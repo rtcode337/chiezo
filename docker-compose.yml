@@ -1,0 +1,22 @@
+services:
+  chiezo-api:
+    build: ./api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data:ro
+    environment:
+      - CHIEZO_DATA_DIR=/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8000/healthz"]
+      interval: 60s
+
+  chiezo-ingest:
+    build: ./ingest
+    profiles: ["ingest"]
+    volumes:
+      - ./data:/data
+    environment:
+      - SOURCE=jawiki
+      - CHIEZO_DATA_DIR=/data
