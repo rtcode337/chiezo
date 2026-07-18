@@ -23,6 +23,19 @@ docker compose restart chiezo-api
 
 容量目安: jawiki(DB 30〜50GB)と同規模以上を別途見込むこと。
 
+## ケース 1': 他地域の OpenStreetMap(例: フランス)
+
+osm アダプタは Geofabrik の `region` パスをパラメータ化しているため、こちらも 1 行で済みます
+(検証パラメータはデフォルトが無いため明示すること)。
+
+```python
+"osm_france": lambda: OsmAdapter("osm_france", region="europe/france", lang="fr",
+                                 min_docs=50_000, sample_titles=["Paris", "Lyon"]),
+```
+
+ソース名の区切りはアンダースコアにすること(ハイフンは世代ファイル名
+`<source>-<date>.db` の区切りと衝突する)。
+
 ## ケース 2: 新しい種類のソース(例: 青空文庫)
 
 ### 1. アダプタモジュールを書く
