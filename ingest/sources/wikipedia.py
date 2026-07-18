@@ -27,6 +27,13 @@ from core import Doc
 log = logging.getLogger(__name__)
 
 DUMP_INDEX_URL = "https://dumps.wikimedia.org/other/cirrus_search_index/"
+PAGEVIEW_INDEX_URL = "https://dumps.wikimedia.org/other/pageview_complete/monthly/"
+
+# ページビュー突合用の wiki_id → pageview_complete のドメインコード対応表。
+WIKI_DOMAIN = {
+    "jawiki": "ja.wikipedia",
+    "enwiki": "en.wikipedia",
+}
 
 # Wikimedia は User-Agent の無い/汎用スクリプト由来のリクエストを 403 で拒否するため、
 # 連絡先付きの UA を明示する(https://meta.wikimedia.org/wiki/User-Agent_policy)。
@@ -75,6 +82,8 @@ class WikipediaAdapter:
         self.sample_titles = (
             sample_titles if sample_titles is not None else defaults.get("sample_titles", [])
         )
+        self._pageview_path: Path | None = None
+        self._pageview_period: str | None = None
 
     # ---- 取得 -------------------------------------------------------------
 
@@ -120,6 +129,81 @@ class WikipediaAdapter:
             paths.append(dest)
         return paths, date
 
+    def latest_pageview_period(self) -> str:
+        """pageview_complete/monthly の最新年月(YYYY-MM)を得る。PAGEVIEW_PERIOD 環境変数で上書き可。"""
+        if period := os.environ.get("PAGEVIEW_PERIOD"):
+            return period
+        html = _http_get(PAGEVIEW_INDEX_URL)
+        years = sorted(set(re.findall(r'href="(\d{4})/"', html)))
+        if not years:
+            raise RuntimeError("no pageview_complete year directories found")
+        year = years[-1]
+        html = _http_get(f"{PAGEVIEW_INDEX_URL}{year}/")
+        months = sorted(set(re.findall(rf'href="({re.escape(year)}-\d{{2}})/"', html)))
+        if not months:
+            raise RuntimeError(f"no pageview_complete month directories found for {year}")
+        return months[-1]
+
+    def fetch_pageviews(self, workdir: Path) -> Path | None:
+        """月次ページビュー(bot 除外・全プロジェクト合算)を取得する。
+
+        対応表に無い wiki_id(WIKI_DOMAIN 未登録)ではページビュー突合をスキップする。
+        ファイルは全 Wikimedia プロジェクト合算(圧縮 5〜6GB)で、対象ドメインへの
+        絞り込みは _load_pageviews 側でストリーミング中に行う(全体を先には絞れない)。
+        """
+        domain = WIKI_DOMAIN.get(self.source)
+        if domain is None:
+            log.info("no pageview domain mapping for %s; skipping pageviews", self.source)
+            return None
+        period = self.latest_pageview_period()
+        year, _, _ = period.partition("-")
+        filename = f"pageviews-{period.replace('-', '')}-user.bz2"
+        dir_url = f"{PAGEVIEW_INDEX_URL}{year}/{period}/"
+        dest = workdir / filename
+        part = dest.with_suffix(".bz2.part")
+        if not (dest.exists() and not part.exists()):
+            url = dir_url + filename
+            log.info("downloading %s", url)
+            subprocess.run(
+                ["curl", "-fSL", "-A", USER_AGENT, "--retry", "5", "-C", "-", "-o", str(part), url],
+                check=True,
+            )
+            part.rename(dest)
+        self._pageview_path = dest
+        self._pageview_period = period
+        return dest
+
+    def _load_pageviews(self) -> dict[int, int]:
+        """page_id → 月間合計閲覧数(アクセス種別 desktop/mobile-web/mobile-app 合算)。
+
+        pageview_complete はドメインコードでアルファベット順にソートされているため、
+        対象ドメインの行を通過し終えたら走査を打ち切れる(全体を読み切らずに済む)。
+        """
+        domain = WIKI_DOMAIN.get(self.source)
+        if domain is None or self._pageview_path is None:
+            return {}
+        counts: dict[int, int] = {}
+        seen = False
+        with bz2.open(self._pageview_path, "rt", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                parts = line.rstrip("\n").split(" ", 5)
+                if len(parts) < 5 or parts[0] != domain:
+                    if seen:
+                        break
+                    continue
+                seen = True
+                page_id_str = parts[2]
+                if page_id_str == "null":
+                    continue
+                try:
+                    page_id = int(page_id_str)
+                    total = int(parts[4])
+                except ValueError:
+                    continue
+                counts[page_id] = counts.get(page_id, 0) + total
+        log.info("loaded pageviews for %d pages (%s, %s)", len(counts), domain, self._pageview_period)
+        return counts
+
     # ---- 変換 -------------------------------------------------------------
 
     def iter_docs(self, path: Path | list[Path]) -> Iterator[Doc]:
@@ -127,12 +211,14 @@ class WikipediaAdapter:
 
         namespace != 0 の文書はスキップ。redirect は ns=0 のもののみ aliases に展開。
         単一ファイル(.gz、テスト用フィクスチャ)と複数シャード(.bz2、本番)の両方に対応。
+        fetch_pageviews() 済みなら、docs.extra に月間閲覧数を載せる。
         """
+        pageviews = self._load_pageviews()
         paths = path if isinstance(path, list) else [path]
         for p in paths:
-            yield from self._iter_docs_one(p)
+            yield from self._iter_docs_one(p, pageviews)
 
-    def _iter_docs_one(self, path: Path) -> Iterator[Doc]:
+    def _iter_docs_one(self, path: Path, pageviews: dict[int, int]) -> Iterator[Doc]:
         opener = bz2.open if path.suffix == ".bz2" else gzip.open
         with opener(path, "rt", encoding="utf-8") as f:
             while True:
@@ -156,6 +242,12 @@ class WikipediaAdapter:
                     for r in raw.get("redirect") or []
                     if r.get("namespace", 0) == 0 and r.get("title")
                 ]
+                views = pageviews.get(doc_id)
+                extra = (
+                    {"pageviews_month": views, "pageviews_period": self._pageview_period}
+                    if views is not None
+                    else None
+                )
                 yield Doc(
                     doc_id=doc_id,
                     title=raw["title"],
@@ -166,5 +258,5 @@ class WikipediaAdapter:
                     aliases=aliases,
                     updated_at=raw.get("timestamp"),
                     rank_score=float(raw.get("popularity_score") or 0.0),
-                    extra=None,
+                    extra=extra,
                 )

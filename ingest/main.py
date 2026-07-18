@@ -193,6 +193,9 @@ def run(source: str, data_dir: Path) -> Path:
         dump_date = os.environ.get("DUMP_DATE") or datetime.now(timezone.utc).strftime("%Y%m%d")
     else:
         dump_path, dump_date = adapter.fetch(dumps_dir)
+        # アダプタが対応していれば、docs.extra 補強用の追加データ(ページビュー等)も取得する
+        if fetch_extra := getattr(adapter, "fetch_pageviews", None):
+            fetch_extra(dumps_dir)
 
     building_path = data_dir / f"{source}-{dump_date}.db.building"
     n_files = len(dump_path) if isinstance(dump_path, list) else 1

@@ -30,10 +30,14 @@ curl -s "$BASE/v1/sources"                                        # ソース一
 curl -s "$BASE/v1/jawiki/search?q=浅草寺&limit=5"                  # 全文検索
 curl -s "$BASE/v1/jawiki/doc?title=浅草寺&fields=title,opening,tags" # 文書概要
 curl -s "$BASE/v1/jawiki/doc?title=浅草寺&max_chars=8000"           # 文書全文(切り詰め)
+curl -s "$BASE/v1/jawiki/doc?title=浅草寺&fields=title,extra"       # ページビュー等の付加情報
 curl -s "$BASE/v1/jawiki/titles?prefix=浅草"                        # タイトル前方一致
 curl -s "$BASE/v1/jawiki/links?title=浅草寺"                        # リンク先一覧
 curl -s "$BASE/v1/jawiki/random?limit=3"                           # ランダム文書
 ```
+
+ブラウザで `http://<サーバーIP>:8000/admin` を開くと、登録済みソース(文書数・dump_date・構築日時など)
+を一覧できる簡易管理画面が見られます。
 
 主な仕様:
 
@@ -41,6 +45,9 @@ curl -s "$BASE/v1/jawiki/random?limit=3"                           # ランダ�
   フォールバックし、レスポンスの `"mode"` が `"title_prefix"` になります(通常は `"fts"`)。
 - `doc` — `title` 完全一致 → リダイレクト(alias)解決 → 見つからなければ 404 と近似候補 5 件。
   `fields`(既定 `title,opening,body,tags,updated_at`)と `max_chars` で応答サイズを制御できます。
+- `extra` フィールド(jawiki) — ページビューを突合できた記事には
+  `{"pageviews_month": <月間閲覧数>, "pageviews_period": "YYYY-MM"}` が入ります(Wikimedia の
+  `pageview_complete` 月次ダンプ由来、bot 除外・全アクセス種別合算)。突合できなかった記事は `null`。
 - 全クエリ 5 秒タイムアウト(超過は 504)。エラーは `{"error": "..."}` 形式。
 
 ### Claude Code から使う(各アプリの CLAUDE.md に転記する文面)
@@ -84,8 +91,15 @@ ingest の環境変数:
 |---|---|
 | `SOURCE` | 取り込むソース名(必須。compose 既定は `jawiki`。`-e SOURCE=enwiki` で上書き) |
 | `DUMP_DATE` | ダンプ日付 `YYYYMMDD` を固定(省略時は最新を自動検出) |
-| `DUMP_FILE` | ダウンロードをスキップし既存ファイルを使う |
+| `DUMP_FILE` | ダウンロードをスキップし既存ファイルを使う(カンマ区切りで複数シャード指定可) |
+| `PAGEVIEW_PERIOD` | ページビュー突合対象の年月 `YYYY-MM` を固定(省略時は最新月を自動検出) |
 | `MIN_DOCS` / `SAMPLE_TITLES` | 検証パラメータの上書き(小規模データでの動作確認用) |
+
+Wikipedia 系ソースは記事本文のダンプ(CirrusSearch)に加えて、Wikimedia の月次ページビューダンプ
+(`other/pageview_complete/monthly/`、全プロジェクト合算で圧縮 5〜6GB)もダウンロードし、
+`page_id` で突合して `docs.extra` に月間閲覧数を格納します。`WIKI_DOMAIN`
+(`ingest/sources/wikipedia.py`)に対応表が無い wiki_id ではこの突合をスキップします。
+この分、初回取り込みのダウンロード量・所要時間は README 冒頭の見積もりよりやや増えます。
 
 中断しても運用 DB は壊れません(`.building` の一時ファイルに構築するため)。再実行すれば最初からやり直します。
 
