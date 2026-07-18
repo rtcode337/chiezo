@@ -1,6 +1,7 @@
 """chiezo-api ルーティング(設計書 §5)。"""
 from __future__ import annotations
 
+import html
 import json
 import logging
 import os
@@ -8,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from app import db
 from app.fts import build_match_query, escape_like
@@ -92,6 +93,55 @@ def list_sources(request: Request):
             for s in sources.values()
         ]
     }
+
+
+# ---- 管理画面 ---------------------------------------------------------------
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin(request: Request):
+    sources: dict[str, Source] = request.app.state.sources
+    rows = "\n".join(
+        f"<tr>"
+        f"<td>{html.escape(s.name)}</td>"
+        f"<td>{html.escape(s.kind)}</td>"
+        f"<td>{html.escape(s.lang or '')}</td>"
+        f"<td>{s.doc_count:,}</td>"
+        f"<td>{html.escape(s.dump_date or '')}</td>"
+        f"<td>{html.escape(s.built_at or '')}</td>"
+        f"<td>{s.schema_version}</td>"
+        f"</tr>"
+        for s in sorted(sources.values(), key=lambda s: s.name)
+    )
+    if not rows:
+        rows = '<tr><td colspan="7">登録済みのソースはありません</td></tr>'
+    body = f"""<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>chiezo 管理画面</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; margin: 2rem; color: #222; }}
+  h1 {{ font-size: 1.25rem; }}
+  table {{ border-collapse: collapse; margin-top: 1rem; }}
+  th, td {{ border: 1px solid #ccc; padding: 0.4rem 0.8rem; text-align: left; }}
+  th {{ background: #f0f0f0; }}
+</style>
+</head>
+<body>
+<h1>chiezo 管理画面</h1>
+<p>登録ソース数: {len(sources)}</p>
+<table>
+<thead>
+<tr><th>name</th><th>kind</th><th>lang</th><th>docs</th><th>dump_date</th><th>built_at</th><th>schema_version</th></tr>
+</thead>
+<tbody>
+{rows}
+</tbody>
+</table>
+</body>
+</html>"""
+    return HTMLResponse(content=body)
 
 
 # ---- 検索 -------------------------------------------------------------------

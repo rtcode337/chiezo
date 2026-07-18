@@ -129,6 +129,10 @@ def validate_db(adapter: SourceAdapter, db_path: Path) -> None:
             ).fetchone()
             if row is None:
                 raise RuntimeError(f"validation failed: sample title not found: {title!r}")
+            # trigram トークナイザは 3 文字未満を扱えない(api/app/fts.py の MIN_TRIGRAM_LEN と同じ閾値)。
+            # API 自体もその場合はタイトル前方一致にフォールバックするため、FTS 検証は対象外。
+            if len(title) < 3:
+                continue
             fts = conn.execute(
                 "SELECT rowid FROM docs_fts WHERE docs_fts MATCH ? LIMIT 1",
                 ('"' + title.replace('"', "") + '"',),
@@ -182,15 +186,17 @@ def run(source: str, data_dir: Path) -> Path:
     dumps_dir = data_dir / "dumps"
     dumps_dir.mkdir(parents=True, exist_ok=True)
 
-    # DUMP_FILE 指定時はダウンロードをスキップ(テスト・手動投入用)
+    # DUMP_FILE 指定時はダウンロードをスキップ(テスト・手動投入用。カンマ区切りで複数シャード可)
     if dump_file := os.environ.get("DUMP_FILE"):
-        dump_path = Path(dump_file)
+        files = [Path(f) for f in dump_file.split(",") if f]
+        dump_path = files[0] if len(files) == 1 else files
         dump_date = os.environ.get("DUMP_DATE") or datetime.now(timezone.utc).strftime("%Y%m%d")
     else:
         dump_path, dump_date = adapter.fetch(dumps_dir)
 
     building_path = data_dir / f"{source}-{dump_date}.db.building"
-    log.info("building %s from %s", building_path.name, dump_path)
+    n_files = len(dump_path) if isinstance(dump_path, list) else 1
+    log.info("building %s from %d dump file(s)", building_path.name, n_files)
     build_db(adapter, dump_path, dump_date, building_path)
     validate_db(adapter, building_path)
     final_path = switch_db(data_dir, source, dump_date, building_path)

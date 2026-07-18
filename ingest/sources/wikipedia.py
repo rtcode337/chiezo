@@ -4,9 +4,14 @@ wiki_id をパラメータ化しており、jawiki / enwiki / … で再利用�
 データ形式: JSON Lines、2 行 1 組
   1 行目: {"index": {"_id": "12345", ...}}
   2 行目: ドキュメント本体(title, text, opening_text, category, ...)
+
+旧 other/cirrussearch/ (単一 .json.gz) は 2026 年に廃止され、
+other/cirrus_search_index/<date>/index_name=<wiki_id>_content/ 配下の
+複数 .json.bz2 シャードに置き換わった(DEPRECATED.txt 参照)。
 """
 from __future__ import annotations
 
+import bz2
 import gzip
 import json
 import logging
@@ -21,7 +26,17 @@ from core import Doc
 
 log = logging.getLogger(__name__)
 
-DUMP_INDEX_URL = "https://dumps.wikimedia.org/other/cirrussearch/current/"
+DUMP_INDEX_URL = "https://dumps.wikimedia.org/other/cirrus_search_index/"
+
+# Wikimedia は User-Agent の無い/汎用スクリプト由来のリクエストを 403 で拒否するため、
+# 連絡先付きの UA を明示する(https://meta.wikimedia.org/wiki/User-Agent_policy)。
+USER_AGENT = "chiezo-ingest/0.1 (https://github.com/; contact via repo issues)"
+
+
+def _http_get(url: str, timeout: int = 60) -> str:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8", errors="replace")
 
 DEFAULT_VALIDATION = {
     # 検証パラメータ(設計書 §6.1-4)。フィクスチャテストではコンストラクタで上書きする。
@@ -64,43 +79,62 @@ class WikipediaAdapter:
     # ---- 取得 -------------------------------------------------------------
 
     def latest_dump_date(self) -> str:
-        """current ディレクトリの一覧から最新のダンプ日付を得る。DUMP_DATE 環境変数で上書き可。"""
+        """親ディレクトリの一覧から最新のダンプ日付を得る。DUMP_DATE 環境変数で上書き可。"""
         if date := os.environ.get("DUMP_DATE"):
             return date
-        with urllib.request.urlopen(DUMP_INDEX_URL, timeout=60) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
-        pattern = rf"{re.escape(self.source)}-(\d{{8}})-cirrussearch-content\.json\.gz"
-        dates = sorted(set(re.findall(pattern, html)))
+        html = _http_get(DUMP_INDEX_URL)
+        dates = sorted(set(re.findall(r'href="(\d{8})/"', html)))
         if not dates:
-            raise RuntimeError(f"no cirrussearch content dump found for {self.source}")
+            raise RuntimeError("no cirrus_search_index date directories found")
         return dates[-1]
 
-    def fetch(self, workdir: Path) -> tuple[Path, str]:
-        """ダンプを取得しローカルパスとダンプ日付を返す。curl -C - で再開可能。"""
+    def _shard_filenames(self, date: str) -> list[str]:
+        """指定日付ディレクトリ配下の index_name=<source>_content シャード一覧。"""
+        dir_url = f"{DUMP_INDEX_URL}{date}/index_name={self.source}_content/"
+        html = _http_get(dir_url)
+        pattern = rf'href="({re.escape(self.source)}_content-{date}-\d+\.json\.bz2)"'
+        names = sorted(set(re.findall(pattern, html)))
+        if not names:
+            raise RuntimeError(f"no cirrus_search_index shards found for {self.source} @ {date}")
+        return names
+
+    def fetch(self, workdir: Path) -> tuple[list[Path], str]:
+        """全シャードを取得しローカルパス一覧とダンプ日付を返す。curl -C - で再開可能。"""
         date = self.latest_dump_date()
-        filename = f"{self.source}-{date}-cirrussearch-content.json.gz"
-        dest = workdir / filename
-        if dest.exists() and not (dest.with_suffix(".gz.part")).exists():
-            log.info("dump already downloaded: %s", dest)
-            return dest, date
-        url = DUMP_INDEX_URL + filename
-        part = dest.with_suffix(".gz.part")
-        log.info("downloading %s", url)
-        subprocess.run(
-            ["curl", "-fSL", "--retry", "5", "-C", "-", "-o", str(part), url],
-            check=True,
-        )
-        part.rename(dest)
-        return dest, date
+        dir_url = f"{DUMP_INDEX_URL}{date}/index_name={self.source}_content/"
+        paths = []
+        for filename in self._shard_filenames(date):
+            dest = workdir / filename
+            part = dest.with_suffix(".bz2.part")
+            if dest.exists() and not part.exists():
+                log.info("shard already downloaded: %s", dest)
+                paths.append(dest)
+                continue
+            url = dir_url + filename
+            log.info("downloading %s", url)
+            subprocess.run(
+                ["curl", "-fSL", "-A", USER_AGENT, "--retry", "5", "-C", "-", "-o", str(part), url],
+                check=True,
+            )
+            part.rename(dest)
+            paths.append(dest)
+        return paths, date
 
     # ---- 変換 -------------------------------------------------------------
 
-    def iter_docs(self, path: Path) -> Iterator[Doc]:
+    def iter_docs(self, path: Path | list[Path]) -> Iterator[Doc]:
         """CirrusSearch ダンプをストリーミングで読み、コアスキーマの Doc を返す。
 
         namespace != 0 の文書はスキップ。redirect は ns=0 のもののみ aliases に展開。
+        単一ファイル(.gz、テスト用フィクスチャ)と複数シャード(.bz2、本番)の両方に対応。
         """
-        with gzip.open(path, "rt", encoding="utf-8") as f:
+        paths = path if isinstance(path, list) else [path]
+        for p in paths:
+            yield from self._iter_docs_one(p)
+
+    def _iter_docs_one(self, path: Path) -> Iterator[Doc]:
+        opener = bz2.open if path.suffix == ".bz2" else gzip.open
+        with opener(path, "rt", encoding="utf-8") as f:
             while True:
                 index_line = f.readline()
                 if not index_line:
