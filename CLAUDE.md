@@ -1,7 +1,8 @@
 # chiezo — ローカル知識サーバー
 
-LAN 内で動く読み取り専用の知識検索 REST API。複数のデータソース(現状は日本語 Wikipedia = `jawiki`)を
-ソースごとに独立した SQLite ファイル(`/data/<source>.db`)として収容する。設計書は v0.2。
+LAN 内で動く読み取り専用の知識検索 REST API。複数のデータソース(日本語 Wikipedia = `jawiki`、
+OpenStreetMap 日本抽出 = `osm_japan`)をソースごとに独立した SQLite ファイル
+(`/data/<source>.db`)として収容する。設計書は v0.2。
 
 ## アーキテクチャ
 
@@ -23,8 +24,18 @@ LAN 内で動く読み取り専用の知識検索 REST API。複数のデータ�
     月次ページビュー(bot 除外・全プロジェクト合算、圧縮 5〜6GB)を `page_id` で突合し、
     `docs.extra` に `{"pageviews_month": ..., "pageviews_period": "YYYY-MM"}` として格納する
     (`WIKI_DOMAIN` 未登録の wiki_id では突合をスキップ)。
+  - `sources/osm.py` — OpenStreetMap アダプタ(`region` パラメータ化、Geofabrik の
+    `<region>-latest.osm.bz2` を標準ライブラリのみで解析。PBF 非対応)。名前付き地物
+    (`place=*` / `boundary=administrative` / 主要 `natural=*`)のみを地名辞典として取り込む。
+    OSM XML の node → way → relation 順を前提に 3 パス走査し、way/relation の座標は
+    構成ノードの平均(行政境界は admin_centre / label ノード優先)で `docs.extra` に
+    `{"osm_type", "osm_id", "lat", "lon", "feature", "tags", ...}` として格納。
+    docs.title の UNIQUE 制約に合わせ、同名地物は先勝ちで「名前 (node:123)」形式に弁別し
+    元の名前を alias に残す。ソース名の区切りはアンダースコア
+    (`osm_japan`。ハイフンは世代ファイル名 `<source>-<date>.db` と衝突するため不可)
   - `sources/__init__.py` — アダプタレジストリ(新ソースはここに 1 行追加)
-- `tests/` — フィクスチャ(`fixtures/mini_jawiki.json.gz`、12 文書)での API / ingest テスト
+- `tests/` — フィクスチャ(`fixtures/mini_jawiki.json.gz` 12 文書、`fixtures/mini_osm.osm.bz2`)
+  での API / ingest テスト
 
 ## コマンド
 
@@ -34,12 +45,16 @@ python -m pytest tests/ -v
 
 # フィクスチャ再生成
 python tests/fixtures/make_fixture.py
+python tests/fixtures/make_osm_fixture.py
 
 # API 起動(Docker)
 docker compose up -d
 
-# 取り込み(本番: 5〜6GB ダウンロード、構築 2〜6 時間、ディスク空き 80GB 推奨)
+# 取り込み(本番: jawiki は 5〜6GB ダウンロード、構築 2〜6 時間、ディスク空き 80GB 推奨)
 docker compose --profile ingest run --rm chiezo-ingest
+
+# OSM 日本抽出の取り込み(4〜5GB ダウンロード、構築 1〜3 時間)
+docker compose --profile ingest run --rm -e SOURCE=osm_japan chiezo-ingest
 
 # 取り込み後の反映
 docker compose restart chiezo-api
@@ -48,6 +63,8 @@ docker compose restart chiezo-api
 ingest の主な環境変数: `SOURCE`(必須)、`DUMP_DATE`(日付固定)、`DUMP_FILE`(ダウンロードスキップ)、
 `MIN_DOCS` / `SAMPLE_TITLES`(検証パラメータ上書き。小規模データでの動作確認用)、
 `PAGEVIEW_PERIOD`(ページビュー突合対象の年月 `YYYY-MM` を固定。省略時は最新月を自動検出)。
+OSM 系ソースでは Geofabrik が latest 1 世代のみ配布のため、`DUMP_DATE` は取得対象の固定ではなく
+世代ファイル名ラベルの上書きとしてのみ機能する。
 
 ## 実装上の約束事
 
