@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
-# 再開可能ダウンロード用に curl を入れる
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
+# curl: 再開可能ダウンロード用。libexpat1: pyosmium(osm 系ソース)の実行時依存
+RUN apt-get update && apt-get install -y --no-install-recommends curl libexpat1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /srv/chiezo-ingest

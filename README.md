@@ -6,7 +6,8 @@ LAN 内の開発マシン(主に Claude Code)から使う、完全ローカル�
 - マルチソース設計: ソースごとに独立した SQLite ファイル 1 つ(`data/<source>.db`)
 - v0.2 収録ソース:
   - `jawiki` — 日本語 Wikipedia(CirrusSearch ダンプ由来)
-  - `osm_japan` — OpenStreetMap 日本抽出(Geofabrik 由来の地名辞典。地名・行政区・自然地物と座標)
+  - `osm_japan` — OpenStreetMap 日本抽出(Geofabrik 由来の地名辞典 + POI 辞典。
+    地名・行政区・自然地物に加え、病院・学校・店舗・観光地等の主要 POI と座標)
 - API: FastAPI + uvicorn(ポート 8000)、認証なし・LAN 内前提
 
 ## セットアップ
@@ -19,7 +20,8 @@ curl -s http://localhost:8000/healthz
 # 2. jawiki を取り込む(ダンプ 5〜6GB DL + 構築 2〜6 時間、ディスク空き 80GB 以上推奨)
 docker compose --profile ingest run --rm chiezo-ingest
 
-# 2'. osm_japan を取り込む(ダンプ 4〜5GB DL + 構築 1〜3 時間、DB は 1GB 前後)
+# 2'. osm_japan を取り込む(ダンプ 2〜3GB DL [.osm.pbf] + 構築 1〜4 時間、
+#     POI を含むため DB は数 GB 規模)
 docker compose --profile ingest run --rm -e SOURCE=osm_japan chiezo-ingest
 
 # 3. 新しい DB を読み込ませる
@@ -40,7 +42,7 @@ curl -s "$BASE/v1/jawiki/titles?prefix=浅草"                        # タイ�
 curl -s "$BASE/v1/jawiki/links?title=浅草寺"                        # リンク先一覧
 curl -s "$BASE/v1/jawiki/random?limit=3"                           # ランダム文書
 
-curl -s "$BASE/v1/osm_japan/search?q=富士山&limit=5"                # 地名検索
+curl -s "$BASE/v1/osm_japan/search?q=富士山&limit=5"                # 地名・POI検索(同一エンドポイント)
 curl -s "$BASE/v1/osm_japan/doc?title=京都市&fields=title,extra"    # 座標・OSMタグ等
 ```
 
@@ -60,6 +62,10 @@ curl -s "$BASE/v1/osm_japan/doc?title=京都市&fields=title,extra"    # 座標�
   "lon": ..., "feature": "place=city", "tags": {<OSM 生タグ>}, ...}`。way / relation の座標は
   構成ノードの平均(近似重心)で、行政境界は admin_centre / label ノードを優先します。
   同名地物はタイトルを「名前 (node:123)」形式で弁別し、元の名前は alias として引けます。
+  POI(`feature` が `amenity=*` / `shop=*` / `tourism=*` / `leisure=*` / `historic=*` /
+  `craft=*` / `office=*` / `healthcare=*`)では、住所(`addr:*` 由来)が取れれば `address`、
+  電話・サイト・営業時間が取れれば `phone` / `website` / `opening_hours` も入ります。
+  地名(place/boundary/natural)と POI は同一ソース内に混在し、`search` は両方をヒットさせます。
 - 全クエリ 5 秒タイムアウト(超過は 504)。エラーは `{"error": "..."}` 形式。
 
 ### Claude Code から使う(各アプリの CLAUDE.md に転記する文面)
@@ -114,13 +120,17 @@ Wikipedia 系ソースは記事本文のダンプ(CirrusSearch)に加えて、Wi
 この分、初回取り込みのダウンロード量・所要時間は README 冒頭の見積もりよりやや増えます。
 
 OSM 系ソース(`osm_japan` 等)は Geofabrik の地域抽出
-`https://download.geofabrik.de/<region>-latest.osm.bz2` をダウンロードし、標準ライブラリのみで
-ストリーミング解析します(PBF 形式は非対応)。取り込むのは「名前付き地物」のみです:
-`place=*`、`boundary=administrative`、主要な `natural=*`(山頂・湖沼・島・湾など)。
-建物・道路・店舗などの POI は対象外です(Nominatim のような住所検索・逆ジオコーディングも
-できません。それが必要な場合は公式の [nominatim-docker](https://github.com/mediagis/nominatim-docker)
-を別途立ててください)。ファイルは node → way → relation の 3 パスで読むため、
-bz2 の伸長を都度やり直すぶん構築時間はダウンロード後さらに 1〜3 時間程度かかります。
+`https://download.geofabrik.de/<region>-latest.osm.pbf` をダウンロードし、pyosmium
+(libosmium バインディング)でストリーミング解析します(Geofabrik が 2026 年に `.osm.bz2` の
+配布を終了し `.osm.pbf` のみになったため、標準ライブラリの `xml.etree` では読めなくなった。
+osm 系ソースに限り pyosmium への依存を許容している)。取り込むのは「名前付き地物」です:
+`place=*`、`boundary=administrative`、主要な `natural=*`(山頂・湖沼・島・湾など)に加えて、
+主要 POI(`amenity=*` `shop=*` `tourism=*` `leisure=*` `historic=*` `craft=*` `office=*`
+`healthcare=*`。いずれも `name` タグ必須)。住所補間・逆ジオコーディングはできません
+(それが必要な場合は公式の [nominatim-docker](https://github.com/mediagis/nominatim-docker)
+を別途立ててください)。ファイルは relation メンバーの把握(パス1)→ ノード座標解決込みの
+node/way/relation 走査(パス2)の 2 パスで読むため、構築時間はダウンロード後さらに
+1〜4 時間程度かかります。
 
 中断しても運用 DB は壊れません(`.building` の一時ファイルに構築するため)。再実行すれば最初からやり直します。
 
@@ -143,7 +153,7 @@ python -m venv .venv && .venv/bin/pip install fastapi 'uvicorn[standard]' httpx 
 ```
 
 テストは同梱の小型フィクスチャ(`tests/fixtures/mini_jawiki.json.gz` 12 文書、
-`tests/fixtures/mini_osm.osm.bz2` 11 ノード + 2 way + 2 relation)から実際に
+`tests/fixtures/mini_osm.osm.pbf` 12 ノード + 2 way + 2 relation)から実際に
 DB を構築して全エンドポイントを検証します。ネットワーク・実データは不要です。
 
 ## 設計メモ

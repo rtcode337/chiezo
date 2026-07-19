@@ -23,9 +23,9 @@ def docs(osm_fixture_dump):
 
 class TestOsmAdapter:
     def test_doc_count_and_exclusions(self, docs):
-        # 対象地物 7 件のみ(amenity ノード・タグ無しノード・タグ無し way は除外)
-        assert len(docs) == 7
-        assert "ラーメン一番" not in docs
+        # 対象地物 8 件(タグ無しノード・タグ無し way・name 無し amenity は除外)
+        assert len(docs) == 8
+        assert "ラーメン一番" in docs
 
     def test_node_doc_fields(self, docs):
         tokyo = docs["東京"]
@@ -34,7 +34,7 @@ class TestOsmAdapter:
         assert "東京" not in tokyo.aliases  # name:ja はタイトルと同じなので除外
         assert tokyo.tags == ["place=city"]
         assert tokyo.links == ["東京都区部"]  # wikipedia タグの言語プレフィックス除去
-        assert tokyo.updated_at == "2026-06-01T00:00:00Z"
+        assert tokyo.updated_at == "2026-06-01T00:00:00+00:00"
         assert tokyo.extra["osm_type"] == "node"
         assert tokyo.extra["osm_id"] == 1
         assert tokyo.extra["lat"] == pytest.approx(35.6895)
@@ -49,6 +49,17 @@ class TestOsmAdapter:
         fuji = docs["富士山"]
         assert set(fuji.aliases) == {"Mount Fuji", "富士の山", "不二山"}
         assert "標高 3776m" in fuji.opening
+
+    def test_poi_doc_fields(self, docs):
+        ramen = docs["ラーメン一番"]
+        assert ramen.doc_id == 5 * 4 + 0  # node
+        assert ramen.extra["osm_type"] == "node"
+        assert ramen.extra["feature"] == "amenity=restaurant"
+        assert ramen.extra["address"] == "京都市 河原町通"
+        assert ramen.extra["phone"] == "075-000-0000"
+        assert "住所 京都市 河原町通" in ramen.opening
+        assert "phone: 075-000-0000" in ramen.body
+        assert 0 < ramen.rank_score < 0.85  # place=city (人口補正あり) より低いスコア
 
     def test_duplicate_title_disambiguated(self, docs):
         # 「中央」が 2 件 → 先勝ちで 2 件目は "(node:4)" 付き、元の名前は alias に残る
@@ -89,7 +100,7 @@ class TestOsmBuild:
             assert meta["lang"] == "ja"
 
             (count,) = conn.execute("SELECT COUNT(*) FROM docs").fetchone()
-            assert count == 7
+            assert count == 8
 
             row = conn.execute("SELECT * FROM docs WHERE title = '京都市'").fetchone()
             extra = json.loads(row["extra"])
@@ -132,7 +143,7 @@ class TestOsmApi:
         (src,) = res.json()["sources"]
         assert src["name"] == "osm_japan"
         assert src["kind"] == "osm"
-        assert src["docs"] == 7
+        assert src["docs"] == 8
 
     def test_search(self, client):
         res = client.get("/v1/osm_japan/search", params={"q": "富士山"})

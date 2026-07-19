@@ -1,1 +1,4 @@
-# 標準ライブラリのみで動作(ダウンロードは curl を使用)
+# 標準ライブラリのみで動作(ダウンロードは curl を使用)。
+# 例外: osm 系ソースのみ pyosmium に依存する(Geofabrik が .osm.pbf のみの配布に
+# 移行したため、標準ライブラリの xml.etree では PBF [protobuf] を解析できない)。
+osmium>=4.0,<5

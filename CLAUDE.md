@@ -25,16 +25,28 @@ OpenStreetMap 日本抽出 = `osm_japan`)をソースごとに独立した SQLit
     `docs.extra` に `{"pageviews_month": ..., "pageviews_period": "YYYY-MM"}` として格納する
     (`WIKI_DOMAIN` 未登録の wiki_id では突合をスキップ)。
   - `sources/osm.py` — OpenStreetMap アダプタ(`region` パラメータ化、Geofabrik の
-    `<region>-latest.osm.bz2` を標準ライブラリのみで解析。PBF 非対応)。名前付き地物
-    (`place=*` / `boundary=administrative` / 主要 `natural=*`)のみを地名辞典として取り込む。
-    OSM XML の node → way → relation 順を前提に 3 パス走査し、way/relation の座標は
-    構成ノードの平均(行政境界は admin_centre / label ノード優先)で `docs.extra` に
-    `{"osm_type", "osm_id", "lat", "lon", "feature", "tags", ...}` として格納。
+    `<region>-latest.osm.pbf` を pyosmium(libosmium バインディング)で解析)。
+    Geofabrik が 2026 年に `.osm.bz2` 配布を終了し `.osm.pbf` のみになったため、標準ライブラリの
+    `xml.etree` では読めなくなった。osm 系ソースに限り pyosmium への依存を許容している
+    (他ソースは標準ライブラリのみの方針を維持)。
+    名前付き地物(`place=*` / `boundary=administrative` / 主要 `natural=*`)を地名辞典として、
+    加えて主要 POI(`amenity=*` / `shop=*` / `tourism=*` / `leisure=*` / `historic=*` /
+    `craft=*` / `office=*` / `healthcare=*`。`name` タグ必須)を POI 辞典として同一ソースに
+    取り込む(地名と POI は同じ docs/docs_fts に混在し、`search` は両方をヒットさせる)。
+    OSM は node → way → relation 順で並ぶため 2 パスで読む: パス1
+    (`_RelationScanHandler`)で対象 relation が参照する way ID を集め、パス2
+    (`_MainHandler`)で pyosmium の `NodeLocationsForWays` によるノード座標自動解決を
+    使いながら node/way/relation を走査して Doc を生成する。relation の label /
+    admin_centre ノード座標は位置インデックス (`idx.get(node_id)`) に直接問い合わせて解決し、
+    それ以外は構成要素の平均(近似重心)。pyosmium はコールバック駆動のため、別スレッドで
+    `osmium.apply()` を回し `queue.Queue` 経由で Doc をジェネレータへ橋渡しする(メモリ抑制)。
     docs.title の UNIQUE 制約に合わせ、同名地物は先勝ちで「名前 (node:123)」形式に弁別し
-    元の名前を alias に残す。ソース名の区切りはアンダースコア
+    元の名前を alias に残す。POI は `addr:*` タグから `docs.extra.address`、
+    `phone` / `website` / `opening_hours` 系タグから同名の extra フィールドも拾う。
+    ソース名の区切りはアンダースコア
     (`osm_japan`。ハイフンは世代ファイル名 `<source>-<date>.db` と衝突するため不可)
   - `sources/__init__.py` — アダプタレジストリ(新ソースはここに 1 行追加)
-- `tests/` — フィクスチャ(`fixtures/mini_jawiki.json.gz` 12 文書、`fixtures/mini_osm.osm.bz2`)
+- `tests/` — フィクスチャ(`fixtures/mini_jawiki.json.gz` 12 文書、`fixtures/mini_osm.osm.pbf`)
   での API / ingest テスト
 
 ## コマンド
@@ -53,7 +65,7 @@ docker compose up -d
 # 取り込み(本番: jawiki は 5〜6GB ダウンロード、構築 2〜6 時間、ディスク空き 80GB 推奨)
 docker compose --profile ingest run --rm chiezo-ingest
 
-# OSM 日本抽出の取り込み(4〜5GB ダウンロード、構築 1〜3 時間)
+# OSM 日本抽出の取り込み(.osm.pbf 2〜3GB ダウンロード、POI 込みで構築 1〜4 時間)
 docker compose --profile ingest run --rm -e SOURCE=osm_japan chiezo-ingest
 
 # 取り込み後の反映

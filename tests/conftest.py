@@ -8,7 +8,7 @@ sys.path.insert(0, str(ROOT / "api"))
 sys.path.insert(0, str(ROOT / "ingest"))
 
 FIXTURE_DUMP = ROOT / "tests" / "fixtures" / "mini_jawiki.json.gz"
-OSM_FIXTURE_DUMP = ROOT / "tests" / "fixtures" / "mini_osm.osm.bz2"
+OSM_FIXTURE_DUMP = ROOT / "tests" / "fixtures" / "mini_osm.osm.pbf"
 
 
 @pytest.fixture(scope="session")

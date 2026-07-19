@@ -1,37 +1,47 @@
 """OpenStreetMap (Geofabrik 地域抽出) アダプタ。
 
 Nominatim のようなフルジオコーダ(住所補間・逆ジオコーディング)ではなく、
-OSM の「名前付き地物」= 地名・行政区・自然地物をコアスキーマに落とし込んだ
-ローカル地名辞典(gazetteer)を構築する。region をパラメータ化しており、
+OSM の「名前付き地物」= 地名・行政区・自然地物・主要 POI をコアスキーマに落とし込んだ
+ローカル地名辞典 + POI 辞典を構築する。region をパラメータ化しており、
 Geofabrik にある任意の地域(asia/japan, europe/france, ...)で再利用できる。
 
-データ形式: Geofabrik の <region>-latest.osm.bz2 (OSM XML) を
-標準ライブラリ (bz2 + xml.etree.iterparse) のみでストリーミング解析する。
-OSM XML は node → way → relation の順に並ぶ規約のため、3 パスで読む:
+データ形式: Geofabrik の <region>-latest.osm.pbf を pyosmium (libosmium バインディング) で
+ストリーミング解析する(旧 .osm.bz2 [OSM XML] は 2026 年に Geofabrik 配布が終了したため、
+標準ライブラリのみでの手書き XML パーサから pyosmium 依存へ切り替えた)。
 
-  パス1: relation を走査し、対象地物の relation とそのメンバー(node/way)を記録
-  パス2: way を走査し、対象地物の way と relation メンバー way のノード参照を記録
-         (relation セクションに入ったら打ち切り)
-  パス3: node を走査し、node の Doc を yield しつつ必要ノードの座標を解決
-         (way セクションに入ったら打ち切り)。その後 way / relation の Doc を yield
+OSM の PBF は node → way → relation の順に並ぶ規約のため、2 パスで読む:
 
-way / relation の座標は構成ノードの平均(近似重心)。行政境界 relation は
-admin_centre / label メンバーノードの座標を優先する。メモリに載せるのは
-「対象地物のメタ情報 + 必要ノードの座標」のみで、全ノードは保持しない。
+  パス1(_RelationScanHandler): relation を走査し、対象地物の relation が参照する
+        way ID(センロイド計算に必要な分のみ、"outer" ロールをサンプリング)を集める。
+  パス2(_MainHandler): pyosmium の NodeLocationsForWays でノード座標を自動解決しながら
+        node → way → relation の順で Doc を生成する。node/own-way/relation は該当すれば
+        即座に Doc を作って yield し(スレッド + Queue で pyosmium のコールバック駆動を
+        ジェネレータへ橋渡し)、relation のセントロイド計算に必要な way だけ座標を
+        way_centroids に保持する。label / admin_centre ロールの node 座標は
+        NodeLocationsForWays が構築する位置インデックス (idx) に直接問い合わせる
+        (way に使われるノードに限らず全ノードの座標を保持しているため引ける)。
+
+取り込み対象:
+  - place=*, boundary=administrative, 主要 natural=*(地名辞典。既存)
+  - amenity=*, shop=*, tourism=*, leisure=*, historic=*, craft=*, office=*,
+    healthcare=*(POI辞典。name タグ必須。旧版では対象外だった)
 """
 from __future__ import annotations
 
-import bz2
+import itertools
 import logging
 import math
 import os
+import queue
 import re
 import subprocess
+import threading
 import urllib.request
-import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import IO, Iterator
+from typing import Iterator
+
+import osmium
 
 from core import Doc
 
@@ -50,12 +60,23 @@ NATURAL_VALUES = {
     "glacier", "dune", "cliff",
 }
 
+# 取り込み対象の POI タグキー(name タグ必須。値は問わない)
+POI_KEYS = ("amenity", "shop", "tourism", "leisure", "historic", "craft", "office", "healthcare")
+
 # 別名として aliases へ展開するタグ(";" 区切りの複数値に対応)
 NAME_KEYS = (
     "name:ja", "name:en", "name:ja-Hira", "name:ja_kana", "name:ja_rm",
     "alt_name", "official_name", "short_name", "old_name", "int_name",
     "loc_name", "nat_name",
 )
+
+# body / extra へ拾い上げる住所・連絡先タグ
+ADDR_KEYS = ("addr:postcode", "addr:city", "addr:street", "addr:housenumber")
+CONTACT_KEYS = {
+    "phone": ("phone", "contact:phone"),
+    "website": ("website", "contact:website", "url"),
+    "opening_hours": ("opening_hours",),
+}
 
 # opening / body 用の地物種別ラベル
 FEATURE_LABEL = {
@@ -93,6 +114,42 @@ FEATURE_LABEL = {
     ("natural", "glacier"): "氷河",
     ("natural", "dune"): "砂丘",
     ("natural", "cliff"): "崖",
+    # 主要 POI(未列挙の値は "key=value" にフォールバックする)
+    ("amenity", "hospital"): "病院",
+    ("amenity", "clinic"): "診療所",
+    ("amenity", "school"): "学校",
+    ("amenity", "university"): "大学",
+    ("amenity", "kindergarten"): "幼稚園・保育園",
+    ("amenity", "library"): "図書館",
+    ("amenity", "restaurant"): "レストラン",
+    ("amenity", "cafe"): "カフェ",
+    ("amenity", "bank"): "銀行",
+    ("amenity", "post_office"): "郵便局",
+    ("amenity", "police"): "警察署",
+    ("amenity", "fire_station"): "消防署",
+    ("amenity", "place_of_worship"): "宗教施設",
+    ("amenity", "townhall"): "役場",
+    ("amenity", "parking"): "駐車場",
+    ("amenity", "fuel"): "ガソリンスタンド",
+    ("shop", "supermarket"): "スーパーマーケット",
+    ("shop", "convenience"): "コンビニ",
+    ("shop", "department_store"): "百貨店",
+    ("shop", "mall"): "ショッピングモール",
+    ("shop", "bakery"): "パン屋",
+    ("tourism", "hotel"): "ホテル",
+    ("tourism", "museum"): "博物館・美術館",
+    ("tourism", "attraction"): "観光名所",
+    ("tourism", "viewpoint"): "展望地点",
+    ("tourism", "information"): "観光案内所",
+    ("leisure", "park"): "公園",
+    ("leisure", "stadium"): "スタジアム",
+    ("leisure", "sports_centre"): "スポーツセンター",
+    ("historic", "castle"): "城",
+    ("historic", "monument"): "記念碑",
+    ("historic", "memorial"): "慰霊碑",
+    ("historic", "ruins"): "史跡・遺跡",
+    ("healthcare", "hospital"): "病院",
+    ("healthcare", "pharmacy"): "薬局",
 }
 
 # rank_score: place 種別ごとの基礎スコア
@@ -103,10 +160,20 @@ PLACE_SCORE = {
     "hamlet": 0.35, "islet": 0.3, "locality": 0.25, "square": 0.25,
 }
 
+# rank_score: POI 種別キーごとの基礎スコア(タグキー単位。値までは分けない)
+POI_KEY_SCORE = {
+    "tourism": 0.45, "historic": 0.45, "healthcare": 0.4, "amenity": 0.4,
+    "leisure": 0.35, "shop": 0.3, "office": 0.25, "craft": 0.25,
+}
+
 # 座標解決用のノード参照サンプリング上限(メモリ抑制。重心は近似で十分)
 MAX_WAY_NODE_SAMPLES = 50        # 対象地物 way 自身
 MAX_MEMBER_WAYS = 30             # relation 1 件あたりのメンバー way
 MAX_MEMBER_WAY_NODE_SAMPLES = 10  # メンバー way 1 本あたりのノード参照
+
+# パス2 のコールバック駆動をジェネレータへ橋渡しする Queue の上限(メモリ抑制)
+QUEUE_MAXSIZE = 1000
+_SENTINEL = object()
 
 DEFAULT_VALIDATION = {
     "osm_japan": {
@@ -119,9 +186,135 @@ DEFAULT_VALIDATION = {
 }
 
 
-def _sample(values: list, limit: int) -> list:
-    """先頭 limit 件のサンプル(重心近似用。全体を保持しない)。"""
-    return values[:limit]
+def _feature(tags: dict[str, str]) -> tuple[str, str] | None:
+    """取り込み対象なら地物種別 (key, value) を返す。対象外は None。"""
+    if not tags.get("name"):
+        return None
+    if tags.get("place"):
+        return ("place", tags["place"])
+    if tags.get("boundary") == "administrative":
+        return ("boundary", "administrative")
+    if tags.get("natural") in NATURAL_VALUES:
+        return ("natural", tags["natural"])
+    for key in POI_KEYS:
+        if tags.get(key):
+            return (key, tags[key])
+    return None
+
+
+def _centroid(pts: list[tuple[float, float]]) -> tuple[float | None, float | None]:
+    if not pts:
+        return None, None
+    return sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)
+
+
+def _way_centroid(way, limit: int) -> tuple[float | None, float | None]:
+    pts = [
+        (nd.lat, nd.lon)
+        for nd in itertools.islice(way.nodes, limit)
+        if nd.location.valid()
+    ]
+    return _centroid(pts)
+
+
+class _RelationScanHandler(osmium.SimpleHandler):
+    """パス1: 対象 relation が参照する way ID を集める(センロイド計算に必要な分だけ)。"""
+
+    def __init__(self):
+        super().__init__()
+        self.member_way_ids: set[int] = set()
+        self.relation_count = 0
+
+    def relation(self, r) -> None:
+        tags = {t.k: t.v for t in r.tags}
+        if _feature(tags) is None:
+            return
+        self.relation_count += 1
+        way_ids = (m.ref for m in r.members if m.type == "w" and m.role in ("outer", ""))
+        for ref in itertools.islice(way_ids, MAX_MEMBER_WAYS):
+            self.member_way_ids.add(ref)
+
+
+class _MainHandler(osmium.SimpleHandler):
+    """パス2: node/way/relation を順に処理し、Doc を q へ積む。"""
+
+    def __init__(self, adapter: "OsmAdapter", member_way_ids: set[int], idx, q: "queue.Queue"):
+        super().__init__()
+        self.adapter = adapter
+        self.member_way_ids = member_way_ids
+        self.idx = idx
+        self.q = q
+        self.way_centroids: dict[int, tuple[float | None, float | None]] = {}
+        self.node_count = 0
+        self.way_count = 0
+        self.relation_count = 0
+
+    def node(self, n) -> None:
+        if not n.location.valid():
+            return
+        tags = {t.k: t.v for t in n.tags}
+        feature = _feature(tags)
+        if feature is None:
+            return
+        doc = self.adapter._make_doc(
+            "node", n.id, tags, feature, n.location.lat, n.location.lon,
+            n.timestamp.isoformat() if n.timestamp else None,
+        )
+        self.q.put(doc)
+        self.node_count += 1
+
+    def way(self, w) -> None:
+        if w.id in self.member_way_ids:
+            self.way_centroids[w.id] = _way_centroid(w, MAX_MEMBER_WAY_NODE_SAMPLES)
+        tags = {t.k: t.v for t in w.tags}
+        feature = _feature(tags)
+        if feature is None:
+            return
+        lat, lon = _way_centroid(w, MAX_WAY_NODE_SAMPLES)
+        doc = self.adapter._make_doc(
+            "way", w.id, tags, feature, lat, lon,
+            w.timestamp.isoformat() if w.timestamp else None,
+        )
+        self.q.put(doc)
+        self.way_count += 1
+
+    def relation(self, r) -> None:
+        tags = {t.k: t.v for t in r.tags}
+        feature = _feature(tags)
+        if feature is None:
+            return
+        lat, lon = self._relation_coords(r)
+        doc = self.adapter._make_doc(
+            "relation", r.id, tags, feature, lat, lon,
+            r.timestamp.isoformat() if r.timestamp else None,
+        )
+        self.q.put(doc)
+        self.relation_count += 1
+
+    def _node_location(self, node_id: int) -> tuple[float, float] | None:
+        try:
+            loc = self.idx.get(node_id)
+        except KeyError:
+            return None
+        return (loc.lat, loc.lon) if loc.valid() else None
+
+    def _relation_coords(self, r) -> tuple[float | None, float | None]:
+        """label / admin_centre ノードを優先し、無ければメンバー座標の平均。"""
+        for wanted_role in ("label", "admin_centre"):
+            for m in r.members:
+                if m.type == "n" and m.role == wanted_role:
+                    if loc := self._node_location(m.ref):
+                        return loc
+        pts: list[tuple[float, float]] = []
+        for m in r.members:
+            if m.type == "n":
+                if loc := self._node_location(m.ref):
+                    pts.append(loc)
+            elif m.type == "w" and m.role in ("outer", ""):
+                lat, lon = self.way_centroids.get(m.ref, (None, None))
+                if lat is not None:
+                    pts.append((lat, lon))
+        return _centroid(pts)
 
 
 class OsmAdapter:
@@ -148,7 +341,7 @@ class OsmAdapter:
     # ---- 取得 -------------------------------------------------------------
 
     def _latest_url(self) -> str:
-        return f"{GEOFABRIK_URL}{self.region}-latest.osm.bz2"
+        return f"{GEOFABRIK_URL}{self.region}-latest.osm.pbf"
 
     def _remote_date(self, url: str) -> str:
         """Last-Modified ヘッダからダンプ日付 YYYYMMDD を得る(無ければ今日)。"""
@@ -169,8 +362,8 @@ class OsmAdapter:
         """
         url = self._latest_url()
         date = os.environ.get("DUMP_DATE") or self._remote_date(url)
-        dest = workdir / f"{self.source}-{date}.osm.bz2"
-        part = dest.with_suffix(".bz2.part")
+        dest = workdir / f"{self.source}-{date}.osm.pbf"
+        part = dest.with_suffix(".pbf.part")
         if dest.exists() and not part.exists():
             log.info("dump already downloaded: %s", dest)
             return dest, date
@@ -184,191 +377,50 @@ class OsmAdapter:
 
     # ---- 変換 -------------------------------------------------------------
 
-    def _open(self, path: Path) -> IO[bytes]:
-        if path.suffix == ".bz2":
-            return bz2.open(path, "rb")
-        return open(path, "rb")
-
-    def _iter_elements(self, path: Path) -> Iterator[ET.Element]:
-        """トップレベル要素 (node/way/relation) を end イベントで順に返す。
-
-        処理済み要素をルート(<osm>)から都度切り離さないとツリーが伸び続けるため、
-        1 要素 yield するごとに root.clear() でメモリを解放する。
-        """
-        with self._open(path) as f:
-            context = ET.iterparse(f, events=("start", "end"))
-            _, root = next(context)  # <osm> ルートの start イベント
-            for event, elem in context:
-                if event == "end" and elem.tag in ("node", "way", "relation"):
-                    yield elem
-                    root.clear()
-
-    @staticmethod
-    def _tags(elem: ET.Element) -> dict[str, str]:
-        return {
-            t.get("k", ""): t.get("v", "")
-            for t in elem.iter("tag")
-            if t.get("k")
-        }
-
     @staticmethod
     def _feature(tags: dict[str, str]) -> tuple[str, str] | None:
-        """取り込み対象なら地物種別 (key, value) を返す。対象外は None。"""
-        if not tags.get("name"):
-            return None
-        if tags.get("place"):
-            return ("place", tags["place"])
-        if tags.get("boundary") == "administrative":
-            return ("boundary", "administrative")
-        if tags.get("natural") in NATURAL_VALUES:
-            return ("natural", tags["natural"])
-        return None
-
-    def _scan_relations(self, path: Path) -> tuple[list[dict], set[int]]:
-        """パス1: 対象 relation のタグとメンバー参照を収集する。"""
-        relations: list[dict] = []
-        member_way_ids: set[int] = set()
-        for elem in self._iter_elements(path):
-            if elem.tag != "relation":
-                continue
-            tags = self._tags(elem)
-            feature = self._feature(tags)
-            if feature is None:
-                continue
-            node_members: list[tuple[int, str]] = []
-            way_ids: list[int] = []
-            for m in elem.iter("member"):
-                ref = m.get("ref")
-                if not ref:
-                    continue
-                if m.get("type") == "node":
-                    node_members.append((int(ref), m.get("role", "")))
-                elif m.get("type") == "way" and m.get("role", "") in ("outer", ""):
-                    way_ids.append(int(ref))
-            way_ids = _sample(way_ids, MAX_MEMBER_WAYS)
-            member_way_ids.update(way_ids)
-            relations.append(
-                {
-                    "id": int(elem.get("id", 0)),
-                    "tags": tags,
-                    "node_members": node_members,
-                    "way_ids": way_ids,
-                    "timestamp": elem.get("timestamp"),
-                }
-            )
-        log.info("pass 1: %d relations of interest", len(relations))
-        return relations, member_way_ids
-
-    def _scan_ways(
-        self, path: Path, member_way_ids: set[int]
-    ) -> tuple[list[dict], dict[int, list[int]]]:
-        """パス2: 対象 way と relation メンバー way のノード参照を収集する。"""
-        own_ways: list[dict] = []
-        member_way_refs: dict[int, list[int]] = {}
-        for elem in self._iter_elements(path):
-            if elem.tag == "relation":
-                break  # way セクション終了
-            if elem.tag != "way":
-                continue
-            way_id = int(elem.get("id", 0))
-            is_member = way_id in member_way_ids
-            tags = self._tags(elem)
-            feature = self._feature(tags)
-            if not is_member and feature is None:
-                continue
-            refs = [int(nd.get("ref", 0)) for nd in elem.iter("nd") if nd.get("ref")]
-            if is_member:
-                member_way_refs[way_id] = _sample(refs, MAX_MEMBER_WAY_NODE_SAMPLES)
-            if feature is not None:
-                own_ways.append(
-                    {
-                        "id": way_id,
-                        "tags": tags,
-                        "refs": _sample(refs, MAX_WAY_NODE_SAMPLES),
-                        "timestamp": elem.get("timestamp"),
-                    }
-                )
-        log.info(
-            "pass 2: %d ways of interest, %d member ways", len(own_ways), len(member_way_refs)
-        )
-        return own_ways, member_way_refs
+        return _feature(tags)
 
     def iter_docs(self, path: Path) -> Iterator[Doc]:
-        relations, member_way_ids = self._scan_relations(path)
-        own_ways, member_way_refs = self._scan_ways(path, member_way_ids)
-
-        needed: set[int] = set()
-        for r in relations:
-            needed.update(ref for ref, _role in r["node_members"])
-        for w in own_ways:
-            needed.update(w["refs"])
-        for refs in member_way_refs.values():
-            needed.update(refs)
-
-        coords: dict[int, tuple[float, float]] = {}
-        self._seen_titles = set()
-        emitted = 0
-
-        # パス3: node を yield しつつ必要ノードの座標を解決する
-        for elem in self._iter_elements(path):
-            if elem.tag != "node":
-                break  # node セクション終了
-            node_id = int(elem.get("id", 0))
-            lat_s, lon_s = elem.get("lat"), elem.get("lon")
-            if lat_s is None or lon_s is None:
-                continue
-            lat, lon = float(lat_s), float(lon_s)
-            if node_id in needed:
-                coords[node_id] = (lat, lon)
-            if len(elem) == 0:  # タグ無しノードは大半なので早期スキップ
-                continue
-            tags = self._tags(elem)
-            feature = self._feature(tags)
-            if feature is None:
-                continue
-            yield self._make_doc("node", node_id, tags, feature, lat, lon, elem.get("timestamp"))
-            emitted += 1
-        log.info("pass 3: %d node docs, resolved %d/%d coords", emitted, len(coords), len(needed))
-
-        for w in own_ways:
-            lat, lon = self._centroid(w["refs"], coords)
-            feature = self._feature(w["tags"])
-            yield self._make_doc("way", w["id"], w["tags"], feature, lat, lon, w["timestamp"])
-
-        for r in relations:
-            lat, lon = self._relation_coords(r, coords, member_way_refs)
-            feature = self._feature(r["tags"])
-            yield self._make_doc(
-                "relation", r["id"], r["tags"], feature, lat, lon, r["timestamp"]
-            )
-
-    @staticmethod
-    def _centroid(
-        refs: list[int], coords: dict[int, tuple[float, float]]
-    ) -> tuple[float | None, float | None]:
-        pts = [coords[ref] for ref in refs if ref in coords]
-        if not pts:
-            return None, None
-        return (
-            sum(p[0] for p in pts) / len(pts),
-            sum(p[1] for p in pts) / len(pts),
+        scan = _RelationScanHandler()
+        scan.apply_file(str(path))
+        log.info(
+            "pass 1: %d relations of interest, %d member ways",
+            scan.relation_count, len(scan.member_way_ids),
         )
 
-    def _relation_coords(
-        self,
-        rel: dict,
-        coords: dict[int, tuple[float, float]],
-        member_way_refs: dict[int, list[int]],
-    ) -> tuple[float | None, float | None]:
-        """label / admin_centre ノードを優先し、無ければメンバー座標の平均。"""
-        for wanted_role in ("label", "admin_centre"):
-            for ref, role in rel["node_members"]:
-                if role == wanted_role and ref in coords:
-                    return coords[ref]
-        refs = [ref for ref, _role in rel["node_members"]]
-        for way_id in rel["way_ids"]:
-            refs.extend(member_way_refs.get(way_id, []))
-        return self._centroid(refs, coords)
+        idx = osmium.index.create_map("sparse_mmap_array")
+        lh = osmium.NodeLocationsForWays(idx)
+        lh.ignore_errors()
+
+        self._seen_titles = set()
+        q: queue.Queue = queue.Queue(maxsize=QUEUE_MAXSIZE)
+
+        def run() -> None:
+            handler = _MainHandler(self, scan.member_way_ids, idx, q)
+            try:
+                osmium.apply(str(path), lh, handler)
+                log.info(
+                    "pass 2: %d node docs, %d way docs, %d relation docs",
+                    handler.node_count, handler.way_count, handler.relation_count,
+                )
+            except Exception as exc:  # スレッド内例外をメインスレッドへ伝播する
+                q.put(exc)
+            finally:
+                q.put(_SENTINEL)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        try:
+            while True:
+                item = q.get()
+                if item is _SENTINEL:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                yield item
+        finally:
+            thread.join()
 
     # ---- Doc 生成 ---------------------------------------------------------
 
@@ -401,11 +453,19 @@ class OsmAdapter:
             level = self._int_tag(tags, "admin_level") or 11
             score = max(0.2, 1.0 - 0.06 * level)
         else:
-            score = 0.4
+            score = POI_KEY_SCORE.get(key, 0.4)
         population = self._int_tag(tags, "population")
         if population:
             score = max(score, min(1.0, math.log10(population) / 8))
         return round(score, 4)
+
+    @staticmethod
+    def _address(tags: dict[str, str]) -> str | None:
+        if full := tags.get("addr:full"):
+            return full
+        parts = [tags.get(k) for k in ("addr:postcode", "addr:city", "addr:street", "addr:housenumber")]
+        parts = [p for p in parts if p]
+        return " ".join(parts) if parts else None
 
     def _make_doc(
         self,
@@ -431,6 +491,7 @@ class OsmAdapter:
                     aliases.append(candidate)
 
         label = FEATURE_LABEL.get(feature, f"{key}={value}")
+        address = self._address(tags)
         details = []
         if level := tags.get("admin_level"):
             details.append(f"admin_level={level}")
@@ -438,6 +499,8 @@ class OsmAdapter:
             details.append(f"標高 {ele}m")
         if population := tags.get("population"):
             details.append(f"人口 {population}")
+        if address:
+            details.append(f"住所 {address}")
         if lat is not None and lon is not None:
             details.append(f"座標 {lat:.4f}, {lon:.4f}")
         opening = f"OpenStreetMap の地物: {label}"
@@ -450,6 +513,11 @@ class OsmAdapter:
         body_lines.extend(details)
         if is_in := tags.get("is_in"):
             body_lines.append(f"is_in: {is_in}")
+        for extra_key, source_keys in CONTACT_KEYS.items():
+            for source_key in source_keys:
+                if contact_value := tags.get(source_key):
+                    body_lines.append(f"{extra_key}: {contact_value}")
+                    break
         body = "\n".join(body_lines)
 
         links = []
@@ -478,6 +546,13 @@ class OsmAdapter:
             extra["wikidata"] = wikidata
         if wikipedia:
             extra["wikipedia"] = wikipedia
+        if address:
+            extra["address"] = address
+        for extra_key, source_keys in CONTACT_KEYS.items():
+            for source_key in source_keys:
+                if contact_value := tags.get(source_key):
+                    extra[extra_key] = contact_value
+                    break
         extra["tags"] = tags
 
         return Doc(
