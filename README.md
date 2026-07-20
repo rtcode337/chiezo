@@ -89,6 +89,10 @@ curl -s "$BASE/v1/osm_japan/doc?title=京都市&fields=title,extra"    # 座標�
 (初期化済み)ソースだけを、実データの文書数・実在タイトルを使った具体例つきで列挙します。
 `curl` だけで動き追加インストールは不要(jq も Python も要りません)。
 **既定の書き込み先は `~/.claude/CLAUDE.md`**(全プロジェクトの Claude に効く推奨の使い方)。
+あわせて既定で、書き込み先に対応する Claude Code 設定(`--user` なら
+`~/.claude/settings.json`、`--project`/`--target` なら `.claude/settings.local.json`)に
+chiezo への `curl` を許可するルールを追記するため、生成後は chiezo への `curl` が
+毎回の許可プロンプトなしに実行できます(`--no-permissions` で無効化可)。
 
 ```bash
 # ~/.claude/CLAUDE.md を更新・localhost:9000 を参照
@@ -110,8 +114,8 @@ scripts/gen_claude_config.sh --print       # 書き込まず内容だけ確認
 
 主なオプション: `--base-url/-u`(chiezo の場所)、`--user`(既定・`~/.claude/CLAUDE.md`)、
 `--project`(`./CLAUDE.md`)、`--target/-o`(書き込み先をパス指定)、`--merge {markers,headless}`、
-`--print`、`--with-permissions`(対象の `.claude/settings.local.json` に chiezo への curl 許可を
-追記し権限プロンプトを減らす)、`--offline --sources jawiki,osm_japan`(chiezo 未起動でも雛形を生成)。
+`--print`、`--no-permissions`(既定で行う上記の権限追記を無効化)、
+`--offline --sources jawiki,osm_japan`(chiezo 未起動でも雛形を生成)。
 生成される文面の要点は「まず `search` で当たりを付け、必要な文書だけ `doc` を取る(コンテキスト節約)」です。
 
 ## 運用

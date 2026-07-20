@@ -17,7 +17,13 @@
 #
 # オプション: --base-url/-u, --target/-o, --user(既定), --project,
 #             --merge {markers,headless}, --print, --offline, --sources,
-#             --no-examples, --with-permissions, --timeout
+#             --no-examples, --no-permissions, --timeout
+#
+# 既定で、書き込み先に対応する Claude Code 設定(--user なら ~/.claude/settings.json、
+# --project/--target なら <対象ディレクトリ>/.claude/settings.local.json)に
+# chiezo への curl を許可するルールを追記する(permissions.allow への追記のみで、
+# 既存の設定は壊さない)。これにより chiezo への curl は毎回の許可プロンプトなしに
+# 実行できるようになる。この動作が不要なら --no-permissions を付ける。
 
 BEGIN_MARK='<!-- BEGIN chiezo (auto-generated) -->'
 END_MARK='<!-- END chiezo -->'
@@ -30,7 +36,7 @@ PRINT=0
 OFFLINE=0
 SRCSPEC=""
 EXAMPLES=1
-WITHPERM=0
+WITHPERM=1
 TIMEOUT=10
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -56,7 +62,8 @@ while [ $# -gt 0 ]; do
     --sources)     SRCSPEC="$2"; shift 2 ;;
     --sources=*)   SRCSPEC="${1#*=}"; shift ;;
     --no-examples) EXAMPLES=0; shift ;;
-    --with-permissions) WITHPERM=1; shift ;;
+    --with-permissions) WITHPERM=1; shift ;;   # 既定で有効(後方互換のため残す)
+    --no-permissions) WITHPERM=0; shift ;;
     --timeout)     TIMEOUT="$2"; shift 2 ;;
     --timeout=*)   TIMEOUT="${1#*=}"; shift ;;
     -h|--help)     usage ;;
@@ -237,24 +244,36 @@ else
   echo "${act}しました: $TARGET_FILE($NSRC ソース, base=$BASE)" >&2
 fi
 
-# ---- 権限(任意) ---------------------------------------------------------
+# ---- 権限(既定で有効) -----------------------------------------------------
 if [ "$WITHPERM" -eq 1 ]; then
-  sdir="$(dirname "$TARGET_FILE")/.claude"
+  # --user は TARGET_FILE 自体が ~/.claude/CLAUDE.md なので、そのディレクトリが
+  # そのまま Claude Code のユーザー設定ディレクトリ(二重に .claude を付けない)。
+  # --project/--target は TARGET_FILE の隣にプロジェクト用 .claude/ を置く。
+  if [ "$DEST" = "user" ]; then
+    sdir="$(dirname "$TARGET_FILE")"
+    sfile="$sdir/settings.json"
+  else
+    sdir="$(dirname "$TARGET_FILE")/.claude"
+    sfile="$sdir/settings.local.json"
+  fi
   mkdir -p "$sdir"
-  sfile="$sdir/settings.local.json"
-  rule="Bash(curl -s $BASE/v1/:*)"
+  rule1="Bash(curl -s $BASE/v1/:*)"
+  rule2="Bash(curl -s $BASE/:*)"
   if command -v jq >/dev/null 2>&1; then
+    tmp="$(mktemp)"
     if [ -f "$sfile" ]; then
-      tmp="$(mktemp)"
-      jq --arg r "$rule" '.permissions.allow = ((.permissions.allow // []) + [$r] | unique)' "$sfile" >"$tmp" && mv "$tmp" "$sfile"
+      jq --arg r1 "$rule1" --arg r2 "$rule2" \
+        '.permissions.allow = ((.permissions.allow // []) + [$r1, $r2] | unique)' \
+        "$sfile" >"$tmp" && mv "$tmp" "$sfile"
     else
-      printf '{\n  "permissions": {\n    "allow": [\n      "%s"\n    ]\n  }\n}\n' "$rule" >"$sfile"
+      jq -n --arg r1 "$rule1" --arg r2 "$rule2" \
+        '{permissions: {allow: [$r1, $r2]}}' >"$tmp" && mv "$tmp" "$sfile"
     fi
     echo "権限を追加しました: $sfile" >&2
   elif [ ! -f "$sfile" ]; then
-    printf '{\n  "permissions": {\n    "allow": [\n      "%s"\n    ]\n  }\n}\n' "$rule" >"$sfile"
+    printf '{\n  "permissions": {\n    "allow": [\n      "%s",\n      "%s"\n    ]\n  }\n}\n' "$rule1" "$rule2" >"$sfile"
     echo "権限を追加しました: $sfile" >&2
   else
-    echo "注意: jq が無いため $sfile を自動編集できません。allow に手動追加してください: $rule" >&2
+    echo "注意: jq が無いため $sfile を自動編集できません。allow に手動追加してください: $rule1 / $rule2" >&2
   fi
 fi
