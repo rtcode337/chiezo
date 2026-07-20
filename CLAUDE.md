@@ -46,6 +46,18 @@ OpenStreetMap 日本抽出 = `osm_japan`)をソースごとに独立した SQLit
     ソース名の区切りはアンダースコア
     (`osm_japan`。ハイフンは世代ファイル名 `<source>-<date>.db` と衝突するため不可)
   - `sources/__init__.py` — アダプタレジストリ(新ソースはここに 1 行追加)
+- `scripts/` — 補助スクリプト(api/ingest 本体ではない運用ツール)
+  - `gen_claude_config.sh` — chiezo 連携用の Claude 設定生成器。`curl` + POSIX ツールのみで
+    動く(jq も Python も不要)。稼働中の chiezo(`--base-url`、既定 `http://localhost:8000`。
+    環境変数 `CHIEZO_URL` でも指定可)の `/v1/sources` を引いて登録済みソースを列挙し
+    (`kind` が `wikipedia`/`osm`/その他で文面を出し分け、`/v1/<src>/random` で実在タイトルを
+    1 件拾って具体例に使う)、対象 CLAUDE.md へ `<!-- BEGIN chiezo (auto-generated) -->`〜
+    `<!-- END chiezo -->` のマーカーブロックを書き込む。書き込み先は既定 `--user`
+    (`~/.claude/CLAUDE.md`。推奨)、`--project`(`./CLAUDE.md`)、`--target/-o <path>`。
+    共存は 2 方式: `--merge markers`(既定・冪等にブロックだけ差し替え)と `--merge headless`
+    (`claude -p` に既存との統合を任せる)。`--offline --sources name[:kind],...` で未起動でも
+    雛形生成、`--with-permissions` で対象の `.claude/settings.local.json` に curl 許可を追記。
+    README の「Claude Code から使う」節と対応
 - `tests/` — フィクスチャ(`fixtures/mini_jawiki.json.gz` 12 文書、`fixtures/mini_osm.osm.pbf`)
   での API / ingest テスト
 
@@ -70,6 +82,9 @@ docker compose --profile ingest run --rm -e SOURCE=osm_japan chiezo-ingest
 
 # 取り込み後の反映
 docker compose restart chiezo-api
+
+# Claude 連携設定(CLAUDE.md ブロック)を稼働中の chiezo から生成(既定は ~/.claude/CLAUDE.md)
+scripts/gen_claude_config.sh --base-url http://localhost:8000       # curl のみ・追加インストール不要
 ```
 
 ingest の主な環境変数: `SOURCE`(必須)、`DUMP_DATE`(日付固定)、`DUMP_FILE`(ダウンロードスキップ)、

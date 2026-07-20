@@ -68,23 +68,37 @@ curl -s "$BASE/v1/osm_japan/doc?title=京都市&fields=title,extra"    # 座標�
   地名(place/boundary/natural)と POI は同一ソース内に混在し、`search` は両方をヒットさせます。
 - 全クエリ 5 秒タイムアウト(超過は 504)。エラーは `{"error": "..."}` 形式。
 
-### Claude Code から使う(各アプリの CLAUDE.md に転記する文面)
+### Claude Code から使う(設定ファイル自動生成)
 
-```markdown
-## chiezo(ローカル知識サーバー)
-LAN内に知識検索サーバー chiezo がある。Wikipedia等の情報が必要なとき、
-Web検索や公式APIの代わりにこれを使うこと。
-ベースURL: http://<サーバーIP>:8000
+各アプリの環境で動く Claude に「chiezo に載っている知識が必要なら chiezo を使う」よう
+促す CLAUDE.md ブロックを、稼働中の chiezo に問い合わせて自動生成できます。登録済み
+(初期化済み)ソースだけを、実データの文書数・実在タイトルを使った具体例つきで列挙します。
+`curl` だけで動き追加インストールは不要(jq も Python も要りません)。
+**既定の書き込み先は `~/.claude/CLAUDE.md`**(全プロジェクトの Claude に効く推奨の使い方)。
 
-- ソース一覧:  curl -s "http://<IP>:8000/v1/sources"
-- 検索:        curl -s "http://<IP>:8000/v1/jawiki/search?q=浅草寺&limit=5"
-- 文書概要:    curl -s "http://<IP>:8000/v1/jawiki/doc?title=浅草寺&fields=title,opening,tags"
-- 文書全文:    curl -s "http://<IP>:8000/v1/jawiki/doc?title=浅草寺&max_chars=8000"
-- タイトル確認: curl -s "http://<IP>:8000/v1/jawiki/titles?prefix=浅草"
+```bash
+# ~/.claude/CLAUDE.md を更新・localhost:8000 を参照
+/path/to/chiezo/scripts/gen_claude_config.sh
 
-注意: いきなり全文を取らず、まず search / opening で当たりを付けてから
-必要な文書だけ本文を取得すること(コンテキスト節約)。
+# chiezo が LAN 上の別ホストにある場合は場所を指定(環境変数 CHIEZO_URL でも可)
+scripts/gen_claude_config.sh --base-url http://192.168.1.20:8000
+
+scripts/gen_claude_config.sh --project     # ~/.claude ではなく ./CLAUDE.md にする
+scripts/gen_claude_config.sh --print       # 書き込まず内容だけ確認
 ```
+
+既存 CLAUDE.md との共存:
+
+- 既定(`--merge markers`)は `<!-- BEGIN chiezo -->`〜`<!-- END chiezo -->` で囲んだ
+  ブロックだけを冪等に差し替えます。既存の記述は壊さず、再実行でソース一覧が最新化されます。
+- 既存内容との統合に人間的な判断が要る場合は `--merge headless` で Claude Code の
+  ヘッドレスモード(`claude -p`)にマージを任せられます(`claude` CLI が必要)。
+
+主なオプション: `--base-url/-u`(chiezo の場所)、`--user`(既定・`~/.claude/CLAUDE.md`)、
+`--project`(`./CLAUDE.md`)、`--target/-o`(書き込み先をパス指定)、`--merge {markers,headless}`、
+`--print`、`--with-permissions`(対象の `.claude/settings.local.json` に chiezo への curl 許可を
+追記し権限プロンプトを減らす)、`--offline --sources jawiki,osm_japan`(chiezo 未起動でも雛形を生成)。
+生成される文面の要点は「まず `search` で当たりを付け、必要な文書だけ `doc` を取る(コンテキスト節約)」です。
 
 ## 運用
 
