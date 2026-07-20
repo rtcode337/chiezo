@@ -8,14 +8,14 @@ LAN 内の開発マシン(主に Claude Code)から使う、完全ローカル�
   - `jawiki` — 日本語 Wikipedia(CirrusSearch ダンプ由来)
   - `osm_japan` — OpenStreetMap 日本抽出(Geofabrik 由来の地名辞典 + POI 辞典。
     地名・行政区・自然地物に加え、病院・学校・店舗・観光地等の主要 POI と座標)
-- API: FastAPI + uvicorn(ポート 8000)、認証なし・LAN 内前提
+- API: FastAPI + uvicorn(ポート 9000)、認証なし・LAN 内前提
 
 ## セットアップ
 
 ```bash
 # 1. API を起動(DB が無い間もソース 0 件で起動する)
 docker compose up -d
-curl -s http://localhost:8000/healthz
+curl -s http://localhost:9000/healthz
 
 # 2. jawiki を取り込む(ダンプ 5〜6GB DL + 構築 2〜6 時間、ディスク空き 80GB 以上推奨)
 docker compose --profile ingest run --rm chiezo-ingest
@@ -31,7 +31,7 @@ docker compose restart chiezo-api
 ## API の使い方
 
 ```bash
-BASE=http://<サーバーIP>:8000
+BASE=http://<サーバーIP>:9000
 
 curl -s "$BASE/v1/sources"                                        # ソース一覧
 curl -s "$BASE/v1/jawiki/search?q=浅草寺&limit=5"                  # 全文検索
@@ -46,7 +46,7 @@ curl -s "$BASE/v1/osm_japan/search?q=富士山&limit=5"                # 地名�
 curl -s "$BASE/v1/osm_japan/doc?title=京都市&fields=title,extra"    # 座標・OSMタグ等
 ```
 
-ブラウザで `http://<サーバーIP>:8000/admin` を開くと、登録済みソース(文書数・dump_date・構築日時など)
+ブラウザで `http://<サーバーIP>:9000/admin` を開くと、登録済みソース(文書数・dump_date・構築日時など)
 を一覧できる簡易管理画面が見られます。
 
 主な仕様:
@@ -77,11 +77,11 @@ curl -s "$BASE/v1/osm_japan/doc?title=京都市&fields=title,extra"    # 座標�
 **既定の書き込み先は `~/.claude/CLAUDE.md`**(全プロジェクトの Claude に効く推奨の使い方)。
 
 ```bash
-# ~/.claude/CLAUDE.md を更新・localhost:8000 を参照
+# ~/.claude/CLAUDE.md を更新・localhost:9000 を参照
 /path/to/chiezo/scripts/gen_claude_config.sh
 
 # chiezo が LAN 上の別ホストにある場合は場所を指定(環境変数 CHIEZO_URL でも可)
-scripts/gen_claude_config.sh --base-url http://192.168.1.20:8000
+scripts/gen_claude_config.sh --base-url http://192.168.1.20:9000
 
 scripts/gen_claude_config.sh --project     # ~/.claude ではなく ./CLAUDE.md にする
 scripts/gen_claude_config.sh --print       # 書き込まず内容だけ確認
@@ -155,9 +155,9 @@ node/way/relation 走査(パス2)の 2 パスで読むため、構築時間は�
 
 ### セキュリティ
 
-認証はありません。LAN 内利用が前提です。ルーターでポート 8000 を外部に開放しないでください。
+認証はありません。LAN 内利用が前提です。ルーターでポート 9000 を外部に開放しないでください。
 必要ならホストの LAN インターフェースのみに bind するよう compose の `ports` を
-`"192.168.x.x:8000:8000"` の形式に変更してください。
+`"192.168.x.x:9000:8000"` の形式に変更してください。
 
 ## 開発
 

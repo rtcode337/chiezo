@@ -2,7 +2,8 @@ services:
   chiezo-api:
     build: ./api
     ports:
-      - "8000:8000"
+      # host:container。ホスト側だけ 9000 に変更(他アプリとの衝突回避)。コンテナ内部は 8000 のまま。
+      - "9000:8000"
     volumes:
       - ./data:/data:ro
     environment:

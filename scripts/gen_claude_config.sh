@@ -8,7 +8,7 @@
 #
 # 使い方:
 #   scripts/gen_claude_config.sh                        # 既定: ~/.claude/CLAUDE.md
-#   scripts/gen_claude_config.sh -u http://192.168.1.20:8000
+#   scripts/gen_claude_config.sh -u http://192.168.1.20:9000
 #   scripts/gen_claude_config.sh --project              # ./CLAUDE.md(このプロジェクトだけ)
 #   scripts/gen_claude_config.sh --target path/to/CLAUDE.md
 #   scripts/gen_claude_config.sh --print                # 書き込まず標準出力へ
@@ -22,7 +22,7 @@
 BEGIN_MARK='<!-- BEGIN chiezo (auto-generated) -->'
 END_MARK='<!-- END chiezo -->'
 
-BASE="${CHIEZO_URL:-http://localhost:8000}"
+BASE="${CHIEZO_URL:-http://localhost:9000}"
 TARGET=""
 DEST="user"          # user | project | path
 MERGE="markers"

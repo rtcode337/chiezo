@@ -48,7 +48,7 @@ OpenStreetMap 日本抽出 = `osm_japan`)をソースごとに独立した SQLit
   - `sources/__init__.py` — アダプタレジストリ(新ソースはここに 1 行追加)
 - `scripts/` — 補助スクリプト(api/ingest 本体ではない運用ツール)
   - `gen_claude_config.sh` — chiezo 連携用の Claude 設定生成器。`curl` + POSIX ツールのみで
-    動く(jq も Python も不要)。稼働中の chiezo(`--base-url`、既定 `http://localhost:8000`。
+    動く(jq も Python も不要)。稼働中の chiezo(`--base-url`、既定 `http://localhost:9000`。
     環境変数 `CHIEZO_URL` でも指定可)の `/v1/sources` を引いて登録済みソースを列挙し
     (`kind` が `wikipedia`/`osm`/その他で文面を出し分け、`/v1/<src>/random` で実在タイトルを
     1 件拾って具体例に使う)、対象 CLAUDE.md へ `<!-- BEGIN chiezo (auto-generated) -->`〜
@@ -84,7 +84,7 @@ docker compose --profile ingest run --rm -e SOURCE=osm_japan chiezo-ingest
 docker compose restart chiezo-api
 
 # Claude 連携設定(CLAUDE.md ブロック)を稼働中の chiezo から生成(既定は ~/.claude/CLAUDE.md)
-scripts/gen_claude_config.sh --base-url http://localhost:8000       # curl のみ・追加インストール不要
+scripts/gen_claude_config.sh --base-url http://localhost:9000       # curl のみ・追加インストール不要
 ```
 
 ingest の主な環境変数: `SOURCE`(必須)、`DUMP_DATE`(日付固定)、`DUMP_FILE`(ダウンロードスキップ)、
