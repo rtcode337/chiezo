@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "api"))
 sys.path.insert(0, str(ROOT / "ingest"))
 
-FIXTURE_DUMP = ROOT / "tests" / "fixtures" / "mini_jawiki.json.gz"
+FIXTURE_DUMP = ROOT / "tests" / "fixtures" / "mini_jawiki.xml.gz"
 OSM_FIXTURE_DUMP = ROOT / "tests" / "fixtures" / "mini_osm.osm.pbf"
 
 

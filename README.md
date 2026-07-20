@@ -5,7 +5,9 @@ LAN 内の開発マシン(主に Claude Code)から使う、完全ローカル�
 
 - マルチソース設計: ソースごとに独立した SQLite ファイル 1 つ(`data/<source>.db`)
 - v0.2 収録ソース:
-  - `jawiki` — 日本語 Wikipedia(CirrusSearch ダンプ由来)
+  - `jawiki` — 日本語 Wikipedia(標準 XML ダンプ + wikitext 解析由来。CirrusSearch ダンプの
+    text フィールドは折りたたみ(collapsible)セクションを検索インデックスから除外して
+    いたため、v0.2 でこの方式に切り替えた)
   - `osm_japan` — OpenStreetMap 日本抽出(Geofabrik 由来の地名辞典 + POI 辞典。
     地名・行政区・自然地物に加え、病院・学校・店舗・観光地等の主要 POI と座標)
 - API: FastAPI + uvicorn(ポート 9000)、認証なし・LAN 内前提
@@ -139,11 +141,29 @@ ingest の環境変数:
 | `PAGEVIEW_PERIOD` | ページビュー突合対象の年月 `YYYY-MM` を固定(省略時は最新月を自動検出) |
 | `MIN_DOCS` / `SAMPLE_TITLES` | 検証パラメータの上書き(小規模データでの動作確認用) |
 
-Wikipedia 系ソースは記事本文のダンプ(CirrusSearch)に加えて、Wikimedia の月次ページビューダンプ
+Wikipedia 系ソースは標準 XML ダンプ(`https://dumps.wikimedia.org/<wiki_id>/<date>/
+<wiki_id>-<date>-pages-articles.xml.bz2`、jawiki で確認時点 4.4GB)を取得し、
+`xml.etree.ElementTree`(標準ライブラリ)でストリーミング解析、記事本文の wikitext は
+`mwparserfromhell`(wikipedia 系ソースのみの例外的依存)でプレーンテキスト化します。以前は CirrusSearch
+ダンプの `text` フィールドを直接使っていましたが、このフィールドは Wikipedia の折りたたみ
+(collapsible)セクション(`{{hidden begin}}`〜`{{hidden end}}` 等)を検索インデックスから
+除外しており、例えば「ブラタモリ」の放送回一覧表のような内容が本文に一切含まれない欠落が
+あったため、XML ダンプ + wikitext 解析に切り替えました。折りたたみテンプレートは通常の
+テンプレート呼び出しとして扱われるため、中身(表を含む)が自然に本文へ含まれます。
+`{{Dts|年|月|日}}`のようなテンプレートは完全展開はせずパラメータ値の連結として残るため
+(例:「2015 4 11」)、日付表示は整形されませんが検索対象としては機能します。
+リダイレクトは XML 上ではリダイレクト元ページの `<redirect>` タグとして表現されるため、
+`ingest/sources/osm.py` と同じ 2 パス走査(パス1: リダイレクト元→対象の対応収集、
+パス2: 本体の Doc 生成)で aliases に変換しています。XML ダンプには CirrusSearch の
+`popularity_score` 相当の人気度指標が無いため `rank_score` は `0.0` 固定になります
+(ページビューは従来どおり `extra` に格納されます)。
+
+Wikipedia 系ソースは記事本文のダンプに加えて、Wikimedia の月次ページビューダンプ
 (`other/pageview_complete/monthly/`、全プロジェクト合算で圧縮 5〜6GB)もダウンロードし、
-`page_id` で突合して `docs.extra` に月間閲覧数を格納します。`WIKI_DOMAIN`
-(`ingest/sources/wikipedia.py`)に対応表が無い wiki_id ではこの突合をスキップします。
-この分、初回取り込みのダウンロード量・所要時間は README 冒頭の見積もりよりやや増えます。
+`page_id`(XML ダンプの `<page><id>`)で突合して `docs.extra` に月間閲覧数を格納します。
+`WIKI_DOMAIN`(`ingest/sources/wikipedia.py`)に対応表が無い wiki_id ではこの突合を
+スキップします。この分、初回取り込みのダウンロード量・所要時間は README 冒頭の見積もりより
+やや増えます。
 
 OSM 系ソース(`osm_japan` 等)は Geofabrik の地域抽出
 `https://download.geofabrik.de/<region>-latest.osm.pbf` をダウンロードし、pyosmium

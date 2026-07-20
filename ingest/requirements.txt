@@ -2,7 +2,12 @@
 # 例外1: osm 系ソースのみ pyosmium に依存する(Geofabrik が .osm.pbf のみの配布に
 # 移行したため、標準ライブラリの xml.etree では PBF [protobuf] を解析できない)。
 osmium>=4.0,<5
-# 例外2: chiezo-trigger(server.py)が同じイメージを使い回すための依存。
+# 例外2: wikipedia 系ソースのみ mwparserfromhell に依存する(CirrusSearch ダンプの
+# text フィールドが折りたたみ(collapsible、{{hidden begin}}等)セクションを検索
+# インデックスから除外するため、標準 XML ダンプ + wikitext 解析に切り替えた。
+# wikitext のテンプレート・タグ構文を標準ライブラリだけで安全に扱うのは非現実的)。
+mwparserfromhell>=0.6
+# 例外3: chiezo-trigger(server.py)が同じイメージを使い回すための依存。
 # one-shot の chiezo-ingest 実行(main.py)自体は使わない。
 fastapi>=0.115
 uvicorn[standard]>=0.30

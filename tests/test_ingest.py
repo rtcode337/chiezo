@@ -18,7 +18,7 @@ class TestAdapter:
     def test_iter_docs_skips_non_zero_namespace(self, fixture_dump):
         adapter = make_test_adapter()
         docs = list(adapter.iter_docs(fixture_dump))
-        assert len(docs) == 11  # フィクスチャは 12 件中 1 件が namespace=1
+        assert len(docs) == 11  # フィクスチャは 11 記事 + リダイレクト 4 件 + 非 ns=0 2 件
         assert all(d.title != "ノート:東京都" for d in docs)
 
     def test_field_mapping(self, fixture_dump):
@@ -31,13 +31,25 @@ class TestAdapter:
         assert "日本" in tokyo.links
         assert tokyo.aliases == ["東京"]
         assert tokyo.updated_at == "2026-06-01T00:00:00Z"
-        assert tokyo.rank_score == pytest.approx(0.9)
+        assert tokyo.rank_score == 0.0  # XML ダンプには popularity_score 相当が無いため固定値
 
     def test_non_zero_namespace_redirects_excluded(self, fixture_dump):
         adapter = make_test_adapter()
         docs = {d.title: d for d in adapter.iter_docs(fixture_dump)}
         # 浅草寺の redirect には ns=4 が混ざっているが aliases には含まれない
         assert docs["浅草寺"].aliases == ["金龍山浅草寺"]
+
+    def test_hidden_section_table_content_included_in_body(self, fixture_dump):
+        """{{hidden begin}}/{{hidden end}} で囲まれた表の内容が body に含まれることの回帰テスト。
+
+        CirrusSearch ダンプの text フィールドはこの種の折りたたみセクションを検索
+        インデックスから除外していた(ブラタモリの放送回一覧表が欠落していた実例と同型)。
+        XML ダンプ + wikitext 解析への切り替えでここが解消されたことを確認する。
+        """
+        adapter = make_test_adapter()
+        docs = {d.title: d for d in adapter.iter_docs(fixture_dump)}
+        assert "柴犬" in docs["犬"].body
+        assert "プードル" in docs["犬"].body
 
 
 class TestBuild:

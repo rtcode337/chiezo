@@ -34,17 +34,34 @@ OpenStreetMap 日本抽出 = `osm_japan`)をソースごとに独立した SQLit
   - `main.py` — 共通フレーム: 取得 → `.building` へ構築 → FTS → 検証 → ブルーグリーン切り替え(シンボリックリンク差し替え、旧世代 1 つ保持)。
     アダプタが `fetch_pageviews` を持つ場合、`fetch()` の後にそれも呼ぶ(docs.extra 補強用の追加データ取得フック)
   - `core.py` — コアスキーマ DDL と `Doc` 型(全ソース共通)
-  - `sources/wikipedia.py` — CirrusSearch ダンプアダプタ(`wiki_id` パラメータ化、enwiki 流用可)。
-    `other/cirrus_search_index/<date>/index_name=<wiki_id>_content/` 配下の複数 `.json.bz2` シャードを取得する
-    (旧 `other/cirrussearch/current/` は 2026 年に廃止)。あわせて `other/pageview_complete/monthly/` の
-    月次ページビュー(bot 除外・全プロジェクト合算、圧縮 5〜6GB)を `page_id` で突合し、
-    `docs.extra` に `{"pageviews_month": ..., "pageviews_period": "YYYY-MM"}` として格納する
+  - `sources/wikipedia.py` — Wikipedia 標準 XML ダンプアダプタ(`wiki_id` パラメータ化、enwiki
+    流用可)。`https://dumps.wikimedia.org/<wiki_id>/<date>/<wiki_id>-<date>-pages-articles.xml.bz2`
+    (MediaWiki エクスポート形式、単一ファイル)を取得する。旧実装は CirrusSearch ダンプの `text`
+    フィールドを docs.body にそのまま使っていたが、この `text` フィールドは Wikipedia の
+    折りたたみ(collapsible)セクション(`{{hidden begin}}`〜`{{hidden end}}` 等)を検索
+    インデックスから除外しており、例えば「ブラタモリ」の放送回一覧表のような内容が本文に
+    一切含まれない欠落があったため、標準 XML ダンプ + wikitext 解析(`mwparserfromhell`。
+    wikipedia 系ソースのみの例外的依存、下記参照)に切り替えた。
+    `xml.etree.ElementTree`(標準ライブラリ)でストリーミング解析し、`<redirect>` を持つ
+    ページは 2 パス走査(パス1: リダイレクト元→対象タイトルの収集、パス2: 本体の Doc 生成)
+    で aliases に変換する(`sources/osm.py` の relation 2 パスと同じ精神)。wikitext →
+    プレーンテキスト変換は、最初の見出しより前のノード列(lead section)を `opening`、
+    記事全体を `strip_code(keep_template_params=True)` した結果を `body` とする。
+    折りたたみテンプレートは通常のテンプレート呼び出しとして wikicode 木に残るため、
+    中身(表を含む)が `body` へ自然に含まれる。`{{Dts|年|月|日}}` 等のテンプレートは
+    完全展開せずパラメータ値の連結として残す(例:「2015 4 11」。検索対象としては機能する
+    が整形はされない、という現実的な妥協)。XML ダンプには CirrusSearch の
+    `popularity_score` 相当が無いため `rank_score` は `0.0` 固定。あわせて
+    `other/pageview_complete/monthly/` の月次ページビュー(bot 除外・全プロジェクト合算、
+    圧縮 5〜6GB)を `page_id`(`<page><id>`)で突合し、`docs.extra` に
+    `{"pageviews_month": ..., "pageviews_period": "YYYY-MM"}` として格納する
     (`WIKI_DOMAIN` 未登録の wiki_id では突合をスキップ)。
   - `sources/osm.py` — OpenStreetMap アダプタ(`region` パラメータ化、Geofabrik の
     `<region>-latest.osm.pbf` を pyosmium(libosmium バインディング)で解析)。
     Geofabrik が 2026 年に `.osm.bz2` 配布を終了し `.osm.pbf` のみになったため、標準ライブラリの
     `xml.etree` では読めなくなった。osm 系ソースに限り pyosmium への依存を許容している
-    (他ソースは標準ライブラリのみの方針を維持)。
+    (それ以外は標準ライブラリのみの方針を維持。wikipedia 系ソースの mwparserfromhell が
+    もう1つの例外、上記参照)。
     名前付き地物(`place=*` / `boundary=administrative` / 主要 `natural=*`)を地名辞典として、
     加えて主要 POI(`amenity=*` / `shop=*` / `tourism=*` / `leisure=*` / `historic=*` /
     `craft=*` / `office=*` / `healthcare=*`。`name` タグ必須)を POI 辞典として同一ソースに
