@@ -9,6 +9,8 @@ LAN 内の開発マシン(主に Claude Code)から使う、完全ローカル�
   - `osm_japan` — OpenStreetMap 日本抽出(Geofabrik 由来の地名辞典 + POI 辞典。
     地名・行政区・自然地物に加え、病院・学校・店舗・観光地等の主要 POI と座標)
 - API: FastAPI + uvicorn(ポート 9000)、認証なし・LAN 内前提
+- 管理画面(`/admin`)から未初期化ソースの取り込みを起動できます(内部専用の `chiezo-trigger`
+  サービス経由。ホストへポート公開せず、`chiezo-api` からのみ到達可能)
 
 ## セットアップ
 
@@ -46,8 +48,18 @@ curl -s "$BASE/v1/osm_japan/search?q=富士山&limit=5"                # 地名�
 curl -s "$BASE/v1/osm_japan/doc?title=京都市&fields=title,extra"    # 座標・OSMタグ等
 ```
 
-ブラウザで `http://<サーバーIP>:9000/admin` を開くと、登録済みソース(文書数・dump_date・構築日時など)
-を一覧できる簡易管理画面が見られます。
+ブラウザで `http://<サーバーIP>:9000/`(`/admin` へ自動リダイレクト)を開くと、登録済みソース
+(文書数・dump_date・構築日時など)の一覧に加えて、未初期化ソース(`chiezo-trigger` 側の
+既知ソース一覧に載っているが `/data` にまだ `.db` が無いもの)向けの「初期化」ボタンが見られます。
+ボタンを押すと `chiezo-trigger`(内部専用サービス。後述)にジョブが積まれ、進行状況(ログ tail 込み)
+が管理画面に表示されます(実行中は自動でリロードされます)。ジョブが完了したら
+`docker compose restart chiezo-api` で新しい DB を読み込ませてください(自動再起動はしません)。
+
+さらに、各ソース名は `/{source}/` にリンクしています。トップは検索フォームのみで(jawiki のような
+大規模ソースだと rank_score 順の全件一覧はフルスキャンになりタイムアウトしうるため、未検索時は
+一覧を出しません)、検索すると結果一覧が表示されます。`/{source}/doc/{doc_id}` で文書詳細
+(本文・tags・links・extra)をブラウザで閲覧できます(`/v1/...` の JSON API を人間向け HTML で
+薄くラップしたものです)。
 
 主な仕様:
 
@@ -148,6 +160,22 @@ node/way/relation 走査(パス2)の 2 パスで読むため、構築時間は�
 
 中断しても運用 DB は壊れません(`.building` の一時ファイルに構築するため)。再実行すれば最初からやり直します。
 
+### chiezo-trigger(管理画面からの初期化)
+
+`chiezo-ingest` と同じイメージを使い回し、CMD だけ `server.py`(FastAPI)の起動に差し替えた
+常駐コンテナです。`/data` に書き込み権限を持ち、`POST /run/{source}` で ingest の `run()` を
+バックグラウンドスレッドで実行、`GET /status` で状態(`idle`/`running`/`done`/`error`)と
+ログ tail を返します。同時に実行できるジョブは 1 つまでです。
+
+ホストへはポート公開せず、docker の内部ネットワーク経由で `chiezo-api` からのみ到達できます
+(`chiezo-api` の環境変数 `CHIEZO_TRIGGER_URL=http://chiezo-trigger:8080`)。管理画面の
+「初期化」ボタン(`POST /admin/init/{source}`)はこのサービスへのプロキシです。
+`CHIEZO_TRIGGER_URL` が未設定なら管理画面の初期化機能は無効化されます(ボタンが押せません)。
+
+新ソースを `ingest/sources/__init__.py` の `ADAPTERS` に追加したら、管理画面に出す名前・kind・lang
+を `api/app/known_sources.py` の `KNOWN_SOURCES` にも 1 行追加してください
+(`chiezo-api` は `chiezo-trigger`/`ingest` のコードを import しないため、表示用に複製が必要です)。
+
 ### ソースの追加・削除
 
 `data/` に `<source>.db` を置いて(または消して)`docker compose restart chiezo-api` するだけです。
@@ -158,6 +186,12 @@ node/way/relation 走査(パス2)の 2 パスで読むため、構築時間は�
 認証はありません。LAN 内利用が前提です。ルーターでポート 9000 を外部に開放しないでください。
 必要ならホストの LAN インターフェースのみに bind するよう compose の `ports` を
 `"192.168.x.x:9000:8000"` の形式に変更してください。
+
+`chiezo-trigger` はホストへポートを公開していません(`docker-compose.yml` に `ports:` の記載なし)。
+`chiezo-api` からのみ内部ネットワーク経由で到達できます。管理画面の初期化ボタンは
+`chiezo-api` にも認証を課していないため、`/admin` に到達できる相手は誰でも初期化を起動できます
+(LAN 内前提のこのサービス全体の認証なし方針と同一線上ですが、ダウンロード・構築という
+比較的重い処理を誰でも起動できる点は留意してください)。
 
 ## 開発
 

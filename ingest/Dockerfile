@@ -9,7 +9,10 @@ WORKDIR /srv/chiezo-ingest
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py core.py ./
+COPY main.py core.py server.py ./
 COPY sources ./sources
 
+# 既定は one-shot 取り込み(chiezo-ingest プロファイル)。
+# chiezo-trigger サービスは docker-compose.yml の command で server:app 起動に上書きする。
+EXPOSE 8080
 CMD ["python", "main.py"]

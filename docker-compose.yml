@@ -8,9 +8,28 @@ services:
       - ./data:/data:ro
     environment:
       - CHIEZO_DATA_DIR=/data
+      # 管理画面の初期化ボタンから叩く chiezo-trigger の内部 URL(ホストには公開しない)。
+      - CHIEZO_TRIGGER_URL=http://chiezo-trigger:8080
+    depends_on:
+      - chiezo-trigger
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:8000/healthz"]
+      interval: 60s
+
+  # 管理画面からの「未初期化データの初期化」を受けて ingest を実行する内部専用トリガー。
+  # ingest イメージを流用し、CMD だけ server:app(FastAPI)起動に上書きする。
+  # ホストへポート公開せず、chiezo-api からのみ docker 内部ネットワーク経由で到達できる。
+  chiezo-trigger:
+    build: ./ingest
+    command: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080"]
+    volumes:
+      - ./data:/data
+    environment:
+      - CHIEZO_DATA_DIR=/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/healthz"]
       interval: 60s
 
   chiezo-ingest:

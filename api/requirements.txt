@@ -1,2 +1,4 @@
 fastapi>=0.115
 uvicorn[standard]>=0.30
+# 管理画面から chiezo-trigger(内部トリガーサービス)を叩くためのクライアント。
+httpx>=0.27

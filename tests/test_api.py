@@ -149,6 +149,61 @@ class TestTitlesLinksRandom:
         assert res.status_code == 200
         assert res.json()["titles"] == []
 
+
+class TestAdminAndBrowse:
+    def test_root_redirects_to_admin(self, client):
+        res = client.get("/", follow_redirects=False)
+        assert res.status_code in (302, 307)
+        assert res.headers["location"] == "/admin"
+
+    def test_admin_lists_registered_source(self, client):
+        res = client.get("/admin")
+        assert res.status_code == 200
+        assert "jawiki" in res.text
+
+    def test_admin_lists_uninitialized_source(self, client):
+        res = client.get("/admin")
+        assert res.status_code == 200
+        assert "osm_japan" in res.text
+
+    def test_admin_init_without_trigger_configured(self, client):
+        res = client.post("/admin/init/osm_japan")
+        assert res.status_code == 503
+
+    def test_admin_init_unknown_source(self, client, monkeypatch):
+        monkeypatch.setattr("app.main.TRIGGER_URL", "http://example.invalid")
+        res = client.post("/admin/init/bogus")
+        assert res.status_code == 404
+
+    def test_admin_init_already_initialized(self, client, monkeypatch):
+        monkeypatch.setattr("app.main.TRIGGER_URL", "http://example.invalid")
+        res = client.post("/admin/init/jawiki")
+        assert res.status_code == 409
+
+    def test_browse_source_top_shows_search_form_only(self, client):
+        res = client.get("/jawiki/")
+        assert res.status_code == 200
+        assert "<form" in res.text
+        assert "浅草寺" not in res.text
+
+    def test_browse_source_search(self, client):
+        res = client.get("/jawiki/", params={"q": "浅草寺"})
+        assert res.status_code == 200
+        assert "浅草寺" in res.text
+
+    def test_browse_source_unknown(self, client):
+        res = client.get("/nosuch/")
+        assert res.status_code == 404
+
+    def test_browse_doc(self, client):
+        res = client.get("/jawiki/doc/2")
+        assert res.status_code == 200
+        assert "浅草寺" in res.text
+
+    def test_browse_doc_not_found(self, client):
+        res = client.get("/jawiki/doc/424242")
+        assert res.status_code == 404
+
     def test_links_out(self, client):
         res = client.get("/v1/jawiki/links", params={"title": "浅草寺"})
         assert res.status_code == 200

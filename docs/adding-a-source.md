@@ -102,7 +102,22 @@ ADAPTERS = {
 }
 ```
 
-### 3. 取り込む
+### 3. 管理画面の初期化ボタンに出す(任意)
+
+管理画面(`/admin`)の「未初期化データの初期化」に出したい場合は、`api/app/known_sources.py`
+の `KNOWN_SOURCES` にも 1 行追加します(chiezo-api は ingest のコードを import しないため、
+表示用の名前・kind・lang をここに複製する必要があります):
+
+```python
+KNOWN_SOURCES = {
+    "jawiki": {"kind": "wikipedia", "lang": "ja"},
+    "aozora": {"kind": "aozora", "lang": "ja"},
+}
+```
+
+追加しなくても手動での取り込み(次項)は変わらず可能です。単に管理画面のボタンに出ないだけです。
+
+### 4. 取り込む
 
 ```bash
 docker compose --profile ingest run --rm -e SOURCE=aozora chiezo-ingest
