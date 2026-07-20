@@ -30,6 +30,12 @@ def get_connection(db_path: Path) -> sqlite3.Connection:
     if conn is None:
         conn = sqlite3.connect(f"file:{db_path}?immutable=1", uri=True)
         conn.row_factory = sqlite3.Row
+        # title の前方一致 (LIKE 'prefix%') を idx_docs_title の範囲検索へ最適化するため。
+        # SQLite は case_sensitive_like=OFF(既定)+ BINARY インデックスだと LIKE 前方一致を
+        # 範囲検索に落とせず全走査になる(百万件規模でタイムアウト)。ON にすると BINARY
+        # インデックスで範囲検索が効く。副作用として LIKE の ASCII 大小同一視は無効になるが、
+        # 用途は titles / search フォールバック等の前方一致のみで実害はない。
+        conn.execute("PRAGMA case_sensitive_like=ON")
         conns[key] = conn
     return conn
 
