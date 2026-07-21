@@ -10,6 +10,9 @@ LAN 内の開発マシン(主に Claude Code)から使う、完全ローカル�
     いたため、v0.2 でこの方式に切り替えた)
   - `osm_japan` — OpenStreetMap 日本抽出(Geofabrik 由来の地名辞典 + POI 辞典。
     地名・行政区・自然地物に加え、病院・学校・店舗・観光地等の主要 POI と座標)
+  - `osm_europe` — OpenStreetMap 欧州大陸抽出(`osm_japan` と同じ仕組み・スキーマ。
+    Geofabrik の `europe-latest.osm.pbf` を国別に分けず丸ごと取り込むため、
+    ダウンロード・構築ともに `osm_japan` よりかなり大きい)
 - API: FastAPI + uvicorn(ポート 9000)、認証なし・LAN 内前提
 - 管理画面(`/admin`)から未初期化ソースの取り込みを起動できます(内部専用の `chiezo-trigger`
   サービス経由。ホストへポート公開せず、`chiezo-api` からのみ到達可能)
@@ -27,6 +30,10 @@ docker compose --profile ingest run --rm chiezo-ingest
 # 2'. osm_japan を取り込む(ダンプ 2〜3GB DL [.osm.pbf] + 構築 1〜4 時間、
 #     POI を含むため DB は数 GB 規模)
 docker compose --profile ingest run --rm -e SOURCE=osm_japan chiezo-ingest
+
+# 2''. osm_europe を取り込む(欧州大陸まるごとの抽出。ダンプ数十GB DL + 構築数時間〜、
+#      ディスク空きは osm_japan よりかなり多く必要)
+docker compose --profile ingest run --rm -e SOURCE=osm_europe chiezo-ingest
 
 # 3. 新しい DB を読み込ませる
 docker compose restart chiezo-api

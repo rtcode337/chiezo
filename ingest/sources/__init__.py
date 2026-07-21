@@ -18,6 +18,12 @@ from sources.wikipedia import WikipediaAdapter
 ADAPTERS: dict[str, Callable[[], SourceAdapter]] = {
     "jawiki": lambda: WikipediaAdapter("jawiki", lang="ja"),
     "osm_japan": lambda: OsmAdapter("osm_japan", region="asia/japan", lang="ja"),
+    # region="europe" は国別ではなく Geofabrik の大陸単位抽出(europe-latest.osm.pbf)。
+    # ファイルサイズ・構築時間が国別抽出より大きい点に注意(ダウンロードだけで数十GB)。
+    "osm_europe": lambda: OsmAdapter(
+        "osm_europe", region="europe", lang=None, min_docs=1_000_000,
+        sample_titles=["Paris", "Berlin", "Roma", "London"],
+    ),
     # enwiki を追加する場合は次の 1 行を有効化するだけ:
     # "enwiki": lambda: WikipediaAdapter("enwiki", lang="en"),
     # 他地域の OSM も 1 行で追加できる(検証パラメータは要指定):

@@ -1,8 +1,8 @@
 # chiezo — ローカル知識サーバー
 
 LAN 内で動く読み取り専用の知識検索 REST API。複数のデータソース(日本語 Wikipedia = `jawiki`、
-OpenStreetMap 日本抽出 = `osm_japan`)をソースごとに独立した SQLite ファイル
-(`/data/<source>.db`)として収容する。設計書は v0.2。
+OpenStreetMap 日本抽出 = `osm_japan`、OpenStreetMap 欧州大陸抽出 = `osm_europe`)を
+ソースごとに独立した SQLite ファイル(`/data/<source>.db`)として収容する。設計書は v0.2。
 
 ## アーキテクチャ
 
@@ -74,7 +74,13 @@ OpenStreetMap 日本抽出 = `osm_japan`)をソースごとに独立した SQLit
     それ以外は構成要素の平均(近似重心)。pyosmium はコールバック駆動のため、別スレッドで
     `osmium.apply()` を回し `queue.Queue` 経由で Doc をジェネレータへ橋渡しする(メモリ抑制)。
     docs.title の UNIQUE 制約に合わせ、同名地物は先勝ちで「名前 (node:123)」形式に弁別し
-    元の名前を alias に残す。POI は `addr:*` タグから `docs.extra.address`、
+    元の名前を alias に残す。既出判定は `set[str]` ではなく固定 256MiB のビットフィルタ
+    (`_TitleBloomFilter`)で行う。大陸単位の osm_europe は名前付き地物が数千万〜億件
+    規模になり、全タイトル文字列を素朴に `set[str]` へ貯めるとメモリを食い尽くして
+    スワップで暴走したため、コーパス規模によらず固定メモリで済む方式に切り替えた。
+    ビットフィルタは誤検出(未出現なのに「出現済み」と判定)のみで見逃しは原理上
+    起きないため、UNIQUE 制約違反にはならず、稀に不要な弁別が付くだけに留まる。
+    POI は `addr:*` タグから `docs.extra.address`、
     `phone` / `website` / `opening_hours` 系タグから同名の extra フィールドも拾う。
     ソース名の区切りはアンダースコア
     (`osm_japan`。ハイフンは世代ファイル名 `<source>-<date>.db` と衝突するため不可)

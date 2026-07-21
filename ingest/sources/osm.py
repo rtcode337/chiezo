@@ -28,6 +28,7 @@ OSM の PBF は node → way → relation の順に並ぶ規約のため、2 パ
 """
 from __future__ import annotations
 
+import hashlib
 import itertools
 import logging
 import math
@@ -174,6 +175,49 @@ MAX_MEMBER_WAY_NODE_SAMPLES = 10  # メンバー way 1 本あたりのノード�
 # パス2 のコールバック駆動をジェネレータへ橋渡しする Queue の上限(メモリ抑制)
 QUEUE_MAXSIZE = 1000
 _SENTINEL = object()
+
+# 重複タイトル判定用ビット配列のサイズ(2^31 bit = 256MiB 固定)とハッシュ数。
+# osm_japan 規模では set[str] でも問題なかったが、osm_europe(大陸単位、
+# 数千万〜億件規模の名前付き地物)では全タイトル文字列を set[str] に貯めると
+# メモリを食い尽くして OS ごとスワップで暴走したため、コーパス規模によらず
+# 固定サイズで済むビットフィルタに置き換えた。
+_TITLE_BLOOM_BITS = 1 << 31
+_TITLE_BLOOM_HASHES = 7
+
+
+class _TitleBloomFilter:
+    """「このタイトルは前に見たか」を固定メモリで概算判定する(誤検出のみ許容)。
+
+    docs.title の UNIQUE 制約回避のための弁別要否判定にしか使わないため、
+    誤検出(未出現なのに「出現済み」と判定)は不要な "(type:id)" 弁別を
+    余分に招くだけで実害はない(alias に元名が残るため引ける)。逆に
+    見逃し(出現済みなのに「未出現」と判定)は起きない設計
+    (ビットフィルタは false positive のみで false negative は原理上出ない)。
+    """
+
+    def __init__(self, size_bits: int = _TITLE_BLOOM_BITS, num_hashes: int = _TITLE_BLOOM_HASHES):
+        self._size = size_bits
+        self._k = num_hashes
+        self._bits = bytearray(size_bits // 8)
+
+    def _indexes(self, item: str) -> Iterator[int]:
+        digest = hashlib.blake2b(item.encode("utf-8"), digest_size=16).digest()
+        h1 = int.from_bytes(digest[:8], "little")
+        h2 = int.from_bytes(digest[8:], "little")
+        for i in range(self._k):
+            yield (h1 + i * h2) % self._size
+
+    def add_and_test(self, item: str) -> bool:
+        """ビットを立てつつ、追加前から既に立っていたか(≒出現済みの可能性)を返す。"""
+        seen = True
+        for idx in self._indexes(item):
+            byte_idx, bit_idx = divmod(idx, 8)
+            mask = 1 << bit_idx
+            if not (self._bits[byte_idx] & mask):
+                seen = False
+                self._bits[byte_idx] |= mask
+        return seen
+
 
 DEFAULT_VALIDATION = {
     "osm_japan": {
@@ -336,7 +380,7 @@ class OsmAdapter:
         self.sample_titles = (
             sample_titles if sample_titles is not None else defaults.get("sample_titles", [])
         )
-        self._seen_titles: set[str] = set()
+        self._seen_titles = _TitleBloomFilter()
 
     # ---- 取得 -------------------------------------------------------------
 
@@ -393,7 +437,7 @@ class OsmAdapter:
         lh = osmium.NodeLocationsForWays(idx)
         lh.ignore_errors()
 
-        self._seen_titles = set()
+        self._seen_titles = _TitleBloomFilter()
         q: queue.Queue = queue.Queue(maxsize=QUEUE_MAXSIZE)
 
         def run() -> None:
@@ -430,11 +474,9 @@ class OsmAdapter:
         2 件目以降は "名前 (node:123)" 形式にし、元の名前を alias に残す
         (doc?title= は alias 解決されるため元の名前でも引ける)。
         """
-        if name not in self._seen_titles:
-            self._seen_titles.add(name)
+        if not self._seen_titles.add_and_test(name):
             return name, []
         title = f"{name} ({osm_type}:{osm_id})"
-        self._seen_titles.add(title)
         return title, [name]
 
     @staticmethod

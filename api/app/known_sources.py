@@ -12,4 +12,5 @@ from __future__ import annotations
 KNOWN_SOURCES: dict[str, dict[str, str]] = {
     "jawiki": {"kind": "wikipedia", "lang": "ja"},
     "osm_japan": {"kind": "osm", "lang": "ja"},
+    "osm_europe": {"kind": "osm", "lang": ""},
 }
