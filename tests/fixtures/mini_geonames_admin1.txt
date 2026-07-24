@@ -1,0 +1,5 @@
+FR.11	Île-de-France	Ile-de-France	3012874
+JP.40	Tokyo	Tokyo	1850147
+US.NY	New York	New York	5128638
+GB.ENG	England	England	6269131
+NO.34	Innlandet	Innlandet	3162046

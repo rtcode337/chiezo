@@ -9,7 +9,7 @@ WORKDIR /srv/chiezo-ingest
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py core.py server.py ./
+COPY main.py core.py server.py lookup.py ./
 COPY sources ./sources
 
 # 既定は one-shot 取り込み(chiezo-ingest プロファイル)。

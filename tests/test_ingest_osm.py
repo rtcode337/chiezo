@@ -23,8 +23,9 @@ def docs(osm_fixture_dump):
 
 class TestOsmAdapter:
     def test_doc_count_and_exclusions(self, docs):
-        # 対象地物 8 件(タグ無しノード・タグ無し way・name 無し amenity は除外)
-        assert len(docs) == 8
+        # 対象地物 12 件(タグ無しノード・タグ無し way・name 無し amenity・
+        # 値が対象外の railway=rail / highway=residential は除外)
+        assert len(docs) == 12
         assert "ラーメン一番" in docs
 
     def test_node_doc_fields(self, docs):
@@ -69,6 +70,26 @@ class TestOsmAdapter:
         assert dup.extra["osm_id"] == 4
         assert "中央" in dup.aliases
 
+    def test_transport_features_ingested(self, docs):
+        # 旧版では place/natural/POI のどれにも属さず丸ごと取りこぼしていた交通インフラ
+        station = docs["京都駅"]
+        assert station.extra["feature"] == "railway=station"
+        assert station.extra["area"] == "京都府"
+        assert "駅" in station.opening
+        assert docs["京都南インターチェンジ"].extra["feature"] == "highway=motorway_junction"
+        airport = docs["大阪国際空港"]
+        assert airport.extra["feature"] == "aeroway=aerodrome"
+        assert "Osaka International Airport" in airport.aliases
+
+    def test_transport_ranks_above_poi(self, docs):
+        # 「博多駅」で同名のラーメン店を掴む取り違えを rank_score の段階で防ぐ
+        assert docs["京都駅"].rank_score > docs["ラーメン一番"].rank_score
+
+    def test_linear_features_excluded(self, docs):
+        # 名前付きでも「地点」ではない値は対象外(railway=rail / highway=residential)
+        assert "東海道本線" not in docs
+        assert "五条通" not in docs
+
     def test_way_centroid_is_node_average(self, docs):
         lake = docs["河口湖"]
         assert lake.doc_id == 100 * 4 + 1  # way
@@ -90,6 +111,37 @@ class TestOsmAdapter:
         assert biwa.extra["lon"] == pytest.approx((135.9 + 136.1) / 2)
 
 
+class TestOsmArea:
+    """admin_level=4 の境界ポリゴンによる extra.area 付与(点内包判定)。"""
+
+    def test_point_inside_boundary_gets_area(self, docs):
+        assert docs["ラーメン一番"].extra["area"] == "京都府"
+        assert "所在 京都府" in docs["ラーメン一番"].opening
+        # admin_centre が府内にある京都市 relation も同じ府に入る
+        assert docs["京都市"].extra["area"] == "京都府"
+
+    def test_points_outside_boundary_have_no_area(self, docs):
+        # 経度・緯度それぞれで外側にある地物(bbox 近似では取りこぼしうる位置関係)
+        assert "area" not in docs["東京"].extra
+        assert "area" not in docs["琵琶湖"].extra      # lon 136.0 > 135.9
+        assert "area" not in docs["中央 (node:4)"].extra  # lat 34.69 < 34.9
+
+    def test_boundary_relation_itself_is_inside(self, docs):
+        kyoto_fu = docs["京都府"]
+        assert kyoto_fu.extra["admin_level"] == 4
+        assert kyoto_fu.extra["area"] == "京都府"
+
+    def test_area_index_can_be_disabled(self, osm_fixture_dump):
+        from sources.osm import OsmAdapter
+
+        adapter = OsmAdapter(
+            "osm_japan", region="asia/japan", lang="ja",
+            min_docs=5, sample_titles=[], area_admin_level=0,
+        )
+        docs = {d.title: d for d in adapter.iter_docs(osm_fixture_dump)}
+        assert "area" not in docs["ラーメン一番"].extra
+
+
 class TestOsmBuild:
     def test_built_db_contents(self, built_osm_data_dir):
         conn = connect(built_osm_data_dir / "osm_japan.db")
@@ -100,7 +152,7 @@ class TestOsmBuild:
             assert meta["lang"] == "ja"
 
             (count,) = conn.execute("SELECT COUNT(*) FROM docs").fetchone()
-            assert count == 8
+            assert count == 12
 
             row = conn.execute("SELECT * FROM docs WHERE title = '京都市'").fetchone()
             extra = json.loads(row["extra"])
@@ -143,7 +195,7 @@ class TestOsmApi:
         (src,) = res.json()["sources"]
         assert src["name"] == "osm_japan"
         assert src["kind"] == "osm"
-        assert src["docs"] == 8
+        assert src["docs"] == 12
 
     def test_search(self, client):
         res = client.get("/v1/osm_japan/search", params={"q": "富士山"})
@@ -163,3 +215,72 @@ class TestOsmApi:
         res = client.get("/v1/osm_japan/doc", params={"title": "Mount Fuji"})
         assert res.status_code == 200
         assert res.json()["title"] == "富士山"
+
+
+class TestOsmFilter:
+    """Overpass 相当の一括抽出(地物種別 × 行政区 / bbox / wikidata 逆引き)。"""
+
+    def test_filter_by_feature_and_area(self, client):
+        res = client.get(
+            "/v1/osm_japan/filter",
+            params={"feature": "amenity=restaurant", "area": "京都府"},
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert body["total"] == 1
+        (row,) = body["results"]
+        assert row["title"] == "ラーメン一番"
+        assert row["area"] == "京都府"
+        assert row["lat"] == pytest.approx(35.0)
+
+    def test_filter_by_area_only_excludes_outside_points(self, client):
+        res = client.get("/v1/osm_japan/filter", params={"area": "京都府", "limit": 50})
+        titles = {r["title"] for r in res.json()["results"]}
+        assert titles == {"ラーメン一番", "京都市", "京都府", "京都駅", "京都南インターチェンジ"}
+
+    def test_filter_by_multiple_features(self, client):
+        res = client.get(
+            "/v1/osm_japan/filter",
+            params={"feature": "natural=peak,natural=water"},
+        )
+        titles = {r["title"] for r in res.json()["results"]}
+        assert titles == {"富士山", "河口湖", "琵琶湖"}
+
+    def test_filter_by_bbox(self, client):
+        res = client.get(
+            "/v1/osm_japan/filter",
+            params={"bbox": "35.0,138.0,36.0,140.0", "feature": "place=city"},
+        )
+        assert [r["title"] for r in res.json()["results"]] == ["東京"]
+
+    def test_filter_by_wikidata(self, client):
+        res = client.get("/v1/osm_japan/filter", params={"wikidata": "Q7473516"})
+        assert [r["title"] for r in res.json()["results"]] == ["東京"]
+
+    def test_filter_pagination_and_fields(self, client):
+        first = client.get(
+            "/v1/osm_japan/filter",
+            params={"area": "京都府", "limit": 1, "offset": 0, "fields": "title,extra"},
+        ).json()
+        assert first["total"] == 5
+        assert set(first["results"][0]) == {"title", "extra"}
+        second = client.get(
+            "/v1/osm_japan/filter", params={"area": "京都府", "limit": 1, "offset": 1}
+        ).json()
+        assert second["results"][0]["title"] != first["results"][0]["title"]
+
+    def test_filter_requires_a_condition(self, client):
+        res = client.get("/v1/osm_japan/filter")
+        assert res.status_code == 400
+        assert "at least one" in res.json()["error"]
+
+    def test_filter_rejects_bad_bbox(self, client):
+        res = client.get("/v1/osm_japan/filter", params={"bbox": "35.0,138.0"})
+        assert res.status_code == 400
+
+    def test_filter_rejects_unknown_field(self, client):
+        res = client.get(
+            "/v1/osm_japan/filter", params={"area": "京都府", "fields": "title,nope"}
+        )
+        assert res.status_code == 400
+        assert "nope" in res.json()["error"]

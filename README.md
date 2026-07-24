@@ -8,11 +8,15 @@ LAN 内の開発マシン(主に Claude Code)から使う、完全ローカル�
   - `jawiki` — 日本語 Wikipedia(標準 XML ダンプ + wikitext 解析由来。CirrusSearch ダンプの
     text フィールドは折りたたみ(collapsible)セクションを検索インデックスから除外して
     いたため、v0.2 でこの方式に切り替えた)
-  - `osm_japan` — OpenStreetMap 日本抽出(Geofabrik 由来の地名辞典 + POI 辞典。
-    地名・行政区・自然地物に加え、病院・学校・店舗・観光地等の主要 POI と座標)
-  - `osm_europe` — OpenStreetMap 欧州大陸抽出(`osm_japan` と同じ仕組み・スキーマ。
-    Geofabrik の `europe-latest.osm.pbf` を国別に分けず丸ごと取り込むため、
-    ダウンロード・構築ともに `osm_japan` よりかなり大きい)
+  - `osm_<国>` — OpenStreetMap の国別抽出(Geofabrik 由来の地名辞典 + POI 辞典。
+    地名・行政区・自然地物に加え、病院・学校・店舗・観光地等の主要 POI と
+    駅・空港・港・IC/SA 等の交通インフラ、およびそれらの座標)。
+    Geofabrik にある **195 の国・地域が定義済み**で(`osm_japan` / `osm_france` / `osm_thailand` …)、
+    使いたい国だけを取り込みます。国の選択は管理画面の `/admin` → `osm` → 国選択から
+  - `geonames` — GeoNames 全世界地名辞典(約 400MB のダンプで約 1,200 万件。
+    多言語別名を持つので「パリ」「ニューヨーク」のような日本語表記から引ける。
+    wikidata の Q 番号も拾うので jawiki と突合できる。**店舗・営業時間は持たない**
+    — そこは osm 系の担当)
 - API: FastAPI + uvicorn(ポート 9000)、認証なし・LAN 内前提
 - 管理画面(`/admin`)から未初期化ソースの取り込みを起動できます(内部専用の `chiezo-trigger`
   サービス経由。ホストへポート公開せず、`chiezo-api` からのみ到達可能)
@@ -28,12 +32,13 @@ curl -s http://localhost:9000/healthz
 docker compose --profile ingest run --rm chiezo-ingest
 
 # 2'. osm_japan を取り込む(ダンプ 2〜3GB DL [.osm.pbf] + 構築 1〜4 時間、
-#     POI を含むため DB は数 GB 規模)
+#     POI を含むため DB は数 GB 規模)。他の国は SOURCE=osm_france のように国名を変えるだけ
+#     (定義済みの国は管理画面の /admin/osm、または GET /sources[chiezo-trigger] で一覧できます)
 docker compose --profile ingest run --rm -e SOURCE=osm_japan chiezo-ingest
 
-# 2''. osm_europe を取り込む(欧州大陸まるごとの抽出。ダンプ数十GB DL + 構築数時間〜、
-#      ディスク空きは osm_japan よりかなり多く必要)
-docker compose --profile ingest run --rm -e SOURCE=osm_europe chiezo-ingest
+# 2''. geonames を取り込む(全世界の地名。ダンプ約 400MB + 別名 191MB。
+#      OSM の大陸抽出と違い 1 ソースで全世界を賄える)
+docker compose --profile ingest run --rm -e SOURCE=geonames chiezo-ingest
 
 # 3. 新しい DB を読み込ませる
 docker compose restart chiezo-api
@@ -55,6 +60,11 @@ curl -s "$BASE/v1/jawiki/random?limit=3"                           # ランダ�
 
 curl -s "$BASE/v1/osm_japan/search?q=富士山&limit=5"                # 地名・POI検索(同一エンドポイント)
 curl -s "$BASE/v1/osm_japan/doc?title=京都市&fields=title,extra"    # 座標・OSMタグ等
+
+# 属性での一括抽出(全文検索ではなく等価・範囲条件。Overpass API 相当)
+curl -s "$BASE/v1/osm_japan/filter?feature=amenity%3Dplace_of_worship&area=京都府&limit=200"
+curl -s "$BASE/v1/osm_japan/filter?feature=tourism%3Dmuseum&bbox=34.9,135.6,35.1,135.9"
+curl -s "$BASE/v1/jawiki/filter?wikidata=Q17221&fields=title,extra" # Q 番号 → 記事の逆引き
 ```
 
 ブラウザで `http://<サーバーIP>:9000/`(`/admin` へ自動リダイレクト)を開くと、登録済みソース
@@ -63,6 +73,11 @@ curl -s "$BASE/v1/osm_japan/doc?title=京都市&fields=title,extra"    # 座標�
 ボタンを押すと `chiezo-trigger`(内部専用サービス。後述)にジョブが積まれ、進行状況(ログ tail 込み)
 が管理画面に表示されます(実行中は自動でリロードされます)。ジョブが完了したら
 `docker compose restart chiezo-api` で新しい DB を読み込ませてください(自動再起動はしません)。
+
+OSM の国別ソース(`osm_<国>`)だけは 195 件あり、そのまま並べると他のソースが埋もれるため、
+一覧では `osm` の 1 行にまとめてあります。その行の「国を選ぶ」から国選択の画面(`/admin/osm`)が
+開き、大陸ごとに畳まれた一覧から国を選んで初期化できます。各国の pbf サイズと必要メモリの目安、
+構築済みかどうかもそこに出ます(国名・`region` での絞り込み可)。
 
 さらに、各ソース名は `/{source}/` にリンクしています。トップは検索フォームのみで(jawiki のような
 大規模ソースだと rank_score 順の全件一覧はフルスキャンになりタイムアウトしうるため、未検索時は
@@ -74,11 +89,26 @@ curl -s "$BASE/v1/osm_japan/doc?title=京都市&fields=title,extra"    # 座標�
 
 - `search` — `limit` 既定 10・最大 50。3 文字以上の語が無いクエリは自動的にタイトル前方一致へ
   フォールバックし、レスポンスの `"mode"` が `"title_prefix"` になります(通常は `"fts"`)。
+  `filter` と同じ `area` / `feature` / `bbox` を併用でき、同名の別地物を掴む取り違えを避けられます
+  (例: `search?q=八坂神社&area=京都府`)。
 - `doc` — `title` 完全一致 → リダイレクト(alias)解決 → 見つからなければ 404 と近似候補 5 件。
   `fields`(既定 `title,opening,body,tags,updated_at`)と `max_chars` で応答サイズを制御できます。
-- `extra` フィールド(jawiki) — ページビューを突合できた記事には
+  同名の別地物が他にもある場合は `alternatives`(`doc_id` / `title` / `feature` / `area` /
+  `lat` / `lon` を最大 5 件)を併記するので、取り違えにその場で気づけます。`area` / `feature` /
+  `bbox` で最初から絞り込むこともできます(例: `doc?title=博多駅&feature=railway%3Dstation`)。
+- `filter` — 属性での絞り込み一括抽出。`feature`(`amenity=place_of_worship` 形式。カンマ区切りで
+  複数可)・`area`(所属行政区名)・`bbox`(`min_lat,min_lon,max_lat,max_lon`)・`wikidata`(Q 番号)を
+  AND で組み合わせます。1 つ以上の条件が必須(無指定は 400)。`limit` 既定 50・最大 500、応答の
+  `total` と `offset` でページングできます。実体は `docs` の生成列(`feature` / `area` / `lat` /
+  `lon` / `wikidata`)への索引付き検索で、これは `schema_version` 2 以降の DB にしかありません
+  (1 のまま残っている DB では 409 を返すので、取り込みをやり直してください)。
+- `extra` フィールド(jawiki) — 座標を持つ記事(`{{Coord}}` テンプレートや駅・空港・施設の
+  Infobox の `緯度度`/`経度度` 系引数から抽出)には `{"lat": ..., "lon": ...}` が入ります。
+  ページビューを突合できた記事には
   `{"pageviews_month": <月間閲覧数>, "pageviews_period": "YYYY-MM"}` が入ります(Wikimedia の
   `pageview_complete` 月次ダンプ由来、bot 除外・全アクセス種別合算)。突合できなかった記事は `null`。
+  `page_props` ダンプから wikidata の Q 番号が取れた記事には `{"wikidata": "Q17221"}` も入り、
+  `filter?wikidata=` で逆引きできます(OSM 側の `wikidata` タグと突き合わせられます)。
 - `extra` フィールド(osm_japan) — `{"osm_type": "node|way|relation", "osm_id": ..., "lat": ...,
   "lon": ..., "feature": "place=city", "tags": {<OSM 生タグ>}, ...}`。way / relation の座標は
   構成ノードの平均(近似重心)で、行政境界は admin_centre / label ノードを優先します。
@@ -86,7 +116,17 @@ curl -s "$BASE/v1/osm_japan/doc?title=京都市&fields=title,extra"    # 座標�
   POI(`feature` が `amenity=*` / `shop=*` / `tourism=*` / `leisure=*` / `historic=*` /
   `craft=*` / `office=*` / `healthcare=*`)では、住所(`addr:*` 由来)が取れれば `address`、
   電話・サイト・営業時間が取れれば `phone` / `website` / `opening_hours` も入ります。
-  地名(place/boundary/natural)と POI は同一ソース内に混在し、`search` は両方をヒットさせます。
+  交通インフラ(`feature` が `railway=station|halt|tram_stop` / `aeroway=aerodrome|terminal|
+  helipad|heliport` / `aerialway=station` / `public_transport=station` /
+  `highway=services|rest_area|motorway_junction|toll_gate` / `man_made=bridge|lighthouse|pier|tower`。
+  港は `amenity=ferry_terminal`)も取り込み対象で、同名の店舗より上位に来るよう `rank_score` を
+  高く設定しています(「博多駅」で同名のラーメン店を掴む取り違えの防止)。
+  地名(place/boundary/natural)・POI・交通インフラは同一ソース内に混在し、`search` は
+  すべてをヒットさせます。
+  座標を持つ地物には所属する行政区を `area`(日本では都道府県。`admin_level=4` の境界 relation を
+  ポリゴンとして組み立て、点内包判定で決定)として付けます。bbox 近似ではないので県境をまたいだ
+  取りこぼし・混入はありません。取り込み時の判定粒度は環境変数 `OSM_AREA_ADMIN_LEVEL` で変更でき、
+  `0` を指定すると境界パスごとスキップします(`area` は付かなくなります)。
 - 全クエリ 5 秒タイムアウト(超過は 504)。エラーは `{"error": "..."}` 形式。
 
 ### Claude Code から使う(設定ファイル自動生成)
@@ -106,7 +146,7 @@ chiezo への `curl` を許可するルールを追記するため、生成後�
 /path/to/chiezo/scripts/gen_claude_config.sh
 
 # chiezo が LAN 上の別ホストにある場合は場所を指定(環境変数 CHIEZO_URL でも可)
-scripts/gen_claude_config.sh --base-url http://192.168.1.20:9000
+scripts/gen_claude_config.sh --base-url http://<サーバーIP>:9000
 
 scripts/gen_claude_config.sh --project     # ~/.claude ではなく ./CLAUDE.md にする
 scripts/gen_claude_config.sh --print       # 書き込まず内容だけ確認
@@ -151,6 +191,11 @@ ingest の環境変数:
 | `DUMP_FILE` | ダウンロードをスキップし既存ファイルを使う(カンマ区切りで複数シャード指定可) |
 | `PAGEVIEW_PERIOD` | ページビュー突合対象の年月 `YYYY-MM` を固定(省略時は最新月を自動検出) |
 | `MIN_DOCS` / `SAMPLE_TITLES` | 検証パラメータの上書き(小規模データでの動作確認用) |
+| `OSM_AREA_ADMIN_LEVEL` | `extra.area` に入れる行政区の admin_level(既定 4 = 都道府県。`0` で境界パス省略) |
+| `OSM_NODE_INDEX` | osm のノード座標索引の置き場。既定はソースごと(小さい国は `sparse_mmap_array`〈RAM・速い〉、RAM 索引が 12GiB を超える国は `sparse_file_array`〈ディスク・省メモリ・遅い〉) |
+| `GEONAMES_ALT_LANGS` | geonames で取り込む別名の言語(カンマ区切り。既定 `ja,en`、`*` で全 400 言語超) |
+| `GEONAMES_FEATURE_CLASSES` | geonames で取り込む feature class(既定 `AHLPSTUV` = 道路 `R` 以外すべて) |
+| `BUILD_MEMORY_GB` / `SKIP_MEMORY_CHECK` | 構築前メモリ検査の必要量を上書き / 検査を無効化(「メモリについて」参照) |
 
 Wikipedia 系ソースは標準 XML ダンプ(`https://dumps.wikimedia.org/<wiki_id>/<date>/
 <wiki_id>-<date>-pages-articles.xml.bz2`、jawiki で確認時点 4.4GB)を取得し、
@@ -176,6 +221,35 @@ Wikipedia 系ソースは記事本文のダンプに加えて、Wikimedia の月
 スキップします。この分、初回取り込みのダウンロード量・所要時間は README 冒頭の見積もりより
 やや増えます。
 
+### 地理データの守備範囲(geonames と osm の分担)
+
+「全世界の地名に答える」用途と「特定の国を店舗レベルまで掘る」用途は、データ源を分けています。
+
+| | `geonames` | `osm_<地域>` |
+|---|---|---|
+| 範囲 | **全世界**(約 1,200 万件) | 取り込んだ地域のみ |
+| ダンプ | 約 400MB + 別名 191MB | 国単位で 2〜5GB(大陸単位は 32GB) |
+| 持っているもの | 地名・座標・国/行政区・人口・多言語別名・timezone | 地名 + **店舗/施設/交通** の詳細、住所・電話・営業時間 |
+| 持っていないもの | 店舗・レストラン・営業時間 | 取り込んでいない国のすべて |
+
+大陸単位の OSM(`europe-latest.osm.pbf`)を 1 ソースとして取り込む案は**廃止しました**。pbf だけで
+32GB、ノード座標索引が 100GB 超、構築に 1 日以上かかるうえ、実測で `osm_japan` の内訳は
+**73% が店舗・施設の裾**(地名・行政界・自然・観光は合計 27%)で、「全世界の地名」を得る手段としては
+過剰だったためです。逆に地名だけに絞れば、それは GeoNames が 80 分の 1 のサイズで既に提供している
+ものになります。
+
+したがって推奨構成は:
+
+- **全世界の問い合わせ** → `geonames`(1 ソースで賄う)
+- **店舗レベルの詳細が要る国** → その国だけ `osm_<国>` を取り込む(管理画面 `/admin/osm` から選ぶか
+  `-e SOURCE=osm_<国>`)。多くの国は pbf 数百 MB〜2GB で、RAM 索引のまま 12GiB 予算・数時間で焼けます
+  (フランス・ドイツ・カナダ・アメリカ・ロシアのような大きい国だけは既定がディスク索引になり、
+  2GiB で焼ける代わりに数倍遅くなります)。
+- **事物の解説** → `jawiki`(座標と wikidata の Q 番号を持つ)
+
+`geonames` と `jawiki` はどちらも `extra.wikidata` に Q 番号を持つので、
+`filter?wikidata=Q90` で相互に引き当てられます。
+
 OSM 系ソース(`osm_japan` 等)は Geofabrik の地域抽出
 `https://download.geofabrik.de/<region>-latest.osm.pbf` をダウンロードし、pyosmium
 (libosmium バインディング)でストリーミング解析します(Geofabrik が 2026 年に `.osm.bz2` の
@@ -183,29 +257,109 @@ OSM 系ソース(`osm_japan` 等)は Geofabrik の地域抽出
 osm 系ソースに限り pyosmium への依存を許容している)。取り込むのは「名前付き地物」です:
 `place=*`、`boundary=administrative`、主要な `natural=*`(山頂・湖沼・島・湾など)に加えて、
 主要 POI(`amenity=*` `shop=*` `tourism=*` `leisure=*` `historic=*` `craft=*` `office=*`
-`healthcare=*`。いずれも `name` タグ必須)。住所補間・逆ジオコーディングはできません
+`healthcare=*`)と、交通インフラ(`railway` `aeroway` `aerialway` `public_transport` `highway`
+`man_made` のうち「地点を指す値」だけを列挙。`railway=rail` や `highway=residential` のような
+名前付きの線形地物は除外)。いずれも `name` タグ必須です。住所補間・逆ジオコーディングはできません
 (それが必要な場合は公式の [nominatim-docker](https://github.com/mediagis/nominatim-docker)
-を別途立ててください)。ファイルは relation メンバーの把握(パス1)→ ノード座標解決込みの
-node/way/relation 走査(パス2)の 2 パスで読むため、構築時間はダウンロード後さらに
-1〜4 時間程度かかります。
+を別途立ててください)。ファイルは relation メンバーの把握(パス1)→ 行政境界ポリゴンの構築
+(パス2。`extra.area` の点内包判定用。`OSM_AREA_ADMIN_LEVEL=0` で省略可)→ ノード座標解決込みの
+node/way/relation 走査(パス3)の 3 パスで読むため、構築時間はダウンロード後さらに
+2〜6 時間程度かかります。パス3 のノード座標インデックスは既定で RAM 上(`sparse_mmap_array`)に
+置きます。参照ノードぶんの座標を抱えるため日本抽出で 5〜10GB 使いますが、これがいちばん速く、
+潤沢メモリのマシンで取り込む前提だからです(足りるかどうかは開始前に検査されます)。
+メモリの少ない環境では `OSM_NODE_INDEX=sparse_file_array` でディスク上のファイル
+(`data/dumps/<source>.nodeloc.idx`、終了・中断のいずれでも自動削除)へ逃がせます。
+必要メモリは 2GiB まで下がる代わりに、ノード解決がランダム読みになり数倍〜10 倍遅くなります。
 
 中断しても運用 DB は壊れません(`.building` の一時ファイルに構築するため)。再実行すれば最初からやり直します。
+
+#### メモリについて
+
+取り込み中に参照する巨大な対応表(リダイレクト・ページビュー・wikidata の Q 番号。jawiki では
+それぞれ 160〜190 万件)は、メモリではなく `data/dumps/*.lookup.db` / `*.redirects.db`(一時 SQLite)に
+持ちます。常駐メモリは SQLite のページキャッシュ上限(約 32MiB/表)に固定され、コーパス規模に
+よらず一定です(これらを素朴に dict で抱えていた版では合計 GB 級になり、メモリ 8GB 級のホストで
+他コンテナごと OOM で落ちる事故がありました)。これらの一時ファイルは取り込み終了・中断のいずれでも
+自動削除されます。
+
+**設計方針: 取り込みは「メモリが足りることを確認できたときだけ」実行する。** 取り込み系コンテナに
+`mem_limit` は課していません。上限で締めると、足りないときに OOM killer が数時間かけた構築を
+最後に殺すだけだからです(実際に 1GiB で締めて osm のノード座標索引が入りきらず落ちました)。
+代わりに ingest は**開始前にメモリを検査し、足りなければダウンロードもせず即座に中止**します。
+
+| ソース | 必要メモリの目安 | 内訳 |
+|---|---|---|
+| `jawiki` | 3 GiB | 巨大な対応表はディスクへ逃がしてあるので軽い。実測ピークは 1GiB 未満 |
+| `osm_japan` | 12 GiB | ノード座標索引を RAM に持つため(実測 5〜10GB) |
+| `osm_<他の国>` | 3〜12 GiB | pbf 1GB あたり RAM 索引 5GiB 見当。国ごとの目安は `/admin/osm` に出ます |
+| `geonames` | 3 GiB | 別名(2,000 万行規模)はディスクへ逃がすため軽い |
+
+RAM 索引が 12GiB に収まらない国(フランス・ドイツ・カナダ・アメリカ・ロシア)は、
+**ディスク索引(`sparse_file_array`)が既定**です。必要メモリは 2 GiB に下がる代わりに数倍遅くなります
+(「既定設定ではどのソースも 12GiB のマシンで構築できる」という方針を保つための切り替えで、
+`OSM_NODE_INDEX=sparse_mmap_array` を明示すれば潤沢メモリのマシンで RAM 索引に戻せます)。
+
+足りない場合のメッセージと対処:
+
+```
+not enough memory to build osm_japan: 2.0 GiB available < 12.0 GiB required.
+```
+
+1. メモリの多いマシンで焼いて `.db` をコピーする(下記「別マシンでビルドして .db を配布する」)
+2. `OSM_NODE_INDEX=sparse_file_array` でノード座標索引をディスクへ逃がす(osm 系のみ。要件は
+   2 GiB まで下がるが、ノード解決がランダム読みになり**数倍〜10 倍遅い**)
+3. `BUILD_MEMORY_GB=<n>` で必要量を上書き、`SKIP_MEMORY_CHECK=1` で検査を無効化(見積もりが
+   実態と合わないと分かっている場合のみ)
+
+**配信側はメモリ数百 MB で動きます。** chiezo-api は読み取り専用の immutable SQLite を開くだけなので、
+1GB 級の小型機でも配信できます。効いてくるのはメモリではなくディスク(jawiki.db 約 42GB の空き)。
+
+### 別マシンでビルドして .db を配布する
+
+chiezo の DB は**自己完結した単一の SQLite ファイル**なので、配布は「ファイルをコピーするだけ」です。
+export/import も配信機でのビルドも要りません(SQLite のファイル形式は OS・CPU アーキ非依存なので、
+Windows で焼いて Linux で読ませてよい)。メモリの少ない配信機と、メモリの多いビルド機を分けられます。
+
+```bash
+# 1. ビルド機へ渡すイメージを作る(リポジトリのソースを持ち出さずに済む)
+docker compose build chiezo-ingest
+mkdir -p handoff
+docker save chiezo-chiezo-ingest:latest | gzip -1 > handoff/chiezo-ingest-image.tar.gz
+
+# 2. ビルド機(メモリ潤沢)で読み込んで取り込む。compose も設定ファイルも不要
+docker load -i chiezo-ingest-image.tar.gz
+docker run --rm -it -e SOURCE=jawiki -e CHIEZO_DATA_DIR=/data \
+  -v /path/to/chiezo-data:/data chiezo-chiezo-ingest:latest
+
+# 3. 出来た世代ファイルを配信機へコピーし、<ソース名>.db として見えるようにして再起動
+cp jawiki-20260701.db /path/to/chiezo/data/
+ln -sfn jawiki-20260701.db /path/to/chiezo/data/jawiki.db
+docker compose restart chiezo-api
+```
+
+詳しい手順(必要ディスク・所要時間、Docker Desktop/WSL2 のメモリ設定、後片付け、環境変数一覧)は
+[`handoff/BUILD-ON-ANOTHER-MACHINE.md`](handoff/BUILD-ON-ANOTHER-MACHINE.md) にまとめてあります。
+イメージとこのファイルだけ持っていけば、ビルド機にリポジトリを置かずに完結します
+(取り込みが触るのは公開ダンプと指定した data フォルダだけで、認証情報や個人ファイルは読みません)。
 
 ### chiezo-trigger(管理画面からの初期化)
 
 `chiezo-ingest` と同じイメージを使い回し、CMD だけ `server.py`(FastAPI)の起動に差し替えた
 常駐コンテナです。`/data` に書き込み権限を持ち、`POST /run/{source}` で ingest の `run()` を
 バックグラウンドスレッドで実行、`GET /status` で状態(`idle`/`running`/`done`/`error`)と
-ログ tail を返します。同時に実行できるジョブは 1 つまでです。
+ログ tail を返します。同時に実行できるジョブは 1 つまでです。`GET /sources` は取り込める
+ソースのカタログ(名前・kind・lang と、osm 国別ソースの表示名・region・pbf サイズ・必要メモリ)を
+返し、管理画面の初期化一覧・国選択画面はこれを読んで組み立てます。
 
 ホストへはポート公開せず、docker の内部ネットワーク経由で `chiezo-api` からのみ到達できます
 (`chiezo-api` の環境変数 `CHIEZO_TRIGGER_URL=http://chiezo-trigger:8080`)。管理画面の
 「初期化」ボタン(`POST /admin/init/{source}`)はこのサービスへのプロキシです。
 `CHIEZO_TRIGGER_URL` が未設定なら管理画面の初期化機能は無効化されます(ボタンが押せません)。
 
-新ソースを `ingest/sources/__init__.py` の `ADAPTERS` に追加したら、管理画面に出す名前・kind・lang
-を `api/app/known_sources.py` の `KNOWN_SOURCES` にも 1 行追加してください
-(`chiezo-api` は `chiezo-trigger`/`ingest` のコードを import しないため、表示用に複製が必要です)。
+新ソースは `ingest/sources/__init__.py` の `ADAPTERS` に追加するだけで管理画面にも出ます
+(`chiezo-api` は ingest のコードを import しませんが、上記の `GET /sources` 経由で名前を受け取ります)。
+`api/app/known_sources.py` の `KNOWN_SOURCES` は、`chiezo-trigger` が未設定・到達不能なときに
+管理画面を空にしないための控えです(必須の複製ではありません)。
 
 ### ソースの追加・削除
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -13,9 +14,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app import db
 from app.fts import build_match_query, escape_like
-from app.known_sources import KNOWN_SOURCES
+from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES
 from app.pages import esc, page_shell
-from app.registry import Source, scan_sources
+from app.registry import FILTER_MIN_SCHEMA_VERSION, Source, scan_sources
 
 log = logging.getLogger("chiezo.api")
 
@@ -32,6 +33,18 @@ JSON_FIELDS = {"tags", "links", "extra"}
 
 SEARCH_LIMIT_DEFAULT = 10
 SEARCH_LIMIT_MAX = 50
+
+# doc で同名の別地物を併記する上限
+DOC_CANDIDATE_LIMIT = 5
+
+# /v1/<source>/filter: 一括抽出が用途なので search より上限を上げてある
+FILTER_LIMIT_DEFAULT = 50
+FILTER_LIMIT_MAX = 500
+FILTER_DEFAULT_FIELDS = ["doc_id", "title", "feature", "area", "lat", "lon"]
+FILTER_ALLOWED_FIELDS = [
+    "doc_id", "title", "feature", "area", "lat", "lon", "wikidata",
+    "opening", "body", "tags", "links", "updated_at", "rank_score", "extra",
+]
 
 
 @asynccontextmanager
@@ -121,6 +134,62 @@ def _fetch_trigger_status() -> dict | None:
         return {"state": "unreachable", "error": str(e)}
 
 
+# chiezo-trigger のソースカタログのプロセス内キャッシュ。中身は trigger のイメージに
+# 焼かれた静的な表(osm_<国> だけで 195 件)なので、一度取れたら取り直す必要はない。
+_catalog_cache: dict[str, dict] | None = None
+# 取得に失敗した時刻(単調時計)。trigger が落ちている間、管理画面を開くたびに
+# タイムアウト待ちを重ねない(ジョブ状況の取得と合わせて毎回 10 秒待たされるため)。
+_catalog_failed_at: float | None = None
+CATALOG_RETRY_SECONDS = 60.0
+
+
+def _fetch_trigger_catalog() -> dict[str, dict] | None:
+    """初期化できるソースの一覧を chiezo-trigger から取る。取れなければ None。"""
+    global _catalog_cache, _catalog_failed_at
+    if _catalog_cache is not None:
+        return _catalog_cache
+    if not TRIGGER_URL:
+        return None
+    if _catalog_failed_at and time.monotonic() - _catalog_failed_at < CATALOG_RETRY_SECONDS:
+        return None
+    try:
+        res = httpx.get(f"{TRIGGER_URL}/sources", timeout=TRIGGER_TIMEOUT)
+        res.raise_for_status()
+        catalog = res.json()["sources"]
+    except (httpx.HTTPError, ValueError, KeyError) as e:
+        log.warning("chiezo-trigger source catalog unreachable: %s", e)
+        _catalog_failed_at = time.monotonic()
+        return None
+    _catalog_cache = catalog
+    return catalog
+
+
+def initializable_sources() -> dict[str, dict]:
+    """初期化できるソース名 → 表示用メタ。
+
+    正は ingest 側(`ADAPTERS`)で、それを chiezo-trigger の `GET /sources` 経由で受け取る。
+    trigger が未設定・到達不能なときだけ、静的な `KNOWN_SOURCES` で代替する。
+    """
+    return _fetch_trigger_catalog() or KNOWN_SOURCES
+
+
+def _format_bytes(size: int | None) -> str:
+    if not size:
+        return ""
+    for unit, scale in (("GB", 10 ** 9), ("MB", 10 ** 6), ("KB", 10 ** 3)):
+        if size >= scale:
+            return f"{size / scale:.1f} {unit}"
+    return f"{size} B"
+
+
+def _memory_hint(meta: dict) -> str:
+    """必要メモリの目安。ディスク索引が既定の国は 2GiB で焼ける代わりに遅い。"""
+    memory_gb = meta.get("memory_gb") or 0
+    if (meta.get("node_index") or "").endswith("file_array"):
+        return f"2 GiB(ディスク索引・低速。RAM 索引なら {memory_gb:.0f} GiB)"
+    return f"{memory_gb:.0f} GiB" if memory_gb else ""
+
+
 def _job_status_html(job: dict | None) -> str:
     if job is None:
         return (
@@ -167,10 +236,14 @@ def admin(request: Request):
         rows = '<tr><td colspan="7">登録済みのソースはありません</td></tr>'
 
     uninitialized = {
-        name: meta for name, meta in KNOWN_SOURCES.items() if name not in sources
+        name: meta for name, meta in initializable_sources().items() if name not in sources
     }
     job = _fetch_trigger_status()
     job_running = bool(job and job.get("state") == "running")
+    disabled = " disabled" if not TRIGGER_URL or job_running else ""
+    # osm_<国> は 195 件あるためここには 1 行だけ出し、国の選択は /admin/osm に分ける
+    osm_pending = {n: m for n, m in uninitialized.items() if m.get("group") == "osm"}
+    rows_source = {n: m for n, m in uninitialized.items() if m.get("group") != "osm"}
     init_rows = "\n".join(
         f"<tr>"
         f"<td>{esc(name)}</td>"
@@ -178,12 +251,21 @@ def admin(request: Request):
         f"<td>{esc(meta.get('lang', ''))}</td>"
         f"<td>"
         f'<form class="init-form" method="post" action="/admin/init/{esc(name)}">'
-        f'<button type="submit"{" disabled" if not TRIGGER_URL or job_running else ""}>初期化</button>'
+        f'<button type="submit"{disabled}>初期化</button>'
         f"</form>"
         f"</td>"
         f"</tr>"
-        for name, meta in sorted(uninitialized.items())
+        for name, meta in sorted(rows_source.items())
     )
+    if osm_pending:
+        init_rows += (
+            f"<tr>"
+            f"<td>osm</td>"
+            f"<td>osm</td>"
+            f"<td>国ごと</td>"
+            f'<td><a href="/admin/osm">国を選ぶ({len(osm_pending)} 件が未初期化)</a></td>'
+            f"</tr>"
+        )
     if not init_rows:
         init_rows = '<tr><td colspan="4">未初期化のソースはありません</td></tr>'
 
@@ -199,6 +281,8 @@ def admin(request: Request):
 </tbody>
 </table>
 
+{_job_status_html(job)}
+
 <h2>未初期化データの初期化</h2>
 <table>
 <thead>
@@ -208,16 +292,106 @@ def admin(request: Request):
 {init_rows}
 </tbody>
 </table>
-{_job_status_html(job)}
 """
     return HTMLResponse(content=page_shell("chiezo 管理画面", body, refresh=5 if job_running else None))
+
+
+@app.get("/admin/osm", response_class=HTMLResponse)
+def admin_osm(request: Request, q: str | None = Query(None, description="国名・region での絞り込み")):
+    """OSM 国別ソースの初期化画面(管理画面の osm 行の「国を選ぶ」から開く)。
+
+    Geofabrik の国別抽出は 195 件あり、管理画面の一覧に全部並べると他のソースが埋もれる。
+    そこで一覧では osm 1 行にまとめ、国の選択だけをこの画面に切り出している。
+    """
+    sources: dict[str, Source] = request.app.state.sources
+    catalog = {n: m for n, m in initializable_sources().items() if m.get("group") == "osm"}
+    job = _fetch_trigger_status()
+    job_running = bool(job and job.get("state") == "running")
+    disabled = " disabled" if not TRIGGER_URL or job_running else ""
+
+    total = len(catalog)
+    needle = (q or "").strip().lower()
+    if needle:
+        catalog = {
+            n: m for n, m in catalog.items()
+            if needle in " ".join(
+                str(m.get(k, "")) for k in ("label", "label_en", "slug", "region")
+            ).lower()
+            or needle in n.lower()
+        }
+
+    groups: dict[str, list[tuple[str, dict]]] = {}
+    for name, meta in catalog.items():
+        groups.setdefault(meta.get("continent", "standalone"), []).append((name, meta))
+
+    order = [c for c in CONTINENT_LABELS if c in groups] + [
+        c for c in sorted(groups) if c not in CONTINENT_LABELS
+    ]
+    blocks = []
+    for continent in order:
+        entries = sorted(groups[continent], key=lambda kv: kv[1].get("label") or kv[0])
+        rows = []
+        for name, meta in entries:
+            src = sources.get(name)
+            if src is not None:
+                action = (
+                    f'初期化済み(<a href="/{esc(name)}/">{src.doc_count:,} 件</a>)'
+                )
+            else:
+                action = (
+                    f'<form class="init-form" method="post" action="/admin/init/{esc(name)}">'
+                    f'<button type="submit"{disabled}>初期化</button></form>'
+                )
+            rows.append(
+                f"<tr>"
+                f"<td>{esc(meta.get('label') or name)}"
+                f'<div class="muted">{esc(name)}</div></td>'
+                f"<td>{esc(meta.get('region', ''))}</td>"
+                f"<td>{esc(_format_bytes(meta.get('pbf_bytes')))}</td>"
+                f"<td>{esc(_memory_hint(meta))}</td>"
+                f"<td>{action}</td>"
+                f"</tr>"
+            )
+        blocks.append(
+            f"<details{' open' if needle else ''}>"
+            f"<summary>{esc(CONTINENT_LABELS.get(continent, continent))}"
+            f"({len(entries)})</summary>"
+            "<table><thead><tr><th>国・地域</th><th>region</th><th>pbf</th>"
+            "<th>必要メモリの目安</th><th></th></tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table>"
+            "</details>"
+        )
+    if not blocks:
+        blocks = ["<p>該当する国・地域がありません。</p>"]
+
+    body = f"""
+<nav><a href="/admin">管理画面</a></nav>
+<h1>OSM(国別)の初期化</h1>
+<p class="muted">
+Geofabrik の国別抽出 {total} 件{f"(絞り込み: {len(catalog)} 件)" if needle else ""}から 1 か国ずつ取り込みます。
+店舗・営業時間まで要る国だけを個別に足す使い方を想定しています
+(全世界のざっくりした地名は geonames が 1 ソースで賄います)。
+取り込みは同時に 1 件のみ・数時間かかります。必要メモリが足りない場合は開始前に中止されます。
+</p>
+<form method="get" action="/admin/osm">
+<input type="text" name="q" value="{esc(q or '')}" placeholder="国名・region で絞り込み(例: france)">
+<button type="submit">絞り込み</button>
+</form>
+
+{_job_status_html(job)}
+
+{''.join(blocks)}
+"""
+    return HTMLResponse(
+        content=page_shell("chiezo: OSM 国別の初期化", body, refresh=5 if job_running else None)
+    )
 
 
 @app.post("/admin/init/{source}")
 def admin_init(source: str, request: Request):
     if not TRIGGER_URL:
         raise HTTPException(503, {"error": "chiezo-trigger is not configured (CHIEZO_TRIGGER_URL unset)"})
-    if source not in KNOWN_SOURCES:
+    if source not in initializable_sources():
         raise HTTPException(404, {"error": f"unknown source: {source}"})
     sources: dict[str, Source] = request.app.state.sources
     if source in sources:
@@ -239,10 +413,18 @@ def search(
     request: Request,
     source: str,
     q: str = Query(..., min_length=1),
+    area: str | None = Query(None, description="所属行政区で絞る(同名の別地物の取り違え防止)"),
+    feature: str | None = Query(None, description="地物種別で絞る。カンマ区切りで複数可"),
+    bbox: str | None = Query(None, description="'min_lat,min_lon,max_lat,max_lon' で絞る"),
     limit: int = Query(SEARCH_LIMIT_DEFAULT, ge=1, le=SEARCH_LIMIT_MAX),
     offset: int = Query(0, ge=0),
 ):
     src = get_source(request, source)
+    extra_where, extra_params = build_attribute_filters(src, area=area, feature=feature, bbox=bbox)
+    # FTS 側は docs に別名 d を付けて JOIN するため、列名を修飾した版も用意する
+    extra_where_d, _ = build_attribute_filters(
+        src, area=area, feature=feature, bbox=bbox, column_prefix="d."
+    )
     match = build_match_query(q)
     if match is None:
         # trigram で扱えない短い検索語 → タイトル前方一致へフォールバック
@@ -251,9 +433,9 @@ def search(
             src.path,
             "SELECT doc_id, title, substr(coalesce(opening, body), 1, 120) AS snippet,"
             " updated_at"
-            " FROM docs WHERE title LIKE ? ESCAPE '\\'"
+            f" FROM docs WHERE title LIKE ? ESCAPE '\\'{extra_where}"
             " ORDER BY rank_score DESC, title LIMIT ? OFFSET ?",
-            (prefix + "%", limit, offset),
+            (prefix + "%", *extra_params, limit, offset),
         )
         mode = "title_prefix"
     else:
@@ -262,10 +444,10 @@ def search(
             "SELECT d.doc_id AS doc_id, d.title AS title,"
             " snippet(docs_fts, 1, '', '', '…', 40) AS snippet, d.updated_at AS updated_at"
             " FROM docs_fts JOIN docs d ON d.doc_id = docs_fts.rowid"
-            " WHERE docs_fts MATCH ?"
+            f" WHERE docs_fts MATCH ?{extra_where_d}"
             " ORDER BY bm25(docs_fts, 5.0, 1.0) ASC, d.rank_score DESC"
             " LIMIT ? OFFSET ?",
-            (match, limit, offset),
+            (match, *extra_params, limit, offset),
         )
         mode = "fts"
     return {
@@ -279,18 +461,21 @@ def search(
 # ---- 文書取得 ---------------------------------------------------------------
 
 
-def parse_fields(fields: str | None) -> list[str]:
+def parse_fields(
+    fields: str | None,
+    default: list[str] | None = None,
+    allowed: list[str] | None = None,
+) -> list[str]:
+    default = default if default is not None else DEFAULT_DOC_FIELDS
+    allowed = allowed if allowed is not None else ALLOWED_DOC_FIELDS
     if not fields:
-        return DEFAULT_DOC_FIELDS
+        return default
     requested = [f.strip() for f in fields.split(",") if f.strip()]
-    unknown = [f for f in requested if f not in ALLOWED_DOC_FIELDS]
+    unknown = [f for f in requested if f not in allowed]
     if unknown:
         raise HTTPException(
             400,
-            {
-                "error": f"unknown fields: {', '.join(unknown)}",
-                "allowed_fields": ALLOWED_DOC_FIELDS,
-            },
+            {"error": f"unknown fields: {', '.join(unknown)}", "allowed_fields": allowed},
         )
     return requested
 
@@ -317,17 +502,48 @@ def title_candidates(src: Source, title: str, limit: int = 5) -> list[str]:
     return [r["title"] for r in rows]
 
 
+def fetch_doc_candidates(
+    src: Source,
+    title: str,
+    where: str = "",
+    params: tuple = (),
+    where_d: str | None = None,
+) -> list:
+    """同じ名前を持つ文書をすべて返す(完全一致を先頭に、残りは rank_score 降順)。
+
+    OSM のように同名の別地物が併存するソースでは、タイトル完全一致で最初に当たった 1 件を
+    返すだけだと「博多駅」で大阪のラーメン店を掴む、といった取り違えが起きる。呼び出し側で
+    先頭を採用しつつ、残りを alternatives として提示できるよう候補を並べて返す。
+    """
+    rows = list(
+        db.query(src.path, f"SELECT * FROM docs WHERE title = ?{where}", (title, *params))
+    )
+    seen = {r["doc_id"] for r in rows}
+    alias_rows = db.query(
+        src.path,
+        "SELECT d.* FROM aliases a JOIN docs d ON d.doc_id = a.doc_id"
+        f" WHERE a.alias = ?{where_d if where_d is not None else where}"
+        " ORDER BY d.rank_score DESC LIMIT ?",
+        (title, *params, DOC_CANDIDATE_LIMIT),
+    )
+    rows.extend(r for r in alias_rows if r["doc_id"] not in seen)
+    return rows
+
+
 def fetch_doc_by_title(src: Source, title: str):
     """完全一致 → aliases 解決の順で文書行を返す。見つからなければ None。"""
-    rows = db.query(src.path, "SELECT * FROM docs WHERE title = ?", (title,))
-    if rows:
-        return rows[0]
-    rows = db.query(
-        src.path,
-        "SELECT d.* FROM aliases a JOIN docs d ON d.doc_id = a.doc_id WHERE a.alias = ? LIMIT 1",
-        (title,),
-    )
+    rows = fetch_doc_candidates(src, title)
     return rows[0] if rows else None
+
+
+def describe_candidate(src: Source, row) -> dict:
+    """alternatives 用の短い説明(取り違えを見分けられる最小限の情報)。"""
+    out = {"doc_id": row["doc_id"], "title": row["title"]}
+    if src.schema_version >= FILTER_MIN_SCHEMA_VERSION:
+        for key in ("feature", "area", "lat", "lon"):
+            if row[key] is not None:
+                out[key] = row[key]
+    return out
 
 
 def not_found_with_candidates(src: Source, title: str) -> HTTPException:
@@ -342,15 +558,26 @@ def get_doc_by_title(
     request: Request,
     source: str,
     title: str = Query(..., min_length=1),
+    area: str | None = Query(None, description="所属行政区で絞る(同名の別地物の取り違え防止)"),
+    feature: str | None = Query(None, description="地物種別で絞る。カンマ区切りで複数可"),
+    bbox: str | None = Query(None, description="'min_lat,min_lon,max_lat,max_lon' で絞る"),
     fields: str | None = None,
     max_chars: int = Query(0, ge=0),
 ):
     src = get_source(request, source)
     field_list = parse_fields(fields)
-    row = fetch_doc_by_title(src, title)
-    if row is None:
+    where, params = build_attribute_filters(src, area=area, feature=feature, bbox=bbox)
+    where_d, _ = build_attribute_filters(
+        src, area=area, feature=feature, bbox=bbox, column_prefix="d."
+    )
+    rows = fetch_doc_candidates(src, title, where, tuple(params), where_d)
+    if not rows:
         raise not_found_with_candidates(src, title)
-    return doc_response(row, field_list, max_chars)
+    body = doc_response(rows[0], field_list, max_chars)
+    if len(rows) > 1:
+        # 同名の別地物がある。黙って 1 件目を返すと取り違えに気づけないので併記する。
+        body["alternatives"] = [describe_candidate(src, r) for r in rows[1:]]
+    return body
 
 
 @app.get("/v1/{source}/doc/{doc_id}")
@@ -367,6 +594,122 @@ def get_doc_by_id(
     if not rows:
         raise HTTPException(404, {"error": f"document not found: doc_id={doc_id}"})
     return doc_response(rows[0], field_list, max_chars)
+
+
+# ---- 属性での絞り込み抽出 ---------------------------------------------------
+
+
+def require_filter_schema(src: Source) -> None:
+    """生成列(feature/area/lat/lon/wikidata)が無い古い DB を明示的に断る。"""
+    if src.schema_version < FILTER_MIN_SCHEMA_VERSION:
+        raise HTTPException(
+            409,
+            {
+                "error": (
+                    f"source {src.name} was built with schema_version={src.schema_version};"
+                    f" attribute filters require >= {FILTER_MIN_SCHEMA_VERSION} (re-run ingest)"
+                )
+            },
+        )
+
+
+def build_attribute_filters(
+    src: Source,
+    *,
+    feature: str | None = None,
+    area: str | None = None,
+    bbox: str | None = None,
+    wikidata: str | None = None,
+    column_prefix: str = "",
+) -> tuple[str, list]:
+    """属性条件を ` AND ...` の形の SQL 断片とパラメータに変換する。
+
+    条件が 1 つも指定されなければ空文字を返すので、呼び出し側の SQL に無条件で
+    連結してよい(その場合 schema_version の検査もしない = 既存 DB でも従来どおり動く)。
+    """
+    if not any((feature, area, bbox, wikidata)):
+        return "", []
+    require_filter_schema(src)
+    p = column_prefix
+    where: list[str] = []
+    params: list = []
+    if feature:
+        features = [f.strip() for f in feature.split(",") if f.strip()]
+        where.append(f"{p}feature IN ({','.join('?' * len(features))})")
+        params.extend(features)
+    if area:
+        where.append(f"{p}area = ?")
+        params.append(area)
+    if wikidata:
+        where.append(f"{p}wikidata = ?")
+        params.append(wikidata)
+    if bbox:
+        min_lat, min_lon, max_lat, max_lon = parse_bbox(bbox)
+        where.append(f"{p}lat BETWEEN ? AND ? AND {p}lon BETWEEN ? AND ?")
+        params.extend([min_lat, max_lat, min_lon, max_lon])
+    return "".join(f" AND {clause}" for clause in where), params
+
+
+def parse_bbox(bbox: str) -> tuple[float, float, float, float]:
+    parts = bbox.split(",")
+    if len(parts) != 4:
+        raise HTTPException(
+            400, {"error": "bbox must be 'min_lat,min_lon,max_lat,max_lon'"}
+        )
+    try:
+        min_lat, min_lon, max_lat, max_lon = (float(p) for p in parts)
+    except ValueError:
+        raise HTTPException(400, {"error": f"bbox is not numeric: {bbox}"}) from None
+    if min_lat > max_lat or min_lon > max_lon:
+        raise HTTPException(400, {"error": "bbox min must not exceed max"})
+    return min_lat, min_lon, max_lat, max_lon
+
+
+@app.get("/v1/{source}/filter")
+def filter_docs(
+    request: Request,
+    source: str,
+    feature: str | None = Query(None, description="地物種別。'amenity=place_of_worship' 形式。カンマ区切りで複数指定可"),
+    area: str | None = Query(None, description="所属する行政区名(OSM ソースでは都道府県相当)"),
+    bbox: str | None = Query(None, description="'min_lat,min_lon,max_lat,max_lon'"),
+    wikidata: str | None = Query(None, description="wikidata の Q 番号(逆引き)"),
+    fields: str | None = None,
+    limit: int = Query(FILTER_LIMIT_DEFAULT, ge=1, le=FILTER_LIMIT_MAX),
+    offset: int = Query(0, ge=0),
+    max_chars: int = Query(0, ge=0),
+):
+    """属性で文書を絞り込み一括で列挙する(全文検索ではなく等価・範囲条件)。
+
+    用途は「京都府の寺社を全件」のような機械的な抽出と、wikidata の Q 番号から
+    記事を引く逆引き。総件数 total を返すので offset でページングできる。
+    """
+    src = get_source(request, source)
+    require_filter_schema(src)
+    field_list = parse_fields(fields, FILTER_DEFAULT_FIELDS, FILTER_ALLOWED_FIELDS)
+
+    where, params = build_attribute_filters(
+        src, feature=feature, area=area, bbox=bbox, wikidata=wikidata
+    )
+    if not where:
+        raise HTTPException(
+            400,
+            {"error": "at least one of feature, area, bbox, wikidata is required"},
+        )
+    clause = where.removeprefix(" AND ")
+    (total,) = db.query(src.path, f"SELECT COUNT(*) AS n FROM docs WHERE {clause}", tuple(params))[0]
+    rows = db.query(
+        src.path,
+        f"SELECT {', '.join(field_list)} FROM docs WHERE {clause}"
+        " ORDER BY rank_score DESC, title LIMIT ? OFFSET ?",
+        (*params, limit, offset),
+    )
+    return {
+        "source": source,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "results": [doc_response(r, field_list, max_chars) for r in rows],
+    }
 
 
 # ---- タイトル前方一致 / リンク / ランダム -----------------------------------

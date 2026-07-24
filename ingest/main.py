@@ -26,11 +26,89 @@ log = logging.getLogger("chiezo.ingest")
 BATCH_SIZE = 2000
 PROGRESS_EVERY = 100_000
 
+# 本体ダンプに加えて docs.extra を補強する追加データの取得フック(実装は任意)
+EXTRA_FETCH_HOOKS = ("fetch_pageviews", "fetch_page_props", "fetch_extra")
+
 BUILD_PRAGMAS = [
     "PRAGMA journal_mode=OFF",
     "PRAGMA synchronous=OFF",
     "PRAGMA cache_size=-524288",
 ]
+
+GIB = 1024 ** 3
+
+
+def _cgroup_memory_limit() -> int | None:
+    """コンテナに課されたメモリ上限(バイト)。無制限/取得不能なら None。
+
+    /proc/meminfo はコンテナ内でもホストの値を見せるため、docker の --memory を
+    効かせている場合はこちらが実際に使える上限になる。cgroup v2 / v1 の両方を見る。
+    """
+    for path, unlimited in (
+        (Path("/sys/fs/cgroup/memory.max"), {"max"}),                      # cgroup v2
+        (Path("/sys/fs/cgroup/memory/memory.limit_in_bytes"), set()),      # cgroup v1
+    ):
+        try:
+            raw = path.read_text().strip()
+        except OSError:
+            continue
+        if raw in unlimited:
+            return None
+        try:
+            value = int(raw)
+        except ValueError:
+            continue
+        # v1 は無制限を巨大な値で表すため、実メモリを超える値は無制限とみなす
+        if value <= 0 or value >= (1 << 62):
+            return None
+        return value
+    return None
+
+
+def _meminfo_bytes(key: str) -> int | None:
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith(key + ":"):
+                return int(line.split()[1]) * 1024  # kB 単位
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def available_memory_bytes() -> int | None:
+    """構築に実際に使えるメモリ(バイト)。ホストの空きとコンテナ上限の小さいほう。"""
+    candidates = [v for v in (_meminfo_bytes("MemAvailable"), _cgroup_memory_limit()) if v]
+    return min(candidates) if candidates else None
+
+
+def require_build_memory(adapter: SourceAdapter) -> None:
+    """必要メモリが確保できないなら、構築を始める前に中止する(設計方針)。
+
+    取り込みは潤沢メモリのマシンで回す前提。足りないまま走らせると数時間かけた末に
+    OOM killer に殺される(しかも共有ホストでは他のプロセスを道連れにする)ため、
+    「足りることを確認できたときだけ実行する」ほうを選ぶ。
+    BUILD_MEMORY_GB で必要量を上書き、SKIP_MEMORY_CHECK=1 で検査自体を省略できる。
+    """
+    if os.environ.get("SKIP_MEMORY_CHECK") == "1":
+        log.warning("SKIP_MEMORY_CHECK=1: skipping the preflight memory check")
+        return
+    required_gb = float(os.environ.get("BUILD_MEMORY_GB") or adapter.min_build_memory_gb)
+    available = available_memory_bytes()
+    if available is None:
+        log.warning("could not determine available memory; skipping the preflight check")
+        return
+    available_gb = available / GIB
+    log.info("memory preflight: %.1f GiB available, %.1f GiB required", available_gb, required_gb)
+    if available_gb < required_gb:
+        raise SystemExit(
+            f"not enough memory to build {adapter.source}: "
+            f"{available_gb:.1f} GiB available < {required_gb:.1f} GiB required.\n"
+            "Build on a machine with more memory and copy the resulting .db over "
+            "(see README: 別マシンでビルドして .db を配布する). Alternatives: "
+            "OSM_NODE_INDEX=sparse_file_array (osm sources; trades speed for disk), "
+            "BUILD_MEMORY_GB=<n> to override the requirement, "
+            "SKIP_MEMORY_CHECK=1 to bypass this check entirely."
+        )
 
 
 def build_db(adapter: SourceAdapter, dump_path: Path, dump_date: str, building_path: Path) -> None:
@@ -183,6 +261,8 @@ def run(source: str, data_dir: Path) -> Path:
         adapter.min_docs = int(min_docs)
     if sample_titles := os.environ.get("SAMPLE_TITLES"):
         adapter.sample_titles = [t for t in sample_titles.split(",") if t]
+    # 数 GB のダウンロードや数時間の構築を始める前に、メモリが足りるかを先に確かめる
+    require_build_memory(adapter)
     dumps_dir = data_dir / "dumps"
     dumps_dir.mkdir(parents=True, exist_ok=True)
 
@@ -193,9 +273,11 @@ def run(source: str, data_dir: Path) -> Path:
         dump_date = os.environ.get("DUMP_DATE") or datetime.now(timezone.utc).strftime("%Y%m%d")
     else:
         dump_path, dump_date = adapter.fetch(dumps_dir)
-        # アダプタが対応していれば、docs.extra 補強用の追加データ(ページビュー等)も取得する
-        if fetch_extra := getattr(adapter, "fetch_pageviews", None):
-            fetch_extra(dumps_dir)
+        # アダプタが対応していれば、docs.extra 補強用の追加データも取得する
+        # (ページビュー、wikidata の Q 番号)。未対応のアダプタでは単にスキップされる。
+        for hook_name in EXTRA_FETCH_HOOKS:
+            if fetch_extra := getattr(adapter, hook_name, None):
+                fetch_extra(dumps_dir)
 
     building_path = data_dir / f"{source}-{dump_date}.db.building"
     n_files = len(dump_path) if isinstance(dump_path, list) else 1

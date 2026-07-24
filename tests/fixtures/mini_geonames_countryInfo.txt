@@ -1,0 +1,6 @@
+#ISO	ISO3	ISO-Numeric	fips	Country	Capital	Area(in sq km)	Population
+FR	FRA	250	FR	France	Paris	547030	64768389
+JP	JPN	392	JA	Japan	Tokyo	377835	127288000
+US	USA	840	US	United States	Washington	9629091	310232863
+GB	GBR	826	UK	United Kingdom	London	244820	62348447
+NO	NOR	578	NO	Norway	Oslo	324220	5009150

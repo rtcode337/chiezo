@@ -1,3 +1,13 @@
+# 取り込み系コンテナ共通のリソース上限(YAML アンカー)。cpus は「良き隣人」のための緩い上限。
+# メモリの上限(mem_limit)はあえて課さない。取り込みは潤沢メモリのマシンで回す前提で、
+# 逆に上限で締めると OOM killer が構築を殺してしまう(以前 1GiB で締めたら osm のノード座標
+# インデックスが入りきらず落ちた)。「メモリが足りる環境でだけ実行する」判断は、コンテナ上限では
+# なく ingest 側のプリフライト検査(main.py の require_build_memory / adapter.min_build_memory_gb)で
+# 行う。足りなければ構築を始める前に明示的に SystemExit する。8GB 級の共有ホストでは重い取り込みは
+# そもそも実行拒否され、成果物の .db は別マシンで焼いて配布する(README「別マシンでビルド」参照)。
+x-ingest-limits: &ingest-limits
+  cpus: "4.0"
+
 services:
   chiezo-api:
     build: ./api
@@ -28,6 +38,9 @@ services:
     environment:
       - CHIEZO_DATA_DIR=/data
     restart: unless-stopped
+    # トリガー経由の取り込みが暴走しても、OOM killer がホスト全体(postgres や
+    # 他アプリのコンテナ)を巻き込まないよう上限を設ける。取り込み本体と同じ *_LIMITS。
+    <<: *ingest-limits
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:8080/healthz"]
       interval: 60s
@@ -40,3 +53,8 @@ services:
     environment:
       - SOURCE=jawiki
       - CHIEZO_DATA_DIR=/data
+    # 取り込みのメモリ上限。以前 jawiki 取り込みが対応表(リダイレクト/ページビュー/
+    # wikidata)を dict で数 GB 抱えてホストごと OOM で落ちたため、(1) それらを
+    # ディスク上の一時 SQLite に逃がした上で(ingest/lookup.py)、(2) 念のため
+    # コンテナ自体にも上限を課して、万一の暴走をコンテナ内で止める(道連れ防止)。
+    <<: *ingest-limits

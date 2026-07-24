@@ -18,6 +18,9 @@ PAGE_STYLE = """
   .log-tail { max-height: 12rem; overflow-y: auto; background: #111; color: #ddd;
               padding: 0.6rem; font-family: monospace; font-size: 0.85rem; white-space: pre-wrap; }
   .snippet { color: #555; }
+  .muted { color: #666; font-size: 0.85rem; }
+  details { margin-top: 1rem; }
+  details > summary { cursor: pointer; font-weight: bold; padding: 0.3rem 0; }
   pre.doc-body { white-space: pre-wrap; word-break: break-word; }
   input[type=text] { padding: 0.3rem 0.5rem; width: 20rem; }
   button { padding: 0.3rem 0.8rem; }

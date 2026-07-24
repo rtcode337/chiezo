@@ -38,6 +38,7 @@ import mwparserfromhell as mwp
 from mwparserfromhell.nodes import Heading
 
 from core import Doc
+from lookup import EMPTY, DiskLookup, DiskMultiMap, EmptyLookup
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +57,9 @@ _NON_ARTICLE_LINK_PREFIXES = (
     "Category:", "カテゴリ:",
 )
 _CATEGORY_PREFIXES = ("Category:", "カテゴリ:")
+
+# page_props SQL ダンプ中の `(<page_id>,'wikibase_item','Q123',...)` を拾う。
+_WIKIBASE_ITEM_RE = re.compile(r"\((\d+),'wikibase_item','(Q\d+)'")
 
 # Wikimedia は User-Agent の無い/汎用スクリプト由来のリクエストを 403 で拒否するため、
 # 連絡先付きの UA を明示する(https://meta.wikimedia.org/wiki/User-Agent_policy)。
@@ -104,6 +108,11 @@ DEFAULT_VALIDATION = {
 class WikipediaAdapter:
     source_kind = "wikipedia"
 
+    # 巨大な対応表(リダイレクト・ページビュー・wikidata)は lookup.py でディスクに逃がして
+    # あるため、wikipedia 系の常駐は SQLite のページキャッシュ(512MiB)+ wikitext 解析の
+    # 一時オブジェクトが主。実測ピークは 1GiB 未満だが、FTS 構築ぶんの余裕を見て 3GiB とする。
+    min_build_memory_gb = 3.0
+
     def __init__(
         self,
         wiki_id: str,
@@ -120,6 +129,7 @@ class WikipediaAdapter:
         )
         self._pageview_path: Path | None = None
         self._pageview_period: str | None = None
+        self._page_props_path: Path | None = None
 
     # ---- 取得 -------------------------------------------------------------
 
@@ -196,16 +206,66 @@ class WikipediaAdapter:
         self._pageview_period = period
         return dest
 
-    def _load_pageviews(self) -> dict[int, int]:
+    def fetch_page_props(self, workdir: Path) -> Path | None:
+        """page_props ダンプ(記事 → wikidata の Q 番号の対応表)を取得する。
+
+        ダンプ日付は本体 XML と同じディレクトリのものを使う(latest_dump_date は
+        DUMP_DATE 環境変数で固定できるため、本体と食い違うことはない)。
+        """
+        date = self.latest_dump_date()
+        filename = f"{self.source}-{date}-page_props.sql.gz"
+        dest = workdir / filename
+        part = dest.with_suffix(dest.suffix + ".part")
+        if not (dest.exists() and not part.exists()):
+            url = f"{DUMP_INDEX_URL.format(wiki_id=self.source)}{date}/{filename}"
+            log.info("downloading %s", url)
+            subprocess.run(
+                ["curl", "-fSL", "-A", USER_AGENT, "--retry", "5", "-C", "-", "-o", str(part), url],
+                check=True,
+            )
+            part.rename(dest)
+        self._page_props_path = dest
+        return dest
+
+    def _load_page_props(self) -> DiskLookup | EmptyLookup:
+        """page_id → wikidata の Q 番号。
+
+        page_props は MediaWiki の SQL ダンプ(巨大な INSERT 文の羅列)なので、
+        行として読まず `(page_id,'propname','value',...)` のタプルを正規表現で拾う。
+        必要なのは propname='wikibase_item' の行だけ。
+
+        ja Wikipedia では 186 万件あり dict で持つと約 270MiB を常駐で占める。
+        取り込みループからの点引きにしか使わないため、ディスク上の一時 SQLite に置く
+        (`lookup.DiskLookup`。詳しい理由は同モジュールの docstring)。
+        """
+        if self._page_props_path is None:
+            return EMPTY
+        props = DiskLookup(self._page_props_path.with_suffix(".lookup.db"))
+        with gzip.open(self._page_props_path, "rt", encoding="utf-8", errors="replace") as f:
+            for chunk in f:
+                props.extend(
+                    (int(page_id), qid) for page_id, qid in _WIKIBASE_ITEM_RE.findall(chunk)
+                )
+        props.finish()
+        log.info("loaded wikidata ids for %d pages", len(props))
+        return props
+
+    def _load_pageviews(self) -> DiskLookup | EmptyLookup:
         """page_id → 月間合計閲覧数(アクセス種別 desktop/mobile-web/mobile-app 合算)。
 
         pageview_complete はドメインコードでアルファベット順にソートされているため、
         対象ドメインの行を通過し終えたら走査を打ち切れる(全体を読み切らずに済む)。
+
+        件数が数百万に達し dict では数百 MiB を常駐で占めるため、page_props と同様に
+        ディスク上の一時 SQLite へ置く(1 ページが access_method ごとに複数行へ
+        分かれているので `accumulate=True` で合算する)。
         """
         domain = WIKI_DOMAIN.get(self.source)
         if domain is None or self._pageview_path is None:
-            return {}
-        counts: dict[int, int] = {}
+            return EMPTY
+        counts = DiskLookup(
+            self._pageview_path.with_suffix(".lookup.db"), accumulate=True
+        )
         seen = False
         with bz2.open(self._pageview_path, "rt", encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -223,7 +283,8 @@ class WikipediaAdapter:
                     total = int(parts[4])
                 except ValueError:
                     continue
-                counts[page_id] = counts.get(page_id, 0) + total
+                counts.add(page_id, total)
+        counts.finish()
         log.info("loaded pageviews for %d pages (%s, %s)", len(counts), domain, self._pageview_period)
         return counts
 
@@ -254,10 +315,23 @@ class WikipediaAdapter:
         パス1: リダイレクトページ(ns=0 かつ <redirect> あり)を集め、
         対象タイトル → [リダイレクト元タイトル, …] の逆引き辞書を作る。
         パス2: リダイレクトでない ns=0 ページを Doc として yield する(aliases 込み)。
-        fetch_pageviews() 済みなら、docs.extra に月間閲覧数を載せる。
+        fetch_pageviews() / fetch_page_props() 済みなら、docs.extra に月間閲覧数と
+        wikidata の Q 番号を載せる。
+
+        3 つの対応表(リダイレクト・ページビュー・wikidata)はいずれも件数が百万単位で、
+        メモリに載せるとホストごと OOM を招くためディスク上の一時 SQLite に置く
+        (`ingest/lookup.py`)。中断時にも消えるよう finally で必ず後始末する。
         """
         redirect_targets = self._collect_redirects(path)
         pageviews = self._load_pageviews()
+        wikidata_ids = self._load_page_props()
+        try:
+            yield from self._iter_docs(path, redirect_targets, pageviews, wikidata_ids)
+        finally:
+            for lookup in (redirect_targets, pageviews, wikidata_ids):
+                lookup.close()
+
+    def _iter_docs(self, path: Path, redirect_targets, pageviews, wikidata_ids) -> Iterator[Doc]:
         for elem in self._iter_pages(path):
             ns_elem = _child(elem, "ns")
             if ns_elem is None or (ns_elem.text or "0") != "0":
@@ -276,13 +350,15 @@ class WikipediaAdapter:
             title = title_elem.text or ""
             doc_id = int(id_elem.text)
             timestamp_elem = _child(revision, "timestamp")
-            opening, body, tags, links = _extract_plaintext(wikitext)
-            views = pageviews.get(doc_id)
-            extra = (
-                {"pageviews_month": views, "pageviews_period": self._pageview_period}
-                if views is not None
-                else None
-            )
+            opening, body, tags, links, coords = _extract_plaintext(wikitext)
+            extra: dict = {}
+            if coords is not None:
+                extra["lat"], extra["lon"] = coords
+            if (views := pageviews.get(doc_id)) is not None:
+                extra["pageviews_month"] = views
+                extra["pageviews_period"] = self._pageview_period
+            if qid := wikidata_ids.get(doc_id):
+                extra["wikidata"] = qid
             yield Doc(
                 doc_id=doc_id,
                 title=title,
@@ -290,15 +366,20 @@ class WikipediaAdapter:
                 body=body,
                 tags=tags,
                 links=links,
-                aliases=redirect_targets.get(title, []),
+                aliases=redirect_targets.get(title),
                 updated_at=timestamp_elem.text if timestamp_elem is not None else None,
                 rank_score=0.0,  # XML ダンプには CirrusSearch の popularity_score 相当が無い
-                extra=extra,
+                extra=extra or None,
             )
 
-    def _collect_redirects(self, path: Path) -> dict[str, list[str]]:
-        """対象タイトル → [リダイレクト元タイトル, …] の辞書を作る(パス1)。"""
-        targets: dict[str, list[str]] = {}
+    def _collect_redirects(self, path: Path) -> DiskMultiMap:
+        """対象タイトル → [リダイレクト元タイトル, …] の対応表を作る(パス1)。
+
+        ja Wikipedia のリダイレクトは 160 万件あり、`dict[str, list[str]]` に貯めると
+        文字列とリストのオーバーヘッドで GB 級に達する。パス2 の本文解析と同時に
+        生きているため、これがホストの OOM の主因だった。ディスクへ逃がす。
+        """
+        targets = DiskMultiMap(path.with_suffix(".redirects.db"))
         for elem in self._iter_pages(path):
             ns_elem = _child(elem, "ns")
             if ns_elem is None or (ns_elem.text or "0") != "0":
@@ -310,12 +391,117 @@ class WikipediaAdapter:
             title_elem = _child(elem, "title")
             if not target or title_elem is None or not title_elem.text:
                 continue
-            targets.setdefault(target, []).append(title_elem.text)
+            targets.add(target, title_elem.text)
+        targets.finish()
+        log.info("collected redirects for %d titles", len(targets))
         return targets
 
 
-def _extract_plaintext(wikitext: str) -> tuple[str | None, str | None, list[str], list[str]]:
-    """wikitext から (opening, body, tags, links) を抽出する。
+def _is_float(value: str) -> bool:
+    try:
+        float(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _dms(parts: list[str], hemisphere: str) -> float | None:
+    """度・分・秒(可変長)と N/S/E/W から十進度を作る。"""
+    if not parts or not all(_is_float(p) for p in parts):
+        return None
+    degrees = 0.0
+    for i, part in enumerate(parts[:3]):
+        degrees += float(part) / (60**i)
+    return -degrees if hemisphere in ("S", "W") else degrees
+
+
+def _coords_from_positional(template) -> tuple[float, float] | None:
+    """{{Coord|35|39|31|N|139|41|30|E|...}} / {{Coord|35.65|139.69|...}} 形式。
+
+    度分秒は 2〜3 個と可変なので、方位(N/S)の出現位置で緯度側の要素数を決め、
+    経度側も同じ数だけ読む。`type:city` のような修飾子以降は無視する。
+    """
+    values: list[str] = []
+    for param in template.params:
+        if param.showkey:
+            break
+        value = str(param.value).strip()
+        if not value or ":" in value:
+            break
+        values.append(value)
+    upper = [v.upper() for v in values]
+    for i, value in enumerate(upper):
+        if value in ("N", "S"):
+            lat = _dms(values[:i], value)
+            tail = upper[i + 1 :]
+            if len(tail) < i + 1 or tail[i] not in ("E", "W"):
+                return None
+            lon = _dms(values[i + 1 : i + 1 + i], tail[i])
+            return (lat, lon) if lat is not None and lon is not None else None
+    if len(values) >= 2 and _is_float(values[0]) and _is_float(values[1]):
+        return float(values[0]), float(values[1])
+    return None
+
+
+# 名前付き引数で座標を持つテンプレート(日本の駅・空港の Infobox 等)の引数名。
+# (度, 分, 秒, 方位) の順。秒・方位は省略されることがある。
+_NAMED_COORD_KEYS = [
+    (("緯度度", "緯度分", "緯度秒", "南北"), ("経度度", "経度分", "経度秒", "東西")),
+    (("latd", "latm", "lats", "latNS"), ("longd", "longm", "longs", "longEW")),
+    (("lat_deg", "lat_min", "lat_sec", "lat_dir"), ("lon_deg", "lon_min", "lon_sec", "lon_dir")),
+]
+# 十進度をそのまま持つ引数名
+_DECIMAL_COORD_KEYS = [("緯度", "経度"), ("latitude", "longitude"), ("lat", "lon"), ("lat", "long")]
+
+
+def _coords_from_named(template) -> tuple[float, float] | None:
+    def value_of(key: str) -> str | None:
+        if not template.has(key):
+            return None
+        return str(template.get(key).value).strip() or None
+
+    for lat_keys, lon_keys in _NAMED_COORD_KEYS:
+        lat_parts = [v for v in (value_of(k) for k in lat_keys[:3]) if v]
+        lon_parts = [v for v in (value_of(k) for k in lon_keys[:3]) if v]
+        if not lat_parts or not lon_parts:
+            continue
+        lat = _dms(lat_parts, (value_of(lat_keys[3]) or "N").upper())
+        lon = _dms(lon_parts, (value_of(lon_keys[3]) or "E").upper())
+        if lat is not None and lon is not None:
+            return lat, lon
+    for lat_key, lon_key in _DECIMAL_COORD_KEYS:
+        lat_raw, lon_raw = value_of(lat_key), value_of(lon_key)
+        if lat_raw and lon_raw and _is_float(lat_raw) and _is_float(lon_raw):
+            return float(lat_raw), float(lon_raw)
+    return None
+
+
+def _extract_coordinates(code) -> tuple[float, float] | None:
+    """記事の wikitext から代表座標を取り出す(最初に見つかった妥当な 1 組)。
+
+    ja Wikipedia の座標は {{Coord}} 系テンプレートのほか、駅・空港・施設の Infobox が
+    持つ `緯度度`/`経度度` のような名前付き引数にも入っている。両方を拾う。
+    Wikidata の P625 を引くには別途巨大なダンプが要るため、ここでは本文だけで完結させる。
+    """
+    for template in code.filter_templates():
+        name = str(template.name).strip().lower()
+        if name.startswith(("coord", "座標", "ウィキ座標")):
+            coords = _coords_from_positional(template) or _coords_from_named(template)
+        else:
+            coords = _coords_from_named(template)
+        if coords is None:
+            continue
+        lat, lon = coords
+        # 0,0(未入力のプレースホルダ)や範囲外は捨てる
+        if -90 <= lat <= 90 and -180 <= lon <= 180 and (lat, lon) != (0.0, 0.0):
+            return round(lat, 7), round(lon, 7)
+    return None
+
+
+def _extract_plaintext(
+    wikitext: str,
+) -> tuple[str | None, str | None, list[str], list[str], tuple[float, float] | None]:
+    """wikitext から (opening, body, tags, links, coords) を抽出する。
 
     opening は最初の見出しより前の節(lead section)、body は記事全体をプレーンテキスト化
     したもの。{{hidden begin}}/{{hidden end}} 等の折りたたみテンプレートは通常のテンプレート
@@ -345,4 +531,4 @@ def _extract_plaintext(wikitext: str) -> tuple[str | None, str | None, list[str]
         else:
             links.append(title)
 
-    return opening, body, tags, links
+    return opening, body, tags, links, _extract_coordinates(code)

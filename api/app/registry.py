@@ -27,7 +27,11 @@ class Source:
     path: Path
 
 
-SUPPORTED_SCHEMA_VERSIONS = {1}
+SUPPORTED_SCHEMA_VERSIONS = {1, 2}
+
+# 生成列 (feature/area/lat/lon/wikidata) と索引が入ったのは schema_version 2 から。
+# 1 のまま残っている DB に対しては /v1/<source>/filter を 409 で断る。
+FILTER_MIN_SCHEMA_VERSION = 2
 
 
 def _load_source(db_path: Path) -> Source | None:

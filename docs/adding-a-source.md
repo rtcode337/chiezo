@@ -23,18 +23,35 @@ docker compose restart chiezo-api
 
 容量目安: jawiki(DB 30〜50GB)と同規模以上を別途見込むこと。
 
-## ケース 1': 他地域の OpenStreetMap(例: フランス)
+## ケース 1': 他の国の OpenStreetMap(例: フランス)
 
-osm アダプタは Geofabrik の `region` パスをパラメータ化しているため、こちらも 1 行で済みます
-(検証パラメータはデフォルトが無いため明示すること)。
+**作業は不要です。** Geofabrik にある 195 の国・地域は `ingest/sources/osm_regions.py`
+(自動生成カタログ)から `osm_<国>` として登録済みで、そのまま取り込めます:
 
-```python
-"osm_france": lambda: OsmAdapter("osm_france", region="europe/france", lang="fr",
-                                 min_docs=50_000, sample_titles=["Paris", "Lyon"]),
+```bash
+docker compose --profile ingest run --rm -e SOURCE=osm_france chiezo-ingest
 ```
 
-ソース名の区切りはアンダースコアにすること(ハイフンは世代ファイル名
-`<source>-<date>.db` の区切りと衝突する)。
+管理画面(`/admin`)の `osm` 行 →「国を選ぶ」(`/admin/osm`)からでも初期化できます。
+国ごとの pbf サイズ・必要メモリの目安もそこに出ます。
+
+Geofabrik 側に新しい抽出が増えた、pbf サイズが伸びて必要メモリの目安がずれた、という場合は
+カタログを作り直します(生成器がネットワークに出るのはこのときだけです):
+
+```bash
+python3 scripts/gen_osm_regions.py     # ingest/sources/osm_regions.py を書き換える
+```
+
+ソース名の区切りはアンダースコアです(`osm_south_korea`。ハイフンは世代ファイル名
+`<source>-<date>.db` の区切りと衝突するため、カタログ生成時に変換しています)。
+
+国より小さい単位(米国の州など)や、複数国をまとめた独自の抽出を足したいときだけ、
+`ADAPTERS` に手で 1 行書きます:
+
+```python
+"osm_hokkaido": lambda: OsmAdapter("osm_hokkaido", region="asia/japan/hokkaido", lang="ja",
+                                   min_docs=10_000, sample_titles=["札幌市"]),
+```
 
 ## ケース 2: 新しい種類のソース(例: 青空文庫)
 
@@ -102,20 +119,13 @@ ADAPTERS = {
 }
 ```
 
-### 3. 管理画面の初期化ボタンに出す(任意)
+### 3. 管理画面の初期化ボタン
 
-管理画面(`/admin`)の「未初期化データの初期化」に出したい場合は、`api/app/known_sources.py`
-の `KNOWN_SOURCES` にも 1 行追加します(chiezo-api は ingest のコードを import しないため、
-表示用の名前・kind・lang をここに複製する必要があります):
+`ADAPTERS` に追加すれば自動的に出ます(chiezo-api は ingest のコードを import しませんが、
+`chiezo-trigger` の `GET /sources` からソース名・kind・lang を受け取るため)。
 
-```python
-KNOWN_SOURCES = {
-    "jawiki": {"kind": "wikipedia", "lang": "ja"},
-    "aozora": {"kind": "aozora", "lang": "ja"},
-}
-```
-
-追加しなくても手動での取り込み(次項)は変わらず可能です。単に管理画面のボタンに出ないだけです。
+`api/app/known_sources.py` の `KNOWN_SOURCES` は、`chiezo-trigger` が未設定・到達不能なときに
+管理画面を空にしないための控えです。追記は必須ではありません。
 
 ### 4. 取り込む
 

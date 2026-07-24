@@ -8,7 +8,7 @@
 #
 # 使い方:
 #   scripts/gen_claude_config.sh                        # 既定: ~/.claude/CLAUDE.md
-#   scripts/gen_claude_config.sh -u http://192.168.1.20:9000
+#   scripts/gen_claude_config.sh -u http://<サーバーIP>:9000
 #   scripts/gen_claude_config.sh --project              # ./CLAUDE.md(このプロジェクトだけ)
 #   scripts/gen_claude_config.sh --target path/to/CLAUDE.md
 #   scripts/gen_claude_config.sh --print                # 書き込まず標準出力へ
@@ -103,6 +103,50 @@ sample_title() {
     | sed -n 's/.*"title"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1
 }
 
+# そのソースの doc.extra に指定キーが入っているか(ダンプ世代によっては未突合)。
+# 「載っていない情報を案内して Claude を無駄足させる」のを防ぐため、案内文は
+# 実際にデータがあることを確認できたものだけ出す。
+has_extra_key() {  # source title key
+  [ "$EXAMPLES" -eq 1 ] && [ "$OFFLINE" -eq 0 ] || return 1
+  [ -n "$2" ] && [ "$2" != "<タイトル>" ] || return 1
+  curl -fsS --max-time "$TIMEOUT" --get --data-urlencode "title=$2" \
+    --data-urlencode 'fields=title,extra' "$BASE/v1/$1/doc" 2>/dev/null \
+    | grep -q "\"$3\""
+}
+
+# /filter(属性での一括抽出)が使えるか。条件なしで叩くと、対応していれば 400 で
+# 「条件を 1 つ以上指定せよ」が返り、schema_version 1 の古い DB では 409 が返る。
+# (400 応答の本文を読みたいので -f は付けない)
+has_filter() {  # source
+  [ "$OFFLINE" -eq 0 ] || return 1
+  curl -s --max-time "$TIMEOUT" "$BASE/v1/$1/filter" 2>/dev/null | grep -q 'at least one'
+}
+
+# そのソースに実在する area(行政区名)を 1 つ拾う。無ければ空。
+sample_area() {  # source
+  [ "$EXAMPLES" -eq 1 ] && [ "$OFFLINE" -eq 0 ] || return 0
+  curl -fsS --max-time "$TIMEOUT" \
+    "$BASE/v1/$1/filter?feature=boundary%3Dadministrative&fields=title,area&limit=50" 2>/dev/null \
+    | tr ',' '\n' | sed -n 's/.*"area"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1
+}
+
+# そのソースの文書に座標が入っているか。ランダムに拾ったサンプル記事は座標を持たない
+# ことが多いため、doc ではなく全球 bbox の filter に 1 件でも当たるかで判定する。
+has_coordinates() {  # source
+  [ "$OFFLINE" -eq 0 ] || return 1
+  curl -fsS --max-time "$TIMEOUT" \
+    "$BASE/v1/$1/filter?bbox=-90,-180,90,180&limit=1" 2>/dev/null \
+    | grep -q '"lat"'
+}
+
+# そのソースの文書に wikidata の Q 番号が入っているか(逆引きを案内してよいか)。
+has_wikidata_column() {  # source
+  [ "$OFFLINE" -eq 0 ] || return 1
+  curl -fsS --max-time "$TIMEOUT" \
+    "$BASE/v1/$1/filter?feature=boundary%3Dadministrative&fields=title,wikidata&limit=50" 2>/dev/null \
+    | grep -q '"wikidata"[[:space:]]*:[[:space:]]*"Q'
+}
+
 # ---- ブロック生成 ----------------------------------------------------------
 BLOCK="$(mktemp)"
 trap 'rm -f "$BLOCK"' EXIT
@@ -121,12 +165,30 @@ emit_source() {  # name kind lang docs
       printf -- '  - 概要:   `curl -s "%s/v1/%s/doc?title=%s&fields=title,opening,tags"`\n' "$BASE" "$_name" "$_title" >>"$BLOCK"
       printf -- '  - 本文:   `curl -s "%s/v1/%s/doc?title=%s&max_chars=8000"`\n' "$BASE" "$_name" "$_title" >>"$BLOCK"
       printf -- '  - 候補:   `curl -s "%s/v1/%s/titles?prefix=%s"`\n' "$BASE" "$_name" "$_title" >>"$BLOCK"
+      if has_extra_key "$_name" "$_title" pageviews_month; then
+        printf -- '  - 人気度: `curl -s "%s/v1/%s/doc?title=%s&fields=title,extra"` (extra の `pageviews_month`=月次ページビュー(bot 除外)。知名度の客観指標に使える。**Wikimedia の pageviews API を叩く必要はない**)\n' "$BASE" "$_name" "$_title" >>"$BLOCK"
+      fi
+      if has_filter "$_name" && has_coordinates "$_name"; then
+        printf -- '  - 座標:   `curl -s "%s/v1/%s/doc?title=%s&fields=title,extra"` (座標を持つ記事は extra に `lat`/`lon` が入る。`filter?bbox=min_lat,min_lon,max_lat,max_lon` で範囲抽出も可。**ジオコーディング API を叩く必要はない**)\n' "$BASE" "$_name" "$_title" >>"$BLOCK"
+      fi
+      if has_filter "$_name" && has_extra_key "$_name" "$_title" wikidata; then
+        printf -- '  - 逆引き: `curl -s "%s/v1/%s/filter?wikidata=Q17221&fields=title,extra"` (wikidata の Q 番号 → 記事。OSM 側の wikidata タグと突き合わせできる。**wikidata.org を叩く必要はない**)\n' "$BASE" "$_name" >>"$BLOCK"
+      fi
       ;;
     osm)
       _paren="OpenStreetMap 地名・POI 辞典"; [ -n "$_docs_str" ] && _paren="$_paren, $_docs_str"
-      printf -- '- **%s**(%s): 地名・行政区・自然地物に加え病院/学校/店舗/観光地などの施設と座標\n' "$_name" "$_paren" >>"$BLOCK"
+      printf -- '- **%s**(%s): 地名・行政区・自然地物に加え病院/学校/店舗/観光地などの施設、駅・空港・港・IC/SA などの交通インフラと座標\n' "$_name" "$_paren" >>"$BLOCK"
       printf -- '  - 検索:   `curl -s "%s/v1/%s/search?q=%s&limit=5"`\n' "$BASE" "$_name" "$_query" >>"$BLOCK"
       printf -- '  - 座標等: `curl -s "%s/v1/%s/doc?title=%s&fields=title,extra"` (extra に lat/lon・OSM タグ・住所等)\n' "$BASE" "$_name" "$_title" >>"$BLOCK"
+      if has_filter "$_name"; then
+        _area="$(sample_area "$_name")"; [ -n "$_area" ] || _area="<行政区名>"
+        printf -- '  - 取り違え防止: 同名の別地物がある場合、doc の応答に `alternatives` が付く。`&area=%s` や `&feature=railway%%3Dstation` で絞り込める(search/doc 共通)\n' "$_area" >>"$BLOCK"
+        printf -- '  - 一括抽出: `curl -s "%s/v1/%s/filter?feature=amenity%%3Dplace_of_worship&area=%s&limit=200"` (地物種別 × 行政区で全件列挙。応答の `total` で件数が分かり `offset` でページングできる。**Overpass API を叩く必要はない**)\n' "$BASE" "$_name" "$_area" >>"$BLOCK"
+        printf -- '  - 範囲抽出: `curl -s "%s/v1/%s/filter?feature=tourism%%3Dmuseum&bbox=34.9,135.6,35.1,135.9"` (bbox は `min_lat,min_lon,max_lat,max_lon`。`feature` はカンマ区切りで複数指定可)\n' "$BASE" "$_name" >>"$BLOCK"
+        if has_wikidata_column "$_name"; then
+          printf -- '  - 逆引き: `curl -s "%s/v1/%s/filter?wikidata=Q17221&fields=title,extra"` (wikidata の Q 番号 → 地物)\n' "$BASE" "$_name" >>"$BLOCK"
+        fi
+      fi
       ;;
     *)
       _paren="kind=${_kind:-?}"; [ -n "$_docs_str" ] && _paren="$_paren, $_docs_str"

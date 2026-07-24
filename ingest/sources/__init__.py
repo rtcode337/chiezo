@@ -4,37 +4,66 @@
   1. sources/<kind>.py にアダプタモジュールを書く(core.SourceAdapter を満たすクラス)
   2. 下の ADAPTERS に 1 行追加する
 それだけで `SOURCE=<name>` で ingest 可能になる。
+
+OSM の国別ソース(`osm_<国>`)だけは例外で、Geofabrik の国別抽出 195 件を
+`osm_regions.OSM_REGIONS`(自動生成カタログ)から機械的に登録している。
+どの国も「使いたくなったときに初期化できる」状態にしておきたいが、200 行を手で
+書き足して region パスの綴りを保守するのは現実的でないため。
 """
 from __future__ import annotations
 
 from typing import Callable
 
 from core import SourceAdapter
-from sources.osm import OsmAdapter
+from sources.geonames import GeonamesAdapter
+from sources.osm import DEFAULT_VALIDATION, OsmAdapter
+from sources.osm_regions import OSM_REGIONS, OsmRegion
 from sources.wikipedia import WikipediaAdapter
 
-# 注意: ソース名の区切りにはアンダースコアを使う(osm_japan)。
-# ハイフンは世代ファイル名 <source>-<date>.db の区切りと衝突するため使わない。
+# 注意: ソース名の区切りにはアンダースコアを使う(osm_japan, osm_south_korea)。
+# ハイフンは世代ファイル名 <source>-<date>.db の区切りと衝突するため使わない
+# (OSM_REGIONS.source は Geofabrik の slug のハイフンを変換済み)。
 ADAPTERS: dict[str, Callable[[], SourceAdapter]] = {
     "jawiki": lambda: WikipediaAdapter("jawiki", lang="ja"),
-    "osm_japan": lambda: OsmAdapter("osm_japan", region="asia/japan", lang="ja"),
-    # region="europe" は国別ではなく Geofabrik の大陸単位抽出(europe-latest.osm.pbf)。
-    # ファイルサイズ・構築時間が国別抽出より大きい点に注意(ダウンロードだけで数十GB)。
-    "osm_europe": lambda: OsmAdapter(
-        "osm_europe", region="europe", lang=None, min_docs=1_000_000,
-        sample_titles=["Paris", "Berlin", "Roma", "London"],
-    ),
+    # 全世界の地名は OSM ではなく GeoNames で賄う。大陸単位の OSM 抽出(europe だけで pbf
+    # 32GB、ノード索引 100GB 超、構築 1 日以上)は現実的でないうえ、実測で osm_japan の 73% は
+    # 店舗・施設の裾であり「全世界の地名」には過剰だった。GeoNames は地名辞典に振り切っている
+    # ぶん約 400MB・1 ソースで全世界を賄える(その代わり店舗・営業時間は持たない)。
+    # 店舗レベルの詳細が要る国だけ、下の osm_<国> を個別に取り込む。
+    "geonames": lambda: GeonamesAdapter(),
     # enwiki を追加する場合は次の 1 行を有効化するだけ:
     # "enwiki": lambda: WikipediaAdapter("enwiki", lang="en"),
-    # 他地域の OSM も 1 行で追加できる(検証パラメータは要指定):
-    # "osm_france": lambda: OsmAdapter("osm_france", region="europe/france", lang="fr",
-    #                                  min_docs=50_000, sample_titles=["Paris", "Lyon"]),
 }
+
+
+def _osm_factory(region: OsmRegion) -> Callable[[], SourceAdapter]:
+    """カタログ 1 行から OSM アダプタの生成関数を作る。
+
+    min_docs / sample_titles は osm.py の DEFAULT_VALIDATION に明示があればそちらを優先する
+    (osm_japan は「東京駅」「富士山」まで確認する手厚い検証を持っているため、カタログの
+    機械的な下限で上書きしてはいけない)。
+    """
+    explicit = region.source in DEFAULT_VALIDATION
+    return lambda: OsmAdapter(
+        region.source,
+        region=region.region,
+        lang=region.lang,
+        min_docs=None if explicit else region.min_docs,
+        # RAM 索引で要るメモリの目安。取り込み前のメモリ検査に使われる
+        ram_index_memory_gb=region.memory_gb,
+        # 12GiB に収まらない国はディスク索引を既定にする(遅い代わりに 2GiB で焼ける)
+        default_node_index=region.node_index,
+    )
+
+
+ADAPTERS.update({r.source: _osm_factory(r) for r in OSM_REGIONS.values()})
 
 
 def get_adapter(source: str) -> SourceAdapter:
     try:
         return ADAPTERS[source]()
     except KeyError:
-        known = ", ".join(sorted(ADAPTERS))
+        # osm_<国> だけで 195 件あるため、全部並べず件数で示す
+        others = sorted(n for n in ADAPTERS if not n.startswith("osm_"))
+        known = ", ".join([*others, f"osm_<国> {len(OSM_REGIONS)} 件"])
         raise SystemExit(f"unknown SOURCE={source!r} (registered: {known})")

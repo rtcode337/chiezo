@@ -73,6 +73,43 @@ def healthz():
     return {"status": "ok"}
 
 
+@app.get("/sources")
+def sources():
+    """取り込める(= 初期化できる)ソースのカタログ。
+
+    chiezo-api の管理画面がこれを引いて「未初期化データの初期化」を組み立てる。
+    ソース定義は ingest 側にしかなく、api は ingest のコードを import しない
+    (コンテナも依存関係も別)ため、名前・種別・表示用のメタだけを HTTP で渡す。
+    `osm_<国>` は 195 件あるので、api 側で 1 行ずつ持たせるのは現実的でない。
+
+    アダプタは実体化せずに答える(OSM アダプタは 195 件あり、全部作ると無駄が大きい)。
+    """
+    from sources import ADAPTERS
+    from sources.osm_regions import CONTINENTS, OSM_REGIONS
+
+    catalog: dict[str, dict] = {}
+    for name in ADAPTERS:
+        if name.startswith("osm_"):
+            continue
+        adapter = ADAPTERS[name]()
+        catalog[name] = {"kind": adapter.source_kind, "lang": adapter.lang}
+    for region in OSM_REGIONS.values():
+        catalog[region.source] = {
+            "kind": "osm",
+            "lang": region.lang,
+            "group": "osm",
+            "slug": region.slug,
+            "label": region.label,
+            "label_en": region.label_en,
+            "continent": region.continent,
+            "region": region.region,
+            "pbf_bytes": region.pbf_bytes,
+            "memory_gb": region.memory_gb,
+            "node_index": region.node_index,
+        }
+    return {"sources": catalog, "continents": list(CONTINENTS)}
+
+
 @app.get("/status")
 def status():
     with _lock:

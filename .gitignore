@@ -4,6 +4,13 @@ __pycache__/
 .venv/
 venv/
 
+# Claude Code のローカル設定(セッションごとの許可設定など。共有しない)
+.claude/
+
 # データディレクトリ(DB・ダンプはリポジトリ管理外)
 data/*
 !data/.gitkeep
+
+# 別マシンへ持ち出す ingest イメージ(docker save の成果物。手順書だけ残す)
+handoff/*.tar.gz
+handoff/*.tar.gz.sha256

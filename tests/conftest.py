@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT / "ingest"))
 
 FIXTURE_DUMP = ROOT / "tests" / "fixtures" / "mini_jawiki.xml.gz"
 OSM_FIXTURE_DUMP = ROOT / "tests" / "fixtures" / "mini_osm.osm.pbf"
+GEONAMES_FIXTURE_DUMP = ROOT / "tests" / "fixtures" / "mini_geonames.zip"
 
 
 @pytest.fixture(scope="session")
@@ -30,6 +31,41 @@ def make_test_adapter():
     return WikipediaAdapter(
         "jawiki", lang="ja", min_docs=5, sample_titles=["東京都", "浅草寺"]
     )
+
+
+@pytest.fixture()
+def geonames_fixture_dump(tmp_path) -> Path:
+    """フィクスチャ一式を tmp へコピーし、本体 zip のパスを返す。
+
+    iter_docs() は一時 lookup をダンプと同じディレクトリに作るため、リポジトリを
+    汚さないようコピーしてから使う。
+    """
+    import shutil
+
+    assert GEONAMES_FIXTURE_DUMP.exists(), "run tests/fixtures/make_geonames_fixture.py first"
+    src = GEONAMES_FIXTURE_DUMP.parent
+    dest = tmp_path / "dumps"
+    dest.mkdir()
+    for name in (
+        "mini_geonames.zip",
+        "mini_geonames_alternate.zip",
+        "mini_geonames_countryInfo.txt",
+        "mini_geonames_admin1.txt",
+    ):
+        shutil.copy(src / name, dest / name)
+    return dest / "mini_geonames.zip"
+
+
+def make_geonames_test_adapter(dump_path: Path):
+    """フィクスチャ向けの geonames アダプタ(補助ファイルのパスを直接差し込む)。"""
+    from sources.geonames import GeonamesAdapter
+
+    adapter = GeonamesAdapter(min_docs=3, sample_titles=["Paris", "Tokyo"])
+    workdir = dump_path.parent
+    adapter._alt_path = workdir / "mini_geonames_alternate.zip"
+    adapter._country_path = workdir / "mini_geonames_countryInfo.txt"
+    adapter._admin1_path = workdir / "mini_geonames_admin1.txt"
+    return adapter
 
 
 def make_osm_test_adapter():

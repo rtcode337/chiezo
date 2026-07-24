@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Protocol
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 CORE_SCHEMA_DDL = """
 -- ソース自身のメタ情報(1行)
@@ -32,7 +32,16 @@ CREATE TABLE docs (
     links       TEXT,
     updated_at  TEXT,
     rank_score  REAL DEFAULT 0,
-    extra       TEXT
+    extra       TEXT,
+    -- 絞り込み用の生成列(schema_version 2 で追加)。
+    -- 実体は extra(JSON)のままで、ここでは索引を張るための射影だけを定義する
+    -- (VIRTUAL = 値を保存せず参照時に json_extract する)。アダプタ側は今までどおり
+    -- extra に詰めるだけでよく、Doc の形も変わらない。
+    feature     TEXT GENERATED ALWAYS AS (json_extract(extra, '$.feature')) VIRTUAL,
+    area        TEXT GENERATED ALWAYS AS (json_extract(extra, '$.area')) VIRTUAL,
+    lat         REAL GENERATED ALWAYS AS (json_extract(extra, '$.lat')) VIRTUAL,
+    lon         REAL GENERATED ALWAYS AS (json_extract(extra, '$.lon')) VIRTUAL,
+    wikidata    TEXT GENERATED ALWAYS AS (json_extract(extra, '$.wikidata')) VIRTUAL
 );
 
 -- 別名 → 正規文書(Wikipediaのリダイレクト等)
@@ -54,6 +63,12 @@ CREATE VIRTUAL TABLE docs_fts USING fts5(
 CORE_INDEX_DDL = """
 CREATE UNIQUE INDEX idx_docs_title ON docs(title);
 CREATE INDEX idx_aliases_alias ON aliases(alias);
+-- 生成列の索引。/v1/<source>/filter の「地物種別 × 地域」「bbox」「wikidata 逆引き」用。
+-- 該当値を持たないソース(jawiki の area/lat/lon 等)では NULL が並ぶだけで害はない。
+CREATE INDEX idx_docs_feature_area ON docs(feature, area);
+CREATE INDEX idx_docs_area_feature ON docs(area, feature);
+CREATE INDEX idx_docs_lat_lon ON docs(lat, lon);
+CREATE INDEX idx_docs_wikidata ON docs(wikidata);
 """
 
 
@@ -81,6 +96,10 @@ class SourceAdapter(Protocol):
     lang: str | None     # 'ja'
     min_docs: int        # 検証: 最低文書数
     sample_titles: list[str]  # 検証: 検索が通るべきタイトル
+    # 構築に必要なメモリの目安(GiB)。取り込み開始前に main.require_build_memory() が
+    # 実際に使えるメモリと突き合わせ、足りなければ構築せず中止する。取り込みは潤沢メモリの
+    # マシンで回す前提で、上限で締めて OOM に殺されるより先に落とすほうが安全なため。
+    min_build_memory_gb: float
 
     def fetch(self, workdir: Path) -> tuple[Path, str]:
         """元データを取得し (ローカルパス, ダンプ日付YYYYMMDD) を返す(再開可能に)。"""

@@ -164,7 +164,55 @@ class TestAdminAndBrowse:
     def test_admin_lists_uninitialized_source(self, client):
         res = client.get("/admin")
         assert res.status_code == 200
+        assert "geonames" in res.text
+
+    def test_admin_groups_osm_countries_into_one_row(self, client):
+        """osm_<国> は 195 件あるので、一覧には出さず 1 行にまとめて国選択へ誘導する。"""
+        res = client.get("/admin")
+        assert res.status_code == 200
+        assert "osm_japan" not in res.text
+        assert '<a href="/admin/osm">' in res.text
+
+    def test_admin_osm_lists_countries(self, client):
+        res = client.get("/admin/osm")
+        assert res.status_code == 200
         assert "osm_japan" in res.text
+        assert "日本" in res.text
+        assert "asia/japan" in res.text
+
+    def test_admin_osm_filters_by_query(self, client):
+        res = client.get("/admin/osm", params={"q": "japan"})
+        assert "osm_japan" in res.text
+        res = client.get("/admin/osm", params={"q": "nosuchcountry"})
+        assert "該当する国・地域がありません" in res.text
+
+    def test_admin_osm_uses_trigger_catalog_when_available(self, client, monkeypatch):
+        """国の一覧の正は ingest 側。chiezo-trigger から取れたらそちらを使う。"""
+        catalog = {
+            "osm_france": {
+                "kind": "osm", "lang": "fr", "group": "osm", "slug": "france",
+                "label": "フランス", "label_en": "France", "continent": "europe",
+                "region": "europe/france", "pbf_bytes": 4_700_000_000,
+                "memory_gb": 24.0, "node_index": "sparse_file_array",
+            },
+        }
+        monkeypatch.setattr("app.main._fetch_trigger_catalog", lambda: catalog)
+        res = client.get("/admin/osm")
+        assert "フランス" in res.text
+        assert "4.7 GB" in res.text
+        # RAM に載らない国はディスク索引が既定なので、要件は 2GiB として案内される
+        assert "2 GiB(ディスク索引・低速。RAM 索引なら 24 GiB)" in res.text
+
+    def test_admin_osm_marks_initialized_source(self, client, monkeypatch):
+        """構築済みの国は初期化ボタンではなく件数リンクを出す。"""
+        # フィクスチャで登録済みの jawiki を osm カタログに見立てる
+        catalog = {
+            "jawiki": {"kind": "osm", "group": "osm", "label": "構築済みの国", "continent": "asia"}
+        }
+        monkeypatch.setattr("app.main._fetch_trigger_catalog", lambda: catalog)
+        res = client.get("/admin/osm")
+        assert "初期化済み" in res.text
+        assert "初期化</button>" not in res.text
 
     def test_admin_init_without_trigger_configured(self, client):
         res = client.post("/admin/init/osm_japan")
@@ -226,3 +274,36 @@ class TestAdminAndBrowse:
         results = res.json()["results"]
         assert len(results) == 3
         assert all({"doc_id", "title"} <= set(r) for r in results)
+
+
+class TestFilterSchemaGuard:
+    """schema_version 1 で作られた既存 DB は /filter を持たない(生成列も索引も無い)。"""
+
+    def test_old_schema_returns_409(self, tmp_path, built_data_dir):
+        import shutil
+        import sqlite3
+
+        from fastapi.testclient import TestClient
+
+        data_dir = tmp_path / "legacy"
+        data_dir.mkdir()
+        db_path = data_dir / "jawiki.db"
+        shutil.copy(built_data_dir / "jawiki.db", db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE meta SET schema_version = 1")
+        conn.commit()
+        conn.close()
+
+        mp = pytest.MonkeyPatch()
+        mp.setenv("CHIEZO_DATA_DIR", str(data_dir))
+        try:
+            from app.main import app
+
+            with TestClient(app) as c:
+                res = c.get("/v1/jawiki/filter", params={"wikidata": "Q1490"})
+                assert res.status_code == 409
+                assert "re-run ingest" in res.json()["error"]
+                # 既存エンドポイントは 1 のままでも従来どおり使える
+                assert c.get("/v1/jawiki/doc", params={"title": "東京都"}).status_code == 200
+        finally:
+            mp.undo()
