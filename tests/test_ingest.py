@@ -334,6 +334,57 @@ class TestOsmRegionCatalog:
         assert "東京駅" in japan.sample_titles
 
 
+class TestWikipediaEditionCatalog:
+    """Wikipedia 言語版カタログ(自動生成)とアダプタ登録の整合。"""
+
+    def test_all_editions_are_registered(self):
+        from sources import ADAPTERS
+        from sources.wikipedia_editions import WIKIPEDIA_EDITIONS
+
+        for wiki_id in WIKIPEDIA_EDITIONS:
+            assert wiki_id in ADAPTERS, wiki_id
+        assert "enwiki" in ADAPTERS and "dewiki" in ADAPTERS
+
+    def test_source_names_use_underscores(self):
+        """ハイフンは世代ファイル名 <source>-<date>.db の区切りと衝突するため使わない。"""
+        from sources.wikipedia_editions import WIKIPEDIA_EDITIONS
+
+        for edition in WIKIPEDIA_EDITIONS.values():
+            assert "-" not in edition.wiki_id, edition.wiki_id
+
+    def test_adapter_carries_lang_and_min_docs(self):
+        from sources import get_adapter
+        from sources.wikipedia_editions import WIKIPEDIA_EDITIONS
+
+        adapter = get_adapter("dewiki")
+        assert adapter.source_kind == "wikipedia"
+        assert adapter.lang == "de"
+        assert adapter.min_docs == WIKIPEDIA_EDITIONS["dewiki"].min_docs
+        assert adapter.min_docs > 100_000
+        assert adapter.sample_titles == []
+
+    def test_pageview_domain_derived_from_url_lang_code(self):
+        """lang は URL のサブドメインなので、pageview ドメインを機械的に導出できる。"""
+        from sources import get_adapter
+
+        assert get_adapter("dewiki").pageview_domain() == "de.wikipedia"
+        # ハイフン付きの URL コードもそのままドメインコードになる
+        assert get_adapter("zh_yuewiki").pageview_domain() == "zh-yue.wikipedia"
+        # 明示の対応表(WIKI_DOMAIN)は導出より優先
+        assert get_adapter("jawiki").pageview_domain() == "ja.wikipedia"
+
+    def test_explicit_validation_wins_over_catalog(self):
+        """jawiki / enwiki の手厚い検証(サンプルタイトル)をカタログの下限で潰さない。"""
+        from sources import get_adapter
+
+        jawiki = get_adapter("jawiki")
+        assert jawiki.min_docs == 1_000_000
+        assert "東京都" in jawiki.sample_titles
+        enwiki = get_adapter("enwiki")
+        assert enwiki.min_docs == 5_000_000
+        assert "Tokyo" in enwiki.sample_titles
+
+
 class TestTriggerCatalogEndpoint:
     """chiezo-trigger の GET /sources(管理画面の国選択が読むカタログ)。"""
 
@@ -348,11 +399,20 @@ class TestTriggerCatalogEndpoint:
     def test_lists_plain_and_osm_sources(self, trigger_client):
         body = trigger_client.get("/sources").json()
         catalog = body["sources"]
-        assert catalog["jawiki"] == {"kind": "wikipedia", "lang": "ja"}
+        assert catalog["geonames"] == {"kind": "geonames", "lang": None}
         assert catalog["osm_japan"]["group"] == "osm"
         assert catalog["osm_japan"]["region"] == "asia/japan"
         assert catalog["osm_japan"]["label"] == "日本"
         assert "asia" in body["continents"]
+
+    def test_lists_wikipedia_editions_with_group(self, trigger_client):
+        """<lang>wiki は group="wikipedia" 付きで出る(管理画面の言語選択が読む)。"""
+        catalog = trigger_client.get("/sources").json()["sources"]
+        assert catalog["jawiki"]["group"] == "wikipedia"
+        assert catalog["jawiki"]["label"] == "日本語"
+        assert catalog["enwiki"]["label"] == "英語"
+        assert catalog["enwiki"]["articles"] > 1_000_000
+        assert catalog["zh_yuewiki"]["lang"] == "zh-yue"
 
     def test_matches_the_adapter_registry(self, trigger_client):
         from sources import ADAPTERS

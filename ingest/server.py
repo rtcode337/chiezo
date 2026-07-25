@@ -80,19 +80,30 @@ def sources():
     chiezo-api の管理画面がこれを引いて「未初期化データの初期化」を組み立てる。
     ソース定義は ingest 側にしかなく、api は ingest のコードを import しない
     (コンテナも依存関係も別)ため、名前・種別・表示用のメタだけを HTTP で渡す。
-    `osm_<国>` は 195 件あるので、api 側で 1 行ずつ持たせるのは現実的でない。
+    `osm_<国>` 195 件・`<lang>wiki` 348 件は、api 側で 1 行ずつ持たせるのは現実的でない。
 
-    アダプタは実体化せずに答える(OSM アダプタは 195 件あり、全部作ると無駄が大きい)。
+    アダプタは実体化せずに答える(カタログ由来だけで 500 超あり、全部作ると無駄が大きい)。
     """
     from sources import ADAPTERS
     from sources.osm_regions import CONTINENTS, OSM_REGIONS
+    from sources.wikipedia_editions import WIKIPEDIA_EDITIONS
 
     catalog: dict[str, dict] = {}
     for name in ADAPTERS:
-        if name.startswith("osm_"):
+        if name.startswith("osm_") or name in WIKIPEDIA_EDITIONS:
             continue
         adapter = ADAPTERS[name]()
         catalog[name] = {"kind": adapter.source_kind, "lang": adapter.lang}
+    for edition in WIKIPEDIA_EDITIONS.values():
+        catalog[edition.wiki_id] = {
+            "kind": "wikipedia",
+            "lang": edition.lang,
+            "group": "wikipedia",
+            "label": edition.label,
+            "label_en": edition.label_en,
+            "autonym": edition.autonym,
+            "articles": edition.articles,
+        }
     for region in OSM_REGIONS.values():
         catalog[region.source] = {
             "kind": "osm",

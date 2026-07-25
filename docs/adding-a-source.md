@@ -6,22 +6,18 @@ API・DB スキーマ・共通フレームの変更は不要です。
 
 ## ケース 1: 他言語 Wikipedia(例: enwiki)
 
-wikipedia アダプタは `wiki_id` をパラメータ化しているため、コードは 1 行で済みます。
-
-`ingest/sources/__init__.py` の `ADAPTERS` に追加:
-
-```python
-"enwiki": lambda: WikipediaAdapter("enwiki", lang="en"),
-```
-
-取り込み:
+**作業は不要です。** Wikipedia の 348 言語版は `ingest/sources/wikipedia_editions.py`
+(自動生成カタログ)から `<lang>wiki` として登録済みで、そのまま取り込めます:
 
 ```bash
 docker compose --profile ingest run --rm -e SOURCE=enwiki chiezo-ingest
 docker compose restart chiezo-api
 ```
 
-容量目安: jawiki(DB 30〜50GB)と同規模以上を別途見込むこと。
+管理画面の `/admin` → `wikipedia` 行の「言語を選ぶ」(`/admin/wikipedia`)からも初期化できます。
+カタログの再生成(言語版の追加・記事数の更新)は `python3 scripts/gen_wikipedia_editions.py`。
+
+容量目安: jawiki(DB 30〜50GB)と同規模以上を別途見込むこと(enwiki はその数倍)。
 
 ## ケース 1': 他の国の OpenStreetMap(例: フランス)
 

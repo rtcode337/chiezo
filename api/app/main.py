@@ -19,7 +19,7 @@ from fastapi.responses import (
 
 from app import claude_config, db
 from app.fts import build_match_query, escape_like
-from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES
+from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
 from app.pages import esc, page_shell
 from app.registry import FILTER_MIN_SCHEMA_VERSION, Source, scan_sources
 
@@ -246,9 +246,16 @@ def admin(request: Request):
     job = _fetch_trigger_status()
     job_running = bool(job and job.get("state") == "running")
     disabled = " disabled" if not TRIGGER_URL or job_running else ""
-    # osm_<国> は 195 件あるためここには 1 行だけ出し、国の選択は /admin/osm に分ける
+    # osm_<国> 195 件・<lang>wiki 348 件はここには 1 行ずつだけ出し、
+    # 国・言語の選択は /admin/osm・/admin/wikipedia に分ける
     osm_pending = {n: m for n, m in uninitialized.items() if m.get("group") == "osm"}
-    rows_source = {n: m for n, m in uninitialized.items() if m.get("group") != "osm"}
+    wikipedia_pending = {
+        n: m for n, m in uninitialized.items() if m.get("group") == "wikipedia"
+    }
+    rows_source = {
+        n: m for n, m in uninitialized.items()
+        if m.get("group") not in ("osm", "wikipedia")
+    }
     init_rows = "\n".join(
         f"<tr>"
         f"<td>{esc(name)}</td>"
@@ -262,6 +269,15 @@ def admin(request: Request):
         f"</tr>"
         for name, meta in sorted(rows_source.items())
     )
+    if wikipedia_pending:
+        init_rows += (
+            f"<tr>"
+            f"<td>wikipedia</td>"
+            f"<td>wikipedia</td>"
+            f"<td>言語ごと</td>"
+            f'<td><a href="/admin/wikipedia">言語を選ぶ({len(wikipedia_pending)} 件が未初期化)</a></td>'
+            f"</tr>"
+        )
     if osm_pending:
         init_rows += (
             f"<tr>"
@@ -396,6 +412,104 @@ Geofabrik の国別抽出 {total} 件{f"(絞り込み: {len(catalog)} 件)" if n
 """
     return HTMLResponse(
         content=page_shell("chiezo: OSM 国別の初期化", body, refresh=5 if job_running else None)
+    )
+
+
+@app.get("/admin/wikipedia", response_class=HTMLResponse)
+def admin_wikipedia(request: Request, q: str | None = Query(None, description="言語名での絞り込み")):
+    """Wikipedia 言語版の初期化画面(管理画面の wikipedia 行の「言語を選ぶ」から開く)。
+
+    言語版は 348 件あり、管理画面の一覧に全部並べると他のソースが埋もれる。
+    そこで一覧では wikipedia 1 行にまとめ、言語の選択だけをこの画面に切り出している
+    (/admin/osm の国選択と同じ構図。大陸の代わりに記事数の階層でグルーピングする)。
+    """
+    sources: dict[str, Source] = request.app.state.sources
+    catalog = {
+        n: m for n, m in initializable_sources().items() if m.get("group") == "wikipedia"
+    }
+    job = _fetch_trigger_status()
+    job_running = bool(job and job.get("state") == "running")
+    disabled = " disabled" if not TRIGGER_URL or job_running else ""
+
+    total = len(catalog)
+    needle = (q or "").strip().lower()
+    if needle:
+        catalog = {
+            n: m for n, m in catalog.items()
+            if needle in " ".join(
+                str(m.get(k, "")) for k in ("label", "label_en", "autonym", "lang")
+            ).lower()
+            or needle in n.lower()
+        }
+
+    tiers: dict[str, list[tuple[str, dict]]] = {}
+    for name, meta in catalog.items():
+        articles = meta.get("articles") or 0
+        for threshold, tier_label in WIKIPEDIA_TIERS:
+            if articles >= threshold:
+                tiers.setdefault(tier_label, []).append((name, meta))
+                break
+
+    blocks = []
+    for _, tier_label in WIKIPEDIA_TIERS:
+        entries = tiers.get(tier_label)
+        if not entries:
+            continue
+        entries.sort(key=lambda kv: (-(kv[1].get("articles") or 0), kv[0]))
+        rows = []
+        for name, meta in entries:
+            src = sources.get(name)
+            if src is not None:
+                action = (
+                    f'初期化済み(<a href="/{esc(name)}/">{src.doc_count:,} 件</a>)'
+                )
+            else:
+                action = (
+                    f'<form class="init-form" method="post" action="/admin/init/{esc(name)}">'
+                    f'<button type="submit"{disabled}>初期化</button></form>'
+                )
+            articles = meta.get("articles") or 0
+            rows.append(
+                f"<tr>"
+                f"<td>{esc(meta.get('label') or name)}"
+                f'<div class="muted">{esc(name)}</div></td>'
+                f"<td>{esc(meta.get('lang', ''))}</td>"
+                f"<td>{esc(meta.get('autonym', ''))}</td>"
+                f"<td>{articles:,}</td>"
+                f"<td>{action}</td>"
+                f"</tr>"
+            )
+        blocks.append(
+            f"<details{' open' if needle else ''}>"
+            f"<summary>{esc(tier_label)}({len(entries)})</summary>"
+            "<table><thead><tr><th>言語</th><th>コード</th><th>自称</th>"
+            "<th>記事数</th><th></th></tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table>"
+            "</details>"
+        )
+    if not blocks:
+        blocks = ["<p>該当する言語がありません。</p>"]
+
+    body = f"""
+<nav><a href="/admin">管理画面</a></nav>
+<h1>Wikipedia(言語版)の初期化</h1>
+<p class="muted">
+Wikipedia の言語版 {total} 件{f"(絞り込み: {len(catalog)} 件)" if needle else ""}から 1 言語ずつ取り込みます。
+記事数の多い言語ほどダンプが大きく構築に時間がかかります(jawiki で構築 2〜6 時間、
+enwiki はその数倍)。ページビュー突合のため全プロジェクト合算ファイル(圧縮 5〜6GB)も
+取得します。必要メモリは約 3 GiB です。取り込みは同時に 1 件のみ。
+</p>
+<form method="get" action="/admin/wikipedia">
+<input type="text" name="q" value="{esc(q or '')}" placeholder="言語名・コードで絞り込み(例: french)">
+<button type="submit">絞り込み</button>
+</form>
+
+{_job_status_html(job)}
+
+{''.join(blocks)}
+"""
+    return HTMLResponse(
+        content=page_shell("chiezo: Wikipedia 言語版の初期化", body, refresh=5 if job_running else None)
     )
 
 

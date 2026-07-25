@@ -214,6 +214,43 @@ class TestAdminAndBrowse:
         assert "初期化済み" in res.text
         assert "初期化</button>" not in res.text
 
+    def test_admin_groups_wikipedia_languages_into_one_row(self, client):
+        """<lang>wiki は 348 件あるので、一覧には出さず 1 行にまとめて言語選択へ誘導する。"""
+        res = client.get("/admin")
+        assert res.status_code == 200
+        assert "enwiki" not in res.text
+        assert '<a href="/admin/wikipedia">' in res.text
+
+    def test_admin_wikipedia_lists_languages(self, client):
+        res = client.get("/admin/wikipedia")
+        assert res.status_code == 200
+        assert "enwiki" in res.text
+        assert "英語" in res.text
+        # フィクスチャで構築済みの jawiki は初期化ボタンではなく件数リンクになる
+        assert "初期化済み" in res.text
+
+    def test_admin_wikipedia_filters_by_query(self, client):
+        res = client.get("/admin/wikipedia", params={"q": "english"})
+        assert "enwiki" in res.text
+        res = client.get("/admin/wikipedia", params={"q": "nosuchlanguage"})
+        assert "該当する言語がありません" in res.text
+
+    def test_admin_wikipedia_uses_trigger_catalog_when_available(self, client, monkeypatch):
+        """言語の一覧の正は ingest 側。chiezo-trigger から取れたらそちらを使う。"""
+        catalog = {
+            "dewiki": {
+                "kind": "wikipedia", "lang": "de", "group": "wikipedia",
+                "label": "ドイツ語", "label_en": "German", "autonym": "Deutsch",
+                "articles": 3_138_349,
+            },
+        }
+        monkeypatch.setattr("app.main._fetch_trigger_catalog", lambda: catalog)
+        res = client.get("/admin/wikipedia")
+        assert "ドイツ語" in res.text
+        assert "3,138,349" in res.text
+        # 記事数の階層でグルーピングされる
+        assert "100 万記事以上" in res.text
+
     def test_admin_init_without_trigger_configured(self, client):
         res = client.post("/admin/init/osm_japan")
         assert res.status_code == 503

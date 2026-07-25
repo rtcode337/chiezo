@@ -24,19 +24,25 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
   - `app/db.py` — スレッドローカル immutable 接続、5 秒クエリタイムアウト(超過は 504)
   - `app/fts.py` — FTS5 エスケープ(フレーズクォート + AND 結合)と 3 文字未満の前方一致フォールバック判定
   - `app/known_sources.py` — `chiezo-trigger` が未設定・到達不能なときの控えの既知ソース一覧と、
-    国選択画面の大陸表示名。初期化できるソースの正は ingest 側の `ADAPTERS` で、通常は
+    国選択画面の大陸表示名・言語選択画面の記事数階層(`WIKIPEDIA_TIERS`)。
+    初期化できるソースの正は ingest 側の `ADAPTERS` で、通常は
     `chiezo-trigger` の `GET /sources` から受け取る(`main.initializable_sources()`。
-    osm 国別ソースだけで 195 件あり、api 側に複製すると必ず腐るため)
+    osm 国別 195 件 + wikipedia 言語版 348 件あり、api 側に複製すると必ず腐るため)
   - `app/pages.py` — 管理画面・ブラウズ画面共通の HTML 組み立てヘルパー(`page_shell`, `esc`)
   - `/`(GET) — `/admin` へ 302 リダイレクト
   - `/admin`(GET) — 登録ソース(name/kind/lang/文書数/dump_date/built_at/schema_version)の一覧、
     未初期化ソース(初期化できるが `/data` に `.db` が無いもの)向けの初期化ボタン、
     `chiezo-trigger` のジョブ状況(state/source/log tail)を表示する簡易 HTML 管理画面
-    (実行中は 5 秒ごとに自動リロード)。`group="osm"`(= `osm_<国>`)のソースは 195 件あり
-    そのまま並べると他が埋もれるため、`osm` 1 行に畳んで「国を選ぶ」で `/admin/osm` へ誘導する
+    (実行中は 5 秒ごとに自動リロード)。`group="osm"`(= `osm_<国>`)195 件と
+    `group="wikipedia"`(= `<lang>wiki`)348 件はそのまま並べると他が埋もれるため、
+    それぞれ 1 行に畳んで「国を選ぶ」`/admin/osm`・「言語を選ぶ」`/admin/wikipedia` へ誘導する
   - `/admin/osm`(GET) — OSM 国別ソースの国選択画面。大陸ごとの `<details>` に畳んだ一覧で、
     国名・region・pbf サイズ・必要メモリの目安・構築済みかどうかを出し、各行から初期化できる
     (`?q=` で国名・region の絞り込み。JS なしのサーバ側フィルタ)
+  - `/admin/wikipedia`(GET) — Wikipedia 言語版の言語選択画面(`/admin/osm` と同じ構図)。
+    記事数の階層(`WIKIPEDIA_TIERS`: 100 万以上/10 万〜/1 万〜/1 万未満)ごとの `<details>` に
+    畳んだ一覧で、言語名(日本語)・コード・自称・記事数・構築済みかどうかを出し、
+    各行から初期化できる(`?q=` で言語名・コードの絞り込み)
   - `/admin/init/{source}`(POST) — `chiezo-trigger` の `POST /run/{source}` へプロキシし、
     `/admin` へ 303 リダイレクト。`CHIEZO_TRIGGER_URL` 未設定なら 503、未知ソースなら 404、
     登録済みソースなら 409
@@ -75,8 +81,9 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
     `docs` に生成列(VIRTUAL)`feature` / `area` / `lat` / `lon` / `wikidata` を持ち、
     実体は従来どおり `extra`(JSON)から `json_extract` する射影+索引でしかない。
     アダプタ側は `extra` に詰めるだけでよく、`Doc` の形は変わらない
-  - `sources/wikipedia.py` — Wikipedia 標準 XML ダンプアダプタ(`wiki_id` パラメータ化、enwiki
-    流用可)。`https://dumps.wikimedia.org/<wiki_id>/<date>/<wiki_id>-<date>-pages-articles.xml.bz2`
+  - `sources/wikipedia.py` — Wikipedia 標準 XML ダンプアダプタ(`wiki_id` パラメータ化。
+    全言語版は下の `wikipedia_editions.py` から機械的に登録される。pageview ドメインは
+    URL 言語コードから `<lang>.wikipedia` を導出し、不規則な wiki だけ `WIKI_DOMAIN` で上書き)。`https://dumps.wikimedia.org/<wiki_id>/<date>/<wiki_id>-<date>-pages-articles.xml.bz2`
     (MediaWiki エクスポート形式、単一ファイル)を取得する。旧実装は CirrusSearch ダンプの `text`
     フィールドを docs.body にそのまま使っていたが、この `text` フィールドは Wikipedia の
     折りたたみ(collapsible)セクション(`{{hidden begin}}`〜`{{hidden end}}` 等)を検索
@@ -177,7 +184,8 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
   - `sources/__init__.py` — アダプタレジストリ(新ソースはここに 1 行追加するだけ。
     管理画面には `chiezo-trigger` の `GET /sources` 経由で自動的に出るので、
     `api/app/known_sources.py` への複製は不要)。
-    `osm_<国>` だけは例外で、下の `osm_regions.py` から 195 件を機械的に登録している
+    `osm_<国>`(下の `osm_regions.py` から 195 件)と `<lang>wiki`(下の
+    `wikipedia_editions.py` から 348 件)だけは例外で、自動生成カタログから機械的に登録している
   - `sources/osm_regions.py` — **自動生成物**。Geofabrik の国別抽出カタログ
     (`scripts/gen_osm_regions.py` で再生成。Geofabrik の index-v1.json + 大陸別 HTML の
     pbf サイズ + CLDR の国名/主要言語から起こす)。1 件あたり region パス・日本語表示名・
@@ -186,13 +194,22 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
     `memory_gb` は pbf 1GB あたり 5GiB(osm_japan の実績: pbf 2.3GB → 12GiB)、
     それが 12GiB を超える国は `node_index` をディスク索引にして「どのソースも 12GiB のマシンで
     構築できる」方針を保つ
+  - `sources/wikipedia_editions.py` — **自動生成物**。Wikipedia 言語版カタログ
+    (`scripts/gen_wikipedia_editions.py` で再生成。Wikimedia sitematrix + wikistats の記事数 +
+    CLDR の言語名日本語表記から起こす)。1 件あたり URL 言語コード(`lang`。pageview ドメインの素)・
+    dbname(`wiki_id` = ソース名。ダンプ URL の素)・日本語/英語の言語名・自称・記事数・
+    検証の最低文書数(記事数の 50%)を持つ。言語コードは 2 系統ある点に注意
+    (sitematrix は現行コード yue、URL・pageview・wikistats は歴史的コード zh-yue。
+    `lang` には URL コードを入れてある。dbname はハイフンを含まない zh_yuewiki 形式なので
+    世代ファイル名の区切りと衝突しない)
   - `server.py` — **chiezo-trigger**: 管理画面の初期化ボタンから叩かれる内部専用トリガー。
     ingest イメージを流用し、docker-compose.yml で CMD だけ `uvicorn server:app` に上書きする
     常駐コンテナ(`/data` に書き込み権限を持つ点だけ chiezo-ingest の one-shot 実行と異なる)。
     `POST /run/{source}` で `main.run(source, data_dir)` をバックグラウンドスレッドで実行し
     (同時実行は 1 ジョブまで、429/409 で拒否)、`GET /sources` で取り込めるソースのカタログ
-    (名前・kind・lang と、osm 国別ソースの表示名・region・pbf サイズ・必要メモリ)を返す
-    (管理画面の初期化一覧と国選択画面はこれを読む。アダプタは実体化せずに答える)。
+    (名前・kind・lang と、osm 国別ソースの表示名・region・pbf サイズ・必要メモリ、
+    wikipedia 言語版の表示名・自称・記事数)を返す
+    (管理画面の初期化一覧と国・言語選択画面はこれを読む。アダプタは実体化せずに答える)。
     `GET /status` で state(idle/running/done/error)・
     source・started_at/finished_at・error・ログ tail(`chiezo.ingest` logger に登録した
     `_TailHandler` 経由)を返す。状態はプロセス内メモリのみ(永続化なし)。
@@ -215,6 +232,10 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
     (`--no-permissions` で無効化)。`--offline`/`--sources`/`--no-examples` は廃止
     (生成がサーバー側になったため稼働中の chiezo が必須)。
     README の「Claude Code から使う」節と対応
+  - `gen_wikipedia_editions.py` — `ingest/sources/wikipedia_editions.py`(Wikipedia 言語版
+    カタログ)の生成器。Wikimedia の sitematrix(言語版一覧。closed/private/fishbowl は除外)、
+    wikistats(記事数)、CLDR の言語名日本語表記を引いて 348 件の表を書き出す。
+    ネットワークに出るのは生成時だけで、生成物はコミットする
   - `gen_osm_regions.py` — `ingest/sources/osm_regions.py`(OSM 国別抽出カタログ)の生成器。
     Geofabrik の `index-v1.json` と大陸別 HTML(pbf サイズ)、CLDR の国名・主要言語を引いて
     195 件の表を書き出す。ネットワークに出るのは生成時だけで、生成物はコミットする。

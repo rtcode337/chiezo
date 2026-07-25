@@ -5,10 +5,11 @@
   2. 下の ADAPTERS に 1 行追加する
 それだけで `SOURCE=<name>` で ingest 可能になる。
 
-OSM の国別ソース(`osm_<国>`)だけは例外で、Geofabrik の国別抽出 195 件を
-`osm_regions.OSM_REGIONS`(自動生成カタログ)から機械的に登録している。
-どの国も「使いたくなったときに初期化できる」状態にしておきたいが、200 行を手で
-書き足して region パスの綴りを保守するのは現実的でないため。
+OSM の国別ソース(`osm_<国>`)と Wikipedia の言語版(`<lang>wiki`)は例外で、
+自動生成カタログ(`osm_regions.OSM_REGIONS` 195 件 /
+`wikipedia_editions.WIKIPEDIA_EDITIONS` 348 件)から機械的に登録している。
+どの国・言語も「使いたくなったときに初期化できる」状態にしておきたいが、数百行を
+手で書き足して綴りを保守するのは現実的でないため。
 """
 from __future__ import annotations
 
@@ -18,11 +19,14 @@ from core import SourceAdapter
 from sources.geonames import GeonamesAdapter
 from sources.osm import DEFAULT_VALIDATION, OsmAdapter
 from sources.osm_regions import OSM_REGIONS, OsmRegion
+from sources.wikipedia import DEFAULT_VALIDATION as WIKIPEDIA_DEFAULT_VALIDATION
 from sources.wikipedia import WikipediaAdapter
+from sources.wikipedia_editions import WIKIPEDIA_EDITIONS, WikipediaEdition
 
-# 注意: ソース名の区切りにはアンダースコアを使う(osm_japan, osm_south_korea)。
+# 注意: ソース名の区切りにはアンダースコアを使う(osm_japan, zh_yuewiki)。
 # ハイフンは世代ファイル名 <source>-<date>.db の区切りと衝突するため使わない
-# (OSM_REGIONS.source は Geofabrik の slug のハイフンを変換済み)。
+# (OSM_REGIONS.source は Geofabrik の slug のハイフンを変換済み。Wikipedia の
+# dbname はもともとアンダースコア区切り)。
 ADAPTERS: dict[str, Callable[[], SourceAdapter]] = {
     "jawiki": lambda: WikipediaAdapter("jawiki", lang="ja"),
     # 全世界の地名は OSM ではなく GeoNames で賄う。大陸単位の OSM 抽出(europe だけで pbf
@@ -31,8 +35,6 @@ ADAPTERS: dict[str, Callable[[], SourceAdapter]] = {
     # ぶん約 400MB・1 ソースで全世界を賄える(その代わり店舗・営業時間は持たない)。
     # 店舗レベルの詳細が要る国だけ、下の osm_<国> を個別に取り込む。
     "geonames": lambda: GeonamesAdapter(),
-    # enwiki を追加する場合は次の 1 行を有効化するだけ:
-    # "enwiki": lambda: WikipediaAdapter("enwiki", lang="en"),
 }
 
 
@@ -59,11 +61,40 @@ def _osm_factory(region: OsmRegion) -> Callable[[], SourceAdapter]:
 ADAPTERS.update({r.source: _osm_factory(r) for r in OSM_REGIONS.values()})
 
 
+def _wikipedia_factory(edition: WikipediaEdition) -> Callable[[], SourceAdapter]:
+    """カタログ 1 行から Wikipedia アダプタの生成関数を作る。
+
+    min_docs は wikipedia.py の DEFAULT_VALIDATION に明示があればそちらを優先する
+    (jawiki / enwiki は実在タイトルの検証まで持つ手厚い設定があるため、カタログの
+    機械的な下限で上書きしてはいけない)。
+    """
+    explicit = edition.wiki_id in WIKIPEDIA_DEFAULT_VALIDATION
+    return lambda: WikipediaAdapter(
+        edition.wiki_id,
+        lang=edition.lang,
+        min_docs=None if explicit else edition.min_docs,
+    )
+
+
+# 明示登録済み(jawiki)はそのまま残す(カタログ側と内容は等価だが、明示が正)
+ADAPTERS.update({
+    e.wiki_id: _wikipedia_factory(e)
+    for e in WIKIPEDIA_EDITIONS.values()
+    if e.wiki_id not in ADAPTERS
+})
+
+
 def get_adapter(source: str) -> SourceAdapter:
     try:
         return ADAPTERS[source]()
     except KeyError:
-        # osm_<国> だけで 195 件あるため、全部並べず件数で示す
-        others = sorted(n for n in ADAPTERS if not n.startswith("osm_"))
-        known = ", ".join([*others, f"osm_<国> {len(OSM_REGIONS)} 件"])
+        # osm_<国> だけで 195 件・<lang>wiki は 348 件あるため、全部並べず件数で示す
+        others = sorted(
+            n for n in ADAPTERS if not n.startswith("osm_") and n not in WIKIPEDIA_EDITIONS
+        )
+        known = ", ".join([
+            *others,
+            f"<lang>wiki {len(WIKIPEDIA_EDITIONS)} 件",
+            f"osm_<国> {len(OSM_REGIONS)} 件",
+        ])
         raise SystemExit(f"unknown SOURCE={source!r} (registered: {known})")

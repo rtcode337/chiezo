@@ -7,7 +7,9 @@ LAN 内の開発マシン(主に Claude Code)から使う、完全ローカル�
 - v0.2 収録ソース:
   - `jawiki` — 日本語 Wikipedia(標準 XML ダンプ + wikitext 解析由来。CirrusSearch ダンプの
     text フィールドは折りたたみ(collapsible)セクションを検索インデックスから除外して
-    いたため、v0.2 でこの方式に切り替えた)
+    いたため、v0.2 でこの方式に切り替えた)。
+    Wikipedia は **348 の言語版が定義済み**で(`enwiki` / `dewiki` / `zh_yuewiki` …)、
+    使いたい言語だけを取り込みます。言語の選択は管理画面の `/admin` → `wikipedia` → 言語選択から
   - `osm_<国>` — OpenStreetMap の国別抽出(Geofabrik 由来の地名辞典 + POI 辞典。
     地名・行政区・自然地物に加え、病院・学校・店舗・観光地等の主要 POI と
     駅・空港・港・IC/SA 等の交通インフラ、およびそれらの座標)。
@@ -74,10 +76,13 @@ curl -s "$BASE/v1/jawiki/filter?wikidata=Q17221&fields=title,extra" # Q 番号 �
 が管理画面に表示されます(実行中は自動でリロードされます)。ジョブが完了したら
 `docker compose restart chiezo-api` で新しい DB を読み込ませてください(自動再起動はしません)。
 
-OSM の国別ソース(`osm_<国>`)だけは 195 件あり、そのまま並べると他のソースが埋もれるため、
-一覧では `osm` の 1 行にまとめてあります。その行の「国を選ぶ」から国選択の画面(`/admin/osm`)が
-開き、大陸ごとに畳まれた一覧から国を選んで初期化できます。各国の pbf サイズと必要メモリの目安、
-構築済みかどうかもそこに出ます(国名・`region` での絞り込み可)。
+OSM の国別ソース(`osm_<国>`、195 件)と Wikipedia の言語版(`<lang>wiki`、348 件)は、
+そのまま並べると他のソースが埋もれるため、一覧ではそれぞれ `osm` / `wikipedia` の 1 行に
+まとめてあります。`osm` 行の「国を選ぶ」から国選択の画面(`/admin/osm`)が開き、
+大陸ごとに畳まれた一覧から国を選んで初期化できます。各国の pbf サイズと必要メモリの目安、
+構築済みかどうかもそこに出ます(国名・`region` での絞り込み可)。同様に `wikipedia` 行の
+「言語を選ぶ」から言語選択の画面(`/admin/wikipedia`)が開き、記事数の階層ごとに畳まれた
+一覧から言語を選んで初期化できます(言語名・コードでの絞り込み可)。
 
 さらに、各ソース名は `/{source}/` にリンクしています。トップは検索フォームのみで(jawiki のような
 大規模ソースだと rank_score 順の全件一覧はフルスキャンになりタイムアウトしうるため、未検索時は
@@ -353,8 +358,9 @@ docker compose restart chiezo-api
 常駐コンテナです。`/data` に書き込み権限を持ち、`POST /run/{source}` で ingest の `run()` を
 バックグラウンドスレッドで実行、`GET /status` で状態(`idle`/`running`/`done`/`error`)と
 ログ tail を返します。同時に実行できるジョブは 1 つまでです。`GET /sources` は取り込める
-ソースのカタログ(名前・kind・lang と、osm 国別ソースの表示名・region・pbf サイズ・必要メモリ)を
-返し、管理画面の初期化一覧・国選択画面はこれを読んで組み立てます。
+ソースのカタログ(名前・kind・lang と、osm 国別ソースの表示名・region・pbf サイズ・必要メモリ、
+wikipedia 言語版の表示名・自称・記事数)を返し、管理画面の初期化一覧・国選択画面・
+言語選択画面はこれを読んで組み立てます。
 
 ホストへはポート公開せず、docker の内部ネットワーク経由で `chiezo-api` からのみ到達できます
 (`chiezo-api` の環境変数 `CHIEZO_TRIGGER_URL=http://chiezo-trigger:8080`)。管理画面の

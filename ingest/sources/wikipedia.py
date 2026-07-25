@@ -45,7 +45,10 @@ log = logging.getLogger(__name__)
 DUMP_INDEX_URL = "https://dumps.wikimedia.org/{wiki_id}/"
 PAGEVIEW_INDEX_URL = "https://dumps.wikimedia.org/other/pageview_complete/monthly/"
 
-# ページビュー突合用の wiki_id → pageview_complete のドメインコード対応表。
+# ページビュー突合用の wiki_id → pageview_complete のドメインコード対応表(不規則な
+# wiki の上書き用)。通常は URL 言語コード(lang)から `<lang>.wikipedia` と機械的に
+# 導出できる(zh_yuewiki は lang="zh-yue" → zh-yue.wikipedia)ので、ここに書くのは
+# その導出が合わない wiki だけでよい。
 WIKI_DOMAIN = {
     "jawiki": "ja.wikipedia",
     "enwiki": "en.wikipedia",
@@ -177,16 +180,28 @@ class WikipediaAdapter:
             raise RuntimeError(f"no pageview_complete month directories found for {year}")
         return months[-1]
 
+    def pageview_domain(self) -> str | None:
+        """pageview_complete のドメインコード。
+
+        WIKI_DOMAIN の明示(不規則な wiki 用)があればそれを、無ければ URL 言語コード
+        から `<lang>.wikipedia` を機械的に導出する(lang は URL のサブドメインなので
+        pageview_complete のドメインコードと一致する)。
+        """
+        explicit = WIKI_DOMAIN.get(self.source)
+        if explicit:
+            return explicit
+        return f"{self.lang}.wikipedia" if self.lang else None
+
     def fetch_pageviews(self, workdir: Path) -> Path | None:
         """月次ページビュー(bot 除外・全プロジェクト合算)を取得する。
 
-        対応表に無い wiki_id(WIKI_DOMAIN 未登録)ではページビュー突合をスキップする。
+        ドメインコードを導出できない wiki ではページビュー突合をスキップする。
         ファイルは全 Wikimedia プロジェクト合算(圧縮 5〜6GB)で、対象ドメインへの
         絞り込みは _load_pageviews 側でストリーミング中に行う(全体を先には絞れない)。
         """
-        domain = WIKI_DOMAIN.get(self.source)
+        domain = self.pageview_domain()
         if domain is None:
-            log.info("no pageview domain mapping for %s; skipping pageviews", self.source)
+            log.info("no pageview domain for %s; skipping pageviews", self.source)
             return None
         period = self.latest_pageview_period()
         year, _, _ = period.partition("-")
@@ -260,7 +275,7 @@ class WikipediaAdapter:
         ディスク上の一時 SQLite へ置く(1 ページが access_method ごとに複数行へ
         分かれているので `accumulate=True` で合算する)。
         """
-        domain = WIKI_DOMAIN.get(self.source)
+        domain = self.pageview_domain()
         if domain is None or self._pageview_path is None:
             return EMPTY
         counts = DiskLookup(
