@@ -132,9 +132,14 @@ OSM の国別ソース(`osm_<国>`)だけは 195 件あり、そのまま並べ�
 ### Claude Code から使う(設定ファイル自動生成)
 
 各アプリの環境で動く Claude に「chiezo に載っている知識が必要なら chiezo を使う」よう
-促す CLAUDE.md ブロックを、稼働中の chiezo に問い合わせて自動生成できます。登録済み
+促す CLAUDE.md ブロックを、稼働中の chiezo の設定生成 API
+(`GET /admin/claude-config.txt`)に問い合わせて自動生成できます。登録済み
 (初期化済み)ソースだけを、実データの文書数・実在タイトルを使った具体例つきで列挙します。
-`curl` だけで動き追加インストールは不要(jq も Python も要りません)。
+ブロック内の curl 例のベース URL は、chiezo 側が「スクリプトがアクセスしてきた URL の
+プロトコル・ホスト名・ポート」から導出するため、`--base-url` に指定した到達可能な URL が
+そのまま生成物に載ります(リバースプロキシ越し・非標準ポートでも可)。
+`curl` だけで動き追加インストールは不要(Python 不要。既存 settings への権限マージにのみ
+jq を使います)。
 **既定の書き込み先は `~/.claude/CLAUDE.md`**(全プロジェクトの Claude に効く推奨の使い方)。
 あわせて既定で、書き込み先に対応する Claude Code 設定(`--user` なら
 `~/.claude/settings.json`、`--project`/`--target` なら `.claude/settings.local.json`)に
@@ -161,8 +166,8 @@ scripts/gen_claude_config.sh --print       # 書き込まず内容だけ確認
 
 主なオプション: `--base-url/-u`(chiezo の場所)、`--user`(既定・`~/.claude/CLAUDE.md`)、
 `--project`(`./CLAUDE.md`)、`--target/-o`(書き込み先をパス指定)、`--merge {markers,headless}`、
-`--print`、`--no-permissions`(既定で行う上記の権限追記を無効化)、
-`--offline --sources jawiki,osm_japan`(chiezo 未起動でも雛形を生成)。
+`--print`、`--no-permissions`(既定で行う上記の権限追記を無効化)。
+生成は chiezo 本体が行うため、稼働中の chiezo が必要です(旧 `--offline --sources` は廃止)。
 生成される文面の要点は「まず `search` で当たりを付け、必要な文書だけ `doc` を取る(コンテキスト節約)」です。
 
 ## 運用

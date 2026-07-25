@@ -42,16 +42,18 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
     登録済みソースなら 409
   - `/admin/claude-config`(GET/HTML)・`/admin/claude-config.txt`(GET/text/plain)・
     `/admin/claude-config.permissions.json`(GET/application/json) —
-    「いま `gen_claude_config.sh` で設定を吐き出したら何が出るか」のプレビュー。現在の登録ソースから
-    CLAUDE.md ブロックと**権限ファイル(`settings.json`/`settings.local.json` の `permissions.allow`)**の
-    両方を生成して表示・配信する(実ファイルは書き換えない。ホームの `~/.claude/CLAUDE.md` 等は
-    クライアント側にあり api からは見えないため)。HTML はそれぞれコピーボタン付き。curl 例・許可ルールの
-    ベース URL はアクセス元(`request.base_url`)から導出するので、そのまま貼れば到達可能な URL になる
+    Claude 連携設定の生成 API。現在の登録ソースから CLAUDE.md ブロックと
+    **権限ファイル(`settings.json`/`settings.local.json` の `permissions.allow`)**の
+    両方を生成して配信する(実ファイルは書き換えない。ホームの `~/.claude/CLAUDE.md` 等は
+    クライアント側にあり api からは見えないため)。`gen_claude_config.sh` はこの 2 つの
+    エンドポイントを取得して書き込む。HTML はプレビュー + コピーボタン付き。
+    curl 例・許可ルールのベース URL はアクセス元 URL のプロトコル・ホスト名・ポート
+    (`request_origin`: スキーム=`X-Forwarded-Proto`(あれば)、ホスト=`X-Forwarded-Host`
+    (あれば)→無ければ `Host` ヘッダ。`Host` はポートを保持する)から導出するので、
+    リバースプロキシ越し・非標準ポートでもそのまま到達可能な URL になる
   - `app/claude_config.py` — 上記ブロックの生成ロジック。**生成の正はここ(api 側)**に置く。
-    `gen_claude_config.sh` は同じ内容を POSIX sh + curl で作るが、`filter` の可否判定に
-    全球 bbox の HTTP プローブを使うため巨大ソース(jawiki)では query timeout で false-negative を出す
-    (座標行が落ちる)。api 側は schema_version と索引付きの `WHERE lat IS NOT NULL LIMIT 1` 等で
-    直接判定するので速く正確。将来 `gen_claude_config.sh` を `/admin/claude-config.txt` を取りに来る形へ寄せられる
+    同一プロセスの DB を schema_version と索引付きの `WHERE lat IS NOT NULL LIMIT 1` 等で
+    直接引くので、HTTP プローブと違い巨大ソース(jawiki)でも timeout の false-negative が出ない
   - `/{source}/`(GET) — 検索フォーム(HTML)。`?q=` 未指定時は一覧を出さずフォームのみ表示
     (jawiki 等の大規模ソースで rank_score 順の全件一覧がフルスキャンとなりタイムアウトするため)。
     `?q=` 指定時は結果一覧を表示し、`/v1/{source}/search` と同じロジック
@@ -199,15 +201,19 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
     初期化機能は無効)
 - `scripts/` — 補助スクリプト(api/ingest 本体ではない運用ツール)
   - `gen_claude_config.sh` — chiezo 連携用の Claude 設定生成器。`curl` + POSIX ツールのみで
-    動く(jq も Python も不要)。稼働中の chiezo(`--base-url`、既定 `http://localhost:9000`。
-    環境変数 `CHIEZO_URL` でも指定可)の `/v1/sources` を引いて登録済みソースを列挙し
-    (`kind` が `wikipedia`/`osm`/その他で文面を出し分け、`/v1/<src>/random` で実在タイトルを
-    1 件拾って具体例に使う)、対象 CLAUDE.md へ `<!-- BEGIN chiezo (auto-generated) -->`〜
-    `<!-- END chiezo -->` のマーカーブロックを書き込む。書き込み先は既定 `--user`
-    (`~/.claude/CLAUDE.md`。推奨)、`--project`(`./CLAUDE.md`)、`--target/-o <path>`。
+    動く(Python 不要。既存 settings へのマージにのみ jq を使う)。稼働中の chiezo
+    (`--base-url`、既定 `http://localhost:9000`。環境変数 `CHIEZO_URL` でも指定可)の
+    `/admin/claude-config.txt` と `/admin/claude-config.permissions.json` を取得して
+    書き込むだけの薄いクライアント(生成の正は api 側 `app/claude_config.py`。
+    ベース URL はサーバーがアクセス元 URL から導出するので、接続に使った URL が
+    そのまま生成物の curl 例・許可ルールになる)。対象 CLAUDE.md へ
+    `<!-- BEGIN chiezo (auto-generated) -->`〜`<!-- END chiezo -->` のマーカーブロックを
+    書き込む。書き込み先は既定 `--user`(`~/.claude/CLAUDE.md`。推奨)、
+    `--project`(`./CLAUDE.md`)、`--target/-o <path>`。
     共存は 2 方式: `--merge markers`(既定・冪等にブロックだけ差し替え)と `--merge headless`
-    (`claude -p` に既存との統合を任せる)。`--offline --sources name[:kind],...` で未起動でも
-    雛形生成、`--with-permissions` で対象の `.claude/settings.local.json` に curl 許可を追記。
+    (`claude -p` に既存との統合を任せる)。既定で対象の settings に curl 許可を追記
+    (`--no-permissions` で無効化)。`--offline`/`--sources`/`--no-examples` は廃止
+    (生成がサーバー側になったため稼働中の chiezo が必須)。
     README の「Claude Code から使う」節と対応
   - `gen_osm_regions.py` — `ingest/sources/osm_regions.py`(OSM 国別抽出カタログ)の生成器。
     Geofabrik の `index-v1.json` と大陸別 HTML(pbf サイズ)、CLDR の国名・主要言語を引いて

@@ -417,22 +417,40 @@ def admin_init(source: str, request: Request):
     return RedirectResponse(url="/admin", status_code=303)
 
 
+def request_origin(request: Request) -> str:
+    """アクセス元 URL のプロトコル・ホスト名・ポートを組み立てる。
+
+    生成する設定内の curl 例・許可ルールを「クライアントが chiezo に届いた URL」に
+    そろえるための導出。リバースプロキシ越しでも到達可能な URL になるよう、
+    スキームは X-Forwarded-Proto(あれば)、ホストは X-Forwarded-Host(あれば)
+    → 無ければ Host ヘッダを使う。Host ヘッダはポートを保持しているので
+    非標準ポート公開でもポートが落ちない。
+    """
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip()
+    host = (
+        request.headers.get("x-forwarded-host")
+        or request.headers.get("host")
+        or request.url.netloc
+    ).split(",")[0].strip()
+    return f"{proto}://{host}"
+
+
 @app.get("/admin/claude-config.txt", response_class=PlainTextResponse)
 def admin_claude_config_raw(request: Request):
-    """生成される CLAUDE.md ブロックを text/plain で返す(コピー元・将来のスクリプト取得用)。
+    """生成される CLAUDE.md ブロックを text/plain で返す(gen_claude_config.sh の取得元)。
 
-    ベース URL は「この画面へのアクセス元」(request.base_url)から導出するので、
+    ベース URL は「この画面へのアクセス元」(request_origin)から導出するので、
     そのままクライアントに貼れば curl の例が到達可能な URL になる。
     """
     sources: dict[str, Source] = request.app.state.sources
-    return claude_config.build_block(sources, str(request.base_url))
+    return claude_config.build_block(sources, request_origin(request))
 
 
 @app.get("/admin/claude-config.permissions.json", response_class=PlainTextResponse)
 def admin_claude_config_permissions(request: Request):
     """権限ファイル(settings.json / settings.local.json)へ書き出される内容を返す。"""
     return PlainTextResponse(
-        claude_config.permission_json(str(request.base_url)),
+        claude_config.permission_json(request_origin(request)),
         media_type="application/json",
     )
 
@@ -440,7 +458,7 @@ def admin_claude_config_permissions(request: Request):
 @app.get("/admin/claude-config", response_class=HTMLResponse)
 def admin_claude_config(request: Request):
     sources: dict[str, Source] = request.app.state.sources
-    base = str(request.base_url)
+    base = request_origin(request)
     block = claude_config.build_block(sources, base)
     perms = claude_config.permission_json(base)
     body = f"""

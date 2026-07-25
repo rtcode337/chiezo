@@ -1,14 +1,14 @@
-"""Claude Code 連携用の CLAUDE.md ブロックを生成する(管理画面のプレビュー用)。
+"""Claude Code 連携用の CLAUDE.md ブロックを生成する(生成の正はここ)。
 
-`scripts/gen_claude_config.sh` と同じ内容を、稼働中の chiezo(=この API)から
-組み立てる。スクリプトは POSIX sh + curl でソースを HTTP 越しに調べていたが、
-こちらは同一プロセスから DB を直接引くので速い(HTTP プローブを打たない)。
+同一プロセスから DB を直接引いて組み立てる(HTTP プローブを打たないので速く正確)。
+`scripts/gen_claude_config.sh` はこの出力(`GET /admin/claude-config.txt` と
+`GET /admin/claude-config.permissions.json`)を取得してクライアント側のファイルへ
+書き込むだけの薄いクライアント。管理画面は同じ出力を「いま設定を吐き出したら
+何が出るか」のプレビューとして表示する。
 
-管理画面はこの出力を「いま設定を吐き出したら何が出るか」のプレビューとして表示する。
+curl 例・許可ルールのベース URL は呼び出し側(main.request_origin)が
+「アクセス元 URL のプロトコル・ホスト名・ポート」から導出して渡す。
 実ファイル(クライアント側の ~/.claude/CLAUDE.md 等)は API からは見えないので触らない。
-
-生成の正はこのモジュール(API 側)に置く方針。gen_claude_config.sh は将来的に
-この出力(`GET /admin/claude-config.txt`)を取りに来る形へ寄せられる。
 """
 from __future__ import annotations
 

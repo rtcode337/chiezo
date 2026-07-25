@@ -244,11 +244,41 @@ class TestClaudeConfig:
         assert "/v1/jawiki/search" in text
 
     def test_config_txt_base_url_is_derived_from_request(self, client):
-        """curl 例のベース URL はアクセス元(request.base_url)から導出する。"""
+        """curl 例のベース URL はアクセス元(プロトコル・ホスト名・ポート)から導出する。"""
         res = client.get("/admin/claude-config.txt")
         # TestClient のベースは http://testserver
         assert 'ベース URL: `http://testserver`' in res.text
         assert "http://testserver/v1/jawiki/search" in res.text
+
+    def test_config_txt_host_header_keeps_port(self, client):
+        """Host ヘッダのポートが生成 URL に残る(非標準ポート公開)。"""
+        res = client.get(
+            "/admin/claude-config.txt", headers={"Host": "192.168.1.10:9000"}
+        )
+        assert 'ベース URL: `http://192.168.1.10:9000`' in res.text
+        assert "http://192.168.1.10:9000/v1/jawiki/search" in res.text
+
+    def test_config_txt_honors_forwarded_headers(self, client):
+        """リバースプロキシ越しは X-Forwarded-Proto / X-Forwarded-Host を優先する。
+
+        X-Forwarded-Host が無いプロキシでは Host ヘッダにフォールバックする
+        (Host はポートを保持しているのでポートが落ちない)。
+        """
+        res = client.get(
+            "/admin/claude-config.txt",
+            headers={"X-Forwarded-Proto": "https", "Host": "example.me:8443"},
+        )
+        assert 'ベース URL: `https://example.me:8443`' in res.text
+
+        res = client.get(
+            "/admin/claude-config.txt",
+            headers={
+                "X-Forwarded-Proto": "https",
+                "X-Forwarded-Host": "chiezo.example.me",
+                "Host": "backend:9000",
+            },
+        )
+        assert 'ベース URL: `https://chiezo.example.me`' in res.text
 
     def test_permissions_json_returns_allow_rules(self, client):
         import json
@@ -260,6 +290,14 @@ class TestClaudeConfig:
         # chiezo への curl 許可 2 本。ベース URL はアクセス元から導出
         assert "Bash(curl -s http://testserver/v1/:*)" in allow
         assert "Bash(curl -s http://testserver/:*)" in allow
+
+    def test_permissions_json_honors_forwarded_headers(self, client):
+        res = client.get(
+            "/admin/claude-config.permissions.json",
+            headers={"X-Forwarded-Proto": "https", "Host": "example.me:8443"},
+        )
+        allow = res.json()["permissions"]["allow"]
+        assert "Bash(curl -s https://example.me:8443/v1/:*)" in allow
 
     def test_config_html_has_both_blocks_and_copy_buttons(self, client):
         res = client.get("/admin/claude-config")
