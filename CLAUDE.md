@@ -40,6 +40,18 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
   - `/admin/init/{source}`(POST) — `chiezo-trigger` の `POST /run/{source}` へプロキシし、
     `/admin` へ 303 リダイレクト。`CHIEZO_TRIGGER_URL` 未設定なら 503、未知ソースなら 404、
     登録済みソースなら 409
+  - `/admin/claude-config`(GET/HTML)・`/admin/claude-config.txt`(GET/text/plain)・
+    `/admin/claude-config.permissions.json`(GET/application/json) —
+    「いま `gen_claude_config.sh` で設定を吐き出したら何が出るか」のプレビュー。現在の登録ソースから
+    CLAUDE.md ブロックと**権限ファイル(`settings.json`/`settings.local.json` の `permissions.allow`)**の
+    両方を生成して表示・配信する(実ファイルは書き換えない。ホームの `~/.claude/CLAUDE.md` 等は
+    クライアント側にあり api からは見えないため)。HTML はそれぞれコピーボタン付き。curl 例・許可ルールの
+    ベース URL はアクセス元(`request.base_url`)から導出するので、そのまま貼れば到達可能な URL になる
+  - `app/claude_config.py` — 上記ブロックの生成ロジック。**生成の正はここ(api 側)**に置く。
+    `gen_claude_config.sh` は同じ内容を POSIX sh + curl で作るが、`filter` の可否判定に
+    全球 bbox の HTTP プローブを使うため巨大ソース(jawiki)では query timeout で false-negative を出す
+    (座標行が落ちる)。api 側は schema_version と索引付きの `WHERE lat IS NOT NULL LIMIT 1` 等で
+    直接判定するので速く正確。将来 `gen_claude_config.sh` を `/admin/claude-config.txt` を取りに来る形へ寄せられる
   - `/{source}/`(GET) — 検索フォーム(HTML)。`?q=` 未指定時は一覧を出さずフォームのみ表示
     (jawiki 等の大規模ソースで rank_score 順の全件一覧がフルスキャンとなりタイムアウトするため)。
     `?q=` 指定時は結果一覧を表示し、`/v1/{source}/search` と同じロジック

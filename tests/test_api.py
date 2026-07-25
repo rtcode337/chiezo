@@ -228,6 +228,56 @@ class TestAdminAndBrowse:
         res = client.post("/admin/init/jawiki")
         assert res.status_code == 409
 
+
+class TestClaudeConfig:
+    """「いま設定を吐き出したら何が出るか」のプレビュー(管理画面)。"""
+
+    def test_config_txt_returns_block(self, client):
+        res = client.get("/admin/claude-config.txt")
+        assert res.status_code == 200
+        assert res.headers["content-type"].startswith("text/plain")
+        text = res.text
+        assert text.startswith("<!-- BEGIN chiezo (auto-generated) -->")
+        assert text.rstrip().endswith("<!-- END chiezo -->")
+        # 登録済みソースが例示コマンドとして載る
+        assert "- **jawiki**" in text
+        assert "/v1/jawiki/search" in text
+
+    def test_config_txt_base_url_is_derived_from_request(self, client):
+        """curl 例のベース URL はアクセス元(request.base_url)から導出する。"""
+        res = client.get("/admin/claude-config.txt")
+        # TestClient のベースは http://testserver
+        assert 'ベース URL: `http://testserver`' in res.text
+        assert "http://testserver/v1/jawiki/search" in res.text
+
+    def test_permissions_json_returns_allow_rules(self, client):
+        import json
+
+        res = client.get("/admin/claude-config.permissions.json")
+        assert res.status_code == 200
+        assert res.headers["content-type"].startswith("application/json")
+        allow = res.json()["permissions"]["allow"]
+        # chiezo への curl 許可 2 本。ベース URL はアクセス元から導出
+        assert "Bash(curl -s http://testserver/v1/:*)" in allow
+        assert "Bash(curl -s http://testserver/:*)" in allow
+
+    def test_config_html_has_both_blocks_and_copy_buttons(self, client):
+        res = client.get("/admin/claude-config")
+        assert res.status_code == 200
+        # CLAUDE.md ブロックと権限ファイルの両方を、それぞれのコピーボタン付きで出す
+        assert 'id="config-block"' in res.text
+        assert 'id="config-perms"' in res.text
+        assert 'id="copy-block"' in res.text
+        assert 'id="copy-perms"' in res.text
+        assert "BEGIN chiezo" in res.text
+        assert "permissions" in res.text
+
+    def test_admin_links_to_config_page(self, client):
+        res = client.get("/admin")
+        assert '/admin/claude-config' in res.text
+
+
+class TestBrowsePages:
     def test_browse_source_top_shows_search_form_only(self, client):
         res = client.get("/jawiki/")
         assert res.status_code == 200

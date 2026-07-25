@@ -10,9 +10,14 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+)
 
-from app import db
+from app import claude_config, db
 from app.fts import build_match_query, escape_like
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES
 from app.pages import esc, page_shell
@@ -292,6 +297,13 @@ def admin(request: Request):
 {init_rows}
 </tbody>
 </table>
+
+<h2>Claude Code 連携設定</h2>
+<p class="muted">
+いま設定を吐き出したら(<code>scripts/gen_claude_config.sh</code>)どういう内容になるかのプレビュー。
+現在の登録ソースから生成した CLAUDE.md ブロックを表示する(実ファイルは書き換えない)。
+</p>
+<p><a href="/admin/claude-config">→ 生成される設定を見る</a></p>
 """
     return HTMLResponse(content=page_shell("chiezo 管理画面", body, refresh=5 if job_running else None))
 
@@ -403,6 +415,85 @@ def admin_init(source: str, request: Request):
     if res.status_code >= 400:
         raise HTTPException(res.status_code, res.json())
     return RedirectResponse(url="/admin", status_code=303)
+
+
+@app.get("/admin/claude-config.txt", response_class=PlainTextResponse)
+def admin_claude_config_raw(request: Request):
+    """生成される CLAUDE.md ブロックを text/plain で返す(コピー元・将来のスクリプト取得用)。
+
+    ベース URL は「この画面へのアクセス元」(request.base_url)から導出するので、
+    そのままクライアントに貼れば curl の例が到達可能な URL になる。
+    """
+    sources: dict[str, Source] = request.app.state.sources
+    return claude_config.build_block(sources, str(request.base_url))
+
+
+@app.get("/admin/claude-config.permissions.json", response_class=PlainTextResponse)
+def admin_claude_config_permissions(request: Request):
+    """権限ファイル(settings.json / settings.local.json)へ書き出される内容を返す。"""
+    return PlainTextResponse(
+        claude_config.permission_json(str(request.base_url)),
+        media_type="application/json",
+    )
+
+
+@app.get("/admin/claude-config", response_class=HTMLResponse)
+def admin_claude_config(request: Request):
+    sources: dict[str, Source] = request.app.state.sources
+    base = str(request.base_url)
+    block = claude_config.build_block(sources, base)
+    perms = claude_config.permission_json(base)
+    body = f"""
+<nav><a href="/admin">管理画面</a></nav>
+<h1>Claude Code 連携設定(プレビュー)</h1>
+<p class="muted">
+いま <code>scripts/gen_claude_config.sh</code> で設定を吐き出したら書き込まれる内容。
+この画面は表示するだけで、実ファイルは書き換えない。
+curl 例・許可ルールのベース URL は、この画面へのアクセス元
+(<code>{esc(base.rstrip("/"))}</code>)から導出している。
+</p>
+
+<h2>CLAUDE.md ブロック</h2>
+<p class="muted">
+書き込み先: <code>--user</code> なら <code>~/.claude/CLAUDE.md</code>、
+<code>--project</code> なら <code>./CLAUDE.md</code>(マーカー間を差し替え)。
+生: <a href="/admin/claude-config.txt">/admin/claude-config.txt</a>
+</p>
+<p><button type="button" id="copy-block">クリップボードにコピー</button>
+<span id="msg-block" class="muted"></span></p>
+<pre class="doc-body" id="config-block">{esc(block)}</pre>
+
+<h2>権限ファイル</h2>
+<p class="muted">
+書き込み先: <code>--user</code> なら <code>~/.claude/settings.json</code>、
+<code>--project</code> なら <code>./.claude/settings.local.json</code>。
+chiezo への curl を許可プロンプトなしに実行できるよう、下記を
+<code>permissions.allow</code> へ<strong>追記マージ</strong>する(既存の許可は壊さない。
+新規作成時の丸ごとの中身が下記)。<code>--no-permissions</code> で無効化できる。
+生: <a href="/admin/claude-config.permissions.json">/admin/claude-config.permissions.json</a>
+</p>
+<p><button type="button" id="copy-perms">クリップボードにコピー</button>
+<span id="msg-perms" class="muted"></span></p>
+<pre class="doc-body" id="config-perms">{esc(perms)}</pre>
+
+<script>
+function wireCopy(btnId, srcId, msgId) {{
+  document.getElementById(btnId).addEventListener('click', async () => {{
+    const text = document.getElementById(srcId).textContent;
+    const msg = document.getElementById(msgId);
+    try {{
+      await navigator.clipboard.writeText(text);
+      msg.textContent = 'コピーしました';
+    }} catch (e) {{
+      msg.textContent = 'コピーできませんでした(手動で選択してください)';
+    }}
+  }});
+}}
+wireCopy('copy-block', 'config-block', 'msg-block');
+wireCopy('copy-perms', 'config-perms', 'msg-perms');
+</script>
+"""
+    return HTMLResponse(content=page_shell("chiezo: Claude Code 連携設定", body))
 
 
 # ---- 検索 -------------------------------------------------------------------
