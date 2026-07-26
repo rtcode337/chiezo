@@ -128,6 +128,16 @@ df -h ~            # 空きが上表のディスク要件を超えているか
 docker pull ghcr.io/rtcode337/chiezo-ingest:latest
 ```
 
+**pull は毎回やること。** ローカルに古い `latest` が残っていると、タグは同じなので見た目では
+気づけないまま古い版で焼いてしまう。そのイメージが作る DB の `schema_version` は、
+取り込みを走らせずに聞ける(配信機の chiezo-api が期待する版より古いと新機能が使えないので、
+数時間かける前にここで確かめる):
+
+```bash
+docker run --rm ghcr.io/rtcode337/chiezo-ingest:latest \
+  python -c "import core; print(core.SCHEMA_VERSION)"
+```
+
 出られない場合は、別のマシンで `docker save` した `chiezo-ingest-image.tar.gz` をコピーして読み込む:
 
 ```bash

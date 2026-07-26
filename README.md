@@ -409,16 +409,48 @@ chiezo の DB は**自己完結した単一の SQLite ファイル**なので、
 export/import も配信機でのビルドも要りません(SQLite のファイル形式は OS・CPU アーキ非依存なので、
 Windows で焼いて Linux で読ませてよい)。メモリの少ない配信機と、メモリの多いビルド機を分けられます。
 
-```bash
-# 1. ビルド機(メモリ潤沢)で GHCR からイメージを pull して取り込む。
-#    リポジトリも compose も設定ファイルも不要
-docker run --rm -it -e SOURCE=jawiki -e CHIEZO_DATA_DIR=/data \
-  -v /path/to/chiezo-data:/data ghcr.io/rtcode337/chiezo-ingest:latest
+ビルド機に要るのは docker だけで、リポジトリも compose も設定ファイルも要りません。
 
-# 2. 出来た世代ファイルを配信機へコピーし、<ソース名>.db として見えるようにして再起動
+```bash
+# 1. イメージを最新にする。ローカルに古い latest が残っていると、それで焼いてしまう
+#    (タグは latest のままなので、古いかどうかは見た目では分かりません)
+docker pull ghcr.io/rtcode337/chiezo-ingest:latest
+
+# 2. そのイメージが作る DB の schema_version を確かめる(取り込みを走らせずに聞けます)。
+#    配信中の chiezo-api が期待するより古いと新機能が使えないので、数時間かける前にここで確認
+docker run --rm ghcr.io/rtcode337/chiezo-ingest:latest \
+  python -c "import core; print(core.SCHEMA_VERSION)"
+
+# 3. 取り込む。数時間かかるので必ず -d(デタッチ)で回すこと。前景(--rm -it)だと
+#    ターミナルを閉じた・スリープした瞬間に構築ごと消えます
+docker run -d --name chiezo-build -e SOURCE=jawiki -e CHIEZO_DATA_DIR=/data \
+  -v /path/to/chiezo-data:/data ghcr.io/rtcode337/chiezo-ingest:latest
+docker logs -f chiezo-build                      # 進捗(Ctrl-C で抜けても構築は続く)
+docker wait chiezo-build && docker rm chiezo-build
+
+# 4. 出来た世代ファイルを配信機へコピーし、<ソース名>.db として見えるようにして再起動
 cp jawiki-20260701.db /path/to/chiezo/data/
 ln -sfn jawiki-20260701.db /path/to/chiezo/data/jawiki.db
 docker compose restart chiezo-api
+```
+
+**jawiki 以外を焼くときに書き換えるのは次の 3 か所だけです**(他はそのままで動きます):
+
+| | jawiki | osm_japan の場合 |
+|---|---|---|
+| 3. の `SOURCE=` | `jawiki` | `osm_japan`(`osm_france` 等、国名を変えるだけ) |
+| 4. のコピー元ファイル名 | `jawiki-<日付>.db` | `osm_japan-<日付>.db` |
+| 4. の `ln -sfn` の 2 つめの引数 | `jawiki.db` | `osm_japan.db` |
+
+世代ファイル名の日付は取り込み時に決まるので、`ls /path/to/chiezo-data/*.db` で実際の名前を
+確認してからコピーしてください。ソースによって必要メモリが違う(上の「メモリについて」の表)点と、
+`osm_<国>` では `-e OSM_NODE_INDEX=sparse_file_array` を足せばメモリ 2 GiB でも焼ける
+(その代わり遅い)点にだけ注意してください。`SOURCE` に渡せる名前(`osm_<国>` 195 件 +
+`<lang>wiki` 348 件 + geonames)はビルド機だけでも引けます:
+
+```bash
+docker run --rm ghcr.io/rtcode337/chiezo-ingest:latest \
+  python -c "import sources; print('\n'.join(sources.ADAPTERS))" | grep france
 ```
 
 ビルド機がインターネットに出られない・GHCR を使いたくない場合は、イメージをファイルで持ち込めます:

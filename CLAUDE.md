@@ -41,19 +41,12 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
     ファビコンは `assets/icon.svg` を最小化した data URI(`FAVICON_DATA_URI`)として埋め込む
     (api イメージのビルドコンテキストは `api/` のみで `assets/` を含まないため。原本を変えたら更新)
   - `/`(GET) — `/admin` へ 302 リダイレクト
-  - `/admin`(GET) — 登録ソース(name/kind/lang/文書数/dump_date/built_at/schema_version)の一覧、
-    未初期化ソース(初期化できるが `/data` に `.db` が無いもの)向けの初期化ボタン、
-    `chiezo-trigger` のジョブ状況(state/source/log tail)を表示する簡易 HTML 管理画面
-    (実行中は 5 秒ごとに自動リロード)。`group="osm"`(= `osm_<国>`)195 件と
-    `group="wikipedia"`(= `<lang>wiki`)348 件はそのまま並べると他が埋もれるため、
-    それぞれ 1 行に畳んで「国を選ぶ」`/admin/osm`・「言語を選ぶ」`/admin/wikipedia` へ誘導する
-  - `/admin/osm`(GET) — OSM 国別ソースの国選択画面。大陸ごとの `<details>` に畳んだ一覧で、
-    国名・region・pbf サイズ・必要メモリの目安・構築済みかどうかを出し、各行から初期化できる
-    (`?q=` で国名・region の絞り込み。JS なしのサーバ側フィルタ)
-  - `/admin/wikipedia`(GET) — Wikipedia 言語版の言語選択画面(`/admin/osm` と同じ構図)。
-    記事数の階層(`WIKIPEDIA_TIERS`: 100 万以上/10 万〜/1 万〜/1 万未満)ごとの `<details>` に
-    畳んだ一覧で、言語名(日本語)・コード・自称・記事数・構築済みかどうかを出し、
-    各行から初期化できる(`?q=` で言語名・コードの絞り込み)
+  - `/admin`・`/admin/osm`・`/admin/wikipedia`(GET) — 簡易 HTML 管理画面(画面に何が出るかは
+    README「API の使い方」節の後半、管理画面の説明が正)。実装側の要点は 3 つ: ジョブ実行中は `page_shell` の
+    `refresh` で 5 秒ごとに自動リロードする / `osm_<国>` 195 件と `<lang>wiki` 348 件は
+    そのまま並べると他のソースが埋もれるので `group` で 1 行に畳み、国・言語の選択だけを
+    `/admin/osm`(大陸ごとの `<details>`)・`/admin/wikipedia`(`WIKIPEDIA_TIERS` の記事数階層ごと)
+    へ切り出す / `?q=` の絞り込みは JS なしのサーバ側フィルタ
   - `/admin/init/{source}`(POST) — `chiezo-trigger` の `POST /run/{source}` へプロキシし、
     `/admin` へ 303 リダイレクト。`CHIEZO_TRIGGER_URL` 未設定なら 503、未知ソースなら 404、
     登録済みソースなら 409
@@ -119,12 +112,10 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
   - `sources/wikipedia.py` — Wikipedia 標準 XML ダンプアダプタ(`wiki_id` パラメータ化。
     全言語版は下の `wikipedia_editions.py` から機械的に登録される。pageview ドメインは
     URL 言語コードから `<lang>.wikipedia` を導出し、不規則な wiki だけ `WIKI_DOMAIN` で上書き)。`https://dumps.wikimedia.org/<wiki_id>/<date>/<wiki_id>-<date>-pages-articles.xml.bz2`
-    (MediaWiki エクスポート形式、単一ファイル)を取得する。旧実装は CirrusSearch ダンプの `text`
-    フィールドを docs.body にそのまま使っていたが、この `text` フィールドは Wikipedia の
-    折りたたみ(collapsible)セクション(`{{hidden begin}}`〜`{{hidden end}}` 等)を検索
-    インデックスから除外しており、例えば「ブラタモリ」の放送回一覧表のような内容が本文に
-    一切含まれない欠落があったため、標準 XML ダンプ + wikitext 解析(`mwparserfromhell`。
-    wikipedia 系ソースのみの例外的依存、下記参照)に切り替えた。
+    (MediaWiki エクスポート形式、単一ファイル)を取得する。CirrusSearch ダンプの `text` を
+    使っていた旧実装から標準 XML ダンプ + wikitext 解析(`mwparserfromhell`。wikipedia 系
+    ソースのみの例外的依存)へ切り替えた経緯は README「ダンプ更新」節を参照(要点: `text` は
+    折りたたみセクションを検索インデックスから除外しており本文が欠落していた)。
     `xml.etree.ElementTree`(標準ライブラリ)でストリーミング解析し、`<redirect>` を持つ
     ページは 2 パス走査(パス1: リダイレクト元→対象タイトルの収集、パス2: 本体の Doc 生成)
     で aliases に変換する(`sources/osm.py` の relation 2 パスと同じ精神)。wikitext →
@@ -156,16 +147,13 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
     `xml.etree` では読めなくなった。osm 系ソースに限り pyosmium への依存を許容している
     (それ以外は標準ライブラリのみの方針を維持。wikipedia 系ソースの mwparserfromhell が
     もう1つの例外、上記参照)。
-    名前付き地物(`place=*` / `boundary=administrative` / 主要 `natural=*`)を地名辞典として、
-    加えて主要 POI(`amenity=*` / `shop=*` / `tourism=*` / `leisure=*` / `historic=*` /
-    `craft=*` / `office=*` / `healthcare=*`。`name` タグ必須)を POI 辞典として同一ソースに
-    取り込む(地名と POI は同じ docs/docs_fts に混在し、`search` は両方をヒットさせる)。
-    さらに交通インフラ(`VALUE_LIMITED_KEYS`: `railway` / `aeroway` / `aerialway` /
-    `public_transport` / `highway` / `man_made` のうち駅・空港・IC/SA・橋・灯台などの
-    「地点を指す値」だけを列挙。港は `amenity=ferry_terminal` で既に入る)も対象。値を
-    限定するのは `railway=rail` や `highway=residential` のような、名前付きでも地点辞典
-    として意味を成さない線形地物を除くため。`POI_KEY_SCORE` では交通インフラを POI より
-    高く置く(「博多駅」で同名の飲食店を先に返す取り違えの防止)。
+    取り込む地物の種類(地名 + POI + 交通インフラ。いずれも `name` タグ必須)は README
+    「地理データの守備範囲」節が正。地名と POI は同じ docs/docs_fts に混在し `search` は
+    両方をヒットさせる。交通インフラだけ `VALUE_LIMITED_KEYS`(`railway` / `aeroway` /
+    `aerialway` / `public_transport` / `highway` / `man_made`)で値を列挙するのは、
+    `railway=rail` や `highway=residential` のような、名前付きでも地点辞典として意味を
+    成さない線形地物を除くため。`POI_KEY_SCORE` では交通インフラを POI より高く置く
+    (「博多駅」で同名の飲食店を先に返す取り違えの防止)。
     OSM は node → way → relation 順で並ぶため 3 パスで読む: パス1
     (`_RelationScanHandler`)で対象 relation が参照する way ID と、`extra.area` 用の
     行政境界(既定 `admin_level=4`)relation のメンバー way を集め、パス2
@@ -257,29 +245,18 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
     (`chiezo-api` 側は環境変数 `CHIEZO_TRIGGER_URL` で URL を知る。未設定なら管理画面の
     初期化機能は無効)
 - `scripts/` — 補助スクリプト(api/ingest 本体ではない運用ツール)
-  - `gen_claude_config.sh` — chiezo 連携用の Claude 設定生成器。`curl` + POSIX ツールのみで
-    動く(Python 不要。既存 settings へのマージにのみ jq を使う)。稼働中の chiezo
-    (`--base-url`、既定 `http://localhost:9000`。環境変数 `CHIEZO_URL` でも指定可)の
-    `/admin/claude-config.txt` と `/admin/claude-config.permissions.json` を取得して
-    書き込むだけの薄いクライアント(生成の正は api 側 `app/claude_config.py`。
-    ベース URL はサーバーがアクセス元 URL から導出するので、接続に使った URL が
-    そのまま生成物の curl 例・許可ルールになる)。対象 CLAUDE.md へ
-    `<!-- BEGIN chiezo (auto-generated) -->`〜`<!-- END chiezo -->` のマーカーブロックを
-    書き込む。書き込み先は既定 `--user`(`~/.claude/CLAUDE.md`。推奨)、
-    `--project`(`./CLAUDE.md`)、`--target/-o <path>`。
-    共存は 2 方式: `--merge markers`(既定・冪等にブロックだけ差し替え)と `--merge headless`
-    (`claude -p` に既存との統合を任せる)。既定で対象の settings に curl 許可を追記
-    (`--no-permissions` で無効化)。`--offline`/`--sources`/`--no-examples` は廃止
-    (生成がサーバー側になったため稼働中の chiezo が必須)。
-    `--with-hook` を付けたときだけ、前方一致では効かない大量取得向けに自動許可フック
-    (`<設定ディレクトリ>/hooks/chiezo-autoallow.py` + `hooks.PreToolUse`)も設置する。
-    **既定では設置しない** — Claude が打つ Bash を毎回検査して自動承認しうる仕掛けで
-    権限ルールより影響が広く、中身を読んで納得してから入れられるようにするため。
-    設置には python3(フックの実行)と jq(settings のマージ)が要り、欠けていれば
-    黙って諦めず落とす(明示的に頼まれた設置なので)。マージは「コマンドが
-    `chiezo-autoallow.py` を含む既存エントリ」を落としてから足すので、再実行しても
-    重複せず、設置先を変えたときも古いパスのエントリが残らない。
-    README の「Claude Code から使う」節と対応
+  - `gen_claude_config.sh` — chiezo 連携用の Claude 設定生成器。**使い方・オプション一覧は
+    README「Claude Code から使う(設定ファイル自動生成)」節が正**で、ここには実装側の要点だけ置く:
+    - `curl` + POSIX ツールのみで動く(Python 不要。既存 settings のマージにだけ jq を使う)。
+      稼働中の chiezo の `/admin/claude-config.*` を取得して書き込むだけの薄いクライアントで、
+      **生成の正は api 側 `app/claude_config.py`**。ベース URL はサーバーがアクセス元 URL から
+      導出するので、接続に使った URL がそのまま生成物の curl 例・許可ルールになる
+    - `--with-hook` を付けたときだけ自動許可フックも設置する。**既定では設置しない** —
+      Claude が打つ Bash を毎回検査して自動承認しうる仕掛けで権限ルールより影響が広く、
+      中身を読んで納得してから入れられるようにするため。設置に要る python3 / jq が欠けていれば
+      黙って諦めず落とす(明示的に頼まれた設置なので)
+    - settings のマージは「コマンドが `chiezo-autoallow.py` を含む既存エントリ」を落としてから
+      足すので、再実行しても重複せず、設置先を変えたときも古いパスのエントリが残らない
   - `gen_wikipedia_editions.py` — `ingest/sources/wikipedia_editions.py`(Wikipedia 言語版
     カタログ)の生成器。Wikimedia の sitematrix(言語版一覧。closed/private/fishbowl は除外)、
     wikistats(記事数)、CLDR の言語名日本語表記を引いて 348 件の表を書き出す。
@@ -306,6 +283,9 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
 
 ## コマンド
 
+セットアップ・取り込み・運用(ダンプ更新、別マシンでのビルド、既存 DB の移行)の手順と
+ingest の環境変数一覧は **README が正**。ここには開発時にしか使わないものだけ置く。
+
 ```bash
 # テスト(api/requirements.txt + ingest/requirements.txt + pytest が必要)
 python -m pytest tests/ -v
@@ -315,39 +295,18 @@ python tests/fixtures/make_fixture.py
 python tests/fixtures/make_osm_fixture.py
 python tests/fixtures/make_geonames_fixture.py
 
-# API 起動(Docker。docker-compose.yml は GHCR の公開イメージを pull する)
-docker compose up -d
-
 # api/ ingest/ を変更したときのローカルビルドでの動作確認
+# (docker-compose.yml は GHCR の公開イメージを pull するので、こちらを使わないと反映されない)
 docker compose -f docker-compose.build.yml up -d --build
-
-# 取り込み(本番: jawiki は 5〜6GB ダウンロード、構築 2〜6 時間、ディスク空き 80GB 推奨)
-docker compose --profile ingest run --rm chiezo-ingest
-
-# OSM 日本抽出の取り込み(.osm.pbf 2〜3GB ダウンロード、POI 込みで構築 1〜4 時間)
-docker compose --profile ingest run --rm -e SOURCE=osm_japan chiezo-ingest
-
-# 取り込み後の反映
-docker compose restart chiezo-api
-
-# 管理画面(http://localhost:9000/、/admin へリダイレクト)から未初期化ソースの初期化も可能
-# (chiezo-trigger 経由。完了後は上と同様に chiezo-api の再起動が必要)
-
-# Claude 連携設定(CLAUDE.md ブロック)を稼働中の chiezo から生成(既定は ~/.claude/CLAUDE.md)
-scripts/gen_claude_config.sh --base-url http://localhost:9000       # curl のみ・追加インストール不要
 ```
 
-ingest の主な環境変数: `SOURCE`(必須)、`DUMP_DATE`(日付固定)、`DUMP_FILE`(ダウンロードスキップ)、
-`MIN_DOCS` / `SAMPLE_TITLES`(検証パラメータ上書き。小規模データでの動作確認用)、
-`PAGEVIEW_PERIOD`(ページビュー突合対象の年月 `YYYY-MM` を固定。省略時は最新月を自動検出)、
-`OSM_AREA_ADMIN_LEVEL`(`extra.area` に入れる行政区の admin_level。既定 4 = 都道府県。
-`0` で境界ポリゴンのパスごと省略)、
-`OSM_NODE_INDEX`(osm のノード座標索引の置き場。既定 `sparse_mmap_array`=RAM、
-`sparse_file_array`=ディスク)、`GEONAMES_ALT_LANGS`(取り込む別名の言語。既定 `ja,en`、
-`*` で全言語)、`GEONAMES_FEATURE_CLASSES`(取り込む feature class。既定 `AHLPSTUV` =
-道路 `R` 以外)、`BUILD_MEMORY_GB` / `SKIP_MEMORY_CHECK`(構築前メモリ検査の上書き / 無効化)。
-OSM 系ソースでは Geofabrik が latest 1 世代のみ配布のため、`DUMP_DATE` は取得対象の固定ではなく
-世代ファイル名ラベルの上書きとしてのみ機能する。
+実データを落とさずに取り込みを試すなら、`DUMP_FILE`(ダウンロードを飛ばして手元のファイルを使う)
+と `MIN_DOCS` / `SAMPLE_TITLES`(検証パラメータを緩める)を使う。`tests/` はこの経路を
+フィクスチャで自動化したもの。
+
+`SOURCE` に渡せる名前や、そのイメージが焼く `schema_version` はイメージ単体に聞ける
+(README「別マシンでビルドして .db を配布する」節。ローカルビルド版なら
+`chiezo-chiezo-ingest:latest` に置き換える)。
 
 ### メモリ方針: 「足りると確認できたときだけ取り込む」
 
@@ -357,24 +316,21 @@ OSM 系ソースでは Geofabrik が latest 1 世代のみ配布のため、`DUM
 足りなければダウンロードもせず `SystemExit` する。判断材料は `/proc/meminfo` の `MemAvailable` と
 cgroup 上限(`memory.max`)の小さいほう(`available_memory_bytes()`)。
 
-必要量は各アダプタの `min_build_memory_gb`(`core.SourceAdapter` の一部)で宣言する:
-- `WikipediaAdapter` = 3GiB 固定。巨大な対応表は `lookup.py` でディスクに逃がしてあるため軽い。
-- `GeonamesAdapter` = 3GiB 固定。別名(2,000 万行規模)を同様にディスクへ逃がしてあるため軽い。
-- `OsmAdapter` は**プロパティ**で、使う索引方式(`node_index_kind` = 環境変数 `OSM_NODE_INDEX` >
-  ソースごとの `default_node_index`)がファイル索引なら 2GiB、RAM 索引なら `ram_index_memory_gb`。
-  osm_japan は RAM 索引が既定で 12GiB。国別ソースの `ram_index_memory_gb` / `default_node_index` は
-  `sources/osm_regions.py`(自動生成カタログ)が pbf サイズから決める — RAM 索引の見積もりが
-  12GiB を超える国(仏独加米露)はディスク索引が既定になり、2GiB で焼ける代わりに遅い。
-  osm ソースは**国スケールに留める**こと。大陸スケールはディスク索引にしても
-  ディスク 300GB・構築 1 日以上が要るため現実的でなく、全世界カバーは `geonames` の担当。
-  **既定設定でどのソースも 12GiB 以内に収まること**をテストで担保している
-  (`test_no_source_requires_more_than_12gb_by_default`)。
+必要量は各アダプタの `min_build_memory_gb`(`core.SourceAdapter` の一部)で宣言する
+(ソースごとの実際の数値は README「メモリについて」の表が正)。wikipedia / geonames は
+巨大な対応表を `lookup.py` でディスクへ逃がしてあるため 3GiB 固定。`OsmAdapter` だけは
+**プロパティ**で、使う索引方式(`node_index_kind` = 環境変数 `OSM_NODE_INDEX` >
+ソースごとの `default_node_index`)がファイル索引なら 2GiB、RAM 索引なら
+`ram_index_memory_gb`。国別ソースのこの 2 つは `sources/osm_regions.py`(自動生成カタログ)が
+pbf サイズから決める。**既定設定でどのソースも 12GiB 以内に収まること**をテストで担保している
+(`test_no_source_requires_more_than_12gb_by_default`)ので、この不変条件を壊さないこと。
+osm ソースは**国スケールに留める**(大陸スケールはディスク索引にしてもディスク 300GB・
+構築 1 日以上で非現実的。全世界カバーは `geonames` の担当)。
 
-`.db` は自己完結した単一 SQLite ファイルなので、**メモリの多いマシンで焼いて配信機へコピー**すれば
-よい(ビルド機は GHCR から ingest イメージを pull するだけで、リポジトリを置かずに完結する。
-オフライン環境へは `docker save` で持ち込む。手順は `handoff/BUILD-ON-ANOTHER-MACHINE.md`)。配信側 chiezo-api は read-only immutable SQLite を
-開くだけで常駐 80〜150MB のため、**メモリ数百 MB の小型機でも動く**(効くのはメモリでなく
-ディスクで、jawiki.db 約42GB の空きが要る)。この非対称性が設計の要なので壊さないこと。
+**ビルド機と配信機を分けられる**のが設計の要なので壊さないこと: `.db` は自己完結した単一
+SQLite ファイルで、配信側 chiezo-api は read-only immutable で開くだけの常駐 80〜150MB。
+効いてくるのはメモリでなくディスク(jawiki.db 約 42GB)。手順は README「別マシンでビルドして
+.db を配布する」と `handoff/BUILD-ON-ANOTHER-MACHINE.md`。
 
 ## 実装上の約束事
 
