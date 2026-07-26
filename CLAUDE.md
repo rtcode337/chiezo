@@ -28,7 +28,9 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
     初期化できるソースの正は ingest 側の `ADAPTERS` で、通常は
     `chiezo-trigger` の `GET /sources` から受け取る(`main.initializable_sources()`。
     osm 国別 195 件 + wikipedia 言語版 348 件あり、api 側に複製すると必ず腐るため)
-  - `app/pages.py` — 管理画面・ブラウズ画面共通の HTML 組み立てヘルパー(`page_shell`, `esc`)
+  - `app/pages.py` — 管理画面・ブラウズ画面共通の HTML 組み立てヘルパー(`page_shell`, `esc`)。
+    ファビコンは `assets/icon.svg` を最小化した data URI(`FAVICON_DATA_URI`)として埋め込む
+    (api イメージのビルドコンテキストは `api/` のみで `assets/` を含まないため。原本を変えたら更新)
   - `/`(GET) — `/admin` へ 302 リダイレクト
   - `/admin`(GET) — 登録ソース(name/kind/lang/文書数/dump_date/built_at/schema_version)の一覧、
     未初期化ソース(初期化できるが `/data` に `.db` が無いもの)向けの初期化ボタン、
@@ -243,6 +245,7 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
     「Ukraine (with Crimea)」や複数国をまとめた抽出)は `OVERRIDES` に人手で書く
     — Geofabrik の ISO コードには取り違え(トケラウに `VU` 等)があり、そのまま引くと
     「トケラウ = バヌアツ」のような誤表示になるため
+- `assets/` — プロジェクトアイコン(`icon.svg`。README ヘッダーと管理画面ファビコンの原本)
 - `tests/` — フィクスチャ(`fixtures/mini_jawiki.xml.gz` 12 文書、`fixtures/mini_osm.osm.pbf`、
   `fixtures/mini_geonames.zip` ほか geonames 一式)での API / ingest テスト
 - `.github/workflows/ci.yml` — push / PR で pytest を実行し、main への push で

@@ -1,4 +1,4 @@
-# chiezo — ローカル知識サーバー
+# <img src="assets/icon.svg" width="40" alt="chiezo icon"> chiezo — ローカル知識サーバー
 
 LAN 内の開発マシン(主に Claude Code)から使う、完全ローカルの知識検索 REST API です。
 公式ダンプを SQLite (FTS5 trigram) に取り込み、外部 API のレート制限や負荷を気にせず参照できます。

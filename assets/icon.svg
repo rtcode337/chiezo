@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- 案B: 本を読むロボット(知識サーバー) -->
+  <rect width="256" height="256" rx="56" fill="#5560E0"/>
+  <!-- アンテナ -->
+  <line x1="128" y1="34" x2="128" y2="52" stroke="#C9D1F2" stroke-width="9" stroke-linecap="round"/>
+  <circle cx="128" cy="28" r="10" fill="#FFD64D"/>
+  <!-- 耳 -->
+  <rect x="46" y="80" width="16" height="38" rx="8" fill="#C9D1F2"/>
+  <rect x="194" y="80" width="16" height="38" rx="8" fill="#C9D1F2"/>
+  <!-- 頭 -->
+  <rect x="62" y="52" width="132" height="96" rx="26" fill="#F4F6FF"/>
+  <!-- 目(下を見て読書中) -->
+  <ellipse cx="102" cy="98" rx="12" ry="13" fill="#2A2E43"/>
+  <ellipse cx="154" cy="98" rx="12" ry="13" fill="#2A2E43"/>
+  <circle cx="105" cy="94" r="4" fill="#FFFFFF"/>
+  <circle cx="157" cy="94" r="4" fill="#FFFFFF"/>
+  <!-- 開いた本 -->
+  <g>
+    <!-- 左ページ -->
+    <path d="M128 176 C108 162, 76 160, 54 168 L54 214 C76 206, 108 208, 128 222 Z" fill="#FFFFFF"/>
+    <!-- 右ページ -->
+    <path d="M128 176 C148 162, 180 160, 202 168 L202 214 C180 206, 148 208, 128 222 Z" fill="#ECEFFC"/>
+    <!-- 背表紙 -->
+    <line x1="128" y1="176" x2="128" y2="222" stroke="#C9D1F2" stroke-width="5"/>
+    <!-- 行 -->
+    <g stroke="#AEB8E8" stroke-width="5" stroke-linecap="round">
+      <line x1="70" y1="180" x2="112" y2="186"/>
+      <line x1="70" y1="194" x2="112" y2="200"/>
+      <line x1="144" y1="186" x2="186" y2="180"/>
+      <line x1="144" y1="200" x2="186" y2="194"/>
+    </g>
+  </g>
+</svg>
