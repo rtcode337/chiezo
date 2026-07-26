@@ -10,17 +10,26 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
   ファイル名の stem と `meta.source` が一致する `*.db` をソースとして登録する(世代ファイル
   `jawiki-20260701.db` は登録されず、シンボリックリンク `jawiki.db` のみ登録される)。
   - `app/main.py` — ルーティング(/, /healthz, /v1/sources,
-    /v1/{source}/search|doc|filter|titles|links|random,
+    /v1/{source}/search|doc|filter|tags|titles|links|random,
     /admin, /admin/init/{source}, /{source}/, /{source}/doc/{doc_id})
-    - `/v1/{source}/filter` — 全文検索ではなく属性(`feature` / `area` / `bbox` / `wikidata`)の
-      AND での一括抽出(Overpass 相当)。`docs` の生成列への索引付き検索なので
+    - `/v1/{source}/filter` — 全文検索ではなく属性(`feature` / `area` / `bbox` / `wikidata` /
+      `tag`)の AND での一括抽出(Overpass 相当)。`docs` の生成列への索引付き検索なので
       `schema_version` 2 以上が必要(1 の DB には 409)。条件は `build_attribute_filters()` が
       SQL 断片に変換し、`search` / `doc` からも同じ関数で併用できる
+    - `tag`(= Wikipedia のカテゴリ等)だけは生成列ではなく転置表 `doc_tags` を引くので
+      `schema_version` 3 以上が必要(2 の DB には 409 + `scripts/add_tag_index.py` を案内)。
+      SQL は `docs.doc_id IN (SELECT dt.doc_id FROM doc_tags dt WHERE dt.tag IN (…))` の形で
+      **書き方が性能に直結する**: `EXISTS (…)` にすると SQLite は docs 側を全走査して 1 行ずつ
+      確認する計画を選び、jawiki 規模で数百倍遅くなる(実測 0.3ms → 100ms/30万件)。
+      `IN (サブクエリ)` なら LIST SUBQUERY → rowid 検索に落ちる
+    - `/v1/{source}/tags` — タグ名を文書数つきで列挙(`prefix` = 索引の範囲検索 /
+      `contains` = 索引が効かない部分一致)。`filter?tag=` が完全一致なので、
+      当てずっぽうで 0 件を掴む前に実在する名前を確かめるための窓口
     - `doc` は同名の別地物がある場合 `alternatives` を併記する(`fetch_doc_candidates()`)。
       OSM は「博多駅」のような名前が駅とラーメン店で衝突するため、黙って 1 件返すと
       取り違えに気づけない
   - `app/registry.py` — /data 走査・ソース登録、`SUPPORTED_SCHEMA_VERSIONS` /
-    `FILTER_MIN_SCHEMA_VERSION`
+    `FILTER_MIN_SCHEMA_VERSION` / `TAG_MIN_SCHEMA_VERSION`
   - `app/db.py` — スレッドローカル immutable 接続、5 秒クエリタイムアウト(超過は 504)
   - `app/fts.py` — FTS5 エスケープ(フレーズクォート + AND 結合)と 3 文字未満の前方一致フォールバック判定
   - `app/known_sources.py` — `chiezo-trigger` が未設定・到達不能なときの控えの既知ソース一覧と、
@@ -97,10 +106,16 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
     上限(既定 32MiB)に固定される。中断時にも消えるよう `iter_docs` の finally で必ず close する。
     これにより wikipedia 系の取り込みは軽くなり、必要メモリは 3GiB 見当に収まる
     (下記「メモリ方針」を参照)
-  - `core.py` — コアスキーマ DDL と `Doc` 型(全ソース共通)。`SCHEMA_VERSION` は 2。
+  - `core.py` — コアスキーマ DDL と `Doc` 型(全ソース共通)。`SCHEMA_VERSION` は 3。
     `docs` に生成列(VIRTUAL)`feature` / `area` / `lat` / `lon` / `wikidata` を持ち、
     実体は従来どおり `extra`(JSON)から `json_extract` する射影+索引でしかない。
-    アダプタ側は `extra` に詰めるだけでよく、`Doc` の形は変わらない
+    アダプタ側は `extra` に詰めるだけでよく、`Doc` の形は変わらない。
+    3 で足した `doc_tags`(タグ → 文書の転置表)も同じ精神で `docs.tags`(JSON 配列)の
+    射影でしかなく、`DOC_TAGS_POPULATE_SQL` が docs 投入後に `json_each` で一括展開する
+    (生成列にできないのは 1 文書が複数タグを持ち 1 行に畳めないため)。
+    行ごとに append せず docs から作り直すのは、`docs` 側が `INSERT OR REPLACE` を使う
+    (同じ doc_id が二度来たら最後の 1 件が残る)ため。同じ SQL を
+    `scripts/add_tag_index.py`(既存 DB の 2 → 3 移行)も使う
   - `sources/wikipedia.py` — Wikipedia 標準 XML ダンプアダプタ(`wiki_id` パラメータ化。
     全言語版は下の `wikipedia_editions.py` から機械的に登録される。pageview ドメインは
     URL 言語コードから `<lang>.wikipedia` を導出し、不規則な wiki だけ `WIKI_DOMAIN` で上書き)。`https://dumps.wikimedia.org/<wiki_id>/<date>/<wiki_id>-<date>-pages-articles.xml.bz2`
@@ -130,6 +145,11 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
     (`{{Coord}}` 系テンプレートの位置引数・度分秒に加え、駅や空港の Infobox が持つ
     `緯度度`/`経度度`・`latd`/`longd` のような名前付き引数にも対応。Wikidata の P625 を
     引くには別途巨大なダンプが要るため、本文だけで完結させている)。
+    カテゴリ(`[[Category:X]]`)は `Doc.tags` に入れる(wikilink のリンク先から取るので、
+    `[[Category:ラーメン店|らあめんしろう]]` のようにソートキーが付いていてもカテゴリ名が
+    取れる)。**本文(`body`)側はソートキー付きだと表示テキスト側しか残らずカテゴリ名が
+    消える**ため、カテゴリの全記事列挙を全文検索(`search?q=Category:…`)で代用すると
+    静かに取りこぼす(実例: ラーメン二郎が漏れた)。列挙は `filter?tag=` を使う
   - `sources/osm.py` — OpenStreetMap アダプタ(`region` パラメータ化、Geofabrik の
     `<region>-latest.osm.pbf` を pyosmium(libosmium バインディング)で解析)。
     Geofabrik が 2026 年に `.osm.bz2` 配布を終了し `.osm.pbf` のみになったため、標準ライブラリの
@@ -271,6 +291,11 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
     「Ukraine (with Crimea)」や複数国をまとめた抽出)は `OVERRIDES` に人手で書く
     — Geofabrik の ISO コードには取り違え(トケラウに `VU` 等)があり、そのまま引くと
     「トケラウ = バヌアツ」のような誤表示になるため
+  - `add_tag_index.py` — 既存 DB の `schema_version` 2 → 3 移行(タグ転置表 `doc_tags` の
+    追加)。タグは 2 の DB にも `docs.tags` として入っているので、ダンプを取り直さず
+    その場で作れる(jawiki の再取り込み 2〜6 時間に対し数分〜十数分)。
+    `meta` の更新を最後の 1 ステップにしてあるので、中断しても中途半端に 3 を名乗る DB は
+    残らない(もう一度実行すればやり直す)。書き込むので API は止めてから実行する
 - `assets/` — プロジェクトアイコン(`icon.svg`。README ヘッダーと管理画面ファビコンの原本)
 - `tests/` — フィクスチャ(`fixtures/mini_jawiki.xml.gz` 12 文書、`fixtures/mini_osm.osm.pbf`、
   `fixtures/mini_geonames.zip` ほか geonames 一式)での API / ingest テスト

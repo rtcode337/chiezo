@@ -19,7 +19,13 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from core import CORE_INDEX_DDL, CORE_SCHEMA_DDL, SCHEMA_VERSION, SourceAdapter
+from core import (
+    CORE_INDEX_DDL,
+    CORE_SCHEMA_DDL,
+    DOC_TAGS_POPULATE_SQL,
+    SCHEMA_VERSION,
+    SourceAdapter,
+)
 
 log = logging.getLogger("chiezo.ingest")
 
@@ -175,6 +181,14 @@ def build_db(adapter: SourceAdapter, dump_path: Path, dump_date: str, building_p
         flush()
         log.info("inserted %d docs total", total)
 
+        # docs.tags(JSON 配列)を doc_tags へ展開する。索引を張る前に流すのと、
+        # 行ごとではなく docs から作り直すのは core.DOC_TAGS_POPULATE_SQL のコメントの通り。
+        log.info("expanding tags...")
+        conn.execute(DOC_TAGS_POPULATE_SQL)
+        conn.commit()
+        (tag_rows,) = conn.execute("SELECT COUNT(*) FROM doc_tags").fetchone()
+        log.info("indexed %d tag rows", tag_rows)
+
         log.info("creating indexes...")
         conn.executescript(CORE_INDEX_DDL)
         conn.commit()
@@ -217,7 +231,16 @@ def validate_db(adapter: SourceAdapter, db_path: Path) -> None:
             ).fetchone()
             if fts is None:
                 raise RuntimeError(f"validation failed: FTS search returned nothing for {title!r}")
-        log.info("validation OK: %d docs, %d sample titles", count, len(adapter.sample_titles))
+        # タグを持つ文書があるのに転置表が空なら、doc_tags の組み立てが落ちている
+        # (このまま配ると filter?tag= が黙って 0 件を返す)。
+        tagged = conn.execute("SELECT 1 FROM docs WHERE tags IS NOT NULL LIMIT 1").fetchone()
+        (tag_rows,) = conn.execute("SELECT COUNT(*) FROM doc_tags").fetchone()
+        if tagged and not tag_rows:
+            raise RuntimeError("validation failed: docs have tags but doc_tags is empty")
+        log.info(
+            "validation OK: %d docs, %d tag rows, %d sample titles",
+            count, tag_rows, len(adapter.sample_titles),
+        )
     finally:
         conn.close()
 

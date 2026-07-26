@@ -52,7 +52,7 @@ docker compose restart chiezo-api
 ```bash
 BASE=http://<サーバーIP>:9000
 
-# 日本語・スペース等を含むパラメータ(q/title/prefix/area/feature)は、URL に直接埋め込む
+# 日本語・スペース等を含むパラメータ(q/title/prefix/area/feature/tag)は、URL に直接埋め込む
 # のではなく `-G --data-urlencode` で渡す(生の UTF-8 はサーバーに弾かれるため)
 curl -s "$BASE/v1/sources"                                          # ソース一覧
 curl -sG "$BASE/v1/jawiki/search?limit=5" --data-urlencode "q=浅草寺"                    # 全文検索
@@ -62,6 +62,11 @@ curl -sG "$BASE/v1/jawiki/doc?fields=title,extra" --data-urlencode "title=浅草
 curl -sG "$BASE/v1/jawiki/titles" --data-urlencode "prefix=浅草"                         # タイトル前方一致
 curl -sG "$BASE/v1/jawiki/links" --data-urlencode "title=浅草寺"                         # リンク先一覧
 curl -s "$BASE/v1/jawiki/random?limit=3"                            # ランダム文書
+
+# タグ(Wikipedia のカテゴリ)。カテゴリの全記事を列挙するのはこちらで、
+# 本文の全文検索で "Category:" 行を拾ってはいけない(後述の取りこぼしがある)
+curl -sG "$BASE/v1/jawiki/tags" --data-urlencode "contains=ラーメン"                     # タグ名を文書数つきで探す
+curl -sG "$BASE/v1/jawiki/filter?limit=200" --data-urlencode "tag=ラーメン店"            # そのカテゴリの記事を全件
 
 curl -sG "$BASE/v1/osm_japan/search?limit=5" --data-urlencode "q=富士山"                 # 地名・POI検索(同一エンドポイント)
 curl -sG "$BASE/v1/osm_japan/doc?fields=title,extra" --data-urlencode "title=京都市"     # 座標・OSMタグ等
@@ -106,11 +111,23 @@ OSM の国別ソース(`osm_<国>`、195 件)と Wikipedia の言語版(`<lang>w
   `lat` / `lon` を最大 5 件)を併記するので、取り違えにその場で気づけます。`area` / `feature` /
   `bbox` で最初から絞り込むこともできます(例: `doc?title=博多駅&feature=railway%3Dstation`)。
 - `filter` — 属性での絞り込み一括抽出。`feature`(`amenity=place_of_worship` 形式。カンマ区切りで
-  複数可)・`area`(所属行政区名)・`bbox`(`min_lat,min_lon,max_lat,max_lon`)・`wikidata`(Q 番号)を
+  複数可)・`area`(所属行政区名)・`bbox`(`min_lat,min_lon,max_lat,max_lon`)・`wikidata`(Q 番号)・
+  `tag`(タグ = Wikipedia のカテゴリ等。カンマ区切りで複数可、その中は OR)を
   AND で組み合わせます。1 つ以上の条件が必須(無指定は 400)。`limit` 既定 50・最大 500、応答の
   `total` と `offset` でページングできます。実体は `docs` の生成列(`feature` / `area` / `lat` /
   `lon` / `wikidata`)への索引付き検索で、これは `schema_version` 2 以降の DB にしかありません
   (1 のまま残っている DB では 409 を返すので、取り込みをやり直してください)。
+  `tag` だけは別建てのタグ転置表(`doc_tags`)を引くため `schema_version` 3 以降が必要です
+  (2 の DB では 409。再取り込みか、後述の `scripts/add_tag_index.py` でその場で移行できます)。
+- `tags` — タグ名を文書数つきで列挙します(`prefix` = 前方一致・索引が効く / `contains` =
+  部分一致・索引が効かないぶん遅い / 無指定 = 文書数の多い順)。`filter?tag=` はタグ名の
+  **完全一致**なので、Wikipedia のカテゴリのように表記の揺れがあるものは、まずここで実在する
+  名前を確かめてから引くのが確実です(`schema_version` 3 以降)。
+- **カテゴリの全記事を列挙したいときは、本文の全文検索(`search?q=Category:ラーメン店`)ではなく
+  `filter?tag=` を使ってください。** wikitext でソートキー付きに書かれたカテゴリ
+  (`[[Category:ラーメン店|らあめんしろう]]`)は、本文側にはソートキーしか残らずカテゴリ名が
+  消えるため、全文検索では静かに取りこぼします(実例: ラーメン二郎)。`tags` / `doc_tags` は
+  wikitext のリンク先から取っているので、ソートキーの有無に関わらず引けます。
 - `extra` フィールド(jawiki) — 座標を持つ記事(`{{Coord}}` テンプレートや駅・空港・施設の
   Infobox の `緯度度`/`経度度` 系引数から抽出)には `{"lat": ..., "lon": ...}` が入ります。
   ページビューを突合できた記事には
@@ -235,6 +252,24 @@ docker compose --profile ingest run --rm chiezo-ingest && docker compose restart
 ```cron
 0 3 1 * * cd /opt/chiezo && docker compose --profile ingest run --rm chiezo-ingest && docker compose restart chiezo-api
 ```
+
+### 既存 DB にタグ索引を足す(schema_version 2 → 3)
+
+タグ絞り込み(`filter?tag=` / `tags`)はタグ転置表 `doc_tags` を引くため
+`schema_version` 3 以降の DB が要ります。タグ自体は 2 の DB にも `docs.tags` として
+入っているので、**ダンプを取り直さずその場で移行できます**(jawiki の再取り込みは 2〜6 時間、
+この移行は数分〜十数分)。
+
+```bash
+docker compose stop chiezo-api        # 読み取り中の DB を書き換えないため
+python3 scripts/add_tag_index.py data/jawiki.db data/osm_japan.db
+docker compose start chiezo-api
+```
+
+シンボリックリンク(`jawiki.db`)を渡してよく(実体の世代ファイルを書き換えます)、
+すでに 3 の DB には何もしません。中断しても、もう一度実行すればやり直せます
+(`meta` の更新が最後の 1 ステップなので、中途半端に 3 を名乗る DB は残りません)。
+次の取り込みからは新しいスキーマで構築されるため、この作業は 1 回だけです。
 
 ingest の環境変数:
 

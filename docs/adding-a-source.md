@@ -95,7 +95,7 @@ class AozoraAdapter:
 | `title` | 一意なタイトル(UNIQUE 制約あり) |
 | `opening` | 冒頭要約(無ければ None) |
 | `body` | 本文プレーンテキスト |
-| `tags` | 分類(Wikipedia ならカテゴリ) |
+| `tags` | 分類(Wikipedia ならカテゴリ)。`doc_tags` へ自動展開され `filter?tag=` / `tags` で引ける |
 | `links` | 関連文書タイトルの配列 |
 | `aliases` | この文書を指す別名(リダイレクト等)→ aliases テーブルへ展開 |
 | `updated_at` | 更新日時(ISO 8601) |
@@ -150,7 +150,7 @@ docker compose --profile ingest run --rm \
 ## 守るべき原則
 
 1. ソースごとに独立した SQLite ファイル 1 つ。ソース間で JOIN しない。
-2. コアスキーマ(meta / docs / aliases / docs_fts)は全ソース共通。
+2. コアスキーマ(meta / docs / aliases / docs_fts / doc_tags)は全ソース共通。
    足りないフィールドは `extra` に逃がし、コアスキーマ変更は最終手段
    (変更時は `schema_version` を上げ、api 側で複数バージョン対応)。
 3. `fetch()` は再開可能に、`iter_docs()` はストリーミングで。

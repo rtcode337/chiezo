@@ -138,6 +138,104 @@ class TestDoc:
         assert res.status_code == 404
 
 
+class TestTagFilter:
+    """タグ(Wikipedia のカテゴリ)での絞り込み。
+
+    全文検索で本文の "Category:" 行を拾う代用は、ソートキー付きのカテゴリ
+    (`[[Category:日本の小説家|なつめ そうせき]]`)を取りこぼす。tags 経由なら引ける、
+    というのがこの機能の存在理由なので、その対比もここで固定しておく。
+    """
+
+    def test_filter_by_tag(self, client):
+        res = client.get("/v1/jawiki/filter", params={"tag": "日本の都道府県"})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["total"] == 2
+        assert sorted(r["title"] for r in body["results"]) == ["大阪府", "東京都"]
+
+    def test_filter_by_tag_finds_articles_full_text_search_misses(self, client):
+        # カテゴリ列挙を全文検索で代用する方法(本文の "Category:" 行を引く)。
+        # ソートキーが無い記事は引けるが……
+        hit = client.get("/v1/jawiki/search", params={"q": "Category:東京都の寺"})
+        assert [r["title"] for r in hit.json()["results"]] == ["浅草寺"]
+        # ソートキー付きの記事は本文にカテゴリ名が残らないので引けない
+        miss = client.get("/v1/jawiki/search", params={"q": "Category:日本の小説家"})
+        assert miss.json()["results"] == []
+
+        res = client.get("/v1/jawiki/filter", params={"tag": "日本の小説家"})
+        assert res.status_code == 200
+        assert [r["title"] for r in res.json()["results"]] == ["夏目漱石"]
+
+    def test_filter_by_multiple_tags_is_or(self, client):
+        res = client.get("/v1/jawiki/filter", params={"tag": "台東区,世界遺産"})
+        assert res.status_code == 200
+        assert sorted(r["title"] for r in res.json()["results"]) == ["富士山", "浅草寺"]
+
+    def test_filter_by_unknown_tag_is_empty(self, client):
+        res = client.get("/v1/jawiki/filter", params={"tag": "存在しないカテゴリ"})
+        assert res.status_code == 200
+        assert res.json() == {
+            "source": "jawiki", "total": 0, "limit": 50, "offset": 0, "results": []
+        }
+
+    def test_filter_tag_pagination_and_fields(self, client):
+        res = client.get(
+            "/v1/jawiki/filter",
+            params={"tag": "日本の都道府県", "fields": "title,tags", "limit": 1},
+        )
+        (row,) = res.json()["results"]
+        assert sorted(row) == ["tags", "title"]
+        assert "日本の都道府県" in row["tags"]
+        assert res.json()["total"] == 2  # limit を絞っても総数は返る
+
+    def test_search_can_be_narrowed_by_tag(self, client):
+        params = {"q": "である"}  # FTS 経路
+        assert len(client.get("/v1/jawiki/search", params=params).json()["results"]) > 1
+        res = client.get("/v1/jawiki/search", params={**params, "tag": "近畿地方"})
+        assert [r["title"] for r in res.json()["results"]] == ["大阪府"]
+
+    def test_short_query_title_prefix_fallback_honors_tag(self, client):
+        # 3 文字未満はタイトル前方一致へ落ちる別経路。ここでも tag が効く
+        params = {"q": "大阪"}
+        assert client.get("/v1/jawiki/search", params=params).json()["mode"] == "title_prefix"
+        hit = client.get("/v1/jawiki/search", params={**params, "tag": "近畿地方"})
+        assert [r["title"] for r in hit.json()["results"]] == ["大阪府"]
+        miss = client.get("/v1/jawiki/search", params={**params, "tag": "関東地方"})
+        assert miss.json()["results"] == []
+
+    def test_doc_can_be_narrowed_by_tag(self, client):
+        assert client.get(
+            "/v1/jawiki/doc", params={"title": "大阪府", "tag": "近畿地方", "fields": "title"}
+        ).json() == {"title": "大阪府"}
+        # タグが一致しなければ 404(同名の別文書を掴まないための絞り込み)
+        res = client.get("/v1/jawiki/doc", params={"title": "大阪府", "tag": "関東地方"})
+        assert res.status_code == 404
+
+    def test_tags_lists_names_with_doc_counts(self, client):
+        res = client.get("/v1/jawiki/tags", params={"limit": 3})
+        assert res.status_code == 200
+        tags = res.json()["tags"]
+        assert tags[0] == {"tag": "日本の都道府県", "docs": 2}  # 文書数の多い順
+        assert len(tags) == 3
+
+    def test_tags_prefix_and_contains(self, client):
+        by_prefix = client.get("/v1/jawiki/tags", params={"prefix": "日本の"}).json()["tags"]
+        assert {t["tag"] for t in by_prefix} == {"日本の都道府県", "日本の合戦", "日本の山",
+                                                 "日本の小説家", "日本の鉄道"}
+        by_contains = client.get("/v1/jawiki/tags", params={"contains": "地方"}).json()["tags"]
+        assert {t["tag"] for t in by_contains} == {"関東地方", "近畿地方"}
+
+    def test_tags_like_wildcards_escaped(self, client):
+        assert client.get("/v1/jawiki/tags", params={"prefix": "%"}).json()["tags"] == []
+        assert client.get("/v1/jawiki/tags", params={"contains": "%"}).json()["tags"] == []
+
+    def test_browse_doc_links_tags_to_tag_listing(self, client):
+        res = client.get("/jawiki/doc/1")
+        assert 'href="/jawiki/?tag=%E9%96%A2%E6%9D%B1%E5%9C%B0%E6%96%B9"' in res.text
+        listing = client.get("/jawiki/", params={"tag": "日本の都道府県"})
+        assert "大阪府" in listing.text and "東京都" in listing.text
+
+
 class TestTitlesLinksRandom:
     def test_titles_prefix(self, client):
         res = client.get("/v1/jawiki/titles", params={"prefix": "浅草"})
@@ -279,6 +377,18 @@ class TestClaudeConfig:
         # 登録済みソースが例示コマンドとして載る
         assert "- **jawiki**" in text
         assert "/v1/jawiki/search" in text
+
+    def test_config_txt_steers_category_lookups_to_the_tag_filter(self, client):
+        """カテゴリ列挙を本文の全文検索でやらせないための指示が載ること。
+
+        これが無いと Claude は `search?q=Category:ラーメン店` のような代用に走り、
+        ソートキー付きの記事(ラーメン二郎など)を黙って取りこぼす。
+        """
+        text = client.get("/admin/claude-config.txt").text
+        assert "/v1/jawiki/filter?limit=200&fields=title,tags" in text
+        assert 'tag=日本の都道府県' in text  # 実在するタグから例示している
+        assert "本文の全文検索で `Category:` 行を探してはいけない" in text
+        assert "/v1/jawiki/tags?limit=20" in text
 
     def test_config_txt_base_url_is_derived_from_request(self, client):
         """curl 例のベース URL はアクセス元(プロトコル・ホスト名・ポート)から導出する。"""
@@ -476,3 +586,83 @@ class TestFilterSchemaGuard:
                 assert c.get("/v1/jawiki/doc", params={"title": "東京都"}).status_code == 200
         finally:
             mp.undo()
+
+
+class TestTagSchemaGuard:
+    """schema_version 2 で作られた既存 DB は doc_tags を持たない(tag 絞り込みは 409)。"""
+
+    @pytest.fixture()
+    def legacy_client(self, tmp_path, built_data_dir):
+        import shutil
+        import sqlite3
+
+        from fastapi.testclient import TestClient
+
+        data_dir = tmp_path / "v2"
+        data_dir.mkdir()
+        db_path = data_dir / "jawiki.db"
+        shutil.copy(built_data_dir / "jawiki.db", db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute("DROP TABLE doc_tags")
+        conn.execute("UPDATE meta SET schema_version = 2")
+        conn.commit()
+        conn.close()
+
+        mp = pytest.MonkeyPatch()
+        mp.setenv("CHIEZO_DATA_DIR", str(data_dir))
+        try:
+            from app.main import app
+
+            with TestClient(app) as c:
+                yield c, db_path
+        finally:
+            mp.undo()
+
+    def test_tag_filter_returns_409_pointing_at_the_migration(self, legacy_client):
+        client, _ = legacy_client
+        for path, params in (
+            ("/v1/jawiki/filter", {"tag": "日本の都道府県"}),
+            ("/v1/jawiki/search", {"q": "日本", "tag": "日本の都道府県"}),
+            ("/v1/jawiki/tags", {}),
+        ):
+            res = client.get(path, params=params)
+            assert res.status_code == 409, path
+            assert "add_tag_index.py" in res.json()["error"]
+
+    def test_other_endpoints_still_work_on_v2(self, legacy_client):
+        client, _ = legacy_client
+        assert client.get("/v1/jawiki/doc", params={"title": "東京都"}).status_code == 200
+        assert client.get("/v1/jawiki/filter", params={"wikidata": "Q1490"}).status_code == 200
+        # tags は取れるが、リンクにはしない(飛んだ先が 409 になるため)
+        assert "?tag=" not in client.get("/jawiki/doc/1").text
+
+    def test_add_tag_index_migrates_in_place(self, legacy_client):
+        import sqlite3
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        _, db_path = legacy_client
+        script = Path(__file__).resolve().parents[1] / "scripts" / "add_tag_index.py"
+        run = subprocess.run(
+            [sys.executable, str(script), str(db_path)], capture_output=True, text=True
+        )
+        assert run.returncode == 0, run.stderr
+
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            (version,) = conn.execute("SELECT schema_version FROM meta").fetchone()
+            assert version == 3
+            rows = conn.execute(
+                "SELECT doc_id FROM doc_tags WHERE tag = '日本の都道府県'"
+            ).fetchall()
+            assert sorted(r[0] for r in rows) == [1, 10]
+        finally:
+            conn.close()
+
+        # 二度目は何もしない(冪等)
+        again = subprocess.run(
+            [sys.executable, str(script), str(db_path)], capture_output=True, text=True
+        )
+        assert again.returncode == 0
+        assert "nothing to do" in again.stdout

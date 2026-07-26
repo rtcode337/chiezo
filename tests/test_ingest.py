@@ -127,7 +127,7 @@ class TestBuild:
             assert meta["source_kind"] == "wikipedia"
             assert meta["lang"] == "ja"
             assert meta["dump_date"] == "20260701"
-            assert meta["schema_version"] == 2
+            assert meta["schema_version"] == 3
 
             (count,) = conn.execute("SELECT COUNT(*) FROM docs").fetchone()
             assert count == 11
@@ -142,6 +142,48 @@ class TestBuild:
             assert "Wikipedia:浅草寺関連" not in aliases
         finally:
             conn.close()
+
+    def test_doc_tags_is_expanded_from_docs_tags(self, built_data_dir):
+        conn = connect(built_data_dir / "jawiki.db")
+        try:
+            rows = conn.execute(
+                "SELECT d.title FROM doc_tags t JOIN docs d ON d.doc_id = t.doc_id"
+                " WHERE t.tag = '日本の都道府県' ORDER BY d.title"
+            ).fetchall()
+            assert [r["title"] for r in rows] == ["大阪府", "東京都"]
+
+            # ソートキー付きのカテゴリ(`[[Category:日本の小説家|なつめ そうせき]]`)。
+            # 本文からはカテゴリ名が消えるが、tags 経由なので doc_tags には入る。
+            (n,) = conn.execute(
+                "SELECT COUNT(*) FROM doc_tags WHERE tag = '日本の小説家'"
+            ).fetchone()
+            assert n == 1
+            body = conn.execute(
+                "SELECT body FROM docs WHERE title = '夏目漱石'"
+            ).fetchone()["body"]
+            assert "Category:日本の小説家" not in body, "本文にはソートキーしか残らない"
+            assert "なつめ そうせき" in body
+
+            # 同じ (tag, doc_id) が二重に入らない
+            (dupes,) = conn.execute(
+                "SELECT COUNT(*) FROM (SELECT tag, doc_id FROM doc_tags"
+                " GROUP BY tag, doc_id HAVING COUNT(*) > 1)"
+            ).fetchone()
+            assert dupes == 0
+        finally:
+            conn.close()
+
+    def test_validation_fails_when_doc_tags_is_empty(self, tmp_path, built_data_dir):
+        import shutil
+
+        db_path = tmp_path / "broken.db"
+        shutil.copy(built_data_dir / "jawiki.db", db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute("DELETE FROM doc_tags")
+        conn.commit()
+        conn.close()
+        with pytest.raises(RuntimeError, match="doc_tags is empty"):
+            ingest_main.validate_db(make_test_adapter(), db_path)
 
     def test_fts_search_works(self, built_data_dir):
         conn = connect(built_data_dir / "jawiki.db")

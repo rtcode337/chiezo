@@ -27,11 +27,16 @@ class Source:
     path: Path
 
 
-SUPPORTED_SCHEMA_VERSIONS = {1, 2}
+SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3}
 
 # 生成列 (feature/area/lat/lon/wikidata) と索引が入ったのは schema_version 2 から。
 # 1 のまま残っている DB に対しては /v1/<source>/filter を 409 で断る。
 FILTER_MIN_SCHEMA_VERSION = 2
+
+# タグ転置表 (doc_tags) が入ったのは schema_version 3 から。
+# 2 以下の DB に対しては tag での絞り込みと /v1/<source>/tags を 409 で断る
+# (取り込み直すか scripts/add_tag_index.py で移行する)。
+TAG_MIN_SCHEMA_VERSION = 3
 
 
 def _load_source(db_path: Path) -> Source | None:

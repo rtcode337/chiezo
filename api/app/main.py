@@ -7,6 +7,7 @@ import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -21,7 +22,12 @@ from app import claude_config, db
 from app.fts import build_match_query, escape_like
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
 from app.pages import esc, page_shell
-from app.registry import FILTER_MIN_SCHEMA_VERSION, Source, scan_sources
+from app.registry import (
+    FILTER_MIN_SCHEMA_VERSION,
+    TAG_MIN_SCHEMA_VERSION,
+    Source,
+    scan_sources,
+)
 
 log = logging.getLogger("chiezo.api")
 
@@ -699,14 +705,17 @@ def search(
     area: str | None = Query(None, description="所属行政区で絞る(同名の別地物の取り違え防止)"),
     feature: str | None = Query(None, description="地物種別で絞る。カンマ区切りで複数可"),
     bbox: str | None = Query(None, description="'min_lat,min_lon,max_lat,max_lon' で絞る"),
+    tag: str | None = Query(None, description="タグ(Wikipedia のカテゴリ等)で絞る。カンマ区切りで複数可(OR)"),
     limit: int = Query(SEARCH_LIMIT_DEFAULT, ge=1, le=SEARCH_LIMIT_MAX),
     offset: int = Query(0, ge=0),
 ):
     src = get_source(request, source)
-    extra_where, extra_params = build_attribute_filters(src, area=area, feature=feature, bbox=bbox)
+    extra_where, extra_params = build_attribute_filters(
+        src, area=area, feature=feature, bbox=bbox, tag=tag
+    )
     # FTS 側は docs に別名 d を付けて JOIN するため、列名を修飾した版も用意する
     extra_where_d, _ = build_attribute_filters(
-        src, area=area, feature=feature, bbox=bbox, column_prefix="d."
+        src, area=area, feature=feature, bbox=bbox, tag=tag, column_prefix="d."
     )
     match = build_match_query(q)
     if match is None:
@@ -844,14 +853,15 @@ def get_doc_by_title(
     area: str | None = Query(None, description="所属行政区で絞る(同名の別地物の取り違え防止)"),
     feature: str | None = Query(None, description="地物種別で絞る。カンマ区切りで複数可"),
     bbox: str | None = Query(None, description="'min_lat,min_lon,max_lat,max_lon' で絞る"),
+    tag: str | None = Query(None, description="タグ(Wikipedia のカテゴリ等)で絞る。カンマ区切りで複数可(OR)"),
     fields: str | None = None,
     max_chars: int = Query(0, ge=0),
 ):
     src = get_source(request, source)
     field_list = parse_fields(fields)
-    where, params = build_attribute_filters(src, area=area, feature=feature, bbox=bbox)
+    where, params = build_attribute_filters(src, area=area, feature=feature, bbox=bbox, tag=tag)
     where_d, _ = build_attribute_filters(
-        src, area=area, feature=feature, bbox=bbox, column_prefix="d."
+        src, area=area, feature=feature, bbox=bbox, tag=tag, column_prefix="d."
     )
     rows = fetch_doc_candidates(src, title, where, tuple(params), where_d)
     if not rows:
@@ -896,6 +906,26 @@ def require_filter_schema(src: Source) -> None:
         )
 
 
+def require_tag_schema(src: Source) -> None:
+    """タグ転置表(doc_tags)が無い古い DB を明示的に断る。
+
+    再取り込みは jawiki で数時間かかるので、既存 DB を作り直さずに移行できる
+    scripts/add_tag_index.py の方も案内する(docs.tags は 2 以前の DB にも入っている
+    ので、転置表と索引を足すだけで済む)。
+    """
+    if src.schema_version < TAG_MIN_SCHEMA_VERSION:
+        raise HTTPException(
+            409,
+            {
+                "error": (
+                    f"source {src.name} was built with schema_version={src.schema_version};"
+                    f" tag filters require >= {TAG_MIN_SCHEMA_VERSION}"
+                    " (re-run ingest, or migrate in place with scripts/add_tag_index.py)"
+                )
+            },
+        )
+
+
 def build_attribute_filters(
     src: Source,
     *,
@@ -903,6 +933,7 @@ def build_attribute_filters(
     area: str | None = None,
     bbox: str | None = None,
     wikidata: str | None = None,
+    tag: str | None = None,
     column_prefix: str = "",
 ) -> tuple[str, list]:
     """属性条件を ` AND ...` の形の SQL 断片とパラメータに変換する。
@@ -910,12 +941,23 @@ def build_attribute_filters(
     条件が 1 つも指定されなければ空文字を返すので、呼び出し側の SQL に無条件で
     連結してよい(その場合 schema_version の検査もしない = 既存 DB でも従来どおり動く)。
     """
-    if not any((feature, area, bbox, wikidata)):
+    if not any((feature, area, bbox, wikidata, tag)):
         return "", []
     require_filter_schema(src)
     p = column_prefix
     where: list[str] = []
     params: list = []
+    if tag:
+        require_tag_schema(src)
+        tags = [t.strip() for t in tag.split(",") if t.strip()]
+        # doc_tags を先に引いて doc_id で docs を叩く形(LIST SUBQUERY → rowid 検索)。
+        # EXISTS(...) で書くと SQLite は docs 側を全走査して 1 行ずつ確認する計画を選び、
+        # jawiki 規模では数百倍遅くなる(= タイムアウトする)。
+        where.append(
+            f"{p or 'docs.'}doc_id IN (SELECT dt.doc_id FROM doc_tags dt"
+            f" WHERE dt.tag IN ({','.join('?' * len(tags))}))"
+        )
+        params.extend(tags)
     if feature:
         features = [f.strip() for f in feature.split(",") if f.strip()]
         where.append(f"{p}feature IN ({','.join('?' * len(features))})")
@@ -956,6 +998,7 @@ def filter_docs(
     area: str | None = Query(None, description="所属する行政区名(OSM ソースでは都道府県相当)"),
     bbox: str | None = Query(None, description="'min_lat,min_lon,max_lat,max_lon'"),
     wikidata: str | None = Query(None, description="wikidata の Q 番号(逆引き)"),
+    tag: str | None = Query(None, description="タグ(Wikipedia のカテゴリ等)。カンマ区切りで複数可(OR)"),
     fields: str | None = None,
     limit: int = Query(FILTER_LIMIT_DEFAULT, ge=1, le=FILTER_LIMIT_MAX),
     offset: int = Query(0, ge=0),
@@ -963,20 +1006,21 @@ def filter_docs(
 ):
     """属性で文書を絞り込み一括で列挙する(全文検索ではなく等価・範囲条件)。
 
-    用途は「京都府の寺社を全件」のような機械的な抽出と、wikidata の Q 番号から
-    記事を引く逆引き。総件数 total を返すので offset でページングできる。
+    用途は「京都府の寺社を全件」「カテゴリ:ラーメン店の記事を全件」のような機械的な
+    抽出と、wikidata の Q 番号から記事を引く逆引き。総件数 total を返すので
+    offset でページングできる。
     """
     src = get_source(request, source)
     require_filter_schema(src)
     field_list = parse_fields(fields, FILTER_DEFAULT_FIELDS, FILTER_ALLOWED_FIELDS)
 
     where, params = build_attribute_filters(
-        src, feature=feature, area=area, bbox=bbox, wikidata=wikidata
+        src, feature=feature, area=area, bbox=bbox, wikidata=wikidata, tag=tag
     )
     if not where:
         raise HTTPException(
             400,
-            {"error": "at least one of feature, area, bbox, wikidata is required"},
+            {"error": "at least one of feature, area, bbox, wikidata, tag is required"},
         )
     clause = where.removeprefix(" AND ")
     (total,) = db.query(src.path, f"SELECT COUNT(*) AS n FROM docs WHERE {clause}", tuple(params))[0]
@@ -992,6 +1036,52 @@ def filter_docs(
         "limit": limit,
         "offset": offset,
         "results": [doc_response(r, field_list, max_chars) for r in rows],
+    }
+
+
+# ---- タグ一覧 ---------------------------------------------------------------
+
+TAGS_LIMIT_DEFAULT = 50
+TAGS_LIMIT_MAX = 500
+
+
+@app.get("/v1/{source}/tags")
+def list_tags(
+    request: Request,
+    source: str,
+    prefix: str | None = Query(None, description="タグ名の前方一致(索引が効く)"),
+    contains: str | None = Query(None, description="タグ名の部分一致(索引が効かず遅い)"),
+    limit: int = Query(TAGS_LIMIT_DEFAULT, ge=1, le=TAGS_LIMIT_MAX),
+    offset: int = Query(0, ge=0),
+):
+    """タグ名を文書数つきで列挙する(`filter?tag=` に渡す正確な名前を探すため)。
+
+    Wikipedia のカテゴリ名は表記の揺れが多く(「ラーメン店」「日本のラーメン店」…)、
+    当てずっぽうで `filter?tag=` を叩くと 0 件が返るだけで、名前が違うのか本当に
+    無いのかが分からない。ここで実在するタグ名を先に確かめられるようにしておく。
+    """
+    src = get_source(request, source)
+    require_tag_schema(src)
+    where = ""
+    params: list = []
+    if prefix:
+        # 前方一致は idx_doc_tags_tag の範囲検索に落ちる(db.py の case_sensitive_like=ON)
+        where += " WHERE tag LIKE ? ESCAPE '\\'"
+        params.append(escape_like(prefix) + "%")
+    if contains:
+        where += (" AND" if where else " WHERE") + " tag LIKE ? ESCAPE '\\'"
+        params.append("%" + escape_like(contains) + "%")
+    rows = db.query(
+        src.path,
+        f"SELECT tag, COUNT(*) AS docs FROM doc_tags{where}"
+        " GROUP BY tag ORDER BY docs DESC, tag LIMIT ? OFFSET ?",
+        (*params, limit, offset),
+    )
+    return {
+        "source": source,
+        "prefix": prefix,
+        "contains": contains,
+        "tags": [dict(r) for r in rows],
     }
 
 
@@ -1062,8 +1152,43 @@ def _browse_nav(source: str) -> str:
 
 
 @app.get("/{source}/", response_class=HTMLResponse)
-def browse_source(request: Request, source: str, q: str | None = Query(None)):
+def browse_source(
+    request: Request,
+    source: str,
+    q: str | None = Query(None),
+    tag: str | None = Query(None),
+):
     src = get_source(request, source)
+    if tag:
+        # 文書詳細のタグから飛んでくる導線(= /v1/<source>/filter?tag= の人間向け)
+        require_tag_schema(src)
+        rows = db.query(
+            src.path,
+            "SELECT doc_id, title, substr(coalesce(opening, body), 1, 160) AS snippet"
+            " FROM docs WHERE docs.doc_id IN (SELECT dt.doc_id FROM doc_tags dt WHERE dt.tag = ?)"
+            " ORDER BY rank_score DESC, title LIMIT ?",
+            (tag, BROWSE_LIMIT),
+        )
+        items = "\n".join(
+            f"<tr><td><a href=\"/{esc(source)}/doc/{r['doc_id']}\">{esc(r['title'])}</a></td>"
+            f"<td class=\"snippet\">{esc(r['snippet'] or '')}</td></tr>"
+            for r in rows
+        )
+        if not items:
+            items = '<tr><td colspan="2">このタグの文書はありません</td></tr>'
+        body = f"""
+{_browse_nav(source)}
+<h1>{esc(source)}: タグ「{esc(tag)}」</h1>
+<p class="muted">先頭 {BROWSE_LIMIT} 件。全件は
+<code>/v1/{esc(source)}/filter?tag=…</code> で取得できます。</p>
+<table>
+<thead><tr><th>title</th><th>snippet</th></tr></thead>
+<tbody>
+{items}
+</tbody>
+</table>
+"""
+        return HTMLResponse(content=page_shell(f"chiezo: {source} / {tag}", body))
     if q:
         match = build_match_query(q)
         if match is None:
@@ -1131,7 +1256,14 @@ def browse_doc(request: Request, source: str, doc_id: int):
     tags = json.loads(row["tags"]) if row["tags"] else []
     links = json.loads(row["links"]) if row["links"] else []
     extra = json.loads(row["extra"]) if row["extra"] else {}
-    tags_html = ", ".join(esc(t) for t in tags) or "(なし)"
+    if src.schema_version >= TAG_MIN_SCHEMA_VERSION:
+        # 同じタグの文書一覧へ飛べるようにする(タグ絞り込みの導線)
+        tags_html = ", ".join(
+            f'<a href="/{esc(source)}/?tag={quote(t)}">{esc(t)}</a>' for t in tags
+        )
+    else:
+        tags_html = ", ".join(esc(t) for t in tags)
+    tags_html = tags_html or "(なし)"
     links_html = "\n".join(f"<li>{esc(link)}</li>" for link in links) or "<li>(なし)</li>"
     extra_html = json.dumps(extra, ensure_ascii=False, indent=2) if extra else "(なし)"
     body = f"""

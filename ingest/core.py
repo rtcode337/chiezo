@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Protocol
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 CORE_SCHEMA_DDL = """
 -- ソース自身のメタ情報(1行)
@@ -50,6 +50,17 @@ CREATE TABLE aliases (
     doc_id    INTEGER NOT NULL REFERENCES docs(doc_id)
 );
 
+-- タグ(Wikipediaのカテゴリ等)→ 文書の転置表(schema_version 3 で追加)。
+-- docs.tags(JSON 配列)を展開しただけの射影で、実体は今までどおり docs.tags のまま。
+-- 生成列にできないのは 1 文書が複数のタグを持つ(1 行に畳めない)ため。
+-- 全文検索でカテゴリを探す代用(本文の "Category:" 行を引く)は、ソートキー付き
+-- (`[[Category:ラーメン店|らあめんしろう]]`)の記事で本文側からカテゴリ名が落ちるため
+-- 取りこぼす。tags は wikitext のリンク先から取っており落ちないので、こちらを索引する。
+CREATE TABLE doc_tags (
+    tag       TEXT NOT NULL,
+    doc_id    INTEGER NOT NULL REFERENCES docs(doc_id)
+);
+
 -- 全文検索(external content 方式で本文の二重保存を回避)
 CREATE VIRTUAL TABLE docs_fts USING fts5(
     title, body,
@@ -69,6 +80,21 @@ CREATE INDEX idx_docs_feature_area ON docs(feature, area);
 CREATE INDEX idx_docs_area_feature ON docs(area, feature);
 CREATE INDEX idx_docs_lat_lon ON docs(lat, lon);
 CREATE INDEX idx_docs_wikidata ON docs(wikidata);
+-- /v1/<source>/filter?tag= と /v1/<source>/tags?prefix= 用。doc_id まで含めた複合に
+-- するのは、タグ → doc_id の引き当てとタグ名の集計をこの索引だけで済ませるため
+-- (covering index。docs 本体を触らない)。
+CREATE INDEX idx_doc_tags_tag ON doc_tags(tag, doc_id);
+"""
+
+# docs 投入後に doc_tags を組み立てる SQL(索引を張る前に流す)。
+# docs から作り直す方式にしているのは、docs 側が INSERT OR REPLACE を使う(同じ doc_id が
+# 二度来ても最後の 1 件が残る)ため。行ごとに append すると置き換えられた古いタグが残る。
+# scripts/add_tag_index.py(既存 DB の schema 2 → 3 移行)も同じ SQL を使う。
+DOC_TAGS_POPULATE_SQL = """
+INSERT INTO doc_tags (tag, doc_id)
+SELECT DISTINCT json_each.value, docs.doc_id
+  FROM docs, json_each(docs.tags)
+ WHERE docs.tags IS NOT NULL AND json_each.value <> ''
 """
 
 

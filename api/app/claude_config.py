@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app import db
-from app.registry import FILTER_MIN_SCHEMA_VERSION, Source
+from app.registry import FILTER_MIN_SCHEMA_VERSION, TAG_MIN_SCHEMA_VERSION, Source
 
 BEGIN_MARK = "<!-- BEGIN chiezo (auto-generated) -->"
 END_MARK = "<!-- END chiezo -->"
@@ -35,14 +35,14 @@ _HOOK_SOURCE = Path(__file__).parent / "hooks" / "chiezo_autoallow.py"
 _ORIGIN_LINE_RE = re.compile(r'^CHIEZO_ORIGIN = "[^"]*"$', re.MULTILINE)
 
 
-def _sample(src: Source) -> tuple[str, set[str]]:
-    """例示に使うサンプルのタイトルと、その doc の extra に入っているキー集合。"""
+def _sample(src: Source) -> tuple[str, set[str], list[str]]:
+    """例示に使うサンプルのタイトルと、その doc の extra のキー集合・tags。"""
     try:
-        rows = db.query(src.path, "SELECT title, extra FROM docs LIMIT 1")
+        rows = db.query(src.path, "SELECT title, extra, tags FROM docs LIMIT 1")
     except sqlite3.Error:
-        return "<タイトル>", set()
+        return "<タイトル>", set(), []
     if not rows:
-        return "<タイトル>", set()
+        return "<タイトル>", set(), []
     title = rows[0]["title"] or "<タイトル>"
     keys: set[str] = set()
     raw = rows[0]["extra"]
@@ -51,7 +51,11 @@ def _sample(src: Source) -> tuple[str, set[str]]:
             keys = set(json.loads(raw).keys())
         except (ValueError, TypeError):
             keys = set()
-    return title, keys
+    try:
+        tags = json.loads(rows[0]["tags"]) if rows[0]["tags"] else []
+    except (ValueError, TypeError):
+        tags = []
+    return title, keys, tags
 
 
 def _has_value(src: Source, column: str) -> bool:
@@ -64,6 +68,23 @@ def _has_value(src: Source, column: str) -> bool:
     except sqlite3.Error:
         return False
     return bool(rows)
+
+
+def _sample_tag(src: Source) -> str | None:
+    """例示に使う実在のタグ。ソースに何が入っているかは分からないので、
+    いちばん多く使われているタグを 1 つ採る(jawiki なら「存命人物」等)。
+
+    doc_tags 全体の集計になるので巨大ソースでは 1 秒前後かかる。タイムアウトしたら
+    諦めて None(呼び出し側がサンプル文書のタグへフォールバックする)。
+    """
+    try:
+        rows = db.query(
+            src.path,
+            "SELECT tag, COUNT(*) AS n FROM doc_tags GROUP BY tag ORDER BY n DESC LIMIT 1",
+        )
+    except (sqlite3.Error, db.QueryTimeout):
+        return None
+    return rows[0]["tag"] if rows else None
 
 
 def _sample_area(src: Source) -> str:
@@ -81,9 +102,10 @@ def _sample_area(src: Source) -> str:
 def _emit_source(base: str, src: Source, out: list[str]) -> None:
     name = src.name
     docs_str = f"{src.doc_count:,}件"
-    title, extra_keys = _sample(src)
+    title, extra_keys, sample_tags = _sample(src)
     query = title if title != "<タイトル>" else "<検索語>"
     has_filter = src.schema_version >= FILTER_MIN_SCHEMA_VERSION
+    has_tags = src.schema_version >= TAG_MIN_SCHEMA_VERSION
 
     if src.kind == "wikipedia":
         desc = f"{src.lang} Wikipedia" if src.lang else "Wikipedia"
@@ -93,6 +115,21 @@ def _emit_source(base: str, src: Source, out: list[str]) -> None:
         out.append(f'  - 概要:   `curl -sG "{base}/v1/{name}/doc?fields=title,opening,tags" --data-urlencode "title={title}"`')
         out.append(f'  - 本文:   `curl -sG "{base}/v1/{name}/doc?max_chars=8000" --data-urlencode "title={title}"`')
         out.append(f'  - 候補:   `curl -sG "{base}/v1/{name}/titles" --data-urlencode "prefix={title}"`')
+        if has_tags:
+            tag = _sample_tag(src) or (sample_tags[0] if sample_tags else "<カテゴリ名>")
+            out.append(
+                f'  - カテゴリ列挙: `curl -sG "{base}/v1/{name}/filter?limit=200&fields=title,tags"'
+                f' --data-urlencode "tag={tag}"`'
+                " (そのカテゴリの記事を全件。応答の `total` で件数が分かり `offset` でページング"
+                "できる。**本文の全文検索で `Category:` 行を探してはいけない** — ソートキー付きの"
+                "記事(`[[Category:X|よみがな]]`)は本文側にカテゴリ名が残らず取りこぼす)"
+            )
+            out.append(
+                f'  - カテゴリ名検索: `curl -sG "{base}/v1/{name}/tags?limit=20"'
+                f' --data-urlencode "contains=ラーメン"`'
+                " (実在するタグ名を文書数つきで返す。`filter?tag=` は完全一致なので、"
+                "先にここで正しい名前を確かめる。前方一致なら `prefix=` の方が速い)"
+            )
         if "pageviews_month" in extra_keys:
             out.append(
                 f'  - 人気度: `curl -sG "{base}/v1/{name}/doc?fields=title,extra" --data-urlencode "title={title}"`'
@@ -155,6 +192,13 @@ def _emit_source(base: str, src: Source, out: list[str]) -> None:
     out.append(f"- **{name}**({paren})")
     out.append(f'  - 検索:   `curl -sG "{base}/v1/{name}/search?limit=5" --data-urlencode "q={query}"`')
     out.append(f'  - 文書:   `curl -sG "{base}/v1/{name}/doc?fields=title,opening,body" --data-urlencode "title={title}"`')
+    if has_tags and (tag := _sample_tag(src) or (sample_tags[0] if sample_tags else None)):
+        out.append(
+            f'  - タグ列挙: `curl -sG "{base}/v1/{name}/filter?limit=200"'
+            f' --data-urlencode "tag={tag}"`'
+            f' (同じタグを持つ文書を全件。タグ名は `curl -sG "{base}/v1/{name}/tags"'
+            ' --data-urlencode "contains=<語>"` で探せる)'
+        )
 
 
 def permission_rules(base_url: str) -> list[str]:
@@ -265,7 +309,7 @@ def build_block(
         "いきなり全文を取らない。",
         "- 3 文字未満の語はタイトル前方一致にフォールバックする"
         "(レスポンスの `mode` が `title_prefix` になる)。",
-        "- 日本語・スペース等を含むパラメータ(`q`/`title`/`prefix`/`area`/`feature`)は"
+        "- 日本語・スペース等を含むパラメータ(`q`/`title`/`prefix`/`area`/`feature`/`tag`)は"
         "下記例のとおり `curl -sG --data-urlencode` で渡す"
         "(URL に直接埋め込むとサーバーに Invalid HTTP request で弾かれる)。",
         '- 応答は JSON。エラーは `{"error": "..."}` 形式。全クエリ 5 秒でタイムアウト(超過は 504)。',
