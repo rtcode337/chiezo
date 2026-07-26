@@ -12,8 +12,8 @@ services:
   chiezo-api:
     build: ./api
     ports:
-      # host:container。ホスト側だけ 9000 に変更(他アプリとの衝突回避)。コンテナ内部は 8000 のまま。
-      - "9000:8000"
+      # host:container。デフォルトの 8000 から 9000 に変更(他アプリとの衝突回避)。
+      - "9000:9000"
     volumes:
       - ./data:/data:ro
     environment:
@@ -24,7 +24,7 @@ services:
       - chiezo-trigger
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-fs", "http://localhost:8000/healthz"]
+      test: ["CMD", "curl", "-fs", "http://localhost:9000/healthz"]
       interval: 60s
 
   # 管理画面からの「未初期化データの初期化」を受けて ingest を実行する内部専用トリガー。
