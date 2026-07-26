@@ -5,7 +5,7 @@
 # 本番は docker-compose.yml(GHCR から pull)を使う。設定はそちらと揃えてあり、
 # 違いは image を pull せず手元でビルドする点だけ(タグは :local で pull 版と区別する)。
 x-ingest-limits: &ingest-limits
-  cpus: "4.0"
+  cpu_shares: 512
 
 services:
   chiezo-api:
