@@ -550,14 +550,21 @@ def request_origin(request: Request) -> str:
 
 
 @app.get("/admin/claude-config.txt", response_class=PlainTextResponse)
-def admin_claude_config_raw(request: Request):
+def admin_claude_config_raw(
+    request: Request,
+    hook: bool = Query(False, description="自動許可フックを入れる前提の書き方の指示を含める"),
+):
     """生成される CLAUDE.md ブロックを text/plain で返す(gen_claude_config.sh の取得元)。
 
     ベース URL は「この画面へのアクセス元」(request_origin)から導出するので、
     そのままクライアントに貼れば curl の例が到達可能な URL になる。
+
+    `?hook=1` は gen_claude_config.sh が `--with-hook` で実際にフックを設置する
+    ときだけ付けてくる。フックの無い環境に「自動許可される」と書くと嘘になるため、
+    その一文は既定では出さない。
     """
     sources: dict[str, Source] = request.app.state.sources
-    return claude_config.build_block(sources, request_origin(request))
+    return claude_config.build_block(sources, request_origin(request), hook=hook)
 
 
 @app.get("/admin/claude-config.permissions.json", response_class=PlainTextResponse)
@@ -569,12 +576,39 @@ def admin_claude_config_permissions(request: Request):
     )
 
 
+@app.get("/admin/claude-config.hook.py", response_class=PlainTextResponse)
+def admin_claude_config_hook_script(request: Request):
+    """PreToolUse フック本体を返す(gen_claude_config.sh が実行可能ファイルとして置く)。
+
+    `permissions.allow` は前方一致なので、ループやパイプに包まれた curl には効かない。
+    フックはコマンドを構造で見て、chiezo だけを読む読み取り専用コマンドを自動許可する。
+    """
+    return PlainTextResponse(
+        claude_config.hook_script(request_origin(request)),
+        media_type="text/x-python",
+    )
+
+
+@app.get("/admin/claude-config.hook.json", response_class=PlainTextResponse)
+def admin_claude_config_hook_settings(request: Request):
+    """settings.json の `hooks` へマージされる断片を返す。
+
+    フック本体の設置先はクライアント側で決まるので、コマンドは
+    `{{HOOK_PATH}}` のまま返し、絶対パスへの差し替えはスクリプト側で行う。
+    """
+    return PlainTextResponse(
+        claude_config.hook_settings_json(),
+        media_type="application/json",
+    )
+
+
 @app.get("/admin/claude-config", response_class=HTMLResponse)
 def admin_claude_config(request: Request):
     sources: dict[str, Source] = request.app.state.sources
     base = request_origin(request)
     block = claude_config.build_block(sources, base)
     perms = claude_config.permission_json(base)
+    hook = claude_config.hook_settings_json()
     body = f"""
 <nav><a href="/admin">管理画面</a></nav>
 <h1>Claude Code 連携設定(プレビュー)</h1>
@@ -608,6 +642,31 @@ chiezo への curl を許可プロンプトなしに実行できるよう、下�
 <span id="msg-perms" class="muted"></span></p>
 <pre class="doc-body" id="config-perms">{esc(perms)}</pre>
 
+<h2>自動許可フック(任意 / 既定では入らない)</h2>
+<p class="muted">
+上の許可ルールは<strong>コマンド文字列の前方一致</strong>なので、
+<code>for … do curl … done</code> やパイプに包まれた curl には 1 本も効かず、
+大量取得のときだけ毎回プロンプトが出てしまう。これを解消したい場合は
+<code>PreToolUse</code> フックを併せて入れる。フックはコマンドを構造で見て
+<strong>chiezo だけを読む読み取り専用コマンド</strong>だけを自動許可する
+(条件を外れたら黙るので、その場合は今までどおりプロンプトが出る)。
+</p>
+<p class="muted">
+これは <strong>Claude が打つ Bash を毎回検査して自動承認しうる</strong>仕掛けで、
+影響が権限ルールより広い。中身を読んで納得してから入れられるよう
+<code>gen_claude_config.sh</code> は既定では設置せず、
+<code>--with-hook</code> を明示したときだけ設置する。
+設置先: <code>--user</code> なら <code>~/.claude/hooks/{esc(claude_config.HOOK_FILENAME)}</code>、
+<code>--project</code> なら <code>./.claude/hooks/{esc(claude_config.HOOK_FILENAME)}</code>。
+下記断片の <code>{esc(claude_config.HOOK_PATH_PLACEHOLDER)}</code> を実際の絶対パスに
+差し替えて <code>hooks</code> へマージする。
+判定ロジックの全文: <a href="/admin/claude-config.hook.py">/admin/claude-config.hook.py</a> ·
+設定断片: <a href="/admin/claude-config.hook.json">/admin/claude-config.hook.json</a>
+</p>
+<p><button type="button" id="copy-hook">クリップボードにコピー</button>
+<span id="msg-hook" class="muted"></span></p>
+<pre class="doc-body" id="config-hook">{esc(hook)}</pre>
+
 <script>
 function wireCopy(btnId, srcId, msgId) {{
   document.getElementById(btnId).addEventListener('click', async () => {{
@@ -623,6 +682,7 @@ function wireCopy(btnId, srcId, msgId) {{
 }}
 wireCopy('copy-block', 'config-block', 'msg-block');
 wireCopy('copy-perms', 'config-perms', 'msg-perms');
+wireCopy('copy-hook', 'config-hook', 'msg-hook');
 </script>
 """
     return HTMLResponse(content=page_shell("chiezo: Claude Code 連携設定", body))

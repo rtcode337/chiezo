@@ -175,9 +175,49 @@ scripts/gen_claude_config.sh --print       # 書き込まず内容だけ確認
 
 主なオプション: `--base-url/-u`(chiezo の場所)、`--user`(既定・`~/.claude/CLAUDE.md`)、
 `--project`(`./CLAUDE.md`)、`--target/-o`(書き込み先をパス指定)、`--merge {markers,headless}`、
-`--print`、`--no-permissions`(既定で行う上記の権限追記を無効化)。
+`--print`、`--no-permissions`(既定で行う上記の権限追記を無効化)、
+`--with-hook`(下記の自動許可フックを設置。既定では設置しない)。
 生成は chiezo 本体が行うため、稼働中の chiezo が必要です(旧 `--offline --sources` は廃止)。
 生成される文面の要点は「まず `search` で当たりを付け、必要な文書だけ `doc` を取る(コンテキスト節約)」です。
+
+#### 大量取得でプロンプトが出てしまう場合(`--with-hook`)
+
+上の権限ルールは Claude Code の仕様上**コマンド文字列の前方一致**でしか判定できません。
+そのため単発の `curl` には効きますが、
+
+```bash
+for t in 東京都 浅草寺 多摩川; do curl -sG ".../doc" --data-urlencode "title=$t"; done
+curl -sG ".../search" --data-urlencode "q=多摩川" | jq -r '.hits[].title'
+```
+
+のように `curl` が先頭に来ない形になると 1 本もマッチせず、**大量取得のときだけ**
+毎回プロンプトが出ます。これを解消したい場合は `--with-hook` を付けると、
+前方一致ではなく**コマンドの構造**で判定する `PreToolUse` フックを併せて設置します
+(`<設定ディレクトリ>/hooks/chiezo-autoallow.py` + `settings` の `hooks.PreToolUse`)。
+フックが自動許可するのは、次を**すべて**満たすコマンドだけです:
+
+- 登場する `scheme://host` が全て chiezo(1 つ以上あること)
+- 実行されるコマンドが `curl`/`jq`/`sort` などの読み取り専用の許可リスト内
+  (`sed`/`awk`/インタプリタ/`curl` 以外のネットワークコマンドは対象外)
+- `$(...)`・バッククォート・プロセス置換・ヒアドキュメント・`eval`/`exec`/`source` を含まない
+- ディスクへ書く `curl` フラグ(`-o`/`-O`/`-K`/`-T` など)と `/tmp` 以外へのリダイレクトを含まない
+
+条件を外れたときフックは何も出力せず、通常の許可フローに戻ります(= 今までどおり
+プロンプトが出るだけ)。判定に迷ったら黙る設計です。
+
+ただしこれは **Claude が打つ Bash を毎回検査して自動承認しうる**仕掛けで、
+権限ルールより影響範囲が広くなります。中身を読んで納得してから入れられるよう
+**既定では設置せず**、`--with-hook` を明示したときだけ設置します。
+判定ロジックの全文は設置前に確認できます:
+
+```bash
+curl -s http://<サーバーIP>:9000/admin/claude-config.hook.py   # フック本体
+# 管理画面 /admin/claude-config でもプレビューできます
+```
+
+設置には `python3`(フックの実行)と `jq`(settings のマージ)が必要です。
+何度実行しても `hooks.PreToolUse` は重複せず、設置先を変えた場合も古いエントリは掃除されます。
+反映には Claude Code の再起動(または一度 `/hooks` を開く)が必要な場合があります。
 
 ## 運用
 

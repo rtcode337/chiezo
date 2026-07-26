@@ -1,8 +1,9 @@
 """Claude Code 連携用の CLAUDE.md ブロックを生成する(生成の正はここ)。
 
 同一プロセスから DB を直接引いて組み立てる(HTTP プローブを打たないので速く正確)。
-`scripts/gen_claude_config.sh` はこの出力(`GET /admin/claude-config.txt` と
-`GET /admin/claude-config.permissions.json`)を取得してクライアント側のファイルへ
+`scripts/gen_claude_config.sh` はこの出力(`GET /admin/claude-config.txt`、
+`GET /admin/claude-config.permissions.json`、`GET /admin/claude-config.hook.py`、
+`GET /admin/claude-config.hook.json`)を取得してクライアント側のファイルへ
 書き込むだけの薄いクライアント。管理画面は同じ出力を「いま設定を吐き出したら
 何が出るか」のプレビューとして表示する。
 
@@ -13,14 +14,25 @@ curl 例・許可ルールのベース URL は呼び出し側(main.request_origi
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
 from app import db
 from app.registry import FILTER_MIN_SCHEMA_VERSION, Source
 
 BEGIN_MARK = "<!-- BEGIN chiezo (auto-generated) -->"
 END_MARK = "<!-- END chiezo -->"
+
+# クライアント側に置くフック本体のファイル名。settings.json の中身を書き換える
+# ときに「以前入れた chiezo のフック」を見分ける鍵にもなるので、変えると
+# 古いエントリが残る(gen_claude_config.sh 側の掃除条件もこの名前を見ている)。
+HOOK_FILENAME = "chiezo-autoallow.py"
+HOOK_PATH_PLACEHOLDER = "{{HOOK_PATH}}"
+
+_HOOK_SOURCE = Path(__file__).parent / "hooks" / "chiezo_autoallow.py"
+_ORIGIN_LINE_RE = re.compile(r'^CHIEZO_ORIGIN = "[^"]*"$', re.MULTILINE)
 
 
 def _sample(src: Source) -> tuple[str, set[str]]:
@@ -174,8 +186,68 @@ def permission_json(base_url: str) -> str:
     )
 
 
-def build_block(sources: dict[str, Source], base_url: str, now: datetime | None = None) -> str:
-    """CLAUDE.md に貼る chiezo ブロック(マーカー込み)を組み立てて返す。"""
+def hook_script(base_url: str) -> str:
+    """クライアントへ配る PreToolUse フック本体(`app/hooks/chiezo_autoallow.py`)。
+
+    前方一致の `permissions.allow` は curl が先頭に来る形にしか効かないので、
+    ループやパイプで大量に引くとき(= いちばん許可したい場面)には 1 本もマッチ
+    しない。フックはコマンドを構造で見て「chiezo だけを読む」ものを自動許可する。
+    ここでは配信時にベース URL を埋め込むだけで、判定ロジックはフック側にある。
+    """
+    base = base_url.rstrip("/")
+    src = _HOOK_SOURCE.read_text(encoding="utf-8")
+    replaced, n = _ORIGIN_LINE_RE.subn(f"CHIEZO_ORIGIN = {json.dumps(base)}", src)
+    if n != 1:
+        # 差し替え対象を見失ったまま配ると localhost 宛てのフックを配ることになる。
+        raise RuntimeError(f"CHIEZO_ORIGIN を {_HOOK_SOURCE} に見つけられない(置換 {n} 件)")
+    return replaced
+
+
+def hook_settings_json() -> str:
+    """settings.json の `hooks` へマージされる断片。
+
+    フック本体の設置先はクライアント側(`--user` か `--project` か)で変わり
+    api からは見えないので、コマンドは `{{HOOK_PATH}}` のままにしておき、
+    絶対パスへの差し替えは gen_claude_config.sh が行う。
+    """
+    return (
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Bash",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": HOOK_PATH_PLACEHOLDER,
+                                    "timeout": 10,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n"
+    )
+
+
+def build_block(
+    sources: dict[str, Source],
+    base_url: str,
+    now: datetime | None = None,
+    hook: bool = False,
+) -> str:
+    """CLAUDE.md に貼る chiezo ブロック(マーカー込み)を組み立てて返す。
+
+    `hook=True` のときだけ、自動許可フックに載る書き方の指示を足す。フックは
+    クライアント側で `--with-hook` を指定したときにしか入らないので、既定で
+    書いてしまうと入れていない環境には嘘になる(gen_claude_config.sh が
+    フックを設置するときだけ `?hook=1` で取りに来る)。
+    """
     base = base_url.rstrip("/")
     when = (now or datetime.now().astimezone()).strftime("%Y-%m-%d %H:%M %Z").strip()
 
@@ -198,6 +270,17 @@ def build_block(sources: dict[str, Source], base_url: str, now: datetime | None 
         "(URL に直接埋め込むとサーバーに Invalid HTTP request で弾かれる)。",
         '- 応答は JSON。エラーは `{"error": "..."}` 形式。全クエリ 5 秒でタイムアウト(超過は 504)。',
         f'- ソース一覧(最新の登録状況): `curl -s "{base}/v1/sources"`',
+    ]
+
+    if hook:
+        out.append(
+            "- 大量に引くときは `for` ループやパイプにまとめてよい(許可プロンプトは出ない)。"
+            "ただし chiezo 以外のホストを混ぜる・`$(...)`・`eval`・`sed`/`awk`・"
+            "ファイルへの書き出し(`curl -o`、`> file`)を使うと自動許可から外れて"
+            "毎回プロンプトになるので、取得は `curl`→`jq` の読み取りだけで完結させる。"
+        )
+
+    out += [
         "",
         "### 収録ソース",
     ]

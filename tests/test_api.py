@@ -340,16 +340,56 @@ class TestClaudeConfig:
         allow = res.json()["permissions"]["allow"]
         assert "Bash(curl -s https://example.me:8443/:*)" in allow
 
-    def test_config_html_has_both_blocks_and_copy_buttons(self, client):
+    def test_config_txt_mentions_bulk_style_only_with_hook(self, client):
+        """自動許可される書き方の指示は ?hook=1 のときだけ出す。
+
+        フックは --with-hook を明示したときしか入らないので、既定の応答に
+        「自動許可される」と書くと、入れていない環境には嘘になる。
+        """
+        plain = client.get("/admin/claude-config.txt").text
+        assert "許可プロンプトは出ない" not in plain
+
+        withhook = client.get("/admin/claude-config.txt?hook=1").text
+        assert "許可プロンプトは出ない" in withhook
+        assert "`$(...)`" in withhook
+        # それ以外は同じブロック
+        assert withhook.startswith("<!-- BEGIN chiezo (auto-generated) -->")
+        assert "- **jawiki**" in withhook
+
+    def test_hook_script_is_served_with_origin_baked_in(self, client):
+        """フック本体は、アクセス元から導出したベース URL を埋め込んで配られる。"""
+        res = client.get(
+            "/admin/claude-config.hook.py", headers={"Host": "192.168.1.10:9000"}
+        )
+        assert res.status_code == 200
+        assert res.headers["content-type"].startswith("text/x-python")
+        assert res.text.startswith("#!/usr/bin/env python3")
+        assert 'CHIEZO_ORIGIN = "http://192.168.1.10:9000"' in res.text
+        # 差し替え漏れ(localhost のまま配る)は起きていない
+        assert "http://localhost:9000" not in res.text
+
+    def test_hook_settings_json_keeps_path_placeholder(self, client):
+        """設置先はクライアント側で決まるので、パスはプレースホルダのまま返す。"""
+        res = client.get("/admin/claude-config.hook.json")
+        assert res.status_code == 200
+        assert res.headers["content-type"].startswith("application/json")
+        entries = res.json()["hooks"]["PreToolUse"]
+        assert entries[0]["matcher"] == "Bash"
+        assert entries[0]["hooks"][0]["command"] == "{{HOOK_PATH}}"
+
+    def test_config_html_has_all_blocks_and_copy_buttons(self, client):
         res = client.get("/admin/claude-config")
         assert res.status_code == 200
-        # CLAUDE.md ブロックと権限ファイルの両方を、それぞれのコピーボタン付きで出す
+        # CLAUDE.md ブロック・権限ファイル・フック設定を、それぞれのコピーボタン付きで出す
         assert 'id="config-block"' in res.text
         assert 'id="config-perms"' in res.text
+        assert 'id="config-hook"' in res.text
         assert 'id="copy-block"' in res.text
         assert 'id="copy-perms"' in res.text
+        assert 'id="copy-hook"' in res.text
         assert "BEGIN chiezo" in res.text
         assert "permissions" in res.text
+        assert "/admin/claude-config.hook.py" in res.text
 
     def test_admin_links_to_config_page(self, client):
         res = client.get("/admin")

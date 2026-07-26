@@ -49,16 +49,34 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
     `/admin` へ 303 リダイレクト。`CHIEZO_TRIGGER_URL` 未設定なら 503、未知ソースなら 404、
     登録済みソースなら 409
   - `/admin/claude-config`(GET/HTML)・`/admin/claude-config.txt`(GET/text/plain)・
-    `/admin/claude-config.permissions.json`(GET/application/json) —
+    `/admin/claude-config.permissions.json`(GET/application/json)・
+    `/admin/claude-config.hook.py`(GET/text/x-python)・
+    `/admin/claude-config.hook.json`(GET/application/json) —
     Claude 連携設定の生成 API。現在の登録ソースから CLAUDE.md ブロックと
-    **権限ファイル(`settings.json`/`settings.local.json` の `permissions.allow`)**の
-    両方を生成して配信する(実ファイルは書き換えない。ホームの `~/.claude/CLAUDE.md` 等は
-    クライアント側にあり api からは見えないため)。`gen_claude_config.sh` はこの 2 つの
-    エンドポイントを取得して書き込む。HTML はプレビュー + コピーボタン付き。
+    **権限ファイル(`settings.json`/`settings.local.json` の `permissions.allow`)**、
+    および任意で入れる**自動許可フック**を生成して配信する(実ファイルは書き換えない。
+    ホームの `~/.claude/CLAUDE.md` 等はクライアント側にあり api からは見えないため)。
+    `gen_claude_config.sh` はこれらのエンドポイントを取得して書き込む。
+    HTML はプレビュー + コピーボタン付き。
     curl 例・許可ルールのベース URL はアクセス元 URL のプロトコル・ホスト名・ポート
     (`request_origin`: スキーム=`X-Forwarded-Proto`(あれば)、ホスト=`X-Forwarded-Host`
     (あれば)→無ければ `Host` ヘッダ。`Host` はポートを保持する)から導出するので、
     リバースプロキシ越し・非標準ポートでもそのまま到達可能な URL になる
+    - `.txt` の `?hook=1` は「自動許可フックを入れる前提の書き方の指示」を本文に足す。
+      フックはクライアント側で `--with-hook` を指定したときしか入らないので、
+      既定で書くと入れていない環境には嘘になる。設置するときだけ付けて取りに来る
+  - `app/hooks/chiezo_autoallow.py` — 上記フックの実体(`PreToolUse` フック)。
+    Claude Code の `permissions.allow` は**コマンド文字列の前方一致**でしか判定できず、
+    `for … do curl … done` やパイプに包まれた curl には 1 本もマッチしない。
+    大量取得は必ずその形になるので、いちばん許可したい場面でルールが効かない。
+    このフックは前方一致ではなく**構造**(登場する URL が全て chiezo か・コマンド位置に
+    来る語が読み取り専用の許可リスト内か・`$(…)`/`eval` 等でコマンド位置を隠していないか)
+    で判定し、条件を満たすときだけ `permissionDecision: "allow"` を返す。
+    外れたら**何も出力しない**(= 通常の許可プロンプトに戻る)ので、判定に迷ったら
+    黙るのが正。api プロセスからは import も実行もされず、`claude_config.hook_script()`
+    がソースを読んで `CHIEZO_ORIGIN` の行だけ差し替えて配信する。文字列テンプレートに
+    せず実ファイルで持つのは、通常の Python として lint・テストできるようにするため
+    (`tests/test_claude_hook.py` が判定の許可/拒否を両側から固定している)
   - `app/claude_config.py` — 上記ブロックの生成ロジック。**生成の正はここ(api 側)**に置く。
     同一プロセスの DB を schema_version と索引付きの `WHERE lat IS NOT NULL LIMIT 1` 等で
     直接引くので、HTTP プローブと違い巨大ソース(jawiki)でも timeout の false-negative が出ない
@@ -233,6 +251,14 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
     (`claude -p` に既存との統合を任せる)。既定で対象の settings に curl 許可を追記
     (`--no-permissions` で無効化)。`--offline`/`--sources`/`--no-examples` は廃止
     (生成がサーバー側になったため稼働中の chiezo が必須)。
+    `--with-hook` を付けたときだけ、前方一致では効かない大量取得向けに自動許可フック
+    (`<設定ディレクトリ>/hooks/chiezo-autoallow.py` + `hooks.PreToolUse`)も設置する。
+    **既定では設置しない** — Claude が打つ Bash を毎回検査して自動承認しうる仕掛けで
+    権限ルールより影響が広く、中身を読んで納得してから入れられるようにするため。
+    設置には python3(フックの実行)と jq(settings のマージ)が要り、欠けていれば
+    黙って諦めず落とす(明示的に頼まれた設置なので)。マージは「コマンドが
+    `chiezo-autoallow.py` を含む既存エントリ」を落としてから足すので、再実行しても
+    重複せず、設置先を変えたときも古いパスのエントリが残らない。
     README の「Claude Code から使う」節と対応
   - `gen_wikipedia_editions.py` — `ingest/sources/wikipedia_editions.py`(Wikipedia 言語版
     カタログ)の生成器。Wikimedia の sitematrix(言語版一覧。closed/private/fishbowl は除外)、
