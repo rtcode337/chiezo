@@ -2,7 +2,7 @@
 
 LAN 内で動く読み取り専用の知識検索 REST API。複数のデータソース(日本語 Wikipedia = `jawiki`、
 OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geonames`)を
-ソースごとに独立した SQLite ファイル(`/data/<source>.db`)として収容する。設計書は v0.2。
+ソースごとに独立した SQLite ファイル(`/data/<source>.db`)として収容する。
 
 ## アーキテクチャ
 
@@ -243,18 +243,23 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
     「Ukraine (with Crimea)」や複数国をまとめた抽出)は `OVERRIDES` に人手で書く
     — Geofabrik の ISO コードには取り違え(トケラウに `VU` 等)があり、そのまま引くと
     「トケラウ = バヌアツ」のような誤表示になるため
-- `tests/` — フィクスチャ(`fixtures/mini_jawiki.json.gz` 12 文書、`fixtures/mini_osm.osm.pbf`)
-  での API / ingest テスト
+- `tests/` — フィクスチャ(`fixtures/mini_jawiki.xml.gz` 12 文書、`fixtures/mini_osm.osm.pbf`、
+  `fixtures/mini_geonames.zip` ほか geonames 一式)での API / ingest テスト
+- `.github/workflows/ci.yml` — push / PR で pytest を実行し、main への push で
+  `chiezo-api` / `chiezo-ingest` の 2 イメージをマルチアーキ(amd64 / arm64)で GHCR へ公開
+  (cc-tasks / travel-log の docker-publish と同じダイジェストマージ方式。
+  arm64 の無料ランナーが public 限定のため、リポジトリが private の間は公開ジョブをスキップ)
 
 ## コマンド
 
 ```bash
-# テスト(fastapi, httpx, pytest が必要)
+# テスト(api/requirements.txt + ingest/requirements.txt + pytest が必要)
 python -m pytest tests/ -v
 
 # フィクスチャ再生成
 python tests/fixtures/make_fixture.py
 python tests/fixtures/make_osm_fixture.py
+python tests/fixtures/make_geonames_fixture.py
 
 # API 起動(Docker)
 docker compose up -d

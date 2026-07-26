@@ -4,10 +4,10 @@ LAN 内の開発マシン(主に Claude Code)から使う、完全ローカル�
 公式ダンプを SQLite (FTS5 trigram) に取り込み、外部 API のレート制限や負荷を気にせず参照できます。
 
 - マルチソース設計: ソースごとに独立した SQLite ファイル 1 つ(`data/<source>.db`)
-- v0.2 収録ソース:
+- 収録ソース:
   - `jawiki` — 日本語 Wikipedia(標準 XML ダンプ + wikitext 解析由来。CirrusSearch ダンプの
     text フィールドは折りたたみ(collapsible)セクションを検索インデックスから除外して
-    いたため、v0.2 でこの方式に切り替えた)。
+    いたため、この方式に切り替えた)。
     Wikipedia は **348 の言語版が定義済み**で(`enwiki` / `dewiki` / `zh_yuewiki` …)、
     使いたい言語だけを取り込みます。言語の選択は管理画面の `/admin` → `wikipedia` → 言語選択から
   - `osm_<国>` — OpenStreetMap の国別抽出(Geofabrik 由来の地名辞典 + POI 辞典。
@@ -392,13 +392,18 @@ wikipedia 言語版の表示名・自称・記事数)を返し、管理画面の
 ## 開発
 
 ```bash
-python -m venv .venv && .venv/bin/pip install fastapi 'uvicorn[standard]' httpx pytest
+python -m venv .venv && .venv/bin/pip install -r api/requirements.txt -r ingest/requirements.txt pytest
 .venv/bin/python -m pytest tests/ -v
 ```
 
-テストは同梱の小型フィクスチャ(`tests/fixtures/mini_jawiki.json.gz` 12 文書、
-`tests/fixtures/mini_osm.osm.pbf` 12 ノード + 2 way + 2 relation)から実際に
+テストは同梱の小型フィクスチャ(`tests/fixtures/mini_jawiki.xml.gz` 12 文書、
+`tests/fixtures/mini_osm.osm.pbf` 12 ノード + 2 way + 2 relation、
+`tests/fixtures/mini_geonames.zip` ほか geonames 一式)から実際に
 DB を構築して全エンドポイントを検証します。ネットワーク・実データは不要です。
+
+CI(`.github/workflows/ci.yml`)は push / PR でこのテストを実行し、main への push で
+`ghcr.io/<owner>/chiezo-api` / `ghcr.io/<owner>/chiezo-ingest` のマルチアーキ
+(amd64 / arm64)イメージを GHCR へ公開します。
 
 ## 設計メモ
 
@@ -407,3 +412,17 @@ DB を構築して全エンドポイントを検証します。ネットワー�
 - 割り切り: 3 文字未満の語は FTS 不可(前方一致へ自動フォールバック)、ランキングは簡易(bm25 + 人気度)。
 - 移行トリガー: 検索精度に不満 → Meilisearch / 同時接続・書き込み要件 → PostgreSQL + PGroonga。
   API 層があるため DB だけ差し替え可能です。
+
+## ライセンス
+
+このリポジトリのコードは [MIT License](LICENSE) です。
+
+取り込んで構築した DB の**中身(データ)は各ソースのライセンスに従います**。
+リポジトリ自体にはデータを含みませんが、構築した DB や検索結果を配布・公開する場合は
+以下の帰属表示・ライセンス継承が必要です。
+
+| ソース | データ提供元 | ライセンス |
+|---|---|---|
+| `<lang>wiki` | [Wikimedia ダンプ](https://dumps.wikimedia.org/) | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/deed.ja)(© Wikipedia 各記事の執筆者) |
+| `osm_<国>` | [Geofabrik](https://download.geofabrik.de/)(OpenStreetMap 抽出) | [ODbL 1.0](https://opendatacommons.org/licenses/odbl/)(© OpenStreetMap contributors) |
+| `geonames` | [GeoNames](https://www.geonames.org/) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.ja) |

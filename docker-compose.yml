@@ -38,8 +38,8 @@ services:
     environment:
       - CHIEZO_DATA_DIR=/data
     restart: unless-stopped
-    # トリガー経由の取り込みが暴走しても、OOM killer がホスト全体(postgres や
-    # 他アプリのコンテナ)を巻き込まないよう上限を設ける。取り込み本体と同じ *_LIMITS。
+    # トリガー経由の取り込みが暴走しても、OOM killer がホスト全体(同居する
+    # 他のコンテナ)を巻き込まないよう上限を設ける。取り込み本体と同じ *_LIMITS。
     <<: *ingest-limits
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:8080/healthz"]

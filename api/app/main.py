@@ -964,7 +964,7 @@ def links(
 ):
     if direction != "out":
         raise HTTPException(
-            400, {"error": "only direction=out is supported in v0.2"}
+            400, {"error": "only direction=out is supported"}
         )
     src = get_source(request, source)
     row = fetch_doc_by_title(src, title)

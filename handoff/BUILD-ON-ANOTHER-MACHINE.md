@@ -64,7 +64,7 @@ autoMemoryReclaim=gradual
 書いたら PowerShell で `wsl --shutdown` してから WSL を開き直す(これをしないと反映されない)。
 `free -g` の `available` が上表の必要メモリを超えているか確認する。
 
-ゲーム機など普段使いのマシンでは、**geonames(3GiB)→ jawiki(3GiB)→ osm_japan(12GiB)**
+普段使いのマシンを一時的にビルド機にする場合は、**geonames(3GiB)→ jawiki(3GiB)→ osm_japan(12GiB)**
 の順に進めるとよい。前 2 つは既定メモリで余裕があり、いちばん重い osm_japan だけ他のアプリを
 閉じた状態で回せばよい。
 
@@ -215,7 +215,7 @@ curl -s http://localhost:9000/v1/sources   # 新しい dump_date / schema_versio
 
 ### 6. ビルド機の後片付け
 
-ゲーム機など、余計なものを残したくないマシンで作業した場合:
+普段使いのマシンを借りたなど、余計なものを残したくない場合:
 
 ```bash
 docker rmi chiezo-chiezo-ingest:latest

@@ -147,7 +147,7 @@ docker compose --profile ingest run --rm \
 - `DUMP_FILE`: `fetch()` をスキップして既存ファイルを使う
 - `MIN_DOCS` / `SAMPLE_TITLES`: アダプタの検証パラメータを一時的に上書き
 
-## 守るべき原則(設計書 §1)
+## 守るべき原則
 
 1. ソースごとに独立した SQLite ファイル 1 つ。ソース間で JOIN しない。
 2. コアスキーマ(meta / docs / aliases / docs_fts)は全ソース共通。
