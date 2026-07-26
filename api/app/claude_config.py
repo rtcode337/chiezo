@@ -77,19 +77,19 @@ def _emit_source(base: str, src: Source, out: list[str]) -> None:
         desc = f"{src.lang} Wikipedia" if src.lang else "Wikipedia"
         paren = f"{desc}, {docs_str}"
         out.append(f"- **{name}**({paren}): 一般知識・人物・作品・地名・用語・出来事など")
-        out.append(f'  - 検索:   `curl -s "{base}/v1/{name}/search?q={query}&limit=5"`')
-        out.append(f'  - 概要:   `curl -s "{base}/v1/{name}/doc?title={title}&fields=title,opening,tags"`')
-        out.append(f'  - 本文:   `curl -s "{base}/v1/{name}/doc?title={title}&max_chars=8000"`')
-        out.append(f'  - 候補:   `curl -s "{base}/v1/{name}/titles?prefix={title}"`')
+        out.append(f'  - 検索:   `curl -sG "{base}/v1/{name}/search?limit=5" --data-urlencode "q={query}"`')
+        out.append(f'  - 概要:   `curl -sG "{base}/v1/{name}/doc?fields=title,opening,tags" --data-urlencode "title={title}"`')
+        out.append(f'  - 本文:   `curl -sG "{base}/v1/{name}/doc?max_chars=8000" --data-urlencode "title={title}"`')
+        out.append(f'  - 候補:   `curl -sG "{base}/v1/{name}/titles" --data-urlencode "prefix={title}"`')
         if "pageviews_month" in extra_keys:
             out.append(
-                f'  - 人気度: `curl -s "{base}/v1/{name}/doc?title={title}&fields=title,extra"`'
+                f'  - 人気度: `curl -sG "{base}/v1/{name}/doc?fields=title,extra" --data-urlencode "title={title}"`'
                 " (extra の `pageviews_month`=月次ページビュー(bot 除外)。知名度の客観指標に使える。"
                 "**Wikimedia の pageviews API を叩く必要はない**)"
             )
         if has_filter and _has_value(src, "lat"):
             out.append(
-                f'  - 座標:   `curl -s "{base}/v1/{name}/doc?title={title}&fields=title,extra"`'
+                f'  - 座標:   `curl -sG "{base}/v1/{name}/doc?fields=title,extra" --data-urlencode "title={title}"`'
                 " (座標を持つ記事は extra に `lat`/`lon` が入る。"
                 "`filter?bbox=min_lat,min_lon,max_lat,max_lon` で範囲抽出も可。"
                 "**ジオコーディング API を叩く必要はない**)"
@@ -108,26 +108,27 @@ def _emit_source(base: str, src: Source, out: list[str]) -> None:
             f"- **{name}**({paren}): 地名・行政区・自然地物に加え病院/学校/店舗/観光地などの施設、"
             "駅・空港・港・IC/SA などの交通インフラと座標"
         )
-        out.append(f'  - 検索:   `curl -s "{base}/v1/{name}/search?q={query}&limit=5"`')
+        out.append(f'  - 検索:   `curl -sG "{base}/v1/{name}/search?limit=5" --data-urlencode "q={query}"`')
         out.append(
-            f'  - 座標等: `curl -s "{base}/v1/{name}/doc?title={title}&fields=title,extra"`'
+            f'  - 座標等: `curl -sG "{base}/v1/{name}/doc?fields=title,extra" --data-urlencode "title={title}"`'
             " (extra に lat/lon・OSM タグ・住所等)"
         )
         if has_filter:
             area = _sample_area(src)
             out.append(
                 "  - 取り違え防止: 同名の別地物がある場合、doc の応答に `alternatives` が付く。"
-                f"`&area={area}` や `&feature=railway%3Dstation` で絞り込める(search/doc 共通)"
+                f'`--data-urlencode "area={area}"` や `--data-urlencode "feature=railway=station"` '
+                "で絞り込める(search/doc 共通)"
             )
             out.append(
-                f'  - 一括抽出: `curl -s "{base}/v1/{name}/filter?feature=amenity%3Dplace_of_worship'
-                f'&area={area}&limit=200"`'
+                f'  - 一括抽出: `curl -sG "{base}/v1/{name}/filter?limit=200"'
+                f' --data-urlencode "feature=amenity=place_of_worship" --data-urlencode "area={area}"`'
                 " (地物種別 × 行政区で全件列挙。応答の `total` で件数が分かり `offset` でページングできる。"
                 "**Overpass API を叩く必要はない**)"
             )
             out.append(
-                f'  - 範囲抽出: `curl -s "{base}/v1/{name}/filter?feature=tourism%3Dmuseum'
-                '&bbox=34.9,135.6,35.1,135.9"`'
+                f'  - 範囲抽出: `curl -sG "{base}/v1/{name}/filter?bbox=34.9,135.6,35.1,135.9"'
+                ' --data-urlencode "feature=tourism=museum"`'
                 " (bbox は `min_lat,min_lon,max_lat,max_lon`。`feature` はカンマ区切りで複数指定可)"
             )
             if _has_value(src, "wikidata"):
@@ -140,18 +141,25 @@ def _emit_source(base: str, src: Source, out: list[str]) -> None:
     # その他(geonames 等)
     paren = f"kind={src.kind or '?'}, {docs_str}"
     out.append(f"- **{name}**({paren})")
-    out.append(f'  - 検索:   `curl -s "{base}/v1/{name}/search?q={query}&limit=5"`')
-    out.append(f'  - 文書:   `curl -s "{base}/v1/{name}/doc?title={title}&fields=title,opening,body"`')
+    out.append(f'  - 検索:   `curl -sG "{base}/v1/{name}/search?limit=5" --data-urlencode "q={query}"`')
+    out.append(f'  - 文書:   `curl -sG "{base}/v1/{name}/doc?fields=title,opening,body" --data-urlencode "title={title}"`')
 
 
 def permission_rules(base_url: str) -> list[str]:
     """settings.json の permissions.allow に追記される chiezo への curl 許可ルール。
 
-    gen_claude_config.sh と同じ 2 本。スクリプトは jq 経路で `unique`(=ソート)して
-    既存 allow に足すので、ここでもソート済みで返す。
+    Bash ルールはコマンド文字列の前方一致なので、実際に打たれる形のぶんだけ変種が要る:
+    `-s`(単純 GET)/`-sG`(--data-urlencode 併用)× URL のクォート有無 の 4 本。
+    `/v1/` 個別ルールは `/` 前方一致に包含されるので出さない。
+    スクリプトは jq 経路で `unique`(=ソート)して既存 allow に足すので、
+    ここでもソート済みで返す。
     """
     base = base_url.rstrip("/")
-    return sorted([f"Bash(curl -s {base}/v1/:*)", f"Bash(curl -s {base}/:*)"])
+    return sorted(
+        f"Bash(curl {flags} {quote}{base}/:*)"
+        for flags in ("-s", "-sG")
+        for quote in ("", '"')
+    )
 
 
 def permission_json(base_url: str) -> str:
@@ -185,6 +193,9 @@ def build_block(sources: dict[str, Source], base_url: str, now: datetime | None 
         "いきなり全文を取らない。",
         "- 3 文字未満の語はタイトル前方一致にフォールバックする"
         "(レスポンスの `mode` が `title_prefix` になる)。",
+        "- 日本語・スペース等を含むパラメータ(`q`/`title`/`prefix`/`area`/`feature`)は"
+        "下記例のとおり `curl -sG --data-urlencode` で渡す"
+        "(URL に直接埋め込むとサーバーに Invalid HTTP request で弾かれる)。",
         '- 応答は JSON。エラーは `{"error": "..."}` 形式。全クエリ 5 秒でタイムアウト(超過は 504)。',
         f'- ソース一覧(最新の登録状況): `curl -s "{base}/v1/sources"`',
         "",

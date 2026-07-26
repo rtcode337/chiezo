@@ -324,9 +324,13 @@ class TestClaudeConfig:
         assert res.status_code == 200
         assert res.headers["content-type"].startswith("application/json")
         allow = res.json()["permissions"]["allow"]
-        # chiezo への curl 許可 2 本。ベース URL はアクセス元から導出
-        assert "Bash(curl -s http://testserver/v1/:*)" in allow
+        # chiezo への curl 許可は -s/-sG × クォート有無の 4 本。ベース URL はアクセス元から導出
+        assert allow == sorted(allow)
         assert "Bash(curl -s http://testserver/:*)" in allow
+        assert 'Bash(curl -s "http://testserver/:*)' in allow
+        assert "Bash(curl -sG http://testserver/:*)" in allow
+        assert 'Bash(curl -sG "http://testserver/:*)' in allow
+        assert len(allow) == 4
 
     def test_permissions_json_honors_forwarded_headers(self, client):
         res = client.get(
@@ -334,7 +338,7 @@ class TestClaudeConfig:
             headers={"X-Forwarded-Proto": "https", "Host": "example.me:8443"},
         )
         allow = res.json()["permissions"]["allow"]
-        assert "Bash(curl -s https://example.me:8443/v1/:*)" in allow
+        assert "Bash(curl -s https://example.me:8443/:*)" in allow
 
     def test_config_html_has_both_blocks_and_copy_buttons(self, client):
         res = client.get("/admin/claude-config")

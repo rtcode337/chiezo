@@ -52,21 +52,24 @@ docker compose restart chiezo-api
 ```bash
 BASE=http://<サーバーIP>:9000
 
-curl -s "$BASE/v1/sources"                                        # ソース一覧
-curl -s "$BASE/v1/jawiki/search?q=浅草寺&limit=5"                  # 全文検索
-curl -s "$BASE/v1/jawiki/doc?title=浅草寺&fields=title,opening,tags" # 文書概要
-curl -s "$BASE/v1/jawiki/doc?title=浅草寺&max_chars=8000"           # 文書全文(切り詰め)
-curl -s "$BASE/v1/jawiki/doc?title=浅草寺&fields=title,extra"       # ページビュー等の付加情報
-curl -s "$BASE/v1/jawiki/titles?prefix=浅草"                        # タイトル前方一致
-curl -s "$BASE/v1/jawiki/links?title=浅草寺"                        # リンク先一覧
-curl -s "$BASE/v1/jawiki/random?limit=3"                           # ランダム文書
+# 日本語・スペース等を含むパラメータ(q/title/prefix/area/feature)は、URL に直接埋め込む
+# のではなく `-G --data-urlencode` で渡す(生の UTF-8 はサーバーに弾かれるため)
+curl -s "$BASE/v1/sources"                                          # ソース一覧
+curl -sG "$BASE/v1/jawiki/search?limit=5" --data-urlencode "q=浅草寺"                    # 全文検索
+curl -sG "$BASE/v1/jawiki/doc?fields=title,opening,tags" --data-urlencode "title=浅草寺" # 文書概要
+curl -sG "$BASE/v1/jawiki/doc?max_chars=8000" --data-urlencode "title=浅草寺"            # 文書全文(切り詰め)
+curl -sG "$BASE/v1/jawiki/doc?fields=title,extra" --data-urlencode "title=浅草寺"        # ページビュー等の付加情報
+curl -sG "$BASE/v1/jawiki/titles" --data-urlencode "prefix=浅草"                         # タイトル前方一致
+curl -sG "$BASE/v1/jawiki/links" --data-urlencode "title=浅草寺"                         # リンク先一覧
+curl -s "$BASE/v1/jawiki/random?limit=3"                            # ランダム文書
 
-curl -s "$BASE/v1/osm_japan/search?q=富士山&limit=5"                # 地名・POI検索(同一エンドポイント)
-curl -s "$BASE/v1/osm_japan/doc?title=京都市&fields=title,extra"    # 座標・OSMタグ等
+curl -sG "$BASE/v1/osm_japan/search?limit=5" --data-urlencode "q=富士山"                 # 地名・POI検索(同一エンドポイント)
+curl -sG "$BASE/v1/osm_japan/doc?fields=title,extra" --data-urlencode "title=京都市"     # 座標・OSMタグ等
 
 # 属性での一括抽出(全文検索ではなく等価・範囲条件。Overpass API 相当)
-curl -s "$BASE/v1/osm_japan/filter?feature=amenity%3Dplace_of_worship&area=京都府&limit=200"
-curl -s "$BASE/v1/osm_japan/filter?feature=tourism%3Dmuseum&bbox=34.9,135.6,35.1,135.9"
+curl -sG "$BASE/v1/osm_japan/filter?limit=200" \
+  --data-urlencode "feature=amenity=place_of_worship" --data-urlencode "area=京都府"
+curl -sG "$BASE/v1/osm_japan/filter?bbox=34.9,135.6,35.1,135.9" --data-urlencode "feature=tourism=museum"
 curl -s "$BASE/v1/jawiki/filter?wikidata=Q17221&fields=title,extra" # Q 番号 → 記事の逆引き
 ```
 

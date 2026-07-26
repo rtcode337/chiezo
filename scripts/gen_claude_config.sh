@@ -133,8 +133,14 @@ fi
 if [ "$WITHPERM" -eq 1 ]; then
   curl -fsS --max-time "$TIMEOUT" "$BASE/admin/claude-config.permissions.json" -o "$PERMS" \
     || die "権限ルールを取得できません($BASE/admin/claude-config.permissions.json)"
-  # 応答 JSON の permissions.allow から "Bash(...)" ルールを 1 行 1 本で取り出す
-  RULES="$(sed -n 's/^[[:space:]]*"\(Bash([^"]*)\)".*/\1/p' "$PERMS")"
+  # 応答 JSON の permissions.allow から "Bash(...)" ルールを 1 行 1 本で取り出す。
+  # ルールには `"` を含むもの(クォート付き curl 用の変種)があるため jq を優先し、
+  # 無い場合は sed で JSON エスケープ(\")を復元しながら近似抽出する。
+  if command -v jq >/dev/null 2>&1; then
+    RULES="$(jq -r '.permissions.allow[]' "$PERMS")"
+  else
+    RULES="$(sed -n 's/^[[:space:]]*"\(Bash(.*)\)",\{0,1\}$/\1/p' "$PERMS" | sed 's/\\"/"/g')"
+  fi
   [ -n "$RULES" ] || die "権限ルールが応答に含まれていません($BASE/admin/claude-config.permissions.json)"
 
   # --user は TARGET_FILE 自体が ~/.claude/CLAUDE.md なので、そのディレクトリが
