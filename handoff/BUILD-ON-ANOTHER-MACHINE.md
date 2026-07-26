@@ -1,7 +1,8 @@
 # 別マシンで chiezo の DB を焼く手順
 
 メモリの潤沢なマシン(以下「ビルド機」)で `.db` を作り、それを配信機へコピーするための手順書。
-イメージ 1 個と、このファイルだけ持っていけば完結する(リポジトリのソースは不要)。
+イメージは GHCR(`ghcr.io/rtcode337/chiezo-ingest`)から pull できるので、
+このファイルだけ持っていけば完結する(リポジトリのソースは不要)。
 
 chiezo の DB は**自己完結した単一の SQLite ファイル**なので、配布は「ファイルをコピーする」だけ。
 export/import も、配信機でのビルドも要らない。SQLite のファイル形式は OS・CPU アーキ非依存なので、
@@ -119,16 +120,22 @@ df -h ~            # 空きが上表のディスク要件を超えているか
 
 ## 手順
 
-### 1. イメージを持ち込んで読み込む
+### 1. イメージを用意する
 
-`chiezo-ingest-image.tar.gz` をビルド機へコピーして:
+ビルド機がインターネットに出られるなら GHCR から pull するだけ:
+
+```bash
+docker pull ghcr.io/rtcode337/chiezo-ingest:latest
+```
+
+出られない場合は、別のマシンで `docker save` した `chiezo-ingest-image.tar.gz` をコピーして読み込む:
 
 ```bash
 # 転送が壊れていないか確認(任意)
 sha256sum -c chiezo-ingest-image.tar.gz.sha256
 
 docker load -i chiezo-ingest-image.tar.gz
-docker images chiezo-chiezo-ingest   # 読み込めたか確認
+docker images ghcr.io/rtcode337/chiezo-ingest   # 読み込めたか確認
 ```
 
 ### 2. 作業用のデータフォルダを用意する
@@ -153,7 +160,7 @@ docker run -d --name chiezo-build \
   -e SOURCE=geonames \
   -e CHIEZO_DATA_DIR=/data \
   -v ~/chiezo-data:/data \
-  chiezo-chiezo-ingest:latest
+  ghcr.io/rtcode337/chiezo-ingest:latest
 
 docker logs -f chiezo-build      # 進捗を見る(Ctrl-C で抜けてもビルドは続く)
 docker wait chiezo-build         # 終了まで待つ(終了コードが返る)
@@ -218,7 +225,7 @@ curl -s http://localhost:9000/v1/sources   # 新しい dump_date / schema_versio
 普段使いのマシンを借りたなど、余計なものを残したくない場合:
 
 ```bash
-docker rmi chiezo-chiezo-ingest:latest
+docker rmi ghcr.io/rtcode337/chiezo-ingest:latest
 rm -rf /path/to/chiezo-data
 ```
 
@@ -239,7 +246,7 @@ not enough memory to build osm_japan: 2.0 GiB available < 12.0 GiB required.
    大陸単位の OSM(旧 `osm_europe`)は廃止した。全世界の地名は `geonames` が 1 ソースで賄う。
    ```bash
    docker run --rm -it -e SOURCE=osm_japan -e OSM_NODE_INDEX=sparse_file_array \
-     -e CHIEZO_DATA_DIR=/data -v /path/to/chiezo-data:/data chiezo-chiezo-ingest:latest
+     -e CHIEZO_DATA_DIR=/data -v /path/to/chiezo-data:/data ghcr.io/rtcode337/chiezo-ingest:latest
    ```
 3. **検査を上書きする** — 見積もりが実態と合っていないと分かっている場合のみ。
    `BUILD_MEMORY_GB=<n>` で必要量を変える、`SKIP_MEMORY_CHECK=1` で検査自体を飛ばす。

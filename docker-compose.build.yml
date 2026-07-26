@@ -1,0 +1,51 @@
+# ローカルでイメージをビルドして本番同等に動かす用(api/ ingest/ を変更したときの動作確認)。
+#
+#   docker compose -f docker-compose.build.yml up -d --build
+#
+# 本番は docker-compose.yml(GHCR から pull)を使う。設定はそちらと揃えてあり、
+# 違いは image を pull せず手元でビルドする点だけ(タグは :local で pull 版と区別する)。
+x-ingest-limits: &ingest-limits
+  cpus: "4.0"
+
+services:
+  chiezo-api:
+    build: ./api
+    image: ghcr.io/rtcode337/chiezo-api:local
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./data:/data:ro
+    environment:
+      - CHIEZO_DATA_DIR=/data
+      - CHIEZO_TRIGGER_URL=http://chiezo-trigger:8080
+    depends_on:
+      - chiezo-trigger
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:9000/healthz"]
+      interval: 60s
+
+  chiezo-trigger:
+    build: ./ingest
+    image: ghcr.io/rtcode337/chiezo-ingest:local
+    command: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080"]
+    volumes:
+      - ./data:/data
+    environment:
+      - CHIEZO_DATA_DIR=/data
+    restart: unless-stopped
+    <<: *ingest-limits
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/healthz"]
+      interval: 60s
+
+  chiezo-ingest:
+    build: ./ingest
+    image: ghcr.io/rtcode337/chiezo-ingest:local
+    profiles: ["ingest"]
+    volumes:
+      - ./data:/data
+    environment:
+      - SOURCE=jawiki
+      - CHIEZO_DATA_DIR=/data
+    <<: *ingest-limits

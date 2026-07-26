@@ -1,3 +1,12 @@
+# 本番用。イメージは GitHub Actions(.github/workflows/ci.yml)が main への push で
+# ビルドし GHCR へ公開する(amd64 / arm64)。本番ではビルドせず pull するだけ:
+#
+#   docker compose pull && docker compose up -d
+#
+# 障害時は :latest ではなく :sha-xxxxxxx を指定すれば任意の時点に戻せる
+# (CHIEZO_API_IMAGE / CHIEZO_INGEST_IMAGE で上書き可)。
+# ローカルでイメージをビルドして動かしたいときは docker-compose.build.yml を使う。
+
 # 取り込み系コンテナ共通のリソース上限(YAML アンカー)。cpus は「良き隣人」のための緩い上限。
 # メモリの上限(mem_limit)はあえて課さない。取り込みは潤沢メモリのマシンで回す前提で、
 # 逆に上限で締めると OOM killer が構築を殺してしまう(以前 1GiB で締めたら osm のノード座標
@@ -10,7 +19,7 @@ x-ingest-limits: &ingest-limits
 
 services:
   chiezo-api:
-    build: ./api
+    image: ${CHIEZO_API_IMAGE:-ghcr.io/rtcode337/chiezo-api:latest}
     ports:
       # host:container。デフォルトの 8000 から 9000 に変更(他アプリとの衝突回避)。
       - "9000:9000"
@@ -31,7 +40,7 @@ services:
   # ingest イメージを流用し、CMD だけ server:app(FastAPI)起動に上書きする。
   # ホストへポート公開せず、chiezo-api からのみ docker 内部ネットワーク経由で到達できる。
   chiezo-trigger:
-    build: ./ingest
+    image: ${CHIEZO_INGEST_IMAGE:-ghcr.io/rtcode337/chiezo-ingest:latest}
     command: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080"]
     volumes:
       - ./data:/data
@@ -46,7 +55,7 @@ services:
       interval: 60s
 
   chiezo-ingest:
-    build: ./ingest
+    image: ${CHIEZO_INGEST_IMAGE:-ghcr.io/rtcode337/chiezo-ingest:latest}
     profiles: ["ingest"]
     volumes:
       - ./data:/data

@@ -26,7 +26,8 @@ LAN 内の開発マシン(主に Claude Code)から使う、完全ローカル�
 ## セットアップ
 
 ```bash
-# 1. API を起動(DB が無い間もソース 0 件で起動する)
+# 1. API を起動(DB が無い間もソース 0 件で起動する)。
+#    イメージは GHCR から自動で pull される(ビルド不要。更新は docker compose pull)
 docker compose up -d
 curl -s http://localhost:9000/healthz
 
@@ -331,25 +332,27 @@ export/import も配信機でのビルドも要りません(SQLite のファイ�
 Windows で焼いて Linux で読ませてよい)。メモリの少ない配信機と、メモリの多いビルド機を分けられます。
 
 ```bash
-# 1. ビルド機へ渡すイメージを作る(リポジトリのソースを持ち出さずに済む)
-docker compose build chiezo-ingest
-mkdir -p handoff
-docker save chiezo-chiezo-ingest:latest | gzip -1 > handoff/chiezo-ingest-image.tar.gz
-
-# 2. ビルド機(メモリ潤沢)で読み込んで取り込む。compose も設定ファイルも不要
-docker load -i chiezo-ingest-image.tar.gz
+# 1. ビルド機(メモリ潤沢)で GHCR からイメージを pull して取り込む。
+#    リポジトリも compose も設定ファイルも不要
 docker run --rm -it -e SOURCE=jawiki -e CHIEZO_DATA_DIR=/data \
-  -v /path/to/chiezo-data:/data chiezo-chiezo-ingest:latest
+  -v /path/to/chiezo-data:/data ghcr.io/rtcode337/chiezo-ingest:latest
 
-# 3. 出来た世代ファイルを配信機へコピーし、<ソース名>.db として見えるようにして再起動
+# 2. 出来た世代ファイルを配信機へコピーし、<ソース名>.db として見えるようにして再起動
 cp jawiki-20260701.db /path/to/chiezo/data/
 ln -sfn jawiki-20260701.db /path/to/chiezo/data/jawiki.db
 docker compose restart chiezo-api
 ```
 
+ビルド機がインターネットに出られない・GHCR を使いたくない場合は、イメージをファイルで持ち込めます:
+
+```bash
+docker pull ghcr.io/rtcode337/chiezo-ingest:latest   # または docker-compose.build.yml でローカルビルド
+docker save ghcr.io/rtcode337/chiezo-ingest:latest | gzip -1 > handoff/chiezo-ingest-image.tar.gz
+# ビルド機で: docker load -i chiezo-ingest-image.tar.gz
+```
+
 詳しい手順(必要ディスク・所要時間、Docker Desktop/WSL2 のメモリ設定、後片付け、環境変数一覧)は
-[`handoff/BUILD-ON-ANOTHER-MACHINE.md`](handoff/BUILD-ON-ANOTHER-MACHINE.md) にまとめてあります。
-イメージとこのファイルだけ持っていけば、ビルド機にリポジトリを置かずに完結します
+[`handoff/BUILD-ON-ANOTHER-MACHINE.md`](handoff/BUILD-ON-ANOTHER-MACHINE.md) にまとめてあります
 (取り込みが触るのは公開ダンプと指定した data フォルダだけで、認証情報や個人ファイルは読みません)。
 
 ### chiezo-trigger(管理画面からの初期化)
@@ -402,8 +405,14 @@ python -m venv .venv && .venv/bin/pip install -r api/requirements.txt -r ingest/
 DB を構築して全エンドポイントを検証します。ネットワーク・実データは不要です。
 
 CI(`.github/workflows/ci.yml`)は push / PR でこのテストを実行し、main への push で
-`ghcr.io/<owner>/chiezo-api` / `ghcr.io/<owner>/chiezo-ingest` のマルチアーキ
-(amd64 / arm64)イメージを GHCR へ公開します。
+`ghcr.io/rtcode337/chiezo-api` / `ghcr.io/rtcode337/chiezo-ingest` のマルチアーキ
+(amd64 / arm64)イメージを GHCR へ公開します。`docker-compose.yml` はこのイメージを
+pull して使います。`api/` や `ingest/` を変更してローカルで動作確認するときは
+ビルド版を使ってください:
+
+```bash
+docker compose -f docker-compose.build.yml up -d --build
+```
 
 ## 設計メモ
 

@@ -261,8 +261,11 @@ python tests/fixtures/make_fixture.py
 python tests/fixtures/make_osm_fixture.py
 python tests/fixtures/make_geonames_fixture.py
 
-# API 起動(Docker)
+# API 起動(Docker。docker-compose.yml は GHCR の公開イメージを pull する)
 docker compose up -d
+
+# api/ ingest/ を変更したときのローカルビルドでの動作確認
+docker compose -f docker-compose.build.yml up -d --build
 
 # 取り込み(本番: jawiki は 5〜6GB ダウンロード、構築 2〜6 時間、ディスク空き 80GB 推奨)
 docker compose --profile ingest run --rm chiezo-ingest
@@ -314,8 +317,8 @@ cgroup 上限(`memory.max`)の小さいほう(`available_memory_bytes()`)。
   (`test_no_source_requires_more_than_12gb_by_default`)。
 
 `.db` は自己完結した単一 SQLite ファイルなので、**メモリの多いマシンで焼いて配信機へコピー**すれば
-よい(`docker save` した ingest イメージ + `handoff/BUILD-ON-ANOTHER-MACHINE.md` だけ持ち出せば、
-ビルド機にリポジトリを置かずに完結する)。配信側 chiezo-api は read-only immutable SQLite を
+よい(ビルド機は GHCR から ingest イメージを pull するだけで、リポジトリを置かずに完結する。
+オフライン環境へは `docker save` で持ち込む。手順は `handoff/BUILD-ON-ANOTHER-MACHINE.md`)。配信側 chiezo-api は read-only immutable SQLite を
 開くだけで常駐 80〜150MB のため、**メモリ数百 MB の小型機でも動く**(効くのはメモリでなく
 ディスクで、jawiki.db 約42GB の空きが要る)。この非対称性が設計の要なので壊さないこと。
 
