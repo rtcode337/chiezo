@@ -1,8 +1,18 @@
 # chiezo — ローカル知識サーバー
 
-LAN 内で動く読み取り専用の知識検索 REST API。複数のデータソース(日本語 Wikipedia = `jawiki`、
-OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geonames`)を
-ソースごとに独立した SQLite ファイル(`/data/<source>.db`)として収容する。
+**AI のための知識ベース。**公開ダンプ(Wikipedia / OpenStreetMap / GeoNames)をローカルの
+SQLite (FTS5) に取り込んで索引し、AI が引ける形で出す。完全ローカルで、レート制限も
+問い合わせ内容の外部送信も無いことが存在理由。3 層で捉えるとよい:
+
+- **ためる** — `ingest/` が公式ダンプを取り込み、ソースごとに独立した SQLite ファイル
+  (`/data/<source>.db`)を作る。更新はブルーグリーン
+- **取り出す** — `api/` が **MCP**(`/mcp`)と **REST**(`/v1/...`)の 2 経路で出す。
+  Claude Code 向けには「いつ chiezo を使うか」を書いた CLAUDE.md ブロックも生成する
+- **答える(任意・未実装)** — ローカル LLM を同居させ、ためた知識で回答まで返す構想。
+  既定では起動しない別サービスにすること(配信側が数百 MB で動く前提を壊さないため)
+
+現在の収録ソースは日本語 Wikipedia = `jawiki`、OpenStreetMap 日本抽出 = `osm_japan`、
+GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か国から選んで増やせる)。
 
 ## アーキテクチャ
 

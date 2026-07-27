@@ -1,27 +1,37 @@
 # <img src="assets/icon.svg" width="40" alt="chiezo icon"> chiezo — ローカル知識サーバー
 
-LAN 内の開発マシン(主に Claude Code)から使う、完全ローカルの知識検索 REST API です。
-公式ダンプを SQLite (FTS5 trigram) に取り込み、外部 API のレート制限や負荷を気にせず参照できます。
+**AI のための知識ベースです。**公開ダンプ(Wikipedia / OpenStreetMap / GeoNames)を
+ローカルの SQLite (FTS5) に取り込んで索引し、AI が引ける形で出します。完全ローカルなので、
+外部 API のレート制限も、問い合わせ内容が外に出ることもありません。
 
-- マルチソース設計: ソースごとに独立した SQLite ファイル 1 つ(`data/<source>.db`)
-- 収録ソース:
-  - `jawiki` — 日本語 Wikipedia(標準 XML ダンプ + wikitext 解析由来。CirrusSearch ダンプの
-    text フィールドは折りたたみ(collapsible)セクションを検索インデックスから除外して
-    いたため、この方式に切り替えた)。
-    Wikipedia は **348 の言語版が定義済み**で(`enwiki` / `dewiki` / `zh_yuewiki` …)、
-    使いたい言語だけを取り込みます。言語の選択は管理画面の `/admin` → `wikipedia` → 言語選択から
-  - `osm_<国>` — OpenStreetMap の国別抽出(Geofabrik 由来の地名辞典 + POI 辞典。
-    地名・行政区・自然地物に加え、病院・学校・店舗・観光地等の主要 POI と
-    駅・空港・港・IC/SA 等の交通インフラ、およびそれらの座標)。
-    Geofabrik にある **195 の国・地域が定義済み**で(`osm_japan` / `osm_france` / `osm_thailand` …)、
-    使いたい国だけを取り込みます。国の選択は管理画面の `/admin` → `osm` → 国選択から
-  - `geonames` — GeoNames 全世界地名辞典(約 400MB のダンプで約 1,200 万件。
-    多言語別名を持つので「パリ」「ニューヨーク」のような日本語表記から引ける。
-    wikidata の Q 番号も拾うので jawiki と突合できる。**店舗・営業時間は持たない**
-    — そこは osm 系の担当)
-- API: FastAPI + uvicorn(ポート 9000)、認証なし・LAN 内前提
-- 管理画面(`/admin`)から未初期化ソースの取り込みを起動できます(内部専用の `chiezo-trigger`
-  サービス経由。ホストへポート公開せず、`chiezo-api` からのみ到達可能)
+- **ためる** — `ingest` が公式ダンプを取り込み、ソースごとに独立した 1 つの SQLite ファイル
+  (`data/<source>.db`)にする。更新はブルーグリーン(別ファイルに構築 → 切り替え)
+- **取り出す** — AI からの引き口は 2 経路。**MCP**(`/mcp`、Streamable HTTP)と
+  **REST**(`search` / `doc` / `filter` / `tags` …)。Claude Code 向けには「どんなときに
+  chiezo を使うか」を書いた CLAUDE.md ブロックも自動生成します
+- **答える(任意)** — ローカル LLM を同居させれば、ためた知識で回答まで返せます
+  (未実装。既定では起動しない構成にする予定)
+
+人間が中身を確かめるための簡易ブラウズ画面と管理画面(`/admin`)も付いています。
+
+### ためられるソース
+
+- `<lang>wiki` — Wikipedia。一般知識・人物・作品・出来事など。**348 の言語版が定義済み**で
+  (`jawiki` / `enwiki` / `zh_yuewiki` …)、使いたい言語だけを取り込みます
+  (管理画面の `/admin` → `wikipedia` → 言語選択から)
+- `osm_<国>` — OpenStreetMap の国別抽出(Geofabrik 由来の地名辞典 + POI 辞典)。
+  地名・行政区・自然地物に加え、病院・学校・店舗・観光地等の主要 POI と
+  駅・空港・港・IC/SA 等の交通インフラ、およびそれらの座標。Geofabrik にある
+  **195 の国・地域が定義済み**で(`osm_japan` / `osm_france` …)、使いたい国だけを
+  取り込みます(`/admin` → `osm` → 国選択から)
+- `geonames` — GeoNames 全世界地名辞典(約 400MB のダンプで約 1,200 万件)。
+  多言語別名を持つので「パリ」「ニューヨーク」のような日本語表記から引けます。
+  wikidata の Q 番号も拾うので jawiki と突合できます。**店舗・営業時間は持たない**
+  — そこは osm 系の担当です
+
+API は FastAPI + uvicorn(ポート 9000)、認証なし・LAN 内前提。未初期化ソースの取り込みは
+管理画面から起動できます(内部専用の `chiezo-trigger` サービス経由。ホストへポート公開せず、
+`chiezo-api` からのみ到達可能)。
 
 ## セットアップ
 
