@@ -34,6 +34,10 @@ HOOK_PATH_PLACEHOLDER = "{{HOOK_PATH}}"
 _HOOK_SOURCE = Path(__file__).parent / "hooks" / "chiezo_autoallow.py"
 _ORIGIN_LINE_RE = re.compile(r'^CHIEZO_ORIGIN = "[^"]*"$', re.MULTILINE)
 
+# 例示タグを選ぶために読む doc_tags の行数と、その集計に許す時間(_sample_tag 参照)。
+_TAG_SAMPLE_ROWS = 200_000
+_TAG_SAMPLE_TIMEOUT = 2.0
+
 
 def _sample(src: Source) -> tuple[str, set[str], list[str]]:
     """例示に使うサンプルのタイトルと、その doc の extra のキー集合・tags。"""
@@ -72,15 +76,26 @@ def _has_value(src: Source, column: str) -> bool:
 
 def _sample_tag(src: Source) -> str | None:
     """例示に使う実在のタグ。ソースに何が入っているかは分からないので、
-    いちばん多く使われているタグを 1 つ採る(jawiki なら「存命人物」等)。
+    よく使われているタグを 1 つ採る(jawiki なら「存命人物」等)。
 
-    doc_tags 全体の集計になるので巨大ソースでは 1 秒前後かかる。タイムアウトしたら
-    諦めて None(呼び出し側がサンプル文書のタグへフォールバックする)。
+    doc_tags 全体の集計は巨大ソース(jawiki・geonames)では db の 5 秒クエリ
+    タイムアウトに達し、結果を捨てたうえでその 5 秒がまるごと
+    /admin/claude-config.txt の応答時間になる(実測: 2 ソースで約 11 秒。
+    gen_claude_config.sh の既定 --timeout 10 を毎回超えて生成が失敗する)。
+    ここが欲しいのは「実在してよく使われているタグ 1 つ」だけで、厳密な最多タグ
+    である必要はないので、先頭 _TAG_SAMPLE_ROWS 行だけを数えて近似する。
+    それでも駄目なら None(呼び出し側がサンプル文書のタグへフォールバックする)。
     """
     try:
         rows = db.query(
             src.path,
-            "SELECT tag, COUNT(*) AS n FROM doc_tags GROUP BY tag ORDER BY n DESC LIMIT 1",
+            # NOT INDEXED は必須。idx_doc_tags_tag はこの副問い合わせの被覆索引なので、
+            # 放っておくと先頭 N 行が「タグ名の辞書順で先頭」に偏り、標本として使えない
+            # (doc_tags は doc_id 順に挿入されるので、rowid 順に読めば実質ランダム標本)。
+            "SELECT tag, COUNT(*) AS n FROM (SELECT tag FROM doc_tags NOT INDEXED LIMIT ?)"
+            " GROUP BY tag ORDER BY n DESC LIMIT 1",
+            (_TAG_SAMPLE_ROWS,),
+            timeout=_TAG_SAMPLE_TIMEOUT,
         )
     except (sqlite3.Error, db.QueryTimeout):
         return None

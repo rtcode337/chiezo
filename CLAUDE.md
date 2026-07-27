@@ -399,6 +399,11 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
   変更は最終手段で、`schema_version` を上げ api 側で複数バージョン対応する。
 - ソース間で JOIN しない。API はソース種別を意識せず docs/aliases/docs_fts のみ参照する。
 - FTS5 は trigram。ユーザー入力は必ずフレーズエスケープしてから MATCH に渡す(`app/fts.py` 経由)。
+  **形態素トークナイザへの差し替えは 2026-07 に評価して見送っている**
+  (`docs/fts-tokenizer-evaluation.md`)。索引 −72%・2 文字クエリが引けるという利得は
+  実測できたが、モデルを SQLite の**接続ごと**に持つため配信側が接続 1 本で +395MiB・
+  8 本で +926MiB になり、「配信機は数百 MB」という前提を壊すため。
+  再挑戦するならモデルをプロセス内で共有できる実装を探すこと。
 - 運用 DB は読み取り専用(`immutable=1`)。更新はブルーグリーン(別ファイル構築 → シンボリックリンク差し替え → api 再起動)のみ。
   `/data` への書き込み権限を持つのは chiezo-ingest(one-shot)と chiezo-trigger(常駐)だけで、
   chiezo-api は引き続き read-only マウント。

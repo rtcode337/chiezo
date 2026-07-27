@@ -610,7 +610,10 @@ docker compose -f docker-compose.build.yml up -d --build
 
 - SQLite + FTS5 (trigram) 採用。読み取り専用・少数クライアントなら数 ms〜数十 ms で十分。
   「ソース = 1 ファイル」が世代管理・ブルーグリーンとよく噛み合います。
-- 割り切り: 3 文字未満の語は FTS 不可(前方一致へ自動フォールバック)、ランキングは簡易(bm25 + 人気度)。
+- 割り切り: 3 文字未満の語は FTS 不可(前方一致へ自動フォールバック)、ランキングは簡易
+  (タイトル完全一致 → bm25 × 人気度)。形態素トークナイザへの差し替えは実測のうえ見送りました
+  (索引は 72% 減るが、モデルを接続ごとに持つため配信側のメモリが 1 桁増える。
+  経緯と数字は [docs/fts-tokenizer-evaluation.md](docs/fts-tokenizer-evaluation.md))。
 - 移行トリガー: 検索精度に不満 → Meilisearch / 同時接続・書き込み要件 → PostgreSQL + PGroonga。
   API 層があるため DB だけ差し替え可能です。
 
