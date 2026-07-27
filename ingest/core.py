@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Protocol
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 CORE_SCHEMA_DDL = """
 -- ソース自身のメタ情報(1行)
@@ -62,6 +62,32 @@ CREATE TABLE doc_tags (
     doc_id    INTEGER NOT NULL REFERENCES docs(doc_id)
 );
 
+-- タグ名 → 文書数の集計表(schema_version 4 で追加)。doc_tags を GROUP BY した
+-- だけの要約で、新しい情報は持たない。分けてあるのは配信側の読み取り量のため:
+-- 「どんなタグがあるか」を探す /v1/<source>/tags は doc_tags 側だと転置表全体
+-- (jawiki で 764 万行・索引 300MB)を読む必要があるのに対し、ここは重複を畳んだ
+-- 29 万行・12MB で済む。配信機は数百 MB メモリの小型機で毎回ディスクから読むため、
+-- この差がそのまま応答時間になる(部分一致 tags?contains= が 5 秒のクエリ
+-- タイムアウトを超えて 504 になっていた)。
+CREATE TABLE tag_counts (
+    tag       TEXT PRIMARY KEY,
+    docs      INTEGER NOT NULL
+) WITHOUT ROWID;
+
+-- 座標 → 文書の索引表(schema_version 4 で追加)。docs の生成列 lat/lon と同じ値の
+-- 射影で、新しい情報は持たない。**生成列の索引では bbox が引けない**ため分けてある:
+-- lat/lon は VIRTUAL(値を保存せず参照時に json_extract する)なので、SQLite は
+-- idx_docs_lat_lon で緯度の範囲までは絞れても、経度の判定には行本体を読み直す
+-- (被覆索引にならない)。結果として費用が「該当件数」ではなく「その緯度帯にある
+-- 全文書数」に比例し、0.05 度四方の bbox でも 3.5 万行を読んでいた(配信機で 13 秒 = 504)。
+-- ここは実体の値を持つので、緯度帯の走査も経度の判定も索引の中だけで完結する。
+CREATE TABLE doc_coords (
+    lat       REAL NOT NULL,
+    lon       REAL NOT NULL,
+    doc_id    INTEGER NOT NULL,
+    PRIMARY KEY (lat, lon, doc_id)
+) WITHOUT ROWID;
+
 -- 全文検索(external content 方式で本文の二重保存を回避)
 CREATE VIRTUAL TABLE docs_fts USING fts5(
     title, body,
@@ -85,6 +111,15 @@ CREATE INDEX idx_docs_wikidata ON docs(wikidata);
 -- するのは、タグ → doc_id の引き当てとタグ名の集計をこの索引だけで済ませるため
 -- (covering index。docs 本体を触らない)。
 CREATE INDEX idx_doc_tags_tag ON doc_tags(tag, doc_id);
+-- /v1/<source>/tags の「文書数の多い順に上位 N 件」用。この順で並んだ索引があると
+-- 部分一致(contains)でも先頭から数えて N 件見つかった時点で走査を打ち切れる。
+CREATE INDEX idx_tag_counts_docs ON tag_counts(docs DESC, tag);
+-- /v1/<source>/filter の ORDER BY rank_score DESC, title 用(schema_version 4 で追加)。
+-- 並び順そのものを索引に持たせて、上位 N 件で走査を打ち切れるようにするためのもの。
+-- これが無いと、該当文書を全部 docs から読んでから並べ替えることになり、jawiki の
+-- 「存命人物」(25 万件)は limit=1 でも 33 秒かかった(実測。この索引を使わせると 0.05 秒)。
+-- title まで入れているのは第 2 キーまで索引で満たすため(rank_score は同点が多い)。
+CREATE INDEX idx_docs_rank ON docs(rank_score DESC, title);
 """
 
 # docs 投入後に doc_tags を組み立てる SQL(索引を張る前に流す)。
@@ -107,6 +142,24 @@ SELECT DISTINCT json_each.value, d.doc_id
   FROM (SELECT doc_id, tags FROM docs WHERE doc_id > ? ORDER BY doc_id LIMIT ?) AS d,
        json_each(d.tags)
  WHERE d.tags IS NOT NULL AND json_each.value <> ''
+"""
+
+# doc_tags を畳んで tag_counts を作る SQL(doc_tags の索引を張った後に流す。
+# idx_doc_tags_tag が tag 順なので GROUP BY が並べ替えなしのストリーム集計になる)。
+# scripts/add_tag_index.py(既存 DB の移行)も同じ SQL を使う。
+TAG_COUNTS_POPULATE_SQL = """
+INSERT INTO tag_counts (tag, docs)
+SELECT tag, COUNT(*) FROM doc_tags GROUP BY tag
+"""
+
+# docs の生成列から doc_coords を作る SQL(idx_docs_lat_lon を張った後に流す)。
+# INDEXED BY は速度のため。放っておくと SQLite は docs の全走査を選び、座標を持つ
+# 文書が一部でも全行の json_extract を回す(手元の jawiki 41GB で 7.4 秒 → 0.04 秒)。
+# scripts/add_tag_index.py(既存 DB の移行)も同じ SQL を使う。
+DOC_COORDS_POPULATE_SQL = """
+INSERT INTO doc_coords (lat, lon, doc_id)
+SELECT lat, lon, doc_id FROM docs INDEXED BY idx_docs_lat_lon
+ WHERE lat IS NOT NULL AND lon IS NOT NULL
 """
 
 

@@ -803,11 +803,21 @@ class TestTagSchemaGuard:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         try:
             (version,) = conn.execute("SELECT schema_version FROM meta").fetchone()
-            assert version == 3
+            assert version == 4
             rows = conn.execute(
                 "SELECT doc_id FROM doc_tags WHERE tag = '日本の都道府県'"
             ).fetchall()
             assert sorted(r[0] for r in rows) == [1, 10]
+            # 4 の分(tag_counts)も同じ実行で作られ、doc_tags と一致する
+            (docs,) = conn.execute(
+                "SELECT docs FROM tag_counts WHERE tag = '日本の都道府県'"
+            ).fetchone()
+            assert docs == 2
+            mismatch = conn.execute(
+                "SELECT tag FROM tag_counts WHERE docs <>"
+                " (SELECT COUNT(DISTINCT doc_id) FROM doc_tags WHERE doc_tags.tag = tag_counts.tag)"
+            ).fetchall()
+            assert mismatch == []
         finally:
             conn.close()
 
@@ -817,3 +827,92 @@ class TestTagSchemaGuard:
         )
         assert again.returncode == 0
         assert "nothing to do" in again.stdout
+
+
+class TestTagCountsFallback:
+    """schema_version 3 の DB は tag_counts を持たない(遅いが今までどおり動く)。
+
+    4 で足したのは doc_tags を畳んだ集計表だけで、答えは変わらない。移行前の DB を
+    断らずに旧経路へ落とすようにしてあるので、両経路が同じ答えを返すことを固定する。
+    """
+
+    @pytest.fixture()
+    def v3_client(self, tmp_path, built_data_dir):
+        import shutil
+        import sqlite3
+
+        from fastapi.testclient import TestClient
+
+        data_dir = tmp_path / "v3"
+        data_dir.mkdir()
+        db_path = data_dir / "jawiki.db"
+        shutil.copy(built_data_dir / "jawiki.db", db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute("DROP TABLE tag_counts")
+        conn.execute("UPDATE meta SET schema_version = 3")
+        conn.commit()
+        conn.close()
+
+        mp = pytest.MonkeyPatch()
+        mp.setenv("CHIEZO_DATA_DIR", str(data_dir))
+        try:
+            from app.main import app
+
+            with TestClient(app) as c:
+                yield c
+        finally:
+            mp.undo()
+
+    def test_tags_endpoint_matches_the_tag_counts_path(self, v3_client, client):
+        for params in ({"limit": 3}, {"prefix": "日本の"}, {"contains": "地方"}, {"contains": "%"}):
+            old = v3_client.get("/v1/jawiki/tags", params=params)
+            new = client.get("/v1/jawiki/tags", params=params)
+            assert old.status_code == 200, params
+            assert old.json() == new.json(), params
+
+    def test_tag_filter_total_matches(self, v3_client, client):
+        for params in ({"tag": "日本の都道府県"}, {"tag": "日本の山,日本の合戦"}):
+            old = v3_client.get("/v1/jawiki/filter", params=params)
+            assert old.status_code == 200, params
+            assert old.json() == client.get("/v1/jawiki/filter", params=params).json(), params
+
+    def test_rank_index_is_not_named_on_v3(self, v3_client, monkeypatch):
+        """3 の DB には idx_docs_rank が無いので、INDEXED BY を書いてはいけない。"""
+        from app import main
+
+        monkeypatch.setattr(main, "RANK_INDEX_MIN_TOTAL", 0)  # 常に使いたがる状態にする
+        res = v3_client.get("/v1/jawiki/filter", params={"tag": "日本の都道府県"})
+        assert res.status_code == 200
+        assert res.json()["total"] == 2
+
+
+class TestRankIndexPath:
+    """大きいタグ向けの INDEXED BY 経路。並びも結果も既定の経路と同じでなければならない。
+
+    切り替えの閾値(RANK_INDEX_MIN_TOTAL)は本番規模で測った交差点なので、テスト用の
+    小さな DB では届かない。閾値を 0 にして経路だけ通し、両者が一致することを見る。
+    """
+
+    def test_matches_the_default_path(self, client, monkeypatch):
+        from app import main
+
+        params = {"tag": "日本の都道府県,日本の山", "limit": 3, "fields": "doc_id,title"}
+        default = client.get("/v1/jawiki/filter", params=params).json()
+        monkeypatch.setattr(main, "RANK_INDEX_MIN_TOTAL", 0)
+        indexed = client.get("/v1/jawiki/filter", params=params).json()
+        assert indexed == default
+        assert default["results"], default  # 空同士の一致で通してしまわないため
+
+    def test_only_for_tag_only_filters(self, built_data_dir):
+        from app import main
+        from app.registry import scan_sources
+
+        # app.state は他のテストの TestClient と共有なので、DB から直に読む
+        src = scan_sources(built_data_dir)["jawiki"]
+        assert main.rank_index_hint(src, id_set_only=True, total=main.RANK_INDEX_MIN_TOTAL)
+        # 生成列の条件が混ざるときは名指ししない(索引を名指しすると行本体が要るため)
+        assert main.rank_index_hint(src, id_set_only=False, total=10**6) == ""
+        # 該当が少ないときも名指ししない(索引を端まで走査する方が高くつく)
+        assert (
+            main.rank_index_hint(src, id_set_only=True, total=main.RANK_INDEX_MIN_TOTAL - 1) == ""
+        )

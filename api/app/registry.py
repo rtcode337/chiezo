@@ -27,7 +27,7 @@ class Source:
     path: Path
 
 
-SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3}
+SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3, 4}
 
 # 生成列 (feature/area/lat/lon/wikidata) と索引が入ったのは schema_version 2 から。
 # 1 のまま残っている DB に対しては /v1/<source>/filter を 409 で断る。
@@ -37,6 +37,21 @@ FILTER_MIN_SCHEMA_VERSION = 2
 # 2 以下の DB に対しては tag での絞り込みと /v1/<source>/tags を 409 で断る
 # (取り込み直すか scripts/add_tag_index.py で移行する)。
 TAG_MIN_SCHEMA_VERSION = 3
+
+# タグ名の集計表 (tag_counts) が入ったのは schema_version 4 から。
+# 3 の DB でも /v1/<source>/tags は動くが、doc_tags 全体を読む遅い経路になる
+# (jawiki・geonames の部分一致は配信機だと 5 秒のクエリタイムアウトを超える)。
+# 断らずに落とすだけなのは、移行前でも今までどおりには使えるようにするため。
+TAG_COUNTS_MIN_SCHEMA_VERSION = 4
+
+# 並び順(rank_score DESC, title)そのものを持つ索引 idx_docs_rank が入ったのも 4 から。
+# /v1/<source>/filter がタグだけで絞るときに INDEXED BY で名指しするので、
+# 3 以下の DB では名指ししない(索引が無い DB に INDEXED BY を書くとエラーになる)。
+RANK_INDEX_MIN_SCHEMA_VERSION = 4
+
+# 座標表 (doc_coords) が入ったのも 4 から。3 以下では docs の生成列 lat/lon を直接
+# 引く旧経路になる(引けるが、緯度帯にある全文書の行を読むので bbox が遅い)。
+COORDS_MIN_SCHEMA_VERSION = 4
 
 
 def _load_source(db_path: Path) -> Source | None:

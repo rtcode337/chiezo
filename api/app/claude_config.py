@@ -20,7 +20,12 @@ from datetime import datetime
 from pathlib import Path
 
 from app import db
-from app.registry import FILTER_MIN_SCHEMA_VERSION, TAG_MIN_SCHEMA_VERSION, Source
+from app.registry import (
+    FILTER_MIN_SCHEMA_VERSION,
+    TAG_COUNTS_MIN_SCHEMA_VERSION,
+    TAG_MIN_SCHEMA_VERSION,
+    Source,
+)
 
 BEGIN_MARK = "<!-- BEGIN chiezo (auto-generated) -->"
 END_MARK = "<!-- END chiezo -->"
@@ -85,7 +90,21 @@ def _sample_tag(src: Source) -> str | None:
     ここが欲しいのは「実在してよく使われているタグ 1 つ」だけで、厳密な最多タグ
     である必要はないので、先頭 _TAG_SAMPLE_ROWS 行だけを数えて近似する。
     それでも駄目なら None(呼び出し側がサンプル文書のタグへフォールバックする)。
+
+    schema_version 4 以降は集計済みの tag_counts があるので、そちらから正確な
+    最多タグを一瞬で採れる(近似は 3 のままの DB 向けの経路)。
     """
+    if src.schema_version >= TAG_COUNTS_MIN_SCHEMA_VERSION:
+        try:
+            rows = db.query(
+                src.path,
+                "SELECT tag FROM tag_counts ORDER BY docs DESC, tag LIMIT 1",
+                timeout=_TAG_SAMPLE_TIMEOUT,
+            )
+        except (sqlite3.Error, db.QueryTimeout):
+            return None
+        return rows[0]["tag"] if rows else None
+
     try:
         rows = db.query(
             src.path,

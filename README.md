@@ -136,12 +136,20 @@ OSM の国別ソース(`osm_<国>`、195 件)と Wikipedia の言語版(`<lang>w
   `total` と `offset` でページングできます。実体は `docs` の生成列(`feature` / `area` / `lat` /
   `lon` / `wikidata`)への索引付き検索で、これは `schema_version` 2 以降の DB にしかありません
   (1 のまま残っている DB では 409 を返すので、取り込みをやり直してください)。
+  ただし `bbox` だけは生成列ではなく座標表(`doc_coords`、4 以降)を引きます。3 以下の DB
+  では緯度帯にある文書を全部読む遅い経路になり、小さな bbox でもタイムアウトしえます。
   `tag` だけは別建てのタグ転置表(`doc_tags`)を引くため `schema_version` 3 以降が必要です
   (2 の DB では 409。再取り込みか、後述の `scripts/add_tag_index.py` でその場で移行できます)。
-- `tags` — タグ名を文書数つきで列挙します(`prefix` = 前方一致・索引が効く / `contains` =
-  部分一致・索引が効かないぶん遅い / 無指定 = 文書数の多い順)。`filter?tag=` はタグ名の
-  **完全一致**なので、Wikipedia のカテゴリのように表記の揺れがあるものは、まずここで実在する
-  名前を確かめてから引くのが確実です(`schema_version` 3 以降)。
+  並びは `rank_score` の降順で、該当が多いときは `idx_docs_rank`(4 以降)を使って上位だけを
+  取り出します。3 の DB では該当文書を全部読んでから並べるため、大きいカテゴリは
+  タイムアウトします(同じく `scripts/add_tag_index.py` で移行できます)。
+- `tags` — タグ名を文書数つきで列挙します(`prefix` = 前方一致 / `contains` = 部分一致 /
+  無指定 = 文書数の多い順)。`filter?tag=` はタグ名の**完全一致**なので、Wikipedia の
+  カテゴリのように表記の揺れがあるものは、まずここで実在する名前を確かめてから引くのが
+  確実です(`schema_version` 3 以降)。引くのは重複を畳んだ集計表 `tag_counts`
+  (`schema_version` 4 以降)で、これが無い 3 の DB では転置表 `doc_tags` を丸ごと読む
+  遅い経路になり、巨大ソースの部分一致はタイムアウトします(後述の
+  `scripts/add_tag_index.py` で移行できます)。
 - **カテゴリの全記事を列挙したいときは、本文の全文検索(`search?q=Category:ラーメン店`)ではなく
   `filter?tag=` を使ってください。** wikitext でソートキー付きに書かれたカテゴリ
   (`[[Category:ラーメン店|らあめんしろう]]`)は、本文側にはソートキーしか残らずカテゴリ名が
@@ -293,12 +301,23 @@ docker compose --profile ingest run --rm chiezo-ingest && docker compose restart
 0 3 1 * * cd /opt/chiezo && docker compose --profile ingest run --rm chiezo-ingest && docker compose restart chiezo-api
 ```
 
-### 既存 DB にタグ索引を足す(schema_version 2 → 3)
+### 既存 DB にタグ索引を足す(schema_version 2 → 3 → 4)
 
 タグ絞り込み(`filter?tag=` / `tags`)はタグ転置表 `doc_tags` を引くため
-`schema_version` 3 以降の DB が要ります。タグ自体は 2 の DB にも `docs.tags` として
-入っているので、**ダンプを取り直さずその場で移行できます**(jawiki の再取り込みは 2〜6 時間、
-この移行は数分〜十数分)。
+`schema_version` 3 以降の DB が要ります。さらに 4 では、実用的な速さのために 2 つ足します
+(どちらも 3 の DB では遅い経路のまま動きます)。
+
+- `tag_counts`(タグ名 → 文書数): `tags?contains=` 用。jawiki なら 764 万行・300MB の
+  転置表を毎回読む代わりに、29 万行・12MB を読む
+- `idx_docs_rank`(`rank_score DESC, title` の索引): `filter?tag=` 用。該当文書を全部
+  読んでから並べる代わりに、上位 N 件で走査を打ち切る(「存命人物」25 万件で 33 秒 → 0.05 秒)
+- `doc_coords`(座標 → 文書): `filter?bbox=` 用。`docs` の `lat` / `lon` は生成列
+  (VIRTUAL)で値を保存しないため、索引では緯度の範囲までしか絞れず、経度の判定に行本体を
+  読み直していました。費用が該当件数ではなく緯度帯の文書数に比例し、0.05 度四方の bbox でも
+  3.5 万行を読んでいます(2.8 秒 → 0.04 秒)
+元の情報はどちらも 2 の DB の `docs.tags` にあるので、**ダンプを取り直さずその場で
+移行できます**(jawiki の再取り込みは 2〜6 時間、この移行は数分〜十数分。3 の DB を
+4 にするだけなら jawiki で 1 分弱)。
 
 ```bash
 docker compose stop chiezo-api        # 読み取り中の DB を書き換えないため
@@ -307,8 +326,9 @@ docker compose start chiezo-api
 ```
 
 シンボリックリンク(`jawiki.db`)を渡してよく(実体の世代ファイルを書き換えます)、
-すでに 3 の DB には何もしません。中断しても、もう一度実行すればやり直せます
-(`meta` の更新が最後の 1 ステップなので、中途半端に 3 を名乗る DB は残りません)。
+足りないステップだけを流すので、すでに 4 の DB には何もしません。中断しても、もう一度
+実行すればやり直せます(`meta` の更新が最後の 1 ステップなので、中途半端に新しい版を
+名乗る DB は残りません)。
 次の取り込みからは新しいスキーマで構築されるため、この作業は 1 回だけです。
 
 **非力なマシンでも実行できます。**メモリは文書数によらずほぼ一定で、実測で 100 万文書

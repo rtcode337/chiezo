@@ -22,8 +22,10 @@ from pathlib import Path
 from core import (
     CORE_INDEX_DDL,
     CORE_SCHEMA_DDL,
+    DOC_COORDS_POPULATE_SQL,
     DOC_TAGS_POPULATE_SQL,
     SCHEMA_VERSION,
+    TAG_COUNTS_POPULATE_SQL,
     SourceAdapter,
 )
 
@@ -192,6 +194,20 @@ def build_db(adapter: SourceAdapter, dump_path: Path, dump_date: str, building_p
         log.info("creating indexes...")
         conn.executescript(CORE_INDEX_DDL)
         conn.commit()
+
+        # tag_counts は doc_tags の索引ができてから作る(tag 順に並んでいるので
+        # GROUP BY が並べ替えなしで済む)。doc_coords も idx_docs_lat_lon が要る。
+        log.info("summarizing tags...")
+        conn.execute(TAG_COUNTS_POPULATE_SQL)
+        conn.commit()
+        (tag_names,) = conn.execute("SELECT COUNT(*) FROM tag_counts").fetchone()
+        log.info("summarized %d distinct tags", tag_names)
+
+        log.info("extracting coordinates...")
+        conn.execute(DOC_COORDS_POPULATE_SQL)
+        conn.commit()
+        (coords,) = conn.execute("SELECT COUNT(*) FROM doc_coords").fetchone()
+        log.info("extracted %d coordinates", coords)
 
         log.info("building FTS index...")
         conn.execute("INSERT INTO docs_fts(rowid, title, body) SELECT doc_id, title, body FROM docs")

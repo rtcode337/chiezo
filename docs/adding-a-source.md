@@ -150,7 +150,8 @@ docker compose --profile ingest run --rm \
 ## 守るべき原則
 
 1. ソースごとに独立した SQLite ファイル 1 つ。ソース間で JOIN しない。
-2. コアスキーマ(meta / docs / aliases / docs_fts / doc_tags)は全ソース共通。
+2. コアスキーマ(meta / docs / aliases / docs_fts / doc_tags / tag_counts / doc_coords)は
+   全ソース共通。
    足りないフィールドは `extra` に逃がし、コアスキーマ変更は最終手段
    (変更時は `schema_version` を上げ、api 側で複数バージョン対応)。
 3. `fetch()` は再開可能に、`iter_docs()` はストリーミングで。

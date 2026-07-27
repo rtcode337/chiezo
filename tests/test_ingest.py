@@ -176,7 +176,7 @@ class TestBuild:
             assert meta["source_kind"] == "wikipedia"
             assert meta["lang"] == "ja"
             assert meta["dump_date"] == "20260701"
-            assert meta["schema_version"] == 3
+            assert meta["schema_version"] == 4
 
             (count,) = conn.execute("SELECT COUNT(*) FROM docs").fetchone()
             assert count == 11

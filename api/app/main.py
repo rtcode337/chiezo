@@ -24,7 +24,10 @@ from app.mcp_server import build_mcp
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
 from app.pages import esc, page_shell
 from app.registry import (
+    COORDS_MIN_SCHEMA_VERSION,
     FILTER_MIN_SCHEMA_VERSION,
+    RANK_INDEX_MIN_SCHEMA_VERSION,
+    TAG_COUNTS_MIN_SCHEMA_VERSION,
     TAG_MIN_SCHEMA_VERSION,
     Source,
     scan_sources,
@@ -999,7 +1002,7 @@ def build_attribute_filters(
     params: list = []
     if tag:
         require_tag_schema(src)
-        tags = [t.strip() for t in tag.split(",") if t.strip()]
+        tags = split_tags(tag)
         # doc_tags を先に引いて doc_id で docs を叩く形(LIST SUBQUERY → rowid 検索)。
         # EXISTS(...) で書くと SQLite は docs 側を全走査して 1 行ずつ確認する計画を選び、
         # jawiki 規模では数百倍遅くなる(= タイムアウトする)。
@@ -1020,9 +1023,58 @@ def build_attribute_filters(
         params.append(wikidata)
     if bbox:
         min_lat, min_lon, max_lat, max_lon = parse_bbox(bbox)
-        where.append(f"{p}lat BETWEEN ? AND ? AND {p}lon BETWEEN ? AND ?")
+        if src.schema_version >= COORDS_MIN_SCHEMA_VERSION:
+            # 実体の値を持つ doc_coords を引く。生成列(VIRTUAL)の索引だと経度の判定に
+            # 行本体が要り、費用が該当件数ではなく緯度帯の文書数に比例する(下の
+            # BBOX_COUNT_SQL のコメント参照)。タグと同じ「doc_id の集合」の形。
+            where.append(f"{p or 'docs.'}doc_id IN ({BBOX_DOC_IDS_SQL})")
+        else:
+            where.append(f"{p}lat BETWEEN ? AND ? AND {p}lon BETWEEN ? AND ?")
         params.extend([min_lat, max_lat, min_lon, max_lon])
     return "".join(f" AND {clause}" for clause in where), params
+
+
+# 引数は (min_lat, max_lat, min_lon, max_lon) の順。上の params.extend と合わせてある。
+BBOX_DOC_IDS_SQL = (
+    "SELECT doc_id FROM doc_coords WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?"
+)
+# 総件数もここから数える。doc_coords は (lat, lon, doc_id) の被覆索引そのものなので、
+# 緯度帯の走査も経度の判定も索引の中だけで終わる(docs 側で数えると行を読み直す)。
+BBOX_COUNT_SQL = (
+    "SELECT COUNT(*) AS n FROM doc_coords WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?"
+)
+
+
+def split_tags(tag: str) -> list[str]:
+    """`tag=` の値(カンマ区切り、OR 条件)をタグ名のリストにする。"""
+    return [t.strip() for t in tag.split(",") if t.strip()]
+
+
+# ここを境に、並び替えの経路を切り替える(下の rank_index_hint 参照)。
+# 手元の本番 jawiki で測った両経路の交差点(該当 100 件前後で 0.03〜0.04 秒と拮抗)。
+RANK_INDEX_MIN_TOTAL = 100
+
+
+def rank_index_hint(src: Source, id_set_only: bool, total: int) -> str:
+    """`ORDER BY rank_score DESC, title` を索引で満たさせる INDEXED BY 句(必要なときだけ)。
+
+    既定の計画は「該当文書を全部 docs から読んでから並べ替える」形で、費用が該当件数に
+    比例する。jawiki の「存命人物」(25 万件)は limit=1 でも 33 秒かかり、配信機では
+    504 になっていた。idx_docs_rank を名指しすると、並び順そのものを持つ索引を走査して
+    上位 N 件で打ち切る計画(+ doc_id 判定はブルームフィルタ)になり 0.05 秒で返る。
+
+    ただし該当が少ないと逆効果になる(索引を端まで走査しても N 件見つからないため。
+    1 件のタグで 0.001 秒 → 0.044 秒)。そこで、先に安く求めた総件数で切り替える。
+
+    条件が「doc_id の集合」に落ちるとき(タグだけ / bbox だけ)に限るのは、`feature` /
+    `area` が VIRTUAL な生成列だから。索引を名指しすると条件の判定に行本体が要り、
+    150 万行を読むことになる(集合判定ならブルームフィルタで索引の中だけで済む)。
+    """
+    if not id_set_only or total < RANK_INDEX_MIN_TOTAL:
+        return ""
+    if src.schema_version < RANK_INDEX_MIN_SCHEMA_VERSION:
+        return ""  # 索引の無い DB に INDEXED BY を書くとエラーになる
+    return " INDEXED BY idx_docs_rank"
 
 
 def parse_bbox(bbox: str) -> tuple[float, float, float, float]:
@@ -1073,11 +1125,37 @@ def filter_docs(
             {"error": "at least one of feature, area, bbox, wikidata, tag is required"},
         )
     clause = where.removeprefix(" AND ")
-    (total,) = db.query(src.path, f"SELECT COUNT(*) AS n FROM docs WHERE {clause}", tuple(params))[0]
+    # タグ / bbox は「doc_id の集合」に落ちる条件で、総件数も並び替えも docs を読まずに
+    # 済ませられる(下の 2 つ)。他の条件と混ざるときは素直に docs 側で処理する。
+    tag_only = bool(tag) and not any((feature, area, bbox, wikidata))
+    bbox_only = (
+        bool(bbox)
+        and not any((feature, area, tag, wikidata))
+        and src.schema_version >= COORDS_MIN_SCHEMA_VERSION
+    )
+    if bbox_only:
+        (total,) = db.query(src.path, BBOX_COUNT_SQL, tuple(params))[0]
+    elif tag_only:
+        # タグだけで絞るときは転置表だけで数える。docs 側で数えると該当 doc_id の
+        # 一つずつに docs(jawiki なら 41GB)への rowid 検索が飛び、「存命人物」
+        # (25 万件)で 33 秒かかった(実測。doc_tags だけなら 0.01 秒)。
+        # doc_tags は docs から作った射影なので、docs を見ずに数えても件数は一致する。
+        tags = split_tags(tag)
+        (total,) = db.query(
+            src.path,
+            "SELECT COUNT(DISTINCT doc_id) AS n FROM doc_tags"
+            f" WHERE tag IN ({','.join('?' * len(tags))})",
+            tuple(tags),
+        )[0]
+    else:
+        (total,) = db.query(
+            src.path, f"SELECT COUNT(*) AS n FROM docs WHERE {clause}", tuple(params)
+        )[0]
     rows = db.query(
         src.path,
-        f"SELECT {', '.join(field_list)} FROM docs WHERE {clause}"
-        " ORDER BY rank_score DESC, title LIMIT ? OFFSET ?",
+        f"SELECT {', '.join(field_list)} FROM docs"
+        f"{rank_index_hint(src, tag_only or bbox_only, total)}"
+        f" WHERE {clause} ORDER BY rank_score DESC, title LIMIT ? OFFSET ?",
         (*params, limit, offset),
     )
     return {
@@ -1115,18 +1193,25 @@ def list_tags(
     where = ""
     params: list = []
     if prefix:
-        # 前方一致は idx_doc_tags_tag の範囲検索に落ちる(db.py の case_sensitive_like=ON)
+        # 前方一致は索引の範囲検索に落ちる(db.py の case_sensitive_like=ON)
         where += " WHERE tag LIKE ? ESCAPE '\\'"
         params.append(escape_like(prefix) + "%")
     if contains:
         where += (" AND" if where else " WHERE") + " tag LIKE ? ESCAPE '\\'"
         params.append("%" + escape_like(contains) + "%")
-    rows = db.query(
-        src.path,
-        f"SELECT tag, COUNT(*) AS docs FROM doc_tags{where}"
-        " GROUP BY tag ORDER BY docs DESC, tag LIMIT ? OFFSET ?",
-        (*params, limit, offset),
-    )
+    if src.schema_version >= TAG_COUNTS_MIN_SCHEMA_VERSION:
+        # 集計済みのタグ名だけを読む(jawiki で 29 万行・12MB)。部分一致でも
+        # idx_tag_counts_docs が docs 降順なので、上位 limit 件が埋まった時点で
+        # 走査が止まる。
+        sql = f"SELECT tag, docs FROM tag_counts{where} ORDER BY docs DESC, tag LIMIT ? OFFSET ?"
+    else:
+        # tag_counts が無い schema_version 3 の DB 向けの旧経路。転置表を丸ごと
+        # 読むので、巨大ソースの部分一致はタイムアウトしうる(scripts/add_tag_index.py で移行する)。
+        sql = (
+            f"SELECT tag, COUNT(*) AS docs FROM doc_tags{where}"
+            " GROUP BY tag ORDER BY docs DESC, tag LIMIT ? OFFSET ?"
+        )
+    rows = db.query(src.path, sql, (*params, limit, offset))
     return {
         "source": source,
         "prefix": prefix,
