@@ -138,6 +138,76 @@ class TestDoc:
         assert res.status_code == 404
 
 
+class TestExactTitleFirst:
+    """タイトルが検索語と完全一致する文書を最上位に出すこと。
+
+    bm25 は「その語をよく含む文書」を上げるが、「その語そのものを説明している文書」は
+    特別扱いしない。本番データでも `京都` の検索で京都市・近鉄京都線が上に来て、
+    記事「京都」は 5 位以内に入らなかった(長い記事ほど長さ正規化で不利になる)。
+    """
+
+    def test_exact_title_outranks_a_better_bm25_match(self, client):
+        # 「東京都」は本文で東京都に触れる他の記事より bm25 が高いとは限らないが、
+        # 同名の記事がある以上それが答え
+        res = client.get("/v1/jawiki/search", params={"q": "東京都", "limit": 10})
+        titles = [r["title"] for r in res.json()["results"]]
+        assert len(titles) > 1
+        assert titles[0] == "東京都"
+
+    def test_exact_title_wins_in_the_title_prefix_fallback_too(self, tmp_path, built_data_dir):
+        """3 文字未満はタイトル前方一致に落ちる別経路。ここでも完全一致が先頭。
+
+        この経路は rank_score 降順で並ぶので、完全一致段が無いと「日本」より人気な
+        「日本橋」が先に来てしまう。前方一致は docs だけを見る(FTS を使わない)ので、
+        検証用の 1 件は docs へ直接入れれば足りる。
+        """
+        import shutil
+        import sqlite3
+
+        from fastapi.testclient import TestClient
+
+        data_dir = tmp_path / "prefix"
+        data_dir.mkdir()
+        db_path = data_dir / "jawiki.db"
+        shutil.copy(built_data_dir / "jawiki.db", db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO docs (doc_id, title, opening, rank_score)"
+            " VALUES (9001, '日本橋', 'にほんばし', 1.0)"
+        )
+        conn.execute("UPDATE docs SET rank_score = 0.1 WHERE title = '日本'")
+        conn.commit()
+        conn.close()
+
+        mp = pytest.MonkeyPatch()
+        mp.setenv("CHIEZO_DATA_DIR", str(data_dir))
+        try:
+            from app.main import app
+
+            with TestClient(app) as c:
+                body = c.get("/v1/jawiki/search", params={"q": "日本"}).json()
+            assert body["mode"] == "title_prefix"
+            titles = [r["title"] for r in body["results"]]
+            assert titles == ["日本", "日本橋"], "完全一致が人気度より先に来ていない"
+        finally:
+            mp.undo()
+
+    def test_no_exact_match_leaves_the_order_alone(self, client):
+        """完全一致が無いクエリでは何も起きない(関連度と人気度だけで決まる)。"""
+        res = client.get("/v1/jawiki/search", params={"q": "である"})
+        titles = [r["title"] for r in res.json()["results"]]
+        assert titles and "である" not in titles
+
+    def test_whitespace_around_the_query_is_ignored(self, client):
+        res = client.get("/v1/jawiki/search", params={"q": "  東京都  "})
+        assert [r["title"] for r in res.json()["results"]][0] == "東京都"
+
+    def test_browse_html_uses_the_same_order(self, client):
+        html = client.get("/jawiki/", params={"q": "東京都"}).text
+        rows = [line for line in html.splitlines() if "/jawiki/doc/" in line]
+        assert rows and "東京都" in rows[0]
+
+
 class TestPopularityRanking:
     """検索の並びに rank_score(0〜1 の知名度)を混ぜること。
 

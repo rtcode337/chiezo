@@ -98,6 +98,21 @@ async def timeout_handler(request: Request, exc: db.QueryTimeout):
     return JSONResponse(status_code=504, content={"error": "query timeout"})
 
 
+def exact_title_first(prefix: str = "") -> str:
+    """タイトルが検索語と完全一致する文書を最上位へ寄せる、ORDER BY の第 1 キー。
+
+    bm25 は「その語をよく含む文書」を上に置くが、「その語そのものを説明している文書」を
+    特別扱いはしない。実測でも `京都` の検索で京都市・近鉄京都線が上に来て、記事「京都」は
+    5 位以内に入らなかった(本文が長いぶん bm25 の長さ正規化で不利になるため)。
+    百科事典的な引き方では同名の記事があればそれが答えなので、人気度や関連度と混ぜず、
+    独立した段として先に置く(完全一致が無いクエリでは何も起きない)。
+
+    `lower()` は英語版 wiki 向け(SQLite の lower は ASCII のみなので日本語では実質無効)。
+    **呼び出し側は WHERE 句のパラメータの後・LIMIT の前に検索語を渡すこと。**
+    """
+    return f"CASE WHEN lower({prefix}title) = lower(?) THEN 0 ELSE 1 END"
+
+
 def relevance_order(prefix: str = "") -> str:
     """関連度に人気度を混ぜた ORDER BY 句を返す(FTS 検索用)。
 
@@ -108,7 +123,10 @@ def relevance_order(prefix: str = "") -> str:
     (= 従来と同じ並び)に戻るので、取り込み直していない DB でも壊れない。
     """
     score = f"MIN(1.0, MAX(0.0, COALESCE({prefix}rank_score, 0.0)))"
-    return f"bm25(docs_fts, 5.0, 1.0) * (1.0 + {POPULARITY_WEIGHT} * {score}) ASC"
+    return (
+        f"{exact_title_first(prefix)},"
+        f" bm25(docs_fts, 5.0, 1.0) * (1.0 + {POPULARITY_WEIGHT} * {score}) ASC"
+    )
 
 
 def get_source(request: Request, source: str) -> Source:
@@ -748,16 +766,18 @@ def search(
         src, area=area, feature=feature, bbox=bbox, tag=tag, column_prefix="d."
     )
     match = build_match_query(q)
+    # ORDER BY の「タイトル完全一致を最上位に」段へ渡す検索語
+    exact = q.strip()
     if match is None:
         # trigram で扱えない短い検索語 → タイトル前方一致へフォールバック
-        prefix = escape_like(q.strip())
+        prefix = escape_like(exact)
         rows = db.query(
             src.path,
             "SELECT doc_id, title, substr(coalesce(opening, body), 1, 120) AS snippet,"
             " updated_at"
             f" FROM docs WHERE title LIKE ? ESCAPE '\\'{extra_where}"
-            " ORDER BY rank_score DESC, title LIMIT ? OFFSET ?",
-            (prefix + "%", *extra_params, limit, offset),
+            f" ORDER BY {exact_title_first()}, rank_score DESC, title LIMIT ? OFFSET ?",
+            (prefix + "%", *extra_params, exact, limit, offset),
         )
         mode = "title_prefix"
     else:
@@ -769,7 +789,7 @@ def search(
             f" WHERE docs_fts MATCH ?{extra_where_d}"
             f" ORDER BY {relevance_order('d.')}"
             " LIMIT ? OFFSET ?",
-            (match, *extra_params, limit, offset),
+            (match, *extra_params, exact, limit, offset),
         )
         mode = "fts"
     return {
@@ -1227,8 +1247,8 @@ def browse_source(
                 src.path,
                 "SELECT doc_id, title, substr(coalesce(opening, body), 1, 160) AS snippet"
                 " FROM docs WHERE title LIKE ? ESCAPE '\\'"
-                " ORDER BY rank_score DESC, title LIMIT ?",
-                (prefix + "%", BROWSE_LIMIT),
+                f" ORDER BY {exact_title_first()}, rank_score DESC, title LIMIT ?",
+                (prefix + "%", q.strip(), BROWSE_LIMIT),
             )
         else:
             rows = db.query(
@@ -1238,7 +1258,7 @@ def browse_source(
                 " FROM docs_fts JOIN docs d ON d.doc_id = docs_fts.rowid"
                 " WHERE docs_fts MATCH ?"
                 f" ORDER BY {relevance_order('d.')} LIMIT ?",
-                (match, BROWSE_LIMIT),
+                (match, q.strip(), BROWSE_LIMIT),
             )
         items = "\n".join(
             f"<tr><td><a href=\"/{esc(source)}/doc/{r['doc_id']}\">{esc(r['title'])}</a></td>"
