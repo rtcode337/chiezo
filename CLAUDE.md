@@ -1,6 +1,6 @@
 # chiezo — ローカル知識サーバー
 
-**AI のための知識ベース。**公開ダンプ(Wikipedia / OpenStreetMap / GeoNames)をローカルの
+**AI のための知識ベース**。公開ダンプ(Wikipedia / OpenStreetMap / GeoNames)をローカルの
 SQLite (FTS5) に取り込んで索引し、AI が引ける形で出す。完全ローカルで、レート制限も
 問い合わせ内容の外部送信も無いことが存在理由。3 層で捉えるとよい:
 
@@ -136,7 +136,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     がソースを読んで `CHIEZO_ORIGIN` の行だけ差し替えて配信する。文字列テンプレートに
     せず実ファイルで持つのは、通常の Python として lint・テストできるようにするため
     (`tests/test_claude_hook.py` が判定の許可/拒否を両側から固定している)
-  - `app/claude_config.py` — 上記ブロックの生成ロジック。**生成の正はここ(api 側)**に置く。
+  - `app/claude_config.py` — 上記ブロックの生成ロジック。**生成の正はここ(api 側)に置く**。
     同一プロセスの DB を schema_version と索引付きの `WHERE lat IS NOT NULL LIMIT 1` 等で
     直接引くので、HTTP プローブと違い巨大ソース(jawiki)でも timeout の false-negative が出ない
   - `/{source}/`(GET) — 検索フォーム(HTML)。`?q=` 未指定時は一覧を出さずフォームのみ表示
@@ -440,6 +440,10 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
   `/data` への書き込み権限を持つのは chiezo-ingest(one-shot)と chiezo-trigger(常駐)だけで、
   chiezo-api は引き続き read-only マウント。
 - エラーレスポンスは `{"error": "..."}` 形式。
+- **ドキュメントの強調は句読点を `**` の外に出す。**`**…です。**次の文` のように閉じる `**` の
+  直前が句読点・閉じ括弧だと、CommonMark の flanking rule で閉じ側と認識されず、太字にならずに
+  `*` がそのまま表示される(日本語では句点で終える書き方が自然なので踏みやすい)。
+  `**…です**。次の文` と書く。検出は markdown をレンダリングして本文に `*` が残るかを見る。
 - 認証なし・LAN 内前提。ルーターでポート開放しないこと。chiezo-trigger はホストへポート公開せず、
   chiezo-api からのみ内部ネットワーク経由で到達可能にすること。
 - コード(api/ ingest/ の挙動・エンドポイント・環境変数など)を変更したら、同じ変更で

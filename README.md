@@ -1,6 +1,6 @@
 # <img src="assets/icon.svg" width="40" alt="chiezo icon"> chiezo — ローカル知識サーバー
 
-**AI のための知識ベースです。**公開ダンプ(Wikipedia / OpenStreetMap / GeoNames)を
+**AI のための知識ベースです**。公開ダンプ(Wikipedia / OpenStreetMap / GeoNames)を
 ローカルの SQLite (FTS5) に取り込んで索引し、AI が引ける形で出します。完全ローカルなので、
 外部 API のレート制限も、問い合わせ内容が外に出ることもありません。
 
@@ -113,15 +113,10 @@ OSM の国別ソース(`osm_<国>`、195 件)と Wikipedia の言語版(`<lang>w
 
 - `search` — `limit` 既定 10・最大 50。3 文字以上の語が無いクエリは自動的にタイトル前方一致へ
   フォールバックし、レスポンスの `"mode"` が `"title_prefix"` になります(通常は `"fts"`)。
-  並び順は 2 段です。**まずタイトルが検索語と完全一致する文書**(`京都` で検索したときの
-  記事「京都」)、次に**関連度(bm25)に知名度(`rank_score`)を掛け合わせた**順で、
-  同じくらい関連する文書なら有名なほうが上に来ます(Wikipedia は月間ページビュー、
-  GeoNames は人口、OSM は地物種別と人口から決まる 0.0〜1.0 の値)。
-  完全一致を別段にしているのは、bm25 が「その語をよく含む文書」を上げる指標で、
-  「その語そのものを説明している文書」を特別扱いしないためです(実測でも `京都` の検索で
-  京都市・近鉄京都線が上に来て、記事「京都」は 5 位以内に入りませんでした)。
-  `rank_score` が入っていない古い DB では 2 段目が bm25 だけになります
-  (後述の「既存 DB の rank_score を入れ直す」)。
+  並び順は 2 段で、**タイトルが検索語と完全一致する文書**が先、残りが
+  **関連度(bm25)× 知名度(`rank_score`)の順**です(理由は
+  [設計メモ](docs/design-notes.md#検索の並び順))。`rank_score` が入っていない古い DB では
+  2 段目が bm25 だけになります(後述の「既存 DB の rank_score を入れ直す」)。
   `filter` と同じ `area` / `feature` / `bbox` を併用でき、同名の別地物を掴む取り違えを避けられます
   (例: `search?q=八坂神社&area=京都府`)。
 - `doc` — `title` 完全一致 → リダイレクト(alias)解決 → 見つからなければ 404 と近似候補 5 件。
@@ -133,28 +128,19 @@ OSM の国別ソース(`osm_<国>`、195 件)と Wikipedia の言語版(`<lang>w
   複数可)・`area`(所属行政区名)・`bbox`(`min_lat,min_lon,max_lat,max_lon`)・`wikidata`(Q 番号)・
   `tag`(タグ = Wikipedia のカテゴリ等。カンマ区切りで複数可、その中は OR)を
   AND で組み合わせます。1 つ以上の条件が必須(無指定は 400)。`limit` 既定 50・最大 500、応答の
-  `total` と `offset` でページングできます。実体は `docs` の生成列(`feature` / `area` / `lat` /
-  `lon` / `wikidata`)への索引付き検索で、これは `schema_version` 2 以降の DB にしかありません
-  (1 のまま残っている DB では 409 を返すので、取り込みをやり直してください)。
-  ただし `bbox` だけは生成列ではなく座標表(`doc_coords`、4 以降)を引きます。3 以下の DB
-  では緯度帯にある文書を全部読む遅い経路になり、小さな bbox でもタイムアウトしえます。
-  `tag` だけは別建てのタグ転置表(`doc_tags`)を引くため `schema_version` 3 以降が必要です
-  (2 の DB では 409。再取り込みか、後述の `scripts/add_tag_index.py` でその場で移行できます)。
-  並びは `rank_score` の降順で、該当が多いときは `idx_docs_rank`(4 以降)を使って上位だけを
-  取り出します。3 の DB では該当文書を全部読んでから並べるため、大きいカテゴリは
-  タイムアウトします(同じく `scripts/add_tag_index.py` で移行できます)。
+  `total` と `offset` でページングできます。並びは `rank_score` の降順です。
+  `schema_version` 2 以降が必要で(1 の DB には 409)、`tag` は 3 以降、`bbox` と
+  大きな該当件数の並べ替えは 4 以降が実用的な速さになります。古い DB は
+  後述の `scripts/add_tag_index.py` でその場で移行できます
+  (どの版で何が速くなるかは [設計メモ](docs/design-notes.md#読む量を該当件数に比例させる))。
 - `tags` — タグ名を文書数つきで列挙します(`prefix` = 前方一致 / `contains` = 部分一致 /
   無指定 = 文書数の多い順)。`filter?tag=` はタグ名の**完全一致**なので、Wikipedia の
   カテゴリのように表記の揺れがあるものは、まずここで実在する名前を確かめてから引くのが
-  確実です(`schema_version` 3 以降)。引くのは重複を畳んだ集計表 `tag_counts`
-  (`schema_version` 4 以降)で、これが無い 3 の DB では転置表 `doc_tags` を丸ごと読む
-  遅い経路になり、巨大ソースの部分一致はタイムアウトします(後述の
-  `scripts/add_tag_index.py` で移行できます)。
+  確実です(`schema_version` 3 以降。4 以降は集計表を引くので部分一致も速い)。
 - **カテゴリの全記事を列挙したいときは、本文の全文検索(`search?q=Category:ラーメン店`)ではなく
-  `filter?tag=` を使ってください。** wikitext でソートキー付きに書かれたカテゴリ
-  (`[[Category:ラーメン店|らあめんしろう]]`)は、本文側にはソートキーしか残らずカテゴリ名が
-  消えるため、全文検索では静かに取りこぼします(実例: ラーメン二郎)。`tags` / `doc_tags` は
-  wikitext のリンク先から取っているので、ソートキーの有無に関わらず引けます。
+  `filter?tag=` を使ってください**。全文検索だとソートキー付きのカテゴリを静かに
+  取りこぼします(実データで 115 件中 16 件が漏れていました。
+  [設計メモ](docs/design-notes.md#カテゴリは本文検索で列挙してはいけない))。
 - `extra` フィールド(jawiki) — 座標を持つ記事(`{{Coord}}` テンプレートや駅・空港・施設の
   Infobox の `緯度度`/`経度度` 系引数から抽出)には `{"lat": ..., "lon": ...}` が入ります。
   ページビューを突合できた記事には
@@ -166,20 +152,12 @@ OSM の国別ソース(`osm_<国>`、195 件)と Wikipedia の言語版(`<lang>w
   "lon": ..., "feature": "place=city", "tags": {<OSM 生タグ>}, ...}`。way / relation の座標は
   構成ノードの平均(近似重心)で、行政境界は admin_centre / label ノードを優先します。
   同名地物はタイトルを「名前 (node:123)」形式で弁別し、元の名前は alias として引けます。
-  POI(`feature` が `amenity=*` / `shop=*` / `tourism=*` / `leisure=*` / `historic=*` /
-  `craft=*` / `office=*` / `healthcare=*`)では、住所(`addr:*` 由来)が取れれば `address`、
-  電話・サイト・営業時間が取れれば `phone` / `website` / `opening_hours` も入ります。
-  交通インフラ(`feature` が `railway=station|halt|tram_stop` / `aeroway=aerodrome|terminal|
-  helipad|heliport` / `aerialway=station` / `public_transport=station` /
-  `highway=services|rest_area|motorway_junction|toll_gate` / `man_made=bridge|lighthouse|pier|tower`。
-  港は `amenity=ferry_terminal`)も取り込み対象で、同名の店舗より上位に来るよう `rank_score` を
-  高く設定しています(「博多駅」で同名のラーメン店を掴む取り違えの防止)。
-  地名(place/boundary/natural)・POI・交通インフラは同一ソース内に混在し、`search` は
-  すべてをヒットさせます。
-  座標を持つ地物には所属する行政区を `area`(日本では都道府県。`admin_level=4` の境界 relation を
-  ポリゴンとして組み立て、点内包判定で決定)として付けます。bbox 近似ではないので県境をまたいだ
-  取りこぼし・混入はありません。取り込み時の判定粒度は環境変数 `OSM_AREA_ADMIN_LEVEL` で変更でき、
-  `0` を指定すると境界パスごとスキップします(`area` は付かなくなります)。
+  POI(`amenity` / `shop` / `tourism` / `leisure` / `historic` / `craft` / `office` /
+  `healthcare`)では、住所・電話・サイト・営業時間が取れれば `address` / `phone` /
+  `website` / `opening_hours` も入ります。地名・POI・交通インフラ(駅・空港・港・IC/SA 等)は
+  同一ソース内に混在し、`search` はすべてをヒットさせます(駅が同名の店舗より上に来るよう
+  `rank_score` を高くしてあります)。座標を持つ地物には所属行政区が `area` として付きます
+  (日本では都道府県。粒度は `OSM_AREA_ADMIN_LEVEL` で変更可)。
 - 全クエリ 5 秒タイムアウト(超過は 504)。エラーは `{"error": "..."}` 形式。
 
 ### MCP から使う(`/mcp`)
@@ -259,16 +237,11 @@ curl -sG ".../search" --data-urlencode "q=多摩川" | jq -r '.hits[].title'
 毎回プロンプトが出ます。これを解消したい場合は `--with-hook` を付けると、
 前方一致ではなく**コマンドの構造**で判定する `PreToolUse` フックを併せて設置します
 (`<設定ディレクトリ>/hooks/chiezo-autoallow.py` + `settings` の `hooks.PreToolUse`)。
-フックが自動許可するのは、次を**すべて**満たすコマンドだけです:
 
-- 登場する `scheme://host` が全て chiezo(1 つ以上あること)
-- 実行されるコマンドが `curl`/`jq`/`sort` などの読み取り専用の許可リスト内
-  (`sed`/`awk`/インタプリタ/`curl` 以外のネットワークコマンドは対象外)
-- `$(...)`・バッククォート・プロセス置換・ヒアドキュメント・`eval`/`exec`/`source` を含まない
-- ディスクへ書く `curl` フラグ(`-o`/`-O`/`-K`/`-T` など)と `/tmp` 以外へのリダイレクトを含まない
-
-条件を外れたときフックは何も出力せず、通常の許可フローに戻ります(= 今までどおり
-プロンプトが出るだけ)。判定に迷ったら黙る設計です。
+フックが自動許可するのは「**chiezo だけを読む、読み取り専用のコマンド**」だけです
+(登場する URL が全て chiezo / 実行されるコマンドが `curl`・`jq` 等の許可リスト内 /
+`$(...)`・`eval` 等でコマンド位置を隠していない / ディスクへ書かない)。条件を外れたときは
+何も出力せず通常の許可フローに戻る、判定に迷ったら黙る設計です。
 
 ただしこれは **Claude が打つ Bash を毎回検査して自動承認しうる**仕掛けで、
 権限ルールより影響範囲が広くなります。中身を読んで納得してから入れられるよう
@@ -303,21 +276,14 @@ docker compose --profile ingest run --rm chiezo-ingest && docker compose restart
 
 ### 既存 DB にタグ索引を足す(schema_version 2 → 3 → 4)
 
-タグ絞り込み(`filter?tag=` / `tags`)はタグ転置表 `doc_tags` を引くため
-`schema_version` 3 以降の DB が要ります。さらに 4 では、実用的な速さのために 2 つ足します
-(どちらも 3 の DB では遅い経路のまま動きます)。
+タグ絞り込み(`filter?tag=` / `tags`)には `schema_version` 3 以降が、`filter?bbox=` と
+大きなカテゴリの並べ替えが実用的な速さになるには 4 以降が要ります(3 の DB でも遅い経路の
+まま動きます。何がどう速くなるかは
+[設計メモ](docs/design-notes.md#読む量を該当件数に比例させる))。
 
-- `tag_counts`(タグ名 → 文書数): `tags?contains=` 用。jawiki なら 764 万行・300MB の
-  転置表を毎回読む代わりに、29 万行・12MB を読む
-- `idx_docs_rank`(`rank_score DESC, title` の索引): `filter?tag=` 用。該当文書を全部
-  読んでから並べる代わりに、上位 N 件で走査を打ち切る(「存命人物」25 万件で 33 秒 → 0.05 秒)
-- `doc_coords`(座標 → 文書): `filter?bbox=` 用。`docs` の `lat` / `lon` は生成列
-  (VIRTUAL)で値を保存しないため、索引では緯度の範囲までしか絞れず、経度の判定に行本体を
-  読み直していました。費用が該当件数ではなく緯度帯の文書数に比例し、0.05 度四方の bbox でも
-  3.5 万行を読んでいます(2.8 秒 → 0.04 秒)
-元の情報はどちらも 2 の DB の `docs.tags` にあるので、**ダンプを取り直さずその場で
-移行できます**(jawiki の再取り込みは 2〜6 時間、この移行は数分〜十数分。3 の DB を
-4 にするだけなら jawiki で 1 分弱)。
+足すのは既にある内容の射影(タグ転置表・タグ集計表・座標表・並び順の索引)だけなので、
+**ダンプを取り直さずその場で移行できます**(jawiki の再取り込みは 2〜6 時間、この移行は
+数分〜十数分。3 の DB を 4 にするだけなら jawiki で 1 分弱)。
 
 ```bash
 docker compose stop chiezo-api        # 読み取り中の DB を書き換えないため
@@ -331,7 +297,7 @@ docker compose start chiezo-api
 名乗る DB は残りません)。
 次の取り込みからは新しいスキーマで構築されるため、この作業は 1 回だけです。
 
-**非力なマシンでも実行できます。**メモリは文書数によらずほぼ一定で、実測で 100 万文書
+**非力なマシンでも実行できます**。メモリは文書数によらずほぼ一定で、実測で 100 万文書
 (300 万タグ行)の展開でもピーク RSS は 24MiB でした(SQLite が数 MB のページキャッシュで
 流し込むだけのため)。効いてくるのはディスクと時間です:
 
@@ -381,29 +347,14 @@ ingest の環境変数:
 | `GEONAMES_FEATURE_CLASSES` | geonames で取り込む feature class(既定 `AHLPSTUV` = 道路 `R` 以外すべて) |
 | `BUILD_MEMORY_GB` / `SKIP_MEMORY_CHECK` | 構築前メモリ検査の必要量を上書き / 検査を無効化(「メモリについて」参照) |
 
-Wikipedia 系ソースは標準 XML ダンプ(`https://dumps.wikimedia.org/<wiki_id>/<date>/
-<wiki_id>-<date>-pages-articles.xml.bz2`、jawiki で確認時点 4.4GB)を取得し、
-`xml.etree.ElementTree`(標準ライブラリ)でストリーミング解析、記事本文の wikitext は
-`mwparserfromhell`(wikipedia 系ソースのみの例外的依存)でプレーンテキスト化します。以前は CirrusSearch
-ダンプの `text` フィールドを直接使っていましたが、このフィールドは Wikipedia の折りたたみ
-(collapsible)セクション(`{{hidden begin}}`〜`{{hidden end}}` 等)を検索インデックスから
-除外しており、例えば「ブラタモリ」の放送回一覧表のような内容が本文に一切含まれない欠落が
-あったため、XML ダンプ + wikitext 解析に切り替えました。折りたたみテンプレートは通常の
-テンプレート呼び出しとして扱われるため、中身(表を含む)が自然に本文へ含まれます。
-`{{Dts|年|月|日}}`のようなテンプレートは完全展開はせずパラメータ値の連結として残るため
-(例:「2015 4 11」)、日付表示は整形されませんが検索対象としては機能します。
-リダイレクトは XML 上ではリダイレクト元ページの `<redirect>` タグとして表現されるため、
-`ingest/sources/osm.py` と同じ 2 パス走査(パス1: リダイレクト元→対象の対応収集、
-パス2: 本体の Doc 生成)で aliases に変換しています。XML ダンプには CirrusSearch の
-`popularity_score` 相当の人気度指標が無いため `rank_score` は `0.0` 固定になります
-(ページビューは従来どおり `extra` に格納されます)。
+Wikipedia 系ソースは標準 XML ダンプ(`<wiki_id>-<date>-pages-articles.xml.bz2`、jawiki で
+確認時点 4.4GB)を取得し、wikitext をプレーンテキスト化して取り込みます
+(CirrusSearch ダンプを使わない理由は
+[設計メモ](docs/design-notes.md#wikipedia-は-cirrussearch-ではなく-xml-ダンプから作る))。
 
-Wikipedia 系ソースは記事本文のダンプに加えて、Wikimedia の月次ページビューダンプ
-(`other/pageview_complete/monthly/`、全プロジェクト合算で圧縮 5〜6GB)もダウンロードし、
-`page_id`(XML ダンプの `<page><id>`)で突合して `docs.extra` に月間閲覧数を格納します。
-`WIKI_DOMAIN`(`ingest/sources/wikipedia.py`)に対応表が無い wiki_id ではこの突合を
-スキップします。この分、初回取り込みのダウンロード量・所要時間は README 冒頭の見積もりより
-やや増えます。
+記事本文に加えて Wikimedia の月次ページビューダンプ(全プロジェクト合算で圧縮 5〜6GB)も
+ダウンロードし、`page_id` で突合して知名度(`rank_score`)と `extra.pageviews_month` に
+します。この分、初回取り込みのダウンロード量・所要時間は冒頭の見積もりよりやや増えます。
 
 ### 地理データの守備範囲(geonames と osm の分担)
 
@@ -416,13 +367,9 @@ Wikipedia 系ソースは記事本文のダンプに加えて、Wikimedia の月
 | 持っているもの | 地名・座標・国/行政区・人口・多言語別名・timezone | 地名 + **店舗/施設/交通** の詳細、住所・電話・営業時間 |
 | 持っていないもの | 店舗・レストラン・営業時間 | 取り込んでいない国のすべて |
 
-大陸単位の OSM(`europe-latest.osm.pbf`)を 1 ソースとして取り込む案は**廃止しました**。pbf だけで
-32GB、ノード座標索引が 100GB 超、構築に 1 日以上かかるうえ、実測で `osm_japan` の内訳は
-**73% が店舗・施設の裾**(地名・行政界・自然・観光は合計 27%)で、「全世界の地名」を得る手段としては
-過剰だったためです。逆に地名だけに絞れば、それは GeoNames が 80 分の 1 のサイズで既に提供している
-ものになります。
-
-したがって推奨構成は:
+大陸単位の OSM(`europe-latest.osm.pbf`)を 1 ソースとして取り込む案は**廃止しました**
+(理由は [設計メモ](docs/design-notes.md#地理データの守備範囲geonames-と-osm-の分担))。
+推奨構成は:
 
 - **全世界の問い合わせ** → `geonames`(1 ソースで賄う)
 - **店舗レベルの詳細が要る国** → その国だけ `osm_<国>` を取り込む(管理画面 `/admin/osm` から選ぶか
@@ -435,41 +382,24 @@ Wikipedia 系ソースは記事本文のダンプに加えて、Wikimedia の月
 `filter?wikidata=Q90` で相互に引き当てられます。
 
 OSM 系ソース(`osm_japan` 等)は Geofabrik の地域抽出
-`https://download.geofabrik.de/<region>-latest.osm.pbf` をダウンロードし、pyosmium
-(libosmium バインディング)でストリーミング解析します(Geofabrik が 2026 年に `.osm.bz2` の
-配布を終了し `.osm.pbf` のみになったため、標準ライブラリの `xml.etree` では読めなくなった。
-osm 系ソースに限り pyosmium への依存を許容している)。取り込むのは「名前付き地物」です:
-`place=*`、`boundary=administrative`、主要な `natural=*`(山頂・湖沼・島・湾など)に加えて、
-主要 POI(`amenity=*` `shop=*` `tourism=*` `leisure=*` `historic=*` `craft=*` `office=*`
-`healthcare=*`)と、交通インフラ(`railway` `aeroway` `aerialway` `public_transport` `highway`
-`man_made` のうち「地点を指す値」だけを列挙。`railway=rail` や `highway=residential` のような
-名前付きの線形地物は除外)。いずれも `name` タグ必須です。住所補間・逆ジオコーディングはできません
-(それが必要な場合は公式の [nominatim-docker](https://github.com/mediagis/nominatim-docker)
-を別途立ててください)。ファイルは relation メンバーの把握(パス1)→ 行政境界ポリゴンの構築
-(パス2。`extra.area` の点内包判定用。`OSM_AREA_ADMIN_LEVEL=0` で省略可)→ ノード座標解決込みの
-node/way/relation 走査(パス3)の 3 パスで読むため、構築時間はダウンロード後さらに
-2〜6 時間程度かかります。パス3 のノード座標インデックスは既定で RAM 上(`sparse_mmap_array`)に
-置きます。参照ノードぶんの座標を抱えるため日本抽出で 5〜10GB 使いますが、これがいちばん速く、
-潤沢メモリのマシンで取り込む前提だからです(足りるかどうかは開始前に検査されます)。
-メモリの少ない環境では `OSM_NODE_INDEX=sparse_file_array` でディスク上のファイル
-(`data/dumps/<source>.nodeloc.idx`、終了・中断のいずれでも自動削除)へ逃がせます。
-必要メモリは 2GiB まで下がる代わりに、ノード解決がランダム読みになり数倍〜10 倍遅くなります。
+`https://download.geofabrik.de/<region>-latest.osm.pbf` を取り込みます。取り込むのは
+`name` タグを持つ「名前付き地物」だけです(地名・行政界・主要な自然地物 + 主要 POI +
+交通インフラ。住所補間・逆ジオコーディングはできません。内部の走査方法は
+[設計メモ](docs/design-notes.md#osm-は-pyosmium-で-3-パス読む))。
+
+ファイルを 3 パス読むため、構築時間はダウンロード後さらに 2〜6 時間程度かかります。
+ノード座標インデックスは既定で RAM 上(`sparse_mmap_array`)に置き、日本抽出で 5〜10GB
+使います。メモリの少ない環境では `OSM_NODE_INDEX=sparse_file_array` でディスクへ逃がせます
+(必要メモリは 2GiB まで下がる代わりに数倍〜10 倍遅くなります)。
 
 中断しても運用 DB は壊れません(`.building` の一時ファイルに構築するため)。再実行すれば最初からやり直します。
 
 #### メモリについて
 
-取り込み中に参照する巨大な対応表(リダイレクト・ページビュー・wikidata の Q 番号。jawiki では
-それぞれ 160〜190 万件)は、メモリではなく `data/dumps/*.lookup.db` / `*.redirects.db`(一時 SQLite)に
-持ちます。常駐メモリは SQLite のページキャッシュ上限(約 32MiB/表)に固定され、コーパス規模に
-よらず一定です(これらを素朴に dict で抱えていた版では合計 GB 級になり、メモリ 8GB 級のホストで
-他コンテナごと OOM で落ちる事故がありました)。これらの一時ファイルは取り込み終了・中断のいずれでも
-自動削除されます。
-
-**設計方針: 取り込みは「メモリが足りることを確認できたときだけ」実行する。** 取り込み系コンテナに
-`mem_limit` は課していません。上限で締めると、足りないときに OOM killer が数時間かけた構築を
-最後に殺すだけだからです(実際に 1GiB で締めて osm のノード座標索引が入りきらず落ちました)。
-代わりに ingest は**開始前にメモリを検査し、足りなければダウンロードもせず即座に中止**します。
+ingest は**開始前にメモリを検査し、足りなければダウンロードもせず即座に中止**します
+(なぜ `mem_limit` で締めないのかは [設計メモ](docs/design-notes.md#メモリ方針))。
+取り込み中の巨大な対応表はディスク上の一時 SQLite に逃がしてあるので、常駐メモリは
+コーパス規模によらず一定です。一時ファイルは終了・中断のいずれでも自動削除されます。
 
 | ソース | 必要メモリの目安 | 内訳 |
 |---|---|---|
@@ -479,9 +409,8 @@ node/way/relation 走査(パス3)の 3 パスで読むため、構築時間は�
 | `geonames` | 3 GiB | 別名(2,000 万行規模)はディスクへ逃がすため軽い |
 
 RAM 索引が 12GiB に収まらない国(フランス・ドイツ・カナダ・アメリカ・ロシア)は、
-**ディスク索引(`sparse_file_array`)が既定**です。必要メモリは 2 GiB に下がる代わりに数倍遅くなります
-(「既定設定ではどのソースも 12GiB のマシンで構築できる」という方針を保つための切り替えで、
-`OSM_NODE_INDEX=sparse_mmap_array` を明示すれば潤沢メモリのマシンで RAM 索引に戻せます)。
+**ディスク索引(`sparse_file_array`)が既定**です。必要メモリは 2 GiB に下がる代わりに
+数倍遅くなります(`OSM_NODE_INDEX=sparse_mmap_array` を明示すれば RAM 索引に戻せます)。
 
 足りない場合のメッセージと対処:
 
@@ -628,15 +557,14 @@ docker compose -f docker-compose.build.yml up -d --build
 
 ## 設計メモ
 
-- SQLite + FTS5 (trigram) 採用。読み取り専用・少数クライアントなら数 ms〜数十 ms で十分。
-  「ソース = 1 ファイル」が世代管理・ブルーグリーンとよく噛み合います。
-- 割り切り: 3 文字未満の語は FTS 不可(前方一致へ自動フォールバック)、ランキングは簡易
-  (タイトル完全一致 → bm25 × 人気度)。形態素トークナイザへの差し替えは候補 2 つを
-  実測したうえで見送りました(索引は 72% 減りますが、速いほうは配信側のメモリが 1 桁増え、
-  軽いほうは索引化が桁違いに遅い。経緯と数字は
-  [docs/fts-tokenizer-evaluation.md](docs/fts-tokenizer-evaluation.md))。
-- 移行トリガー: 検索精度に不満 → Meilisearch / 同時接続・書き込み要件 → PostgreSQL + PGroonga。
-  API 層があるため DB だけ差し替え可能です。
+なぜこの形なのか(土台に SQLite + FTS5 を選んだ理由、検索の並び順、索引の形、
+geonames と osm の分担、メモリ方針など)は
+**[docs/design-notes.md](docs/design-notes.md)** にまとめています。
+実測して方針が変わったものは、数字と一緒にそちらへ残す方針です。
+
+- [FTS トークナイザの評価](docs/fts-tokenizer-evaluation.md) — 形態素解析への差し替えを
+  見送った経緯と実測値
+- [ソースの追加手順](docs/adding-a-source.md) — 新しい種類のデータを足すとき
 
 ## ライセンス
 
