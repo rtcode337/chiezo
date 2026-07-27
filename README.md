@@ -328,6 +328,10 @@ python3 scripts/refresh_rank_score.py data/jawiki.db data/geonames.db
 docker compose start chiezo-api
 ```
 
+jawiki は数分〜十数分かかります。SSH 越しに実行するなら、接続が切れても止まらないよう
+`tmux` の中で回すか `nohup … &` にしてください(途中で落ちても、もう一度流し直せば
+同じ結果になります)。
+
 スキーマは変わらないので `schema_version` も上がりません。入れ直していない DB でも
 API は壊れません(`rank_score` を 0〜1 に丸めてから使うので、実質 bm25 だけの並びに
 戻るだけです)。何度実行しても結果は同じです。

@@ -110,6 +110,10 @@ def refresh(db_path: Path) -> int:
 
 
 def main() -> None:
+    # 進捗は 1 行ずつすぐ出す。既定だと標準出力が端末以外(nohup のリダイレクト等)では
+    # ブロックバッファになり、数十分かかる処理の途中経過が溜まったまま出てこない。
+    # このスクリプトは「動いているのか固まったのか」を見せるのが目的なので必ず流す。
+    sys.stdout.reconfigure(line_buffering=True)
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("db", type=Path, nargs="+", help="対象の <source>.db(複数可)")
     args = parser.parse_args()
