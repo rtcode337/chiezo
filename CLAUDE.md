@@ -11,7 +11,8 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
   `jawiki-20260701.db` は登録されず、シンボリックリンク `jawiki.db` のみ登録される)。
   - `app/main.py` — ルーティング(/, /healthz, /v1/sources,
     /v1/{source}/search|doc|filter|tags|titles|links|random,
-    /admin, /admin/init/{source}, /{source}/, /{source}/doc/{doc_id})
+    /admin, /admin/init/{source}, /{source}/, /{source}/doc/{doc_id}、
+    および MCP の /mcp(実体は下の `app/mcp_server.py`))
     - `/v1/{source}/filter` — 全文検索ではなく属性(`feature` / `area` / `bbox` / `wikidata` /
       `tag`)の AND での一括抽出(Overpass 相当)。`docs` の生成列への索引付き検索なので
       `schema_version` 2 以上が必要(1 の DB には 409)。条件は `build_attribute_filters()` が
@@ -28,6 +29,24 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
     - `doc` は同名の別地物がある場合 `alternatives` を併記する(`fetch_doc_candidates()`)。
       OSM は「博多駅」のような名前が駅とラーメン店で衝突するため、黙って 1 件返すと
       取り違えに気づけない
+  - `app/mcp_server.py` — **MCP サーバー(`/mcp`、Streamable HTTP・ステートレス)**。
+    使い方は README「MCP から使う」節。ツールの実体は `app/main.py` のエンドポイント関数
+    そのもので、MCP 用に処理を書き直していない(別実装にすると片方だけ直されて必ずずれる)。
+    そのぶん**踏み抜きやすい罠が 3 つ**あるので、触るときは順に確認すること:
+    - FastAPI のエンドポイントは既定値が `Query(...)` オブジェクトなので、Python から
+      直接呼ぶときに**全パラメータを明示的に渡す**必要がある。渡し忘れると Query
+      インスタンスが値として入り、`if tag:` が常に真になる等、例外にならず静かに壊れる。
+      `tests/test_mcp.py::TestStaysInSyncWithRest` がシグネチャを突き合わせて落とす
+    - FastMCP は**同期のツール関数をイベントループ上で直接呼ぶ**(await するのは async
+      関数だけ)。chiezo のクエリは最大 5 秒ブロックしうるので、必ず `run_in_threadpool`
+      に逃がす。でないと重いクエリ 1 本で API 全体が止まる
+    - `TransportSecuritySettings` の既定は「localhost 系の Host しか受け付けない」。
+      そのままだと LAN の別マシンから叩いた時点で 421 になるので、既定では検証を外し
+      (REST 側も認証なし・LAN 内前提)、`CHIEZO_MCP_ALLOWED_HOSTS` で絞れるようにしている
+    セッションマネージャは lifespan の中で `run()` する必要があり(python-sdk#1367)、かつ
+    1 インスタンス 1 回しか呼べないため、**起動ごとに `build_mcp()` で作り直して**
+    `app.state.mcp_asgi` に置き、マウント先(`main._mcp_asgi`)がそれを見る形にしている
+    (モジュール読み込み時に作り置きすると、同一プロセスで二度起動するテストが落ちる)
   - `app/registry.py` — /data 走査・ソース登録、`SUPPORTED_SCHEMA_VERSIONS` /
     `FILTER_MIN_SCHEMA_VERSION` / `TAG_MIN_SCHEMA_VERSION`
   - `app/db.py` — スレッドローカル immutable 接続、5 秒クエリタイムアウト(超過は 504)
@@ -272,10 +291,18 @@ OpenStreetMap 日本抽出 = `osm_japan`、GeoNames 全世界地名辞典 = `geo
     追加)。タグは 2 の DB にも `docs.tags` として入っているので、ダンプを取り直さず
     その場で作れる(jawiki の再取り込み 2〜6 時間に対し数分〜十数分)。
     `meta` の更新を最後の 1 ステップにしてあるので、中断しても中途半端に 3 を名乗る DB は
-    残らない(もう一度実行すればやり直す)。書き込むので API は止めてから実行する
+    残らない(もう一度実行すればやり直す)。書き込むので API は止めてから実行する。
+    **取り込み側の PRAGMA をそのまま持ち込まないこと**: ここが触るのは使い捨ての
+    `.building` ではなく運用 DB 本体なので、`journal_mode=OFF` にすると kill 一発で
+    42GB が壊れる。速度よりロールバックできることを優先する。
+    `docs` の全走査を 20 万件ずつに分けるのは、`DISTINCT` の並べ替えが一時ファイルに
+    落ちるため(メモリは文書数によらず一定で、実測 100 万文書でピーク RSS 24MiB)。
+    doc_id の値で等分割できない(osm は `osm_id*4` で 10 桁超)ので件数で刻んでいる
 - `assets/` — プロジェクトアイコン(`icon.svg`。README ヘッダーと管理画面ファビコンの原本)
 - `tests/` — フィクスチャ(`fixtures/mini_jawiki.xml.gz` 12 文書、`fixtures/mini_osm.osm.pbf`、
-  `fixtures/mini_geonames.zip` ほか geonames 一式)での API / ingest テスト
+  `fixtures/mini_geonames.zip` ほか geonames 一式)での API / ingest テスト。
+  `test_mcp.py` は /mcp に生の JSON-RPC を 1 発 POST して確かめる(ステートレスな
+  トランスポートなので initialize のハンドシェイクが要らず、応答は SSE フレームの data: 行)
 - `.github/workflows/ci.yml` — push / PR で pytest を実行し、main への push で
   `chiezo-api` / `chiezo-ingest` の 2 イメージをマルチアーキ(amd64 / arm64)で GHCR へ公開
   (cc-tasks / travel-log の docker-publish と同じダイジェストマージ方式。

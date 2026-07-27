@@ -97,6 +97,17 @@ SELECT DISTINCT json_each.value, docs.doc_id
  WHERE docs.tags IS NOT NULL AND json_each.value <> ''
 """
 
+# 上の分割版(scripts/add_tag_index.py が既存 DB を少しずつ埋めるのに使う)。
+# doc_id の値で等分割できないので(osm の doc_id は osm_id*4 で 10 桁を超える)、
+# 「前回の続きから N 件」という件数での刻みにしている。パラメータは (前回の最大 doc_id, 件数)。
+DOC_TAGS_POPULATE_BATCH_SQL = """
+INSERT INTO doc_tags (tag, doc_id)
+SELECT DISTINCT json_each.value, d.doc_id
+  FROM (SELECT doc_id, tags FROM docs WHERE doc_id > ? ORDER BY doc_id LIMIT ?) AS d,
+       json_each(d.tags)
+ WHERE d.tags IS NOT NULL AND json_each.value <> ''
+"""
+
 
 @dataclass
 class Doc:

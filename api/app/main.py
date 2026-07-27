@@ -20,6 +20,7 @@ from fastapi.responses import (
 
 from app import claude_config, db
 from app.fts import build_match_query, escape_like
+from app.mcp_server import build_mcp
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
 from app.pages import esc, page_shell
 from app.registry import (
@@ -64,7 +65,17 @@ async def lifespan(app: FastAPI):
     app.state.sources = scan_sources(data_dir)
     if not app.state.sources:
         log.warning("no sources registered from %s", data_dir)
-    yield
+    # MCP(/mcp)はここで組み立てて起動する。理由が 2 つある:
+    #  1. セッションマネージャは lifespan の中で run() しないとタスクグループが張られず、
+    #     最初のリクエストで "Task group is not initialized" になる(python-sdk#1367)。
+    #  2. その run() は 1 インスタンスにつき 1 回しか呼べない。モジュール読み込み時に
+    #     作り置きすると、同一プロセスでアプリを二度起動したとき(テストや再入する
+    #     ホスティング)に RuntimeError で落ちる。なので起動ごとに作り直す。
+    # マウント先(下の _mcp_asgi)はここで置いた app.state.mcp_asgi を見に行く。
+    mcp = build_mcp(app)
+    app.state.mcp_asgi = mcp.streamable_http_app()
+    async with mcp.session_manager.run():
+        yield
 
 
 app = FastAPI(title="chiezo", version="0.2", lifespan=lifespan)
@@ -1281,3 +1292,22 @@ def browse_doc(request: Request, source: str, doc_id: int):
 <pre class="doc-body">{esc(extra_html)}</pre>
 """
     return HTMLResponse(content=page_shell(f"chiezo: {row['title']}", body))
+
+
+# ---- MCP(Streamable HTTP) ---------------------------------------------------
+
+
+async def _mcp_asgi(scope, receive, send):
+    """/mcp を lifespan が用意した MCP アプリへ委譲する。
+
+    実体を起動ごとに作り直す(上の lifespan 参照)ため、マウント時点では実体が無い。
+    パスの前置き除去は Starlette の Mount 側が済ませてから呼ぶので、ここは素通しでよい。
+    """
+    inner = getattr(app.state, "mcp_asgi", None)
+    if inner is None:  # lifespan を通らずに呼ばれた場合(通常は起こらない)
+        raise RuntimeError("MCP app is not initialized (lifespan did not run)")
+    await inner(scope, receive, send)
+
+
+# ツールの実体は上のエンドポイント関数そのもの(app/mcp_server.py 参照)。
+app.mount("/mcp", _mcp_asgi)

@@ -644,10 +644,14 @@ class TestTagSchemaGuard:
 
         _, db_path = legacy_client
         script = Path(__file__).resolve().parents[1] / "scripts" / "add_tag_index.py"
+        # --batch を文書数より小さくして、分割ループが 2 周以上回る経路を通す
+        # (一時領域を小さく保つために件数で刻んでおり、刻み目で取りこぼすと静かに欠ける)
         run = subprocess.run(
-            [sys.executable, str(script), str(db_path)], capture_output=True, text=True
+            [sys.executable, str(script), "--batch", "3", str(db_path)],
+            capture_output=True, text=True,
         )
         assert run.returncode == 0, run.stderr
+        assert run.stdout.count("docs ->") >= 4, run.stdout  # 11 文書 / 3 件ずつ
 
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         try:
