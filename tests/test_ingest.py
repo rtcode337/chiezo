@@ -1,6 +1,8 @@
 """ingest 共通フレーム + wikipedia アダプタのテスト(フィクスチャ E2E)。"""
+import bz2
 import gzip
 import json
+import math
 import sqlite3
 
 import pytest
@@ -32,7 +34,8 @@ class TestAdapter:
         assert "日本" in tokyo.links
         assert tokyo.aliases == ["東京"]
         assert tokyo.updated_at == "2026-06-01T00:00:00Z"
-        assert tokyo.rank_score == 0.0  # XML ダンプには popularity_score 相当が無いため固定値
+        # ページビューを突合していなければ rank_score は 0(この fixture は突合なし)
+        assert tokyo.rank_score == 0.0
 
     def test_non_zero_namespace_redirects_excluded(self, fixture_dump):
         adapter = make_test_adapter()
@@ -116,6 +119,52 @@ class TestWikidataIds:
         assert temp_files(), "取り込み中は一時 DB が存在する"
         gen.close()  # ジェネレータを中断 → finally が走る
         assert not temp_files(), "中断後に一時ファイルが残っている"
+
+
+class TestPageviewRanking:
+    """月間ページビューを rank_score(0〜1 の知名度)に写すこと。
+
+    XML ダンプには CirrusSearch の popularity_score 相当が無く、以前は rank_score が
+    全記事 0.0 だった。検索の並びで人気度が一切効かず、2 文字語のように数千件ヒットする
+    問い合わせで有名な記事が埋もれる原因になっていた。
+    """
+
+    @staticmethod
+    def _write_pageviews(tmp_path, lines: str):
+        path = tmp_path / "pageviews-2026-06.bz2"
+        with bz2.open(path, "wt", encoding="utf-8") as f:
+            f.write(lines)
+        return path
+
+    def test_pageviews_become_rank_score(self, tmp_path, fixture_dump):
+        adapter = make_test_adapter()
+        # 実ダンプの形: <domain> <title> <page_id> <access> <count> <...>
+        adapter._pageview_path = self._write_pageviews(
+            tmp_path,
+            "ja.wikipedia 東京都 1 desktop 900000 X\n"
+            "ja.wikipedia 東京都 1 mobile-web 100000 X\n"
+            "ja.wikipedia 浅草寺 2 desktop 100 X\n",
+        )
+        adapter._pageview_period = "2026-06"
+        docs = {d.title: d for d in adapter.iter_docs(fixture_dump)}
+
+        # アクセス種別は合算される(90 万 + 10 万 = 100 万)
+        assert docs["東京都"].extra["pageviews_month"] == 1_000_000
+        assert docs["東京都"].rank_score == round(math.log10(1_000_001) / 7, 4)
+        assert docs["浅草寺"].rank_score == round(math.log10(101) / 7, 4)
+        # 突合できなかった記事は 0
+        assert docs["富士山"].rank_score == 0.0
+
+    def test_rank_score_stays_within_zero_to_one(self, tmp_path, fixture_dump):
+        """API が bm25 に掛け合わせるので、この範囲を外れると並びが壊れる。"""
+        adapter = make_test_adapter()
+        adapter._pageview_path = self._write_pageviews(
+            tmp_path, "ja.wikipedia 東京都 1 desktop 999999999 X\n"
+        )
+        adapter._pageview_period = "2026-06"
+        docs = {d.title: d for d in adapter.iter_docs(fixture_dump)}
+        assert docs["東京都"].rank_score == 1.0
+        assert all(0.0 <= d.rank_score <= 1.0 for d in docs.values())
 
 
 class TestBuild:

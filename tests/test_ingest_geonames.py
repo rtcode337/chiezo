@@ -72,10 +72,22 @@ class TestGeonamesAdapter:
         assert docs_by_title(adapter, geonames_fixture_dump)["Paris"].extra["area"] == "France"
 
     def test_population_becomes_rank_score(self, geonames_fixture_dump):
+        """人口は 0.0〜1.0 に正規化して rank_score に入れる。
+
+        生の人口のままだと、API が bm25 に掛け合わせて並べるときに人口だけで順位が
+        決まってしまう(rank_score は全ソース共通で 0〜1 という約束)。
+        対数変換なので人口による大小関係そのものは変わらない。
+        """
+        import math
+
         adapter = make_geonames_test_adapter(geonames_fixture_dump)
         docs = docs_by_title(adapter, geonames_fixture_dump)
-        assert docs["Paris"].rank_score == 2138551.0
+        assert docs["Paris"].rank_score == round(math.log10(1 + 2138551) / 10, 4)
+        assert 0.0 < docs["Paris"].rank_score <= 1.0
         assert docs["Galdhopiggen"].rank_score == 0.0
+        # 対数変換なので人口の大小関係は保たれる
+        by_pop = sorted(docs.values(), key=lambda d: (d.extra or {}).get("population", 0))
+        assert [d.rank_score for d in by_pop] == sorted(d.rank_score for d in by_pop)
 
     def test_opening_is_searchable_text(self, geonames_fixture_dump):
         """GeoNames は本文を持たないので、FTS が効くよう 1 行の説明を組み立てている。"""

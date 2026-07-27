@@ -33,7 +33,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Iterator
 
-from core import Doc
+from core import POPULARITY_LOG_MAX_COUNTRY_POPULATION, Doc, normalized_popularity
 from lookup import BATCH_SIZE, CACHE_SIZE_KIB, DiskMultiMap
 
 log = logging.getLogger("chiezo.ingest")
@@ -421,7 +421,9 @@ class GeonamesAdapter:
             tags=tags,
             aliases=aliases,
             updated_at=row[F_MOD] or None,
-            # 人口を素朴な人気度として使う(検索の並びに効く)
-            rank_score=float(population),
+            # 人口を素朴な人気度として使う(検索の並びに効く)。生の人口ではなく
+            # 0.0〜1.0 に正規化するのは、API が bm25 に掛け合わせて並べるため
+            # (生値だと人口だけで並びが決まる)。順序は対数変換で変わらない。
+            rank_score=normalized_popularity(population, POPULARITY_LOG_MAX_COUNTRY_POPULATION),
             extra=extra,
         )

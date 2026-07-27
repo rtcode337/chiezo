@@ -60,7 +60,7 @@ from typing import Iterator
 
 import osmium
 
-from core import Doc
+from core import POPULARITY_LOG_MAX_CITY_POPULATION, Doc, normalized_popularity
 
 log = logging.getLogger(__name__)
 
@@ -777,7 +777,7 @@ class OsmAdapter:
             score = POI_KEY_SCORE.get(key, 0.4)
         population = self._int_tag(tags, "population")
         if population:
-            score = max(score, min(1.0, math.log10(population) / 8))
+            score = max(score, normalized_popularity(population, POPULARITY_LOG_MAX_CITY_POPULATION))
         return round(score, 4)
 
     @staticmethod

@@ -36,6 +36,13 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     - `/v1/{source}/tags` — タグ名を文書数つきで列挙(`prefix` = 索引の範囲検索 /
       `contains` = 索引が効かない部分一致)。`filter?tag=` が完全一致なので、
       当てずっぽうで 0 件を掴む前に実在する名前を確かめるための窓口
+    - `relevance_order()` — FTS の並びは **bm25 に人気度(`rank_score`)を掛け合わせる**。
+      bm25 は「良い一致ほど小さい負値」なので、係数を大きくするほど上位へ動く。
+      重み `POPULARITY_WEIGHT`(0.4)は `scripts/fts_lab.py` で本番 jawiki 3 万件に対し
+      0〜2 を振って決めた実測値で、2.0 まで上げると語の関連が薄い人気記事を拾い始める。
+      `rank_score` を 0〜1 に丸めてから使うのは、入れ直していない geonames が人口の
+      生値(最大 14 億)を持っているため。丸めれば全件 1.0 に張り付いて実質 bm25 のみに
+      戻るので、古い DB でも壊れない(`scripts/refresh_rank_score.py` で入れ直せる)
     - `doc` は同名の別地物がある場合 `alternatives` を併記する(`fetch_doc_candidates()`)。
       OSM は「博多駅」のような名前が駅とラーメン店で衝突するため、黙って 1 件返すと
       取り違えに気づけない
@@ -129,6 +136,11 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     これにより wikipedia 系の取り込みは軽くなり、必要メモリは 3GiB 見当に収まる
     (下記「メモリ方針」を参照)
   - `core.py` — コアスキーマ DDL と `Doc` 型(全ソース共通)。`SCHEMA_VERSION` は 3。
+    `rank_score` は **全ソース共通で 0.0〜1.0** という約束(`normalized_popularity()` で
+    対数正規化する)。API が bm25 に掛け合わせて並べるため、ソースごとに桁が違うと
+    混ぜられないから。人口の対数上限だけは都市規模(osm、1 億)と国家規模(geonames、
+    100 億)で分けてある — geonames は国そのものを 1 文書として持ち、同じ係数だと
+    1 億超の国が全部 1.0 に張り付いて上位の区別が消えるため。
     `docs` に生成列(VIRTUAL)`feature` / `area` / `lat` / `lon` / `wikidata` を持ち、
     実体は従来どおり `extra`(JSON)から `json_extract` する射影+索引でしかない。
     アダプタ側は `extra` に詰めるだけでよく、`Doc` の形は変わらない。
@@ -297,6 +309,12 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     「Ukraine (with Crimea)」や複数国をまとめた抽出)は `OVERRIDES` に人手で書く
     — Geofabrik の ISO コードには取り違え(トケラウに `VU` 等)があり、そのまま引くと
     「トケラウ = バヌアツ」のような誤表示になるため
+  - `refresh_rank_score.py` — 既存 DB の `rank_score` を `extra` から計算し直す
+    (wikipedia は `pageviews_month`、geonames は `population`。osm は元から 0〜1 なので
+    対象外)。スキーマは変わらないので `schema_version` は上げない。ダンプの取り直しも不要
+  - `fts_lab.py` — trigram と形態素トークナイザの FTS を同じ文書集合の上で作って比べる
+    実験台。索引サイズ・構築時間・ヒット数・順位を出す。人気度の重みを振るのにも使った。
+    拡張(`sqlite-vaporetto` 等)は同梱していないので別途取ってくる
   - `add_tag_index.py` — 既存 DB の `schema_version` 2 → 3 移行(タグ転置表 `doc_tags` の
     追加)。タグは 2 の DB にも `docs.tags` として入っているので、ダンプを取り直さず
     その場で作れる(jawiki の再取り込み 2〜6 時間に対し数分〜十数分)。

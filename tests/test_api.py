@@ -138,6 +138,83 @@ class TestDoc:
         assert res.status_code == 404
 
 
+class TestPopularityRanking:
+    """検索の並びに rank_score(0〜1 の知名度)を混ぜること。
+
+    bm25 だけだと、2 文字語のように数千件ヒットする問い合わせで有名な記事が埋もれる。
+    一方で rank_score をそのまま信じると古い DB(geonames は人口の生値が入っている)で
+    並びが壊れるので、0〜1 に丸めてから使う。その両方をここで固定する。
+    """
+
+    @pytest.fixture()
+    def ranked_client(self, tmp_path, built_data_dir):
+        """同点になりやすい 2 文書の rank_score だけを差し替えたクライアント。"""
+        import shutil
+        import sqlite3
+
+        from fastapi.testclient import TestClient
+
+        data_dir = tmp_path / "ranked"
+        data_dir.mkdir()
+        db_path = data_dir / "jawiki.db"
+        shutil.copy(built_data_dir / "jawiki.db", db_path)
+
+        mp = pytest.MonkeyPatch()
+        mp.setenv("CHIEZO_DATA_DIR", str(data_dir))
+        try:
+            from app.main import app
+
+            def with_scores(scores: dict[str, float]):
+                conn = sqlite3.connect(db_path)
+                conn.execute("UPDATE docs SET rank_score = 0")
+                for title, score in scores.items():
+                    conn.execute(
+                        "UPDATE docs SET rank_score = ? WHERE title = ?", (score, title)
+                    )
+                conn.commit()
+                conn.close()
+                return TestClient(app)
+
+            yield with_scores
+        finally:
+            mp.undo()
+
+    def titles_for(self, client, q: str) -> list[str]:
+        return [r["title"] for r in client.get(
+            "/v1/jawiki/search", params={"q": q, "limit": 10}
+        ).json()["results"]]
+
+    def test_popular_doc_outranks_equally_relevant_one(self, ranked_client):
+        with ranked_client({}) as c:
+            baseline = self.titles_for(c, "である")
+        assert len(baseline) > 1
+        underdog = baseline[-1]  # 素の bm25 では最下位の記事
+
+        with ranked_client({underdog: 1.0}) as c:
+            boosted = self.titles_for(c, "である")
+        assert boosted.index(underdog) < baseline.index(underdog), (
+            f"{underdog} が人気度で上がっていない: {baseline} -> {boosted}"
+        )
+
+    def test_out_of_range_rank_score_is_clamped(self, ranked_client):
+        """geonames の古い DB は rank_score に人口の生値(数千万)が入っている。
+
+        丸めずに使うとその 1 列だけで並びが決まるので、0〜1 に丸めていることを確かめる。
+        丸めた結果は全件同じ倍率になり、並びは bm25 のみのときと一致する。
+        """
+        with ranked_client({}) as c:
+            baseline = self.titles_for(c, "である")
+        with ranked_client({t: 30_000_000.0 for t in baseline}) as c:
+            clamped = self.titles_for(c, "である")
+        assert clamped == baseline
+
+    def test_negative_rank_score_does_not_flip_the_order(self, ranked_client):
+        with ranked_client({}) as c:
+            baseline = self.titles_for(c, "である")
+        with ranked_client({baseline[0]: -5.0}) as c:
+            assert self.titles_for(c, "である") == baseline
+
+
 class TestTagFilter:
     """タグ(Wikipedia のカテゴリ)での絞り込み。
 

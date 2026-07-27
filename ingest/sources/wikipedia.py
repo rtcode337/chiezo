@@ -37,7 +37,7 @@ from typing import IO, Iterator
 import mwparserfromhell as mwp
 from mwparserfromhell.nodes import Heading
 
-from core import Doc
+from core import POPULARITY_LOG_MAX_PAGEVIEWS, Doc, normalized_popularity
 from lookup import EMPTY, DiskLookup, DiskMultiMap, EmptyLookup
 
 log = logging.getLogger(__name__)
@@ -383,7 +383,11 @@ class WikipediaAdapter:
                 links=links,
                 aliases=redirect_targets.get(title),
                 updated_at=timestamp_elem.text if timestamp_elem is not None else None,
-                rank_score=0.0,  # XML ダンプには CirrusSearch の popularity_score 相当が無い
+                # XML ダンプには CirrusSearch の popularity_score 相当が無いので、
+                # 突合した月間ページビューを正規化して知名度として使う(取れなければ 0)。
+                rank_score=normalized_popularity(
+                    extra.get("pageviews_month"), POPULARITY_LOG_MAX_PAGEVIEWS
+                ),
                 extra=extra or None,
             )
 

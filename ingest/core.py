@@ -5,6 +5,7 @@ DB 構築・FTS・検証・切り替えは共通フレーム(main.py)が担う�
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Protocol
@@ -109,6 +110,29 @@ SELECT DISTINCT json_each.value, d.doc_id
 """
 
 
+# rank_score の正規化に使う対数の上限。ソースごとに桁が違う量(ページビュー・人口)を
+# 同じ 0.0〜1.0 に写すための係数で、この値で 1.0 に張り付く。
+POPULARITY_LOG_MAX_PAGEVIEWS = 7.0        # 月間 1000 万 PV
+POPULARITY_LOG_MAX_CITY_POPULATION = 8.0  # 人口 1 億(osm が元から使っていた係数)
+# geonames は国そのものも 1 文書として持ち、人口が 14 億まで行く。都市規模と同じ
+# 係数だと 1 億超の国が全部 1.0 に張り付いて、上位の区別が消えるため分けてある。
+POPULARITY_LOG_MAX_COUNTRY_POPULATION = 10.0
+
+
+def normalized_popularity(value: float | int | None, log_max: float) -> float:
+    """人気度の生値(ページビュー・人口)を 0.0〜1.0 の rank_score に正規化する。
+
+    **rank_score は全ソース共通で 0.0〜1.0 という約束**にしてある。API が関連度
+    (bm25)に人気度を掛け合わせて並べるため、ソースごとに桁が違うと混ぜられないから
+    (人口 3000 万とページビュー 100 万を同じ式には入れられない)。
+    対数を使うのは、人気度が桁で効く量だから(10 万 PV と 20 万 PV の差より、
+    1000 PV と 10 万 PV の差の方が意味がある)。
+    """
+    if not value or value <= 0:
+        return 0.0
+    return round(min(1.0, math.log10(1 + value) / log_max), 4)
+
+
 @dataclass
 class Doc:
     """コアスキーマ 1 文書。アダプタが iter_docs() で yield する単位。"""
@@ -121,6 +145,8 @@ class Doc:
     links: list[str] = field(default_factory=list)
     aliases: list[str] = field(default_factory=list)
     updated_at: str | None = None
+    # 0.0〜1.0 に正規化した知名度・重要度(normalized_popularity() 参照)。
+    # 検索の並びで bm25 に掛け合わせるので、この範囲を外れると並びが壊れる。
     rank_score: float = 0.0
     extra: dict[str, Any] | None = None
 

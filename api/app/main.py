@@ -46,6 +46,12 @@ JSON_FIELDS = {"tags", "links", "extra"}
 SEARCH_LIMIT_DEFAULT = 10
 SEARCH_LIMIT_MAX = 50
 
+# 関連度(bm25)に人気度(rank_score)を混ぜる重み。0 にすると従来どおり bm25 のみ。
+# 実測(scripts/fts_lab.py で本番 jawiki 3 万件・重みを 0〜2 で振った)から 0.4 を採った。
+# 0.3〜0.5 で「ラーメン」に対する有名店、「浅草寺」に対する浅草のような順当な記事が
+# 上がり、2.0 まで上げると語の関連が薄い人気記事(織田信長など)を拾い始める。
+POPULARITY_WEIGHT = 0.4
+
 # doc で同名の別地物を併記する上限
 DOC_CANDIDATE_LIMIT = 5
 
@@ -90,6 +96,19 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 @app.exception_handler(db.QueryTimeout)
 async def timeout_handler(request: Request, exc: db.QueryTimeout):
     return JSONResponse(status_code=504, content={"error": "query timeout"})
+
+
+def relevance_order(prefix: str = "") -> str:
+    """関連度に人気度を混ぜた ORDER BY 句を返す(FTS 検索用)。
+
+    bm25() は「良い一致ほど小さい負値」なので、人気度で係数を大きくするほど上位へ動く。
+    rank_score を 0〜1 に丸めてから使うのは、`schema_version` 3 以前の geonames が
+    rank_score に人口の生値(最大 3000 万)を入れているため。丸めないとその 1 列だけで
+    並びが決まってしまう。丸めれば古い DB は全件 1.0 に張り付き、実質 bm25 のみ
+    (= 従来と同じ並び)に戻るので、取り込み直していない DB でも壊れない。
+    """
+    score = f"MIN(1.0, MAX(0.0, COALESCE({prefix}rank_score, 0.0)))"
+    return f"bm25(docs_fts, 5.0, 1.0) * (1.0 + {POPULARITY_WEIGHT} * {score}) ASC"
 
 
 def get_source(request: Request, source: str) -> Source:
@@ -748,7 +767,7 @@ def search(
             " snippet(docs_fts, 1, '', '', '…', 40) AS snippet, d.updated_at AS updated_at"
             " FROM docs_fts JOIN docs d ON d.doc_id = docs_fts.rowid"
             f" WHERE docs_fts MATCH ?{extra_where_d}"
-            " ORDER BY bm25(docs_fts, 5.0, 1.0) ASC, d.rank_score DESC"
+            f" ORDER BY {relevance_order('d.')}"
             " LIMIT ? OFFSET ?",
             (match, *extra_params, limit, offset),
         )
@@ -1218,7 +1237,7 @@ def browse_source(
                 " snippet(docs_fts, 1, '', '', '…', 40) AS snippet"
                 " FROM docs_fts JOIN docs d ON d.doc_id = docs_fts.rowid"
                 " WHERE docs_fts MATCH ?"
-                " ORDER BY bm25(docs_fts, 5.0, 1.0) ASC, d.rank_score DESC LIMIT ?",
+                f" ORDER BY {relevance_order('d.')} LIMIT ?",
                 (match, BROWSE_LIMIT),
             )
         items = "\n".join(

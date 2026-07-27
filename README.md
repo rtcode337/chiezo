@@ -113,6 +113,10 @@ OSM の国別ソース(`osm_<国>`、195 件)と Wikipedia の言語版(`<lang>w
 
 - `search` — `limit` 既定 10・最大 50。3 文字以上の語が無いクエリは自動的にタイトル前方一致へ
   フォールバックし、レスポンスの `"mode"` が `"title_prefix"` になります(通常は `"fts"`)。
+  並び順は**関連度(bm25)に知名度(`rank_score`)を掛け合わせた**もので、同じくらい
+  関連する文書なら有名なほうが上に来ます(Wikipedia は月間ページビュー、GeoNames は人口、
+  OSM は地物種別と人口から決まる 0.0〜1.0 の値)。`rank_score` が入っていない古い DB では
+  従来どおり bm25 だけの並びになります(後述の「既存 DB の rank_score を入れ直す」)。
   `filter` と同じ `area` / `feature` / `bbox` を併用でき、同名の別地物を掴む取り違えを避けられます
   (例: `search?q=八坂神社&area=京都府`)。
 - `doc` — `title` 完全一致 → リダイレクト(alias)解決 → 見つからなければ 404 と近似候補 5 件。
@@ -314,6 +318,28 @@ docker compose start chiezo-api
 
 運用 DB を直接書き換えるので、ロールバックジャーナルは無効化していません
 (途中で kill されても壊れないことを速度より優先しています)。
+
+### 既存 DB の rank_score を入れ直す
+
+検索の並びに使う `rank_score` は「0.0〜1.0 に正規化した知名度」という約束ですが、
+古い DB はこの約束を満たしていません:
+
+- `<lang>wiki` — 全記事 0.0 固定(XML ダンプに人気度が無いため入れていなかった)。
+  月間ページビューは `extra.pageviews_month` にあるので、そこから計算できます
+- `geonames` — 人口の生値(最大 14 億)が入っています。`extra.population` から入れ直します
+- `osm_<国>` — 元から 0.0〜1.0 なので対象外です
+
+いずれも取り込み済みの `extra` を読み直すだけで、**ダンプの取り直しは要りません**。
+
+```bash
+docker compose stop chiezo-api
+python3 scripts/refresh_rank_score.py data/jawiki.db data/geonames.db
+docker compose start chiezo-api
+```
+
+スキーマは変わらないので `schema_version` も上がりません。入れ直していない DB でも
+API は壊れません(`rank_score` を 0〜1 に丸めてから使うので、実質 bm25 だけの並びに
+戻るだけです)。何度実行しても結果は同じです。
 
 ingest の環境変数:
 
