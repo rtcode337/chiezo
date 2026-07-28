@@ -748,6 +748,89 @@ wireCopy('copy-hook', 'config-hook', 'msg-hook');
 # ---- 検索 -------------------------------------------------------------------
 
 
+FTS_ROW_SQL = (
+    "SELECT d.doc_id AS doc_id, d.title AS title,"
+    " snippet(docs_fts, 1, '', '', '…', 40) AS snippet, d.updated_at AS updated_at"
+    " FROM docs_fts JOIN docs d ON d.doc_id = docs_fts.rowid"
+)
+
+# 並べ替えの前に docs を読む文書数の上限(下の fts_search 参照)。返す件数の
+# SEARCH_POOL_FACTOR 倍を候補に取る。人気度の混ぜ込みは bm25 を最大 1.4 倍しか
+# 動かせない(POPULARITY_WEIGHT)ので、この深さの候補があれば順位はまず変わらない。
+SEARCH_POOL_MIN = 300
+SEARCH_POOL_FACTOR = 5
+SEARCH_POOL_MAX = 2000
+# タイトルが検索語で始まる文書を候補に加えるときに見る索引の件数。
+TITLE_ANCHOR_SCAN = 20
+
+
+def search_pool_size(offset: int, limit: int) -> int:
+    need = offset + limit
+    return max(need, min(SEARCH_POOL_MAX, max(SEARCH_POOL_MIN, need * SEARCH_POOL_FACTOR)))
+
+
+def fts_search(src: Source, match: str, exact: str, limit: int, offset: int) -> list:
+    """全文検索の本体。**該当件数ではなく返す件数に比例した数の行しか読まない**。
+
+    素直に書くと `docs_fts MATCH ... JOIN docs ORDER BY <bm25 と人気度>` になるが、
+    並べ替えに docs の rank_score と title が要るせいで、該当した文書を**全部**
+    docs から読むことになる。osm_japan の「東京都」は 17 万件が該当し(施設の本文に
+    「所在: 東京都…」が入るため)、上位 10 件を返すのに 17 万行を読んで配信機で
+    504 になっていた。都道府県名が軒並み引けなかったのはこれが理由。
+
+    そこで 2 段にする:
+
+    1. bm25 だけで上位 N 件の doc_id を取る。ここは FTS の索引の中で完結する
+       (docs を 1 行も読まない)。
+    2. その N 件だけ docs と突き合わせ、人気度を混ぜた本来の並びで limit 件返す。
+
+    加えて「タイトルが検索語そのもの / 検索語で始まる」文書を索引から拾って候補に
+    足す(idx_docs_title の被覆索引を数十件見るだけ)。bm25 の上位に入らなくても
+    `東京都` で記事「東京都」が出るのは百科事典的な引き方の前提なので、
+    そこは関連度の運任せにしない。
+
+    候補の外側は順位付けから漏れるため、該当が N 件を超えるときの並びは厳密には
+    近似になる(N 件以下なら従来と完全に一致する)。
+    """
+    pool = search_pool_size(offset, limit)
+    ids = [
+        r["doc_id"]
+        for r in db.query(
+            src.path,
+            "SELECT rowid AS doc_id FROM docs_fts WHERE docs_fts MATCH ?"
+            " ORDER BY bm25(docs_fts, 5.0, 1.0) LIMIT ?",
+            (match, pool),
+        )
+    ]
+    anchors = db.query(
+        src.path,
+        "SELECT doc_id, title FROM docs WHERE title LIKE ? ESCAPE '\\' LIMIT ?",
+        (escape_like(exact) + "%", TITLE_ANCHOR_SCAN),
+    )
+    seen = set(ids)
+    for row in anchors:
+        # 完全一致と、OSM の同名回避で付く括弧付き(`東京都 (relation:1543125)`)まで。
+        # 「東京都庁」のような別の文書まで拾わないよう、そこは前方一致で広げない。
+        if row["doc_id"] not in seen and (
+            row["title"] == exact or row["title"].startswith(f"{exact} (")
+        ):
+            ids.append(row["doc_id"])
+            seen.add(row["doc_id"])
+    if not ids:
+        return []
+    # 単項 `+` は「この条件を索引に使うな」の指示。付けないと SQLite は候補 1 件ごとに
+    # FTS の rowid 検索を選び、そのたびに該当語の doclist(東京都なら 17 万件)を
+    # たどり直す(候補 300 件で 0.87 秒)。付けると doclist は 1 回流すだけで済み、
+    # docs を読むのも候補の分だけになる(0.013 秒)。
+    return db.query(
+        src.path,
+        f"{FTS_ROW_SQL} WHERE docs_fts MATCH ?"
+        f" AND +docs_fts.rowid IN ({','.join('?' * len(ids))})"
+        f" ORDER BY {relevance_order('d.')} LIMIT ? OFFSET ?",
+        (match, *ids, exact, limit, offset),
+    )
+
+
 @app.get("/v1/{source}/search")
 def search(
     request: Request,
@@ -783,17 +866,19 @@ def search(
             (prefix + "%", *extra_params, exact, limit, offset),
         )
         mode = "title_prefix"
-    else:
+    elif extra_where_d:
+        # 絞り込みが付くときは候補を先に選べない(候補の中に条件を満たす文書が
+        # 無いかもしれない)ので、従来どおり該当を全部見て並べる。
         rows = db.query(
             src.path,
-            "SELECT d.doc_id AS doc_id, d.title AS title,"
-            " snippet(docs_fts, 1, '', '', '…', 40) AS snippet, d.updated_at AS updated_at"
-            " FROM docs_fts JOIN docs d ON d.doc_id = docs_fts.rowid"
-            f" WHERE docs_fts MATCH ?{extra_where_d}"
+            f"{FTS_ROW_SQL} WHERE docs_fts MATCH ?{extra_where_d}"
             f" ORDER BY {relevance_order('d.')}"
             " LIMIT ? OFFSET ?",
             (match, *extra_params, exact, limit, offset),
         )
+        mode = "fts"
+    else:
+        rows = fts_search(src, match, exact, limit, offset)
         mode = "fts"
     return {
         "source": source,
@@ -1025,8 +1110,8 @@ def build_attribute_filters(
         min_lat, min_lon, max_lat, max_lon = parse_bbox(bbox)
         if src.schema_version >= COORDS_MIN_SCHEMA_VERSION:
             # 実体の値を持つ doc_coords を引く。生成列(VIRTUAL)の索引だと経度の判定に
-            # 行本体が要り、費用が該当件数ではなく緯度帯の文書数に比例する(下の
-            # BBOX_COUNT_SQL のコメント参照)。タグと同じ「doc_id の集合」の形。
+            # 行本体が要り、費用が該当件数ではなく緯度帯の文書数に比例する。
+            # タグと同じ「doc_id の集合」の形。
             where.append(f"{p or 'docs.'}doc_id IN ({BBOX_DOC_IDS_SQL})")
         else:
             where.append(f"{p}lat BETWEEN ? AND ? AND {p}lon BETWEEN ? AND ?")
@@ -1035,13 +1120,10 @@ def build_attribute_filters(
 
 
 # 引数は (min_lat, max_lat, min_lon, max_lon) の順。上の params.extend と合わせてある。
+# doc_coords は (lat, lon, doc_id) の被覆索引そのものなので、緯度帯の走査も経度の判定も
+# 索引の中だけで終わる(docs 側で判定すると行を読み直す)。
 BBOX_DOC_IDS_SQL = (
     "SELECT doc_id FROM doc_coords WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?"
-)
-# 総件数もここから数える。doc_coords は (lat, lon, doc_id) の被覆索引そのものなので、
-# 緯度帯の走査も経度の判定も索引の中だけで終わる(docs 側で数えると行を読み直す)。
-BBOX_COUNT_SQL = (
-    "SELECT COUNT(*) AS n FROM doc_coords WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?"
 )
 
 
@@ -1050,30 +1132,117 @@ def split_tags(tag: str) -> list[str]:
     return [t.strip() for t in tag.split(",") if t.strip()]
 
 
-# ここを境に、並び替えの経路を切り替える(下の rank_index_hint 参照)。
-# 手元の本番 jawiki で測った両経路の交差点(該当 100 件前後で 0.03〜0.04 秒と拮抗)。
-RANK_INDEX_MIN_TOTAL = 100
+def build_doc_id_set(
+    src: Source,
+    *,
+    feature: str | None = None,
+    area: str | None = None,
+    bbox: str | None = None,
+    wikidata: str | None = None,
+    tag: str | None = None,
+) -> tuple[str, list] | None:
+    """絞り込み条件を「doc_id を返す SELECT」に変換する(/filter 用)。行本体を読まない。
 
+    どの条件も、値を実体で持つ表か索引だけで doc_id の集合に落とせる:
 
-def rank_index_hint(src: Source, id_set_only: bool, total: int) -> str:
-    """`ORDER BY rank_score DESC, title` を索引で満たさせる INDEXED BY 句(必要なときだけ)。
+    - `tag` → doc_tags(idx_doc_tags_tag が (tag, doc_id) の被覆索引)
+    - `bbox` → doc_coords(実体の lat/lon を持つ表。生成列の索引では経度の判定に
+      行本体が要る。schema_version 4 から)
+    - `feature` / `area` → idx_docs_feature_area / idx_docs_area_feature。
+      生成列でも**索引には計算済みの値が入っている**ので、doc_id だけを取り出す
+      分にはここも索引の中で完結する(2 つを 1 本の複合索引で捌けるので分けない)
+    - `wikidata` → idx_docs_wikidata
 
-    既定の計画は「該当文書を全部 docs から読んでから並べ替える」形で、費用が該当件数に
-    比例する。jawiki の「存命人物」(25 万件)は limit=1 でも 33 秒かかり、配信機では
-    504 になっていた。idx_docs_rank を名指しすると、並び順そのものを持つ索引を走査して
-    上位 N 件で打ち切る計画(+ doc_id 判定はブルームフィルタ)になり 0.05 秒で返る。
+    複数指定は INTERSECT で交差させる。ここが要点で、`doc_id IN (座標の集合) AND
+    feature IN (...)` と書くと SQLite は片側の索引だけで駆動して**もう片方の判定に
+    行本体を読む**(全国の amenity=restaurant 10 万行を読んでいた: 手元で 0.94 秒、
+    配信機で 5 秒前後 = 504)。INTERSECT なら両側とも索引の中で終わり、行を読むのは
+    交差した分だけになる(同じ条件で 0.05 秒)。
 
-    ただし該当が少ないと逆効果になる(索引を端まで走査しても N 件見つからないため。
-    1 件のタグで 0.001 秒 → 0.044 秒)。そこで、先に安く求めた総件数で切り替える。
-
-    条件が「doc_id の集合」に落ちるとき(タグだけ / bbox だけ)に限るのは、`feature` /
-    `area` が VIRTUAL な生成列だから。索引を名指しすると条件の判定に行本体が要り、
-    150 万行を読むことになる(集合判定ならブルームフィルタで索引の中だけで済む)。
+    索引だけで引けない組み合わせ(古い schema_version)では None を返す。呼び出し側は
+    従来の WHERE 句(build_attribute_filters)へ落ちる。
     """
-    if not id_set_only or total < RANK_INDEX_MIN_TOTAL:
-        return ""
+    if not any((feature, area, bbox, wikidata, tag)):
+        return None
+    if src.schema_version < FILTER_MIN_SCHEMA_VERSION:
+        return None
+    parts: list[str] = []
+    params: list = []
+    if tag:
+        if src.schema_version < TAG_MIN_SCHEMA_VERSION:
+            return None
+        tags = split_tags(tag)
+        # 1 文書が指定タグを 2 つ持てば 2 行出るので、複数指定のときだけ畳む
+        # (総件数を数えるのに効く。単一タグなら重複しないので並べ替えを足さない)。
+        distinct = "DISTINCT " if len(tags) > 1 else ""
+        parts.append(
+            f"SELECT {distinct}doc_id FROM doc_tags WHERE tag IN ({','.join('?' * len(tags))})"
+        )
+        params.extend(tags)
+    if bbox:
+        if src.schema_version < COORDS_MIN_SCHEMA_VERSION:
+            return None
+        min_lat, min_lon, max_lat, max_lon = parse_bbox(bbox)
+        parts.append(BBOX_DOC_IDS_SQL)
+        params.extend([min_lat, max_lat, min_lon, max_lon])
+    if feature or area:
+        where: list[str] = []
+        if feature:
+            features = [f.strip() for f in feature.split(",") if f.strip()]
+            where.append(f"feature IN ({','.join('?' * len(features))})")
+            params.extend(features)
+        if area:
+            where.append("area = ?")
+            params.append(area)
+        # 索引は先頭の列で絞れないと使えないので、feature の有無で名指しを変える
+        index = "idx_docs_feature_area" if feature else "idx_docs_area_feature"
+        parts.append(
+            f"SELECT doc_id FROM docs INDEXED BY {index} WHERE {' AND '.join(where)}"
+        )
+    if wikidata:
+        parts.append("SELECT doc_id FROM docs INDEXED BY idx_docs_wikidata WHERE wikidata = ?")
+        params.append(wikidata)
+    return " INTERSECT ".join(parts), params
+
+
+# docs の行を 1 件読む費用は、idx_docs_rank を 1 件走る費用の何倍か(下の
+# rank_index_hint の経路選択に使う)。配信機での実測から: 該当 25 万件を docs から
+# 読むと 33 秒(= 1 行 132µs)、索引側は 336 件のタグの頁送りの伸び(offset=250 で
+# 0.665 秒)から 1 件 3µs 前後なので 40 倍ほど。行の太さで変わる値(jawiki は
+# 1 行 27KB、osm は 1.4KB)なので、境目付近はどちらの経路でも同程度の費用になる。
+# 迷ったら行読み側に倒す: そちらは費用が total で頭打ちになり、頁の深さで破綻しない。
+DOC_ROW_VS_INDEX_COST = 32
+
+
+def rank_index_hint(src: Source, total: int, need: int) -> str:
+    """`ORDER BY rank_score DESC, title` を索引で満たさせる INDEXED BY 句(安い方を選ぶ)。
+
+    条件が「doc_id の集合」に落ちているとき(= build_doc_id_set が組めたとき)、
+    並べ替えには 2 つの経路がある。費用の形が違うので、どちらが安いかは条件によって
+    ひっくり返る:
+
+    - 既定(名指し無し): 該当文書を**全部** docs から読んで並べ替える。
+      費用 ≒ `total` 行の読み出し。**offset には依らない**。
+    - `INDEXED BY idx_docs_rank`: 並び順そのものを持つ索引を上から走査し、
+      該当を `need` 件(= offset + limit)拾った時点で打ち切る(doc_id の判定は
+      ブルームフィルタで索引の中だけで済む)。該当が索引に一様に散らばっていれば
+      費用 ≒ `doc_count * need / total` 件の走査。**total には依らず、深い頁ほど伸びる**。
+
+    後者は「上位数件だけ見る」ときは桁違いに速い一方、頁が末尾に近づくと索引を端まで
+    舐めることになる。実際、この判定に offset が入っていなかったために、336 件のタグの
+    末尾(offset=300)や 131 件のタグの全件取得(limit=131)が 150 万件の全走査に落ちて
+    配信機で 504 になっていた(offset=250 までは 0.665 秒で返っていた)。
+    総件数だけで切り替えると、この「浅い頁は速いが末尾で破綻する」形を直せない。
+    """
     if src.schema_version < RANK_INDEX_MIN_SCHEMA_VERSION:
         return ""  # 索引の無い DB に INDEXED BY を書くとエラーになる
+    if total <= 0:
+        return ""
+    # 一様分布での期待走査件数(該当を need 件拾うまでに読む索引の件数)。
+    # need が total 以上なら索引の端まで走ることが確定するので doc_count で頭打ち。
+    scan = src.doc_count * min(1.0, need / total)
+    if scan >= DOC_ROW_VS_INDEX_COST * total:
+        return ""  # 素直に docs を読んで並べ替えた方が安い
     return " INDEXED BY idx_docs_rank"
 
 
@@ -1114,47 +1283,38 @@ def filter_docs(
     """
     src = get_source(request, source)
     require_filter_schema(src)
+    if tag:
+        require_tag_schema(src)
     field_list = parse_fields(fields, FILTER_DEFAULT_FIELDS, FILTER_ALLOWED_FIELDS)
-
-    where, params = build_attribute_filters(
-        src, feature=feature, area=area, bbox=bbox, wikidata=wikidata, tag=tag
-    )
-    if not where:
+    if not any((feature, area, bbox, wikidata, tag)):
         raise HTTPException(
             400,
             {"error": "at least one of feature, area, bbox, wikidata, tag is required"},
         )
-    clause = where.removeprefix(" AND ")
-    # タグ / bbox は「doc_id の集合」に落ちる条件で、総件数も並び替えも docs を読まずに
-    # 済ませられる(下の 2 つ)。他の条件と混ざるときは素直に docs 側で処理する。
-    tag_only = bool(tag) and not any((feature, area, bbox, wikidata))
-    bbox_only = (
-        bool(bbox)
-        and not any((feature, area, tag, wikidata))
-        and src.schema_version >= COORDS_MIN_SCHEMA_VERSION
+
+    id_set = build_doc_id_set(
+        src, feature=feature, area=area, bbox=bbox, wikidata=wikidata, tag=tag
     )
-    if bbox_only:
-        (total,) = db.query(src.path, BBOX_COUNT_SQL, tuple(params))[0]
-    elif tag_only:
-        # タグだけで絞るときは転置表だけで数える。docs 側で数えると該当 doc_id の
-        # 一つずつに docs(jawiki なら 41GB)への rowid 検索が飛び、「存命人物」
-        # (25 万件)で 33 秒かかった(実測。doc_tags だけなら 0.01 秒)。
-        # doc_tags は docs から作った射影なので、docs を見ずに数えても件数は一致する。
-        tags = split_tags(tag)
-        (total,) = db.query(
-            src.path,
-            "SELECT COUNT(DISTINCT doc_id) AS n FROM doc_tags"
-            f" WHERE tag IN ({','.join('?' * len(tags))})",
-            tuple(tags),
-        )[0]
+    if id_set is not None:
+        # 索引だけで doc_id の集合に落ちた場合。総件数はその集合を数えるだけで済み
+        # (docs を 1 行も読まない)、行を読むのは並べ替えの経路が決めた分だけになる。
+        set_sql, params = id_set
+        (total,) = db.query(src.path, f"SELECT COUNT(*) AS n FROM ({set_sql})", tuple(params))[0]
+        clause = f"doc_id IN ({set_sql})"
+        hint = rank_index_hint(src, total, offset + limit)
     else:
+        # 古い schema_version の DB 向けの旧経路(索引が足りず docs 側で判定する)。
+        where, params = build_attribute_filters(
+            src, feature=feature, area=area, bbox=bbox, wikidata=wikidata, tag=tag
+        )
+        clause = where.removeprefix(" AND ")
         (total,) = db.query(
             src.path, f"SELECT COUNT(*) AS n FROM docs WHERE {clause}", tuple(params)
         )[0]
+        hint = ""
     rows = db.query(
         src.path,
-        f"SELECT {', '.join(field_list)} FROM docs"
-        f"{rank_index_hint(src, tag_only or bbox_only, total)}"
+        f"SELECT {', '.join(field_list)} FROM docs{hint}"
         f" WHERE {clause} ORDER BY rank_score DESC, title LIMIT ? OFFSET ?",
         (*params, limit, offset),
     )

@@ -292,6 +292,9 @@ class TestOsmFilter:
                 for params in (
                     {"bbox": "34.9,135.6,35.1,135.9", "limit": 50},
                     {"bbox": "35.0,138.0,36.0,140.0", "feature": "place=city"},
+                    # 3 つ以上の条件(索引の集合を交差させる経路)も突き合わせる
+                    {"bbox": "34.9,135.6,35.1,135.9", "feature": "amenity=restaurant",
+                     "area": "京都府"},
                     {"bbox": "10.0,10.0,10.1,10.1"},  # 該当なし
                 ):
                     res = old.get("/v1/osm_japan/filter", params=params)

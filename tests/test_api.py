@@ -83,6 +83,31 @@ class TestSearch:
         res = client.get("/v1/jawiki/search", params={"q": "東京都", "limit": 51})
         assert res.status_code == 422
 
+    def test_exact_title_survives_a_full_candidate_pool(self, client, monkeypatch):
+        """候補の絞り込み(bm25 上位 N 件)から漏れても、タイトル完全一致は出てくる。
+
+        本番では「東京都」のような語が 17 万件に当たり、関連度の上位だけを候補に
+        するので、記事「東京都」がそこに入る保証はない。索引から直接拾う経路が
+        効いていることを、候補を 1 件に絞り切って確かめる。
+        """
+        from app import main
+
+        for name in ("SEARCH_POOL_MIN", "SEARCH_POOL_FACTOR", "SEARCH_POOL_MAX"):
+            monkeypatch.setattr(main, name, 1)
+        res = client.get("/v1/jawiki/search", params={"q": "東京都", "limit": 5})
+        assert res.status_code == 200
+        assert res.json()["results"][0]["title"] == "東京都"
+
+    def test_candidate_pool_matches_the_unpooled_ranking(self, client, monkeypatch):
+        """候補が該当件数以上あるとき(= 通常の検索)の並びは絞り込み前と同じ。"""
+        from app import main
+
+        params = {"q": "である", "limit": 50}
+        full = client.get("/v1/jawiki/search", params=params).json()
+        monkeypatch.setattr(main, "SEARCH_POOL_MIN", 10**6)
+        assert client.get("/v1/jawiki/search", params=params).json() == full
+        assert len(full["results"]) > 1, full
+
     def test_quote_injection_is_escaped(self, client):
         res = client.get("/v1/jawiki/search", params={"q": '寺院" OR x'})
         assert res.status_code == 200
@@ -880,7 +905,7 @@ class TestTagCountsFallback:
         """3 の DB には idx_docs_rank が無いので、INDEXED BY を書いてはいけない。"""
         from app import main
 
-        monkeypatch.setattr(main, "RANK_INDEX_MIN_TOTAL", 0)  # 常に使いたがる状態にする
+        monkeypatch.setattr(main, "DOC_ROW_VS_INDEX_COST", 10**9)  # 常に使いたがる状態にする
         res = v3_client.get("/v1/jawiki/filter", params={"tag": "日本の都道府県"})
         assert res.status_code == 200
         assert res.json()["total"] == 2
@@ -889,8 +914,8 @@ class TestTagCountsFallback:
 class TestRankIndexPath:
     """大きいタグ向けの INDEXED BY 経路。並びも結果も既定の経路と同じでなければならない。
 
-    切り替えの閾値(RANK_INDEX_MIN_TOTAL)は本番規模で測った交差点なので、テスト用の
-    小さな DB では届かない。閾値を 0 にして経路だけ通し、両者が一致することを見る。
+    経路の選択は本番規模の費用で決まるので、テスト用の小さな DB では選ばれない。
+    費用比を振り切って経路だけ通し、両者が一致することを見る。
     """
 
     def test_matches_the_default_path(self, client, monkeypatch):
@@ -898,21 +923,47 @@ class TestRankIndexPath:
 
         params = {"tag": "日本の都道府県,日本の山", "limit": 3, "fields": "doc_id,title"}
         default = client.get("/v1/jawiki/filter", params=params).json()
-        monkeypatch.setattr(main, "RANK_INDEX_MIN_TOTAL", 0)
+        monkeypatch.setattr(main, "DOC_ROW_VS_INDEX_COST", 10**9)
         indexed = client.get("/v1/jawiki/filter", params=params).json()
         assert indexed == default
         assert default["results"], default  # 空同士の一致で通してしまわないため
 
-    def test_only_for_tag_only_filters(self, built_data_dir):
+    def test_switches_on_how_deep_the_page_is(self, built_data_dir):
+        """浅い頁では索引を名指しし、末尾に近づいたら素直に docs を読む。
+
+        索引経路の費用は総件数ではなく `doc_count * (offset+limit) / total` 件の走査で、
+        頁が末尾に近づくと索引の端まで舐めることになる(336 件のタグの offset=300 が
+        150 万件の全走査に落ちて 504 になっていた)。判定に offset が入っていることを
+        ここで固定する。
+        """
+        import dataclasses
+
         from app import main
         from app.registry import scan_sources
 
-        # app.state は他のテストの TestClient と共有なので、DB から直に読む
+        # app.state は他のテストの TestClient と共有なので、DB から直に読む。
+        # 判定は文書数との比で決まるので、件数だけ本番(jawiki 150 万件)に差し替える。
         src = scan_sources(built_data_dir)["jawiki"]
-        assert main.rank_index_hint(src, id_set_only=True, total=main.RANK_INDEX_MIN_TOTAL)
-        # 生成列の条件が混ざるときは名指ししない(索引を名指しすると行本体が要るため)
-        assert main.rank_index_hint(src, id_set_only=False, total=10**6) == ""
-        # 該当が少ないときも名指ししない(索引を端まで走査する方が高くつく)
-        assert (
-            main.rank_index_hint(src, id_set_only=True, total=main.RANK_INDEX_MIN_TOTAL - 1) == ""
-        )
+        src = dataclasses.replace(src, doc_count=1_500_000)
+
+        # 25 万件のタグ(「存命人物」)。上位を返す限り索引を数百件走るだけで済む
+        assert main.rank_index_hint(src, total=250_000, need=50)
+        assert main.rank_index_hint(src, total=250_000, need=200_000)  # 深い頁でもこちらが安い
+        # 336 件のタグ(「日本のレストラン」)。索引側は該当が薄すぎて割に合わない
+        assert main.rank_index_hint(src, total=336, need=50) == ""
+        assert main.rank_index_hint(src, total=336, need=350) == ""  # 末尾 = 索引の全走査
+        assert main.rank_index_hint(src, total=0, need=50) == ""
+
+    def test_small_tag_can_be_paged_to_the_end(self, client):
+        """末尾の頁でも取りこぼさない(1 リクエストで全件取れる)。"""
+        whole = client.get("/v1/jawiki/filter", params={"tag": "日本の都道府県"}).json()
+        assert whole["total"] == 2
+        tail = client.get(
+            "/v1/jawiki/filter", params={"tag": "日本の都道府県", "limit": 1, "offset": 1}
+        ).json()
+        assert tail["results"] == whole["results"][1:]
+        # 総件数ぴったりの limit(索引経路だと端まで走ることになる形)
+        exact = client.get(
+            "/v1/jawiki/filter", params={"tag": "日本の都道府県", "limit": 2}
+        ).json()
+        assert exact["results"] == whole["results"]
