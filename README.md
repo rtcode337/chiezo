@@ -98,8 +98,9 @@ curl -s "$BASE/v1/jawiki/filter?wikidata=Q17221&fields=title,extra" # Q 番号 �
 ブルーグリーンなので構築中も現行 DB での配信は続きます)。
 初期化・再構築のボタンを押すと `chiezo-trigger`(内部専用サービス。後述)にジョブが積まれ、
 進行状況(ログ tail 込み)が管理画面に表示されます(実行中は自動でリロードされます)。
-ジョブが完了したら `docker compose restart chiezo-api` で新しい DB を読み込ませてください
-(自動再起動はしません)。
+ジョブが完了すると、chiezo-api が `data/` の変化(シンボリックリンクの差し替え)を数秒以内に
+検知して自動で新しい DB に切り替わります(再起動は不要。検知間隔は
+`CHIEZO_RESCAN_INTERVAL` 秒、既定 5。0 以下で無効化でき、その場合は従来どおり再起動で反映)。
 
 OSM の国別ソース(`osm_<国>`、195 件)と Wikipedia の言語版(`<lang>wiki`、348 件)は、
 そのまま並べると他のソースが埋もれるため、一覧ではそれぞれ `osm` / `wikipedia` の 1 行に
@@ -271,16 +272,17 @@ curl -s http://<サーバーIP>:9000/admin/claude-config.hook.py   # フック�
 ### ダンプ更新(ブルーグリーン)
 
 ingest は毎回 `data/<source>-<date>.db` を新規構築し、検証が通ったらシンボリックリンク
-`data/<source>.db` を差し替えます。旧世代は 1 つだけ残します。API の停止時間は再起動の数秒のみです。
+`data/<source>.db` を差し替えます。旧世代は 1 つだけ残します。差し替えは chiezo-api が
+数秒以内に自動検知して新しい DB へ切り替わるので、再起動も停止時間もありません。
 
 ```bash
-docker compose --profile ingest run --rm chiezo-ingest && docker compose restart chiezo-api
+docker compose --profile ingest run --rm chiezo-ingest
 ```
 
 月次 cron の例:
 
 ```cron
-0 3 1 * * cd /opt/chiezo && docker compose --profile ingest run --rm chiezo-ingest && docker compose restart chiezo-api
+0 3 1 * * cd /opt/chiezo && docker compose --profile ingest run --rm chiezo-ingest
 ```
 
 ### 既存 DB にタグ索引を足す(schema_version 2 → 3 → 4)
@@ -483,10 +485,10 @@ docker run -d --name chiezo-build -e SOURCE=jawiki -e CHIEZO_DATA_DIR=/data \
 docker logs -f chiezo-build                      # 進捗(Ctrl-C で抜けても構築は続く)
 docker wait chiezo-build && docker rm chiezo-build
 
-# 4. 出来た世代ファイルを配信機へコピーし、<ソース名>.db として見えるようにして再起動
+# 4. 出来た世代ファイルを配信機へコピーし、<ソース名>.db として見えるようにする
+#    (リンクを差し替えれば chiezo-api が数秒以内に自動で読み込む。再起動は不要)
 cp jawiki-20260701.db /path/to/chiezo/data/
 ln -sfn jawiki-20260701.db /path/to/chiezo/data/jawiki.db
-docker compose restart chiezo-api
 ```
 
 **jawiki 以外を焼くときに書き換えるのは次の 3 か所だけです**(他はそのままで動きます):

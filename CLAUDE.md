@@ -503,7 +503,10 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
     jawiki 全体では数十時間規模になり取り込みが成立しない
     (おまけに現行 SQLite ではロード自体が失敗する。上流のバグ 2 つを直して測った)
   再挑戦の条件は評価ドキュメントの「採用できる条件」に 3 つ整理してある。
-- 運用 DB は読み取り専用(`immutable=1`)。更新はブルーグリーン(別ファイル構築 → シンボリックリンク差し替え → api 再起動)のみ。
+- 運用 DB は読み取り専用(`immutable=1`)。更新はブルーグリーン(別ファイル構築 → シンボリックリンク差し替え)のみ。
+  差し替えは api が自動検知する: lifespan の常駐タスクが `CHIEZO_RESCAN_INTERVAL` 秒(既定 5)ごとに
+  `/data` の指紋(`registry.data_dir_fingerprint`)を見て、変わっていれば再走査(`main.refresh_sources`)。
+  スレッドローカルの接続キャッシュも `db.get_connection` がリンク先の inode を見て開き直すので再起動不要。
   `/data` への書き込み権限を持つのは chiezo-ingest(one-shot)と chiezo-trigger(常駐)だけで、
   chiezo-api は引き続き read-only マウント。
 - エラーレスポンスは `{"error": "..."}` 形式。

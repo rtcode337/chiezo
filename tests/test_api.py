@@ -1029,3 +1029,80 @@ class TestRankIndexPath:
         ).json()
         assert exact["results"] == whole["results"]
 
+
+class TestAutoReload:
+    """ブルーグリーン切り替え(シンボリックリンク差し替え)を再起動なしで拾うこと。
+
+    実運用では lifespan の常駐タスクが数秒ごとに refresh_sources を呼ぶ。テストでは
+    時間待ちを避けて refresh_sources を直接呼び、検知(登録の差し替え)と
+    接続の開き直し(db.get_connection の inode 確認)の両方を見る。
+    """
+
+    @staticmethod
+    def _swap_symlink(data_dir, target_name):
+        """ingest の switch_db と同じ手順(tmp リンク → アトミック rename)。"""
+        tmp = data_dir / "jawiki.db.tmp"
+        tmp.symlink_to(target_name)
+        tmp.replace(data_dir / "jawiki.db")
+
+    def test_get_connection_reopens_when_the_symlink_target_changes(self, tmp_path):
+        import sqlite3
+
+        from app import db
+
+        for name, marker in (("a.db", "旧"), ("b.db", "新")):
+            conn = sqlite3.connect(tmp_path / name)
+            conn.execute("CREATE TABLE t (v TEXT)")
+            conn.execute("INSERT INTO t VALUES (?)", (marker,))
+            conn.commit()
+            conn.close()
+        link = tmp_path / "jawiki.db"
+        link.symlink_to("a.db")
+
+        try:
+            first = db.get_connection(link)
+            assert first is db.get_connection(link), "同じ実体の間はキャッシュが効くこと"
+            self._swap_symlink(tmp_path, "b.db")
+            second = db.get_connection(link)
+            assert second is not first
+            assert second.execute("SELECT v FROM t").fetchone()[0] == "新"
+        finally:
+            db.close_thread_connections()
+
+    def test_symlink_swap_is_served_without_restart(self, tmp_path, built_data_dir):
+        import shutil
+        import sqlite3
+
+        from fastapi.testclient import TestClient
+
+        data_dir = tmp_path / "reload"
+        data_dir.mkdir()
+        shutil.copy(built_data_dir / "jawiki.db", data_dir / "jawiki-20260701.db")
+        data_dir.joinpath("jawiki.db").symlink_to("jawiki-20260701.db")
+
+        mp = pytest.MonkeyPatch()
+        mp.setenv("CHIEZO_DATA_DIR", str(data_dir))
+        try:
+            from app.main import app, refresh_sources
+
+            with TestClient(app) as c:
+                assert c.get("/v1/sources").json()["sources"][0]["dump_date"] == "20260701"
+                # 接続をキャッシュさせておく(旧世代を掴んだままにならないことを見るため)
+                assert c.get("/v1/jawiki/doc", params={"title": "東京都"}).status_code == 200
+
+                # 新世代を用意して切り替え(タイトルを 1 件だけ変えて世代を見分ける)
+                new_gen = data_dir / "jawiki-20260801.db"
+                shutil.copy(data_dir / "jawiki-20260701.db", new_gen)
+                conn = sqlite3.connect(new_gen)
+                conn.execute("UPDATE meta SET dump_date = '20260801'")
+                conn.execute("UPDATE docs SET title = '新東京都' WHERE title = '東京都'")
+                conn.commit()
+                conn.close()
+                self._swap_symlink(data_dir, new_gen.name)
+
+                assert refresh_sources(app) is True
+                assert refresh_sources(app) is False, "変化が無ければ走査しないこと"
+                assert c.get("/v1/sources").json()["sources"][0]["dump_date"] == "20260801"
+                assert c.get("/v1/jawiki/doc", params={"title": "新東京都"}).status_code == 200
+        finally:
+            mp.undo()

@@ -94,6 +94,25 @@ def _load_source(db_path: Path) -> Source | None:
         conn.close()
 
 
+def data_dir_fingerprint(data_dir: Path) -> dict[str, tuple[int, int, int, int]]:
+    """世代切り替え検知用の指紋: `*.db` それぞれのリンク先実体の (dev, ino, size, mtime)。
+
+    シンボリックリンクの差し替え(ino が変わる)だけでなく、コピー途中のファイル
+    (size / mtime が動き続ける)も指紋の変化として現れるので、書き込みが落ち着くまで
+    呼び出し側が再走査を繰り返す形で安定を待てる。stat のみでクエリは発行しない。
+    """
+    fp: dict[str, tuple[int, int, int, int]] = {}
+    if not data_dir.is_dir():
+        return fp
+    for p in sorted(data_dir.glob("*.db")):
+        try:
+            st = p.stat()
+        except OSError:
+            continue  # 走査中に消えた(旧世代の削除など)
+        fp[p.name] = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+    return fp
+
+
 def scan_sources(data_dir: Path) -> dict[str, Source]:
     sources: dict[str, Source] = {}
     if not data_dir.is_dir():

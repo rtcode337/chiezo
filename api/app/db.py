@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 import time
@@ -21,13 +22,31 @@ class QueryTimeout(Exception):
 
 
 def get_connection(db_path: Path) -> sqlite3.Connection:
-    """スレッドローカルに immutable 接続をキャッシュして返す。"""
-    conns: dict[str, sqlite3.Connection] = getattr(_local, "conns", None) or {}
+    """スレッドローカルに immutable 接続をキャッシュして返す。
+
+    キャッシュにはリンク先の実体 (st_dev, st_ino) を添えて持ち、呼び出しごとに現在の
+    実体と突き合わせる。ブルーグリーン切り替えでシンボリックリンクが別の世代ファイルへ
+    差し替わったら、古い実体への接続を閉じて開き直す(immutable 接続は開いた時点の
+    ファイルを掴み続けるため、これをしないと再起動まで旧世代を読み続ける)。
+    stat 1 回の上乗せはクエリ本体に比べて無視できる。
+    """
+    conns: dict[str, tuple[sqlite3.Connection, tuple[int, int] | None]] = (
+        getattr(_local, "conns", None) or {}
+    )
     if not hasattr(_local, "conns"):
         _local.conns = conns
     key = str(db_path)
-    conn = conns.get(key)
-    if conn is None:
+    try:
+        st = os.stat(db_path)  # シンボリックリンクは辿って実体を見る
+        ident = (st.st_dev, st.st_ino)
+    except OSError:
+        ident = None
+    cached = conns.get(key)
+    if cached is not None and cached[1] != ident:
+        cached[0].close()
+        del conns[key]
+        cached = None
+    if cached is None:
         conn = sqlite3.connect(f"file:{db_path}?immutable=1", uri=True)
         conn.row_factory = sqlite3.Row
         # title の前方一致 (LIKE 'prefix%') を idx_docs_title の範囲検索へ最適化するため。
@@ -36,14 +55,14 @@ def get_connection(db_path: Path) -> sqlite3.Connection:
         # インデックスで範囲検索が効く。副作用として LIKE の ASCII 大小同一視は無効になるが、
         # 用途は titles / search フォールバック等の前方一致のみで実害はない。
         conn.execute("PRAGMA case_sensitive_like=ON")
-        conns[key] = conn
-    return conn
+        conns[key] = (conn, ident)
+    return conns[key][0]
 
 
 def close_thread_connections() -> None:
     conns = getattr(_local, "conns", None)
     if conns:
-        for conn in conns.values():
+        for conn, _ in conns.values():
             conn.close()
         conns.clear()
 

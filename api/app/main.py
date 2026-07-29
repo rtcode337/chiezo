@@ -1,11 +1,12 @@
 """chiezo-api ルーティング(設計書 §5)。"""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from urllib.parse import quote
 
@@ -32,6 +33,7 @@ from app.registry import (
     TAG_COUNTS_MIN_SCHEMA_VERSION,
     TAG_MIN_SCHEMA_VERSION,
     Source,
+    data_dir_fingerprint,
     scan_sources,
 )
 
@@ -40,6 +42,10 @@ log = logging.getLogger("chiezo.api")
 # 管理画面の初期化ボタンから叩く chiezo-trigger の内部 URL。未設定ならその機能を無効化する。
 TRIGGER_URL = os.environ.get("CHIEZO_TRIGGER_URL")
 TRIGGER_TIMEOUT = 5.0
+
+# /data の変化(ブルーグリーン切り替え・DB コピー)を検知する定期再走査の間隔(秒)。
+# 0 以下で無効(= 従来どおり再起動でのみ反映)。
+RESCAN_INTERVAL_SECONDS = float(os.environ.get("CHIEZO_RESCAN_INTERVAL", "5"))
 
 DEFAULT_DOC_FIELDS = ["title", "opening", "body", "tags", "updated_at"]
 ALLOWED_DOC_FIELDS = [
@@ -70,12 +76,52 @@ FILTER_ALLOWED_FIELDS = [
 ]
 
 
+def refresh_sources(app: FastAPI) -> bool:
+    """/data の指紋が前回と変わっていればソースを再走査して差し替える(変わったら True)。
+
+    ingest のブルーグリーン切り替え(世代ファイルへのリネーム + シンボリックリンク差し替え)や
+    別マシンで焼いた DB のコピーを、api の再起動なしで反映するための入口。指紋を先に取って
+    から走査するので、走査中にさらに変化があっても次回の呼び出しで拾い直せる。
+    接続の開き直しはここではなく db.get_connection が実体の inode を見て行う。
+    """
+    fp = data_dir_fingerprint(app.state.data_dir)
+    if fp == app.state.data_fingerprint:
+        return False
+    app.state.data_fingerprint = fp
+    app.state.sources = scan_sources(app.state.data_dir)
+    return True
+
+
+async def _watch_data_dir(app: FastAPI) -> None:
+    """RESCAN_INTERVAL_SECONDS ごとに refresh_sources を呼ぶ常駐タスク。
+
+    走査(各 DB の meta 読みと COUNT(*))はブロッキングなのでスレッドへ逃がす。
+    失敗しても監視は止めない(次の周期でやり直す)。
+    """
+    while True:
+        await asyncio.sleep(RESCAN_INTERVAL_SECONDS)
+        try:
+            if await asyncio.to_thread(refresh_sources, app):
+                log.info(
+                    "data dir changed; sources reloaded (%d registered)",
+                    len(app.state.sources),
+                )
+        except Exception:  # noqa: BLE001 - 常駐タスクを例外で殺さない
+            log.exception("periodic source rescan failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     data_dir = Path(os.environ.get("CHIEZO_DATA_DIR", "/data"))
+    app.state.data_dir = data_dir
+    # 指紋は走査の前に取る(走査中の変化を取りこぼさない側に倒す)
+    app.state.data_fingerprint = data_dir_fingerprint(data_dir)
     app.state.sources = scan_sources(data_dir)
     if not app.state.sources:
         log.warning("no sources registered from %s", data_dir)
+    watcher = (
+        asyncio.create_task(_watch_data_dir(app)) if RESCAN_INTERVAL_SECONDS > 0 else None
+    )
     # MCP(/mcp)はここで組み立てて起動する。理由が 2 つある:
     #  1. セッションマネージャは lifespan の中で run() しないとタスクグループが張られず、
     #     最初のリクエストで "Task group is not initialized" になる(python-sdk#1367)。
@@ -85,8 +131,14 @@ async def lifespan(app: FastAPI):
     # マウント先(下の _mcp_asgi)はここで置いた app.state.mcp_asgi を見に行く。
     mcp = build_mcp(app)
     app.state.mcp_asgi = mcp.streamable_http_app()
-    async with mcp.session_manager.run():
-        yield
+    try:
+        async with mcp.session_manager.run():
+            yield
+    finally:
+        if watcher is not None:
+            watcher.cancel()
+            with suppress(asyncio.CancelledError):
+                await watcher
 
 
 app = FastAPI(title="chiezo", version="0.2", lifespan=lifespan)
@@ -403,7 +455,7 @@ def admin(request: Request):
 <p class="muted">
 スキーマバージョンが最新より古いソースは再構築で最新になる(タグ・座標まわりの一部は
 <code>scripts/add_tag_index.py</code> でのその場移行でも可)。再構築はブルーグリーンで、
-構築中も現行 DB での配信は続く。完了後は chiezo-api の再起動で新しい DB に切り替わる。
+構築中も現行 DB での配信は続く。完了後は数秒以内に自動で新しい DB へ切り替わる(再起動不要)。
 </p>
 
 {_job_status_html(job)}
