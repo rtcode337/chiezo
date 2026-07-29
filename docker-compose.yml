@@ -49,6 +49,10 @@ services:
       - ./data:/data
     environment:
       - CHIEZO_DATA_DIR=/data
+      # 空きメモリ 2GiB 級のマシン(WSL 上の Docker 等)で取り込むなら、メモリ優先の
+      # 構築プロファイルを有効にする(全ソース 2GiB で焼ける。osm は数倍〜10 倍遅い。
+      # README「メモリについて」参照)。
+      # - BUILD_PROFILE=low_memory
     restart: unless-stopped
     # トリガー経由の取り込みが暴走しても、OOM killer がホスト全体(同居する
     # 他のコンテナ)を巻き込まないよう上限を設ける。取り込み本体と同じ *_LIMITS。
@@ -65,6 +69,8 @@ services:
     environment:
       - SOURCE=jawiki
       - CHIEZO_DATA_DIR=/data
+      # 空きメモリ 2GiB 級のマシンで取り込むなら(chiezo-trigger 側のコメント参照)。
+      # - BUILD_PROFILE=low_memory
     # 取り込みのメモリ上限。以前 jawiki 取り込みが対応表(リダイレクト/ページビュー/
     # wikidata)を dict で数 GB 抱えてホストごと OOM で落ちたため、(1) それらを
     # ディスク上の一時 SQLite に逃がした上で(ingest/lookup.py)、(2) 念のため

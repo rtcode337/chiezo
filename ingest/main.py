@@ -27,6 +27,7 @@ from core import (
     SCHEMA_VERSION,
     TAG_COUNTS_POPULATE_SQL,
     SourceAdapter,
+    build_profile,
 )
 
 log = logging.getLogger("chiezo.ingest")
@@ -37,11 +38,20 @@ PROGRESS_EVERY = 100_000
 # 本体ダンプに加えて docs.extra を補強する追加データの取得フック(実装は任意)
 EXTRA_FETCH_HOOKS = ("fetch_pageviews", "fetch_page_props", "fetch_extra")
 
-BUILD_PRAGMAS = [
-    "PRAGMA journal_mode=OFF",
-    "PRAGMA synchronous=OFF",
-    "PRAGMA cache_size=-524288",
-]
+# 構築用 SQLite のページキャッシュ(KiB)。索引作成・FTS・VACUUM が使い切るため、
+# 構築時の固定メモリ消費として一番大きい。fast は速度優先の 512MiB(従来値)、
+# low_memory は 64MiB に絞る(構築は遅くなるが、2GiB 級のマシンでも収まる)。
+BUILD_CACHE_KIB = {"fast": 524_288, "low_memory": 65_536}
+
+
+def build_pragmas() -> list[str]:
+    """構築時の PRAGMA(使い捨ての .building 専用。運用 DB には持ち込まない —
+    journal_mode=OFF は kill 一発で DB が壊れるため。scripts/add_tag_index.py 参照)。"""
+    return [
+        "PRAGMA journal_mode=OFF",
+        "PRAGMA synchronous=OFF",
+        f"PRAGMA cache_size=-{BUILD_CACHE_KIB[build_profile()]}",
+    ]
 
 GIB = 1024 ** 3
 
@@ -106,13 +116,17 @@ def require_build_memory(adapter: SourceAdapter) -> None:
         log.warning("could not determine available memory; skipping the preflight check")
         return
     available_gb = available / GIB
-    log.info("memory preflight: %.1f GiB available, %.1f GiB required", available_gb, required_gb)
+    log.info(
+        "memory preflight: profile=%s, %.1f GiB available, %.1f GiB required",
+        build_profile(), available_gb, required_gb,
+    )
     if available_gb < required_gb:
         raise SystemExit(
             f"not enough memory to build {adapter.source}: "
             f"{available_gb:.1f} GiB available < {required_gb:.1f} GiB required.\n"
             "Build on a machine with more memory and copy the resulting .db over "
             "(see README: 別マシンでビルドして .db を配布する). Alternatives: "
+            "BUILD_PROFILE=low_memory (every source fits in 2 GiB; osm gets slower), "
             "OSM_NODE_INDEX=sparse_file_array (osm sources; trades speed for disk), "
             "BUILD_MEMORY_GB=<n> to override the requirement, "
             "SKIP_MEMORY_CHECK=1 to bypass this check entirely."
@@ -125,7 +139,7 @@ def build_db(adapter: SourceAdapter, dump_path: Path, dump_date: str, building_p
         building_path.unlink()
     conn = sqlite3.connect(building_path)
     try:
-        for pragma in BUILD_PRAGMAS:
+        for pragma in build_pragmas():
             conn.execute(pragma)
         conn.executescript(CORE_SCHEMA_DDL)
         conn.execute(

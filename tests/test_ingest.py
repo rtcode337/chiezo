@@ -7,6 +7,7 @@ import sqlite3
 
 import pytest
 
+import core as ingest_core
 import main as ingest_main
 from conftest import make_test_adapter
 
@@ -348,6 +349,7 @@ class TestBuildMemoryPreflight:
         from sources import get_adapter
 
         monkeypatch.delenv("OSM_NODE_INDEX", raising=False)
+        monkeypatch.delenv("BUILD_PROFILE", raising=False)
         assert get_adapter("osm_japan").min_build_memory_gb == 12.0
         monkeypatch.setenv("OSM_NODE_INDEX", "sparse_file_array")
         assert get_adapter("osm_japan").min_build_memory_gb == 2.0
@@ -373,8 +375,47 @@ class TestBuildMemoryPreflight:
         from sources import ADAPTERS, get_adapter
 
         monkeypatch.delenv("OSM_NODE_INDEX", raising=False)
+        monkeypatch.delenv("BUILD_PROFILE", raising=False)
         for name in ADAPTERS:
             assert get_adapter(name).min_build_memory_gb <= 12.0, name
+
+    def test_low_memory_profile_fits_every_source_in_2gb(self, monkeypatch):
+        """BUILD_PROFILE=low_memory では、どのソースも 2GiB のマシンで構築できること。
+
+        「12GiB 以内(既定)」と並ぶ不変条件。空きメモリ 2GiB 級の開発機(WSL 等)でも
+        全ソースを焼けるようにするためのプロファイルなので、これを超える宣言のソースを
+        増やさないこと。
+        """
+        from sources import ADAPTERS, get_adapter
+
+        monkeypatch.delenv("OSM_NODE_INDEX", raising=False)
+        monkeypatch.setenv("BUILD_PROFILE", "low_memory")
+        for name in ADAPTERS:
+            assert get_adapter(name).min_build_memory_gb <= 2.0, name
+
+    def test_explicit_node_index_beats_low_memory_profile(self, monkeypatch):
+        """low_memory のままでも、OSM_NODE_INDEX の明示指定で RAM 索引に戻せること。"""
+        from sources import get_adapter
+
+        monkeypatch.setenv("BUILD_PROFILE", "low_memory")
+        monkeypatch.setenv("OSM_NODE_INDEX", "sparse_mmap_array")
+        adapter = get_adapter("osm_japan")
+        assert adapter.node_index_kind == "sparse_mmap_array"
+        assert adapter.min_build_memory_gb == 12.0
+
+    def test_unknown_build_profile_aborts(self, monkeypatch):
+        """綴り間違い(low-memory 等)を fast として黙って続行しないこと。"""
+        monkeypatch.setenv("BUILD_PROFILE", "low-memory")
+        with pytest.raises(SystemExit) as excinfo:
+            ingest_core.build_profile()
+        assert "BUILD_PROFILE" in str(excinfo.value)
+
+    def test_build_cache_shrinks_in_low_memory_profile(self, monkeypatch):
+        """構築用 SQLite キャッシュがプロファイルに追従すること(512MiB → 64MiB)。"""
+        monkeypatch.delenv("BUILD_PROFILE", raising=False)
+        assert "PRAGMA cache_size=-524288" in ingest_main.build_pragmas()
+        monkeypatch.setenv("BUILD_PROFILE", "low_memory")
+        assert "PRAGMA cache_size=-65536" in ingest_main.build_pragmas()
 
 
 class TestOsmRegionCatalog:

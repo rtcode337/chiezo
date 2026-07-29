@@ -251,11 +251,13 @@ not enough memory to build osm_japan: 2.0 GiB available < 12.0 GiB required.
 対処は 3 つ:
 
 1. **メモリの多いマシンで焼く**(本手順書の想定。いちばん速い)
-2. **ディスクに逃がす** — osm 系のみ。ノード座標索引を RAM からファイルへ移すと必要メモリは 2GiB まで
-   下がるが、ノード解決がランダム読みになり**数倍〜10 倍遅くなる**(実測で日本抽出が数時間 → 十数時間)。
+2. **メモリ優先プロファイルに切り替える** — `BUILD_PROFILE=low_memory` で**どのソースも
+   2GiB で焼ける**。構築用 SQLite キャッシュを絞り、osm はノード座標索引をディスクに
+   置くため、osm はノード解決がランダム読みになり**数倍〜10 倍遅くなる**
+   (実測で日本抽出が数時間 → 十数時間。wikipedia / geonames はほぼ変わらない)。
    大陸単位の OSM(旧 `osm_europe`)は廃止した。全世界の地名は `geonames` が 1 ソースで賄う。
    ```bash
-   docker run --rm -it -e SOURCE=osm_japan -e OSM_NODE_INDEX=sparse_file_array \
+   docker run --rm -it -e SOURCE=osm_japan -e BUILD_PROFILE=low_memory \
      -e CHIEZO_DATA_DIR=/data -v /path/to/chiezo-data:/data ghcr.io/rtcode337/chiezo-ingest:latest
    ```
 3. **検査を上書きする** — 見積もりが実態と合っていないと分かっている場合のみ。
@@ -271,7 +273,8 @@ not enough memory to build osm_japan: 2.0 GiB available < 12.0 GiB required.
 | `CHIEZO_DATA_DIR` | データディレクトリ(コンテナ内パス。`-v` の右側と合わせる。既定 `/data`) |
 | `DUMP_DATE` | ダンプ日付 `YYYYMMDD` を固定(省略時は最新を自動検出) |
 | `DUMP_FILE` | ダウンロードを飛ばして既存ファイルを使う(例: 手で置いたダンプを使う) |
-| `OSM_NODE_INDEX` | osm のノード座標索引の置き場。既定 `sparse_mmap_array`(RAM・速い)、`sparse_file_array`(ディスク・省メモリ・遅い) |
+| `BUILD_PROFILE` | 構築プロファイル。`low_memory` でどのソースも 2GiB で焼ける(osm は数倍〜10 倍遅い)。既定 `fast` = 速度優先 |
+| `OSM_NODE_INDEX` | osm のノード座標索引の置き場。既定 `sparse_mmap_array`(RAM・速い)、`sparse_file_array`(ディスク・省メモリ・遅い)。明示指定は `BUILD_PROFILE` より優先 |
 | `BUILD_MEMORY_GB` / `SKIP_MEMORY_CHECK` | メモリ検査の上書き / 無効化 |
 | `OSM_AREA_ADMIN_LEVEL` | `extra.area` に入れる行政区の admin_level(既定 4 = 都道府県、`0` で省略) |
 | `GEONAMES_ALT_LANGS` | geonames で取り込む別名の言語(既定 `ja,en`。`*` で全 400 言語超) |

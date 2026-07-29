@@ -169,7 +169,9 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
 - `ingest/` — **chiezo-ingest**: ワンショット構築バッチ。
   - `main.py` — 共通フレーム: 取得 → `.building` へ構築 → FTS → 検証 → ブルーグリーン切り替え(シンボリックリンク差し替え、旧世代 1 つ保持)。
     アダプタが `EXTRA_FETCH_HOOKS`(`fetch_pageviews` / `fetch_page_props`)を持つ場合、
-    `fetch()` の後にそれも呼ぶ(docs.extra 補強用の追加データ取得フック)
+    `fetch()` の後にそれも呼ぶ(docs.extra 補強用の追加データ取得フック)。
+    構築用 SQLite のページキャッシュは `BUILD_CACHE_KIB`(`build_pragmas()`)で
+    プロファイル別: fast 512MiB / low_memory 64MiB(下記「メモリ方針」参照)
   - `lookup.py` — 取り込み中だけ参照する巨大な「ID → 値」対応表(リダイレクト・ページビュー・
     wikidata の Q 番号)を、メモリではなくディスク上の一時 SQLite に持つための小道具
     (`DiskLookup` / `DiskMultiMap` / ヌルオブジェクト `EMPTY`)。以前これらを dict で抱えて
@@ -179,6 +181,10 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     これにより wikipedia 系の取り込みは軽くなり、必要メモリは 3GiB 見当に収まる
     (下記「メモリ方針」を参照)
   - `core.py` — コアスキーマ DDL と `Doc` 型(全ソース共通)。`SCHEMA_VERSION` は 3。
+    構築プロファイル(`build_profile()` / `is_low_memory_build()`、環境変数
+    `BUILD_PROFILE`)もここに置く — main(PRAGMA)と各アダプタ(必要メモリ宣言・
+    osm の索引方式)の両方が参照するため。未知の値は fast に黙って倒さず `SystemExit`
+    (綴り間違いを「指定したのに 12GiB 要求される」で気づかせないため)。
     `rank_score` は **全ソース共通で 0.0〜1.0** という約束(`normalized_popularity()` で
     対数正規化する)。API が bm25 に掛け合わせて並べるため、ソースごとに桁が違うと
     混ぜられないから。人口の対数上限だけは都市規模(osm、1 億)と国家規模(geonames、
@@ -331,7 +337,10 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     (同時実行は 1 ジョブまで、429/409 で拒否)、`GET /sources` で取り込めるソースのカタログ
     (名前・kind・lang と、osm 国別ソースの表示名・region・pbf サイズ・必要メモリ、
     wikipedia 言語版の表示名・自称・記事数)を返す
-    (管理画面の初期化一覧と国・言語選択画面はこれを読む。アダプタは実体化せずに答える)。
+    (管理画面の初期化一覧と国・言語選択画面はこれを読む。アダプタは実体化せずに答える。
+    osm の `node_index` はカタログの既定を実行時設定〔`OSM_NODE_INDEX` >
+    `BUILD_PROFILE=low_memory`〕で解決してから返す — 管理画面の必要メモリ表示を
+    実際の実行条件と一致させるため)。
     `GET /status` で state(idle/running/done/error)・
     source・started_at/finished_at・error・ログ tail(`chiezo.ingest` logger に登録した
     `_TailHandler` 経由)を返す。状態はプロセス内メモリのみ(永続化なし)。
@@ -425,14 +434,24 @@ docker compose -f docker-compose.build.yml up -d --build
 足りなければダウンロードもせず `SystemExit` する。判断材料は `/proc/meminfo` の `MemAvailable` と
 cgroup 上限(`memory.max`)の小さいほう(`available_memory_bytes()`)。
 
+構築プロファイル(環境変数 `BUILD_PROFILE`、`core.build_profile()`)で速度とメモリの
+どちらを優先するかを切り替えられる: `fast`(既定)は従来どおりの速度優先、
+`low_memory` は**どのソースも 2GiB で構築できる**メモリ優先(構築用 SQLite キャッシュを
+512MiB → 64MiB に絞り、osm のノード座標索引をディスクに置く。osm は数倍〜10 倍遅くなる)。
+空きメモリ 2GiB 級の開発機(WSL 上の Docker 等)でも全ソースを焼けるようにするための
+もので、メモリの多いビルド機では何も設定しなければ最速のまま。
+
 必要量は各アダプタの `min_build_memory_gb`(`core.SourceAdapter` の一部)で宣言する
 (ソースごとの実際の数値は README「メモリについて」の表が正)。wikipedia / geonames は
-巨大な対応表を `lookup.py` でディスクへ逃がしてあるため 3GiB 固定。`OsmAdapter` だけは
-**プロパティ**で、使う索引方式(`node_index_kind` = 環境変数 `OSM_NODE_INDEX` >
-ソースごとの `default_node_index`)がファイル索引なら 2GiB、RAM 索引なら
-`ram_index_memory_gb`。国別ソースのこの 2 つは `sources/osm_regions.py`(自動生成カタログ)が
-pbf サイズから決める。**既定設定でどのソースも 12GiB 以内に収まること**をテストで担保している
-(`test_no_source_requires_more_than_12gb_by_default`)ので、この不変条件を壊さないこと。
+巨大な対応表を `lookup.py` でディスクへ逃がしてあるため fast 3GiB / low_memory 2GiB
+(実測ピークは 1GiB 未満で、3GiB との差はキャッシュ分の余裕)。`OsmAdapter` は
+使う索引方式(`node_index_kind` = 環境変数 `OSM_NODE_INDEX` > `BUILD_PROFILE=low_memory` >
+ソースごとの `default_node_index`。明示指定がプロファイルより優先)がファイル索引なら
+2GiB、RAM 索引なら `ram_index_memory_gb`。国別ソースのこの 2 つは
+`sources/osm_regions.py`(自動生成カタログ)が pbf サイズから決める。
+**既定設定でどのソースも 12GiB 以内・low_memory でどのソースも 2GiB 以内に収まること**を
+テストで担保している(`test_no_source_requires_more_than_12gb_by_default` /
+`test_low_memory_profile_fits_every_source_in_2gb`)ので、この不変条件を壊さないこと。
 osm ソースは**国スケールに留める**(大陸スケールはディスク索引にしてもディスク 300GB・
 構築 1 日以上で非現実的。全世界カバーは `geonames` の担当)。
 

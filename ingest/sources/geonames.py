@@ -33,7 +33,13 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Iterator
 
-from core import POPULARITY_LOG_MAX_COUNTRY_POPULATION, Doc, normalized_popularity
+from core import (
+    LOW_MEMORY_BUILD_GB,
+    POPULARITY_LOG_MAX_COUNTRY_POPULATION,
+    Doc,
+    is_low_memory_build,
+    normalized_popularity,
+)
 from lookup import BATCH_SIZE, CACHE_SIZE_KIB, DiskMultiMap
 
 log = logging.getLogger("chiezo.ingest")
@@ -166,9 +172,12 @@ class _TitleOwners:
 class GeonamesAdapter:
     source_kind = "geonames"
 
-    # 別名(2,000 万行規模)はディスクへ逃がすので常駐は小さい。SQLite の
-    # ページキャッシュ(512MiB)+ 小さめの辞書(国名・admin1)が主。
-    min_build_memory_gb = 3.0
+    # 別名(2,000 万行規模)はディスクへ逃がすので常駐は小さい。構築用 SQLite の
+    # ページキャッシュ + 小さめの辞書(国名・admin1)が主。fast は余裕を見て 3GiB、
+    # low_memory はキャッシュを 64MiB に絞る(main.BUILD_CACHE_KIB)ので 2GiB 宣言で足りる。
+    @property
+    def min_build_memory_gb(self) -> float:
+        return LOW_MEMORY_BUILD_GB if is_low_memory_build() else 3.0
 
     def __init__(
         self,
