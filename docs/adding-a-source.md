@@ -11,7 +11,7 @@ API・DB スキーマ・共通フレームの変更は不要です。
 
 ```bash
 docker compose --profile ingest run --rm -e SOURCE=enwiki chiezo-ingest
-docker compose restart chiezo-api
+# 取り込みが終われば chiezo-api が数秒以内に自動で新しい DB を読み込む(再起動は不要)
 ```
 
 管理画面の `/admin` → `wikipedia` 行の「言語を選ぶ」(`/admin/wikipedia`)からも初期化できます。
@@ -127,7 +127,7 @@ ADAPTERS = {
 
 ```bash
 docker compose --profile ingest run --rm -e SOURCE=aozora chiezo-ingest
-docker compose restart chiezo-api
+# 取り込みが終われば chiezo-api が数秒以内に自動で新しい DB を読み込む(再起動は不要)
 ```
 
 これで `/v1/aozora/search` などの全エンドポイントが自動的に使えるようになります

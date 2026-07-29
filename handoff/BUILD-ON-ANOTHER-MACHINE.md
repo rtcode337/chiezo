@@ -225,15 +225,13 @@ Windows 側からは、エクスプローラで `\\wsl$\Ubuntu\home\<ユーザ�
 
 ### 5. 配信機へ配置する
 
-配信機の data ディレクトリに置き、`<ソース名>.db` として見えるようにして API を再起動する。
+配信機の data ディレクトリに置き、`<ソース名>.db` として見えるようにする(chiezo-api が数秒以内に自動で読み込む。再起動は不要)。
 
 ```bash
 cp jawiki-20260701.db /path/to/chiezo/data/
 cd /path/to/chiezo/data
 ln -sfn jawiki-20260701.db jawiki.db    # シンボリックリンクが使えない環境ならリネームでよい
-cd /path/to/chiezo
-docker compose restart chiezo-api
-curl -s http://localhost:9000/v1/sources   # 新しい dump_date / schema_version が出れば成功
+curl -s http://localhost:9000/v1/sources   # 数秒待って新しい dump_date / schema_version が出れば成功
 ```
 
 配信側(chiezo-api)は読み取り専用の immutable SQLite を開くだけなので、**メモリ数百 MB の小型機でも動く**。

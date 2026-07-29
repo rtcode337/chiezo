@@ -53,8 +53,8 @@ docker compose --profile ingest run --rm -e SOURCE=osm_japan chiezo-ingest
 #      OSM の大陸抽出と違い 1 ソースで全世界を賄える)
 docker compose --profile ingest run --rm -e SOURCE=geonames chiezo-ingest
 
-# 3. 新しい DB を読み込ませる
-docker compose restart chiezo-api
+# 3. 取り込みが終われば chiezo-api が数秒以内に自動で新しい DB を読み込む(再起動は不要)
+curl -s http://localhost:9000/v1/sources
 ```
 
 ## API の使い方
@@ -546,7 +546,7 @@ wikipedia 言語版の表示名・自称・記事数)と、このイメージが
 
 ### ソースの追加・削除
 
-`data/` に `<source>.db` を置いて(または消して)`docker compose restart chiezo-api` するだけです。
+`data/` に `<source>.db` を置く(または消す)だけです(chiezo-api が数秒以内に自動で検知します)。
 新しい種類のソースの取り込み方は [docs/adding-a-source.md](docs/adding-a-source.md) を参照してください。
 
 ### セキュリティ
