@@ -84,9 +84,19 @@ def sources():
 
     アダプタは実体化せずに答える(カタログ由来だけで 500 超あり、全部作ると無駄が大きい)。
     """
+    from core import is_low_memory_build
     from sources import ADAPTERS
     from sources.osm_regions import CONTINENTS, OSM_REGIONS
     from sources.wikipedia_editions import WIKIPEDIA_EDITIONS
+
+    # osm のノード座標索引はカタログの既定を実行時設定が上書きしうる
+    # (OSM_NODE_INDEX > BUILD_PROFILE=low_memory > 既定。sources/osm.py の
+    # node_index_kind と同じ優先順)。管理画面の必要メモリ表示が実際の実行条件と
+    # 食い違わないよう、ここで解決してから返す。memory_gb は「RAM 索引で焼く場合の
+    # 目安」のままでよい(api 側がディスク索引時の 2 GiB 表示を組み立てる)。
+    forced_node_index = os.environ.get("OSM_NODE_INDEX") or (
+        "sparse_file_array" if is_low_memory_build() else None
+    )
 
     catalog: dict[str, dict] = {}
     for name in ADAPTERS:
@@ -116,7 +126,7 @@ def sources():
             "region": region.region,
             "pbf_bytes": region.pbf_bytes,
             "memory_gb": region.memory_gb,
-            "node_index": region.node_index,
+            "node_index": forced_node_index or region.node_index,
         }
     return {"sources": catalog, "continents": list(CONTINENTS)}
 

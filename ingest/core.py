@@ -6,6 +6,7 @@ DB 構築・FTS・検証・切り替えは共通フレーム(main.py)が担う�
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Protocol
@@ -161,6 +162,47 @@ INSERT INTO doc_coords (lat, lon, doc_id)
 SELECT lat, lon, doc_id FROM docs INDEXED BY idx_docs_lat_lon
  WHERE lat IS NOT NULL AND lon IS NOT NULL
 """
+
+
+# ---- 構築プロファイル ---------------------------------------------------------
+
+# 構築の速度とメモリのどちらを優先するかの切り替え(環境変数 BUILD_PROFILE)。
+#   low_memory(既定): メモリ優先。**どのソースも 2GiB で構築できる**。構築用 SQLite
+#                      キャッシュを 64MiB に絞り、osm のノード座標索引をディスクに置く
+#                      (osm は数倍〜10 倍遅い。wikipedia / geonames はほぼ変わらない)。
+#   fast             : 速度優先。SQLite キャッシュ 512MiB、osm はソースごとの既定索引
+#                      (小さい国は RAM 索引で 5〜12GiB)。
+# 既定を low_memory にしてあるのは、本番(配信)サーバも開発機もメモリ 2GiB 級という
+# 運用のため — 何も指定せずに走らせても安全に完走するほうを既定にする。fast は
+# メモリの潤沢なビルド機で ingest を走らせるときに `-e BUILD_PROFILE=fast` と
+# **実行時の引数として明示したときだけ**使う(compose 等に常設しない)。
+# main(PRAGMA)と各アダプタ(必要メモリ宣言・osm の索引方式)の両方が参照するため、
+# ここ core に置く。
+BUILD_PROFILE_FAST = "fast"
+BUILD_PROFILE_LOW_MEMORY = "low_memory"
+BUILD_PROFILES = (BUILD_PROFILE_LOW_MEMORY, BUILD_PROFILE_FAST)
+
+# low_memory プロファイルでの必要メモリ宣言(GiB)。全ソース共通でこの値に収まることを
+# テスト(test_low_memory_profile_fits_every_source_in_2gb)で担保している。
+LOW_MEMORY_BUILD_GB = 2.0
+
+
+def build_profile() -> str:
+    """現在の構築プロファイル(環境変数 BUILD_PROFILE、既定 low_memory)。
+
+    未知の値は既定に黙って倒さず中止する。綴り間違い(low-mem 等)を見逃すと、
+    「fast を指定したのに遅い」「絞ったつもりで 12GiB 要求される」だけの状態になるため。
+    """
+    value = os.environ.get("BUILD_PROFILE") or BUILD_PROFILE_LOW_MEMORY
+    if value not in BUILD_PROFILES:
+        raise SystemExit(
+            f"unknown BUILD_PROFILE: {value!r} (expected one of: {', '.join(BUILD_PROFILES)})"
+        )
+    return value
+
+
+def is_low_memory_build() -> bool:
+    return build_profile() == BUILD_PROFILE_LOW_MEMORY
 
 
 # rank_score の正規化に使う対数の上限。ソースごとに桁が違う量(ページビュー・人口)を

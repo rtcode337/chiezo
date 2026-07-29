@@ -7,6 +7,7 @@ import sqlite3
 
 import pytest
 
+import core as ingest_core
 import main as ingest_main
 from conftest import make_test_adapter
 
@@ -348,15 +349,17 @@ class TestBuildMemoryPreflight:
         from sources import get_adapter
 
         monkeypatch.delenv("OSM_NODE_INDEX", raising=False)
+        monkeypatch.setenv("BUILD_PROFILE", "fast")
         assert get_adapter("osm_japan").min_build_memory_gb == 12.0
         monkeypatch.setenv("OSM_NODE_INDEX", "sparse_file_array")
         assert get_adapter("osm_japan").min_build_memory_gb == 2.0
 
     def test_source_can_default_to_disk_index(self, monkeypatch):
-        """大陸規模のような RAM 索引が成立しないソース向けに、既定をディスクにできること。"""
+        """大陸規模のような RAM 索引が成立しないソース向けに、fast でも既定をディスクにできること。"""
         from sources.osm import OsmAdapter
 
         monkeypatch.delenv("OSM_NODE_INDEX", raising=False)
+        monkeypatch.setenv("BUILD_PROFILE", "fast")
         huge = OsmAdapter("osm_huge", region="europe", default_node_index="sparse_file_array")
         assert huge.node_index_kind == "sparse_file_array"
         assert huge.min_build_memory_gb == 2.0
@@ -368,13 +371,51 @@ class TestBuildMemoryPreflight:
         monkeypatch.setenv("OSM_NODE_INDEX", "sparse_mmap_array")
         assert huge.node_index_kind == "sparse_mmap_array"  # 明示指定なら RAM 索引も選べる
 
-    def test_no_source_requires_more_than_12gb_by_default(self, monkeypatch):
-        """既定設定では、どのソースも 12GiB のマシンで構築できること。"""
+    def test_no_source_requires_more_than_12gb_in_fast_profile(self, monkeypatch):
+        """BUILD_PROFILE=fast でも、どのソースも 12GiB のマシンで構築できること。"""
         from sources import ADAPTERS, get_adapter
 
         monkeypatch.delenv("OSM_NODE_INDEX", raising=False)
+        monkeypatch.setenv("BUILD_PROFILE", "fast")
         for name in ADAPTERS:
             assert get_adapter(name).min_build_memory_gb <= 12.0, name
+
+    def test_low_memory_profile_fits_every_source_in_2gb(self, monkeypatch):
+        """既定(low_memory)では、どのソースも 2GiB のマシンで構築できること。
+
+        「fast で 12GiB 以内」と並ぶ不変条件。本番(配信)サーバも開発機もメモリ 2GiB 級
+        という運用のための既定なので、これを超える宣言のソースを増やさないこと。
+        """
+        from sources import ADAPTERS, get_adapter
+
+        monkeypatch.delenv("OSM_NODE_INDEX", raising=False)
+        monkeypatch.delenv("BUILD_PROFILE", raising=False)  # 未指定 = low_memory が既定
+        for name in ADAPTERS:
+            assert get_adapter(name).min_build_memory_gb <= 2.0, name
+
+    def test_explicit_node_index_beats_low_memory_profile(self, monkeypatch):
+        """既定(low_memory)のままでも、OSM_NODE_INDEX の明示指定で RAM 索引に戻せること。"""
+        from sources import get_adapter
+
+        monkeypatch.delenv("BUILD_PROFILE", raising=False)
+        monkeypatch.setenv("OSM_NODE_INDEX", "sparse_mmap_array")
+        adapter = get_adapter("osm_japan")
+        assert adapter.node_index_kind == "sparse_mmap_array"
+        assert adapter.min_build_memory_gb == 12.0
+
+    def test_unknown_build_profile_aborts(self, monkeypatch):
+        """綴り間違い(low-memory 等)を既定に黙って倒さないこと。"""
+        monkeypatch.setenv("BUILD_PROFILE", "low-memory")
+        with pytest.raises(SystemExit) as excinfo:
+            ingest_core.build_profile()
+        assert "BUILD_PROFILE" in str(excinfo.value)
+
+    def test_build_cache_follows_profile(self, monkeypatch):
+        """構築用 SQLite キャッシュがプロファイルに追従すること(既定 64MiB / fast 512MiB)。"""
+        monkeypatch.delenv("BUILD_PROFILE", raising=False)
+        assert "PRAGMA cache_size=-65536" in ingest_main.build_pragmas()
+        monkeypatch.setenv("BUILD_PROFILE", "fast")
+        assert "PRAGMA cache_size=-524288" in ingest_main.build_pragmas()
 
 
 class TestOsmRegionCatalog:
@@ -405,11 +446,12 @@ class TestOsmRegionCatalog:
         assert adapter.source_kind == "osm"
 
     def test_large_countries_default_to_disk_index(self, monkeypatch):
-        """RAM 索引が 12GiB に収まらない国は、ディスク索引を既定にして構築可能に保つ。"""
+        """RAM 索引が 12GiB に収まらない国は、fast でもディスク索引を既定にして構築可能に保つ。"""
         from sources import get_adapter
         from sources.osm_regions import OSM_REGIONS
 
         monkeypatch.delenv("OSM_NODE_INDEX", raising=False)
+        monkeypatch.setenv("BUILD_PROFILE", "fast")
         for region in OSM_REGIONS.values():
             expected = "sparse_mmap_array" if region.memory_gb <= 12 else "sparse_file_array"
             assert region.node_index == expected, region.source

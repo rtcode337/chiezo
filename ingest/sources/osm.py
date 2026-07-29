@@ -60,7 +60,13 @@ from typing import Iterator
 
 import osmium
 
-from core import POPULARITY_LOG_MAX_CITY_POPULATION, Doc, normalized_popularity
+from core import (
+    LOW_MEMORY_BUILD_GB,
+    POPULARITY_LOG_MAX_CITY_POPULATION,
+    Doc,
+    is_low_memory_build,
+    normalized_popularity,
+)
 
 log = logging.getLogger(__name__)
 
@@ -606,8 +612,17 @@ class OsmAdapter:
 
     @property
     def node_index_kind(self) -> str:
-        """実際に使うノード座標インデックス方式(環境変数 > ソースごとの既定)。"""
-        return os.environ.get("OSM_NODE_INDEX") or self.default_node_index
+        """実際に使うノード座標インデックス方式。
+
+        優先順は 環境変数 OSM_NODE_INDEX > BUILD_PROFILE=low_memory > ソースごとの既定。
+        明示指定を最優先にするのは、low_memory のまま「この 1 ソースだけは RAM 索引で
+        速く焼く」という使い方を残すため。
+        """
+        if explicit := os.environ.get("OSM_NODE_INDEX"):
+            return explicit
+        if is_low_memory_build():
+            return "sparse_file_array"
+        return self.default_node_index
 
     @property
     def min_build_memory_gb(self) -> float:
@@ -615,10 +630,10 @@ class OsmAdapter:
 
         RAM 索引は参照ノードぶんの座標を抱えるため抽出範囲に比例して大きい(日本抽出で
         5〜10GB、欧州大陸なら 70GB 超と実機では成立しない)。ディスク索引なら常駐は
-        ビットフィルタ(256MiB)+ SQLite キャッシュ(512MiB)+ 境界ポリゴン程度で済む。
+        ビットフィルタ(256MiB)+ SQLite キャッシュ + 境界ポリゴン程度で済む。
         """
         if self.node_index_kind.endswith("file_array"):
-            return 2.0
+            return LOW_MEMORY_BUILD_GB
         return self.ram_index_memory_gb
 
     # ---- 取得 -------------------------------------------------------------

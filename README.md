@@ -349,7 +349,8 @@ ingest の環境変数:
 | `PAGEVIEW_PERIOD` | ページビュー突合対象の年月 `YYYY-MM` を固定(省略時は最新月を自動検出) |
 | `MIN_DOCS` / `SAMPLE_TITLES` | 検証パラメータの上書き(小規模データでの動作確認用) |
 | `OSM_AREA_ADMIN_LEVEL` | `extra.area` に入れる行政区の admin_level(既定 4 = 都道府県。`0` で境界パス省略) |
-| `OSM_NODE_INDEX` | osm のノード座標索引の置き場。既定はソースごと(小さい国は `sparse_mmap_array`〈RAM・速い〉、RAM 索引が 12GiB を超える国は `sparse_file_array`〈ディスク・省メモリ・遅い〉) |
+| `BUILD_PROFILE` | 構築プロファイル。既定は `low_memory` = **どのソースも 2GiB で構築できる**(構築用 SQLite キャッシュを絞り、osm のノード座標索引をディスクへ。osm は数倍〜10 倍遅い)。メモリの潤沢なビルド機では `fast` を実行時に明示すると速度優先になる(「メモリについて」参照) |
+| `OSM_NODE_INDEX` | osm のノード座標索引の置き場(`sparse_mmap_array`〈RAM・速い〉/ `sparse_file_array`〈ディスク・省メモリ・遅い〉)。明示指定は `BUILD_PROFILE` より優先。未指定なら low_memory はディスク、fast はソースごとの既定(RAM 索引が 12GiB を超える国のみディスク) |
 | `GEONAMES_ALT_LANGS` | geonames で取り込む別名の言語(カンマ区切り。既定 `ja,en`、`*` で全 400 言語超) |
 | `GEONAMES_FEATURE_CLASSES` | geonames で取り込む feature class(既定 `AHLPSTUV` = 道路 `R` 以外すべて) |
 | `BUILD_MEMORY_GB` / `SKIP_MEMORY_CHECK` | 構築前メモリ検査の必要量を上書き / 検査を無効化(「メモリについて」参照) |
@@ -380,9 +381,10 @@ Wikipedia 系ソースは標準 XML ダンプ(`<wiki_id>-<date>-pages-articles.x
 
 - **全世界の問い合わせ** → `geonames`(1 ソースで賄う)
 - **店舗レベルの詳細が要る国** → その国だけ `osm_<国>` を取り込む(管理画面 `/admin/osm` から選ぶか
-  `-e SOURCE=osm_<国>`)。多くの国は pbf 数百 MB〜2GB で、RAM 索引のまま 12GiB 予算・数時間で焼けます
-  (フランス・ドイツ・カナダ・アメリカ・ロシアのような大きい国だけは既定がディスク索引になり、
-  2GiB で焼ける代わりに数倍遅くなります)。
+  `-e SOURCE=osm_<国>`)。既定(`low_memory`)ではどの国もメモリ 2GiB で焼けます。
+  メモリの潤沢なビルド機で `-e BUILD_PROFILE=fast` を付けると、多くの国は RAM 索引・
+  12GiB 予算で数時間に短縮できます(フランス・ドイツ・カナダ・アメリカ・ロシアのような
+  大きい国だけは fast でもディスク索引が既定です)。
 - **事物の解説** → `jawiki`(座標と wikidata の Q 番号を持つ)
 
 `geonames` と `jawiki` はどちらも `extra.wikidata` に Q 番号を持つので、
@@ -394,10 +396,10 @@ OSM 系ソース(`osm_japan` 等)は Geofabrik の地域抽出
 交通インフラ。住所補間・逆ジオコーディングはできません。内部の走査方法は
 [設計メモ](docs/design-notes.md#osm-は-pyosmium-で-3-パス読む))。
 
-ファイルを 3 パス読むため、構築時間はダウンロード後さらに 2〜6 時間程度かかります。
-ノード座標インデックスは既定で RAM 上(`sparse_mmap_array`)に置き、日本抽出で 5〜10GB
-使います。メモリの少ない環境では `OSM_NODE_INDEX=sparse_file_array` でディスクへ逃がせます
-(必要メモリは 2GiB まで下がる代わりに数倍〜10 倍遅くなります)。
+ファイルを 3 パス読むため、構築時間はダウンロード後さらに 2〜6 時間程度かかります
+(既定の `low_memory` プロファイルではノード座標索引がディスクに置かれるため、
+さらに数倍〜10 倍かかります)。メモリの潤沢なビルド機で `BUILD_PROFILE=fast` を付けると
+索引が RAM 上(`sparse_mmap_array`)になり最速です(日本抽出で 5〜10GB 使います)。
 
 中断しても運用 DB は壊れません(`.building` の一時ファイルに構築するため)。再実行すれば最初からやり直します。
 
@@ -408,6 +410,21 @@ ingest は**開始前にメモリを検査し、足りなければダウンロ�
 取り込み中の巨大な対応表はディスク上の一時 SQLite に逃がしてあるので、常駐メモリは
 コーパス規模によらず一定です。一時ファイルは終了・中断のいずれでも自動削除されます。
 
+構築には速度優先とメモリ優先の 2 つのプロファイルがあり、環境変数 `BUILD_PROFILE` で
+切り替えます:
+
+- `low_memory`(既定) — メモリ優先。**どのソースも 2 GiB で構築できます**。構築用
+  SQLite キャッシュを 64MiB に絞り、osm のノード座標索引をディスクに置きます。
+  osm は数倍〜10 倍遅くなります(wikipedia / geonames はほぼ変わりません)。
+  何も指定しなければこちらなので、メモリ 2 GiB 級のサーバや開発機(WSL 上の
+  Docker 等)ではそのまま取り込めます
+- `fast` — 速度優先。必要メモリは下表のとおり(最大 12 GiB)。メモリの潤沢な
+  ビルド機で焼くときに、実行時の引数として明示します(compose には書かず、
+  `docker run -e BUILD_PROFILE=fast …` のようにその実行だけに付けるのがおすすめです。
+  手順は「別マシンでビルドして .db を配布する」)
+
+`fast` での必要メモリの目安:
+
 | ソース | 必要メモリの目安 | 内訳 |
 |---|---|---|
 | `jawiki` | 3 GiB | 巨大な対応表はディスクへ逃がしてあるので軽い。実測ピークは 1GiB 未満 |
@@ -416,8 +433,9 @@ ingest は**開始前にメモリを検査し、足りなければダウンロ�
 | `geonames` | 3 GiB | 別名(2,000 万行規模)はディスクへ逃がすため軽い |
 
 RAM 索引が 12GiB に収まらない国(フランス・ドイツ・カナダ・アメリカ・ロシア)は、
-**ディスク索引(`sparse_file_array`)が既定**です。必要メモリは 2 GiB に下がる代わりに
-数倍遅くなります(`OSM_NODE_INDEX=sparse_mmap_array` を明示すれば RAM 索引に戻せます)。
+`fast` でも**ディスク索引(`sparse_file_array`)が既定**です。なお `OSM_NODE_INDEX` の
+明示指定はプロファイルよりも優先されるので、`OSM_NODE_INDEX=sparse_mmap_array` を付ければ
+「既定の省メモリのまま、この 1 ソースだけ RAM 索引で速く」という使い方もできます。
 
 足りない場合のメッセージと対処:
 
@@ -425,9 +443,9 @@ RAM 索引が 12GiB に収まらない国(フランス・ドイツ・カナダ�
 not enough memory to build osm_japan: 2.0 GiB available < 12.0 GiB required.
 ```
 
-1. メモリの多いマシンで焼いて `.db` をコピーする(下記「別マシンでビルドして .db を配布する」)
-2. `OSM_NODE_INDEX=sparse_file_array` でノード座標索引をディスクへ逃がす(osm 系のみ。要件は
-   2 GiB まで下がるが、ノード解決がランダム読みになり**数倍〜10 倍遅い**)
+1. `BUILD_PROFILE=fast` を付けているなら外す(既定の `low_memory` は全ソース 2 GiB で
+   構築できます)
+2. メモリの多いマシンで焼いて `.db` をコピーする(下記「別マシンでビルドして .db を配布する」)
 3. `BUILD_MEMORY_GB=<n>` で必要量を上書き、`SKIP_MEMORY_CHECK=1` で検査を無効化(見積もりが
    実態と合わないと分かっている場合のみ)
 
@@ -474,9 +492,9 @@ docker compose restart chiezo-api
 | 4. の `ln -sfn` の 2 つめの引数 | `jawiki.db` | `osm_japan.db` |
 
 世代ファイル名の日付は取り込み時に決まるので、`ls /path/to/chiezo-data/*.db` で実際の名前を
-確認してからコピーしてください。ソースによって必要メモリが違う(上の「メモリについて」の表)点と、
-`osm_<国>` では `-e OSM_NODE_INDEX=sparse_file_array` を足せばメモリ 2 GiB でも焼ける
-(その代わり遅い)点にだけ注意してください。`SOURCE` に渡せる名前(`osm_<国>` 195 件 +
+確認してからコピーしてください。ビルド機にメモリの余裕があるなら `-e BUILD_PROFILE=fast` を
+足すと速く焼けます(ソースによって必要メモリが違う点は上の「メモリについて」の表を参照。
+付けなければ既定の `low_memory` でどのソースも 2 GiB で焼けます)。`SOURCE` に渡せる名前(`osm_<国>` 195 件 +
 `<lang>wiki` 348 件 + geonames)はビルド機だけでも引けます:
 
 ```bash
