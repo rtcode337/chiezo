@@ -16,13 +16,14 @@ from fastapi.responses import (
     JSONResponse,
     PlainTextResponse,
     RedirectResponse,
+    Response,
 )
 
 from app import claude_config, db
 from app.fts import build_match_query, escape_like
 from app.mcp_server import build_mcp
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
-from app.pages import esc, page_shell
+from app.pages import APPLE_TOUCH_ICON_PNG, esc, page_shell
 from app.registry import (
     COORDS_MIN_SCHEMA_VERSION,
     FILTER_MIN_SCHEMA_VERSION,
@@ -146,6 +147,14 @@ def get_source(request: Request, source: str) -> Source:
 @app.get("/", include_in_schema=False)
 def root():
     return RedirectResponse(url="/admin")
+
+
+# iOS の「ホーム画面に追加」はページの <link rel="apple-touch-icon">(page_shell が出す)を
+# 見るが、リンクを解釈できない場面ではサイト直下の /apple-touch-icon.png も探しに来るため、
+# 固定パスで配信する
+@app.get("/apple-touch-icon.png", include_in_schema=False)
+def apple_touch_icon():
+    return Response(content=APPLE_TOUCH_ICON_PNG, media_type="image/png")
 
 
 # ---- ヘルスチェック・ソース一覧 -------------------------------------------

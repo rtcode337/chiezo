@@ -19,7 +19,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
 - `api/` — **chiezo-api**: FastAPI + uvicorn の常駐コンテナ。起動時に `CHIEZO_DATA_DIR`(既定 `/data`)を走査し、
   ファイル名の stem と `meta.source` が一致する `*.db` をソースとして登録する(世代ファイル
   `jawiki-20260701.db` は登録されず、シンボリックリンク `jawiki.db` のみ登録される)。
-  - `app/main.py` — ルーティング(/, /healthz, /v1/sources,
+  - `app/main.py` — ルーティング(/, /healthz, /apple-touch-icon.png, /v1/sources,
     /v1/{source}/search|doc|filter|tags|titles|links|random,
     /admin, /admin/init/{source}, /{source}/, /{source}/doc/{doc_id}、
     および MCP の /mcp(実体は下の `app/mcp_server.py`))
@@ -118,7 +118,12 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     osm 国別 195 件 + wikipedia 言語版 348 件あり、api 側に複製すると必ず腐るため)
   - `app/pages.py` — 管理画面・ブラウズ画面共通の HTML 組み立てヘルパー(`page_shell`, `esc`)。
     ファビコンは `assets/icon.svg` を最小化した data URI(`FAVICON_DATA_URI`)として埋め込む
-    (api イメージのビルドコンテキストは `api/` のみで `assets/` を含まないため。原本を変えたら更新)
+    (api イメージのビルドコンテキストは `api/` のみで `assets/` を含まないため。原本を変えたら更新)。
+    iPhone の「ホーム画面に追加」用に 180×180 の PNG(`APPLE_TOUCH_ICON_PNG`)も持ち、
+    `page_shell` が `<link rel="apple-touch-icon">` を出す + `main.py` が
+    `/apple-touch-icon.png` で配信する — iOS は SVG や data URI のファビコンをホームアイコンに
+    使わないため。角丸マスクは iOS が自前で掛けるので角丸なし・全面塗りで描いてある
+    (再生成手順は README「開発 > アイコンを変えたとき」節が正)
   - `/`(GET) — `/admin` へ 302 リダイレクト
   - `/admin`・`/admin/osm`・`/admin/wikipedia`(GET) — 簡易 HTML 管理画面(画面に何が出るかは
     README「API の使い方」節の後半、管理画面の説明が正)。実装側の要点は 3 つ: ジョブ実行中は `page_shell` の
@@ -391,7 +396,8 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `docs` の全走査を 20 万件ずつに分けるのは、`DISTINCT` の並べ替えが一時ファイルに
     落ちるため(メモリは文書数によらず一定で、実測 100 万文書でピーク RSS 24MiB)。
     doc_id の値で等分割できない(osm は `osm_id*4` で 10 桁超)ので件数で刻んでいる
-- `assets/` — プロジェクトアイコン(`icon.svg`。README ヘッダーと管理画面ファビコンの原本)
+- `assets/` — プロジェクトアイコン(`icon.svg`。README ヘッダー・管理画面ファビコン・
+  apple-touch-icon の原本)
 - `tests/` — フィクスチャ(`fixtures/mini_jawiki.xml.gz` 12 文書、`fixtures/mini_osm.osm.pbf`、
   `fixtures/mini_geonames.zip` ほか geonames 一式)での API / ingest テスト。
   `test_mcp.py` は /mcp に生の JSON-RPC を 1 発 POST して確かめる(ステートレスな

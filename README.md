@@ -580,6 +580,28 @@ pull して使います。`api/` や `ingest/` を変更してローカルで動
 docker compose -f docker-compose.build.yml up -d --build
 ```
 
+### アイコンを変えたとき
+
+原本は `assets/icon.svg` で、`api/app/pages.py` に 2 つの派生物を埋め込んであります
+(api イメージのビルドコンテキストは `api/` のみで `assets/` を含まないため)。
+原本を変えたら両方を作り直してください:
+
+- `FAVICON_DATA_URI` — SVG を最小化した data URI(ブラウザタブ用)
+- `APPLE_TOUCH_ICON_PNG` — iPhone「ホーム画面に追加」用の 180×180 PNG
+  (`/apple-touch-icon.png` で配信)。iOS は SVG や data URI のファビコンを
+  ホームアイコンに使わないため PNG が別に要ります。角丸マスクは iOS が自前で掛ける
+  (透過部分は黒く塗られる)ので、**角丸なし・全面塗り**でラスタライズします:
+
+```bash
+pip install cairosvg
+python - <<'EOF'
+import base64, cairosvg, pathlib, textwrap
+svg = pathlib.Path("assets/icon.svg").read_text().replace('rx="56"', 'rx="0"', 1)
+png = cairosvg.svg2png(bytestring=svg.encode(), output_width=180, output_height=180)
+print("\n".join(textwrap.wrap(base64.b64encode(png).decode(), 96)))
+EOF
+```
+
 ## 設計メモ
 
 なぜこの形なのか(土台に SQLite + FTS5 を選んだ理由、検索の並び順、索引の形、

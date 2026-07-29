@@ -426,6 +426,18 @@ class TestAdminAndBrowse:
         assert res.status_code in (302, 307)
         assert res.headers["location"] == "/admin"
 
+    def test_apple_touch_icon_served_as_png(self, client):
+        """iPhone の「ホーム画面に追加」用。iOS は data URI のファビコンを使わないため、
+        PNG を固定パスで配信し、page_shell が <link rel="apple-touch-icon"> で参照する。"""
+        res = client.get("/apple-touch-icon.png")
+        assert res.status_code == 200
+        assert res.headers["content-type"] == "image/png"
+        assert res.content.startswith(b"\x89PNG\r\n\x1a\n")
+
+    def test_pages_link_apple_touch_icon(self, client):
+        res = client.get("/admin")
+        assert '<link rel="apple-touch-icon" href="/apple-touch-icon.png">' in res.text
+
     def test_admin_lists_registered_source(self, client):
         res = client.get("/admin")
         assert res.status_code == 200
