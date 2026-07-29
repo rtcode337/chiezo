@@ -193,7 +193,10 @@ def _fetch_trigger_status() -> dict | None:
         return res.json()
     except httpx.HTTPError as e:
         log.warning("chiezo-trigger status unreachable: %s", e)
-        return {"state": "unreachable", "error": str(e)}
+        # 例外の文字列は管理画面にそのまま埋め込まれる。接続エラーの文言は内部 URL
+        # (CHIEZO_TRIGGER_URL)等を含みうるので画面には出さず、詳細はログに残すだけにする
+        # (CodeQL: Information exposure through an exception)。
+        return {"state": "unreachable", "error": "chiezo-trigger に到達できません(詳細は api コンテナのログ)"}
 
 
 # chiezo-trigger のソースカタログのプロセス内キャッシュ。中身は trigger のイメージに
@@ -582,7 +585,10 @@ def admin_init(source: str, request: Request):
     try:
         res = httpx.post(f"{TRIGGER_URL}/run/{source}", timeout=TRIGGER_TIMEOUT)
     except httpx.HTTPError as e:
-        raise HTTPException(502, {"error": f"chiezo-trigger unreachable: {e}"}) from e
+        # 例外の文字列は内部 URL 等を含みうるのでレスポンスに載せない(上の
+        # _fetch_trigger_status と同じ理由。詳細はログへ)。
+        log.warning("chiezo-trigger run request failed: %s", e)
+        raise HTTPException(502, {"error": "chiezo-trigger unreachable (details in api logs)"}) from e
     if res.status_code >= 400:
         raise HTTPException(res.status_code, res.json())
     return RedirectResponse(url="/admin", status_code=303)
@@ -907,7 +913,12 @@ def parse_fields(
             400,
             {"error": f"unknown fields: {', '.join(unknown)}", "allowed_fields": allowed},
         )
-    return requested
+    # 返すのはユーザー入力の文字列そのものではなく、許可リスト側の文字列に引き直したもの
+    # (挙動は同じ)。この戻り値は SELECT 句へ直接補間されるので、「SQL に届く文字列は
+    # コード側の定数だけ」を検証ロジックの如何によらず構造で保証する
+    # (CodeQL: SQL query built from user-controlled sources への手当てでもある)。
+    canonical = {name: name for name in allowed}
+    return [canonical[f] for f in requested]
 
 
 def doc_response(row, fields: list[str], max_chars: int) -> dict:
