@@ -14,10 +14,19 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # 週 1 の定期実行(月曜 6:00 JST)。requirements は範囲指定(>=)なので、コミットが
+  # 無くても依存の新版で環境が静かに変わる。定期的にテストを回して、上流の破壊的変更
+  # (実例: mcp 2.0 が mcp.server.fastmcp を削除し import から落ちた)にコミットを
+  # 待たず気づくためのもの。検知が目的なので、下の build/merge(イメージ公開)は
+  # 定期実行では走らせない。
+  schedule:
+    - cron: "0 21 * * 0"
 
+# 既定はワークフロー全体で読み取りのみ。GHCR への push 権限は、それを実際に使う
+# build / merge ジョブだけに与える(public リポジトリは fork からの PR が来る前提で、
+# 権限は使う場所まで絞っておく)。
 permissions:
   contents: read
-  packages: write
 
 jobs:
   test:
@@ -38,8 +47,14 @@ jobs:
   # 無料の ubuntu-24.04-arm ランナーは public リポジトリ限定のため、private の間は
   # 公開ジョブをスキップする(public 化後の main への push から動き出す)。
   build:
-    if: github.event_name != 'pull_request' && github.event.repository.private == false
+    # 公開するのは main への push と手動実行のみ(PR はテストだけ、定期実行は検知だけ)。
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.event.repository.private == false
     needs: [test]
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -94,6 +109,9 @@ jobs:
   # 各アーキのダイジェストをイメージごとに 1 つのマニフェスト(latest / sha-xxxxxxx)にまとめて push する
   merge:
     needs: [build]
+    permissions:
+      contents: read
+      packages: write
     strategy:
       matrix:
         image: [api, ingest]

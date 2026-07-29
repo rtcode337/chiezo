@@ -399,7 +399,15 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
 - `.github/workflows/ci.yml` — push / PR で pytest を実行し、main への push で
   `chiezo-api` / `chiezo-ingest` の 2 イメージをマルチアーキ(amd64 / arm64)で GHCR へ公開
   (cc-tasks / travel-log の docker-publish と同じダイジェストマージ方式。
-  arm64 の無料ランナーが public 限定のため、リポジトリが private の間は公開ジョブをスキップ)
+  arm64 の無料ランナーが public 限定のため、リポジトリが private の間は公開ジョブをスキップ)。
+  加えて週 1 の `schedule` でテストのみ実行する — requirements が範囲指定(>=)なので、
+  コミットが無くても上流の破壊的変更(実例: mcp 2.0)に気づくため。定期実行では
+  イメージ公開は走らない(`build` の `if` が push / 手動実行だけに絞ってある)。
+  `permissions` はトップレベルを読み取りのみとし、`packages: write` は build / merge
+  ジョブだけに与える(public 化に伴う絞り込み)
+- `.github/dependabot.yml` — 依存更新の週次 PR(pip×2 / docker×2 / github-actions)。
+  範囲指定の requirements で拾えない「範囲外の新メジャー」と上限ピンの解除、
+  Actions・ベースイメージの更新を PR + CI で受ける
 
 ## コマンド
 
