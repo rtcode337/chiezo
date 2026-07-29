@@ -1,0 +1,30 @@
+# 依存の更新 PR を週 1 でまとめて受け取る(月曜 JST)。
+# requirements は範囲指定(>=)なので日々の追従は不要で、ここで拾いたいのは
+# 「範囲の外に出る新メジャー」(実例: mcp 2.0)と、上限ピンを入れた依存の解除時期、
+# Actions・ベースイメージの更新。CI(pytest)が通るかは PR ごとに自動で検証される。
+version: 2
+updates:
+  # Python 依存(api = 配信、ingest = 取り込み。requirements.txt がそれぞれにある)
+  - package-ecosystem: pip
+    directories:
+      - /api
+      - /ingest
+    schedule:
+      interval: weekly
+      timezone: Asia/Tokyo
+
+  # Dockerfile のベースイメージ(python:3.12-slim)
+  - package-ecosystem: docker
+    directories:
+      - /api
+      - /ingest
+    schedule:
+      interval: weekly
+      timezone: Asia/Tokyo
+
+  # GitHub Actions(actions/checkout 等。Node ランタイムの非推奨化への追従もこれで拾う)
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      timezone: Asia/Tokyo
