@@ -39,8 +39,8 @@ PROGRESS_EVERY = 100_000
 EXTRA_FETCH_HOOKS = ("fetch_pageviews", "fetch_page_props", "fetch_extra")
 
 # 構築用 SQLite のページキャッシュ(KiB)。索引作成・FTS・VACUUM が使い切るため、
-# 構築時の固定メモリ消費として一番大きい。fast は速度優先の 512MiB(従来値)、
-# low_memory は 64MiB に絞る(構築は遅くなるが、2GiB 級のマシンでも収まる)。
+# 構築時の固定メモリ消費として一番大きい。low_memory(既定)は 2GiB 級のマシンでも
+# 収まる 64MiB、fast は速度優先の 512MiB。
 BUILD_CACHE_KIB = {"fast": 524_288, "low_memory": 65_536}
 
 
@@ -126,8 +126,7 @@ def require_build_memory(adapter: SourceAdapter) -> None:
             f"{available_gb:.1f} GiB available < {required_gb:.1f} GiB required.\n"
             "Build on a machine with more memory and copy the resulting .db over "
             "(see README: 別マシンでビルドして .db を配布する). Alternatives: "
-            "BUILD_PROFILE=low_memory (every source fits in 2 GiB; osm gets slower), "
-            "OSM_NODE_INDEX=sparse_file_array (osm sources; trades speed for disk), "
+            "drop BUILD_PROFILE=fast to build with the low-memory default (2 GiB), "
             "BUILD_MEMORY_GB=<n> to override the requirement, "
             "SKIP_MEMORY_CHECK=1 to bypass this check entirely."
         )

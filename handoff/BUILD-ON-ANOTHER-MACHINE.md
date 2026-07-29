@@ -10,6 +10,11 @@ Windows のビルド機で焼いて Linux の配信機で読ませてよい。
 
 ## ビルド機に必要なもの
 
+ビルド機で速く焼くための手順書なので、取り込みには **`BUILD_PROFILE=fast`
+(速度優先プロファイル)を付ける前提**で書く。下表の必要メモリはそのときの値
+(付けなければ既定の `low_memory` になり、どのソースもメモリ 2 GiB で焼ける代わりに
+osm が数倍〜10 倍遅い — それなら配信機で直接焼けばよく、この手順書の出番ではない)。
+
 | 項目 | jawiki | osm_japan | geonames |
 |---|---|---|---|
 | メモリ(Docker が使える量) | 3 GiB 以上 | **12 GiB 以上**(RAM ノード索引) | 3 GiB 以上 |
@@ -17,7 +22,7 @@ Windows のビルド機で焼いて Linux の配信機で読ませてよい。
 | 所要時間の目安 | 4〜6 時間 | 2〜4 時間 | 1〜3 時間 |
 | ネットワーク | ダンプを自分で落とすので必要(jawiki は約 11GB) | 約 2.5GB | 約 600MB |
 
-どのソースも既定設定で **12 GiB のマシンがあれば構築できる**。
+どのソースも `fast` で **12 GiB のマシンがあれば構築できる**。
 `geonames` は全世界の地名を 1 ソースで賄うためのソースで、ダンプが約 600MB と軽い
 (その代わり店舗・営業時間は持たない。そこは `osm_<国>` の担当)。
 
@@ -166,8 +171,11 @@ mkdir -p /path/to/chiezo-data          # Windows なら D:\chiezo-data など
 
 ```bash
 # geonames(全世界の地名。いちばん軽いので最初の試運転に向く)
+# BUILD_PROFILE=fast は速度優先(冒頭の表の前提)。付け忘れても失敗はしないが、
+# 既定のメモリ優先(low_memory)になり osm が数倍〜10 倍遅くなる。
 docker run -d --name chiezo-build \
   -e SOURCE=geonames \
+  -e BUILD_PROFILE=fast \
   -e CHIEZO_DATA_DIR=/data \
   -v ~/chiezo-data:/data \
   ghcr.io/rtcode337/chiezo-ingest:latest
@@ -182,8 +190,9 @@ docker rm chiezo-build           # 終わったら片付ける(次の SOURCE を
 
 OSM は日本以外の国も `osm_france` / `osm_thailand` のように国名を変えるだけで焼ける
 (Geofabrik にある 195 の国・地域が定義済み。国ごとの必要メモリ・pbf サイズは配信機の
-管理画面 `/admin/osm` で確認できる。多くの国は日本より軽く 3〜12 GiB、
-フランス・ドイツ・カナダ・アメリカ・ロシアだけはディスク索引が既定で 2 GiB・その代わり低速)。
+管理画面 `/admin/osm` で確認できる。多くの国は日本より軽く `fast` で 3〜12 GiB、
+フランス・ドイツ・カナダ・アメリカ・ロシアだけは `fast` でもディスク索引が既定で
+2 GiB・その代わり低速)。
 
 Windows PowerShell から実行する場合、ボリューム指定は `-v D:\chiezo-data:/data` の形。
 ただし前述のとおり **Windows 側のドライブを作業領域にすると極端に遅い**ので、WSL 内の
@@ -251,15 +260,11 @@ not enough memory to build osm_japan: 2.0 GiB available < 12.0 GiB required.
 対処は 3 つ:
 
 1. **メモリの多いマシンで焼く**(本手順書の想定。いちばん速い)
-2. **メモリ優先プロファイルに切り替える** — `BUILD_PROFILE=low_memory` で**どのソースも
+2. **`BUILD_PROFILE=fast` を外す** — 既定のメモリ優先(`low_memory`)なら**どのソースも
    2GiB で焼ける**。構築用 SQLite キャッシュを絞り、osm はノード座標索引をディスクに
    置くため、osm はノード解決がランダム読みになり**数倍〜10 倍遅くなる**
    (実測で日本抽出が数時間 → 十数時間。wikipedia / geonames はほぼ変わらない)。
    大陸単位の OSM(旧 `osm_europe`)は廃止した。全世界の地名は `geonames` が 1 ソースで賄う。
-   ```bash
-   docker run --rm -it -e SOURCE=osm_japan -e BUILD_PROFILE=low_memory \
-     -e CHIEZO_DATA_DIR=/data -v /path/to/chiezo-data:/data ghcr.io/rtcode337/chiezo-ingest:latest
-   ```
 3. **検査を上書きする** — 見積もりが実態と合っていないと分かっている場合のみ。
    `BUILD_MEMORY_GB=<n>` で必要量を変える、`SKIP_MEMORY_CHECK=1` で検査自体を飛ばす。
    足りないまま走らせると数時間かけた末に OOM killer に殺される(共有ホストでは他のプロセスも
@@ -273,8 +278,8 @@ not enough memory to build osm_japan: 2.0 GiB available < 12.0 GiB required.
 | `CHIEZO_DATA_DIR` | データディレクトリ(コンテナ内パス。`-v` の右側と合わせる。既定 `/data`) |
 | `DUMP_DATE` | ダンプ日付 `YYYYMMDD` を固定(省略時は最新を自動検出) |
 | `DUMP_FILE` | ダウンロードを飛ばして既存ファイルを使う(例: 手で置いたダンプを使う) |
-| `BUILD_PROFILE` | 構築プロファイル。`low_memory` でどのソースも 2GiB で焼ける(osm は数倍〜10 倍遅い)。既定 `fast` = 速度優先 |
-| `OSM_NODE_INDEX` | osm のノード座標索引の置き場。既定 `sparse_mmap_array`(RAM・速い)、`sparse_file_array`(ディスク・省メモリ・遅い)。明示指定は `BUILD_PROFILE` より優先 |
+| `BUILD_PROFILE` | 構築プロファイル。既定 `low_memory` = どのソースも 2GiB で焼ける(osm は数倍〜10 倍遅い)。ビルド機では `fast`(速度優先)を明示する |
+| `OSM_NODE_INDEX` | osm のノード座標索引の置き場。`sparse_mmap_array`(RAM・速い)/ `sparse_file_array`(ディスク・省メモリ・遅い)。明示指定は `BUILD_PROFILE` より優先 |
 | `BUILD_MEMORY_GB` / `SKIP_MEMORY_CHECK` | メモリ検査の上書き / 無効化 |
 | `OSM_AREA_ADMIN_LEVEL` | `extra.area` に入れる行政区の admin_level(既定 4 = 都道府県、`0` で省略) |
 | `GEONAMES_ALT_LANGS` | geonames で取り込む別名の言語(既定 `ja,en`。`*` で全 400 言語超) |

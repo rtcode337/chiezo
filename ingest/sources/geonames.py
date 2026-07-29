@@ -173,8 +173,9 @@ class GeonamesAdapter:
     source_kind = "geonames"
 
     # 別名(2,000 万行規模)はディスクへ逃がすので常駐は小さい。構築用 SQLite の
-    # ページキャッシュ + 小さめの辞書(国名・admin1)が主。fast は余裕を見て 3GiB、
-    # low_memory はキャッシュを 64MiB に絞る(main.BUILD_CACHE_KIB)ので 2GiB 宣言で足りる。
+    # ページキャッシュ + 小さめの辞書(国名・admin1)が主。low_memory(既定)は
+    # キャッシュを 64MiB に絞る(main.BUILD_CACHE_KIB)ので 2GiB 宣言で足り、
+    # fast は余裕を見て 3GiB。
     @property
     def min_build_memory_gb(self) -> float:
         return LOW_MEMORY_BUILD_GB if is_low_memory_build() else 3.0

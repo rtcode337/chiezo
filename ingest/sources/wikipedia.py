@@ -120,8 +120,8 @@ class WikipediaAdapter:
     # 巨大な対応表(リダイレクト・ページビュー・wikidata)は lookup.py でディスクに逃がして
     # あるため、wikipedia 系の常駐は構築用 SQLite のページキャッシュ + wikitext 解析の
     # 一時オブジェクトが主。実測ピークは 1GiB 未満(キャッシュ 512MiB 込み)。
-    # fast は FTS 構築ぶんの余裕を見て 3GiB、low_memory はキャッシュを 64MiB に絞る
-    # (main.BUILD_CACHE_KIB)ので 2GiB 宣言で足りる。
+    # low_memory(既定)はキャッシュを 64MiB に絞る(main.BUILD_CACHE_KIB)ので
+    # 2GiB 宣言で足り、fast は FTS 構築ぶんの余裕を見て 3GiB。
     @property
     def min_build_memory_gb(self) -> float:
         return LOW_MEMORY_BUILD_GB if is_low_memory_build() else 3.0

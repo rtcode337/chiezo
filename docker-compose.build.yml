@@ -33,8 +33,6 @@ services:
       - ./data:/data
     environment:
       - CHIEZO_DATA_DIR=/data
-      # 空きメモリ 2GiB 級のマシンで取り込むなら(README「メモリについて」参照)。
-      # - BUILD_PROFILE=low_memory
     restart: unless-stopped
     <<: *ingest-limits
     healthcheck:
@@ -50,6 +48,4 @@ services:
     environment:
       - SOURCE=jawiki
       - CHIEZO_DATA_DIR=/data
-      # 空きメモリ 2GiB 級のマシンで取り込むなら(README「メモリについて」参照)。
-      # - BUILD_PROFILE=low_memory
     <<: *ingest-limits

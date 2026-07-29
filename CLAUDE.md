@@ -171,7 +171,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     アダプタが `EXTRA_FETCH_HOOKS`(`fetch_pageviews` / `fetch_page_props`)を持つ場合、
     `fetch()` の後にそれも呼ぶ(docs.extra 補強用の追加データ取得フック)。
     構築用 SQLite のページキャッシュは `BUILD_CACHE_KIB`(`build_pragmas()`)で
-    プロファイル別: fast 512MiB / low_memory 64MiB(下記「メモリ方針」参照)
+    プロファイル別: low_memory(既定)64MiB / fast 512MiB(下記「メモリ方針」参照)
   - `lookup.py` — 取り込み中だけ参照する巨大な「ID → 値」対応表(リダイレクト・ページビュー・
     wikidata の Q 番号)を、メモリではなくディスク上の一時 SQLite に持つための小道具
     (`DiskLookup` / `DiskMultiMap` / ヌルオブジェクト `EMPTY`)。以前これらを dict で抱えて
@@ -261,12 +261,13 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     索引付きレイキャスティング)を組み立て、パス3
     (`_MainHandler`)で pyosmium の `NodeLocationsForWays` によるノード座標自動解決を
     使いながら node/way/relation を走査して Doc を生成する。この位置インデックスの置き場は
-    環境変数 `OSM_NODE_INDEX` で選ぶ。既定は RAM 上の `sparse_mmap_array` で、これが最速
-    (参照ノードぶんの座標=1件16B程度を抱えるため日本抽出で5〜10GB。足りるかは
-    `require_build_memory()` が事前検査する)。メモリの少ない環境向けに
-    `sparse_file_array` を指定すると `<dumps>/<source>.nodeloc.idx` へ退避でき、必要メモリは
-    2GiB まで下がる代わりにノード解決がランダム読みになり数倍〜10倍遅くなる(欧州大陸は
-    RAM 索引が非現実的なので実質こちら)。ファイル索引の一時ファイルは `iter_docs` の finally で
+    `node_index_kind`(環境変数 `OSM_NODE_INDEX` > `BUILD_PROFILE` > ソースごとの既定)で
+    決まる。既定プロファイル(low_memory)ではディスクの `sparse_file_array`
+    (`<dumps>/<source>.nodeloc.idx` へ退避。必要メモリは 2GiB まで下がる代わりに
+    ノード解決がランダム読みになり数倍〜10倍遅い)。`BUILD_PROFILE=fast` では RAM 上の
+    `sparse_mmap_array` で、これが最速(参照ノードぶんの座標=1件16B程度を抱えるため
+    日本抽出で5〜10GB。足りるかは `require_build_memory()` が事前検査する)。
+    ファイル索引の一時ファイルは `iter_docs` の finally で
     必ず unlink する(中断時も残さない。`ingest/lookup.py` と同じ精神)。座標を持つ Doc には所属行政区を
     `extra.area` として付ける(bbox 近似ではないので県境のはみ出しが無い)。境界ポリゴンは
     relation より前に必要なため専用パスを挟んでいる(`OSM_AREA_ADMIN_LEVEL=0` でパスごと省略可)。
@@ -321,7 +322,8 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     手で 195 行書くと region パスの綴り間違いにダウンロード時まで気づけないため機械生成にした。
     `memory_gb` は pbf 1GB あたり 5GiB(osm_japan の実績: pbf 2.3GB → 12GiB)、
     それが 12GiB を超える国は `node_index` をディスク索引にして「どのソースも 12GiB のマシンで
-    構築できる」方針を保つ
+    構築できる」方針を保つ(fast プロファイル時の話。既定の low_memory では全ソースが
+    ディスク索引・2GiB に収まる)
   - `sources/wikipedia_editions.py` — **自動生成物**。Wikipedia 言語版カタログ
     (`scripts/gen_wikipedia_editions.py` で再生成。Wikimedia sitematrix + wikistats の記事数 +
     CLDR の言語名日本語表記から起こす)。1 件あたり URL 言語コード(`lang`。pageview ドメインの素)・
@@ -435,11 +437,13 @@ docker compose -f docker-compose.build.yml up -d --build
 cgroup 上限(`memory.max`)の小さいほう(`available_memory_bytes()`)。
 
 構築プロファイル(環境変数 `BUILD_PROFILE`、`core.build_profile()`)で速度とメモリの
-どちらを優先するかを切り替えられる: `fast`(既定)は従来どおりの速度優先、
-`low_memory` は**どのソースも 2GiB で構築できる**メモリ優先(構築用 SQLite キャッシュを
-512MiB → 64MiB に絞り、osm のノード座標索引をディスクに置く。osm は数倍〜10 倍遅くなる)。
-空きメモリ 2GiB 級の開発機(WSL 上の Docker 等)でも全ソースを焼けるようにするための
-もので、メモリの多いビルド機では何も設定しなければ最速のまま。
+どちらを優先するかを切り替えられる: `low_memory`(既定)は**どのソースも 2GiB で
+構築できる**メモリ優先(構築用 SQLite キャッシュを 64MiB に絞り、osm のノード座標索引を
+ディスクに置く。osm は数倍〜10 倍遅くなる)、`fast` は速度優先(キャッシュ 512MiB、
+osm はソースごとの既定索引)。既定を low_memory にしてあるのは、本番(配信)サーバも
+開発機もメモリ 2GiB 級という運用のため。fast はメモリの潤沢なビルド機で
+`docker run -e BUILD_PROFILE=fast …` と**実行時の引数として明示したときだけ**使い、
+compose には常設しない(小さいマシンに設定が持ち込まれて OOM の芽になるため)。
 
 必要量は各アダプタの `min_build_memory_gb`(`core.SourceAdapter` の一部)で宣言する
 (ソースごとの実際の数値は README「メモリについて」の表が正)。wikipedia / geonames は
@@ -449,9 +453,9 @@ cgroup 上限(`memory.max`)の小さいほう(`available_memory_bytes()`)。
 ソースごとの `default_node_index`。明示指定がプロファイルより優先)がファイル索引なら
 2GiB、RAM 索引なら `ram_index_memory_gb`。国別ソースのこの 2 つは
 `sources/osm_regions.py`(自動生成カタログ)が pbf サイズから決める。
-**既定設定でどのソースも 12GiB 以内・low_memory でどのソースも 2GiB 以内に収まること**を
-テストで担保している(`test_no_source_requires_more_than_12gb_by_default` /
-`test_low_memory_profile_fits_every_source_in_2gb`)ので、この不変条件を壊さないこと。
+**既定(low_memory)でどのソースも 2GiB 以内・fast でどのソースも 12GiB 以内に収まること**を
+テストで担保している(`test_low_memory_profile_fits_every_source_in_2gb` /
+`test_no_source_requires_more_than_12gb_in_fast_profile`)ので、この不変条件を壊さないこと。
 osm ソースは**国スケールに留める**(大陸スケールはディスク索引にしてもディスク 300GB・
 構築 1 日以上で非現実的。全世界カバーは `geonames` の担当)。
 
