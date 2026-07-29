@@ -89,11 +89,17 @@ curl -s "$BASE/v1/jawiki/filter?wikidata=Q17221&fields=title,extra" # Q 番号 �
 ```
 
 ブラウザで `http://<サーバーIP>:9000/`(`/admin` へ自動リダイレクト)を開くと、登録済みソース
-(文書数・dump_date・構築日時など)の一覧に加えて、未初期化ソース(`chiezo-trigger` 側の
-既知ソース一覧に載っているが `/data` にまだ `.db` が無いもの)向けの「初期化」ボタンが見られます。
-ボタンを押すと `chiezo-trigger`(内部専用サービス。後述)にジョブが積まれ、進行状況(ログ tail 込み)
-が管理画面に表示されます(実行中は自動でリロードされます)。ジョブが完了したら
-`docker compose restart chiezo-api` で新しい DB を読み込ませてください(自動再起動はしません)。
+(文書数・dump_date・構築日時・スキーマバージョンなど)の一覧に加えて、未初期化ソース
+(`chiezo-trigger` 側の既知ソース一覧に載っているが `/data` にまだ `.db` が無いもの)向けの
+「初期化」ボタンが見られます。一覧には最新のスキーマバージョン(いま取り込みを実行すると
+焼かれる版。`chiezo-trigger` から取得)も表示され、それより古い DB の行には注意書きが付きます。
+登録済みソースには「再構築」ボタンがあり、ダンプの取得から取り込みをやり直せます
+(古いスキーマの DB を最新にする、ダンプの新しい版を取り込み直す、が主な用途。
+ブルーグリーンなので構築中も現行 DB での配信は続きます)。
+初期化・再構築のボタンを押すと `chiezo-trigger`(内部専用サービス。後述)にジョブが積まれ、
+進行状況(ログ tail 込み)が管理画面に表示されます(実行中は自動でリロードされます)。
+ジョブが完了したら `docker compose restart chiezo-api` で新しい DB を読み込ませてください
+(自動再起動はしません)。
 
 OSM の国別ソース(`osm_<国>`、195 件)と Wikipedia の言語版(`<lang>wiki`、348 件)は、
 そのまま並べると他のソースが埋もれるため、一覧ではそれぞれ `osm` / `wikipedia` の 1 行に
@@ -514,20 +520,22 @@ docker save ghcr.io/rtcode337/chiezo-ingest:latest | gzip -1 > handoff/chiezo-in
 [`handoff/BUILD-ON-ANOTHER-MACHINE.md`](handoff/BUILD-ON-ANOTHER-MACHINE.md) にまとめてあります
 (取り込みが触るのは公開ダンプと指定した data フォルダだけで、認証情報や個人ファイルは読みません)。
 
-### chiezo-trigger(管理画面からの初期化)
+### chiezo-trigger(管理画面からの初期化・再構築)
 
 `chiezo-ingest` と同じイメージを使い回し、CMD だけ `server.py`(FastAPI)の起動に差し替えた
 常駐コンテナです。`/data` に書き込み権限を持ち、`POST /run/{source}` で ingest の `run()` を
 バックグラウンドスレッドで実行、`GET /status` で状態(`idle`/`running`/`done`/`error`)と
 ログ tail を返します。同時に実行できるジョブは 1 つまでです。`GET /sources` は取り込める
 ソースのカタログ(名前・kind・lang と、osm 国別ソースの表示名・region・pbf サイズ・必要メモリ、
-wikipedia 言語版の表示名・自称・記事数)を返し、管理画面の初期化一覧・国選択画面・
-言語選択画面はこれを読んで組み立てます。
+wikipedia 言語版の表示名・自称・記事数)と、このイメージが焼くスキーマバージョン
+(`schema_version`)を返し、管理画面の初期化一覧・国選択画面・言語選択画面・
+「最新のスキーマバージョン」表示はこれを読んで組み立てます。
 
 ホストへはポート公開せず、docker の内部ネットワーク経由で `chiezo-api` からのみ到達できます
 (`chiezo-api` の環境変数 `CHIEZO_TRIGGER_URL=http://chiezo-trigger:8080`)。管理画面の
-「初期化」ボタン(`POST /admin/init/{source}`)はこのサービスへのプロキシです。
-`CHIEZO_TRIGGER_URL` が未設定なら管理画面の初期化機能は無効化されます(ボタンが押せません)。
+「初期化」ボタン(`POST /admin/init/{source}`)と「再構築」ボタン
+(`POST /admin/rebuild/{source}`。登録済みソースのみ受け付ける)はこのサービスへのプロキシです。
+`CHIEZO_TRIGGER_URL` が未設定なら管理画面の初期化・再構築機能は無効化されます(ボタンが押せません)。
 
 新ソースは `ingest/sources/__init__.py` の `ADAPTERS` に追加するだけで管理画面にも出ます
 (`chiezo-api` は ingest のコードを import しませんが、上記の `GET /sources` 経由で名前を受け取ります)。

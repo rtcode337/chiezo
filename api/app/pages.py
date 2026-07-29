@@ -101,10 +101,14 @@ PAGE_STYLE = """
   .job-status { border: 1px solid #ccc; padding: 0.6rem 1rem; margin-top: 1rem; background: #fafafa; }
   .job-status.running { border-color: #d9a400; background: #fff8e1; }
   .job-status.error { border-color: #c0392b; background: #fdecea; }
-  .log-tail { max-height: 12rem; overflow-y: auto; background: #111; color: #ddd;
+  /* column-reverse でスクロール原点を下端にし、リロード直後から最新行が見えるようにする
+     (中身は単一のテキストノードなので表示順は変わらない。JS なしで済む) */
+  .log-tail { max-height: 12rem; overflow-y: auto; display: flex; flex-direction: column-reverse;
+              background: #111; color: #ddd;
               padding: 0.6rem; font-family: monospace; font-size: 0.85rem; white-space: pre-wrap; }
   .snippet { color: #555; }
   .muted { color: #666; font-size: 0.85rem; }
+  .stale { color: #c0392b; font-size: 0.85rem; }
   details { margin-top: 1rem; }
   details > summary { cursor: pointer; font-weight: bold; padding: 0.3rem 0; }
   pre.doc-body { white-space: pre-wrap; word-break: break-word; }

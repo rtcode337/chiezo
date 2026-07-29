@@ -551,3 +551,10 @@ class TestTriggerCatalogEndpoint:
         from sources import ADAPTERS
 
         assert set(trigger_client.get("/sources").json()["sources"]) == set(ADAPTERS)
+
+    def test_reports_schema_version(self, trigger_client):
+        """このイメージが焼くスキーマバージョンをカタログと一緒に返す
+        (管理画面の「最新のスキーマバージョン」表示の正)。"""
+        from core import SCHEMA_VERSION
+
+        assert trigger_client.get("/sources").json()["schema_version"] == SCHEMA_VERSION

@@ -21,7 +21,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   `jawiki-20260701.db` は登録されず、シンボリックリンク `jawiki.db` のみ登録される)。
   - `app/main.py` — ルーティング(/, /healthz, /apple-touch-icon.png, /v1/sources,
     /v1/{source}/search|doc|filter|tags|titles|links|random,
-    /admin, /admin/init/{source}, /{source}/, /{source}/doc/{doc_id}、
+    /admin, /admin/init/{source}, /admin/rebuild/{source}, /{source}/, /{source}/doc/{doc_id}、
     および MCP の /mcp(実体は下の `app/mcp_server.py`))
     - `/v1/{source}/filter` — 全文検索ではなく属性(`feature` / `area` / `bbox` / `wikidata` /
       `tag`)の AND での一括抽出(Overpass 相当)。`docs` の生成列への索引付き検索なので
@@ -134,6 +134,13 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   - `/admin/init/{source}`(POST) — `chiezo-trigger` の `POST /run/{source}` へプロキシし、
     `/admin` へ 303 リダイレクト。`CHIEZO_TRIGGER_URL` 未設定なら 503、未知ソースなら 404、
     登録済みソースなら 409
+  - `/admin/rebuild/{source}`(POST) — 登録済みソースの再構築(init と同じプロキシで、
+    要求条件だけ逆: **登録済みであることを要求**し、未登録は 404。未登録の取り込みは init 側)。
+    ソースの正は trigger 側の `ADAPTERS` なので、カタログに無い登録済みソースでも trigger に
+    判断を委ねる。管理画面は「最新のスキーマバージョン」(`latest_schema_version()` —
+    trigger の `GET /sources` が返す `schema_version` = ingest の `core.SCHEMA_VERSION`。
+    取れなければ api の `max(SUPPORTED_SCHEMA_VERSIONS)` で代替)を表示し、
+    それより古い DB の行に注意書きを付けて再構築を促す
   - `/admin/claude-config`(GET/HTML)・`/admin/claude-config.txt`(GET/text/plain)・
     `/admin/claude-config.permissions.json`(GET/application/json)・
     `/admin/claude-config.hook.py`(GET/text/x-python)・
@@ -337,13 +344,14 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     (sitematrix は現行コード yue、URL・pageview・wikistats は歴史的コード zh-yue。
     `lang` には URL コードを入れてある。dbname はハイフンを含まない zh_yuewiki 形式なので
     世代ファイル名の区切りと衝突しない)
-  - `server.py` — **chiezo-trigger**: 管理画面の初期化ボタンから叩かれる内部専用トリガー。
+  - `server.py` — **chiezo-trigger**: 管理画面の初期化・再構築ボタンから叩かれる内部専用トリガー。
     ingest イメージを流用し、docker-compose.yml で CMD だけ `uvicorn server:app` に上書きする
     常駐コンテナ(`/data` に書き込み権限を持つ点だけ chiezo-ingest の one-shot 実行と異なる)。
     `POST /run/{source}` で `main.run(source, data_dir)` をバックグラウンドスレッドで実行し
     (同時実行は 1 ジョブまで、429/409 で拒否)、`GET /sources` で取り込めるソースのカタログ
     (名前・kind・lang と、osm 国別ソースの表示名・region・pbf サイズ・必要メモリ、
-    wikipedia 言語版の表示名・自称・記事数)を返す
+    wikipedia 言語版の表示名・自称・記事数)と、このイメージが焼くスキーマバージョン
+    (`schema_version` = `core.SCHEMA_VERSION`。管理画面の「最新のスキーマバージョン」表示の正)を返す
     (管理画面の初期化一覧と国・言語選択画面はこれを読む。アダプタは実体化せずに答える。
     osm の `node_index` はカタログの既定を実行時設定〔`OSM_NODE_INDEX` >
     `BUILD_PROFILE=low_memory`〕で解決してから返す — 管理画面の必要メモリ表示を

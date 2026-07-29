@@ -28,6 +28,7 @@ from app.registry import (
     COORDS_MIN_SCHEMA_VERSION,
     FILTER_MIN_SCHEMA_VERSION,
     RANK_INDEX_MIN_SCHEMA_VERSION,
+    SUPPORTED_SCHEMA_VERSIONS,
     TAG_COUNTS_MIN_SCHEMA_VERSION,
     TAG_MIN_SCHEMA_VERSION,
     Source,
@@ -211,6 +212,8 @@ def _fetch_trigger_status() -> dict | None:
 # chiezo-trigger のソースカタログのプロセス内キャッシュ。中身は trigger のイメージに
 # 焼かれた静的な表(osm_<国> だけで 195 件)なので、一度取れたら取り直す必要はない。
 _catalog_cache: dict[str, dict] | None = None
+# trigger(= ingest イメージ)が焼くスキーマバージョン。カタログと一緒に受け取る
+_catalog_schema_version: int | None = None
 # 取得に失敗した時刻(単調時計)。trigger が落ちている間、管理画面を開くたびに
 # タイムアウト待ちを重ねない(ジョブ状況の取得と合わせて毎回 10 秒待たされるため)。
 _catalog_failed_at: float | None = None
@@ -219,7 +222,7 @@ CATALOG_RETRY_SECONDS = 60.0
 
 def _fetch_trigger_catalog() -> dict[str, dict] | None:
     """初期化できるソースの一覧を chiezo-trigger から取る。取れなければ None。"""
-    global _catalog_cache, _catalog_failed_at
+    global _catalog_cache, _catalog_failed_at, _catalog_schema_version
     if _catalog_cache is not None:
         return _catalog_cache
     if not TRIGGER_URL:
@@ -229,13 +232,26 @@ def _fetch_trigger_catalog() -> dict[str, dict] | None:
     try:
         res = httpx.get(f"{TRIGGER_URL}/sources", timeout=TRIGGER_TIMEOUT)
         res.raise_for_status()
-        catalog = res.json()["sources"]
+        payload = res.json()
+        catalog = payload["sources"]
     except (httpx.HTTPError, ValueError, KeyError) as e:
         log.warning("chiezo-trigger source catalog unreachable: %s", e)
         _catalog_failed_at = time.monotonic()
         return None
     _catalog_cache = catalog
+    _catalog_schema_version = payload.get("schema_version")
     return catalog
+
+
+def latest_schema_version() -> int:
+    """いま取り込み(再構築)を実行すると焼かれるスキーマバージョン(= 最新)。
+
+    正は ingest 側(`core.SCHEMA_VERSION`)で、chiezo-trigger の `GET /sources` が
+    カタログと一緒に返す。trigger が未設定・到達不能・古い(schema_version を返さない)
+    ときは、api が対応できる最大バージョンで代替する(通常は両者一致する)。
+    """
+    _fetch_trigger_catalog()
+    return _catalog_schema_version or max(SUPPORTED_SCHEMA_VERSIONS)
 
 
 def initializable_sources() -> dict[str, dict]:
@@ -294,6 +310,16 @@ def _job_status_html(job: dict | None) -> str:
 @app.get("/admin", response_class=HTMLResponse)
 def admin(request: Request):
     sources: dict[str, Source] = request.app.state.sources
+    job = _fetch_trigger_status()
+    job_running = bool(job and job.get("state") == "running")
+    disabled = " disabled" if not TRIGGER_URL or job_running else ""
+    latest_schema = latest_schema_version()
+
+    def schema_cell(version: int) -> str:
+        if version >= latest_schema:
+            return str(version)
+        return f'{version} <span class="stale">(最新: {latest_schema})</span>'
+
     rows = "\n".join(
         f"<tr>"
         f"<td><a href=\"/{esc(s.name)}/\">{esc(s.name)}</a></td>"
@@ -302,19 +328,23 @@ def admin(request: Request):
         f"<td>{s.doc_count:,}</td>"
         f"<td>{esc(s.dump_date or '')}</td>"
         f"<td>{esc(s.built_at or '')}</td>"
-        f"<td>{s.schema_version}</td>"
+        f"<td>{schema_cell(s.schema_version)}</td>"
+        f"<td>"
+        f'<form class="init-form" method="post" action="/admin/rebuild/{esc(s.name)}" '
+        f"onsubmit=\"return confirm('{esc(s.name)} を再構築します。ダンプの取得からやり直すため"
+        f"時間がかかります(構築中も現行 DB での配信は続きます)。よろしいですか?')\">"
+        f'<button type="submit"{disabled}>再構築</button>'
+        f"</form>"
+        f"</td>"
         f"</tr>"
         for s in sorted(sources.values(), key=lambda s: s.name)
     )
     if not rows:
-        rows = '<tr><td colspan="7">登録済みのソースはありません</td></tr>'
+        rows = '<tr><td colspan="8">登録済みのソースはありません</td></tr>'
 
     uninitialized = {
         name: meta for name, meta in initializable_sources().items() if name not in sources
     }
-    job = _fetch_trigger_status()
-    job_running = bool(job and job.get("state") == "running")
-    disabled = " disabled" if not TRIGGER_URL or job_running else ""
     # osm_<国> 195 件・<lang>wiki 348 件はここには 1 行ずつだけ出し、
     # 国・言語の選択は /admin/osm・/admin/wikipedia に分ける
     osm_pending = {n: m for n, m in uninitialized.items() if m.get("group") == "osm"}
@@ -361,15 +391,20 @@ def admin(request: Request):
 
     body = f"""
 <h1>chiezo 管理画面</h1>
-<p>登録ソース数: {len(sources)}</p>
+<p>登録ソース数: {len(sources)} / 最新のスキーマバージョン: {latest_schema}</p>
 <table>
 <thead>
-<tr><th>name</th><th>kind</th><th>lang</th><th>docs</th><th>dump_date</th><th>built_at</th><th>schema_version</th></tr>
+<tr><th>name</th><th>kind</th><th>lang</th><th>docs</th><th>dump_date</th><th>built_at</th><th>schema_version</th><th></th></tr>
 </thead>
 <tbody>
 {rows}
 </tbody>
 </table>
+<p class="muted">
+スキーマバージョンが最新より古いソースは再構築で最新になる(タグ・座標まわりの一部は
+<code>scripts/add_tag_index.py</code> でのその場移行でも可)。再構築はブルーグリーンで、
+構築中も現行 DB での配信は続く。完了後は chiezo-api の再起動で新しい DB に切り替わる。
+</p>
 
 {_job_status_html(job)}
 
@@ -582,15 +617,8 @@ enwiki はその数倍)。ページビュー突合のため全プロジェクト
     )
 
 
-@app.post("/admin/init/{source}")
-def admin_init(source: str, request: Request):
-    if not TRIGGER_URL:
-        raise HTTPException(503, {"error": "chiezo-trigger is not configured (CHIEZO_TRIGGER_URL unset)"})
-    if source not in initializable_sources():
-        raise HTTPException(404, {"error": f"unknown source: {source}"})
-    sources: dict[str, Source] = request.app.state.sources
-    if source in sources:
-        raise HTTPException(409, {"error": f"source already initialized: {source}"})
+def _proxy_trigger_run(source: str) -> RedirectResponse:
+    """chiezo-trigger の POST /run/{source} へプロキシし、管理画面へ戻す(init / rebuild 共通)。"""
     try:
         res = httpx.post(f"{TRIGGER_URL}/run/{source}", timeout=TRIGGER_TIMEOUT)
     except httpx.HTTPError as e:
@@ -601,6 +629,35 @@ def admin_init(source: str, request: Request):
     if res.status_code >= 400:
         raise HTTPException(res.status_code, res.json())
     return RedirectResponse(url="/admin", status_code=303)
+
+
+@app.post("/admin/init/{source}")
+def admin_init(source: str, request: Request):
+    if not TRIGGER_URL:
+        raise HTTPException(503, {"error": "chiezo-trigger is not configured (CHIEZO_TRIGGER_URL unset)"})
+    if source not in initializable_sources():
+        raise HTTPException(404, {"error": f"unknown source: {source}"})
+    sources: dict[str, Source] = request.app.state.sources
+    if source in sources:
+        raise HTTPException(409, {"error": f"source already initialized: {source}"})
+    return _proxy_trigger_run(source)
+
+
+@app.post("/admin/rebuild/{source}")
+def admin_rebuild(source: str, request: Request):
+    """登録済みソースの再構築(管理画面の「再構築」ボタン)。
+
+    init と違い登録済みであることを要求する(未登録は init 側の担当)。ジョブの実体は
+    init と同じ ingest の一括取り込みで、ブルーグリーン(別ファイル構築 → シンボリック
+    リンク差し替え)なので構築中も現行 DB での配信は続く。ソースの正は trigger 側の
+    ADAPTERS なので、カタログに無い登録済みソースでも trigger に判断を委ねる。
+    """
+    if not TRIGGER_URL:
+        raise HTTPException(503, {"error": "chiezo-trigger is not configured (CHIEZO_TRIGGER_URL unset)"})
+    sources: dict[str, Source] = request.app.state.sources
+    if source not in sources:
+        raise HTTPException(404, {"error": f"source not initialized: {source}"})
+    return _proxy_trigger_run(source)
 
 
 def request_origin(request: Request) -> str:

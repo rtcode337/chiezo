@@ -83,8 +83,12 @@ def sources():
     `osm_<国>` 195 件・`<lang>wiki` 348 件は、api 側で 1 行ずつ持たせるのは現実的でない。
 
     アダプタは実体化せずに答える(カタログ由来だけで 500 超あり、全部作ると無駄が大きい)。
+
+    `schema_version` はこのイメージが焼くスキーマバージョン(`core.SCHEMA_VERSION`)。
+    管理画面が「最新のスキーマバージョン」と再構築を促す表示に使う(api 側の対応最大
+    バージョンと通常は一致するが、正はあくまで取り込みを実行する ingest 側)。
     """
-    from core import is_low_memory_build
+    from core import SCHEMA_VERSION, is_low_memory_build
     from sources import ADAPTERS
     from sources.osm_regions import CONTINENTS, OSM_REGIONS
     from sources.wikipedia_editions import WIKIPEDIA_EDITIONS
@@ -128,7 +132,11 @@ def sources():
             "memory_gb": region.memory_gb,
             "node_index": forced_node_index or region.node_index,
         }
-    return {"sources": catalog, "continents": list(CONTINENTS)}
+    return {
+        "sources": catalog,
+        "continents": list(CONTINENTS),
+        "schema_version": SCHEMA_VERSION,
+    }
 
 
 @app.get("/status")

@@ -547,6 +547,55 @@ class TestAdminAndBrowse:
         res = client.post("/admin/init/jawiki")
         assert res.status_code == 409
 
+    def test_admin_shows_latest_schema_version(self, client):
+        from app.registry import SUPPORTED_SCHEMA_VERSIONS
+
+        res = client.get("/admin")
+        assert f"最新のスキーマバージョン: {max(SUPPORTED_SCHEMA_VERSIONS)}" in res.text
+
+    def test_admin_marks_stale_schema_version(self, client, monkeypatch):
+        """最新より古い DB の行には最新版への注意書きが付く(最新なら付かない)。"""
+        from app.registry import SUPPORTED_SCHEMA_VERSIONS
+
+        latest = max(SUPPORTED_SCHEMA_VERSIONS)
+        assert f"(最新: {latest})" not in client.get("/admin").text
+        monkeypatch.setattr(client.app.state.sources["jawiki"], "schema_version", 1)
+        assert f"(最新: {latest})" in client.get("/admin").text
+
+    def test_admin_shows_rebuild_button_for_registered_source(self, client):
+        res = client.get("/admin")
+        assert 'action="/admin/rebuild/jawiki"' in res.text
+
+    def test_admin_rebuild_without_trigger_configured(self, client):
+        res = client.post("/admin/rebuild/jawiki")
+        assert res.status_code == 503
+
+    def test_admin_rebuild_unregistered_source(self, client, monkeypatch):
+        """未登録ソースの再構築は断る(初期化は /admin/init 側の担当)。"""
+        monkeypatch.setattr("app.main.TRIGGER_URL", "http://example.invalid")
+        res = client.post("/admin/rebuild/osm_japan")
+        assert res.status_code == 404
+
+    def test_admin_rebuild_proxies_to_trigger(self, client, monkeypatch):
+        monkeypatch.setattr("app.main.TRIGGER_URL", "http://trigger.internal")
+        calls = []
+
+        class FakeResponse:
+            status_code = 202
+
+            def json(self):
+                return {"status": "started", "source": "jawiki"}
+
+        def fake_post(url, timeout):
+            calls.append(url)
+            return FakeResponse()
+
+        monkeypatch.setattr("app.main.httpx.post", fake_post)
+        res = client.post("/admin/rebuild/jawiki", follow_redirects=False)
+        assert res.status_code == 303
+        assert res.headers["location"] == "/admin"
+        assert calls == ["http://trigger.internal/run/jawiki"]
+
 
 class TestClaudeConfig:
     """「いま設定を吐き出したら何が出るか」のプレビュー(管理画面)。"""
@@ -979,3 +1028,4 @@ class TestRankIndexPath:
             "/v1/jawiki/filter", params={"tag": "日本の都道府県", "limit": 2}
         ).json()
         assert exact["results"] == whole["results"]
+
