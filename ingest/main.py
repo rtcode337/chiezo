@@ -338,7 +338,7 @@ def run(source: str, data_dir: Path) -> Path:
     validate_db(adapter, building_path)
     final_path = switch_db(data_dir, source, dump_date, building_path)
     log.info("done: %s", final_path)
-    log.info("restart the API to pick up the new DB: docker compose restart chiezo-api")
+    log.info("the API will pick up the new DB automatically within a few seconds")
     return final_path
 
 
