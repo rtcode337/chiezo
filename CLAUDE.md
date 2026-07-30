@@ -143,6 +143,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     それより古い DB の行に注意書きを付けて再構築を促す
   - `/admin/claude-config`(GET/HTML)・`/admin/claude-config.txt`(GET/text/plain)・
     `/admin/claude-config.permissions.json`(GET/application/json)・
+    `/admin/claude-config.mcp.json`(GET/application/json)・
     `/admin/claude-config.hook.py`(GET/text/x-python)・
     `/admin/claude-config.hook.json`(GET/application/json) —
     Claude 連携設定の生成 API。現在の登録ソースから CLAUDE.md ブロックと
@@ -157,7 +158,12 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     リバースプロキシ越し・非標準ポートでもそのまま到達可能な URL になる
     - `.txt` の `?hook=1` は「自動許可フックを入れる前提の書き方の指示」を本文に足す。
       フックはクライアント側で `--with-hook` を指定したときしか入らないので、
-      既定で書くと入れていない環境には嘘になる。設置するときだけ付けて取りに来る
+      既定で書くと入れていない環境には嘘になる。設置するときだけ付けて取りに来る。
+      `?mcp=1` も同じ理屈で、MCP 登録済み環境向けの使い分けの指示
+      (単発の参照は MCP・大量取得は curl)を足す(`--with-mcp` のときだけ)
+    - `.mcp.json` は MCP サーバー登録の断片(`mcpServers.chiezo` → `<base>/mcp`)。
+      プロジェクト用 `.mcp.json` へのマージやユーザースコープの `claude mcp add` は
+      スクリプト側の仕事(登録名の正は `claude_config.MCP_SERVER_NAME`)
   - `app/hooks/chiezo_autoallow.py` — 上記フックの実体(`PreToolUse` フック)。
     Claude Code の `permissions.allow` は**コマンド文字列の前方一致**でしか判定できず、
     `for … do curl … done` やパイプに包まれた curl には 1 本もマッチしない。
@@ -375,6 +381,11 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       黙って諦めず落とす(明示的に頼まれた設置なので)
     - settings のマージは「コマンドが `chiezo-autoallow.py` を含む既存エントリ」を落としてから
       足すので、再実行しても重複せず、設置先を変えたときも古いパスのエントリが残らない
+    - `--with-mcp` を付けたときだけ MCP サーバーとしても登録する(これも既定ではしない —
+      ツール定義が常にコンテキストに載るため、使わない環境には純粋なコスト)。
+      `--user` は claude CLI(`claude mcp add --scope user`。remove → add で冪等)、
+      CLI の無い環境では jq で `~/.claude.json` の `mcpServers` へ直接マージ、
+      `--project`/`--target` は `.mcp.json` へのマージ(新規なら API 応答をそのまま置く)
   - `gen_wikipedia_editions.py` — `ingest/sources/wikipedia_editions.py`(Wikipedia 言語版
     カタログ)の生成器。Wikimedia の sitematrix(言語版一覧。closed/private/fishbowl は除外)、
     wikistats(記事数)、CLDR の言語名日本語表記を引いて 348 件の表を書き出す。

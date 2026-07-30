@@ -734,6 +734,7 @@ def request_origin(request: Request) -> str:
 def admin_claude_config_raw(
     request: Request,
     hook: bool = Query(False, description="自動許可フックを入れる前提の書き方の指示を含める"),
+    mcp: bool = Query(False, description="MCP サーバーを登録した前提の使い分けの指示を含める"),
 ):
     """生成される CLAUDE.md ブロックを text/plain で返す(gen_claude_config.sh の取得元)。
 
@@ -745,7 +746,21 @@ def admin_claude_config_raw(
     その一文は既定では出さない。
     """
     sources: dict[str, Source] = request.app.state.sources
-    return claude_config.build_block(sources, request_origin(request), hook=hook)
+    return claude_config.build_block(sources, request_origin(request), hook=hook, mcp=mcp)
+
+
+@app.get("/admin/claude-config.mcp.json", response_class=PlainTextResponse)
+def admin_claude_config_mcp(request: Request):
+    """MCP サーバー登録の断片(`.mcp.json` の中身)を返す。
+
+    URL はアクセス元から導出した `<base>/mcp`。プロジェクト用 `.mcp.json` への
+    書き込み・ユーザースコープでの `claude mcp add` は gen_claude_config.sh
+    (`--with-mcp`)が行う。
+    """
+    return PlainTextResponse(
+        claude_config.mcp_servers_json(request_origin(request)),
+        media_type="application/json",
+    )
 
 
 @app.get("/admin/claude-config.permissions.json", response_class=PlainTextResponse)
@@ -790,6 +805,7 @@ def admin_claude_config(request: Request):
     block = claude_config.build_block(sources, base)
     perms = claude_config.permission_json(base)
     hook = claude_config.hook_settings_json()
+    mcp = claude_config.mcp_servers_json(base)
     body = f"""
 <nav><a href="/admin">管理画面</a></nav>
 <h1>Claude Code 連携設定(プレビュー)</h1>
@@ -848,6 +864,21 @@ chiezo への curl を許可プロンプトなしに実行できるよう、下�
 <span id="msg-hook" class="muted"></span></p>
 <pre class="doc-body" id="config-hook">{esc(hook)}</pre>
 
+<h2>MCP サーバー登録(任意 / 既定では入らない)</h2>
+<p class="muted">
+chiezo は MCP サーバーでもある(<code>{esc(base.rstrip("/"))}/mcp</code>)。
+<code>gen_claude_config.sh --with-mcp</code> を付けると Claude Code に登録する:
+<code>--user</code> ならユーザースコープ(<code>claude mcp add --scope user</code>。
+claude CLI が無ければ jq で <code>~/.claude.json</code> へ直接マージ)、
+<code>--project</code>/<code>--target</code> なら
+<code>.mcp.json</code> へ下記断片をマージする。あわせて CLAUDE.md ブロックに
+「単発の参照は MCP・大量取得は curl」の使い分けの指示が入る。
+生: <a href="/admin/claude-config.mcp.json">/admin/claude-config.mcp.json</a>
+</p>
+<p><button type="button" id="copy-mcp">クリップボードにコピー</button>
+<span id="msg-mcp" class="muted"></span></p>
+<pre class="doc-body" id="config-mcp">{esc(mcp)}</pre>
+
 <script>
 function wireCopy(btnId, srcId, msgId) {{
   document.getElementById(btnId).addEventListener('click', async () => {{
@@ -864,6 +895,7 @@ function wireCopy(btnId, srcId, msgId) {{
 wireCopy('copy-block', 'config-block', 'msg-block');
 wireCopy('copy-perms', 'config-perms', 'msg-perms');
 wireCopy('copy-hook', 'config-hook', 'msg-hook');
+wireCopy('copy-mcp', 'config-mcp', 'msg-mcp');
 </script>
 """
     return HTMLResponse(content=page_shell("chiezo: Claude Code 連携設定", body))

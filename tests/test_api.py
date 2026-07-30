@@ -699,6 +699,38 @@ class TestClaudeConfig:
         assert withhook.startswith("<!-- BEGIN chiezo (auto-generated) -->")
         assert "- **jawiki**" in withhook
 
+    def test_mcp_json_returns_server_entry(self, client):
+        """MCP 登録断片(.mcp.json の中身)。URL はアクセス元から導出した <base>/mcp。"""
+        res = client.get(
+            "/admin/claude-config.mcp.json", headers={"Host": "192.168.1.10:9000"}
+        )
+        assert res.status_code == 200
+        assert res.headers["content-type"].startswith("application/json")
+        assert res.json() == {
+            "mcpServers": {
+                "chiezo": {"type": "http", "url": "http://192.168.1.10:9000/mcp"}
+            }
+        }
+
+    def test_config_txt_mentions_mcp_only_with_mcp(self, client):
+        """MCP の使い分けの指示は ?mcp=1 のときだけ出す(hook と同じ理屈)。
+
+        MCP は --with-mcp を明示したときしか登録されないので、既定の応答に
+        「MCP ツールを優先」と書くと、登録していない環境には嘘になる。
+        """
+        plain = client.get("/admin/claude-config.txt").text
+        assert "mcp__chiezo__" not in plain
+        assert "--with-mcp" not in plain
+
+        withmcp = client.get("/admin/claude-config.txt?mcp=1").text
+        assert "mcp__chiezo__" in withmcp
+        assert "単発の参照は MCP ツールを優先" in withmcp
+        # 再生成の案内にフラグが引き継がれる
+        assert "--with-mcp" in withmcp
+        # それ以外は同じブロック
+        assert withmcp.startswith("<!-- BEGIN chiezo (auto-generated) -->")
+        assert "- **jawiki**" in withmcp
+
     def test_hook_script_is_served_with_origin_baked_in(self, client):
         """フック本体は、アクセス元から導出したベース URL を埋め込んで配られる。"""
         res = client.get(

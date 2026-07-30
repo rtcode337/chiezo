@@ -36,6 +36,10 @@ END_MARK = "<!-- END chiezo -->"
 HOOK_FILENAME = "chiezo-autoallow.py"
 HOOK_PATH_PLACEHOLDER = "{{HOOK_PATH}}"
 
+# MCP サーバー登録名。Claude 側のツール名の接頭辞(mcp__chiezo__search 等)になるので、
+# 変えると既存環境の登録と二重になる。
+MCP_SERVER_NAME = "chiezo"
+
 _HOOK_SOURCE = Path(__file__).parent / "hooks" / "chiezo_autoallow.py"
 _ORIGIN_LINE_RE = re.compile(r'^CHIEZO_ORIGIN = "[^"]*"$', re.MULTILINE)
 
@@ -264,6 +268,29 @@ def permission_json(base_url: str) -> str:
     )
 
 
+def mcp_servers_json(base_url: str) -> str:
+    """MCP サーバー登録の断片(`.mcp.json` の中身そのもの)。
+
+    プロジェクト用 `.mcp.json` には新規作成ならこのまま、既存があれば
+    `mcpServers.chiezo` としてマージされる。ユーザースコープは Claude Code CLI
+    (`claude mcp add --scope user`)経由で登録するので、この JSON は使わず
+    URL(`<base>/mcp`)だけを使う(いずれも gen_claude_config.sh 側の仕事)。
+    """
+    base = base_url.rstrip("/")
+    return (
+        json.dumps(
+            {
+                "mcpServers": {
+                    MCP_SERVER_NAME: {"type": "http", "url": f"{base}/mcp"},
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n"
+    )
+
+
 def hook_script(base_url: str) -> str:
     """クライアントへ配る PreToolUse フック本体(`app/hooks/chiezo_autoallow.py`)。
 
@@ -318,6 +345,7 @@ def build_block(
     base_url: str,
     now: datetime | None = None,
     hook: bool = False,
+    mcp: bool = False,
 ) -> str:
     """CLAUDE.md に貼る chiezo ブロック(マーカー込み)を組み立てて返す。
 
@@ -325,6 +353,8 @@ def build_block(
     クライアント側で `--with-hook` を指定したときにしか入らないので、既定で
     書いてしまうと入れていない環境には嘘になる(gen_claude_config.sh が
     フックを設置するときだけ `?hook=1` で取りに来る)。
+    `mcp=True` も同じ理屈で、MCP サーバーを登録した環境にだけ使い分けの指示を足す
+    (`--with-mcp` のときだけ `?mcp=1` で取りに来る)。
     """
     base = base_url.rstrip("/")
     when = (now or datetime.now().astimezone()).strftime("%Y-%m-%d %H:%M %Z").strip()
@@ -352,6 +382,15 @@ def build_block(
         f'- ソース一覧(最新の登録状況): `curl -s "{base}/v1/sources"`',
     ]
 
+    if mcp:
+        out.append(
+            f"- MCP ツール(`mcp__{MCP_SERVER_NAME}__search` / `doc` / `filter` 等)も"
+            "同じ機能を提供している。**単発の参照は MCP ツールを優先**してよい"
+            "(引数が構造化されていて URL エンコードの失敗が無い)。"
+            "**大量取得・後処理があるときは curl** — MCP の応答は必ずコンテキストを"
+            "通るので、ページングや突合はファイルに落とせる curl のほうが向く。"
+        )
+
     if hook:
         out.append(
             "- 大量に引くときは `for` ループやパイプにまとめてよい(許可プロンプトは出ない)。"
@@ -373,9 +412,16 @@ def build_block(
         out.append("- (生成時点で登録済みソースは 0 件だった。取り込み後に本ブロックを再生成すること)")
 
     out.append("")
+    # 再生成の案内には今回のフラグを引き継がせる(--with-mcp で生成したブロックを
+    # フラグ無しで再生成すると、登録は残っているのに使い分けの指示だけ消えるため)
+    regen = f"scripts/gen_claude_config.sh --base-url {base}"
+    if mcp:
+        regen += " --with-mcp"
+    if hook:
+        regen += " --with-hook"
     out.append(
         f"<sub>この一覧は {when} 時点の chiezo(`{base}`)の登録ソースから自動生成。"
-        f"再生成: `scripts/gen_claude_config.sh --base-url {base}`</sub>"
+        f"再生成: `{regen}`</sub>"
     )
     out.append(END_MARK)
     return "\n".join(out) + "\n"

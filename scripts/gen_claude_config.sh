@@ -18,7 +18,8 @@
 #   scripts/gen_claude_config.sh --merge headless       # 既存と賢く統合(claude CLI 必要)
 #
 # オプション: --base-url/-u, --target/-o, --user(既定), --project,
-#             --merge {markers,headless}, --print, --no-permissions, --with-hook, --timeout
+#             --merge {markers,headless}, --print, --no-permissions, --with-hook,
+#             --with-mcp, --timeout
 #
 # 既定で、書き込み先に対応する Claude Code 設定(--user なら ~/.claude/settings.json、
 # --project/--target なら <対象ディレクトリ>/.claude/settings.local.json)に
@@ -44,6 +45,12 @@
 # 権限ルールより広い。中身を読んで納得してから入れられるよう、既定では設置せず
 # 明示的に --with-hook を指定したときだけ入れる。事前に中身だけ見たいときは
 # curl "<base>/admin/claude-config.hook.py" か管理画面 /admin/claude-config を見る。
+#
+# --with-mcp を付けると、chiezo の MCP サーバー(<base>/mcp)を Claude Code に登録する:
+#   - --user: ユーザースコープに登録(claude mcp add --scope user。claude CLI が無い環境では
+#     jq で ~/.claude.json の mcpServers へ直接マージする)
+#   - --project/--target: 対象ディレクトリの .mcp.json へマージ(GET /admin/claude-config.mcp.json)
+# あわせて CLAUDE.md ブロックに「単発の参照は MCP・大量取得は curl」の使い分けの指示が入る。
 
 BEGIN_MARK='<!-- BEGIN chiezo (auto-generated) -->'
 END_MARK='<!-- END chiezo -->'
@@ -56,12 +63,14 @@ MERGE="markers"
 PRINT=0
 WITHPERM=1
 WITHHOOK=0          # フックは明示的な --with-hook のときだけ設置する
+WITHMCP=0           # MCP 登録も明示的な --with-mcp のときだけ行う
 TIMEOUT=10
+MCP_NAME='chiezo'   # api 側 claude_config.MCP_SERVER_NAME と一致させる
 
 die() { echo "error: $*" >&2; exit 1; }
 
 usage() {
-  sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'
   exit 0
 }
 
@@ -83,6 +92,8 @@ while [ $# -gt 0 ]; do
     --no-permissions) WITHPERM=0; shift ;;
     --with-hook)   WITHHOOK=1; shift ;;
     --no-hook)     WITHHOOK=0; shift ;;        # 既定なので実質 no-op(明示用に残す)
+    --with-mcp)    WITHMCP=1; shift ;;
+    --no-mcp)      WITHMCP=0; shift ;;         # 既定なので実質 no-op(明示用に残す)
     --timeout)     TIMEOUT="$2"; shift 2 ;;
     --timeout=*)   TIMEOUT="${1#*=}"; shift ;;
     -h|--help)     usage ;;
@@ -122,18 +133,29 @@ if [ "$WITHHOOK" -eq 1 ]; then
   [ "$HAS_JQ" -eq 1 ] || die "--with-hook には jq が必要です(settings のマージに使う)"
 fi
 
+# MCP 登録の前提も取得より先に確定させる(ブロックに使い分けの指示を入れるかに影響する)。
+# ユーザースコープの MCP 設定は claude CLI の管理ファイル(~/.claude.json)にあるので、
+# CLI があればそれ経由で登録する。CLI の無い環境(VS Code 拡張のみ等)では
+# jq で ~/.claude.json の mcpServers キーへ直接マージする(他のキーは触らない)。
+HAS_CLAUDE=0
+command -v claude >/dev/null 2>&1 && HAS_CLAUDE=1
+if [ "$WITHMCP" -eq 1 ] && [ "$DEST" = "user" ] && [ "$HAS_CLAUDE" -eq 0 ] && [ "$HAS_JQ" -eq 0 ]; then
+  die "--user での --with-mcp には claude CLI か jq のどちらかが必要です(~/.claude.json への登録に使う)"
+fi
+
 # ---- API から取得 ----------------------------------------------------------
 # ベース URL(curl 例・許可ルール)はサーバー側がアクセス元 URL から導出するので、
 # ここで接続に使った $BASE と生成物の中の URL は一致する。
 BLOCK="$(mktemp)"
 PERMS="$(mktemp)"
 HOOKJ="$(mktemp)"
-trap 'rm -f "$BLOCK" "$PERMS" "$HOOKJ"' EXIT
+MCPJ=""             # --with-mcp のときだけ後段で mktemp する
+trap 'rm -f "$BLOCK" "$PERMS" "$HOOKJ" "$MCPJ"' EXIT
 
-# フックを入れるときだけ ?hook=1。自動許可に載る書き方の指示が本文に足される
-# (フック無しの環境にその指示を書いても嘘になるので、既定では足さない)。
-BLOCK_URL="$BASE/admin/claude-config.txt"
-[ "$WITHHOOK" -eq 1 ] && BLOCK_URL="$BLOCK_URL?hook=1"
+# フックを入れるときだけ ?hook=1、MCP を登録するときだけ mcp=1。それぞれの前提に
+# 立った書き方の指示が本文に足される(入れていない環境にその指示を書いても嘘になる
+# ので、既定では足さない)。
+BLOCK_URL="$BASE/admin/claude-config.txt?hook=$WITHHOOK&mcp=$WITHMCP"
 
 curl -fsS --max-time "$TIMEOUT" "$BLOCK_URL" -o "$BLOCK" \
   || die "chiezo に接続できません($BLOCK_URL)。--base-url を確認(稼働中の chiezo が必要)。"
@@ -268,4 +290,63 @@ if [ "$WITHHOOK" -eq 1 ]; then
     rm -f "$tmp"
     die "$sfile への hooks マージに失敗しました(JSON が壊れていないか確認)"
   fi
+fi
+
+# ---- MCP サーバー登録(--with-mcp のときだけ) -------------------------------
+# chiezo は MCP サーバーでもある($BASE/mcp、Streamable HTTP)。単発の参照は
+# MCP ツールのほうが確実(引数が構造化されていて URL エンコードの失敗が無い)なので、
+# 希望があれば Claude Code に登録する。既定で登録しないのは、ツール定義が常に
+# コンテキストに載る = 使わない環境には純粋なコストになるため。
+if [ "$WITHMCP" -eq 1 ]; then
+  if [ "$DEST" = "user" ] && [ "$HAS_CLAUDE" -eq 1 ]; then
+    # ユーザースコープは claude CLI 経由が第一候補。add は既存名と衝突すると
+    # 失敗するので、先に同名を消してから足す(= 何度実行しても同じ結果)。
+    claude mcp remove --scope user "$MCP_NAME" >/dev/null 2>&1 || true
+    claude mcp add --scope user --transport http "$MCP_NAME" "$BASE/mcp" >/dev/null \
+      || die "claude mcp add に失敗しました(claude mcp list で状態を確認)"
+    echo "MCP サーバーを登録しました: $MCP_NAME → $BASE/mcp(ユーザースコープ)" >&2
+  elif [ "$DEST" = "user" ]; then
+    # CLI の無い環境(前提検査済みなので jq はある)。~/.claude.json の mcpServers へ
+    # 直接マージする。無ければ mcpServers だけの新規ファイルとして作る。
+    ufile="$HOME/.claude.json"
+    MCPJ="$(mktemp)"
+    curl -fsS --max-time "$TIMEOUT" "$BASE/admin/claude-config.mcp.json" -o "$MCPJ" \
+      || die "MCP 設定を取得できません($BASE/admin/claude-config.mcp.json)"
+    [ -f "$ufile" ] || printf '{}\n' >"$ufile"
+    tmp="$(mktemp)"
+    if jq --slurpfile new "$MCPJ" --arg name "$MCP_NAME" \
+        '.mcpServers = ((.mcpServers // {}) + {($name): $new[0].mcpServers[$name]})' \
+        "$ufile" >"$tmp"; then
+      mv "$tmp" "$ufile"
+      echo "MCP サーバーを登録しました: $ufile($MCP_NAME → $BASE/mcp)" >&2
+    else
+      rm -f "$tmp"
+      die "$ufile への mcpServers マージに失敗しました(JSON が壊れていないか確認)"
+    fi
+  else
+    # プロジェクトスコープは対象ディレクトリの .mcp.json(VCS で共有される想定の場所)。
+    mfile="$(dirname "$TARGET_FILE")/.mcp.json"
+    MCPJ="$(mktemp)"
+    curl -fsS --max-time "$TIMEOUT" "$BASE/admin/claude-config.mcp.json" -o "$MCPJ" \
+      || die "MCP 設定を取得できません($BASE/admin/claude-config.mcp.json)"
+    if [ ! -f "$mfile" ]; then
+      cp "$MCPJ" "$mfile"
+      echo "MCP サーバーを登録しました: $mfile($MCP_NAME → $BASE/mcp)" >&2
+    elif [ "$HAS_JQ" -eq 1 ]; then
+      tmp="$(mktemp)"
+      if jq --slurpfile new "$MCPJ" --arg name "$MCP_NAME" \
+          '.mcpServers = ((.mcpServers // {}) + {($name): $new[0].mcpServers[$name]})' \
+          "$mfile" >"$tmp"; then
+        mv "$tmp" "$mfile"
+        echo "MCP サーバーを登録しました: $mfile($MCP_NAME → $BASE/mcp)" >&2
+      else
+        rm -f "$tmp"
+        die "$mfile への mcpServers マージに失敗しました(JSON が壊れていないか確認)"
+      fi
+    else
+      echo "注意: jq が無いため既存の $mfile を自動編集できません。mcpServers に手動追加してください:" >&2
+      sed 's/^/  /' "$MCPJ" >&2
+    fi
+  fi
+  echo "  反映には Claude Code の再起動(新しいセッションの開始)が必要です" >&2
 fi
