@@ -112,6 +112,10 @@ PAGE_STYLE = """
   details { margin-top: 1rem; }
   details > summary { cursor: pointer; font-weight: bold; padding: 0.3rem 0; }
   pre.doc-body { white-space: pre-wrap; word-break: break-word; }
+  pre.answer { white-space: pre-wrap; word-break: break-word; line-height: 1.7;
+               border: 1px solid #ccc; border-left: 4px solid #5560E0;
+               background: #fafaff; padding: 0.8rem 1rem; }
+  select { padding: 0.3rem 0.5rem; }
   input[type=text] { padding: 0.3rem 0.5rem; width: 20rem; }
   button { padding: 0.3rem 0.8rem; }
 """

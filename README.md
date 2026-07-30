@@ -9,8 +9,8 @@
 - **取り出す** — AI からの引き口は 2 経路。**MCP**(`/mcp`、Streamable HTTP)と
   **REST**(`search` / `doc` / `filter` / `tags` …)。Claude Code 向けには「どんなときに
   chiezo を使うか」を書いた CLAUDE.md ブロックも自動生成します
-- **答える(任意)** — ローカル LLM を同居させれば、ためた知識で回答まで返せます
-  (未実装。既定では起動しない構成にする予定)
+- **答える(任意)** — ローカル LLM を繋ぐと、ためた知識だけを根拠に回答まで返します
+  (`/v1/ask` と ブラウザの `/ask`)。**既定では無効**で、推論は別コンテナに置きます
 
 人間が中身を確かめるための簡易ブラウズ画面と管理画面(`/admin`)も付いています。
 
@@ -283,6 +283,112 @@ curl -s http://<サーバーIP>:9000/admin/claude-config.hook.py   # フック�
 設置には `python3`(フックの実行)と `jq`(settings のマージ)が必要です。
 何度実行しても `hooks.PreToolUse` は重複せず、設置先を変えた場合も古いエントリは掃除されます。
 反映には Claude Code の再起動(または一度 `/hooks` を開く)が必要な場合があります。
+
+## 答える(ローカル LLM。既定では無効)
+
+ためた知識**だけ**を根拠に、質問へ日本語で答えます。根拠にした文書は出典として必ず併記します。
+推論は chiezo-api の中では動かさず、**OpenAI 互換 API を喋る別プロセス**に任せます
+(配信側 chiezo-api がメモリ数百 MB で動く前提を壊さないため)。
+
+有効になるのは `CHIEZO_LLM_URL` を設定したときだけです。設定しなければ `/v1/ask` は 503 を返し、
+管理画面にも無効と表示されます。
+
+### 使いはじめる
+
+```bash
+cp .env.example .env
+# .env の CHIEZO_LLM_URL=http://chiezo-llm:8080/v1 の行のコメントを外す
+
+docker compose --profile answer up -d
+docker compose logs -f chiezo-llm     # 初回はモデルのダウンロード(約 2.5GB)
+```
+
+`--profile answer` を付けたときだけ推論コンテナ(`chiezo-llm` = llama.cpp の
+`llama-server`)が起動します。付けなければ従来どおり chiezo-api と chiezo-trigger だけです。
+モデルは起動時に Hugging Face から取得して `./models` にキャッシュするので、
+2 回目以降のダウンロードはありません。`chiezo-trigger` と同じくホストへポートを公開せず、
+chiezo-api からのみ内部ネットワーク経由で到達します。
+
+### 使い方
+
+```bash
+BASE=http://<サーバーIP>:9000
+
+curl -sG "$BASE/v1/ask" --data-urlencode "q=浅草寺はどこにある?" | jq .
+curl -sG "$BASE/v1/ask" --data-urlencode "q=浅草寺の歴史は?" -d source=jawiki   # ソースを固定
+curl -sG "$BASE/v1/ask" --data-urlencode "q=浅草寺はどこにある?" -d stream=1     # SSE で流す
+```
+
+```json
+{
+  "question": "浅草寺はどこにある?",
+  "answer": "浅草寺は東京都台東区浅草にある寺院です [1]。",
+  "references": [
+    {"n": 1, "source": "jawiki", "title": "浅草寺", "doc_id": 3, "url": "/jawiki/doc/3"}
+  ],
+  "queries": [{"source": "jawiki", "q": "浅草寺"}],
+  "model": "chiezo"
+}
+```
+
+- `q` — 質問文(自然文でよい)
+- `source` — 引くソースを固定する(省略時はどのソースを引くか LLM が選ぶ)
+- `stream=1` — `text/event-stream` で返す。`references`(出典。本文より先に確定するので先に届く)
+  → `delta`(本文の差分)× n → `done` の順。途中で推論側が落ちたら `error` イベントが挟まります
+
+ブラウザからは **`/ask`**(管理画面からも辿れます)。回答が出るまで数十秒かかるので、
+この画面だけは JavaScript で SSE を受けて逐次表示します。JavaScript が無効な場合は
+「回答が出揃ってから表示する」リンクが出ます。
+
+答えの作り方は 2 段です。まず質問文から検索クエリを組み立て(質問文をそのまま全文検索に
+入れても当たらないため)、その結果の上位文書の本文を抜粋して、**抜粋だけを根拠に**答えさせます。
+詳しくは [設計メモ](docs/design-notes.md#答える層はなぜ-2-段の-rag-か)を参照してください。
+
+### 別の推論サーバに向ける
+
+chiezo が要求するのは OpenAI 互換の `/v1/chat/completions` だけなので、`CHIEZO_LLM_URL` を
+差し替えれば Ollama・LM Studio・GPU 付きの別マシンなど何にでも向けられます
+(その場合 `--profile answer` は不要です)。
+
+```bash
+CHIEZO_LLM_URL=http://192.168.0.5:11434/v1     # Ollama
+CHIEZO_LLM_MODEL=qwen3:8b                       # 複数モデルを持つ相手では実在名が要る
+```
+
+### モデルとメモリ
+
+既定は `ggml-org/gemma-3-4b-it-GGUF:Q4_K_M`(約 2.5GB)です。`CHIEZO_LLM_HF_REPO` に
+Hugging Face の GGUF リポジトリを `<user>/<repo>:<quant>` の形で指定すると差し替わります。
+
+| | 目安 |
+|---|---|
+| CPU のみ | 4B 級・Q4_K_M まで。1 回の回答に数十秒 |
+| GPU あり | 7〜14B 級。image を `ghcr.io/ggml-org/llama.cpp:server-cuda13` 系に変え、`LLAMA_ARG_N_GPU_LAYERS` を足す |
+| メモリ | モデルのファイルサイズ + コンテキスト分(既定 8192 で数百 MB)が目安 |
+
+**配信機に同居させないでください。** chiezo-api 自体は従来どおり数百 MB で動きますが、
+推論はモデルサイズぶんのメモリを持っていきます。小型の配信機で使うなら、推論は
+LAN 上の別マシンに置いて `CHIEZO_LLM_URL` で指すのが素直です。
+
+chiezo-api 側の環境変数:
+
+| 変数 | 既定 | 説明 |
+|---|---|---|
+| `CHIEZO_LLM_URL` | (未設定 = 無効) | 推論サーバの OpenAI 互換ベース URL。`/v1` は省略しても補われる |
+| `CHIEZO_LLM_MODEL` | `chiezo` | リクエストに載せるモデル名。llama-server は 1 プロセス 1 モデルなので何でもよい |
+| `CHIEZO_LLM_API_KEY` | (なし) | 設定すると `Authorization: Bearer` を送る |
+| `CHIEZO_ANSWER_TIMEOUT` | `120` | 推論の待ち時間(秒)。DB クエリの 5 秒とは別枠 |
+| `CHIEZO_ANSWER_DOCS` | `4` | 根拠として本文を取ってくる文書数 |
+| `CHIEZO_ANSWER_MAX_CHARS` | `6000` | 抜粋の合計文字数の上限 |
+
+推論コンテナ側(`chiezo-llm`)は `CHIEZO_LLM_HF_REPO`(モデル)と `CHIEZO_LLM_CTX_SIZE`
+(コンテキスト長、既定 8192)で調整します。それ以外の項目は llama-server の
+`LLAMA_ARG_*` 環境変数を compose に足せば効きます。
+
+推論コンテナのイメージはタグを固定してあります(`server-b10156`)。dependabot は
+`api/` `ingest/` の Dockerfile しか見ていないので、更新するときは compose の
+このタグを手で上げてください(タグ一覧は
+[GHCR](https://github.com/ggml-org/llama.cpp/pkgs/container/llama.cpp))。
 
 ## 運用
 
@@ -578,6 +684,11 @@ MCP SDK の既定は「localhost 系の Host しか受け付けない」で、�
 LAN 内前提なので方針は揃っています)。絞りたい場合は `chiezo-api` の環境変数
 `CHIEZO_MCP_ALLOWED_HOSTS` に許可する Host をカンマ区切りで指定してください
 (例: `192.168.0.3:9000,localhost:*`。末尾 `:*` でポート任意)。
+
+「答える」層(`/v1/ask`・`/ask`)も同じ方針です。推論コンテナ `chiezo-llm` はホストへ
+ポートを公開せず、chiezo-api からのみ到達できます。ただし `/ask` に到達できる相手は誰でも
+推論を起動できる(比較的重い処理を認証なしで回せる)点は、初期化ボタンと同様に留意してください。
+質問文が外部へ送られることはありません(推論も検索もローカルで完結します)。
 
 `chiezo-trigger` はホストへポートを公開していません(`docker-compose.yml` に `ports:` の記載なし)。
 `chiezo-api` からのみ内部ネットワーク経由で到達できます。管理画面の初期化ボタンは

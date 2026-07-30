@@ -18,6 +18,8 @@ services:
     environment:
       - CHIEZO_DATA_DIR=/data
       - CHIEZO_TRIGGER_URL=http://chiezo-trigger:8080
+      - CHIEZO_LLM_URL=${CHIEZO_LLM_URL-}
+      - CHIEZO_LLM_MODEL=${CHIEZO_LLM_MODEL-}
     depends_on:
       - chiezo-trigger
     restart: unless-stopped
@@ -38,6 +40,27 @@ services:
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:8080/healthz"]
       interval: 60s
+
+  # 「答える」層の推論サーバ(本番と同じ。ここはビルドせず公開イメージをそのまま使う)。
+  chiezo-llm:
+    image: ghcr.io/ggml-org/llama.cpp:server-b10156
+    profiles: ["answer"]
+    environment:
+      - LLAMA_ARG_HF_REPO=${CHIEZO_LLM_HF_REPO:-ggml-org/gemma-3-4b-it-GGUF:Q4_K_M}
+      - LLAMA_ARG_CTX_SIZE=${CHIEZO_LLM_CTX_SIZE:-8192}
+      - LLAMA_ARG_HOST=0.0.0.0
+      - LLAMA_ARG_PORT=8080
+      - LLAMA_CACHE=/models
+    volumes:
+      - ./models:/models
+    restart: unless-stopped
+    # 推論は全コアを使い切るので、CPU が競合したときは他のコンテナへ譲る
+    # (取り込み系と同じ「良き隣人」の相対ウェイト。空いていれば全力で使える)。
+    cpu_shares: 512
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/health"]
+      interval: 60s
+      start_period: 600s
 
   chiezo-ingest:
     build: ./ingest

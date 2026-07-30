@@ -18,9 +18,10 @@ from fastapi.responses import (
     PlainTextResponse,
     RedirectResponse,
     Response,
+    StreamingResponse,
 )
 
-from app import claude_config, db
+from app import answer, claude_config, db
 from app.fts import build_match_query, escape_like
 from app.mcp_server import build_mcp
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
@@ -359,6 +360,17 @@ def _job_status_html(job: dict | None) -> str:
     return "\n".join(lines)
 
 
+def _answer_status_html() -> str:
+    """管理画面に出す「答える」層の状態(既定では無効なので、その旨と有効化方法を出す)。"""
+    if not answer.is_enabled():
+        return (
+            '<p class="muted">「答える」層は無効です。推論サーバの OpenAI 互換 URL を'
+            " <code>CHIEZO_LLM_URL</code> に設定すると有効になります"
+            "(compose なら <code>docker compose --profile answer up -d</code>)。</p>"
+        )
+    return '<p><a href="/ask">→ chiezo に質問する</a></p>'
+
+
 @app.get("/admin", response_class=HTMLResponse)
 def admin(request: Request):
     sources: dict[str, Source] = request.app.state.sources
@@ -469,6 +481,9 @@ def admin(request: Request):
 {init_rows}
 </tbody>
 </table>
+
+<h2>ためた知識で答える</h2>
+{_answer_status_html()}
 
 <h2>Claude Code 連携設定</h2>
 <p class="muted">
@@ -1596,6 +1611,175 @@ def random_docs(
         (limit,),
     )
     return {"source": source, "results": [dict(r) for r in rows]}
+
+
+# ---- 答える(ローカル LLM。既定では無効) -------------------------------------
+#
+# パイプラインの実体は app/answer.py。ここは HTTP の口(JSON / SSE / HTML)だけを持つ。
+# `CHIEZO_LLM_URL` が未設定なら丸ごと無効で、503 と有効化の案内を返す。
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@app.get("/v1/ask")
+async def ask(
+    request: Request,
+    q: str = Query(..., min_length=1, description="質問文(自然文でよい)"),
+    source: str | None = Query(None, description="引くソースを固定する(省略時は LLM が選ぶ)"),
+    stream: bool = Query(False, description="1 なら SSE で回答を流す"),
+):
+    cfg = answer.require_settings()
+    if not stream:
+        return await answer.answer(cfg, request, q, source)
+
+    # ストリーミングはヘッダを送った後でステータスを変えられないので、
+    # 失敗しうる段(クエリ生成・検索)はここで済ませてから流し始める。
+    queries, snippets, references = await answer.prepare(cfg, request, q, source)
+
+    async def events():
+        yield _sse(
+            "references",
+            {"references": references, "queries": queries, "model": cfg.model},
+        )
+        try:
+            async for delta in answer.stream_answer(cfg, q, snippets):
+                yield _sse("delta", {"text": delta})
+        except HTTPException as e:
+            detail = e.detail if isinstance(e.detail, dict) else {"error": str(e.detail)}
+            yield _sse("error", detail)
+        yield _sse("done", {})
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        # リバースプロキシに溜め込まれるとストリーミングの意味が無くなる
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# 回答が出るまで数十秒かかるので、ここだけ inline JS で SSE を受けて逐次表示する。
+# JS はあくまで上乗せで、フォームは素の GET なので JS が動かなくても
+# (非ストリーミングの)回答は表示される。
+ASK_STREAM_JS = """
+(function () {
+  var out = document.getElementById('answer');
+  var refs = document.getElementById('references');
+  if (!out || !window.EventSource) return;
+  var q = out.dataset.q, source = out.dataset.source;
+  if (!q) return;
+  out.textContent = '';
+  var url = '/v1/ask?stream=1&q=' + encodeURIComponent(q)
+          + (source ? '&source=' + encodeURIComponent(source) : '');
+  var es = new EventSource(url);
+  es.addEventListener('references', function (e) {
+    // 文書タイトルは < や " を含みうるので innerHTML では組み立てない
+    refs.textContent = '';
+    var list = JSON.parse(e.data).references;
+    if (!list.length) { refs.textContent = '(なし)'; return; }
+    list.forEach(function (r) {
+      var li = document.createElement('li');
+      var a = document.createElement('a');
+      a.href = r.url;
+      a.textContent = r.source + ' / ' + r.title;
+      li.appendChild(document.createTextNode('[' + r.n + '] '));
+      li.appendChild(a);
+      refs.appendChild(li);
+    });
+  });
+  es.addEventListener('delta', function (e) { out.textContent += JSON.parse(e.data).text; });
+  es.addEventListener('error', function (e) {
+    // サーバから届いたエラー(data あり)と、接続断による native error を区別する。
+    // どちらでも必ず close する — 放っておくと EventSource が再接続し、
+    // 推論をまるごともう一度走らせてしまう。
+    if (e.data) {
+      try { out.textContent += '\\n[エラー] ' + JSON.parse(e.data).error; } catch (_) {}
+    } else {
+      out.textContent += '\\n[接続が切れました]';
+    }
+    es.close();
+  });
+  es.addEventListener('done', function () { es.close(); });
+})();
+"""
+
+
+# 末尾スラッシュ付きはキャッチオールの /{source}/ に食われて「unknown source: ask」に
+# なってしまうので、先に受けて /ask へ寄せる(ブラウザで手打ちしたときの迷子を防ぐ)。
+@app.get("/ask/", include_in_schema=False)
+def ask_page_slash(request: Request):
+    query = request.url.query
+    return RedirectResponse(url="/ask" + (f"?{query}" if query else ""))
+
+
+@app.get("/ask", response_class=HTMLResponse)
+async def ask_page(
+    request: Request,
+    q: str | None = Query(None),
+    source: str | None = Query(None),
+    nojs: bool = Query(False, description="JS を使わず、回答が出揃ってから表示する"),
+):
+    sources: dict[str, Source] = request.app.state.sources
+    options = '<option value="">(自動)</option>' + "".join(
+        f'<option value="{esc(name)}"{" selected" if name == source else ""}>{esc(name)}</option>'
+        for name in sorted(sources)
+    )
+    form = f"""
+<nav><a href="/admin">管理画面</a></nav>
+<h1>chiezo に質問する</h1>
+<form method="get" action="/ask">
+<input type="text" name="q" value="{esc(q or '')}" placeholder="質問を書く(自然文でよい)">
+<select name="source">{options}</select>
+<button type="submit">質問する</button>
+</form>
+"""
+    if not answer.is_enabled():
+        body = form + """
+<p class="stale">「答える」層は無効です。</p>
+<p class="muted">推論サーバの OpenAI 互換 URL を <code>CHIEZO_LLM_URL</code> に設定すると有効になります
+(compose なら <code>docker compose --profile answer up -d</code>)。</p>
+"""
+        return HTMLResponse(content=page_shell("chiezo: 質問する", body))
+    if not q:
+        body = form + """
+<p class="muted">ためた知識(登録済みソース)だけを根拠に回答します。
+根拠にした文書は出典として下に並びます。</p>
+"""
+        return HTMLResponse(content=page_shell("chiezo: 質問する", body))
+
+    cfg = answer.require_settings()
+    nojs_url = f"/ask?nojs=1&q={quote(q)}" + (f"&source={quote(source)}" if source else "")
+    if not nojs:
+        # 既定は「空の枠を返して JS が SSE で埋める」。ここでサーバ側でも回答を作ると
+        # 推論を二重に走らせる(数十秒 × 2)ので、JS が無い場合だけ下の nojs 経路に回す。
+        body = form + f"""
+<h2>回答</h2>
+<pre class="answer" id="answer" data-q="{esc(q)}" data-source="{esc(source or '')}">生成中…</pre>
+<h2>出典</h2>
+<ul id="references"><li>(生成中)</li></ul>
+<noscript><p class="stale">JavaScript が無効です。
+<a href="{esc(nojs_url)}">回答が出揃ってから表示する</a>(数十秒かかります)。</p></noscript>
+<script>{ASK_STREAM_JS}</script>
+"""
+        return HTMLResponse(content=page_shell("chiezo: 質問する", body))
+
+    result = await answer.answer(cfg, request, q, source)
+    refs = "\n".join(
+        f'<li>[{r["n"]}] <a href="{esc(r["url"])}">{esc(r["source"])} / {esc(r["title"])}</a></li>'
+        for r in result["references"]
+    ) or "<li>(なし)</li>"
+    body = form + f"""
+<h2>回答</h2>
+<pre class="answer">{esc(result['answer'])}</pre>
+<h2>出典</h2>
+<ul>
+{refs}
+</ul>
+<p class="muted">検索に使ったクエリ: {esc(json.dumps(result['queries'], ensure_ascii=False))}
+/ モデル: {esc(result['model'])}</p>
+"""
+    return HTMLResponse(content=page_shell("chiezo: 質問する", body))
 
 
 # ---- ブラウズ画面(人間向け HTML) -------------------------------------------

@@ -8,8 +8,9 @@ SQLite (FTS5) に取り込んで索引し、AI が引ける形で出す。完全
   (`/data/<source>.db`)を作る。更新はブルーグリーン
 - **取り出す** — `api/` が **MCP**(`/mcp`)と **REST**(`/v1/...`)の 2 経路で出す。
   Claude Code 向けには「いつ chiezo を使うか」を書いた CLAUDE.md ブロックも生成する
-- **答える(任意・未実装)** — ローカル LLM を同居させ、ためた知識で回答まで返す構想。
-  既定では起動しない別サービスにすること(配信側が数百 MB で動く前提を壊さないため)
+- **答える(任意)** — `api/app/answer.py` が、ためた知識だけを根拠に回答を返す
+  (`/v1/ask` と ブラウザの `/ask`)。推論は同居させず OpenAI 互換 API を叩くだけで、
+  **`CHIEZO_LLM_URL` 未設定が既定 = 丸ごと無効**(配信側が数百 MB で動く前提を壊さないため)
 
 現在の収録ソースは日本語 Wikipedia = `jawiki`、OpenStreetMap 日本抽出 = `osm_japan`、
 GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か国から選んで増やせる)。
@@ -20,7 +21,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   ファイル名の stem と `meta.source` が一致する `*.db` をソースとして登録する(世代ファイル
   `jawiki-20260701.db` は登録されず、シンボリックリンク `jawiki.db` のみ登録される)。
   - `app/main.py` — ルーティング(/, /healthz, /apple-touch-icon.png, /v1/sources,
-    /v1/{source}/search|doc|filter|tags|titles|links|random,
+    /v1/{source}/search|doc|filter|tags|titles|links|random, /v1/ask, /ask,
     /admin, /admin/init/{source}, /admin/rebuild/{source}, /{source}/, /{source}/doc/{doc_id}、
     および MCP の /mcp(実体は下の `app/mcp_server.py`))
     - `/v1/{source}/filter` — 全文検索ではなく属性(`feature` / `area` / `bbox` / `wikidata` /
@@ -107,6 +108,28 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     1 インスタンス 1 回しか呼べないため、**起動ごとに `build_mcp()` で作り直して**
     `app.state.mcp_asgi` に置き、マウント先(`main._mcp_asgi`)がそれを見る形にしている
     (モジュール読み込み時に作り置きすると、同一プロセスで二度起動するテストが落ちる)
+  - `app/answer.py` — **「答える」層(`/v1/ask`・`/ask`)の本体**。使い方・環境変数は
+    README「答える(ローカル LLM。既定では無効)」節が、なぜこの形かは
+    `docs/design-notes.md`「「答える」層はなぜ 2 段の RAG か」が正。実装側の要点:
+    - **`CHIEZO_LLM_URL` が機能フラグを兼ねる**(未設定 = 丸ごと無効、`/v1/ask` は 503)。
+      推論はこのプロセスに入れない。ここがするのは OpenAI 互換の `/chat/completions` を
+      叩くことだけで、モデルは別コンテナ(compose の profile `answer` の `chiezo-llm`
+      = llama.cpp の `llama-server`)か LAN 上の別マシンにいる
+    - **検索は `app/main.py` のエンドポイント関数をそのまま呼ぶ**(`app/mcp_server.py` と
+      同じ方針。取り出し方を二重に持つと片方だけ直されて必ずずれる)。FastAPI の
+      エンドポイントは既定値が `Query(...)` オブジェクトなので**全パラメータを明示的に渡す**。
+      同期関数なので `run_in_threadpool` に逃がす(重いクエリ 1 本で API 全体を止めない)
+    - **クエリ生成の段(LLM 1 回目)は `?source=` 指定時も省かない**。ソースを絞っても
+      「質問文 → 検索語」の変換は残るからで、飛ばすと `app/fts.py` が質問文全体を
+      1 フレーズにして 0 件になる(日本語は空白で切れない)
+    - **`parse_plan()` は諦めながら落ちる**(素直な JSON → `{…}` 抜き出し → `"q"` の
+      拾い出し → 質問文の最長断片)。小型モデルの JSON 出力は当てにならないので、
+      1 段目の失敗で 500 にせず劣化経路で回答まで到達させる。何で引いたかは応答の
+      `queries` に必ず載るので、劣化は呼び出し側から見える
+    - 数値の環境変数は `_env_num()` で読む。compose は未設定の変数を `VAR=`(空文字)で
+      渡すため、素直に `float()` すると「.env に書いていない」だけで 500 になる
+    - ストリーミング(`?stream=1`)は**クエリ生成・検索を流し始める前に済ませる**
+      (`prepare()` → `stream_answer()`)。SSE はヘッダ送出後にステータスを変えられない
   - `app/registry.py` — /data 走査・ソース登録、`SUPPORTED_SCHEMA_VERSIONS` /
     `FILTER_MIN_SCHEMA_VERSION` / `TAG_MIN_SCHEMA_VERSION`
   - `app/db.py` — スレッドローカル immutable 接続、5 秒クエリタイムアウト(超過は 504)
@@ -188,6 +211,16 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `?q=` 指定時は結果一覧を表示し、`/v1/{source}/search` と同じロジック
     (FTS または短語のタイトル前方一致フォールバック)
   - `/{source}/doc/{doc_id}`(GET) — 文書詳細(title/tags/opening/body/links/extra)の HTML 表示
+  - `/v1/ask`(GET) — 「答える」層の REST。`stream=0`(既定)は JSON 一括、`stream=1` は
+    SSE(`references` → `delta` × n → `done`、失敗時は `error` を挟む)。
+    無効なら 503、推論サーバに繋がらなければ 502、タイムアウトは 504
+  - `/ask`(GET) — 質問フォームと回答の HTML。**キャッチオールの `/{source}/` より前に
+    定義すること**。既定はサーバ側で推論を回さず、空の枠 + inline JS(`ASK_STREAM_JS`)が
+    `EventSource` で `/v1/ask?stream=1` から埋める — ここでサーバ側でも回答を作ると
+    推論が二重に走る(数十秒 × 2)。JS が無い環境向けに `?nojs=1`(出揃ってから表示)への
+    導線を `<noscript>` で出す。**この画面だけ JS を使う**のは、数十秒無反応で待たせる
+    体験を避けるため(他の画面は従来どおり JS なし)。末尾スラッシュ付きの `/ask/` は
+    キャッチオールに食われて「unknown source: ask」になるので、専用ルートで `/ask` へ寄せる
 - `ingest/` — **chiezo-ingest**: ワンショット構築バッチ。
   - `main.py` — 共通フレーム: 取得 → `.building` へ構築 → FTS → 検証 → ブルーグリーン切り替え(シンボリックリンク差し替え、旧世代 1 つ保持)。
     アダプタが `EXTRA_FETCH_HOOKS`(`fetch_pageviews` / `fetch_page_props`)を持つ場合、
@@ -429,7 +462,10 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
 - `tests/` — フィクスチャ(`fixtures/mini_jawiki.xml.gz` 12 文書、`fixtures/mini_osm.osm.pbf`、
   `fixtures/mini_geonames.zip` ほか geonames 一式)での API / ingest テスト。
   `test_mcp.py` は /mcp に生の JSON-RPC を 1 発 POST して確かめる(ステートレスな
-  トランスポートなので initialize のハンドシェイクが要らず、応答は SSE フレームの data: 行)
+  トランスポートなので initialize のハンドシェイクが要らず、応答は SSE フレームの data: 行)。
+  `test_answer.py` は `answer._llm_client` を `httpx.MockTransport` 入りのクライアントに
+  差し替えて偽の OpenAI 互換サーバを演じさせる(推論サーバもネットワークも無しで、
+  クエリ生成 → 検索 → 回答の全経路を通せる)
 - `.github/workflows/ci.yml` — push / PR で pytest を実行し、main への push で
   `chiezo-api` / `chiezo-ingest` の 2 イメージをマルチアーキ(amd64 / arm64)で GHCR へ公開
   (cc-tasks / travel-log の docker-publish と同じダイジェストマージ方式。
@@ -534,8 +570,12 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
   直前が句読点・閉じ括弧だと、CommonMark の flanking rule で閉じ側と認識されず、太字にならずに
   `*` がそのまま表示される(日本語では句点で終える書き方が自然なので踏みやすい)。
   `**…です**。次の文` と書く。検出は markdown をレンダリングして本文に `*` が残るかを見る。
-- 認証なし・LAN 内前提。ルーターでポート開放しないこと。chiezo-trigger はホストへポート公開せず、
-  chiezo-api からのみ内部ネットワーク経由で到達可能にすること。
+- 認証なし・LAN 内前提。ルーターでポート開放しないこと。chiezo-trigger と chiezo-llm は
+  ホストへポート公開せず、chiezo-api からのみ内部ネットワーク経由で到達可能にすること。
+- **「答える」層は既定で無効のまま保つ**。推論を chiezo-api の中で動かさない(配信側が
+  数百 MB で動く前提)。LLM を呼ぶコードは `app/answer.py` に閉じ、検索・文書取得は
+  `app/main.py` の関数を再利用する。compose では profile `answer` を付けたときだけ
+  `chiezo-llm` が起動する状態を崩さない。
 - コード(api/ ingest/ の挙動・エンドポイント・環境変数など)を変更したら、同じ変更で
   README.md(セットアップ・API 仕様・運用手順)と本ファイル(CLAUDE.md、アーキテクチャ記述)も
   あわせて更新すること。ドキュメントだけを別コミット・別対応に先送りしない。
