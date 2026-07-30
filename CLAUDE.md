@@ -179,7 +179,10 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     (`tests/test_claude_hook.py` が判定の許可/拒否を両側から固定している)
   - `app/claude_config.py` — 上記ブロックの生成ロジック。**生成の正はここ(api 側)に置く**。
     同一プロセスの DB を schema_version と索引付きの `WHERE lat IS NOT NULL LIMIT 1` 等で
-    直接引くので、HTTP プローブと違い巨大ソース(jawiki)でも timeout の false-negative が出ない
+    直接引くので、HTTP プローブと違い巨大ソース(jawiki)でも timeout の false-negative が出ない。
+    ただし**索引の無い列を同じ形で探ってはいけない**: `links` は生成列でも索引付きでもないので
+    `WHERE links IS NOT NULL LIMIT 1` は 1 件も無いソースほど全表を舐める(geonames 1300 万件で
+    3.2 秒)。`_has_links()` は先頭 `_LINKS_SAMPLE_ROWS` 行だけ見て判定する
   - `/{source}/`(GET) — 検索フォーム(HTML)。`?q=` 未指定時は一覧を出さずフォームのみ表示
     (jawiki 等の大規模ソースで rank_score 順の全件一覧がフルスキャンとなりタイムアウトするため)。
     `?q=` 指定時は結果一覧を表示し、`/v1/{source}/search` と同じロジック

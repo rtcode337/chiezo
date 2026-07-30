@@ -336,3 +336,18 @@ class TestOsmFilter:
         )
         assert res.status_code == 400
         assert "nope" in res.json()["error"]
+
+
+class TestOsmClaudeConfig:
+    """OSM ソースの CLAUDE.md ブロック(生成の正は app/claude_config.py)。"""
+
+    def test_config_txt_mentions_links_as_the_wikipedia_bridge(self, client):
+        """osm の links は「対応する Wikipedia 記事名」なので、そう説明されること。
+
+        jawiki と同じ「関連記事の一覧」だと思われると、OSM 側では常に 1 件以下
+        しか返らない理由が分からず、取れないものを取ろうとして空回りする。
+        """
+        text = client.get("/admin/claude-config.txt").text
+        assert "/v1/osm_japan/links" in text
+        assert "`wikipedia` タグから作った対応記事のタイトル" in text
+        assert "タグの無い地物は空配列" in text

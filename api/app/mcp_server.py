@@ -213,7 +213,12 @@ def build_mcp(app: FastAPI) -> FastMCP:
             request=_request(app), source=source, prefix=prefix, limit=limit,
         )
 
-    @mcp.tool(description="その文書から出ているリンク(関連文書のタイトル)の一覧を返す。")
+    @mcp.tool(description=(
+        "その文書から出ているリンク(関連文書のタイトル)の一覧を返す。"
+        "出リンクのみで、被リンク(この文書を指している文書)は取れない。"
+        "本文の出現順そのままなので重複があり、`記事名#節名` の形も混じる。"
+        "doc に渡す前に重複を落として `#` の前で切ること。"
+    ))
     async def links(source: str, title: str) -> dict:
         return await run_in_threadpool(
             _call, api.links,

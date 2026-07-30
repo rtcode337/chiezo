@@ -623,6 +623,17 @@ class TestClaudeConfig:
         assert "本文の全文検索で `Category:` 行を探してはいけない" in text
         assert "/v1/jawiki/tags?limit=20" in text
 
+    def test_config_txt_documents_the_links_pitfalls(self, client):
+        """links の例示には、素直に使うと外す 3 点(出リンクのみ・重複・節付き)を添える。
+
+        これが無いと「被リンクも取れる」前提の依頼を組み立てたり、`記事名#節名` を
+        そのまま doc に渡して 404 を踏んだりする。
+        """
+        text = client.get("/admin/claude-config.txt").text
+        assert "/v1/jawiki/links" in text
+        assert "被リンク(この記事を指している記事)は取れない" in text
+        assert "`#` の前で切ること" in text
+
     def test_config_txt_base_url_is_derived_from_request(self, client):
         """curl 例のベース URL はアクセス元(プロトコル・ホスト名・ポート)から導出する。"""
         res = client.get("/admin/claude-config.txt")
@@ -1159,3 +1170,49 @@ class TestAutoReload:
                 assert c.get("/v1/jawiki/doc", params={"title": "新東京都"}).status_code == 200
         finally:
             mp.undo()
+
+
+class TestHasLinks:
+    """links を持つソースかの判定(claude_config._has_links)。"""
+
+    @staticmethod
+    def _src(path):
+        from app.registry import Source
+
+        return Source(
+            name="dummy", kind="wikipedia", lang="ja", dump_date="20260701",
+            schema_version=4, built_at="", doc_count=0, path=path,
+        )
+
+    def _build(self, path, rows, links_at=None):
+        import sqlite3
+
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE docs (doc_id INTEGER PRIMARY KEY, links TEXT)")
+        conn.executemany(
+            "INSERT INTO docs (doc_id, links) VALUES (?, ?)",
+            [(i, '["x"]' if i == links_at else None) for i in range(rows)],
+        )
+        conn.commit()
+        conn.close()
+
+    def test_detects_links(self, tmp_path):
+        from app import claude_config
+
+        path = tmp_path / "with_links.db"
+        self._build(path, 10, links_at=3)
+        assert claude_config._has_links(self._src(path)) is True
+
+    def test_reports_absence_without_scanning_the_whole_table(self, tmp_path, monkeypatch):
+        """判定は先頭 _LINKS_SAMPLE_ROWS 行で打ち切る(全表を舐めない)。
+
+        links は索引が無いので、1 件も無いソースほど全表スキャンが長引く
+        (実測: geonames 1300 万件で 3.2 秒)。判定 1 個にその時間は払えないので、
+        窓の外にしか links が無い DB では False になるのが仕様どおり。
+        """
+        from app import claude_config
+
+        monkeypatch.setattr(claude_config, "_LINKS_SAMPLE_ROWS", 5)
+        path = tmp_path / "late_links.db"
+        self._build(path, 50, links_at=40)
+        assert claude_config._has_links(self._src(path)) is False

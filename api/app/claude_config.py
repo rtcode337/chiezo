@@ -47,6 +47,9 @@ _ORIGIN_LINE_RE = re.compile(r'^CHIEZO_ORIGIN = "[^"]*"$', re.MULTILINE)
 _TAG_SAMPLE_ROWS = 200_000
 _TAG_SAMPLE_TIMEOUT = 2.0
 
+# links の有無を判定するために読む docs の行数(_has_links 参照)。
+_LINKS_SAMPLE_ROWS = 200_000
+
 
 def _sample(src: Source) -> tuple[str, set[str], list[str]]:
     """例示に使うサンプルのタイトルと、その doc の extra のキー集合・tags。"""
@@ -78,6 +81,28 @@ def _has_value(src: Source, column: str) -> bool:
     """
     try:
         rows = db.query(src.path, f"SELECT 1 FROM docs WHERE {column} IS NOT NULL LIMIT 1")
+    except sqlite3.Error:
+        return False
+    return bool(rows)
+
+
+def _has_links(src: Source) -> bool:
+    """links(出リンク先タイトルの配列)が入っているソースか。
+
+    links は生成列でも索引付きでもないので、`WHERE links IS NOT NULL LIMIT 1` を
+    そのまま打つと、**入っていないソースほど遅い**(1 件も無いと全表を舐める。
+    実測: geonames 13,391,482 件で 3.2 秒。ここは判定 1 個のために払う額ではない)。
+    知りたいのは「このソースは links を持つ設計か」だけなので、先頭の一定件数だけ
+    見て決める。links を作るソース(wikipedia)は全記事に入るし、一部にしか入らない
+    ソース(osm は wikipedia タグのある地物だけ)でもこの範囲に必ず現れる。
+    """
+    try:
+        rows = db.query(
+            src.path,
+            "SELECT 1 FROM (SELECT links FROM docs LIMIT ?)"
+            " WHERE links IS NOT NULL LIMIT 1",
+            (_LINKS_SAMPLE_ROWS,),
+        )
     except sqlite3.Error:
         return False
     return bool(rows)
@@ -153,6 +178,14 @@ def _emit_source(base: str, src: Source, out: list[str]) -> None:
         out.append(f'  - 概要:   `curl -sG "{base}/v1/{name}/doc?fields=title,opening,tags" --data-urlencode "title={title}"`')
         out.append(f'  - 本文:   `curl -sG "{base}/v1/{name}/doc?max_chars=8000" --data-urlencode "title={title}"`')
         out.append(f'  - 候補:   `curl -sG "{base}/v1/{name}/titles" --data-urlencode "prefix={title}"`')
+        if _has_links(src):
+            out.append(
+                f'  - リンク: `curl -sG "{base}/v1/{name}/links" --data-urlencode "title={title}"`'
+                " (その記事から出ている内部リンク先のタイトル一覧。関連記事をたどるのに使う。"
+                "**出リンクのみで、被リンク(この記事を指している記事)は取れない**。"
+                "本文の出現順そのままなので同じタイトルが何度も入り、`記事名#節名` の形も"
+                "混じる。`doc` に渡す前に重複を落として `#` の前で切ること)"
+            )
         if has_tags:
             tag = _sample_tag(src) or (sample_tags[0] if sample_tags else "<カテゴリ名>")
             out.append(
@@ -223,6 +256,13 @@ def _emit_source(base: str, src: Source, out: list[str]) -> None:
                     f'  - 逆引き: `curl -s "{base}/v1/{name}/filter?wikidata=Q17221&fields=title,extra"`'
                     " (wikidata の Q 番号 → 地物)"
                 )
+        if _has_links(src):
+            out.append(
+                f'  - 対応記事: `curl -sG "{base}/v1/{name}/links" --data-urlencode "title={title}"`'
+                " (OSM の `wikipedia` タグから作った対応記事のタイトル。言語プレフィックスは"
+                "外してあるので Wikipedia ソースの `doc?title=` にそのまま渡せる。"
+                "タグの無い地物は空配列)"
+            )
         return
 
     # その他(geonames 等)
@@ -230,6 +270,12 @@ def _emit_source(base: str, src: Source, out: list[str]) -> None:
     out.append(f"- **{name}**({paren})")
     out.append(f'  - 検索:   `curl -sG "{base}/v1/{name}/search?limit=5" --data-urlencode "q={query}"`')
     out.append(f'  - 文書:   `curl -sG "{base}/v1/{name}/doc?fields=title,opening,body" --data-urlencode "title={title}"`')
+    if _has_links(src):
+        out.append(
+            f'  - リンク: `curl -sG "{base}/v1/{name}/links" --data-urlencode "title={title}"`'
+            " (その文書から出ているリンク先タイトルの一覧。**出リンクのみで、被リンクは取れない**。"
+            "重複を落とすのは呼び出し側の仕事)"
+        )
     if has_tags and (tag := _sample_tag(src) or (sample_tags[0] if sample_tags else None)):
         out.append(
             f'  - タグ列挙: `curl -sG "{base}/v1/{name}/filter?limit=200"'
