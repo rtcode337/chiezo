@@ -844,7 +844,7 @@ claude CLI が無ければ jq で <code>~/.claude.json</code> へ直接マージ
 <span id="msg-mcp" class="muted"></span></p>
 <pre class="doc-body" id="config-mcp">{esc(mcp)}</pre>
 
-<h2>権限ファイル</h2>
+<h2>権限ファイル(既定で入る)</h2>
 <p class="muted">
 書き込み先: <code>--user</code> なら <code>~/.claude/settings.json</code>、
 <code>--project</code> なら <code>./.claude/settings.local.json</code>。
