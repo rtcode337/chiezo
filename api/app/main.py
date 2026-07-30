@@ -828,6 +828,22 @@ curl 例・許可ルールのベース URL は、この画面へのアクセス�
 <span id="msg-block" class="muted"></span></p>
 <pre class="doc-body" id="config-block">{esc(block)}</pre>
 
+<h2>MCP サーバー登録(既定で入る)</h2>
+<p class="muted">
+chiezo は MCP サーバーでもある(<code>{esc(base.rstrip("/"))}/mcp</code>)。
+<code>gen_claude_config.sh</code> は既定でこれも Claude Code に登録する:
+<code>--user</code> ならユーザースコープ(<code>claude mcp add --scope user</code>。
+claude CLI が無ければ jq で <code>~/.claude.json</code> へ直接マージ)、
+<code>--project</code>/<code>--target</code> なら
+<code>.mcp.json</code> へ下記断片をマージする。あわせて上の CLAUDE.md ブロックに
+「単発の参照は MCP・大量取得は curl」の使い分けの指示が入る。
+登録が不要なら <code>--no-mcp</code>。
+生: <a href="/admin/claude-config.mcp.json">/admin/claude-config.mcp.json</a>
+</p>
+<p><button type="button" id="copy-mcp">クリップボードにコピー</button>
+<span id="msg-mcp" class="muted"></span></p>
+<pre class="doc-body" id="config-mcp">{esc(mcp)}</pre>
+
 <h2>権限ファイル</h2>
 <p class="muted">
 書き込み先: <code>--user</code> なら <code>~/.claude/settings.json</code>、
@@ -865,22 +881,6 @@ chiezo への curl を許可プロンプトなしに実行できるよう、下�
 <p><button type="button" id="copy-hook">クリップボードにコピー</button>
 <span id="msg-hook" class="muted"></span></p>
 <pre class="doc-body" id="config-hook">{esc(hook)}</pre>
-
-<h2>MCP サーバー登録(既定で入る)</h2>
-<p class="muted">
-chiezo は MCP サーバーでもある(<code>{esc(base.rstrip("/"))}/mcp</code>)。
-<code>gen_claude_config.sh</code> は既定でこれも Claude Code に登録する:
-<code>--user</code> ならユーザースコープ(<code>claude mcp add --scope user</code>。
-claude CLI が無ければ jq で <code>~/.claude.json</code> へ直接マージ)、
-<code>--project</code>/<code>--target</code> なら
-<code>.mcp.json</code> へ下記断片をマージする。あわせて上の CLAUDE.md ブロックに
-「単発の参照は MCP・大量取得は curl」の使い分けの指示が入る。
-登録が不要なら <code>--no-mcp</code>。
-生: <a href="/admin/claude-config.mcp.json">/admin/claude-config.mcp.json</a>
-</p>
-<p><button type="button" id="copy-mcp">クリップボードにコピー</button>
-<span id="msg-mcp" class="muted"></span></p>
-<pre class="doc-body" id="config-mcp">{esc(mcp)}</pre>
 
 <script>
 function wireCopy(btnId, srcId, msgId) {{

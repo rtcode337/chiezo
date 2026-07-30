@@ -769,6 +769,15 @@ class TestClaudeConfig:
         assert "/admin/claude-config.hook.py" in res.text
         assert "/admin/claude-config.mcp.json" in res.text
 
+    def test_config_html_puts_defaults_before_optional_sections(self, client):
+        """既定で入る設定(CLAUDE.md ブロック → MCP → 権限)を先に、任意のフックを後に置く。
+
+        画面を上から読んだ順が「既定で何が入るか」になるようにするための並び。
+        """
+        text = client.get("/admin/claude-config").text
+        order = [text.index(f'id="config-{n}"') for n in ("block", "mcp", "perms", "hook")]
+        assert order == sorted(order), "既定の設定が任意のフックより後に来ている"
+
     def test_config_html_previews_the_script_defaults(self, client):
         """プレビューはスクリプトの既定と一致させる: MCP 登録は入り、フックは入らない。
 
