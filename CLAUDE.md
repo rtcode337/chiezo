@@ -159,8 +159,9 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     - `.txt` の `?hook=1` は「自動許可フックを入れる前提の書き方の指示」を本文に足す。
       フックはクライアント側で `--with-hook` を指定したときしか入らないので、
       既定で書くと入れていない環境には嘘になる。設置するときだけ付けて取りに来る。
-      `?mcp=1` も同じ理屈で、MCP 登録済み環境向けの使い分けの指示
-      (単発の参照は MCP・大量取得は curl)を足す(`--with-mcp` のときだけ)
+      `?mcp=1` は MCP 登録済み環境向けの使い分けの指示(単発の参照は MCP・大量取得は
+      curl)を足す。**MCP 登録はスクリプトの既定**なのでこちらは通常付いてくる
+      (`--no-mcp` のときだけ落ちる。HTML プレビューも既定に合わせて `mcp=True` で出す)
     - `.mcp.json` は MCP サーバー登録の断片(`mcpServers.chiezo` → `<base>/mcp`)。
       プロジェクト用 `.mcp.json` へのマージやユーザースコープの `claude mcp add` は
       スクリプト側の仕事(登録名の正は `claude_config.MCP_SERVER_NAME`)
@@ -381,11 +382,16 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       黙って諦めず落とす(明示的に頼まれた設置なので)
     - settings のマージは「コマンドが `chiezo-autoallow.py` を含む既存エントリ」を落としてから
       足すので、再実行しても重複せず、設置先を変えたときも古いパスのエントリが残らない
-    - `--with-mcp` を付けたときだけ MCP サーバーとしても登録する(これも既定ではしない —
-      ツール定義が常にコンテキストに載るため、使わない環境には純粋なコスト)。
-      `--user` は claude CLI(`claude mcp add --scope user`。remove → add で冪等)、
-      CLI の無い環境では jq で `~/.claude.json` の `mcpServers` へ直接マージ、
-      `--project`/`--target` は `.mcp.json` へのマージ(新規なら API 応答をそのまま置く)
+    - MCP サーバーの登録も**既定で行う**(`--no-mcp` で無効)。`--user` は claude CLI
+      (`claude mcp add --scope user`。remove → add で冪等)、CLI の無い環境では jq で
+      `~/.claude.json` の `mcpServers` へ直接マージ、`--project`/`--target` は
+      `.mcp.json` へのマージ(新規なら API 応答をそのまま置く)。
+      前提(claude CLI か jq)が無ければ警告して登録だけ飛ばす — 既定の動作なので、
+      明示的に `--with-mcp` されたときだけ落とす。
+      **フックと違って既定で入れる**理由: フックが opt-in なのは Bash を自動承認しうる
+      security 上の判断で、MCP 登録にはその性質が無い。ツール定義は常時コンテキストに
+      載るが(7 ツールで約 4.4k 字)、既定で入れている CLAUDE.md ブロック(約 4.3k 字)と
+      同程度で、chiezo を設定する時点で使う前提なのだから片方だけ渋る理由が無い
   - `gen_wikipedia_editions.py` — `ingest/sources/wikipedia_editions.py`(Wikipedia 言語版
     カタログ)の生成器。Wikimedia の sitematrix(言語版一覧。closed/private/fishbowl は除外)、
     wikistats(記事数)、CLDR の言語名日本語表記を引いて 348 件の表を書き出す。

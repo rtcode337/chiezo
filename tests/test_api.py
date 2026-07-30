@@ -713,10 +713,10 @@ class TestClaudeConfig:
         }
 
     def test_config_txt_mentions_mcp_only_with_mcp(self, client):
-        """MCP の使い分けの指示は ?mcp=1 のときだけ出す(hook と同じ理屈)。
+        """MCP の使い分けの指示は ?mcp=1 のときだけ出す。
 
-        MCP は --with-mcp を明示したときしか登録されないので、既定の応答に
-        「MCP ツールを優先」と書くと、登録していない環境には嘘になる。
+        登録はスクリプト側の既定なので通常は付いてくるが、`--no-mcp` の環境に
+        「MCP ツールを優先」と書くと嘘になるため、API はパラメータで受け取る。
         """
         plain = client.get("/admin/claude-config.txt").text
         assert "mcp__chiezo__" not in plain
@@ -755,16 +755,28 @@ class TestClaudeConfig:
     def test_config_html_has_all_blocks_and_copy_buttons(self, client):
         res = client.get("/admin/claude-config")
         assert res.status_code == 200
-        # CLAUDE.md ブロック・権限ファイル・フック設定を、それぞれのコピーボタン付きで出す
+        # CLAUDE.md ブロック・権限ファイル・フック設定・MCP 登録を、それぞれのコピーボタン付きで出す
         assert 'id="config-block"' in res.text
         assert 'id="config-perms"' in res.text
         assert 'id="config-hook"' in res.text
+        assert 'id="config-mcp"' in res.text
         assert 'id="copy-block"' in res.text
         assert 'id="copy-perms"' in res.text
         assert 'id="copy-hook"' in res.text
+        assert 'id="copy-mcp"' in res.text
         assert "BEGIN chiezo" in res.text
         assert "permissions" in res.text
         assert "/admin/claude-config.hook.py" in res.text
+        assert "/admin/claude-config.mcp.json" in res.text
+
+    def test_config_html_previews_the_script_defaults(self, client):
+        """プレビューはスクリプトの既定と一致させる: MCP 登録は入り、フックは入らない。
+
+        ここがずれると、管理画面で見た内容と実際に書き込まれる内容が食い違う。
+        """
+        text = client.get("/admin/claude-config").text
+        assert "mcp__chiezo__" in text          # MCP は既定で登録するので使い分けが載る
+        assert "許可プロンプトは出ない" not in text  # フックは --with-hook のときだけ
 
     def test_admin_links_to_config_page(self, client):
         res = client.get("/admin")

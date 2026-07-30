@@ -177,8 +177,8 @@ REST と同じ機能を MCP(Model Context Protocol)のツールとしても提�
 
 ```bash
 claude mcp add --transport http chiezo http://<サーバーIP>:9000/mcp
-# または設定生成スクリプトに任せる(--with-mcp。次節参照)
-scripts/gen_claude_config.sh -u http://<サーバーIP>:9000 --with-mcp
+# 次節の設定生成スクリプトを使うなら、この登録も既定で行われます(手動登録は不要)
+scripts/gen_claude_config.sh -u http://<サーバーIP>:9000
 ```
 
 公開しているツールは `sources` / `search` / `doc` / `filter` / `tags` / `titles` / `links` の
@@ -209,6 +209,7 @@ jq を使います)。
 `~/.claude/settings.json`、`--project`/`--target` なら `.claude/settings.local.json`)に
 chiezo への `curl` を許可するルールを追記するため、生成後は chiezo への `curl` が
 毎回の許可プロンプトなしに実行できます(`--no-permissions` で無効化可)。
+さらに既定で、chiezo を **MCP サーバーとしても登録**します(後述)。
 
 ```bash
 # ~/.claude/CLAUDE.md を更新・localhost:9000 を参照
@@ -232,14 +233,22 @@ scripts/gen_claude_config.sh --print       # 書き込まず内容だけ確認
 `--project`(`./CLAUDE.md`)、`--target/-o`(書き込み先をパス指定)、`--merge {markers,headless}`、
 `--print`、`--no-permissions`(既定で行う上記の権限追記を無効化)、
 `--with-hook`(下記の自動許可フックを設置。既定では設置しない)、
-`--with-mcp`(MCP サーバーとしても登録。`--user` なら `claude mcp add --scope user`
-〔`claude` CLI が無ければ jq で `~/.claude.json` へ直接マージ〕、
-`--project`/`--target` なら `.mcp.json` へマージ。あわせて
-CLAUDE.md ブロックに「単発の参照は MCP・大量取得は curl」の使い分けの指示が入る。
-既定で登録しないのは、ツール定義が常にコンテキストに載るため使わない環境には
-純粋なコストになるから)。
+`--no-mcp`(既定で行う下記の MCP 登録を無効化)。
 生成は chiezo 本体が行うため、稼働中の chiezo が必要です(旧 `--offline --sources` は廃止)。
 生成される文面の要点は「まず `search` で当たりを付け、必要な文書だけ `doc` を取る(コンテキスト節約)」です。
+
+#### MCP サーバーの登録(既定・`--no-mcp` で無効化)
+
+chiezo は [MCP サーバーでもある](#mcp-から使うmcp)ため、生成時に Claude Code へ登録も行います。
+書き込み先は `--user` ならユーザースコープ(`claude mcp add --scope user`。`claude` CLI が
+無い環境では jq で `~/.claude.json` の `mcpServers` へ直接マージ)、`--project`/`--target` なら
+対象ディレクトリの `.mcp.json` です。どちらも再実行で重複しません。あわせて CLAUDE.md
+ブロックに**「単発の参照は MCP ツール・大量取得は `curl`」の使い分け**が書かれます
+(MCP の応答は必ずモデルのコンテキストを通るため、ページングや突合はファイルに落とせる
+`curl` の方が向くという理由です)。
+
+前提(`claude` CLI か jq)がどちらも無い環境では、警告を出して登録だけ飛ばします
+(CLAUDE.md の生成は続きます)。反映には Claude Code の再起動(新しいセッション)が必要です。
 
 #### 大量取得でプロンプトが出てしまう場合(`--with-hook`)
 

@@ -46,11 +46,14 @@
 # 明示的に --with-hook を指定したときだけ入れる。事前に中身だけ見たいときは
 # curl "<base>/admin/claude-config.hook.py" か管理画面 /admin/claude-config を見る。
 #
-# --with-mcp を付けると、chiezo の MCP サーバー(<base>/mcp)を Claude Code に登録する:
+# また既定で、chiezo の MCP サーバー(<base>/mcp)を Claude Code に登録する:
 #   - --user: ユーザースコープに登録(claude mcp add --scope user。claude CLI が無い環境では
 #     jq で ~/.claude.json の mcpServers へ直接マージする)
 #   - --project/--target: 対象ディレクトリの .mcp.json へマージ(GET /admin/claude-config.mcp.json)
 # あわせて CLAUDE.md ブロックに「単発の参照は MCP・大量取得は curl」の使い分けの指示が入る。
+# chiezo は REST と MCP の両方で同じ機能を出しており、単発の参照は引数が構造化された
+# MCP のほうが確実(URL エンコードの失敗が無い)なので、curl 用の設定と揃えて既定で入れる。
+# 登録が不要なら --no-mcp。前提(claude CLI か jq)が無い環境では警告して登録だけ飛ばす。
 
 BEGIN_MARK='<!-- BEGIN chiezo (auto-generated) -->'
 END_MARK='<!-- END chiezo -->'
@@ -63,7 +66,8 @@ MERGE="markers"
 PRINT=0
 WITHPERM=1
 WITHHOOK=0          # フックは明示的な --with-hook のときだけ設置する
-WITHMCP=0           # MCP 登録も明示的な --with-mcp のときだけ行う
+WITHMCP=1           # MCP 登録は既定で行う(--no-mcp で無効化)
+MCPEXPLICIT=0       # --with-mcp を明示されたか(前提が欠けたとき落とすか黙って飛ばすかの分岐)
 TIMEOUT=10
 MCP_NAME='chiezo'   # api 側 claude_config.MCP_SERVER_NAME と一致させる
 
@@ -92,8 +96,8 @@ while [ $# -gt 0 ]; do
     --no-permissions) WITHPERM=0; shift ;;
     --with-hook)   WITHHOOK=1; shift ;;
     --no-hook)     WITHHOOK=0; shift ;;        # 既定なので実質 no-op(明示用に残す)
-    --with-mcp)    WITHMCP=1; shift ;;
-    --no-mcp)      WITHMCP=0; shift ;;         # 既定なので実質 no-op(明示用に残す)
+    --with-mcp)    WITHMCP=1; MCPEXPLICIT=1; shift ;;  # 既定なので実質 no-op(明示用に残す)
+    --no-mcp)      WITHMCP=0; shift ;;
     --timeout)     TIMEOUT="$2"; shift 2 ;;
     --timeout=*)   TIMEOUT="${1#*=}"; shift ;;
     -h|--help)     usage ;;
@@ -140,7 +144,13 @@ fi
 HAS_CLAUDE=0
 command -v claude >/dev/null 2>&1 && HAS_CLAUDE=1
 if [ "$WITHMCP" -eq 1 ] && [ "$DEST" = "user" ] && [ "$HAS_CLAUDE" -eq 0 ] && [ "$HAS_JQ" -eq 0 ]; then
-  die "--user での --with-mcp には claude CLI か jq のどちらかが必要です(~/.claude.json への登録に使う)"
+  # 既定の動作なので、前提が無い環境では登録だけ諦めて CLAUDE.md の生成は続ける
+  # (明示的に頼まれたときだけ落とす)。
+  if [ "$MCPEXPLICIT" -eq 1 ]; then
+    die "--user での --with-mcp には claude CLI か jq のどちらかが必要です(~/.claude.json への登録に使う)"
+  fi
+  echo "注意: claude CLI も jq も無いため MCP サーバーの登録を飛ばします(--no-mcp で警告を消せます)" >&2
+  WITHMCP=0
 fi
 
 # ---- API から取得 ----------------------------------------------------------
@@ -292,11 +302,13 @@ if [ "$WITHHOOK" -eq 1 ]; then
   fi
 fi
 
-# ---- MCP サーバー登録(--with-mcp のときだけ) -------------------------------
+# ---- MCP サーバー登録(既定で行う。--no-mcp で無効) -------------------------
 # chiezo は MCP サーバーでもある($BASE/mcp、Streamable HTTP)。単発の参照は
 # MCP ツールのほうが確実(引数が構造化されていて URL エンコードの失敗が無い)なので、
-# 希望があれば Claude Code に登録する。既定で登録しないのは、ツール定義が常に
-# コンテキストに載る = 使わない環境には純粋なコストになるため。
+# curl 用の CLAUDE.md ブロック・権限と揃えて既定で登録する。ツール定義はコンテキストに
+# 常駐するが(7 ツールで約 4.4k 字)、既定で入れている CLAUDE.md ブロックと同程度で、
+# chiezo を設定する時点で使う前提の環境なのだから、片方だけ渋る理由が無い。
+# フックを既定で入れないのは security 上の理由(Bash を自動承認しうる)で、こことは別。
 if [ "$WITHMCP" -eq 1 ]; then
   if [ "$DEST" = "user" ] && [ "$HAS_CLAUDE" -eq 1 ]; then
     # ユーザースコープは claude CLI 経由が第一候補。add は既存名と衝突すると
