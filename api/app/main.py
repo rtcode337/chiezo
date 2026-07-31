@@ -1629,10 +1629,14 @@ async def ask(
     q: str = Query(..., min_length=1, description="質問文(自然文でよい)"),
     source: str | None = Query(None, description="引くソースを固定する(省略時は LLM が選ぶ)"),
     stream: bool = Query(False, description="1 なら SSE で回答を流す"),
+    grounded: bool = Query(
+        True,
+        description="1(既定)は chiezo の抜粋だけを根拠にする。0 なら足りない分をモデルの知識で補う",
+    ),
 ):
     cfg = answer.require_settings()
     if not stream:
-        return await answer.answer(cfg, request, q, source)
+        return await answer.answer(cfg, request, q, source, grounded)
 
     # ストリーミングはヘッダを送った後でステータスを変えられないので、
     # 失敗しうる段(クエリ生成・検索)はここで済ませてから流し始める。
@@ -1641,10 +1645,13 @@ async def ask(
     async def events():
         yield _sse(
             "references",
-            {"references": references, "queries": queries, "model": cfg.model},
+            {
+                "references": references, "queries": queries,
+                "grounded": grounded, "model": cfg.model,
+            },
         )
         try:
-            async for delta in answer.stream_answer(cfg, q, snippets):
+            async for delta in answer.stream_answer(cfg, q, snippets, grounded):
                 yield _sse("delta", {"text": delta})
         except HTTPException as e:
             detail = e.detail if isinstance(e.detail, dict) else {"error": str(e.detail)}
@@ -1670,7 +1677,8 @@ ASK_STREAM_JS = """
   var q = out.dataset.q, source = out.dataset.source;
   if (!q) return;
   out.textContent = '';
-  var url = '/v1/ask?stream=1&q=' + encodeURIComponent(q)
+  var url = '/v1/ask?stream=1&grounded=' + (out.dataset.grounded || '1')
+          + '&q=' + encodeURIComponent(q)
           + (source ? '&source=' + encodeURIComponent(source) : '');
   var es = new EventSource(url);
   es.addEventListener('references', function (e) {
@@ -1719,11 +1727,19 @@ async def ask_page(
     q: str | None = Query(None),
     source: str | None = Query(None),
     nojs: bool = Query(False, description="JS を使わず、回答が出揃ってから表示する"),
+    grounded: bool = Query(True, description="chiezo の抜粋だけを根拠にする"),
 ):
     sources: dict[str, Source] = request.app.state.sources
     options = '<option value="">(自動)</option>' + "".join(
         f'<option value="{esc(name)}"{" selected" if name == source else ""}>{esc(name)}</option>'
         for name in sorted(sources)
+    )
+    # チェックボックスではなく select にしてある。チェックボックスは off のとき何も
+    # 送らないので hidden との併用が要り、その場合 grounded=0&grounded=1 の 2 値が
+    # 飛んで FastAPI は先頭(=0)を採る。select なら必ず 1 値だけ送られる。
+    grounded_options = "".join(
+        f'<option value="{value}"{" selected" if (value == "1") == grounded else ""}>{label}</option>'
+        for value, label in (("1", "抜粋のみを根拠にする"), ("0", "モデルの知識で補ってよい"))
     )
     form = f"""
 <nav><a href="/admin">管理画面</a></nav>
@@ -1731,6 +1747,7 @@ async def ask_page(
 <form method="get" action="/ask">
 <input type="text" name="q" value="{esc(q or '')}" placeholder="質問を書く(自然文でよい)">
 <select name="source">{options}</select>
+<select name="grounded">{grounded_options}</select>
 <button type="submit">質問する</button>
 </form>
 """
@@ -1749,13 +1766,17 @@ async def ask_page(
         return HTMLResponse(content=page_shell("chiezo: 質問する", body))
 
     cfg = answer.require_settings()
-    nojs_url = f"/ask?nojs=1&q={quote(q)}" + (f"&source={quote(source)}" if source else "")
+    nojs_url = (
+        f"/ask?nojs=1&grounded={'1' if grounded else '0'}&q={quote(q)}"
+        + (f"&source={quote(source)}" if source else "")
+    )
     if not nojs:
         # 既定は「空の枠を返して JS が SSE で埋める」。ここでサーバ側でも回答を作ると
         # 推論を二重に走らせる(数十秒 × 2)ので、JS が無い場合だけ下の nojs 経路に回す。
         body = form + f"""
 <h2>回答</h2>
-<pre class="answer" id="answer" data-q="{esc(q)}" data-source="{esc(source or '')}">生成中…</pre>
+<pre class="answer" id="answer" data-q="{esc(q)}" data-source="{esc(source or '')}"
+ data-grounded="{'1' if grounded else '0'}">生成中…</pre>
 <h2>出典</h2>
 <ul id="references"><li>(生成中)</li></ul>
 <noscript><p class="stale">JavaScript が無効です。
@@ -1764,7 +1785,7 @@ async def ask_page(
 """
         return HTMLResponse(content=page_shell("chiezo: 質問する", body))
 
-    result = await answer.answer(cfg, request, q, source)
+    result = await answer.answer(cfg, request, q, source, grounded)
     refs = "\n".join(
         f'<li>[{r["n"]}] <a href="{esc(r["url"])}">{esc(r["source"])} / {esc(r["title"])}</a></li>'
         for r in result["references"]

@@ -438,8 +438,11 @@ def gather_context(
 # ---- 段 3: 回答 -------------------------------------------------------------
 
 
-ANSWER_SYSTEM = """\
-あなたはローカル知識ベース「chiezo」の回答係です。渡された抜粋だけを根拠に、日本語で簡潔に答えてください。
+# 回答方針は 2 つあり、`grounded` で切り替える。これは chiezo の設計思想ではなく
+# **モデルの幻覚への対処**なので、固定の制約にはしない(chiezo は AI 用の知識ベースで、
+# ローカル LLM はそれを使う側。持っている知識を封じるのが目的ではない)。
+ANSWER_SYSTEM_GROUNDED = """\
+あなたはローカル知識ベース「chiezo」の回答係です。渡された抜粋を根拠に、日本語で簡潔に答えてください。
 
 規則:
 - 抜粋に書かれていないことは答えない。根拠が無ければ「抜粋からは分かりません」と言う
@@ -447,18 +450,49 @@ ANSWER_SYSTEM = """\
 - 抜粋の丸写しではなく、質問に答える形にまとめる
 """
 
+ANSWER_SYSTEM_OPEN = """\
+あなたはローカル知識ベース「chiezo」を引ける回答係です。chiezo から取ってきた抜粋を踏まえ、
+日本語で簡潔に答えてください。
 
-def build_answer_messages(question: str, snippets: list[dict]) -> list[dict]:
+規則:
+- 抜粋に書かれていることは、根拠にした番号を [1] の形で付ける
+- 抜粋で足りない部分は自分の知識で補ってよい。ただしその部分には番号を付けない
+- 抜粋と自分の知識が食い違うときは抜粋を優先し、食い違い自体も述べる
+"""
+
+# grounded=1 なのに抜粋が 1 件も取れなかったときの答え。ここで LLM を呼ばないのは、
+# 実測で小型モデル(gemma-3-1b)が「抜粋が空でも自分の知識で答えてしまう」ことを
+# 確かめたため。守れない約束をプロンプトだけに委ねず、経路として断つ。
+NO_CONTEXT_ANSWER = (
+    "抜粋からは分かりません(chiezo で該当する文書が見つかりませんでした)。"
+    "検索語を変えるか、source を指定するか、grounded=0 で聞き直してください。"
+)
+
+
+def build_answer_messages(
+    question: str, snippets: list[dict], grounded: bool = True
+) -> list[dict]:
     if snippets:
         blocks = "\n\n".join(
             f"[{s['n']}] {s['source']} / {s['title']}\n{s['text']}" for s in snippets
         )
     else:
-        blocks = "(該当する文書が見つかりませんでした)"
+        # grounded=0 でここに来る(grounded=1 は has_no_basis で手前で止まる)。
+        # 念を押さないと小型モデルは根拠が無くても [1] を書く(実測: gemma-3-1b)。
+        # 応答の references が空なら本文中の番号は無意味、というのが呼び出し側との契約。
+        blocks = (
+            "(該当する文書が見つかりませんでした。"
+            "根拠が 1 件も無いので、[1] のような出典番号は絶対に付けないこと)"
+        )
     return [
-        {"role": "system", "content": ANSWER_SYSTEM},
+        {"role": "system", "content": ANSWER_SYSTEM_GROUNDED if grounded else ANSWER_SYSTEM_OPEN},
         {"role": "user", "content": f"# 抜粋\n{blocks}\n\n# 質問\n{question}"},
     ]
+
+
+def has_no_basis(snippets: list[dict], grounded: bool) -> bool:
+    """grounded なのに根拠が 1 件も無い状態(= LLM を呼ぶ意味がない)。"""
+    return grounded and not snippets
 
 
 # ---- 呼び出し口 -------------------------------------------------------------
@@ -473,24 +507,44 @@ async def prepare(
     return queries, snippets, references
 
 
-async def answer(cfg: Settings, request: Request, question: str, source: str | None) -> dict:
+async def answer(
+    cfg: Settings,
+    request: Request,
+    question: str,
+    source: str | None,
+    grounded: bool = True,
+) -> dict:
     """まとめて 1 つの JSON を返す(非ストリーミング)。"""
     queries, snippets, references = await prepare(cfg, request, question, source)
-    text = await _complete(cfg, build_answer_messages(question, snippets), temperature=0.2)
+    if has_no_basis(snippets, grounded):
+        text = NO_CONTEXT_ANSWER
+    else:
+        text = await _complete(
+            cfg, build_answer_messages(question, snippets, grounded), temperature=0.2
+        )
     return {
         "question": question,
         "answer": text.strip(),
         "references": references,
         "queries": queries,
+        "grounded": grounded,
         "model": cfg.model,
     }
 
 
-def stream_answer(cfg: Settings, question: str, snippets: list[dict]) -> AsyncIterator[str]:
+async def stream_answer(
+    cfg: Settings, question: str, snippets: list[dict], grounded: bool = True
+) -> AsyncIterator[str]:
     """回答本文を差分で返す(`/v1/ask?stream=1` の本体)。
 
     取得(`prepare`)は呼び出し側が**先に**済ませること。ストリーミング応答は
     ヘッダを送った後で失敗してもステータスコードを変えられないので、
     クエリ生成・検索の失敗は流し始める前に HTTP のエラーとして返す必要がある。
     """
-    return _stream(cfg, build_answer_messages(question, snippets), temperature=0.2)
+    if has_no_basis(snippets, grounded):
+        yield NO_CONTEXT_ANSWER
+        return
+    async for delta in _stream(
+        cfg, build_answer_messages(question, snippets, grounded), temperature=0.2
+    ):
+        yield delta

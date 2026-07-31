@@ -179,6 +179,74 @@ class TestAskJson:
         assert res.status_code == 200
 
 
+class TestGrounding:
+    """回答方針の切り替え。「抜粋だけ」は chiezo の思想ではなくモデルの幻覚対策。"""
+
+    def test_grounded_is_the_default(self, monkeypatch_env):
+        fake = FakeLLM(PLAN_OK, ANSWER_OK)
+        with make_client(monkeypatch_env, fake) as client:
+            res = client.get("/v1/ask", params={"q": "浅草寺はどこ?"})
+        assert res.json()["grounded"] is True
+        assert "抜粋に書かれていないことは答えない" in fake.requests[1]["messages"][0]["content"]
+
+    def test_open_mode_lets_the_model_fill_gaps(self, monkeypatch_env):
+        fake = FakeLLM(PLAN_OK, ANSWER_OK)
+        with make_client(monkeypatch_env, fake) as client:
+            res = client.get("/v1/ask", params={"q": "浅草寺はどこ?", "grounded": 0})
+        assert res.json()["grounded"] is False
+        system = fake.requests[1]["messages"][0]["content"]
+        assert "自分の知識で補ってよい" in system
+        assert "抜粋に書かれていないことは答えない" not in system
+
+    def test_grounded_without_any_snippet_never_calls_the_model(self, monkeypatch_env):
+        """実測で 1B は「抜粋が空でも自分の知識で答える」。経路として断つ。"""
+        no_hit = json.dumps(
+            {"queries": [{"source": "jawiki", "q": "存在しない語句ですよこれは"}]},
+            ensure_ascii=False,
+        )
+        fake = FakeLLM(no_hit, ANSWER_OK)
+        with make_client(monkeypatch_env, fake) as client:
+            res = client.get("/v1/ask", params={"q": "存在しない語句ですよこれは"})
+        body = res.json()
+        assert body["references"] == []
+        assert "抜粋からは分かりません" in body["answer"]
+        assert fake.calls == 1  # クエリ生成のみ。回答の推論は走らせない
+
+    def test_open_mode_still_answers_without_snippets(self, monkeypatch_env):
+        no_hit = json.dumps(
+            {"queries": [{"source": "jawiki", "q": "存在しない語句ですよこれは"}]},
+            ensure_ascii=False,
+        )
+        fake = FakeLLM(no_hit, ANSWER_OK)
+        with make_client(monkeypatch_env, fake) as client:
+            res = client.get(
+                "/v1/ask", params={"q": "存在しない語句ですよこれは", "grounded": 0}
+            )
+        assert res.json()["answer"] == ANSWER_OK
+        assert fake.calls == 2
+        # 根拠 0 件なので、番号を付けるなと明示して渡す(1B は放っておくと [1] を捏造する)
+        assert "出典番号は絶対に付けないこと" in fake.requests[1]["messages"][-1]["content"]
+
+    def test_streaming_reports_the_no_basis_answer_too(self, monkeypatch_env):
+        no_hit = json.dumps(
+            {"queries": [{"source": "jawiki", "q": "存在しない語句ですよこれは"}]},
+            ensure_ascii=False,
+        )
+        fake = FakeLLM(no_hit, ANSWER_OK)
+        with make_client(monkeypatch_env, fake) as client:
+            res = client.get(
+                "/v1/ask", params={"q": "存在しない語句ですよこれは", "stream": 1}
+            )
+        assert "抜粋からは分かりません" in res.text
+        assert fake.calls == 1
+
+    def test_page_offers_both_policies(self, monkeypatch_env):
+        with make_client(monkeypatch_env, FakeLLM()) as client:
+            res = client.get("/ask")
+        assert 'name="grounded"' in res.text
+        assert "モデルの知識で補ってよい" in res.text
+
+
 class TestAskStreaming:
     def test_sse_emits_references_then_deltas_then_done(self, monkeypatch_env):
         fake = FakeLLM(PLAN_OK, "東京都です")
