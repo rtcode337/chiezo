@@ -303,6 +303,8 @@ def collect_references(refs: list[dict], source: str, payload: Any) -> None:
     if rows is None:
         rows = [payload] if payload.get("title") else []
     found = []
+    if not source:
+        return  # どのソースの文書か分からなければ、リンクを組み立てられない
     for row in rows:
         if not isinstance(row, dict) or not row.get("title"):
             continue
@@ -489,7 +491,13 @@ async def stream(
                 if name == websearch.TOOL_NAME:
                     add_references(references, websearch.references_from(payload))
                 else:
-                    collect_references(references, (arguments or {}).get("source", ""), payload)
+                    # notes の道具(remember / recall)は source 引数を持たない
+                    default_source = "notes" if name in NOTE_TOOLS else ""
+                    collect_references(
+                        references,
+                        (arguments or {}).get("source") or default_source,
+                        payload,
+                    )
                 if has_content(ok, payload):
                     evidence += 1
             messages.append({

@@ -66,7 +66,7 @@ class TestRemember:
         created = res.json()
         assert created["title"] == "devcontainer をやめて WSL2 へ移行する"
         assert created["tags"] == ["環境", "決定"]
-        assert created["url"] == f"/notes/doc/{created['doc_id']}"
+        assert created["url"] == f"/search/notes/doc/{created['doc_id']}"
 
         got = client.get("/v1/notes/recall").json()
         assert got["total"] == 1

@@ -1272,3 +1272,27 @@ class TestUrlLayout:
             )
         ]
         assert not stale, f"古い URL が残っている: {stale}"
+
+    def test_no_response_builds_a_url_outside_the_new_layout(self, client):
+        """応答に載る URL は全部 pages.browse_url / doc_url を通っていること。
+
+        URL の前置きを足したとき、notes の応答だけ手組みのままで `/notes/doc/N` を
+        返し続け、たどると 404 になっていた(実際に踏んだ)。組み立てを 1 か所に
+        寄せてあっても、そこを通っていない場所が残っていないかは別に確かめる。
+        """
+        import re
+
+        bodies = [
+            client.get("/v1/jawiki/search", params={"q": "浅草寺"}).text,
+            client.get("/v1/jawiki/filter", params={"tag": "日本の都道府県"}).text,
+        ]
+        for body in bodies:
+            for url in re.findall(r'"url"\s*:\s*"(/[^"]*)"', body):
+                assert url.startswith("/search/"), f"古い形の URL: {url}"
+
+    def test_source_names_never_produce_an_empty_segment(self, client):
+        """`/search//doc/4` のような空のソース名を作らない。"""
+        from app.pages import browse_url, doc_url
+
+        assert "//" not in doc_url("notes", 4)
+        assert browse_url("notes").startswith("/search/notes/")

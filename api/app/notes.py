@@ -42,6 +42,8 @@ from fastapi import HTTPException
 from app import db
 from app.fts import build_match_query
 
+from app.pages import doc_url
+
 log = logging.getLogger("chiezo.api")
 
 SOURCE_NAME = "notes"
@@ -262,7 +264,7 @@ def add(text: str, title: str | None = None, tags: str | None = None) -> dict:
         "title": final_title,
         "tags": tag_list,
         "updated_at": now,
-        "url": f"/{SOURCE_NAME}/doc/{doc_id}",
+        "url": doc_url(SOURCE_NAME, doc_id),
     }
 
 
@@ -352,7 +354,7 @@ def recall(
                 "text": r["body"],
                 "tags": json.loads(r["tags"] or "[]"),
                 "updated_at": r["updated_at"],
-                "url": f"/{SOURCE_NAME}/doc/{r['doc_id']}",
+                "url": doc_url(SOURCE_NAME, r["doc_id"]),
             }
             for r in rows
         ],
