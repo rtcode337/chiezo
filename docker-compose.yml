@@ -28,8 +28,13 @@ services:
       - "9000:9000"
     volumes:
       - ./data:/data:ro
+      # notes(短期記憶)だけは書き込む。/data の read-only は崩さず別ディレクトリにする
+      # (同じ場所に置くと、1 件書くたびに全ソースの再走査が走る。api/app/notes.py 参照)。
+      - ./notes:/notes
     environment:
       - CHIEZO_DATA_DIR=/data
+      # 「覚える」層(/v1/notes)。空にすると機能ごと無効になる。
+      - CHIEZO_NOTES_DIR=/notes
       # 管理画面の初期化ボタンから叩く chiezo-trigger の内部 URL(ホストには公開しない)。
       - CHIEZO_TRIGGER_URL=http://chiezo-trigger:8080
       # 「答える」層(/v1/ask・/ask)。未設定が既定で、その場合この機能は丸ごと無効。

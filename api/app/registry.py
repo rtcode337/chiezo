@@ -25,6 +25,9 @@ class Source:
     built_at: str
     doc_count: int
     path: Path
+    # 追記されうるソース(notes)。`immutable=1` で開けないので db 側に伝える必要がある。
+    # 通常のソースは ingest のブルーグリーンでしか変わらないので False。
+    mutable: bool = False
 
 
 SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3, 4}
@@ -54,9 +57,10 @@ RANK_INDEX_MIN_SCHEMA_VERSION = 4
 COORDS_MIN_SCHEMA_VERSION = 4
 
 
-def _load_source(db_path: Path) -> Source | None:
+def _load_source(db_path: Path, mutable: bool = False) -> Source | None:
+    uri = f"file:{db_path}?mode=ro" if mutable else f"file:{db_path}?immutable=1"
     try:
-        conn = sqlite3.connect(f"file:{db_path}?immutable=1", uri=True)
+        conn = sqlite3.connect(uri, uri=True)
     except sqlite3.Error as e:
         log.warning("skipping %s: cannot open (%s)", db_path.name, e)
         return None
@@ -86,6 +90,7 @@ def _load_source(db_path: Path) -> Source | None:
             built_at=built_at,
             doc_count=doc_count,
             path=db_path,
+            mutable=mutable,
         )
     except sqlite3.Error as e:
         log.warning("skipping %s: %s", db_path.name, e)
@@ -113,13 +118,13 @@ def data_dir_fingerprint(data_dir: Path) -> dict[str, tuple[int, int, int, int]]
     return fp
 
 
-def scan_sources(data_dir: Path) -> dict[str, Source]:
+def scan_sources(data_dir: Path, mutable: bool = False) -> dict[str, Source]:
     sources: dict[str, Source] = {}
     if not data_dir.is_dir():
         log.warning("data dir does not exist: %s", data_dir)
         return sources
     for db_path in sorted(data_dir.glob("*.db")):
-        src = _load_source(db_path)
+        src = _load_source(db_path, mutable)
         if src is not None:
             sources[src.name] = src
             log.info(

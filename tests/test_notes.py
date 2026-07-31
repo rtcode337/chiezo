@@ -1,0 +1,295 @@
+"""notes(唯一書き込めるソース)のテスト。"""
+import json
+import sqlite3
+
+import pytest
+from fastapi.testclient import TestClient
+
+
+@pytest.fixture()
+def notes_dir(tmp_path, monkeypatch):
+    directory = tmp_path / "notes"
+    monkeypatch.setenv("CHIEZO_NOTES_DIR", str(directory))
+    return directory
+
+
+@pytest.fixture()
+def client(notes_dir, built_data_dir, monkeypatch):
+    monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+    from app.main import app
+
+    with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture()
+def disabled_client(built_data_dir, monkeypatch):
+    monkeypatch.delenv("CHIEZO_NOTES_DIR", raising=False)
+    monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+    from app.main import app
+
+    with TestClient(app) as c:
+        yield c
+
+
+class TestDisabled:
+    def test_remember_returns_503(self, disabled_client):
+        res = disabled_client.post("/v1/notes", json={"text": "覚えて"})
+        assert res.status_code == 503
+        assert res.json()["error"] == "notes are disabled"
+        assert "CHIEZO_NOTES_DIR" in res.json()["hint"]
+
+    def test_recall_returns_503(self, disabled_client):
+        assert disabled_client.get("/v1/notes/recall").status_code == 503
+
+    def test_notes_is_not_registered_as_a_source(self, disabled_client):
+        names = [s["name"] for s in disabled_client.get("/v1/sources").json()["sources"]]
+        assert "notes" not in names
+
+
+class TestRemember:
+    def test_creates_the_db_on_startup(self, client, notes_dir):
+        """ingest を回さずに使い始められること。"""
+        assert (notes_dir / "notes.db").exists()
+
+    def test_registers_itself_as_a_source(self, client):
+        listed = {s["name"]: s for s in client.get("/v1/sources").json()["sources"]}
+        assert listed["notes"]["kind"] == "notes"
+        assert listed["notes"]["schema_version"] == 4
+
+    def test_remembers_and_recalls(self, client):
+        res = client.post(
+            "/v1/notes",
+            json={"text": "devcontainer をやめて WSL2 へ移行する", "tags": "環境,決定"},
+        )
+        assert res.status_code == 200
+        created = res.json()
+        assert created["title"] == "devcontainer をやめて WSL2 へ移行する"
+        assert created["tags"] == ["環境", "決定"]
+        assert created["url"] == f"/notes/doc/{created['doc_id']}"
+
+        got = client.get("/v1/notes/recall").json()
+        assert got["total"] == 1
+        assert got["notes"][0]["text"] == "devcontainer をやめて WSL2 へ移行する"
+
+    def test_title_is_taken_from_the_first_line(self, client):
+        created = client.post(
+            "/v1/notes", json={"text": "一行目が見出し\n\n二行目以降は本文"}
+        ).json()
+        assert created["title"] == "一行目が見出し"
+
+    def test_duplicate_titles_are_disambiguated(self, client):
+        """docs.title は UNIQUE。同じ書き出しのメモを何度も取れないと困る。"""
+        first = client.post("/v1/notes", json={"text": "TODO"}).json()
+        second = client.post("/v1/notes", json={"text": "TODO"}).json()
+        assert first["title"] == "TODO"
+        assert second["title"] == f"TODO ({second['doc_id']})"
+
+    def test_empty_text_is_rejected(self, client):
+        assert client.post("/v1/notes", json={"text": "   "}).status_code == 400
+
+    def test_doc_count_follows_writes(self, client):
+        """走査は /data の変化でしか走らないので、書いた側で件数を直している。"""
+        for i in range(3):
+            client.post("/v1/notes", json={"text": f"メモ {i}"})
+        listed = {s["name"]: s for s in client.get("/v1/sources").json()["sources"]}
+        assert listed["notes"]["docs"] == 3
+
+
+class TestRecall:
+    @pytest.fixture()
+    def filled(self, client):
+        client.post("/v1/notes", json={"text": "浅草寺に行った話", "tags": "旅行"})
+        client.post("/v1/notes", json={"text": "chiezo のスキーマを 4 に上げた", "tags": "開発"})
+        client.post("/v1/notes", json={"text": "WSL2 へ移行すると決めた", "tags": "開発,環境"})
+        return client
+
+    def test_newest_first(self, filled):
+        titles = [n["title"] for n in filled.get("/v1/notes/recall").json()["notes"]]
+        assert titles[0] == "WSL2 へ移行すると決めた"
+
+    def test_full_text_search(self, filled):
+        got = filled.get("/v1/notes/recall", params={"q": "スキーマ"}).json()
+        assert [n["title"] for n in got["notes"]] == ["chiezo のスキーマを 4 に上げた"]
+
+    def test_short_query_falls_back_to_substring(self, filled):
+        """trigram は 3 文字未満を引けないので、件数の小さい notes では走査に落とす。"""
+        got = filled.get("/v1/notes/recall", params={"q": "旅"}).json()
+        assert got["total"] == 0  # 本文に「旅」は無い(タグにはある)
+        got = filled.get("/v1/notes/recall", params={"q": "went"}).json()
+        assert got["total"] == 0
+
+    def test_tag_filter(self, filled):
+        got = filled.get("/v1/notes/recall", params={"tag": "開発"}).json()
+        assert got["total"] == 2
+
+    def test_multiple_tags_are_and(self, filled):
+        got = filled.get("/v1/notes/recall", params={"tag": "開発,環境"}).json()
+        assert [n["title"] for n in got["notes"]] == ["WSL2 へ移行すると決めた"]
+
+    def test_time_range(self, filled):
+        got = filled.get("/v1/notes/recall", params={"since": "2999-01-01"}).json()
+        assert got["total"] == 0
+        got = filled.get("/v1/notes/recall", params={"since": "2000-01-01"}).json()
+        assert got["total"] == 3
+
+    def test_paging(self, filled):
+        page = filled.get("/v1/notes/recall", params={"limit": 2}).json()
+        assert page["total"] == 3 and len(page["notes"]) == 2
+        rest = filled.get("/v1/notes/recall", params={"limit": 2, "offset": 2}).json()
+        assert len(rest["notes"]) == 1
+
+
+class TestForget:
+    def test_deletes_from_docs_and_fts(self, client):
+        created = client.post("/v1/notes", json={"text": "消す予定のメモ", "tags": "一時"}).json()
+        assert client.delete(f"/v1/notes/{created['doc_id']}").status_code == 200
+        assert client.get("/v1/notes/recall").json()["total"] == 0
+        # FTS からも消えていること(external content は手で消さないと残る)
+        assert client.get("/v1/notes/recall", params={"q": "予定"}).json()["total"] == 0
+        # タグの集計も戻っていること
+        assert client.get("/v1/notes/tags").json()["tags"] == []
+
+    def test_unknown_id_is_404(self, client):
+        assert client.delete("/v1/notes/999").status_code == 404
+
+
+class TestWorksWithTheGenericEndpoints:
+    """コアスキーマなので、ソース種別を意識しない既存の口がそのまま効く。"""
+
+    @pytest.fixture()
+    def filled(self, client):
+        client.post("/v1/notes", json={"text": "浅草寺の最寄り駅を調べた", "tags": "調査"})
+        return client
+
+    def test_search(self, filled):
+        got = filled.get("/v1/notes/search", params={"q": "最寄り駅"}).json()
+        assert [r["title"] for r in got["results"]] == ["浅草寺の最寄り駅を調べた"]
+
+    def test_doc(self, filled):
+        got = filled.get("/v1/notes/doc", params={"title": "浅草寺の最寄り駅を調べた"}).json()
+        assert got["tags"] == ["調査"]
+
+    def test_filter_by_tag(self, filled):
+        got = filled.get("/v1/notes/filter", params={"tag": "調査"}).json()
+        assert got["total"] == 1
+
+    def test_tags_listing(self, filled):
+        assert filled.get("/v1/notes/tags").json()["tags"] == [{"tag": "調査", "docs": 1}]
+
+    def test_browse_page(self, filled):
+        assert filled.get("/notes/").status_code == 200
+        assert "調べた" in filled.get("/notes/", params={"q": "調べた"}).text
+
+
+class TestReaderIsNotImmutable:
+    """追記される DB を immutable で開くと壊れたページを掴む。開き方が分かれていること。"""
+
+    def test_notes_source_is_marked_mutable(self, client):
+        from app import db
+
+        src = client.app.state.sources["notes"]
+        assert src.mutable is True
+        assert db.is_mutable(src.path) is True
+
+    def test_data_sources_stay_immutable(self, client):
+        from app import db
+
+        src = client.app.state.sources["jawiki"]
+        assert src.mutable is False
+        assert db.is_mutable(src.path) is False
+
+    def test_writes_are_visible_to_readers_without_restart(self, client):
+        """書いた直後に、読み取り側の接続からそのまま見えること。"""
+        client.get("/v1/notes/recall")  # 先に読み取り接続を張らせる
+        client.post("/v1/notes", json={"text": "あとから書いたメモ"})
+        got = client.get("/v1/notes/recall").json()
+        assert [n["title"] for n in got["notes"]] == ["あとから書いたメモ"]
+
+
+class TestSchemaStaysInSyncWithIngest:
+    """api は ingest を import しないので DDL の写しを持っている。ずれたら落とす。
+
+    ずれると「notes だけ filter が 409」「tags が空」のように静かに壊れるため、
+    ここで ingest の core.py から作った DB と実際に突き合わせる。
+    """
+
+    def _schema(self, conn) -> set[str]:
+        return {
+            f"{row['type']} {row['name']}"
+            for row in conn.execute(
+                "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+            )
+        }
+
+    def test_tables_and_indexes_match_core(self, notes_dir, tmp_path):
+        import core  # ingest 側(conftest が sys.path に入れている)
+
+        from app import notes
+
+        notes.ensure_db()
+        theirs = sqlite3.connect(tmp_path / "core.db")
+        theirs.row_factory = sqlite3.Row
+        theirs.executescript(core.CORE_SCHEMA_DDL)
+        theirs.executescript(core.CORE_INDEX_DDL)
+
+        ours = sqlite3.connect(notes.notes_path())
+        ours.row_factory = sqlite3.Row
+        try:
+            missing = self._schema(theirs) - self._schema(ours)
+            assert not missing, f"notes.py の DDL に足りないもの: {sorted(missing)}"
+            # notes 固有の索引(時系列の想起用)だけが増えている分には構わない
+            extra = self._schema(ours) - self._schema(theirs)
+            assert extra == {"index idx_docs_updated"}, f"想定外の追加: {sorted(extra)}"
+        finally:
+            theirs.close()
+            ours.close()
+
+    def test_schema_version_matches_core(self):
+        import core
+
+        from app import notes
+
+        assert notes.SCHEMA_VERSION == core.SCHEMA_VERSION
+
+    def test_docs_columns_match_core(self, notes_dir, tmp_path):
+        import core
+
+        from app import notes
+
+        notes.ensure_db()
+        theirs = sqlite3.connect(tmp_path / "core.db")
+        theirs.executescript(core.CORE_SCHEMA_DDL)
+        ours = sqlite3.connect(notes.notes_path())
+        try:
+            cols = lambda c: [(r[1], r[2]) for r in c.execute("PRAGMA table_info(docs)")]  # noqa: E731
+            assert cols(ours) == cols(theirs)
+        finally:
+            theirs.close()
+            ours.close()
+
+
+class TestMcpTools:
+    """ツール定義は常時コンテキストに載るので、使えないときは出さない。"""
+
+    def _tool_names(self, client) -> set[str]:
+        from tests.test_mcp import rpc
+
+        return {t["name"] for t in rpc(client, "tools/list")["result"]["tools"]}
+
+    def test_memory_tools_are_offered_when_enabled(self, client):
+        assert {"remember", "recall"} <= self._tool_names(client)
+
+    def test_memory_tools_are_absent_when_disabled(self, disabled_client):
+        names = self._tool_names(disabled_client)
+        assert not ({"remember", "recall"} & names)
+        assert "search" in names  # 他の道具は出たまま
+
+    def test_remember_and_recall_round_trip_over_mcp(self, client):
+        from tests.test_mcp import call_tool
+
+        stored = call_tool(client, "remember", {"text": "MCP 経由で覚えた話", "tags": "検証"})
+        assert stored["isError"] is False
+        got = call_tool(client, "recall", {"tag": "検証"})["payload"]
+        assert got["total"] == 1
+        assert got["notes"][0]["text"] == "MCP 経由で覚えた話"

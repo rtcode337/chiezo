@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -21,7 +21,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 
-from app import answer, claude_config, db
+from app import answer, claude_config, db, notes
 from app.fts import build_match_query, escape_like
 from app.mcp_server import build_mcp
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
@@ -77,6 +77,22 @@ FILTER_ALLOWED_FIELDS = [
 ]
 
 
+def scan_all(data_dir: Path) -> dict[str, Source]:
+    """/data と(有効なら)notes の両方を走査してソース表を作る。
+
+    notes を別ディレクトリに置いているのは、`data_dir_fingerprint` が /data の変化を
+    5 秒ごとに見て全ソースを再走査する(`COUNT(*)` 込み)ためで、同じ場所に置くと
+    メモを 1 件書くたびに jawiki 150 万件の COUNT が走る(`app/notes.py` 参照)。
+    """
+    sources = scan_sources(data_dir)
+    notes_dir = notes.notes_dir()
+    if notes_dir is not None:
+        sources.update(scan_sources(notes_dir, mutable=True))
+    # 追記される DB は immutable で開けない、と db 側に伝える
+    db.set_mutable_paths(s.path for s in sources.values() if s.mutable)
+    return sources
+
+
 def refresh_sources(app: FastAPI) -> bool:
     """/data の指紋が前回と変わっていればソースを再走査して差し替える(変わったら True)。
 
@@ -89,7 +105,7 @@ def refresh_sources(app: FastAPI) -> bool:
     if fp == app.state.data_fingerprint:
         return False
     app.state.data_fingerprint = fp
-    app.state.sources = scan_sources(app.state.data_dir)
+    app.state.sources = scan_all(app.state.data_dir)
     return True
 
 
@@ -117,7 +133,9 @@ async def lifespan(app: FastAPI):
     app.state.data_dir = data_dir
     # 指紋は走査の前に取る(走査中の変化を取りこぼさない側に倒す)
     app.state.data_fingerprint = data_dir_fingerprint(data_dir)
-    app.state.sources = scan_sources(data_dir)
+    # notes(唯一書き込めるソース)は ingest を回さずに使えるよう、無ければここで作る
+    notes.ensure_db()
+    app.state.sources = scan_all(data_dir)
     if not app.state.sources:
         log.warning("no sources registered from %s", data_dir)
     watcher = (
@@ -1611,6 +1629,66 @@ def random_docs(
         (limit,),
     )
     return {"source": source, "results": [dict(r) for r in rows]}
+
+
+# ---- notes(短期記憶。唯一書き込めるソース) ----------------------------------
+#
+# 実体は app/notes.py。ここは HTTP の口だけを持つ。`CHIEZO_NOTES_DIR` 未設定なら 503。
+# 読み出しは専用の recall のほかに、コアスキーマなので /v1/notes/search・doc・filter・
+# tags・/notes/ のブラウズ画面もそのまま効く(ソース種別を意識しない設計のおかげ)。
+
+
+def _refresh_notes_count(request: Request) -> None:
+    """ソース表の doc_count を追記のたびに直す。
+
+    doc_count は走査時に数えた値で、走査は /data の変化でしか走らない(notes は別
+    ディレクトリなので指紋に入らない)。放っておくと /v1/sources と管理画面の件数が
+    増えないままになるので、書いた側で直す。
+    """
+    src = request.app.state.sources.get(notes.SOURCE_NAME)
+    if src is None:
+        return
+    try:
+        (count,) = db.query(src.path, "SELECT COUNT(*) FROM docs")[0]
+        src.doc_count = count
+    except Exception:  # noqa: BLE001 - 件数表示のためだけに書き込みを失敗させない
+        log.debug("could not refresh notes doc_count", exc_info=True)
+
+
+@app.post("/v1/notes")
+def remember(
+    request: Request,
+    text: str = Body(..., embed=True, min_length=1, description="覚えておく内容"),
+    title: str | None = Body(None, embed=True, description="省略時は本文の 1 行目から作る"),
+    tags: str | None = Body(None, embed=True, description="カンマ区切り"),
+):
+    created = notes.add(text=text, title=title, tags=tags)
+    # 作られたばかり(初回の追記)ならソースとして登録し直す
+    if notes.SOURCE_NAME not in request.app.state.sources:
+        request.app.state.sources = scan_all(request.app.state.data_dir)
+    _refresh_notes_count(request)
+    return created
+
+
+@app.get("/v1/notes/recall")
+def recall_notes(
+    request: Request,
+    q: str | None = Query(None, description="全文検索。省略すると時系列だけで引く"),
+    since: str | None = Query(None, description="この日時以降(例 2026-07-31)"),
+    until: str | None = Query(None, description="この日時以前"),
+    tag: str | None = Query(None, description="タグで絞る。カンマ区切りで AND"),
+    limit: int = Query(notes.RECALL_LIMIT_DEFAULT, ge=1, le=notes.RECALL_LIMIT_MAX),
+    offset: int = Query(0, ge=0),
+):
+    return notes.recall(q=q, since=since, until=until, tag=tag, limit=limit, offset=offset)
+
+
+@app.delete("/v1/notes/{doc_id}")
+def forget(request: Request, doc_id: int):
+    if not notes.delete(doc_id):
+        raise HTTPException(404, {"error": f"note not found: doc_id={doc_id}"})
+    _refresh_notes_count(request)
+    return {"deleted": doc_id}
 
 
 # ---- 答える(ローカル LLM。既定では無効) -------------------------------------

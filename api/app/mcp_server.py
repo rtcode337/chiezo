@@ -28,6 +28,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.concurrency import run_in_threadpool
 
+from app import notes
+
 # doc のレスポンスはそのままモデルのコンテキストに載るので、REST(既定 0 = 無制限)より
 # 短く切る。jawiki には 10 万字級の記事があり、既定で全文を返すと 1 回で窓を潰す。
 MCP_DOC_MAX_CHARS = 4000
@@ -44,6 +46,11 @@ LAN 内の読み取り専用ナレッジ API「chiezo」。Wikipedia・OpenStree
 - 「カテゴリ○○の記事を全部」のような列挙は `filter`(tag 指定)を使う。
   本文の全文検索で "Category:" 行を探すと、ソートキー付きの記事を静かに取りこぼす。
 - どのソースが登録されているかは `sources` で分かる。
+
+`remember` / `recall` が見えている場合、chiezo は短期記憶の置き場も兼ねている:
+- ユーザーが「覚えておいて」と言ったこと、後から参照する価値のある調査結果は `remember`。
+- 「さっき話したあの件」「先月の件」のように過去のやり取りを指されたら `recall`。
+  曖昧な指され方のときは検索語を無理に作らず、`since` だけで新しい順に引くほうが当たる。
 """
 
 
@@ -225,4 +232,52 @@ def build_mcp(app: FastAPI) -> FastMCP:
             request=_request(app), source=source, title=title, direction="out",
         )
 
+    # notes(短期記憶)は無効なこともあるので、有効なときだけ道具を出す。
+    # ツール定義は常時コンテキストに載るため、使えないものを並べない。
+    if notes.is_enabled():
+        _register_memory_tools(mcp, app)
+
     return mcp
+
+
+def _register_memory_tools(mcp: FastMCP, app: FastAPI) -> None:
+    """覚える・思い出すの 2 つ。
+
+    この 2 つがあることの意味は「常駐するのはこの定義(数百字)だけで、覚えた中身は
+    引いたときにしかコンテキストに載らない」こと。CLAUDE.md や記憶ファイルは毎回
+    全部載るので、件数が増えるほど関係ない話にもトークンを払うことになる。
+    """
+    from app import main as api
+
+    @mcp.tool(description=(
+        "ユーザーが「覚えておいて」と言ったこと、後から参照する価値のある調査結果や"
+        "決定事項を chiezo に保存する。保存先はローカルで、外部には出ない。"
+        "tags はカンマ区切りで、後から絞り込むのに使える。"
+    ))
+    async def remember(text: str, title: str | None = None, tags: str | None = None) -> dict:
+        return await run_in_threadpool(
+            _call, api.remember,
+            request=_request(app), text=text, title=title, tags=tags,
+        )
+
+    @mcp.tool(description=(
+        "以前 remember で保存したことを思い出す。**新しい順**に返る。"
+        "「さっき話したあの件」「先月お願いしたあれ」のように過去のやり取りを"
+        "指されたら、まずこれを引くこと。"
+        "q は全文検索(trigram なので 3 文字以上の語が要る)。"
+        "**曖昧な指され方をしたときは q を省いて since だけで引くほうが当たる**"
+        "(「あの件」は語が一致しないため)。since/until は 2026-07-31 の形でよい。"
+    ))
+    async def recall(
+        q: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        tag: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> dict:
+        return await run_in_threadpool(
+            _call, api.recall_notes,
+            request=_request(app), q=q, since=since, until=until, tag=tag,
+            limit=limit, offset=offset,
+        )

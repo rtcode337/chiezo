@@ -8,6 +8,9 @@ SQLite (FTS5) に取り込んで索引し、AI が引ける形で出す。完全
   (`/data/<source>.db`)を作る。更新はブルーグリーン
 - **取り出す** — `api/` が **MCP**(`/mcp`)と **REST**(`/v1/...`)の 2 経路で出す。
   Claude Code 向けには「いつ chiezo を使うか」を書いた CLAUDE.md ブロックも生成する
+- **覚える** — `api/app/notes.py` が **chiezo で唯一書き込めるソース** `notes` を持つ。
+  「覚えておいて」と言われたことを溜め、`recall` で新しい順に引く。CLAUDE.md や記憶ファイルと
+  違い**常駐するのはツール定義だけ**なので、件数が増えてもコンテキストを食わない
 - **答える(任意)** — `api/app/answer.py` が、ためた知識だけを根拠に回答を返す
   (`/v1/ask` と ブラウザの `/ask`)。推論は同居させず OpenAI 互換 API を叩くだけで、
   **`CHIEZO_LLM_URL` 未設定が既定 = 丸ごと無効**(配信側が数百 MB で動く前提を壊さないため)
@@ -108,6 +111,30 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     1 インスタンス 1 回しか呼べないため、**起動ごとに `build_mcp()` で作り直して**
     `app.state.mcp_asgi` に置き、マウント先(`main._mcp_asgi`)がそれを見る形にしている
     (モジュール読み込み時に作り置きすると、同一プロセスで二度起動するテストが落ちる)
+  - `app/notes.py` — **「覚える」層(`/v1/notes`)の本体。chiezo で唯一書き込む場所**。
+    使い方は README「覚える(notes)」節、なぜこの形かは `docs/design-notes.md`
+    「「覚える」(notes)はなぜ chiezo に置くのか」が正。実装側の要点:
+    - **`CHIEZO_NOTES_DIR` が機能フラグを兼ねる**(未設定 = 503、MCP の道具も出さない)。
+      ツール定義は常時コンテキストに載るので、使えないものを並べない
+    - **置き場を `/data` と分けるのは性能上の理由**。`registry.data_dir_fingerprint()` が
+      `/data/*.db` の mtime/size を 5 秒ごとに見て、変われば**全ソース再走査(`COUNT(*)` 込み)**
+      する。同じ場所に置くとメモ 1 件ごとに jawiki 150 万件の COUNT が走る
+    - **読み手は `mode=ro`**(`db.set_mutable_paths` / `registry.Source.mutable`)。
+      `immutable=1` は「開いている間このファイルは変わらない」という宣言で、SQLite は
+      ロックも WAL 確認もしない。追記される DB をこれで開くと壊れたページを掴む
+    - **`docs_fts` は external content 方式なので自動同期しない**。ingest が全件投入後に
+      `INSERT INTO docs_fts(rowid, title, body) SELECT …` しているのと同じことを 1 件ずつやる。
+      削除は `INSERT INTO docs_fts(docs_fts, rowid, title, body) VALUES ('delete', …)` が要る
+      (入れたときと同じ値を渡さないと索引に残る)
+    - **DDL は `ingest/core.py` の写し**(api は ingest を import しない)。ずれると
+      「notes だけ filter が 409」のように静かに壊れるので、`tests/test_notes.py` が
+      ingest 側から作った DB と `sqlite_master` を突き合わせて落とす
+    - `doc_count` は走査時の値だが notes は指紋に入らないので、書いた側
+      (`main._refresh_notes_count`)で数え直す
+    - **想起の主役は全文検索ではなく時系列の見込み**。「さっき話したあの件」は語が
+      一致しないため、`recall` は `q` を省いて `updated_at` 順に引ける形にしてある
+      (`idx_docs_updated` は notes だけが持つ。コアスキーマの追加ではないので
+      `schema_version` は上げない)
   - `app/answer.py` — **「答える」層(`/v1/ask`・`/ask`)の本体**。使い方・環境変数は
     README「答える(ローカル LLM。既定では無効)」節が、なぜこの形かは
     `docs/design-notes.md`「「答える」層はなぜ 2 段の RAG か」が正。実装側の要点:
@@ -220,6 +247,9 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `?q=` 指定時は結果一覧を表示し、`/v1/{source}/search` と同じロジック
     (FTS または短語のタイトル前方一致フォールバック)
   - `/{source}/doc/{doc_id}`(GET) — 文書詳細(title/tags/opening/body/links/extra)の HTML 表示
+  - `/v1/notes`(POST)・`/v1/notes/recall`(GET)・`/v1/notes/{doc_id}`(DELETE) —
+    「覚える」層の REST。読み出しはコアスキーマなので `/v1/notes/search|doc|filter|tags` と
+    `/notes/` のブラウズ画面もそのまま効く(専用の口は追記・削除・時系列の想起だけ)
   - `/v1/ask`(GET) — 「答える」層の REST。`stream=0`(既定)は JSON 一括、`stream=1` は
     SSE(`references` → `delta` × n → `done`、失敗時は `error` を挟む)。
     無効なら 503、推論サーバに繋がらなければ 502、タイムアウトは 504
@@ -585,6 +615,8 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
     (おまけに現行 SQLite ではロード自体が失敗する。上流のバグ 2 つを直して測った)
   再挑戦の条件は評価ドキュメントの「採用できる条件」に 3 つ整理してある。
 - 運用 DB は読み取り専用(`immutable=1`)。更新はブルーグリーン(別ファイル構築 → シンボリックリンク差し替え)のみ。
+  **例外は `notes` の 1 ソースだけ**(`app/notes.py`)。書き込みは `CHIEZO_NOTES_DIR` 配下に
+  閉じ、`/data` は read-only マウントのまま保つこと。そのソースだけ読み手も `mode=ro` に落とす。
   差し替えは api が自動検知する: lifespan の常駐タスクが `CHIEZO_RESCAN_INTERVAL` 秒(既定 5)ごとに
   `/data` の指紋(`registry.data_dir_fingerprint`)を見て、変わっていれば再走査(`main.refresh_sources`)。
   スレッドローカルの接続キャッシュも `db.get_connection` がリンク先の inode を見て開き直すので再起動不要。

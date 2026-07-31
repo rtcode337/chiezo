@@ -9,6 +9,9 @@
 - **取り出す** — AI からの引き口は 2 経路。**MCP**(`/mcp`、Streamable HTTP)と
   **REST**(`search` / `doc` / `filter` / `tags` …)。Claude Code 向けには「どんなときに
   chiezo を使うか」を書いた CLAUDE.md ブロックも自動生成します
+- **覚える** — `/v1/notes` に書いたことは `notes` ソースとして溜まり、あとから
+  `recall` で引けます。**常時コンテキストに載るのはツール定義だけ**なので、
+  件数が増えても AI 側の負担が増えません
 - **答える(任意)** — ローカル LLM を繋ぐと、chiezo を引いて回答まで返します
   (`/v1/ask` と ブラウザの `/ask`)。Claude Code と同じ知識をローカルの LLM からも使う口です。
   **既定では無効**で、推論は別プロセスに置きます
@@ -183,7 +186,8 @@ scripts/gen_claude_config.sh -u http://<サーバーIP>:9000
 ```
 
 公開しているツールは `sources` / `search` / `doc` / `filter` / `tags` / `titles` / `links` の
-7 つで、引数は REST のクエリパラメータと同じです。実体も REST のエンドポイント関数そのものなので、
+7 つ(notes が有効なら `remember` / `recall` を加えて 9 つ)で、引数は REST のクエリ
+パラメータと同じです。実体も REST のエンドポイント関数そのものなので、
 挙動が二重管理になることはありません。REST と違うのは `doc` / `filter` の `max_chars` が
 既定で 4000 字に切られる点だけです(MCP の応答はそのままモデルのコンテキストに載るため。
 全文が要るときは `max_chars` を明示的に上げてください)。
@@ -284,6 +288,54 @@ curl -s http://<サーバーIP>:9000/admin/claude-config.hook.py   # フック�
 設置には `python3`(フックの実行)と `jq`(settings のマージ)が必要です。
 何度実行しても `hooks.PreToolUse` は重複せず、設置先を変えた場合も古いエントリは掃除されます。
 反映には Claude Code の再起動(または一度 `/hooks` を開く)が必要な場合があります。
+
+## 覚える(notes)
+
+「これ覚えておいて」と言われたこと、調べた結果、決めたこと。**chiezo で唯一書き込めるソース**が
+`notes` です。溜めたものは `recall` で新しい順に引けます。
+
+```bash
+BASE=http://<サーバーIP>:9000
+
+curl -s "$BASE/v1/notes" -H 'Content-Type: application/json' \
+  -d '{"text":"devcontainer をやめて WSL2 へ移行する","tags":"環境,決定"}'
+
+curl -s "$BASE/v1/notes/recall"                                  # 新しい順に 20 件
+curl -sG "$BASE/v1/notes/recall" --data-urlencode "q=移行"        # 全文検索
+curl -sG "$BASE/v1/notes/recall" -d since=2026-07-01             # 期間で絞る
+curl -sG "$BASE/v1/notes/recall" --data-urlencode "tag=決定"      # タグで絞る
+curl -s -X DELETE "$BASE/v1/notes/3"                             # 取り消し
+```
+
+コアスキーマなので `/v1/notes/search`・`doc`・`filter`・`tags` と `/notes/`(ブラウズ画面)も
+そのまま使えます。
+
+### なぜ CLAUDE.md や記憶ファイルではなく chiezo なのか
+
+**常時コンテキストに載るかどうか**が違います。CLAUDE.md や AI の記憶ファイルは毎セッション
+全部が読み込まれるので、件数が増えるほど、関係ない話のときにもトークンを払い続けることに
+なります。chiezo に置けば**常駐するのは MCP のツール定義(数百字)だけ**で、中身は引いた
+ときにしか載りません。100 件でも 1000 件でも常駐コストは変わりません。
+
+MCP クライアント(Claude Code など)からは `remember` / `recall` の 2 つの道具として見えます。
+「さっき話したあの件」のように曖昧に指されたときは、検索語を無理に作らず期間だけで
+引くほうが当たります(全文検索は trigram なので語が一致しないと引けません)。
+
+### 設定
+
+compose では既定で有効です(`./notes` に SQLite が 1 つできます。初回アクセス時に自動生成
+されるので、取り込みを回す必要はありません)。
+
+| 変数 | 既定 | 説明 |
+|---|---|---|
+| `CHIEZO_NOTES_DIR` | `/notes`(compose) | 書き込み可能なディレクトリ。**空にすると機能ごと無効**(`/v1/notes` は 503、MCP の道具も出ない) |
+
+`/data` は読み取り専用マウントのままです。notes を別ディレクトリに置いているのは、
+`/data` の変化を監視して全ソースを再走査する仕組みと干渉させないためです
+([設計メモ](docs/design-notes.md#覚えるnotesはなぜ-chiezo-に置くのか))。
+
+**認証はありません。** `/v1/notes` に到達できる相手は誰でも書けます(LAN 内前提という
+このサービス全体の方針と同じですが、書き込みができる唯一の口である点は留意してください)。
 
 ## 答える(ローカル LLM。既定では無効)
 
