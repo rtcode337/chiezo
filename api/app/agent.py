@@ -20,8 +20,9 @@ LLM に渡し、何をどう引くかをモデルに決めさせる。「カテ�
   (`CHIEZO_AGENT_TOOL_CHARS`)・全体の締め切り(`CHIEZO_AGENT_TIMEOUT`)。
   ツール結果は毎ターン積み上がるので、上限が無いとモデルの窓も待ち時間も
   読めなくなる。必要な文脈長は **ステップ数 × ツール結果の長さ** で見積もれる。
-- **同じ呼び出しの繰り返しは実行せずに突き返す**(`_repeat_notice`)。小型モデルは
-  0 件だったクエリをそのまま何度も投げるので、ステップ予算を空回りで使い切る。
+- **同じ呼び出しは実行し直さず、前回の結果を返す**(`repeated_payload`)。モデルは
+  1 回の応答に同じ呼び出しを 2 つ並べて出すことがあり、外へ 2 回出す必要はない。
+  ここでエラーを返すと「失敗した」と受け取って別の検索を足しに行き、ステップを空費する。
 - **最終回答はストリーミングしない**。ツール呼び出しは応答の途中まで読まないと
   「道具を呼んだのか答えたのか」が分からず、ストリームの断片から復元するのは
   壊れやすい。代わりに**ステップの進捗**(どの道具を何の引数で呼び、何件返ったか)を
@@ -331,13 +332,21 @@ def add_references(refs: list[dict], found: list[dict]) -> None:
         refs.append({"n": len(refs) + 1, **item})
 
 
-def _repeat_notice(name: str, arguments: dict) -> dict:
-    return {
-        "error": "same call repeated",
-        "hint": f"{name} を同じ引数で既に呼んでいる。検索語・ソース・絞り込みを変えるか、"
-                "いま分かっていることで答えること",
-        "arguments": arguments,
-    }
+def repeated_payload(payload: Any) -> Any:
+    """同じ引数で 2 回目に呼ばれたときに返すもの: **前回の結果 + 一言**。
+
+    エラーを返してはいけない。実測でモデルは **1 回の応答に同じ呼び出しを 2 つ並べて**
+    出してくる(0 件だったので投げ直した、ではない)。そこにエラーを返すと、手元に
+    結果があるのに「失敗した」と受け取って別の検索を足しに行き、ステップを空費する。
+    外へは出さずに前回の結果をそのまま返し、繰り返しであることだけ添える。
+    """
+    if isinstance(payload, dict):
+        return {
+            **payload,
+            "note": "同じ引数で既に呼ばれたので、前回の結果をそのまま返した"
+                    "(結果は変わらない。次は別の引数にするか、分かったことで答えること)",
+        }
+    return payload
 
 
 # ---- ループ本体 -------------------------------------------------------------
@@ -438,7 +447,8 @@ async def stream(
         {"role": "user", "content": question},
     ]
     references: list[dict] = []
-    called: set[str] = set()
+    # 呼んだ道具と、その結果(同じ引数で呼び直されたら実行せずこれを返す)
+    called: dict[str, tuple[bool, Any]] = {}
     evidence = 0
     # 予算(`agent_max_steps`)は LLM のターン数だが、1 ターンで複数の道具を呼べるので
     # 表示用の番号は**実行した道具の通し番号**にする(同じ番号が並ぶと追えない)。
@@ -464,13 +474,17 @@ async def stream(
             fn = call.get("function") or {}
             name = fn.get("name") or ""
             arguments, why = _parse_arguments(fn.get("arguments"))
+            repeated = False
             if arguments is None:
                 ok, payload = False, {"error": why}
             elif (key := f"{name}:{json.dumps(arguments, sort_keys=True, ensure_ascii=False)}") in called:
-                ok, payload = False, _repeat_notice(name, arguments)
+                # 同じ呼び出しは**実行し直さない**(外へも出さない)。前回の結果を返す。
+                repeated = True
+                ok, payload = called[key]
+                payload = repeated_payload(payload)
             else:
-                called.add(key)
                 ok, payload = await execute(app, name, arguments, use_web, use_notes)
+                called[key] = (ok, payload)
             if ok:
                 if name == websearch.TOOL_NAME:
                     add_references(references, websearch.references_from(payload))
@@ -487,7 +501,8 @@ async def stream(
             executed += 1
             yield "step", {
                 "step": executed, "turn": step + 1, "tool": name,
-                "arguments": arguments or {}, "ok": ok, "summary": summarize(payload),
+                "arguments": arguments or {}, "ok": ok, "repeated": repeated,
+                "summary": summarize(payload) + ("(前回と同じ)" if repeated else ""),
             }
     else:
         log.info("agent: step budget (%d) exhausted", cfg.agent_max_steps)

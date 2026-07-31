@@ -100,11 +100,12 @@ class TestToolsComeFromMcp:
         missing = set(agent.AGENT_TOOLS) - names
         assert not missing, f"MCP に無い道具を agent に渡そうとしている: {missing}"
 
-    def test_write_tools_are_not_handed_to_the_agent(self):
-        """書き込み(remember)は自動ループに任せない。"""
+    def test_write_tools_are_separated_from_the_knowledge_tools(self):
+        """書き込み(remember)は常時渡す群には入れない(切れる側に置く)。"""
         from app import agent
 
-        assert "remember" not in agent.AGENT_TOOLS
+        assert "remember" not in agent.KNOWLEDGE_TOOLS
+        assert "remember" in agent.NOTE_TOOLS
 
     def test_definitions_are_sent_in_openai_function_form(self, monkeypatch_env):
         from app import agent
@@ -194,13 +195,34 @@ class TestToolLoop:
         assert "JSON" in body["steps"][0]["summary"]
         assert body["answer"] == ANSWER
 
-    def test_repeating_the_same_call_is_refused_without_running_it(self, monkeypatch_env):
-        """小型モデルは 0 件のクエリをそのまま投げ直す。空回りでステップを使わせない。"""
+    def test_repeating_the_same_call_reuses_the_result(self, monkeypatch_env):
+        """モデルは同じ呼び出しを 2 度出してくる。実行し直さず前回の結果を返す。
+
+        ここでエラーを返すと、手元に結果があるのに「失敗した」と受け取って別の検索を
+        足しに行き、ステップを空費する(実測)。
+        """
         fake = ToolLLM(SEARCH_ASAKUSA, SEARCH_ASAKUSA, ANSWER)
         with make_client(monkeypatch_env, fake) as client:
             body = ask(client, q="浅草寺はどこ?").json()
-        assert body["steps"][1]["ok"] is False
-        assert "same call repeated" in body["steps"][1]["summary"]
+        assert body["steps"][1]["ok"] is True
+        assert body["steps"][1]["repeated"] is True
+        assert "前回と同じ" in body["steps"][1]["summary"]
+        # モデルには前回の結果が渡る(繰り返しであることを添えて)
+        returned = json.loads(fake.requests[2]["messages"][-1]["content"])
+        assert "浅草寺" in json.dumps(returned, ensure_ascii=False)
+        assert "同じ引数で既に呼ばれた" in returned["note"]
+
+    def test_a_repeat_in_the_same_turn_hits_the_tool_only_once(self, monkeypatch_env):
+        """1 回の応答に同じ呼び出しが 2 つ並んでも、実行は 1 回だけ。"""
+        twice = [
+            ("search", {"source": "jawiki", "q": "浅草寺"}),
+            ("search", {"source": "jawiki", "q": "浅草寺"}),
+        ]
+        fake = ToolLLM(twice, ANSWER)
+        with make_client(monkeypatch_env, fake) as client:
+            steps = ask(client, q="浅草寺はどこ?").json()["steps"]
+        assert [s["repeated"] for s in steps] == [False, True]
+        assert all(s["ok"] for s in steps)
 
     def test_step_budget_forces_a_final_answer(self, monkeypatch_env):
         """予算を使い切っても、調べただけで終わらせない(道具なしでもう 1 回聞く)。"""
