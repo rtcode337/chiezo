@@ -33,6 +33,11 @@ services:
       # 既定(6 × 3000 字)なら 16k で足りる。
       - LLAMA_ARG_HF_REPO=${CHIEZO_LLM_HF_REPO:-Qwen/Qwen3-8B-GGUF:Q4_K_M}
       - LLAMA_ARG_CTX_SIZE=${CHIEZO_LLM_CTX_SIZE:-16384}
+      # 同時に処理する会話の数(llama.cpp の既定は 4)。**1 にしてある** — 家庭内で
+      # 1 人が話すのに 4 並列は要らず、スロットごとにホスト側の計算バッファを持つぶん
+      # メモリが増える(実測で llama-server のホスト RSS が 3.7GB まで育ち、
+      # 8GB の VM で OOM killer に殺された)。
+      - LLAMA_ARG_N_PARALLEL=${CHIEZO_LLM_PARALLEL:-1}
       # 全層を GPU に載せる(既定の auto は載る分だけ載せるので、VRAM が足りている
       # つもりで一部が CPU に残っていた、という取りこぼしを避ける)。
       - LLAMA_ARG_N_GPU_LAYERS=${CHIEZO_LLM_GPU_LAYERS:-999}
