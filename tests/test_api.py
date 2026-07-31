@@ -1319,3 +1319,14 @@ class TestUrlLayout:
         res = client.get("/search/nosuch/")
         assert res.status_code == 404
         assert "Traceback" not in res.text
+
+    def test_the_doc_page_does_not_print_the_text_twice(self, client):
+        """opening は body の冒頭の写しなので、本文と並べない。
+
+        短いメモ(notes)では opening == body になり、同じ文章が 2 回出ていた。
+        """
+        res = client.get("/search/jawiki/doc/1")
+        assert res.status_code == 200
+        body = res.text.split('<pre class="doc-body">')[1].split("</pre>")[0]
+        head = body.strip()[:40]
+        assert head and body.count(head) == 1, "本文が 2 回出ている"

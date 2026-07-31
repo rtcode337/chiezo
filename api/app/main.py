@@ -2377,6 +2377,12 @@ def browse_source(
 
 @app.get("/search/{source}/doc/{doc_id}", response_class=HTMLResponse)
 def browse_doc(request: Request, source: str, doc_id: int):
+    """文書 1 件の詳細。
+
+    **`opening` は出さない**。あれは `body` の冒頭を切り出したもの(検索結果の
+    スニペットや「答える」層の抜粋に使う)で、人が読む画面で本文と並べると同じ文章が
+    2 回出る。短いメモ(notes)では完全に同じ文字列が 2 度並んでいた。
+    """
     src = get_source(request, source)
     rows = db.query(src.path, "SELECT * FROM docs WHERE doc_id = ?", (doc_id,))
     if not rows:
@@ -2407,9 +2413,7 @@ def browse_doc(request: Request, source: str, doc_id: int):
 <p>doc_id: {row['doc_id']} / updated_at: {esc(row['updated_at'] or '')}</p>
 <p>tags: {tags_html}</p>
 <h2>本文</h2>
-<pre class="doc-body">{esc(row['opening'] or '')}
-
-{esc(row['body'] or '')}</pre>
+<pre class="doc-body">{esc(row['body'] or row['opening'] or '(なし)')}</pre>
 <h2>リンク</h2>
 <ul>{links_html}</ul>
 <h2>extra</h2>
