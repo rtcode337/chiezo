@@ -332,3 +332,86 @@ class TestChatPageLayout:
         with make_client(monkeypatch_env, ToolLLM()) as client:
             assert "composer-box" not in client.get("/admin").text
             assert "composer-box" in client.get(CHAT_PATH).text
+
+
+@pytest.fixture()
+def notes_on(monkeypatch_env, tmp_path):
+    """notes(唯一書き込めるソース)を有効にした状態。"""
+    monkeypatch_env.setenv("CHIEZO_NOTES_DIR", str(tmp_path / "notes"))
+    return monkeypatch_env
+
+
+class TestNotesTools:
+    """「覚えておいて」に応えられること。
+
+    書き込みを伴うので、当初は agent に渡していなかった。会話で明示的に頼まれるなら
+    副作用ではないので渡すが、**やり取りごとに切れる**ことと、**何を書いたかが手順に
+    出る**ことをここで固定する。
+    """
+
+    def test_tools_are_hidden_while_notes_are_disabled(self, monkeypatch_env):
+        monkeypatch_env.delenv("CHIEZO_NOTES_DIR", raising=False)
+        fake = ToolLLM(ANSWER)
+        with make_client(monkeypatch_env, fake) as client:
+            body = chat(client, [{"role": "user", "content": "覚えておいて"}], mode="agent").json()
+        names = {t["function"]["name"] for t in fake.requests[0]["tools"]}
+        assert "remember" not in names and "recall" not in names
+        assert body["notes"] is False
+
+    def test_tools_appear_when_notes_are_enabled(self, notes_on):
+        fake = ToolLLM(ANSWER)
+        with make_client(notes_on, fake) as client:
+            body = chat(client, [{"role": "user", "content": "覚えておいて"}], mode="agent").json()
+        names = {t["function"]["name"] for t in fake.requests[0]["tools"]}
+        assert {"remember", "recall"} <= names
+        assert body["notes"] is True
+
+    def test_request_can_turn_them_off(self, notes_on):
+        fake = ToolLLM(ANSWER)
+        with make_client(notes_on, fake) as client:
+            body = chat(
+                client, [{"role": "user", "content": "覚えておいて"}], mode="agent", notes=False
+            ).json()
+        assert "remember" not in {t["function"]["name"] for t in fake.requests[0]["tools"]}
+        assert body["notes"] is False
+
+    def test_writing_is_refused_when_turned_off(self, notes_on):
+        """道具を出していないのにモデルが呼んできたら、実行せず突き返す。"""
+        fake = ToolLLM([("remember", {"text": "勝手に書く"})], "書けませんでした")
+        with make_client(notes_on, fake) as client:
+            body = chat(
+                client, [{"role": "user", "content": "何か"}],
+                mode="agent", grounded=False, notes=False,
+            ).json()
+        assert body["steps"][0]["ok"] is False
+        assert "disabled" in body["steps"][0]["summary"]
+
+    def test_remember_then_recall_round_trip(self, notes_on):
+        """覚えたものが、次の会話で思い出せる(chiezo に実際に書かれている)。"""
+        write = ToolLLM([("remember", {"text": "agent モードは 8B 級が前提"})], "覚えました")
+        with make_client(notes_on, write) as client:
+            body = chat(
+                client, [{"role": "user", "content": "…と覚えておいて"}], mode="agent"
+            ).json()
+            assert body["steps"][0]["ok"] is True
+            # REST から見ても入っている
+            stored = client.get("/v1/notes/recall").json()["notes"]
+            assert any("8B 級" in n["text"] for n in stored)
+
+        read = ToolLLM([("recall", {"q": "agent"})], "8B 級が前提、でした")
+        with make_client(notes_on, read) as client:
+            body = chat(
+                client, [{"role": "user", "content": "さっきの話を思い出して"}], mode="agent"
+            ).json()
+        assert body["steps"][0]["ok"] is True
+        # 思い出したメモは出典としても並ぶ(リンク先は notes のブラウズ画面)
+        assert body["references"], "recall の結果が出典に出ていない"
+        assert body["references"][0]["url"].startswith("/search/notes/doc/")
+
+    def test_page_shows_the_toggle_only_when_enabled(self, monkeypatch_env, tmp_path):
+        with make_client(monkeypatch_env, ToolLLM()) as client:
+            monkeypatch_env.delenv("CHIEZO_NOTES_DIR", raising=False)
+            assert 'id="notes"' not in client.get(CHAT_PATH).text
+        monkeypatch_env.setenv("CHIEZO_NOTES_DIR", str(tmp_path / "notes"))
+        with make_client(monkeypatch_env, ToolLLM()) as client:
+            assert 'id="notes"' in client.get(CHAT_PATH).text

@@ -41,17 +41,24 @@ from urllib.parse import quote
 from fastapi import HTTPException, Request
 from mcp.server.fastmcp.exceptions import ToolError
 
-from app import answer, websearch
+from app import answer, notes, websearch
 from app.mcp_server import INSTRUCTIONS, build_mcp
 from app.pages import browse_url, doc_url
 
 log = logging.getLogger("chiezo.api")
 
-# agent に渡す道具。MCP に出しているもののうち**読み取り専用のものだけ**を挙げる。
-# `remember` は書き込みなので外す(質問の副作用でメモを増やさない)。`recall` も
-# 外してあるのは、これが「質問に答える」道具ではなく利用者の記憶を引く道具で、
-# 質問応答のループに置く意味が薄いため(記憶を引くのは Claude Code 側の仕事)。
-AGENT_TOOLS = ("sources", "search", "doc", "filter", "tags", "titles", "links")
+# agent に渡す chiezo の道具(MCP に出しているものから借りる)。ここは読み取り専用。
+KNOWLEDGE_TOOLS = ("sources", "search", "doc", "filter", "tags", "titles", "links")
+
+# 「覚える」層の道具。**`remember` は chiezo で唯一の書き込み**なので分けてある。
+# 当初は「質問の副作用でメモが増えるのは予想外の変化」として渡していなかったが、
+# 会話で「覚えておいて」と**明示的に頼まれる**なら副作用ではない。代わりに
+# ①やり取りごとに切れる(`notes` 引数・画面のトグル)②何を書いたかは step に出る、
+# の 2 つで見えるようにしてある。
+NOTE_TOOLS = ("remember", "recall")
+
+# 「この名前は agent が実行してよい」の全体(実際に渡すかは呼び出しごとに決まる)
+AGENT_TOOLS = KNOWLEDGE_TOOLS
 
 # 出典として持ち帰る文書の上限(道具の応答には 50 件単位で並ぶので、そのまま
 # 積むと出典欄が結果一覧になる)。
@@ -128,12 +135,13 @@ def _mcp(app):
     return mcp
 
 
-async def tool_specs(app, web: bool = False) -> list[dict]:
+async def tool_specs(app, web: bool = False, notes: bool = False) -> list[dict]:
     """MCP のツール定義を OpenAI の function 形式へ写す。
 
     説明文(description)も入力スキーマも MCP のものをそのまま使う。ここで書き直すと
     「MCP 経由では正しく引けるのに agent では引けない」というずれが必ず生まれる。
     """
+    allowed = set(KNOWLEDGE_TOOLS) | (set(NOTE_TOOLS) if notes else set())
     tools = await _mcp(app).list_tools()
     specs = [
         {
@@ -145,13 +153,22 @@ async def tool_specs(app, web: bool = False) -> list[dict]:
             },
         }
         for t in tools
-        if t.name in AGENT_TOOLS
+        if t.name in allowed
     ]
     # web 検索は chiezo の道具ではないので MCP には出しておらず、ここで足す
     # (使うときだけ。使わないなら道具ごと見せない = 使えないものを文脈に並べない)。
     if web:
         specs.append(websearch.TOOL_SPEC)
     return specs
+
+
+def notes_allowed(requested: bool | None) -> bool:
+    """このやり取りで「覚える・思い出す」を使わせるか。
+
+    `CHIEZO_NOTES_DIR` が未設定なら notes ごと無効なので、頼まれても使えない。
+    有効な場合は**呼び出しごとに切れる**(書き込みを伴うので、切れることが要る)。
+    """
+    return notes.is_enabled() and requested is not False
 
 
 def web_allowed(requested: bool | None) -> bool:
@@ -205,7 +222,9 @@ def _tool_error_payload(text: str) -> dict:
     return {"error": text}
 
 
-async def execute(app, name: str, arguments: dict, web: bool = False) -> tuple[bool, Any]:
+async def execute(
+    app, name: str, arguments: dict, web: bool = False, notes_ok: bool = False
+) -> tuple[bool, Any]:
     """道具を 1 つ実行する。戻りは (成功したか, 応答)。
 
     失敗も**モデルに返す**(例外にしない)。404 の candidates や 409 の移行案内には
@@ -216,7 +235,9 @@ async def execute(app, name: str, arguments: dict, web: bool = False) -> tuple[b
             return False, {"error": "web search is disabled"}
         payload = await websearch.search(str(arguments.get("q", "")).strip())
         return "error" not in payload, payload
-    if name not in AGENT_TOOLS:
+    if name in NOTE_TOOLS and not notes_ok:
+        return False, {"error": "notes are disabled for this conversation"}
+    if name not in KNOWLEDGE_TOOLS and name not in NOTE_TOOLS:
         return False, {"error": f"unknown tool: {name}"}
     try:
         raw = await _mcp(app).call_tool(name, arguments)
@@ -238,7 +259,7 @@ def summarize(payload: Any) -> str:
             return f"エラー: {payload['error']}"
         if isinstance(payload.get("total"), int):
             return f"total={payload['total']}"
-        for key in ("results", "tags", "titles", "links", "sources"):
+        for key in ("results", "notes", "tags", "titles", "links", "sources"):
             value = payload.get(key)
             if isinstance(value, list):
                 return f"{len(value)} 件"
@@ -257,7 +278,7 @@ def has_content(ok: bool, payload: Any) -> bool:
         return False
     if isinstance(payload.get("total"), int):
         return payload["total"] > 0
-    for key in ("results", "tags", "titles", "links", "sources"):
+    for key in ("results", "notes", "tags", "titles", "links", "sources"):
         value = payload.get(key)
         if isinstance(value, list) and value:
             return True
@@ -273,7 +294,11 @@ def collect_references(refs: list[dict], source: str, payload: Any) -> None:
     if not isinstance(payload, dict):
         return
     source = payload.get("source") or source
-    rows = payload.get("results") if isinstance(payload.get("results"), list) else None
+    # 道具ごとに並びのキーが違う(search / filter は results、recall は notes)
+    rows = next(
+        (payload[key] for key in ("results", "notes") if isinstance(payload.get(key), list)),
+        None,
+    )
     if rows is None:
         rows = [payload] if payload.get("title") else []
     found = []
@@ -386,6 +411,7 @@ async def stream(
     grounded: bool = True,
     history: list[dict] | None = None,
     web: bool | None = None,
+    notes: bool | None = None,
 ) -> AsyncIterator[tuple[str, dict]]:
     """agent ループを回し、進捗と結果を (イベント名, 中身) で流す。
 
@@ -398,7 +424,8 @@ async def stream(
     app = request.app
     catalog = prepare_catalog(request, source)
     use_web = web_allowed(web)
-    tools = await tool_specs(app, use_web)
+    use_notes = notes_allowed(notes)
+    tools = await tool_specs(app, use_web, use_notes)
     # 履歴は本文だけを積み直す(過去のターンの道具のやり取りまで積むと文脈が際限なく伸び、
     # モデルが古い検索結果を根拠にし始める。何を引くかは毎ターン引き直させる)。
     past = [
@@ -443,7 +470,7 @@ async def stream(
                 ok, payload = False, _repeat_notice(name, arguments)
             else:
                 called.add(key)
-                ok, payload = await execute(app, name, arguments, use_web)
+                ok, payload = await execute(app, name, arguments, use_web, use_notes)
             if ok:
                 if name == websearch.TOOL_NAME:
                     add_references(references, websearch.references_from(payload))
@@ -497,12 +524,15 @@ async def answer_question(
     grounded: bool = True,
     history: list[dict] | None = None,
     web: bool | None = None,
+    notes: bool | None = None,
 ) -> dict:
     """agent ループをまとめて 1 つの JSON にする(非ストリーミング)。"""
     steps: list[dict] = []
     references: list[dict] = []
     text = ""
-    async for event, data in stream(cfg, request, question, source, grounded, history, web):
+    async for event, data in stream(
+        cfg, request, question, source, grounded, history, web, notes
+    ):
         if event == "step":
             steps.append(data)
         elif event == "references":
@@ -517,5 +547,6 @@ async def answer_question(
         "mode": "agent",
         "grounded": grounded,
         "web": web_allowed(web),
+        "notes": notes_allowed(notes),
         "model": cfg.model,
     }

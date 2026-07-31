@@ -1795,6 +1795,11 @@ async def ask(
         description="agent モードで web 検索の道具を渡すか。既定はサーバー設定どおり"
                     "(CHIEZO_WEB_SEARCH_URL が未設定なら、頼まれても使えない)",
     ),
+    notes_ok: bool | None = Query(
+        None, alias="notes",
+        description="agent モードで「覚える・思い出す」の道具を渡すか。既定はサーバー設定どおり"
+                    "(CHIEZO_NOTES_DIR が未設定なら、頼まれても使えない)",
+    ),
 ):
     cfg = answer.require_settings()
     # 既定は環境変数で決める(GPU + 8B の環境と、CPU だけの環境で妥当な既定が違うため)。
@@ -1802,11 +1807,15 @@ async def ask(
     grounded = answer.default_grounded() if grounded is None else grounded
     if mode == "agent":
         if not stream:
-            return await agent.answer_question(cfg, request, q, source, grounded, None, web)
+            return await agent.answer_question(
+                cfg, request, q, source, grounded, None, web, notes_ok
+            )
         # 流し始める前に済ませられる検査はここで(SSE はヘッダ送出後に
         # ステータスコードを変えられない)。残りの失敗は error イベントになる。
         agent.prepare_catalog(request, source)
-        return _sse_response(_agent_events(cfg, request, q, source, grounded, None, web))
+        return _sse_response(
+            _agent_events(cfg, request, q, source, grounded, None, web, notes_ok)
+        )
     if not stream:
         return await answer.answer(cfg, request, q, source, grounded)
 
@@ -1819,6 +1828,7 @@ async def ask(
 async def _agent_events(
     cfg, request: Request, q: str, source: str | None, grounded: bool,
     history: list[dict] | None = None, web: bool | None = None,
+    notes_ok: bool | None = None,
 ):
     """agent モードの SSE。
 
@@ -1826,10 +1836,10 @@ async def _agent_events(
     それが数十秒かかる)。ソースの検査だけは呼び出し側が先に済ませてあり、
     残りの失敗(推論サーバに繋がらない等)は error イベントとして流す。
     """
-    events = agent.stream(cfg, request, q, source, grounded, history, web)
+    events = agent.stream(cfg, request, q, source, grounded, history, web, notes_ok)
     yield _sse("meta", {
         "mode": "agent", "grounded": grounded, "model": cfg.model,
-        "web": agent.web_allowed(web),
+        "web": agent.web_allowed(web), "notes": agent.notes_allowed(notes_ok),
     })
     try:
         async for event, data in events:
@@ -1862,6 +1872,8 @@ class ChatRequest(BaseModel):
     # agent モードで web 検索の道具を渡すか(None = サーバー設定どおり)。
     # 画面のトグルはここを毎回送る = やり取りごとに切り替えられる。
     web: bool | None = None
+    # 「覚える・思い出す」の道具を渡すか。**書き込みを伴う**ので、同じく切れるようにする。
+    notes: bool | None = None
 
 
 def _split_history(body: ChatRequest) -> tuple[str, list[dict]]:
@@ -1880,11 +1892,13 @@ async def chat(request: Request, body: ChatRequest, stream: bool = Query(False))
     if mode == "agent":
         if not stream:
             return await agent.answer_question(
-                cfg, request, question, body.source, grounded, history, body.web
+                cfg, request, question, body.source, grounded, history, body.web, body.notes
             )
         agent.prepare_catalog(request, body.source)
         return _sse_response(
-            _agent_events(cfg, request, question, body.source, grounded, history, body.web)
+            _agent_events(
+                cfg, request, question, body.source, grounded, history, body.web, body.notes
+            )
         )
     if not stream:
         return await answer.answer(cfg, request, question, body.source, grounded, history)
@@ -1975,12 +1989,13 @@ CHAT_JS = """
   }
 
   function settings() {
-    var web = document.getElementById('web');
+    var web = document.getElementById('web'), notes = document.getElementById('notes');
     return {
       source: document.getElementById('source').value || null,
       grounded: document.getElementById('grounded').value === '1',
       mode: document.getElementById('mode').value,
-      web: web ? web.checked : null
+      web: web ? web.checked : null,
+      notes: notes ? notes.checked : null
     };
   }
 
@@ -2060,18 +2075,27 @@ CHAT_JS = """
     input.style.height = 'auto';
     input.style.height = input.scrollHeight + 'px';
   });
-  // web 検索は agent モードの道具なので、rag のときは選べないことを見せる
-  var mode = document.getElementById('mode'), web = document.getElementById('web');
-  function syncWeb() {
-    if (!web) return;
+  // web 検索と「覚える」は agent モードの道具なので、rag のときは選べないことを見せる
+  var mode = document.getElementById('mode');
+  var toggles = [
+    [document.getElementById('web'), 'web 検索は agent モードの道具です'],
+    [document.getElementById('notes'), '「覚える」は agent モードの道具です']
+  ];
+  function syncToggles() {
     var off = mode.value !== 'agent';
-    web.disabled = off;
-    web.parentNode.classList.toggle('on', web.checked && !off);
-    web.parentNode.title = off ? 'web 検索は agent モードの道具です' : '';
+    toggles.forEach(function (pair) {
+      var box = pair[0];
+      if (!box) return;
+      box.disabled = off;
+      box.parentNode.classList.toggle('on', box.checked && !off);
+      box.parentNode.title = off ? pair[1] : '';
+    });
   }
-  if (mode) mode.addEventListener('change', syncWeb);
-  if (web) web.addEventListener('change', syncWeb);
-  syncWeb();
+  if (mode) mode.addEventListener('change', syncToggles);
+  toggles.forEach(function (pair) {
+    if (pair[0]) pair[0].addEventListener('change', syncToggles);
+  });
+  syncToggles();
 
   Array.prototype.forEach.call(document.querySelectorAll('.empty button'), function (b) {
     b.addEventListener('click', function () { send_(b.textContent); });
@@ -2117,12 +2141,20 @@ async def chat_page(
         '<input type="checkbox" id="web" checked>🌐 web 検索</label>'
         if websearch.is_enabled() else ""
     )
+    # 「覚えておいて」に応えられるようにする道具(chiezo で唯一の書き込み)。
+    # 何を書いたかは「調べた手順」に出るので、勝手に増えたときも後から分かる。
+    notes_toggle = (
+        '<label class="toggle on" id="notes-toggle">'
+        '<input type="checkbox" id="notes" checked>📝 覚える</label>'
+        if notes.is_enabled() else ""
+    )
     settings = f"""
 <div class="composer-settings">
 <select id="source" name="source" title="引くソース">{options}</select>
 <select id="mode" name="mode" title="引き方">{mode_options}</select>
 <select id="grounded" name="grounded" title="根拠の扱い">{grounded_options}</select>
 {web_toggle}
+{notes_toggle}
 <span class="hint">Enter で送信</span>
 </div>
 """
