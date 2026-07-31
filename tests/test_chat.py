@@ -233,3 +233,30 @@ class TestWebSearch:
         assert body["steps"][0]["ok"] is False
         assert "unreachable" in body["steps"][0]["summary"]
         assert body["answer"] == "web は使えませんでした"
+
+
+class TestWhoYouAreTalkingTo:
+    """話す相手は AI(モデル)で、chiezo はその AI が引く知識、という関係を画面に出す。"""
+
+    def test_heading_names_the_model(self, monkeypatch_env):
+        with make_client(monkeypatch_env, ToolLLM(), CHIEZO_LLM_MODEL="Qwen/Qwen3-8B-GGUF:Q4_K_M") as c:
+            res = c.get("/ask")
+        # 配布元・GGUF・量子化は落として名乗る
+        assert "<h1>AI(Qwen3-8B)と話す</h1>" in res.text
+        assert "chiezo と話す" not in res.text
+
+    def test_heading_falls_back_when_the_model_is_unknown(self, monkeypatch_env):
+        """モデル名が取れない(推論サーバに繋がらない)ときも画面は出す。"""
+        from app import answer
+
+        answer._MODEL_LABEL_CACHE.clear()
+        with make_client(monkeypatch_env, None) as c:   # 推論サーバは居ない
+            res = c.get("/ask")
+        assert "<h1>AI と話す</h1>" in res.text
+
+    def test_prompt_tells_the_model_it_is_not_chiezo(self, monkeypatch_env):
+        fake = ToolLLM(ANSWER)
+        with make_client(monkeypatch_env, fake) as client:
+            chat(client, [{"role": "user", "content": "こんにちは"}], mode="agent")
+        system = fake.requests[0]["messages"][0]["content"]
+        assert "chiezo はあなたが引く知識であって、あなた自身ではありません" in system

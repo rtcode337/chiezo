@@ -391,7 +391,7 @@ def _answer_status_html() -> str:
             " <code>CHIEZO_LLM_URL</code> に設定すると有効になります"
             "(compose なら <code>docker compose --profile answer up -d</code>)。</p>"
         )
-    return '<p><a href="/ask">→ chiezo に質問する</a></p>'
+    return '<p><a href="/ask">→ AI と話す(chiezo の知識を引きます)</a></p>'
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -2054,7 +2054,7 @@ async def ask_page(
         # 「壊れている」のか「使っていない機能」なのか見分けが付かない)。
         body = f"""
 <nav><a href="/admin">管理画面</a></nav>
-<h1>chiezo と話す</h1>
+<h1>AI と話す</h1>
 <p class="stale">「答える」層は無効です。</p>
 <p class="muted">推論サーバの OpenAI 互換 URL を <code>CHIEZO_LLM_URL</code> に設定すると有効になります
 (compose なら <code>docker compose --profile answer up -d</code>)。</p>
@@ -2063,9 +2063,13 @@ async def ask_page(
 <button type="submit" disabled>送信</button>
 </form>
 """
-        return HTMLResponse(content=page_shell("chiezo と話す", body))
+        return HTMLResponse(content=page_shell("AI と話す", body))
 
     cfg = answer.require_settings()
+    # 話す相手は AI(モデル)で、chiezo はその AI が引く知識。見出しでその関係を出すため、
+    # モデル名を名乗らせる(推論サーバに聞く。分からなければ名前なしの「AI」)。
+    label = await answer.model_label(cfg)
+    heading = f"AI({esc(label)})と話す" if label else "AI と話す"
     if not nojs:
         # 会話は JS(fetch + SSE)が主役。履歴を持つのはブラウザ側で、サーバーは
         # 毎回まるごと受け取る。JS が無い環境には下の 1 問 1 答へ誘導する。
@@ -2075,8 +2079,8 @@ async def ask_page(
         )
         body = f"""
 <nav><a href="/admin">管理画面</a></nav>
-<h1>chiezo と話す</h1>
-<p class="muted">ためた知識(登録済みソース)を引ける相手と話せます。
+<h1>{heading}</h1>
+<p class="muted">chiezo にためた知識(登録済みソース)を引ける AI です。
 根拠にした文書は発言のあとに並びます。</p>
 <div id="log"></div>
 <form class="chat" id="chat"{first}>
@@ -2088,12 +2092,12 @@ async def ask_page(
 <a href="{esc(nojs_url)}">1 問 1 答の画面</a>を使ってください(会話の継続はできません)。</p></noscript>
 <script>{CHAT_JS}</script>
 """
-        return HTMLResponse(content=page_shell("chiezo と話す", body))
+        return HTMLResponse(content=page_shell(heading, body))
 
     # ---- JS なしの 1 問 1 答(会話は続かないが、これだけで用が足りることも多い)
     form = f"""
 <nav><a href="/admin">管理画面</a></nav>
-<h1>chiezo に質問する(JS なし)</h1>
+<h1>{heading}(JS なし・1 問 1 答)</h1>
 <form method="get" action="/ask">
 <input type="hidden" name="nojs" value="1">
 <input type="text" name="q" value="{esc(q or '')}" placeholder="質問を書く(自然文でよい)">
@@ -2105,7 +2109,7 @@ async def ask_page(
 <p class="muted"><a href="/ask">会話できる画面へ戻る</a></p>
 """
     if not q:
-        return HTMLResponse(content=page_shell("chiezo に質問する", form))
+        return HTMLResponse(content=page_shell(heading, form))
 
     steps_block = ""
     if mode == "agent":
@@ -2136,7 +2140,7 @@ async def ask_page(
 </ul>
 <p class="muted">{footer}</p>
 """
-    return HTMLResponse(content=page_shell("chiezo に質問する", body))
+    return HTMLResponse(content=page_shell(heading, body))
 
 
 # ---- ブラウズ画面(人間向け HTML) -------------------------------------------

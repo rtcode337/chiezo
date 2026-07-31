@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 
@@ -125,6 +126,52 @@ def load_settings() -> Settings | None:
 
 def is_enabled() -> bool:
     return bool(os.environ.get("CHIEZO_LLM_URL", "").strip())
+
+
+# 画面に出すモデル名の見当。推論サーバに毎回聞かずに済むよう覚えておく
+# (相手が落ちているときにページの表示まで待たされないようにするため)。
+_MODEL_LABEL_CACHE: dict[str, tuple[float, str | None]] = {}
+MODEL_LABEL_TTL = 300.0
+
+
+def short_model_name(model_id: str) -> str:
+    """`Qwen/Qwen3-8B-GGUF:Q4_K_M` → `Qwen3-8B`(見出しに出す用)。
+
+    配布元・GGUF・量子化の別は、話している相手を名乗るのには要らない。
+    """
+    name = model_id.split("/")[-1].split(":")[0].strip()
+    for suffix in ("-GGUF", "-gguf"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+    return name or model_id
+
+
+async def model_label(cfg: Settings) -> str | None:
+    """いま話している相手(モデル)の名前。分からなければ None。
+
+    **chiezo は知識ベースで、話す相手は AI** という関係を画面に出すために要る。
+    `CHIEZO_LLM_MODEL` が明示されていればそれを、無ければ推論サーバの `/models` に聞く
+    (llama-server は 1 プロセス 1 モデルなので、設定していない運用のほうが普通)。
+    相手が落ちていても画面は出したいので、失敗は None として覚えて先へ進む。
+    """
+    explicit = os.environ.get("CHIEZO_LLM_MODEL", "").strip()
+    if explicit:
+        return short_model_name(explicit)
+    now = time.monotonic()
+    cached = _MODEL_LABEL_CACHE.get(cfg.url)
+    if cached and now - cached[0] < MODEL_LABEL_TTL:
+        return cached[1]
+    label = None
+    try:
+        async with _llm_client(cfg) as client:
+            res = await client.get(f"{cfg.url}/models", timeout=3.0)
+        entries = res.json().get("data") or []
+        if entries:
+            label = short_model_name(str(entries[0].get("id") or "")) or None
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError, KeyError, IndexError):
+        label = None
+    _MODEL_LABEL_CACHE[cfg.url] = (now, label)
+    return label
 
 
 def default_mode() -> str:
@@ -525,7 +572,8 @@ def gather_context(
 # **モデルの幻覚への対処**なので、固定の制約にはしない(chiezo は AI 用の知識ベースで、
 # ローカル LLM はそれを使う側。持っている知識を封じるのが目的ではない)。
 ANSWER_SYSTEM_GROUNDED = """\
-あなたはローカル知識ベース「chiezo」の回答係です。渡された抜粋を根拠に、日本語で簡潔に答えてください。
+あなたは AI アシスタントです。ローカル知識ベース「chiezo」から抜き出した文章を渡すので、
+それを根拠に日本語で簡潔に答えてください(chiezo はあなたが引く知識であって、あなた自身ではありません)。
 
 規則:
 - 抜粋に書かれていないことは答えない。根拠が無ければ「抜粋からは分かりません」と言う
@@ -534,8 +582,8 @@ ANSWER_SYSTEM_GROUNDED = """\
 """
 
 ANSWER_SYSTEM_OPEN = """\
-あなたはローカル知識ベース「chiezo」を引ける回答係です。chiezo から取ってきた抜粋を踏まえ、
-日本語で簡潔に答えてください。
+あなたは AI アシスタントです。ローカル知識ベース「chiezo」から取ってきた抜粋を渡すので、
+それを踏まえて日本語で簡潔に答えてください(chiezo はあなたが引く知識であって、あなた自身ではありません)。
 
 規則:
 - 抜粋に書かれていることは、根拠にした番号を [1] の形で付ける
