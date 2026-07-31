@@ -128,7 +128,7 @@ def _mcp(app):
     return mcp
 
 
-async def tool_specs(app) -> list[dict]:
+async def tool_specs(app, web: bool = False) -> list[dict]:
     """MCP のツール定義を OpenAI の function 形式へ写す。
 
     説明文(description)も入力スキーマも MCP のものをそのまま使う。ここで書き直すと
@@ -148,10 +148,20 @@ async def tool_specs(app) -> list[dict]:
         if t.name in AGENT_TOOLS
     ]
     # web 検索は chiezo の道具ではないので MCP には出しておらず、ここで足す
-    # (有効なときだけ。無効なら道具ごと見せない = 使えないものを文脈に並べない)。
-    if websearch.is_enabled():
+    # (使うときだけ。使わないなら道具ごと見せない = 使えないものを文脈に並べない)。
+    if web:
         specs.append(websearch.TOOL_SPEC)
     return specs
+
+
+def web_allowed(requested: bool | None) -> bool:
+    """このやり取りで web 検索を使わせるか。
+
+    サーバー側で設定されていなければ、頼まれても使えない(道具が無い)。
+    設定されている場合は**呼び出しごとに切れる** — 画面のトグルや API の `web=0` で、
+    「いまは chiezo だけで答えてほしい」を選べるようにするため。
+    """
+    return websearch.is_enabled() and requested is not False
 
 
 def _payload_of(result: Any) -> Any:
@@ -195,14 +205,14 @@ def _tool_error_payload(text: str) -> dict:
     return {"error": text}
 
 
-async def execute(app, name: str, arguments: dict) -> tuple[bool, Any]:
+async def execute(app, name: str, arguments: dict, web: bool = False) -> tuple[bool, Any]:
     """道具を 1 つ実行する。戻りは (成功したか, 応答)。
 
     失敗も**モデルに返す**(例外にしない)。404 の candidates や 409 の移行案内には
     次の手を決めるのに要る情報が入っているし、1 回の失敗でループを落とす必要もない。
     """
     if name == websearch.TOOL_NAME:
-        if not websearch.is_enabled():
+        if not web:
             return False, {"error": "web search is disabled"}
         payload = await websearch.search(str(arguments.get("q", "")).strip())
         return "error" not in payload, payload
@@ -308,7 +318,9 @@ def _repeat_notice(name: str, arguments: dict) -> dict:
 # ---- ループ本体 -------------------------------------------------------------
 
 
-def _system_prompt(catalog: list[dict], source: str | None, grounded: bool) -> str:
+def _system_prompt(
+    catalog: list[dict], source: str | None, grounded: bool, web: bool = False
+) -> str:
     """道具の使い方(MCP の instructions)+ ソース一覧 + 回答方針。
 
     使い方の説明を MCP から借りるのは道具の定義と同じ理由で、chiezo を正しく引くための
@@ -323,13 +335,13 @@ def _system_prompt(catalog: list[dict], source: str | None, grounded: bool) -> s
         f"\n\n**このやり取りでは {source} だけを引くこと**(他のソースは使わない)。"
         if source else ""
     )
-    # web 検索が有効なときだけ、その使い分けを足す(無効なら道具ごと出していないので不要)。
-    web = WEB_SEARCH_POLICY if websearch.is_enabled() else ""
+    # web 検索を使わせるときだけ、その使い分けを足す(使わないなら道具ごと出していない)。
+    web_policy = WEB_SEARCH_POLICY if web else ""
     return (
         INSTRUCTIONS
         + "\n利用できるソース:\n" + "\n".join(lines) + fixed + "\n\n"
         + (AGENT_SYSTEM_GROUNDED if grounded else AGENT_SYSTEM_OPEN)
-        + web
+        + web_policy
     )
 
 
@@ -373,6 +385,7 @@ async def stream(
     source: str | None,
     grounded: bool = True,
     history: list[dict] | None = None,
+    web: bool | None = None,
 ) -> AsyncIterator[tuple[str, dict]]:
     """agent ループを回し、進捗と結果を (イベント名, 中身) で流す。
 
@@ -384,7 +397,8 @@ async def stream(
     """
     app = request.app
     catalog = prepare_catalog(request, source)
-    tools = await tool_specs(app)
+    use_web = web_allowed(web)
+    tools = await tool_specs(app, use_web)
     # 履歴は本文だけを積み直す(過去のターンの道具のやり取りまで積むと文脈が際限なく伸び、
     # モデルが古い検索結果を根拠にし始める。何を引くかは毎ターン引き直させる)。
     past = [
@@ -392,7 +406,7 @@ async def stream(
         for m in (history or []) if m.get("role") in ("user", "assistant")
     ][-answer.HISTORY_TURNS:]
     messages: list[dict] = [
-        {"role": "system", "content": _system_prompt(catalog, source, grounded)},
+        {"role": "system", "content": _system_prompt(catalog, source, grounded, use_web)},
         *past,
         {"role": "user", "content": question},
     ]
@@ -429,7 +443,7 @@ async def stream(
                 ok, payload = False, _repeat_notice(name, arguments)
             else:
                 called.add(key)
-                ok, payload = await execute(app, name, arguments)
+                ok, payload = await execute(app, name, arguments, use_web)
             if ok:
                 if name == websearch.TOOL_NAME:
                     add_references(references, websearch.references_from(payload))
@@ -482,12 +496,13 @@ async def answer_question(
     source: str | None,
     grounded: bool = True,
     history: list[dict] | None = None,
+    web: bool | None = None,
 ) -> dict:
     """agent ループをまとめて 1 つの JSON にする(非ストリーミング)。"""
     steps: list[dict] = []
     references: list[dict] = []
     text = ""
-    async for event, data in stream(cfg, request, question, source, grounded, history):
+    async for event, data in stream(cfg, request, question, source, grounded, history, web):
         if event == "step":
             steps.append(data)
         elif event == "references":
@@ -501,5 +516,6 @@ async def answer_question(
         "steps": steps,
         "mode": "agent",
         "grounded": grounded,
+        "web": web_allowed(web),
         "model": cfg.model,
     }

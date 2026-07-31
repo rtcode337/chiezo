@@ -27,7 +27,14 @@ from app import agent, answer, claude_config, db, notes, websearch
 from app.fts import build_match_query, escape_like
 from app.mcp_server import build_mcp
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
-from app.pages import APPLE_TOUCH_ICON_PNG, browse_url, doc_url, esc, page_shell
+from app.pages import (
+    APPLE_TOUCH_ICON_PNG,
+    CHAT_STYLE,
+    browse_url,
+    doc_url,
+    esc,
+    page_shell,
+)
 from app.registry import (
     COORDS_MIN_SCHEMA_VERSION,
     FILTER_MIN_SCHEMA_VERSION,
@@ -1783,6 +1790,11 @@ async def ask(
         description="rag は search を 1 回。agent は LLM 自身に道具を引かせる"
                     "(ツール呼び出しが安定するモデルが要る。既定は CHIEZO_ASK_DEFAULT_MODE)",
     ),
+    web: bool | None = Query(
+        None,
+        description="agent モードで web 検索の道具を渡すか。既定はサーバー設定どおり"
+                    "(CHIEZO_WEB_SEARCH_URL が未設定なら、頼まれても使えない)",
+    ),
 ):
     cfg = answer.require_settings()
     # 既定は環境変数で決める(GPU + 8B の環境と、CPU だけの環境で妥当な既定が違うため)。
@@ -1790,11 +1802,11 @@ async def ask(
     grounded = answer.default_grounded() if grounded is None else grounded
     if mode == "agent":
         if not stream:
-            return await agent.answer_question(cfg, request, q, source, grounded)
+            return await agent.answer_question(cfg, request, q, source, grounded, None, web)
         # 流し始める前に済ませられる検査はここで(SSE はヘッダ送出後に
         # ステータスコードを変えられない)。残りの失敗は error イベントになる。
         agent.prepare_catalog(request, source)
-        return _sse_response(_agent_events(cfg, request, q, source, grounded))
+        return _sse_response(_agent_events(cfg, request, q, source, grounded, None, web))
     if not stream:
         return await answer.answer(cfg, request, q, source, grounded)
 
@@ -1806,7 +1818,7 @@ async def ask(
 
 async def _agent_events(
     cfg, request: Request, q: str, source: str | None, grounded: bool,
-    history: list[dict] | None = None,
+    history: list[dict] | None = None, web: bool | None = None,
 ):
     """agent モードの SSE。
 
@@ -1814,8 +1826,11 @@ async def _agent_events(
     それが数十秒かかる)。ソースの検査だけは呼び出し側が先に済ませてあり、
     残りの失敗(推論サーバに繋がらない等)は error イベントとして流す。
     """
-    events = agent.stream(cfg, request, q, source, grounded, history)
-    yield _sse("meta", {"mode": "agent", "grounded": grounded, "model": cfg.model})
+    events = agent.stream(cfg, request, q, source, grounded, history, web)
+    yield _sse("meta", {
+        "mode": "agent", "grounded": grounded, "model": cfg.model,
+        "web": agent.web_allowed(web),
+    })
     try:
         async for event, data in events:
             yield _sse(event, data)
@@ -1844,6 +1859,9 @@ class ChatRequest(BaseModel):
     source: str | None = None
     grounded: bool | None = None
     mode: str | None = PydField(default=None, pattern="^(rag|agent)$")
+    # agent モードで web 検索の道具を渡すか(None = サーバー設定どおり)。
+    # 画面のトグルはここを毎回送る = やり取りごとに切り替えられる。
+    web: bool | None = None
 
 
 def _split_history(body: ChatRequest) -> tuple[str, list[dict]]:
@@ -1862,11 +1880,11 @@ async def chat(request: Request, body: ChatRequest, stream: bool = Query(False))
     if mode == "agent":
         if not stream:
             return await agent.answer_question(
-                cfg, request, question, body.source, grounded, history
+                cfg, request, question, body.source, grounded, history, body.web
             )
         agent.prepare_catalog(request, body.source)
         return _sse_response(
-            _agent_events(cfg, request, question, body.source, grounded, history)
+            _agent_events(cfg, request, question, body.source, grounded, history, body.web)
         )
     if not stream:
         return await answer.answer(cfg, request, question, body.source, grounded, history)
@@ -1905,7 +1923,8 @@ CHAT_JS = """
   var log = document.getElementById('log');
   var form = document.getElementById('chat');
   var input = document.getElementById('q');
-  if (!log || !form || !window.fetch) return;
+  var send = document.getElementById('send');
+  if (!log || !form || !input || !window.fetch) return;
   var history = [];   // 会話の主体はここ。サーバーは状態を持たない
   var busy = false;
 
@@ -1915,97 +1934,149 @@ CHAT_JS = """
     if (text !== undefined) n.textContent = text;
     return n;
   }
-  function turn(who, label) {
-    var t = el('div', 'turn ' + who);
-    t.appendChild(el('div', 'who', label));
+  function atBottom() {
+    return log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+  }
+  function toBottom() { log.scrollTop = log.scrollHeight; }
+
+  function turn(who, cls) {
+    var t = el('div', 'turn ' + cls);
     var body = el('div', 'text', '');
     t.appendChild(body);
     log.appendChild(t);
-    t.scrollIntoView({block: 'end'});
+    toBottom();
     return {node: t, text: body};
   }
-  function addSteps(t, s) {
-    if (!t.steps) { t.steps = el('ul', 'steps'); t.node.appendChild(t.steps); }
-    t.steps.appendChild(el('li', null,
+  function addStep(t, s) {
+    if (!t.steps) {
+      t.steps = el('details', 'steps');
+      t.stepSummary = el('summary', null, '調べている…');
+      t.stepList = el('ol');
+      t.steps.appendChild(t.stepSummary);
+      t.steps.appendChild(t.stepList);
+      t.node.appendChild(t.steps);
+    }
+    t.stepList.appendChild(el('li', null,
       s.tool + ' ' + JSON.stringify(s.arguments) + ' → ' + s.summary));
+    t.stepSummary.textContent = '調べた手順(' + t.stepList.children.length + ')';
   }
   function addRefs(t, list) {
     if (!list.length) return;
-    var ul = el('ul', 'refs');
+    var box = el('div', 'refs');
     list.forEach(function (r) {
       // タイトルは < や " を含みうるので innerHTML では組み立てない
-      var li = el('li', r.source === 'web' ? 'web' : null);
-      var a = el('a', null, r.source === 'web' ? r.title : r.source + ' / ' + r.title);
+      var a = el('a', null, (r.source === 'web' ? '🌐 ' : r.source + ' / ') + r.title);
       a.href = r.url;
+      a.title = r.title;
       if (r.source === 'web') { a.target = '_blank'; a.rel = 'noreferrer'; }
-      li.appendChild(a);
-      ul.appendChild(li);
+      box.appendChild(a);
     });
-    t.node.appendChild(ul);
+    t.node.appendChild(box);
   }
 
-  function send(text) {
+  function settings() {
+    var web = document.getElementById('web');
+    return {
+      source: document.getElementById('source').value || null,
+      grounded: document.getElementById('grounded').value === '1',
+      mode: document.getElementById('mode').value,
+      web: web ? web.checked : null
+    };
+  }
+
+  function send_(text) {
     if (busy || !text) return;
     busy = true;
-    turn('you', 'あなた').text.textContent = text;
+    if (send) send.disabled = true;
+    var empty = document.getElementById('empty');
+    if (empty) empty.remove();
+    turn('you', 'you').text.textContent = text;
     history.push({role: 'user', content: text});
-    var t = turn('bot', 'chiezo');
-    t.text.textContent = '…';
+    var t = turn('bot', 'bot');
+    t.text.classList.add('pending');
+    t.text.textContent = '考えています…';
     var first = true, answer = '';
+    var opts = settings();
+    opts.messages = history;
     fetch('/v1/chat?stream=1', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        messages: history,
-        source: document.getElementById('source').value || null,
-        grounded: document.getElementById('grounded').value === '1',
-        mode: document.getElementById('mode').value
-      })
+      body: JSON.stringify(opts)
     }).then(function (res) {
       if (!res.ok) { throw new Error('HTTP ' + res.status); }
       var reader = res.body.getReader(), decoder = new TextDecoder(), buf = '';
       function pump() {
         return reader.read().then(function (chunk) {
-          if (chunk.done) { return; }
+          if (chunk.done) return;
           buf += decoder.decode(chunk.value, {stream: true});
           var frames = buf.split('\\n\\n');
           buf = frames.pop();
+          var stick = atBottom();
           frames.forEach(function (frame) {
             var ev = /^event: (.*)$/m.exec(frame), da = /^data: (.*)$/m.exec(frame);
             if (!ev || !da) return;
             var data = JSON.parse(da[1]);
-            if (ev[1] === 'step') { addSteps(t, data); }
+            if (ev[1] === 'step') { addStep(t, data); }
             else if (ev[1] === 'references') { addRefs(t, data.references || []); }
             else if (ev[1] === 'delta') {
-              if (first) { t.text.textContent = ''; first = false; }
+              if (first) { t.text.textContent = ''; t.text.classList.remove('pending'); first = false; }
               answer += data.text;
               t.text.textContent = answer;
             } else if (ev[1] === 'error') {
+              t.text.classList.remove('pending');
               t.text.textContent += '\\n[エラー] ' + (data.error || '');
             }
           });
-          t.node.scrollIntoView({block: 'end'});
+          if (stick) toBottom();
           return pump();
         });
       }
       return pump();
     }).catch(function (e) {
+      t.text.classList.remove('pending');
       t.text.textContent += '\\n[通信に失敗しました: ' + e.message + ']';
     }).then(function () {
       // 失敗しても履歴には残す(次の発言で文脈が飛ぶのを避ける)
       history.push({role: 'assistant', content: answer || '(応答なし)'});
       busy = false;
+      if (send) send.disabled = false;
       input.focus();
     });
   }
 
-  form.addEventListener('submit', function (e) {
-    e.preventDefault();
+  function submit() {
     var text = input.value.trim();
     input.value = '';
-    send(text);
+    input.style.height = 'auto';
+    send_(text);
+  }
+  form.addEventListener('submit', function (e) { e.preventDefault(); submit(); });
+  // Enter で送信・Shift+Enter で改行(日本語入力の変換中は送らない)
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); }
   });
-  if (form.dataset.first) { send(form.dataset.first); }
+  // 入力に合わせて高さを伸ばす(上限は CSS の max-height)
+  input.addEventListener('input', function () {
+    input.style.height = 'auto';
+    input.style.height = input.scrollHeight + 'px';
+  });
+  // web 検索は agent モードの道具なので、rag のときは選べないことを見せる
+  var mode = document.getElementById('mode'), web = document.getElementById('web');
+  function syncWeb() {
+    if (!web) return;
+    var off = mode.value !== 'agent';
+    web.disabled = off;
+    web.parentNode.classList.toggle('on', web.checked && !off);
+    web.parentNode.title = off ? 'web 検索は agent モードの道具です' : '';
+  }
+  if (mode) mode.addEventListener('change', syncWeb);
+  if (web) web.addEventListener('change', syncWeb);
+  syncWeb();
+
+  Array.prototype.forEach.call(document.querySelectorAll('.empty button'), function (b) {
+    b.addEventListener('click', function () { send_(b.textContent); });
+  });
+  if (form.dataset.first) { send_(form.dataset.first); }
 })();
 """
 
@@ -2039,29 +2110,41 @@ async def chat_page(
         f'<option value="{value}"{" selected" if value == mode else ""}>{label}</option>'
         for value, label in (("rag", "1 回検索して答える"), ("agent", "モデルに道具を引かせる"))
     )
+    # 設定は**入力欄の下**に並べる(会話中に触るのは稀なので、視線の主役にしない)。
+    # web 検索は設定してある環境でだけ出し、**やり取りごとに切れる**トグルにする。
+    web_toggle = (
+        '<label class="toggle on" id="web-toggle">'
+        '<input type="checkbox" id="web" checked>🌐 web 検索</label>'
+        if websearch.is_enabled() else ""
+    )
     settings = f"""
-<div class="settings">
-ソース <select id="source" name="source">{options}</select>
-根拠 <select id="grounded" name="grounded">{grounded_options}</select>
-引き方 <select id="mode" name="mode">{mode_options}</select>
-{'<span title="web 検索が有効です">🌐 web 検索: 有効</span>' if websearch.is_enabled() else ''}
+<div class="composer-settings">
+<select id="source" name="source" title="引くソース">{options}</select>
+<select id="mode" name="mode" title="引き方">{mode_options}</select>
+<select id="grounded" name="grounded" title="根拠の扱い">{grounded_options}</select>
+{web_toggle}
+<span class="hint">Enter で送信</span>
 </div>
 """
     if not answer.is_enabled():
         # 無効でも入力欄そのものは出す(何をする画面なのかが分からないと、
         # 「壊れている」のか「使っていない機能」なのか見分けが付かない)。
         body = f"""
-<nav><a href="/admin">管理画面</a></nav>
-<h1>AI と話す</h1>
+<div class="chat-page">
+<div class="chat-head"><h1>AI と話す</h1><span class="spacer"></span>
+<a href="/admin">管理画面</a></div>
+<div class="log">
 <p class="stale">「答える」層は無効です。</p>
-<p class="muted">推論サーバの OpenAI 互換 URL を <code>CHIEZO_LLM_URL</code> に設定すると有効になります
-(compose なら <code>docker compose --profile answer up -d</code>)。</p>
-<form class="chat">
-<input type="text" name="q" placeholder="話しかける(自然文でよい)" disabled>
-<button type="submit" disabled>送信</button>
-</form>
+<p class="muted">推論サーバの OpenAI 互換 URL を <code>CHIEZO_LLM_URL</code> に設定すると
+有効になります(compose なら <code>docker compose --profile answer up -d</code>)。</p>
+</div>
+<div class="composer"><div class="composer-box">
+<textarea name="q" rows="3" placeholder="話しかける(いまは無効です)" disabled></textarea>
+<button type="button" disabled>↑</button>
+</div></div>
+</div>
 """
-        return HTMLResponse(content=page_shell("AI と話す", body))
+        return HTMLResponse(content=page_shell("AI と話す", body, style=CHAT_STYLE))
 
     cfg = answer.require_settings()
     # 話す相手は AI(モデル)で、chiezo はその AI が引く知識。見出しでその関係を出すため、
@@ -2076,21 +2159,33 @@ async def chat_page(
             f"&q={quote(q)}" if q else ""
         )
         body = f"""
-<nav><a href="/admin">管理画面</a></nav>
-<h1>{heading}</h1>
-<p class="muted">chiezo にためた知識(登録済みソース)を引ける AI です。
+<div class="chat-page">
+<div class="chat-head"><h1>{heading}</h1><span class="spacer"></span>
+<a href="/admin">管理画面</a></div>
+<div class="log" id="log">
+<div class="empty" id="empty">
+<p>chiezo にためた知識(登録済みソース)を引ける AI です。<br>
 根拠にした文書は発言のあとに並びます。</p>
-<div id="log"></div>
-<form class="chat" id="chat"{first}>
-<input type="text" id="q" name="q" placeholder="話しかける(自然文でよい)" autofocus>
-<button type="submit">送信</button>
-</form>
+<div class="examples">
+<button type="button">浅草寺について教えて</button>
+<button type="button">カテゴリ「東京都の寺」の記事は何件ある?</button>
+<button type="button">京都府にある博物館を挙げて</button>
+</div>
+</div>
+</div>
+<form class="composer" id="chat"{first}>
+<div class="composer-box">
+<textarea id="q" name="q" rows="3" placeholder="話しかける(自然文でよい)" autofocus></textarea>
+<button type="submit" id="send" title="送信">↑</button>
+</div>
 {settings}
+</form>
 <noscript><p class="stale">JavaScript が無効です。
 <a href="{esc(nojs_url)}">1 問 1 答の画面</a>を使ってください(会話の継続はできません)。</p></noscript>
 <script>{CHAT_JS}</script>
+</div>
 """
-        return HTMLResponse(content=page_shell(heading, body))
+        return HTMLResponse(content=page_shell(heading, body, style=CHAT_STYLE))
 
     # ---- JS なしの 1 問 1 答(会話は続かないが、これだけで用が足りることも多い)
     form = f"""

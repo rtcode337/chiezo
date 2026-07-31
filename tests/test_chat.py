@@ -261,3 +261,74 @@ class TestWhoYouAreTalkingTo:
             chat(client, [{"role": "user", "content": "こんにちは"}], mode="agent")
         system = fake.requests[0]["messages"][0]["content"]
         assert "chiezo はあなたが引く知識であって、あなた自身ではありません" in system
+
+
+class TestWebToggle:
+    """web 検索はやり取りごとに切れる(画面のトグルがこれを毎回送る)。"""
+
+    def test_request_can_turn_it_off(self, monkeypatch_env, web):
+        fake = ToolLLM(ANSWER)
+        with make_client(monkeypatch_env, fake) as client:
+            body = chat(
+                client, [{"role": "user", "content": "こんにちは"}], mode="agent", web=False
+            ).json()
+        names = {t["function"]["name"] for t in fake.requests[0]["tools"]}
+        assert "web_search" not in names
+        # 使わせないときは、使い分けの指示もプロンプトに載せない
+        assert "まず chiezo を引く" not in fake.requests[0]["messages"][0]["content"]
+        assert body["web"] is False
+
+    def test_request_cannot_conjure_it_when_unconfigured(self, monkeypatch_env):
+        """サーバー側で設定していなければ、頼まれても使えない。"""
+        fake = ToolLLM(ANSWER)
+        with make_client(monkeypatch_env, fake) as client:
+            body = chat(
+                client, [{"role": "user", "content": "こんにちは"}], mode="agent", web=True
+            ).json()
+        from app import agent
+
+        assert {t["function"]["name"] for t in fake.requests[0]["tools"]} == set(agent.AGENT_TOOLS)
+        assert body["web"] is False
+
+    def test_default_is_the_server_setting(self, monkeypatch_env, web):
+        fake = ToolLLM(ANSWER)
+        with make_client(monkeypatch_env, fake) as client:
+            body = chat(client, [{"role": "user", "content": "こんにちは"}], mode="agent").json()
+        assert body["web"] is True
+
+    def test_turning_it_off_also_refuses_the_call(self, monkeypatch_env, web):
+        """道具を出していないのにモデルが呼んできたら、実行せず突き返す。"""
+        fake = ToolLLM([("web_search", {"q": "何か"})], "chiezo だけで答えます")
+        with make_client(monkeypatch_env, fake) as client:
+            body = chat(
+                client, [{"role": "user", "content": "何か"}],
+                mode="agent", grounded=False, web=False,
+            ).json()
+        assert body["steps"][0]["ok"] is False
+        assert len(web.requests) == 0  # 外へは出ていない
+
+
+class TestChatPageLayout:
+    """入力欄は高さを持たせ、設定はその下に並べる。"""
+
+    def test_composer_has_a_textarea_with_room(self, monkeypatch_env):
+        with make_client(monkeypatch_env, ToolLLM()) as client:
+            html = client.get(CHAT_PATH).text
+        assert '<textarea id="q"' in html and 'rows="3"' in html
+        # 設定は入力欄の「下」
+        assert html.index("composer-settings") > html.index("composer-box")
+
+    def test_web_toggle_shows_up_only_when_configured(self, monkeypatch_env):
+        with make_client(monkeypatch_env, ToolLLM()) as client:
+            assert 'id="web"' not in client.get(CHAT_PATH).text
+
+    def test_web_toggle_is_there_when_configured(self, monkeypatch_env, web):
+        with make_client(monkeypatch_env, ToolLLM()) as client:
+            html = client.get(CHAT_PATH).text
+        assert 'id="web"' in html and "web 検索" in html
+
+    def test_admin_pages_keep_their_own_plain_look(self, monkeypatch_env):
+        """会話画面のスタイルは管理画面に漏らさない(あちらは素っ気ないままでよい)。"""
+        with make_client(monkeypatch_env, ToolLLM()) as client:
+            assert "composer-box" not in client.get("/admin").text
+            assert "composer-box" in client.get(CHAT_PATH).text

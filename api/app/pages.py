@@ -133,34 +133,95 @@ PAGE_STYLE = """
   select { padding: 0.3rem 0.5rem; }
   input[type=text] { padding: 0.3rem 0.5rem; width: 20rem; }
   button { padding: 0.3rem 0.8rem; }
-  /* 会話画面(/ask)。発言を左右に振らず、ラベルと余白だけで話者を分ける
-     (端末幅の狭い機械でも読める・凝った吹き出しにしない) */
-  .turn { margin: 1.2rem 0; }
-  .turn .who { font-size: 0.8rem; color: #666; margin-bottom: 0.2rem; }
-  .turn.you .text { border-left: 4px solid #bbb; background: #f6f6f6; }
-  .turn .text { white-space: pre-wrap; word-break: break-word; line-height: 1.7;
-                border: 1px solid #ccc; border-left: 4px solid #5560E0;
-                background: #fafaff; padding: 0.8rem 1rem; }
-  .turn .refs, .turn .steps { font-size: 0.8rem; color: #555; margin: 0.3rem 0 0 0.5rem;
-                              padding-left: 1rem; }
-  .turn .refs li.web { list-style-type: '🌐 '; }
+  /* 会話画面の 1 問 1 答(JS なし)版だけが使う。会話そのものの見た目は CHAT_STYLE 側 */
   form.chat { display: flex; gap: 0.5rem; margin-top: 1rem; }
   form.chat input[type=text] { flex: 1; width: auto; }
-  .settings { margin-top: 0.5rem; font-size: 0.85rem; color: #555; }
+"""
+
+# 会話画面(/localllm/chat)専用のスタイル。**管理画面とは分けてある** —
+# 管理画面は素っ気ないままでよく、会話は毎日触る画面なので作りが違う。
+# PAGE_STYLE の後ろに足すので、body の余白など重なる指定はこちらが勝つ。
+CHAT_STYLE = """
+  body { margin: 0; background: #faf9f7; color: #23221f; }
+  .chat-page { display: flex; flex-direction: column; height: 100dvh;
+               max-width: 46rem; margin: 0 auto; padding: 0 1rem; }
+  .chat-head { display: flex; align-items: baseline; gap: 1rem; padding: 1rem 0 0.5rem; }
+  .chat-head h1 { font-size: 1.05rem; margin: 0; }
+  .chat-head .spacer { flex: 1; }
+  .chat-head a { color: #6b665e; font-size: 0.85rem; }
+
+  /* 会話は上に伸びて、入力欄は下に貼り付く */
+  .log { flex: 1; overflow-y: auto; padding: 0.5rem 0 1rem; scrollbar-width: thin; }
+  /* 空のときだけ中央に置く(:has が無い環境では上寄せのまま = 崩れはしない) */
+  .log:has(.empty) { display: flex; align-items: center; justify-content: center; }
+  .empty { color: #8a857c; font-size: 0.9rem; text-align: center; }
+  .empty .examples { display: flex; flex-wrap: wrap; gap: 0.5rem;
+                     justify-content: center; margin-top: 1rem; }
+  .empty button { background: #fff; border: 1px solid #e3e0da; border-radius: 999px;
+                  padding: 0.4rem 0.9rem; font-size: 0.85rem; color: #4a463f;
+                  cursor: pointer; }
+  .empty button:hover { border-color: #b9b4aa; }
+
+  .turn { margin: 1.1rem 0; display: flex; flex-direction: column; }
+  .turn.you { align-items: flex-end; }
+  .turn.you .text { background: #ecebff; border-radius: 16px 16px 4px 16px;
+                    padding: 0.6rem 0.9rem; max-width: 85%; }
+  .turn.bot .text { line-height: 1.75; }
+  .turn .text { white-space: pre-wrap; word-break: break-word; }
+  .turn .text.pending { color: #8a857c; }
+  .turn .steps { margin: 0.4rem 0 0; font-size: 0.8rem; color: #6b665e; }
+  .turn .steps summary { font-weight: normal; color: #6b665e; }
+  .turn .steps ol { margin: 0.3rem 0 0; padding-left: 1.2rem;
+                    font-family: ui-monospace, monospace; word-break: break-all; }
+  .turn .refs { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.6rem; }
+  .turn .refs a { font-size: 0.78rem; color: #4a463f; text-decoration: none;
+                  background: #fff; border: 1px solid #e3e0da; border-radius: 999px;
+                  padding: 0.2rem 0.7rem; max-width: 20rem; overflow: hidden;
+                  text-overflow: ellipsis; white-space: nowrap; }
+  .turn .refs a:hover { border-color: #5560E0; color: #5560E0; }
+
+  /* 入力欄。高さを持たせ(既定 3 行)、設定はその下に並べる */
+  .composer { position: sticky; bottom: 0; background: #faf9f7; padding-bottom: 1rem; }
+  .composer-box { display: flex; align-items: flex-end; gap: 0.5rem; background: #fff;
+                  border: 1px solid #e3e0da; border-radius: 18px; padding: 0.6rem 0.6rem 0.6rem 0.9rem;
+                  box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+  .composer-box:focus-within { border-color: #5560E0; box-shadow: 0 0 0 3px #5560E01a; }
+  .composer-box textarea { flex: 1; border: none; outline: none; resize: none; background: none;
+                           font: inherit; line-height: 1.6; max-height: 40vh; padding: 0.2rem 0; }
+  .composer-box button { border: none; border-radius: 50%; width: 2.1rem; height: 2.1rem;
+                         background: #5560E0; color: #fff; font-size: 1rem; cursor: pointer;
+                         flex: none; padding: 0; }
+  .composer-box button:disabled { background: #cdcbc6; cursor: default; }
+  .composer-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem;
+                       margin-top: 0.5rem; font-size: 0.8rem; color: #6b665e; }
+  .composer-settings select { border: 1px solid #e3e0da; border-radius: 999px; background: #fff;
+                              padding: 0.25rem 0.6rem; font-size: 0.8rem; color: #4a463f; }
+  .composer-settings .toggle { display: inline-flex; align-items: center; gap: 0.3rem;
+                               border: 1px solid #e3e0da; border-radius: 999px; background: #fff;
+                               padding: 0.25rem 0.7rem; cursor: pointer; user-select: none; }
+  .composer-settings .toggle.on { border-color: #5560E0; color: #5560E0; background: #f4f5ff; }
+  .composer-settings .toggle input { margin: 0; }
+  .composer-settings .hint { margin-left: auto; }
+  @media (max-width: 30rem) {
+    .composer-settings { font-size: 0.75rem; }
+    .composer-settings .hint { display: none; }
+  }
 """
 
 
-def page_shell(title: str, body: str, refresh: int | None = None) -> str:
+def page_shell(title: str, body: str, refresh: int | None = None, style: str = "") -> str:
+    """共通の外枠。`style` は画面ごとの上乗せ(会話画面だけが使う)。"""
     refresh_tag = f'<meta http-equiv="refresh" content="{refresh}">' if refresh else ""
     return f"""<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 {refresh_tag}
 <link rel="icon" href="{FAVICON_DATA_URI}">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <title>{html.escape(title)}</title>
-<style>{PAGE_STYLE}</style>
+<style>{PAGE_STYLE}{style}</style>
 </head>
 <body>
 {body}
