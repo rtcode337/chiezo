@@ -416,7 +416,7 @@ def admin(request: Request):
 
     rows = "\n".join(
         f"<tr>"
-        f"<td><a href=\"{browse_url(s.name)}\">{esc(s.name)}</a></td>"
+        f"<td><a href=\"{esc(browse_url(s.name))}\">{esc(s.name)}</a></td>"
         f"<td>{esc(s.kind)}</td>"
         f"<td>{esc(s.lang or '')}</td>"
         f"<td>{s.doc_count:,}</td>"
@@ -564,7 +564,7 @@ def admin_osm(request: Request, q: str | None = Query(None, description="国名�
             src = sources.get(name)
             if src is not None:
                 action = (
-                    f'初期化済み(<a href="{browse_url(name)}">{src.doc_count:,} 件</a>)'
+                    f'初期化済み(<a href="{esc(browse_url(name))}">{src.doc_count:,} 件</a>)'
                 )
             else:
                 action = (
@@ -662,7 +662,7 @@ def admin_wikipedia(request: Request, q: str | None = Query(None, description="�
             src = sources.get(name)
             if src is not None:
                 action = (
-                    f'初期化済み(<a href="{browse_url(name)}">{src.doc_count:,} 件</a>)'
+                    f'初期化済み(<a href="{esc(browse_url(name))}">{src.doc_count:,} 件</a>)'
                 )
             else:
                 action = (
@@ -2281,7 +2281,7 @@ BROWSE_LIMIT = 50
 def _browse_nav(source: str) -> str:
     return (
         '<nav><a href="/admin">管理画面</a>'
-        f'<a href="{browse_url(source)}">{esc(source)} トップ</a></nav>'
+        f'<a href="{esc(browse_url(source))}">{esc(source)} トップ</a></nav>'
     )
 
 
@@ -2304,7 +2304,7 @@ def browse_source(
             (tag, BROWSE_LIMIT),
         )
         items = "\n".join(
-            f"<tr><td><a href=\"{doc_url(source, r['doc_id'])}\">{esc(r['title'])}</a></td>"
+            f"<tr><td><a href=\"{esc(doc_url(source, r['doc_id']))}\">{esc(r['title'])}</a></td>"
             f"<td class=\"snippet\">{esc(r['snippet'] or '')}</td></tr>"
             for r in rows
         )
@@ -2345,7 +2345,7 @@ def browse_source(
                 (match, q.strip(), BROWSE_LIMIT),
             )
         items = "\n".join(
-            f"<tr><td><a href=\"{doc_url(source, r['doc_id'])}\">{esc(r['title'])}</a></td>"
+            f"<tr><td><a href=\"{esc(doc_url(source, r['doc_id']))}\">{esc(r['title'])}</a></td>"
             f"<td class=\"snippet\">{esc(r['snippet'] or '')}</td></tr>"
             for r in rows
         )
@@ -2366,7 +2366,7 @@ def browse_source(
     body = f"""
 {_browse_nav(source)}
 <h1>{esc(source)}</h1>
-<form method="get" action="{browse_url(source)}">
+<form method="get" action="{esc(browse_url(source))}">
 <input type="text" name="q" value="{esc(q or '')}" placeholder="キーワード検索">
 <button type="submit">検索</button>
 </form>
@@ -2393,7 +2393,8 @@ def browse_doc(request: Request, source: str, doc_id: int):
     if src.schema_version >= TAG_MIN_SCHEMA_VERSION:
         # 同じタグの文書一覧へ飛べるようにする(タグ絞り込みの導線)
         tags_html = ", ".join(
-            f'<a href="{browse_url(source)}?tag={quote(t)}">{esc(t)}</a>' for t in tags
+            f'<a href="{esc(browse_url(source) + "?tag=" + quote(t))}">{esc(t)}</a>'
+            for t in tags
         )
     else:
         tags_html = ", ".join(esc(t) for t in tags)

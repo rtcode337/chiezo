@@ -124,10 +124,12 @@ async def search(q: str, limit: int | None = None) -> dict:
         async with _client() as client:
             res = await client.get(url, params=_params(provider, q, limit))
     except httpx.HTTPError as e:
-        log.info("web search failed: %s", e)
-        return {"error": f"web search unreachable: {e}"}
+        # 例外の文言(接続先のホスト名等が入る)はログにだけ残し、モデルには種別を返す
+        log.info("web search failed: %r", e)
+        return {"error": "web search unreachable", "reason": type(e).__name__}
     if res.status_code >= 400:
-        return {"error": f"web search error {res.status_code}", "detail": res.text[:200]}
+        log.info("web search error %s: %s", res.status_code, res.text[:200])
+        return {"error": f"web search error {res.status_code}"}
     try:
         data = res.json()
     except ValueError:

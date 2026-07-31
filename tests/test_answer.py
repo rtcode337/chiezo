@@ -293,7 +293,8 @@ class TestUpstreamFailures:
         with make_client(monkeypatch_env, None) as client:
             res = client.get("/v1/ask", params={"q": "浅草寺はどこ?"})
         assert res.status_code == 502
-        assert "llm unreachable" in res.json()["error"]
+        assert res.json()["error"] == "llm unreachable"
+        assert "ConnectError" == res.json()["reason"]  # 種別だけ返す(文言は返さない)
 
     def test_timeout_is_504(self, monkeypatch_env):
         from app import answer
@@ -322,7 +323,10 @@ class TestUpstreamFailures:
         with make_client(monkeypatch_env, None) as client:
             res = client.get("/v1/ask", params={"q": "浅草寺はどこ?"})
         assert res.status_code == 502
-        assert res.json()["detail"] == "boom"
+        assert res.json()["error"] == "llm error 500"
+        # 相手の応答本文は返さない(ログにだけ残す)。認証の無い画面から
+        # 内部の構成が読めてしまうため
+        assert "boom" not in res.text
 
 
 class TestAskPage:

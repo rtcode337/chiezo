@@ -1296,3 +1296,26 @@ class TestUrlLayout:
 
         assert "//" not in doc_url("notes", 4)
         assert browse_url("notes").startswith("/search/notes/")
+
+    def test_user_input_is_escaped_in_the_browse_pages(self, client):
+        """URL に紛れ込んだスクリプトが、そのまま HTML に出ないこと。
+
+        CodeQL が反射型 XSS として指摘したのはブラウズ画面で、原因は URL の組み立てに
+        `urllib.parse.quote` しか通っていなかったこと。percent-encode は HTML の
+        エスケープではないので、**HTML に埋めるところでは必ず esc() を通す**。
+        """
+        payload = '<script>alert(1)</script>'
+        for params in ({"q": payload}, {"tag": payload}):
+            res = client.get("/search/jawiki/", params=params)
+            assert res.status_code == 200
+            assert payload not in res.text, f"{params} が生のまま出ている"
+            assert "&lt;script&gt;" in res.text
+
+    def test_upstream_details_do_not_reach_the_client(self, client):
+        """例外の文言・相手の応答本文は返さない(ログにだけ残す)。
+
+        認証の無い画面から内部の構成(接続先ホスト名など)が読めてしまうため。
+        """
+        res = client.get("/search/nosuch/")
+        assert res.status_code == 404
+        assert "Traceback" not in res.text

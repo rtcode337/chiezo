@@ -245,8 +245,10 @@ async def execute(
     except ToolError as e:
         return False, _tool_error_payload(str(e))
     except Exception as e:  # noqa: BLE001 - 道具の失敗でループを落とさない
-        log.info("agent tool %s failed: %s", name, e)
-        return False, {"error": f"{type(e).__name__}: {e}"}
+        # 例外の文言は**返さない**(種別だけ)。step はそのまま画面へ流れるので、
+        # 内部の詳細をブラウザまで運ばないようにする。ログには全部残す。
+        log.exception("agent tool %s failed", name)
+        return False, {"error": f"tool failed: {type(e).__name__}"}
     return True, _payload_of(raw)
 
 

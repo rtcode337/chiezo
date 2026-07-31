@@ -236,10 +236,17 @@ def _payload(cfg: Settings, messages: list[dict], *, stream: bool, **extra) -> d
 
 
 def _upstream_error(exc: Exception) -> HTTPException:
-    """推論サーバ側の失敗を、chiezo のエラー形式に翻訳する。"""
+    """推論サーバ側の失敗を、chiezo のエラー形式に翻訳する。
+
+    **例外の文言はそのまま返さない**(ログには全部残す)。中身には接続先のホスト名や
+    ポート、内部の解決失敗の詳細が入ることがあり、それを応答に載せると、認証の無い
+    画面から内部構成が読めてしまう。呼び出し側が次の手を決めるのに要るのは
+    「繋がらない」のか「遅い」のかの区別なので、そこだけ返す。
+    """
+    log.warning("llm request failed: %r", exc)
     if isinstance(exc, httpx.TimeoutException):
-        return HTTPException(504, {"error": f"llm timeout: {exc}"})
-    return HTTPException(502, {"error": f"llm unreachable: {exc}"})
+        return HTTPException(504, {"error": "llm timeout", "reason": type(exc).__name__})
+    return HTTPException(502, {"error": "llm unreachable", "reason": type(exc).__name__})
 
 
 async def complete_message(cfg: Settings, messages: list[dict], **extra) -> dict:
@@ -256,9 +263,9 @@ async def complete_message(cfg: Settings, messages: list[dict], **extra) -> dict
     except httpx.HTTPError as e:
         raise _upstream_error(e) from None
     if res.status_code >= 400:
-        raise HTTPException(
-            502, {"error": f"llm error {res.status_code}", "detail": res.text[:500]}
-        )
+        # 相手の応答本文もそのまま返さない(上と同じ理由)。ログには残す。
+        log.warning("llm error %s: %s", res.status_code, res.text[:500])
+        raise HTTPException(502, {"error": f"llm error {res.status_code}"})
     try:
         message = res.json()["choices"][0]["message"]
     except (KeyError, IndexError, TypeError, ValueError) as e:
@@ -298,9 +305,8 @@ async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator
             ) as res:
                 if res.status_code >= 400:
                     body = (await res.aread()).decode("utf-8", "replace")
-                    raise HTTPException(
-                        502, {"error": f"llm error {res.status_code}", "detail": body[:500]}
-                    )
+                    log.warning("llm error %s: %s", res.status_code, body[:500])
+                    raise HTTPException(502, {"error": f"llm error {res.status_code}"})
                 async for line in res.aiter_lines():
                     if not line.startswith("data:"):
                         continue

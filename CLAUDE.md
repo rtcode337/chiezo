@@ -226,6 +226,9 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     osm 国別 195 件 + wikipedia 言語版 348 件あり、api 側に複製すると必ず腐るため)
   - `app/pages.py` — 管理画面・ブラウズ画面共通の HTML 組み立てヘルパー(`page_shell`, `esc`)と、
     画面の URL(`browse_url` / `doc_url`。出典のリンクもここを通すので、移すときに漏れない)。
+    **URL を HTML に埋めるときも `esc()` を通すこと** — `browse_url` の中の
+    `urllib.parse.quote` は percent-encode であって HTML のエスケープではない
+    (CodeQL に反射型 XSS として指摘された。`tests/test_api.py::TestUrlLayout` が固定)。
     ファビコンは `assets/icon.svg` を最小化した data URI(`FAVICON_DATA_URI`)として埋め込む
     (api イメージのビルドコンテキストは `api/` のみで `assets/` を含まないため。原本を変えたら更新)。
     iPhone の「ホーム画面に追加」用に 180×180 の PNG(`APPLE_TOUCH_ICON_PNG`)も持ち、
@@ -693,7 +696,10 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
   スレッドローカルの接続キャッシュも `db.get_connection` がリンク先の inode を見て開き直すので再起動不要。
   `/data` への書き込み権限を持つのは chiezo-ingest(one-shot)と chiezo-trigger(常駐)だけで、
   chiezo-api は引き続き read-only マウント。
-- エラーレスポンスは `{"error": "..."}` 形式。
+- エラーレスポンスは `{"error": "..."}` 形式。**例外の文言や相手の応答本文をそのまま
+  載せない**(接続先のホスト名などが内部構成の手がかりになる。認証が無いぶん、
+  読めてよいのは「繋がらない/遅い/相手が 500」の区別まで)。詳細は `log` に残し、
+  応答には種別(`reason` = 例外クラス名)だけ返す。agent の step も画面へ流れるので同じ扱い。
 - **ドキュメントの強調は句読点を `**` の外に出す。**`**…です。**次の文` のように閉じる `**` の
   直前が句読点・閉じ括弧だと、CommonMark の flanking rule で閉じ側と認識されず、太字にならずに
   `*` がそのまま表示される(日本語では句点で終える書き方が自然なので踏みやすい)。
