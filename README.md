@@ -944,9 +944,21 @@ LAN 内前提なので方針は揃っています)。絞りたい場合は `chie
 ## 開発
 
 ```bash
-python -m venv .venv && .venv/bin/pip install -r api/requirements.txt -r ingest/requirements.txt pytest
-.venv/bin/python -m pytest tests/ -v
+scripts/run_tests.sh                          # 全テスト
+scripts/run_tests.sh tests/test_notes.py -v   # 引数はそのまま pytest へ渡る
 ```
+
+依存が揃っていればそのまま、無ければ CI と同じ Python 3.12 のイメージを組み立てて
+Docker で実行します(リポジトリはバインドマウントするだけなので `data/` の大きさは
+関係ありません)。手元に環境を作るなら **Python 3.12** を使ってください
+(`api/` と `ingest/` のイメージ・CI と同じ系列。依存に C 拡張が含まれるため、
+別のバージョンでは import から落ちます):
+
+```bash
+python3.12 -m venv .venv && .venv/bin/pip install -r api/requirements.txt -r ingest/requirements.txt pytest
+```
+
+`.venv` があれば `scripts/run_tests.sh` はそちらを優先します。
 
 テストは同梱の小型フィクスチャ(`tests/fixtures/mini_jawiki.xml.gz` 12 文書、
 `tests/fixtures/mini_osm.osm.pbf` 12 ノード + 2 way + 2 relation、

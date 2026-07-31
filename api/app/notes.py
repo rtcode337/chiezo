@@ -310,9 +310,16 @@ def recall(
     そのため `q` を省くと時系列だけで引ける形にしてある(「さっき話したあの件」は
     語ではなく時刻で引くほうが確実)。`since` / `until` は `updated_at` との
     文字列比較なので、`2026-07-31` でも `2026-07-31T12:00:00+00:00` でも渡せる。
+
+    **上限はここで担保する**。REST の `Query(ge=1, le=…)` は HTTP の口にしか効かず、
+    MCP(`app/mcp_server.py`)は api の関数を Python から直接呼ぶので通らない。
+    SQLite は `LIMIT -1` を「無制限」と解釈するため、負の値がそのまま届くと
+    全件返る(頁を送る意図の呼び出しが静かに全件取得になる)。
     """
     path = require_path()
     ensure_db()
+    limit = max(1, min(int(limit), RECALL_LIMIT_MAX))
+    offset = max(0, int(offset))
     where: list[str] = []
     params: list = []
     if since:

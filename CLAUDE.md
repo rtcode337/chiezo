@@ -141,6 +141,10 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       一致しないため、`recall` は `q` を省いて `updated_at` 順に引ける形にしてある
       (`idx_docs_updated` は notes だけが持つ。コアスキーマの追加ではないので
       `schema_version` は上げない)
+    - **`limit`/`offset` の上限は `notes.recall()` の中で担保する**。REST の
+      `Query(ge=1, le=…)` は HTTP の口にしか効かず、MCP と agent は api の関数を
+      Python から直接呼ぶので通らない。SQLite は **`LIMIT -1` を「無制限」**と解釈するため、
+      素通しすると頁を送る意図の呼び出しが静かに全件取得になる
   - `app/answer.py` — **「答える」層(`/v1/ask`・`/ask`)の本体**。使い方・環境変数は
     README「答える(ローカル LLM。既定では無効)」節が、なぜこの形かは
     `docs/design-notes.md`「「答える」層はなぜ 2 段の RAG か」が正。実装側の要点:
@@ -566,6 +570,14 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     「Ukraine (with Crimea)」や複数国をまとめた抽出)は `OVERRIDES` に人手で書く
     — Geofabrik の ISO コードには取り違え(トケラウに `VU` 等)があり、そのまま引くと
     「トケラウ = バヌアツ」のような誤表示になるため
+  - `run_tests.sh` — テスト実行のラッパー(引数はそのまま pytest へ)。手元に依存が
+    揃っていればそれで、無ければ **CI と同じ Python 3.12 のイメージを組み立てて** Docker で
+    回す。ホストの python が 3.12 でない環境(依存に C 拡張があるので import から落ちる)で
+    準備なしにテストを通せるようにするためのもの。**Docker のビルドコンテキストは
+    requirements 2 つだけの一時ディレクトリにすること** — リポジトリのルートを渡すと
+    `data/` の `.db`(数十 GB)まで docker daemon へ送られる。リポジトリ側は
+    バインドマウントなので大きさは関係ない。実行ユーザーを呼び出し元に合わせるのは、
+    `__pycache__` が root 所有で残るとホスト側の実行が書き込めなくなるため
   - `refresh_rank_score.py` — 既存 DB の `rank_score` を `extra` から計算し直す
     (wikipedia は `pageviews_month`、geonames は `population`。osm は元から 0〜1 なので
     対象外)。スキーマは変わらないので `schema_version` は上げない。ダンプの取り直しも不要
@@ -614,8 +626,9 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
 ingest の環境変数一覧は **README が正**。ここには開発時にしか使わないものだけ置く。
 
 ```bash
-# テスト(api/requirements.txt + ingest/requirements.txt + pytest が必要)
-python -m pytest tests/ -v
+# テスト(引数はそのまま pytest へ。依存が手元に無ければ Docker で回す)
+scripts/run_tests.sh
+scripts/run_tests.sh tests/test_notes.py -v
 
 # フィクスチャ再生成
 python tests/fixtures/make_fixture.py
@@ -673,6 +686,14 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
 
 ## 実装上の約束事
 
+- **Python は 3.12 に留める**(api/ingest の Dockerfile・CI・開発環境で揃える)。現行の最新は
+  3.14 で、**2026-08 に実測した限りテストは 3.14 でも全件通る**が、依存のうち
+  `mwparserfromhell` だけ cp314 の wheel がまだ無く、sdist からのビルドになる
+  (純 Python のフォールバックに落とすと wikitext 解析が桁で遅くなるので、C 拡張は死守する)。
+  ingest イメージにビルド道具の出し入れを常設することになり、イメージは +7MB(276→283MB)で
+  済むがビルド時間を 2 アーキぶん恒久的に払う。**上流が cp314 wheel を出した時点で上げる** —
+  そのときは `FROM` の行と CI の `python-version` を変えるだけで済む(dependabot が週次で見ている)。
+  api 側の依存は 3.14 でも全部 wheel があるので、待っているのは ingest の都合だけ。
 - コアスキーマ(meta / docs / aliases / docs_fts)は全ソース共通。ソース固有情報は `docs.extra`(JSON)へ。
   変更は最終手段で、`schema_version` を上げ api 側で複数バージョン対応する。
 - ソース間で JOIN しない。API はソース種別を意識せず docs/aliases/docs_fts のみ参照する。

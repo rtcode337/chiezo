@@ -139,6 +139,21 @@ class TestRecall:
         rest = filled.get("/v1/notes/recall", params={"limit": 2, "offset": 2}).json()
         assert len(rest["notes"]) == 1
 
+    def test_limit_is_clamped_for_direct_callers(self, filled, monkeypatch):
+        """MCP は api の関数を直接呼ぶので、FastAPI の Query 検証を通らない。"""
+        from app import notes
+
+        monkeypatch.setattr(notes, "RECALL_LIMIT_MAX", 2)
+        assert len(notes.recall(limit=10_000)["notes"]) == 2
+
+    def test_negative_limit_does_not_return_everything(self, filled):
+        """SQLite の LIMIT -1 は「無制限」なので、素通しすると全件返る。"""
+        from app import notes
+
+        got = notes.recall(limit=-1, offset=-5)
+        assert got["total"] == 3 and len(got["notes"]) == 1
+        assert got["offset"] == 0
+
 
 class TestForget:
     def test_deletes_from_docs_and_fts(self, client):
