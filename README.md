@@ -545,14 +545,25 @@ Hugging Face の GGUF リポジトリを `<user>/<repo>:<quant>` の形で指定
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile answer up -d
 ```
 
-既定は **Qwen3-8B Q4_K_M(約 5GB)・コンテキスト 32k・全層 GPU・思考オフ**で、VRAM 12GB 級を
+既定は **Qwen3-8B Q4_K_M(約 5GB)・コンテキスト 16k・全層 GPU・思考オフ**で、VRAM 12GB 級を
 想定しています。CUDA 13 のイメージを使うので、ドライバが古い場合はタグを
 `server-cuda12-<同じビルド番号>` に落としてください(対応 CUDA は `nvidia-smi` の右上に出ます)。
 
-VRAM 12GB の GPU での実測は **VRAM 11.4GB・プロンプト処理 3,300〜3,800 tok/s・生成 72〜78 tok/s**、
-1 問あたり rag で 2.5 秒・agent で 2〜8 秒です(12GB では 8B Q4 + 32k がほぼ上限。
-14B を載せるならコンテキストを 16k 前後に下げてください)。agent モードが
-どこまで解けたかは[設計メモ](docs/design-notes.md#agent-モード-道具をモデルに引かせる)にあります。
+VRAM 12GB の GPU での実測は **プロンプト処理 3,300〜3,800 tok/s・生成 72〜78 tok/s**、1 問あたり
+rag で 2.5 秒・agent で 2〜8 秒です。agent モードがどこまで解けたかは
+[設計メモ](docs/design-notes.md#agent-モード-道具をモデルに引かせる)にあります。
+
+**コンテキスト長は KV キャッシュとして VRAM を食います。** 同じ 12GB での実測
+(画面描画に使われる 2GB 弱を含む):
+
+| | VRAM 使用 | 空き |
+|---|---|---|
+| `CHIEZO_LLM_CTX_SIZE=32768` | 11.3GB | 0.9GB |
+| `CHIEZO_LLM_CTX_SIZE=16384`(既定) | 8.8GB | 3.4GB |
+
+**画面も同じ GPU が描いているなら、空きは 2GB 以上残してください。** 尽きると Windows が
+GPU メモリをシステムメモリへ退避し、ホストごとページングで固まります(実測で PC がフリーズ
+しました → [設計メモ](docs/design-notes.md#vram-を使い切るとホストごと止まるwsl2--windows))。
 
 思考(reasoning)を既定で切っているのは、道具を何度も呼ぶ agent モードでは 1 ステップごとの
 思考が待ち時間としてそのまま積み上がるためです。品質を優先するなら

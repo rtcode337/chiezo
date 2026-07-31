@@ -22,11 +22,17 @@ services:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda-b10156
     gpus: all
     environment:
-      # 既定は Qwen3-8B の Q4_K_M(約 5GB)。12GB の GPU なら 32k コンテキストでも余裕がある。
-      # agent モードはツール定義と結果が積み上がるので、コンテキストは広めに取る
-      # (必要量の目安 = CHIEZO_AGENT_MAX_STEPS × CHIEZO_AGENT_TOOL_CHARS)。
+      # 既定は Qwen3-8B の Q4_K_M(約 5GB)。
+      # **コンテキスト長は KV キャッシュとして VRAM を食う**ので、モデルのサイズだけ見て
+      # 決めてはいけない。VRAM 12GB の GPU での実測(いずれも画面描画に使われる 2GB 弱を含む):
+      #   ctx 32768 → 11.3GB 使用(空き 0.9GB) / ctx 16384 → 8.8GB 使用(空き 3.4GB)
+      # 32k は「載る」が、**画面も同じ GPU が描いている場合は空きが 1GB を切って危ない**
+      # (ブラウザ等が GPU メモリを要求すると Windows がシステムメモリへ退避し、
+      # ホストごとページング地獄になる。docs/design-notes.md「VRAM を使い切ると…」参照)。
+      # agent モードに要る量の目安は CHIEZO_AGENT_MAX_STEPS × CHIEZO_AGENT_TOOL_CHARS で、
+      # 既定(6 × 3000 字)なら 16k で足りる。
       - LLAMA_ARG_HF_REPO=${CHIEZO_LLM_HF_REPO:-Qwen/Qwen3-8B-GGUF:Q4_K_M}
-      - LLAMA_ARG_CTX_SIZE=${CHIEZO_LLM_CTX_SIZE:-32768}
+      - LLAMA_ARG_CTX_SIZE=${CHIEZO_LLM_CTX_SIZE:-16384}
       # 全層を GPU に載せる(既定の auto は載る分だけ載せるので、VRAM が足りている
       # つもりで一部が CPU に残っていた、という取りこぼしを避ける)。
       - LLAMA_ARG_N_GPU_LAYERS=${CHIEZO_LLM_GPU_LAYERS:-999}
@@ -43,4 +49,6 @@ services:
     # 重みは VRAM に載るが、ダウンロードとロードでホスト側のメモリも要る。上限を課すのは
     # 推論は**いつ殺しても失うのは 1 回の回答だけ**だから(取り込みと判断が逆になる理由は
     # docs/design-notes.md「メモリ方針」を参照)。
-    mem_limit: ${CHIEZO_LLM_MEM_LIMIT:-6g}
+    # 4g にしてあるのは、VM で動かしている場合(WSL2 など)に VM のメモリが 8GB 程度だと、
+    # 6g ではほぼ全部を 1 コンテナに渡すのと同じになり、ホスト側の余裕まで奪うため。
+    mem_limit: ${CHIEZO_LLM_MEM_LIMIT:-4g}
