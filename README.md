@@ -688,6 +688,25 @@ wikipedia 言語版の表示名・自称・記事数)と、このイメージが
 `data/` に `<source>.db` を置く(または消す)だけです(chiezo-api が数秒以内に自動で検知します)。
 新しい種類のソースの取り込み方は [docs/adding-a-source.md](docs/adding-a-source.md) を参照してください。
 
+**このリポジトリに入れられないソース**(社内 wiki や社内サーバーから集めた情報など)は、
+別リポジトリのモジュールとして書き、ingest イメージを継承して差し込めます。
+
+```dockerfile
+FROM ghcr.io/rtcode337/chiezo-ingest:latest
+COPY netmap_sources /srv/chiezo-ingest/netmap_sources
+ENV CHIEZO_SOURCE_PLUGINS=netmap_sources     # カンマ区切りで複数可
+```
+
+```bash
+# .env — chiezo-ingest と chiezo-trigger の両方がこの変数を見る
+CHIEZO_INGEST_IMAGE=ghcr.io/<社内>/chiezo-ingest-netmap:latest
+```
+
+これで管理画面の「初期化」「再構築」ボタンからも回せます。chiezo 側にはコードもデータも
+入りません。そもそも**配信側はソース種別を知らない**ので、管理画面から回す必要が無ければ
+「別リポジトリで `.db` を焼いて `data/` に置く」だけで動きます(設定も不要)。
+手順は [docs/adding-a-source.md のケース 3](docs/adding-a-source.md) が正です。
+
 ### セキュリティ
 
 認証はありません。LAN 内利用が前提です。ルーターでポート 9000 を外部に開放しないでください。

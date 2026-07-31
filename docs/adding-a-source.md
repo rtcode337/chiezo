@@ -133,6 +133,95 @@ docker compose --profile ingest run --rm -e SOURCE=aozora chiezo-ingest
 これで `/v1/aozora/search` などの全エンドポイントが自動的に使えるようになります
 (API は起動時に `/data/aozora.db` を検出して登録するだけで、ソース種別を意識しません)。
 
+## ケース 3: このリポジトリに入れられないソース(別リポジトリのプラグイン)
+
+社内 wiki や社内サーバーから集めた構成情報のように、**取得コードごと公開リポジトリに
+置きたくないソース**は、別リポジトリのモジュールとして書き、`CHIEZO_SOURCE_PLUGINS` で
+差し込みます。chiezo 側には何も入りません(コードもデータも社内リポジトリのまま)。
+
+### 前提: 配信側は最初から何も要らない
+
+chiezo-api はソース種別を知りません。`data/<名前>.db` にコアスキーマの SQLite が
+置かれていれば、それだけで登録されて `search` / `doc` / `filter` / `tags` / MCP /
+ブラウズ画面が全部使えます。**「別リポジトリで `.db` を焼いて `data/` に置く」だけなら、
+以下の設定すら要りません**(chiezo-api が数秒以内に検知します)。
+
+以下が要るのは、**管理画面の初期化・再構築ボタンからも回したい**場合です。
+
+### 1. 社内リポジトリにアダプタを書く
+
+ケース 2 と同じ `SourceAdapter` を書き、モジュールの直下に `ADAPTERS` を置きます。
+
+```python
+# netmap_sources/__init__.py
+from core import Doc          # chiezo-ingest イメージの core.py を使う
+
+
+class NetmapAdapter:
+    source = "netmap"
+    source_kind = "netmap"
+    lang = "ja"
+    min_docs = 100
+    sample_titles = ["本社コアスイッチ"]
+    min_build_memory_gb = 0.5
+
+    def fetch(self, workdir):
+        # 社内 wiki の API を叩く、サーバーに SSH して集める、など
+        return collected_path, "20260731"
+
+    def iter_docs(self, path):
+        yield Doc(doc_id=1, title="本社コアスイッチ", opening="…", body="…")
+
+
+ADAPTERS = {"netmap": lambda: NetmapAdapter()}
+```
+
+ソース名は `[A-Za-z0-9_]` のみ(ハイフンは世代ファイル名 `<source>-<date>.db` の区切りと
+衝突するため弾かれます)。既存ソースと同名も弾かれます(`jawiki` を影で差し替えると
+間違ったダンプが `jawiki.db` に焼かれるため)。
+
+**`__init__` は軽くしてください。** 管理画面のカタログ(`GET /sources`)を組み立てる際に
+アダプタを実体化するので、コンストラクタで通信やファイル読み込みをしないこと。
+
+### 2. ingest イメージを継承する
+
+```dockerfile
+# 社内リポジトリの Dockerfile
+FROM ghcr.io/rtcode337/chiezo-ingest:latest
+COPY netmap_sources /srv/chiezo-ingest/netmap_sources
+ENV CHIEZO_SOURCE_PLUGINS=netmap_sources
+```
+
+複数のモジュールを入れるならカンマ区切りで並べます。
+
+### 3. compose のイメージを差し替える
+
+`chiezo-ingest` と `chiezo-trigger` はどちらも `CHIEZO_INGEST_IMAGE` で差し替えられます。
+
+```bash
+# .env
+CHIEZO_INGEST_IMAGE=ghcr.io/<社内>/chiezo-ingest-netmap:latest
+```
+
+```bash
+docker compose up -d           # trigger が差し替わり、管理画面に netmap が出る
+```
+
+これで組み込みソースと同じように、管理画面の「初期化」「再構築」ボタンから回せます。
+`SOURCE=netmap` での one-shot 実行も同様です。
+
+**指定したモジュールが読めない・`ADAPTERS` が無い場合は起動時に落とします**
+(黙って無視すると「管理画面に出ない」「unknown SOURCE」として後から現れ、原因が
+分からなくなるため)。`docker logs` にモジュール名つきの理由が出ます。
+
+### スキーマバージョンについて
+
+`schema_version` は「api がどの機能を出せるか」の指標です(2 で `filter`、3 で `tag`、
+4 で `bbox` と大きな並べ替え)。DDL は `core.py` にあるので、上のようにイメージを
+継承していれば最新版が自動的に焼かれます。**独自に `.db` を組み立てる場合は、
+`core.CORE_SCHEMA_DDL` 一式をそのまま使ってください** — 索引が欠けると
+`filter` / `tags` が 409 になります。
+
 ## 動作確認のコツ
 
 小さなサンプルデータで先に流れを確認できます:

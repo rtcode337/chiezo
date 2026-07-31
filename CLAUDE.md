@@ -378,7 +378,23 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     管理画面には `chiezo-trigger` の `GET /sources` 経由で自動的に出るので、
     `api/app/known_sources.py` への複製は不要)。
     `osm_<国>`(下の `osm_regions.py` から 195 件)と `<lang>wiki`(下の
-    `wikipedia_editions.py` から 348 件)だけは例外で、自動生成カタログから機械的に登録している
+    `wikipedia_editions.py` から 348 件)だけは例外で、自動生成カタログから機械的に登録している。
+    `load_plugin_adapters()` は **このリポジトリに入れられないソース(社内 wiki 等)を
+    別リポジトリのモジュールから差し込む唯一の口**(環境変数 `CHIEZO_SOURCE_PLUGINS` に
+    モジュール名をカンマ区切り。そのモジュールの `ADAPTERS` を取り込む)。使い方は
+    README「ソースの追加・削除」と `docs/adding-a-source.md` のケース 3 が正。実装側の要点:
+    - **壊れた指定は握り潰さず `SystemExit`**(import できない / `ADAPTERS` が無い /
+      生成関数でない)。黙って無視すると「管理画面に出ない」「unknown SOURCE」として
+      後から現れて原因が分からない。opt-in の設定なので、起動時に落ちるほうが分かりやすい
+      (chiezo-trigger が起動しないのも、カタログが静かに欠けているより気づける)
+    - **既存ソースと同名は拒否する**。上書きを許すと `jawiki` を影で差し替える取り違えに
+      気づけない(名前を変えれば済むので安全側に倒す)
+    - **ソース名は `[A-Za-z0-9_]` のみ**。ハイフンは世代ファイル名 `<source>-<date>.db` の
+      区切りと衝突し、取り込みは通るのにブルーグリーン切り替えの段で壊れるため先に弾く
+    - 差し込みは ingest 側だけで完結する。**api は変更不要**(ソース種別を意識しない設計なので、
+      コアスキーマの `.db` が `/data` にあれば全エンドポイントがそのまま効く)。
+      compose は `chiezo-ingest` と `chiezo-trigger` の両方が `CHIEZO_INGEST_IMAGE` を
+      見るので、継承イメージを指すだけで管理画面の初期化・再構築も効く
   - `sources/osm_regions.py` — **自動生成物**。Geofabrik の国別抽出カタログ
     (`scripts/gen_osm_regions.py` で再生成。Geofabrik の index-v1.json + 大陸別 HTML の
     pbf サイズ + CLDR の国名/主要言語から起こす)。1 件あたり region パス・日本語表示名・
