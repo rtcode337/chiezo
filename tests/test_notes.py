@@ -178,8 +178,8 @@ class TestWorksWithTheGenericEndpoints:
         assert filled.get("/v1/notes/tags").json()["tags"] == [{"tag": "調査", "docs": 1}]
 
     def test_browse_page(self, filled):
-        assert filled.get("/notes/").status_code == 200
-        assert "調べた" in filled.get("/notes/", params={"q": "調べた"}).text
+        assert filled.get("/search/notes/").status_code == 200
+        assert "調べた" in filled.get("/search/notes/", params={"q": "調べた"}).text
 
 
 class TestReaderIsNotImmutable:

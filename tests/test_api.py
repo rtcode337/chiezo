@@ -228,8 +228,8 @@ class TestExactTitleFirst:
         assert [r["title"] for r in res.json()["results"]][0] == "東京都"
 
     def test_browse_html_uses_the_same_order(self, client):
-        html = client.get("/jawiki/", params={"q": "東京都"}).text
-        rows = [line for line in html.splitlines() if "/jawiki/doc/" in line]
+        html = client.get("/search/jawiki/", params={"q": "東京都"}).text
+        rows = [line for line in html.splitlines() if "/search/jawiki/doc/" in line]
         assert rows and "東京都" in rows[0]
 
 
@@ -402,9 +402,9 @@ class TestTagFilter:
         assert client.get("/v1/jawiki/tags", params={"contains": "%"}).json()["tags"] == []
 
     def test_browse_doc_links_tags_to_tag_listing(self, client):
-        res = client.get("/jawiki/doc/1")
-        assert 'href="/jawiki/?tag=%E9%96%A2%E6%9D%B1%E5%9C%B0%E6%96%B9"' in res.text
-        listing = client.get("/jawiki/", params={"tag": "日本の都道府県"})
+        res = client.get("/search/jawiki/doc/1")
+        assert 'href="/search/jawiki/?tag=%E9%96%A2%E6%9D%B1%E5%9C%B0%E6%96%B9"' in res.text
+        listing = client.get("/search/jawiki/", params={"tag": "日本の都道府県"})
         assert "大阪府" in listing.text and "東京都" in listing.text
 
 
@@ -805,13 +805,13 @@ class TestClaudeConfig:
 
 class TestBrowsePages:
     def test_browse_source_top_shows_search_form_only(self, client):
-        res = client.get("/jawiki/")
+        res = client.get("/search/jawiki/")
         assert res.status_code == 200
         assert "<form" in res.text
         assert "浅草寺" not in res.text
 
     def test_browse_source_search(self, client):
-        res = client.get("/jawiki/", params={"q": "浅草寺"})
+        res = client.get("/search/jawiki/", params={"q": "浅草寺"})
         assert res.status_code == 200
         assert "浅草寺" in res.text
 
@@ -820,12 +820,12 @@ class TestBrowsePages:
         assert res.status_code == 404
 
     def test_browse_doc(self, client):
-        res = client.get("/jawiki/doc/2")
+        res = client.get("/search/jawiki/doc/2")
         assert res.status_code == 200
         assert "浅草寺" in res.text
 
     def test_browse_doc_not_found(self, client):
-        res = client.get("/jawiki/doc/424242")
+        res = client.get("/search/jawiki/doc/424242")
         assert res.status_code == 404
 
     def test_links_out(self, client):
@@ -931,7 +931,7 @@ class TestTagSchemaGuard:
         assert client.get("/v1/jawiki/doc", params={"title": "東京都"}).status_code == 200
         assert client.get("/v1/jawiki/filter", params={"wikidata": "Q1490"}).status_code == 200
         # tags は取れるが、リンクにはしない(飛んだ先が 409 になるため)
-        assert "?tag=" not in client.get("/jawiki/doc/1").text
+        assert "?tag=" not in client.get("/search/jawiki/doc/1").text
 
     def test_add_tag_index_migrates_in_place(self, legacy_client):
         import sqlite3
@@ -1242,3 +1242,33 @@ class TestAttributeGuard:
         assert client.get(
             "/v1/jawiki/filter", params={"bbox": "34.0,134.0,36.0,140.0"}
         ).status_code == 200
+
+
+class TestUrlLayout:
+    """画面の URL は「前置きの下」に置く。
+
+    以前はソース名をそのままルート直下(`/{source}/`)に置いていたため、ルートが
+    キャッチオールになり、`ask` や `admin` という名前のソースを足せなかった
+    (既存の画面に食われる)。逆に画面を足すときもソース名との衝突を気にする必要があった。
+    """
+
+    def test_source_pages_live_under_search(self, client):
+        assert client.get("/search/jawiki/").status_code == 200
+        assert client.get("/search/jawiki/doc/1").status_code == 200
+
+    def test_root_is_no_longer_a_catch_all(self, client):
+        """ソース名と同じ名前の画面を足せる = ルート直下が空いている。"""
+        assert client.get("/jawiki/", follow_redirects=False).status_code == 404
+        assert client.get("/ask", follow_redirects=False).status_code == 404
+
+    def test_every_link_on_the_admin_page_points_at_the_new_layout(self, client):
+        import re
+
+        html = client.get("/admin").text
+        stale = [
+            href for href in re.findall(r'href="(/[^"]*)"', html)
+            if not href.startswith(
+                ("/admin", "/search/", "/localllm/", "/v1/", "/healthz", "/apple-touch-icon")
+            )
+        ]
+        assert not stale, f"古い URL が残っている: {stale}"

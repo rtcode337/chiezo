@@ -29,8 +29,9 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   ファイル名の stem と `meta.source` が一致する `*.db` をソースとして登録する(世代ファイル
   `jawiki-20260701.db` は登録されず、シンボリックリンク `jawiki.db` のみ登録される)。
   - `app/main.py` — ルーティング(/, /healthz, /apple-touch-icon.png, /v1/sources,
-    /v1/{source}/search|doc|filter|tags|titles|links|random, /v1/ask, /ask,
-    /admin, /admin/init/{source}, /admin/rebuild/{source}, /{source}/, /{source}/doc/{doc_id}、
+    /v1/{source}/search|doc|filter|tags|titles|links|random, /v1/ask, /v1/chat,
+    /admin, /admin/init/{source}, /admin/rebuild/{source},
+    /search/{source}/, /search/{source}/doc/{doc_id}, /localllm/chat、
     および MCP の /mcp(実体は下の `app/mcp_server.py`))
     - `/v1/{source}/filter` — 全文検索ではなく属性(`feature` / `area` / `bbox` / `wikidata` /
       `tag`)の AND での一括抽出(Overpass 相当)。`docs` の生成列への索引付き検索なので
@@ -215,7 +216,8 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     初期化できるソースの正は ingest 側の `ADAPTERS` で、通常は
     `chiezo-trigger` の `GET /sources` から受け取る(`main.initializable_sources()`。
     osm 国別 195 件 + wikipedia 言語版 348 件あり、api 側に複製すると必ず腐るため)
-  - `app/pages.py` — 管理画面・ブラウズ画面共通の HTML 組み立てヘルパー(`page_shell`, `esc`)。
+  - `app/pages.py` — 管理画面・ブラウズ画面共通の HTML 組み立てヘルパー(`page_shell`, `esc`)と、
+    画面の URL(`browse_url` / `doc_url`。出典のリンクもここを通すので、移すときに漏れない)。
     ファビコンは `assets/icon.svg` を最小化した data URI(`FAVICON_DATA_URI`)として埋め込む
     (api イメージのビルドコンテキストは `api/` のみで `assets/` を含まないため。原本を変えたら更新)。
     iPhone の「ホーム画面に追加」用に 180×180 の PNG(`APPLE_TOUCH_ICON_PNG`)も持ち、
@@ -282,14 +284,18 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     ただし**索引の無い列を同じ形で探ってはいけない**: `links` は生成列でも索引付きでもないので
     `WHERE links IS NOT NULL LIMIT 1` は 1 件も無いソースほど全表を舐める(geonames 1300 万件で
     3.2 秒)。`_has_links()` は先頭 `_LINKS_SAMPLE_ROWS` 行だけ見て判定する
-  - `/{source}/`(GET) — 検索フォーム(HTML)。`?q=` 未指定時は一覧を出さずフォームのみ表示
+  - `/search/{source}/`(GET) — 検索フォーム(HTML)。**画面はすべて前置きの下に置く**
+    (`/admin`・`/search/…`・`/localllm/…`)。以前はソース名をそのままルート直下に置いていて、
+    ルートがキャッチオールになるため `ask` や `admin` という名前のソースを足せなかった。
+    URL の組み立ては `app/pages.py` の `browse_url()` / `doc_url()` に閉じてある。
+    `?q=` 未指定時は一覧を出さずフォームのみ表示
     (jawiki 等の大規模ソースで rank_score 順の全件一覧がフルスキャンとなりタイムアウトするため)。
     `?q=` 指定時は結果一覧を表示し、`/v1/{source}/search` と同じロジック
     (FTS または短語のタイトル前方一致フォールバック)
-  - `/{source}/doc/{doc_id}`(GET) — 文書詳細(title/tags/opening/body/links/extra)の HTML 表示
+  - `/search/{source}/doc/{doc_id}`(GET) — 文書詳細(title/tags/opening/body/links/extra)の HTML 表示
   - `/v1/notes`(POST)・`/v1/notes/recall`(GET)・`/v1/notes/{doc_id}`(DELETE) —
     「覚える」層の REST。読み出しはコアスキーマなので `/v1/notes/search|doc|filter|tags` と
-    `/notes/` のブラウズ画面もそのまま効く(専用の口は追記・削除・時系列の想起だけ)
+    `/search/notes/` のブラウズ画面もそのまま効く(専用の口は追記・削除・時系列の想起だけ)
   - `/v1/ask`(GET) — 「答える」層の REST。`stream=0`(既定)は JSON 一括、`stream=1` は
     SSE(`references` → `delta` × n → `done`、失敗時は `error` を挟む)。
     無効なら 503、推論サーバに繋がらなければ 502、タイムアウトは 504。
@@ -300,19 +306,18 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     (末尾が user でなければ 400)。**サーバーは会話の状態を持たない** — 履歴はクライアントが
     持って毎回送る(読み取り専用・LAN 内・複数ワーカーの前提を崩さないため。MCP を
     ステートレスにしたのと同じ判断)。rag / agent とも `/v1/ask` と同じ実装に流す
-  - `/ask`(GET) — 会話画面と、JS なし用の 1 問 1 答の HTML。見出しは
+  - `/localllm/chat`(GET) — 会話画面と、JS なし用の 1 問 1 答の HTML。**ローカル LLM を使う側の
+    機能なので `/localllm/` の下**(chiezo 本体の画面と並びで区別する)。見出しは
     **`AI(<モデル名>)と話す`**(`answer.model_label()`。`CHIEZO_LLM_MODEL` が無ければ
     推論サーバの `/models` に聞き、5 分覚える。取れなければ「AI と話す」)。
     **chiezo は AI が引く知識であって AI 自身ではない**という関係を画面にもプロンプトにも
-    出すため。**キャッチオールの `/{source}/` より前に
-    定義すること**。既定はサーバ側で推論を回さず、inline JS(`CHAT_JS`)が `/v1/chat?stream=1`
+    出すため。既定はサーバ側で推論を回さず、inline JS(`CHAT_JS`)が `/v1/chat?stream=1`
     を叩いて埋める — ここでサーバ側でも回答を作ると推論が二重に走る(数十秒 × 2)。
     **`EventSource` ではなく `fetch` で SSE を読む**のは、履歴を送るのに POST が要るため
     (EventSource は GET しか張れない)。会話の履歴を持つのもこの JS。JS が無い環境向けに
     `?nojs=1`(1 問 1 答・出揃ってから表示)への導線を `<noscript>` で出す。
     **この画面だけ JS を使う**のは、数十秒無反応で待たせる体験を避けるためと、
-    会話の主体がクライアント側だから(他の画面は従来どおり JS なし)。末尾スラッシュ付きの
-    `/ask/` はキャッチオールに食われて「unknown source: ask」になるので、専用ルートで寄せる
+    会話の主体がクライアント側だから(他の画面は従来どおり JS なし)
 - `ingest/` — **chiezo-ingest**: ワンショット構築バッチ。
   - `main.py` — 共通フレーム: 取得 → `.building` へ構築 → FTS → 検証 → ブルーグリーン切り替え(シンボリックリンク差し替え、旧世代 1 つ保持)。
     アダプタが `EXTRA_FETCH_HOOKS`(`fetch_pageviews` / `fetch_page_props`)を持つ場合、

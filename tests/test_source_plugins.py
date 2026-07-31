@@ -206,4 +206,4 @@ class TestEndToEnd:
             assert [r["title"] for r in tagged["results"]] == ["踏み台サーバーの運用"]
 
             # ブラウズ画面も汎用なのでそのまま開ける
-            assert client.get("/memo/").status_code == 200
+            assert client.get("/search/memo/").status_code == 200

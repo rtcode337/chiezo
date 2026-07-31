@@ -43,6 +43,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from app import answer, websearch
 from app.mcp_server import INSTRUCTIONS, build_mcp
+from app.pages import browse_url, doc_url
 
 log = logging.getLogger("chiezo.api")
 
@@ -271,8 +272,8 @@ def collect_references(refs: list[dict], source: str, payload: Any) -> None:
             continue
         title, doc_id = str(row["title"]), row.get("doc_id")
         url = (
-            f"/{source}/doc/{doc_id}" if isinstance(doc_id, int)
-            else f"/{quote(str(source))}/?q={quote(title)}"
+            doc_url(source, doc_id) if isinstance(doc_id, int)
+            else browse_url(source) + f"?q={quote(title)}"
         )
         found.append({
             "source": source, "title": title,

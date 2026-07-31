@@ -32,6 +32,8 @@ import httpx
 from fastapi import HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
+from app.pages import doc_url
+
 log = logging.getLogger("chiezo.api")
 
 # 検索 1 本あたり見る上位件数(この中から本文を取る文書を選ぶ)
@@ -560,7 +562,7 @@ def gather_context(
             "source": source,
             "title": doc["title"],
             "doc_id": hit["doc_id"],
-            "url": f"/{source}/doc/{hit['doc_id']}",
+            "url": doc_url(source, hit["doc_id"]),
         })
     return snippets, references
 

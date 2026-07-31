@@ -10,6 +10,8 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import CHAT_PATH
+
 
 @pytest.fixture()
 def monkeypatch_env(monkeypatch, built_data_dir):
@@ -88,7 +90,7 @@ class TestDisabled:
         assert "CHIEZO_LLM_URL" in res.json()["hint"]
 
     def test_ask_page_explains_how_to_enable(self, disabled_client):
-        res = disabled_client.get("/ask")
+        res = disabled_client.get(CHAT_PATH)
         assert res.status_code == 200
         assert "CHIEZO_LLM_URL" in res.text
         # 無効でもフォーム自体は出す(何のページか分かるように)
@@ -113,7 +115,7 @@ class TestAskJson:
         # 出典はフィクスチャの実在文書を指す
         (ref,) = [r for r in body["references"] if r["title"] == "浅草寺"]
         assert ref["source"] == "jawiki"
-        assert ref["url"] == f"/jawiki/doc/{ref['doc_id']}"
+        assert ref["url"] == f"/search/jawiki/doc/{ref['doc_id']}"
         assert ref["n"] == 1
 
     def test_snippets_are_handed_to_the_model(self, monkeypatch_env):
@@ -242,7 +244,7 @@ class TestGrounding:
 
     def test_page_offers_both_policies(self, monkeypatch_env):
         with make_client(monkeypatch_env, FakeLLM()) as client:
-            res = client.get("/ask")
+            res = client.get(CHAT_PATH)
         assert 'name="grounded"' in res.text
         assert "モデルの知識で補ってよい" in res.text
 
@@ -326,7 +328,7 @@ class TestUpstreamFailures:
 class TestAskPage:
     def test_form_only_without_a_question(self, monkeypatch_env):
         with make_client(monkeypatch_env, FakeLLM()) as client:
-            res = client.get("/ask")
+            res = client.get(CHAT_PATH)
         assert res.status_code == 200
         assert 'name="q"' in res.text
         assert '<option value="jawiki"' in res.text
@@ -336,7 +338,7 @@ class TestAskPage:
         """既定はサーバ側で推論を回さない(JS が /v1/chat から埋める)。二重に走らせないため。"""
         fake = FakeLLM(PLAN_OK, ANSWER_OK)
         with make_client(monkeypatch_env, fake) as client:
-            res = client.get("/ask", params={"q": "浅草寺はどこ?"})
+            res = client.get(CHAT_PATH, params={"q": "浅草寺はどこ?"})
         assert res.status_code == 200
         assert 'data-first="浅草寺はどこ?"' in res.text  # JS が最初の発言として送る
         assert "fetch('/v1/chat?stream=1'" in res.text
@@ -346,23 +348,16 @@ class TestAskPage:
     def test_nojs_renders_the_answer_server_side(self, monkeypatch_env):
         fake = FakeLLM(PLAN_OK, ANSWER_OK)
         with make_client(monkeypatch_env, fake) as client:
-            res = client.get("/ask", params={"q": "浅草寺はどこ?", "nojs": 1})
+            res = client.get(CHAT_PATH, params={"q": "浅草寺はどこ?", "nojs": 1})
         assert res.status_code == 200
         assert ANSWER_OK in res.text
-        assert "/jawiki/doc/" in res.text
+        assert "/search/jawiki/doc/" in res.text
         assert fake.calls == 2
 
-    def test_trailing_slash_redirects_instead_of_hitting_the_catch_all(self, monkeypatch_env):
-        """/ask/ は /{source}/ に食われて「unknown source: ask」になるので先に受ける。"""
-        with make_client(monkeypatch_env, FakeLLM()) as client:
-            res = client.get("/ask/", params={"q": "浅草寺"}, follow_redirects=False)
-        assert res.status_code == 307
-        assert res.headers["location"] == "/ask?q=%E6%B5%85%E8%8D%89%E5%AF%BA"
-
-    def test_admin_links_to_the_ask_page_when_enabled(self, monkeypatch_env):
+    def test_admin_links_to_the_chat_page_when_enabled(self, monkeypatch_env):
         with make_client(monkeypatch_env, FakeLLM()) as client:
             res = client.get("/admin")
-        assert 'href="/ask"' in res.text
+        assert f'href="{CHAT_PATH}"' in res.text
 
 
 class TestSettings:

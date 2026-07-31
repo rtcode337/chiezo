@@ -13,6 +13,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import CHAT_PATH
 from test_agent import ANSWER, SEARCH_ASAKUSA, ToolLLM, make_client  # noqa: F401
 
 
@@ -120,7 +121,7 @@ class TestDefaults:
 
     def test_page_follows_the_env_default(self, monkeypatch_env):
         with make_client(monkeypatch_env, ToolLLM(), CHIEZO_ASK_DEFAULT_MODE="agent") as client:
-            res = client.get("/ask")
+            res = client.get(CHAT_PATH)
         assert '<option value="agent" selected>' in res.text
 
 
@@ -240,7 +241,7 @@ class TestWhoYouAreTalkingTo:
 
     def test_heading_names_the_model(self, monkeypatch_env):
         with make_client(monkeypatch_env, ToolLLM(), CHIEZO_LLM_MODEL="Qwen/Qwen3-8B-GGUF:Q4_K_M") as c:
-            res = c.get("/ask")
+            res = c.get(CHAT_PATH)
         # 配布元・GGUF・量子化は落として名乗る
         assert "<h1>AI(Qwen3-8B)と話す</h1>" in res.text
         assert "chiezo と話す" not in res.text
@@ -251,7 +252,7 @@ class TestWhoYouAreTalkingTo:
 
         answer._MODEL_LABEL_CACHE.clear()
         with make_client(monkeypatch_env, None) as c:   # 推論サーバは居ない
-            res = c.get("/ask")
+            res = c.get(CHAT_PATH)
         assert "<h1>AI と話す</h1>" in res.text
 
     def test_prompt_tells_the_model_it_is_not_chiezo(self, monkeypatch_env):

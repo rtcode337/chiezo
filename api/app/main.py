@@ -27,7 +27,7 @@ from app import agent, answer, claude_config, db, notes, websearch
 from app.fts import build_match_query, escape_like
 from app.mcp_server import build_mcp
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
-from app.pages import APPLE_TOUCH_ICON_PNG, esc, page_shell
+from app.pages import APPLE_TOUCH_ICON_PNG, browse_url, doc_url, esc, page_shell
 from app.registry import (
     COORDS_MIN_SCHEMA_VERSION,
     FILTER_MIN_SCHEMA_VERSION,
@@ -391,7 +391,7 @@ def _answer_status_html() -> str:
             " <code>CHIEZO_LLM_URL</code> に設定すると有効になります"
             "(compose なら <code>docker compose --profile answer up -d</code>)。</p>"
         )
-    return '<p><a href="/ask">→ AI と話す(chiezo の知識を引きます)</a></p>'
+    return f'<p><a href="{CHAT_PATH}">→ AI と話す(chiezo の知識を引きます)</a></p>'
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -409,7 +409,7 @@ def admin(request: Request):
 
     rows = "\n".join(
         f"<tr>"
-        f"<td><a href=\"/{esc(s.name)}/\">{esc(s.name)}</a></td>"
+        f"<td><a href=\"{browse_url(s.name)}\">{esc(s.name)}</a></td>"
         f"<td>{esc(s.kind)}</td>"
         f"<td>{esc(s.lang or '')}</td>"
         f"<td>{s.doc_count:,}</td>"
@@ -557,7 +557,7 @@ def admin_osm(request: Request, q: str | None = Query(None, description="国名�
             src = sources.get(name)
             if src is not None:
                 action = (
-                    f'初期化済み(<a href="/{esc(name)}/">{src.doc_count:,} 件</a>)'
+                    f'初期化済み(<a href="{browse_url(name)}">{src.doc_count:,} 件</a>)'
                 )
             else:
                 action = (
@@ -655,7 +655,7 @@ def admin_wikipedia(request: Request, q: str | None = Query(None, description="�
             src = sources.get(name)
             if src is not None:
                 action = (
-                    f'初期化済み(<a href="/{esc(name)}/">{src.doc_count:,} 件</a>)'
+                    f'初期化済み(<a href="{browse_url(name)}">{src.doc_count:,} 件</a>)'
                 )
             else:
                 action = (
@@ -1749,6 +1749,10 @@ def forget(request: Request, doc_id: int):
 # `CHIEZO_LLM_URL` が未設定なら丸ごと無効で、503 と有効化の案内を返す。
 
 
+# 会話画面のパス。画面の中のリンクと JS の両方が参照する。
+CHAT_PATH = "/localllm/chat"
+
+
 def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
@@ -2006,16 +2010,10 @@ CHAT_JS = """
 """
 
 
-# 末尾スラッシュ付きはキャッチオールの /{source}/ に食われて「unknown source: ask」に
-# なってしまうので、先に受けて /ask へ寄せる(ブラウザで手打ちしたときの迷子を防ぐ)。
-@app.get("/ask/", include_in_schema=False)
-def ask_page_slash(request: Request):
-    query = request.url.query
-    return RedirectResponse(url="/ask" + (f"?{query}" if query else ""))
-
-
-@app.get("/ask", response_class=HTMLResponse)
-async def ask_page(
+# 会話の画面。**ローカル LLM を使う側の機能**なので `/localllm/` の下に置く
+# (chiezo 本体の画面 = /admin と /search/… とは並びで区別できるようにする)。
+@app.get("/localllm/chat", response_class=HTMLResponse)
+async def chat_page(
     request: Request,
     q: str | None = Query(None),
     source: str | None = Query(None),
@@ -2074,7 +2072,7 @@ async def ask_page(
         # 会話は JS(fetch + SSE)が主役。履歴を持つのはブラウザ側で、サーバーは
         # 毎回まるごと受け取る。JS が無い環境には下の 1 問 1 答へ誘導する。
         first = f' data-first="{esc(q)}"' if q else ""
-        nojs_url = f"/ask?nojs=1&mode={mode}&grounded={'1' if grounded else '0'}" + (
+        nojs_url = f"{CHAT_PATH}?nojs=1&mode={mode}&grounded={'1' if grounded else '0'}" + (
             f"&q={quote(q)}" if q else ""
         )
         body = f"""
@@ -2098,7 +2096,7 @@ async def ask_page(
     form = f"""
 <nav><a href="/admin">管理画面</a></nav>
 <h1>{heading}(JS なし・1 問 1 答)</h1>
-<form method="get" action="/ask">
+<form method="get" action="{CHAT_PATH}">
 <input type="hidden" name="nojs" value="1">
 <input type="text" name="q" value="{esc(q or '')}" placeholder="質問を書く(自然文でよい)">
 <select name="source">{options}</select>
@@ -2106,7 +2104,7 @@ async def ask_page(
 <select name="mode">{mode_options}</select>
 <button type="submit">質問する</button>
 </form>
-<p class="muted"><a href="/ask">会話できる画面へ戻る</a></p>
+<p class="muted"><a href="{CHAT_PATH}">会話できる画面へ戻る</a></p>
 """
     if not q:
         return HTMLResponse(content=page_shell(heading, form))
@@ -2144,6 +2142,11 @@ async def ask_page(
 
 
 # ---- ブラウズ画面(人間向け HTML) -------------------------------------------
+#
+# **`/search/` の下に置く**。以前はソース名をそのまま `/{source}/` に置いていたが、
+# それだとルート直下がキャッチオールになり、`ask` や `admin` という名前のソースを
+# 足せない(既存の画面に食われる)。逆に画面を足すたびにソース名と衝突しないか
+# 気にする必要もあった。前置きを 1 つ挟むだけで、その両方が消える。
 
 BROWSE_LIMIT = 50
 
@@ -2151,11 +2154,11 @@ BROWSE_LIMIT = 50
 def _browse_nav(source: str) -> str:
     return (
         '<nav><a href="/admin">管理画面</a>'
-        f'<a href="/{esc(source)}/">{esc(source)} トップ</a></nav>'
+        f'<a href="{browse_url(source)}">{esc(source)} トップ</a></nav>'
     )
 
 
-@app.get("/{source}/", response_class=HTMLResponse)
+@app.get("/search/{source}/", response_class=HTMLResponse)
 def browse_source(
     request: Request,
     source: str,
@@ -2174,7 +2177,7 @@ def browse_source(
             (tag, BROWSE_LIMIT),
         )
         items = "\n".join(
-            f"<tr><td><a href=\"/{esc(source)}/doc/{r['doc_id']}\">{esc(r['title'])}</a></td>"
+            f"<tr><td><a href=\"{doc_url(source, r['doc_id'])}\">{esc(r['title'])}</a></td>"
             f"<td class=\"snippet\">{esc(r['snippet'] or '')}</td></tr>"
             for r in rows
         )
@@ -2215,7 +2218,7 @@ def browse_source(
                 (match, q.strip(), BROWSE_LIMIT),
             )
         items = "\n".join(
-            f"<tr><td><a href=\"/{esc(source)}/doc/{r['doc_id']}\">{esc(r['title'])}</a></td>"
+            f"<tr><td><a href=\"{doc_url(source, r['doc_id'])}\">{esc(r['title'])}</a></td>"
             f"<td class=\"snippet\">{esc(r['snippet'] or '')}</td></tr>"
             for r in rows
         )
@@ -2236,7 +2239,7 @@ def browse_source(
     body = f"""
 {_browse_nav(source)}
 <h1>{esc(source)}</h1>
-<form method="get" action="/{esc(source)}/">
+<form method="get" action="{browse_url(source)}">
 <input type="text" name="q" value="{esc(q or '')}" placeholder="キーワード検索">
 <button type="submit">検索</button>
 </form>
@@ -2245,7 +2248,7 @@ def browse_source(
     return HTMLResponse(content=page_shell(f"chiezo: {source}", body))
 
 
-@app.get("/{source}/doc/{doc_id}", response_class=HTMLResponse)
+@app.get("/search/{source}/doc/{doc_id}", response_class=HTMLResponse)
 def browse_doc(request: Request, source: str, doc_id: int):
     src = get_source(request, source)
     rows = db.query(src.path, "SELECT * FROM docs WHERE doc_id = ?", (doc_id,))
@@ -2263,7 +2266,7 @@ def browse_doc(request: Request, source: str, doc_id: int):
     if src.schema_version >= TAG_MIN_SCHEMA_VERSION:
         # 同じタグの文書一覧へ飛べるようにする(タグ絞り込みの導線)
         tags_html = ", ".join(
-            f'<a href="/{esc(source)}/?tag={quote(t)}">{esc(t)}</a>' for t in tags
+            f'<a href="{browse_url(source)}?tag={quote(t)}">{esc(t)}</a>' for t in tags
         )
     else:
         tags_html = ", ".join(esc(t) for t in tags)

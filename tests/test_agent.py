@@ -11,6 +11,8 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import CHAT_PATH
+
 
 @pytest.fixture()
 def monkeypatch_env(monkeypatch, built_data_dir):
@@ -156,7 +158,7 @@ class TestToolLoop:
             body = ask(client, q="浅草寺はどこにある?").json()
         (ref,) = [r for r in body["references"] if r["title"] == "浅草寺"]
         assert ref["source"] == "jawiki"
-        assert ref["url"] == f"/jawiki/doc/{ref['doc_id']}"
+        assert ref["url"] == f"/search/jawiki/doc/{ref['doc_id']}"
 
     def test_counting_questions_can_use_filter_total(self, monkeypatch_env):
         """rag では原理的に答えられなかった問い(件数)に届くこと。"""
@@ -327,13 +329,13 @@ class TestStreaming:
 class TestAskPage:
     def test_page_offers_the_mode_switch(self, monkeypatch_env):
         with make_client(monkeypatch_env, ToolLLM()) as client:
-            res = client.get("/ask")
+            res = client.get(CHAT_PATH)
         assert 'name="mode"' in res.text
         assert "モデルに道具を引かせる" in res.text
 
     def test_chat_page_preselects_the_mode(self, monkeypatch_env):
         with make_client(monkeypatch_env, ToolLLM()) as client:
-            res = client.get("/ask", params={"q": "浅草寺はどこ?", "mode": "agent"})
+            res = client.get(CHAT_PATH, params={"q": "浅草寺はどこ?", "mode": "agent"})
         assert '<option value="agent" selected>' in res.text
         assert 'data-first="浅草寺はどこ?"' in res.text
 
@@ -341,7 +343,7 @@ class TestAskPage:
         fake = ToolLLM(SEARCH_ASAKUSA, ANSWER)
         with make_client(monkeypatch_env, fake) as client:
             res = client.get(
-                "/ask", params={"q": "浅草寺はどこ?", "mode": "agent", "nojs": 1}
+                CHAT_PATH, params={"q": "浅草寺はどこ?", "mode": "agent", "nojs": 1}
             )
         assert "調べた手順" in res.text
         assert "search" in res.text

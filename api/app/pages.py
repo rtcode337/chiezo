@@ -3,6 +3,21 @@ from __future__ import annotations
 
 import base64
 import html
+from urllib.parse import quote
+
+
+# ブラウズ画面の URL。**ソースの画面は `/search/` の下に置く**(ルート直下を
+# キャッチオールにすると、`ask` や `admin` という名前のソースを足せなくなる)。
+# 出典のリンクもここを通すので、移すときに漏れない。
+BROWSE_PREFIX = "/search"
+
+
+def browse_url(source: str, suffix: str = "") -> str:
+    return f"{BROWSE_PREFIX}/{quote(str(source))}/{suffix}"
+
+
+def doc_url(source: str, doc_id: int) -> str:
+    return browse_url(source, f"doc/{doc_id}")
 
 # プロジェクトアイコン(assets/icon.svg が原本。api イメージのビルドコンテキストは api/ のみで
 # assets/ を含まないため、最小化した data URI をここに埋め込んで配信する。原本を変えたら更新)
