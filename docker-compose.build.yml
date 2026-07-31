@@ -69,6 +69,9 @@ services:
       # 同時に処理する会話の数。既定の 4 はスロットごとにホスト側のバッファを持つので、
       # 1 人で使うぶんには 1 でよい(小さな機械でメモリを空けるため)。
       - LLAMA_ARG_N_PARALLEL=${CHIEZO_LLM_PARALLEL:-1}
+      # ホスト側のプロンプトキャッシュの上限(MiB)。既定の 8192 は小さな機械には大きすぎる
+      # (会話を続けるほど育ち、メモリを食い尽くす)。
+      - LLAMA_ARG_CACHE_RAM=${CHIEZO_LLM_CACHE_RAM:-512}
       # 思考(reasoning)は既定で切る。hybrid thinking のモデルは 1 応答ごとに
       # 数百トークン考えるので、道具を何度も呼ぶ agent モードでは待ち時間が積み上がる。
       - LLAMA_ARG_THINK_BUDGET=${CHIEZO_LLM_THINK_BUDGET:-0}

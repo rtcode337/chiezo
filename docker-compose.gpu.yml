@@ -38,6 +38,13 @@ services:
       # メモリが増える(実測で llama-server のホスト RSS が 3.7GB まで育ち、
       # 8GB の VM で OOM killer に殺された)。
       - LLAMA_ARG_N_PARALLEL=${CHIEZO_LLM_PARALLEL:-1}
+      # **ホスト側のプロンプトキャッシュの上限(MiB)**。llama-server は過去の
+      # プロンプトの KV スナップショットをホスト RAM に持ち、既定は 8192MiB = 8GiB。
+      # 会話を続けるほど育つので、メモリの小さい機械では**これが OOM の直接の原因**になる
+      # (実測: 会話中にホスト常駐が 3.7GB まで伸びて OOM killer に殺された)。
+      # 512MiB に抑えても、直前の会話の使い回しは効く(外れたぶんはプロンプトを
+      # 読み直すだけで、実測 3,000 tok/s 以上出るので体感差は小さい)。
+      - LLAMA_ARG_CACHE_RAM=${CHIEZO_LLM_CACHE_RAM:-512}
       # 全層を GPU に載せる(既定の auto は載る分だけ載せるので、VRAM が足りている
       # つもりで一部が CPU に残っていた、という取りこぼしを避ける)。
       - LLAMA_ARG_N_GPU_LAYERS=${CHIEZO_LLM_GPU_LAYERS:-999}
