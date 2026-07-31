@@ -41,7 +41,7 @@ from urllib.parse import quote
 from fastapi import HTTPException, Request
 from mcp.server.fastmcp.exceptions import ToolError
 
-from app import answer
+from app import answer, websearch
 from app.mcp_server import INSTRUCTIONS, build_mcp
 
 log = logging.getLogger("chiezo.api")
@@ -83,6 +83,16 @@ AGENT_SYSTEM_OPEN = """\
 - 根拠にした文書のタイトルを本文に書く(出典一覧は chiezo 側で付ける)
 """
 
+# web 検索が有効なときだけ足す使い分け。**chiezo が先**という順番をここで固定する
+# (chiezo の存在理由が「外部 API を先に叩かせない」ことなので、道具が増えても順番は変えない)。
+WEB_SEARCH_POLICY = """
+web_search も使える場合:
+- **まず chiezo を引く**。web は chiezo に無いものだけ(取り込んだダンプより新しい出来事、
+  いま現在の状態、ローカルに収録していない話題)に使う
+- web から得たことは、chiezo から得たことと**区別が分かるように書く**
+  (「web で調べた限り」など)。出典一覧にも web として並ぶ
+"""
+
 # ステップ予算・締め切りを使い切ったときに最後の 1 回だけ足す指示。
 # 道具を渡さずにこれを送るので、モデルはここで必ず答えを書くことになる。
 FORCED_ANSWER_NOTICE = (
@@ -122,7 +132,7 @@ async def tool_specs(app) -> list[dict]:
     「MCP 経由では正しく引けるのに agent では引けない」というずれが必ず生まれる。
     """
     tools = await _mcp(app).list_tools()
-    return [
+    specs = [
         {
             "type": "function",
             "function": {
@@ -134,6 +144,11 @@ async def tool_specs(app) -> list[dict]:
         for t in tools
         if t.name in AGENT_TOOLS
     ]
+    # web 検索は chiezo の道具ではないので MCP には出しておらず、ここで足す
+    # (有効なときだけ。無効なら道具ごと見せない = 使えないものを文脈に並べない)。
+    if websearch.is_enabled():
+        specs.append(websearch.TOOL_SPEC)
+    return specs
 
 
 def _payload_of(result: Any) -> Any:
@@ -183,6 +198,11 @@ async def execute(app, name: str, arguments: dict) -> tuple[bool, Any]:
     失敗も**モデルに返す**(例外にしない)。404 の candidates や 409 の移行案内には
     次の手を決めるのに要る情報が入っているし、1 回の失敗でループを落とす必要もない。
     """
+    if name == websearch.TOOL_NAME:
+        if not websearch.is_enabled():
+            return False, {"error": "web search is disabled"}
+        payload = await websearch.search(str(arguments.get("q", "")).strip())
+        return "error" not in payload, payload
     if name not in AGENT_TOOLS:
         return False, {"error": f"unknown tool: {name}"}
     try:
@@ -237,28 +257,40 @@ def collect_references(refs: list[dict], source: str, payload: Any) -> None:
     `doc` の応答は既定のフィールドに doc_id を含まないので、その場合は
     タイトルで検索する URL に落とす(出典の行き先が無いよりはよい)。
     """
-    if not isinstance(payload, dict) or len(refs) >= MAX_REFERENCES:
+    if not isinstance(payload, dict):
         return
     source = payload.get("source") or source
     rows = payload.get("results") if isinstance(payload.get("results"), list) else None
     if rows is None:
         rows = [payload] if payload.get("title") else []
+    found = []
     for row in rows:
-        if len(refs) >= MAX_REFERENCES:
-            return
         if not isinstance(row, dict) or not row.get("title"):
             continue
         title, doc_id = str(row["title"]), row.get("doc_id")
-        if any(r["source"] == source and r["title"] == title for r in refs):
-            continue
         url = (
             f"/{source}/doc/{doc_id}" if isinstance(doc_id, int)
             else f"/{quote(str(source))}/?q={quote(title)}"
         )
-        refs.append({
-            "n": len(refs) + 1, "source": source, "title": title,
+        found.append({
+            "source": source, "title": title,
             "doc_id": doc_id if isinstance(doc_id, int) else None, "url": url,
         })
+    add_references(refs, found)
+
+
+def add_references(refs: list[dict], found: list[dict]) -> None:
+    """出典を積む(出現順・重複なし・上限あり)。番号はここで振る。
+
+    chiezo の文書と web の結果が同じ一覧に並ぶので、`source` は消さない
+    (`web` かどうかが出典を見た人に分かる必要がある)。
+    """
+    for item in found:
+        if len(refs) >= MAX_REFERENCES:
+            return
+        if any(r["source"] == item["source"] and r["title"] == item["title"] for r in refs):
+            continue
+        refs.append({"n": len(refs) + 1, **item})
 
 
 def _repeat_notice(name: str, arguments: dict) -> dict:
@@ -288,10 +320,13 @@ def _system_prompt(catalog: list[dict], source: str | None, grounded: bool) -> s
         f"\n\n**このやり取りでは {source} だけを引くこと**(他のソースは使わない)。"
         if source else ""
     )
+    # web 検索が有効なときだけ、その使い分けを足す(無効なら道具ごと出していないので不要)。
+    web = WEB_SEARCH_POLICY if websearch.is_enabled() else ""
     return (
         INSTRUCTIONS
         + "\n利用できるソース:\n" + "\n".join(lines) + fixed + "\n\n"
         + (AGENT_SYSTEM_GROUNDED if grounded else AGENT_SYSTEM_OPEN)
+        + web
     )
 
 
@@ -334,6 +369,7 @@ async def stream(
     question: str,
     source: str | None,
     grounded: bool = True,
+    history: list[dict] | None = None,
 ) -> AsyncIterator[tuple[str, dict]]:
     """agent ループを回し、進捗と結果を (イベント名, 中身) で流す。
 
@@ -346,8 +382,15 @@ async def stream(
     app = request.app
     catalog = prepare_catalog(request, source)
     tools = await tool_specs(app)
+    # 履歴は本文だけを積み直す(過去のターンの道具のやり取りまで積むと文脈が際限なく伸び、
+    # モデルが古い検索結果を根拠にし始める。何を引くかは毎ターン引き直させる)。
+    past = [
+        {"role": m["role"], "content": m.get("content") or ""}
+        for m in (history or []) if m.get("role") in ("user", "assistant")
+    ][-answer.HISTORY_TURNS:]
     messages: list[dict] = [
         {"role": "system", "content": _system_prompt(catalog, source, grounded)},
+        *past,
         {"role": "user", "content": question},
     ]
     references: list[dict] = []
@@ -385,7 +428,10 @@ async def stream(
                 called.add(key)
                 ok, payload = await execute(app, name, arguments)
             if ok:
-                collect_references(references, (arguments or {}).get("source", ""), payload)
+                if name == websearch.TOOL_NAME:
+                    add_references(references, websearch.references_from(payload))
+                else:
+                    collect_references(references, (arguments or {}).get("source", ""), payload)
                 if has_content(ok, payload):
                     evidence += 1
             messages.append({
@@ -432,12 +478,13 @@ async def answer_question(
     question: str,
     source: str | None,
     grounded: bool = True,
+    history: list[dict] | None = None,
 ) -> dict:
     """agent ループをまとめて 1 つの JSON にする(非ストリーミング)。"""
     steps: list[dict] = []
     references: list[dict] = []
     text = ""
-    async for event, data in stream(cfg, request, question, source, grounded):
+    async for event, data in stream(cfg, request, question, source, grounded, history):
         if event == "step":
             steps.append(data)
         elif event == "references":

@@ -122,7 +122,9 @@ def build_mcp(app: FastAPI) -> FastMCP:
         description=(
             "全文検索。まずこれで当たりを付け、必要な文書だけ doc で取る。"
             "area / feature / bbox / tag で絞り込める(書式は filter と同じ。"
-            "同名の別地物の取り違え防止に使う)。**総件数は返らない**ので、"
+            "同名の別地物の取り違え防止に使う)。**まずは絞り込み無しで引くこと** — "
+            "wikipedia 系のソースは feature / area を持たないので、付けると必ず 0 件になる"
+            "(wikipedia を絞るなら tag = カテゴリ名)。**総件数は返らない**ので、"
             "「何件あるか」を知りたいときは filter を使う。"
             "3 文字未満の語はタイトル前方一致にフォールバックする(mode=title_prefix)。"
         )
@@ -148,6 +150,8 @@ def build_mcp(app: FastAPI) -> FastMCP:
             "タイトル完全一致(別名も解決)で 1 文書を取る。"
             f"body は既定で {MCP_DOC_MAX_CHARS} 字に切る(全文が要るなら max_chars を上げる)。"
             "fields は title,opening,body,tags,links,updated_at,extra から選ぶ。"
+            "絞り込み(area / feature)は同名の別地物を見分けるためのもので、"
+            "**wikipedia 系のソースでは使わない**(持っていないので not found になる)。"
             "**座標(lat/lon)・住所・OSM タグは extra に入っている**"
             "(「近くの○○」を調べるなら、まず extra で座標を取り、その周りを filter の bbox で引く)。"
             "同名の別地物があるときは alternatives が付くので、area / feature / tag で絞る。"
@@ -177,6 +181,8 @@ def build_mcp(app: FastAPI) -> FastMCP:
             "**feature は OSM 由来の `key=value` 形式**(`tourism=museum` / `railway=station` /"
             " `amenity=restaurant` など。`museum` のような値だけでは 0 件になる)。"
             "area は所属行政区の名前(`京都府` など)、bbox は `min_lat,min_lon,max_lat,max_lon`。"
+            "**feature / area / bbox を持つのは osm・geonames だけ**で、wikipedia 系のソースを"
+            "これで絞ると 0 件になる(wikipedia は tag = カテゴリ名で絞る)。"
             "tag の正確な名前は tags で確かめる。feature と tag はカンマ区切りで複数指定できる"
             "(その中は OR)。**件数を数えられるのはこの道具だけ**(total が返る。search は"
             "上位数件を返すだけで総数を持たない)。offset でページングする。"

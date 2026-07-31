@@ -39,6 +39,9 @@ SEARCH_LIMIT = 5
 MAX_QUERIES = 3
 # opening がこれより短ければ body も足す(定義文 1 行だけでは答えに足りないため)
 MIN_OPENING_CHARS = 200
+# 会話(/v1/chat)でモデルに見せる直前のやり取りの数。長くするほど「さっきの話」に
+# 追従できるが、毎回のプロンプトが伸びる(rag はこれをクエリ生成にも使う)。
+HISTORY_TURNS = 6
 
 # ソース種別ごとの 1 行説明(クエリ生成のプロンプトに載せる)
 KIND_HINTS = {
@@ -122,6 +125,27 @@ def load_settings() -> Settings | None:
 
 def is_enabled() -> bool:
     return bool(os.environ.get("CHIEZO_LLM_URL", "").strip())
+
+
+def default_mode() -> str:
+    """`mode` を省いたときの既定(`CHIEZO_ASK_DEFAULT_MODE`)。
+
+    素の既定を `rag` にしてあるのは、agent がツール呼び出しの安定するモデル(8B 級)と
+    GPU を前提にするため。**環境ごとに違う判断**なので、潤沢な環境では .env で
+    `agent` に倒せるようにしてある(小さな機械に設定が持ち込まれない側に倒す)。
+    """
+    value = os.environ.get("CHIEZO_ASK_DEFAULT_MODE", "").strip().lower()
+    return value if value in ("rag", "agent") else "rag"
+
+
+def default_grounded() -> bool:
+    """`grounded` を省いたときの既定(`CHIEZO_ASK_DEFAULT_GROUNDED`)。
+
+    素の既定は 1(chiezo で取れたことだけを根拠にする)。0 にすると足りない分を
+    モデルの知識で補うので、会話として自然になる代わりに幻覚のリスクを引き受ける。
+    """
+    value = os.environ.get("CHIEZO_ASK_DEFAULT_GROUNDED", "").strip().lower()
+    return value not in ("0", "false", "no", "off")
 
 
 def require_settings() -> Settings:
@@ -276,13 +300,33 @@ def source_catalog(request: Request) -> list[dict]:
     ]
 
 
-def _plan_user_prompt(question: str, catalog: list[dict]) -> str:
+def format_history(history: list[dict], limit: int = HISTORY_TURNS) -> str:
+    """直前のやり取りを 1 つの文字列にする(会話の続きを検索語に反映するため)。
+
+    「じゃあ京都のほうを詳しく」のような指示語は、直前の話が無いと検索語に直せない。
+    全部載せずに直近だけにするのは、クエリ生成の 1 回目に長い文脈を渡す価値が薄いから。
+    """
+    recent = [m for m in history if m.get("role") in ("user", "assistant")][-limit:]
+    if not recent:
+        return ""
+    lines = [
+        f"{'ユーザー' if m['role'] == 'user' else 'あなた'}: {(m.get('content') or '')[:400]}"
+        for m in recent
+    ]
+    return "これまでのやり取り:\n" + "\n".join(lines) + "\n\n"
+
+
+def _plan_user_prompt(question: str, catalog: list[dict], history: list[dict] | None = None) -> str:
     lines = []
     for c in catalog:
         lang = f" / {c['lang']}" if c["lang"] else ""
         hint = f" — {c['hint']}" if c["hint"] else ""
         lines.append(f"- {c['name']}({c['kind']}{lang} / {c['docs']:,} 件){hint}")
-    return "利用できるソース:\n" + "\n".join(lines) + f"\n\n質問: {question}"
+    return (
+        format_history(history or [])
+        + "利用できるソース:\n" + "\n".join(lines)
+        + f"\n\n質問: {question}"
+    )
 
 
 _JSON_BLOCK = re.compile(r"\{.*\}", re.S)
@@ -358,7 +402,8 @@ def fallback_queries(question: str, known: list[str]) -> list[dict]:
 
 
 async def plan_queries(
-    cfg: Settings, request: Request, question: str, source: str | None
+    cfg: Settings, request: Request, question: str, source: str | None,
+    history: list[dict] | None = None,
 ) -> list[dict]:
     """質問から検索クエリを組み立てる。
 
@@ -380,7 +425,7 @@ async def plan_queries(
         cfg,
         [
             {"role": "system", "content": PLAN_SYSTEM},
-            {"role": "user", "content": _plan_user_prompt(question, catalog)},
+            {"role": "user", "content": _plan_user_prompt(question, catalog, history)},
         ],
         temperature=0.0,
         max_tokens=300,
@@ -508,7 +553,8 @@ NO_CONTEXT_ANSWER = (
 
 
 def build_answer_messages(
-    question: str, snippets: list[dict], grounded: bool = True
+    question: str, snippets: list[dict], grounded: bool = True,
+    history: list[dict] | None = None,
 ) -> list[dict]:
     if snippets:
         blocks = "\n\n".join(
@@ -522,8 +568,15 @@ def build_answer_messages(
             "(該当する文書が見つかりませんでした。"
             "根拠が 1 件も無いので、[1] のような出典番号は絶対に付けないこと)"
         )
+    # 履歴は system と今回の質問のあいだに挟む(会話として自然な並びにする)。
+    # 抜粋は毎回作り直すので、過去のターンの抜粋は積み直さない(文脈が際限なく伸びる)。
+    past = [
+        {"role": m["role"], "content": m.get("content") or ""}
+        for m in (history or []) if m.get("role") in ("user", "assistant")
+    ][-HISTORY_TURNS:]
     return [
         {"role": "system", "content": ANSWER_SYSTEM_GROUNDED if grounded else ANSWER_SYSTEM_OPEN},
+        *past,
         {"role": "user", "content": f"# 抜粋\n{blocks}\n\n# 質問\n{question}"},
     ]
 
@@ -537,10 +590,11 @@ def has_no_basis(snippets: list[dict], grounded: bool) -> bool:
 
 
 async def prepare(
-    cfg: Settings, request: Request, question: str, source: str | None
+    cfg: Settings, request: Request, question: str, source: str | None,
+    history: list[dict] | None = None,
 ) -> tuple[list[dict], list[dict], list[dict]]:
     """クエリ生成 → 取得 まで進め、(クエリ, 抜粋, 出典) を返す。"""
-    queries = await plan_queries(cfg, request, question, source)
+    queries = await plan_queries(cfg, request, question, source, history)
     snippets, references = await run_in_threadpool(gather_context, request, queries, cfg)
     return queries, snippets, references
 
@@ -551,14 +605,15 @@ async def answer(
     question: str,
     source: str | None,
     grounded: bool = True,
+    history: list[dict] | None = None,
 ) -> dict:
     """まとめて 1 つの JSON を返す(非ストリーミング)。"""
-    queries, snippets, references = await prepare(cfg, request, question, source)
+    queries, snippets, references = await prepare(cfg, request, question, source, history)
     if has_no_basis(snippets, grounded):
         text = NO_CONTEXT_ANSWER
     else:
         text = await _complete(
-            cfg, build_answer_messages(question, snippets, grounded), temperature=0.2
+            cfg, build_answer_messages(question, snippets, grounded, history), temperature=0.2
         )
     return {
         "question": question,
@@ -571,7 +626,8 @@ async def answer(
 
 
 async def stream_answer(
-    cfg: Settings, question: str, snippets: list[dict], grounded: bool = True
+    cfg: Settings, question: str, snippets: list[dict], grounded: bool = True,
+    history: list[dict] | None = None,
 ) -> AsyncIterator[str]:
     """回答本文を差分で返す(`/v1/ask?stream=1` の本体)。
 
@@ -583,6 +639,6 @@ async def stream_answer(
         yield NO_CONTEXT_ANSWER
         return
     async for delta in _stream(
-        cfg, build_answer_messages(question, snippets, grounded), temperature=0.2
+        cfg, build_answer_messages(question, snippets, grounded, history), temperature=0.2
     ):
         yield delta

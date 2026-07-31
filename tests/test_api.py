@@ -1216,3 +1216,29 @@ class TestHasLinks:
         path = tmp_path / "late_links.db"
         self._build(path, 50, links_at=40)
         assert claude_config._has_links(self._src(path)) is False
+
+
+class TestAttributeGuard:
+    """持っていない属性での絞り込みは、0 件ではなく理由を返す。
+
+    条件としては正しいのに必ず 0 件になる組み合わせ(wikipedia に area / feature)は、
+    人にも分かりにくく、agent モードでは「絞り込みを付けたまま検索語だけ変えて空振り」を
+    延々と繰り返す原因になっていた(実測)。
+    """
+
+    def test_area_on_a_wikipedia_source_is_400(self, client):
+        res = client.get("/v1/jawiki/search", params={"q": "東京", "area": "東京都"})
+        assert res.status_code == 400
+        assert "has no feature/area" in res.json()["error"]
+        assert "tag" in res.json()["hint"]
+
+    def test_feature_on_a_wikipedia_source_is_400(self, client):
+        res = client.get("/v1/jawiki/filter", params={"feature": "tourism=museum"})
+        assert res.status_code == 400
+
+    def test_tag_and_bbox_still_work(self, client):
+        """wikipedia が持っている属性(タグ・座標)はそのまま引ける。"""
+        assert client.get("/v1/jawiki/filter", params={"tag": "日本の都道府県"}).status_code == 200
+        assert client.get(
+            "/v1/jawiki/filter", params={"bbox": "34.0,134.0,36.0,140.0"}
+        ).status_code == 200

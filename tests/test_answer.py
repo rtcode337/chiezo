@@ -330,16 +330,16 @@ class TestAskPage:
         assert res.status_code == 200
         assert 'name="q"' in res.text
         assert '<option value="jawiki"' in res.text
-        assert "id=\"answer\"" not in res.text
+        assert "data-first" not in res.text  # 質問が無ければ何も送らない
 
-    def test_question_renders_a_placeholder_that_js_fills(self, monkeypatch_env):
-        """既定はサーバ側で推論を回さない(JS が SSE で埋める)。二重に走らせないため。"""
+    def test_question_is_handed_to_the_chat_js(self, monkeypatch_env):
+        """既定はサーバ側で推論を回さない(JS が /v1/chat から埋める)。二重に走らせないため。"""
         fake = FakeLLM(PLAN_OK, ANSWER_OK)
         with make_client(monkeypatch_env, fake) as client:
             res = client.get("/ask", params={"q": "浅草寺はどこ?"})
         assert res.status_code == 200
-        assert 'id="answer"' in res.text
-        assert "EventSource" in res.text
+        assert 'data-first="浅草寺はどこ?"' in res.text  # JS が最初の発言として送る
+        assert "fetch('/v1/chat?stream=1'" in res.text
         assert "nojs=1" in res.text  # JS が無い環境向けの導線
         assert fake.calls == 0
 

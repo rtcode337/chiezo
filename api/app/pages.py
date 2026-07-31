@@ -118,6 +118,20 @@ PAGE_STYLE = """
   select { padding: 0.3rem 0.5rem; }
   input[type=text] { padding: 0.3rem 0.5rem; width: 20rem; }
   button { padding: 0.3rem 0.8rem; }
+  /* 会話画面(/ask)。発言を左右に振らず、ラベルと余白だけで話者を分ける
+     (端末幅の狭い機械でも読める・凝った吹き出しにしない) */
+  .turn { margin: 1.2rem 0; }
+  .turn .who { font-size: 0.8rem; color: #666; margin-bottom: 0.2rem; }
+  .turn.you .text { border-left: 4px solid #bbb; background: #f6f6f6; }
+  .turn .text { white-space: pre-wrap; word-break: break-word; line-height: 1.7;
+                border: 1px solid #ccc; border-left: 4px solid #5560E0;
+                background: #fafaff; padding: 0.8rem 1rem; }
+  .turn .refs, .turn .steps { font-size: 0.8rem; color: #555; margin: 0.3rem 0 0 0.5rem;
+                              padding-left: 1rem; }
+  .turn .refs li.web { list-style-type: '🌐 '; }
+  form.chat { display: flex; gap: 0.5rem; margin-top: 1rem; }
+  form.chat input[type=text] { flex: 1; width: auto; }
+  .settings { margin-top: 0.5rem; font-size: 0.85rem; color: #555; }
 """
 
 

@@ -12,6 +12,8 @@ from urllib.parse import quote
 
 import httpx
 from fastapi import Body, FastAPI, HTTPException, Query, Request
+from pydantic import BaseModel
+from pydantic import Field as PydField
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -21,7 +23,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 
-from app import agent, answer, claude_config, db, notes
+from app import agent, answer, claude_config, db, notes, websearch
 from app.fts import build_match_query, escape_like
 from app.mcp_server import build_mcp
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
@@ -1264,6 +1266,49 @@ def require_tag_schema(src: Source) -> None:
         )
 
 
+def has_feature_area(src: Source) -> bool:
+    """このソースが `feature` / `area` を持っているか(索引だけで分かる)。
+
+    持っているのは地物のソース(osm・geonames)だけで、wikipedia 系の文書はどれも
+    NULL。1 件だけ探せばよいので `idx_docs_feature_area` の先頭を覗いて判定する
+    (`app/claude_config.py` が索引付きの列を同じ形で探っているのと同じやり方)。
+    結果は Source に覚える — 走査のたびに作り直されるので、DB を差し替えれば消える。
+    """
+    if src.schema_version < FILTER_MIN_SCHEMA_VERSION:
+        return False
+    cached = getattr(src, "_has_feature_area", None)
+    if cached is None:
+        rows = db.query(
+            src.path,
+            "SELECT 1 FROM docs INDEXED BY idx_docs_feature_area"
+            " WHERE feature IS NOT NULL LIMIT 1",
+            (),
+        )
+        cached = bool(rows)
+        object.__setattr__(src, "_has_feature_area", cached)
+    return cached
+
+
+def require_attributes(src: Source, *, feature: str | None, area: str | None) -> None:
+    """持っていない属性で絞ろうとしたら、0 件ではなく**理由**を返す。
+
+    wikipedia 系のソースに `area=東京都` を付けると、条件としては正しいのに必ず 0 件になる。
+    人にとっても分かりにくいが、**agent モードでは致命的**だった: モデルは 0 件を見ても
+    理由が分からず、絞り込みを付けたまま検索語だけ変えて何度も空振りする(実測)。
+    「そのソースにその属性は無い」と言えば、次の手に移れる。
+    """
+    if not (feature or area) or has_feature_area(src):
+        return
+    raise HTTPException(
+        400,
+        {
+            "error": f"source {src.name} has no feature/area attributes",
+            "hint": "地物の属性(feature / area)を持つのは osm・geonames などの地物ソースだけ。"
+                    "wikipedia 系のソースは tag(カテゴリ名)で絞るか、絞り込み無しで引くこと",
+        },
+    )
+
+
 def build_attribute_filters(
     src: Source,
     *,
@@ -1282,6 +1327,7 @@ def build_attribute_filters(
     if not any((feature, area, bbox, wikidata, tag)):
         return "", []
     require_filter_schema(src)
+    require_attributes(src, feature=feature, area=area)
     p = column_prefix
     where: list[str] = []
     params: list = []
@@ -1366,6 +1412,9 @@ def build_doc_id_set(
         return None
     if src.schema_version < FILTER_MIN_SCHEMA_VERSION:
         return None
+    # 持っていない属性で絞ろうとしていないか(0 件ではなく理由を返す)。
+    # ここは /filter の経路で、search / doc は build_attribute_filters 側で同じ検査をする。
+    require_attributes(src, feature=feature, area=area)
     parts: list[str] = []
     params: list = []
     if tag:
@@ -1719,18 +1768,22 @@ async def ask(
     q: str = Query(..., min_length=1, description="質問文(自然文でよい)"),
     source: str | None = Query(None, description="引くソースを固定する(省略時は LLM が選ぶ)"),
     stream: bool = Query(False, description="1 なら SSE で回答を流す"),
-    grounded: bool = Query(
-        True,
-        description="1(既定)は chiezo の抜粋だけを根拠にする。0 なら足りない分をモデルの知識で補う",
+    grounded: bool | None = Query(
+        None,
+        description="1 は chiezo で取れたことだけを根拠にする。0 なら足りない分をモデルの知識で補う"
+                    "(既定は CHIEZO_ASK_DEFAULT_GROUNDED、無指定なら 1)",
     ),
-    mode: str = Query(
-        "rag",
+    mode: str | None = Query(
+        None,
         pattern="^(rag|agent)$",
-        description="rag(既定)は search を 1 回。agent は LLM 自身に道具を引かせる"
-                    "(ツール呼び出しが安定するモデルが要る)",
+        description="rag は search を 1 回。agent は LLM 自身に道具を引かせる"
+                    "(ツール呼び出しが安定するモデルが要る。既定は CHIEZO_ASK_DEFAULT_MODE)",
     ),
 ):
     cfg = answer.require_settings()
+    # 既定は環境変数で決める(GPU + 8B の環境と、CPU だけの環境で妥当な既定が違うため)。
+    mode = mode or answer.default_mode()
+    grounded = answer.default_grounded() if grounded is None else grounded
     if mode == "agent":
         if not stream:
             return await agent.answer_question(cfg, request, q, source, grounded)
@@ -1744,34 +1797,20 @@ async def ask(
     # ストリーミングはヘッダを送った後でステータスを変えられないので、
     # 失敗しうる段(クエリ生成・検索)はここで済ませてから流し始める。
     queries, snippets, references = await answer.prepare(cfg, request, q, source)
-
-    async def events():
-        yield _sse(
-            "references",
-            {
-                "references": references, "queries": queries,
-                "grounded": grounded, "model": cfg.model,
-            },
-        )
-        try:
-            async for delta in answer.stream_answer(cfg, q, snippets, grounded):
-                yield _sse("delta", {"text": delta})
-        except HTTPException as e:
-            detail = e.detail if isinstance(e.detail, dict) else {"error": str(e.detail)}
-            yield _sse("error", detail)
-        yield _sse("done", {})
-
-    return _sse_response(events())
+    return _sse_response(_rag_events(cfg, q, queries, snippets, references, grounded))
 
 
-async def _agent_events(cfg, request: Request, q: str, source: str | None, grounded: bool):
+async def _agent_events(
+    cfg, request: Request, q: str, source: str | None, grounded: bool,
+    history: list[dict] | None = None,
+):
     """agent モードの SSE。
 
     rag と違い**流し始めた後にしかできない仕事**が本体(道具を引くこと自体が目的で、
     それが数十秒かかる)。ソースの検査だけは呼び出し側が先に済ませてあり、
     残りの失敗(推論サーバに繋がらない等)は error イベントとして流す。
     """
-    events = agent.stream(cfg, request, q, source, grounded)
+    events = agent.stream(cfg, request, q, source, grounded, history)
     yield _sse("meta", {"mode": "agent", "grounded": grounded, "model": cfg.model})
     try:
         async for event, data in events:
@@ -1782,60 +1821,187 @@ async def _agent_events(cfg, request: Request, q: str, source: str | None, groun
     yield _sse("done", {})
 
 
-# 回答が出るまで数十秒かかるので、ここだけ inline JS で SSE を受けて逐次表示する。
-# JS はあくまで上乗せで、フォームは素の GET なので JS が動かなくても
-# (非ストリーミングの)回答は表示される。
-ASK_STREAM_JS = """
+# ---- 会話(/v1/chat) --------------------------------------------------------
+#
+# `/v1/ask` は 1 問 1 答で、curl から使うぶんにはそれでよい。会話として続けるには
+# 直前のやり取りが要るので、こちらは **messages をまるごと受け取る**。
+# **サーバーは会話の状態を持たない**(履歴はクライアントが持って毎回送る)。読み取り専用・
+# LAN 内・複数ワーカーという前提を崩さないためで、MCP をステートレスにしたのと同じ判断。
+
+
+class ChatMessage(BaseModel):
+    role: str = PydField(pattern="^(user|assistant)$")
+    content: str
+
+
+class ChatRequest(BaseModel):
+    # 末尾が今回の発言、それより前が履歴。空や assistant で終わる列は 400。
+    messages: list[ChatMessage]
+    source: str | None = None
+    grounded: bool | None = None
+    mode: str | None = PydField(default=None, pattern="^(rag|agent)$")
+
+
+def _split_history(body: ChatRequest) -> tuple[str, list[dict]]:
+    turns = [m.model_dump() for m in body.messages if (m.content or "").strip()]
+    if not turns or turns[-1]["role"] != "user":
+        raise HTTPException(400, {"error": "messages must end with a user message"})
+    return turns[-1]["content"], turns[:-1]
+
+
+@app.post("/v1/chat")
+async def chat(request: Request, body: ChatRequest, stream: bool = Query(False)):
+    cfg = answer.require_settings()
+    question, history = _split_history(body)
+    mode = body.mode or answer.default_mode()
+    grounded = answer.default_grounded() if body.grounded is None else body.grounded
+    if mode == "agent":
+        if not stream:
+            return await agent.answer_question(
+                cfg, request, question, body.source, grounded, history
+            )
+        agent.prepare_catalog(request, body.source)
+        return _sse_response(
+            _agent_events(cfg, request, question, body.source, grounded, history)
+        )
+    if not stream:
+        return await answer.answer(cfg, request, question, body.source, grounded, history)
+    queries, snippets, references = await answer.prepare(
+        cfg, request, question, body.source, history
+    )
+    return _sse_response(
+        _rag_events(cfg, question, queries, snippets, references, grounded, history)
+    )
+
+
+async def _rag_events(cfg, q, queries, snippets, references, grounded, history=None):
+    """rag モードの SSE(/v1/ask と /v1/chat で共通)。"""
+    yield _sse(
+        "references",
+        {
+            "references": references, "queries": queries,
+            "grounded": grounded, "model": cfg.model,
+        },
+    )
+    try:
+        async for delta in answer.stream_answer(cfg, q, snippets, grounded, history):
+            yield _sse("delta", {"text": delta})
+    except HTTPException as e:
+        detail = e.detail if isinstance(e.detail, dict) else {"error": str(e.detail)}
+        yield _sse("error", detail)
+    yield _sse("done", {})
+
+
+# 会話画面の JS。**この画面だけ JS を使う**(他の画面は従来どおり JS なし)理由は 2 つ:
+# 回答まで数十秒かかるので逐次表示しないと無反応に見えること、会話の履歴を持つ主体が
+# クライアント側だからこと。EventSource ではなく fetch を使うのは、履歴を送るのに
+# POST が要るため(EventSource は GET しか張れない)。
+CHAT_JS = """
 (function () {
-  var out = document.getElementById('answer');
-  var refs = document.getElementById('references');
-  var steps = document.getElementById('steps');
-  if (!out || !window.EventSource) return;
-  var q = out.dataset.q, source = out.dataset.source, mode = out.dataset.mode || 'rag';
-  if (!q) return;
-  out.textContent = '';
-  var url = '/v1/ask?stream=1&grounded=' + (out.dataset.grounded || '1')
-          + '&mode=' + encodeURIComponent(mode)
-          + '&q=' + encodeURIComponent(q)
-          + (source ? '&source=' + encodeURIComponent(source) : '');
-  var es = new EventSource(url);
-  // agent モードは道具を引いている間ずっと無反応になるので、進捗だけ先に見せる
-  es.addEventListener('step', function (e) {
-    if (!steps) return;
-    var s = JSON.parse(e.data);
-    var li = document.createElement('li');
-    li.textContent = s.step + '. ' + s.tool + ' '
-                   + JSON.stringify(s.arguments) + ' → ' + s.summary;
-    steps.appendChild(li);
-  });
-  es.addEventListener('references', function (e) {
-    // 文書タイトルは < や " を含みうるので innerHTML では組み立てない
-    refs.textContent = '';
-    var list = JSON.parse(e.data).references;
-    if (!list.length) { refs.textContent = '(なし)'; return; }
+  var log = document.getElementById('log');
+  var form = document.getElementById('chat');
+  var input = document.getElementById('q');
+  if (!log || !form || !window.fetch) return;
+  var history = [];   // 会話の主体はここ。サーバーは状態を持たない
+  var busy = false;
+
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  }
+  function turn(who, label) {
+    var t = el('div', 'turn ' + who);
+    t.appendChild(el('div', 'who', label));
+    var body = el('div', 'text', '');
+    t.appendChild(body);
+    log.appendChild(t);
+    t.scrollIntoView({block: 'end'});
+    return {node: t, text: body};
+  }
+  function addSteps(t, s) {
+    if (!t.steps) { t.steps = el('ul', 'steps'); t.node.appendChild(t.steps); }
+    t.steps.appendChild(el('li', null,
+      s.tool + ' ' + JSON.stringify(s.arguments) + ' → ' + s.summary));
+  }
+  function addRefs(t, list) {
+    if (!list.length) return;
+    var ul = el('ul', 'refs');
     list.forEach(function (r) {
-      var li = document.createElement('li');
-      var a = document.createElement('a');
+      // タイトルは < や " を含みうるので innerHTML では組み立てない
+      var li = el('li', r.source === 'web' ? 'web' : null);
+      var a = el('a', null, r.source === 'web' ? r.title : r.source + ' / ' + r.title);
       a.href = r.url;
-      a.textContent = r.source + ' / ' + r.title;
-      li.appendChild(document.createTextNode('[' + r.n + '] '));
+      if (r.source === 'web') { a.target = '_blank'; a.rel = 'noreferrer'; }
       li.appendChild(a);
-      refs.appendChild(li);
+      ul.appendChild(li);
     });
+    t.node.appendChild(ul);
+  }
+
+  function send(text) {
+    if (busy || !text) return;
+    busy = true;
+    turn('you', 'あなた').text.textContent = text;
+    history.push({role: 'user', content: text});
+    var t = turn('bot', 'chiezo');
+    t.text.textContent = '…';
+    var first = true, answer = '';
+    fetch('/v1/chat?stream=1', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        messages: history,
+        source: document.getElementById('source').value || null,
+        grounded: document.getElementById('grounded').value === '1',
+        mode: document.getElementById('mode').value
+      })
+    }).then(function (res) {
+      if (!res.ok) { throw new Error('HTTP ' + res.status); }
+      var reader = res.body.getReader(), decoder = new TextDecoder(), buf = '';
+      function pump() {
+        return reader.read().then(function (chunk) {
+          if (chunk.done) { return; }
+          buf += decoder.decode(chunk.value, {stream: true});
+          var frames = buf.split('\\n\\n');
+          buf = frames.pop();
+          frames.forEach(function (frame) {
+            var ev = /^event: (.*)$/m.exec(frame), da = /^data: (.*)$/m.exec(frame);
+            if (!ev || !da) return;
+            var data = JSON.parse(da[1]);
+            if (ev[1] === 'step') { addSteps(t, data); }
+            else if (ev[1] === 'references') { addRefs(t, data.references || []); }
+            else if (ev[1] === 'delta') {
+              if (first) { t.text.textContent = ''; first = false; }
+              answer += data.text;
+              t.text.textContent = answer;
+            } else if (ev[1] === 'error') {
+              t.text.textContent += '\\n[エラー] ' + (data.error || '');
+            }
+          });
+          t.node.scrollIntoView({block: 'end'});
+          return pump();
+        });
+      }
+      return pump();
+    }).catch(function (e) {
+      t.text.textContent += '\\n[通信に失敗しました: ' + e.message + ']';
+    }).then(function () {
+      // 失敗しても履歴には残す(次の発言で文脈が飛ぶのを避ける)
+      history.push({role: 'assistant', content: answer || '(応答なし)'});
+      busy = false;
+      input.focus();
+    });
+  }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var text = input.value.trim();
+    input.value = '';
+    send(text);
   });
-  es.addEventListener('delta', function (e) { out.textContent += JSON.parse(e.data).text; });
-  es.addEventListener('error', function (e) {
-    // サーバから届いたエラー(data あり)と、接続断による native error を区別する。
-    // どちらでも必ず close する — 放っておくと EventSource が再接続し、
-    // 推論をまるごともう一度走らせてしまう。
-    if (e.data) {
-      try { out.textContent += '\\n[エラー] ' + JSON.parse(e.data).error; } catch (_) {}
-    } else {
-      out.textContent += '\\n[接続が切れました]';
-    }
-    es.close();
-  });
-  es.addEventListener('done', function () { es.close(); });
+  if (form.dataset.first) { send(form.dataset.first); }
 })();
 """
 
@@ -1853,10 +2019,12 @@ async def ask_page(
     request: Request,
     q: str | None = Query(None),
     source: str | None = Query(None),
-    nojs: bool = Query(False, description="JS を使わず、回答が出揃ってから表示する"),
-    grounded: bool = Query(True, description="chiezo の抜粋だけを根拠にする"),
-    mode: str = Query("rag", pattern="^(rag|agent)$", description="rag / agent"),
+    nojs: bool = Query(False, description="JS を使わず、1 問 1 答で表示する"),
+    grounded: bool | None = Query(None, description="chiezo で取れたことだけを根拠にする"),
+    mode: str | None = Query(None, pattern="^(rag|agent)$", description="rag / agent"),
 ):
+    mode = mode or answer.default_mode()
+    grounded = answer.default_grounded() if grounded is None else grounded
     sources: dict[str, Source] = request.app.state.sources
     options = '<option value="">(自動)</option>' + "".join(
         f'<option value="{esc(name)}"{" selected" if name == source else ""}>{esc(name)}</option>'
@@ -1867,59 +2035,79 @@ async def ask_page(
     # 飛んで FastAPI は先頭(=0)を採る。select なら必ず 1 値だけ送られる。
     grounded_options = "".join(
         f'<option value="{value}"{" selected" if (value == "1") == grounded else ""}>{label}</option>'
-        for value, label in (("1", "抜粋のみを根拠にする"), ("0", "モデルの知識で補ってよい"))
+        for value, label in (("1", "chiezo で取れたことだけ"), ("0", "モデルの知識で補ってよい"))
     )
     mode_options = "".join(
         f'<option value="{value}"{" selected" if value == mode else ""}>{label}</option>'
         for value, label in (("rag", "1 回検索して答える"), ("agent", "モデルに道具を引かせる"))
     )
+    settings = f"""
+<div class="settings">
+ソース <select id="source" name="source">{options}</select>
+根拠 <select id="grounded" name="grounded">{grounded_options}</select>
+引き方 <select id="mode" name="mode">{mode_options}</select>
+{'<span title="web 検索が有効です">🌐 web 検索: 有効</span>' if websearch.is_enabled() else ''}
+</div>
+"""
+    if not answer.is_enabled():
+        # 無効でも入力欄そのものは出す(何をする画面なのかが分からないと、
+        # 「壊れている」のか「使っていない機能」なのか見分けが付かない)。
+        body = f"""
+<nav><a href="/admin">管理画面</a></nav>
+<h1>chiezo と話す</h1>
+<p class="stale">「答える」層は無効です。</p>
+<p class="muted">推論サーバの OpenAI 互換 URL を <code>CHIEZO_LLM_URL</code> に設定すると有効になります
+(compose なら <code>docker compose --profile answer up -d</code>)。</p>
+<form class="chat">
+<input type="text" name="q" placeholder="話しかける(自然文でよい)" disabled>
+<button type="submit" disabled>送信</button>
+</form>
+"""
+        return HTMLResponse(content=page_shell("chiezo と話す", body))
+
+    cfg = answer.require_settings()
+    if not nojs:
+        # 会話は JS(fetch + SSE)が主役。履歴を持つのはブラウザ側で、サーバーは
+        # 毎回まるごと受け取る。JS が無い環境には下の 1 問 1 答へ誘導する。
+        first = f' data-first="{esc(q)}"' if q else ""
+        nojs_url = f"/ask?nojs=1&mode={mode}&grounded={'1' if grounded else '0'}" + (
+            f"&q={quote(q)}" if q else ""
+        )
+        body = f"""
+<nav><a href="/admin">管理画面</a></nav>
+<h1>chiezo と話す</h1>
+<p class="muted">ためた知識(登録済みソース)を引ける相手と話せます。
+根拠にした文書は発言のあとに並びます。</p>
+<div id="log"></div>
+<form class="chat" id="chat"{first}>
+<input type="text" id="q" name="q" placeholder="話しかける(自然文でよい)" autofocus>
+<button type="submit">送信</button>
+</form>
+{settings}
+<noscript><p class="stale">JavaScript が無効です。
+<a href="{esc(nojs_url)}">1 問 1 答の画面</a>を使ってください(会話の継続はできません)。</p></noscript>
+<script>{CHAT_JS}</script>
+"""
+        return HTMLResponse(content=page_shell("chiezo と話す", body))
+
+    # ---- JS なしの 1 問 1 答(会話は続かないが、これだけで用が足りることも多い)
     form = f"""
 <nav><a href="/admin">管理画面</a></nav>
-<h1>chiezo に質問する</h1>
+<h1>chiezo に質問する(JS なし)</h1>
 <form method="get" action="/ask">
+<input type="hidden" name="nojs" value="1">
 <input type="text" name="q" value="{esc(q or '')}" placeholder="質問を書く(自然文でよい)">
 <select name="source">{options}</select>
 <select name="grounded">{grounded_options}</select>
 <select name="mode">{mode_options}</select>
 <button type="submit">質問する</button>
 </form>
+<p class="muted"><a href="/ask">会話できる画面へ戻る</a></p>
 """
-    if not answer.is_enabled():
-        body = form + """
-<p class="stale">「答える」層は無効です。</p>
-<p class="muted">推論サーバの OpenAI 互換 URL を <code>CHIEZO_LLM_URL</code> に設定すると有効になります
-(compose なら <code>docker compose --profile answer up -d</code>)。</p>
-"""
-        return HTMLResponse(content=page_shell("chiezo: 質問する", body))
     if not q:
-        body = form + """
-<p class="muted">ためた知識(登録済みソース)だけを根拠に回答します。
-根拠にした文書は出典として下に並びます。</p>
-"""
-        return HTMLResponse(content=page_shell("chiezo: 質問する", body))
+        return HTMLResponse(content=page_shell("chiezo に質問する", form))
 
-    cfg = answer.require_settings()
-    nojs_url = (
-        f"/ask?nojs=1&grounded={'1' if grounded else '0'}&mode={mode}&q={quote(q)}"
-        + (f"&source={quote(source)}" if source else "")
-    )
-    # agent モードは道具を引くたびに step イベントが飛ぶので、その置き場を用意する
-    steps_block = '<h2>調べた手順</h2>\n<ul id="steps"></ul>\n' if mode == "agent" else ""
-    if not nojs:
-        # 既定は「空の枠を返して JS が SSE で埋める」。ここでサーバ側でも回答を作ると
-        # 推論を二重に走らせる(数十秒 × 2)ので、JS が無い場合だけ下の nojs 経路に回す。
-        body = form + f"""
-{steps_block}<h2>回答</h2>
-<pre class="answer" id="answer" data-q="{esc(q)}" data-source="{esc(source or '')}"
- data-grounded="{'1' if grounded else '0'}" data-mode="{esc(mode)}">生成中…</pre>
-<h2>出典</h2>
-<ul id="references"><li>(生成中)</li></ul>
-<noscript><p class="stale">JavaScript が無効です。
-<a href="{esc(nojs_url)}">回答が出揃ってから表示する</a>(数十秒かかります)。</p></noscript>
-<script>{ASK_STREAM_JS}</script>
-"""
-        return HTMLResponse(content=page_shell("chiezo: 質問する", body))
-
+    steps_block = ""
     if mode == "agent":
         result = await agent.answer_question(cfg, request, q, source, grounded)
         trace = "\n".join(
@@ -1948,7 +2136,7 @@ async def ask_page(
 </ul>
 <p class="muted">{footer}</p>
 """
-    return HTMLResponse(content=page_shell("chiezo: 質問する", body))
+    return HTMLResponse(content=page_shell("chiezo に質問する", body))
 
 
 # ---- ブラウズ画面(人間向け HTML) -------------------------------------------

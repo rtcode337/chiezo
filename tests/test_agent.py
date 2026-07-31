@@ -331,11 +331,11 @@ class TestAskPage:
         assert 'name="mode"' in res.text
         assert "モデルに道具を引かせる" in res.text
 
-    def test_streaming_page_carries_the_mode_and_a_place_for_steps(self, monkeypatch_env):
+    def test_chat_page_preselects_the_mode(self, monkeypatch_env):
         with make_client(monkeypatch_env, ToolLLM()) as client:
             res = client.get("/ask", params={"q": "浅草寺はどこ?", "mode": "agent"})
-        assert 'data-mode="agent"' in res.text
-        assert 'id="steps"' in res.text
+        assert '<option value="agent" selected>' in res.text
+        assert 'data-first="浅草寺はどこ?"' in res.text
 
     def test_nojs_page_shows_the_trace(self, monkeypatch_env):
         fake = ToolLLM(SEARCH_ASAKUSA, ANSWER)
