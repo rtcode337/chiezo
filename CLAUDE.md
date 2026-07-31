@@ -135,6 +135,10 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       渡すため、素直に `float()` すると「.env に書いていない」だけで 500 になる
     - ストリーミング(`?stream=1`)は**クエリ生成・検索を流し始める前に済ませる**
       (`prepare()` → `stream_answer()`)。SSE はヘッダ送出後にステータスを変えられない
+    - **agent モード(LLM 自身に `filter` / `tags` / `links` を引かせるループ)は未実装**。
+      やるなら定義も実行も `app/mcp_server.py` から借りる(`list_tools()` → OpenAI の
+      function 形式、実行は `call_tool()`)。書き写すと REST・MCP・agent の三重管理になる。
+      着手条件と見送った理由は `docs/design-notes.md`「今後の拡張: agent モード」が正
   - `app/registry.py` — /data 走査・ソース登録、`SUPPORTED_SCHEMA_VERSIONS` /
     `FILTER_MIN_SCHEMA_VERSION` / `TAG_MIN_SCHEMA_VERSION`
   - `app/db.py` — スレッドローカル immutable 接続、5 秒クエリタイムアウト(超過は 504)
