@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Annotated, Any, Callable
 
 import os
 
@@ -26,6 +26,7 @@ from fastapi import FastAPI, HTTPException
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import Field
 from starlette.concurrency import run_in_threadpool
 
 from app import notes
@@ -266,9 +267,21 @@ def _register_memory_tools(mcp: FastMCP, app: FastAPI) -> None:
     @mcp.tool(description=(
         "ユーザーが「覚えておいて」と言ったこと、後から参照する価値のある調査結果や"
         "決定事項を chiezo に保存する。保存先はローカルで、外部には出ない。"
-        "tags はカンマ区切りで、後から絞り込むのに使える。"
+        "**text には内容そのものを書く**(「〜を調べた」のような見出しだけでは、"
+        "後から読んでも何も分からない)。**後で読み返す自分に向けて、それだけで意味が通る"
+        "文章にすること** — 挙げたものは列挙し、数値・固有名詞・日付はそのまま残す。"
+        "長さの制限は無いので、要約して削るより残すほうがよい。"
+        "title は省略してよい(本文の 1 行目から作る)。tags はカンマ区切りで、"
+        "後から絞り込むのに使える。"
     ))
-    async def remember(text: str, title: str | None = None, tags: str | None = None) -> dict:
+    async def remember(
+        text: Annotated[str, Field(description=(
+            "覚えておく内容そのもの。見出しや「〜について調べた」のような要約ラベルではなく、"
+            "後から読んで意味が通る本文を入れる(列挙・数値・固有名詞をそのまま残す)"
+        ))],
+        title: Annotated[str | None, Field(description="省略時は本文の 1 行目から作る")] = None,
+        tags: Annotated[str | None, Field(description="カンマ区切り")] = None,
+    ) -> dict:
         return await run_in_threadpool(
             _call, api.remember,
             request=_request(app), text=text, title=title, tags=tags,

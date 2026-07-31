@@ -104,6 +104,18 @@ web_search も使える場合:
   (「web で調べた限り」など)。出典一覧にも web として並ぶ
 """
 
+# 「覚える」道具を渡すときだけ足す使い分け。**会話に特有の落とし穴**への対処で、
+# 道具の説明(MCP 側)だけでは足りなかったところを補う: 「これを覚えて」と言われた
+# ときの「これ」は直前の自分の回答で、モデルはそれを 1 行に要約して保存してしまう
+# (実測: 5 件挙げた観光スポットが「〜について調べた」の 1 行になった)。
+NOTES_POLICY = """
+remember / recall も使える場合:
+- 「これ(いまの話)を覚えて」と言われたときの「これ」は、**直前のあなたの回答の中身**。
+  要約せず、挙げた項目・数値・固有名詞をそのまま text に入れる(後から読む人には
+  会話が残っていない。text だけで意味が通る必要がある)
+- 覚えたかどうかを聞かれたら、recall で確かめてから答える
+"""
+
 # ステップ予算・締め切りを使い切ったときに最後の 1 回だけ足す指示。
 # 道具を渡さずにこれを送るので、モデルはここで必ず答えを書くことになる。
 FORCED_ANSWER_NOTICE = (
@@ -357,7 +369,8 @@ def repeated_payload(payload: Any) -> Any:
 
 
 def _system_prompt(
-    catalog: list[dict], source: str | None, grounded: bool, web: bool = False
+    catalog: list[dict], source: str | None, grounded: bool, web: bool = False,
+    notes: bool = False,
 ) -> str:
     """道具の使い方(MCP の instructions)+ ソース一覧 + 回答方針。
 
@@ -375,11 +388,13 @@ def _system_prompt(
     )
     # web 検索を使わせるときだけ、その使い分けを足す(使わないなら道具ごと出していない)。
     web_policy = WEB_SEARCH_POLICY if web else ""
+    notes_policy = NOTES_POLICY if notes else ""
     return (
         INSTRUCTIONS
         + "\n利用できるソース:\n" + "\n".join(lines) + fixed + "\n\n"
         + (AGENT_SYSTEM_GROUNDED if grounded else AGENT_SYSTEM_OPEN)
         + web_policy
+        + notes_policy
     )
 
 
@@ -446,7 +461,10 @@ async def stream(
         for m in (history or []) if m.get("role") in ("user", "assistant")
     ][-answer.HISTORY_TURNS:]
     messages: list[dict] = [
-        {"role": "system", "content": _system_prompt(catalog, source, grounded, use_web)},
+        {
+            "role": "system",
+            "content": _system_prompt(catalog, source, grounded, use_web, use_notes),
+        },
         *past,
         {"role": "user", "content": question},
     ]
