@@ -1,0 +1,46 @@
+# 「答える」層の推論を GPU で動かすための上書き。本体(docker-compose.yml)と重ねて使う:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile answer up -d
+#
+# 手元ビルドで試すときは 1 つ目を docker-compose.build.yml に差し替えればよい
+# (この上書きは chiezo-llm しか触らないので、どちらの土台にも重ねられる)。
+#
+# 別ファイルに分けてあるのは、GPU の指定(`gpus: all`)が「無い環境では起動そのものが
+# 失敗する」設定だから。本体に書くと GPU の無いマシンで compose が通らなくなる。
+#
+# 前提: ホストに nvidia-container-toolkit が入っていること(WSL2 でもドライバは
+# Windows 側のものを使うので、Linux 側にドライバを入れ直す必要はない)。確認は:
+#
+#   docker run --rm --gpus all nvidia/cuda:13.0.1-base-ubuntu24.04 nvidia-smi
+#
+# agent モード(/v1/ask?mode=agent)を使うならこちら側が実質の前提になる。ツール
+# 呼び出しが安定するのは 8B 級からで、そのクラスを CPU で回すと 1 問が分単位になる。
+services:
+  chiezo-llm:
+    # CUDA 13 向け。ドライバが古くて動かないときは server-cuda12-<同じビルド番号> に落とす
+    # (対応 CUDA は `nvidia-smi` の右上に出る CUDA Version を見る)。
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda-b10156
+    gpus: all
+    environment:
+      # 既定は Qwen3-8B の Q4_K_M(約 5GB)。12GB の GPU なら 32k コンテキストでも余裕がある。
+      # agent モードはツール定義と結果が積み上がるので、コンテキストは広めに取る
+      # (必要量の目安 = CHIEZO_AGENT_MAX_STEPS × CHIEZO_AGENT_TOOL_CHARS)。
+      - LLAMA_ARG_HF_REPO=${CHIEZO_LLM_HF_REPO:-Qwen/Qwen3-8B-GGUF:Q4_K_M}
+      - LLAMA_ARG_CTX_SIZE=${CHIEZO_LLM_CTX_SIZE:-32768}
+      # 全層を GPU に載せる(既定の auto は載る分だけ載せるので、VRAM が足りている
+      # つもりで一部が CPU に残っていた、という取りこぼしを避ける)。
+      - LLAMA_ARG_N_GPU_LAYERS=${CHIEZO_LLM_GPU_LAYERS:-999}
+      # 思考(reasoning)は既定で切る。Qwen3 のような hybrid thinking のモデルは
+      # 放っておくと 1 ステップごとに数百トークン考えるので、道具を 3〜7 回呼ぶ
+      # agent モードでは待ち時間がそのぶん積み上がる。品質を優先するなら .env で -1。
+      - LLAMA_ARG_THINK_BUDGET=${CHIEZO_LLM_THINK_BUDGET:-0}
+      # ツール呼び出しはモデルのチャットテンプレートを通して初めて成立する。
+      # b10156 では既定で有効だが、上流の既定が変わっても壊れないよう明示しておく。
+      - LLAMA_ARG_JINJA=1
+      - LLAMA_ARG_HOST=0.0.0.0
+      - LLAMA_ARG_PORT=8080
+      - LLAMA_CACHE=/models
+    # 重みは VRAM に載るが、ダウンロードとロードでホスト側のメモリも要る。上限を課すのは
+    # 推論は**いつ殺しても失うのは 1 回の回答だけ**だから(取り込みと判断が逆になる理由は
+    # docs/design-notes.md「メモリ方針」を参照)。
+    mem_limit: ${CHIEZO_LLM_MEM_LIMIT:-6g}

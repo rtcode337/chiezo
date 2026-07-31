@@ -21,7 +21,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 
-from app import answer, claude_config, db, notes
+from app import agent, answer, claude_config, db, notes
 from app.fts import build_match_query, escape_like
 from app.mcp_server import build_mcp
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
@@ -149,6 +149,9 @@ async def lifespan(app: FastAPI):
     #     ホスティング)に RuntimeError で落ちる。なので起動ごとに作り直す。
     # マウント先(下の _mcp_asgi)はここで置いた app.state.mcp_asgi を見に行く。
     mcp = build_mcp(app)
+    # agent モード(app/agent.py)は道具の定義も実行もここから借りるので、
+    # ASGI アプリだけでなく MCP サーバー本体も置いておく。
+    app.state.mcp = mcp
     app.state.mcp_asgi = mcp.streamable_http_app()
     try:
         async with mcp.session_manager.run():
@@ -1701,6 +1704,15 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def _sse_response(events) -> StreamingResponse:
+    return StreamingResponse(
+        events,
+        media_type="text/event-stream",
+        # リバースプロキシに溜め込まれるとストリーミングの意味が無くなる
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.get("/v1/ask")
 async def ask(
     request: Request,
@@ -1711,8 +1723,21 @@ async def ask(
         True,
         description="1(既定)は chiezo の抜粋だけを根拠にする。0 なら足りない分をモデルの知識で補う",
     ),
+    mode: str = Query(
+        "rag",
+        pattern="^(rag|agent)$",
+        description="rag(既定)は search を 1 回。agent は LLM 自身に道具を引かせる"
+                    "(ツール呼び出しが安定するモデルが要る)",
+    ),
 ):
     cfg = answer.require_settings()
+    if mode == "agent":
+        if not stream:
+            return await agent.answer_question(cfg, request, q, source, grounded)
+        # 流し始める前に済ませられる検査はここで(SSE はヘッダ送出後に
+        # ステータスコードを変えられない)。残りの失敗は error イベントになる。
+        agent.prepare_catalog(request, source)
+        return _sse_response(_agent_events(cfg, request, q, source, grounded))
     if not stream:
         return await answer.answer(cfg, request, q, source, grounded)
 
@@ -1736,12 +1761,25 @@ async def ask(
             yield _sse("error", detail)
         yield _sse("done", {})
 
-    return StreamingResponse(
-        events(),
-        media_type="text/event-stream",
-        # リバースプロキシに溜め込まれるとストリーミングの意味が無くなる
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    return _sse_response(events())
+
+
+async def _agent_events(cfg, request: Request, q: str, source: str | None, grounded: bool):
+    """agent モードの SSE。
+
+    rag と違い**流し始めた後にしかできない仕事**が本体(道具を引くこと自体が目的で、
+    それが数十秒かかる)。ソースの検査だけは呼び出し側が先に済ませてあり、
+    残りの失敗(推論サーバに繋がらない等)は error イベントとして流す。
+    """
+    events = agent.stream(cfg, request, q, source, grounded)
+    yield _sse("meta", {"mode": "agent", "grounded": grounded, "model": cfg.model})
+    try:
+        async for event, data in events:
+            yield _sse(event, data)
+    except HTTPException as e:
+        detail = e.detail if isinstance(e.detail, dict) else {"error": str(e.detail)}
+        yield _sse("error", detail)
+    yield _sse("done", {})
 
 
 # 回答が出るまで数十秒かかるので、ここだけ inline JS で SSE を受けて逐次表示する。
@@ -1751,14 +1789,25 @@ ASK_STREAM_JS = """
 (function () {
   var out = document.getElementById('answer');
   var refs = document.getElementById('references');
+  var steps = document.getElementById('steps');
   if (!out || !window.EventSource) return;
-  var q = out.dataset.q, source = out.dataset.source;
+  var q = out.dataset.q, source = out.dataset.source, mode = out.dataset.mode || 'rag';
   if (!q) return;
   out.textContent = '';
   var url = '/v1/ask?stream=1&grounded=' + (out.dataset.grounded || '1')
+          + '&mode=' + encodeURIComponent(mode)
           + '&q=' + encodeURIComponent(q)
           + (source ? '&source=' + encodeURIComponent(source) : '');
   var es = new EventSource(url);
+  // agent モードは道具を引いている間ずっと無反応になるので、進捗だけ先に見せる
+  es.addEventListener('step', function (e) {
+    if (!steps) return;
+    var s = JSON.parse(e.data);
+    var li = document.createElement('li');
+    li.textContent = s.step + '. ' + s.tool + ' '
+                   + JSON.stringify(s.arguments) + ' → ' + s.summary;
+    steps.appendChild(li);
+  });
   es.addEventListener('references', function (e) {
     // 文書タイトルは < や " を含みうるので innerHTML では組み立てない
     refs.textContent = '';
@@ -1806,6 +1855,7 @@ async def ask_page(
     source: str | None = Query(None),
     nojs: bool = Query(False, description="JS を使わず、回答が出揃ってから表示する"),
     grounded: bool = Query(True, description="chiezo の抜粋だけを根拠にする"),
+    mode: str = Query("rag", pattern="^(rag|agent)$", description="rag / agent"),
 ):
     sources: dict[str, Source] = request.app.state.sources
     options = '<option value="">(自動)</option>' + "".join(
@@ -1819,6 +1869,10 @@ async def ask_page(
         f'<option value="{value}"{" selected" if (value == "1") == grounded else ""}>{label}</option>'
         for value, label in (("1", "抜粋のみを根拠にする"), ("0", "モデルの知識で補ってよい"))
     )
+    mode_options = "".join(
+        f'<option value="{value}"{" selected" if value == mode else ""}>{label}</option>'
+        for value, label in (("rag", "1 回検索して答える"), ("agent", "モデルに道具を引かせる"))
+    )
     form = f"""
 <nav><a href="/admin">管理画面</a></nav>
 <h1>chiezo に質問する</h1>
@@ -1826,6 +1880,7 @@ async def ask_page(
 <input type="text" name="q" value="{esc(q or '')}" placeholder="質問を書く(自然文でよい)">
 <select name="source">{options}</select>
 <select name="grounded">{grounded_options}</select>
+<select name="mode">{mode_options}</select>
 <button type="submit">質問する</button>
 </form>
 """
@@ -1845,16 +1900,18 @@ async def ask_page(
 
     cfg = answer.require_settings()
     nojs_url = (
-        f"/ask?nojs=1&grounded={'1' if grounded else '0'}&q={quote(q)}"
+        f"/ask?nojs=1&grounded={'1' if grounded else '0'}&mode={mode}&q={quote(q)}"
         + (f"&source={quote(source)}" if source else "")
     )
+    # agent モードは道具を引くたびに step イベントが飛ぶので、その置き場を用意する
+    steps_block = '<h2>調べた手順</h2>\n<ul id="steps"></ul>\n' if mode == "agent" else ""
     if not nojs:
         # 既定は「空の枠を返して JS が SSE で埋める」。ここでサーバ側でも回答を作ると
         # 推論を二重に走らせる(数十秒 × 2)ので、JS が無い場合だけ下の nojs 経路に回す。
         body = form + f"""
-<h2>回答</h2>
+{steps_block}<h2>回答</h2>
 <pre class="answer" id="answer" data-q="{esc(q)}" data-source="{esc(source or '')}"
- data-grounded="{'1' if grounded else '0'}">生成中…</pre>
+ data-grounded="{'1' if grounded else '0'}" data-mode="{esc(mode)}">生成中…</pre>
 <h2>出典</h2>
 <ul id="references"><li>(生成中)</li></ul>
 <noscript><p class="stale">JavaScript が無効です。
@@ -1863,20 +1920,33 @@ async def ask_page(
 """
         return HTMLResponse(content=page_shell("chiezo: 質問する", body))
 
-    result = await answer.answer(cfg, request, q, source, grounded)
+    if mode == "agent":
+        result = await agent.answer_question(cfg, request, q, source, grounded)
+        trace = "\n".join(
+            f'<li>{s["step"]}. {esc(s["tool"])} '
+            f'{esc(json.dumps(s["arguments"], ensure_ascii=False))} → {esc(s["summary"])}</li>'
+            for s in result["steps"]
+        ) or "<li>(道具を使わずに答えた)</li>"
+        steps_block = f"<h2>調べた手順</h2>\n<ul>\n{trace}\n</ul>\n"
+        footer = f"モデル: {esc(result['model'])}(agent モード)"
+    else:
+        result = await answer.answer(cfg, request, q, source, grounded)
+        footer = (
+            f"検索に使ったクエリ: {esc(json.dumps(result['queries'], ensure_ascii=False))}"
+            f" / モデル: {esc(result['model'])}"
+        )
     refs = "\n".join(
         f'<li>[{r["n"]}] <a href="{esc(r["url"])}">{esc(r["source"])} / {esc(r["title"])}</a></li>'
         for r in result["references"]
     ) or "<li>(なし)</li>"
     body = form + f"""
-<h2>回答</h2>
+{steps_block}<h2>回答</h2>
 <pre class="answer">{esc(result['answer'])}</pre>
 <h2>出典</h2>
 <ul>
 {refs}
 </ul>
-<p class="muted">検索に使ったクエリ: {esc(json.dumps(result['queries'], ensure_ascii=False))}
-/ モデル: {esc(result['model'])}</p>
+<p class="muted">{footer}</p>
 """
     return HTMLResponse(content=page_shell("chiezo: 質問する", body))
 

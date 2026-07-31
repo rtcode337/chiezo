@@ -121,7 +121,9 @@ def build_mcp(app: FastAPI) -> FastMCP:
     @mcp.tool(
         description=(
             "全文検索。まずこれで当たりを付け、必要な文書だけ doc で取る。"
-            "area / feature / bbox / tag で絞り込める(同名の別地物の取り違え防止)。"
+            "area / feature / bbox / tag で絞り込める(書式は filter と同じ。"
+            "同名の別地物の取り違え防止に使う)。**総件数は返らない**ので、"
+            "「何件あるか」を知りたいときは filter を使う。"
             "3 文字未満の語はタイトル前方一致にフォールバックする(mode=title_prefix)。"
         )
     )
@@ -146,6 +148,8 @@ def build_mcp(app: FastAPI) -> FastMCP:
             "タイトル完全一致(別名も解決)で 1 文書を取る。"
             f"body は既定で {MCP_DOC_MAX_CHARS} 字に切る(全文が要るなら max_chars を上げる)。"
             "fields は title,opening,body,tags,links,updated_at,extra から選ぶ。"
+            "**座標(lat/lon)・住所・OSM タグは extra に入っている**"
+            "(「近くの○○」を調べるなら、まず extra で座標を取り、その周りを filter の bbox で引く)。"
             "同名の別地物があるときは alternatives が付くので、area / feature / tag で絞る。"
         )
     )
@@ -168,10 +172,14 @@ def build_mcp(app: FastAPI) -> FastMCP:
     @mcp.tool(
         description=(
             "属性での一括抽出(全文検索ではなく等価・範囲条件の AND)。"
-            "「カテゴリ○○の記事を全件」は tag、「京都府の寺社を全件」は feature+area、"
+            "「カテゴリ○○の記事を全件」は tag、「京都府の博物館を全件」は feature+area、"
             "wikidata の Q 番号からの逆引きは wikidata を使う。"
-            "feature と tag はカンマ区切りで複数指定できる(その中は OR)。"
-            "総件数 total が返るので offset でページングする。"
+            "**feature は OSM 由来の `key=value` 形式**(`tourism=museum` / `railway=station` /"
+            " `amenity=restaurant` など。`museum` のような値だけでは 0 件になる)。"
+            "area は所属行政区の名前(`京都府` など)、bbox は `min_lat,min_lon,max_lat,max_lon`。"
+            "tag の正確な名前は tags で確かめる。feature と tag はカンマ区切りで複数指定できる"
+            "(その中は OR)。**件数を数えられるのはこの道具だけ**(total が返る。search は"
+            "上位数件を返すだけで総数を持たない)。offset でページングする。"
         )
     )
     async def filter(

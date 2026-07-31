@@ -13,7 +13,9 @@ SQLite (FTS5) に取り込んで索引し、AI が引ける形で出す。完全
   違い**常駐するのはツール定義だけ**なので、件数が増えてもコンテキストを食わない
 - **答える(任意)** — `api/app/answer.py` が、ためた知識だけを根拠に回答を返す
   (`/v1/ask` と ブラウザの `/ask`)。推論は同居させず OpenAI 互換 API を叩くだけで、
-  **`CHIEZO_LLM_URL` 未設定が既定 = 丸ごと無効**(配信側が数百 MB で動く前提を壊さないため)
+  **`CHIEZO_LLM_URL` 未設定が既定 = 丸ごと無効**(配信側が数百 MB で動く前提を壊さないため)。
+  `?mode=agent` では `api/app/agent.py` が MCP と同じ道具を LLM 自身に引かせる
+  (GPU + 8B 級が前提なので**既定は 1 回検索する `rag`**)
 
 現在の収録ソースは日本語 Wikipedia = `jawiki`、OpenStreetMap 日本抽出 = `osm_japan`、
 GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か国から選んで増やせる)。
@@ -162,10 +164,30 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       渡すため、素直に `float()` すると「.env に書いていない」だけで 500 になる
     - ストリーミング(`?stream=1`)は**クエリ生成・検索を流し始める前に済ませる**
       (`prepare()` → `stream_answer()`)。SSE はヘッダ送出後にステータスを変えられない
-    - **agent モード(LLM 自身に `filter` / `tags` / `links` を引かせるループ)は未実装**。
-      やるなら定義も実行も `app/mcp_server.py` から借りる(`list_tools()` → OpenAI の
+    - `content_of()` が**思考タグの残骸を落とす**。thinking 系モデルは推論サーバの設定次第で
+      `<think>…</think>` や閉じタグだけが `content` に残る(実測: Qwen3 + 思考オフで先頭に
+      `</think>`)。相手の設定は chiezo が握っていないので受け側で落とす
+  - `app/agent.py` — **agent モード(`/v1/ask?mode=agent`)の本体**。LLM 自身に道具を
+    引かせるループ。使い方・環境変数は README「agent モード(モデルに道具を引かせる)」節が、
+    なぜこの形かは `docs/design-notes.md`「agent モード: 道具をモデルに引かせる」が正。
+    実装側の要点:
+    - **道具の定義も実行も `app/mcp_server.py` から借りる**(`list_tools()` → OpenAI の
       function 形式、実行は `call_tool()`)。書き写すと REST・MCP・agent の三重管理になる。
-      着手条件と見送った理由は `docs/design-notes.md`「今後の拡張: agent モード」が正
+      システムプロンプト前半の使い方も MCP の `INSTRUCTIONS` をそのまま使う。
+      `tests/test_agent.py` が `AGENT_TOOLS` と MCP のツール名を突き合わせて落とす
+    - **渡すのは読み取り専用の道具だけ**(`AGENT_TOOLS`)。`remember`(書き込み)を入れない —
+      質問に答えた副作用でメモが増えるのは利用者から見て予想外の変化になる
+    - 上限は 3 つ(`CHIEZO_AGENT_MAX_STEPS` / `_TOOL_CHARS` / `_TIMEOUT`)。**予算を
+      使い切っても打ち切らず**、道具を渡さずにもう 1 回だけ聞いて答えさせる(調べただけで
+      終わらせない)。**同じ引数の呼び出しは実行せず突き返す**(小型モデルは 0 件のクエリを
+      投げ直してステップを空回りさせる)
+    - **道具の失敗はモデルに返す**(`execute()` は例外にしない)。404 の candidates は
+      次の手の材料になる。ToolError の文言には FastMCP の前置きが付くので
+      `_tool_error_payload()` で剥がしてから渡す
+    - **最終回答はストリーミングしない**。ツール呼び出しかどうかは応答を途中まで読まないと
+      分からず、断片から復元すると壊れやすい。代わりに `step` イベントで進捗を流す
+    - 出典は道具の応答に出てきた文書を出現順に集めたもの。**本文の番号とは対応しない**
+      (生の応答に番号を振る先が無いため)
   - `app/registry.py` — /data 走査・ソース登録、`SUPPORTED_SCHEMA_VERSIONS` /
     `FILTER_MIN_SCHEMA_VERSION` / `TAG_MIN_SCHEMA_VERSION`
   - `app/db.py` — スレッドローカル immutable 接続、5 秒クエリタイムアウト(超過は 504)
@@ -252,7 +274,10 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `/notes/` のブラウズ画面もそのまま効く(専用の口は追記・削除・時系列の想起だけ)
   - `/v1/ask`(GET) — 「答える」層の REST。`stream=0`(既定)は JSON 一括、`stream=1` は
     SSE(`references` → `delta` × n → `done`、失敗時は `error` を挟む)。
-    無効なら 503、推論サーバに繋がらなければ 502、タイムアウトは 504
+    無効なら 503、推論サーバに繋がらなければ 502、タイムアウトは 504。
+    `mode=agent` は `app/agent.py` のループへ回す(SSE は `meta` → `step` × n →
+    `references` → `delta` → `done`。**流し始める前に済ませられる検査はソースだけ**なので、
+    それだけ `prepare_catalog()` で先に通し、残りの失敗は `error` イベントになる)
   - `/ask`(GET) — 質問フォームと回答の HTML。**キャッチオールの `/{source}/` より前に
     定義すること**。既定はサーバ側で推論を回さず、空の枠 + inline JS(`ASK_STREAM_JS`)が
     `EventSource` で `/v1/ask?stream=1` から埋める — ここでサーバ側でも回答を作ると
@@ -520,7 +545,9 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   トランスポートなので initialize のハンドシェイクが要らず、応答は SSE フレームの data: 行)。
   `test_answer.py` は `answer._llm_client` を `httpx.MockTransport` 入りのクライアントに
   差し替えて偽の OpenAI 互換サーバを演じさせる(推論サーバもネットワークも無しで、
-  クエリ生成 → 検索 → 回答の全経路を通せる)
+  クエリ生成 → 検索 → 回答の全経路を通せる)。`test_agent.py` は同じ仕掛けの偽サーバに
+  **`tool_calls` を返させて** agent ループ(道具を呼ぶ → 実行して返す → 答える)を通す。
+  GPU もモデルも要らないので CI で回る
 - `.github/workflows/ci.yml` — push / PR で pytest を実行し、main への push で
   `chiezo-api` / `chiezo-ingest` の 2 イメージをマルチアーキ(amd64 / arm64)で GHCR へ公開
   (cc-tasks / travel-log の docker-publish と同じダイジェストマージ方式。
@@ -630,9 +657,13 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
 - 認証なし・LAN 内前提。ルーターでポート開放しないこと。chiezo-trigger と chiezo-llm は
   ホストへポート公開せず、chiezo-api からのみ内部ネットワーク経由で到達可能にすること。
 - **「答える」層は既定で無効のまま保つ**。推論を chiezo-api の中で動かさない(配信側が
-  数百 MB で動く前提)。LLM を呼ぶコードは `app/answer.py` に閉じ、検索・文書取得は
-  `app/main.py` の関数を再利用する。compose では profile `answer` を付けたときだけ
-  `chiezo-llm` が起動する状態を崩さない。
+  数百 MB で動く前提)。LLM を呼ぶコードは `app/answer.py` と `app/agent.py` に閉じ、
+  検索・文書取得は `app/main.py` の関数(agent は MCP の道具)を再利用する。compose では
+  profile `answer` を付けたときだけ `chiezo-llm` が起動する状態を崩さない。
+  **既定のモードは `rag`**。agent は LLM 呼び出しが 3〜7 回に増えるので、
+  `?mode=agent` と明示したときだけ走る状態を保つ。
+- **GPU の設定は `docker-compose.gpu.yml`(上書きファイル)に閉じる**。`gpus: all` は
+  GPU の無い環境では起動そのものが失敗するので、本体の compose には書かない。
 - コード(api/ ingest/ の挙動・エンドポイント・環境変数など)を変更したら、同じ変更で
   README.md(セットアップ・API 仕様・運用手順)と本ファイル(CLAUDE.md、アーキテクチャ記述)も
   あわせて更新すること。ドキュメントだけを別コミット・別対応に先送りしない。

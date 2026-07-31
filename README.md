@@ -408,6 +408,42 @@ curl -sG "$BASE/v1/ask" --data-urlencode "q=浅草寺はどこにある?" -d str
 入れても当たらないため)、その結果の上位文書の本文を抜粋してから答えさせます。
 詳しくは [設計メモ](docs/design-notes.md#答える層はなぜ-2-段の-rag-か)を参照してください。
 
+### agent モード(モデルに道具を引かせる)
+
+既定の `rag` は **`search` を 1 回**引いて終わりなので、chiezo の強い道具に手が届きません。
+`mode=agent` を付けると、`search` / `doc` / `filter` / `tags` / `titles` / `links` を
+**モデル自身に**引かせます(道具の定義も実行も MCP と同じものを使うので、Claude Code から
+使うときと同じ道具立てです)。
+
+```bash
+curl -sG "$BASE/v1/ask" -d mode=agent --data-urlencode "q=カテゴリ「東京都の寺」の記事は何件ある?" | jq .
+```
+
+rag では原理的に答えられなかった問いに届きます:
+
+| 質問 | agent が使う道具 |
+|---|---|
+| カテゴリ「○○」の記事は何件ある? | `tags` で正式な名前 → `filter` の `total` |
+| 京都府の博物館を挙げて | `filter?feature=tourism=museum&area=京都府` |
+| 浅草寺の最寄り駅は? | jawiki の `doc` で座標 → osm の `filter?bbox=…&feature=railway=station` |
+
+応答には `queries` の代わりに `steps`(どの道具を何の引数で呼び、何が返ったか)が入ります。
+`stream=1` なら道具を呼ぶたびに `step` イベントが流れ、`references` → `delta` → `done` と続きます
+(ブラウザの `/ask` でも「調べた手順」として出ます)。出典は**本文中の番号ではなく**、
+道具の応答に出てきた文書の一覧です(生の応答に番号を振る先が無いため)。
+
+**ツール呼び出しが安定するモデル(8B 級以上)と GPU が実質の前提です。** 4B 未満は
+引数を間違える・同じ検索を繰り返すが普通に起き、CPU では 1 問が分単位になります。
+既定が `rag` のままなのはそのためで、`mode=agent` は明示的に選んだときだけ使われます。
+
+| 変数 | 既定 | 説明 |
+|---|---|---|
+| `CHIEZO_AGENT_MAX_STEPS` | `6` | 道具を呼べる回数。使い切ったら道具なしでもう 1 回だけ聞いて答えさせる |
+| `CHIEZO_AGENT_TOOL_CHARS` | `3000` | 1 回の道具の結果をモデルに返す上限文字数 |
+| `CHIEZO_AGENT_TIMEOUT` | `180` | ループ全体の締め切り(秒) |
+
+必要なコンテキスト長の目安は **`MAX_STEPS` × `TOOL_CHARS`** です(既定なら 16k 以上を推奨)。
+
 ### 別の推論サーバに向ける
 
 chiezo が要求するのは OpenAI 互換の `/v1/chat/completions` だけなので、`CHIEZO_LLM_URL` を
@@ -426,9 +462,30 @@ Hugging Face の GGUF リポジトリを `<user>/<repo>:<quant>` の形で指定
 
 | | 目安 |
 |---|---|
-| CPU のみ | 4B 級・Q4_K_M まで。1 回の回答に数十秒 |
-| GPU あり | 7〜14B 級。image を `ghcr.io/ggml-org/llama.cpp:server-cuda13` 系に変え、`LLAMA_ARG_N_GPU_LAYERS` を足す |
+| CPU のみ | 4B 級・Q4_K_M まで。1 回の回答に数十秒。agent モードは実用外 |
+| GPU あり | 8〜14B 級。下の「GPU で動かす」を参照。agent モードはこちらが前提 |
 | メモリ | モデルのファイルサイズ + コンテキスト分(既定 8192 で数百 MB)が目安 |
+
+### GPU で動かす
+
+上書きファイルを重ねて起動します(ホストに nvidia-container-toolkit が要ります)。
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile answer up -d
+```
+
+既定は **Qwen3-8B Q4_K_M(約 5GB)・コンテキスト 32k・全層 GPU・思考オフ**で、VRAM 12GB 級を
+想定しています。CUDA 13 のイメージを使うので、ドライバが古い場合はタグを
+`server-cuda12-<同じビルド番号>` に落としてください(対応 CUDA は `nvidia-smi` の右上に出ます)。
+
+VRAM 12GB の GPU での実測は **VRAM 11.4GB・プロンプト処理 3,300〜3,800 tok/s・生成 72〜78 tok/s**、
+1 問あたり rag で 2.5 秒・agent で 2〜8 秒です(12GB では 8B Q4 + 32k がほぼ上限。
+14B を載せるならコンテキストを 16k 前後に下げてください)。agent モードが
+どこまで解けたかは[設計メモ](docs/design-notes.md#agent-モード-道具をモデルに引かせる)にあります。
+
+思考(reasoning)を既定で切っているのは、道具を何度も呼ぶ agent モードでは 1 ステップごとの
+思考が待ち時間としてそのまま積み上がるためです。品質を優先するなら
+`CHIEZO_LLM_THINK_BUDGET=-1` で戻せます。
 
 **配信機に同居させないでください。** chiezo-api 自体は従来どおり数百 MB で動きますが、
 推論はモデルサイズぶんのメモリを持っていきます。小型の配信機で使うなら、推論は

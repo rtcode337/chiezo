@@ -56,6 +56,11 @@ class Settings:
     timeout: float
     docs: int
     max_chars: int
+    # agent モード(app/agent.py)の上限。rag では使わないが、推論サーバの設定と
+    # 一緒に読めたほうが分かりやすいのでここに置く。
+    agent_max_steps: int
+    agent_tool_chars: int
+    agent_timeout: float
     extra_headers: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -107,6 +112,11 @@ def load_settings() -> Settings | None:
         timeout=_env_num("CHIEZO_ANSWER_TIMEOUT", 120.0, float),
         docs=max(1, _env_num("CHIEZO_ANSWER_DOCS", 4, int)),
         max_chars=max(1, _env_num("CHIEZO_ANSWER_MAX_CHARS", 6000, int)),
+        # agent モードの 3 つの上限。どれもモデルの窓と待ち時間を有限に保つためのもので、
+        # 意味は app/agent.py 冒頭の説明が正。
+        agent_max_steps=max(1, _env_num("CHIEZO_AGENT_MAX_STEPS", 6, int)),
+        agent_tool_chars=max(200, _env_num("CHIEZO_AGENT_TOOL_CHARS", 3000, int)),
+        agent_timeout=_env_num("CHIEZO_AGENT_TIMEOUT", 180.0, float),
     )
 
 
@@ -159,8 +169,12 @@ def _upstream_error(exc: Exception) -> HTTPException:
     return HTTPException(502, {"error": f"llm unreachable: {exc}"})
 
 
-async def _complete(cfg: Settings, messages: list[dict], **extra) -> str:
-    """1 回の応答をまとめて取る(クエリ生成用)。"""
+async def complete_message(cfg: Settings, messages: list[dict], **extra) -> dict:
+    """1 回の応答を**メッセージまるごと**取る。
+
+    `_complete` が本文だけを返すのに対し、こちらは `tool_calls` を含む assistant
+    メッセージをそのまま返す(agent モードは次のターンにこれを丸ごと積み直す必要がある)。
+    """
     try:
         async with _llm_client(cfg) as client:
             res = await client.post(
@@ -173,9 +187,33 @@ async def _complete(cfg: Settings, messages: list[dict], **extra) -> str:
             502, {"error": f"llm error {res.status_code}", "detail": res.text[:500]}
         )
     try:
-        return res.json()["choices"][0]["message"]["content"] or ""
+        message = res.json()["choices"][0]["message"]
     except (KeyError, IndexError, TypeError, ValueError) as e:
         raise HTTPException(502, {"error": f"unexpected llm response: {e}"}) from None
+    if not isinstance(message, dict):
+        raise HTTPException(502, {"error": "unexpected llm response: message is not an object"})
+    return message
+
+
+_THINK_BLOCK = re.compile(r"<think>.*?</think>", re.S)
+_ORPHAN_THINK_END = re.compile(r"^\s*</think>")
+
+
+def content_of(message: dict) -> str:
+    """assistant メッセージの本文を取り出し、思考タグの残骸を落とす。
+
+    思考(reasoning)を出すモデルでは、推論サーバの設定次第で思考の中身や閉じタグだけが
+    `content` に残る。実測: Qwen3 に `--reasoning-budget 0`(思考させない)を掛けると、
+    本文の先頭に `</think>` だけが付いてきた。設定は chiezo が握っていない
+    (LAN 上の別サーバかもしれない)ので、受け側で落とす。
+    """
+    text = _THINK_BLOCK.sub("", message.get("content") or "")
+    return _ORPHAN_THINK_END.sub("", text).strip()
+
+
+async def _complete(cfg: Settings, messages: list[dict], **extra) -> str:
+    """1 回の応答の本文だけを取る(クエリ生成・回答用)。"""
+    return content_of(await complete_message(cfg, messages, **extra))
 
 
 async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator[str]:
@@ -224,7 +262,7 @@ PLAN_SYSTEM = """\
 """ % MAX_QUERIES
 
 
-def _source_catalog(request: Request) -> list[dict]:
+def source_catalog(request: Request) -> list[dict]:
     sources = request.app.state.sources
     return [
         {
@@ -328,7 +366,7 @@ async def plan_queries(
     仕事(質問文 → 検索語)は残るからで、ここを飛ばすと「浅草寺はどこにある?」が
     そのまま FTS に入って 0 件になる。指定は選べるソースを 1 つに絞るだけに使う。
     """
-    known = [c["name"] for c in _source_catalog(request)]
+    known = [c["name"] for c in source_catalog(request)]
     if not known:
         raise HTTPException(503, {"error": "no sources registered"})
     if source is not None:
@@ -337,7 +375,7 @@ async def plan_queries(
                 404, {"error": f"unknown source: {source}", "sources": known}
             )
         known = [source]
-    catalog = [c for c in _source_catalog(request) if c["name"] in known]
+    catalog = [c for c in source_catalog(request) if c["name"] in known]
     raw = await _complete(
         cfg,
         [

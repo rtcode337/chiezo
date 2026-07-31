@@ -25,6 +25,10 @@ services:
       - CHIEZO_TRIGGER_URL=http://chiezo-trigger:8080
       - CHIEZO_LLM_URL=${CHIEZO_LLM_URL-}
       - CHIEZO_LLM_MODEL=${CHIEZO_LLM_MODEL-}
+      # agent モード(mode=agent)の上限。既定のままなら書かなくてよい。
+      - CHIEZO_AGENT_MAX_STEPS=${CHIEZO_AGENT_MAX_STEPS-}
+      - CHIEZO_AGENT_TOOL_CHARS=${CHIEZO_AGENT_TOOL_CHARS-}
+      - CHIEZO_AGENT_TIMEOUT=${CHIEZO_AGENT_TIMEOUT-}
     depends_on:
       - chiezo-trigger
     restart: unless-stopped
@@ -53,6 +57,9 @@ services:
     environment:
       - LLAMA_ARG_HF_REPO=${CHIEZO_LLM_HF_REPO:-ggml-org/gemma-3-4b-it-GGUF:Q4_K_M}
       - LLAMA_ARG_CTX_SIZE=${CHIEZO_LLM_CTX_SIZE:-8192}
+      # 思考(reasoning)は既定で切る。hybrid thinking のモデルは 1 応答ごとに
+      # 数百トークン考えるので、道具を何度も呼ぶ agent モードでは待ち時間が積み上がる。
+      - LLAMA_ARG_THINK_BUDGET=${CHIEZO_LLM_THINK_BUDGET:-0}
       - LLAMA_ARG_HOST=0.0.0.0
       - LLAMA_ARG_PORT=8080
       - LLAMA_CACHE=/models
