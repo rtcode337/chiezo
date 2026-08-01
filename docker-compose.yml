@@ -37,6 +37,11 @@ services:
       - CHIEZO_NOTES_DIR=/notes
       # 管理画面の初期化ボタンから叩く chiezo-trigger の内部 URL(ホストには公開しない)。
       - CHIEZO_TRIGGER_URL=http://chiezo-trigger:8080
+      # 本体の調整(どれも既定のままなら書かなくてよい。空文字なら既定に倒れる)。
+      # /data の再走査間隔(秒)・ソースカタログのキャッシュ(秒)・/mcp の Host 検証。
+      - CHIEZO_RESCAN_INTERVAL=${CHIEZO_RESCAN_INTERVAL-}
+      - CHIEZO_CATALOG_TTL=${CHIEZO_CATALOG_TTL-}
+      - CHIEZO_MCP_ALLOWED_HOSTS=${CHIEZO_MCP_ALLOWED_HOSTS-}
       # 「答える」層(/v1/ask・/localllm/chat)。未設定が既定で、その場合この機能は丸ごと無効。
       # 有効にするには .env で CHIEZO_LLM_URL=http://chiezo-llm:8080/v1 を設定し、
       # `docker compose --profile answer up -d` で推論コンテナごと起動する(.env.example 参照)。

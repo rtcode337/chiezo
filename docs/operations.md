@@ -278,7 +278,8 @@ wikipedia 言語版の表示名・自称・記事数)と、このイメージが
 大半はイメージに焼かれた静的な表ですが、プラグインはマウントで実行時に足せるので、
 永久に持つと足したソースが管理画面に出ません。取り直しに失敗したときは**古いカタログを
 そのまま使い続けます**(trigger が一時的に落ちただけで一覧が空になるのを避けるため)。
-0 以下にすると取り直しません。
+0 以下にすると取り直しません。この値と `CHIEZO_RESCAN_INTERVAL`・`CHIEZO_MCP_ALLOWED_HOSTS` は
+compose が `.env` から受け取ります(`.env.example` の「1. Chiezo 本体」)。
 
 新ソースは `ingest/sources/__init__.py` の `ADAPTERS` に追加するだけで管理画面にも出ます
 (`chiezo-api` は ingest のコードを import しませんが、上記の `GET /sources` 経由で名前を受け取ります)。

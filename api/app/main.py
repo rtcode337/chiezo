@@ -54,8 +54,9 @@ TRIGGER_URL = os.environ.get("CHIEZO_TRIGGER_URL")
 TRIGGER_TIMEOUT = 5.0
 
 # /data の変化(ブルーグリーン切り替え・DB コピー)を検知する定期再走査の間隔(秒)。
-# 0 以下で無効(= 従来どおり再起動でのみ反映)。
-RESCAN_INTERVAL_SECONDS = float(os.environ.get("CHIEZO_RESCAN_INTERVAL", "5"))
+# 0 以下で無効(= 従来どおり再起動でのみ反映)。compose は未設定の変数を `VAR=`(空文字)
+# で渡すので、素の float() だと「.env に書いていない」だけで起動時に落ちる。
+RESCAN_INTERVAL_SECONDS = answer._env_num("CHIEZO_RESCAN_INTERVAL", 5.0, float)
 
 DEFAULT_DOC_FIELDS = ["title", "opening", "body", "tags", "updated_at"]
 ALLOWED_DOC_FIELDS = [

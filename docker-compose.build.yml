@@ -23,6 +23,10 @@ services:
       # 「覚える」層(/v1/notes)。空にすると機能ごと無効になる。
       - CHIEZO_NOTES_DIR=/notes
       - CHIEZO_TRIGGER_URL=http://chiezo-trigger:8080
+      # 本体の調整(どれも既定のままなら書かなくてよい。空文字なら既定に倒れる)。
+      - CHIEZO_RESCAN_INTERVAL=${CHIEZO_RESCAN_INTERVAL-}
+      - CHIEZO_CATALOG_TTL=${CHIEZO_CATALOG_TTL-}
+      - CHIEZO_MCP_ALLOWED_HOSTS=${CHIEZO_MCP_ALLOWED_HOSTS-}
       - CHIEZO_LLM_URL=${CHIEZO_LLM_URL-}
       - CHIEZO_LLM_MODEL=${CHIEZO_LLM_MODEL-}
       # agent モード(mode=agent)の上限。既定のままなら書かなくてよい。
