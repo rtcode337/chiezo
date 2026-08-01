@@ -5,4 +5,4 @@ httpx>=0.28.1
 # MCP サーバー(/mcp、Streamable HTTP)。REST と同じ関数を MCP ツールとしても公開する。
 # 2.0 は mcp.server.fastmcp を削除しており import から落ちるため 1.x に留める
 # (2.x 対応は FastMCP の移行を確かめてから別途行う)。
-mcp>=1.28,<2
+mcp>=2.0.0,<3
