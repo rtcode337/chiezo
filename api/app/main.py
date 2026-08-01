@@ -292,26 +292,42 @@ def _fetch_trigger_status() -> dict | None:
         return {"state": "unreachable", "error": "chiezo-trigger に到達できません(詳細は api コンテナのログ)"}
 
 
-# chiezo-trigger のソースカタログのプロセス内キャッシュ。中身は trigger のイメージに
-# 焼かれた静的な表(osm_<国> だけで 195 件)なので、一度取れたら取り直す必要はない。
+# chiezo-trigger のソースカタログのプロセス内キャッシュ。中身の大半は trigger のイメージに
+# 焼かれた静的な表(osm_<国> だけで 195 件)だが、**それだけとは限らない**:
+# `CHIEZO_SOURCE_PLUGINS` の差し込みはボリュームで実行時に足せるので、trigger を入れ替えた
+# あとにカタログが増える。一度取ったら永久に持ち続けると、プラグインを足したのに管理画面へ
+# 出ないまま api の再起動を待つことになる。そこで有効期限を持たせる。
 _catalog_cache: dict[str, dict] | None = None
 # trigger(= ingest イメージ)が焼くスキーマバージョン。カタログと一緒に受け取る
 _catalog_schema_version: int | None = None
+# 最後に取れた時刻(単調時計)。この値から CATALOG_TTL_SECONDS 経過したら取り直す。
+_catalog_fetched_at: float | None = None
 # 取得に失敗した時刻(単調時計)。trigger が落ちている間、管理画面を開くたびに
 # タイムアウト待ちを重ねない(ジョブ状況の取得と合わせて毎回 10 秒待たされるため)。
 _catalog_failed_at: float | None = None
 CATALOG_RETRY_SECONDS = 60.0
+# カタログの有効期限(秒)。0 以下で無期限(取り直さない)。既定の 5 分は「プラグインを
+# 足して管理画面を開き直す」のに待たされない長さと、内部 HTTP を叩く頻度の折り合い。
+CATALOG_TTL_SECONDS = answer._env_num("CHIEZO_CATALOG_TTL", 300.0, float)
+
+
+def _catalog_is_fresh() -> bool:
+    if _catalog_cache is None or _catalog_fetched_at is None:
+        return False
+    if CATALOG_TTL_SECONDS <= 0:
+        return True
+    return time.monotonic() - _catalog_fetched_at < CATALOG_TTL_SECONDS
 
 
 def _fetch_trigger_catalog() -> dict[str, dict] | None:
     """初期化できるソースの一覧を chiezo-trigger から取る。取れなければ None。"""
-    global _catalog_cache, _catalog_failed_at, _catalog_schema_version
-    if _catalog_cache is not None:
+    global _catalog_cache, _catalog_failed_at, _catalog_fetched_at, _catalog_schema_version
+    if _catalog_is_fresh():
         return _catalog_cache
     if not TRIGGER_URL:
-        return None
+        return _catalog_cache
     if _catalog_failed_at and time.monotonic() - _catalog_failed_at < CATALOG_RETRY_SECONDS:
-        return None
+        return _catalog_cache
     try:
         res = httpx.get(f"{TRIGGER_URL}/sources", timeout=TRIGGER_TIMEOUT)
         res.raise_for_status()
@@ -320,8 +336,12 @@ def _fetch_trigger_catalog() -> dict[str, dict] | None:
     except (httpx.HTTPError, ValueError, KeyError) as e:
         log.warning("chiezo-trigger source catalog unreachable: %s", e)
         _catalog_failed_at = time.monotonic()
-        return None
+        # **期限切れでも古いカタログは捨てない。** 捨てると控えの KNOWN_SOURCES に落ちて、
+        # 管理画面から 545 件が消える(trigger が一時的に落ちただけなのに)。
+        return _catalog_cache
     _catalog_cache = catalog
+    _catalog_fetched_at = time.monotonic()
+    _catalog_failed_at = None
     _catalog_schema_version = payload.get("schema_version")
     return catalog
 

@@ -102,6 +102,15 @@ class AozoraAdapter:
 | `rank_score` | 同点時ランキング補助(人気度等。無ければ 0) |
 | `extra` | ソース固有情報の dict(コアに無いものは全部ここ) |
 
+> **`sample_titles` に「消えうる固有名」を書かないこと。** 検証は「そのタイトルの文書が
+> 実在し(完全一致 or alias)、FTS でも引けること」を見るので、書いた 1 件が次のダンプで
+> 無くなると**正しく取り込めているのに検証が落ちます**(しかも原因が分かりにくい)。
+> 百科事典の記事や著名な山・駅のように消えないものならそのままでよいですが、店舗・施設・
+> 事業所のように統廃合されるソースでは、`iter_docs` が取り込んだ中から代表を 1 件選んで
+> `self.sample_titles` に入れる形にします(`__init__` では空にしておき、`SAMPLE_TITLES`
+> での外からの上書きがあればそちらを優先する)。確かめたいのは「索引が壊れていないか」で
+> あって「あの 1 件が実在するか」ではありません。
+
 ### 2. レジストリに登録する
 
 `ingest/sources/__init__.py`:
@@ -183,7 +192,68 @@ ADAPTERS = {"private_docs": lambda: PrivateDocsAdapter()}
 **`__init__` は軽くしてください。** 管理画面のカタログ(`GET /sources`)を組み立てる際に
 アダプタを実体化するので、コンストラクタで通信やファイル読み込みをしないこと。
 
-### 2. ingest イメージを継承する
+### 2. 差し込み方を選ぶ
+
+差し込み方は 2 つあります。**まずマウント方式を検討してください** — イメージを焼かずに済み、
+プラグインを直したら再起動だけで反映されます。
+
+| | マウント(推奨) | イメージに焼く |
+|---|---|---|
+| やること | ボリューム 1 本 + 環境変数 2 つ | `FROM` で継承して `COPY` |
+| イメージ | 本体の `chiezo-ingest` のまま | プラグインごとに 1 つ増える |
+| 直したとき | `docker compose up -d` | 焼き直す |
+| 追加の pip 依存 | 入れられない | 入れられる |
+| ソースツリー | 配信先に要る | 要らない |
+
+### 2a. マウントして差し込む(推奨)
+
+`chiezo-ingest`(one-shot)と `chiezo-trigger`(管理画面のボタン)の両方に、コードを
+読み取り専用でマウントし、環境変数を 2 つ足します。プラグイン側に置いたオーバーレイを
+Chiezo の compose に**重ねる**形にすると、Chiezo 側は `.env` の 2 行だけで済みます。
+
+```yaml
+# 別リポジトリ側の docker-compose.plugin.yml
+# image: は書かない —— 重ねた先の定義(pull 版 / :local)をそのまま引き継ぐため
+services:
+  chiezo-trigger:
+    volumes:
+      - ${CHIEZO_PLUGIN_DIR:-../my-plugin}/private_sources:/plugins/private_sources:ro
+    environment:
+      - PYTHONPATH=/plugins
+      - CHIEZO_SOURCE_PLUGINS=private_sources
+  chiezo-ingest:
+    volumes:
+      - ${CHIEZO_PLUGIN_DIR:-../my-plugin}/private_sources:/plugins/private_sources:ro
+    environment:
+      - PYTHONPATH=/plugins
+      - CHIEZO_SOURCE_PLUGINS=private_sources
+```
+
+```bash
+# chiezo/.env
+COMPOSE_FILE=docker-compose.yml:../my-plugin/docker-compose.plugin.yml
+CHIEZO_PLUGIN_DIR=../my-plugin
+```
+
+```bash
+docker compose up -d                    # trigger にプラグインが載る
+docker compose --profile ingest run --rm -e SOURCE=private_docs chiezo-ingest
+```
+
+`PYTHONPATH=/plugins` はマウント先を import 対象に加えるためで、`CHIEZO_SOURCE_PLUGINS` が
+そのモジュールの `ADAPTERS` を取り込みます。相対パスは**重ねた先のプロジェクトディレクトリ**
+(= Chiezo のチェックアウト)から解決されるので、別の場所に置くなら `CHIEZO_PLUGIN_DIR` を
+絶対パスにしてください。
+
+> **プラグインを新しく足したときだけ、管理画面への反映に最大 `CHIEZO_CATALOG_TTL` 秒
+> (既定 300)かかります。** 「取り込めるソースの一覧」は chiezo-trigger から取って
+> api がキャッシュするためです。待てないなら `docker compose restart chiezo-api`。
+> 取り込み(上の `docker compose run`)は待たずに通ります。
+
+**追加の pip 依存が要るプラグインではこの方式は使えません**(マウントするのはコードだけで、
+本体のイメージに依存は入っていないため)。その場合は次のイメージを焼く方式にしてください。
+
+### 2b. イメージに焼いて差し込む
 
 ```dockerfile
 # 非公開リポジトリ側の Dockerfile
@@ -194,7 +264,7 @@ ENV CHIEZO_SOURCE_PLUGINS=private_sources
 
 複数のモジュールを入れるならカンマ区切りで並べます。
 
-### 3. compose のイメージを差し替える
+#### compose のイメージを差し替える
 
 `chiezo-ingest` と `chiezo-trigger` はどちらも `CHIEZO_INGEST_IMAGE` で差し替えられます。
 

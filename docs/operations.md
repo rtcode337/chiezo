@@ -274,6 +274,12 @@ wikipedia 言語版の表示名・自称・記事数)と、このイメージが
 (`POST /admin/rebuild/{source}`。登録済みソースのみ受け付ける)はこのサービスへのプロキシです。
 `CHIEZO_TRIGGER_URL` が未設定なら管理画面の初期化・再構築機能は無効化されます(ボタンが押せません)。
 
+`GET /sources` の結果は chiezo-api が `CHIEZO_CATALOG_TTL` 秒(既定 300)キャッシュします。
+大半はイメージに焼かれた静的な表ですが、プラグインはマウントで実行時に足せるので、
+永久に持つと足したソースが管理画面に出ません。取り直しに失敗したときは**古いカタログを
+そのまま使い続けます**(trigger が一時的に落ちただけで一覧が空になるのを避けるため)。
+0 以下にすると取り直しません。
+
 新ソースは `ingest/sources/__init__.py` の `ADAPTERS` に追加するだけで管理画面にも出ます
 (`chiezo-api` は ingest のコードを import しませんが、上記の `GET /sources` 経由で名前を受け取ります)。
 `api/app/known_sources.py` の `KNOWN_SOURCES` は、`chiezo-trigger` が未設定・到達不能なときに
@@ -285,18 +291,34 @@ wikipedia 言語版の表示名・自称・記事数)と、このイメージが
 新しい種類のソースの取り込み方は [adding-a-source.md](adding-a-source.md) を参照してください。
 
 **このリポジトリに入れられないソース**(公開できないプライベートな情報など)は、
-別リポジトリのモジュールとして書き、ingest イメージを継承して差し込めます。
+別リポジトリのモジュールとして書いて差し込めます。イメージは焼かず、コードを読み取り専用で
+マウントして環境変数 2 つで認識させるのが基本です。
 
-```dockerfile
-FROM ghcr.io/rtcode337/chiezo-ingest:latest
-COPY private_sources /srv/chiezo-ingest/private_sources
-ENV CHIEZO_SOURCE_PLUGINS=private_sources    # カンマ区切りで複数可
+```yaml
+# 別リポジトリ側の docker-compose.plugin.yml(Chiezo の compose に重ねる)
+services:
+  chiezo-trigger:
+    volumes:
+      - ${CHIEZO_PLUGIN_DIR:-../my-plugin}/private_sources:/plugins/private_sources:ro
+    environment:
+      - PYTHONPATH=/plugins
+      - CHIEZO_SOURCE_PLUGINS=private_sources   # カンマ区切りで複数可
+  chiezo-ingest:
+    volumes:
+      - ${CHIEZO_PLUGIN_DIR:-../my-plugin}/private_sources:/plugins/private_sources:ro
+    environment:
+      - PYTHONPATH=/plugins
+      - CHIEZO_SOURCE_PLUGINS=private_sources
 ```
 
 ```bash
-# .env — chiezo-ingest と chiezo-trigger の両方がこの変数を見る
-CHIEZO_INGEST_IMAGE=ghcr.io/<自分のアカウント>/chiezo-ingest-private:latest
+# .env
+COMPOSE_FILE=docker-compose.yml:../my-plugin/docker-compose.plugin.yml
+CHIEZO_PLUGIN_DIR=../my-plugin
 ```
+
+追加の pip 依存が要るプラグインや、ソースツリーを置けない配信先では、代わりに ingest
+イメージを継承して焼き、`CHIEZO_INGEST_IMAGE` で差し替えます。
 
 これで管理画面の「初期化」「再構築」ボタンからも回せます。Chiezo 側にはコードもデータも
 入りません。そもそも**配信側はソース種別を知らない**ので、管理画面から回す必要が無ければ

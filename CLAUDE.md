@@ -506,9 +506,13 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     - **ソース名は `[A-Za-z0-9_]` のみ**。ハイフンは世代ファイル名 `<source>-<date>.db` の
       区切りと衝突し、取り込みは通るのにブルーグリーン切り替えの段で壊れるため先に弾く
     - 差し込みは ingest 側だけで完結する。**api は変更不要**(ソース種別を意識しない設計なので、
-      コアスキーマの `.db` が `/data` にあれば全エンドポイントがそのまま効く)。
-      compose は `chiezo-ingest` と `chiezo-trigger` の両方が `CHIEZO_INGEST_IMAGE` を
-      見るので、継承イメージを指すだけで管理画面の初期化・再構築も効く
+      コアスキーマの `.db` が `/data` にあれば全エンドポイントがそのまま効く)
+    - **基本はイメージを焼かずマウントで足す**。`chiezo-ingest` / `chiezo-trigger` に
+      コードを ro でマウントし、`PYTHONPATH` と `CHIEZO_SOURCE_PLUGINS` を足すだけで
+      stock のイメージのままソースが増える(プラグイン側が置いた compose の
+      オーバーレイを重ねる形。`docs/adding-a-source.md` ケース 3 の 2a が正)。
+      追加の pip 依存が要るときだけ `FROM` で継承して焼き、`CHIEZO_INGEST_IMAGE` で
+      差し替える(両サービスがこの変数を見る)
   - `sources/osm_regions.py` — **自動生成物**。Geofabrik の国別抽出カタログ
     (`scripts/gen_osm_regions.py` で再生成。Geofabrik の index-v1.json + 大陸別 HTML の
     pbf サイズ + CLDR の国名/主要言語から起こす)。1 件あたり region パス・日本語表示名・
@@ -534,7 +538,10 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     (名前・kind・lang と、osm 国別ソースの表示名・region・pbf サイズ・必要メモリ、
     wikipedia 言語版の表示名・自称・記事数)と、このイメージが焼くスキーマバージョン
     (`schema_version` = `core.SCHEMA_VERSION`。管理画面の「最新のスキーマバージョン」表示の正)を返す
-    (管理画面の初期化一覧と国・言語選択画面はこれを読む。アダプタは実体化せずに答える。
+    (管理画面の初期化一覧と国・言語選択画面はこれを読む。api 側は `CHIEZO_CATALOG_TTL` 秒
+    〔既定 300〕キャッシュする — 大半は焼かれた静的な表だが、プラグインはマウントで実行時に
+    足せるので永久に持てない。取り直しに失敗したら**古いカタログを捨てない**
+    〔控えの `KNOWN_SOURCES` に落ちると管理画面から 545 件が消える〕。アダプタは実体化せずに答える。
     osm の `node_index` はカタログの既定を実行時設定〔`OSM_NODE_INDEX` >
     `BUILD_PROFILE=low_memory`〕で解決してから返す — 管理画面の必要メモリ表示を
     実際の実行条件と一致させるため)。

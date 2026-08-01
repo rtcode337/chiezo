@@ -1,6 +1,12 @@
 """API エンドポイントのテスト(フィクスチャ DB 使用)。"""
+import time
+
+import httpx
 import pytest
 from fastapi.testclient import TestClient
+
+from app import main
+from app.known_sources import KNOWN_SOURCES
 
 
 @pytest.fixture(scope="module")
@@ -418,6 +424,80 @@ class TestTitlesLinksRandom:
         res = client.get("/v1/jawiki/titles", params={"prefix": "%"})
         assert res.status_code == 200
         assert res.json()["titles"] == []
+
+
+class TestTriggerCatalogCache:
+    """chiezo-trigger のソースカタログのキャッシュ。
+
+    大半はイメージに焼かれた静的な表だが、`CHIEZO_SOURCE_PLUGINS` の差し込みは
+    ボリュームで実行時に足せるので、trigger を入れ替えるとカタログが増えることがある。
+    永久にキャッシュすると、プラグインを足したのに管理画面へ出ないまま api の再起動を
+    待つことになる。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset(self, monkeypatch):
+        monkeypatch.setattr("app.main._catalog_cache", None)
+        monkeypatch.setattr("app.main._catalog_fetched_at", None)
+        monkeypatch.setattr("app.main._catalog_failed_at", None)
+        monkeypatch.setattr("app.main.TRIGGER_URL", "http://chiezo-trigger:8080")
+
+    def _stub(self, monkeypatch, payloads):
+        """呼ばれるたびに次の応答を返す偽の trigger。呼ばれた回数も返す。"""
+        calls = []
+
+        def fake_get(url, timeout=None):
+            calls.append(url)
+            payload = payloads[min(len(calls) - 1, len(payloads) - 1)]
+            if isinstance(payload, Exception):
+                raise payload
+            return httpx.Response(200, json=payload, request=httpx.Request("GET", url))
+
+        monkeypatch.setattr("app.main.httpx.get", fake_get)
+        return calls
+
+    def test_serves_from_cache_within_ttl(self, monkeypatch):
+        calls = self._stub(monkeypatch, [{"sources": {"a": {}}, "schema_version": 4}])
+        assert main._fetch_trigger_catalog() == {"a": {}}
+        assert main._fetch_trigger_catalog() == {"a": {}}
+        assert len(calls) == 1
+
+    def test_refetches_after_ttl(self, monkeypatch):
+        """プラグインを差し込んだ trigger に入れ替えたら、期限切れで拾い直せること。"""
+        calls = self._stub(
+            monkeypatch,
+            [{"sources": {"a": {}}}, {"sources": {"a": {}, "post_office": {"kind": "x"}}}],
+        )
+        assert main._fetch_trigger_catalog() == {"a": {}}
+        monkeypatch.setattr("app.main._catalog_fetched_at", time.monotonic() - 10_000)
+        assert "post_office" in main._fetch_trigger_catalog()
+        assert len(calls) == 2
+
+    def test_ttl_zero_never_refetches(self, monkeypatch):
+        """無期限にしたい運用向けの逃げ道(0 以下 = 取り直さない)。"""
+        monkeypatch.setattr("app.main.CATALOG_TTL_SECONDS", 0.0)
+        calls = self._stub(monkeypatch, [{"sources": {"a": {}}}, {"sources": {"b": {}}}])
+        assert main._fetch_trigger_catalog() == {"a": {}}
+        monkeypatch.setattr("app.main._catalog_fetched_at", time.monotonic() - 10_000)
+        assert main._fetch_trigger_catalog() == {"a": {}}
+        assert len(calls) == 1
+
+    def test_keeps_stale_catalog_when_trigger_is_down(self, monkeypatch):
+        """取り直しに失敗しても古いカタログを捨てない。
+
+        捨てると控えの KNOWN_SOURCES に落ちて、trigger が一時的に落ちただけで
+        管理画面から 545 件が消える。
+        """
+        self._stub(monkeypatch, [{"sources": {"a": {}}}, httpx.ConnectError("boom")])
+        assert main._fetch_trigger_catalog() == {"a": {}}
+        monkeypatch.setattr("app.main._catalog_fetched_at", time.monotonic() - 10_000)
+        assert main._fetch_trigger_catalog() == {"a": {}}
+        assert main.initializable_sources() == {"a": {}}
+
+    def test_falls_back_to_known_sources_when_never_fetched(self, monkeypatch):
+        self._stub(monkeypatch, [httpx.ConnectError("boom")])
+        assert main._fetch_trigger_catalog() is None
+        assert main.initializable_sources() is KNOWN_SOURCES
 
 
 class TestAdminAndBrowse:
