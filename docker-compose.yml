@@ -24,7 +24,7 @@ services:
   chiezo-api:
     image: ${CHIEZO_API_IMAGE:-ghcr.io/rtcode337/chiezo-api:latest}
     ports:
-      # host:container。デフォルトの 8000 から 9000 に変更(他アプリとの衝突回避)。
+      # host:container。8000 は他のアプリと衝突しやすいので避けている。
       - "9000:9000"
     volumes:
       - ./data:/data:ro
@@ -37,7 +37,7 @@ services:
       - CHIEZO_NOTES_DIR=/notes
       # 管理画面の初期化ボタンから叩く chiezo-trigger の内部 URL(ホストには公開しない)。
       - CHIEZO_TRIGGER_URL=http://chiezo-trigger:8080
-      # 「答える」層(/v1/ask・/ask)。未設定が既定で、その場合この機能は丸ごと無効。
+      # 「答える」層(/v1/ask・/localllm/chat)。未設定が既定で、その場合この機能は丸ごと無効。
       # 有効にするには .env で CHIEZO_LLM_URL=http://chiezo-llm:8080/v1 を設定し、
       # `docker compose --profile answer up -d` で推論コンテナごと起動する(.env.example 参照)。
       - CHIEZO_LLM_URL=${CHIEZO_LLM_URL-}
