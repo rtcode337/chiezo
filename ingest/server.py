@@ -16,7 +16,7 @@ import logging
 import os
 import threading
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -56,13 +56,13 @@ def _run_job(source: str) -> None:
         ingest_run(source, DATA_DIR)
         with _lock:
             _status["state"] = "done"
-            _status["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    except Exception as e:  # noqa: BLE001 - バックグラウンドジョブの失敗を状態として残す
+            _status["finished_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+    except Exception as e:
         log.exception("ingest job failed: source=%s", source)
         with _lock:
             _status["state"] = "error"
             _status["error"] = str(e)
-            _status["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            _status["finished_at"] = datetime.now(UTC).isoformat(timespec="seconds")
 
 
 app = FastAPI(title="chiezo-trigger", version="0.1")
@@ -164,7 +164,7 @@ def start_run(source: str):
         _status.update(
             state="running",
             source=source,
-            started_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            started_at=datetime.now(UTC).isoformat(timespec="seconds"),
             finished_at=None,
             error=None,
         )

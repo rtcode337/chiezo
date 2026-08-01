@@ -1,9 +1,8 @@
 """geonames アダプタのテスト(ミニフィクスチャ E2E)。"""
 import sqlite3
 
-import pytest
-
 import main as ingest_main
+import pytest
 from conftest import make_geonames_test_adapter
 
 

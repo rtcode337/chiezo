@@ -12,8 +12,6 @@ from urllib.parse import quote
 
 import httpx
 from fastapi import Body, FastAPI, HTTPException, Query, Request
-from pydantic import BaseModel
-from pydantic import Field as PydField
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -22,11 +20,13 @@ from fastapi.responses import (
     Response,
     StreamingResponse,
 )
+from pydantic import BaseModel
+from pydantic import Field as PydField
 
 from app import agent, answer, claude_config, db, notes, websearch
 from app.fts import build_match_query, escape_like
-from app.mcp_server import build_mcp
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
+from app.mcp_server import build_mcp
 from app.pages import (
     APPLE_TOUCH_ICON_PNG,
     CHAT_STYLE,
@@ -133,7 +133,7 @@ async def _watch_data_dir(app: FastAPI) -> None:
                     "data dir changed; sources reloaded (%d registered)",
                     len(app.state.sources),
                 )
-        except Exception:  # noqa: BLE001 - 常駐タスクを例外で殺さない
+        except Exception:
             log.exception("periodic source rescan failed")
 
 
@@ -1542,7 +1542,9 @@ def parse_bbox(bbox: str) -> tuple[float, float, float, float]:
 def filter_docs(
     request: Request,
     source: str,
-    feature: str | None = Query(None, description="地物種別。'amenity=place_of_worship' 形式。カンマ区切りで複数指定可"),
+    feature: str | None = Query(
+        None, description="地物種別。'amenity=place_of_worship' 形式。カンマ区切りで複数指定可"
+    ),
     area: str | None = Query(None, description="所属する行政区名(OSM ソースでは都道府県相当)"),
     bbox: str | None = Query(None, description="'min_lat,min_lon,max_lat,max_lon'"),
     wikidata: str | None = Query(None, description="wikidata の Q 番号(逆引き)"),
@@ -1731,7 +1733,7 @@ def _refresh_notes_count(request: Request) -> None:
     try:
         (count,) = db.query(src.path, "SELECT COUNT(*) FROM docs")[0]
         src.doc_count = count
-    except Exception:  # noqa: BLE001 - 件数表示のためだけに書き込みを失敗させない
+    except Exception:
         log.debug("could not refresh notes doc_count", exc_info=True)
 
 
@@ -2193,7 +2195,7 @@ async def chat_page(
     if not answer.is_enabled():
         # 無効でも入力欄そのものは出す(何をする画面なのかが分からないと、
         # 「壊れている」のか「使っていない機能」なのか見分けが付かない)。
-        body = f"""
+        body = """
 <div class="chat-page">
 <div class="chat-head"><h1>AI と話す</h1><span class="spacer"></span>
 <a href="/admin">管理画面</a></div>

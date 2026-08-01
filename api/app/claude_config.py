@@ -175,7 +175,10 @@ def _emit_source(base: str, src: Source, out: list[str]) -> None:
         paren = f"{desc}, {docs_str}"
         out.append(f"- **{name}**({paren}): 一般知識・人物・作品・地名・用語・出来事など")
         out.append(f'  - 検索:   `curl -sG "{base}/v1/{name}/search?limit=5" --data-urlencode "q={query}"`')
-        out.append(f'  - 概要:   `curl -sG "{base}/v1/{name}/doc?fields=title,opening,tags" --data-urlencode "title={title}"`')
+        out.append(
+            f'  - 概要:   `curl -sG "{base}/v1/{name}/doc?fields=title,opening,tags"'
+            f' --data-urlencode "title={title}"`'
+        )
         out.append(f'  - 本文:   `curl -sG "{base}/v1/{name}/doc?max_chars=8000" --data-urlencode "title={title}"`')
         out.append(f'  - 候補:   `curl -sG "{base}/v1/{name}/titles" --data-urlencode "prefix={title}"`')
         if _has_links(src):
@@ -269,7 +272,10 @@ def _emit_source(base: str, src: Source, out: list[str]) -> None:
     paren = f"kind={src.kind or '?'}, {docs_str}"
     out.append(f"- **{name}**({paren})")
     out.append(f'  - 検索:   `curl -sG "{base}/v1/{name}/search?limit=5" --data-urlencode "q={query}"`')
-    out.append(f'  - 文書:   `curl -sG "{base}/v1/{name}/doc?fields=title,opening,body" --data-urlencode "title={title}"`')
+    out.append(
+        f'  - 文書:   `curl -sG "{base}/v1/{name}/doc?fields=title,opening,body"'
+        f' --data-urlencode "title={title}"`'
+    )
     if _has_links(src):
         out.append(
             f'  - リンク: `curl -sG "{base}/v1/{name}/links" --data-urlencode "title={title}"`'

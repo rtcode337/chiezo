@@ -28,10 +28,10 @@ import subprocess
 import sys
 import urllib.request
 import zipfile
-from datetime import datetime, timezone
+from collections.abc import Iterator
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Iterator
 
 from core import (
     LOW_MEMORY_BUILD_GB,
@@ -151,7 +151,7 @@ class _TitleOwners:
         )
         self._pending.clear()
 
-    def finish(self) -> "_TitleOwners":
+    def finish(self) -> _TitleOwners:
         self._flush()
         self._conn.commit()
         return self
@@ -211,7 +211,7 @@ class GeonamesAdapter:
                 return parsedate_to_datetime(last_modified).strftime("%Y%m%d")
         except OSError:
             log.warning("could not read Last-Modified; falling back to today")
-        return datetime.now(timezone.utc).strftime("%Y%m%d")
+        return datetime.now(UTC).strftime("%Y%m%d")
 
     def fetch(self, workdir: Path) -> tuple[Path, str]:
         """本体 zip を取得する。補助ファイルは fetch_extra() 側で落とす。"""

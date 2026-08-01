@@ -36,7 +36,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 from urllib.parse import quote
 
 from fastapi import HTTPException, Request
@@ -256,7 +257,7 @@ async def execute(
         raw = await _mcp(app).call_tool(name, arguments)
     except ToolError as e:
         return False, _tool_error_payload(str(e))
-    except Exception as e:  # noqa: BLE001 - 道具の失敗でループを落とさない
+    except Exception as e:
         # 例外の文言は**返さない**(種別だけ)。step はそのまま画面へ流れるので、
         # 内部の詳細をブラウザまで運ばないようにする。ログには全部残す。
         log.exception("agent tool %s failed", name)

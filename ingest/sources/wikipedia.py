@@ -31,8 +31,9 @@ import re
 import subprocess
 import urllib.request
 import xml.etree.ElementTree as ET
+from collections.abc import Iterator
 from pathlib import Path
-from typing import IO, Iterator
+from typing import IO
 
 import mwparserfromhell as mwp
 from mwparserfromhell.nodes import Heading

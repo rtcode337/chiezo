@@ -1,5 +1,4 @@
 """notes(唯一書き込めるソース)のテスト。"""
-import json
 import sqlite3
 
 import pytest
@@ -291,7 +290,6 @@ class TestSchemaStaysInSyncWithIngest:
 
     def test_tables_and_indexes_match_core(self, notes_dir, tmp_path):
         import core  # ingest 側(conftest が sys.path に入れている)
-
         from app import notes
 
         notes.ensure_db()
@@ -314,14 +312,12 @@ class TestSchemaStaysInSyncWithIngest:
 
     def test_schema_version_matches_core(self):
         import core
-
         from app import notes
 
         assert notes.SCHEMA_VERSION == core.SCHEMA_VERSION
 
     def test_docs_columns_match_core(self, notes_dir, tmp_path):
         import core
-
         from app import notes
 
         notes.ensure_db()

@@ -3,10 +3,8 @@ import json
 import sqlite3
 
 import pytest
-from fastapi.testclient import TestClient
-
-import main as ingest_main
 from conftest import make_osm_test_adapter
+from fastapi.testclient import TestClient
 
 
 def connect(db_path):

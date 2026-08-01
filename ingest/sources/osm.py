@@ -54,9 +54,10 @@ import subprocess
 import threading
 import urllib.request
 from array import array
+from collections.abc import Iterator
+from datetime import UTC
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Iterator
 
 import osmium
 
@@ -385,8 +386,8 @@ class _AreaIndex:
             buckets: dict[int, array] = {}
             for i in range(0, len(edges), 4):
                 lat1, lat2 = edges[i], edges[i + 2]
-                lo = int(math.floor(min(lat1, lat2) / band))
-                hi = int(math.floor(max(lat1, lat2) / band))
+                lo = math.floor(min(lat1, lat2) / band)
+                hi = math.floor(max(lat1, lat2) / band)
                 for b in range(lo, hi + 1):
                     bucket = buckets.get(b)
                     if bucket is None:
@@ -394,7 +395,7 @@ class _AreaIndex:
                     bucket.append(i)
             self._bands[area] = buckets
             box = self._bbox[area]
-            for deg in range(int(math.floor(box[0])), int(math.floor(box[2])) + 1):
+            for deg in range(math.floor(box[0]), math.floor(box[2]) + 1):
                 self._by_degree.setdefault(deg, []).append(area)
         log.info(
             "area index: %d areas, %d edges total",
@@ -406,10 +407,10 @@ class _AreaIndex:
 
     def find(self, lat: float, lon: float) -> str | None:
         """点を含む地域名を返す(県境上など複数該当時は最初の 1 件)。"""
-        candidates = self._by_degree.get(int(math.floor(lat)))
+        candidates = self._by_degree.get(math.floor(lat))
         if not candidates:
             return None
-        band_key = int(math.floor(lat / self._band))
+        band_key = math.floor(lat / self._band)
         for area in candidates:
             box = self._bbox[area]
             if not (box[0] <= lat <= box[2] and box[1] <= lon <= box[3]):
@@ -421,10 +422,10 @@ class _AreaIndex:
             crossings = 0
             for i in bucket:
                 lat1, lon1, lat2, lon2 = edges[i], edges[i + 1], edges[i + 2], edges[i + 3]
-                if (lat1 > lat) != (lat2 > lat):
-                    # 辺が点の緯度を跨ぐ → 交点の経度が点より東側なら 1 交差
-                    if lon1 + (lat - lat1) * (lon2 - lon1) / (lat2 - lat1) > lon:
-                        crossings += 1
+                # 辺が点の緯度を跨ぐ(前段)→ 交点の経度が点より東側(後段)なら 1 交差。
+                # 前段が偽のとき後段の割り算は 0 除算になるので、条件の順序に意味がある。
+                if (lat1 > lat) != (lat2 > lat) and lon1 + (lat - lat1) * (lon2 - lon1) / (lat2 - lat1) > lon:
+                    crossings += 1
             if crossings % 2:
                 return area
         return None
@@ -497,7 +498,7 @@ class _AreaWayHandler(osmium.SimpleHandler):
 class _MainHandler(osmium.SimpleHandler):
     """パス2: node/way/relation を順に処理し、Doc を q へ積む。"""
 
-    def __init__(self, adapter: "OsmAdapter", member_way_ids: set[int], idx, q: "queue.Queue"):
+    def __init__(self, adapter: OsmAdapter, member_way_ids: set[int], idx, q: queue.Queue):
         super().__init__()
         self.adapter = adapter
         self.member_way_ids = member_way_ids
@@ -561,9 +562,8 @@ class _MainHandler(osmium.SimpleHandler):
         """label / admin_centre ノードを優先し、無ければメンバー座標の平均。"""
         for wanted_role in ("label", "admin_centre"):
             for m in r.members:
-                if m.type == "n" and m.role == wanted_role:
-                    if loc := self._node_location(m.ref):
-                        return loc
+                if m.type == "n" and m.role == wanted_role and (loc := self._node_location(m.ref)):
+                    return loc
         pts: list[tuple[float, float]] = []
         for m in r.members:
             if m.type == "n":
@@ -648,9 +648,9 @@ class OsmAdapter:
             last_modified = resp.headers.get("Last-Modified")
         if last_modified:
             return parsedate_to_datetime(last_modified).strftime("%Y%m%d")
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        return datetime.now(timezone.utc).strftime("%Y%m%d")
+        return datetime.now(UTC).strftime("%Y%m%d")
 
     def fetch(self, workdir: Path) -> tuple[Path, str]:
         """Geofabrik の最新抽出を取得する。curl -C - で再開可能。

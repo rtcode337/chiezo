@@ -16,7 +16,7 @@ import logging
 import os
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from core import (
@@ -150,7 +150,7 @@ def build_db(adapter: SourceAdapter, dump_path: Path, dump_date: str, building_p
                 adapter.lang,
                 dump_date,
                 SCHEMA_VERSION,
-                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                datetime.now(UTC).isoformat(timespec="seconds"),
             ),
         )
         conn.commit()
@@ -322,7 +322,7 @@ def run(source: str, data_dir: Path) -> Path:
     if dump_file := os.environ.get("DUMP_FILE"):
         files = [Path(f) for f in dump_file.split(",") if f]
         dump_path = files[0] if len(files) == 1 else files
-        dump_date = os.environ.get("DUMP_DATE") or datetime.now(timezone.utc).strftime("%Y%m%d")
+        dump_date = os.environ.get("DUMP_DATE") or datetime.now(UTC).strftime("%Y%m%d")
     else:
         dump_path, dump_date = adapter.fetch(dumps_dir)
         # アダプタが対応していれば、docs.extra 補強用の追加データも取得する

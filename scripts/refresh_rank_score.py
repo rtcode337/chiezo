@@ -34,8 +34,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ingest"))
 try:
     from core import (
-        POPULARITY_LOG_MAX_PAGEVIEWS,
         POPULARITY_LOG_MAX_COUNTRY_POPULATION,
+        POPULARITY_LOG_MAX_PAGEVIEWS,
         normalized_popularity,
     )
 except ImportError as e:  # pragma: no cover - 配置ミスの案内

@@ -1,0 +1,38 @@
+# 開発ツールの設定だけを置く。**配布物のメタデータ(`[project]`)は持たない** ——
+# Chiezo は pip で配るライブラリではなく、2 つのイメージ(chiezo-api / chiezo-ingest)
+# として動くアプリケーションで、依存もイメージごとに別だから(api に osmium を入れない)。
+# 依存は api/requirements.in・ingest/requirements.in が正で、実際に入るバージョンは
+# それをコンパイルした requirements.txt に固定してある。
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# api/ と ingest/ を import 可能にする。以前は tests/conftest.py が sys.path を
+# 書き換えていたが、それは「pytest の設定を書く場所が無い」ことの回避策だった。
+pythonpath = ["api", "ingest"]
+
+[tool.ruff]
+target-version = "py312"
+# 既定の 88 は、日本語のコメントが多いこのリポジトリには短すぎる(全角は 1 文字で
+# 2 桁ぶんの幅を取るため)。実際の行に合わせて 120 に置く。
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+    # 全角の括弧・ダッシュ・句読点を「紛らわしい Unicode」として全部拾ってしまう。
+    # 日本語で書く方針(CLAUDE.md)と正面から衝突するため落とす。
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 自動生成のカタログ(scripts/gen_osm_regions.py / gen_wikipedia_editions.py が作る)。
+# 行が長いのは国名・言語名がそのまま入るからで、手で折り返す対象ではない。
+"ingest/sources/osm_regions.py" = ["E501"]
+"ingest/sources/wikipedia_editions.py" = ["E501"]
+
+[tool.ruff.lint.isort]
+# api は app パッケージ、ingest は単一モジュール(core / sources / lookup)で置いてある。
+# 指定しないと第三者パッケージ扱いになり、並びが実態と食い違う。
+known-first-party = ["app", "core", "lookup", "server", "sources"]

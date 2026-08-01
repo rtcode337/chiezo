@@ -174,6 +174,7 @@ class TestEndToEnd:
     @pytest.fixture()
     def plugin_data_dir(self, plugin_module, tmp_path_factory):
         import main as ingest_main
+
         import sources
 
         adapter = sources.load_plugin_adapters(plugin_module)["memo"]()

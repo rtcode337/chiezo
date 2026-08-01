@@ -5,7 +5,6 @@ import base64
 import html
 from urllib.parse import quote
 
-
 # ブラウズ画面の URL。**ソースの画面は `/search/` の下に置く**(ルート直下を
 # キャッチオールにすると、`ask` や `admin` という名前のソースを足せなくなる)。
 # 出典のリンクもここを通すので、移すときに漏れない。

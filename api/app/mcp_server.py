@@ -17,10 +17,10 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
-from typing import Annotated, Any, Callable
-
 import os
+from collections.abc import Callable
+from types import SimpleNamespace
+from typing import Annotated, Any
 
 from fastapi import FastAPI, HTTPException
 from mcp.server.fastmcp import FastMCP

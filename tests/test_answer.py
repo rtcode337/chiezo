@@ -8,9 +8,8 @@ import json
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
-
 from conftest import CHAT_PATH
+from fastapi.testclient import TestClient
 
 
 @pytest.fixture()
@@ -294,7 +293,7 @@ class TestUpstreamFailures:
             res = client.get("/v1/ask", params={"q": "浅草寺はどこ?"})
         assert res.status_code == 502
         assert res.json()["error"] == "llm unreachable"
-        assert "ConnectError" == res.json()["reason"]  # 種別だけ返す(文言は返さない)
+        assert res.json()["reason"] == "ConnectError"  # 種別だけ返す(文言は返さない)
 
     def test_timeout_is_504(self, monkeypatch_env):
         from app import answer

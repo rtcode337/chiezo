@@ -11,10 +11,9 @@ import json
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
-
 from conftest import CHAT_PATH
-from test_agent import ANSWER, SEARCH_ASAKUSA, ToolLLM, make_client  # noqa: F401
+from fastapi.testclient import TestClient
+from test_agent import ANSWER, SEARCH_ASAKUSA, ToolLLM, make_client
 
 
 @pytest.fixture()

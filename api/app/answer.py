@@ -25,8 +25,8 @@ import logging
 import os
 import re
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import AsyncIterator
 
 import httpx
 from fastapi import HTTPException, Request
@@ -299,27 +299,26 @@ async def _complete(cfg: Settings, messages: list[dict], **extra) -> str:
 async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator[str]:
     """OpenAI 互換の SSE を読んで、本文の差分だけを順に返す。"""
     try:
-        async with _llm_client(cfg) as client:
-            async with client.stream(
-                "POST", cfg.endpoint, json=_payload(cfg, messages, stream=True, **extra)
-            ) as res:
-                if res.status_code >= 400:
-                    body = (await res.aread()).decode("utf-8", "replace")
-                    log.warning("llm error %s: %s", res.status_code, body[:500])
-                    raise HTTPException(502, {"error": f"llm error {res.status_code}"})
-                async for line in res.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[len("data:"):].strip()
-                    if not data or data == "[DONE]":
-                        continue
-                    try:
-                        chunk = json.loads(data)
-                        delta = chunk["choices"][0]["delta"].get("content") or ""
-                    except (json.JSONDecodeError, KeyError, IndexError, TypeError):
-                        continue  # 使い物にならないフレームは黙って捨てる
-                    if delta:
-                        yield delta
+        async with _llm_client(cfg) as client, client.stream(
+            "POST", cfg.endpoint, json=_payload(cfg, messages, stream=True, **extra)
+        ) as res:
+            if res.status_code >= 400:
+                body = (await res.aread()).decode("utf-8", "replace")
+                log.warning("llm error %s: %s", res.status_code, body[:500])
+                raise HTTPException(502, {"error": f"llm error {res.status_code}"})
+            async for line in res.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                data = line[len("data:"):].strip()
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    chunk = json.loads(data)
+                    delta = chunk["choices"][0]["delta"].get("content") or ""
+                except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+                    continue  # 使い物にならないフレームは黙って捨てる
+                if delta:
+                    yield delta
     except httpx.HTTPError as e:
         raise _upstream_error(e) from None
 
@@ -338,7 +337,7 @@ PLAN_SYSTEM = """\
   (全文検索は空白区切りの各語の AND なので、語を増やすほど当たらなくなる)
 - 3 文字以上の語を使う(2 文字以下は索引で引けない)
 - クエリは最大 %d 件。関係のないソースは含めない
-""" % MAX_QUERIES
+""" % MAX_QUERIES  # noqa: UP031 —— 本文に JSON の {"queries": …} が入るので format/f-string は使えない
 
 
 def source_catalog(request: Request) -> list[dict]:

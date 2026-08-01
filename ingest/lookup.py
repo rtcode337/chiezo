@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ class DiskLookup:
         self._count += len(self._pending)
         self._pending.clear()
 
-    def finish(self) -> "DiskLookup":
+    def finish(self) -> DiskLookup:
         """書き込みを確定する。以降は get() のみ。"""
         self._flush()
         self._conn.commit()
@@ -96,7 +97,7 @@ class DiskLookup:
         self._conn.close()
         self.path.unlink(missing_ok=True)
 
-    def __enter__(self) -> "DiskLookup":
+    def __enter__(self) -> DiskLookup:
         return self
 
     def __exit__(self, *exc) -> None:
@@ -135,7 +136,7 @@ class DiskMultiMap:
             self._conn.executemany("INSERT INTO kv (k, v) VALUES (?, ?)", self._pending)
             self._pending.clear()
 
-    def finish(self) -> "DiskMultiMap":
+    def finish(self) -> DiskMultiMap:
         self._flush()
         self._conn.execute("CREATE INDEX idx_kv_k ON kv(k)")
         self._conn.commit()
@@ -152,7 +153,7 @@ class DiskMultiMap:
         self._conn.close()
         self.path.unlink(missing_ok=True)
 
-    def __enter__(self) -> "DiskMultiMap":
+    def __enter__(self) -> DiskMultiMap:
         return self
 
     def __exit__(self, *exc) -> None:

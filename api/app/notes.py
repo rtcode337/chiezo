@@ -34,14 +34,13 @@ import json
 import logging
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import HTTPException
 
 from app import db
 from app.fts import build_match_query
-
 from app.pages import doc_url
 
 log = logging.getLogger("chiezo.api")
@@ -168,7 +167,7 @@ def require_path() -> Path:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def _connect(path: Path) -> sqlite3.Connection:

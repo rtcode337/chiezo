@@ -5,11 +5,11 @@ import json
 import math
 import sqlite3
 
+import main as ingest_main
 import pytest
+from conftest import make_test_adapter
 
 import core as ingest_core
-import main as ingest_main
-from conftest import make_test_adapter
 
 
 def connect(db_path):

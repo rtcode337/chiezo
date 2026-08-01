@@ -231,7 +231,7 @@ class TestExactTitleFirst:
 
     def test_whitespace_around_the_query_is_ignored(self, client):
         res = client.get("/v1/jawiki/search", params={"q": "  東京都  "})
-        assert [r["title"] for r in res.json()["results"]][0] == "東京都"
+        assert next(r["title"] for r in res.json()["results"]) == "東京都"
 
     def test_browse_html_uses_the_same_order(self, client):
         html = client.get("/search/jawiki/", params={"q": "東京都"}).text
@@ -305,7 +305,7 @@ class TestPopularityRanking:
         """
         with ranked_client({}) as c:
             baseline = self.titles_for(c, "である")
-        with ranked_client({t: 30_000_000.0 for t in baseline}) as c:
+        with ranked_client(dict.fromkeys(baseline, 30000000.0)) as c:
             clamped = self.titles_for(c, "である")
         assert clamped == baseline
 
@@ -752,7 +752,6 @@ class TestClaudeConfig:
         assert 'ベース URL: `https://chiezo.example.me`' in res.text
 
     def test_permissions_json_returns_allow_rules(self, client):
-        import json
 
         res = client.get("/admin/claude-config.permissions.json")
         assert res.status_code == 200

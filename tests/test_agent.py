@@ -9,9 +9,8 @@ import json
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
-
 from conftest import CHAT_PATH
+from fastapi.testclient import TestClient
 
 
 @pytest.fixture()

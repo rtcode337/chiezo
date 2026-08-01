@@ -20,7 +20,7 @@ from __future__ import annotations
 import importlib
 import os
 import re
-from typing import Callable
+from collections.abc import Callable
 
 from core import SourceAdapter
 from sources.geonames import GeonamesAdapter
@@ -125,7 +125,7 @@ def load_plugin_adapters(spec: str | None = None) -> dict[str, Callable[[], Sour
             continue
         try:
             module = importlib.import_module(module_name)
-        except Exception as e:  # noqa: BLE001 - import 中の任意の失敗をそのまま見せる
+        except Exception as e:
             raise SystemExit(f"{PLUGIN_ENV}: cannot import {module_name!r}: {e}") from None
         adapters = getattr(module, "ADAPTERS", None)
         if not isinstance(adapters, dict) or not adapters:
@@ -170,4 +170,5 @@ def get_adapter(source: str) -> SourceAdapter:
             f"<lang>wiki {len(WIKIPEDIA_EDITIONS)} 件",
             f"osm_<国> {len(OSM_REGIONS)} 件",
         ])
-        raise SystemExit(f"unknown SOURCE={source!r} (registered: {known})")
+        # from None —— 使い方の間違いなので、KeyError の連鎖を見せても助けにならない
+        raise SystemExit(f"unknown SOURCE={source!r} (registered: {known})") from None

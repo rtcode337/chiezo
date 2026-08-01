@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import math
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator, Protocol
+from typing import Any, Protocol
 
 SCHEMA_VERSION = 4
 
