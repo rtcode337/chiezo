@@ -196,7 +196,7 @@ not enough memory to build osm_japan: 2.0 GiB available < 12.0 GiB required.
 
 ## 別マシンでビルドして .db を配布する
 
-chiezo の DB は**自己完結した単一の SQLite ファイル**なので、配布は「ファイルをコピーするだけ」です。
+Chiezo の DB は**自己完結した単一の SQLite ファイル**なので、配布は「ファイルをコピーするだけ」です。
 export/import も配信機でのビルドも要りません(SQLite のファイル形式は OS・CPU アーキ非依存です)。
 メモリの少ない配信機と、メモリの多いビルド機を分けられます。
 
@@ -298,7 +298,7 @@ ENV CHIEZO_SOURCE_PLUGINS=netmap_sources     # カンマ区切りで複数可
 CHIEZO_INGEST_IMAGE=ghcr.io/<自分の組織>/chiezo-ingest-netmap:latest
 ```
 
-これで管理画面の「初期化」「再構築」ボタンからも回せます。chiezo 側にはコードもデータも
+これで管理画面の「初期化」「再構築」ボタンからも回せます。Chiezo 側にはコードもデータも
 入りません。そもそも**配信側はソース種別を知らない**ので、管理画面から回す必要が無ければ
 「別リポジトリで `.db` を焼いて `data/` に置く」だけで動きます(設定も不要)。
 手順は [adding-a-source.md のケース 3](adding-a-source.md) が正です。

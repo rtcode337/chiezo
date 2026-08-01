@@ -106,7 +106,7 @@ def load_plugin_adapters(spec: str | None = None) -> dict[str, Callable[[], Sour
 
     `CHIEZO_SOURCE_PLUGINS` にモジュール名をカンマ区切りで並べると、それぞれの
     `ADAPTERS`(このモジュールと同じ `{ソース名: 生成関数}` の dict)を取り込む。
-    社外に出せないソースを別リポジトリに置いたまま、chiezo のイメージを `FROM` で
+    社外に出せないソースを別リポジトリに置いたまま、Chiezo のイメージを `FROM` で
     継承して足せるようにするための唯一の口。
 
     **失敗は握り潰さず落とす**(`SystemExit`)。指定したのに読み込まれていない状態を

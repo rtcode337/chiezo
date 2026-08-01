@@ -678,7 +678,7 @@ class TestClaudeConfig:
         assert res.status_code == 200
         assert res.headers["content-type"].startswith("application/json")
         allow = res.json()["permissions"]["allow"]
-        # chiezo への curl 許可は -s/-sG × クォート有無の 4 本。ベース URL はアクセス元から導出
+        # Chiezo への curl 許可は -s/-sG × クォート有無の 4 本。ベース URL はアクセス元から導出
         assert allow == sorted(allow)
         assert "Bash(curl -s http://testserver/:*)" in allow
         assert 'Bash(curl -s "http://testserver/:*)' in allow

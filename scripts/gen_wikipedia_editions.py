@@ -128,7 +128,7 @@ wikistats(記事数)、CLDR(言語名の日本語表記)から機械的に起こ
 各項目の意味:
   lang       URL 言語コード(サブドメイン。ハイフン区切り: zh-yue 等)。
              pageview_complete のドメイン `<lang>.wikipedia` の素
-  wiki_id    dbname = chiezo のソース名(zh_yuewiki 等)。ダンプ URL の素
+  wiki_id    dbname = Chiezo のソース名(zh_yuewiki 等)。ダンプ URL の素
   label      言語名の日本語表記(CLDR。無ければ英名)
   label_en   英語名(sitematrix localname)
   autonym    その言語での自称

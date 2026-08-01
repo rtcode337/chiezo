@@ -31,7 +31,7 @@ BEGIN_MARK = "<!-- BEGIN chiezo (auto-generated) -->"
 END_MARK = "<!-- END chiezo -->"
 
 # クライアント側に置くフック本体のファイル名。settings.json の中身を書き換える
-# ときに「以前入れた chiezo のフック」を見分ける鍵にもなるので、変えると
+# ときに「以前入れた Chiezo のフック」を見分ける鍵にもなるので、変えると
 # 古いエントリが残る(gen_claude_config.sh 側の掃除条件もこの名前を見ている)。
 HOOK_FILENAME = "chiezo-autoallow.py"
 HOOK_PATH_PLACEHOLDER = "{{HOOK_PATH}}"
@@ -286,7 +286,7 @@ def _emit_source(base: str, src: Source, out: list[str]) -> None:
 
 
 def permission_rules(base_url: str) -> list[str]:
-    """settings.json の permissions.allow に追記される chiezo への curl 許可ルール。
+    """settings.json の permissions.allow に追記される Chiezo への curl 許可ルール。
 
     Bash ルールはコマンド文字列の前方一致なので、実際に打たれる形のぶんだけ変種が要る:
     `-s`(単純 GET)/`-sG`(--data-urlencode 併用)× URL のクォート有無 の 4 本。
@@ -342,7 +342,7 @@ def hook_script(base_url: str) -> str:
 
     前方一致の `permissions.allow` は curl が先頭に来る形にしか効かないので、
     ループやパイプで大量に引くとき(= いちばん許可したい場面)には 1 本もマッチ
-    しない。フックはコマンドを構造で見て「chiezo だけを読む」ものを自動許可する。
+    しない。フックはコマンドを構造で見て「Chiezo だけを読む」ものを自動許可する。
     ここでは配信時にベース URL を埋め込むだけで、判定ロジックはフック側にある。
     """
     base = base_url.rstrip("/")
@@ -393,7 +393,7 @@ def build_block(
     hook: bool = False,
     mcp: bool = False,
 ) -> str:
-    """CLAUDE.md に貼る chiezo ブロック(マーカー込み)を組み立てて返す。
+    """CLAUDE.md に貼る Chiezo ブロック(マーカー込み)を組み立てて返す。
 
     `hook=True` のときだけ、自動許可フックに載る書き方の指示を足す。フックは
     クライアント側で `--with-hook` を指定したときにしか入らないので、既定で
@@ -407,10 +407,10 @@ def build_block(
 
     out: list[str] = [
         BEGIN_MARK,
-        "## chiezo(ローカル知識サーバー)",
+        "## Chiezo(ローカル知識サーバー)",
         "",
-        "LAN 内に読み取り専用の知識検索 API「chiezo」がある。下記ソースに載っている情報が"
-        "必要になったら、**Web 検索や外部 API より先に chiezo を使うこと**"
+        "LAN 内に読み取り専用の知識検索 API「Chiezo」がある。下記ソースに載っている情報が"
+        "必要になったら、**Web 検索や外部 API より先に Chiezo を使うこと**"
         "(オフライン・レート制限なし・高速)。",
         f"ベース URL: `{base}`",
         "",
@@ -440,7 +440,7 @@ def build_block(
     if hook:
         out.append(
             "- 大量に引くときは `for` ループやパイプにまとめてよい(許可プロンプトは出ない)。"
-            "ただし chiezo 以外のホストを混ぜる・`$(...)`・`eval`・`sed`/`awk`・"
+            "ただし Chiezo 以外のホストを混ぜる・`$(...)`・`eval`・`sed`/`awk`・"
             "ファイルへの書き出し(`curl -o`、`> file`)を使うと自動許可から外れて"
             "毎回プロンプトになるので、取得は `curl`→`jq` の読み取りだけで完結させる。"
         )
@@ -466,7 +466,7 @@ def build_block(
     if hook:
         regen += " --with-hook"
     out.append(
-        f"<sub>この一覧は {when} 時点の chiezo(`{base}`)の登録ソースから自動生成。"
+        f"<sub>この一覧は {when} 時点の Chiezo(`{base}`)の登録ソースから自動生成。"
         f"再生成: `{regen}`</sub>"
     )
     out.append(END_MARK)

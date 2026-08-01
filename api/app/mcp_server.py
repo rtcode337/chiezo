@@ -1,4 +1,4 @@
-"""chiezo を MCP(Streamable HTTP)でも喋らせる薄い層。
+"""Chiezo を MCP(Streamable HTTP)でも喋らせる薄い層。
 
 設計の要点:
 
@@ -9,7 +9,7 @@
   インスタンスがそのまま値として渡り、`if tag:` が常に真になるような静かな誤動作になる)。
   `tests/test_mcp.py` がシグネチャを突き合わせて渡し漏れを落とす。
 - FastMCP は**同期のツール関数をイベントループ上で直接呼ぶ**(非同期関数だけ await する)。
-  chiezo のクエリは最大 5 秒ブロックしうるので、必ず `run_in_threadpool` に逃がす。
+  Chiezo のクエリは最大 5 秒ブロックしうるので、必ず `run_in_threadpool` に逃がす。
   そうしないと重いクエリ 1 本で API 全体(管理画面や他のリクエスト)が止まる。
 - `stateless_http=True`。読み取り専用・LAN 内・セッションに持つ状態が無いので、
   セッション管理を挟む理由がない(複数ワーカーでも素直に動く)。
@@ -36,7 +36,7 @@ from app import notes
 MCP_DOC_MAX_CHARS = 4000
 
 INSTRUCTIONS = """\
-LAN 内の読み取り専用ナレッジ API「chiezo」。Wikipedia・OpenStreetMap・GeoNames を
+LAN 内の読み取り専用ナレッジ API「Chiezo」。Wikipedia・OpenStreetMap・GeoNames を
 ローカルの SQLite に取り込んであり、オフライン・レート制限なしで引ける。
 ここに載っている情報が要るときは、Web 検索や外部 API より先にこちらを使うこと。
 
@@ -48,7 +48,7 @@ LAN 内の読み取り専用ナレッジ API「chiezo」。Wikipedia・OpenStree
   本文の全文検索で "Category:" 行を探すと、ソートキー付きの記事を静かに取りこぼす。
 - どのソースが登録されているかは `sources` で分かる。
 
-`remember` / `recall` が見えている場合、chiezo は短期記憶の置き場も兼ねている:
+`remember` / `recall` が見えている場合、Chiezo は短期記憶の置き場も兼ねている:
 - ユーザーが「覚えておいて」と言ったこと、後から参照する価値のある調査結果は `remember`。
 - 「さっき話したあの件」「先月の件」のように過去のやり取りを指されたら `recall`。
   曖昧な指され方のときは検索語を無理に作らず、`since` だけで新しい順に引くほうが当たる。
@@ -61,7 +61,7 @@ def _transport_security() -> TransportSecuritySettings:
     FastMCP の既定は「localhost 系の Host しか受け付けない」(DNS リバインディング対策)。
     そのままだと LAN の別マシンから `http://<LAN の IP>:9000/mcp` を叩いた時点で
     421 になり、この API の使い方(LAN 内から引く)がまるごと成立しない。
-    chiezo は REST 側も認証なし・LAN 内前提なので、既定では検証を外して足並みを揃える。
+    Chiezo は REST 側も認証なし・LAN 内前提なので、既定では検証を外して足並みを揃える。
     絞りたい場合は `CHIEZO_MCP_ALLOWED_HOSTS` に許可する Host をカンマ区切りで書く
     (`<LAN の IP>:9000,localhost:*` のように、末尾 `:*` でポート任意を表せる)。
     """
@@ -266,7 +266,7 @@ def _register_memory_tools(mcp: FastMCP, app: FastAPI) -> None:
 
     @mcp.tool(description=(
         "ユーザーが「覚えておいて」と言ったこと、後から参照する価値のある調査結果や"
-        "決定事項を chiezo に保存する。保存先はローカルで、外部には出ない。"
+        "決定事項を Chiezo に保存する。保存先はローカルで、外部には出ない。"
         "**text には内容そのものを書く**(「〜を調べた」のような見出しだけでは、"
         "後から読んでも何も分からない)。**後で読み返す自分に向けて、それだけで意味が通る"
         "文章にすること** — 挙げたものは列挙し、数値・固有名詞・日付はそのまま残す。"

@@ -64,7 +64,7 @@ try:
     )
 except ImportError as e:  # pragma: no cover - 配置ミスの案内
     raise SystemExit(
-        f"ingest/core.py を読めない({e})。chiezo のチェックアウト内から"
+        f"ingest/core.py を読めない({e})。Chiezo のチェックアウト内から"
         " scripts/add_tag_index.py を実行してください"
     ) from e
 
@@ -108,7 +108,7 @@ def upgrade(db_path: Path, vacuum: bool = False, batch: int = DEFAULT_BATCH) -> 
     try:
         row = conn.execute("SELECT source, schema_version FROM meta").fetchone()
         if row is None:
-            raise SystemExit(f"{db_path}: meta table is empty (not a chiezo DB?)")
+            raise SystemExit(f"{db_path}: meta table is empty (not a Chiezo DB?)")
         source, version = row
         if version >= TARGET_VERSION:
             print(f"{source}: already schema_version={version}; nothing to do")

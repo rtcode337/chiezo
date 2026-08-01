@@ -1,4 +1,4 @@
-# chiezo — ローカル知識サーバー
+# Chiezo — ローカル知識サーバー
 
 **AI のための知識ベース**。公開ダンプ(Wikipedia / OpenStreetMap / GeoNames)をローカルの
 SQLite (FTS5) に取り込んで索引し、AI が引ける形で出す。完全ローカルで、レート制限も
@@ -7,8 +7,8 @@ SQLite (FTS5) に取り込んで索引し、AI が引ける形で出す。完全
 - **ためる** — `ingest/` が公式ダンプを取り込み、ソースごとに独立した SQLite ファイル
   (`/data/<source>.db`)を作る。更新はブルーグリーン
 - **取り出す** — `api/` が **MCP**(`/mcp`)と **REST**(`/v1/...`)の 2 経路で出す。
-  Claude Code 向けには「いつ chiezo を使うか」を書いた CLAUDE.md ブロックも生成する
-- **覚える** — `api/app/notes.py` が **chiezo で唯一書き込めるソース** `notes` を持つ。
+  Claude Code 向けには「いつ Chiezo を使うか」を書いた CLAUDE.md ブロックも生成する
+- **覚える** — `api/app/notes.py` が **Chiezo で唯一書き込めるソース** `notes` を持つ。
   「覚えておいて」と言われたことを溜め、`recall` で新しい順に引く。CLAUDE.md や記憶ファイルと
   違い**常駐するのはツール定義だけ**なので、件数が増えてもコンテキストを食わない
 - **答える(任意)** — `api/app/answer.py` が、ためた知識だけを根拠に回答を返す
@@ -17,7 +17,7 @@ SQLite (FTS5) に取り込んで索引し、AI が引ける形で出す。完全
   `?mode=agent` では `api/app/agent.py` が MCP と同じ道具を LLM 自身に引かせる
   (GPU + 8B 級が前提なので**既定は 1 回検索する `rag`**)。会話として続けるのが
   `/v1/chat`(履歴はクライアントが持つ)、足りないぶんを外から補うのが
-  `api/app/websearch.py`(既定では無効)。**この層は「chiezo を使う側」の実装**で、
+  `api/app/websearch.py`(既定では無効)。**この層は「Chiezo を使う側」の実装**で、
   知識ベース本体は今までどおり外を叩かない
 
 現在の収録ソースは日本語 Wikipedia = `jawiki`、OpenStreetMap 日本抽出 = `osm_japan`、
@@ -108,7 +108,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       インスタンスが値として入り、`if tag:` が常に真になる等、例外にならず静かに壊れる。
       `tests/test_mcp.py::TestStaysInSyncWithRest` がシグネチャを突き合わせて落とす
     - FastMCP は**同期のツール関数をイベントループ上で直接呼ぶ**(await するのは async
-      関数だけ)。chiezo のクエリは最大 5 秒ブロックしうるので、必ず `run_in_threadpool`
+      関数だけ)。Chiezo のクエリは最大 5 秒ブロックしうるので、必ず `run_in_threadpool`
       に逃がす。でないと重いクエリ 1 本で API 全体が止まる
     - `TransportSecuritySettings` の既定は「localhost 系の Host しか受け付けない」。
       そのままだと LAN の別マシンから叩いた時点で 421 になるので、既定では検証を外し
@@ -117,10 +117,10 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     1 インスタンス 1 回しか呼べないため、**起動ごとに `build_mcp()` で作り直して**
     `app.state.mcp_asgi` に置き、マウント先(`main._mcp_asgi`)がそれを見る形にしている
     (モジュール読み込み時に作り置きすると、同一プロセスで二度起動するテストが落ちる)
-  - `app/notes.py` — **「覚える」層(`/v1/notes`)の本体。chiezo で唯一書き込む場所**。
+  - `app/notes.py` — **「覚える」層(`/v1/notes`)の本体。Chiezo で唯一書き込む場所**。
     使い方は `docs/api-reference.md`「notes(唯一書き込めるソース)の REST」節、
     なぜこの形かは `docs/design-notes.md`
-    「「覚える」(notes)はなぜ chiezo に置くのか」が正。実装側の要点:
+    「「覚える」(notes)はなぜ Chiezo に置くのか」が正。実装側の要点:
     - **`CHIEZO_NOTES_DIR` が機能フラグを兼ねる**(未設定 = 503、MCP の道具も出さない)。
       ツール定義は常時コンテキストに載るので、使えないものを並べない
     - **置き場を `/data` と分けるのは性能上の理由**。`registry.data_dir_fingerprint()` が
@@ -164,8 +164,8 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       拾い出し → 質問文の最長断片)。小型モデルの JSON 出力は当てにならないので、
       1 段目の失敗で 500 にせず劣化経路で回答まで到達させる。何で引いたかは応答の
       `queries` に必ず載るので、劣化は呼び出し側から見える
-    - **回答方針は `grounded` で切り替える**(既定 1 = 抜粋のみ)。「抜粋だけ」は chiezo の
-      設計思想ではなく**モデルの幻覚への対処**なので固定しない — chiezo は AI 用の知識ベースで、
+    - **回答方針は `grounded` で切り替える**(既定 1 = 抜粋のみ)。「抜粋だけ」は Chiezo の
+      設計思想ではなく**モデルの幻覚への対処**なので固定しない — Chiezo は AI 用の知識ベースで、
       ローカル LLM はそれを使う側。ただし `grounded=1` で抜粋 0 件のときは `has_no_basis()` が
       **推論を走らせず定型文を返す**。実測で gemma-3-1b が「抜粋が空でも自分の知識で答える」
       ことを確かめたため、プロンプトに委ねず経路として断ってある
@@ -175,7 +175,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       (`prepare()` → `stream_answer()`)。SSE はヘッダ送出後にステータスを変えられない
     - `content_of()` が**思考タグの残骸を落とす**。thinking 系モデルは推論サーバの設定次第で
       `<think>…</think>` や閉じタグだけが `content` に残る(実測: Qwen3 + 思考オフで先頭に
-      `</think>`)。相手の設定は chiezo が握っていないので受け側で落とす
+      `</think>`)。相手の設定は Chiezo が握っていないので受け側で落とす
   - `app/agent.py` — **agent モード(`/v1/ask?mode=agent`)の本体**。LLM 自身に道具を
     引かせるループ。使い方・環境変数は `docs/local-llm.md`「agent モード(モデルに道具を引かせる)」節が、
     なぜこの形かは `docs/design-notes.md`「agent モード: 道具をモデルに引かせる」が正。
@@ -185,7 +185,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       システムプロンプト前半の使い方も MCP の `INSTRUCTIONS` をそのまま使う。
       `tests/test_agent.py` が `AGENT_TOOLS` と MCP のツール名を突き合わせて落とす
     - 道具は 2 群に分かれる。`KNOWLEDGE_TOOLS`(読み取り専用。常に渡す)と
-      `NOTE_TOOLS`(`remember` / `recall`)。**後者は chiezo で唯一の書き込みを含む**ので、
+      `NOTE_TOOLS`(`remember` / `recall`)。**後者は Chiezo で唯一の書き込みを含む**ので、
       `notes_allowed()` が「notes が有効 かつ リクエストで切られていない」ときだけ渡す。
       当初は書き込みを一切渡していなかったが、会話で「覚えておいて」と明示的に頼まれるなら
       副作用ではないので渡す。代わりに**やり取りごとに切れる**(画面のトグル・`notes=0`)、
@@ -204,7 +204,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     - 出典は道具の応答に出てきた文書を出現順に集めたもの。**本文の番号とは対応しない**
       (生の応答に番号を振る先が無いため)。web の結果は `source: "web"` として同じ一覧に
       混ぜる(どれが外から来たか出典を見た人に分かる必要がある)
-    - **web 検索の道具だけは MCP から借りない**(`app/websearch.py` で定義)。chiezo の MCP は
+    - **web 検索の道具だけは MCP から借りない**(`app/websearch.py` で定義)。Chiezo の MCP は
       「ためた知識の引き口」であって web はその外側だから — MCP の利用者(Claude Code)は
       自前の web 検索を持っている。有効なときだけ道具一覧に足す
   - `app/websearch.py` — **web 検索の道具(既定では無効)**。`CHIEZO_WEB_SEARCH_URL` が
@@ -212,7 +212,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     (`agent.web_allowed()`: サーバー設定 AND リクエストの `web` が false でない)。
     画面のトグルは毎回これを送る。使い方は `docs/local-llm.md`「web 検索で
     足りないぶんを補う」節が正。実装側の要点:
-    - **これは「答える」層(= chiezo を使う側)の機能で、chiezo 本体の機能ではない**。
+    - **これは「答える」層(= Chiezo を使う側)の機能で、Chiezo 本体の機能ではない**。
       知識ベースそのものは引き続き外を叩かない。この整理を崩さないこと
     - **本文は取りに行かない**(タイトル・要約・URL だけ)。ページ取得はスクレイピングに
       踏み込む話で、相手への負担も壊れやすさも別次元になる
@@ -286,7 +286,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     Claude Code の `permissions.allow` は**コマンド文字列の前方一致**でしか判定できず、
     `for … do curl … done` やパイプに包まれた curl には 1 本もマッチしない。
     大量取得は必ずその形になるので、いちばん許可したい場面でルールが効かない。
-    このフックは前方一致ではなく**構造**(登場する URL が全て chiezo か・コマンド位置に
+    このフックは前方一致ではなく**構造**(登場する URL が全て Chiezo か・コマンド位置に
     来る語が読み取り専用の許可リスト内か・`$(…)`/`eval` 等でコマンド位置を隠していないか)
     で判定し、条件を満たすときだけ `permissionDecision: "allow"` を返す。
     外れたら**何も出力しない**(= 通常の許可プロンプトに戻る)ので、判定に迷ったら
@@ -323,13 +323,13 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     持って毎回送る(読み取り専用・LAN 内・複数ワーカーの前提を崩さないため。MCP を
     ステートレスにしたのと同じ判断)。rag / agent とも `/v1/ask` と同じ実装に流す
   - `/localllm/chat`(GET) — 会話画面と、JS なし用の 1 問 1 答の HTML。**ローカル LLM を使う側の
-    機能なので `/localllm/` の下**(chiezo 本体の画面と並びで区別する)。見た目は
+    機能なので `/localllm/` の下**(Chiezo 本体の画面と並びで区別する)。見た目は
     **この画面だけ作り込んである**(`app/pages.py` の `CHAT_STYLE` を `page_shell(style=…)` で
     上乗せ。管理画面・ブラウズ画面は素っ気ないままでよいので、CSS を混ぜない)。
     入力欄は数行ぶんの高さを持ち、設定(ソース・引き方・根拠・web 検索)はその下に並ぶ。見出しは
     **`AI(<モデル名>)と話す`**(`answer.model_label()`。`CHIEZO_LLM_MODEL` が無ければ
     推論サーバの `/models` に聞き、5 分覚える。取れなければ「AI と話す」)。
-    **chiezo は AI が引く知識であって AI 自身ではない**という関係を画面にもプロンプトにも
+    **Chiezo は AI が引く知識であって AI 自身ではない**という関係を画面にもプロンプトにも
     出すため。既定はサーバ側で推論を回さず、inline JS(`CHAT_JS`)が `/v1/chat?stream=1`
     を叩いて埋める — ここでサーバ側でも回答を作ると推論が二重に走る(数十秒 × 2)。
     **`EventSource` ではなく `fetch` で SSE を読む**のは、履歴を送るのに POST が要るため
@@ -539,11 +539,11 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     (`chiezo-api` 側は環境変数 `CHIEZO_TRIGGER_URL` で URL を知る。未設定なら管理画面の
     初期化機能は無効)
 - `scripts/` — 補助スクリプト(api/ingest 本体ではない運用ツール)
-  - `gen_claude_config.sh` — chiezo 連携用の Claude 設定生成器。**使い方・オプション一覧は
+  - `gen_claude_config.sh` — Chiezo 連携用の Claude 設定生成器。**使い方・オプション一覧は
     `docs/api-reference.md`「Claude Code から使う(設定ファイル自動生成)」節が正**で、
     ここには実装側の要点だけ置く:
     - `curl` + POSIX ツールのみで動く(Python 不要。既存 settings のマージにだけ jq を使う)。
-      稼働中の chiezo の `/admin/claude-config.*` を取得して書き込むだけの薄いクライアントで、
+      稼働中の Chiezo の `/admin/claude-config.*` を取得して書き込むだけの薄いクライアントで、
       **生成の正は api 側 `app/claude_config.py`**。ベース URL はサーバーがアクセス元 URL から
       導出するので、接続に使った URL がそのまま生成物の curl 例・許可ルールになる
     - `--with-hook` を付けたときだけ自動許可フックも設置する。**既定では設置しない** —
@@ -561,7 +561,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       **フックと違って既定で入れる**理由: フックが opt-in なのは Bash を自動承認しうる
       security 上の判断で、MCP 登録にはその性質が無い。ツール定義は常時コンテキストに
       載るが(7 ツールで約 4.4k 字)、既定で入れている CLAUDE.md ブロック(約 4.3k 字)と
-      同程度で、chiezo を設定する時点で使う前提なのだから片方だけ渋る理由が無い
+      同程度で、Chiezo を設定する時点で使う前提なのだから片方だけ渋る理由が無い
   - `gen_wikipedia_editions.py` — `ingest/sources/wikipedia_editions.py`(Wikipedia 言語版
     カタログ)の生成器。Wikimedia の sitematrix(言語版一覧。closed/private/fishbowl は除外)、
     wikistats(記事数)、CLDR の言語名日本語表記を引いて 348 件の表を書き出す。
@@ -729,6 +729,13 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
   直前が句読点・閉じ括弧だと、CommonMark の flanking rule で閉じ側と認識されず、太字にならずに
   `*` がそのまま表示される(日本語では句点で終える書き方が自然なので踏みやすい)。
   `**…です**。次の文` と書く。検出は markdown をレンダリングして本文に `*` が残るかを見る。
+- **製品名は `Chiezo`(大文字始まり)、識別子は `chiezo`(小文字)**。散文・見出し・画面の
+  文言・LLM へのプロンプト・エラーメッセージは `Chiezo` で書く。小文字のまま据え置くのは
+  **値として意味を持つもの**だけ: サービス名(`chiezo-api` / `chiezo-ingest` / `chiezo-trigger` /
+  `chiezo-llm`)、イメージ名、環境変数の接頭辞 `CHIEZO_`、MCP 登録名(`claude_config.MCP_SERVER_NAME`
+  = `"chiezo"`)、CLAUDE.md ブロックのマーカー(`<!-- BEGIN chiezo … -->`。変えると既存の
+  埋め込みを差し替えられなくなる)、`User-Agent`(`chiezo-ingest/0.1` と揃えた機械可読トークン)、
+  `CHIEZO_LLM_MODEL` の既定値。**日本語名は付けない**(表記は `Chiezo` に一本化する)。
 - 認証なし・LAN 内前提。ルーターでポート開放しないこと。chiezo-trigger と chiezo-llm は
   ホストへポート公開せず、chiezo-api からのみ内部ネットワーク経由で到達可能にすること。
 - **「答える」層は既定で無効のまま保つ**。推論を chiezo-api の中で動かさない(配信側が
@@ -737,7 +744,7 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
   profile `answer` を付けたときだけ `chiezo-llm` が起動する状態を崩さない。
   **素の既定は `rag` + `grounded=1`**(小さな機械でも安全に動く側)。潤沢な環境では
   `CHIEZO_ASK_DEFAULT_MODE` / `_GROUNDED` で倒せるが、**素の既定は変えない**。
-- **外へ出るのは「答える」層だけ**。chiezo 本体(知識ベース)は ingest がダンプを取る以外
+- **外へ出るのは「答える」層だけ**。Chiezo 本体(知識ベース)は ingest がダンプを取る以外
   外を叩かない。web 検索は使う側の機能として `app/websearch.py` に閉じ、既定は無効のまま保つ。
   有効にしたときも「どれが web 由来か分かる」ことを崩さない(出典の `source` が `web`)。
 - **会話の状態をサーバーに持たせない**。`/v1/chat` は履歴を毎回まるごと受け取る。

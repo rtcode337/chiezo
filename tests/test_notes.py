@@ -100,7 +100,7 @@ class TestRecall:
     @pytest.fixture()
     def filled(self, client):
         client.post("/v1/notes", json={"text": "浅草寺に行った話", "tags": "旅行"})
-        client.post("/v1/notes", json={"text": "chiezo のスキーマを 4 に上げた", "tags": "開発"})
+        client.post("/v1/notes", json={"text": "Chiezo のスキーマを 4 に上げた", "tags": "開発"})
         client.post("/v1/notes", json={"text": "WSL2 へ移行すると決めた", "tags": "開発,環境"})
         return client
 
@@ -110,7 +110,7 @@ class TestRecall:
 
     def test_full_text_search(self, filled):
         got = filled.get("/v1/notes/recall", params={"q": "スキーマ"}).json()
-        assert [n["title"] for n in got["notes"]] == ["chiezo のスキーマを 4 に上げた"]
+        assert [n["title"] for n in got["notes"]] == ["Chiezo のスキーマを 4 に上げた"]
 
     def test_short_query_falls_back_to_substring(self, filled):
         """trigram は 3 文字未満を引けないので、件数の小さい notes では走査に落とす。"""

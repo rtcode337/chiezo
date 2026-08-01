@@ -1,7 +1,7 @@
 """agent モード — 道具を LLM 自身に引かせる「答える」層のもう 1 つの経路。
 
 `/v1/ask?mode=agent` の本体。rag モード(`app/answer.py`)が **search を 1 回叩いて
-終わり**なのに対し、こちらは `filter` / `tags` / `links` を含む chiezo の道具一式を
+終わり**なのに対し、こちらは `filter` / `tags` / `links` を含む Chiezo の道具一式を
 LLM に渡し、何をどう引くかをモデルに決めさせる。「カテゴリ○○の記事は何件ある?」
 (tags で正式な名前を確かめて filter の total を見る)のように、**1 回の検索では原理的に
 答えられない問い**に届かせるための経路。
@@ -11,7 +11,7 @@ LLM に渡し、何をどう引くかをモデルに決めさせる。「カテ�
 - **道具の定義も実行も `app/mcp_server.py` から借りる**。MCP の `list_tools()` を
   OpenAI の function 形式へ写し、実行は `call_tool()` に投げる。書き写すと
   REST・MCP・agent の三重管理になって必ずずれるし、借りれば説明文(「タグの列挙は
-  filter で」等、chiezo を正しく引くための知識)もそのまま付いてくる。
+  filter で」等、Chiezo を正しく引くための知識)もそのまま付いてくる。
   結果として **Claude Code から MCP で使うときと同じ道具立て**になる。
 - **渡すのは読み取り専用の道具だけ**(`AGENT_TOOLS`)。notes の `remember` は
   書き込みなので自動ループに任せない — 質問に答えた副作用でメモが増えるのは、
@@ -48,10 +48,10 @@ from app.pages import browse_url, doc_url
 
 log = logging.getLogger("chiezo.api")
 
-# agent に渡す chiezo の道具(MCP に出しているものから借りる)。ここは読み取り専用。
+# agent に渡す Chiezo の道具(MCP に出しているものから借りる)。ここは読み取り専用。
 KNOWLEDGE_TOOLS = ("sources", "search", "doc", "filter", "tags", "titles", "links")
 
-# 「覚える」層の道具。**`remember` は chiezo で唯一の書き込み**なので分けてある。
+# 「覚える」層の道具。**`remember` は Chiezo で唯一の書き込み**なので分けてある。
 # 当初は「質問の副作用でメモが増えるのは予想外の変化」として渡していなかったが、
 # 会話で「覚えておいて」と**明示的に頼まれる**なら副作用ではない。代わりに
 # ①やり取りごとに切れる(`notes` 引数・画面のトグル)②何を書いたかは step に出る、
@@ -66,23 +66,23 @@ AGENT_TOOLS = KNOWLEDGE_TOOLS
 MAX_REFERENCES = 20
 
 AGENT_SYSTEM_GROUNDED = """\
-あなたは AI アシスタントです。ローカル知識ベース「chiezo」を上の道具で引けます
-(chiezo はあなたが引く知識であって、あなた自身ではありません)。
+あなたは AI アシスタントです。ローカル知識ベース「Chiezo」を上の道具で引けます
+(Chiezo はあなたが引く知識であって、あなた自身ではありません)。
 引いて分かったことを日本語で簡潔に答えてください。
 
 規則:
 - **必ず道具で調べてから答える**。道具で取れなかったことは答えず、
-  「chiezo からは分かりません」と言う
+  「Chiezo からは分かりません」と言う
 - 道具は 1 ステップに必要な分だけ呼ぶ。同じ呼び出しを繰り返さない
   (0 件だったら、検索語・ソース・絞り込みのどれかを変える)
 - 件数を答えるときは filter の total を使う(search の結果件数は上位数件でしかない)
 - 十分に分かった時点で道具を呼ぶのをやめ、答えを書く
-- 根拠にした文書のタイトルを本文に書く(出典一覧は chiezo 側で付ける)
+- 根拠にした文書のタイトルを本文に書く(出典一覧は Chiezo 側で付ける)
 """
 
 AGENT_SYSTEM_OPEN = """\
-あなたは AI アシスタントです。ローカル知識ベース「chiezo」を上の道具で引けます
-(chiezo はあなたが引く知識であって、あなた自身ではありません)。
+あなたは AI アシスタントです。ローカル知識ベース「Chiezo」を上の道具で引けます
+(Chiezo はあなたが引く知識であって、あなた自身ではありません)。
 引いて分かったことを日本語で簡潔に答えてください。会話として自然に応じてかまいません。
 
 規則:
@@ -90,17 +90,17 @@ AGENT_SYSTEM_OPEN = """\
 - 道具は 1 ステップに必要な分だけ呼ぶ。同じ呼び出しを繰り返さない
   (0 件だったら、検索語・ソース・絞り込みのどれかを変える)
 - 件数を答えるときは filter の total を使う(search の結果件数は上位数件でしかない)
-- chiezo から取れたことと自分の知識で補ったことは、区別が分かるように書く
-- 根拠にした文書のタイトルを本文に書く(出典一覧は chiezo 側で付ける)
+- Chiezo から取れたことと自分の知識で補ったことは、区別が分かるように書く
+- 根拠にした文書のタイトルを本文に書く(出典一覧は Chiezo 側で付ける)
 """
 
-# web 検索が有効なときだけ足す使い分け。**chiezo が先**という順番をここで固定する
-# (chiezo の存在理由が「外部 API を先に叩かせない」ことなので、道具が増えても順番は変えない)。
+# web 検索が有効なときだけ足す使い分け。**Chiezo が先**という順番をここで固定する
+# (Chiezo の存在理由が「外部 API を先に叩かせない」ことなので、道具が増えても順番は変えない)。
 WEB_SEARCH_POLICY = """
 web_search も使える場合:
-- **まず chiezo を引く**。web は chiezo に無いものだけ(取り込んだダンプより新しい出来事、
+- **まず Chiezo を引く**。web は Chiezo に無いものだけ(取り込んだダンプより新しい出来事、
   いま現在の状態、ローカルに収録していない話題)に使う
-- web から得たことは、chiezo から得たことと**区別が分かるように書く**
+- web から得たことは、Chiezo から得たことと**区別が分かるように書く**
   (「web で調べた限り」など)。出典一覧にも web として並ぶ
 """
 
@@ -121,13 +121,13 @@ remember / recall も使える場合:
 FORCED_ANSWER_NOTICE = (
     "ここまでで調べる時間を使い切りました。これ以上道具は使えません。"
     "いま手元にある情報だけで、分かる範囲の答えを日本語で書いてください。"
-    "足りない部分は「chiezo からは分かりませんでした」と正直に書いてかまいません。"
+    "足りない部分は「Chiezo からは分かりませんでした」と正直に書いてかまいません。"
 )
 
 # 一度も道具が結果を返さないまま grounded で答えようとした場合の定型文。
 # rag 側の NO_CONTEXT_ANSWER と同じ趣旨(根拠が無いなら推論に委ねない)。
 NO_EVIDENCE_ANSWER = (
-    "chiezo からは分かりません(道具で根拠になる情報を取れませんでした)。"
+    "Chiezo からは分かりません(道具で根拠になる情報を取れませんでした)。"
     "質問を具体的にするか、source を指定するか、grounded=0 で聞き直してください。"
 )
 
@@ -168,7 +168,7 @@ async def tool_specs(app, web: bool = False, notes: bool = False) -> list[dict]:
         for t in tools
         if t.name in allowed
     ]
-    # web 検索は chiezo の道具ではないので MCP には出しておらず、ここで足す
+    # web 検索は Chiezo の道具ではないので MCP には出しておらず、ここで足す
     # (使うときだけ。使わないなら道具ごと見せない = 使えないものを文脈に並べない)。
     if web:
         specs.append(websearch.TOOL_SPEC)
@@ -189,7 +189,7 @@ def web_allowed(requested: bool | None) -> bool:
 
     サーバー側で設定されていなければ、頼まれても使えない(道具が無い)。
     設定されている場合は**呼び出しごとに切れる** — 画面のトグルや API の `web=0` で、
-    「いまは chiezo だけで答えてほしい」を選べるようにするため。
+    「いまは Chiezo だけで答えてほしい」を選べるようにするため。
     """
     return websearch.is_enabled() and requested is not False
 
@@ -337,7 +337,7 @@ def collect_references(refs: list[dict], source: str, payload: Any) -> None:
 def add_references(refs: list[dict], found: list[dict]) -> None:
     """出典を積む(出現順・重複なし・上限あり)。番号はここで振る。
 
-    chiezo の文書と web の結果が同じ一覧に並ぶので、`source` は消さない
+    Chiezo の文書と web の結果が同じ一覧に並ぶので、`source` は消さない
     (`web` かどうかが出典を見た人に分かる必要がある)。
     """
     for item in found:
@@ -374,7 +374,7 @@ def _system_prompt(
 ) -> str:
     """道具の使い方(MCP の instructions)+ ソース一覧 + 回答方針。
 
-    使い方の説明を MCP から借りるのは道具の定義と同じ理由で、chiezo を正しく引くための
+    使い方の説明を MCP から借りるのは道具の定義と同じ理由で、Chiezo を正しく引くための
     知識(「列挙は filter」「短い語は前方一致に落ちる」等)を二重に書かないため。
     """
     lines = []

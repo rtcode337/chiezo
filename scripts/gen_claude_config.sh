@@ -1,11 +1,11 @@
 #!/bin/sh
-# chiezo 連携用の Claude Code 設定(CLAUDE.md ブロック)を生成する。
+# Chiezo 連携用の Claude Code 設定(CLAUDE.md ブロック)を生成する。
 #
-# 稼働中の chiezo の設定生成 API(GET /admin/claude-config.txt)に問い合わせて、
-# その環境の Claude に「chiezo に載っている知識が必要なら chiezo を使う」よう促す
-# CLAUDE.md ブロックを取得し、対象ファイルへ書き込む。生成の正は chiezo 本体
+# 稼働中の Chiezo の設定生成 API(GET /admin/claude-config.txt)に問い合わせて、
+# その環境の Claude に「Chiezo に載っている知識が必要なら Chiezo を使う」よう促す
+# CLAUDE.md ブロックを取得し、対象ファイルへ書き込む。生成の正は Chiezo 本体
 # (api/app/claude_config.py)にあり、このスクリプトは取得と書き込みだけを行う。
-# ブロック内の curl 例のベース URL は、chiezo 側が「このスクリプトがアクセスして
+# ブロック内の curl 例のベース URL は、Chiezo 側が「このスクリプトがアクセスして
 # きた URL のプロトコル・ホスト名・ポート」から導出する。
 # POSIX シェル + curl だけで動き、追加インストールは不要。
 #
@@ -23,9 +23,9 @@
 #
 # 既定で、書き込み先に対応する Claude Code 設定(--user なら ~/.claude/settings.json、
 # --project/--target なら <対象ディレクトリ>/.claude/settings.local.json)に
-# chiezo への curl を許可するルール(GET /admin/claude-config.permissions.json の内容)を
+# Chiezo への curl を許可するルール(GET /admin/claude-config.permissions.json の内容)を
 # 追記する(permissions.allow への追記のみで、既存の設定は壊さない)。これにより
-# chiezo への curl は毎回の許可プロンプトなしに実行できるようになる。
+# Chiezo への curl は毎回の許可プロンプトなしに実行できるようになる。
 # この動作が不要なら --no-permissions を付ける。
 #
 # ただし permissions.allow は**コマンド文字列の前方一致**でしか判定できない。
@@ -36,7 +36,7 @@
 #   - フック本体を <設定ディレクトリ>/hooks/chiezo-autoallow.py に置く
 #     (GET /admin/claude-config.hook.py の内容。実行可能にする)
 #   - settings の hooks.PreToolUse へ登録する(GET /admin/claude-config.hook.json)
-# フックはコマンドを前方一致ではなく構造で見て、「登場する URL が全て chiezo」かつ
+# フックはコマンドを前方一致ではなく構造で見て、「登場する URL が全て Chiezo」かつ
 # 「実行されるコマンドが curl/jq/sort 等の読み取り専用」のときだけ自動許可する。
 # 条件を外れたら何も出力しないので、その場合は今までどおりプロンプトが出るだけ。
 # 設置には python3(フックの実行)と jq(settings のマージ)が要る。
@@ -46,12 +46,12 @@
 # 明示的に --with-hook を指定したときだけ入れる。事前に中身だけ見たいときは
 # curl "<base>/admin/claude-config.hook.py" か管理画面 /admin/claude-config を見る。
 #
-# また既定で、chiezo の MCP サーバー(<base>/mcp)を Claude Code に登録する:
+# また既定で、Chiezo の MCP サーバー(<base>/mcp)を Claude Code に登録する:
 #   - --user: ユーザースコープに登録(claude mcp add --scope user。claude CLI が無い環境では
 #     jq で ~/.claude.json の mcpServers へ直接マージする)
 #   - --project/--target: 対象ディレクトリの .mcp.json へマージ(GET /admin/claude-config.mcp.json)
 # あわせて CLAUDE.md ブロックに「単発の参照は MCP・大量取得は curl」の使い分けの指示が入る。
-# chiezo は REST と MCP の両方で同じ機能を出しており、単発の参照は引数が構造化された
+# Chiezo は REST と MCP の両方で同じ機能を出しており、単発の参照は引数が構造化された
 # MCP のほうが確実(URL エンコードの失敗が無い)なので、curl 用の設定と揃えて既定で入れる。
 # 登録が不要なら --no-mcp。前提(claude CLI か jq)が無い環境では警告して登録だけ飛ばす。
 
@@ -91,7 +91,7 @@ while [ $# -gt 0 ]; do
     --merge=*)     MERGE="${1#*=}"; shift ;;
     --print)       PRINT=1; shift ;;
     --offline|--sources|--sources=*|--no-examples)
-      die "$1 は廃止されました。生成は chiezo 本体(/admin/claude-config.txt)が行うため、稼働中の chiezo が必要です" ;;
+      die "$1 は廃止されました。生成は Chiezo 本体(/admin/claude-config.txt)が行うため、稼働中の Chiezo が必要です" ;;
     --with-permissions) WITHPERM=1; shift ;;   # 既定で有効(後方互換のため残す)
     --no-permissions) WITHPERM=0; shift ;;
     --with-hook)   WITHHOOK=1; shift ;;
@@ -168,9 +168,9 @@ trap 'rm -f "$BLOCK" "$PERMS" "$HOOKJ" "$MCPJ"' EXIT
 BLOCK_URL="$BASE/admin/claude-config.txt?hook=$WITHHOOK&mcp=$WITHMCP"
 
 curl -fsS --max-time "$TIMEOUT" "$BLOCK_URL" -o "$BLOCK" \
-  || die "chiezo に接続できません($BLOCK_URL)。--base-url を確認(稼働中の chiezo が必要)。"
+  || die "Chiezo に接続できません($BLOCK_URL)。--base-url を確認(稼働中の Chiezo が必要)。"
 grep -qF "$BEGIN_MARK" "$BLOCK" \
-  || die "応答が CLAUDE.md ブロックではありません($BASE は chiezo の URL か確認)"
+  || die "応答が CLAUDE.md ブロックではありません($BASE は Chiezo の URL か確認)"
 NSRC="$(grep -c '^- \*\*' "$BLOCK")"
 
 # ---- 出力 ------------------------------------------------------------------
@@ -198,7 +198,7 @@ if [ "$MERGE" = "headless" ]; then
   command -v claude >/dev/null 2>&1 || die "--merge headless には Claude Code CLI(claude)が必要"
   mkdir -p "$(dirname "$TARGET_FILE")"; [ -f "$TARGET_FILE" ] || : >"$TARGET_FILE"
   KEEP="$(mktemp)"; cp "$BLOCK" "$KEEP"   # claude 実行中に消えないよう退避
-  prompt="\`$TARGET_FILE\` に chiezo 連携の案内を統合してください。統合内容は \`$KEEP\`(chiezo が自動生成したブロック)にあります。要件: (1) \`$KEEP\` の内容をマーカー \`$BEGIN_MARK\` から \`$END_MARK\` ごと取り込む。(2) 既に chiezo の記述やマーカーブロックがあれば重複させず今回の内容で置き換える。(3) それ以外の既存記述・体裁は壊さない。\`$TARGET_FILE\` を直接編集してください。"
+  prompt="\`$TARGET_FILE\` に Chiezo 連携の案内を統合してください。統合内容は \`$KEEP\`(Chiezo が自動生成したブロック)にあります。要件: (1) \`$KEEP\` の内容をマーカー \`$BEGIN_MARK\` から \`$END_MARK\` ごと取り込む。(2) 既に Chiezo の記述やマーカーブロックがあれば重複させず今回の内容で置き換える。(3) それ以外の既存記述・体裁は壊さない。\`$TARGET_FILE\` を直接編集してください。"
   echo "→ claude -p でヘッドレス統合を実行中(target=$TARGET_FILE)…" >&2
   ( cd "$(dirname "$TARGET_FILE")" && claude -p "$prompt" ); rc=$?
   rm -f "$KEEP"
@@ -254,7 +254,7 @@ fi
 
 # ---- 自動許可フック(--with-hook のときだけ) -------------------------------
 # permissions.allow は前方一致なので、ループやパイプに包まれた curl には効かない。
-# コマンドを構造で見て「chiezo だけを読む読み取り専用コマンド」を自動許可する
+# コマンドを構造で見て「Chiezo だけを読む読み取り専用コマンド」を自動許可する
 # PreToolUse フックを設置する。Claude が打つ Bash を毎回検査して自動承認しうる
 # 仕掛けなので、既定では入れず明示的に頼まれたときだけ入れる(前提の検査は冒頭で済み)。
 if [ "$WITHHOOK" -eq 1 ]; then
@@ -266,7 +266,7 @@ if [ "$WITHHOOK" -eq 1 ]; then
   # 取得物が本当にフックか確かめてから既存を置き換える(エラーページを置かない)
   if ! grep -q 'permissionDecision' "$hfile.tmp"; then
     rm -f "$hfile.tmp"
-    die "応答がフック本体ではありません($BASE は chiezo の URL か、版が古くないか確認)"
+    die "応答がフック本体ではありません($BASE は Chiezo の URL か、版が古くないか確認)"
   fi
   mv "$hfile.tmp" "$hfile"
   chmod 755 "$hfile"
@@ -303,11 +303,11 @@ if [ "$WITHHOOK" -eq 1 ]; then
 fi
 
 # ---- MCP サーバー登録(既定で行う。--no-mcp で無効) -------------------------
-# chiezo は MCP サーバーでもある($BASE/mcp、Streamable HTTP)。単発の参照は
+# Chiezo は MCP サーバーでもある($BASE/mcp、Streamable HTTP)。単発の参照は
 # MCP ツールのほうが確実(引数が構造化されていて URL エンコードの失敗が無い)なので、
 # curl 用の CLAUDE.md ブロック・権限と揃えて既定で登録する。ツール定義はコンテキストに
 # 常駐するが(7 ツールで約 4.4k 字)、既定で入れている CLAUDE.md ブロックと同程度で、
-# chiezo を設定する時点で使う前提の環境なのだから、片方だけ渋る理由が無い。
+# Chiezo を設定する時点で使う前提の環境なのだから、片方だけ渋る理由が無い。
 # フックを既定で入れないのは security 上の理由(Bash を自動承認しうる)で、こことは別。
 if [ "$WITHMCP" -eq 1 ]; then
   if [ "$DEST" = "user" ] && [ "$HAS_CLAUDE" -eq 1 ]; then

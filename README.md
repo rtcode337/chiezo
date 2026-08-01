@@ -1,4 +1,4 @@
-# <img src="assets/icon.svg" width="40" alt="chiezo icon"> chiezo — ローカル知識サーバー
+# <img src="assets/icon.svg" width="40" alt="Chiezo icon"> Chiezo — ローカル知識サーバー
 
 **AI のための知識ベースです**。公開ダンプ(Wikipedia / OpenStreetMap / GeoNames)を
 ローカルの SQLite (FTS5) に取り込んで索引し、AI が引ける形で出します。
@@ -7,11 +7,11 @@
   (`data/<source>.db`)にする。更新はブルーグリーン(別ファイルに構築 → 切り替え)
 - **取り出す** — AI からの引き口は 2 経路。**MCP**(`/mcp`、Streamable HTTP)と
   **REST**(`search` / `doc` / `filter` / `tags` …)。Claude Code 向けには「どんなときに
-  chiezo を使うか」を書いた CLAUDE.md ブロックも自動生成します
+  Chiezo を使うか」を書いた CLAUDE.md ブロックも自動生成します
 - **覚える** — `/v1/notes` に書いたことは `notes` ソースとして溜まり、あとから
   `recall` で引けます。**常時コンテキストに載るのはツール定義だけ**なので、
   件数が増えても AI 側の負担が増えません
-- **答える(任意)** — ローカル LLM を繋ぐと、chiezo を引いて回答まで返します
+- **答える(任意)** — ローカル LLM を繋ぐと、Chiezo を引いて回答まで返します
   (`/v1/ask` と ブラウザの `/localllm/chat`)。Claude Code と同じ知識をローカルの LLM からも
   使う口です。**既定では無効**で、推論は別プロセスに置きます
 
@@ -33,7 +33,7 @@
 - **遅い・失敗する** — レート制限で待たされ、ネットワークの不調や相手側の障害で止まります。
   ローカルの SQLite なら数 ms〜数十 ms で返り、オフラインでも動きます
 
-裏返すと、**chiezo が向かないのは「いま現在の状態」を知りたいとき**です。取り込んだ
+裏返すと、**Chiezo が向かないのは「いま現在の状態」を知りたいとき**です。取り込んだ
 ダンプのスナップショットなので、リアルタイム性が要る用途は外部 API のままが適切です。
 
 ### ためられるソース
@@ -114,7 +114,7 @@ curl -sG "$BASE/v1/osm_japan/filter?limit=200" \
 ### MCP / Claude Code から使う
 
 chiezo-api 自身が MCP サーバーなので、クライアント側に何もインストールせずに繋がります。
-Claude Code 用の設定(CLAUDE.md ブロック・権限ルール・MCP 登録)は、稼働中の chiezo に
+Claude Code 用の設定(CLAUDE.md ブロック・権限ルール・MCP 登録)は、稼働中の Chiezo に
 問い合わせて生成できます。
 
 ```bash
@@ -127,7 +127,7 @@ scripts/gen_claude_config.sh -u http://<サーバーIP>:9000              # 一�
 
 ## 覚える(notes)
 
-「これ覚えておいて」と言われたこと、調べた結果、決めたこと。**chiezo で唯一書き込めるソース**が
+「これ覚えておいて」と言われたこと、調べた結果、決めたこと。**Chiezo で唯一書き込めるソース**が
 `notes` です。溜めたものは `recall` で新しい順に引けます。
 
 ```bash
@@ -136,9 +136,9 @@ curl -s "$BASE/v1/notes" -H 'Content-Type: application/json' \
 curl -s "$BASE/v1/notes/recall"                                  # 新しい順に 20 件
 ```
 
-**なぜ CLAUDE.md や記憶ファイルではなく chiezo なのか** — 常時コンテキストに載るかどうかが
+**なぜ CLAUDE.md や記憶ファイルではなく Chiezo なのか** — 常時コンテキストに載るかどうかが
 違います。CLAUDE.md や AI の記憶ファイルは毎セッション全部が読み込まれるので、件数が増える
-ほど関係ない話のときにもトークンを払い続けます。chiezo に置けば**常駐するのは MCP の
+ほど関係ない話のときにもトークンを払い続けます。Chiezo に置けば**常駐するのは MCP の
 ツール定義(数百字)だけ**で、中身は引いたときにしか載りません。100 件でも 1000 件でも
 常駐コストは変わりません。
 
@@ -151,7 +151,7 @@ compose では既定で有効です(`./notes` に SQLite が 1 つできます)�
 
 ## 答える(ローカル LLM。既定では無効)
 
-**chiezo を引ける AI と、ブラウザから話せます**(`/localllm/chat`)。1 問 1 答の口(`/v1/ask`)と
+**Chiezo を引ける AI と、ブラウザから話せます**(`/localllm/chat`)。1 問 1 答の口(`/v1/ask`)と
 会話の口(`/v1/chat`)があり、根拠にした文書は出典として併記します。推論は chiezo-api の中では
 動かさず、**OpenAI 互換 API を喋る別プロセス**に任せます(配信側が数百 MB で動く前提を
 壊さないため)。有効になるのは `CHIEZO_LLM_URL` を設定したときだけです。

@@ -1,6 +1,6 @@
 # API リファレンス
 
-chiezo から知識を**取り出す**口の詳細仕様です。経路は 3 つあり、どれも中身は同じ関数を呼びます。
+Chiezo から知識を**取り出す**口の詳細仕様です。経路は 3 つあり、どれも中身は同じ関数を呼びます。
 
 - [REST](#rest) — `curl` と人間向け HTML 画面
 - [MCP](#mcp-から使うmcp) — Streamable HTTP。chiezo-api 自身が MCP サーバー
@@ -142,7 +142,7 @@ curl -s -X DELETE "$BASE/v1/notes/3"                             # 取り消し
 compose では既定で有効で、`./notes` に SQLite が 1 つできます(初回アクセス時に自動生成
 されるので、取り込みを回す必要はありません)。`/data` は読み取り専用マウントのままです。
 notes を別ディレクトリに置いているのは、`/data` の変化を監視して全ソースを再走査する
-仕組みと干渉させないためで、その理由となぜ chiezo に置くのかは
+仕組みと干渉させないためで、その理由となぜ Chiezo に置くのかは
 [設計メモ](design-notes.md#覚えるnotesはなぜ-chiezo-に置くのか)にあります。
 
 **認証はありません。** `/v1/notes` に到達できる相手は誰でも書けます(LAN 内前提という
@@ -215,11 +215,11 @@ curl の方がトークン効率が良い場面があるため、どちらかに
 
 ## Claude Code から使う(設定ファイル自動生成)
 
-各アプリの環境で動く Claude に「chiezo に載っている知識が必要なら chiezo を使う」よう
-促す CLAUDE.md ブロックを、稼働中の chiezo の設定生成 API
+各アプリの環境で動く Claude に「Chiezo に載っている知識が必要なら Chiezo を使う」よう
+促す CLAUDE.md ブロックを、稼働中の Chiezo の設定生成 API
 (`GET /admin/claude-config.txt`)に問い合わせて自動生成できます。登録済み
 (初期化済み)ソースだけを、実データの文書数・実在タイトルを使った具体例つきで列挙します。
-ブロック内の curl 例のベース URL は、chiezo 側が「スクリプトがアクセスしてきた URL の
+ブロック内の curl 例のベース URL は、Chiezo 側が「スクリプトがアクセスしてきた URL の
 プロトコル・ホスト名・ポート」から導出するため、`--base-url` に指定した到達可能な URL が
 そのまま生成物に載ります(リバースプロキシ越し・非標準ポートでも可)。
 `curl` だけで動き追加インストールは不要(Python 不要。既存 settings への権限マージにのみ
@@ -228,15 +228,15 @@ jq を使います)。
 **既定の書き込み先は `~/.claude/CLAUDE.md`**(全プロジェクトの Claude に効く推奨の使い方)。
 あわせて既定で、書き込み先に対応する Claude Code 設定(`--user` なら
 `~/.claude/settings.json`、`--project`/`--target` なら `.claude/settings.local.json`)に
-chiezo への `curl` を許可するルールを追記するため、生成後は chiezo への `curl` が
+Chiezo への `curl` を許可するルールを追記するため、生成後は Chiezo への `curl` が
 毎回の許可プロンプトなしに実行できます(`--no-permissions` で無効化可)。
-さらに既定で、chiezo を **MCP サーバーとしても登録**します(後述)。
+さらに既定で、Chiezo を **MCP サーバーとしても登録**します(後述)。
 
 ```bash
 # ~/.claude/CLAUDE.md を更新・localhost:9000 を参照
 /path/to/chiezo/scripts/gen_claude_config.sh
 
-# chiezo が LAN 上の別ホストにある場合は場所を指定(環境変数 CHIEZO_URL でも可)
+# Chiezo が LAN 上の別ホストにある場合は場所を指定(環境変数 CHIEZO_URL でも可)
 scripts/gen_claude_config.sh --base-url http://<サーバーIP>:9000
 
 scripts/gen_claude_config.sh --project     # ~/.claude ではなく ./CLAUDE.md にする
@@ -250,17 +250,17 @@ scripts/gen_claude_config.sh --print       # 書き込まず内容だけ確認
 - 既存内容との統合に人間的な判断が要る場合は `--merge headless` で Claude Code の
   ヘッドレスモード(`claude -p`)にマージを任せられます(`claude` CLI が必要)。
 
-主なオプション: `--base-url/-u`(chiezo の場所)、`--user`(既定・`~/.claude/CLAUDE.md`)、
+主なオプション: `--base-url/-u`(Chiezo の場所)、`--user`(既定・`~/.claude/CLAUDE.md`)、
 `--project`(`./CLAUDE.md`)、`--target/-o`(書き込み先をパス指定)、`--merge {markers,headless}`、
 `--print`、`--no-permissions`(既定で行う上記の権限追記を無効化)、
 `--with-hook`(下記の自動許可フックを設置。既定では設置しない)、
 `--no-mcp`(既定で行う下記の MCP 登録を無効化)。
-生成は chiezo 本体が行うため、稼働中の chiezo が必要です(旧 `--offline --sources` は廃止)。
+生成は Chiezo 本体が行うため、稼働中の Chiezo が必要です(旧 `--offline --sources` は廃止)。
 生成される文面の要点は「まず `search` で当たりを付け、必要な文書だけ `doc` を取る(コンテキスト節約)」です。
 
 ### MCP サーバーの登録(既定・`--no-mcp` で無効化)
 
-chiezo は [MCP サーバーでもある](#mcp-から使うmcp)ため、生成時に Claude Code へ登録も行います。
+Chiezo は [MCP サーバーでもある](#mcp-から使うmcp)ため、生成時に Claude Code へ登録も行います。
 書き込み先は `--user` ならユーザースコープ(`claude mcp add --scope user`。`claude` CLI が
 無い環境では jq で `~/.claude.json` の `mcpServers` へ直接マージ)、`--project`/`--target` なら
 対象ディレクトリの `.mcp.json` です。どちらも再実行で重複しません。あわせて CLAUDE.md
@@ -286,8 +286,8 @@ curl -sG ".../search" --data-urlencode "q=多摩川" | jq -r '.hits[].title'
 前方一致ではなく**コマンドの構造**で判定する `PreToolUse` フックを併せて設置します
 (`<設定ディレクトリ>/hooks/chiezo-autoallow.py` + `settings` の `hooks.PreToolUse`)。
 
-フックが自動許可するのは「**chiezo だけを読む、読み取り専用のコマンド**」だけです
-(登場する URL が全て chiezo / 実行されるコマンドが `curl`・`jq` 等の許可リスト内 /
+フックが自動許可するのは「**Chiezo だけを読む、読み取り専用のコマンド**」だけです
+(登場する URL が全て Chiezo / 実行されるコマンドが `curl`・`jq` 等の許可リスト内 /
 `$(...)`・`eval` 等でコマンド位置を隠していない / ディスクへ書かない)。条件を外れたときは
 何も出力せず通常の許可フローに戻る、判定に迷ったら黙る設計です。
 

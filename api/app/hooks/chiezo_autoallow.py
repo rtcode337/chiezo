@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Code の PreToolUse フック: chiezo だけを読む Bash を自動許可する。
+"""Claude Code の PreToolUse フック: Chiezo だけを読む Bash を自動許可する。
 
 Claude Code の `permissions.allow` はコマンド文字列の**前方一致**で判定する。
 そのため `Bash(curl -sG "http://.../:*)` のようなルールは、単発の curl には効くが
@@ -13,8 +13,8 @@ Claude Code の `permissions.allow` はコマンド文字列の**前方一致**�
 このフックは前方一致ではなく**構造**で判定する。以下を全て満たすときだけ
 `permissionDecision: "allow"` を返す:
 
-  1. コマンド中に chiezo の URL が 1 つ以上ある。
-  2. コマンド中の `scheme://host` が**全て** chiezo である。
+  1. コマンド中に Chiezo の URL が 1 つ以上ある。
+  2. コマンド中の `scheme://host` が**全て** Chiezo である。
   3. コマンド位置に来る語が、安全なシェルキーワードか読み取り専用コマンドの
      許可リスト(curl/jq/sort など)に入っている。
   4. コマンド位置を隠せる構文(`$(...)` / バッククォート / プロセス置換 /
@@ -36,11 +36,11 @@ import shutil
 import sys
 from urllib.parse import urlsplit
 
-# gen_claude_config.sh(実体は chiezo の /admin/claude-config.hook.py)が
+# gen_claude_config.sh(実体は Chiezo の /admin/claude-config.hook.py)が
 # 配信時にこの 1 行を実際のベース URL へ差し替える。
 CHIEZO_ORIGIN = "http://localhost:9000"
 
-# 読み取り専用で、chiezo の応答を捌くのに使う程度のコマンドだけを許す。
+# 読み取り専用で、Chiezo の応答を捌くのに使う程度のコマンドだけを許す。
 # sed / awk は意図的に外している(sed -i でファイルを書き換えられ、awk は
 # `> "file"` と system() でシェルに出られるため)。ネットワークに出るのは curl のみ。
 ALLOWED_BINS = {
@@ -110,7 +110,7 @@ def chiezo_netloc() -> str:
 
 
 def _is_chiezo_target(token: str) -> bool:
-    """curl の位置引数(URL)が chiezo を指しているか。スキーム省略も許す。"""
+    """curl の位置引数(URL)が Chiezo を指しているか。スキーム省略も許す。"""
     netloc = chiezo_netloc()
     for prefix in (f"http://{netloc}", f"https://{netloc}", netloc):
         if token == prefix or token.startswith(prefix + "/") or token.startswith(prefix + "?"):
@@ -142,10 +142,10 @@ def tokenize(command: str) -> list[str]:
 
 
 def check_urls(tokens: list[str]) -> None:
-    """コマンド中の scheme://host が全て chiezo で、かつ 1 つ以上あること。
+    """コマンド中の scheme://host が全て Chiezo で、かつ 1 つ以上あること。
 
-    「1 つ以上」を要求するのは、このフックの管轄を chiezo を叩くコマンドだけに
-    限るため。chiezo が出てこないコマンドは黙って通常の許可フローへ渡す。
+    「1 つ以上」を要求するのは、このフックの管轄を Chiezo を叩くコマンドだけに
+    限るため。Chiezo が出てこないコマンドは黙って通常の許可フローへ渡す。
     """
     netloc = chiezo_netloc()
     found = False
@@ -156,11 +156,11 @@ def check_urls(tokens: list[str]) -> None:
             if host != netloc:
                 raise Reject(f"non-chiezo host: {host}")
             found = True
-        # スキームを省いた `curl -s <chiezo のホスト>:9000/v1/sources` も chiezo とみなす
+        # スキームを省いた `curl -s <Chiezo のホスト>:9000/v1/sources` も Chiezo とみなす
         if not found and _is_chiezo_target(tok):
             found = True
     if not found:
-        raise Reject("no chiezo URL")
+        raise Reject("no Chiezo URL")
 
 
 def check_command_word(tok: str) -> None:
@@ -195,7 +195,7 @@ def check_curl_args(args: list[str]) -> None:
         if expect_url:
             expect_url = False
             if not _is_chiezo_target(tok):
-                raise Reject(f"--url is not chiezo: {tok}")
+                raise Reject(f"--url is not Chiezo: {tok}")
             continue
         if tok == "--url":
             expect_url = True
@@ -209,7 +209,7 @@ def check_curl_args(args: list[str]) -> None:
         if tok.startswith("-"):
             continue
         if not _is_chiezo_target(tok):
-            raise Reject(f"curl target is not chiezo: {tok}")
+            raise Reject(f"curl target is not Chiezo: {tok}")
 
 
 def check_structure(tokens: list[str]) -> None:
@@ -304,7 +304,7 @@ def main() -> None:
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "allow",
-                "permissionDecisionReason": f"chiezo read-only lookup ({chiezo_netloc()})",
+                "permissionDecisionReason": f"Chiezo read-only lookup ({chiezo_netloc()})",
             },
             "suppressOutput": True,
         },

@@ -182,7 +182,7 @@ class TestAskJson:
 
 
 class TestGrounding:
-    """回答方針の切り替え。「抜粋だけ」は chiezo の思想ではなくモデルの幻覚対策。"""
+    """回答方針の切り替え。「抜粋だけ」は Chiezo の思想ではなくモデルの幻覚対策。"""
 
     def test_grounded_is_the_default(self, monkeypatch_env):
         fake = FakeLLM(PLAN_OK, ANSWER_OK)

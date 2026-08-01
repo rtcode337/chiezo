@@ -172,7 +172,7 @@ async def lifespan(app: FastAPI):
                 await watcher
 
 
-app = FastAPI(title="chiezo", version="0.2", lifespan=lifespan)
+app = FastAPI(title="Chiezo", version="0.2", lifespan=lifespan)
 
 
 @app.exception_handler(HTTPException)
@@ -398,7 +398,7 @@ def _answer_status_html() -> str:
             " <code>CHIEZO_LLM_URL</code> に設定すると有効になります"
             "(compose なら <code>docker compose --profile answer up -d</code>)。</p>"
         )
-    return f'<p><a href="{CHAT_PATH}">→ AI と話す(chiezo の知識を引きます)</a></p>'
+    return f'<p><a href="{CHAT_PATH}">→ AI と話す(Chiezo の知識を引きます)</a></p>'
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -484,7 +484,7 @@ def admin(request: Request):
         init_rows = '<tr><td colspan="4">未初期化のソースはありません</td></tr>'
 
     body = f"""
-<h1>chiezo 管理画面</h1>
+<h1>Chiezo 管理画面</h1>
 <p>登録ソース数: {len(sources)} / 最新のスキーマバージョン: {latest_schema}</p>
 <table>
 <thead>
@@ -522,7 +522,7 @@ def admin(request: Request):
 </p>
 <p><a href="/admin/claude-config">→ 生成される設定を見る</a></p>
 """
-    return HTMLResponse(content=page_shell("chiezo 管理画面", body, refresh=5 if job_running else None))
+    return HTMLResponse(content=page_shell("Chiezo 管理画面", body, refresh=5 if job_running else None))
 
 
 @app.get("/admin/osm", response_class=HTMLResponse)
@@ -612,7 +612,7 @@ Geofabrik の国別抽出 {total} 件{f"(絞り込み: {len(catalog)} 件)" if n
 {''.join(blocks)}
 """
     return HTMLResponse(
-        content=page_shell("chiezo: OSM 国別の初期化", body, refresh=5 if job_running else None)
+        content=page_shell("Chiezo: OSM 国別の初期化", body, refresh=5 if job_running else None)
     )
 
 
@@ -710,7 +710,7 @@ enwiki はその数倍)。ページビュー突合のため全プロジェクト
 {''.join(blocks)}
 """
     return HTMLResponse(
-        content=page_shell("chiezo: Wikipedia 言語版の初期化", body, refresh=5 if job_running else None)
+        content=page_shell("Chiezo: Wikipedia 言語版の初期化", body, refresh=5 if job_running else None)
     )
 
 
@@ -760,7 +760,7 @@ def admin_rebuild(source: str, request: Request):
 def request_origin(request: Request) -> str:
     """アクセス元 URL のプロトコル・ホスト名・ポートを組み立てる。
 
-    生成する設定内の curl 例・許可ルールを「クライアントが chiezo に届いた URL」に
+    生成する設定内の curl 例・許可ルールを「クライアントが Chiezo に届いた URL」に
     そろえるための導出。リバースプロキシ越しでも到達可能な URL になるよう、
     スキームは X-Forwarded-Proto(あれば)、ホストは X-Forwarded-Host(あれば)
     → 無ければ Host ヘッダを使う。Host ヘッダはポートを保持しているので
@@ -822,7 +822,7 @@ def admin_claude_config_hook_script(request: Request):
     """PreToolUse フック本体を返す(gen_claude_config.sh が実行可能ファイルとして置く)。
 
     `permissions.allow` は前方一致なので、ループやパイプに包まれた curl には効かない。
-    フックはコマンドを構造で見て、chiezo だけを読む読み取り専用コマンドを自動許可する。
+    フックはコマンドを構造で見て、Chiezo だけを読む読み取り専用コマンドを自動許可する。
     """
     return PlainTextResponse(
         claude_config.hook_script(request_origin(request)),
@@ -875,7 +875,7 @@ curl 例・許可ルールのベース URL は、この画面へのアクセス�
 
 <h2>MCP サーバー登録(既定で入る)</h2>
 <p class="muted">
-chiezo は MCP サーバーでもある(<code>{esc(base.rstrip("/"))}/mcp</code>)。
+Chiezo は MCP サーバーでもある(<code>{esc(base.rstrip("/"))}/mcp</code>)。
 <code>gen_claude_config.sh</code> は既定でこれも Claude Code に登録する:
 <code>--user</code> ならユーザースコープ(<code>claude mcp add --scope user</code>。
 claude CLI が無ければ jq で <code>~/.claude.json</code> へ直接マージ)、
@@ -893,7 +893,7 @@ claude CLI が無ければ jq で <code>~/.claude.json</code> へ直接マージ
 <p class="muted">
 書き込み先: <code>--user</code> なら <code>~/.claude/settings.json</code>、
 <code>--project</code> なら <code>./.claude/settings.local.json</code>。
-chiezo への curl を許可プロンプトなしに実行できるよう、下記を
+Chiezo への curl を許可プロンプトなしに実行できるよう、下記を
 <code>permissions.allow</code> へ<strong>追記マージ</strong>する(既存の許可は壊さない。
 新規作成時の丸ごとの中身が下記)。<code>--no-permissions</code> で無効化できる。
 生: <a href="/admin/claude-config.permissions.json">/admin/claude-config.permissions.json</a>
@@ -908,7 +908,7 @@ chiezo への curl を許可プロンプトなしに実行できるよう、下�
 <code>for … do curl … done</code> やパイプに包まれた curl には 1 本も効かず、
 大量取得のときだけ毎回プロンプトが出てしまう。これを解消したい場合は
 <code>PreToolUse</code> フックを併せて入れる。フックはコマンドを構造で見て
-<strong>chiezo だけを読む読み取り専用コマンド</strong>だけを自動許可する
+<strong>Chiezo だけを読む読み取り専用コマンド</strong>だけを自動許可する
 (条件を外れたら黙るので、その場合は今までどおりプロンプトが出る)。
 </p>
 <p class="muted">
@@ -946,7 +946,7 @@ wireCopy('copy-hook', 'config-hook', 'msg-hook');
 wireCopy('copy-mcp', 'config-mcp', 'msg-mcp');
 </script>
 """
-    return HTMLResponse(content=page_shell("chiezo: Claude Code 連携設定", body))
+    return HTMLResponse(content=page_shell("Chiezo: Claude Code 連携設定", body))
 
 
 # ---- 検索 -------------------------------------------------------------------
@@ -1781,7 +1781,7 @@ async def ask(
     stream: bool = Query(False, description="1 なら SSE で回答を流す"),
     grounded: bool | None = Query(
         None,
-        description="1 は chiezo で取れたことだけを根拠にする。0 なら足りない分をモデルの知識で補う"
+        description="1 は Chiezo で取れたことだけを根拠にする。0 なら足りない分をモデルの知識で補う"
                     "(既定は CHIEZO_ASK_DEFAULT_GROUNDED、無指定なら 1)",
     ),
     mode: str | None = Query(
@@ -2106,14 +2106,14 @@ CHAT_JS = """
 
 
 # 会話の画面。**ローカル LLM を使う側の機能**なので `/localllm/` の下に置く
-# (chiezo 本体の画面 = /admin と /search/… とは並びで区別できるようにする)。
+# (Chiezo 本体の画面 = /admin と /search/… とは並びで区別できるようにする)。
 @app.get("/localllm/chat", response_class=HTMLResponse)
 async def chat_page(
     request: Request,
     q: str | None = Query(None),
     source: str | None = Query(None),
     nojs: bool = Query(False, description="JS を使わず、1 問 1 答で表示する"),
-    grounded: bool | None = Query(None, description="chiezo で取れたことだけを根拠にする"),
+    grounded: bool | None = Query(None, description="Chiezo で取れたことだけを根拠にする"),
     mode: str | None = Query(None, pattern="^(rag|agent)$", description="rag / agent"),
 ):
     mode = mode or answer.default_mode()
@@ -2128,7 +2128,7 @@ async def chat_page(
     # 飛んで FastAPI は先頭(=0)を採る。select なら必ず 1 値だけ送られる。
     grounded_options = "".join(
         f'<option value="{value}"{" selected" if (value == "1") == grounded else ""}>{label}</option>'
-        for value, label in (("1", "chiezo で取れたことだけ"), ("0", "モデルの知識で補ってよい"))
+        for value, label in (("1", "Chiezo で取れたことだけ"), ("0", "モデルの知識で補ってよい"))
     )
     mode_options = "".join(
         f'<option value="{value}"{" selected" if value == mode else ""}>{label}</option>'
@@ -2141,7 +2141,7 @@ async def chat_page(
         '<input type="checkbox" id="web" checked>🌐 web 検索</label>'
         if websearch.is_enabled() else ""
     )
-    # 「覚えておいて」に応えられるようにする道具(chiezo で唯一の書き込み)。
+    # 「覚えておいて」に応えられるようにする道具(Chiezo で唯一の書き込み)。
     # 何を書いたかは「調べた手順」に出るので、勝手に増えたときも後から分かる。
     notes_toggle = (
         '<label class="toggle on" id="notes-toggle">'
@@ -2179,7 +2179,7 @@ async def chat_page(
         return HTMLResponse(content=page_shell("AI と話す", body, style=CHAT_STYLE))
 
     cfg = answer.require_settings()
-    # 話す相手は AI(モデル)で、chiezo はその AI が引く知識。見出しでその関係を出すため、
+    # 話す相手は AI(モデル)で、Chiezo はその AI が引く知識。見出しでその関係を出すため、
     # モデル名を名乗らせる(推論サーバに聞く。分からなければ名前なしの「AI」)。
     label = await answer.model_label(cfg)
     heading = f"AI({esc(label)})と話す" if label else "AI と話す"
@@ -2196,7 +2196,7 @@ async def chat_page(
 <a href="/admin">管理画面</a></div>
 <div class="log" id="log">
 <div class="empty" id="empty">
-<p>chiezo にためた知識(登録済みソース)を引ける AI です。<br>
+<p>Chiezo にためた知識(登録済みソース)を引ける AI です。<br>
 根拠にした文書は発言のあとに並びます。</p>
 <div class="examples">
 <button type="button">浅草寺について教えて</button>
@@ -2322,7 +2322,7 @@ def browse_source(
 </tbody>
 </table>
 """
-        return HTMLResponse(content=page_shell(f"chiezo: {source} / {tag}", body))
+        return HTMLResponse(content=page_shell(f"Chiezo: {source} / {tag}", body))
     if q:
         match = build_match_query(q)
         if match is None:
@@ -2372,7 +2372,7 @@ def browse_source(
 </form>
 {results_html}
 """
-    return HTMLResponse(content=page_shell(f"chiezo: {source}", body))
+    return HTMLResponse(content=page_shell(f"Chiezo: {source}", body))
 
 
 @app.get("/search/{source}/doc/{doc_id}", response_class=HTMLResponse)
@@ -2391,7 +2391,7 @@ def browse_doc(request: Request, source: str, doc_id: int):
 <h1>見つかりません</h1>
 <p>doc_id={esc(doc_id)} の文書は存在しません。</p>
 """
-        return HTMLResponse(content=page_shell(f"chiezo: {source}", body), status_code=404)
+        return HTMLResponse(content=page_shell(f"Chiezo: {source}", body), status_code=404)
     row = rows[0]
     tags = json.loads(row["tags"]) if row["tags"] else []
     links = json.loads(row["links"]) if row["links"] else []
@@ -2419,7 +2419,7 @@ def browse_doc(request: Request, source: str, doc_id: int):
 <h2>extra</h2>
 <pre class="doc-body">{esc(extra_html)}</pre>
 """
-    return HTMLResponse(content=page_shell(f"chiezo: {row['title']}", body))
+    return HTMLResponse(content=page_shell(f"Chiezo: {row['title']}", body))
 
 
 # ---- MCP(Streamable HTTP) ---------------------------------------------------

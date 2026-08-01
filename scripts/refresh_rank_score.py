@@ -40,7 +40,7 @@ try:
     )
 except ImportError as e:  # pragma: no cover - 配置ミスの案内
     raise SystemExit(
-        f"ingest/core.py を読めない({e})。chiezo のチェックアウト内から実行してください"
+        f"ingest/core.py を読めない({e})。Chiezo のチェックアウト内から実行してください"
     ) from e
 
 # source_kind → (extra のどのキーを人気度として使うか, 対数の上限)
@@ -59,7 +59,7 @@ def refresh(db_path: Path) -> int:
     try:
         row = conn.execute("SELECT source, source_kind FROM meta").fetchone()
         if row is None:
-            raise SystemExit(f"{db_path}: meta table is empty (not a chiezo DB?)")
+            raise SystemExit(f"{db_path}: meta table is empty (not a Chiezo DB?)")
         source, kind = row
         if kind not in POPULARITY_SOURCE:
             print(f"{source}: source_kind={kind} は対象外(元から 0〜1)。何もしない")

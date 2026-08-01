@@ -267,7 +267,7 @@ from typing import NamedTuple
 
 class OsmRegion(NamedTuple):
     slug: str          # Geofabrik 側の識別子(ハイフン区切り)
-    source: str        # chiezo のソース名(osm_<国>。区切りはアンダースコア)
+    source: str        # Chiezo のソース名(osm_<国>。区切りはアンダースコア)
     region: str        # Geofabrik のパス(例: asia/japan)
     continent: str     # 大陸(表示のグルーピング用。russia / antarctica は standalone)
     label: str         # 表示名(日本語。無ければ英名)

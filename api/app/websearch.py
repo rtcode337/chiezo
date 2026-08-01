@@ -1,13 +1,13 @@
 """web 検索の道具 — ためた知識で足りないぶんを外から補う(既定では無効)。
 
-**これは「答える」層(= chiezo を使う側)の機能であって、chiezo 本体の機能ではない**。
-chiezo は AI のための知識ベースで、その AI をローカル LLM で同居させたのが「答える」層。
-Claude Code が chiezo と web 検索の両方を持っているのと同じ関係で、
+**これは「答える」層(= Chiezo を使う側)の機能であって、Chiezo 本体の機能ではない**。
+Chiezo は AI のための知識ベースで、その AI をローカル LLM で同居させたのが「答える」層。
+Claude Code が Chiezo と web 検索の両方を持っているのと同じ関係で、
 **知識ベースそのものは今までどおり外を一切叩かない**(ingest がダンプを取る以外)。
 だから存在理由と矛盾はしないが、外へ出る以上は次を守る:
 
 - **どれが web 由来かを必ず出す**。出典(`references`)の `source` が `web` になり、URL が付く。
-  chiezo の文書と混ざったまま「どこから来た話か分からない」状態にしない
+  Chiezo の文書と混ざったまま「どこから来た話か分からない」状態にしない
 - **自分でレート制限をかける**(`MIN_INTERVAL`)。ツールループはモデルの気分で何度でも呼ぶので、
   呼ばれた回数ぶん素直に外へ出さない
 - **`User-Agent` に個人情報を入れない**。名乗るのはプロジェクト名だけで、
@@ -15,7 +15,7 @@ Claude Code が chiezo と web 検索の両方を持っているのと同じ関�
 - **本文は取りに行かない**。返すのは検索結果のタイトル・要約・URL だけ。ページを取得して
   中身を読むのはスクレイピングに踏み込む話で、相手への負担も壊れやすさも別次元になる
 
-プロバイダは 2 つ。**自前で立てた SearXNG を第一に置いている**のは、chiezo と同じ
+プロバイダは 2 つ。**自前で立てた SearXNG を第一に置いている**のは、Chiezo と同じ
 「LAN 内で完結する」置き方ができるから(検索先は SearXNG が面倒を見る)。Brave は
 公式 API があるので、鍵を持っているならそちらでもよい、という位置づけ。
 """
@@ -138,9 +138,9 @@ async def search(q: str, limit: int | None = None) -> dict:
     return {"query": q, "provider": provider, "results": results}
 
 
-# agent に渡す道具の定義(OpenAI の function 形式)。chiezo の道具は MCP から借りるが、
+# agent に渡す道具の定義(OpenAI の function 形式)。Chiezo の道具は MCP から借りるが、
 # こちらは MCP に出していないので、ここで定義する。**MCP に出さないのは意図的**で、
-# chiezo の MCP は「ためた知識の引き口」であり、web 検索はその外側だから
+# Chiezo の MCP は「ためた知識の引き口」であり、web 検索はその外側だから
 # (MCP の利用者である Claude Code は自前の web 検索を持っている)。
 TOOL_NAME = "web_search"
 
@@ -149,10 +149,10 @@ TOOL_SPEC = {
     "function": {
         "name": TOOL_NAME,
         "description": (
-            "web を検索する。**chiezo(ローカルの知識)で足りないときだけ使う**"
+            "web を検索する。**Chiezo(ローカルの知識)で足りないときだけ使う**"
             "(取り込んだダンプに無い最近の出来事、いま現在の状態など)。"
             "返るのはタイトル・要約・URL だけで、ページ本文は取得しない。"
-            "検索できる回数には限りがあるので、まず chiezo を引くこと。"
+            "検索できる回数には限りがあるので、まず Chiezo を引くこと。"
         ),
         "parameters": {
             "type": "object",
@@ -166,7 +166,7 @@ TOOL_SPEC = {
 
 
 def references_from(results: dict) -> list[dict]:
-    """検索結果を出典の形にする(chiezo の文書と混ざっても web だと分かるように)。"""
+    """検索結果を出典の形にする(Chiezo の文書と混ざっても web だと分かるように)。"""
     return [
         {"source": "web", "title": r["title"] or r["url"], "doc_id": None, "url": r["url"]}
         for r in results.get("results", [])

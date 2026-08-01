@@ -171,8 +171,8 @@ class TestWebSearch:
             chat(client, [{"role": "user", "content": "こんにちは"}], mode="agent")
         names = {t["function"]["name"] for t in fake.requests[0]["tools"]}
         assert "web_search" in names
-        # chiezo が先、という順番はプロンプト側で固定する
-        assert "まず chiezo を引く" in fake.requests[0]["messages"][0]["content"]
+        # Chiezo が先、という順番はプロンプト側で固定する
+        assert "まず Chiezo を引く" in fake.requests[0]["messages"][0]["content"]
 
     def test_results_become_web_references(self, monkeypatch_env, web):
         fake = ToolLLM([("web_search", {"q": "最新のニュース"})], "web で調べた限り…")
@@ -181,7 +181,7 @@ class TestWebSearch:
                 client, [{"role": "user", "content": "最近のニュースは?"}], mode="agent"
             ).json()
         assert body["steps"][0]["ok"] is True
-        # 出典は web と分かる形で並ぶ(chiezo の文書と混ざっても区別できる)
+        # 出典は web と分かる形で並ぶ(Chiezo の文書と混ざっても区別できる)
         assert [r["source"] for r in body["references"]] == ["web", "web"]
         assert body["references"][0]["url"].startswith("https://example.com/")
         assert len(web.requests) == 1
@@ -237,14 +237,14 @@ class TestWebSearch:
 
 
 class TestWhoYouAreTalkingTo:
-    """話す相手は AI(モデル)で、chiezo はその AI が引く知識、という関係を画面に出す。"""
+    """話す相手は AI(モデル)で、Chiezo はその AI が引く知識、という関係を画面に出す。"""
 
     def test_heading_names_the_model(self, monkeypatch_env):
         with make_client(monkeypatch_env, ToolLLM(), CHIEZO_LLM_MODEL="Qwen/Qwen3-8B-GGUF:Q4_K_M") as c:
             res = c.get(CHAT_PATH)
         # 配布元・GGUF・量子化は落として名乗る
         assert "<h1>AI(Qwen3-8B)と話す</h1>" in res.text
-        assert "chiezo と話す" not in res.text
+        assert "Chiezo と話す" not in res.text
 
     def test_heading_falls_back_when_the_model_is_unknown(self, monkeypatch_env):
         """モデル名が取れない(推論サーバに繋がらない)ときも画面は出す。"""
@@ -260,7 +260,7 @@ class TestWhoYouAreTalkingTo:
         with make_client(monkeypatch_env, fake) as client:
             chat(client, [{"role": "user", "content": "こんにちは"}], mode="agent")
         system = fake.requests[0]["messages"][0]["content"]
-        assert "chiezo はあなたが引く知識であって、あなた自身ではありません" in system
+        assert "Chiezo はあなたが引く知識であって、あなた自身ではありません" in system
 
 
 class TestWebToggle:
@@ -275,7 +275,7 @@ class TestWebToggle:
         names = {t["function"]["name"] for t in fake.requests[0]["tools"]}
         assert "web_search" not in names
         # 使わせないときは、使い分けの指示もプロンプトに載せない
-        assert "まず chiezo を引く" not in fake.requests[0]["messages"][0]["content"]
+        assert "まず Chiezo を引く" not in fake.requests[0]["messages"][0]["content"]
         assert body["web"] is False
 
     def test_request_cannot_conjure_it_when_unconfigured(self, monkeypatch_env):
@@ -298,7 +298,7 @@ class TestWebToggle:
 
     def test_turning_it_off_also_refuses_the_call(self, monkeypatch_env, web):
         """道具を出していないのにモデルが呼んできたら、実行せず突き返す。"""
-        fake = ToolLLM([("web_search", {"q": "何か"})], "chiezo だけで答えます")
+        fake = ToolLLM([("web_search", {"q": "何か"})], "Chiezo だけで答えます")
         with make_client(monkeypatch_env, fake) as client:
             body = chat(
                 client, [{"role": "user", "content": "何か"}],
@@ -387,7 +387,7 @@ class TestNotesTools:
         assert "disabled" in body["steps"][0]["summary"]
 
     def test_remember_then_recall_round_trip(self, notes_on):
-        """覚えたものが、次の会話で思い出せる(chiezo に実際に書かれている)。"""
+        """覚えたものが、次の会話で思い出せる(Chiezo に実際に書かれている)。"""
         write = ToolLLM([("remember", {"text": "agent モードは 8B 級が前提"})], "覚えました")
         with make_client(notes_on, write) as client:
             body = chat(

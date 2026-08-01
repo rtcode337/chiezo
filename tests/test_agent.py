@@ -2,7 +2,7 @@
 
 test_answer.py と同じく推論サーバは立てず、`answer._llm_client` を差し替えて偽の
 OpenAI 互換サーバを演じさせる。違いは**この偽サーバが tool_calls を返せる**ことで、
-「モデルが道具を呼ぶ → chiezo が実行して結果を返す → モデルが答える」の全経路を、
+「モデルが道具を呼ぶ → Chiezo が実行して結果を返す → モデルが答える」の全経路を、
 実データもネットワークも GPU も無しで通せる。
 """
 import json
@@ -258,7 +258,7 @@ class TestGrounding:
         with make_client(monkeypatch_env, fake) as client:
             body = ask(client, q="存在しない語句ですよこれは").json()
         assert body["references"] == []
-        assert "chiezo からは分かりません" in body["answer"]
+        assert "Chiezo からは分かりません" in body["answer"]
 
     def test_open_mode_keeps_the_models_own_answer(self, monkeypatch_env):
         fake = ToolLLM(

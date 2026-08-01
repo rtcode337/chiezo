@@ -6,7 +6,7 @@
 #   CHIEZO_TEST_RUNNER=docker scripts/run_tests.sh  # 手元の環境を無視して Docker で
 #   CHIEZO_TEST_RUNNER=local  scripts/run_tests.sh  # Docker へ落ちずに失敗させる
 #
-# chiezo は **Python 3.12** 前提(api/Dockerfile・ingest/Dockerfile・CI がその系列)で、
+# Chiezo は **Python 3.12** 前提(api/Dockerfile・ingest/Dockerfile・CI がその系列)で、
 # ホストの python はそれより新しいことがある。依存には C 拡張(pyosmium, pydantic-core)が
 # 含まれるので、バージョンが違うと import から落ちる。Docker 経路はそのときの逃げ道で、
 # CI と同じ Python・同じ requirements で回すためのもの。

@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT / "ingest"))
 
 # 画面の URL(人が打つもの・リンクされるものなので、変えたらテストが落ちてよい契約)。
 # ソースの画面は /search/ の下(ルート直下をキャッチオールにすると、ask や admin という
-# 名前のソースを足せなくなる)、会話は「chiezo を使う側」の機能なので /localllm/ の下。
+# 名前のソースを足せなくなる)、会話は「Chiezo を使う側」の機能なので /localllm/ の下。
 CHAT_PATH = "/localllm/chat"
 
 FIXTURE_DUMP = ROOT / "tests" / "fixtures" / "mini_jawiki.xml.gz"
