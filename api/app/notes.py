@@ -12,7 +12,7 @@ Chiezo なら**常駐するのは MCP のツール定義(数百字)だけ**で�
 
 ## 設計の要点
 
-- **`CHIEZO_NOTES_DIR` が機能フラグを兼ねる**(未設定 = 丸ごと無効)。「答える」層と同じ流儀。
+- **`CHIEZO_NOTES_DIR` が機能フラグを兼ねる**(未設定 = 丸ごと無効)。「使う」層と同じ流儀。
 - **置き場は `/data` と分ける**。`registry.data_dir_fingerprint()` が `/data/*.db` の
   mtime と size を 5 秒ごとに見ていて、変化があれば**全ソースを再走査**(`COUNT(*)` 込み)
   する。notes.db を `/data` に置くと、メモを 1 件書くたびに jawiki 150 万件の COUNT が走る。

@@ -1,6 +1,6 @@
 """外部プラグイン(CHIEZO_SOURCE_PLUGINS)でソースを足せることのテスト。
 
-社外に出せないソース(社内 wiki・社内サーバーの構成情報など)を別リポジトリに置いたまま、
+公開できないプライベートな情報を、取得コードごと別リポジトリに置いたまま、
 Chiezo のイメージを継承して足せる、という経路を固定する。
 """
 import importlib
@@ -21,7 +21,7 @@ PLUGIN_SOURCE = textwrap.dedent(
         source_kind = "memo"
         lang = "ja"
         min_docs = 2
-        sample_titles = ["社内ネットワーク構成"]
+        sample_titles = ["回線の契約内容"]
         min_build_memory_gb = 0.1
 
         def fetch(self, workdir):
@@ -30,18 +30,18 @@ PLUGIN_SOURCE = textwrap.dedent(
         def iter_docs(self, path):
             yield Doc(
                 doc_id=1,
-                title="社内ネットワーク構成",
-                opening="拠点間は VPN で接続している。",
-                body="拠点間は VPN で接続している。コアスイッチは各拠点に 1 台ずつ。",
-                tags=["ネットワーク"],
+                title="回線の契約内容",
+                opening="上下 1Gbps の光回線。IPv6 は有効。",
+                body="上下 1Gbps の光回線。IPv6 は有効。契約は 2 年ごとの自動更新。",
+                tags=["契約"],
                 rank_score=1.0,
-                extra={"area": "本社"},
+                extra={"area": "拠点 A"},
             )
             yield Doc(
                 doc_id=2,
-                title="踏み台サーバーの運用",
-                opening="踏み台は 1 台のみ。",
-                body="踏み台は 1 台のみ。鍵は四半期ごとに入れ替える。",
+                title="バックアップの運用",
+                opening="バックアップは 1 日 1 回。",
+                body="バックアップは 1 日 1 回。世代は 30 日ぶん残す。",
                 tags=["運用"],
                 rank_score=0.5,
             )
@@ -194,16 +194,16 @@ class TestEndToEnd:
             assert [s["name"] for s in listed] == ["memo"]
             assert listed[0]["kind"] == "memo"
 
-            hits = client.get("/v1/memo/search", params={"q": "踏み台"}).json()
-            assert [r["title"] for r in hits["results"]] == ["踏み台サーバーの運用"]
+            hits = client.get("/v1/memo/search", params={"q": "バックアップ"}).json()
+            assert [r["title"] for r in hits["results"]] == ["バックアップの運用"]
 
-            doc = client.get("/v1/memo/doc", params={"title": "社内ネットワーク構成"}).json()
-            assert "VPN" in doc["body"]
-            assert doc["tags"] == ["ネットワーク"]
+            doc = client.get("/v1/memo/doc", params={"title": "回線の契約内容"}).json()
+            assert "IPv6" in doc["body"]
+            assert doc["tags"] == ["契約"]
 
             # 属性・タグの索引も組み込みソースと同じように効く
             tagged = client.get("/v1/memo/filter", params={"tag": "運用"}).json()
-            assert [r["title"] for r in tagged["results"]] == ["踏み台サーバーの運用"]
+            assert [r["title"] for r in tagged["results"]] == ["バックアップの運用"]
 
             # ブラウズ画面も汎用なのでそのまま開ける
             assert client.get("/search/memo/").status_code == 200

@@ -1,4 +1,4 @@
-"""agent モード — 道具を LLM 自身に引かせる「答える」層のもう 1 つの経路。
+"""agent モード — 道具を LLM 自身に引かせる「使う」層のもう 1 つの経路。
 
 `/v1/ask?mode=agent` の本体。rag モード(`app/answer.py`)が **search を 1 回叩いて
 終わり**なのに対し、こちらは `filter` / `tags` / `links` を含む Chiezo の道具一式を

@@ -135,9 +135,9 @@ docker compose --profile ingest run --rm -e SOURCE=aozora chiezo-ingest
 
 ## ケース 3: このリポジトリに入れられないソース(別リポジトリのプラグイン)
 
-社内 wiki や社内サーバーから集めた構成情報のように、**取得コードごと公開リポジトリに
-置きたくないソース**は、別リポジトリのモジュールとして書き、`CHIEZO_SOURCE_PLUGINS` で
-差し込みます。Chiezo 側には何も入りません(コードもデータも社内リポジトリのまま)。
+プライベートな情報のように、**取得コードごと公開リポジトリに置きたくないソース**は、
+別リポジトリのモジュールとして書き、`CHIEZO_SOURCE_PLUGINS` で差し込みます。
+Chiezo 側には何も入りません(コードもデータも非公開のリポジトリのまま)。
 
 ### 前提: 配信側は最初から何も要らない
 
@@ -148,32 +148,32 @@ chiezo-api はソース種別を知りません。`data/<名前>.db` にコア�
 
 以下が要るのは、**管理画面の初期化・再構築ボタンからも回したい**場合です。
 
-### 1. 社内リポジトリにアダプタを書く
+### 1. 非公開のリポジトリにアダプタを書く
 
 ケース 2 と同じ `SourceAdapter` を書き、モジュールの直下に `ADAPTERS` を置きます。
 
 ```python
-# netmap_sources/__init__.py
+# private_sources/__init__.py
 from core import Doc          # chiezo-ingest イメージの core.py を使う
 
 
-class NetmapAdapter:
-    source = "netmap"
-    source_kind = "netmap"
+class PrivateDocsAdapter:
+    source = "private_docs"
+    source_kind = "private_docs"
     lang = "ja"
     min_docs = 100
-    sample_titles = ["本社コアスイッチ"]
+    sample_titles = ["運用手順書"]
     min_build_memory_gb = 0.5
 
     def fetch(self, workdir):
-        # 社内 wiki の API を叩く、サーバーに SSH して集める、など
+        # 非公開の API を叩く、別のサーバーからファイルを集める、など
         return collected_path, "20260731"
 
     def iter_docs(self, path):
-        yield Doc(doc_id=1, title="本社コアスイッチ", opening="…", body="…")
+        yield Doc(doc_id=1, title="運用手順書", opening="…", body="…")
 
 
-ADAPTERS = {"netmap": lambda: NetmapAdapter()}
+ADAPTERS = {"private_docs": lambda: PrivateDocsAdapter()}
 ```
 
 ソース名は `[A-Za-z0-9_]` のみ(ハイフンは世代ファイル名 `<source>-<date>.db` の区切りと
@@ -186,10 +186,10 @@ ADAPTERS = {"netmap": lambda: NetmapAdapter()}
 ### 2. ingest イメージを継承する
 
 ```dockerfile
-# 社内リポジトリの Dockerfile
+# 非公開リポジトリ側の Dockerfile
 FROM ghcr.io/rtcode337/chiezo-ingest:latest
-COPY netmap_sources /srv/chiezo-ingest/netmap_sources
-ENV CHIEZO_SOURCE_PLUGINS=netmap_sources
+COPY private_sources /srv/chiezo-ingest/private_sources
+ENV CHIEZO_SOURCE_PLUGINS=private_sources
 ```
 
 複数のモジュールを入れるならカンマ区切りで並べます。
@@ -200,15 +200,15 @@ ENV CHIEZO_SOURCE_PLUGINS=netmap_sources
 
 ```bash
 # .env
-CHIEZO_INGEST_IMAGE=ghcr.io/<社内>/chiezo-ingest-netmap:latest
+CHIEZO_INGEST_IMAGE=ghcr.io/<自分のアカウント>/chiezo-ingest-private:latest
 ```
 
 ```bash
-docker compose up -d           # trigger が差し替わり、管理画面に netmap が出る
+docker compose up -d           # trigger が差し替わり、管理画面に private_docs が出る
 ```
 
 これで組み込みソースと同じように、管理画面の「初期化」「再構築」ボタンから回せます。
-`SOURCE=netmap` での one-shot 実行も同様です。
+`SOURCE=private_docs` での one-shot 実行も同様です。
 
 **指定したモジュールが読めない・`ADAPTERS` が無い場合は起動時に落とします**
 (黙って無視すると「管理画面に出ない」「unknown SOURCE」として後から現れ、原因が

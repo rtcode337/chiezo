@@ -391,10 +391,10 @@ def _job_status_html(job: dict | None) -> str:
 
 
 def _answer_status_html() -> str:
-    """管理画面に出す「答える」層の状態(既定では無効なので、その旨と有効化方法を出す)。"""
+    """管理画面に出す「使う」層の状態(既定では無効なので、その旨と有効化方法を出す)。"""
     if not answer.is_enabled():
         return (
-            '<p class="muted">「答える」層は無効です。推論サーバの OpenAI 互換 URL を'
+            '<p class="muted">「使う」層は無効です。推論サーバの OpenAI 互換 URL を'
             " <code>CHIEZO_LLM_URL</code> に設定すると有効になります"
             "(compose なら <code>docker compose --profile answer up -d</code>)。</p>"
         )
@@ -512,7 +512,7 @@ def admin(request: Request):
 </tbody>
 </table>
 
-<h2>ためた知識で答える</h2>
+<h2>ためた知識を使う AI</h2>
 {_answer_status_html()}
 
 <h2>Claude Code 連携設定</h2>
@@ -1750,7 +1750,7 @@ def forget(request: Request, doc_id: int):
     return {"deleted": doc_id}
 
 
-# ---- 答える(ローカル LLM。既定では無効) -------------------------------------
+# ---- 使う(ローカル LLM。既定では無効) ---------------------------------------
 #
 # パイプラインの実体は app/answer.py。ここは HTTP の口(JSON / SSE / HTML)だけを持つ。
 # `CHIEZO_LLM_URL` が未設定なら丸ごと無効で、503 と有効化の案内を返す。
@@ -2166,7 +2166,7 @@ async def chat_page(
 <div class="chat-head"><h1>AI と話す</h1><span class="spacer"></span>
 <a href="/admin">管理画面</a></div>
 <div class="log">
-<p class="stale">「答える」層は無効です。</p>
+<p class="stale">「使う」層は無効です。</p>
 <p class="muted">推論サーバの OpenAI 互換 URL を <code>CHIEZO_LLM_URL</code> に設定すると
 有効になります(compose なら <code>docker compose --profile answer up -d</code>)。</p>
 </div>
@@ -2380,7 +2380,7 @@ def browse_doc(request: Request, source: str, doc_id: int):
     """文書 1 件の詳細。
 
     **`opening` は出さない**。あれは `body` の冒頭を切り出したもの(検索結果の
-    スニペットや「答える」層の抜粋に使う)で、人が読む画面で本文と並べると同じ文章が
+    スニペットや「使う」層の抜粋に使う)で、人が読む画面で本文と並べると同じ文章が
     2 回出る。短いメモ(notes)では完全に同じ文字列が 2 度並んでいた。
     """
     src = get_source(request, source)

@@ -1,4 +1,4 @@
-"""「答える」層(/v1/ask・/ask)のテスト。
+"""「使う」層(/v1/ask・/localllm/chat)のテスト。
 
 推論サーバは立てず、`answer._llm_client` を `httpx.MockTransport` 入りのクライアントに
 差し替えて偽の OpenAI 互換サーバを演じさせる。こうするとクエリ生成 → 検索 → 回答の
@@ -21,7 +21,7 @@ def monkeypatch_env(monkeypatch, built_data_dir):
 
 @pytest.fixture()
 def disabled_client(monkeypatch_env):
-    """CHIEZO_LLM_URL 未設定 = 答える層が無効な状態。"""
+    """CHIEZO_LLM_URL 未設定 = 使う層が無効な状態。"""
     monkeypatch_env.delenv("CHIEZO_LLM_URL", raising=False)
     from app.main import app
 
@@ -99,7 +99,7 @@ class TestDisabled:
     def test_admin_shows_the_feature_as_disabled(self, disabled_client):
         res = disabled_client.get("/admin")
         assert res.status_code == 200
-        assert "「答える」層は無効です" in res.text
+        assert "「使う」層は無効です" in res.text
 
 
 class TestAskJson:

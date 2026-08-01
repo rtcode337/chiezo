@@ -284,18 +284,18 @@ wikipedia 言語版の表示名・自称・記事数)と、このイメージが
 `data/` に `<source>.db` を置く(または消す)だけです(chiezo-api が数秒以内に自動で検知します)。
 新しい種類のソースの取り込み方は [adding-a-source.md](adding-a-source.md) を参照してください。
 
-**このリポジトリに入れられないソース**(社内 wiki や社内サーバーから集めた情報など)は、
+**このリポジトリに入れられないソース**(公開できないプライベートな情報など)は、
 別リポジトリのモジュールとして書き、ingest イメージを継承して差し込めます。
 
 ```dockerfile
 FROM ghcr.io/rtcode337/chiezo-ingest:latest
-COPY netmap_sources /srv/chiezo-ingest/netmap_sources
-ENV CHIEZO_SOURCE_PLUGINS=netmap_sources     # カンマ区切りで複数可
+COPY private_sources /srv/chiezo-ingest/private_sources
+ENV CHIEZO_SOURCE_PLUGINS=private_sources    # カンマ区切りで複数可
 ```
 
 ```bash
 # .env — chiezo-ingest と chiezo-trigger の両方がこの変数を見る
-CHIEZO_INGEST_IMAGE=ghcr.io/<自分の組織>/chiezo-ingest-netmap:latest
+CHIEZO_INGEST_IMAGE=ghcr.io/<自分のアカウント>/chiezo-ingest-private:latest
 ```
 
 これで管理画面の「初期化」「再構築」ボタンからも回せます。Chiezo 側にはコードもデータも
@@ -316,7 +316,7 @@ LAN 内前提なので方針は揃っています)。絞りたい場合は `chie
 `CHIEZO_MCP_ALLOWED_HOSTS` に許可する Host をカンマ区切りで指定してください
 (例: `<LAN の IP>:9000,localhost:*`。末尾 `:*` でポート任意)。
 
-「答える」層(`/v1/ask`・`/v1/chat`・`/localllm/chat`)も同じ方針です。推論コンテナ `chiezo-llm` は
+「使う」層(`/v1/ask`・`/v1/chat`・`/localllm/chat`)も同じ方針です。推論コンテナ `chiezo-llm` は
 ホストへポートを公開せず、chiezo-api からのみ到達できます。ただし到達できる相手は誰でも
 推論を起動できる(比較的重い処理を認証なしで回せる)点は、初期化ボタンと同様に留意してください。
 質問文が外部へ送られることはありません(推論も検索もローカルで完結します)。

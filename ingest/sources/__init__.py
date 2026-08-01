@@ -11,7 +11,7 @@ OSM の国別ソース(`osm_<国>`)と Wikipedia の言語版(`<lang>wiki`)は�
 どの国・言語も「使いたくなったときに初期化できる」状態にしておきたいが、数百行を
 手で書き足して綴りを保守するのは現実的でないため。
 
-このリポジトリに入れられないソース(社内 wiki、社内サーバーから集めた構成情報など)は、
+このリポジトリに入れられないソース(公開できないプライベートな情報など)は、
 別リポジトリのモジュールを `CHIEZO_SOURCE_PLUGINS` で差し込む(下の
 `load_plugin_adapters()`)。手順は `docs/adding-a-source.md` のケース 3 が正。
 """
@@ -106,7 +106,7 @@ def load_plugin_adapters(spec: str | None = None) -> dict[str, Callable[[], Sour
 
     `CHIEZO_SOURCE_PLUGINS` にモジュール名をカンマ区切りで並べると、それぞれの
     `ADAPTERS`(このモジュールと同じ `{ソース名: 生成関数}` の dict)を取り込む。
-    社外に出せないソースを別リポジトリに置いたまま、Chiezo のイメージを `FROM` で
+    公開できないソースを別リポジトリに置いたまま、Chiezo のイメージを `FROM` で
     継承して足せるようにするための唯一の口。
 
     **失敗は握り潰さず落とす**(`SystemExit`)。指定したのに読み込まれていない状態を
