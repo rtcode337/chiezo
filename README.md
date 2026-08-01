@@ -3,15 +3,11 @@
 AI が使う知識を AI の外に置くための知識ベース。知識をローカルの SQLite (FTS5) に
 索引して置き、AI は必要になったときに必要なぶんだけ引く。
 
-- ためる — ソースごとに独立した 1 つの SQLite ファイル(`data/<source>.db`)にする。
-  取得元は公開ダンプ(Wikipedia / OpenStreetMap / GeoNames)のほか、公開リポジトリに
-  置けないプライベートな情報も、別リポジトリのアダプタとして差し込める。
-  更新はブルーグリーン(別ファイルに構築 → 切り替え)
-- 取り出す — AI からの引き口は 2 経路。MCP(`/mcp`、Streamable HTTP)と
-  REST(`search` / `doc` / `filter` / `tags` …)。Claude Code 向けには「どんなときに
-  Chiezo を使うか」を書いた CLAUDE.md ブロックも生成できる
-- 覚える — `/v1/notes` に書いたものは `notes` ソースとして溜まり、`recall` で引ける。
-  書き手は人でも AI でもよい
+| はたらき | 内容 |
+|---|---|
+| ためる | ソースごとに独立した 1 つの SQLite ファイル(`data/<source>.db`)にする。取得元は公開ダンプ(Wikipedia / OpenStreetMap / GeoNames)のほか、公開リポジトリに置けないプライベートな情報も、別リポジトリのアダプタとして差し込める。更新はブルーグリーン(別ファイルに構築 → 切り替え) |
+| 取り出す | AI からの引き口は 2 経路。MCP(`/mcp`、Streamable HTTP)と REST(`search` / `doc` / `filter` / `tags` …)。Claude Code 向けには「どんなときに Chiezo を使うか」を書いた CLAUDE.md ブロックも生成できる |
+| 覚える | `/v1/notes` に書いたものは `notes` ソースとして溜まり、`recall` で引ける。書き手は人でも AI でもよい |
 
 人間が中身を確かめるための簡易ブラウズ画面と管理画面(`/admin`)も持つ。
 
@@ -39,19 +35,12 @@ AI に知識を持たせる方法はほかに 3 つある。モデルの中(学�
 
 ### ためられるソース
 
-- `<lang>wiki` — Wikipedia。一般知識・人物・作品・出来事など。348 の言語版が定義済みで
-  (`jawiki` / `enwiki` / `zh_yuewiki` …)、使いたい言語だけを取り込む
-  (管理画面の `/admin` → `wikipedia` → 言語選択から)
-- `osm_<国>` — OpenStreetMap の国別抽出(Geofabrik 由来の地名辞典 + POI 辞典)。
-  地名・行政区・自然地物に加え、病院・学校・店舗・観光地等の主要 POI と
-  駅・空港・港・IC/SA 等の交通インフラ、およびそれらの座標。Geofabrik にある
-  195 の国・地域が定義済みで(`osm_japan` / `osm_france` …)、使いたい国だけを取り込む
-  (`/admin` → `osm` → 国選択から)
-- `geonames` — GeoNames 全世界地名辞典(約 400MB のダンプで約 1,200 万件)。
-  多言語別名を持つので「パリ」「ニューヨーク」のような日本語表記から引ける。
-  wikidata の Q 番号も拾うので jawiki と突合できる。店舗・営業時間は持たない
-  (そこは osm 系の担当)
-- `notes` — AI 自身が書き込むソース。取り込みは要らず、書いた端から引ける(後述)
+| ためる情報 | ソース名 | 内容 |
+|---|---|---|
+| Wikipedia | `<lang>wiki` | 一般知識・人物・作品・出来事など。348 の言語版が定義済みで(`jawiki` / `enwiki` / `zh_yuewiki` …)、使いたい言語だけを取り込む(管理画面の `/admin` → `wikipedia` → 言語選択から) |
+| OpenStreetMap | `osm_<国>` | 国別抽出(Geofabrik 由来の地名辞典 + POI 辞典)。地名・行政区・自然地物に加え、病院・学校・店舗・観光地等の主要 POI と駅・空港・港・IC/SA 等の交通インフラ、およびそれらの座標。Geofabrik にある 195 の国・地域が定義済みで(`osm_japan` / `osm_france` …)、使いたい国だけを取り込む(`/admin` → `osm` → 国選択から) |
+| GeoNames | `geonames` | 全世界地名辞典(約 400MB のダンプで約 1,200 万件)。多言語別名を持つので「パリ」「ニューヨーク」のような日本語表記から引ける。wikidata の Q 番号も拾うので jawiki と突合できる。店舗・営業時間は持たない(そこは osm 系の担当) |
+| AI 自身が書いたメモ | `notes` | 取り込みは要らず、書いた端から引ける(後述) |
 
 公開リポジトリに置けないプライベートな情報は、取得コードごと別リポジトリに置いたまま
 [アダプタとして差し込める](docs/operations.md#ソースの追加削除)。
@@ -106,14 +95,12 @@ curl -sG "$BASE/v1/osm_japan/filter?limit=200" \
 各ソース名から簡易ブラウズ画面(`/search/{source}/`)に辿れる。
 
 パラメータの一覧・`extra` フィールドの中身・MCP・Claude Code 連携・画面の仕様は
-[API リファレンス](docs/api-reference.md)にある。挙動が直感に反する点は 3 つ。
+[API リファレンス](docs/api-reference.md)にある。挙動が直感に反する点は 2 つ。
 
 - 3 文字未満の語は全文検索できず、タイトル前方一致にフォールバックする
   (応答の `mode` が `title_prefix` になる)
 - カテゴリの全記事列挙は `filter?tag=` を使う。本文の全文検索
   (`search?q=Category:…`)で代用すると、ソートキー付きの記事を静かに取りこぼす
-- 504 は「該当 0 件」ではなく「取れなかった」を意味する。空の結果として先へ進むと
-  そのまとまりを丸ごと取りこぼす
 
 ### MCP / Claude Code から使う
 
