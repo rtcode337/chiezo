@@ -1,14 +1,20 @@
 # 依存の更新 PR を週 1 でまとめて受け取る(月曜 JST)。
-# requirements は範囲指定(>=)なので日々の追従は不要で、ここで拾いたいのは
+# 直接の依存は `requirements.in` で範囲指定(>=)しており、実際に入る版はそれを
+# コンパイルした `requirements.txt`(ハッシュ付き)で固定してある。ここで拾いたいのは
 # 「範囲の外に出る新メジャー」(実例: mcp 2.0)と、上限ピンを入れた依存の解除時期、
-# Actions・ベースイメージの更新。CI(pytest)が通るかは PR ごとに自動で検証される。
+# Actions・ベースイメージの更新。CI(ruff + pytest)が通るかは PR ごとに自動で検証される。
+#
+# **ロックの更新は Dependabot に任せない**(uv がコンパイルした形式は Dependabot が
+# 書き戻せない)。範囲を動かす PR が来たら、手元で
+# `scripts/lock_requirements.sh` を回して requirements.txt を作り直す。
 version: 2
 updates:
-  # Python 依存(api = 配信、ingest = 取り込み。requirements.txt がそれぞれにある)
+  # Python 依存(api = 配信、ingest = 取り込み、ルート = 開発・CI 用)
   - package-ecosystem: pip
     directories:
       - /api
       - /ingest
+      - /
     schedule:
       interval: weekly
       timezone: Asia/Tokyo

@@ -597,8 +597,11 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   - `run_tests.sh` — テスト実行のラッパー(引数はそのまま pytest へ)。手元に依存が
     揃っていればそれで、無ければ **CI と同じ Python 3.12 のイメージを組み立てて** Docker で
     回す。ホストの python が 3.12 でない環境(依存に C 拡張があるので import から落ちる)で
-    準備なしにテストを通せるようにするためのもの。**Docker のビルドコンテキストは
-    requirements 2 つだけの一時ディレクトリにすること** — リポジトリのルートを渡すと
+    準備なしにテストを通せるようにするためのもの。入れるのは `requirements-dev.txt`
+    (api + ingest + pytest + ruff を 1 本にまとめたロック)—— **2 つのロックを同時に
+    渡してはいけない**。共通の依存(fastapi 等)が二重指定になり pip が断る。
+    **Docker のビルドコンテキストはロック 1 つだけの一時ディレクトリにすること** —
+    リポジトリのルートを渡すと
     `data/` の `.db`(数十 GB)まで docker daemon へ送られる。リポジトリ側は
     バインドマウントなので大きさは関係ない。実行ユーザーを呼び出し元に合わせるのは、
     `__pycache__` が root 所有で残るとホスト側の実行が書き込めなくなるため
@@ -631,18 +634,37 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   クエリ生成 → 検索 → 回答の全経路を通せる)。`test_agent.py` は同じ仕掛けの偽サーバに
   **`tool_calls` を返させて** agent ループ(道具を呼ぶ → 実行して返す → 答える)を通す。
   GPU もモデルも要らないので CI で回る
-- `.github/workflows/ci.yml` — push / PR で pytest を実行し、main への push で
-  `chiezo-api` / `chiezo-ingest` の 2 イメージをマルチアーキ(amd64 / arm64)で GHCR へ公開
-  (cc-tasks / travel-log の docker-publish と同じダイジェストマージ方式。
+- `pyproject.toml` — **開発ツールの設定だけ**(ruff / pytest)。`[project]` は持たない ——
+  pip で配るライブラリではなく、依存の違う 2 つのイメージとして動くアプリだから。
+  - `pythonpath = ["api", "ingest"]` で両方を import 可能にする。以前は
+    `tests/conftest.py` が `sys.path` を書き換えていたが、それは設定の置き場が無いことの
+    回避策だった
+  - ruff は `line-length = 120`(既定の 88 は日本語コメントに短すぎる)、
+    `RUF001/002/003`(全角記号を「紛らわしい Unicode」と見なす)は落とす。
+    自動生成カタログ 2 つは `E501` を per-file-ignore
+- `*/requirements.in` / `requirements.txt` — **直接の依存は `.in` に範囲(>=)で書き、
+  実際に入る版は `.txt`(全依存 + ハッシュ)で固定する**。作り直しは
+  `scripts/lock_requirements.sh`(uv pip compile)。`.txt` を手で編集しない。
+  ルートの `requirements-dev.in` は api + ingest + pytest + ruff をまとめたもので、
+  CI と `run_tests.sh` の Docker 経路が使う
+- `.github/workflows/ci.yml` — push / PR で `ruff check` と pytest を実行し、main への
+  push で `chiezo-api` / `chiezo-ingest` の 2 イメージをマルチアーキ(amd64 / arm64)で
+  GHCR へ公開(cc-tasks / travel-log の docker-publish と同じダイジェストマージ方式。
   arm64 の無料ランナーが public 限定のため、リポジトリが private の間は公開ジョブをスキップ)。
-  加えて週 1 の `schedule` でテストのみ実行する — requirements が範囲指定(>=)なので、
-  コミットが無くても上流の破壊的変更(実例: mcp 2.0)に気づくため。定期実行では
-  イメージ公開は走らない(`build` の `if` が push / 手動実行だけに絞ってある)。
-  `permissions` はトップレベルを読み取りのみとし、`packages: write` は build / merge
-  ジョブだけに与える(public 化に伴う絞り込み)
-- `.github/dependabot.yml` — 依存更新の週次 PR(pip×2 / docker×2 / github-actions)。
-  範囲指定の requirements で拾えない「範囲外の新メジャー」と上限ピンの解除、
-  Actions・ベースイメージの更新を PR + CI で受ける
+  ジョブは 4 つ:
+  - `lint` / `test` — 固定した版(`requirements-dev.txt`)で回す。`build` はこの 2 つを待つ
+  - `test-latest` — **ロックを無視して `requirements-dev.in` の範囲で最新を入れて回す**
+    canary。週 1 の `schedule` と手動実行のときだけ動き、`continue-on-error` で公開は
+    止めない。ロックを入れると通常のテストが固定版になるので、上流の破壊的変更
+    (実例: mcp 2.0 が `mcp.server.fastmcp` を削除)に気づく役目をここへ移した
+  - `build` / `merge` — 定期実行では走らない(`build` の `if` が push / 手動実行だけに
+    絞ってある)。`permissions` はトップレベルを読み取りのみとし、`packages: write` は
+    build / merge ジョブだけに与える(public 化に伴う絞り込み)
+- `.github/dependabot.yml` — 依存更新の週次 PR(pip×3 / docker×2 / github-actions)。
+  拾いたいのは `.in` の範囲で捕まらない「範囲外の新メジャー」と上限ピンの解除、
+  Actions・ベースイメージの更新。**ロック(`requirements.txt`)の更新は任せない** ——
+  uv がコンパイルした形式は Dependabot が書き戻せないので、範囲が動いたら手元で
+  `scripts/lock_requirements.sh` を回す
 
 ## コマンド
 
@@ -654,6 +676,13 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
 # テスト(引数はそのまま pytest へ。依存が手元に無ければ Docker で回す)
 scripts/run_tests.sh
 scripts/run_tests.sh tests/test_notes.py -v
+
+# lint(CI と同じ設定。設定は pyproject.toml、版は requirements-dev.txt で固定)
+ruff check .
+ruff check --fix .
+
+# 依存のロックを作り直す(.in を編集したあと。--upgrade で範囲の中の最新へ)
+scripts/lock_requirements.sh
 
 # フィクスチャ再生成
 python tests/fixtures/make_fixture.py

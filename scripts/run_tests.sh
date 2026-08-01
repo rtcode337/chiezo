@@ -43,20 +43,21 @@ run_in_docker() {
     fi
 
     # 依存だけを焼いたイメージを作る(requirements が変わらなければ層のキャッシュで一瞬)。
-    # ビルドコンテキストは requirements 2 つだけの一時ディレクトリにする —— リポジトリの
+    # ビルドコンテキストはロック 1 つだけの一時ディレクトリにする —— リポジトリの
     # ルートを渡すと data/ の .db(数十 GB)まで docker daemon へ送ることになるため。
     # trap はスクリプト終了時に呼ばれる(= 関数の外)ので、変数はグローバルにしておく。
     ctx=$(mktemp -d)
     trap 'rm -rf "${ctx:-}"' EXIT
-    cp "$ROOT/api/requirements.txt" "$ctx/api-requirements.txt"
-    cp "$ROOT/ingest/requirements.txt" "$ctx/ingest-requirements.txt"
+    # api と ingest の依存 + pytest + ruff を 1 本にまとめたロック(CI と同じもの)。
+    # 2 つのロックを同時に渡すと、共通の依存(fastapi 等)が二重指定になって pip が断る。
+    cp "$ROOT/requirements-dev.txt" "$ctx/requirements-dev.txt"
     cat >"$ctx/Dockerfile" <<EOF
 FROM $BASE_IMAGE
 # libexpat1: pyosmium の実行時依存(ingest/Dockerfile と同じ理由)
 RUN apt-get update && apt-get install -y --no-install-recommends libexpat1 \\
     && rm -rf /var/lib/apt/lists/*
-COPY api-requirements.txt ingest-requirements.txt ./
-RUN pip install --no-cache-dir -r api-requirements.txt -r ingest-requirements.txt pytest
+COPY requirements-dev.txt ./
+RUN pip install --no-cache-dir -r requirements-dev.txt
 EOF
     docker build -t "$IMAGE" "$ctx" >/dev/null
 

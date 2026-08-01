@@ -194,6 +194,7 @@ ingest は毎回 `data/<source>-<date>.db` を新規構築し、検証が通っ�
 ```bash
 scripts/run_tests.sh                          # 全テスト
 scripts/run_tests.sh tests/test_notes.py -v   # 引数はそのまま pytest へ渡る
+ruff check .                                  # lint(設定は pyproject.toml)
 ```
 
 依存が揃っていればそのまま、無ければ CI と同じ Python 3.12 のイメージを組み立てて
@@ -202,10 +203,15 @@ Docker で実行する(リポジトリはバインドマウントするだけな
 CI と同じ系列。依存に C 拡張が含まれるため、別のバージョンでは import から落ちる)。
 
 ```bash
-python3.12 -m venv .venv && .venv/bin/pip install -r api/requirements.txt -r ingest/requirements.txt pytest
+python3.12 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 ```
 
 `.venv` があれば `scripts/run_tests.sh` はそちらを優先する。
+
+依存は `requirements.in`(直接の依存を範囲で指定)から `requirements.txt`(版とハッシュを
+固定したロック)を作る形にしてある。`.in` を編集したら `scripts/lock_requirements.sh` で
+ロックを作り直す。イメージが再現する代わりに上流の新版は自動では入らないので、
+破壊的変更への追従は CI の週次ジョブ(最新の依存でテストを回す)が受け持つ。
 
 テストは同梱の小型フィクスチャ(`tests/fixtures/mini_jawiki.xml.gz` 12 文書、
 `tests/fixtures/mini_osm.osm.pbf` 12 ノード + 2 way + 2 relation、

@@ -14,11 +14,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-  # 週 1 の定期実行(月曜 6:00 JST)。requirements は範囲指定(>=)なので、コミットが
-  # 無くても依存の新版で環境が静かに変わる。定期的にテストを回して、上流の破壊的変更
-  # (実例: mcp 2.0 が mcp.server.fastmcp を削除し import から落ちた)にコミットを
-  # 待たず気づくためのもの。検知が目的なので、下の build/merge(イメージ公開)は
-  # 定期実行では走らせない。
+  # 週 1 の定期実行(月曜 6:00 JST)。実際に入る版は requirements.txt(ロック)で
+  # 固定しているが、requirements.in の範囲指定(>=)の中では上流が動き続けている。
+  # test-latest ジョブが最新の依存で回して、上流の破壊的変更(実例: mcp 2.0 が
+  # mcp.server.fastmcp を削除し import から落ちた)にコミットを待たず気づく。
+  # 検知が目的なので、下の build/merge(イメージ公開)は定期実行では走らせない。
   schedule:
     - cron: "0 21 * * 0"
 
@@ -29,6 +29,22 @@ permissions:
   contents: read
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # ruff の版は requirements-dev.txt に固定してある(版が変わると指摘が増減するので、
+      # 手元と CI で同じものを使う)。ハッシュ付きロックは丸ごと入れるのが素直。
+      - run: pip install -r requirements-dev.txt
+
+      - run: ruff check .
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -39,9 +55,31 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - run: pip install -r api/requirements.txt -r ingest/requirements.txt pytest
+      # 固定した版で回す(requirements-dev.txt は requirements-dev.in をコンパイルしたもの)。
+      - run: pip install -r requirements-dev.txt
 
-      - run: python -m pytest tests/ -v
+      - run: python -m pytest -v
+
+  # 上限を外して最新の依存で回す canary。ロックを入れたことで通常のテストは固定版に
+  # なったため、上流の破壊的変更に気づく役目をこちらへ移した(週 1 の定期実行と手動実行のみ)。
+  # 失敗しても公開は止めない(main への push では動かないので needs にも入れない)。
+  test-latest:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements-dev.in
+
+      - run: pip list
+
+      - run: python -m pytest -v
 
   # アーキごとにネイティブランナーでビルドし、タグを付けずダイジェストで push する。
   # 無料の ubuntu-24.04-arm ランナーは public リポジトリ限定のため、private の間は
@@ -51,7 +89,7 @@ jobs:
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
       && github.event.repository.private == false
-    needs: [test]
+    needs: [lint, test]
     permissions:
       contents: read
       packages: write

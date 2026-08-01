@@ -1,0 +1,8 @@
+# 開発・CI 用。テストは api と ingest の両方を import するので、両方の依存を入れる。
+# `requirements-dev.txt` へコンパイルして使う(手順は下の requirements.in と同じ)。
+-r api/requirements.in
+-r ingest/requirements.in
+
+pytest>=8.4
+# lint。CI と手元で同じ版を使うため、ここで固定する(版が違うと指摘が増減する)。
+ruff>=0.16,<0.17
