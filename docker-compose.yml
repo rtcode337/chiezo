@@ -16,7 +16,7 @@
 # インデックスが入りきらず落ちた)。「メモリが足りる環境でだけ実行する」判断は、コンテナ上限では
 # なく ingest 側のプリフライト検査(main.py の require_build_memory / adapter.min_build_memory_gb)で
 # 行う。足りなければ構築を始める前に明示的に SystemExit する。8GB 級の共有ホストでは重い取り込みは
-# そもそも実行拒否され、成果物の .db は別マシンで焼いて配布する(README「別マシンでビルド」参照)。
+# そもそも実行拒否され、成果物の .db は別マシンで焼いて配布する(docs/operations.md「別マシンでビルドして .db を配布する」参照)。
 x-ingest-limits: &ingest-limits
   cpu_shares: 512
 

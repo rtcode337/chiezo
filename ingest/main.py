@@ -125,7 +125,7 @@ def require_build_memory(adapter: SourceAdapter) -> None:
             f"not enough memory to build {adapter.source}: "
             f"{available_gb:.1f} GiB available < {required_gb:.1f} GiB required.\n"
             "Build on a machine with more memory and copy the resulting .db over "
-            "(see README: 別マシンでビルドして .db を配布する). Alternatives: "
+            "(see docs/operations.md: 別マシンでビルドして .db を配布する). Alternatives: "
             "drop BUILD_PROFILE=fast to build with the low-memory default (2 GiB), "
             "BUILD_MEMORY_GB=<n> to override the requirement, "
             "SKIP_MEMORY_CHECK=1 to bypass this check entirely."

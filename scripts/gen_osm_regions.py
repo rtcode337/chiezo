@@ -64,7 +64,7 @@ MIN_MEMORY_GB = 3.0
 
 # これを超えるならディスク索引(sparse_file_array)を既定にする。
 # 「既定設定ではどのソースも 12GiB のマシンで構築できる」という方針の閾値
-# (README / CLAUDE.md「メモリ方針」)。大きい国は遅くなる代わりに 2GiB で焼ける。
+# (docs/operations.md「メモリについて」/ CLAUDE.md「メモリ方針」)。大きい国は遅くなる代わりに 2GiB で焼ける。
 RAM_INDEX_BUDGET_GB = 12.0
 
 # 検証の最低文書数: pbf 1GB あたり何件を下回ったら失敗とみなすか。

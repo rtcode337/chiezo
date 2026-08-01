@@ -156,7 +156,7 @@ def check_urls(tokens: list[str]) -> None:
             if host != netloc:
                 raise Reject(f"non-chiezo host: {host}")
             found = True
-        # スキームを省いた `curl -s 192.168.0.3:9000/v1/sources` も chiezo とみなす
+        # スキームを省いた `curl -s <chiezo のホスト>:9000/v1/sources` も chiezo とみなす
         if not found and _is_chiezo_target(tok):
             found = True
     if not found:

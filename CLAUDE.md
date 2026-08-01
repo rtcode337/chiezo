@@ -100,7 +100,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       OSM は「博多駅」のような名前が駅とラーメン店で衝突するため、黙って 1 件返すと
       取り違えに気づけない
   - `app/mcp_server.py` — **MCP サーバー(`/mcp`、Streamable HTTP・ステートレス)**。
-    使い方は README「MCP から使う」節。ツールの実体は `app/main.py` のエンドポイント関数
+    使い方は `docs/api-reference.md`「MCP から使う」節。ツールの実体は `app/main.py` のエンドポイント関数
     そのもので、MCP 用に処理を書き直していない(別実装にすると片方だけ直されて必ずずれる)。
     そのぶん**踏み抜きやすい罠が 3 つ**あるので、触るときは順に確認すること:
     - FastAPI のエンドポイントは既定値が `Query(...)` オブジェクトなので、Python から
@@ -118,7 +118,8 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `app.state.mcp_asgi` に置き、マウント先(`main._mcp_asgi`)がそれを見る形にしている
     (モジュール読み込み時に作り置きすると、同一プロセスで二度起動するテストが落ちる)
   - `app/notes.py` — **「覚える」層(`/v1/notes`)の本体。chiezo で唯一書き込む場所**。
-    使い方は README「覚える(notes)」節、なぜこの形かは `docs/design-notes.md`
+    使い方は `docs/api-reference.md`「notes(唯一書き込めるソース)の REST」節、
+    なぜこの形かは `docs/design-notes.md`
     「「覚える」(notes)はなぜ chiezo に置くのか」が正。実装側の要点:
     - **`CHIEZO_NOTES_DIR` が機能フラグを兼ねる**(未設定 = 503、MCP の道具も出さない)。
       ツール定義は常時コンテキストに載るので、使えないものを並べない
@@ -146,7 +147,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       Python から直接呼ぶので通らない。SQLite は **`LIMIT -1` を「無制限」**と解釈するため、
       素通しすると頁を送る意図の呼び出しが静かに全件取得になる
   - `app/answer.py` — **「答える」層(`/v1/ask`・`/ask`)の本体**。使い方・環境変数は
-    README「答える(ローカル LLM。既定では無効)」節が、なぜこの形かは
+    `docs/local-llm.md` が、なぜこの形かは
     `docs/design-notes.md`「「答える」層はなぜ 2 段の RAG か」が正。実装側の要点:
     - **`CHIEZO_LLM_URL` が機能フラグを兼ねる**(未設定 = 丸ごと無効、`/v1/ask` は 503)。
       推論はこのプロセスに入れない。ここがするのは OpenAI 互換の `/chat/completions` を
@@ -176,7 +177,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       `<think>…</think>` や閉じタグだけが `content` に残る(実測: Qwen3 + 思考オフで先頭に
       `</think>`)。相手の設定は chiezo が握っていないので受け側で落とす
   - `app/agent.py` — **agent モード(`/v1/ask?mode=agent`)の本体**。LLM 自身に道具を
-    引かせるループ。使い方・環境変数は README「agent モード(モデルに道具を引かせる)」節が、
+    引かせるループ。使い方・環境変数は `docs/local-llm.md`「agent モード(モデルに道具を引かせる)」節が、
     なぜこの形かは `docs/design-notes.md`「agent モード: 道具をモデルに引かせる」が正。
     実装側の要点:
     - **道具の定義も実行も `app/mcp_server.py` から借りる**(`list_tools()` → OpenAI の
@@ -209,8 +210,8 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   - `app/websearch.py` — **web 検索の道具(既定では無効)**。`CHIEZO_WEB_SEARCH_URL` が
     機能フラグを兼ねる(未設定 = 道具ごと出さない)。**使うかどうかはやり取りごとに選べる**
     (`agent.web_allowed()`: サーバー設定 AND リクエストの `web` が false でない)。
-    画面のトグルは毎回これを送る。使い方は README「web 検索で足りないぶんを
-    補う」節が正。実装側の要点:
+    画面のトグルは毎回これを送る。使い方は `docs/local-llm.md`「web 検索で
+    足りないぶんを補う」節が正。実装側の要点:
     - **これは「答える」層(= chiezo を使う側)の機能で、chiezo 本体の機能ではない**。
       知識ベースそのものは引き続き外を叩かない。この整理を崩さないこと
     - **本文は取りに行かない**(タイトル・要約・URL だけ)。ページ取得はスクレイピングに
@@ -242,7 +243,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     (再生成手順は README「開発 > アイコンを変えたとき」節が正)
   - `/`(GET) — `/admin` へ 302 リダイレクト
   - `/admin`・`/admin/osm`・`/admin/wikipedia`(GET) — 簡易 HTML 管理画面(画面に何が出るかは
-    README「API の使い方」節の後半、管理画面の説明が正)。実装側の要点は 3 つ: ジョブ実行中は `page_shell` の
+    `docs/api-reference.md`「人間向けの画面」節が正)。実装側の要点は 3 つ: ジョブ実行中は `page_shell` の
     `refresh` で 5 秒ごとに自動リロードする / `osm_<国>` 195 件と `<lang>wiki` 348 件は
     そのまま並べると他のソースが埋もれるので `group` で 1 行に畳み、国・言語の選択だけを
     `/admin/osm`(大陸ごとの `<details>`)・`/admin/wikipedia`(`WIKIPEDIA_TIERS` の記事数階層ごと)
@@ -384,7 +385,8 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     URL 言語コードから `<lang>.wikipedia` を導出し、不規則な wiki だけ `WIKI_DOMAIN` で上書き)。`https://dumps.wikimedia.org/<wiki_id>/<date>/<wiki_id>-<date>-pages-articles.xml.bz2`
     (MediaWiki エクスポート形式、単一ファイル)を取得する。CirrusSearch ダンプの `text` を
     使っていた旧実装から標準 XML ダンプ + wikitext 解析(`mwparserfromhell`。wikipedia 系
-    ソースのみの例外的依存)へ切り替えた経緯は README「ダンプ更新」節を参照(要点: `text` は
+    ソースのみの例外的依存)へ切り替えた経緯は `docs/design-notes.md`「Wikipedia は
+    CirrusSearch ではなく XML ダンプから作る」を参照(要点: `text` は
     折りたたみセクションを検索インデックスから除外しており本文が欠落していた)。
     `xml.etree.ElementTree`(標準ライブラリ)でストリーミング解析し、`<redirect>` を持つ
     ページは 2 パス走査(パス1: リダイレクト元→対象タイトルの収集、パス2: 本体の Doc 生成)
@@ -417,8 +419,8 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `xml.etree` では読めなくなった。osm 系ソースに限り pyosmium への依存を許容している
     (それ以外は標準ライブラリのみの方針を維持。wikipedia 系ソースの mwparserfromhell が
     もう1つの例外、上記参照)。
-    取り込む地物の種類(地名 + POI + 交通インフラ。いずれも `name` タグ必須)は README
-    「地理データの守備範囲」節が正。地名と POI は同じ docs/docs_fts に混在し `search` は
+    取り込む地物の種類(地名 + POI + 交通インフラ。いずれも `name` タグ必須)は
+    `docs/operations.md`「地理データの守備範囲」節が正。地名と POI は同じ docs/docs_fts に混在し `search` は
     両方をヒットさせる。交通インフラだけ `VALUE_LIMITED_KEYS`(`railway` / `aeroway` /
     `aerialway` / `public_transport` / `highway` / `man_made`)で値を列挙するのは、
     `railway=rail` や `highway=residential` のような、名前付きでも地点辞典として意味を
@@ -478,7 +480,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     既定では道路(feature class `R`)を除外し、別名は `ja,en` のみ拾う
     (`GEONAMES_FEATURE_CLASSES` / `GEONAMES_ALT_LANGS` で変更可)。
     **大陸単位の OSM 抽出(旧 `osm_europe`)はこれに置き換えて廃止した**。理由は
-    「地理データの守備範囲」(README)参照 — 実測で osm_japan の 73% は店舗・施設の裾で、
+    「地理データの守備範囲」(`docs/operations.md`)参照 — 実測で osm_japan の 73% は店舗・施設の裾で、
     全世界の地名を得る手段としては桁違いに非効率だった。
   - `sources/__init__.py` — アダプタレジストリ(新ソースはここに 1 行追加するだけ。
     管理画面には `chiezo-trigger` の `GET /sources` 経由で自動的に出るので、
@@ -488,7 +490,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `load_plugin_adapters()` は **このリポジトリに入れられないソース(社内 wiki 等)を
     別リポジトリのモジュールから差し込む唯一の口**(環境変数 `CHIEZO_SOURCE_PLUGINS` に
     モジュール名をカンマ区切り。そのモジュールの `ADAPTERS` を取り込む)。使い方は
-    README「ソースの追加・削除」と `docs/adding-a-source.md` のケース 3 が正。実装側の要点:
+    `docs/operations.md`「ソースの追加・削除」と `docs/adding-a-source.md` のケース 3 が正。実装側の要点:
     - **壊れた指定は握り潰さず `SystemExit`**(import できない / `ADAPTERS` が無い /
       生成関数でない)。黙って無視すると「管理画面に出ない」「unknown SOURCE」として
       後から現れて原因が分からない。opt-in の設定なので、起動時に落ちるほうが分かりやすい
@@ -538,7 +540,8 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     初期化機能は無効)
 - `scripts/` — 補助スクリプト(api/ingest 本体ではない運用ツール)
   - `gen_claude_config.sh` — chiezo 連携用の Claude 設定生成器。**使い方・オプション一覧は
-    README「Claude Code から使う(設定ファイル自動生成)」節が正**で、ここには実装側の要点だけ置く:
+    `docs/api-reference.md`「Claude Code から使う(設定ファイル自動生成)」節が正**で、
+    ここには実装側の要点だけ置く:
     - `curl` + POSIX ツールのみで動く(Python 不要。既存 settings のマージにだけ jq を使う)。
       稼働中の chiezo の `/admin/claude-config.*` を取得して書き込むだけの薄いクライアントで、
       **生成の正は api 側 `app/claude_config.py`**。ベース URL はサーバーがアクセス元 URL から
@@ -622,8 +625,9 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
 
 ## コマンド
 
-セットアップ・取り込み・運用(ダンプ更新、別マシンでのビルド、既存 DB の移行)の手順と
-ingest の環境変数一覧は **README が正**。ここには開発時にしか使わないものだけ置く。
+セットアップは README、取り込み・運用(ダンプ更新、別マシンでのビルド、既存 DB の移行)の
+手順と ingest の環境変数一覧は **`docs/operations.md` が正**。
+ここには開発時にしか使わないものだけ置く。
 
 ```bash
 # テスト(引数はそのまま pytest へ。依存が手元に無ければ Docker で回す)
@@ -645,7 +649,7 @@ docker compose -f docker-compose.build.yml up -d --build
 フィクスチャで自動化したもの。
 
 `SOURCE` に渡せる名前や、そのイメージが焼く `schema_version` はイメージ単体に聞ける
-(README「別マシンでビルドして .db を配布する」節。ローカルビルド版なら
+(`docs/operations.md`「別マシンでビルドして .db を配布する」節。ローカルビルド版なら
 `chiezo-chiezo-ingest:latest` に置き換える)。
 
 ### メモリ方針: 「足りると確認できたときだけ取り込む」
@@ -666,7 +670,7 @@ osm はソースごとの既定索引)。既定を low_memory にしてあるの
 compose には常設しない(小さいマシンに設定が持ち込まれて OOM の芽になるため)。
 
 必要量は各アダプタの `min_build_memory_gb`(`core.SourceAdapter` の一部)で宣言する
-(ソースごとの実際の数値は README「メモリについて」の表が正)。wikipedia / geonames は
+(ソースごとの実際の数値は `docs/operations.md`「メモリについて」の表が正)。wikipedia / geonames は
 巨大な対応表を `lookup.py` でディスクへ逃がしてあるため fast 3GiB / low_memory 2GiB
 (実測ピークは 1GiB 未満で、3GiB との差はキャッシュ分の余裕)。`OsmAdapter` は
 使う索引方式(`node_index_kind` = 環境変数 `OSM_NODE_INDEX` > `BUILD_PROFILE=low_memory` >
@@ -681,8 +685,8 @@ osm ソースは**国スケールに留める**(大陸スケールはディス�
 
 **ビルド機と配信機を分けられる**のが設計の要なので壊さないこと: `.db` は自己完結した単一
 SQLite ファイルで、配信側 chiezo-api は read-only immutable で開くだけの常駐 80〜150MB。
-効いてくるのはメモリでなくディスク(jawiki.db 約 42GB)。手順は README「別マシンでビルドして
-.db を配布する」と `handoff/BUILD-ON-ANOTHER-MACHINE.md`。
+効いてくるのはメモリでなくディスク(jawiki.db 約 42GB)。手順は `docs/operations.md`
+「別マシンでビルドして .db を配布する」と `handoff/BUILD-ON-ANOTHER-MACHINE.md`。
 
 ## 実装上の約束事
 
@@ -741,5 +745,9 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
 - **GPU の設定は `docker-compose.gpu.yml`(上書きファイル)に閉じる**。`gpus: all` は
   GPU の無い環境では起動そのものが失敗するので、本体の compose には書かない。
 - コード(api/ ingest/ の挙動・エンドポイント・環境変数など)を変更したら、同じ変更で
-  README.md(セットアップ・API 仕様・運用手順)と本ファイル(CLAUDE.md、アーキテクチャ記述)も
-  あわせて更新すること。ドキュメントだけを別コミット・別対応に先送りしない。
+  README.md(入口。概要・セットアップ・各機能の要約とリンク)と、対応する docs/ の詳細
+  (`api-reference.md` = API 仕様と画面 / `local-llm.md` = 「答える」層 /
+  `operations.md` = 取り込みと運用 / `design-notes.md` = なぜこの形か)、および本ファイル
+  (CLAUDE.md、アーキテクチャ記述)もあわせて更新すること。**README には詳細を書き戻さない**
+  (人に読ませる入口として 1 画面で全体像がつかめる長さを保つ)。
+  ドキュメントだけを別コミット・別対応に先送りしない。

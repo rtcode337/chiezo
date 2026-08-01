@@ -3,7 +3,7 @@
 #   ghcr.io/<owner>/chiezo-ingest … 取り込みバッチ + chiezo-trigger(ingest/Dockerfile)
 #
 # テストはフィクスチャ完結(ネットワーク・実データ不要)なので、そのまま CI で回る。
-# イメージ公開は cc-tasks / travel-log の docker-publish と同じ方式:
+# イメージ公開はダイジェストマージ方式:
 # アーキごとに「そのアーキのネイティブランナー」で並列ビルドし、ダイジェストで
 # push したものを最後の merge ジョブでマニフェスト(latest / sha-xxxxxxx)にまとめる。
 # QEMU エミュレーションだとビルドが極端に遅く不安定なため。
