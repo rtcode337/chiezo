@@ -34,11 +34,13 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
 - `api/` — **chiezo-api**: FastAPI + uvicorn の常駐コンテナ。起動時に `CHIEZO_DATA_DIR`(既定 `/data`)を走査し、
   ファイル名の stem と `meta.source` が一致する `*.db` をソースとして登録する(世代ファイル
   `jawiki-20260701.db` は登録されず、シンボリックリンク `jawiki.db` のみ登録される)。
-  - `app/main.py` — ルーティング(/, /healthz, /apple-touch-icon.png, /v1/sources,
-    /v1/{source}/search|doc|filter|tags|titles|links|random, /v1/ask, /v1/chat,
-    /admin, /admin/init/{source}, /admin/rebuild/{source},
-    /search/{source}/, /search/{source}/doc/{doc_id}, /localllm/chat、
-    および MCP の /mcp(実体は下の `app/mcp_server.py`))
+  - `app/main.py` — **機械向けの口とアプリの組み立て**(/, /healthz, /apple-touch-icon.png,
+    /v1/sources, /v1/{source}/search|doc|filter|tags|titles|links|random, /v1/ask, /v1/chat、
+    lifespan・例外ハンドラ・画面 router の登録・MCP の /mcp のマウント。
+    MCP の実体は下の `app/mcp_server.py`)。
+    **人間向けの HTML はここに置かない**(`app/views/`)。以前は 2,473 行の 1 ファイルに
+    REST と管理画面 HTML が同居していて、変更の理由(API の契約 / 画面の見た目)が
+    まったく別のものが混ざっていた
     - `/v1/{source}/filter` — 全文検索ではなく属性(`feature` / `area` / `bbox` / `wikidata` /
       `tag`)の AND での一括抽出(Overpass 相当)。`docs` の生成列への索引付き検索なので
       `schema_version` 2 以上が必要(1 の DB には 409)。条件は `build_attribute_filters()` が
@@ -234,6 +236,14 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       呼ぶので、呼ばれた回数ぶん素直に外へ出さない
     - `USER_AGENT` に**個人情報を入れない**(名乗るのはプロジェクト名だけ)。
       `tests/test_chat.py` が固定している
+  - `app/views/` — **人間向けの HTML を返す画面**。`APIRouter` を持ち、`main.py` の末尾で
+    `include_router` する。`admin.py`(管理画面と chiezo-trigger へのプロキシ、
+    Claude Code 連携設定の配布。`TRIGGER_URL` もここ)/ `browse.py`(`/search/{source}/`)/
+    `chat.py`(`/localllm/chat` と会話画面の JS)
+  - `app/deps.py` — **REST と画面が共有する下ごしらえ**(`get_source`、ORDER BY 断片の
+    `exact_title_first` / `relevance_order`、古い DB を断る `require_*`)。
+    **ここは app の他モジュールを import しない** —— views が main を import すると
+    main → views(router 登録)との間で循環参照になるため、共有物はここへ降ろす
   - `app/registry.py` — /data 走査・ソース登録、`SUPPORTED_SCHEMA_VERSIONS` /
     `FILTER_MIN_SCHEMA_VERSION` / `TAG_MIN_SCHEMA_VERSION`
   - `app/db.py` — スレッドローカル immutable 接続、5 秒クエリタイムアウト(超過は 504)
@@ -241,7 +251,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   - `app/known_sources.py` — `chiezo-trigger` が未設定・到達不能なときの控えの既知ソース一覧と、
     国選択画面の大陸表示名・言語選択画面の記事数階層(`WIKIPEDIA_TIERS`)。
     初期化できるソースの正は ingest 側の `ADAPTERS` で、通常は
-    `chiezo-trigger` の `GET /sources` から受け取る(`main.initializable_sources()`。
+    `chiezo-trigger` の `GET /sources` から受け取る(`views/admin.py` の `initializable_sources()`。
     osm 国別 195 件 + wikipedia 言語版 348 件あり、api 側に複製すると必ず腐るため)
   - `app/pages.py` — 管理画面・ブラウズ画面共通の HTML 組み立てヘルパー(`page_shell`, `esc`)と、
     画面の URL(`browse_url` / `doc_url`。出典のリンクもここを通すので、移すときに漏れない)。

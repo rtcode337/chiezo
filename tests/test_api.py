@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.known_sources import KNOWN_SOURCES
+from app.views import admin
 
 
 @pytest.fixture(scope="module")
@@ -96,7 +97,6 @@ class TestSearch:
         するので、記事「東京都」がそこに入る保証はない。索引から直接拾う経路が
         効いていることを、候補を 1 件に絞り切って確かめる。
         """
-        from app import main
 
         for name in ("SEARCH_POOL_MIN", "SEARCH_POOL_FACTOR", "SEARCH_POOL_MAX"):
             monkeypatch.setattr(main, name, 1)
@@ -106,7 +106,6 @@ class TestSearch:
 
     def test_candidate_pool_matches_the_unpooled_ranking(self, client, monkeypatch):
         """候補が該当件数以上あるとき(= 通常の検索)の並びは絞り込み前と同じ。"""
-        from app import main
 
         params = {"q": "である", "limit": 50}
         full = client.get("/v1/jawiki/search", params=params).json()
@@ -437,10 +436,10 @@ class TestTriggerCatalogCache:
 
     @pytest.fixture(autouse=True)
     def _reset(self, monkeypatch):
-        monkeypatch.setattr("app.main._catalog_cache", None)
-        monkeypatch.setattr("app.main._catalog_fetched_at", None)
-        monkeypatch.setattr("app.main._catalog_failed_at", None)
-        monkeypatch.setattr("app.main.TRIGGER_URL", "http://chiezo-trigger:8080")
+        monkeypatch.setattr("app.views.admin._catalog_cache", None)
+        monkeypatch.setattr("app.views.admin._catalog_fetched_at", None)
+        monkeypatch.setattr("app.views.admin._catalog_failed_at", None)
+        monkeypatch.setattr("app.views.admin.TRIGGER_URL", "http://chiezo-trigger:8080")
 
     def _stub(self, monkeypatch, payloads):
         """呼ばれるたびに次の応答を返す偽の trigger。呼ばれた回数も返す。"""
@@ -453,13 +452,13 @@ class TestTriggerCatalogCache:
                 raise payload
             return httpx.Response(200, json=payload, request=httpx.Request("GET", url))
 
-        monkeypatch.setattr("app.main.httpx.get", fake_get)
+        monkeypatch.setattr("app.views.admin.httpx.get", fake_get)
         return calls
 
     def test_serves_from_cache_within_ttl(self, monkeypatch):
         calls = self._stub(monkeypatch, [{"sources": {"a": {}}, "schema_version": 4}])
-        assert main._fetch_trigger_catalog() == {"a": {}}
-        assert main._fetch_trigger_catalog() == {"a": {}}
+        assert admin._fetch_trigger_catalog() == {"a": {}}
+        assert admin._fetch_trigger_catalog() == {"a": {}}
         assert len(calls) == 1
 
     def test_refetches_after_ttl(self, monkeypatch):
@@ -468,18 +467,18 @@ class TestTriggerCatalogCache:
             monkeypatch,
             [{"sources": {"a": {}}}, {"sources": {"a": {}, "post_office": {"kind": "x"}}}],
         )
-        assert main._fetch_trigger_catalog() == {"a": {}}
-        monkeypatch.setattr("app.main._catalog_fetched_at", time.monotonic() - 10_000)
-        assert "post_office" in main._fetch_trigger_catalog()
+        assert admin._fetch_trigger_catalog() == {"a": {}}
+        monkeypatch.setattr("app.views.admin._catalog_fetched_at", time.monotonic() - 10_000)
+        assert "post_office" in admin._fetch_trigger_catalog()
         assert len(calls) == 2
 
     def test_ttl_zero_never_refetches(self, monkeypatch):
         """無期限にしたい運用向けの逃げ道(0 以下 = 取り直さない)。"""
-        monkeypatch.setattr("app.main.CATALOG_TTL_SECONDS", 0.0)
+        monkeypatch.setattr("app.views.admin.CATALOG_TTL_SECONDS", 0.0)
         calls = self._stub(monkeypatch, [{"sources": {"a": {}}}, {"sources": {"b": {}}}])
-        assert main._fetch_trigger_catalog() == {"a": {}}
-        monkeypatch.setattr("app.main._catalog_fetched_at", time.monotonic() - 10_000)
-        assert main._fetch_trigger_catalog() == {"a": {}}
+        assert admin._fetch_trigger_catalog() == {"a": {}}
+        monkeypatch.setattr("app.views.admin._catalog_fetched_at", time.monotonic() - 10_000)
+        assert admin._fetch_trigger_catalog() == {"a": {}}
         assert len(calls) == 1
 
     def test_keeps_stale_catalog_when_trigger_is_down(self, monkeypatch):
@@ -489,15 +488,15 @@ class TestTriggerCatalogCache:
         管理画面から 545 件が消える。
         """
         self._stub(monkeypatch, [{"sources": {"a": {}}}, httpx.ConnectError("boom")])
-        assert main._fetch_trigger_catalog() == {"a": {}}
-        monkeypatch.setattr("app.main._catalog_fetched_at", time.monotonic() - 10_000)
-        assert main._fetch_trigger_catalog() == {"a": {}}
-        assert main.initializable_sources() == {"a": {}}
+        assert admin._fetch_trigger_catalog() == {"a": {}}
+        monkeypatch.setattr("app.views.admin._catalog_fetched_at", time.monotonic() - 10_000)
+        assert admin._fetch_trigger_catalog() == {"a": {}}
+        assert admin.initializable_sources() == {"a": {}}
 
     def test_falls_back_to_known_sources_when_never_fetched(self, monkeypatch):
         self._stub(monkeypatch, [httpx.ConnectError("boom")])
-        assert main._fetch_trigger_catalog() is None
-        assert main.initializable_sources() is KNOWN_SOURCES
+        assert admin._fetch_trigger_catalog() is None
+        assert admin.initializable_sources() is KNOWN_SOURCES
 
 
 class TestAdminAndBrowse:
@@ -558,7 +557,7 @@ class TestAdminAndBrowse:
                 "memory_gb": 24.0, "node_index": "sparse_file_array",
             },
         }
-        monkeypatch.setattr("app.main._fetch_trigger_catalog", lambda: catalog)
+        monkeypatch.setattr("app.views.admin._fetch_trigger_catalog", lambda: catalog)
         res = client.get("/admin/osm")
         assert "フランス" in res.text
         assert "4.7 GB" in res.text
@@ -571,7 +570,7 @@ class TestAdminAndBrowse:
         catalog = {
             "jawiki": {"kind": "osm", "group": "osm", "label": "構築済みの国", "continent": "asia"}
         }
-        monkeypatch.setattr("app.main._fetch_trigger_catalog", lambda: catalog)
+        monkeypatch.setattr("app.views.admin._fetch_trigger_catalog", lambda: catalog)
         res = client.get("/admin/osm")
         assert "初期化済み" in res.text
         assert "初期化</button>" not in res.text
@@ -606,7 +605,7 @@ class TestAdminAndBrowse:
                 "articles": 3_138_349,
             },
         }
-        monkeypatch.setattr("app.main._fetch_trigger_catalog", lambda: catalog)
+        monkeypatch.setattr("app.views.admin._fetch_trigger_catalog", lambda: catalog)
         res = client.get("/admin/wikipedia")
         assert "ドイツ語" in res.text
         assert "3,138,349" in res.text
@@ -618,12 +617,12 @@ class TestAdminAndBrowse:
         assert res.status_code == 503
 
     def test_admin_init_unknown_source(self, client, monkeypatch):
-        monkeypatch.setattr("app.main.TRIGGER_URL", "http://example.invalid")
+        monkeypatch.setattr("app.views.admin.TRIGGER_URL", "http://example.invalid")
         res = client.post("/admin/init/bogus")
         assert res.status_code == 404
 
     def test_admin_init_already_initialized(self, client, monkeypatch):
-        monkeypatch.setattr("app.main.TRIGGER_URL", "http://example.invalid")
+        monkeypatch.setattr("app.views.admin.TRIGGER_URL", "http://example.invalid")
         res = client.post("/admin/init/jawiki")
         assert res.status_code == 409
 
@@ -652,12 +651,12 @@ class TestAdminAndBrowse:
 
     def test_admin_rebuild_unregistered_source(self, client, monkeypatch):
         """未登録ソースの再構築は断る(初期化は /admin/init 側の担当)。"""
-        monkeypatch.setattr("app.main.TRIGGER_URL", "http://example.invalid")
+        monkeypatch.setattr("app.views.admin.TRIGGER_URL", "http://example.invalid")
         res = client.post("/admin/rebuild/osm_japan")
         assert res.status_code == 404
 
     def test_admin_rebuild_proxies_to_trigger(self, client, monkeypatch):
-        monkeypatch.setattr("app.main.TRIGGER_URL", "http://trigger.internal")
+        monkeypatch.setattr("app.views.admin.TRIGGER_URL", "http://trigger.internal")
         calls = []
 
         class FakeResponse:
@@ -670,7 +669,7 @@ class TestAdminAndBrowse:
             calls.append(url)
             return FakeResponse()
 
-        monkeypatch.setattr("app.main.httpx.post", fake_post)
+        monkeypatch.setattr("app.views.admin.httpx.post", fake_post)
         res = client.post("/admin/rebuild/jawiki", follow_redirects=False)
         assert res.status_code == 303
         assert res.headers["location"] == "/admin"
@@ -1107,7 +1106,6 @@ class TestTagCountsFallback:
 
     def test_rank_index_is_not_named_on_v3(self, v3_client, monkeypatch):
         """3 の DB には idx_docs_rank が無いので、INDEXED BY を書いてはいけない。"""
-        from app import main
 
         monkeypatch.setattr(main, "DOC_ROW_VS_INDEX_COST", 10**9)  # 常に使いたがる状態にする
         res = v3_client.get("/v1/jawiki/filter", params={"tag": "日本の都道府県"})
@@ -1123,7 +1121,6 @@ class TestRankIndexPath:
     """
 
     def test_matches_the_default_path(self, client, monkeypatch):
-        from app import main
 
         params = {"tag": "日本の都道府県,日本の山", "limit": 3, "fields": "doc_id,title"}
         default = client.get("/v1/jawiki/filter", params=params).json()
@@ -1142,7 +1139,6 @@ class TestRankIndexPath:
         """
         import dataclasses
 
-        from app import main
         from app.registry import scan_sources
 
         # app.state は他のテストの TestClient と共有なので、DB から直に読む。

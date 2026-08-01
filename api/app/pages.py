@@ -137,6 +137,10 @@ PAGE_STYLE = """
   form.chat input[type=text] { flex: 1; width: auto; }
 """
 
+# 会話画面の URL。画面(app/views/chat.py)・そこへ誘導する管理画面・
+# REST 側(app/main.py)が同じ値を見る。
+CHAT_PATH = "/localllm/chat"
+
 # 会話画面(/localllm/chat)専用のスタイル。**管理画面とは分けてある** —
 # 管理画面は素っ気ないままでよく、会話は毎日触る画面なので作りが違う。
 # PAGE_STYLE の後ろに足すので、body の余白など重なる指定はこちらが勝つ。
