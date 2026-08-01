@@ -52,6 +52,16 @@ SOURCE_KIND = "notes"
 RECALL_LIMIT_DEFAULT = 20
 RECALL_LIMIT_MAX = 100
 
+# recall は当たったメモの**本文をまるごと**返すので、20 件返れば 20 件分の全文が
+# 会話のコンテキストに載る。他ソースが `search`(冒頭だけ)→ `doc`(全文)の二段に
+# なっているのに合わせ、既定では先頭 400 文字に切って `truncated` を立てる
+# (全文は `url` / `doc_id` から `/v1/notes/doc/{doc_id}` で取り直せる)。
+# 0 を渡すと切らない —— `doc` / `filter` の `max_chars` と同じ流儀。
+RECALL_MAX_CHARS_DEFAULT = 400
+
+# recall が返せる項目。`fields` で選ぶと、当たりを付ける段では本文を載せずに済む。
+RECALL_FIELDS = ("doc_id", "title", "text", "tags", "updated_at", "url")
+
 # タイトルは本文の 1 行目から作る(`docs.title` は UNIQUE なので衝突時は doc_id を足す)
 TITLE_MAX_CHARS = 60
 
@@ -296,6 +306,25 @@ def delete(doc_id: int) -> bool:
     return True
 
 
+def parse_recall_fields(fields: str | None) -> list[str]:
+    """`fields` を項目の並びに直す。空なら全項目(これまでの応答と同じ)。"""
+    if not fields:
+        return list(RECALL_FIELDS)
+    requested = [f.strip() for f in fields.split(",") if f.strip()]
+    if not requested:
+        return list(RECALL_FIELDS)
+    unknown = [f for f in requested if f not in RECALL_FIELDS]
+    if unknown:
+        raise HTTPException(
+            400,
+            {
+                "error": f"unknown fields: {', '.join(unknown)}",
+                "allowed_fields": list(RECALL_FIELDS),
+            },
+        )
+    return requested
+
+
 def recall(
     q: str | None = None,
     since: str | None = None,
@@ -303,6 +332,8 @@ def recall(
     tag: str | None = None,
     limit: int = RECALL_LIMIT_DEFAULT,
     offset: int = 0,
+    fields: str | None = None,
+    max_chars: int = RECALL_MAX_CHARS_DEFAULT,
 ) -> dict:
     """メモを思い出す。**新しい順**に返す。
 
@@ -311,15 +342,22 @@ def recall(
     語ではなく時刻で引くほうが確実)。`since` / `until` は `updated_at` との
     文字列比較なので、`2026-07-31` でも `2026-07-31T12:00:00+00:00` でも渡せる。
 
+    本文は既定で `RECALL_MAX_CHARS_DEFAULT` 文字に切り、切ったものには
+    `truncated: true` を立てる(**黙って切ると「これで全部」と読まれる**)。
+    全文は `/v1/notes/doc/{doc_id}` で取り直す。`max_chars=0` で切らない。
+
     **上限はここで担保する**。REST の `Query(ge=1, le=…)` は HTTP の口にしか効かず、
     MCP(`app/mcp_server.py`)は api の関数を Python から直接呼ぶので通らない。
     SQLite は `LIMIT -1` を「無制限」と解釈するため、負の値がそのまま届くと
-    全件返る(頁を送る意図の呼び出しが静かに全件取得になる)。
+    全件返る(頁を送る意図の呼び出しが静かに全件取得になる)。同じ理由で
+    `max_chars` の負値もここで 0 に丸める(負の添字は末尾を削る意味になる)。
     """
     path = require_path()
     ensure_db()
     limit = max(1, min(int(limit), RECALL_LIMIT_MAX))
     offset = max(0, int(offset))
+    field_list = parse_recall_fields(fields)
+    max_chars = max(0, int(max_chars))
     where: list[str] = []
     params: list = []
     if since:
@@ -354,15 +392,27 @@ def recall(
         "source": SOURCE_NAME,
         "total": total,
         "offset": offset,
-        "notes": [
-            {
-                "doc_id": r["doc_id"],
-                "title": r["title"],
-                "text": r["body"],
-                "tags": json.loads(r["tags"] or "[]"),
-                "updated_at": r["updated_at"],
-                "url": doc_url(SOURCE_NAME, r["doc_id"]),
-            }
-            for r in rows
-        ],
+        "notes": [_recall_note(r, field_list, max_chars) for r in rows],
     }
+
+
+def _recall_note(row, fields: list[str], max_chars: int) -> dict:
+    values = {
+        "doc_id": row["doc_id"],
+        "title": row["title"],
+        "text": row["body"],
+        "tags": json.loads(row["tags"] or "[]"),
+        "updated_at": row["updated_at"],
+        "url": doc_url(SOURCE_NAME, row["doc_id"]),
+    }
+    note: dict = {}
+    truncated = False
+    for name in fields:
+        value = values[name]
+        if name == "text" and max_chars and value and len(value) > max_chars:
+            value = value[:max_chars]
+            truncated = True
+        note[name] = value
+    if truncated:
+        note["truncated"] = True
+    return note

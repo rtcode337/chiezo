@@ -1758,8 +1758,19 @@ def recall_notes(
     tag: str | None = Query(None, description="タグで絞る。カンマ区切りで AND"),
     limit: int = Query(notes.RECALL_LIMIT_DEFAULT, ge=1, le=notes.RECALL_LIMIT_MAX),
     offset: int = Query(0, ge=0),
+    fields: str | None = Query(
+        None, description=f"返す項目。カンマ区切り。省略時は全部({','.join(notes.RECALL_FIELDS)})"
+    ),
+    max_chars: int = Query(
+        notes.RECALL_MAX_CHARS_DEFAULT,
+        ge=0,
+        description="本文の頭から返す文字数。切ったら truncated が立つ。0 で切らない",
+    ),
 ):
-    return notes.recall(q=q, since=since, until=until, tag=tag, limit=limit, offset=offset)
+    return notes.recall(
+        q=q, since=since, until=until, tag=tag, limit=limit, offset=offset,
+        fields=fields, max_chars=max_chars,
+    )
 
 
 @app.delete("/v1/notes/{doc_id}")

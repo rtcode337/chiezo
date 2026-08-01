@@ -151,7 +151,15 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     - **`limit`/`offset` の上限は `notes.recall()` の中で担保する**。REST の
       `Query(ge=1, le=…)` は HTTP の口にしか効かず、MCP と agent は api の関数を
       Python から直接呼ぶので通らない。SQLite は **`LIMIT -1` を「無制限」**と解釈するため、
-      素通しすると頁を送る意図の呼び出しが静かに全件取得になる
+      素通しすると頁を送る意図の呼び出しが静かに全件取得になる。`max_chars` の負値も
+      同じ理由でここで 0 に丸める(Python の負の添字は末尾を削る意味になる)
+    - **本文は既定で 400 文字に切る**(`RECALL_MAX_CHARS_DEFAULT`)。絞り込めても
+      1 件あたりが重いままだと、20 件当たれば 20 件分の全文がコンテキストに載る。
+      他ソースの `search`(冒頭)→ `doc`(全文)と同じ二段構えにするための既定で、
+      `max_chars=0` で切らない。`fields` で項目も選べる(`RECALL_FIELDS`)
+    - **切ったものには `truncated: true` を立てる**。黙って切ると「これで全部」と
+      読まれる —— 504 を 0 件と読むのと同じ取りこぼし方をするため、全文が要ると
+      分かる印を必ず返す(取り直し先は `/v1/notes/doc/{doc_id}`)
   - `app/answer.py` — **「使う」層(`/v1/ask`・`/localllm/chat`)の本体**。使い方・環境変数は
     `docs/local-llm.md` が、なぜこの形かは
     `docs/design-notes.md`「「使う」層はなぜ 2 段の RAG か」が正。実装側の要点:

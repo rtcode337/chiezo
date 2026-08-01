@@ -126,7 +126,11 @@ scripts/gen_claude_config.sh -u http://<サーバーIP>:9000              # 一�
 curl -s "$BASE/v1/notes" -H 'Content-Type: application/json' \
   -d '{"text":"開発環境を WSL2 へ移行する","tags":"環境,決定"}'
 curl -s "$BASE/v1/notes/recall"                                  # 新しい順に 20 件
+curl -sG "$BASE/v1/notes/recall" -d since=2026-07-01 --data-urlencode "q=移行"
 ```
+
+引くときは期間(`since`/`until`)・キーワード(`q`)・タグで絞れる。本文は既定で先頭
+400 文字までで、切れたメモには `truncated` が付く(全文は `doc` で取り直す)。
 
 CLAUDE.md や記憶ファイルとの違いは、常時コンテキストに載るかどうか。それらは毎セッション
 全部が読み込まれるため件数に比例してトークンを払うが、Chiezo で常駐するのは MCP の

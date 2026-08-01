@@ -146,6 +146,58 @@ class TestRecall:
         monkeypatch.setattr(notes, "RECALL_LIMIT_MAX", 2)
         assert len(notes.recall(limit=10_000)["notes"]) == 2
 
+    def test_body_is_truncated_by_default(self, client):
+        """既定で全文を返すと、当たった件数ぶんの本文がまるごとコンテキストに載る。"""
+        from app import notes
+
+        long_text = "あ" * (notes.RECALL_MAX_CHARS_DEFAULT + 50)
+        client.post("/v1/notes", json={"text": long_text})
+        note = client.get("/v1/notes/recall").json()["notes"][0]
+        assert len(note["text"]) == notes.RECALL_MAX_CHARS_DEFAULT
+        assert note["truncated"] is True
+
+    def test_truncated_notes_can_be_fetched_in_full(self, client):
+        """切った本文の取り直し先。doc_id が残っていないと全文へ辿れない。"""
+        from app import notes
+
+        long_text = "い" * (notes.RECALL_MAX_CHARS_DEFAULT + 50)
+        client.post("/v1/notes", json={"text": long_text})
+        note = client.get("/v1/notes/recall").json()["notes"][0]
+        full = client.get(f"/v1/notes/doc/{note['doc_id']}").json()
+        assert full["body"] == long_text
+
+    def test_short_notes_are_not_marked_truncated(self, filled):
+        assert all(
+            "truncated" not in n for n in filled.get("/v1/notes/recall").json()["notes"]
+        )
+
+    def test_max_chars_zero_returns_everything(self, client):
+        from app import notes
+
+        long_text = "う" * (notes.RECALL_MAX_CHARS_DEFAULT + 50)
+        client.post("/v1/notes", json={"text": long_text})
+        note = client.get("/v1/notes/recall", params={"max_chars": 0}).json()["notes"][0]
+        assert note["text"] == long_text and "truncated" not in note
+
+    def test_fields_selects_and_orders_the_response(self, filled):
+        got = filled.get(
+            "/v1/notes/recall", params={"fields": "title,updated_at"}
+        ).json()
+        assert list(got["notes"][0]) == ["title", "updated_at"]
+
+    def test_unknown_field_is_rejected(self, filled):
+        res = filled.get("/v1/notes/recall", params={"fields": "title,body"})
+        assert res.status_code == 400
+        body = res.json()
+        assert "body" in body["error"] and "text" in body["allowed_fields"]
+
+    def test_max_chars_is_clamped_for_direct_callers(self, filled):
+        """MCP は api の関数を直接呼ぶ。負の添字は末尾を削る意味になってしまう。"""
+        from app import notes
+
+        note = notes.recall(max_chars=-3)["notes"][0]
+        assert note["text"] == "WSL2 へ移行すると決めた"
+
     def test_negative_limit_does_not_return_everything(self, filled):
         """SQLite の LIMIT -1 は「無制限」なので、素通しすると全件返る。"""
         from app import notes

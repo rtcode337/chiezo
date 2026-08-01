@@ -294,6 +294,8 @@ def _register_memory_tools(mcp: FastMCP, app: FastAPI) -> None:
         "q は全文検索(trigram なので 3 文字以上の語が要る)。"
         "**曖昧な指され方をしたときは q を省いて since だけで引くほうが当たる**"
         "(「あの件」は語が一致しないため)。since/until は 2026-07-31 の形でよい。"
+        f"本文は既定で {notes.RECALL_MAX_CHARS_DEFAULT} 文字までしか返らない"
+        "(切れたものは truncated: true が付く)。全文が要るなら doc に doc_id を渡す。"
     ))
     async def recall(
         q: str | None = None,
@@ -302,9 +304,17 @@ def _register_memory_tools(mcp: FastMCP, app: FastAPI) -> None:
         tag: str | None = None,
         limit: int = 20,
         offset: int = 0,
+        fields: Annotated[str | None, Field(description=(
+            "返す項目をカンマ区切りで選ぶ("
+            f"{', '.join(notes.RECALL_FIELDS)})。当たりを付けるだけなら "
+            "title,updated_at,doc_id に絞ると本文を載せずに済む"
+        ))] = None,
+        max_chars: Annotated[int, Field(description=(
+            "本文の頭から返す文字数。0 で切らない"
+        ))] = notes.RECALL_MAX_CHARS_DEFAULT,
     ) -> dict:
         return await run_in_threadpool(
             _call, api.recall_notes,
             request=_request(app), q=q, since=since, until=until, tag=tag,
-            limit=limit, offset=offset,
+            limit=limit, offset=offset, fields=fields, max_chars=max_chars,
         )
