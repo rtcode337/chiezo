@@ -811,6 +811,12 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
   セッションを持つと read-only・複数ワーカーの前提が崩れる(MCP をステートレスにしたのと同じ)。
 - **GPU の設定は `docker-compose.gpu.yml`(上書きファイル)に閉じる**。`gpus: all` は
   GPU の無い環境では起動そのものが失敗するので、本体の compose には書かない。
+- **`docker-compose.standalone.yml` は「`.env` もシェルの環境変数も無い環境」向けの単体定義**。
+  管理画面に YAML を貼り付けて起動するタイプの環境では `${...}` を解決できず、profile も
+  付けられないため、値を直接書き・使うサービスだけを並べてある(chiezo-api + chiezo-trigger。
+  chiezo-llm はコメントアウト)。編集箇所は先頭の置き場アンカー(`x-data-dir` / `x-notes-dir`)に
+  集約し、**ホスト側は絶対パス**にする(貼り付けて登録する環境では相対パスの基準が読めない)。
+  `docker-compose.yml` を変えたらこちらも追従させること —— 値が直書きなぶん古くなりやすい。
 - コード(api/ ingest/ の挙動・エンドポイント・環境変数など)を変更したら、同じ変更で
   README.md(入口。概要・セットアップ・各機能の要約とリンク)と、対応する docs/ の詳細
   (`api-reference.md` = API 仕様と画面 / `local-llm.md` = 「使う」層 /

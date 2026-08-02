@@ -180,7 +180,7 @@ ingest は毎回 `data/<source>-<date>.db` を新規構築し、検証が通っ�
 
 取り込みの環境変数・スキーマ移行・rank_score の入れ直し・メモリ方針・別マシンでのビルドと
 配布・`chiezo-trigger`・セキュリティは[運用ドキュメント](docs/operations.md)にある。
-よく使うものは次の 4 つ。
+よく使うものは次の 5 つ。
 
 | したいこと | 参照 |
 |---|---|
@@ -188,6 +188,7 @@ ingest は毎回 `data/<source>-<date>.db` を新規構築し、検証が通っ�
 | 検索の並びが効かない DB を直す | [rank_score を入れ直す](docs/operations.md#既存-db-の-rank_score-を入れ直す) |
 | メモリの多い別マシンで焼いて配る | [.db を配布する](docs/operations.md#別マシンでビルドして-db-を配布する) |
 | 外に開けてよいか確かめる | [セキュリティ](docs/operations.md#セキュリティ) |
+| `.env` を置けない環境で起動する | [単体定義](docs/operations.md#env-を置けない環境で起動する単体定義) |
 
 ## 開発
 

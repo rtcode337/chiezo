@@ -1,0 +1,125 @@
+# `.env` を置けず、環境変数も設定できない実行環境向けの単体定義。
+# (管理画面に YAML を貼り付けて起動するタイプの環境を想定)
+#
+# docker-compose.yml との違いは「${...} を使わず、値を YAML に直接書く」点だけ。
+# ${...} は `.env` かシェルの環境変数からしか解決できず、どちらも無い環境では
+# 既定値のあるものしか効かないため。profile も付けられない前提なので、
+# 使うサービスだけをここに並べる(取り込みは管理画面の初期化ボタンから叩く)。
+#
+# 使い方:
+#   1. 「ここだけ編集」の置き場を、そのホストの絶対パスに書き換える
+#   2. その内容を管理画面に貼り付けて起動する
+#   3. http://<ホスト>:9000/ を開く(DB が無い間もソース 0 件で起動する)
+#
+# 通常の環境では docker-compose.yml を使う(こちらは値の直書きぶん古くなりやすい)。
+
+# ---- ここだけ編集: データの置き場 ----
+# 管理画面から登録する環境では相対パス (./data) の基準が分かりにくいので絶対パスで書く。
+# data はダンプから作った .db の置き場、notes は「覚える」層の書き込み先。
+# どちらも**あらかじめ作っておくこと**(取り込んだ .db は data に置く)。
+x-data-dir: &data-dir "/path/to/chiezo/data"
+x-notes-dir: &notes-dir "/path/to/chiezo/notes"
+
+services:
+  # 検索 API・MCP・管理画面。これが本体で、単体で起動する。
+  chiezo-api:
+    # 障害時は :latest ではなく :sha-xxxxxxx を指定すれば任意の時点に戻せる
+    image: ghcr.io/rtcode337/chiezo-api:latest
+    container_name: chiezo-api
+    ports:
+      # host:container。8000 は他のアプリと衝突しやすいので避けている
+      - "9000:9000"
+    volumes:
+      # 配信側は読み取り専用。書くのは取り込み側(chiezo-trigger)だけ
+      - type: bind
+        source: *data-dir
+        target: /data
+        read_only: true
+      # notes(短期記憶)だけは書き込む。/data の read-only は崩さず別ディレクトリにする
+      # (同じ場所に置くと、1 件書くたびに全ソースの再走査が走る)
+      - type: bind
+        source: *notes-dir
+        target: /notes
+    environment:
+      CHIEZO_DATA_DIR: /data
+      # 「覚える」層(/v1/notes)。空にすると機能ごと無効になる
+      CHIEZO_NOTES_DIR: /notes
+      # 管理画面の初期化ボタンから叩く chiezo-trigger の内部 URL(ホストには公開しない)。
+      # サービス名で引くので、下の chiezo-trigger の名前を変えるならここも合わせる
+      CHIEZO_TRIGGER_URL: http://chiezo-trigger:8080
+      # 本体の調整はどれも既定があるため、変えたいときだけ足す(素のままなら書かない)。
+      # 例: /mcp の Host 検証を絞るなら次を有効にする
+      #CHIEZO_MCP_ALLOWED_HOSTS: "chiezo.example.com:9000,localhost:*"
+    depends_on:
+      - chiezo-trigger
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:9000/healthz"]
+      interval: 60s
+
+  # 管理画面からの「未初期化データの初期化」を受けて ingest を実行する内部専用トリガー。
+  # ingest イメージを流用し、CMD だけ server:app(FastAPI)起動に上書きする。
+  # ホストへポート公開せず、chiezo-api からのみ docker 内部ネットワーク経由で到達できる。
+  chiezo-trigger:
+    image: ghcr.io/rtcode337/chiezo-ingest:latest
+    container_name: chiezo-trigger
+    command: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080"]
+    volumes:
+      # 取り込みは書き込むので read_only にしない
+      - type: bind
+        source: *data-dir
+        target: /data
+    environment:
+      CHIEZO_DATA_DIR: /data
+    restart: unless-stopped
+    # 「良き隣人」のための相対ウェイト(既定 1024 の半分)。CPU が競合したときだけ
+    # 他のコンテナへ譲り、空いていれば全力で使える。ハード上限の cpus は使わない ——
+    # CPU CFS スケジューラのバンド幅制御を無効にしたカーネルでは作成自体が失敗するため。
+    # この項目を受け付けない実行環境なら、行ごと消してよい(無くても動く)
+    cpu_shares: 512
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/healthz"]
+      interval: 60s
+
+  # ---- 「答える」層(ローカル LLM)を使う場合だけ、以下のコメントを外す ----
+  #
+  # 既定では**丸ごと無効**。検索 API・MCP としての Chiezo には要らない。
+  # 有効にするには (1) 下のブロックのコメントを外し、(2) chiezo-api の environment に
+  # CHIEZO_LLM_URL: http://chiezo-llm:8080/v1 を足す。
+  #
+  # 起動すると Hugging Face からモデルを取ってきて置き場にキャッシュする(初回だけ数 GB)。
+  # 4B 級 Q4_K_M で約 2.5GB・メモリ 4GB 見当。CPU だけなら 4B 級までが実用の目安。
+  # GPU で動かすならイメージを server-cuda-b10156 に変え、`gpus: all` を足す
+  # (ホストに nvidia-container-toolkit が要る。GPU の無い環境では起動そのものが失敗する)。
+  #
+  #chiezo-llm:
+  #  image: ghcr.io/ggml-org/llama.cpp:server-b10156
+  #  container_name: chiezo-llm
+  #  volumes:
+  #    # ---- ここだけ編集: GGUF のキャッシュ置き場(数 GB) ----
+  #    - type: bind
+  #      source: "/path/to/chiezo/models"
+  #      target: /models
+  #  environment:
+  #    # llama-server は全オプションに LLAMA_ARG_* の環境変数を持つので command は上書きしない
+  #    LLAMA_ARG_HF_REPO: ggml-org/gemma-3-4b-it-GGUF:Q4_K_M
+  #    LLAMA_ARG_CTX_SIZE: "8192"
+  #    # 同時に処理する会話の数。1 人で使うなら 1 でよい(スロットごとにホスト側の
+  #    # バッファを持つので、増やすとメモリも増える)
+  #    LLAMA_ARG_N_PARALLEL: "1"
+  #    # ホスト側プロンプトキャッシュの上限(MiB)。既定の 8192 は小さな機械には大きすぎ、
+  #    # 会話を続けるほど育ってメモリを食い尽くす
+  #    LLAMA_ARG_CACHE_RAM: "512"
+  #    # 思考(reasoning)は既定で切る。道具を何度も呼ぶ agent モードで待ち時間が積み上がるため
+  #    LLAMA_ARG_THINK_BUDGET: "0"
+  #    LLAMA_ARG_HOST: 0.0.0.0
+  #    LLAMA_ARG_PORT: "8080"
+  #    # -hf で落としたモデルの置き場(既定はコンテナ内の HOME 配下 = 使い捨てになる)
+  #    LLAMA_CACHE: /models
+  #  restart: unless-stopped
+  #  cpu_shares: 512
+  #  healthcheck:
+  #    # モデルの読み込みが終わるまで応答しないので、起動猶予を長めに取る
+  #    test: ["CMD", "curl", "-fs", "http://localhost:8080/health"]
+  #    interval: 60s
+  #    start_period: 600s

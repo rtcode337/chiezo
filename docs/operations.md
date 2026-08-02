@@ -286,6 +286,30 @@ compose が `.env` から受け取ります(`.env.example` の「1. Chiezo 本�
 `api/app/known_sources.py` の `KNOWN_SOURCES` は、`chiezo-trigger` が未設定・到達不能なときに
 管理画面を空にしないための控えです(必須の複製ではありません)。
 
+## `.env` を置けない環境で起動する(単体定義)
+
+管理画面に YAML を貼り付けて起動するタイプの実行環境では、`.env` もシェルの環境変数も
+無いため `${...}` を解決できず、`--profile` も付けられません。この場合は値を直接書いた
+[`docker-compose.standalone.yml`](../docker-compose.standalone.yml) を使います。
+
+```bash
+# 中身をコピーして、先頭の置き場を実際の絶対パスに書き換えてから貼り付ける
+cat docker-compose.standalone.yml
+```
+
+編集するのは先頭の 2 行(`x-data-dir` / `x-notes-dir`)だけです。**ホスト側は絶対パスで
+書きます** —— 貼り付けて登録する環境では相対パス(`./data`)の基準が読めないためです。
+どちらのディレクトリも**あらかじめ作っておいてください**(取り込んだ `.db` は data に置く)。
+
+起動するのは `chiezo-api` と `chiezo-trigger` の 2 つで、通常の `docker-compose.yml` と同じく
+trigger はホストへ公開されず、管理画面の初期化ボタンから内部ネットワーク経由で叩かれます。
+「答える」層(`chiezo-llm`)はファイル末尾にコメントアウトしてあり、使うときだけ外します
+(あわせて `chiezo-api` の environment に `CHIEZO_LLM_URL` を足します)。
+
+`cpu_shares` のように受け付けない実行環境がある項目は、行ごと消しても動きます。
+**`docker-compose.yml` を変えたらこのファイルも追従させてください**(値が直書きのぶん、
+黙って古くなります)。
+
 ## ソースの追加・削除
 
 `data/` に `<source>.db` を置く(または消す)だけです(chiezo-api が数秒以内に自動で検知します)。
