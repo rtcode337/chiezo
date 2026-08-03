@@ -41,7 +41,7 @@ from typing import Any
 from urllib.parse import quote
 
 from fastapi import HTTPException, Request
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from app import answer, notes, websearch
 from app.mcp_server import INSTRUCTIONS, build_mcp
@@ -163,7 +163,7 @@ async def tool_specs(app, web: bool = False, notes: bool = False) -> list[dict]:
             "function": {
                 "name": t.name,
                 "description": t.description or "",
-                "parameters": t.inputSchema,
+                "parameters": t.input_schema,
             },
         }
         for t in tools
@@ -196,20 +196,21 @@ def web_allowed(requested: bool | None) -> bool:
 
 
 def _payload_of(result: Any) -> Any:
-    """FastMCP の戻り値を素の Python 値に均す。
+    """`call_tool()` の戻り値を素の Python 値に均す。
 
-    mcp 1.x の `call_tool(convert_result=True)` は表示用の ContentBlock 列を返す
-    (中身は道具が返した dict の JSON)。版によっては構造化結果との組で返るので、
-    その場合は構造化側を採る。どちらでもなければ本文を JSON として読む
-    (読めなければ文字列のまま)。
+    mcp 2.x は `CallToolResult`(表示用の ContentBlock 列 + 任意の構造化結果)を返す。
+    構造化結果があるならそれを採り、無ければ本文を JSON として読む
+    (読めなければ文字列のまま)。素の dict / ContentBlock 列も受けるのは、
+    版によって戻りの形が変わってきた経緯があるため。
     """
-    if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], dict):
-        structured = result[1]
+    structured = getattr(result, "structured_content", None)
+    if isinstance(structured, dict):
         # dict を返さない道具は {"result": ...} に包まれて来る
         return structured["result"] if set(structured) == {"result"} else structured
     if isinstance(result, dict):
         return result
-    text = "".join(getattr(b, "text", "") or "" for b in (result or []))
+    blocks = getattr(result, "content", result) or []
+    text = "".join(getattr(b, "text", "") or "" for b in blocks)
     try:
         return json.loads(text)
     except (json.JSONDecodeError, TypeError):
@@ -220,7 +221,7 @@ def _tool_error_payload(text: str) -> dict:
     """ToolError の文言から、エンドポイントが返した JSON を取り出す。
 
     `mcp_server._call` は HTTPException の中身を JSON 文字列にして ToolError にするが、
-    FastMCP がさらに "Error executing tool search: " を前置きするので素直には読めない。
+    MCP 側がさらに "Error executing tool search: " を前置きするので素直には読めない。
     404 の candidates や 409 の移行案内はモデルが次の手を決めるのに要るので、
     前置きを剥がしてでも拾う(それも駄目なら文言をそのままエラーにする)。
     """

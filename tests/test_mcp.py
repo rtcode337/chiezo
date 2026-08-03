@@ -60,7 +60,7 @@ def rpc(client, method: str, params: dict | None = None, rpc_id: int = 1) -> dic
 def call_tool(client, name: str, arguments: dict) -> dict:
     """tools/call の戻り(content[0].text の JSON)と isError を返す。
 
-    エラー時は FastMCP が "Error executing tool <name>: " を前置きするので、
+    エラー時は MCP 側が "Error executing tool <name>: " を前置きするので、
     最初の `{` 以降を JSON として読む。
     """
     body = rpc(client, "tools/call", {"name": name, "arguments": arguments})

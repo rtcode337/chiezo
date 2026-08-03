@@ -115,7 +115,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       直接呼ぶときに**全パラメータを明示的に渡す**必要がある。渡し忘れると Query
       インスタンスが値として入り、`if tag:` が常に真になる等、例外にならず静かに壊れる。
       `tests/test_mcp.py::TestStaysInSyncWithRest` がシグネチャを突き合わせて落とす
-    - FastMCP は**同期のツール関数をイベントループ上で直接呼ぶ**(await するのは async
+    - MCPServer は**同期のツール関数をイベントループ上で直接呼ぶ**(await するのは async
       関数だけ)。Chiezo のクエリは最大 5 秒ブロックしうるので、必ず `run_in_threadpool`
       に逃がす。でないと重いクエリ 1 本で API 全体が止まる
     - `TransportSecuritySettings` の既定は「localhost 系の Host しか受け付けない」。
@@ -124,7 +124,10 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     セッションマネージャは lifespan の中で `run()` する必要があり(python-sdk#1367)、かつ
     1 インスタンス 1 回しか呼べないため、**起動ごとに `build_mcp()` で作り直して**
     `app.state.mcp_asgi` に置き、マウント先(`main._mcp_asgi`)がそれを見る形にしている
-    (モジュール読み込み時に作り置きすると、同一プロセスで二度起動するテストが落ちる)
+    (モジュール読み込み時に作り置きすると、同一プロセスで二度起動するテストが落ちる)。
+    **ステートレス・待ち受けパス・Host 検証は `build_mcp_app()`(= `streamable_http_app()`)
+    側の設定**で、mcp 2.x でサーバー本体の引数から移った(1.x の `FastMCP(...)` に
+    まとめて渡していた頃の書き方は通らない)
   - `app/notes.py` — **「覚える」層(`/v1/notes`)の本体。Chiezo で唯一書き込む場所**。
     使い方は `docs/api-reference.md`「notes(唯一書き込めるソース)の REST」節、
     なぜこの形かは `docs/design-notes.md`
@@ -213,7 +216,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       ここでエラーを返すと、手元に結果があるのに「失敗した」と受け取って別の検索を
       足しに行き、ステップを空費する)
     - **道具の失敗はモデルに返す**(`execute()` は例外にしない)。404 の candidates は
-      次の手の材料になる。ToolError の文言には FastMCP の前置きが付くので
+      次の手の材料になる。ToolError の文言には MCP 側の前置きが付くので
       `_tool_error_payload()` で剥がしてから渡す
     - **最終回答はストリーミングしない**。ツール呼び出しかどうかは応答を途中まで読まないと
       分からず、断片から復元すると壊れやすい。代わりに `step` イベントで進捗を流す

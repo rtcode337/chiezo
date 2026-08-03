@@ -8,11 +8,14 @@
   Python から直接呼ぶときは**全パラメータを明示的に渡す**必要がある(省略すると Query
   インスタンスがそのまま値として渡り、`if tag:` が常に真になるような静かな誤動作になる)。
   `tests/test_mcp.py` がシグネチャを突き合わせて渡し漏れを落とす。
-- FastMCP は**同期のツール関数をイベントループ上で直接呼ぶ**(非同期関数だけ await する)。
+- MCPServer は**同期のツール関数をイベントループ上で直接呼ぶ**(非同期関数だけ await する)。
   Chiezo のクエリは最大 5 秒ブロックしうるので、必ず `run_in_threadpool` に逃がす。
   そうしないと重いクエリ 1 本で API 全体(管理画面や他のリクエスト)が止まる。
 - `stateless_http=True`。読み取り専用・LAN 内・セッションに持つ状態が無いので、
   セッション管理を挟む理由がない(複数ワーカーでも素直に動く)。
+- **トランスポートの設定は `build_mcp_app()` 側に持つ**。mcp 2.x でサーバー本体の
+  引数から ASGI アプリの引数へ移ったので、置き場もそちらへ寄せてある
+  (サーバーの組み立てとマウントの仕方が分かれた)。
 """
 from __future__ import annotations
 
@@ -23,10 +26,11 @@ from types import SimpleNamespace
 from typing import Annotated, Any
 
 from fastapi import FastAPI, HTTPException
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
+from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 
 from app import notes
@@ -58,7 +62,7 @@ LAN 内の読み取り専用ナレッジ API「Chiezo」。Wikipedia・OpenStree
 def _transport_security() -> TransportSecuritySettings:
     """Host ヘッダ検証の設定。
 
-    FastMCP の既定は「localhost 系の Host しか受け付けない」(DNS リバインディング対策)。
+    既定は「localhost 系の Host しか受け付けない」(DNS リバインディング対策)。
     そのままだと LAN の別マシンから `http://<LAN の IP>:9000/mcp` を叩いた時点で
     421 になり、この API の使い方(LAN 内から引く)がまるごと成立しない。
     Chiezo は REST 側も認証なし・LAN 内前提なので、既定では検証を外して足並みを揃える。
@@ -98,7 +102,22 @@ def _call(fn: Callable[..., Any], **kwargs: Any) -> Any:
         raise ToolError(json.dumps(detail, ensure_ascii=False)) from None
 
 
-def build_mcp(app: FastAPI) -> FastMCP:
+def build_mcp_app(mcp: MCPServer) -> Starlette:
+    """MCP サーバーを `/mcp` にマウントできる ASGI アプリにする。
+
+    トランスポート側の設定(ステートレス・待ち受けパス・Host 検証)は mcp 2.x で
+    サーバー本体からこちらへ移った。呼ぶのは `app/main.py` の lifespan 1 か所だけだが、
+    設定の意味はこのモジュールの話なのでここに置く。
+    """
+    return mcp.streamable_http_app(
+        # マウント側で /mcp を担当するので、この app 自身はルート直下で待ち受ける
+        streamable_http_path="/",
+        stateless_http=True,
+        transport_security=_transport_security(),
+    )
+
+
+def build_mcp(app: FastAPI) -> MCPServer:
     """FastAPI アプリに紐づく MCP サーバーを組み立てて返す。
 
     `app/main.py` の末尾から呼ばれる。main を遅延 import しているのは循環参照を
@@ -106,14 +125,7 @@ def build_mcp(app: FastAPI) -> FastMCP:
     """
     from app import main as api
 
-    mcp = FastMCP(
-        "chiezo",
-        instructions=INSTRUCTIONS,
-        stateless_http=True,
-        # マウント側で /mcp を担当するので、この app 自身はルート直下で待ち受ける
-        streamable_http_path="/",
-        transport_security=_transport_security(),
-    )
+    mcp = MCPServer("chiezo", instructions=INSTRUCTIONS)
 
     @mcp.tool(description="登録済みソースの一覧(名前・種類・言語・文書数・スキーマ版)を返す。")
     async def sources() -> dict:
@@ -255,7 +267,7 @@ def build_mcp(app: FastAPI) -> FastMCP:
     return mcp
 
 
-def _register_memory_tools(mcp: FastMCP, app: FastAPI) -> None:
+def _register_memory_tools(mcp: MCPServer, app: FastAPI) -> None:
     """覚える・思い出すの 2 つ。
 
     この 2 つがあることの意味は「常駐するのはこの定義(数百字)だけで、覚えた中身は

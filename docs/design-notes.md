@@ -506,7 +506,7 @@ rag モードは **`search` を 1 回叩いて終わり**なので、Chiezo の�
 
 #### 道具は MCP から借りる(書き写さない)
 
-FastMCP の `list_tools()` を OpenAI の function 形式へ写し、実行は `call_tool()` に投げます。
+MCP サーバーの `list_tools()` を OpenAI の function 形式へ写し、実行は `call_tool()` に投げます。
 定義を書き写すと REST・MCP・agent の三重管理になって必ずずれますし、借りれば説明文
 (「タグの列挙は `filter` で」等、Chiezo を正しく引くための知識)もそのまま付いてきて、
 **Claude Code から使うときと同じ道具立て**になります。システムプロンプトの前半に置く

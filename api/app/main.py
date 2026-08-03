@@ -33,7 +33,7 @@ from app.deps import (
     require_tag_schema,
 )
 from app.fts import build_match_query, escape_like
-from app.mcp_server import build_mcp
+from app.mcp_server import build_mcp, build_mcp_app
 from app.pages import APPLE_TOUCH_ICON_PNG
 from app.registry import (
     COORDS_MIN_SCHEMA_VERSION,
@@ -154,7 +154,8 @@ async def lifespan(app: FastAPI):
     # agent モード(app/agent.py)は道具の定義も実行もここから借りるので、
     # ASGI アプリだけでなく MCP サーバー本体も置いておく。
     app.state.mcp = mcp
-    app.state.mcp_asgi = mcp.streamable_http_app()
+    # session_manager は streamable_http_app() を先に呼んでからでないと取れない。
+    app.state.mcp_asgi = build_mcp_app(mcp)
     try:
         async with mcp.session_manager.run():
             yield

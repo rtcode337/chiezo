@@ -19,9 +19,14 @@ if ! command -v uv >/dev/null 2>&1; then
     exit 1
 fi
 
+# uv は「実行したコマンド」を .txt の先頭に書くので、**リポジトリのルートへ移って
+# 相対パスで渡す**。絶対パスのまま回すと、生成した人のホームディレクトリが
+# そのままロックに残り、置き場所が違うだけで差分が出る。
+cd "$ROOT"
+
 for target in api/requirements ingest/requirements requirements-dev; do
     echo "==> $target.txt" >&2
     uv pip compile \
         --quiet --generate-hashes --python-version "$PYTHON_VERSION" \
-        --output-file "$ROOT/$target.txt" "$ROOT/$target.in" "$@"
+        --output-file "$target.txt" "$target.in" "$@"
 done
