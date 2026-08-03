@@ -409,7 +409,11 @@ def _parse_arguments(raw: Any) -> tuple[dict | None, str]:
     try:
         parsed = json.loads(raw)
     except (json.JSONDecodeError, TypeError) as e:
-        return None, f"arguments is not valid JSON: {e}"
+        # 例外の文言は**返さない**(種別だけ)。この理由は tool の結果として
+        # モデルへ渡ると同時に step としてブラウザまで流れるので、`execute` の
+        # 失敗と同じ扱いにする。読み取れなかった中身はログにだけ残す。
+        log.info("agent tool arguments not parsable (%s): %r", type(e).__name__, raw)
+        return None, f"arguments is not valid JSON ({type(e).__name__})"
     if not isinstance(parsed, dict):
         return None, "arguments must be a JSON object"
     return parsed, ""
