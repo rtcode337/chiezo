@@ -204,16 +204,22 @@ Hugging Face の GGUF リポジトリを `<user>/<repo>:<quant>` の形で指定
 | | 目安 |
 |---|---|
 | CPU のみ | 4B 級・Q4_K_M まで。1 回の回答に数十秒。agent モードは実用外 |
-| GPU あり | 8〜14B 級。下の「GPU で動かす」を参照。agent モードはこちらが前提 |
+| GPU あり | 8〜14B 級。下の「GPU で動かす(NVIDIA)」を参照。agent モードはこちらが前提 |
 | メモリ | モデルのファイルサイズ + コンテキスト分(既定 8192 で数百 MB)が目安 |
 
-## GPU で動かす
+## GPU で動かす(NVIDIA)
 
 上書きファイルを重ねて起動します(ホストに nvidia-container-toolkit が要ります)。
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile answer up -d
+docker compose -f docker-compose.yml -f docker-compose.cuda.yml --profile answer up -d
 ```
+
+**この上書きは NVIDIA 専用**です。イメージが CUDA ビルドで、`gpus: all` も NVIDIA
+Container Toolkit の経路のため、AMD や Intel の GPU では動きません。llama.cpp は同じ
+ビルド番号で `server-rocm-*`(AMD)・`server-vulkan-*`(ベンダー非依存)・`server-intel-*`
+のイメージも公開していますが、デバイスの渡し方が違う(ROCm は `/dev/kfd` と `/dev/dri`、
+Vulkan は `/dev/dri`)ので、使うなら別の上書きファイルが要ります。
 
 既定は **Qwen3-8B Q4_K_M(約 5GB)・コンテキスト 16k・全層 GPU・思考オフ**で、VRAM 12GB 級を
 想定しています。CUDA 13 のイメージを使うので、ドライバが古い場合はタグを

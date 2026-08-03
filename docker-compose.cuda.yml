@@ -1,9 +1,16 @@
-# 「答える」層の推論を GPU で動かすための上書き。本体(docker-compose.yml)と重ねて使う:
+# 「答える」層の推論を **NVIDIA の GPU** で動かすための上書き。本体(docker-compose.yml)と
+# 重ねて使う:
 #
-#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile answer up -d
+#   docker compose -f docker-compose.yml -f docker-compose.cuda.yml --profile answer up -d
 #
 # 手元ビルドで試すときは 1 つ目を docker-compose.build.yml に差し替えればよい
 # (この上書きは chiezo-llm しか触らないので、どちらの土台にも重ねられる)。
+#
+# **NVIDIA 専用**なのでファイル名も cuda にしてある。イメージが CUDA ビルドで、
+# `gpus: all` も NVIDIA Container Toolkit の経路だから、他ベンダーでは動かない。
+# llama.cpp は同じビルド番号で rocm(AMD)・vulkan(ベンダー非依存)・intel などの
+# イメージも出しているが、**デバイスの渡し方が違う**(ROCm は /dev/kfd と /dev/dri、
+# Vulkan は /dev/dri)ので、使うなら別の上書きを起こすことになる。
 #
 # 別ファイルに分けてあるのは、GPU の指定(`gpus: all`)が「無い環境では起動そのものが
 # 失敗する」設定だから。本体に書くと GPU の無いマシンで compose が通らなくなる。

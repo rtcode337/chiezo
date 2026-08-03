@@ -812,8 +812,13 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
   有効にしたときも「どれが web 由来か分かる」ことを崩さない(出典の `source` が `web`)。
 - **会話の状態をサーバーに持たせない**。`/v1/chat` は履歴を毎回まるごと受け取る。
   セッションを持つと read-only・複数ワーカーの前提が崩れる(MCP をステートレスにしたのと同じ)。
-- **GPU の設定は `docker-compose.gpu.yml`(上書きファイル)に閉じる**。`gpus: all` は
+- **GPU の設定は `docker-compose.cuda.yml`(上書きファイル)に閉じる**。`gpus: all` は
   GPU の無い環境では起動そのものが失敗するので、本体の compose には書かない。
+  **この上書きは NVIDIA 専用**(イメージが CUDA ビルドで、`gpus: all` も NVIDIA
+  Container Toolkit の経路)なのでファイル名も `gpu` ではなく `cuda` にしてある。
+  llama.cpp は同じビルド番号で rocm(AMD)・vulkan(ベンダー非依存)・intel などの
+  イメージも出しているが、デバイスの渡し方が違う(ROCm は `/dev/kfd` と `/dev/dri`、
+  Vulkan は `/dev/dri`)ため、対応するなら別の上書きファイルを起こすこと。
 - **`docker-compose.standalone.yml` は「`.env` もシェルの環境変数も無い環境」向けの単体定義**。
   管理画面に YAML を貼り付けて起動するタイプの環境では `${...}` を解決できず、profile も
   付けられないため、値を直接書き・使うサービスだけを並べてある(chiezo-api + chiezo-trigger。

@@ -96,9 +96,9 @@ services:
   #
   # モデルは起動時に Hugging Face から取ってきて ./models にキャッシュする(初回だけ数 GB)。
   # 別のモデルにするなら .env の CHIEZO_LLM_HF_REPO を変えて再起動する。
-  # ここは CPU 版。GPU で動かすなら docker-compose.gpu.yml を重ねる(そちらが正):
+  # ここは CPU 版。NVIDIA の GPU で動かすなら docker-compose.cuda.yml を重ねる(そちらが正):
   #
-  #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile answer up -d
+  #   docker compose -f docker-compose.yml -f docker-compose.cuda.yml --profile answer up -d
   #
   # chiezo-trigger と同じくホストへポート公開せず、chiezo-api からのみ到達できる。
   chiezo-llm:
