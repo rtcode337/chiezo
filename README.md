@@ -259,6 +259,7 @@ EOF
 | [API リファレンス](docs/api-reference.md) | REST の全パラメータ、`extra` の中身、MCP、Claude Code 連携、管理画面・ブラウズ画面 |
 | [ローカル LLM](docs/local-llm.md) | 「使う」層の使い方・agent モード・web 検索・GPU・環境変数 |
 | [運用](docs/operations.md) | 取り込みの環境変数、スキーマ移行、メモリ、別マシンでのビルドと配布、セキュリティ |
+| [別マシンで DB を焼く](docs/build-on-another-machine.md) | メモリの多いマシンで `.db` を作って配信機へ渡す手順。これ 1 枚で完結する |
 | [ソースの追加手順](docs/adding-a-source.md) | 新しい種類のデータを足すとき |
 | [FTS トークナイザの評価](docs/fts-tokenizer-evaluation.md) | 形態素解析への差し替えを見送った経緯と実測値 |
 

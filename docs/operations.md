@@ -249,12 +249,13 @@ docker run --rm ghcr.io/rtcode337/chiezo-ingest:latest \
 
 ```bash
 docker pull ghcr.io/rtcode337/chiezo-ingest:latest   # または docker-compose.build.yml でローカルビルド
+mkdir -p handoff                                     # 持ち出す成果物の置き場(リポジトリ管理外)
 docker save ghcr.io/rtcode337/chiezo-ingest:latest | gzip -1 > handoff/chiezo-ingest-image.tar.gz
 # ビルド機で: docker load -i chiezo-ingest-image.tar.gz
 ```
 
 詳しい手順(必要ディスク・所要時間、Docker Desktop/WSL2 のメモリ設定、後片付け、環境変数一覧)は
-[`handoff/BUILD-ON-ANOTHER-MACHINE.md`](../handoff/BUILD-ON-ANOTHER-MACHINE.md) にまとめてあります
+[`docs/build-on-another-machine.md`](build-on-another-machine.md) にまとめてあります
 (取り込みが触るのは公開ダンプと指定した data フォルダだけで、認証情報や個人ファイルは読みません)。
 
 ## chiezo-trigger(管理画面からの初期化・再構築)

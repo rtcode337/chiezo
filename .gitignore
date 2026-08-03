@@ -20,6 +20,6 @@ notes/
 # 「答える」層の GGUF キャッシュ(数 GB。イメージにも repo にも入れない)
 models/
 
-# 別マシンへ持ち出す ingest イメージ(docker save の成果物。手順書だけ残す)
-handoff/*.tar.gz
-handoff/*.tar.gz.sha256
+# 別マシンへ持ち出す ingest イメージの置き場(docker save の成果物。手順書は
+# docs/build-on-another-machine.md にあるので、このフォルダは丸ごと管理外)
+handoff/

@@ -758,7 +758,7 @@ osm ソースは**国スケールに留める**(大陸スケールはディス�
 **ビルド機と配信機を分けられる**のが設計の要なので壊さないこと: `.db` は自己完結した単一
 SQLite ファイルで、配信側 chiezo-api は read-only immutable で開くだけの常駐 80〜150MB。
 効いてくるのはメモリでなくディスク(jawiki.db 約 42GB)。手順は `docs/operations.md`
-「別マシンでビルドして .db を配布する」と `handoff/BUILD-ON-ANOTHER-MACHINE.md`。
+「別マシンでビルドして .db を配布する」と `docs/build-on-another-machine.md`。
 
 ## 実装上の約束事
 
