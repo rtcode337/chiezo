@@ -809,13 +809,13 @@ class TestClaudeConfig:
         """
         plain = client.get("/admin/claude-config.txt").text
         assert "mcp__chiezo__" not in plain
-        assert "--with-mcp" not in plain
+        # 登録は既定なので、再生成の案内に引き継ぐのは opt-out した --no-mcp のほう
+        assert "--no-mcp" in plain
 
         withmcp = client.get("/admin/claude-config.txt?mcp=1").text
         assert "mcp__chiezo__" in withmcp
         assert "単発の参照は MCP ツールを優先" in withmcp
-        # 再生成の案内にフラグが引き継がれる
-        assert "--with-mcp" in withmcp
+        assert "--no-mcp" not in withmcp
         # それ以外は同じブロック
         assert withmcp.startswith("<!-- BEGIN chiezo (auto-generated) -->")
         assert "- **jawiki**" in withmcp

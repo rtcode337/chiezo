@@ -297,8 +297,8 @@ def permission_rules(base_url: str) -> list[str]:
     Bash ルールはコマンド文字列の前方一致なので、実際に打たれる形のぶんだけ変種が要る:
     `-s`(単純 GET)/`-sG`(--data-urlencode 併用)× URL のクォート有無 の 4 本。
     `/v1/` 個別ルールは `/` 前方一致に包含されるので出さない。
-    スクリプトは jq 経路で `unique`(=ソート)して既存 allow に足すので、
-    ここでもソート済みで返す。
+    スクリプトはこれをソート・重複排除しながら既存 allow に足す(jq の `unique` と
+    python3 の `sorted(set(...))` で同じ結果になる)ので、ここでもソート済みで返す。
     """
     base = base_url.rstrip("/")
     return sorted(
@@ -405,8 +405,9 @@ def build_block(
     クライアント側で `--with-hook` を指定したときにしか入らないので、既定で
     書いてしまうと入れていない環境には嘘になる(gen_claude_config.sh が
     フックを設置するときだけ `?hook=1` で取りに来る)。
-    `mcp=True` も同じ理屈で、MCP サーバーを登録した環境にだけ使い分けの指示を足す
-    (`--with-mcp` のときだけ `?mcp=1` で取りに来る)。
+    `mcp=True` も同じ理屈で、MCP サーバーを登録した環境にだけ使い分けの指示を足す。
+    こちらはスクリプト側の既定が「登録する」なので、通常は `?mcp=1` で来て、
+    `--no-mcp` を指定されたときだけ `?mcp=0` になる。
     """
     base = base_url.rstrip("/")
     when = (now or datetime.now().astimezone()).strftime("%Y-%m-%d %H:%M %Z").strip()
@@ -464,11 +465,12 @@ def build_block(
         out.append("- (生成時点で登録済みソースは 0 件だった。取り込み後に本ブロックを再生成すること)")
 
     out.append("")
-    # 再生成の案内には今回のフラグを引き継がせる(--with-mcp で生成したブロックを
-    # フラグ無しで再生成すると、登録は残っているのに使い分けの指示だけ消えるため)
+    # 再生成の案内には今回のフラグを引き継がせる(既定と違う選択をした環境で
+    # フラグ無しで再生成すると、実際の設置状態と本文の指示がずれるため)。
+    # MCP は既定で登録するので、引き継ぐのは opt-out した `--no-mcp` のほう。
     regen = f"scripts/gen_claude_config.sh --base-url {base}"
-    if mcp:
-        regen += " --with-mcp"
+    if not mcp:
+        regen += " --no-mcp"
     if hook:
         regen += " --with-hook"
     out.append(

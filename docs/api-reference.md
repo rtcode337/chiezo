@@ -230,8 +230,8 @@ curl の方がトークン効率が良い場面があるため、どちらかに
 ブロック内の curl 例のベース URL は、Chiezo 側が「スクリプトがアクセスしてきた URL の
 プロトコル・ホスト名・ポート」から導出するため、`--base-url` に指定した到達可能な URL が
 そのまま生成物に載ります(リバースプロキシ越し・非標準ポートでも可)。
-`curl` だけで動き追加インストールは不要(Python 不要。既存 settings への権限マージにのみ
-jq を使います)。
+`curl` + POSIX シェルだけで動きます(既存の JSON 設定ファイルへマージする場面でのみ
+jq か python3 のどちらかを使います。詳細は後述)。
 
 **既定の書き込み先は `~/.claude/CLAUDE.md`**(全プロジェクトの Claude に効く推奨の使い方)。
 あわせて既定で、書き込み先に対応する Claude Code 設定(`--user` なら
@@ -269,15 +269,30 @@ scripts/gen_claude_config.sh --print       # 書き込まず内容だけ確認
 ### MCP サーバーの登録(既定・`--no-mcp` で無効化)
 
 Chiezo は [MCP サーバーでもある](#mcp-から使うmcp)ため、生成時に Claude Code へ登録も行います。
-書き込み先は `--user` ならユーザースコープ(`claude mcp add --scope user`。`claude` CLI が
-無い環境では jq で `~/.claude.json` の `mcpServers` へ直接マージ)、`--project`/`--target` なら
-対象ディレクトリの `.mcp.json` です。どちらも再実行で重複しません。あわせて CLAUDE.md
+書き込み先は `--user` ならユーザースコープ(`~/.claude.json`)、`--project`/`--target` なら
+対象ディレクトリの `.mcp.json` です。`claude` CLI があればどちらも
+`claude mcp add --scope {user,project}` に任せ、無ければ設定ファイルの `mcpServers` へ
+直接マージします。どちらも再実行で重複しません。あわせて CLAUDE.md
 ブロックに「**単発の参照は MCP ツール・大量取得は `curl`**」の使い分けが書かれます
 (MCP の応答は必ずモデルのコンテキストを通るため、ページングや突合はファイルに落とせる
-`curl` の方が向くという理由です)。
+`curl` の方が向くという理由です)。反映には Claude Code の再起動(新しいセッション)が必要です。
 
-前提(`claude` CLI か jq)がどちらも無い環境では、警告を出して登録だけ飛ばします
-(CLAUDE.md の生成は続きます)。反映には Claude Code の再起動(新しいセッション)が必要です。
+### 必要なもの(jq / python3 / `claude` CLI)
+
+`curl` 以外は、**既存の JSON 設定ファイルへマージするときだけ**必要です
+(書き込み先がまだ無ければ API の応答をそのまま置くので何も要りません)。
+
+| 場面 | 必要なもの |
+|---|---|
+| CLAUDE.md ブロックの生成 | `curl` のみ |
+| 既存 `settings.json` への権限追記 | jq か python3(どちらでも同じ結果。jq を優先) |
+| MCP の登録 | `claude` CLI。無ければ jq か python3 |
+| `--with-hook` | python3(フック本体が Python スクリプトなので実行に必須) |
+
+権限と MCP は**既定で入れる設定なので、入れられない環境では黙って飛ばさずエラーで停止します**
+(「設定が入ったつもり」で使い始めるほうが困るため)。意図的に外すときは
+`--no-permissions` / `--no-mcp` を明示してください。`--print` は何も書き込まないので
+この検査を行いません。
 
 ### 大量取得でプロンプトが出てしまう場合(`--with-hook`)
 
@@ -309,6 +324,7 @@ curl -s http://<サーバーIP>:9000/admin/claude-config.hook.py   # フック�
 # 管理画面 /admin/claude-config でもプレビューできます
 ```
 
-設置には `python3`(フックの実行)と `jq`(settings のマージ)が必要です。
+設置には `python3` が必要です(フック本体が Python スクリプトなので実行に必須。
+`settings` のマージにも流用します)。
 何度実行しても `hooks.PreToolUse` は重複せず、設置先を変えた場合も古いエントリは掃除されます。
 反映には Claude Code の再起動(または一度 `/hooks` を開く)が必要な場合があります。

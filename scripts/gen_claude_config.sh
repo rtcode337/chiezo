@@ -7,7 +7,7 @@
 # (api/app/claude_config.py)にあり、このスクリプトは取得と書き込みだけを行う。
 # ブロック内の curl 例のベース URL は、Chiezo 側が「このスクリプトがアクセスして
 # きた URL のプロトコル・ホスト名・ポート」から導出する。
-# POSIX シェル + curl だけで動き、追加インストールは不要。
+# POSIX シェル + curl だけで動く。
 #
 # 使い方:
 #   scripts/gen_claude_config.sh                        # 既定: ~/.claude/CLAUDE.md
@@ -19,7 +19,7 @@
 #
 # オプション: --base-url/-u, --target/-o, --user(既定), --project,
 #             --merge {markers,headless}, --print, --no-permissions, --with-hook,
-#             --with-mcp, --timeout
+#             --no-mcp, --timeout
 #
 # 既定で、書き込み先に対応する Claude Code 設定(--user なら ~/.claude/settings.json、
 # --project/--target なら <対象ディレクトリ>/.claude/settings.local.json)に
@@ -28,7 +28,23 @@
 # Chiezo への curl は毎回の許可プロンプトなしに実行できるようになる。
 # この動作が不要なら --no-permissions を付ける。
 #
-# ただし permissions.allow は**コマンド文字列の前方一致**でしか判定できない。
+# また既定で、Chiezo の MCP サーバー(<base>/mcp)を Claude Code に登録する:
+#   - --user: ユーザースコープ(claude mcp add --scope user)
+#   - --project/--target: 対象ディレクトリの .mcp.json(claude mcp add --scope project)
+# あわせて CLAUDE.md ブロックに「単発の参照は MCP・大量取得は curl」の使い分けの指示が入る。
+# Chiezo は REST と MCP の両方で同じ機能を出しており、単発の参照は引数が構造化された
+# MCP のほうが確実(URL エンコードの失敗が無い)なので、curl 用の設定と揃えて既定で入れる。
+# 登録が不要なら --no-mcp。
+#
+# 権限・MCP はどちらも既定で入れる設定なので、**入れられない環境では黙って飛ばさず落とす**。
+# 「設定が入ったつもり」で使い始めるほうが困るため。外したいときは明示的に
+# --no-permissions / --no-mcp を付ける。
+#
+# 既存の JSON 設定ファイルへのマージには jq か python3 のどちらかを使う(あるほうを使い、
+# jq を優先する)。claude CLI があれば MCP の登録は CLI に任せるのでどちらも要らない。
+# 新規ファイルを作るだけで済む場合(既存の settings.json / .mcp.json が無い場合)も要らない。
+#
+# permissions.allow は**コマンド文字列の前方一致**でしか判定できない。
 # 大量取得は必ず `for t in …; do curl …; done` やパイプの形になり、そうなると
 # curl が先頭に来ないのでルールが 1 本もマッチせず、いちばん許可したい場面で
 # 毎回プロンプトが出る。これを解消したい場合だけ --with-hook を付けると、
@@ -39,21 +55,12 @@
 # フックはコマンドを前方一致ではなく構造で見て、「登場する URL が全て Chiezo」かつ
 # 「実行されるコマンドが curl/jq/sort 等の読み取り専用」のときだけ自動許可する。
 # 条件を外れたら何も出力しないので、その場合は今までどおりプロンプトが出るだけ。
-# 設置には python3(フックの実行)と jq(settings のマージ)が要る。
+# 設置には python3 が要る(フック本体が Python スクリプトなので実行に必須)。
 #
 # フックは「Claude が打つ Bash を毎回検査して自動承認しうる」仕掛けで、影響が
 # 権限ルールより広い。中身を読んで納得してから入れられるよう、既定では設置せず
 # 明示的に --with-hook を指定したときだけ入れる。事前に中身だけ見たいときは
 # curl "<base>/admin/claude-config.hook.py" か管理画面 /admin/claude-config を見る。
-#
-# また既定で、Chiezo の MCP サーバー(<base>/mcp)を Claude Code に登録する:
-#   - --user: ユーザースコープに登録(claude mcp add --scope user。claude CLI が無い環境では
-#     jq で ~/.claude.json の mcpServers へ直接マージする)
-#   - --project/--target: 対象ディレクトリの .mcp.json へマージ(GET /admin/claude-config.mcp.json)
-# あわせて CLAUDE.md ブロックに「単発の参照は MCP・大量取得は curl」の使い分けの指示が入る。
-# Chiezo は REST と MCP の両方で同じ機能を出しており、単発の参照は引数が構造化された
-# MCP のほうが確実(URL エンコードの失敗が無い)なので、curl 用の設定と揃えて既定で入れる。
-# 登録が不要なら --no-mcp。前提(claude CLI か jq)が無い環境では警告して登録だけ飛ばす。
 
 BEGIN_MARK='<!-- BEGIN chiezo (auto-generated) -->'
 END_MARK='<!-- END chiezo -->'
@@ -67,14 +74,14 @@ PRINT=0
 WITHPERM=1
 WITHHOOK=0          # フックは明示的な --with-hook のときだけ設置する
 WITHMCP=1           # MCP 登録は既定で行う(--no-mcp で無効化)
-MCPEXPLICIT=0       # --with-mcp を明示されたか(前提が欠けたとき落とすか黙って飛ばすかの分岐)
 TIMEOUT=10
 MCP_NAME='chiezo'   # api 側 claude_config.MCP_SERVER_NAME と一致させる
 
 die() { echo "error: $*" >&2; exit 1; }
 
 usage() {
-  sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'
+  # 冒頭のコメントブロック(2 行目〜最初の空行)をそのままヘルプにする
+  sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
   exit 0
 }
 
@@ -96,7 +103,7 @@ while [ $# -gt 0 ]; do
     --no-permissions) WITHPERM=0; shift ;;
     --with-hook)   WITHHOOK=1; shift ;;
     --no-hook)     WITHHOOK=0; shift ;;        # 既定なので実質 no-op(明示用に残す)
-    --with-mcp)    WITHMCP=1; MCPEXPLICIT=1; shift ;;  # 既定なので実質 no-op(明示用に残す)
+    --with-mcp)    WITHMCP=1; shift ;;         # 既定なので実質 no-op(明示用に残す)
     --no-mcp)      WITHMCP=0; shift ;;
     --timeout)     TIMEOUT="$2"; shift 2 ;;
     --timeout=*)   TIMEOUT="${1#*=}"; shift ;;
@@ -126,32 +133,130 @@ else
   sdir="$(dirname "$TARGET_FILE")/.claude"
   sfile="$sdir/settings.local.json"
 fi
-HAS_JQ=0
-command -v jq >/dev/null 2>&1 && HAS_JQ=1
 
-# フックを実際に設置するかは、CLAUDE.md ブロックの内容(自動許可を前提にした
-# 書き方の指示を入れるか)にも影響するので、取得より先に確定させる。
-# 明示的に頼まれた設置なので、前提が欠けていれば黙って諦めず落とす。
-if [ "$WITHHOOK" -eq 1 ]; then
-  command -v python3 >/dev/null 2>&1 || die "--with-hook には python3 が必要です(フックの実行に使う)"
-  [ "$HAS_JQ" -eq 1 ] || die "--with-hook には jq が必要です(settings のマージに使う)"
+# 既存 JSON へのマージに使う道具を1つ選ぶ。jq を優先し、無ければ python3。
+# どちらも無い環境でも「新規ファイルを作るだけ」で済む場面はあるので、
+# ここでは選ぶだけにして、実際にマージが要る場面ごとに前提を検査する。
+JSONTOOL=""
+if command -v jq >/dev/null 2>&1; then
+  JSONTOOL=jq
+elif command -v python3 >/dev/null 2>&1; then
+  JSONTOOL=python3
 fi
 
-# MCP 登録の前提も取得より先に確定させる(ブロックに使い分けの指示を入れるかに影響する)。
-# ユーザースコープの MCP 設定は claude CLI の管理ファイル(~/.claude.json)にあるので、
-# CLI があればそれ経由で登録する。CLI の無い環境(VS Code 拡張のみ等)では
-# jq で ~/.claude.json の mcpServers キーへ直接マージする(他のキーは触らない)。
 HAS_CLAUDE=0
 command -v claude >/dev/null 2>&1 && HAS_CLAUDE=1
-if [ "$WITHMCP" -eq 1 ] && [ "$DEST" = "user" ] && [ "$HAS_CLAUDE" -eq 0 ] && [ "$HAS_JQ" -eq 0 ]; then
-  # 既定の動作なので、前提が無い環境では登録だけ諦めて CLAUDE.md の生成は続ける
-  # (明示的に頼まれたときだけ落とす)。
-  if [ "$MCPEXPLICIT" -eq 1 ]; then
-    die "--user での --with-mcp には claude CLI か jq のどちらかが必要です(~/.claude.json への登録に使う)"
-  fi
-  echo "注意: claude CLI も jq も無いため MCP サーバーの登録を飛ばします(--no-mcp で警告を消せます)" >&2
-  WITHMCP=0
+
+# MCP の登録先。claude CLI があれば CLI に任せるので直接は触らないが、
+# 前提の検査とメッセージの表示にファイル名が要る。
+if [ "$DEST" = "user" ]; then
+  mcpfile="$HOME/.claude.json"
+else
+  mcpfile="$(dirname "$TARGET_FILE")/.mcp.json"
 fi
+
+# ---- 前提の検査(取得より先に済ませる) ------------------------------------
+# フックと MCP を実際に入れるかは、CLAUDE.md ブロックの内容(それを前提にした
+# 書き方の指示を入れるか)にも影響するので、取得より先に確定させる。
+# 権限・MCP は既定で入れる設定なので、入れられないなら黙って飛ばさず落とす
+# (--print は何も書き込まないので検査しない)。
+if [ "$PRINT" -eq 0 ]; then
+  if [ "$WITHHOOK" -eq 1 ]; then
+    command -v python3 >/dev/null 2>&1 \
+      || die "--with-hook には python3 が必要です(フック本体が Python スクリプトなので実行に必須)"
+    JSONTOOL="${JSONTOOL:-python3}"
+  fi
+  if [ "$WITHPERM" -eq 1 ] && [ -f "$sfile" ] && [ -z "$JSONTOOL" ]; then
+    die "権限の追記には jq か python3 が必要です(既存の $sfile へマージするため)。--no-permissions で外せます"
+  fi
+  if [ "$WITHMCP" -eq 1 ] && [ "$HAS_CLAUDE" -eq 0 ] && [ -f "$mcpfile" ] && [ -z "$JSONTOOL" ]; then
+    die "MCP の登録には claude CLI か jq か python3 が必要です(既存の $mcpfile へマージするため)。--no-mcp で外せます"
+  fi
+fi
+
+# ---- JSON マージ(jq が無ければ python3 で同じことをする) ------------------
+# どれも一時ファイルへ書いて、成功したときだけ差し替える(途中で落ちても元が残る)。
+
+merge_permissions() {  # settings_file perms_response_file
+  _f="$1"; _p="$2"; _tmp="$(mktemp)"
+  if [ "$JSONTOOL" = jq ]; then
+    jq --slurpfile new "$_p" \
+      '.permissions.allow = ((.permissions.allow // []) + $new[0].permissions.allow | unique)' \
+      "$_f" >"$_tmp"
+  else
+    CHIEZO_SETTINGS="$_f" CHIEZO_PERMS="$_p" python3 -c '
+import json, os, sys
+d = json.load(open(os.environ["CHIEZO_SETTINGS"], encoding="utf-8"))
+new = json.load(open(os.environ["CHIEZO_PERMS"], encoding="utf-8"))["permissions"]["allow"]
+p = d.setdefault("permissions", {})
+p["allow"] = sorted(set((p.get("allow") or []) + new))
+sys.stdout.buffer.write(json.dumps(d, ensure_ascii=False, indent=2).encode("utf-8") + b"\n")
+' >"$_tmp"
+  fi || { rm -f "$_tmp"; return 1; }
+  mv "$_tmp" "$_f"
+}
+
+merge_mcp() {  # target_file mcp_response_file
+  _f="$1"; _m="$2"; _tmp="$(mktemp)"
+  if [ "$JSONTOOL" = jq ]; then
+    jq --slurpfile new "$_m" --arg name "$MCP_NAME" \
+      '.mcpServers = ((.mcpServers // {}) + {($name): $new[0].mcpServers[$name]})' \
+      "$_f" >"$_tmp"
+  else
+    CHIEZO_FILE="$_f" CHIEZO_MCP="$_m" CHIEZO_NAME="$MCP_NAME" python3 -c '
+import json, os, sys
+name = os.environ["CHIEZO_NAME"]
+d = json.load(open(os.environ["CHIEZO_FILE"], encoding="utf-8"))
+new = json.load(open(os.environ["CHIEZO_MCP"], encoding="utf-8"))["mcpServers"][name]
+d.setdefault("mcpServers", {})[name] = new
+sys.stdout.buffer.write(json.dumps(d, ensure_ascii=False, indent=2).encode("utf-8") + b"\n")
+' >"$_tmp"
+  fi || { rm -f "$_tmp"; return 1; }
+  mv "$_tmp" "$_f"
+}
+
+# {{HOOK_PATH}} を実際の絶対パスへ差し替えたうえで hooks.PreToolUse へマージする。
+# 先に「コマンドが $HOOK_FILENAME を指す既存エントリ」を全部落としてから足すので、
+# 何度実行しても増えず、設置先を変えた場合も古いパスのエントリが残らない。
+merge_hook() {  # settings_file hook_json_file hook_path
+  _f="$1"; _h="$2"; _path="$3"; _tmp="$(mktemp)"
+  if [ "$JSONTOOL" = jq ]; then
+    jq --slurpfile new "$_h" --arg path "$_path" --arg fname "$HOOK_FILENAME" '
+      ($new[0].hooks.PreToolUse
+        | map(.hooks |= map(if .command == "{{HOOK_PATH}}" then .command = $path else . end))
+      ) as $entries
+      | .hooks = (.hooks // {})
+      | .hooks.PreToolUse = (
+          [ (.hooks.PreToolUse // [])[]
+            | .hooks = [ (.hooks // [])[]
+                | select(((.command // "") | contains($fname)) | not) ]
+            | select((.hooks | length) > 0) ]
+          + $entries
+        )
+    ' "$_f" >"$_tmp"
+  else
+    CHIEZO_SETTINGS="$_f" CHIEZO_HOOKJ="$_h" CHIEZO_HOOKPATH="$_path" \
+    CHIEZO_HOOKNAME="$HOOK_FILENAME" python3 -c '
+import json, os, sys
+path, fname = os.environ["CHIEZO_HOOKPATH"], os.environ["CHIEZO_HOOKNAME"]
+d = json.load(open(os.environ["CHIEZO_SETTINGS"], encoding="utf-8"))
+entries = json.load(open(os.environ["CHIEZO_HOOKJ"], encoding="utf-8"))["hooks"]["PreToolUse"]
+for e in entries:
+    for h in e.get("hooks") or []:
+        if h.get("command") == "{{HOOK_PATH}}":
+            h["command"] = path
+kept = []
+for e in d.get("hooks", {}).get("PreToolUse") or []:
+    hooks = [h for h in (e.get("hooks") or []) if fname not in (h.get("command") or "")]
+    if hooks:
+        e["hooks"] = hooks
+        kept.append(e)
+d.setdefault("hooks", {})["PreToolUse"] = kept + entries
+sys.stdout.buffer.write(json.dumps(d, ensure_ascii=False, indent=2).encode("utf-8") + b"\n")
+' >"$_tmp"
+  fi || { rm -f "$_tmp"; return 1; }
+  mv "$_tmp" "$_f"
+}
 
 # ---- API から取得 ----------------------------------------------------------
 # ベース URL(curl 例・許可ルール)はサーバー側がアクセス元 URL から導出するので、
@@ -159,7 +264,7 @@ fi
 BLOCK="$(mktemp)"
 PERMS="$(mktemp)"
 HOOKJ="$(mktemp)"
-MCPJ=""             # --with-mcp のときだけ後段で mktemp する
+MCPJ=""             # MCP を自前でマージするときだけ後段で mktemp する
 trap 'rm -f "$BLOCK" "$PERMS" "$HOOKJ" "$MCPJ"' EXIT
 
 # フックを入れるときだけ ?hook=1、MCP を登録するときだけ mcp=1。それぞれの前提に
@@ -211,9 +316,6 @@ else
 fi
 
 # ---- 権限・フックの書き込み ------------------------------------------------
-# jq でのマージ対象にするため、無ければ空 JSON で作る。
-ensure_settings() { [ -f "$sfile" ] || printf '{}\n' >"$sfile"; }
-
 if [ "$WITHPERM" -eq 1 ] || [ "$WITHHOOK" -eq 1 ]; then
   mkdir -p "$sdir"
 fi
@@ -222,34 +324,15 @@ fi
 if [ "$WITHPERM" -eq 1 ]; then
   curl -fsS --max-time "$TIMEOUT" "$BASE/admin/claude-config.permissions.json" -o "$PERMS" \
     || die "権限ルールを取得できません($BASE/admin/claude-config.permissions.json)"
-  # 応答 JSON の permissions.allow から "Bash(...)" ルールを 1 行 1 本で取り出す。
-  # ルールには `"` を含むもの(クォート付き curl 用の変種)があるため jq を優先し、
-  # 無い場合は sed で JSON エスケープ(\")を復元しながら近似抽出する。
-  if [ "$HAS_JQ" -eq 1 ]; then
-    RULES="$(jq -r '.permissions.allow[]' "$PERMS")"
+  grep -q '"Bash(' "$PERMS" \
+    || die "権限ルールが応答に含まれていません($BASE/admin/claude-config.permissions.json)"
+  if [ ! -f "$sfile" ]; then
+    cp "$PERMS" "$sfile"   # 新規作成: API の応答がそのまま新規ファイルの中身
   else
-    RULES="$(sed -n 's/^[[:space:]]*"\(Bash(.*)\)",\{0,1\}$/\1/p' "$PERMS" | sed 's/\\"/"/g')"
+    merge_permissions "$sfile" "$PERMS" \
+      || die "$sfile への permissions マージに失敗しました(JSON が壊れていないか確認)"
   fi
-  [ -n "$RULES" ] || die "権限ルールが応答に含まれていません($BASE/admin/claude-config.permissions.json)"
-
-  if [ "$HAS_JQ" -eq 1 ]; then
-    ensure_settings
-    printf '%s\n' "$RULES" | while IFS= read -r rule; do
-      [ -n "$rule" ] || continue
-      tmp="$(mktemp)"
-      jq --arg r "$rule" \
-        '.permissions.allow = ((.permissions.allow // []) + [$r] | unique)' \
-        "$sfile" >"$tmp" && mv "$tmp" "$sfile" || rm -f "$tmp"
-    done
-    echo "権限を追加しました: $sfile" >&2
-  elif [ ! -f "$sfile" ]; then
-    # 新規作成: API の応答がそのまま新規ファイルの中身
-    cp "$PERMS" "$sfile"
-    echo "権限を追加しました: $sfile" >&2
-  else
-    echo "注意: jq が無いため $sfile を自動編集できません。permissions.allow に手動追加してください:" >&2
-    printf '%s\n' "$RULES" | sed 's/^/  /' >&2
-  fi
+  echo "権限を追加しました: $sfile" >&2
 fi
 
 # ---- 自動許可フック(--with-hook のときだけ) -------------------------------
@@ -274,32 +357,12 @@ if [ "$WITHHOOK" -eq 1 ]; then
   curl -fsS --max-time "$TIMEOUT" "$BASE/admin/claude-config.hook.json" -o "$HOOKJ" \
     || die "フック設定を取得できません($BASE/admin/claude-config.hook.json)"
 
-  ensure_settings
-  # {{HOOK_PATH}} を実際の絶対パスへ差し替えたうえで hooks.PreToolUse へマージする。
-  # 先に「コマンドが $HOOK_FILENAME を指す既存エントリ」を全部落としてから足すので、
-  # 何度実行しても増えず、設置先を変えた場合も古いパスのエントリが残らない。
-  tmp="$(mktemp)"
-  if jq --slurpfile new "$HOOKJ" --arg path "$hfile" --arg fname "$HOOK_FILENAME" '
-      ($new[0].hooks.PreToolUse
-        | map(.hooks |= map(if .command == "{{HOOK_PATH}}" then .command = $path else . end))
-      ) as $entries
-      | .hooks = (.hooks // {})
-      | .hooks.PreToolUse = (
-          [ (.hooks.PreToolUse // [])[]
-            | .hooks = [ (.hooks // [])[]
-                | select(((.command // "") | contains($fname)) | not) ]
-            | select((.hooks | length) > 0) ]
-          + $entries
-        )
-    ' "$sfile" >"$tmp"; then
-    mv "$tmp" "$sfile"
-    echo "フックを設置しました: $hfile" >&2
-    echo "  設定に登録しました: $sfile(hooks.PreToolUse)" >&2
-    echo "  反映には Claude Code の再起動か /hooks を一度開くことが必要な場合があります" >&2
-  else
-    rm -f "$tmp"
-    die "$sfile への hooks マージに失敗しました(JSON が壊れていないか確認)"
-  fi
+  [ -f "$sfile" ] || printf '{}\n' >"$sfile"   # マージ対象にするため無ければ空 JSON で作る
+  merge_hook "$sfile" "$HOOKJ" "$hfile" \
+    || die "$sfile への hooks マージに失敗しました(JSON が壊れていないか確認)"
+  echo "フックを設置しました: $hfile" >&2
+  echo "  設定に登録しました: $sfile(hooks.PreToolUse)" >&2
+  echo "  反映には Claude Code の再起動か /hooks を一度開くことが必要な場合があります" >&2
 fi
 
 # ---- MCP サーバー登録(既定で行う。--no-mcp で無効) -------------------------
@@ -310,55 +373,32 @@ fi
 # Chiezo を設定する時点で使う前提の環境なのだから、片方だけ渋る理由が無い。
 # フックを既定で入れないのは security 上の理由(Bash を自動承認しうる)で、こことは別。
 if [ "$WITHMCP" -eq 1 ]; then
-  if [ "$DEST" = "user" ] && [ "$HAS_CLAUDE" -eq 1 ]; then
-    # ユーザースコープは claude CLI 経由が第一候補。add は既存名と衝突すると
-    # 失敗するので、先に同名を消してから足す(= 何度実行しても同じ結果)。
-    claude mcp remove --scope user "$MCP_NAME" >/dev/null 2>&1 || true
-    claude mcp add --scope user --transport http "$MCP_NAME" "$BASE/mcp" >/dev/null \
-      || die "claude mcp add に失敗しました(claude mcp list で状態を確認)"
-    echo "MCP サーバーを登録しました: $MCP_NAME → $BASE/mcp(ユーザースコープ)" >&2
-  elif [ "$DEST" = "user" ]; then
-    # CLI の無い環境(前提検査済みなので jq はある)。~/.claude.json の mcpServers へ
-    # 直接マージする。無ければ mcpServers だけの新規ファイルとして作る。
-    ufile="$HOME/.claude.json"
-    MCPJ="$(mktemp)"
-    curl -fsS --max-time "$TIMEOUT" "$BASE/admin/claude-config.mcp.json" -o "$MCPJ" \
-      || die "MCP 設定を取得できません($BASE/admin/claude-config.mcp.json)"
-    [ -f "$ufile" ] || printf '{}\n' >"$ufile"
-    tmp="$(mktemp)"
-    if jq --slurpfile new "$MCPJ" --arg name "$MCP_NAME" \
-        '.mcpServers = ((.mcpServers // {}) + {($name): $new[0].mcpServers[$name]})' \
-        "$ufile" >"$tmp"; then
-      mv "$tmp" "$ufile"
-      echo "MCP サーバーを登録しました: $ufile($MCP_NAME → $BASE/mcp)" >&2
-    else
-      rm -f "$tmp"
-      die "$ufile への mcpServers マージに失敗しました(JSON が壊れていないか確認)"
-    fi
+  if [ "$HAS_CLAUDE" -eq 1 ]; then
+    # claude CLI があれば user / project どちらのスコープも CLI に任せる(設定ファイルの
+    # 構造を自前で知らずに済む)。project スコープの書き込み先はカレントディレクトリの
+    # .mcp.json なので、対象ディレクトリへ移ってから実行する。
+    # add は既存名と衝突すると失敗するので、先に同名を消してから足す(= 何度実行しても同じ)。
+    if [ "$DEST" = "user" ]; then mscope=user; mcwd="." ; else mscope=project; mcwd="$(dirname "$TARGET_FILE")"; fi
+    (
+      cd "$mcwd" || exit 1
+      claude mcp remove --scope "$mscope" "$MCP_NAME" >/dev/null 2>&1
+      claude mcp add --scope "$mscope" --transport http "$MCP_NAME" "$BASE/mcp" >/dev/null
+    ) || die "claude mcp add に失敗しました(claude mcp list で状態を確認)"
+    echo "MCP サーバーを登録しました: $mcpfile($MCP_NAME → $BASE/mcp、$mscope スコープ)" >&2
   else
-    # プロジェクトスコープは対象ディレクトリの .mcp.json(VCS で共有される想定の場所)。
-    mfile="$(dirname "$TARGET_FILE")/.mcp.json"
+    # CLI の無い環境(VS Code 拡張のみ等)。設定ファイルへ直接マージする。
+    # ユーザースコープの登録先は claude CLI の管理ファイル ~/.claude.json の
+    # mcpServers キー(他のキーは触らない)、プロジェクトスコープは .mcp.json。
     MCPJ="$(mktemp)"
     curl -fsS --max-time "$TIMEOUT" "$BASE/admin/claude-config.mcp.json" -o "$MCPJ" \
       || die "MCP 設定を取得できません($BASE/admin/claude-config.mcp.json)"
-    if [ ! -f "$mfile" ]; then
-      cp "$MCPJ" "$mfile"
-      echo "MCP サーバーを登録しました: $mfile($MCP_NAME → $BASE/mcp)" >&2
-    elif [ "$HAS_JQ" -eq 1 ]; then
-      tmp="$(mktemp)"
-      if jq --slurpfile new "$MCPJ" --arg name "$MCP_NAME" \
-          '.mcpServers = ((.mcpServers // {}) + {($name): $new[0].mcpServers[$name]})' \
-          "$mfile" >"$tmp"; then
-        mv "$tmp" "$mfile"
-        echo "MCP サーバーを登録しました: $mfile($MCP_NAME → $BASE/mcp)" >&2
-      else
-        rm -f "$tmp"
-        die "$mfile への mcpServers マージに失敗しました(JSON が壊れていないか確認)"
-      fi
+    if [ ! -f "$mcpfile" ]; then
+      cp "$MCPJ" "$mcpfile"   # 新規なら API の応答がそのまま中身
     else
-      echo "注意: jq が無いため既存の $mfile を自動編集できません。mcpServers に手動追加してください:" >&2
-      sed 's/^/  /' "$MCPJ" >&2
+      merge_mcp "$mcpfile" "$MCPJ" \
+        || die "$mcpfile への mcpServers マージに失敗しました(JSON が壊れていないか確認)"
     fi
+    echo "MCP サーバーを登録しました: $mcpfile($MCP_NAME → $BASE/mcp)" >&2
   fi
   echo "  反映には Claude Code の再起動(新しいセッションの開始)が必要です" >&2
 fi

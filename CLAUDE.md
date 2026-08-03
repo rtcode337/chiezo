@@ -576,23 +576,32 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   - `gen_claude_config.sh` — Chiezo 連携用の Claude 設定生成器。**使い方・オプション一覧は
     `docs/api-reference.md`「Claude Code から使う(設定ファイル自動生成)」節が正**で、
     ここには実装側の要点だけ置く:
-    - `curl` + POSIX ツールのみで動く(Python 不要。既存 settings のマージにだけ jq を使う)。
+    - `curl` + POSIX ツールのみで動く(**既存 JSON へのマージにだけ jq か python3 が要る**。
+      どちらでも同じ結果になるよう両方の実装を持ち、jq を優先する)。
       稼働中の Chiezo の `/admin/claude-config.*` を取得して書き込むだけの薄いクライアントで、
       **生成の正は api 側 `app/claude_config.py`**。ベース URL はサーバーがアクセス元 URL から
       導出するので、接続に使った URL がそのまま生成物の curl 例・許可ルールになる
     - `--with-hook` を付けたときだけ自動許可フックも設置する。**既定では設置しない** —
       Claude が打つ Bash を毎回検査して自動承認しうる仕掛けで権限ルールより影響が広く、
-      中身を読んで納得してから入れられるようにするため。設置に要る python3 / jq が欠けていれば
-      黙って諦めず落とす(明示的に頼まれた設置なので)
+      中身を読んで納得してから入れられるようにするため。フック本体が Python スクリプトなので
+      設置には python3 が要り、欠けていれば落とす
     - settings のマージは「コマンドが `chiezo-autoallow.py` を含む既存エントリ」を落としてから
       足すので、再実行しても重複せず、設置先を変えたときも古いパスのエントリが残らない
-    - MCP サーバーの登録も**既定で行う**(`--no-mcp` で無効)。`--user` は claude CLI
-      (`claude mcp add --scope user`。remove → add で冪等)、CLI の無い環境では jq で
-      `~/.claude.json` の `mcpServers` へ直接マージ、`--project`/`--target` は
-      `.mcp.json` へのマージ(新規なら API 応答をそのまま置く)。
-      前提(claude CLI か jq)が無ければ警告して登録だけ飛ばす — 既定の動作なので、
-      明示的に `--with-mcp` されたときだけ落とす。
-      **フックと違って既定で入れる**理由: フックが opt-in なのは Bash を自動承認しうる
+    - MCP サーバーの登録も**既定で行う**(`--no-mcp` で無効)。**claude CLI があれば
+      `--user` / `--project` どちらのスコープも `claude mcp add --scope {user,project}` に
+      任せる**(remove → add で冪等)。設定ファイルの構造を自前で知らずに済み、jq も要らない
+      ため。CLI の無い環境(VS Code 拡張のみ等)では `~/.claude.json` / `.mcp.json` の
+      `mcpServers` へ直接マージする(新規なら API 応答をそのまま置く)。
+      **CLI 任せの副作用**: `claude mcp add --scope project` は `.mcp.json` を書き直すので、
+      `mcpServers` 以外の独自キーを書いていた場合は落ちる(このファイルの仕様は
+      `mcpServers` だけなので許容している)
+    - **権限と MCP は「入れられないなら黙って飛ばさず落とす」**(`die`)。どちらも既定で
+      入れる設定なので、飛ばすと「設定が入ったつもり」で使い始めることになる。
+      外したいときは明示的に `--no-permissions` / `--no-mcp` を付ける。
+      前提の検査は取得より前にまとめてあり、**実際にマージが要るときだけ**落とす
+      (書き込み先が無ければ API 応答を `cp` するだけなので jq も python3 も要らない)。
+      `--print` は何も書き込まないので検査しない
+    - **フックと違って既定で入れる**理由: フックが opt-in なのは Bash を自動承認しうる
       security 上の判断で、MCP 登録にはその性質が無い。ツール定義は常時コンテキストに
       載るが(7 ツールで約 4.4k 字)、既定で入れている CLAUDE.md ブロック(約 4.3k 字)と
       同程度で、Chiezo を設定する時点で使う前提なのだから片方だけ渋る理由が無い
