@@ -267,7 +267,13 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `page_shell` が `<link rel="apple-touch-icon">` を出す + `main.py` が
     `/apple-touch-icon.png` で配信する — iOS は SVG や data URI のファビコンをホームアイコンに
     使わないため。角丸マスクは iOS が自前で掛けるので角丸なし・全面塗りで描いてある
-    (再生成手順は README「開発 > アイコンを変えたとき」節が正)
+    (再生成手順は README「開発 > アイコンを変えたとき」節が正)。
+    共通スタイル(`PAGE_STYLE`)は狭い画面向けにメディアクエリを 2 つ持つ。
+    `56rem` 以下は**表だけ**を `display: block` + `overflow-x: auto` で横スクロールさせる ——
+    列の多い表(登録ソース一覧は約 800px 要る)が画面からあふれると、ページ全体が横スクロール
+    して本文まで画面外へ出るため。表を `<div>` で包む必要がないので、画面ごとの HTML 組み立ては
+    触らずに済む。本文の抜粋(`td.snippet`)だけは折り返す(1 行に伸ばすと表が果てしなく広くなる)。
+    `40rem` 以下(スマホ)は余白を詰め、ボタンと入力欄を指で押せる大きさにする
   - `/`(GET) — `/admin` へ 302 リダイレクト
   - `/admin`・`/admin/osm`・`/admin/wikipedia`(GET) — 簡易 HTML 管理画面(画面に何が出るかは
     `docs/api-reference.md`「人間向けの画面」節が正)。実装側の要点は 3 つ: ジョブ実行中は `page_shell` の

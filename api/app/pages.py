@@ -130,8 +130,28 @@ PAGE_STYLE = """
                border: 1px solid #ccc; border-left: 4px solid #5560E0;
                background: #fafaff; padding: 0.8rem 1rem; }
   select { padding: 0.3rem 0.5rem; }
-  input[type=text] { padding: 0.3rem 0.5rem; width: 20rem; }
+  input[type=text] { padding: 0.3rem 0.5rem; width: 20rem; max-width: 100%; box-sizing: border-box; }
   button { padding: 0.3rem 0.8rem; }
+  /* 狭い画面。列の多い表(管理画面の登録ソース一覧)がそのままだと画面からはみ出し、
+     ページ全体が横スクロールして本文まで画面外へ出る。**表だけ**を横スクロールさせ、
+     ページ本体は縦スクロールだけで読めるようにする。
+     table を display:block にすると幅が中身なりになり、あふれた分がこの表の中で
+     スクロールする(表を <div> で包まずに済むので、画面ごとの HTML 組み立ては触らない)。
+     しきい値がスマホ幅より広いのは、**登録ソースの表が約 800px 必要**だから
+     (built_at の ISO 日時と schema_version の見出しが長い)—— タブレット縦持ちや
+     小さいウィンドウでもあふれる。 */
+  @media (max-width: 56rem) {
+    table { display: block; overflow-x: auto; }
+    th, td { white-space: nowrap; padding: 0.4rem 0.6rem; }
+    /* 本文の抜粋だけは折り返す(1 行に伸ばすと表が果てしなく広くなる) */
+    td.snippet { white-space: normal; min-width: 14rem; }
+  }
+  /* スマホ幅。余白を詰めて本文の幅を稼ぎ、押す物を指の大きさに合わせる */
+  @media (max-width: 40rem) {
+    body { margin: 1rem 0.9rem; }
+    button { padding: 0.5rem 0.9rem; }
+    input[type=text] { width: 100%; }
+  }
   /* 会話画面の 1 問 1 答(JS なし)版だけが使う。会話そのものの見た目は CHAT_STYLE 側 */
   form.chat { display: flex; gap: 0.5rem; margin-top: 1rem; }
   form.chat input[type=text] { flex: 1; width: auto; }
