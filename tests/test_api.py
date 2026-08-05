@@ -465,11 +465,11 @@ class TestTriggerCatalogCache:
         """プラグインを差し込んだ trigger に入れ替えたら、期限切れで拾い直せること。"""
         calls = self._stub(
             monkeypatch,
-            [{"sources": {"a": {}}}, {"sources": {"a": {}, "post_office": {"kind": "x"}}}],
+            [{"sources": {"a": {}}}, {"sources": {"a": {}, "plugged_in": {"kind": "x"}}}],
         )
         assert admin._fetch_trigger_catalog() == {"a": {}}
         monkeypatch.setattr("app.views.admin._catalog_fetched_at", time.monotonic() - 10_000)
-        assert "post_office" in admin._fetch_trigger_catalog()
+        assert "plugged_in" in admin._fetch_trigger_catalog()
         assert len(calls) == 2
 
     def test_ttl_zero_never_refetches(self, monkeypatch):

@@ -91,9 +91,9 @@ services:
     environment:
       CHIEZO_DATA_DIR: /data
       # ---- 別コンテナのソースプラグインを使う場合 ----
-      # 下の chiezo-plugin-* を有効にしたら、その URL をカンマ区切りで並べる。
+      # 下の chiezo-plugin を有効にしたら、その URL をカンマ区切りで並べる。
       # プラグインが提供するソースが管理画面の「未初期化データの初期化」に出る。
-      #CHIEZO_PLUGIN_SOURCES: http://chiezo-plugin-post-office:8080
+      #CHIEZO_PLUGIN_SOURCES: http://chiezo-plugin:8080
     restart: unless-stopped
     # 「良き隣人」のための相対ウェイト(既定 1024 の半分)。CPU が競合したときだけ
     # 他のコンテナへ譲り、空いていれば全力で使える。ハード上限の cpus は使わない ——
@@ -113,13 +113,15 @@ services:
   # 有効にするには (1) 下のブロックのコメントを外し、(2) chiezo-trigger の environment の
   # CHIEZO_PLUGIN_SOURCES を有効にする。増やすときはサービスを足し、URL を `,` で並べる。
   #
-  # **非公開リポジトリのイメージを使うなら、先に GHCR へログインしておくこと**
+  # イメージが非公開なら、先にその環境で GHCR へログインしておくこと
   # (`docker login ghcr.io`。管理画面から貼り付ける環境では、その環境の
   # レジストリ認証の設定が要る)。
   #
-  #chiezo-plugin-post-office:
-  #  image: ghcr.io/rtcode337/chiezo-plugin:latest
-  #  container_name: chiezo-plugin-post-office
+  # 契約とプラグインの書き方は docs/adding-a-source.md のケース 3 が正。
+  #
+  #chiezo-plugin:
+  #  image: ghcr.io/<自分のアカウント>/chiezo-plugin:latest
+  #  container_name: chiezo-plugin
   #  # ホストへポート公開しない。chiezo-trigger からのみ到達できればよい
   #  restart: unless-stopped
   #  cpu_shares: 512

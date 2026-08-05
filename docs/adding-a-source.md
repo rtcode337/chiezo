@@ -228,7 +228,6 @@ docker compose --profile ingest run --rm -e SOURCE=private_docs chiezo-ingest
 > (別コンテナである以上、再起動中に繋がらないのは正常な状態のため)。ただし**繋がったのに
 > 応答の形が違う場合は落とします** —— 直すべき不具合を黙って無視しないためです。
 
-実例が [chiezo-plugin](https://github.com/rtcode337/chiezo-plugin)(郵便局データ)にあります。
 
 ### スキーマバージョンについて
 

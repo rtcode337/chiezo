@@ -14,10 +14,12 @@ import pytest
 
 from sources import remote
 
+# 題材は架空。**実在のプラグイン名は書かない** —— プラグインは「公開リポジトリに
+# 置きたくないもの」を扱う仕組みなので、こちら側にその名前を残さない。
 DOCS = [
-    {"doc_id": 7, "title": "那覇新都心郵便局", "body": "沖縄県那覇市",
-     "tags": ["直営郵便局"], "rank_score": 0.5, "extra": {"lat": 26.2, "lon": 127.7}},
-    {"title": "首里郵便局", "opening": "沖縄県那覇市首里"},
+    {"doc_id": 7, "title": "運用手順書", "body": "障害時の連絡順と復旧手順",
+     "tags": ["運用"], "rank_score": 0.5, "extra": {"lat": 35.68, "lon": 139.76}},
+    {"title": "障害対応メモ", "opening": "再起動で直った事例のまとめ"},
 ]
 
 
@@ -56,8 +58,8 @@ class _Handler(BaseHTTPRequestHandler):
 def plugin():
     """テスト用のプラグインサーバー。`base` にベース URL を返す。"""
     _Handler.catalog = {"sources": [{
-        "name": "post_office", "kind": "post_office", "lang": "ja",
-        "label": "郵便局", "min_docs": 2, "memory_gb": 0.5,
+        "name": "private_docs", "kind": "private_docs", "lang": "ja",
+        "label": "社内ドキュメント", "min_docs": 2, "memory_gb": 0.5,
     }]}
     _Handler.meta = {"dump_date": "20260805"}
     _Handler.docs = DOCS
@@ -74,7 +76,8 @@ def plugin():
 class TestCatalog:
     def test_lists_sources_from_the_plugin(self, plugin):
         (src,) = remote.catalog(plugin)
-        assert (src.name, src.kind, src.lang, src.label) == ("post_office", "post_office", "ja", "郵便局")
+        assert (src.name, src.kind, src.lang, src.label) == (
+            "private_docs", "private_docs", "ja", "社内ドキュメント")
         assert src.min_docs == 2
 
     def test_empty_setting_means_no_plugins(self):
@@ -99,24 +102,24 @@ class TestCatalog:
 
 class TestAdapter:
     def test_fetch_and_iter_docs(self, plugin, tmp_path):
-        adapter = remote.load_remote_adapters(plugin)["post_office"]()
+        adapter = remote.load_remote_adapters(plugin)["private_docs"]()
         path, dump_date = adapter.fetch(tmp_path)
 
         assert dump_date == "20260805"
-        assert path.name == "post_office-20260805.ndjson"
+        assert path.name == "private_docs-20260805.ndjson"
 
         docs = list(adapter.iter_docs(path))
         # meta の行は文書として数えない
-        assert [d.title for d in docs] == ["那覇新都心郵便局", "首里郵便局"]
+        assert [d.title for d in docs] == ["運用手順書", "障害対応メモ"]
         assert docs[0].doc_id == 7
-        assert docs[0].tags == ["直営郵便局"]
-        assert docs[0].extra == {"lat": 26.2, "lon": 127.7}
+        assert docs[0].tags == ["運用"]
+        assert docs[0].extra == {"lat": 35.68, "lon": 139.76}
         # doc_id を省いた行は行番号で埋める(元データに安定した id が無いソース向け)
         assert docs[1].doc_id == 3  # meta が 1 行目なので行番号は 3
 
     def test_missing_meta_falls_back_to_today(self, plugin, tmp_path):
         _Handler.meta = None
-        adapter = remote.load_remote_adapters(plugin)["post_office"]()
+        adapter = remote.load_remote_adapters(plugin)["private_docs"]()
         _, dump_date = adapter.fetch(tmp_path)
         assert len(dump_date) == 8 and dump_date.isdigit()
 
@@ -127,22 +130,22 @@ class TestAdapter:
         HTTP ヘッダは latin-1 しか運べない)。
         """
         _Handler.meta = {
-            "dump_date": "20260805", "min_docs": 1, "sample_titles": ["那覇新都心郵便局"],
+            "dump_date": "20260805", "min_docs": 1, "sample_titles": ["運用手順書"],
         }
-        adapter = remote.load_remote_adapters(plugin)["post_office"]()
+        adapter = remote.load_remote_adapters(plugin)["private_docs"]()
         adapter.fetch(tmp_path)
         assert adapter.min_docs == 1
-        assert adapter.sample_titles == ["那覇新都心郵便局"]
+        assert adapter.sample_titles == ["運用手順書"]
 
     def test_broken_line_is_an_error(self, plugin, tmp_path):
-        adapter = remote.load_remote_adapters(plugin)["post_office"]()
+        adapter = remote.load_remote_adapters(plugin)["private_docs"]()
         path = tmp_path / "broken.ndjson"
         path.write_text('{"title": "ok"}\nnot json\n', encoding="utf-8")
         with pytest.raises(remote.PluginError, match="line 2"):
             list(adapter.iter_docs(path))
 
     def test_line_without_title_is_an_error(self, plugin, tmp_path):
-        adapter = remote.load_remote_adapters(plugin)["post_office"]()
+        adapter = remote.load_remote_adapters(plugin)["private_docs"]()
         path = tmp_path / "no-title.ndjson"
         path.write_text('{"body": "本文だけ"}\n', encoding="utf-8")
         with pytest.raises(remote.PluginError, match="must be an object with a title"):
@@ -151,17 +154,17 @@ class TestAdapter:
 
 class TestLookup:
     def test_get_adapter_finds_plugin_sources(self, plugin, monkeypatch):
-        """`SOURCE=post_office` で取り込みが始められること(main.run が通る道)。"""
+        """`SOURCE=<プラグインのソース>` で取り込みが始められること(main.run が通る道)。"""
         import sources
 
         monkeypatch.setenv(remote.PLUGIN_ENV, plugin)
-        adapter = sources.get_adapter("post_office")
-        assert adapter.source == "post_office"
-        assert adapter.source_kind == "post_office"
+        adapter = sources.get_adapter("private_docs")
+        assert adapter.source == "private_docs"
+        assert adapter.source_kind == "private_docs"
 
     def test_unknown_source_lists_plugin_sources_too(self, plugin, monkeypatch):
         import sources
 
         monkeypatch.setenv(remote.PLUGIN_ENV, plugin)
-        with pytest.raises(SystemExit, match=r"post_office \(plugin\)"):
+        with pytest.raises(SystemExit, match=r"private_docs \(plugin\)"):
             sources.get_adapter("nope")
