@@ -14,6 +14,10 @@ data/*
 # ローカルの環境設定(例は .env.example)
 .env
 
+# 実値を書いた単体定義(雛形は docker-compose.standalone.example.yml)。
+# 置き場の絶対パス・接続先の IP を書き込んで使うものなのでコミットしない
+docker-compose.standalone.yml
+
 # notes(短期記憶)の DB。ユーザーが書いた内容そのものなのでコミットしない
 notes/
 

@@ -291,10 +291,11 @@ compose が `.env` から受け取ります(`.env.example` の「1. Chiezo 本�
 
 管理画面に YAML を貼り付けて起動するタイプの実行環境では、`.env` もシェルの環境変数も
 無いため `${...}` を解決できず、`--profile` も付けられません。この場合は値を直接書いた
-[`docker-compose.standalone.yml`](../docker-compose.standalone.yml) を使います。
+[`docker-compose.standalone.example.yml`](../docker-compose.standalone.example.yml) を使います。
 
 ```bash
 # 中身をコピーして、先頭の置き場を実際の絶対パスに書き換えてから貼り付ける
+cp docker-compose.standalone.example.yml docker-compose.standalone.yml   # コピー先は .gitignore 済み
 cat docker-compose.standalone.yml
 ```
 
