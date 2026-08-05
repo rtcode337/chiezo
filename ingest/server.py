@@ -89,7 +89,7 @@ def sources():
     バージョンと通常は一致するが、正はあくまで取り込みを実行する ingest 側)。
     """
     from core import SCHEMA_VERSION, is_low_memory_build
-    from sources import ADAPTERS
+    from sources import ADAPTERS, remote
     from sources.osm_regions import CONTINENTS, OSM_REGIONS
     from sources.wikipedia_editions import WIKIPEDIA_EDITIONS
 
@@ -131,6 +131,17 @@ def sources():
             "pbf_bytes": region.pbf_bytes,
             "memory_gb": region.memory_gb,
             "node_index": forced_node_index or region.node_index,
+        }
+    # 別コンテナのプラグイン(CHIEZO_PLUGIN_SOURCES)が提供するソース。
+    # **落ちていても catalog() が警告だけ出して飛ばす**ので、ここで止まることはない
+    # (プラグイン 1 つの不調で管理画面の一覧が丸ごと消えるほうが困る)。
+    for src in remote.catalog():
+        catalog[src.name] = {
+            "kind": src.kind,
+            "lang": src.lang,
+            "label": src.label,
+            "memory_gb": src.memory_gb,
+            "plugin": src.base_url,
         }
     return {
         "sources": catalog,

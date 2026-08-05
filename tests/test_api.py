@@ -428,7 +428,7 @@ class TestTitlesLinksRandom:
 class TestTriggerCatalogCache:
     """chiezo-trigger のソースカタログのキャッシュ。
 
-    大半はイメージに焼かれた静的な表だが、`CHIEZO_SOURCE_PLUGINS` の差し込みは
+    大半はイメージに焼かれた静的な表だが、`CHIEZO_PLUGIN_SOURCES` のプラグインは
     ボリュームで実行時に足せるので、trigger を入れ替えるとカタログが増えることがある。
     永久にキャッシュすると、プラグインを足したのに管理画面へ出ないまま api の再起動を
     待つことになる。

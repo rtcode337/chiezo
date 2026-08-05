@@ -46,7 +46,7 @@ def _fetch_trigger_status() -> dict | None:
 
 # chiezo-trigger のソースカタログのプロセス内キャッシュ。中身の大半は trigger のイメージに
 # 焼かれた静的な表(osm_<国> だけで 195 件)だが、**それだけとは限らない**:
-# `CHIEZO_SOURCE_PLUGINS` の差し込みはボリュームで実行時に足せるので、trigger を入れ替えた
+# `CHIEZO_PLUGIN_SOURCES` のプラグインは実行時に足せるので、trigger を入れ替えた
 # あとにカタログが増える。一度取ったら永久に持ち続けると、プラグインを足したのに管理画面へ
 # 出ないまま api の再起動を待つことになる。そこで有効期限を持たせる。
 _catalog_cache: dict[str, dict] | None = None

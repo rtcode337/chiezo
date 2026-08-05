@@ -12,20 +12,19 @@ OSM の国別ソース(`osm_<国>`)と Wikipedia の言語版(`<lang>wiki`)は�
 手で書き足して綴りを保守するのは現実的でないため。
 
 このリポジトリに入れられないソース(公開できないプライベートな情報など)は、
-別リポジトリのモジュールを `CHIEZO_SOURCE_PLUGINS` で差し込む(下の
-`load_plugin_adapters()`)。手順は `docs/adding-a-source.md` のケース 3 が正。
+このリポジトリに入れられないソースは、**別コンテナのプラグイン**から借りる
+(`sources/remote.py`、`CHIEZO_PLUGIN_SOURCES`)。プラグインは Chiezo のコードを含まず、
+文書を配るだけでよい。手順は `docs/adding-a-source.md` のケース 3 が正。
 """
 from __future__ import annotations
 
-import importlib
-import os
-import re
 from collections.abc import Callable
 
 from core import SourceAdapter
 from sources.geonames import GeonamesAdapter
 from sources.osm import DEFAULT_VALIDATION, OsmAdapter
 from sources.osm_regions import OSM_REGIONS, OsmRegion
+from sources.remote import load_remote_adapters
 from sources.wikipedia import DEFAULT_VALIDATION as WIKIPEDIA_DEFAULT_VALIDATION
 from sources.wikipedia import WikipediaAdapter
 from sources.wikipedia_editions import WIKIPEDIA_EDITIONS, WikipediaEdition
@@ -91,84 +90,25 @@ ADAPTERS.update({
 })
 
 
-# ---- 外部プラグイン ---------------------------------------------------------
-
-PLUGIN_ENV = "CHIEZO_SOURCE_PLUGINS"
-
-# ソース名に許す文字。ハイフンを弾くのは世代ファイル名 `<source>-<date>.db` の区切りと
-# 衝突するため(取り込み自体は通り、ブルーグリーン切り替えの段で壊れる)。`/` や `.` も
-# ファイル名になる以上ここで止める。
-_SOURCE_NAME = re.compile(r"^[A-Za-z0-9_]+$")
-
-
-def load_plugin_adapters(spec: str | None = None) -> dict[str, Callable[[], SourceAdapter]]:
-    """外部モジュールのアダプタを取り込む。
-
-    `CHIEZO_SOURCE_PLUGINS` にモジュール名をカンマ区切りで並べると、それぞれの
-    `ADAPTERS`(このモジュールと同じ `{ソース名: 生成関数}` の dict)を取り込む。
-    公開できないソースを別リポジトリに置いたまま、Chiezo のイメージを `FROM` で
-    継承して足せるようにするための唯一の口。
-
-    **失敗は握り潰さず落とす**(`SystemExit`)。指定したのに読み込まれていない状態を
-    許すと、後から「unknown SOURCE」や「管理画面に出ない」として現れて原因が分からない。
-    プラグインは opt-in(設定した人は入れるつもりでいる)なので、壊れているなら
-    起動時に気づけるほうがよい。chiezo-trigger が起動しなくなるのも、黙って
-    カタログが欠けているより分かりやすい。
-
-    既存ソースと同名は**受け付けない**。上書きを許すと `jawiki` を影で差し替えるような
-    取り違えに気づけないため(名前を変えれば済む話なので、安全側に倒す)。
-    """
-    raw = os.environ.get(PLUGIN_ENV, "") if spec is None else spec
-    loaded: dict[str, Callable[[], SourceAdapter]] = {}
-    for module_name in (n.strip() for n in raw.split(",")):
-        if not module_name:
-            continue
-        try:
-            module = importlib.import_module(module_name)
-        except Exception as e:
-            raise SystemExit(f"{PLUGIN_ENV}: cannot import {module_name!r}: {e}") from None
-        adapters = getattr(module, "ADAPTERS", None)
-        if not isinstance(adapters, dict) or not adapters:
-            raise SystemExit(
-                f"{PLUGIN_ENV}: {module_name!r} must define a non-empty ADAPTERS dict"
-                " ({source_name: factory})"
-            )
-        for source, factory in adapters.items():
-            if not isinstance(source, str) or not _SOURCE_NAME.match(source):
-                raise SystemExit(
-                    f"{PLUGIN_ENV}: {module_name!r} has an invalid source name {source!r}"
-                    " (use [A-Za-z0-9_] only; '-' collides with the <source>-<date>.db separator)"
-                )
-            if source in ADAPTERS or source in loaded:
-                raise SystemExit(
-                    f"{PLUGIN_ENV}: {module_name!r} redefines an existing source {source!r};"
-                    " rename it instead of shadowing"
-                )
-            if not callable(factory):
-                raise SystemExit(
-                    f"{PLUGIN_ENV}: {module_name!r} ADAPTERS[{source!r}] must be callable"
-                    " (a zero-argument factory returning a SourceAdapter)"
-                )
-            loaded[source] = factory
-    return loaded
-
-
-PLUGIN_ADAPTERS = load_plugin_adapters()
-ADAPTERS.update(PLUGIN_ADAPTERS)
 
 
 def get_adapter(source: str) -> SourceAdapter:
-    try:
+    if source in ADAPTERS:
         return ADAPTERS[source]()
-    except KeyError:
-        # osm_<国> だけで 195 件・<lang>wiki は 348 件あるため、全部並べず件数で示す
-        others = sorted(
-            n for n in ADAPTERS if not n.startswith("osm_") and n not in WIKIPEDIA_EDITIONS
-        )
-        known = ", ".join([
-            *others,
-            f"<lang>wiki {len(WIKIPEDIA_EDITIONS)} 件",
-            f"osm_<国> {len(OSM_REGIONS)} 件",
-        ])
-        # from None —— 使い方の間違いなので、KeyError の連鎖を見せても助けにならない
-        raise SystemExit(f"unknown SOURCE={source!r} (registered: {known})") from None
+    # 別コンテナのプラグイン(CHIEZO_PLUGIN_SOURCES)。**問い合わせるのはここで初めて** ——
+    # import 時に聞きに行くと、プラグインが起動していない間は本体を立てられなくなる。
+    remote = load_remote_adapters()
+    if source in remote:
+        return remote[source]()
+    # osm_<国> だけで 195 件・<lang>wiki は 348 件あるため、全部並べず件数で示す
+    others = sorted(
+        n for n in ADAPTERS if not n.startswith("osm_") and n not in WIKIPEDIA_EDITIONS
+    )
+    known = ", ".join([
+        *others,
+        *sorted(f"{n} (plugin)" for n in remote),
+        f"<lang>wiki {len(WIKIPEDIA_EDITIONS)} 件",
+        f"osm_<国> {len(OSM_REGIONS)} 件",
+    ])
+    # 使い方の間違いなので、例外の連鎖を見せても助けにならない
+    raise SystemExit(f"unknown SOURCE={source!r} (registered: {known})")

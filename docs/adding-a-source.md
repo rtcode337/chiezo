@@ -144,9 +144,9 @@ docker compose --profile ingest run --rm -e SOURCE=aozora chiezo-ingest
 
 ## ケース 3: このリポジトリに入れられないソース(別リポジトリのプラグイン)
 
-プライベートな情報のように、**取得コードごと公開リポジトリに置きたくないソース**は、
-別リポジトリのモジュールとして書き、`CHIEZO_SOURCE_PLUGINS` で差し込みます。
-Chiezo 側には何も入りません(コードもデータも非公開のリポジトリのまま)。
+プライベートな情報やライセンスの都合で、**取得コードごと公開リポジトリに置きたくない
+ソース**は、別リポジトリのプラグインとして書きます。Chiezo 側には何も入りません
+(コードもデータも別リポジトリのまま)。
 
 ### 前提: 配信側は最初から何も要らない
 
@@ -155,134 +155,80 @@ chiezo-api はソース種別を知りません。`data/<名前>.db` にコア�
 ブラウズ画面が全部使えます。**「別リポジトリで `.db` を焼いて `data/` に置く」だけなら、
 以下の設定すら要りません**(chiezo-api が数秒以内に検知します)。
 
-以下が要るのは、**管理画面の初期化・再構築ボタンからも回したい**場合です。
+以下が要るのは、**取り込み自体を Chiezo に任せたい**場合です(管理画面の初期化・再構築
+ボタンから回せるようになります)。
 
-### 1. 非公開のリポジトリにアダプタを書く
+### プラグインは「文書を配るサービス」
 
-ケース 2 と同じ `SourceAdapter` を書き、モジュールの直下に `ADAPTERS` を置きます。
+プラグインは HTTP で 2 つの口を持つだけのサービスです。**役割は「取得と整形」まで**で、
+DB の構築(FTS・タグ転置表・世代切り替え・検証)は Chiezo 本体が行います。
 
-```python
-# private_sources/__init__.py
-from core import Doc          # chiezo-ingest イメージの core.py を使う
-
-
-class PrivateDocsAdapter:
-    source = "private_docs"
-    source_kind = "private_docs"
-    lang = "ja"
-    min_docs = 100
-    sample_titles = ["運用手順書"]
-    min_build_memory_gb = 0.5
-
-    def fetch(self, workdir):
-        # 非公開の API を叩く、別のサーバーからファイルを集める、など
-        return collected_path, "20260731"
-
-    def iter_docs(self, path):
-        yield Doc(doc_id=1, title="運用手順書", opening="…", body="…")
-
-
-ADAPTERS = {"private_docs": lambda: PrivateDocsAdapter()}
+```
+[chiezo-trigger / chiezo-ingest]  --HTTP-->  [あなたのプラグイン]
+        DB を構築する                          元データを取得して NDJSON で配る
 ```
 
-ソース名は `[A-Za-z0-9_]` のみ(ハイフンは世代ファイル名 `<source>-<date>.db` の区切りと
-衝突するため弾かれます)。既存ソースと同名も弾かれます(`jawiki` を影で差し替えると
-間違ったダンプが `jawiki.db` に焼かれるため)。
+#### 契約
 
-**`__init__` は軽くしてください。** 管理画面のカタログ(`GET /sources`)を組み立てる際に
-アダプタを実体化するので、コンストラクタで通信やファイル読み込みをしないこと。
+```
+GET /sources            → {"sources": [{"name","kind","lang","label","min_docs","memory_gb"}]}
+GET /fetch?source=NAME  → NDJSON(1 行目に meta、以降は 1 行 1 文書)
+```
 
-### 2. 差し込み方を選ぶ
+`/fetch` の 1 行目は省略できます(その場合は取り込んだ日が世代の日付になります)。
 
-差し込み方は 2 つあります。**まずマウント方式を検討してください** — イメージを焼かずに済み、
-プラグインを直したら再起動だけで反映されます。
+```json
+{"meta": {"dump_date": "20260805", "min_docs": 20000, "sample_titles": ["運用手順書"]}}
+{"doc_id": 1, "title": "運用手順書", "opening": "…", "body": "…", "tags": ["社内"], "rank_score": 0.5}
+{"title": "障害対応メモ", "body": "…", "extra": {"lat": 35.68, "lon": 139.76}}
+```
 
-| | マウント(推奨) | イメージに焼く |
-|---|---|---|
-| やること | ボリューム 1 本 + 環境変数 2 つ | `FROM` で継承して `COPY` |
-| イメージ | 本体の `chiezo-ingest` のまま | プラグインごとに 1 つ増える |
-| 直したとき | `docker compose up -d` | 焼き直す |
-| 追加の pip 依存 | 入れられない | 入れられる |
-| ソースツリー | 配信先に要る | 要らない |
+- 文書の項目はコアスキーマの `Doc` と同じ(`title` だけ必須)。`doc_id` を省くと行番号を振ります
+- **`meta` をヘッダではなく本文の 1 行目に置く**のは、HTTP ヘッダが latin-1 しか運べず
+  日本語のタイトルを載せられないため。取り込んだ中身を見てから代表を選ぶソースは、
+  全部数え終えてから 1 行目を書き出せます
+- ソース名は `[A-Za-z0-9_]` のみ(ハイフンは世代ファイル名 `<source>-<date>.db` の区切りと
+  衝突します)。組み込みソースや他のプラグインと同名も弾かれます
 
-### 2a. マウントして差し込む(推奨)
+実装の受け口は本体側の [`ingest/sources/remote.py`](../ingest/sources/remote.py) が正です。
 
-`chiezo-ingest`(one-shot)と `chiezo-trigger`(管理画面のボタン)の両方に、コードを
-読み取り専用でマウントし、環境変数を 2 つ足します。プラグイン側に置いたオーバーレイを
-Chiezo の compose に**重ねる**形にすると、Chiezo 側は `.env` の 2 行だけで済みます。
+#### 繋ぎ方
+
+プラグイン側にオーバーレイを置き、Chiezo の compose に**重ねます**。
 
 ```yaml
 # 別リポジトリ側の docker-compose.plugin.yml
-# image: は書かない —— 重ねた先の定義(pull 版 / :local)をそのまま引き継ぐため
 services:
+  my-plugin:
+    image: ghcr.io/<自分のアカウント>/my-plugin:latest   # 本体とは別に pull する
+    restart: unless-stopped
   chiezo-trigger:
-    volumes:
-      - ${CHIEZO_PLUGIN_DIR:-../my-plugin}/private_sources:/plugins/private_sources:ro
     environment:
-      - PYTHONPATH=/plugins
-      - CHIEZO_SOURCE_PLUGINS=private_sources
+      - CHIEZO_PLUGIN_SOURCES=http://my-plugin:8080
+    depends_on: [my-plugin]
   chiezo-ingest:
-    volumes:
-      - ${CHIEZO_PLUGIN_DIR:-../my-plugin}/private_sources:/plugins/private_sources:ro
     environment:
-      - PYTHONPATH=/plugins
-      - CHIEZO_SOURCE_PLUGINS=private_sources
+      - CHIEZO_PLUGIN_SOURCES=http://my-plugin:8080
 ```
 
 ```bash
 # chiezo/.env
 COMPOSE_FILE=docker-compose.yml:../my-plugin/docker-compose.plugin.yml
-CHIEZO_PLUGIN_DIR=../my-plugin
 ```
 
 ```bash
-docker compose up -d                    # trigger にプラグインが載る
+docker compose up -d                    # プラグインも一緒に立ち、trigger が見つける
 docker compose --profile ingest run --rm -e SOURCE=private_docs chiezo-ingest
 ```
 
-`PYTHONPATH=/plugins` はマウント先を import 対象に加えるためで、`CHIEZO_SOURCE_PLUGINS` が
-そのモジュールの `ADAPTERS` を取り込みます。相対パスは**重ねた先のプロジェクトディレクトリ**
-(= Chiezo のチェックアウト)から解決されるので、別の場所に置くなら `CHIEZO_PLUGIN_DIR` を
-絶対パスにしてください。
+プラグインを増やすときは、サービスを 1 ブロック足して URL を `,` で並べます
+(compose は環境変数のリストからサービスを生やせないので、両方に書きます)。
 
-> **プラグインを新しく足したときだけ、管理画面への反映に最大 `CHIEZO_CATALOG_TTL` 秒
-> (既定 300)かかります。** 「取り込めるソースの一覧」は chiezo-trigger から取って
-> api がキャッシュするためです。待てないなら `docker compose restart chiezo-api`。
-> 取り込み(上の `docker compose run`)は待たずに通ります。
+> **落ちていても本体は動きます。** カタログが引けないプラグインは警告を出して飛ばすだけです
+> (別コンテナである以上、再起動中に繋がらないのは正常な状態のため)。ただし**繋がったのに
+> 応答の形が違う場合は落とします** —— 直すべき不具合を黙って無視しないためです。
 
-**追加の pip 依存が要るプラグインではこの方式は使えません**(マウントするのはコードだけで、
-本体のイメージに依存は入っていないため)。その場合は次のイメージを焼く方式にしてください。
-
-### 2b. イメージに焼いて差し込む
-
-```dockerfile
-# 非公開リポジトリ側の Dockerfile
-FROM ghcr.io/rtcode337/chiezo-ingest:latest
-COPY private_sources /srv/chiezo-ingest/private_sources
-ENV CHIEZO_SOURCE_PLUGINS=private_sources
-```
-
-複数のモジュールを入れるならカンマ区切りで並べます。
-
-#### compose のイメージを差し替える
-
-`chiezo-ingest` と `chiezo-trigger` はどちらも `CHIEZO_INGEST_IMAGE` で差し替えられます。
-
-```bash
-# .env
-CHIEZO_INGEST_IMAGE=ghcr.io/<自分のアカウント>/chiezo-ingest-private:latest
-```
-
-```bash
-docker compose up -d           # trigger が差し替わり、管理画面に private_docs が出る
-```
-
-これで組み込みソースと同じように、管理画面の「初期化」「再構築」ボタンから回せます。
-`SOURCE=private_docs` での one-shot 実行も同様です。
-
-**指定したモジュールが読めない・`ADAPTERS` が無い場合は起動時に落とします**
-(黙って無視すると「管理画面に出ない」「unknown SOURCE」として後から現れ、原因が
-分からなくなるため)。`docker logs` にモジュール名つきの理由が出ます。
+実例が [chiezo-plugin](https://github.com/rtcode337/chiezo-plugin)(郵便局データ)にあります。
 
 ### スキーマバージョンについて
 

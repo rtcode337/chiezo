@@ -7,7 +7,8 @@
 
 - **ためる** — `ingest/` がソースごとに独立した SQLite ファイル(`/data/<source>.db`)を作る。
   取得元は公開ダンプ(Wikipedia / OpenStreetMap / GeoNames)に限らず、このリポジトリに
-  入れられないものは `CHIEZO_SOURCE_PLUGINS` で外から差し込める。更新はブルーグリーン
+  入れられないものは**別コンテナのプラグイン**(`CHIEZO_PLUGIN_SOURCES`)から足せる。
+  更新はブルーグリーン
 - **取り出す** — `api/` が **MCP**(`/mcp`)と **REST**(`/v1/...`)の 2 経路で出す。
   Claude Code 向けには「いつ Chiezo を使うか」を書いた CLAUDE.md ブロックも生成する
 - **覚える** — `api/app/notes.py` が **Chiezo で唯一書き込めるソース** `notes` を持つ。
@@ -520,26 +521,22 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `api/app/known_sources.py` への複製は不要)。
     `osm_<国>`(下の `osm_regions.py` から 195 件)と `<lang>wiki`(下の
     `wikipedia_editions.py` から 348 件)だけは例外で、自動生成カタログから機械的に登録している。
-    `load_plugin_adapters()` は **このリポジトリに入れられないソース(プライベートな情報等)を
-    別リポジトリのモジュールから差し込む唯一の口**(環境変数 `CHIEZO_SOURCE_PLUGINS` に
-    モジュール名をカンマ区切り。そのモジュールの `ADAPTERS` を取り込む)。使い方は
-    `docs/operations.md`「ソースの追加・削除」と `docs/adding-a-source.md` のケース 3 が正。実装側の要点:
-    - **壊れた指定は握り潰さず `SystemExit`**(import できない / `ADAPTERS` が無い /
-      生成関数でない)。黙って無視すると「管理画面に出ない」「unknown SOURCE」として
-      後から現れて原因が分からない。opt-in の設定なので、起動時に落ちるほうが分かりやすい
-      (chiezo-trigger が起動しないのも、カタログが静かに欠けているより気づける)
-    - **既存ソースと同名は拒否する**。上書きを許すと `jawiki` を影で差し替える取り違えに
-      気づけない(名前を変えれば済むので安全側に倒す)
-    - **ソース名は `[A-Za-z0-9_]` のみ**。ハイフンは世代ファイル名 `<source>-<date>.db` の
-      区切りと衝突し、取り込みは通るのにブルーグリーン切り替えの段で壊れるため先に弾く
-    - 差し込みは ingest 側だけで完結する。**api は変更不要**(ソース種別を意識しない設計なので、
-      コアスキーマの `.db` が `/data` にあれば全エンドポイントがそのまま効く)
-    - **基本はイメージを焼かずマウントで足す**。`chiezo-ingest` / `chiezo-trigger` に
-      コードを ro でマウントし、`PYTHONPATH` と `CHIEZO_SOURCE_PLUGINS` を足すだけで
-      stock のイメージのままソースが増える(プラグイン側が置いた compose の
-      オーバーレイを重ねる形。`docs/adding-a-source.md` ケース 3 の 2a が正)。
-      追加の pip 依存が要るときだけ `FROM` で継承して焼き、`CHIEZO_INGEST_IMAGE` で
-      差し替える(両サービスがこの変数を見る)
+    **このリポジトリに入れられないソース(プライベートな情報・ライセンスの都合)は
+    別コンテナのプラグインから足す**(下の `sources/remote.py`)。使い方は
+    `docs/adding-a-source.md` のケース 3 が正。
+  - `sources/remote.py` — **外部プラグイン**(`CHIEZO_PLUGIN_SOURCES` に
+    プラグインの URL をカンマ区切り)。**取得と整形はプラグイン、DB の構築は本体**という
+    割り方にしてあり、プラグインは `GET /sources`(カタログ)と `GET /fetch?source=`
+    (NDJSON)の 2 つを話すだけでよい。実装側の要点:
+    - **プラグインは Chiezo のコードを含まない**。だから本体のスキーマ版が上がっても
+      焼き直しが要らず、`/data` の書き込み権限も要らない(継承方式の弱点がここで消える)
+    - **問い合わせは import 時ではなく `get_adapter()` / `GET /sources` のとき**。
+      import 時に聞きに行くと、プラグインが起動する前に本体を立てられなくなる
+    - **到達不能は警告して飛ばし、応答の形の誤りは落とす**。別コンテナである以上、
+      再起動中に繋がらないのは正常な状態でありうる(そこで本体を止めると、プラグインが
+      1 つ死んだだけで Chiezo 全体が動かない)。一方、繋がったのに形が違うのは不具合
+    - **メタ(ダンプ日付・検証条件)は NDJSON の 1 行目**。HTTP ヘッダは latin-1 しか
+      運べず日本語の代表タイトルを載せられないため(ヘッダで設計して実際に踏んだ)
   - `sources/osm_regions.py` — **自動生成物**。Geofabrik の国別抽出カタログ
     (`scripts/gen_osm_regions.py` で再生成。Geofabrik の index-v1.json + 大陸別 HTML の
     pbf サイズ + CLDR の国名/主要言語から起こす)。1 件あたり region パス・日本語表示名・

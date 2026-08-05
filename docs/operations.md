@@ -317,34 +317,30 @@ trigger はホストへ公開されず、管理画面の初期化ボタンから
 新しい種類のソースの取り込み方は [adding-a-source.md](adding-a-source.md) を参照してください。
 
 **このリポジトリに入れられないソース**(公開できないプライベートな情報など)は、
-別リポジトリのモジュールとして書いて差し込めます。イメージは焼かず、コードを読み取り専用で
-マウントして環境変数 2 つで認識させるのが基本です。
+別リポジトリのプラグインとして書いて足せます。**プラグインは別イメージ・別コンテナの
+サービス**で、本体からは HTTP で見えます(取得と整形はプラグイン、DB の構築は本体)。
 
 ```yaml
 # 別リポジトリ側の docker-compose.plugin.yml(Chiezo の compose に重ねる)
 services:
+  my-plugin:
+    image: ghcr.io/<自分のアカウント>/my-plugin:latest   # 本体とは別に pull する
+    restart: unless-stopped
   chiezo-trigger:
-    volumes:
-      - ${CHIEZO_PLUGIN_DIR:-../my-plugin}/private_sources:/plugins/private_sources:ro
     environment:
-      - PYTHONPATH=/plugins
-      - CHIEZO_SOURCE_PLUGINS=private_sources   # カンマ区切りで複数可
+      - CHIEZO_PLUGIN_SOURCES=http://my-plugin:8080     # カンマ区切りで複数可
+    depends_on: [my-plugin]
   chiezo-ingest:
-    volumes:
-      - ${CHIEZO_PLUGIN_DIR:-../my-plugin}/private_sources:/plugins/private_sources:ro
     environment:
-      - PYTHONPATH=/plugins
-      - CHIEZO_SOURCE_PLUGINS=private_sources
+      - CHIEZO_PLUGIN_SOURCES=http://my-plugin:8080
 ```
 
 ```bash
 # .env
 COMPOSE_FILE=docker-compose.yml:../my-plugin/docker-compose.plugin.yml
-CHIEZO_PLUGIN_DIR=../my-plugin
 ```
 
-追加の pip 依存が要るプラグインや、ソースツリーを置けない配信先では、代わりに ingest
-イメージを継承して焼き、`CHIEZO_INGEST_IMAGE` で差し替えます。
+プラグインが落ちていても本体は動きます(そのソースが一覧に出なくなるだけ)。
 
 これで管理画面の「初期化」「再構築」ボタンからも回せます。Chiezo 側にはコードもデータも
 入りません。そもそも**配信側はソース種別を知らない**ので、管理画面から回す必要が無ければ
