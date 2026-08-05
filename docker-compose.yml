@@ -5,7 +5,17 @@
 #
 # 障害時は :latest ではなく :sha-xxxxxxx を指定すれば任意の時点に戻せる
 # (CHIEZO_API_IMAGE / CHIEZO_INGEST_IMAGE で上書き可)。
-# ローカルでイメージをビルドして動かしたいときは docker-compose.build.yml を使う。
+#
+# **このファイルは検索 API・MCP としての Chiezo だけ**(chiezo-api + chiezo-trigger +
+# chiezo-ingest)。足すものは上書きファイルを重ねる。どれも数行〜数十行で、
+# 重ねる順は下の並びどおり(後のファイルが勝つ):
+#
+#   docker-compose.build.yml    手元でビルドして :local タグで動かす(本番は pull)
+#   docker-compose.answer.yml   「答える」層(推論サーバ + 検索エンジン)
+#   docker-compose.cuda.yml     推論を NVIDIA の GPU で動かす(answer に重ねる)
+#   docker-compose.lan.yml      「答える」層を LAN の別ホストの chiezo-api へ公開する
+#
+# 使い分けは docs/operations.md、「答える」層は docs/local-llm.md が正。
 
 # 取り込み系コンテナ共通のリソース制限(YAML アンカー)。cpu_shares は「良き隣人」のための
 # 相対ウェイト(既定 1024 の半分)。CPU が競合したときだけ他のコンテナへ譲り、空いていれば
@@ -43,8 +53,9 @@ services:
       - CHIEZO_CATALOG_TTL=${CHIEZO_CATALOG_TTL-}
       - CHIEZO_MCP_ALLOWED_HOSTS=${CHIEZO_MCP_ALLOWED_HOSTS-}
       # 「答える」層(/v1/ask・/localllm/chat)。未設定が既定で、その場合この機能は丸ごと無効。
-      # 有効にするには .env で CHIEZO_LLM_URL=http://chiezo-llm:7011/v1 を設定し、
-      # `docker compose --profile answer up -d` で推論コンテナごと起動する(.env.example 参照)。
+      # **推論サーバ・検索エンジンのコンテナは docker-compose.answer.yml にある** ——
+      # ここにあるのは chiezo-api に渡す設定だけで、外部の OpenAI 互換サーバを指すなら
+      # この設定だけで足りる(同居させるならあちらを重ねる)。
       - CHIEZO_LLM_URL=${CHIEZO_LLM_URL-}
       - CHIEZO_LLM_MODEL=${CHIEZO_LLM_MODEL-}
       - CHIEZO_LLM_API_KEY=${CHIEZO_LLM_API_KEY-}
@@ -88,55 +99,6 @@ services:
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:8080/healthz"]
       interval: 60s
-
-  # 「答える」層の推論サーバ(OpenAI 互換)。profile を付けたときだけ起動する。
-  # 配信側 chiezo-api が数百 MB で動く前提を壊さないため、推論は必ず別プロセスに置く。
-  #
-  #   docker compose --profile answer up -d
-  #
-  # モデルは起動時に Hugging Face から取ってきて ./models にキャッシュする(初回だけ数 GB)。
-  # 別のモデルにするなら .env の CHIEZO_LLM_HF_REPO を変えて再起動する。
-  # ここは CPU 版。NVIDIA の GPU で動かすなら docker-compose.cuda.yml を重ねる(そちらが正):
-  #
-  #   docker compose -f docker-compose.yml -f docker-compose.cuda.yml --profile answer up -d
-  #
-  # chiezo-trigger と同じくホストへポート公開せず、chiezo-api からのみ到達できる。
-  chiezo-llm:
-    image: ghcr.io/ggml-org/llama.cpp:server-b10156
-    profiles: ["answer"]
-    # ホストへは公開しない(chiezo-api からのみ到達する)。**別のマシンから使う**
-    # ときだけ次を有効にする —— その場合は推論サーバに認証が無い前提を思い出すこと
-    # (llama-server の --api-key と chiezo-api の CHIEZO_LLM_API_KEY を揃える)。
-    #ports:
-    #  - "7011:7011"
-    environment:
-      # llama-server は全オプションに LLAMA_ARG_* の環境変数を持つので command は上書きしない
-      - LLAMA_ARG_HF_REPO=${CHIEZO_LLM_HF_REPO:-ggml-org/gemma-3-4b-it-GGUF:Q4_K_M}
-      - LLAMA_ARG_CTX_SIZE=${CHIEZO_LLM_CTX_SIZE:-8192}
-      # 同時に処理する会話の数。既定の 4 はスロットごとにホスト側のバッファを持つので、
-      # 1 人で使うぶんには 1 でよい(小さな機械でメモリを空けるため)。
-      - LLAMA_ARG_N_PARALLEL=${CHIEZO_LLM_PARALLEL:-1}
-      # ホスト側のプロンプトキャッシュの上限(MiB)。既定の 8192 は小さな機械には大きすぎる
-      # (会話を続けるほど育ち、メモリを食い尽くす)。
-      - LLAMA_ARG_CACHE_RAM=${CHIEZO_LLM_CACHE_RAM:-512}
-      # 思考(reasoning)は既定で切る。hybrid thinking のモデルは 1 応答ごとに
-      # 数百トークン考えるので、道具を何度も呼ぶ agent モードでは待ち時間が積み上がる。
-      - LLAMA_ARG_THINK_BUDGET=${CHIEZO_LLM_THINK_BUDGET:-0}
-      - LLAMA_ARG_HOST=0.0.0.0
-      - LLAMA_ARG_PORT=7011
-      # -hf で落としたモデルの置き場(既定はコンテナ内の HOME 配下 = 使い捨てになる)
-      - LLAMA_CACHE=/models
-    volumes:
-      - ./models:/models
-    restart: unless-stopped
-    # 推論は全コアを使い切るので、CPU が競合したときは他のコンテナへ譲る
-    # (取り込み系と同じ「良き隣人」の相対ウェイト。空いていれば全力で使える)。
-    cpu_shares: 512
-    healthcheck:
-      # モデルの読み込みが終わるまで応答しないので、起動猶予を長めに取る
-      test: ["CMD", "curl", "-fs", "http://localhost:7011/health"]
-      interval: 60s
-      start_period: 600s
 
   chiezo-ingest:
     image: ${CHIEZO_INGEST_IMAGE:-ghcr.io/rtcode337/chiezo-ingest:latest}

@@ -22,19 +22,30 @@ Claude Code の代わりにローカル LLM で立てて同居させたのがこ
 
 ## 使いはじめる
 
+推論サーバと検索エンジンの**コンテナは `docker-compose.answer.yml` に外出し**してあります
+(chiezo-api 側の設定は本体の `docker-compose.yml` にあります)。重ねなければコンテナは
+立たず、Chiezo は検索 API・MCP として動きます。
+
 ```bash
 cp .env.example .env
 # .env の CHIEZO_LLM_URL=http://chiezo-llm:7011/v1 の行のコメントを外す
 
-docker compose --profile answer up -d
+docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile answer up -d
 docker compose logs -f chiezo-llm     # 初回はモデルのダウンロード(約 2.5GB)
 ```
 
-`--profile answer` を付けたときだけ推論コンテナ(`chiezo-llm` = llama.cpp の
-`llama-server`)が起動します。付けなければ従来どおり chiezo-api と chiezo-trigger だけです。
+毎回 `-f` を並べるのが煩わしければ、`.env` に
+`COMPOSE_FILE=docker-compose.yml:docker-compose.answer.yml` と書けば以後は
+`docker compose --profile answer up -d` で済みます。
+
+起動するのは推論サーバ(`chiezo-llm` = llama.cpp の `llama-server`)と
+検索エンジン(`searxng`)の 2 つです。**推論を LAN の別マシン(Ollama 等)に任せるなら
+このファイルは要りません** —— `CHIEZO_LLM_URL` にその URL を書くだけで、本体だけで動きます。
+
 モデルは起動時に Hugging Face から取得して `./models` にキャッシュするので、
 2 回目以降のダウンロードはありません。`chiezo-trigger` と同じくホストへポートを公開せず、
-chiezo-api からのみ内部ネットワーク経由で到達します。
+chiezo-api からのみ内部ネットワーク経由で到達します(別ホストの chiezo-api から使うなら
+`docker-compose.lan.yml` を重ねます)。
 
 ## 話す(ブラウザ)
 
@@ -153,11 +164,15 @@ agent モードに `web_search` の道具を足せます。**Chiezo に無いこ
 
 ```bash
 # .env
-CHIEZO_WEB_SEARCH_URL=http://searxng:8080/search   # 自分で立てた SearXNG
+CHIEZO_WEB_SEARCH_URL=http://searxng:7012/search   # 同居(--profile answer で立つ)
+#CHIEZO_WEB_SEARCH_URL=http://<立てたホストのIP>:7012/search  # LAN の別ホストのもの
 #CHIEZO_WEB_SEARCH_PROVIDER=searxng                # searxng(既定)/ brave
 #CHIEZO_WEB_SEARCH_API_KEY=                        # brave のときだけ
 #CHIEZO_WEB_SEARCH_RESULTS=5                       # 1 回に見る件数
 ```
+
+ポートは**内も外も 7012**です(7010 = API・7011 = 推論の隣に揃えてあります)。同居なら
+サービス名で、別ホストなら `docker-compose.lan.yml` が公開する 7012 を指します。
 
 これは **Chiezo 本体ではなく「使う」層(= Chiezo を使う側)の機能**です。知識ベースそのものは
 引き続き外へ出ません。とはいえ外に出る以上は、次を守っています。
@@ -167,9 +182,27 @@ CHIEZO_WEB_SEARCH_URL=http://searxng:8080/search   # 自分で立てた SearXNG
 - **自分でレート制限をかける**。`User-Agent` はプロジェクト名だけで、連絡先や個人名は載せません
 - **Chiezo が先**。プロンプトで順番を固定しています(web は足りないぶんだけ)
 
-SearXNG を使う場合は JSON 出力を有効にする必要があります(`settings.yml` の
-`search.formats` に `json` を足す)。既定で無効な形式なので、有効にしないと HTML が返り、
+### 検索エンジン(SearXNG)
+
+**立てる手順はありません。`--profile answer` を付けた時点で推論サーバと一緒に立ちます**
+(`docker-compose.answer.yml`)。web 検索を使うかどうかは、上の `CHIEZO_WEB_SEARCH_URL` を
+書くかどうかだけで決まります —— 道具を足すたびに起動コマンドが増えるほうが混乱するため、
+起動は一本にして、使うかは設定で切り分けています。
+
+設定は `searxng/settings.yml` に入っています(リポジトリに同梱)。**SearXNG の既定は
+HTML しか返さない**ので、そこで `search.formats` に `json` を足してあります。無いと
 Chiezo 側は「JSON ではない」というエラーとして扱います。
+
+```bash
+# 動いているか確かめる(コンテナの外から見るなら docker-compose.lan.yml を重ねて 7012)
+docker compose exec searxng wget -qO- "http://localhost:7012/search?q=test&format=json" | head -c 200
+```
+
+`settings.yml` の `secret_key` は**秘密の値ではありません**(プリファレンスの Cookie と
+画像プロキシの署名用で、Chiezo は JSON の検索しか叩きません)。気にするなら `.env` の
+`CHIEZO_WEB_SEARCH_SECRET` で置き換えてください。`limiter: false` は API として叩くための
+設定で、**LAN 内前提**です。SearXNG 以外(Brave)を使うなら
+`CHIEZO_WEB_SEARCH_PROVIDER=brave` と API キーを設定すれば、この節は要りません。
 
 **設定してあっても、使うかどうかはやり取りごとに選べます。** 会話画面の「🌐 web 検索」を
 外すか、API に `web=0` を渡すと、そのやり取りではモデルに道具を渡しません(Chiezo だけで

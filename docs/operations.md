@@ -248,7 +248,7 @@ docker run --rm ghcr.io/rtcode337/chiezo-ingest:latest \
 ビルド機がインターネットに出られない・GHCR を使いたくない場合は、イメージをファイルで持ち込めます:
 
 ```bash
-docker pull ghcr.io/rtcode337/chiezo-ingest:latest   # または docker-compose.build.yml でローカルビルド
+docker pull ghcr.io/rtcode337/chiezo-ingest:latest   # または docker-compose.build.yml を重ねてローカルビルド
 mkdir -p handoff                                     # 持ち出す成果物の置き場(リポジトリ管理外)
 docker save ghcr.io/rtcode337/chiezo-ingest:latest | gzip -1 > handoff/chiezo-ingest-image.tar.gz
 # ビルド機で: docker load -i chiezo-ingest-image.tar.gz
@@ -305,12 +305,15 @@ cat docker-compose.standalone.yml
 
 起動するのは `chiezo-api` と `chiezo-trigger` の 2 つで、通常の `docker-compose.yml` と同じく
 trigger はホストへ公開されず、管理画面の初期化ボタンから内部ネットワーク経由で叩かれます。
-「答える」層(`chiezo-llm`)はファイル末尾にコメントアウトしてあり、使うときだけ外します
-(あわせて `chiezo-api` の environment に `CHIEZO_LLM_URL` を足します)。
+**「答える」層は設定だけを載せてあり、コンテナは含みません** —— 推論サーバと検索エンジンは
+別サーバーで動かしているものを指せば済み(chiezo-api は OpenAI 互換の口を叩くだけ)、
+貼り付けて動かすような実行環境で同居させる前提も無いためです。同じホストに立てるなら、
+上書きを重ねられる環境で `docker-compose.answer.yml` を使ってください。
 
 `cpu_shares` のように受け付けない実行環境がある項目は、行ごと消しても動きます。
 **`docker-compose.yml` を変えたらこのファイルも追従させてください**(値が直書きのぶん、
-黙って古くなります)。
+黙って古くなります)。追従漏れは `tests/test_compose_files.py` が検知します —— 本体が
+`chiezo-api` に渡している設定が、コメントとしてでもこのファイルに出てくるかを照合します。
 
 ## ソースの追加・削除
 

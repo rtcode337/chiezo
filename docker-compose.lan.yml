@@ -1,0 +1,27 @@
+# 「答える」層を **LAN の別ホストで動く chiezo-api** から使うための公開。
+# docker-compose.answer.yml に重ねる(GPU を使うなら cuda の後ろ):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.answer.yml \
+#                  -f docker-compose.cuda.yml -f docker-compose.lan.yml \
+#                  --profile answer up -d chiezo-llm searxng
+#
+# 相手側の chiezo-api には .env でこう渡す(このホストの IP に読み替える):
+#
+#   CHIEZO_LLM_URL=http://<このホストのIP>:7011/v1
+#   CHIEZO_WEB_SEARCH_URL=http://<このホストのIP>:7012/search
+#
+# **同じホストに chiezo-api がいるなら重ねない。** その場合はサービス名で届くので
+# (http://chiezo-llm:7011/v1・http://searxng:7012/search)、口を開ける理由が無い。
+#
+# 開ける以上は前提を承知しておくこと —— **どちらも認証が無い**。推論サーバは
+# 誰でも VRAM を使えるようになり(空きが尽きるとホストごとページングで固まる)、
+# 検索エンジンは外向きの検索の中継そのものになる。ルーターでポート開放しないこと。
+# 推論に鍵を掛けるなら llama-server の --api-key と相手側の CHIEZO_LLM_API_KEY を揃える。
+services:
+  chiezo-llm:
+    ports:
+      - "7011:7011"
+
+  searxng:
+    ports:
+      - "7012:7012"

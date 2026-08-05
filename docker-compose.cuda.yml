@@ -1,10 +1,11 @@
-# 「答える」層の推論を **NVIDIA の GPU** で動かすための上書き。本体(docker-compose.yml)と
-# 重ねて使う:
+# 「答える」層の推論を **NVIDIA の GPU** で動かすための上書き。推論サーバを定義して
+# いるのは docker-compose.answer.yml なので、その後ろに重ねる:
 #
-#   docker compose -f docker-compose.yml -f docker-compose.cuda.yml --profile answer up -d
+#   docker compose -f docker-compose.yml -f docker-compose.answer.yml \
+#                  -f docker-compose.cuda.yml --profile answer up -d
 #
-# 手元ビルドで試すときは 1 つ目を docker-compose.build.yml に差し替えればよい
-# (この上書きは chiezo-llm しか触らないので、どちらの土台にも重ねられる)。
+# 手元ビルドで試すなら docker-compose.build.yml も足す(この上書きは chiezo-llm しか
+# 触らないので、重ねる順さえ守ればどの土台にも乗る)。
 #
 # **NVIDIA 専用**なのでファイル名も cuda にしてある。イメージが CUDA ビルドで、
 # `gpus: all` も NVIDIA Container Toolkit の経路だから、他ベンダーでは動かない。

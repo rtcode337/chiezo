@@ -1,105 +1,22 @@
-# ローカルでイメージをビルドして本番同等に動かす用(api/ ingest/ を変更したときの動作確認)。
+# 手元でイメージをビルドして動かす上書き(api/ ingest/ を変更したときの動作確認)。
+# 本番は docker-compose.yml が GHCR から pull するので、こちらを重ねないと反映されない。
 #
-#   docker compose -f docker-compose.build.yml up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 #
-# 本番は docker-compose.yml(GHCR から pull)を使う。設定はそちらと揃えてあり、
-# 違いは image を pull せず手元でビルドする点だけ(タグは :local で pull 版と区別する)。
-x-ingest-limits: &ingest-limits
-  cpu_shares: 512
-
+# **違いはビルドするかどうかだけ**なので、ここには build と image しか書かない。
+# 以前は本体をまるごと写していて、実際に web 検索と回答パイプラインの設定が抜けたまま
+# 取り残されていた(上書きにすれば構造上ずれない)。
+# タグを :local にしてあるのは、pull した本番イメージと取り違えないため。
+# 「答える」層(推論・検索エンジン)は公開イメージをそのまま使うのでここには出てこない。
 services:
   chiezo-api:
     build: ./api
     image: ghcr.io/rtcode337/chiezo-api:local
-    ports:
-      - "7010:7010"
-    volumes:
-      - ./data:/data:ro
-      # notes(短期記憶)だけは書き込む。/data の read-only は崩さず別ディレクトリにする
-      # (同じ場所に置くと、1 件書くたびに全ソースの再走査が走る。api/app/notes.py 参照)。
-      - ./notes:/notes
-    environment:
-      - CHIEZO_DATA_DIR=/data
-      # 「覚える」層(/v1/notes)。空にすると機能ごと無効になる。
-      - CHIEZO_NOTES_DIR=/notes
-      - CHIEZO_TRIGGER_URL=http://chiezo-trigger:8080
-      # 本体の調整(どれも既定のままなら書かなくてよい。空文字なら既定に倒れる)。
-      - CHIEZO_RESCAN_INTERVAL=${CHIEZO_RESCAN_INTERVAL-}
-      - CHIEZO_CATALOG_TTL=${CHIEZO_CATALOG_TTL-}
-      - CHIEZO_MCP_ALLOWED_HOSTS=${CHIEZO_MCP_ALLOWED_HOSTS-}
-      - CHIEZO_LLM_URL=${CHIEZO_LLM_URL-}
-      - CHIEZO_LLM_MODEL=${CHIEZO_LLM_MODEL-}
-      # agent モード(mode=agent)の上限。既定のままなら書かなくてよい。
-      - CHIEZO_AGENT_MAX_STEPS=${CHIEZO_AGENT_MAX_STEPS-}
-      - CHIEZO_AGENT_TOOL_CHARS=${CHIEZO_AGENT_TOOL_CHARS-}
-      - CHIEZO_AGENT_TIMEOUT=${CHIEZO_AGENT_TIMEOUT-}
-      # 会話画面・API の既定(素の既定は rag + grounded=1。潤沢な環境なら agent + 0 に倒せる)。
-      - CHIEZO_ASK_DEFAULT_MODE=${CHIEZO_ASK_DEFAULT_MODE-}
-      - CHIEZO_ASK_DEFAULT_GROUNDED=${CHIEZO_ASK_DEFAULT_GROUNDED-}
-      # web 検索(既定では無効。URL を設定したときだけ agent の道具に加わる)。
-      - CHIEZO_WEB_SEARCH_URL=${CHIEZO_WEB_SEARCH_URL-}
-      - CHIEZO_WEB_SEARCH_PROVIDER=${CHIEZO_WEB_SEARCH_PROVIDER-}
-      - CHIEZO_WEB_SEARCH_API_KEY=${CHIEZO_WEB_SEARCH_API_KEY-}
-      - CHIEZO_WEB_SEARCH_RESULTS=${CHIEZO_WEB_SEARCH_RESULTS-}
-      - CHIEZO_WEB_SEARCH_TIMEOUT=${CHIEZO_WEB_SEARCH_TIMEOUT-}
-    depends_on:
-      - chiezo-trigger
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-fs", "http://localhost:7010/healthz"]
-      interval: 60s
 
   chiezo-trigger:
     build: ./ingest
     image: ghcr.io/rtcode337/chiezo-ingest:local
-    command: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080"]
-    volumes:
-      - ./data:/data
-    environment:
-      - CHIEZO_DATA_DIR=/data
-    restart: unless-stopped
-    <<: *ingest-limits
-    healthcheck:
-      test: ["CMD", "curl", "-fs", "http://localhost:8080/healthz"]
-      interval: 60s
-
-  # 「答える」層の推論サーバ(本番と同じ。ここはビルドせず公開イメージをそのまま使う)。
-  chiezo-llm:
-    image: ghcr.io/ggml-org/llama.cpp:server-b10156
-    profiles: ["answer"]
-    environment:
-      - LLAMA_ARG_HF_REPO=${CHIEZO_LLM_HF_REPO:-ggml-org/gemma-3-4b-it-GGUF:Q4_K_M}
-      - LLAMA_ARG_CTX_SIZE=${CHIEZO_LLM_CTX_SIZE:-8192}
-      # 同時に処理する会話の数。既定の 4 はスロットごとにホスト側のバッファを持つので、
-      # 1 人で使うぶんには 1 でよい(小さな機械でメモリを空けるため)。
-      - LLAMA_ARG_N_PARALLEL=${CHIEZO_LLM_PARALLEL:-1}
-      # ホスト側のプロンプトキャッシュの上限(MiB)。既定の 8192 は小さな機械には大きすぎる
-      # (会話を続けるほど育ち、メモリを食い尽くす)。
-      - LLAMA_ARG_CACHE_RAM=${CHIEZO_LLM_CACHE_RAM:-512}
-      # 思考(reasoning)は既定で切る。hybrid thinking のモデルは 1 応答ごとに
-      # 数百トークン考えるので、道具を何度も呼ぶ agent モードでは待ち時間が積み上がる。
-      - LLAMA_ARG_THINK_BUDGET=${CHIEZO_LLM_THINK_BUDGET:-0}
-      - LLAMA_ARG_HOST=0.0.0.0
-      - LLAMA_ARG_PORT=7011
-      - LLAMA_CACHE=/models
-    volumes:
-      - ./models:/models
-    restart: unless-stopped
-    # 推論は全コアを使い切るので、CPU が競合したときは他のコンテナへ譲る
-    # (取り込み系と同じ「良き隣人」の相対ウェイト。空いていれば全力で使える)。
-    cpu_shares: 512
-    healthcheck:
-      test: ["CMD", "curl", "-fs", "http://localhost:7011/health"]
-      interval: 60s
-      start_period: 600s
 
   chiezo-ingest:
     build: ./ingest
     image: ghcr.io/rtcode337/chiezo-ingest:local
-    profiles: ["ingest"]
-    volumes:
-      - ./data:/data
-    environment:
-      - SOURCE=jawiki
-      - CHIEZO_DATA_DIR=/data
-    <<: *ingest-limits

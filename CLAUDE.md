@@ -715,8 +715,11 @@ python tests/fixtures/make_osm_fixture.py
 python tests/fixtures/make_geonames_fixture.py
 
 # api/ ingest/ を変更したときのローカルビルドでの動作確認
-# (docker-compose.yml は GHCR の公開イメージを pull するので、こちらを使わないと反映されない)
-docker compose -f docker-compose.build.yml up -d --build
+# (docker-compose.yml は GHCR の公開イメージを pull するので、こちらを重ねないと反映されない)
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+
+# 「答える」層(推論サーバ + 検索エンジン)も立てる。GPU なら cuda を後ろに重ねる
+docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile answer up -d
 ```
 
 実データを落とさずに取り込みを試すなら、`DUMP_FILE`(ダウンロードを飛ばして手元のファイルを使う)
@@ -817,12 +820,18 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
   = `"chiezo"`)、CLAUDE.md ブロックのマーカー(`<!-- BEGIN chiezo … -->`。変えると既存の
   埋め込みを差し替えられなくなる)、`User-Agent`(`chiezo-ingest/0.1` と揃えた機械可読トークン)、
   `CHIEZO_LLM_MODEL` の既定値。**日本語名は付けない**(表記は `Chiezo` に一本化する)。
-- 認証なし・LAN 内前提。ルーターでポート開放しないこと。chiezo-trigger と chiezo-llm は
-  ホストへポート公開せず、chiezo-api からのみ内部ネットワーク経由で到達可能にすること。
+- 認証なし・LAN 内前提。ルーターでポート開放しないこと。chiezo-trigger・chiezo-llm・searxng は
+  ホストへポート公開せず、chiezo-api からのみ内部ネットワーク経由で到達可能にすること
+  (別ホストの chiezo-api から使うときだけ `docker-compose.lan.yml` で開ける)。
+- **待ち受けは 7010 = API・7011 = 推論・7012 = 検索エンジンで、コンテナの内と外を同じ番号にする**。
+  番号が食い違うと URL を書くたびにどちらか迷う。既定が違うイメージは環境変数で寄せる ——
+  searxng は granian で動くので `GRANIAN_PORT`(SearXNG の `SEARXNG_PORT` は設定ファイルの
+  値で待ち受けには使われない)。
 - **「使う」層は既定で無効のまま保つ**。推論を chiezo-api の中で動かさない(配信側が
   数百 MB で動く前提)。LLM を呼ぶコードは `app/answer.py` と `app/agent.py` に閉じ、
   検索・文書取得は `app/main.py` の関数(agent は MCP の道具)を再利用する。compose では
-  profile `answer` を付けたときだけ `chiezo-llm` が起動する状態を崩さない。
+  `docker-compose.answer.yml` を重ねて profile `answer` を付けたときだけコンテナが
+  起動する状態を崩さない。
   **素の既定は `rag` + `grounded=1`**(小さな機械でも安全に動く側)。潤沢な環境では
   `CHIEZO_ASK_DEFAULT_MODE` / `_GROUNDED` で倒せるが、**素の既定は変えない**。
 - **外へ出るのは「使う」層だけ**。Chiezo 本体(知識ベース)は ingest がダンプを取る以外
@@ -830,6 +839,21 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
   有効にしたときも「どれが web 由来か分かる」ことを崩さない(出典の `source` が `web`)。
 - **会話の状態をサーバーに持たせない**。`/v1/chat` は履歴を毎回まるごと受け取る。
   セッションを持つと read-only・複数ワーカーの前提が崩れる(MCP をステートレスにしたのと同じ)。
+- **compose は「本体 + 上書き」に保つ**。`docker-compose.yml` は検索 API・MCP としての
+  Chiezo(chiezo-api + chiezo-trigger + chiezo-ingest)だけを持ち、足すものは上書きを
+  重ねる:`build`(手元ビルド)→ `answer`(推論と検索エンジン)→ `cuda`(GPU)→
+  `lan`(「答える」層を別ホストへ公開)。重ねる順はこの並び。
+  **上書きに本体の設定を写さないこと** —— 以前 `build` が本体の完全なコピーで、
+  web 検索と回答パイプラインの設定が抜けたまま取り残された。`tests/test_compose_files.py`
+  が行数で見張っている。
+- **「答える」層は、コンテナだけを `docker-compose.answer.yml` に置く**。chiezo-api に渡す
+  設定(`CHIEZO_LLM_URL` 以下)は本体側に残す —— 推論を LAN の別マシンに任せる使い方では、
+  コンテナは要らず設定だけが要るため。`searxng`(web 検索の道具が引く検索エンジン)も
+  同じ profile で立てる。**web 検索を使うかどうかで起動を分けない**(道具を足すたびに
+  起動コマンドが増えるほうが混乱する)。使うかは `CHIEZO_WEB_SEARCH_URL` が決める。
+  設定は `searxng/settings.yml`(リポジトリに同梱)。**SearXNG の既定は HTML しか返さない**
+  ので `search.formats` に `json` を足してある。マウントは**読み取り専用**にすること ——
+  書き込み可にするとイメージがディレクトリごと uid 977 に chown し、ホスト側から編集できなくなる。
 - **GPU の設定は `docker-compose.cuda.yml`(上書きファイル)に閉じる**。`gpus: all` は
   GPU の無い環境では起動そのものが失敗するので、本体の compose には書かない。
   **この上書きは NVIDIA 専用**(イメージが CUDA ビルドで、`gpus: all` も NVIDIA
@@ -839,10 +863,15 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
   Vulkan は `/dev/dri`)ため、対応するなら別の上書きファイルを起こすこと。
 - **`docker-compose.standalone.example.yml` は「`.env` もシェルの環境変数も無い環境」向けの単体定義**。
   管理画面に YAML を貼り付けて起動するタイプの環境では `${...}` を解決できず、profile も
-  付けられないため、値を直接書き・使うサービスだけを並べてある(chiezo-api + chiezo-trigger。
-  chiezo-llm はコメントアウト)。編集箇所は先頭の置き場アンカー(`x-data-dir` / `x-notes-dir`)に
-  集約し、**ホスト側は絶対パス**にする(貼り付けて登録する環境では相対パスの基準が読めない)。
+  付けられないため、値を直接書き・使うサービスだけを並べてある(chiezo-api + chiezo-trigger)。
+  **「答える」層は設定だけを載せ、コンテナは載せない** —— 推論サーバと検索エンジンは
+  別サーバーのものを指せば済み、この環境で同居させる前提が無いため(本体側と同じ
+  「設定は残す・コンテナは外す」の分け方)。編集箇所は先頭の置き場アンカー
+  (`x-data-dir` / `x-notes-dir`)に集約し、**ホスト側は絶対パス**にする
+  (貼り付けて登録する環境では相対パスの基準が読めない)。
   `docker-compose.yml` を変えたらこちらも追従させること —— 値が直書きなぶん古くなりやすい。
+  **追従漏れは `tests/test_compose_files.py` が検知する**(本体の chiezo-api に渡している
+  環境変数が、コメントとしてでも単体定義に出てくるかを照合。実際に 2 回取り残された)。
   **実値を書いたコピー(`docker-compose.standalone.yml`)は `.gitignore` 済み**。
   リポジトリに置くのは雛形(`.example`)だけで、置き場の絶対パス・接続先の IP を
   コミットしない(追跡したままだと、手元で書き換えたものが `git add` に巻き込まれる)。

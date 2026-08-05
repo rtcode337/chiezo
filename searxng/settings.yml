@@ -1,0 +1,19 @@
+# 「答える」層の web 検索が引く SearXNG の設定。既定値を土台に、Chiezo から API として
+# 引くために要る 3 点だけ上書きする(docs/local-llm.md「web 検索で足りないぶんを補う」)。
+use_default_settings: true
+
+server:
+  # **秘密の値ではない**(LAN 内前提の既定)。プリファレンスの Cookie と画像プロキシの
+  # 署名に使う値で、Chiezo は JSON の検索しか叩かないため既定のままで動く。
+  # 気にするなら .env の CHIEZO_WEB_SEARCH_SECRET で上書きする(compose が
+  # SEARXNG_SECRET として渡す)。
+  secret_key: "chiezo-lan"
+  # API として叩くので bot 判定を切る。**LAN の外へ出すなら true に戻すこと**
+  limiter: false
+  # 画像のプロキシは使わない(返すのはタイトル・要約・URL だけなので要らない)
+  image_proxy: false
+
+search:
+  # **この行が要**。SearXNG の既定は html だけで、Chiezo は format=json で引くため、
+  # 足さないと HTML が返り「JSON ではない」というエラーとして扱われる。
+  formats: [html, json]

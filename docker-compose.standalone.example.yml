@@ -14,8 +14,13 @@
 #   3. その内容を管理画面に貼り付けて起動する
 #   4. http://<ホスト>:7010/ を開く(DB が無い間もソース 0 件で起動する)
 #
-# 「答える」層(別サーバーの LLM を含む)とソースプラグインは、それぞれ下のコメントを
-# 外すと使える(この環境ではオーバーレイを重ねられないので、全部ここに書いてある)。
+# ソースプラグインは下のコメントを外すと使える(この環境ではオーバーレイを重ねられないので
+# ここに直接書いてある)。
+#
+# **「答える」層は、chiezo-api に渡す設定だけを載せてコンテナは載せていない。** 推論サーバと
+# 検索エンジンは別サーバーで動かしているものを指せば済み(chiezo-api は OpenAI 互換の口を
+# 叩くだけ)、貼り付けて動かすような小さな実行環境で同居させる前提も無いため。同じホストに
+# 立てるなら、上書きを重ねられる環境で docker-compose.answer.yml を使うこと。
 #
 # 通常の環境では docker-compose.yml を使う(こちらは値の直書きぶん古くなりやすい)。
 
@@ -54,15 +59,15 @@ services:
       # サービス名で引くので、下の chiezo-trigger の名前を変えるならここも合わせる
       CHIEZO_TRIGGER_URL: http://chiezo-trigger:8080
       # 本体の調整はどれも既定があるため、変えたいときだけ足す(素のままなら書かない)。
-      # 例: /mcp の Host 検証を絞るなら次を有効にする
-      #CHIEZO_MCP_ALLOWED_HOSTS: "chiezo.example.com:7010,localhost:*"
+      #CHIEZO_MCP_ALLOWED_HOSTS: "chiezo.example.com:7010,localhost:*"  # /mcp の Host 検証
+      #CHIEZO_RESCAN_INTERVAL: "5"    # data/ の変化を拾う間隔(秒)。低速なディスクでは伸ばす
+      #CHIEZO_CATALOG_TTL: "300"      # ソース一覧(GET /sources)のキャッシュ(秒)
       #
       # ---- 「答える」層(/v1/ask・/v1/chat・/localllm/chat)を使う場合 ----
       # **この 1 行が機能フラグを兼ねる**(未設定なら層ごと無効で、Chiezo は検索 API と
       # MCP として動く)。推論は同居させず OpenAI 互換の口を叩くだけなので、
       # **別サーバーで動かしている LLM をそのまま指せる**:
       #CHIEZO_LLM_URL: http://192.0.2.10:7011/v1     # ← 別サーバーの推論サーバ
-      # 同じホストで下の chiezo-llm を有効にした場合は http://chiezo-llm:7011/v1
       #
       # 推論サーバに認証を掛けているなら鍵を渡す(LAN に出す以上、掛けておくのが安全)。
       # モデル名は llama-server なら不要(1 プロセス 1 モデル)。Ollama 等は実在名が要る。
@@ -72,6 +77,28 @@ services:
       # 使い方をしたいなら agent + 0 に倒す(素の既定は rag + 1)。
       #CHIEZO_ASK_DEFAULT_MODE: agent
       #CHIEZO_ASK_DEFAULT_GROUNDED: "0"
+      #
+      # ---- web 検索(agent モードの道具に加える。既定では無効)----
+      # **この 1 行が機能フラグを兼ねる**。取り込んだダンプより新しい出来事や、いま現在の
+      # 状態を聞かれたときだけモデルが使う(本文は取りに行かず、タイトル・要約・URL だけ)。
+      # 検索エンジンもこの定義には含めないので、**別に立てたものを指す**(SearXNG なら
+      # settings.yml の search.formats に json を足しておくこと)。
+      # 別ホストで Chiezo の docker-compose.answer.yml + lan.yml を動かしているなら 7012
+      # (7010 = API・7011 = 推論の隣。素の SearXNG を立てたなら既定の 8080)。
+      #CHIEZO_WEB_SEARCH_URL: http://192.0.2.20:7012/search   # ← 立てた SearXNG
+      #CHIEZO_WEB_SEARCH_PROVIDER: searxng   # searxng(既定)/ brave
+      #CHIEZO_WEB_SEARCH_API_KEY: ""         # brave のときだけ
+      #CHIEZO_WEB_SEARCH_RESULTS: "5"        # 1 回に見る件数
+      #CHIEZO_WEB_SEARCH_TIMEOUT: "10"       # 秒
+      #
+      # ---- 回答・agent の調整(どれも既定があるので、変えたいときだけ)----
+      # agent に要るコンテキスト長の目安 = MAX_STEPS × TOOL_CHARS(+ 質問と道具の定義で 2〜3k)。
+      #CHIEZO_ANSWER_TIMEOUT: "120"     # 推論の待ち時間(秒)。CPU 推論は数十秒級になる
+      #CHIEZO_ANSWER_DOCS: "4"          # 根拠として本文を取ってくる文書数
+      #CHIEZO_ANSWER_MAX_CHARS: "6000"  # 抜粋の合計文字数
+      #CHIEZO_AGENT_MAX_STEPS: "6"      # 道具を呼べる回数の上限
+      #CHIEZO_AGENT_TOOL_CHARS: "3000"  # 1 回の道具の結果をモデルに返す上限文字数
+      #CHIEZO_AGENT_TIMEOUT: "180"      # ループ全体の締め切り(秒)
     depends_on:
       - chiezo-trigger
     restart: unless-stopped
@@ -132,46 +159,3 @@ services:
   #    test: ["CMD", "python", "-c",
   #           "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"]
   #    interval: 60s
-
-  # ---- 「答える」層(ローカル LLM)を使う場合だけ、以下のコメントを外す ----
-  #
-  # 既定では**丸ごと無効**。検索 API・MCP としての Chiezo には要らない。
-  # 有効にするには (1) 下のブロックのコメントを外し、(2) chiezo-api の environment に
-  # CHIEZO_LLM_URL: http://chiezo-llm:7011/v1 を足す。
-  #
-  # 起動すると Hugging Face からモデルを取ってきて置き場にキャッシュする(初回だけ数 GB)。
-  # 4B 級 Q4_K_M で約 2.5GB・メモリ 4GB 見当。CPU だけなら 4B 級までが実用の目安。
-  # GPU で動かすならイメージを server-cuda-b10156 に変え、`gpus: all` を足す
-  # (ホストに nvidia-container-toolkit が要る。GPU の無い環境では起動そのものが失敗する)。
-  #
-  #chiezo-llm:
-  #  image: ghcr.io/ggml-org/llama.cpp:server-b10156
-  #  container_name: chiezo-llm
-  #  volumes:
-  #    # ---- ここだけ編集: GGUF のキャッシュ置き場(数 GB) ----
-  #    - type: bind
-  #      source: "/path/to/chiezo/models"
-  #      target: /models
-  #  environment:
-  #    # llama-server は全オプションに LLAMA_ARG_* の環境変数を持つので command は上書きしない
-  #    LLAMA_ARG_HF_REPO: ggml-org/gemma-3-4b-it-GGUF:Q4_K_M
-  #    LLAMA_ARG_CTX_SIZE: "8192"
-  #    # 同時に処理する会話の数。1 人で使うなら 1 でよい(スロットごとにホスト側の
-  #    # バッファを持つので、増やすとメモリも増える)
-  #    LLAMA_ARG_N_PARALLEL: "1"
-  #    # ホスト側プロンプトキャッシュの上限(MiB)。既定の 8192 は小さな機械には大きすぎ、
-  #    # 会話を続けるほど育ってメモリを食い尽くす
-  #    LLAMA_ARG_CACHE_RAM: "512"
-  #    # 思考(reasoning)は既定で切る。道具を何度も呼ぶ agent モードで待ち時間が積み上がるため
-  #    LLAMA_ARG_THINK_BUDGET: "0"
-  #    LLAMA_ARG_HOST: 0.0.0.0
-  #    LLAMA_ARG_PORT: "7011"
-  #    # -hf で落としたモデルの置き場(既定はコンテナ内の HOME 配下 = 使い捨てになる)
-  #    LLAMA_CACHE: /models
-  #  restart: unless-stopped
-  #  cpu_shares: 512
-  #  healthcheck:
-  #    # モデルの読み込みが終わるまで応答しないので、起動猶予を長めに取る
-  #    test: ["CMD", "curl", "-fs", "http://localhost:7011/health"]
-  #    interval: 60s
-  #    start_period: 600s

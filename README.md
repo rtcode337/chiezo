@@ -157,8 +157,11 @@ OpenAI 互換 API を喋る別プロセスに任せる(配信側が数百 MB で
 ```bash
 cp .env.example .env
 # .env の CHIEZO_LLM_URL=http://chiezo-llm:7011/v1 の行のコメントを外す
-docker compose --profile answer up -d
+docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile answer up -d
 ```
+
+推論サーバと検索エンジンのコンテナは `docker-compose.answer.yml` に分けてある
+(LAN の別マシンの LLM を指すだけなら重ねなくてよい)。
 
 `mode=agent` を付けると、`search` / `doc` / `filter` / `tags` / `links` をモデル自身に
 引かせる(MCP と同じ道具立て)。「カテゴリ○○の記事は何件?」のように 1 回の検索では
@@ -226,8 +229,12 @@ pull して使うので、`api/` や `ingest/` を変更してローカルで動
 ビルド版を使う。
 
 ```bash
-docker compose -f docker-compose.build.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
+
+compose は「本体 + 上書き」の形にしてある。本体(`docker-compose.yml`)が検索 API・MCP で、
+上書きは足したいものだけを数行ずつ:`build`(手元ビルド)・`answer`(推論と検索エンジン)・
+`cuda`(GPU)・`lan`(「答える」層を別ホストへ公開)。重ねる順はこの並びどおり。
 
 ### アイコンを変えたとき
 

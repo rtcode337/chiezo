@@ -1,0 +1,78 @@
+# 「答える」層(/v1/ask・/v1/chat・/localllm/chat)を**自分で立てる**ための上書き。
+# 推論サーバと検索エンジンの 2 つを持つ。本体(docker-compose.yml)と重ねて使う:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile answer up -d
+#
+# GPU で動かすなら docker-compose.cuda.yml を後ろに重ねる(そちらが正)。
+#
+# **このファイルにあるのはコンテナだけ**で、chiezo-api に渡す設定
+# (CHIEZO_LLM_URL 以下)は本体側にある —— 推論を LAN の別マシン(Ollama 等)に
+# 任せる使い方では、コンテナは要らず設定だけが要るため。
+services:
+  # 推論サーバ(OpenAI 互換)。配信側 chiezo-api が数百 MB で動く前提を壊さないため、
+  # 推論は必ず別プロセスに置く。モデルは起動時に Hugging Face から取ってきて ./models に
+  # キャッシュする(初回だけ数 GB)。別のモデルにするなら .env の CHIEZO_LLM_HF_REPO。
+  # ここは CPU 版。NVIDIA の GPU なら docker-compose.cuda.yml を重ねる。
+  chiezo-llm:
+    image: ghcr.io/ggml-org/llama.cpp:server-b10156
+    profiles: ["answer"]
+    # ホストへは公開しない(chiezo-api からのみ到達する)。LAN の別ホストの
+    # chiezo-api から使うなら docker-compose.lan.yml を重ねる。
+    environment:
+      # llama-server は全オプションに LLAMA_ARG_* の環境変数を持つので command は上書きしない
+      - LLAMA_ARG_HF_REPO=${CHIEZO_LLM_HF_REPO:-ggml-org/gemma-3-4b-it-GGUF:Q4_K_M}
+      - LLAMA_ARG_CTX_SIZE=${CHIEZO_LLM_CTX_SIZE:-8192}
+      # 同時に処理する会話の数。既定の 4 はスロットごとにホスト側のバッファを持つので、
+      # 1 人で使うぶんには 1 でよい(小さな機械でメモリを空けるため)。
+      - LLAMA_ARG_N_PARALLEL=${CHIEZO_LLM_PARALLEL:-1}
+      # ホスト側のプロンプトキャッシュの上限(MiB)。既定の 8192 は小さな機械には大きすぎる
+      # (会話を続けるほど育ち、メモリを食い尽くす)。
+      - LLAMA_ARG_CACHE_RAM=${CHIEZO_LLM_CACHE_RAM:-512}
+      # 思考(reasoning)は既定で切る。hybrid thinking のモデルは 1 応答ごとに
+      # 数百トークン考えるので、道具を何度も呼ぶ agent モードでは待ち時間が積み上がる。
+      - LLAMA_ARG_THINK_BUDGET=${CHIEZO_LLM_THINK_BUDGET:-0}
+      - LLAMA_ARG_HOST=0.0.0.0
+      - LLAMA_ARG_PORT=7011
+      # -hf で落としたモデルの置き場(既定はコンテナ内の HOME 配下 = 使い捨てになる)
+      - LLAMA_CACHE=/models
+    volumes:
+      - ./models:/models
+    restart: unless-stopped
+    # 推論は全コアを使い切るので、CPU が競合したときは他のコンテナへ譲る
+    # (取り込み系と同じ「良き隣人」の相対ウェイト。空いていれば全力で使える)。
+    cpu_shares: 512
+    healthcheck:
+      # モデルの読み込みが終わるまで応答しないので、起動猶予を長めに取る
+      test: ["CMD", "curl", "-fs", "http://localhost:7011/health"]
+      interval: 60s
+      start_period: 600s
+
+  # agent モードの道具 `web_search` が引く検索エンジン。**web 検索を使うかどうかに
+  # かかわらず、推論と一緒に立てる**(使うかは chiezo-api 側の CHIEZO_WEB_SEARCH_URL で
+  # 決まる)—— 道具を足すたびに起動コマンドが増えるほうが混乱するため。
+  #
+  # 設定は ./searxng/settings.yml(リポジトリに入っている)。**SearXNG の既定は
+  # html だけを返す**ので、そこで search.formats に json を足してある。
+  # 設定ファイルは読み取り専用でマウントする —— 書き込み可にすると、イメージが
+  # ディレクトリごと searxng ユーザー(uid 977)に chown してホスト側から編集できなくなる。
+  searxng:
+    # 日付ベースのタグで固定する(:latest にしない)
+    image: searxng/searxng:2026.7.31-057a77168
+    profiles: ["answer"]
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      # プリファレンスの Cookie と画像プロキシの署名に使う値。Chiezo は JSON の検索しか
+      # 叩かないので既定のままでよい(気にするなら .env で置き換える)。
+      - SEARXNG_SECRET=${CHIEZO_WEB_SEARCH_SECRET:-chiezo-lan}
+      # 待ち受けを 7012 にする(既定は 8080)。chiezo-api の 7010・推論の 7011 と
+      # 揃えて、コンテナの内と外で番号が食い違わないようにするため。
+      # **この image は uvicorn ではなく granian で動く**ので、効くのは GRANIAN_PORT
+      # (SearXNG 側の SEARXNG_PORT は設定ファイルの値で、待ち受けには使われない)。
+      - GRANIAN_PORT=7012
+    restart: unless-stopped
+    # 検索の中継なので軽いが、CPU が競合したときは取り込みや推論へ譲る
+    cpu_shares: 512
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7012/healthz"]
+      interval: 60s
