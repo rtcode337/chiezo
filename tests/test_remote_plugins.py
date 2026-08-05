@@ -168,3 +168,39 @@ class TestLookup:
         monkeypatch.setenv(remote.PLUGIN_ENV, plugin)
         with pytest.raises(SystemExit, match=r"private_docs \(plugin\)"):
             sources.get_adapter("nope")
+
+
+class TestTrigger:
+    """chiezo-trigger(管理画面のボタンが叩く先)がプラグインのソースを扱えること。"""
+
+    @pytest.fixture()
+    def trigger(self, plugin, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import server
+
+        monkeypatch.setenv(remote.PLUGIN_ENV, plugin)
+        return TestClient(server.app)
+
+    def test_catalog_includes_plugin_sources(self, trigger):
+        entry = trigger.get("/sources").json()["sources"]["private_docs"]
+        assert entry["kind"] == "private_docs"
+        assert entry["label"] == "社内ドキュメント"
+        # どのプラグインが出しているかも返す(管理画面の表示と切り分けに使う)
+        assert entry["plugin"].startswith("http://")
+
+    def test_run_accepts_plugin_sources(self, trigger, monkeypatch):
+        """**カタログに出したものは実行できなければならない。**
+
+        `/sources` にだけ足して `/run` の存在チェックを直さないと、管理画面には
+        ボタンが出るのに押すと `unknown source` になる(実際にそうなった)。
+        """
+        started = []
+        monkeypatch.setattr("server._run_job", lambda source: started.append(source))
+        res = trigger.post("/run/private_docs")
+        assert res.status_code == 202, res.json()
+        assert res.json() == {"status": "started", "source": "private_docs"}
+        assert started == ["private_docs"]
+
+    def test_run_still_rejects_unknown_sources(self, trigger):
+        assert trigger.post("/run/nope").status_code == 404

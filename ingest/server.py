@@ -158,9 +158,12 @@ def status():
 
 @app.post("/run/{source}")
 def start_run(source: str):
-    from sources import ADAPTERS
+    from sources import ADAPTERS, remote
 
-    if source not in ADAPTERS:
+    # **プラグインのソースもここで通す。** `/sources` に出したものは実行できなければ
+    # ならない —— 管理画面はカタログからボタンを組み立てるので、片方だけ知っていると
+    # 「ボタンはあるのに押すと unknown source」になる(実際にそうなった)。
+    if source not in ADAPTERS and source not in {s.name for s in remote.catalog()}:
         raise HTTPException(404, {"error": f"unknown source: {source}"})
     with _lock:
         if _status["state"] == "running":
