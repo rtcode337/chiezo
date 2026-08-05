@@ -63,11 +63,11 @@ def _transport_security() -> TransportSecuritySettings:
     """Host ヘッダ検証の設定。
 
     既定は「localhost 系の Host しか受け付けない」(DNS リバインディング対策)。
-    そのままだと LAN の別マシンから `http://<LAN の IP>:9000/mcp` を叩いた時点で
+    そのままだと LAN の別マシンから `http://<LAN の IP>:7010/mcp` を叩いた時点で
     421 になり、この API の使い方(LAN 内から引く)がまるごと成立しない。
     Chiezo は REST 側も認証なし・LAN 内前提なので、既定では検証を外して足並みを揃える。
     絞りたい場合は `CHIEZO_MCP_ALLOWED_HOSTS` に許可する Host をカンマ区切りで書く
-    (`<LAN の IP>:9000,localhost:*` のように、末尾 `:*` でポート任意を表せる)。
+    (`<LAN の IP>:7010,localhost:*` のように、末尾 `:*` でポート任意を表せる)。
     """
     allowed = [h.strip() for h in os.environ.get("CHIEZO_MCP_ALLOWED_HOSTS", "").split(",") if h.strip()]
     if not allowed:

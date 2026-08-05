@@ -11,7 +11,7 @@ Chiezo から知識を**取り出す**口の詳細仕様です。経路は 3 つ
 ## REST
 
 ```bash
-BASE=http://<サーバーIP>:9000
+BASE=http://<サーバーIP>:7010
 
 # 日本語・スペース等を含むパラメータ(q/title/prefix/area/feature/tag)は、URL に直接埋め込む
 # のではなく `-G --data-urlencode` で渡す(生の UTF-8 はサーバーに弾かれるため)
@@ -160,7 +160,7 @@ notes を別ディレクトリに置いているのは、`/data` の変化を監
 
 ### 管理画面(`/admin`)
 
-ブラウザで `http://<サーバーIP>:9000/`(`/admin` へ自動リダイレクト)を開くと、登録済みソース
+ブラウザで `http://<サーバーIP>:7010/`(`/admin` へ自動リダイレクト)を開くと、登録済みソース
 (文書数・dump_date・構築日時・スキーマバージョンなど)の一覧に加えて、未初期化ソース
 (`chiezo-trigger` 側の既知ソース一覧に載っているが `/data` にまだ `.db` が無いもの)向けの
 「初期化」ボタンが見られます。一覧には最新のスキーマバージョン(いま取り込みを実行すると
@@ -200,9 +200,9 @@ REST と同じ機能を MCP(Model Context Protocol)のツールとしても提�
 **chiezo-api 自身が MCP サーバー**なので、クライアント側に何もインストールせずに繋がります。
 
 ```bash
-claude mcp add --transport http chiezo http://<サーバーIP>:9000/mcp
+claude mcp add --transport http chiezo http://<サーバーIP>:7010/mcp
 # 次節の設定生成スクリプトを使うなら、この登録も既定で行われます(手動登録は不要)
-scripts/gen_claude_config.sh -u http://<サーバーIP>:9000
+scripts/gen_claude_config.sh -u http://<サーバーIP>:7010
 ```
 
 公開しているツールは `sources` / `search` / `doc` / `filter` / `tags` / `titles` / `links` の
@@ -241,11 +241,11 @@ Chiezo への `curl` を許可するルールを追記するため、生成後�
 さらに既定で、Chiezo を **MCP サーバーとしても登録**します(後述)。
 
 ```bash
-# ~/.claude/CLAUDE.md を更新・localhost:9000 を参照
+# ~/.claude/CLAUDE.md を更新・localhost:7010 を参照
 /path/to/chiezo/scripts/gen_claude_config.sh
 
 # Chiezo が LAN 上の別ホストにある場合は場所を指定(環境変数 CHIEZO_URL でも可)
-scripts/gen_claude_config.sh --base-url http://<サーバーIP>:9000
+scripts/gen_claude_config.sh --base-url http://<サーバーIP>:7010
 
 scripts/gen_claude_config.sh --project     # ~/.claude ではなく ./CLAUDE.md にする
 scripts/gen_claude_config.sh --print       # 書き込まず内容だけ確認
@@ -320,7 +320,7 @@ curl -sG ".../search" --data-urlencode "q=多摩川" | jq -r '.hits[].title'
 判定ロジックの全文は設置前に確認できます:
 
 ```bash
-curl -s http://<サーバーIP>:9000/admin/claude-config.hook.py   # フック本体
+curl -s http://<サーバーIP>:7010/admin/claude-config.hook.py   # フック本体
 # 管理画面 /admin/claude-config でもプレビューできます
 ```
 

@@ -47,7 +47,7 @@ AI に知識を持たせる方法はほかに 3 つある。モデルの中(学�
 geonames と osm の使い分けは
 [運用ドキュメント](docs/operations.md#地理データの守備範囲geonames-と-osm-の分担)を参照。
 
-API は FastAPI + uvicorn(ポート 9000)、認証なし・LAN 内前提。未初期化ソースの取り込みは
+API は FastAPI + uvicorn(ポート 7010)、認証なし・LAN 内前提。未初期化ソースの取り込みは
 管理画面から起動できる(内部専用の `chiezo-trigger` サービス経由。ホストへポート公開せず、
 `chiezo-api` からのみ到達可能)。
 
@@ -57,7 +57,7 @@ API は FastAPI + uvicorn(ポート 9000)、認証なし・LAN 内前提。未�
 # 1. API を起動(DB が無い間もソース 0 件で起動する)。
 #    イメージは GHCR から自動で pull される(ビルド不要。更新は docker compose pull)
 docker compose up -d
-curl -s http://localhost:9000/healthz
+curl -s http://localhost:7010/healthz
 
 # 2. jawiki を取り込む(ダンプ 5〜6GB DL + 構築 2〜6 時間、ディスク空き 80GB 以上推奨)
 docker compose --profile ingest run --rm chiezo-ingest
@@ -70,7 +70,7 @@ docker compose --profile ingest run --rm -e SOURCE=osm_japan chiezo-ingest
 docker compose --profile ingest run --rm -e SOURCE=geonames chiezo-ingest
 
 # 3. 取り込みが終われば chiezo-api が数秒以内に自動で新しい DB を読み込む(再起動は不要)
-curl -s http://localhost:9000/v1/sources
+curl -s http://localhost:7010/v1/sources
 ```
 
 取り込みは開始前にメモリを検査し、足りなければダウンロードもせず中止する。
@@ -80,7 +80,7 @@ curl -s http://localhost:9000/v1/sources
 ## 引く
 
 ```bash
-BASE=http://<サーバーIP>:9000
+BASE=http://<サーバーIP>:7010
 
 # 日本語・スペース等を含むパラメータは -G --data-urlencode で渡す
 curl -s  "$BASE/v1/sources"                                                              # ソース一覧
@@ -91,7 +91,7 @@ curl -sG "$BASE/v1/osm_japan/filter?limit=200" \
   --data-urlencode "feature=amenity=place_of_worship" --data-urlencode "area=京都府"     # Overpass 相当
 ```
 
-ブラウザで `http://<サーバーIP>:9000/` を開くと管理画面(`/admin`)に、
+ブラウザで `http://<サーバーIP>:7010/` を開くと管理画面(`/admin`)に、
 各ソース名から簡易ブラウズ画面(`/search/{source}/`)に辿れる。
 
 パラメータの一覧・`extra` フィールドの中身・MCP・Claude Code 連携・画面の仕様は
@@ -109,8 +109,8 @@ Claude Code 用の設定(CLAUDE.md ブロック・権限ルール・MCP 登録)�
 問い合わせて生成できる。
 
 ```bash
-claude mcp add --transport http chiezo http://<サーバーIP>:9000/mcp   # 手動で登録する場合
-scripts/gen_claude_config.sh -u http://<サーバーIP>:9000              # 一式まとめて生成(MCP 登録も既定で行う)
+claude mcp add --transport http chiezo http://<サーバーIP>:7010/mcp   # 手動で登録する場合
+scripts/gen_claude_config.sh -u http://<サーバーIP>:7010              # 一式まとめて生成(MCP 登録も既定で行う)
 ```
 
 オプション・自動許可フック・既存 CLAUDE.md とのマージ方法は

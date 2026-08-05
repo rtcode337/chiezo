@@ -50,7 +50,7 @@ JavaScript で逐次表示します。JavaScript が無い環境向けに 1 問 
 ## 使い方(curl)
 
 ```bash
-BASE=http://<サーバーIP>:9000
+BASE=http://<サーバーIP>:7010
 
 # 1 問 1 答
 curl -sG "$BASE/v1/ask" --data-urlencode "q=浅草寺はどこにある?" | jq .

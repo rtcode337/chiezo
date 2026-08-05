@@ -11,7 +11,7 @@
 #
 # 使い方:
 #   scripts/gen_claude_config.sh                        # 既定: ~/.claude/CLAUDE.md
-#   scripts/gen_claude_config.sh -u http://<サーバーIP>:9000
+#   scripts/gen_claude_config.sh -u http://<サーバーIP>:7010
 #   scripts/gen_claude_config.sh --project              # ./CLAUDE.md(このプロジェクトだけ)
 #   scripts/gen_claude_config.sh --target path/to/CLAUDE.md
 #   scripts/gen_claude_config.sh --print                # 書き込まず標準出力へ
@@ -66,7 +66,7 @@ BEGIN_MARK='<!-- BEGIN chiezo (auto-generated) -->'
 END_MARK='<!-- END chiezo -->'
 HOOK_FILENAME='chiezo-autoallow.py'   # api 側 claude_config.HOOK_FILENAME と一致させる
 
-BASE="${CHIEZO_URL:-http://localhost:9000}"
+BASE="${CHIEZO_URL:-http://localhost:7010}"
 TARGET=""
 DEST="user"          # user | project | path
 MERGE="markers"

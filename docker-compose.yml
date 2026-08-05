@@ -25,7 +25,7 @@ services:
     image: ${CHIEZO_API_IMAGE:-ghcr.io/rtcode337/chiezo-api:latest}
     ports:
       # host:container。8000 は他のアプリと衝突しやすいので避けている。
-      - "9000:9000"
+      - "7010:7010"
     volumes:
       - ./data:/data:ro
       # notes(短期記憶)だけは書き込む。/data の read-only は崩さず別ディレクトリにする
@@ -68,7 +68,7 @@ services:
       - chiezo-trigger
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-fs", "http://localhost:9000/healthz"]
+      test: ["CMD", "curl", "-fs", "http://localhost:7010/healthz"]
       interval: 60s
 
   # 管理画面からの「未初期化データの初期化」を受けて ingest を実行する内部専用トリガー。

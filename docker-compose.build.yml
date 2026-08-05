@@ -12,7 +12,7 @@ services:
     build: ./api
     image: ghcr.io/rtcode337/chiezo-api:local
     ports:
-      - "9000:9000"
+      - "7010:7010"
     volumes:
       - ./data:/data:ro
       # notes(短期記憶)だけは書き込む。/data の read-only は崩さず別ディレクトリにする
@@ -46,7 +46,7 @@ services:
       - chiezo-trigger
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-fs", "http://localhost:9000/healthz"]
+      test: ["CMD", "curl", "-fs", "http://localhost:7010/healthz"]
       interval: 60s
 
   chiezo-trigger:

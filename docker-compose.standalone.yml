@@ -9,7 +9,7 @@
 # 使い方:
 #   1. 「ここだけ編集」の置き場を、そのホストの絶対パスに書き換える
 #   2. その内容を管理画面に貼り付けて起動する
-#   3. http://<ホスト>:9000/ を開く(DB が無い間もソース 0 件で起動する)
+#   3. http://<ホスト>:7010/ を開く(DB が無い間もソース 0 件で起動する)
 #
 # 通常の環境では docker-compose.yml を使う(こちらは値の直書きぶん古くなりやすい)。
 
@@ -28,7 +28,7 @@ services:
     container_name: chiezo-api
     ports:
       # host:container。8000 は他のアプリと衝突しやすいので避けている
-      - "9000:9000"
+      - "7010:7010"
     volumes:
       # 配信側は読み取り専用。書くのは取り込み側(chiezo-trigger)だけ
       - type: bind
@@ -49,12 +49,12 @@ services:
       CHIEZO_TRIGGER_URL: http://chiezo-trigger:8080
       # 本体の調整はどれも既定があるため、変えたいときだけ足す(素のままなら書かない)。
       # 例: /mcp の Host 検証を絞るなら次を有効にする
-      #CHIEZO_MCP_ALLOWED_HOSTS: "chiezo.example.com:9000,localhost:*"
+      #CHIEZO_MCP_ALLOWED_HOSTS: "chiezo.example.com:7010,localhost:*"
     depends_on:
       - chiezo-trigger
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-fs", "http://localhost:9000/healthz"]
+      test: ["CMD", "curl", "-fs", "http://localhost:7010/healthz"]
       interval: 60s
 
   # 管理画面からの「未初期化データの初期化」を受けて ingest を実行する内部専用トリガー。

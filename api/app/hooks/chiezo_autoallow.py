@@ -38,7 +38,7 @@ from urllib.parse import urlsplit
 
 # gen_claude_config.sh(実体は Chiezo の /admin/claude-config.hook.py)が
 # 配信時にこの 1 行を実際のベース URL へ差し替える。
-CHIEZO_ORIGIN = "http://localhost:9000"
+CHIEZO_ORIGIN = "http://localhost:7010"
 
 # 読み取り専用で、Chiezo の応答を捌くのに使う程度のコマンドだけを許す。
 # sed / awk は意図的に外している(sed -i でファイルを書き換えられ、awk は
@@ -156,7 +156,7 @@ def check_urls(tokens: list[str]) -> None:
             if host != netloc:
                 raise Reject(f"non-chiezo host: {host}")
             found = True
-        # スキームを省いた `curl -s <Chiezo のホスト>:9000/v1/sources` も Chiezo とみなす
+        # スキームを省いた `curl -s <Chiezo のホスト>:7010/v1/sources` も Chiezo とみなす
         if not found and _is_chiezo_target(tok):
             found = True
     if not found:

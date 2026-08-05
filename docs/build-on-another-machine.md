@@ -231,7 +231,7 @@ Windows 側からは、エクスプローラで `\\wsl$\Ubuntu\home\<ユーザ�
 cp jawiki-20260701.db /path/to/chiezo/data/
 cd /path/to/chiezo/data
 ln -sfn jawiki-20260701.db jawiki.db    # シンボリックリンクが使えない環境ならリネームでよい
-curl -s http://localhost:9000/v1/sources   # 数秒待って新しい dump_date / schema_version が出れば成功
+curl -s http://localhost:7010/v1/sources   # 数秒待って新しい dump_date / schema_version が出れば成功
 ```
 
 配信側(chiezo-api)は読み取り専用の immutable SQLite を開くだけなので、**メモリ数百 MB の小型機でも動く**。

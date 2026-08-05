@@ -830,7 +830,7 @@ class TestClaudeConfig:
         assert res.text.startswith("#!/usr/bin/env python3")
         assert 'CHIEZO_ORIGIN = "http://192.168.1.10:9000"' in res.text
         # 差し替え漏れ(localhost のまま配る)は起きていない
-        assert "http://localhost:9000" not in res.text
+        assert "http://localhost:7010" not in res.text
 
     def test_hook_settings_json_keeps_path_placeholder(self, client):
         """設置先はクライアント側で決まるので、パスはプレースホルダのまま返す。"""

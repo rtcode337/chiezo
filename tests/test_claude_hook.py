@@ -163,7 +163,7 @@ class TestHookGeneration:
     def test_origin_is_substituted(self):
         src = claude_config.hook_script("https://chiezo.example.me:8443/")
         assert 'CHIEZO_ORIGIN = "https://chiezo.example.me:8443"' in src
-        assert 'CHIEZO_ORIGIN = "http://localhost:9000"' not in src
+        assert 'CHIEZO_ORIGIN = "http://localhost:7010"' not in src
 
     def test_generated_hook_targets_that_origin(self, tmp_path):
         """配信された版が、そのベース URL だけを通すこと(定数の差し替えが効いている)。"""
