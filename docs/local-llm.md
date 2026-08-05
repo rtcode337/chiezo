@@ -24,7 +24,7 @@ Claude Code の代わりにローカル LLM で立てて同居させたのがこ
 
 ```bash
 cp .env.example .env
-# .env の CHIEZO_LLM_URL=http://chiezo-llm:8080/v1 の行のコメントを外す
+# .env の CHIEZO_LLM_URL=http://chiezo-llm:7011/v1 の行のコメントを外す
 
 docker compose --profile answer up -d
 docker compose logs -f chiezo-llm     # 初回はモデルのダウンロード(約 2.5GB)

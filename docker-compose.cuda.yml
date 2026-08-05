@@ -63,7 +63,7 @@ services:
       # b10156 では既定で有効だが、上流の既定が変わっても壊れないよう明示しておく。
       - LLAMA_ARG_JINJA=1
       - LLAMA_ARG_HOST=0.0.0.0
-      - LLAMA_ARG_PORT=8080
+      - LLAMA_ARG_PORT=7011
       - LLAMA_CACHE=/models
     # 重みは VRAM に載るが、ダウンロードとロードでホスト側のメモリも要る。上限を課すのは
     # 推論は**いつ殺しても失うのは 1 回の回答だけ**だから(取り込みと判断が逆になる理由は

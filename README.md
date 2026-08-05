@@ -156,7 +156,7 @@ OpenAI 互換 API を喋る別プロセスに任せる(配信側が数百 MB で
 
 ```bash
 cp .env.example .env
-# .env の CHIEZO_LLM_URL=http://chiezo-llm:8080/v1 の行のコメントを外す
+# .env の CHIEZO_LLM_URL=http://chiezo-llm:7011/v1 の行のコメントを外す
 docker compose --profile answer up -d
 ```
 

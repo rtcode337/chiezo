@@ -43,7 +43,7 @@ services:
       - CHIEZO_CATALOG_TTL=${CHIEZO_CATALOG_TTL-}
       - CHIEZO_MCP_ALLOWED_HOSTS=${CHIEZO_MCP_ALLOWED_HOSTS-}
       # 「答える」層(/v1/ask・/localllm/chat)。未設定が既定で、その場合この機能は丸ごと無効。
-      # 有効にするには .env で CHIEZO_LLM_URL=http://chiezo-llm:8080/v1 を設定し、
+      # 有効にするには .env で CHIEZO_LLM_URL=http://chiezo-llm:7011/v1 を設定し、
       # `docker compose --profile answer up -d` で推論コンテナごと起動する(.env.example 参照)。
       - CHIEZO_LLM_URL=${CHIEZO_LLM_URL-}
       - CHIEZO_LLM_MODEL=${CHIEZO_LLM_MODEL-}
@@ -104,6 +104,11 @@ services:
   chiezo-llm:
     image: ghcr.io/ggml-org/llama.cpp:server-b10156
     profiles: ["answer"]
+    # ホストへは公開しない(chiezo-api からのみ到達する)。**別のマシンから使う**
+    # ときだけ次を有効にする —— その場合は推論サーバに認証が無い前提を思い出すこと
+    # (llama-server の --api-key と chiezo-api の CHIEZO_LLM_API_KEY を揃える)。
+    #ports:
+    #  - "7011:7011"
     environment:
       # llama-server は全オプションに LLAMA_ARG_* の環境変数を持つので command は上書きしない
       - LLAMA_ARG_HF_REPO=${CHIEZO_LLM_HF_REPO:-ggml-org/gemma-3-4b-it-GGUF:Q4_K_M}
@@ -118,7 +123,7 @@ services:
       # 数百トークン考えるので、道具を何度も呼ぶ agent モードでは待ち時間が積み上がる。
       - LLAMA_ARG_THINK_BUDGET=${CHIEZO_LLM_THINK_BUDGET:-0}
       - LLAMA_ARG_HOST=0.0.0.0
-      - LLAMA_ARG_PORT=8080
+      - LLAMA_ARG_PORT=7011
       # -hf で落としたモデルの置き場(既定はコンテナ内の HOME 配下 = 使い捨てになる)
       - LLAMA_CACHE=/models
     volumes:
@@ -129,7 +134,7 @@ services:
     cpu_shares: 512
     healthcheck:
       # モデルの読み込みが終わるまで応答しないので、起動猶予を長めに取る
-      test: ["CMD", "curl", "-fs", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-fs", "http://localhost:7011/health"]
       interval: 60s
       start_period: 600s
 

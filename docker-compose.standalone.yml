@@ -58,8 +58,8 @@ services:
       # **この 1 行が機能フラグを兼ねる**(未設定なら層ごと無効で、Chiezo は検索 API と
       # MCP として動く)。推論は同居させず OpenAI 互換の口を叩くだけなので、
       # **別サーバーで動かしている LLM をそのまま指せる**:
-      #CHIEZO_LLM_URL: http://192.0.2.10:8080/v1     # ← 別サーバーの推論サーバ
-      # 同じホストで下の chiezo-llm を有効にした場合は http://chiezo-llm:8080/v1
+      #CHIEZO_LLM_URL: http://192.0.2.10:7011/v1     # ← 別サーバーの推論サーバ
+      # 同じホストで下の chiezo-llm を有効にした場合は http://chiezo-llm:7011/v1
       #
       # 推論サーバに認証を掛けているなら鍵を渡す(LAN に出す以上、掛けておくのが安全)。
       # モデル名は llama-server なら不要(1 プロセス 1 モデル)。Ollama 等は実在名が要る。
@@ -134,7 +134,7 @@ services:
   #
   # 既定では**丸ごと無効**。検索 API・MCP としての Chiezo には要らない。
   # 有効にするには (1) 下のブロックのコメントを外し、(2) chiezo-api の environment に
-  # CHIEZO_LLM_URL: http://chiezo-llm:8080/v1 を足す。
+  # CHIEZO_LLM_URL: http://chiezo-llm:7011/v1 を足す。
   #
   # 起動すると Hugging Face からモデルを取ってきて置き場にキャッシュする(初回だけ数 GB)。
   # 4B 級 Q4_K_M で約 2.5GB・メモリ 4GB 見当。CPU だけなら 4B 級までが実用の目安。
@@ -162,13 +162,13 @@ services:
   #    # 思考(reasoning)は既定で切る。道具を何度も呼ぶ agent モードで待ち時間が積み上がるため
   #    LLAMA_ARG_THINK_BUDGET: "0"
   #    LLAMA_ARG_HOST: 0.0.0.0
-  #    LLAMA_ARG_PORT: "8080"
+  #    LLAMA_ARG_PORT: "7011"
   #    # -hf で落としたモデルの置き場(既定はコンテナ内の HOME 配下 = 使い捨てになる)
   #    LLAMA_CACHE: /models
   #  restart: unless-stopped
   #  cpu_shares: 512
   #  healthcheck:
   #    # モデルの読み込みが終わるまで応答しないので、起動猶予を長めに取る
-  #    test: ["CMD", "curl", "-fs", "http://localhost:8080/health"]
+  #    test: ["CMD", "curl", "-fs", "http://localhost:7011/health"]
   #    interval: 60s
   #    start_period: 600s

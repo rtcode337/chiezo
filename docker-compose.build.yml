@@ -80,7 +80,7 @@ services:
       # 数百トークン考えるので、道具を何度も呼ぶ agent モードでは待ち時間が積み上がる。
       - LLAMA_ARG_THINK_BUDGET=${CHIEZO_LLM_THINK_BUDGET:-0}
       - LLAMA_ARG_HOST=0.0.0.0
-      - LLAMA_ARG_PORT=8080
+      - LLAMA_ARG_PORT=7011
       - LLAMA_CACHE=/models
     volumes:
       - ./models:/models
@@ -89,7 +89,7 @@ services:
     # (取り込み系と同じ「良き隣人」の相対ウェイト。空いていれば全力で使える)。
     cpu_shares: 512
     healthcheck:
-      test: ["CMD", "curl", "-fs", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-fs", "http://localhost:7011/health"]
       interval: 60s
       start_period: 600s
 
