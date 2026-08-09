@@ -138,6 +138,33 @@ CREATE INDEX idx_docs_updated ON docs(updated_at DESC, doc_id DESC);
 # ingest の core.SCHEMA_VERSION と揃える(registry の対応範囲に入っている必要がある)
 SCHEMA_VERSION = 4
 
+# タグの定番語彙。**書き手(セッション・AI クライアント・人)が変わっても、同じ意味には
+# 同じ表記が付く**ようにするための、サーバー側の 1 か所 —— クライアント側の CLAUDE.md に
+# 写しを持たせると写しごとにずれていく(実際に NAS と nas、デプロイ と deploy に割れた)。
+# 配り方は MCP の remember のツール定義(tag_guide())。タグ自体は自由入力のままで、
+# ここに無い語を拒みはしない(語彙は絞り込みの実用が目的で、検閲ではない)。
+CANONICAL_TAGS: dict[str, str] = {
+    "todo": "いつかやりたいが今ではない作業。着手時に tag=todo で見返す",
+    "決定": "決めたこと・方針",
+    "runbook": "繰り返し使う手順",
+    "環境": "開発マシン・LAN・ポートなど環境の事実",
+    "本番": "本番運用の事実(URL・構成)",
+    "設計メモ": "設計判断・検討の記録",
+    "トラブルシュート": "ハマった症状と原因・回避策",
+}
+
+
+def tag_guide() -> str:
+    """remember のツール定義に載せるタグの手引き。語彙の出どころは CANONICAL_TAGS の 1 か所。"""
+    listed = " / ".join(f"{tag}={hint}" for tag, hint in CANONICAL_TAGS.items())
+    return (
+        "**同じ意味には同じ表記のタグ**を付けること。定番: "
+        + listed
+        + "。プロジェクトはリポジトリ名を小文字でそのまま(例 tech-antenna)。"
+        "これ以外のタグを作る前に tags で既存の表記を確かめる"
+        "(NAS と nas のような割れは絞り込みを壊す)。"
+    )
+
 
 def notes_dir() -> Path | None:
     raw = os.environ.get("CHIEZO_NOTES_DIR", "").strip()

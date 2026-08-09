@@ -58,6 +58,7 @@ LAN 内の読み取り専用ナレッジ API「Chiezo」。Wikipedia・OpenStree
   曖昧な指され方のときは検索語を無理に作らず、`since` だけで新しい順に引くほうが当たる。
 - 覚えた内容が古くなった・間違っていたら `update`(渡した項目だけ差し替え)。
   消すのは `forget` だが、**取り消せない**ので recall で内容を確かめてから。
+- タグは `remember` の定義にある**定番の表記**に合わせる(表記の割れは絞り込みを壊す)。
 """
 
 
@@ -289,6 +290,7 @@ def _register_memory_tools(mcp: MCPServer, app: FastAPI) -> None:
         "長さの制限は無いので、要約して削るより残すほうがよい。"
         "title は省略してよい(本文の 1 行目から作る)。tags はカンマ区切りで、"
         "後から絞り込むのに使える。"
+        + notes.tag_guide()
     ))
     async def remember(
         text: Annotated[str, Field(description=(

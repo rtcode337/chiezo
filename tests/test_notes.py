@@ -274,6 +274,25 @@ class TestUpdate:
         ).status_code == 400
 
 
+class TestTagGuide:
+    """定番タグの語彙はサーバー側の 1 か所(CANONICAL_TAGS)から配る。"""
+
+    def test_every_canonical_tag_is_in_the_guide(self):
+        from app import notes
+
+        guide = notes.tag_guide()
+        for tag, hint in notes.CANONICAL_TAGS.items():
+            assert tag in guide and hint in guide
+
+    def test_remember_tool_description_carries_the_guide(self):
+        """語彙を書き換えたら MCP のツール定義にそのまま載ること(写しを作らない)。"""
+        import inspect
+
+        from app import mcp_server
+
+        assert "tag_guide" in inspect.getsource(mcp_server._register_memory_tools)
+
+
 class TestForget:
     def test_deletes_from_docs_and_fts(self, client):
         created = client.post("/v1/notes", json={"text": "消す予定のメモ", "tags": "一時"}).json()
