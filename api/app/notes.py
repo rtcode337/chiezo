@@ -277,6 +277,95 @@ def add(text: str, title: str | None = None, tags: str | None = None) -> dict:
     }
 
 
+def update(
+    doc_id: int,
+    text: str | None = None,
+    title: str | None = None,
+    tags: str | None = None,
+) -> dict | None:
+    """メモを 1 件書き換える。**渡した項目だけ**を差し替え、None の項目は今のまま。
+
+    - `tags` は**丸ごと置き換え**(カンマ区切り)。空文字を渡すと全部外れる ——
+      「1 個だけ足す」はできない(部分編集を許すと、読み手が今の値を知らないまま
+      消してしまう。置き換えなら送った値がそのまま結果になる)
+    - `updated_at` は現在時刻になる。recall は新しい順なので、**書き換えたメモは
+      先頭に浮く**(「最新の判断が上に来る」は想起の用途では望ましい側)
+    - タイトルの衝突は `add` と同じ規則で doc_id を足して逃がす
+    - 見つからなければ None(HTTP 層が 404 にする)
+    """
+    if text is None and title is None and tags is None:
+        raise HTTPException(400, {"error": "nothing to update: pass text, title or tags"})
+    if text is not None and not text.strip():
+        raise HTTPException(400, {"error": "text must not be empty"})
+    if title is not None and not title.strip():
+        raise HTTPException(400, {"error": "title must not be empty"})
+
+    path = require_path()
+    conn = _connect(path)
+    try:
+        with conn:
+            row = conn.execute(
+                "SELECT title, body, tags FROM docs WHERE doc_id = ?", (doc_id,)
+            ).fetchone()
+            if row is None:
+                return None
+
+            new_body = text.strip() if text is not None else row["body"]
+            new_title = title.strip() if title is not None else row["title"]
+            # docs.title は UNIQUE。他のメモと衝突したら add と同じ規則で一意にする
+            if new_title != row["title"] and conn.execute(
+                "SELECT 1 FROM docs WHERE title = ? AND doc_id != ?", (new_title, doc_id)
+            ).fetchone():
+                new_title = f"{new_title} ({doc_id})"
+
+            old_tags = json.loads(row["tags"] or "[]")
+            new_tags = split_tags(tags) if tags is not None else old_tags
+
+            now = _now()
+            conn.execute(
+                "UPDATE docs SET title = ?, opening = ?, body = ?, tags = ?, updated_at = ?"
+                " WHERE doc_id = ?",
+                (
+                    new_title, new_body[:TITLE_MAX_CHARS * 4], new_body,
+                    json.dumps(new_tags, ensure_ascii=False), now, doc_id,
+                ),
+            )
+            # external content の FTS は自動では追従しない。'delete' に**書き換え前の値**を
+            # 渡して消してから、新しい値を入れ直す(add / delete と同じ流儀)
+            conn.execute(
+                "INSERT INTO docs_fts(docs_fts, rowid, title, body) VALUES ('delete', ?, ?, ?)",
+                (doc_id, row["title"], row["body"]),
+            )
+            conn.execute(
+                "INSERT INTO docs_fts(rowid, title, body) VALUES (?, ?, ?)",
+                (doc_id, new_title, new_body),
+            )
+
+            if new_tags != old_tags:
+                conn.execute("DELETE FROM doc_tags WHERE doc_id = ?", (doc_id,))
+                for tag in old_tags:
+                    conn.execute(
+                        "UPDATE tag_counts SET docs = docs - 1 WHERE tag = ?", (tag,)
+                    )
+                conn.execute("DELETE FROM tag_counts WHERE docs <= 0")
+                for tag in new_tags:
+                    conn.execute("INSERT INTO doc_tags (tag, doc_id) VALUES (?, ?)", (tag, doc_id))
+                    conn.execute(
+                        "INSERT INTO tag_counts (tag, docs) VALUES (?, 1)"
+                        " ON CONFLICT(tag) DO UPDATE SET docs = docs + 1",
+                        (tag,),
+                    )
+    finally:
+        conn.close()
+    return {
+        "doc_id": doc_id,
+        "title": new_title,
+        "tags": new_tags,
+        "updated_at": now,
+        "url": doc_url(SOURCE_NAME, doc_id),
+    }
+
+
 def delete(doc_id: int) -> bool:
     """メモを 1 件消す。消せたら True、元から無ければ False。"""
     path = require_path()

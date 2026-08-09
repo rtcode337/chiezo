@@ -56,6 +56,8 @@ LAN 内の読み取り専用ナレッジ API「Chiezo」。Wikipedia・OpenStree
 - ユーザーが「覚えておいて」と言ったこと、後から参照する価値のある調査結果は `remember`。
 - 「さっき話したあの件」「先月の件」のように過去のやり取りを指されたら `recall`。
   曖昧な指され方のときは検索語を無理に作らず、`since` だけで新しい順に引くほうが当たる。
+- 覚えた内容が古くなった・間違っていたら `update`(渡した項目だけ差し替え)。
+  消すのは `forget` だが、**取り消せない**ので recall で内容を確かめてから。
 """
 
 
@@ -268,11 +270,13 @@ def build_mcp(app: FastAPI) -> MCPServer:
 
 
 def _register_memory_tools(mcp: MCPServer, app: FastAPI) -> None:
-    """覚える・思い出すの 2 つ。
+    """覚える・思い出す・書き換える・忘れるの 4 つ。
 
-    この 2 つがあることの意味は「常駐するのはこの定義(数百字)だけで、覚えた中身は
-    引いたときにしかコンテキストに載らない」こと。CLAUDE.md や記憶ファイルは毎回
-    全部載るので、件数が増えるほど関係ない話にもトークンを払うことになる。
+    remember / recall があることの意味は「常駐するのはこの定義(数百字)だけで、
+    覚えた中身は引いたときにしかコンテキストに載らない」こと。CLAUDE.md や記憶ファイルは
+    毎回全部載るので、件数が増えるほど関係ない話にもトークンを払うことになる。
+    update / forget は溜めたものの手入れ —— 古くなって誤解を招くメモを直せないと、
+    想起の置き場として信用できなくなる。
     """
     from app import main as api
 
@@ -329,4 +333,34 @@ def _register_memory_tools(mcp: MCPServer, app: FastAPI) -> None:
             _call, api.recall_notes,
             request=_request(app), q=q, since=since, until=until, tag=tag,
             limit=limit, offset=offset, fields=fields, max_chars=max_chars,
+        )
+
+    @mcp.tool(description=(
+        "remember で保存したメモを書き換える。**渡した項目だけ**が差し替わり、"
+        "渡さない項目は今のまま。tags はカンマ区切りで**丸ごと置き換え**"
+        "(空文字を渡すと全部外れる)。updated_at が現在時刻になるので、"
+        "書き換えたメモは recall の先頭に浮く。doc_id は recall で確かめてから使うこと。"
+    ))
+    async def update(
+        doc_id: int,
+        text: Annotated[str | None, Field(description="本文を差し替える。省略は今のまま")] = None,
+        title: Annotated[str | None, Field(description="見出しを差し替える。省略は今のまま")] = None,
+        tags: Annotated[str | None, Field(description=(
+            "カンマ区切りで丸ごと置き換え。空文字で全部外す。省略は今のまま"
+        ))] = None,
+    ) -> dict:
+        return await run_in_threadpool(
+            _call, api.update_note,
+            request=_request(app), doc_id=doc_id, text=text, title=title, tags=tags,
+        )
+
+    @mcp.tool(description=(
+        "remember で保存したメモを 1 件消す。間違えて保存したもの・古くなって誤解を招く"
+        "ものの削除用。**消すと戻せない**ので、doc_id は recall で内容を確かめてから使うこと。"
+        "内容を直したいだけなら消さずに update を使う。"
+    ))
+    async def forget(doc_id: int) -> dict:
+        return await run_in_threadpool(
+            _call, api.forget,
+            request=_request(app), doc_id=doc_id,
         )

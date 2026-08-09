@@ -41,6 +41,9 @@ class TestDisabled:
     def test_recall_returns_503(self, disabled_client):
         assert disabled_client.get("/v1/notes/recall").status_code == 503
 
+    def test_update_returns_503(self, disabled_client):
+        assert disabled_client.patch("/v1/notes/1", json={"text": "直す"}).status_code == 503
+
     def test_notes_is_not_registered_as_a_source(self, disabled_client):
         names = [s["name"] for s in disabled_client.get("/v1/sources").json()["sources"]]
         assert "notes" not in names
@@ -204,6 +207,71 @@ class TestRecall:
         got = notes.recall(limit=-1, offset=-5)
         assert got["total"] == 3 and len(got["notes"]) == 1
         assert got["offset"] == 0
+
+
+class TestUpdate:
+    @pytest.fixture()
+    def created(self, client):
+        return client.post(
+            "/v1/notes", json={"text": "浅草寺に行った話", "tags": "旅行,寺"}
+        ).json()
+
+    def test_replaces_only_what_was_passed(self, client, created):
+        res = client.patch(f"/v1/notes/{created['doc_id']}", json={"text": "泉岳寺に行った話"})
+        assert res.status_code == 200
+        got = client.get("/v1/notes/doc", params={"title": created["title"]}).json()
+        assert got["body"] == "泉岳寺に行った話"
+        # 渡していない項目は今のまま(タイトルもタグも変わらない)
+        assert got["tags"] == ["旅行", "寺"]
+
+    def test_fts_follows_the_new_body(self, client):
+        # タイトルは本文と別に持つ(1 行目由来のタイトルは text を変えても残る)ので、
+        # 本文だけに入る語で確かめる
+        created = client.post(
+            "/v1/notes", json={"text": "参拝の記録\n\n浅草寺に行った", "tags": "旅行"}
+        ).json()
+        client.patch(f"/v1/notes/{created['doc_id']}", json={"text": "参拝の記録\n\n泉岳寺に行った"})
+        # external content の FTS を手で入れ替えないと、古い本文で当たり続ける
+        assert client.get("/v1/notes/recall", params={"q": "泉岳寺"}).json()["total"] == 1
+        assert client.get("/v1/notes/recall", params={"q": "浅草寺"}).json()["total"] == 0
+
+    def test_tags_are_replaced_wholesale_and_counts_follow(self, client, created):
+        client.patch(f"/v1/notes/{created['doc_id']}", json={"tags": "旅行,御朱印"})
+        assert client.get("/v1/notes/tags").json()["tags"] == [
+            {"tag": "御朱印", "docs": 1},
+            {"tag": "旅行", "docs": 1},
+        ]
+
+    def test_empty_tags_clears_them(self, client, created):
+        client.patch(f"/v1/notes/{created['doc_id']}", json={"tags": ""})
+        assert client.get("/v1/notes/tags").json()["tags"] == []
+
+    def test_update_bumps_updated_at_to_the_front_of_recall(self, client, created, monkeypatch):
+        client.post("/v1/notes", json={"text": "あとから書いた別のメモ"})
+        # updated_at は秒精度なので、同じ秒に書くと doc_id の若い側が後ろに沈む。
+        # 「書き換えで浮く」を確かめたいテストなので、時刻を進めて書き換える
+        from app import notes
+
+        monkeypatch.setattr(notes, "_now", lambda: "2999-01-01T00:00:00+00:00")
+        client.patch(f"/v1/notes/{created['doc_id']}", json={"text": "書き換えた本文"})
+        got = client.get("/v1/notes/recall").json()
+        assert got["notes"][0]["text"] == "書き換えた本文"
+
+    def test_title_collision_is_disambiguated(self, client, created):
+        other = client.post("/v1/notes", json={"text": "別のメモ"}).json()
+        res = client.patch(f"/v1/notes/{other['doc_id']}", json={"title": created["title"]}).json()
+        assert res["title"] == f"{created['title']} ({other['doc_id']})"
+
+    def test_unknown_id_is_404(self, client):
+        assert client.patch("/v1/notes/999", json={"text": "無い"}).status_code == 404
+
+    def test_nothing_to_update_is_400(self, client, created):
+        assert client.patch(f"/v1/notes/{created['doc_id']}", json={}).status_code == 400
+
+    def test_empty_text_is_rejected(self, client, created):
+        assert client.patch(
+            f"/v1/notes/{created['doc_id']}", json={"text": "   "}
+        ).status_code == 400
 
 
 class TestForget:

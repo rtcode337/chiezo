@@ -955,6 +955,22 @@ def recall_notes(
     )
 
 
+@app.patch("/v1/notes/{doc_id}")
+def update_note(
+    request: Request,
+    doc_id: int,
+    text: str | None = Body(None, embed=True, description="本文を差し替える。省略は今のまま"),
+    title: str | None = Body(None, embed=True, description="見出しを差し替える。省略は今のまま"),
+    tags: str | None = Body(
+        None, embed=True, description="カンマ区切りで丸ごと置き換え。空文字で全部外す。省略は今のまま"
+    ),
+):
+    updated = notes.update(doc_id, text=text, title=title, tags=tags)
+    if updated is None:
+        raise HTTPException(404, {"error": f"note not found: doc_id={doc_id}"})
+    return updated
+
+
 @app.delete("/v1/notes/{doc_id}")
 def forget(request: Request, doc_id: int):
     if not notes.delete(doc_id):

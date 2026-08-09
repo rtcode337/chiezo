@@ -120,7 +120,8 @@ scripts/gen_claude_config.sh -u http://<サーバーIP>:7010              # 一�
 
 `notes` は Chiezo で唯一書き込めるソース。「これ覚えておいて」と言われたこと、調べた結果、
 決めたことを溜め、`recall` で新しい順に引く。書き手は人でも AI でもよく、MCP
-クライアントからは `remember` / `recall` の 2 つの道具として見える。
+クライアントからは `remember` / `recall` / `update` / `forget` の 4 つの道具として見える
+(書き換えは渡した項目だけの差し替え。削除は取り消せない)。
 
 ```bash
 curl -s "$BASE/v1/notes" -H 'Content-Type: application/json' \

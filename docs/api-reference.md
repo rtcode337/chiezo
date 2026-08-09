@@ -131,8 +131,14 @@ curl -sG "$BASE/v1/notes/recall" -d since=2026-07-01             # 期間で絞�
 curl -sG "$BASE/v1/notes/recall" --data-urlencode "tag=決定"      # タグで絞る
 curl -sG "$BASE/v1/notes/recall" -d fields=title,updated_at      # 当たりを付ける(本文を載せない)
 curl -sG "$BASE/v1/notes/recall" -d max_chars=0                  # 本文を切らずに返す
+curl -s -X PATCH "$BASE/v1/notes/3" -H 'Content-Type: application/json' \
+  -d '{"tags":"環境,決定,完了"}'                                  # 書き換え(渡した項目だけ)
 curl -s -X DELETE "$BASE/v1/notes/3"                             # 取り消し
 ```
+
+書き換え(PATCH)は**渡した項目だけ**を差し替えます(`text` / `title` / `tags`)。
+`tags` はカンマ区切りの丸ごと置き換えで、空文字を渡すと全部外れます。
+`updated_at` が現在時刻になるので、書き換えたメモは `recall` の先頭に浮きます。
 
 **本文は既定で先頭 400 文字までしか返りません**(`max_chars`)。切れたメモには
 `truncated: true` が付くので、全文が要るものだけ `/v1/notes/doc/{doc_id}` で取り直します。
@@ -140,7 +146,7 @@ curl -s -X DELETE "$BASE/v1/notes/3"                             # 取り消し
 `search`(冒頭だけ)→ `doc`(全文)と同じ二段構えです。`fields` で項目を選べば
 本文そのものを外せます(`doc_id` / `title` / `text` / `tags` / `updated_at` / `url`)。
 
-専用の口は追記・削除・時系列の想起だけです。読み出しはコアスキーマなので
+専用の口は追記・書き換え・削除・時系列の想起だけです。読み出しはコアスキーマなので
 `/v1/notes/search`・`doc`・`filter`・`tags` と `/search/notes/`(ブラウズ画面)もそのまま効きます。
 
 | 変数 | 既定 | 説明 |
@@ -206,7 +212,7 @@ scripts/gen_claude_config.sh -u http://<サーバーIP>:7010
 ```
 
 公開しているツールは `sources` / `search` / `doc` / `filter` / `tags` / `titles` / `links` の
-7 つ(notes が有効なら `remember` / `recall` を加えて 9 つ)で、引数は REST のクエリ
+7 つ(notes が有効なら `remember` / `recall` / `update` / `forget` を加えて 11)で、引数は REST のクエリ
 パラメータと同じです。実体も REST のエンドポイント関数そのものなので、
 挙動が二重管理になることはありません。REST と違うのは `doc` / `filter` の `max_chars` が
 既定で 4000 字に切られる点だけです(MCP の応答はそのままモデルのコンテキストに載るため。

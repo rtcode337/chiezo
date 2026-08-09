@@ -205,7 +205,9 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       システムプロンプト前半の使い方も MCP の `INSTRUCTIONS` をそのまま使う。
       `tests/test_agent.py` が `AGENT_TOOLS` と MCP のツール名を突き合わせて落とす
     - 道具は 2 群に分かれる。`KNOWLEDGE_TOOLS`(読み取り専用。常に渡す)と
-      `NOTE_TOOLS`(`remember` / `recall`)。**後者は Chiezo で唯一の書き込みを含む**ので、
+      `NOTE_TOOLS`(`remember` / `recall`。**MCP にある `update` / `forget` は渡さない** ——
+      追記と違い書き換え・削除は取り消しが効かず、ローカル LLM の誤操作に対して重すぎる)。
+      **後者は Chiezo で唯一の書き込みを含む**ので、
       `notes_allowed()` が「notes が有効 かつ リクエストで切られていない」ときだけ渡す。
       当初は書き込みを一切渡していなかったが、会話で「覚えておいて」と明示的に頼まれるなら
       副作用ではないので渡す。代わりに**やり取りごとに切れる**(画面のトグル・`notes=0`)、
@@ -343,9 +345,11 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `?q=` 指定時は結果一覧を表示し、`/v1/{source}/search` と同じロジック
     (FTS または短語のタイトル前方一致フォールバック)
   - `/search/{source}/doc/{doc_id}`(GET) — 文書詳細(title/tags/opening/body/links/extra)の HTML 表示
-  - `/v1/notes`(POST)・`/v1/notes/recall`(GET)・`/v1/notes/{doc_id}`(DELETE) —
+  - `/v1/notes`(POST)・`/v1/notes/recall`(GET)・`/v1/notes/{doc_id}`(PATCH / DELETE) —
     「覚える」層の REST。読み出しはコアスキーマなので `/v1/notes/search|doc|filter|tags` と
-    `/search/notes/` のブラウズ画面もそのまま効く(専用の口は追記・削除・時系列の想起だけ)
+    `/search/notes/` のブラウズ画面もそのまま効く(専用の口は追記・書き換え・削除・
+    時系列の想起だけ)。PATCH は渡した項目だけを差し替える(`tags` は丸ごと置き換え、
+    空文字で全部外す。updated_at が現在時刻になり recall の先頭に浮く)
   - `/v1/ask`(GET) — 「使う」層の REST。`stream=0`(既定)は JSON 一括、`stream=1` は
     SSE(`references` → `delta` × n → `done`、失敗時は `error` を挟む)。
     無効なら 503、推論サーバに繋がらなければ 502、タイムアウトは 504。
