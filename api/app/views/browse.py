@@ -1,13 +1,14 @@
 """ブラウズ画面(`/search/{source}/`)。中身を人が確かめるための最小の画面。
 
 REST(`app/main.py`)と同じ DB を同じ並び順で引く。検索の本体は `app/deps.py` の
-ORDER BY 断片を共有していて、ここで別の並びを作らない。
+ORDER BY 断片を共有していて、ここで別の並びを作らない。唯一の例外は未検索の
+全件一覧(doc_id 昇順)で、これは並び替えではなく「格納順に頭から確かめる」ため。
 """
 from __future__ import annotations
 
 import json
 import logging
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
@@ -29,7 +30,9 @@ router = APIRouter()
 # 足せない(既存の画面に食われる)。逆に画面を足すたびにソース名と衝突しないか
 # 気にする必要もあった。前置きを 1 つ挟むだけで、その両方が消える。
 
-BROWSE_LIMIT = 50
+# 1 ページの件数。未検索の全件一覧も、検索・タグ絞り込みの結果もこの単位でページングする
+# (上限なしで出すと jawiki や geonames の百万件超がそのまま HTML になる)。
+PAGE_SIZE = 100
 
 
 def _browse_nav(source: str) -> str:
@@ -39,42 +42,91 @@ def _browse_nav(source: str) -> str:
     )
 
 
+def _tags_text(tags_json: str | None) -> str:
+    tags = json.loads(tags_json) if tags_json else []
+    return ", ".join(esc(t) for t in tags)
+
+
+def _result_table(source: str, rows) -> str:
+    """一覧の表。未検索・検索・タグ絞り込みの 3 経路で同じ列(doc_id / title / tags / snippet)。"""
+    items = "\n".join(
+        f"<tr><td>{r['doc_id']}</td>"
+        f"<td><a href=\"{esc(doc_url(source, r['doc_id']))}\">{esc(r['title'])}</a></td>"
+        f"<td class=\"tags\">{_tags_text(r['tags'])}</td>"
+        f"<td class=\"snippet\">{esc(r['snippet'] or '')}</td></tr>"
+        for r in rows
+    )
+    if not items:
+        items = '<tr><td colspan="4">該当する文書がありません</td></tr>'
+    return f"""
+<table>
+<thead><tr><th>doc_id</th><th>title</th><th>tags</th><th>snippet</th></tr></thead>
+<tbody>
+{items}
+</tbody>
+</table>
+"""
+
+
+def _pager(source: str, page: int, has_next: bool, *, q: str | None = None,
+           tag: str | None = None) -> str:
+    """前後ページへのリンク。総件数は数えない(FTS の全件 COUNT は高くつく)ので、
+    「次があるか」は 1 件多く取れたかどうかで判定した結果を受け取る。"""
+    if page <= 1 and not has_next:
+        return ""
+
+    def url(p: int) -> str:
+        params: dict[str, str | int] = {}
+        if q:
+            params["q"] = q
+        if tag:
+            params["tag"] = tag
+        if p > 1:
+            params["page"] = p
+        query = urlencode(params)
+        return browse_url(source) + (f"?{query}" if query else "")
+
+    prev_html = f'<a href="{esc(url(page - 1))}">← 前の{PAGE_SIZE}件</a>' if page > 1 else ""
+    next_html = f'<a href="{esc(url(page + 1))}">次の{PAGE_SIZE}件 →</a>' if has_next else ""
+    return (f'<p class="pager">{prev_html}'
+            f'<span class="muted">ページ {page}</span>{next_html}</p>')
+
+
+def _paginate(rows: list) -> tuple[list, bool]:
+    """PAGE_SIZE + 1 件で引いた結果を「表示する分」と「次ページの有無」に分ける。"""
+    return rows[:PAGE_SIZE], len(rows) > PAGE_SIZE
+
+
 @router.get("/search/{source}/", response_class=HTMLResponse)
 def browse_source(
     request: Request,
     source: str,
     q: str | None = Query(None),
     tag: str | None = Query(None),
+    page: int = Query(1, ge=1),
 ):
     src = get_source(request, source)
+    offset = (page - 1) * PAGE_SIZE
+    fetch = PAGE_SIZE + 1  # 1 件多く引いて「次ページがあるか」を知る(COUNT を打たない)
     if tag:
         # 文書詳細のタグから飛んでくる導線(= /v1/<source>/filter?tag= の人間向け)
         require_tag_schema(src)
         rows = db.query(
             src.path,
-            "SELECT doc_id, title, substr(coalesce(opening, body), 1, 160) AS snippet"
+            "SELECT doc_id, title, tags,"
+            " substr(coalesce(opening, body), 1, 160) AS snippet"
             " FROM docs WHERE docs.doc_id IN (SELECT dt.doc_id FROM doc_tags dt WHERE dt.tag = ?)"
-            " ORDER BY rank_score DESC, title LIMIT ?",
-            (tag, BROWSE_LIMIT),
+            " ORDER BY rank_score DESC, title LIMIT ? OFFSET ?",
+            (tag, fetch, offset),
         )
-        items = "\n".join(
-            f"<tr><td><a href=\"{esc(doc_url(source, r['doc_id']))}\">{esc(r['title'])}</a></td>"
-            f"<td class=\"snippet\">{esc(r['snippet'] or '')}</td></tr>"
-            for r in rows
-        )
-        if not items:
-            items = '<tr><td colspan="2">このタグの文書はありません</td></tr>'
+        rows, has_next = _paginate(rows)
         body = f"""
 {_browse_nav(source)}
 <h1>{esc(source)}: タグ「{esc(tag)}」</h1>
-<p class="muted">先頭 {BROWSE_LIMIT} 件。全件は
+<p class="muted">1 ページ {PAGE_SIZE} 件。API では
 <code>/v1/{esc(source)}/filter?tag=…</code> で取得できます。</p>
-<table>
-<thead><tr><th>title</th><th>snippet</th></tr></thead>
-<tbody>
-{items}
-</tbody>
-</table>
+{_result_table(source, rows)}
+{_pager(source, page, has_next, tag=tag)}
 """
         return HTMLResponse(content=page_shell(f"Chiezo: {source} / {tag}", body))
     if q:
@@ -83,40 +135,43 @@ def browse_source(
             prefix = escape_like(q.strip())
             rows = db.query(
                 src.path,
-                "SELECT doc_id, title, substr(coalesce(opening, body), 1, 160) AS snippet"
+                "SELECT doc_id, title, tags,"
+                " substr(coalesce(opening, body), 1, 160) AS snippet"
                 " FROM docs WHERE title LIKE ? ESCAPE '\\'"
-                f" ORDER BY {exact_title_first()}, rank_score DESC, title LIMIT ?",
-                (prefix + "%", q.strip(), BROWSE_LIMIT),
+                f" ORDER BY {exact_title_first()}, rank_score DESC, title LIMIT ? OFFSET ?",
+                (prefix + "%", q.strip(), fetch, offset),
             )
         else:
             rows = db.query(
                 src.path,
-                "SELECT d.doc_id AS doc_id, d.title AS title,"
+                "SELECT d.doc_id AS doc_id, d.title AS title, d.tags AS tags,"
                 " snippet(docs_fts, 1, '', '', '…', 40) AS snippet"
                 " FROM docs_fts JOIN docs d ON d.doc_id = docs_fts.rowid"
                 " WHERE docs_fts MATCH ?"
-                f" ORDER BY {relevance_order('d.')} LIMIT ?",
-                (match, q.strip(), BROWSE_LIMIT),
+                f" ORDER BY {relevance_order('d.')} LIMIT ? OFFSET ?",
+                (match, q.strip(), fetch, offset),
             )
-        items = "\n".join(
-            f"<tr><td><a href=\"{esc(doc_url(source, r['doc_id']))}\">{esc(r['title'])}</a></td>"
-            f"<td class=\"snippet\">{esc(r['snippet'] or '')}</td></tr>"
-            for r in rows
-        )
-        if not items:
-            items = '<tr><td colspan="2">該当する文書がありません</td></tr>'
-        results_html = f"""
-<table>
-<thead><tr><th>title</th><th>snippet</th></tr></thead>
-<tbody>
-{items}
-</tbody>
-</table>
-"""
+        rows, has_next = _paginate(rows)
+        results_html = _result_table(source, rows) + _pager(source, page, has_next, q=q)
     else:
-        # 大規模ソース(jawiki 等)では rank_score 順の全件一覧はフルスキャンになりタイムアウトしうるため、
-        # 未検索時は一覧を出さず検索フォームのみ表示する。
-        results_html = ""
+        # 未検索は全件一覧(doc_id 昇順)。doc_id は主キーなので ORDER BY は索引を歩くだけで、
+        # rank_score 順のようなフルスキャンにはならない(かつては一覧を出していなかった理由)。
+        # notes のような小さなソースを頭から確かめる用途と、大規模ソースの様子見の両方を
+        # 同じページングでまかなう。
+        rows = db.query(
+            src.path,
+            "SELECT doc_id, title, tags,"
+            " substr(coalesce(opening, body), 1, 160) AS snippet"
+            " FROM docs ORDER BY doc_id LIMIT ? OFFSET ?",
+            (fetch, offset),
+        )
+        rows, has_next = _paginate(rows)
+        results_html = (
+            f'<p class="muted">全 {src.doc_count:,} 件を doc_id 順で表示'
+            f'(1 ページ {PAGE_SIZE} 件)。</p>'
+            + _result_table(source, rows)
+            + _pager(source, page, has_next)
+        )
     body = f"""
 {_browse_nav(source)}
 <h1>{esc(source)}</h1>

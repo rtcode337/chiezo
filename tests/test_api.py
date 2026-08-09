@@ -882,11 +882,49 @@ class TestClaudeConfig:
 
 
 class TestBrowsePages:
-    def test_browse_source_top_shows_search_form_only(self, client):
+    def test_browse_source_top_lists_docs_in_doc_id_order(self, client):
+        """未検索のトップは全件一覧(doc_id 昇順)。検索フォームも残っていること。
+
+        以前は「一覧はフルスキャンでタイムアウトする」としてフォームだけ出していたが、
+        doc_id は主キーなので昇順の頁送りは索引を歩くだけで済む。notes のような
+        小さなソースを頭から確かめる導線として一覧を出す。
+        """
         res = client.get("/search/jawiki/")
         assert res.status_code == 200
         assert "<form" in res.text
-        assert "浅草寺" not in res.text
+        pos = [res.text.find(f'"/search/jawiki/doc/{i}"') for i in (1, 2, 3)]
+        assert all(p >= 0 for p in pos), "一覧に doc が出ていない"
+        assert pos == sorted(pos), "doc_id 昇順で並んでいない"
+
+    def test_browse_listing_has_doc_id_and_tags_columns(self, client):
+        """一覧の列は doc_id / title / tags / snippet の順(3 経路とも同じ表)。"""
+        for params in ({}, {"q": "東京都"}, {"tag": "関東地方"}):
+            res = client.get("/search/jawiki/", params=params)
+            assert "<th>doc_id</th><th>title</th><th>tags</th><th>snippet</th>" in res.text, params
+        # 東京都(doc_id=1)のタグが一覧のセルに出る
+        assert "関東地方" in client.get("/search/jawiki/").text
+
+    def test_browse_top_paging(self, client, monkeypatch):
+        """100 件を超えたら頁送り。フィクスチャは小さいので PAGE_SIZE を絞って確かめる。"""
+        from app.views import browse
+
+        monkeypatch.setattr(browse, "PAGE_SIZE", 2)
+        first = client.get("/search/jawiki/").text
+        assert "次の2件" in first and "前の2件" not in first
+        assert '"/search/jawiki/doc/1"' in first
+        assert '"/search/jawiki/doc/3"' not in first
+        second = client.get("/search/jawiki/", params={"page": 2}).text
+        assert "前の2件" in second
+        assert '"/search/jawiki/doc/3"' in second
+
+    def test_browse_search_paging_keeps_the_query(self, client, monkeypatch):
+        """検索結果の頁送りリンクは q を保ったまま次ページを指す。"""
+        from app.views import browse
+
+        monkeypatch.setattr(browse, "PAGE_SIZE", 1)
+        res = client.get("/search/jawiki/", params={"q": "東京都"}).text
+        assert "次の1件" in res
+        assert "q=%E6%9D%B1%E4%BA%AC%E9%83%BD" in res and "page=2" in res
 
     def test_browse_source_search(self, client):
         res = client.get("/search/jawiki/", params={"q": "浅草寺"})

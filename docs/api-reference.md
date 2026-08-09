@@ -197,9 +197,10 @@ OSM の国別ソース(`osm_<国>`、195 件)と Wikipedia の言語版(`<lang>w
 
 ### ブラウズ画面(`/search/{source}/`)
 
-各ソース名は `/search/{source}/` にリンクしています。トップは検索フォームのみで(jawiki のような
-大規模ソースだと rank_score 順の全件一覧はフルスキャンになりタイムアウトしうるため、未検索時は
-一覧を出しません)、検索すると結果一覧が表示されます。`/search/{source}/doc/{doc_id}` で文書詳細
+各ソース名は `/search/{source}/` にリンクしています。トップは全件一覧(doc_id 昇順。
+notes のような小さなソースを頭から確かめる導線)で、検索するとその結果一覧に変わります。
+一覧はどの経路(未検索・検索・タグ絞り込み)も同じ表(doc_id / title / tags / snippet)で、
+1 ページ 100 件でページングします(`?page=2`)。`/search/{source}/doc/{doc_id}` で文書詳細
 (本文・tags・links・extra)をブラウザで閲覧できます(`/v1/...` の JSON API を人間向け HTML で
 薄くラップしたものです)。
 

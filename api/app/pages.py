@@ -122,6 +122,7 @@ PAGE_STYLE = """
               padding: 0.6rem; font-family: monospace; font-size: 0.85rem; white-space: pre-wrap; }
   .snippet { color: #555; }
   .muted { color: #666; font-size: 0.85rem; }
+  .pager { display: flex; gap: 1rem; align-items: baseline; margin-top: 1rem; }
   .stale { color: #c0392b; font-size: 0.85rem; }
   details { margin-top: 1rem; }
   details > summary { cursor: pointer; font-weight: bold; padding: 0.3rem 0; }
@@ -143,8 +144,9 @@ PAGE_STYLE = """
   @media (max-width: 56rem) {
     table { display: block; overflow-x: auto; }
     th, td { white-space: nowrap; padding: 0.4rem 0.6rem; }
-    /* 本文の抜粋だけは折り返す(1 行に伸ばすと表が果てしなく広くなる) */
+    /* 本文の抜粋とタグは折り返す(1 行に伸ばすと表が果てしなく広くなる) */
     td.snippet { white-space: normal; min-width: 14rem; }
+    td.tags { white-space: normal; min-width: 10rem; }
   }
   /* スマホ幅。余白を詰めて本文の幅を稼ぎ、押す物を指の大きさに合わせる */
   @media (max-width: 40rem) {
