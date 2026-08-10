@@ -235,7 +235,12 @@ CHAT_STYLE = """
 
 
 def page_shell(title: str, body: str, refresh: int | None = None, style: str = "") -> str:
-    """共通の外枠。`style` は画面ごとの上乗せ(会話画面だけが使う)。"""
+    """共通の外枠。`style` は画面ごとの上乗せ(会話画面だけが使う)。
+
+    `title` はページ名だけを渡す(「Chiezo — 」は付けない)。タブの表記は他のプロダクトと
+    そろえて「Chiezo — <ページ名>」で統一し、空ならアプリの正式名「AI知識ベース」を出す。
+    """
+    tab_title = f"Chiezo — {title or 'AI知識ベース'}"
     refresh_tag = f'<meta http-equiv="refresh" content="{refresh}">' if refresh else ""
     return f"""<!doctype html>
 <html lang="ja">
@@ -245,7 +250,7 @@ def page_shell(title: str, body: str, refresh: int | None = None, style: str = "
 {refresh_tag}
 <link rel="icon" href="{FAVICON_DATA_URI}">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<title>{html.escape(title)}</title>
+<title>{html.escape(tab_title)}</title>
 <style>{PAGE_STYLE}{style}</style>
 </head>
 <body>

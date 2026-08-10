@@ -294,7 +294,7 @@ def admin(request: Request):
 </p>
 <p><a href="/admin/claude-config">→ 生成される設定を見る</a></p>
 """
-    return HTMLResponse(content=page_shell("Chiezo 管理画面", body, refresh=5 if job_running else None))
+    return HTMLResponse(content=page_shell("管理画面", body, refresh=5 if job_running else None))
 
 
 @router.get("/admin/osm", response_class=HTMLResponse)
@@ -384,7 +384,7 @@ Geofabrik の国別抽出 {total} 件{f"(絞り込み: {len(catalog)} 件)" if n
 {''.join(blocks)}
 """
     return HTMLResponse(
-        content=page_shell("Chiezo: OSM 国別の初期化", body, refresh=5 if job_running else None)
+        content=page_shell("OSM 国別の初期化", body, refresh=5 if job_running else None)
     )
 
 
@@ -482,7 +482,7 @@ enwiki はその数倍)。ページビュー突合のため全プロジェクト
 {''.join(blocks)}
 """
     return HTMLResponse(
-        content=page_shell("Chiezo: Wikipedia 言語版の初期化", body, refresh=5 if job_running else None)
+        content=page_shell("Wikipedia 言語版の初期化", body, refresh=5 if job_running else None)
     )
 
 
@@ -718,6 +718,6 @@ wireCopy('copy-hook', 'config-hook', 'msg-hook');
 wireCopy('copy-mcp', 'config-mcp', 'msg-mcp');
 </script>
 """
-    return HTMLResponse(content=page_shell("Chiezo: Claude Code 連携設定", body))
+    return HTMLResponse(content=page_shell("Claude Code 連携設定", body))
 
 

@@ -128,7 +128,7 @@ def browse_source(
 {_result_table(source, rows)}
 {_pager(source, page, has_next, tag=tag)}
 """
-        return HTMLResponse(content=page_shell(f"Chiezo: {source} / {tag}", body))
+        return HTMLResponse(content=page_shell(f"{source} / {tag}", body))
     if q:
         match = build_match_query(q)
         if match is None:
@@ -181,7 +181,7 @@ def browse_source(
 </form>
 {results_html}
 """
-    return HTMLResponse(content=page_shell(f"Chiezo: {source}", body))
+    return HTMLResponse(content=page_shell(source, body))
 
 
 @router.get("/search/{source}/doc/{doc_id}", response_class=HTMLResponse)
@@ -200,7 +200,7 @@ def browse_doc(request: Request, source: str, doc_id: int):
 <h1>見つかりません</h1>
 <p>doc_id={esc(doc_id)} の文書は存在しません。</p>
 """
-        return HTMLResponse(content=page_shell(f"Chiezo: {source}", body), status_code=404)
+        return HTMLResponse(content=page_shell(source, body), status_code=404)
     row = rows[0]
     tags = json.loads(row["tags"]) if row["tags"] else []
     links = json.loads(row["links"]) if row["links"] else []
@@ -228,5 +228,5 @@ def browse_doc(request: Request, source: str, doc_id: int):
 <h2>extra</h2>
 <pre class="doc-body">{esc(extra_html)}</pre>
 """
-    return HTMLResponse(content=page_shell(f"Chiezo: {row['title']}", body))
+    return HTMLResponse(content=page_shell(row["title"], body))
 
