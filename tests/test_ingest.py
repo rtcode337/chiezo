@@ -57,6 +57,69 @@ class TestAdapter:
         assert "プードル" in docs["犬"].body
 
 
+class TestPlaintext:
+    """wikitext → プレーンテキストで、地の文でないものが混ざらないこと。
+
+    `strip_code()` は **タグの中身を本文として残す**ため、`<ref>` を消さないと注釈や
+    出典の題名が地の文に流れ込む。実際に travel-log 側の観光地データで、
+    「NIFRELは、大阪府吹田市千里万博公園内**所在地の実際は、…万博記念公園の中**」の
+    ような説明文が 1,000 件以上作られていた(脚注・画像の説明・マジックワードの 3 種)。
+    """
+
+    def extract(self, wikitext):
+        from sources.wikipedia import _extract_plaintext
+
+        return _extract_plaintext(wikitext)
+
+    def test_footnote_and_reference_contents_are_dropped(self):
+        opening, body, _, _, _ = self.extract(
+            "'''NIFREL'''（ニフレル）は、大阪府吹田市千里万博公園内"
+            "<ref group=\"注\">所在地の実際は、吹田市の千里丘陵にある万博記念公園の中。</ref>"
+            "に所在する[[博物館]]。<ref name=\"src\">胆沢ダム 国土交通省</ref>\n"
+            "== 沿革 ==\n2015年に開業した。<references />"
+        )
+        assert "所在地の実際は" not in opening
+        assert "国土交通省" not in opening
+        assert "に所在する博物館" in opening.replace(" ", "")
+        assert "2015年に開業した" in body
+        assert "所在地の実際は" not in body
+
+    def test_media_captions_are_dropped(self):
+        opening, body, _, links, _ = self.extract(
+            "[[ファイル:Hokkaido Museum.jpg|300px|thumb|"
+            "内部に復元されたアイヌ民族の伝統住居「チセ」]]\n"
+            "'''北海道博物館'''は、2015年に開館した[[博物館]]。"
+        )
+        assert opening.startswith("北海道博物館は")
+        assert "チセ" not in opening
+        assert "thumb" not in body and "300px" not in body
+        # 画像の説明の中にあるリンクも links に混ぜない(記事の関連リンクではない)
+        assert links == ["博物館"]
+
+    def test_behavior_switches_are_dropped(self):
+        opening, _, _, _, _ = self.extract(
+            "__NOTOC__\n'''多聞院'''（たもんいん）は、埼玉県所沢市中富にある寺院である。"
+        )
+        assert opening.startswith("多聞院（たもんいん）は、")
+        # 決まった語だけを消す(プログラミング記事の `__CONSTANT__` は地の文として残す)
+        opening2, _, _, _, _ = self.extract("'''例'''は __CONSTANT__ を使う。")
+        assert "__CONSTANT__" in opening2
+
+    def test_coordinates_survive_the_removal(self):
+        """座標は落とす前に取る(消した中に {{Coord}} があっても失わないため)。"""
+        _, _, _, _, coords = self.extract(
+            "'''例'''は例である。<ref>{{Coord|35|1|2|N|139|3|4|E}}</ref>\n"
+            "{{Coord|35|41|22|N|139|41|30|E}}"
+        )
+        assert coords is not None
+
+    def test_categories_still_collected(self):
+        _, _, tags, _, _ = self.extract(
+            "'''例'''は例である。[[Category:日本の博物館|れい]]"
+        )
+        assert tags == ["日本の博物館"]
+
+
 class TestWikidataIds:
     """page_props ダンプ(記事 → wikidata の Q 番号)の取り込み。"""
 

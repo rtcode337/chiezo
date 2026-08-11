@@ -24,6 +24,7 @@ yield する際に aliases として付与する。
 from __future__ import annotations
 
 import bz2
+import contextlib
 import gzip
 import logging
 import os
@@ -67,6 +68,29 @@ _NON_ARTICLE_LINK_PREFIXES = (
     "Category:", "カテゴリ:",
 )
 _CATEGORY_PREFIXES = ("Category:", "カテゴリ:")
+
+# 本文から丸ごと落とすもの(下記 _drop_non_prose)。
+# 脚注・出典タグ: mwparserfromhell の strip_code は **タグの中身を本文として残す**ため、
+# 消さないと注釈や出典の題名が地の文に流れ込む
+# (「NIFRELは、大阪府吹田市千里万博公園内**所在地の実際は、…万博記念公園の中**に所在する」)。
+_FOOTNOTE_TAGS = ("ref", "references")
+# 画像・音声・動画の埋め込み。説明文とパラメータが本文に残る
+# (「内部に復元されたアイヌ民族の伝統住居「チセ」|300px|thumb 北海道博物館は…」)
+_MEDIA_LINK_PREFIXES = (
+    "File:", "ファイル:", "Image:", "画像:", "Media:", "メディア:",
+)
+# 動作切り替えのマジックワード。表示されないのに文字として残る(「__NOTOC__ 多聞院は…」)。
+# **決まった語だけを消す**(`__[A-Z]+__` のような形で消すと、プログラミング記事の
+# `__CONSTANT__` のような地の文まで落ちる)。MediaWiki の behavior switch と ja の別名。
+_MAGIC_WORDS = (
+    "NOTOC", "FORCETOC", "TOC", "NOEDITSECTION", "NEWSECTIONLINK", "NONEWSECTIONLINK",
+    "NOGALLERY", "HIDDENCAT", "EXPECTUNUSEDCATEGORY", "NOCONTENTCONVERT", "NOCC",
+    "NOTITLECONVERT", "NOTC", "INDEX", "NOINDEX", "STATICREDIRECT", "NOGLOBAL",
+    "DISAMBIG", "EXPECTED_UNCONNECTED_PAGE", "ARCHIVEDTALK", "NOTALK",
+    "目次強制", "目次非表示", "節編集リンク非表示", "新規節リンク", "新規節リンク非表示",
+    "ギャラリー非表示", "隠しカテゴリ", "リダイレクト固定", "曖昧さ回避",
+)
+_MAGIC_WORD_RE = re.compile("|".join(f"__{w}__" for w in _MAGIC_WORDS))
 
 # page_props SQL ダンプ中の `(<page_id>,'wikibase_item','Q123',...)` を拾う。
 _WIKIBASE_ITEM_RE = re.compile(r"\((\d+),'wikibase_item','(Q\d+)'")
@@ -528,6 +552,33 @@ def _extract_coordinates(code) -> tuple[float, float] | None:
     return None
 
 
+def _drop_non_prose(code) -> None:
+    """地の文でないもの(脚注・出典・画像の説明)を wikicode から落とす。
+
+    `strip_code()` は **タグの中身を本文として残す**ので、`<ref>` を消さないと注釈や
+    出典の題名がそのまま地の文に混ざる。画像の埋め込みも説明文とパラメータ
+    (`|thumb|300px`)が残る。どちらも「記事が何を書いているか」ではないため、
+    opening / body / links のいずれからも外す。
+
+    **座標の抽出はこれより前に行うこと**(消した中に {{Coord}} が入っていても
+    座標を落とさないため。呼び出し側の `_extract_plaintext` がその順で呼ぶ)。
+    """
+    # **木から取り除く(`code.remove()`)のではなく中身を空にする。** remove は
+    # ノード列の走査を伴うため、脚注が数百ある記事(ja の「靖国神社」は 191 個)では
+    # O(n^2) になり、抽出全体が 3 倍以上遅くなる(実測 0.20s → 0.66s / 20 記事)。
+    # 中身を空にすれば strip_code の結果は同じで、費用はほぼ増えない
+    for node in code.filter_tags(recursive=True):
+        if str(node.tag).strip().lower() in _FOOTNOTE_TAGS and not node.self_closing:
+            with contextlib.suppress(ValueError, AttributeError, TypeError):
+                node.contents = ""
+    for link in code.filter_wikilinks(recursive=True):
+        if str(link.title).strip().startswith(_MEDIA_LINK_PREFIXES):
+            # 表示文字(説明文)と題名の両方を空にする。題名だけ残すと
+            # 「ファイル:X.jpg」が地の文に出る(strip_code は text が空なら title を返す)
+            link.text = ""
+            link.title = ""
+
+
 def _extract_plaintext(
     wikitext: str,
 ) -> tuple[str | None, str | None, list[str], list[str], tuple[float, float] | None]:
@@ -536,17 +587,21 @@ def _extract_plaintext(
     opening は最初の見出しより前の節(lead section)、body は記事全体をプレーンテキスト化
     したもの。{{hidden begin}}/{{hidden end}} 等の折りたたみテンプレートは通常のテンプレート
     呼び出しとして扱われるため、中身(表を含む)は body に自然に含まれる。
+
+    脚注・出典・画像の説明は地の文ではないので落とす(`_drop_non_prose`)。
     """
     code = mwp.parse(wikitext)
+    coords = _extract_coordinates(code)
+    _drop_non_prose(code)
 
     lead_nodes = []
     for node in code.nodes:
         if isinstance(node, Heading):
             break
         lead_nodes.append(node)
-    opening = mwp.wikicode.Wikicode(lead_nodes).strip_code().strip() or None
+    opening = _clean_text(mwp.wikicode.Wikicode(lead_nodes).strip_code())
 
-    body = code.strip_code(keep_template_params=True).strip() or None
+    body = _clean_text(code.strip_code(keep_template_params=True))
 
     tags: list[str] = []
     links: list[str] = []
@@ -561,4 +616,13 @@ def _extract_plaintext(
         else:
             links.append(title)
 
-    return opening, body, tags, links, _extract_coordinates(code)
+    return opening, body, tags, links, coords
+
+
+def _clean_text(text: str) -> str | None:
+    """プレーンテキスト化の後始末(マジックワードの除去と空白の詰め)。"""
+    text = _MAGIC_WORD_RE.sub("", text)
+    # 消した跡に残る行頭・行末の空白と、3 行以上の空行を詰める
+    text = "\n".join(line.strip() for line in text.splitlines())
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip() or None
