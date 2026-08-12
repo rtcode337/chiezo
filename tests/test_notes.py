@@ -443,3 +443,55 @@ class TestMcpTools:
         got = call_tool(client, "recall", {"tag": "検証"})["payload"]
         assert got["total"] == 1
         assert got["notes"][0]["text"] == "MCP 経由で覚えた話"
+
+
+class TestClaudeConfig:
+    """CLAUDE.md ブロックに**メモの中身を引き写さない**こと(app/claude_config.py)。
+
+    例示のタイトル・タグは DB の実データから採るが、notes はユーザーが手元で書いたメモで
+    機密が混じりうる。ブロックはリポジトリ側(`--project`)にも生成できるので、
+    見出しやタグが載るとコミットされて意図せず共有される。
+    """
+
+    SECRET_TITLE = "社外に出せない相談ごと"
+    SECRET_TAG = "機密"
+
+    @pytest.fixture()
+    def block(self, client):
+        client.post(
+            "/v1/notes",
+            json={"text": f"{self.SECRET_TITLE}\n\n本文も出さない", "tags": self.SECRET_TAG},
+        )
+        return client.get("/admin/claude-config.txt").text
+
+    def _section(self, block: str) -> str:
+        """notes の行だけを切り出す(次のソースの見出しまで)。"""
+        lines = block.splitlines()
+        start = next(i for i, line in enumerate(lines) if line.startswith("- **notes**"))
+        rest = lines[start + 1:]
+        end = next((i for i, line in enumerate(rest) if line.startswith("- **")), len(rest))
+        return "\n".join(lines[start:start + 1 + end])
+
+    def test_notes_is_listed(self, block):
+        assert "- **notes**(kind=notes)" in block
+
+    def test_the_memo_is_not_quoted(self, block):
+        assert self.SECRET_TITLE not in block
+        assert self.SECRET_TAG not in block
+
+    def test_examples_use_placeholders(self, block):
+        section = self._section(block)
+        assert '--data-urlencode "q=<検索語>"' in section
+        assert '--data-urlencode "title=<タイトル>"' in section
+        assert '--data-urlencode "tag=<タグ名>"' in section
+
+    def test_public_sources_still_quote_real_titles(self, block):
+        """公開ダンプ由来のソースは実在タイトルで例示したまま(引用を止めるのは notes だけ)。
+
+        プレースホルダーは「その API をどう呼ぶか」しか伝えない。実在タイトルは
+        `多摩川 (relation:32007)` のような**そのソース特有の表記**まで見せられるので、
+        載せてよいソースでは落とさない。
+        """
+        others = block.replace(self._section(block), "")
+        assert "- **jawiki**" in others
+        assert "<タイトル>" not in others

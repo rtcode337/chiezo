@@ -1,5 +1,7 @@
 """API エンドポイントのテスト(フィクスチャ DB 使用)。"""
+import re
 import time
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -712,6 +714,25 @@ class TestClaudeConfig:
         assert "/v1/jawiki/links" in text
         assert "被リンク(この記事を指している記事)は取れない" in text
         assert "`#` の前で切ること" in text
+
+    def test_config_txt_omits_doc_counts(self, client):
+        """ソース名の括弧に文書数を書かないこと。
+
+        取り込み・notes への書き込みのたびに変わる値で、ブロックを貼り替えない限り
+        古い数字が残る。正確な件数は同じブロックが案内している `/v1/sources` で引ける。
+        """
+        text = client.get("/admin/claude-config.txt").text
+        assert "- **jawiki**(ja Wikipedia):" in text
+        assert re.search(r"\d+件", text) is None
+
+    def test_config_footer_timestamp_is_jst(self, client):
+        """生成時刻は人が読む行なので JST 表記(実行環境の TZ に依らせない)。"""
+        from app import claude_config
+
+        block = claude_config.build_block(
+            {}, "http://example.test", now=datetime(2026, 8, 12, 14, 58, tzinfo=UTC)
+        )
+        assert "この一覧は 2026-08-12 23:58 JST 時点の" in block
 
     def test_config_txt_base_url_is_derived_from_request(self, client):
         """curl 例のベース URL はアクセス元(プロトコル・ホスト名・ポート)から導出する。"""

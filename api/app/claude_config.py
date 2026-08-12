@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app import db
@@ -50,6 +50,11 @@ _TAG_SAMPLE_TIMEOUT = 2.0
 # links の有無を判定するために読む docs の行数(_has_links 参照)。
 _LINKS_SAMPLE_ROWS = 200_000
 
+# フッターの生成時刻に使う。**人が読む行なので JST**(CLAUDE.md「日時は JST で見せる」)。
+# 実行環境のローカル時刻に任せると、api コンテナの TZ 次第で表記が変わる。JST は夏時間を
+# 持たないので固定オフセットで足り、tzdata の無いイメージでも壊れない。
+JST = timezone(timedelta(hours=9))
+
 
 def _sample(src: Source) -> tuple[str, set[str], list[str]]:
     """例示に使うサンプルのタイトルと、その doc の extra のキー集合・tags。"""
@@ -72,6 +77,19 @@ def _sample(src: Source) -> tuple[str, set[str], list[str]]:
     except (ValueError, TypeError):
         tags = []
     return title, keys, tags
+
+
+def _quotable(src: Source) -> bool:
+    """このソースの中身(タイトル・タグ)を例示に引き写してよいか。
+
+    例示は DB の実データから採る。公開ダンプ由来のソース(wikipedia・osm・geonames…)なら
+    生成物に載るのは公開情報の引き写しにすぎないが、**notes はユーザーが手元で書いたメモ**で、
+    機密が混じりうる。CLAUDE.md ブロックはリポジトリ側(`--project`)にも生成できるので、
+    メモの見出しやタグがそのまま載るとコミットされて意図せず共有される。
+    書き込めるソース(= 中身が手元で作られるソース)は実データを引かず、
+    `<タイトル>` のようなプレースホルダーだけで例示する。
+    """
+    return not src.mutable
 
 
 def _has_value(src: Source, column: str) -> bool:
@@ -150,6 +168,13 @@ def _sample_tag(src: Source) -> str | None:
     return rows[0]["tag"] if rows else None
 
 
+def _example_tag(src: Source, sample_tags: list[str]) -> str | None:
+    """例示に使うタグ名。引用してよいソースなら実在のタグ、そうでなければプレースホルダー。"""
+    if not _quotable(src):
+        return "<タグ名>"
+    return _sample_tag(src) or (sample_tags[0] if sample_tags else None)
+
+
 def _sample_area(src: Source) -> str:
     try:
         rows = db.query(
@@ -164,15 +189,16 @@ def _sample_area(src: Source) -> str:
 
 def _emit_source(base: str, src: Source, out: list[str]) -> None:
     name = src.name
-    docs_str = f"{src.doc_count:,}件"
     title, extra_keys, sample_tags = _sample(src)
+    if not _quotable(src):
+        # 中身は引き写さない(`_quotable` 参照)。extra のキー名は中身ではなくスキーマなので残す。
+        title, sample_tags = "<タイトル>", []
     query = title if title != "<タイトル>" else "<検索語>"
     has_filter = src.schema_version >= FILTER_MIN_SCHEMA_VERSION
     has_tags = src.schema_version >= TAG_MIN_SCHEMA_VERSION
 
     if src.kind == "wikipedia":
-        desc = f"{src.lang} Wikipedia" if src.lang else "Wikipedia"
-        paren = f"{desc}, {docs_str}"
+        paren = f"{src.lang} Wikipedia" if src.lang else "Wikipedia"
         out.append(f"- **{name}**({paren}): 一般知識・人物・作品・地名・用語・出来事など")
         out.append(f'  - 検索:   `curl -sG "{base}/v1/{name}/search?limit=5" --data-urlencode "q={query}"`')
         out.append(
@@ -190,7 +216,7 @@ def _emit_source(base: str, src: Source, out: list[str]) -> None:
                 "混じる。`doc` に渡す前に重複を落として `#` の前で切ること)"
             )
         if has_tags:
-            tag = _sample_tag(src) or (sample_tags[0] if sample_tags else "<カテゴリ名>")
+            tag = _example_tag(src, sample_tags) or "<カテゴリ名>"
             out.append(
                 f'  - カテゴリ列挙: `curl -sG "{base}/v1/{name}/filter?limit=200&fields=title,tags"'
                 f' --data-urlencode "tag={tag}"`'
@@ -226,7 +252,7 @@ def _emit_source(base: str, src: Source, out: list[str]) -> None:
         return
 
     if src.kind == "osm":
-        paren = f"OpenStreetMap 地名・POI 辞典, {docs_str}"
+        paren = "OpenStreetMap 地名・POI 辞典"
         out.append(
             f"- **{name}**({paren}): 地名・行政区・自然地物に加え病院/学校/店舗/観光地などの施設、"
             "駅・空港・港・IC/SA などの交通インフラと座標"
@@ -269,7 +295,7 @@ def _emit_source(base: str, src: Source, out: list[str]) -> None:
         return
 
     # その他(geonames 等)
-    paren = f"kind={src.kind or '?'}, {docs_str}"
+    paren = f"kind={src.kind or '?'}"
     out.append(f"- **{name}**({paren})")
     out.append(f'  - 検索:   `curl -sG "{base}/v1/{name}/search?limit=5" --data-urlencode "q={query}"`')
     out.append(
@@ -282,7 +308,7 @@ def _emit_source(base: str, src: Source, out: list[str]) -> None:
             " (その文書から出ているリンク先タイトルの一覧。**出リンクのみで、被リンクは取れない**。"
             "重複を落とすのは呼び出し側の仕事)"
         )
-    if has_tags and (tag := _sample_tag(src) or (sample_tags[0] if sample_tags else None)):
+    if has_tags and (tag := _example_tag(src, sample_tags)):
         out.append(
             f'  - タグ列挙: `curl -sG "{base}/v1/{name}/filter?limit=200"'
             f' --data-urlencode "tag={tag}"`'
@@ -410,7 +436,7 @@ def build_block(
     `--no-mcp` を指定されたときだけ `?mcp=0` になる。
     """
     base = base_url.rstrip("/")
-    when = (now or datetime.now().astimezone()).strftime("%Y-%m-%d %H:%M %Z").strip()
+    when = (now or datetime.now(JST)).astimezone(JST).strftime("%Y-%m-%d %H:%M JST")
 
     out: list[str] = [
         BEGIN_MARK,
