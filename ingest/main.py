@@ -222,9 +222,15 @@ def build_db(adapter: SourceAdapter, dump_path: Path, dump_date: str, building_p
         (coords,) = conn.execute("SELECT COUNT(*) FROM doc_coords").fetchone()
         log.info("extracted %d coordinates", coords)
 
+        # このあとの2つはどちらも重く、しかも1文なので途中経過を出せない。
+        # せめて「いまどちらで止まっているのか」が分かるよう境目にログを置く
+        # (jawiki 150万件では投入に2時間かかり、無音のまま固まったように見える)。
         log.info("building FTS index...")
         conn.execute("INSERT INTO docs_fts(rowid, title, body) SELECT doc_id, title, body FROM docs")
         conn.commit()
+        # optimize は全セグメントを1つにマージし直す処理で、索引が大きいと
+        # 投入本体と同等以上かかる。ここが無音の後半にあたる
+        log.info("optimizing FTS index (merging segments)...")
         conn.execute("INSERT INTO docs_fts(docs_fts) VALUES('optimize')")
         conn.commit()
 
