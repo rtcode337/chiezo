@@ -88,8 +88,10 @@ def _pager(source: str, page: int, has_next: bool, *, q: str | None = None,
 
     prev_html = f'<a href="{esc(url(page - 1))}">← 前の{PAGE_SIZE}件</a>' if page > 1 else ""
     next_html = f'<a href="{esc(url(page + 1))}">次の{PAGE_SIZE}件 →</a>' if has_next else ""
+    # `page` は int で受けているので実害は無いが、**HTML に出す値は例外なく esc を通す**
+    # (型注釈による絞り込みは呼び出し側の宣言に依存し、この関数を読むだけでは分からない)。
     return (f'<p class="pager">{prev_html}'
-            f'<span class="muted">ページ {page}</span>{next_html}</p>')
+            f'<span class="muted">ページ {esc(page)}</span>{next_html}</p>')
 
 
 def _paginate(rows: list) -> tuple[list, bool]:
