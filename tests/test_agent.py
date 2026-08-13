@@ -14,8 +14,9 @@ from fastapi.testclient import TestClient
 
 
 @pytest.fixture()
-def monkeypatch_env(monkeypatch, built_data_dir):
+def monkeypatch_env(monkeypatch, built_data_dir, tmp_path):
     monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+    monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
     return monkeypatch
 
 
@@ -62,10 +63,12 @@ class ToolLLM:
 
 
 def make_client(monkeypatch, fake: ToolLLM | None, **env) -> TestClient:
-    from app import answer
+    from app import answer, settings_store
     from app.main import app
 
+    # 相手の on/off は設定ストアに入る。URL は `local` の逃げ道で偽の相手へ向ける。
     monkeypatch.setenv("CHIEZO_LLM_URL", "http://llm.test:8080/v1")
+    settings_store.set_enabled("local", True)
     for key, value in env.items():
         monkeypatch.setenv(key, str(value))
     if fake is not None:

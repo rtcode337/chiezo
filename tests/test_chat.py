@@ -17,8 +17,9 @@ from test_agent import ANSWER, SEARCH_ASAKUSA, ToolLLM, make_client
 
 
 @pytest.fixture()
-def monkeypatch_env(monkeypatch, built_data_dir):
+def monkeypatch_env(monkeypatch, built_data_dir, tmp_path):
     monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+    monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.delenv("CHIEZO_WEB_SEARCH_URL", raising=False)
     monkeypatch.delenv("CHIEZO_ASK_DEFAULT_MODE", raising=False)
     monkeypatch.delenv("CHIEZO_ASK_DEFAULT_GROUNDED", raising=False)
@@ -239,7 +240,11 @@ class TestWhoYouAreTalkingTo:
     """話す相手は AI(モデル)で、Chiezo はその AI が引く知識、という関係を画面に出す。"""
 
     def test_heading_names_the_model(self, monkeypatch_env):
-        with make_client(monkeypatch_env, ToolLLM(), CHIEZO_LLM_MODEL="Qwen/Qwen3-8B-GGUF:Q4_K_M") as c:
+        from app import settings_store
+
+        # モデルは環境変数ではなく設定ストアから来る（会話のたびに選び直せる）
+        settings_store.set_model("local", "Qwen/Qwen3-8B-GGUF:Q4_K_M")
+        with make_client(monkeypatch_env, ToolLLM()) as c:
             res = c.get(CHAT_PATH)
         # 配布元・GGUF・量子化は落として名乗る
         assert "<h1>AI(Qwen3-8B)と話す</h1>" in res.text

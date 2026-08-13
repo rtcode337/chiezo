@@ -30,6 +30,8 @@
 # どちらも**あらかじめ作っておくこと**(取り込んだ .db は data に置く)。
 x-data-dir: &data-dir "/path/to/chiezo/data"
 x-notes-dir: &notes-dir "/path/to/chiezo/notes"
+# 管理画面から入れた設定(話す相手の on/off・API キー)の置き場。**API キーが入る**
+x-state-dir: &state-dir "/path/to/chiezo/state"
 
 services:
   # 検索 API・MCP・管理画面。これが本体で、単体で起動する。
@@ -51,6 +53,11 @@ services:
       - type: bind
         source: *notes-dir
         target: /notes
+      # 管理画面から入れた設定。notes と分けるのは、あちらが「覚える」層の中身で、
+      # 消してよいものと消してはいけないものが混ざるため
+      - type: bind
+        source: *state-dir
+        target: /state
     environment:
       CHIEZO_DATA_DIR: /data
       # 「覚える」層(/v1/notes)。空にすると機能ごと無効になる
@@ -58,47 +65,26 @@ services:
       # 管理画面の初期化ボタンから叩く chiezo-trigger の内部 URL(ホストには公開しない)。
       # サービス名で引くので、下の chiezo-trigger の名前を変えるならここも合わせる
       CHIEZO_TRIGGER_URL: http://chiezo-trigger:8080
+      # 管理画面から入れた設定(話す相手の on/off・API キー・モデル)の置き場。
+      # 未設定だと管理画面から相手を増やせない(環境変数で指す相手だけが使える)。
+      CHIEZO_STATE_DIR: /state
       # 本体の調整はどれも既定があるため、変えたいときだけ足す(素のままなら書かない)。
       #CHIEZO_MCP_ALLOWED_HOSTS: "chiezo.example.com:7010,localhost:*"  # /mcp の Host 検証
       #CHIEZO_RESCAN_INTERVAL: "5"    # data/ の変化を拾う間隔(秒)。低速なディスクでは伸ばす
       #CHIEZO_CATALOG_TTL: "300"      # ソース一覧(GET /sources)のキャッシュ(秒)
       #
       # ---- 「答える」層(/v1/ask・/v1/chat・/ai/chat)を使う場合 ----
-      # **この 1 行が機能フラグを兼ねる**(未設定なら層ごと無効で、Chiezo は検索 API と
-      # MCP として動く)。推論は同居させず OpenAI 互換の口を叩くだけなので、
-      # **別サーバーで動かしている LLM をそのまま指せる**:
-      #CHIEZO_LLM_URL: http://192.0.2.10:7011/v1     # ← 別サーバーの推論サーバ
+      # **話す相手は管理画面(/admin)の「話す相手」から on/off する。**
+      # 同居の推論サーバも Gemini も OpenRouter も CLI ブリッジも同じ扱いで、URL は
+      # api/app/providers.py に決め打ち。入れるのは API キーと on/off とモデルだけで、
+      # 保存先は上の CHIEZO_STATE_DIR。
       #
-      # 推論サーバに認証を掛けているなら鍵を渡す(LAN に出す以上、掛けておくのが安全)。
-      # モデル名は llama-server なら不要(1 プロセス 1 モデル)。Ollama 等は実在名が要る。
-      #CHIEZO_LLM_API_KEY: ""
-      #CHIEZO_LLM_MODEL: ""
+      # ここに書くのは、**推論サーバを別マシンで動かしている場合の URL だけ**。
+      # 同居なら書かなくてよい(コンテナ名で辿り着けるので決め打ちが効く)。
+      #CHIEZO_LLM_URL: http://192.0.2.10:7011/v1     # ← 別マシンの推論サーバ
       #
-      # ---- 話す相手を増やす場合 ----
-      # 上の CHIEZO_LLM_URL は「名前なし = 既定の相手」。`CHIEZO_LLM_<名前>_URL` を足すと
-      # 相手が増え、/ai/chat のセレクトと /v1/ask?backend=<名前> で選べる。
-      # 要求するのは OpenAI 互換の /chat/completions だけなので、相手の素性は問わない。
-      # **ここに書いた名前しか渡らない**ので、独自の名前を使うならこの並びに 4 行足すこと。
-      #
-      # Gemini(無料枠)。この URL の直下が chat/completions なので、末尾に /v1 は付けない
-      #CHIEZO_LLM_GEMINI_URL: https://generativelanguage.googleapis.com/v1beta/openai
-      #CHIEZO_LLM_GEMINI_MODEL: gemini-2.5-flash
-      #CHIEZO_LLM_GEMINI_API_KEY: ""
-      #CHIEZO_LLM_GEMINI_LABEL: Gemini
-      # OpenRouter(モデル ID の末尾が :free のものを選べば課金されない)
-      #CHIEZO_LLM_OPENROUTER_URL: https://openrouter.ai/api/v1
-      #CHIEZO_LLM_OPENROUTER_MODEL: deepseek/deepseek-r1:free
-      #CHIEZO_LLM_OPENROUTER_API_KEY: ""
-      #CHIEZO_LLM_OPENROUTER_LABEL: OpenRouter
-      #
-      # ---- CLI ブリッジ(Claude Code / Codex CLI)を使う場合 ----
-      # サブスクで使う CLI は HTTP ではないので、OpenAI 互換に見せるコンテナを別に立てて
-      # (ghcr.io/rtcode337/chiezo-bridge)、その URL をここに書く。
-      # **認証情報はブリッジ側のコンテナにだけ渡す**(ここには URL とラベルしか要らない)。
-      #CHIEZO_LLM_CLAUDE_URL: http://192.0.2.30:7013/v1
-      #CHIEZO_LLM_CLAUDE_LABEL: Claude Code
-      #CHIEZO_LLM_CODEX_URL: http://192.0.2.31:7013/v1
-      #CHIEZO_LLM_CODEX_LABEL: Codex CLI
+      # CLI ブリッジ(Claude Code / Codex CLI)を使うなら、この定義の下のほうにある
+      # chiezo-bridge-* のコメントも外すこと。
       #
       # 会話の既定。GPU で 8B 級を動かしていて「Chiezo の知識を持った相手と普通に話す」
       # 使い方をしたいなら agent + 0 に倒す(素の既定は rag + 1)。
@@ -160,6 +146,42 @@ services:
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:8080/healthz"]
       interval: 60s
+
+  # ---- Claude Code / Codex CLI と話す場合だけ、以下のコメントを外す ----
+  #
+  # この 2 つは HTTP ではなく CLI なので、OpenAI 互換の口に見せるブリッジを挟む。
+  # **サブスクの枠で使うためのもの**で、API キー経路は従量課金になるため使わない。
+  # 立ち上げたら管理画面(/admin)の「話す相手」で on にできるようになる
+  # (到達できない間は押せない)。
+  #
+  #chiezo-bridge-claude:
+  #  image: ghcr.io/rtcode337/chiezo-bridge:latest
+  #  container_name: chiezo-bridge-claude
+  #  volumes:
+  #    # 認証情報は Chiezo の設定 DB から読む(管理画面から登録する)。読み取り専用
+  #    - type: bind
+  #      source: /path/to/chiezo/state
+  #      target: /state
+  #      read_only: true
+  #  environment:
+  #    CHIEZO_BRIDGE_CLI: claude
+  #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-api:7010/mcp
+  #  restart: unless-stopped
+  #  cpu_shares: 512
+  #
+  #chiezo-bridge-codex:
+  #  image: ghcr.io/rtcode337/chiezo-bridge:latest
+  #  container_name: chiezo-bridge-codex
+  #  volumes:
+  #    - type: bind
+  #      source: /path/to/chiezo/state
+  #      target: /state
+  #      read_only: true
+  #  environment:
+  #    CHIEZO_BRIDGE_CLI: codex
+  #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-api:7010/mcp
+  #  restart: unless-stopped
+  #  cpu_shares: 512
 
   # ---- ソースプラグインを使う場合だけ、以下のコメントを外す ----
   #

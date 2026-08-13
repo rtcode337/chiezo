@@ -46,6 +46,7 @@ from app.registry import (
     scan_sources,
 )
 from app.views import admin as views_admin
+from app.views import ai_settings as views_ai_settings
 from app.views import browse as views_browse
 from app.views import chat as views_chat
 
@@ -1033,8 +1034,9 @@ async def ask(
         description="どの AI に聞くか(CHIEZO_LLM_<名前>_URL で足した相手の名前)。"
                     "省略すると CHIEZO_LLM_URL の相手",
     ),
+    model: str | None = Query(None, description="どのモデルを使うか(省略時はその相手の既定)"),
 ):
-    cfg = answer.require_settings(backend)
+    cfg = answer.require_settings(backend, model)
     # 既定は環境変数で決める(GPU + 8B の環境と、CPU だけの環境で妥当な既定が違うため)。
     mode = mode or answer.default_mode()
     grounded = answer.default_grounded() if grounded is None else grounded
@@ -1109,6 +1111,8 @@ class ChatRequest(BaseModel):
     notes: bool | None = None
     # どの AI に聞くか。画面のセレクトはここを毎回送る = やり取りごとに相手を変えられる。
     backend: str | None = None
+    # どのモデルを使うか。同じく毎回送るので、会話の途中でも切り替えられる。
+    model: str | None = None
 
 
 def _split_history(body: ChatRequest) -> tuple[str, list[dict]]:
@@ -1120,7 +1124,7 @@ def _split_history(body: ChatRequest) -> tuple[str, list[dict]]:
 
 @app.post("/v1/chat")
 async def chat(request: Request, body: ChatRequest, stream: bool = Query(False)):
-    cfg = answer.require_settings(body.backend)
+    cfg = answer.require_settings(body.backend, body.model)
     question, history = _split_history(body)
     mode = body.mode or answer.default_mode()
     grounded = answer.default_grounded() if body.grounded is None else body.grounded
@@ -1174,6 +1178,7 @@ async def _rag_events(cfg, q, queries, snippets, references, grounded, history=N
 # 下ごしらえを取るので main を import しない設計だが、登録の位置は末尾に揃える。
 
 app.include_router(views_admin.router)
+app.include_router(views_ai_settings.router)
 app.include_router(views_browse.router)
 app.include_router(views_chat.router)
 

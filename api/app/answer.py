@@ -37,15 +37,10 @@ import httpx
 from fastapi import HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
+from app import providers, settings_store
 from app.pages import doc_url
 
 log = logging.getLogger("chiezo.api")
-
-# 名前なしのバックエンド(= 従来の `CHIEZO_LLM_URL`)の内部名。
-DEFAULT_BACKEND = "default"
-# `CHIEZO_LLM_<名前>_URL` を見つけるための形。推論コンテナ向けの変数は `_URL` で
-# 終わらないので、この形にしておけば混ざらない。
-_BACKEND_URL_RE = re.compile(r"^CHIEZO_LLM_(.+)_URL$")
 
 # 検索 1 本あたり見る上位件数(この中から本文を取る文書を選ぶ)
 SEARCH_LIMIT = 5
@@ -79,9 +74,8 @@ class Settings:
     agent_tool_chars: int
     agent_timeout: float
     extra_headers: dict[str, str] = field(default_factory=dict)
-    # どのバックエンドの設定か(既定は DEFAULT_BACKEND)。画面の表示と、
-    # モデル名を引くときにどの環境変数を見るかの判断に使う。
-    name: str = DEFAULT_BACKEND
+    # どの相手の設定か（`app/providers.py` の ID）。画面の表示に使う。
+    name: str = ""
 
     @property
     def endpoint(self) -> str:
@@ -121,91 +115,75 @@ def _env_num(name: str, default, cast):
         return default
 
 
-def backend_env(backend: str, key: str) -> str:
-    """バックエンド名と項目名から環境変数名を作る。
-
-    既定のバックエンドだけは接頭辞を持たない(`CHIEZO_LLM_URL`)。ここを分けているのは、
-    **この機能が入る前の .env がそのまま動く**ようにするため —— 既存の設定を
-    書き換えさせずに相手を増やせる。
-    """
-    if backend == DEFAULT_BACKEND:
-        return f"CHIEZO_LLM_{key}"
-    return f"CHIEZO_LLM_{_env_token(backend)}_{key}"
-
-
-def _env_token(backend: str) -> str:
-    """バックエンド名を環境変数で使う形にする(`open-router` → `OPEN_ROUTER`)。"""
-    return re.sub(r"[^A-Z0-9]+", "_", backend.upper()).strip("_")
-
-
 def normalize_backend(name: str | None) -> str:
-    """クエリ等で受け取った名前を内部表記に寄せる。空なら既定のバックエンド。"""
-    token = (name or "").strip().lower().replace("-", "_")
-    return token or DEFAULT_BACKEND
+    """クエリ等で受け取った相手の名前を内部表記に寄せる。空なら「先頭の相手」。"""
+    token = (name or "").strip().lower()
+    if token:
+        return token
+    names = backend_names()
+    return names[0] if names else ""
 
 
 def backend_names() -> list[str]:
-    """設定されているバックエンドを、既定を先頭にして返す。
+    """いま話せる相手（管理画面で有効にしてあるもの）を、画面の並び順で返す。
 
-    見つけ方は「`CHIEZO_LLM_<名前>_URL` という形の環境変数を数える」。
-    推論コンテナ向けの変数(`CHIEZO_LLM_HF_REPO`・`CHIEZO_LLM_CTX_SIZE` 等)は
-    `_URL` で終わらないので混ざらない。
+    **同居の推論サーバも外部のサービスも CLI ブリッジも同じ扱い。** 特別扱いする相手は無い。
+    コンテナが立っているかどうかまではここでは見ない（HTTP を叩くので遅い）。
+    そちらは `app/views/ai_settings.py` が管理画面を描くときに確かめる。
     """
-    names: list[str] = []
-    if os.environ.get("CHIEZO_LLM_URL", "").strip():
-        names.append(DEFAULT_BACKEND)
-    found = set()
-    for key, value in os.environ.items():
-        m = _BACKEND_URL_RE.match(key)
-        if m and value.strip():
-            found.add(m.group(1).lower())
-    names.extend(sorted(found))
-    return names
+    # 元栓が閉じていれば、相手が何台有効でも話せない。
+    if not settings_store.answer_enabled():
+        return []
+    stored = settings_store.load_all()
+    return [
+        spec.id
+        for spec in providers.all_providers()
+        if stored.get(spec.id, settings_store.ProviderSetting(spec.id)).enabled
+    ]
 
 
 def backend_label(backend: str) -> str:
-    """画面に出す相手の名前。`CHIEZO_LLM_<名前>_LABEL` があればそれを使う。
+    """画面に出す相手の名前。**見出しのモデル名とは別**で、どの設定かを指す。"""
+    return providers.label_of(backend)
 
-    名前は環境変数から作った識別子(`gemini`・`bridge_claude`)なので、
-    そのままだと画面で読みにくい。**見出しのモデル名とは別**で、こちらは
-    「どの設定を選んでいるか」を指すラベルである。
+
+def load_settings(backend: str | None = None, model: str | None = None) -> Settings | None:
+    """相手の設定を組み立てる。使えない相手なら None。
+
+    URL と表示名は `app/providers.py` の決め打ち、on/off と API キーとモデルは
+    管理画面の設定（`app/settings_store.py`）から。
+
+    `model` を渡すと、保存してある既定より優先する（会話のたびに選び直せるようにするため）。
+
+    タイムアウトや抜粋の量（`CHIEZO_ANSWER_*`）は相手で分けない —— 相手が変わっても
+    「どれだけ根拠を積むか」は Chiezo 側の都合だから。
     """
-    explicit = os.environ.get(backend_env(backend, "LABEL"), "").strip()
-    if explicit:
-        return explicit
-    if backend == DEFAULT_BACKEND:
-        return "既定"
-    return backend.replace("_", " ")
-
-
-def load_settings(backend: str | None = None) -> Settings | None:
-    """環境変数から設定を読む。URL が無ければ None(= そのバックエンドは無効)。
-
-    import 時ではなく呼び出しごとに読むのは、環境変数だけで有効・無効を切り替えられる
-    ようにするため(テストも monkeypatch で切り替える)。
-
-    タイムアウトや抜粋の量(`CHIEZO_ANSWER_*`)はバックエンドで分けない —— 相手が変わっても
-    「どれだけ根拠を積むか」は Chiezo 側の都合だからである。分けるのは相手そのもの
-    (URL・モデル・鍵)だけ。
-    """
-    name = normalize_backend(backend)
-    raw = os.environ.get(backend_env(name, "URL"), "").strip()
-    if not raw:
+    if not settings_store.answer_enabled():
         return None
-    api_key = os.environ.get(backend_env(name, "API_KEY"), "").strip() or None
+    name = normalize_backend(backend)
+    spec = providers.get(name)
+    if spec is None:
+        return None
+    stored = settings_store.load(name)
+    if not stored.enabled:
+        return None
+    # 鍵の要る相手で未登録なら使えない（管理画面が on にさせないが、設定を直に
+    # 書き換えられた場合の保険でもある）。
+    if spec.key == providers.KEY_REQUIRED and not stored.has_key:
+        return None
+    chosen = (model or stored.model or (spec.models[0] if spec.models else "")).strip()
     return Settings(
         name=name,
-        url=_normalize_base_url(raw),
-        # llama-server は 1 プロセス 1 モデルなので名前は何でも通る。
-        # Ollama など複数モデルを持つ相手に向けるときだけ実在名が要る。
-        model=os.environ.get(backend_env(name, "MODEL"), "chiezo").strip() or "chiezo",
-        api_key=api_key,
+        url=_normalize_base_url(providers.url_of(spec)),
+        # 空でも通る相手（1 プロセス 1 モデルの推論サーバ・CLI ブリッジ）がいるので、
+        # 決まらないときは無難な既定を置く。
+        model=chosen or "chiezo",
+        api_key=stored.api_key or None,
         # DB の 5 秒とは別枠。CPU 推論は数十秒級になる。
         timeout=_env_num("CHIEZO_ANSWER_TIMEOUT", 120.0, float),
         docs=max(1, _env_num("CHIEZO_ANSWER_DOCS", 4, int)),
         max_chars=max(1, _env_num("CHIEZO_ANSWER_MAX_CHARS", 6000, int)),
-        # agent モードの 3 つの上限。どれもモデルの窓と待ち時間を有限に保つためのもので、
-        # 意味は app/agent.py 冒頭の説明が正。
+        # agent モードの 3 つの上限。意味は app/agent.py 冒頭の説明が正。
         agent_max_steps=max(1, _env_num("CHIEZO_AGENT_MAX_STEPS", 6, int)),
         agent_tool_chars=max(200, _env_num("CHIEZO_AGENT_TOOL_CHARS", 3000, int)),
         agent_timeout=_env_num("CHIEZO_AGENT_TIMEOUT", 180.0, float),
@@ -213,7 +191,7 @@ def load_settings(backend: str | None = None) -> Settings | None:
 
 
 def is_enabled() -> bool:
-    """使う層が有効か(バックエンドが 1 つでも設定されていれば有効)。"""
+    """使う層が有効か（話せる相手が 1 つでもあれば有効）。"""
     return bool(backend_names())
 
 
@@ -239,11 +217,12 @@ async def model_label(cfg: Settings) -> str | None:
     """いま話している相手(モデル)の名前。分からなければ None。
 
     **Chiezo は知識ベースで、話す相手は AI** という関係を画面に出すために要る。
-    `CHIEZO_LLM_MODEL` が明示されていればそれを、無ければ推論サーバの `/models` に聞く
-    (llama-server は 1 プロセス 1 モデルなので、設定していない運用のほうが普通)。
+    設定でモデルが決まっていればそれを、決まっていなければ相手の `/models` に聞く
+    (llama-server は 1 プロセス 1 モデルなので、選ばずに使う運用のほうが普通)。
     相手が落ちていても画面は出したいので、失敗は None として覚えて先へ進む。
     """
-    explicit = os.environ.get(backend_env(cfg.name, "MODEL"), "").strip()
+    # 設定で決まっているモデルがあればそれを名乗る（相手に聞くのは決まっていないときだけ）。
+    explicit = cfg.model if cfg.model and cfg.model != "chiezo" else ""
     if explicit:
         return short_model_name(explicit)
     now = time.monotonic()
@@ -261,6 +240,65 @@ async def model_label(cfg: Settings) -> str | None:
         label = None
     _MODEL_LABEL_CACHE[cfg.url] = (now, label)
     return label
+
+
+async def reachable(url: str, api_key: str | None = None, timeout: float = 3.0) -> bool:
+    """その URL に OpenAI 互換の相手がいるか。
+
+    **CLI ブリッジを on にしてよいかの判定**に使う。ブリッジは別コンテナで、
+    compose のコメントを外していなければ立っていない。立っていない相手を有効にしても
+    会話のたびに失敗するだけなので、管理画面はここが真のときだけ on を押させる。
+
+    待ち時間を短くしてあるのは、管理画面を開くたびに走るため（相手が落ちていても
+    ページは出したい）。
+    """
+    base = _normalize_base_url(url)
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            res = await client.get(f"{base}/models", headers=headers)
+        return res.status_code < 500
+    except httpx.HTTPError:
+        return False
+
+
+# 相手が名乗るモデルの控え。管理画面と会話画面が開くたびに聞かずに済むよう覚えておく。
+_MODELS_CACHE: dict[str, tuple[float, list[str]]] = {}
+MODELS_TTL = 300.0
+
+
+async def available_models(backend: str) -> list[str]:
+    """会話で選べるモデルの一覧。
+
+    **相手に聞くのを優先し、聞けなければコードの候補に落ちる。** OpenRouter のように
+    提供モデルが頻繁に入れ替わる相手ではコードの控えがすぐ古くなるし、CLI ブリッジのように
+    一覧を持たない相手もいる。両方あるときは相手の答えが正。
+    """
+    name = normalize_backend(backend)
+    now = time.monotonic()
+    cached = _MODELS_CACHE.get(name)
+    if cached and now - cached[0] < MODELS_TTL:
+        return cached[1]
+
+    fallback: list[str] = []
+    spec = providers.get(name)
+    if spec is not None:
+        fallback = list(spec.models)
+
+    models: list[str] = []
+    cfg = load_settings(name)
+    if cfg is not None:
+        try:
+            async with _llm_client(cfg) as client:
+                res = await client.get(f"{cfg.url}/models", timeout=5.0)
+            entries = res.json().get("data") or []
+            models = [str(e.get("id")) for e in entries if e.get("id")]
+        except (httpx.HTTPError, ValueError, TypeError, AttributeError, KeyError):
+            models = []
+
+    out = models or fallback
+    _MODELS_CACHE[name] = (now, out)
+    return out
 
 
 def default_mode() -> str:
@@ -284,8 +322,8 @@ def default_grounded() -> bool:
     return value not in ("0", "false", "no", "off")
 
 
-def require_settings(backend: str | None = None) -> Settings:
-    cfg = load_settings(backend)
+def require_settings(backend: str | None = None, model: str | None = None) -> Settings:
+    cfg = load_settings(backend, model)
     if cfg is not None:
         return cfg
     name = normalize_backend(backend)
@@ -297,17 +335,15 @@ def require_settings(backend: str | None = None) -> Settings:
             503,
             {
                 "error": "answering is disabled",
-                "hint": "推論サーバの OpenAI 互換 URL を CHIEZO_LLM_URL に設定すると有効になる"
-                        "(compose なら `docker compose --profile answer up -d`)",
+                "hint": "管理画面（/admin）で「答える」層を有効にし、話す相手を on にすると使えるようになる",
             },
         )
+    hint = "管理画面（/admin）で有効にすると選べるようになる"
+    if providers.get(name) is None:
+        hint = f"知らない相手です。選べるのは: {', '.join(known)}"
     raise HTTPException(
         404,
-        {
-            "error": f"unknown backend: {name}",
-            "backends": known,
-            "hint": f"{backend_env(name, 'URL')} を設定すると選べるようになる",
-        },
+        {"error": f"unknown backend: {name}", "backends": known, "hint": hint},
     )
 
 

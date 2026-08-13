@@ -19,8 +19,12 @@ Codex は **HTTP ではなく CLI** で、サブスクの枠で使うにはそ�
   「1 回聞いたら答えが返る」ので、`rag` / `agent` の区別は関係なくなる。
 - **組み込みの道具は全部切る**。ファイルの読み書きやシェルは、知識ベースに答えるのに
   要らないうえ危ない。CLI に渡すのは Chiezo の MCP だけにする。
-- **認証情報はイメージに焼かない**。環境変数で受け取り、Codex の認証ファイルだけは
-  起動時に書き出してコンテナと一緒に捨てる(`entrypoint.sh`)。
+- **認証情報は Chiezo の設定 DB から読む**(`/state/settings.db` を読み取り専用でマウント)。
+  こうすると **Chiezo の管理画面から登録できる** —— chiezo-api に「トークンを返す口」を
+  開けずに済むのが要点で、認証なしの LAN サービスにそんな口を足したくない。
+  DB が無い・空のときは環境変数(`CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_AUTH_JSON`)に落ちる。
+  **読むのは要求のたび**なので、鍵を登録し直してもブリッジの再起動は要らない。
+  イメージには何も焼かない。
 - **ストリーミングは 1 チャンク**。CLI の応答を待ち切ってから SSE に載せる。
   差分で流すには CLI ごとに `--output-format stream-json` / `--json` の解析が要り、
   2 つ分の解析を抱えるだけの価値がまだ無い(Chiezo 側は差分の粒度を問わない)。
@@ -31,6 +35,7 @@ import asyncio
 import json
 import logging
 import os
+import sqlite3
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -61,6 +66,65 @@ MODEL_LABEL = os.environ.get("CHIEZO_BRIDGE_MODEL_LABEL", "").strip() or (
 ALLOWED_TOOLS = os.environ.get("CHIEZO_BRIDGE_ALLOWED_TOOLS", "mcp__chiezo").strip()
 
 MCP_CONFIG_PATH = "/tmp/chiezo-mcp.json"
+
+# Chiezo の設定 DB(chiezo-api と共有。読み取り専用でマウントする)。
+# **テーブルの形は api/app/settings_store.py との約束**。同じリポジトリの 2 つのイメージが
+# 1 つのファイルを挟んで話すので、片方だけ変えると黙って読めなくなる。
+STATE_DB = os.environ.get("CHIEZO_BRIDGE_STATE_DB", "/state/settings.db")
+
+
+def stored_credential() -> str:
+    """管理画面から登録された認証情報。無ければ環境変数へ落ちる。
+
+    要求のたびに読む(起動時に固めない)ので、**管理画面で登録し直しても再起動が要らない**。
+    """
+    fallback = os.environ.get(
+        {"claude": "CLAUDE_CODE_OAUTH_TOKEN", "codex": "CODEX_AUTH_JSON"}.get(CLI, ""), ""
+    ).strip()
+    try:
+        # 読み取り専用で開く(マウントも ro だが、WAL の副作用でファイルを作らないため)。
+        conn = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True, timeout=5.0)
+        try:
+            row = conn.execute(
+                "SELECT api_key FROM provider_settings WHERE provider = ?", (CLI,)
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return fallback
+    return (row[0] if row and row[0] else "").strip() or fallback
+
+
+def apply_credential() -> str:
+    """認証情報を CLI が読める形に置く。置けなければ理由を返す(空なら成功)。
+
+    Claude は環境変数、Codex は認証ファイルを見るので、置き方が違う。
+    """
+    value = stored_credential()
+    if not value:
+        return (
+            f"{CLI} の認証情報が未登録です。"
+            "Chiezo の管理画面(/admin の「話す相手」)で登録してください"
+        )
+    if CLI == "claude":
+        os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = value
+        return ""
+    if CLI == "codex":
+        home = os.environ.get("CODEX_HOME", "/srv/bridge/.codex")
+        os.makedirs(home, mode=0o700, exist_ok=True)
+        path = os.path.join(home, "auth.json")
+        # 中身が変わったときだけ書く(毎回書くと更新時刻が動き続ける)。
+        try:
+            with open(path, encoding="utf-8") as f:
+                if f.read() == value:
+                    return ""
+        except OSError:
+            pass
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(value)
+        os.chmod(path, 0o600)
+        return ""
+    return f"未対応の CHIEZO_BRIDGE_CLI: {CLI}"
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -167,6 +231,8 @@ def build_command(out_path: str) -> list[str]:
 
 async def run_cli(prompt: str) -> str:
     """CLI を 1 回起動して本文を返す。失敗は HTTPException にする。"""
+    if reason := apply_credential():
+        raise HTTPException(401, {"error": reason})
     out_path = f"/tmp/chiezo-answer-{uuid.uuid4().hex}.txt"
     cmd = build_command(out_path)
     log.info("running %s (prompt %d bytes)", cmd[0], len(prompt.encode("utf-8")))
@@ -241,7 +307,16 @@ async def _sse(text: str) -> AsyncIterator[str]:
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "cli": CLI, "model": MODEL_LABEL}
+    """立っているかと、認証情報が入っているか。
+
+    **認証が無くても 200 を返す。** 管理画面はまず「立っているか」を見て、立っていれば
+    鍵の登録欄を出す —— 認証が無いだけで到達不能に見えると、どこで詰まっているのか
+    分からなくなる。
+    """
+    return {
+        "status": "ok", "cli": CLI, "model": MODEL_LABEL,
+        "authenticated": bool(stored_credential()),
+    }
 
 
 @app.get("/v1/models")

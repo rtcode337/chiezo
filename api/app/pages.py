@@ -124,6 +124,15 @@ PAGE_STYLE = """
   .muted { color: #666; font-size: 0.85rem; }
   .pager { display: flex; gap: 1rem; align-items: baseline; margin-top: 1rem; }
   .stale { color: #c0392b; font-size: 0.85rem; }
+  /* 管理画面の「話す相手」の表。設定を一度入れたら開かない場所なので、1 行を低く保つ
+     (本文と同じ字の大きさだと、手順の説明が入る列で行が伸びすぎる)。 */
+  table.ai-settings td { font-size: 0.85rem; }
+  table.ai-settings button { padding: 0.2rem 0.6rem; font-size: 0.85rem; }
+  table.ai-settings input[type=text] { width: 16rem; font-size: 0.85rem; }
+  /* details は本文中の見出し向けの体裁(太字・上下の余白)なので、表の中では抑える。 */
+  table.ai-settings details { margin-top: 0.3rem; }
+  table.ai-settings details > summary { font-weight: normal; padding: 0.1rem 0; }
+  table.ai-settings p { margin: 0.3rem 0; }
   details { margin-top: 1rem; }
   details > summary { cursor: pointer; font-weight: bold; padding: 0.3rem 0; }
   pre.doc-body { white-space: pre-wrap; word-break: break-word; }

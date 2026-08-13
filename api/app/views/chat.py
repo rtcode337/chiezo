@@ -84,6 +84,7 @@ CHAT_JS = """
     var web = document.getElementById('web'), notes = document.getElementById('notes');
     return {
       backend: (document.getElementById('backend') || {}).value || null,
+      model: (document.getElementById('model') || {}).value || null,
       source: document.getElementById('source').value || null,
       grounded: document.getElementById('grounded').value === '1',
       mode: document.getElementById('mode').value,
@@ -209,6 +210,7 @@ async def chat_page(
     grounded: bool | None = Query(None, description="Chiezo で取れたことだけを根拠にする"),
     mode: str | None = Query(None, pattern="^(rag|agent)$", description="rag / agent"),
     backend: str | None = Query(None, description="どの AI に聞くか(省略時は既定のバックエンド)"),
+    model: str | None = Query(None, description="どのモデルを使うか(省略時はその相手の既定)"),
 ):
     mode = mode or answer.default_mode()
     grounded = answer.default_grounded() if grounded is None else grounded
@@ -233,7 +235,17 @@ async def chat_page(
     names = answer.backend_names()
     current_backend = answer.normalize_backend(backend)
     if current_backend not in names:
-        current_backend = names[0] if names else answer.DEFAULT_BACKEND
+        current_backend = names[0] if names else ""
+    # モデルは**会話のたびに選べる**。候補は相手に聞いた一覧（無ければコードの控え）。
+    model_select = ""
+    if names:
+        model_options = "".join(
+            f'<option value="{esc(m)}"{" selected" if m == model else ""}>{esc(m)}</option>'
+            for m in await answer.available_models(current_backend)
+        )
+        if model_options:
+            model_select = f'<select id="model" name="model" title="モデル">{model_options}</select>'
+
     backend_select = ""
     if len(names) > 1:
         backend_options = "".join(
@@ -259,6 +271,7 @@ async def chat_page(
     settings = f"""
 <div class="composer-settings">
 {backend_select}
+{model_select}
 <select id="source" name="source" title="引くソース">{options}</select>
 <select id="mode" name="mode" title="引き方">{mode_options}</select>
 <select id="grounded" name="grounded" title="根拠の扱い">{grounded_options}</select>
@@ -287,7 +300,7 @@ async def chat_page(
 """
         return HTMLResponse(content=page_shell("AI と話す", body, style=CHAT_STYLE))
 
-    cfg = answer.require_settings(current_backend)
+    cfg = answer.require_settings(current_backend, model)
     # 話す相手は AI(モデル)で、Chiezo はその AI が引く知識。見出しでその関係を出すため、
     # モデル名を名乗らせる(推論サーバに聞く。分からなければ名前なしの「AI」)。
     label = await answer.model_label(cfg)
@@ -325,6 +338,26 @@ async def chat_page(
 <noscript><p class="stale">JavaScript が無効です。
 <a href="{esc(nojs_url)}">1 問 1 答の画面</a>を使ってください(会話の継続はできません)。</p></noscript>
 <script>{CHAT_JS}</script>
+<script>
+  // 相手を変えたらモデルの候補も入れ替える(相手ごとに使えるモデルが違う)。
+  (function () {{
+    var b = document.getElementById('backend'), m = document.getElementById('model');
+    if (!b || !m) {{ return; }}
+    b.addEventListener('change', function () {{
+      m.disabled = true;
+      fetch('/ai/models?backend=' + encodeURIComponent(b.value))
+        .then(function (r) {{ return r.ok ? r.json() : {{ models: [] }}; }})
+        .then(function (d) {{
+          m.innerHTML = '';
+          (d.models || []).forEach(function (id) {{
+            var o = document.createElement('option');
+            o.value = id; o.textContent = id; m.appendChild(o);
+          }});
+        }})
+        .finally(function () {{ m.disabled = false; }});
+    }});
+  }})();
+</script>
 </div>
 """
         return HTMLResponse(content=page_shell(heading, body, style=CHAT_STYLE))
@@ -337,6 +370,7 @@ async def chat_page(
 <input type="hidden" name="nojs" value="1">
 <input type="text" name="q" value="{esc(q or '')}" placeholder="質問を書く(自然文でよい)">
 {backend_select.replace('id="backend"', 'id="backend-nojs"')}
+{model_select.replace('id="model"', 'id="model-nojs"')}
 <select name="source">{options}</select>
 <select name="grounded">{grounded_options}</select>
 <select name="mode">{mode_options}</select>

@@ -18,6 +18,7 @@ from app import answer, claude_config
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
 from app.pages import CHAT_PATH, browse_url, esc, page_shell
 from app.registry import SUPPORTED_SCHEMA_VERSIONS, Source
+from app.views import ai_settings
 
 log = logging.getLogger("chiezo.api")
 
@@ -164,18 +165,18 @@ def _job_status_html(job: dict | None) -> str:
 
 
 def _answer_status_html() -> str:
-    """管理画面に出す「使う」層の状態(既定では無効なので、その旨と有効化方法を出す)。"""
-    if not answer.is_enabled():
-        return (
-            '<p class="muted">「使う」層は無効です。推論サーバの OpenAI 互換 URL を'
-            " <code>CHIEZO_LLM_URL</code> に設定すると有効になります"
-            "(compose なら <code>docker compose --profile answer up -d</code>)。</p>"
-        )
+    """管理画面に出す「使う」層の状態(既定では無効なので、その旨を出す)。
+
+    相手の増やし方そのものは下の「話す相手」節(app/views/ai_settings.py)が持つ。
+    ここは「いま話せるか」と会話画面への入口だけ。
+    """
     names = answer.backend_names()
-    # 相手が 1 つなら従来どおりの 1 行。増やしてある環境では、どれが設定されているかを
-    # ここで一望できるようにする(会話画面のセレクトと同じ並び)。
-    if len(names) == 1:
-        return f'<p><a href="{CHAT_PATH}">→ AI と話す(Chiezo の知識を引きます)</a></p>'
+    if not names:
+        return (
+            '<p class="muted">まだ話せる相手がいません。下の「話す相手」で有効にしてください'
+            "(LAN の別マシンで動かしている推論サーバを指すなら、"
+            " <code>CHIEZO_LLM_URL</code> に URL を設定します)。</p>"
+        )
     links = " / ".join(
         f'<a href="{CHAT_PATH}?backend={quote(name)}">{esc(answer.backend_label(name))}</a>'
         for name in names
@@ -187,7 +188,7 @@ def _answer_status_html() -> str:
 
 
 @router.get("/admin", response_class=HTMLResponse)
-def admin(request: Request):
+async def admin(request: Request):
     sources: dict[str, Source] = request.app.state.sources
     job = _fetch_trigger_status()
     job_running = bool(job and job.get("state") == "running")
@@ -299,6 +300,8 @@ def admin(request: Request):
 
 <h2>ためた知識を使う AI</h2>
 {_answer_status_html()}
+
+{await ai_settings.section_html()}
 
 <h2>Claude Code 連携設定</h2>
 <p class="muted">

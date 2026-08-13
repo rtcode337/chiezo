@@ -218,81 +218,109 @@ docker compose exec searxng wget -qO- "http://localhost:7012/search?q=test&forma
 - 何を書いたかは「調べた手順」に `remember {...}` として出る
 - トグルを外す(API なら `notes=0`)と、そのやり取りでは道具ごと渡らない
 
-## 話す相手を増やす
+## 話す相手を選ぶ（管理画面から）
 
-`CHIEZO_LLM_URL` は「名前なし = 既定の相手」です。`CHIEZO_LLM_<名前>_URL` を足すと相手が増え、
-`/ai/chat` のセレクトと `/v1/ask?backend=<名前>` で選べるようになります。
+**話す相手は管理画面（`/admin` の「話す相手」）から on/off します。** `.env` に書くことはありません。
 
-Chiezo が要求するのは **OpenAI 互換の `/chat/completions` だけ**なので、相手の素性は問いません。
+節の先頭に**「答える」層そのものの元栓**があります。止めると、相手をいくつ有効にしてあっても
+`/v1/ask`・`/ai/chat` は 503 になります（相手を 1 つずつ切って回らずに機能ごと止めたいとき用）。
+相手の設定はそのまま残るので、再開すれば元どおりです。
+
+| 相手 | 使えるようにするには |
+|---|---|
+| 推論サーバ（同梱の llama.cpp） | `--profile answer` で立ち上げる → on |
+| Gemini | API キーを登録 → on |
+| OpenRouter | API キーを登録 → on |
+| Claude Code | ブリッジのコメントを外して起動 → 認証情報を登録 → on |
+| Codex CLI | 同上 |
+
+**CLI の認証情報も管理画面から登録します。** ブリッジのコンテナが設定 DB（`/state`）を
+**読み取り専用でマウント**して、要求のたびに読むためです。chiezo-api に「トークンを返す口」を
+開けずに済むのが要点で、認証なしの LAN サービスにそんな口は足したくありません。
+**登録し直してもブリッジの再起動は要りません。**
+
+**同居の推論サーバも外部のサービスも CLI も、扱いは全部同じです。** 特別扱いする相手はありません。
+相手の URL は 1 つに決まっている（Gemini の OpenAI 互換の口は 1 つだけ、コンテナ名は compose で
+決まっている）ので、`api/app/providers.py` に決め打ちしてあります。決まっているものを設定にすると、
+書き間違いの余地を増やすだけなので置いていません。
+
+**入れるのは 3 つだけです。**
+
+| 決めること | どこで | 備考 |
+|---|---|---|
+| 使うかどうか（on/off） | 管理画面 | 条件を満たすまで on にできない（下記） |
+| API キー | 管理画面 | 値は二度と表示しない（登録の有無と日時だけ） |
+| どのモデルを使うか | **会話のたびに** `/ai/chat` のセレクト | 候補は相手に聞き、聞けなければコードの控え |
+
+保存先は `/state`（compose がマウント済み。`CHIEZO_STATE_DIR`）。ここが無い環境では
+どの相手も有効にできません。
+
+### 推論サーバを別マシンで動かしている場合
+
+**`CHIEZO_LLM_URL` にその URL を書きます。** これが唯一の例外で、コンテナ名で辿り着けない
+相手のための逃げ道です（IP は環境ごとに違うので決め打ちにできない）。
+「相手を増やす設定」ではないので、他の相手には同種の変数はありません。
 
 ```bash
 # .env
-CHIEZO_LLM_URL=http://chiezo-llm:7011/v1          # 既定(従来どおり)
-
-CHIEZO_LLM_GEMINI_URL=https://generativelanguage.googleapis.com/v1beta/openai
-CHIEZO_LLM_GEMINI_MODEL=gemini-2.5-flash
-CHIEZO_LLM_GEMINI_API_KEY=...
-CHIEZO_LLM_GEMINI_LABEL=Gemini                    # 画面に出す名前(省略可)
+CHIEZO_LLM_URL=http://192.0.2.10:11434/v1   # 別マシンの Ollama 等
 ```
 
-設定する項目は `URL`(必須)・`MODEL`・`API_KEY`・`LABEL` の 4 つです。待ち時間や抜粋の量
-(`CHIEZO_ANSWER_*`)は相手ごとには分けません —— 相手が変わっても「どれだけ根拠を積むか」は
-Chiezo 側の都合だからです。
+認証を掛けているなら、API キーは管理画面から入れます（推論サーバは鍵が「任意」の扱い）。
 
-> **Gemini の URL は末尾に `/v1` を付けません。** この URL の直下が `chat/completions` です。
-> Chiezo は「パスを持たない相手」にだけ `/v1` を補うので、上のとおり書けば正しく組み立てられます。
+### on にできる条件
 
-**compose は環境変数を 1 つずつ渡す作り**なので、独自の名前を使うときは
-`docker-compose.yml` の `chiezo-api` の `environment:` にも 4 行足してください
-(`.env` を丸ごと流し込まないのは、CLI ブリッジ用の認証情報まで `chiezo-api` に
-入ってしまうためです)。
+- **API キーの要る相手（Gemini / OpenRouter）** … 鍵が未登録なら on にできません。
+  鍵を消すと同時に無効になります（鍵の無い相手を有効のまま残すと、会話のたびに失敗するだけなので）
+- **同居のコンテナ（推論サーバ / CLI ブリッジ）** … **立っていなければ on にできません。**
+  管理画面を開いたときに到達確認をしていて、立っていなければボタンが押せません。
+  外部のサービス（Gemini・OpenRouter）は確認しません —— 落ちていても一時的なものなので
 
-## Claude Code / Codex CLI と話す(CLI ブリッジ)
+> ⚠️ Chiezo は認証なし・LAN 内前提です。ここに入れた API キーは、**管理画面を開ける人なら
+> 誰でも差し替えられます**（値の表示はしませんが、書き換えは防げません）。
+
+## Claude Code / Codex CLI と話す（CLI ブリッジ）
 
 この 2 つは HTTP ではなく CLI なので、そのままでは指せません。サブスクの枠で使うには
-CLI を通すしかない(API キー経路は従量課金になる)ため、**OpenAI 互換の口に見せる小さな
-コンテナ**を挟みます(`bridge/`)。
+CLI を通すしかない（API キー経路は従量課金になる）ため、**OpenAI 互換の口に見せる小さな
+コンテナ**を挟みます（`bridge/`）。
 
-ブリッジは **Chiezo の MCP(`/mcp`)を CLI に繋ぎます**。つまり検索して答える段取りは
+ブリッジは **Chiezo の MCP（`/mcp`）を CLI に繋ぎます**。つまり検索して答える段取りは
 ブリッジ側で組まず、道具は CLI 自身が引きます —— Claude Code も Codex も、道具を自分で
 回すのが本業だからです。Chiezo 側から見ると「1 回聞いたら答えが返る」ので、
 `rag` / `agent` の区別は関係なくなります。
 
-安全のために、**CLI の組み込みの道具(シェル・ファイルの読み書き)は全部切って**あります。
+安全のために、**CLI の組み込みの道具（シェル・ファイルの読み書き）は全部切って**あります。
 渡すのは Chiezo の MCP だけです。
 
 ```bash
-# 1) 認証情報を手元で作る
-claude setup-token                 # → 出てきたトークンを CLAUDE_CODE_OAUTH_TOKEN へ
-codex login --device-auth          # → ~/.codex/auth.json の中身を CODEX_AUTH_JSON へ
+# 1) docker-compose.yml の chiezo-bridge-* のコメントを外して立ち上げる
+#    （profile も追加の -f も要らない。イメージは GHCR から pull される）
+docker compose up -d
 
-# 2) docker-compose.answer.yml の chiezo-bridge-* のコメントを外す
+# 2) 認証情報を手元で作る
+claude setup-token                 # → 出てきたトークン
+codex login --device-auth          # → ~/.codex/auth.json の中身
 
-# 3) .env に認証情報と、Chiezo から見た URL を書く
-#    CLAUDE_CODE_OAUTH_TOKEN=...
-#    CHIEZO_LLM_CLAUDE_URL=http://chiezo-bridge-claude:7013/v1
-#    CHIEZO_LLM_CLAUDE_LABEL=Claude Code
-
-# 4) 立ち上げる(イメージは GHCR から pull される)
-docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile bridge up -d
+# 3) 管理画面（/admin）の「話す相手」でそれを登録し、on にする
 ```
 
-`--profile bridge` を `answer` と分けてあるのは、推論サーバとブリッジが排他ではなく
-**併用するもの**だからです。相手は何本でも並べられます。
+環境変数（`CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_AUTH_JSON`）でも渡せます —— 設定 DB を
+マウントできない環境向けの逃げ道で、DB に無ければそちらへ落ちます。
 
-ブリッジのイメージ(`ghcr.io/rtcode337/chiezo-bridge`)には両方の CLI が入っていて、
+ブリッジのイメージ（`ghcr.io/rtcode337/chiezo-bridge`）には両方の CLI が入っていて、
 `CHIEZO_BRIDGE_CLI` で役割を決めます。
 
 | 環境変数 | 既定 | 説明 |
 |---|---|---|
-| `CHIEZO_BRIDGE_CLI` | `claude` | 包む CLI(`claude` / `codex`) |
+| `CHIEZO_BRIDGE_CLI` | `claude` | 包む CLI（`claude` / `codex`） |
 | `CHIEZO_BRIDGE_MCP_URL` | `http://chiezo-api:7010/mcp` | CLI に繋ぐ Chiezo の MCP |
-| `CHIEZO_BRIDGE_MODEL` | (CLI の既定) | 使うモデル。サブスク枠を食うので明示を推奨 |
-| `CHIEZO_BRIDGE_MODEL_LABEL` | CLI 名かモデル名 | 画面の見出しに出す名前 |
-| `CHIEZO_BRIDGE_ALLOWED_TOOLS` | `mcp__chiezo` | CLI に許す道具。書き込み(`remember`)まで止めるならここを絞る |
-| `CHIEZO_BRIDGE_TIMEOUT` | `300` | 1 回の上限(秒)。CLI は道具を何度も引くので推論サーバより長い |
+| `CHIEZO_BRIDGE_STATE_DB` | `/state/settings.db` | 認証情報を読む Chiezo の設定 DB（読み取り専用でマウント） |
+| `CHIEZO_BRIDGE_MODEL` | （CLI の既定） | 使うモデル。会話画面で選んだものが優先される |
+| `CHIEZO_BRIDGE_ALLOWED_TOOLS` | `mcp__chiezo` | CLI に許す道具。書き込み（`remember`）まで止めるならここを絞る |
+| `CHIEZO_BRIDGE_TIMEOUT` | `300` | 1 回の上限（秒）。CLI は道具を何度も引くので推論サーバより長い |
 
-**いまは応答を待ち切ってから流します**(差分では流れません)。CLI ごとに
+**いまは応答を待ち切ってから流します**（差分では流れません）。CLI ごとに
 `--output-format stream-json` / `--json` を解析すれば差分にできますが、2 つ分の解析を
 抱えるだけの値打ちがまだ無いと判断しています。
 
@@ -365,7 +393,9 @@ chiezo-api 側:
 
 | 変数 | 既定 | 説明 |
 |---|---|---|
-| `CHIEZO_LLM_URL` | (未設定 = 無効) | 推論サーバの OpenAI 互換ベース URL。`/v1` は省略しても補われる |
+| `CHIEZO_STATE_DIR` | (未設定 = 管理画面から相手を増やせない) | 話す相手の設定(on/off・API キー・モデル)の置き場 |
+| `CHIEZO_LLM_URL` | (未設定) | **環境変数でしか指せない相手**の OpenAI 互換ベース URL。パスを持たない URL にだけ `/v1` を補う(Gemini のように既にパスがある相手には足さない) |
+| `CHIEZO_LLM_LABEL` | `推論サーバ` | その相手を選ぶセレクトに出す名前 |
 | `CHIEZO_LLM_MODEL` | `chiezo` | リクエストに載せるモデル名。llama-server は 1 プロセス 1 モデルなので何でもよい |
 | `CHIEZO_LLM_API_KEY` | (なし) | 設定すると `Authorization: Bearer` を送る |
 | `CHIEZO_ANSWER_TIMEOUT` | `120` | 推論の待ち時間(秒)。DB クエリの 5 秒とは別枠 |

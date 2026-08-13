@@ -13,14 +13,15 @@ from fastapi.testclient import TestClient
 
 
 @pytest.fixture()
-def monkeypatch_env(monkeypatch, built_data_dir):
+def monkeypatch_env(monkeypatch, built_data_dir, tmp_path):
     monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+    monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
     return monkeypatch
 
 
 @pytest.fixture()
 def disabled_client(monkeypatch_env):
-    """CHIEZO_LLM_URL 未設定 = 使う層が無効な状態。"""
+    """相手を 1 つも有効にしていない = 使う層が無効な状態。"""
     monkeypatch_env.delenv("CHIEZO_LLM_URL", raising=False)
     from app.main import app
 
@@ -63,10 +64,12 @@ class FakeLLM:
 
 
 def make_client(monkeypatch, fake: FakeLLM | None, **env) -> TestClient:
-    from app import answer
+    from app import answer, settings_store
     from app.main import app
 
+    # 相手の on/off は設定ストアに入る。URL は `local` の逃げ道で偽の相手へ向ける。
     monkeypatch.setenv("CHIEZO_LLM_URL", env.pop("url", "http://llm.test:8080/v1"))
+    settings_store.set_enabled("local", True)
     for key, value in env.items():
         monkeypatch.setenv(key, str(value))
     if fake is not None:
@@ -82,11 +85,12 @@ ANSWER_OK = "浅草寺は東京都台東区にある寺院です [1]。"
 
 
 class TestDisabled:
-    def test_ask_returns_503_when_llm_url_is_unset(self, disabled_client):
+    def test_ask_returns_503_when_nothing_is_enabled(self, disabled_client):
         res = disabled_client.get("/v1/ask", params={"q": "浅草寺はどこ?"})
         assert res.status_code == 503
         assert res.json()["error"] == "answering is disabled"
-        assert "CHIEZO_LLM_URL" in res.json()["hint"]
+        # 次にすることが分かるよう、有効にする場所を案内する
+        assert "/admin" in res.json()["hint"]
 
     def test_ask_page_explains_how_to_enable(self, disabled_client):
         res = disabled_client.get(CHAT_PATH)
@@ -98,7 +102,9 @@ class TestDisabled:
     def test_admin_shows_the_feature_as_disabled(self, disabled_client):
         res = disabled_client.get("/admin")
         assert res.status_code == 200
-        assert "「使う」層は無効です" in res.text
+        assert "まだ話せる相手がいません" in res.text
+        # 相手を増やす入口(「話す相手」節)も同じページに出ていること
+        assert "話す相手" in res.text
 
 
 class TestAskJson:
@@ -384,102 +390,144 @@ class TestSettings:
             ("https://openrouter.ai/api/v1", "https://openrouter.ai/api/v1"),
         ],
     )
-    def test_base_url_is_normalized(self, monkeypatch, raw, expected):
+    def test_base_url_is_normalized(self, raw, expected):
         from app import answer
 
-        monkeypatch.setenv("CHIEZO_LLM_URL", raw)
-        cfg = answer.load_settings()
-        assert cfg.url == expected
-        assert cfg.endpoint == f"{expected}/chat/completions"
+        assert answer._normalize_base_url(raw) == expected
 
-    def test_disabled_when_url_is_blank(self, monkeypatch):
+    def test_disabled_when_nothing_is_enabled(self, monkeypatch, tmp_path):
         from app import answer
 
-        monkeypatch.setenv("CHIEZO_LLM_URL", "   ")
-        assert answer.load_settings() is None
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        assert answer.load_settings("local") is None
         assert answer.is_enabled() is False
 
 
 class TestBackends:
-    """話す相手を複数持てること(`CHIEZO_LLM_<名前>_URL`)。
+    """話せる相手（`app/providers.py` の決め打ち + 管理画面の設定）。
 
-    要求するのは OpenAI 互換の `/chat/completions` だけなので、ローカルの推論サーバでも
-    Gemini・OpenRouter でも、CLI を包んだブリッジでも同じ 1 本の口で扱える。
-    **既定(`CHIEZO_LLM_URL`)はそのまま動く**ことが、この機能で壊してはいけない点。
+    URL と表示名はコードに固定してあり、ユーザーが決めるのは on/off・API キー・モデルだけ。
+    `CHIEZO_LLM_URL` で指す相手だけは別扱いで、環境変数から URL を取る
+    （LAN の別マシンの推論サーバを指す用途があり、IP は環境ごとに違うため）。
     """
 
     @pytest.fixture(autouse=True)
-    def _clean(self, monkeypatch):
-        """他所の環境変数が紛れ込まないようにする(発見は環境変数の走査で行うため)。"""
-        for key in list(__import__("os").environ):
+    def _clean(self, monkeypatch, tmp_path):
+        import os
+
+        from app import answer
+
+        for key in list(os.environ):
             if key.startswith("CHIEZO_LLM_"):
                 monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        # 相手に聞いたモデル一覧の控えは、テスト間で持ち越さない
+        answer._MODELS_CACHE.clear()
+        answer._MODEL_LABEL_CACHE.clear()
 
-    def test_default_backend_keeps_working(self, monkeypatch):
-        from app import answer
+    def test_local_is_just_another_provider(self):
+        """同居の推論サーバも他と同じ扱い（管理画面で on にして初めて使える）。"""
+        from app import answer, settings_store
 
-        monkeypatch.setenv("CHIEZO_LLM_URL", "http://llm.test:8080")
-        assert answer.backend_names() == [answer.DEFAULT_BACKEND]
-        cfg = answer.load_settings()
-        assert cfg.name == answer.DEFAULT_BACKEND
-        assert cfg.url == "http://llm.test:8080/v1"
+        assert answer.backend_names() == []
+        settings_store.set_enabled("local", True)
+        assert answer.backend_names() == ["local"]
+        # URL はコードの決め打ち（compose 同梱の chiezo-llm）
+        assert answer.load_settings("local").url == "http://chiezo-llm:7011/v1"
 
-    def test_named_backends_are_discovered(self, monkeypatch):
-        from app import answer
+    def test_local_url_can_be_pointed_elsewhere(self, monkeypatch):
+        """LAN の別マシンで動かしている場合の逃げ道（IP は環境ごとに違い決め打ちできない）。"""
+        from app import answer, settings_store
 
-        monkeypatch.setenv("CHIEZO_LLM_URL", "http://llm.test:8080")
-        monkeypatch.setenv("CHIEZO_LLM_GEMINI_URL", "https://gen.test/v1beta/openai")
-        monkeypatch.setenv("CHIEZO_LLM_GEMINI_MODEL", "gemini-2.5-flash")
-        monkeypatch.setenv("CHIEZO_LLM_GEMINI_API_KEY", "k")
-        # 既定を先頭に、あとは名前順。
-        assert answer.backend_names() == [answer.DEFAULT_BACKEND, "gemini"]
+        settings_store.set_enabled("local", True)
+        monkeypatch.setenv("CHIEZO_LLM_URL", "http://192.0.2.10:11434")
+        assert answer.load_settings("local").url == "http://192.0.2.10:11434/v1"
 
+    def test_only_local_takes_a_url_override(self, monkeypatch):
+        """逃げ道を持つのは local だけ（他は URL が 1 つに決まる）。"""
+        from app import providers
+
+        monkeypatch.setenv("CHIEZO_LLM_URL", "http://192.0.2.10:11434")
+        assert providers.url_of(providers.get("gemini")) == providers.get("gemini").url
+
+    def test_provider_appears_only_after_it_is_enabled(self):
+        from app import answer, settings_store
+
+        assert answer.backend_names() == []
+        settings_store.set_api_key("gemini", "k")
+        # 鍵を入れただけでは出てこない（有効化は別操作）
+        assert answer.backend_names() == []
+        settings_store.set_enabled("gemini", True)
+        assert answer.backend_names() == ["gemini"]
+
+    def test_url_and_label_come_from_code(self):
+        from app import answer, settings_store
+
+        settings_store.set_api_key("gemini", "k")
+        settings_store.set_enabled("gemini", True)
         cfg = answer.load_settings("gemini")
-        assert cfg.name == "gemini"
-        assert cfg.url == "https://gen.test/v1beta/openai"  # パス持ちなので /v1 は足さない
-        assert cfg.model == "gemini-2.5-flash"
+        # パスを持つ相手なので /v1 は足さない（足すと Gemini は 404 になる）
+        assert cfg.url == "https://generativelanguage.googleapis.com/v1beta/openai"
         assert cfg.api_key == "k"
+        assert answer.backend_label("gemini") == "Gemini"
 
-    def test_inference_container_vars_are_not_mistaken_for_backends(self, monkeypatch):
-        """`CHIEZO_LLM_HF_REPO` 等(推論コンテナ向け)を相手と数えないこと。"""
+    def test_enabled_without_a_key_is_not_usable(self):
+        """鍵の要る相手を鍵なしで有効にしても使えない（設定を直に書き換えられた場合の保険）。"""
+        from app import answer, settings_store
+
+        settings_store.set_enabled("gemini", True)
+        assert answer.load_settings("gemini") is None
+
+    def test_clearing_the_key_also_disables(self):
+        from app import answer, settings_store
+
+        settings_store.set_api_key("gemini", "k")
+        settings_store.set_enabled("gemini", True)
+        settings_store.clear_api_key("gemini")
+        assert answer.backend_names() == []
+        assert answer.load_settings("gemini") is None
+
+    def test_model_can_be_chosen_per_request(self):
+        from app import answer, settings_store
+
+        settings_store.set_api_key("gemini", "k")
+        settings_store.set_enabled("gemini", True)
+        settings_store.set_model("gemini", "gemini-2.5-pro")
+        assert answer.load_settings("gemini").model == "gemini-2.5-pro"
+        # 都度の指定が保存してある既定より優先する
+        assert answer.load_settings("gemini", model="gemini-2.5-flash").model == "gemini-2.5-flash"
+
+    def test_model_falls_back_to_the_first_candidate(self):
+        from app import answer, settings_store
+
+        settings_store.set_api_key("gemini", "k")
+        settings_store.set_enabled("gemini", True)
+        assert answer.load_settings("gemini").model == "gemini-2.5-flash"
+
+    def test_works_without_a_state_dir(self, monkeypatch):
+        """保存先が無い環境でも落ちない（どの相手も無効なだけ）。"""
         from app import answer
 
-        monkeypatch.setenv("CHIEZO_LLM_URL", "http://llm.test:8080")
-        monkeypatch.setenv("CHIEZO_LLM_HF_REPO", "ggml-org/gemma-3-4b-it-GGUF:Q4_K_M")
-        monkeypatch.setenv("CHIEZO_LLM_CTX_SIZE", "8192")
-        monkeypatch.setenv("CHIEZO_LLM_THINK_BUDGET", "0")
-        assert answer.backend_names() == [answer.DEFAULT_BACKEND]
-
-    def test_named_backend_alone_enables_the_layer(self, monkeypatch):
-        """既定が無くても、名前付きが 1 つあれば使う層は有効。"""
-        from app import answer
-
-        monkeypatch.setenv("CHIEZO_LLM_OPENROUTER_URL", "https://openrouter.test/api/v1")
-        assert answer.is_enabled() is True
-        assert answer.backend_names() == ["openrouter"]
-        assert answer.load_settings() is None  # 既定は未設定のまま
-
-    def test_hyphens_in_the_query_are_normalized(self, monkeypatch):
-        from app import answer
-
-        monkeypatch.setenv("CHIEZO_LLM_BRIDGE_CLAUDE_URL", "http://bridge:7013/v1")
-        assert answer.load_settings("bridge-claude").name == "bridge_claude"
+        monkeypatch.delenv("CHIEZO_STATE_DIR", raising=False)
+        assert answer.backend_names() == []
+        assert answer.load_settings("gemini") is None
+        assert answer.is_enabled() is False
 
     def test_unknown_backend_is_404_with_the_choices(self, monkeypatch, built_data_dir):
+        from app import settings_store
         from app.main import app
 
         monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
-        monkeypatch.setenv("CHIEZO_LLM_URL", "http://llm.test:8080")
+        settings_store.set_enabled("local", True)
         with TestClient(app) as client:
             res = client.get("/v1/ask", params={"q": "浅草寺", "backend": "nope"})
         assert res.status_code == 404
-        # このAPIのエラーは detail で包まず本文をそのまま返す(app/main.py の例外ハンドラ)。
+        # このAPIのエラーは detail で包まず本文をそのまま返す（app/main.py の例外ハンドラ）
         body = res.json()
-        assert body["backends"] == ["default"]
-        assert "CHIEZO_LLM_NOPE_URL" in body["hint"]
+        assert body["backends"] == ["local"]
 
     def test_disabled_layer_is_still_503(self, monkeypatch, built_data_dir):
-        """相手を 1 つも設定していないときは「無効」であって「未知の相手」ではない。"""
+        """相手が 1 つも無いときは「無効」であって「未知の相手」ではない。"""
         from app.main import app
 
         monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
@@ -487,19 +535,83 @@ class TestBackends:
             res = client.get("/v1/ask", params={"q": "浅草寺", "backend": "gemini"})
         assert res.status_code == 503
 
-    def test_chat_page_shows_a_picker_only_when_there_is_a_choice(
-        self, monkeypatch, built_data_dir
-    ):
+
+class TestModelCandidates:
+    @pytest.fixture(autouse=True)
+    def _clean(self, monkeypatch, tmp_path):
+        from app import answer
+
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        answer._MODELS_CACHE.clear()
+
+    def test_falls_back_to_the_code_candidates(self):
+        """相手に聞けないときはコードの控えを使う（無効な相手は聞きにいけない）。"""
+        import asyncio
+
+        from app import answer, providers
+
+        got = asyncio.run(answer.available_models("gemini"))
+        assert got == list(providers.get("gemini").models)
+
+    def test_the_upstream_list_wins(self, monkeypatch):
+        import asyncio
+
+        from app import answer, settings_store
+
+        settings_store.set_api_key("openrouter", "k")
+        settings_store.set_enabled("openrouter", True)
+
+        def handler(request):
+            return httpx.Response(200, json={"data": [{"id": "x/y:free"}, {"id": "a/b:free"}]})
+
+        monkeypatch.setattr(
+            answer, "_llm_client",
+            lambda cfg: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        assert asyncio.run(answer.available_models("openrouter")) == ["x/y:free", "a/b:free"]
+
+
+class TestAnswerLayerSwitch:
+    """「答える」層そのものの on/off（元栓）。
+
+    相手を 1 つずつ切って回らずに機能ごと止められること、止めたら相手が有効でも
+    話せなくなることを見る。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _state(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+
+    def test_enabled_by_default(self):
+        from app import settings_store
+
+        assert settings_store.answer_enabled() is True
+
+    def test_closing_the_master_switch_hides_every_backend(self):
+        from app import answer, settings_store
+
+        settings_store.set_enabled("local", True)
+        assert answer.backend_names() == ["local"]
+
+        settings_store.set_answer_enabled(False)
+        # 相手の設定はそのまま残るが、話せる相手は 0 になる
+        assert answer.backend_names() == []
+        assert answer.is_enabled() is False
+        # 相手を名指ししても素通りしない
+        assert answer.load_settings("local") is None
+        assert settings_store.load("local").enabled is True
+
+        settings_store.set_answer_enabled(True)
+        assert answer.backend_names() == ["local"]
+
+    def test_ask_is_503_while_the_layer_is_off(self, monkeypatch, built_data_dir):
+        from app import settings_store
         from app.main import app
 
         monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
-        monkeypatch.setenv("CHIEZO_LLM_URL", "http://llm.test:8080")
+        settings_store.set_enabled("local", True)
+        settings_store.set_answer_enabled(False)
         with TestClient(app) as client:
-            assert 'id="backend"' not in client.get(CHAT_PATH).text
-
-        monkeypatch.setenv("CHIEZO_LLM_GEMINI_URL", "https://gen.test/v1beta/openai")
-        monkeypatch.setenv("CHIEZO_LLM_GEMINI_LABEL", "Gemini")
-        with TestClient(app) as client:
-            html = client.get(CHAT_PATH).text
-        assert 'id="backend"' in html
-        assert ">Gemini<" in html
+            res = client.get("/v1/ask", params={"q": "浅草寺はどこ?"})
+        assert res.status_code == 503
+        assert res.json()["error"] == "answering is disabled"
