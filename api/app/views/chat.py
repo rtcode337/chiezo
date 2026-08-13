@@ -206,11 +206,18 @@ CHAT_JS = """
     toggles.forEach(function (pair) {
       var box = pair[0];
       if (!box) return;
-      box.disabled = off;
-      box.parentNode.classList.toggle('on', box.checked && !off);
-      box.parentNode.title = off ? pair[1] : '';
+      // **切れない道具は切れないままにする**（相手が CLI で、こちらから外す口が無い）。
+      // ここを素通りさせると、サーバーが付けた disabled を読み込み直後に外してしまう。
+      var label = box.parentNode;
+      var fixed = label.classList.contains('fixed');
+      if (fixed) { box.checked = true; }
+      box.disabled = off || fixed;
+      label.classList.toggle('on', box.checked && !off);
+      label.title = off ? pair[1] : (fixed ? (label.dataset.fixedNote || '') : '');
     });
   }
+  // 相手が変わったときも同じ判断を通す（下の出し入れから呼ぶ）
+  window.chiezoSyncModeToggles = syncToggles;
   if (mode) mode.addEventListener('change', syncToggles);
   toggles.forEach(function (pair) {
     if (pair[0]) pair[0].addEventListener('change', syncToggles);
@@ -329,7 +336,7 @@ async def chat_page(
     notes_toggle = (
         f'<label class="toggle on{" fixed" if notes_fixed else ""}" id="notes-toggle"'
         f'{"" if notes_usable else " hidden"}'
-        f'{f" title=\"{esc(fixed_note)}\"" if notes_fixed else ""}>'
+        f'{f" title=\"{esc(fixed_note)}\" data-fixed-note=\"{esc(fixed_note)}\"" if notes_fixed else ""}>'
         f'<input type="checkbox" id="notes" checked{" disabled" if notes_fixed else ""}>'
         "📝 覚える</label>"
         if notes.is_enabled() else ""
@@ -440,7 +447,8 @@ async def chat_page(
           if (isBridge) {{ box.checked = true; }}
         }}
         notesBox.classList.toggle('fixed', isBridge);
-        notesBox.title = isBridge ? {json.dumps(fixed_note)} : '';
+        notesBox.dataset.fixedNote = {json.dumps(fixed_note)};
+        if (window.chiezoSyncModeToggles) {{ window.chiezoSyncModeToggles(); }}
       }}
     }}
     if (modeSel) {{ modeSel.addEventListener('change', sync); }}

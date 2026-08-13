@@ -480,6 +480,11 @@ class TestHiddenControls:
             res = c.get(CHAT_PATH, params={"backend": "claude", "mode": "agent"})
         assert 'id="notes"' in res.text
         assert "checked disabled" in res.text
+        # **JS が読み込み直後に disabled を外さないこと。**
+        # agent モードなら無条件に触れるようにする古い分岐があり、サーバーの指定を
+        # 上書きしていた（本番で押せてしまった）。
+        assert "var fixed = label.classList.contains('fixed');" in res.text
+        assert "box.disabled = off || fixed;" in res.text
         assert "hidden" not in res.text.split('id="notes-toggle"')[1][:40]
         # 推論サーバ相手なら切れる（disabled にしない）
         with make_client(monkeypatch_env, ToolLLM()) as c:
