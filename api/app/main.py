@@ -23,7 +23,7 @@ from fastapi.responses import (
 from pydantic import BaseModel
 from pydantic import Field as PydField
 
-from app import agent, answer, db, notes
+from app import agent, answer, db, notes, providers
 from app.deps import (
     exact_title_first,
     get_source,
@@ -1171,6 +1171,79 @@ async def _rag_events(cfg, q, queries, snippets, references, grounded, history=N
 
 
 
+
+
+# ---- 素の問い合わせ(知識ベースを介さない)------------------------------------
+#
+# **`/v1/chat` とは目的が違う。** あちらは知識ベースを引いて答えるための口で、必ず抽出が
+# 混ざる。こちらは**渡したプロンプトをそのまま相手に投げる**だけ —— 呼び出す側が自分の
+# 材料とプロンプトを持っていて、Chiezo に借りたいのは「話せる相手と鍵」だけ、という使い方
+# (例: tech-antenna のサマリー生成)。認証情報は相手ごとに Chiezo が握っているので、
+# 呼ぶ側は鍵を持たずに済み、管理画面で on にした相手をそのまま使える。
+
+
+class AiMessage(BaseModel):
+    # `/v1/chat` の ChatMessage と違い **system を許す**。プロンプトを組むのは呼ぶ側で、
+    # 役割の付け方までこちらで決めない
+    role: str = PydField(pattern="^(system|user|assistant)$")
+    content: str
+
+
+class AiCompleteRequest(BaseModel):
+    messages: list[AiMessage]
+    # どの相手に投げるか。空なら「先頭の相手」(`/v1/chat` と同じ規則)
+    backend: str | None = None
+    model: str | None = None
+    effort: str | None = None
+
+
+@app.get("/v1/ai/backends")
+async def ai_backends() -> dict:
+    """いま話せる相手と、その相手で選べるモデル・エフォート。
+
+    **呼ぶ側が画面を作れるだけの材料を返す。** 一覧は管理画面で on にしたものだけで、
+    モデルは相手に聞けた場合はその答え(聞けなければコードの控え)。
+    """
+    names = answer.backend_names()
+    models = await asyncio.gather(*(answer.available_models(name) for name in names))
+
+    return {
+        "backends": [
+            {
+                "id": name,
+                "label": answer.backend_label(name),
+                "models": list(available),
+                "efforts": list(providers.efforts_of(name)),
+                # モデルを必ず指定しないといけない相手か(false なら「既定」を選べる)
+                "model_required": bool(spec.model_required) if spec else True,
+            }
+            for name, available in zip(names, models, strict=True)
+            for spec in (providers.get(name),)
+        ]
+    }
+
+
+@app.post("/v1/ai/complete")
+async def ai_complete(body: AiCompleteRequest) -> dict:
+    """渡されたメッセージをそのまま相手へ投げて、本文を返す(1 往復・道具なし)。"""
+    messages = [m.model_dump() for m in body.messages if (m.content or "").strip()]
+    if not messages:
+        raise HTTPException(400, {"error": "messages must not be empty"})
+
+    cfg = answer.require_settings(body.backend, body.model, body.effort)
+    message = await answer.complete_message(cfg, messages)
+    content = answer.content_of(message)
+    if not content:
+        raise HTTPException(502, {"error": "empty response from llm"})
+
+    return {
+        "backend": cfg.name,
+        "label": answer.backend_label(cfg.name),
+        # 実際に使われたモデル。呼ぶ側が「どれが書いたか」を残せるようにする
+        "model": cfg.model,
+        "effort": cfg.effort,
+        "content": content,
+    }
 
 
 # ---- 画面(人間向け HTML)-----------------------------------------------------

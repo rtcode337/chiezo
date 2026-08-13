@@ -36,7 +36,8 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   ファイル名の stem と `meta.source` が一致する `*.db` をソースとして登録する(世代ファイル
   `jawiki-20260701.db` は登録されず、シンボリックリンク `jawiki.db` のみ登録される)。
   - `app/main.py` — **機械向けの口とアプリの組み立て**(/, /healthz, /apple-touch-icon.png,
-    /v1/sources, /v1/{source}/search|doc|filter|tags|titles|links|random, /v1/ask, /v1/chat、
+    /v1/sources, /v1/{source}/search|doc|filter|tags|titles|links|random, /v1/ask, /v1/chat,
+    /v1/ai/backends, /v1/ai/complete、
     lifespan・例外ハンドラ・画面 router の登録・MCP の /mcp のマウント。
     MCP の実体は下の `app/mcp_server.py`)。
     **人間向けの HTML はここに置かない**(`app/views/`)。以前は 2,473 行の 1 ファイルに
@@ -427,6 +428,13 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     (末尾が user でなければ 400)。**サーバーは会話の状態を持たない** — 履歴はクライアントが
     持って毎回送る(読み取り専用・LAN 内・複数ワーカーの前提を崩さないため。MCP を
     ステートレスにしたのと同じ判断)。rag / agent とも `/v1/ask` と同じ実装に流す
+  - `/v1/ai/backends`(GET) / `/v1/ai/complete`(POST) — **知識ベースを介さない素の口**。
+    `/v1/chat` は必ず抽出を混ぜるので、**自分のプロンプトと材料を持っているアプリ**には使えない
+    (無関係な抜粋が載り、トークンも余分に使う)。借りたいのは「話せる相手と鍵」だけ、という
+    使い方のために分けてある(例: tech-antenna のサマリー生成)。`backends` は管理画面で
+    on にした相手を、モデル(相手に聞けた場合はその答え)・エフォート・モデル指定の要否つきで返す。
+    `complete` は渡された `messages` をそのまま 1 往復投げるだけ(道具も履歴の組み立ても無い)。
+    **`system` ロールを許す**のはこの口だけ —— プロンプトを組むのは呼ぶ側だから
   - `/ai/chat`(GET) — 会話画面と、JS なし用の 1 問 1 答の HTML。**Chiezo を使う側の
     機能なので `/ai/` の下**(Chiezo 本体の画面と並びで区別する)。話す相手が 2 つ以上
     設定されているときだけ、相手を選ぶセレクトが出る。見た目は
