@@ -13,7 +13,7 @@ AI が使う知識を AI の外に置くための知識ベース。知識をロ�
 
 知識ベースとしての中身は上の 3 つ。それとは別に「使う」側も同梱している。Chiezo を
 どう引けば当たるかを知っているのはこのリポジトリなので、Claude Code 向けの設定を生成する
-スクリプトと、Chiezo を引けるローカル LLM 用の道具立て・プロンプトを置いてある
+スクリプトと、Chiezo を引ける AI 用の道具立て・プロンプトを置いてある
 (後者は[使う](#使うローカル-llm既定では無効)。既定では無効)。
 
 ### 性質
@@ -145,7 +145,7 @@ compose では既定で有効(`./notes` に SQLite が 1 つできる)。`CHIEZO
 
 ## 使う(ローカル LLM。既定では無効)
 
-Chiezo を引ける AI とブラウザから話せる(`/localllm/chat`)。1 問 1 答の口(`/v1/ask`)と
+Chiezo を引ける AI とブラウザから話せる(`/ai/chat`)。1 問 1 答の口(`/v1/ask`)と
 会話の口(`/v1/chat`)があり、根拠にした文書は出典として併記する。
 
 これは知識ベース本体の機能ではなく、Chiezo を使う側をこのリポジトリが用意しているもの
@@ -170,7 +170,7 @@ docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile answ
 実質の前提なので、既定は `rag` のまま。
 
 使い方・パラメータ・agent モード・web 検索・GPU 設定・環境変数の一覧は
-[ローカル LLM ドキュメント](docs/local-llm.md)にある。
+[AI と話すドキュメント](docs/ai.md)にある。
 
 ## 運用
 
@@ -265,7 +265,7 @@ EOF
 |---|---|
 | [設計メモ](docs/design-notes.md) | なぜこの形なのか。SQLite + FTS5 を選んだ理由、検索の並び順、索引の形、メモリ方針。実測して方針が変わったものは数字と一緒にここへ残す |
 | [API リファレンス](docs/api-reference.md) | REST の全パラメータ、`extra` の中身、MCP、Claude Code 連携、管理画面・ブラウズ画面 |
-| [ローカル LLM](docs/local-llm.md) | 「使う」層の使い方・agent モード・web 検索・GPU・環境変数 |
+| [AI と話す](docs/ai.md) | 「使う」層の使い方・話す相手の増やし方・CLI ブリッジ・agent モード・web 検索・GPU・環境変数 |
 | [運用](docs/operations.md) | 取り込みの環境変数、スキーマ移行、メモリ、別マシンでのビルドと配布、セキュリティ |
 | [別マシンで DB を焼く](docs/build-on-another-machine.md) | メモリの多いマシンで `.db` を作って配信機へ渡す手順。これ 1 枚で完結する |
 | [ソースの追加手順](docs/adding-a-source.md) | 新しい種類のデータを足すとき |

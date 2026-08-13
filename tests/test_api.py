@@ -1402,7 +1402,7 @@ class TestUrlLayout:
         stale = [
             href for href in re.findall(r'href="(/[^"]*)"', html)
             if not href.startswith(
-                ("/admin", "/search/", "/localllm/", "/v1/", "/healthz", "/apple-touch-icon")
+                ("/admin", "/search/", "/ai/", "/v1/", "/healthz", "/apple-touch-icon")
             )
         ]
         assert not stale, f"古い URL が残っている: {stale}"

@@ -1,4 +1,4 @@
-# 「答える」層(/v1/ask・/v1/chat・/localllm/chat)を**自分で立てる**ための上書き。
+# 「答える」層(/v1/ask・/v1/chat・/ai/chat)を**自分で立てる**ための上書き。
 # 推論サーバと検索エンジンの 2 つを持つ。本体(docker-compose.yml)と重ねて使う:
 #
 #   docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile answer up -d
@@ -76,3 +76,52 @@ services:
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:7012/healthz"]
       interval: 60s
+
+  # ---- CLI ブリッジ(既定では立たない。使うときだけコメントを外す)----------------
+  #
+  # Claude Code / Codex CLI は HTTP ではなく CLI なので、OpenAI 互換の口に見せる小さな
+  # コンテナを挟む(bridge/)。**サブスクの枠で使うためのもの**で、API キー経路は
+  # 従量課金になるため使わない。ブリッジは Chiezo の MCP(/mcp)を CLI に繋ぐので、
+  # 道具は CLI 自身が引く(Chiezo 側の rag / agent の区別は関係なくなる)。
+  #
+  # 使い方: 下のコメントを外し、.env に認証情報と CHIEZO_LLM_<名前>_URL を書いて
+  #
+  #   docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile bridge up -d
+  #
+  # profile を answer と分けてあるのは、推論サーバ(chiezo-llm)と CLI ブリッジが
+  # 排他ではなく**併用するもの**だから —— 相手は何本でも並べられる。
+  #
+  # ホストへポートは公開しない(chiezo-api からのみ到達すればよい)。
+  #
+  #chiezo-bridge-claude:
+  #  image: ghcr.io/rtcode337/chiezo-bridge:latest
+  #  profiles: ["bridge"]
+  #  environment:
+  #    - CHIEZO_BRIDGE_CLI=claude
+  #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp
+  #    # 手元で `claude setup-token` を実行して発行したトークン
+  #    - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
+  #    - CHIEZO_BRIDGE_MODEL=${CHIEZO_BRIDGE_CLAUDE_MODEL:-}
+  #    - CHIEZO_BRIDGE_TIMEOUT=${CHIEZO_BRIDGE_TIMEOUT:-300}
+  #  restart: unless-stopped
+  #  # CLI は待ち時間の長い相手なので、CPU が競合したら取り込みや推論へ譲る
+  #  cpu_shares: 512
+  #  healthcheck:
+  #    test: ["CMD", "curl", "-fs", "http://localhost:7013/health"]
+  #    interval: 60s
+  #
+  #chiezo-bridge-codex:
+  #  image: ghcr.io/rtcode337/chiezo-bridge:latest
+  #  profiles: ["bridge"]
+  #  environment:
+  #    - CHIEZO_BRIDGE_CLI=codex
+  #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp
+  #    # 手元で `codex login --device-auth` して ~/.codex/auth.json の中身を貼る
+  #    - CODEX_AUTH_JSON=${CODEX_AUTH_JSON:-}
+  #    - CHIEZO_BRIDGE_MODEL=${CHIEZO_BRIDGE_CODEX_MODEL:-}
+  #    - CHIEZO_BRIDGE_TIMEOUT=${CHIEZO_BRIDGE_TIMEOUT:-300}
+  #  restart: unless-stopped
+  #  cpu_shares: 512
+  #  healthcheck:
+  #    test: ["CMD", "curl", "-fs", "http://localhost:7013/health"]
+  #    interval: 60s

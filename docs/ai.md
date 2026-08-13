@@ -1,6 +1,6 @@
-# 使う(ローカル LLM。既定では無効)
+# 使う(AI と話す。既定では無効)
 
-**Chiezo を引ける AI と、ブラウザから話せます**(`/localllm/chat`)。1 問 1 答の口(`/v1/ask`)と
+**Chiezo を引ける AI と、ブラウザから話せます**(`/ai/chat`)。1 問 1 答の口(`/v1/ask`)と
 会話の口(`/v1/chat`)があり、根拠にした文書は出典として併記します。
 
 **話す相手は AI(使っているモデル)で、Chiezo はその AI が引く知識**です。画面の見出しにも
@@ -49,7 +49,7 @@ chiezo-api からのみ内部ネットワーク経由で到達します(別ホ�
 
 ## 話す(ブラウザ)
 
-**`/localllm/chat`**(管理画面からも辿れます)。見出しにはいま話しているモデルの名前が出ます
+**`/ai/chat`**(管理画面からも辿れます)。見出しにはいま話しているモデルの名前が出ます
 (`CHIEZO_LLM_MODEL` が未設定なら推論サーバに問い合わせます)。入力欄は数行ぶんの高さがあり
 (Enter で送信・Shift+Enter で改行)、**ソース・引き方・根拠・web 検索の切り替えはその下**に
 並びます。会話として続けられるので、「じゃあ京都のほうは?」
@@ -140,7 +140,7 @@ rag では原理的に答えられなかった問いに届きます:
 
 応答には `queries` の代わりに `steps`(どの道具を何の引数で呼び、何が返ったか)が入ります。
 `stream=1` なら道具を呼ぶたびに `step` イベントが流れ、`references` → `delta` → `done` と続きます
-(ブラウザの `/localllm/chat` でも「調べた手順」として出ます)。出典は**本文中の番号ではなく**、
+(ブラウザの `/ai/chat` でも「調べた手順」として出ます)。出典は**本文中の番号ではなく**、
 道具の応答に出てきた文書の一覧です(生の応答に番号を振る先が無いため)。
 
 **ツール呼び出しが安定するモデル(8B 級以上)と GPU が実質の前提です。** 4B 未満は
@@ -217,6 +217,84 @@ docker compose exec searxng wget -qO- "http://localhost:7012/search?q=test&forma
 
 - 何を書いたかは「調べた手順」に `remember {...}` として出る
 - トグルを外す(API なら `notes=0`)と、そのやり取りでは道具ごと渡らない
+
+## 話す相手を増やす
+
+`CHIEZO_LLM_URL` は「名前なし = 既定の相手」です。`CHIEZO_LLM_<名前>_URL` を足すと相手が増え、
+`/ai/chat` のセレクトと `/v1/ask?backend=<名前>` で選べるようになります。
+
+Chiezo が要求するのは **OpenAI 互換の `/chat/completions` だけ**なので、相手の素性は問いません。
+
+```bash
+# .env
+CHIEZO_LLM_URL=http://chiezo-llm:7011/v1          # 既定(従来どおり)
+
+CHIEZO_LLM_GEMINI_URL=https://generativelanguage.googleapis.com/v1beta/openai
+CHIEZO_LLM_GEMINI_MODEL=gemini-2.5-flash
+CHIEZO_LLM_GEMINI_API_KEY=...
+CHIEZO_LLM_GEMINI_LABEL=Gemini                    # 画面に出す名前(省略可)
+```
+
+設定する項目は `URL`(必須)・`MODEL`・`API_KEY`・`LABEL` の 4 つです。待ち時間や抜粋の量
+(`CHIEZO_ANSWER_*`)は相手ごとには分けません —— 相手が変わっても「どれだけ根拠を積むか」は
+Chiezo 側の都合だからです。
+
+> **Gemini の URL は末尾に `/v1` を付けません。** この URL の直下が `chat/completions` です。
+> Chiezo は「パスを持たない相手」にだけ `/v1` を補うので、上のとおり書けば正しく組み立てられます。
+
+**compose は環境変数を 1 つずつ渡す作り**なので、独自の名前を使うときは
+`docker-compose.yml` の `chiezo-api` の `environment:` にも 4 行足してください
+(`.env` を丸ごと流し込まないのは、CLI ブリッジ用の認証情報まで `chiezo-api` に
+入ってしまうためです)。
+
+## Claude Code / Codex CLI と話す(CLI ブリッジ)
+
+この 2 つは HTTP ではなく CLI なので、そのままでは指せません。サブスクの枠で使うには
+CLI を通すしかない(API キー経路は従量課金になる)ため、**OpenAI 互換の口に見せる小さな
+コンテナ**を挟みます(`bridge/`)。
+
+ブリッジは **Chiezo の MCP(`/mcp`)を CLI に繋ぎます**。つまり検索して答える段取りは
+ブリッジ側で組まず、道具は CLI 自身が引きます —— Claude Code も Codex も、道具を自分で
+回すのが本業だからです。Chiezo 側から見ると「1 回聞いたら答えが返る」ので、
+`rag` / `agent` の区別は関係なくなります。
+
+安全のために、**CLI の組み込みの道具(シェル・ファイルの読み書き)は全部切って**あります。
+渡すのは Chiezo の MCP だけです。
+
+```bash
+# 1) 認証情報を手元で作る
+claude setup-token                 # → 出てきたトークンを CLAUDE_CODE_OAUTH_TOKEN へ
+codex login --device-auth          # → ~/.codex/auth.json の中身を CODEX_AUTH_JSON へ
+
+# 2) docker-compose.answer.yml の chiezo-bridge-* のコメントを外す
+
+# 3) .env に認証情報と、Chiezo から見た URL を書く
+#    CLAUDE_CODE_OAUTH_TOKEN=...
+#    CHIEZO_LLM_CLAUDE_URL=http://chiezo-bridge-claude:7013/v1
+#    CHIEZO_LLM_CLAUDE_LABEL=Claude Code
+
+# 4) 立ち上げる(イメージは GHCR から pull される)
+docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile bridge up -d
+```
+
+`--profile bridge` を `answer` と分けてあるのは、推論サーバとブリッジが排他ではなく
+**併用するもの**だからです。相手は何本でも並べられます。
+
+ブリッジのイメージ(`ghcr.io/rtcode337/chiezo-bridge`)には両方の CLI が入っていて、
+`CHIEZO_BRIDGE_CLI` で役割を決めます。
+
+| 環境変数 | 既定 | 説明 |
+|---|---|---|
+| `CHIEZO_BRIDGE_CLI` | `claude` | 包む CLI(`claude` / `codex`) |
+| `CHIEZO_BRIDGE_MCP_URL` | `http://chiezo-api:7010/mcp` | CLI に繋ぐ Chiezo の MCP |
+| `CHIEZO_BRIDGE_MODEL` | (CLI の既定) | 使うモデル。サブスク枠を食うので明示を推奨 |
+| `CHIEZO_BRIDGE_MODEL_LABEL` | CLI 名かモデル名 | 画面の見出しに出す名前 |
+| `CHIEZO_BRIDGE_ALLOWED_TOOLS` | `mcp__chiezo` | CLI に許す道具。書き込み(`remember`)まで止めるならここを絞る |
+| `CHIEZO_BRIDGE_TIMEOUT` | `300` | 1 回の上限(秒)。CLI は道具を何度も引くので推論サーバより長い |
+
+**いまは応答を待ち切ってから流します**(差分では流れません)。CLI ごとに
+`--output-format stream-json` / `--json` を解析すれば差分にできますが、2 つ分の解析を
+抱えるだけの値打ちがまだ無いと判断しています。
 
 ## 別の推論サーバに向ける
 

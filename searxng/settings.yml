@@ -1,5 +1,5 @@
 # 「答える」層の web 検索が引く SearXNG の設定。既定値を土台に、Chiezo から API として
-# 引くために要る 3 点だけ上書きする(docs/local-llm.md「web 検索で足りないぶんを補う」)。
+# 引くために要る 3 点だけ上書きする(docs/ai.md「web 検索で足りないぶんを補う」)。
 use_default_settings: true
 
 server:

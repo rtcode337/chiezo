@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -170,7 +171,19 @@ def _answer_status_html() -> str:
             " <code>CHIEZO_LLM_URL</code> に設定すると有効になります"
             "(compose なら <code>docker compose --profile answer up -d</code>)。</p>"
         )
-    return f'<p><a href="{CHAT_PATH}">→ AI と話す(Chiezo の知識を引きます)</a></p>'
+    names = answer.backend_names()
+    # 相手が 1 つなら従来どおりの 1 行。増やしてある環境では、どれが設定されているかを
+    # ここで一望できるようにする(会話画面のセレクトと同じ並び)。
+    if len(names) == 1:
+        return f'<p><a href="{CHAT_PATH}">→ AI と話す(Chiezo の知識を引きます)</a></p>'
+    links = " / ".join(
+        f'<a href="{CHAT_PATH}?backend={quote(name)}">{esc(answer.backend_label(name))}</a>'
+        for name in names
+    )
+    return (
+        f'<p><a href="{CHAT_PATH}">→ AI と話す(Chiezo の知識を引きます)</a></p>'
+        f'<p class="muted">話せる相手: {links}</p>'
+    )
 
 
 @router.get("/admin", response_class=HTMLResponse)

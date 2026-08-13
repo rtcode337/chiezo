@@ -1028,8 +1028,13 @@ async def ask(
         description="agent モードで「覚える・思い出す」の道具を渡すか。既定はサーバー設定どおり"
                     "(CHIEZO_NOTES_DIR が未設定なら、頼まれても使えない)",
     ),
+    backend: str | None = Query(
+        None,
+        description="どの AI に聞くか(CHIEZO_LLM_<名前>_URL で足した相手の名前)。"
+                    "省略すると CHIEZO_LLM_URL の相手",
+    ),
 ):
-    cfg = answer.require_settings()
+    cfg = answer.require_settings(backend)
     # 既定は環境変数で決める(GPU + 8B の環境と、CPU だけの環境で妥当な既定が違うため)。
     mode = mode or answer.default_mode()
     grounded = answer.default_grounded() if grounded is None else grounded
@@ -1102,6 +1107,8 @@ class ChatRequest(BaseModel):
     web: bool | None = None
     # 「覚える・思い出す」の道具を渡すか。**書き込みを伴う**ので、同じく切れるようにする。
     notes: bool | None = None
+    # どの AI に聞くか。画面のセレクトはここを毎回送る = やり取りごとに相手を変えられる。
+    backend: str | None = None
 
 
 def _split_history(body: ChatRequest) -> tuple[str, list[dict]]:
@@ -1113,7 +1120,7 @@ def _split_history(body: ChatRequest) -> tuple[str, list[dict]]:
 
 @app.post("/v1/chat")
 async def chat(request: Request, body: ChatRequest, stream: bool = Query(False)):
-    cfg = answer.require_settings()
+    cfg = answer.require_settings(body.backend)
     question, history = _split_history(body)
     mode = body.mode or answer.default_mode()
     grounded = answer.default_grounded() if body.grounded is None else body.grounded

@@ -20,7 +20,7 @@
 **Chiezo を上手に引ける AI を Chiezo 自身が用意する**もので、知識ベース本体の機能ではない
 (`scripts/gen_claude_config.sh` が Claude Code 用の設定を配るのと同じ考え方。どう引けば
 当たるかをいちばん知っているここが、道具立てとプロンプトを持つ)。`api/app/answer.py` が
-`/v1/ask` と ブラウザの `/localllm/chat` を受ける。推論は同居させず OpenAI 互換 API を叩くだけで、
+`/v1/ask` と ブラウザの `/ai/chat` を受ける。推論は同居させず OpenAI 互換 API を叩くだけで、
 **`CHIEZO_LLM_URL` 未設定が既定 = 丸ごと無効**(配信側が数百 MB で動く前提を壊さないため)。
 `?mode=agent` では `api/app/agent.py` が MCP と同じ道具を LLM 自身に引かせる
 (GPU + 8B 級が前提なので**既定は 1 回検索する `rag`**)。会話として続けるのが
@@ -170,8 +170,13 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     - **切ったものには `truncated: true` を立てる**。黙って切ると「これで全部」と
       読まれる —— 504 を 0 件と読むのと同じ取りこぼし方をするため、全文が要ると
       分かる印を必ず返す(取り直し先は `/v1/notes/doc/{doc_id}`)
-  - `app/answer.py` — **「使う」層(`/v1/ask`・`/localllm/chat`)の本体**。使い方・環境変数は
-    `docs/local-llm.md` が、なぜこの形かは
+  - `app/answer.py` — **「使う」層(`/v1/ask`・`/ai/chat`)の本体**。**話す相手は複数持てる**
+    (`CHIEZO_LLM_URL` が名前なしの既定、`CHIEZO_LLM_<名前>_URL` で増える)。要求するのは
+    OpenAI 互換の `/chat/completions` だけなので、ローカルの推論サーバでも Gemini・OpenRouter でも、
+    CLI を包んだブリッジでも同じ 1 本の口で扱う。**`_normalize_base_url` が `/v1` を補うのは
+    パスを持たない相手にだけ** —— Gemini の互換の口(`…/v1beta/openai`)は直下が
+    `chat/completions` で、足すと 404 になる。使い方・環境変数は
+    `docs/ai.md` が、なぜこの形かは
     `docs/design-notes.md`「「使う」層はなぜ 2 段の RAG か」が正。実装側の要点:
     - **`CHIEZO_LLM_URL` が機能フラグを兼ねる**(未設定 = 丸ごと無効、`/v1/ask` は 503)。
       推論はこのプロセスに入れない。ここがするのは OpenAI 互換の `/chat/completions` を
@@ -200,8 +205,22 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     - `content_of()` が**思考タグの残骸を落とす**。thinking 系モデルは推論サーバの設定次第で
       `<think>…</think>` や閉じタグだけが `content` に残る(実測: Qwen3 + 思考オフで先頭に
       `</think>`)。相手の設定は Chiezo が握っていないので受け側で落とす
+- **`bridge/` — CLI ブリッジ(別イメージ `ghcr.io/<owner>/chiezo-bridge`)。**
+  Claude Code / Codex CLI を OpenAI 互換の口に見せて、`CHIEZO_LLM_<名前>_URL` から指せるようにする。
+  **本体には入れない** —— `chiezo-api` が数百 MB で動く前提を崩さないため(推論を同居させないのと
+  同じ理由)。既定では立たず、`docker-compose.answer.yml` のコメントを外した人だけが pull する。
+  - **道具は CLI 自身に引かせる**。Chiezo の MCP(`/mcp`)を CLI に繋ぐので、検索して答える
+    段取りをブリッジ側で組まない。Chiezo から見ると「1 回聞いたら答えが返る」ので
+    `rag` / `agent` の区別は関係なくなる
+  - **組み込みの道具は全部切る**(`claude --tools ""` / `codex -s read-only`)。知識ベースに
+    答えるのにシェルもファイル操作も要らず、使えると危ない
+  - **認証情報はイメージに焼かない**。環境変数で受け取り、ファイルが要る Codex だけ
+    `entrypoint.sh` が起動時に書いてコンテナと一緒に捨てる
+  - ファイル名が `server.py` でなく `cli_bridge.py` なのは `ingest/server.py` と衝突するため
+    (テストは api / ingest / bridge を同じ pythonpath で読む)
+
   - `app/agent.py` — **agent モード(`/v1/ask?mode=agent`)の本体**。LLM 自身に道具を
-    引かせるループ。使い方・環境変数は `docs/local-llm.md`「agent モード(モデルに道具を引かせる)」節が、
+    引かせるループ。使い方・環境変数は `docs/ai.md`「agent モード(モデルに道具を引かせる)」節が、
     なぜこの形かは `docs/design-notes.md`「agent モード: 道具をモデルに引かせる」が正。
     実装側の要点:
     - **道具の定義も実行も `app/mcp_server.py` から借りる**(`list_tools()` → OpenAI の
@@ -236,7 +255,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   - `app/websearch.py` — **web 検索の道具(既定では無効)**。`CHIEZO_WEB_SEARCH_URL` が
     機能フラグを兼ねる(未設定 = 道具ごと出さない)。**使うかどうかはやり取りごとに選べる**
     (`agent.web_allowed()`: サーバー設定 AND リクエストの `web` が false でない)。
-    画面のトグルは毎回これを送る。使い方は `docs/local-llm.md`「web 検索で
+    画面のトグルは毎回これを送る。使い方は `docs/ai.md`「web 検索で
     足りないぶんを補う」節が正。実装側の要点:
     - **これは「使う」層(= Chiezo を使う側)の機能で、Chiezo 本体の機能ではない**。
       知識ベースそのものは引き続き外を叩かない。この整理を崩さないこと
@@ -249,7 +268,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   - `app/views/` — **人間向けの HTML を返す画面**。`APIRouter` を持ち、`main.py` の末尾で
     `include_router` する。`admin.py`(管理画面と chiezo-trigger へのプロキシ、
     Claude Code 連携設定の配布。`TRIGGER_URL` もここ)/ `browse.py`(`/search/{source}/`)/
-    `chat.py`(`/localllm/chat` と会話画面の JS)
+    `chat.py`(`/ai/chat` と会話画面の JS)
   - `app/deps.py` — **REST と画面が共有する下ごしらえ**(`get_source`、ORDER BY 断片の
     `exact_title_first` / `relevance_order`、古い DB を断る `require_*`)。
     **ここは app の他モジュールを import しない** —— views が main を import すると
@@ -349,7 +368,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     - 生成時刻のフッターは **JST 固定**(`JST` 定数)。人が読む行なので、api コンテナの
       TZ 次第で表記が変わらないようにする
   - `/search/{source}/`(GET) — 検索フォーム(HTML)。**画面はすべて前置きの下に置く**
-    (`/admin`・`/search/…`・`/localllm/…`)。以前はソース名をそのままルート直下に置いていて、
+    (`/admin`・`/search/…`・`/ai/…`)。以前はソース名をそのままルート直下に置いていて、
     ルートがキャッチオールになるため `ask` や `admin` という名前のソースを足せなかった。
     URL の組み立ては `app/pages.py` の `browse_url()` / `doc_url()` に閉じてある。
     `?q=` 未指定時は一覧を出さずフォームのみ表示
@@ -372,8 +391,9 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     (末尾が user でなければ 400)。**サーバーは会話の状態を持たない** — 履歴はクライアントが
     持って毎回送る(読み取り専用・LAN 内・複数ワーカーの前提を崩さないため。MCP を
     ステートレスにしたのと同じ判断)。rag / agent とも `/v1/ask` と同じ実装に流す
-  - `/localllm/chat`(GET) — 会話画面と、JS なし用の 1 問 1 答の HTML。**ローカル LLM を使う側の
-    機能なので `/localllm/` の下**(Chiezo 本体の画面と並びで区別する)。見た目は
+  - `/ai/chat`(GET) — 会話画面と、JS なし用の 1 問 1 答の HTML。**Chiezo を使う側の
+    機能なので `/ai/` の下**(Chiezo 本体の画面と並びで区別する)。話す相手が 2 つ以上
+    設定されているときだけ、相手を選ぶセレクトが出る。見た目は
     **この画面だけ作り込んである**(`app/pages.py` の `CHAT_STYLE` を `page_shell(style=…)` で
     上乗せ。管理画面・ブラウズ画面は素っ気ないままでよいので、CSS を混ぜない)。
     入力欄は数行ぶんの高さを持ち、設定(ソース・引き方・根拠・web 検索)はその下に並ぶ。見出しは
@@ -903,7 +923,7 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
   コミットしない(追跡したままだと、手元で書き換えたものが `git add` に巻き込まれる)。
 - コード(api/ ingest/ の挙動・エンドポイント・環境変数など)を変更したら、同じ変更で
   README.md(入口。概要・セットアップ・各機能の要約とリンク)と、対応する docs/ の詳細
-  (`api-reference.md` = API 仕様と画面 / `local-llm.md` = 「使う」層 /
+  (`api-reference.md` = API 仕様と画面 / `ai.md` = 「使う」層 /
   `operations.md` = 取り込みと運用 / `design-notes.md` = なぜこの形か)、および本ファイル
   (CLAUDE.md、アーキテクチャ記述)もあわせて更新すること。**README には詳細を書き戻さない**
   (人に読ませる入口として 1 画面で全体像がつかめる長さを保つ)。

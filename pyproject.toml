@@ -8,7 +8,9 @@
 testpaths = ["tests"]
 # api/ と ingest/ を import 可能にする。以前は tests/conftest.py が sys.path を
 # 書き換えていたが、それは「pytest の設定を書く場所が無い」ことの回避策だった。
-pythonpath = ["api", "ingest"]
+# bridge/ は CLI ブリッジ(別イメージ)。CLI を起動しない部分 —— プロンプトの組み立てと
+# 起動コマンドの組み方 —— はここでテストする。
+pythonpath = ["api", "ingest", "bridge"]
 
 [tool.ruff]
 target-version = "py312"

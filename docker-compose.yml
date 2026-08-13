@@ -15,7 +15,7 @@
 #   docker-compose.cuda.yml     推論を NVIDIA の GPU で動かす(answer に重ねる)
 #   docker-compose.lan.yml      「答える」層を LAN の別ホストの chiezo-api へ公開する
 #
-# 使い分けは docs/operations.md、「答える」層は docs/local-llm.md が正。
+# 使い分けは docs/operations.md、「答える」層は docs/ai.md が正。
 
 # 取り込み系コンテナ共通のリソース制限(YAML アンカー)。cpu_shares は「良き隣人」のための
 # 相対ウェイト(既定 1024 の半分)。CPU が競合したときだけ他のコンテナへ譲り、空いていれば
@@ -52,13 +52,33 @@ services:
       - CHIEZO_RESCAN_INTERVAL=${CHIEZO_RESCAN_INTERVAL-}
       - CHIEZO_CATALOG_TTL=${CHIEZO_CATALOG_TTL-}
       - CHIEZO_MCP_ALLOWED_HOSTS=${CHIEZO_MCP_ALLOWED_HOSTS-}
-      # 「答える」層(/v1/ask・/localllm/chat)。未設定が既定で、その場合この機能は丸ごと無効。
+      # 「答える」層(/v1/ask・/ai/chat)。未設定が既定で、その場合この機能は丸ごと無効。
       # **推論サーバ・検索エンジンのコンテナは docker-compose.answer.yml にある** ——
       # ここにあるのは chiezo-api に渡す設定だけで、外部の OpenAI 互換サーバを指すなら
       # この設定だけで足りる(同居させるならあちらを重ねる)。
       - CHIEZO_LLM_URL=${CHIEZO_LLM_URL-}
       - CHIEZO_LLM_MODEL=${CHIEZO_LLM_MODEL-}
       - CHIEZO_LLM_API_KEY=${CHIEZO_LLM_API_KEY-}
+      # 話す相手を増やす場合(CHIEZO_LLM_<名前>_URL)。既定の相手のほかに何本でも並べられ、
+      # /ai/chat のセレクトと /v1/ask?backend=<名前> で選べる。
+      #
+      # **compose は環境変数を 1 つずつ渡す作りなので、名前を増やすときはここに足す**
+      # (env_file で .env を丸ごと流し込まないのは、CLI ブリッジ用の認証情報まで
+      # chiezo-api に入ってしまうため —— あれはブリッジのコンテナにだけ要る)。
+      - CHIEZO_LLM_GEMINI_URL=${CHIEZO_LLM_GEMINI_URL-}
+      - CHIEZO_LLM_GEMINI_MODEL=${CHIEZO_LLM_GEMINI_MODEL-}
+      - CHIEZO_LLM_GEMINI_API_KEY=${CHIEZO_LLM_GEMINI_API_KEY-}
+      - CHIEZO_LLM_GEMINI_LABEL=${CHIEZO_LLM_GEMINI_LABEL-}
+      - CHIEZO_LLM_OPENROUTER_URL=${CHIEZO_LLM_OPENROUTER_URL-}
+      - CHIEZO_LLM_OPENROUTER_MODEL=${CHIEZO_LLM_OPENROUTER_MODEL-}
+      - CHIEZO_LLM_OPENROUTER_API_KEY=${CHIEZO_LLM_OPENROUTER_API_KEY-}
+      - CHIEZO_LLM_OPENROUTER_LABEL=${CHIEZO_LLM_OPENROUTER_LABEL-}
+      # CLI ブリッジ(docker-compose.answer.yml の chiezo-bridge-*)を指す先。
+      # 認証情報そのものはブリッジ側にあり、ここには URL とラベルしか来ない。
+      - CHIEZO_LLM_CLAUDE_URL=${CHIEZO_LLM_CLAUDE_URL-}
+      - CHIEZO_LLM_CLAUDE_LABEL=${CHIEZO_LLM_CLAUDE_LABEL-}
+      - CHIEZO_LLM_CODEX_URL=${CHIEZO_LLM_CODEX_URL-}
+      - CHIEZO_LLM_CODEX_LABEL=${CHIEZO_LLM_CODEX_LABEL-}
       - CHIEZO_ANSWER_TIMEOUT=${CHIEZO_ANSWER_TIMEOUT-}
       - CHIEZO_ANSWER_DOCS=${CHIEZO_ANSWER_DOCS-}
       - CHIEZO_ANSWER_MAX_CHARS=${CHIEZO_ANSWER_MAX_CHARS-}

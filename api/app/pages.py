@@ -161,9 +161,13 @@ PAGE_STYLE = """
 
 # 会話画面の URL。画面(app/views/chat.py)・そこへ誘導する管理画面・
 # REST 側(app/main.py)が同じ値を見る。
-CHAT_PATH = "/localllm/chat"
+#
+# 以前は `/localllm/chat` だった。話す相手はローカルの推論サーバとは限らず
+# (Gemini・OpenRouter・CLI ブリッジも選べる)、名前が実態と食い違ったので `/ai/` へ移した。
+# **旧 URL のリダイレクトは置いていない** —— LAN 内の画面で、外から参照されるものではないため。
+CHAT_PATH = "/ai/chat"
 
-# 会話画面(/localllm/chat)専用のスタイル。**管理画面とは分けてある** —
+# 会話画面(/ai/chat)専用のスタイル。**管理画面とは分けてある** —
 # 管理画面は素っ気ないままでよく、会話は毎日触る画面なので作りが違う。
 # PAGE_STYLE の後ろに足すので、body の余白など重なる指定はこちらが勝つ。
 CHAT_STYLE = """

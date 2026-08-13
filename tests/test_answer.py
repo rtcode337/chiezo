@@ -1,4 +1,4 @@
-"""「使う」層(/v1/ask・/localllm/chat)のテスト。
+"""「使う」層(/v1/ask・/ai/chat)のテスト。
 
 推論サーバは立てず、`answer._llm_client` を `httpx.MockTransport` 入りのクライアントに
 差し替えて偽の OpenAI 互換サーバを演じさせる。こうするとクエリ生成 → 検索 → 回答の
@@ -371,6 +371,17 @@ class TestSettings:
             ("http://llm:8080/", "http://llm:8080/v1"),
             ("http://llm:8080/v1", "http://llm:8080/v1"),
             ("http://llm:8080/v1/", "http://llm:8080/v1"),
+            # パスを持つ相手には足さない。Gemini の OpenAI 互換の口はこの形で、
+            # 直下が chat/completions なので `/v1` を挟むと 404 になる。
+            (
+                "https://generativelanguage.googleapis.com/v1beta/openai",
+                "https://generativelanguage.googleapis.com/v1beta/openai",
+            ),
+            (
+                "https://generativelanguage.googleapis.com/v1beta/openai/",
+                "https://generativelanguage.googleapis.com/v1beta/openai",
+            ),
+            ("https://openrouter.ai/api/v1", "https://openrouter.ai/api/v1"),
         ],
     )
     def test_base_url_is_normalized(self, monkeypatch, raw, expected):
@@ -387,3 +398,108 @@ class TestSettings:
         monkeypatch.setenv("CHIEZO_LLM_URL", "   ")
         assert answer.load_settings() is None
         assert answer.is_enabled() is False
+
+
+class TestBackends:
+    """話す相手を複数持てること(`CHIEZO_LLM_<名前>_URL`)。
+
+    要求するのは OpenAI 互換の `/chat/completions` だけなので、ローカルの推論サーバでも
+    Gemini・OpenRouter でも、CLI を包んだブリッジでも同じ 1 本の口で扱える。
+    **既定(`CHIEZO_LLM_URL`)はそのまま動く**ことが、この機能で壊してはいけない点。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean(self, monkeypatch):
+        """他所の環境変数が紛れ込まないようにする(発見は環境変数の走査で行うため)。"""
+        for key in list(__import__("os").environ):
+            if key.startswith("CHIEZO_LLM_"):
+                monkeypatch.delenv(key, raising=False)
+
+    def test_default_backend_keeps_working(self, monkeypatch):
+        from app import answer
+
+        monkeypatch.setenv("CHIEZO_LLM_URL", "http://llm.test:8080")
+        assert answer.backend_names() == [answer.DEFAULT_BACKEND]
+        cfg = answer.load_settings()
+        assert cfg.name == answer.DEFAULT_BACKEND
+        assert cfg.url == "http://llm.test:8080/v1"
+
+    def test_named_backends_are_discovered(self, monkeypatch):
+        from app import answer
+
+        monkeypatch.setenv("CHIEZO_LLM_URL", "http://llm.test:8080")
+        monkeypatch.setenv("CHIEZO_LLM_GEMINI_URL", "https://gen.test/v1beta/openai")
+        monkeypatch.setenv("CHIEZO_LLM_GEMINI_MODEL", "gemini-2.5-flash")
+        monkeypatch.setenv("CHIEZO_LLM_GEMINI_API_KEY", "k")
+        # 既定を先頭に、あとは名前順。
+        assert answer.backend_names() == [answer.DEFAULT_BACKEND, "gemini"]
+
+        cfg = answer.load_settings("gemini")
+        assert cfg.name == "gemini"
+        assert cfg.url == "https://gen.test/v1beta/openai"  # パス持ちなので /v1 は足さない
+        assert cfg.model == "gemini-2.5-flash"
+        assert cfg.api_key == "k"
+
+    def test_inference_container_vars_are_not_mistaken_for_backends(self, monkeypatch):
+        """`CHIEZO_LLM_HF_REPO` 等(推論コンテナ向け)を相手と数えないこと。"""
+        from app import answer
+
+        monkeypatch.setenv("CHIEZO_LLM_URL", "http://llm.test:8080")
+        monkeypatch.setenv("CHIEZO_LLM_HF_REPO", "ggml-org/gemma-3-4b-it-GGUF:Q4_K_M")
+        monkeypatch.setenv("CHIEZO_LLM_CTX_SIZE", "8192")
+        monkeypatch.setenv("CHIEZO_LLM_THINK_BUDGET", "0")
+        assert answer.backend_names() == [answer.DEFAULT_BACKEND]
+
+    def test_named_backend_alone_enables_the_layer(self, monkeypatch):
+        """既定が無くても、名前付きが 1 つあれば使う層は有効。"""
+        from app import answer
+
+        monkeypatch.setenv("CHIEZO_LLM_OPENROUTER_URL", "https://openrouter.test/api/v1")
+        assert answer.is_enabled() is True
+        assert answer.backend_names() == ["openrouter"]
+        assert answer.load_settings() is None  # 既定は未設定のまま
+
+    def test_hyphens_in_the_query_are_normalized(self, monkeypatch):
+        from app import answer
+
+        monkeypatch.setenv("CHIEZO_LLM_BRIDGE_CLAUDE_URL", "http://bridge:7013/v1")
+        assert answer.load_settings("bridge-claude").name == "bridge_claude"
+
+    def test_unknown_backend_is_404_with_the_choices(self, monkeypatch, built_data_dir):
+        from app.main import app
+
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        monkeypatch.setenv("CHIEZO_LLM_URL", "http://llm.test:8080")
+        with TestClient(app) as client:
+            res = client.get("/v1/ask", params={"q": "浅草寺", "backend": "nope"})
+        assert res.status_code == 404
+        # このAPIのエラーは detail で包まず本文をそのまま返す(app/main.py の例外ハンドラ)。
+        body = res.json()
+        assert body["backends"] == ["default"]
+        assert "CHIEZO_LLM_NOPE_URL" in body["hint"]
+
+    def test_disabled_layer_is_still_503(self, monkeypatch, built_data_dir):
+        """相手を 1 つも設定していないときは「無効」であって「未知の相手」ではない。"""
+        from app.main import app
+
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        with TestClient(app) as client:
+            res = client.get("/v1/ask", params={"q": "浅草寺", "backend": "gemini"})
+        assert res.status_code == 503
+
+    def test_chat_page_shows_a_picker_only_when_there_is_a_choice(
+        self, monkeypatch, built_data_dir
+    ):
+        from app.main import app
+
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        monkeypatch.setenv("CHIEZO_LLM_URL", "http://llm.test:8080")
+        with TestClient(app) as client:
+            assert 'id="backend"' not in client.get(CHAT_PATH).text
+
+        monkeypatch.setenv("CHIEZO_LLM_GEMINI_URL", "https://gen.test/v1beta/openai")
+        monkeypatch.setenv("CHIEZO_LLM_GEMINI_LABEL", "Gemini")
+        with TestClient(app) as client:
+            html = client.get(CHAT_PATH).text
+        assert 'id="backend"' in html
+        assert ">Gemini<" in html

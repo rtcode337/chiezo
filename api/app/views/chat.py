@@ -1,4 +1,4 @@
-"""会話画面(`/localllm/chat`)。「使う」層のブラウザ側。
+"""会話画面(`/ai/chat`)。「使う」層のブラウザ側。
 
 答えを組み立てるのは `app/answer.py` / `app/agent.py` で、ここがするのは画面と
 その JS を返すことだけ(本文は `/v1/chat` へ POST して SSE で受け取る)。
@@ -83,6 +83,7 @@ CHAT_JS = """
   function settings() {
     var web = document.getElementById('web'), notes = document.getElementById('notes');
     return {
+      backend: (document.getElementById('backend') || {}).value || null,
       source: document.getElementById('source').value || null,
       grounded: document.getElementById('grounded').value === '1',
       mode: document.getElementById('mode').value,
@@ -197,9 +198,9 @@ CHAT_JS = """
 """
 
 
-# 会話の画面。**ローカル LLM を使う側の機能**なので `/localllm/` の下に置く
+# 会話の画面。**Chiezo を「使う」側の機能**なので `/ai/` の下に置く
 # (Chiezo 本体の画面 = /admin と /search/… とは並びで区別できるようにする)。
-@router.get("/localllm/chat", response_class=HTMLResponse)
+@router.get(CHAT_PATH, response_class=HTMLResponse)
 async def chat_page(
     request: Request,
     q: str | None = Query(None),
@@ -207,6 +208,7 @@ async def chat_page(
     nojs: bool = Query(False, description="JS を使わず、1 問 1 答で表示する"),
     grounded: bool | None = Query(None, description="Chiezo で取れたことだけを根拠にする"),
     mode: str | None = Query(None, pattern="^(rag|agent)$", description="rag / agent"),
+    backend: str | None = Query(None, description="どの AI に聞くか(省略時は既定のバックエンド)"),
 ):
     mode = mode or answer.default_mode()
     grounded = answer.default_grounded() if grounded is None else grounded
@@ -226,6 +228,20 @@ async def chat_page(
         f'<option value="{value}"{" selected" if value == mode else ""}>{label}</option>'
         for value, label in (("rag", "1 回検索して答える"), ("agent", "モデルに道具を引かせる"))
     )
+    # 話す相手の選択。**相手が 1 つしか無いときは出さない** —— 選べない選択肢を
+    # 並べても場所を取るだけで、設定を足せば自然に現れる。
+    names = answer.backend_names()
+    current_backend = answer.normalize_backend(backend)
+    if current_backend not in names:
+        current_backend = names[0] if names else answer.DEFAULT_BACKEND
+    backend_select = ""
+    if len(names) > 1:
+        backend_options = "".join(
+            f'<option value="{esc(name)}"'
+            f'{" selected" if name == current_backend else ""}>{esc(answer.backend_label(name))}</option>'
+            for name in names
+        )
+        backend_select = f'<select id="backend" name="backend" title="話す相手">{backend_options}</select>'
     # 設定は**入力欄の下**に並べる(会話中に触るのは稀なので、視線の主役にしない)。
     # web 検索は設定してある環境でだけ出し、**やり取りごとに切れる**トグルにする。
     web_toggle = (
@@ -242,6 +258,7 @@ async def chat_page(
     )
     settings = f"""
 <div class="composer-settings">
+{backend_select}
 <select id="source" name="source" title="引くソース">{options}</select>
 <select id="mode" name="mode" title="引き方">{mode_options}</select>
 <select id="grounded" name="grounded" title="根拠の扱い">{grounded_options}</select>
@@ -270,7 +287,7 @@ async def chat_page(
 """
         return HTMLResponse(content=page_shell("AI と話す", body, style=CHAT_STYLE))
 
-    cfg = answer.require_settings()
+    cfg = answer.require_settings(current_backend)
     # 話す相手は AI(モデル)で、Chiezo はその AI が引く知識。見出しでその関係を出すため、
     # モデル名を名乗らせる(推論サーバに聞く。分からなければ名前なしの「AI」)。
     label = await answer.model_label(cfg)
@@ -279,9 +296,10 @@ async def chat_page(
         # 会話は JS(fetch + SSE)が主役。履歴を持つのはブラウザ側で、サーバーは
         # 毎回まるごと受け取る。JS が無い環境には下の 1 問 1 答へ誘導する。
         first = f' data-first="{esc(q)}"' if q else ""
-        nojs_url = f"{CHAT_PATH}?nojs=1&mode={mode}&grounded={'1' if grounded else '0'}" + (
-            f"&q={quote(q)}" if q else ""
-        )
+        nojs_url = (
+            f"{CHAT_PATH}?nojs=1&mode={mode}&grounded={'1' if grounded else '0'}"
+            f"&backend={quote(current_backend)}"
+        ) + (f"&q={quote(q)}" if q else "")
         body = f"""
 <div class="chat-page">
 <div class="chat-head"><h1>{heading}</h1><span class="spacer"></span>
@@ -318,6 +336,7 @@ async def chat_page(
 <form method="get" action="{CHAT_PATH}">
 <input type="hidden" name="nojs" value="1">
 <input type="text" name="q" value="{esc(q or '')}" placeholder="質問を書く(自然文でよい)">
+{backend_select.replace('id="backend"', 'id="backend-nojs"')}
 <select name="source">{options}</select>
 <select name="grounded">{grounded_options}</select>
 <select name="mode">{mode_options}</select>
