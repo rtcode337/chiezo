@@ -1,6 +1,8 @@
 # push / PR でテストを実行し、main への push で Docker イメージをビルドして GHCR へ公開する。
 #   ghcr.io/<owner>/chiezo-api    … 配信 API(api/Dockerfile)
 #   ghcr.io/<owner>/chiezo-ingest … 取り込みバッチ + chiezo-trigger(ingest/Dockerfile)
+#   ghcr.io/<owner>/chiezo-bridge … CLI ブリッジ(bridge/Dockerfile)。Claude Code / Codex CLI を
+#                                   OpenAI 互換の口に見せる。既定では立たず、使う人だけが pull する
 #
 # テストはフィクスチャ完結(ネットワーク・実データ不要)なので、そのまま CI で回る。
 # イメージ公開はダイジェストマージ方式:
@@ -96,7 +98,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [api, ingest]
+        image: [api, ingest, bridge]
         arch:
           - platform: linux/amd64
             runner: ubuntu-latest
@@ -152,7 +154,7 @@ jobs:
       packages: write
     strategy:
       matrix:
-        image: [api, ingest]
+        image: [api, ingest, bridge]
     runs-on: ubuntu-latest
     steps:
       - name: Download digests
@@ -189,3 +191,23 @@ jobs:
 
       - name: Inspect
         run: docker buildx imagetools inspect ghcr.io/${{ github.repository }}-${{ matrix.image }}:${{ steps.meta.outputs.version }}
+
+      # 古い版を消して直近 10 世代だけ残す。
+      #
+      # 公開パッケージなので GHCR の容量・転送は無料枠を消費しないが、版は放っておくと
+      # 際限なく積み上がる(`latest` を付け替えても前の版は SHA タグ付きで残る)。
+      # 一覧が読めなくなるのと、どれが生きているか分からなくなるのを防ぐための掃除。
+      #
+      # **actions/delete-package-versions は使わない。** このリポジトリはマルチアーキで、
+      # 1 つのタグが manifest list ＋ アーキごとの子イメージで構成される。あちらは
+      # 子イメージを「タグ無しの版」として消してしまい、残したはずのタグが壊れる。
+      # この action は manifest list を理解して親子まとめて扱う。
+      - name: 古いイメージを削除して直近 10 世代だけ残す
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          # merge は image ごとの matrix なので、自分が作った版だけを掃除する
+          # (3 つまとめて指定すると 3 並列で同じパッケージを触り合う)。
+          packages: chiezo-${{ matrix.image }}
+          keep-n-tagged: 10
+          delete-untagged: true
+          token: ${{ secrets.GITHUB_TOKEN }}
