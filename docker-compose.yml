@@ -120,10 +120,12 @@ services:
     # コンテナ自体にも上限を課して、万一の暴走をコンテナ内で止める(道連れ防止)。
     <<: *ingest-limits
 
-  # ---- Claude Code / Codex CLI と話す場合だけ、以下のコメントを外す ----
+  # ---- CLI の AI と話す場合だけ、以下のコメントを外す ----
   #
-  # この 2 つは HTTP ではなく CLI なので、OpenAI 互換の口に見せるブリッジを挟む
-  # (bridge/。イメージは 1 つで、CHIEZO_BRIDGE_CLI で役割を決める)。
+  # これらは HTTP ではなく CLI なので、OpenAI 互換の口に見せるブリッジを挟む
+  # (bridge/。**イメージは 1 つで、CHIEZO_BRIDGE_CLI で役割を決める**)。
+  # イメージは 1 回 pull すればディスクは 1 つぶんで、コンテナを何個立てても増えるのは
+  # 書き込み層(数 KB)だけ —— なので CLI ごとに分けず 1 枚にまとめてある。
   # **サブスクの枠で使うためのもの**で、API キー経路は従量課金になるため使わない。
   #
   # ブリッジは Chiezo の MCP(/mcp)を CLI に繋ぐので、**道具は CLI 自身が引く**。
@@ -159,6 +161,25 @@ services:
   #    - ./state:/state:ro
   #  environment:
   #    - CHIEZO_BRIDGE_CLI=codex
+  #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp
+  #    - CHIEZO_BRIDGE_TIMEOUT=${CHIEZO_BRIDGE_TIMEOUT:-300}
+  #  restart: unless-stopped
+  #  cpu_shares: 512
+  #  healthcheck:
+  #    test: ["CMD", "curl", "-fs", "http://localhost:7013/health"]
+  #    interval: 60s
+  #
+  # Antigravity は API キー方式を持たない。**コンテナ内で 1 回サインインした結果**を
+  # ホーム配下のキャッシュから読むので、/state ではなく**書き込み可能なホーム**を
+  # バインドして永続化する。立ち上げたら
+  #   docker compose exec chiezo-bridge-antigravity agy
+  # を 1 回だけ対話で実行し、表示される URL でサインインすること。
+  #chiezo-bridge-antigravity:
+  #  image: ghcr.io/rtcode337/chiezo-bridge:latest
+  #  volumes:
+  #    - ./state/bridge-antigravity-home:/srv/bridge/home
+  #  environment:
+  #    - CHIEZO_BRIDGE_CLI=antigravity
   #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp
   #    - CHIEZO_BRIDGE_TIMEOUT=${CHIEZO_BRIDGE_TIMEOUT:-300}
   #  restart: unless-stopped

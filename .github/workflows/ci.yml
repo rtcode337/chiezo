@@ -104,6 +104,15 @@ jobs:
             runner: ubuntu-latest
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
+        exclude:
+          # ブリッジは amd64 だけにする。中身が CLI 3 本(圧縮後 300MB)で、arm64 を作ると
+          # 保存量がそのまま倍になる。**同梱の CLI は amd64 のバイナリを取り出しているので、
+          # arm64 を作るなら Dockerfile 側の取り出し先も変える必要がある**(いまは
+          # codex の vendor パスに x86_64 が直書きしてある)。
+          - image: bridge
+            arch:
+              platform: linux/arm64
+              runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.arch.runner }}
     steps:
       - uses: actions/checkout@v7
@@ -208,6 +217,8 @@ jobs:
           # merge は image ごとの matrix なので、自分が作った版だけを掃除する
           # (3 つまとめて指定すると 3 並列で同じパッケージを触り合う)。
           packages: chiezo-${{ matrix.image }}
-          keep-n-tagged: 10
+          # ブリッジだけ世代を絞る。1 世代が圧縮後 300MB あり、CLI の版が上がるたびに
+          # レイヤーが丸ごと入れ替わる(他の 2 つはベース層が世代間で共有されるので軽い)。
+          keep-n-tagged: ${{ matrix.image == 'bridge' && 3 || 10 }}
           delete-untagged: true
           token: ${{ secrets.GITHUB_TOKEN }}

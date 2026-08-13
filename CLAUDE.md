@@ -226,7 +226,14 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       `<think>…</think>` や閉じタグだけが `content` に残る(実測: Qwen3 + 思考オフで先頭に
       `</think>`)。相手の設定は Chiezo が握っていないので受け側で落とす
 - **`bridge/` — CLI ブリッジ(別イメージ `ghcr.io/<owner>/chiezo-bridge`)。**
-  Claude Code / Codex CLI を OpenAI 互換の口に見せて、`CHIEZO_LLM_<名前>_URL` から指せるようにする。
+  Claude Code / Codex CLI / Antigravity CLI を OpenAI 互換の口に見せる。**イメージは 1 つで、
+  `CHIEZO_BRIDGE_CLI` で役割を決める** —— イメージは 1 回 pull すればディスクは 1 つぶんで、
+  コンテナを何個立てても増えるのは書き込み層(数 KB)だけなので、分けるより 1 枚が得。
+  **node は最終イメージに入れない**(claude は自己完結バイナリ、codex も vendor の実体を
+  直接叩ける。node が要るのは npm install のときだけ)。**amd64 のみ**ビルドする
+  —— codex の vendor パスに x86_64 が直書きしてあるので、arm64 を作るならそこも変える。
+  **MCP は任意**(`CHIEZO_BRIDGE_MCP_URL` を空にすると繋がない)。Chiezo 専用の部品ではなく、
+  他のアプリからも使えるサービスとして立てられる。
   **本体には入れない** —— `chiezo-api` が数百 MB で動く前提を崩さないため(推論を同居させないのと
   同じ理由)。既定では立たず、`docker-compose.answer.yml` のコメントを外した人だけが pull する。
   - **道具は CLI 自身に引かせる**。Chiezo の MCP(`/mcp`)を CLI に繋ぐので、検索して答える

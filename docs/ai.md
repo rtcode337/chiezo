@@ -233,6 +233,7 @@ docker compose exec searxng wget -qO- "http://localhost:7012/search?q=test&forma
 | OpenRouter | API キーを登録 → on |
 | Claude Code | ブリッジのコメントを外して起動 → 認証情報を登録 → on |
 | Codex CLI | 同上 |
+| Antigravity CLI | ブリッジのコメントを外して起動 → **コンテナ内で1回サインイン** → on |
 
 **CLI の認証情報も管理画面から登録します。** ブリッジのコンテナが設定 DB（`/state`）を
 **読み取り専用でマウント**して、要求のたびに読むためです。chiezo-api に「トークンを返す口」を
@@ -279,11 +280,19 @@ CHIEZO_LLM_URL=http://192.0.2.10:11434/v1   # 別マシンの Ollama 等
 > ⚠️ Chiezo は認証なし・LAN 内前提です。ここに入れた API キーは、**管理画面を開ける人なら
 > 誰でも差し替えられます**（値の表示はしませんが、書き換えは防げません）。
 
-## Claude Code / Codex CLI と話す（CLI ブリッジ）
+## CLI の AI と話す（ブリッジ）
 
-この 2 つは HTTP ではなく CLI なので、そのままでは指せません。サブスクの枠で使うには
-CLI を通すしかない（API キー経路は従量課金になる）ため、**OpenAI 互換の口に見せる小さな
+これらは HTTP ではなく CLI なので、そのままでは指せません。サブスクの枠で使うには
+CLI を通すしかない（API キー経路は従量課金になる）ため、**OpenAI 互換の口に見せる
 コンテナ**を挟みます（`bridge/`）。
+
+**イメージは 1 つで、`CHIEZO_BRIDGE_CLI` で役割を決めます。** イメージは 1 回 pull すれば
+ディスクは 1 つぶんで、コンテナを何個立てても増えるのは書き込み層（数 KB）だけなので、
+CLI ごとに分けず 1 枚にまとめてあります。
+
+**MCP は任意です**（`CHIEZO_BRIDGE_MCP_URL` を空にすると繋ぎません）。Chiezo 専用の部品では
+なく、**「CLI を OpenAI 互換の口に見せるサービス」として他のアプリからも使えます** ——
+postgres を別コンテナで立てて複数のアプリが繋ぐのと同じ形です。
 
 ブリッジは **Chiezo の MCP（`/mcp`）を CLI に繋ぎます**。つまり検索して答える段取りは
 ブリッジ側で組まず、道具は CLI 自身が引きます —— Claude Code も Codex も、道具を自分で
@@ -313,8 +322,8 @@ codex login --device-auth          # → ~/.codex/auth.json の中身
 
 | 環境変数 | 既定 | 説明 |
 |---|---|---|
-| `CHIEZO_BRIDGE_CLI` | `claude` | 包む CLI（`claude` / `codex`） |
-| `CHIEZO_BRIDGE_MCP_URL` | `http://chiezo-api:7010/mcp` | CLI に繋ぐ Chiezo の MCP |
+| `CHIEZO_BRIDGE_CLI` | `claude` | 包む CLI（`claude` / `codex` / `antigravity`） |
+| `CHIEZO_BRIDGE_MCP_URL` | `http://chiezo-api:7010/mcp` | CLI に繋ぐ Chiezo の MCP。**空にすると繋がない** |
 | `CHIEZO_BRIDGE_STATE_DB` | `/state/settings.db` | 認証情報を読む Chiezo の設定 DB（読み取り専用でマウント） |
 | `CHIEZO_BRIDGE_MODEL` | （CLI の既定） | 使うモデル。会話画面で選んだものが優先される |
 | `CHIEZO_BRIDGE_ALLOWED_TOOLS` | `mcp__chiezo` | CLI に許す道具。書き込み（`remember`）まで止めるならここを絞る |

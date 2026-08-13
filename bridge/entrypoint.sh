@@ -20,10 +20,20 @@ case "${CLI}" in
         mkdir -p "${CODEX_HOME}"
         chmod 700 "${CODEX_HOME}"
         codex mcp remove chiezo >/dev/null 2>&1 || true
-        codex mcp add chiezo --url "${MCP_URL}"
+        [ -n "${MCP_URL}" ] && codex mcp add chiezo --url "${MCP_URL}"
+        ;;
+    antigravity)
+        # **認証はコンテナ内で 1 回サインインした結果**を HOME 配下のキャッシュから読む
+        # (API キー方式が無い)。HOME を書き込み可能なボリュームにバインドしてあれば、
+        # コンテナを作り直しても消えない。サインインは
+        #   docker compose exec chiezo-bridge-antigravity agy
+        # を対話で 1 回実行して、表示される URL で済ませる。
+        mkdir -p "${HOME}"
+        agy mcp remove chiezo >/dev/null 2>&1 || true
+        [ -n "${MCP_URL}" ] && agy mcp add chiezo --url "${MCP_URL}" >/dev/null 2>&1 || true
         ;;
     *)
-        echo "ERROR: 未対応の CHIEZO_BRIDGE_CLI: ${CLI}（claude / codex）" >&2
+        echo "ERROR: 未対応の CHIEZO_BRIDGE_CLI: ${CLI}（claude / codex / antigravity）" >&2
         exit 2
         ;;
 esac

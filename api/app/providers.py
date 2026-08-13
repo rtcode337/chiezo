@@ -24,7 +24,7 @@ from dataclasses import dataclass
 # API キーの要りかた。画面の出し分けと「on にできるか」の判定に使う。
 KEY_REQUIRED = "required"  # 鍵が無ければ on にできない（Gemini・OpenRouter）
 KEY_OPTIONAL = "optional"  # 無くても動くが、認証を掛けた相手には入れられる（推論サーバ）
-KEY_NONE = "none"  # 鍵という概念が無い（いまは該当なし）
+KEY_NONE = "none"  # 鍵という概念が無い（Antigravity。認証はコンテナ内のサインイン結果）
 
 
 @dataclass(frozen=True)
@@ -109,6 +109,23 @@ PROVIDERS: tuple[Provider, ...] = (
         models=("fable", "opus", "sonnet", "haiku"),
         probe=True,
         order=30,
+    ),
+    Provider(
+        id="antigravity",
+        label="Antigravity CLI",
+        url="http://chiezo-bridge-antigravity:7013/v1",
+        # **API キー方式が無い。** コンテナ内で 1 回サインインした結果をホーム配下の
+        # キャッシュから読むので、画面から登録する秘密は無い。
+        key=KEY_NONE,
+        billing="Google AI サブスクリプション（定額）",
+        setup="docker-compose.yml の chiezo-bridge-antigravity のコメントを外して起動し、"
+        "`docker compose exec chiezo-bridge-antigravity agy` を 1 回だけ対話で実行して"
+        "サインインしてください（表示される URL を手元のブラウザで開き、出てきた認証コードを"
+        "端末に貼り戻す）。サインイン結果はバインドしたホームに残るので、"
+        "コンテナを作り直しても消えません。",
+        models=(),
+        probe=True,
+        order=35,
     ),
     Provider(
         id="codex",

@@ -70,10 +70,50 @@ class TestCommand:
         server = bridge(CHIEZO_BRIDGE_CLI="claude")
         assert "--model" not in server.build_command("/tmp/out.txt")
 
+    def test_antigravity_takes_the_prompt_as_an_argument(self, bridge):
+        """**agy だけプロンプトを引数で取る**（claude/codex は標準入力から読む）。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+        assert server.build_command("/tmp/out.txt", "こんにちは") == ["agy", "-p", "こんにちは"]
+
+    def test_antigravity_refuses_a_prompt_that_would_not_fit_in_argv(self, bridge):
+        """引数渡しなので Linux の単一引数の上限(128KiB)に当たる。
+
+        黙って E2BIG で落ちるより、理由を返して断るほうが原因を追える。
+        """
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+        with pytest.raises(server.PromptTooLong):
+            server.build_command("/tmp/out.txt", "あ" * 100_000)
+
     def test_unknown_cli_is_rejected(self, bridge):
         server = bridge(CHIEZO_BRIDGE_CLI="gemini")
         with pytest.raises(RuntimeError):
             server.build_command("/tmp/out.txt")
+
+
+class TestOptionalMcp:
+    """MCP は任意。**Chiezo 専用の部品ではなく、道具の要らない用途でも使える**。"""
+
+    def test_no_mcp_means_no_tools_at_all(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude", CHIEZO_BRIDGE_MCP_URL="")
+        cmd = server.build_command("/tmp/out.txt")
+        assert "--mcp-config" not in cmd
+        assert "--allowed-tools" not in cmd
+        # 組み込みの道具を切る指定と、他所の MCP を拾わない指定は残す
+        assert cmd[cmd.index("--tools") + 1] == ""
+        assert "--strict-mcp-config" in cmd
+
+    def test_mcp_is_attached_when_configured(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude", CHIEZO_BRIDGE_MCP_URL="http://api.test:7010/mcp")
+        cmd = server.build_command("/tmp/out.txt")
+        assert "--mcp-config" in cmd
+        assert cmd[cmd.index("--allowed-tools") + 1] == "mcp__chiezo"
+
+
+class TestAntigravityCredential:
+    def test_it_has_nothing_to_place(self, bridge):
+        """API キー方式が無く、サインイン結果はホームのキャッシュにある。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+        assert server.apply_credential() == ""
 
 
 class TestMcpConfig:
@@ -93,5 +133,6 @@ class TestModelLabel:
     def test_label_falls_back_to_the_cli_name(self, bridge):
         """Chiezo の見出し(`AI(…)と話す`)はこの名前を出す。"""
         assert bridge(CHIEZO_BRIDGE_CLI="codex").MODEL_LABEL == "Codex CLI"
+        assert bridge(CHIEZO_BRIDGE_CLI="antigravity").MODEL_LABEL == "Antigravity CLI"
         assert bridge(CHIEZO_BRIDGE_CLI="claude", CHIEZO_BRIDGE_MODEL="opus").MODEL_LABEL == "opus"
         assert bridge(CHIEZO_BRIDGE_CLI="claude", CHIEZO_BRIDGE_MODEL_LABEL="社内AI").MODEL_LABEL == "社内AI"

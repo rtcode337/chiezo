@@ -102,10 +102,14 @@ async def section_html() -> str:
         state = "使える" if r["runnable"] else (r["blocked"] or "無効")
 
         if not r["takes_key"]:
-            # **「鍵が要らない」のではなく「chiezo-api が持てない」。** CLI の認証情報は
-            # ブリッジのコンテナが使うもので、別コンテナへ環境変数を注入する手段が無いため
-            # .env から compose 経由で渡す。「不要」とだけ書くと何も要らないと読めてしまう。
-            key_cell = '<span class="muted">ブリッジ側（.env）</span>'
+            # **「鍵が要らない」のではなく「鍵という概念が無い」。** Antigravity は API キー方式を
+            # 持たず、コンテナ内で 1 回サインインした結果を使う。ここで「不要」とだけ書くと
+            # 何もしなくてよいと読めてしまうので、何をすればよいかを添える。
+            key_cell = (
+                '<span class="muted">鍵を使わない</span>'
+                f'<details><summary>使えるようにするには</summary>'
+                f'<p class="muted">{esc(spec.setup)}</p></details>'
+            )
         elif not r["key_required"]:
             key_cell = "登録済み" if r["has_key"] else "未登録"
             key_cell += '<br><span class="muted">認証を掛けているときだけ</span>'

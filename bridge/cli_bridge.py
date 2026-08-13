@@ -17,12 +17,19 @@ Codex は **HTTP ではなく CLI** で、サブスクの枠で使うにはそ�
   「検索して答える」の段取りはブリッジ側で組まない —— Claude Code も Codex も
   道具を自分で回すのが本業で、そこは任せたほうが上手い。Chiezo 側から見ると
   「1 回聞いたら答えが返る」ので、`rag` / `agent` の区別は関係なくなる。
+- **MCP は任意**(`CHIEZO_BRIDGE_MCP_URL` を空にすると繋がない)。**Chiezo 専用の部品では
+  なく、「CLI を OpenAI 互換の口に見せるサービス」として他のアプリからも使える** ——
+  postgres を別コンテナで立てて複数のアプリが繋ぐのと同じ形。道具の要らない用途
+  (プロンプトを渡して答えを受け取るだけ)では、繋がないほうが速く、余計なことをしない。
 - **組み込みの道具は全部切る**。ファイルの読み書きやシェルは、知識ベースに答えるのに
   要らないうえ危ない。CLI に渡すのは Chiezo の MCP だけにする。
 - **認証情報は Chiezo の設定 DB から読む**(`/state/settings.db` を読み取り専用でマウント)。
   こうすると **Chiezo の管理画面から登録できる** —— chiezo-api に「トークンを返す口」を
   開けずに済むのが要点で、認証なしの LAN サービスにそんな口を足したくない。
   DB が無い・空のときは環境変数(`CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_AUTH_JSON`)に落ちる。
+  **Antigravity だけは別** —— API キー方式が無く、コンテナ内で 1 回サインインした結果を
+  HOME 配下のキャッシュから読む。HOME を書き込み可能なボリュームにバインドしてあれば、
+  コンテナを作り直しても消えない。
   **読むのは要求のたび**なので、鍵を登録し直してもブリッジの再起動は要らない。
   イメージには何も焼かない。
 - **ストリーミングは 1 チャンク**。CLI の応答を待ち切ってから SSE に載せる。
@@ -52,6 +59,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 # (compose では chiezo-bridge-claude / chiezo-bridge-codex の 2 サービスに分ける)。
 CLI = os.environ.get("CHIEZO_BRIDGE_CLI", "claude").strip().lower()
 # Chiezo の MCP の URL。CLI はここから search / doc / filter … を引く。
+# **空にすると MCP を繋がない**(道具の要らない用途で使うとき)。
 MCP_URL = os.environ.get("CHIEZO_BRIDGE_MCP_URL", "http://chiezo-api:7010/mcp").strip()
 # CLI に渡すモデル。空なら CLI の既定(サブスクの枠を無駄に食わないよう明示するのが望ましい)。
 MODEL = os.environ.get("CHIEZO_BRIDGE_MODEL", "").strip()
@@ -59,7 +67,8 @@ MODEL = os.environ.get("CHIEZO_BRIDGE_MODEL", "").strip()
 TIMEOUT = float(os.environ.get("CHIEZO_BRIDGE_TIMEOUT", "300") or 300)
 # 名乗るモデル名(`/v1/models` と応答の model に載る。Chiezo の見出しがこれを出す)。
 MODEL_LABEL = os.environ.get("CHIEZO_BRIDGE_MODEL_LABEL", "").strip() or (
-    MODEL or {"claude": "Claude Code", "codex": "Codex CLI"}.get(CLI, CLI)
+    MODEL
+    or {"claude": "Claude Code", "codex": "Codex CLI", "antigravity": "Antigravity CLI"}.get(CLI, CLI)
 )
 # CLI に許す道具。既定は Chiezo の MCP だけ。書き込み(remember)まで止めたいときは
 # ここを `mcp__chiezo__search mcp__chiezo__doc …` のように絞る。
@@ -71,6 +80,13 @@ MCP_CONFIG_PATH = "/tmp/chiezo-mcp.json"
 # **テーブルの形は api/app/settings_store.py との約束**。同じリポジトリの 2 つのイメージが
 # 1 つのファイルを挟んで話すので、片方だけ変えると黙って読めなくなる。
 STATE_DB = os.environ.get("CHIEZO_BRIDGE_STATE_DB", "/state/settings.db")
+
+# Linux の単一引数の長さ上限(MAX_ARG_STRLEN = 32 ページ = 128KiB)。少し余裕を見る。
+MAX_ARG_BYTES = 120 * 1024
+
+
+class PromptTooLong(Exception):
+    """プロンプトを引数で渡す CLI(agy)で、長さ上限を超えたとき。"""
 
 
 def stored_credential() -> str:
@@ -100,6 +116,9 @@ def apply_credential() -> str:
 
     Claude は環境変数、Codex は認証ファイルを見るので、置き方が違う。
     """
+    if CLI == "antigravity":
+        # API キー方式が無く、置くものが無い(サインイン結果は HOME のキャッシュにある)。
+        return ""
     value = stored_credential()
     if not value:
         return (
@@ -129,9 +148,9 @@ def apply_credential() -> str:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # Claude Code に渡す MCP 設定は起動時に書く(Codex は entrypoint.sh が config へ入れる)。
-    if CLI == "claude":
+    if CLI == "claude" and MCP_URL:
         _write_mcp_config()
-    log.info("bridge ready: cli=%s model=%s mcp=%s", CLI, MODEL_LABEL, MCP_URL)
+    log.info("bridge ready: cli=%s model=%s mcp=%s", CLI, MODEL_LABEL, MCP_URL or "(繋がない)")
     yield
 
 
@@ -182,7 +201,7 @@ def _write_mcp_config() -> None:
         json.dump(config, f, ensure_ascii=False)
 
 
-def build_command(out_path: str) -> list[str]:
+def build_command(out_path: str, prompt: str = "") -> list[str]:
     """CLI の起動コマンドを組む。プロンプトは標準入力から渡す。
 
     引数ではなく標準入力にするのは、Linux の単一引数の長さ上限
@@ -195,15 +214,31 @@ def build_command(out_path: str) -> list[str]:
             # 組み込みの道具(Bash・Edit・Write…)は全部切る。知識ベースに答えるのに要らず、
             # 使えると危ない。残るのは --mcp-config で渡した Chiezo の道具だけ。
             "--tools", "",
-            "--mcp-config", MCP_CONFIG_PATH,
             # 手元の ~/.claude.json 等に入っている別の MCP を拾わせない
             # (コンテナは使い捨てなので普通は無いが、意図しない相手に繋がないための保険)。
+            # MCP を繋がない設定でも付ける —— **道具を一切渡さない**ことを保証するため。
             "--strict-mcp-config",
-            "--allowed-tools", ALLOWED_TOOLS,
-            # 非対話なので確認を出されると待ち続けて固まる。渡した道具は Chiezo のものだけ。
+            # 非対話なので確認を出されると待ち続けて固まる。渡す道具は下の分岐で決まる。
             "--permission-mode", "bypassPermissions",
             "--output-format", "text",
         ]
+        if MCP_URL:
+            cmd += ["--mcp-config", MCP_CONFIG_PATH, "--allowed-tools", ALLOWED_TOOLS]
+        if MODEL:
+            cmd += ["--model", MODEL]
+        return cmd
+
+    if CLI == "antigravity":
+        # **`-p` はプロンプトを引数で取る**(claude/codex のように標準入力からは読まない)。
+        # そのため Linux の単一引数の長さ上限(MAX_ARG_STRLEN = 128KiB)に当たりうる ——
+        # 超えると実行前に E2BIG で落ちるので、ここで先に断って理由を返す。
+        # 認証はコンテナ内でサインイン済みである前提(HOME 配下のキャッシュ)。
+        if len(prompt.encode("utf-8")) >= MAX_ARG_BYTES:
+            raise PromptTooLong(
+                f"Antigravity CLI はプロンプトを引数で受け取るため、"
+                f"{MAX_ARG_BYTES // 1024}KiB 未満にする必要があります"
+            )
+        cmd = ["agy", "-p", prompt]
         if MODEL:
             cmd += ["--model", MODEL]
         return cmd
@@ -234,8 +269,13 @@ async def run_cli(prompt: str) -> str:
     if reason := apply_credential():
         raise HTTPException(401, {"error": reason})
     out_path = f"/tmp/chiezo-answer-{uuid.uuid4().hex}.txt"
-    cmd = build_command(out_path)
+    try:
+        cmd = build_command(out_path, prompt)
+    except PromptTooLong as e:
+        raise HTTPException(413, {"error": str(e)}) from e
     log.info("running %s (prompt %d bytes)", cmd[0], len(prompt.encode("utf-8")))
+    # agy はプロンプトを引数で受け取っているので、標準入力には流さない。
+    payload = b"" if CLI == "antigravity" else prompt.encode("utf-8")
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdin=asyncio.subprocess.PIPE,
@@ -244,7 +284,7 @@ async def run_cli(prompt: str) -> str:
     )
     try:
         stdout, stderr = await asyncio.wait_for(
-            proc.communicate(prompt.encode("utf-8")), timeout=TIMEOUT
+            proc.communicate(payload), timeout=TIMEOUT
         )
     except TimeoutError:
         proc.kill()
@@ -315,7 +355,8 @@ async def health() -> dict:
     """
     return {
         "status": "ok", "cli": CLI, "model": MODEL_LABEL,
-        "authenticated": bool(stored_credential()),
+        # antigravity は鍵を持たない(サインイン済みかはここでは分からない)。
+        "authenticated": True if CLI == "antigravity" else bool(stored_credential()),
     }
 
 
