@@ -250,14 +250,44 @@ class TestWhoYouAreTalkingTo:
         assert "<h1>AI(Qwen3-8B)と話す</h1>" in res.text
         assert "Chiezo と話す" not in res.text
 
-    def test_heading_falls_back_when_the_model_is_unknown(self, monkeypatch_env):
-        """モデル名が取れない(推論サーバに繋がらない)ときも画面は出す。"""
+    def test_heading_names_the_relay_when_the_model_is_unknown(self, monkeypatch_env):
+        """モデル名が取れないときは**相手の名前**を出す(画面は必ず出す)。
+
+        以前は名前なしの「AI と話す」だった。相手を選べるようになった今は、
+        どこに話しかけているのかが分かるほうが役に立つ。
+        """
         from app import answer
 
         answer._MODEL_LABEL_CACHE.clear()
         with make_client(monkeypatch_env, None) as c:   # 推論サーバは居ない
             res = c.get(CHAT_PATH)
-        assert "<h1>AI と話す</h1>" in res.text
+        assert "<h1>AI(推論サーバ)と話す</h1>" in res.text
+
+    def test_heading_does_not_name_a_model_from_a_menu(self, monkeypatch_env):
+        """**一覧が 2 つ以上なら名乗らない。**
+
+        それは「選べるもの」の並びであって、いま使われているものではない。
+        CLI ブリッジは受け付けるエイリアスを全部返すので、先頭を採ると
+        `sonnet` のように選んでもいないモデル名が見出しに出る（実際に出た）。
+        """
+        from app import answer
+
+        answer._MODEL_LABEL_CACHE.clear()
+        llm = ToolLLM(models=["sonnet", "fable", "opus", "haiku"])
+        with make_client(monkeypatch_env, llm) as c:
+            res = c.get(CHAT_PATH)
+        assert "sonnet" not in res.text.split("</h1>")[0]
+        assert "<h1>AI(推論サーバ)と話す</h1>" in res.text
+
+    def test_heading_names_the_only_model_a_relay_serves(self, monkeypatch_env):
+        """1 つしか無いなら「それしか無い」ので名乗る（llama-server がこれ）。"""
+        from app import answer
+
+        answer._MODEL_LABEL_CACHE.clear()
+        llm = ToolLLM(models=["Qwen/Qwen3-8B-GGUF:Q4_K_M"])
+        with make_client(monkeypatch_env, llm) as c:
+            res = c.get(CHAT_PATH)
+        assert "<h1>AI(Qwen3-8B)と話す</h1>" in res.text
 
     def test_prompt_tells_the_model_it_is_not_chiezo(self, monkeypatch_env):
         fake = ToolLLM(ANSWER)

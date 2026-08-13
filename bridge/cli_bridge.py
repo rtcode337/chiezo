@@ -70,6 +70,42 @@ MODEL_LABEL = os.environ.get("CHIEZO_BRIDGE_MODEL_LABEL", "").strip() or (
     MODEL
     or {"claude": "Claude Code", "codex": "Codex CLI", "antigravity": "Antigravity CLI"}.get(CLI, CLI)
 )
+# **会話ごとに選べるモデルの一覧**(`/v1/models` で名乗る)。
+#
+# CLI には一覧を出す口が無い(agy だけ `agy models` を持つが、サインイン済みでないと
+# 何も返さない)ので、ここに持つ。**確かめていない ID を並べない** ——
+# 画面には出るのに選ぶと必ず失敗する選択肢になるため。codex と antigravity を
+# 空にしてあるのはそれが理由で、入れたい場合は CHIEZO_BRIDGE_MODELS で渡す。
+#
+# **先頭は「何も選ばなかったときに使われるもの」に揃える。** Chiezo の見出しは
+# 一覧の先頭を名乗るので、ここがずれると使っていないモデル名が画面に出る。
+# claude の既定は `claude-sonnet-5`(実測)なので sonnet が先頭。
+DEFAULT_MODELS = {
+    "claude": ("sonnet", "fable", "opus", "haiku"),  # claude --help のエイリアス（4 つとも実測）
+    "codex": (),
+    "antigravity": (),
+}
+MODELS = tuple(
+    m.strip()
+    for m in os.environ.get("CHIEZO_BRIDGE_MODELS", "").split(",")
+    if m.strip()
+) or DEFAULT_MODELS.get(CLI, ())
+
+# **選べるエフォート(考える量)。** CLI ごとに受け付ける段階が違う。
+#
+# **CLI は値を検証しない** —— claude は `--effort bogus` をエラーにも警告にもせず、
+# 黙って既定で動く(実測)。打ち間違いに気づけないので、ここに無い値は 400 で返す。
+DEFAULT_EFFORTS = {
+    "claude": ("low", "medium", "high", "xhigh", "max"),  # claude --help（5 つとも実測）
+    "antigravity": ("low", "medium", "high"),  # agy --help
+    "codex": (),  # codex exec --help に無い（設定キーは確かめていないので出さない）
+}
+EFFORTS = tuple(
+    e.strip().lower()
+    for e in os.environ.get("CHIEZO_BRIDGE_EFFORTS", "").split(",")
+    if e.strip()
+) or DEFAULT_EFFORTS.get(CLI, ())
+
 # CLI に許す道具。既定は Chiezo の MCP だけ。書き込み(remember)まで止めたいときは
 # ここを `mcp__chiezo__search mcp__chiezo__doc …` のように絞る。
 ALLOWED_TOOLS = os.environ.get("CHIEZO_BRIDGE_ALLOWED_TOOLS", "mcp__chiezo").strip()
@@ -165,6 +201,8 @@ class Message(BaseModel):
 class ChatRequest(BaseModel):
     messages: list[Message]
     model: str | None = None
+    # OpenAI 互換の名前で受ける（Chiezo はこれを送る）。CLI の --effort に直す。
+    reasoning_effort: str | None = None
     stream: bool = False
     # OpenAI 互換の相手が送ってくる他のフィールドは受け取って捨てる
     # (CLI に渡せる対応物が無いため)。知らない項目で 422 にしない。
@@ -201,13 +239,50 @@ def _write_mcp_config() -> None:
         json.dump(config, f, ensure_ascii=False)
 
 
-def build_command(out_path: str, prompt: str = "") -> list[str]:
+def resolve_model(requested: str | None) -> str:
+    """今回使うモデル名。空なら CLI の既定に任せる。
+
+    **`-` で始まる名前は弾く。** 引数として渡すので、そのままだと CLI のフラグとして
+    解釈される（`--dangerously-…` のような指定を外から注ぎ込まれかねない）。
+    一覧に無い名前は通す —— CLI は正式名（`claude-fable-5` など）も受け付けるし、
+    Chiezo 以外から使うこともあるため。間違っていれば CLI のエラーがそのまま返る。
+    """
+    name = (requested or "").strip()
+    # Chiezo は選ばれていないとき見出しの名前をそのまま送ってくることがある。
+    if not name or name == MODEL_LABEL or name == "chiezo":
+        return MODEL
+    if name.startswith("-"):
+        raise HTTPException(400, {"error": f"モデル名に使えない文字で始まっています: {name[:40]}"})
+    return name
+
+
+def resolve_effort(requested: str | None) -> str:
+    """今回のエフォート。空なら CLI の既定に任せる。
+
+    **一覧に無い値は 400 にする。** モデル名と違い、CLI が間違いを教えてくれない ——
+    claude は知らない値を黙って捨てて既定で動くので、通してしまうと
+    「選んだのに効いていない」ことに誰も気づけない。
+    """
+    name = (requested or "").strip().lower()
+    if not name:
+        return ""
+    if name not in EFFORTS:
+        allowed = ", ".join(EFFORTS) or "（この CLI は指定できません）"
+        raise HTTPException(400, {"error": f"使えないエフォートです: {name[:40]}", "allowed": allowed})
+    return name
+
+
+def build_command(out_path: str, prompt: str = "", model: str = "", effort: str = "") -> list[str]:
     """CLI の起動コマンドを組む。プロンプトは標準入力から渡す。
+
+    `model` は今回の要求で選ばれたもの。空なら起動時の既定(CHIEZO_BRIDGE_MODEL)、
+    それも空なら CLI 自身の既定に任せる。
 
     引数ではなく標準入力にするのは、Linux の単一引数の長さ上限
     (MAX_ARG_STRLEN = 128KiB)を超えると実行前に E2BIG で落ちるため。
     Chiezo が積む抜粋は簡単にこの桁へ届く。
     """
+    model = model or MODEL
     if CLI == "claude":
         cmd = [
             "claude", "-p",
@@ -224,8 +299,10 @@ def build_command(out_path: str, prompt: str = "") -> list[str]:
         ]
         if MCP_URL:
             cmd += ["--mcp-config", MCP_CONFIG_PATH, "--allowed-tools", ALLOWED_TOOLS]
-        if MODEL:
-            cmd += ["--model", MODEL]
+        if model:
+            cmd += ["--model", model]
+        if effort:
+            cmd += ["--effort", effort]
         return cmd
 
     if CLI == "antigravity":
@@ -239,8 +316,10 @@ def build_command(out_path: str, prompt: str = "") -> list[str]:
                 f"{MAX_ARG_BYTES // 1024}KiB 未満にする必要があります"
             )
         cmd = ["agy", "-p", prompt]
-        if MODEL:
-            cmd += ["--model", MODEL]
+        if model:
+            cmd += ["--model", model]
+        if effort:
+            cmd += ["--effort", effort]
         return cmd
 
     if CLI == "codex":
@@ -256,21 +335,21 @@ def build_command(out_path: str, prompt: str = "") -> list[str]:
             # 最後の発言だけをファイルへ。標準出力には進捗も混ざるので、本文はこちらから取る
             "-o", out_path,
         ]
-        if MODEL:
-            cmd += ["-m", MODEL]
+        if model:
+            cmd += ["-m", model]
         cmd.append("-")  # プロンプトは標準入力から
         return cmd
 
     raise RuntimeError(f"未対応の CHIEZO_BRIDGE_CLI: {CLI}")
 
 
-async def run_cli(prompt: str) -> str:
+async def run_cli(prompt: str, model: str = "", effort: str = "") -> str:
     """CLI を 1 回起動して本文を返す。失敗は HTTPException にする。"""
     if reason := apply_credential():
         raise HTTPException(401, {"error": reason})
     out_path = f"/tmp/chiezo-answer-{uuid.uuid4().hex}.txt"
     try:
-        cmd = build_command(out_path, prompt)
+        cmd = build_command(out_path, prompt, model, effort)
     except PromptTooLong as e:
         raise HTTPException(413, {"error": str(e)}) from e
     log.info("running %s (prompt %d bytes)", cmd[0], len(prompt.encode("utf-8")))
@@ -315,19 +394,19 @@ async def run_cli(prompt: str) -> str:
     return text
 
 
-def _completion(text: str) -> dict:
+def _completion(text: str, model: str = "") -> dict:
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex}",
         "object": "chat.completion",
         "created": int(time.time()),
-        "model": MODEL_LABEL,
+        "model": model or MODEL_LABEL,
         "choices": [
             {"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}
         ],
     }
 
 
-async def _sse(text: str) -> AsyncIterator[str]:
+async def _sse(text: str, model: str = "") -> AsyncIterator[str]:
     """SSE で返す。差分は 1 つだけ(CLI を待ち切ってから流すため)。
 
     受け手(app/answer.py)は差分を順に足すだけなので、粒度は問われない。
@@ -336,7 +415,7 @@ async def _sse(text: str) -> AsyncIterator[str]:
         "id": f"chatcmpl-{uuid.uuid4().hex}",
         "object": "chat.completion.chunk",
         "created": int(time.time()),
-        "model": MODEL_LABEL,
+        "model": model or MODEL_LABEL,
         "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
     }
     yield f"data: {json.dumps(head, ensure_ascii=False)}\n\n"
@@ -399,19 +478,28 @@ async def health(check: bool = False) -> dict:
 
 @app.get("/v1/models")
 async def models() -> dict:
-    """Chiezo の `model_label()` がここを引いて見出しの名前を決める。"""
-    return {"object": "list", "data": [{"id": MODEL_LABEL, "object": "model", "owned_by": "chiezo-bridge"}]}
+    """会話画面のモデル選択と、Chiezo の見出し(`model_label()`)がここを引く。
+
+    選べるものが無い CLI では、名乗る名前を 1 つだけ返す(見出しが空にならないため)。
+    """
+    ids = MODELS or (MODEL_LABEL,)
+    return {
+        "object": "list",
+        "data": [{"id": i, "object": "model", "owned_by": "chiezo-bridge"} for i in ids],
+    }
 
 
 @app.post("/v1/chat/completions")
 async def chat_completions(body: ChatRequest):
     if not body.messages:
         raise HTTPException(400, {"error": "messages must not be empty"})
-    text = await run_cli(build_prompt(body.messages))
+    model = resolve_model(body.model)
+    effort = resolve_effort(body.reasoning_effort)
+    text = await run_cli(build_prompt(body.messages), model, effort)
     if body.stream:
         return StreamingResponse(
-            _sse(text),
+            _sse(text, model),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
-    return JSONResponse(_completion(text))
+    return JSONResponse(_completion(text, model))

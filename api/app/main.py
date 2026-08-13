@@ -1035,8 +1035,9 @@ async def ask(
                     "省略すると CHIEZO_LLM_URL の相手",
     ),
     model: str | None = Query(None, description="どのモデルを使うか(省略時はその相手の既定)"),
+    effort: str | None = Query(None, description="どれだけ考えさせるか(相手が持っていれば)"),
 ):
-    cfg = answer.require_settings(backend, model)
+    cfg = answer.require_settings(backend, model, effort)
     # 既定は環境変数で決める(GPU + 8B の環境と、CPU だけの環境で妥当な既定が違うため)。
     mode = mode or answer.default_mode()
     grounded = answer.default_grounded() if grounded is None else grounded
@@ -1113,6 +1114,8 @@ class ChatRequest(BaseModel):
     backend: str | None = None
     # どのモデルを使うか。同じく毎回送るので、会話の途中でも切り替えられる。
     model: str | None = None
+    # どれだけ考えさせるか。相手が持っていなければ無視される。
+    effort: str | None = None
 
 
 def _split_history(body: ChatRequest) -> tuple[str, list[dict]]:
@@ -1124,7 +1127,7 @@ def _split_history(body: ChatRequest) -> tuple[str, list[dict]]:
 
 @app.post("/v1/chat")
 async def chat(request: Request, body: ChatRequest, stream: bool = Query(False)):
-    cfg = answer.require_settings(body.backend, body.model)
+    cfg = answer.require_settings(body.backend, body.model, body.effort)
     question, history = _split_history(body)
     mode = body.mode or answer.default_mode()
     grounded = answer.default_grounded() if body.grounded is None else body.grounded

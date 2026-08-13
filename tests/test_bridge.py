@@ -136,3 +136,125 @@ class TestModelLabel:
         assert bridge(CHIEZO_BRIDGE_CLI="antigravity").MODEL_LABEL == "Antigravity CLI"
         assert bridge(CHIEZO_BRIDGE_CLI="claude", CHIEZO_BRIDGE_MODEL="opus").MODEL_LABEL == "opus"
         assert bridge(CHIEZO_BRIDGE_CLI="claude", CHIEZO_BRIDGE_MODEL_LABEL="社内AI").MODEL_LABEL == "社内AI"
+
+
+class TestRunsAsNonRoot:
+    """**イメージが非 root で動くこと。**
+
+    claude は権限確認を飛ばす指定を root では拒む
+    (`--dangerously-skip-permissions cannot be used with root/sudo privileges`)。
+    非対話で動かす以上その指定は外せないので、root に戻すと生成が必ず失敗する。
+    しかも `claude auth status` は root でも通るため、管理画面の「接続を試す」は
+    成功したまま生成だけが 502 になる —— 気づきにくいので、ここで見張る。
+    """
+
+    def test_dockerfile_switches_to_an_unprivileged_user(self):
+        from pathlib import Path
+
+        text = (Path(__file__).resolve().parents[1] / "bridge" / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        users = [ln.split()[1] for ln in text.splitlines() if ln.startswith("USER ")]
+        assert users, "bridge/Dockerfile に USER が無い(root で動いてしまう)"
+        assert users[-1] not in {"root", "0"}, f"最後の USER が root: {users[-1]}"
+
+
+class TestModelSelection:
+    """会話ごとにモデルを選べること。
+
+    以前は起動時の CHIEZO_BRIDGE_MODEL に固定で、要求の `model` は**捨てていた** ——
+    画面にモデル選択があるのに何も変わらない状態だった。
+    """
+
+    def test_it_advertises_the_models_it_accepts(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        assert server.MODELS == ("sonnet", "fable", "opus", "haiku")
+
+    def test_the_first_model_is_the_cli_default(self, bridge):
+        """見出しは一覧の先頭を名乗るので、CLI の既定(claude-sonnet-5)に揃える。"""
+        assert bridge(CHIEZO_BRIDGE_CLI="claude").MODELS[0] == "sonnet"
+
+    def test_it_does_not_guess_ids_for_clis_without_a_list(self, bridge):
+        """確かめていない ID を並べない(選べるのに必ず失敗する選択肢になるため)。"""
+        assert bridge(CHIEZO_BRIDGE_CLI="codex").MODELS == ()
+        assert bridge(CHIEZO_BRIDGE_CLI="antigravity").MODELS == ()
+
+    def test_the_list_can_be_given_from_outside(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="codex", CHIEZO_BRIDGE_MODELS="gpt-x, gpt-y ")
+        assert server.MODELS == ("gpt-x", "gpt-y")
+
+    def test_the_requested_model_reaches_the_cli(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        cmd = server.build_command("/tmp/out.txt", "q", server.resolve_model("haiku"))
+        assert cmd[cmd.index("--model") + 1] == "haiku"
+
+    def test_codex_takes_it_with_its_own_flag(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        cmd = server.build_command("/tmp/out.txt", "q", server.resolve_model("gpt-x"))
+        assert cmd[cmd.index("-m") + 1] == "gpt-x"
+
+    def test_no_choice_leaves_the_cli_default_alone(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        for requested in (None, "", "  ", "Claude Code", "chiezo"):
+            assert server.resolve_model(requested) == ""
+            assert "--model" not in server.build_command("/tmp/out.txt", "q", "")
+
+    def test_it_refuses_a_name_that_would_become_a_flag(self, bridge):
+        """**引数として渡すので、`-` で始まる名前は CLI のフラグになる。**"""
+        import fastapi
+
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        with pytest.raises(fastapi.HTTPException) as got:
+            server.resolve_model("--dangerously-skip-permissions")
+        assert got.value.status_code == 400
+
+    def test_it_accepts_a_full_model_name(self, bridge):
+        """一覧に無くても通す(CLI は正式名も受け付ける。間違いは CLI が言う)。"""
+        assert bridge(CHIEZO_BRIDGE_CLI="claude").resolve_model("claude-fable-5") == "claude-fable-5"
+
+
+class TestEffortSelection:
+    """考える量（エフォート）を会話ごとに選べること。"""
+
+    def test_it_offers_what_the_cli_accepts(self, bridge):
+        assert bridge(CHIEZO_BRIDGE_CLI="claude").EFFORTS == (
+            "low", "medium", "high", "xhigh", "max",
+        )
+        # agy に xhigh / max は無い
+        assert bridge(CHIEZO_BRIDGE_CLI="antigravity").EFFORTS == ("low", "medium", "high")
+        assert bridge(CHIEZO_BRIDGE_CLI="codex").EFFORTS == ()
+
+    def test_it_reaches_the_cli(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        cmd = server.build_command("/tmp/out.txt", "q", "", server.resolve_effort("xhigh"))
+        assert cmd[cmd.index("--effort") + 1] == "xhigh"
+
+    def test_no_choice_leaves_the_cli_default_alone(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        assert server.resolve_effort(None) == ""
+        assert "--effort" not in server.build_command("/tmp/out.txt", "q", "", "")
+
+    def test_it_refuses_a_value_the_cli_would_swallow(self, bridge):
+        """**CLI が間違いを教えてくれない。**
+
+        claude は `--effort bogus` をエラーにも警告にもせず、黙って既定で動く（実測）。
+        通すと「選んだのに効いていない」ことに気づけないので、ここで弾く。
+        """
+        import fastapi
+
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        with pytest.raises(fastapi.HTTPException) as got:
+            server.resolve_effort("bogus")
+        assert got.value.status_code == 400
+        # 段階の名前が違う CLI では、その CLI に無いものも弾く
+        agy = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+        with pytest.raises(fastapi.HTTPException):
+            agy.resolve_effort("xhigh")
+
+    def test_a_cli_without_efforts_refuses_all_of_them(self, bridge):
+        import fastapi
+
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        with pytest.raises(fastapi.HTTPException):
+            server.resolve_effort("high")
+

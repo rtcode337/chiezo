@@ -76,6 +76,8 @@ class Settings:
     extra_headers: dict[str, str] = field(default_factory=dict)
     # どの相手の設定か（`app/providers.py` の ID）。画面の表示に使う。
     name: str = ""
+    # 考える量（`reasoning_effort`）。空なら送らない = 相手の既定に任せる。
+    effort: str = ""
 
     @property
     def endpoint(self) -> str:
@@ -147,8 +149,23 @@ def backend_label(backend: str) -> str:
     return providers.label_of(backend)
 
 
+def normalize_effort(backend: str, effort: str | None) -> str:
+    """選ばれたエフォートを検証する。知らない値は空（＝相手の既定）にする。
+
+    **相手が検証してくれない。** claude は `--effort bogus` を黙って受け取り、
+    エラーも警告も出さずに既定で動く（実測）—— 打ち間違いに気づけないので、
+    ここで一覧に無いものを落とす。
+    """
+    name = (effort or "").strip().lower()
+    return name if name in providers.efforts_of(backend) else ""
+
+
 def load_settings(
-    backend: str | None = None, model: str | None = None, *, require_enabled: bool = True
+    backend: str | None = None,
+    model: str | None = None,
+    effort: str | None = None,
+    *,
+    require_enabled: bool = True,
 ) -> Settings | None:
     """相手の設定を組み立てる。使えない相手なら None。
 
@@ -175,9 +192,15 @@ def load_settings(
     # 書き換えられた場合の保険でもある）。
     if spec.credential == providers.CRED_REQUIRED and not stored.has_credential:
         return None
-    chosen = (model or stored.model or (spec.models[0] if spec.models else "")).strip()
+    chosen = (model or stored.model or "").strip()
+    # **モデルを選ばなかったとき。** 指定が要る相手には控えの先頭を当てる（Gemini に
+    # モデル無しで投げても通らない）が、自分で決められる相手（CLI ブリッジ・1 プロセス
+    # 1 モデルの推論サーバ）には**何も渡さない** —— 画面の「既定」がそれを選べる。
+    if not chosen and spec.model_required and spec.models:
+        chosen = spec.models[0]
     return Settings(
         name=name,
+        effort=normalize_effort(name, effort),
         url=_normalize_base_url(providers.url_of(spec)),
         # 空でも通る相手（1 プロセス 1 モデルの推論サーバ・CLI ブリッジ）がいるので、
         # 決まらないときは無難な既定を置く。
@@ -224,6 +247,11 @@ async def model_label(cfg: Settings) -> str | None:
     設定でモデルが決まっていればそれを、決まっていなければ相手の `/models` に聞く
     (llama-server は 1 プロセス 1 モデルなので、選ばずに使う運用のほうが普通)。
     相手が落ちていても画面は出したいので、失敗は None として覚えて先へ進む。
+
+    **一覧が 2 つ以上あるときは名乗らない。** それは「選べるもの」の並びであって、
+    いま使われているものではない —— CLI ブリッジは受け付けるエイリアスを全部返すので、
+    先頭を採ると `sonnet` のように**選んでもいないモデル名**が画面に出る。
+    呼び出し側が相手の名前（`Claude Code`）に落とせるよう、ここは None を返す。
     """
     # 設定で決まっているモデルがあればそれを名乗る（相手に聞くのは決まっていないときだけ）。
     explicit = cfg.model if cfg.model and cfg.model != "chiezo" else ""
@@ -238,7 +266,8 @@ async def model_label(cfg: Settings) -> str | None:
         async with _llm_client(cfg) as client:
             res = await client.get(f"{cfg.url}/models", timeout=3.0)
         entries = res.json().get("data") or []
-        if entries:
+        # 1 つだけなら「それしか無い」ので名乗れる（llama-server がこれ）。
+        if len(entries) == 1:
             label = short_model_name(str(entries[0].get("id") or "")) or None
     except (httpx.HTTPError, ValueError, TypeError, AttributeError, KeyError, IndexError):
         label = None
@@ -348,8 +377,10 @@ def default_grounded() -> bool:
     return value not in ("0", "false", "no", "off")
 
 
-def require_settings(backend: str | None = None, model: str | None = None) -> Settings:
-    cfg = load_settings(backend, model)
+def require_settings(
+    backend: str | None = None, model: str | None = None, effort: str | None = None
+) -> Settings:
+    cfg = load_settings(backend, model, effort)
     if cfg is not None:
         return cfg
     name = normalize_backend(backend)
@@ -389,12 +420,52 @@ def _llm_client(cfg: Settings) -> httpx.AsyncClient:
 
 
 def _payload(cfg: Settings, messages: list[dict], *, stream: bool, **extra) -> dict:
-    return {
+    payload = {
         "model": cfg.model,
         "messages": messages,
         "stream": stream,
         **extra,
     }
+    # **選ばれたときだけ送る。** 既定では触らない —— 知らない項目を無視せず
+    # 400 で弾く相手がいるので、使わない機能を毎回載せない。
+    if cfg.effort:
+        payload["reasoning_effort"] = cfg.effort
+    return payload
+
+
+# 相手のエラー本文から画面に出す理由を取るとき、切り詰める長さ。
+REASON_MAX = 300
+
+
+def _upstream_reason(body: str) -> str:
+    """相手が返したエラー本文から、**構造化された一言だけ**を取り出す。
+
+    本文をそのまま返さないのは `_upstream_error` と同じ理由(内部構成が漏れる)。
+    かといって握り潰すと、画面には「llm error 502」しか出ず**何が起きたか追えない**
+    —— CLI ブリッジが「root では権限確認を飛ばせない」と言っていたのに、
+    それが一切画面へ出ずに詰まったことがある。
+
+    そこで**決まった場所に入っている文言だけ**を通す。読めない形なら空を返す
+    (status code だけが出る)。
+    """
+    try:
+        doc = json.loads(body)
+    except ValueError:
+        return ""
+    if not isinstance(doc, dict):
+        return ""
+    # FastAPI は detail に包む(CLI ブリッジがこれ)。OpenAI 互換は素で error を持つ。
+    node = doc.get("detail", doc)
+    if isinstance(node, str):
+        return node.strip()[:REASON_MAX]
+    if not isinstance(node, dict):
+        return ""
+    err = node.get("error")
+    # OpenAI / Gemini / OpenRouter は {"error": {"message": ...}}、
+    # CLI ブリッジは {"error": "claude failed", "stderr": ...}。
+    head = err.get("message") if isinstance(err, dict) else err
+    parts = [p for p in (head, node.get("stderr")) if isinstance(p, str) and p.strip()]
+    return " / ".join(p.strip() for p in parts)[:REASON_MAX]
 
 
 def _upstream_error(exc: Exception) -> HTTPException:
@@ -409,6 +480,14 @@ def _upstream_error(exc: Exception) -> HTTPException:
     if isinstance(exc, httpx.TimeoutException):
         return HTTPException(504, {"error": "llm timeout", "reason": type(exc).__name__})
     return HTTPException(502, {"error": "llm unreachable", "reason": type(exc).__name__})
+
+
+def _llm_error(status: int, body: str) -> dict:
+    """相手のエラーを Chiezo のエラー形式にする(理由が読めれば添える)。"""
+    detail = {"error": f"llm error {status}"}
+    if reason := _upstream_reason(body):
+        detail["reason"] = reason
+    return detail
 
 
 async def complete_message(cfg: Settings, messages: list[dict], **extra) -> dict:
@@ -427,7 +506,7 @@ async def complete_message(cfg: Settings, messages: list[dict], **extra) -> dict
     if res.status_code >= 400:
         # 相手の応答本文もそのまま返さない(上と同じ理由)。ログには残す。
         log.warning("llm error %s: %s", res.status_code, res.text[:500])
-        raise HTTPException(502, {"error": f"llm error {res.status_code}"})
+        raise HTTPException(502, _llm_error(res.status_code, res.text))
     try:
         message = res.json()["choices"][0]["message"]
     except (KeyError, IndexError, TypeError, ValueError) as e:
@@ -467,7 +546,7 @@ async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator
             if res.status_code >= 400:
                 body = (await res.aread()).decode("utf-8", "replace")
                 log.warning("llm error %s: %s", res.status_code, body[:500])
-                raise HTTPException(502, {"error": f"llm error {res.status_code}"})
+                raise HTTPException(502, _llm_error(res.status_code, body))
             async for line in res.aiter_lines():
                 if not line.startswith("data:"):
                     continue

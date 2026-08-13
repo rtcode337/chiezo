@@ -293,11 +293,16 @@ async def test_connection(provider: str = Form(...)):
 
 @router.get("/ai/models")
 async def list_models(request: Request, backend: str = ""):
-    """会話画面がモデルのセレクトを組み立てるために引く。
+    """会話画面がモデルとエフォートのセレクトを組み立てるために引く。
 
-    相手に聞けたらその一覧、聞けなければ `app/providers.py` の控えを返す。
+    モデルは相手に聞けたらその一覧、聞けなければ `app/providers.py` の控え。
+    エフォートは**聞く口が無い**ので控えだけ（持たない相手では空）。
     """
     name = answer.normalize_backend(backend)
     if name not in answer.backend_names():
         raise HTTPException(404, {"error": f"unknown backend: {name}"})
-    return {"backend": name, "models": await answer.available_models(name)}
+    return {
+        "backend": name,
+        "models": await answer.available_models(name),
+        "efforts": list(providers.efforts_of(name)),
+    }

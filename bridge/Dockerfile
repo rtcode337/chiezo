@@ -72,7 +72,23 @@ ENV CODEX_HOME=/srv/bridge/.codex
 # コンテナを作り直しても消えない**(compose がそうしている)。
 ENV HOME=/srv/bridge/home
 ENV CHIEZO_BRIDGE_PORT=7013
-RUN mkdir -p /srv/bridge/.codex /srv/bridge/home && chmod 700 /srv/bridge/.codex
+
+# **非 root で動かす。** claude は権限確認を飛ばす指定(--permission-mode
+# bypassPermissions)を **root では拒む** ——
+#   --dangerously-skip-permissions cannot be used with root/sudo privileges
+# 非対話で動かす以上この指定は外せないので、root のままだと使えない。
+# しかも `claude auth status` は root でも通るため、**管理画面の「接続を試す」は
+# 成功するのに生成だけが 502 で落ちる**という分かりにくい壊れ方をする(実際に踏んだ)。
+#
+# **uid は 1000 にする。** Antigravity のサインイン結果を残すホームはホスト側の
+# ディレクトリをバインドする作りで、その持ち主は普通ホストの最初のユーザー(1000)。
+# ここを合わせておかないと、サインインの書き込みが弾かれる。
+# 合わない環境では、バインド先を chown してから起動すること。
+RUN useradd --uid 1000 --home-dir /srv/bridge/home --shell /usr/sbin/nologin bridge \
+    && mkdir -p /srv/bridge/.codex /srv/bridge/home \
+    && chmod 700 /srv/bridge/.codex \
+    && chown -R bridge:bridge /srv/bridge
+USER bridge
 
 EXPOSE 7013
 CMD ["./entrypoint.sh"]

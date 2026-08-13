@@ -12,7 +12,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 
-from app import agent, answer, notes, websearch
+from app import agent, answer, notes, providers, websearch
 from app.pages import CHAT_PATH, CHAT_STYLE, esc, page_shell
 from app.registry import Source
 
@@ -85,12 +85,24 @@ CHAT_JS = """
     return {
       backend: (document.getElementById('backend') || {}).value || null,
       model: (document.getElementById('model') || {}).value || null,
+      effort: (document.getElementById('effort') || {}).value || null,
       source: document.getElementById('source').value || null,
       grounded: document.getElementById('grounded').value === '1',
       mode: document.getElementById('mode').value,
       web: web ? web.checked : null,
       notes: notes ? notes.checked : null
     };
+  }
+
+  // エラー本文({detail: {error, reason}})から画面に添える一言を取る。
+  // 読めない形なら空("HTTP 502" だけが出る)。
+  function reasonOf(body) {
+    try {
+      var d = JSON.parse(body).detail;
+      if (typeof d === 'string') return ' ' + d;
+      if (d && d.error) return ' ' + d.error + (d.reason ? ' — ' + d.reason : '');
+    } catch (e) {}
+    return '';
   }
 
   function send_(text) {
@@ -112,7 +124,13 @@ CHAT_JS = """
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(opts)
     }).then(function (res) {
-      if (!res.ok) { throw new Error('HTTP ' + res.status); }
+      if (!res.ok) {
+        // **本文を捨てない。** 理由は JSON の detail に入っていて、捨てると画面に
+        // 「HTTP 502」しか出ず何が起きたか追えない(実際にそれで詰まった)。
+        return res.text().then(function (body) {
+          throw new Error('HTTP ' + res.status + reasonOf(body));
+        });
+      }
       var reader = res.body.getReader(), decoder = new TextDecoder(), buf = '';
       function pump() {
         return reader.read().then(function (chunk) {
@@ -133,7 +151,8 @@ CHAT_JS = """
               t.text.textContent = answer;
             } else if (ev[1] === 'error') {
               t.text.classList.remove('pending');
-              t.text.textContent += '\\n[エラー] ' + (data.error || '');
+              t.text.textContent += '\\n[エラー] ' + (data.error || '')
+                + (data.reason ? ' — ' + data.reason : '');
             }
           });
           if (stick) toBottom();
@@ -211,6 +230,7 @@ async def chat_page(
     mode: str | None = Query(None, pattern="^(rag|agent)$", description="rag / agent"),
     backend: str | None = Query(None, description="どの AI に聞くか(省略時は既定のバックエンド)"),
     model: str | None = Query(None, description="どのモデルを使うか(省略時はその相手の既定)"),
+    effort: str | None = Query(None, description="どれだけ考えさせるか(相手が持っていれば)"),
 ):
     mode = mode or answer.default_mode()
     grounded = answer.default_grounded() if grounded is None else grounded
@@ -244,7 +264,26 @@ async def chat_page(
             for m in await answer.available_models(current_backend)
         )
         if model_options:
-            model_select = f'<select id="model" name="model" title="モデル">{model_options}</select>'
+            # **相手に任せる選択肢を先頭に置く**（エフォートと同じ扱い）。
+            # 指定が要る相手（Gemini など）では、これを選んでも控えの先頭が当たる。
+            model_select = (
+                '<select id="model" name="model" title="モデル">'
+                '<option value="">モデル（既定）</option>'
+                f"{model_options}</select>"
+            )
+
+    # エフォート（考える量）。**持っている相手のときだけ出す** —— 持たない相手に
+    # 出しても送るだけ無駄で、選べたのに効かない、という分かりにくさが残る。
+    effort_select = ""
+    effort_names = providers.efforts_of(current_backend)
+    if effort_names:
+        effort_options = '<option value="">考える量（既定）</option>' + "".join(
+            f'<option value="{esc(e)}"{" selected" if e == effort else ""}>{esc(e)}</option>'
+            for e in effort_names
+        )
+        effort_select = (
+            f'<select id="effort" name="effort" title="考える量">{effort_options}</select>'
+        )
 
     backend_select = ""
     if len(names) > 1:
@@ -272,6 +311,7 @@ async def chat_page(
 <div class="composer-settings">
 {backend_select}
 {model_select}
+{effort_select}
 <select id="source" name="source" title="引くソース">{options}</select>
 <select id="mode" name="mode" title="引き方">{mode_options}</select>
 <select id="grounded" name="grounded" title="根拠の扱い">{grounded_options}</select>
@@ -300,10 +340,22 @@ async def chat_page(
 """
         return HTMLResponse(content=page_shell("AI と話す", body, style=CHAT_STYLE))
 
-    cfg = answer.require_settings(current_backend, model)
+    cfg = answer.require_settings(current_backend, model, effort)
     # 話す相手は AI(モデル)で、Chiezo はその AI が引く知識。見出しでその関係を出すため、
     # モデル名を名乗らせる(推論サーバに聞く。分からなければ名前なしの「AI」)。
-    label = await answer.model_label(cfg)
+    # モデルが決まっていなければ**相手の名前**を出す（`Claude Code` など）。
+    # 選べる一覧の先頭を出すと、選んでもいないモデル名が並んで嘘になる。
+    label = await answer.model_label(cfg) or answer.backend_label(current_backend)
+
+    def shown_model(name: str) -> str:
+        """人に見せるモデル名。**置き字は出さない。**
+
+        モデルを選ばなかったとき、内部では相手に無視される置き字（`chiezo`）が入る。
+        そのまま出すと画面に「モデル: chiezo」と並んで、何で答えたのか分からなくなる。
+        """
+        if name != "chiezo":
+            return name
+        return label or answer.backend_label(current_backend)
     heading = f"AI({esc(label)})と話す" if label else "AI と話す"
     if not nojs:
         # 会話は JS(fetch + SSE)が主役。履歴を持つのはブラウザ側で、サーバーは
@@ -339,19 +391,29 @@ async def chat_page(
 <a href="{esc(nojs_url)}">1 問 1 答の画面</a>を使ってください(会話の継続はできません)。</p></noscript>
 <script>{CHAT_JS}</script>
 <script>
-  // 相手を変えたらモデルの候補も入れ替える(相手ごとに使えるモデルが違う)。
+  // 相手を変えたらモデルとエフォートの候補も入れ替える(相手ごとに違う)。
   (function () {{
     var b = document.getElementById('backend'), m = document.getElementById('model');
+    var ef = document.getElementById('effort');
     if (!b || !m) {{ return; }}
     b.addEventListener('change', function () {{
       m.disabled = true;
       fetch('/ai/models?backend=' + encodeURIComponent(b.value))
-        .then(function (r) {{ return r.ok ? r.json() : {{ models: [] }}; }})
+        .then(function (r) {{ return r.ok ? r.json() : {{ models: [], efforts: [] }}; }})
         .then(function (d) {{
-          m.innerHTML = '';
+          m.innerHTML = '<option value="">モデル（既定）</option>';
           (d.models || []).forEach(function (id) {{
             var o = document.createElement('option');
             o.value = id; o.textContent = id; m.appendChild(o);
+          }});
+          if (!ef) {{ return; }}
+          // **持っていない相手では隠す**(選べても効かない選択肢を残さない)。
+          var efforts = d.efforts || [];
+          ef.hidden = efforts.length === 0;
+          ef.innerHTML = '<option value="">考える量（既定）</option>';
+          efforts.forEach(function (id) {{
+            var o = document.createElement('option');
+            o.value = id; o.textContent = id; ef.appendChild(o);
           }});
         }})
         .finally(function () {{ m.disabled = false; }});
@@ -371,6 +433,7 @@ async def chat_page(
 <input type="text" name="q" value="{esc(q or '')}" placeholder="質問を書く(自然文でよい)">
 {backend_select.replace('id="backend"', 'id="backend-nojs"')}
 {model_select.replace('id="model"', 'id="model-nojs"')}
+{effort_select.replace('id="effort"', 'id="effort-nojs"')}
 <select name="source">{options}</select>
 <select name="grounded">{grounded_options}</select>
 <select name="mode">{mode_options}</select>
@@ -390,12 +453,12 @@ async def chat_page(
             for s in result["steps"]
         ) or "<li>(道具を使わずに答えた)</li>"
         steps_block = f"<h2>調べた手順</h2>\n<ul>\n{trace}\n</ul>\n"
-        footer = f"モデル: {esc(result['model'])}(agent モード)"
+        footer = f"モデル: {esc(shown_model(result['model']))}(agent モード)"
     else:
         result = await answer.answer(cfg, request, q, source, grounded)
         footer = (
             f"検索に使ったクエリ: {esc(json.dumps(result['queries'], ensure_ascii=False))}"
-            f" / モデル: {esc(result['model'])}"
+            f" / モデル: {esc(shown_model(result['model']))}"
         )
     refs = "\n".join(
         f'<li>[{r["n"]}] <a href="{esc(r["url"])}">{esc(r["source"])} / {esc(r["title"])}</a></li>'

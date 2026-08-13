@@ -41,6 +41,14 @@ class Provider:
     # モデル候補の控え。相手の `/v1/models` が引ければそちらを優先し、
     # 引けない相手（CLI ブリッジなど）でこれを使う。
     models: tuple[str, ...] = ()
+    # **モデルを必ず指定しないといけない相手か。** API は指定が要る（Gemini に
+    # モデル無しで投げても通らない）が、CLI ブリッジと 1 プロセス 1 モデルの推論サーバは
+    # 相手が自分で決められる。False の相手では、画面で「既定」を選べば何も送らない。
+    model_required: bool = True
+    # 選べる「エフォート」（考える量）。**相手に聞く口が無い**ので決め打ちする。
+    # 空なら画面に出さない —— **確かめていない相手には出さない**。
+    # 送ると `reasoning_effort` として相手に渡る（CLI ブリッジは `--effort` に直す）。
+    efforts: tuple[str, ...] = ()
     # **この CLI ブリッジ（bridge/）で包んでいる相手か。** 「接続を試す」の確かめ方が変わる
     # —— ブリッジは `/health?check=1` を持っていて CLI に直接聞ける（`claude auth status` 等）。
     # それ以外は OpenAI 互換の `/models` を引いて確かめる。
@@ -62,6 +70,7 @@ PROVIDERS: tuple[Provider, ...] = (
         url="http://chiezo-llm:7011/v1",
         credential=CRED_OPTIONAL,
         billing="自前（電気代のみ）",
+        model_required=False,
         setup="docker-compose.answer.yml を重ねて "
         "`docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile answer up -d` "
         "で立ち上げてください。LAN の別マシンで動かしているなら、その URL を "
@@ -102,12 +111,17 @@ PROVIDERS: tuple[Provider, ...] = (
         url="http://chiezo-bridge-claude:7013/v1",
         credential=CRED_REQUIRED,
         billing="Claude のサブスクリプション（定額）",
+        model_required=False,
         setup="docker-compose.yml の chiezo-bridge-claude のコメントを外して起動し、"
         "手元の端末で `claude setup-token` を実行して発行したトークンをここに登録してください。"
         "（ブリッジは設定 DB を読み取り専用でマウントしているので、"
         "登録すればブリッジの再起動なしで効きます。）",
         # CLI はエイリアスで受ける（正式名はモデルが変わるたびに動く）。
-        models=("fable", "opus", "sonnet", "haiku"),
+        # **先頭は CLI の既定に揃える**（claude の既定は claude-sonnet-5。実測）——
+        # 何も選ばなかったときにここが使われるので、ずらすと黙って別のモデルになる。
+        models=("sonnet", "fable", "opus", "haiku"),
+        # `claude --help` の --effort（実測で 5 つとも通る）。
+        efforts=("low", "medium", "high", "xhigh", "max"),
         bridge=True,
         order=30,
     ),
@@ -119,12 +133,15 @@ PROVIDERS: tuple[Provider, ...] = (
         # キャッシュから読むので、画面から登録する秘密は無い。
         credential=CRED_NONE,
         billing="Google AI サブスクリプション（定額）",
+        model_required=False,
         setup="docker-compose.yml の chiezo-bridge-antigravity のコメントを外して起動し、"
         "`docker compose exec chiezo-bridge-antigravity agy` を 1 回だけ対話で実行して"
         "サインインしてください（表示される URL を手元のブラウザで開き、出てきた認証コードを"
         "端末に貼り戻す）。サインイン結果はバインドしたホームに残るので、"
         "コンテナを作り直しても消えません。",
         models=(),
+        # `agy --help` の --effort。claude と違い xhigh / max は無い。
+        efforts=("low", "medium", "high"),
         bridge=True,
         order=35,
     ),
@@ -134,10 +151,13 @@ PROVIDERS: tuple[Provider, ...] = (
         url="http://chiezo-bridge-codex:7013/v1",
         credential=CRED_REQUIRED,
         billing="ChatGPT のサブスクリプション（定額）",
+        model_required=False,
         setup="docker-compose.yml の chiezo-bridge-codex のコメントを外して起動し、"
         "手元で `codex login --device-auth` して作られる ~/.codex/auth.json の中身を"
         "そのままここに登録してください（API キー経路は従量課金になるので使いません）。",
         models=(),  # CLI の既定に任せる（/v1/models が返すものを使う）
+        # `codex exec --help` に --effort は無い（設定キーはあるが確かめていないので出さない）。
+        efforts=(),
         bridge=True,
         order=40,
     ),
@@ -171,3 +191,9 @@ def label_of(provider_id: str) -> str:
     """画面に出す名前。知らない ID はそのまま返す（過去の記録を消さないため）。"""
     p = get(provider_id)
     return p.label if p else provider_id
+
+
+def efforts_of(provider_id: str) -> tuple[str, ...]:
+    """その相手で選べるエフォート（空なら画面に出さない）。"""
+    p = get(provider_id)
+    return p.efforts if p else ()

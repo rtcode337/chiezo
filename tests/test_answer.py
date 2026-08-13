@@ -831,3 +831,125 @@ class TestVerificationGate:
         assert settings_store.load("gemini").enabled is False
         assert answer.load_settings("gemini") is None
         assert answer.load_settings("gemini", require_enabled=False) is not None
+
+
+class TestUpstreamReason:
+    """相手のエラーから画面に出す理由を取り出す。
+
+    握り潰していたころは「llm error 502」しか出ず、CLI ブリッジが理由を
+    返していても画面から追えなかった。
+    """
+
+    def test_it_reads_the_cli_bridge_shape(self):
+        from app import answer
+
+        body = (
+            '{"detail": {"error": "claude failed", "exit_code": 1,'
+            ' "stderr": "--dangerously-skip-permissions cannot be used with root"}}'
+        )
+        reason = answer._upstream_reason(body)
+        assert "claude failed" in reason
+        assert "root" in reason
+
+    def test_it_reads_the_openai_shape(self):
+        from app import answer
+
+        body = '{"error": {"message": "invalid api key", "type": "invalid_request_error"}}'
+        assert answer._upstream_reason(body) == "invalid api key"
+
+    def test_it_reads_a_plain_detail_string(self):
+        from app import answer
+
+        assert answer._upstream_reason('{"detail": "Not Found"}') == "Not Found"
+
+    def test_it_stays_quiet_on_shapes_it_cannot_read(self):
+        from app import answer
+
+        """**読めない本文はそのまま返さない。** 内部構成が漏れるため。"""
+        assert answer._upstream_reason("<html>gateway error</html>") == ""
+        assert answer._upstream_reason('["unexpected"]') == ""
+        assert answer._upstream_reason('{"unrelated": "http://chiezo-llm:7011"}') == ""
+
+    def test_it_truncates(self):
+        from app import answer
+
+        body = '{"detail": {"error": "%s"}}' % ("x" * 1000)
+        assert len(answer._upstream_reason(body)) == answer.REASON_MAX
+
+    def test_the_error_carries_the_reason(self):
+        from app import answer
+
+        detail = answer._llm_error(502, '{"detail": {"error": "claude failed"}}')
+        assert detail == {"error": "llm error 502", "reason": "claude failed"}
+        assert answer._llm_error(500, "boom") == {"error": "llm error 500"}
+
+
+class TestEffort:
+    """エフォート（考える量）は、持っている相手にだけ送る。"""
+
+    def test_it_is_sent_only_when_chosen(self):
+        from app import answer
+
+        cfg = answer.Settings(
+            url="http://x/v1", model="sonnet", api_key=None, timeout=1.0, docs=1,
+            max_chars=1, agent_max_steps=1, agent_tool_chars=200, agent_timeout=1.0,
+            name="claude", effort="xhigh",
+        )
+        assert answer._payload(cfg, [], stream=False)["reasoning_effort"] == "xhigh"
+        bare = answer.Settings(
+            url="http://x/v1", model="sonnet", api_key=None, timeout=1.0, docs=1,
+            max_chars=1, agent_max_steps=1, agent_tool_chars=200, agent_timeout=1.0,
+            name="claude",
+        )
+        assert "reasoning_effort" not in answer._payload(bare, [], stream=False)
+
+    def test_unknown_values_fall_back_to_the_default(self):
+        """**相手が検証してくれない**ので、知らない値はここで落とす。"""
+        from app import answer
+
+        assert answer.normalize_effort("claude", "xhigh") == "xhigh"
+        assert answer.normalize_effort("claude", "XHIGH ") == "xhigh"
+        assert answer.normalize_effort("claude", "bogus") == ""
+        # 相手ごとに段階が違う（agy に xhigh は無い）
+        assert answer.normalize_effort("antigravity", "xhigh") == ""
+        # 持たない相手には何も送らない
+        assert answer.normalize_effort("codex", "high") == ""
+        assert answer.normalize_effort("gemini", "high") == ""
+
+
+class TestModelDefault:
+    """モデルも「既定」を選べる（エフォートと同じ扱い）。"""
+
+    @pytest.fixture(autouse=True)
+    def _clean(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+
+    def _settings(self, backend, model=None):
+        from app import answer, settings_store
+
+        settings_store.set_verified(backend, True)
+        settings_store.set_enabled(backend, True)
+        return answer.load_settings(backend, model)
+
+    def test_a_relay_that_decides_for_itself_gets_nothing(self):
+        """CLI ブリッジは自分で決められるので、選ばなければ渡さない。"""
+        from app import settings_store
+
+        settings_store.set_credential("claude", "token")
+        cfg = self._settings("claude")
+        assert cfg.model == "chiezo"  # 送っても無視される置き字（相手の既定が使われる）
+
+    def test_a_relay_that_needs_one_still_gets_a_model(self):
+        """Gemini はモデル無しでは通らないので、控えの先頭を当てる。"""
+        from app import providers, settings_store
+
+        settings_store.set_credential("gemini", "key")
+        cfg = self._settings("gemini")
+        assert cfg.model == providers.get("gemini").models[0]
+
+    def test_choosing_one_still_wins(self):
+        from app import settings_store
+
+        settings_store.set_credential("claude", "token")
+        assert self._settings("claude", "opus").model == "opus"
+

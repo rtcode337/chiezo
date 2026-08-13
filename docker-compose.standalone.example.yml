@@ -194,6 +194,9 @@ services:
   # **書き込み可能なホーム**をバインドして永続化する。立ち上げたら
   #   docker exec -it chiezo-bridge-antigravity agy
   # を 1 回だけ対話で実行し、表示される URL でサインインすること。
+  # **ブリッジは非 root(uid 1000)で動く** —— claude が権限確認を飛ばす指定を root では
+  # 受け付けないため。ここでバインドするディレクトリは uid 1000 が書けるようにしておくこと
+  # (合わなければ `sudo chown -R 1000:1000 <ディレクトリ>`)。書けないとサインインが残らない。
   #chiezo-bridge-antigravity:
   #  image: ghcr.io/rtcode337/chiezo-bridge:latest
   #  container_name: chiezo-bridge-antigravity

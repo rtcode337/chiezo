@@ -319,6 +319,15 @@ postgres を別コンテナで立てて複数のアプリが繋ぐのと同じ�
 安全のために、**CLI の組み込みの道具（シェル・ファイルの読み書き）は全部切って**あります。
 渡すのは Chiezo の MCP だけです。
 
+**コンテナは非 root（uid 1000）で動きます。** claude は権限確認を飛ばす指定を root では
+受け付けません（`--dangerously-skip-permissions cannot be used with root/sudo privileges`）。
+非対話で動かす以上その指定は外せないので、root だと生成が必ず失敗します —— しかも
+`claude auth status` は root でも通るため、**「接続を試す」は成功したまま会話だけが 502**
+という分かりにくい壊れ方をします（実際に踏みました）。
+
+そのため **Antigravity のホームにバインドするディレクトリは uid 1000 が書けること**が要ります
+（`sudo chown -R 1000:1000 state/bridge-antigravity-home`）。書けないとサインインが残りません。
+
 ```bash
 # 1) docker-compose.yml の chiezo-bridge-* のコメントを外して立ち上げる
 #    （profile も追加の -f も要らない。イメージは GHCR から pull される）
@@ -342,9 +351,52 @@ codex login --device-auth          # → ~/.codex/auth.json の中身
 | `CHIEZO_BRIDGE_CLI` | `claude` | 包む CLI（`claude` / `codex` / `antigravity`） |
 | `CHIEZO_BRIDGE_MCP_URL` | `http://chiezo-api:7010/mcp` | CLI に繋ぐ Chiezo の MCP。**空にすると繋がない** |
 | `CHIEZO_BRIDGE_STATE_DB` | `/state/settings.db` | 認証情報を読む Chiezo の設定 DB（読み取り専用でマウント） |
-| `CHIEZO_BRIDGE_MODEL` | （CLI の既定） | 使うモデル。会話画面で選んだものが優先される |
+| `CHIEZO_BRIDGE_MODEL` | （CLI の既定） | 何も選ばれなかったときのモデル。会話画面で選んだものが優先される |
+| `CHIEZO_BRIDGE_MODELS` | （下記） | 会話画面に出すモデルの候補（カンマ区切り） |
+| `CHIEZO_BRIDGE_EFFORTS` | （下記） | 会話画面に出す「考える量」の候補（カンマ区切り） |
 | `CHIEZO_BRIDGE_ALLOWED_TOOLS` | `mcp__chiezo` | CLI に許す道具。書き込み（`remember`）まで止めるならここを絞る |
 | `CHIEZO_BRIDGE_TIMEOUT` | `300` | 1 回の上限（秒）。CLI は道具を何度も引くので推論サーバより長い |
+
+### モデルは会話ごとに選べる
+
+会話画面のモデル選択はブリッジにも効きます（`/v1/models` が名乗ったものが並ぶ）。
+**一覧に無い名前も通ります** —— CLI は正式名（`claude-fable-5` など）も受け付けるためで、
+間違っていれば CLI のエラーがそのまま画面に出ます。`-` で始まる名前だけは拒みます
+（引数として渡すので、CLI のフラグとして解釈されてしまうため）。
+
+| CLI | 候補 | 備考 |
+|---|---|---|
+| Claude Code | `sonnet` / `fable` / `opus` / `haiku` | `claude --help` のエイリアス（4 つとも実測） |
+| Codex CLI | （なし） | 一覧を出す口が無い |
+| Antigravity CLI | （なし） | `agy models` はあるが、サインイン済みでないと何も返さない |
+
+**確かめていない ID は並べません** —— 画面には出るのに選ぶと必ず失敗する選択肢に
+なるためです。入れたい場合は `CHIEZO_BRIDGE_MODELS` で渡してください。
+
+先頭に**「モデル（既定）」**があり、これを選ぶと**何も渡しません**（相手が自分で決めます）。
+Claude Code の既定は `claude-sonnet-5` です。ただし **Gemini や OpenRouter のように
+モデルの指定が要る相手では、「既定」を選んでも控えの先頭が当たります**（モデル無しでは
+通らないため）。
+
+一覧の先頭は「何も選ばなかったときに使われるもの」に揃えてあります（画面の見出しは
+一覧の先頭を名乗るので、ずらすと使っていないモデル名が出ます）。
+
+### 考える量（エフォート）も選べる
+
+会話画面の「考える量」は、持っている CLI のときだけ出ます。
+
+| CLI | 段階 | 由来 |
+|---|---|---|
+| Claude Code | `low` / `medium` / `high` / `xhigh` / `max` | `claude --help`（5 つとも実測） |
+| Antigravity CLI | `low` / `medium` / `high` | `agy --help`（`xhigh` / `max` は無い） |
+| Codex CLI | （なし） | `codex exec --help` に無い |
+
+**モデル名と違い、一覧に無い値は 400 で拒みます。** claude は `--effort bogus` を
+エラーにも警告にもせず**黙って既定で動く**（実測）ので、通すと「選んだのに効いていない」
+ことに誰も気づけません。選ばなければ何も渡さず、CLI の既定に任せます。
+
+Chiezo からは OpenAI 互換の `reasoning_effort` として送られます
+（`/v1/chat` の `effort`、`/v1/ask` の `?effort=`）。
 
 **いまは応答を待ち切ってから流します**（差分では流れません）。CLI ごとに
 `--output-format stream-json` / `--json` を解析すれば差分にできますが、2 つ分の解析を

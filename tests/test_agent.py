@@ -28,11 +28,18 @@ class ToolLLM:
       - [(道具名, 引数dict), ...]    … その道具を呼ぶ
     """
 
-    def __init__(self, *turns):
+    def __init__(self, *turns, models: list[str] | None = None):
         self.turns = list(turns)
         self.requests: list[dict] = []
+        # `/models` で名乗る一覧（画面の見出しとモデル選択がここを引く）
+        self.models = models if models is not None else []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(
+                200,
+                json={"data": [{"id": m} for m in self.models]},
+            )
         payload = json.loads(request.content)
         self.requests.append(payload)
         turn = self.turns.pop(0) if self.turns else "分かりませんでした"
