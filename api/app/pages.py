@@ -234,10 +234,16 @@ CHAT_STYLE = """
                        margin-top: 0.5rem; font-size: 0.8rem; color: #6b665e; }
   .composer-settings select { border: 1px solid #e3e0da; border-radius: 999px; background: #fff;
                               padding: 0.25rem 0.6rem; font-size: 0.8rem; color: #4a463f; }
+  /* **display を指定した要素は hidden 属性が効かない**（作者側の指定が UA の
+     display:none に勝つ）。効かない操作を隠しているつもりで**押せてしまう**ので、
+     ここで打ち消しておく —— 実際に本番で「覚える」が切れる状態のまま出ていた。 */
+  .composer-settings [hidden] { display: none !important; }
   .composer-settings .toggle { display: inline-flex; align-items: center; gap: 0.3rem;
                                border: 1px solid #e3e0da; border-radius: 999px; background: #fff;
                                padding: 0.25rem 0.7rem; cursor: pointer; user-select: none; }
   .composer-settings .toggle.on { border-color: #5560E0; color: #5560E0; background: #f4f5ff; }
+  /* 切れないもの（CLI ブリッジの「覚える」）。入っていることは見せ、押せないことも見せる。 */
+  .composer-settings .toggle.fixed { cursor: default; opacity: 0.75; }
   .composer-settings .toggle input { margin: 0; }
   .composer-settings .hint { margin-left: auto; }
   @media (max-width: 30rem) {

@@ -311,8 +311,10 @@ async def chat_page(
     # そちらは Chiezo 側の設定と無関係なので、設定していない環境でも出す。
     web_usable = current_mode == "agent" and (websearch.is_enabled() or is_bridge)
     # **「覚える」は CLI ブリッジでは止められない**（MCP をまるごと渡していて、道具を
-    # 1 つずつ外す口が無い）。止められないものを止められるように見せない。
-    notes_usable = current_mode == "agent" and notes.is_enabled() and not is_bridge
+    # 1 つずつ外す口が無い）。隠すのではなく**入ったまま触れない**状態で見せる ——
+    # 使えること自体は伝わったほうがよく、切れるように見せるのだけを避けたい。
+    notes_usable = current_mode == "agent" and notes.is_enabled()
+    notes_fixed = notes_usable and is_bridge
     # **要素は描いておき、効かない場面では隠す。** モードや相手は JS で切り替わるので、
     # そのたびに作り直すより、出し入れするほうが素直。
     any_bridge = any(bool((p := providers.get(n)) and p.bridge) for n in names)
@@ -323,9 +325,13 @@ async def chat_page(
     )
     # 「覚えておいて」に応えられるようにする道具(Chiezo で唯一の書き込み)。
     # 何を書いたかは「調べた手順」に出るので、勝手に増えたときも後から分かる。
+    fixed_note = "この相手では止められません（CLI が自分で道具を引くため）"
     notes_toggle = (
-        f'<label class="toggle on" id="notes-toggle"{"" if notes_usable else " hidden"}>'
-        '<input type="checkbox" id="notes" checked>📝 覚える</label>'
+        f'<label class="toggle on{" fixed" if notes_fixed else ""}" id="notes-toggle"'
+        f'{"" if notes_usable else " hidden"}'
+        f'{f" title=\"{esc(fixed_note)}\"" if notes_fixed else ""}>'
+        f'<input type="checkbox" id="notes" checked{" disabled" if notes_fixed else ""}>'
+        "📝 覚える</label>"
         if notes.is_enabled() else ""
     )
     settings = f"""
@@ -425,8 +431,17 @@ async def chat_page(
       var agent = modeSel && modeSel.value === 'agent';
       // CLI ブリッジでは CLI 自身の web 検索を開ける(Chiezo の設定とは無関係)
       if (webBox) {{ webBox.hidden = !(agent && (WEB_READY || isBridge)); }}
-      // **「覚える」は CLI ブリッジでは止められない**ので、そこでは出さない
-      if (notesBox) {{ notesBox.hidden = !(agent && NOTES_READY && !isBridge); }}
+      // **「覚える」は CLI ブリッジでは止められない**ので、入ったまま触れなくする
+      if (notesBox) {{
+        notesBox.hidden = !(agent && NOTES_READY);
+        var box = document.getElementById('notes');
+        if (box) {{
+          box.disabled = isBridge;
+          if (isBridge) {{ box.checked = true; }}
+        }}
+        notesBox.classList.toggle('fixed', isBridge);
+        notesBox.title = isBridge ? {json.dumps(fixed_note)} : '';
+      }}
     }}
     if (modeSel) {{ modeSel.addEventListener('change', sync); }}
     window.chiezoSyncToggles = function (bridge) {{ isBridge = bridge; sync(); }};

@@ -182,7 +182,8 @@ def stored_credential() -> str:
             ).fetchone()
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as e:
+        log.warning("認証情報を DB から読めませんでした(%s): %s", STATE_DB, e)
         return fallback
     return (row[0] if row and row[0] else "").strip() or fallback
 
@@ -246,6 +247,12 @@ class ChatRequest(BaseModel):
     # **CLI 自身の web 検索を許すか。** OpenAI 互換に対応する項目が無いので独自に足す
     # （既定は塞いだまま。会話画面の 🌐 トグルがこれを送る）。
     chiezo_web: bool = False
+    # **道具を引く往復の上限。** ここが総コストの上限になる（銘柄や質問が増えても
+    # ここから先には伸びない）ので、要求ごとに決められるようにする。
+    chiezo_max_turns: int | None = None
+    # **この 1 回の上限秒数。** 起動時の CHIEZO_BRIDGE_TIMEOUT より短くも長くもできる
+    # —— 同じブリッジを、数十秒で返ってほしい会話と、数分かかる調査の両方で使うため。
+    chiezo_timeout: float | None = None
     stream: bool = False
     # OpenAI 互換の相手が送ってくる他のフィールドは受け取って捨てる
     # (CLI に渡せる対応物が無いため)。知らない項目で 422 にしない。
@@ -315,8 +322,22 @@ def resolve_effort(requested: str | None) -> str:
     return name
 
 
+def resolve_timeout(requested: float | None) -> float:
+    """この 1 回の上限秒数。指定が無ければ起動時の既定。
+
+    **上限は設けない。** 何分かけてよいかを決めるのは呼ぶ側で、ブリッジはそれを
+    預かるだけ（暴走を止めるのは呼ぶ側のジョブ管理の仕事）。
+    """
+    if requested is None:
+        return TIMEOUT
+    if requested <= 0:
+        raise HTTPException(400, {"error": f"上限秒数は正の数にしてください: {requested}"})
+    return float(requested)
+
+
 def build_command(
-    out_path: str, prompt: str = "", model: str = "", effort: str = "", web: bool = False
+    out_path: str, prompt: str = "", model: str = "", effort: str = "",
+    web: bool = False, max_turns: int | None = None,
 ) -> list[str]:
     """CLI の起動コマンドを組む。プロンプトは標準入力から渡す。
 
@@ -343,6 +364,8 @@ def build_command(
         # ——上の DEFAULT_DISALLOWED の説明のとおり、MCP の道具まで消えてしまう。
         if denied := disallowed_for(web):
             cmd += ["--disallowed-tools", denied]
+        if max_turns:
+            cmd += ["--max-turns", str(max_turns)]
         if MCP_URL:
             cmd += ["--mcp-config", MCP_CONFIG_PATH, "--allowed-tools", ALLOWED_TOOLS]
         if model:
@@ -403,13 +426,16 @@ def strip_cli_notices(text: str) -> str:
     return CLI_NOTICE.sub("", text).strip()
 
 
-async def run_cli(prompt: str, model: str = "", effort: str = "", web: bool = False) -> str:
+async def run_cli(
+    prompt: str, model: str = "", effort: str = "", web: bool = False,
+    max_turns: int | None = None, timeout: float | None = None,
+) -> str:
     """CLI を 1 回起動して本文を返す。失敗は HTTPException にする。"""
     if reason := apply_credential():
         raise HTTPException(401, {"error": reason})
     out_path = f"/tmp/chiezo-answer-{uuid.uuid4().hex}.txt"
     try:
-        cmd = build_command(out_path, prompt, model, effort, web)
+        cmd = build_command(out_path, prompt, model, effort, web, max_turns)
     except PromptTooLong as e:
         raise HTTPException(413, {"error": str(e)}) from e
     log.info("running %s (prompt %d bytes)", cmd[0], len(prompt.encode("utf-8")))
@@ -421,14 +447,15 @@ async def run_cli(prompt: str, model: str = "", effort: str = "", web: bool = Fa
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    limit = resolve_timeout(timeout)
     try:
         stdout, stderr = await asyncio.wait_for(
-            proc.communicate(payload), timeout=TIMEOUT
+            proc.communicate(payload), timeout=limit
         )
     except TimeoutError:
         proc.kill()
         await proc.wait()
-        raise HTTPException(504, {"error": f"{CLI} timed out after {TIMEOUT:.0f}s"}) from None
+        raise HTTPException(504, {"error": f"{CLI} timed out after {limit:.0f}s"}) from None
 
     if proc.returncode != 0:
         # 中身(プロンプト・応答)はログに出さない。出すのは終了コードと CLI の stderr の頭だけ。
@@ -555,7 +582,10 @@ async def chat_completions(body: ChatRequest):
         raise HTTPException(400, {"error": "messages must not be empty"})
     model = resolve_model(body.model)
     effort = resolve_effort(body.reasoning_effort)
-    text = await run_cli(build_prompt(body.messages), model, effort, body.chiezo_web)
+    text = await run_cli(
+        build_prompt(body.messages), model, effort, body.chiezo_web,
+        body.chiezo_max_turns, body.chiezo_timeout,
+    )
     if body.stream:
         return StreamingResponse(
             _sse(text, model),

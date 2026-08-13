@@ -449,3 +449,47 @@ class TestNotesTools:
         monkeypatch_env.setenv("CHIEZO_NOTES_DIR", str(tmp_path / "notes"))
         with make_client(monkeypatch_env, ToolLLM()) as client:
             assert 'id="notes"' in client.get(CHAT_PATH).text
+
+
+class TestHiddenControls:
+    """**隠した操作が本当に隠れていること。**
+
+    `.toggle` に display を指定しているため、hidden 属性だけでは消えない
+    （作者側の display が UA の display:none に勝つ）。本番で「覚える」が
+    切れる状態のまま出ていた。
+    """
+
+    def test_the_stylesheet_neutralises_display(self):
+        from app.pages import CHAT_STYLE
+
+        assert "[hidden] { display: none !important; }" in CHAT_STYLE
+
+    def test_the_notes_toggle_is_locked_on_for_a_cli_relay(self, monkeypatch_env, tmp_path):
+        """CLI ブリッジでは「覚える」を止められない。**入ったまま触れない**状態で出す。
+
+        隠すと「使えないのか」と読めてしまう。使えること自体は伝えたうえで、
+        切れるように見せるのだけを避ける。
+        """
+        from app import settings_store
+
+        monkeypatch_env.setenv("CHIEZO_NOTES_DIR", str(tmp_path / "notes"))
+        with make_client(monkeypatch_env, ToolLLM()) as c:
+            settings_store.set_credential("claude", "token")
+            settings_store.set_verified("claude", True)
+            settings_store.set_enabled("claude", True)
+            res = c.get(CHAT_PATH, params={"backend": "claude", "mode": "agent"})
+        assert 'id="notes"' in res.text
+        assert "checked disabled" in res.text
+        assert "hidden" not in res.text.split('id="notes-toggle"')[1][:40]
+        # 推論サーバ相手なら切れる（disabled にしない）
+        with make_client(monkeypatch_env, ToolLLM()) as c:
+            res = c.get(CHAT_PATH, params={"backend": "local", "mode": "agent"})
+        assert "checked disabled" not in res.text
+
+    def test_the_toggles_are_hidden_in_rag_mode(self, monkeypatch_env, tmp_path):
+        """rag モードでは送っても捨てられるので、どちらも出さない。"""
+        monkeypatch_env.setenv("CHIEZO_NOTES_DIR", str(tmp_path / "notes"))
+        with make_client(monkeypatch_env, ToolLLM()) as c:
+            res = c.get(CHAT_PATH, params={"backend": "local", "mode": "rag"})
+        assert 'id="notes-toggle" hidden' in res.text
+

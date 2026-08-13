@@ -339,7 +339,45 @@ CLI ブリッジ相手のときは、次のように振る舞いが変わりま�
 | | ブリッジ相手 |
 |---|---|
 | 🌐 web 検索 | 出る。**ただし引く先は SearXNG ではなく CLI 提供元の検索**（`WebSearch` / `WebFetch` を要求ごとに開ける）。Chiezo 側で web 検索を設定していなくても使える |
-| 📝 覚える | **出ない（常に使える）**。ブリッジには MCP をまるごと渡していて、`remember` だけ外す口が無いため。止められないものを止められるように見せない |
+| 📝 覚える | **入ったまま触れない**（常に使える）。ブリッジには MCP をまるごと渡していて、`remember` だけ外す口が無いため。使えること自体は見せ、切れるように見せるのだけを避ける |
+
+### 1 回ごとの上限（往復と待ち時間）
+
+| 送るもの | 効く CLI | 意味 |
+|---|---|---|
+| `chiezo_max_turns` | Claude Code（`--max-turns`） | 道具を引く往復の上限。**ここが総コストの上限**になる（対象が増えてもここから先には伸びない） |
+| `chiezo_timeout` | すべて | この 1 回の上限秒数。`CHIEZO_BRIDGE_TIMEOUT` より短くも長くもできる |
+
+同じブリッジを、数十秒で返ってほしい会話と、数分かかる調査の両方で使うためです。
+Codex CLI と Antigravity CLI には往復の上限にあたる指定がありません（`--help` で確認）。
+
+### Chiezo 以外のアプリから使う
+
+ブリッジは Chiezo 専用の部品ではありません。**認証情報の置き場を読み取り専用で共有**
+すれば、他のアプリからも同じ形で使えます。
+
+**表の形はこちらに合わせてもらいます**（`settings.db` の `provider_settings`）。
+問い合わせを相手ごとに変えられるようにすると、繋ぐ先のアプリの数だけ設定が増えるためで、
+ディレクトリを共有する取り込みのトリガー（`chiezo-trigger`）と同じ流儀です。
+
+```yaml
+volumes:
+  - ./state:/state:ro        # アプリ側が settings.db を書くディレクトリ
+environment:
+  - CHIEZO_BRIDGE_MCP_URL=   # Chiezo の知識は引かない場合
+```
+
+```sql
+-- アプリ側が用意する表（Chiezo と同じ形）
+CREATE TABLE provider_settings (provider TEXT PRIMARY KEY, credential TEXT, ...);
+INSERT INTO provider_settings (provider, credential) VALUES ('claude', '<トークン>');
+```
+
+**共有する DB を WAL にしないこと** —— WAL の読み手は `-shm` への書き込みを要求するので、
+読み取り専用のマウントでは `unable to open database file` になります。
+
+アプリ側が画面からトークンを入れ替えても、**ブリッジは要求のたびに読み直す**ので
+再起動は要りません。
 
 ### agent モードはブリッジ側に任せる
 

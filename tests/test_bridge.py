@@ -319,3 +319,66 @@ class TestWebTools:
         # 他は塞いだまま
         assert "Bash" in denied
 
+
+class TestPerRequestLimits:
+    """往復の上限と待ち時間は**要求ごとに**決める。
+
+    同じブリッジを、数十秒で返ってほしい会話と、数分かかる調査の両方で使うため。
+    往復の上限は総コストの上限でもある（対象が増えてもそこから先に伸びない）。
+    """
+
+    def test_max_turns_reaches_the_cli(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        cmd = server.build_command("/tmp/out.txt", "q", max_turns=15)
+        assert cmd[cmd.index("--max-turns") + 1] == "15"
+
+    def test_no_limit_is_left_to_the_cli(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        assert "--max-turns" not in server.build_command("/tmp/out.txt", "q")
+
+    def test_timeout_defaults_to_the_container_setting(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude", CHIEZO_BRIDGE_TIMEOUT="42")
+        assert server.resolve_timeout(None) == 42.0
+        assert server.resolve_timeout(120) == 120.0
+
+    def test_a_meaningless_timeout_is_refused(self, bridge):
+        import fastapi
+
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        with pytest.raises(fastapi.HTTPException) as got:
+            server.resolve_timeout(0)
+        assert got.value.status_code == 400
+
+
+class TestCredentialFromAnotherApp:
+    """**認証情報の置き場を共有すれば、Chiezo 以外のアプリからも使える。**
+
+    表の形はこちらに合わせてもらう（`provider_settings`）—— 相手ごとに問い合わせを
+    変えられるようにすると、ブリッジが繋ぐ先のアプリの数だけ設定が増える。
+    取り込みのトリガー(chiezo-trigger)がディレクトリを共有するのと同じ流儀。
+    """
+
+    def _db(self, tmp_path, rows: str) -> str:
+        import sqlite3
+
+        path = tmp_path / "settings.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            "CREATE TABLE provider_settings (provider TEXT PRIMARY KEY, credential TEXT);" + rows
+        )
+        conn.commit()
+        conn.close()
+        return str(path)
+
+    def test_it_reads_the_shared_shape(self, bridge, tmp_path):
+        path = self._db(tmp_path, "INSERT INTO provider_settings VALUES ('claude', 'tok-shared');")
+        server = bridge(CHIEZO_BRIDGE_CLI="claude", CHIEZO_BRIDGE_STATE_DB=path)
+        assert server.stored_credential() == "tok-shared"
+
+    def test_a_missing_db_falls_back_to_the_environment(self, bridge, tmp_path):
+        server = bridge(
+            CHIEZO_BRIDGE_CLI="claude",
+            CHIEZO_BRIDGE_STATE_DB=str(tmp_path / "nope.db"),
+            CLAUDE_CODE_OAUTH_TOKEN="tok-from-env",
+        )
+        assert server.stored_credential() == "tok-from-env"
