@@ -80,6 +80,13 @@ CHAT_JS = """
     t.node.appendChild(box);
   }
 
+  // 隠れているトグルの値は送らない（効かない場面なので、指示だけ飛ぶのを防ぐ）
+  function toggleValue(el) {
+    if (!el) return null;
+    var box = el.closest('label');
+    return box && box.hidden ? null : el.checked;
+  }
+
   function settings() {
     var web = document.getElementById('web'), notes = document.getElementById('notes');
     return {
@@ -89,8 +96,8 @@ CHAT_JS = """
       source: document.getElementById('source').value || null,
       grounded: document.getElementById('grounded').value === '1',
       mode: document.getElementById('mode').value,
-      web: web ? web.checked : null,
-      notes: notes ? notes.checked : null
+      web: toggleValue(web),
+      notes: toggleValue(notes)
     };
   }
 
@@ -294,16 +301,30 @@ async def chat_page(
         )
         backend_select = f'<select id="backend" name="backend" title="話す相手">{backend_options}</select>'
     # 設定は**入力欄の下**に並べる(会話中に触るのは稀なので、視線の主役にしない)。
-    # web 検索は設定してある環境でだけ出し、**やり取りごとに切れる**トグルにする。
+    #
+    # **効かない場面ではトグルを出さない。** web 検索も「覚える」も agent モードの
+    # 道具でしか働かず、rag モードでは送っても捨てられる。出しっぱなしにすると
+    # 「押せるのに何も起きない」状態になる（実際にそうなっていた）。
+    is_bridge = bool((spec := providers.get(current_backend)) and spec.bridge)
+    current_mode = (mode or answer.default_mode()).strip().lower()
+    # CLI ブリッジでは Chiezo の SearXNG ではなく **CLI 自身の web 検索**を開ける。
+    # そちらは Chiezo 側の設定と無関係なので、設定していない環境でも出す。
+    web_usable = current_mode == "agent" and (websearch.is_enabled() or is_bridge)
+    # **「覚える」は CLI ブリッジでは止められない**（MCP をまるごと渡していて、道具を
+    # 1 つずつ外す口が無い）。止められないものを止められるように見せない。
+    notes_usable = current_mode == "agent" and notes.is_enabled() and not is_bridge
+    # **要素は描いておき、効かない場面では隠す。** モードや相手は JS で切り替わるので、
+    # そのたびに作り直すより、出し入れするほうが素直。
+    any_bridge = any(bool((p := providers.get(n)) and p.bridge) for n in names)
     web_toggle = (
-        '<label class="toggle on" id="web-toggle">'
+        f'<label class="toggle on" id="web-toggle"{"" if web_usable else " hidden"}>'
         '<input type="checkbox" id="web" checked>🌐 web 検索</label>'
-        if websearch.is_enabled() else ""
+        if websearch.is_enabled() or any_bridge else ""
     )
     # 「覚えておいて」に応えられるようにする道具(Chiezo で唯一の書き込み)。
     # 何を書いたかは「調べた手順」に出るので、勝手に増えたときも後から分かる。
     notes_toggle = (
-        '<label class="toggle on" id="notes-toggle">'
+        f'<label class="toggle on" id="notes-toggle"{"" if notes_usable else " hidden"}>'
         '<input type="checkbox" id="notes" checked>📝 覚える</label>'
         if notes.is_enabled() else ""
     )
@@ -391,16 +412,37 @@ async def chat_page(
 <a href="{esc(nojs_url)}">1 問 1 答の画面</a>を使ってください(会話の継続はできません)。</p></noscript>
 <script>{CHAT_JS}</script>
 <script>
+  // モードや相手を変えたら、効かなくなるトグルを隠す(押せるのに何も起きない状態を作らない)。
+  (function () {{
+    var WEB_READY = {json.dumps(websearch.is_enabled())};   // Chiezo 側の web 検索(SearXNG)
+    var NOTES_READY = {json.dumps(notes.is_enabled())};
+    var isBridge = {json.dumps(is_bridge)};
+    var modeSel = document.getElementById('mode');
+    var webBox = document.getElementById('web-toggle');
+    var notesBox = document.getElementById('notes-toggle');
+
+    function sync() {{
+      var agent = modeSel && modeSel.value === 'agent';
+      // CLI ブリッジでは CLI 自身の web 検索を開ける(Chiezo の設定とは無関係)
+      if (webBox) {{ webBox.hidden = !(agent && (WEB_READY || isBridge)); }}
+      // **「覚える」は CLI ブリッジでは止められない**ので、そこでは出さない
+      if (notesBox) {{ notesBox.hidden = !(agent && NOTES_READY && !isBridge); }}
+    }}
+    if (modeSel) {{ modeSel.addEventListener('change', sync); }}
+    window.chiezoSyncToggles = function (bridge) {{ isBridge = bridge; sync(); }};
+  }})();
+
   // 相手を変えたらモデルとエフォートの候補も入れ替える(相手ごとに違う)。
   (function () {{
     var b = document.getElementById('backend'), m = document.getElementById('model');
-    var ef = document.getElementById('effort');
+    var ef = document.getElementById('effort'), lastBridge = false;
     if (!b || !m) {{ return; }}
     b.addEventListener('change', function () {{
       m.disabled = true;
       fetch('/ai/models?backend=' + encodeURIComponent(b.value))
         .then(function (r) {{ return r.ok ? r.json() : {{ models: [], efforts: [] }}; }})
         .then(function (d) {{
+          lastBridge = !!d.bridge;
           m.innerHTML = '<option value="">モデル（既定）</option>';
           (d.models || []).forEach(function (id) {{
             var o = document.createElement('option');
@@ -415,6 +457,10 @@ async def chat_page(
             var o = document.createElement('option');
             o.value = id; o.textContent = id; ef.appendChild(o);
           }});
+        }})
+        .then(function () {{
+          // 相手が変われば、効くトグルも変わる
+          if (window.chiezoSyncToggles) {{ window.chiezoSyncToggles(lastBridge); }}
         }})
         .finally(function () {{ m.disabled = false; }});
     }});

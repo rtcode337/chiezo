@@ -301,8 +301,11 @@ async def list_models(request: Request, backend: str = ""):
     name = answer.normalize_backend(backend)
     if name not in answer.backend_names():
         raise HTTPException(404, {"error": f"unknown backend: {name}"})
+    spec = providers.get(name)
     return {
         "backend": name,
         "models": await answer.available_models(name),
         "efforts": list(providers.efforts_of(name)),
+        # CLI ブリッジかどうか（会話画面のトグルの出し分けに使う）
+        "bridge": bool(spec and spec.bridge),
     }

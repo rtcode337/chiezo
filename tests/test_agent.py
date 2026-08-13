@@ -420,3 +420,86 @@ class TestStepNumbering:
             steps = ask(client, q="浅草寺と雷門は?").json()["steps"]
         assert [s["step"] for s in steps] == [1, 2]
         assert [s["turn"] for s in steps] == [1, 1]
+
+
+class TestBridgeDrivesItsOwnTools:
+    """**CLI ブリッジ相手では agent のループを回さない。**
+
+    向こうは CLI で、Chiezo の MCP を自分で繋いで引く。こちらが渡す `tools` は
+    受け取ってもらえない（OpenAI の道具呼び出しの形を返せない）ので、ループは道具を
+    1 度も実行できずに終わり、grounded なら「根拠が取れなかった」に化けて、
+    **CLI が調べて書いた答えが捨てられていた**（本番で発覚）。
+    """
+
+    def _client(self, monkeypatch, fake):
+        from app import settings_store
+
+        client = make_client(monkeypatch, fake)
+        settings_store.set_credential("claude", "token")
+        settings_store.set_verified("claude", True)
+        settings_store.set_enabled("claude", True)
+        return client
+
+    def test_the_answer_survives(self, monkeypatch_env):
+        fake = ToolLLM(ANSWER)
+        with self._client(monkeypatch_env, fake) as client:
+            body = client.post(
+                "/v1/chat",
+                json={
+                    "backend": "claude", "mode": "agent",
+                    "messages": [{"role": "user", "content": "浅草寺について教えて"}],
+                },
+            ).json()
+        assert body["answer"] == ANSWER
+        assert body["steps"] == []
+        # 1 往復で終わる（ループを回さない）
+        assert len(fake.requests) == 1
+
+    def test_no_tools_are_offered(self, monkeypatch_env):
+        """渡しても捨てられるので載せない（無駄に文脈を食うだけ）。"""
+        fake = ToolLLM(ANSWER)
+        with self._client(monkeypatch_env, fake) as client:
+            client.post(
+                "/v1/chat",
+                json={
+                    "backend": "claude", "mode": "agent",
+                    "messages": [{"role": "user", "content": "浅草寺について教えて"}],
+                },
+            )
+        assert "tools" not in fake.requests[0]
+
+    def test_it_is_told_to_use_its_own_tools(self, monkeypatch_env):
+        fake = ToolLLM(ANSWER)
+        with self._client(monkeypatch_env, fake) as client:
+            client.post(
+                "/v1/chat",
+                json={
+                    "backend": "claude", "mode": "agent",
+                    "messages": [{"role": "user", "content": "浅草寺について教えて"}],
+                },
+            )
+        system = fake.requests[0]["messages"][0]["content"]
+        assert "MCP" in system
+        # 引けるソースは伝える（何があるか知らないと引きようがない）
+        assert "jawiki" in system
+
+    def test_web_is_closed_unless_asked(self, monkeypatch_env):
+        fake = ToolLLM(ANSWER)
+        with self._client(monkeypatch_env, fake) as client:
+            client.post("/v1/chat", json={
+                "backend": "claude", "mode": "agent",
+                "messages": [{"role": "user", "content": "浅草寺について教えて"}],
+            })
+        assert fake.requests[0]["chiezo_web"] is False
+
+    def test_asking_opens_the_cli_web_search(self, monkeypatch_env):
+        """**Chiezo の SearXNG とは別経路**（引く先は CLI の提供元）。"""
+        fake = ToolLLM(ANSWER)
+        with self._client(monkeypatch_env, fake) as client:
+            client.post("/v1/chat", json={
+                "backend": "claude", "mode": "agent", "web": True,
+                "messages": [{"role": "user", "content": "浅草寺について教えて"}],
+            })
+        assert fake.requests[0]["chiezo_web"] is True
+        assert "web 検索" in fake.requests[0]["messages"][0]["content"]
+

@@ -42,6 +42,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -109,6 +110,45 @@ EFFORTS = tuple(
 # CLI に許す道具。既定は Chiezo の MCP だけ。書き込み(remember)まで止めたいときは
 # ここを `mcp__chiezo__search mcp__chiezo__doc …` のように絞る。
 ALLOWED_TOOLS = os.environ.get("CHIEZO_BRIDGE_ALLOWED_TOOLS", "mcp__chiezo").strip()
+
+# **組み込みの道具は名前を挙げて塞ぐ。**
+#
+# 以前は `--tools ""`(組み込みを全部切る指定)を渡していたが、**これは MCP の道具まで
+# 消す** —— つまり「Chiezo の知識を引かせる」というブリッジの目的そのものが、
+# 黙って働いていなかった(CLI は自分の知識だけで答えていた)。`--tools` に MCP の名前を
+# 並べても駄目で、あれは組み込みの一覧しか受け付けない。実測で確かめた。
+#
+# **ToolSearch は塞がない。** MCP の道具はここから読み込まれるので、塞ぐと
+# `--mcp-config` を渡していても引けなくなる(これも実測で踏んだ)。
+#
+# **この一覧は取りこぼしうる。** 組み込みは CLI の版が上がるたびに増えるので、
+# 新しい道具は既定で使えてしまう。増えたら足すこと（`CHIEZO_BRIDGE_DISALLOWED_TOOLS`
+# で環境から差し替えられる）。
+DEFAULT_DISALLOWED = (
+    "Agent", "Bash", "Edit", "Read", "Write", "NotebookEdit",
+    "WebFetch", "WebSearch", "Workflow", "Skill",
+    "ReportFindings", "ScheduleWakeup", "DesignSync", "Monitor",
+    "PushNotification", "RemoteTrigger", "SendMessage",
+    "CronCreate", "CronDelete", "CronList",
+    "EnterWorktree", "ExitWorktree",
+    "TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate",
+)
+DISALLOWED_TOOLS = os.environ.get(
+    "CHIEZO_BRIDGE_DISALLOWED_TOOLS", ",".join(DEFAULT_DISALLOWED)
+).strip()
+
+# **web 検索を頼まれたときだけ開ける道具。**
+# 引く先は Chiezo の SearXNG ではなく **CLI の提供元の検索**なので、既定では塞いだまま
+# にして、要求ごとに開ける（会話画面の 🌐 トグルがこれを送る）。
+WEB_TOOLS = ("WebSearch", "WebFetch")
+
+
+def disallowed_for(web: bool) -> str:
+    """今回塞ぐ道具。web 検索を頼まれたぶんだけ開ける。"""
+    names = [n.strip() for n in DISALLOWED_TOOLS.split(",") if n.strip()]
+    if web:
+        names = [n for n in names if n not in WEB_TOOLS]
+    return ",".join(names)
 
 MCP_CONFIG_PATH = "/tmp/chiezo-mcp.json"
 
@@ -203,6 +243,9 @@ class ChatRequest(BaseModel):
     model: str | None = None
     # OpenAI 互換の名前で受ける（Chiezo はこれを送る）。CLI の --effort に直す。
     reasoning_effort: str | None = None
+    # **CLI 自身の web 検索を許すか。** OpenAI 互換に対応する項目が無いので独自に足す
+    # （既定は塞いだまま。会話画面の 🌐 トグルがこれを送る）。
+    chiezo_web: bool = False
     stream: bool = False
     # OpenAI 互換の相手が送ってくる他のフィールドは受け取って捨てる
     # (CLI に渡せる対応物が無いため)。知らない項目で 422 にしない。
@@ -272,7 +315,9 @@ def resolve_effort(requested: str | None) -> str:
     return name
 
 
-def build_command(out_path: str, prompt: str = "", model: str = "", effort: str = "") -> list[str]:
+def build_command(
+    out_path: str, prompt: str = "", model: str = "", effort: str = "", web: bool = False
+) -> list[str]:
     """CLI の起動コマンドを組む。プロンプトは標準入力から渡す。
 
     `model` は今回の要求で選ばれたもの。空なら起動時の既定(CHIEZO_BRIDGE_MODEL)、
@@ -286,9 +331,6 @@ def build_command(out_path: str, prompt: str = "", model: str = "", effort: str 
     if CLI == "claude":
         cmd = [
             "claude", "-p",
-            # 組み込みの道具(Bash・Edit・Write…)は全部切る。知識ベースに答えるのに要らず、
-            # 使えると危ない。残るのは --mcp-config で渡した Chiezo の道具だけ。
-            "--tools", "",
             # 手元の ~/.claude.json 等に入っている別の MCP を拾わせない
             # (コンテナは使い捨てなので普通は無いが、意図しない相手に繋がないための保険)。
             # MCP を繋がない設定でも付ける —— **道具を一切渡さない**ことを保証するため。
@@ -297,6 +339,10 @@ def build_command(out_path: str, prompt: str = "", model: str = "", effort: str 
             "--permission-mode", "bypassPermissions",
             "--output-format", "text",
         ]
+        # 組み込みの道具(Bash・Read・WebFetch…)を塞ぐ。**`--tools ""` は使えない**
+        # ——上の DEFAULT_DISALLOWED の説明のとおり、MCP の道具まで消えてしまう。
+        if denied := disallowed_for(web):
+            cmd += ["--disallowed-tools", denied]
         if MCP_URL:
             cmd += ["--mcp-config", MCP_CONFIG_PATH, "--allowed-tools", ALLOWED_TOOLS]
         if model:
@@ -343,13 +389,27 @@ def build_command(out_path: str, prompt: str = "", model: str = "", effort: str 
     raise RuntimeError(f"未対応の CHIEZO_BRIDGE_CLI: {CLI}")
 
 
-async def run_cli(prompt: str, model: str = "", effort: str = "") -> str:
+# CLI が本文と一緒に吐く注意書き。**答えに混ざると読み手が困る**ので落としてログへ回す。
+# 塞ぐ道具の名前が版の変化でずれると出る（`--disallowed-tools` の綴りは検証される）。
+CLI_NOTICE = re.compile(r'^Permission (?:deny|allow) rule ".*?" matches no known tool.*$', re.M)
+
+
+def strip_cli_notices(text: str) -> str:
+    """CLI の注意書きを本文から外す（外した内容はログに残す）。"""
+    notices = CLI_NOTICE.findall(text)
+    if not notices:
+        return text
+    log.warning("%s notice: %s", CLI, " / ".join(notices)[:300])
+    return CLI_NOTICE.sub("", text).strip()
+
+
+async def run_cli(prompt: str, model: str = "", effort: str = "", web: bool = False) -> str:
     """CLI を 1 回起動して本文を返す。失敗は HTTPException にする。"""
     if reason := apply_credential():
         raise HTTPException(401, {"error": reason})
     out_path = f"/tmp/chiezo-answer-{uuid.uuid4().hex}.txt"
     try:
-        cmd = build_command(out_path, prompt, model, effort)
+        cmd = build_command(out_path, prompt, model, effort, web)
     except PromptTooLong as e:
         raise HTTPException(413, {"error": str(e)}) from e
     log.info("running %s (prompt %d bytes)", cmd[0], len(prompt.encode("utf-8")))
@@ -388,7 +448,7 @@ async def run_cli(prompt: str, model: str = "", effort: str = "") -> str:
             with suppress(OSError):
                 os.unlink(out_path)
     if not text:
-        text = stdout.decode("utf-8", "replace").strip()
+        text = strip_cli_notices(stdout.decode("utf-8", "replace").strip())
     if not text:
         raise HTTPException(502, {"error": f"{CLI} returned an empty answer"})
     return text
@@ -495,7 +555,7 @@ async def chat_completions(body: ChatRequest):
         raise HTTPException(400, {"error": "messages must not be empty"})
     model = resolve_model(body.model)
     effort = resolve_effort(body.reasoning_effort)
-    text = await run_cli(build_prompt(body.messages), model, effort)
+    text = await run_cli(build_prompt(body.messages), model, effort, body.chiezo_web)
     if body.stream:
         return StreamingResponse(
             _sse(text, model),

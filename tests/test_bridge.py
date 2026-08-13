@@ -46,8 +46,13 @@ class TestCommand:
         server = bridge(CHIEZO_BRIDGE_CLI="claude", CHIEZO_BRIDGE_MODEL="sonnet")
         cmd = server.build_command("/tmp/out.txt")
         assert cmd[:2] == ["claude", "-p"]
-        # 組み込みの道具(Bash・Edit・Write…)は切る。知識ベースに答えるのに要らず、危ない。
-        assert cmd[cmd.index("--tools") + 1] == ""
+        # 組み込みの道具(Bash・Read・WebFetch…)は名前を挙げて塞ぐ。
+        denied = cmd[cmd.index("--disallowed-tools") + 1].split(",")
+        assert {"Bash", "Read", "Write", "WebFetch", "Agent"} <= set(denied)
+        # **`--tools ""` は使わない**（MCP の道具まで消えてしまう）
+        assert "--tools" not in cmd
+        # **ToolSearch は塞がない**（MCP の道具はここから読み込まれる）
+        assert "ToolSearch" not in denied
         # 手元の設定にある別の MCP を拾わせない
         assert "--strict-mcp-config" in cmd
         assert cmd[cmd.index("--allowed-tools") + 1] == "mcp__chiezo"
@@ -98,8 +103,8 @@ class TestOptionalMcp:
         cmd = server.build_command("/tmp/out.txt")
         assert "--mcp-config" not in cmd
         assert "--allowed-tools" not in cmd
-        # 組み込みの道具を切る指定と、他所の MCP を拾わない指定は残す
-        assert cmd[cmd.index("--tools") + 1] == ""
+        # 組み込みの道具を塞ぐ指定と、他所の MCP を拾わない指定は残す
+        assert "--disallowed-tools" in cmd
         assert "--strict-mcp-config" in cmd
 
     def test_mcp_is_attached_when_configured(self, bridge):
@@ -257,4 +262,60 @@ class TestEffortSelection:
         server = bridge(CHIEZO_BRIDGE_CLI="codex")
         with pytest.raises(fastapi.HTTPException):
             server.resolve_effort("high")
+
+
+class TestBuiltinTools:
+    """**MCP の道具を残したまま**、組み込みの道具だけを塞ぐ。
+
+    以前は `--tools ""`（組み込みを全部切る指定）を渡していたが、これは MCP の道具まで
+    消す。つまり「Chiezo の知識を引かせる」というブリッジの目的が黙って働いておらず、
+    CLI は自分の知識だけで答えていた（本番で発覚）。
+    """
+
+    def test_it_does_not_use_the_flag_that_kills_mcp(self, bridge):
+        cmd = bridge(CHIEZO_BRIDGE_CLI="claude").build_command("/tmp/out.txt")
+        assert "--tools" not in cmd
+        assert cmd[cmd.index("--mcp-config") + 1]
+
+    def test_tool_search_stays_open(self, bridge):
+        """MCP の道具は ToolSearch から読み込まれるので、塞ぐと引けなくなる。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        assert "ToolSearch" not in server.DEFAULT_DISALLOWED
+
+    def test_the_list_can_be_given_from_outside(self, bridge):
+        """組み込みは CLI の版が上がるたびに増えるので、外から差し替えられる。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="claude", CHIEZO_BRIDGE_DISALLOWED_TOOLS="Bash,Read")
+        cmd = server.build_command("/tmp/out.txt")
+        assert cmd[cmd.index("--disallowed-tools") + 1] == "Bash,Read"
+
+    def test_notices_do_not_leak_into_the_answer(self, bridge):
+        """塞ぐ道具の名前がずれると CLI が注意書きを吐く。**答えに混ぜない。**"""
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        raw = (
+            'Permission deny rule "SlashCommand" matches no known tool — check for typos.\n'
+            "浅草寺は東京都台東区にあります。"
+        )
+        assert server.strip_cli_notices(raw) == "浅草寺は東京都台東区にあります。"
+        assert server.strip_cli_notices("答えだけ") == "答えだけ"
+
+
+class TestWebTools:
+    """CLI 自身の web 検索は、頼まれたときだけ開ける。
+
+    引く先は Chiezo の SearXNG ではなく**提供元の検索**なので、既定では塞いだまま。
+    """
+
+    def test_it_is_closed_by_default(self, bridge):
+        cmd = bridge(CHIEZO_BRIDGE_CLI="claude").build_command("/tmp/out.txt")
+        denied = cmd[cmd.index("--disallowed-tools") + 1].split(",")
+        assert "WebSearch" in denied
+        assert "WebFetch" in denied
+
+    def test_asking_opens_it(self, bridge):
+        cmd = bridge(CHIEZO_BRIDGE_CLI="claude").build_command("/tmp/out.txt", "q", web=True)
+        denied = cmd[cmd.index("--disallowed-tools") + 1].split(",")
+        assert "WebSearch" not in denied
+        assert "WebFetch" not in denied
+        # 他は塞いだまま
+        assert "Bash" in denied
 

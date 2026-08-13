@@ -43,7 +43,7 @@ from urllib.parse import quote
 from fastapi import HTTPException, Request
 from mcp.server.mcpserver.exceptions import ToolError
 
-from app import answer, notes, websearch
+from app import answer, notes, providers, websearch
 from app.mcp_server import INSTRUCTIONS, build_mcp
 from app.pages import browse_url, doc_url
 
@@ -437,6 +437,67 @@ def prepare_catalog(request: Request, source: str | None) -> list[dict]:
     return [c for c in catalog if c["name"] == source]
 
 
+BRIDGE_SYSTEM = (
+    "あなたは Chiezo（読み取り専用の知識ベース）の道具を MCP 経由で持っています。"
+    "**まずその道具で調べてから答えてください**（自分の記憶だけで答えない）。"
+    "Chiezo はあなたが引く知識であって、あなた自身ではありません。"
+    "答えには、どのソースの何を見たかを添えてください。"
+)
+
+
+def bridge_web_allowed(requested: bool | None) -> bool:
+    """CLI 自身の web 検索を許すか（既定は許さない）。
+
+    **SearXNG とは別の経路**である点に注意 —— 引く先は CLI の提供元の検索なので、
+    Chiezo が web 検索を設定しているかどうかとは無関係に、頼まれたときだけ開ける。
+    """
+    return requested is True
+
+
+def bridge_notes_note() -> str:
+    """CLI ブリッジでは「覚える」を止められない、と伝えるための一言。
+
+    こちらは MCP をまるごと（`mcp__chiezo`）渡していて、道具を 1 つずつ外す口が無い。
+    **止められないものを止められるように見せない**のが大事なので、画面ではトグルを
+    出さず、常に使える前提で説明する。
+    """
+    return "覚える(remember)も使えます。"
+
+
+async def _bridge_stream(
+    cfg: answer.Settings,
+    catalog: list[dict],
+    question: str,
+    source: str | None,
+    grounded: bool,
+    history: list[dict] | None,
+    web: bool | None = None,
+) -> AsyncIterator[tuple[str, dict]]:
+    """CLI ブリッジ相手の 1 往復（段取りは向こうが持つ）。"""
+    lines = [f"- {c['name']}({c['kind']} / {c['docs']:,} 件)" for c in catalog]
+    fixed = f"\n\n**このやり取りでは {source} だけを引くこと**。" if source else ""
+    system = BRIDGE_SYSTEM + "\n\n利用できるソース:\n" + "\n".join(lines) + fixed
+    if bridge_web_allowed(web):
+        system += (
+            "\n\n**あなた自身の web 検索も使ってよい**（Chiezo に無いことを補うため）。"
+            "使ったときは、Chiezo から引いたものと web から取ったものを区別して書くこと。"
+        )
+    past = [
+        {"role": m["role"], "content": m.get("content") or ""}
+        for m in (history or []) if m.get("role") in ("user", "assistant")
+    ][-answer.HISTORY_TURNS:]
+    messages = [
+        {"role": "system", "content": system},
+        *past,
+        {"role": "user", "content": question},
+    ]
+    # **web 検索は要求ごとに開ける。** OpenAI 互換に項目が無いのでブリッジ独自の名前で送る。
+    use_web = bridge_web_allowed(web)
+    text = await answer._complete(cfg, messages, chiezo_web=use_web)
+    yield "references", {"references": []}
+    yield "delta", {"text": text.strip()}
+
+
 async def stream(
     cfg: answer.Settings,
     request: Request,
@@ -457,6 +518,22 @@ async def stream(
     """
     app = request.app
     catalog = prepare_catalog(request, source)
+    spec = providers.get(cfg.name)
+    if spec is not None and spec.bridge:
+        # **CLI ブリッジ相手ではループを回さない。**
+        #
+        # 向こうは CLI で、Chiezo の MCP を**自分で**繋いで引く。こちらが渡す `tools` は
+        # 受け取ってもらえず（OpenAI の道具呼び出しの形を返せない）、Chiezo 側の
+        # ループは道具を 1 度も実行できないまま終わる —— grounded なら
+        # 「根拠が取れなかった」に化け、**CLI が調べて書いた答えが捨てられていた**。
+        #
+        # 段取りは向こうに任せて、1 回聞いて 1 回受け取る。出典は CLI の本文の中にある
+        # ので、こちらの references は空になる。
+        async for event in _bridge_stream(
+            cfg, catalog, question, source, grounded, history, web
+        ):
+            yield event
+        return
     use_web = web_allowed(web)
     use_notes = notes_allowed(notes)
     tools = await tool_specs(app, use_web, use_notes)
