@@ -301,7 +301,7 @@ async def admin(request: Request):
 <h2>ためた知識を使う AI</h2>
 {_answer_status_html()}
 
-{await ai_settings.section_html()}
+{await ai_settings.section_html(request)}
 
 <h2>Claude Code 連携設定</h2>
 <p class="muted">

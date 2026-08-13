@@ -9,7 +9,7 @@ URL は相手ごとに 1 つに決まっていて、ユーザーが選ぶ余地�
 **同居の推論サーバ（`local`）も含めて全部同じ扱い**で、特別扱いする相手は無い。
 
 - 使うか使わないか（on/off）
-- API キー（要る相手だけ。要らない相手でも、認証を掛けた相手には任意で入れられる）
+- 認証情報（要る相手だけ。API キー・OAuth トークン・auth.json と、相手によって中身が違う）
 - どのモデルを使うか（会話のたびに選べる。ここの `models` は候補の控え）
 
 URL だけは `url_env` を持つ相手に限り環境変数で上書きできる。**これは「別の URL を
@@ -21,10 +21,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-# API キーの要りかた。画面の出し分けと「on にできるか」の判定に使う。
-KEY_REQUIRED = "required"  # 鍵が無ければ on にできない（Gemini・OpenRouter）
-KEY_OPTIONAL = "optional"  # 無くても動くが、認証を掛けた相手には入れられる（推論サーバ）
-KEY_NONE = "none"  # 鍵という概念が無い（Antigravity。認証はコンテナ内のサインイン結果）
+# 認証情報の要りかた。**「API キー」と呼ばない** —— API キーなのは Gemini と OpenRouter だけで、
+# Claude Code は OAuth トークン、Codex は auth.json の中身が入る。画面の出し分けと「on にできるか」の判定に使う。
+CRED_REQUIRED = "required"  # 認証情報が無ければ on にできない
+CRED_OPTIONAL = "optional"  # 無くても動くが、認証を掛けた相手には入れられる（推論サーバ）
+CRED_NONE = "none"  # 渡すものが無い（Antigravity。認証はコンテナ内のサインイン結果）
 
 
 @dataclass(frozen=True)
@@ -32,7 +33,7 @@ class Provider:
     id: str
     label: str
     url: str
-    key: str
+    credential: str
     # 使えるようにするまでの手順（画面のヘルプに出す）
     setup: str
     # 課金の形（「無料枠か」「サブスクか」を一目で分かるように）
@@ -40,10 +41,10 @@ class Provider:
     # モデル候補の控え。相手の `/v1/models` が引ければそちらを優先し、
     # 引けない相手（CLI ブリッジなど）でこれを使う。
     models: tuple[str, ...] = ()
-    # **立っていなければ on にできない相手**（同居のコンテナ）。有効にしても会話のたびに
-    # 失敗するだけなので、管理画面は到達を確かめてからでないと押させない。
-    # 外部のサービス（Gemini・OpenRouter）は落ちていても一時的なので確認しない。
-    probe: bool = False
+    # **この CLI ブリッジ（bridge/）で包んでいる相手か。** 「接続を試す」の確かめ方が変わる
+    # —— ブリッジは `/health?check=1` を持っていて CLI に直接聞ける（`claude auth status` 等）。
+    # それ以外は OpenAI 互換の `/models` を引いて確かめる。
+    bridge: bool = False
     # URL を上書きできる環境変数。コンテナ名で辿り着けない相手のための逃げ道で、
     # 設定として増やすものではない（いまは local だけが持つ）。
     url_env: str = ""
@@ -59,7 +60,7 @@ PROVIDERS: tuple[Provider, ...] = (
         # compose 同梱の chiezo-llm（llama.cpp）。LAN の別マシンで動かしているなら
         # CHIEZO_LLM_URL で上書きする。
         url="http://chiezo-llm:7011/v1",
-        key=KEY_OPTIONAL,
+        credential=CRED_OPTIONAL,
         billing="自前（電気代のみ）",
         setup="docker-compose.answer.yml を重ねて "
         "`docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile answer up -d` "
@@ -67,7 +68,7 @@ PROVIDERS: tuple[Provider, ...] = (
         "CHIEZO_LLM_URL に設定します（認証を掛けているなら API キーも入れてください）。",
         # llama-server は 1 プロセス 1 モデルなので、名乗る名前は相手に聞くのが正しい。
         models=(),
-        probe=True,
+        # 推論サーバはブリッジではない（OpenAI 互換サーバそのもの）。
         url_env="CHIEZO_LLM_URL",
         order=0,
     ),
@@ -76,7 +77,7 @@ PROVIDERS: tuple[Provider, ...] = (
         label="Gemini",
         # **この URL の直下が chat/completions**。末尾に /v1 は付けない。
         url="https://generativelanguage.googleapis.com/v1beta/openai",
-        key=KEY_REQUIRED,
+        credential=CRED_REQUIRED,
         billing="無料枠（課金を有効にしなければ従量課金は発生しない）",
         setup="Google AI Studio で API キーを発行して貼り付けてください。",
         models=("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"),
@@ -86,7 +87,7 @@ PROVIDERS: tuple[Provider, ...] = (
         id="openrouter",
         label="OpenRouter",
         url="https://openrouter.ai/api/v1",
-        key=KEY_REQUIRED,
+        credential=CRED_REQUIRED,
         billing="無料モデル（モデル ID の末尾が :free のもの）",
         setup="openrouter.ai で API キーを発行して貼り付けてください。"
         "モデル ID の末尾が :free のものを選べば課金されません。",
@@ -99,7 +100,7 @@ PROVIDERS: tuple[Provider, ...] = (
         id="claude",
         label="Claude Code",
         url="http://chiezo-bridge-claude:7013/v1",
-        key=KEY_REQUIRED,
+        credential=CRED_REQUIRED,
         billing="Claude のサブスクリプション（定額）",
         setup="docker-compose.yml の chiezo-bridge-claude のコメントを外して起動し、"
         "手元の端末で `claude setup-token` を実行して発行したトークンをここに登録してください。"
@@ -107,7 +108,7 @@ PROVIDERS: tuple[Provider, ...] = (
         "登録すればブリッジの再起動なしで効きます。）",
         # CLI はエイリアスで受ける（正式名はモデルが変わるたびに動く）。
         models=("fable", "opus", "sonnet", "haiku"),
-        probe=True,
+        bridge=True,
         order=30,
     ),
     Provider(
@@ -116,7 +117,7 @@ PROVIDERS: tuple[Provider, ...] = (
         url="http://chiezo-bridge-antigravity:7013/v1",
         # **API キー方式が無い。** コンテナ内で 1 回サインインした結果をホーム配下の
         # キャッシュから読むので、画面から登録する秘密は無い。
-        key=KEY_NONE,
+        credential=CRED_NONE,
         billing="Google AI サブスクリプション（定額）",
         setup="docker-compose.yml の chiezo-bridge-antigravity のコメントを外して起動し、"
         "`docker compose exec chiezo-bridge-antigravity agy` を 1 回だけ対話で実行して"
@@ -124,20 +125,20 @@ PROVIDERS: tuple[Provider, ...] = (
         "端末に貼り戻す）。サインイン結果はバインドしたホームに残るので、"
         "コンテナを作り直しても消えません。",
         models=(),
-        probe=True,
+        bridge=True,
         order=35,
     ),
     Provider(
         id="codex",
         label="Codex CLI",
         url="http://chiezo-bridge-codex:7013/v1",
-        key=KEY_REQUIRED,
+        credential=CRED_REQUIRED,
         billing="ChatGPT のサブスクリプション（定額）",
         setup="docker-compose.yml の chiezo-bridge-codex のコメントを外して起動し、"
         "手元で `codex login --device-auth` して作られる ~/.codex/auth.json の中身を"
         "そのままここに登録してください（API キー経路は従量課金になるので使いません）。",
         models=(),  # CLI の既定に任せる（/v1/models が返すものを使う）
-        probe=True,
+        bridge=True,
         order=40,
     ),
 )

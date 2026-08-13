@@ -69,6 +69,7 @@ def make_client(monkeypatch, fake: FakeLLM | None, **env) -> TestClient:
 
     # 相手の on/off は設定ストアに入る。URL は `local` の逃げ道で偽の相手へ向ける。
     monkeypatch.setenv("CHIEZO_LLM_URL", env.pop("url", "http://llm.test:8080/v1"))
+    settings_store.set_verified("local", True)
     settings_store.set_enabled("local", True)
     for key, value in env.items():
         monkeypatch.setenv(key, str(value))
@@ -430,6 +431,7 @@ class TestBackends:
         from app import answer, settings_store
 
         assert answer.backend_names() == []
+        settings_store.set_verified("local", True)
         settings_store.set_enabled("local", True)
         assert answer.backend_names() == ["local"]
         # URL はコードの決め打ち（compose 同梱の chiezo-llm）
@@ -439,6 +441,7 @@ class TestBackends:
         """LAN の別マシンで動かしている場合の逃げ道（IP は環境ごとに違い決め打ちできない）。"""
         from app import answer, settings_store
 
+        settings_store.set_verified("local", True)
         settings_store.set_enabled("local", True)
         monkeypatch.setenv("CHIEZO_LLM_URL", "http://192.0.2.10:11434")
         assert answer.load_settings("local").url == "http://192.0.2.10:11434/v1"
@@ -454,16 +457,18 @@ class TestBackends:
         from app import answer, settings_store
 
         assert answer.backend_names() == []
-        settings_store.set_api_key("gemini", "k")
-        # 鍵を入れただけでは出てこない（有効化は別操作）
+        settings_store.set_credential("gemini", "k")
+        # 認証情報を入れただけでは出てこない（有効化は別操作）
         assert answer.backend_names() == []
+        settings_store.set_verified("gemini", True)
         settings_store.set_enabled("gemini", True)
         assert answer.backend_names() == ["gemini"]
 
     def test_url_and_label_come_from_code(self):
         from app import answer, settings_store
 
-        settings_store.set_api_key("gemini", "k")
+        settings_store.set_credential("gemini", "k")
+        settings_store.set_verified("gemini", True)
         settings_store.set_enabled("gemini", True)
         cfg = answer.load_settings("gemini")
         # パスを持つ相手なので /v1 は足さない（足すと Gemini は 404 になる）
@@ -471,26 +476,29 @@ class TestBackends:
         assert cfg.api_key == "k"
         assert answer.backend_label("gemini") == "Gemini"
 
-    def test_enabled_without_a_key_is_not_usable(self):
-        """鍵の要る相手を鍵なしで有効にしても使えない（設定を直に書き換えられた場合の保険）。"""
+    def test_enabled_without_a_credential_is_not_usable(self):
+        """認証情報の要る相手を未登録のまま有効にしても使えない（設定を直に書き換えられた場合の保険）。"""
         from app import answer, settings_store
 
+        settings_store.set_verified("gemini", True)
         settings_store.set_enabled("gemini", True)
         assert answer.load_settings("gemini") is None
 
-    def test_clearing_the_key_also_disables(self):
+    def test_clearing_the_credential_also_disables(self):
         from app import answer, settings_store
 
-        settings_store.set_api_key("gemini", "k")
+        settings_store.set_credential("gemini", "k")
+        settings_store.set_verified("gemini", True)
         settings_store.set_enabled("gemini", True)
-        settings_store.clear_api_key("gemini")
+        settings_store.clear_credential("gemini")
         assert answer.backend_names() == []
         assert answer.load_settings("gemini") is None
 
     def test_model_can_be_chosen_per_request(self):
         from app import answer, settings_store
 
-        settings_store.set_api_key("gemini", "k")
+        settings_store.set_credential("gemini", "k")
+        settings_store.set_verified("gemini", True)
         settings_store.set_enabled("gemini", True)
         settings_store.set_model("gemini", "gemini-2.5-pro")
         assert answer.load_settings("gemini").model == "gemini-2.5-pro"
@@ -500,7 +508,8 @@ class TestBackends:
     def test_model_falls_back_to_the_first_candidate(self):
         from app import answer, settings_store
 
-        settings_store.set_api_key("gemini", "k")
+        settings_store.set_credential("gemini", "k")
+        settings_store.set_verified("gemini", True)
         settings_store.set_enabled("gemini", True)
         assert answer.load_settings("gemini").model == "gemini-2.5-flash"
 
@@ -518,6 +527,7 @@ class TestBackends:
         from app.main import app
 
         monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        settings_store.set_verified("local", True)
         settings_store.set_enabled("local", True)
         with TestClient(app) as client:
             res = client.get("/v1/ask", params={"q": "浅草寺", "backend": "nope"})
@@ -558,7 +568,8 @@ class TestModelCandidates:
 
         from app import answer, settings_store
 
-        settings_store.set_api_key("openrouter", "k")
+        settings_store.set_credential("openrouter", "k")
+        settings_store.set_verified("openrouter", True)
         settings_store.set_enabled("openrouter", True)
 
         def handler(request):
@@ -590,6 +601,7 @@ class TestAnswerLayerSwitch:
     def test_closing_the_master_switch_hides_every_backend(self):
         from app import answer, settings_store
 
+        settings_store.set_verified("local", True)
         settings_store.set_enabled("local", True)
         assert answer.backend_names() == ["local"]
 
@@ -609,9 +621,213 @@ class TestAnswerLayerSwitch:
         from app.main import app
 
         monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        settings_store.set_verified("local", True)
         settings_store.set_enabled("local", True)
         settings_store.set_answer_enabled(False)
         with TestClient(app) as client:
             res = client.get("/v1/ask", params={"q": "浅草寺はどこ?"})
         assert res.status_code == 503
         assert res.json()["error"] == "answering is disabled"
+
+
+class TestSettingsMigration:
+    def test_the_old_api_key_column_is_renamed(self, monkeypatch, tmp_path):
+        """列名を変えたときの移行。置かないと既存 DB を読んだ瞬間に落ちる。"""
+        import sqlite3
+
+        from app import settings_store
+
+        state = tmp_path / "state"
+        state.mkdir()
+        db = state / "settings.db"
+        # この機能を入れた当初のスキーマ（api_key のまま）で作る
+        conn = sqlite3.connect(db)
+        conn.executescript(
+            "CREATE TABLE provider_settings (provider TEXT PRIMARY KEY, enabled INTEGER NOT NULL"
+            " DEFAULT 0, api_key TEXT, model TEXT, updated_at TEXT NOT NULL);"
+            "INSERT INTO provider_settings VALUES ('claude', 1, 'old-token', '', '2026-08-13');"
+        )
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(state))
+        got = settings_store.load("claude")
+        assert got.credential == "old-token"  # 中身は失われない
+        assert got.enabled is True
+        # 二度目も落ちない（init は何度でも走る）
+        assert settings_store.load("claude").credential == "old-token"
+
+
+class TestJournalMode:
+    def test_an_existing_wal_database_is_converted(self, monkeypatch, tmp_path):
+        """**WAL のまま残っていたファイルも戻す。**
+
+        journal_mode はファイルに焼き付く属性なので、コードから PRAGMA を消しただけでは
+        既存の DB は WAL のまま。CLI ブリッジは /state を読み取り専用でマウントして読むので、
+        WAL のままだと `unable to open database file` になり、認証情報が空に見える
+        （本番で会話が 502 になった原因）。
+        """
+        import sqlite3
+
+        from app import settings_store
+
+        state = tmp_path / "state"
+        state.mkdir()
+        db = state / "settings.db"
+        conn = sqlite3.connect(db, isolation_level=None)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            "CREATE TABLE provider_settings (provider TEXT PRIMARY KEY, enabled INTEGER NOT NULL"
+            " DEFAULT 0, credential TEXT, model TEXT, updated_at TEXT NOT NULL)"
+        )
+        conn.close()
+
+        probe = sqlite3.connect(db, isolation_level=None)
+        assert probe.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        probe.close()
+
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(state))
+        settings_store.set_credential("claude", "token")
+
+        probe = sqlite3.connect(db, isolation_level=None)
+        assert probe.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        probe.close()
+        # -wal / -shm が残っていないこと（読み取り専用の読み手が要求してしまうため）
+        assert not (state / "settings.db-wal").exists()
+        assert not (state / "settings.db-shm").exists()
+
+
+class TestConnectionTest:
+    """「接続を試す」。**登録の有無ではなく「いま使えるか」を見る。**
+
+    打ち間違えた認証情報や期限切れは登録の有無では分からず、会話して初めて失敗する
+    （本番でそれが 502 として出た）。会話は 1 往復もせず `/models` を引くだけ。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _state(self, monkeypatch, tmp_path, built_data_dir):
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+
+    def _test_button(self, client, provider):
+        res = client.post("/admin/ai/test", data={"provider": provider}, follow_redirects=False)
+        assert res.status_code == 303
+        from urllib.parse import parse_qs, urlparse
+
+        return parse_qs(urlparse(res.headers["location"]).query)
+
+    def test_a_rejected_credential_is_reported(self, monkeypatch):
+        from app import answer, settings_store
+        from app.main import app
+
+        settings_store.set_credential("gemini", "wrong")
+        settings_store.set_verified("gemini", True)
+        settings_store.set_enabled("gemini", True)
+
+        def handler(request):
+            return httpx.Response(401, json={"error": "invalid key"})
+
+        monkeypatch.setattr(
+            answer, "_llm_client",
+            lambda cfg: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        with TestClient(app) as client:
+            q = self._test_button(client, "gemini")
+        assert q["ok"] == ["0"]
+        assert "401" in q["why"][0]
+
+    def test_a_working_credential_is_reported(self, monkeypatch):
+        from app import answer, settings_store
+        from app.main import app
+
+        settings_store.set_credential("gemini", "good")
+        settings_store.set_verified("gemini", True)
+        settings_store.set_enabled("gemini", True)
+        monkeypatch.setattr(
+            answer, "_llm_client",
+            lambda cfg: httpx.AsyncClient(
+                transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"data": []}))
+            ),
+        )
+        with TestClient(app) as client:
+            q = self._test_button(client, "gemini")
+        assert q["ok"] == ["1"]
+
+    def test_an_unregistered_provider_says_so(self):
+        from app.main import app
+
+        with TestClient(app) as client:
+            q = self._test_button(client, "openrouter")
+        assert q["ok"] == ["0"]
+        assert "未登録" in q["why"][0]
+
+    def test_the_result_shows_up_on_the_admin_page(self, built_data_dir):
+        from app.main import app
+
+        with TestClient(app) as client:
+            ok = client.get("/admin", params={"tested": "gemini", "ok": "1"}).text
+            ng = client.get("/admin", params={"tested": "gemini", "ok": "0", "why": "だめ"}).text
+        assert "✅ Gemini と話せます。" in ok
+        assert "⚠️ Gemini と話せません: だめ" in ng
+
+
+class TestVerificationGate:
+    """**「接続を試す」が一度でも通るまで on にできない。**
+
+    到達できることと話せることは別で（認証情報が間違っていても到達はする）、
+    登録の有無だけでは会話して初めて失敗する。本番でそれが 502 として出た。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _state(self, monkeypatch, tmp_path, built_data_dir):
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+
+    def test_enabling_is_refused_until_a_test_passes(self):
+        from app import settings_store
+        from app.main import app
+
+        settings_store.set_credential("gemini", "k")
+        with TestClient(app) as client:
+            res = client.post("/admin/ai/enabled", data={"provider": "gemini", "enabled": "1"})
+            assert res.status_code == 400
+            assert "接続を試す" in res.json()["error"]
+
+            settings_store.set_verified("gemini", True)
+            res = client.post(
+                "/admin/ai/enabled", data={"provider": "gemini", "enabled": "1"},
+                follow_redirects=False,
+            )
+        assert res.status_code == 303
+        assert settings_store.load("gemini").enabled is True
+
+    def test_changing_the_credential_clears_the_mark(self):
+        """入れ替えた認証情報はまだ確かめていないので、試し直させる。"""
+        from app import settings_store
+
+        settings_store.set_credential("gemini", "k")
+        settings_store.set_verified("gemini", True)
+        assert settings_store.load("gemini").verified is True
+
+        settings_store.set_credential("gemini", "another")
+        assert settings_store.load("gemini").verified is False
+
+    def test_a_failing_test_clears_the_mark(self):
+        """一度通ったあとに壊れた相手を、通ったままにしておかない。"""
+        from app import settings_store
+
+        settings_store.set_verified("gemini", True)
+        settings_store.set_verified("gemini", False)
+        assert settings_store.load("gemini").verified is False
+
+    def test_a_disabled_provider_can_still_be_tested(self, monkeypatch):
+        """**試さないと on にできない仕様なので、無効のままでも試せること。**
+
+        ここを弾くと「試せないから on にできない」の堂々巡りになる（実際に踏んだ）。
+        """
+        from app import answer, settings_store
+
+        settings_store.set_credential("gemini", "k")
+        assert settings_store.load("gemini").enabled is False
+        assert answer.load_settings("gemini") is None
+        assert answer.load_settings("gemini", require_enabled=False) is not None

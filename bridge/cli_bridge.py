@@ -102,7 +102,7 @@ def stored_credential() -> str:
         conn = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True, timeout=5.0)
         try:
             row = conn.execute(
-                "SELECT api_key FROM provider_settings WHERE provider = ?", (CLI,)
+                "SELECT credential FROM provider_settings WHERE provider = ?", (CLI,)
             ).fetchone()
         finally:
             conn.close()
@@ -345,19 +345,56 @@ async def _sse(text: str) -> AsyncIterator[str]:
     yield "data: [DONE]\n\n"
 
 
-@app.get("/health")
-async def health() -> dict:
-    """立っているかと、認証情報が入っているか。
+# 認証済みかを CLI に確かめるコマンド。**モデルを呼ばない**ものを選んである ——
+# 会話を 1 往復させて確かめると、そのたびにサブスクの枠を食う。
+AUTH_CHECK = {
+    "claude": ["claude", "auth", "status"],
+    "codex": ["codex", "login", "status"],
+    "antigravity": ["agy", "models"],
+}
 
-    **認証が無くても 200 を返す。** 管理画面はまず「立っているか」を見て、立っていれば
-    鍵の登録欄を出す —— 認証が無いだけで到達不能に見えると、どこで詰まっているのか
-    分からなくなる。
+
+async def check_auth() -> tuple[bool, str]:
+    """いま実際に認証が通るか。(判定, 理由) を返す。
+
+    **認証情報が「登録されているか」ではなく「使えるか」を見る。** 打ち間違えたトークンや
+    期限切れは、登録の有無では分からない —— 会話して初めて 502 になり、原因を追いにくい。
     """
-    return {
-        "status": "ok", "cli": CLI, "model": MODEL_LABEL,
-        # antigravity は鍵を持たない(サインイン済みかはここでは分からない)。
-        "authenticated": True if CLI == "antigravity" else bool(stored_credential()),
-    }
+    if reason := apply_credential():
+        return False, reason
+    cmd = AUTH_CHECK.get(CLI)
+    if not cmd:
+        return False, f"未対応の CLI: {CLI}"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except (TimeoutError, OSError) as e:
+        return False, f"確認に失敗: {e}"
+    if proc.returncode == 0:
+        return True, ""
+    return False, out.decode("utf-8", "replace").strip()[:300] or "認証されていません"
+
+
+@app.get("/health")
+async def health(check: bool = False) -> dict:
+    """立っているかと、認証が通るか。
+
+    `?check=1` を付けると **CLI に実際に確かめる**(数秒かかる)。付けなければ
+    認証情報が置いてあるかを見るだけで即答する —— 管理画面は一覧を描くたびに
+    全プロバイダを叩くので、既定は軽いほうにしてある。
+    """
+    body = {"status": "ok", "cli": CLI, "model": MODEL_LABEL}
+    if check:
+        ok, reason = await check_auth()
+        body["authenticated"] = ok
+        if reason:
+            body["reason"] = reason
+        return body
+    # 軽い判定。antigravity は置くものが無いので、ここでは分からない。
+    body["authenticated"] = None if CLI == "antigravity" else bool(stored_credential())
+    return body
 
 
 @app.get("/v1/models")

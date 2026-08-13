@@ -1,6 +1,6 @@
 """管理画面から入れた設定の置き場（`state/settings.db`）。
 
-ここに入るのは**ユーザーが決めるものだけ** — どの相手を使うか（on/off）、API キー、
+ここに入るのは**ユーザーが決めるものだけ** — どの相手を使うか（on/off）、認証情報、
 既定のモデル。URL や表示名は `app/providers.py` に決め打ちしてあるので入らない。
 
 設計の要点:
@@ -13,8 +13,10 @@
   あちらが「覚える」層の中身で、消してよいものと消してはいけないものが混ざるため。
 - **CLI ブリッジのコンテナがこのファイルを読み取り専用でマウントして読む**
   （認証情報をそこから取る）。そのため **WAL は使わない** —— WAL の読み手は -shm への
-  書き込みを要求し、read-only のマウントでは最新の書き込みが見えない。
-- **API キーは平文で持つ。** Chiezo は認証なし・LAN 内前提のサービスなので、
+  書き込みを要求し、read-only のマウントでは `unable to open database file` になる。
+  journal_mode は**ファイルに焼き付く属性**なので、`PRAGMA` を書かないだけでは
+  既に WAL のファイルが戻らない。接続のたびに `DELETE` を明示している。
+- **認証情報は平文で持つ。** Chiezo は認証なし・LAN 内前提のサービスなので、
   暗号化しても鍵の置き場が同じ機械にある以上、守れるものが増えない。
   代わりに**画面には二度と出さない**（登録の有無と日時だけ返す）。
 """
@@ -37,8 +39,11 @@ CREATE TABLE IF NOT EXISTS flags (
 CREATE TABLE IF NOT EXISTS provider_settings (
     provider   TEXT PRIMARY KEY,
     enabled    INTEGER NOT NULL DEFAULT 0,
-    api_key    TEXT,
+    credential TEXT,
     model      TEXT,
+    -- 「接続を試す」が最後に通った日時。**ここが空の相手は on にできない**。
+    -- 認証情報を入れ替えたら消す（新しい情報はまだ確かめていないため）。
+    verified_at TEXT,
     updated_at TEXT NOT NULL
 );
 """
@@ -48,13 +53,19 @@ CREATE TABLE IF NOT EXISTS provider_settings (
 class ProviderSetting:
     provider: str
     enabled: bool = False
-    api_key: str = ""
+    credential: str = ""
     model: str = ""
+    verified_at: str = ""
     updated_at: str = ""
 
     @property
-    def has_key(self) -> bool:
-        return bool(self.api_key)
+    def has_credential(self) -> bool:
+        return bool(self.credential)
+
+    @property
+    def verified(self) -> bool:
+        """「接続を試す」が一度でも通ったか。**on にできる条件**。"""
+        return bool(self.verified_at)
 
 
 def state_dir() -> Path | None:
@@ -85,17 +96,38 @@ def require_path() -> Path:
     return path
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """列名を変えたときの移行。**何度実行しても同じ結果になるように書くこと。**
+
+    `api_key` → `credential`。中身は相手によって OAuth トークンだったり auth.json の
+    中身だったりするので、「API キー」という名前が実態と食い違っていた。
+    移行を置かないと、既存の DB を新しいコードが読んだ瞬間に
+    `no such column: credential` で落ちる（実際に踏んだ）。
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(provider_settings)")}
+    if "api_key" in cols and "credential" not in cols:
+        conn.execute("ALTER TABLE provider_settings RENAME COLUMN api_key TO credential")
+        cols.add("credential")
+    if "verified_at" not in cols:
+        conn.execute("ALTER TABLE provider_settings ADD COLUMN verified_at TEXT")
+
+
 def _connect() -> sqlite3.Connection:
     path = require_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=10.0)
     conn.row_factory = sqlite3.Row
-    # **WAL にしない。** このファイルは CLI ブリッジのコンテナが
-    # 読み取り専用でマウントして読む（そこから認証情報を取る）。WAL では読み手が
-    # -shm への書き込みを要求するため、read-only のマウントでは最新の書き込みが
-    # 見えなかったり、開けなかったりする（実際にそれで詰まった）。
-    # 書き込みは管理画面を押したときだけなので、既定のロールバックジャーナルで足りる。
+    # **WAL を明示的に外す。** このファイルは CLI ブリッジのコンテナが読み取り専用で
+    # マウントして読む（そこから認証情報を取る）。WAL の読み手は -shm への書き込みを
+    # 要求するので、read-only のマウントでは `unable to open database file` になる。
+    #
+    # **`PRAGMA journal_mode` を書かないだけでは足りない** —— journal_mode は
+    # **ファイルに焼き付く属性**で、一度 WAL で作られた DB はコードを直しても WAL のまま。
+    # ここで毎回 DELETE を指定して、既存のファイルも戻す（指定済みなら何も起きない）。
+    # 書き込みは管理画面を押したときだけなので、ロールバックジャーナルで足りる。
+    conn.execute("PRAGMA journal_mode=DELETE")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
 
 
@@ -140,11 +172,15 @@ def load_all() -> dict[str, ProviderSetting]:
         return {}
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT provider, enabled, COALESCE(api_key, ''), COALESCE(model, ''), updated_at"
+            "SELECT provider, enabled, COALESCE(credential, ''), COALESCE(model, ''),"
+            "       COALESCE(verified_at, ''), updated_at"
             "  FROM provider_settings"
         ).fetchall()
     return {
-        r[0]: ProviderSetting(provider=r[0], enabled=bool(r[1]), api_key=r[2], model=r[3], updated_at=r[4])
+        r[0]: ProviderSetting(
+            provider=r[0], enabled=bool(r[1]), credential=r[2], model=r[3],
+            verified_at=r[4], updated_at=r[5],
+        )
         for r in rows
     }
 
@@ -170,17 +206,34 @@ def set_enabled(provider: str, enabled: bool) -> None:
     _upsert(provider, enabled=1 if enabled else 0)
 
 
-def set_api_key(provider: str, api_key: str) -> None:
-    """API キーを保存する。**入れただけでは有効にならない**（on は別操作）。"""
-    _upsert(provider, api_key=api_key)
+def set_credential(provider: str, credential: str) -> None:
+    """認証情報を保存する。**入れただけでは有効にならない**（on は別操作）。
+
+    中身は相手によって違う —— Gemini / OpenRouter は API キー、Claude Code は
+    `claude setup-token` の OAuth トークン、Codex は `~/.codex/auth.json` の中身。
+    **「API キー」と呼ばないのはそのため**（4 つのうち API キーなのは 2 つだけ）。
+    """
+    # **確認済みの印を消す。** 入れ替えた認証情報はまだ確かめていないので、
+    # 「接続を試す」を通すまで on にできない状態に戻す。
+    _upsert(provider, credential=credential, verified_at=None)
 
 
-def clear_api_key(provider: str) -> None:
-    """API キーを消し、同時に無効にする。
+def clear_credential(provider: str) -> None:
+    """認証情報を消し、同時に無効にする。
 
     鍵の無い相手を有効のまま残すと、会話のたびに失敗するだけになるため。
     """
-    _upsert(provider, api_key=None, enabled=0)
+    _upsert(provider, credential=None, enabled=0, verified_at=None)
+
+
+def set_verified(provider: str, ok: bool) -> None:
+    """「接続を試す」の結果を記録する。
+
+    **通った相手だけが on にできる。** 登録の有無では、打ち間違えた認証情報も期限切れも
+    分からず、会話して初めて失敗する（本番でそれが 502 として出た）。
+    失敗したら印を消す —— 一度通ったあとに壊れた相手を、通ったままにしておかない。
+    """
+    _upsert(provider, verified_at=_now() if ok else None)
 
 
 def set_model(provider: str, model: str) -> None:

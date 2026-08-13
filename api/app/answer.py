@@ -147,7 +147,9 @@ def backend_label(backend: str) -> str:
     return providers.label_of(backend)
 
 
-def load_settings(backend: str | None = None, model: str | None = None) -> Settings | None:
+def load_settings(
+    backend: str | None = None, model: str | None = None, *, require_enabled: bool = True
+) -> Settings | None:
     """相手の設定を組み立てる。使えない相手なら None。
 
     URL と表示名は `app/providers.py` の決め打ち、on/off と API キーとモデルは
@@ -165,11 +167,13 @@ def load_settings(backend: str | None = None, model: str | None = None) -> Setti
     if spec is None:
         return None
     stored = settings_store.load(name)
-    if not stored.enabled:
+    # **「接続を試す」だけは無効の相手にも組み立てる。** 試さないと on にできない仕様なので、
+    # ここで無効を弾くと「試せないから on にできない」の堂々巡りになる（実際に踏んだ）。
+    if require_enabled and not stored.enabled:
         return None
-    # 鍵の要る相手で未登録なら使えない（管理画面が on にさせないが、設定を直に
+    # 認証情報の要る相手で未登録なら使えない（管理画面が on にさせないが、設定を直に
     # 書き換えられた場合の保険でもある）。
-    if spec.key == providers.KEY_REQUIRED and not stored.has_key:
+    if spec.credential == providers.CRED_REQUIRED and not stored.has_credential:
         return None
     chosen = (model or stored.model or (spec.models[0] if spec.models else "")).strip()
     return Settings(
@@ -178,7 +182,7 @@ def load_settings(backend: str | None = None, model: str | None = None) -> Setti
         # 空でも通る相手（1 プロセス 1 モデルの推論サーバ・CLI ブリッジ）がいるので、
         # 決まらないときは無難な既定を置く。
         model=chosen or "chiezo",
-        api_key=stored.api_key or None,
+        api_key=stored.credential or None,
         # DB の 5 秒とは別枠。CPU 推論は数十秒級になる。
         timeout=_env_num("CHIEZO_ANSWER_TIMEOUT", 120.0, float),
         docs=max(1, _env_num("CHIEZO_ANSWER_DOCS", 4, int)),
@@ -260,6 +264,28 @@ async def reachable(url: str, api_key: str | None = None, timeout: float = 3.0) 
         return res.status_code < 500
     except httpx.HTTPError:
         return False
+
+
+async def check_credential(cfg: Settings) -> tuple[bool, str]:
+    """その相手といま実際に話せるか。(判定, 理由) を返す。
+
+    **`/models` を引くだけで、会話は 1 往復もしない。** 打ち間違えたキーや期限切れは
+    「登録されているか」では分からず、会話して初めて失敗する —— それを登録の直後に
+    確かめられるようにするためのもので、確かめるたびにサブスクの枠を食っては本末転倒。
+
+    CLI ブリッジは `/health?check=1` を持っていて、そちらは CLI に直接聞く
+    (`claude auth status` 等)。ブリッジかどうかは呼び出し側が判断する。
+    """
+    try:
+        async with _llm_client(cfg) as client:
+            res = await client.get(f"{cfg.url}/models", timeout=15.0)
+    except httpx.HTTPError as e:
+        return False, f"つながりません: {e}"
+    if res.status_code == 200:
+        return True, ""
+    if res.status_code in (401, 403):
+        return False, f"認証情報が受け付けられませんでした（HTTP {res.status_code}）"
+    return False, f"HTTP {res.status_code}: {res.text[:200]}"
 
 
 # 相手が名乗るモデルの控え。管理画面と会話画面が開くたびに聞かずに済むよう覚えておく。

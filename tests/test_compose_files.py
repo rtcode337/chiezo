@@ -34,6 +34,17 @@ STANDALONE_EXEMPT = {
 # 検索エンジンは別サーバーのものを指せば済み、この環境で同居させる前提が無いため。
 ANSWER_CONTAINERS = {"chiezo-llm", "searxng"}
 
+# **リポジトリが持たない compose は見ない。** 単体定義に実値を書いた
+# docker-compose.standalone.yml は .gitignore 済みで、置くかどうかも中身も
+# 環境ごとに違う（ホストの絶対パスが入る）。手元にそれがある環境でだけテストが
+# 落ちるのは、見張りたいものと関係がない。
+LOCAL_ONLY = {"docker-compose.standalone.yml"}
+
+
+def _compose_files() -> list[Path]:
+    """リポジトリが持っている compose ファイル。"""
+    return sorted(p for p in ROOT.glob("docker-compose*.yml") if p.name not in LOCAL_ONLY)
+
 
 def _service_env_keys(compose_path: Path, service: str) -> set[str]:
     """compose の 1 サービスに渡している CHIEZO_* の環境変数名を集める。"""
@@ -78,7 +89,7 @@ def test_answer_overlay_defines_only_containers():
     )
 
 
-@pytest.mark.parametrize("path", sorted(ROOT.glob("docker-compose*.yml")))
+@pytest.mark.parametrize("path", _compose_files())
 def test_compose_files_parse(path: Path):
     """どの compose ファイルも YAML として読めること(貼り付けミスの検知)。"""
     doc = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -92,8 +103,9 @@ def test_overrides_do_not_duplicate_base():
     上書きは「本体との違い」だけを書く —— 行数で機械的に見張る。
     """
     overrides = [
-        p for p in ROOT.glob("docker-compose.*.yml")
-        if p.name not in {"docker-compose.standalone.example.yml", "docker-compose.answer.yml"}
+        p for p in _compose_files()
+        if p.name not in {"docker-compose.yml", "docker-compose.standalone.example.yml",
+                          "docker-compose.answer.yml"}
     ]
     base_lines = len(BASE.read_text(encoding="utf-8").splitlines())
     for path in overrides:

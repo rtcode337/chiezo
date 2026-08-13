@@ -32,6 +32,10 @@ x-data-dir: &data-dir "/path/to/chiezo/data"
 x-notes-dir: &notes-dir "/path/to/chiezo/notes"
 # 管理画面から入れた設定(話す相手の on/off・API キー)の置き場。**API キーが入る**
 x-state-dir: &state-dir "/path/to/chiezo/state"
+# Antigravity のサインイン結果の置き場(CLI ブリッジを使う場合だけ)。
+# state の下に置く想定だが、**YAML は文字列を連結できない**ので別のアンカーにしてある
+# —— 上の x-state-dir を変えたら、こちらも同じ場所を指すように直すこと。
+x-bridge-home-dir: &bridge-home-dir "/path/to/chiezo/state/bridge-antigravity-home"
 
 services:
   # 検索 API・MCP・管理画面。これが本体で、単体で起動する。
@@ -147,10 +151,12 @@ services:
       test: ["CMD", "curl", "-fs", "http://localhost:8080/healthz"]
       interval: 60s
 
-  # ---- Claude Code / Codex CLI と話す場合だけ、以下のコメントを外す ----
+  # ---- CLI の AI と話す場合だけ、以下のコメントを外す ----
   #
-  # この 2 つは HTTP ではなく CLI なので、OpenAI 互換の口に見せるブリッジを挟む。
+  # これらは HTTP ではなく CLI なので、OpenAI 互換の口に見せるブリッジを挟む。
   # **サブスクの枠で使うためのもの**で、API キー経路は従量課金になるため使わない。
+  # **イメージは 1 つで、CHIEZO_BRIDGE_CLI で役割を決める**(1 回 pull すればディスクは
+  # 1 つぶんで、コンテナを何個立てても増えるのは書き込み層だけ)。使うものだけ外せばよい。
   # 立ち上げたら管理画面(/admin)の「話す相手」で on にできるようになる
   # (到達できない間は押せない)。
   #
@@ -160,7 +166,7 @@ services:
   #  volumes:
   #    # 認証情報は Chiezo の設定 DB から読む(管理画面から登録する)。読み取り専用
   #    - type: bind
-  #      source: /path/to/chiezo/state
+  #      source: *state-dir
   #      target: /state
   #      read_only: true
   #  environment:
@@ -174,11 +180,29 @@ services:
   #  container_name: chiezo-bridge-codex
   #  volumes:
   #    - type: bind
-  #      source: /path/to/chiezo/state
+  #      source: *state-dir
   #      target: /state
   #      read_only: true
   #  environment:
   #    CHIEZO_BRIDGE_CLI: codex
+  #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-api:7010/mcp
+  #  restart: unless-stopped
+  #  cpu_shares: 512
+  #
+  # Antigravity だけマウントが違う。**API キー方式が無く**、コンテナ内で 1 回サインインした
+  # 結果をホーム配下のキャッシュから読むので、/state(読み取り専用)ではなく
+  # **書き込み可能なホーム**をバインドして永続化する。立ち上げたら
+  #   docker exec -it chiezo-bridge-antigravity agy
+  # を 1 回だけ対話で実行し、表示される URL でサインインすること。
+  #chiezo-bridge-antigravity:
+  #  image: ghcr.io/rtcode337/chiezo-bridge:latest
+  #  container_name: chiezo-bridge-antigravity
+  #  volumes:
+  #    - type: bind
+  #      source: *bridge-home-dir
+  #      target: /srv/bridge/home
+  #  environment:
+  #    CHIEZO_BRIDGE_CLI: antigravity
   #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-api:7010/mcp
   #  restart: unless-stopped
   #  cpu_shares: 512
