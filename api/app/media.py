@@ -318,6 +318,26 @@ def start_image_job(
     return job
 
 
+async def check(backend: str) -> tuple[bool, str]:
+    """その相手と実際に話せるか確かめる(「接続を試す」)。
+
+    **自前の GPU にだけ用意する。** 外部サービスは「話す相手」側に同じ仕組みがあり、
+    鍵も on/off も共通なので、こちらで二重に持たない。
+    """
+    spec = media_providers.get(backend)
+    if spec is None or not spec.owns_toggle:
+        raise HTTPException(404, {"error": f"unknown backend: {backend}"})
+
+    try:
+        models = await media_backends.comfy_models(media_providers.url_of(spec))
+    except Exception as e:  # 立っていない・URL 違い・応答が読めない
+        return False, f"繋がりません({type(e).__name__})"
+
+    if not models:
+        return False, "繋がりましたが、チェックポイントが 1 つも置かれていません"
+    return True, "、".join(models[:3])
+
+
 async def backends() -> list[dict]:
     """使える相手と、その相手で選べるモデル。**使えない相手も理由つきで出す** ——
     出さないと「なぜ選べないのか」が分からない。"""
@@ -347,6 +367,9 @@ async def backends() -> list[dict]:
                 "billing": spec.billing,
                 "setup": spec.setup,
                 "url": media_providers.url_of(spec) if spec.url_env else "",
+                # 自分の on/off と「接続を試す」を持つか(画面がボタンを出すかの判断)
+                "owns_toggle": spec.owns_toggle,
+                "enabled": settings_store.load(spec.id).enabled if spec.owns_toggle else None,
             }
         )
     return out

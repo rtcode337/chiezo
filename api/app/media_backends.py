@@ -80,9 +80,12 @@ def unusable_reason(spec: media_providers.MediaProvider) -> str:
     """
     if not settings_store.answer_enabled():
         return "「答える」層が停止中"
-    # 「話す相手」に対応がある相手(外部サービス)は、そちらの on/off に従う
-    linked = spec.credential_from
-    if linked and not settings_store.load(linked).enabled:
+    # 自分の on/off を持つ相手(自前の GPU)は自分の行を、「話す相手」に対応がある相手は
+    # あちらの行を見る。**同じものを 2 か所で切り替えさせない**
+    if spec.owns_toggle:
+        if not settings_store.load(spec.id).enabled:
+            return "無効(この節の「使う」で有効にする)"
+    elif spec.credential_from and not settings_store.load(spec.credential_from).enabled:
         return "「話す相手」で無効(先に話せるようにする)"
     if spec.credential == media_providers.CRED_REQUIRED and not credential_of(spec):
         return NO_CREDENTIAL

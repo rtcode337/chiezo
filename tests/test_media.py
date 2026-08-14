@@ -20,10 +20,15 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
 
 @pytest.fixture()
 def state(monkeypatch, tmp_path):
-    """置き場と設定 DB を一時ディレクトリに逃がす。"""
+    """置き場と設定 DB を一時ディレクトリに逃がす。
+
+    **自前の GPU は既定で無効**(話す相手と同じで、明示的に on にする)。
+    ほとんどのテストは「使える状態」を前提にするので、ここで on にしておく。
+    """
     monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.delenv("CHIEZO_MEDIA_DIR", raising=False)
     monkeypatch.delenv("CHIEZO_IMAGE_URL", raising=False)
+    settings_store.set_enabled("comfyui", True)
     return monkeypatch
 
 
@@ -233,6 +238,38 @@ class TestJobs:
 
 
 class TestSwitchedOff:
+    def test_comfyui_has_its_own_toggle(self, state):
+        """自前の GPU は「話す相手」に出てこないので、自分の on/off を持つ。"""
+        settings_store.set_enabled("comfyui", False)
+        use(state, fake_comfy())
+
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(media_backends.generate(
+                "comfyui", media_backends.ImageRequest(prompt="猫")))
+
+        assert e.value.status_code == 403
+        assert "無効" in e.value.detail["error"]
+
+    def test_connection_check_reports_the_checkpoints(self, state):
+        """「接続を試す」は繋がるかとモデルの有無まで見る(立っているだけでは描けない)。"""
+        use(state, fake_comfy())
+        ok, why = asyncio.run(media.check("comfyui"))
+        assert ok is True
+        assert "sdxl.safetensors" in why
+
+        use(state, lambda request: httpx.Response(500))
+        ok, why = asyncio.run(media.check("comfyui"))
+        assert ok is False
+        assert "繋がりません" in why
+
+    def test_connection_check_is_only_for_our_own_gpu(self, state):
+        """外部サービスは「話す相手」側で試す(同じ確認を 2 か所に持たない)。"""
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(media.check("gemini"))
+
+        assert e.value.status_code == 404
+
+
     """**「話す相手」で無効にしたら絵も描けない。** 鍵を持っている相手を止めたのに
     片方だけ動き続けるのは、止めたつもりの人にとって事故になる。"""
 
@@ -305,6 +342,8 @@ class TestBackendList:
 
         assert backends["comfyui"]["usable"] is False
         assert "繋がらない" in backends["comfyui"]["reason"]
+        # 自前の GPU は自分の on/off を持つ(画面がボタンを出す)
+        assert backends["comfyui"]["owns_toggle"] is True
         assert backends["gemini"]["usable"] is False
         # 「話す相手」で有効にしていないので、鍵より先にそちらが理由になる
         assert "無効" in backends["gemini"]["reason"]

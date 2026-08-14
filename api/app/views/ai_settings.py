@@ -203,17 +203,25 @@ async def section_html(request: Request | None = None) -> str:
 {chr(10).join(rows)}
 </tbody>
 </table>
-{await _image_section_html()}
+{await _image_section_html(q)}
 """
 
 
-async def _image_section_html() -> str:
+async def _image_section_html(q) -> str:
     """「絵を描く相手」節。**上の表とは別に出す** —— 自前の GPU(ComfyUI)は
     「話す相手」ではないので上の表に出てこず、状態を見る場所が無くなるため。
 
     ここに操作は置かない(on/off は上の表、GPU は compose で立てるもの)。
     出すのは**いま使えるかと、使えないなら理由**だけ。
     """
+    banner = ""
+    if tested := q.get("image_tested"):
+        label = esc(media_providers.label_of(tested))
+        if q.get("image_ok") == "1":
+            banner = f'<p class="note">✅ {label} と繋がりました: {esc(q.get("image_why", ""))}</p>'
+        else:
+            banner = f'<p class="stale">⚠️ {label} と繋がりません: {esc(q.get("image_why", ""))}</p>'
+
     if not media.is_enabled():
         return (
             "<h2>絵を描く相手</h2>\n"
@@ -226,13 +234,30 @@ async def _image_section_html() -> str:
     for entry in await media.backends():
         state = "使える" if entry["usable"] else esc(entry["reason"])
         models = "、".join(entry["models"][:4]) or "—"
+
+        if entry["owns_toggle"]:
+            # 自前の GPU は「話す相手」に出てこないので、on/off と接続確認をここに置く
+            use_cell = (
+                f'<form method="post" action="/admin/media/enabled" class="init-form">'
+                f'<input type="hidden" name="provider" value="{entry["id"]}">'
+                f'<input type="hidden" name="enabled" value="{"0" if entry["enabled"] else "1"}">'
+                f'<button type="submit">{"無効にする" if entry["enabled"] else "使う"}</button></form>'
+                f'<form method="post" action="/admin/media/test" class="init-form">'
+                f'<input type="hidden" name="provider" value="{entry["id"]}">'
+                f"<button type=\"submit\">接続を試す</button></form>"
+            )
+        else:
+            # 外部サービスは鍵も on/off も「話す相手」と共通。二重に持たない
+            use_cell = '<span class="muted">上の「話す相手」で切り替える</span>'
+
         rows.append(
             f'<tr><td>{esc(entry["label"])}</td><td>{esc(state)}</td>'
-            f'<td class="muted">{esc(models)}</td>'
+            f'<td class="muted">{esc(models)}</td><td>{use_cell}</td>'
             f'<td class="muted">{esc(entry["billing"])}</td></tr>'
         )
 
     return f"""<h2>絵を描く相手</h2>
+{banner}
 <details>
 <summary>この節について</summary>
 <p>MCP の <code>image_generate</code> で使う相手。<strong>外部サービスの鍵と on/off は上の
@@ -243,7 +268,7 @@ async def _image_section_html() -> str:
 <p class="muted">「答える」層を止めると、ここも全部止まる(MCP の道具も出なくなる)。</p>
 </details>
 <table class="ai-settings">
-<thead><tr><th>相手</th><th>状態</th><th>モデル</th><th>課金の形</th></tr></thead>
+<thead><tr><th>相手</th><th>状態</th><th>モデル</th><th>使う</th><th>課金の形</th></tr></thead>
 <tbody>
 {chr(10).join(rows)}
 </tbody>
@@ -298,6 +323,26 @@ async def set_enabled(provider: str = Form(...), enabled: str = Form("0")):
             )
     settings_store.set_enabled(spec.id, want)
     return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/admin/media/enabled")
+async def set_media_enabled(provider: str = Form(...), enabled: str = Form("0")):
+    """自前の GPU(ComfyUI)の on/off。**外部サービスはここでは切り替えない** ——
+    あちらは「話す相手」と共通で、2 か所から切れるとどちらが効いているのか分からなくなる。"""
+    spec = media_providers.get(provider)
+    if spec is None or not spec.owns_toggle:
+        raise HTTPException(404, {"error": f"unknown backend: {provider}"})
+
+    settings_store.set_enabled(spec.id, enabled == "1")
+    return RedirectResponse("/admin", status_code=303)
+
+
+@router.post("/admin/media/test")
+async def test_media_connection(provider: str = Form(...)):
+    """絵を描く相手と実際に話せるか確かめる(結果はクエリで画面へ返す)。"""
+    ok, why = await media.check(provider)
+    params = urlencode({"image_tested": provider, "image_ok": "1" if ok else "0", "image_why": why})
+    return RedirectResponse(f"/admin?{params}", status_code=303)
 
 
 @router.post("/admin/ai/layer")

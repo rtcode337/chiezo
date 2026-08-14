@@ -38,6 +38,10 @@ class MediaProvider:
     sizes: tuple[str, ...] = ("1024x1024", "1024x1536", "1536x1024")
     # 鍵を借りる相手(`app/providers.py` の ID)。空なら自前の鍵。
     credential_from: str = ""
+    # **自分の on/off を持つか。** 「話す相手」に対応がある相手(外部サービス)は
+    # あちらの on/off に従う —— 同じものを 2 か所で切り替えられると、どちらが効いて
+    # いるのか画面から読めなくなる。自前の GPU はあちらに出てこないので自分で持つ。
+    owns_toggle: bool = False
     # URL を上書きできる環境変数(コンテナ名で辿り着けない相手のための逃げ道)
     url_env: str = ""
     # 画面・一覧に出す順
@@ -59,6 +63,7 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         # チェックポイントは置いたものによるので、相手(`/object_info`)に聞く。
         models=(),
         url_env="CHIEZO_IMAGE_URL",
+        owns_toggle=True,
         order=0,
     ),
     MediaProvider(
