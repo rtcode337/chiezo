@@ -346,8 +346,38 @@ async def _openai_generate(
     return GeneratedImage(base64.b64decode(data), "image/png", seed, model)
 
 
+# ---- Codex CLI(ChatGPT のサブスク枠)----------------------------------------
+#
+# ブリッジ(chiezo-bridge-codex)の `/v1/images/generations` に投げる。中では
+# `codex exec` が内蔵の image_gen を回して PNG を書き、ブリッジがそれを base64 で返す。
+# **鍵はこちらに無い**(ブリッジが「話す相手」で登録された auth.json を読む)。
+async def _codex_generate(
+    spec: media_providers.MediaProvider, req: ImageRequest, seed: int
+) -> GeneratedImage:
+    async with _client(GENERATE_TIMEOUT) as client:
+        res = await client.post(
+            f"{media_providers.url_of(spec)}/images/generations",
+            json={"prompt": req.prompt, "size": req.size, "n": 1},
+        )
+    if res.status_code >= 400:
+        log.warning("codex image error %s: %s", res.status_code, res.text[:300])
+        raise HTTPException(502, {"error": f"Codex のブリッジが {res.status_code} を返しました",
+                                  "detail": res.text[:300]})
+
+    data = next(
+        (item.get("b64_json") for item in res.json().get("data", []) if item.get("b64_json")),
+        None,
+    )
+    if not data:
+        raise HTTPException(502, {"error": "Codex が画像を返しませんでした"})
+
+    # **seed は受け付けない。** 記録だけしておく(再現できるのは ComfyUI 側だけ)
+    return GeneratedImage(base64.b64decode(data), "image/png", seed, "gpt-image-2")
+
+
 GENERATORS = {
     "comfyui": _comfy_generate,
+    "codex": _codex_generate,
     "gemini": _gemini_generate,
     "openai": _openai_generate,
 }

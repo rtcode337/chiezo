@@ -39,15 +39,18 @@ Codex は **HTTP ではなく CLI** で、サブスクの枠で使うにはそ�
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
 import re
 import sqlite3
+import tempfile
 import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -573,6 +576,145 @@ async def models() -> dict:
     return {
         "object": "list",
         "data": [{"id": i, "object": "model", "owned_by": "chiezo-bridge"} for i in ids],
+    }
+
+
+# ---- 画像生成(Codex の内蔵ツール)-------------------------------------------
+#
+# **サブスクの枠で gpt-image-2 を使うための経路。** OpenAI の画像 API(従量課金)とは
+# 課金が別で、こちらは ChatGPT のログインで動く —— 追加の API キーが要らない。
+#
+# **Codex にしか無い。** 画像を作れるのは Codex の内蔵ツール(image_gen)で、
+# claude / antigravity は持たない。持たない CLI では 404 を返す。
+#
+# **サンドボックスを緩める。** 会話の口は `-s read-only` で動かしているが、
+# 画像はファイルとして書き出されるので書き込みを許さないと 1 枚も残らない。
+# 許すのは**この 1 回のために作った作業ディレクトリだけ**で、書けた画像を読んだら消す。
+IMAGE_TIMEOUT = float(os.environ.get("CHIEZO_BRIDGE_IMAGE_TIMEOUT", "600") or 600)
+
+# 生成物として拾う拡張子。Codex は PNG で保存する(サイズ指定つきでも変わらない)。
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
+
+
+class ImageRequest(BaseModel):
+    prompt: str
+    # OpenAI の画像 API と同じ名前で受ける(呼ぶ側が書き分けなくて済む)。
+    size: str = "1024x1024"
+    n: int = 1
+    model: str | None = None
+
+
+def _image_prompt(body: ImageRequest, out_dir: str) -> str:
+    """Codex に渡す指示。**保存先と枚数を言い切る** —— 相手はエージェントなので、
+    曖昧だと説明だけ返してファイルを書かないことがある。"""
+    return (
+        f"Generate {body.n} image(s) at {body.size} for this description:\n\n"
+        f"{body.prompt}\n\n"
+        f"Save the result as PNG into {out_dir}/ (use names like out-1.png). "
+        "Do not create any other files, do not write code, and do not explain. "
+        "When the file is saved, reply with just the file path."
+    )
+
+
+def _collect_images(out_dir: str, since: float) -> list[bytes]:
+    """作業ディレクトリと Codex の保存先から、この実行で増えた画像を拾う。
+
+    **2 か所見るのは、保存先が版によって変わるから** —— 指示どおり作業ディレクトリへ
+    書くこともあれば、内蔵ツールの既定($CODEX_HOME/generated_images)に置くこともある。
+    """
+    roots = [out_dir, os.path.join(os.environ.get("CODEX_HOME", "/srv/bridge/.codex"),
+                                   "generated_images")]
+    found: list[tuple[float, str]] = []
+    for root in roots:
+        for dirpath, _dirs, files in os.walk(root):
+            for name in files:
+                if not name.lower().endswith(IMAGE_SUFFIXES):
+                    continue
+                path = os.path.join(dirpath, name)
+                try:
+                    stat = os.stat(path)
+                except OSError:
+                    continue
+                # 「この実行で出来たもの」だけ。前回の生成物を混ぜない
+                if stat.st_mtime >= since - 1:
+                    found.append((stat.st_mtime, path))
+
+    out = []
+    for _when, path in sorted(found):
+        try:
+            out.append(Path(path).read_bytes())
+        except OSError:
+            continue
+    return out
+
+
+@app.post("/v1/images/generations")
+async def images_generations(body: ImageRequest):
+    """画像を作って base64 で返す(OpenAI の画像 API と同じ形)。"""
+    if CLI != "codex":
+        raise HTTPException(
+            404,
+            {
+                "error": f"{CLI} は画像生成を持っていません",
+                "hint": "画像を作れるのは Codex の内蔵ツールだけです"
+                "(CHIEZO_BRIDGE_CLI=codex のブリッジへ投げてください)",
+            },
+        )
+    if not body.prompt.strip():
+        raise HTTPException(400, {"error": "prompt must not be empty"})
+    if reason := apply_credential():
+        raise HTTPException(401, {"error": reason})
+
+    started = time.time()
+    with tempfile.TemporaryDirectory(prefix="chiezo-image-") as out_dir:
+        cmd = [
+            "codex", "exec",
+            "--skip-git-repo-check",
+            "--ephemeral",
+            # **この作業ディレクトリにだけ書かせる**(会話の口は read-only のまま)
+            "-s", "workspace-write",
+            "-c", 'approval_policy="never"',
+            "-C", out_dir,
+        ]
+        if body.model or MODEL:
+            cmd += ["-m", body.model or MODEL]
+        cmd.append("-")
+
+        log.info("running codex image_gen (prompt %d bytes)", len(body.prompt.encode("utf-8")))
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _stdout, stderr = await asyncio.wait_for(
+                proc.communicate(_image_prompt(body, out_dir).encode("utf-8")),
+                timeout=IMAGE_TIMEOUT,
+            )
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise HTTPException(
+                504, {"error": f"codex が {IMAGE_TIMEOUT:.0f}s で終わりませんでした"}
+            ) from None
+
+        if proc.returncode != 0:
+            detail = stderr.decode("utf-8", "replace").strip()[:500]
+            log.error("codex image exited %s: %s", proc.returncode, detail)
+            raise HTTPException(502, {"error": "codex failed", "exit_code": proc.returncode,
+                                      "stderr": detail})
+
+        images = _collect_images(out_dir, started)
+
+    if not images:
+        # **説明だけ返してファイルを書かない**ことがある(相手はエージェント)。
+        # 呼ぶ側が「作れなかった」と分かるようにする
+        raise HTTPException(502, {"error": "codex が画像を保存しませんでした"})
+
+    return {
+        "created": int(started),
+        "data": [{"b64_json": base64.b64encode(data).decode()} for data in images[: body.n]],
     }
 
 

@@ -189,6 +189,43 @@ class TestOpenAI:
         assert "sk-test" not in json.dumps(e.value.detail)
 
 
+class TestCodex:
+    """**ChatGPT のサブスク枠**で gpt-image-2 を使う経路(API の従量課金とは別勘定)。"""
+
+    def test_asks_the_bridge_and_takes_the_image(self, state):
+        settings_store.set_enabled("codex", True)
+        settings_store.set_credential("codex", '{"tokens": "…"}')
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            handler.url = str(request.url)
+            handler.sent = json.loads(request.content)
+            return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(PNG).decode()}]})
+
+        use(state, handler)
+
+        image = asyncio.run(media_backends.generate(
+            "codex", media_backends.ImageRequest(prompt="盾", size="1536x1024")))
+
+        assert image.data == PNG
+        # 鍵はこちらに無い(ブリッジが持つ)。投げ先はブリッジの画像の口
+        assert handler.url.endswith("/v1/images/generations")
+        assert handler.sent == {"prompt": "盾", "size": "1536x1024", "n": 1}
+        # 実際に描くのは gpt-image-2(モデルは Codex の内蔵ツールが決める)
+        assert image.model == "gpt-image-2"
+
+    def test_follows_the_codex_switch_in_the_chat_providers(self, state):
+        """鍵も on/off も「話す相手」の Codex と共通。"""
+        settings_store.set_credential("codex", '{"tokens": "…"}')
+        settings_store.set_enabled("codex", False)
+        use(state, lambda request: httpx.Response(200, json={"data": []}))
+
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(media_backends.generate(
+                "codex", media_backends.ImageRequest(prompt="盾")))
+
+        assert e.value.status_code == 403
+
+
 class TestJobs:
     def test_saves_the_image_and_returns_a_path_and_url(self, state):
         """**画像そのものは返さない**(1 枚 1〜2MB でコンテキストが飛ぶ)。"""

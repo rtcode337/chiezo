@@ -144,11 +144,18 @@ image_status(job_id)                    … 仕上がり。files に保存先の
 
 ### 相手を選ぶ
 
-| id | 実体 | 鍵 | 置き場 |
+| id | 実体 | 鍵 | 課金 |
 |---|---|---|---|
-| `comfyui` | 自前の GPU の ComfyUI | 不要 | 同じホストなら compose、別マシンなら `CHIEZO_IMAGE_URL` |
-| `gemini` | Gemini の画像生成(`gemini-3.1-flash-image` ほか) | **「話す相手」に登録済みの鍵を流用** | 外部 |
-| `openai` | gpt-image(`gpt-image-2`) | 同上(OpenAI の鍵) | 外部 |
+| `comfyui` | 自前の GPU の ComfyUI | 不要 | 電気代だけ |
+| `codex` | **Codex CLI の内蔵ツール**(gpt-image-2) | 「話す相手」の Codex(ChatGPT のログイン) | **ChatGPT のサブスク枠** |
+| `gemini` | Gemini の画像生成(`gemini-3.1-flash-image` ほか) | 「話す相手」の Gemini | 無料枠 |
+| `openai` | gpt-image(`gpt-image-2`) | 「話す相手」の OpenAI | 従量課金 |
+
+**`codex` と `openai` は同じ gpt-image-2 ですが、課金の出どころが違います。**
+`codex` は chatgpt.com 側(サブスクリプション)で追加の API キーが要らず、`openai` は
+platform.openai.com 側(従量課金)でクレジットが要ります —— 残高は行き来しません。
+ただし**画像のターンは文字だけのターンより 3〜5 倍の速さでサブスクの枠を食う**ので、
+枚数を出すなら自前の GPU が向いています。
 
 **外部の鍵と on/off は「話す相手」の画面と共通です**(鍵を 2 か所に持たないため)。
 つまり**「話せるようにする」を押していない相手には絵も描かせません** —— 鍵を持っている相手を
@@ -162,6 +169,11 @@ image_status(job_id)                    … 仕上がり。files に保存先の
 
 「接続を試す」は**繋がるかどうかに加えて、チェックポイントが置いてあるかまで見ます**
 —— ComfyUI は立っていてもモデルが無ければ 1 枚も描けません。
+
+`codex` を使うには、`chiezo-bridge-codex` を立てて「話す相手」で Codex を有効にしてください
+(画像はブリッジの `/v1/images/generations` を通り、中で `codex exec` が内蔵ツールを回します。
+**会話の口と違い、この 1 回のための作業ディレクトリにだけ書き込みを許します** ——
+画像はファイルとして書き出されるためです)。
 
 gpt-image が **403** を返したら、OpenAI の開発者コンソールで**組織の本人確認**を求められて
 いることがあります —— API の話なので、ChatGPT や Codex のサブスクで使えているかは関係しません。

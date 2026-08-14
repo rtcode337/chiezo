@@ -235,6 +235,13 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     - `content_of()` が**思考タグの残骸を落とす**。thinking 系モデルは推論サーバの設定次第で
       `<think>…</think>` や閉じタグだけが `content` に残る(実測: Qwen3 + 思考オフで先頭に
       `</think>`)。相手の設定は Chiezo が握っていないので受け側で落とす
+- **画像は Codex の内蔵ツールでも作れる**(`/v1/images/generations`。**ブリッジにあるのは
+  Codex のときだけ**で、claude / antigravity は持たない)。**課金は ChatGPT の
+  サブスク枠**で、API キーの `openai` とは別勘定(同じ gpt-image-2 でも出どころが違う)。
+  会話の口は `-s read-only` だが、**画像はファイルに書き出されるので
+  `-s workspace-write` にして、この 1 回のための作業ディレクトリにだけ許す**。
+  拾うのは**その実行で増えた画像だけ**(保存先は使い回されるので、前回のぶんを混ぜない)。
+  相手はエージェントなので、**保存先と枚数を言い切る**(曖昧だと説明だけ返してファイルを書かない)
 - **`bridge/` — CLI ブリッジ(別イメージ `ghcr.io/<owner>/chiezo-bridge`)。**
   Claude Code / Codex CLI / Antigravity CLI を OpenAI 互換の口に見せる。**イメージは 1 つで、
   `CHIEZO_BRIDGE_CLI` で役割を決める** —— イメージは 1 回 pull すればディスクは 1 つぶんで、
@@ -432,7 +439,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     / `/media/{path}`(GET) — **絵を描く口**(MCP の `image_*` と同じ実体)。
     知識を引くのとは別の仕事だが、**MCP の登録先を増やさない**ために同じサーバーに載せている。
     実体は `app/media.py`(ジョブと置き場)/ `app/media_backends.py`(相手ごとの描き方)
-    / `app/media_providers.py`(相手の定義。ComfyUI / Gemini / OpenAI)。要点:
+    / `app/media_providers.py`(相手の定義。ComfyUI / Codex / Gemini / OpenAI)。要点:
     **待たない**(job を返し `image_status` で引く。生成は数秒〜数分で、待つと呼び出し側が
     先に切れる)。**画像そのものは返さない**(1 枚 1〜2MB あり、道具の結果はまるごと
     コンテキストに載る。返すのはパスと URL)。**ジョブは SQLite に持つ** ——

@@ -67,6 +67,24 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         order=0,
     ),
     MediaProvider(
+        id="codex",
+        label="Codex CLI(ChatGPT のサブスク枠)",
+        # CLI ブリッジ(chiezo-bridge-codex)。**API ではなく ChatGPT のログインで動く**
+        url="http://chiezo-bridge-codex:7013/v1",
+        # 認証情報はブリッジが持つ(「話す相手」で登録した auth.json をそのまま使う)
+        credential=CRED_REQUIRED,
+        billing="ChatGPT のサブスクリプション(**画像は文字の 3〜5 倍の速さで枠を食う**)",
+        setup="docker-compose.yml の chiezo-bridge-codex のコメントを外して起動し、"
+        "管理画面(/admin の「話す相手」)で Codex を有効にしてください。"
+        "画像も同じログイン(ChatGPT のサブスク)で動くので、API キーは要りません。",
+        # モデルは Codex の内蔵ツールが決める(いまは gpt-image-2)。指定は受け付けない
+        models=(),
+        # 画素の指定は「言葉で頼む」形なので、こちらの語彙をそのまま渡す
+        sizes=("1024x1024", "1536x1024", "1024x1536"),
+        credential_from="codex",
+        order=15,
+    ),
+    MediaProvider(
         id="openai",
         label="OpenAI(gpt-image)",
         url="https://api.openai.com/v1",

@@ -350,6 +350,58 @@ class TestPerRequestLimits:
         assert got.value.status_code == 400
 
 
+class TestImageGeneration:
+    """画像は **Codex の内蔵ツール**だけが作れる(ChatGPT のサブスク枠で動く)。"""
+
+    def test_only_codex_offers_it(self, bridge):
+        from fastapi.testclient import TestClient
+
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        res = TestClient(server.app).post("/v1/images/generations", json={"prompt": "剣"})
+
+        assert res.status_code == 404
+        # ブリッジは FastAPI の既定のまま返す(detail で包まれる)
+        assert "画像生成を持っていません" in res.json()["detail"]["error"]
+
+    def test_the_prompt_says_where_to_save_and_how_many(self, bridge):
+        """相手はエージェントなので、**曖昧だと説明だけ返してファイルを書かない**。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        text = server._image_prompt(
+            server.ImageRequest(prompt="剣のアイコン", size="1024x1536", n=2), "/tmp/work"
+        )
+
+        assert "2 image(s)" in text
+        assert "1024x1536" in text
+        assert "/tmp/work/" in text
+        assert "do not explain" in text.lower()
+
+    def test_it_picks_up_only_what_this_run_wrote(self, bridge, tmp_path):
+        """前回の生成物を混ぜない(保存先は使い回される)。"""
+        import time as _t
+
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        old = tmp_path / "old.png"
+        old.write_bytes(b"old")
+        # 「この実行より前」に置かれたものとして扱わせる
+        import os as _os
+        _os.utime(old, (0, 0))
+        started = _t.time()
+        new = tmp_path / "new.png"
+        new.write_bytes(b"new")
+
+        got = server._collect_images(str(tmp_path), started)
+
+        assert got == [b"new"]
+
+    def test_text_files_are_not_mistaken_for_images(self, bridge, tmp_path):
+        import time as _t
+
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        (tmp_path / "notes.txt").write_text("メモ", encoding="utf-8")
+
+        assert server._collect_images(str(tmp_path), _t.time()) == []
+
+
 class TestCredentialFromAnotherApp:
     """**認証情報の置き場を共有すれば、Chiezo 以外のアプリからも使える。**
 
