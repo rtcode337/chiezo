@@ -24,6 +24,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -516,6 +517,10 @@ def _upstream_reason(body: str) -> str:
         doc = json.loads(body)
     except ValueError:
         return ""
+    # **Gemini はエラーを配列で返す**(`[{"error": {...}}]`)。dict しか見ていなかった
+    # ときは理由が落ちて、画面には「llm error 503」しか出なかった(実測)。
+    if isinstance(doc, list):
+        doc = doc[0] if doc and isinstance(doc[0], dict) else {}
     if not isinstance(doc, dict):
         return ""
     # FastAPI は detail に包む(CLI ブリッジがこれ)。OpenAI 互換は素で error を持つ。
@@ -561,6 +566,26 @@ def _llm_error(status: int, body: str, model: str = "") -> dict:
     return detail
 
 
+# **混んでいるだけの失敗は引き直す。** Gemini は「いま混んでいる」を 503 で返し
+# (`The model is overloaded`)、数秒後には通ることが多い。agent モードでは道具を
+# 何度も引いた後に落ちるので、1 回の 503 でその手間ごと捨てるのは惜しい。
+# **待ち時間は短く、回数も少なく** —— 相手が本当に落ちているときに粘っても、
+# 画面の前の人を待たせるだけ。
+RETRY_STATUSES = (429, 503)
+RETRY_WAITS = (1.0, 3.0)
+
+
+async def _post_with_retry(client: httpx.AsyncClient, cfg: Settings, payload: dict):
+    """混雑(429/503)だけ引き直す。他の失敗はそのまま返す(呼び出し側が翻訳する)。"""
+    for wait in (*RETRY_WAITS, None):
+        res = await client.post(cfg.endpoint, json=payload)
+        if res.status_code not in RETRY_STATUSES or wait is None:
+            return res
+        log.info("llm %s; retrying in %.0fs", res.status_code, wait)
+        await asyncio.sleep(wait)
+    return res  # 到達しない(ループの最後で必ず返す)
+
+
 async def complete_message(cfg: Settings, messages: list[dict], **extra) -> dict:
     """1 回の応答を**メッセージまるごと**取る。
 
@@ -569,8 +594,8 @@ async def complete_message(cfg: Settings, messages: list[dict], **extra) -> dict
     """
     try:
         async with _llm_client(cfg) as client:
-            res = await client.post(
-                cfg.endpoint, json=_payload(cfg, messages, stream=False, **extra)
+            res = await _post_with_retry(
+                client, cfg, _payload(cfg, messages, stream=False, **extra)
             )
     except httpx.HTTPError as e:
         raise _upstream_error(e) from None
@@ -609,30 +634,41 @@ async def _complete(cfg: Settings, messages: list[dict], **extra) -> str:
 
 
 async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator[str]:
-    """OpenAI 互換の SSE を読んで、本文の差分だけを順に返す。"""
-    try:
-        async with _llm_client(cfg) as client, client.stream(
-            "POST", cfg.endpoint, json=_payload(cfg, messages, stream=True, **extra)
-        ) as res:
-            if res.status_code >= 400:
-                body = (await res.aread()).decode("utf-8", "replace")
-                log.warning("llm error %s: %s", res.status_code, body[:500])
-                raise HTTPException(502, _llm_error(res.status_code, body))
-            async for line in res.aiter_lines():
-                if not line.startswith("data:"):
+    """OpenAI 互換の SSE を読んで、本文の差分だけを順に返す。
+
+    **混雑(429/503)は流し始める前だけ引き直す。** 1 文字でも返した後に引き直すと、
+    画面に同じ答えが二重に出る。
+    """
+    for wait in (*RETRY_WAITS, None):
+        try:
+            async with _llm_client(cfg) as client, client.stream(
+                "POST", cfg.endpoint, json=_payload(cfg, messages, stream=True, **extra)
+            ) as res:
+                if res.status_code in RETRY_STATUSES and wait is not None:
+                    await res.aread()
+                    log.info("llm %s; retrying in %.0fs", res.status_code, wait)
+                    await asyncio.sleep(wait)
                     continue
-                data = line[len("data:"):].strip()
-                if not data or data == "[DONE]":
-                    continue
-                try:
-                    chunk = json.loads(data)
-                    delta = chunk["choices"][0]["delta"].get("content") or ""
-                except (json.JSONDecodeError, KeyError, IndexError, TypeError):
-                    continue  # 使い物にならないフレームは黙って捨てる
-                if delta:
-                    yield delta
-    except httpx.HTTPError as e:
-        raise _upstream_error(e) from None
+                if res.status_code >= 400:
+                    body = (await res.aread()).decode("utf-8", "replace")
+                    log.warning("llm error %s: %s", res.status_code, body[:500])
+                    raise HTTPException(502, _llm_error(res.status_code, body, cfg.model))
+                async for line in res.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[len("data:"):].strip()
+                    if not data or data == "[DONE]":
+                        continue
+                    try:
+                        chunk = json.loads(data)
+                        delta = chunk["choices"][0]["delta"].get("content") or ""
+                    except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+                        continue  # 使い物にならないフレームは黙って捨てる
+                    if delta:
+                        yield delta
+                return
+        except httpx.HTTPError as e:
+            raise _upstream_error(e) from None
 
 
 # ---- 段 1: クエリ生成 -------------------------------------------------------

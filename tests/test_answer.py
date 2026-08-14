@@ -648,6 +648,69 @@ class TestStaleModelName:
         assert "選び直す" in detail["hint"]
 
 
+class TestBusyUpstream:
+    """**混んでいるだけの失敗は引き直す。** Gemini は「いま混んでいる」を 503 で返し
+    (`The model is overloaded`)、数秒後には通ることが多い。agent モードでは道具を
+    何度も引いた後に落ちるので、1 回の 503 でその手間ごと捨てるのは惜しい。"""
+
+    @staticmethod
+    def _client(monkeypatch, statuses):
+        from app import answer
+
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            status = statuses[min(len(seen), len(statuses) - 1)]
+            seen.append(status)
+            if status == 200:
+                return httpx.Response(
+                    200, json={"choices": [{"message": {"role": "assistant", "content": "はい"}}]}
+                )
+            return httpx.Response(status, json=[{"error": {"message": "The model is overloaded."}}])
+
+        # 待ち時間は飛ばす(**元の sleep を捕まえてから**差し替える。差し替え後の
+        # asyncio.sleep を呼ぶと自分を呼び続ける)
+        real_sleep = asyncio.sleep
+        monkeypatch.setattr(answer.asyncio, "sleep", lambda _s: real_sleep(0))
+        monkeypatch.setattr(
+            answer, "_llm_client",
+            lambda cfg: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        return answer, seen
+
+    def test_a_busy_answer_is_retried(self, monkeypatch_env, tmp_path):
+        monkeypatch_env.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        answer, seen = self._client(monkeypatch_env, [503, 200])
+        from app import settings_store
+
+        settings_store.set_credential("gemini", "k")
+        settings_store.set_enabled("gemini", True)
+        cfg = answer.require_settings("gemini")
+
+        got = asyncio.run(answer.complete_message(cfg, [{"role": "user", "content": "やあ"}]))
+
+        assert answer.content_of(got) == "はい"
+        assert seen == [503, 200]   # 1 回目で諦めていない
+
+    def test_it_gives_up_and_says_why(self, monkeypatch_env, tmp_path):
+        """粘り続けない(相手が本当に落ちているとき、待たされるだけになる)。"""
+        monkeypatch_env.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        answer, seen = self._client(monkeypatch_env, [503])
+        from app import settings_store
+
+        settings_store.set_credential("gemini", "k")
+        settings_store.set_enabled("gemini", True)
+        cfg = answer.require_settings("gemini")
+
+        with pytest.raises(Exception) as e:
+            asyncio.run(answer.complete_message(cfg, [{"role": "user", "content": "やあ"}]))
+
+        assert len(seen) == 3   # 初回 + 2 回の引き直し
+        # **理由を出す。** Gemini はエラーを配列で返すので、dict しか見ていないと
+        # 画面に「llm error 503」しか出ない
+        assert "overloaded" in e.value.detail["reason"]
+
+
 class TestModeForBackendsWithoutTools:
     """**道具を引けない相手では agent を選ばせない。** Codex は codex exec で MCP の
     呼び出しが必ずキャンセルされる(上流の不具合)ので、agent だと道具の無いまま
