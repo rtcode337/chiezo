@@ -287,6 +287,9 @@ def _register_image_tools(mcp: MCPServer) -> None:
         "画像を生成する(ゲーム素材・図版など)。**すぐには返らない** —— job_id を返すので "
         "image_status で仕上がりを確認する。返るのは保存先のパスと URL で、画像そのものは返さない。"
         "backend は image_backends で選べる相手を確認できる(既定は自前の GPU)。"
+        "**size は image_backends が返す一覧から選ぶ** —— 自前の GPU は一覧以外を受け付けない"
+        "(モデルの学習解像度を外れると絵が崩れるため)。アイコンのような小さい素材が要るときも、"
+        "一覧のサイズで描いてから手元で縮小する。"
         "**seed を指定すると同じ絵を作り直せる**(ComfyUI のみ。指定しなければ毎回振り直す)。"
     ))
     async def image_generate(

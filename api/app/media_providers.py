@@ -36,6 +36,11 @@ class MediaProvider:
     # 頼めるサイズ。**相手ごとに書き方が違う**(ComfyUI は画素、Gemini は比率と段階)ので、
     # ここには「こちらの語彙」で並べ、変換は各バックエンドが受け持つ。
     sizes: tuple[str, ...] = ("1024x1024", "1024x1536", "1536x1024")
+    # **頼まれた画素をそのまま使う相手か。** ComfyUI はその画素で潜在空間を作るので、
+    # モデルの学習解像度(SDXL なら 1024)を外れると絵が崩壊する —— それでも生成は
+    # 成功として返り、気づけるのは出てきた絵を見たときだけ。そういう相手には
+    # sizes 以外を渡さない。外部サービスは自分の語彙へ丸めてくれるので狭めなくてよい。
+    exact_sizes: bool = False
     # 鍵を借りる相手(`app/providers.py` の ID)。空なら自前の鍵。
     credential_from: str = ""
     # **自分の on/off を持つか。** 「話す相手」に対応がある相手(外部サービス)は
@@ -62,6 +67,7 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         "そちらで ComfyUI を動かして URL を CHIEZO_IMAGE_URL に設定します。",
         # チェックポイントは置いたものによるので、相手(`/object_info`)に聞く。
         models=(),
+        exact_sizes=True,
         url_env="CHIEZO_IMAGE_URL",
         owns_toggle=True,
         order=0,

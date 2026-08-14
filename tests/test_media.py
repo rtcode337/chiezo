@@ -230,9 +230,9 @@ class TestJobs:
     def test_saves_the_image_and_returns_a_path_and_url(self, state):
         """**画像そのものは返さない**(1 枚 1〜2MB でコンテキストが飛ぶ)。"""
         use(state, fake_comfy())
-        job = media.create_job("猫", backend="comfyui", size="512x512")
+        job = media.create_job("猫", backend="comfyui", size="1024x1024")
         asyncio.run(media._run(
-            job["id"], "comfyui", media_backends.ImageRequest(prompt="猫", size="512x512"), 1))
+            job["id"], "comfyui", media_backends.ImageRequest(prompt="猫", size="1024x1024"), 1))
 
         done = media.get_job(job["id"])
         assert done["state"] == "done"
@@ -272,6 +272,23 @@ class TestJobs:
             media.create_job("猫", size="おおきめ")
 
         assert e.value.status_code == 400
+
+    def test_size_the_model_cannot_draw_is_rejected(self, state):
+        """**崩れた絵は「成功」として返ってくる。** ComfyUI は頼まれた画素で潜在空間を
+        作るので、SDXL に 512 を頼むと意味を成さない絵が done で返る —— 見るまで
+        気づけないぶん、書き方の間違いより性質が悪い。"""
+        with pytest.raises(HTTPException) as e:
+            media.create_job("猫", backend="comfyui", size="512x512")
+
+        assert e.value.status_code == 400
+        assert "1024x1024" in e.value.detail["sizes"]
+
+    def test_other_backends_still_take_any_size(self, state):
+        """外部サービスは自分の語彙へ丸めてくれる(openai は近いものを選ぶ)ので、
+        こちら側で狭めない。"""
+        job = media.create_job("猫", backend="openai", size="1280x720")
+
+        assert job["size"] == "1280x720"
 
 
 class TestSwitchedOff:

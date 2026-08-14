@@ -260,7 +260,8 @@ def create_job(
         raise HTTPException(400, {"error": f"count は 1〜{MAX_COUNT} にしてください"})
 
     chosen = (backend or media_providers.default_backend()).strip().lower()
-    if media_providers.get(chosen) is None:
+    spec = media_providers.get(chosen)
+    if spec is None:
         raise HTTPException(
             404,
             {
@@ -268,8 +269,20 @@ def create_job(
                 "backends": [p.id for p in media_providers.all_providers()],
             },
         )
-    # サイズの書き方はここで弾く(走らせてから落ちると待たされ損になる)
-    media_backends.parse_size(size)
+    # サイズはここで弾く(走らせてから落ちると待たされ損になる)
+    width, height = media_backends.parse_size(size)
+    # **描けないサイズも同じ扱い。** 画素をそのまま使う相手は、学習解像度を外れると
+    # 崩れた絵を「成功」として返してくる。受け取る側は見るまで気づけないので、
+    # GPU を回す前に断る。
+    if spec.exact_sizes and f"{width}x{height}" not in spec.sizes:
+        raise HTTPException(
+            400,
+            {
+                "error": f"{spec.label} に {size} は頼めません(モデルの学習解像度から外れ、絵が崩れます)",
+                "sizes": list(spec.sizes),
+                "hint": "小さい素材が要るときは、一覧のサイズで描いてから縮小してください",
+            },
+        )
 
     job = {
         "id": uuid.uuid4().hex,
