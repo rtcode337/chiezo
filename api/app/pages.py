@@ -206,6 +206,45 @@ CHAT_STYLE = """
                     padding: 0.6rem 0.9rem; max-width: 85%; }
   .turn.bot .text { line-height: 1.75; }
   .turn .text { white-space: pre-wrap; word-break: break-word; }
+  /* Markdown を組んだ返事。**pre-wrap を戻す** —— ブロック要素で行が分かれるので、
+     改行も残すと段落のあいだが二重に空く */
+  .turn .text.md { white-space: normal; }
+  .turn .text.md > :first-child { margin-top: 0; }
+  .turn .text.md > :last-child { margin-bottom: 0; }
+  .turn .text.md p { margin: 0.6rem 0; }
+  .turn .text.md h2, .turn .text.md h3, .turn .text.md h4,
+  .turn .text.md h5, .turn .text.md h6 {
+    margin: 1.1rem 0 0.4rem; line-height: 1.5;
+  }
+  .turn .text.md h2 { font-size: 1.05rem; }
+  .turn .text.md h3 { font-size: 0.98rem; }
+  .turn .text.md h4, .turn .text.md h5, .turn .text.md h6 { font-size: 0.92rem; }
+  .turn .text.md ul, .turn .text.md ol { margin: 0.6rem 0; padding-left: 1.4rem; }
+  .turn .text.md li { margin: 0.2rem 0; }
+  .turn .text.md blockquote {
+    margin: 0.6rem 0; padding: 0.1rem 0.9rem; border-left: 3px solid #e3e0da; color: #6b665e;
+  }
+  .turn .text.md code {
+    background: #f1efea; border-radius: 4px; padding: 0.1rem 0.3rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88em;
+  }
+  /* コードブロックは**横に流す**(折り返すとインデントが崩れて読めない) */
+  .turn .text.md pre {
+    margin: 0.7rem 0; padding: 0.7rem 0.9rem; background: #f1efea; border-radius: 8px;
+    overflow-x: auto;
+  }
+  .turn .text.md pre code { background: none; padding: 0; font-size: 0.85em; line-height: 1.6; }
+  .turn .text.md a { color: #5560E0; }
+  .turn .text.md hr { margin: 1rem 0; border: 0; border-top: 1px solid #e3e0da; }
+  /* 表は画面幅を超えることがあるので、はみ出すぶんは横スクロールにする */
+  .turn .text.md table {
+    display: block; overflow-x: auto; border-collapse: collapse; margin: 0.7rem 0;
+    font-size: 0.9rem;
+  }
+  .turn .text.md th, .turn .text.md td {
+    border: 1px solid #e3e0da; padding: 0.35rem 0.6rem; text-align: left;
+  }
+  .turn .text.md th { background: #f6f4f1; }
   .turn .text.pending { color: #8a857c; }
   .turn .steps { margin: 0.4rem 0 0; font-size: 0.8rem; color: #6b665e; }
   .turn .steps summary { font-weight: normal; color: #6b665e; }

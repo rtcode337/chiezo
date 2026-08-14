@@ -5,6 +5,10 @@
 #                  -f docker-compose.cuda.yml -f docker-compose.lan.yml \
 #                  --profile answer up -d chiezo-llm searxng
 #
+# **SearXNG だけを別ホストへ出すなら answer / cuda は要らない**(本体にあるため):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.lan.yml up -d searxng
+#
 # 相手側の chiezo-api には .env でこう渡す(このホストの IP に読み替える):
 #
 #   CHIEZO_LLM_URL=http://<このホストのIP>:7011/v1

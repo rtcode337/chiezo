@@ -24,6 +24,172 @@ router = APIRouter()
 # 回答まで数十秒かかるので逐次表示しないと無反応に見えること、会話の履歴を持つ主体が
 # クライアント側だからこと。EventSource ではなく fetch を使うのは、履歴を送るのに
 # POST が要るため(EventSource は GET しか張れない)。
+# AI の返事に混ざる Markdown を、その場で HTML に直すための小さな描画器。
+#
+# **外部のライブラリを読み込まない。** Chiezo は LAN 内・オフラインで動く前提で、
+# 他の画面も JS も CSS も外に出ずに済ませてある —— ここだけ CDN に頼ると、
+# 外に出られない環境で装飾だけが消える(しかも原因が分かりにくい)。
+#
+# **エスケープしてから組み立てる。** 相手はモデルの出力(信用できない文字列)なので、
+# 先に & < > " ' を実体参照へ直し、そのうえで Markdown の印を HTML に置き換える ——
+# 順番を逆にすると、生成物にタグを書かれた時点で入り込む。
+# リンクも **http/https だけ**通す(javascript: を踏ませない)。
+#
+# 対応するのは LLM が実際に使う範囲: 見出し・箇条書き・番号付き・引用・区切り線・
+# コード(インライン/ブロック)・表・強調・打ち消し・リンク・裸の URL。
+# **入れ子の箇条書きには対応しない**(1 段だけ)—— 会話の答えで 2 段以上は稀で、
+# 対応させるぶんだけ壊れやすくなる。
+MARKDOWN_JS = r"""
+(function (global) {
+  var MARK = '\u0000';   // インラインコードを一時的に隠す目印(本文には出てこない文字)
+
+  function esc(s) {
+    return s.replace(/[&<>"']/g, function (c) {
+      return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
+    });
+  }
+
+  // 行の中の装飾。**コードを先に抜き取る** —— ** を含むコードを強調にしないため。
+  function inline(s) {
+    var code = [];
+    s = s.replace(/`([^`]+)`/g, function (_, c) {
+      code.push(c);
+      return MARK + (code.length - 1) + MARK;
+    });
+    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    // 裸の URL(モデルは出典をこの形で書くことが多い)
+    s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g,
+      '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>');
+    s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+    return s.replace(new RegExp(MARK + '(\\d+)' + MARK, 'g'), function (_, i) {
+      return '<code>' + code[i] + '</code>';
+    });
+  }
+
+  function cells(line) {
+    return line.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(function (c) {
+      return c.trim();
+    });
+  }
+
+  function isDivider(line) {
+    return /^\s*\|?[\s:|-]+$/.test(line) && line.indexOf('-') >= 0;
+  }
+
+  function render(text) {
+    var lines = esc(text || '').split(/\r?\n/);
+    var out = [], para = [], list = null, quote = [], i = 0;
+
+    function flushPara() {
+      if (para.length) { out.push('<p>' + inline(para.join('<br>')) + '</p>'); para = []; }
+    }
+    function flushList() {
+      if (list) {
+        out.push('<' + list.tag + '>' + list.items.join('') + '</' + list.tag + '>');
+        list = null;
+      }
+    }
+    function flushQuote() {
+      if (quote.length) {
+        out.push('<blockquote>' + inline(quote.join('<br>')) + '</blockquote>');
+        quote = [];
+      }
+    }
+    function flushAll() { flushPara(); flushList(); flushQuote(); }
+
+    while (i < lines.length) {
+      var line = lines[i];
+
+      // コードブロック。**閉じていなくても出す** ——
+      // 流している途中の応答では必ず開きっぱなしになる
+      if (/^\s*```+\s*[\w+-]*\s*$/.test(line)) {
+        flushAll();
+        var body = [];
+        i++;
+        while (i < lines.length && !/^\s*```+\s*$/.test(lines[i])) { body.push(lines[i]); i++; }
+        i++;
+        out.push('<pre><code>' + body.join('\n') + '</code></pre>');
+        continue;
+      }
+
+      // 表(| で区切られ、次の行が区切り線)
+      if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && isDivider(lines[i + 1])) {
+        flushAll();
+        var head = cells(line).map(function (c) { return '<th>' + inline(c) + '</th>'; }).join('');
+        var rows = [];
+        i += 2;
+        while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+          rows.push('<tr>' + cells(lines[i]).map(function (c) {
+            return '<td>' + inline(c) + '</td>';
+          }).join('') + '</tr>');
+          i++;
+        }
+        out.push('<table><thead><tr>' + head + '</tr></thead><tbody>'
+          + rows.join('') + '</tbody></table>');
+        continue;
+      }
+
+      var heading = /^\s*(#{1,6})\s+(.*)$/.exec(line);
+      if (heading) {
+        flushAll();
+        // h1 は画面の見出しに使っているので、本文は h2 から始める(段の差は保つ)
+        var level = Math.min(heading[1].length + 1, 6);
+        out.push('<h' + level + '>' + inline(heading[2]) + '</h' + level + '>');
+        i++;
+        continue;
+      }
+
+      if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+        flushAll();
+        out.push('<hr>');
+        i++;
+        continue;
+      }
+
+      var quoted = /^\s*&gt;\s?(.*)$/.exec(line);   // エスケープ済みなので > は &gt;
+      if (quoted) {
+        flushPara();
+        flushList();
+        quote.push(quoted[1]);
+        i++;
+        continue;
+      }
+
+      var bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
+      var numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+      if (bullet || numbered) {
+        flushPara();
+        flushQuote();
+        var tag = bullet ? 'ul' : 'ol';
+        if (!list || list.tag !== tag) { flushList(); list = {tag: tag, items: []}; }
+        list.items.push('<li>' + inline((bullet || numbered)[1]) + '</li>');
+        i++;
+        continue;
+      }
+
+      if (!line.trim()) {
+        flushAll();
+        i++;
+        continue;
+      }
+
+      flushList();
+      flushQuote();
+      para.push(line.trim());
+      i++;
+    }
+
+    flushAll();
+    return out.join('');
+  }
+
+  global.chiezoMarkdown = render;
+})(window);
+"""
+
 CHAT_JS = """
 (function () {
   var log = document.getElementById('log');
@@ -40,6 +206,17 @@ CHAT_JS = """
     if (text !== undefined) n.textContent = text;
     return n;
   }
+  // 返事は Markdown で来る。描画器があれば装飾つきで、無ければ素のまま出す
+  // (描画器を読めなかったときに本文まで消えないようにする)
+  function show(node, text) {
+    if (window.chiezoMarkdown) {
+      node.classList.add('md');
+      node.innerHTML = window.chiezoMarkdown(text);
+    } else {
+      node.textContent = text;
+    }
+  }
+
   function atBottom() {
     return log.scrollHeight - log.scrollTop - log.clientHeight < 80;
   }
@@ -155,11 +332,14 @@ CHAT_JS = """
             else if (ev[1] === 'delta') {
               if (first) { t.text.textContent = ''; t.text.classList.remove('pending'); first = false; }
               answer += data.text;
-              t.text.textContent = answer;
+              // **毎回まるごと描き直す。** Markdown は行のまとまりで意味が決まるので、
+              // 届いた差分だけを足すと表や箇条書きが途中で切れた形のまま残る
+              show(t.text, answer);
             } else if (ev[1] === 'error') {
               t.text.classList.remove('pending');
-              t.text.textContent += '\\n[エラー] ' + (data.error || '')
-                + (data.reason ? ' — ' + data.reason : '');
+              // 本文とは別の要素に出す(本文は描き直されるので、混ぜると消える)
+              t.node.appendChild(el('p', 'stale', '[エラー] ' + (data.error || '')
+                + (data.reason ? ' — ' + data.reason : '')));
             }
           });
           if (stick) toBottom();
@@ -169,7 +349,7 @@ CHAT_JS = """
       return pump();
     }).catch(function (e) {
       t.text.classList.remove('pending');
-      t.text.textContent += '\\n[通信に失敗しました: ' + e.message + ']';
+      t.node.appendChild(el('p', 'stale', '[通信に失敗しました: ' + e.message + ']'));
     }).then(function () {
       // 失敗しても履歴には残す(次の発言で文脈が飛ぶのを避ける)
       history.push({role: 'assistant', content: answer || '(応答なし)'});
@@ -423,6 +603,7 @@ async def chat_page(
 </form>
 <noscript><p class="stale">JavaScript が無効です。
 <a href="{esc(nojs_url)}">1 問 1 答の画面</a>を使ってください(会話の継続はできません)。</p></noscript>
+<script>{MARKDOWN_JS}</script>
 <script>{CHAT_JS}</script>
 <script>
   // モードや相手を変えたら、効かなくなるトグルを隠す(押せるのに何も起きない状態を作らない)。

@@ -444,7 +444,17 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     **`AI(<モデル名>)と話す`**(`answer.model_label()`。`CHIEZO_LLM_MODEL` が無ければ
     推論サーバの `/models` に聞き、5 分覚える。取れなければ「AI と話す」)。
     **Chiezo は AI が引く知識であって AI 自身ではない**という関係を画面にもプロンプトにも
-    出すため。既定はサーバ側で推論を回さず、inline JS(`CHAT_JS`)が `/v1/chat?stream=1`
+    出すため。**返事の Markdown は画面で組み立てる**(`MARKDOWN_JS` の
+    `window.chiezoMarkdown`)—— モデルは見出し・箇条書き・表・コードで返してくるのに、
+    素のテキストで出していたので `**` や `|` がそのまま並んでいた。
+    **外部のライブラリは読まない**(LAN 内・オフラインで動く前提。CDN に頼ると
+    外に出られない環境で装飾だけが消える)。**先にエスケープしてから印を置き換える**
+    ——順番を逆にすると、生成物にタグを書かれた時点で入り込む。リンクは http/https だけ通す。
+    **差分ごとに全文を描き直す**(Markdown は行のまとまりで意味が決まるので、
+    届いた差分だけを足すと表や箇条書きが途中で切れた形のまま残る)。
+    エラーは本文とは別の要素に足す(本文は描き直されるので混ぜると消える)。
+    **JS なしの 1 問 1 答は素のテキストのまま**(あちらは会話も続かない代替経路)。
+    既定はサーバ側で推論を回さず、inline JS(`CHAT_JS`)が `/v1/chat?stream=1`
     を叩いて埋める — ここでサーバ側でも回答を作ると推論が二重に走る(数十秒 × 2)。
     **`EventSource` ではなく `fetch` で SSE を読む**のは、履歴を送るのに POST が要るため
     (EventSource は GET しか張れない)。会話の履歴を持つのもこの JS。JS が無い環境向けに
@@ -763,7 +773,8 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   ルートの `requirements-dev.in` は api + ingest + pytest + ruff をまとめたもので、
   CI と `run_tests.sh` の Docker 経路が使う
 - `.github/workflows/ci.yml` — push / PR で `ruff check` と pytest を実行し、main への
-  push で `chiezo-api` / `chiezo-ingest` の 2 イメージをマルチアーキ(amd64 / arm64)で
+  push で `chiezo-api` / `chiezo-ingest` / `chiezo-bridge` / `chiezo-searxng` の 4 イメージを
+  マルチアーキ(amd64 / arm64。bridge だけ amd64)で
   GHCR へ公開(cc-tasks / travel-log の docker-publish と同じダイジェストマージ方式。
   arm64 の無料ランナーが public 限定のため、リポジトリが private の間は公開ジョブをスキップ)。
   ジョブは 4 つ:
@@ -938,12 +949,19 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
   が行数で見張っている。
 - **「答える」層は、コンテナだけを `docker-compose.answer.yml` に置く**。chiezo-api に渡す
   設定(`CHIEZO_LLM_URL` 以下)は本体側に残す —— 推論を LAN の別マシンに任せる使い方では、
-  コンテナは要らず設定だけが要るため。`searxng`(web 検索の道具が引く検索エンジン)も
-  同じ profile で立てる。**web 検索を使うかどうかで起動を分けない**(道具を足すたびに
-  起動コマンドが増えるほうが混乱する)。使うかは `CHIEZO_WEB_SEARCH_URL` が決める。
-  設定は `searxng/settings.yml`(リポジトリに同梱)。**SearXNG の既定は HTML しか返さない**
-  ので `search.formats` に `json` を足してある。マウントは**読み取り専用**にすること ——
-  書き込み可にするとイメージがディレクトリごと uid 977 に chown し、ホスト側から編集できなくなる。
+  コンテナは要らず設定だけが要るため。
+- **`searxng`(web 検索の道具が引く検索エンジン)は本体の compose に置く。** 推論とは
+  独立しているため —— 話す相手が Gemini や Claude Code でも web 検索は要るのに、
+  「答える」層の上書きに置いていた頃は、検索を使いたいだけで数 GB の推論サーバまで
+  立ち上がっていた。**profile は付けない**(本体を上げれば立つ)。使うかは
+  `CHIEZO_WEB_SEARCH_URL`(既定は空)が決めるので、立っているだけでは外へ検索を投げない。
+  **設定はマウントせずイメージに焼き込む**(`searxng/Dockerfile` → `chiezo-searxng`)——
+  マウントだと、リポジトリを置けない環境(単体定義)では立てられなかった。
+  手元で設定をいじるときだけ、compose でマウントを重ねればよい。
+  設定は `searxng/settings.yml`(既定値 + Chiezo から API として引くための 3 点)。
+  **SearXNG の既定は HTML しか返さない**ので `search.formats` に `json` を足してある。
+  手元でマウントして試すときは**読み取り専用**にすること —— 書き込み可にするとイメージが
+  ディレクトリごと uid 977 に chown し、ホスト側から編集できなくなる。
 - **GPU の設定は `docker-compose.cuda.yml`(上書きファイル)に閉じる**。`gpus: all` は
   GPU の無い環境では起動そのものが失敗するので、本体の compose には書かない。
   **この上書きは NVIDIA 専用**(イメージが CUDA ビルドで、`gpus: all` も NVIDIA

@@ -98,7 +98,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [api, ingest, bridge]
+        image: [api, ingest, bridge, searxng]
         arch:
           - platform: linux/amd64
             runner: ubuntu-latest
@@ -163,7 +163,7 @@ jobs:
       packages: write
     strategy:
       matrix:
-        image: [api, ingest, bridge]
+        image: [api, ingest, bridge, searxng]
     runs-on: ubuntu-latest
     steps:
       - name: Download digests

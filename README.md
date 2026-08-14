@@ -161,8 +161,11 @@ cp .env.example .env
 docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile answer up -d
 ```
 
-推論サーバと検索エンジンのコンテナは `docker-compose.answer.yml` に分けてある
-(LAN の別マシンの LLM を指すだけなら重ねなくてよい)。
+推論サーバのコンテナは `docker-compose.answer.yml` に分けてある
+(LAN の別マシンの LLM を指すだけなら重ねなくてよい)。**検索エンジン(SearXNG)は本体側**で、
+`docker compose up -d` で一緒に立つ(設定を焼き込んだ `chiezo-searxng` を使うので、
+リポジトリを置けない環境でも立てられる) —— 話す相手が Gemini や Claude Code でも web 検索は
+使えるようにするため。使うかどうかは `CHIEZO_WEB_SEARCH_URL` を書くかで決まる。
 
 `mode=agent` を付けると、`search` / `doc` / `filter` / `tags` / `links` をモデル自身に
 引かせる(MCP と同じ道具立て)。「カテゴリ○○の記事は何件?」のように 1 回の検索では

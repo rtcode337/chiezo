@@ -98,11 +98,10 @@ services:
       # ---- web 検索(agent モードの道具に加える。既定では無効)----
       # **この 1 行が機能フラグを兼ねる**。取り込んだダンプより新しい出来事や、いま現在の
       # 状態を聞かれたときだけモデルが使う(本文は取りに行かず、タイトル・要約・URL だけ)。
-      # 検索エンジンもこの定義には含めないので、**別に立てたものを指す**(SearXNG なら
-      # settings.yml の search.formats に json を足しておくこと)。
-      # 別ホストで Chiezo の docker-compose.answer.yml + lan.yml を動かしているなら 7012
-      # (7010 = API・7011 = 推論の隣。素の SearXNG を立てたなら既定の 8080)。
-      #CHIEZO_WEB_SEARCH_URL: http://192.0.2.20:7012/search   # ← 立てた SearXNG
+      # **検索エンジン(SearXNG)はこの定義にも入っている**(下の searxng)ので、
+      # 同居のものを指すならサービス名でよい。別ホストのものを指すならその URL を書く。
+      CHIEZO_WEB_SEARCH_URL: http://searxng:7012/search   # 同居のもの(使わないなら空に)
+      #CHIEZO_WEB_SEARCH_URL: http://192.0.2.20:7012/search   # ← 別に立てた SearXNG
       #CHIEZO_WEB_SEARCH_PROVIDER: searxng   # searxng(既定)/ brave
       #CHIEZO_WEB_SEARCH_API_KEY: ""         # brave のときだけ
       #CHIEZO_WEB_SEARCH_RESULTS: "5"        # 1 回に見る件数
@@ -121,6 +120,25 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:7010/healthz"]
+      interval: 60s
+
+  # agent モードの道具 `web_search` が引く検索エンジン。**設定を焼き込んだイメージ**なので、
+  # リポジトリが無くてもこれだけで立つ(素の searxng/searxng は settings.yml を要求する)。
+  # ホストへは公開しない —— 使うのは chiezo-api だけで、外向きの検索の中継になるため。
+  # 使わないなら、このブロックごと消して上の CHIEZO_WEB_SEARCH_URL も空にする。
+  searxng:
+    image: ghcr.io/rtcode337/chiezo-searxng:latest
+    container_name: chiezo-searxng
+    environment:
+      # プリファレンスの Cookie と画像プロキシの署名に使う値(LAN 内前提の既定のまま)
+      SEARXNG_SECRET: "chiezo-lan"
+      # 待ち受けを 7012 にする(既定は 8080)。**この image は granian で動く**ので
+      # 効くのは GRANIAN_PORT(SEARXNG_PORT は設定ファイル側の値)
+      GRANIAN_PORT: "7012"
+    restart: unless-stopped
+    cpu_shares: 512
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7012/healthz"]
       interval: 60s
 
   # 管理画面からの「未初期化データの初期化」を受けて ingest を実行する内部専用トリガー。

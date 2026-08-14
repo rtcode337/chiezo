@@ -190,3 +190,34 @@ services:
   #  healthcheck:
   #    test: ["CMD", "curl", "-fs", "http://localhost:7013/health"]
   #    interval: 60s
+
+  # agent モードの道具 `web_search` が引く検索エンジン。**推論サーバとは独立して立てる** ——
+  # 話す相手が Gemini や Claude Code でも web 検索は要るのに、以前は
+  # docker-compose.answer.yml にあったせいで「検索を使いたいだけ」で数 GB の推論サーバまで
+  # 立ち上げることになっていた。**使うかどうかは chiezo-api 側の CHIEZO_WEB_SEARCH_URL**
+  # (既定は空 = 使わない)で決まるので、立っているだけでは外へ検索を投げない。
+  # 要らない環境では `docker compose up -d chiezo-api chiezo-trigger` のように選んで起動する。
+  #
+  # **設定を焼き込んだ自前のイメージ**を使う(`searxng/Dockerfile`。素の SearXNG に
+  # settings.yml を足しただけ)。マウントで渡していた頃は、**リポジトリを置けない環境
+  # (単体定義)では立てられなかった**。手元で設定をいじるときだけ、この上に
+  # `./searxng/settings.yml:/etc/searxng/settings.yml:ro` を重ねればよい。
+  # 設定の中身は「既定値 + Chiezo から API として引くための 3 点」——
+  # **SearXNG の既定は html だけを返す**ので search.formats に json を足してある。
+  searxng:
+    image: ${CHIEZO_SEARXNG_IMAGE:-ghcr.io/rtcode337/chiezo-searxng:latest}
+    environment:
+      # プリファレンスの Cookie と画像プロキシの署名に使う値。Chiezo は JSON の検索しか
+      # 叩かないので既定のままでよい(気にするなら .env で置き換える)。
+      - SEARXNG_SECRET=${CHIEZO_WEB_SEARCH_SECRET:-chiezo-lan}
+      # 待ち受けを 7012 にする(既定は 8080)。chiezo-api の 7010・推論の 7011 と
+      # 揃えて、コンテナの内と外で番号が食い違わないようにするため。
+      # **この image は uvicorn ではなく granian で動く**ので、効くのは GRANIAN_PORT
+      # (SearXNG 側の SEARXNG_PORT は設定ファイルの値で、待ち受けには使われない)。
+      - GRANIAN_PORT=7012
+    restart: unless-stopped
+    # 検索の中継なので軽いが、CPU が競合したときは取り込みや推論へ譲る
+    cpu_shares: 512
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7012/healthz"]
+      interval: 60s

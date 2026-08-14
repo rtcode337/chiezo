@@ -164,7 +164,7 @@ agent モードに `web_search` の道具を足せます。**Chiezo に無いこ
 
 ```bash
 # .env
-CHIEZO_WEB_SEARCH_URL=http://searxng:7012/search   # 同居(--profile answer で立つ)
+CHIEZO_WEB_SEARCH_URL=http://searxng:7012/search   # 同居(本体の compose で立つ)
 #CHIEZO_WEB_SEARCH_URL=http://<立てたホストのIP>:7012/search  # LAN の別ホストのもの
 #CHIEZO_WEB_SEARCH_PROVIDER=searxng                # searxng(既定)/ brave
 #CHIEZO_WEB_SEARCH_API_KEY=                        # brave のときだけ
@@ -184,14 +184,23 @@ CHIEZO_WEB_SEARCH_URL=http://searxng:7012/search   # 同居(--profile answer で
 
 ### 検索エンジン(SearXNG)
 
-**立てる手順はありません。`--profile answer` を付けた時点で推論サーバと一緒に立ちます**
-(`docker-compose.answer.yml`)。web 検索を使うかどうかは、上の `CHIEZO_WEB_SEARCH_URL` を
-書くかどうかだけで決まります —— 道具を足すたびに起動コマンドが増えるほうが混乱するため、
-起動は一本にして、使うかは設定で切り分けています。
+**立てる手順はありません。本体(`docker-compose.yml`)を上げれば一緒に立ちます。**
+web 検索を使うかどうかは、上の `CHIEZO_WEB_SEARCH_URL` を書くかどうかだけで決まります ——
+立っているだけでは外へ検索を投げません。
 
-設定は `searxng/settings.yml` に入っています(リポジトリに同梱)。**SearXNG の既定は
-HTML しか返さない**ので、そこで `search.formats` に `json` を足してあります。無いと
-Chiezo 側は「JSON ではない」というエラーとして扱います。
+**推論サーバとは独立しています。** 話す相手が Gemini や Claude Code でも web 検索は要るのに、
+以前は `--profile answer` に入れていたせいで、検索を使いたいだけで数 GB の推論サーバまで
+立ち上げることになっていました。要らない環境では
+`docker compose up -d chiezo-api chiezo-trigger` のようにサービスを選んで起動します。
+
+設定は `searxng/settings.yml` に入っていて、**イメージに焼き込んで配っています**
+(`ghcr.io/rtcode337/chiezo-searxng`。素の SearXNG に設定を 1 つ足しただけ)。
+マウントで渡していた頃は、**リポジトリを置けない環境(単体定義)では立てられません**でした。
+手元で設定をいじるときは、compose で
+`./searxng/settings.yml:/etc/searxng/settings.yml:ro` を重ねてください。
+
+**SearXNG の既定は HTML しか返さない**ので、設定で `search.formats` に `json` を
+足してあります。無いと Chiezo 側は「JSON ではない」というエラーとして扱います。
 
 ```bash
 # 動いているか確かめる(コンテナの外から見るなら docker-compose.lan.yml を重ねて 7012)

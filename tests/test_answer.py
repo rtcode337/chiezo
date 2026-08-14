@@ -364,6 +364,14 @@ class TestAskPage:
         assert "/search/jawiki/doc/" in res.text
         assert fake.calls == 2
 
+    def test_markdown_renderer_is_served_with_the_page(self, monkeypatch_env):
+        """返事の Markdown は画面で組む。**外部のライブラリは読まない**(LAN 内・オフライン前提)。"""
+        with make_client(monkeypatch_env, FakeLLM()) as client:
+            res = client.get(CHAT_PATH)
+        assert "window.chiezoMarkdown" in res.text   # 描画器そのもの
+        assert "show(t.text, answer)" in res.text    # 本文をそれで描いている
+        assert "cdn." not in res.text                # 外から読み込まない
+
     def test_admin_links_to_the_chat_page_when_enabled(self, monkeypatch_env):
         with make_client(monkeypatch_env, FakeLLM()) as client:
             res = client.get("/admin")

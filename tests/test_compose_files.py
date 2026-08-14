@@ -30,9 +30,15 @@ STANDALONE_EXEMPT = {
     "CHIEZO_INGEST_IMAGE",
 }
 
-# 「答える」層のコンテナ。**単体定義には載せない**(設定は載せる)—— 推論サーバと
-# 検索エンジンは別サーバーのものを指せば済み、この環境で同居させる前提が無いため。
-ANSWER_CONTAINERS = {"chiezo-llm", "searxng"}
+# 「答える」層の上書き(docker-compose.answer.yml)が持つコンテナ。**推論サーバだけ** ——
+# 検索エンジン(SearXNG)は本体側にある(web 検索と推論は独立していて、相手が Gemini や
+# Claude Code でも検索は要るのに、以前は検索のために推論サーバまで立ち上がっていた)。
+ANSWER_CONTAINERS = {"chiezo-llm"}
+
+# **単体定義には載せないコンテナ。** 推論サーバはモデルの置き場(数 GB)と GPU の設定が
+# 環境ごとに違い、別サーバーのものを指せば済むため。
+# (SearXNG は設定を焼き込んだイメージにしたので、単体定義にも載せてある)
+STANDALONE_EXCLUDED_CONTAINERS = {"chiezo-llm"}
 
 # **リポジトリが持たない compose は見ない。** 単体定義に実値を書いた
 # docker-compose.standalone.yml は .gitignore 済みで、置くかどうかも中身も
@@ -68,12 +74,36 @@ def test_standalone_covers_base_env():
 
 
 def test_standalone_has_no_answer_containers():
-    """単体定義は「答える」層のコンテナを持たないこと(設定だけを載せる)。"""
+    """単体定義は推論サーバ・検索エンジンを持たないこと(設定だけを載せる)。"""
     doc = yaml.safe_load(STANDALONE.read_text(encoding="utf-8"))
-    assert not (set(doc["services"]) & ANSWER_CONTAINERS), (
-        "「答える」層のコンテナが単体定義に入っている。"
-        "推論サーバ・検索エンジンは別サーバーのものを指すか、docker-compose.answer.yml を使うこと"
+    assert not (set(doc["services"]) & STANDALONE_EXCLUDED_CONTAINERS), (
+        "推論サーバ・検索エンジンのコンテナが単体定義に入っている。"
+        "別サーバーのものを指すか、リポジトリを置ける環境で docker-compose.yml を使うこと"
     )
+
+
+def test_websearch_container_is_in_the_base():
+    """SearXNG は本体側にあること(推論サーバと同居させない)。
+
+    web 検索と推論は独立している —— 話す相手が Gemini や Claude Code でも検索は要るのに、
+    「答える」層の上書きに置いていた頃は、検索を使いたいだけで数 GB の推論サーバまで
+    立ち上げることになっていた。
+    """
+    base = yaml.safe_load(BASE.read_text(encoding="utf-8"))
+    assert "searxng" in base["services"]
+    # profile を付けない(本体を上げれば一緒に立つ)
+    assert not base["services"]["searxng"].get("profiles")
+    # **設定はマウントではなくイメージに焼き込む** —— マウントだと、リポジトリを置けない
+    # 環境(単体定義)では立てられない
+    assert not base["services"]["searxng"].get("volumes")
+    assert "chiezo-searxng" in base["services"]["searxng"]["image"]
+
+
+def test_standalone_has_the_websearch_container():
+    """単体定義でも SearXNG が立つこと(設定を焼き込んだイメージなので置ける)。"""
+    doc = yaml.safe_load(STANDALONE.read_text(encoding="utf-8"))
+    assert "searxng" in doc["services"]
+    assert not doc["services"]["searxng"].get("volumes")
 
 
 def test_answer_overlay_defines_only_containers():

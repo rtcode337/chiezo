@@ -1,5 +1,5 @@
-# 「答える」層(/v1/ask・/v1/chat・/ai/chat)を**自分で立てる**ための上書き。
-# 推論サーバと検索エンジンの 2 つを持つ。本体(docker-compose.yml)と重ねて使う:
+# 「答える」層(/v1/ask・/v1/chat・/ai/chat)の**推論サーバを自分で立てる**ための上書き。
+# 本体(docker-compose.yml)と重ねて使う:
 #
 #   docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile answer up -d
 #
@@ -8,6 +8,10 @@
 # **このファイルにあるのはコンテナだけ**で、chiezo-api に渡す設定
 # (CHIEZO_LLM_URL 以下)は本体側にある —— 推論を LAN の別マシン(Ollama 等)に
 # 任せる使い方では、コンテナは要らず設定だけが要るため。
+#
+# **検索エンジン(SearXNG)はここには無い。** 本体の docker-compose.yml にある ——
+# web 検索と推論は独立していて(相手が Gemini や Claude Code でも web 検索は要る)、
+# 検索を使いたいだけで数 GB の推論サーバまで立ち上げることになっていた。
 services:
   # 推論サーバ(OpenAI 互換)。配信側 chiezo-api が数百 MB で動く前提を壊さないため、
   # 推論は必ず別プロセスに置く。モデルは起動時に Hugging Face から取ってきて ./models に
@@ -46,33 +50,3 @@ services:
       test: ["CMD", "curl", "-fs", "http://localhost:7011/health"]
       interval: 60s
       start_period: 600s
-
-  # agent モードの道具 `web_search` が引く検索エンジン。**web 検索を使うかどうかに
-  # かかわらず、推論と一緒に立てる**(使うかは chiezo-api 側の CHIEZO_WEB_SEARCH_URL で
-  # 決まる)—— 道具を足すたびに起動コマンドが増えるほうが混乱するため。
-  #
-  # 設定は ./searxng/settings.yml(リポジトリに入っている)。**SearXNG の既定は
-  # html だけを返す**ので、そこで search.formats に json を足してある。
-  # 設定ファイルは読み取り専用でマウントする —— 書き込み可にすると、イメージが
-  # ディレクトリごと searxng ユーザー(uid 977)に chown してホスト側から編集できなくなる。
-  searxng:
-    # 日付ベースのタグで固定する(:latest にしない)
-    image: searxng/searxng:2026.7.31-057a77168
-    profiles: ["answer"]
-    volumes:
-      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
-    environment:
-      # プリファレンスの Cookie と画像プロキシの署名に使う値。Chiezo は JSON の検索しか
-      # 叩かないので既定のままでよい(気にするなら .env で置き換える)。
-      - SEARXNG_SECRET=${CHIEZO_WEB_SEARCH_SECRET:-chiezo-lan}
-      # 待ち受けを 7012 にする(既定は 8080)。chiezo-api の 7010・推論の 7011 と
-      # 揃えて、コンテナの内と外で番号が食い違わないようにするため。
-      # **この image は uvicorn ではなく granian で動く**ので、効くのは GRANIAN_PORT
-      # (SearXNG 側の SEARXNG_PORT は設定ファイルの値で、待ち受けには使われない)。
-      - GRANIAN_PORT=7012
-    restart: unless-stopped
-    # 検索の中継なので軽いが、CPU が競合したときは取り込みや推論へ譲る
-    cpu_shares: 512
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:7012/healthz"]
-      interval: 60s
