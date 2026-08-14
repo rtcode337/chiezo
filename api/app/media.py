@@ -131,13 +131,36 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     return job
 
 
+# 走っているはずの job を「もう動いていない」と見なすまでの猶予。**1 枚ぶんの上限 + 余裕**
+# (更新は 1 枚描くごとに入るので、これを超えて無音なら誰も面倒を見ていない)。
+STALE_AFTER = media_backends.GENERATE_TIMEOUT + 60
+
+
+def _reap_stale() -> None:
+    """**誰も面倒を見ていない job を畳む。**
+
+    タスクが中断されたときは `_run` が書き残すが、**ワーカーごと落ちた場合は
+    そこも通らない**(`--workers 2` で動くので、片方が再起動すれば走っていた生成は消える)。
+    running のまま残ると image_status が永遠に running を返し、呼び出し側は待ち続ける。
+    """
+    limit = (datetime.now(UTC) - timedelta(seconds=STALE_AFTER)).isoformat()
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE jobs SET state = 'failed', error = ?, updated_at = ?"
+            " WHERE state IN ('queued', 'running') AND updated_at < ?",
+            ("生成が中断されました(応答が途絶えました)", _now(), limit),
+        )
+
+
 def get_job(job_id: str) -> dict | None:
+    _reap_stale()
     with _connect() as conn:
         row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
     return _row_to_dict(row) if row else None
 
 
 def recent_jobs(limit: int = 20) -> list[dict]:
+    _reap_stale()
     with _connect() as conn:
         rows = conn.execute(
             "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
@@ -198,7 +221,9 @@ def _save(job_id: str, index: int, image: media_backends.GeneratedImage) -> JobF
     day = datetime.now(UTC).strftime("%Y%m%d")
     directory = require_dir() / day
     directory.mkdir(parents=True, exist_ok=True)
-    name = f"{job_id}-{index}.png"
+    # **拡張子は中身に合わせる。** 相手によって形式が違う(Gemini は JPEG しか返さない)ので、
+    # png 決め打ちで書くと、名前と中身の食い違ったファイルを配ることになる。
+    name = f"{job_id}-{index}.{'jpg' if image.mime == 'image/jpeg' else 'png'}"
     (directory / name).write_bytes(image.data)
 
     return JobFile(
@@ -230,6 +255,15 @@ async def _run(job_id: str, backend: str, req: media_backends.ImageRequest, coun
             files.append(asdict(_save(job_id, index, image)))
             _update(job_id, files=files, model=image.model, seed=files[0]["seed"])
         _update(job_id, state="done", files=files)
+    except asyncio.CancelledError:
+        # **中断は Exception ではない**(BaseException)ので、下の except では拾えない。
+        # ここで書き残さないと job は running のまま永久に残る —— 実際に MCP の接続が
+        # 切れた拍子にこのタスクごと畳まれ、ComfyUI 側は描き上がっているのに
+        # image_status が running を返し続けたことがある。
+        log.warning("image job %s cancelled", job_id)
+        _update(job_id, state="failed" if not files else "partial",
+                error="生成が中断されました", files=files)
+        raise
     except Exception as e:
         # **どんな失敗でも記録して返す。** ここで投げても受け取る相手がいない
         # (走っているのは背後のタスク)ので、理由は job に書いて image_status で見せる

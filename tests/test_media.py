@@ -8,6 +8,8 @@
 import asyncio
 import base64
 import json
+from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -239,6 +241,58 @@ class TestJobs:
         file = done["files"][0]
         assert file["url"].startswith("/media/")
         assert media.resolve(file["url"].removeprefix("/media/")).read_bytes() == PNG
+
+    def test_jpeg_is_saved_as_jpg(self, state):
+        """**Gemini は JPEG しか返さない。** png 決め打ちで書くと、名前と中身が食い違う。"""
+        async def one(*a, **k):
+            return media_backends.GeneratedImage(PNG, "image/jpeg", 1, "m")
+
+        with patch.object(media_backends, "generate", one):
+            job = media.create_job("猫", backend="gemini")
+            asyncio.run(media._run(
+                job["id"], "gemini", media_backends.ImageRequest(prompt="猫"), 1))
+
+        assert media.get_job(job["id"])["files"][0]["url"].endswith(".jpg")
+
+    def test_cancelled_job_does_not_stay_running(self, state):
+        """**中断は Exception ではない。** ここを書き残さないと、絵は描き上がっているのに
+        image_status が running を返し続ける(実際に MCP の接続が切れて起きた)。"""
+        async def scenario():
+            async def forever(*a, **k):
+                await asyncio.sleep(3600)
+
+            with patch.object(media_backends, "generate", forever):
+                job = media.create_job("猫", backend="comfyui")
+                task = asyncio.create_task(
+                    media._run(job["id"], "comfyui", media_backends.ImageRequest(prompt="猫"), 1))
+                await asyncio.sleep(0)          # running まで進める
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                return job["id"]
+
+        job_id = asyncio.run(scenario())
+        done = media.get_job(job_id)
+        assert done["state"] == "failed"
+        assert "中断" in done["error"]
+
+    def test_stale_running_job_is_reaped(self, state):
+        """ワーカーごと落ちると `_run` の後始末すら通らない。
+        **running のまま残った job は、読み出すときに畳む。**"""
+        job = media.create_job("猫", backend="comfyui")
+        media._update(job["id"], state="running")
+        old = (datetime.now(UTC) - timedelta(seconds=media.STALE_AFTER + 10)).isoformat()
+        with media._connect() as conn:
+            conn.execute("UPDATE jobs SET updated_at = ? WHERE id = ?", (old, job["id"]))
+
+        assert media.get_job(job["id"])["state"] == "failed"
+
+    def test_running_job_is_left_alone_until_it_goes_quiet(self, state):
+        """**動いている job を畳まない。** 生成は数分かかることがある。"""
+        job = media.create_job("猫", backend="comfyui")
+        media._update(job["id"], state="running")
+
+        assert media.get_job(job["id"])["state"] == "running"
 
     def test_keeps_what_was_drawn_when_one_fails(self, state):
         """3 枚頼んで 2 枚描けたなら、その 2 枚は使える(GPU の時間を捨てない)。"""

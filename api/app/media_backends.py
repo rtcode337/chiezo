@@ -251,9 +251,12 @@ async def _gemini_generate(
     body = {
         "model": model,
         "input": [{"type": "text", "text": req.prompt}],
+        # **JPEG しか受け付けない。** png を頼むと 400 が返る
+        # (`'image/png' is not supported for 'response_format.mime_type'`)。
+        # 透過の要る素材は自前の GPU 側で作る。
         "response_format": {
             "type": "image",
-            "mime_type": "image/png",
+            "mime_type": "image/jpeg",
             "aspect_ratio": _aspect_of(req.size),
         },
     }
@@ -284,7 +287,7 @@ async def _gemini_generate(
 
     # **seed は返らない。** 相手が受け付けないので、こちらで振った値を記録だけしておく
     # (同じ seed で頼み直しても同じ絵にはならない —— 再現できるのは ComfyUI 側だけ)
-    return GeneratedImage(base64.b64decode(data), "image/png", seed, model)
+    return GeneratedImage(base64.b64decode(data), "image/jpeg", seed, model)
 
 
 # ---- OpenAI(gpt-image)------------------------------------------------------
