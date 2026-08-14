@@ -415,14 +415,32 @@ class TestSwitchedOff:
 
 
 class TestServing:
-    def test_paths_outside_the_media_dir_are_not_served(self, state):
-        """`../` を踏ませない。"""
+    @pytest.mark.parametrize("path", [
+        "../state/settings.db",          # 上へ抜ける
+        "20260814/../../state/x.db",     # 途中で抜ける
+        "/etc/passwd",                   # 絶対パス(連結すると置き場を無視する)
+        "20260814/.hidden.png",          # 隠しファイル
+        "20260814",                      # 日付だけ(ディレクトリ)
+        "20260814/a/b.png",              # 深すぎる
+        "2026081/a.png",                 # 日付の桁が足りない
+    ])
+    def test_paths_outside_the_media_dir_are_not_served(self, state, path):
+        """**形で弾く。** 置き場は `<日付 8 桁>/<ファイル名>` の 2 段しかないので、
+        そこから外れたものはパスを組み立てる前に断る。"""
         media.require_dir()
 
         with pytest.raises(HTTPException) as e:
-            media.resolve("../state/settings.db")
+            media.resolve(path)
 
         assert e.value.status_code == 404
+
+    def test_a_normal_file_is_still_served(self, state):
+        """弾きすぎない(実際に `_save` が書く形は通る)。"""
+        day = media.require_dir() / "20260814"
+        day.mkdir(parents=True)
+        (day / "abc123-0.png").write_bytes(PNG)
+
+        assert media.resolve("20260814/abc123-0.png").read_bytes() == PNG
 
     def test_old_days_are_cleaned_up(self, state):
         """1 枚 1〜2MB あり、放っておくと際限なく溜まる。"""

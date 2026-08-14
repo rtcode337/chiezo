@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sqlite3
 import uuid
 from dataclasses import asdict, dataclass
@@ -422,10 +423,29 @@ async def backends() -> list[dict]:
     return out
 
 
+# 配信できるファイル名の形。**先頭は英数字**(`..` と隠しファイルを弾くため)。
+_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
 def resolve(relative: str) -> Path:
-    """配信のためにパスを解く。**置き場の外は返さない**(`../` を踏ませない)。"""
+    """配信のためにパスを解く。**組み立てる前に形を確かめる**。
+
+    置き場は `<日付 8 桁>/<ファイル名>` の 2 段しかない(`_save` がそう書く)。
+    「連結してから外に出ていないか確かめる」書き方でも守れるが、**受け取った文字列が
+    パスの組み立てに入ってしまう**ので、読む側にも検査器にも安全だと分からない
+    (CodeQL の path injection として上がった)。**先に形で弾いて、通ったものだけ繋ぐ。**
+    """
+    parts = relative.strip("/").split("/")
+    if len(parts) != 2 or not all(_SEGMENT.fullmatch(part) for part in parts):
+        raise HTTPException(404, {"error": "not found"})
+    day, name = parts
+    if len(day) != 8 or not day.isdigit():
+        raise HTTPException(404, {"error": "not found"})
+
+    # 形を通ったうえで、**実体が置き場の中にあることも確かめる** —— 中に外を指す
+    # シンボリックリンクが混ざっても外へ出さない(書くのは chiezo だけなので念のため)。
     root = require_dir().resolve()
-    path = (root / relative).resolve()
-    if not path.is_relative_to(root) or not path.is_file():
+    path = root / day / name
+    if not path.is_file() or not path.resolve().is_relative_to(root):
         raise HTTPException(404, {"error": "not found"})
     return path
