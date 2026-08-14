@@ -393,6 +393,44 @@ class TestImageGeneration:
 
         assert got == [b"new"]
 
+    def test_the_shared_store_does_not_leak_another_runs_image(self, bridge, tmp_path,
+                                                               monkeypatch):
+        """**共有の保存先は使い回される。** 走らせる前にあったものを除かないと、
+        同時に走った別の実行の絵を返す(4 件同時に頼んで 4 件とも同じ絵が返った)。"""
+        import time as _t
+
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        store = tmp_path / "generated_images"
+        store.mkdir()
+        other = store / "someone-elses.png"
+        other.write_bytes("別の実行の絵".encode())
+        seen = server._existing(str(store))
+        started = _t.time()
+        mine = store / "mine.png"
+        mine.write_bytes("この実行の絵".encode())
+
+        empty = tmp_path / "work"
+        empty.mkdir()
+
+        assert server._collect_images(str(empty), started, seen) == ["この実行の絵".encode()]
+
+    def test_the_working_directory_wins_over_the_shared_store(self, bridge, tmp_path,
+                                                              monkeypatch):
+        """作業ディレクトリは 1 回ごとに作り直すので、そこに在ればそれが正。"""
+        import time as _t
+
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        store = tmp_path / "generated_images"
+        store.mkdir()
+        (store / "stray.png").write_bytes("共有の絵".encode())
+        work = tmp_path / "work"
+        work.mkdir()
+        (work / "out-1.png").write_bytes("作業ディレクトリの絵".encode())
+
+        assert server._collect_images(str(work), _t.time() - 5) == ["作業ディレクトリの絵".encode()]
+
     def test_text_files_are_not_mistaken_for_images(self, bridge, tmp_path):
         import time as _t
 

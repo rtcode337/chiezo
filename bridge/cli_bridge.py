@@ -616,21 +616,44 @@ def _image_prompt(body: ImageRequest, out_dir: str) -> str:
     )
 
 
-def _collect_images(out_dir: str, since: float) -> list[bytes]:
-    """作業ディレクトリと Codex の保存先から、この実行で増えた画像を拾う。
+# **画像は 1 回ずつ走らせる。** 内蔵ツールは共有の保存先
+# ($CODEX_HOME/generated_images)へ置くことがあり、同時に走らせると
+# 「どれがこの実行のものか」が mtime では決まらない —— 実際に 4 件を同時に頼んで、
+# 4 件とも同じ絵が返った。1 枚 1 分以上かかる相手なので、直列でも困らない。
+_IMAGE_LOCK = asyncio.Lock()
 
-    **2 か所見るのは、保存先が版によって変わるから** —— 指示どおり作業ディレクトリへ
-    書くこともあれば、内蔵ツールの既定($CODEX_HOME/generated_images)に置くこともある。
+
+def _shared_root() -> str:
+    """内蔵ツールの既定の保存先。**使い回されるので中身は前回のものが残る。**"""
+    return os.path.join(os.environ.get("CODEX_HOME", "/srv/bridge/.codex"), "generated_images")
+
+
+def _existing(root: str) -> frozenset[str]:
+    """走らせる前に共有の保存先にあったもの。あとで除くために覚えておく。"""
+    return frozenset(
+        os.path.join(dirpath, name)
+        for dirpath, _dirs, files in os.walk(root)
+        for name in files
+    )
+
+
+def _collect_images(out_dir: str, since: float, seen: frozenset[str] = frozenset()) -> list[bytes]:
+    """この実行で増えた画像を拾う。
+
+    **作業ディレクトリを先に見る。** そこは 1 回ごとに作り直すので取り違えようがない。
+    内蔵ツールが既定の保存先へ置いた場合だけ、そちらを見る —— **あちらは使い回される**
+    ので、走らせる前にあったもの(`seen`)を除く。mtime だけで選ぶと、
+    同時に走った別の実行の絵まで拾ってしまう。
     """
-    roots = [out_dir, os.path.join(os.environ.get("CODEX_HOME", "/srv/bridge/.codex"),
-                                   "generated_images")]
-    found: list[tuple[float, str]] = []
-    for root in roots:
+    def scan(root: str, skip: frozenset[str]) -> list[tuple[float, str]]:
+        found: list[tuple[float, str]] = []
         for dirpath, _dirs, files in os.walk(root):
             for name in files:
                 if not name.lower().endswith(IMAGE_SUFFIXES):
                     continue
                 path = os.path.join(dirpath, name)
+                if path in skip:
+                    continue
                 try:
                     stat = os.stat(path)
                 except OSError:
@@ -638,6 +661,9 @@ def _collect_images(out_dir: str, since: float) -> list[bytes]:
                 # 「この実行で出来たもの」だけ。前回の生成物を混ぜない
                 if stat.st_mtime >= since - 1:
                     found.append((stat.st_mtime, path))
+        return found
+
+    found = scan(out_dir, frozenset()) or scan(_shared_root(), seen)
 
     out = []
     for _when, path in sorted(found):
@@ -665,7 +691,13 @@ async def images_generations(body: ImageRequest):
     if reason := apply_credential():
         raise HTTPException(401, {"error": reason})
 
+    async with _IMAGE_LOCK:
+        return await _generate_images(body)
+
+
+async def _generate_images(body: ImageRequest) -> dict:
     started = time.time()
+    seen = _existing(_shared_root())
     with tempfile.TemporaryDirectory(prefix="chiezo-image-") as out_dir:
         cmd = [
             "codex", "exec",
@@ -705,7 +737,7 @@ async def images_generations(body: ImageRequest):
             raise HTTPException(502, {"error": "codex failed", "exit_code": proc.returncode,
                                       "stderr": detail})
 
-        images = _collect_images(out_dir, started)
+        images = _collect_images(out_dir, started, seen)
 
     if not images:
         # **説明だけ返してファイルを書かない**ことがある(相手はエージェント)。
