@@ -89,7 +89,10 @@ PROVIDERS: tuple[Provider, ...] = (
         credential=CRED_REQUIRED,
         billing="無料枠（課金を有効にしなければ従量課金は発生しない）",
         setup="Google AI Studio で API キーを発行して貼り付けてください。",
-        models=("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"),
+        # **先頭が既定。** 実測(2026-08)で 2.5 系は chat/completions が 404 を返すように
+        # なっていた —— 相手の一覧には残っているので、一覧に出るかどうかでは判断できない。
+        # 動くことを確かめたものだけ並べる。
+        models=("gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite"),
         order=10,
     ),
     Provider(

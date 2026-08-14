@@ -121,6 +121,19 @@ def _env_num(name: str, default, cast):
         return default
 
 
+def normalize_model_id(raw: str) -> str:
+    """`models/gemini-3.7-flash` → `gemini-3.7-flash`。
+
+    **Gemini の `/models` だけが `models/` を付けて返す**が、同じ相手の
+    `chat/completions` はその形を受け付けず 404 になる(実測)。画面の選択肢は
+    一覧から作るので、剥がさないと**選んだ瞬間に必ず失敗する**。
+
+    剥がすのは**先頭の `models/` だけ**。OpenRouter の `qwen/qwen3-coder:free` の
+    ようなスラッシュを含む ID は触らない。
+    """
+    return (raw or "").strip().removeprefix("models/")
+
+
 def normalize_backend(name: str | None) -> str:
     """クエリ等で受け取った相手の名前を内部表記に寄せる。空なら「先頭の相手」。"""
     token = (name or "").strip().lower()
@@ -196,7 +209,7 @@ def load_settings(
     # 書き換えられた場合の保険でもある）。
     if spec.credential == providers.CRED_REQUIRED and not stored.has_credential:
         return None
-    chosen = (model or stored.model or "").strip()
+    chosen = normalize_model_id(model or stored.model or "")
     # **モデルを選ばなかったとき。** 指定が要る相手には控えの先頭を当てる（Gemini に
     # モデル無しで投げても通らない）が、自分で決められる相手（CLI ブリッジ・1 プロセス
     # 1 モデルの推論サーバ）には**何も渡さない** —— 画面の「既定」がそれを選べる。
@@ -354,7 +367,7 @@ async def available_models(backend: str) -> list[str]:
             async with _llm_client(cfg) as client:
                 res = await client.get(f"{cfg.url}/models", timeout=5.0)
             entries = res.json().get("data") or []
-            models = [str(e.get("id")) for e in entries if e.get("id")]
+            models = [normalize_model_id(str(e.get("id"))) for e in entries if e.get("id")]
         except (httpx.HTTPError, ValueError, TypeError, AttributeError, KeyError):
             models = []
 
@@ -421,8 +434,20 @@ async def ensure_model(cfg: Settings) -> Settings:
     if not cfg.model_is_fallback:
         return cfg
     models = await available_models(cfg.name)
-    if models:
-        cfg.model = models[0]
+    if not models or cfg.model in models:
+        return cfg
+
+    # **控えの中で、まだ相手にあるものを優先する。** 相手の一覧は「新しい順」でも
+    # 「会話用だけ」でもない(Gemini は引退したモデル・読み上げ・埋め込みまで並べ、
+    # 先頭は古い 2.5 系)。控えの並びはこちらが選んだ順なので、そこから生き残りを拾う
+    spec = providers.get(cfg.name)
+    for candidate in (spec.models if spec else ()):  # 控えの順
+        if candidate in models:
+            cfg.model = candidate
+            return cfg
+
+    # 控えが全部消えていたら、相手の先頭に賭ける(何も送らないよりは通る見込みがある)
+    cfg.model = models[0]
     return cfg
 
 

@@ -530,7 +530,11 @@ class TestBackends:
         settings_store.set_credential("gemini", "k")
         settings_store.set_verified("gemini", True)
         settings_store.set_enabled("gemini", True)
-        assert answer.load_settings("gemini").model == "gemini-2.5-flash"
+        # 控えの先頭(`app/providers.py`)。**名前を直書きしない** —— 相手のモデルは
+        # 入れ替わるので、控えを更新するたびにテストが落ちるのは見張りたいものと関係がない
+        from app import providers
+
+        assert answer.load_settings("gemini").model == providers.get("gemini").models[0]
 
     def test_works_without_a_state_dir(self, monkeypatch):
         """保存先が無い環境でも落ちない（どの相手も無効なだけ）。"""
@@ -605,6 +609,34 @@ class TestStaleModelName:
         assert cfg.model_is_fallback is False
 
         assert asyncio.run(answer.ensure_model(cfg)).model == "gemini-2.5-pro"
+
+    def test_the_models_prefix_is_stripped(self, monkeypatch_env, tmp_path):
+        """**Gemini の一覧だけ `models/` が付く**が、会話の口はその形を受け付けない
+        (実測で 404)。画面の選択肢は一覧から作るので、剥がさないと選んだ瞬間に失敗する。"""
+        monkeypatch_env.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        answer = self._offering(monkeypatch_env, "models/gemini-9.9-flash")
+
+        assert asyncio.run(answer.available_models("gemini")) == ["gemini-9.9-flash"]
+        # 保存済み・選択された値に付いていても剥がす(古い値のまま直らないのを避ける)
+        assert answer.require_settings("gemini", model="models/gemini-9.9-pro").model == (
+            "gemini-9.9-pro"
+        )
+
+    def test_a_fallback_that_is_gone_falls_to_the_next_candidate(
+        self, monkeypatch_env, tmp_path
+    ):
+        """相手の一覧は「新しい順」でも「会話用だけ」でもない(引退したモデルも並ぶ)。
+        控えの並びはこちらが選んだ順なので、そこから生き残りを拾う。"""
+        from app import providers
+
+        monkeypatch_env.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        spec = providers.get("gemini")
+        # 控えの 2 番目だけが残っている相手を演じる(先頭は消えた)
+        answer = self._offering(monkeypatch_env, "models/gemini-2.5-flash", spec.models[1])
+
+        cfg = asyncio.run(answer.ensure_model(answer.require_settings("gemini")))
+
+        assert cfg.model == spec.models[1]
 
     def test_404_says_the_model_may_be_gone(self, monkeypatch_env):
         """画面に「llm error 404」しか出ないと、何を直せばよいか分からない。"""
