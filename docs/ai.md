@@ -118,6 +118,60 @@ Chiezo を引き、雑談は雑談として返る)。
 答えの作り方は 2 段です。まず質問文から検索クエリを組み立て(質問文をそのまま全文検索に
 入れても当たらないため)、その結果の上位文書の本文を抜粋してから答えさせます。
 
+## 絵を描かせる(MCP の `image_*`)
+
+**知識を引くのとは別の仕事**ですが、口は Chiezo にまとめてあります —— MCP の登録先を
+増やさないためです。ゲーム素材や図版を、**自分の GPU(ComfyUI)か外部(Gemini)を
+選んで**作れます。
+
+```
+image_backends()                        … 頼める相手・モデル・サイズ(使えない相手は理由つき)
+image_generate(prompt, backend?, model?, size?, seed?, count?, negative?)
+                                        … job_id を返す(**待たない**)
+image_status(job_id)                    … 仕上がり。files に保存先のパスと URL
+```
+
+- **画像そのものは返しません。** 1 枚 1〜2MB あり、道具の結果はまるごと呼び出し側の
+  コンテキストに載ります。返すのは**パスと URL**(`GET /media/<日付>/<名前>`)で、
+  要るときだけ取りに来てもらいます
+- **待ちません。** 生成は数秒〜数分かかり、待たせると呼び出し側が先に切れます。
+  進み具合は `image_status` で引きます(state は queued / running / done /
+  **partial**(一部だけ描けた)/ failed)
+- **seed を指定すると同じ絵を作り直せます**(ComfyUI のみ)。ゲーム素材は「同じキャラの
+  別ポーズ」を作るので、再現性が要ります。指定しなければ毎回振り直します
+- 出来た画像は `CHIEZO_MEDIA_DIR`(既定は `CHIEZO_STATE_DIR/media`)に日付ごとに置かれ、
+  `CHIEZO_MEDIA_KEEP_DAYS`(既定 14)より古いものは自動で消えます
+
+### 相手を選ぶ
+
+| id | 実体 | 鍵 | 置き場 |
+|---|---|---|---|
+| `comfyui` | 自前の GPU の ComfyUI | 不要 | 同じホストなら compose、別マシンなら `CHIEZO_IMAGE_URL` |
+| `gemini` | Gemini の画像生成(`gemini-3.1-flash-image` ほか) | **「話す相手」に登録済みの鍵を流用** | 外部 |
+| `openai` | gpt-image(`gpt-image-2`) | 同上(OpenAI の鍵) | 外部 |
+
+**外部の鍵は「話す相手」の画面から入れます**(鍵を 2 か所に持たないため)。OpenAI は
+画像のためだけに使うこともできます —— 鍵だけ登録して、話す相手としては off のままで構いません
+(gpt-image が **403** を返したら、OpenAI の開発者コンソールで**組織の本人確認**を求められている
+ことがあります —— API の話なので、ChatGPT や Codex のサブスクで使えているかは関係しません)。
+
+サイズは相手ごとに受け取り方が違うので、こちらは常に `幅x高さ` で頼み、変換は中で行います
+—— Gemini は比率(`3:2` など)、OpenAI は決まった組み合わせ(`1536x1024` など)へ
+**近いものに寄せます**。画素どおりに出るのは ComfyUI だけです。
+
+自分の GPU で回すには、GPU のあるホストで:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.image.yml --profile image up -d
+```
+
+**モデル(チェックポイント)は自分で置いてください** —— 数 GB あり、ライセンスも
+配布条件もモデルごとに違うので、同梱も自動取得もしていません。
+`./models/comfyui/checkpoints/` に `.safetensors` を置くと `image_backends` に出ます。
+
+**GPU が別のマシンにあるなら、そちらで ComfyUI を動かして URL を渡すだけです**
+(`CHIEZO_IMAGE_URL=http://<GPUマシン>:8188`)。推論サーバと同じ逃げ道です。
+
 ## agent モード(モデルに道具を引かせる)
 
 既定の `rag` は **`search` を 1 回**引いて終わりなので、Chiezo の強い道具に手が届きません。

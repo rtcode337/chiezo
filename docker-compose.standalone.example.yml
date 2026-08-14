@@ -107,6 +107,15 @@ services:
       #CHIEZO_WEB_SEARCH_RESULTS: "5"        # 1 回に見る件数
       #CHIEZO_WEB_SEARCH_TIMEOUT: "10"       # 秒
       #
+      # ---- 画像生成(MCP の image_generate)----
+      # 置き場は既定で CHIEZO_STATE_DIR の下(上でマウント済み)。**GPU は別マシンに
+      # 置くのが普通**なので、そちらの ComfyUI を指す。指さなければ外部(Gemini)だけが使える
+      # (鍵は管理画面の「話す相手」に登録したものを流用する)。
+      #CHIEZO_IMAGE_URL: http://192.0.2.30:8188    # ← GPU マシンの ComfyUI
+      #CHIEZO_MEDIA_DIR: /state/media              # 置き場(既定は CHIEZO_STATE_DIR の下)
+      #CHIEZO_MEDIA_KEEP_DAYS: "14"                # 出来た画像を残す日数
+      #CHIEZO_IMAGE_TIMEOUT: "300"                 # 1 枚あたりの上限(秒)
+      #
       # ---- 回答・agent の調整(どれも既定があるので、変えたいときだけ)----
       # agent に要るコンテキスト長の目安 = MAX_STEPS × TOOL_CHARS(+ 質問と道具の定義で 2〜3k)。
       #CHIEZO_ANSWER_TIMEOUT: "120"     # 推論の待ち時間(秒)。CPU 推論は数十秒級になる

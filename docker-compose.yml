@@ -76,6 +76,13 @@ services:
       - CHIEZO_ASK_DEFAULT_MODE=${CHIEZO_ASK_DEFAULT_MODE-}
       - CHIEZO_ASK_DEFAULT_GROUNDED=${CHIEZO_ASK_DEFAULT_GROUNDED-}
       # web 検索(既定では無効。URL を設定したときだけ agent の道具に加わる)。
+      # 画像生成(MCP の image_generate)。**置き場が無ければ道具ごと出さない**。
+      # 既定は状態ディレクトリの下(compose が既にマウントしている)なので、
+      # 通常は何も書かなくてよい。GPU が別マシンなら CHIEZO_IMAGE_URL でその ComfyUI を指す
+      - CHIEZO_MEDIA_DIR=${CHIEZO_MEDIA_DIR-}
+      - CHIEZO_MEDIA_KEEP_DAYS=${CHIEZO_MEDIA_KEEP_DAYS-}
+      - CHIEZO_IMAGE_URL=${CHIEZO_IMAGE_URL-}
+      - CHIEZO_IMAGE_TIMEOUT=${CHIEZO_IMAGE_TIMEOUT-}
       - CHIEZO_WEB_SEARCH_URL=${CHIEZO_WEB_SEARCH_URL-}
       - CHIEZO_WEB_SEARCH_PROVIDER=${CHIEZO_WEB_SEARCH_PROVIDER-}
       - CHIEZO_WEB_SEARCH_API_KEY=${CHIEZO_WEB_SEARCH_API_KEY-}

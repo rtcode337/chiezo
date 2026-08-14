@@ -15,6 +15,7 @@ from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import (
+    FileResponse,
     JSONResponse,
     RedirectResponse,
     Response,
@@ -23,7 +24,7 @@ from fastapi.responses import (
 from pydantic import BaseModel
 from pydantic import Field as PydField
 
-from app import agent, answer, db, notes, providers
+from app import agent, answer, db, media, notes, providers
 from app.deps import (
     exact_title_first,
     get_source,
@@ -1244,6 +1245,66 @@ async def ai_complete(body: AiCompleteRequest) -> dict:
         "effort": cfg.effort,
         "content": content,
     }
+
+
+# ---- 画像の生成(ゲーム素材などを作る)---------------------------------------
+#
+# **知識を引くのとは別の仕事**だが、口は Chiezo にまとめてある —— クライアント(MCP)の
+# 登録先を増やしたくないため。重い処理は例によって別コンテナ(ComfyUI)で、
+# 外部サービス(Gemini)と選べる。実体は `app/media.py` / `app/media_backends.py`。
+
+
+class ImageRequest(BaseModel):
+    prompt: str
+    # 相手。空なら既定(自前の GPU)
+    backend: str | None = None
+    model: str | None = None
+    size: str = "1024x1024"
+    # 0 なら毎回振り直す。**同じ絵を作り直したいときに指定する**
+    seed: int = 0
+    count: int = 1
+    negative: str = ""
+    steps: int = 25
+
+
+@app.get("/v1/media/backends")
+async def media_backends_list() -> dict:
+    """絵を頼める相手と、その相手で選べるモデル・サイズ。"""
+    return {"backends": await media.backends(), "enabled": media.is_enabled()}
+
+
+@app.post("/v1/media/image")
+async def media_image(body: ImageRequest) -> dict:
+    """描き始めて job を返す(**待たない**)。進み具合は下の口で引く。"""
+    return media.start_image_job(
+        prompt=body.prompt,
+        backend=(body.backend or "").strip(),
+        model=(body.model or "").strip(),
+        size=body.size,
+        seed=body.seed,
+        count=body.count,
+        negative=body.negative,
+        steps=body.steps,
+    )
+
+
+@app.get("/v1/media/jobs/{job_id}")
+async def media_job(job_id: str) -> dict:
+    job = media.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, {"error": f"unknown job: {job_id}"})
+    return job
+
+
+@app.get("/v1/media/jobs")
+async def media_jobs(limit: int = Query(20, ge=1, le=100)) -> dict:
+    return {"jobs": media.recent_jobs(limit)}
+
+
+@app.get("/media/{path:path}", include_in_schema=False)
+async def media_file(path: str):
+    """出来た画像を配る。**置き場の外は返さない**(`../` を踏ませない)。"""
+    return FileResponse(media.resolve(path))
 
 
 # ---- 画面(人間向け HTML)-----------------------------------------------------

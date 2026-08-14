@@ -33,7 +33,7 @@ from pydantic import Field
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 
-from app import notes
+from app import media, notes
 
 # doc のレスポンスはそのままモデルのコンテキストに載るので、REST(既定 0 = 無制限)より
 # 短く切る。jawiki には 10 万字級の記事があり、既定で全文を返すと 1 回で窓を潰す。
@@ -267,7 +267,65 @@ def build_mcp(app: FastAPI) -> MCPServer:
     if notes.is_enabled():
         _register_memory_tools(mcp, app)
 
+    # 画像生成も同じ扱い —— 置き場が無ければ道具ごと出さない
+    if media.is_enabled():
+        _register_image_tools(mcp)
+
     return mcp
+
+
+def _register_image_tools(mcp: MCPServer) -> None:
+    """絵を描く道具。**知識を引く道具とは別の仕事**だが、MCP の登録先を増やさないために
+    同じサーバーに載せている。
+
+    **画像そのものは返さない**(1 枚 1〜2MB あり、道具の結果はまるごと呼び出し側の
+    コンテキストに載る)。返すのは保存先のパスと URL で、要るときだけ取りに来てもらう。
+    **描き終わるのを待たない** —— 生成は数秒〜数分かかり、待つと呼び出し側が先に切れる。
+    """
+
+    @mcp.tool(description=(
+        "画像を生成する(ゲーム素材・図版など)。**すぐには返らない** —— job_id を返すので "
+        "image_status で仕上がりを確認する。返るのは保存先のパスと URL で、画像そのものは返さない。"
+        "backend は image_backends で選べる相手を確認できる(既定は自前の GPU)。"
+        "**seed を指定すると同じ絵を作り直せる**(ComfyUI のみ。指定しなければ毎回振り直す)。"
+    ))
+    async def image_generate(
+        prompt: str,
+        backend: str = "",
+        model: str = "",
+        size: str = "1024x1024",
+        seed: int = 0,
+        count: int = 1,
+        negative: str = "",
+    ) -> dict:
+        return _call(
+            media.start_image_job,
+            prompt=prompt,
+            backend=backend,
+            model=model,
+            size=size,
+            seed=seed,
+            count=count,
+            negative=negative,
+        )
+
+    @mcp.tool(description=(
+        "image_generate の仕上がりを確認する。state は queued / running / done / "
+        "partial(一部だけ描けた)/ failed。done なら files に保存先のパスと URL、"
+        "使われた seed とモデルが入る。"
+    ))
+    async def image_status(job_id: str) -> dict:
+        job = media.get_job(job_id)
+        if job is None:
+            raise ValueError(f"unknown job: {job_id}")
+        return job
+
+    @mcp.tool(description=(
+        "絵を頼める相手(自前の GPU・外部サービス)と、その相手で選べるモデル・サイズを返す。"
+        "使えない相手も理由つきで出る。"
+    ))
+    async def image_backends() -> dict:
+        return {"backends": await media.backends()}
 
 
 def _register_memory_tools(mcp: MCPServer, app: FastAPI) -> None:

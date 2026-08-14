@@ -93,6 +93,19 @@ PROVIDERS: tuple[Provider, ...] = (
         order=10,
     ),
     Provider(
+        id="openai",
+        label="OpenAI",
+        url="https://api.openai.com/v1",
+        credential=CRED_REQUIRED,
+        billing="従量課金(無料枠は無い)",
+        setup="platform.openai.com で API キーを発行して貼り付けてください。"
+        "**画像生成(image_generate の openai)でも同じ鍵を使います** —— "
+        "画像だけに使うなら、話す相手としては off のままでよいです。",
+        # 提供モデルは入れ替わるので控えにとどめる(実際の一覧は /v1/models から取る)。
+        models=(),
+        order=15,
+    ),
+    Provider(
         id="openrouter",
         label="OpenRouter",
         url="https://openrouter.ai/api/v1",
