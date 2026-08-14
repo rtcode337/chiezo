@@ -29,6 +29,11 @@ from app import media_backends, media_providers, settings_store
 
 log = logging.getLogger("chiezo.media")
 
+# **走らせたタスクは掴んでおく。** `asyncio.create_task` の戻り値を捨てると、
+# イベントループは弱参照しか持たないため**実行中に回収されることがある**
+# (生成の途中で黙って止まる)。終わったら外す。
+_RUNNING: set[asyncio.Task] = set()
+
 # 置いたものを残す日数。**放っておくと際限なく溜まる**(1 枚 1〜2MB)。
 KEEP_DAYS = int(os.environ.get("CHIEZO_MEDIA_KEEP_DAYS", "14") or 14)
 
@@ -214,7 +219,9 @@ async def _run(job_id: str, backend: str, req: media_backends.ImageRequest, coun
             files.append(asdict(_save(job_id, index, image)))
             _update(job_id, files=files, model=image.model, seed=files[0]["seed"])
         _update(job_id, state="done", files=files)
-    except Exception as e:  # noqa: BLE001 - 理由は記録して呼び出し側に見せる
+    except Exception as e:
+        # **どんな失敗でも記録して返す。** ここで投げても受け取る相手がいない
+        # (走っているのは背後のタスク)ので、理由は job に書いて image_status で見せる
         detail = getattr(e, "detail", None)
         message = json.dumps(detail, ensure_ascii=False) if detail else str(e)
         log.warning("image job %s failed: %s", job_id, message[:300])
@@ -293,7 +300,9 @@ def start_image_job(
     request = media_backends.ImageRequest(
         prompt=job["prompt"], negative=negative, size=size, seed=seed, model=model, steps=steps
     )
-    asyncio.create_task(_run(job["id"], job["backend"], request, count))
+    task = asyncio.create_task(_run(job["id"], job["backend"], request, count))
+    _RUNNING.add(task)
+    task.add_done_callback(_RUNNING.discard)
 
     return job
 
@@ -309,7 +318,8 @@ async def backends() -> list[dict]:
         elif spec.id == "comfyui":
             try:
                 models = await media_backends.comfy_models(media_providers.url_of(spec))
-            except Exception:  # noqa: BLE001 - 立っていない/繋がらないのは「使えない」で足りる
+            # 立っていない・繋がらない・応答が読めない —— どれも「使えない」で足りる
+            except Exception:
                 usable, reason = False, "繋がらない(立ち上げていないか URL 違い)"
             else:
                 if not models:
