@@ -426,7 +426,7 @@ async def chat_page(
     model: str | None = Query(None, description="どのモデルを使うか(省略時はその相手の既定)"),
     effort: str | None = Query(None, description="どれだけ考えさせるか(相手が持っていれば)"),
 ):
-    mode = mode or answer.default_mode()
+    mode = answer.resolve_mode(backend, mode)
     grounded = answer.default_grounded() if grounded is None else grounded
     sources: dict[str, Source] = request.app.state.sources
     options = '<option value="">(自動)</option>' + "".join(
@@ -440,9 +440,21 @@ async def chat_page(
         f'<option value="{value}"{" selected" if (value == "1") == grounded else ""}>{label}</option>'
         for value, label in (("1", "Chiezo で取れたことだけ"), ("0", "モデルの知識で補ってよい"))
     )
+    # **引けない相手には agent を出さない。** 選べるのに必ず空振りする選択肢を並べると、
+    # 「選んだのに Chiezo を引いてくれない」という分かりにくい壊れ方になる(Codex)。
+    mcp_ok = (spec := providers.get(answer.normalize_backend(backend))) is None or spec.can_use_mcp
     mode_options = "".join(
         f'<option value="{value}"{" selected" if value == mode else ""}>{label}</option>'
         for value, label in (("rag", "1 回検索して答える"), ("agent", "モデルに道具を引かせる"))
+        if mcp_ok or value == "rag"
+    )
+    # **理由を書く。** 選択肢が 1 つしか無い理由が画面から読めないと、設定を疑って回ることになる
+    mode_note = (
+        ""
+        if mcp_ok
+        else '<span class="muted" title="codex exec では MCP の呼び出しが必ず'
+        'キャンセルされる(上流の不具合)。rag なら Chiezo が抜粋を集めて渡すので'
+        '根拠つきで答えられる">この相手は道具を引けません</span>'
     )
     # 話す相手の選択。**相手が 1 つしか無いときは出さない** —— 選べない選択肢を
     # 並べても場所を取るだけで、設定を足せば自然に現れる。
@@ -493,7 +505,7 @@ async def chat_page(
     # 道具でしか働かず、rag モードでは送っても捨てられる。出しっぱなしにすると
     # 「押せるのに何も起きない」状態になる（実際にそうなっていた）。
     is_bridge = bool((spec := providers.get(current_backend)) and spec.bridge)
-    current_mode = (mode or answer.default_mode()).strip().lower()
+    current_mode = answer.resolve_mode(current_backend, mode)
     # CLI ブリッジでは Chiezo の SearXNG ではなく **CLI 自身の web 検索**を開ける。
     # そちらは Chiezo 側の設定と無関係なので、設定していない環境でも出す。
     web_usable = current_mode == "agent" and (websearch.is_enabled() or is_bridge)
@@ -528,6 +540,7 @@ async def chat_page(
 {effort_select}
 <select id="source" name="source" title="引くソース">{options}</select>
 <select id="mode" name="mode" title="引き方">{mode_options}</select>
+{mode_note}
 <select id="grounded" name="grounded" title="根拠の扱い">{grounded_options}</select>
 {web_toggle}
 {notes_toggle}

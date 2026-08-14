@@ -49,6 +49,9 @@ class Provider:
     # 空なら画面に出さない —— **確かめていない相手には出さない**。
     # 送ると `reasoning_effort` として相手に渡る（CLI ブリッジは `--effort` に直す）。
     efforts: tuple[str, ...] = ()
+    # **その相手に MCP（Chiezo の道具）を引かせられるか。** 引けない相手では agent モードに
+    # 意味が無い（道具を渡す先が無く、モデルの知識だけで答える）ので、rag に倒す。
+    can_use_mcp: bool = True
     # **この CLI ブリッジ（bridge/）で包んでいる相手か。** 「接続を試す」の確かめ方が変わる
     # —— ブリッジは `/health?check=1` を持っていて CLI に直接聞ける（`claude auth status` 等）。
     # それ以外は OpenAI 互換の `/models` を引いて確かめる。
@@ -174,6 +177,11 @@ PROVIDERS: tuple[Provider, ...] = (
         models=(),  # CLI の既定に任せる（/v1/models が返すものを使う）
         # `codex exec --help` に --effort は無い（設定キーはあるが確かめていないので出さない）。
         efforts=(),
+        # **codex exec では MCP の呼び出しが必ずキャンセルされる**（非対話では答えられない
+        # 確認の経路に入る。`user cancelled MCP tool call`。openai/codex#16685、
+        # 2026-08 時点で未修正）。こちらの設定では回避できないので agent を選ばせず rag に倒す
+        # —— rag なら Chiezo が抜粋を集めてプロンプトに載せるので、道具が無くても根拠が付く。
+        can_use_mcp=False,
         bridge=True,
         order=40,
     ),

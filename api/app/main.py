@@ -1040,7 +1040,7 @@ async def ask(
 ):
     cfg = await answer.ensure_model(answer.require_settings(backend, model, effort))
     # 既定は環境変数で決める(GPU + 8B の環境と、CPU だけの環境で妥当な既定が違うため)。
-    mode = mode or answer.default_mode()
+    mode = answer.resolve_mode(backend, mode)
     grounded = answer.default_grounded() if grounded is None else grounded
     if mode == "agent":
         if not stream:
@@ -1130,7 +1130,7 @@ def _split_history(body: ChatRequest) -> tuple[str, list[dict]]:
 async def chat(request: Request, body: ChatRequest, stream: bool = Query(False)):
     cfg = await answer.ensure_model(answer.require_settings(body.backend, body.model, body.effort))
     question, history = _split_history(body)
-    mode = body.mode or answer.default_mode()
+    mode = answer.resolve_mode(body.backend, body.mode)
     grounded = answer.default_grounded() if body.grounded is None else body.grounded
     if mode == "agent":
         if not stream:

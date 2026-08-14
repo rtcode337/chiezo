@@ -648,6 +648,33 @@ class TestStaleModelName:
         assert "選び直す" in detail["hint"]
 
 
+class TestModeForBackendsWithoutTools:
+    """**道具を引けない相手では agent を選ばせない。** Codex は codex exec で MCP の
+    呼び出しが必ずキャンセルされる(上流の不具合)ので、agent だと道具の無いまま
+    1 往復し、Chiezo の知識がまったく効かない答えが返る。"""
+
+    def test_agent_falls_back_to_rag(self):
+        from app import answer
+
+        assert answer.resolve_mode("codex", "agent") == "rag"
+
+    def test_other_backends_keep_agent(self):
+        from app import answer
+
+        assert answer.resolve_mode("claude", "agent") == "agent"
+        assert answer.resolve_mode("local", "agent") == "agent"
+
+    def test_the_chat_page_does_not_offer_agent_for_codex(self, monkeypatch_env):
+        with make_client(monkeypatch_env, FakeLLM()) as client:
+            page = client.get(CHAT_PATH, params={"backend": "codex"}).text
+            other = client.get(CHAT_PATH, params={"backend": "local"}).text
+
+        assert 'value="agent"' not in page
+        assert "この相手は道具を引けません" in page
+        # 他の相手では今までどおり選べる
+        assert 'value="agent"' in other
+
+
 class TestModelCandidates:
     @pytest.fixture(autouse=True)
     def _clean(self, monkeypatch, tmp_path):

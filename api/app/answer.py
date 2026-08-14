@@ -387,6 +387,23 @@ def default_mode() -> str:
     return value if value in ("rag", "agent") else "rag"
 
 
+def resolve_mode(backend: str | None, mode: str | None) -> str:
+    """その相手で実際に使える引き方。**道具を引けない相手では agent を選ばせない**。
+
+    agent は「モデル自身に道具を引かせる」やり方なので、MCP を引けない相手
+    (Codex。上流の不具合)では道具の無いまま 1 往復するだけになり、Chiezo の知識が
+    まったく効かない答えが返る。rag なら Chiezo 側が抜粋を集めてプロンプトに載せるので、
+    同じ相手でも根拠つきで答えられる —— **黙って質を落とすより、引き方を倒すほうがよい**。
+    """
+    chosen = (mode or default_mode()).strip().lower()
+    if chosen not in ("rag", "agent"):
+        chosen = default_mode()
+    spec = providers.get(normalize_backend(backend))
+    if chosen == "agent" and spec is not None and not spec.can_use_mcp:
+        return "rag"
+    return chosen
+
+
 def default_grounded() -> bool:
     """`grounded` を省いたときの既定(`CHIEZO_ASK_DEFAULT_GROUNDED`)。
 
