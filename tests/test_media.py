@@ -111,6 +111,7 @@ class TestGemini:
     def test_uses_the_key_registered_for_chat(self, state):
         """**鍵を 2 か所に持たない** —— 「話す相手」に登録済みのものを流用する。"""
         settings_store.set_credential("gemini", "AIza-test")
+        settings_store.set_enabled("gemini", True)
         use(state, fake_gemini())
 
         image = asyncio.run(media_backends.generate(
@@ -123,12 +124,14 @@ class TestGemini:
         assert fake_gemini.sent["model"] == "gemini-3.1-flash-image"
 
     def test_missing_key_says_where_to_put_it(self, state):
+        settings_store.set_enabled("gemini", True)
         use(state, fake_gemini())
 
         with pytest.raises(HTTPException) as e:
             asyncio.run(media_backends.generate(
                 "gemini", media_backends.ImageRequest(prompt="城")))
 
+        # 鍵が無いのは 401(入れれば直る)、無効にしてあるのは 403(画面で有効にする)
         assert e.value.status_code == 401
         assert "話す相手" in e.value.detail["hint"]
 
@@ -137,6 +140,7 @@ class TestOpenAI:
     def test_asks_for_the_nearest_allowed_size(self, state):
         """**相手は決まった組み合わせしか取らない**ので、近いものへ寄せる。"""
         settings_store.set_credential("openai", "sk-test")
+        settings_store.set_enabled("openai", True)
 
         def handler(request: httpx.Request) -> httpx.Response:
             handler.sent = json.loads(request.content)
@@ -155,6 +159,7 @@ class TestOpenAI:
         assert handler.sent["size"] == "3840x2160"
 
     def test_missing_key_says_where_to_put_it(self, state):
+        settings_store.set_enabled("openai", True)
         use(state, lambda request: httpx.Response(200, json={"data": []}))
 
         with pytest.raises(HTTPException) as e:
@@ -167,6 +172,7 @@ class TestOpenAI:
     def test_upstream_error_does_not_leak_the_key(self, state):
         """理由の頭だけ返す(鍵は載せない)。403 は組織の本人確認で返ることがある。"""
         settings_store.set_credential("openai", "sk-test")
+        settings_store.set_enabled("openai", True)
         use(state, lambda request: httpx.Response(403, json={"error": {"message": "must verify"}}))
 
         with pytest.raises(HTTPException) as e:
@@ -226,6 +232,43 @@ class TestJobs:
         assert e.value.status_code == 400
 
 
+class TestSwitchedOff:
+    """**「話す相手」で無効にしたら絵も描けない。** 鍵を持っている相手を止めたのに
+    片方だけ動き続けるのは、止めたつもりの人にとって事故になる。"""
+
+    def test_disabled_provider_cannot_draw(self, state):
+        settings_store.set_credential("gemini", "AIza-test")
+        settings_store.set_enabled("gemini", False)
+        use(state, fake_gemini())
+
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(media_backends.generate(
+                "gemini", media_backends.ImageRequest(prompt="城")))
+
+        assert e.value.status_code == 403
+        assert "無効" in e.value.detail["error"]
+
+    def test_stopping_the_answer_layer_stops_everything(self, state):
+        """元栓を止めたら、自前の GPU も含めて全部止まる。"""
+        settings_store.set_answer_enabled(False)
+        use(state, fake_comfy())
+
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(media_backends.generate(
+                "comfyui", media_backends.ImageRequest(prompt="猫")))
+
+        assert e.value.status_code == 403
+        assert "答える" in e.value.detail["error"]
+
+    def test_mcp_tools_are_not_offered_when_stopped(self, state):
+        """使えない道具をコンテナに並べない(notes と同じ扱い)。"""
+        assert media.tools_enabled() is True
+
+        settings_store.set_answer_enabled(False)
+
+        assert media.tools_enabled() is False
+
+
 class TestServing:
     def test_paths_outside_the_media_dir_are_not_served(self, state):
         """`../` を踏ませない。"""
@@ -263,7 +306,8 @@ class TestBackendList:
         assert backends["comfyui"]["usable"] is False
         assert "繋がらない" in backends["comfyui"]["reason"]
         assert backends["gemini"]["usable"] is False
-        assert backends["gemini"]["reason"] == "鍵が未登録"
+        # 「話す相手」で有効にしていないので、鍵より先にそちらが理由になる
+        assert "無効" in backends["gemini"]["reason"]
 
     def test_lists_the_checkpoints_comfyui_has(self, state):
         use(state, fake_comfy())

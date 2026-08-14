@@ -66,6 +66,29 @@ def credential_of(spec: media_providers.MediaProvider) -> str:
     return (settings_store.load(source).credential or "").strip()
 
 
+# 鍵が無いときの理由。**状態(403)と認証(401)を出し分ける**ために、文字列を定数で持つ
+# —— 「鍵を入れれば直る」と「画面で有効にすれば直る」は、次にすることが違う。
+NO_CREDENTIAL = "鍵が未登録"
+
+
+def unusable_reason(spec: media_providers.MediaProvider) -> str:
+    """使えない理由。使えるなら空。**画面と道具で同じ判定を使う**(食い違わせない)。
+
+    **「話す相手」で無効にしてある相手は、絵も描かせない。** 鍵を持っている相手を
+    止めたのに片方だけ動き続けるのは、止めたつもりの人にとって事故になる。
+    元栓(「答える」層)が停止中なら、相手によらず全部止める。
+    """
+    if not settings_store.answer_enabled():
+        return "「答える」層が停止中"
+    # 「話す相手」に対応がある相手(外部サービス)は、そちらの on/off に従う
+    linked = spec.credential_from
+    if linked and not settings_store.load(linked).enabled:
+        return "「話す相手」で無効(先に話せるようにする)"
+    if spec.credential == media_providers.CRED_REQUIRED and not credential_of(spec):
+        return NO_CREDENTIAL
+    return ""
+
+
 def _client(timeout: float) -> httpx.AsyncClient:
     """テストが差し替える口(`httpx.MockTransport` を挿す)。"""
     return httpx.AsyncClient(timeout=timeout)
@@ -336,6 +359,18 @@ async def generate(backend: str, req: ImageRequest) -> GeneratedImage:
             {
                 "error": f"unknown backend: {backend}",
                 "backends": [p.id for p in media_providers.all_providers()],
+            },
+        )
+
+    # **止めてある相手には頼まない。** 画面で無効にしたのに道具からは描けてしまう、
+    # という食い違いを作らない
+    if reason := unusable_reason(spec):
+        raise HTTPException(
+            401 if reason == NO_CREDENTIAL else 403,
+            {
+                "error": f"{spec.label} は使えません: {reason}",
+                "hint": "管理画面(/admin の「話す相手」)で鍵を登録し、有効にしてください"
+                "(画像生成でも同じ鍵と on/off を使います)",
             },
         )
 

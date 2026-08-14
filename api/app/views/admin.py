@@ -14,7 +14,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
-from app import answer, claude_config
+from app import answer, claude_config, media
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
 from app.pages import CHAT_PATH, browse_url, esc, page_shell
 from app.registry import SUPPORTED_SCHEMA_VERSIONS, Source
@@ -579,7 +579,9 @@ def admin_claude_config_raw(
     その一文は既定では出さない。
     """
     sources: dict[str, Source] = request.app.state.sources
-    return claude_config.build_block(sources, request_origin(request), hook=hook, mcp=mcp)
+    return claude_config.build_block(
+        sources, request_origin(request), hook=hook, mcp=mcp, image=media.tools_enabled()
+    )
 
 
 @router.get("/admin/claude-config.mcp.json", response_class=PlainTextResponse)
@@ -637,7 +639,7 @@ def admin_claude_config(request: Request):
     base = request_origin(request)
     # MCP 登録はスクリプトの既定なので、プレビューも既定(mcp=True)側で見せる。
     # フックは --with-hook のときだけなので、こちらは既定のまま出さない。
-    block = claude_config.build_block(sources, base, mcp=True)
+    block = claude_config.build_block(sources, base, mcp=True, image=media.tools_enabled())
     perms = claude_config.permission_json(base)
     hook = claude_config.hook_settings_json()
     mcp = claude_config.mcp_servers_json(base)

@@ -21,7 +21,7 @@ import httpx
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from app import answer, providers, settings_store
+from app import answer, media, media_providers, providers, settings_store
 from app.pages import CHAT_PATH, esc
 
 router = APIRouter()
@@ -164,10 +164,20 @@ async def section_html(request: Request | None = None) -> str:
             f"<button type=\"submit\"{'' if (r['enabled'] or r['can_enable']) else ' disabled'}>"
             f"{'無効にする' if r['enabled'] else '話せるようにする'}</button></form>"
         )
+        # **絵も描ける相手はそう分かるようにする。** 同じ鍵で 2 つの用途に使えることも、
+        # ここで無効にすると絵のほうも止まることも、画面から読めないと事故になる
+        draws = ""
+        if any(m.credential_from == spec.id for m in media_providers.all_providers()):
+            draws = (
+                '<br><span class="muted">🎨 画像生成にも使える'
+                f"{'(無効にすると絵も描けなくなる)' if r['enabled'] else '(有効にすると使える)'}"
+                "</span>"
+            )
+
         # 手順は鍵の欄の details に出ているので、ここには繰り返さない
         # （同じ長文が 1 行に 2 回出て、表が読めない高さになる）。
         rows.append(
-            f"<tr><td>{esc(spec.label)}</td><td>{esc(state)}</td>"
+            f"<tr><td>{esc(spec.label)}{draws}</td><td>{esc(state)}</td>"
             f"<td>{cred_cell}</td><td>{toggle}{test_btn}</td>"
             f'<td class="muted">{esc(spec.billing)}</td></tr>'
         )
@@ -189,6 +199,51 @@ async def section_html(request: Request | None = None) -> str:
 </details>
 <table class="ai-settings">
 <thead><tr><th>AI</th><th>状態</th><th>認証情報</th><th>使う</th><th>課金の形</th></tr></thead>
+<tbody>
+{chr(10).join(rows)}
+</tbody>
+</table>
+{await _image_section_html()}
+"""
+
+
+async def _image_section_html() -> str:
+    """「絵を描く相手」節。**上の表とは別に出す** —— 自前の GPU(ComfyUI)は
+    「話す相手」ではないので上の表に出てこず、状態を見る場所が無くなるため。
+
+    ここに操作は置かない(on/off は上の表、GPU は compose で立てるもの)。
+    出すのは**いま使えるかと、使えないなら理由**だけ。
+    """
+    if not media.is_enabled():
+        return (
+            "<h2>絵を描く相手</h2>\n"
+            '<p class="muted">画像の置き場がありません。書き込み可能なディレクトリを'
+            " <code>CHIEZO_MEDIA_DIR</code>(既定は <code>CHIEZO_STATE_DIR</code> の下)に"
+            "設定すると使えるようになります。</p>"
+        )
+
+    rows = []
+    for entry in await media.backends():
+        state = "使える" if entry["usable"] else esc(entry["reason"])
+        models = "、".join(entry["models"][:4]) or "—"
+        rows.append(
+            f'<tr><td>{esc(entry["label"])}</td><td>{esc(state)}</td>'
+            f'<td class="muted">{esc(models)}</td>'
+            f'<td class="muted">{esc(entry["billing"])}</td></tr>'
+        )
+
+    return f"""<h2>絵を描く相手</h2>
+<details>
+<summary>この節について</summary>
+<p>MCP の <code>image_generate</code> で使う相手。<strong>外部サービスの鍵と on/off は上の
+「話す相手」と共通</strong>(同じ鍵を 2 か所に入れさせないため)—— 上で無効にすると絵も描けなくなる。</p>
+<p>自前の GPU(ComfyUI)は「話す相手」ではないのでここにだけ出る。
+<code>docker-compose.image.yml</code> を重ねて立てるか、別マシンのものを
+<code>CHIEZO_IMAGE_URL</code> で指す。<strong>モデル(チェックポイント)は自分で置く。</strong></p>
+<p class="muted">「答える」層を止めると、ここも全部止まる(MCP の道具も出なくなる)。</p>
+</details>
+<table class="ai-settings">
+<thead><tr><th>相手</th><th>状態</th><th>モデル</th><th>課金の形</th></tr></thead>
 <tbody>
 {chr(10).join(rows)}
 </tbody>

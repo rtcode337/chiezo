@@ -82,7 +82,18 @@ def media_dir() -> Path | None:
 
 
 def is_enabled() -> bool:
+    """置き場があるか(画像を保存できるか)。"""
     return media_dir() is not None
+
+
+def tools_enabled() -> bool:
+    """MCP に道具を出すか。
+
+    **元栓(「答える」層)が止まっていれば出さない。** 「AI は使わない」と決めた環境で
+    絵を描く道具だけが並んでいるのは筋が通らないし、押せば 403 になる道具を
+    コンテナに載せることになる(使えない道具を並べない、notes と同じ扱い)。
+    """
+    return is_enabled() and settings_store.answer_enabled()
 
 
 def require_dir() -> Path:
@@ -313,8 +324,8 @@ async def backends() -> list[dict]:
     out = []
     for spec in media_providers.all_providers():
         usable, reason, models = True, "", list(spec.models)
-        if spec.credential == media_providers.CRED_REQUIRED and not media_backends.credential_of(spec):
-            usable, reason = False, "鍵が未登録"
+        if reason := media_backends.unusable_reason(spec):
+            usable = False
         elif spec.id == "comfyui":
             try:
                 models = await media_backends.comfy_models(media_providers.url_of(spec))

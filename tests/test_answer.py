@@ -372,6 +372,16 @@ class TestAskPage:
         assert "show(t.text, answer)" in res.text    # 本文をそれで描いている
         assert "cdn." not in res.text                # 外から読み込まない
 
+    def test_admin_shows_which_providers_can_also_draw(self, monkeypatch_env):
+        """同じ鍵で絵も描けること・止めると絵も止まることが、画面から読めるように。"""
+        with make_client(monkeypatch_env, FakeLLM()) as client:
+            res = client.get("/admin")
+
+        assert "🎨 画像生成にも使える" in res.text
+        # 「話す相手」に出てこない自前の GPU は、専用の節で状態が見える
+        assert "絵を描く相手" in res.text
+        assert "ComfyUI" in res.text
+
     def test_admin_links_to_the_chat_page_when_enabled(self, monkeypatch_env):
         with make_client(monkeypatch_env, FakeLLM()) as client:
             res = client.get("/admin")

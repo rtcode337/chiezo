@@ -267,8 +267,8 @@ def build_mcp(app: FastAPI) -> MCPServer:
     if notes.is_enabled():
         _register_memory_tools(mcp, app)
 
-    # 画像生成も同じ扱い —— 置き場が無ければ道具ごと出さない
-    if media.is_enabled():
+    # 画像生成も同じ扱い —— 置き場が無い・「答える」層が止まっているなら道具ごと出さない
+    if media.tools_enabled():
         _register_image_tools(mcp)
 
     return mcp

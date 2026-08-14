@@ -734,6 +734,23 @@ class TestClaudeConfig:
         )
         assert "この一覧は 2026-08-12 23:58 JST 時点の" in block
 
+    def test_config_mentions_image_tools_only_when_they_exist(self, client):
+        """**呼べない道具を勧めない。** MCP を登録していない環境や、絵を描けない
+        サーバーに「image_generate を使え」と書いても、読んだ側は呼べない。"""
+        from app import claude_config
+
+        with_image = claude_config.build_block({}, "http://x.test", mcp=True, image=True)
+        assert "mcp__chiezo__image_generate" in with_image
+        assert "seed" in with_image   # 同じ絵を作り直す手がかりまで書く
+
+        assert "image_generate" not in claude_config.build_block(
+            {}, "http://x.test", mcp=True, image=False
+        )
+        # MCP を登録していない環境では、道具の話そのものを出さない
+        assert "image_generate" not in claude_config.build_block(
+            {}, "http://x.test", mcp=False, image=True
+        )
+
     def test_config_txt_base_url_is_derived_from_request(self, client):
         """curl 例のベース URL はアクセス元(プロトコル・ホスト名・ポート)から導出する。"""
         res = client.get("/admin/claude-config.txt")

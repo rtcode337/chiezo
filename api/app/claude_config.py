@@ -424,6 +424,7 @@ def build_block(
     now: datetime | None = None,
     hook: bool = False,
     mcp: bool = False,
+    image: bool = False,
 ) -> str:
     """CLAUDE.md に貼る Chiezo ブロック(マーカー込み)を組み立てて返す。
 
@@ -434,6 +435,10 @@ def build_block(
     `mcp=True` も同じ理屈で、MCP サーバーを登録した環境にだけ使い分けの指示を足す。
     こちらはスクリプト側の既定が「登録する」なので、通常は `?mcp=1` で来て、
     `--no-mcp` を指定されたときだけ `?mcp=0` になる。
+
+    `image=True` は**この Chiezo で絵を描ける**ときだけ(置き場があり「答える」層が
+    有効)。道具は MCP 経由なので `mcp=True` と揃ったときにしか書かない ——
+    登録していない環境に「`image_generate` を使え」と書いても呼べない。
     """
     base = base_url.rstrip("/")
     when = (now or datetime.now(JST)).astimezone(JST).strftime("%Y-%m-%d %H:%M JST")
@@ -460,6 +465,26 @@ def build_block(
         "`limit` を小さくして取り直す(そのまま続けると静かに取りこぼす)。",
         f'- ソース一覧(最新の登録状況): `curl -s "{base}/v1/sources"`',
     ]
+
+    if mcp and image:
+        # **知識を引く話とは別物**なので、節を分けて短く書く。ここに長い説明を積むと、
+        # 毎回のコンテキストに乗るぶんが増えるだけで、実際に呼ぶときの手順は道具の
+        # description に書いてある
+        out += [
+            "",
+            "### 絵を作る(このサーバーで生成できる)",
+            "",
+            "画像が要るとき(ゲーム素材・図版・アイコン)は、**外のサービスを探しに行く前に"
+            f"`mcp__{MCP_SERVER_NAME}__image_generate` を使う**。自前の GPU か外部の"
+            "生成 AI を選べて、鍵はサーバー側にある。",
+            f"- 頼む → `mcp__{MCP_SERVER_NAME}__image_generate`(job が返る。**待たない**)",
+            f"- 仕上がり → `mcp__{MCP_SERVER_NAME}__image_status`(**パスと URL** が返る。"
+            "画像そのものは返らないので、要るならそのパスを読む)",
+            f"- 相手とモデル → `mcp__{MCP_SERVER_NAME}__image_backends`"
+            "(使えない相手は理由つきで出る)",
+            "- **同じ絵を作り直すときは seed を指定する**(自前の GPU のときだけ再現できる)。"
+            "キャラの別ポーズのように「揃えたい」場面で効く",
+        ]
 
     if mcp:
         out.append(
