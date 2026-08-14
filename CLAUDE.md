@@ -242,6 +242,15 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   `-s workspace-write` にして、この 1 回のための作業ディレクトリにだけ許す**。
   拾うのは**その実行で増えた画像だけ**(保存先は使い回されるので、前回のぶんを混ぜない)。
   相手はエージェントなので、**保存先と枚数を言い切る**(曖昧だと説明だけ返してファイルを書かない)
+- **Codex は MCP を引けない(上流の不具合。2026-08 時点)。** `codex exec` では
+  MCP の呼び出しが必ず `user cancelled MCP tool call` になる —— 非対話では答えられない
+  確認の経路に入るため(openai/codex#16685、未修正)。**ブリッジの作りの問題ではない**ので
+  こちらでは直せない。知識を引かせたいときは Claude Code か Gemini を選ぶ。
+  画像生成は MCP を使わないので影響しない
+- **モデル名の控え(`app/providers.py` の `models`)は古くなる。** 相手からモデルが
+  消えると 404 になり、画面には「llm error 404」としか出ない。**選んでも保存してもいない
+  ときは、相手に聞いて先頭へ差し替える**(`answer.ensure_model`)。404 のときは
+  「モデル名が違うかもしれない」というヒントも返す
 - **`bridge/` — CLI ブリッジ(別イメージ `ghcr.io/<owner>/chiezo-bridge`)。**
   Claude Code / Codex CLI / Antigravity CLI を OpenAI 互換の口に見せる。**イメージは 1 つで、
   `CHIEZO_BRIDGE_CLI` で役割を決める** —— イメージは 1 回 pull すればディスクは 1 つぶんで、

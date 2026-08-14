@@ -493,6 +493,17 @@ INSERT INTO provider_settings (provider, credential) VALUES ('claude', '<トー�
 アプリ側が画面からトークンを入れ替えても、**ブリッジは要求のたびに読み直す**ので
 再起動は要りません。
 
+### Codex は MCP を引けない(上流の不具合・2026-08 時点)
+
+**`codex exec`(非対話)では MCP の呼び出しが必ずキャンセルされます** ——
+Codex が途中でユーザーへの確認を求める経路に入り、非対話ではそれに答えられないため
+自動的に取り消されます(`user cancelled MCP tool call`。openai/codex#16685、未修正)。
+ブリッジは非対話で回すので、**Codex 相手のときは Chiezo の知識を引けません**
+(答え自体は返りますが、モデルの知識だけで書かれます)。
+
+知識を引かせたいときは **Claude Code か Gemini を選んでください**。Codex は
+素の会話と、**画像生成**(こちらは MCP を使わないので影響しません)で使えます。
+
 ### agent モードはブリッジ側に任せる
 
 CLI ブリッジ相手のときは、**Chiezo は agent のループを回しません**（1 回聞いて 1 回

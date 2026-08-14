@@ -78,6 +78,10 @@ class Settings:
     name: str = ""
     # 考える量（`reasoning_effort`）。空なら送らない = 相手の既定に任せる。
     effort: str = ""
+    # **モデルを控え（`app/providers.py` の決め打ち）から当てたか。** 控えは相手の都合で
+    # 古くなる（実測: 保存も選択もしていない Gemini が 404 になった＝その名前のモデルが
+    # 消えていた）ので、当てた場合は後から相手に聞いて選び直す（`ensure_model`）。
+    model_is_fallback: bool = False
 
     @property
     def endpoint(self) -> str:
@@ -196,10 +200,13 @@ def load_settings(
     # **モデルを選ばなかったとき。** 指定が要る相手には控えの先頭を当てる（Gemini に
     # モデル無しで投げても通らない）が、自分で決められる相手（CLI ブリッジ・1 プロセス
     # 1 モデルの推論サーバ）には**何も渡さない** —— 画面の「既定」がそれを選べる。
+    from_fallback = False
     if not chosen and spec.model_required and spec.models:
         chosen = spec.models[0]
+        from_fallback = True
     return Settings(
         name=name,
+        model_is_fallback=from_fallback,
         effort=normalize_effort(name, effort),
         url=_normalize_base_url(providers.url_of(spec)),
         # 空でも通る相手（1 プロセス 1 モデルの推論サーバ・CLI ブリッジ）がいるので、
@@ -404,6 +411,21 @@ def require_settings(
     )
 
 
+async def ensure_model(cfg: Settings) -> Settings:
+    """モデルを**控えから当てた**ときだけ、相手に聞いて先頭へ差し替える。
+
+    控え(`app/providers.py`)は相手の都合で古くなる —— 消えたモデル名を送ると 404 に
+    なり、画面には「llm error 404」としか出ない。相手が一覧を返せないときは控えのまま
+    (それ以上できることが無い)。**選んだ・保存したモデルには触らない。**
+    """
+    if not cfg.model_is_fallback:
+        return cfg
+    models = await available_models(cfg.name)
+    if models:
+        cfg.model = models[0]
+    return cfg
+
+
 def _llm_client(cfg: Settings) -> httpx.AsyncClient:
     """推論サーバ向けの HTTP クライアント。
 
@@ -482,11 +504,18 @@ def _upstream_error(exc: Exception) -> HTTPException:
     return HTTPException(502, {"error": "llm unreachable", "reason": type(exc).__name__})
 
 
-def _llm_error(status: int, body: str) -> dict:
+def _llm_error(status: int, body: str, model: str = "") -> dict:
     """相手のエラーを Chiezo のエラー形式にする(理由が読めれば添える)。"""
     detail = {"error": f"llm error {status}"}
     if reason := _upstream_reason(body):
         detail["reason"] = reason
+    if status == 404:
+        # **404 はたいていモデル名。** 相手のモデルは入れ替わるので、こちらの控えが
+        # 古いままだと「その名前は無い」で 404 になる(実測: gemini-2.5-flash)
+        detail["hint"] = (
+            f"モデル名(`{model}`)が相手に無い可能性があります。"
+            "会話画面のモデル選択で選び直すか、管理画面で保存し直してください"
+        )
     return detail
 
 
@@ -506,7 +535,7 @@ async def complete_message(cfg: Settings, messages: list[dict], **extra) -> dict
     if res.status_code >= 400:
         # 相手の応答本文もそのまま返さない(上と同じ理由)。ログには残す。
         log.warning("llm error %s: %s", res.status_code, res.text[:500])
-        raise HTTPException(502, _llm_error(res.status_code, res.text))
+        raise HTTPException(502, _llm_error(res.status_code, res.text, cfg.model))
     try:
         message = res.json()["choices"][0]["message"]
     except (KeyError, IndexError, TypeError, ValueError) as e:

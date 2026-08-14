@@ -1038,7 +1038,7 @@ async def ask(
     model: str | None = Query(None, description="どのモデルを使うか(省略時はその相手の既定)"),
     effort: str | None = Query(None, description="どれだけ考えさせるか(相手が持っていれば)"),
 ):
-    cfg = answer.require_settings(backend, model, effort)
+    cfg = await answer.ensure_model(answer.require_settings(backend, model, effort))
     # 既定は環境変数で決める(GPU + 8B の環境と、CPU だけの環境で妥当な既定が違うため)。
     mode = mode or answer.default_mode()
     grounded = answer.default_grounded() if grounded is None else grounded
@@ -1128,7 +1128,7 @@ def _split_history(body: ChatRequest) -> tuple[str, list[dict]]:
 
 @app.post("/v1/chat")
 async def chat(request: Request, body: ChatRequest, stream: bool = Query(False)):
-    cfg = answer.require_settings(body.backend, body.model, body.effort)
+    cfg = await answer.ensure_model(answer.require_settings(body.backend, body.model, body.effort))
     question, history = _split_history(body)
     mode = body.mode or answer.default_mode()
     grounded = answer.default_grounded() if body.grounded is None else body.grounded
@@ -1231,7 +1231,7 @@ async def ai_complete(body: AiCompleteRequest) -> dict:
     if not messages:
         raise HTTPException(400, {"error": "messages must not be empty"})
 
-    cfg = answer.require_settings(body.backend, body.model, body.effort)
+    cfg = await answer.ensure_model(answer.require_settings(body.backend, body.model, body.effort))
     message = await answer.complete_message(cfg, messages)
     content = answer.content_of(message)
     if not content:

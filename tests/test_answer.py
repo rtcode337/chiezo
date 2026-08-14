@@ -4,6 +4,7 @@
 差し替えて偽の OpenAI 互換サーバを演じさせる。こうするとクエリ生成 → 検索 → 回答の
 全経路を、実データもネットワークも無しで通せる。
 """
+import asyncio
 import json
 
 import httpx
@@ -562,6 +563,57 @@ class TestBackends:
         with TestClient(app) as client:
             res = client.get("/v1/ask", params={"q": "浅草寺", "backend": "gemini"})
         assert res.status_code == 503
+
+
+class TestStaleModelName:
+    """**控えのモデル名は古くなる。** 実測で、選んでも保存してもいない Gemini が
+    「llm error 404」になった —— 控えの先頭(gemini-2.5-flash)が相手から消えていた。"""
+
+    @staticmethod
+    def _offering(monkeypatch, *ids):
+        """`/models` でその一覧を名乗る相手を立てる。"""
+        from app import answer, settings_store
+
+        settings_store.set_credential("gemini", "k")
+        settings_store.set_enabled("gemini", True)
+        answer._MODELS_CACHE.clear()
+        monkeypatch.setattr(
+            answer, "_llm_client",
+            lambda cfg: httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json={"data": [{"id": i} for i in ids]})
+            )),
+        )
+        return answer
+
+    def test_a_fallback_model_is_replaced_by_what_the_provider_offers(
+        self, monkeypatch_env, tmp_path
+    ):
+        monkeypatch_env.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        answer = self._offering(monkeypatch_env, "gemini-9.9-flash", "gemini-9.9-pro")
+
+        cfg = answer.require_settings("gemini")
+        assert cfg.model_is_fallback is True
+
+        assert asyncio.run(answer.ensure_model(cfg)).model == "gemini-9.9-flash"
+
+    def test_a_chosen_model_is_left_alone(self, monkeypatch_env, tmp_path):
+        """選んだ・保存したモデルには触らない(選び直した意味が無くなる)。"""
+        monkeypatch_env.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        answer = self._offering(monkeypatch_env, "gemini-9.9-flash")
+
+        cfg = answer.require_settings("gemini", model="gemini-2.5-pro")
+        assert cfg.model_is_fallback is False
+
+        assert asyncio.run(answer.ensure_model(cfg)).model == "gemini-2.5-pro"
+
+    def test_404_says_the_model_may_be_gone(self, monkeypatch_env):
+        """画面に「llm error 404」しか出ないと、何を直せばよいか分からない。"""
+        from app import answer
+
+        detail = answer._llm_error(404, '{"error": {"message": "not found"}}', "gemini-2.5-flash")
+
+        assert "gemini-2.5-flash" in detail["hint"]
+        assert "選び直す" in detail["hint"]
 
 
 class TestModelCandidates:

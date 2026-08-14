@@ -554,7 +554,7 @@ async def chat_page(
 """
         return HTMLResponse(content=page_shell("AI と話す", body, style=CHAT_STYLE))
 
-    cfg = answer.require_settings(current_backend, model, effort)
+    cfg = await answer.ensure_model(answer.require_settings(current_backend, model, effort))
     # 話す相手は AI(モデル)で、Chiezo はその AI が引く知識。見出しでその関係を出すため、
     # モデル名を名乗らせる(推論サーバに聞く。分からなければ名前なしの「AI」)。
     # モデルが決まっていなければ**相手の名前**を出す（`Claude Code` など）。
