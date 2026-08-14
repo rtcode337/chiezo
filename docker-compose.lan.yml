@@ -13,13 +13,16 @@
 #
 #   CHIEZO_LLM_URL=http://<このホストのIP>:7011/v1
 #   CHIEZO_WEB_SEARCH_URL=http://<このホストのIP>:7012/search
+#   CHIEZO_IMAGE_URL=http://<このホストのIP>:7014
 #
 # **同じホストに chiezo-api がいるなら重ねない。** その場合はサービス名で届くので
-# (http://chiezo-llm:7011/v1・http://searxng:7012/search)、口を開ける理由が無い。
+# (http://chiezo-llm:7011/v1・http://searxng:7012/search・http://chiezo-image:7014)、
+# 口を開ける理由が無い。
 #
-# 開ける以上は前提を承知しておくこと —— **どちらも認証が無い**。推論サーバは
+# 開ける以上は前提を承知しておくこと —— **どれも認証が無い**。推論サーバと画像生成は
 # 誰でも VRAM を使えるようになり(空きが尽きるとホストごとページングで固まる)、
-# 検索エンジンは外向きの検索の中継そのものになる。ルーターでポート開放しないこと。
+# 検索エンジンは外向きの検索の中継そのものになる。**ComfyUI は画面も付いてくる**ので、
+# LAN の誰でもワークフローを流せる。ルーターでポート開放しないこと。
 # 推論に鍵を掛けるなら llama-server の --api-key と相手側の CHIEZO_LLM_API_KEY を揃える。
 services:
   chiezo-llm:
@@ -29,3 +32,10 @@ services:
   searxng:
     ports:
       - "7012:7012"
+
+  # 画像生成(ComfyUI)。**GPU のあるマシンで立てて、別ホストの chiezo-api から使う**
+  # ときに開ける。相手側には CHIEZO_IMAGE_URL=http://<このホストのIP>:7014 を渡す。
+  # 定義は docker-compose.image.yml 側なので、そちらも重ねて --profile image を付ける。
+  chiezo-image:
+    ports:
+      - "7014:7014"
