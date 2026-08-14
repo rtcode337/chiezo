@@ -19,7 +19,9 @@ services:
     # ホストへは公開しない(chiezo-api からのみ到達する)。
     # 手元のブラウザで ComfyUI の画面を触りたいときだけ ports を足す
     environment:
-      - CLI_ARGS=--listen 0.0.0.0 --port 8188
+      # 待ち受けを 7014 にする(既定は 8188)。7010 = API・7011 = 推論・7012 = 検索・
+      # 7013 = CLI ブリッジ の並びに合わせ、**コンテナの内と外で番号を食い違わせない**
+      - CLI_ARGS=--listen 0.0.0.0 --port 7014
     volumes:
       # モデル・出力・カスタムノードの置き場(数 GB。data/ とは分ける)
       - ./models/comfyui:/root
@@ -35,6 +37,6 @@ services:
               capabilities: [gpu]
     healthcheck:
       # モデルの読み込みが終わるまで応答しないので、起動猶予を長めに取る
-      test: ["CMD", "curl", "-fs", "http://localhost:8188/system_stats"]
+      test: ["CMD", "curl", "-fs", "http://localhost:7014/system_stats"]
       interval: 60s
       start_period: 300s

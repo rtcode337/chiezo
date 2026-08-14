@@ -169,8 +169,12 @@ docker compose -f docker-compose.yml -f docker-compose.image.yml --profile image
 配布条件もモデルごとに違うので、同梱も自動取得もしていません。
 `./models/comfyui/checkpoints/` に `.safetensors` を置くと `image_backends` に出ます。
 
+待ち受けは **7014**(7010 = API・7011 = 推論・7012 = 検索・7013 = CLI ブリッジの並び)。
+ComfyUI の既定は 8188 ですが、番号が食い違うと URL を書くたびに迷うので寄せてあります。
+
 **GPU が別のマシンにあるなら、そちらで ComfyUI を動かして URL を渡すだけです**
-(`CHIEZO_IMAGE_URL=http://<GPUマシン>:8188`)。推論サーバと同じ逃げ道です。
+(`CHIEZO_IMAGE_URL=http://<GPUマシン>:7014`。素の ComfyUI を自分で動かしているなら
+その待ち受けポート、既定なら 8188)。推論サーバと同じ逃げ道です。
 
 ## agent モード(モデルに道具を引かせる)
 

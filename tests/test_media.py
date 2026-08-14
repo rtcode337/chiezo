@@ -101,10 +101,10 @@ class TestComfyUI:
 
     def test_url_can_be_overridden_for_another_machine(self, state):
         """GPU は別マシンに置くことが多い(コンテナ名では辿り着けない)。"""
-        state.setenv("CHIEZO_IMAGE_URL", "http://192.0.2.5:8188/")
+        state.setenv("CHIEZO_IMAGE_URL", "http://192.0.2.5:7014/")
         spec = media_providers.get("comfyui")
 
-        assert media_providers.url_of(spec) == "http://192.0.2.5:8188"
+        assert media_providers.url_of(spec) == "http://192.0.2.5:7014"
 
 
 class TestGemini:

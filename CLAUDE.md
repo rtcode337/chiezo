@@ -942,10 +942,11 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
 - 認証なし・LAN 内前提。ルーターでポート開放しないこと。chiezo-trigger・chiezo-llm・searxng は
   ホストへポート公開せず、chiezo-api からのみ内部ネットワーク経由で到達可能にすること
   (別ホストの chiezo-api から使うときだけ `docker-compose.lan.yml` で開ける)。
-- **待ち受けは 7010 = API・7011 = 推論・7012 = 検索エンジンで、コンテナの内と外を同じ番号にする**。
+- **待ち受けは 7010 = API・7011 = 推論・7012 = 検索エンジン・7013 = CLI ブリッジ・
+  7014 = 画像生成(ComfyUI)で、コンテナの内と外を同じ番号にする**。
   番号が食い違うと URL を書くたびにどちらか迷う。既定が違うイメージは環境変数で寄せる ——
   searxng は granian で動くので `GRANIAN_PORT`(SearXNG の `SEARXNG_PORT` は設定ファイルの
-  値で待ち受けには使われない)。
+  値で待ち受けには使われない)。ComfyUI は `CLI_ARGS` の `--port`(既定は 8188)。
 - **「使う」層は既定で無効のまま保つ**。推論を chiezo-api の中で動かさない(配信側が
   数百 MB で動く前提)。LLM を呼ぶコードは `app/answer.py` と `app/agent.py` に閉じ、
   検索・文書取得は `app/main.py` の関数(agent は MCP の道具)を再利用する。compose では

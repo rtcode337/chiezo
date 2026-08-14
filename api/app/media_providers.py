@@ -49,7 +49,7 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         id="comfyui",
         label="ComfyUI(自前の GPU)",
         # compose 同梱の chiezo-image。GPU が別マシンなら CHIEZO_IMAGE_URL で上書きする。
-        url="http://chiezo-image:8188",
+        url="http://chiezo-image:7014",
         credential=CRED_NONE,
         billing="自前(電気代のみ)",
         setup="docker-compose.image.yml を重ねて "
