@@ -130,12 +130,20 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}-${{ matrix.image }}
 
+      # ビルド日時。**イメージに焼いて画面に出す**(タグでは判別できないため)
+      - id: buildtime
+        run: echo "value=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - id: build
         uses: docker/build-push-action@v7
         with:
           context: ./${{ matrix.image }}
           platforms: ${{ matrix.arch.platform }}
           labels: ${{ steps.meta.outputs.labels }}
+          # 動いているイメージがどのコミットかを画面に出すために焼き込む
+          build-args: |
+            BUILD_SHA=${{ github.sha }}
+            BUILD_TIME=${{ steps.buildtime.outputs.value }}
           # タグではなくダイジェストで push する(マニフェストは merge ジョブで作る)
           outputs: type=image,name=ghcr.io/${{ github.repository }}-${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch.platform }}

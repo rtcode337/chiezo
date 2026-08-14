@@ -366,7 +366,14 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `refresh` で 5 秒ごとに自動リロードする / `osm_<国>` 195 件と `<lang>wiki` 348 件は
     そのまま並べると他のソースが埋もれるので `group` で 1 行に畳み、国・言語の選択だけを
     `/admin/osm`(大陸ごとの `<details>`)・`/admin/wikipedia`(`WIKIPEDIA_TIERS` の記事数階層ごと)
-    へ切り出す / `?q=` の絞り込みは JS なしのサーバ側フィルタ
+    へ切り出す / `?q=` の絞り込みは JS なしのサーバ側フィルタ。
+    **末尾に「いま動いているビルド」を出す**(`app/build_info.py`)—— タグ(`latest`)は
+    上書きされ、デプロイ先が pull し忘れても外からは見えないので、イメージ自身に
+    素性を持たせる。値は CI が `--build-arg` で焼き込み(`CHIEZO_BUILD_SHA` /
+    `CHIEZO_BUILD_TIME`)、**渡らなければ「不明」と出すだけでビルドは通す**
+    (手元ビルドを壊さない)。Python には Go の `runtime/debug.ReadBuildInfo` に
+    当たる仕組みが無いので、自動では入らない。表示は JST 固定(オフセットで持ち、
+    tzdata を引かない)
   - `/admin/init/{source}`(POST) — `chiezo-trigger` の `POST /run/{source}` へプロキシし、
     `/admin` へ 303 リダイレクト。`CHIEZO_TRIGGER_URL` 未設定なら 503、未知ソースなら 404、
     登録済みソースなら 409

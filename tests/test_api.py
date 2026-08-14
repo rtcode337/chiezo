@@ -1481,3 +1481,35 @@ class TestUrlLayout:
         body = res.text.split('<pre class="doc-body">')[1].split("</pre>")[0]
         head = body.strip()[:40]
         assert head and body.count(head) == 1, "本文が 2 回出ている"
+
+
+class TestBuildVersion:
+    """**動いているイメージがどのコミットかを画面から確かめられるようにする。**
+    タグは latest で上書きされ、デプロイ先が pull し忘れても外からは見えない。"""
+
+    def test_shows_the_build_time_in_jst_with_the_commit(self, monkeypatch):
+        from app import build_info
+
+        monkeypatch.setenv("CHIEZO_BUILD_SHA", "dbdb1fb0123456789")
+        monkeypatch.setenv("CHIEZO_BUILD_TIME", "2026-08-14T15:12:00Z")
+
+        # 表示は JST(読む人は日本にいる)。UTC の 15:12 は翌日の 00:12
+        assert build_info.describe() == "2026-08-15 00:12 JST (dbdb1fb)"
+
+    def test_says_unknown_when_nothing_was_baked_in(self, monkeypatch):
+        """手元ビルドでは渡らない。**ビルドを失敗させず、分からないと出す。**"""
+        from app import build_info
+
+        monkeypatch.delenv("CHIEZO_BUILD_SHA", raising=False)
+        monkeypatch.delenv("CHIEZO_BUILD_TIME", raising=False)
+
+        assert build_info.describe() == build_info.UNKNOWN
+
+    def test_a_broken_time_does_not_break_the_page(self, monkeypatch):
+        """渡し方を間違えても画面ごと落とさない(出るのは管理画面の 1 行)。"""
+        from app import build_info
+
+        monkeypatch.setenv("CHIEZO_BUILD_SHA", "abc1234")
+        monkeypatch.setenv("CHIEZO_BUILD_TIME", "きのう")
+
+        assert build_info.describe() == "日時不明 (abc1234)"

@@ -258,6 +258,29 @@ docker save ghcr.io/rtcode337/chiezo-ingest:latest | gzip -1 > handoff/chiezo-in
 [`docs/build-on-another-machine.md`](build-on-another-machine.md) にまとめてあります
 (取り込みが触るのは公開ダンプと指定した data フォルダだけで、認証情報や個人ファイルは読みません)。
 
+## 動いているビルドを確かめる
+
+管理画面(`/admin`)の末尾に「いま動いているビルド」として、**ビルド日時(JST)と
+ビルド元のコミット**が出る(`2026-08-15 00:12 JST (dbdb1fb)`)。手元の `git log -1` と
+見比べれば、変更が反映済みかが分かる。
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+このあと画面のビルドが新しくなっていなければ、**古いイメージのまま動いている**。
+タグ(`latest`)は上書きされるので、タグだけでは判別できない。
+
+値は CI がイメージへ焼き込む(`--build-arg BUILD_SHA=... BUILD_TIME=...` →
+`CHIEZO_BUILD_SHA` / `CHIEZO_BUILD_TIME`)。**手元でビルドしたイメージでは渡らないので
+「不明(ビルド情報なし)」と出る**。手元ビルドでも出したいなら、こう渡す。
+
+```bash
+docker build ./api \
+  --build-arg BUILD_SHA="$(git rev-parse HEAD)" \
+  --build-arg BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+```
+
 ## chiezo-trigger(管理画面からの初期化・再構築)
 
 `chiezo-ingest` と同じイメージを使い回し、CMD だけ `server.py`(FastAPI)の起動に差し替えた

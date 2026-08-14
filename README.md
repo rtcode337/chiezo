@@ -199,6 +199,7 @@ ingest は毎回 `data/<source>-<date>.db` を新規構築し、検証が通っ�
 | 古い DB にタグ索引・座標表を足す(再取り込みなし) | [schema_version 2 → 3 → 4](docs/operations.md#既存-db-にタグ索引を足すschema_version-2--3--4) |
 | 検索の並びが効かない DB を直す | [rank_score を入れ直す](docs/operations.md#既存-db-の-rank_score-を入れ直す) |
 | メモリの多い別マシンで焼いて配る | [.db を配布する](docs/operations.md#別マシンでビルドして-db-を配布する) |
+| どのコミットが動いているか確かめる | [動いているビルドを確かめる](docs/operations.md#動いているビルドを確かめる) |
 | 外に開けてよいか確かめる | [セキュリティ](docs/operations.md#セキュリティ) |
 | `.env` を置けない環境で起動する | [単体定義](docs/operations.md#env-を置けない環境で起動する単体定義) |
 

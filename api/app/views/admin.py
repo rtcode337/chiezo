@@ -14,7 +14,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
-from app import answer, claude_config, media
+from app import answer, build_info, claude_config, media
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
 from app.pages import CHAT_PATH, browse_url, esc, page_shell
 from app.registry import SUPPORTED_SCHEMA_VERSIONS, Source
@@ -309,6 +309,14 @@ async def admin(request: Request):
 現在の登録ソースから生成した CLAUDE.md ブロックを表示する(実ファイルは書き換えない)。
 </p>
 <p><a href="/admin/claude-config">→ 生成される設定を見る</a></p>
+
+<h2>いま動いているビルド</h2>
+<p class="muted">
+{esc(build_info.describe())}<br>
+ビルド日時(JST)とビルド元のコミット。手元の <code>git log -1</code> と見比べれば、
+変更が反映済みかが分かる。<code>docker compose pull &amp;&amp; docker compose up -d</code>
+のあと、ここが新しくなっていなければ古いイメージのままになっている。
+</p>
 """
     return HTMLResponse(content=page_shell("管理画面", body, refresh=5 if job_running else None))
 
