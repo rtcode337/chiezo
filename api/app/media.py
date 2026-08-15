@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -568,10 +569,9 @@ async def _check_elevenlabs(spec: media_providers.MediaProvider) -> tuple[bool, 
         return False, f"{res.status_code} が返りました"
 
     tier = ""
-    try:
+    # 応答が JSON でなくても「鍵は通った」は言える(等級は飾り)
+    with contextlib.suppress(ValueError):
         tier = str(res.json().get("subscription", {}).get("tier") or "")
-    except ValueError:
-        pass
     return True, f"鍵が通りました({tier})" if tier else "鍵が通りました"
 
 
@@ -636,13 +636,26 @@ async def backends(kind: str = media_providers.KIND_IMAGE) -> list[dict]:
 _SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
+def _child_named(parent: Path, wanted: str) -> Path | None:
+    """`parent` の直下から、その名前の実体を**探して**返す(組み立てない)。
+
+    `parent / wanted` と書けば 1 行で済むが、それだと**受け取った文字列がパスの
+    組み立てに入る**。読む側にも検査器にも安全だと分からず、CodeQL の path injection
+    として上がり続ける(実際に上がった)。ここで返す `Path` は置き場を並べて得たもので、
+    渡された文字列は**照合にしか使っていない**。
+
+    置き場は日付ごとに分かれていて 1 日ぶんは高々数百件なので、並べる costs は小さい。
+    """
+    if not parent.is_dir():
+        return None
+    return next((entry for entry in parent.iterdir() if entry.name == wanted), None)
+
+
 def resolve(relative: str) -> Path:
-    """配信のためにパスを解く。**組み立てる前に形を確かめる**。
+    """配信のためにパスを解く。**組み立てる前に形を確かめ、実体は置き場から選ぶ**。
 
     置き場は `<日付 8 桁>/<ファイル名>` の 2 段しかない(`_save` がそう書く)。
-    「連結してから外に出ていないか確かめる」書き方でも守れるが、**受け取った文字列が
-    パスの組み立てに入ってしまう**ので、読む側にも検査器にも安全だと分からない
-    (CodeQL の path injection として上がった)。**先に形で弾いて、通ったものだけ繋ぐ。**
+    形の検査だけでも `..` は通らないが、**組み立てをやめる**ほうが読む側にも分かりやすい。
     """
     parts = relative.strip("/").split("/")
     if len(parts) != 2 or not all(_SEGMENT.fullmatch(part) for part in parts):
@@ -651,10 +664,12 @@ def resolve(relative: str) -> Path:
     if len(day) != 8 or not day.isdigit():
         raise HTTPException(404, {"error": "not found"})
 
-    # 形を通ったうえで、**実体が置き場の中にあることも確かめる** —— 中に外を指す
-    # シンボリックリンクが混ざっても外へ出さない(書くのは chiezo だけなので念のため)。
     root = require_dir().resolve()
-    path = root / day / name
-    if not path.is_file() or not path.resolve().is_relative_to(root):
+    directory = _child_named(root, day)
+    path = _child_named(directory, name) if directory else None
+
+    # **実体が置き場の中にあることも確かめる** —— 中に外を指すシンボリックリンクが
+    # 混ざっても外へ出さない(書くのは chiezo だけなので念のため)。
+    if path is None or not path.is_file() or not path.resolve().is_relative_to(root):
         raise HTTPException(404, {"error": "not found"})
     return path

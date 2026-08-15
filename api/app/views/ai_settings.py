@@ -401,9 +401,12 @@ async def set_media_enabled(provider: str = Form(...), enabled: str = Form("0"))
     want = enabled == "1"
     # **鍵の要る相手は、鍵が無ければ on にできない。** 有効のまま残しても、
     # 頼むたびに 401 になるだけ(「話す相手」と同じ抑止)
-    if want and spec.credential == media_providers.CRED_REQUIRED:
-        if not settings_store.load(spec.credential_from or spec.id).credential:
-            raise HTTPException(400, {"error": f"先に「{spec.label}」の API キーを登録してください"})
+    if (
+        want
+        and spec.credential == media_providers.CRED_REQUIRED
+        and not settings_store.load(spec.credential_from or spec.id).credential
+    ):
+        raise HTTPException(400, {"error": f"先に「{spec.label}」の API キーを登録してください"})
 
     settings_store.set_enabled(spec.id, want)
     return RedirectResponse("/admin", status_code=303)

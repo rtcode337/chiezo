@@ -449,6 +449,21 @@ class TestServing:
 
         assert e.value.status_code == 404
 
+    def test_a_symlink_pointing_outside_is_not_followed(self, state):
+        """置き場の中に外を指すリンクが混ざっても外へ出さない
+        (書くのは chiezo だけだが、形の検査だけでは防げない)。"""
+        root = media.require_dir()
+        secret = root.parent / "settings.db"
+        secret.write_bytes(b"secret")
+        day = root / "20260814"
+        day.mkdir(parents=True)
+        (day / "leak.png").symlink_to(secret)
+
+        with pytest.raises(HTTPException) as e:
+            media.resolve("20260814/leak.png")
+
+        assert e.value.status_code == 404
+
     def test_a_normal_file_is_still_served(self, state):
         """弾きすぎない(実際に `_save` が書く形は通る)。"""
         day = media.require_dir() / "20260814"
