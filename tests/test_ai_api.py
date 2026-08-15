@@ -95,3 +95,86 @@ class TestComplete:
             res = complete(client, messages=[{"role": "user", "content": "   "}])
 
         assert res.status_code == 400
+
+
+class TestCompleteWeb:
+    """相手自身の web 検索を開ける口(`web=true`)。
+
+    ニュースの収集のように「いまの外の情報」が要る仕事を、`/v1/chat` の抽出を混ぜずに
+    頼めるようにするためのもの。**持っているのは CLI ブリッジで包んだ相手だけ。**
+    """
+
+    def test_web_is_off_by_default(self, monkeypatch_env):
+        """頼まなければ道具は渡さない(既定の振る舞いを変えない)。"""
+        fake = ToolLLM("はい")
+        with make_client(monkeypatch_env, fake) as client:
+            res = complete(client, messages=[{"role": "user", "content": "やあ"}])
+
+        assert res.json()["web"] is False
+        assert "chiezo_web" not in fake.requests[0]
+
+    def test_web_is_rejected_when_no_route_exists(self, monkeypatch_env):
+        """**黙って道具無しで答えさせない。**
+
+        呼ぶ側はそれを「調べた結果」として受け取り、学習データから作った話が
+        最新の材料として保存されてしまう。開けないなら断る。
+        推論サーバは CLI ブリッジでなく、SearXNG も設定されていない状態。
+        """
+        fake = ToolLLM("はい")
+        with make_client(monkeypatch_env, fake) as client:
+            res = complete(
+                client, messages=[{"role": "user", "content": "やあ"}], web=True
+            )
+
+        assert res.status_code == 400
+        assert "web" in res.json()["error"]
+        # 断ったのだから相手には投げていない
+        assert fake.requests == []
+
+    def test_web_uses_searxng_for_api_backends(self, monkeypatch_env):
+        """**API で直に叩く相手には Chiezo の SearXNG を道具として貸す。**
+
+        OpenAI 互換の口に検索の項目が無くても、道具として渡せば外を見られる。
+        """
+        from app import websearch
+
+        monkeypatch_env.setenv("CHIEZO_WEB_SEARCH_URL", "http://searxng:8080/search")
+        # 検索そのものは外へ出さない（実行されたことと、その結果が積まれることを見る）
+        asked: list[str] = []
+
+        async def fake_search(q, limit=None):
+            asked.append(q)
+            return {"results": [{"title": "終値", "url": "https://example.com", "snippet": "…"}]}
+
+        monkeypatch_env.setattr(websearch, "search", fake_search)
+        # 1ターン目で検索を呼び、2ターン目で答える
+        fake = ToolLLM([("web_search", {"q": "日経平均 終値"})], "終値は…でした。")
+        with make_client(monkeypatch_env, fake) as client:
+            res = complete(
+                client, messages=[{"role": "user", "content": "今日の終値は?"}], web=True
+            )
+
+        assert res.status_code == 200
+        assert res.json()["content"] == "終値は…でした。"
+        assert res.json()["web"] is True
+        # 道具として渡したのは web 検索だけ（知識ベースの道具は混ぜない）
+        names = [t["function"]["name"] for t in fake.requests[0]["tools"]]
+        assert names == ["web_search"]
+        assert asked == ["日経平均 終値"]
+
+    def test_backends_tell_whether_web_is_available(self, monkeypatch_env):
+        """選べてしまってから 400 で断られないよう、一覧に能力を出す。"""
+        with make_client(monkeypatch_env, ToolLLM(models=["qwen3-8b"])) as client:
+            body = client.get("/v1/ai/backends").json()
+
+        local = next(b for b in body["backends"] if b["id"] == "local")
+        # SearXNG 未設定・CLIブリッジでもないので開けられない
+        assert local["web"] is False
+
+    def test_backends_report_web_once_searxng_is_set(self, monkeypatch_env):
+        monkeypatch_env.setenv("CHIEZO_WEB_SEARCH_URL", "http://searxng:8080/search")
+        with make_client(monkeypatch_env, ToolLLM(models=["qwen3-8b"])) as client:
+            body = client.get("/v1/ai/backends").json()
+
+        local = next(b for b in body["backends"] if b["id"] == "local")
+        assert local["web"] is True

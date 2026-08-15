@@ -24,7 +24,7 @@ from fastapi.responses import (
 from pydantic import BaseModel
 from pydantic import Field as PydField
 
-from app import agent, answer, db, media, notes, providers
+from app import agent, answer, db, media, notes, providers, websearch
 from app.deps import (
     exact_title_first,
     get_source,
@@ -1196,6 +1196,10 @@ class AiCompleteRequest(BaseModel):
     backend: str | None = None
     model: str | None = None
     effort: str | None = None
+    # 相手自身の web 検索を開けるか(既定は開けない)。
+    # **CLI ブリッジで包んだ相手だけが持つ道具**なので、それ以外に頼まれたら断る
+    # —— 黙って道具無しで答えさせると、呼ぶ側は「調べた結果」として受け取ってしまう。
+    web: bool | None = None
 
 
 @app.get("/v1/ai/backends")
@@ -1217,6 +1221,11 @@ async def ai_backends() -> dict:
                 "efforts": list(providers.efforts_of(name)),
                 # モデルを必ず指定しないといけない相手か(false なら「既定」を選べる)
                 "model_required": bool(spec.model_required) if spec else True,
+                # **web 検索を開けるか**(`/v1/ai/complete` の `web=true`)。
+                # CLI ブリッジの相手は自前の検索を、それ以外は Chiezo の SearXNG を使う。
+                # 呼ぶ側はこれを見て「調べさせる仕事に使える相手」を絞れる ——
+                # 出さないと、選べてしまってから 400 で断られることになる
+                "web": bool(spec and spec.bridge) or websearch.is_enabled(),
             }
             for name, available in zip(names, models, strict=True)
             for spec in (providers.get(name),)
@@ -1226,14 +1235,48 @@ async def ai_backends() -> dict:
 
 @app.post("/v1/ai/complete")
 async def ai_complete(body: AiCompleteRequest) -> dict:
-    """渡されたメッセージをそのまま相手へ投げて、本文を返す(1 往復・道具なし)。"""
+    """渡されたメッセージをそのまま相手へ投げて、本文を返す(1 往復)。
+
+    道具は既定では渡さない。`web=true` のときだけ**相手自身の web 検索**を開ける
+    —— ニュースの収集のように「いまの外の情報」が要る仕事を、`/v1/chat` の抽出を
+    混ぜずに頼めるようにするため。
+
+    web の出し方は相手で変わる:
+
+    - **CLI ブリッジで包んだ相手**(claude / codex / antigravity)は自前の web 検索を持つ。
+      `chiezo_web` を立てるだけでよい(道具の往復が無いぶん速い)
+    - **API で直に叩く相手**(gemini / openai 等)は OpenAI 互換の口に検索の項目が無いので、
+      **Chiezo が立てている SearXNG を道具として貸す**(`agent.complete_with_web`)。
+      知識ベースの道具は渡さない —— この口は抽出を混ぜないためにある
+
+    どちらも無理なとき(SearXNG を設定していない)は**断る** —— 黙って道具無しで答えさせると、
+    呼ぶ側はそれを「調べた結果」として受け取り、学習データから作った話が最新の材料として
+    保存されてしまう(実際に「取得不可」と答えるべき場面で古い答えが返った)。
+    """
     messages = [m.model_dump() for m in body.messages if (m.content or "").strip()]
     if not messages:
         raise HTTPException(400, {"error": "messages must not be empty"})
 
     cfg = await answer.ensure_model(answer.require_settings(body.backend, body.model, body.effort))
-    message = await answer.complete_message(cfg, messages)
-    content = answer.content_of(message)
+
+    spec = providers.get(cfg.name)
+    via_bridge = bool(spec and spec.bridge)
+    want_web = body.web is True
+    if want_web and not via_bridge and not websearch.is_enabled():
+        raise HTTPException(400, {
+            "error": "web search is not available",
+            "reason": f"{answer.backend_label(cfg.name)} は自前の web 検索を持たず、"
+                      "Chiezo の web 検索も設定されていません",
+            "hint": "CHIEZO_WEB_SEARCH_URL に SearXNG を設定するか、"
+                    "CLI ブリッジ経由の相手(claude / codex / antigravity)を選んでください",
+        })
+
+    if want_web and not via_bridge:
+        # SearXNG を道具として貸す(往復あり)。知識ベースの道具は渡さない。
+        content = await agent.complete_with_web(cfg, messages)
+    else:
+        extra = {"chiezo_web": True} if want_web else {}
+        content = answer.content_of(await answer.complete_message(cfg, messages, **extra))
     if not content:
         raise HTTPException(502, {"error": "empty response from llm"})
 
@@ -1243,6 +1286,9 @@ async def ai_complete(body: AiCompleteRequest) -> dict:
         # 実際に使われたモデル。呼ぶ側が「どれが書いたか」を残せるようにする
         "model": cfg.model,
         "effort": cfg.effort,
+        # **実際に web を開けたか。** 頼まなければ false。呼ぶ側が
+        # 「調べさせたつもりで調べていない」を検出できるようにする
+        "web": want_web,
         "content": content,
     }
 

@@ -634,6 +634,68 @@ async def stream(
     yield "delta", {"text": final}
 
 
+async def complete_with_web(cfg, messages: list[dict]) -> str:
+    """**web 検索の道具だけ**を渡して答えを作る(`/v1/ai/complete` の `web=true` 用)。
+
+    知識ベースの道具は渡さない —— この口は「自分のプロンプトと材料を持っているアプリ」の
+    ためのもので、抽出が混ざると邪魔になる(それが `/v1/chat` と分けてある理由)。
+    渡すのは外を見る手段だけ。
+
+    **CLI ブリッジで包んだ相手には使わない。** あちらは自前の web 検索を持っているので、
+    `chiezo_web` を立てるだけでよい(道具の往復ぶん速い)。こちらは API で直に叩く相手
+    (gemini・openai 等)に、Chiezo が立てている SearXNG を貸すための経路。
+
+    出典は返さない。**呼ぶ側は本文しか受け取らない**ので、URL が要るなら本文に書かせる
+    (道具の説明文にタイトル・要約・URL が返ると書いてある)。
+    """
+    tools = [websearch.TOOL_SPEC]
+    convo = list(messages)
+    called: dict[str, Any] = {}
+    deadline = asyncio.get_running_loop().time() + cfg.agent_timeout
+
+    for step in range(cfg.agent_max_steps):
+        if asyncio.get_running_loop().time() > deadline:
+            log.info("complete_with_web: out of time after %d step(s)", step)
+            break
+        message = await answer.complete_message(cfg, convo, tools=tools)
+        calls = message.get("tool_calls") or []
+        if not calls:
+            return answer.content_of(message)
+        # assistant メッセージは tool_calls ごと積み直す(tool メッセージと対応が取れなくなる)
+        convo.append(message)
+        for call in calls:
+            fn = call.get("function") or {}
+            name = fn.get("name") or ""
+            arguments, why = _parse_arguments(fn.get("arguments"))
+            if name != websearch.TOOL_NAME:
+                # 渡していない道具を呼ばれたら、その旨を返して続けさせる(落とさない)
+                payload: Any = {"error": f"unknown tool: {name}"}
+            elif arguments is None:
+                payload = {"error": why}
+            else:
+                q = str(arguments.get("q", "")).strip()
+                # **同じ検索は外へ出さない。** ループはモデルの気分で何度でも呼ぶ
+                # (agent ループが同じ理由で入れている)。
+                if q in called:
+                    payload = called[q]
+                else:
+                    payload = await websearch.search(q)
+                    called[q] = payload
+            convo.append({
+                "role": "tool",
+                "tool_call_id": call.get("id", ""),
+                "name": name,
+                "content": _tool_content(payload, cfg.agent_tool_chars),
+            })
+    else:
+        log.info("complete_with_web: step budget (%d) exhausted", cfg.agent_max_steps)
+
+    # 予算か締め切りを使い切った場合。道具を渡さずにもう 1 回だけ聞く
+    # (ここで打ち切ると、調べただけで何も答えないまま終わってしまう)。
+    convo.append({"role": "user", "content": FORCED_ANSWER_NOTICE})
+    return answer.content_of(await answer.complete_message(cfg, convo))
+
+
 def _tool_content(payload: Any, limit: int) -> str:
     """道具の応答をモデルに返す形(JSON 文字列)にし、長ければ切る。"""
     text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
