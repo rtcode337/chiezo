@@ -133,6 +133,11 @@ PAGE_STYLE = """
   table.ai-settings details { margin-top: 0.3rem; }
   table.ai-settings details > summary { font-weight: normal; padding: 0.1rem 0; }
   table.ai-settings p { margin: 0.3rem 0; }
+  /* **無効な相手は行ごと薄くする。** 「使う」のボタンの文字だけでは、行が増えるほど
+     いまどちらの状態か読み取りにくい。ボタンは押せる必要があるので薄くしない。 */
+  table.ai-settings tr.off { background: #f7f7f7; }
+  table.ai-settings tr.off td { color: #999; }
+  table.ai-settings tr.off button { color: inherit; }
   details { margin-top: 1rem; }
   details > summary { cursor: pointer; font-weight: bold; padding: 0.3rem 0; }
   pre.doc-body { white-space: pre-wrap; word-break: break-word; }

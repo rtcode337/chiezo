@@ -73,10 +73,9 @@ TIMEOUT = float(os.environ.get("CHIEZO_BRIDGE_TIMEOUT", "300") or 300)
 MODEL_LABEL = os.environ.get("CHIEZO_BRIDGE_MODEL_LABEL", "").strip() or (
     MODEL
     or {
-        "claude": "Claude Code",
+        "claude": "Claude Code CLI",
         "codex": "Codex CLI",
         "antigravity": "Antigravity CLI",
-        "gemini": "Gemini CLI",
     }.get(CLI, CLI)
 )
 # **会話ごとに選べるモデルの一覧**(`/v1/models` で名乗る)。
@@ -93,10 +92,6 @@ DEFAULT_MODELS = {
     "claude": ("sonnet", "fable", "opus", "haiku"),  # claude --help のエイリアス（4 つとも実測）
     "codex": (),
     "antigravity": (),
-    # gemini は短縮名を持たず実 ID を渡す。**これは CLI 自身のバンドルに入っていた ID** で、
-    # 実行して確かめたものではない（鍵が無いと認証で止まり、モデル名まで到達しない）。
-    # 選んで失敗するようなら CHIEZO_BRIDGE_MODELS で差し替える。
-    "gemini": ("gemini-3.5-flash", "gemini-3-pro-preview", "gemini-2.5-pro", "gemini-2.5-flash"),
 }
 MODELS = tuple(
     m.strip()
@@ -112,7 +107,6 @@ DEFAULT_EFFORTS = {
     "claude": ("low", "medium", "high", "xhigh", "max"),  # claude --help（5 つとも実測）
     "antigravity": ("low", "medium", "high"),  # agy --help
     "codex": (),  # codex exec --help に無い（設定キーは確かめていないので出さない）
-    "gemini": (),  # gemini --help に無い
 }
 EFFORTS = tuple(
     e.strip().lower()
@@ -164,38 +158,6 @@ def disallowed_for(web: bool) -> str:
     return ",".join(names)
 
 
-# ---- Gemini CLI の道具 ------------------------------------------------------
-#
-# **⚠ web を off にしても塞げていないかもしれない。**
-#
-# 道具の名前（`google_web_search` / `web_fetch` / `run_shell_command` /
-# `read_many_files`）と、絞る手段が 2 系統あること（`--policy` の
-# `toolName` + `decision`、settings の `excludeTools`）まではバンドルから確かめた。
-# **効くかどうかは確かめていない** —— Gemini CLI は**認証チェックがポリシー検証より先**に
-# 走るので、鍵が無いと正しい形式と壊れた形式が同じエラーになり区別が付かない。
-#
-# claude で保証している「道具を一切渡さない」は、gemini では**保証できない**。
-# 塞げていることを前提にしないこと。確かめるには鍵を入れて 1 回実行し、
-# `google_web_search` が実際に拒否されるかを見る必要がある。
-GEMINI_TOOLS = ("google_web_search", "web_fetch", "run_shell_command", "read_many_files")
-GEMINI_WEB_TOOLS = ("google_web_search", "web_fetch")
-GEMINI_POLICY_PATH = "/tmp/chiezo-gemini-policy.json"
-
-
-def _write_gemini_policy(web: bool) -> str:
-    """今回塞ぐ道具のポリシーを書き、そのパスを返す（塞ぐものが無ければ空）。
-
-    **効く保証は無い**（上の注記を参照）。書いておくのは、効くようになったとき／
-    確かめたときにそのまま使えるようにするため。
-    """
-    deny = [t for t in GEMINI_TOOLS if web is False or t not in GEMINI_WEB_TOOLS]
-    if not deny:
-        return ""
-    rules = [{"toolName": name, "decision": "deny"} for name in deny]
-    with open(GEMINI_POLICY_PATH, "w", encoding="utf-8") as f:
-        json.dump({"rules": rules}, f, ensure_ascii=False)
-    return GEMINI_POLICY_PATH
-
 MCP_CONFIG_PATH = "/tmp/chiezo-mcp.json"
 
 # Chiezo の設定 DB(chiezo-api と共有。読み取り専用でマウントする)。
@@ -211,14 +173,6 @@ class PromptTooLong(Exception):
     """プロンプトを引数で渡す CLI(agy)で、長さ上限を超えたとき。"""
 
 
-# 設定 DB のどの行を読むか。**CLI 名と相手 ID がずれるものだけ書く** ——
-# 管理画面の相手 ID は `api/app/providers.py` が持っていて、Gemini CLI だけは
-# `gemini`(API を直に叩くほう)と区別するために `gemini-cli` になっている。
-# ここを CLI 名のまま引くと、**画面では Gemini CLI の行に鍵を入れたのに、
-# ブリッジは別の行を読む**という食い違いになる(鍵が無いのに登録済みに見える)。
-PROVIDER_ID = {"gemini": "gemini-cli"}.get(CLI, CLI)
-
-
 def stored_credential() -> str:
     """管理画面から登録された認証情報。無ければ環境変数へ落ちる。
 
@@ -228,7 +182,6 @@ def stored_credential() -> str:
         {
             "claude": "CLAUDE_CODE_OAUTH_TOKEN",
             "codex": "CODEX_AUTH_JSON",
-            "gemini": "GEMINI_API_KEY",
         }.get(CLI, ""), ""
     ).strip()
     try:
@@ -236,7 +189,7 @@ def stored_credential() -> str:
         conn = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True, timeout=5.0)
         try:
             row = conn.execute(
-                "SELECT credential FROM provider_settings WHERE provider = ?", (PROVIDER_ID,)
+                "SELECT credential FROM provider_settings WHERE provider = ?", (CLI,)
             ).fetchone()
         finally:
             conn.close()
@@ -262,10 +215,6 @@ def apply_credential() -> str:
         )
     if CLI == "claude":
         os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = value
-        return ""
-    if CLI == "gemini":
-        # 鍵 1 本で済む（未設定時のエラー文が GEMINI_API_KEY を挙げるのを実測）。
-        os.environ["GEMINI_API_KEY"] = value
         return ""
     if CLI == "codex":
         home = os.environ.get("CODEX_HOME", "/srv/bridge/.codex")
@@ -453,24 +402,6 @@ def build_command(
             cmd += ["--effort", effort]
         return cmd
 
-    if CLI == "gemini":
-        # **プロンプトは標準入力から読ませる**（`-p` の値に追記される仕様。`--help` で実測）。
-        # claude / codex と同じ扱いにでき、Antigravity のような引数長の制限を受けない。
-        cmd = [
-            "gemini",
-            "-p", "",
-            "-o", "text",
-            # 非対話なので確認を出されると待ち続けて固まる。
-            # **これは「確認を省く」だけで、道具を塞ぐ指定ではない。**
-            "--approval-mode", "yolo",
-        ]
-        # 塞ぐ指定は書くが、**効く保証は無い**（GEMINI_TOOLS の注記を参照）。
-        if policy := _write_gemini_policy(web):
-            cmd += ["--policy", policy]
-        if model:
-            cmd += ["--model", model]
-        return cmd
-
     if CLI == "codex":
         cmd = [
             "codex", "exec",
@@ -597,13 +528,6 @@ AUTH_CHECK = {
     "claude": ["claude", "auth", "status"],
     "codex": ["codex", "login", "status"],
     "antigravity": ["agy", "models"],
-    # **gemini だけはモデルを呼ぶ。** 認証の状態を見せるサブコマンドが無く
-    # (`gemini --help` にあるのは mcp / extensions / skills / hooks / gemma だけ)、
-    # `mcp list` の類は鍵が壊れていても 0 で終わるので確かめたことにならない。
-    # ここは API キー方式(無料枠は従量)なので、1 語のやり取り 1 回で済ませる ——
-    # 枠を食うのを嫌ってサブスクの相手には避けている手だが、この相手では逆に
-    # これしか「いま使えるか」を見る方法が無い。
-    "gemini": ["gemini", "-p", "ok", "-o", "text"],
 }
 
 

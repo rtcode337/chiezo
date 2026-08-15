@@ -126,7 +126,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="claude",
-        label="Claude Code",
+        label="Claude Code CLI",
         url="http://chiezo-bridge-claude:7013/v1",
         credential=CRED_REQUIRED,
         billing="Claude のサブスクリプション（定額）",
@@ -143,29 +143,6 @@ PROVIDERS: tuple[Provider, ...] = (
         efforts=("low", "medium", "high", "xhigh", "max"),
         bridge=True,
         order=30,
-    ),
-    Provider(
-        id="gemini-cli",
-        label="Gemini CLI",
-        url="http://chiezo-bridge-gemini:7013/v1",
-        credential=CRED_REQUIRED,
-        billing="Gemini API の無料枠（課金を有効にしなければ従量課金は発生しない）",
-        model_required=False,
-        setup="docker-compose.yml の chiezo-bridge-gemini のコメントを外して起動し、"
-        "Google AI Studio で発行した API キーをここに登録してください"
-        "（`gemini` と同じ鍵で構いません）。"
-        "**⚠ この相手は web 検索を止められないかもしれません** —— "
-        "`web=false` で塞ぐ指定は書いてありますが、効くことを確かめられていません"
-        "（Gemini CLI は認証チェックがポリシー検証より先に走るため、鍵を入れて"
-        "1 回実行しないと確かめられない）。調べさせたくない用途では選ばないでください。",
-        # **CLI 自身のバンドルに入っていた ID**。実行して確かめたものではないので、
-        # 選んで失敗するようなら CHIEZO_BRIDGE_MODELS で差し替える。
-        # 短縮名（claude の sonnet のようなもの）は持たない。
-        models=("gemini-3.5-flash", "gemini-3-pro-preview", "gemini-2.5-pro", "gemini-2.5-flash"),
-        # `gemini --help` に相当する指定が無い。
-        efforts=(),
-        bridge=True,
-        order=35,
     ),
     Provider(
         id="antigravity",

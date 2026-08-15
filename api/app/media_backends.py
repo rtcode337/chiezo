@@ -12,7 +12,7 @@
 - **ComfyUI** —— 自前の GPU。API は「プロンプトを投げる口」ではなく**ノードのグラフを
   投げる口**なので、こちらでテンプレのグラフを持ち、プロンプト・seed・サイズを差し込む。
   音も同じ口で、**チェックポイントの系統でグラフが変わる**(Stable Audio Open / ACE-Step)。
-- **Gemini** —— 外部。鍵は「話す相手」に登録済みのものを流用する。絵も曲(Lyria 3)も
+- **Gemini** —— 外部。鍵は会話用に登録済みのものを流用する。絵も曲(Lyria 3)も
   同じ `interactions` の口で、違うのは `response_format` だけ。
 - **ElevenLabs** —— 外部。**効果音と曲で口が別**(`/sound-generation` と `/music`)。
   会話ができない相手なので鍵を借りる先が無く、ここだけ鍵を自分で持つ。
@@ -129,19 +129,22 @@ NO_CREDENTIAL = "鍵が未登録"
 def unusable_reason(spec: media_providers.MediaProvider) -> str:
     """使えない理由。使えるなら空。**画面と道具で同じ判定を使う**(食い違わせない)。
 
-    **「話す相手」で無効にしてある相手は、絵も描かせない。** 鍵を持っている相手を
+    **無効にしてある相手には、絵も音も作らせない。** 鍵を持っている相手を
     止めたのに片方だけ動き続けるのは、止めたつもりの人にとって事故になる。
     元栓(「答える」層)が停止中なら、相手によらず全部止める。
+
+    **理由は画面の 1 行に収まる短さにする。** 管理画面では相手ごとに 1 行で、
+    その行の「できること」の欄にそのまま出るため。
     """
     if not settings_store.answer_enabled():
         return "「答える」層が停止中"
-    # 自分の on/off を持つ相手(自前の GPU)は自分の行を、「話す相手」に対応がある相手は
-    # あちらの行を見る。**同じものを 2 か所で切り替えさせない**
+    # **on/off は相手ごとに 1 つ。** 自分の行を持つ相手(自前の GPU・ElevenLabs)は
+    # 自分の設定を、鍵を借りている相手は借り先の設定を見る
     if spec.owns_toggle:
         if not settings_store.load(spec.id).enabled:
-            return "無効(この節の「使う」で有効にする)"
+            return "無効(この行で有効にする)"
     elif spec.credential_from and not settings_store.load(spec.credential_from).enabled:
-        return "「話す相手」で無効(先に話せるようにする)"
+        return "無効(この行で有効にする)"
     if spec.credential == media_providers.CRED_REQUIRED and not credential_of(spec):
         return NO_CREDENTIAL
     return ""
@@ -204,13 +207,14 @@ async def _comfy_generate(
 
     model = req.model
     if not model:
-        available = await comfy_models(url)
+        available = await comfy_image_models(url)
         if not available:
             raise HTTPException(
                 502,
                 {
-                    "error": "ComfyUI にチェックポイントが 1 つも置かれていません",
-                    "hint": "models/checkpoints に .safetensors を置いてください",
+                    "error": "ComfyUI に絵のチェックポイントが 1 つも置かれていません",
+                    "hint": "models/checkpoints に .safetensors を置いてください"
+                    "(名前に audio か ace を含むものは音のモデルとして扱います)",
                 },
             )
         model = available[0]
@@ -307,7 +311,7 @@ async def _gemini_generate(
             401,
             {
                 "error": "Gemini の API キーが未登録です",
-                "hint": "管理画面(/admin の「話す相手」)で Gemini の鍵を登録してください"
+                "hint": "管理画面(/admin の「AI の相手」)で Gemini の鍵を登録してください"
                 "(画像生成でも同じ鍵を使います)",
             },
         )
@@ -381,7 +385,7 @@ async def _openai_generate(
             401,
             {
                 "error": "OpenAI の API キーが未登録です",
-                "hint": "管理画面(/admin の「話す相手」)で OpenAI の鍵を登録してください"
+                "hint": "管理画面(/admin の「AI の相手」)で OpenAI の鍵を登録してください"
                 "(画像生成でも同じ鍵を使います)",
             },
         )
@@ -418,7 +422,7 @@ async def _openai_generate(
 #
 # ブリッジ(chiezo-bridge-codex)の `/v1/images/generations` に投げる。中では
 # `codex exec` が内蔵の image_gen を回して PNG を書き、ブリッジがそれを base64 で返す。
-# **鍵はこちらに無い**(ブリッジが「話す相手」で登録された auth.json を読む)。
+# **鍵はこちらに無い**(ブリッジが管理画面で登録された auth.json を読む)。
 async def _codex_generate(
     spec: media_providers.MediaProvider, req: ImageRequest, seed: int
 ) -> GeneratedImage:
@@ -467,6 +471,17 @@ def _is_ace(name: str) -> bool:
 def is_audio_checkpoint(name: str) -> bool:
     """音のチェックポイントらしい名前か(絵のものと同じ置き場に混ざっている)。"""
     return any(hint in name.lower() for hint in _AUDIO_HINTS)
+
+
+async def comfy_image_models(url: str, timeout: float = 5.0) -> list[str]:
+    """置いてある**絵の**チェックポイント。
+
+    **音のものを混ぜない。** 置き場が同じ(`models/checkpoints`)なので、素の一覧には
+    音のモデルも並ぶ —— そのまま使うと、モデルを指定しなかった絵の生成が一覧の先頭に
+    来た音のモデルを掴む(`ace_step_…` が `sd_xl_…` より前に来る)。読み込んで初めて
+    失敗するので、気づくのは遅い。
+    """
+    return [name for name in await comfy_models(url, timeout) if not is_audio_checkpoint(name)]
 
 
 async def comfy_audio_models(url: str, timeout: float = 5.0) -> list[str]:
@@ -642,7 +657,7 @@ async def _gemini_audio(
             401,
             {
                 "error": "Gemini の API キーが未登録です",
-                "hint": "管理画面(/admin の「話す相手」)で Gemini の鍵を登録してください"
+                "hint": "管理画面(/admin の「AI の相手」)で Gemini の鍵を登録してください"
                 "(音の生成でも同じ鍵を使います)",
             },
         )
@@ -689,7 +704,7 @@ async def _gemini_audio(
 #
 # **効果音と曲で口が別**(`/sound-generation` と `/music`)。返るのは JSON ではなく
 # **音のバイト列そのもの**なので、失敗したときだけ本文が JSON になる。
-# 鍵はこの相手のもの(会話ができないので「話す相手」に借り先が無い)。
+# 鍵はこの相手のもの(会話ができないので借り先が無い)。
 def _elevenlabs_body(req: AudioRequest, model: str, seconds: float) -> tuple[str, dict]:
     if req.sound == media_providers.SOUND_MUSIC:
         body: dict = {"prompt": req.prompt, "model_id": model}
@@ -717,7 +732,7 @@ async def _elevenlabs_audio(
             401,
             {
                 "error": "ElevenLabs の API キーが未登録です",
-                "hint": "管理画面(/admin の「絵と音を作る相手」)で ElevenLabs の鍵を"
+                "hint": "管理画面(/admin の「AI の相手」)で ElevenLabs の鍵を"
                 "登録してください",
             },
         )
@@ -775,16 +790,14 @@ def _ready(backend: str, table: dict, kind: str) -> media_providers.MediaProvide
     # **止めてある相手には頼まない。** 画面で無効にしたのに道具からは作れてしまう、
     # という食い違いを作らない
     if reason := unusable_reason(spec):
-        # **鍵をどこへ入れるかは相手によって違う。** 借り物の相手は「話す相手」、
-        # 借り先の無い相手(ElevenLabs)は「絵と音を作る相手」の節。
-        # 場所を言わない案内は、受け取った側にとって次の一手にならない。
-        where = "話す相手" if spec.credential_from else "絵と音を作る相手"
+        # **場所を言わない案内は、受け取った側にとって次の一手にならない。**
+        # 相手ごとに 1 行なので、行き先は 1 つで済む。
         raise HTTPException(
             401 if reason == NO_CREDENTIAL else 403,
             {
                 "error": f"{spec.label} は使えません: {reason}",
-                "hint": f"管理画面(/admin の「{where}」)で鍵を登録し、有効にしてください"
-                "(絵と音で同じ鍵と on/off を使います)",
+                "hint": "管理画面(/admin の「AI の相手」)で鍵を登録し、有効にしてください"
+                "(話す・絵・音で同じ鍵と on/off を使います)",
             },
         )
     return spec

@@ -208,43 +208,6 @@ services:
   #chiezo-bridge-codex:
   #  image: ghcr.io/rtcode337/chiezo-bridge:latest
   #  container_name: chiezo-bridge-codex
-  #  volumes:
-  #    - type: bind
-  #      source: *state-dir
-  #      target: /state
-  #      read_only: true
-  #  environment:
-  #    CHIEZO_BRIDGE_CLI: codex
-  #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-api:7010/mcp
-  #  restart: unless-stopped
-  #  cpu_shares: 512
-  #
-  # Gemini CLI。鍵は管理画面の「話す相手」で登録する(`gemini` と同じ API キーでよい)。
-  # **⚠ web 検索を止められないかもしれない** —— `web=false` で塞ぐ指定は書いてあるが、
-  # 効くことを確かめられていない(Gemini CLI は認証チェックがポリシー検証より先に走るので、
-  # 鍵を入れて 1 回実行しないと確かめられない)。調べさせたくない用途では選ばないこと。
-  #chiezo-bridge-gemini:
-  #  image: ghcr.io/rtcode337/chiezo-bridge:latest
-  #  container_name: chiezo-bridge-gemini
-  #  volumes:
-  #    - type: bind
-  #      source: *state-dir
-  #      target: /state
-  #      read_only: true
-  #  environment:
-  #    CHIEZO_BRIDGE_CLI: gemini
-  #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-api:7010/mcp
-  #  restart: unless-stopped
-  #  cpu_shares: 512
-  #
-  # Antigravity だけマウントが違う。**API キー方式が無く**、コンテナ内で 1 回サインインした
-  # 結果をホーム配下のキャッシュから読むので、/state(読み取り専用)ではなく
-  # **書き込み可能なホーム**をバインドして永続化する。立ち上げたら
-  #   docker exec -it chiezo-bridge-antigravity agy
-  # を 1 回だけ対話で実行し、表示される URL でサインインすること。
-  # **ブリッジは非 root(uid 1000)で動く** —— claude が権限確認を飛ばす指定を root では
-  # 受け付けないため。ここでバインドするディレクトリは uid 1000 が書けるようにしておくこと
-  # (合わなければ `sudo chown -R 1000:1000 <ディレクトリ>`)。書けないとサインインが残らない。
   #chiezo-bridge-antigravity:
   #  image: ghcr.io/rtcode337/chiezo-bridge:latest
   #  container_name: chiezo-bridge-antigravity

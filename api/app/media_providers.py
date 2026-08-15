@@ -110,7 +110,7 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         credential=CRED_REQUIRED,
         billing="ChatGPT のサブスクリプション(**画像は文字の 3〜5 倍の速さで枠を食う**)",
         setup="docker-compose.yml の chiezo-bridge-codex のコメントを外して起動し、"
-        "管理画面(/admin の「話す相手」)で Codex を有効にしてください。"
+        "管理画面(/admin の「AI の相手」)で Codex を有効にしてください。"
         "画像も同じログイン(ChatGPT のサブスク)で動くので、API キーは要りません。",
         # モデルは Codex の内蔵ツールが決める(いまは gpt-image-2)。指定は受け付けない
         models=(),
@@ -125,7 +125,7 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         url="https://api.openai.com/v1",
         credential=CRED_REQUIRED,
         billing="従量課金(無料枠は無い)",
-        setup="管理画面(/admin の「話す相手」)で OpenAI の API キーを登録してください。"
+        setup="管理画面(/admin の「AI の相手」)で OpenAI の API キーを登録してください。"
         "画像生成でも同じ鍵を使います(話す相手としては off のままで構いません)。",
         models=("gpt-image-2",),
         # **相手が受け付けるのは決まった組み合わせだけ**(自由な画素数は取らない)。
@@ -141,7 +141,7 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         url="https://generativelanguage.googleapis.com/v1beta",
         credential=CRED_REQUIRED,
         billing="無料枠(課金を有効にしなければ従量課金は発生しない)",
-        setup="管理画面(/admin の「話す相手」)で Gemini の API キーを登録してください。"
+        setup="管理画面(/admin の「AI の相手」)で Gemini の API キーを登録してください。"
         "画像生成でも同じ鍵を使います。",
         # 速い順。**先頭が既定**(何も選ばなかったときに使われるので、ずらすと黙って変わる)。
         models=("gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image"),
@@ -160,7 +160,7 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         url="https://api.elevenlabs.io/v1",
         credential=CRED_REQUIRED,
         billing="無料枠あり(超えたぶんは従量課金)",
-        setup="管理画面(/admin の「絵と音を作る相手」)で ElevenLabs の API キーを登録し、"
+        setup="管理画面(/admin の「AI の相手」)で ElevenLabs の API キーを登録し、"
         "「使う」を押してください。",
         # **この相手だけ鍵を自分で持つ。** 「話す相手」に対応が無い(会話はできない)ので
         # 借りる先が無く、鍵と on/off をここに置くしかない。ComfyUI と同じ扱い。

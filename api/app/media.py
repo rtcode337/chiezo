@@ -594,7 +594,7 @@ async def backends(kind: str = media_providers.KIND_IMAGE) -> list[dict]:
                 models = await (
                     media_backends.comfy_audio_models(media_providers.url_of(spec))
                     if audio
-                    else media_backends.comfy_models(media_providers.url_of(spec))
+                    else media_backends.comfy_image_models(media_providers.url_of(spec))
                 )
             # 立っていない・繋がらない・応答が読めない —— どれも「使えない」で足りる
             except Exception:
@@ -603,7 +603,7 @@ async def backends(kind: str = media_providers.KIND_IMAGE) -> list[dict]:
                 if not models:
                     usable, reason = False, (
                         "音のチェックポイントが置かれていない" if audio
-                        else "チェックポイントが置かれていない"
+                        else "絵のチェックポイントが置かれていない"
                     )
 
         entry = {

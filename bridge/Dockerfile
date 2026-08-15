@@ -5,21 +5,19 @@
 # イメージは 1 回 pull すればディスクは 1 つぶんで、コンテナを何個立てても増えるのは
 # 書き込み層(数 KB)だけ —— CLI ごとにイメージを分けるより、まとめて 1 枚のほうが得。
 #
-# **node は最終イメージに入れない…はずだった。** claude は自己完結バイナリ、codex も
-# vendor の実体バイナリを直接叩けるので、node が要るのは npm install のときだけだった。
+# **node は最終イメージに入れない。** claude は自己完結バイナリ、codex も
+# vendor の実体バイナリを直接叩けるので、node が要るのは npm install のときだけ。
 # 以前は node:20-slim をそのまま実行ステージにしていて、使わない node と npm で
 # 圧縮後 41MB を配っていた。
 #
-# **Gemini CLI だけは JS バンドル**(`bundle/gemini.js` に `#!/usr/bin/env node`)なので、
-# 実行にも node が要る。そこで **node の実体だけを持ち込む**。npm と node_modules は
-# 入れない —— 要るのは実行だけ。
-# **それでもイメージは増える**(実測 1.27GB → 1.56GB。node 95MB + CLI 本体)。
-# gemini を使わない環境ではそのぶんを無駄に配ることになる、というのが今の割り切り。
+# 以前は Gemini CLI(JS バンドルなので実行にも node が要る)のために node を持ち込んで
+# いたが、**個人向けの提供が 2026-06-18 に終了した**ので落とした(後継は Antigravity CLI)。
+# そのぶんイメージは 1.56GB → 1.27GB に戻る。
 
 # ---- CLI を取り出すためだけのステージ ----
 FROM node:20-slim AS cli
 
-RUN npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli
+RUN npm install -g @anthropic-ai/claude-code @openai/codex
 
 # Antigravity CLI は単一の Go バイナリで、npm では配布されていない。
 # インストーラが受け付けるのは --dir と --help だけ(--skip-aliases 等は無い)。
@@ -53,18 +51,13 @@ COPY --from=cli /usr/local/lib/node_modules/@anthropic-ai/claude-code \
 COPY --from=cli /usr/local/lib/node_modules/@openai/codex \
                 /usr/local/lib/node_modules/@openai/codex
 COPY --from=cli /usr/local/bin/agy /usr/local/bin/agy
-COPY --from=cli /usr/local/lib/node_modules/@google/gemini-cli \
-                /usr/local/lib/node_modules/@google/gemini-cli
-# gemini を動かすためだけの node(npm は入れない)。
-COPY --from=cli /usr/local/bin/node /usr/local/bin/node
 
 # npm が張るのと同じ symlink を自分で張る。codex は **node を通す codex.js ではなく
 # vendor の実体バイナリ**を指す(node を最終イメージに置かないため)。
 RUN set -eux; \
     ln -s /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe /usr/local/bin/claude; \
     ln -s /usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex \
-          /usr/local/bin/codex; \
-    ln -s /usr/local/lib/node_modules/@google/gemini-cli/bundle/gemini.js /usr/local/bin/gemini
+          /usr/local/bin/codex
 
 WORKDIR /srv/bridge
 

@@ -95,52 +95,6 @@ class TestCommand:
         with pytest.raises(RuntimeError):
             server.build_command("/tmp/out.txt")
 
-    def test_gemini_reads_the_prompt_from_stdin(self, bridge):
-        """**プロンプトは引数に載せない。**
-
-        `-p` の値に標準入力が追記される仕様（`gemini --help` で実測）なので、
-        claude / codex と同じ扱いにできる —— Antigravity のような引数長の制限を受けない。
-        """
-        server = bridge(CHIEZO_BRIDGE_CLI="gemini")
-        cmd = server.build_command("/tmp/out.txt", "あ" * 100_000, model="gemini-3.5-flash")
-
-        assert cmd[0] == "gemini"
-        # 長いプロンプトでも argv には入らない
-        assert all(len(a) < 1000 for a in cmd)
-        assert cmd[cmd.index("-p") + 1] == ""
-        assert cmd[cmd.index("-o") + 1] == "text"
-        assert cmd[cmd.index("--model") + 1] == "gemini-3.5-flash"
-
-    def test_gemini_writes_a_deny_policy(self, bridge, tmp_path, monkeypatch):
-        """塞ぐ指定は**書く**（効くかどうかは別。GEMINI_TOOLS の注記を参照）。"""
-        server = bridge(CHIEZO_BRIDGE_CLI="gemini")
-        monkeypatch.setattr(server, "GEMINI_POLICY_PATH", str(tmp_path / "policy.json"))
-
-        cmd = server.build_command("/tmp/out.txt", "やあ", web=False)
-        policy = json.loads((tmp_path / "policy.json").read_text(encoding="utf-8"))
-        denied = {r["toolName"] for r in policy["rules"]}
-
-        assert cmd[cmd.index("--policy") + 1] == str(tmp_path / "policy.json")
-        # web を頼んでいないので検索も塞ぐ対象に入る
-        assert "google_web_search" in denied
-        assert "run_shell_command" in denied
-
-    def test_gemini_opens_search_when_web_is_requested(self, bridge, tmp_path, monkeypatch):
-        server = bridge(CHIEZO_BRIDGE_CLI="gemini")
-        monkeypatch.setattr(server, "GEMINI_POLICY_PATH", str(tmp_path / "policy.json"))
-
-        server.build_command("/tmp/out.txt", "やあ", web=True)
-        denied = {
-            r["toolName"]
-            for r in json.loads((tmp_path / "policy.json").read_text(encoding="utf-8"))["rules"]
-        }
-
-        assert "google_web_search" not in denied
-        assert "web_fetch" not in denied
-        # 検索と関係ない道具は塞いだまま
-        assert "run_shell_command" in denied
-
-
 class TestOptionalMcp:
     """MCP は任意。**Chiezo 専用の部品ではなく、道具の要らない用途でも使える**。"""
 
@@ -169,7 +123,6 @@ class TestAntigravityCredential:
 
 class TestMcpConfig:
     def test_config_points_at_chiezo_over_streamable_http(self, bridge, tmp_path):
-        import json
 
         server = bridge(CHIEZO_BRIDGE_CLI="claude", CHIEZO_BRIDGE_MCP_URL="http://api.test:7010/mcp")
         server.MCP_CONFIG_PATH = str(tmp_path / "mcp.json")
@@ -246,7 +199,7 @@ class TestModelSelection:
 
     def test_no_choice_leaves_the_cli_default_alone(self, bridge):
         server = bridge(CHIEZO_BRIDGE_CLI="claude")
-        for requested in (None, "", "  ", "Claude Code", "chiezo"):
+        for requested in (None, "", "  ", "Claude Code CLI", "chiezo"):
             assert server.resolve_model(requested) == ""
             assert "--model" not in server.build_command("/tmp/out.txt", "q", "")
 
@@ -524,7 +477,8 @@ class TestEveryCliIsWiredEndToEnd:
     """**対応する CLI を足すとき、直す場所は 1 つではない。**
 
     実際に Gemini CLI を足したとき `entrypoint.sh` だけが取り残され、
-    コンテナが `未対応の CHIEZO_BRIDGE_CLI: gemini` で起動しなかった。
+    コンテナが `未対応の CHIEZO_BRIDGE_CLI` で起動しなかった（その CLI は
+    提供終了で外したが、検査は残してある）。
     どれか 1 か所を足し忘れると「起動しない」か「画面から有効にできない」になるので、
     対応表の欠けをここで見張る。
     """
@@ -562,46 +516,3 @@ class TestEveryCliIsWiredEndToEnd:
         missing = set(server.DEFAULT_MODELS) - set(server.AUTH_CHECK)
 
         assert not missing, f"認証を確かめる手が無い CLI がある(有効にできない): {missing}"
-
-
-class TestGeminiCliCredential:
-    """**CLI 名と管理画面の相手 ID がずれるのは Gemini CLI だけ。**
-
-    API を直に叩くほうが `gemini` を使っているので、CLI 側は `gemini-cli`。
-    ここを CLI 名のまま引くと、画面では Gemini CLI の行に鍵を入れたのに
-    ブリッジは別の行を読む、という食い違いになる。
-    """
-
-    def _db(self, tmp_path, rows: str) -> str:
-        import sqlite3
-
-        path = tmp_path / "settings.db"
-        conn = sqlite3.connect(path)
-        conn.executescript(
-            "CREATE TABLE provider_settings (provider TEXT PRIMARY KEY, credential TEXT);" + rows
-        )
-        conn.commit()
-        conn.close()
-        return str(path)
-
-    def test_it_reads_the_row_of_the_provider_shown_in_the_admin_screen(self, bridge, tmp_path):
-        path = self._db(
-            tmp_path,
-            "INSERT INTO provider_settings VALUES ('gemini-cli', 'key-cli');"
-            "INSERT INTO provider_settings VALUES ('gemini', 'key-api');",
-        )
-        server = bridge(CHIEZO_BRIDGE_CLI="gemini", CHIEZO_BRIDGE_STATE_DB=path)
-
-        assert server.PROVIDER_ID == "gemini-cli"
-        assert server.stored_credential() == "key-cli"
-
-    def test_the_key_goes_into_the_environment_the_cli_reads(self, bridge, tmp_path):
-        path = self._db(
-            tmp_path, "INSERT INTO provider_settings VALUES ('gemini-cli', 'key-cli');"
-        )
-        server = bridge(CHIEZO_BRIDGE_CLI="gemini", CHIEZO_BRIDGE_STATE_DB=path)
-
-        assert server.apply_credential() == ""
-        import os
-
-        assert os.environ["GEMINI_API_KEY"] == "key-cli"

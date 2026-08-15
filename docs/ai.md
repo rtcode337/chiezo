@@ -154,9 +154,9 @@ image_status(job_id)                    … 仕上がり。files に保存先の
 | id | 実体 | 鍵 | 課金 |
 |---|---|---|---|
 | `comfyui` | 自前の GPU の ComfyUI | 不要 | 電気代だけ |
-| `codex` | **Codex CLI の内蔵ツール**(gpt-image-2) | 「話す相手」の Codex(ChatGPT のログイン) | **ChatGPT のサブスク枠** |
-| `gemini` | Gemini の画像生成(`gemini-3.1-flash-image` ほか) | 「話す相手」の Gemini | 無料枠 |
-| `openai` | gpt-image(`gpt-image-2`) | 「話す相手」の OpenAI | 従量課金 |
+| `codex` | **Codex CLI の内蔵ツール**(gpt-image-2) | Codex の行(ChatGPT のログイン) | **ChatGPT のサブスク枠** |
+| `gemini` | Gemini の画像生成(`gemini-3.1-flash-image` ほか) | Gemini の行 | 無料枠 |
+| `openai` | gpt-image(`gpt-image-2`) | OpenAI の行 | 従量課金 |
 
 **`codex` と `openai` は同じ gpt-image-2 ですが、課金の出どころが違います。**
 `codex` は chatgpt.com 側(サブスクリプション)で追加の API キーが要らず、`openai` は
@@ -164,22 +164,22 @@ platform.openai.com 側(従量課金)でクレジットが要ります —— �
 ただし**画像のターンは文字だけのターンより 3〜5 倍の速さでサブスクの枠を食う**ので、
 枚数を出すなら自前の GPU が向いています。
 
-**外部の鍵と on/off は「話す相手」の画面と共通です**(鍵を 2 か所に持たないため)。
-つまり**「話せるようにする」を押していない相手には絵も描かせません** —— 鍵を持っている相手を
+**鍵と on/off は相手ごとに 1 つです**(同じ鍵を 2 か所に入れさせないため)。
+つまり**「有効にする」を押していない相手には絵も描かせません** —— 鍵を持っている相手を
 止めたのに片方だけ動き続けるのは、止めたつもりの人にとって事故になるためです。
 **「答える」層を停止すると全部止まり、MCP の道具も出なくなります。**
 
-管理画面には「話す相手」の下に**「絵と音を作る相手」**の節が出ます。自前の GPU(ComfyUI)と
-ElevenLabs は話す相手ではないので、**鍵・on/off・「接続を試す」もこの節にあります**
-(「話す相手」に対応がある外部サービスは上で切り替える —— 同じものを 2 か所から切れると、
-どちらが効いているのか分からなくなるため)。**既定は無効**なので、立ち上げたら一度
-「使う」を押してください。
+管理画面の**「AI の相手」**の表に、話す相手と一緒に並びます。**相手ごとに 1 行**で、
+「できること」の欄に**その相手でいま何ができるか（話す・絵・音）**が出ます
+—— 鍵も on/off も相手ごとに 1 つなので、無効にすると全部止まります
+(表を分けていた頃は同じ相手が 2 か所に出ていて、どちらが効くのか読めませんでした)。
+**既定は無効**なので、立ち上げたら一度「有効にする」を押してください。
 
 「接続を試す」は**繋がるかどうかに加えて、チェックポイントが置いてあるかまで見ます**
 —— ComfyUI は立っていてもモデルが無ければ 1 枚も描けません。**絵と音は別のファイルが
 要る**ので、どちらが何件あるかも返します。
 
-`codex` を使うには、`chiezo-bridge-codex` を立てて「話す相手」で Codex を有効にしてください
+`codex` を使うには、`chiezo-bridge-codex` を立てて表の Codex CLI を有効にしてください
 (画像はブリッジの `/v1/images/generations` を通り、中で `codex exec` が内蔵ツールを回します。
 **会話の口と違い、この 1 回のための作業ディレクトリにだけ書き込みを許します** ——
 画像はファイルとして書き出されるためです)。
@@ -254,12 +254,11 @@ audio_status(job_id)                    … 仕上がり。files に保存先の
 | id | 実体 | 頼めるもの | 鍵 | 課金 |
 |---|---|---|---|---|
 | `comfyui` | 自前の GPU(Stable Audio Open / ACE-Step) | 効果音 〜47 秒・曲 〜240 秒 | 不要 | 電気代だけ |
-| `gemini` | Lyria 3(`lyria-3-clip-preview` ほか) | **曲のみ・長さは指定できない** | 「話す相手」の Gemini | 無料枠 |
+| `gemini` | Lyria 3(`lyria-3-clip-preview` ほか) | **曲のみ・長さは指定できない** | Gemini の行 | 無料枠 |
 | `elevenlabs` | ElevenLabs(`/sound-generation`・`/music`) | 効果音 〜30 秒・曲 〜600 秒 | **この相手専用**(下記) | 無料枠あり |
 
-**ElevenLabs だけ鍵をこの節で登録します。** 会話ができない相手なので「話す相手」に
-対応が無く、借りる先がありません(他の外部サービスは絵と同じで、上の表の鍵と on/off を
-そのまま使います)。
+**ElevenLabs は会話ができない相手**なので、鍵を借りる先がありません（自分の行に登録します）。
+他の外部サービスは絵と同じで、同じ行の鍵と on/off をそのまま使います。
 
 自前の GPU で作るには、**絵とは別のモデル**を `./models/comfyui/ComfyUI/models/checkpoints/` に
 置きます（絵と同じ置き場です）。
@@ -383,9 +382,9 @@ docker compose exec searxng wget -qO- "http://localhost:7012/search?q=test&forma
 - 何を書いたかは「調べた手順」に `remember {...}` として出る
 - トグルを外す(API なら `notes=0`)と、そのやり取りでは道具ごと渡らない
 
-## 話す相手を選ぶ（管理画面から）
+## 相手を選ぶ（管理画面から）
 
-**話す相手は管理画面（`/admin` の「話す相手」）から on/off します。** `.env` に書くことはありません。
+**相手は管理画面（`/admin` の「AI の相手」）から on/off します。** `.env` に書くことはありません。
 
 節の先頭に**「答える」層そのものの元栓**があります。止めると、相手をいくつ有効にしてあっても
 `/v1/ask`・`/ai/chat` は 503 になります（相手を 1 つずつ切って回らずに機能ごと止めたいとき用）。
@@ -441,10 +440,6 @@ CHIEZO_LLM_URL=http://192.0.2.10:11434/v1   # 別マシンの Ollama 等
 **会話は 1 往復もせず**、`/models` を引くだけ（CLI ブリッジは `claude auth status` 等を
 CLI に聞かせる）ので、サブスクの枠を食いません。
 
-**例外は Gemini CLI だけで、ここはモデルを 1 回呼びます。** 認証の状態を見せる
-サブコマンドが無く、`gemini mcp list` の類は鍵が壊れていても成功で終わるためです。
-API キー方式（無料枠は従量）なので、1 語のやり取り 1 回ぶんだけかかります。
-
 登録の有無だけでは、打ち間違えた認証情報や期限切れは分かりません —— 会話して初めて
 失敗し、原因が追いにくくなります（実際に本番で 502 として出ました）。到達できることと
 話せることも別です（認証情報が間違っていても到達はする）。
@@ -484,11 +479,6 @@ postgres を別コンテナで立てて複数のアプリが繋ぐのと同じ�
 ブリッジ側で組まず、道具は CLI 自身が引きます —— Claude Code も Codex も、道具を自分で
 回すのが本業だからです。Chiezo 側から見ると「1 回聞いたら答えが返る」ので、
 `rag` / `agent` の区別は関係なくなります。
-
-**Gemini CLI だけは「信頼していないフォルダでは MCP を無効にする」**ので、ブリッジは
-起動時にフォルダ信頼の機能を切っています（`security.folderTrust.enabled = false`）。
-切らないと `gemini mcp list` に `Disabled` と出るだけで、**実行時は黙って道具の無い状態**に
-なります —— コンテナはこの用途専用なので、機能ごと切ってしまって差し支えありません。
 
 安全のために、**CLI の組み込みの道具（シェル・ファイルの読み書き・web 取得）は塞いで**
 あります（`--disallowed-tools`）。使えるのは Chiezo の MCP だけです。
@@ -617,7 +607,7 @@ docker compose up -d
 claude setup-token                 # → 出てきたトークン
 codex login --device-auth          # → ~/.codex/auth.json の中身
 
-# 3) 管理画面（/admin）の「話す相手」でそれを登録し、on にする
+# 3) 管理画面（/admin）の「AI の相手」でそれを登録し、on にする
 ```
 
 環境変数（`CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_AUTH_JSON`）でも渡せます —— 設定 DB を
@@ -628,7 +618,7 @@ codex login --device-auth          # → ~/.codex/auth.json の中身
 
 | 環境変数 | 既定 | 説明 |
 |---|---|---|
-| `CHIEZO_BRIDGE_CLI` | `claude` | 包む CLI（`claude` / `codex` / `gemini` / `antigravity`） |
+| `CHIEZO_BRIDGE_CLI` | `claude` | 包む CLI（`claude` / `codex` / `antigravity`） |
 | `CHIEZO_BRIDGE_MCP_URL` | `http://chiezo-api:7010/mcp` | CLI に繋ぐ Chiezo の MCP。**空にすると繋がない** |
 | `CHIEZO_BRIDGE_STATE_DB` | `/state/settings.db` | 認証情報を読む Chiezo の設定 DB（読み取り専用でマウント） |
 | `CHIEZO_BRIDGE_MODEL` | （CLI の既定） | 何も選ばれなかったときのモデル。会話画面で選んだものが優先される |
@@ -752,7 +742,7 @@ chiezo-api 側:
 
 | 変数 | 既定 | 説明 |
 |---|---|---|
-| `CHIEZO_STATE_DIR` | (未設定 = 管理画面から相手を増やせない) | 話す相手の設定(on/off・API キー・モデル)の置き場 |
+| `CHIEZO_STATE_DIR` | (未設定 = 管理画面から相手を増やせない) | 相手の設定(on/off・API キー・モデル)の置き場 |
 | `CHIEZO_LLM_URL` | (未設定) | **環境変数でしか指せない相手**の OpenAI 互換ベース URL。パスを持たない URL にだけ `/v1` を補う(Gemini のように既にパスがある相手には足さない) |
 | `CHIEZO_LLM_LABEL` | `推論サーバ` | その相手を選ぶセレクトに出す名前 |
 | `CHIEZO_LLM_MODEL` | `chiezo` | リクエストに載せるモデル名。llama-server は 1 プロセス 1 モデルなので何でもよい |

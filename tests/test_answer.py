@@ -373,16 +373,29 @@ class TestAskPage:
         assert "show(t.text, answer)" in res.text    # 本文をそれで描いている
         assert "cdn." not in res.text                # 外から読み込まない
 
-    def test_admin_shows_which_providers_can_also_draw(self, monkeypatch_env):
-        """同じ鍵で絵や音も作れること・止めるとそちらも止まることが、画面から読めるように。"""
+    def test_admin_lists_every_provider_in_one_table(self, monkeypatch_env):
+        """**相手ごとに 1 行。** 話す相手と絵・音の相手を分けていた頃は、同じ相手が
+        2 か所に出ていて、どちらの on/off が効くのか画面から読めなかった。"""
         with make_client(monkeypatch_env, FakeLLM()) as client:
             res = client.get("/admin")
 
-        assert "の生成にも使える" in res.text
-        # 「話す相手」に出てこない相手(自前の GPU・ElevenLabs)も、専用の節で状態が見える
-        assert "絵と音を作る相手" in res.text
+        assert "AI の相手" in res.text
+        assert "できること" in res.text
+        # 話せない相手（自前の GPU・ElevenLabs）も同じ表に並ぶ
         assert "ComfyUI" in res.text
         assert "ElevenLabs" in res.text
+        # 節は 1 つだけ（古い見出しが残っていない）
+        assert "絵と音を作る相手" not in res.text
+
+    def test_admin_greys_out_the_providers_that_are_off(self, monkeypatch_env):
+        """**いまどちらの状態かを、ボタンの文字だけに頼らせない。**"""
+        with make_client(monkeypatch_env, FakeLLM()) as client:
+            res = client.get("/admin")
+
+        assert 'class="off"' in res.text
+        # 有効にするボタンの文言は「無効にする」と同じ長さに揃える（並ぶと目立つため）
+        assert "有効にする" in res.text
+        assert "話せるようにする" not in res.text
 
     def test_admin_links_to_the_chat_page_when_enabled(self, monkeypatch_env):
         with make_client(monkeypatch_env, FakeLLM()) as client:

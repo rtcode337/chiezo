@@ -35,14 +35,14 @@ def state(monkeypatch, tmp_path):
     return monkeypatch
 
 
-def fake_comfy(handler_images=1):
+def fake_comfy(checkpoints=("sdxl.safetensors", "sd15.ckpt")):
     """ComfyUI を演じる。/object_info → /prompt → /history → /view の順に応じる。"""
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path.endswith("/object_info/CheckpointLoaderSimple"):
             return httpx.Response(200, json={
                 "CheckpointLoaderSimple": {
-                    "input": {"required": {"ckpt_name": [["sdxl.safetensors", "sd15.ckpt"]]}}
+                    "input": {"required": {"ckpt_name": [list(checkpoints)]}}
                 }
             })
         if path.endswith("/prompt"):
@@ -141,7 +141,7 @@ class TestGemini:
 
         # 鍵が無いのは 401(入れれば直る)、無効にしてあるのは 403(画面で有効にする)
         assert e.value.status_code == 401
-        assert "話す相手" in e.value.detail["hint"]
+        assert "AI の相手" in e.value.detail["hint"]
 
 
 class TestOpenAI:
@@ -175,7 +175,7 @@ class TestOpenAI:
                 "openai", media_backends.ImageRequest(prompt="剣")))
 
         assert e.value.status_code == 401
-        assert "話す相手" in e.value.detail["hint"]
+        assert "AI の相手" in e.value.detail["hint"]
 
     def test_upstream_error_does_not_leak_the_key(self, state):
         """理由の頭だけ返す(鍵は載せない)。403 は組織の本人確認で返ることがある。"""
@@ -512,6 +512,25 @@ class TestBackendList:
         assert backends["comfyui"]["usable"] is True
         assert backends["comfyui"]["models"] == ["sdxl.safetensors", "sd15.ckpt"]
 
+    def test_audio_checkpoints_are_kept_out_of_the_image_list(self, state):
+        """**置き場が同じなので混ざる。** 混ざったまま先頭を既定にすると、モデルを
+        指定しなかった絵の生成が音のモデルを掴む(`ace_step_…` は `sd_xl_…` より前)。"""
+        use(state, fake_comfy_audio(
+            checkpoints=("ace_step_v1_3.5b.safetensors", "sd_xl_base_1.0.safetensors")))
+
+        image = {b["id"]: b for b in asyncio.run(media.backends("image"))}
+
+        assert image["comfyui"]["models"] == ["sd_xl_base_1.0.safetensors"]
+
+    def test_the_default_image_model_is_never_an_audio_one(self, state):
+        use(state, fake_comfy(
+            checkpoints=("ace_step_v1_3.5b.safetensors", "sd_xl_base_1.0.safetensors")))
+
+        asyncio.run(media_backends.generate("comfyui", media_backends.ImageRequest(prompt="猫")))
+
+        graph = fake_comfy.sent["prompt"]
+        assert graph["1"]["inputs"]["ckpt_name"] == "sd_xl_base_1.0.safetensors"
+
 
 # ---- 音 ---------------------------------------------------------------------
 #
@@ -664,8 +683,8 @@ class TestElevenLabs:
         assert fake_elevenlabs.sent["music_length_ms"] == 45000
         assert fake_elevenlabs.sent["force_instrumental"] is True
 
-    def test_missing_key_points_at_its_own_section(self, state):
-        """**この相手だけ鍵を自分で持つ**(「話す相手」に対応が無い)ので、案内先も違う。"""
+    def test_missing_key_is_reported_before_anything_is_sent(self, state):
+        """**この相手だけ鍵を自分で持つ**(会話ができないので借り先が無い)。"""
         settings_store.set_enabled("elevenlabs", True)
         use(state, fake_elevenlabs())
 
@@ -674,7 +693,7 @@ class TestElevenLabs:
                 "elevenlabs", media_backends.AudioRequest(prompt="爆発")))
 
         assert e.value.status_code == 401
-        assert "絵と音を作る相手" in e.value.detail["hint"]
+        assert "AI の相手" in e.value.detail["hint"]
 
 
 class TestAudioJobs:
