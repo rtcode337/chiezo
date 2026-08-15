@@ -5,7 +5,6 @@ CLI そのものは起動しない。確かめるのは「OpenAI 形式の入力
 コンテナを立てて確かめる(docs/ai.md)。
 """
 import importlib
-
 import json
 
 import pytest
