@@ -438,6 +438,10 @@ CHIEZO_LLM_URL=http://192.0.2.10:11434/v1   # 別マシンの Ollama 等
 **会話は 1 往復もせず**、`/models` を引くだけ（CLI ブリッジは `claude auth status` 等を
 CLI に聞かせる）ので、サブスクの枠を食いません。
 
+**例外は Gemini CLI だけで、ここはモデルを 1 回呼びます。** 認証の状態を見せる
+サブコマンドが無く、`gemini mcp list` の類は鍵が壊れていても成功で終わるためです。
+API キー方式（無料枠は従量）なので、1 語のやり取り 1 回ぶんだけかかります。
+
 登録の有無だけでは、打ち間違えた認証情報や期限切れは分かりません —— 会話して初めて
 失敗し、原因が追いにくくなります（実際に本番で 502 として出ました）。到達できることと
 話せることも別です（認証情報が間違っていても到達はする）。
@@ -477,6 +481,11 @@ postgres を別コンテナで立てて複数のアプリが繋ぐのと同じ�
 ブリッジ側で組まず、道具は CLI 自身が引きます —— Claude Code も Codex も、道具を自分で
 回すのが本業だからです。Chiezo 側から見ると「1 回聞いたら答えが返る」ので、
 `rag` / `agent` の区別は関係なくなります。
+
+**Gemini CLI だけは「信頼していないフォルダでは MCP を無効にする」**ので、ブリッジは
+起動時にフォルダ信頼の機能を切っています（`security.folderTrust.enabled = false`）。
+切らないと `gemini mcp list` に `Disabled` と出るだけで、**実行時は黙って道具の無い状態**に
+なります —— コンテナはこの用途専用なので、機能ごと切ってしまって差し支えありません。
 
 安全のために、**CLI の組み込みの道具（シェル・ファイルの読み書き・web 取得）は塞いで**
 あります（`--disallowed-tools`）。使えるのは Chiezo の MCP だけです。
@@ -616,7 +625,7 @@ codex login --device-auth          # → ~/.codex/auth.json の中身
 
 | 環境変数 | 既定 | 説明 |
 |---|---|---|
-| `CHIEZO_BRIDGE_CLI` | `claude` | 包む CLI（`claude` / `codex` / `antigravity`） |
+| `CHIEZO_BRIDGE_CLI` | `claude` | 包む CLI（`claude` / `codex` / `gemini` / `antigravity`） |
 | `CHIEZO_BRIDGE_MCP_URL` | `http://chiezo-api:7010/mcp` | CLI に繋ぐ Chiezo の MCP。**空にすると繋がない** |
 | `CHIEZO_BRIDGE_STATE_DB` | `/state/settings.db` | 認証情報を読む Chiezo の設定 DB（読み取り専用でマウント） |
 | `CHIEZO_BRIDGE_MODEL` | （CLI の既定） | 何も選ばれなかったときのモデル。会話画面で選んだものが優先される |

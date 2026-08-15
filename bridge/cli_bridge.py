@@ -211,6 +211,14 @@ class PromptTooLong(Exception):
     """プロンプトを引数で渡す CLI(agy)で、長さ上限を超えたとき。"""
 
 
+# 設定 DB のどの行を読むか。**CLI 名と相手 ID がずれるものだけ書く** ——
+# 管理画面の相手 ID は `api/app/providers.py` が持っていて、Gemini CLI だけは
+# `gemini`(API を直に叩くほう)と区別するために `gemini-cli` になっている。
+# ここを CLI 名のまま引くと、**画面では Gemini CLI の行に鍵を入れたのに、
+# ブリッジは別の行を読む**という食い違いになる(鍵が無いのに登録済みに見える)。
+PROVIDER_ID = {"gemini": "gemini-cli"}.get(CLI, CLI)
+
+
 def stored_credential() -> str:
     """管理画面から登録された認証情報。無ければ環境変数へ落ちる。
 
@@ -228,7 +236,7 @@ def stored_credential() -> str:
         conn = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True, timeout=5.0)
         try:
             row = conn.execute(
-                "SELECT credential FROM provider_settings WHERE provider = ?", (CLI,)
+                "SELECT credential FROM provider_settings WHERE provider = ?", (PROVIDER_ID,)
             ).fetchone()
         finally:
             conn.close()
@@ -589,6 +597,13 @@ AUTH_CHECK = {
     "claude": ["claude", "auth", "status"],
     "codex": ["codex", "login", "status"],
     "antigravity": ["agy", "models"],
+    # **gemini だけはモデルを呼ぶ。** 認証の状態を見せるサブコマンドが無く
+    # (`gemini --help` にあるのは mcp / extensions / skills / hooks / gemma だけ)、
+    # `mcp list` の類は鍵が壊れていても 0 で終わるので確かめたことにならない。
+    # ここは API キー方式(無料枠は従量)なので、1 語のやり取り 1 回で済ませる ——
+    # 枠を食うのを嫌ってサブスクの相手には避けている手だが、この相手では逆に
+    # これしか「いま使えるか」を見る方法が無い。
+    "gemini": ["gemini", "-p", "ok", "-o", "text"],
 }
 
 

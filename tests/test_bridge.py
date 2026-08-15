@@ -518,3 +518,90 @@ class TestCredentialFromAnotherApp:
             CLAUDE_CODE_OAUTH_TOKEN="tok-from-env",
         )
         assert server.stored_credential() == "tok-from-env"
+
+
+class TestEveryCliIsWiredEndToEnd:
+    """**対応する CLI を足すとき、直す場所は 1 つではない。**
+
+    実際に Gemini CLI を足したとき `entrypoint.sh` だけが取り残され、
+    コンテナが `未対応の CHIEZO_BRIDGE_CLI: gemini` で起動しなかった。
+    どれか 1 か所を足し忘れると「起動しない」か「画面から有効にできない」になるので、
+    対応表の欠けをここで見張る。
+    """
+
+    def _entrypoint_cases(self) -> set[str]:
+        """`entrypoint.sh` の case が受け付ける CLI 名。"""
+        from pathlib import Path
+
+        text = (Path(__file__).resolve().parents[1] / "bridge" / "entrypoint.sh").read_text(
+            encoding="utf-8"
+        )
+        found = set()
+        for line in text.splitlines():
+            line = line.strip()
+            # `claude)` のような分岐の見出しだけを拾う(`*)` は既定なので除く)
+            if line.endswith(")") and not line.startswith(("#", "*", "esac", "case")):
+                name = line[:-1].strip()
+                if name.isascii() and name.isalpha():
+                    found.add(name)
+        return found
+
+    def test_the_entrypoint_accepts_every_cli_the_bridge_knows(self, bridge):
+        server = bridge()
+        known = set(server.DEFAULT_MODELS)
+
+        missing = known - self._entrypoint_cases()
+
+        assert not missing, f"entrypoint.sh が受け付けない CLI がある(起動できない): {missing}"
+
+    def test_every_cli_can_be_checked_from_the_admin_screen(self, bridge):
+        """**「接続を試す」が通らないと on にできない**(有効化の条件になっている)。
+        認証方式を持たない antigravity だけは、置くものが無いぶんここも別扱い。"""
+        server = bridge()
+
+        missing = set(server.DEFAULT_MODELS) - set(server.AUTH_CHECK)
+
+        assert not missing, f"認証を確かめる手が無い CLI がある(有効にできない): {missing}"
+
+
+class TestGeminiCliCredential:
+    """**CLI 名と管理画面の相手 ID がずれるのは Gemini CLI だけ。**
+
+    API を直に叩くほうが `gemini` を使っているので、CLI 側は `gemini-cli`。
+    ここを CLI 名のまま引くと、画面では Gemini CLI の行に鍵を入れたのに
+    ブリッジは別の行を読む、という食い違いになる。
+    """
+
+    def _db(self, tmp_path, rows: str) -> str:
+        import sqlite3
+
+        path = tmp_path / "settings.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            "CREATE TABLE provider_settings (provider TEXT PRIMARY KEY, credential TEXT);" + rows
+        )
+        conn.commit()
+        conn.close()
+        return str(path)
+
+    def test_it_reads_the_row_of_the_provider_shown_in_the_admin_screen(self, bridge, tmp_path):
+        path = self._db(
+            tmp_path,
+            "INSERT INTO provider_settings VALUES ('gemini-cli', 'key-cli');"
+            "INSERT INTO provider_settings VALUES ('gemini', 'key-api');",
+        )
+        server = bridge(CHIEZO_BRIDGE_CLI="gemini", CHIEZO_BRIDGE_STATE_DB=path)
+
+        assert server.PROVIDER_ID == "gemini-cli"
+        assert server.stored_credential() == "key-cli"
+
+    def test_the_key_goes_into_the_environment_the_cli_reads(self, bridge, tmp_path):
+        path = self._db(
+            tmp_path, "INSERT INTO provider_settings VALUES ('gemini-cli', 'key-cli');"
+        )
+        server = bridge(CHIEZO_BRIDGE_CLI="gemini", CHIEZO_BRIDGE_STATE_DB=path)
+
+        assert server.apply_credential() == ""
+        import os
+
+        assert os.environ["GEMINI_API_KEY"] == "key-cli"

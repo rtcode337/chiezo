@@ -286,6 +286,24 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     答えるのにシェルもファイル操作も要らず、使えると危ない
   - **認証情報はイメージに焼かない**。環境変数で受け取り、ファイルが要る Codex だけ
     `entrypoint.sh` が起動時に書いてコンテナと一緒に捨てる
+  - **CLI を 1 つ足すときに触る場所は 4 つある。** `cli_bridge.py`(起動コマンド・
+    モデルの控え)だけ直しても動かない —— `entrypoint.sh` の `case`(**足りないと
+    「未対応の CHIEZO_BRIDGE_CLI」で起動すらしない**)、`AUTH_CHECK`(**無いと
+    「接続を試す」が通らず、画面から有効にできない**)、Dockerfile(CLI の導入)。
+    実際に Gemini CLI で `entrypoint.sh` が取り残されて起動しなくなったので、
+    `tests/test_bridge.py` が対応表の欠けを見張っている
+  - **設定 DB のどの行を読むかは `PROVIDER_ID`。** 相手 ID は `app/providers.py` が
+    持っていて、**Gemini CLI だけ CLI 名(`gemini`)と一致しない**(API を直に叩くほうが
+    その名前を使っているので `gemini-cli`)。CLI 名のまま引くと、画面では Gemini CLI の
+    行に鍵を入れたのにブリッジは別の行を読む、という食い違いになる
+  - **gemini は「信頼していないフォルダでは MCP を無効にする」。** 登録しただけでは
+    道具が繋がらず、`gemini mcp list` に `Disabled` と出るだけで**実行時は黙って
+    道具の無い状態**になる(agent モードで「引いたつもりの答え」が返る最悪の形)。
+    `entrypoint.sh` が `security.folderTrust.enabled` を false にして切る ——
+    このコンテナはこの用途専用なので、機能ごと切ってよい
+  - **「接続を試す」で gemini だけはモデルを 1 回呼ぶ。** 認証の状態を見せる
+    サブコマンドが無く、`mcp list` の類は鍵が壊れていても 0 で終わる。
+    API キー方式(無料枠は従量)なので 1 語のやり取りで済ませている
   - ファイル名が `server.py` でなく `cli_bridge.py` なのは `ingest/server.py` と衝突するため
     (テストは api / ingest / bridge を同じ pythonpath で読む)
 
