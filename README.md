@@ -167,10 +167,10 @@ docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile answ
 リポジトリを置けない環境でも立てられる) —— 話す相手が Gemini や Claude Code でも web 検索は
 使えるようにするため。使うかどうかは `CHIEZO_WEB_SEARCH_URL` を書くかで決まる。
 
-**絵を描かせることもできる**(MCP の `image_generate` / `image_status`)。ゲーム素材や
-図版を、自分の GPU(ComfyUI)か外部(Gemini)を選んで作る —— 知識を引くのとは別の仕事だが、
-**MCP の登録先を増やさない**ために同じサーバーに載せてある。詳しくは
-[docs/ai.md](docs/ai.md)「絵を描かせる」。
+**絵と音を作らせることもできる**(MCP の `image_generate` / `audio_generate`)。ゲーム素材や
+図版・効果音・BGM を、自分の GPU(ComfyUI)か外部(Gemini / OpenAI / ElevenLabs)を選んで
+作る —— 知識を引くのとは別の仕事だが、**MCP の登録先を増やさない**ために同じサーバーに
+載せてある。詳しくは [docs/ai.md](docs/ai.md)「絵を描かせる」「音を作らせる」。
 
 `mode=agent` を付けると、`search` / `doc` / `filter` / `tags` / `links` をモデル自身に
 引かせる(MCP と同じ道具立て)。「カテゴリ○○の記事は何件?」のように 1 回の検索では

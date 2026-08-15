@@ -374,14 +374,15 @@ class TestAskPage:
         assert "cdn." not in res.text                # 外から読み込まない
 
     def test_admin_shows_which_providers_can_also_draw(self, monkeypatch_env):
-        """同じ鍵で絵も描けること・止めると絵も止まることが、画面から読めるように。"""
+        """同じ鍵で絵や音も作れること・止めるとそちらも止まることが、画面から読めるように。"""
         with make_client(monkeypatch_env, FakeLLM()) as client:
             res = client.get("/admin")
 
-        assert "🎨 画像生成にも使える" in res.text
-        # 「話す相手」に出てこない自前の GPU は、専用の節で状態が見える
-        assert "絵を描く相手" in res.text
+        assert "の生成にも使える" in res.text
+        # 「話す相手」に出てこない相手(自前の GPU・ElevenLabs)も、専用の節で状態が見える
+        assert "絵と音を作る相手" in res.text
         assert "ComfyUI" in res.text
+        assert "ElevenLabs" in res.text
 
     def test_admin_links_to_the_chat_page_when_enabled(self, monkeypatch_env):
         with make_client(monkeypatch_env, FakeLLM()) as client:

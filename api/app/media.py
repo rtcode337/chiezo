@@ -1,4 +1,4 @@
-"""生成した画像の置き場と、生成の進み具合(ジョブ)の記録。
+"""生成した画像・音の置き場と、生成の進み具合(ジョブ)の記録。
 
 **なぜ非同期(ジョブ)なのか。** 生成は数秒〜数分かかる。MCP の道具呼び出しで数分待つと
 呼び出し側が先に切れるので、頼む口は job を返し、進み具合は別の口で引く。
@@ -8,8 +8,12 @@
 設定 DB(`settings.db`)とは**別ファイル**にする —— あちらは CLI ブリッジが読み取り専用で
 マウントしているので、書き込みの多い表を同居させたくない。
 
-**画像は base64 で返さない。** 1 枚 1〜2MB あり、道具の結果はまるごと呼び出し側の
-コンテキストに載る。ファイルに書いて**パスと URL** を返し、要るときだけ取りに来てもらう。
+**中身は base64 で返さない。** 画像は 1 枚 1〜2MB、音も曲なら同じくらいある。道具の結果は
+まるごと呼び出し側のコンテキストに載るので、ファイルに書いて**パスと URL** を返し、
+要るときだけ取りに来てもらう。
+
+**絵と音でジョブの表を分けない。** 置き場・掃除・中断の後始末・配信は同じ仕事で、
+違うのは頼むときの語彙(サイズ / 長さ)だけ。分けると同じ後始末を 2 つ持つことになる。
 """
 from __future__ import annotations
 
@@ -20,10 +24,11 @@ import os
 import re
 import sqlite3
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx
 from fastapi import HTTPException
 
 from app import media_backends, media_providers, settings_store
@@ -56,9 +61,15 @@ CREATE TABLE IF NOT EXISTS jobs (
     error      TEXT,
     files      TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    sound      TEXT,
+    seconds    REAL
 );
 """
+
+# 後から足した列。**既にある表は CREATE TABLE IF NOT EXISTS では変わらない**ので、
+# 足りないものだけ ALTER する(設定 DB と同じやり方)。
+_ADDED_COLUMNS = {"sound": "TEXT", "seconds": "REAL"}
 
 
 @dataclass
@@ -67,6 +78,8 @@ class JobFile:
     url: str
     seed: int
     model: str
+    # 音の長さ(秒)。**頼んだ秒数ではなく出来たもの**。絵では 0。
+    seconds: float = 0.0
 
 
 def media_dir() -> Path | None:
@@ -83,7 +96,7 @@ def media_dir() -> Path | None:
 
 
 def is_enabled() -> bool:
-    """置き場があるか(画像を保存できるか)。"""
+    """置き場があるか(作ったものを保存できるか)。"""
     return media_dir() is not None
 
 
@@ -91,7 +104,7 @@ def tools_enabled() -> bool:
     """MCP に道具を出すか。
 
     **元栓(「答える」層)が止まっていれば出さない。** 「AI は使わない」と決めた環境で
-    絵を描く道具だけが並んでいるのは筋が通らないし、押せば 403 になる道具を
+    絵や音を作る道具だけが並んでいるのは筋が通らないし、押せば 403 になる道具を
     コンテナに載せることになる(使えない道具を並べない、notes と同じ扱い)。
     """
     return is_enabled() and settings_store.answer_enabled()
@@ -103,7 +116,7 @@ def require_dir() -> Path:
         raise HTTPException(
             503,
             {
-                "error": "image generation is disabled",
+                "error": "media generation is disabled",
                 "hint": "書き込み可能なディレクトリを CHIEZO_MEDIA_DIR("
                 "または CHIEZO_STATE_DIR)に設定すると使えるようになる",
             },
@@ -119,6 +132,10 @@ def _connect() -> sqlite3.Connection:
     # 共有ファイルシステムでは WAL が使えないことがある(設定 DB と同じ判断)。
     conn.execute("PRAGMA journal_mode=DELETE")
     conn.execute(_SCHEMA)
+    have = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
+    for name, kind in _ADDED_COLUMNS.items():
+        if name not in have:
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {kind}")
     return conn
 
 
@@ -173,9 +190,9 @@ def _insert(job: dict) -> None:
     with _connect() as conn:
         conn.execute(
             "INSERT INTO jobs (id, kind, backend, model, prompt, size, seed, count,"
-            " state, error, files, created_at, updated_at)"
+            " state, error, files, created_at, updated_at, sound, seconds)"
             " VALUES (:id, :kind, :backend, :model, :prompt, :size, :seed, :count,"
-            " :state, :error, :files, :created_at, :updated_at)",
+            " :state, :error, :files, :created_at, :updated_at, :sound, :seconds)",
             {**job, "files": json.dumps(job["files"], ensure_ascii=False)},
         )
 
@@ -217,51 +234,79 @@ def cleanup(keep_days: int = KEEP_DAYS) -> int:
     return removed
 
 
-def _save(job_id: str, index: int, image: media_backends.GeneratedImage) -> JobFile:
-    """**日付でディレクトリを分ける**(掃除の単位になる)。"""
+# MIME → 拡張子。**相手によって形式が違う**(Gemini の絵は JPEG のみ、音は相手ごとに
+# mp3 / wav / flac)ので、決め打ちで書くと名前と中身の食い違ったファイルを配ることになる。
+_EXTENSIONS = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+    "audio/mpeg": "mp3",
+    "audio/mp3": "mp3",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+    "audio/flac": "flac",
+    "audio/ogg": "ogg",
+}
+
+
+def _extension(mime: str) -> str:
+    """知らない MIME でも**それらしい拡張子**を作る(`audio/aac` → `aac`)。
+
+    落とすところが無いので、最後は種類ごとの無難なものへ寄せる。
+    """
+    if ext := _EXTENSIONS.get((mime or "").split(";")[0].strip().lower()):
+        return ext
+    tail = (mime or "").split("/")[-1].split(";")[0].strip().lower()
+    if tail.isalnum() and tail:
+        return tail
+    return "bin"
+
+
+def _save(job_id: str, index: int, item) -> JobFile:
+    """**日付でディレクトリを分ける**(掃除の単位になる)。絵と音で同じ置き方。"""
     day = datetime.now(UTC).strftime("%Y%m%d")
     directory = require_dir() / day
     directory.mkdir(parents=True, exist_ok=True)
-    # **拡張子は中身に合わせる。** 相手によって形式が違う(Gemini は JPEG しか返さない)ので、
-    # png 決め打ちで書くと、名前と中身の食い違ったファイルを配ることになる。
-    name = f"{job_id}-{index}.{'jpg' if image.mime == 'image/jpeg' else 'png'}"
-    (directory / name).write_bytes(image.data)
+    name = f"{job_id}-{index}.{_extension(item.mime)}"
+    (directory / name).write_bytes(item.data)
 
     return JobFile(
         path=str(directory / name),
         # chiezo-api が配る URL(`GET /media/<日付>/<名前>`)
         url=f"/media/{day}/{name}",
-        seed=image.seed,
-        model=image.model,
+        seed=item.seed,
+        model=item.model,
+        seconds=round(getattr(item, "seconds", 0.0), 2),
     )
 
 
-async def _run(job_id: str, backend: str, req: media_backends.ImageRequest, count: int) -> None:
-    """頼まれたぶんを順に描いて記録する。**1 枚ごとに書く** —— 途中で失敗しても、
-    そこまでの絵は残す(GPU の時間を捨てない)。"""
+async def _run(job_id: str, backend: str, req, count: int) -> None:
+    """頼まれたぶんを順に作って記録する。**1 つごとに書く** —— 途中で失敗しても、
+    そこまでの成果は残す(GPU の時間を捨てない)。
+
+    絵と音で違うのは呼ぶ関数だけなので、進み方の面倒はここに 1 つだけ置く。
+    """
+    audio = isinstance(req, media_backends.AudioRequest)
     _update(job_id, state="running")
     files: list[dict] = []
     try:
         for index in range(count):
-            # seed は 1 枚ごとにずらす(同じ頼みで同じ絵が並んでも選べない)
-            one = media_backends.ImageRequest(
-                prompt=req.prompt,
-                negative=req.negative,
-                size=req.size,
-                seed=(req.seed + index) if req.seed else 0,
-                model=req.model,
-                steps=req.steps,
+            # seed は 1 つごとにずらす(同じ頼みで同じものが並んでも選べない)
+            one = replace(req, seed=(req.seed + index) if req.seed else 0)
+            item = await (
+                media_backends.generate_audio(backend, one)
+                if audio
+                else media_backends.generate(backend, one)
             )
-            image = await media_backends.generate(backend, one)
-            files.append(asdict(_save(job_id, index, image)))
-            _update(job_id, files=files, model=image.model, seed=files[0]["seed"])
+            files.append(asdict(_save(job_id, index, item)))
+            _update(job_id, files=files, model=item.model, seed=files[0]["seed"])
         _update(job_id, state="done", files=files)
     except asyncio.CancelledError:
         # **中断は Exception ではない**(BaseException)ので、下の except では拾えない。
         # ここで書き残さないと job は running のまま永久に残る —— 実際に MCP の接続が
         # 切れた拍子にこのタスクごと畳まれ、ComfyUI 側は描き上がっているのに
         # image_status が running を返し続けたことがある。
-        log.warning("image job %s cancelled", job_id)
+        log.warning("media job %s cancelled", job_id)
         _update(job_id, state="failed" if not files else "partial",
                 error="生成が中断されました", files=files)
         raise
@@ -270,8 +315,8 @@ async def _run(job_id: str, backend: str, req: media_backends.ImageRequest, coun
         # (走っているのは背後のタスク)ので、理由は job に書いて image_status で見せる
         detail = getattr(e, "detail", None)
         message = json.dumps(detail, ensure_ascii=False) if detail else str(e)
-        log.warning("image job %s failed: %s", job_id, message[:300])
-        # **描けたぶんは残す。** 3 枚頼んで 2 枚描けたなら、その 2 枚は使える
+        log.warning("media job %s failed: %s", job_id, message[:300])
+        # **出来たぶんは残す。** 3 つ頼んで 2 つ出来たなら、その 2 つは使える
         _update(job_id, state="failed" if not files else "partial", error=message[:1000], files=files)
 
 
@@ -282,11 +327,16 @@ def create_job(
     size: str = "1024x1024",
     seed: int = 0,
     count: int = 1,
+    kind: str = media_providers.KIND_IMAGE,
+    sound: str = "",
+    seconds: float = 0.0,
 ) -> dict:
-    """頼みを検査して記録するだけ(まだ描かない)。
+    """頼みを検査して記録するだけ(まだ作らない)。
 
     **走らせる側と分けてある** —— 実行にはイベントループが要るが、記録は要らない。
     分けておくと、テストは「記録 → 自分で走らせる」の順で確かめられる。
+
+    **無理な頼みはここで断る。** 走らせてから落ちると、呼び出し側は待たされ損になる。
     """
     require_dir()
     if not prompt.strip():
@@ -294,38 +344,42 @@ def create_job(
     if not 1 <= count <= MAX_COUNT:
         raise HTTPException(400, {"error": f"count は 1〜{MAX_COUNT} にしてください"})
 
-    chosen = (backend or media_providers.default_backend()).strip().lower()
+    chosen = (backend or media_providers.default_backend(kind)).strip().lower()
     spec = media_providers.get(chosen)
-    if spec is None:
+    if spec is None or kind not in spec.kinds:
         raise HTTPException(
             404,
             {
                 "error": f"unknown backend: {chosen}",
-                "backends": [p.id for p in media_providers.all_providers()],
-            },
-        )
-    # サイズはここで弾く(走らせてから落ちると待たされ損になる)
-    width, height = media_backends.parse_size(size)
-    # **描けないサイズも同じ扱い。** 画素をそのまま使う相手は、学習解像度を外れると
-    # 崩れた絵を「成功」として返してくる。受け取る側は見るまで気づけないので、
-    # GPU を回す前に断る。
-    if spec.exact_sizes and f"{width}x{height}" not in spec.sizes:
-        raise HTTPException(
-            400,
-            {
-                "error": f"{spec.label} に {size} は頼めません(モデルの学習解像度から外れ、絵が崩れます)",
-                "sizes": list(spec.sizes),
-                "hint": "小さい素材が要るときは、一覧のサイズで描いてから縮小してください",
+                "backends": [p.id for p in media_providers.all_providers(kind)],
             },
         )
 
+    if kind == media_providers.KIND_AUDIO:
+        sound, seconds = _check_audio(spec, sound, seconds)
+    else:
+        # サイズはここで弾く(走らせてから落ちると待たされ損になる)
+        width, height = media_backends.parse_size(size)
+        # **描けないサイズも同じ扱い。** 画素をそのまま使う相手は、学習解像度を外れると
+        # 崩れた絵を「成功」として返してくる。受け取る側は見るまで気づけないので、
+        # GPU を回す前に断る。
+        if spec.exact_sizes and f"{width}x{height}" not in spec.sizes:
+            raise HTTPException(
+                400,
+                {
+                    "error": f"{spec.label} に {size} は頼めません(モデルの学習解像度から外れ、絵が崩れます)",
+                    "sizes": list(spec.sizes),
+                    "hint": "小さい素材が要るときは、一覧のサイズで描いてから縮小してください",
+                },
+            )
+
     job = {
         "id": uuid.uuid4().hex,
-        "kind": "image",
+        "kind": kind,
         "backend": chosen,
         "model": model,
         "prompt": prompt.strip(),
-        "size": size,
+        "size": size if kind == media_providers.KIND_IMAGE else None,
         "seed": seed,
         "count": count,
         "state": "queued",
@@ -333,11 +387,62 @@ def create_job(
         "files": [],
         "created_at": _now(),
         "updated_at": _now(),
+        "sound": sound or None,
+        "seconds": seconds or None,
     }
     _insert(job)
     cleanup()
 
     return job
+
+
+def _check_audio(
+    spec: media_providers.MediaProvider, sound: str, seconds: float
+) -> tuple[str, float]:
+    """音の頼みを検査して、記録する値に直す。
+
+    **長さは黙って丸めない。** 上限を超えた頼みを短くして返すと、呼んだ側は
+    「頼んだ尺で出来た」と思ったまま短い素材を受け取る —— 断って相手を選び直させる。
+    """
+    sound = (sound or media_providers.SOUND_SFX).strip().lower()
+    if sound not in media_providers.SOUNDS:
+        raise HTTPException(
+            400,
+            {"error": f"sound は {' / '.join(media_providers.SOUNDS)} のどれかにしてください"},
+        )
+
+    allowed = media_providers.sounds_of(spec)
+    if sound not in allowed:
+        raise HTTPException(
+            400,
+            {
+                "error": f"{spec.label} に {sound} は頼めません",
+                "sounds": list(allowed),
+                "hint": "audio_backends で、その相手に頼める種類を確かめてください",
+            },
+        )
+
+    limit = media_providers.max_seconds_of(spec, sound)
+    if seconds > 0 and limit <= 0:
+        # **尺を渡す口が無い相手**(Lyria)。黙って無視すると、頼んだ長さで出来たと
+        # 思われる —— 実際にはモデルごとに決まった尺で返る。
+        raise HTTPException(
+            400,
+            {
+                "error": f"{spec.label} は長さを指定できません(モデルごとに決まっています)",
+                "hint": "長さを決めたいときは自前の GPU か ElevenLabs を選んでください",
+            },
+        )
+    if seconds > limit > 0:
+        raise HTTPException(
+            400,
+            {
+                "error": f"{spec.label} に頼める長さは {limit:.0f} 秒までです",
+                "hint": "長い曲が要るときは audio_backends で上限の大きい相手を選んでください",
+            },
+        )
+
+    return sound, media_backends.resolve_seconds(spec, sound, seconds)
 
 
 def start_image_job(
@@ -359,6 +464,51 @@ def start_image_job(
     request = media_backends.ImageRequest(
         prompt=job["prompt"], negative=negative, size=size, seed=seed, model=model, steps=steps
     )
+    return _start(job, request, count)
+
+
+def start_audio_job(
+    prompt: str,
+    backend: str = "",
+    model: str = "",
+    sound: str = media_providers.SOUND_SFX,
+    seconds: float = 0.0,
+    seed: int = 0,
+    count: int = 1,
+    lyrics: str = "",
+    negative: str = "",
+    loop: bool = False,
+    steps: int = 50,
+) -> dict:
+    """音の頼みを受け付けて job を返す(生成は後ろで走る)。絵とまったく同じ扱い。"""
+    job = create_job(
+        prompt,
+        backend=backend,
+        model=model,
+        seed=seed,
+        count=count,
+        kind=media_providers.KIND_AUDIO,
+        sound=sound,
+        seconds=seconds,
+    )
+    request = media_backends.AudioRequest(
+        prompt=job["prompt"],
+        sound=job["sound"],
+        # **記録した秒数を渡す**(既定に落ちたぶんもここで確定している)
+        seconds=job["seconds"] or 0.0,
+        lyrics=lyrics,
+        negative=negative,
+        seed=seed,
+        model=model,
+        steps=steps,
+        loop=loop,
+    )
+    return _start(job, request, count)
+
+
+def _start(job: dict, request, count: int) -> dict:
+    """後ろで走らせる。**待たない** —— 生成は数秒〜数分かかり、待たせると
+    呼び出し側が先に切れる。進み具合は `*_status` で引く。"""
     task = asyncio.create_task(_run(job["id"], job["backend"], request, count))
     _RUNNING.add(task)
     task.add_done_callback(_RUNNING.discard)
@@ -369,12 +519,15 @@ def start_image_job(
 async def check(backend: str) -> tuple[bool, str]:
     """その相手と実際に話せるか確かめる(「接続を試す」)。
 
-    **自前の GPU にだけ用意する。** 外部サービスは「話す相手」側に同じ仕組みがあり、
-    鍵も on/off も共通なので、こちらで二重に持たない。
+    **自分の on/off を持つ相手にだけ用意する。** 「話す相手」に対応がある相手は
+    あちらに同じ仕組みがあり、鍵も on/off も共通なので、こちらで二重に持たない。
     """
     spec = media_providers.get(backend)
     if spec is None or not spec.owns_toggle:
         raise HTTPException(404, {"error": f"unknown backend: {backend}"})
+
+    if spec.id == "elevenlabs":
+        return await _check_elevenlabs(spec)
 
     try:
         models = await media_backends.comfy_models(media_providers.url_of(spec))
@@ -383,43 +536,99 @@ async def check(backend: str) -> tuple[bool, str]:
 
     if not models:
         return False, "繋がりましたが、チェックポイントが 1 つも置かれていません"
-    return True, "、".join(models[:3])
+
+    # **絵と音の両方を見る。** 片方しか置いていないのは失敗ではないので、
+    # 「繋がった」と言ったうえで**何が作れるか**を返す —— 音のモデルを置き忘れたまま
+    # audio_generate を呼んで、初めて気づくのを避ける。
+    audio = [name for name in models if media_backends.is_audio_checkpoint(name)]
+    picture = [name for name in models if name not in audio]
+    parts = [f"絵 {len(picture)} 件", f"音 {len(audio)} 件"]
+    if not audio:
+        parts.append("(音のチェックポイントは未設置)")
+    return True, "、".join(parts) + ": " + "、".join(models[:3])
 
 
-async def backends() -> list[dict]:
-    """使える相手と、その相手で選べるモデル。**使えない相手も理由つきで出す** ——
-    出さないと「なぜ選べないのか」が分からない。"""
+async def _check_elevenlabs(spec: media_providers.MediaProvider) -> tuple[bool, str]:
+    """鍵が通るかを確かめる。**音は作らない** —— 試すたびに枠を食うのは筋が悪い。"""
+    key = media_backends.credential_of(spec)
+    if not key:
+        return False, "API キーが未登録です"
+    try:
+        # **相手を叩く口は 1 つに寄せる**(テストが差し替えるのもここ)
+        async with media_backends._client(10.0) as client:
+            res = await client.get(
+                f"{media_providers.url_of(spec)}/user", headers={"xi-api-key": key}
+            )
+    except httpx.HTTPError as e:
+        return False, f"繋がりません({type(e).__name__})"
+
+    if res.status_code == 401:
+        return False, "API キーが通りませんでした(401)"
+    if res.status_code >= 400:
+        return False, f"{res.status_code} が返りました"
+
+    tier = ""
+    try:
+        tier = str(res.json().get("subscription", {}).get("tier") or "")
+    except ValueError:
+        pass
+    return True, f"鍵が通りました({tier})" if tier else "鍵が通りました"
+
+
+async def backends(kind: str = media_providers.KIND_IMAGE) -> list[dict]:
+    """その kind を作れる相手と、選べるモデル。**使えない相手も理由つきで出す** ——
+    出さないと「なぜ選べないのか」が分からない。
+
+    **絵と音で一覧を分ける。** 混ぜると、頼めない相手が並んで見えてしまう
+    (Lyria に効果音は頼めないし、ElevenLabs に絵は描けない)。
+    """
+    audio = kind == media_providers.KIND_AUDIO
     out = []
-    for spec in media_providers.all_providers():
-        usable, reason, models = True, "", list(spec.models)
+    for spec in media_providers.all_providers(kind):
+        models = list(spec.audio_models if audio else spec.models)
+        usable, reason = True, ""
         if reason := media_backends.unusable_reason(spec):
             usable = False
         elif spec.id == "comfyui":
             try:
-                models = await media_backends.comfy_models(media_providers.url_of(spec))
+                models = await (
+                    media_backends.comfy_audio_models(media_providers.url_of(spec))
+                    if audio
+                    else media_backends.comfy_models(media_providers.url_of(spec))
+                )
             # 立っていない・繋がらない・応答が読めない —— どれも「使えない」で足りる
             except Exception:
                 usable, reason = False, "繋がらない(立ち上げていないか URL 違い)"
             else:
                 if not models:
-                    usable, reason = False, "チェックポイントが置かれていない"
+                    usable, reason = False, (
+                        "音のチェックポイントが置かれていない" if audio
+                        else "チェックポイントが置かれていない"
+                    )
 
-        out.append(
-            {
-                "id": spec.id,
-                "label": spec.label,
-                "usable": usable,
-                "reason": reason,
-                "models": models,
-                "sizes": list(spec.sizes),
-                "billing": spec.billing,
-                "setup": spec.setup,
-                "url": media_providers.url_of(spec) if spec.url_env else "",
-                # 自分の on/off と「接続を試す」を持つか(画面がボタンを出すかの判断)
-                "owns_toggle": spec.owns_toggle,
-                "enabled": settings_store.load(spec.id).enabled if spec.owns_toggle else None,
+        entry = {
+            "id": spec.id,
+            "label": spec.label,
+            "usable": usable,
+            "reason": reason,
+            "models": models,
+            "billing": spec.billing,
+            "setup": spec.setup,
+            "url": media_providers.url_of(spec) if spec.url_env else "",
+            # 自分の on/off と「接続を試す」を持つか(画面がボタンを出すかの判断)
+            "owns_toggle": spec.owns_toggle,
+            "enabled": settings_store.load(spec.id).enabled if spec.owns_toggle else None,
+        }
+        if audio:
+            # **0 は「長さを指定できない」**(モデルで決まる)。呼ぶ側が秒数を
+            # 渡すかどうかをここで判断できるようにする。
+            entry["sounds"] = {
+                sound: media_providers.max_seconds_of(spec, sound)
+                for sound in media_providers.sounds_of(spec)
             }
-        )
+        else:
+            entry["sizes"] = list(spec.sizes)
+        out.append(entry)
     return out
 
 

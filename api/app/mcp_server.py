@@ -33,7 +33,7 @@ from pydantic import Field
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 
-from app import media, notes
+from app import media, media_providers, notes
 
 # doc のレスポンスはそのままモデルのコンテキストに載るので、REST(既定 0 = 無制限)より
 # 短く切る。jawiki には 10 万字級の記事があり、既定で全文を返すと 1 回で窓を潰す。
@@ -267,9 +267,10 @@ def build_mcp(app: FastAPI) -> MCPServer:
     if notes.is_enabled():
         _register_memory_tools(mcp, app)
 
-    # 画像生成も同じ扱い —— 置き場が無い・「答える」層が止まっているなら道具ごと出さない
+    # 絵と音の生成も同じ扱い —— 置き場が無い・「答える」層が止まっているなら道具ごと出さない
     if media.tools_enabled():
         _register_image_tools(mcp)
+        _register_audio_tools(mcp)
 
     return mcp
 
@@ -329,6 +330,71 @@ def _register_image_tools(mcp: MCPServer) -> None:
     ))
     async def image_backends() -> dict:
         return {"backends": await media.backends()}
+
+
+def _register_audio_tools(mcp: MCPServer) -> None:
+    """音を作る道具。**絵と同じ作り**(頼む・確かめる・相手を知る)で、違うのは語彙だけ。
+
+    絵と分けてあるのは、頼むときに要るものが違うから —— 絵はサイズ、音は種類と長さ。
+    1 つの道具に混ぜると、どちらにも効かない引数が並んで説明が読めなくなる。
+    """
+
+    @mcp.tool(description=(
+        "効果音や BGM を生成する(ゲームの音素材など)。**すぐには返らない** —— job_id を返すので "
+        "audio_status で仕上がりを確認する。返るのは保存先のパスと URL で、音そのものは返さない。"
+        "sound は sfx(効果音)/ music(曲)で、**相手によって頼める種類が違う**"
+        "(audio_backends で確かめる。既定は自前の GPU)。"
+        "seconds は長さ(秒)。**上限を超えると断る**ので、長い曲は上限の大きい相手を選ぶ。"
+        "**長さを指定できない相手もいる**(Lyria は尺がモデルで決まる)。"
+        "lyrics を空にすると器楽として頼む(BGM は歌が入ると台詞と喧嘩する)。"
+        "loop は繋いで鳴らせる素材にしたいとき(効くのは ElevenLabs の効果音だけ)。"
+        "**seed を指定すると同じ音を作り直せる**(ComfyUI のみ)。"
+    ))
+    async def audio_generate(
+        prompt: str,
+        sound: str = "sfx",
+        backend: str = "",
+        model: str = "",
+        seconds: float = 0,
+        seed: int = 0,
+        count: int = 1,
+        lyrics: str = "",
+        negative: str = "",
+        loop: bool = False,
+    ) -> dict:
+        return _call(
+            media.start_audio_job,
+            prompt=prompt,
+            sound=sound,
+            backend=backend,
+            model=model,
+            seconds=seconds,
+            seed=seed,
+            count=count,
+            lyrics=lyrics,
+            negative=negative,
+            loop=loop,
+        )
+
+    @mcp.tool(description=(
+        "audio_generate の仕上がりを確認する。state は queued / running / done / "
+        "partial(一部だけ出来た)/ failed。done なら files に保存先のパスと URL、"
+        "使われた seed とモデル、実際の長さが入る。"
+    ))
+    async def audio_status(job_id: str) -> dict:
+        job = media.get_job(job_id)
+        if job is None:
+            raise ValueError(f"unknown job: {job_id}")
+        return job
+
+    @mcp.tool(description=(
+        "音を頼める相手(自前の GPU・外部サービス)と、その相手で選べるモデル・"
+        "頼める種類と長さの上限を返す。使えない相手も理由つきで出る。"
+        "sounds の値が 0 の種類は「長さを指定できない」("
+        "モデルごとに尺が決まっている)。"
+    ))
+    async def audio_backends() -> dict:
+        return {"backends": await media.backends(media_providers.KIND_AUDIO)}
 
 
 def _register_memory_tools(mcp: MCPServer, app: FastAPI) -> None:

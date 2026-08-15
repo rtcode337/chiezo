@@ -588,7 +588,7 @@ def admin_claude_config_raw(
     """
     sources: dict[str, Source] = request.app.state.sources
     return claude_config.build_block(
-        sources, request_origin(request), hook=hook, mcp=mcp, image=media.tools_enabled()
+        sources, request_origin(request), hook=hook, mcp=mcp, media=media.tools_enabled()
     )
 
 
@@ -647,7 +647,7 @@ def admin_claude_config(request: Request):
     base = request_origin(request)
     # MCP 登録はスクリプトの既定なので、プレビューも既定(mcp=True)側で見せる。
     # フックは --with-hook のときだけなので、こちらは既定のまま出さない。
-    block = claude_config.build_block(sources, base, mcp=True, image=media.tools_enabled())
+    block = claude_config.build_block(sources, base, mcp=True, media=media.tools_enabled())
     perms = claude_config.permission_json(base)
     hook = claude_config.hook_settings_json()
     mcp = claude_config.mcp_servers_json(base)

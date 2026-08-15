@@ -24,7 +24,7 @@ from fastapi.responses import (
 from pydantic import BaseModel
 from pydantic import Field as PydField
 
-from app import agent, answer, db, media, notes, providers, websearch
+from app import agent, answer, db, media, media_providers, notes, providers, websearch
 from app.deps import (
     exact_title_first,
     get_source,
@@ -1293,11 +1293,12 @@ async def ai_complete(body: AiCompleteRequest) -> dict:
     }
 
 
-# ---- 画像の生成(ゲーム素材などを作る)---------------------------------------
+# ---- 絵と音の生成(ゲーム素材などを作る)-------------------------------------
 #
 # **知識を引くのとは別の仕事**だが、口は Chiezo にまとめてある —— クライアント(MCP)の
 # 登録先を増やしたくないため。重い処理は例によって別コンテナ(ComfyUI)で、
-# 外部サービス(Gemini)と選べる。実体は `app/media.py` / `app/media_backends.py`。
+# 外部サービス(Gemini / OpenAI / ElevenLabs)と選べる。
+# 実体は `app/media.py` / `app/media_backends.py`。
 
 
 class ImageRequest(BaseModel):
@@ -1313,10 +1314,33 @@ class ImageRequest(BaseModel):
     steps: int = 25
 
 
+class AudioRequestBody(BaseModel):
+    prompt: str
+    # 相手。空なら既定(自前の GPU)
+    backend: str | None = None
+    model: str | None = None
+    # 効果音(sfx)か曲(music)か。**モデルも口も別物**なので選ばせる
+    sound: str = media_providers.SOUND_SFX
+    # 0 なら相手の既定。**長さを指定できない相手(Lyria)に渡すと 400**
+    seconds: float = 0
+    seed: int = 0
+    count: int = 1
+    # 空なら器楽として頼む
+    lyrics: str = ""
+    negative: str = ""
+    # 繋いで鳴らせる素材にするか(効くのは ElevenLabs の効果音だけ)
+    loop: bool = False
+    steps: int = 50
+
+
 @app.get("/v1/media/backends")
-async def media_backends_list() -> dict:
-    """絵を頼める相手と、その相手で選べるモデル・サイズ。"""
-    return {"backends": await media.backends(), "enabled": media.is_enabled()}
+async def media_backends_list(
+    kind: str = Query(media_providers.KIND_IMAGE, description="image / audio"),
+) -> dict:
+    """絵(または音)を頼める相手と、その相手で選べるモデル・サイズ・長さ。"""
+    if kind not in (media_providers.KIND_IMAGE, media_providers.KIND_AUDIO):
+        raise HTTPException(400, {"error": "kind は image / audio のどちらかにしてください"})
+    return {"backends": await media.backends(kind), "kind": kind, "enabled": media.is_enabled()}
 
 
 @app.post("/v1/media/image")
@@ -1330,6 +1354,24 @@ async def media_image(body: ImageRequest) -> dict:
         seed=body.seed,
         count=body.count,
         negative=body.negative,
+        steps=body.steps,
+    )
+
+
+@app.post("/v1/media/audio")
+async def media_audio(body: AudioRequestBody) -> dict:
+    """作り始めて job を返す(**待たない**)。進み具合は絵と同じ口で引く。"""
+    return media.start_audio_job(
+        prompt=body.prompt,
+        backend=(body.backend or "").strip(),
+        model=(body.model or "").strip(),
+        sound=body.sound,
+        seconds=body.seconds,
+        seed=body.seed,
+        count=body.count,
+        lyrics=body.lyrics,
+        negative=body.negative,
+        loop=body.loop,
         steps=body.steps,
     )
 
@@ -1349,7 +1391,7 @@ async def media_jobs(limit: int = Query(20, ge=1, le=100)) -> dict:
 
 @app.get("/media/{path:path}", include_in_schema=False)
 async def media_file(path: str):
-    """出来た画像を配る。**置き場の外は返さない**(`../` を踏ませない)。"""
+    """出来た画像・音を配る。**置き場の外は返さない**(`../` を踏ませない)。"""
     return FileResponse(media.resolve(path))
 
 

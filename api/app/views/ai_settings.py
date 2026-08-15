@@ -164,13 +164,19 @@ async def section_html(request: Request | None = None) -> str:
             f"<button type=\"submit\"{'' if (r['enabled'] or r['can_enable']) else ' disabled'}>"
             f"{'無効にする' if r['enabled'] else '話せるようにする'}</button></form>"
         )
-        # **絵も描ける相手はそう分かるようにする。** 同じ鍵で 2 つの用途に使えることも、
-        # ここで無効にすると絵のほうも止まることも、画面から読めないと事故になる
+        # **絵や音も作れる相手はそう分かるようにする。** 同じ鍵で 2 つの用途に使えることも、
+        # ここで無効にすると絵と音のほうも止まることも、画面から読めないと事故になる
         draws = ""
-        if any(m.credential_from == spec.id for m in media_providers.all_providers()):
+        borrowers = [m for m in media_providers.all_providers() if m.credential_from == spec.id]
+        if borrowers:
+            what = "・".join(
+                sorted({"🎨 絵" if media_providers.KIND_IMAGE in m.kinds else "" for m in borrowers}
+                       | {"🎵 音" if media_providers.KIND_AUDIO in m.kinds else "" for m in borrowers}
+                       - {""})
+            )
             draws = (
-                '<br><span class="muted">🎨 画像生成にも使える'
-                f"{'(無効にすると絵も描けなくなる)' if r['enabled'] else '(有効にすると使える)'}"
+                f'<br><span class="muted">{what}の生成にも使える'
+                f"{'(無効にすると作れなくなる)' if r['enabled'] else '(有効にすると使える)'}"
                 "</span>"
             )
 
@@ -203,72 +209,124 @@ async def section_html(request: Request | None = None) -> str:
 {chr(10).join(rows)}
 </tbody>
 </table>
-{await _image_section_html(q)}
+{await _media_section_html(q)}
 """
 
 
-async def _image_section_html(q) -> str:
-    """「絵を描く相手」節。**上の表とは別に出す** —— 自前の GPU(ComfyUI)は
-    「話す相手」ではないので上の表に出てこず、状態を見る場所が無くなるため。
+async def _media_section_html(q) -> str:
+    """「絵と音を作る相手」節。**上の表とは別に出す** —— 自前の GPU(ComfyUI)や
+    ElevenLabs は「話す相手」ではないので上の表に出てこず、状態を見る場所が無くなるため。
 
-    ここに操作は置かない(on/off は上の表、GPU は compose で立てるもの)。
-    出すのは**いま使えるかと、使えないなら理由**だけ。
+    **相手ごとに 1 行**にして、作れるもの(絵・音)は行の中に並べる —— 同じ相手が
+    2 行に分かれると、on/off がどちらに効くのか読めなくなる。
     """
     banner = ""
-    if tested := q.get("image_tested"):
+    if tested := q.get("media_tested"):
         label = esc(media_providers.label_of(tested))
-        if q.get("image_ok") == "1":
-            banner = f'<p class="note">✅ {label} と繋がりました: {esc(q.get("image_why", ""))}</p>'
+        if q.get("media_ok") == "1":
+            banner = f'<p class="note">✅ {label} と繋がりました: {esc(q.get("media_why", ""))}</p>'
         else:
-            banner = f'<p class="stale">⚠️ {label} と繋がりません: {esc(q.get("image_why", ""))}</p>'
+            banner = f'<p class="stale">⚠️ {label} と繋がりません: {esc(q.get("media_why", ""))}</p>'
 
     if not media.is_enabled():
         return (
-            "<h2>絵を描く相手</h2>\n"
-            '<p class="muted">画像の置き場がありません。書き込み可能なディレクトリを'
+            "<h2>絵と音を作る相手</h2>\n"
+            '<p class="muted">出来たものの置き場がありません。書き込み可能なディレクトリを'
             " <code>CHIEZO_MEDIA_DIR</code>(既定は <code>CHIEZO_STATE_DIR</code> の下)に"
             "設定すると使えるようになります。</p>"
         )
 
-    rows = []
-    for entry in await media.backends():
-        state = "使える" if entry["usable"] else esc(entry["reason"])
-        models = "、".join(entry["models"][:4]) or "—"
+    # **kind ごとに引く。** 一覧を混ぜると、頼めない相手が並んで見えてしまう
+    entries: dict[str, dict[str, dict]] = {}
+    for kind, label in ((media_providers.KIND_IMAGE, "絵"), (media_providers.KIND_AUDIO, "音")):
+        for entry in await media.backends(kind):
+            entries.setdefault(entry["id"], {})[label] = entry
 
-        if entry["owns_toggle"]:
-            # 自前の GPU は「話す相手」に出てこないので、on/off と接続確認をここに置く
+    rows = []
+    for spec in media_providers.all_providers():
+        found = entries.get(spec.id, {})
+        if not found:
+            continue
+        first = next(iter(found.values()))
+
+        # 作れるものと、その状態。**片方だけ使えることがある**
+        # (絵のチェックポイントはあるが音は置いていない、など)
+        lines = []
+        for label, entry in found.items():
+            models = "、".join(entry["models"][:3]) or "—"
+            state = f"使える({esc(models)})" if entry["usable"] else esc(entry["reason"])
+            extra = ""
+            if label == "音":
+                extra = "、".join(
+                    f"{'効果音' if sound == media_providers.SOUND_SFX else '曲'}"
+                    f"{f' 〜{limit:.0f} 秒' if limit else '(長さは指定できない)'}"
+                    for sound, limit in entry.get("sounds", {}).items()
+                )
+                extra = f'<br><span class="muted">{esc(extra)}</span>' if extra else ""
+            lines.append(f"<strong>{label}</strong> — {state}{extra}")
+
+        if spec.credential == media_providers.CRED_NONE:
+            cred_cell = '<span class="muted">不要</span>'
+        elif spec.credential_from:
+            # 借り物。**同じ鍵を 2 か所に入れさせない**
+            cred_cell = '<span class="muted">上の「話す相手」と共通</span>'
+        else:
+            # 会話ができない相手は借り先が無いので、ここで登録する
+            has = bool(settings_store.load(spec.id).credential)
+            # **消す導線も置く。** 登録しかできないと、間違えて入れた鍵を画面から
+            # 外せなくなる(「話す相手」側と同じ扱い)
+            drop = (
+                f'<form method="post" action="/admin/media/key" class="init-form">'
+                f'<input type="hidden" name="provider" value="{spec.id}">'
+                f'<input type="hidden" name="action" value="delete">'
+                f'<button type="submit">削除</button></form>'
+            ) if has else ""
+            cred_cell = (
+                f"<details><summary>{'登録済み(差し替え)' if has else '未登録'}</summary>"
+                f'<form method="post" action="/admin/media/key" class="init-form">'
+                f'<input type="hidden" name="provider" value="{spec.id}">'
+                f'<input type="password" name="credential" placeholder="API キー" required>'
+                f'<button type="submit">保存</button></form>{drop}'
+                f'<p class="muted">値は画面に二度と表示しません。</p></details>'
+            )
+
+        if first["owns_toggle"]:
+            # 「話す相手」に出てこないので、on/off と接続確認をここに置く
             use_cell = (
                 f'<form method="post" action="/admin/media/enabled" class="init-form">'
-                f'<input type="hidden" name="provider" value="{entry["id"]}">'
-                f'<input type="hidden" name="enabled" value="{"0" if entry["enabled"] else "1"}">'
-                f'<button type="submit">{"無効にする" if entry["enabled"] else "使う"}</button></form>'
+                f'<input type="hidden" name="provider" value="{spec.id}">'
+                f'<input type="hidden" name="enabled" value="{"0" if first["enabled"] else "1"}">'
+                f'<button type="submit">{"無効にする" if first["enabled"] else "使う"}</button></form>'
                 f'<form method="post" action="/admin/media/test" class="init-form">'
-                f'<input type="hidden" name="provider" value="{entry["id"]}">'
+                f'<input type="hidden" name="provider" value="{spec.id}">'
                 f"<button type=\"submit\">接続を試す</button></form>"
             )
         else:
-            # 外部サービスは鍵も on/off も「話す相手」と共通。二重に持たない
+            # 「話す相手」に対応がある相手は鍵も on/off も共通。二重に持たない
             use_cell = '<span class="muted">上の「話す相手」で切り替える</span>'
 
         rows.append(
-            f'<tr><td>{esc(entry["label"])}</td><td>{esc(state)}</td>'
-            f'<td class="muted">{esc(models)}</td><td>{use_cell}</td>'
-            f'<td class="muted">{esc(entry["billing"])}</td></tr>'
+            f'<tr><td>{esc(spec.label)}</td><td>{"<br>".join(lines)}</td>'
+            f"<td>{cred_cell}</td><td>{use_cell}</td>"
+            f'<td class="muted">{esc(spec.billing)}</td></tr>'
         )
 
-    return f"""<h2>絵を描く相手</h2>
+    return f"""<h2>絵と音を作る相手</h2>
 {banner}
 <details>
 <summary>この節について</summary>
-<p>MCP の <code>image_generate</code> で使う相手。<strong>外部サービスの鍵と on/off は上の
-「話す相手」と共通</strong>(同じ鍵を 2 か所に入れさせないため)—— 上で無効にすると絵も描けなくなる。</p>
-<p>自前の GPU(ComfyUI)は「話す相手」ではないのでここにだけ出る。
-<code>docker-compose.image.yml</code> を重ねて立てるか、別マシンのものを
-<code>CHIEZO_IMAGE_URL</code> で指す。<strong>モデル(チェックポイント)は自分で置く。</strong></p>
+<p>MCP の <code>image_generate</code> / <code>audio_generate</code> で使う相手。
+<strong>「話す相手」に対応がある相手は、鍵も on/off も上の表と共通</strong>
+(同じ鍵を 2 か所に入れさせないため)—— 上で無効にすると絵も音も作れなくなる。</p>
+<p>自前の GPU(ComfyUI)と ElevenLabs は「話す相手」ではないのでここにだけ出る。
+GPU は <code>docker-compose.image.yml</code> を重ねて立てるか、別マシンのものを
+<code>CHIEZO_IMAGE_URL</code> で指す。<strong>モデル(チェックポイント)は自分で置く</strong>
+—— 絵と音で別のファイルが要る(音は <code>stable-audio-open</code> か
+<code>ace_step</code> を <code>models/checkpoints</code> へ)。</p>
 <p class="muted">「答える」層を止めると、ここも全部止まる(MCP の道具も出なくなる)。</p>
 </details>
 <table class="ai-settings">
-<thead><tr><th>相手</th><th>状態</th><th>モデル</th><th>使う</th><th>課金の形</th></tr></thead>
+<thead><tr><th>相手</th><th>作れるもの</th><th>認証情報</th><th>使う</th><th>課金の形</th></tr></thead>
 <tbody>
 {chr(10).join(rows)}
 </tbody>
@@ -325,23 +383,60 @@ async def set_enabled(provider: str = Form(...), enabled: str = Form("0")):
     return RedirectResponse(url="/admin", status_code=303)
 
 
-@router.post("/admin/media/enabled")
-async def set_media_enabled(provider: str = Form(...), enabled: str = Form("0")):
-    """自前の GPU(ComfyUI)の on/off。**外部サービスはここでは切り替えない** ——
-    あちらは「話す相手」と共通で、2 か所から切れるとどちらが効いているのか分からなくなる。"""
+def _require_media_owner(provider: str) -> media_providers.MediaProvider:
+    """自分の on/off を持つ相手だけを受け付ける。**借り物の相手はここでは触らせない**
+    —— あちらは「話す相手」と共通で、2 か所から切れるとどちらが効いているのか
+    分からなくなる。"""
     spec = media_providers.get(provider)
     if spec is None or not spec.owns_toggle:
         raise HTTPException(404, {"error": f"unknown backend: {provider}"})
+    return spec
 
-    settings_store.set_enabled(spec.id, enabled == "1")
+
+@router.post("/admin/media/enabled")
+async def set_media_enabled(provider: str = Form(...), enabled: str = Form("0")):
+    """自前の GPU(ComfyUI)・ElevenLabs の on/off。"""
+    spec = _require_media_owner(provider)
+    settings_store.require_path()
+    want = enabled == "1"
+    # **鍵の要る相手は、鍵が無ければ on にできない。** 有効のまま残しても、
+    # 頼むたびに 401 になるだけ(「話す相手」と同じ抑止)
+    if want and spec.credential == media_providers.CRED_REQUIRED:
+        if not settings_store.load(spec.credential_from or spec.id).credential:
+            raise HTTPException(400, {"error": f"先に「{spec.label}」の API キーを登録してください"})
+
+    settings_store.set_enabled(spec.id, want)
+    return RedirectResponse("/admin", status_code=303)
+
+
+@router.post("/admin/media/key")
+async def set_media_credential(
+    provider: str = Form(...), credential: str = Form(""), action: str = Form("")
+):
+    """**「話す相手」に対応が無い相手**(ElevenLabs)の鍵をここで登録・削除する。
+
+    借り先のある相手はここへ来ない —— 同じ鍵を 2 か所に入れさせると、片方だけ古くなる。
+    削除を同じ入口にまとめてあるのは「話す相手」と同じ理由で、鍵を消したら同時に
+    無効にする必要があるため(鍵の無い相手を有効のまま残すと、頼むたびに失敗する)。
+    """
+    spec = _require_media_owner(provider)
+    if spec.credential == media_providers.CRED_NONE or spec.credential_from:
+        raise HTTPException(400, {"error": f"「{spec.label}」の鍵はここでは登録しません"})
+    settings_store.require_path()
+    if action == "delete":
+        settings_store.clear_credential(spec.id)
+    elif not credential.strip():
+        raise HTTPException(400, {"error": "認証情報が空です"})
+    else:
+        settings_store.set_credential(spec.id, credential.strip())
     return RedirectResponse("/admin", status_code=303)
 
 
 @router.post("/admin/media/test")
 async def test_media_connection(provider: str = Form(...)):
-    """絵を描く相手と実際に話せるか確かめる(結果はクエリで画面へ返す)。"""
+    """絵と音を作る相手と実際に話せるか確かめる(結果はクエリで画面へ返す)。"""
     ok, why = await media.check(provider)
-    params = urlencode({"image_tested": provider, "image_ok": "1" if ok else "0", "image_why": why})
+    params = urlencode({"media_tested": provider, "media_ok": "1" if ok else "0", "media_why": why})
     return RedirectResponse(f"/admin?{params}", status_code=303)
 
 

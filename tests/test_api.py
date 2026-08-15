@@ -734,21 +734,27 @@ class TestClaudeConfig:
         )
         assert "この一覧は 2026-08-12 23:58 JST 時点の" in block
 
-    def test_config_mentions_image_tools_only_when_they_exist(self, client):
-        """**呼べない道具を勧めない。** MCP を登録していない環境や、絵を描けない
+    def test_config_mentions_media_tools_only_when_they_exist(self, client):
+        """**呼べない道具を勧めない。** MCP を登録していない環境や、絵も音も作れない
         サーバーに「image_generate を使え」と書いても、読んだ側は呼べない。"""
         from app import claude_config
 
-        with_image = claude_config.build_block({}, "http://x.test", mcp=True, image=True)
-        assert "mcp__chiezo__image_generate" in with_image
-        assert "seed" in with_image   # 同じ絵を作り直す手がかりまで書く
+        with_media = claude_config.build_block({}, "http://x.test", mcp=True, media=True)
+        assert "mcp__chiezo__image_generate" in with_media
+        assert "seed" in with_media   # 同じ絵を作り直す手がかりまで書く
+        # 音も同じ節で案内する(絵だけ書いて音を書かないと、外のサービスを探しに行かれる)
+        assert "mcp__chiezo__audio_generate" in with_media
+        assert "sound=" in with_media
 
         assert "image_generate" not in claude_config.build_block(
-            {}, "http://x.test", mcp=True, image=False
+            {}, "http://x.test", mcp=True, media=False
+        )
+        assert "audio_generate" not in claude_config.build_block(
+            {}, "http://x.test", mcp=True, media=False
         )
         # MCP を登録していない環境では、道具の話そのものを出さない
         assert "image_generate" not in claude_config.build_block(
-            {}, "http://x.test", mcp=False, image=True
+            {}, "http://x.test", mcp=False, media=True
         )
 
     def test_config_txt_base_url_is_derived_from_request(self, client):

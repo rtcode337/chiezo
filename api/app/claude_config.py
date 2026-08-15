@@ -424,7 +424,7 @@ def build_block(
     now: datetime | None = None,
     hook: bool = False,
     mcp: bool = False,
-    image: bool = False,
+    media: bool = False,
 ) -> str:
     """CLAUDE.md に貼る Chiezo ブロック(マーカー込み)を組み立てて返す。
 
@@ -436,7 +436,7 @@ def build_block(
     こちらはスクリプト側の既定が「登録する」なので、通常は `?mcp=1` で来て、
     `--no-mcp` を指定されたときだけ `?mcp=0` になる。
 
-    `image=True` は**この Chiezo で絵を描ける**ときだけ(置き場があり「答える」層が
+    `media=True` は**この Chiezo で絵と音を作れる**ときだけ(置き場があり「答える」層が
     有効)。道具は MCP 経由なので `mcp=True` と揃ったときにしか書かない ——
     登録していない環境に「`image_generate` を使え」と書いても呼べない。
     """
@@ -466,7 +466,7 @@ def build_block(
         f'- ソース一覧(最新の登録状況): `curl -s "{base}/v1/sources"`',
     ]
 
-    if mcp and image:
+    if mcp and media:
         # **知識を引く話とは別物**なので、節を分けて短く書く。ここに長い説明を積むと、
         # 毎回のコンテキストに乗るぶんが増えるだけで、実際に呼ぶときの手順は道具の
         # description に書いてある
@@ -486,6 +486,19 @@ def build_block(
             "アイコンのような小さい素材も、一覧のサイズで描いてから手元で縮小する",
             "- **同じ絵を作り直すときは seed を指定する**(自前の GPU のときだけ再現できる)。"
             "キャラの別ポーズのように「揃えたい」場面で効く",
+            "",
+            "### 音を作る(このサーバーで生成できる)",
+            "",
+            "効果音や BGM が要るときも、**外のサービスを探しに行く前に"
+            f"`mcp__{MCP_SERVER_NAME}__audio_generate` を使う**。作りは絵と同じ。",
+            f"- 頼む → `mcp__{MCP_SERVER_NAME}__audio_generate`"
+            "(`sound=\"sfx\"` で効果音、`sound=\"music\"` で曲。job が返る。**待たない**)",
+            f"- 仕上がり → `mcp__{MCP_SERVER_NAME}__audio_status`(**パスと URL** が返る)",
+            f"- 相手と上限 → `mcp__{MCP_SERVER_NAME}__audio_backends`"
+            "(**頼める種類と長さの上限は相手ごとに違う**。効果音を作れない相手もいる)",
+            "- **長さ(`seconds`)は上限を超えると断られる**。黙って短くはしないので、"
+            "長い曲が要るときは上限の大きい相手を選ぶ",
+            "- **BGM は `lyrics` を空のままにする**(器楽で作る)。歌が入ると台詞と喧嘩する",
         ]
 
     if mcp:
