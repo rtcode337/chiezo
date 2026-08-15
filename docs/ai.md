@@ -694,7 +694,7 @@ chiezo-api 側:
 | `CHIEZO_LLM_LABEL` | `推論サーバ` | その相手を選ぶセレクトに出す名前 |
 | `CHIEZO_LLM_MODEL` | `chiezo` | リクエストに載せるモデル名。llama-server は 1 プロセス 1 モデルなので何でもよい |
 | `CHIEZO_LLM_API_KEY` | (なし) | 設定すると `Authorization: Bearer` を送る |
-| `CHIEZO_ANSWER_TIMEOUT` | `120` | 推論の待ち時間(秒)。DB クエリの 5 秒とは別枠 |
+| `CHIEZO_ANSWER_TIMEOUT` | 相手による | 相手を待つ時間(秒)。DB クエリの 5 秒とは別枠。**CLI ブリッジ経由は 900、API で直に叩く相手と推論サーバは 120**。ブリッジは道具を何度も引くので桁が違ううえ、ブリッジ自身の上限(`CHIEZO_BRIDGE_TIMEOUT`。既定 300 / compose 600)より**待つ側が長くないと**、向こうの判断が見えないまま ReadTimeout になる |
 | `CHIEZO_ANSWER_DOCS` | `4` | 根拠として本文を取ってくる文書数 |
 | `CHIEZO_ANSWER_MAX_CHARS` | `6000` | 抜粋の合計文字数の上限 |
 | `CHIEZO_ASK_DEFAULT_MODE` | `rag` | `mode` を省いたときの既定 |

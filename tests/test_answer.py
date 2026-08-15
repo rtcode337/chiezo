@@ -1145,3 +1145,36 @@ class TestModelDefault:
         settings_store.set_credential("claude", "token")
         assert self._settings("claude", "opus").model == "opus"
 
+
+
+class TestBackendTimeout:
+    """相手を待つ秒数は**その相手が何をするか**で変える。
+
+    CLI ブリッジは道具を何度も引くので分単位になりうるうえ、ブリッジ自身が上限を持つ。
+    **待つ側が先に切れると、向こうの判断が一切見えなくなる**（実測: claude を
+    effort=high で呼んだら 120 秒で切れ、504 llm timeout しか残らなかった）。
+    """
+
+    def test_bridge_backends_wait_longer_than_the_bridge_itself(self):
+        from app import answer, providers
+
+        claude = providers.get("claude")
+        assert claude.bridge, "前提: claude は CLI ブリッジ経由"
+        # ブリッジ自身の既定は 300 秒、compose は 600 秒。待つ側はそれより長い
+        assert answer._default_timeout(claude) > 600
+
+    def test_direct_backends_keep_the_short_default(self):
+        from app import answer, providers
+
+        gemini = providers.get("gemini")
+        assert not gemini.bridge, "前提: gemini は API で直に叩く"
+        assert answer._default_timeout(gemini) == answer.DIRECT_TIMEOUT_SECONDS
+
+    def test_env_still_wins(self, monkeypatch):
+        """明示した値が常に優先する（相手で決めるのは既定だけ）。"""
+        from app import answer
+
+        monkeypatch.setenv("CHIEZO_ANSWER_TIMEOUT", "42")
+        assert answer._env_num("CHIEZO_ANSWER_TIMEOUT", 900.0, float) == 42.0
+        monkeypatch.delenv("CHIEZO_ANSWER_TIMEOUT")
+        assert answer._env_num("CHIEZO_ANSWER_TIMEOUT", 900.0, float) == 900.0

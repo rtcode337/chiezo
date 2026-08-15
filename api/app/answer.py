@@ -228,7 +228,15 @@ def load_settings(
         model=chosen or "chiezo",
         api_key=stored.credential or None,
         # DB の 5 秒とは別枠。CPU 推論は数十秒級になる。
-        timeout=_env_num("CHIEZO_ANSWER_TIMEOUT", 120.0, float),
+        #
+        # **CLI ブリッジの相手だけ桁を変える。** あちらは道具を何度も引くので分単位に
+        # なりうるうえ、ブリッジ自身が上限(`CHIEZO_BRIDGE_TIMEOUT`。既定 300 秒、
+        # compose では 600 秒)を持っている。**待つ側が先に切れてはいけない** ——
+        # 切れると画面には ReadTimeout しか出ず、「向こうが何秒で諦めたか」も
+        # 「そもそも何が起きたか」も分からなくなる(実測: claude を effort=high で
+        # 呼んだら 120 秒で切れ、504 llm timeout しか残らなかった)。
+        # ブリッジ側の上限を 900 秒より伸ばすときは、こちらも一緒に伸ばすこと。
+        timeout=_env_num("CHIEZO_ANSWER_TIMEOUT", _default_timeout(spec), float),
         docs=max(1, _env_num("CHIEZO_ANSWER_DOCS", 4, int)),
         max_chars=max(1, _env_num("CHIEZO_ANSWER_MAX_CHARS", 6000, int)),
         # agent モードの 3 つの上限。意味は app/agent.py 冒頭の説明が正。
@@ -236,6 +244,20 @@ def load_settings(
         agent_tool_chars=max(200, _env_num("CHIEZO_AGENT_TOOL_CHARS", 3000, int)),
         agent_timeout=_env_num("CHIEZO_AGENT_TIMEOUT", 180.0, float),
     )
+
+
+# CLI ブリッジ経由の相手を待つ秒数の既定。ブリッジ自身の上限(既定 300 / compose 600)より
+# 長く取る —— 待つ側が先に切れると、向こうの判断が一切見えなくなるため。
+BRIDGE_TIMEOUT_SECONDS = 900.0
+# API で直に叩く相手・推論サーバの既定。1 往復なのでこの桁で足りる。
+DIRECT_TIMEOUT_SECONDS = 120.0
+
+
+def _default_timeout(spec) -> float:
+    """その相手を待つ既定の秒数。CLI ブリッジだけ桁が違う。"""
+    if spec is not None and getattr(spec, "bridge", False):
+        return BRIDGE_TIMEOUT_SECONDS
+    return DIRECT_TIMEOUT_SECONDS
 
 
 def is_enabled() -> bool:
