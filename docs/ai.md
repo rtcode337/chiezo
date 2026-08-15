@@ -213,7 +213,9 @@ docker compose -f docker-compose.yml -f docker-compose.image.yml --profile image
 
 **モデル(チェックポイント)は自分で置いてください** —— 数 GB あり、ライセンスも
 配布条件もモデルごとに違うので、同梱も自動取得もしていません。
-`./models/comfyui/checkpoints/` に `.safetensors` を置くと `image_backends` に出ます。
+`./models/comfyui/ComfyUI/models/checkpoints/` に `.safetensors` を置くと `image_backends` に
+出ます（**この上書きは `./models/comfyui` をコンテナの `/root` に繋ぐ**ので、ComfyUI 本体が
+展開される 1 段下がモデルの置き場になります）。
 
 待ち受けは **7014**(7010 = API・7011 = 推論・7012 = 検索・7013 = CLI ブリッジの並び)。
 ComfyUI の既定は 8188 ですが、番号が食い違うと URL を書くたびに迷うので寄せてあります。
@@ -259,12 +261,13 @@ audio_status(job_id)                    … 仕上がり。files に保存先の
 対応が無く、借りる先がありません(他の外部サービスは絵と同じで、上の表の鍵と on/off を
 そのまま使います)。
 
-自前の GPU で作るには、**絵とは別のモデル**を `./models/comfyui/checkpoints/` に置きます。
+自前の GPU で作るには、**絵とは別のモデル**を `./models/comfyui/ComfyUI/models/checkpoints/` に
+置きます（絵と同じ置き場です）。
 
 | 何を作るか | 置くファイル | 補足 |
 |---|---|---|
-| 効果音・短い素材 | `stable-audio-open-1.0.safetensors` | **`./models/comfyui/text_encoders/t5-base.safetensors` も要る** |
-| 曲 | `ace_step_v1_3.5b.safetensors` | all-in-one(text encoder は不要) |
+| 効果音・短い素材 | `stable-audio-open-1.0.safetensors` | **`../text_encoders/t5-base.safetensors` も要る**。**`Comfy-Org/stable-audio-open-1.0_repackaged` から落とす**（本家 `stabilityai/…` は gated で、同意とアクセストークンが要る）。ライセンスは Stability AI Community License —— **配布物に「Powered by Stability AI」の表示が要る** |
+| 曲 | `ace_step_v1_3.5b.safetensors` | all-in-one（text encoder は不要）。7.7GB、認証なしで落とせる。Apache-2.0 なので表示の縛りが無い |
 
 **どちらの系統かは名前で見分けています。** ComfyUI に「このチェックポイントは何用か」を
 聞く口は無く(読み込んで初めて分かる)、GPU にモデルを載せてから間違いに気づくのは高くつきます。

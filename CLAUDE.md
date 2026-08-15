@@ -1097,6 +1097,8 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
   そちらを指す**(推論サーバと同じ逃げ道)。**モデルは同梱も自動取得もしない** ——
   数 GB あり、ライセンスも配布条件もモデルごとに違う。**絵と音で別のファイルが要る**
   (音は `stable-audio-open`(+ `text_encoders/t5-base`)か `ace_step`)。
+  **置き場はホストの `./models/comfyui/ComfyUI/models/` の下**(上書きが `./models/comfyui` を
+  コンテナの `/root` に繋ぐので、ComfyUI 本体が展開される 1 段下になる)。
 - **GPU の設定は `docker-compose.cuda.yml`(上書きファイル)に閉じる**。`gpus: all` は
   GPU の無い環境では起動そのものが失敗するので、本体の compose には書かない。
   **この上書きは NVIDIA 専用**(イメージが CUDA ビルドで、`gpus: all` も NVIDIA

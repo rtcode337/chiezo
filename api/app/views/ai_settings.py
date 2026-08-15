@@ -322,7 +322,7 @@ async def _media_section_html(q) -> str:
 GPU は <code>docker-compose.image.yml</code> を重ねて立てるか、別マシンのものを
 <code>CHIEZO_IMAGE_URL</code> で指す。<strong>モデル(チェックポイント)は自分で置く</strong>
 —— 絵と音で別のファイルが要る(音は <code>stable-audio-open</code> か
-<code>ace_step</code> を <code>models/checkpoints</code> へ)。</p>
+<code>ace_step</code> を ComfyUI の <code>models/checkpoints</code> へ)。</p>
 <p class="muted">「答える」層を止めると、ここも全部止まる(MCP の道具も出なくなる)。</p>
 </details>
 <table class="ai-settings">

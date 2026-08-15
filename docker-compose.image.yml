@@ -9,12 +9,14 @@
 #
 # **モデル(チェックポイント)は自分で置く。** 数 GB あり、ライセンスも配布条件も
 # モデルごとに違うので、こちらでは同梱も自動取得もしない。
-# `./models/comfyui/checkpoints/` に .safetensors を置くと、相手に聞いて選べるようになる。
+# `./models/comfyui/ComfyUI/models/checkpoints/` に .safetensors を置くと、相手に聞いて
+# 選べるようになる(**この上書きは ./models/comfyui をコンテナの /root に繋ぐ**ので、
+# ComfyUI 本体が展開される 1 段下がモデルの置き場になる)。
 #
 # **絵と音で別のファイルが要る**(置き場は同じ checkpoints):
 #   絵     … 好きな SDXL 系など
 #   効果音 … stable-audio-open-1.0.safetensors
-#            + ./models/comfyui/text_encoders/t5-base.safetensors
+#            + ./models/comfyui/ComfyUI/models/text_encoders/t5-base.safetensors
 #   曲     … ace_step_v1_3.5b.safetensors(all-in-one)
 # **名前で系統を見分ける**(名前に audio か ace を含むものを音として扱う)ので、
 # 名前は変えずに置くこと。変えたときは model で名指しする。
