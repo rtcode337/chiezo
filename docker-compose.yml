@@ -176,6 +176,24 @@ services:
   #    test: ["CMD", "curl", "-fs", "http://localhost:7013/health"]
   #    interval: 60s
   #
+  # Gemini CLI。鍵は管理画面の「話す相手」で登録する(`gemini` と同じ API キーでよい)。
+  # **⚠ web 検索を止められないかもしれない** —— `web=false` で塞ぐ指定は書いてあるが、
+  # 効くことを確かめられていない(Gemini CLI は認証チェックがポリシー検証より先に走るので、
+  # 鍵を入れて 1 回実行しないと確かめられない)。調べさせたくない用途では選ばないこと。
+  #chiezo-bridge-gemini:
+  #  image: ghcr.io/rtcode337/chiezo-bridge:latest
+  #  volumes:
+  #    - ./state:/state:ro
+  #  environment:
+  #    - CHIEZO_BRIDGE_CLI=gemini
+  #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp
+  #    - CHIEZO_BRIDGE_TIMEOUT=${CHIEZO_BRIDGE_TIMEOUT:-300}
+  #  restart: unless-stopped
+  #  cpu_shares: 512
+  #  healthcheck:
+  #    test: ["CMD", "curl", "-fs", "http://localhost:7013/health"]
+  #    interval: 60s
+  #
   # Antigravity は API キー方式を持たない。**コンテナ内で 1 回サインインした結果**を
   # ホーム配下のキャッシュから読むので、/state ではなく**書き込み可能なホーム**を
   # バインドして永続化する。立ち上げたら

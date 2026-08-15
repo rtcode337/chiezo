@@ -216,6 +216,24 @@ services:
   #  restart: unless-stopped
   #  cpu_shares: 512
   #
+  # Gemini CLI。鍵は管理画面の「話す相手」で登録する(`gemini` と同じ API キーでよい)。
+  # **⚠ web 検索を止められないかもしれない** —— `web=false` で塞ぐ指定は書いてあるが、
+  # 効くことを確かめられていない(Gemini CLI は認証チェックがポリシー検証より先に走るので、
+  # 鍵を入れて 1 回実行しないと確かめられない)。調べさせたくない用途では選ばないこと。
+  #chiezo-bridge-gemini:
+  #  image: ghcr.io/rtcode337/chiezo-bridge:latest
+  #  container_name: chiezo-bridge-gemini
+  #  volumes:
+  #    - type: bind
+  #      source: *state-dir
+  #      target: /state
+  #      read_only: true
+  #  environment:
+  #    CHIEZO_BRIDGE_CLI: gemini
+  #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-api:7010/mcp
+  #  restart: unless-stopped
+  #  cpu_shares: 512
+  #
   # Antigravity だけマウントが違う。**API キー方式が無く**、コンテナ内で 1 回サインインした
   # 結果をホーム配下のキャッシュから読むので、/state(読み取り専用)ではなく
   # **書き込み可能なホーム**をバインドして永続化する。立ち上げたら

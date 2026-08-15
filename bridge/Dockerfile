@@ -1,19 +1,25 @@
-# CLI ブリッジ。Claude Code / Codex CLI / Antigravity CLI を OpenAI 互換の口に見せる
-# (bridge/cli_bridge.py)。
+# CLI ブリッジ。Claude Code / Codex CLI / Antigravity CLI / Gemini CLI を
+# OpenAI 互換の口に見せる (bridge/cli_bridge.py)。
 #
 # **1 つのイメージで全部を賄い、立ち上げるときに CHIEZO_BRIDGE_CLI で役割を決める。**
 # イメージは 1 回 pull すればディスクは 1 つぶんで、コンテナを何個立てても増えるのは
 # 書き込み層(数 KB)だけ —— CLI ごとにイメージを分けるより、まとめて 1 枚のほうが得。
 #
-# **node は最終イメージに入れない。** claude は自己完結バイナリ、codex も vendor の
-# 実体バイナリを直接叩けるので、node が要るのは npm install のときだけ。
+# **node は最終イメージに入れない…はずだった。** claude は自己完結バイナリ、codex も
+# vendor の実体バイナリを直接叩けるので、node が要るのは npm install のときだけだった。
 # 以前は node:20-slim をそのまま実行ステージにしていて、使わない node と npm で
 # 圧縮後 41MB を配っていた。
+#
+# **Gemini CLI だけは JS バンドル**(`bundle/gemini.js` に `#!/usr/bin/env node`)なので、
+# 実行にも node が要る。そこで **node の実体だけを持ち込む**。npm と node_modules は
+# 入れない —— 要るのは実行だけ。
+# **それでもイメージは増える**(実測 1.27GB → 1.56GB。node 95MB + CLI 本体)。
+# gemini を使わない環境ではそのぶんを無駄に配ることになる、というのが今の割り切り。
 
 # ---- CLI を取り出すためだけのステージ ----
 FROM node:20-slim AS cli
 
-RUN npm install -g @anthropic-ai/claude-code @openai/codex
+RUN npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli
 
 # Antigravity CLI は単一の Go バイナリで、npm では配布されていない。
 # インストーラが受け付けるのは --dir と --help だけ(--skip-aliases 等は無い)。
@@ -41,19 +47,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-pip curl \
     && rm -rf /var/lib/apt/lists/*
 
-# CLI 3 種。**認証情報は入れない**(実行時に設定 DB か環境変数から受け取る)。
+# CLI 4 種。**認証情報は入れない**(実行時に設定 DB か環境変数から受け取る)。
 COPY --from=cli /usr/local/lib/node_modules/@anthropic-ai/claude-code \
                 /usr/local/lib/node_modules/@anthropic-ai/claude-code
 COPY --from=cli /usr/local/lib/node_modules/@openai/codex \
                 /usr/local/lib/node_modules/@openai/codex
 COPY --from=cli /usr/local/bin/agy /usr/local/bin/agy
+COPY --from=cli /usr/local/lib/node_modules/@google/gemini-cli \
+                /usr/local/lib/node_modules/@google/gemini-cli
+# gemini を動かすためだけの node(npm は入れない)。
+COPY --from=cli /usr/local/bin/node /usr/local/bin/node
 
 # npm が張るのと同じ symlink を自分で張る。codex は **node を通す codex.js ではなく
 # vendor の実体バイナリ**を指す(node を最終イメージに置かないため)。
 RUN set -eux; \
     ln -s /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe /usr/local/bin/claude; \
     ln -s /usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex \
-          /usr/local/bin/codex
+          /usr/local/bin/codex; \
+    ln -s /usr/local/lib/node_modules/@google/gemini-cli/bundle/gemini.js /usr/local/bin/gemini
 
 WORKDIR /srv/bridge
 

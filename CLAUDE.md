@@ -259,11 +259,13 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   ときは、相手に聞いて先頭へ差し替える**(`answer.ensure_model`)。404 のときは
   「モデル名が違うかもしれない」というヒントも返す
 - **`bridge/` — CLI ブリッジ(別イメージ `ghcr.io/<owner>/chiezo-bridge`)。**
-  Claude Code / Codex CLI / Antigravity CLI を OpenAI 互換の口に見せる。**イメージは 1 つで、
-  `CHIEZO_BRIDGE_CLI` で役割を決める** —— イメージは 1 回 pull すればディスクは 1 つぶんで、
-  コンテナを何個立てても増えるのは書き込み層(数 KB)だけなので、分けるより 1 枚が得。
-  **node は最終イメージに入れない**(claude は自己完結バイナリ、codex も vendor の実体を
-  直接叩ける。node が要るのは npm install のときだけ)。**amd64 のみ**ビルドする
+  Claude Code / Codex CLI / Antigravity CLI / Gemini CLI を OpenAI 互換の口に見せる。
+  **イメージは 1 つで、`CHIEZO_BRIDGE_CLI` で役割を決める** —— イメージは 1 回 pull すれば
+  ディスクは 1 つぶんで、コンテナを何個立てても増えるのは書き込み層(数 KB)だけなので、
+  分けるより 1 枚が得。
+  **node は gemini のためだけに入れている**(claude は自己完結バイナリ、codex も vendor の
+  実体を直接叩けるので本来は要らない。**Gemini CLI だけが JS バンドル**)。npm と
+  node_modules は入れない。**そのぶんイメージは増える**(実測 1.27GB → 1.56GB)。**amd64 のみ**ビルドする
   —— codex の vendor パスに x86_64 が直書きしてあるので、arm64 を作るならそこも変える。
   **MCP は任意**(`CHIEZO_BRIDGE_MCP_URL` を空にすると繋がない)。Chiezo 専用の部品ではなく、
   他のアプリからも使えるサービスとして立てられる。
@@ -272,6 +274,14 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   - **道具は CLI 自身に引かせる**。Chiezo の MCP(`/mcp`)を CLI に繋ぐので、検索して答える
     段取りをブリッジ側で組まない。Chiezo から見ると「1 回聞いたら答えが返る」ので
     `rag` / `agent` の区別は関係なくなる
+  - **⚠ gemini だけは道具を切れているか確かめていない。** 名前(`google_web_search` /
+    `web_fetch` / `run_shell_command` / `read_many_files`)と、絞る手段が 2 系統ある
+    こと(`--policy` の `toolName` + `decision`、settings の `excludeTools`)までは
+    バンドルから確かめた。**効くかどうかは未確認** —— Gemini CLI は**認証チェックが
+    ポリシー検証より先**に走るので、鍵が無いと正しい形式と壊れた形式が同じエラーになり
+    区別が付かない。`web=false` で塞ぐ指定は書いてあるが、**塞げている前提にしないこと**。
+    確かめるには鍵を入れて 1 回実行し、`google_web_search` が実際に拒否されるかを見る。
+    画面(相手の説明文)と compose のコメントにも同じ注意を出してある
   - **組み込みの道具は全部切る**(`claude --tools ""` / `codex -s read-only`)。知識ベースに
     答えるのにシェルもファイル操作も要らず、使えると危ない
   - **認証情報はイメージに焼かない**。環境変数で受け取り、ファイルが要る Codex だけ

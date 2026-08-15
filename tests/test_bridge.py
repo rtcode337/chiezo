@@ -6,6 +6,8 @@ CLI そのものは起動しない。確かめるのは「OpenAI 形式の入力
 """
 import importlib
 
+import json
+
 import pytest
 
 
@@ -90,9 +92,54 @@ class TestCommand:
             server.build_command("/tmp/out.txt", "あ" * 100_000)
 
     def test_unknown_cli_is_rejected(self, bridge):
-        server = bridge(CHIEZO_BRIDGE_CLI="gemini")
+        server = bridge(CHIEZO_BRIDGE_CLI="not-a-cli")
         with pytest.raises(RuntimeError):
             server.build_command("/tmp/out.txt")
+
+    def test_gemini_reads_the_prompt_from_stdin(self, bridge):
+        """**プロンプトは引数に載せない。**
+
+        `-p` の値に標準入力が追記される仕様（`gemini --help` で実測）なので、
+        claude / codex と同じ扱いにできる —— Antigravity のような引数長の制限を受けない。
+        """
+        server = bridge(CHIEZO_BRIDGE_CLI="gemini")
+        cmd = server.build_command("/tmp/out.txt", "あ" * 100_000, model="gemini-3.5-flash")
+
+        assert cmd[0] == "gemini"
+        # 長いプロンプトでも argv には入らない
+        assert all(len(a) < 1000 for a in cmd)
+        assert cmd[cmd.index("-p") + 1] == ""
+        assert cmd[cmd.index("-o") + 1] == "text"
+        assert cmd[cmd.index("--model") + 1] == "gemini-3.5-flash"
+
+    def test_gemini_writes_a_deny_policy(self, bridge, tmp_path, monkeypatch):
+        """塞ぐ指定は**書く**（効くかどうかは別。GEMINI_TOOLS の注記を参照）。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="gemini")
+        monkeypatch.setattr(server, "GEMINI_POLICY_PATH", str(tmp_path / "policy.json"))
+
+        cmd = server.build_command("/tmp/out.txt", "やあ", web=False)
+        policy = json.loads((tmp_path / "policy.json").read_text(encoding="utf-8"))
+        denied = {r["toolName"] for r in policy["rules"]}
+
+        assert cmd[cmd.index("--policy") + 1] == str(tmp_path / "policy.json")
+        # web を頼んでいないので検索も塞ぐ対象に入る
+        assert "google_web_search" in denied
+        assert "run_shell_command" in denied
+
+    def test_gemini_opens_search_when_web_is_requested(self, bridge, tmp_path, monkeypatch):
+        server = bridge(CHIEZO_BRIDGE_CLI="gemini")
+        monkeypatch.setattr(server, "GEMINI_POLICY_PATH", str(tmp_path / "policy.json"))
+
+        server.build_command("/tmp/out.txt", "やあ", web=True)
+        denied = {
+            r["toolName"]
+            for r in json.loads((tmp_path / "policy.json").read_text(encoding="utf-8"))["rules"]
+        }
+
+        assert "google_web_search" not in denied
+        assert "web_fetch" not in denied
+        # 検索と関係ない道具は塞いだまま
+        assert "run_shell_command" in denied
 
 
 class TestOptionalMcp:
