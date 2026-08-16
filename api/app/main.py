@@ -24,7 +24,17 @@ from fastapi.responses import (
 from pydantic import BaseModel
 from pydantic import Field as PydField
 
-from app import agent, answer, db, media, media_providers, notes, providers, websearch
+from app import (
+    agent,
+    answer,
+    capabilities,
+    db,
+    media,
+    media_providers,
+    notes,
+    providers,
+    websearch,
+)
 from app.deps import (
     exact_title_first,
     get_source,
@@ -1331,6 +1341,36 @@ class AudioRequestBody(BaseModel):
     # 繋いで鳴らせる素材にするか(効くのは ElevenLabs の効果音だけ)
     loop: bool = False
     steps: int = 50
+
+
+@app.get("/v1/capabilities")
+async def capabilities_list() -> dict:
+    """**chiezo 経由で AI に頼めることの一覧**（会話・声・画像・動画・音楽・SE）。
+
+    画面と同じ語彙を返す(`app/capabilities.py`)。**まだ無いものも並べる** ——
+    表から消すと「頼めるのか分からない」になり、聞かれるたびにコードを読み直すことになる。
+    `supported=false` は**実装が無い**という意味で、「相手がいない」(実装はあるが鍵が
+    未登録・GPU が無い等)とは別。
+    """
+    usable: dict[str, set[str]] = {}
+    for spec in providers.all_providers():
+        if answer.load_settings(spec.id) is not None:
+            usable.setdefault(spec.id, set()).add(capabilities.CHAT)
+
+    if media.is_enabled():
+        for kind in (media_providers.KIND_IMAGE, media_providers.KIND_AUDIO):
+            for entry in await media.backends(kind):
+                if not entry["usable"]:
+                    continue
+                if kind == media_providers.KIND_IMAGE:
+                    usable.setdefault(entry["id"], set()).add(capabilities.IMAGE)
+                    continue
+                for cap_id, sound in ((capabilities.MUSIC, media_providers.SOUND_MUSIC),
+                                      (capabilities.SFX, media_providers.SOUND_SFX)):
+                    if sound in entry.get("sounds", {}):
+                        usable.setdefault(entry["id"], set()).add(cap_id)
+
+    return {"capabilities": capabilities.overview(usable)}
 
 
 @app.get("/v1/media/backends")

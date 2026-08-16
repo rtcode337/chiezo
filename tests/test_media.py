@@ -794,3 +794,54 @@ class TestOwnCredential:
         settings_store.set_credential("gemini", "AIza-test")
 
         assert media_backends.credential_of(media_providers.get("elevenlabs")) == ""
+
+
+class TestCapabilities:
+    """**頼めることの分類は 1 か所に持つ**（`app/capabilities.py`）。
+
+    会話は `providers.py`、絵と音は `media_providers.py` と持ち主が分かれているので、
+    分類まで散らすと「何が頼めるのか」を数える場所が無くなる。
+    """
+
+    def test_music_and_sfx_are_counted_separately(self, state):
+        """job の kind はどちらも audio だが、**相手もモデルも別物**
+        （Lyria は曲しか作れない）。分類は仕事の単位で切る。"""
+        from app import capabilities
+
+        assert capabilities.of_provider("gemini") == {
+            capabilities.CHAT, capabilities.IMAGE, capabilities.MUSIC
+        }
+        assert capabilities.of_provider("elevenlabs") == {
+            capabilities.MUSIC, capabilities.SFX
+        }
+        assert capabilities.of_provider("comfyui") == {
+            capabilities.IMAGE, capabilities.MUSIC, capabilities.SFX
+        }
+
+    def test_a_chat_only_provider_has_only_chat(self, state):
+        from app import capabilities
+
+        assert capabilities.of_provider("openrouter") == {capabilities.CHAT}
+
+    def test_unimplemented_kinds_are_still_listed(self, state):
+        """**表から消さない。** 消すと「頼めるのか分からない」になり、
+        聞かれるたびにコードを読み直すことになる。"""
+        from app import capabilities
+
+        items = {c["id"]: c for c in capabilities.overview({})}
+
+        assert len(items) == 6
+        assert items["voice"]["supported"] is False
+        assert items["video"]["supported"] is False
+        assert items["voice"]["state"] == "未対応"
+
+    def test_it_separates_not_implemented_from_nobody_available(self, state):
+        """**次にすることが違う。** 作れば直るのか、鍵を入れれば直るのか。"""
+        from app import capabilities
+
+        items = {c["id"]: c for c in capabilities.overview({"gemini": {capabilities.IMAGE}})}
+
+        assert items["image"]["state"] == "使える"
+        assert items["image"]["providers"] == ["gemini"]
+        assert items["music"]["state"] == "相手がいない"
+        assert items["video"]["state"] == "未対応"

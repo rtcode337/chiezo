@@ -208,6 +208,23 @@ services:
   #chiezo-bridge-codex:
   #  image: ghcr.io/rtcode337/chiezo-bridge:latest
   #  container_name: chiezo-bridge-codex
+  #  volumes:
+  #    - type: bind
+  #      source: *state-dir
+  #      target: /state
+  #      read_only: true
+  #  environment:
+  #    CHIEZO_BRIDGE_CLI: codex
+  #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-api:7010/mcp
+  #  restart: unless-stopped
+  #  cpu_shares: 512
+  #
+  # Antigravity だけマウントが違う。**API キー方式が無く**、コンテナ内で 1 回サインインした
+  # 結果をホーム配下のキャッシュから読むので、/state(読み取り専用)ではなく
+  # **書き込み可能なホーム**をバインドして永続化する。立ち上げたら、その環境の
+  # コンテナ管理画面から `agy` を対話で 1 回実行してサインインすること
+  # (表示される URL を手元のブラウザで開き、出てきたコードを貼り戻す)。
+  # **ブリッジは非 root(uid 1000)で動く**ので、バインド先は uid 1000 が書けるようにする。
   #chiezo-bridge-antigravity:
   #  image: ghcr.io/rtcode337/chiezo-bridge:latest
   #  container_name: chiezo-bridge-antigravity

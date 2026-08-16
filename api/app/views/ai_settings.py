@@ -21,7 +21,7 @@ import httpx
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from app import answer, media, media_providers, providers, settings_store
+from app import answer, capabilities, media, media_providers, providers, settings_store
 from app.pages import CHAT_PATH, esc
 
 router = APIRouter()
@@ -78,32 +78,67 @@ def _capabilities_cell(talk: dict | None, media_entries: dict[str, dict]) -> str
     """その相手で**何ができるか**を 1 つの欄にまとめる。
 
     印は `✓` と `⚠`（絵文字は環境によって豆腐になり、いちばん見たい列が読めなくなる）。
-
-    **話す・絵・音を同じ書き方で並べる。** 以前は話す相手の表と絵と音の表が分かれていて、
-    同じ相手が 2 か所に出ていた —— どちらの on/off が効くのか画面から読めなかった。
+    **その相手が受け持たない分類は書かない** —— 6 つ全部を毎行に並べると、
+    行が高くなるだけで「この相手で何ができるか」が読みにくくなる。
+    分類そのものは表の上の一覧が示す。
     """
     lines = []
 
-    if talk is None:
-        lines.append('<span class="muted">話す —</span>')
-    elif talk["runnable"]:
-        lines.append("✓ 話す")
-    else:
-        why = talk["blocked"] or ("無効" if not talk["enabled"] else "")
-        lines.append(f'⚠ 話す <span class="muted">{esc(why)}</span>' if why else "⚠ 話す")
-
-    for kind, label in ((media_providers.KIND_IMAGE, "絵"), (media_providers.KIND_AUDIO, "音")):
-        entry = media_entries.get(kind)
-        if entry is None:
-            lines.append(f'<span class="muted">{label} —</span>')
-        elif entry["usable"]:
-            models = "、".join(entry["models"][:2])
-            tail = f' <span class="muted">{esc(models)}</span>' if models else ""
-            lines.append(f"✓ {label}{tail}")
+    if talk is not None:
+        label = capabilities.BY_ID[capabilities.CHAT].label
+        if talk["runnable"]:
+            lines.append(f"✓ {label}")
         else:
-            lines.append(f'⚠ {label} <span class="muted">{esc(entry["reason"])}</span>')
+            why = talk["blocked"] or ("無効" if not talk["enabled"] else "")
+            lines.append(f'⚠ {label} <span class="muted">{esc(why)}</span>' if why else f"⚠ {label}")
 
-    return "<br>".join(lines)
+    image = media_entries.get(media_providers.KIND_IMAGE)
+    if image is not None:
+        lines.append(_media_line(capabilities.IMAGE, image, models=True))
+
+    audio = media_entries.get(media_providers.KIND_AUDIO)
+    if audio is not None:
+        sounds = audio.get("sounds", {})
+        for cap_id, sound in ((capabilities.MUSIC, media_providers.SOUND_MUSIC),
+                              (capabilities.SFX, media_providers.SOUND_SFX)):
+            if sound in sounds:
+                lines.append(_media_line(cap_id, audio, limit=sounds[sound]))
+
+    return "<br>".join(lines) or '<span class="muted">—</span>'
+
+
+def _media_line(cap_id: str, entry: dict, models: bool = False, limit: float | None = None) -> str:
+    """絵・音の 1 行。使えない相手は**理由をそのまま出す**（次にすることが分かるように）。"""
+    label = capabilities.BY_ID[cap_id].label
+    if not entry["usable"]:
+        return f'⚠ {label} <span class="muted">{esc(entry["reason"])}</span>'
+    tail = ""
+    if models and entry["models"]:
+        tail = f' <span class="muted">{esc("、".join(entry["models"][:2]))}</span>'
+    elif limit:
+        tail = f' <span class="muted">〜{limit:.0f} 秒</span>'
+    return f"✓ {label}{tail}"
+
+
+def _overview_html(usable: dict[str, set[str]]) -> str:
+    """**表の上に、頼めることの一覧を出す。** 行ごとの欄は「その相手で何ができるか」しか
+    示さないので、**そもそも何を頼めるのか**（と、まだ頼めないもの）はここで見せる。"""
+    cells = []
+    for item in capabilities.overview(usable):
+        if item["state"] == "使える":
+            names = "、".join(esc(capabilities.label_of(p)) for p in item["providers"])
+            body = f'<strong>✓ {esc(item["label"])}</strong><br><span class="muted">{names}</span>'
+        elif item["state"] == "相手がいない":
+            body = (f'<strong>{esc(item["label"])}</strong>'
+                    '<br><span class="muted">使える相手がいない</span>')
+        else:
+            body = f'<span class="muted">{esc(item["label"])}<br>未対応</span>'
+        cells.append(f"<td>{body}</td>")
+    return (
+        '<table class="ai-settings"><thead><tr><th colspan="6">'
+        "chiezo 経由で AI に頼めること</th></tr></thead>"
+        f"<tbody><tr>{''.join(cells)}</tr></tbody></table>"
+    )
 
 
 def _talk_cells(r: dict) -> tuple[str, str]:
@@ -257,16 +292,32 @@ async def section_html(request: Request | None = None) -> str:
 
     rows = []
     talk_ids = set()
+    usable: dict[str, set[str]] = {}
     for r in _rows():
         spec = r["spec"]
         talk_ids.add(spec.id)
         cred, use = _talk_cells(r)
+        if r["runnable"]:
+            usable.setdefault(spec.id, set()).add(capabilities.CHAT)
         rows.append(
             f'<tr{"" if r["enabled"] else ' class="off"'}><td>{esc(spec.label)}</td>'
             f'<td>{_capabilities_cell(r, by_id.get(spec.id, {}))}</td>'
             f"<td>{cred}</td><td>{use}</td>"
             f'<td class="muted">{esc(spec.billing)}</td></tr>'
         )
+
+    # 絵・音は「いま使えるか」を相手ごとに数える（上の一覧に渡す）
+    for pid, kinds in by_id.items():
+        for kind, entry in kinds.items():
+            if not entry["usable"]:
+                continue
+            if kind == media_providers.KIND_IMAGE:
+                usable.setdefault(pid, set()).add(capabilities.IMAGE)
+                continue
+            for cap_id, sound in ((capabilities.MUSIC, media_providers.SOUND_MUSIC),
+                                  (capabilities.SFX, media_providers.SOUND_SFX)):
+                if sound in entry.get("sounds", {}):
+                    usable.setdefault(pid, set()).add(cap_id)
 
     # 話せない相手（自前の GPU・ElevenLabs）は「話す相手」に出てこないので、続けて並べる
     for spec in media_providers.all_providers():
@@ -291,6 +342,7 @@ async def section_html(request: Request | None = None) -> str:
 {banner}
 {master}
 {media_note}
+{_overview_html(usable)}
 <details>
 <summary>この節について</summary>
 <p>Chiezo にためた知識を引ける AI と、絵や音を作る相手をここで増やす。
@@ -302,12 +354,15 @@ async def section_html(request: Request | None = None) -> str:
 無効にすると全部止まる —— 同じものを 2 か所から切り替えさせない。</p>
 <p>どのモデルを使うかは<strong>会話のたびに選べる</strong>(<a href="{CHAT_PATH}">AI と話す</a>の画面)。</p>
 <p><strong>Claude Code CLI / Codex CLI / Antigravity CLI は CLI なので、別コンテナ(ブリッジ)を
-立てて使う。</strong><code>docker-compose.yml</code> の該当サービスのコメントを外して起動すると、
-ここが押せるようになる。<strong>認証情報はこの画面から登録する</strong> —— ブリッジが設定 DB を
-読み取り専用でマウントして読むので、登録すればブリッジの再起動なしで効く。</p>
+立てて使う。</strong>立てるとここが押せるようになる（手順は各行の「登録する」「使えるようにするには」の中）。
+<strong>compose のファイルが無い環境でも立てられる</strong> —— <code>docker run</code> で、
+<strong>コンテナ名を <code>chiezo-bridge-&lt;CLI 名&gt;</code> にして chiezo-api と同じネットワークに繋ぐ</strong>
+のが条件（この名前で呼びに行くため）。<strong>認証情報はこの画面から登録する</strong> —— ブリッジが設定 DB を
+読み取り専用でマウントして読むので、登録すればブリッジの再起動なしで効く
+（<strong>Antigravity だけは例外</strong>で、API キーを持たずコンテナ内で 1 回サインインする）。</p>
 <p><strong>自前の GPU(ComfyUI)は「話す相手」ではない。</strong>
 <code>docker-compose.image.yml</code> を重ねて立てるか、別マシンのものを
-<code>CHIEZO_IMAGE_URL</code> で指す。<strong>モデルは自分で置く</strong>
+<code>CHIEZO_IMAGE_URL</code> で指す(compose が無ければ後者が早い)。<strong>モデルは自分で置く</strong>
 —— 絵と音で別のファイルが要る(置き場は <code>docs/ai.md</code>)。</p>
 <p class="stale">⚠️ Chiezo は認証なし・LAN 内前提。ここに入れた認証情報は、この画面を開ける人なら
 誰でも差し替えられる(値は表示しないが、書き換えは防げない)。</p>

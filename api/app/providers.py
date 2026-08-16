@@ -131,8 +131,16 @@ PROVIDERS: tuple[Provider, ...] = (
         credential=CRED_REQUIRED,
         billing="Claude のサブスクリプション（定額）",
         model_required=False,
-        setup="docker-compose.yml の chiezo-bridge-claude のコメントを外して起動し、"
-        "手元の端末で `claude setup-token` を実行して発行したトークンをここに登録してください。"
+        setup="ブリッジのコンテナ chiezo-bridge-claude を立ててから、手元の端末で "
+        "`claude setup-token` を実行して発行したトークンをここに登録してください。"
+        "**コンテナ名はこのとおりにすること**(この名前で呼びに行きます)。"
+        "compose があるなら docker-compose.yml の該当サービスのコメントを外すだけ。"
+        "**無ければ `docker run` で立てます** —— chiezo-api と同じネットワークに繋ぎ、"
+        "設定 DB を読み取り専用で渡します: "
+        "`docker run -d --name chiezo-bridge-claude --network <chiezo と同じ> "
+        "-v <state のパス>:/state:ro -e CHIEZO_BRIDGE_CLI=claude "
+        "-e CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp --restart unless-stopped "
+        "ghcr.io/rtcode337/chiezo-bridge:latest`。"
         "（ブリッジは設定 DB を読み取り専用でマウントしているので、"
         "登録すればブリッジの再起動なしで効きます。）",
         # CLI はエイリアスで受ける（正式名はモデルが変わるたびに動く）。
@@ -153,11 +161,21 @@ PROVIDERS: tuple[Provider, ...] = (
         credential=CRED_NONE,
         billing="Google AI サブスクリプション（定額）",
         model_required=False,
-        setup="docker-compose.yml の chiezo-bridge-antigravity のコメントを外して起動し、"
-        "`docker compose exec chiezo-bridge-antigravity agy` を 1 回だけ対話で実行して"
-        "サインインしてください（表示される URL を手元のブラウザで開き、出てきた認証コードを"
-        "端末に貼り戻す）。サインイン結果はバインドしたホームに残るので、"
-        "コンテナを作り直しても消えません。",
+        setup="**API キーでは動きません**（鍵を渡しても Google アカウントのサインインを求められます）。"
+        "手順は 2 段階です。"
+        "(1) ブリッジのコンテナ chiezo-bridge-antigravity を立てる。**コンテナ名はこのとおりに**し、"
+        "chiezo-api と同じネットワークに繋ぎ、**書き込めるホーム**をバインドします"
+        "（サインイン結果がそこに残るので、コンテナを作り直しても消えません。"
+        "ブリッジは非 root(uid 1000) で動くので、そのディレクトリは uid 1000 が書けるようにすること）。"
+        "compose があるなら該当サービスのコメントを外すだけ。無ければ: "
+        "`docker run -d --name chiezo-bridge-antigravity --network <chiezo と同じ> "
+        "-v <state のパス>/bridge-antigravity-home:/srv/bridge/home "
+        "-e CHIEZO_BRIDGE_CLI=antigravity -e CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp "
+        "--restart unless-stopped ghcr.io/rtcode337/chiezo-bridge:latest`。"
+        "(2) そのコンテナの中で `agy` を**対話で 1 回**実行してサインインする"
+        "（`docker exec -it chiezo-bridge-antigravity agy`。表示される URL を手元のブラウザで開き、"
+        "出てきた認証コードを貼り戻す）。コンテナ管理画面しか無い環境では、"
+        "その画面のターミナル機能から同じことをします。",
         models=(),
         # `agy --help` の --effort。claude と違い xhigh / max は無い。
         efforts=("low", "medium", "high"),
@@ -171,7 +189,7 @@ PROVIDERS: tuple[Provider, ...] = (
         credential=CRED_REQUIRED,
         billing="ChatGPT のサブスクリプション（定額）",
         model_required=False,
-        setup="docker-compose.yml の chiezo-bridge-codex のコメントを外して起動し、"
+        setup="ブリッジのコンテナ chiezo-bridge-codex を立ててから、"
         "手元で `codex login --device-auth` して作られる ~/.codex/auth.json の中身を"
         "そのままここに登録してください（API キー経路は従量課金になるので使いません）。",
         models=(),  # CLI の既定に任せる（/v1/models が返すものを使う）

@@ -118,6 +118,28 @@ Chiezo を引き、雑談は雑談として返る)。
 答えの作り方は 2 段です。まず質問文から検索クエリを組み立て(質問文をそのまま全文検索に
 入れても当たらないため)、その結果の上位文書の本文を抜粋してから答えさせます。
 
+## 何を頼めるのか(`GET /v1/capabilities`)
+
+chiezo 経由で AI に頼めることは **6 つに分類**してあります。管理画面の「AI の相手」の
+いちばん上と、この口が同じものを返します。
+
+| 分類 | いま | 頼み方 |
+|---|---|---|
+| **会話** | ✅ | `/v1/ask`・`/v1/chat`・`/ai/chat`・MCP の道具 |
+| **声・音声** | ❌ 未対応 | 読み上げ(TTS)も音声入力(STT)も未実装 |
+| **画像** | ✅ | `image_generate` / `POST /v1/media/image` |
+| **動画** | ❌ 未対応 | 未実装 |
+| **音楽** | ✅ | `audio_generate(sound="music")` |
+| **SE** | ✅ | `audio_generate(sound="sfx")` |
+
+**「未対応」と「相手がいない」は別物です。** 前者は実装が無い（作れば直る）、後者は
+実装はあるが使える相手がいない（鍵を登録する・GPU にモデルを置けば直る）—— 次にすることが
+違うので、同じ言葉にしていません。
+
+**音楽と SE を分けてあるのは、相手もモデルも別物だから**です（job の `kind` はどちらも
+`audio`）。Lyria は曲しか作れず、Stable Audio Open は効果音向き、ACE-Step は曲向き。
+「音が作れます」とだけ言うと、効果音を頼んで 30 秒の曲が返ることになります。
+
 ## 絵を描かせる(MCP の `image_*`)
 
 **知識を引くのとは別の仕事**ですが、口は Chiezo にまとめてあります —— MCP の登録先を
@@ -491,6 +513,45 @@ postgres を別コンテナで立てて複数のアプリが繋ぐのと同じ�
 **塞ぐ一覧は取りこぼしうる**点に注意してください。組み込みの道具は CLI の版が上がるたび
 増え、**新しいものは既定で使えてしまいます**。`CHIEZO_BRIDGE_DISALLOWED_TOOLS` で
 差し替えられるので、CLI を上げたら見直してください。
+
+### compose のファイルが無い環境で立てる
+
+NAS のコンテナマネージャーのように**リポジトリを置けない環境**でも、ブリッジは立てられます。
+守るのは 2 つだけです。
+
+- **コンテナ名を `chiezo-bridge-<CLI 名>` にする**（`chiezo-bridge-claude` など）。
+  Chiezo はこの名前で呼びに行きます（URL は `api/app/providers.py` に決め打ち）
+- **chiezo-api と同じ Docker ネットワークに繋ぐ**（名前で解決できないと届きません）
+
+```bash
+# Claude Code CLI / Codex CLI —— 認証情報は設定 DB から読むので、読み取り専用で渡す
+docker run -d --name chiezo-bridge-claude --network <chiezo と同じネットワーク> \
+  -v <state のパス>:/state:ro \
+  -e CHIEZO_BRIDGE_CLI=claude -e CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp \
+  --restart unless-stopped ghcr.io/rtcode337/chiezo-bridge:latest
+```
+
+**Antigravity CLI だけ手順が違います。API キーでは動きません** —— 鍵を渡しても
+Google アカウントのサインインを求められます（`GEMINI_API_KEY` を入れて実行すると、
+鍵を見ずに OAuth の URL を出して待ちに入るのを実測）。なので**書き込めるホームをバインドして、
+コンテナの中で 1 回サインイン**します。
+
+```bash
+docker run -d --name chiezo-bridge-antigravity --network <chiezo と同じネットワーク> \
+  -v <state のパス>/bridge-antigravity-home:/srv/bridge/home \
+  -e CHIEZO_BRIDGE_CLI=antigravity -e CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp \
+  --restart unless-stopped ghcr.io/rtcode337/chiezo-bridge:latest
+
+# サインイン（1 回だけ。表示された URL を手元のブラウザで開き、出たコードを貼り戻す）
+docker exec -it chiezo-bridge-antigravity agy
+```
+
+**バインド先は uid 1000 が書けるようにしておくこと**（ブリッジは非 root で動きます。
+合わなければ `sudo chown -R 1000:1000 <ディレクトリ>`）。書けないとサインインが残らず、
+コンテナを作り直すたびにやり直しになります。**ターミナルを開けないコンテナ管理画面**では、
+その画面のコンソール機能から同じコマンドを実行してください。
+
+立てたら管理画面（`/admin` の「AI の相手」）で「接続を試す」→「有効にする」の順に押します。
 
 ### 🌐 web 検索 / 📝 覚える は agent モードだけ
 
