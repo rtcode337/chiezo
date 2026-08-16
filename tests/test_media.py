@@ -278,7 +278,8 @@ class TestJobs:
         use(state, fake_comfy())
         job = media.create_job("猫", backend="comfyui", size="1024x1024")
         asyncio.run(media._run(
-            job["id"], "comfyui", media_backends.ImageRequest(prompt="猫", size="1024x1024"), 1))
+            job["id"], "comfyui", media_backends.ImageRequest(prompt="猫", size="1024x1024"), 1,
+            media_providers.KIND_IMAGE))
 
         done = media.get_job(job["id"])
         assert done["state"] == "done"
@@ -294,7 +295,8 @@ class TestJobs:
         with patch.object(media_backends, "generate", one):
             job = media.create_job("猫", backend="gemini")
             asyncio.run(media._run(
-                job["id"], "gemini", media_backends.ImageRequest(prompt="猫"), 1))
+                job["id"], "gemini", media_backends.ImageRequest(prompt="猫"), 1,
+                media_providers.KIND_IMAGE))
 
         assert media.get_job(job["id"])["files"][0]["url"].endswith(".jpg")
 
@@ -308,7 +310,8 @@ class TestJobs:
             with patch.object(media_backends, "generate", forever):
                 job = media.create_job("猫", backend="comfyui")
                 task = asyncio.create_task(
-                    media._run(job["id"], "comfyui", media_backends.ImageRequest(prompt="猫"), 1))
+                    media._run(job["id"], "comfyui", media_backends.ImageRequest(prompt="猫"), 1,
+                       media_providers.KIND_IMAGE))
                 await asyncio.sleep(0)          # running まで進める
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
@@ -350,7 +353,8 @@ class TestJobs:
 
         state.setattr(media_backends, "generate", flaky)
         job = media.create_job("猫", backend="comfyui", count=3)
-        asyncio.run(media._run(job["id"], "comfyui", media_backends.ImageRequest(prompt="猫"), 3))
+        asyncio.run(media._run(job["id"], "comfyui", media_backends.ImageRequest(prompt="猫"), 3,
+                               media_providers.KIND_IMAGE))
 
         done = media.get_job(job["id"])
         assert done["state"] == "partial"
@@ -745,7 +749,8 @@ class TestAudioJobs:
         job = media.create_job("剣", backend="comfyui", kind="audio", sound="sfx", seconds=4)
         asyncio.run(media._run(
             job["id"], "comfyui",
-            media_backends.AudioRequest(prompt="剣", sound="sfx", seconds=4), 1))
+            media_backends.AudioRequest(prompt="剣", sound="sfx", seconds=4), 1,
+            media_providers.KIND_AUDIO))
 
         done = media.get_job(job["id"])
         assert done["kind"] == "audio"
@@ -788,7 +793,9 @@ class TestAudioBackendList:
         image = {b["id"]: b for b in asyncio.run(media.backends("image"))}
 
         assert set(audio) == {"comfyui", "gemini", "elevenlabs"}
-        assert "elevenlabs" not in image
+        # **CLI ブリッジの相手は絵しか描けない**(内蔵ツールに音が無い)
+        assert "codex" not in audio and "antigravity" not in audio
+        assert "codex" in image
         assert "openai" in image
 
     def test_says_what_each_backend_accepts(self, state):
@@ -852,13 +859,17 @@ class TestCapabilities:
         from app import capabilities
 
         assert capabilities.of_provider("gemini") == {
-            capabilities.CHAT, capabilities.IMAGE, capabilities.MUSIC
+            capabilities.CHAT, capabilities.IMAGE, capabilities.MUSIC,
+            capabilities.VIDEO, capabilities.SPEECH, capabilities.TRANSCRIBE,
         }
+        # **話す相手としては出てこないが、それ以外はほぼ全部受け持つ**
         assert capabilities.of_provider("elevenlabs") == {
-            capabilities.MUSIC, capabilities.SFX
+            capabilities.MUSIC, capabilities.SFX, capabilities.IMAGE,
+            capabilities.VIDEO, capabilities.SPEECH, capabilities.TRANSCRIBE,
         }
+        # **自前の GPU に読み上げは無い**(ComfyUI 本体に TTS のノードが無いため)
         assert capabilities.of_provider("comfyui") == {
-            capabilities.IMAGE, capabilities.MUSIC, capabilities.SFX
+            capabilities.IMAGE, capabilities.MUSIC, capabilities.SFX, capabilities.VIDEO
         }
 
     def test_a_chat_only_provider_has_only_chat(self, state):
@@ -866,17 +877,20 @@ class TestCapabilities:
 
         assert capabilities.of_provider("openrouter") == {capabilities.CHAT}
 
-    def test_unimplemented_kinds_are_still_listed(self, state):
+    def test_every_kind_is_listed(self, state):
         """**表から消さない。** 消すと「頼めるのか分からない」になり、
-        聞かれるたびにコードを読み直すことになる。"""
+        聞かれるたびにコードを読み直すことになる。
+
+        読み上げと文字起こしは**別に数える** —— 同じ「声」でも仕事の向きが逆で、
+        まとめると「読み上げはできるが文字起こしはできない」相手を
+        「声が使える」と言うことになる。
+        """
         from app import capabilities
 
         items = {c["id"]: c for c in capabilities.overview({})}
 
-        assert len(items) == 6
-        assert items["voice"]["supported"] is False
-        assert items["video"]["supported"] is False
-        assert items["voice"]["state"] == "未対応"
+        assert list(items) == ["chat", "speech", "transcribe", "image", "video", "music", "sfx"]
+        assert all(item["supported"] for item in items.values())
 
     def test_it_separates_not_implemented_from_nobody_available(self, state):
         """**次にすることが違う。** 作れば直るのか、鍵を入れれば直るのか。"""
@@ -887,7 +901,6 @@ class TestCapabilities:
         assert items["image"]["state"] == "使える"
         assert items["image"]["providers"] == ["gemini"]
         assert items["music"]["state"] == "相手がいない"
-        assert items["video"]["state"] == "未対応"
 
 
 class TestRemoteErrors:
@@ -921,3 +934,634 @@ class TestRemoteErrors:
                 "gemini", media_backends.AudioRequest(prompt="曲", sound="music")))
 
         assert "hint" not in e.value.detail
+
+
+# ---- 動画 -------------------------------------------------------------------
+#
+# **絵と音で効いた検査をそのまま持ってくるだけでは足りない。** 動画は
+# 「待ち時間が桁で違う」「受け付ける尺が飛び飛び」「1 本が重い」の 3 つが加わり、
+# どれも**間違えても生成そのものは成功して返る**(尺だけ違う動画が返る、
+# 途中で job を畳んで取りに行けなくなる)ので、テストで押さえておく。
+
+MP4 = b"\x00\x00\x00 ftypisom" + b"0" * 64
+
+
+def fake_comfy_video(unets=("wan2.2_t2v_14B.safetensors", "flux1-dev.safetensors"),
+                     clips=("umt5_xxl_fp8.safetensors",),
+                     vaes=("wan_2.1_vae.safetensors",)):
+    """動画を作れる ComfyUI を演じる。**読むものが 3 つ**あるのがここの肝。"""
+    lists = {
+        "UNETLoader": ("unet_name", unets),
+        "CLIPLoader": ("clip_name", clips),
+        "VAELoader": ("vae_name", vaes),
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        for node, (field, names) in lists.items():
+            if path.endswith(f"/object_info/{node}"):
+                return httpx.Response(200, json={
+                    node: {"input": {"required": {field: [list(names)]}}}
+                })
+        if path.endswith("/prompt"):
+            fake_comfy_video.sent = json.loads(request.content)
+            return httpx.Response(200, json={"prompt_id": "p1"})
+        if "/history/" in path:
+            return httpx.Response(200, json={
+                "p1": {"outputs": {"11": {"videos": [{"filename": "a.mp4", "type": "output"}]}}}
+            })
+        if path.endswith("/view"):
+            return httpx.Response(200, content=MP4)
+        return httpx.Response(404)
+
+    return handler
+
+
+class TestComfyUIVideo:
+    def test_it_only_offers_models_that_can_make_video(self, state):
+        """`models/diffusion_models` には**絵の UNet も同居する**。混ぜて先頭を掴むと、
+        絵のモデルで動画を作ろうとして、読み込んで初めて失敗する。"""
+        use(state, fake_comfy_video())
+
+        names = asyncio.run(media_backends.comfy_video_models("http://x"))
+
+        assert names == ["wan2.2_t2v_14B.safetensors"]
+
+    def test_frames_are_rounded_to_the_shape_wan_accepts(self, state):
+        """**4n+1 でないと通らない。** 秒数から素直に掛けると 32 フレームになり、
+        グラフごと弾かれる。"""
+        assert media_backends.comfy_video_length(2.0) == 33
+        assert media_backends.comfy_video_length(3.0) == 49
+        # **近いほうへ寄せる。** 切り捨てると 2.0 秒が 29 フレーム(1.81 秒)になり、
+        # 頼んだ尺より短いものが黙って返る
+        assert media_backends.comfy_video_length(2.0) / 16 == pytest.approx(2.06, abs=0.01)
+        assert [media_backends.comfy_video_length(s) % 4 for s in (2.0, 3.0, 5.0)] == [1, 1, 1]
+
+    def test_it_loads_the_encoder_and_vae_the_model_needs(self, state):
+        """絵と違って**読むものが 3 つ**ある。どれか 1 つでも取り違えると通らない。"""
+        use(state, fake_comfy_video())
+
+        video = asyncio.run(media_backends.generate_video(
+            "comfyui",
+            media_backends.VideoRequest(prompt="走る猫", size="848x480", seconds=2.0, seed=9),
+        ))
+
+        graph = fake_comfy_video.sent["prompt"]
+        assert graph["1"]["inputs"]["unet_name"] == "wan2.2_t2v_14B.safetensors"
+        assert graph["2"]["inputs"] == {"clip_name": "umt5_xxl_fp8.safetensors", "type": "wan"}
+        assert graph["3"]["inputs"]["vae_name"] == "wan_2.1_vae.safetensors"
+        assert graph["6"]["inputs"] == {"width": 848, "height": 480, "length": 33, "batch_size": 1}
+        assert video.data == MP4
+        assert video.mime == "video/mp4"
+
+    def test_a_missing_encoder_is_refused_before_the_gpu_spins(self, state):
+        """ComfyUI 側のエラーは「名前が不正」としか出ない。**何を置けばよいか**を
+        こちらで言わないと、原因に辿り着けない。"""
+        use(state, fake_comfy_video(clips=("clip_l.safetensors",)))
+
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(media_backends.generate_video(
+                "comfyui", media_backends.VideoRequest(prompt="猫", size="848x480")))
+
+        assert "umt5" in e.value.detail["error"]
+        assert "text_encoders" in e.value.detail["hint"]
+
+    def test_it_says_what_to_place_when_no_video_model_exists(self, state):
+        use(state, fake_comfy_video(unets=("flux1-dev.safetensors",)))
+
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(media_backends.generate_video(
+                "comfyui", media_backends.VideoRequest(prompt="猫", size="848x480")))
+
+        assert "diffusion_models" in e.value.detail["hint"]
+
+    def test_the_output_bucket_name_may_differ_between_versions(self, state):
+        """出口の入れ物の名前は ComfyUI の版で変わる(videos / gifs / images)。
+        決め打ちにすると、版が上がっただけで「返しませんでした」になる。"""
+        handler = fake_comfy_video()
+
+        def as_gifs(request: httpx.Request) -> httpx.Response:
+            if "/history/" in request.url.path:
+                return httpx.Response(200, json={
+                    "p1": {"outputs": {"11": {"gifs": [{"filename": "a.mp4", "type": "output"}]}}}
+                })
+            return handler(request)
+
+        use(state, as_gifs)
+
+        video = asyncio.run(media_backends.generate_video(
+            "comfyui", media_backends.VideoRequest(prompt="猫", size="848x480", seconds=2.0)))
+
+        assert video.data == MP4
+
+
+def fake_openai_video(status_sequence=("completed",)):
+    """Sora を演じる。**頼む → 覗く → 取りに行く**の 3 手。"""
+    seen = {"looks": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/videos") and request.method == "POST":
+            fake_openai_video.sent = request.content
+            return httpx.Response(200, json={"id": "vid_1", "status": "queued"})
+        if path.endswith("/content"):
+            return httpx.Response(200, content=MP4)
+        if "/videos/" in path:
+            index = min(seen["looks"], len(status_sequence) - 1)
+            seen["looks"] += 1
+            return httpx.Response(200, json={"id": "vid_1", "status": status_sequence[index]})
+        return httpx.Response(404)
+
+    fake_openai_video.looks = seen
+    return handler
+
+
+class TestOpenAIVideo:
+    def test_it_asks_polls_then_downloads(self, state):
+        settings_store.set_credential("openai", "sk-x")
+        settings_store.set_enabled("openai", True)
+        use(state, fake_openai_video())
+
+        video = asyncio.run(media_backends.generate_video(
+            "openai",
+            media_backends.VideoRequest(prompt="海", size="1280x720", seconds=8.0, seed=3),
+        ))
+
+        assert video.data == MP4
+        assert video.seconds == 8.0
+        # **multipart で送る**(相手が JSON を取らない)
+        assert b'name="prompt"' in fake_openai_video.sent
+
+    def test_it_keeps_looking_until_the_video_is_ready(self, state):
+        """1 回目で完成していることはまずない。**待てること**そのものを確かめる。"""
+        settings_store.set_credential("openai", "sk-x")
+        settings_store.set_enabled("openai", True)
+        use(state, fake_openai_video(("queued", "in_progress", "completed")))
+        state.setattr(media_backends.asyncio, "sleep", _no_wait)
+
+        video = asyncio.run(media_backends.generate_video(
+            "openai", media_backends.VideoRequest(prompt="海", size="1280x720", seconds=4.0)))
+
+        assert video.data == MP4
+        assert fake_openai_video.looks["looks"] == 3
+
+    def test_a_failed_generation_is_reported_not_downloaded(self, state):
+        settings_store.set_credential("openai", "sk-x")
+        settings_store.set_enabled("openai", True)
+        use(state, fake_openai_video(("failed",)))
+
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(media_backends.generate_video(
+                "openai", media_backends.VideoRequest(prompt="海", size="1280x720")))
+
+        assert "失敗" in e.value.detail["error"]
+
+
+async def _no_wait(_seconds):
+    """待たずに次を覗く(テストを実時間で止めないため)。"""
+    return None
+
+
+def fake_gemini_video(veo=False):
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith(":predictLongRunning"):
+            fake_gemini_video.sent = json.loads(request.content)
+            return httpx.Response(200, json={"name": "models/veo/operations/1"})
+        if path.endswith("/operations/1"):
+            return httpx.Response(200, json={"done": True, "response": {
+                "generateVideoResponse": {"generatedSamples": [
+                    {"video": {"uri": "https://example.invalid/v.mp4"}}
+                ]}
+            }})
+        if path.endswith("/v.mp4"):
+            fake_gemini_video.download_key = request.headers.get("x-goog-api-key")
+            return httpx.Response(200, content=MP4)
+        if path.endswith("/interactions"):
+            fake_gemini_video.sent = json.loads(request.content)
+            return httpx.Response(200, json={"steps": [{"type": "model_output", "content": [
+                {"type": "video", "mime_type": "video/mp4",
+                 "data": base64.b64encode(MP4).decode()}
+            ]}]})
+        return httpx.Response(404)
+
+    return handler
+
+
+class TestGeminiVideo:
+    def test_omni_goes_through_the_same_interactions_endpoint(self, state):
+        """絵・曲と**同じ口**。違うのは response_format だけ。"""
+        settings_store.set_credential("gemini", "k")
+        settings_store.set_enabled("gemini", True)
+        use(state, fake_gemini_video())
+
+        video = asyncio.run(media_backends.generate_video(
+            "gemini", media_backends.VideoRequest(prompt="花火", size="1280x720")))
+
+        assert video.data == MP4
+        assert fake_gemini_video.sent["response_format"]["type"] == "video"
+        assert fake_gemini_video.sent["response_format"]["aspect_ratio"] == "16:9"
+
+    def test_veo_takes_the_long_running_road_and_needs_the_key_to_download(self, state):
+        """**口が別**(:predictLongRunning)で、出来た動画を取りに行くのにも鍵が要る
+        —— 署名済みの URL ではないので、鍵を付け忘れると 403 で落ちる。"""
+        settings_store.set_credential("gemini", "k")
+        settings_store.set_enabled("gemini", True)
+        use(state, fake_gemini_video())
+
+        video = asyncio.run(media_backends.generate_video(
+            "gemini",
+            media_backends.VideoRequest(
+                prompt="花火", model="veo-3.1-fast-generate-preview",
+                size="1920x1080", seconds=6.0),
+        ))
+
+        assert video.data == MP4
+        assert fake_gemini_video.download_key == "k"
+        # **文字列で渡す**(数値だと 400 になる)
+        assert fake_gemini_video.sent["parameters"]["durationSeconds"] == "6"
+        assert fake_gemini_video.sent["parameters"]["resolution"] == "1080p"
+
+
+def fake_elevenlabs_flow(kind="video", status="completed"):
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith(f"/flows/{kind}") and request.method == "POST":
+            fake_elevenlabs_flow.sent = json.loads(request.content)
+            fake_elevenlabs_flow.key = request.headers.get("xi-api-key")
+            return httpx.Response(200, json={"id": "g1", "status": "pending"})
+        if path.endswith(f"/flows/{kind}/g1"):
+            return httpx.Response(200, json={
+                "id": "g1", "status": status,
+                "content_url": "https://example.invalid/out.bin",
+                "content_mime_type": "video/mp4" if kind == "video" else "image/png",
+            })
+        if path.endswith("/out.bin"):
+            fake_elevenlabs_flow.download_key = request.headers.get("xi-api-key")
+            return httpx.Response(200, content=MP4 if kind == "video" else PNG)
+        return httpx.Response(404)
+
+    return handler
+
+
+class TestElevenLabsFlows:
+    def test_video_is_created_then_fetched_from_the_signed_url(self, state):
+        settings_store.set_credential("elevenlabs", "el-k")
+        settings_store.set_enabled("elevenlabs", True)
+        use(state, fake_elevenlabs_flow("video"))
+
+        video = asyncio.run(media_backends.generate_video(
+            "elevenlabs",
+            media_backends.VideoRequest(prompt="波", size="1280x720", seconds=5.0),
+        ))
+
+        assert video.data == MP4
+        assert fake_elevenlabs_flow.sent["duration_secs"] == 5
+        assert fake_elevenlabs_flow.key == "el-k"
+        # **署名済みの URL に鍵は載せない**(外のホストへ出ていくことがある)
+        assert fake_elevenlabs_flow.download_key is None
+
+    def test_it_can_draw_now_that_the_service_hosts_image_models(self, state):
+        """**ここは事実が変わった。** 「ElevenLabs に絵は描けない」は 2025 年までの話で、
+        いまは他社のモデルを預かる flows の口がある。"""
+        settings_store.set_credential("elevenlabs", "el-k")
+        settings_store.set_enabled("elevenlabs", True)
+        use(state, fake_elevenlabs_flow("image"))
+
+        image = asyncio.run(media_backends.generate(
+            "elevenlabs", media_backends.ImageRequest(prompt="城", size="1024x1024", seed=5)))
+
+        assert image.data == PNG
+        assert fake_elevenlabs_flow.sent["resolution"] == "1K"
+        # **seed を受け付ける数少ない外部の相手**(同じ絵を作り直せる)
+        assert fake_elevenlabs_flow.sent["seed"] == 5
+
+
+class TestVideoRequests:
+    def test_a_length_the_backend_does_not_take_is_refused_not_rounded(self, state):
+        """**丸めない。** 受け付ける値が飛び飛びなので、寄せると「6 秒で頼んだのに
+        8 秒が返る」になる —— 数分と数十 MB を使ってから気づくことになる。"""
+        settings_store.set_credential("openai", "sk-x")
+        settings_store.set_enabled("openai", True)
+
+        with pytest.raises(HTTPException) as e:
+            media.start_video_job("海", backend="openai", seconds=6.0)
+
+        assert e.value.detail["seconds"] == [4.0, 8.0, 12.0]
+
+    def test_a_backend_without_a_length_knob_refuses_seconds(self, state):
+        """Omni Flash には尺を渡す口が無い。黙って無視すると、頼んだ長さで
+        出来たと思われる。"""
+        settings_store.set_credential("gemini", "k")
+        settings_store.set_enabled("gemini", True)
+
+        with pytest.raises(HTTPException) as e:
+            media.start_video_job("花火", backend="gemini", seconds=8.0)
+
+        assert "長さを指定できません" in e.value.detail["error"]
+
+    def test_a_size_the_gpu_cannot_render_is_refused_before_starting(self, state):
+        with pytest.raises(HTTPException) as e:
+            media.start_video_job("猫", backend="comfyui", size="1024x1024")
+
+        assert e.value.detail["sizes"] == ["848x480", "480x848", "1280x720", "720x1280"]
+
+    def test_fewer_videos_can_be_asked_for_at_once_than_images(self, state):
+        """1 本で数分と数十 MB。**間違えたときの損が大きいほうを狭くする**。"""
+        with pytest.raises(HTTPException) as e:
+            media.start_video_job("猫", backend="comfyui", size="848x480", count=4)
+
+        assert "1〜2" in e.value.detail["error"]
+
+    def test_the_shortest_length_is_the_default(self, state):
+        """頼まれなければいちばん短いもの —— 動画は 1 本が高いので、
+        既定は「間違えたときの損が小さいほう」にする。"""
+        job = media.create_job("猫", backend="comfyui", size="848x480",
+                               kind=media_providers.KIND_VIDEO)
+
+        assert job["seconds"] == 2.0
+
+    def test_a_video_job_is_saved_as_mp4(self, state):
+        use(state, fake_comfy_video())
+
+        job = media.create_job("猫", backend="comfyui", size="848x480",
+                               kind=media_providers.KIND_VIDEO, seconds=2.0)
+        asyncio.run(media._run(job["id"], "comfyui",
+                               media_backends.VideoRequest(prompt="猫", size="848x480",
+                                                           seconds=2.0),
+                               1, media_providers.KIND_VIDEO))
+
+        done = media.get_job(job["id"])
+        assert done["state"] == "done"
+        assert done["files"][0]["path"].endswith(".mp4")
+
+    def test_a_running_video_is_not_reaped_on_the_image_schedule(self, state):
+        """**動画だけ猶予が長い。** 絵と同じ基準で畳むと、まだ相手の中で作っている
+        最中の job を「中断された」と書いてしまい、出来た動画を取りに行けなくなる。"""
+        job = media.create_job("猫", backend="comfyui", size="848x480",
+                               kind=media_providers.KIND_VIDEO, seconds=2.0)
+        stale = (datetime.now(UTC) - timedelta(seconds=media.STALE_AFTER + 60)).isoformat()
+        media._update(job["id"], state="running")
+        with media._connect() as conn:
+            conn.execute("UPDATE jobs SET updated_at = ? WHERE id = ?", (stale, job["id"]))
+
+        assert media.get_job(job["id"])["state"] == "running"
+
+
+# ---- 声(読み上げと文字起こし)------------------------------------------------
+#
+# **向きが逆の 2 つ**を同じ節にまとめてある。押さえるのは 3 つ:
+# 声の名前を id に直せること、生の PCM をそのまま配らないこと、
+# **文字起こしだけは job にしない**こと。
+
+WAV = b"RIFF" + b"0" * 60
+PCM = b"\x01\x00" * 128
+
+
+def fake_elevenlabs_voice(status=200):
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/voices"):
+            return httpx.Response(200, json={"voices": [
+                {"voice_id": "v-rachel", "name": "Rachel"},
+                {"voice_id": "v-adam", "name": "Adam"},
+            ]})
+        if "/text-to-speech/" in path:
+            fake_elevenlabs_voice.voice = path.rsplit("/", 1)[-1]
+            fake_elevenlabs_voice.sent = json.loads(request.content)
+            fake_elevenlabs_voice.query = dict(request.url.params)
+            return httpx.Response(status, content=MP3)
+        if path.endswith("/speech-to-text"):
+            fake_elevenlabs_voice.upload = request.content
+            return httpx.Response(200, json={"text": "こんにちは", "language_code": "ja"})
+        return httpx.Response(404)
+
+    return handler
+
+
+class TestSpeech:
+    def test_a_voice_can_be_asked_for_by_name(self, state):
+        """**id を控えている人はいない。** 画面にも道具にも出るのは「Rachel」の側なので、
+        名前で頼めないと、毎回一覧を引いてから頼むことになる。"""
+        settings_store.set_credential("elevenlabs", "el-k")
+        settings_store.set_enabled("elevenlabs", True)
+        use(state, fake_elevenlabs_voice())
+
+        speech = asyncio.run(media_backends.generate_speech(
+            "elevenlabs", media_backends.SpeechRequest(prompt="やあ", voice="Rachel")))
+
+        assert fake_elevenlabs_voice.voice == "v-rachel"
+        assert fake_elevenlabs_voice.sent["text"] == "やあ"
+        assert speech.data == MP3
+
+    def test_an_unknown_name_is_passed_through_as_an_id(self, state):
+        """一覧を引き損ねただけ、という場合に頼みごと自体を潰さない。"""
+        settings_store.set_credential("elevenlabs", "el-k")
+        settings_store.set_enabled("elevenlabs", True)
+        use(state, fake_elevenlabs_voice())
+
+        asyncio.run(media_backends.generate_speech(
+            "elevenlabs", media_backends.SpeechRequest(prompt="やあ", voice="v-custom")))
+
+        assert fake_elevenlabs_voice.voice == "v-custom"
+
+    def test_openai_reads_with_one_of_its_fixed_voices(self, state):
+        settings_store.set_credential("openai", "sk-x")
+        settings_store.set_enabled("openai", True)
+        sent = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sent.update(json.loads(request.content))
+            return httpx.Response(200, content=MP3)
+
+        use(state, handler)
+        asyncio.run(media_backends.generate_speech(
+            "openai", media_backends.SpeechRequest(prompt="やあ", instructions="明るく")))
+
+        assert sent["voice"] == "alloy"
+        assert sent["response_format"] == "mp3"
+        # 読み方の指示が効くのは gpt-4o-mini-tts だけ。既定がそれなので載る
+        assert sent["instructions"] == "明るく"
+
+    def test_raw_pcm_gets_a_wav_header_before_it_is_saved(self, state):
+        """**Gemini は生の PCM を返すことがある。** そのまま保存すると拡張子も中身も
+        再生できないファイルになり、受け取った側は開くまで気づけない。"""
+        settings_store.set_credential("gemini", "k")
+        settings_store.set_enabled("gemini", True)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            fake = {"steps": [{"type": "model_output", "content": [
+                {"type": "audio", "mime_type": "audio/L16;rate=24000",
+                 "data": base64.b64encode(PCM).decode()}
+            ]}]}
+            handler.sent = json.loads(request.content)
+            return httpx.Response(200, json=fake)
+
+        use(state, handler)
+        speech = asyncio.run(media_backends.generate_speech(
+            "gemini", media_backends.SpeechRequest(prompt="やあ", voice="Puck")))
+
+        assert speech.mime == "audio/wav"
+        assert speech.data[:4] == b"RIFF"
+        assert handler.sent["generation_config"]["speech_config"] == [{"voice": "Puck"}]
+
+    def test_a_wav_that_already_has_a_header_is_left_alone(self, state):
+        assert media_backends._ensure_wav(WAV, "audio/wav") == (WAV, "audio/wav")
+
+    def test_the_local_gpu_is_not_offered_for_reading_aloud(self, state):
+        """ComfyUI 本体に TTS のノードが無い(外部の拡張しか無く、入れたもので
+        ノード名も引数も変わる)。**選べる形にしておくほうが不親切**。"""
+        ids = [p.id for p in media_providers.all_providers(media_providers.KIND_SPEECH)]
+
+        assert "comfyui" not in ids
+        assert "comfyui" not in media_backends.SPEECH_GENERATORS
+
+    def test_a_voice_the_backend_does_not_have_is_refused_before_starting(self, state):
+        settings_store.set_credential("openai", "sk-x")
+        settings_store.set_enabled("openai", True)
+
+        with pytest.raises(HTTPException) as e:
+            media.start_speech_job("やあ", backend="openai", voice="Rachel")
+
+        assert "alloy" in e.value.detail["voices"]
+
+    def test_a_backend_that_keeps_its_voices_remote_is_not_second_guessed(self, state):
+        """ElevenLabs は登録した声が人によって違う。こちらに一覧が無いので素通しする
+        —— 勝手に既定へ倒すと、頼んだ声と違う声で読み上げられる。"""
+        settings_store.set_credential("elevenlabs", "el-k")
+        settings_store.set_enabled("elevenlabs", True)
+
+        job = media.create_job("やあ", backend="elevenlabs",
+                               kind=media_providers.KIND_SPEECH, voice="なんとかさん")
+
+        assert job["voice"] == "なんとかさん"
+
+
+class TestTranscribe:
+    def test_it_returns_the_text_right_away_instead_of_a_job(self, state):
+        """**返るのは文字(数 KB)。** 置き場も掃除も配信も要らないので、
+        job にすると呼ぶ側の手数が増えるだけになる。"""
+        settings_store.set_credential("elevenlabs", "el-k")
+        settings_store.set_enabled("elevenlabs", True)
+        use(state, fake_elevenlabs_voice())
+
+        got = asyncio.run(media.transcribe(
+            data=MP3, filename="a.mp3", mime="audio/mpeg", backend="elevenlabs"))
+
+        assert got["text"] == "こんにちは"
+        assert got["language"] == "ja"
+        assert media.recent_jobs() == []
+        # **multipart で送る**(base64 に膨らませない)
+        assert b'name="file"' in fake_elevenlabs_voice.upload
+
+    def test_gemini_is_told_to_write_down_only_what_it_hears(self, state):
+        """専用のモデルではないので、言わないと要約や感想が混じる。"""
+        settings_store.set_credential("gemini", "k")
+        settings_store.set_enabled("gemini", True)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            handler.sent = json.loads(request.content)
+            return httpx.Response(200, json={"steps": [
+                {"type": "thought", "content": [{"type": "text", "text": "考えた"}]},
+                {"type": "model_output", "content": [{"type": "text", "text": "やあ"}]},
+            ]})
+
+        use(state, handler)
+        got = asyncio.run(media.transcribe(data=MP3, mime="audio/mpeg", backend="gemini"))
+
+        # **考えごとは拾わない**(model_output だけ)
+        assert got["text"] == "やあ"
+        assert "書き起こし" in handler.sent["input"][1]["text"]
+
+    def test_it_reads_only_from_the_media_directory(self, state):
+        """chiezo はコンテナの中で動いていて、頼んだ人のディスクは見えない。
+        受け取れるように見せると、あるはずのファイルが「見つからない」と返る。"""
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(media.load_audio(path="../../etc/passwd"))
+
+        assert e.value.status_code == 404
+
+    def test_it_can_read_back_what_chiezo_itself_made(self, state):
+        """自分で読み上げた音をそのまま文字起こしに回せる(確かめに使う)。"""
+        day = datetime.now(UTC).strftime("%Y%m%d")
+        directory = media.require_dir() / day
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "j-0.mp3").write_bytes(MP3)
+
+        data, name, mime = asyncio.run(media.load_audio(path=f"/media/{day}/j-0.mp3"))
+
+        assert (data, name, mime) == (MP3, "j-0.mp3", "audio/mpeg")
+
+    def test_it_refuses_a_file_big_enough_to_take_the_process_down(self, state):
+        state.setattr(media, "MAX_TRANSCRIBE_BYTES", 8)
+        day = datetime.now(UTC).strftime("%Y%m%d")
+        directory = media.require_dir() / day
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "big.mp3").write_bytes(b"0" * 64)
+
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(media.load_audio(path=f"/media/{day}/big.mp3"))
+
+        assert "大きすぎます" in e.value.detail["error"]
+
+
+class TestNewBackendLists:
+    def test_the_video_list_says_which_lengths_are_allowed(self, state):
+        """**上限ではなく一覧。** 呼ぶ側が「4 と 8 の間は無い」と分かる形にする。"""
+        settings_store.set_credential("openai", "sk-x")
+        settings_store.set_enabled("openai", True)
+        found = {e["id"]: e for e in asyncio.run(
+            media.backends(media_providers.KIND_VIDEO))}
+
+        assert found["openai"]["seconds"] == [4.0, 8.0, 12.0]
+        # 尺を指定できない相手は空(モデルが決める)ではなく、Veo のぶんが並ぶ
+        assert "gemini" in found
+
+    def test_the_speech_list_asks_elevenlabs_for_its_voices(self, state):
+        settings_store.set_credential("elevenlabs", "el-k")
+        settings_store.set_enabled("elevenlabs", True)
+        settings_store.set_credential("openai", "sk-x")
+        settings_store.set_enabled("openai", True)
+        use(state, fake_elevenlabs_voice())
+
+        found = {e["id"]: e for e in asyncio.run(
+            media.backends(media_providers.KIND_SPEECH))}
+
+        assert [v["label"] for v in found["elevenlabs"]["voices"]] == ["Rachel", "Adam"]
+        # 決め打ちの相手はこちらの一覧をそのまま出す
+        assert {"id": "alloy", "label": "alloy"} in found["openai"]["voices"]
+
+    def test_the_new_tools_are_registered(self, state):
+        from app import mcp_server
+        from app.main import app as fastapi_app
+
+        names = {tool.name for tool in asyncio.run(mcp_server.build_mcp(fastapi_app).list_tools())}
+
+        assert {"video_generate", "video_status", "video_backends",
+                "speech_generate", "speech_status", "transcribe",
+                "voice_backends"} <= names
+
+    def test_the_voice_list_is_remembered_for_a_while(self, state):
+        """**管理画面が開くたびに聞きに行かせない。** 相手が遅い日に、画面そのものが
+        10 秒待たされる —— 声はそう頻繁に増えない。"""
+        settings_store.set_credential("elevenlabs", "el-k")
+        settings_store.set_enabled("elevenlabs", True)
+        asked = {"n": 0}
+        inner = fake_elevenlabs_voice()
+
+        def counting(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/voices"):
+                asked["n"] += 1
+            return inner(request)
+
+        use(state, counting)
+        state.setattr(media_backends, "_voices_cache", {})
+        spec = media_providers.get("elevenlabs")
+
+        async def twice():
+            return (await media_backends.elevenlabs_voices(spec),
+                    await media_backends.elevenlabs_voices(spec))
+
+        first, second = asyncio.run(twice())
+
+        assert first == second and asked["n"] == 1

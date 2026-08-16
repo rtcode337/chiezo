@@ -13,7 +13,7 @@ import os
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
-from fastapi import Body, FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import (
     FileResponse,
     JSONResponse,
@@ -1343,6 +1343,38 @@ class AudioRequestBody(BaseModel):
     steps: int = 50
 
 
+class VideoRequestBody(BaseModel):
+    prompt: str
+    # 相手。空なら既定(自前の GPU)
+    backend: str | None = None
+    model: str | None = None
+    size: str = "1280x720"
+    # 0 なら相手の一覧のいちばん短いもの。**一覧に無い値は 400**(丸めない)
+    seconds: float = 0
+    seed: int = 0
+    count: int = 1
+    negative: str = ""
+    # 音も一緒に作らせるか(効くのは Veo 系だけ)
+    audio: bool = True
+    steps: int = 20
+
+
+class SpeechRequestBody(BaseModel):
+    # **読み上げる文章そのもの**(絵や音の「こういうものを作って」ではない)
+    text: str
+    backend: str | None = None
+    model: str | None = None
+    # 空なら相手の既定の声
+    voice: str = ""
+    speed: float = 1.0
+    # ISO 639-1。空なら相手が文章から見当をつける
+    language: str = ""
+    # 読み方の指示(効くのは OpenAI の gpt-4o-mini-tts だけ)
+    instructions: str = ""
+    seed: int = 0
+    count: int = 1
+
+
 @app.get("/v1/capabilities")
 async def capabilities_list() -> dict:
     """**chiezo 経由で AI に頼めることの一覧**（会話・声・画像・動画・音楽・SE）。
@@ -1357,13 +1389,21 @@ async def capabilities_list() -> dict:
         if answer.load_settings(spec.id) is not None:
             usable.setdefault(spec.id, set()).add(capabilities.CHAT)
 
+    # **kind と分類は 1 対 1 ではない。** 音だけは 1 つの kind が音楽と SE に割れる
+    # (`sounds` を見て分ける)ので、そこだけ別に数える。
+    simple = {
+        media_providers.KIND_IMAGE: capabilities.IMAGE,
+        media_providers.KIND_VIDEO: capabilities.VIDEO,
+        media_providers.KIND_SPEECH: capabilities.SPEECH,
+        media_providers.KIND_TRANSCRIBE: capabilities.TRANSCRIBE,
+    }
     if media.is_enabled():
-        for kind in (media_providers.KIND_IMAGE, media_providers.KIND_AUDIO):
+        for kind in (*simple, media_providers.KIND_AUDIO):
             for entry in await media.backends(kind):
                 if not entry["usable"]:
                     continue
-                if kind == media_providers.KIND_IMAGE:
-                    usable.setdefault(entry["id"], set()).add(capabilities.IMAGE)
+                if kind in simple:
+                    usable.setdefault(entry["id"], set()).add(simple[kind])
                     continue
                 for cap_id, sound in ((capabilities.MUSIC, media_providers.SOUND_MUSIC),
                                       (capabilities.SFX, media_providers.SOUND_SFX)):
@@ -1373,13 +1413,27 @@ async def capabilities_list() -> dict:
     return {"capabilities": capabilities.overview(usable)}
 
 
+# 頼める相手を引ける kind。**文字起こしも並べる**(job にはならないが、
+# 「誰に頼めるか」は他と同じように知りたい)。
+_MEDIA_KINDS = (
+    media_providers.KIND_IMAGE,
+    media_providers.KIND_AUDIO,
+    media_providers.KIND_VIDEO,
+    media_providers.KIND_SPEECH,
+    media_providers.KIND_TRANSCRIBE,
+)
+
+
 @app.get("/v1/media/backends")
 async def media_backends_list(
-    kind: str = Query(media_providers.KIND_IMAGE, description="image / audio"),
+    kind: str = Query(media_providers.KIND_IMAGE,
+                      description="image / audio / video / speech / transcribe"),
 ) -> dict:
-    """絵(または音)を頼める相手と、その相手で選べるモデル・サイズ・長さ。"""
-    if kind not in (media_providers.KIND_IMAGE, media_providers.KIND_AUDIO):
-        raise HTTPException(400, {"error": "kind は image / audio のどちらかにしてください"})
+    """その kind を頼める相手と、選べるモデル・サイズ・長さ・声。"""
+    if kind not in _MEDIA_KINDS:
+        raise HTTPException(
+            400, {"error": f"kind は {' / '.join(_MEDIA_KINDS)} のどれかにしてください"}
+        )
     return {"backends": await media.backends(kind), "kind": kind, "enabled": media.is_enabled()}
 
 
@@ -1413,6 +1467,64 @@ async def media_audio(body: AudioRequestBody) -> dict:
         negative=body.negative,
         loop=body.loop,
         steps=body.steps,
+    )
+
+
+@app.post("/v1/media/video")
+async def media_video(body: VideoRequestBody) -> dict:
+    """作り始めて job を返す(**待たない**)。進み具合は絵と同じ口で引く。
+
+    **絵より待つ**(数分〜十数分)ので、呼ぶ側は間を空けて引きに来ること。
+    """
+    return media.start_video_job(
+        prompt=body.prompt,
+        backend=(body.backend or "").strip(),
+        model=(body.model or "").strip(),
+        size=body.size,
+        seconds=body.seconds,
+        seed=body.seed,
+        count=body.count,
+        negative=body.negative,
+        audio=body.audio,
+        steps=body.steps,
+    )
+
+
+@app.post("/v1/media/speech")
+async def media_speech(body: SpeechRequestBody) -> dict:
+    """読み上げ始めて job を返す(**待たない**)。進み具合は絵と同じ口で引く。"""
+    return media.start_speech_job(
+        text=body.text,
+        backend=(body.backend or "").strip(),
+        model=(body.model or "").strip(),
+        voice=body.voice,
+        speed=body.speed,
+        language=body.language,
+        instructions=body.instructions,
+        seed=body.seed,
+        count=body.count,
+    )
+
+
+@app.post("/v1/media/transcribe")
+async def media_transcribe(
+    file: UploadFile = File(..., description="文字起こしする音声・動画"),
+    backend: str = Form(""),
+    model: str = Form(""),
+    language: str = Form(""),
+) -> dict:
+    """音を文字にする。**この口だけ job にならない**(その場で文字が返る)。
+
+    **multipart で受ける。** 送る側が既に音を持っているので、base64 に膨らませて
+    JSON に載せる意味がない(1 割以上大きくなり、両側で詰め替えの手間が増える)。
+    """
+    return await media.transcribe(
+        data=await file.read(),
+        filename=file.filename or "audio",
+        mime=file.content_type or "application/octet-stream",
+        backend=backend.strip(),
+        model=model.strip(),
+        language=language.strip(),
     )
 
 

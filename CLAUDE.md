@@ -476,16 +476,18 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     (末尾が user でなければ 400)。**サーバーは会話の状態を持たない** — 履歴はクライアントが
     持って毎回送る(読み取り専用・LAN 内・複数ワーカーの前提を崩さないため。MCP を
     ステートレスにしたのと同じ判断)。rag / agent とも `/v1/ask` と同じ実装に流す
-  - `/v1/media/backends?kind=`(GET) / `/v1/media/image`(POST) / `/v1/media/audio`(POST)
-    / `/v1/media/jobs/{id}`(GET) / `/media/{path}`(GET) — **絵と音を作る口**
-    (MCP の `image_*` / `audio_*` と同じ実体)。
+  - `/v1/media/backends?kind=`(GET) / `/v1/media/image`・`/audio`・`/video`・`/speech`
+    ・`/transcribe`(POST) / `/v1/media/jobs/{id}`(GET) / `/media/{path}`(GET)
+    — **絵・音・動画・声を作る口**
+    (MCP の `image_*` / `audio_*` / `video_*` / `speech_*` / `transcribe` と同じ実体)。
     知識を引くのとは別の仕事だが、**MCP の登録先を増やさない**ために同じサーバーに載せている。
     実体は `app/media.py`(ジョブと置き場)/ `app/media_backends.py`(相手ごとの作り方)
     / `app/media_providers.py`(相手の定義。ComfyUI / Codex / Antigravity / Gemini / OpenAI / ElevenLabs)。
-    **絵と音で層を分けない** —— ジョブ・置き場・掃除・中断の後始末・配信は同じ仕事で、
-    違うのは頼むときの語彙(サイズ / 種類と長さ)だけ。分けると同じ後始末を 2 つ持つ。
+    **kind が違っても層を分けない** —— ジョブ・置き場・掃除・中断の後始末・配信は同じ仕事で、
+    違うのは頼むときの語彙(サイズ / 種類と長さ / 尺 / 声)だけ。分けると同じ後始末を
+    kind の数だけ持つことになる。呼び分けは `media_backends.generate_for` の 1 か所。
     `MediaProvider.kinds` がその相手に頼めるものを持ち、一覧は kind で絞る
-    (Lyria に効果音は頼めないし、ElevenLabs に絵は描けない)。要点:
+    (Lyria に効果音は頼めないし、自前の GPU に読み上げは頼めない)。要点:
     **待たない**(job を返し `image_status` / `audio_status` で引く。生成は数秒〜数分で、
     待つと呼び出し側が先に切れる)。**中身そのものは返さない**(1 つ 1〜2MB あり、道具の結果はまるごと
     コンテキストに載る。返すのはパスと URL)。**ジョブは SQLite に持つ** ——
@@ -515,7 +517,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     絵を見るまで気づけない。GPU を回す前に断るのが親切
   - **音は `sound`(効果音 / 曲)と `seconds` で頼む**(`media.start_audio_job`)。
     同じ「音」でもモデルが別物で、相手によっては口そのものが分かれている
-    (ElevenLabs は `/sound-generation` と `/music`)。ComfyUI も系統でグラフが変わり、
+    (ElevenLabs は `/sound-generation` と `/music`。絵と動画はさらに別で `/flows/*`)。ComfyUI も系統でグラフが変わり、
     **Stable Audio Open は text encoder(T5)を別に読む**が ACE-Step は all-in-one。
     **どちらの系統かは名前で見分ける**(`is_audio_checkpoint` / `_is_ace`)——
     ComfyUI に「このチェックポイントは何用か」を聞く口が無く、GPU に載せてから
@@ -523,16 +525,44 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     —— 短くして返すと、呼んだ側は頼んだ尺で出来たと思ったまま短い素材を受け取る。
     **尺を渡す口が無い相手(Lyria)に秒数を渡されたら断る**(無視すると同じ勘違いが起きる)。
     **歌詞が空なら器楽として頼む** —— ゲームの BGM に歌が乗ると台詞と喧嘩する
+  - **動画は「待ち時間」「尺」「重さ」の 3 つが絵と違う**(`media.start_video_job`)。
+    **上限を別に持つ**(`CHIEZO_VIDEO_TIMEOUT`、既定 1200 秒)だけでなく、
+    **job を畳む猶予も別**(`STALE_AFTER_VIDEO`)—— 絵と同じ基準で畳むと、まだ相手の中で
+    作っている最中の job を「中断された」と書いてしまい、出来上がった動画を取りに行けない。
+    **尺は丸めない**(`_check_video`)。相手ごとに受け付ける値が飛び飛びで
+    (Sora は 4/8/12、Veo は 4/6/8)、寄せると「6 秒で頼んだのに 8 秒が返る」になる ——
+    数分と数十 MB を使ってから気づく。**一度に頼めるのは 2 本まで**(絵は 4 枚)。
+    **相手はどこも非同期**(頼んだ時点では id しか返らない)なので、待ち方は
+    `media_backends._await_remote` に 1 つだけ置く —— 覗きに行く間隔は相手が決めている
+    (ElevenLabs は動画で 10 秒に 1 回まで)。**Gemini だけ口が 2 通り**で、
+    Omni Flash は絵と同じ `interactions`、Veo は `:predictLongRunning` を待って
+    **鍵つきで**取りに行く(署名済み URL ではない)。名前で見分ける(`_is_veo`)
+  - **声は向きが逆の 2 つ**(`media.start_speech_job` / `media.transcribe`)。
+    **文字起こしだけ job にしない** —— 返るのが文字(数 KB)なので置き場も掃除も配信も
+    要らず、その場で返すほうが呼ぶ側の手数が少ない。そのぶん口の形も違う(multipart)。
+    **自前の GPU には読み上げを頼めない**(ComfyUI 本体に TTS のノードが無く、外部の拡張
+    しか無い —— 入れたものでノード名も引数も変わるので、こちらからグラフを組み立てられない)。
+    **声は名前で頼める**(`_elevenlabs_voice_id` が id に直す。id を控えている人はいない)。
+    一覧に無い名前は**そのまま id として渡す** —— こちらが一覧を取り損ねただけ、という
+    場合に頼みごと自体を潰さない。**生の PCM には WAV の殻をかぶせる**(`_ensure_wav`)——
+    Gemini は 24kHz の生 PCM を返すことがあり、そのまま保存すると拡張子も中身も
+    再生できないファイルになる(受け取った側は開くまで気づけない)。
+    **文字起こしに渡せるのは置き場の中か届く URL だけ** —— chiezo はコンテナの中で
+    動いていて、頼んだ人のディスクは見えない(受け取れるように見せると、あるはずの
+    ファイルが「見つからない」と返ってくる)
   - `/v1/capabilities`(GET) — **chiezo 経由で AI に頼めることの一覧**
-    (会話・声/音声・画像・動画・音楽・SE)。語彙は `app/capabilities.py` の 1 か所に持ち、
+    (会話・読み上げ・文字起こし・画像・動画・音楽・SE)。
+    語彙は `app/capabilities.py` の 1 か所に持ち、
     **画面も REST も同じものを見る** —— 会話は `app/providers.py`、絵と音は
     `app/media_providers.py` と持ち主が分かれているので、分類まで散らすと
     「何が頼めるのか」を数える場所が無くなる。
     **分類は仕事の単位で切る(実装の単位ではない)** —— 音楽と SE は job の `kind` としては
     どちらも `audio` だが、モデルも相手も別物(Lyria は曲しか作れない)なので別に数える。
-    **まだ無いもの(声・動画)も並べる** —— 表から消すと「頼めるのか分からない」になる。
+    **読み上げと文字起こしを分けてあるのも同じ理由**(仕事の向きが逆で相手も別物。
+    まとめると「読み上げはできるが文字起こしはできない」相手を「声が使える」と言うことになる)。
     `supported=false`(**実装が無い**)と「相手がいない」(実装はあるが鍵が未登録・GPU が無い)
-    は別扱いにする。次にすることが違うため
+    は別扱いにする。次にすることが違うため。**いまは全部 true だが仕組みは残す** ——
+    次に分類が増えたときにまた要るし、消すと 2 つがまた同じ言葉に潰れる
   - `/v1/ai/backends`(GET) / `/v1/ai/complete`(POST) — **知識ベースを介さない素の口**。
     `/v1/chat` は必ず抽出を混ぜるので、**自分のプロンプトと材料を持っているアプリ**には使えない
     (無関係な抜粋が載り、トークンも余分に使う)。借りたいのは「話せる相手と鍵」だけ、という
@@ -561,7 +591,9 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     いまどちらか読み取りにくい。**「接続を試す」の戻り先には節の印を付ける**
     (`#ai-providers`)—— 付けないとページの先頭へ戻され、結果が画面外のままになる。
     自前の GPU(ComfyUI)と ElevenLabs は「話す相手」ではないので、鍵・on/off・
-    「接続を試す」もこの表の自分の行に置く(`owns_toggle`)。
+    「接続を試す」もこの表の自分の行に置く(`owns_toggle`)。**ElevenLabs は
+    会話ができないのではなく、会話の口が「先にエージェントを作って `agent_id` で話す」形で
+    `app/providers.py` の枠(OpenAI 互換に 1 往復)に入らない**、が正確なところ。
     「接続を試す」は繋がるかに加えて**チェックポイントの有無まで見る**
     (立っていてもモデルが無ければ 1 枚も描けない)。**絵と音は別のファイルが要る**ので
     どちらが何件あるかも返す
@@ -1099,8 +1131,11 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
 - **絵と音の生成の ComfyUI は `docker-compose.image.yml`(profile `image`)に置く**。
   GPU が要るので既定では立てない。**GPU が別マシンにあるなら重ねず、`CHIEZO_IMAGE_URL` で
   そちらを指す**(推論サーバと同じ逃げ道)。**モデルは同梱も自動取得もしない** ——
-  数 GB あり、ライセンスも配布条件もモデルごとに違う。**絵と音で別のファイルが要る**
-  (音は `stable-audio-open`(+ `text_encoders/t5-base`)か `ace_step`)。
+  数 GB あり、ライセンスも配布条件もモデルごとに違う。**絵・音・動画で別のファイルが要る**
+  (音は `stable-audio-open`(+ `text_encoders/t5-base`)か `ace_step`。
+  **動画は置き場そのものが違う** —— Wan は UNet 単体で配られるので
+  `diffusion_models/` に置き、`text_encoders/umt5_xxl_*` と `vae/wan_2.1_vae` を別に読む。
+  対応しているのは Wan 系だけで、3 つのうち 1 つでも欠けるとグラフごと通らない)。
   **置き場はホストの `./models/comfyui/ComfyUI/models/` の下**(上書きが `./models/comfyui` を
   コンテナの `/root` に繋ぐので、ComfyUI 本体が展開される 1 段下になる)。
 - **GPU の設定は `docker-compose.cuda.yml`(上書きファイル)に閉じる**。`gpus: all` は

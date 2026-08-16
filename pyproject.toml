@@ -28,6 +28,13 @@ ignore = [
     "RUF003",
 ]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI は「引数の既定値に宣言を書く」作りなので、B008(既定値で関数を呼ぶな)が
+# そのまま当たる。これは回避策の余地がある間違いではなく**フレームワークの書き方**
+# なので、指摘のほうを外す。Query / Body は既定で除外されているが、
+# multipart を受ける File / Form は自分で並べる必要がある。
+extend-immutable-calls = ["fastapi.File", "fastapi.Form"]
+
 [tool.ruff.lint.per-file-ignores]
 # 自動生成のカタログ(scripts/gen_osm_regions.py / gen_wikipedia_editions.py が作る)。
 # 行が長いのは国名・言語名がそのまま入るからで、手で折り返す対象ではない。

@@ -436,7 +436,7 @@ def build_block(
     こちらはスクリプト側の既定が「登録する」なので、通常は `?mcp=1` で来て、
     `--no-mcp` を指定されたときだけ `?mcp=0` になる。
 
-    `media=True` は**この Chiezo で絵と音を作れる**ときだけ(置き場があり「答える」層が
+    `media=True` は**この Chiezo で絵・音・動画・声を扱える**ときだけ(置き場があり「答える」層が
     有効)。道具は MCP 経由なので `mcp=True` と揃ったときにしか書かない ——
     登録していない環境に「`image_generate` を使え」と書いても呼べない。
     """
@@ -499,6 +499,28 @@ def build_block(
             "- **長さ(`seconds`)は上限を超えると断られる**。黙って短くはしないので、"
             "長い曲が要るときは上限の大きい相手を選ぶ",
             "- **BGM は `lyrics` を空のままにする**(器楽で作る)。歌が入ると台詞と喧嘩する",
+            "",
+            "### 動画を作る(このサーバーで生成できる)",
+            "",
+            f"動画が要るときも `mcp__{MCP_SERVER_NAME}__video_generate` を使う。作りは絵と同じだが、"
+            "**待ち時間の桁が違う**(数分〜十数分)ので、頼んだら他の仕事をして後から引きに来る。",
+            f"- 頼む → `mcp__{MCP_SERVER_NAME}__video_generate`(job が返る。**待たない**)",
+            f"- 仕上がり → `mcp__{MCP_SERVER_NAME}__video_status`(**パスと URL** が返る)",
+            f"- 相手と尺 → `mcp__{MCP_SERVER_NAME}__video_backends`",
+            "- **尺(`seconds`)は一覧にある値だけ**(Sora は 4/8/12、Veo は 4/6/8)。"
+            "近い値に丸めたりはしないので、一覧を見てから頼む",
+            "- **1 本で数十 MB あり、置き場は 14 日で掃除される**。要るものは早めに引き取る",
+            "",
+            "### 声を扱う(このサーバーでできる)",
+            "",
+            f"読み上げは `mcp__{MCP_SERVER_NAME}__speech_generate`、"
+            f"文字起こしは `mcp__{MCP_SERVER_NAME}__transcribe`。"
+            f"相手と声は `mcp__{MCP_SERVER_NAME}__voice_backends` で引く。",
+            "- **読み上げは job**(パスと URL が返る)、**文字起こしはその場で文字が返る**",
+            "- **自前の GPU に読み上げは頼めない**(ComfyUI 本体に TTS のノードが無い)",
+            "- 文字起こしに渡せるのは **chiezo が作ったもの(`/media/…`)か、"
+            "サーバーから届く URL** だけ。手元のファイルは "
+            f"`POST {base}/v1/media/transcribe` に multipart で送る",
         ]
 
     if mcp:

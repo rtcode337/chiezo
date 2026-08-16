@@ -11,6 +11,8 @@
 **まだ無いものも並べる。** 表から消すと「頼めるのか分からない」になり、聞かれるたびに
 コードを読み直すことになる。`supported=False` は**実装が無い**という意味で、
 「相手がいない」（実装はあるが鍵が未登録・GPU が無い等）とは別。
+いまは全部 `True` だが、**仕組みは残してある** —— 次に増える分類（動画の編集など）で
+また要るし、消すと「未対応」と「相手がいない」がまた同じ言葉に潰れる。
 """
 from __future__ import annotations
 
@@ -19,7 +21,11 @@ from dataclasses import dataclass
 from app import media_providers, providers, settings_store
 
 CHAT = "chat"
-VOICE = "voice"
+# **読み上げと文字起こしは別に数える。** 同じ「声」でも仕事の向きが逆で、相手も
+# モデルも別物 —— まとめると「読み上げはできるが文字起こしはできない」相手を
+# 「声が使える」と言うことになる。
+SPEECH = "speech"
+TRANSCRIBE = "transcribe"
 IMAGE = "image"
 VIDEO = "video"
 MUSIC = "music"
@@ -38,13 +44,16 @@ class Capability:
 
 CAPABILITIES: tuple[Capability, ...] = (
     Capability(CHAT, "会話"),
-    Capability(VOICE, "声・音声", supported=False,
-               note="読み上げ(TTS)も音声入力(STT)も未実装。音声入力は"
-                    "「ファイルを送る」形になるので、口の形が他と違う"),
+    Capability(SPEECH, "読み上げ",
+               note="文章を音声にする（TTS）。**自前の GPU は相手にできない** ——"
+                    "ComfyUI 本体に TTS のノードが無く、外部の拡張しか無いため"),
+    Capability(TRANSCRIBE, "文字起こし",
+               note="音声を文字にする（STT）。**これだけ job にならない** ——"
+                    "返るのが文字なので、送ったその場で返す"),
     Capability(IMAGE, "画像"),
-    Capability(VIDEO, "動画", supported=False,
-               note="未実装。生成に数分・1 本で数十〜数百 MB になるので、"
-                    "長時間ジョブと置き場の扱いを足す必要がある"),
+    Capability(VIDEO, "動画",
+               note="生成に数分・1 本で数十 MB になるので、待つ上限も置き場の"
+                    "使い方も絵とは別に決めてある（CHIEZO_VIDEO_TIMEOUT）"),
     Capability(MUSIC, "音楽"),
     Capability(SFX, "SE"),
 )
@@ -57,6 +66,12 @@ def _media_capabilities(spec: media_providers.MediaProvider) -> set[str]:
     found = set()
     if media_providers.KIND_IMAGE in spec.kinds:
         found.add(IMAGE)
+    if media_providers.KIND_VIDEO in spec.kinds:
+        found.add(VIDEO)
+    if media_providers.KIND_SPEECH in spec.kinds:
+        found.add(SPEECH)
+    if media_providers.KIND_TRANSCRIBE in spec.kinds:
+        found.add(TRANSCRIBE)
     if media_providers.KIND_AUDIO in spec.kinds:
         sounds = media_providers.sounds_of(spec)
         if media_providers.SOUND_MUSIC in sounds:

@@ -271,6 +271,8 @@ def build_mcp(app: FastAPI) -> MCPServer:
     if media.tools_enabled():
         _register_image_tools(mcp)
         _register_audio_tools(mcp)
+        _register_video_tools(mcp)
+        _register_voice_tools(mcp)
 
     return mcp
 
@@ -395,6 +397,147 @@ def _register_audio_tools(mcp: MCPServer) -> None:
     ))
     async def audio_backends() -> dict:
         return {"backends": await media.backends(media_providers.KIND_AUDIO)}
+
+
+def _register_video_tools(mcp: MCPServer) -> None:
+    """動画を作る道具。**絵・音と同じ作り**(頼む・確かめる・相手を知る)。
+
+    違うのは待ち時間の桁で、絵が数十秒なのに対して動画は数分〜十数分かかる ——
+    道具の説明にそれを書いておかないと、呼んだ側が数秒おきに status を叩き続ける。
+    """
+
+    @mcp.tool(description=(
+        "動画を生成する。**すぐには返らない** —— job_id を返すので video_status で"
+        "仕上がりを確認する。**絵より遥かに待つ**(数分〜十数分)ので、間を空けて引きに来ること。"
+        "返るのは保存先のパスと URL で、動画そのものは返さない。"
+        "backend は video_backends で選べる相手を確認できる(既定は自前の GPU)。"
+        "**seconds は video_backends が返す一覧の値だけ** —— 相手ごとに飛び飛びで"
+        "(Sora は 4/8/12、Veo は 4/6/8)、一覧に無い値は断る(黙って丸めない)。"
+        "**尺を指定できない相手もいる**(Gemini Omni Flash はモデルが決める)。"
+        "size も一覧から選ぶ。audio=true で音つきにできる(効くのは Veo 系だけ)。"
+        "**1 本で数十 MB あり、置き場は 14 日で掃除される**ので、要るものは早めに引き取ること。"
+    ))
+    async def video_generate(
+        prompt: str,
+        backend: str = "",
+        model: str = "",
+        size: str = "1280x720",
+        seconds: float = 0,
+        seed: int = 0,
+        count: int = 1,
+        negative: str = "",
+        audio: bool = True,
+    ) -> dict:
+        return _call(
+            media.start_video_job,
+            prompt=prompt,
+            backend=backend,
+            model=model,
+            size=size,
+            seconds=seconds,
+            seed=seed,
+            count=count,
+            negative=negative,
+            audio=audio,
+        )
+
+    @mcp.tool(description=(
+        "video_generate の仕上がりを確認する。state は queued / running / done / "
+        "partial(一部だけ出来た)/ failed。done なら files に保存先のパスと URL、"
+        "使われた seed とモデル、実際の長さが入る。"
+    ))
+    async def video_status(job_id: str) -> dict:
+        job = media.get_job(job_id)
+        if job is None:
+            raise ValueError(f"unknown job: {job_id}")
+        return job
+
+    @mcp.tool(description=(
+        "動画を頼める相手(自前の GPU・外部サービス)と、その相手で選べるモデル・"
+        "サイズ・**受け付ける尺の一覧**を返す。使えない相手も理由つきで出る。"
+        "seconds が空の相手は「尺を指定できない」(モデルごとに決まっている)。"
+    ))
+    async def video_backends() -> dict:
+        return {"backends": await media.backends(media_providers.KIND_VIDEO)}
+
+
+def _register_voice_tools(mcp: MCPServer) -> None:
+    """声の道具。**向きが逆の 2 つ**(読み上げと文字起こし)を 1 か所にまとめてある。
+
+    **文字起こしだけ job にならない。** 返るのが文字(数 KB)なので、置き場も掃除も
+    要らず、その場で返すほうが呼ぶ側の手数が少ない。
+    """
+
+    @mcp.tool(description=(
+        "文章を読み上げて音声にする(TTS)。**すぐには返らない** —— job_id を返すので "
+        "speech_status で仕上がりを確認する。返るのは保存先のパスと URL。"
+        "text は読み上げる文章そのもの(絵や音のような「こういうものを作って」ではない)。"
+        "voice は speech_backends が返す声から選ぶ(空なら相手の既定)。"
+        "**自前の GPU には頼めない** —— ComfyUI 本体に TTS のノードが無いため。"
+        "instructions で読み方を指示できる(効くのは OpenAI の gpt-4o-mini-tts だけ)。"
+    ))
+    async def speech_generate(
+        text: str,
+        backend: str = "",
+        model: str = "",
+        voice: str = "",
+        speed: float = 1.0,
+        language: str = "",
+        instructions: str = "",
+        count: int = 1,
+    ) -> dict:
+        return _call(
+            media.start_speech_job,
+            text=text,
+            backend=backend,
+            model=model,
+            voice=voice,
+            speed=speed,
+            language=language,
+            instructions=instructions,
+            count=count,
+        )
+
+    @mcp.tool(description=(
+        "speech_generate の仕上がりを確認する。state は queued / running / done / "
+        "partial / failed。done なら files に保存先のパスと URL が入る。"
+    ))
+    async def speech_status(job_id: str) -> dict:
+        job = media.get_job(job_id)
+        if job is None:
+            raise ValueError(f"unknown job: {job_id}")
+        return job
+
+    @mcp.tool(description=(
+        "音声を文字にする(STT)。**この道具だけ待たない** —— その場で文字が返る。"
+        "渡せるのは path(chiezo が作ったもの。speech_generate や audio_generate が返す "
+        "/media/… のパス)か url(サーバーから届くもの)。"
+        "**頼んだ人の手元のファイルは渡せない** —— chiezo はコンテナの中で動いていて、"
+        "そちらのディスクが見えないため(その場合は POST /v1/media/transcribe に "
+        "multipart で送る)。"
+        "**OpenAI は 25MB までしか受け取らない**ので、長い音は切り分けるか他の相手を選ぶ。"
+    ))
+    async def transcribe(
+        path: str = "",
+        url: str = "",
+        backend: str = "",
+        model: str = "",
+        language: str = "",
+    ) -> dict:
+        data, name, mime = await media.load_audio(path=path, url=url)
+        return await media.transcribe(
+            data=data, filename=name, mime=mime,
+            backend=backend, model=model, language=language,
+        )
+
+    @mcp.tool(description=(
+        "読み上げ・文字起こしを頼める相手と、選べるモデル・声を返す。"
+        "使えない相手も理由つきで出る。kind は speech(読み上げ)/ transcribe(文字起こし)。"
+    ))
+    async def voice_backends(kind: str = "speech") -> dict:
+        if kind not in (media_providers.KIND_SPEECH, media_providers.KIND_TRANSCRIBE):
+            raise ValueError("kind は speech / transcribe のどちらかにしてください")
+        return {"backends": await media.backends(kind), "kind": kind}
 
 
 def _register_memory_tools(mcp: MCPServer, app: FastAPI) -> None:

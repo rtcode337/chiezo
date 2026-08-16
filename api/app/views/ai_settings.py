@@ -74,6 +74,19 @@ SECTION_ANCHOR = "ai-providers"
 BACK_TO_SECTION = f"/admin#{SECTION_ANCHOR}"
 
 
+# kind → 分類。**音だけここに載らない**（1 つの kind が音楽と SE に割れるため、
+# `sounds` を見て数える必要がある）。
+_CAP_OF_KIND = {
+    media_providers.KIND_IMAGE: capabilities.IMAGE,
+    media_providers.KIND_VIDEO: capabilities.VIDEO,
+    media_providers.KIND_SPEECH: capabilities.SPEECH,
+    media_providers.KIND_TRANSCRIBE: capabilities.TRANSCRIBE,
+}
+
+# 相手ごとに引く kind。**音も含めた全部**（上の表と違い、こちらは引く対象の一覧）。
+_MEDIA_KINDS = (*_CAP_OF_KIND, media_providers.KIND_AUDIO)
+
+
 def _capabilities_cell(talk: dict | None, media_entries: dict[str, dict]) -> str:
     """その相手で**何ができて、何ができないか**を 1 つの欄にまとめる。
 
@@ -81,8 +94,8 @@ def _capabilities_cell(talk: dict | None, media_entries: dict[str, dict]) -> str
     **絵文字は使わない** —— 環境によっては豆腐になり、いちばん見たい列が読めなくなる。
 
     **できないことも並べる。** 「書いていない = できない」は読み手に伝わらず、
-    毎回ほかの行と見比べることになる。並べるのは**実装のある 4 つ**まで
-    （声・動画はどの相手でもまだ作れないので、相手ごとに繰り返さず上の一覧に任せる）。
+    毎回ほかの行と見比べることになる。**分類の数だけ並べる**ので、
+    順番は `capabilities.CAPABILITIES` と揃える（一覧と行で並びが違うと読み比べられない）。
     """
     lines = []
 
@@ -95,8 +108,13 @@ def _capabilities_cell(talk: dict | None, media_entries: dict[str, dict]) -> str
         why = talk["blocked"] or ("無効" if not talk["enabled"] else "")
         lines.append(f'⚠ {label} <span class="muted">{esc(why)}</span>' if why else f"⚠ {label}")
 
-    lines.append(_media_line(capabilities.IMAGE, media_entries.get(media_providers.KIND_IMAGE),
-                             models=True))
+    for cap_id, kind in (
+        (capabilities.SPEECH, media_providers.KIND_SPEECH),
+        (capabilities.TRANSCRIBE, media_providers.KIND_TRANSCRIBE),
+        (capabilities.IMAGE, media_providers.KIND_IMAGE),
+        (capabilities.VIDEO, media_providers.KIND_VIDEO),
+    ):
+        lines.append(_media_line(cap_id, media_entries.get(kind), models=True))
 
     audio = media_entries.get(media_providers.KIND_AUDIO)
     sounds = audio.get("sounds", {}) if audio else {}
@@ -123,6 +141,9 @@ def _media_line(cap_id: str, entry: dict | None, models: bool = False,
     tail = ""
     if models and entry["models"]:
         tail = f' <span class="muted">{esc("、".join(entry["models"][:2]))}</span>'
+    elif models and entry.get("voices"):
+        # モデル名を持たない相手（声を相手に聞く ElevenLabs）は、代わりに声の数を出す
+        tail = f' <span class="muted">声 {len(entry["voices"])} 件</span>'
     elif limit:
         tail = f' <span class="muted">〜{limit:.0f} 秒</span>'
     return f"✓ {label}{tail}"
@@ -294,7 +315,7 @@ async def section_html(request: Request | None = None) -> str:
     # **kind ごとに引いて相手 ID で束ねる。** 一覧を混ぜると頼めない相手が並んで見える
     by_id: dict[str, dict[str, dict]] = {}
     if media.is_enabled():
-        for kind in (media_providers.KIND_IMAGE, media_providers.KIND_AUDIO):
+        for kind in _MEDIA_KINDS:
             for entry in await media.backends(kind):
                 by_id.setdefault(entry["id"], {})[kind] = entry
 
@@ -314,13 +335,14 @@ async def section_html(request: Request | None = None) -> str:
             f'<td class="muted">{esc(spec.billing)}</td></tr>'
         )
 
-    # 絵・音は「いま使えるか」を相手ごとに数える（上の一覧に渡す）
+    # 絵・音・動画・声は「いま使えるか」を相手ごとに数える（上の一覧に渡す）。
+    # **音だけ 1 つの kind が 2 つの分類に割れる**ので、そこだけ別に数える。
     for pid, kinds in by_id.items():
         for kind, entry in kinds.items():
             if not entry["usable"]:
                 continue
-            if kind == media_providers.KIND_IMAGE:
-                usable.setdefault(pid, set()).add(capabilities.IMAGE)
+            if cap_id := _CAP_OF_KIND.get(kind):
+                usable.setdefault(pid, set()).add(cap_id)
                 continue
             for cap_id, sound in ((capabilities.MUSIC, media_providers.SOUND_MUSIC),
                                   (capabilities.SFX, media_providers.SOUND_SFX)):
