@@ -192,6 +192,49 @@ class TestOpenAI:
         assert "sk-test" not in json.dumps(e.value.detail)
 
 
+class TestAntigravity:
+    """**Codex と同じブリッジの口**（`/v1/images/generations`）で描く。
+
+    鍵はこちらに無く、コンテナ内のサインイン結果をブリッジが使う。
+    """
+
+    def test_it_goes_through_its_own_bridge(self, state):
+        settings_store.set_enabled("antigravity", True)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            handler.url = str(request.url)
+            return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(PNG).decode()}]})
+
+        use(state, handler)
+
+        image = asyncio.run(media_backends.generate(
+            "antigravity", media_backends.ImageRequest(prompt="りんご", size="1024x1024")))
+
+        assert image.data == PNG
+        assert image.model == "antigravity-imagegen"
+        # **鍵は要らない**（サインイン結果をブリッジが使う）ので、自分のブリッジへ行く
+        assert "chiezo-bridge-antigravity" in handler.url
+
+    def test_it_follows_the_toggle_of_the_row_it_shares(self, state):
+        """**サインインは 1 つ。** 「話す相手」として止めたら、絵も止まる。"""
+        settings_store.set_enabled("antigravity", False)
+        use(state, lambda request: httpx.Response(200, json={"data": []}))
+
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(media_backends.generate(
+                "antigravity", media_backends.ImageRequest(prompt="りんご")))
+
+        assert e.value.status_code == 403
+
+    def test_it_cannot_make_sound(self, state):
+        """**内蔵ツールに音は無い**（バイナリを見ても入力側の語しか無い）。"""
+        from app import capabilities
+
+        assert capabilities.of_provider("antigravity") == {
+            capabilities.CHAT, capabilities.IMAGE
+        }
+
+
 class TestCodex:
     """**ChatGPT のサブスク枠**で gpt-image-2 を使う経路(API の従量課金とは別勘定)。"""
 
@@ -845,3 +888,36 @@ class TestCapabilities:
         assert items["image"]["providers"] == ["gemini"]
         assert items["music"]["state"] == "相手がいない"
         assert items["video"]["state"] == "未対応"
+
+
+class TestRemoteErrors:
+    """**相手のエラーは、次の一手が分かる形で返す。**
+
+    429 のとき「使い切った」のか「そもそも枠が無い」のかが分からず、2 度調べ直した。
+    """
+
+    def test_the_body_is_not_cut_before_the_reason(self, state):
+        """どの枠が尽きたかは前置きの後ろに来る。300 字で切ると必ず落ちていた。"""
+        settings_store.set_credential("gemini", "AIza-test")
+        settings_store.set_enabled("gemini", True)
+        body = ("You exceeded your current quota. " + "x" * 200
+                + "\n* Quota exceeded for metric: lyria, limit: 0")
+        use(state, lambda request: httpx.Response(429, text=body))
+
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(media_backends.generate_audio(
+                "gemini", media_backends.AudioRequest(prompt="曲", sound="music")))
+
+        assert "limit: 0" in e.value.detail["detail"]
+        assert "無料枠" in e.value.detail["hint"]
+
+    def test_it_does_not_hint_about_quota_for_other_failures(self, state):
+        settings_store.set_credential("gemini", "AIza-test")
+        settings_store.set_enabled("gemini", True)
+        use(state, lambda request: httpx.Response(500, text="boom"))
+
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(media_backends.generate_audio(
+                "gemini", media_backends.AudioRequest(prompt="曲", sound="music")))
+
+        assert "hint" not in e.value.detail

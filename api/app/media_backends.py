@@ -150,6 +150,33 @@ def unusable_reason(spec: media_providers.MediaProvider) -> str:
     return ""
 
 
+# 相手の応答本文をどこまで返すか。**300 字では足りなかった。** 429 のとき、
+# どの枠が尽きたか(`Quota exceeded for metric: … limit: 0`)は前置きの後ろに来るので、
+# ちょうど切れて「枠が無い」のか「使い切った」のか分からなかった —— 実際に 2 度踏んだ。
+# **鍵は本文ではなくヘッダで送っている**ので、本文を長めに返しても秘密は載らない。
+DETAIL_CHARS = 600
+
+
+def remote_error(spec: media_providers.MediaProvider, res, what: str) -> HTTPException:
+    """相手が返したエラーを、次の一手が分かる形にして返す。
+
+    **鍵は載せない**(ログにも画面にも)。載せるのは状態と本文の頭だけ。
+    """
+    log.warning("%s %s error %s: %s", spec.id, what, res.status_code, res.text[:DETAIL_CHARS])
+    detail = {
+        "error": f"{spec.label} が {res.status_code} を返しました",
+        "detail": res.text[:DETAIL_CHARS],
+    }
+    if res.status_code == 429:
+        # **「使い切った」と「そもそも無い」は違う。** 無料枠に含まれないモデルだと、
+        # 待っても直らない(実際に Lyria がこれだった)。
+        detail["hint"] = (
+            "枠が足りません。時間をおいても直らない場合、そのモデルが無料枠に"
+            "含まれていない可能性があります(本文の metric と limit を確認してください)"
+        )
+    return HTTPException(502, detail)
+
+
 def _client(timeout: float) -> httpx.AsyncClient:
     """テストが差し替える口(`httpx.MockTransport` を挿す)。"""
     return httpx.AsyncClient(timeout=timeout)
@@ -338,9 +365,7 @@ async def _gemini_generate(
         )
     if res.status_code >= 400:
         # 鍵と本文はログにも画面にも出さない(理由の頭だけ返す)
-        log.warning("gemini image error %s: %s", res.status_code, res.text[:300])
-        raise HTTPException(502, {"error": f"Gemini が {res.status_code} を返しました",
-                                  "detail": res.text[:300]})
+        raise remote_error(spec, res, "image")
 
     data = next(
         (
@@ -406,9 +431,7 @@ async def _openai_generate(
         # 鍵は載せない。理由の頭だけ返す。**403 が返ったら組織の本人確認を疑う** ——
         # OpenAI の API は一部のモデルで開発者コンソールでの本人確認を求めることがある
         # (ChatGPT / Codex のサブスクとは別系統なので、あちらで使えていても関係しない)
-        log.warning("openai image error %s: %s", res.status_code, res.text[:300])
-        raise HTTPException(502, {"error": f"OpenAI が {res.status_code} を返しました",
-                                  "detail": res.text[:300]})
+        raise remote_error(spec, res, "image")
 
     data = next((item.get("b64_json") for item in res.json().get("data", []) if item.get("b64_json")), None)
     if not data:
@@ -418,12 +441,19 @@ async def _openai_generate(
     return GeneratedImage(base64.b64decode(data), "image/png", seed, model)
 
 
-# ---- Codex CLI(ChatGPT のサブスク枠)----------------------------------------
+# ---- CLI ブリッジ(サブスクの枠で描く)----------------------------------------
 #
-# ブリッジ(chiezo-bridge-codex)の `/v1/images/generations` に投げる。中では
-# `codex exec` が内蔵の image_gen を回して PNG を書き、ブリッジがそれを base64 で返す。
-# **鍵はこちらに無い**(ブリッジが管理画面で登録された auth.json を読む)。
-async def _codex_generate(
+# ブリッジの `/v1/images/generations` に投げる。中では CLI が内蔵の画像ツールを回して
+# PNG を書き、ブリッジがそれを base64 で返す。**Codex と Antigravity が同じ形**なので、
+# 実装は 1 つで足りる(違うのは URL と、記録に残すモデル名だけ)。
+# **鍵はこちらに無い** —— Codex は管理画面で登録された auth.json、
+# Antigravity はコンテナ内のサインイン結果を、ブリッジ側が読む。
+
+# 記録に残すモデル名。**相手が決めるので、こちらは名前しか知らない。**
+BRIDGE_IMAGE_MODELS = {"codex": "gpt-image-2", "antigravity": "antigravity-imagegen"}
+
+
+async def _bridge_image_generate(
     spec: media_providers.MediaProvider, req: ImageRequest, seed: int
 ) -> GeneratedImage:
     async with _client(GENERATE_TIMEOUT) as client:
@@ -432,19 +462,18 @@ async def _codex_generate(
             json={"prompt": req.prompt, "size": req.size, "n": 1},
         )
     if res.status_code >= 400:
-        log.warning("codex image error %s: %s", res.status_code, res.text[:300])
-        raise HTTPException(502, {"error": f"Codex のブリッジが {res.status_code} を返しました",
-                                  "detail": res.text[:300]})
+        raise remote_error(spec, res, "image")
 
     data = next(
         (item.get("b64_json") for item in res.json().get("data", []) if item.get("b64_json")),
         None,
     )
     if not data:
-        raise HTTPException(502, {"error": "Codex が画像を返しませんでした"})
+        raise HTTPException(502, {"error": f"{spec.label} が画像を返しませんでした"})
 
     # **seed は受け付けない。** 記録だけしておく(再現できるのは ComfyUI 側だけ)
-    return GeneratedImage(base64.b64decode(data), "image/png", seed, "gpt-image-2")
+    model = BRIDGE_IMAGE_MODELS.get(spec.id, spec.id)
+    return GeneratedImage(base64.b64decode(data), "image/png", seed, model)
 
 
 # ---- ComfyUI(音)-----------------------------------------------------------
@@ -678,9 +707,7 @@ async def _gemini_audio(
         )
     if res.status_code >= 400:
         # 鍵と本文はログにも画面にも出さない(理由の頭だけ返す)
-        log.warning("gemini audio error %s: %s", res.status_code, res.text[:300])
-        raise HTTPException(502, {"error": f"Gemini が {res.status_code} を返しました",
-                                  "detail": res.text[:300]})
+        raise remote_error(spec, res, "audio")
 
     item = next(
         (
@@ -750,9 +777,7 @@ async def _elevenlabs_audio(
             json=body,
         )
     if res.status_code >= 400:
-        log.warning("elevenlabs audio error %s: %s", res.status_code, res.text[:300])
-        raise HTTPException(502, {"error": f"ElevenLabs が {res.status_code} を返しました",
-                                  "detail": res.text[:300]})
+        raise remote_error(spec, res, "audio")
     if not res.content:
         raise HTTPException(502, {"error": "ElevenLabs が音を返しませんでした"})
 
@@ -762,7 +787,8 @@ async def _elevenlabs_audio(
 
 GENERATORS = {
     "comfyui": _comfy_generate,
-    "codex": _codex_generate,
+    "codex": _bridge_image_generate,
+    "antigravity": _bridge_image_generate,
     "gemini": _gemini_generate,
     "openai": _openai_generate,
 }

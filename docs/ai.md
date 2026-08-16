@@ -177,8 +177,13 @@ image_status(job_id)                    … 仕上がり。files に保存先の
 |---|---|---|---|
 | `comfyui` | 自前の GPU の ComfyUI | 不要 | 電気代だけ |
 | `codex` | **Codex CLI の内蔵ツール**(gpt-image-2) | Codex の行(ChatGPT のログイン) | **ChatGPT のサブスク枠** |
+| `antigravity` | **Antigravity CLI の内蔵ツール** | Antigravity の行(Google アカウントのサインイン) | **Google AI のサブスク枠** |
 | `gemini` | Gemini の画像生成(`gemini-3.1-flash-image` ほか) | Gemini の行 | 無料枠 |
 | `openai` | gpt-image(`gpt-image-2`) | OpenAI の行 | 従量課金 |
+
+**`codex` と `antigravity` はサブスクの枠**（API キーが要りません）。**画像を作れるのは
+内蔵ツールを持つ CLI だけ**で、Claude Code CLI は持ちません。どちらも
+「エージェントにファイルを書かせる」形なので、ブリッジ側の段取りは共通です。
 
 **`codex` と `openai` は同じ gpt-image-2 ですが、課金の出どころが違います。**
 `codex` は chatgpt.com 側(サブスクリプション)で追加の API キーが要らず、`openai` は

@@ -235,8 +235,9 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     - `content_of()` が**思考タグの残骸を落とす**。thinking 系モデルは推論サーバの設定次第で
       `<think>…</think>` や閉じタグだけが `content` に残る(実測: Qwen3 + 思考オフで先頭に
       `</think>`)。相手の設定は Chiezo が握っていないので受け側で落とす
-- **画像は Codex の内蔵ツールでも作れる**(`/v1/images/generations`。**ブリッジにあるのは
-  Codex のときだけ**で、claude / antigravity は持たない)。**課金は ChatGPT の
+- **画像は CLI の内蔵ツールでも作れる**(`/v1/images/generations`。**持っているのは
+  Codex と Antigravity だけ**で、claude は持たない。どちらも「エージェントにファイルを
+  書かせる」形なので、ブリッジの段取りは共通で違うのは起動コマンドだけ)。**課金は ChatGPT の
   サブスク枠**で、API キーの `openai` とは別勘定(同じ gpt-image-2 でも出どころが違う)。
   会話の口は `-s read-only` だが、**画像はファイルに書き出されるので
   `-s workspace-write` にして、この 1 回のための作業ディレクトリにだけ許す**。
@@ -244,7 +245,15 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   **作業ディレクトリを先に見て、共有の保存先(`$CODEX_HOME/generated_images`)は
   走らせる前にあったものを除く。さらに直列化する**(`_IMAGE_LOCK`)—— 共有の保存先を
   時刻だけで選ぶと、同時に走った別の実行の絵を返す(4 件同時に頼んで 4 件とも同じ絵が返った)。
-  相手はエージェントなので、**保存先と枚数を言い切る**(曖昧だと説明だけ返してファイルを書かない)
+  相手はエージェントなので、**保存先と枚数を言い切る**(曖昧だと説明だけ返してファイルを書かない)。
+  **Antigravity は頼んだ場所へ直接書く**ので共有の保存先を見る必要は無いが、
+  **音と動画の道具は持っていない**(バイナリに imagegen のハンドラはあるが、
+  動画は protobuf の型だけで実装が無く、実際に頼んでも何も出ない)
+- **外部の相手のエラーは本文を 600 字まで返す**(`media_backends.remote_error`)。
+  300 字では 429 の `Quota exceeded for metric: … limit: 0` がちょうど切れて、
+  「枠を使い切った」のか「そもそも枠が無い」のか分からなかった(2 度踏んだ)。
+  **鍵はヘッダで送っている**ので本文には載らない。429 には「時間をおいても直らないなら
+  無料枠に含まれていない可能性」というヒントを添える
 - **Codex は MCP を引けない(上流の不具合。2026-08 時点)。** `codex exec` では
   MCP の呼び出しが必ず `user cancelled MCP tool call` になる —— 非対話では答えられない
   確認の経路に入るため(openai/codex#16685、未修正)。**ブリッジの作りの問題ではない**ので
@@ -472,7 +481,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     (MCP の `image_*` / `audio_*` と同じ実体)。
     知識を引くのとは別の仕事だが、**MCP の登録先を増やさない**ために同じサーバーに載せている。
     実体は `app/media.py`(ジョブと置き場)/ `app/media_backends.py`(相手ごとの作り方)
-    / `app/media_providers.py`(相手の定義。ComfyUI / Codex / Gemini / OpenAI / ElevenLabs)。
+    / `app/media_providers.py`(相手の定義。ComfyUI / Codex / Antigravity / Gemini / OpenAI / ElevenLabs)。
     **絵と音で層を分けない** —— ジョブ・置き場・掃除・中断の後始末・配信は同じ仕事で、
     違うのは頼むときの語彙(サイズ / 種類と長さ)だけ。分けると同じ後始末を 2 つ持つ。
     `MediaProvider.kinds` がその相手に頼めるものを持ち、一覧は kind で絞る

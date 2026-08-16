@@ -120,6 +120,27 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         order=15,
     ),
     MediaProvider(
+        id="antigravity",
+        label="Antigravity CLI(Google AI のサブスク枠)",
+        # CLI ブリッジ(chiezo-bridge-antigravity)。**API キーではなくサインインで動く**
+        url="http://chiezo-bridge-antigravity:7013/v1",
+        # 認証情報はコンテナ内のサインイン結果。画面から登録する秘密は無い
+        credential=CRED_NONE,
+        billing="Google AI サブスクリプション(定額)",
+        setup="ブリッジ(chiezo-bridge-antigravity)を立てて、コンテナ内で 1 回サインインすると"
+        "使えるようになります(手順は「話す相手」としての行と同じ)。"
+        "**絵を描けるのは内蔵ツールを持つ CLI だけ**で、Claude Code CLI は持ちません。",
+        # モデルは内蔵ツールが決める(指定は受け付けない)
+        models=(),
+        # 画素の指定は「言葉で頼む」形なので、こちらの語彙をそのまま渡す
+        sizes=("1024x1024", "1536x1024", "1024x1536"),
+        # **on/off は「話す相手」の行と共通。** 同じサインインを使うので、
+        # あちらを止めたら絵も止まる
+        credential_from="antigravity",
+        order=17,
+        kinds=(KIND_IMAGE,),
+    ),
+    MediaProvider(
         id="openai",
         label="OpenAI(gpt-image)",
         url="https://api.openai.com/v1",
