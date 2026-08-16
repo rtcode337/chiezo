@@ -1,5 +1,5 @@
 # ブリッジは HTTP の受け口だけを持つ。Chiezo 本体(api/requirements.txt)とは
 # 別のロックにしてある —— こちらは CLI を包むだけで、DB も MCP サーバも要らないため。
 fastapi==0.121.2
-pydantic==2.13.1
+pydantic==2.13.4
 uvicorn==0.41.0
