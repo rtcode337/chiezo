@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import html
+import re
 from urllib.parse import quote
 
 # ブラウズ画面の URL。**ソースの画面は `/search/` の下に置く**(ルート直下を
@@ -127,7 +128,13 @@ PAGE_STYLE = """
   /* 管理画面の「話す相手」の表。設定を一度入れたら開かない場所なので、1 行を低く保つ
      (本文と同じ字の大きさだと、手順の説明が入る列で行が伸びすぎる)。 */
   table.ai-settings td { font-size: 0.85rem; }
-  table.ai-settings button { padding: 0.2rem 0.6rem; font-size: 0.85rem; }
+  /* **ボタンの文字は折らない。** 手順の details が広がると、この列だけ潰れて
+     「有効にする」が 3 行に折れていた。 */
+  table.ai-settings button { padding: 0.2rem 0.6rem; font-size: 0.85rem; white-space: nowrap; }
+  /* 手順に貼った docker run は長い。**幅を決めて折り返す** —— 決めないと、
+     その列だけが伸びて他の列を押し潰す。 */
+  table.ai-settings details { max-width: 34rem; }
+  table.ai-settings code { word-break: break-all; }
   table.ai-settings input[type=text] { width: 16rem; font-size: 0.85rem; }
   /* details は本文中の見出し向けの体裁(太字・上下の余白)なので、表の中では抑える。 */
   table.ai-settings details { margin-top: 0.3rem; }
@@ -324,3 +331,21 @@ def page_shell(title: str, body: str, refresh: int | None = None, style: str = "
 
 def esc(value) -> str:
     return html.escape(str(value)) if value is not None else ""
+
+
+# 手順の文（`Provider.setup` など）に効かせる最小の印。**Markdown を入れるためではなく、
+# 「素のテキストが 1 行に潰れて読めない」を直すため**に置いてある。
+_STRONG = re.compile(r"\*\*(.+?)\*\*", re.S)
+_CODE = re.compile(r"`([^`]+)`")
+
+
+def markup(value) -> str:
+    """`**強調**` / `` `コード` `` / 改行だけを HTML にする。
+
+    **必ず先にエスケープしてから印を置き換える。** 逆にすると、文中にタグを書かれた時点で
+    そのまま入り込む（会話画面の Markdown でも同じ順にしてある）。
+    """
+    text = esc(value)
+    text = _CODE.sub(r"<code>\1</code>", text)
+    text = _STRONG.sub(r"<strong>\1</strong>", text)
+    return text.replace("\n", "<br>")

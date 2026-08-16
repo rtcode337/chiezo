@@ -538,7 +538,7 @@ Google アカウントのサインインを求められます（`GEMINI_API_KEY`
 
 ```bash
 docker run -d --name chiezo-bridge-antigravity --network <chiezo と同じネットワーク> \
-  -v <state のパス>/bridge-antigravity-home:/srv/bridge/home \
+  -v chiezo-antigravity-home:/srv/bridge/home \
   -e CHIEZO_BRIDGE_CLI=antigravity -e CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp \
   --restart unless-stopped ghcr.io/rtcode337/chiezo-bridge:latest
 
@@ -546,10 +546,22 @@ docker run -d --name chiezo-bridge-antigravity --network <chiezo と同じネッ
 docker exec -it chiezo-bridge-antigravity agy
 ```
 
-**バインド先は uid 1000 が書けるようにしておくこと**（ブリッジは非 root で動きます。
-合わなければ `sudo chown -R 1000:1000 <ディレクトリ>`）。書けないとサインインが残らず、
-コンテナを作り直すたびにやり直しになります。**ターミナルを開けないコンテナ管理画面**では、
-その画面のコンソール機能から同じコマンドを実行してください。
+**ホームは名前付きボリュームにしてください。** ホストのディレクトリをバインドすると、
+こうなります:
+
+```
+failed to complete onboarding: failed to save settings:
+open /srv/bridge/home/.gemini/antigravity-cli/settings.json.<...>.tmp: permission denied
+```
+
+ブリッジは**非 root（uid 1000）で動く**のに、**バインド先が存在しないと Docker が
+root 所有で作る**ためです。名前付きボリュームなら**イメージ側の所有者（uid 1000）が
+そのまま入る**ので、この問題が起きません。どうしてもホストのパスに置きたいときは、
+先に作って `sudo chown -R 1000:1000 <ディレクトリ>` してからバインドしてください
+（既に踏んでしまった場合も、同じ chown で直ります）。
+
+**ターミナルを開けないコンテナ管理画面**では、その画面のコンソール機能から
+同じコマンドを実行してください。
 
 立てたら管理画面（`/admin` の「AI の相手」）で「接続を試す」→「有効にする」の順に押します。
 
@@ -657,7 +669,8 @@ CLI ブリッジ相手のときは、**Chiezo は agent のループを回しま
 という分かりにくい壊れ方をします（実際に踏みました）。
 
 そのため **Antigravity のホームにバインドするディレクトリは uid 1000 が書けること**が要ります
-（`sudo chown -R 1000:1000 state/bridge-antigravity-home`）。書けないとサインインが残りません。
+（名前付きボリュームにすれば不要です。上の「compose のファイルが無い環境で立てる」を参照）。
+書けないとサインインが残りません。
 
 ```bash
 # 1) docker-compose.yml の chiezo-bridge-* のコメントを外して立ち上げる

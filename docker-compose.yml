@@ -178,16 +178,21 @@ services:
   #
   # Antigravity は API キー方式を持たない。**コンテナ内で 1 回サインインした結果**を
   # ホーム配下のキャッシュから読むので、/state ではなく**書き込み可能なホーム**を
-  # バインドして永続化する。立ち上げたら
+  # 渡して永続化する。立ち上げたら
   #   docker compose exec chiezo-bridge-antigravity agy
   # を 1 回だけ対話で実行し、表示される URL でサインインすること。
-  # **ブリッジは非 root(uid 1000)で動く** —— claude が権限確認を飛ばす指定を root では
-  # 受け付けないため。ここでバインドするディレクトリは uid 1000 が書けるようにしておくこと
-  # (合わなければ `sudo chown -R 1000:1000 <ディレクトリ>`)。書けないとサインインが残らない。
+  #
+  # **ここはホストのディレクトリではなく名前付きボリュームにする。** ブリッジは
+  # 非 root(uid 1000)で動く(claude が権限確認を飛ばす指定を root では受け付けないため)
+  # のに、**バインド先が無いと Docker は root 所有で作る** —— サインインの保存が
+  # `permission denied` で落ちる(実際に踏んだ)。名前付きボリュームなら**イメージ側の
+  # 所有者(uid 1000)がそのまま入る**ので、ホスト側で chown して回らなくて済む。
+  # ホストのパスに置きたい場合は、先に `mkdir -p` して
+  # `sudo chown -R 1000:1000 <ディレクトリ>` してからバインドすること。
   #chiezo-bridge-antigravity:
   #  image: ghcr.io/rtcode337/chiezo-bridge:latest
   #  volumes:
-  #    - ./state/bridge-antigravity-home:/srv/bridge/home
+  #    - chiezo-antigravity-home:/srv/bridge/home
   #  environment:
   #    - CHIEZO_BRIDGE_CLI=antigravity
   #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp
@@ -228,3 +233,8 @@ services:
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:7012/healthz"]
       interval: 60s
+
+# **サインイン結果の置き場**(Antigravity)。ホストのディレクトリにしないのは、
+# 無いときに Docker が root 所有で作ってしまい、非 root のブリッジが書けなくなるため。
+volumes:
+  chiezo-antigravity-home:

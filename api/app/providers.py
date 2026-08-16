@@ -131,18 +131,21 @@ PROVIDERS: tuple[Provider, ...] = (
         credential=CRED_REQUIRED,
         billing="Claude のサブスクリプション（定額）",
         model_required=False,
-        setup="ブリッジのコンテナ chiezo-bridge-claude を立ててから、手元の端末で "
-        "`claude setup-token` を実行して発行したトークンをここに登録してください。"
-        "**コンテナ名はこのとおりにすること**(この名前で呼びに行きます)。"
-        "compose があるなら docker-compose.yml の該当サービスのコメントを外すだけ。"
-        "**無ければ `docker run` で立てます** —— chiezo-api と同じネットワークに繋ぎ、"
-        "設定 DB を読み取り専用で渡します: "
+        setup="ブリッジのコンテナ **chiezo-bridge-claude** を立ててから、手元の端末で\n"
+        "`claude setup-token` を実行し、発行されたトークンをここに登録してください。\n"
+        "\n"
+        "**コンテナ名はこのとおりにすること**（Chiezo はこの名前で呼びに行きます）。\n"
+        "compose があるなら docker-compose.yml の該当サービスのコメントを外すだけです。\n"
+        "\n"
+        "**compose のファイルが無い環境**では docker run で立てます。\n"
+        "条件は「コンテナ名」と「chiezo-api と同じネットワークに繋ぐ」の 2 つだけです。\n"
         "`docker run -d --name chiezo-bridge-claude --network <chiezo と同じ> "
         "-v <state のパス>:/state:ro -e CHIEZO_BRIDGE_CLI=claude "
         "-e CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp --restart unless-stopped "
-        "ghcr.io/rtcode337/chiezo-bridge:latest`。"
-        "（ブリッジは設定 DB を読み取り専用でマウントしているので、"
-        "登録すればブリッジの再起動なしで効きます。）",
+        "ghcr.io/rtcode337/chiezo-bridge:latest`\n"
+        "\n"
+        "ブリッジは設定 DB を読み取り専用でマウントして読むので、"
+        "登録すればブリッジの再起動なしで効きます。",
         # CLI はエイリアスで受ける（正式名はモデルが変わるたびに動く）。
         # **先頭は CLI の既定に揃える**（claude の既定は claude-sonnet-5。実測）——
         # 何も選ばなかったときにここが使われるので、ずらすと黙って別のモデルになる。
@@ -161,21 +164,27 @@ PROVIDERS: tuple[Provider, ...] = (
         credential=CRED_NONE,
         billing="Google AI サブスクリプション（定額）",
         model_required=False,
-        setup="**API キーでは動きません**（鍵を渡しても Google アカウントのサインインを求められます）。"
-        "手順は 2 段階です。"
-        "(1) ブリッジのコンテナ chiezo-bridge-antigravity を立てる。**コンテナ名はこのとおりに**し、"
-        "chiezo-api と同じネットワークに繋ぎ、**書き込めるホーム**をバインドします"
-        "（サインイン結果がそこに残るので、コンテナを作り直しても消えません。"
-        "ブリッジは非 root(uid 1000) で動くので、そのディレクトリは uid 1000 が書けるようにすること）。"
-        "compose があるなら該当サービスのコメントを外すだけ。無ければ: "
+        setup="**API キーでは動きません。** 鍵を渡しても Google アカウントの"
+        "サインインを求められます（実測）。手順は 2 段階です。\n"
+        "\n"
+        "**(1) コンテナ chiezo-bridge-antigravity を立てる。**\n"
+        "コンテナ名はこのとおりにし、chiezo-api と同じネットワークに繋ぎ、"
+        "**書き込めるホームを渡します**（サインイン結果がそこに残るので、"
+        "コンテナを作り直しても消えません）。\n"
+        "**ホストのディレクトリではなく名前付きボリュームを使ってください** —— "
+        "ブリッジは非 root(uid 1000) で動くのに、バインド先が無いと Docker は "
+        "root 所有で作るため、サインインの保存が `permission denied` で落ちます。\n"
         "`docker run -d --name chiezo-bridge-antigravity --network <chiezo と同じ> "
-        "-v <state のパス>/bridge-antigravity-home:/srv/bridge/home "
-        "-e CHIEZO_BRIDGE_CLI=antigravity -e CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp "
-        "--restart unless-stopped ghcr.io/rtcode337/chiezo-bridge:latest`。"
-        "(2) そのコンテナの中で `agy` を**対話で 1 回**実行してサインインする"
-        "（`docker exec -it chiezo-bridge-antigravity agy`。表示される URL を手元のブラウザで開き、"
-        "出てきた認証コードを貼り戻す）。コンテナ管理画面しか無い環境では、"
-        "その画面のターミナル機能から同じことをします。",
+        "-v chiezo-antigravity-home:/srv/bridge/home -e CHIEZO_BRIDGE_CLI=antigravity "
+        "-e CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp --restart unless-stopped "
+        "ghcr.io/rtcode337/chiezo-bridge:latest`\n"
+        "どうしてもホストのパスに置くなら、先に作って "
+        "`sudo chown -R 1000:1000 <ディレクトリ>` してからバインドします。\n"
+        "\n"
+        "**(2) コンテナの中で `agy` を対話で 1 回実行してサインインする。**\n"
+        "`docker exec -it chiezo-bridge-antigravity agy`\n"
+        "表示される URL を手元のブラウザで開き、出てきた認証コードを貼り戻します。\n"
+        "コンテナ管理画面しか無い環境では、その画面のコンソール機能から同じことをします。",
         models=(),
         # `agy --help` の --effort。claude と違い xhigh / max は無い。
         efforts=("low", "medium", "high"),

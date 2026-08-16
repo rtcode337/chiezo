@@ -32,10 +32,6 @@ x-data-dir: &data-dir "/path/to/chiezo/data"
 x-notes-dir: &notes-dir "/path/to/chiezo/notes"
 # 管理画面から入れた設定(話す相手の on/off・API キー)の置き場。**API キーが入る**
 x-state-dir: &state-dir "/path/to/chiezo/state"
-# Antigravity のサインイン結果の置き場(CLI ブリッジを使う場合だけ)。
-# state の下に置く想定だが、**YAML は文字列を連結できない**ので別のアンカーにしてある
-# —— 上の x-state-dir を変えたら、こちらも同じ場所を指すように直すこと。
-x-bridge-home-dir: &bridge-home-dir "/path/to/chiezo/state/bridge-antigravity-home"
 
 services:
   # 検索 API・MCP・管理画面。これが本体で、単体で起動する。
@@ -221,16 +217,21 @@ services:
   #
   # Antigravity だけマウントが違う。**API キー方式が無く**、コンテナ内で 1 回サインインした
   # 結果をホーム配下のキャッシュから読むので、/state(読み取り専用)ではなく
-  # **書き込み可能なホーム**をバインドして永続化する。立ち上げたら、その環境の
+  # **書き込み可能なホーム**を渡して永続化する。立ち上げたら、その環境の
   # コンテナ管理画面から `agy` を対話で 1 回実行してサインインすること
   # (表示される URL を手元のブラウザで開き、出てきたコードを貼り戻す)。
-  # **ブリッジは非 root(uid 1000)で動く**ので、バインド先は uid 1000 が書けるようにする。
+  #
+  # **ホストのディレクトリではなく名前付きボリュームを使う。** ブリッジは非 root(uid 1000)で
+  # 動くのに、**バインド先が無いと Docker は root 所有で作る** —— サインインの保存が
+  # `permission denied` で落ちる(実際に踏んだ)。名前付きボリュームなら
+  # **イメージ側の所有者(uid 1000)がそのまま入る**。
+  # どうしてもホストのパスに置くなら、先に作って `chown -R 1000:1000` してからにすること。
   #chiezo-bridge-antigravity:
   #  image: ghcr.io/rtcode337/chiezo-bridge:latest
   #  container_name: chiezo-bridge-antigravity
   #  volumes:
-  #    - type: bind
-  #      source: *bridge-home-dir
+  #    - type: volume
+  #      source: chiezo-antigravity-home
   #      target: /srv/bridge/home
   #  environment:
   #    CHIEZO_BRIDGE_CLI: antigravity
@@ -263,3 +264,8 @@ services:
   #    test: ["CMD", "python", "-c",
   #           "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"]
   #    interval: 60s
+
+# **サインイン結果の置き場**(Antigravity)。ホストのディレクトリにしないのは、
+# 無いときに Docker が root 所有で作ってしまい、非 root のブリッジが書けなくなるため。
+volumes:
+  chiezo-antigravity-home:

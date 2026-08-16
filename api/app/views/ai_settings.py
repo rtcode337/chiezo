@@ -22,7 +22,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from app import answer, capabilities, media, media_providers, providers, settings_store
-from app.pages import CHAT_PATH, esc
+from app.pages import CHAT_PATH, esc, markup
 
 router = APIRouter()
 
@@ -75,41 +75,49 @@ BACK_TO_SECTION = f"/admin#{SECTION_ANCHOR}"
 
 
 def _capabilities_cell(talk: dict | None, media_entries: dict[str, dict]) -> str:
-    """その相手で**何ができるか**を 1 つの欄にまとめる。
+    """その相手で**何ができて、何ができないか**を 1 つの欄にまとめる。
 
-    印は `✓` と `⚠`（絵文字は環境によって豆腐になり、いちばん見たい列が読めなくなる）。
-    **その相手が受け持たない分類は書かない** —— 6 つ全部を毎行に並べると、
-    行が高くなるだけで「この相手で何ができるか」が読みにくくなる。
-    分類そのものは表の上の一覧が示す。
+    印は `✓`（使える）/ `⚠`（受け持つが、いまは使えない）/ `✗`（そもそも作れない）。
+    **絵文字は使わない** —— 環境によっては豆腐になり、いちばん見たい列が読めなくなる。
+
+    **できないことも並べる。** 「書いていない = できない」は読み手に伝わらず、
+    毎回ほかの行と見比べることになる。並べるのは**実装のある 4 つ**まで
+    （声・動画はどの相手でもまだ作れないので、相手ごとに繰り返さず上の一覧に任せる）。
     """
     lines = []
 
-    if talk is not None:
-        label = capabilities.BY_ID[capabilities.CHAT].label
-        if talk["runnable"]:
-            lines.append(f"✓ {label}")
-        else:
-            why = talk["blocked"] or ("無効" if not talk["enabled"] else "")
-            lines.append(f'⚠ {label} <span class="muted">{esc(why)}</span>' if why else f"⚠ {label}")
+    label = capabilities.BY_ID[capabilities.CHAT].label
+    if talk is None:
+        lines.append(f'<span class="muted">✗ {label}</span>')
+    elif talk["runnable"]:
+        lines.append(f"✓ {label}")
+    else:
+        why = talk["blocked"] or ("無効" if not talk["enabled"] else "")
+        lines.append(f'⚠ {label} <span class="muted">{esc(why)}</span>' if why else f"⚠ {label}")
 
-    image = media_entries.get(media_providers.KIND_IMAGE)
-    if image is not None:
-        lines.append(_media_line(capabilities.IMAGE, image, models=True))
+    lines.append(_media_line(capabilities.IMAGE, media_entries.get(media_providers.KIND_IMAGE),
+                             models=True))
 
     audio = media_entries.get(media_providers.KIND_AUDIO)
-    if audio is not None:
-        sounds = audio.get("sounds", {})
-        for cap_id, sound in ((capabilities.MUSIC, media_providers.SOUND_MUSIC),
-                              (capabilities.SFX, media_providers.SOUND_SFX)):
-            if sound in sounds:
-                lines.append(_media_line(cap_id, audio, limit=sounds[sound]))
+    sounds = audio.get("sounds", {}) if audio else {}
+    for cap_id, sound in ((capabilities.MUSIC, media_providers.SOUND_MUSIC),
+                          (capabilities.SFX, media_providers.SOUND_SFX)):
+        lines.append(_media_line(cap_id, audio if sound in sounds else None,
+                                 limit=sounds.get(sound)))
 
-    return "<br>".join(lines) or '<span class="muted">—</span>'
+    return "<br>".join(lines)
 
 
-def _media_line(cap_id: str, entry: dict, models: bool = False, limit: float | None = None) -> str:
-    """絵・音の 1 行。使えない相手は**理由をそのまま出す**（次にすることが分かるように）。"""
+def _media_line(cap_id: str, entry: dict | None, models: bool = False,
+                limit: float | None = None) -> str:
+    """絵・音の 1 行。`entry` が無ければ**その相手は作れない**（✗）。
+
+    使える相手は理由の代わりに手掛かり（モデル名・長さの上限）を、
+    使えない相手は**理由をそのまま**出す（次にすることが分かるように）。
+    """
     label = capabilities.BY_ID[cap_id].label
+    if entry is None:
+        return f'<span class="muted">✗ {label}</span>'
     if not entry["usable"]:
         return f'⚠ {label} <span class="muted">{esc(entry["reason"])}</span>'
     tail = ""
@@ -151,7 +159,7 @@ def _talk_cells(r: dict) -> tuple[str, str]:
         cred = (
             '<span class="muted">渡すものが無い</span>'
             f'<details><summary>使えるようにするには</summary>'
-            f'<p class="muted">{esc(spec.setup)}</p></details>'
+            f'<p class="muted">{markup(spec.setup)}</p></details>'
         )
     elif not r["credential_required"]:
         cred = "登録済み" if r["has_credential"] else "未登録"
@@ -172,7 +180,7 @@ def _talk_cells(r: dict) -> tuple[str, str]:
     if r["takes_credential"]:
         cred += (
             f"<details><summary>{'更新' if r['has_credential'] else '登録'}する</summary>"
-            f'<p class="muted">{esc(spec.setup)}</p>'
+            f'<p class="muted">{markup(spec.setup)}</p>'
             f'<form method="post" action="/admin/ai/key">'
             f'<input type="hidden" name="provider" value="{spec.id}">'
             f'<input type="text" name="credential" placeholder="認証情報" required>'
@@ -203,7 +211,7 @@ def _media_only_cells(spec, enabled: bool) -> tuple[str, str]:
         cred = (
             '<span class="muted">渡すものが無い</span>'
             f'<details><summary>使えるようにするには</summary>'
-            f'<p class="muted">{esc(spec.setup)}</p></details>'
+            f'<p class="muted">{markup(spec.setup)}</p></details>'
         )
     else:
         has = bool(settings_store.load(spec.id).credential)
@@ -216,7 +224,7 @@ def _media_only_cells(spec, enabled: bool) -> tuple[str, str]:
         cred = "登録済み" if has else "未登録"
         cred += (
             f"<details><summary>{'更新' if has else '登録'}する</summary>"
-            f'<p class="muted">{esc(spec.setup)}</p>'
+            f'<p class="muted">{markup(spec.setup)}</p>'
             f'<form method="post" action="/admin/media/key">'
             f'<input type="hidden" name="provider" value="{spec.id}">'
             f'<input type="password" name="credential" placeholder="API キー" required>'
