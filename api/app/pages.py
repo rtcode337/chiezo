@@ -141,10 +141,15 @@ PAGE_STYLE = """
   table.ai-settings details > summary { font-weight: normal; padding: 0.1rem 0; }
   table.ai-settings p { margin: 0.3rem 0; }
   /* **無効な相手は行ごと薄くする。** 「使う」のボタンの文字だけでは、行が増えるほど
-     いまどちらの状態か読み取りにくい。ボタンは押せる必要があるので薄くしない。 */
+     いまどちらの状態か読み取りにくい。
+     **ただしボタンは薄くしない。** 一度 `color: inherit` を掛けたら、td の灰色を
+     継いで「押せないボタン」に見え、**まさに押してほしい行（無効な行）で
+     押せないと思われた**（実際に報告を受けた）。文字色を明示して継がせない。 */
   table.ai-settings tr.off { background: #f7f7f7; }
   table.ai-settings tr.off td { color: #999; }
-  table.ai-settings tr.off button { color: inherit; }
+  table.ai-settings tr.off button:not([disabled]) { color: #111; }
+  /* 押せないボタン（条件を満たしていない）は、見た目でもそう分かるようにする */
+  table.ai-settings button[disabled] { color: #999; cursor: not-allowed; }
   details { margin-top: 1rem; }
   details > summary { cursor: pointer; font-weight: bold; padding: 0.3rem 0; }
   pre.doc-body { white-space: pre-wrap; word-break: break-word; }
