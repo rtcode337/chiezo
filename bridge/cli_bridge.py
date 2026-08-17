@@ -166,11 +166,17 @@ MCP_CONFIG_PATH = "/tmp/chiezo-mcp.json"
 STATE_DB = os.environ.get("CHIEZO_BRIDGE_STATE_DB", "/state/settings.db")
 
 # Linux の単一引数の長さ上限(MAX_ARG_STRLEN = 32 ページ = 128KiB)。少し余裕を見る。
+# agy はプロンプトを引数で取るので、これを超えるぶんはファイル経由に切り替える(下記)。
 MAX_ARG_BYTES = 120 * 1024
 
-
-class PromptTooLong(Exception):
-    """プロンプトを引数で渡す CLI(agy)で、長さ上限を超えたとき。"""
+# 長いプロンプトを agy へ渡すときの言い方。**中身は書かず、読む先だけを伝える。**
+# agy は標準入力からプロンプトを読めず(`-p` は値を必須とし、`-p -` は "-" を
+# プロンプトそのものとして扱う)、プロンプトを取るファイル用のフラグも無い。
+# 残るのは「ファイルに置いて、道具で読ませる」だけ。
+LONG_PROMPT_INSTRUCTION = (
+    "{path} を読み、その中の指示にだけ従って回答してください。"
+    "ファイルを読んだことには触れず、指示への回答だけを出力してください。"
+)
 
 
 def stored_credential() -> str:
@@ -348,7 +354,7 @@ def resolve_timeout(requested: float | None) -> float:
 
 def build_command(
     out_path: str, prompt: str = "", model: str = "", effort: str = "",
-    web: bool = False, max_turns: int | None = None,
+    web: bool = False, max_turns: int | None = None, prompt_path: str = "",
 ) -> list[str]:
     """CLI の起動コマンドを組む。プロンプトは標準入力から渡す。
 
@@ -388,14 +394,22 @@ def build_command(
     if CLI == "antigravity":
         # **`-p` はプロンプトを引数で取る**(claude/codex のように標準入力からは読まない)。
         # そのため Linux の単一引数の長さ上限(MAX_ARG_STRLEN = 128KiB)に当たりうる ——
-        # 超えると実行前に E2BIG で落ちるので、ここで先に断って理由を返す。
+        # 超えると実行前に E2BIG で落ちる。
+        #
+        # **長いときだけファイル経由にする。** 短いプロンプトは今までどおり引数で渡す ——
+        # そちらは道具も権限も要らず、確実に動く経路だから。長いときは prompt_path へ
+        # 書き出し、読む先だけを引数で伝えて、CLI にファイルを読ませる。
         # 認証はコンテナ内でサインイン済みである前提(HOME 配下のキャッシュ)。
-        if len(prompt.encode("utf-8")) >= MAX_ARG_BYTES:
-            raise PromptTooLong(
-                f"Antigravity CLI はプロンプトを引数で受け取るため、"
-                f"{MAX_ARG_BYTES // 1024}KiB 未満にする必要があります"
-            )
-        cmd = ["agy", "-p", prompt]
+        if prompt_path:
+            cmd = [
+                "agy", "-p", LONG_PROMPT_INSTRUCTION.format(path=prompt_path),
+                # 読ませるファイルを作業対象に入れる。
+                "--add-dir", os.path.dirname(prompt_path),
+                # 非対話なので、権限の確認を出されると待ち続けて固まる。
+                "--dangerously-skip-permissions",
+            ]
+        else:
+            cmd = ["agy", "-p", prompt]
         if model:
             cmd += ["--model", model]
         if effort:
@@ -445,13 +459,31 @@ async def run_cli(
     if reason := apply_credential():
         raise HTTPException(401, {"error": reason})
     out_path = f"/tmp/chiezo-answer-{uuid.uuid4().hex}.txt"
+    # agy で引数に収まらないときだけ、プロンプトをファイルへ出して読ませる(build_command 参照)。
+    prompt_path = ""
+    if CLI == "antigravity" and len(prompt.encode("utf-8")) >= MAX_ARG_BYTES:
+        prompt_path = f"/tmp/chiezo-prompt-{uuid.uuid4().hex}.md"
+        try:
+            with open(prompt_path, "w", encoding="utf-8") as f:
+                f.write(prompt)
+        except OSError as e:
+            raise HTTPException(500, {"error": f"プロンプトを書き出せませんでした: {e}"}) from e
     try:
-        cmd = build_command(out_path, prompt, model, effort, web, max_turns)
-    except PromptTooLong as e:
-        raise HTTPException(413, {"error": str(e)}) from e
-    log.info("running %s (prompt %d bytes)", cmd[0], len(prompt.encode("utf-8")))
-    # agy はプロンプトを引数で受け取っているので、標準入力には流さない。
-    payload = b"" if CLI == "antigravity" else prompt.encode("utf-8")
+        cmd = build_command(out_path, prompt, model, effort, web, max_turns, prompt_path)
+        log.info("running %s (prompt %d bytes%s)", cmd[0], len(prompt.encode("utf-8")),
+                 ", via file" if prompt_path else "")
+        # agy はプロンプトを引数かファイルで受け取っているので、標準入力には流さない。
+        payload = b"" if CLI == "antigravity" else prompt.encode("utf-8")
+        return await _spawn(cmd, payload, out_path, timeout)
+    finally:
+        # 中身はプロンプトそのものなので、答えを返す前に必ず消す。
+        if prompt_path:
+            with suppress(OSError):
+                os.unlink(prompt_path)
+
+
+async def _spawn(cmd: list[str], payload: bytes, out_path: str, timeout: float | None) -> str:
+    """組み上げたコマンドを 1 回動かして本文を返す。"""
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdin=asyncio.subprocess.PIPE,

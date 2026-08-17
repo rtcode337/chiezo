@@ -81,14 +81,23 @@ class TestCommand:
         server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
         assert server.build_command("/tmp/out.txt", "こんにちは") == ["agy", "-p", "こんにちは"]
 
-    def test_antigravity_refuses_a_prompt_that_would_not_fit_in_argv(self, bridge):
+    def test_antigravity_reads_a_long_prompt_from_a_file(self, bridge):
         """引数渡しなので Linux の単一引数の上限(128KiB)に当たる。
 
-        黙って E2BIG で落ちるより、理由を返して断るほうが原因を追える。
+        agy は標準入力からプロンプトを読めない(`-p` は値を必須とし、`-p -` は "-" を
+        プロンプトそのものとして扱う)ので、長いぶんはファイルに置いて読ませる。
+        断って 413 を返していた頃は、pta の売買提案(候補ショートリスト込みで 120KiB 超)が
+        毎回失敗していた。
         """
         server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
-        with pytest.raises(server.PromptTooLong):
-            server.build_command("/tmp/out.txt", "あ" * 100_000)
+        long_prompt = "あ" * 100_000
+        cmd = server.build_command("/tmp/out.txt", long_prompt, prompt_path="/tmp/p.md")
+        # プロンプトそのものは引数に載らない(載ると上限に当たる)。
+        assert long_prompt not in cmd
+        assert "/tmp/p.md" in cmd[cmd.index("-p") + 1]
+        # 読ませるファイルを作業対象に入れ、非対話なので権限の確認で止まらないようにする。
+        assert cmd[cmd.index("--add-dir") + 1] == "/tmp"
+        assert "--dangerously-skip-permissions" in cmd
 
     def test_unknown_cli_is_rejected(self, bridge):
         server = bridge(CHIEZO_BRIDGE_CLI="not-a-cli")
