@@ -113,6 +113,51 @@ class TestPlaintext:
         )
         assert coords is not None
 
+    def test_company_infobox_coordinates(self):
+        """`基礎情報 会社` の接頭辞付きの引数(`本社緯度度` / `本店緯度度`)からも取る。
+
+        素の `緯度度` だけを見ていると、店・メーカーの記事の座標がまとめて落ちる。
+        """
+        # 本社が埋まっている形(味仙)
+        _, _, _, _, coords = self.extract(
+            "{{基礎情報 会社\n| 社名 = 例\n"
+            "|本社緯度度 = 35|本社緯度分 = 10|本社緯度秒 = 4.5|本社N(北緯)及びS(南緯) = N\n"
+            "|本社経度度 = 136|本社経度分 = 56|本社経度秒 = 9.5|本社E(東経)及びW(西経) = E\n"
+            "}}\n'''例'''は例である。"
+        )
+        assert coords is not None
+        assert coords[0] == pytest.approx(35.1679, abs=1e-3)
+        assert coords[1] == pytest.approx(136.9360, abs=1e-3)
+
+        # 本社が空で本店だけ埋まっている形(中華四川)。空の側で諦めない
+        _, _, _, _, coords = self.extract(
+            "{{基礎情報 会社\n| 社名 = 例\n"
+            "| 本社緯度度 = |本社緯度分 = |本社緯度秒 = |本社N(北緯)及びS(南緯) = \n"
+            "| 本社経度度 = |本社経度分 = |本社経度秒 = |本社E(東経)及びW(西経) = \n"
+            "| 本店緯度度 =35 |本店緯度分 =18 |本店緯度秒 =58.9 |本店N(北緯)及びS(南緯) =N \n"
+            "| 本店経度度 =139 |本店経度分 =10 |本店経度秒 =18.5 |本店E(東経)及びW(西経) =E \n"
+            "}}\n'''例'''は例である。"
+        )
+        assert coords is not None
+        assert coords[0] == pytest.approx(35.3164, abs=1e-3)
+        assert coords[1] == pytest.approx(139.1718, abs=1e-3)
+
+    def test_infobox_wins_over_the_map_frame_centre(self):
+        """インフォボックスの座標を、地図の中心({{Maplink}} の `coord`)より先に採る。
+
+        地図の中心は縮尺に合わせた点で、記事の主題の位置ではない(味仙は地図の中心が
+        10km ほど離れた場所を指していて、そちらが記事の座標として入っていた)。
+        """
+        _, _, _, _, coords = self.extract(
+            "{{基礎情報 会社\n| 社名 = 例\n"
+            "|本社緯度度 = 35|本社緯度分 = 10|本社緯度秒 = 4.5|本社N(北緯)及びS(南緯) = N\n"
+            "|本社経度度 = 136|本社経度分 = 56|本社経度秒 = 9.5|本社E(東経)及びW(西経) = E\n"
+            "}}\n'''例'''は例である。\n"
+            "{{Maplink | coord = {{coord|35.079863|N|136.932980|E}} | zoom = 10 }}"
+        )
+        assert coords is not None
+        assert coords[0] == pytest.approx(35.1679, abs=1e-3)
+
     def test_categories_still_collected(self):
         _, _, tags, _, _ = self.extract(
             "'''例'''は例である。[[Category:日本の博物館|れい]]"
