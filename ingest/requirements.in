@@ -9,5 +9,5 @@ osmium>=4.0,<5
 mwparserfromhell>=0.6
 # 例外3: chiezo-trigger(server.py)が同じイメージを使い回すための依存。
 # one-shot の chiezo-ingest 実行(main.py)自体は使わない。
-fastapi>=0.140.13
+fastapi>=0.141.1
 uvicorn[standard]>=0.52.1
