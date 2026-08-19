@@ -230,3 +230,39 @@ jobs:
           keep-n-tagged: ${{ matrix.image == 'bridge' && 3 || 10 }}
           delete-untagged: true
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Dependabot の PR のうち、破壊的でない更新(patch / minor)を自動でマージする。
+  #
+  # needs が唯一のゲート —— ブランチ保護は掛けていない運用なので、
+  # 「CI が通ってからマージする」をジョブの依存関係で表している。
+  # major は自動で入れない(壊れ方が読めないので人が見る)。
+  auto-merge:
+    needs: [lint, test]
+    if: github.event_name == 'pull_request' && github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      # マージ後にイメージのビルドを起こすために要る(下の理由を参照)
+      actions: write
+    steps:
+      - name: 更新の種類を読む
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+
+      - name: patch / minor ならマージする
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        run: gh pr merge --squash --delete-branch "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # GITHUB_TOKEN で作った push は workflow を起こさないので、このままだと
+      # 依存が main に入ってもイメージが作り直されない(build / merge はこの
+      # ワークフローの中にある)。workflow_dispatch は GITHUB_TOKEN でも発火する
+      # 例外なので、明示的に起こす
+      - name: イメージのビルドを起こす
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        run: gh workflow run ci.yml --ref main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
