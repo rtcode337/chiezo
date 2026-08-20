@@ -482,6 +482,27 @@ async def run_cli(
                 os.unlink(prompt_path)
 
 
+# 失敗の理由として持ち帰る文字数の上限。全部載せると応答もログも読めなくなる。
+DETAIL_MAX = 500
+
+def failure_detail(stdout: bytes, stderr: bytes) -> str:
+    """CLI が非ゼロで終わったときの理由を組む。
+
+    stderr だけでは足りない。Claude Code は失敗の理由を stdout に書くことがあり
+    (実測: `Failed to authenticate. API Error: 401 OAuth access token is invalid.` が
+    stdout に出て stderr は空だった)、stderr だけ拾っていた頃は呼ぶ側に
+    `claude failed` しか届かなかった —— 認証切れなのか、混んでいるのか、
+    上限に当たったのかが後から一切たどれない。
+
+    順は stderr → stdout。普通の失敗は stderr に出るので、そちらを先に読ませる。
+    """
+    parts = [
+        s.decode("utf-8", "replace").strip()
+        for s in (stderr, stdout)
+    ]
+    return " / ".join(p for p in parts if p)[:DETAIL_MAX]
+
+
 async def _spawn(cmd: list[str], payload: bytes, out_path: str, timeout: float | None) -> str:
     """組み上げたコマンドを 1 回動かして本文を返す。"""
     proc = await asyncio.create_subprocess_exec(
@@ -501,8 +522,8 @@ async def _spawn(cmd: list[str], payload: bytes, out_path: str, timeout: float |
         raise HTTPException(504, {"error": f"{CLI} timed out after {limit:.0f}s"}) from None
 
     if proc.returncode != 0:
-        # 中身(プロンプト・応答)はログに出さない。出すのは終了コードと CLI の stderr の頭だけ。
-        detail = stderr.decode("utf-8", "replace").strip()[:500]
+        # 中身(プロンプト・応答)はログに出さない。出すのは終了コードと CLI が書いた理由だけ。
+        detail = failure_detail(stdout, stderr)
         log.error("%s exited %s: %s", CLI, proc.returncode, detail)
         raise HTTPException(502, {"error": f"{CLI} failed", "exit_code": proc.returncode, "stderr": detail})
 
@@ -779,7 +800,7 @@ async def _generate_images(body: ImageRequest) -> dict:
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            _stdout, stderr = await asyncio.wait_for(
+            stdout, stderr = await asyncio.wait_for(
                 proc.communicate(payload),
                 timeout=IMAGE_TIMEOUT,
             )
@@ -791,7 +812,7 @@ async def _generate_images(body: ImageRequest) -> dict:
             ) from None
 
         if proc.returncode != 0:
-            detail = stderr.decode("utf-8", "replace").strip()[:500]
+            detail = failure_detail(stdout, stderr)
             log.error("%s image tool exited %s: %s", CLI, proc.returncode, detail)
             raise HTTPException(502, {"error": f"{CLI} failed", "exit_code": proc.returncode,
                                       "stderr": detail})

@@ -26,6 +26,7 @@ from pydantic import Field as PydField
 
 from app import (
     agent,
+    ai_log,
     answer,
     capabilities,
     db,
@@ -1241,6 +1242,21 @@ async def ai_backends() -> dict:
             for spec in (providers.get(name),)
         ]
     }
+
+
+@app.get("/v1/ai/failures")
+async def ai_failures(limit: int = 50) -> dict:
+    """AI への問い合わせが失敗したときの控え(新しい順)。
+
+    **無人の呼び出しのために置いてある。** 定期実行が朝に落ちても、その場に居合わせないと
+    理由は流れて消える —— 呼んだ側のログに残るのは「llm error 502」のような一行だけで、
+    相手が何と言って断ったのかは分からない。ここには相手・モデル・状態・理由と
+    プロンプトの大きさが残る。
+
+    **中身(プロンプト・応答)は残していない。** 呼んだ側の材料がそのまま入るため
+    (`app/ai_log.py`)。大きさだけ残すのは、失敗が大きさに寄っているのかを見分けるため。
+    """
+    return {"failures": ai_log.recent(limit)}
 
 
 @app.post("/v1/ai/complete")

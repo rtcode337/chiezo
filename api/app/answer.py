@@ -38,7 +38,7 @@ import httpx
 from fastapi import HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
-from app import providers, settings_store
+from app import ai_log, providers, settings_store
 from app.pages import doc_url
 
 log = logging.getLogger("chiezo.api")
@@ -553,10 +553,31 @@ def _upstream_reason(body: str) -> str:
         return ""
     err = node.get("error")
     # OpenAI / Gemini / OpenRouter は {"error": {"message": ...}}、
-    # CLI ブリッジは {"error": "claude failed", "stderr": ...}。
+    # CLI ブリッジは {"error": "claude failed", "exit_code": 1, "stderr": ...}。
     head = err.get("message") if isinstance(err, dict) else err
-    parts = [p for p in (head, node.get("stderr")) if isinstance(p, str) and p.strip()]
+    # 終了コードも拾う。CLI が理由を何も書かずに落ちることがあり(実測: prompt 307KB の
+    # 生成が 6 秒で exit 1、stderr も stdout も空)、そのとき残るのが「claude failed」
+    # だけでは、落ちたのか断られたのかの区別も付かない。
+    code = node.get("exit_code")
+    code_text = f"exit {code}" if isinstance(code, int) else None
+    parts = [p for p in (head, code_text, node.get("stderr")) if isinstance(p, str) and p.strip()]
     return " / ".join(p.strip() for p in parts)[:REASON_MAX]
+
+
+def _note_failure(cfg: Settings, messages: list[dict], status: int, reason: str) -> None:
+    """失敗を控えに残す(`app/ai_log.py`)。
+
+    残す場所を呼び出しの側にしているのは、**相手とプロンプトの大きさがここにしかない**ため。
+    `_llm_error` / `_upstream_error` は応答を組むだけで、どの相手にどれだけ送ったかを知らない。
+    """
+    ai_log.record(
+        backend=cfg.name,
+        model=cfg.model,
+        effort=cfg.effort,
+        status=status,
+        reason=reason,
+        prompt_bytes=sum(len((m.get("content") or "").encode()) for m in messages),
+    )
 
 
 def _upstream_error(exc: Exception) -> HTTPException:
@@ -620,11 +641,15 @@ async def complete_message(cfg: Settings, messages: list[dict], **extra) -> dict
                 client, cfg, _payload(cfg, messages, stream=False, **extra)
             )
     except httpx.HTTPError as e:
-        raise _upstream_error(e) from None
+        err = _upstream_error(e)
+        _note_failure(cfg, messages, err.status_code, str(err.detail.get("reason", "")))
+        raise err from None
     if res.status_code >= 400:
         # 相手の応答本文もそのまま返さない(上と同じ理由)。ログには残す。
         log.warning("llm error %s: %s", res.status_code, res.text[:500])
-        raise HTTPException(502, _llm_error(res.status_code, res.text, cfg.model))
+        detail = _llm_error(res.status_code, res.text, cfg.model)
+        _note_failure(cfg, messages, res.status_code, detail.get("reason", detail["error"]))
+        raise HTTPException(502, detail)
     try:
         message = res.json()["choices"][0]["message"]
     except (KeyError, IndexError, TypeError, ValueError) as e:
@@ -674,7 +699,10 @@ async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator
                 if res.status_code >= 400:
                     body = (await res.aread()).decode("utf-8", "replace")
                     log.warning("llm error %s: %s", res.status_code, body[:500])
-                    raise HTTPException(502, _llm_error(res.status_code, body, cfg.model))
+                    detail = _llm_error(res.status_code, body, cfg.model)
+                    _note_failure(cfg, messages, res.status_code,
+                                  detail.get("reason", detail["error"]))
+                    raise HTTPException(502, detail)
                 async for line in res.aiter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -690,7 +718,9 @@ async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator
                         yield delta
                 return
         except httpx.HTTPError as e:
-            raise _upstream_error(e) from None
+            err = _upstream_error(e)
+            _note_failure(cfg, messages, err.status_code, str(err.detail.get("reason", "")))
+            raise err from None
 
 
 # ---- 段 1: クエリ生成 -------------------------------------------------------

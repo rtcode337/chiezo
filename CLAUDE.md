@@ -37,7 +37,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   `jawiki-20260701.db` は登録されず、シンボリックリンク `jawiki.db` のみ登録される)。
   - `app/main.py` — **機械向けの口とアプリの組み立て**(/, /healthz, /apple-touch-icon.png,
     /v1/sources, /v1/{source}/search|doc|filter|tags|titles|links|random, /v1/ask, /v1/chat,
-    /v1/ai/backends, /v1/ai/complete、
+    /v1/ai/backends, /v1/ai/complete, /v1/ai/failures、
     lifespan・例外ハンドラ・画面 router の登録・MCP の /mcp のマウント。
     MCP の実体は下の `app/mcp_server.py`)。
     **人間向けの HTML はここに置かない**(`app/views/`)。以前は 2,473 行の 1 ファイルに
@@ -580,6 +580,16 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     **web 検索を持つか**(`web`)つきで返す。
     `complete` は渡された `messages` をそのまま 1 往復投げる(履歴の組み立ては無い)。
     **`system` ロールを許す**のはこの口だけ —— プロンプトを組むのは呼ぶ側だから
+  - `/v1/ai/failures`(GET) — **AI への問い合わせが失敗したときの控え**(新しい順)。
+    無人の呼び出しのために置いてある。定期実行が朝に落ちても、呼んだ側のログに残るのは
+    `llm error 502` の一行だけで、**その場に居合わせないと理由が消える**
+    (実測: pta の朝の提案が `claude failed` だけを残して落ちた)。
+    記録するのは相手・モデル・状態・理由と**プロンプトのバイト数**まで。
+    **中身は残さない** —— プロンプトと応答には呼んだ側の材料がそのまま入る
+    (保有銘柄、家庭内の通信先…)。大きさだけ残すのは、失敗が大きさに寄っているのかを
+    後から見分けるため(実測では寄っていなかった: 307KB が落ちた 90 分後に 324KB が通っている)。
+    置き場は `state/ai_failures.db`(`app/ai_log.py`)。**`settings.db` とは別のファイル** ——
+    あちらは消してはいけない設定、こちらは消してよい観測。`MAX_ROWS` で頭打ちにする
   - **`complete` の `web=true` で相手自身の web 検索を開ける**(既定は開けない)。
     ニュースの収集のように「いまの外の情報」が要る仕事を、`/v1/chat` の抽出を混ぜずに
     頼めるようにするため(例: paper-trade-advisor の市況ニュース収集・銘柄調査)。

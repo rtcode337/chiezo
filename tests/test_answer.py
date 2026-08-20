@@ -1057,6 +1057,18 @@ class TestUpstreamReason:
         assert "claude failed" in reason
         assert "root" in reason
 
+    def test_it_keeps_the_exit_code_when_the_cli_says_nothing(self):
+        """理由を書かずに落ちることがある(実測: 307KB の生成が 6 秒で exit 1、stderr も空)。
+
+        そのとき「claude failed」だけだと、断られたのか落ちたのかも分からない。
+        終了コードだけは必ず残す。
+        """
+        from app import answer
+
+        body = '{"detail": {"error": "claude failed", "exit_code": 1, "stderr": ""}}'
+        reason = answer._upstream_reason(body)
+        assert reason == "claude failed / exit 1"
+
     def test_it_reads_the_openai_shape(self):
         from app import answer
 
