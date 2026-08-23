@@ -84,11 +84,12 @@ ENV CHIEZO_BRIDGE_PORT=7013
 # しかも `claude auth status` は root でも通るため、**管理画面の「接続を試す」は
 # 成功するのに生成だけが 502 で落ちる**という分かりにくい壊れ方をする(実際に踏んだ)。
 #
-# **uid は 1000 にする。** Antigravity のサインイン結果を残すホームはホスト側の
-# ディレクトリをバインドする作りで、その持ち主は普通ホストの最初のユーザー(1000)。
-# ここを合わせておかないと、サインインの書き込みが弾かれる。
-# 合わない環境では、バインド先を chown してから起動すること。
-RUN useradd --uid 1000 --home-dir /srv/bridge/home --shell /usr/sbin/nologin bridge \
+# **uid はホストに実在しない 10001。** 1000 はホストの1人目のユーザーの番号なので、
+# それで動かすと万一コンテナから抜け出されたときにその人のファイルを触れる立場になる。
+# サインイン結果を残すホームは**名前付きボリューム**にしてあり(compose 参照)、
+# その場合はイメージ側の所有者がそのまま入るので、ホスト側で chown して回らなくてよい。
+# ホストのディレクトリをバインドするなら、先に 10001 へ chown すること。
+RUN useradd --uid 10001 --home-dir /srv/bridge/home --shell /usr/sbin/nologin bridge \
     && mkdir -p /srv/bridge/.codex /srv/bridge/home \
     && chmod 700 /srv/bridge/.codex \
     && chown -R bridge:bridge /srv/bridge

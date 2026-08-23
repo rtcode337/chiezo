@@ -140,9 +140,12 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       ツール定義(`tag_guide()`)として配る**。クライアント側の CLAUDE.md に写しを
       持たせると写しごとにずれる(実際に NAS と nas に割れた)。語彙を変えるのは
       この定数だけでよい —— テストが「語彙がツール定義に載ること」を突き合わせる
-    - **置き場を `/data` と分けるのは性能上の理由**。`registry.data_dir_fingerprint()` が
-      `/data/*.db` の mtime/size を 5 秒ごとに見て、変われば**全ソース再走査(`COUNT(*)` 込み)**
-      する。同じ場所に置くとメモ 1 件ごとに jawiki 150 万件の COUNT が走る
+    - **置き場を取り込み本体(`/data/corpus`)と分けるのは性能上の理由**。
+      `registry.data_dir_fingerprint()` が `CHIEZO_DATA_DIR/*.db` の mtime/size を 5 秒ごとに
+      見て、変われば**全ソース再走査(`COUNT(*)` 込み)**する。同じ場所に置くとメモ 1 件ごとに
+      jawiki 150 万件の COUNT が走る。**バインドするホストのディレクトリは `data/` 1 本**で、
+      その下を `corpus/`(本体)・`notes/`(覚える層)・`state/`(管理画面の設定)に切っている ——
+      走査するのは `corpus/` だけなので、1 本にまとめても再走査は起きない
     - **読み手は `mode=ro`**(`db.set_mutable_paths` / `registry.Source.mutable`)。
       `immutable=1` は「開いている間このファイルは変わらない」という宣言で、SQLite は
       ロックも WAL 確認もしない。追記される DB をこれで開くと壊れたページを掴む
@@ -174,19 +177,19 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   - `app/providers.py` — **話せる相手の定義(URL・表示名・モデル候補はここに決め打ち)**。
     相手ごとに URL は 1 つに決まるので設定にしない —— 書き間違いの余地を増やすだけ。
     **ユーザーが決めるのは on/off・API キー・モデルの 3 つだけ**で、それらは
-    `app/settings_store.py`(`/state/settings.db`)に入る。例外は `CHIEZO_LLM_URL` で指す相手で、
+    `app/settings_store.py`(`/data/state/settings.db`)に入る。例外は `CHIEZO_LLM_URL` で指す相手で、
     LAN の別マシンを指す用途があり URL を決め打ちにできない。
   - `app/settings_store.py` — 管理画面から入れた設定の置き場。**`CHIEZO_STATE_DIR` が
     機能フラグを兼ねる**。「答える」層そのものの元栓(`answer_enabled`)もここに持つ ——
     **既定は有効だが、それで勝手に動き出すことは無い**(相手が全部既定 off なので)。
-    元栓は「相手を 1 つずつ切って回らずに機能ごと止める」ためのもの。`/data`(読み取り専用)にも `/notes`(「覚える」層の中身)にも
+    元栓は「相手を 1 つずつ切って回らずに機能ごと止める」ためのもの。`/data/corpus`(読み取り専用)にも `/data/notes`(「覚える」層の中身)にも
     混ぜない。**API キーは平文**(認証なし・LAN 内前提のサービスで暗号化しても守れるものが
     増えない)だが、**画面には二度と出さない**。
   - `app/views/ai_settings.py` — 管理画面の「AI の相手」節と、on/off・API キーの受け口。
     **on にできる条件を画面側でも守る**: 鍵の要る相手は鍵が要る / 同居のコンテナ
     (推論サーバ・CLI ブリッジ)は**立っていなければ on にできない**(到達確認は並行に
     行う。直列だと立っていない相手の数だけ画面が遅れる)。`app/answer.py` 側でも弾く。
-    **CLI の認証情報も管理画面から入れる** —— ブリッジが設定 DB(`/state`)を読み取り専用で
+    **CLI の認証情報も管理画面から入れる** —— ブリッジが設定 DB(`/data/state`)を読み取り専用で
     マウントして要求のたびに読むため(再起動は要らない)。chiezo-api に「トークンを返す口」を
     開けずに済むのが要点。**そのため settings.db は WAL にしない** —— WAL の読み手は -shm への
     書き込みを要求し、read-only のマウントでは `unable to open database file` になる。
@@ -217,7 +220,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       openrouter は `/api/v1/key`。**gemini・openai・推論サーバには口が無い**
       (前者は Google Cloud の Quotas API 側、後者は Admin キーが要る)ので
       画面には「この相手は枠を出さない」と書く —— **空欄にすると「使っていない」と読める**
-    - **Chiezo が使ったぶん**(`spent`)…… `state/usage.db` に 1 呼び出し 1 行で残し、
+    - **Chiezo が使ったぶん**(`spent`)…… `data/state/usage.db` に 1 呼び出し 1 行で残し、
       5 時間 / 24 時間 / 7 日で集計する。**全部の相手で同じ物差し**だが、
       **Chiezo を通していない利用は入らない**(手元の端末で回した CLI など)。
       記録するのは `answer.complete_message`(会話)と `media._run` / `media.transcribe`

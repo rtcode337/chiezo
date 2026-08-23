@@ -31,23 +31,49 @@ x-ingest-limits: &ingest-limits
   cpu_shares: 512
 
 services:
+  # data/ の下に corpus/・notes/・state/ を作り、所有者を実行ユーザーに合わせる
+  # ワンショット。**corpus も chown する** —— 取り込み側(trigger / ingest)が書くため。
+  # api が壊さない保証は所有者ではなく、api 側だけ corpus を read-only で重ねることで作る。
+  # **バインドするホストのディレクトリは data/ 1つだけ**にして、
+  # 中の切り分けはこちらが持つ —— bind 先がホストに無いと Docker が root 所有で
+  # 作ってしまい、非 root で動く api がメモも設定も書けずに落ちる。
+  # **api も ingest もこれの完了を待つ**ので、いちばん先に置いてある。
+  # mkdir と chown だけなので、小さな汎用イメージを使う(手元ビルドの構成でも
+  # GHCR を引きに行かせないため)
+  chiezo-init:
+    image: alpine:3.24
+    user: root
+    entrypoint:
+      - sh
+      - -c
+      - mkdir -p /data/corpus /data/notes /data/state && chown -R "$$0" /data
+      - ${CHIEZO_UID:-10001}:${CHIEZO_GID:-10001}
+    volumes:
+      - ./data:/data
+    restart: "no"
+
   chiezo-api:
     image: ${CHIEZO_API_IMAGE:-ghcr.io/rtcode337/chiezo-api:latest}
     ports:
       # host:container。8000 は他のアプリと衝突しやすいので避けている。
       - "7010:7010"
     volumes:
-      - ./data:/data:ro
-      # notes(短期記憶)だけは書き込む。/data の read-only は崩さず別ディレクトリにする
-      # (同じ場所に置くと、1 件書くたびに全ソースの再走査が走る。api/app/notes.py 参照)。
-      - ./notes:/notes
-      # 管理画面から入れた設定(話す相手の on/off・API キー・モデル)。notes と分けるのは、
-      # あちらが「覚える」層の中身で、消してよいものと消してはいけないものが混ざるため。
-      - ./state:/state
+      # **バインドするホストのディレクトリは data/ 1つだけ**。下が corpus/(取り込んだ
+      # 本体)・notes/(短期記憶)・state/(管理画面の設定)で、作るのは chiezo-init。
+      - ./data:/data
+      # **corpus だけは読み取り専用で重ねる。** api は読むだけで、書くのは ingest 側
+      # (取り違えて壊さないための線引きを、同じ 1 本の置き場のまま保つ)
+      - ./data/corpus:/data/corpus:ro
+    # 実行ユーザー。既定は 10001 = ホストに実在しない番号(抜け出されてもホストの
+    # ユーザーのファイルには届かない)。data/ をホストから直接編集・書き戻ししたい
+    # ときだけ .env の CHIEZO_UID / CHIEZO_GID に `id -u` / `id -g` を入れる
+    user: "${CHIEZO_UID:-10001}:${CHIEZO_GID:-10001}"
     environment:
-      - CHIEZO_DATA_DIR=/data
+      # **走査するのは corpus/ だけ。** notes を同じ場所に置くと、メモを 1 件書くたびに
+      # jawiki 150 万件の COUNT が走る(api/app/main.py の data_dir_fingerprint 参照)
+      - CHIEZO_DATA_DIR=/data/corpus
       # 「覚える」層(/v1/notes)。空にすると機能ごと無効になる。
-      - CHIEZO_NOTES_DIR=/notes
+      - CHIEZO_NOTES_DIR=/data/notes
       # 管理画面の初期化ボタンから叩く chiezo-trigger の内部 URL(ホストには公開しない)。
       - CHIEZO_TRIGGER_URL=http://chiezo-trigger:8080
       # 本体の調整(どれも既定のままなら書かなくてよい。空文字なら既定に倒れる)。
@@ -58,9 +84,9 @@ services:
       # 「答える」層(/v1/ask・/ai/chat)。**話す相手は管理画面(/admin)から on/off する** ——
       # 同居の推論サーバも Gemini も OpenRouter も CLI ブリッジも同じ扱いで、URL は
       # api/app/providers.py に決め打ち。ユーザーが入れるのは API キーと on/off と
-      # モデルだけで、保存先が下の /state。
+      # モデルだけで、保存先が下の CHIEZO_STATE_DIR。
       # **推論サーバ・検索エンジンのコンテナは docker-compose.answer.yml にある**。
-      - CHIEZO_STATE_DIR=/state
+      - CHIEZO_STATE_DIR=/data/state
       # 推論サーバを**別マシンで**動かしている場合だけ、その URL を書く。
       # 同居(chiezo-llm)なら書かなくてよい —— コンテナ名で辿り着けるので決め打ちが効く。
       # これは「相手を増やす設定」ではなく、辿り着けない相手のための逃げ道。
@@ -89,7 +115,12 @@ services:
       - CHIEZO_WEB_SEARCH_RESULTS=${CHIEZO_WEB_SEARCH_RESULTS-}
       - CHIEZO_WEB_SEARCH_TIMEOUT=${CHIEZO_WEB_SEARCH_TIMEOUT-}
     depends_on:
-      - chiezo-trigger
+      # 置き場の用意(chiezo-init)が済んでから起動する。trigger は管理画面の
+      # 初期化ボタンの相手で、居ないと画面から取り込みを起こせない
+      chiezo-init:
+        condition: service_completed_successfully
+      chiezo-trigger:
+        condition: service_started
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:7010/healthz"]
@@ -101,10 +132,14 @@ services:
   chiezo-trigger:
     image: ${CHIEZO_INGEST_IMAGE:-ghcr.io/rtcode337/chiezo-ingest:latest}
     command: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080"]
+    depends_on:
+      chiezo-init:
+        condition: service_completed_successfully
     volumes:
       - ./data:/data
+    user: "${CHIEZO_UID:-10001}:${CHIEZO_GID:-10001}"
     environment:
-      - CHIEZO_DATA_DIR=/data
+      - CHIEZO_DATA_DIR=/data/corpus
     restart: unless-stopped
     # トリガー経由の取り込みが暴走しても、OOM killer がホスト全体(同居する
     # 他のコンテナ)を巻き込まないよう上限を設ける。取り込み本体と同じ *_LIMITS。
@@ -116,11 +151,15 @@ services:
   chiezo-ingest:
     image: ${CHIEZO_INGEST_IMAGE:-ghcr.io/rtcode337/chiezo-ingest:latest}
     profiles: ["ingest"]
+    depends_on:
+      chiezo-init:
+        condition: service_completed_successfully
     volumes:
       - ./data:/data
+    user: "${CHIEZO_UID:-10001}:${CHIEZO_GID:-10001}"
     environment:
       - SOURCE=jawiki
-      - CHIEZO_DATA_DIR=/data
+      - CHIEZO_DATA_DIR=/data/corpus
     # 取り込みのメモリ上限。以前 jawiki 取り込みが対応表(リダイレクト/ページビュー/
     # wikidata)を dict で数 GB 抱えてホストごと OOM で落ちたため、(1) それらを
     # ディスク上の一時 SQLite に逃がした上で(ingest/lookup.py)、(2) 念のため
@@ -150,7 +189,7 @@ services:
   #  volumes:
   #    # 認証情報は Chiezo の設定 DB から読む(管理画面から登録できるようにするため)。
   #    # **読み取り専用**。ブリッジは書かない
-  #    - ./state:/state:ro
+  #    - ./data/state:/data/state:ro
   #  environment:
   #    - CHIEZO_BRIDGE_CLI=claude
   #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp
@@ -165,7 +204,7 @@ services:
   #chiezo-bridge-codex:
   #  image: ghcr.io/rtcode337/chiezo-bridge:latest
   #  volumes:
-  #    - ./state:/state:ro
+  #    - ./data/state:/data/state:ro
   #  environment:
   #    - CHIEZO_BRIDGE_CLI=codex
   #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp
@@ -177,18 +216,18 @@ services:
   #    interval: 60s
   #
   # Antigravity は API キー方式を持たない。**コンテナ内で 1 回サインインした結果**を
-  # ホーム配下のキャッシュから読むので、/state ではなく**書き込み可能なホーム**を
+  # ホーム配下のキャッシュから読むので、設定の置き場ではなく**書き込み可能なホーム**を
   # 渡して永続化する。立ち上げたら
   #   docker compose exec chiezo-bridge-antigravity agy
   # を 1 回だけ対話で実行し、表示される URL でサインインすること。
   #
   # **ここはホストのディレクトリではなく名前付きボリュームにする。** ブリッジは
-  # 非 root(uid 1000)で動く(claude が権限確認を飛ばす指定を root では受け付けないため)
+  # 非 root(uid 10001)で動く(claude が権限確認を飛ばす指定を root では受け付けないため)
   # のに、**バインド先が無いと Docker は root 所有で作る** —— サインインの保存が
   # `permission denied` で落ちる(実際に踏んだ)。名前付きボリュームなら**イメージ側の
-  # 所有者(uid 1000)がそのまま入る**ので、ホスト側で chown して回らなくて済む。
+  # 所有者(uid 10001)がそのまま入る**ので、ホスト側で chown して回らなくて済む。
   # ホストのパスに置きたい場合は、先に `mkdir -p` して
-  # `sudo chown -R 1000:1000 <ディレクトリ>` してからバインドすること。
+  # `sudo chown -R 10001:10001 <ディレクトリ>` してからバインドすること。
   #chiezo-bridge-antigravity:
   #  image: ghcr.io/rtcode337/chiezo-bridge:latest
   #  volumes:

@@ -5,7 +5,7 @@ AI が使う知識を AI の外に置くための知識ベース。知識をロ�
 
 | はたらき | 内容 |
 |---|---|
-| ためる | ソースごとに独立した 1 つの SQLite ファイル(`data/<source>.db`)にする。取得元は公開ダンプ(Wikipedia / OpenStreetMap / GeoNames)のほか、公開リポジトリに置けないプライベートな情報も、別リポジトリのアダプタとして差し込める。更新はブルーグリーン(別ファイルに構築 → 切り替え) |
+| ためる | ソースごとに独立した 1 つの SQLite ファイル(`data/corpus/<source>.db`)にする。取得元は公開ダンプ(Wikipedia / OpenStreetMap / GeoNames)のほか、公開リポジトリに置けないプライベートな情報も、別リポジトリのアダプタとして差し込める。更新はブルーグリーン(別ファイルに構築 → 切り替え) |
 | 取り出す | AI からの引き口は 2 経路。MCP(`/mcp`、Streamable HTTP)と REST(`search` / `doc` / `filter` / `tags` …)。Claude Code 向けには「どんなときに Chiezo を使うか」を書いた CLAUDE.md ブロックも生成できる |
 | 覚える | `/v1/notes` に書いたものは `notes` ソースとして溜まり、`recall` で引ける。書き手は人でも AI でもよい |
 
@@ -137,7 +137,7 @@ CLAUDE.md や記憶ファイルとの違いは、常時コンテキストに載�
 全部が読み込まれるため件数に比例してトークンを払うが、Chiezo で常駐するのは MCP の
 ツール定義(数百字)だけで、中身は引いたときにしか載らない。
 
-compose では既定で有効(`./notes` に SQLite が 1 つできる)。`CHIEZO_NOTES_DIR` を
+compose では既定で有効(`data/notes/` に SQLite が 1 つできる)。`CHIEZO_NOTES_DIR` を
 空にすると機能ごと無効になる。認証は無いので、`/v1/notes` に到達できる相手は誰でも書ける。
 
 - API の詳細 → [API リファレンス](docs/api-reference.md#notes唯一書き込めるソースの-rest)
@@ -192,8 +192,8 @@ docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile answ
 docker compose --profile ingest run --rm chiezo-ingest   # ダンプ更新(ブルーグリーン)
 ```
 
-ingest は毎回 `data/<source>-<date>.db` を新規構築し、検証が通ったらシンボリックリンク
-`data/<source>.db` を差し替える(旧世代は 1 つ保持)。差し替えは chiezo-api が数秒以内に
+ingest は毎回 `data/corpus/<source>-<date>.db` を新規構築し、検証が通ったらシンボリックリンク
+`data/corpus/<source>.db` を差し替える(旧世代は 1 つ保持)。差し替えは chiezo-api が数秒以内に
 自動検知するので、再起動も停止時間も要らない。
 
 取り込みの環境変数・スキーマ移行・rank_score の入れ直し・メモリ方針・別マシンでのビルドと
@@ -218,6 +218,20 @@ ruff check .                                  # lint(設定は pyproject.toml)
 ```
 
 依存が揃っていればそのまま、無ければ CI と同じ Python 3.12 のイメージを組み立てて
+**バインドするホストのディレクトリは `data/` 1 つだけ。** 下の `corpus/`(取り込んだ本体)・
+`notes/`(覚える層)・`state/`(管理画面の設定。**API キーが入る**)は `chiezo-init` が
+起動前に作り、所有者を実行ユーザー(既定 uid 10001。ホストに実在しない番号)に合わせる。
+`data/` をホストから直接編集・書き戻ししたいときだけ `.env` に `CHIEZO_UID` / `CHIEZO_GID` を書く。
+
+**置き場を 1 つにまとめる前から動かしているホストは、更新時に 1 回だけ移すこと**:
+
+```bash
+docker compose down
+mkdir -p data/corpus && mv data/*.db data/*.db-* data/corpus/ 2>/dev/null
+mv notes data/notes; mv state data/state
+docker compose up -d          # chiezo-init が所有者を揃える
+```
+
 Docker で実行する(リポジトリはバインドマウントするだけなので `data/` の大きさは
 関係しない)。手元に環境を作るなら Python 3.12 を使う(`api/` と `ingest/` のイメージ・
 CI と同じ系列。依存に C 拡張が含まれるため、別のバージョンでは import から落ちる)。

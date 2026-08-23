@@ -24,16 +24,46 @@
 #
 # 通常の環境では docker-compose.yml を使う(こちらは値の直書きぶん古くなりやすい)。
 
-# ---- ここだけ編集: データの置き場 ----
+# ---- ここだけ編集: データの置き場(1つだけ) ----
 # 管理画面から登録する環境では相対パス (./data) の基準が分かりにくいので絶対パスで書く。
-# data はダンプから作った .db の置き場、notes は「覚える」層の書き込み先。
-# どちらも**あらかじめ作っておくこと**(取り込んだ .db は data に置く)。
-x-data-dir: &data-dir "/path/to/chiezo/data"
-x-notes-dir: &notes-dir "/path/to/chiezo/notes"
-# 管理画面から入れた設定(話す相手の on/off・API キー)の置き場。**API キーが入る**
-x-state-dir: &state-dir "/path/to/chiezo/state"
+# **用意するのはこの親だけ**で、下の3つは chiezo-init が起動時に作る:
+#   <置き場>/corpus … ダンプから作った .db の置き場(取り込んだ .db はここに入れる)
+#   <置き場>/notes  … 「覚える」層の書き込み先
+#   <置き場>/state  … 管理画面から入れた設定(話す相手の on/off・API キー)。**API キーが入る**
+# 書式は「ホスト側の絶対パス:コンテナ側」。**`type: bind` の長い形は使わない** ——
+# 古い Docker だとホスト側のディレクトリを自動で作らない
+x-data-volume: &data-volume "/path/to/chiezo/data:/data"
+# corpus だけは api に読み取り専用で重ねる(書くのは取り込み側。取り違えて壊さないため)。
+# **上を書き換えたらここも同じ親に揃えること** —— YAML のアンカーは文字列の一部に
+# 差し込めないので、置き場のパスだけ2行に分かれる
+x-corpus-volume: &corpus-volume "/path/to/chiezo/data/corpus:/data/corpus:ro"
+
+# ---- ここだけ編集(必要なときだけ): 実行ユーザー ----
+# **イメージ内の既定は 10001:10001** で、ホストに実在しない番号にしてある
+# (万一コンテナから抜け出されても、ホストのユーザーのファイルには届かない)。
+# 置き場をホストから直接編集・書き戻ししたいときだけ `id -u`:`id -g` に書き換える
+x-run-as: &run-as "10001:10001"
 
 services:
+  # 置き場の下に corpus/・notes/・state/ を作り、所有者を実行ユーザーに合わせる
+  # ワンショット。**corpus も chown する**(取り込み側が書くため。api 側は
+  # corpus を read-only で重ねてあるので、そちらからは書けない)。
+  # bind 先がホストに無いと Docker が root 所有で作ってしまい、
+  # 非 root で動く api がメモも設定も書けずに落ちる。
+  # **api も trigger もこれの完了を待つ**ので、いちばん先に置いてある
+  chiezo-init:
+    image: alpine:3.24
+    container_name: chiezo-init
+    user: root
+    entrypoint:
+      - sh
+      - -c
+      - mkdir -p /data/corpus /data/notes /data/state && chown -R "$$0" /data
+      - *run-as
+    volumes:
+      - *data-volume
+    restart: "no"
+
   # 検索 API・MCP・管理画面。これが本体で、単体で起動する。
   chiezo-api:
     # 障害時は :latest ではなく :sha-xxxxxxx を指定すれば任意の時点に戻せる
@@ -43,31 +73,23 @@ services:
       # host:container。8000 は他のアプリと衝突しやすいので避けている
       - "7010:7010"
     volumes:
-      # 配信側は読み取り専用。書くのは取り込み側(chiezo-trigger)だけ
-      - type: bind
-        source: *data-dir
-        target: /data
-        read_only: true
-      # notes(短期記憶)だけは書き込む。/data の read-only は崩さず別ディレクトリにする
-      # (同じ場所に置くと、1 件書くたびに全ソースの再走査が走る)
-      - type: bind
-        source: *notes-dir
-        target: /notes
-      # 管理画面から入れた設定。notes と分けるのは、あちらが「覚える」層の中身で、
-      # 消してよいものと消してはいけないものが混ざるため
-      - type: bind
-        source: *state-dir
-        target: /state
+      # **バインドするホストのディレクトリは1つだけ**。下が corpus/(取り込んだ本体)・
+      # notes/(短期記憶)・state/(管理画面の設定)で、作るのは chiezo-init
+      - *data-volume
+      # corpus は配信側から見て読み取り専用。書くのは取り込み側(chiezo-trigger)だけ。
+      # **notes を corpus と同じ場所に置かない** —— 1 件書くたびに全ソースの再走査が走る
+      - *corpus-volume
+    user: *run-as
     environment:
-      CHIEZO_DATA_DIR: /data
+      CHIEZO_DATA_DIR: /data/corpus
       # 「覚える」層(/v1/notes)。空にすると機能ごと無効になる
-      CHIEZO_NOTES_DIR: /notes
+      CHIEZO_NOTES_DIR: /data/notes
       # 管理画面の初期化ボタンから叩く chiezo-trigger の内部 URL(ホストには公開しない)。
       # サービス名で引くので、下の chiezo-trigger の名前を変えるならここも合わせる
       CHIEZO_TRIGGER_URL: http://chiezo-trigger:8080
       # 管理画面から入れた設定(話す相手の on/off・API キー・モデル)の置き場。
       # 未設定だと管理画面から相手を増やせない(環境変数で指す相手だけが使える)。
-      CHIEZO_STATE_DIR: /state
+      CHIEZO_STATE_DIR: /data/state
       # 本体の調整はどれも既定があるため、変えたいときだけ足す(素のままなら書かない)。
       #CHIEZO_MCP_ALLOWED_HOSTS: "chiezo.example.com:7010,localhost:*"  # /mcp の Host 検証
       #CHIEZO_RESCAN_INTERVAL: "5"    # data/ の変化を拾う間隔(秒)。低速なディスクでは伸ばす
@@ -108,7 +130,7 @@ services:
       # 置くのが普通**なので、そちらの ComfyUI を指す。指さなければ外部(Gemini)だけが使える
       # (鍵は管理画面の「話す相手」に登録したものを流用する)。
       #CHIEZO_IMAGE_URL: http://192.0.2.30:7014    # ← GPU マシンの ComfyUI(素の ComfyUI なら 8188)
-      #CHIEZO_MEDIA_DIR: /state/media              # 置き場(既定は CHIEZO_STATE_DIR の下)
+      #CHIEZO_MEDIA_DIR: /data/state/media              # 置き場(既定は CHIEZO_STATE_DIR の下)
       #CHIEZO_MEDIA_KEEP_DAYS: "14"                # 出来た画像を残す日数
       #CHIEZO_IMAGE_TIMEOUT: "300"                 # 1 枚あたりの上限(秒)
       #
@@ -124,7 +146,11 @@ services:
       #CHIEZO_AGENT_TOOL_CHARS: "3000"  # 1 回の道具の結果をモデルに返す上限文字数
       #CHIEZO_AGENT_TIMEOUT: "180"      # ループ全体の締め切り(秒)
     depends_on:
-      - chiezo-trigger
+      # 置き場の用意(chiezo-init)が済んでから起動する
+      chiezo-init:
+        condition: service_completed_successfully
+      chiezo-trigger:
+        condition: service_started
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:7010/healthz"]
@@ -156,13 +182,15 @@ services:
     image: ghcr.io/rtcode337/chiezo-ingest:latest
     container_name: chiezo-trigger
     command: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080"]
+    depends_on:
+      chiezo-init:
+        condition: service_completed_successfully
     volumes:
-      # 取り込みは書き込むので read_only にしない
-      - type: bind
-        source: *data-dir
-        target: /data
+      # 取り込みは corpus に書き込むので、こちらは読み取り専用で重ねない
+      - *data-volume
+    user: *run-as
     environment:
-      CHIEZO_DATA_DIR: /data
+      CHIEZO_DATA_DIR: /data/corpus
       # ---- 別コンテナのソースプラグインを使う場合 ----
       # 下の chiezo-plugin を有効にしたら、その URL をカンマ区切りで並べる。
       # プラグインが提供するソースが管理画面の「未初期化データの初期化」に出る。
@@ -192,8 +220,7 @@ services:
   #  volumes:
   #    # 認証情報は Chiezo の設定 DB から読む(管理画面から登録する)。読み取り専用
   #    - type: bind
-  #      source: *state-dir
-  #      target: /state
+  #      - "/path/to/chiezo/data/state:/data/state:ro"
   #      read_only: true
   #  environment:
   #    CHIEZO_BRIDGE_CLI: claude
@@ -206,8 +233,7 @@ services:
   #  container_name: chiezo-bridge-codex
   #  volumes:
   #    - type: bind
-  #      source: *state-dir
-  #      target: /state
+  #      - "/path/to/chiezo/data/state:/data/state:ro"
   #      read_only: true
   #  environment:
   #    CHIEZO_BRIDGE_CLI: codex
@@ -221,11 +247,11 @@ services:
   # コンテナ管理画面から `agy` を対話で 1 回実行してサインインすること
   # (表示される URL を手元のブラウザで開き、出てきたコードを貼り戻す)。
   #
-  # **ホストのディレクトリではなく名前付きボリュームを使う。** ブリッジは非 root(uid 1000)で
+  # **ホストのディレクトリではなく名前付きボリュームを使う。** ブリッジは非 root(uid 10001)で
   # 動くのに、**バインド先が無いと Docker は root 所有で作る** —— サインインの保存が
   # `permission denied` で落ちる(実際に踏んだ)。名前付きボリュームなら
-  # **イメージ側の所有者(uid 1000)がそのまま入る**。
-  # どうしてもホストのパスに置くなら、先に作って `chown -R 1000:1000` してからにすること。
+  # **イメージ側の所有者(uid 10001)がそのまま入る**。
+  # どうしてもホストのパスに置くなら、先に作って `chown -R 10001:10001` してからにすること。
   #chiezo-bridge-antigravity:
   #  image: ghcr.io/rtcode337/chiezo-bridge:latest
   #  container_name: chiezo-bridge-antigravity
