@@ -343,6 +343,22 @@ def label_of(provider_id: str) -> str:
     return spec.label if spec else provider_id
 
 
+def standalone_labels() -> dict[str, str]:
+    """**「話す相手」に出てこない相手**(自前の GPU・ElevenLabs)の `{id: 表示名}`。
+
+    鍵を借りている相手(`credential_from`)は「話す相手」の側に同じ行があるので出さない
+    —— 同じ相手が 2 行に出ると、どちらの数字なのか読めなくなる。
+    """
+    from app import providers  # 循環参照を避けるためここで読む(定義には要らない)
+
+    talk = {p.id for p in providers.all_providers()}
+    return {
+        spec.id: spec.label
+        for spec in all_providers()
+        if spec.id not in talk and not spec.credential_from
+    }
+
+
 def default_backend(kind: str = KIND_IMAGE) -> str:
     """相手を指定されなかったときに使う既定。**その kind を作れる一覧の先頭**。
 

@@ -627,6 +627,189 @@ async def health(check: bool = False) -> dict:
     return body
 
 
+# ---- 使用量(サブスクの枠)-----------------------------------------------------
+#
+# **枠の数字は CLI の中にしかない。** サブスクで動く相手(ChatGPT / Google AI)の残量を
+# 引く口は公開されていないうえ、**こちらが控えている認証情報は期限切れになる**
+# (access_token は短命で、更新するのは CLI)。だから CLI 自身に聞かせる。
+#
+# **モデルは呼ばない。** 確かめるたびに枠を食っては本末転倒なので、
+# 「認証を確かめる」(`AUTH_CHECK`)と同じ方針にしてある。
+#
+# **claude はここに来ない。** claude CLI には使用量を出すサブコマンドが無く
+# (`/usage` は対話画面の中だけ)、代わりに Chiezo が `api.anthropic.com` の
+# `/api/oauth/usage` を同じトークンで直に引く(`api/app/usage.py`)。
+USAGE_CLIS = frozenset({"codex", "antigravity"})
+
+# Antigravity から使用量を引くコマンド。**print モードのスラッシュコマンド**で、
+# モデルの応答を待たずに CLI 自身が報告を返す。
+# **打ち間違いではなく、確かめられていない**(サインイン済みのコンテナが要る)ので、
+# `CHIEZO_BRIDGE_USAGE_CMD`(カンマ区切り)で外から差し替えられるようにしてある。
+ANTIGRAVITY_USAGE_CMD = [
+    e.strip() for e in os.environ.get("CHIEZO_BRIDGE_USAGE_CMD", "").split(",") if e.strip()
+] or ["agy", "-p", "/credits", "--output-format", "json"]
+
+USAGE_TIMEOUT = float(os.environ.get("CHIEZO_BRIDGE_USAGE_TIMEOUT", "60") or 60)
+
+
+def _as_number(value) -> float | None:
+    return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
+
+
+def _window_from(name: str, entry: dict) -> dict | None:
+    """CLI の返事から窓を 1 つ組む。**読めた形だけ拾う。**
+
+    相手ごとに名前が違う(`used_percent` で言う相手と、残量そのもので言う相手がいる)ので、
+    **どちらの形でも読める**ようにしてある。読めなければ None を返し、呼び出し側が
+    生の返事をそのまま Chiezo へ渡す —— **推測で数字を作らない**。
+    """
+    percent = _as_number(entry.get("used_percent") or entry.get("usedPercent"))
+    used = _as_number(entry.get("used"))
+    remaining = _as_number(entry.get("remaining"))
+    limit = _as_number(entry.get("limit") or entry.get("total"))
+    if percent is None and remaining is None and used is None:
+        return None
+    if limit is None and used is not None and remaining is not None:
+        limit = used + remaining
+    if percent is None and limit:
+        # 残量しか言わない相手のために、使用率はこちらで出す
+        percent = round(min(100.0, ((used if used is not None else limit - remaining) / limit) * 100.0), 1)
+
+    resets = entry.get("resets_at") or entry.get("reset") or entry.get("resets")
+    if resets is None and (seconds := _as_number(entry.get("resets_in_seconds"))) is not None:
+        resets = time.time() + seconds
+    return {
+        "id": str(entry.get("id") or name),
+        "label": str(entry.get("label") or entry.get("name") or entry.get("title") or ""),
+        "used_percent": percent,
+        "used": used,
+        "limit": limit,
+        "unit": str(entry.get("unit") or ""),
+        "window_minutes": _as_number(entry.get("window_minutes")),
+        "resets_at": resets,
+    }
+
+
+def _windows_in(payload, name: str = "") -> list[dict]:
+    """入れ子のどこにあっても窓を拾う。
+
+    **返事の外側の形を決め打ちにしない** —— CLI の版で 1 段増えるだけで
+    「使用量が取れない」に変わってしまうため。中身(窓の形)だけを手掛かりにする。
+    """
+    found: list[dict] = []
+    if isinstance(payload, dict):
+        if (window := _window_from(name or "window", payload)) is not None:
+            return [window]
+        for key, value in payload.items():
+            found += _windows_in(value, str(key))
+    elif isinstance(payload, list):
+        for i, value in enumerate(payload):
+            found += _windows_in(value, f"{name}{i}" if name else str(i))
+    return found
+
+
+async def _run_for_usage(cmd: list[str]) -> str:
+    """使用量を聞くコマンドを 1 回走らせて、出力をそのまま返す。"""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=USAGE_TIMEOUT)
+    except TimeoutError:
+        raise HTTPException(504, {"error": f"{USAGE_TIMEOUT:.0f} 秒で応答がありませんでした"}) from None
+    except OSError as e:
+        raise HTTPException(502, {"error": f"CLI を起動できません: {e}"}) from None
+    text = out.decode("utf-8", "replace").strip()
+    if proc.returncode != 0:
+        raise HTTPException(502, {"error": text[:300] or f"CLI が {proc.returncode} で終了しました"})
+    return text
+
+
+async def _codex_usage() -> tuple[list[dict], str]:
+    """Codex の枠。`codex app-server` に `account/rateLimits/read` を投げる。
+
+    **JSON-RPC を 1 往復するだけ**でモデルは呼ばない。`codex exec` を使わないのは、
+    あちらは会話を 1 回走らせてしまうため(枠を食う)。
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "codex", "app-server",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except OSError as e:
+        raise HTTPException(502, {"error": f"codex app-server を起動できません: {e}"}) from None
+
+    async def _talk() -> tuple[list[dict], str]:
+        assert proc.stdin is not None and proc.stdout is not None
+        # **初期化してから聞く。** app-server は initialize を受けるまで他の要求に答えない。
+        for line in (
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"clientInfo": {"name": "chiezo-bridge", "title": "Chiezo",
+                                       "version": "1"}}},
+            {"jsonrpc": "2.0", "method": "initialized", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read", "params": {}},
+        ):
+            proc.stdin.write((json.dumps(line) + "\n").encode())
+        await proc.stdin.drain()
+
+        # 通知が混ざって流れてくるので、**求めた id の応答が来るまで読み飛ばす**。
+        while raw := await proc.stdout.readline():
+            try:
+                message = json.loads(raw)
+            except ValueError:
+                continue
+            if message.get("id") != 2:
+                continue
+            if error := message.get("error"):
+                return [], str(error.get("message") or error)[:300]
+            result = message.get("result") or {}
+            return _windows_in(result), json.dumps(result, ensure_ascii=False)[:500]
+        return [], "codex app-server が応答を返しませんでした"
+
+    try:
+        return await asyncio.wait_for(_talk(), timeout=USAGE_TIMEOUT)
+    except TimeoutError:
+        raise HTTPException(
+            504, {"error": f"codex app-server が {USAGE_TIMEOUT:.0f} 秒で応答しませんでした"}
+        ) from None
+    finally:
+        with suppress(ProcessLookupError):
+            proc.kill()
+        with suppress(Exception):
+            await proc.wait()
+
+
+@app.get("/usage")
+async def usage() -> dict:
+    """サブスクの枠(使用量と、いつ戻るか)を CLI に聞く。
+
+    返すのは正規化した窓の一覧と、**読めなかったときのための生の返事**
+    (`reason`)—— 数字にできなくても、CLI が何と言ったかは画面に出せる。
+    """
+    if CLI not in USAGE_CLIS:
+        raise HTTPException(404, {"error": f"{CLI} は使用量を出せません"})
+    if reason := apply_credential():
+        raise HTTPException(401, {"error": reason})
+
+    if CLI == "codex":
+        windows, raw = await _codex_usage()
+    else:
+        raw = await _run_for_usage(ANTIGRAVITY_USAGE_CMD)
+        try:
+            windows = _windows_in(json.loads(raw))
+        except ValueError:
+            windows = []
+    return {
+        "cli": CLI,
+        "windows": windows,
+        # 窓を組めなかったときだけ意味を持つ(Chiezo がそのまま画面に出す)。
+        "reason": "" if windows else raw[:300],
+    }
+
+
 @app.get("/v1/models")
 async def models() -> dict:
     """会話画面のモデル選択と、Chiezo の見出し(`model_label()`)がここを引く。

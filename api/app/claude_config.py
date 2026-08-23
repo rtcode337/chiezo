@@ -16,10 +16,10 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 
-from app import db
+from app import db, jst
 from app.registry import (
     FILTER_MIN_SCHEMA_VERSION,
     TAG_COUNTS_MIN_SCHEMA_VERSION,
@@ -51,9 +51,9 @@ _TAG_SAMPLE_TIMEOUT = 2.0
 _LINKS_SAMPLE_ROWS = 200_000
 
 # フッターの生成時刻に使う。**人が読む行なので JST**(CLAUDE.md「日時は JST で見せる」)。
-# 実行環境のローカル時刻に任せると、api コンテナの TZ 次第で表記が変わる。JST は夏時間を
-# 持たないので固定オフセットで足り、tzdata の無いイメージでも壊れない。
-JST = timezone(timedelta(hours=9))
+# 書式ごと `app/jst.py` に集めてある —— 実行環境のローカル時刻に任せると、api コンテナの
+# TZ 次第で表記が変わる。
+JST = jst.JST
 
 
 def _sample(src: Source) -> tuple[str, set[str], list[str]]:
@@ -441,7 +441,7 @@ def build_block(
     登録していない環境に「`image_generate` を使え」と書いても呼べない。
     """
     base = base_url.rstrip("/")
-    when = (now or datetime.now(JST)).astimezone(JST).strftime("%Y-%m-%d %H:%M JST")
+    when = jst.format(now or datetime.now(JST))
 
     out: list[str] = [
         BEGIN_MARK,

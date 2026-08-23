@@ -173,6 +173,11 @@ docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile answ
 作る —— 知識を引くのとは別の仕事だが、**MCP の登録先を増やさない**ために同じサーバーに
 載せてある。詳しくは [docs/ai.md](docs/ai.md)「絵を描かせる」以降。
 
+**各 AI の使用量も見られる**(管理画面の「使用量」節と `GET /v1/ai/usage`)。
+相手が言う枠の残り —— Claude Code の 5 時間・週、Codex の窓、OpenRouter のクレジット ——
+と、Chiezo がその相手を呼んだ回数・トークン数を並べて出す。**枠を聞けない相手もいる**
+(Gemini・OpenAI)ので、そこは「出せない」と書いてある。
+
 `mode=agent` を付けると、`search` / `doc` / `filter` / `tags` / `links` をモデル自身に
 引かせる(MCP と同じ道具立て)。「カテゴリ○○の記事は何件?」のように 1 回の検索では
 原理的に答えられない問いに届く。ツール呼び出しが安定するモデル(8B 級以上)と GPU が

@@ -12,11 +12,10 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime
 
-# 表示は JST 固定(読む人は日本にいる)。**タイムゾーン DB は引かない** ——
-# JST に夏時間は無いのでオフセットで足り、tzdata の無いコンテナでも壊れない
-JST = timezone(timedelta(hours=9), "JST")
+# 表示は JST 固定(読む人は日本にいる)。変換と書式は `app/jst.py` に集めてある。
+from app import jst
 
 UNKNOWN = "不明(ビルド情報なし)"
 
@@ -50,4 +49,4 @@ def describe() -> str:
     short = revision[:7] if revision else "不明"
     if when is None:
         return f"日時不明 ({short})"
-    return f"{when.astimezone(JST):%Y-%m-%d %H:%M} JST ({short})"
+    return f"{jst.format(when)} ({short})"

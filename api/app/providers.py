@@ -27,6 +27,13 @@ CRED_REQUIRED = "required"  # 認証情報が無ければ on にできない
 CRED_OPTIONAL = "optional"  # 無くても動くが、認証を掛けた相手には入れられる（推論サーバ）
 CRED_NONE = "none"  # 渡すものが無い（Antigravity。認証はコンテナ内のサインイン結果）
 
+# **枠(使用量と残り)の聞き方。** 相手ごとに口が違い、持たない相手のほうが多い。
+# 実装は `app/usage.py`。ここに書くのは「どの口で聞くか」だけ。
+USAGE_NONE = ""  # 聞く口が無い（Gemini・OpenAI・推論サーバ）
+USAGE_ANTHROPIC = "anthropic"  # api.anthropic.com の /api/oauth/usage（Claude Code の /usage と同じ）
+USAGE_OPENROUTER = "openrouter"  # OpenRouter の /api/v1/key（クレジットの使用額と残高）
+USAGE_BRIDGE = "bridge"  # CLI ブリッジの /usage（CLI 自身に聞かせる）
+
 
 @dataclass(frozen=True)
 class Provider:
@@ -56,6 +63,9 @@ class Provider:
     # —— ブリッジは `/health?check=1` を持っていて CLI に直接聞ける（`claude auth status` 等）。
     # それ以外は OpenAI 互換の `/models` を引いて確かめる。
     bridge: bool = False
+    # **枠の聞き方**（`USAGE_*`。空なら聞く口が無い）。**課金の形とは別物** ——
+    # サブスクの相手でも枠を出す口があるとは限らない（Antigravity は CLI にしか無い）。
+    usage: str = USAGE_NONE
     # URL を上書きできる環境変数。コンテナ名で辿り着けない相手のための逃げ道で、
     # 設定として増やすものではない（いまは local だけが持つ）。
     url_env: str = ""
@@ -96,6 +106,8 @@ PROVIDERS: tuple[Provider, ...] = (
         # なっていた —— 相手の一覧には残っているので、一覧に出るかどうかでは判断できない。
         # 動くことを確かめたものだけ並べる。
         models=("gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite"),
+        # 枠を聞く口は無い。**残量は Google Cloud の Quotas API 側にあり**、
+        # API キー 1 本では引けない（GCP のプロジェクトと別の認証が要る）。
         order=10,
     ),
     Provider(
@@ -122,6 +134,7 @@ PROVIDERS: tuple[Provider, ...] = (
         # 提供モデルは頻繁に入れ替わるので、ここは控えにとどめる
         # （実際の一覧は /v1/models から取る）。
         models=("deepseek/deepseek-r1:free", "qwen/qwen3-coder:free", "meta-llama/llama-4-scout:free"),
+        usage=USAGE_OPENROUTER,
         order=20,
     ),
     Provider(
@@ -152,6 +165,10 @@ PROVIDERS: tuple[Provider, ...] = (
         models=("sonnet", "fable", "opus", "haiku"),
         # `claude --help` の --effort（実測で 5 つとも通る）。
         efforts=("low", "medium", "high", "xhigh", "max"),
+        # **枠はブリッジ越しではなく直に聞く。** claude CLI には使用量を出す
+        # サブコマンドが無く（`/usage` は対話画面の中だけ）、代わりに CLI 自身が
+        # 叩いている口を同じトークンで引ける。ブリッジが立っていなくても引けるのが利点。
+        usage=USAGE_ANTHROPIC,
         bridge=True,
         order=30,
     ),
@@ -188,6 +205,9 @@ PROVIDERS: tuple[Provider, ...] = (
         models=(),
         # `agy --help` の --effort。claude と違い xhigh / max は無い。
         efforts=("low", "medium", "high"),
+        # **枠は CLI に聞くしかない。** 残クレジットを取る RPC は持っているが、
+        # 外から叩ける口としては公開されていない（画面の中で使われるだけ）。
+        usage=USAGE_BRIDGE,
         bridge=True,
         order=36,
     ),
@@ -209,6 +229,11 @@ PROVIDERS: tuple[Provider, ...] = (
         # 2026-08 時点で未修正）。こちらの設定では回避できないので agent を選ばせず rag に倒す
         # —— rag なら Chiezo が抜粋を集めてプロンプトに載せるので、道具が無くても根拠が付く。
         can_use_mcp=False,
+        # **枠は CLI に聞く。** `codex app-server` の `account/rateLimits/read` が
+        # 5 時間・週の使用率を返す（モデルを呼ばないので枠を食わない）。
+        # 手元に控えた auth.json を直に使わないのは、access_token が期限切れになるため
+        # —— CLI に聞けば、更新はあちらがやる。
+        usage=USAGE_BRIDGE,
         bridge=True,
         order=40,
     ),

@@ -598,6 +598,89 @@ CLI に聞かせる）ので、サブスクの枠を食いません。
 > ⚠️ Chiezo は認証なし・LAN 内前提です。ここに入れた API キーは、**管理画面を開ける人なら
 > 誰でも差し替えられます**（値の表示はしませんが、書き換えは防げません）。
 
+## 使用量を見る（枠の残りと、Chiezo が使ったぶん）
+
+管理画面の「使用量」節（`/admin#ai-usage`）と `GET /v1/ai/usage` で、相手ごとの
+使用量が見られます。**数が 2 つあるのは、測っているものが違うから**です。
+
+| | 何の数か | 分かること | 相手 |
+|---|---|---|---|
+| 相手が言う枠 | 相手の勘定 | **残り**（使用率と、いつ戻るか） | 下の表の 4 つだけ |
+| Chiezo が使ったぶん | Chiezo の勘定 | 回数とトークン。**残りは分からない** | 全部 |
+
+「Chiezo が使ったぶん」には **Chiezo を通していない利用が入りません**（手元の端末で
+回した Claude Code など）。逆に「相手が言う枠」はそれも含んだ、相手の側の勘定です。
+
+### 枠を聞ける相手と、その聞き方
+
+| 相手 | 聞き方 | 備考 |
+|---|---|---|
+| Claude Code CLI | `GET https://api.anthropic.com/api/oauth/usage` | CLI の `/usage` と同じ口を、登録済みの OAuth トークンで直に引く。**ブリッジが立っていなくても引ける** |
+| Codex CLI | ブリッジの `/usage` → `codex app-server` の `account/rateLimits/read` | **CLI に聞く**ので、期限切れになる access_token の更新はあちらがやる |
+| Antigravity CLI | ブリッジの `/usage` → `agy` の print モード | 残クレジットを取る RPC はあるが、外から叩ける口としては公開されていない |
+| OpenRouter | `GET /api/v1/key` | クレジットの使用額と残高 |
+
+**Gemini・OpenAI・推論サーバには聞く口がありません。** Gemini の残量は Google Cloud の
+Quotas API 側にあり、OpenAI の使用量は Admin キー（`sk-admin-…`）が要るので、
+どちらもここに入れる鍵では引けません。画面には「この相手は枠を出さない」と出ます
+（空欄にすると「使っていない」と読めてしまうため）。
+
+**どの聞き方もモデルを呼びません。** 確かめるたびにサブスクの枠を食っては本末転倒なので、
+「接続を試す」と同じ方針です。
+
+### 開いたときには聞きに行かない
+
+管理画面は**描画のときに相手へ問い合わせません**（「接続を試す」と同じ流儀）。控えてある
+値と「いつ取ったか」を出し、取り直しは行の「取り直す」ボタンで —— 落ちている相手がいると、
+その数だけ画面が遅れるためです。**取れなかったときも、直前まで見えていた数字は消しません**
+（一時的に繋がらないだけのことがあるので、値と失敗の理由を並べて出します）。
+
+```bash
+# 控えてある値（外へは問い合わせない）
+curl -s "$BASE/v1/ai/usage" | jq .
+
+# 取り直す（相手に聞きに行く。1 相手だけなら backend も指定する）
+curl -s "$BASE/v1/ai/usage?refresh=1&backend=claude" | jq '.backends[0].quota'
+```
+
+```json
+{
+  "supported": true,
+  "fetched_at": "2026-08-24T00:02:11+00:00",
+  "error": "",
+  "windows": [
+    {"id": "five_hour", "label": "セッション(5 時間)", "used_percent": 42.5,
+     "remaining_percent": 57.5, "resets_at": "2026-08-24T06:00:00+00:00",
+     "used": null, "limit": null, "unit": ""}
+  ]
+}
+```
+
+`spent` のほうは窓ごと（`5h` / `24h` / `7d`）に回数とトークン数が入ります。
+**トークン数の `unknown_tokens` は「相手が言わなかった回数」**で、0 とは別物です ——
+CLI ブリッジ経由の相手はトークン数を返さないので、回数だけが確かな数になります。
+**絵・音・動画・読み上げの呼び出しも同じ表に入ります**（同じサブスクの枠を食うため）。
+
+記録は `state/usage.db` に置き、既定で 30 日で消えます（`CHIEZO_USAGE_KEEP_DAYS`）。
+`CHIEZO_STATE_DIR` が無い環境では記録も表示もされません。
+
+### どこまで確かめてあるか
+
+- **Codex** …… `codex app-server` に上の 2 つを投げるところまで実測しました。
+  未サインインの `CODEX_HOME` では
+  `{"error":{"code":-32600,"message":"codex account authentication required to read rate limits"}}`
+  が返ります（= メソッドは実在し、手順も合っている）。**サインイン済みで返る中身は
+  まだ見ていません** —— 窓の形（`used_percent` / `window_minutes` / `resets_at`）は
+  CLI の型定義から取ってあり、読み取りは入れ子のどこにあっても拾う書き方にしてあります。
+- **Antigravity** …… **実地では確かめられていません**（サインイン済みのコンテナが要る）。
+  CLI が別の名前のコマンドを使っていた場合は、ブリッジの `CHIEZO_BRIDGE_USAGE_CMD`
+  （カンマ区切り。既定 `agy,-p,/credits,--output-format,json`）で差し替えられます。
+- **Claude** …… `/api/oauth/usage` は CLI の中から見つけたもので、**公開ドキュメントには
+  ありません**。`claude setup-token` のトークンで通るかは環境で確かめてください。
+
+**数字にできなかったときは、CLI や相手が返した文言をそのまま画面に出します**
+—— 推測で数字は作りません。
+
 ## CLI の AI と話す（ブリッジ）
 
 これらは HTTP ではなく CLI なので、そのままでは指せません。サブスクの枠で使うには
@@ -816,6 +899,8 @@ codex login --device-auth          # → ~/.codex/auth.json の中身
 | `CHIEZO_BRIDGE_ALLOWED_TOOLS` | `mcp__chiezo` | CLI に許す道具。書き込み（`remember`）まで止めるならここを絞る |
 | `CHIEZO_BRIDGE_DISALLOWED_TOOLS` | （組み込み一式） | 塞ぐ組み込みの道具。**`ToolSearch` を入れないこと**（MCP が引けなくなる）。`WebSearch` / `WebFetch` は要求ごとに開く |
 | `CHIEZO_BRIDGE_TIMEOUT` | `300` | 1 回の上限（秒）。CLI は道具を何度も引くので推論サーバより長い |
+| `CHIEZO_BRIDGE_USAGE_CMD` | `agy,-p,/credits,--output-format,json` | 使用量を聞くコマンド（Antigravity のみ。カンマ区切り）。**実地で確かめられていない**ので差し替えられるようにしてある |
+| `CHIEZO_BRIDGE_USAGE_TIMEOUT` | `60` | 使用量を聞くときの上限（秒） |
 
 ### モデルは会話ごとに選べる
 
@@ -941,6 +1026,7 @@ chiezo-api 側:
 | `CHIEZO_ANSWER_MAX_CHARS` | `6000` | 抜粋の合計文字数の上限 |
 | `CHIEZO_ASK_DEFAULT_MODE` | `rag` | `mode` を省いたときの既定 |
 | `CHIEZO_ASK_DEFAULT_GROUNDED` | `1` | `grounded` を省いたときの既定 |
+| `CHIEZO_USAGE_KEEP_DAYS` | `30` | 使用量の記録を残す日数（`state/usage.db`）。集計の窓は最長 7 日 |
 
 **CPU 推論では `CHIEZO_ANSWER_MAX_CHARS` を下げてください。** 所要時間は抜粋の長さ
 (プロンプト処理)がほぼ支配します。実測は

@@ -18,7 +18,7 @@ from app import answer, build_info, claude_config, media
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
 from app.pages import CHAT_PATH, browse_url, esc, page_shell
 from app.registry import SUPPORTED_SCHEMA_VERSIONS, Source
-from app.views import ai_settings
+from app.views import ai_settings, ai_usage
 
 log = logging.getLogger("chiezo.api")
 
@@ -302,6 +302,8 @@ async def admin(request: Request):
 {_answer_status_html()}
 
 {await ai_settings.section_html(request)}
+
+{ai_usage.section_html(request)}
 
 <h2>Claude Code 連携設定</h2>
 <p class="muted">

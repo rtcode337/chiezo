@@ -37,7 +37,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   `jawiki-20260701.db` は登録されず、シンボリックリンク `jawiki.db` のみ登録される)。
   - `app/main.py` — **機械向けの口とアプリの組み立て**(/, /healthz, /apple-touch-icon.png,
     /v1/sources, /v1/{source}/search|doc|filter|tags|titles|links|random, /v1/ask, /v1/chat,
-    /v1/ai/backends, /v1/ai/complete, /v1/ai/failures、
+    /v1/ai/backends, /v1/ai/complete, /v1/ai/failures, /v1/ai/usage、
     lifespan・例外ハンドラ・画面 router の登録・MCP の /mcp のマウント。
     MCP の実体は下の `app/mcp_server.py`)。
     **人間向けの HTML はここに置かない**(`app/views/`)。以前は 2,473 行の 1 ファイルに
@@ -199,6 +199,43 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     ブリッジだけは `/health?check=1` で CLI に直接聞く(`claude auth status` 等)。
     **認証情報を入れ替えたら印を消す**(まだ確かめていないため)。**管理画面は描画のときに
     相手へ問い合わせない** —— 記録された結果だけを見るので、落ちている相手があっても遅くならない。
+  - `app/usage.py` / `app/usage_store.py` — **各 AI の使用量**(`/v1/ai/usage`・管理画面の
+    「使用量」節)。**数を 2 つ持ち、混ぜない**:
+    - **相手が言う枠**(`quota`)…… 相手の勘定なので**残りが分かる**が、**聞ける相手が限られる**。
+      聞き方は `Provider.usage`(`app/providers.py`)で相手ごとに決まる ——
+      claude は `api.anthropic.com/api/oauth/usage`(**CLI の `/usage` と同じ口**。
+      CLI 側に出口が無く、ブリッジが立っていなくても引けるので直に引く)、
+      codex / antigravity は**ブリッジの `/usage`**(CLI に聞かせる。
+      **手元に控えた認証情報は期限切れになる**ので、更新は CLI に任せる)、
+      openrouter は `/api/v1/key`。**gemini・openai・推論サーバには口が無い**
+      (前者は Google Cloud の Quotas API 側、後者は Admin キーが要る)ので
+      画面には「この相手は枠を出さない」と書く —— **空欄にすると「使っていない」と読める**
+    - **Chiezo が使ったぶん**(`spent`)…… `state/usage.db` に 1 呼び出し 1 行で残し、
+      5 時間 / 24 時間 / 7 日で集計する。**全部の相手で同じ物差し**だが、
+      **Chiezo を通していない利用は入らない**(手元の端末で回した CLI など)。
+      記録するのは `answer.complete_message`(会話)と `media._run` / `media.transcribe`
+      (絵・音・動画・声)—— **絵と音も同じサブスクの枠を食う**ので同じ表に入れる
+    決めごと:
+    - **どの聞き方もモデルを呼ばない**(「接続を試す」と同じ方針。確かめるたびに枠を食わない)
+    - **画面は描画のときに聞きに行かない。** 控えと取得時刻を出し、取り直しは行のボタン。
+      API も既定は控えを返し、`?refresh=1` のときだけ外へ出る ——
+      **見ているだけで相手のレート制限に当たらない**ため
+    - **取れなかったときに前の値を消さない**(一時的に繋がらないだけのことがある)。
+      値と失敗の理由を並べて出す
+    - **トークン数の `NULL` は「相手が言わなかった」、`0` は「使わなかった」。**
+      混ぜると、数を返さない相手(CLI ブリッジ)が「0 トークンで動く相手」に見える
+    - **`settings.db` に相乗りしない** —— あちらは CLI ブリッジが読み取り専用でマウントする
+      ファイルで、呼ぶたびに書く表を同居させたくない(ジョブ DB と同じ判断)
+    - **推測で数字を作らない。** ブリッジは読めた形だけを窓にして返し、読めなければ
+      CLI の返事をそのまま渡す(画面はそれを理由として出す)
+  - `app/views/ai_usage.py` — 管理画面の「使用量」節と「取り直す」の受け口。
+    **「AI の相手」の表とは分けてある** —— あちらは設定を一度入れたら開かない場所、
+    こちらは何度も見に来る場所(重い仕事を頼む前に枠を見る)。
+  - `app/jst.py` — **人に見せる日時の書式(JST 固定)**。保存と比較は UTC のまま、
+    表示の直前だけここを通す。**変換と書式を 1 か所に集める** —— 画面ごとに書くと
+    同じサーバーの中で表記も時差もばらつく。`astimezone()` に任せないのは、
+    api コンテナの `TZ` 次第で表示が変わるため(`TZ` はログを読みやすくするためのもので、
+    画面の正しさをそこに依存させない)。
   - `app/answer.py` — **「使う」層(`/v1/ask`・`/ai/chat`)の本体**。要求するのは
     OpenAI 互換の `/chat/completions` だけなので、ローカルの推論サーバでも Gemini・OpenRouter でも、
     CLI を包んだブリッジでも同じ 1 本の口で扱う。**`_normalize_base_url` が `/v1` を補うのは
@@ -303,6 +340,17 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     実際に Gemini CLI を足したとき `entrypoint.sh` が取り残されて起動しなくなったので、
     `tests/test_bridge.py` が対応表の欠けを見張っている(その CLI は提供終了で外したが、
     検査は残してある)
+  - **`GET /usage` は CLI にサブスクの枠を聞く**(`USAGE_CLIS` = codex / antigravity)。
+    codex は `codex app-server` に JSON-RPC で `account/rateLimits/read` を 1 往復
+    (**`codex exec` は使わない** —— あちらは会話を 1 回走らせるので枠を食う。
+    枠組みは実測済み: 未サインインで
+    `codex account authentication required to read rate limits` が返る = メソッドは実在する。
+    **サインイン済みで返る中身はまだ見ていない**)、
+    antigravity は print モードのスラッシュコマンド。**claude はここに来ない** ——
+    CLI に出口が無いので Chiezo が `api.anthropic.com` に直に聞く(`app/usage.py`)。
+    **相手の返事の形は決め打ちにしない**(`_windows_in` が入れ子のどこにあっても
+    「使用率で言う窓」「残量で言う窓」を拾う)—— 版が変わって 1 段増えるだけで
+    「取れない」に変わるため。**読めなければ数字を作らず、CLI の返事をそのまま返す**
   - ファイル名が `server.py` でなく `cli_bridge.py` なのは `ingest/server.py` と衝突するため
     (テストは api / ingest / bridge を同じ pythonpath で読む)
 
@@ -599,6 +647,10 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     それを「調べた結果」として受け取り、学習データから作った話が最新の材料として
     保存されてしまう(実際に「取得不可」と答えるべき場面で古い首相の名前が返った)。
     応答の `web` に**実際に開けたか**を載せるので、呼ぶ側は取り違えを検出できる
+  - `/v1/ai/usage`(GET) — **各 AI の使用量**(枠の残りと、Chiezo が使ったぶん)。
+    **既定では相手へ問い合わせない**(控えを返す)—— 画面もダッシュボードも定期的に引く口で、
+    引かれるたびに外へ出ると見ているだけでレート制限に当たる。取り直すのは `?refresh=1`、
+    1 相手だけなら `?backend=`。中身の決めごとは上の `app/usage.py` が正
   - 管理画面は**頼めることの一覧 + 相手ごとに 1 行の表**にまとめてある
     (`app/views/ai_settings.py`)。**行の欄はその相手で何ができるかしか示さない**ので、
     そもそも何を頼めるのか(と、まだ頼めないもの)は上の一覧が受け持つ。

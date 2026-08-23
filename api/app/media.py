@@ -37,7 +37,7 @@ from pathlib import Path
 import httpx
 from fastapi import HTTPException
 
-from app import media_backends, media_providers, settings_store
+from app import media_backends, media_providers, settings_store, usage_store
 
 log = logging.getLogger("chiezo.media")
 
@@ -326,6 +326,9 @@ async def _run(job_id: str, backend: str, req, count: int, kind: str) -> None:
             # seed は 1 つごとにずらす(同じ頼みで同じものが並んでも選べない)
             one = replace(req, seed=(req.seed + index) if req.seed else 0)
             item = await media_backends.generate_for(kind, backend, one)
+            # **1 枚 = 1 回。** 絵と音も同じサブスクの枠を食う(Codex / Antigravity)ので、
+            # 会話と同じ表に残す —— 分けると「話していないのに枠が減った」が読めない。
+            usage_store.record(backend, model=item.model, kind=kind)
             files.append(asdict(_save(job_id, index, item)))
             _update(job_id, files=files, model=item.model, seed=files[0]["seed"])
         _update(job_id, state="done", files=files)
@@ -760,6 +763,7 @@ async def transcribe(
             data=data, filename=filename, mime=mime, model=model, language=language
         ),
     )
+    usage_store.record(chosen, model=result.model, kind=media_providers.KIND_TRANSCRIBE)
     return {"text": result.text, "model": result.model,
             "language": result.language, "backend": chosen}
 

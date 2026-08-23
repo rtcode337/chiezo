@@ -38,7 +38,7 @@ import httpx
 from fastapi import HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
-from app import ai_log, providers, settings_store
+from app import ai_log, providers, settings_store, usage_store
 from app.pages import doc_url
 
 log = logging.getLogger("chiezo.api")
@@ -629,6 +629,34 @@ async def _post_with_retry(client: httpx.AsyncClient, cfg: Settings, payload: di
     return res  # 到達しない(ループの最後で必ず返す)
 
 
+def _record_usage(cfg: Settings, usage: dict | None) -> None:
+    """1 往復ぶんを使用量に残す(`app/usage_store.py`)。
+
+    **相手がトークン数を言わなければ `None` のまま残す。** 0 と書くと、数を返さない相手
+    (CLI ブリッジ)が「0 トークンで動く相手」に見える —— 回数だけは確かなので、
+    そちらは必ず 1 増える。
+
+    **失敗しても会話を止めない**(記録側が例外を投げない作りにしてある)。
+    """
+    tokens = usage if isinstance(usage, dict) else {}
+
+    def _count(*names: str) -> int | None:
+        for name in names:
+            value = tokens.get(name)
+            if isinstance(value, int | float):
+                return int(value)
+        return None
+
+    usage_store.record(
+        cfg.name,
+        model=cfg.model,
+        kind="chat",
+        # OpenAI 互換は prompt/completion。相手によっては input/output で名乗る。
+        input_tokens=_count("prompt_tokens", "input_tokens"),
+        output_tokens=_count("completion_tokens", "output_tokens"),
+    )
+
+
 async def complete_message(cfg: Settings, messages: list[dict], **extra) -> dict:
     """1 回の応答を**メッセージまるごと**取る。
 
@@ -651,11 +679,13 @@ async def complete_message(cfg: Settings, messages: list[dict], **extra) -> dict
         _note_failure(cfg, messages, res.status_code, detail.get("reason", detail["error"]))
         raise HTTPException(502, detail)
     try:
-        message = res.json()["choices"][0]["message"]
+        body = res.json()
+        message = body["choices"][0]["message"]
     except (KeyError, IndexError, TypeError, ValueError) as e:
         raise HTTPException(502, {"error": f"unexpected llm response: {e}"}) from None
     if not isinstance(message, dict):
         raise HTTPException(502, {"error": "unexpected llm response: message is not an object"})
+    _record_usage(cfg, body.get("usage"))
     return message
 
 
@@ -716,6 +746,10 @@ async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator
                         continue  # 使い物にならないフレームは黙って捨てる
                     if delta:
                         yield delta
+                # **流し切ったら 1 回ぶん残す。** 差分の応答にトークン数は載らない
+                # (`stream_options` を送れば載る相手もいるが、送ると 400 で断る相手がいる)
+                # ので、回数だけを記録する。
+                _record_usage(cfg, None)
                 return
         except httpx.HTTPError as e:
             err = _upstream_error(e)

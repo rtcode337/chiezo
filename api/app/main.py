@@ -34,6 +34,8 @@ from app import (
     media_providers,
     notes,
     providers,
+    usage,
+    usage_store,
     websearch,
 )
 from app.deps import (
@@ -59,6 +61,7 @@ from app.registry import (
 )
 from app.views import admin as views_admin
 from app.views import ai_settings as views_ai_settings
+from app.views import ai_usage as views_ai_usage
 from app.views import browse as views_browse
 from app.views import chat as views_chat
 
@@ -1259,6 +1262,48 @@ async def ai_failures(limit: int = 50) -> dict:
     return {"failures": ai_log.recent(limit)}
 
 
+@app.get("/v1/ai/usage")
+async def ai_usage(
+    backend: str = Query("", description="1 相手だけ見るとき(既定は全部)"),
+    refresh: bool = Query(False, description="相手に聞き直す(既定は控えを返す)"),
+) -> dict:
+    """各 AI の**使用量**。相手が言う枠(残りが分かる)と、Chiezo が使ったぶん。
+
+    **既定では相手へ問い合わせない**(控えてある値を返す)—— この口は画面や
+    ダッシュボードが定期的に引くもので、引かれるたびに外へ出ていくと、
+    見ているだけで相手のレート制限に当たる。取り直すときだけ `refresh=1`。
+
+    枠を聞ける相手は限られる(`quota.supported`)。**聞けない相手にも `spent` は出る**
+    —— そちらは Chiezo が自分で数えているので、全部の相手で同じ物差しになる。
+    ただし **Chiezo を通していない利用は入らない**(手元の端末で回した CLI など)。
+    """
+    name = (backend or "").strip().lower()
+    if name and providers.get(name) is None:
+        raise HTTPException(404, {"error": f"unknown backend: {name}",
+                                  "backends": [p.id for p in providers.all_providers()]})
+    if refresh:
+        await (usage.refresh(name) if name else usage.refresh_all())
+
+    rows = [r for r in usage.rows() if not name or r["id"] == name]
+    return {
+        # **いつからの数か**を添える。書かないと、入れたばかりの環境の「0 回」が
+        # 「使っていない」と読めてしまう。
+        "recorded_since": usage_store.first_recorded_at(),
+        "windows": [w for w, _ in usage.SPENT_WINDOWS],
+        "backends": [
+            {
+                "id": r["id"],
+                "label": r["label"],
+                "enabled": r["enabled"],
+                "billing": r["billing"],
+                "quota": r["quota"].as_dict(),
+                "spent": {window: value.as_dict() for window, value in r["spent"].items()},
+            }
+            for r in rows
+        ],
+    }
+
+
 @app.post("/v1/ai/complete")
 async def ai_complete(body: AiCompleteRequest) -> dict:
     """渡されたメッセージをそのまま相手へ投げて、本文を返す(1 往復)。
@@ -1572,6 +1617,7 @@ async def media_file(path: str):
 
 app.include_router(views_admin.router)
 app.include_router(views_ai_settings.router)
+app.include_router(views_ai_usage.router)
 app.include_router(views_browse.router)
 app.include_router(views_chat.router)
 

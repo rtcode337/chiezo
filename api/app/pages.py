@@ -150,6 +150,16 @@ PAGE_STYLE = """
   table.ai-settings tr.off button:not([disabled]) { color: #111; }
   /* 押せないボタン（条件を満たしていない）は、見た目でもそう分かるようにする */
   table.ai-settings button[disabled] { color: #999; cursor: not-allowed; }
+  /* 使用量の表。**枠の欄は折り返す** —— 1 行が「帯 + 使用率 + 戻る時刻」で長く、
+     nowrap のままだと狭い画面でこの列だけが伸びて他を押し潰す。 */
+  table.ai-usage td { white-space: normal; }
+  /* 使用率の帯。**数字と併せて出す**(色の見え方だけで読ませない)。
+     70% / 90% で色を変えるのは、押す前に「もう頼めないか」を見分けるため。 */
+  .meter { display: inline-block; width: 6rem; height: 0.55rem; vertical-align: middle;
+           background: #e6e6e6; border-radius: 999px; overflow: hidden; margin-right: 0.3rem; }
+  .meter-fill { display: block; height: 100%; background: #5560E0; }
+  .meter-fill.mid { background: #d9a400; }
+  .meter-fill.high { background: #c0392b; }
   details { margin-top: 1rem; }
   details > summary { cursor: pointer; font-weight: bold; padding: 0.3rem 0; }
   pre.doc-body { white-space: pre-wrap; word-break: break-word; }
