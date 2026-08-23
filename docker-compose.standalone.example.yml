@@ -37,9 +37,11 @@ x-data-volume: &data-volume "/path/to/chiezo/data:/data"
 # 上を書き換えたらここも同じ親に揃えること —— YAML のアンカーは文字列の一部に
 # 差し込めないので、置き場のパスだけ2行に分かれる
 x-corpus-volume: &corpus-volume "/path/to/chiezo/data/corpus:/data/corpus:ro"
-# CLI ブリッジ(下のほうで畳んである)が読む設定 DB。こちらも読み取り専用で、
-# 上と同じ親に揃えること
-x-state-volume: &state-volume "/path/to/chiezo/data/state:/data/state:ro"
+# CLI ブリッジ(下のほうで畳んである)が読む設定 DB。読み取り専用で渡す。
+# 上と同じ親に揃えること。**コンテナ側は /state のまま** —— ブリッジは
+# /state/settings.db を決め打ちで読む(CHIEZO_BRIDGE_STATE_DB の既定)ので、
+# api 側の置き場が data/ の下へ移ってもここは変えない
+x-state-volume: &state-volume "/path/to/chiezo/data/state:/state:ro"
 
 # ---- ここだけ編集(必要なときだけ): 実行ユーザー ----
 # イメージ内の既定は 10001:10001 で、ホストに実在しない番号にしてある

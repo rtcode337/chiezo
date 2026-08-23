@@ -189,7 +189,9 @@ services:
   #  volumes:
   #    # 認証情報は Chiezo の設定 DB から読む(管理画面から登録できるようにするため)。
   #    # 読み取り専用。ブリッジは書かない
-  #    - ./data/state:/data/state:ro
+  #    # **ブリッジは `/state/settings.db` を決め打ちで読む**(CHIEZO_BRIDGE_STATE_DB の
+  #    # 既定)。api 側の置き場が data/ の下へ移っても、こちらのマウント先は /state のまま
+  #    - ./data/state:/state:ro
   #  environment:
   #    - CHIEZO_BRIDGE_CLI=claude
   #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp
@@ -204,7 +206,9 @@ services:
   #chiezo-bridge-codex:
   #  image: ghcr.io/rtcode337/chiezo-bridge:latest
   #  volumes:
-  #    - ./data/state:/data/state:ro
+  #    # **ブリッジは `/state/settings.db` を決め打ちで読む**(CHIEZO_BRIDGE_STATE_DB の
+  #    # 既定)。api 側の置き場が data/ の下へ移っても、こちらのマウント先は /state のまま
+  #    - ./data/state:/state:ro
   #  environment:
   #    - CHIEZO_BRIDGE_CLI=codex
   #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp
