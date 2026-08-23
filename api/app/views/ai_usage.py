@@ -1,10 +1,10 @@
 """管理画面の「使用量」節 —— 各 AI の枠(残り)と、Chiezo が使ったぶん。
 
-**「AI の相手」の表とは分けてある。** あちらは設定を一度入れたら開かない場所、
-こちらは**何度も見に来る場所**で、読む目的が違う(そして相手を選ぶための情報でもある ——
+「AI の相手」の表とは分けてある。 あちらは設定を一度入れたら開かない場所、
+こちらは何度も見に来る場所で、読む目的が違う(そして相手を選ぶための情報でもある ——
 枠を使い切っている相手には重い仕事を頼まない)。
 
-**描画のときに相手へ問い合わせない**(「接続を試す」と同じ流儀)。控えてある値と
+描画のときに相手へ問い合わせない(「接続を試す」と同じ流儀)。控えてある値と
 「いつ取ったか」を出し、取り直しは行ごとのボタンで。落ちている相手がいても画面は遅れない。
 """
 from __future__ import annotations
@@ -33,7 +33,7 @@ def _when(raw: str) -> str:
 
 
 def _meter(percent: float | None) -> str:
-    """使用率の帯。**数字も必ず添える** —— 帯だけだと、色の見え方で読み違える。"""
+    """使用率の帯。数字も必ず添える —— 帯だけだと、色の見え方で読み違える。"""
     if percent is None:
         return ""
     width = max(0.0, min(100.0, percent))
@@ -64,14 +64,14 @@ def _window_html(window: usage.Window) -> str:
 def _quota_cell(row: dict) -> str:
     quota: usage.Quota = row["quota"]
     if not quota.supported:
-        # **「出せない」と書く。** 空欄にすると「使っていない」と読めてしまう。
+        # 「出せない」と書く。 空欄にすると「使っていない」と読めてしまう。
         return '<span class="muted">この相手は枠を出さない</span>'
     lines = [f"<div>{_window_html(w)}</div>" for w in quota.windows]
-    # **数字が無いときに「◯時 時点」だけ出さない** —— 何かが取れているように読める。
+    # 数字が無いときに「◯時 時点」だけ出さない —— 何かが取れているように読める。
     if quota.windows and (fetched := _when(quota.fetched_at)):
         lines.append(f'<span class="muted">{esc(fetched)} 時点</span>')
     if quota.error:
-        # **前の値は消さない。** 一時的に繋がらないだけのことがあるので、
+        # 前の値は消さない。 一時的に繋がらないだけのことがあるので、
         # 直前まで見えていた数字と、そのあと失敗したことを並べて出す。
         lines.append(f'<span class="stale">⚠️ 取れませんでした: {esc(quota.error)}</span>')
     elif not quota.windows:
@@ -89,7 +89,7 @@ def _spent_cell(row: dict) -> str:
         if value is None or not value.requests:
             continue
         text = f"{esc(_SPENT_LABELS.get(name, name))}: {value.requests} 回"
-        # **0 と「言われていない」を分ける。** CLI ブリッジの相手はトークン数を返さないので、
+        # 0 と「言われていない」を分ける。 CLI ブリッジの相手はトークン数を返さないので、
         # 0 と書くと「0 トークンで動く相手」に見える。全部が未取得なら、そう言い切る。
         if value.input_tokens or value.output_tokens:
             text += f" / {value.input_tokens:,} in・{value.output_tokens:,} out"

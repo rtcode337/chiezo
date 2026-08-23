@@ -1,6 +1,6 @@
 """OpenStreetMap(Geofabrik)の国別抽出カタログ。
 
-**自動生成物。手で編集せず `python3 scripts/gen_osm_regions.py` で作り直すこと。**
+自動生成物。手で編集せず `python3 scripts/gen_osm_regions.py` で作り直すこと。
 
 `sources/__init__.py` はこの表から `osm_<国>` のアダプタを一括生成する。国別抽出は
 200 以上あり手書きでは追随できないうえ、region パスを 1 文字間違えるとダウンロード時

@@ -130,7 +130,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}-${{ matrix.image }}
 
-      # ビルド日時。**イメージに焼いて画面に出す**(タグでは判別できないため)
+      # ビルド日時。イメージに焼いて画面に出す(タグでは判別できないため)
       - id: buildtime
         run: echo "value=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
@@ -215,7 +215,7 @@ jobs:
       # 際限なく積み上がる(`latest` を付け替えても前の版は SHA タグ付きで残る)。
       # 一覧が読めなくなるのと、どれが生きているか分からなくなるのを防ぐための掃除。
       #
-      # **actions/delete-package-versions は使わない。** このリポジトリはマルチアーキで、
+      # actions/delete-package-versions は使わない。 このリポジトリはマルチアーキで、
       # 1 つのタグが manifest list ＋ アーキごとの子イメージで構成される。あちらは
       # 子イメージを「タグ無しの版」として消してしまい、残したはずのタグが壊れる。
       # この action は manifest list を理解して親子まとめて扱う。

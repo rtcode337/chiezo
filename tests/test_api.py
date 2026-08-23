@@ -735,7 +735,7 @@ class TestClaudeConfig:
         assert "この一覧は 2026-08-12 23:58 JST 時点の" in block
 
     def test_config_mentions_media_tools_only_when_they_exist(self, client):
-        """**呼べない道具を勧めない。** MCP を登録していない環境や、絵も音も作れない
+        """呼べない道具を勧めない。 MCP を登録していない環境や、絵も音も作れない
         サーバーに「image_generate を使え」と書いても、読んだ側は呼べない。"""
         from app import claude_config
 
@@ -758,7 +758,7 @@ class TestClaudeConfig:
         )
 
     def test_config_offers_to_split_the_work_with_other_ais(self, client):
-        """**手分けの節。** 調べものが広いときに 1 人で抱えないよう、Chiezo 越しに
+        """手分けの節。 調べものが広いときに 1 人で抱えないよう、Chiezo 越しに
         頼める相手を ID つきで名指しする(呼ぶのは curl なので MCP は要らない)。"""
         from app import capabilities, claude_config
 
@@ -774,7 +774,7 @@ class TestClaudeConfig:
         assert "/v1/ai/usage" in block
 
     def test_config_stays_quiet_when_no_one_can_be_asked(self, client):
-        """**呼べない相手を勧めない。** 話せる相手が 1 つも無い環境に
+        """呼べない相手を勧めない。 話せる相手が 1 つも無い環境に
         「手分けして頼め」と書いても、読んだ側は投げ先が無い。"""
         from app import claude_config
 
@@ -784,7 +784,7 @@ class TestClaudeConfig:
         )
 
     def test_config_names_the_backends_that_can_actually_make_things(self, client):
-        """**絵と音の節では相手を名指しする。** 「外部の生成 AI を選べる」だけだと、
+        """絵と音の節では相手を名指しする。 「外部の生成 AI を選べる」だけだと、
         いま何に頼めるのかが読み取れず、外のサービスを探しに行かれる。"""
         from app import capabilities, claude_config
 
@@ -803,7 +803,7 @@ class TestClaudeConfig:
         assert "動画は" not in block
 
     def test_config_splits_the_sentence_when_the_backends_differ(self, client):
-        """**曲と効果音で相手が違うことがある**(Lyria は曲しか作れない)。
+        """曲と効果音で相手が違うことがある(Lyria は曲しか作れない)。
         まとめて書くと、作れない相手に頼ませることになる。"""
         from app import capabilities, claude_config
 
@@ -813,7 +813,7 @@ class TestClaudeConfig:
             {}, "http://x.test", mcp=True, media=True, usable=usable
         )
 
-        # **自前の GPU は後ろ。** 先に名前を出したものに頼まれるので、出来のよい順に並べる
+        # 自前の GPU は後ろ。 先に名前を出したものに頼まれるので、出来のよい順に並べる
         assert "**曲は ElevenLabs、効果音は ElevenLabs・ComfyUI が使える**。" in block
 
     def test_config_txt_base_url_is_derived_from_request(self, client):
@@ -1518,7 +1518,7 @@ class TestUrlLayout:
 
         CodeQL が反射型 XSS として指摘したのはブラウズ画面で、原因は URL の組み立てに
         `urllib.parse.quote` しか通っていなかったこと。percent-encode は HTML の
-        エスケープではないので、**HTML に埋めるところでは必ず esc() を通す**。
+        エスケープではないので、HTML に埋めるところでは必ず esc() を通す。
         """
         payload = '<script>alert(1)</script>'
         for params in ({"q": payload}, {"tag": payload}):
@@ -1549,7 +1549,7 @@ class TestUrlLayout:
 
 
 class TestBuildVersion:
-    """**動いているイメージがどのコミットかを画面から確かめられるようにする。**
+    """動いているイメージがどのコミットかを画面から確かめられるようにする。
     タグは latest で上書きされ、デプロイ先が pull し忘れても外からは見えない。"""
 
     def test_shows_the_build_time_in_jst_with_the_commit(self, monkeypatch):
@@ -1562,7 +1562,7 @@ class TestBuildVersion:
         assert build_info.describe() == "2026-08-15 00:12 JST (dbdb1fb)"
 
     def test_says_unknown_when_nothing_was_baked_in(self, monkeypatch):
-        """手元ビルドでは渡らない。**ビルドを失敗させず、分からないと出す。**"""
+        """手元ビルドでは渡らない。ビルドを失敗させず、分からないと出す。"""
         from app import build_info
 
         monkeypatch.delenv("CHIEZO_BUILD_SHA", raising=False)

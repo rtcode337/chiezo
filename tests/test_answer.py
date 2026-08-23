@@ -366,7 +366,7 @@ class TestAskPage:
         assert fake.calls == 2
 
     def test_markdown_renderer_is_served_with_the_page(self, monkeypatch_env):
-        """返事の Markdown は画面で組む。**外部のライブラリは読まない**(LAN 内・オフライン前提)。"""
+        """返事の Markdown は画面で組む。外部のライブラリは読まない(LAN 内・オフライン前提)。"""
         with make_client(monkeypatch_env, FakeLLM()) as client:
             res = client.get(CHAT_PATH)
         assert "window.chiezoMarkdown" in res.text   # 描画器そのもの
@@ -374,7 +374,7 @@ class TestAskPage:
         assert "cdn." not in res.text                # 外から読み込まない
 
     def test_admin_lists_every_provider_in_one_table(self, monkeypatch_env):
-        """**相手ごとに 1 行。** 話す相手と絵・音の相手を分けていた頃は、同じ相手が
+        """相手ごとに 1 行。 話す相手と絵・音の相手を分けていた頃は、同じ相手が
         2 か所に出ていて、どちらの on/off が効くのか画面から読めなかった。"""
         with make_client(monkeypatch_env, FakeLLM()) as client:
             res = client.get("/admin")
@@ -388,7 +388,7 @@ class TestAskPage:
         assert "絵と音を作る相手" not in res.text
 
     def test_admin_greys_out_the_providers_that_are_off(self, monkeypatch_env):
-        """**いまどちらの状態かを、ボタンの文字だけに頼らせない。**"""
+        """いまどちらの状態かを、ボタンの文字だけに頼らせない。"""
         with make_client(monkeypatch_env, FakeLLM()) as client:
             res = client.get("/admin")
 
@@ -544,7 +544,7 @@ class TestBackends:
         settings_store.set_credential("gemini", "k")
         settings_store.set_verified("gemini", True)
         settings_store.set_enabled("gemini", True)
-        # 控えの先頭(`app/providers.py`)。**名前を直書きしない** —— 相手のモデルは
+        # 控えの先頭(`app/providers.py`)。名前を直書きしない —— 相手のモデルは
         # 入れ替わるので、控えを更新するたびにテストが落ちるのは見張りたいものと関係がない
         from app import providers
 
@@ -584,7 +584,7 @@ class TestBackends:
 
 
 class TestStaleModelName:
-    """**控えのモデル名は古くなる。** 実測で、選んでも保存してもいない Gemini が
+    """控えのモデル名は古くなる。 実測で、選んでも保存してもいない Gemini が
     「llm error 404」になった —— 控えの先頭(gemini-2.5-flash)が相手から消えていた。"""
 
     @staticmethod
@@ -625,7 +625,7 @@ class TestStaleModelName:
         assert asyncio.run(answer.ensure_model(cfg)).model == "gemini-2.5-pro"
 
     def test_the_models_prefix_is_stripped(self, monkeypatch_env, tmp_path):
-        """**Gemini の一覧だけ `models/` が付く**が、会話の口はその形を受け付けない
+        """Gemini の一覧だけ `models/` が付くが、会話の口はその形を受け付けない
         (実測で 404)。画面の選択肢は一覧から作るので、剥がさないと選んだ瞬間に失敗する。"""
         monkeypatch_env.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
         answer = self._offering(monkeypatch_env, "models/gemini-9.9-flash")
@@ -663,7 +663,7 @@ class TestStaleModelName:
 
 
 class TestBusyUpstream:
-    """**混んでいるだけの失敗は引き直す。** Gemini は「いま混んでいる」を 503 で返し
+    """混んでいるだけの失敗は引き直す。 Gemini は「いま混んでいる」を 503 で返し
     (`The model is overloaded`)、数秒後には通ることが多い。agent モードでは道具を
     何度も引いた後に落ちるので、1 回の 503 でその手間ごと捨てるのは惜しい。"""
 
@@ -682,7 +682,7 @@ class TestBusyUpstream:
                 )
             return httpx.Response(status, json=[{"error": {"message": "The model is overloaded."}}])
 
-        # 待ち時間は飛ばす(**元の sleep を捕まえてから**差し替える。差し替え後の
+        # 待ち時間は飛ばす(元の sleep を捕まえてから差し替える。差し替え後の
         # asyncio.sleep を呼ぶと自分を呼び続ける)
         real_sleep = asyncio.sleep
         monkeypatch.setattr(answer.asyncio, "sleep", lambda _s: real_sleep(0))
@@ -720,13 +720,13 @@ class TestBusyUpstream:
             asyncio.run(answer.complete_message(cfg, [{"role": "user", "content": "やあ"}]))
 
         assert len(seen) == 3   # 初回 + 2 回の引き直し
-        # **理由を出す。** Gemini はエラーを配列で返すので、dict しか見ていないと
+        # 理由を出す。 Gemini はエラーを配列で返すので、dict しか見ていないと
         # 画面に「llm error 503」しか出ない
         assert "overloaded" in e.value.detail["reason"]
 
 
 class TestModeForBackendsWithoutTools:
-    """**道具を引けない相手では agent を選ばせない。** Codex は codex exec で MCP の
+    """道具を引けない相手では agent を選ばせない。 Codex は codex exec で MCP の
     呼び出しが必ずキャンセルされる(上流の不具合)ので、agent だと道具の無いまま
     1 往復し、Chiezo の知識がまったく効かない答えが返る。"""
 
@@ -866,7 +866,7 @@ class TestSettingsMigration:
 
 class TestJournalMode:
     def test_an_existing_wal_database_is_converted(self, monkeypatch, tmp_path):
-        """**WAL のまま残っていたファイルも戻す。**
+        """WAL のまま残っていたファイルも戻す。
 
         journal_mode はファイルに焼き付く属性なので、コードから PRAGMA を消しただけでは
         既存の DB は WAL のまま。CLI ブリッジは /state を読み取り専用でマウントして読むので、
@@ -904,7 +904,7 @@ class TestJournalMode:
 
 
 class TestConnectionTest:
-    """「接続を試す」。**登録の有無ではなく「いま使えるか」を見る。**
+    """「接続を試す」。登録の有無ではなく「いま使えるか」を見る。
 
     打ち間違えた認証情報や期限切れは登録の有無では分からず、会話して初めて失敗する
     （本番でそれが 502 として出た）。会話は 1 往復もせず `/models` を引くだけ。
@@ -978,7 +978,7 @@ class TestConnectionTest:
 
 
 class TestVerificationGate:
-    """**「接続を試す」が一度でも通るまで on にできない。**
+    """「接続を試す」が一度でも通るまで on にできない。
 
     到達できることと話せることは別で（認証情報が間違っていても到達はする）、
     登録の有無だけでは会話して初めて失敗する。本番でそれが 502 として出た。
@@ -1027,7 +1027,7 @@ class TestVerificationGate:
         assert settings_store.load("gemini").verified is False
 
     def test_a_disabled_provider_can_still_be_tested(self, monkeypatch):
-        """**試さないと on にできない仕様なので、無効のままでも試せること。**
+        """試さないと on にできない仕様なので、無効のままでも試せること。
 
         ここを弾くと「試せないから on にできない」の堂々巡りになる（実際に踏んだ）。
         """
@@ -1122,7 +1122,7 @@ class TestEffort:
         assert "reasoning_effort" not in answer._payload(bare, [], stream=False)
 
     def test_unknown_values_fall_back_to_the_default(self):
-        """**相手が検証してくれない**ので、知らない値はここで落とす。"""
+        """相手が検証してくれないので、知らない値はここで落とす。"""
         from app import answer
 
         assert answer.normalize_effort("claude", "xhigh") == "xhigh"
@@ -1174,10 +1174,10 @@ class TestModelDefault:
 
 
 class TestBackendTimeout:
-    """相手を待つ秒数は**その相手が何をするか**で変える。
+    """相手を待つ秒数はその相手が何をするかで変える。
 
     CLI ブリッジは道具を何度も引くので分単位になりうるうえ、ブリッジ自身が上限を持つ。
-    **待つ側が先に切れると、向こうの判断が一切見えなくなる**（実測: claude を
+    待つ側が先に切れると、向こうの判断が一切見えなくなる（実測: claude を
     effort=high で呼んだら 120 秒で切れ、504 llm timeout しか残らなかった）。
     """
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CLI ブリッジの起動。MCP の設定を入れてから HTTP サーバを上げる。
 #
-# **認証情報はここでは要求しない。** Chiezo の設定 DB(/state/settings.db を読み取り専用で
+# 認証情報はここでは要求しない。 Chiezo の設定 DB(/state/settings.db を読み取り専用で
 # マウント)から要求のたびに読むので、鍵が無くても立ち上げてよい ——
 # むしろ立っていないと管理画面から鍵を登録できない(到達確認に落ちるため)。
 # DB が無い環境向けに、環境変数(CLAUDE_CODE_OAUTH_TOKEN / CODEX_AUTH_JSON)にも落ちる。
@@ -23,7 +23,7 @@ case "${CLI}" in
         [ -n "${MCP_URL}" ] && codex mcp add chiezo --url "${MCP_URL}"
         ;;
     antigravity)
-        # **認証はコンテナ内で 1 回サインインした結果**を HOME 配下のキャッシュから読む
+        # 認証はコンテナ内で 1 回サインインした結果を HOME 配下のキャッシュから読む
         # (API キー方式が無い)。HOME を書き込み可能なボリュームにバインドしてあれば、
         # コンテナを作り直しても消えない。サインインは
         #   docker compose exec chiezo-bridge-antigravity agy

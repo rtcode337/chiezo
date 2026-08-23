@@ -1,28 +1,28 @@
-"""各 AI の使用量 —— **相手が言う枠**と、**Chiezo が使ったぶん**。
+"""各 AI の使用量 —— 相手が言う枠と、Chiezo が使ったぶん。
 
-**2 つを別々に出す。混ぜると読めなくなる。**
+2 つを別々に出す。混ぜると読めなくなる。
 
 | | 何の数か | 分かること | 聞ける相手 |
 |---|---|---|---|
-| 枠(quota) | 相手の勘定 | **残り**(使用率と、いつ戻るか) | 下の表の 3 つだけ |
-| 使ったぶん(spent) | Chiezo の勘定 | 回数とトークン。**残りは分からない** | 全部 |
+| 枠(quota) | 相手の勘定 | 残り(使用率と、いつ戻るか) | 下の表の 3 つだけ |
+| 使ったぶん(spent) | Chiezo の勘定 | 回数とトークン。残りは分からない | 全部 |
 
 枠を聞ける相手と、その聞き方(`app/providers.py` の `usage`):
 
-- **Claude Code CLI** …… `GET https://api.anthropic.com/api/oauth/usage`。
-  CLI の `/usage` が叩いている口で、**CLI 側に出口が無い**(サブコマンドが無く、
+- Claude Code CLI …… `GET https://api.anthropic.com/api/oauth/usage`。
+  CLI の `/usage` が叩いている口で、CLI 側に出口が無い(サブコマンドが無く、
   対話画面の中でしか出ない)ので同じトークンで直に引く。ブリッジが立っていなくても引ける
-- **Codex CLI** …… ブリッジの `/usage`(`codex app-server` の `account/rateLimits/read`)。
-  **手元に控えた auth.json は期限切れになる** —— CLI に聞けば更新はあちらがやる
-- **Antigravity CLI** …… ブリッジの `/usage`(`agy` の print モード)。
+- Codex CLI …… ブリッジの `/usage`(`codex app-server` の `account/rateLimits/read`)。
+  手元に控えた auth.json は期限切れになる —— CLI に聞けば更新はあちらがやる
+- Antigravity CLI …… ブリッジの `/usage`(`agy` の print モード)。
   残クレジットを取る RPC はあるが、外から叩ける口としては公開されていない
-- **OpenRouter** …… `GET /api/v1/key`。クレジットの使用額と残高がそのまま返る
+- OpenRouter …… `GET /api/v1/key`。クレジットの使用額と残高がそのまま返る
 
-**Gemini・OpenAI・推論サーバには口が無い**(Gemini の残量は Google Cloud の Quotas API 側、
-OpenAI の使用量は Admin キーが要る)。**「出せない」と画面に書く** ——
+Gemini・OpenAI・推論サーバには口が無い(Gemini の残量は Google Cloud の Quotas API 側、
+OpenAI の使用量は Admin キーが要る)。「出せない」と画面に書く ——
 空欄にすると「使っていない」と読めてしまう。
 
-**枠を取るのは押されたときだけ。** 管理画面は描画のたびに相手へ問い合わせない
+枠を取るのは押されたときだけ。 管理画面は描画のたびに相手へ問い合わせない
 (「接続を試す」と同じ流儀)—— 落ちている相手がいると、その数だけ画面が遅れる。
 控えてある値と「いつ取ったか」を出し、取り直しはボタンで。
 """
@@ -39,16 +39,16 @@ from app import media_providers, providers, settings_store, usage_store
 
 log = logging.getLogger("chiezo.usage")
 
-# Claude のサブスクの枠を引く口。**Claude Code の `/usage` が叩いているのと同じ**で、
+# Claude のサブスクの枠を引く口。Claude Code の `/usage` が叩いているのと同じで、
 # 公開ドキュメントには載っていない(CLI の中から見つけたもの)。相手の都合で消えうるので、
 # 取れなかった理由をそのまま画面に出す作りにしてある。
 ANTHROPIC_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 
-# 相手へ聞きに行くときの上限秒数。**短くする** —— 押した人を待たせる操作で、
+# 相手へ聞きに行くときの上限秒数。短くする —— 押した人を待たせる操作で、
 # しかも 1 つ落ちていても他は出したい。
 TIMEOUT = 10.0
 
-# Chiezo が使ったぶんを数える窓。**先頭は 5 時間** —— サブスクの「セッション」が
+# Chiezo が使ったぶんを数える窓。先頭は 5 時間 —— サブスクの「セッション」が
 # その長さなので、枠の数字と並べたときに同じ期間の話になる。
 SPENT_WINDOWS: tuple[tuple[str, timedelta], ...] = (
     ("5h", timedelta(hours=5)),
@@ -59,7 +59,7 @@ SPENT_WINDOWS: tuple[tuple[str, timedelta], ...] = (
 
 @dataclass
 class Window:
-    """枠 1 つぶん。**相手ごとに単位が違う**ので、割合と実数の両方を持てる形にしてある。
+    """枠 1 つぶん。相手ごとに単位が違うので、割合と実数の両方を持てる形にしてある。
 
     - 使用率で言う相手(Claude・Codex)…… `used_percent`
     - 金額で言う相手(OpenRouter)…… `used` / `limit` / `unit`
@@ -106,7 +106,7 @@ class UsageError(Exception):
 
 
 def _window_from(raw: dict) -> Window | None:
-    """控えから窓を組み直す。**知らないキーは捨てる** —— 版が変わって項目が増えても、
+    """控えから窓を組み直す。知らないキーは捨てる —— 版が変わって項目が増えても、
     古い控えを読んだ瞬間に画面ごと落ちないようにするため。"""
     fields = set(Window.__dataclass_fields__)
     known = {k: v for k, v in raw.items() if k in fields}
@@ -118,7 +118,7 @@ def _window_from(raw: dict) -> Window | None:
 def _client(headers: dict[str, str] | None = None, timeout: float = TIMEOUT) -> httpx.AsyncClient:
     """相手へ聞きに行くための HTTP クライアント。
 
-    **テストはここを差し替える**(`app/answer.py` の `_llm_client` と同じ流儀)——
+    テストはここを差し替える(`app/answer.py` の `_llm_client` と同じ流儀)——
     偽のサーバを立てずに、応答の読み方まで通しで確かめられるようにするため。
     """
     return httpx.AsyncClient(timeout=timeout, headers=headers or {})
@@ -142,7 +142,7 @@ def _iso(value) -> str:
 
 
 def _window_label(minutes: float | None, fallback: str) -> str:
-    """窓の長さから名前を作る。**相手は名前を持たない**(primary / secondary としか
+    """窓の長さから名前を作る。相手は名前を持たない(primary / secondary としか
     言わない)ので、長さで呼ぶ —— どちらが 5 時間でどちらが週かは、そこにしか無い。"""
     if not minutes:
         return fallback
@@ -155,7 +155,7 @@ def _window_label(minutes: float | None, fallback: str) -> str:
 
 # ---- 相手ごとの聞き方 -------------------------------------------------------
 
-# `/api/oauth/usage` が返す窓と、画面に出す名前。**知っている名前だけ出す** ——
+# `/api/oauth/usage` が返す窓と、画面に出す名前。知っている名前だけ出す ——
 # 相手が増やした窓を推測で訳すと、意味の違う数字に名前を付けることになる。
 _ANTHROPIC_WINDOWS = {
     "five_hour": "セッション(5 時間)",
@@ -166,10 +166,10 @@ _ANTHROPIC_WINDOWS = {
 
 
 async def _anthropic(credential: str) -> list[Window]:
-    """Claude のサブスクの枠。**Claude Code の `/usage` と同じ口**を同じトークンで引く。
+    """Claude のサブスクの枠。Claude Code の `/usage` と同じ口を同じトークンで引く。
 
     返るのは窓ごとの `utilization`(0〜100 の使用率)と `resets_at`。
-    **会話は 1 往復もしない**ので、確かめるたびに枠を食うことはない。
+    会話は 1 往復もしないので、確かめるたびに枠を食うことはない。
     """
     headers = {
         "Authorization": f"Bearer {credential}",
@@ -183,7 +183,7 @@ async def _anthropic(credential: str) -> list[Window]:
     except httpx.HTTPError as e:
         raise UsageError(f"つながりません: {e}") from None
     if res.status_code >= 400:
-        # **本文まで出す。** 「HTTP 403」だけでは、トークンが古いのか、この口が
+        # 本文まで出す。 「HTTP 403」だけでは、トークンが古いのか、この口が
         # その種類のトークンを受け付けないのかが分からない(打つ手が変わる)。
         # 鍵はヘッダで送っているので本文には載らない(絵と音の相手と同じ判断)。
         raise UsageError(f"{_anthropic_hint(res.text)}HTTP {res.status_code}: {res.text[:300]}")
@@ -210,10 +210,10 @@ async def _anthropic(credential: str) -> list[Window]:
     return windows
 
 
-# **`claude setup-token` のトークンではこの口は通らない**(実測: HTTP 403
+# `claude setup-token` のトークンではこの口は通らない(実測: HTTP 403
 # `OAuth token does not meet scope requirement user:profile`)。長期トークンは
 # 安全のため推論だけに絞られていて、`claude auth login` の完全スコープにしか
-# `user:profile` が入らない。**打つ手が変わるので、そうと分かるように書く** ——
+# `user:profile` が入らない。打つ手が変わるので、そうと分かるように書く ——
 # 生の英文だけだと「鍵が間違っている」と読んでトークンを入れ直すことになる。
 SCOPE_HINT = (
     "この口には user:profile スコープが要ります。"
@@ -229,7 +229,7 @@ def _anthropic_hint(body: str) -> str:
 async def _openrouter(spec: providers.Provider, credential: str) -> list[Window]:
     """OpenRouter のクレジット。使った額と、上限があれば残高。
 
-    **上限が無い鍵もある**(従量課金)ので、`limit` が null のときは使用額だけ出す ——
+    上限が無い鍵もある(従量課金)ので、`limit` が null のときは使用額だけ出す ——
     残りを 0 と書くと、使い切ったように読める。
     """
     url = f"{providers.url_of(spec).rstrip('/')}/key"
@@ -269,7 +269,7 @@ async def _openrouter(spec: providers.Provider, credential: str) -> list[Window]
 async def _bridge(spec: providers.Provider) -> list[Window]:
     """CLI ブリッジに聞く(ブリッジが CLI に聞く)。
 
-    **ブリッジが立っていなければ取れない。** 枠は CLI の中にしか無いので、
+    ブリッジが立っていなければ取れない。 枠は CLI の中にしか無いので、
     ここは「相手が立っていること」が前提になる —— 立っていないことも理由として出す。
     """
     base = providers.url_of(spec).rstrip("/")
@@ -314,7 +314,7 @@ async def _bridge(spec: providers.Provider) -> list[Window]:
 def _bridge_error(body: dict, status: int) -> str:
     """ブリッジが返した理由を取り出す。
 
-    **FastAPI は `HTTPException` の中身を `detail` に包む**ので、そこまで見ないと
+    FastAPI は `HTTPException` の中身を `detail` に包むので、そこまで見ないと
     「HTTP 401」としか出せない —— 打つ手が分かるのは中の文言のほう。
     """
     detail = body.get("detail")
@@ -343,7 +343,7 @@ async def fetch(spec: providers.Provider) -> list[Window]:
 
 
 async def refresh(provider_id: str) -> Quota:
-    """1 相手ぶん取り直して控える。**失敗も控える**(理由を画面に出すため)。"""
+    """1 相手ぶん取り直して控える。失敗も控える(理由を画面に出すため)。"""
     spec = providers.get(provider_id)
     if spec is None or not spec.usage:
         return Quota(supported=False)
@@ -400,9 +400,9 @@ def _spent_all() -> dict[str, dict[str, usage_store.Spent]]:
 
 
 def rows() -> list[dict]:
-    """画面と API が使う 1 行ぶんずつ。**相手へは問い合わせない**(控えを読むだけ)。
+    """画面と API が使う 1 行ぶんずつ。相手へは問い合わせない(控えを読むだけ)。
 
-    **絵と音だけの相手(自前の GPU・ElevenLabs)も並べる** —— あちらも呼べば回数が
+    絵と音だけの相手(自前の GPU・ElevenLabs)も並べる —— あちらも呼べば回数が
     増えるので、話す相手だけ出すと「頼んだはずの回数が出てこない」ことになる。
     """
     stored = usage_store.load_quota()
@@ -439,6 +439,6 @@ def rows() -> list[dict]:
 
 
 async def refresh_all() -> None:
-    """枠を聞ける相手を**並行に**取り直す。直列だと落ちている相手の数だけ待つ。"""
+    """枠を聞ける相手を並行に取り直す。直列だと落ちている相手の数だけ待つ。"""
     targets = [p.id for p in providers.all_providers() if p.usage]
     await asyncio.gather(*(refresh(pid) for pid in targets), return_exceptions=True)

@@ -2,23 +2,23 @@
 
 設計の要点:
 
-- **推論は同居させない**。この層がするのは OpenAI 互換の `/chat/completions` を叩くことだけで、
+- 推論は同居させない。この層がするのは OpenAI 互換の `/chat/completions` を叩くことだけで、
   モデルは別コンテナ(compose の profile `answer` の `chiezo-llm`)か LAN 上の別マシンにいる。
   配信側 chiezo-api が数百 MB で動く前提を壊さないため、ここにモデルを抱えない。
-- **`CHIEZO_LLM_URL` が機能フラグを兼ねる**。未設定なら使う層は丸ごと無効
+- `CHIEZO_LLM_URL` が機能フラグを兼ねる。未設定なら使う層は丸ごと無効
   (`/v1/ask` は 503、管理画面にも無効と出る)。既定では起動しないことをこの 1 変数で守る。
-- **話す相手は複数持てる**(バックエンド)。`CHIEZO_LLM_URL` が名前なしの既定で、
+- 話す相手は複数持てる(バックエンド)。`CHIEZO_LLM_URL` が名前なしの既定で、
   `CHIEZO_LLM_<名前>_URL` を足すと選べる相手が増える。要求するのは OpenAI 互換の
   `/chat/completions` だけなので、ローカルの推論サーバでも Gemini・OpenRouter でも、
   CLI を OpenAI 互換に見せるブリッジでも、同じ 1 本の口で扱える。
-- **検索は `app/main.py` のエンドポイント関数をそのまま呼ぶ**(`app/mcp_server.py` と同じ方針)。
+- 検索は `app/main.py` のエンドポイント関数をそのまま呼ぶ(`app/mcp_server.py` と同じ方針)。
   取り出し方を二重に持つと、片方だけ直されて必ずずれる。
-- **2 段の RAG**(クエリ生成 → 取得 → 回答)。質問文をそのまま FTS に入れても当たらないため
+- 2 段の RAG(クエリ生成 → 取得 → 回答)。質問文をそのまま FTS に入れても当たらないため
   (`app/fts.py` は空白区切りの各語をフレーズにして AND 結合するので、
   「浅草寺はどこにある?」は 1 個の長いフレーズになり何にもマッチしない)、
   検索語は LLM に組み立てさせる。ツール呼び出しループにしないのは、小型のローカルモデルでは
   ツール呼び出しが不安定で、暴走・長時間化しやすいから。何をどう引くかは Chiezo 側が決め打つ。
-- **クエリ生成が壊れても回答まで到達させる**。小型モデルの JSON 出力は当てにならないので、
+- クエリ生成が壊れても回答まで到達させる。小型モデルの JSON 出力は当てにならないので、
   厳密なパース → `"q"` の拾い出し → 質問文そのまま、の順に諦めながら落ちる
   (最後の段は当たりが悪い劣化経路だが、黙って 500 を返すよりはよい)。
 """
@@ -79,7 +79,7 @@ class Settings:
     name: str = ""
     # 考える量（`reasoning_effort`）。空なら送らない = 相手の既定に任せる。
     effort: str = ""
-    # **モデルを控え（`app/providers.py` の決め打ち）から当てたか。** 控えは相手の都合で
+    # モデルを控え（`app/providers.py` の決め打ち）から当てたか。 控えは相手の都合で
     # 古くなる（実測: 保存も選択もしていない Gemini が 404 になった＝その名前のモデルが
     # 消えていた）ので、当てた場合は後から相手に聞いて選び直す（`ensure_model`）。
     model_is_fallback: bool = False
@@ -92,7 +92,7 @@ class Settings:
 def _normalize_base_url(raw: str) -> str:
     """`http://host:8080` でも `http://host:8080/v1` でも受け取れるようにする。
 
-    **補うのはパスを持たない相手にだけ**。llama-server や Ollama は `http://host:11434`
+    補うのはパスを持たない相手にだけ。llama-server や Ollama は `http://host:11434`
     のようにホストだけを書きがちなので `/v1` を足すが、既にパスがある相手に足すと壊れる ——
     Gemini の OpenAI 互換の口は `https://generativelanguage.googleapis.com/v1beta/openai`
     で、その下が直接 `chat/completions` である(`/v1` を挟む場所は無い)。
@@ -125,11 +125,11 @@ def _env_num(name: str, default, cast):
 def normalize_model_id(raw: str) -> str:
     """`models/gemini-3.7-flash` → `gemini-3.7-flash`。
 
-    **Gemini の `/models` だけが `models/` を付けて返す**が、同じ相手の
+    Gemini の `/models` だけが `models/` を付けて返すが、同じ相手の
     `chat/completions` はその形を受け付けず 404 になる(実測)。画面の選択肢は
-    一覧から作るので、剥がさないと**選んだ瞬間に必ず失敗する**。
+    一覧から作るので、剥がさないと選んだ瞬間に必ず失敗する。
 
-    剥がすのは**先頭の `models/` だけ**。OpenRouter の `qwen/qwen3-coder:free` の
+    剥がすのは先頭の `models/` だけ。OpenRouter の `qwen/qwen3-coder:free` の
     ようなスラッシュを含む ID は触らない。
     """
     return (raw or "").strip().removeprefix("models/")
@@ -147,7 +147,7 @@ def normalize_backend(name: str | None) -> str:
 def backend_names() -> list[str]:
     """いま話せる相手（管理画面で有効にしてあるもの）を、画面の並び順で返す。
 
-    **同居の推論サーバも外部のサービスも CLI ブリッジも同じ扱い。** 特別扱いする相手は無い。
+    同居の推論サーバも外部のサービスも CLI ブリッジも同じ扱い。 特別扱いする相手は無い。
     コンテナが立っているかどうかまではここでは見ない（HTTP を叩くので遅い）。
     そちらは `app/views/ai_settings.py` が管理画面を描くときに確かめる。
     """
@@ -163,14 +163,14 @@ def backend_names() -> list[str]:
 
 
 def backend_label(backend: str) -> str:
-    """画面に出す相手の名前。**見出しのモデル名とは別**で、どの設定かを指す。"""
+    """画面に出す相手の名前。見出しのモデル名とは別で、どの設定かを指す。"""
     return providers.label_of(backend)
 
 
 def normalize_effort(backend: str, effort: str | None) -> str:
     """選ばれたエフォートを検証する。知らない値は空（＝相手の既定）にする。
 
-    **相手が検証してくれない。** claude は `--effort bogus` を黙って受け取り、
+    相手が検証してくれない。 claude は `--effort bogus` を黙って受け取り、
     エラーも警告も出さずに既定で動く（実測）—— 打ち間違いに気づけないので、
     ここで一覧に無いものを落とす。
     """
@@ -202,7 +202,7 @@ def load_settings(
     if spec is None:
         return None
     stored = settings_store.load(name)
-    # **「接続を試す」だけは無効の相手にも組み立てる。** 試さないと on にできない仕様なので、
+    # 「接続を試す」だけは無効の相手にも組み立てる。 試さないと on にできない仕様なので、
     # ここで無効を弾くと「試せないから on にできない」の堂々巡りになる（実際に踏んだ）。
     if require_enabled and not stored.enabled:
         return None
@@ -211,9 +211,9 @@ def load_settings(
     if spec.credential == providers.CRED_REQUIRED and not stored.has_credential:
         return None
     chosen = normalize_model_id(model or stored.model or "")
-    # **モデルを選ばなかったとき。** 指定が要る相手には控えの先頭を当てる（Gemini に
+    # モデルを選ばなかったとき。 指定が要る相手には控えの先頭を当てる（Gemini に
     # モデル無しで投げても通らない）が、自分で決められる相手（CLI ブリッジ・1 プロセス
-    # 1 モデルの推論サーバ）には**何も渡さない** —— 画面の「既定」がそれを選べる。
+    # 1 モデルの推論サーバ）には何も渡さない —— 画面の「既定」がそれを選べる。
     from_fallback = False
     if not chosen and spec.model_required and spec.models:
         chosen = spec.models[0]
@@ -229,9 +229,9 @@ def load_settings(
         api_key=stored.credential or None,
         # DB の 5 秒とは別枠。CPU 推論は数十秒級になる。
         #
-        # **CLI ブリッジの相手だけ桁を変える。** あちらは道具を何度も引くので分単位に
+        # CLI ブリッジの相手だけ桁を変える。 あちらは道具を何度も引くので分単位に
         # なりうるうえ、ブリッジ自身が上限(`CHIEZO_BRIDGE_TIMEOUT`。既定 300 秒、
-        # compose では 600 秒)を持っている。**待つ側が先に切れてはいけない** ——
+        # compose では 600 秒)を持っている。待つ側が先に切れてはいけない ——
         # 切れると画面には ReadTimeout しか出ず、「向こうが何秒で諦めたか」も
         # 「そもそも何が起きたか」も分からなくなる(実測: claude を effort=high で
         # 呼んだら 120 秒で切れ、504 llm timeout しか残らなかった)。
@@ -286,14 +286,14 @@ def short_model_name(model_id: str) -> str:
 async def model_label(cfg: Settings) -> str | None:
     """いま話している相手(モデル)の名前。分からなければ None。
 
-    **Chiezo は知識ベースで、話す相手は AI** という関係を画面に出すために要る。
+    Chiezo は知識ベースで、話す相手は AI という関係を画面に出すために要る。
     設定でモデルが決まっていればそれを、決まっていなければ相手の `/models` に聞く
     (llama-server は 1 プロセス 1 モデルなので、選ばずに使う運用のほうが普通)。
     相手が落ちていても画面は出したいので、失敗は None として覚えて先へ進む。
 
-    **一覧が 2 つ以上あるときは名乗らない。** それは「選べるもの」の並びであって、
+    一覧が 2 つ以上あるときは名乗らない。 それは「選べるもの」の並びであって、
     いま使われているものではない —— CLI ブリッジは受け付けるエイリアスを全部返すので、
-    先頭を採ると `sonnet` のように**選んでもいないモデル名**が画面に出る。
+    先頭を採ると `sonnet` のように選んでもいないモデル名が画面に出る。
     呼び出し側が相手の名前（`Claude Code`）に落とせるよう、ここは None を返す。
     """
     # 設定で決まっているモデルがあればそれを名乗る（相手に聞くのは決まっていないときだけ）。
@@ -321,7 +321,7 @@ async def model_label(cfg: Settings) -> str | None:
 async def reachable(url: str, api_key: str | None = None, timeout: float = 3.0) -> bool:
     """その URL に OpenAI 互換の相手がいるか。
 
-    **CLI ブリッジを on にしてよいかの判定**に使う。ブリッジは別コンテナで、
+    CLI ブリッジを on にしてよいかの判定に使う。ブリッジは別コンテナで、
     compose のコメントを外していなければ立っていない。立っていない相手を有効にしても
     会話のたびに失敗するだけなので、管理画面はここが真のときだけ on を押させる。
 
@@ -341,7 +341,7 @@ async def reachable(url: str, api_key: str | None = None, timeout: float = 3.0) 
 async def check_credential(cfg: Settings) -> tuple[bool, str]:
     """その相手といま実際に話せるか。(判定, 理由) を返す。
 
-    **`/models` を引くだけで、会話は 1 往復もしない。** 打ち間違えたキーや期限切れは
+    `/models` を引くだけで、会話は 1 往復もしない。 打ち間違えたキーや期限切れは
     「登録されているか」では分からず、会話して初めて失敗する —— それを登録の直後に
     確かめられるようにするためのもので、確かめるたびにサブスクの枠を食っては本末転倒。
 
@@ -368,7 +368,7 @@ MODELS_TTL = 300.0
 async def available_models(backend: str) -> list[str]:
     """会話で選べるモデルの一覧。
 
-    **相手に聞くのを優先し、聞けなければコードの候補に落ちる。** OpenRouter のように
+    相手に聞くのを優先し、聞けなければコードの候補に落ちる。 OpenRouter のように
     提供モデルが頻繁に入れ替わる相手ではコードの控えがすぐ古くなるし、CLI ブリッジのように
     一覧を持たない相手もいる。両方あるときは相手の答えが正。
     """
@@ -403,7 +403,7 @@ def default_mode() -> str:
     """`mode` を省いたときの既定(`CHIEZO_ASK_DEFAULT_MODE`)。
 
     素の既定を `rag` にしてあるのは、agent がツール呼び出しの安定するモデル(8B 級)と
-    GPU を前提にするため。**環境ごとに違う判断**なので、潤沢な環境では .env で
+    GPU を前提にするため。環境ごとに違う判断なので、潤沢な環境では .env で
     `agent` に倒せるようにしてある(小さな機械に設定が持ち込まれない側に倒す)。
     """
     value = os.environ.get("CHIEZO_ASK_DEFAULT_MODE", "").strip().lower()
@@ -411,12 +411,12 @@ def default_mode() -> str:
 
 
 def resolve_mode(backend: str | None, mode: str | None) -> str:
-    """その相手で実際に使える引き方。**道具を引けない相手では agent を選ばせない**。
+    """その相手で実際に使える引き方。道具を引けない相手では agent を選ばせない。
 
     agent は「モデル自身に道具を引かせる」やり方なので、MCP を引けない相手
     (Codex。上流の不具合)では道具の無いまま 1 往復するだけになり、Chiezo の知識が
     まったく効かない答えが返る。rag なら Chiezo 側が抜粋を集めてプロンプトに載せるので、
-    同じ相手でも根拠つきで答えられる —— **黙って質を落とすより、引き方を倒すほうがよい**。
+    同じ相手でも根拠つきで答えられる —— 黙って質を落とすより、引き方を倒すほうがよい。
     """
     chosen = (mode or default_mode()).strip().lower()
     if chosen not in ("rag", "agent"):
@@ -465,11 +465,11 @@ def require_settings(
 
 
 async def ensure_model(cfg: Settings) -> Settings:
-    """モデルを**控えから当てた**ときだけ、相手に聞いて先頭へ差し替える。
+    """モデルを控えから当てたときだけ、相手に聞いて先頭へ差し替える。
 
     控え(`app/providers.py`)は相手の都合で古くなる —— 消えたモデル名を送ると 404 に
     なり、画面には「llm error 404」としか出ない。相手が一覧を返せないときは控えのまま
-    (それ以上できることが無い)。**選んだ・保存したモデルには触らない。**
+    (それ以上できることが無い)。選んだ・保存したモデルには触らない。
     """
     if not cfg.model_is_fallback:
         return cfg
@@ -477,7 +477,7 @@ async def ensure_model(cfg: Settings) -> Settings:
     if not models or cfg.model in models:
         return cfg
 
-    # **控えの中で、まだ相手にあるものを優先する。** 相手の一覧は「新しい順」でも
+    # 控えの中で、まだ相手にあるものを優先する。 相手の一覧は「新しい順」でも
     # 「会話用だけ」でもない(Gemini は引退したモデル・読み上げ・埋め込みまで並べ、
     # 先頭は古い 2.5 系)。控えの並びはこちらが選んだ順なので、そこから生き残りを拾う
     spec = providers.get(cfg.name)
@@ -513,7 +513,7 @@ def _payload(cfg: Settings, messages: list[dict], *, stream: bool, **extra) -> d
         "stream": stream,
         **extra,
     }
-    # **選ばれたときだけ送る。** 既定では触らない —— 知らない項目を無視せず
+    # 選ばれたときだけ送る。 既定では触らない —— 知らない項目を無視せず
     # 400 で弾く相手がいるので、使わない機能を毎回載せない。
     if cfg.effort:
         payload["reasoning_effort"] = cfg.effort
@@ -525,21 +525,21 @@ REASON_MAX = 300
 
 
 def _upstream_reason(body: str) -> str:
-    """相手が返したエラー本文から、**構造化された一言だけ**を取り出す。
+    """相手が返したエラー本文から、構造化された一言だけを取り出す。
 
     本文をそのまま返さないのは `_upstream_error` と同じ理由(内部構成が漏れる)。
-    かといって握り潰すと、画面には「llm error 502」しか出ず**何が起きたか追えない**
+    かといって握り潰すと、画面には「llm error 502」しか出ず何が起きたか追えない
     —— CLI ブリッジが「root では権限確認を飛ばせない」と言っていたのに、
     それが一切画面へ出ずに詰まったことがある。
 
-    そこで**決まった場所に入っている文言だけ**を通す。読めない形なら空を返す
+    そこで決まった場所に入っている文言だけを通す。読めない形なら空を返す
     (status code だけが出る)。
     """
     try:
         doc = json.loads(body)
     except ValueError:
         return ""
-    # **Gemini はエラーを配列で返す**(`[{"error": {...}}]`)。dict しか見ていなかった
+    # Gemini はエラーを配列で返す(`[{"error": {...}}]`)。dict しか見ていなかった
     # ときは理由が落ちて、画面には「llm error 503」しか出なかった(実測)。
     if isinstance(doc, list):
         doc = doc[0] if doc and isinstance(doc[0], dict) else {}
@@ -567,7 +567,7 @@ def _upstream_reason(body: str) -> str:
 def _note_failure(cfg: Settings, messages: list[dict], status: int, reason: str) -> None:
     """失敗を控えに残す(`app/ai_log.py`)。
 
-    残す場所を呼び出しの側にしているのは、**相手とプロンプトの大きさがここにしかない**ため。
+    残す場所を呼び出しの側にしているのは、相手とプロンプトの大きさがここにしかないため。
     `_llm_error` / `_upstream_error` は応答を組むだけで、どの相手にどれだけ送ったかを知らない。
     """
     ai_log.record(
@@ -583,7 +583,7 @@ def _note_failure(cfg: Settings, messages: list[dict], status: int, reason: str)
 def _upstream_error(exc: Exception) -> HTTPException:
     """推論サーバ側の失敗を、Chiezo のエラー形式に翻訳する。
 
-    **例外の文言はそのまま返さない**(ログには全部残す)。中身には接続先のホスト名や
+    例外の文言はそのまま返さない(ログには全部残す)。中身には接続先のホスト名や
     ポート、内部の解決失敗の詳細が入ることがあり、それを応答に載せると、認証の無い
     画面から内部構成が読めてしまう。呼び出し側が次の手を決めるのに要るのは
     「繋がらない」のか「遅い」のかの区別なので、そこだけ返す。
@@ -600,7 +600,7 @@ def _llm_error(status: int, body: str, model: str = "") -> dict:
     if reason := _upstream_reason(body):
         detail["reason"] = reason
     if status == 404:
-        # **404 はたいていモデル名。** 相手のモデルは入れ替わるので、こちらの控えが
+        # 404 はたいていモデル名。 相手のモデルは入れ替わるので、こちらの控えが
         # 古いままだと「その名前は無い」で 404 になる(実測: gemini-2.5-flash)
         detail["hint"] = (
             f"モデル名(`{model}`)が相手に無い可能性があります。"
@@ -609,10 +609,10 @@ def _llm_error(status: int, body: str, model: str = "") -> dict:
     return detail
 
 
-# **混んでいるだけの失敗は引き直す。** Gemini は「いま混んでいる」を 503 で返し
+# 混んでいるだけの失敗は引き直す。 Gemini は「いま混んでいる」を 503 で返し
 # (`The model is overloaded`)、数秒後には通ることが多い。agent モードでは道具を
 # 何度も引いた後に落ちるので、1 回の 503 でその手間ごと捨てるのは惜しい。
-# **待ち時間は短く、回数も少なく** —— 相手が本当に落ちているときに粘っても、
+# 待ち時間は短く、回数も少なく —— 相手が本当に落ちているときに粘っても、
 # 画面の前の人を待たせるだけ。
 RETRY_STATUSES = (429, 503)
 RETRY_WAITS = (1.0, 3.0)
@@ -632,11 +632,11 @@ async def _post_with_retry(client: httpx.AsyncClient, cfg: Settings, payload: di
 def _record_usage(cfg: Settings, usage: dict | None) -> None:
     """1 往復ぶんを使用量に残す(`app/usage_store.py`)。
 
-    **相手がトークン数を言わなければ `None` のまま残す。** 0 と書くと、数を返さない相手
+    相手がトークン数を言わなければ `None` のまま残す。 0 と書くと、数を返さない相手
     (CLI ブリッジ)が「0 トークンで動く相手」に見える —— 回数だけは確かなので、
     そちらは必ず 1 増える。
 
-    **失敗しても会話を止めない**(記録側が例外を投げない作りにしてある)。
+    失敗しても会話を止めない(記録側が例外を投げない作りにしてある)。
     """
     tokens = usage if isinstance(usage, dict) else {}
 
@@ -658,7 +658,7 @@ def _record_usage(cfg: Settings, usage: dict | None) -> None:
 
 
 async def complete_message(cfg: Settings, messages: list[dict], **extra) -> dict:
-    """1 回の応答を**メッセージまるごと**取る。
+    """1 回の応答をメッセージまるごと取る。
 
     `_complete` が本文だけを返すのに対し、こちらは `tool_calls` を含む assistant
     メッセージをそのまま返す(agent モードは次のターンにこれを丸ごと積み直す必要がある)。
@@ -713,7 +713,7 @@ async def _complete(cfg: Settings, messages: list[dict], **extra) -> str:
 async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator[str]:
     """OpenAI 互換の SSE を読んで、本文の差分だけを順に返す。
 
-    **混雑(429/503)は流し始める前だけ引き直す。** 1 文字でも返した後に引き直すと、
+    混雑(429/503)は流し始める前だけ引き直す。 1 文字でも返した後に引き直すと、
     画面に同じ答えが二重に出る。
     """
     for wait in (*RETRY_WAITS, None):
@@ -746,7 +746,7 @@ async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator
                         continue  # 使い物にならないフレームは黙って捨てる
                     if delta:
                         yield delta
-                # **流し切ったら 1 回ぶん残す。** 差分の応答にトークン数は載らない
+                # 流し切ったら 1 回ぶん残す。 差分の応答にトークン数は載らない
                 # (`stream_options` を送れば載る相手もいるが、送ると 400 で断る相手がいる)
                 # ので、回数だけを記録する。
                 _record_usage(cfg, None)
@@ -895,7 +895,7 @@ async def plan_queries(
 ) -> list[dict]:
     """質問から検索クエリを組み立てる。
 
-    `source` を指定されたときも**この段は省かない**。ソースを固定してもクエリ生成の
+    `source` を指定されたときもこの段は省かない。ソースを固定してもクエリ生成の
     仕事(質問文 → 検索語)は残るからで、ここを飛ばすと「浅草寺はどこにある?」が
     そのまま FTS に入って 0 件になる。指定は選べるソースを 1 つに絞るだけに使う。
     """
@@ -935,7 +935,7 @@ def gather_context(
     """検索クエリを実行し、(抜粋, 出典) を返す。同期(呼び出し側がスレッドへ逃がす)。
 
     検索・文書取得は `app/main.py` のエンドポイント関数をそのまま呼ぶ。FastAPI の
-    エンドポイントは既定値が `Query(...)` オブジェクトなので、**全パラメータを明示的に渡す**
+    エンドポイントは既定値が `Query(...)` オブジェクトなので、全パラメータを明示的に渡す
     (省略すると Query インスタンスが値として入り、例外にならず静かに壊れる)。
     """
     from app import main as api
@@ -1010,7 +1010,7 @@ def gather_context(
 
 
 # 回答方針は 2 つあり、`grounded` で切り替える。これは Chiezo の設計思想ではなく
-# **モデルの幻覚への対処**なので、固定の制約にはしない(Chiezo は AI 用の知識ベースで、
+# モデルの幻覚への対処なので、固定の制約にはしない(Chiezo は AI 用の知識ベースで、
 # ローカル LLM はそれを使う側。持っている知識を封じるのが目的ではない)。
 ANSWER_SYSTEM_GROUNDED = """\
 あなたは AI アシスタントです。ローカル知識ベース「Chiezo」から抜き出した文章を渡すので、
@@ -1120,7 +1120,7 @@ async def stream_answer(
 ) -> AsyncIterator[str]:
     """回答本文を差分で返す(`/v1/ask?stream=1` の本体)。
 
-    取得(`prepare`)は呼び出し側が**先に**済ませること。ストリーミング応答は
+    取得(`prepare`)は呼び出し側が先に済ませること。ストリーミング応答は
     ヘッダを送った後で失敗してもステータスコードを変えられないので、
     クエリ生成・検索の失敗は流し始める前に HTTP のエラーとして返す必要がある。
     """

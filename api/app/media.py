@@ -1,22 +1,22 @@
 """生成した画像・音・動画・音声の置き場と、生成の進み具合(ジョブ)の記録。
 
-**なぜ非同期(ジョブ)なのか。** 生成は数秒〜数分かかる。MCP の道具呼び出しで数分待つと
+なぜ非同期(ジョブ)なのか。 生成は数秒〜数分かかる。MCP の道具呼び出しで数分待つと
 呼び出し側が先に切れるので、頼む口は job を返し、進み具合は別の口で引く。
 
-**なぜ SQLite なのか。** chiezo-api は `--workers 2` で動く。プロセス内の辞書に持つと、
+なぜ SQLite なのか。 chiezo-api は `--workers 2` で動く。プロセス内の辞書に持つと、
 頼んだワーカーと状態を聞かれたワーカーが別だったときに「そんなジョブは無い」になる。
-設定 DB(`settings.db`)とは**別ファイル**にする —— あちらは CLI ブリッジが読み取り専用で
+設定 DB(`settings.db`)とは別ファイルにする —— あちらは CLI ブリッジが読み取り専用で
 マウントしているので、書き込みの多い表を同居させたくない。
 
-**中身は base64 で返さない。** 画像は 1 枚 1〜2MB、音も曲なら同じくらいある。道具の結果は
-まるごと呼び出し側のコンテキストに載るので、ファイルに書いて**パスと URL** を返し、
+中身は base64 で返さない。 画像は 1 枚 1〜2MB、音も曲なら同じくらいある。道具の結果は
+まるごと呼び出し側のコンテキストに載るので、ファイルに書いてパスと URL を返し、
 要るときだけ取りに来てもらう。
 
-**kind が違ってもジョブの表を分けない。** 置き場・掃除・中断の後始末・配信は同じ仕事で、
+kind が違ってもジョブの表を分けない。 置き場・掃除・中断の後始末・配信は同じ仕事で、
 違うのは頼むときの語彙(サイズ / 長さ / 尺 / 声)だけ。分けると同じ後始末を kind の数だけ
 持つことになる。
 
-**文字起こしだけは job にならない。** 送る側が既に音を持っていて、返るのは文字(数 KB)
+文字起こしだけは job にならない。 送る側が既に音を持っていて、返るのは文字(数 KB)
 —— 置き場も掃除も配信も要らないので、その場で返すほうが呼ぶ側の手数が少ない。
 """
 from __future__ import annotations
@@ -41,19 +41,19 @@ from app import media_backends, media_providers, settings_store, usage_store
 
 log = logging.getLogger("chiezo.media")
 
-# **走らせたタスクは掴んでおく。** `asyncio.create_task` の戻り値を捨てると、
-# イベントループは弱参照しか持たないため**実行中に回収されることがある**
+# 走らせたタスクは掴んでおく。 `asyncio.create_task` の戻り値を捨てると、
+# イベントループは弱参照しか持たないため実行中に回収されることがある
 # (生成の途中で黙って止まる)。終わったら外す。
 _RUNNING: set[asyncio.Task] = set()
 
-# 置いたものを残す日数。**放っておくと際限なく溜まる**(1 枚 1〜2MB)。
+# 置いたものを残す日数。放っておくと際限なく溜まる(1 枚 1〜2MB)。
 KEEP_DAYS = int(os.environ.get("CHIEZO_MEDIA_KEEP_DAYS", "14") or 14)
 
-# 1 回に頼める枚数の上限。**seed 違いを並べて選ぶ**用途なので少しは要るが、
+# 1 回に頼める枚数の上限。seed 違いを並べて選ぶ用途なので少しは要るが、
 # GPU を長時間占有させないために止める。
 MAX_COUNT = 4
 
-# **動画だけ別枠。** 1 本で数分と数十 MB を使うので、seed 違いを並べて選ぶ用途でも
+# 動画だけ別枠。 1 本で数分と数十 MB を使うので、seed 違いを並べて選ぶ用途でも
 # 2 本までにしてある(絵と同じ 4 本を許すと、間違えたときの損が大きすぎる)。
 MAX_COUNT_VIDEO = 2
 
@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 """
 
-# 後から足した列。**既にある表は CREATE TABLE IF NOT EXISTS では変わらない**ので、
+# 後から足した列。既にある表は CREATE TABLE IF NOT EXISTS では変わらないので、
 # 足りないものだけ ALTER する(設定 DB と同じやり方)。
 _ADDED_COLUMNS = {"sound": "TEXT", "seconds": "REAL", "voice": "TEXT"}
 
@@ -93,12 +93,12 @@ class JobFile:
     url: str
     seed: int
     model: str
-    # 音の長さ(秒)。**頼んだ秒数ではなく出来たもの**。絵では 0。
+    # 音の長さ(秒)。頼んだ秒数ではなく出来たもの。絵では 0。
     seconds: float = 0.0
 
 
 def media_dir() -> Path | None:
-    """置き場。**未設定なら状態ディレクトリの下**(compose が既にマウントしている)。
+    """置き場。未設定なら状態ディレクトリの下(compose が既にマウントしている)。
 
     どちらも無い環境では画像生成そのものを無効にする —— 書けない場所へ書きに行って
     実行時に落ちるより、「使えない理由」を先に言うほうがよい。
@@ -118,7 +118,7 @@ def is_enabled() -> bool:
 def tools_enabled() -> bool:
     """MCP に道具を出すか。
 
-    **元栓(「答える」層)が止まっていれば出さない。** 「AI は使わない」と決めた環境で
+    元栓(「答える」層)が止まっていれば出さない。 「AI は使わない」と決めた環境で
     絵や音を作る道具だけが並んでいるのは筋が通らないし、押せば 403 になる道具を
     コンテナに載せることになる(使えない道具を並べない、notes と同じ扱い)。
     """
@@ -143,7 +143,7 @@ def require_dir() -> Path:
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(require_dir() / "jobs.db", timeout=10.0)
     conn.row_factory = sqlite3.Row
-    # **WAL にしない。** 置き場はホストのディレクトリをマウントしていることが多く、
+    # WAL にしない。 置き場はホストのディレクトリをマウントしていることが多く、
     # 共有ファイルシステムでは WAL が使えないことがある(設定 DB と同じ判断)。
     conn.execute("PRAGMA journal_mode=DELETE")
     conn.execute(_SCHEMA)
@@ -164,23 +164,23 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     return job
 
 
-# 走っているはずの job を「もう動いていない」と見なすまでの猶予。**1 つぶんの上限 + 余裕**
+# 走っているはずの job を「もう動いていない」と見なすまでの猶予。1 つぶんの上限 + 余裕
 # (更新は 1 つ出来るごとに入るので、これを超えて無音なら誰も面倒を見ていない)。
 STALE_AFTER = media_backends.GENERATE_TIMEOUT + 60
 
-# **動画は待ち時間の桁が違う。** 絵と同じ猶予で畳むと、まだ相手の中で作っている最中の
+# 動画は待ち時間の桁が違う。 絵と同じ猶予で畳むと、まだ相手の中で作っている最中の
 # job を「中断された」と書いてしまい、出来上がった動画を取りに行けなくなる。
 STALE_AFTER_VIDEO = media_backends.VIDEO_TIMEOUT + 60
 
 
 def _reap_stale() -> None:
-    """**誰も面倒を見ていない job を畳む。**
+    """誰も面倒を見ていない job を畳む。
 
     タスクが中断されたときは `_run` が書き残すが、**ワーカーごと落ちた場合は
     そこも通らない**(`--workers 2` で動くので、片方が再起動すれば走っていた生成は消える)。
     running のまま残ると image_status が永遠に running を返し、呼び出し側は待ち続ける。
 
-    **猶予は kind ごとに変える。** 動画だけ桁が違うので、1 つの数字で畳むと
+    猶予は kind ごとに変える。 動画だけ桁が違うので、1 つの数字で畳むと
     「まだ作っている最中のものを失敗にする」か「止まったものを何十分も running のまま
     残す」かのどちらかになる。
     """
@@ -263,7 +263,7 @@ def cleanup(keep_days: int = KEEP_DAYS) -> int:
     return removed
 
 
-# MIME → 拡張子。**相手によって形式が違う**(Gemini の絵は JPEG のみ、音は相手ごとに
+# MIME → 拡張子。相手によって形式が違う(Gemini の絵は JPEG のみ、音は相手ごとに
 # mp3 / wav / flac)ので、決め打ちで書くと名前と中身の食い違ったファイルを配ることになる。
 _EXTENSIONS = {
     "image/png": "png",
@@ -282,7 +282,7 @@ _EXTENSIONS = {
 
 
 def _extension(mime: str) -> str:
-    """知らない MIME でも**それらしい拡張子**を作る(`audio/aac` → `aac`)。
+    """知らない MIME でもそれらしい拡張子を作る(`audio/aac` → `aac`)。
 
     落とすところが無いので、最後は種類ごとの無難なものへ寄せる。
     """
@@ -295,7 +295,7 @@ def _extension(mime: str) -> str:
 
 
 def _save(job_id: str, index: int, item) -> JobFile:
-    """**日付でディレクトリを分ける**(掃除の単位になる)。絵と音で同じ置き方。"""
+    """日付でディレクトリを分ける(掃除の単位になる)。絵と音で同じ置き方。"""
     day = datetime.now(UTC).strftime("%Y%m%d")
     directory = require_dir() / day
     directory.mkdir(parents=True, exist_ok=True)
@@ -313,10 +313,10 @@ def _save(job_id: str, index: int, item) -> JobFile:
 
 
 async def _run(job_id: str, backend: str, req, count: int, kind: str) -> None:
-    """頼まれたぶんを順に作って記録する。**1 つごとに書く** —— 途中で失敗しても、
+    """頼まれたぶんを順に作って記録する。1 つごとに書く —— 途中で失敗しても、
     そこまでの成果は残す(GPU の時間を捨てない)。
 
-    **絵・音・動画・声で違うのは呼ぶ関数だけ**なので、進み方の面倒はここに 1 つだけ置く
+    絵・音・動画・声で違うのは呼ぶ関数だけなので、進み方の面倒はここに 1 つだけ置く
     (呼び分けは `media_backends.generate_for`)。
     """
     _update(job_id, state="running")
@@ -326,14 +326,14 @@ async def _run(job_id: str, backend: str, req, count: int, kind: str) -> None:
             # seed は 1 つごとにずらす(同じ頼みで同じものが並んでも選べない)
             one = replace(req, seed=(req.seed + index) if req.seed else 0)
             item = await media_backends.generate_for(kind, backend, one)
-            # **1 枚 = 1 回。** 絵と音も同じサブスクの枠を食う(Codex / Antigravity)ので、
+            # 1 枚 = 1 回。 絵と音も同じサブスクの枠を食う(Codex / Antigravity)ので、
             # 会話と同じ表に残す —— 分けると「話していないのに枠が減った」が読めない。
             usage_store.record(backend, model=item.model, kind=kind)
             files.append(asdict(_save(job_id, index, item)))
             _update(job_id, files=files, model=item.model, seed=files[0]["seed"])
         _update(job_id, state="done", files=files)
     except asyncio.CancelledError:
-        # **中断は Exception ではない**(BaseException)ので、下の except では拾えない。
+        # 中断は Exception ではない(BaseException)ので、下の except では拾えない。
         # ここで書き残さないと job は running のまま永久に残る —— 実際に MCP の接続が
         # 切れた拍子にこのタスクごと畳まれ、ComfyUI 側は描き上がっているのに
         # image_status が running を返し続けたことがある。
@@ -342,12 +342,12 @@ async def _run(job_id: str, backend: str, req, count: int, kind: str) -> None:
                 error="生成が中断されました", files=files)
         raise
     except Exception as e:
-        # **どんな失敗でも記録して返す。** ここで投げても受け取る相手がいない
+        # どんな失敗でも記録して返す。 ここで投げても受け取る相手がいない
         # (走っているのは背後のタスク)ので、理由は job に書いて image_status で見せる
         detail = getattr(e, "detail", None)
         message = json.dumps(detail, ensure_ascii=False) if detail else str(e)
         log.warning("media job %s failed: %s", job_id, message[:300])
-        # **出来たぶんは残す。** 3 つ頼んで 2 つ出来たなら、その 2 つは使える
+        # 出来たぶんは残す。 3 つ頼んで 2 つ出来たなら、その 2 つは使える
         _update(job_id, state="failed" if not files else "partial", error=message[:1000], files=files)
 
 
@@ -365,10 +365,10 @@ def create_job(
 ) -> dict:
     """頼みを検査して記録するだけ(まだ作らない)。
 
-    **走らせる側と分けてある** —— 実行にはイベントループが要るが、記録は要らない。
+    走らせる側と分けてある —— 実行にはイベントループが要るが、記録は要らない。
     分けておくと、テストは「記録 → 自分で走らせる」の順で確かめられる。
 
-    **無理な頼みはここで断る。** 走らせてから落ちると、呼び出し側は待たされ損になる。
+    無理な頼みはここで断る。 走らせてから落ちると、呼び出し側は待たされ損になる。
     """
     require_dir()
     if not prompt.strip():
@@ -391,7 +391,7 @@ def create_job(
     if kind == media_providers.KIND_AUDIO:
         sound, seconds = _check_audio(spec, sound, seconds)
     elif kind == media_providers.KIND_SPEECH:
-        # 読み上げに大きさも尺も無い。**声だけ確かめる**(相手が持っていない声を
+        # 読み上げに大きさも尺も無い。声だけ確かめる(相手が持っていない声を
         # 渡すと、生成そのものが 400 で返ってくる)
         voice = _check_voice(spec, voice)
     elif kind == media_providers.KIND_VIDEO:
@@ -399,7 +399,7 @@ def create_job(
     else:
         # サイズはここで弾く(走らせてから落ちると待たされ損になる)
         width, height = media_backends.parse_size(size)
-        # **描けないサイズも同じ扱い。** 画素をそのまま使う相手は、学習解像度を外れると
+        # 描けないサイズも同じ扱い。 画素をそのまま使う相手は、学習解像度を外れると
         # 崩れた絵を「成功」として返してくる。受け取る側は見るまで気づけないので、
         # GPU を回す前に断る。
         if spec.exact_sizes and f"{width}x{height}" not in spec.sizes:
@@ -441,7 +441,7 @@ def _check_audio(
 ) -> tuple[str, float]:
     """音の頼みを検査して、記録する値に直す。
 
-    **長さは黙って丸めない。** 上限を超えた頼みを短くして返すと、呼んだ側は
+    長さは黙って丸めない。 上限を超えた頼みを短くして返すと、呼んだ側は
     「頼んだ尺で出来た」と思ったまま短い素材を受け取る —— 断って相手を選び直させる。
     """
     sound = (sound or media_providers.SOUND_SFX).strip().lower()
@@ -464,7 +464,7 @@ def _check_audio(
 
     limit = media_providers.max_seconds_of(spec, sound)
     if seconds > 0 and limit <= 0:
-        # **尺を渡す口が無い相手**(Lyria)。黙って無視すると、頼んだ長さで出来たと
+        # 尺を渡す口が無い相手(Lyria)。黙って無視すると、頼んだ長さで出来たと
         # 思われる —— 実際にはモデルごとに決まった尺で返る。
         raise HTTPException(
             400,
@@ -490,7 +490,7 @@ def _check_video(
 ) -> tuple[str, float]:
     """動画の頼みを検査して、記録する値に直す。
 
-    **尺は丸めない。** 動画の相手は受け付ける値が飛び飛び(Sora は 4/8/12、
+    尺は丸めない。 動画の相手は受け付ける値が飛び飛び(Sora は 4/8/12、
     Veo は 4/6/8)なので、近い値へ寄せると「6 秒で頼んだのに 8 秒が返る」になる。
     数分と数十 MB を使ってから気づくのは高いので、頼む前に断る。
     """
@@ -506,7 +506,7 @@ def _check_video(
             },
         )
 
-    # **omni には尺を渡す口が無い。** 黙って無視すると、頼んだ長さで出来たと思われる
+    # omni には尺を渡す口が無い。 黙って無視すると、頼んだ長さで出来たと思われる
     if seconds > 0 and spec.id == "gemini" and not media_backends._is_veo(
         model or spec.video_models[0]
     ):
@@ -532,7 +532,7 @@ def _check_video(
 
 
 def _check_voice(spec: media_providers.MediaProvider, voice: str) -> str:
-    """声の名前を検査する。**一覧を持っている相手だけ**弾く。
+    """声の名前を検査する。一覧を持っている相手だけ弾く。
 
     ElevenLabs は登録した声が人によって違うので、こちらに一覧が無い ——
     そういう相手には素通しして、間違っていれば相手のエラーで気づいてもらう
@@ -563,7 +563,7 @@ def start_image_job(
 ) -> dict:
     """頼みを受け付けて job を返す(生成は後ろで走る)。
 
-    **待たない。** 呼び出し側は job を持って帰り、`image_status` で進み具合を見る ——
+    待たない。 呼び出し側は job を持って帰り、`image_status` で進み具合を見る ——
     生成は数秒〜数分かかり、待たせると呼び出し側が先に切れる。
     """
     job = create_job(prompt, backend=backend, model=model, size=size, seed=seed, count=count)
@@ -600,7 +600,7 @@ def start_audio_job(
     request = media_backends.AudioRequest(
         prompt=job["prompt"],
         sound=job["sound"],
-        # **記録した秒数を渡す**(既定に落ちたぶんもここで確定している)
+        # 記録した秒数を渡す(既定に落ちたぶんもここで確定している)
         seconds=job["seconds"] or 0.0,
         lyrics=lyrics,
         negative=negative,
@@ -624,7 +624,7 @@ def start_video_job(
     audio: bool = True,
     steps: int = 20,
 ) -> dict:
-    """動画の頼みを受け付けて job を返す。**絵や音より待つ**(数分〜十数分)。"""
+    """動画の頼みを受け付けて job を返す。絵や音より待つ(数分〜十数分)。"""
     job = create_job(
         prompt,
         backend=backend,
@@ -638,7 +638,7 @@ def start_video_job(
     request = media_backends.VideoRequest(
         prompt=job["prompt"],
         negative=negative,
-        # **記録した値を渡す**(既定に落ちたぶんもここで確定している)
+        # 記録した値を渡す(既定に落ちたぶんもここで確定している)
         size=job["size"] or size,
         seconds=job["seconds"] or 0.0,
         seed=seed,
@@ -662,7 +662,7 @@ def start_speech_job(
 ) -> dict:
     """読み上げの頼みを受け付けて job を返す。
 
-    **`text` を job の prompt として記録する。** 絵や音の「こういうものを作って」とは
+    `text` を job の prompt として記録する。 絵や音の「こういうものを作って」とは
     性格が違うが、列を分けても後始末・配信・掃除は同じなので、1 つの表に載せている。
     """
     job = create_job(
@@ -686,21 +686,21 @@ def start_speech_job(
     return _start(job, request, count)
 
 
-# 文字起こしに渡せる音の上限。**相手の上限より手前で断る**(OpenAI は 25MB)。
+# 文字起こしに渡せる音の上限。相手の上限より手前で断る(OpenAI は 25MB)。
 # ここは「メモリごと持っていかれない」ための歯止めなので、相手の上限より緩い。
 MAX_TRANSCRIBE_BYTES = 200 * 1024 * 1024
 
 
 async def load_audio(path: str = "", url: str = "") -> tuple[bytes, str, str]:
-    """文字起こしに渡す音を読む。**置き場の中か、サーバーから届く URL からだけ**。
+    """文字起こしに渡す音を読む。置き場の中か、サーバーから届く URL からだけ。
 
-    **手元のファイルの絶対パスは受け取らない。** chiezo-api はコンテナの中で動くので、
+    手元のファイルの絶対パスは受け取らない。 chiezo-api はコンテナの中で動くので、
     頼んだ人のディスクは見えない —— 受け取れるように見せると、あるはずのファイルが
     「見つからない」と返ってきて、原因が分からないまま終わる。
     自分のファイルを渡したいときは `POST /v1/media/transcribe` に multipart で送る。
     """
     if path:
-        # `/media/<日付>/<名前>` の形だけ。**組み立てずに置き場から選ぶ**(`resolve`)
+        # `/media/<日付>/<名前>` の形だけ。組み立てずに置き場から選ぶ(`resolve`)
         found = resolve(path.split("/media/", 1)[-1])
         data = found.read_bytes()
         name = found.name
@@ -734,7 +734,7 @@ async def transcribe(
     model: str = "",
     language: str = "",
 ) -> dict:
-    """音を文字にする。**job にしない**(返るのが文字なので、その場で返す)。
+    """音を文字にする。job にしない(返るのが文字なので、その場で返す)。
 
     置き場も掃除も要らないので `require_dir()` も通さない —— 文字起こしだけは
     「置き場が無い環境」でも使える。
@@ -769,10 +769,10 @@ async def transcribe(
 
 
 def _start(job: dict, request, count: int) -> dict:
-    """後ろで走らせる。**待たない** —— 生成は数秒〜数分(動画なら十数分)かかり、
+    """後ろで走らせる。待たない —— 生成は数秒〜数分(動画なら十数分)かかり、
     待たせると呼び出し側が先に切れる。進み具合は `*_status` で引く。
 
-    **kind は job から取る。** 呼ぶ側にもう一度書かせると、記録と実際に走る処理が
+    kind は job から取る。 呼ぶ側にもう一度書かせると、記録と実際に走る処理が
     食い違いうる(記録は動画なのに絵を作る、が起きる)。
     """
     task = asyncio.create_task(
@@ -787,7 +787,7 @@ def _start(job: dict, request, count: int) -> dict:
 async def check(backend: str) -> tuple[bool, str]:
     """その相手と実際に話せるか確かめる(「接続を試す」)。
 
-    **自分の on/off を持つ相手にだけ用意する。** 「話す相手」に対応がある相手は
+    自分の on/off を持つ相手にだけ用意する。 「話す相手」に対応がある相手は
     あちらに同じ仕組みがあり、鍵も on/off も共通なので、こちらで二重に持たない。
     """
     spec = media_providers.get(backend)
@@ -805,8 +805,8 @@ async def check(backend: str) -> tuple[bool, str]:
     if not models:
         return False, "繋がりましたが、チェックポイントが 1 つも置かれていません"
 
-    # **絵と音の両方を見る。** 片方しか置いていないのは失敗ではないので、
-    # 「繋がった」と言ったうえで**何が作れるか**を返す —— 音のモデルを置き忘れたまま
+    # 絵と音の両方を見る。 片方しか置いていないのは失敗ではないので、
+    # 「繋がった」と言ったうえで何が作れるかを返す —— 音のモデルを置き忘れたまま
     # audio_generate を呼んで、初めて気づくのを避ける。
     audio = [name for name in models if media_backends.is_audio_checkpoint(name)]
     picture = [name for name in models if name not in audio]
@@ -817,12 +817,12 @@ async def check(backend: str) -> tuple[bool, str]:
 
 
 async def _check_elevenlabs(spec: media_providers.MediaProvider) -> tuple[bool, str]:
-    """鍵が通るかを確かめる。**音は作らない** —— 試すたびに枠を食うのは筋が悪い。"""
+    """鍵が通るかを確かめる。音は作らない —— 試すたびに枠を食うのは筋が悪い。"""
     key = media_backends.credential_of(spec)
     if not key:
         return False, "API キーが未登録です"
     try:
-        # **相手を叩く口は 1 つに寄せる**(テストが差し替えるのもここ)
+        # 相手を叩く口は 1 つに寄せる(テストが差し替えるのもここ)
         async with media_backends._client(10.0) as client:
             res = await client.get(
                 f"{media_providers.url_of(spec)}/user", headers={"xi-api-key": key}
@@ -843,7 +843,7 @@ async def _check_elevenlabs(spec: media_providers.MediaProvider) -> tuple[bool, 
 
 
 # ComfyUI に「何が置いてあるか」を聞く関数と、置いていなかったときの言い方。
-# **kind ごとに置き場もノードも違う**(絵と音は checkpoints、動画は diffusion_models)。
+# kind ごとに置き場もノードも違う(絵と音は checkpoints、動画は diffusion_models)。
 _COMFY_LISTS = {
     media_providers.KIND_IMAGE: (
         media_backends.comfy_image_models, "絵のチェックポイントが置かれていない"),
@@ -856,13 +856,13 @@ _COMFY_LISTS = {
 
 
 async def backends(kind: str = media_providers.KIND_IMAGE) -> list[dict]:
-    """その kind を作れる相手と、選べるモデル。**使えない相手も理由つきで出す** ——
+    """その kind を作れる相手と、選べるモデル。使えない相手も理由つきで出す ——
     出さないと「なぜ選べないのか」が分からない。
 
-    **kind ごとに一覧を分ける。** 混ぜると、頼めない相手が並んで見えてしまう
+    kind ごとに一覧を分ける。 混ぜると、頼めない相手が並んで見えてしまう
     (Lyria に効果音は頼めないし、自前の GPU に読み上げは頼めない)。
 
-    頼むときに要るものが kind ごとに違うので、**その kind に効く項目だけ**を足す
+    頼むときに要るものが kind ごとに違うので、その kind に効く項目だけを足す
     (絵はサイズ、音は種類と長さ、動画はサイズと尺、声は選べる声)。
     """
     out = []
@@ -896,7 +896,7 @@ async def backends(kind: str = media_providers.KIND_IMAGE) -> list[dict]:
             "enabled": settings_store.load(spec.id).enabled if spec.owns_toggle else None,
         }
         if kind == media_providers.KIND_AUDIO:
-            # **0 は「長さを指定できない」**(モデルで決まる)。呼ぶ側が秒数を
+            # 0 は「長さを指定できない」(モデルで決まる)。呼ぶ側が秒数を
             # 渡すかどうかをここで判断できるようにする。
             entry["sounds"] = {
                 sound: media_providers.max_seconds_of(spec, sound)
@@ -904,7 +904,7 @@ async def backends(kind: str = media_providers.KIND_IMAGE) -> list[dict]:
             }
         elif kind == media_providers.KIND_VIDEO:
             entry["sizes"] = list(spec.video_sizes)
-            # **並んでいる値しか頼めない**(音のような「上限」ではない)。
+            # 並んでいる値しか頼めない(音のような「上限」ではない)。
             # 空なら「尺を指定できない相手」。
             entry["seconds"] = list(spec.video_seconds)
         elif kind == media_providers.KIND_SPEECH:
@@ -916,7 +916,7 @@ async def backends(kind: str = media_providers.KIND_IMAGE) -> list[dict]:
 
 
 async def _voices(spec: media_providers.MediaProvider) -> list[dict]:
-    """選べる声。**一覧を持たない相手には聞きに行く** —— ElevenLabs は登録した声が
+    """選べる声。一覧を持たない相手には聞きに行く —— ElevenLabs は登録した声が
     人によって違うので、こちらで並べると持っていない声を勧めることになる。
 
     聞けなかったら空を返す(声が引けないだけで相手ごと使えない扱いにはしない ——
@@ -930,17 +930,17 @@ async def _voices(spec: media_providers.MediaProvider) -> list[dict]:
     return []
 
 
-# 配信できるファイル名の形。**先頭は英数字**(`..` と隠しファイルを弾くため)。
+# 配信できるファイル名の形。先頭は英数字(`..` と隠しファイルを弾くため)。
 _SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 def _child_named(parent: Path, wanted: str) -> Path | None:
-    """`parent` の直下から、その名前の実体を**探して**返す(組み立てない)。
+    """`parent` の直下から、その名前の実体を探して返す(組み立てない)。
 
     `parent / wanted` と書けば 1 行で済むが、それだと**受け取った文字列がパスの
     組み立てに入る**。読む側にも検査器にも安全だと分からず、CodeQL の path injection
     として上がり続ける(実際に上がった)。ここで返す `Path` は置き場を並べて得たもので、
-    渡された文字列は**照合にしか使っていない**。
+    渡された文字列は照合にしか使っていない。
 
     置き場は日付ごとに分かれていて 1 日ぶんは高々数百件なので、並べる costs は小さい。
     """
@@ -950,10 +950,10 @@ def _child_named(parent: Path, wanted: str) -> Path | None:
 
 
 def resolve(relative: str) -> Path:
-    """配信のためにパスを解く。**組み立てる前に形を確かめ、実体は置き場から選ぶ**。
+    """配信のためにパスを解く。組み立てる前に形を確かめ、実体は置き場から選ぶ。
 
     置き場は `<日付 8 桁>/<ファイル名>` の 2 段しかない(`_save` がそう書く)。
-    形の検査だけでも `..` は通らないが、**組み立てをやめる**ほうが読む側にも分かりやすい。
+    形の検査だけでも `..` は通らないが、組み立てをやめるほうが読む側にも分かりやすい。
     """
     parts = relative.strip("/").split("/")
     if len(parts) != 2 or not all(_SEGMENT.fullmatch(part) for part in parts):
@@ -966,7 +966,7 @@ def resolve(relative: str) -> Path:
     directory = _child_named(root, day)
     path = _child_named(directory, name) if directory else None
 
-    # **実体が置き場の中にあることも確かめる** —— 中に外を指すシンボリックリンクが
+    # 実体が置き場の中にあることも確かめる —— 中に外を指すシンボリックリンクが
     # 混ざっても外へ出さない(書くのは chiezo だけなので念のため)。
     if path is None or not path.is_file() or not path.resolve().is_relative_to(root):
         raise HTTPException(404, {"error": "not found"})

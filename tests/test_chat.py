@@ -1,6 +1,6 @@
 """会話(/v1/chat)と web 検索の道具のテスト。
 
-`/v1/ask` が 1 問 1 答なのに対し、`/v1/chat` は **messages をまるごと受け取る**
+`/v1/ask` が 1 問 1 答なのに対し、`/v1/chat` は messages をまるごと受け取る
 (サーバーは会話の状態を持たず、履歴はクライアントが毎回送る)。ここで確かめるのは
 その約束と、履歴がちゃんとモデルまで届いていること。
 
@@ -251,7 +251,7 @@ class TestWhoYouAreTalkingTo:
         assert "Chiezo と話す" not in res.text
 
     def test_heading_names_the_relay_when_the_model_is_unknown(self, monkeypatch_env):
-        """モデル名が取れないときは**相手の名前**を出す(画面は必ず出す)。
+        """モデル名が取れないときは相手の名前を出す(画面は必ず出す)。
 
         以前は名前なしの「AI と話す」だった。相手を選べるようになった今は、
         どこに話しかけているのかが分かるほうが役に立つ。
@@ -264,7 +264,7 @@ class TestWhoYouAreTalkingTo:
         assert "<h1>AI(推論サーバ)と話す</h1>" in res.text
 
     def test_heading_does_not_name_a_model_from_a_menu(self, monkeypatch_env):
-        """**一覧が 2 つ以上なら名乗らない。**
+        """一覧が 2 つ以上なら名乗らない。
 
         それは「選べるもの」の並びであって、いま使われているものではない。
         CLI ブリッジは受け付けるエイリアスを全部返すので、先頭を採ると
@@ -379,7 +379,7 @@ class TestNotesTools:
     """「覚えておいて」に応えられること。
 
     書き込みを伴うので、当初は agent に渡していなかった。会話で明示的に頼まれるなら
-    副作用ではないので渡すが、**やり取りごとに切れる**ことと、**何を書いたかが手順に
+    副作用ではないので渡すが、やり取りごとに切れることと、**何を書いたかが手順に
     出る**ことをここで固定する。
     """
 
@@ -452,7 +452,7 @@ class TestNotesTools:
 
 
 class TestHiddenControls:
-    """**隠した操作が本当に隠れていること。**
+    """隠した操作が本当に隠れていること。
 
     `.toggle` に display を指定しているため、hidden 属性だけでは消えない
     （作者側の display が UA の display:none に勝つ）。本番で「覚える」が
@@ -465,7 +465,7 @@ class TestHiddenControls:
         assert "[hidden] { display: none !important; }" in CHAT_STYLE
 
     def test_the_notes_toggle_is_locked_on_for_a_cli_relay(self, monkeypatch_env, tmp_path):
-        """CLI ブリッジでは「覚える」を止められない。**入ったまま触れない**状態で出す。
+        """CLI ブリッジでは「覚える」を止められない。入ったまま触れない状態で出す。
 
         隠すと「使えないのか」と読めてしまう。使えること自体は伝えたうえで、
         切れるように見せるのだけを避ける。
@@ -480,7 +480,7 @@ class TestHiddenControls:
             res = c.get(CHAT_PATH, params={"backend": "claude", "mode": "agent"})
         assert 'id="notes"' in res.text
         assert "checked disabled" in res.text
-        # **JS が読み込み直後に disabled を外さないこと。**
+        # JS が読み込み直後に disabled を外さないこと。
         # agent モードなら無条件に触れるようにする古い分岐があり、サーバーの指定を
         # 上書きしていた（本番で押せてしまった）。
         assert "var fixed = label.classList.contains('fixed');" in res.text

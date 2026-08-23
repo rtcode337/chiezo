@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Claude Code の PreToolUse フック: Chiezo だけを読む Bash を自動許可する。
 
-Claude Code の `permissions.allow` はコマンド文字列の**前方一致**で判定する。
+Claude Code の `permissions.allow` はコマンド文字列の前方一致で判定する。
 そのため `Bash(curl -sG "http://.../:*)` のようなルールは、単発の curl には効くが
 
     for t in A B C; do curl -sG "http://.../v1/jawiki/doc" ...; done
@@ -10,11 +10,11 @@ Claude Code の `permissions.allow` はコマンド文字列の**前方一致**�
 のように curl が先頭に来ない形になった瞬間、1 本もマッチせず毎回プロンプトが出る。
 大量取得は必ずループやパイプになるので、いちばん許可したい場面でルールが効かない。
 
-このフックは前方一致ではなく**構造**で判定する。以下を全て満たすときだけ
+このフックは前方一致ではなく構造で判定する。以下を全て満たすときだけ
 `permissionDecision: "allow"` を返す:
 
   1. コマンド中に Chiezo の URL が 1 つ以上ある。
-  2. コマンド中の `scheme://host` が**全て** Chiezo である。
+  2. コマンド中の `scheme://host` が全て Chiezo である。
   3. コマンド位置に来る語が、安全なシェルキーワードか読み取り専用コマンドの
      許可リスト(curl/jq/sort など)に入っている。
   4. コマンド位置を隠せる構文(`$(...)` / バッククォート / プロセス置換 /
@@ -22,7 +22,7 @@ Claude Code の `permissions.allow` はコマンド文字列の**前方一致**�
   5. ディスクへ書く curl フラグ(-o/-O/-K/-T/-D 等)と、/tmp 以外への
      リダイレクトを含まない。
 
-条件を外れたときは**何も出力しない**。フックが黙れば Claude Code は通常の
+条件を外れたときは何も出力しない。フックが黙れば Claude Code は通常の
 許可フローに戻るだけなので、最悪でも「今までどおりプロンプトが出る」で済む。
 判定に迷ったら黙る(fail closed)方針で書いてある。
 """

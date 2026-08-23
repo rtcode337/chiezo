@@ -5,34 +5,34 @@
 
 Chiezo の「使う」層(`app/answer.py`)が要求するのは OpenAI 互換の `/chat/completions` だけ
 なので、ローカルの推論サーバでも Gemini でも同じ 1 本の口で扱える。ところが Claude Code と
-Codex は **HTTP ではなく CLI** で、サブスクの枠で使うにはその CLI を通すしかない
+Codex は HTTP ではなく CLI で、サブスクの枠で使うにはその CLI を通すしかない
 (API キー経路は従量課金になり、定額で試すという目的から外れる)。
 そこを埋めるのがこのブリッジで、受けた OpenAI 形式のリクエストを CLI の起動に変換する。
 
 設計の要点:
 
-- **別コンテナに置く**。Chiezo 本体(`chiezo-api`)は数百 MB で動く前提があり、CLI を
+- 別コンテナに置く。Chiezo 本体(`chiezo-api`)は数百 MB で動く前提があり、CLI を
   同居させるとその前提が崩れる。推論を同居させないのと同じ理由。
-- **道具は CLI 自身に引かせる**。Chiezo の MCP(`/mcp`)を CLI に繋ぐので、
+- 道具は CLI 自身に引かせる。Chiezo の MCP(`/mcp`)を CLI に繋ぐので、
   「検索して答える」の段取りはブリッジ側で組まない —— Claude Code も Codex も
   道具を自分で回すのが本業で、そこは任せたほうが上手い。Chiezo 側から見ると
   「1 回聞いたら答えが返る」ので、`rag` / `agent` の区別は関係なくなる。
-- **MCP は任意**(`CHIEZO_BRIDGE_MCP_URL` を空にすると繋がない)。**Chiezo 専用の部品では
+- MCP は任意(`CHIEZO_BRIDGE_MCP_URL` を空にすると繋がない)。**Chiezo 専用の部品では
   なく、「CLI を OpenAI 互換の口に見せるサービス」として他のアプリからも使える** ——
   postgres を別コンテナで立てて複数のアプリが繋ぐのと同じ形。道具の要らない用途
   (プロンプトを渡して答えを受け取るだけ)では、繋がないほうが速く、余計なことをしない。
-- **組み込みの道具は全部切る**。ファイルの読み書きやシェルは、知識ベースに答えるのに
+- 組み込みの道具は全部切る。ファイルの読み書きやシェルは、知識ベースに答えるのに
   要らないうえ危ない。CLI に渡すのは Chiezo の MCP だけにする。
-- **認証情報は Chiezo の設定 DB から読む**(`/state/settings.db` を読み取り専用でマウント)。
-  こうすると **Chiezo の管理画面から登録できる** —— chiezo-api に「トークンを返す口」を
+- 認証情報は Chiezo の設定 DB から読む(`/state/settings.db` を読み取り専用でマウント)。
+  こうすると Chiezo の管理画面から登録できる —— chiezo-api に「トークンを返す口」を
   開けずに済むのが要点で、認証なしの LAN サービスにそんな口を足したくない。
   DB が無い・空のときは環境変数(`CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_AUTH_JSON`)に落ちる。
-  **Antigravity だけは別** —— API キー方式が無く、コンテナ内で 1 回サインインした結果を
+  Antigravity だけは別 —— API キー方式が無く、コンテナ内で 1 回サインインした結果を
   HOME 配下のキャッシュから読む。HOME を書き込み可能なボリュームにバインドしてあれば、
   コンテナを作り直しても消えない。
-  **読むのは要求のたび**なので、鍵を登録し直してもブリッジの再起動は要らない。
+  読むのは要求のたびなので、鍵を登録し直してもブリッジの再起動は要らない。
   イメージには何も焼かない。
-- **ストリーミングは 1 チャンク**。CLI の応答を待ち切ってから SSE に載せる。
+- ストリーミングは 1 チャンク。CLI の応答を待ち切ってから SSE に載せる。
   差分で流すには CLI ごとに `--output-format stream-json` / `--json` の解析が要り、
   2 つ分の解析を抱えるだけの価値がまだ無い(Chiezo 側は差分の粒度を問わない)。
 """
@@ -63,7 +63,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 # (compose では chiezo-bridge-claude / chiezo-bridge-codex の 2 サービスに分ける)。
 CLI = os.environ.get("CHIEZO_BRIDGE_CLI", "claude").strip().lower()
 # Chiezo の MCP の URL。CLI はここから search / doc / filter … を引く。
-# **空にすると MCP を繋がない**(道具の要らない用途で使うとき)。
+# 空にすると MCP を繋がない(道具の要らない用途で使うとき)。
 MCP_URL = os.environ.get("CHIEZO_BRIDGE_MCP_URL", "http://chiezo-api:7010/mcp").strip()
 # CLI に渡すモデル。空なら CLI の既定(サブスクの枠を無駄に食わないよう明示するのが望ましい)。
 MODEL = os.environ.get("CHIEZO_BRIDGE_MODEL", "").strip()
@@ -78,14 +78,14 @@ MODEL_LABEL = os.environ.get("CHIEZO_BRIDGE_MODEL_LABEL", "").strip() or (
         "antigravity": "Antigravity CLI",
     }.get(CLI, CLI)
 )
-# **会話ごとに選べるモデルの一覧**(`/v1/models` で名乗る)。
+# 会話ごとに選べるモデルの一覧(`/v1/models` で名乗る)。
 #
 # CLI には一覧を出す口が無い(agy だけ `agy models` を持つが、サインイン済みでないと
-# 何も返さない)ので、ここに持つ。**確かめていない ID を並べない** ——
+# 何も返さない)ので、ここに持つ。確かめていない ID を並べない ——
 # 画面には出るのに選ぶと必ず失敗する選択肢になるため。codex と antigravity を
 # 空にしてあるのはそれが理由で、入れたい場合は CHIEZO_BRIDGE_MODELS で渡す。
 #
-# **先頭は「何も選ばなかったときに使われるもの」に揃える。** Chiezo の見出しは
+# 先頭は「何も選ばなかったときに使われるもの」に揃える。 Chiezo の見出しは
 # 一覧の先頭を名乗るので、ここがずれると使っていないモデル名が画面に出る。
 # claude の既定は `claude-sonnet-5`(実測)なので sonnet が先頭。
 DEFAULT_MODELS = {
@@ -99,9 +99,9 @@ MODELS = tuple(
     if m.strip()
 ) or DEFAULT_MODELS.get(CLI, ())
 
-# **選べるエフォート(考える量)。** CLI ごとに受け付ける段階が違う。
+# 選べるエフォート(考える量)。 CLI ごとに受け付ける段階が違う。
 #
-# **CLI は値を検証しない** —— claude は `--effort bogus` をエラーにも警告にもせず、
+# CLI は値を検証しない —— claude は `--effort bogus` をエラーにも警告にもせず、
 # 黙って既定で動く(実測)。打ち間違いに気づけないので、ここに無い値は 400 で返す。
 DEFAULT_EFFORTS = {
     "claude": ("low", "medium", "high", "xhigh", "max"),  # claude --help（5 つとも実測）
@@ -118,17 +118,17 @@ EFFORTS = tuple(
 # ここを `mcp__chiezo__search mcp__chiezo__doc …` のように絞る。
 ALLOWED_TOOLS = os.environ.get("CHIEZO_BRIDGE_ALLOWED_TOOLS", "mcp__chiezo").strip()
 
-# **組み込みの道具は名前を挙げて塞ぐ。**
+# 組み込みの道具は名前を挙げて塞ぐ。
 #
 # 以前は `--tools ""`(組み込みを全部切る指定)を渡していたが、**これは MCP の道具まで
 # 消す** —— つまり「Chiezo の知識を引かせる」というブリッジの目的そのものが、
 # 黙って働いていなかった(CLI は自分の知識だけで答えていた)。`--tools` に MCP の名前を
 # 並べても駄目で、あれは組み込みの一覧しか受け付けない。実測で確かめた。
 #
-# **ToolSearch は塞がない。** MCP の道具はここから読み込まれるので、塞ぐと
+# ToolSearch は塞がない。 MCP の道具はここから読み込まれるので、塞ぐと
 # `--mcp-config` を渡していても引けなくなる(これも実測で踏んだ)。
 #
-# **この一覧は取りこぼしうる。** 組み込みは CLI の版が上がるたびに増えるので、
+# この一覧は取りこぼしうる。 組み込みは CLI の版が上がるたびに増えるので、
 # 新しい道具は既定で使えてしまう。増えたら足すこと（`CHIEZO_BRIDGE_DISALLOWED_TOOLS`
 # で環境から差し替えられる）。
 DEFAULT_DISALLOWED = (
@@ -144,8 +144,8 @@ DISALLOWED_TOOLS = os.environ.get(
     "CHIEZO_BRIDGE_DISALLOWED_TOOLS", ",".join(DEFAULT_DISALLOWED)
 ).strip()
 
-# **web 検索を頼まれたときだけ開ける道具。**
-# 引く先は Chiezo の SearXNG ではなく **CLI の提供元の検索**なので、既定では塞いだまま
+# web 検索を頼まれたときだけ開ける道具。
+# 引く先は Chiezo の SearXNG ではなく CLI の提供元の検索なので、既定では塞いだまま
 # にして、要求ごとに開ける（会話画面の 🌐 トグルがこれを送る）。
 WEB_TOOLS = ("WebSearch", "WebFetch")
 
@@ -161,7 +161,7 @@ def disallowed_for(web: bool) -> str:
 MCP_CONFIG_PATH = "/tmp/chiezo-mcp.json"
 
 # Chiezo の設定 DB(chiezo-api と共有。読み取り専用でマウントする)。
-# **テーブルの形は api/app/settings_store.py との約束**。同じリポジトリの 2 つのイメージが
+# テーブルの形は api/app/settings_store.py との約束。同じリポジトリの 2 つのイメージが
 # 1 つのファイルを挟んで話すので、片方だけ変えると黙って読めなくなる。
 STATE_DB = os.environ.get("CHIEZO_BRIDGE_STATE_DB", "/state/settings.db")
 
@@ -169,7 +169,7 @@ STATE_DB = os.environ.get("CHIEZO_BRIDGE_STATE_DB", "/state/settings.db")
 # agy はプロンプトを引数で取るので、これを超えるぶんはファイル経由に切り替える(下記)。
 MAX_ARG_BYTES = 120 * 1024
 
-# 長いプロンプトを agy へ渡すときの言い方。**中身は書かず、読む先だけを伝える。**
+# 長いプロンプトを agy へ渡すときの言い方。中身は書かず、読む先だけを伝える。
 # agy は標準入力からプロンプトを読めず(`-p` は値を必須とし、`-p -` は "-" を
 # プロンプトそのものとして扱う)、プロンプトを取るファイル用のフラグも無い。
 # 残るのは「ファイルに置いて、道具で読ませる」だけ。
@@ -182,7 +182,7 @@ LONG_PROMPT_INSTRUCTION = (
 def stored_credential() -> str:
     """管理画面から登録された認証情報。無ければ環境変数へ落ちる。
 
-    要求のたびに読む(起動時に固めない)ので、**管理画面で登録し直しても再起動が要らない**。
+    要求のたびに読む(起動時に固めない)ので、管理画面で登録し直しても再起動が要らない。
     """
     fallback = os.environ.get(
         {
@@ -261,13 +261,13 @@ class ChatRequest(BaseModel):
     model: str | None = None
     # OpenAI 互換の名前で受ける（Chiezo はこれを送る）。CLI の --effort に直す。
     reasoning_effort: str | None = None
-    # **CLI 自身の web 検索を許すか。** OpenAI 互換に対応する項目が無いので独自に足す
+    # CLI 自身の web 検索を許すか。 OpenAI 互換に対応する項目が無いので独自に足す
     # （既定は塞いだまま。会話画面の 🌐 トグルがこれを送る）。
     chiezo_web: bool = False
-    # **道具を引く往復の上限。** ここが総コストの上限になる（銘柄や質問が増えても
+    # 道具を引く往復の上限。 ここが総コストの上限になる（銘柄や質問が増えても
     # ここから先には伸びない）ので、要求ごとに決められるようにする。
     chiezo_max_turns: int | None = None
-    # **この 1 回の上限秒数。** 起動時の CHIEZO_BRIDGE_TIMEOUT より短くも長くもできる
+    # この 1 回の上限秒数。 起動時の CHIEZO_BRIDGE_TIMEOUT より短くも長くもできる
     # —— 同じブリッジを、数十秒で返ってほしい会話と、数分かかる調査の両方で使うため。
     chiezo_timeout: float | None = None
     stream: bool = False
@@ -309,7 +309,7 @@ def _write_mcp_config() -> None:
 def resolve_model(requested: str | None) -> str:
     """今回使うモデル名。空なら CLI の既定に任せる。
 
-    **`-` で始まる名前は弾く。** 引数として渡すので、そのままだと CLI のフラグとして
+    `-` で始まる名前は弾く。 引数として渡すので、そのままだと CLI のフラグとして
     解釈される（`--dangerously-…` のような指定を外から注ぎ込まれかねない）。
     一覧に無い名前は通す —— CLI は正式名（`claude-fable-5` など）も受け付けるし、
     Chiezo 以外から使うこともあるため。間違っていれば CLI のエラーがそのまま返る。
@@ -326,7 +326,7 @@ def resolve_model(requested: str | None) -> str:
 def resolve_effort(requested: str | None) -> str:
     """今回のエフォート。空なら CLI の既定に任せる。
 
-    **一覧に無い値は 400 にする。** モデル名と違い、CLI が間違いを教えてくれない ——
+    一覧に無い値は 400 にする。 モデル名と違い、CLI が間違いを教えてくれない ——
     claude は知らない値を黙って捨てて既定で動くので、通してしまうと
     「選んだのに効いていない」ことに誰も気づけない。
     """
@@ -342,7 +342,7 @@ def resolve_effort(requested: str | None) -> str:
 def resolve_timeout(requested: float | None) -> float:
     """この 1 回の上限秒数。指定が無ければ起動時の既定。
 
-    **上限は設けない。** 何分かけてよいかを決めるのは呼ぶ側で、ブリッジはそれを
+    上限は設けない。 何分かけてよいかを決めるのは呼ぶ側で、ブリッジはそれを
     預かるだけ（暴走を止めるのは呼ぶ側のジョブ管理の仕事）。
     """
     if requested is None:
@@ -371,13 +371,13 @@ def build_command(
             "claude", "-p",
             # 手元の ~/.claude.json 等に入っている別の MCP を拾わせない
             # (コンテナは使い捨てなので普通は無いが、意図しない相手に繋がないための保険)。
-            # MCP を繋がない設定でも付ける —— **道具を一切渡さない**ことを保証するため。
+            # MCP を繋がない設定でも付ける —— 道具を一切渡さないことを保証するため。
             "--strict-mcp-config",
             # 非対話なので確認を出されると待ち続けて固まる。渡す道具は下の分岐で決まる。
             "--permission-mode", "bypassPermissions",
             "--output-format", "text",
         ]
-        # 組み込みの道具(Bash・Read・WebFetch…)を塞ぐ。**`--tools ""` は使えない**
+        # 組み込みの道具(Bash・Read・WebFetch…)を塞ぐ。`--tools ""` は使えない
         # ——上の DEFAULT_DISALLOWED の説明のとおり、MCP の道具まで消えてしまう。
         if denied := disallowed_for(web):
             cmd += ["--disallowed-tools", denied]
@@ -392,11 +392,11 @@ def build_command(
         return cmd
 
     if CLI == "antigravity":
-        # **`-p` はプロンプトを引数で取る**(claude/codex のように標準入力からは読まない)。
+        # `-p` はプロンプトを引数で取る(claude/codex のように標準入力からは読まない)。
         # そのため Linux の単一引数の長さ上限(MAX_ARG_STRLEN = 128KiB)に当たりうる ——
         # 超えると実行前に E2BIG で落ちる。
         #
-        # **長いときだけファイル経由にする。** 短いプロンプトは今までどおり引数で渡す ——
+        # 長いときだけファイル経由にする。 短いプロンプトは今までどおり引数で渡す ——
         # そちらは道具も権限も要らず、確実に動く経路だから。長いときは prompt_path へ
         # 書き出し、読む先だけを引数で伝えて、CLI にファイルを読ませる。
         # 認証はコンテナ内でサインイン済みである前提(HOME 配下のキャッシュ)。
@@ -437,7 +437,7 @@ def build_command(
     raise RuntimeError(f"未対応の CHIEZO_BRIDGE_CLI: {CLI}")
 
 
-# CLI が本文と一緒に吐く注意書き。**答えに混ざると読み手が困る**ので落としてログへ回す。
+# CLI が本文と一緒に吐く注意書き。答えに混ざると読み手が困るので落としてログへ回す。
 # 塞ぐ道具の名前が版の変化でずれると出る（`--disallowed-tools` の綴りは検証される）。
 CLI_NOTICE = re.compile(r'^Permission (?:deny|allow) rule ".*?" matches no known tool.*$', re.M)
 
@@ -575,7 +575,7 @@ async def _sse(text: str, model: str = "") -> AsyncIterator[str]:
     yield "data: [DONE]\n\n"
 
 
-# 認証済みかを CLI に確かめるコマンド。**モデルを呼ばない**ものを選んである ——
+# 認証済みかを CLI に確かめるコマンド。モデルを呼ばないものを選んである ——
 # 会話を 1 往復させて確かめると、そのたびにサブスクの枠を食う。
 AUTH_CHECK = {
     "claude": ["claude", "auth", "status"],
@@ -587,7 +587,7 @@ AUTH_CHECK = {
 async def check_auth() -> tuple[bool, str]:
     """いま実際に認証が通るか。(判定, 理由) を返す。
 
-    **認証情報が「登録されているか」ではなく「使えるか」を見る。** 打ち間違えたトークンや
+    認証情報が「登録されているか」ではなく「使えるか」を見る。 打ち間違えたトークンや
     期限切れは、登録の有無では分からない —— 会話して初めて 502 になり、原因を追いにくい。
     """
     if reason := apply_credential():
@@ -611,7 +611,7 @@ async def check_auth() -> tuple[bool, str]:
 async def health(check: bool = False) -> dict:
     """立っているかと、認証が通るか。
 
-    `?check=1` を付けると **CLI に実際に確かめる**(数秒かかる)。付けなければ
+    `?check=1` を付けると CLI に実際に確かめる(数秒かかる)。付けなければ
     認証情報が置いてあるかを見るだけで即答する —— 管理画面は一覧を描くたびに
     全プロバイダを叩くので、既定は軽いほうにしてある。
     """
@@ -629,21 +629,21 @@ async def health(check: bool = False) -> dict:
 
 # ---- 使用量(サブスクの枠)-----------------------------------------------------
 #
-# **枠の数字は CLI の中にしかない。** サブスクで動く相手(ChatGPT / Google AI)の残量を
-# 引く口は公開されていないうえ、**こちらが控えている認証情報は期限切れになる**
+# 枠の数字は CLI の中にしかない。 サブスクで動く相手(ChatGPT / Google AI)の残量を
+# 引く口は公開されていないうえ、こちらが控えている認証情報は期限切れになる
 # (access_token は短命で、更新するのは CLI)。だから CLI 自身に聞かせる。
 #
-# **モデルは呼ばない。** 確かめるたびに枠を食っては本末転倒なので、
+# モデルは呼ばない。 確かめるたびに枠を食っては本末転倒なので、
 # 「認証を確かめる」(`AUTH_CHECK`)と同じ方針にしてある。
 #
-# **claude はここに来ない。** claude CLI には使用量を出すサブコマンドが無く
+# claude はここに来ない。 claude CLI には使用量を出すサブコマンドが無く
 # (`/usage` は対話画面の中だけ)、代わりに Chiezo が `api.anthropic.com` の
 # `/api/oauth/usage` を同じトークンで直に引く(`api/app/usage.py`)。
 USAGE_CLIS = frozenset({"codex", "antigravity"})
 
-# Antigravity から使用量を引くコマンド。**print モードのスラッシュコマンド**で、
+# Antigravity から使用量を引くコマンド。print モードのスラッシュコマンドで、
 # モデルの応答を待たずに CLI 自身が報告を返す。
-# **打ち間違いではなく、確かめられていない**(サインイン済みのコンテナが要る)ので、
+# 打ち間違いではなく、確かめられていない(サインイン済みのコンテナが要る)ので、
 # `CHIEZO_BRIDGE_USAGE_CMD`(カンマ区切り)で外から差し替えられるようにしてある。
 ANTIGRAVITY_USAGE_CMD = [
     e.strip() for e in os.environ.get("CHIEZO_BRIDGE_USAGE_CMD", "").split(",") if e.strip()
@@ -657,11 +657,11 @@ def _as_number(value) -> float | None:
 
 
 def _window_from(name: str, entry: dict) -> dict | None:
-    """CLI の返事から窓を 1 つ組む。**読めた形だけ拾う。**
+    """CLI の返事から窓を 1 つ組む。読めた形だけ拾う。
 
     相手ごとに名前が違う(`used_percent` で言う相手と、残量そのもので言う相手がいる)ので、
-    **どちらの形でも読める**ようにしてある。読めなければ None を返し、呼び出し側が
-    生の返事をそのまま Chiezo へ渡す —— **推測で数字を作らない**。
+    どちらの形でも読めるようにしてある。読めなければ None を返し、呼び出し側が
+    生の返事をそのまま Chiezo へ渡す —— 推測で数字を作らない。
     """
     percent = _as_number(entry.get("used_percent") or entry.get("usedPercent"))
     used = _as_number(entry.get("used"))
@@ -693,7 +693,7 @@ def _window_from(name: str, entry: dict) -> dict | None:
 def _windows_in(payload, name: str = "") -> list[dict]:
     """入れ子のどこにあっても窓を拾う。
 
-    **返事の外側の形を決め打ちにしない** —— CLI の版で 1 段増えるだけで
+    返事の外側の形を決め打ちにしない —— CLI の版で 1 段増えるだけで
     「使用量が取れない」に変わってしまうため。中身(窓の形)だけを手掛かりにする。
     """
     found: list[dict] = []
@@ -729,7 +729,7 @@ async def _run_for_usage(cmd: list[str]) -> str:
 async def _codex_usage() -> tuple[list[dict], str]:
     """Codex の枠。`codex app-server` に `account/rateLimits/read` を投げる。
 
-    **JSON-RPC を 1 往復するだけ**でモデルは呼ばない。`codex exec` を使わないのは、
+    JSON-RPC を 1 往復するだけでモデルは呼ばない。`codex exec` を使わないのは、
     あちらは会話を 1 回走らせてしまうため(枠を食う)。
     """
     try:
@@ -744,7 +744,7 @@ async def _codex_usage() -> tuple[list[dict], str]:
 
     async def _talk() -> tuple[list[dict], str]:
         assert proc.stdin is not None and proc.stdout is not None
-        # **初期化してから聞く。** app-server は initialize を受けるまで他の要求に答えない。
+        # 初期化してから聞く。 app-server は initialize を受けるまで他の要求に答えない。
         for line in (
             {"jsonrpc": "2.0", "id": 1, "method": "initialize",
              "params": {"clientInfo": {"name": "chiezo-bridge", "title": "Chiezo",
@@ -755,7 +755,7 @@ async def _codex_usage() -> tuple[list[dict], str]:
             proc.stdin.write((json.dumps(line) + "\n").encode())
         await proc.stdin.drain()
 
-        # 通知が混ざって流れてくるので、**求めた id の応答が来るまで読み飛ばす**。
+        # 通知が混ざって流れてくるので、求めた id の応答が来るまで読み飛ばす。
         while raw := await proc.stdout.readline():
             try:
                 message = json.loads(raw)
@@ -786,7 +786,7 @@ async def _codex_usage() -> tuple[list[dict], str]:
 async def usage() -> dict:
     """サブスクの枠(使用量と、いつ戻るか)を CLI に聞く。
 
-    返すのは正規化した窓の一覧と、**読めなかったときのための生の返事**
+    返すのは正規化した窓の一覧と、読めなかったときのための生の返事
     (`reason`)—— 数字にできなくても、CLI が何と言ったかは画面に出せる。
     """
     if CLI not in USAGE_CLIS:
@@ -825,22 +825,22 @@ async def models() -> dict:
 
 # ---- 画像生成(CLI の内蔵ツール)---------------------------------------------
 #
-# **サブスクの枠で画像を作るための経路。** API の画像生成(従量課金)とは課金が別で、
+# サブスクの枠で画像を作るための経路。 API の画像生成(従量課金)とは課金が別で、
 # こちらは CLI のログインで動く —— 追加の API キーが要らない。
 #
-# **持っているのは Codex(image_gen)と Antigravity(imagegen)だけ。** claude は持たない。
-# 持たない CLI では 404 を返す。**どちらも「エージェントにファイルを書かせる」形**なので、
+# 持っているのは Codex(image_gen)と Antigravity(imagegen)だけ。 claude は持たない。
+# 持たない CLI では 404 を返す。どちらも「エージェントにファイルを書かせる」形なので、
 # 段取りは共通で、違うのは起動コマンドだけ。
 #
-# **サンドボックスを緩める。** 会話の口は読み取り専用で動かしているが、
+# サンドボックスを緩める。 会話の口は読み取り専用で動かしているが、
 # 画像はファイルとして書き出されるので書き込みを許さないと 1 枚も残らない。
-# 許すのは**この 1 回のために作った作業ディレクトリだけ**で、書けた画像を読んだら消す。
+# 許すのはこの 1 回のために作った作業ディレクトリだけで、書けた画像を読んだら消す。
 IMAGE_TIMEOUT = float(os.environ.get("CHIEZO_BRIDGE_IMAGE_TIMEOUT", "600") or 600)
 
 # 生成物として拾う拡張子。どちらの CLI も PNG で保存する(サイズ指定つきでも変わらない)。
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
 
-# **内蔵の画像ツールを持つ CLI。** ここに無い CLI では 404 を返す。
+# 内蔵の画像ツールを持つ CLI。 ここに無い CLI では 404 を返す。
 IMAGE_CLIS = frozenset({"codex", "antigravity"})
 
 
@@ -853,7 +853,7 @@ class ImageRequest(BaseModel):
 
 
 def _image_prompt(body: ImageRequest, out_dir: str) -> str:
-    """Codex に渡す指示。**保存先と枚数を言い切る** —— 相手はエージェントなので、
+    """Codex に渡す指示。保存先と枚数を言い切る —— 相手はエージェントなので、
     曖昧だと説明だけ返してファイルを書かないことがある。"""
     return (
         f"Generate {body.n} image(s) at {body.size} for this description:\n\n"
@@ -864,7 +864,7 @@ def _image_prompt(body: ImageRequest, out_dir: str) -> str:
     )
 
 
-# **画像は 1 回ずつ走らせる。** 内蔵ツールは共有の保存先
+# 画像は 1 回ずつ走らせる。 内蔵ツールは共有の保存先
 # ($CODEX_HOME/generated_images)へ置くことがあり、同時に走らせると
 # 「どれがこの実行のものか」が mtime では決まらない —— 実際に 4 件を同時に頼んで、
 # 4 件とも同じ絵が返った。1 枚 1 分以上かかる相手なので、直列でも困らない。
@@ -872,9 +872,9 @@ _IMAGE_LOCK = asyncio.Lock()
 
 
 def _shared_root() -> str:
-    """内蔵ツールの既定の保存先。**使い回されるので中身は前回のものが残る。**
+    """内蔵ツールの既定の保存先。使い回されるので中身は前回のものが残る。
 
-    これは Codex の話。**Antigravity は頼んだ場所へ直接書く**ので、
+    これは Codex の話。Antigravity は頼んだ場所へ直接書くので、
     こちらを見るのは「作業ディレクトリに何も無かったとき」の保険にしかならない。
     """
     return os.path.join(os.environ.get("CODEX_HOME", "/srv/bridge/.codex"), "generated_images")
@@ -892,8 +892,8 @@ def _existing(root: str) -> frozenset[str]:
 def _collect_images(out_dir: str, since: float, seen: frozenset[str] = frozenset()) -> list[bytes]:
     """この実行で増えた画像を拾う。
 
-    **作業ディレクトリを先に見る。** そこは 1 回ごとに作り直すので取り違えようがない。
-    内蔵ツールが既定の保存先へ置いた場合だけ、そちらを見る —— **あちらは使い回される**
+    作業ディレクトリを先に見る。 そこは 1 回ごとに作り直すので取り違えようがない。
+    内蔵ツールが既定の保存先へ置いた場合だけ、そちらを見る —— あちらは使い回される
     ので、走らせる前にあったもの(`seen`)を除く。mtime だけで選ぶと、
     同時に走った別の実行の絵まで拾ってしまう。
     """
@@ -953,7 +953,7 @@ async def _generate_images(body: ImageRequest) -> dict:
     with tempfile.TemporaryDirectory(prefix="chiezo-image-") as out_dir:
         prompt = _image_prompt(body, out_dir)
         if CLI == "antigravity":
-            # **agy はプロンプトを引数で取る**(会話の口と同じ)。作業ディレクトリは
+            # agy はプロンプトを引数で取る(会話の口と同じ)。作業ディレクトリは
             # cwd で渡し、確認は出させない(非対話なので待ちに入ると固まる)。
             cmd = ["agy", "-p", prompt, "--dangerously-skip-permissions"]
             if body.model or MODEL:
@@ -964,7 +964,7 @@ async def _generate_images(body: ImageRequest) -> dict:
                 "codex", "exec",
                 "--skip-git-repo-check",
                 "--ephemeral",
-                # **この作業ディレクトリにだけ書かせる**(会話の口は read-only のまま)
+                # この作業ディレクトリにだけ書かせる(会話の口は read-only のまま)
                 "-s", "workspace-write",
                 "-c", 'approval_policy="never"',
                 "-C", out_dir,
@@ -1003,7 +1003,7 @@ async def _generate_images(body: ImageRequest) -> dict:
         images = _collect_images(out_dir, started, seen)
 
     if not images:
-        # **説明だけ返してファイルを書かない**ことがある(相手はエージェント)。
+        # 説明だけ返してファイルを書かないことがある(相手はエージェント)。
         # 呼ぶ側が「作れなかった」と分かるようにする
         raise HTTPException(502, {"error": f"{CLI} が画像を保存しませんでした"})
 

@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 
-# **どのコミットが動いているかを画面に出すための情報。** タグは latest で上書きされ、
+# どのコミットが動いているかを画面に出すための情報。 タグは latest で上書きされ、
 # デプロイ先が pull し忘れていても外からは見えないので、イメージ自身に持たせる。
 # 渡さなければ「不明」と出るだけで、ビルドは通る(手元ビルド用)。
 ARG BUILD_SHA=""
@@ -19,7 +19,7 @@ ARG BUILD_TIME=""
 ENV CHIEZO_BUILD_SHA=$BUILD_SHA \
     CHIEZO_BUILD_TIME=$BUILD_TIME
 
-# **root で動かさない。uid はホストに実在しない 10001。** 1000 はホストの1人目の
+# root で動かさない。uid はホストに実在しない 10001。 1000 はホストの1人目の
 # ユーザーの番号なので、それで動かすと万一コンテナから抜け出されたときにその人の
 # ファイルを触れる立場になる。10001 ならホストの誰でもなく、chown で渡した data/ しか
 # 触れない。compose の user: で上書きできる(data/ をホストから直接編集したいとき)。

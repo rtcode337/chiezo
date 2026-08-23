@@ -6,7 +6,7 @@ import html
 import re
 from urllib.parse import quote
 
-# ブラウズ画面の URL。**ソースの画面は `/search/` の下に置く**(ルート直下を
+# ブラウズ画面の URL。ソースの画面は `/search/` の下に置く(ルート直下を
 # キャッチオールにすると、`ask` や `admin` という名前のソースを足せなくなる)。
 # 出典のリンクもここを通すので、移すときに漏れない。
 BROWSE_PREFIX = "/search"
@@ -128,10 +128,10 @@ PAGE_STYLE = """
   /* 管理画面の「話す相手」の表。設定を一度入れたら開かない場所なので、1 行を低く保つ
      (本文と同じ字の大きさだと、手順の説明が入る列で行が伸びすぎる)。 */
   table.ai-settings td { font-size: 0.85rem; }
-  /* **ボタンの文字は折らない。** 手順の details が広がると、この列だけ潰れて
+  /* ボタンの文字は折らない。 手順の details が広がると、この列だけ潰れて
      「有効にする」が 3 行に折れていた。 */
   table.ai-settings button { padding: 0.2rem 0.6rem; font-size: 0.85rem; white-space: nowrap; }
-  /* 手順に貼った docker run は長い。**幅を決めて折り返す** —— 決めないと、
+  /* 手順に貼った docker run は長い。幅を決めて折り返す —— 決めないと、
      その列だけが伸びて他の列を押し潰す。 */
   table.ai-settings details { max-width: 34rem; }
   table.ai-settings code { word-break: break-all; }
@@ -140,9 +140,9 @@ PAGE_STYLE = """
   table.ai-settings details { margin-top: 0.3rem; }
   table.ai-settings details > summary { font-weight: normal; padding: 0.1rem 0; }
   table.ai-settings p { margin: 0.3rem 0; }
-  /* **無効な相手は行ごと薄くする。** 「使う」のボタンの文字だけでは、行が増えるほど
+  /* 無効な相手は行ごと薄くする。 「使う」のボタンの文字だけでは、行が増えるほど
      いまどちらの状態か読み取りにくい。
-     **ただしボタンは薄くしない。** 一度 `color: inherit` を掛けたら、td の灰色を
+     ただしボタンは薄くしない。 一度 `color: inherit` を掛けたら、td の灰色を
      継いで「押せないボタン」に見え、**まさに押してほしい行（無効な行）で
      押せないと思われた**（実際に報告を受けた）。文字色を明示して継がせない。 */
   table.ai-settings tr.off { background: #f7f7f7; }
@@ -150,10 +150,10 @@ PAGE_STYLE = """
   table.ai-settings tr.off button:not([disabled]) { color: #111; }
   /* 押せないボタン（条件を満たしていない）は、見た目でもそう分かるようにする */
   table.ai-settings button[disabled] { color: #999; cursor: not-allowed; }
-  /* 使用量の表。**枠の欄は折り返す** —— 1 行が「帯 + 使用率 + 戻る時刻」で長く、
+  /* 使用量の表。枠の欄は折り返す —— 1 行が「帯 + 使用率 + 戻る時刻」で長く、
      nowrap のままだと狭い画面でこの列だけが伸びて他を押し潰す。 */
   table.ai-usage td { white-space: normal; }
-  /* 使用率の帯。**数字と併せて出す**(色の見え方だけで読ませない)。
+  /* 使用率の帯。数字と併せて出す(色の見え方だけで読ませない)。
      70% / 90% で色を変えるのは、押す前に「もう頼めないか」を見分けるため。 */
   .meter { display: inline-block; width: 6rem; height: 0.55rem; vertical-align: middle;
            background: #e6e6e6; border-radius: 999px; overflow: hidden; margin-right: 0.3rem; }
@@ -170,11 +170,11 @@ PAGE_STYLE = """
   input[type=text] { padding: 0.3rem 0.5rem; width: 20rem; max-width: 100%; box-sizing: border-box; }
   button { padding: 0.3rem 0.8rem; }
   /* 狭い画面。列の多い表(管理画面の登録ソース一覧)がそのままだと画面からはみ出し、
-     ページ全体が横スクロールして本文まで画面外へ出る。**表だけ**を横スクロールさせ、
+     ページ全体が横スクロールして本文まで画面外へ出る。表だけを横スクロールさせ、
      ページ本体は縦スクロールだけで読めるようにする。
      table を display:block にすると幅が中身なりになり、あふれた分がこの表の中で
      スクロールする(表を <div> で包まずに済むので、画面ごとの HTML 組み立ては触らない)。
-     しきい値がスマホ幅より広いのは、**登録ソースの表が約 800px 必要**だから
+     しきい値がスマホ幅より広いのは、登録ソースの表が約 800px 必要だから
      (built_at の ISO 日時と schema_version の見出しが長い)—— タブレット縦持ちや
      小さいウィンドウでもあふれる。 */
   @media (max-width: 56rem) {
@@ -200,10 +200,10 @@ PAGE_STYLE = """
 #
 # 以前は `/localllm/chat` だった。話す相手はローカルの推論サーバとは限らず
 # (Gemini・OpenRouter・CLI ブリッジも選べる)、名前が実態と食い違ったので `/ai/` へ移した。
-# **旧 URL のリダイレクトは置いていない** —— LAN 内の画面で、外から参照されるものではないため。
+# 旧 URL のリダイレクトは置いていない —— LAN 内の画面で、外から参照されるものではないため。
 CHAT_PATH = "/ai/chat"
 
-# 会話画面(/ai/chat)専用のスタイル。**管理画面とは分けてある** —
+# 会話画面(/ai/chat)専用のスタイル。管理画面とは分けてある —
 # 管理画面は素っ気ないままでよく、会話は毎日触る画面なので作りが違う。
 # PAGE_STYLE の後ろに足すので、body の余白など重なる指定はこちらが勝つ。
 CHAT_STYLE = """
@@ -233,7 +233,7 @@ CHAT_STYLE = """
                     padding: 0.6rem 0.9rem; max-width: 85%; }
   .turn.bot .text { line-height: 1.75; }
   .turn .text { white-space: pre-wrap; word-break: break-word; }
-  /* Markdown を組んだ返事。**pre-wrap を戻す** —— ブロック要素で行が分かれるので、
+  /* Markdown を組んだ返事。pre-wrap を戻す —— ブロック要素で行が分かれるので、
      改行も残すと段落のあいだが二重に空く */
   .turn .text.md { white-space: normal; }
   .turn .text.md > :first-child { margin-top: 0; }
@@ -255,7 +255,7 @@ CHAT_STYLE = """
     background: #f1efea; border-radius: 4px; padding: 0.1rem 0.3rem;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88em;
   }
-  /* コードブロックは**横に流す**(折り返すとインデントが崩れて読めない) */
+  /* コードブロックは横に流す(折り返すとインデントが崩れて読めない) */
   .turn .text.md pre {
     margin: 0.7rem 0; padding: 0.7rem 0.9rem; background: #f1efea; border-radius: 8px;
     overflow-x: auto;
@@ -300,8 +300,8 @@ CHAT_STYLE = """
                        margin-top: 0.5rem; font-size: 0.8rem; color: #6b665e; }
   .composer-settings select { border: 1px solid #e3e0da; border-radius: 999px; background: #fff;
                               padding: 0.25rem 0.6rem; font-size: 0.8rem; color: #4a463f; }
-  /* **display を指定した要素は hidden 属性が効かない**（作者側の指定が UA の
-     display:none に勝つ）。効かない操作を隠しているつもりで**押せてしまう**ので、
+  /* display を指定した要素は hidden 属性が効かない（作者側の指定が UA の
+     display:none に勝つ）。効かない操作を隠しているつもりで押せてしまうので、
      ここで打ち消しておく —— 実際に本番で「覚える」が切れる状態のまま出ていた。 */
   .composer-settings [hidden] { display: none !important; }
   .composer-settings .toggle { display: inline-flex; align-items: center; gap: 0.3rem;
@@ -355,9 +355,9 @@ _CODE = re.compile(r"`([^`]+)`")
 
 
 def markup(value) -> str:
-    """`**強調**` / `` `コード` `` / 改行だけを HTML にする。
+    """`強調` / `` `コード` `` / 改行だけを HTML にする。
 
-    **必ず先にエスケープしてから印を置き換える。** 逆にすると、文中にタグを書かれた時点で
+    必ず先にエスケープしてから印を置き換える。 逆にすると、文中にタグを書かれた時点で
     そのまま入り込む（会話画面の Markdown でも同じ順にしてある）。
     """
     text = esc(value)

@@ -1,6 +1,6 @@
 """Wikipedia 言語版カタログ。
 
-**自動生成物。手で編集せず `python3 scripts/gen_wikipedia_editions.py` で作り直すこと。**
+自動生成物。手で編集せず `python3 scripts/gen_wikipedia_editions.py` で作り直すこと。
 
 `sources/__init__.py` はこの表から `<lang>wiki` のアダプタを一括生成する。言語版は
 300 以上あり手書きでは追随できないため、Wikimedia の sitematrix(言語版一覧)と

@@ -20,24 +20,24 @@ log = logging.getLogger("chiezo.api")
 
 router = APIRouter()
 
-# 会話画面の JS。**この画面だけ JS を使う**(他の画面は従来どおり JS なし)理由は 2 つ:
+# 会話画面の JS。この画面だけ JS を使う(他の画面は従来どおり JS なし)理由は 2 つ:
 # 回答まで数十秒かかるので逐次表示しないと無反応に見えること、会話の履歴を持つ主体が
 # クライアント側だからこと。EventSource ではなく fetch を使うのは、履歴を送るのに
 # POST が要るため(EventSource は GET しか張れない)。
 # AI の返事に混ざる Markdown を、その場で HTML に直すための小さな描画器。
 #
-# **外部のライブラリを読み込まない。** Chiezo は LAN 内・オフラインで動く前提で、
+# 外部のライブラリを読み込まない。 Chiezo は LAN 内・オフラインで動く前提で、
 # 他の画面も JS も CSS も外に出ずに済ませてある —— ここだけ CDN に頼ると、
 # 外に出られない環境で装飾だけが消える(しかも原因が分かりにくい)。
 #
-# **エスケープしてから組み立てる。** 相手はモデルの出力(信用できない文字列)なので、
+# エスケープしてから組み立てる。 相手はモデルの出力(信用できない文字列)なので、
 # 先に & < > " ' を実体参照へ直し、そのうえで Markdown の印を HTML に置き換える ——
 # 順番を逆にすると、生成物にタグを書かれた時点で入り込む。
-# リンクも **http/https だけ**通す(javascript: を踏ませない)。
+# リンクも http/https だけ通す(javascript: を踏ませない)。
 #
 # 対応するのは LLM が実際に使う範囲: 見出し・箇条書き・番号付き・引用・区切り線・
 # コード(インライン/ブロック)・表・強調・打ち消し・リンク・裸の URL。
-# **入れ子の箇条書きには対応しない**(1 段だけ)—— 会話の答えで 2 段以上は稀で、
+# 入れ子の箇条書きには対応しない(1 段だけ)—— 会話の答えで 2 段以上は稀で、
 # 対応させるぶんだけ壊れやすくなる。
 MARKDOWN_JS = r"""
 (function (global) {
@@ -412,7 +412,7 @@ CHAT_JS = """
 """
 
 
-# 会話の画面。**Chiezo を「使う」側の機能**なので `/ai/` の下に置く
+# 会話の画面。Chiezo を「使う」側の機能なので `/ai/` の下に置く
 # (Chiezo 本体の画面 = /admin と /search/… とは並びで区別できるようにする)。
 @router.get(CHAT_PATH, response_class=HTMLResponse)
 async def chat_page(
@@ -440,7 +440,7 @@ async def chat_page(
         f'<option value="{value}"{" selected" if (value == "1") == grounded else ""}>{label}</option>'
         for value, label in (("1", "Chiezo で取れたことだけ"), ("0", "モデルの知識で補ってよい"))
     )
-    # **引けない相手には agent を出さない。** 選べるのに必ず空振りする選択肢を並べると、
+    # 引けない相手には agent を出さない。 選べるのに必ず空振りする選択肢を並べると、
     # 「選んだのに Chiezo を引いてくれない」という分かりにくい壊れ方になる(Codex)。
     mcp_ok = (spec := providers.get(answer.normalize_backend(backend))) is None or spec.can_use_mcp
     mode_options = "".join(
@@ -448,7 +448,7 @@ async def chat_page(
         for value, label in (("rag", "1 回検索して答える"), ("agent", "モデルに道具を引かせる"))
         if mcp_ok or value == "rag"
     )
-    # **理由を書く。** 選択肢が 1 つしか無い理由が画面から読めないと、設定を疑って回ることになる
+    # 理由を書く。 選択肢が 1 つしか無い理由が画面から読めないと、設定を疑って回ることになる
     mode_note = (
         ""
         if mcp_ok
@@ -456,13 +456,13 @@ async def chat_page(
         'キャンセルされる(上流の不具合)。rag なら Chiezo が抜粋を集めて渡すので'
         '根拠つきで答えられる">この相手は道具を引けません</span>'
     )
-    # 話す相手の選択。**相手が 1 つしか無いときは出さない** —— 選べない選択肢を
+    # 話す相手の選択。相手が 1 つしか無いときは出さない —— 選べない選択肢を
     # 並べても場所を取るだけで、設定を足せば自然に現れる。
     names = answer.backend_names()
     current_backend = answer.normalize_backend(backend)
     if current_backend not in names:
         current_backend = names[0] if names else ""
-    # モデルは**会話のたびに選べる**。候補は相手に聞いた一覧（無ければコードの控え）。
+    # モデルは会話のたびに選べる。候補は相手に聞いた一覧（無ければコードの控え）。
     model_select = ""
     if names:
         model_options = "".join(
@@ -470,7 +470,7 @@ async def chat_page(
             for m in await answer.available_models(current_backend)
         )
         if model_options:
-            # **相手に任せる選択肢を先頭に置く**（エフォートと同じ扱い）。
+            # 相手に任せる選択肢を先頭に置く（エフォートと同じ扱い）。
             # 指定が要る相手（Gemini など）では、これを選んでも控えの先頭が当たる。
             model_select = (
                 '<select id="model" name="model" title="モデル">'
@@ -478,7 +478,7 @@ async def chat_page(
                 f"{model_options}</select>"
             )
 
-    # エフォート（考える量）。**持っている相手のときだけ出す** —— 持たない相手に
+    # エフォート（考える量）。持っている相手のときだけ出す —— 持たない相手に
     # 出しても送るだけ無駄で、選べたのに効かない、という分かりにくさが残る。
     effort_select = ""
     effort_names = providers.efforts_of(current_backend)
@@ -499,22 +499,22 @@ async def chat_page(
             for name in names
         )
         backend_select = f'<select id="backend" name="backend" title="話す相手">{backend_options}</select>'
-    # 設定は**入力欄の下**に並べる(会話中に触るのは稀なので、視線の主役にしない)。
+    # 設定は入力欄の下に並べる(会話中に触るのは稀なので、視線の主役にしない)。
     #
-    # **効かない場面ではトグルを出さない。** web 検索も「覚える」も agent モードの
+    # 効かない場面ではトグルを出さない。 web 検索も「覚える」も agent モードの
     # 道具でしか働かず、rag モードでは送っても捨てられる。出しっぱなしにすると
     # 「押せるのに何も起きない」状態になる（実際にそうなっていた）。
     is_bridge = bool((spec := providers.get(current_backend)) and spec.bridge)
     current_mode = answer.resolve_mode(current_backend, mode)
-    # CLI ブリッジでは Chiezo の SearXNG ではなく **CLI 自身の web 検索**を開ける。
+    # CLI ブリッジでは Chiezo の SearXNG ではなく CLI 自身の web 検索を開ける。
     # そちらは Chiezo 側の設定と無関係なので、設定していない環境でも出す。
     web_usable = current_mode == "agent" and (websearch.is_enabled() or is_bridge)
-    # **「覚える」は CLI ブリッジでは止められない**（MCP をまるごと渡していて、道具を
-    # 1 つずつ外す口が無い）。隠すのではなく**入ったまま触れない**状態で見せる ——
+    # 「覚える」は CLI ブリッジでは止められない（MCP をまるごと渡していて、道具を
+    # 1 つずつ外す口が無い）。隠すのではなく入ったまま触れない状態で見せる ——
     # 使えること自体は伝わったほうがよく、切れるように見せるのだけを避けたい。
     notes_usable = current_mode == "agent" and notes.is_enabled()
     notes_fixed = notes_usable and is_bridge
-    # **要素は描いておき、効かない場面では隠す。** モードや相手は JS で切り替わるので、
+    # 要素は描いておき、効かない場面では隠す。 モードや相手は JS で切り替わるので、
     # そのたびに作り直すより、出し入れするほうが素直。
     any_bridge = any(bool((p := providers.get(n)) and p.bridge) for n in names)
     web_toggle = (
@@ -570,12 +570,12 @@ async def chat_page(
     cfg = await answer.ensure_model(answer.require_settings(current_backend, model, effort))
     # 話す相手は AI(モデル)で、Chiezo はその AI が引く知識。見出しでその関係を出すため、
     # モデル名を名乗らせる(推論サーバに聞く。分からなければ名前なしの「AI」)。
-    # モデルが決まっていなければ**相手の名前**を出す（`Claude Code` など）。
+    # モデルが決まっていなければ相手の名前を出す（`Claude Code` など）。
     # 選べる一覧の先頭を出すと、選んでもいないモデル名が並んで嘘になる。
     label = await answer.model_label(cfg) or answer.backend_label(current_backend)
 
     def shown_model(name: str) -> str:
-        """人に見せるモデル名。**置き字は出さない。**
+        """人に見せるモデル名。置き字は出さない。
 
         モデルを選ばなかったとき、内部では相手に無視される置き字（`chiezo`）が入る。
         そのまま出すと画面に「モデル: chiezo」と並んで、何で答えたのか分からなくなる。

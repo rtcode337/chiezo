@@ -1,12 +1,12 @@
 """話せる AI の一覧（URL・表示名・モデル候補はここに決め打ち）。
 
-**環境変数で相手を定義するのはやめた。** 以前は `CHIEZO_LLM_<名前>_URL` を並べる形だったが、
+環境変数で相手を定義するのはやめた。 以前は `CHIEZO_LLM_<名前>_URL` を並べる形だったが、
 URL は相手ごとに 1 つに決まっていて、ユーザーが選ぶ余地は無い（Gemini の OpenAI 互換の口は
 1 つしかないし、同居の推論サーバもブリッジもコンテナ名が compose で決まっている）。
 決まっているものを設定にすると、書き間違いの余地を増やすだけで得が無い。
 
-**ユーザーが決めるのは 3 つだけ**で、それらは管理画面から入れて `app/settings_store.py` に入る。
-**同居の推論サーバ（`local`）も含めて全部同じ扱い**で、特別扱いする相手は無い。
+ユーザーが決めるのは 3 つだけで、それらは管理画面から入れて `app/settings_store.py` に入る。
+同居の推論サーバ（`local`）も含めて全部同じ扱いで、特別扱いする相手は無い。
 
 - 使うか使わないか（on/off）
 - 認証情報（要る相手だけ。API キー・OAuth トークン・auth.json と、相手によって中身が違う）
@@ -21,13 +21,13 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-# 認証情報の要りかた。**「API キー」と呼ばない** —— API キーなのは Gemini と OpenRouter だけで、
+# 認証情報の要りかた。「API キー」と呼ばない —— API キーなのは Gemini と OpenRouter だけで、
 # Claude Code は OAuth トークン、Codex は auth.json の中身が入る。画面の出し分けと「on にできるか」の判定に使う。
 CRED_REQUIRED = "required"  # 認証情報が無ければ on にできない
 CRED_OPTIONAL = "optional"  # 無くても動くが、認証を掛けた相手には入れられる（推論サーバ）
 CRED_NONE = "none"  # 渡すものが無い（Antigravity。認証はコンテナ内のサインイン結果）
 
-# **枠(使用量と残り)の聞き方。** 相手ごとに口が違い、持たない相手のほうが多い。
+# 枠(使用量と残り)の聞き方。 相手ごとに口が違い、持たない相手のほうが多い。
 # 実装は `app/usage.py`。ここに書くのは「どの口で聞くか」だけ。
 USAGE_NONE = ""  # 聞く口が無い（Gemini・OpenAI・推論サーバ）
 USAGE_ANTHROPIC = "anthropic"  # api.anthropic.com の /api/oauth/usage（Claude Code の /usage と同じ）
@@ -48,22 +48,22 @@ class Provider:
     # モデル候補の控え。相手の `/v1/models` が引ければそちらを優先し、
     # 引けない相手（CLI ブリッジなど）でこれを使う。
     models: tuple[str, ...] = ()
-    # **モデルを必ず指定しないといけない相手か。** API は指定が要る（Gemini に
+    # モデルを必ず指定しないといけない相手か。 API は指定が要る（Gemini に
     # モデル無しで投げても通らない）が、CLI ブリッジと 1 プロセス 1 モデルの推論サーバは
     # 相手が自分で決められる。False の相手では、画面で「既定」を選べば何も送らない。
     model_required: bool = True
-    # 選べる「エフォート」（考える量）。**相手に聞く口が無い**ので決め打ちする。
-    # 空なら画面に出さない —— **確かめていない相手には出さない**。
+    # 選べる「エフォート」（考える量）。相手に聞く口が無いので決め打ちする。
+    # 空なら画面に出さない —— 確かめていない相手には出さない。
     # 送ると `reasoning_effort` として相手に渡る（CLI ブリッジは `--effort` に直す）。
     efforts: tuple[str, ...] = ()
-    # **その相手に MCP（Chiezo の道具）を引かせられるか。** 引けない相手では agent モードに
+    # その相手に MCP（Chiezo の道具）を引かせられるか。 引けない相手では agent モードに
     # 意味が無い（道具を渡す先が無く、モデルの知識だけで答える）ので、rag に倒す。
     can_use_mcp: bool = True
-    # **この CLI ブリッジ（bridge/）で包んでいる相手か。** 「接続を試す」の確かめ方が変わる
+    # この CLI ブリッジ（bridge/）で包んでいる相手か。 「接続を試す」の確かめ方が変わる
     # —— ブリッジは `/health?check=1` を持っていて CLI に直接聞ける（`claude auth status` 等）。
     # それ以外は OpenAI 互換の `/models` を引いて確かめる。
     bridge: bool = False
-    # **枠の聞き方**（`USAGE_*`。空なら聞く口が無い）。**課金の形とは別物** ——
+    # 枠の聞き方（`USAGE_*`。空なら聞く口が無い）。課金の形とは別物 ——
     # サブスクの相手でも枠を出す口があるとは限らない（Antigravity は CLI にしか無い）。
     usage: str = USAGE_NONE
     # URL を上書きできる環境変数。コンテナ名で辿り着けない相手のための逃げ道で、
@@ -97,16 +97,16 @@ PROVIDERS: tuple[Provider, ...] = (
     Provider(
         id="gemini",
         label="Gemini",
-        # **この URL の直下が chat/completions**。末尾に /v1 は付けない。
+        # この URL の直下が chat/completions。末尾に /v1 は付けない。
         url="https://generativelanguage.googleapis.com/v1beta/openai",
         credential=CRED_REQUIRED,
         billing="無料枠（課金を有効にしなければ従量課金は発生しない）",
         setup="Google AI Studio で API キーを発行して貼り付けてください。",
-        # **先頭が既定。** 実測(2026-08)で 2.5 系は chat/completions が 404 を返すように
+        # 先頭が既定。 実測(2026-08)で 2.5 系は chat/completions が 404 を返すように
         # なっていた —— 相手の一覧には残っているので、一覧に出るかどうかでは判断できない。
         # 動くことを確かめたものだけ並べる。
         models=("gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite"),
-        # 枠を聞く口は無い。**残量は Google Cloud の Quotas API 側にあり**、
+        # 枠を聞く口は無い。残量は Google Cloud の Quotas API 側にあり、
         # API キー 1 本では引けない（GCP のプロジェクトと別の認証が要る）。
         order=10,
     ),
@@ -160,15 +160,15 @@ PROVIDERS: tuple[Provider, ...] = (
         "ブリッジは設定 DB を読み取り専用でマウントして読むので、"
         "登録すればブリッジの再起動なしで効きます。",
         # CLI はエイリアスで受ける（正式名はモデルが変わるたびに動く）。
-        # **先頭は CLI の既定に揃える**（claude の既定は claude-sonnet-5。実測）——
+        # 先頭は CLI の既定に揃える（claude の既定は claude-sonnet-5。実測）——
         # 何も選ばなかったときにここが使われるので、ずらすと黙って別のモデルになる。
         models=("sonnet", "fable", "opus", "haiku"),
         # `claude --help` の --effort（実測で 5 つとも通る）。
         efforts=("low", "medium", "high", "xhigh", "max"),
-        # **枠はブリッジ越しではなく直に聞く。** claude CLI には使用量を出す
+        # 枠はブリッジ越しではなく直に聞く。 claude CLI には使用量を出す
         # サブコマンドが無く（`/usage` は対話画面の中だけ）、代わりに CLI 自身が
         # 叩いている口を同じトークンで引く。ブリッジが立っていなくても引けるのが利点。
-        # **ただし `claude setup-token` のトークンでは 403 になる**（実測。あれは
+        # ただし `claude setup-token` のトークンでは 403 になる（実測。あれは
         # 推論だけに絞られていて `user:profile` を持たない）—— 経路は残し、
         # そうと分かる理由を返す（`app/usage.py` の `SCOPE_HINT`）。
         usage=USAGE_ANTHROPIC,
@@ -179,7 +179,7 @@ PROVIDERS: tuple[Provider, ...] = (
         id="antigravity",
         label="Antigravity CLI",
         url="http://chiezo-bridge-antigravity:7013/v1",
-        # **API キー方式が無い。** コンテナ内で 1 回サインインした結果をホーム配下の
+        # API キー方式が無い。 コンテナ内で 1 回サインインした結果をホーム配下の
         # キャッシュから読むので、画面から登録する秘密は無い。
         credential=CRED_NONE,
         billing="Google AI サブスクリプション（定額）",
@@ -208,7 +208,7 @@ PROVIDERS: tuple[Provider, ...] = (
         models=(),
         # `agy --help` の --effort。claude と違い xhigh / max は無い。
         efforts=("low", "medium", "high"),
-        # **枠は CLI に聞くしかない。** 残クレジットを取る RPC は持っているが、
+        # 枠は CLI に聞くしかない。 残クレジットを取る RPC は持っているが、
         # 外から叩ける口としては公開されていない（画面の中で使われるだけ）。
         usage=USAGE_BRIDGE,
         bridge=True,
@@ -227,12 +227,12 @@ PROVIDERS: tuple[Provider, ...] = (
         models=(),  # CLI の既定に任せる（/v1/models が返すものを使う）
         # `codex exec --help` に --effort は無い（設定キーはあるが確かめていないので出さない）。
         efforts=(),
-        # **codex exec では MCP の呼び出しが必ずキャンセルされる**（非対話では答えられない
+        # codex exec では MCP の呼び出しが必ずキャンセルされる（非対話では答えられない
         # 確認の経路に入る。`user cancelled MCP tool call`。openai/codex#16685、
         # 2026-08 時点で未修正）。こちらの設定では回避できないので agent を選ばせず rag に倒す
         # —— rag なら Chiezo が抜粋を集めてプロンプトに載せるので、道具が無くても根拠が付く。
         can_use_mcp=False,
-        # **枠は CLI に聞く。** `codex app-server` の `account/rateLimits/read` が
+        # 枠は CLI に聞く。 `codex app-server` の `account/rateLimits/read` が
         # 5 時間・週の使用率を返す（モデルを呼ばないので枠を食わない）。
         # 手元に控えた auth.json を直に使わないのは、access_token が期限切れになるため
         # —— CLI に聞けば、更新はあちらがやる。

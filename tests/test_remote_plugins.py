@@ -14,7 +14,7 @@ import pytest
 
 from sources import remote
 
-# 題材は架空。**実在のプラグイン名は書かない** —— プラグインは「公開リポジトリに
+# 題材は架空。実在のプラグイン名は書かない —— プラグインは「公開リポジトリに
 # 置きたくないもの」を扱う仕組みなので、こちら側にその名前を残さない。
 DOCS = [
     {"doc_id": 7, "title": "運用手順書", "body": "障害時の連絡順と復旧手順",
@@ -85,7 +85,7 @@ class TestCatalog:
         assert remote.catalog("  ,  ") == []
 
     def test_unreachable_plugin_is_skipped(self, caplog):
-        """**落ちていても本体は動く**(警告のみ)。別コンテナなので一時的な不通は正常。"""
+        """落ちていても本体は動く(警告のみ)。別コンテナなので一時的な不通は正常。"""
         assert remote.catalog("http://127.0.0.1:9") == []
         assert "catalog unavailable" in caplog.text
 
@@ -126,7 +126,7 @@ class TestAdapter:
     def test_meta_line_overrides_the_catalog(self, plugin, tmp_path):
         """取り込んだ中身を見てからでないと代表を選べないソースのための口。
 
-        **日本語のタイトルが通ること**まで見る(ヘッダで渡す設計はここで壊れた ——
+        日本語のタイトルが通ることまで見る(ヘッダで渡す設計はここで壊れた ——
         HTTP ヘッダは latin-1 しか運べない)。
         """
         _Handler.meta = {
@@ -190,7 +190,7 @@ class TestTrigger:
         assert entry["plugin"].startswith("http://")
 
     def test_run_accepts_plugin_sources(self, trigger, monkeypatch):
-        """**カタログに出したものは実行できなければならない。**
+        """カタログに出したものは実行できなければならない。
 
         `/sources` にだけ足して `/run` の存在チェックを直さないと、管理画面には
         ボタンが出るのに押すと `unknown source` になる(実際にそうなった)。

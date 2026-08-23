@@ -2,7 +2,7 @@
 
 `app/main.py`(REST)と `app/views/`(人間向け HTML)の両方から使うものだけを置く。
 main に置いたままだと views が main を import することになり、main → views(router の
-登録)との間で循環参照になる。**ここは app の他モジュールを import しない**。
+登録)との間で循環参照になる。ここは app の他モジュールを import しない。
 
 - ソースの取り出し(`get_source`)
 - 並び順の SQL 断片(`exact_title_first` / `relevance_order`)
@@ -43,7 +43,7 @@ def exact_title_first(prefix: str = "") -> str:
     独立した段として先に置く(完全一致が無いクエリでは何も起きない)。
 
     `lower()` は英語版 wiki 向け(SQLite の lower は ASCII のみなので日本語では実質無効)。
-    **呼び出し側は WHERE 句のパラメータの後・LIMIT の前に検索語を渡すこと。**
+    呼び出し側は WHERE 句のパラメータの後・LIMIT の前に検索語を渡すこと。
     """
     return f"CASE WHEN lower({prefix}title) = lower(?) THEN 0 ELSE 1 END"
 
@@ -122,10 +122,10 @@ def has_feature_area(src: Source) -> bool:
 
 
 def require_attributes(src: Source, *, feature: str | None, area: str | None) -> None:
-    """持っていない属性で絞ろうとしたら、0 件ではなく**理由**を返す。
+    """持っていない属性で絞ろうとしたら、0 件ではなく理由を返す。
 
     wikipedia 系のソースに `area=東京都` を付けると、条件としては正しいのに必ず 0 件になる。
-    人にとっても分かりにくいが、**agent モードでは致命的**だった: モデルは 0 件を見ても
+    人にとっても分かりにくいが、agent モードでは致命的だった: モデルは 0 件を見ても
     理由が分からず、絞り込みを付けたまま検索語だけ変えて何度も空振りする(実測)。
     「そのソースにその属性は無い」と言えば、次の手に移れる。
     """

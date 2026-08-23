@@ -12,7 +12,7 @@ OSM の国別ソース(`osm_<国>`)と Wikipedia の言語版(`<lang>wiki`)は�
 手で書き足して綴りを保守するのは現実的でないため。
 
 このリポジトリに入れられないソース(公開できないプライベートな情報など)は、
-このリポジトリに入れられないソースは、**別コンテナのプラグイン**から借りる
+このリポジトリに入れられないソースは、別コンテナのプラグインから借りる
 (`sources/remote.py`、`CHIEZO_PLUGIN_SOURCES`)。プラグインは Chiezo のコードを含まず、
 文書を配るだけでよい。手順は `docs/adding-a-source.md` のケース 3 が正。
 """
@@ -95,7 +95,7 @@ ADAPTERS.update({
 def get_adapter(source: str) -> SourceAdapter:
     if source in ADAPTERS:
         return ADAPTERS[source]()
-    # 別コンテナのプラグイン(CHIEZO_PLUGIN_SOURCES)。**問い合わせるのはここで初めて** ——
+    # 別コンテナのプラグイン(CHIEZO_PLUGIN_SOURCES)。問い合わせるのはここで初めて ——
     # import 時に聞きに行くと、プラグインが起動していない間は本体を立てられなくなる。
     remote = load_remote_adapters()
     if source in remote:

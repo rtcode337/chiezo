@@ -1,13 +1,13 @@
 """管理画面の「話す相手」節（一覧の描画と、on/off・認証情報の受け口）。
 
-**設定は環境変数ではなくここから入れる。** URL と表示名は `app/providers.py` に
+設定は環境変数ではなくここから入れる。 URL と表示名は `app/providers.py` に
 決め打ちしてあり、ユーザーが決めるのは on/off・認証情報・既定のモデルだけ。
 保存先は `app/settings_store.py`（`state/settings.db`）。
 
 on にできる条件を画面側でも守る:
 
-- 認証情報の要る相手… **未登録なら on にできない**
-- CLI ブリッジ（Claude Code / Codex CLI）… **コンテナが立っていなければ on にできない**
+- 認証情報の要る相手… 未登録なら on にできない
+- CLI ブリッジ（Claude Code / Codex CLI）… コンテナが立っていなければ on にできない
   （compose のコメントを外していなければ立っていない。立っていない相手を有効にしても
   会話のたびに失敗するだけなので、押させない）
 
@@ -30,9 +30,9 @@ router = APIRouter()
 def _rows() -> list[dict]:
     """一覧に出す 1 行ぶんずつ。
 
-    **画面を描くときに相手へ問い合わせない。** 以前は毎回ブリッジの到達確認をしていたが、
+    画面を描くときに相手へ問い合わせない。 以前は毎回ブリッジの到達確認をしていたが、
     立っていない相手の数だけ表示が遅れるうえ、「到達できる」と「話せる」は別物だった
-    （認証情報が間違っていても到達はする）。いまは**「接続を試す」が通った記録**だけを見る。
+    （認証情報が間違っていても到達はする）。いまは「接続を試す」が通った記録だけを見る。
     """
     stored = settings_store.load_all()
 
@@ -55,7 +55,7 @@ def _rows() -> list[dict]:
                 "credential_required": spec.credential == providers.CRED_REQUIRED,
                 "model": st.model,
                 "updated_at": st.updated_at[:19],
-                # 「接続を試す」が通った記録。**これが on を押せる条件**
+                # 「接続を試す」が通った記録。これが on を押せる条件
                 "verified": st.verified,
                 "verified_at": st.verified_at[:19],
                 # can_enable が偽なら on のボタンを押させない
@@ -69,12 +69,12 @@ def _rows() -> list[dict]:
 
 SECTION_ANCHOR = "ai-providers"
 
-# 「接続を試す」の結果は節の中に出るので、**戻り先にこの印を付ける**。
+# 「接続を試す」の結果は節の中に出るので、戻り先にこの印を付ける。
 # 付けないとページの先頭へ戻され、結果が画面外のままになる（実際に読めなかった）。
 BACK_TO_SECTION = f"/admin#{SECTION_ANCHOR}"
 
 
-# kind → 分類。**音だけここに載らない**（1 つの kind が音楽と SE に割れるため、
+# kind → 分類。音だけここに載らない（1 つの kind が音楽と SE に割れるため、
 # `sounds` を見て数える必要がある）。
 _CAP_OF_KIND = {
     media_providers.KIND_IMAGE: capabilities.IMAGE,
@@ -83,18 +83,18 @@ _CAP_OF_KIND = {
     media_providers.KIND_TRANSCRIBE: capabilities.TRANSCRIBE,
 }
 
-# 相手ごとに引く kind。**音も含めた全部**（上の表と違い、こちらは引く対象の一覧）。
+# 相手ごとに引く kind。音も含めた全部（上の表と違い、こちらは引く対象の一覧）。
 _MEDIA_KINDS = (*_CAP_OF_KIND, media_providers.KIND_AUDIO)
 
 
 def _capabilities_cell(talk: dict | None, media_entries: dict[str, dict]) -> str:
-    """その相手で**何ができて、何ができないか**を 1 つの欄にまとめる。
+    """その相手で何ができて、何ができないかを 1 つの欄にまとめる。
 
     印は `✓`（使える）/ `⚠`（受け持つが、いまは使えない）/ `✗`（そもそも作れない）。
-    **絵文字は使わない** —— 環境によっては豆腐になり、いちばん見たい列が読めなくなる。
+    絵文字は使わない —— 環境によっては豆腐になり、いちばん見たい列が読めなくなる。
 
-    **できないことも並べる。** 「書いていない = できない」は読み手に伝わらず、
-    毎回ほかの行と見比べることになる。**分類の数だけ並べる**ので、
+    できないことも並べる。 「書いていない = できない」は読み手に伝わらず、
+    毎回ほかの行と見比べることになる。分類の数だけ並べるので、
     順番は `capabilities.CAPABILITIES` と揃える（一覧と行で並びが違うと読み比べられない）。
     """
     lines = []
@@ -128,10 +128,10 @@ def _capabilities_cell(talk: dict | None, media_entries: dict[str, dict]) -> str
 
 def _media_line(cap_id: str, entry: dict | None, models: bool = False,
                 limit: float | None = None) -> str:
-    """絵・音の 1 行。`entry` が無ければ**その相手は作れない**（✗）。
+    """絵・音の 1 行。`entry` が無ければその相手は作れない（✗）。
 
     使える相手は理由の代わりに手掛かり（モデル名・長さの上限）を、
-    使えない相手は**理由をそのまま**出す（次にすることが分かるように）。
+    使えない相手は理由をそのまま出す（次にすることが分かるように）。
     """
     label = capabilities.BY_ID[cap_id].label
     if entry is None:
@@ -150,8 +150,8 @@ def _media_line(cap_id: str, entry: dict | None, models: bool = False,
 
 
 def _overview_html(usable: dict[str, set[str]]) -> str:
-    """**表の上に、頼めることの一覧を出す。** 行ごとの欄は「その相手で何ができるか」しか
-    示さないので、**そもそも何を頼めるのか**（と、まだ頼めないもの）はここで見せる。"""
+    """表の上に、頼めることの一覧を出す。 行ごとの欄は「その相手で何ができるか」しか
+    示さないので、そもそも何を頼めるのか（と、まだ頼めないもの）はここで見せる。"""
     cells = []
     for item in capabilities.overview(usable):
         if item["state"] == "使える":
@@ -174,7 +174,7 @@ def _talk_cells(r: dict) -> tuple[str, str]:
     """「話す相手」側の認証情報の欄と操作の欄。"""
     spec = r["spec"]
     if not r["takes_credential"]:
-        # **「要らない」のではなく「渡すものが無い」。** Antigravity は API キー方式も
+        # 「要らない」のではなく「渡すものが無い」。 Antigravity は API キー方式も
         # 持たず、コンテナ内で 1 回サインインした結果を使う。ここで「不要」とだけ書くと
         # 何もしなくてよいと読めてしまうので、何をすればよいかを添える。
         cred = (
@@ -224,7 +224,7 @@ def _talk_cells(r: dict) -> tuple[str, str]:
 
 
 def _media_only_cells(spec, enabled: bool) -> tuple[str, str]:
-    """**話せない相手**（自前の GPU・ElevenLabs）の認証情報の欄と操作の欄。
+    """話せない相手（自前の GPU・ElevenLabs）の認証情報の欄と操作の欄。
 
     こちらは「話す相手」に対応が無いので、鍵も on/off もここに置くしかない。
     """
@@ -268,10 +268,10 @@ def _media_only_cells(spec, enabled: bool) -> tuple[str, str]:
 async def section_html(request: Request | None = None) -> str:
     """管理画面に差し込む「AI の相手」節。
 
-    見た目は**管理画面の素っ気なさに合わせる**（表と details だけ。JS も持たない）。
+    見た目は管理画面の素っ気なさに合わせる（表と details だけ。JS も持たない）。
     会話画面は毎日触るので作り込んであるが、こちらは設定を一度入れたら開かない場所である。
 
-    **話す相手と、絵や音を作る相手を 1 つの表にまとめてある。** 分けていた頃は
+    話す相手と、絵や音を作る相手を 1 つの表にまとめてある。 分けていた頃は
     同じ相手（鍵も on/off も共通）が 2 か所に出ていて、どちらが効くのか読めなかった。
     """
     if not settings_store.is_enabled():
@@ -282,7 +282,7 @@ async def section_html(request: Request | None = None) -> str:
             "(compose では <code>./state:/state</code> をマウント済み)。</p>"
         )
 
-    # 「接続を試す」の結果。**画面に残すのは 1 回だけ**（リロードで消える）ので、
+    # 「接続を試す」の結果。画面に残すのは 1 回だけ（リロードで消える）ので、
     # クエリで受け渡す —— セッションを持たない作りに合わせる。
     banner = ""
     q = request.query_params if request is not None else {}
@@ -312,7 +312,7 @@ async def section_html(request: Request | None = None) -> str:
         "(相手を 1 つずつ切って回らずに、機能ごと止めたいとき用)。</p></div>"
     )
 
-    # **kind ごとに引いて相手 ID で束ねる。** 一覧を混ぜると頼めない相手が並んで見える
+    # kind ごとに引いて相手 ID で束ねる。 一覧を混ぜると頼めない相手が並んで見える
     by_id: dict[str, dict[str, dict]] = {}
     if media.is_enabled():
         for kind in _MEDIA_KINDS:
@@ -336,7 +336,7 @@ async def section_html(request: Request | None = None) -> str:
         )
 
     # 絵・音・動画・声は「いま使えるか」を相手ごとに数える（上の一覧に渡す）。
-    # **音だけ 1 つの kind が 2 つの分類に割れる**ので、そこだけ別に数える。
+    # 音だけ 1 つの kind が 2 つの分類に割れるので、そこだけ別に数える。
     for pid, kinds in by_id.items():
         for kind, entry in kinds.items():
             if not entry["usable"]:
@@ -436,7 +436,7 @@ async def set_credential(provider: str = Form(...), credential: str = Form(""), 
 
 @router.post("/admin/ai/enabled")
 async def set_enabled(provider: str = Form(...), enabled: str = Form("0")):
-    """on/off の切り替え。**on にできない相手は on にしない**（画面側の抑止の裏打ち）。"""
+    """on/off の切り替え。on にできない相手は on にしない（画面側の抑止の裏打ち）。"""
     spec = _require_provider(provider)
     settings_store.require_path()
     want = enabled == "1"
@@ -444,7 +444,7 @@ async def set_enabled(provider: str = Form(...), enabled: str = Form("0")):
         st = settings_store.load(spec.id)
         if spec.credential == providers.CRED_REQUIRED and not st.has_credential:
             raise HTTPException(400, {"error": f"先に「{spec.label}」の認証情報を登録してください"})
-        # **「接続を試す」が一度でも通っていないと on にできない。** 到達できるだけでは
+        # 「接続を試す」が一度でも通っていないと on にできない。 到達できるだけでは
         # 話せる保証にならず（認証情報が間違っていても到達はする）、会話して初めて失敗する。
         if not st.verified:
             raise HTTPException(
@@ -456,7 +456,7 @@ async def set_enabled(provider: str = Form(...), enabled: str = Form("0")):
 
 
 def _require_media_owner(provider: str) -> media_providers.MediaProvider:
-    """自分の on/off を持つ相手だけを受け付ける。**借り物の相手はここでは触らせない**
+    """自分の on/off を持つ相手だけを受け付ける。借り物の相手はここでは触らせない
     —— あちらは「話す相手」と共通で、2 か所から切れるとどちらが効いているのか
     分からなくなる。"""
     spec = media_providers.get(provider)
@@ -471,7 +471,7 @@ async def set_media_enabled(provider: str = Form(...), enabled: str = Form("0"))
     spec = _require_media_owner(provider)
     settings_store.require_path()
     want = enabled == "1"
-    # **鍵の要る相手は、鍵が無ければ on にできない。** 有効のまま残しても、
+    # 鍵の要る相手は、鍵が無ければ on にできない。 有効のまま残しても、
     # 頼むたびに 401 になるだけ(「話す相手」と同じ抑止)
     if (
         want
@@ -488,7 +488,7 @@ async def set_media_enabled(provider: str = Form(...), enabled: str = Form("0"))
 async def set_media_credential(
     provider: str = Form(...), credential: str = Form(""), action: str = Form("")
 ):
-    """**「話す相手」に対応が無い相手**(ElevenLabs)の鍵をここで登録・削除する。
+    """「話す相手」に対応が無い相手(ElevenLabs)の鍵をここで登録・削除する。
 
     借り先のある相手はここへ来ない —— 同じ鍵を 2 か所に入れさせると、片方だけ古くなる。
     削除を同じ入口にまとめてあるのは「話す相手」と同じ理由で、鍵を消したら同時に
@@ -525,7 +525,7 @@ async def set_layer(enabled: str = Form("1")):
 
 @router.post("/admin/ai/test")
 async def test_connection(provider: str = Form(...)):
-    """「接続を試す」。**会話は 1 往復もせず**、相手に軽く聞くだけで確かめる。
+    """「接続を試す」。会話は 1 往復もせず、相手に軽く聞くだけで確かめる。
 
     - CLI ブリッジ … ブリッジの `/health?check=1`（CLI に `claude auth status` 等を聞かせる）
     - それ以外 … OpenAI 互換の `/models` を引く
@@ -553,7 +553,7 @@ async def test_connection(provider: str = Form(...)):
         else:
             ok, why = await answer.check_credential(cfg)
 
-    # **結果を残す。** これが on を押せるかどうかの根拠になる。
+    # 結果を残す。 これが on を押せるかどうかの根拠になる。
     settings_store.set_verified(spec.id, ok)
     params = {"tested": spec.id, "ok": "1" if ok else "0"}
     if why:
@@ -566,7 +566,7 @@ async def list_models(request: Request, backend: str = ""):
     """会話画面がモデルとエフォートのセレクトを組み立てるために引く。
 
     モデルは相手に聞けたらその一覧、聞けなければ `app/providers.py` の控え。
-    エフォートは**聞く口が無い**ので控えだけ（持たない相手では空）。
+    エフォートは聞く口が無いので控えだけ（持たない相手では空）。
     """
     name = answer.normalize_backend(backend)
     if name not in answer.backend_names():

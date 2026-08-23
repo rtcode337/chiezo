@@ -15,7 +15,7 @@ Wikipedia の言語版は 300 以上あり、`ADAPTERS` に手で 1 行ずつ書
 
 注意: 言語コードは 2 系統ある。sitematrix の言語コードは現行の BCP47 寄り(yue, gsw)、
 URL・pageview ドメイン・wikistats は歴史的な URL コード(zh-yue, als)を使う。
-カタログの `lang` には **URL コード**(サブドメイン)を入れる。ダンプ URL の素になる
+カタログの `lang` には URL コード(サブドメイン)を入れる。ダンプ URL の素になる
 `wiki_id`(dbname)はハイフンを含まない(zh_yuewiki)ので、世代ファイル名
 `<source>-<date>.db` の区切りとも衝突しない。
 

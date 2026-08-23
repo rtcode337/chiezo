@@ -1,4 +1,4 @@
-# 開発ツールの設定だけを置く。**配布物のメタデータ(`[project]`)は持たない** ——
+# 開発ツールの設定だけを置く。配布物のメタデータ(`[project]`)は持たない ——
 # Chiezo は pip で配るライブラリではなく、2 つのイメージ(chiezo-api / chiezo-ingest)
 # として動くアプリケーションで、依存もイメージごとに別だから(api に osmium を入れない)。
 # 依存は api/requirements.in・ingest/requirements.in が正で、実際に入るバージョンは
@@ -30,7 +30,7 @@ ignore = [
 
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI は「引数の既定値に宣言を書く」作りなので、B008(既定値で関数を呼ぶな)が
-# そのまま当たる。これは回避策の余地がある間違いではなく**フレームワークの書き方**
+# そのまま当たる。これは回避策の余地がある間違いではなくフレームワークの書き方
 # なので、指摘のほうを外す。Query / Body は既定で除外されているが、
 # multipart を受ける File / Form は自分で並べる必要がある。
 extend-immutable-calls = ["fastapi.File", "fastapi.Form"]

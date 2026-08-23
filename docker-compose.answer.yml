@@ -1,15 +1,15 @@
-# 「答える」層(/v1/ask・/v1/chat・/ai/chat)の**推論サーバを自分で立てる**ための上書き。
+# 「答える」層(/v1/ask・/v1/chat・/ai/chat)の推論サーバを自分で立てるための上書き。
 # 本体(docker-compose.yml)と重ねて使う:
 #
 #   docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile answer up -d
 #
 # GPU で動かすなら docker-compose.cuda.yml を後ろに重ねる(そちらが正)。
 #
-# **このファイルにあるのはコンテナだけ**で、chiezo-api に渡す設定
+# このファイルにあるのはコンテナだけで、chiezo-api に渡す設定
 # (CHIEZO_LLM_URL 以下)は本体側にある —— 推論を LAN の別マシン(Ollama 等)に
 # 任せる使い方では、コンテナは要らず設定だけが要るため。
 #
-# **検索エンジン(SearXNG)はここには無い。** 本体の docker-compose.yml にある ——
+# 検索エンジン(SearXNG)はここには無い。 本体の docker-compose.yml にある ——
 # web 検索と推論は独立していて(相手が Gemini や Claude Code でも web 検索は要る)、
 # 検索を使いたいだけで数 GB の推論サーバまで立ち上げることになっていた。
 services:

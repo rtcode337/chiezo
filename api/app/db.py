@@ -29,7 +29,7 @@ _mutable_paths: set[str] = set()
 def set_mutable_paths(paths) -> None:
     """`immutable=1` で開いてはいけない DB を登録する(実体は notes だけ)。
 
-    `immutable=1` は「このファイルは開いている間 1 バイトも変わらない」という**宣言**で、
+    `immutable=1` は「このファイルは開いている間 1 バイトも変わらない」という宣言で、
     SQLite はそれを信じてロックも WAL の確認も一切しない。書き込みが起きる DB をこれで
     開くと、読み手が中途半端なページを掴んで壊れた結果や例外を返す。notes は追記される
     ので、そこだけ通常の読み取り専用(`mode=ro`)に落とす。

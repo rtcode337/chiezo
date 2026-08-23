@@ -3,7 +3,7 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 #
-# **違いはビルドするかどうかだけ**なので、ここには build と image しか書かない。
+# 違いはビルドするかどうかだけなので、ここには build と image しか書かない。
 # 以前は本体をまるごと写していて、実際に web 検索と回答パイプラインの設定が抜けたまま
 # 取り残されていた(上書きにすれば構造上ずれない)。
 # タグを :local にしてあるのは、pull した本番イメージと取り違えないため。

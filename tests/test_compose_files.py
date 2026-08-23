@@ -1,13 +1,13 @@
 """compose ファイル同士の食い違いを見張るテスト。
 
 Chiezo の compose は「本体 + 上書き」に分けてあり、上書き側は重ねるだけなので
-構造上ずれない。**ずれるのは単体定義(docker-compose.standalone.example.yml)だけ**で、
+構造上ずれない。ずれるのは単体定義(docker-compose.standalone.example.yml)だけで、
 これは `${...}` も profile も使えない環境向けに値を直書きしたコピーだから、
 本体を変えたときに手で追従させるしかない。実際に 2 回取り残された
 (web 検索の設定一式と、回答パイプラインの調整)。
 
 そこで「本体の chiezo-api に渡している環境変数が、単体定義にも(コメントとしてでも)
-出てきているか」を照合する。**コメントでよい**ことにしてあるのは、単体定義では
+出てきているか」を照合する。コメントでよいことにしてあるのは、単体定義では
 任意の設定をコメントアウトで並べておくのが作法だから。
 
 docker や PyYAML の外部コマンドには依存しない(YAML として読むのは本体だけで、
@@ -30,17 +30,17 @@ STANDALONE_EXEMPT = {
     "CHIEZO_INGEST_IMAGE",
 }
 
-# 「答える」層の上書き(docker-compose.answer.yml)が持つコンテナ。**推論サーバだけ** ——
+# 「答える」層の上書き(docker-compose.answer.yml)が持つコンテナ。推論サーバだけ ——
 # 検索エンジン(SearXNG)は本体側にある(web 検索と推論は独立していて、相手が Gemini や
 # Claude Code でも検索は要るのに、以前は検索のために推論サーバまで立ち上がっていた)。
 ANSWER_CONTAINERS = {"chiezo-llm"}
 
-# **単体定義には載せないコンテナ。** 推論サーバはモデルの置き場(数 GB)と GPU の設定が
+# 単体定義には載せないコンテナ。 推論サーバはモデルの置き場(数 GB)と GPU の設定が
 # 環境ごとに違い、別サーバーのものを指せば済むため。
 # (SearXNG は設定を焼き込んだイメージにしたので、単体定義にも載せてある)
 STANDALONE_EXCLUDED_CONTAINERS = {"chiezo-llm"}
 
-# **リポジトリが持たない compose は見ない。** 単体定義に実値を書いた
+# リポジトリが持たない compose は見ない。 単体定義に実値を書いた
 # docker-compose.standalone.yml は .gitignore 済みで、置くかどうかも中身も
 # 環境ごとに違う（ホストの絶対パスが入る）。手元にそれがある環境でだけテストが
 # 落ちるのは、見張りたいものと関係がない。
@@ -93,7 +93,7 @@ def test_websearch_container_is_in_the_base():
     assert "searxng" in base["services"]
     # profile を付けない(本体を上げれば一緒に立つ)
     assert not base["services"]["searxng"].get("profiles")
-    # **設定はマウントではなくイメージに焼き込む** —— マウントだと、リポジトリを置けない
+    # 設定はマウントではなくイメージに焼き込む —— マウントだと、リポジトリを置けない
     # 環境(単体定義)では立てられない
     assert not base["services"]["searxng"].get("volumes")
     assert "chiezo-searxng" in base["services"]["searxng"]["image"]

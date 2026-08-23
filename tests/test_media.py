@@ -1,6 +1,6 @@
 """絵と音の生成(/v1/media/*・MCP の image_* / audio_*)のテスト。
 
-**知識を引くのとは別の仕事**だが、口は Chiezo にまとめてある(MCP の登録先を増やさない
+知識を引くのとは別の仕事だが、口は Chiezo にまとめてある(MCP の登録先を増やさない
 ため)。ここで確かめるのは、相手ごとの呼び方・出来たものの受け渡し・置き場の守り。
 
 外部にも GPU にも出ないよう、`media_backends._client` を差し替えて偽のサーバーを演じさせる。
@@ -25,7 +25,7 @@ MP3 = b"ID3" + b"0" * 64
 def state(monkeypatch, tmp_path):
     """置き場と設定 DB を一時ディレクトリに逃がす。
 
-    **自前の GPU は既定で無効**(話す相手と同じで、明示的に on にする)。
+    自前の GPU は既定で無効(話す相手と同じで、明示的に on にする)。
     ほとんどのテストは「使える状態」を前提にするので、ここで on にしておく。
     """
     monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
@@ -83,7 +83,7 @@ def use(monkeypatch, handler):
 
 class TestComfyUI:
     def test_generates_with_the_first_checkpoint_when_no_model_is_given(self, state):
-        """置いてあるモデルは環境ごとに違うので、**相手に聞く**。"""
+        """置いてあるモデルは環境ごとに違うので、相手に聞く。"""
         use(state, fake_comfy())
 
         image = asyncio.run(media_backends.generate(
@@ -117,7 +117,7 @@ class TestComfyUI:
 
 class TestGemini:
     def test_uses_the_key_registered_for_chat(self, state):
-        """**鍵を 2 か所に持たない** —— 「話す相手」に登録済みのものを流用する。"""
+        """鍵を 2 か所に持たない —— 「話す相手」に登録済みのものを流用する。"""
         settings_store.set_credential("gemini", "AIza-test")
         settings_store.set_enabled("gemini", True)
         use(state, fake_gemini())
@@ -146,7 +146,7 @@ class TestGemini:
 
 class TestOpenAI:
     def test_asks_for_the_nearest_allowed_size(self, state):
-        """**相手は決まった組み合わせしか取らない**ので、近いものへ寄せる。"""
+        """相手は決まった組み合わせしか取らないので、近いものへ寄せる。"""
         settings_store.set_credential("openai", "sk-test")
         settings_store.set_enabled("openai", True)
 
@@ -193,7 +193,7 @@ class TestOpenAI:
 
 
 class TestAntigravity:
-    """**Codex と同じブリッジの口**（`/v1/images/generations`）で描く。
+    """Codex と同じブリッジの口（`/v1/images/generations`）で描く。
 
     鍵はこちらに無く、コンテナ内のサインイン結果をブリッジが使う。
     """
@@ -212,11 +212,11 @@ class TestAntigravity:
 
         assert image.data == PNG
         assert image.model == "antigravity-imagegen"
-        # **鍵は要らない**（サインイン結果をブリッジが使う）ので、自分のブリッジへ行く
+        # 鍵は要らない（サインイン結果をブリッジが使う）ので、自分のブリッジへ行く
         assert "chiezo-bridge-antigravity" in handler.url
 
     def test_it_follows_the_toggle_of_the_row_it_shares(self, state):
-        """**サインインは 1 つ。** 「話す相手」として止めたら、絵も止まる。"""
+        """サインインは 1 つ。 「話す相手」として止めたら、絵も止まる。"""
         settings_store.set_enabled("antigravity", False)
         use(state, lambda request: httpx.Response(200, json={"data": []}))
 
@@ -227,7 +227,7 @@ class TestAntigravity:
         assert e.value.status_code == 403
 
     def test_it_cannot_make_sound(self, state):
-        """**内蔵ツールに音は無い**（バイナリを見ても入力側の語しか無い）。"""
+        """内蔵ツールに音は無い（バイナリを見ても入力側の語しか無い）。"""
         from app import capabilities
 
         assert capabilities.of_provider("antigravity") == {
@@ -236,7 +236,7 @@ class TestAntigravity:
 
 
 class TestCodex:
-    """**ChatGPT のサブスク枠**で gpt-image-2 を使う経路(API の従量課金とは別勘定)。"""
+    """ChatGPT のサブスク枠で gpt-image-2 を使う経路(API の従量課金とは別勘定)。"""
 
     def test_asks_the_bridge_and_takes_the_image(self, state):
         settings_store.set_enabled("codex", True)
@@ -274,7 +274,7 @@ class TestCodex:
 
 class TestJobs:
     def test_saves_the_image_and_returns_a_path_and_url(self, state):
-        """**画像そのものは返さない**(1 枚 1〜2MB でコンテキストが飛ぶ)。"""
+        """画像そのものは返さない(1 枚 1〜2MB でコンテキストが飛ぶ)。"""
         use(state, fake_comfy())
         job = media.create_job("猫", backend="comfyui", size="1024x1024")
         asyncio.run(media._run(
@@ -288,7 +288,7 @@ class TestJobs:
         assert media.resolve(file["url"].removeprefix("/media/")).read_bytes() == PNG
 
     def test_jpeg_is_saved_as_jpg(self, state):
-        """**Gemini は JPEG しか返さない。** png 決め打ちで書くと、名前と中身が食い違う。"""
+        """Gemini は JPEG しか返さない。 png 決め打ちで書くと、名前と中身が食い違う。"""
         async def one(*a, **k):
             return media_backends.GeneratedImage(PNG, "image/jpeg", 1, "m")
 
@@ -301,7 +301,7 @@ class TestJobs:
         assert media.get_job(job["id"])["files"][0]["url"].endswith(".jpg")
 
     def test_cancelled_job_does_not_stay_running(self, state):
-        """**中断は Exception ではない。** ここを書き残さないと、絵は描き上がっているのに
+        """中断は Exception ではない。 ここを書き残さないと、絵は描き上がっているのに
         image_status が running を返し続ける(実際に MCP の接続が切れて起きた)。"""
         async def scenario():
             async def forever(*a, **k):
@@ -325,7 +325,7 @@ class TestJobs:
 
     def test_stale_running_job_is_reaped(self, state):
         """ワーカーごと落ちると `_run` の後始末すら通らない。
-        **running のまま残った job は、読み出すときに畳む。**"""
+        running のまま残った job は、読み出すときに畳む。"""
         job = media.create_job("猫", backend="comfyui")
         media._update(job["id"], state="running")
         old = (datetime.now(UTC) - timedelta(seconds=media.STALE_AFTER + 10)).isoformat()
@@ -335,7 +335,7 @@ class TestJobs:
         assert media.get_job(job["id"])["state"] == "failed"
 
     def test_running_job_is_left_alone_until_it_goes_quiet(self, state):
-        """**動いている job を畳まない。** 生成は数分かかることがある。"""
+        """動いている job を畳まない。 生成は数分かかることがある。"""
         job = media.create_job("猫", backend="comfyui")
         media._update(job["id"], state="running")
 
@@ -376,7 +376,7 @@ class TestJobs:
         assert e.value.status_code == 400
 
     def test_size_the_model_cannot_draw_is_rejected(self, state):
-        """**崩れた絵は「成功」として返ってくる。** ComfyUI は頼まれた画素で潜在空間を
+        """崩れた絵は「成功」として返ってくる。 ComfyUI は頼まれた画素で潜在空間を
         作るので、SDXL に 512 を頼むと意味を成さない絵が done で返る —— 見るまで
         気づけないぶん、書き方の間違いより性質が悪い。"""
         with pytest.raises(HTTPException) as e:
@@ -462,7 +462,7 @@ class TestSwitchedOff:
         assert media.tools_enabled() is False
 
     def test_both_the_image_and_the_audio_tools_are_registered(self, state):
-        """**道具の定義は常時コンテキストに載る**ので、出す・出さないは 1 か所で決める。
+        """道具の定義は常時コンテキストに載るので、出す・出さないは 1 か所で決める。
         絵だけ出て音が出ない、という取りこぼしをここで止める。"""
         from fastapi import FastAPI
 
@@ -487,7 +487,7 @@ class TestServing:
         "2026081/a.png",                 # 日付の桁が足りない
     ])
     def test_paths_outside_the_media_dir_are_not_served(self, state, path):
-        """**形で弾く。** 置き場は `<日付 8 桁>/<ファイル名>` の 2 段しかないので、
+        """形で弾く。 置き場は `<日付 8 桁>/<ファイル名>` の 2 段しかないので、
         そこから外れたものはパスを組み立てる前に断る。"""
         media.require_dir()
 
@@ -560,7 +560,7 @@ class TestBackendList:
         assert backends["comfyui"]["models"] == ["sdxl.safetensors", "sd15.ckpt"]
 
     def test_audio_checkpoints_are_kept_out_of_the_image_list(self, state):
-        """**置き場が同じなので混ざる。** 混ざったまま先頭を既定にすると、モデルを
+        """置き場が同じなので混ざる。 混ざったまま先頭を既定にすると、モデルを
         指定しなかった絵の生成が音のモデルを掴む(`ace_step_…` は `sd_xl_…` より前)。"""
         use(state, fake_comfy_audio(
             checkpoints=("ace_step_v1_3.5b.safetensors", "sd_xl_base_1.0.safetensors")))
@@ -581,7 +581,7 @@ class TestBackendList:
 
 # ---- 音 ---------------------------------------------------------------------
 #
-# 絵と同じ層をそのまま使うので、ここで確かめるのは**音でだけ違うところ** ——
+# 絵と同じ層をそのまま使うので、ここで確かめるのは音でだけ違うところ ——
 # チェックポイントの選び分け・グラフの形・相手ごとの口・長さの扱い。
 
 
@@ -628,7 +628,7 @@ def fake_elevenlabs(status=200):
 
 class TestComfyUIAudio:
     def test_music_uses_the_ace_step_checkpoint(self, state):
-        """**曲は ACE-Step 優先。** 系統でグラフそのものが変わる(歌詞を渡す口がある)。"""
+        """曲は ACE-Step 優先。 系統でグラフそのものが変わる(歌詞を渡す口がある)。"""
         use(state, fake_comfy_audio())
 
         audio = asyncio.run(media_backends.generate_audio(
@@ -644,7 +644,7 @@ class TestComfyUIAudio:
         assert graph["4"]["inputs"]["seconds"] == 20
 
     def test_sfx_uses_stable_audio_and_loads_the_text_encoder(self, state):
-        """**効果音は Stable Audio Open 側。** text encoder を別に読む必要がある。"""
+        """効果音は Stable Audio Open 側。 text encoder を別に読む必要がある。"""
         use(state, fake_comfy_audio())
 
         audio = asyncio.run(media_backends.generate_audio(
@@ -680,7 +680,7 @@ class TestComfyUIAudio:
 
 class TestGeminiAudio:
     def test_music_goes_through_the_same_interactions_endpoint(self, state):
-        """**絵と同じ口。** 違うのは response_format だけ(鍵も「話す相手」と共通)。"""
+        """絵と同じ口。 違うのは response_format だけ(鍵も「話す相手」と共通)。"""
         settings_store.set_credential("gemini", "AIza-test")
         settings_store.set_enabled("gemini", True)
         use(state, fake_gemini(body={"steps": [{"content": [
@@ -711,7 +711,7 @@ class TestGeminiAudio:
 
 class TestElevenLabs:
     def test_sfx_and_music_go_to_different_endpoints(self, state):
-        """**口が別。** 効果音は /sound-generation、曲は /music。"""
+        """口が別。 効果音は /sound-generation、曲は /music。"""
         settings_store.set_credential("elevenlabs", "xi-test")
         settings_store.set_enabled("elevenlabs", True)
         use(state, fake_elevenlabs())
@@ -731,7 +731,7 @@ class TestElevenLabs:
         assert fake_elevenlabs.sent["force_instrumental"] is True
 
     def test_missing_key_is_reported_before_anything_is_sent(self, state):
-        """**この相手だけ鍵を自分で持つ**(会話ができないので借り先が無い)。"""
+        """この相手だけ鍵を自分で持つ(会話ができないので借り先が無い)。"""
         settings_store.set_enabled("elevenlabs", True)
         use(state, fake_elevenlabs())
 
@@ -759,7 +759,7 @@ class TestAudioJobs:
         assert media.resolve(done["files"][0]["url"].removeprefix("/media/")).read_bytes() == MP3
 
     def test_too_long_is_refused_instead_of_silently_shortened(self, state):
-        """**黙って丸めない。** 短くして返すと、頼んだ尺で出来たと思われる。"""
+        """黙って丸めない。 短くして返すと、頼んだ尺で出来たと思われる。"""
         with pytest.raises(HTTPException) as e:
             media.create_job("行進曲", backend="comfyui", kind="audio", sound="music", seconds=600)
 
@@ -777,10 +777,10 @@ class TestAudioJobs:
         assert "長さを指定できません" in e.value.detail["error"]
 
     def test_the_default_backend_for_audio_is_the_one_that_sounds_best(self, state):
-        """**既定は「頼む順」の先頭**(`media_providers.PREFERENCE`)。
+        """既定は「頼む順」の先頭(`media_providers.PREFERENCE`)。
 
         かつては自前の GPU(外へ出さず枠も食わない)を既定にしていたが、
-        **出来が違う** —— 相手を名指ししない呼び出し(MCP の `audio_generate` など)が
+        出来が違う —— 相手を名指ししない呼び出し(MCP の `audio_generate` など)が
         いちばん多いので、そこが良い相手へ行くようにする。ComfyUI は名指しすれば使える。
         """
         job = media.create_job("剣", kind="audio", sound="sfx")
@@ -790,10 +790,10 @@ class TestAudioJobs:
 
 
 class TestPreferenceTable:
-    """**どれに頼むのがよいか**の表(`media_providers.PREFERENCE`)。"""
+    """どれに頼むのがよいかの表(`media_providers.PREFERENCE`)。"""
 
     def test_every_backend_is_ranked_for_every_kind_it_can_do(self):
-        """**相手を足したら表にも足す。** 抜けた相手は黙って最後尾に回るので、
+        """相手を足したら表にも足す。 抜けた相手は黙って最後尾に回るので、
         「新しく足した相手にいつまでも頼まれない」が起きても気づけない。"""
         from app import media_providers
 
@@ -807,7 +807,7 @@ class TestPreferenceTable:
         assert not missing, f"頼む順の表に無い相手がいる: {sorted(missing)}"
 
     def test_the_table_only_names_backends_that_can_do_that_kind(self):
-        """**作れない相手を順位に入れない**(直した気になって効かない)。"""
+        """作れない相手を順位に入れない(直した気になって効かない)。"""
         from app import media_providers
 
         wrong = {
@@ -820,7 +820,7 @@ class TestPreferenceTable:
         assert not wrong, f"その種類を作れない相手が順位に入っている: {sorted(wrong)}"
 
     def test_the_settings_table_keeps_its_own_order(self):
-        """**画面の並びは変えない。** 設定を探すための並びで、用が違う
+        """画面の並びは変えない。 設定を探すための並びで、用が違う
         (頼む順で並べ替えると、いつも同じ場所にあった行が動く)。"""
         from app import media_providers
 
@@ -837,13 +837,13 @@ class TestAudioBackendList:
         image = {b["id"]: b for b in asyncio.run(media.backends("image"))}
 
         assert set(audio) == {"comfyui", "gemini", "elevenlabs"}
-        # **CLI ブリッジの相手は絵しか描けない**(内蔵ツールに音が無い)
+        # CLI ブリッジの相手は絵しか描けない(内蔵ツールに音が無い)
         assert "codex" not in audio and "antigravity" not in audio
         assert "codex" in image
         assert "openai" in image
 
     def test_says_what_each_backend_accepts(self, state):
-        """**頼める種類と長さの上限は相手ごとに違う。** 0 は「指定できない」。"""
+        """頼める種類と長さの上限は相手ごとに違う。 0 は「指定できない」。"""
         use(state, fake_comfy_audio())
 
         audio = {b["id"]: b for b in asyncio.run(media.backends("audio"))}
@@ -868,7 +868,7 @@ class TestAudioBackendList:
 
 
 class TestOwnCredential:
-    """**ElevenLabs だけ鍵を自分で持つ**(「話す相手」に対応が無く、借り先がない)。"""
+    """ElevenLabs だけ鍵を自分で持つ(「話す相手」に対応が無く、借り先がない)。"""
 
     def test_a_key_can_be_registered_and_removed_from_the_media_section(self, state):
         """登録しかできないと、間違えて入れた鍵を画面から外せなくなる。"""
@@ -891,14 +891,14 @@ class TestOwnCredential:
 
 
 class TestCapabilities:
-    """**頼めることの分類は 1 か所に持つ**（`app/capabilities.py`）。
+    """頼めることの分類は 1 か所に持つ（`app/capabilities.py`）。
 
     会話は `providers.py`、絵と音は `media_providers.py` と持ち主が分かれているので、
     分類まで散らすと「何が頼めるのか」を数える場所が無くなる。
     """
 
     def test_music_and_sfx_are_counted_separately(self, state):
-        """job の kind はどちらも audio だが、**相手もモデルも別物**
+        """job の kind はどちらも audio だが、相手もモデルも別物
         （Lyria は曲しか作れない）。分類は仕事の単位で切る。"""
         from app import capabilities
 
@@ -906,12 +906,12 @@ class TestCapabilities:
             capabilities.CHAT, capabilities.IMAGE, capabilities.MUSIC,
             capabilities.VIDEO, capabilities.SPEECH, capabilities.TRANSCRIBE,
         }
-        # **話す相手としては出てこないが、それ以外はほぼ全部受け持つ**
+        # 話す相手としては出てこないが、それ以外はほぼ全部受け持つ
         assert capabilities.of_provider("elevenlabs") == {
             capabilities.MUSIC, capabilities.SFX, capabilities.IMAGE,
             capabilities.VIDEO, capabilities.SPEECH, capabilities.TRANSCRIBE,
         }
-        # **自前の GPU に読み上げは無い**(ComfyUI 本体に TTS のノードが無いため)
+        # 自前の GPU に読み上げは無い(ComfyUI 本体に TTS のノードが無いため)
         assert capabilities.of_provider("comfyui") == {
             capabilities.IMAGE, capabilities.MUSIC, capabilities.SFX, capabilities.VIDEO
         }
@@ -922,10 +922,10 @@ class TestCapabilities:
         assert capabilities.of_provider("openrouter") == {capabilities.CHAT}
 
     def test_every_kind_is_listed(self, state):
-        """**表から消さない。** 消すと「頼めるのか分からない」になり、
+        """表から消さない。 消すと「頼めるのか分からない」になり、
         聞かれるたびにコードを読み直すことになる。
 
-        読み上げと文字起こしは**別に数える** —— 同じ「声」でも仕事の向きが逆で、
+        読み上げと文字起こしは別に数える —— 同じ「声」でも仕事の向きが逆で、
         まとめると「読み上げはできるが文字起こしはできない」相手を
         「声が使える」と言うことになる。
         """
@@ -937,7 +937,7 @@ class TestCapabilities:
         assert all(item["supported"] for item in items.values())
 
     def test_it_separates_not_implemented_from_nobody_available(self, state):
-        """**次にすることが違う。** 作れば直るのか、鍵を入れれば直るのか。"""
+        """次にすることが違う。 作れば直るのか、鍵を入れれば直るのか。"""
         from app import capabilities
 
         items = {c["id"]: c for c in capabilities.overview({"gemini": {capabilities.IMAGE}})}
@@ -948,7 +948,7 @@ class TestCapabilities:
 
 
 class TestRemoteErrors:
-    """**相手のエラーは、次の一手が分かる形で返す。**
+    """相手のエラーは、次の一手が分かる形で返す。
 
     429 のとき「使い切った」のか「そもそも枠が無い」のかが分からず、2 度調べ直した。
     """
@@ -982,9 +982,9 @@ class TestRemoteErrors:
 
 # ---- 動画 -------------------------------------------------------------------
 #
-# **絵と音で効いた検査をそのまま持ってくるだけでは足りない。** 動画は
+# 絵と音で効いた検査をそのまま持ってくるだけでは足りない。 動画は
 # 「待ち時間が桁で違う」「受け付ける尺が飛び飛び」「1 本が重い」の 3 つが加わり、
-# どれも**間違えても生成そのものは成功して返る**(尺だけ違う動画が返る、
+# どれも間違えても生成そのものは成功して返る(尺だけ違う動画が返る、
 # 途中で job を畳んで取りに行けなくなる)ので、テストで押さえておく。
 
 MP4 = b"\x00\x00\x00 ftypisom" + b"0" * 64
@@ -993,7 +993,7 @@ MP4 = b"\x00\x00\x00 ftypisom" + b"0" * 64
 def fake_comfy_video(unets=("wan2.2_t2v_14B.safetensors", "flux1-dev.safetensors"),
                      clips=("umt5_xxl_fp8.safetensors",),
                      vaes=("wan_2.1_vae.safetensors",)):
-    """動画を作れる ComfyUI を演じる。**読むものが 3 つ**あるのがここの肝。"""
+    """動画を作れる ComfyUI を演じる。読むものが 3 つあるのがここの肝。"""
     lists = {
         "UNETLoader": ("unet_name", unets),
         "CLIPLoader": ("clip_name", clips),
@@ -1023,7 +1023,7 @@ def fake_comfy_video(unets=("wan2.2_t2v_14B.safetensors", "flux1-dev.safetensors
 
 class TestComfyUIVideo:
     def test_it_only_offers_models_that_can_make_video(self, state):
-        """`models/diffusion_models` には**絵の UNet も同居する**。混ぜて先頭を掴むと、
+        """`models/diffusion_models` には絵の UNet も同居する。混ぜて先頭を掴むと、
         絵のモデルで動画を作ろうとして、読み込んで初めて失敗する。"""
         use(state, fake_comfy_video())
 
@@ -1032,17 +1032,17 @@ class TestComfyUIVideo:
         assert names == ["wan2.2_t2v_14B.safetensors"]
 
     def test_frames_are_rounded_to_the_shape_wan_accepts(self, state):
-        """**4n+1 でないと通らない。** 秒数から素直に掛けると 32 フレームになり、
+        """4n+1 でないと通らない。 秒数から素直に掛けると 32 フレームになり、
         グラフごと弾かれる。"""
         assert media_backends.comfy_video_length(2.0) == 33
         assert media_backends.comfy_video_length(3.0) == 49
-        # **近いほうへ寄せる。** 切り捨てると 2.0 秒が 29 フレーム(1.81 秒)になり、
+        # 近いほうへ寄せる。 切り捨てると 2.0 秒が 29 フレーム(1.81 秒)になり、
         # 頼んだ尺より短いものが黙って返る
         assert media_backends.comfy_video_length(2.0) / 16 == pytest.approx(2.06, abs=0.01)
         assert [media_backends.comfy_video_length(s) % 4 for s in (2.0, 3.0, 5.0)] == [1, 1, 1]
 
     def test_it_loads_the_encoder_and_vae_the_model_needs(self, state):
-        """絵と違って**読むものが 3 つ**ある。どれか 1 つでも取り違えると通らない。"""
+        """絵と違って読むものが 3 つある。どれか 1 つでも取り違えると通らない。"""
         use(state, fake_comfy_video())
 
         video = asyncio.run(media_backends.generate_video(
@@ -1059,7 +1059,7 @@ class TestComfyUIVideo:
         assert video.mime == "video/mp4"
 
     def test_a_missing_encoder_is_refused_before_the_gpu_spins(self, state):
-        """ComfyUI 側のエラーは「名前が不正」としか出ない。**何を置けばよいか**を
+        """ComfyUI 側のエラーは「名前が不正」としか出ない。何を置けばよいかを
         こちらで言わないと、原因に辿り着けない。"""
         use(state, fake_comfy_video(clips=("clip_l.safetensors",)))
 
@@ -1100,7 +1100,7 @@ class TestComfyUIVideo:
 
 
 def fake_openai_video(status_sequence=("completed",)):
-    """Sora を演じる。**頼む → 覗く → 取りに行く**の 3 手。"""
+    """Sora を演じる。頼む → 覗く → 取りに行くの 3 手。"""
     seen = {"looks": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1133,11 +1133,11 @@ class TestOpenAIVideo:
 
         assert video.data == MP4
         assert video.seconds == 8.0
-        # **multipart で送る**(相手が JSON を取らない)
+        # multipart で送る(相手が JSON を取らない)
         assert b'name="prompt"' in fake_openai_video.sent
 
     def test_it_keeps_looking_until_the_video_is_ready(self, state):
-        """1 回目で完成していることはまずない。**待てること**そのものを確かめる。"""
+        """1 回目で完成していることはまずない。待てることそのものを確かめる。"""
         settings_store.set_credential("openai", "sk-x")
         settings_store.set_enabled("openai", True)
         use(state, fake_openai_video(("queued", "in_progress", "completed")))
@@ -1194,7 +1194,7 @@ def fake_gemini_video(veo=False):
 
 class TestGeminiVideo:
     def test_omni_goes_through_the_same_interactions_endpoint(self, state):
-        """絵・曲と**同じ口**。違うのは response_format だけ。"""
+        """絵・曲と同じ口。違うのは response_format だけ。"""
         settings_store.set_credential("gemini", "k")
         settings_store.set_enabled("gemini", True)
         use(state, fake_gemini_video())
@@ -1207,7 +1207,7 @@ class TestGeminiVideo:
         assert fake_gemini_video.sent["response_format"]["aspect_ratio"] == "16:9"
 
     def test_veo_takes_the_long_running_road_and_needs_the_key_to_download(self, state):
-        """**口が別**(:predictLongRunning)で、出来た動画を取りに行くのにも鍵が要る
+        """口が別(:predictLongRunning)で、出来た動画を取りに行くのにも鍵が要る
         —— 署名済みの URL ではないので、鍵を付け忘れると 403 で落ちる。"""
         settings_store.set_credential("gemini", "k")
         settings_store.set_enabled("gemini", True)
@@ -1222,7 +1222,7 @@ class TestGeminiVideo:
 
         assert video.data == MP4
         assert fake_gemini_video.download_key == "k"
-        # **文字列で渡す**(数値だと 400 になる)
+        # 文字列で渡す(数値だと 400 になる)
         assert fake_gemini_video.sent["parameters"]["durationSeconds"] == "6"
         assert fake_gemini_video.sent["parameters"]["resolution"] == "1080p"
 
@@ -1262,11 +1262,11 @@ class TestElevenLabsFlows:
         assert video.data == MP4
         assert fake_elevenlabs_flow.sent["duration_secs"] == 5
         assert fake_elevenlabs_flow.key == "el-k"
-        # **署名済みの URL に鍵は載せない**(外のホストへ出ていくことがある)
+        # 署名済みの URL に鍵は載せない(外のホストへ出ていくことがある)
         assert fake_elevenlabs_flow.download_key is None
 
     def test_it_can_draw_now_that_the_service_hosts_image_models(self, state):
-        """**ここは事実が変わった。** 「ElevenLabs に絵は描けない」は 2025 年までの話で、
+        """ここは事実が変わった。 「ElevenLabs に絵は描けない」は 2025 年までの話で、
         いまは他社のモデルを預かる flows の口がある。"""
         settings_store.set_credential("elevenlabs", "el-k")
         settings_store.set_enabled("elevenlabs", True)
@@ -1277,13 +1277,13 @@ class TestElevenLabsFlows:
 
         assert image.data == PNG
         assert fake_elevenlabs_flow.sent["resolution"] == "1K"
-        # **seed を受け付ける数少ない外部の相手**(同じ絵を作り直せる)
+        # seed を受け付ける数少ない外部の相手(同じ絵を作り直せる)
         assert fake_elevenlabs_flow.sent["seed"] == 5
 
 
 class TestVideoRequests:
     def test_a_length_the_backend_does_not_take_is_refused_not_rounded(self, state):
-        """**丸めない。** 受け付ける値が飛び飛びなので、寄せると「6 秒で頼んだのに
+        """丸めない。 受け付ける値が飛び飛びなので、寄せると「6 秒で頼んだのに
         8 秒が返る」になる —— 数分と数十 MB を使ってから気づくことになる。"""
         settings_store.set_credential("openai", "sk-x")
         settings_store.set_enabled("openai", True)
@@ -1311,7 +1311,7 @@ class TestVideoRequests:
         assert e.value.detail["sizes"] == ["848x480", "480x848", "1280x720", "720x1280"]
 
     def test_fewer_videos_can_be_asked_for_at_once_than_images(self, state):
-        """1 本で数分と数十 MB。**間違えたときの損が大きいほうを狭くする**。"""
+        """1 本で数分と数十 MB。間違えたときの損が大きいほうを狭くする。"""
         with pytest.raises(HTTPException) as e:
             media.start_video_job("猫", backend="comfyui", size="848x480", count=4)
 
@@ -1340,7 +1340,7 @@ class TestVideoRequests:
         assert done["files"][0]["path"].endswith(".mp4")
 
     def test_a_running_video_is_not_reaped_on_the_image_schedule(self, state):
-        """**動画だけ猶予が長い。** 絵と同じ基準で畳むと、まだ相手の中で作っている
+        """動画だけ猶予が長い。 絵と同じ基準で畳むと、まだ相手の中で作っている
         最中の job を「中断された」と書いてしまい、出来た動画を取りに行けなくなる。"""
         job = media.create_job("猫", backend="comfyui", size="848x480",
                                kind=media_providers.KIND_VIDEO, seconds=2.0)
@@ -1354,9 +1354,9 @@ class TestVideoRequests:
 
 # ---- 声(読み上げと文字起こし)------------------------------------------------
 #
-# **向きが逆の 2 つ**を同じ節にまとめてある。押さえるのは 3 つ:
+# 向きが逆の 2 つを同じ節にまとめてある。押さえるのは 3 つ:
 # 声の名前を id に直せること、生の PCM をそのまま配らないこと、
-# **文字起こしだけは job にしない**こと。
+# 文字起こしだけは job にしないこと。
 
 WAV = b"RIFF" + b"0" * 60
 PCM = b"\x01\x00" * 128
@@ -1385,7 +1385,7 @@ def fake_elevenlabs_voice(status=200):
 
 class TestSpeech:
     def test_a_voice_can_be_asked_for_by_name(self, state):
-        """**id を控えている人はいない。** 画面にも道具にも出るのは「Rachel」の側なので、
+        """id を控えている人はいない。 画面にも道具にも出るのは「Rachel」の側なので、
         名前で頼めないと、毎回一覧を引いてから頼むことになる。"""
         settings_store.set_credential("elevenlabs", "el-k")
         settings_store.set_enabled("elevenlabs", True)
@@ -1428,7 +1428,7 @@ class TestSpeech:
         assert sent["instructions"] == "明るく"
 
     def test_raw_pcm_gets_a_wav_header_before_it_is_saved(self, state):
-        """**Gemini は生の PCM を返すことがある。** そのまま保存すると拡張子も中身も
+        """Gemini は生の PCM を返すことがある。 そのまま保存すると拡張子も中身も
         再生できないファイルになり、受け取った側は開くまで気づけない。"""
         settings_store.set_credential("gemini", "k")
         settings_store.set_enabled("gemini", True)
@@ -1454,7 +1454,7 @@ class TestSpeech:
 
     def test_the_local_gpu_is_not_offered_for_reading_aloud(self, state):
         """ComfyUI 本体に TTS のノードが無い(外部の拡張しか無く、入れたもので
-        ノード名も引数も変わる)。**選べる形にしておくほうが不親切**。"""
+        ノード名も引数も変わる)。選べる形にしておくほうが不親切。"""
         ids = [p.id for p in media_providers.all_providers(media_providers.KIND_SPEECH)]
 
         assert "comfyui" not in ids
@@ -1483,7 +1483,7 @@ class TestSpeech:
 
 class TestTranscribe:
     def test_it_returns_the_text_right_away_instead_of_a_job(self, state):
-        """**返るのは文字(数 KB)。** 置き場も掃除も配信も要らないので、
+        """返るのは文字(数 KB)。 置き場も掃除も配信も要らないので、
         job にすると呼ぶ側の手数が増えるだけになる。"""
         settings_store.set_credential("elevenlabs", "el-k")
         settings_store.set_enabled("elevenlabs", True)
@@ -1495,7 +1495,7 @@ class TestTranscribe:
         assert got["text"] == "こんにちは"
         assert got["language"] == "ja"
         assert media.recent_jobs() == []
-        # **multipart で送る**(base64 に膨らませない)
+        # multipart で送る(base64 に膨らませない)
         assert b'name="file"' in fake_elevenlabs_voice.upload
 
     def test_gemini_is_told_to_write_down_only_what_it_hears(self, state):
@@ -1513,7 +1513,7 @@ class TestTranscribe:
         use(state, handler)
         got = asyncio.run(media.transcribe(data=MP3, mime="audio/mpeg", backend="gemini"))
 
-        # **考えごとは拾わない**(model_output だけ)
+        # 考えごとは拾わない(model_output だけ)
         assert got["text"] == "やあ"
         assert "書き起こし" in handler.sent["input"][1]["text"]
 
@@ -1551,7 +1551,7 @@ class TestTranscribe:
 
 class TestNewBackendLists:
     def test_the_video_list_says_which_lengths_are_allowed(self, state):
-        """**上限ではなく一覧。** 呼ぶ側が「4 と 8 の間は無い」と分かる形にする。"""
+        """上限ではなく一覧。 呼ぶ側が「4 と 8 の間は無い」と分かる形にする。"""
         settings_store.set_credential("openai", "sk-x")
         settings_store.set_enabled("openai", True)
         found = {e["id"]: e for e in asyncio.run(
@@ -1586,7 +1586,7 @@ class TestNewBackendLists:
                 "voice_backends"} <= names
 
     def test_the_voice_list_is_remembered_for_a_while(self, state):
-        """**管理画面が開くたびに聞きに行かせない。** 相手が遅い日に、画面そのものが
+        """管理画面が開くたびに聞きに行かせない。 相手が遅い日に、画面そのものが
         10 秒待たされる —— 声はそう頻繁に増えない。"""
         settings_store.set_credential("elevenlabs", "el-k")
         settings_store.set_enabled("elevenlabs", True)

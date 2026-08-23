@@ -1,8 +1,8 @@
 """使用量(`/v1/ai/usage`・管理画面の「使用量」節)のテスト。
 
 確かめるのは 2 つの数を混ぜていないこと ——
-**相手が言う枠**(残りが分かるが、聞ける相手が限られる)と、
-**Chiezo が使ったぶん**(全部の相手で測れるが、残りは分からない)。
+相手が言う枠(残りが分かるが、聞ける相手が限られる)と、
+Chiezo が使ったぶん(全部の相手で測れるが、残りは分からない)。
 
 相手は立てない。枠を聞きに行く口(`app/usage.py` の `_client`)を差し替えて、
 応答の読み方まで通しで見る(`app/answer.py` の `_llm_client` と同じ流儀)。
@@ -49,7 +49,7 @@ def backend_of(body: dict, name: str) -> dict:
 
 
 class TestSpent:
-    """Chiezo が使ったぶん —— **全部の相手で同じ物差し**で測れる側。"""
+    """Chiezo が使ったぶん —— 全部の相手で同じ物差しで測れる側。"""
 
     def test_a_call_is_counted_with_its_tokens(self, env):
         fake = ReplyLLM({"prompt_tokens": 120, "completion_tokens": 30})
@@ -64,7 +64,7 @@ class TestSpent:
         assert spent["unknown_tokens"] == 0
 
     def test_a_reply_without_usage_counts_the_call_but_not_tokens(self, env):
-        """**0 と「言われていない」を分ける。** CLI ブリッジはトークン数を返さない ——
+        """0 と「言われていない」を分ける。 CLI ブリッジはトークン数を返さない ——
         0 と書くと「0 トークンで動く相手」に見える。"""
         with make_client(env, ReplyLLM()) as client:
             complete(client, messages=[{"role": "user", "content": "やあ"}])
@@ -74,7 +74,7 @@ class TestSpent:
         assert (spent["requests"], spent["input_tokens"], spent["unknown_tokens"]) == (1, 0, 1)
 
     def test_it_says_since_when_it_has_been_counting(self, env):
-        """**「0 回」が「使っていない」と読まれないように**、いつからの数かを添える。"""
+        """「0 回」が「使っていない」と読まれないように、いつからの数かを添える。"""
         with make_client(env, ReplyLLM()) as client:
             assert client.get("/v1/ai/usage").json()["recorded_since"] is None
             complete(client, messages=[{"role": "user", "content": "やあ"}])
@@ -92,10 +92,10 @@ class TestSpent:
 
 
 class TestQuota:
-    """相手が言う枠 —— **聞ける相手が限られる**側。"""
+    """相手が言う枠 —— 聞ける相手が限られる側。"""
 
     def test_backends_without_a_way_to_ask_say_so(self, env):
-        """**空欄にしない。** 「出せない」と「まだ取っていない」は別の状態。"""
+        """空欄にしない。 「出せない」と「まだ取っていない」は別の状態。"""
         with make_client(env, ReplyLLM()) as client:
             body = client.get("/v1/ai/usage").json()
 
@@ -104,7 +104,7 @@ class TestQuota:
         assert backend_of(body, "claude")["quota"]["supported"] is True
 
     def test_it_does_not_ask_anyone_unless_told_to(self, env):
-        """**引かれるたびに外へ出ていかない。** 画面もダッシュボードも定期的に引く口。"""
+        """引かれるたびに外へ出ていかない。 画面もダッシュボードも定期的に引く口。"""
         asked = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -124,7 +124,7 @@ class TestQuota:
         assert asked == [usage.ANTHROPIC_USAGE_URL]
 
     def test_claude_windows_are_read_with_their_names(self, env):
-        """`five_hour` は「セッション」、`seven_day` は「今週」。**残りも出す。**"""
+        """`five_hour` は「セッション」、`seven_day` は「今週」。残りも出す。"""
         from app import settings_store, usage
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -169,7 +169,7 @@ class TestQuota:
         assert quota["fetched_at"]
 
     def test_a_failure_keeps_the_last_value_and_says_why(self, env):
-        """**取れなかったからといって、直前まで見えていた数字を消さない。**"""
+        """取れなかったからといって、直前まで見えていた数字を消さない。"""
         from app import settings_store, usage
 
         replies = [
@@ -189,7 +189,7 @@ class TestQuota:
         assert "401" in quota["error"]
 
     def test_a_scope_error_says_what_to_do(self, env):
-        """**実測**: `claude setup-token` の長期トークンは推論だけに絞られていて、
+        """実測: `claude setup-token` の長期トークンは推論だけに絞られていて、
         この口(user:profile が要る)では 403 になる。生の英文だけだと「鍵が違う」と
         読んで入れ直すことになるので、そうではないと書く。"""
         from app import settings_store, usage
@@ -275,7 +275,7 @@ class TestBridgeQuota:
         assert window["used_percent"] == 12.0
 
     def test_the_bridge_reason_survives_fastapis_detail_wrapper(self, env):
-        """ブリッジの失敗は `detail` に包まれて返る。**中の文言まで出す** ——
+        """ブリッジの失敗は `detail` に包まれて返る。中の文言まで出す ——
         「HTTP 401」だけでは打つ手が分からない。"""
         with make_client(env, ReplyLLM()) as client:
             self._bridge(env, {"detail": {"error": "認証情報が未登録です"}}, status=401)
@@ -284,7 +284,7 @@ class TestBridgeQuota:
         assert backend_of(body, "codex")["quota"]["error"] == "認証情報が未登録です"
 
     def test_a_backend_that_never_answered_has_no_fetch_time(self, env):
-        """**一度も取れていない相手に時刻を入れない**(何かが取れたように読める)。"""
+        """一度も取れていない相手に時刻を入れない(何かが取れたように読める)。"""
         with make_client(env, ReplyLLM()) as client:
             self._bridge(env, {"windows": [], "reason": "立っていません"})
             body = client.get("/v1/ai/usage", params={"refresh": 1, "backend": "codex"}).json()
@@ -293,7 +293,7 @@ class TestBridgeQuota:
         assert quota["fetched_at"] == "" and quota["error"] == "立っていません"
 
     def test_what_the_cli_said_is_shown_when_no_number_could_be_read(self, env):
-        """数字にできなくても、**CLI が何と言ったかは画面に出す**。"""
+        """数字にできなくても、CLI が何と言ったかは画面に出す。"""
         with make_client(env, ReplyLLM()) as client:
             self._bridge(env, {"windows": [], "reason": "Please sign in to view credits."})
             body = client.get("/v1/ai/usage",
@@ -338,7 +338,7 @@ class TestAdminSection:
 
 class TestMediaCounts:
     def test_pictures_and_sound_are_counted_too(self, env, tmp_path):
-        """**絵と音も同じサブスクの枠を食う**ので、同じ表に残す。"""
+        """絵と音も同じサブスクの枠を食うので、同じ表に残す。"""
         from app import usage_store
 
         with make_client(env, ReplyLLM()) as client:
@@ -388,13 +388,13 @@ class TestBridgeSide:
         assert windows[0]["label"] == "prompt"
 
     def test_it_invents_nothing_when_the_shape_is_unknown(self):
-        """**推測で数字を作らない**(読めなければ空で返し、生の返事を渡す)。"""
+        """推測で数字を作らない(読めなければ空で返し、生の返事を渡す)。"""
         import cli_bridge
 
         assert cli_bridge._windows_in({"plan": "pro", "note": "hello"}) == []
 
     def test_the_endpoint_returns_what_the_cli_printed(self, monkeypatch, tmp_path):
-        """`/usage` の口そのもの。**CLI の代わりに python を走らせて**、
+        """`/usage` の口そのもの。CLI の代わりに python を走らせて、
         起動 → 出力の読み取り → 窓への変換までを通す(本物の CLI は要らない)。"""
         import importlib
 
@@ -419,7 +419,7 @@ class TestBridgeSide:
     def test_the_endpoint_hands_back_the_raw_reply_when_it_reads_nothing(
         self, monkeypatch, tmp_path
     ):
-        """**数字にできなくても、CLI が何と言ったかは返す**(画面がそれを出す)。"""
+        """数字にできなくても、CLI が何と言ったかは返す(画面がそれを出す)。"""
         import importlib
 
         from fastapi.testclient import TestClient

@@ -133,7 +133,7 @@ def sources():
             "node_index": forced_node_index or region.node_index,
         }
     # 別コンテナのプラグイン(CHIEZO_PLUGIN_SOURCES)が提供するソース。
-    # **落ちていても catalog() が警告だけ出して飛ばす**ので、ここで止まることはない
+    # 落ちていても catalog() が警告だけ出して飛ばすので、ここで止まることはない
     # (プラグイン 1 つの不調で管理画面の一覧が丸ごと消えるほうが困る)。
     for src in remote.catalog():
         catalog[src.name] = {
@@ -160,7 +160,7 @@ def status():
 def start_run(source: str):
     from sources import ADAPTERS, remote
 
-    # **プラグインのソースもここで通す。** `/sources` に出したものは実行できなければ
+    # プラグインのソースもここで通す。 `/sources` に出したものは実行できなければ
     # ならない —— 管理画面はカタログからボタンを組み立てるので、片方だけ知っていると
     # 「ボタンはあるのに押すと unknown source」になる(実際にそうなった)。
     if source not in ADAPTERS and source not in {s.name for s in remote.catalog()}:

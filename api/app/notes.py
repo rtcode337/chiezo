@@ -3,29 +3,29 @@
 ## なぜ Chiezo に置くのか
 
 「AI に覚えておいてほしいこと」の置き場として、CLAUDE.md や Claude Code の記憶機能は
-**毎セッション全部がコンテキストに載る**。件数が増えるほど、関係ない話のときにも
+毎セッション全部がコンテキストに載る。件数が増えるほど、関係ない話のときにも
 トークンを払い続けることになり、規模に対して破綻する。
 
-Chiezo なら**常駐するのは MCP のツール定義(数百字)だけ**で、中身は引いたときにしか
+Chiezo なら常駐するのは MCP のツール定義(数百字)だけで、中身は引いたときにしか
 載らない。100 件でも 1000 件でも常駐コストは変わらない。「さっき話したあの件」
 「1 か月前に覚えてもらったあの件」のときだけ探しに行く、という使い方はこの層の担当。
 
 ## 設計の要点
 
-- **`CHIEZO_NOTES_DIR` が機能フラグを兼ねる**(未設定 = 丸ごと無効)。「使う」層と同じ流儀。
-- **置き場は `/data` と分ける**。`registry.data_dir_fingerprint()` が `/data/*.db` の
-  mtime と size を 5 秒ごとに見ていて、変化があれば**全ソースを再走査**(`COUNT(*)` 込み)
+- `CHIEZO_NOTES_DIR` が機能フラグを兼ねる(未設定 = 丸ごと無効)。「使う」層と同じ流儀。
+- 置き場は `/data` と分ける。`registry.data_dir_fingerprint()` が `/data/*.db` の
+  mtime と size を 5 秒ごとに見ていて、変化があれば全ソースを再走査(`COUNT(*)` 込み)
   する。notes.db を `/data` に置くと、メモを 1 件書くたびに jawiki 150 万件の COUNT が走る。
   分けておけば干渉しないし、`/data` の read-only マウントも崩さずに済む。
-- **スキーマはコアスキーマそのもの**。だから `search` / `doc` / `filter` / `tags` /
+- スキーマはコアスキーマそのもの。だから `search` / `doc` / `filter` / `tags` /
   ブラウズ画面 / MCP が、ソース種別を意識しない設計のおかげでそのまま効く。
-  DDL は ingest の `core.py` にあるが、**api は ingest を import しない**(コンテナが別)
+  DDL は ingest の `core.py` にあるが、api は ingest を import しない(コンテナが別)
   ため写しを持つ。ずれると静かに壊れるので、`tests/test_notes.py` が ingest 側の
   `core.CORE_SCHEMA_DDL` から作った DB とスキーマを突き合わせて落とす。
-- **`docs_fts` は external content 方式**(`content='docs'`)なので自動では同期しない。
+- `docs_fts` は external content 方式(`content='docs'`)なので自動では同期しない。
   ingest が全件投入後に `INSERT INTO docs_fts(rowid, title, body) SELECT …` しているのと
   同じことを、1 件ずつの追記でも手でやる。削除は FTS の `'delete'` コマンドが要る。
-- **読み手は `mode=ro`**(`app/db.py` の `set_mutable_paths`)。追記される DB を
+- 読み手は `mode=ro`(`app/db.py` の `set_mutable_paths`)。追記される DB を
   `immutable=1` で開くと壊れたページを掴む。
 """
 from __future__ import annotations
@@ -51,7 +51,7 @@ SOURCE_KIND = "notes"
 RECALL_LIMIT_DEFAULT = 20
 RECALL_LIMIT_MAX = 100
 
-# recall は当たったメモの**本文をまるごと**返すので、20 件返れば 20 件分の全文が
+# recall は当たったメモの本文をまるごと返すので、20 件返れば 20 件分の全文が
 # 会話のコンテキストに載る。他ソースが `search`(冒頭だけ)→ `doc`(全文)の二段に
 # なっているのに合わせ、既定では先頭 400 文字に切って `truncated` を立てる
 # (全文は `url` / `doc_id` から `/v1/notes/doc/{doc_id}` で取り直せる)。
@@ -64,7 +64,7 @@ RECALL_FIELDS = ("doc_id", "title", "text", "tags", "updated_at", "url")
 # タイトルは本文の 1 行目から作る(`docs.title` は UNIQUE なので衝突時は doc_id を足す)
 TITLE_MAX_CHARS = 60
 
-# ingest の core.py と同じ形。**変更したら向こうも直すこと**(テストが突き合わせて落とす)。
+# ingest の core.py と同じ形。変更したら向こうも直すこと(テストが突き合わせて落とす)。
 SCHEMA_DDL = """
 CREATE TABLE meta (
     source        TEXT NOT NULL,
@@ -128,7 +128,7 @@ CREATE INDEX idx_tag_counts_docs ON tag_counts(docs DESC, tag);
 CREATE INDEX idx_docs_rank ON docs(rank_score DESC, title);
 """
 
-# notes だけが持つ索引。想起の主役は全文検索ではなく**時系列**になる見込みのため
+# notes だけが持つ索引。想起の主役は全文検索ではなく時系列になる見込みのため
 # (「さっき話したあの件」は語が一致しない)。他のソースには無いが、コアスキーマの
 # 追加ではなく notes 固有の索引なので schema_version は上げない。
 NOTES_INDEX_DDL = """
@@ -310,9 +310,9 @@ def update(
     title: str | None = None,
     tags: str | None = None,
 ) -> dict | None:
-    """メモを 1 件書き換える。**渡した項目だけ**を差し替え、None の項目は今のまま。
+    """メモを 1 件書き換える。渡した項目だけを差し替え、None の項目は今のまま。
 
-    - `tags` は**丸ごと置き換え**(カンマ区切り)。空文字を渡すと全部外れる ——
+    - `tags` は丸ごと置き換え(カンマ区切り)。空文字を渡すと全部外れる ——
       「1 個だけ足す」はできない(部分編集を許すと、読み手が今の値を知らないまま
       消してしまう。置き換えなら送った値がそのまま結果になる)
     - `updated_at` は現在時刻になる。recall は新しい順なので、**書き換えたメモは
@@ -357,7 +357,7 @@ def update(
                     json.dumps(new_tags, ensure_ascii=False), now, doc_id,
                 ),
             )
-            # external content の FTS は自動では追従しない。'delete' に**書き換え前の値**を
+            # external content の FTS は自動では追従しない。'delete' に書き換え前の値を
             # 渡して消してから、新しい値を入れ直す(add / delete と同じ流儀)
             conn.execute(
                 "INSERT INTO docs_fts(docs_fts, rowid, title, body) VALUES ('delete', ?, ?, ?)",
@@ -450,7 +450,7 @@ def recall(
     fields: str | None = None,
     max_chars: int = RECALL_MAX_CHARS_DEFAULT,
 ) -> dict:
-    """メモを思い出す。**新しい順**に返す。
+    """メモを思い出す。新しい順に返す。
 
     全文検索(`q`)は trigram なので「あの件」のような曖昧な問いには当たらない。
     そのため `q` を省くと時系列だけで引ける形にしてある(「さっき話したあの件」は
@@ -458,10 +458,10 @@ def recall(
     文字列比較なので、`2026-07-31` でも `2026-07-31T12:00:00+00:00` でも渡せる。
 
     本文は既定で `RECALL_MAX_CHARS_DEFAULT` 文字に切り、切ったものには
-    `truncated: true` を立てる(**黙って切ると「これで全部」と読まれる**)。
+    `truncated: true` を立てる(黙って切ると「これで全部」と読まれる)。
     全文は `/v1/notes/doc/{doc_id}` で取り直す。`max_chars=0` で切らない。
 
-    **上限はここで担保する**。REST の `Query(ge=1, le=…)` は HTTP の口にしか効かず、
+    上限はここで担保する。REST の `Query(ge=1, le=…)` は HTTP の口にしか効かず、
     MCP(`app/mcp_server.py`)は api の関数を Python から直接呼ぶので通らない。
     SQLite は `LIMIT -1` を「無制限」と解釈するため、負の値がそのまま届くと
     全件返る(頁を送る意図の呼び出しが静かに全件取得になる)。同じ理由で

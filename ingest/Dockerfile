@@ -14,7 +14,7 @@ COPY sources ./sources
 
 # 既定は one-shot 取り込み(chiezo-ingest プロファイル)。
 # chiezo-trigger サービスは docker-compose.yml の command で server:app 起動に上書きする。
-# **root で動かさない。uid はホストに実在しない 10001。** 1000 はホストの1人目の
+# root で動かさない。uid はホストに実在しない 10001。 1000 はホストの1人目の
 # ユーザーの番号なので、それで動かすと万一コンテナから抜け出されたときにその人の
 # ファイルを触れる立場になる。10001 ならホストの誰でもなく、chown で渡した data/ しか
 # 触れない。compose の user: で上書きできる(data/ をホストから直接編集したいとき)。

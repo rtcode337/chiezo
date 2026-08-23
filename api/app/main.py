@@ -1,6 +1,6 @@
 """chiezo-api の REST(設計書 §5)。
 
-**このモジュールが持つのは機械向けの口(`/v1/...`)とアプリの組み立て**
+このモジュールが持つのは機械向けの口(`/v1/...`)とアプリの組み立て
 (lifespan・例外ハンドラ・画面 router の登録・`/mcp` のマウント)。
 人間向けの HTML は `app/views/`、両者が共有する下ごしらえは `app/deps.py`。
 """
@@ -267,10 +267,10 @@ def search_pool_size(offset: int, limit: int) -> int:
 
 
 def fts_search(src: Source, match: str, exact: str, limit: int, offset: int) -> list:
-    """全文検索の本体。**該当件数ではなく返す件数に比例した数の行しか読まない**。
+    """全文検索の本体。該当件数ではなく返す件数に比例した数の行しか読まない。
 
     素直に書くと `docs_fts MATCH ... JOIN docs ORDER BY <bm25 と人気度>` になるが、
-    並べ替えに docs の rank_score と title が要るせいで、該当した文書を**全部**
+    並べ替えに docs の rank_score と title が要るせいで、該当した文書を全部
     docs から読むことになる。osm_japan の「東京都」は 17 万件が該当し(施設の本文に
     「所在: 東京都…」が入るため)、上位 10 件を返すのに 17 万行を読んで配信機で
     504 になっていた。都道府県名が軒並み引けなかったのはこれが理由。
@@ -618,7 +618,7 @@ def build_doc_id_set(
     - `bbox` → doc_coords(実体の lat/lon を持つ表。生成列の索引では経度の判定に
       行本体が要る。schema_version 4 から)
     - `feature` / `area` → idx_docs_feature_area / idx_docs_area_feature。
-      生成列でも**索引には計算済みの値が入っている**ので、doc_id だけを取り出す
+      生成列でも索引には計算済みの値が入っているので、doc_id だけを取り出す
       分にはここも索引の中で完結する(2 つを 1 本の複合索引で捌けるので分けない)
     - `wikidata` → idx_docs_wikidata
 
@@ -693,12 +693,12 @@ def rank_index_hint(src: Source, total: int, need: int) -> str:
     並べ替えには 2 つの経路がある。費用の形が違うので、どちらが安いかは条件によって
     ひっくり返る:
 
-    - 既定(名指し無し): 該当文書を**全部** docs から読んで並べ替える。
-      費用 ≒ `total` 行の読み出し。**offset には依らない**。
+    - 既定(名指し無し): 該当文書を全部 docs から読んで並べ替える。
+      費用 ≒ `total` 行の読み出し。offset には依らない。
     - `INDEXED BY idx_docs_rank`: 並び順そのものを持つ索引を上から走査し、
       該当を `need` 件(= offset + limit)拾った時点で打ち切る(doc_id の判定は
       ブルームフィルタで索引の中だけで済む)。該当が索引に一様に散らばっていれば
-      費用 ≒ `doc_count * need / total` 件の走査。**total には依らず、深い頁ほど伸びる**。
+      費用 ≒ `doc_count * need / total` 件の走査。total には依らず、深い頁ほど伸びる。
 
     後者は「上位数件だけ見る」ときは桁違いに速い一方、頁が末尾に近づくと索引を端まで
     舐めることになる。実際、この判定に offset が入っていなかったために、336 件のタグの
@@ -1083,7 +1083,7 @@ async def _agent_events(
 ):
     """agent モードの SSE。
 
-    rag と違い**流し始めた後にしかできない仕事**が本体(道具を引くこと自体が目的で、
+    rag と違い流し始めた後にしかできない仕事が本体(道具を引くこと自体が目的で、
     それが数十秒かかる)。ソースの検査だけは呼び出し側が先に済ませてあり、
     残りの失敗(推論サーバに繋がらない等)は error イベントとして流す。
     """
@@ -1104,8 +1104,8 @@ async def _agent_events(
 # ---- 会話(/v1/chat) --------------------------------------------------------
 #
 # `/v1/ask` は 1 問 1 答で、curl から使うぶんにはそれでよい。会話として続けるには
-# 直前のやり取りが要るので、こちらは **messages をまるごと受け取る**。
-# **サーバーは会話の状態を持たない**(履歴はクライアントが持って毎回送る)。読み取り専用・
+# 直前のやり取りが要るので、こちらは messages をまるごと受け取る。
+# サーバーは会話の状態を持たない(履歴はクライアントが持って毎回送る)。読み取り専用・
 # LAN 内・複数ワーカーという前提を崩さないためで、MCP をステートレスにしたのと同じ判断。
 
 
@@ -1123,7 +1123,7 @@ class ChatRequest(BaseModel):
     # agent モードで web 検索の道具を渡すか(None = サーバー設定どおり)。
     # 画面のトグルはここを毎回送る = やり取りごとに切り替えられる。
     web: bool | None = None
-    # 「覚える・思い出す」の道具を渡すか。**書き込みを伴う**ので、同じく切れるようにする。
+    # 「覚える・思い出す」の道具を渡すか。書き込みを伴うので、同じく切れるようにする。
     notes: bool | None = None
     # どの AI に聞くか。画面のセレクトはここを毎回送る = やり取りごとに相手を変えられる。
     backend: str | None = None
@@ -1190,15 +1190,15 @@ async def _rag_events(cfg, q, queries, snippets, references, grounded, history=N
 
 # ---- 素の問い合わせ(知識ベースを介さない)------------------------------------
 #
-# **`/v1/chat` とは目的が違う。** あちらは知識ベースを引いて答えるための口で、必ず抽出が
-# 混ざる。こちらは**渡したプロンプトをそのまま相手に投げる**だけ —— 呼び出す側が自分の
+# `/v1/chat` とは目的が違う。 あちらは知識ベースを引いて答えるための口で、必ず抽出が
+# 混ざる。こちらは渡したプロンプトをそのまま相手に投げるだけ —— 呼び出す側が自分の
 # 材料とプロンプトを持っていて、Chiezo に借りたいのは「話せる相手と鍵」だけ、という使い方
 # (例: tech-antenna のサマリー生成)。認証情報は相手ごとに Chiezo が握っているので、
 # 呼ぶ側は鍵を持たずに済み、管理画面で on にした相手をそのまま使える。
 
 
 class AiMessage(BaseModel):
-    # `/v1/chat` の ChatMessage と違い **system を許す**。プロンプトを組むのは呼ぶ側で、
+    # `/v1/chat` の ChatMessage と違い system を許す。プロンプトを組むのは呼ぶ側で、
     # 役割の付け方までこちらで決めない
     role: str = PydField(pattern="^(system|user|assistant)$")
     content: str
@@ -1211,7 +1211,7 @@ class AiCompleteRequest(BaseModel):
     model: str | None = None
     effort: str | None = None
     # 相手自身の web 検索を開けるか(既定は開けない)。
-    # **CLI ブリッジで包んだ相手だけが持つ道具**なので、それ以外に頼まれたら断る
+    # CLI ブリッジで包んだ相手だけが持つ道具なので、それ以外に頼まれたら断る
     # —— 黙って道具無しで答えさせると、呼ぶ側は「調べた結果」として受け取ってしまう。
     web: bool | None = None
 
@@ -1220,7 +1220,7 @@ class AiCompleteRequest(BaseModel):
 async def ai_backends() -> dict:
     """いま話せる相手と、その相手で選べるモデル・エフォート。
 
-    **呼ぶ側が画面を作れるだけの材料を返す。** 一覧は管理画面で on にしたものだけで、
+    呼ぶ側が画面を作れるだけの材料を返す。 一覧は管理画面で on にしたものだけで、
     モデルは相手に聞けた場合はその答え(聞けなければコードの控え)。
     """
     names = answer.backend_names()
@@ -1235,7 +1235,7 @@ async def ai_backends() -> dict:
                 "efforts": list(providers.efforts_of(name)),
                 # モデルを必ず指定しないといけない相手か(false なら「既定」を選べる)
                 "model_required": bool(spec.model_required) if spec else True,
-                # **web 検索を開けるか**(`/v1/ai/complete` の `web=true`)。
+                # web 検索を開けるか(`/v1/ai/complete` の `web=true`)。
                 # CLI ブリッジの相手は自前の検索を、それ以外は Chiezo の SearXNG を使う。
                 # 呼ぶ側はこれを見て「調べさせる仕事に使える相手」を絞れる ——
                 # 出さないと、選べてしまってから 400 で断られることになる
@@ -1251,12 +1251,12 @@ async def ai_backends() -> dict:
 async def ai_failures(limit: int = 50) -> dict:
     """AI への問い合わせが失敗したときの控え(新しい順)。
 
-    **無人の呼び出しのために置いてある。** 定期実行が朝に落ちても、その場に居合わせないと
+    無人の呼び出しのために置いてある。 定期実行が朝に落ちても、その場に居合わせないと
     理由は流れて消える —— 呼んだ側のログに残るのは「llm error 502」のような一行だけで、
     相手が何と言って断ったのかは分からない。ここには相手・モデル・状態・理由と
     プロンプトの大きさが残る。
 
-    **中身(プロンプト・応答)は残していない。** 呼んだ側の材料がそのまま入るため
+    中身(プロンプト・応答)は残していない。 呼んだ側の材料がそのまま入るため
     (`app/ai_log.py`)。大きさだけ残すのは、失敗が大きさに寄っているのかを見分けるため。
     """
     return {"failures": ai_log.recent(limit)}
@@ -1267,15 +1267,15 @@ async def ai_usage(
     backend: str = Query("", description="1 相手だけ見るとき(既定は全部)"),
     refresh: bool = Query(False, description="相手に聞き直す(既定は控えを返す)"),
 ) -> dict:
-    """各 AI の**使用量**。相手が言う枠(残りが分かる)と、Chiezo が使ったぶん。
+    """各 AI の使用量。相手が言う枠(残りが分かる)と、Chiezo が使ったぶん。
 
-    **既定では相手へ問い合わせない**(控えてある値を返す)—— この口は画面や
+    既定では相手へ問い合わせない(控えてある値を返す)—— この口は画面や
     ダッシュボードが定期的に引くもので、引かれるたびに外へ出ていくと、
     見ているだけで相手のレート制限に当たる。取り直すときだけ `refresh=1`。
 
-    枠を聞ける相手は限られる(`quota.supported`)。**聞けない相手にも `spent` は出る**
+    枠を聞ける相手は限られる(`quota.supported`)。聞けない相手にも `spent` は出る
     —— そちらは Chiezo が自分で数えているので、全部の相手で同じ物差しになる。
-    ただし **Chiezo を通していない利用は入らない**(手元の端末で回した CLI など)。
+    ただし Chiezo を通していない利用は入らない(手元の端末で回した CLI など)。
     """
     name = (backend or "").strip().lower()
     if name and providers.get(name) is None:
@@ -1286,7 +1286,7 @@ async def ai_usage(
 
     rows = [r for r in usage.rows() if not name or r["id"] == name]
     return {
-        # **いつからの数か**を添える。書かないと、入れたばかりの環境の「0 回」が
+        # いつからの数かを添える。書かないと、入れたばかりの環境の「0 回」が
         # 「使っていない」と読めてしまう。
         "recorded_since": usage_store.first_recorded_at(),
         "windows": [w for w, _ in usage.SPENT_WINDOWS],
@@ -1308,19 +1308,19 @@ async def ai_usage(
 async def ai_complete(body: AiCompleteRequest) -> dict:
     """渡されたメッセージをそのまま相手へ投げて、本文を返す(1 往復)。
 
-    道具は既定では渡さない。`web=true` のときだけ**相手自身の web 検索**を開ける
+    道具は既定では渡さない。`web=true` のときだけ相手自身の web 検索を開ける
     —— ニュースの収集のように「いまの外の情報」が要る仕事を、`/v1/chat` の抽出を
     混ぜずに頼めるようにするため。
 
     web の出し方は相手で変わる:
 
-    - **CLI ブリッジで包んだ相手**(claude / codex / antigravity)は自前の web 検索を持つ。
+    - CLI ブリッジで包んだ相手(claude / codex / antigravity)は自前の web 検索を持つ。
       `chiezo_web` を立てるだけでよい(道具の往復が無いぶん速い)
-    - **API で直に叩く相手**(gemini / openai 等)は OpenAI 互換の口に検索の項目が無いので、
-      **Chiezo が立てている SearXNG を道具として貸す**(`agent.complete_with_web`)。
+    - API で直に叩く相手(gemini / openai 等)は OpenAI 互換の口に検索の項目が無いので、
+      Chiezo が立てている SearXNG を道具として貸す(`agent.complete_with_web`)。
       知識ベースの道具は渡さない —— この口は抽出を混ぜないためにある
 
-    どちらも無理なとき(SearXNG を設定していない)は**断る** —— 黙って道具無しで答えさせると、
+    どちらも無理なとき(SearXNG を設定していない)は断る —— 黙って道具無しで答えさせると、
     呼ぶ側はそれを「調べた結果」として受け取り、学習データから作った話が最新の材料として
     保存されてしまう(実際に「取得不可」と答えるべき場面で古い答えが返った)。
     """
@@ -1357,7 +1357,7 @@ async def ai_complete(body: AiCompleteRequest) -> dict:
         # 実際に使われたモデル。呼ぶ側が「どれが書いたか」を残せるようにする
         "model": cfg.model,
         "effort": cfg.effort,
-        # **実際に web を開けたか。** 頼まなければ false。呼ぶ側が
+        # 実際に web を開けたか。 頼まなければ false。呼ぶ側が
         # 「調べさせたつもりで調べていない」を検出できるようにする
         "web": want_web,
         "content": content,
@@ -1366,7 +1366,7 @@ async def ai_complete(body: AiCompleteRequest) -> dict:
 
 # ---- 絵と音の生成(ゲーム素材などを作る)-------------------------------------
 #
-# **知識を引くのとは別の仕事**だが、口は Chiezo にまとめてある —— クライアント(MCP)の
+# 知識を引くのとは別の仕事だが、口は Chiezo にまとめてある —— クライアント(MCP)の
 # 登録先を増やしたくないため。重い処理は例によって別コンテナ(ComfyUI)で、
 # 外部サービス(Gemini / OpenAI / ElevenLabs)と選べる。
 # 実体は `app/media.py` / `app/media_backends.py`。
@@ -1378,7 +1378,7 @@ class ImageRequest(BaseModel):
     backend: str | None = None
     model: str | None = None
     size: str = "1024x1024"
-    # 0 なら毎回振り直す。**同じ絵を作り直したいときに指定する**
+    # 0 なら毎回振り直す。同じ絵を作り直したいときに指定する
     seed: int = 0
     count: int = 1
     negative: str = ""
@@ -1390,9 +1390,9 @@ class AudioRequestBody(BaseModel):
     # 相手。空なら既定(自前の GPU)
     backend: str | None = None
     model: str | None = None
-    # 効果音(sfx)か曲(music)か。**モデルも口も別物**なので選ばせる
+    # 効果音(sfx)か曲(music)か。モデルも口も別物なので選ばせる
     sound: str = media_providers.SOUND_SFX
-    # 0 なら相手の既定。**長さを指定できない相手(Lyria)に渡すと 400**
+    # 0 なら相手の既定。長さを指定できない相手(Lyria)に渡すと 400
     seconds: float = 0
     seed: int = 0
     count: int = 1
@@ -1410,7 +1410,7 @@ class VideoRequestBody(BaseModel):
     backend: str | None = None
     model: str | None = None
     size: str = "1280x720"
-    # 0 なら相手の一覧のいちばん短いもの。**一覧に無い値は 400**(丸めない)
+    # 0 なら相手の一覧のいちばん短いもの。一覧に無い値は 400(丸めない)
     seconds: float = 0
     seed: int = 0
     count: int = 1
@@ -1421,7 +1421,7 @@ class VideoRequestBody(BaseModel):
 
 
 class SpeechRequestBody(BaseModel):
-    # **読み上げる文章そのもの**(絵や音の「こういうものを作って」ではない)
+    # 読み上げる文章そのもの(絵や音の「こういうものを作って」ではない)
     text: str
     backend: str | None = None
     model: str | None = None
@@ -1438,17 +1438,17 @@ class SpeechRequestBody(BaseModel):
 
 @app.get("/v1/capabilities")
 async def capabilities_list() -> dict:
-    """**chiezo 経由で AI に頼めることの一覧**（会話・声・画像・動画・音楽・SE）。
+    """chiezo 経由で AI に頼めることの一覧（会話・声・画像・動画・音楽・SE）。
 
-    画面と同じ語彙を返す(`app/capabilities.py`)。**まだ無いものも並べる** ——
+    画面と同じ語彙を返す(`app/capabilities.py`)。まだ無いものも並べる ——
     表から消すと「頼めるのか分からない」になり、聞かれるたびにコードを読み直すことになる。
-    `supported=false` は**実装が無い**という意味で、「相手がいない」(実装はあるが鍵が
+    `supported=false` は実装が無いという意味で、「相手がいない」(実装はあるが鍵が
     未登録・GPU が無い等)とは別。
     """
     return {"capabilities": capabilities.overview(await capabilities.usable_now())}
 
 
-# 頼める相手を引ける kind。**文字起こしも並べる**(job にはならないが、
+# 頼める相手を引ける kind。文字起こしも並べる(job にはならないが、
 # 「誰に頼めるか」は他と同じように知りたい)。
 _MEDIA_KINDS = (
     media_providers.KIND_IMAGE,
@@ -1474,7 +1474,7 @@ async def media_backends_list(
 
 @app.post("/v1/media/image")
 async def media_image(body: ImageRequest) -> dict:
-    """描き始めて job を返す(**待たない**)。進み具合は下の口で引く。"""
+    """描き始めて job を返す(待たない)。進み具合は下の口で引く。"""
     return media.start_image_job(
         prompt=body.prompt,
         backend=(body.backend or "").strip(),
@@ -1489,7 +1489,7 @@ async def media_image(body: ImageRequest) -> dict:
 
 @app.post("/v1/media/audio")
 async def media_audio(body: AudioRequestBody) -> dict:
-    """作り始めて job を返す(**待たない**)。進み具合は絵と同じ口で引く。"""
+    """作り始めて job を返す(待たない)。進み具合は絵と同じ口で引く。"""
     return media.start_audio_job(
         prompt=body.prompt,
         backend=(body.backend or "").strip(),
@@ -1507,9 +1507,9 @@ async def media_audio(body: AudioRequestBody) -> dict:
 
 @app.post("/v1/media/video")
 async def media_video(body: VideoRequestBody) -> dict:
-    """作り始めて job を返す(**待たない**)。進み具合は絵と同じ口で引く。
+    """作り始めて job を返す(待たない)。進み具合は絵と同じ口で引く。
 
-    **絵より待つ**(数分〜十数分)ので、呼ぶ側は間を空けて引きに来ること。
+    絵より待つ(数分〜十数分)ので、呼ぶ側は間を空けて引きに来ること。
     """
     return media.start_video_job(
         prompt=body.prompt,
@@ -1527,7 +1527,7 @@ async def media_video(body: VideoRequestBody) -> dict:
 
 @app.post("/v1/media/speech")
 async def media_speech(body: SpeechRequestBody) -> dict:
-    """読み上げ始めて job を返す(**待たない**)。進み具合は絵と同じ口で引く。"""
+    """読み上げ始めて job を返す(待たない)。進み具合は絵と同じ口で引く。"""
     return media.start_speech_job(
         text=body.text,
         backend=(body.backend or "").strip(),
@@ -1548,9 +1548,9 @@ async def media_transcribe(
     model: str = Form(""),
     language: str = Form(""),
 ) -> dict:
-    """音を文字にする。**この口だけ job にならない**(その場で文字が返る)。
+    """音を文字にする。この口だけ job にならない(その場で文字が返る)。
 
-    **multipart で受ける。** 送る側が既に音を持っているので、base64 に膨らませて
+    multipart で受ける。 送る側が既に音を持っているので、base64 に膨らませて
     JSON に載せる意味がない(1 割以上大きくなり、両側で詰め替えの手間が増える)。
     """
     return await media.transcribe(
@@ -1578,7 +1578,7 @@ async def media_jobs(limit: int = Query(20, ge=1, le=100)) -> dict:
 
 @app.get("/media/{path:path}", include_in_schema=False)
 async def media_file(path: str):
-    """出来た画像・音を配る。**置き場の外は返さない**(`../` を踏ませない)。"""
+    """出来た画像・音を配る。置き場の外は返さない(`../` を踏ませない)。"""
     return FileResponse(media.resolve(path))
 
 
@@ -1586,7 +1586,7 @@ async def media_file(path: str):
 #
 # 実体は app/views/ に分けてある。REST(この上)と画面は変更の理由が別で、
 # 同じファイルに置くと管理画面の HTML だけで 700 行を占めるため。
-# **import はここ(定義の後ろ)で行う** —— views は app/deps.py から共有の
+# import はここ(定義の後ろ)で行う —— views は app/deps.py から共有の
 # 下ごしらえを取るので main を import しない設計だが、登録の位置は末尾に揃える。
 
 app.include_router(views_admin.router)

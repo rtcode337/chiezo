@@ -6,7 +6,7 @@
 # 障害時は :latest ではなく :sha-xxxxxxx を指定すれば任意の時点に戻せる
 # (CHIEZO_API_IMAGE / CHIEZO_INGEST_IMAGE で上書き可)。
 #
-# **このファイルは検索 API・MCP としての Chiezo だけ**(chiezo-api + chiezo-trigger +
+# このファイルは検索 API・MCP としての Chiezo だけ(chiezo-api + chiezo-trigger +
 # chiezo-ingest)。足すものは上書きファイルを重ねる。どれも数行〜数十行で、
 # 重ねる順は下の並びどおり(後のファイルが勝つ):
 #
@@ -32,12 +32,12 @@ x-ingest-limits: &ingest-limits
 
 services:
   # data/ の下に corpus/・notes/・state/ を作り、所有者を実行ユーザーに合わせる
-  # ワンショット。**corpus も chown する** —— 取り込み側(trigger / ingest)が書くため。
+  # ワンショット。corpus も chown する —— 取り込み側(trigger / ingest)が書くため。
   # api が壊さない保証は所有者ではなく、api 側だけ corpus を read-only で重ねることで作る。
-  # **バインドするホストのディレクトリは data/ 1つだけ**にして、
+  # バインドするホストのディレクトリは data/ 1つだけにして、
   # 中の切り分けはこちらが持つ —— bind 先がホストに無いと Docker が root 所有で
   # 作ってしまい、非 root で動く api がメモも設定も書けずに落ちる。
-  # **api も ingest もこれの完了を待つ**ので、いちばん先に置いてある。
+  # api も ingest もこれの完了を待つので、いちばん先に置いてある。
   # mkdir と chown だけなので、小さな汎用イメージを使う(手元ビルドの構成でも
   # GHCR を引きに行かせないため)
   chiezo-init:
@@ -58,10 +58,10 @@ services:
       # host:container。8000 は他のアプリと衝突しやすいので避けている。
       - "7010:7010"
     volumes:
-      # **バインドするホストのディレクトリは data/ 1つだけ**。下が corpus/(取り込んだ
+      # バインドするホストのディレクトリは data/ 1つだけ。下が corpus/(取り込んだ
       # 本体)・notes/(短期記憶)・state/(管理画面の設定)で、作るのは chiezo-init。
       - ./data:/data
-      # **corpus だけは読み取り専用で重ねる。** api は読むだけで、書くのは ingest 側
+      # corpus だけは読み取り専用で重ねる。 api は読むだけで、書くのは ingest 側
       # (取り違えて壊さないための線引きを、同じ 1 本の置き場のまま保つ)
       - ./data/corpus:/data/corpus:ro
     # 実行ユーザー。既定は 10001 = ホストに実在しない番号(抜け出されてもホストの
@@ -69,7 +69,7 @@ services:
     # ときだけ .env の CHIEZO_UID / CHIEZO_GID に `id -u` / `id -g` を入れる
     user: "${CHIEZO_UID:-10001}:${CHIEZO_GID:-10001}"
     environment:
-      # **走査するのは corpus/ だけ。** notes を同じ場所に置くと、メモを 1 件書くたびに
+      # 走査するのは corpus/ だけ。 notes を同じ場所に置くと、メモを 1 件書くたびに
       # jawiki 150 万件の COUNT が走る(api/app/main.py の data_dir_fingerprint 参照)
       - CHIEZO_DATA_DIR=/data/corpus
       # 「覚える」層(/v1/notes)。空にすると機能ごと無効になる。
@@ -81,13 +81,13 @@ services:
       - CHIEZO_RESCAN_INTERVAL=${CHIEZO_RESCAN_INTERVAL-}
       - CHIEZO_CATALOG_TTL=${CHIEZO_CATALOG_TTL-}
       - CHIEZO_MCP_ALLOWED_HOSTS=${CHIEZO_MCP_ALLOWED_HOSTS-}
-      # 「答える」層(/v1/ask・/ai/chat)。**話す相手は管理画面(/admin)から on/off する** ——
+      # 「答える」層(/v1/ask・/ai/chat)。話す相手は管理画面(/admin)から on/off する ——
       # 同居の推論サーバも Gemini も OpenRouter も CLI ブリッジも同じ扱いで、URL は
       # api/app/providers.py に決め打ち。ユーザーが入れるのは API キーと on/off と
       # モデルだけで、保存先が下の CHIEZO_STATE_DIR。
-      # **推論サーバ・検索エンジンのコンテナは docker-compose.answer.yml にある**。
+      # 推論サーバ・検索エンジンのコンテナは docker-compose.answer.yml にある。
       - CHIEZO_STATE_DIR=/data/state
-      # 推論サーバを**別マシンで**動かしている場合だけ、その URL を書く。
+      # 推論サーバを別マシンで動かしている場合だけ、その URL を書く。
       # 同居(chiezo-llm)なら書かなくてよい —— コンテナ名で辿り着けるので決め打ちが効く。
       # これは「相手を増やす設定」ではなく、辿り着けない相手のための逃げ道。
       - CHIEZO_LLM_URL=${CHIEZO_LLM_URL-}
@@ -102,7 +102,7 @@ services:
       - CHIEZO_ASK_DEFAULT_MODE=${CHIEZO_ASK_DEFAULT_MODE-}
       - CHIEZO_ASK_DEFAULT_GROUNDED=${CHIEZO_ASK_DEFAULT_GROUNDED-}
       # web 検索(既定では無効。URL を設定したときだけ agent の道具に加わる)。
-      # 画像生成(MCP の image_generate)。**置き場が無ければ道具ごと出さない**。
+      # 画像生成(MCP の image_generate)。置き場が無ければ道具ごと出さない。
       # 既定は状態ディレクトリの下(compose が既にマウントしている)なので、
       # 通常は何も書かなくてよい。GPU が別マシンなら CHIEZO_IMAGE_URL でその ComfyUI を指す
       - CHIEZO_MEDIA_DIR=${CHIEZO_MEDIA_DIR-}
@@ -169,16 +169,16 @@ services:
   # ---- CLI の AI と話す場合だけ、以下のコメントを外す ----
   #
   # これらは HTTP ではなく CLI なので、OpenAI 互換の口に見せるブリッジを挟む
-  # (bridge/。**イメージは 1 つで、CHIEZO_BRIDGE_CLI で役割を決める**)。
+  # (bridge/。イメージは 1 つで、CHIEZO_BRIDGE_CLI で役割を決める)。
   # イメージは 1 回 pull すればディスクは 1 つぶんで、コンテナを何個立てても増えるのは
   # 書き込み層(数 KB)だけ —— なので CLI ごとに分けず 1 枚にまとめてある。
-  # **サブスクの枠で使うためのもの**で、API キー経路は従量課金になるため使わない。
+  # サブスクの枠で使うためのもので、API キー経路は従量課金になるため使わない。
   #
-  # ブリッジは Chiezo の MCP(/mcp)を CLI に繋ぐので、**道具は CLI 自身が引く**。
+  # ブリッジは Chiezo の MCP(/mcp)を CLI に繋ぐので、道具は CLI 自身が引く。
   # CLI の組み込みの道具(シェル・ファイルの読み書き)は全部切ってある。
   #
   # 有効にするには (1) 下のブロックのコメントを外し、(2) `docker compose up -d` する。
-  # **profile も追加の -f も要らない**。認証情報は .env ではなく**管理画面から登録する**
+  # profile も追加の -f も要らない。認証情報は .env ではなく管理画面から登録する
   # (ブリッジは Chiezo の設定 DB を読み取り専用でマウントして読む)。
   # 立ち上げるまでは管理画面の on が押せない(到達確認に落ちるため)。
   #
@@ -188,7 +188,7 @@ services:
   #  image: ghcr.io/rtcode337/chiezo-bridge:latest
   #  volumes:
   #    # 認証情報は Chiezo の設定 DB から読む(管理画面から登録できるようにするため)。
-  #    # **読み取り専用**。ブリッジは書かない
+  #    # 読み取り専用。ブリッジは書かない
   #    - ./data/state:/data/state:ro
   #  environment:
   #    - CHIEZO_BRIDGE_CLI=claude
@@ -215,15 +215,15 @@ services:
   #    test: ["CMD", "curl", "-fs", "http://localhost:7013/health"]
   #    interval: 60s
   #
-  # Antigravity は API キー方式を持たない。**コンテナ内で 1 回サインインした結果**を
-  # ホーム配下のキャッシュから読むので、設定の置き場ではなく**書き込み可能なホーム**を
+  # Antigravity は API キー方式を持たない。コンテナ内で 1 回サインインした結果を
+  # ホーム配下のキャッシュから読むので、設定の置き場ではなく書き込み可能なホームを
   # 渡して永続化する。立ち上げたら
   #   docker compose exec chiezo-bridge-antigravity agy
   # を 1 回だけ対話で実行し、表示される URL でサインインすること。
   #
-  # **ここはホストのディレクトリではなく名前付きボリュームにする。** ブリッジは
+  # ここはホストのディレクトリではなく名前付きボリュームにする。 ブリッジは
   # 非 root(uid 10001)で動く(claude が権限確認を飛ばす指定を root では受け付けないため)
-  # のに、**バインド先が無いと Docker は root 所有で作る** —— サインインの保存が
+  # のに、バインド先が無いと Docker は root 所有で作る —— サインインの保存が
   # `permission denied` で落ちる(実際に踏んだ)。名前付きボリュームなら**イメージ側の
   # 所有者(uid 10001)がそのまま入る**ので、ホスト側で chown して回らなくて済む。
   # ホストのパスに置きたい場合は、先に `mkdir -p` して
@@ -242,19 +242,19 @@ services:
   #    test: ["CMD", "curl", "-fs", "http://localhost:7013/health"]
   #    interval: 60s
 
-  # agent モードの道具 `web_search` が引く検索エンジン。**推論サーバとは独立して立てる** ——
+  # agent モードの道具 `web_search` が引く検索エンジン。推論サーバとは独立して立てる ——
   # 話す相手が Gemini や Claude Code でも web 検索は要るのに、以前は
   # docker-compose.answer.yml にあったせいで「検索を使いたいだけ」で数 GB の推論サーバまで
-  # 立ち上げることになっていた。**使うかどうかは chiezo-api 側の CHIEZO_WEB_SEARCH_URL**
+  # 立ち上げることになっていた。使うかどうかは chiezo-api 側の CHIEZO_WEB_SEARCH_URL
   # (既定は空 = 使わない)で決まるので、立っているだけでは外へ検索を投げない。
   # 要らない環境では `docker compose up -d chiezo-api chiezo-trigger` のように選んで起動する。
   #
-  # **設定を焼き込んだ自前のイメージ**を使う(`searxng/Dockerfile`。素の SearXNG に
+  # 設定を焼き込んだ自前のイメージを使う(`searxng/Dockerfile`。素の SearXNG に
   # settings.yml を足しただけ)。マウントで渡していた頃は、**リポジトリを置けない環境
   # (単体定義)では立てられなかった**。手元で設定をいじるときだけ、この上に
   # `./searxng/settings.yml:/etc/searxng/settings.yml:ro` を重ねればよい。
   # 設定の中身は「既定値 + Chiezo から API として引くための 3 点」——
-  # **SearXNG の既定は html だけを返す**ので search.formats に json を足してある。
+  # SearXNG の既定は html だけを返すので search.formats に json を足してある。
   searxng:
     image: ${CHIEZO_SEARXNG_IMAGE:-ghcr.io/rtcode337/chiezo-searxng:latest}
     environment:
@@ -263,7 +263,7 @@ services:
       - SEARXNG_SECRET=${CHIEZO_WEB_SEARCH_SECRET:-chiezo-lan}
       # 待ち受けを 7012 にする(既定は 8080)。chiezo-api の 7010・推論の 7011 と
       # 揃えて、コンテナの内と外で番号が食い違わないようにするため。
-      # **この image は uvicorn ではなく granian で動く**ので、効くのは GRANIAN_PORT
+      # この image は uvicorn ではなく granian で動くので、効くのは GRANIAN_PORT
       # (SearXNG 側の SEARXNG_PORT は設定ファイルの値で、待ち受けには使われない)。
       - GRANIAN_PORT=7012
     restart: unless-stopped
@@ -273,7 +273,7 @@ services:
       test: ["CMD", "wget", "-qO-", "http://localhost:7012/healthz"]
       interval: 60s
 
-# **サインイン結果の置き場**(Antigravity)。ホストのディレクトリにしないのは、
+# サインイン結果の置き場(Antigravity)。ホストのディレクトリにしないのは、
 # 無いときに Docker が root 所有で作ってしまい、非 root のブリッジが書けなくなるため。
 volumes:
   chiezo-antigravity-home:

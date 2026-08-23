@@ -8,26 +8,26 @@ LLM に渡し、何をどう引くかをモデルに決めさせる。「カテ�
 
 設計の要点:
 
-- **道具の定義も実行も `app/mcp_server.py` から借りる**。MCP の `list_tools()` を
+- 道具の定義も実行も `app/mcp_server.py` から借りる。MCP の `list_tools()` を
   OpenAI の function 形式へ写し、実行は `call_tool()` に投げる。書き写すと
   REST・MCP・agent の三重管理になって必ずずれるし、借りれば説明文(「タグの列挙は
   filter で」等、Chiezo を正しく引くための知識)もそのまま付いてくる。
-  結果として **Claude Code から MCP で使うときと同じ道具立て**になる。
-- **渡すのは読み取り専用の道具だけ**(`AGENT_TOOLS`)。notes の `remember` は
+  結果として Claude Code から MCP で使うときと同じ道具立てになる。
+- 渡すのは読み取り専用の道具だけ(`AGENT_TOOLS`)。notes の `remember` は
   書き込みなので自動ループに任せない — 質問に答えた副作用でメモが増えるのは、
   利用者から見て予想外の変化になる。
-- **上限は 3 つ**: ステップ数(`CHIEZO_AGENT_MAX_STEPS`)・ツール結果の長さ
+- 上限は 3 つ: ステップ数(`CHIEZO_AGENT_MAX_STEPS`)・ツール結果の長さ
   (`CHIEZO_AGENT_TOOL_CHARS`)・全体の締め切り(`CHIEZO_AGENT_TIMEOUT`)。
   ツール結果は毎ターン積み上がるので、上限が無いとモデルの窓も待ち時間も
-  読めなくなる。必要な文脈長は **ステップ数 × ツール結果の長さ** で見積もれる。
-- **同じ呼び出しは実行し直さず、前回の結果を返す**(`repeated_payload`)。モデルは
+  読めなくなる。必要な文脈長は ステップ数 × ツール結果の長さ で見積もれる。
+- 同じ呼び出しは実行し直さず、前回の結果を返す(`repeated_payload`)。モデルは
   1 回の応答に同じ呼び出しを 2 つ並べて出すことがあり、外へ 2 回出す必要はない。
   ここでエラーを返すと「失敗した」と受け取って別の検索を足しに行き、ステップを空費する。
-- **最終回答はストリーミングしない**。ツール呼び出しは応答の途中まで読まないと
+- 最終回答はストリーミングしない。ツール呼び出しは応答の途中まで読まないと
   「道具を呼んだのか答えたのか」が分からず、ストリームの断片から復元するのは
-  壊れやすい。代わりに**ステップの進捗**(どの道具を何の引数で呼び、何件返ったか)を
+  壊れやすい。代わりにステップの進捗(どの道具を何の引数で呼び、何件返ったか)を
   逐次流す — 数十秒待たせる画面で見たいのはそちらでもある。
-- **出典は番号引用ではなくタイトル参照**。rag は抜粋に [1] を振って渡せるが、
+- 出典は番号引用ではなくタイトル参照。rag は抜粋に [1] を振って渡せるが、
   agent が見るのは道具の生の応答なので番号を振る先が無い。代わりに、道具の応答に
   出てきた文書を出現順に集めて `references` として返す(何を見て答えたかは残る)。
 """
@@ -52,9 +52,9 @@ log = logging.getLogger("chiezo.api")
 # agent に渡す Chiezo の道具(MCP に出しているものから借りる)。ここは読み取り専用。
 KNOWLEDGE_TOOLS = ("sources", "search", "doc", "filter", "tags", "titles", "links")
 
-# 「覚える」層の道具。**`remember` は Chiezo で唯一の書き込み**なので分けてある。
+# 「覚える」層の道具。`remember` は Chiezo で唯一の書き込みなので分けてある。
 # 当初は「質問の副作用でメモが増えるのは予想外の変化」として渡していなかったが、
-# 会話で「覚えておいて」と**明示的に頼まれる**なら副作用ではない。代わりに
+# 会話で「覚えておいて」と明示的に頼まれるなら副作用ではない。代わりに
 # ①やり取りごとに切れる(`notes` 引数・画面のトグル)②何を書いたかは step に出る、
 # の 2 つで見えるようにしてある。
 NOTE_TOOLS = ("remember", "recall")
@@ -95,7 +95,7 @@ AGENT_SYSTEM_OPEN = """\
 - 根拠にした文書のタイトルを本文に書く(出典一覧は Chiezo 側で付ける)
 """
 
-# web 検索が有効なときだけ足す使い分け。**Chiezo が先**という順番をここで固定する
+# web 検索が有効なときだけ足す使い分け。Chiezo が先という順番をここで固定する
 # (Chiezo の存在理由が「外部 API を先に叩かせない」ことなので、道具が増えても順番は変えない)。
 WEB_SEARCH_POLICY = """
 web_search も使える場合:
@@ -105,7 +105,7 @@ web_search も使える場合:
   (「web で調べた限り」など)。出典一覧にも web として並ぶ
 """
 
-# 「覚える」道具を渡すときだけ足す使い分け。**会話に特有の落とし穴**への対処で、
+# 「覚える」道具を渡すときだけ足す使い分け。会話に特有の落とし穴への対処で、
 # 道具の説明(MCP 側)だけでは足りなかったところを補う: 「これを覚えて」と言われた
 # ときの「これ」は直前の自分の回答で、モデルはそれを 1 行に要約して保存してしまう
 # (実測: 5 件挙げた観光スポットが「〜について調べた」の 1 行になった)。
@@ -180,7 +180,7 @@ def notes_allowed(requested: bool | None) -> bool:
     """このやり取りで「覚える・思い出す」を使わせるか。
 
     `CHIEZO_NOTES_DIR` が未設定なら notes ごと無効なので、頼まれても使えない。
-    有効な場合は**呼び出しごとに切れる**(書き込みを伴うので、切れることが要る)。
+    有効な場合は呼び出しごとに切れる(書き込みを伴うので、切れることが要る)。
     """
     return notes.is_enabled() and requested is not False
 
@@ -189,7 +189,7 @@ def web_allowed(requested: bool | None) -> bool:
     """このやり取りで web 検索を使わせるか。
 
     サーバー側で設定されていなければ、頼まれても使えない(道具が無い)。
-    設定されている場合は**呼び出しごとに切れる** — 画面のトグルや API の `web=0` で、
+    設定されている場合は呼び出しごとに切れる — 画面のトグルや API の `web=0` で、
     「いまは Chiezo だけで答えてほしい」を選べるようにするため。
     """
     return websearch.is_enabled() and requested is not False
@@ -242,7 +242,7 @@ async def execute(
 ) -> tuple[bool, Any]:
     """道具を 1 つ実行する。戻りは (成功したか, 応答)。
 
-    失敗も**モデルに返す**(例外にしない)。404 の candidates や 409 の移行案内には
+    失敗もモデルに返す(例外にしない)。404 の candidates や 409 の移行案内には
     次の手を決めるのに要る情報が入っているし、1 回の失敗でループを落とす必要もない。
     """
     if name == websearch.TOOL_NAME:
@@ -259,7 +259,7 @@ async def execute(
     except ToolError as e:
         return False, _tool_error_payload(str(e))
     except Exception as e:
-        # 例外の文言は**返さない**(種別だけ)。step はそのまま画面へ流れるので、
+        # 例外の文言は返さない(種別だけ)。step はそのまま画面へ流れるので、
         # 内部の詳細をブラウザまで運ばないようにする。ログには全部残す。
         log.exception("agent tool %s failed", name)
         return False, {"error": f"tool failed: {type(e).__name__}"}
@@ -351,9 +351,9 @@ def add_references(refs: list[dict], found: list[dict]) -> None:
 
 
 def repeated_payload(payload: Any) -> Any:
-    """同じ引数で 2 回目に呼ばれたときに返すもの: **前回の結果 + 一言**。
+    """同じ引数で 2 回目に呼ばれたときに返すもの: 前回の結果 + 一言。
 
-    エラーを返してはいけない。実測でモデルは **1 回の応答に同じ呼び出しを 2 つ並べて**
+    エラーを返してはいけない。実測でモデルは 1 回の応答に同じ呼び出しを 2 つ並べて
     出してくる(0 件だったので投げ直した、ではない)。そこにエラーを返すと、手元に
     結果があるのに「失敗した」と受け取って別の検索を足しに行き、ステップを空費する。
     外へは出さずに前回の結果をそのまま返し、繰り返しであることだけ添える。
@@ -409,7 +409,7 @@ def _parse_arguments(raw: Any) -> tuple[dict | None, str]:
     try:
         parsed = json.loads(raw)
     except (json.JSONDecodeError, TypeError) as e:
-        # 例外の文言は**返さない**(種別だけ)。この理由は tool の結果として
+        # 例外の文言は返さない(種別だけ)。この理由は tool の結果として
         # モデルへ渡ると同時に step としてブラウザまで流れるので、`execute` の
         # 失敗と同じ扱いにする。読み取れなかった中身はログにだけ残す。
         log.info("agent tool arguments not parsable (%s): %r", type(e).__name__, raw)
@@ -448,7 +448,7 @@ BRIDGE_SYSTEM = (
 def bridge_web_allowed(requested: bool | None) -> bool:
     """CLI 自身の web 検索を許すか（既定は許さない）。
 
-    **SearXNG とは別の経路**である点に注意 —— 引く先は CLI の提供元の検索なので、
+    SearXNG とは別の経路である点に注意 —— 引く先は CLI の提供元の検索なので、
     Chiezo が web 検索を設定しているかどうかとは無関係に、頼まれたときだけ開ける。
     """
     return requested is True
@@ -458,7 +458,7 @@ def bridge_notes_note() -> str:
     """CLI ブリッジでは「覚える」を止められない、と伝えるための一言。
 
     こちらは MCP をまるごと（`mcp__chiezo`）渡していて、道具を 1 つずつ外す口が無い。
-    **止められないものを止められるように見せない**のが大事なので、画面ではトグルを
+    止められないものを止められるように見せないのが大事なので、画面ではトグルを
     出さず、常に使える前提で説明する。
     """
     return "覚える(remember)も使えます。"
@@ -491,7 +491,7 @@ async def _bridge_stream(
         *past,
         {"role": "user", "content": question},
     ]
-    # **web 検索は要求ごとに開ける。** OpenAI 互換に項目が無いのでブリッジ独自の名前で送る。
+    # web 検索は要求ごとに開ける。 OpenAI 互換に項目が無いのでブリッジ独自の名前で送る。
     use_web = bridge_web_allowed(web)
     text = await answer._complete(cfg, messages, chiezo_web=use_web)
     yield "references", {"references": []}
@@ -520,12 +520,12 @@ async def stream(
     catalog = prepare_catalog(request, source)
     spec = providers.get(cfg.name)
     if spec is not None and spec.bridge:
-        # **CLI ブリッジ相手ではループを回さない。**
+        # CLI ブリッジ相手ではループを回さない。
         #
-        # 向こうは CLI で、Chiezo の MCP を**自分で**繋いで引く。こちらが渡す `tools` は
+        # 向こうは CLI で、Chiezo の MCP を自分で繋いで引く。こちらが渡す `tools` は
         # 受け取ってもらえず（OpenAI の道具呼び出しの形を返せない）、Chiezo 側の
         # ループは道具を 1 度も実行できないまま終わる —— grounded なら
-        # 「根拠が取れなかった」に化け、**CLI が調べて書いた答えが捨てられていた**。
+        # 「根拠が取れなかった」に化け、CLI が調べて書いた答えが捨てられていた。
         #
         # 段取りは向こうに任せて、1 回聞いて 1 回受け取る。出典は CLI の本文の中にある
         # ので、こちらの references は空になる。
@@ -556,7 +556,7 @@ async def stream(
     called: dict[str, tuple[bool, Any]] = {}
     evidence = 0
     # 予算(`agent_max_steps`)は LLM のターン数だが、1 ターンで複数の道具を呼べるので
-    # 表示用の番号は**実行した道具の通し番号**にする(同じ番号が並ぶと追えない)。
+    # 表示用の番号は実行した道具の通し番号にする(同じ番号が並ぶと追えない)。
     executed = 0
     deadline = asyncio.get_running_loop().time() + cfg.agent_timeout
     final = ""
@@ -583,7 +583,7 @@ async def stream(
             if arguments is None:
                 ok, payload = False, {"error": why}
             elif (key := f"{name}:{json.dumps(arguments, sort_keys=True, ensure_ascii=False)}") in called:
-                # 同じ呼び出しは**実行し直さない**(外へも出さない)。前回の結果を返す。
+                # 同じ呼び出しは実行し直さない(外へも出さない)。前回の結果を返す。
                 repeated = True
                 ok, payload = called[key]
                 payload = repeated_payload(payload)
@@ -635,17 +635,17 @@ async def stream(
 
 
 async def complete_with_web(cfg, messages: list[dict]) -> str:
-    """**web 検索の道具だけ**を渡して答えを作る(`/v1/ai/complete` の `web=true` 用)。
+    """web 検索の道具だけを渡して答えを作る(`/v1/ai/complete` の `web=true` 用)。
 
     知識ベースの道具は渡さない —— この口は「自分のプロンプトと材料を持っているアプリ」の
     ためのもので、抽出が混ざると邪魔になる(それが `/v1/chat` と分けてある理由)。
     渡すのは外を見る手段だけ。
 
-    **CLI ブリッジで包んだ相手には使わない。** あちらは自前の web 検索を持っているので、
+    CLI ブリッジで包んだ相手には使わない。 あちらは自前の web 検索を持っているので、
     `chiezo_web` を立てるだけでよい(道具の往復ぶん速い)。こちらは API で直に叩く相手
     (gemini・openai 等)に、Chiezo が立てている SearXNG を貸すための経路。
 
-    出典は返さない。**呼ぶ側は本文しか受け取らない**ので、URL が要るなら本文に書かせる
+    出典は返さない。呼ぶ側は本文しか受け取らないので、URL が要るなら本文に書かせる
     (道具の説明文にタイトル・要約・URL が返ると書いてある)。
     """
     tools = [websearch.TOOL_SPEC]
@@ -674,7 +674,7 @@ async def complete_with_web(cfg, messages: list[dict]) -> str:
                 payload = {"error": why}
             else:
                 q = str(arguments.get("q", "")).strip()
-                # **同じ検索は外へ出さない。** ループはモデルの気分で何度でも呼ぶ
+                # 同じ検索は外へ出さない。 ループはモデルの気分で何度でも呼ぶ
                 # (agent ループが同じ理由で入れている)。
                 if q in called:
                     payload = called[q]

@@ -446,7 +446,7 @@ class TestMcpTools:
 
 
 class TestClaudeConfig:
-    """CLAUDE.md ブロックに**メモの中身を引き写さない**こと(app/claude_config.py)。
+    """CLAUDE.md ブロックにメモの中身を引き写さないこと(app/claude_config.py)。
 
     例示のタイトル・タグは DB の実データから採るが、notes はユーザーが手元で書いたメモで
     機密が混じりうる。ブロックはリポジトリ側(`--project`)にも生成できるので、
@@ -489,7 +489,7 @@ class TestClaudeConfig:
         """公開ダンプ由来のソースは実在タイトルで例示したまま(引用を止めるのは notes だけ)。
 
         プレースホルダーは「その API をどう呼ぶか」しか伝えない。実在タイトルは
-        `多摩川 (relation:32007)` のような**そのソース特有の表記**まで見せられるので、
+        `多摩川 (relation:32007)` のようなそのソース特有の表記まで見せられるので、
         載せてよいソースでは落とさない。
         """
         others = block.replace(self._section(block), "")

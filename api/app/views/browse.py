@@ -25,7 +25,7 @@ router = APIRouter()
 
 # ---- ブラウズ画面(人間向け HTML) -------------------------------------------
 #
-# **`/search/` の下に置く**。以前はソース名をそのまま `/{source}/` に置いていたが、
+# `/search/` の下に置く。以前はソース名をそのまま `/{source}/` に置いていたが、
 # それだとルート直下がキャッチオールになり、`ask` や `admin` という名前のソースを
 # 足せない(既存の画面に食われる)。逆に画面を足すたびにソース名と衝突しないか
 # 気にする必要もあった。前置きを 1 つ挟むだけで、その両方が消える。
@@ -88,7 +88,7 @@ def _pager(source: str, page: int, has_next: bool, *, q: str | None = None,
 
     prev_html = f'<a href="{esc(url(page - 1))}">← 前の{PAGE_SIZE}件</a>' if page > 1 else ""
     next_html = f'<a href="{esc(url(page + 1))}">次の{PAGE_SIZE}件 →</a>' if has_next else ""
-    # `page` は int で受けているので実害は無いが、**HTML に出す値は例外なく esc を通す**
+    # `page` は int で受けているので実害は無いが、HTML に出す値は例外なく esc を通す
     # (型注釈による絞り込みは呼び出し側の宣言に依存し、この関数を読むだけでは分からない)。
     return (f'<p class="pager">{prev_html}'
             f'<span class="muted">ページ {esc(page)}</span>{next_html}</p>')
@@ -190,7 +190,7 @@ def browse_source(
 def browse_doc(request: Request, source: str, doc_id: int):
     """文書 1 件の詳細。
 
-    **`opening` は出さない**。あれは `body` の冒頭を切り出したもの(検索結果の
+    `opening` は出さない。あれは `body` の冒頭を切り出したもの(検索結果の
     スニペットや「使う」層の抜粋に使う)で、人が読む画面で本文と並べると同じ文章が
     2 回出る。短いメモ(notes)では完全に同じ文字列が 2 度並んでいた。
     """

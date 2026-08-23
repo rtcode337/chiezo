@@ -48,7 +48,7 @@ def _fetch_trigger_status() -> dict | None:
 
 
 # chiezo-trigger のソースカタログのプロセス内キャッシュ。中身の大半は trigger のイメージに
-# 焼かれた静的な表(osm_<国> だけで 195 件)だが、**それだけとは限らない**:
+# 焼かれた静的な表(osm_<国> だけで 195 件)だが、それだけとは限らない:
 # `CHIEZO_PLUGIN_SOURCES` のプラグインは実行時に足せるので、trigger を入れ替えた
 # あとにカタログが増える。一度取ったら永久に持ち続けると、プラグインを足したのに管理画面へ
 # 出ないまま api の再起動を待つことになる。そこで有効期限を持たせる。
@@ -91,7 +91,7 @@ def _fetch_trigger_catalog() -> dict[str, dict] | None:
     except (httpx.HTTPError, ValueError, KeyError) as e:
         log.warning("chiezo-trigger source catalog unreachable: %s", e)
         _catalog_failed_at = time.monotonic()
-        # **期限切れでも古いカタログは捨てない。** 捨てると控えの KNOWN_SOURCES に落ちて、
+        # 期限切れでも古いカタログは捨てない。 捨てると控えの KNOWN_SOURCES に落ちて、
         # 管理画面から 545 件が消える(trigger が一時的に落ちただけなのに)。
         return _catalog_cache
     _catalog_cache = catalog
@@ -590,7 +590,7 @@ async def admin_claude_config_raw(
     その一文は既定では出さない。
     """
     sources: dict[str, Source] = request.app.state.sources
-    # **いま頼める相手を渡す。** 使えない相手を名指しで勧めると、呼んで断られるまで
+    # いま頼める相手を渡す。 使えない相手を名指しで勧めると、呼んで断られるまで
     # 分からない(呼べない道具を勧めないのと同じ理由)。
     usable = await capabilities.usable_now()
     # ブロックの組み立ては DB を引く(例示に使うタグの抽出)ので、

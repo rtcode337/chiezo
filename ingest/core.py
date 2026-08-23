@@ -77,7 +77,7 @@ CREATE TABLE tag_counts (
 ) WITHOUT ROWID;
 
 -- 座標 → 文書の索引表(schema_version 4 で追加)。docs の生成列 lat/lon と同じ値の
--- 射影で、新しい情報は持たない。**生成列の索引では bbox が引けない**ため分けてある:
+-- 射影で、新しい情報は持たない。生成列の索引では bbox が引けないため分けてある:
 -- lat/lon は VIRTUAL(値を保存せず参照時に json_extract する)なので、SQLite は
 -- idx_docs_lat_lon で緯度の範囲までは絞れても、経度の判定には行本体を読み直す
 -- (被覆索引にならない)。結果として費用が「該当件数」ではなく「その緯度帯にある
@@ -168,7 +168,7 @@ SELECT lat, lon, doc_id FROM docs INDEXED BY idx_docs_lat_lon
 # ---- 構築プロファイル ---------------------------------------------------------
 
 # 構築の速度とメモリのどちらを優先するかの切り替え(環境変数 BUILD_PROFILE)。
-#   low_memory(既定): メモリ優先。**どのソースも 2GiB で構築できる**。構築用 SQLite
+#   low_memory(既定): メモリ優先。どのソースも 2GiB で構築できる。構築用 SQLite
 #                      キャッシュを 64MiB に絞り、osm のノード座標索引をディスクに置く
 #                      (osm は数倍〜10 倍遅い。wikipedia / geonames はほぼ変わらない)。
 #   fast             : 速度優先。SQLite キャッシュ 512MiB、osm はソースごとの既定索引
@@ -176,7 +176,7 @@ SELECT lat, lon, doc_id FROM docs INDEXED BY idx_docs_lat_lon
 # 既定を low_memory にしてあるのは、本番(配信)サーバも開発機もメモリ 2GiB 級という
 # 運用のため — 何も指定せずに走らせても安全に完走するほうを既定にする。fast は
 # メモリの潤沢なビルド機で ingest を走らせるときに `-e BUILD_PROFILE=fast` と
-# **実行時の引数として明示したときだけ**使う(compose 等に常設しない)。
+# 実行時の引数として明示したときだけ使う(compose 等に常設しない)。
 # main(PRAGMA)と各アダプタ(必要メモリ宣言・osm の索引方式)の両方が参照するため、
 # ここ core に置く。
 BUILD_PROFILE_FAST = "fast"
@@ -218,7 +218,7 @@ POPULARITY_LOG_MAX_COUNTRY_POPULATION = 10.0
 def normalized_popularity(value: float | int | None, log_max: float) -> float:
     """人気度の生値(ページビュー・人口)を 0.0〜1.0 の rank_score に正規化する。
 
-    **rank_score は全ソース共通で 0.0〜1.0 という約束**にしてある。API が関連度
+    rank_score は全ソース共通で 0.0〜1.0 という約束にしてある。API が関連度
     (bm25)に人気度を掛け合わせて並べるため、ソースごとに桁が違うと混ぜられないから
     (人口 3000 万とページビュー 100 万を同じ式には入れられない)。
     対数を使うのは、人気度が桁で効く量だから(10 万 PV と 20 万 PV の差より、

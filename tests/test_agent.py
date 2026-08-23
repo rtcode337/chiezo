@@ -1,7 +1,7 @@
 """agent モード(/v1/ask?mode=agent)のテスト。
 
 test_answer.py と同じく推論サーバは立てず、`answer._llm_client` を差し替えて偽の
-OpenAI 互換サーバを演じさせる。違いは**この偽サーバが tool_calls を返せる**ことで、
+OpenAI 互換サーバを演じさせる。違いはこの偽サーバが tool_calls を返せることで、
 「モデルが道具を呼ぶ → Chiezo が実行して結果を返す → モデルが答える」の全経路を、
 実データもネットワークも GPU も無しで通せる。
 """
@@ -423,12 +423,12 @@ class TestStepNumbering:
 
 
 class TestBridgeDrivesItsOwnTools:
-    """**CLI ブリッジ相手では agent のループを回さない。**
+    """CLI ブリッジ相手では agent のループを回さない。
 
     向こうは CLI で、Chiezo の MCP を自分で繋いで引く。こちらが渡す `tools` は
     受け取ってもらえない（OpenAI の道具呼び出しの形を返せない）ので、ループは道具を
     1 度も実行できずに終わり、grounded なら「根拠が取れなかった」に化けて、
-    **CLI が調べて書いた答えが捨てられていた**（本番で発覚）。
+    CLI が調べて書いた答えが捨てられていた（本番で発覚）。
     """
 
     def _client(self, monkeypatch, fake):
@@ -493,7 +493,7 @@ class TestBridgeDrivesItsOwnTools:
         assert fake.requests[0]["chiezo_web"] is False
 
     def test_asking_opens_the_cli_web_search(self, monkeypatch_env):
-        """**Chiezo の SearXNG とは別経路**（引く先は CLI の提供元）。"""
+        """Chiezo の SearXNG とは別経路（引く先は CLI の提供元）。"""
         fake = ToolLLM(ANSWER)
         with self._client(monkeypatch_env, fake) as client:
             client.post("/v1/chat", json={

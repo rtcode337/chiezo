@@ -21,7 +21,7 @@ docker-compose.standalone.yml
 # notes(短期記憶)の DB。ユーザーが書いた内容そのものなのでコミットしない
 notes/
 
-# 管理画面から入れた設定(話す相手の on/off・API キー)。**API キーが入るのでコミットしない**。
+# 管理画面から入れた設定(話す相手の on/off・API キー)。API キーが入るのでコミットしない。
 # ディレクトリ自体は残す(マウント先が無いと compose が root 所有で作ってしまう)ので、
 # `state/` ではなく `state/*` にして .gitkeep だけ通す。
 state/*

@@ -50,9 +50,9 @@ class TestCommand:
         # 組み込みの道具(Bash・Read・WebFetch…)は名前を挙げて塞ぐ。
         denied = cmd[cmd.index("--disallowed-tools") + 1].split(",")
         assert {"Bash", "Read", "Write", "WebFetch", "Agent"} <= set(denied)
-        # **`--tools ""` は使わない**（MCP の道具まで消えてしまう）
+        # `--tools ""` は使わない（MCP の道具まで消えてしまう）
         assert "--tools" not in cmd
-        # **ToolSearch は塞がない**（MCP の道具はここから読み込まれる）
+        # ToolSearch は塞がない（MCP の道具はここから読み込まれる）
         assert "ToolSearch" not in denied
         # 手元の設定にある別の MCP を拾わせない
         assert "--strict-mcp-config" in cmd
@@ -77,7 +77,7 @@ class TestCommand:
         assert "--model" not in server.build_command("/tmp/out.txt")
 
     def test_antigravity_takes_the_prompt_as_an_argument(self, bridge):
-        """**agy だけプロンプトを引数で取る**（claude/codex は標準入力から読む）。"""
+        """agy だけプロンプトを引数で取る（claude/codex は標準入力から読む）。"""
         server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
         assert server.build_command("/tmp/out.txt", "こんにちは") == ["agy", "-p", "こんにちは"]
 
@@ -105,7 +105,7 @@ class TestCommand:
             server.build_command("/tmp/out.txt")
 
 class TestOptionalMcp:
-    """MCP は任意。**Chiezo 専用の部品ではなく、道具の要らない用途でも使える**。"""
+    """MCP は任意。Chiezo 専用の部品ではなく、道具の要らない用途でも使える。"""
 
     def test_no_mcp_means_no_tools_at_all(self, bridge):
         server = bridge(CHIEZO_BRIDGE_CLI="claude", CHIEZO_BRIDGE_MCP_URL="")
@@ -152,7 +152,7 @@ class TestModelLabel:
 
 
 class TestRunsAsNonRoot:
-    """**イメージが非 root で動くこと。**
+    """イメージが非 root で動くこと。
 
     claude は権限確認を飛ばす指定を root では拒む
     (`--dangerously-skip-permissions cannot be used with root/sudo privileges`)。
@@ -175,7 +175,7 @@ class TestRunsAsNonRoot:
 class TestModelSelection:
     """会話ごとにモデルを選べること。
 
-    以前は起動時の CHIEZO_BRIDGE_MODEL に固定で、要求の `model` は**捨てていた** ——
+    以前は起動時の CHIEZO_BRIDGE_MODEL に固定で、要求の `model` は捨てていた ——
     画面にモデル選択があるのに何も変わらない状態だった。
     """
 
@@ -213,7 +213,7 @@ class TestModelSelection:
             assert "--model" not in server.build_command("/tmp/out.txt", "q", "")
 
     def test_it_refuses_a_name_that_would_become_a_flag(self, bridge):
-        """**引数として渡すので、`-` で始まる名前は CLI のフラグになる。**"""
+        """引数として渡すので、`-` で始まる名前は CLI のフラグになる。"""
         import fastapi
 
         server = bridge(CHIEZO_BRIDGE_CLI="claude")
@@ -248,7 +248,7 @@ class TestEffortSelection:
         assert "--effort" not in server.build_command("/tmp/out.txt", "q", "", "")
 
     def test_it_refuses_a_value_the_cli_would_swallow(self, bridge):
-        """**CLI が間違いを教えてくれない。**
+        """CLI が間違いを教えてくれない。
 
         claude は `--effort bogus` をエラーにも警告にもせず、黙って既定で動く（実測）。
         通すと「選んだのに効いていない」ことに気づけないので、ここで弾く。
@@ -273,7 +273,7 @@ class TestEffortSelection:
 
 
 class TestBuiltinTools:
-    """**MCP の道具を残したまま**、組み込みの道具だけを塞ぐ。
+    """MCP の道具を残したまま、組み込みの道具だけを塞ぐ。
 
     以前は `--tools ""`（組み込みを全部切る指定）を渡していたが、これは MCP の道具まで
     消す。つまり「Chiezo の知識を引かせる」というブリッジの目的が黙って働いておらず、
@@ -297,7 +297,7 @@ class TestBuiltinTools:
         assert cmd[cmd.index("--disallowed-tools") + 1] == "Bash,Read"
 
     def test_notices_do_not_leak_into_the_answer(self, bridge):
-        """塞ぐ道具の名前がずれると CLI が注意書きを吐く。**答えに混ぜない。**"""
+        """塞ぐ道具の名前がずれると CLI が注意書きを吐く。答えに混ぜない。"""
         server = bridge(CHIEZO_BRIDGE_CLI="claude")
         raw = (
             'Permission deny rule "SlashCommand" matches no known tool — check for typos.\n'
@@ -310,7 +310,7 @@ class TestBuiltinTools:
 class TestWebTools:
     """CLI 自身の web 検索は、頼まれたときだけ開ける。
 
-    引く先は Chiezo の SearXNG ではなく**提供元の検索**なので、既定では塞いだまま。
+    引く先は Chiezo の SearXNG ではなく提供元の検索なので、既定では塞いだまま。
     """
 
     def test_it_is_closed_by_default(self, bridge):
@@ -329,7 +329,7 @@ class TestWebTools:
 
 
 class TestPerRequestLimits:
-    """往復の上限と待ち時間は**要求ごとに**決める。
+    """往復の上限と待ち時間は要求ごとに決める。
 
     同じブリッジを、数十秒で返ってほしい会話と、数分かかる調査の両方で使うため。
     往復の上限は総コストの上限でもある（対象が増えてもそこから先に伸びない）。
@@ -359,7 +359,7 @@ class TestPerRequestLimits:
 
 
 class TestImageGeneration:
-    """画像は **Codex の内蔵ツール**だけが作れる(ChatGPT のサブスク枠で動く)。"""
+    """画像は Codex の内蔵ツールだけが作れる(ChatGPT のサブスク枠で動く)。"""
 
     def test_only_codex_offers_it(self, bridge):
         from fastapi.testclient import TestClient
@@ -372,7 +372,7 @@ class TestImageGeneration:
         assert "画像生成を持っていません" in res.json()["detail"]["error"]
 
     def test_the_prompt_says_where_to_save_and_how_many(self, bridge):
-        """相手はエージェントなので、**曖昧だと説明だけ返してファイルを書かない**。"""
+        """相手はエージェントなので、曖昧だと説明だけ返してファイルを書かない。"""
         server = bridge(CHIEZO_BRIDGE_CLI="codex")
         text = server._image_prompt(
             server.ImageRequest(prompt="剣のアイコン", size="1024x1536", n=2), "/tmp/work"
@@ -403,7 +403,7 @@ class TestImageGeneration:
 
     def test_the_shared_store_does_not_leak_another_runs_image(self, bridge, tmp_path,
                                                                monkeypatch):
-        """**共有の保存先は使い回される。** 走らせる前にあったものを除かないと、
+        """共有の保存先は使い回される。 走らせる前にあったものを除かないと、
         同時に走った別の実行の絵を返す(4 件同時に頼んで 4 件とも同じ絵が返った)。"""
         import time as _t
 
@@ -449,7 +449,7 @@ class TestImageGeneration:
 
 
 class TestCredentialFromAnotherApp:
-    """**認証情報の置き場を共有すれば、Chiezo 以外のアプリからも使える。**
+    """認証情報の置き場を共有すれば、Chiezo 以外のアプリからも使える。
 
     表の形はこちらに合わせてもらう（`provider_settings`）—— 相手ごとに問い合わせを
     変えられるようにすると、ブリッジが繋ぐ先のアプリの数だけ設定が増える。
@@ -483,7 +483,7 @@ class TestCredentialFromAnotherApp:
 
 
 class TestEveryCliIsWiredEndToEnd:
-    """**対応する CLI を足すとき、直す場所は 1 つではない。**
+    """対応する CLI を足すとき、直す場所は 1 つではない。
 
     実際に Gemini CLI を足したとき `entrypoint.sh` だけが取り残され、
     コンテナが `未対応の CHIEZO_BRIDGE_CLI` で起動しなかった（その CLI は
@@ -518,7 +518,7 @@ class TestEveryCliIsWiredEndToEnd:
         assert not missing, f"entrypoint.sh が受け付けない CLI がある(起動できない): {missing}"
 
     def test_every_cli_can_be_checked_from_the_admin_screen(self, bridge):
-        """**「接続を試す」が通らないと on にできない**(有効化の条件になっている)。
+        """「接続を試す」が通らないと on にできない(有効化の条件になっている)。
         認証方式を持たない antigravity だけは、置くものが無いぶんここも別扱い。"""
         server = bridge()
 

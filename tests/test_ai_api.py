@@ -1,6 +1,6 @@
 """素の問い合わせ(/v1/ai/backends・/v1/ai/complete)のテスト。
 
-`/v1/chat` が知識ベースを引いて答えるのに対し、こちらは**渡したプロンプトをそのまま**
+`/v1/chat` が知識ベースを引いて答えるのに対し、こちらは渡したプロンプトをそのまま
 相手へ投げるだけの口。呼ぶ側(tech-antenna のサマリー生成など)は自分の材料と
 プロンプトを持っていて、Chiezo に借りたいのは「話せる相手と鍵」だけ。
 """
@@ -51,7 +51,7 @@ class TestBackends:
 
 class TestComplete:
     def test_sends_the_prompt_as_given(self, monkeypatch_env):
-        """**抽出を混ぜない。** 渡したメッセージがそのまま相手へ届く。"""
+        """抽出を混ぜない。 渡したメッセージがそのまま相手へ届く。"""
         fake = ToolLLM("まとめました。")
         messages = [
             {"role": "system", "content": "あなたは編集者。"},
@@ -101,7 +101,7 @@ class TestCompleteWeb:
     """相手自身の web 検索を開ける口(`web=true`)。
 
     ニュースの収集のように「いまの外の情報」が要る仕事を、`/v1/chat` の抽出を混ぜずに
-    頼めるようにするためのもの。**持っているのは CLI ブリッジで包んだ相手だけ。**
+    頼めるようにするためのもの。持っているのは CLI ブリッジで包んだ相手だけ。
     """
 
     def test_web_is_off_by_default(self, monkeypatch_env):
@@ -114,7 +114,7 @@ class TestCompleteWeb:
         assert "chiezo_web" not in fake.requests[0]
 
     def test_web_is_rejected_when_no_route_exists(self, monkeypatch_env):
-        """**黙って道具無しで答えさせない。**
+        """黙って道具無しで答えさせない。
 
         呼ぶ側はそれを「調べた結果」として受け取り、学習データから作った話が
         最新の材料として保存されてしまう。開けないなら断る。
@@ -132,7 +132,7 @@ class TestCompleteWeb:
         assert fake.requests == []
 
     def test_web_uses_searxng_for_api_backends(self, monkeypatch_env):
-        """**API で直に叩く相手には Chiezo の SearXNG を道具として貸す。**
+        """API で直に叩く相手には Chiezo の SearXNG を道具として貸す。
 
         OpenAI 互換の口に検索の項目が無くても、道具として渡せば外を見られる。
         """
