@@ -8,7 +8,7 @@
 #
 # 使い方:
 #   1. cp docker-compose.standalone.example.yml docker-compose.standalone.yml
-#      (コピー先は .gitignore 済み。**実値を書くのはコピーした側**で、
+#      (コピー先は .gitignore 済み。実値を書くのはコピーした側で、
 #       雛形のこのファイルには置き場の絶対パスも接続先の IP も書かない)
 #   2. 「ここだけ編集」の置き場を、そのホストの絶対パスに書き換える
 #   3. その内容を管理画面に貼り付けて起動する
@@ -17,7 +17,7 @@
 # ソースプラグインは下のコメントを外すと使える(この環境ではオーバーレイを重ねられないので
 # ここに直接書いてある)。
 #
-# **「答える」層は、chiezo-api に渡す設定だけを載せてコンテナは載せていない。** 推論サーバと
+# 「答える」層は、chiezo-api に渡す設定だけを載せてコンテナは載せていない。 推論サーバと
 # 検索エンジンは別サーバーで動かしているものを指せば済み(chiezo-api は OpenAI 互換の口を
 # 叩くだけ)、貼り付けて動かすような小さな実行環境で同居させる前提も無いため。同じホストに
 # 立てるなら、上書きを重ねられる環境で docker-compose.answer.yml を使うこと。
@@ -26,31 +26,34 @@
 
 # ---- ここだけ編集: データの置き場(1つだけ) ----
 # 管理画面から登録する環境では相対パス (./data) の基準が分かりにくいので絶対パスで書く。
-# **用意するのはこの親だけ**で、下の3つは chiezo-init が起動時に作る:
+# 用意するのはこの親だけで、下の3つは chiezo-init が起動時に作る:
 #   <置き場>/corpus … ダンプから作った .db の置き場(取り込んだ .db はここに入れる)
 #   <置き場>/notes  … 「覚える」層の書き込み先
-#   <置き場>/state  … 管理画面から入れた設定(話す相手の on/off・API キー)。**API キーが入る**
-# 書式は「ホスト側の絶対パス:コンテナ側」。**`type: bind` の長い形は使わない** ——
+#   <置き場>/state  … 管理画面から入れた設定(話す相手の on/off・API キー)。API キーが入る
+# 書式は「ホスト側の絶対パス:コンテナ側」。`type: bind` の長い形は使わない ——
 # 古い Docker だとホスト側のディレクトリを自動で作らない
 x-data-volume: &data-volume "/path/to/chiezo/data:/data"
 # corpus だけは api に読み取り専用で重ねる(書くのは取り込み側。取り違えて壊さないため)。
-# **上を書き換えたらここも同じ親に揃えること** —— YAML のアンカーは文字列の一部に
+# 上を書き換えたらここも同じ親に揃えること —— YAML のアンカーは文字列の一部に
 # 差し込めないので、置き場のパスだけ2行に分かれる
 x-corpus-volume: &corpus-volume "/path/to/chiezo/data/corpus:/data/corpus:ro"
+# CLI ブリッジ(下のほうで畳んである)が読む設定 DB。こちらも読み取り専用で、
+# 上と同じ親に揃えること
+x-state-volume: &state-volume "/path/to/chiezo/data/state:/data/state:ro"
 
 # ---- ここだけ編集(必要なときだけ): 実行ユーザー ----
-# **イメージ内の既定は 10001:10001** で、ホストに実在しない番号にしてある
+# イメージ内の既定は 10001:10001 で、ホストに実在しない番号にしてある
 # (万一コンテナから抜け出されても、ホストのユーザーのファイルには届かない)。
 # 置き場をホストから直接編集・書き戻ししたいときだけ `id -u`:`id -g` に書き換える
 x-run-as: &run-as "10001:10001"
 
 services:
   # 置き場の下に corpus/・notes/・state/ を作り、所有者を実行ユーザーに合わせる
-  # ワンショット。**corpus も chown する**(取り込み側が書くため。api 側は
+  # ワンショット。corpus も chown する(取り込み側が書くため。api 側は
   # corpus を read-only で重ねてあるので、そちらからは書けない)。
   # bind 先がホストに無いと Docker が root 所有で作ってしまい、
   # 非 root で動く api がメモも設定も書けずに落ちる。
-  # **api も trigger もこれの完了を待つ**ので、いちばん先に置いてある
+  # api も trigger もこれの完了を待つので、いちばん先に置いてある
   chiezo-init:
     image: alpine:3.24
     container_name: chiezo-init
@@ -73,11 +76,11 @@ services:
       # host:container。8000 は他のアプリと衝突しやすいので避けている
       - "7010:7010"
     volumes:
-      # **バインドするホストのディレクトリは1つだけ**。下が corpus/(取り込んだ本体)・
+      # バインドするホストのディレクトリは1つだけ。下が corpus/(取り込んだ本体)・
       # notes/(短期記憶)・state/(管理画面の設定)で、作るのは chiezo-init
       - *data-volume
       # corpus は配信側から見て読み取り専用。書くのは取り込み側(chiezo-trigger)だけ。
-      # **notes を corpus と同じ場所に置かない** —— 1 件書くたびに全ソースの再走査が走る
+      # notes を corpus と同じ場所に置かない —— 1 件書くたびに全ソースの再走査が走る
       - *corpus-volume
     user: *run-as
     environment:
@@ -96,12 +99,12 @@ services:
       #CHIEZO_CATALOG_TTL: "300"      # ソース一覧(GET /sources)のキャッシュ(秒)
       #
       # ---- 「答える」層(/v1/ask・/v1/chat・/ai/chat)を使う場合 ----
-      # **話す相手は管理画面(/admin)の「話す相手」から on/off する。**
+      # 話す相手は管理画面(/admin)の「話す相手」から on/off する。
       # 同居の推論サーバも Gemini も OpenRouter も CLI ブリッジも同じ扱いで、URL は
       # api/app/providers.py に決め打ち。入れるのは API キーと on/off とモデルだけで、
       # 保存先は上の CHIEZO_STATE_DIR。
       #
-      # ここに書くのは、**推論サーバを別マシンで動かしている場合の URL だけ**。
+      # ここに書くのは、推論サーバを別マシンで動かしている場合の URL だけ。
       # 同居なら書かなくてよい(コンテナ名で辿り着けるので決め打ちが効く)。
       #CHIEZO_LLM_URL: http://192.0.2.10:7011/v1     # ← 別マシンの推論サーバ
       #
@@ -114,9 +117,9 @@ services:
       #CHIEZO_ASK_DEFAULT_GROUNDED: "0"
       #
       # ---- web 検索(agent モードの道具に加える。既定では無効)----
-      # **この 1 行が機能フラグを兼ねる**。取り込んだダンプより新しい出来事や、いま現在の
+      # この 1 行が機能フラグを兼ねる。取り込んだダンプより新しい出来事や、いま現在の
       # 状態を聞かれたときだけモデルが使う(本文は取りに行かず、タイトル・要約・URL だけ)。
-      # **検索エンジン(SearXNG)はこの定義にも入っている**(下の searxng)ので、
+      # 検索エンジン(SearXNG)はこの定義にも入っている(下の searxng)ので、
       # 同居のものを指すならサービス名でよい。別ホストのものを指すならその URL を書く。
       CHIEZO_WEB_SEARCH_URL: http://searxng:7012/search   # 同居のもの(使わないなら空に)
       #CHIEZO_WEB_SEARCH_URL: http://192.0.2.20:7012/search   # ← 別に立てた SearXNG
@@ -137,7 +140,7 @@ services:
       # ---- 回答・agent の調整(どれも既定があるので、変えたいときだけ)----
       # agent に要るコンテキスト長の目安 = MAX_STEPS × TOOL_CHARS(+ 質問と道具の定義で 2〜3k)。
       # 相手を待つ時間(秒)。既定は相手で変わる: CLI ブリッジ経由 900 / それ以外 120。
-      # **ブリッジ自身の上限(CHIEZO_BRIDGE_TIMEOUT)より長く**すること —— 待つ側が先に
+      # ブリッジ自身の上限(CHIEZO_BRIDGE_TIMEOUT)より長くすること —— 待つ側が先に
       # 切れると、向こうが何秒で諦めたかも分からないまま ReadTimeout だけが残る。
       #CHIEZO_ANSWER_TIMEOUT: "900"
       #CHIEZO_ANSWER_DOCS: "4"          # 根拠として本文を取ってくる文書数
@@ -156,7 +159,7 @@ services:
       test: ["CMD", "curl", "-fs", "http://localhost:7010/healthz"]
       interval: 60s
 
-  # agent モードの道具 `web_search` が引く検索エンジン。**設定を焼き込んだイメージ**なので、
+  # agent モードの道具 `web_search` が引く検索エンジン。設定を焼き込んだイメージなので、
   # リポジトリが無くてもこれだけで立つ(素の searxng/searxng は settings.yml を要求する)。
   # ホストへは公開しない —— 使うのは chiezo-api だけで、外向きの検索の中継になるため。
   # 使わないなら、このブロックごと消して上の CHIEZO_WEB_SEARCH_URL も空にする。
@@ -166,11 +169,13 @@ services:
     environment:
       # プリファレンスの Cookie と画像プロキシの署名に使う値(LAN 内前提の既定のまま)
       SEARXNG_SECRET: "chiezo-lan"
-      # 待ち受けを 7012 にする(既定は 8080)。**この image は granian で動く**ので
+      # 待ち受けを 7012 にする(既定は 8080)。この image は granian で動くので
       # 効くのは GRANIAN_PORT(SEARXNG_PORT は設定ファイル側の値)
       GRANIAN_PORT: "7012"
     restart: unless-stopped
-    cpu_shares: 512
+    # 既定では畳んである —— この項目を受け付けない実行環境がある
+    # (NAS のコンテナマネージャー等)。使える環境なら外すと「良き隣人」になる
+    #cpu_shares: 512
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:7012/healthz"]
       interval: 60s
@@ -199,8 +204,9 @@ services:
     # 「良き隣人」のための相対ウェイト(既定 1024 の半分)。CPU が競合したときだけ
     # 他のコンテナへ譲り、空いていれば全力で使える。ハード上限の cpus は使わない ——
     # CPU CFS スケジューラのバンド幅制御を無効にしたカーネルでは作成自体が失敗するため。
-    # この項目を受け付けない実行環境なら、行ごと消してよい(無くても動く)
-    cpu_shares: 512
+    # 既定では畳んである —— この項目を受け付けない実行環境がある
+    # (NAS のコンテナマネージャー等)。使える環境なら外してよい(無くても動く)
+    #cpu_shares: 512
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:8080/healthz"]
       interval: 60s
@@ -208,8 +214,8 @@ services:
   # ---- CLI の AI と話す場合だけ、以下のコメントを外す ----
   #
   # これらは HTTP ではなく CLI なので、OpenAI 互換の口に見せるブリッジを挟む。
-  # **サブスクの枠で使うためのもの**で、API キー経路は従量課金になるため使わない。
-  # **イメージは 1 つで、CHIEZO_BRIDGE_CLI で役割を決める**(1 回 pull すればディスクは
+  # サブスクの枠で使うためのもので、API キー経路は従量課金になるため使わない。
+  # イメージは 1 つで、CHIEZO_BRIDGE_CLI で役割を決める(1 回 pull すればディスクは
   # 1 つぶんで、コンテナを何個立てても増えるのは書き込み層だけ)。使うものだけ外せばよい。
   # 立ち上げたら管理画面(/admin)の「話す相手」で on にできるようになる
   # (到達できない間は押せない)。
@@ -219,38 +225,34 @@ services:
   #  container_name: chiezo-bridge-claude
   #  volumes:
   #    # 認証情報は Chiezo の設定 DB から読む(管理画面から登録する)。読み取り専用
-  #    - type: bind
-  #      - "/path/to/chiezo/data/state:/data/state:ro"
-  #      read_only: true
+  #    - *state-volume
   #  environment:
   #    CHIEZO_BRIDGE_CLI: claude
   #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-api:7010/mcp
   #  restart: unless-stopped
-  #  cpu_shares: 512
+  #  #cpu_shares: 512
   #
   #chiezo-bridge-codex:
   #  image: ghcr.io/rtcode337/chiezo-bridge:latest
   #  container_name: chiezo-bridge-codex
   #  volumes:
-  #    - type: bind
-  #      - "/path/to/chiezo/data/state:/data/state:ro"
-  #      read_only: true
+  #    - *state-volume
   #  environment:
   #    CHIEZO_BRIDGE_CLI: codex
   #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-api:7010/mcp
   #  restart: unless-stopped
-  #  cpu_shares: 512
+  #  #cpu_shares: 512
   #
-  # Antigravity だけマウントが違う。**API キー方式が無く**、コンテナ内で 1 回サインインした
+  # Antigravity だけマウントが違う。API キー方式が無く、コンテナ内で 1 回サインインした
   # 結果をホーム配下のキャッシュから読むので、/state(読み取り専用)ではなく
-  # **書き込み可能なホーム**を渡して永続化する。立ち上げたら、その環境の
+  # 書き込み可能なホームを渡して永続化する。立ち上げたら、その環境の
   # コンテナ管理画面から `agy` を対話で 1 回実行してサインインすること
   # (表示される URL を手元のブラウザで開き、出てきたコードを貼り戻す)。
   #
-  # **ホストのディレクトリではなく名前付きボリュームを使う。** ブリッジは非 root(uid 10001)で
-  # 動くのに、**バインド先が無いと Docker は root 所有で作る** —— サインインの保存が
+  # ホストのディレクトリではなく名前付きボリュームを使う。 ブリッジは非 root(uid 10001)で
+  # 動くのに、バインド先が無いと Docker は root 所有で作る —— サインインの保存が
   # `permission denied` で落ちる(実際に踏んだ)。名前付きボリュームなら
-  # **イメージ側の所有者(uid 10001)がそのまま入る**。
+  # イメージ側の所有者(uid 10001)がそのまま入る。
   # どうしてもホストのパスに置くなら、先に作って `chown -R 10001:10001` してからにすること。
   #chiezo-bridge-antigravity:
   #  image: ghcr.io/rtcode337/chiezo-bridge:latest
@@ -263,11 +265,11 @@ services:
   #    CHIEZO_BRIDGE_CLI: antigravity
   #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-api:7010/mcp
   #  restart: unless-stopped
-  #  cpu_shares: 512
+  #  #cpu_shares: 512
 
   # ---- ソースプラグインを使う場合だけ、以下のコメントを外す ----
   #
-  # プラグインは **Chiezo とは別のリポジトリ・別のイメージ**で、取得した文書を NDJSON で
+  # プラグインは Chiezo とは別のリポジトリ・別のイメージで、取得した文書を NDJSON で
   # 配るだけのサービス(DB を焼くのは chiezo-trigger 側)。**この環境ではオーバーレイを
   # 重ねられない**ので、プラグイン側の docker-compose.plugin.yml の代わりにここへ直接書く。
   #
@@ -285,13 +287,13 @@ services:
   #  container_name: chiezo-plugin
   #  # ホストへポート公開しない。chiezo-trigger からのみ到達できればよい
   #  restart: unless-stopped
-  #  cpu_shares: 512
+  #  #cpu_shares: 512
   #  healthcheck:
   #    test: ["CMD", "python", "-c",
   #           "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"]
   #    interval: 60s
 
-# **サインイン結果の置き場**(Antigravity)。ホストのディレクトリにしないのは、
+# サインイン結果の置き場(Antigravity)。ホストのディレクトリにしないのは、
 # 無いときに Docker が root 所有で作ってしまい、非 root のブリッジが書けなくなるため。
 volumes:
   chiezo-antigravity-home:
