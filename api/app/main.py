@@ -1445,33 +1445,7 @@ async def capabilities_list() -> dict:
     `supported=false` は**実装が無い**という意味で、「相手がいない」(実装はあるが鍵が
     未登録・GPU が無い等)とは別。
     """
-    usable: dict[str, set[str]] = {}
-    for spec in providers.all_providers():
-        if answer.load_settings(spec.id) is not None:
-            usable.setdefault(spec.id, set()).add(capabilities.CHAT)
-
-    # **kind と分類は 1 対 1 ではない。** 音だけは 1 つの kind が音楽と SE に割れる
-    # (`sounds` を見て分ける)ので、そこだけ別に数える。
-    simple = {
-        media_providers.KIND_IMAGE: capabilities.IMAGE,
-        media_providers.KIND_VIDEO: capabilities.VIDEO,
-        media_providers.KIND_SPEECH: capabilities.SPEECH,
-        media_providers.KIND_TRANSCRIBE: capabilities.TRANSCRIBE,
-    }
-    if media.is_enabled():
-        for kind in (*simple, media_providers.KIND_AUDIO):
-            for entry in await media.backends(kind):
-                if not entry["usable"]:
-                    continue
-                if kind in simple:
-                    usable.setdefault(entry["id"], set()).add(simple[kind])
-                    continue
-                for cap_id, sound in ((capabilities.MUSIC, media_providers.SOUND_MUSIC),
-                                      (capabilities.SFX, media_providers.SOUND_SFX)):
-                    if sound in entry.get("sounds", {}):
-                        usable.setdefault(entry["id"], set()).add(cap_id)
-
-    return {"capabilities": capabilities.overview(usable)}
+    return {"capabilities": capabilities.overview(await capabilities.usable_now())}
 
 
 # 頼める相手を引ける kind。**文字起こしも並べる**(job にはならないが、

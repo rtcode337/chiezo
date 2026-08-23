@@ -188,6 +188,12 @@ image_status(job_id)                    … 仕上がり。files に保存先の
 | `openai` | gpt-image(`gpt-image-2`) | OpenAI の行 | 従量課金 |
 | `elevenlabs` | **他社モデルの預かり**(gpt-image / Gemini / Seedream) | **この相手専用** | **API は Pro 以上** |
 
+**相手を指定しなければ、表の上の相手から順に選ばれます**(`image_backends` の並びと同じ)。
+既定は **`codex`** —— **かつては自前の GPU(`comfyui`)を既定にしていました**が、
+外へ出さず枠も食わない代わりに出来が落ちるので、名指ししない呼び出しが良い相手へ行くように
+入れ替えてあります。**枠を使いたくないときは `backend="comfyui"` と名指ししてください。**
+順位は `api/app/media_providers.py` の `PREFERENCE`(種類ごとの表)にあります。
+
 **`elevenlabs` に自社の絵のモデルはありません。** 他社のモデルを 1 つの口から選べる
 だけなので、同じモデルを OpenAI や Gemini に直接頼めるならそちらのほうが枠の要件が
 緩くなります —— ここを選ぶ利点は「1 つの鍵で絵も動画も声も音もそろう」ことだけです。
@@ -294,6 +300,9 @@ audio_status(job_id)                    … 仕上がり。files に保存先の
 | `comfyui` | 自前の GPU(Stable Audio Open / ACE-Step) | 効果音 〜47 秒・曲 〜240 秒 | 不要 | 電気代だけ |
 | `gemini` | Lyria 3(`lyria-3-clip-preview` ほか) | **曲のみ・長さは指定できない** | Gemini の行 | 無料枠 |
 | `elevenlabs` | ElevenLabs(`/sound-generation`・`/music`) | 効果音 〜30 秒・曲 〜600 秒 | **この相手専用**(下記) | 無料枠あり |
+
+**相手を指定しなければ既定は `elevenlabs`**(絵と同じで「頼む順」の先頭。
+枠を使いたくないときは `backend="comfyui"`)。
 
 **ElevenLabs だけ鍵を自分の行に登録します。** 会話の口が「先にエージェントを作って
 `agent_id` で話す」形で、`app/providers.py` の「OpenAI 互換に 1 往復投げる」枠に

@@ -776,12 +776,56 @@ class TestAudioJobs:
 
         assert "長さを指定できません" in e.value.detail["error"]
 
-    def test_the_default_backend_for_audio_is_the_local_gpu(self, state):
-        """外へ出さず、枠も食わないほうを既定にする(絵と同じ考え方)。"""
+    def test_the_default_backend_for_audio_is_the_one_that_sounds_best(self, state):
+        """**既定は「頼む順」の先頭**(`media_providers.PREFERENCE`)。
+
+        かつては自前の GPU(外へ出さず枠も食わない)を既定にしていたが、
+        **出来が違う** —— 相手を名指ししない呼び出し(MCP の `audio_generate` など)が
+        いちばん多いので、そこが良い相手へ行くようにする。ComfyUI は名指しすれば使える。
+        """
         job = media.create_job("剣", kind="audio", sound="sfx")
 
-        assert job["backend"] == "comfyui"
+        assert job["backend"] == "elevenlabs"
         assert job["sound"] == "sfx"
+
+
+class TestPreferenceTable:
+    """**どれに頼むのがよいか**の表(`media_providers.PREFERENCE`)。"""
+
+    def test_every_backend_is_ranked_for_every_kind_it_can_do(self):
+        """**相手を足したら表にも足す。** 抜けた相手は黙って最後尾に回るので、
+        「新しく足した相手にいつまでも頼まれない」が起きても気づけない。"""
+        from app import media_providers
+
+        missing = {
+            (kind, spec.id)
+            for kind, ranked in media_providers.PREFERENCE.items()
+            for spec in media_providers.PROVIDERS
+            if kind in spec.kinds and spec.id not in ranked
+        }
+
+        assert not missing, f"頼む順の表に無い相手がいる: {sorted(missing)}"
+
+    def test_the_table_only_names_backends_that_can_do_that_kind(self):
+        """**作れない相手を順位に入れない**(直した気になって効かない)。"""
+        from app import media_providers
+
+        wrong = {
+            (kind, pid)
+            for kind, ranked in media_providers.PREFERENCE.items()
+            for pid in ranked
+            if (spec := media_providers.get(pid)) is None or kind not in spec.kinds
+        }
+
+        assert not wrong, f"その種類を作れない相手が順位に入っている: {sorted(wrong)}"
+
+    def test_the_settings_table_keeps_its_own_order(self):
+        """**画面の並びは変えない。** 設定を探すための並びで、用が違う
+        (頼む順で並べ替えると、いつも同じ場所にあった行が動く)。"""
+        from app import media_providers
+
+        assert next(p.id for p in media_providers.all_providers()) == "comfyui"
+        assert next(p.id for p in media_providers.all_providers("image")) == "codex"
 
 
 class TestAudioBackendList:

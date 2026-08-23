@@ -757,6 +757,65 @@ class TestClaudeConfig:
             {}, "http://x.test", mcp=False, media=True
         )
 
+    def test_config_offers_to_split_the_work_with_other_ais(self, client):
+        """**手分けの節。** 調べものが広いときに 1 人で抱えないよう、Chiezo 越しに
+        頼める相手を ID つきで名指しする(呼ぶのは curl なので MCP は要らない)。"""
+        from app import capabilities, claude_config
+
+        usable = {"codex": {capabilities.CHAT}, "antigravity": {capabilities.CHAT}}
+        block = claude_config.build_block({}, "http://x.test", usable=usable)
+
+        assert "### 手分けして調べる" in block
+        assert "Antigravity CLI(`antigravity`)" in block
+        assert "Codex CLI(`codex`)" in block
+        # 例示の curl は許可ルール(`curl -s "<base>/` の前方一致)に載る形で出す
+        assert '- 頼む → `curl -s "http://x.test/v1/ai/complete"' in block
+        # 枠を使い切っている相手を避けられるよう、見る先も書く
+        assert "/v1/ai/usage" in block
+
+    def test_config_stays_quiet_when_no_one_can_be_asked(self, client):
+        """**呼べない相手を勧めない。** 話せる相手が 1 つも無い環境に
+        「手分けして頼め」と書いても、読んだ側は投げ先が無い。"""
+        from app import claude_config
+
+        assert "手分けして調べる" not in claude_config.build_block({}, "http://x.test")
+        assert "手分けして調べる" not in claude_config.build_block(
+            {}, "http://x.test", usable={}
+        )
+
+    def test_config_names_the_backends_that_can_actually_make_things(self, client):
+        """**絵と音の節では相手を名指しする。** 「外部の生成 AI を選べる」だけだと、
+        いま何に頼めるのかが読み取れず、外のサービスを探しに行かれる。"""
+        from app import capabilities, claude_config
+
+        usable = {
+            "codex": {capabilities.IMAGE},
+            "elevenlabs": {capabilities.MUSIC, capabilities.SFX},
+        }
+        block = claude_config.build_block(
+            {}, "http://x.test", mcp=True, media=True, usable=usable
+        )
+
+        assert "いまこのサーバーで使えるのは Codex CLI**。" in block
+        # 但し書き(`ElevenLabs(声・効果音・…)`)は落として短く出す
+        assert "いまこのサーバーで使えるのは ElevenLabs**。" in block
+        # 頼める相手のいない分類には何も書かない(動画・読み上げ)
+        assert "動画は" not in block
+
+    def test_config_splits_the_sentence_when_the_backends_differ(self, client):
+        """**曲と効果音で相手が違うことがある**(Lyria は曲しか作れない)。
+        まとめて書くと、作れない相手に頼ませることになる。"""
+        from app import capabilities, claude_config
+
+        usable = {"elevenlabs": {capabilities.MUSIC, capabilities.SFX},
+                  "comfyui": {capabilities.SFX}}
+        block = claude_config.build_block(
+            {}, "http://x.test", mcp=True, media=True, usable=usable
+        )
+
+        # **自前の GPU は後ろ。** 先に名前を出したものに頼まれるので、出来のよい順に並べる
+        assert "**曲は ElevenLabs、効果音は ElevenLabs・ComfyUI が使える**。" in block
+
     def test_config_txt_base_url_is_derived_from_request(self, client):
         """curl 例のベース URL はアクセス元(プロトコル・ホスト名・ポート)から導出する。"""
         res = client.get("/admin/claude-config.txt")

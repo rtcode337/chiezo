@@ -19,7 +19,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from app import db, jst
+from app import capabilities, db, jst
 from app.registry import (
     FILTER_MIN_SCHEMA_VERSION,
     TAG_COUNTS_MIN_SCHEMA_VERSION,
@@ -317,6 +317,56 @@ def _emit_source(base: str, src: Source, out: list[str]) -> None:
         )
 
 
+def _short(name: str) -> str:
+    """相手の名前から但し書きを落とす(`ElevenLabs(声・効果音・曲・絵・動画)` → `ElevenLabs`)。
+
+    表の名前は「どの相手か」を見分けるためのもので、**この節では節そのものが用途を
+    言っている**ので繰り返しになる。ブロックは毎回のコンテキストに乗るので短く保つ。
+    """
+    return name.split("(")[0].strip() or name
+
+
+def _who(usable: dict[str, set[str]] | None, *kinds: tuple[str, str]) -> str:
+    """「いま使えるのは A・B」の 1 文。相手が分からない・いなければ空。
+
+    **使えない相手は書かない。** 勧められて呼んでから断られるのでは、
+    読んだ側は何が悪いのか分からない。
+
+    分類を複数渡せるのは、**1 つの節が 2 つの分類を扱う**ため(音の節は曲と効果音、
+    声の節は読み上げと文字起こし)。**相手が同じなら 1 文にまとめ、違えば書き分ける**
+    —— 「曲は作れるが効果音は作れない」相手がいるので、まとめると嘘になる。
+    """
+    if not usable:
+        return ""
+    found = [(label, [_short(n) for n in capabilities.providers_for(usable, cap)])
+             for cap, label in kinds]
+    ready = [(label, names) for label, names in found if names]
+    if not ready:
+        return ""
+    lists = {tuple(names) for _, names in ready}
+    if len(lists) == 1 and len(ready) == len(kinds):
+        return f"**いまこのサーバーで使えるのは {'・'.join(ready[0][1])}**。"
+    parts = (f"{label}は {'・'.join(names)}" for label, names in ready)
+    return f"**{'、'.join(parts)} が使える**。"
+
+
+# **手分けの相手に出さない相手。** このブロックを読むのは Claude Code なので、
+# Chiezo 越しにまた Claude Code へ投げても**同じサブスクの枠を食うだけ**で、
+# 手分けの目的(自分の枠を空けて、別の視点も入れる)から外れる。
+# 名指しで頼みたいときは `/v1/ai/backends` に出ているので、経路は塞がない。
+HELPER_EXCLUDED = frozenset({"claude"})
+
+
+def _chat_helpers(usable: dict[str, set[str]] | None) -> list[str]:
+    """手分けを頼める相手の ID(画面と同じ並び。自分自身は除く)。"""
+    if not usable:
+        return []
+    return [
+        pid for pid in capabilities.all_provider_ids()
+        if capabilities.CHAT in usable.get(pid, set()) and pid not in HELPER_EXCLUDED
+    ]
+
+
 def permission_rules(base_url: str) -> list[str]:
     """settings.json の permissions.allow に追記される Chiezo への curl 許可ルール。
 
@@ -425,6 +475,7 @@ def build_block(
     hook: bool = False,
     mcp: bool = False,
     media: bool = False,
+    usable: dict[str, set[str]] | None = None,
 ) -> str:
     """CLAUDE.md に貼る Chiezo ブロック(マーカー込み)を組み立てて返す。
 
@@ -439,6 +490,12 @@ def build_block(
     `media=True` は**この Chiezo で絵・音・動画・声を扱える**ときだけ(置き場があり「答える」層が
     有効)。道具は MCP 経由なので `mcp=True` と揃ったときにしか書かない ——
     登録していない環境に「`image_generate` を使え」と書いても呼べない。
+
+    `usable`(`app/capabilities.py` の `usable_now()`)は**いま実際に頼める相手**。
+    渡すと**相手を名指しで書く** —— 「外部の生成 AI を選べる」と抽象的に書くより、
+    「いま使えるのは ElevenLabs / Codex CLI」と書いたほうが読んだ側が動ける。
+    **名指しするのは使える相手だけ**(鍵の無い相手を勧めると、呼んで断られるまで
+    分からない)。話せる相手がいれば**手分けの節**も足す。
     """
     base = base_url.rstrip("/")
     when = jst.format(now or datetime.now(JST))
@@ -466,6 +523,40 @@ def build_block(
         f'- ソース一覧(最新の登録状況): `curl -s "{base}/v1/sources"`',
     ]
 
+    if helpers := _chat_helpers(usable):
+        # **知識を引く話とは別物**なので節を分ける。ここも短く保つ ——
+        # 毎回のコンテキストに乗るぶんが増えるので、手順は 1 行ずつにとどめ、
+        # 相手ごとの細かい話は `/v1/ai/backends` に聞かせる。
+        named = "・".join(f"{capabilities.label_of(pid)}(`{pid}`)" for pid in helpers)
+        # **例示の本文は json.dumps で作る。** 手で組むとクォートの入れ子で必ず崩れ、
+        # 崩れた curl をそのまま打たれる(読む側はコピーして使う)。
+        payload = json.dumps(
+            {"backend": helpers[0],
+             "messages": [{"role": "user", "content": "<調べてほしいこと>"}]},
+            ensure_ascii=False,
+        )
+        out += [
+            "",
+            "### 手分けして調べる(このサーバー越しに別の AI へ頼める)",
+            "",
+            "調べものが広いとき・別の観点でも当たりたいときは、**自分だけで抱えずに "
+            "Chiezo 越しに別の AI へ手分けして頼む**。鍵はサーバー側にあるので、"
+            "こちらは相手を選んで投げるだけでよい。"
+            f"**いまこのサーバーで頼めるのは {named}**。",
+            f'- 頼む → `curl -s "{base}/v1/ai/complete" -H \'Content-Type: application/json\' '
+            f"-d '{payload}'`"
+            "(**渡した文がそのまま相手に届く**。知識ベースの抜粋は混ざらない)",
+            f'- 相手・モデル・web 検索の有無 → `curl -s "{base}/v1/ai/backends"`',
+            '- **外の最新情報が要るなら `"web": true` を足す**'
+            "(相手自身の web 検索が開く。持たない相手には 400 で断られる)",
+            "- **1 回 1 往復**で履歴は持たない。長い調査は問いを分けて**並行に投げ**、"
+            "突き合わせはこちらでやる",
+            "- **相手は数十秒〜数分かかる**(CLI を包んだ相手はとくに)。"
+            "投げたら他の作業を進める",
+            f'- 枠の残りが気になるときは `curl -s "{base}/v1/ai/usage"`'
+            "(相手が枠を出す場合のみ。使いすぎている相手は避ける)",
+        ]
+
     if mcp and media:
         # **知識を引く話とは別物**なので、節を分けて短く書く。ここに長い説明を積むと、
         # 毎回のコンテキストに乗るぶんが増えるだけで、実際に呼ぶときの手順は道具の
@@ -476,7 +567,8 @@ def build_block(
             "",
             "画像が要るとき(ゲーム素材・図版・アイコン)は、**外のサービスを探しに行く前に"
             f"`mcp__{MCP_SERVER_NAME}__image_generate` を使う**。自前の GPU か外部の"
-            "生成 AI を選べて、鍵はサーバー側にある。",
+            "生成 AI を選べて、鍵はサーバー側にある。"
+            + _who(usable, (capabilities.IMAGE, "画像")),
             f"- 頼む → `mcp__{MCP_SERVER_NAME}__image_generate`(job が返る。**待たない**)",
             f"- 仕上がり → `mcp__{MCP_SERVER_NAME}__image_status`(**パスと URL** が返る。"
             "画像そのものは返らないので、要るならそのパスを読む)",
@@ -490,7 +582,8 @@ def build_block(
             "### 音を作る(このサーバーで生成できる)",
             "",
             "効果音や BGM が要るときも、**外のサービスを探しに行く前に"
-            f"`mcp__{MCP_SERVER_NAME}__audio_generate` を使う**。作りは絵と同じ。",
+            f"`mcp__{MCP_SERVER_NAME}__audio_generate` を使う**。作りは絵と同じ。"
+            + _who(usable, (capabilities.MUSIC, "曲"), (capabilities.SFX, "効果音")),
             f"- 頼む → `mcp__{MCP_SERVER_NAME}__audio_generate`"
             "(`sound=\"sfx\"` で効果音、`sound=\"music\"` で曲。job が返る。**待たない**)",
             f"- 仕上がり → `mcp__{MCP_SERVER_NAME}__audio_status`(**パスと URL** が返る)",
@@ -503,7 +596,8 @@ def build_block(
             "### 動画を作る(このサーバーで生成できる)",
             "",
             f"動画が要るときも `mcp__{MCP_SERVER_NAME}__video_generate` を使う。作りは絵と同じだが、"
-            "**待ち時間の桁が違う**(数分〜十数分)ので、頼んだら他の仕事をして後から引きに来る。",
+            "**待ち時間の桁が違う**(数分〜十数分)ので、頼んだら他の仕事をして後から引きに来る。"
+            + _who(usable, (capabilities.VIDEO, "動画")),
             f"- 頼む → `mcp__{MCP_SERVER_NAME}__video_generate`(job が返る。**待たない**)",
             f"- 仕上がり → `mcp__{MCP_SERVER_NAME}__video_status`(**パスと URL** が返る)",
             f"- 相手と尺 → `mcp__{MCP_SERVER_NAME}__video_backends`",
@@ -515,7 +609,8 @@ def build_block(
             "",
             f"読み上げは `mcp__{MCP_SERVER_NAME}__speech_generate`、"
             f"文字起こしは `mcp__{MCP_SERVER_NAME}__transcribe`。"
-            f"相手と声は `mcp__{MCP_SERVER_NAME}__voice_backends` で引く。",
+            f"相手と声は `mcp__{MCP_SERVER_NAME}__voice_backends` で引く。"
+            + _who(usable, (capabilities.SPEECH, "読み上げ"), (capabilities.TRANSCRIBE, "文字起こし")),
             "- **読み上げは job**(パスと URL が返る)、**文字起こしはその場で文字が返る**",
             "- **自前の GPU に読み上げは頼めない**(ComfyUI 本体に TTS のノードが無い)",
             "- 文字起こしに渡せるのは **chiezo が作ったもの(`/media/…`)か、"

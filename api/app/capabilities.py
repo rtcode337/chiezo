@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app import media_providers, providers, settings_store
+from app import answer, media, media_providers, providers, settings_store
 
 CHAT = "chat"
 # **読み上げと文字起こしは別に数える。** 同じ「声」でも仕事の向きが逆で、相手も
@@ -30,6 +30,18 @@ IMAGE = "image"
 VIDEO = "video"
 MUSIC = "music"
 SFX = "sfx"
+
+
+# 分類 → 絵と音の kind。**頼む順を引くために要る**(順位は kind ごとに違う)。
+# 音だけ 1 つの kind が 2 つの分類に割れるので、両方から同じ kind を指す。
+KIND_OF = {
+    IMAGE: media_providers.KIND_IMAGE,
+    VIDEO: media_providers.KIND_VIDEO,
+    SPEECH: media_providers.KIND_SPEECH,
+    TRANSCRIBE: media_providers.KIND_TRANSCRIBE,
+    MUSIC: media_providers.KIND_AUDIO,
+    SFX: media_providers.KIND_AUDIO,
+}
 
 
 @dataclass(frozen=True)
@@ -97,6 +109,55 @@ def all_provider_ids() -> list[str]:
     ids = [p.id for p in providers.all_providers()]
     ids += [p.id for p in media_providers.all_providers() if p.id not in ids]
     return ids
+
+
+async def usable_now() -> dict[str, set[str]]:
+    """**いま実際に頼める**分類を相手ごとに(`{相手 ID: {分類}}`)。
+
+    `of_provider()` が「仕組みの上で受け持つ分類」なのに対し、こちらは
+    **鍵が入っていて on になっていて、置き場もある**ものだけを返す。
+    `/v1/capabilities`・Claude 連携設定の生成が同じものを見る ——
+    **数える場所を分けると、画面に出る相手と設定に書かれる相手がずれる**。
+    """
+    usable: dict[str, set[str]] = {}
+    for spec in providers.all_providers():
+        if answer.load_settings(spec.id) is not None:
+            usable.setdefault(spec.id, set()).add(CHAT)
+
+    # **kind と分類は 1 対 1 ではない。** 音だけは 1 つの kind が音楽と SE に割れる
+    # (`sounds` を見て分ける)ので、そこだけ別に数える。
+    simple = {
+        media_providers.KIND_IMAGE: IMAGE,
+        media_providers.KIND_VIDEO: VIDEO,
+        media_providers.KIND_SPEECH: SPEECH,
+        media_providers.KIND_TRANSCRIBE: TRANSCRIBE,
+    }
+    if media.is_enabled():
+        for kind in (*simple, media_providers.KIND_AUDIO):
+            for entry in await media.backends(kind):
+                if not entry["usable"]:
+                    continue
+                if kind in simple:
+                    usable.setdefault(entry["id"], set()).add(simple[kind])
+                    continue
+                for cap_id, sound in ((MUSIC, media_providers.SOUND_MUSIC),
+                                      (SFX, media_providers.SOUND_SFX)):
+                    if sound in entry.get("sounds", {}):
+                        usable.setdefault(entry["id"], set()).add(cap_id)
+    return usable
+
+
+def providers_for(usable: dict[str, set[str]], capability: str) -> list[str]:
+    """その分類をいま頼める相手の**表示名**を、**頼む順**(良い順)に。
+
+    画面の並び(`order`)ではなく `MediaProvider.preference` で並べる ——
+    **先に名前を出したものに頼まれる**ので、ここは「どれに頼むのがよいか」の順にする。
+    同点なら画面の並びのまま(安定ソート)。
+    """
+    ready = [pid for pid in all_provider_ids() if capability in usable.get(pid, set())]
+    kind = KIND_OF.get(capability, "")
+    ready.sort(key=lambda pid: media_providers.preference_of(pid, kind))
+    return [label_of(pid) for pid in ready]
 
 
 def overview(usable: dict[str, set[str]]) -> list[dict]:

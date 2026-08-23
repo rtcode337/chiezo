@@ -13,8 +13,9 @@ from urllib.parse import quote
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from starlette.concurrency import run_in_threadpool
 
-from app import answer, build_info, claude_config, media
+from app import answer, build_info, capabilities, claude_config, media
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
 from app.pages import CHAT_PATH, browse_url, esc, page_shell
 from app.registry import SUPPORTED_SCHEMA_VERSIONS, Source
@@ -574,7 +575,7 @@ def request_origin(request: Request) -> str:
 
 
 @router.get("/admin/claude-config.txt", response_class=PlainTextResponse)
-def admin_claude_config_raw(
+async def admin_claude_config_raw(
     request: Request,
     hook: bool = Query(False, description="自動許可フックを入れる前提の書き方の指示を含める"),
     mcp: bool = Query(False, description="MCP サーバーを登録した前提の使い分けの指示を含める"),
@@ -589,8 +590,15 @@ def admin_claude_config_raw(
     その一文は既定では出さない。
     """
     sources: dict[str, Source] = request.app.state.sources
-    return claude_config.build_block(
-        sources, request_origin(request), hook=hook, mcp=mcp, media=media.tools_enabled()
+    # **いま頼める相手を渡す。** 使えない相手を名指しで勧めると、呼んで断られるまで
+    # 分からない(呼べない道具を勧めないのと同じ理由)。
+    usable = await capabilities.usable_now()
+    # ブロックの組み立ては DB を引く(例示に使うタグの抽出)ので、
+    # 待たせるあいだ API 全体を止めないよう threadpool へ逃がす。
+    return await run_in_threadpool(
+        claude_config.build_block,
+        sources, request_origin(request),
+        hook=hook, mcp=mcp, media=media.tools_enabled(), usable=usable,
     )
 
 
@@ -644,12 +652,15 @@ def admin_claude_config_hook_settings(request: Request):
 
 
 @router.get("/admin/claude-config", response_class=HTMLResponse)
-def admin_claude_config(request: Request):
+async def admin_claude_config(request: Request):
     sources: dict[str, Source] = request.app.state.sources
     base = request_origin(request)
     # MCP 登録はスクリプトの既定なので、プレビューも既定(mcp=True)側で見せる。
     # フックは --with-hook のときだけなので、こちらは既定のまま出さない。
-    block = claude_config.build_block(sources, base, mcp=True, media=media.tools_enabled())
+    block = await run_in_threadpool(
+        claude_config.build_block, sources, base,
+        mcp=True, media=media.tools_enabled(), usable=await capabilities.usable_now(),
+    )
     perms = claude_config.permission_json(base)
     hook = claude_config.hook_settings_json()
     mcp = claude_config.mcp_servers_json(base)

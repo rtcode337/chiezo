@@ -290,14 +290,43 @@ PROVIDERS: tuple[MediaProvider, ...] = (
 BY_ID = {p.id: p for p in PROVIDERS}
 
 
+# **どれに頼むのがよいか(先頭が既定)。** `order`(画面に並べる順)とは別に持つ ——
+# あちらは設定を探すための並びで、用が違う。
+#
+# **種類ごとに違う。** 相手ごとに 1 つの順位にすると、音で先頭にした相手が絵でも
+# 先頭になる(ElevenLabs は曲がよくても絵の相手としては選びたくない)。
+#
+# **自前の GPU(ComfyUI)を後ろにしてあるのは出来の問題**で、枠を食わない利点は残る ——
+# 名指しすればこれまでどおり使える。**ここに無い相手は listed の後ろ**(画面の並びのまま)
+# に回る。相手を足したらこの表にも足すこと(`tests/test_media.py` が欠けを見張っている)。
+PREFERENCE: dict[str, tuple[str, ...]] = {
+    KIND_IMAGE: ("codex", "antigravity", "gemini", "openai", "comfyui", "elevenlabs"),
+    KIND_AUDIO: ("elevenlabs", "gemini", "comfyui"),
+    KIND_VIDEO: ("gemini", "openai", "comfyui", "elevenlabs"),
+    KIND_SPEECH: ("elevenlabs", "gemini", "openai"),
+    KIND_TRANSCRIBE: ("gemini", "openai", "elevenlabs"),
+}
+
+
+def preference_of(provider_id: str, kind: str = "") -> int:
+    """その種類で何番目に頼みたいか(小さいほど先)。表に無い相手は後ろへ。"""
+    ranked = PREFERENCE.get(kind, ())
+    return ranked.index(provider_id) if provider_id in ranked else len(ranked)
+
+
 def all_providers(kind: str = "") -> tuple[MediaProvider, ...]:
-    """相手の一覧。`kind` を渡すと**それを作れる相手だけ**に絞る。
+    """相手の一覧。`kind` を渡すと**それを作れる相手だけ**を、**頼む順**で返す。
 
     絞らないと、絵の一覧に音しか作れない相手が並ぶ(逆も同じ)。
-    頼めない相手を選ばせないための絞り込みで、順は `order` のまま。
+    **並びは頼む順**(`PREFERENCE`)—— この先頭が既定の相手になり、道具の一覧でも
+    先に出るので、「よい相手から」に揃える。同点は画面の並びのまま(安定ソート)。
+    **kind を渡さないときは画面の並び**(`order`)—— 設定の表はそちらで読む。
     """
-    found = [p for p in PROVIDERS if not kind or kind in p.kinds]
-    return tuple(sorted(found, key=lambda p: p.order))
+    found = sorted((p for p in PROVIDERS if not kind or kind in p.kinds),
+                   key=lambda p: p.order)
+    if not kind:
+        return tuple(found)
+    return tuple(sorted(found, key=lambda p: preference_of(p.id, kind)))
 
 
 def sounds_of(spec: MediaProvider) -> tuple[str, ...]:
@@ -360,9 +389,11 @@ def standalone_labels() -> dict[str, str]:
 
 
 def default_backend(kind: str = KIND_IMAGE) -> str:
-    """相手を指定されなかったときに使う既定。**その kind を作れる一覧の先頭**。
+    """相手を指定されなかったときに使う既定。**その kind の「頼む順」の先頭**(`PREFERENCE`)。
 
-    絵も音も既定は自前の GPU になる —— 外へ出さず、枠も食わないため。
+    **かつては自前の GPU を既定にしていた**(外へ出さず、枠も食わない)が、
+    **出来が違う** —— 相手を名指ししない呼び出しがいちばん多いので、そこが良い相手へ
+    行くようにしてある。枠を使いたくないときは `backend="comfyui"` と名指しする。
     """
     providers = all_providers(kind)
     return providers[0].id if providers else ""
