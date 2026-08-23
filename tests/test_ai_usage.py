@@ -188,6 +188,27 @@ class TestQuota:
         assert quota["windows"][0]["used_percent"] == 30.0
         assert "401" in quota["error"]
 
+    def test_a_scope_error_says_what_to_do(self, env):
+        """**実測**: `claude setup-token` の長期トークンは推論だけに絞られていて、
+        この口(user:profile が要る)では 403 になる。生の英文だけだと「鍵が違う」と
+        読んで入れ直すことになるので、そうではないと書く。"""
+        from app import settings_store, usage
+
+        body = {"type": "error", "error": {
+            "type": "permission_error",
+            "message": "OAuth token does not meet scope requirement user:profile"}}
+
+        with make_client(env, ReplyLLM()) as client:
+            settings_store.set_credential("claude", "sk-ant-oat01-test")
+            env.setattr(usage, "_client", lambda *a, **k: httpx.AsyncClient(
+                transport=httpx.MockTransport(lambda r: httpx.Response(403, json=body))))
+            out = client.get("/v1/ai/usage", params={"refresh": 1, "backend": "claude"}).json()
+
+        error = backend_of(out, "claude")["quota"]["error"]
+        assert "setup-token" in error and "user:profile" in error
+        # 相手の言い分も残す(こちらの言い換えだけにしない)
+        assert "403" in error
+
     def test_a_missing_credential_is_the_reason_not_a_crash(self, env):
         from app import usage
 

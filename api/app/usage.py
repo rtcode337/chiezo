@@ -182,10 +182,11 @@ async def _anthropic(credential: str) -> list[Window]:
             res = await client.get(ANTHROPIC_USAGE_URL)
     except httpx.HTTPError as e:
         raise UsageError(f"つながりません: {e}") from None
-    if res.status_code in (401, 403):
-        raise UsageError(f"認証情報が受け付けられませんでした(HTTP {res.status_code})")
     if res.status_code >= 400:
-        raise UsageError(f"HTTP {res.status_code}: {res.text[:200]}")
+        # **本文まで出す。** 「HTTP 403」だけでは、トークンが古いのか、この口が
+        # その種類のトークンを受け付けないのかが分からない(打つ手が変わる)。
+        # 鍵はヘッダで送っているので本文には載らない(絵と音の相手と同じ判断)。
+        raise UsageError(f"{_anthropic_hint(res.text)}HTTP {res.status_code}: {res.text[:300]}")
     try:
         body = res.json()
     except ValueError:
@@ -207,6 +208,22 @@ async def _anthropic(credential: str) -> list[Window]:
     if not windows:
         raise UsageError("枠の情報が入っていませんでした(相手の応答が変わった可能性)")
     return windows
+
+
+# **`claude setup-token` のトークンではこの口は通らない**(実測: HTTP 403
+# `OAuth token does not meet scope requirement user:profile`)。長期トークンは
+# 安全のため推論だけに絞られていて、`claude auth login` の完全スコープにしか
+# `user:profile` が入らない。**打つ手が変わるので、そうと分かるように書く** ——
+# 生の英文だけだと「鍵が間違っている」と読んでトークンを入れ直すことになる。
+SCOPE_HINT = (
+    "この口には user:profile スコープが要ります。"
+    "`claude setup-token` の長期トークンは推論だけに絞られているので枠を取れません"
+    "(会話・要約はそのまま使えます)。 "
+)
+
+
+def _anthropic_hint(body: str) -> str:
+    return SCOPE_HINT if "user:profile" in body else ""
 
 
 async def _openrouter(spec: providers.Provider, credential: str) -> list[Window]:

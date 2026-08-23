@@ -615,7 +615,7 @@ CLI に聞かせる）ので、サブスクの枠を食いません。
 
 | 相手 | 聞き方 | 備考 |
 |---|---|---|
-| Claude Code CLI | `GET https://api.anthropic.com/api/oauth/usage` | CLI の `/usage` と同じ口を、登録済みの OAuth トークンで直に引く。**ブリッジが立っていなくても引ける** |
+| Claude Code CLI | `GET https://api.anthropic.com/api/oauth/usage` | CLI の `/usage` と同じ口。**`claude setup-token` のトークンでは通りません**(下記) |
 | Codex CLI | ブリッジの `/usage` → `codex app-server` の `account/rateLimits/read` | **CLI に聞く**ので、期限切れになる access_token の更新はあちらがやる |
 | Antigravity CLI | ブリッジの `/usage` → `agy` の print モード | 残クレジットを取る RPC はあるが、外から叩ける口としては公開されていない |
 | OpenRouter | `GET /api/v1/key` | クレジットの使用額と残高 |
@@ -675,8 +675,21 @@ CLI ブリッジ経由の相手はトークン数を返さないので、回数�
 - **Antigravity** …… **実地では確かめられていません**（サインイン済みのコンテナが要る）。
   CLI が別の名前のコマンドを使っていた場合は、ブリッジの `CHIEZO_BRIDGE_USAGE_CMD`
   （カンマ区切り。既定 `agy,-p,/credits,--output-format,json`）で差し替えられます。
-- **Claude** …… `/api/oauth/usage` は CLI の中から見つけたもので、**公開ドキュメントには
-  ありません**。`claude setup-token` のトークンで通るかは環境で確かめてください。
+- **Claude** …… **`claude setup-token` の長期トークンでは枠を取れません**(実測)。
+  この口は `user:profile` スコープを要求しますが、長期トークンは安全のため推論だけに
+  絞られているためです:
+
+  ```
+  HTTP 403 {"type":"error","error":{"type":"permission_error",
+   "message":"OAuth token does not meet scope requirement user:profile"}}
+  ```
+
+  **会話・要約・絵の生成には影響しません**(そちらは `user:inference` で足ります)。
+  枠を出すには `user:profile` を含むトークン —— `claude auth login` の完全スコープの
+  もの —— が要りますが、あれは短命で CLI が自分で更新するので、貼り付けて使う運用には
+  向きません。**いまは「取れない理由」を画面に出すところまで**で、Claude の枠は
+  CLI の `/usage`(対話画面)で見てください。`/api/oauth/usage` 自体は CLI の中から
+  見つけたもので、公開ドキュメントにはありません。
 
 **数字にできなかったときは、CLI や相手が返した文言をそのまま画面に出します**
 —— 推測で数字は作りません。

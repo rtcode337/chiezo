@@ -204,7 +204,14 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     - **相手が言う枠**(`quota`)…… 相手の勘定なので**残りが分かる**が、**聞ける相手が限られる**。
       聞き方は `Provider.usage`(`app/providers.py`)で相手ごとに決まる ——
       claude は `api.anthropic.com/api/oauth/usage`(**CLI の `/usage` と同じ口**。
-      CLI 側に出口が無く、ブリッジが立っていなくても引けるので直に引く)、
+      CLI 側に出口が無く、ブリッジが立っていなくても引けるので直に引く)——
+      ただし**`claude setup-token` の長期トークンでは通らない**(実測: HTTP 403
+      `OAuth token does not meet scope requirement user:profile`。長期トークンは
+      推論だけに絞られていて、完全スコープは `claude auth login` にしか無い)。
+      **会話・要約には影響しない**ので経路は残し、**そうと分かる文言を返す**
+      (`SCOPE_HINT`)—— 生の英文だけだと「鍵が違う」と読んでトークンを入れ直すことになる。
+      相手が 400 番台を返したら**本文まで出す**のもこれが理由で、「HTTP 403」だけでは
+      打つ手が分からなかった、
       codex / antigravity は**ブリッジの `/usage`**(CLI に聞かせる。
       **手元に控えた認証情報は期限切れになる**ので、更新は CLI に任せる)、
       openrouter は `/api/v1/key`。**gemini・openai・推論サーバには口が無い**

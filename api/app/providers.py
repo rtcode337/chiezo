@@ -167,7 +167,10 @@ PROVIDERS: tuple[Provider, ...] = (
         efforts=("low", "medium", "high", "xhigh", "max"),
         # **枠はブリッジ越しではなく直に聞く。** claude CLI には使用量を出す
         # サブコマンドが無く（`/usage` は対話画面の中だけ）、代わりに CLI 自身が
-        # 叩いている口を同じトークンで引ける。ブリッジが立っていなくても引けるのが利点。
+        # 叩いている口を同じトークンで引く。ブリッジが立っていなくても引けるのが利点。
+        # **ただし `claude setup-token` のトークンでは 403 になる**（実測。あれは
+        # 推論だけに絞られていて `user:profile` を持たない）—— 経路は残し、
+        # そうと分かる理由を返す（`app/usage.py` の `SCOPE_HINT`）。
         usage=USAGE_ANTHROPIC,
         bridge=True,
         order=30,
