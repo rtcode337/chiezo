@@ -774,11 +774,35 @@ failed to complete onboarding: failed to save settings:
 open /srv/bridge/home/.gemini/antigravity-cli/settings.json.<...>.tmp: permission denied
 ```
 
-ブリッジは**非 root（uid 1000）で動く**のに、**バインド先が存在しないと Docker が
-root 所有で作る**ためです。名前付きボリュームなら**イメージ側の所有者（uid 1000）が
+ブリッジは**非 root（uid 10001）で動く**のに、**バインド先が存在しないと Docker が
+root 所有で作る**ためです。名前付きボリュームなら**イメージ側の所有者（uid 10001）が
 そのまま入る**ので、この問題が起きません。どうしてもホストのパスに置きたいときは、
-先に作って `sudo chown -R 1000:1000 <ディレクトリ>` してからバインドしてください
+先に作って `sudo chown -R 10001:10001 <ディレクトリ>` してからバインドしてください
 （既に踏んでしまった場合も、同じ chown で直ります）。
+
+**uid を 1000 から 10001 へ変えた前後で立てていた場合は、1 回だけ付け替えが要ります。**
+既にある名前付きボリュームの中身は uid 1000 のままなので、新しいイメージ（10001）は
+そこへ書けません（症状はサインインの保存に失敗し、`ERROR: logging before google.Init`
+などが出る）。**サインインし直す必要はなく、所有者を付け替えるだけで戻ります。**
+
+**動いているコンテナに root で入って直すのが一番手数が少ない**（止めなくてよい）。
+コンテナ管理画面のコンソールを root で開ける環境なら、そこから 1 行:
+
+```bash
+docker exec -u 0 chiezo-bridge-antigravity chown -R 10001:10001 /srv/bridge/home
+```
+
+ホストで `docker` を打てる環境なら、止めてからボリュームを直してもよい:
+
+```bash
+docker stop chiezo-bridge-antigravity
+docker run --rm -v <ボリューム名>:/h alpine:3.24 chown -R 10001:10001 /h
+docker start chiezo-bridge-antigravity
+```
+
+ボリューム名は `docker volume ls | grep antigravity` で確かめてください
+（スタック名が前に付くことがあります）。どちらの手順でも、実際に付け替えたあとに
+コンテナから書けるようになり、保存済みのサインインもそのまま残ることを確認しています。
 
 **ターミナルを開けないコンテナ管理画面**では、その画面のコンソール機能から
 同じコマンドを実行してください。
@@ -882,13 +906,13 @@ CLI ブリッジ相手のときは、**Chiezo は agent のループを回しま
 は受け取ってもらえません。出典は CLI の本文の中に書かれるので、画面の「調べた手順」と
 参照リストは空になります。
 
-**コンテナは非 root（uid 1000）で動きます。** claude は権限確認を飛ばす指定を root では
+**コンテナは非 root（uid 10001）で動きます。** claude は権限確認を飛ばす指定を root では
 受け付けません（`--dangerously-skip-permissions cannot be used with root/sudo privileges`）。
 非対話で動かす以上その指定は外せないので、root だと生成が必ず失敗します —— しかも
 `claude auth status` は root でも通るため、**「接続を試す」は成功したまま会話だけが 502**
 という分かりにくい壊れ方をします（実際に踏みました）。
 
-そのため **Antigravity のホームにバインドするディレクトリは uid 1000 が書けること**が要ります
+そのため **Antigravity のホームにバインドするディレクトリは uid 10001 が書けること**が要ります
 （名前付きボリュームにすれば不要です。上の「compose のファイルが無い環境で立てる」を参照）。
 書けないとサインインが残りません。
 
