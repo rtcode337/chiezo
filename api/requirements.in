@@ -1,5 +1,5 @@
 fastapi>=0.141.1
-uvicorn[standard]>=0.52.1
+uvicorn[standard]>=0.52.4
 # 管理画面から chiezo-trigger(内部トリガーサービス)を叩くためのクライアント。
 httpx>=0.28.1
 # MCP サーバー(/mcp、Streamable HTTP)。REST と同じ関数を MCP ツールとしても公開する。

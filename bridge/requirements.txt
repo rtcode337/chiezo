@@ -2,4 +2,4 @@
 # 別のロックにしてある —— こちらは CLI を包むだけで、DB も MCP サーバも要らないため。
 fastapi==0.141.1
 pydantic==2.13.4
-uvicorn==0.41.0
+uvicorn==0.52.4
