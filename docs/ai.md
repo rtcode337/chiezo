@@ -675,12 +675,25 @@ CLI ブリッジ経由の相手はトークン数を返さないので、回数�
 
 ### どこまで確かめてあるか
 
-- **Codex** …… `codex app-server` に上の 2 つを投げるところまで実測しました。
-  未サインインの `CODEX_HOME` では
+- **Codex** …… サインイン済みの応答まで実測しました（2026-08）。未サインインの
+  `CODEX_HOME` では
   `{"error":{"code":-32600,"message":"codex account authentication required to read rate limits"}}`
-  が返ります（= メソッドは実在し、手順も合っている）。**サインイン済みで返る中身は
-  まだ見ていません** —— 窓の形（`used_percent` / `window_minutes` / `resets_at`）は
-  CLI の型定義から取ってあり、読み取りは入れ子のどこにあっても拾う書き方にしてあります。
+  が返ります（= メソッドは実在し、手順も合っている）。サインイン済みだと、こう返ります:
+
+  ```json
+  {"rateLimits": {"limitId": "codex",
+                  "primary": {"usedPercent": 0, "windowDurationMins": 10080, "resetsAt": 1788135754},
+                  "secondary": null, "credits": {...}, "planType": "plus"},
+   "rateLimitsByLimitId": {"codex": { … 上とまったく同じもの … }},
+   "rateLimitResetCredits": {...}}
+  ```
+
+  読み取りで効いてくるのが 2 点あります。**同じ枠が `rateLimits` と
+  `rateLimitsByLimitId.<id>` の両方に入っている**ので、入れ子のどこからでも拾う書き方の
+  ままだと同じ窓が 2 行並びます（`_dedupe` で中身の同じものを 1 つにまとめています）。
+  **鍵が camelCase**（`windowDurationMins` / `resetsAt`）なので、snake_case だけを見ると
+  窓の長さと明ける時刻を落とし、名前が相手の内部名（`primary`）のまま画面に出ます。
+  どちらも実際にそうなっていたので直しました。`secondary` は plus では null（週の窓 1 本だけ）。
 - **Antigravity** …… **実地では確かめられていません**（サインイン済みのコンテナが要る）。
   CLI が別の名前のコマンドを使っていた場合は、ブリッジの `CHIEZO_BRIDGE_USAGE_CMD`
   （カンマ区切り。既定 `agy,-p,/credits,--output-format,json`）で差し替えられます。

@@ -656,17 +656,33 @@ def _as_number(value) -> float | None:
     return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
 
 
+def _first(entry: dict, *keys):
+    """最初に見つかった鍵の値。無い鍵と null は飛ばす。
+
+    `a or b` では書けない —— 使用率 0 や残量 0 は falsy なので、
+    値があるのに次の鍵へ流れてしまう(0% の窓が丸ごと消える)。
+    """
+    for key in keys:
+        if entry.get(key) is not None:
+            return entry[key]
+    return None
+
+
 def _window_from(name: str, entry: dict) -> dict | None:
     """CLI の返事から窓を 1 つ組む。読めた形だけ拾う。
 
     相手ごとに名前が違う(`used_percent` で言う相手と、残量そのもので言う相手がいる)ので、
     どちらの形でも読めるようにしてある。読めなければ None を返し、呼び出し側が
     生の返事をそのまま Chiezo へ渡す —— 推測で数字を作らない。
+
+    鍵は snake_case と camelCase の両方を見る。codex は
+    `windowDurationMins` / `resetsAt` の形で返すので、片方しか見ないと
+    窓の長さと明ける時刻を落とし、名前が `primary` のまま出てしまう。
     """
-    percent = _as_number(entry.get("used_percent") or entry.get("usedPercent"))
-    used = _as_number(entry.get("used"))
-    remaining = _as_number(entry.get("remaining"))
-    limit = _as_number(entry.get("limit") or entry.get("total"))
+    percent = _as_number(_first(entry, "used_percent", "usedPercent"))
+    used = _as_number(_first(entry, "used"))
+    remaining = _as_number(_first(entry, "remaining"))
+    limit = _as_number(_first(entry, "limit", "total"))
     if percent is None and remaining is None and used is None:
         return None
     if limit is None and used is not None and remaining is not None:
@@ -675,9 +691,11 @@ def _window_from(name: str, entry: dict) -> dict | None:
         # 残量しか言わない相手のために、使用率はこちらで出す
         percent = round(min(100.0, ((used if used is not None else limit - remaining) / limit) * 100.0), 1)
 
-    resets = entry.get("resets_at") or entry.get("reset") or entry.get("resets")
-    if resets is None and (seconds := _as_number(entry.get("resets_in_seconds"))) is not None:
-        resets = time.time() + seconds
+    resets = _first(entry, "resets_at", "resetsAt", "reset", "resets")
+    if resets is None:
+        seconds = _as_number(_first(entry, "resets_in_seconds", "resetsInSeconds"))
+        if seconds is not None:
+            resets = time.time() + seconds
     return {
         "id": str(entry.get("id") or name),
         "label": str(entry.get("label") or entry.get("name") or entry.get("title") or ""),
@@ -685,27 +703,52 @@ def _window_from(name: str, entry: dict) -> dict | None:
         "used": used,
         "limit": limit,
         "unit": str(entry.get("unit") or ""),
-        "window_minutes": _as_number(entry.get("window_minutes")),
+        "window_minutes": _as_number(
+            _first(entry, "window_minutes", "windowMinutes", "window_duration_mins", "windowDurationMins")
+        ),
         "resets_at": resets,
     }
 
 
 def _windows_in(payload, name: str = "") -> list[dict]:
-    """入れ子のどこにあっても窓を拾う。
+    """入れ子のどこにあっても窓を拾い、同じ窓は 1 つにまとめる。
 
     返事の外側の形を決め打ちにしない —— CLI の版で 1 段増えるだけで
     「使用量が取れない」に変わってしまうため。中身(窓の形)だけを手掛かりにする。
+
+    そのぶん、同じ窓が 2 つ以上の道筋で見つかることがある。codex は同じ枠を
+    `rateLimits` と `rateLimitsByLimitId.<id>` の両方に入れてくるので、
+    まとめないと画面に同じ窓が 2 行並ぶ。
     """
+    return _dedupe(_collect(payload, name))
+
+
+def _collect(payload, name: str = "") -> list[dict]:
+    """窓を探して回る本体(まとめる前)。"""
     found: list[dict] = []
     if isinstance(payload, dict):
         if (window := _window_from(name or "window", payload)) is not None:
             return [window]
         for key, value in payload.items():
-            found += _windows_in(value, str(key))
+            found += _collect(value, str(key))
     elif isinstance(payload, list):
         for i, value in enumerate(payload):
-            found += _windows_in(value, f"{name}{i}" if name else str(i))
+            found += _collect(value, f"{name}{i}" if name else str(i))
     return found
+
+
+def _dedupe(windows: list[dict]) -> list[dict]:
+    """中身がそっくり同じ窓を落とす。値が 1 つでも違えば別の窓として残す
+    —— 同じ名前でも中身が違うなら、それは別の枠のこと。"""
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for window in windows:
+        key = json.dumps(window, sort_keys=True, ensure_ascii=False, default=str)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(window)
+    return unique
 
 
 async def _run_for_usage(cmd: list[str]) -> str:

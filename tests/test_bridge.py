@@ -6,6 +6,7 @@ CLI そのものは起動しない。確かめるのは「OpenAI 形式の入力
 """
 import importlib
 import json
+from typing import ClassVar
 
 import pytest
 
@@ -525,3 +526,72 @@ class TestEveryCliIsWiredEndToEnd:
         missing = set(server.DEFAULT_MODELS) - set(server.AUTH_CHECK)
 
         assert not missing, f"認証を確かめる手が無い CLI がある(有効にできない): {missing}"
+
+
+class TestUsageWindows:
+    """使用量の窓の読み取り(`_windows_in`)。
+
+    相手の返事は形も鍵の書き方も揃っていないので、ここが崩れると
+    画面に「primary」のような相手の内部名や、同じ窓が2行並ぶ形で出てくる。
+    """
+
+    # codex app-server の `account/rateLimits/read` が実際に返す形(2026-08 実測)。
+    # 同じ枠が rateLimits と rateLimitsByLimitId の両方に入っているのが要点。
+    CODEX: ClassVar[dict] = {
+        "rateLimits": {
+            "limitId": "codex",
+            "primary": {"usedPercent": 0, "windowDurationMins": 10080, "resetsAt": 1788135754},
+            "secondary": None,
+            "credits": {"hasCredits": False, "unlimited": False, "balance": "0"},
+            "planType": "plus",
+        },
+        "rateLimitsByLimitId": {
+            "codex": {
+                "limitId": "codex",
+                "primary": {"usedPercent": 0, "windowDurationMins": 10080, "resetsAt": 1788135754},
+                "secondary": None,
+                "credits": {"hasCredits": False, "unlimited": False, "balance": "0"},
+                "planType": "plus",
+            }
+        },
+        "rateLimitResetCredits": {
+            "availableCount": 1,
+            "credits": [{"id": "x", "status": "available", "title": "Full reset"}],
+        },
+    }
+
+    def test_the_same_window_found_twice_is_reported_once(self, bridge):
+        server = bridge()
+
+        windows = server._windows_in(self.CODEX)
+
+        assert len(windows) == 1, f"同じ窓が2つ出ている: {windows}"
+
+    def test_camel_case_keys_are_read(self, bridge):
+        """windowDurationMins / resetsAt を読めないと、窓の名前が `primary` のままになる。"""
+        server = bridge()
+
+        window = server._windows_in(self.CODEX)[0]
+
+        assert window["window_minutes"] == 10080
+        assert window["resets_at"] == 1788135754
+        assert window["used_percent"] == 0.0
+
+    def test_zero_percent_is_not_dropped(self, bridge):
+        """0 は falsy なので、`or` で鍵を選ぶと使い切っていない窓が消える。"""
+        server = bridge()
+
+        windows = server._windows_in({"week": {"used_percent": 0}})
+
+        assert windows and windows[0]["used_percent"] == 0.0
+
+    def test_windows_that_differ_are_both_kept(self, bridge):
+        """名前が同じでも中身が違えば別の枠。まとめてはいけない。"""
+        server = bridge()
+
+        windows = server._windows_in({
+            "a": {"primary": {"usedPercent": 10, "windowDurationMins": 300}},
+            "b": {"primary": {"usedPercent": 40, "windowDurationMins": 10080}},
+        })
+
+        assert len(windows) == 2
