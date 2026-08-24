@@ -423,11 +423,22 @@ def rows() -> list[dict]:
 
 
 def refreshable() -> list[str]:
-    """枠を聞ける相手の ID。 画面のボタンと `refresh_all` が同じここから数える
-    —— 別々に数えると、「N 件取り直しました」と実際に聞いた相手が食い違う。"""
-    out = [p.id for p in providers.all_providers() if p.usage]
+    """まとめて取り直す相手の ID。 画面のボタンと `refresh_all` が同じここから数える
+    —— 別々に数えると、「N 件取り直しました」と実際に聞いた相手が食い違う。
+
+    **使わない相手は入れない**(画面の「使う」が off)。 呼ばない相手の枠を
+    聞きに行っても意味が無いうえ、鍵を外したまま残している相手が毎回失敗として
+    数えられる。1 件ずつの「取り直す」は off でも押せる —— あちらは名指しの操作。
+    """
+    settings = settings_store.load_all()
+
+    def on(provider_id: str) -> bool:
+        st = settings.get(provider_id)
+        return bool(st and st.enabled)
+
+    out = [p.id for p in providers.all_providers() if p.usage and on(p.id)]
     out += [pid for pid in media_providers.standalone_labels()
-            if getattr(media_providers.get(pid), "usage", "")]
+            if getattr(media_providers.get(pid), "usage", "") and on(pid)]
     return out
 
 

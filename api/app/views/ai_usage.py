@@ -117,6 +117,20 @@ def _refresh_button(row: dict) -> str:
     )
 
 
+def _refresh_all_button() -> str:
+    """まとめて取り直すボタン。 相手が 1 つも無いときは出さない
+    —— 押しても何も起きないボタンは、壊れているのか設定が足りないのか読めない。"""
+    targets = usage.refreshable()
+    if not targets:
+        return ('<p class="muted">まとめて取り直せる相手がいません'
+                "(枠を聞ける相手を「使う」にすると出ます)。</p>")
+    return (
+        '<form method="post" action="/admin/ai/usage/all" class="init-form">'
+        f'<button type="submit">使う相手の枠を全部取り直す({len(targets)} 件)</button>'
+        "</form>"
+    )
+
+
 def section_html(request: Request | None = None) -> str:
     """管理画面に差し込む「使用量」節。"""
     if not usage_store.is_enabled():
@@ -184,9 +198,7 @@ Gemini は残量が Google Cloud の Quotas API 側にあり、OpenAI は Admin 
 API からは <code>GET /v1/ai/usage</code>(取り直すなら <code>?refresh=1</code>)。</p>
 </details>
 {since_note}
-<form method="post" action="/admin/ai/usage/all" class="init-form">
-<button type="submit">枠を聞ける相手を全部取り直す({len(usage.refreshable())} 件)</button>
-</form>
+{_refresh_all_button()}
 <table class="ai-settings ai-usage">
 <thead><tr><th>AI</th><th>相手が言う枠(残り)</th><th>Chiezo が使ったぶん</th><th></th></tr></thead>
 <tbody>

@@ -380,30 +380,61 @@ class TestAdminSection:
 
         with make_client(env, ReplyLLM()) as client:
             settings_store.set_credential("openrouter", "sk-or-test")
+            for pid in ("openrouter", "codex"):
+                settings_store.set_enabled(pid, True)
             env.setattr(usage, "_client", lambda *a, **k: httpx.AsyncClient(
                 transport=httpx.MockTransport(handler)))
             res = client.post("/admin/ai/usage/all", follow_redirects=False)
 
         assert res.status_code == 303
-        # 鍵の無い相手・答えない相手は理由つきで失敗する。押した結果は「取れた数」で返す
+        # 答えない相手は理由つきで失敗する。押した結果は「取れた数」で返す
         assert "usage_refreshed_all=1" in res.headers["location"]
         assert "usage_error" in res.headers["location"]
-        # 鍵の無い相手(ElevenLabs)には行かない —— 手前で「未登録」が理由になる
-        assert not [u for u in asked if "elevenlabs" in u]
-        # 残りには全員に聞く(並行。1 つ落ちていても残りは取り直す)
+        # 「使う」にした相手にだけ聞く(並行。1 つ落ちていても残りは取り直す)
         assert "https://openrouter.ai/api/v1/key" in asked
-        assert len(asked) == len(usage.refreshable()) - 1
+        assert len(asked) == 2
+
+    def test_backends_that_are_off_are_left_alone(self, env):
+        """使わない相手の枠は聞きに行かない —— 呼ばない相手の残りを見ても仕方がなく、
+        鍵を外したまま残している相手が毎回「取れませんでした」に数えられる。"""
+        from app import settings_store, usage
+
+        asked = []
+
+        with make_client(env, ReplyLLM()) as client:
+            settings_store.set_credential("openrouter", "sk-or-test")
+            settings_store.set_enabled("openrouter", False)
+            env.setattr(usage, "_client", lambda *a, **k: httpx.AsyncClient(
+                transport=httpx.MockTransport(
+                    lambda r: asked.append(str(r.url)) or httpx.Response(200, json={}))))
+            res = client.post("/admin/ai/usage/all", follow_redirects=False)
+
+        assert asked == []
+        assert usage.refreshable() == []
+        assert "usage_refreshed_all=0" in res.headers["location"]
 
     def test_the_button_counts_the_same_backends_it_will_ask(self, env):
         """ボタンに出す数と、実際に聞く相手を同じところから数える。"""
-        from app import usage
+        from app import settings_store, usage
+        from app.views import ai_usage
+
+        with make_client(env, ReplyLLM()):
+            # 絵と音だけの相手も対象に入る(枠を聞ける口があるため)
+            settings_store.set_enabled("elevenlabs", True)
+            html = ai_usage.section_html()
+
+        assert usage.refreshable() == ["elevenlabs"]
+        assert f"全部取り直す({len(usage.refreshable())} 件)" in html
+
+    def test_the_button_is_hidden_when_there_is_nothing_to_ask(self, env):
+        """押しても何も起きないボタンは出さない(壊れているのか設定不足か読めない)。"""
         from app.views import ai_usage
 
         with make_client(env, ReplyLLM()):
             html = ai_usage.section_html()
 
-        assert f"全部取り直す({len(usage.refreshable())} 件)" in html
-        assert "elevenlabs" in usage.refreshable()  # 絵と音だけの相手も入る
+        assert "/admin/ai/usage/all" not in html
+        assert "まとめて取り直せる相手がいません" in html
 
     def test_the_reason_comes_back_to_the_screen(self, env):
         from app import settings_store, usage
