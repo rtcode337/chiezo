@@ -215,6 +215,56 @@ class TestQuota:
         assert usage  # 相手へは行っていない(鍵が無いので手前で止まる)
         assert backend_of(body, "openrouter")["quota"]["error"] == "認証情報が未登録です"
 
+    def test_elevenlabs_reports_its_credits(self, env):
+        """絵と音だけの相手にも枠を聞ける口はある(鍵だけで引ける)。
+
+        声・効果音・曲・絵・動画が同じ 1 つの残量を食うので、ここが見えないと
+        「作れなくなった理由」が画面から分からない。
+        """
+        from app import settings_store, usage
+
+        asked = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            asked["url"] = str(request.url)
+            asked["key"] = request.headers.get("xi-api-key")
+            return httpx.Response(200, json={
+                "tier": "creator", "character_count": 41234, "character_limit": 100000,
+                "next_character_count_reset_unix": 1788135754,
+            })
+
+        with make_client(env, ReplyLLM()) as client:
+            settings_store.set_credential("elevenlabs", "xi-test")
+            env.setattr(usage, "_client", lambda headers=None, timeout=None: httpx.AsyncClient(
+                headers=headers or {}, transport=httpx.MockTransport(handler)))
+            body = client.get("/v1/ai/usage",
+                              params={"refresh": 1, "backend": "elevenlabs"}).json()
+
+        assert asked["url"] == "https://api.elevenlabs.io/v1/user/subscription"
+        # 鍵はヘッダで送る(URL に載せない)
+        assert asked["key"] == "xi-test"
+        window = backend_of(body, "elevenlabs")["quota"]["windows"][0]
+        assert (window["used"], window["limit"]) == (41234.0, 100000.0)
+        assert window["used_percent"] == 41.2
+        assert window["label"] == "クレジット(creator)"
+        assert window["resets_at"].startswith("2026-08-31")
+
+    def test_elevenlabs_without_the_numbers_says_why(self, env):
+        """項目が見当たらないときに 0 と書かない —— 相手の返事をそのまま出す。"""
+        from app import settings_store, usage
+
+        with make_client(env, ReplyLLM()) as client:
+            settings_store.set_credential("elevenlabs", "xi-test")
+            env.setattr(usage, "_client", lambda headers=None, timeout=None: httpx.AsyncClient(
+                headers=headers or {},
+                transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"tier": "free"}))))
+            body = client.get("/v1/ai/usage",
+                              params={"refresh": 1, "backend": "elevenlabs"}).json()
+
+        quota = backend_of(body, "elevenlabs")["quota"]
+        assert quota["windows"] == []
+        assert "見当たりません" in quota["error"]
+
     def test_openrouter_reports_credits_without_a_limit_as_such(self, env):
         """上限の無い鍵で「残り 0」と書かない(使い切ったように読める)。"""
         from app import settings_store, usage

@@ -42,6 +42,12 @@ def _meter(percent: float | None) -> str:
             f' style="width: {width:.0f}%"></span></span>')
 
 
+def _amount(value: float) -> str:
+    """数の書き方。 端数があるときだけ小数を出す —— 金額(OpenRouter)は $1.50 の
+    ように出したいが、クレジットのような整数で 41,234.00 と出ると読みにくい。"""
+    return f"{value:,.2f}" if value % 1 else f"{value:,.0f}"
+
+
 def _window_html(window: usage.Window) -> str:
     """枠 1 つぶん。使用率で言う相手と、金額で言う相手の両方を同じ形に収める。"""
     parts = [f"<strong>{esc(window.label)}</strong>"]
@@ -52,9 +58,9 @@ def _window_html(window: usage.Window) -> str:
         )
     if window.used is not None:
         unit = f" {esc(window.unit)}" if window.unit else ""
-        amount = f"{window.used:,.2f}{unit} 使用"
+        amount = f"{_amount(window.used)}{unit} 使用"
         if window.limit:
-            amount += f" / 上限 {window.limit:,.2f}{unit}"
+            amount += f" / 上限 {_amount(window.limit)}{unit}"
         parts.append(amount)
     if when := _when(window.resets_at):
         parts.append(f'<span class="muted">{esc(when)} に戻る</span>')
@@ -178,7 +184,7 @@ API からは <code>GET /v1/ai/usage</code>(取り直すなら <code>?refresh=1<
 @router.post("/admin/ai/usage")
 async def refresh_usage(provider: str = Form(...)):
     """1 相手ぶん取り直す(結果はクエリで画面へ返す)。"""
-    spec = providers.get(provider)
+    spec = usage.spec_of(provider)
     if spec is None:
         raise HTTPException(404, {"error": f"unknown provider: {provider}"})
     if not spec.usage:

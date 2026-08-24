@@ -627,6 +627,13 @@ CLI に聞かせる）ので、サブスクの枠を食いません。
 | Codex CLI | ブリッジの `/usage` → `codex app-server` の `account/rateLimits/read` | **CLI に聞く**ので、期限切れになる access_token の更新はあちらがやる |
 | Antigravity CLI | ブリッジの `/usage` → `agy -p /usage` | **クレジット残高(`/credits`)ではなくモデルの枠**。窓はグループ × 週/5 時間 |
 | OpenRouter | `GET /api/v1/key` | クレジットの使用額と残高 |
+| ElevenLabs | `GET /v1/user/subscription` | 鍵だけで引ける。**声・効果音・曲・絵・動画が同じ 1 つの残量**を食う |
+
+**絵と音だけの相手も同じ表に並びます。** ElevenLabs は枠を聞けます（この 1 つの残量から
+声・効果音・曲・絵・動画のすべてが引かれるので、見えないと「作れなくなった理由」が
+画面から分かりません）。相手は文字数（`character_count` / `character_limit`）と呼びますが、
+料金表とダッシュボードの呼び名はクレジットなので画面ではそちらに合わせています。
+自前の GPU（ComfyUI）には枠がありません（電気代だけ）。
 
 **Gemini・OpenAI・推論サーバには聞く口がありません。** Gemini の残量は Google Cloud の
 Quotas API 側にあり、OpenAI の使用量は Admin キー（`sk-admin-…`）が要るので、

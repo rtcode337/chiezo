@@ -158,6 +158,50 @@ def _window_label(minutes: float | None, fallback: str) -> str:
 # ---- 相手ごとの聞き方 -------------------------------------------------------
 
 
+async def _elevenlabs(spec, credential: str) -> list[Window]:
+    """ElevenLabs の枠。声・効果音・曲・絵・動画が同じ 1 つの残量を食う。
+
+    `GET /v1/user/subscription` は鍵だけで引ける —— 生成も会話もしないので、
+    確かめるたびに枠が減ることはない。
+    """
+    url = f"{media_providers.url_of(spec).rstrip('/')}/user/subscription"
+    try:
+        async with _client({"xi-api-key": credential}) as client:
+            res = await client.get(url)
+    except httpx.HTTPError as e:
+        raise UsageError(f"つながりません: {e}") from None
+    if res.status_code in (401, 403):
+        raise UsageError(f"認証情報が受け付けられませんでした(HTTP {res.status_code})")
+    if res.status_code >= 400:
+        raise UsageError(f"HTTP {res.status_code}: {res.text[:300]}")
+    try:
+        body = res.json()
+    except ValueError:
+        raise UsageError("応答を JSON として読めませんでした") from None
+
+    # 相手は文字数(`character_*`)と呼ぶが、料金表とダッシュボードの呼び名はクレジット。
+    # 効果音や曲も同じ勘定から引かれるので、画面ではクレジットと書く。
+    used = _amount(body.get("character_count"))
+    limit = _amount(body.get("character_limit"))
+    if used is None and limit is None:
+        raise UsageError(f"枠の項目が見当たりません: {str(body)[:200]}")
+    tier = str(body.get("tier") or "").strip()
+    return [Window(
+        id="credits",
+        label=f"クレジット({tier})" if tier else "クレジット",
+        used_percent=round(min(100.0, used / limit * 100.0), 1) if used is not None and limit else None,
+        resets_at=_iso(body.get("next_character_count_reset_unix")),
+        used=used,
+        limit=limit,
+        unit="クレジット",
+    )]
+
+
+def _amount(value) -> float | None:
+    """数として読む。読めない値は None(0 と混ぜない)。"""
+    return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
+
+
 async def _openrouter(spec: providers.Provider, credential: str) -> list[Window]:
     """OpenRouter のクレジット。使った額と、上限があれば残高。
 
@@ -267,12 +311,22 @@ async def fetch(spec: providers.Provider) -> list[Window]:
         return await _openrouter(spec, credential)
     if spec.usage == providers.USAGE_BRIDGE:
         return await _bridge(spec)
+    if spec.usage == media_providers.USAGE_ELEVENLABS:
+        if not credential:
+            raise UsageError("認証情報が未登録です")
+        return await _elevenlabs(spec, credential)
     raise UsageError(f"未対応の聞き方: {spec.usage}")
+
+
+def spec_of(provider_id: str):
+    """枠を聞ける相手を引く。 絵と音だけの相手(ElevenLabs)も同じ入口で扱う ——
+    呼ぶ側が「どちらの表にいるか」を知らずに済むようにするため。"""
+    return providers.get(provider_id) or media_providers.get(provider_id)
 
 
 async def refresh(provider_id: str) -> Quota:
     """1 相手ぶん取り直して控える。失敗も控える(理由を画面に出すため)。"""
-    spec = providers.get(provider_id)
+    spec = spec_of(provider_id)
     if spec is None or not spec.usage:
         return Quota(supported=False)
     try:
@@ -358,8 +412,10 @@ def rows() -> list[dict]:
                 "label": label or pid,
                 "billing": "",
                 "enabled": bool(st and st.enabled),
-                # 絵と音だけの相手に枠の口は無い(自前の GPU・ElevenLabs)
-                "quota": Quota(supported=False),
+                # 枠を聞ける相手はここにもいる(ElevenLabs)。自前の GPU は口が無い。
+                "quota": _stored_quota(
+                    pid, getattr(media_providers.get(pid), "usage", ""), stored
+                ),
                 "spent": spent.get(pid, {}),
             }
         )
@@ -369,4 +425,6 @@ def rows() -> list[dict]:
 async def refresh_all() -> None:
     """枠を聞ける相手を並行に取り直す。直列だと落ちている相手の数だけ待つ。"""
     targets = [p.id for p in providers.all_providers() if p.usage]
+    targets += [pid for pid in media_providers.standalone_labels()
+                if getattr(media_providers.get(pid), "usage", "")]
     await asyncio.gather(*(refresh(pid) for pid in targets), return_exceptions=True)

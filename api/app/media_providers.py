@@ -23,6 +23,10 @@ from dataclasses import dataclass
 CRED_REQUIRED = "required"  # 認証情報が無ければ使えない
 CRED_NONE = "none"  # 渡すものが無い(LAN 内の自前サーバ)
 
+# 枠の聞き方。 `GET /v1/user/subscription`(鍵だけで引ける)。
+# 「話す相手」の USAGE_* と同じ役目だが、あちらは循環参照になるのでここに置く。
+USAGE_ELEVENLABS = "elevenlabs"
+
 # 作れるもの(job の kind と同じ語彙)。文字起こしだけは job にならない(即答する)が、
 # 「その相手に何を頼めるか」は同じ表で持つ —— 分けると一覧の絞り込みが 2 通りになる。
 KIND_IMAGE = "image"
@@ -70,6 +74,9 @@ class MediaProvider:
     owns_toggle: bool = False
     # URL を上書きできる環境変数(コンテナ名で辿り着けない相手のための逃げ道)
     url_env: str = ""
+    # 枠の聞き方(`app/usage.py`)。空なら「この相手は枠を出さない」。
+    # 「話す相手」の側にも同じ欄があるが、こちらは絵と音だけの相手のためのもの。
+    usage: str = ""
     # 画面・一覧に出す順
     order: int = 0
     # 作れるもの。 絵しか作れない相手・音しか作れない相手があるので、
@@ -259,6 +266,8 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         # 借りる先が無く、鍵と on/off をここに置くしかない。ComfyUI と同じ扱い。
         credential_from="",
         owns_toggle=True,
+        # 枠を聞ける。 鍵だけで引ける口があり、生成も会話もしないので枠を食わない。
+        usage=USAGE_ELEVENLABS,
         order=30,
         kinds=(KIND_AUDIO, KIND_SPEECH, KIND_TRANSCRIBE, KIND_IMAGE, KIND_VIDEO),
         # 絵と動画は他社のモデルを預かっているだけ(自社の絵のモデルは持っていない)。

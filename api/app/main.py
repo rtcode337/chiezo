@@ -1278,9 +1278,11 @@ async def ai_usage(
     ただし Chiezo を通していない利用は入らない(手元の端末で回した CLI など)。
     """
     name = (backend or "").strip().lower()
-    if name and providers.get(name) is None:
+    # 絵と音だけの相手(ElevenLabs・自前の GPU)もこの表に並ぶので、名前もそちらまで見る
+    # —— 画面に出ている行を名指しできないと、その行だけ取り直せない。
+    if name and usage.spec_of(name) is None:
         raise HTTPException(404, {"error": f"unknown backend: {name}",
-                                  "backends": [p.id for p in providers.all_providers()]})
+                                  "backends": [r["id"] for r in usage.rows()]})
     if refresh:
         await (usage.refresh(name) if name else usage.refresh_all())
 
