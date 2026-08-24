@@ -703,11 +703,51 @@ def _window_from(name: str, entry: dict) -> dict | None:
         "used": used,
         "limit": limit,
         "unit": str(entry.get("unit") or ""),
+        "remaining": remaining,
         "window_minutes": _as_number(
             _first(entry, "window_minutes", "windowMinutes", "window_duration_mins", "windowDurationMins")
         ),
         "resets_at": resets,
     }
+
+
+# `agy -p /credits --output-format json` は、数字を JSON の形では持たない。
+# 人向けの文が `response` に入ってくる(実測 2026-08):
+#   {"status":"SUCCESS","response":"Remaining credits\t0\nUpgrade\thttps://…\n", …}
+# 上限は言わないので割合は作れない —— 残りの数だけを持つ窓にする。
+_CREDITS_RE = re.compile(r"remaining\s+credits[\s:]+([0-9][0-9,]*)", re.IGNORECASE)
+
+
+def _credits_window(text: str) -> dict | None:
+    """クレジットの残りを文から読む。読めなければ None(推測で 0 を作らない)。"""
+    if not (found := _CREDITS_RE.search(text or "")):
+        return None
+    return _window_from("credits", {
+        "id": "credits",
+        "label": "クレジット",
+        "remaining": float(found.group(1).replace(",", "")),
+    })
+
+
+def _antigravity_windows(raw: str) -> list[dict]:
+    """Antigravity の返事から窓を組む。
+
+    まず JSON として窓を探し(CLI が構造化して返すようになったらそちらが勝つ)、
+    見つからなければ人向けの文を読む。文しか返さない版でも読めるよう、
+    JSON として読めなかったときは生の文字列をそのまま当てる。
+    """
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        payload = None
+    if payload is not None:
+        if windows := _windows_in(payload):
+            return windows
+        if isinstance(payload, dict):
+            text = str(payload.get("response") or "")
+            if (window := _credits_window(text)) is not None:
+                return [window]
+    return [window] if (window := _credits_window(raw)) is not None else []
 
 
 def _windows_in(payload, name: str = "") -> list[dict]:
@@ -841,10 +881,7 @@ async def usage() -> dict:
         windows, raw = await _codex_usage()
     else:
         raw = await _run_for_usage(ANTIGRAVITY_USAGE_CMD)
-        try:
-            windows = _windows_in(json.loads(raw))
-        except ValueError:
-            windows = []
+        windows = _antigravity_windows(raw)
     return {
         "cli": CLI,
         "windows": windows,

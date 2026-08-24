@@ -694,8 +694,21 @@ CLI ブリッジ経由の相手はトークン数を返さないので、回数�
   **鍵が camelCase**（`windowDurationMins` / `resetsAt`）なので、snake_case だけを見ると
   窓の長さと明ける時刻を落とし、名前が相手の内部名（`primary`）のまま画面に出ます。
   どちらも実際にそうなっていたので直しました。`secondary` は plus では null（週の窓 1 本だけ）。
-- **Antigravity** …… **実地では確かめられていません**（サインイン済みのコンテナが要る）。
-  CLI が別の名前のコマンドを使っていた場合は、ブリッジの `CHIEZO_BRIDGE_USAGE_CMD`
+- **Antigravity** …… サインイン済みの応答まで実測しました（2026-08）。既定のコマンドで
+  通りますが、**数字は JSON の形では来ません** —— 人向けの文が `response` に入ります:
+
+  ```json
+  {"status": "SUCCESS",
+   "response": "Remaining credits\t0\nUpgrade\thttps://antigravity.google/g1-upgrade\n",
+   "usage": {"input_tokens": 0, …}, "command": {"name": "credits", "data": {…}}}
+  ```
+
+  そのため窓を1つも組めず、画面には CLI の返事がそのままエラーとして出ていました。
+  いまは `response` の文から残りのクレジットを読みます（`_credits_window`）。
+  **上限を言わない**ので割合は作れません —— `remaining`（残りの数）だけを持つ窓にして、
+  画面も「残り 0」とだけ書きます。メーターを出さないのは、0% とも 100% とも書けないからです
+  （`usage` はその1往復のトークン数で、枠とは関係ありません）。
+  CLI が別の名前のコマンドを使うようになった場合は、ブリッジの `CHIEZO_BRIDGE_USAGE_CMD`
   （カンマ区切り。既定 `agy,-p,/credits,--output-format,json`）で差し替えられます。
 - **Claude** …… **`claude setup-token` の長期トークンでは枠を取れません**(実測)。
   この口は `user:profile` スコープを要求しますが、長期トークンは安全のため推論だけに

@@ -595,3 +595,51 @@ class TestUsageWindows:
         })
 
         assert len(windows) == 2
+
+
+class TestAntigravityCredits:
+    """Antigravity の使用量(`agy -p /credits --output-format json`)。
+
+    数字が JSON の形で来ない相手なので、`_windows_in` だけでは 1 つも窓が組めず、
+    画面には CLI の返事がそのままエラーとして出ていた。
+    """
+
+    # 実測(2026-08)。数字は response の中の人向けの文にしか無い。
+    RAW = json.dumps({
+        "conversation_id": "", "status": "SUCCESS",
+        "response": "Remaining credits\t0\nUpgrade\thttps://antigravity.google/g1-upgrade\n",
+        "duration_seconds": 0, "num_turns": 0,
+        "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+        "command": {"name": "credits", "data": {}},
+    }, ensure_ascii=False)
+
+    def test_credits_are_read_from_the_human_readable_response(self, bridge):
+        server = bridge()
+
+        windows = server._antigravity_windows(self.RAW)
+
+        assert len(windows) == 1
+        assert windows[0]["remaining"] == 0.0
+
+    def test_zero_credits_do_not_become_a_percentage(self, bridge):
+        """上限を言わない相手なので、割合を作ってはいけない(0% とも 100% とも書けない)。"""
+        server = bridge()
+
+        window = server._antigravity_windows(self.RAW)[0]
+
+        assert window["used_percent"] is None
+        assert window["limit"] is None
+
+    def test_plain_text_output_is_read_too(self, bridge):
+        """JSON を返さない版でも読めるようにしてある。"""
+        server = bridge()
+
+        windows = server._antigravity_windows("Remaining credits\t1,250\n")
+
+        assert windows and windows[0]["remaining"] == 1250.0
+
+    def test_a_response_without_credits_stays_empty(self, bridge):
+        """読めないときは窓を作らない —— 生の返事が理由として画面に出る。"""
+        server = bridge()
+
+        assert server._antigravity_windows("サインインしてください") == []
