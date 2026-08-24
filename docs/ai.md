@@ -624,7 +624,6 @@ CLI に聞かせる）ので、サブスクの枠を食いません。
 
 | 相手 | 聞き方 | 備考 |
 |---|---|---|
-| Claude Code CLI | `GET https://api.anthropic.com/api/oauth/usage` | CLI の `/usage` と同じ口。**`claude setup-token` のトークンでは通りません**(下記) |
 | Codex CLI | ブリッジの `/usage` → `codex app-server` の `account/rateLimits/read` | **CLI に聞く**ので、期限切れになる access_token の更新はあちらがやる |
 | Antigravity CLI | ブリッジの `/usage` → `agy` の print モード | 残クレジットを取る RPC はあるが、外から叩ける口としては公開されていない |
 | OpenRouter | `GET /api/v1/key` | クレジットの使用額と残高 |
@@ -633,6 +632,13 @@ CLI に聞かせる）ので、サブスクの枠を食いません。
 Quotas API 側にあり、OpenAI の使用量は Admin キー（`sk-admin-…`）が要るので、
 どちらもここに入れる鍵では引けません。画面には「この相手は枠を出さない」と出ます
 （空欄にすると「使っていない」と読めてしまうため）。
+
+**Claude Code CLI もこちら側です。** CLI に出口が無く（サブコマンドが無く、`/usage` は
+対話画面の中だけ）、CLI 自身が叩いている口は `user:profile` を要求するのに対し、
+Chiezo が預かるのは `claude setup-token` の長期トークン —— 推論だけに絞られていて
+このスコープを持ちません。**取れないものをエラーとして出し続けても打つ手が無い**ので、
+「枠を出さない相手」に倒してあります（取り直しのボタンも出しません）。
+取れるようにする道はあります（下記）。
 
 **どの聞き方もモデルを呼びません。** 確かめるたびにサブスクの枠を食っては本末転倒なので、
 「接続を試す」と同じ方針です。
@@ -711,8 +717,8 @@ CLI ブリッジ経由の相手はトークン数を返さないので、回数�
   CLI が別の名前のコマンドを使うようになった場合は、ブリッジの `CHIEZO_BRIDGE_USAGE_CMD`
   （カンマ区切り。既定 `agy,-p,/credits,--output-format,json`）で差し替えられます。
 - **Claude** …… **`claude setup-token` の長期トークンでは枠を取れません**(実測)。
-  この口は `user:profile` スコープを要求しますが、長期トークンは安全のため推論だけに
-  絞られているためです:
+  `/api/oauth/usage` は `user:profile` スコープを要求しますが、長期トークンは安全のため
+  推論だけに絞られているためです:
 
   ```
   HTTP 403 {"type":"error","error":{"type":"permission_error",
@@ -720,11 +726,26 @@ CLI ブリッジ経由の相手はトークン数を返さないので、回数�
   ```
 
   **会話・要約・絵の生成には影響しません**(そちらは `user:inference` で足ります)。
-  枠を出すには `user:profile` を含むトークン —— `claude auth login` の完全スコープの
-  もの —— が要りますが、あれは短命で CLI が自分で更新するので、貼り付けて使う運用には
-  向きません。**いまは「取れない理由」を画面に出すところまで**で、Claude の枠は
-  CLI の `/usage`(対話画面)で見てください。`/api/oauth/usage` 自体は CLI の中から
-  見つけたもので、公開ドキュメントにはありません。
+  取れないものをエラーとして出し続けても打つ手が無いので、**いまは経路を持たず
+  「この相手は枠を出さない」と書きます**。Claude の枠は CLI の `/usage`(対話画面)で
+  見てください。`/api/oauth/usage` 自体は CLI の中から見つけたもので、公開ドキュメントには
+  ありません。
+
+  **取れるようにする道はあります。** `claude auth login`(通常のサインイン)の資格情報は
+  スコープに `user:profile` を含み、同じ口が実測で 200 を返します:
+
+  ```
+  five_hour → utilization 41.0%（4:29 に戻る） / seven_day → utilization 8.0%
+  ```
+
+  ただしあれは**アクセストークンが数時間で切れ、CLI が自分で更新するもの**なので、
+  設定 DB に貼り付ける形には向きません。やるなら codex・antigravity と同じく
+  **コンテナの中で 1 回サインインする**形になります —— `chiezo-bridge-claude` に
+  書き込めるホーム（名前付きボリューム）を渡し、`docker compose exec
+  chiezo-bridge-claude claude auth login` を 1 回実行し、ブリッジ側に `/usage` を足して
+  `$HOME/.claude/.credentials.json` の accessToken で引く（古ければ先に
+  `claude auth status` を走らせれば、モデルを呼ばずに更新されます）。
+  そこまでやる価値があると判断したときに入れること。
 
 **数字にできなかったときは、CLI や相手が返した文言をそのまま画面に出します**
 —— 推測で数字は作りません。

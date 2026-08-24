@@ -9,9 +9,6 @@
 
 枠を聞ける相手と、その聞き方(`app/providers.py` の `usage`):
 
-- Claude Code CLI …… `GET https://api.anthropic.com/api/oauth/usage`。
-  CLI の `/usage` が叩いている口で、CLI 側に出口が無い(サブコマンドが無く、
-  対話画面の中でしか出ない)ので同じトークンで直に引く。ブリッジが立っていなくても引ける
 - Codex CLI …… ブリッジの `/usage`(`codex app-server` の `account/rateLimits/read`)。
   手元に控えた auth.json は期限切れになる —— CLI に聞けば更新はあちらがやる
 - Antigravity CLI …… ブリッジの `/usage`(`agy` の print モード)。
@@ -21,6 +18,12 @@
 Gemini・OpenAI・推論サーバには口が無い(Gemini の残量は Google Cloud の Quotas API 側、
 OpenAI の使用量は Admin キーが要る)。「出せない」と画面に書く ——
 空欄にすると「使っていない」と読めてしまう。
+
+Claude Code CLI もここに入る。 CLI に出口が無く(サブコマンドが無く、`/usage` は
+対話画面の中だけ)、CLI 自身が叩いている口は `user:profile` を要求するのに対し、
+Chiezo が預かるのは `claude setup-token` の長期トークン —— 推論だけに絞られていて
+このスコープを持たない(実測 HTTP 403)。取れないものをエラーとして出し続けるより、
+「出さない相手」と書くほうが正しい(詳しくは docs/ai.md)。
 
 枠を取るのは押されたときだけ。 管理画面は描画のたびに相手へ問い合わせない
 (「接続を試す」と同じ流儀)—— 落ちている相手がいると、その数だけ画面が遅れる。
@@ -42,7 +45,6 @@ log = logging.getLogger("chiezo.usage")
 # Claude のサブスクの枠を引く口。Claude Code の `/usage` が叩いているのと同じで、
 # 公開ドキュメントには載っていない(CLI の中から見つけたもの)。相手の都合で消えうるので、
 # 取れなかった理由をそのまま画面に出す作りにしてある。
-ANTHROPIC_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 
 # 相手へ聞きに行くときの上限秒数。短くする —— 押した人を待たせる操作で、
 # しかも 1 つ落ちていても他は出したい。
@@ -158,76 +160,6 @@ def _window_label(minutes: float | None, fallback: str) -> str:
 
 # ---- 相手ごとの聞き方 -------------------------------------------------------
 
-# `/api/oauth/usage` が返す窓と、画面に出す名前。知っている名前だけ出す ——
-# 相手が増やした窓を推測で訳すと、意味の違う数字に名前を付けることになる。
-_ANTHROPIC_WINDOWS = {
-    "five_hour": "セッション(5 時間)",
-    "seven_day": "今週(全モデル)",
-    "seven_day_opus": "今週(Opus)",
-    "seven_day_sonnet": "今週(Sonnet)",
-}
-
-
-async def _anthropic(credential: str) -> list[Window]:
-    """Claude のサブスクの枠。Claude Code の `/usage` と同じ口を同じトークンで引く。
-
-    返るのは窓ごとの `utilization`(0〜100 の使用率)と `resets_at`。
-    会話は 1 往復もしないので、確かめるたびに枠を食うことはない。
-    """
-    headers = {
-        "Authorization": f"Bearer {credential}",
-        "Content-Type": "application/json",
-        # OAuth のトークンで叩く口なので、ベータの印を添える(CLI と同じ)。
-        "anthropic-beta": "oauth-2025-04-20",
-    }
-    try:
-        async with _client(headers) as client:
-            res = await client.get(ANTHROPIC_USAGE_URL)
-    except httpx.HTTPError as e:
-        raise UsageError(f"つながりません: {e}") from None
-    if res.status_code >= 400:
-        # 本文まで出す。 「HTTP 403」だけでは、トークンが古いのか、この口が
-        # その種類のトークンを受け付けないのかが分からない(打つ手が変わる)。
-        # 鍵はヘッダで送っているので本文には載らない(絵と音の相手と同じ判断)。
-        raise UsageError(f"{_anthropic_hint(res.text)}HTTP {res.status_code}: {res.text[:300]}")
-    try:
-        body = res.json()
-    except ValueError:
-        raise UsageError("応答を JSON として読めませんでした") from None
-
-    windows = []
-    for key, label in _ANTHROPIC_WINDOWS.items():
-        entry = body.get(key)
-        if not isinstance(entry, dict):
-            continue
-        windows.append(
-            Window(
-                id=key,
-                label=label,
-                used_percent=_percent(entry.get("utilization")),
-                resets_at=_iso(entry.get("resets_at")),
-            )
-        )
-    if not windows:
-        raise UsageError("枠の情報が入っていませんでした(相手の応答が変わった可能性)")
-    return windows
-
-
-# `claude setup-token` のトークンではこの口は通らない(実測: HTTP 403
-# `OAuth token does not meet scope requirement user:profile`)。長期トークンは
-# 安全のため推論だけに絞られていて、`claude auth login` の完全スコープにしか
-# `user:profile` が入らない。打つ手が変わるので、そうと分かるように書く ——
-# 生の英文だけだと「鍵が間違っている」と読んでトークンを入れ直すことになる。
-SCOPE_HINT = (
-    "この口には user:profile スコープが要ります。"
-    "`claude setup-token` の長期トークンは推論だけに絞られているので枠を取れません"
-    "(会話・要約はそのまま使えます)。 "
-)
-
-
-def _anthropic_hint(body: str) -> str:
-    return SCOPE_HINT if "user:profile" in body else ""
-
 
 async def _openrouter(spec: providers.Provider, credential: str) -> list[Window]:
     """OpenRouter のクレジット。使った額と、上限があれば残高。
@@ -335,10 +267,6 @@ async def fetch(spec: providers.Provider) -> list[Window]:
     if not spec.usage:
         raise UsageError("この相手は使用量を出しません")
     credential = settings_store.load(spec.id).credential
-    if spec.usage == providers.USAGE_ANTHROPIC:
-        if not credential:
-            raise UsageError("認証情報が未登録です")
-        return await _anthropic(credential)
     if spec.usage == providers.USAGE_OPENROUTER:
         if not credential:
             raise UsageError("認証情報が未登録です")

@@ -30,7 +30,6 @@ CRED_NONE = "none"  # 渡すものが無い（Antigravity。認証はコンテ�
 # 枠(使用量と残り)の聞き方。 相手ごとに口が違い、持たない相手のほうが多い。
 # 実装は `app/usage.py`。ここに書くのは「どの口で聞くか」だけ。
 USAGE_NONE = ""  # 聞く口が無い（Gemini・OpenAI・推論サーバ）
-USAGE_ANTHROPIC = "anthropic"  # api.anthropic.com の /api/oauth/usage（Claude Code の /usage と同じ）
 USAGE_OPENROUTER = "openrouter"  # OpenRouter の /api/v1/key（クレジットの使用額と残高）
 USAGE_BRIDGE = "bridge"  # CLI ブリッジの /usage（CLI 自身に聞かせる）
 
@@ -165,13 +164,16 @@ PROVIDERS: tuple[Provider, ...] = (
         models=("sonnet", "fable", "opus", "haiku"),
         # `claude --help` の --effort（実測で 5 つとも通る）。
         efforts=("low", "medium", "high", "xhigh", "max"),
-        # 枠はブリッジ越しではなく直に聞く。 claude CLI には使用量を出す
-        # サブコマンドが無く（`/usage` は対話画面の中だけ）、代わりに CLI 自身が
-        # 叩いている口を同じトークンで引く。ブリッジが立っていなくても引けるのが利点。
-        # ただし `claude setup-token` のトークンでは 403 になる（実測。あれは
-        # 推論だけに絞られていて `user:profile` を持たない）—— 経路は残し、
-        # そうと分かる理由を返す（`app/usage.py` の `SCOPE_HINT`）。
-        usage=USAGE_ANTHROPIC,
+        # 枠は出せない。 claude CLI には使用量を出すサブコマンドが無く
+        # （`/usage` は対話画面の中だけ）、CLI 自身が叩いている口
+        # （`api.anthropic.com/api/oauth/usage`）は `user:profile` を要求する一方、
+        # Chiezo が預かるのは `claude setup-token` の長期トークン —— あれは安全のため
+        # 推論だけに絞られていて、このスコープを持たない（実測で HTTP 403）。
+        # かつては経路を残して 403 の理由を画面に出していたが、**取れないものを
+        # エラーとして出し続けるだけ**なので「枠を出さない相手」に倒した。
+        # 取れるようにする道はある（`claude auth login` の資格情報なら実測で 200）が、
+        # あれは CLI が数時間ごとに更新するものなので、設定 DB に貼る形には向かない
+        # —— やるならコンテナの中でサインインする（docs/ai.md）。
         bridge=True,
         order=30,
     ),

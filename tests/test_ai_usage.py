@@ -101,7 +101,11 @@ class TestQuota:
 
         assert backend_of(body, "gemini")["quota"]["supported"] is False
         assert backend_of(body, "local")["quota"]["supported"] is False
-        assert backend_of(body, "claude")["quota"]["supported"] is True
+        # Claude もこちら側。 CLI に出口が無く、CLI 自身が叩いている口は user:profile を
+        # 要求するのに対し、Chiezo が預かるのは setup-token(推論だけに絞られている)。
+        # 取れないものをエラーとして出し続けるより「出さない」と書く。
+        assert backend_of(body, "claude")["quota"]["supported"] is False
+        assert backend_of(body, "codex")["quota"]["supported"] is True
 
     def test_it_does_not_ask_anyone_unless_told_to(self, env):
         """引かれるたびに外へ出ていかない。 画面もダッシュボードも定期的に引く口。"""
@@ -114,37 +118,41 @@ class TestQuota:
         from app import settings_store, usage
 
         with make_client(env, ReplyLLM()) as client:
-            settings_store.set_credential("claude", "sk-ant-oat01-test")
+            settings_store.set_credential("openrouter", "sk-or-test")
             env.setattr(usage, "_client", lambda *a, **k: httpx.AsyncClient(
                 transport=httpx.MockTransport(handler)))
             client.get("/v1/ai/usage")
             assert asked == []
-            client.get("/v1/ai/usage", params={"refresh": 1, "backend": "claude"})
+            client.get("/v1/ai/usage", params={"refresh": 1, "backend": "openrouter"})
 
-        assert asked == [usage.ANTHROPIC_USAGE_URL]
+        assert asked == ["https://openrouter.ai/api/v1/key"]
 
-    def test_claude_windows_are_read_with_their_names(self, env):
-        """`five_hour` は「セッション」、`seven_day` は「今週」。残りも出す。"""
+    def test_claude_is_not_asked_at_all(self, env):
+        """Claude は枠を出さない相手なので、取り直しても外へは出ていかない。
+
+        setup-token では 403 にしかならない口を叩き続けても、毎回同じ理由が
+        画面に出るだけで打つ手が無い(取れるようにする道は docs/ai.md)。
+        """
         from app import settings_store, usage
 
+        asked = []
+
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={
-                "five_hour": {"utilization": 42.5, "resets_at": "2026-08-23T15:00:00Z"},
-                "seven_day": {"utilization": 10, "resets_at": "2026-08-28T00:00:00Z"},
-                # 知らない窓は出さない(意味の違う数字に名前を付けないため)
-                "some_new_window": {"utilization": 99},
-            })
+            asked.append(str(request.url))
+            return httpx.Response(200, json={})
 
         with make_client(env, ReplyLLM()) as client:
             settings_store.set_credential("claude", "sk-ant-oat01-test")
             env.setattr(usage, "_client", lambda *a, **k: httpx.AsyncClient(
                 transport=httpx.MockTransport(handler)))
-            body = client.get("/v1/ai/usage", params={"refresh": 1, "backend": "claude"}).json()
+            body = client.get("/v1/ai/usage",
+                              params={"refresh": 1, "backend": "claude"}).json()
 
-        windows = backend_of(body, "claude")["quota"]["windows"]
-        assert [w["id"] for w in windows] == ["five_hour", "seven_day"]
-        assert windows[0]["label"] == "セッション(5 時間)"
-        assert (windows[0]["used_percent"], windows[0]["remaining_percent"]) == (42.5, 57.5)
+        assert asked == []
+        quota = backend_of(body, "claude")["quota"]
+        assert quota["supported"] is False
+        # 「出さない」であって「取れなかった」ではない —— 理由を書く欄は空のまま。
+        assert quota["error"] == ""
 
     def test_the_value_is_kept_so_the_screen_does_not_have_to_ask(self, env):
         """一度取った枠は控える(次に開いたときは聞きに行かずに出す)。"""
@@ -154,18 +162,18 @@ class TestQuota:
 
         def handler(request: httpx.Request) -> httpx.Response:
             calls.append(1)
-            return httpx.Response(200, json={"five_hour": {"utilization": 5}})
+            return httpx.Response(200, json={"data": {"usage": 5.0, "limit": 20}})
 
         with make_client(env, ReplyLLM()) as client:
-            settings_store.set_credential("claude", "sk-ant-oat01-test")
+            settings_store.set_credential("openrouter", "sk-or-test")
             env.setattr(usage, "_client", lambda *a, **k: httpx.AsyncClient(
                 transport=httpx.MockTransport(handler)))
-            client.get("/v1/ai/usage", params={"refresh": 1, "backend": "claude"})
+            client.get("/v1/ai/usage", params={"refresh": 1, "backend": "openrouter"})
             body = client.get("/v1/ai/usage").json()
 
-        quota = backend_of(body, "claude")["quota"]
+        quota = backend_of(body, "openrouter")["quota"]
         assert len(calls) == 1
-        assert quota["windows"][0]["used_percent"] == 5.0
+        assert quota["windows"][0]["used"] == 5.0
         assert quota["fetched_at"]
 
     def test_a_failure_keeps_the_last_value_and_says_why(self, env):
@@ -173,50 +181,39 @@ class TestQuota:
         from app import settings_store, usage
 
         replies = [
-            httpx.Response(200, json={"five_hour": {"utilization": 30}}),
+            httpx.Response(200, json={"data": {"usage": 30.0, "limit": 100}}),
             httpx.Response(401, text="expired"),
         ]
 
         with make_client(env, ReplyLLM()) as client:
-            settings_store.set_credential("claude", "sk-ant-oat01-test")
+            settings_store.set_credential("openrouter", "sk-or-test")
             env.setattr(usage, "_client", lambda *a, **k: httpx.AsyncClient(
                 transport=httpx.MockTransport(lambda request: replies.pop(0))))
-            client.get("/v1/ai/usage", params={"refresh": 1, "backend": "claude"})
-            body = client.get("/v1/ai/usage", params={"refresh": 1, "backend": "claude"}).json()
+            client.get("/v1/ai/usage", params={"refresh": 1, "backend": "openrouter"})
+            body = client.get("/v1/ai/usage",
+                              params={"refresh": 1, "backend": "openrouter"}).json()
 
-        quota = backend_of(body, "claude")["quota"]
-        assert quota["windows"][0]["used_percent"] == 30.0
+        quota = backend_of(body, "openrouter")["quota"]
+        assert quota["windows"][0]["used"] == 30.0
         assert "401" in quota["error"]
 
-    def test_a_scope_error_says_what_to_do(self, env):
-        """実測: `claude setup-token` の長期トークンは推論だけに絞られていて、
-        この口(user:profile が要る)では 403 になる。生の英文だけだと「鍵が違う」と
-        読んで入れ直すことになるので、そうではないと書く。"""
-        from app import settings_store, usage
-
-        body = {"type": "error", "error": {
-            "type": "permission_error",
-            "message": "OAuth token does not meet scope requirement user:profile"}}
-
+    def test_the_screen_refuses_to_refresh_what_cannot_be_asked(self, env):
+        """枠を出さない相手の「取り直す」は受け付けない(押す口も画面に出さない)。"""
         with make_client(env, ReplyLLM()) as client:
-            settings_store.set_credential("claude", "sk-ant-oat01-test")
-            env.setattr(usage, "_client", lambda *a, **k: httpx.AsyncClient(
-                transport=httpx.MockTransport(lambda r: httpx.Response(403, json=body))))
-            out = client.get("/v1/ai/usage", params={"refresh": 1, "backend": "claude"}).json()
+            res = client.post("/admin/ai/usage", data={"provider": "claude"},
+                              follow_redirects=False)
 
-        error = backend_of(out, "claude")["quota"]["error"]
-        assert "setup-token" in error and "user:profile" in error
-        # 相手の言い分も残す(こちらの言い換えだけにしない)
-        assert "403" in error
+        assert res.status_code == 400
 
     def test_a_missing_credential_is_the_reason_not_a_crash(self, env):
         from app import usage
 
         with make_client(env, ReplyLLM()) as client:
-            body = client.get("/v1/ai/usage", params={"refresh": 1, "backend": "claude"}).json()
+            body = client.get("/v1/ai/usage",
+                              params={"refresh": 1, "backend": "openrouter"}).json()
 
         assert usage  # 相手へは行っていない(鍵が無いので手前で止まる)
-        assert backend_of(body, "claude")["quota"]["error"] == "認証情報が未登録です"
+        assert backend_of(body, "openrouter")["quota"]["error"] == "認証情報が未登録です"
 
     def test_openrouter_reports_credits_without_a_limit_as_such(self, env):
         """上限の無い鍵で「残り 0」と書かない(使い切ったように読める)。"""
@@ -325,10 +322,10 @@ class TestAdminSection:
         from app import settings_store, usage
 
         with make_client(env, ReplyLLM()) as client:
-            settings_store.set_credential("claude", "x")
+            settings_store.set_credential("openrouter", "sk-or-test")
             env.setattr(usage, "_client", lambda *a, **k: httpx.AsyncClient(
                 transport=httpx.MockTransport(lambda r: httpx.Response(500, text="boom"))))
-            res = client.post("/admin/ai/usage", data={"provider": "claude"},
+            res = client.post("/admin/ai/usage", data={"provider": "openrouter"},
                               follow_redirects=False)
 
         assert res.status_code == 303
