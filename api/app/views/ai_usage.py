@@ -56,11 +56,6 @@ def _window_html(window: usage.Window) -> str:
         if window.limit:
             amount += f" / 上限 {window.limit:,.2f}{unit}"
         parts.append(amount)
-    elif window.used_percent is None and window.remaining is not None:
-        # 残りの数しか言わない相手。使った量も上限も無いので、メーターは出せない
-        # (0% と読めてしまう)。数だけを書く。
-        unit = f" {esc(window.unit)}" if window.unit else ""
-        parts.append(f"残り {window.remaining:,.0f}{unit}")
     if when := _when(window.resets_at):
         parts.append(f'<span class="muted">{esc(when)} に戻る</span>')
     return " ".join(parts)

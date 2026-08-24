@@ -625,7 +625,7 @@ CLI に聞かせる）ので、サブスクの枠を食いません。
 | 相手 | 聞き方 | 備考 |
 |---|---|---|
 | Codex CLI | ブリッジの `/usage` → `codex app-server` の `account/rateLimits/read` | **CLI に聞く**ので、期限切れになる access_token の更新はあちらがやる |
-| Antigravity CLI | ブリッジの `/usage` → `agy` の print モード | 残クレジットを取る RPC はあるが、外から叩ける口としては公開されていない |
+| Antigravity CLI | ブリッジの `/usage` → `agy -p /usage` | **クレジット残高(`/credits`)ではなくモデルの枠**。窓はグループ × 週/5 時間 |
 | OpenRouter | `GET /api/v1/key` | クレジットの使用額と残高 |
 
 **Gemini・OpenAI・推論サーバには聞く口がありません。** Gemini の残量は Google Cloud の
@@ -700,22 +700,30 @@ CLI ブリッジ経由の相手はトークン数を返さないので、回数�
   **鍵が camelCase**（`windowDurationMins` / `resetsAt`）なので、snake_case だけを見ると
   窓の長さと明ける時刻を落とし、名前が相手の内部名（`primary`）のまま画面に出ます。
   どちらも実際にそうなっていたので直しました。`secondary` は plus では null（週の窓 1 本だけ）。
-- **Antigravity** …… サインイン済みの応答まで実測しました（2026-08）。既定のコマンドで
-  通りますが、**数字は JSON の形では来ません** —— 人向けの文が `response` に入ります:
+- **Antigravity** …… サインイン済みの応答まで実測しました（2026-08）。**聞くのは
+  `/usage`（モデルの枠）で、`/credits` ではありません。** あちらは有償プランの
+  クレジット残高という別の勘定で、**「残り 0」でも推論はできます**（実測。CLI の
+  changelog にも「空のクレジット応答を残高 0 と読む」不具合の記述があります）——
+  かつて `/credits` を引いていたときは、枠を使い切ったように見える 0 が画面に出ていました。
+
+  `/usage` はこう返します:
 
   ```json
-  {"status": "SUCCESS",
-   "response": "Remaining credits\t0\nUpgrade\thttps://antigravity.google/g1-upgrade\n",
-   "usage": {"input_tokens": 0, …}, "command": {"name": "credits", "data": {…}}}
+  {"response": "Gemini Models\tWeekly Limit Remaining\t99%\t2026-08-30T01:45:06Z\n…",
+   "command": {"name": "usage", "data": {"groups": [
+     {"name": "Gemini Models", "buckets": [
+       {"id": "gemini-weekly", "name": "Weekly Limit Remaining", "window": "weekly",
+        "remaining_fraction": 0.986, "reset_time": "2026-08-30T01:45:06Z"}, …]}, …]}}}
   ```
 
-  そのため窓を1つも組めず、画面には CLI の返事がそのままエラーとして出ていました。
-  いまは `response` の文から残りのクレジットを読みます（`_credits_window`）。
-  **上限を言わない**ので割合は作れません —— `remaining`（残りの数）だけを持つ窓にして、
-  画面も「残り 0」とだけ書きます。メーターを出さないのは、0% とも 100% とも書けないからです
-  （`usage` はその1往復のトークン数で、枠とは関係ありません）。
-  CLI が別の名前のコマンドを使うようになった場合は、ブリッジの `CHIEZO_BRIDGE_USAGE_CMD`
-  （カンマ区切り。既定 `agy,-p,/credits,--output-format,json`）で差し替えられます。
+  窓は **モデルのグループ 2 つ（Gemini / Claude と GPT）× 週・5 時間 の 4 つ**。
+  読み方で 2 点あります。**グループ名は窓の兄弟ではなく親に付いている**ので、
+  入れ子のどこからでも拾う書き方では名前を作れません（同じ "Weekly Limit Remaining" が
+  2 つ並ぶ）—— この形だけは専用に読みます。相手が言うのは **残り**
+  （`remaining_fraction`）なので、画面の使用率にそろえるためこちらで裏返します。
+  `command.data` の形が変わったときは、同じ内容がタブ区切りで入っている `response` を読みます。
+  コマンド自体は `CHIEZO_BRIDGE_USAGE_CMD`（カンマ区切り。既定
+  `agy,-p,/usage,--output-format,json`）で差し替えられます。
 - **Claude** …… **`claude setup-token` の長期トークンでは枠を取れません**(実測)。
   `/api/oauth/usage` は `user:profile` スコープを要求しますが、長期トークンは安全のため
   推論だけに絞られているためです:

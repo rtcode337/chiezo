@@ -597,48 +597,73 @@ class TestUsageWindows:
         assert len(windows) == 2
 
 
-class TestAntigravityCredits:
-    """Antigravity の使用量(`agy -p /credits --output-format json`)。
+class TestAntigravityUsage:
+    """Antigravity の使用量(`agy -p /usage --output-format json`)。
 
-    数字が JSON の形で来ない相手なので、`_windows_in` だけでは 1 つも窓が組めず、
-    画面には CLI の返事がそのままエラーとして出ていた。
+    聞くのはモデルの枠(`/usage`)であって、クレジット残高(`/credits`)ではない
+    —— あれは有償プランの勘定で、残り 0 でも推論はできる(実測)。
     """
 
-    # 実測(2026-08)。数字は response の中の人向けの文にしか無い。
-    RAW = json.dumps({
-        "conversation_id": "", "status": "SUCCESS",
-        "response": "Remaining credits\t0\nUpgrade\thttps://antigravity.google/g1-upgrade\n",
-        "duration_seconds": 0, "num_turns": 0,
-        "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-        "command": {"name": "credits", "data": {}},
+    # 実測(2026-08)。窓はモデルのグループ 2 つ × 週 / 5 時間 の 4 つ。
+    RAW: ClassVar[str] = json.dumps({
+        "status": "SUCCESS",
+        "response": (
+            "Gemini Models\tWeekly Limit Remaining\t99%\t2026-08-30T01:45:06Z\n"
+            "Gemini Models\tFive Hour Limit Remaining\t96%\t2026-08-24T05:07:54Z\n"
+        ),
+        "command": {"name": "usage", "data": {"groups": [
+            {"name": "Gemini Models", "buckets": [
+                {"id": "gemini-weekly", "name": "Weekly Limit Remaining", "window": "weekly",
+                 "remaining_fraction": 0.9864732623100281,
+                 "reset_time": "2026-08-30T01:45:06Z"},
+                {"id": "gemini-5h", "name": "Five Hour Limit Remaining", "window": "5h",
+                 "remaining_fraction": 0.9628173112869263,
+                 "reset_time": "2026-08-24T05:07:54Z"}]},
+            {"name": "Claude and GPT models", "buckets": [
+                {"id": "3p-weekly", "name": "Weekly Limit Remaining", "window": "weekly",
+                 "remaining_fraction": 1, "reset_time": "2026-08-31T01:30:18Z"}]},
+        ]}},
     }, ensure_ascii=False)
 
-    def test_credits_are_read_from_the_human_readable_response(self, bridge):
+    def test_every_bucket_becomes_a_window(self, bridge):
         server = bridge()
 
         windows = server._antigravity_windows(self.RAW)
 
-        assert len(windows) == 1
-        assert windows[0]["remaining"] == 0.0
+        assert [w["id"] for w in windows] == ["gemini-weekly", "gemini-5h", "3p-weekly"]
 
-    def test_zero_credits_do_not_become_a_percentage(self, bridge):
-        """上限を言わない相手なので、割合を作ってはいけない(0% とも 100% とも書けない)。"""
+    def test_the_group_is_in_the_name(self, bridge):
+        """グループ名は窓の兄弟ではなく親に付いている。付けないと同じ名前が2つ並ぶ。"""
         server = bridge()
 
-        window = server._antigravity_windows(self.RAW)[0]
+        labels = [w["label"] for w in server._antigravity_windows(self.RAW)]
 
-        assert window["used_percent"] is None
-        assert window["limit"] is None
+        assert labels[0] == "Gemini Models(直近 7 日)"
+        assert labels[1] == "Gemini Models(直近 5 時間)"
+        assert labels[2] == "Claude and GPT models(直近 7 日)"
 
-    def test_plain_text_output_is_read_too(self, bridge):
-        """JSON を返さない版でも読めるようにしてある。"""
+    def test_remaining_is_turned_into_used(self, bridge):
+        """相手が言うのは「残り」。画面は使用率でそろえているので裏返す。"""
         server = bridge()
 
-        windows = server._antigravity_windows("Remaining credits\t1,250\n")
+        windows = server._antigravity_windows(self.RAW)
 
-        assert windows and windows[0]["remaining"] == 1250.0
+        assert windows[0]["used_percent"] == 1.4  # 残り 98.6%
+        assert windows[2]["used_percent"] == 0.0  # 使っていない(残り 100%)
+        assert windows[0]["resets_at"] == "2026-08-30T01:45:06Z"
 
-    def test_a_response_without_credits_stays_empty(self, bridge):
+    def test_the_human_readable_lines_are_the_fallback(self, bridge):
+        """構造が変わっても、タブ区切りの行から同じ窓を組める。"""
+        server = bridge()
+        text_only = json.dumps({"status": "SUCCESS", "response": json.loads(self.RAW)["response"]})
+
+        windows = server._antigravity_windows(text_only)
+
+        assert len(windows) == 2
+        assert windows[0]["label"] == "Gemini Models(Weekly Limit Remaining)"
+        assert windows[0]["used_percent"] == 1.0
+
+    def test_a_response_without_numbers_stays_empty(self, bridge):
         """読めないときは窓を作らない —— 生の返事が理由として画面に出る。"""
         server = bridge()
 

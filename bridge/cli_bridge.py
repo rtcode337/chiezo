@@ -642,12 +642,15 @@ async def health(check: bool = False) -> dict:
 USAGE_CLIS = frozenset({"codex", "antigravity"})
 
 # Antigravity から使用量を引くコマンド。print モードのスラッシュコマンドで、
-# モデルの応答を待たずに CLI 自身が報告を返す。
-# 打ち間違いではなく、確かめられていない(サインイン済みのコンテナが要る)ので、
-# `CHIEZO_BRIDGE_USAGE_CMD`(カンマ区切り)で外から差し替えられるようにしてある。
+# モデルの応答を待たずに CLI 自身が報告を返す(会話も始めず、枠も食わない)。
+#
+# 聞くのは `/usage`(モデルの枠)であって `/credits` ではない。 あれは有償プランの
+# クレジット残高で、無料枠とは別の勘定 —— 実測で「残り 0」でも推論はできていた
+# (CLI の changelog にも、空のクレジット応答を残高 0 と読む不具合の記述がある)。
+# `CHIEZO_BRIDGE_USAGE_CMD`(カンマ区切り)で外から差し替えられる。
 ANTIGRAVITY_USAGE_CMD = [
     e.strip() for e in os.environ.get("CHIEZO_BRIDGE_USAGE_CMD", "").split(",") if e.strip()
-] or ["agy", "-p", "/credits", "--output-format", "json"]
+] or ["agy", "-p", "/usage", "--output-format", "json"]
 
 USAGE_TIMEOUT = float(os.environ.get("CHIEZO_BRIDGE_USAGE_TIMEOUT", "60") or 60)
 
@@ -703,7 +706,6 @@ def _window_from(name: str, entry: dict) -> dict | None:
         "used": used,
         "limit": limit,
         "unit": str(entry.get("unit") or ""),
-        "remaining": remaining,
         "window_minutes": _as_number(
             _first(entry, "window_minutes", "windowMinutes", "window_duration_mins", "windowDurationMins")
         ),
@@ -711,43 +713,93 @@ def _window_from(name: str, entry: dict) -> dict | None:
     }
 
 
-# `agy -p /credits --output-format json` は、数字を JSON の形では持たない。
-# 人向けの文が `response` に入ってくる(実測 2026-08):
-#   {"status":"SUCCESS","response":"Remaining credits\t0\nUpgrade\thttps://…\n", …}
-# 上限は言わないので割合は作れない —— 残りの数だけを持つ窓にする。
-_CREDITS_RE = re.compile(r"remaining\s+credits[\s:]+([0-9][0-9,]*)", re.IGNORECASE)
+# `agy -p /usage --output-format json` の形(実測 2026-08)。数字は `response` の
+# タブ区切りの行にも、`command.data` の構造にも入っている。後者から読む:
+#
+#   {"command": {"name": "usage", "data": {"groups": [
+#       {"name": "Gemini Models", "buckets": [
+#           {"id": "gemini-weekly", "name": "Weekly Limit Remaining", "window": "weekly",
+#            "remaining_fraction": 0.986, "reset_time": "2026-08-30T01:45:06Z"}, …]}, …]}}}
+#
+# 窓は 4 つ(モデルのグループ 2 つ × 週 / 5 時間)。**グループ名は窓の兄弟ではなく親に
+# 付いている**ので、入れ子のどこからでも拾う書き方では名前を作れない(同じ
+# "Weekly Limit Remaining" が 2 つ並ぶ)—— この形だけは専用に読む。
+_WINDOW_LABELS = {"weekly": "直近 7 日", "5h": "直近 5 時間"}
+
+# 上の `response` 側。 「グループ  窓の名前  残り%  戻る時刻」のタブ区切り。
+# `command.data` の形が変わったときの受け皿として持つ。
+_USAGE_LINE_RE = re.compile(
+    r"^(?P<group>[^\t]+)\t(?P<name>[^\t]+)\t(?P<percent>[0-9.]+)%\t(?P<resets>\S+)$"
+)
 
 
-def _credits_window(text: str) -> dict | None:
-    """クレジットの残りを文から読む。読めなければ None(推測で 0 を作らない)。"""
-    if not (found := _CREDITS_RE.search(text or "")):
-        return None
-    return _window_from("credits", {
-        "id": "credits",
-        "label": "クレジット",
-        "remaining": float(found.group(1).replace(",", "")),
-    })
+def _usage_windows(data: dict) -> list[dict]:
+    """`/usage` の構造から窓を組む。読めた窓だけ返す。"""
+    windows = []
+    for group in data.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        group_name = str(group.get("name") or "").strip()
+        for bucket in group.get("buckets") or []:
+            if not isinstance(bucket, dict):
+                continue
+            fraction = _as_number(bucket.get("remaining_fraction"))
+            if fraction is None:
+                continue
+            # 相手が言うのは「残り」。 画面は使用率で揃えているので、ここで裏返す。
+            window = _WINDOW_LABELS.get(str(bucket.get("window") or ""))
+            name = window or str(bucket.get("name") or "").strip()
+            windows.append({
+                "id": str(bucket.get("id") or name),
+                "label": f"{group_name}({name})" if group_name and name else (group_name or name),
+                "used_percent": round(max(0.0, (1.0 - fraction) * 100.0), 1),
+                "used": None,
+                "limit": None,
+                "unit": "",
+                "window_minutes": None,
+                "resets_at": bucket.get("reset_time") or None,
+            })
+    return windows
+
+
+def _usage_windows_from_text(text: str) -> list[dict]:
+    """人向けの行から窓を組む(構造が読めなかったときの受け皿)。"""
+    windows = []
+    for line in (text or "").splitlines():
+        if not (found := _USAGE_LINE_RE.match(line.strip())):
+            continue
+        remaining = float(found["percent"])
+        windows.append({
+            "id": f"{found['group']}:{found['name']}",
+            "label": f"{found['group']}({found['name']})",
+            "used_percent": round(max(0.0, 100.0 - remaining), 1),
+            "used": None,
+            "limit": None,
+            "unit": "",
+            "window_minutes": None,
+            "resets_at": found["resets"],
+        })
+    return windows
 
 
 def _antigravity_windows(raw: str) -> list[dict]:
     """Antigravity の返事から窓を組む。
 
-    まず JSON として窓を探し(CLI が構造化して返すようになったらそちらが勝つ)、
-    見つからなければ人向けの文を読む。文しか返さない版でも読めるよう、
-    JSON として読めなかったときは生の文字列をそのまま当てる。
+    構造(`command.data`)→ 人向けの行 → 入れ子のどこかにある窓、の順に試す。
+    どれも読めなければ空を返し、生の返事が理由として画面に出る。
     """
     try:
         payload = json.loads(raw)
     except ValueError:
-        payload = None
-    if payload is not None:
-        if windows := _windows_in(payload):
-            return windows
-        if isinstance(payload, dict):
-            text = str(payload.get("response") or "")
-            if (window := _credits_window(text)) is not None:
-                return [window]
-    return [window] if (window := _credits_window(raw)) is not None else []
+        return _usage_windows_from_text(raw)
+    if not isinstance(payload, dict):
+        return []
+    data = (payload.get("command") or {}).get("data")
+    if isinstance(data, dict) and (windows := _usage_windows(data)):
+        return windows
+    if windows := _usage_windows_from_text(str(payload.get("response") or "")):
+        return windows
+    return _windows_in(payload)
 
 
 def _windows_in(payload, name: str = "") -> list[dict]:

@@ -65,8 +65,6 @@ class Window:
 
     - 使用率で言う相手(Claude・Codex)…… `used_percent`
     - 金額で言う相手(OpenRouter)…… `used` / `limit` / `unit`
-    - 残りの数しか言わない相手(Antigravity のクレジット)…… `remaining`
-      (上限を言わないので割合にできない。使った量でもないので `used` にも入れられない)
     """
 
     id: str
@@ -76,7 +74,6 @@ class Window:
     used: float | None = None
     limit: float | None = None
     unit: str = ""
-    remaining: float | None = None
 
     @property
     def remaining_percent(self) -> float | None:
@@ -239,9 +236,6 @@ async def _bridge(spec: providers.Provider) -> list[Window]:
                 used=entry.get("used") if isinstance(entry.get("used"), int | float) else None,
                 limit=entry.get("limit") if isinstance(entry.get("limit"), int | float) else None,
                 unit=str(entry.get("unit") or ""),
-                remaining=(
-                    entry.get("remaining") if isinstance(entry.get("remaining"), int | float) else None
-                ),
             )
         )
     if not windows:
