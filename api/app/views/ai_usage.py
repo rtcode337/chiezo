@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from app import jst, providers, usage, usage_store
+from app import jst, usage, usage_store
 from app.pages import esc
 
 router = APIRouter()
@@ -129,11 +129,20 @@ def section_html(request: Request | None = None) -> str:
     banner = ""
     q = request.query_params if request is not None else {}
     if refreshed := q.get("usage_refreshed"):
-        label = esc(providers.label_of(refreshed))
+        label = esc(usage.label_of(refreshed))
         why = q.get("usage_error", "")
         banner = (
             f'<p class="stale">⚠️ {label} の使用量を取れません: {esc(why)}</p>' if why
             else f'<p class="note">✅ {label} の使用量を取り直しました。</p>'
+        )
+    elif (done := q.get("usage_refreshed_all")) is not None:
+        # 一気に取り直したとき。 取れた数と、取れなかった相手を並べる ——
+        # 「全部取り直しました」とだけ書くと、落ちている相手に気づけない。
+        why = q.get("usage_error", "")
+        banner = (
+            f'<p class="stale">⚠️ {esc(done)} 件を取り直しました'
+            f"(取れなかった相手: {esc(why)})。</p>" if why
+            else f'<p class="note">✅ {esc(done)} 件の使用量を取り直しました。</p>'
         )
 
     rows = []
@@ -163,15 +172,21 @@ def section_html(request: Request | None = None) -> str:
 <strong>聞ける相手が限られる</strong>。「Chiezo が使ったぶん」は Chiezo の勘定なので
 <strong>全部の相手で同じ物差し</strong>だが、<strong>残りは分からない</strong>
 —— <strong>Chiezo を通していない利用は入らない</strong>(手元の端末で回した CLI など)。</p>
-<p><strong>枠を聞けるのは Claude Code CLI・Codex CLI・Antigravity CLI・OpenRouter だけ。</strong>
+<p><strong>枠を聞けるのは Codex CLI・Antigravity CLI・ElevenLabs・OpenRouter だけ。</strong>
 Gemini は残量が Google Cloud の Quotas API 側にあり、OpenAI は Admin キーが要るので、
-どちらもここに入れる鍵では引けない。CLI の 3 つは<strong>モデルを呼ばずに聞く</strong>
-(確かめるたびに枠を食っては本末転倒なので)。</p>
+どちらもここに入れる鍵では引けない。<strong>Claude Code CLI も出せない</strong>
+—— CLI 自身が叩いている口は <code>user:profile</code> を要求するが、Chiezo が預かる
+<code>claude setup-token</code> の長期トークンは推論だけに絞られているため。
+聞ける相手は<strong>モデルを呼ばずに聞く</strong>(確かめるたびに枠を食っては本末転倒なので)。</p>
 <p><strong>開いたときには聞きに行かない。</strong>控えてある値と「いつ取ったか」を出し、
-取り直しは行のボタンで —— 落ちている相手がいると、その数だけ画面が遅れるため。
+取り直しはボタンで —— 落ちている相手がいると、その数だけ画面が遅れるため。
+まとめて取り直すボタンは<strong>並行に聞く</strong>ので、待つのは一番遅い相手のぶんだけ。
 API からは <code>GET /v1/ai/usage</code>(取り直すなら <code>?refresh=1</code>)。</p>
 </details>
 {since_note}
+<form method="post" action="/admin/ai/usage/all" class="init-form">
+<button type="submit">枠を聞ける相手を全部取り直す({len(usage.refreshable())} 件)</button>
+</form>
 <table class="ai-settings ai-usage">
 <thead><tr><th>AI</th><th>相手が言う枠(残り)</th><th>Chiezo が使ったぶん</th><th></th></tr></thead>
 <tbody>
@@ -179,6 +194,21 @@ API からは <code>GET /v1/ai/usage</code>(取り直すなら <code>?refresh=1<
 </tbody>
 </table>
 """
+
+
+@router.post("/admin/ai/usage/all")
+async def refresh_all_usage():
+    """枠を聞ける相手をまとめて取り直す(並行に聞く)。
+
+    行ごとに押すと相手の数だけ往復することになる。取れなかった相手がいても
+    残りは取り直し、誰が取れなかったかを画面に出す。
+    """
+    done = await usage.refresh_all()
+    failed = [usage.label_of(pid) for pid, quota in done.items() if quota.error]
+    params = {"usage_refreshed_all": len(done) - len(failed)}
+    if failed:
+        params["usage_error"] = "、".join(failed)[:300]
+    return RedirectResponse(f"/admin?{urlencode(params)}#{SECTION_ANCHOR}", status_code=303)
 
 
 @router.post("/admin/ai/usage")

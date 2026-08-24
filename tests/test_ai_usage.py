@@ -368,6 +368,43 @@ class TestAdminSection:
 
         assert res.status_code == 400
 
+    def test_everything_can_be_refreshed_at_once(self, env):
+        """行ごとに押すと相手の数だけ往復することになる。まとめて押せる口を出す。"""
+        from app import settings_store, usage
+
+        asked = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            asked.append(str(request.url))
+            return httpx.Response(200, json={"data": {"usage": 1.0, "limit": 10}})
+
+        with make_client(env, ReplyLLM()) as client:
+            settings_store.set_credential("openrouter", "sk-or-test")
+            env.setattr(usage, "_client", lambda *a, **k: httpx.AsyncClient(
+                transport=httpx.MockTransport(handler)))
+            res = client.post("/admin/ai/usage/all", follow_redirects=False)
+
+        assert res.status_code == 303
+        # 鍵の無い相手・答えない相手は理由つきで失敗する。押した結果は「取れた数」で返す
+        assert "usage_refreshed_all=1" in res.headers["location"]
+        assert "usage_error" in res.headers["location"]
+        # 鍵の無い相手(ElevenLabs)には行かない —— 手前で「未登録」が理由になる
+        assert not [u for u in asked if "elevenlabs" in u]
+        # 残りには全員に聞く(並行。1 つ落ちていても残りは取り直す)
+        assert "https://openrouter.ai/api/v1/key" in asked
+        assert len(asked) == len(usage.refreshable()) - 1
+
+    def test_the_button_counts_the_same_backends_it_will_ask(self, env):
+        """ボタンに出す数と、実際に聞く相手を同じところから数える。"""
+        from app import usage
+        from app.views import ai_usage
+
+        with make_client(env, ReplyLLM()):
+            html = ai_usage.section_html()
+
+        assert f"全部取り直す({len(usage.refreshable())} 件)" in html
+        assert "elevenlabs" in usage.refreshable()  # 絵と音だけの相手も入る
+
     def test_the_reason_comes_back_to_the_screen(self, env):
         from app import settings_store, usage
 

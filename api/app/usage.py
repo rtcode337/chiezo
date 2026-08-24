@@ -422,9 +422,30 @@ def rows() -> list[dict]:
     return out
 
 
-async def refresh_all() -> None:
-    """枠を聞ける相手を並行に取り直す。直列だと落ちている相手の数だけ待つ。"""
-    targets = [p.id for p in providers.all_providers() if p.usage]
-    targets += [pid for pid in media_providers.standalone_labels()
-                if getattr(media_providers.get(pid), "usage", "")]
-    await asyncio.gather(*(refresh(pid) for pid in targets), return_exceptions=True)
+def refreshable() -> list[str]:
+    """枠を聞ける相手の ID。 画面のボタンと `refresh_all` が同じここから数える
+    —— 別々に数えると、「N 件取り直しました」と実際に聞いた相手が食い違う。"""
+    out = [p.id for p in providers.all_providers() if p.usage]
+    out += [pid for pid in media_providers.standalone_labels()
+            if getattr(media_providers.get(pid), "usage", "")]
+    return out
+
+
+async def refresh_all() -> dict[str, Quota]:
+    """枠を聞ける相手を並行に取り直す。直列だと落ちている相手の数だけ待つ。
+
+    返すのは相手ごとの結果。 落ちている相手がいても残りは取り直す
+    —— 1 つの失敗で全部を捨てない(結果は控えにも残る)。
+    """
+    targets = refreshable()
+    done = await asyncio.gather(*(refresh(pid) for pid in targets), return_exceptions=True)
+    return {
+        pid: quota for pid, quota in zip(targets, done, strict=True)
+        if isinstance(quota, Quota)
+    }
+
+
+def label_of(provider_id: str) -> str:
+    """画面に出す名前。絵と音だけの相手も引ける(`spec_of` と同じ範囲)。"""
+    spec = spec_of(provider_id)
+    return getattr(spec, "label", "") or provider_id
