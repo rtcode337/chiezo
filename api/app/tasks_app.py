@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app import db, notes, tasks_api
+from app import db, notes, tasks_api, tasks_auth
 
 log = logging.getLogger("chiezo.tasks")
 
@@ -41,6 +41,17 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Chiezo tasks", lifespan=lifespan, docs_url=None, redoc_url=None)
     tasks_api.install_error_handlers(app)
     app.include_router(tasks_api.router)
+    # 認証・CSRF・レート制限・セキュリティヘッダ。**ルーターより後に仕込む**
+    # (Starlette のミドルウェアは後から足したものが外側に来るので、
+    #  ここで足したものが全ルートを包む)
+    tasks_auth.install(app)
+    if tasks_auth.config.dev:
+        log.warning("CHIEZO_TASKS_DEV=true。認証を通していない。本番で立ててはいけない")
+    elif not tasks_auth.config.configured:
+        log.error(
+            "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / ALLOWED_EMAIL が未設定のため"
+            " ログインを無効化した。/api は 401 を返し続ける"
+        )
 
     @app.get("/healthz")
     def healthz() -> dict:

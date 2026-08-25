@@ -9,11 +9,27 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture()
 def api(tmp_path, monkeypatch):
+    """ログイン済みのクライアント。
+
+    開発モード(`CHIEZO_TASKS_DEV`)で素通しするのではなく、**本物のセッションを 1 件
+    作って Cookie を持たせる** —— そうしないと認証と CSRF のミドルウェアを通らず、
+    画面が実際に踏む経路を試したことにならない。
+    """
     monkeypatch.setenv("CHIEZO_NOTES_DIR", str(tmp_path / "notes"))
     monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "test-secret")
+    monkeypatch.setenv("ALLOWED_EMAIL", "someone@example.com")
+    from app import tasks_auth
     from app.tasks_app import create_app
 
-    with TestClient(create_app()) as c:
+    session_id = tasks_auth._store(
+        "user", tasks_auth.SESSION_TTL, email="someone@example.com", name="Someone"
+    )
+    csrf = "test-csrf-token"
+    with TestClient(create_app(), headers={tasks_auth.CSRF_HEADER: csrf}) as c:
+        c.cookies.set(tasks_auth.SESSION_COOKIE, session_id)
+        c.cookies.set(tasks_auth.CSRF_COOKIE, csrf)
         yield c
 
 
