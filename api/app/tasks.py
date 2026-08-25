@@ -68,6 +68,10 @@ STRUCTURAL_TAGS = frozenset({
 # 完了タスクの 1 ページ。cc-tasks の TaskService.listDone と同じ上限。
 DONE_PAGE_SIZE_MAX = 100
 
+# 更新で projectId にこれ(0)を送ると紐づけを外す。null は「変更しない」の意味なので、
+# 外す指示をそれと分けるための値。doc_id は 1 から振られるので実在の id とぶつからない。
+UNLINK_PROJECT_ID = 0
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
@@ -248,11 +252,15 @@ def create_task(
     body: str | None = None,
     project: str | None = None,
     status: str | None = None,
+    flagged: bool = False,
 ) -> Task:
     """タスクを 1 件足す。
 
     `sort_order` は 0(未並び替え)。手で並べた分(1..n)より前に来るので、
-    放り込んだタスクはグループの先頭に積まれる。印は放り込む時点では分からないので付けない。
+    放り込んだタスクはグループの先頭に積まれる。
+
+    `flagged` を渡すのは**取り込み(`import_tasks`)だけ**。印を付けるかは人の判断なので
+    放り込む時点では分からないが、書き出したものを戻すときは運ばないと失われる。
     """
     title = (title or "").strip()
     if not title:
@@ -268,7 +276,7 @@ def create_task(
     created = notes.add(
         text=text,
         title=title,
-        tags=_task_tags(status, False, project, []),
+        tags=_task_tags(status, flagged, project, []),
         extra={"created_at": _now(), "sort_order": 0},
     )
     return require_task(created["doc_id"])
@@ -771,3 +779,122 @@ def set_rules_repo_url(value: str | None) -> str | None:
     """規約リポジトリの更新。空文字を渡すと消す。更新後の値を返す。"""
     settings_store.set_flag(RULES_REPO_URL_KEY, value)
     return rules_repo_url()
+
+
+# ---- 持ち出しと取り込み -----------------------------------------------------
+#
+# DB を失っても打ち直さずに戻せるようにするための機能。**書き出したものをそのまま
+# 読み込める**(書き出し結果が読み込みの入力と同じ形)ので、テキストとして手元に
+# 置いておけばバックアップになる。
+#
+# 持ち出すのは未完了のタスクと、その所属プロジェクトの名前・リポジトリだけ。
+# 完了タスクは「片付いたものの記録」で復元する意味が薄く、プロジェクトの説明・
+# 並び順・アーカイブ状態も対象にしない(戻したいのは待ち行列であって画面の状態ではない)。
+
+# 書き出し形式の版。読み込み側は「これ以下なら読む」で判定する ——
+# 将来 2 を書き出すようになっても、古い 1 のファイルは読めるようにするため。
+EXPORT_FORMAT_VERSION = 1
+
+
+def _exported(items: list[Task]) -> list[dict]:
+    return [{"title": t.title, "status": t.status, "flagged": t.flagged} for t in items]
+
+
+def export_tasks() -> dict:
+    """未完了タスクを書き出す。プロジェクトは表示順、タスクは各プロジェクト内の並び順。
+
+    未完了タスクを持たないプロジェクトは含めない —— 戻したいのはタスクなので、
+    空のプロジェクトまで作ると復元先に使っていない箱が増える。
+    """
+    projects = []
+    for project in list_projects():
+        items = list_active_tasks(project.name)
+        if items:
+            projects.append({
+                "name": project.name,
+                "repoUrls": project.repo_urls,
+                "tasks": _exported(items),
+            })
+    unassigned = [t for t in list_active_tasks() if t.project is None]
+    return {
+        "version": EXPORT_FORMAT_VERSION,
+        "exportedAt": _now(),
+        "projects": projects,
+        "unassignedTasks": _exported(unassigned),
+    }
+
+
+def _transfer_key(project_name: str, title: str) -> str:
+    # NUL 区切り。表示に使える文字でつなぐと、名前とタイトルの境目が違っても
+    # 同じキーになりうる(「A」+「B C」と「A B」+「C」)。
+    return f"{project_name}\0{title}"
+
+
+def import_tasks(data: dict | None, dry_run: bool = False) -> dict:
+    """書き出したものを読み込む。
+
+    プロジェクトは**名前で照合し、無ければ作る**(リポジトリも一緒に登録する)。
+    既にあるものは触らない —— 復元のたびに手元の設定を上書きされると困る。
+
+    タスクは**同じプロジェクトに同じタイトルの未完了タスクがあれば飛ばす**。
+    同じファイルを二度読んでも増えないようにするため(復元は繰り返し試すことがある)。
+    """
+    data = data or {}
+    entries = data.get("projects") or []
+    unassigned = data.get("unassignedTasks") or []
+    if not entries and not unassigned:
+        raise _bad_request("読み込めるタスクがありません。書き出した JSON を貼り付けてください")
+    version = int(data.get("version") or EXPORT_FORMAT_VERSION)
+    if version > EXPORT_FORMAT_VERSION:
+        raise _bad_request(
+            f"対応していない形式です(version={version})。"
+            f"このアプリが読めるのは {EXPORT_FORMAT_VERSION} までです"
+        )
+
+    result: dict[str, list[str]] = {"createdProjects": [], "createdTasks": [], "skippedTasks": []}
+    # 既存の未完了タスクの (プロジェクト名, タイトル)。id ではなく名前で持つのは、
+    # dry_run ではまだ作っていないプロジェクトがあるため。
+    taken = {_transfer_key(t.project or "", t.title) for t in list_active_tasks()}
+    existing_names = {p.name for p in list_projects()}
+
+    for entry in entries:
+        name = (entry.get("name") or "").strip()
+        if not name:
+            raise _bad_request("プロジェクト名が空のものがあります")
+        if name not in existing_names:
+            result["createdProjects"].append(name)
+            existing_names.add(name)
+            if not dry_run:
+                create_project(name, repo_urls=entry.get("repoUrls"))
+        _import_into(name, entry.get("tasks"), taken, result, dry_run)
+    _import_into("", unassigned, taken, result, dry_run)
+    return result
+
+
+def _import_into(
+    project_name: str,
+    items: list[dict] | None,
+    taken: set[str],
+    result: dict[str, list[str]],
+    dry_run: bool,
+) -> None:
+    for item in items or []:
+        title = (item.get("title") or "").strip()
+        if not title:
+            continue
+        label = title if not project_name else f"{project_name} / {title}"
+        key = _transfer_key(project_name, title)
+        # 既にある、または同じファイル内での重複
+        if key in taken:
+            result["skippedTasks"].append(label)
+            continue
+        taken.add(key)
+        result["createdTasks"].append(label)
+        if not dry_run:
+            status = item.get("status") or STATUS_TODO
+            create_task(
+                title,
+                project=project_name or None,
+                status=status if status in STATUSES else STATUS_TODO,
+                flagged=bool(item.get("flagged")),
+            )
