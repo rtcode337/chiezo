@@ -1,0 +1,239 @@
+/* モバイルファースト。主用途は出先のスマホ入力 (仕様書 §8) */
+
+/* 明るいテーマがデフォルト。暗いテーマは <html data-theme="dark"> で切り替える。
+   コンポーネントはすべてこの変数を参照するので、ここだけで両テーマを賄う。 */
+:root,
+:root[data-theme='light'] {
+  --bg: #f4f6f9;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --border: #dce2ea;
+  --text: #1b232c;
+  --muted: #5b6b7a;
+  --muted-dim: #94a1af;
+  --accent: #1478c8;
+  --accent-text: #ffffff;
+  --danger: #d92d20;
+  --danger-bg: #fdecea;
+  --warn: #8a5a00;
+  --warn-bg: #fdf4d6;
+  --code-bg: #f0f3f7;
+
+  --badge-todo-bg: #e4e9f0;
+  --badge-todo-text: #48566a;
+  --badge-inprogress-bg: #fdf0cf;
+  --badge-inprogress-text: #8a5a00;
+  --badge-done-bg: #d8f5e2;
+  --badge-done-text: #1a7a3f;
+
+  /* 「修正が大変そう」の印が付いたカードの面。状態バッジ(灰・黄・緑)と被らない水色 */
+  --flag-bg: #ddeffb;
+  --flag-border: #8ec7ea;
+  --flag-text: #0e5d8f;
+
+  --overlay: rgba(27, 35, 44, 0.4);
+}
+
+:root[data-theme='dark'] {
+  --bg: #12181f;
+  --surface: #1a222c;
+  --surface-raised: #212b37;
+  --border: #2c3846;
+  --text: #e6edf3;
+  --muted: #9aa8b6;
+  --muted-dim: #6b7a8a;
+  --accent: #5ec8f8;
+  --accent-text: #06121f;
+  --danger: #f87171;
+  --danger-bg: #3a1d1d;
+  --warn: #fbbf24;
+  --warn-bg: #3a2f14;
+  --code-bg: #0e141b;
+
+  --badge-todo-bg: #2b3440;
+  --badge-todo-text: #cbd5e1;
+  --badge-inprogress-bg: #3b2f12;
+  --badge-inprogress-text: #fbbf24;
+  --badge-done-bg: #12321f;
+  --badge-done-text: #4ade80;
+
+  --flag-bg: #14303f;
+  --flag-border: #2d6a8c;
+  --flag-text: #7fd0f5;
+
+  --overlay: rgba(4, 8, 12, 0.7);
+}
+
+/* 幅の決めごと。色と違ってテーマでは変わらないので、明暗のブロックとは分けて置く。
+   --content-max はヘッダ・本文・フッターが共有する外枠、--reading-max は
+   長い文章と入力欄の上限。広い画面で本文だけ広げても、1 行が伸び続けると読みにくいため */
+:root {
+  --content-max: 46rem;
+  --reading-max: 46rem;
+}
+
+/* PC のような広い画面では外枠の制限を外す —— 一覧が段組みで右へ流れるので、
+   ここで頭打ちにすると使える段の数がその幅で決まってしまう。
+   量が足りずに折り返さないときは、段組みの側が使ったぶんだけの幅に絞って中央に置く
+   (lib/columnFlow.ts)。同じ 64rem を境にするので、動かすなら段組み側もそろえること */
+@media (min-width: 64rem) {
+  :root {
+    --content-max: 100%;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  /* アプリ独自の「引っ張って更新」(App.vue)と Chrome 標準のプル更新が二重にならないように */
+  overscroll-behavior-y: contain;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    system-ui,
+    -apple-system,
+    'Hiragino Kaku Gothic ProN',
+    'Noto Sans JP',
+    sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  overflow-wrap: break-word;
+  /* テーマ切り替えを滑らかに */
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+a {
+  color: var(--accent);
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  /* 16px 未満だと iOS がフォーカス時にズームする */
+  font-size: 1rem;
+  font-family: inherit;
+}
+
+textarea {
+  resize: vertical;
+  line-height: 1.6;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.button {
+  padding: 0.625rem 1rem;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.button--ghost {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--muted);
+}
+
+.button--danger {
+  background: transparent;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* モーダル右上のアイコンボタン(コピー / ファイルに書き出す / ファイルから読み込む)。
+   横に並ぶので、どれか 1 つだけ見た目がずれないよう指定はここに 1 つだけ置く */
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.875rem;
+  height: 1.875rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.icon-button:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* 広い画面の一覧の段組み(新聞組み)。上から詰めて **下端まで来たら右の段へ折り返し**、
+   溢れたぶんは横スクロール。トップ・完了・アーカイブの 3 画面で使うのでここに置く。
+   使う側は「画面の余り高さ」を渡すこと —— multicol は確定した高さが無いと折り返せない
+   (App.vue が .app を 100dvh にし、各ビューの .page が flex で継ぐ)。
+   **トップでは入力欄もこの中に入れる**(入力欄の右にもカードが回り込むように)。 */
+@media (min-width: 64rem) {
+  .column-flow {
+    flex: 1;
+    min-height: 0;
+    /* flex コンテナは段をまたいで分割できないので block に戻す */
+    display: block;
+    /* **1 段の幅は入力欄の幅にそろえる。** トップでは入力欄も同じ流れに入るので、
+       段を細くするとそのぶん入力欄が狭くなる(段組みは全段が同じ幅になる)。
+       段は器の幅いっぱいに引き伸ばされてしまうので、器の側を段の整数倍に詰める
+       —— そこは lib/columnFlow.ts が測ってやる */
+    column-width: var(--reading-max);
+    column-count: auto;
+    column-gap: 1rem;
+    /* 段を均等割りせず、1 段目を下端まで詰めてから次の段へ */
+    column-fill: auto;
+    /* 溢れた段は右へ。縦は原則溢れないが、段より高い中身を閉じ込めないよう auto */
+    overflow: auto;
+  }
+}
+
+/* 文言で出す小さなボタン(ファイルに書き出す / ファイルから読み込む)。
+   アイコンだけでは何のファイル操作か分からないものは、こちらで文言のまま出す */
+.text-button {
+  padding: 0.25rem 0.625rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.text-button:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}

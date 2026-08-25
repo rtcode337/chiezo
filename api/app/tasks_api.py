@@ -34,6 +34,23 @@ class _Input(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="ignore")
 
 
+def _optional_bool(value: str | None) -> bool | None:
+    """三値の真偽をクエリから読む。**空文字は「絞り込まない」**。
+
+    画面は「全件」を `?archived=`(値だけ空)で送る。FastAPI に `bool | None` として
+    宣言すると空文字を変換できず 422 になり、一覧がまるごと出なくなる
+    (実際に踏んだ。テストでは `?archived=true` しか送っていなかったので気づけなかった)。
+    """
+    if value is None or value == "":
+        return None
+    lowered = value.strip().lower()
+    if lowered in {"1", "true", "yes"}:
+        return True
+    if lowered in {"0", "false", "no"}:
+        return False
+    raise HTTPException(400, {"error": f"true か false を指定してください: {value}"})
+
+
 # ---- エラーの形 -------------------------------------------------------------
 
 _CODES = {400: "bad_request", 404: "not_found", 409: "conflict"}
@@ -123,8 +140,8 @@ class OrderInput(_Input):
 
 
 @router.get("/projects")
-def list_projects(archived: bool | None = Query(None)) -> list[dict]:
-    return [_project_json(p) for p in tasks.list_projects(archived)]
+def list_projects(archived: str | None = Query(None)) -> list[dict]:
+    return [_project_json(p) for p in tasks.list_projects(_optional_bool(archived))]
 
 
 @router.post("/projects", status_code=201)
@@ -175,13 +192,14 @@ class TaskOrderInput(_Input):
 def list_tasks(
     projectId: int | None = Query(None),  # 画面が送るクエリ名に合わせる
     status: str | None = Query(None),
-    done: bool | None = Query(None),
+    done: str | None = Query(None),
     page: int = Query(0, ge=0),
     size: int = Query(20, ge=1),
 ):
+    want_done = _optional_bool(done)
     project = _project_name(projectId) if projectId is not None else None
     ids = _project_ids()
-    if done is True:
+    if want_done is True:
         paged = tasks.list_done_tasks(project, page, size)
         total, size = paged["total"], paged["size"]
         return {
@@ -191,7 +209,7 @@ def list_tasks(
             "size": size,
             "totalPages": (total + size - 1) // size,
         }
-    if done is False:
+    if want_done is False:
         return [_task_json(t, ids) for t in tasks.list_active_tasks(project)]
     return [_task_json(t, ids) for t in tasks.list_tasks(project, status)]
 

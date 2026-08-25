@@ -143,6 +143,21 @@ class TestTasks:
     def test_unknown_status_is_400(self, api):
         assert api.get("/api/tasks", params={"status": "なにか"}).status_code == 400
 
+    def test_an_empty_flag_means_no_filter(self, api):
+        """画面は「全件」を `?archived=` / `?done=`(値だけ空)で送る。
+
+        FastAPI に bool として宣言すると空文字を変換できず 422 になり、
+        一覧がまるごと出なくなる(実ブラウザで踏んだ)。
+        """
+        _project(api, "a")
+        _task(api, "あ")
+        assert api.get("/api/projects?archived=").status_code == 200
+        assert len(api.get("/api/projects?archived=").json()) == 1
+        assert len(api.get("/api/tasks?done=").json()) == 1
+
+    def test_a_garbage_flag_is_400_not_500(self, api):
+        assert api.get("/api/projects", params={"archived": "たぶん"}).status_code == 400
+
 
 class TestProjects:
     def test_archived_filter(self, api):
@@ -248,3 +263,47 @@ class TestTransfer:
 class TestHealth:
     def test_healthz(self, api):
         assert api.get("/healthz").json() == {"ok": True, "notes": True}
+
+
+class TestSpa:
+    """画面(Vue の成果物)の配信。"""
+
+    @pytest.fixture()
+    def served(self, api, tmp_path, monkeypatch):
+        root = tmp_path / "static"
+        (root / "assets").mkdir(parents=True)
+        (root / "index.html").write_text("<!doctype html>殻", encoding="utf-8")
+        (root / "assets" / "app-abc123.js").write_text("console.log(1)", encoding="utf-8")
+        (root / "manifest.webmanifest").write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("CHIEZO_TASKS_STATIC_DIR", str(root))
+        return api
+
+    def test_serves_the_shell_for_unknown_paths(self, served):
+        """画面のルーティングは SPA 側が持つので、/done も /rules も殻を返す。"""
+        for path in ["/", "/done", "/rules", "/archived"]:
+            res = served.get(path)
+            assert res.status_code == 200 and "殻" in res.text, path
+
+    def test_serves_real_files(self, served):
+        assert served.get("/assets/app-abc123.js").text == "console.log(1)"
+
+    def test_hashed_assets_are_cached_but_the_shell_is_not(self, served):
+        assert "immutable" in served.get("/assets/app-abc123.js").headers["cache-control"]
+        assert served.get("/").headers["cache-control"] == "no-cache"
+
+    def test_the_manifest_is_typed_so_it_gets_read(self, served):
+        assert "manifest+json" in served.get("/manifest.webmanifest").headers["content-type"]
+
+    def test_unknown_api_paths_do_not_fall_through_to_the_shell(self, served):
+        """殻が 200 で返ると、綴りを間違えた呼び出しの原因を追えなくなる。"""
+        res = served.get("/api/nope")
+        assert res.status_code == 404 and res.json()["error"]["code"] == "not_found"
+
+    def test_it_will_not_serve_outside_the_directory(self, served):
+        res = served.get("/../../etc/passwd")
+        assert "passwd" not in res.text and "root:" not in res.text
+
+    def test_without_a_build_it_says_so(self, api, tmp_path, monkeypatch):
+        monkeypatch.setenv("CHIEZO_TASKS_STATIC_DIR", str(tmp_path / "missing"))
+        res = api.get("/")
+        assert res.status_code == 503 and res.json()["error"]["code"] == "no_static"

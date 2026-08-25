@@ -33,3 +33,7 @@ models/
 # 別マシンへ持ち出す ingest イメージの置き場(docker save の成果物。手順書は
 # docs/build-on-another-machine.md にあるので、このフォルダは丸ごと管理外)
 handoff/
+
+# やること画面(Vue)のビルド成果物と依存。イメージの中でビルドするのでコミットしない
+tasks-frontend/node_modules/
+tasks-frontend/dist/

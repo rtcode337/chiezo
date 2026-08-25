@@ -237,6 +237,20 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     - **notes を `db.set_mutable_paths()` に登録すること**。登録しないと
       `immutable=1` で開かれ、書き込み途中のページを掴みうる(本体は `/data` の走査で
       登録しているが、こちらは notes しか読まないので lifespan で明示する)
+    - **画面(`tasks-frontend/` のビルド成果物)もここが配る**(`_serve_spa`)。
+      総取りのルートなので**全部のルートを登録し終えた後**に足す。
+      `/api/` `/oauth2/` `/login/` に前方一致するものは画面に落とさない ——
+      落とすと、綴りを間違えた API 呼び出しに殻が 200 で返って原因を追えなくなる。
+      ハッシュの付いた `/assets/` だけ長く持たせ、殻と Service Worker は `no-cache`
+  - `tasks-frontend/` — **やること画面(Vue 3 + Vite + PWA)**。cc-tasks から移した。
+    使い方は `docs/tasks.md`「画面」が正。**サーバーレンダリングの `api/app/views/` とは
+    別系統**で、ここだけビルドステップを持つ。
+    - **クエリの真偽は空文字を「絞り込まない」として受けること**(`_optional_bool`)。
+      画面は「全件」を `?archived=`(値だけ空)で送るので、FastAPI に `bool` として
+      宣言すると 422 になり一覧がまるごと出ない。**テストでは `?archived=true` しか
+      送っていなくて気づけず、実ブラウザで開いて初めて出た**
+    - アイコンは `scripts/gen_tasks_icons.py`(標準ライブラリのみ)。この環境には
+      SVG のラスタライザが無いので、距離関数で描いて zlib で PNG を組んでいる
   - `app/tasks_auth.py` — **やること層の認証(Google OAuth)。外に出す面はここだけが守る**。
     要件は `docs/tasks.md`「守り」が正。実装側の要点:
     - **足りないときは閉じる**。`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` /

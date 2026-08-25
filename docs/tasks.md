@@ -85,6 +85,36 @@ Google Cloud Console に登録するリダイレクト URI は
   起動すること**(信頼できる値だけが `request` に入る)
 - **リダイレクト URI のホストは許可リストでのみ採用**する(Host ヘッダ注入対策)
 
+## 画面(`tasks-frontend/`)
+
+cc-tasks の Vue 3 + Vite + `vite-plugin-pwa` をそのまま持ってきた。**サーバー
+レンダリングの管理画面(`api/app/views/`)とは別系統**で、こちらだけビルドステップを持つ
+—— PWA・ドラッグ並び替え・オフラインを HTML 文字列の組み立てに載せ直すのは割に合わない。
+
+```bash
+cd tasks-frontend
+npm ci
+npm run build          # vue-tsc の型検査込み。成果物は dist/
+
+# 開発中(API と画面を別々に上げる)
+CHIEZO_NOTES_DIR=./notes CHIEZO_STATE_DIR=./state CHIEZO_TASKS_DEV=true \
+  PYTHONPATH=api .venv/bin/python -m uvicorn app.tasks_app:app --port 7015
+npm run dev            # :7016 → /api・/oauth2・/login を :7015 へ中継
+```
+
+**ポートは 7015**(コンテナの内も外も、本番も開発中の直接起動も同じ)。本体が 7010、
+その周辺が 7011〜7014・7019 を使っているので、その次を取っている。開発中のフロントだけ
+7016 で、これは Vite の中継サーバーぶん。
+
+- `CHIEZO_TASKS_STATIC_DIR`(既定 `/app/tasks-static`)にビルド成果物を置くと、
+  `app/tasks_app.py` がそこから配る。**無ければ 503** で「画面がまだ置かれていません」
+- **ハッシュの付いた資材(`/assets/`)だけ長く持たせる**。殻と Service Worker を
+  長く持たせると、更新しても古い版が出続ける
+- **`/api/` `/oauth2/` `/login/` に前方一致するものは画面に落とさない**。落とすと、
+  綴りを間違えた API 呼び出しに殻が 200 で返り、原因を追いにくくなる
+- アイコンは `scripts/gen_tasks_icons.py` が書き出す(標準ライブラリのみ)。
+  この環境には SVG のラスタライザが無いので、距離関数で描いて zlib で PNG を組んでいる
+
 ## REST(`/api/**`)
 
 パスと本文は cc-tasks のものをそのまま引き継いでいる(移した画面が変更なしで話せる)。
