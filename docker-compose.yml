@@ -126,6 +126,62 @@ services:
       test: ["CMD", "curl", "-fs", "http://localhost:7010/healthz"]
       interval: 60s
 
+  # やること(タスク・ルール)。**外に出すのはこれだけ。**
+  #
+  # chiezo-api と同じイメージで、command だけ差し替えて別のアプリを起動する。
+  # 面をプロセスごと分けてあるのは、本体を公開すると サーバー側の鍵で AI を叩く口・
+  # 課金の走る生成の口・取り込みを起こせる管理画面・メモを消せる口まで一緒に外へ
+  # 出てしまうため(docs/tasks.md)。
+  #
+  # **GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / ALLOWED_EMAIL を入れるまで
+  # /api は 401 を返し続ける。** 設定が無いときに素通しすると外に出した瞬間に
+  # 丸見えになるので、足りないときは閉じる側に倒してある。
+  chiezo-tasks:
+    image: ${CHIEZO_API_IMAGE:-ghcr.io/rtcode337/chiezo-api:latest}
+    # --proxy-headers を付けるのは、リバースプロキシの後ろで client の IP と
+    # scheme を正しく見るため。**--forwarded-allow-ips に信頼できるプロキシを
+    # 指定すること** —— 既定(127.0.0.1)のままだと別コンテナのプロキシからの
+    # ヘッダが無視され、レート制限のキーがプロキシ 1 つに潰れる
+    command:
+      - uvicorn
+      - app.tasks_app:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "7015"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - ${CHIEZO_TASKS_FORWARDED_ALLOW_IPS:-127.0.0.1}
+    ports:
+      - "7015:7015"
+    volumes:
+      # notes は本体と同じ実体を見る(WAL なので別プロセスから書ける)。
+      # corpus は要らない —— この面は知識ベースを引かない
+      - ./data:/data
+    user: "${CHIEZO_UID:-10001}:${CHIEZO_GID:-10001}"
+    environment:
+      - CHIEZO_NOTES_DIR=/data/notes
+      - CHIEZO_STATE_DIR=/data/state
+      # ログインを許す Google アカウント 1 件と、その資格情報。
+      # 3 つとも揃わないと /api は 401 のまま(素通しはしない)
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET-}
+      - ALLOWED_EMAIL=${ALLOWED_EMAIL-}
+      # 公開 URL。リダイレクト URI をここから組む(最優先)。
+      # 設定しない場合は ALLOWED_REDIRECT_HOSTS でホストを許可リストにする
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL-}
+      - ALLOWED_REDIRECT_HOSTS=${ALLOWED_REDIRECT_HOSTS-}
+      - LOGIN_RATE_LIMIT_PER_MINUTE=${LOGIN_RATE_LIMIT_PER_MINUTE-}
+      # 認証を通さない開発モード。**本番では絶対に立てない**(既定は false)
+      - CHIEZO_TASKS_DEV=${CHIEZO_TASKS_DEV-}
+    depends_on:
+      chiezo-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:7015/healthz"]
+      interval: 60s
+
   # 管理画面からの「未初期化データの初期化」を受けて ingest を実行する内部専用トリガー。
   # ingest イメージを流用し、CMD だけ server:app(FastAPI)起動に上書きする。
   # ホストへポート公開せず、chiezo-api からのみ docker 内部ネットワーク経由で到達できる。

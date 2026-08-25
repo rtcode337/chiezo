@@ -69,6 +69,56 @@ services:
       - *data-volume
     restart: "no"
 
+  # やること(タスク・ルール)。**外に出すのはこれだけ。**
+  # chiezo-api と同じイメージで、command だけ差し替えて別のアプリを起動する。
+  # 本体(7010)を公開してはいけない —— サーバー側の鍵で AI を叩く口・課金の走る
+  # 生成の口・取り込みを起こせる管理画面・メモを消せる口まで一緒に外へ出るため。
+  # 詳しくは docs/tasks.md。使わないならこのサービスごと消してよい。
+  chiezo-tasks:
+    image: ghcr.io/rtcode337/chiezo-api:latest
+    container_name: chiezo-tasks
+    # --forwarded-allow-ips には信頼できるプロキシの IP を書く。既定(127.0.0.1)の
+    # ままだと別コンテナのプロキシからのヘッダが無視され、レート制限のキーが
+    # プロキシ 1 つに潰れる
+    command:
+      - uvicorn
+      - app.tasks_app:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "7015"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "127.0.0.1"
+    ports:
+      - "7015:7015"
+    volumes:
+      # notes は本体と同じ実体を見る(WAL なので別プロセスから書ける)。
+      # corpus は要らない —— この面は知識ベースを引かない
+      - *data-volume
+    user: *run-as
+    environment:
+      CHIEZO_NOTES_DIR: /data/notes
+      CHIEZO_STATE_DIR: /data/state
+      # ログインを許す Google アカウント 1 件と、その資格情報。
+      # **3 つとも埋めるまで /api は 401 を返し続ける**(素通しはしない)。
+      # Google Cloud Console の承認済みリダイレクト URI には
+      # <公開URL>/login/oauth2/code/google を登録する
+      GOOGLE_CLIENT_ID: "xxxxxxxxxxxx.apps.googleusercontent.com"
+      GOOGLE_CLIENT_SECRET: "xxxxxxxxxxxxxxxxxxxxxxxx"
+      ALLOWED_EMAIL: "you@example.com"
+      # 公開 URL。リダイレクト URI をここから組む(最優先)。設定しない場合は
+      # 組み立てに使ってよいホストを ALLOWED_REDIRECT_HOSTS で許可リストにする
+      PUBLIC_BASE_URL: "https://tasks.example.com"
+      #ALLOWED_REDIRECT_HOSTS: "tasks.example.com"
+      #LOGIN_RATE_LIMIT_PER_MINUTE: "20"   # ログイン試行の上限(IP あたり・毎分)
+      # 認証を通さない開発モード。**本番では絶対に有効にしない**
+      #CHIEZO_TASKS_DEV: "false"
+    depends_on:
+      chiezo-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   # 検索 API・MCP・管理画面。これが本体で、単体で起動する。
   chiezo-api:
     # 障害時は :latest ではなく :sha-xxxxxxx を指定すれば任意の時点に戻せる

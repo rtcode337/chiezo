@@ -137,7 +137,11 @@ jobs:
       - id: build
         uses: docker/build-push-action@v7
         with:
-          context: ./${{ matrix.image }}
+          # api だけリポジトリ全体を文脈にする。やること画面(tasks-frontend/)を
+          # 同じイメージへ焼き、公開する面は compose の command だけで分けるため。
+          # 送る量はルートの .dockerignore で絞ってある(data/ は数十 GB ある)
+          context: ${{ matrix.image == 'api' && '.' || format('./{0}', matrix.image) }}
+          file: ./${{ matrix.image }}/Dockerfile
           platforms: ${{ matrix.arch.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           # 動いているイメージがどのコミットかを画面に出すために焼き込む

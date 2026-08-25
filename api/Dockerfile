@@ -1,3 +1,20 @@
+# ---- やること画面(Vue)を組む ----------------------------------------------
+#
+# 出来た成果物だけを下の段へ持っていくので、node は最終イメージに残らない。
+# 画面と API を**同じイメージ**にしてあるのは、公開する面をコマンドだけで分ける
+# ためで、成果物は 200KB 程度なので API 側に積んでも実害が無い(docs/tasks.md)。
+FROM node:24-slim AS web
+WORKDIR /build
+# 依存の取得だけ先にやると、画面のソースを直しても層のキャッシュが効く
+COPY tasks-frontend/package.json tasks-frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY tasks-frontend/ ./
+# ビルド番号(画面のフッターに出る)。渡さなければ nogit と出るだけ
+ARG BUILD_SHA=""
+ENV GIT_SHA=$BUILD_SHA
+RUN npm run build
+
+
 FROM python:3.12-slim
 
 # healthcheck 用に curl を入れる
@@ -6,10 +23,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
 
 WORKDIR /srv/chiezo
 
-COPY requirements.txt .
+COPY api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app ./app
+COPY api/app ./app
+
+# 画面の成果物。chiezo-tasks だけがここから配る(chiezo-api は口を持たない)
+COPY --from=web /build/dist ./tasks-static
 
 # どのコミットが動いているかを画面に出すための情報。 タグは latest で上書きされ、
 # デプロイ先が pull し忘れていても外からは見えないので、イメージ自身に持たせる。
@@ -32,5 +52,7 @@ RUN useradd --uid 10001 --user-group --home-dir /home/app --create-home chiezo \
 ENV HOME=/home/app
 USER 10001:10001
 
-EXPOSE 7010
+# 7010 = 知識ベース本体(LAN 内)、7015 = やること(外に出す面)。
+# 同じイメージから起動し、compose 側で command を差し替えて使い分ける。
+EXPOSE 7010 7015
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7010", "--workers", "2"]

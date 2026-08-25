@@ -68,8 +68,9 @@ def create_app() -> FastAPI:
 # ---- 画面(Vue の成果物)の配信 ---------------------------------------------
 
 # `tasks-frontend` を `npm run build` した中身。イメージでは Dockerfile が
-# ここへ置く。手元で試すときは `CHIEZO_TASKS_STATIC_DIR=tasks-frontend/dist`。
-DEFAULT_STATIC_DIR = "/app/tasks-static"
+# ここへ置く(WORKDIR の直下)。手元で試すときは
+# `CHIEZO_TASKS_STATIC_DIR=tasks-frontend/dist`。
+DEFAULT_STATIC_DIR = "/srv/chiezo/tasks-static"
 
 # 機械向けの口。ここに前方一致するものは画面に落とさない —— 落とすと、
 # 綴りを間違えた API 呼び出しに index.html が 200 で返り、画面側が

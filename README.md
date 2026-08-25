@@ -143,6 +143,25 @@ compose では既定で有効(`data/notes/` に SQLite が 1 つできる)。`CH
 - API の詳細 → [API リファレンス](docs/api-reference.md#notes唯一書き込めるソースの-rest)
 - なぜこの形か → [設計メモ](docs/design-notes.md#覚えるnotesはなぜ-chiezo-に置くのか)
 
+## やること(タスク・ルール。既定では 401)
+
+Claude Code に頼みたいことのメモと、守らせたい共通ルールを 1 か所で持つ画面
+(スマホから PWA として使える)。**notes の上にタグで載っているだけ**で、専用の
+テーブルは持たない —— `todo` タグで書いたメモがそのままタスクとして並ぶ。
+
+**知識ベース本体(7010)とは別のプロセス・別のポート(7015)で動く。**
+外に出してよいのはこちらだけで、本体を公開すると、サーバー側の鍵で AI を叩く口・
+課金の走る生成の口・取り込みを起こせる管理画面・メモを消せる口まで一緒に外へ出る。
+
+```bash
+# .env に 3 つ入れてから起動する。揃うまで /api は 401 を返し続ける
+#   GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / ALLOWED_EMAIL
+docker compose up -d chiezo-tasks
+# → http://localhost:7015
+```
+
+- 使い方・環境変数・守り → [やること](docs/tasks.md)
+
 ## 使う(ローカル LLM。既定では無効)
 
 Chiezo を引ける AI とブラウザから話せる(`/ai/chat`)。1 問 1 答の口(`/v1/ask`)と
@@ -294,6 +313,7 @@ EOF
 |---|---|
 | [設計メモ](docs/design-notes.md) | なぜこの形なのか。SQLite + FTS5 を選んだ理由、検索の並び順、索引の形、メモリ方針。実測して方針が変わったものは数字と一緒にここへ残す |
 | [API リファレンス](docs/api-reference.md) | REST の全パラメータ、`extra` の中身、MCP、Claude Code 連携、管理画面・ブラウズ画面 |
+| [やること](docs/tasks.md) | タスク・ルールの画面。notes のタグでの表し方、外に出す面と出さない面の分け方、認証と守り、画面のビルド |
 | [AI と話す](docs/ai.md) | 「使う」層の使い方・話す相手の増やし方・CLI ブリッジ・agent モード・web 検索・GPU・環境変数 |
 | [運用](docs/operations.md) | 取り込みの環境変数、スキーマ移行、メモリ、別マシンでのビルドと配布、セキュリティ |
 | [別マシンで DB を焼く](docs/build-on-another-machine.md) | メモリの多いマシンで `.db` を作って配信機へ渡す手順。これ 1 枚で完結する |

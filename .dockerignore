@@ -1,0 +1,35 @@
+# api イメージはリポジトリ全体を文脈にする(やること画面を同じイメージへ焼くため)。
+# 除かないと、取り込んだ本体(data/ は数十 GB)や GGUF まで丸ごと送られる。
+
+.git/
+.github/
+
+# 取り込んだ本体・メモ・設定・重み。イメージに入れるものではない
+data/
+notes/
+state/
+models/
+handoff/
+
+# 手元の作業物
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.claude/
+.env
+
+# 画面の依存と成果物。イメージの中で入れ直して組む
+tasks-frontend/node_modules/
+tasks-frontend/dist/
+
+# api イメージに要らない兄弟
+ingest/
+bridge/
+searxng/
+scripts/
+tests/
+docs/
+assets/
