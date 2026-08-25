@@ -162,6 +162,34 @@ def set_answer_enabled(enabled: bool) -> None:
         )
 
 
+# ---- 汎用のフラグ(flags テーブル) ------------------------------------------
+#
+# `answer_enabled` は専用の関数で先にあったが、キーを増やすたびに同じ SQL を
+# 書き足すことになるので、以降は下の 2 つを使う。
+
+
+def get_flag(key: str) -> str | None:
+    """保存してある値。保存先が無い環境・未設定なら None。"""
+    if db_path() is None:
+        return None
+    with _connect() as conn:
+        row = conn.execute("SELECT value FROM flags WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def set_flag(key: str, value: str | None) -> None:
+    """値を保存する。None か空文字を渡すと消す(「未設定に戻す」を別の口にしない)。"""
+    with _connect() as conn:
+        if value is None or not value.strip():
+            conn.execute("DELETE FROM flags WHERE key = ?", (key,))
+        else:
+            conn.execute(
+                "INSERT INTO flags (key, value, updated_at) VALUES (?, ?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                (key, value.strip(), _now()),
+            )
+
+
 def load_all() -> dict[str, ProviderSetting]:
     """全プロバイダの設定。保存先が無い環境では空を返す（例外にしない）。
 

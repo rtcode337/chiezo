@@ -267,7 +267,7 @@ def split_tags(tags: str | None) -> list[str]:
     return [t.strip() for t in (tags or "").split(",") if t.strip()]
 
 
-def _dump_extra(extra: dict | None) -> str | None:
+def dump_extra(extra: dict | None) -> str | None:
     """`docs.extra` に入れる JSON。空の dict は「持たない」と同じに畳む。
 
     タグで表せる性質(種別・状態・所属)はタグに置き、ここに入れるのは
@@ -276,7 +276,7 @@ def _dump_extra(extra: dict | None) -> str | None:
     return json.dumps(extra, ensure_ascii=False) if extra else None
 
 
-def _load_extra(raw: str | None) -> dict | None:
+def load_extra(raw: str | None) -> dict | None:
     if not raw:
         return None
     try:
@@ -295,7 +295,7 @@ def add(
 ) -> dict:
     """メモを 1 件足して、足したものを返す。
 
-    `extra` はタグで表せない構造(並び順など)の置き場。詳しくは `_dump_extra`。
+    `extra` はタグで表せない構造(並び順など)の置き場。詳しくは `dump_extra`。
     """
     path = require_path()
     ensure_db()
@@ -320,7 +320,7 @@ def add(
                 (
                     doc_id, final_title, body[:TITLE_MAX_CHARS * 4], body,
                     json.dumps(tag_list, ensure_ascii=False), None, now, 0.0,
-                    _dump_extra(extra),
+                    dump_extra(extra),
                 ),
             )
             # external content なので FTS には手で入れる(core.py と同じ書き方)
@@ -397,7 +397,7 @@ def update(
 
             old_tags = json.loads(row["tags"] or "[]")
             new_tags = split_tags(tags) if tags is not None else old_tags
-            new_extra = extra if extra is not None else _load_extra(row["extra"])
+            new_extra = extra if extra is not None else load_extra(row["extra"])
 
             now = _now()
             conn.execute(
@@ -406,7 +406,7 @@ def update(
                 (
                     new_title, new_body[:TITLE_MAX_CHARS * 4], new_body,
                     json.dumps(new_tags, ensure_ascii=False), now,
-                    _dump_extra(new_extra), doc_id,
+                    dump_extra(new_extra), doc_id,
                 ),
             )
             # external content の FTS は自動では追従しない。'delete' に書き換え前の値を
@@ -446,6 +446,29 @@ def update(
     if new_extra:
         updated["extra"] = new_extra
     return updated
+
+
+def set_extra(doc_id: int, extra: dict | None) -> bool:
+    """`extra` だけを書き換える。**`updated_at` を動かさない**。見つからなければ False。
+
+    並び替えのための口。`update()` を使うと `updated_at` が現在時刻になり、
+    **カードを 1 枚ドラッグしただけで `recall` の先頭に浮いてしまう** ——
+    並び替えはメモの内容が動いたわけではないので、時系列を乱すのは誤り
+    (cc-tasks でも並び替えだけは `updated_at` を触らない実装にしてあった)。
+
+    `extra` は FTS(title / body)にも `doc_tags` にも関わらないので、
+    ここだけ直接書いても索引は食い違わない。
+    """
+    path = require_path()
+    conn = _connect(path)
+    try:
+        with conn:
+            cur = conn.execute(
+                "UPDATE docs SET extra = ? WHERE doc_id = ?", (dump_extra(extra), doc_id)
+            )
+            return cur.rowcount > 0
+    finally:
+        conn.close()
 
 
 def delete(doc_id: int) -> bool:
@@ -572,7 +595,7 @@ def _recall_note(row, fields: list[str], max_chars: int) -> dict:
         "title": row["title"],
         "text": row["body"],
         "tags": json.loads(row["tags"] or "[]"),
-        "extra": _load_extra(row["extra"]),
+        "extra": load_extra(row["extra"]),
         "updated_at": row["updated_at"],
         "url": doc_url(SOURCE_NAME, row["doc_id"]),
     }
