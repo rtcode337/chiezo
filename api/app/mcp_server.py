@@ -575,7 +575,7 @@ def _register_memory_tools(mcp: MCPServer, app: FastAPI) -> None:
     ) -> dict:
         return await run_in_threadpool(
             _call, api.remember,
-            request=_request(app), text=text, title=title, tags=tags,
+            request=_request(app), text=text, title=title, tags=tags, extra=None,
         )
 
     @mcp.tool(description=(
@@ -627,6 +627,7 @@ def _register_memory_tools(mcp: MCPServer, app: FastAPI) -> None:
         return await run_in_threadpool(
             _call, api.update_note,
             request=_request(app), doc_id=doc_id, text=text, title=title, tags=tags,
+            extra=None,
         )
 
     @mcp.tool(description=(

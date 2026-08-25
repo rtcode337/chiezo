@@ -132,17 +132,26 @@ curl -sG "$BASE/v1/notes/recall" -d since=2026-07-01             # 期間で絞�
 curl -sG "$BASE/v1/notes/recall" --data-urlencode "tag=決定"      # タグで絞る
 curl -sG "$BASE/v1/notes/recall" -d fields=title,updated_at      # 当たりを付ける(本文を載せない)
 curl -sG "$BASE/v1/notes/recall" -d max_chars=0                  # 本文を切らずに返す
+curl -sG "$BASE/v1/notes/recall" -d fields=doc_id,extra           # 構造だけ取る(既定では返らない)
 curl -s -X PATCH "$BASE/v1/notes/3" -H 'Content-Type: application/json' \
   -d '{"tags":"環境,決定,完了"}'                                  # 書き換え(渡した項目だけ)
 curl -s -X DELETE "$BASE/v1/notes/3"                             # 取り消し
 ```
 
-書き換え(PATCH)は**渡した項目だけ**を差し替えます(`text` / `title` / `tags`)。
+書き換え(PATCH)は**渡した項目だけ**を差し替えます(`text` / `title` / `tags` / `extra`)。
 `tags` はカンマ区切りの丸ごと置き換えで、空文字を渡すと全部外れます。
+`extra` も丸ごと置き換えで、空の dict を渡すと外れます。
 `updated_at` が現在時刻になるので、書き換えたメモは `recall` の先頭に浮きます。
 
-タグには**定番の語彙**があります(`todo` = いつかやるが今ではない作業、`決定`、`runbook`、
-`環境`、`本番`、`設計メモ`、`トラブルシュート`。プロジェクトはリポジトリ名を小文字で)。
+`extra` は**タグで表せない構造の置き場**です(いまはタスク・ルールの並び順 `sort_order`)。
+種別・状態・所属はタグで表すのが基本で、`extra` に入れるのはタグにすると読めなくなるもの
+だけにしてください。**`recall` の既定の項目には入りません** —— 入れると `extra` を持たない
+ほとんどのメモにも `"extra": null` が並び、`recall` を読む AI のコンテキストを無駄に食う
+ためで、要る側が `fields` で名指しして取りに来ます。
+
+タグには**定番の語彙**があります(`todo` = 作業、`着手中`、`完了`、`難所`、`rule`、`無効`、
+`project`、`アーカイブ`、`決定`、`runbook`、`環境`、`本番`、`設計メモ`、`トラブルシュート`。
+プロジェクトはリポジトリ名を小文字で)。
 語彙は `api/app/notes.py` の `CANONICAL_TAGS` が 1 か所で持ち、MCP の `remember` の
 ツール定義として配られます —— 書き手が変わっても同じ意味に同じ表記が付くようにするためで、
 ここに無いタグも自由に付けられます。curl で書くときもこの表記に合わせてください。

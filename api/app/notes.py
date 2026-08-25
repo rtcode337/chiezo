@@ -61,6 +61,12 @@ RECALL_MAX_CHARS_DEFAULT = 400
 # recall が返せる項目。`fields` で選ぶと、当たりを付ける段では本文を載せずに済む。
 RECALL_FIELDS = ("doc_id", "title", "text", "tags", "updated_at", "url")
 
+# 名指ししたときだけ返る項目。`extra` を既定に入れると、持たないほとんどのメモにも
+# `"extra": null` が並び、recall を読む AI のコンテキストを無駄に食う。
+# 構造を持つのはタスク・ルールの画面だけなので、要る側が明示的に取りに来る。
+RECALL_OPTIONAL_FIELDS = ("extra",)
+RECALL_ALLOWED_FIELDS = RECALL_FIELDS + RECALL_OPTIONAL_FIELDS
+
 # タイトルは本文の 1 行目から作る(`docs.title` は UNIQUE なので衝突時は doc_id を足す)
 TITLE_MAX_CHARS = 60
 
@@ -144,7 +150,14 @@ SCHEMA_VERSION = 4
 # 配り方は MCP の remember のツール定義(tag_guide())。タグ自体は自由入力のままで、
 # ここに無い語を拒みはしない(語彙は絞り込みの実用が目的で、検閲ではない)。
 CANONICAL_TAGS: dict[str, str] = {
-    "todo": "いつかやりたいが今ではない作業。着手時に tag=todo で見返す",
+    "todo": "作業。タスク画面に並ぶ。状態のタグが無いものは未着手",
+    "着手中": "todo のうち依頼済みで動作確認待ちのもの",
+    "完了": "todo のうち終わったもの",
+    "難所": "todo のうち直すのが大変そうなもの(状態とは別軸)",
+    "rule": "全環境に効かせる決まりごと。本文が Markdown 1 本ぶん",
+    "無効": "rule のうち連結に含めないもの",
+    "project": "タスクの入れ物の定義。本文にリポジトリの URL を書く",
+    "アーカイブ": "project のうち片付いたもの",
     "決定": "決めたこと・方針",
     "runbook": "繰り返し使う手順",
     "環境": "開発マシン・LAN・ポートなど環境の事実",
@@ -254,8 +267,36 @@ def split_tags(tags: str | None) -> list[str]:
     return [t.strip() for t in (tags or "").split(",") if t.strip()]
 
 
-def add(text: str, title: str | None = None, tags: str | None = None) -> dict:
-    """メモを 1 件足して、足したものを返す。"""
+def _dump_extra(extra: dict | None) -> str | None:
+    """`docs.extra` に入れる JSON。空の dict は「持たない」と同じに畳む。
+
+    タグで表せる性質(種別・状態・所属)はタグに置き、ここに入れるのは
+    タグにすると読めなくなるものだけ —— 今はタスク・ルールの並び順(`sort_order`)。
+    """
+    return json.dumps(extra, ensure_ascii=False) if extra else None
+
+
+def _load_extra(raw: str | None) -> dict | None:
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        log.warning("notes: could not parse extra as json: %r", raw)
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def add(
+    text: str,
+    title: str | None = None,
+    tags: str | None = None,
+    extra: dict | None = None,
+) -> dict:
+    """メモを 1 件足して、足したものを返す。
+
+    `extra` はタグで表せない構造(並び順など)の置き場。詳しくは `_dump_extra`。
+    """
     path = require_path()
     ensure_db()
     body = text.strip()
@@ -278,7 +319,8 @@ def add(text: str, title: str | None = None, tags: str | None = None) -> dict:
                 " rank_score, extra) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     doc_id, final_title, body[:TITLE_MAX_CHARS * 4], body,
-                    json.dumps(tag_list, ensure_ascii=False), None, now, 0.0, None,
+                    json.dumps(tag_list, ensure_ascii=False), None, now, 0.0,
+                    _dump_extra(extra),
                 ),
             )
             # external content なので FTS には手で入れる(core.py と同じ書き方)
@@ -295,13 +337,17 @@ def add(text: str, title: str | None = None, tags: str | None = None) -> dict:
                 )
     finally:
         conn.close()
-    return {
+    created = {
         "doc_id": doc_id,
         "title": final_title,
         "tags": tag_list,
         "updated_at": now,
         "url": doc_url(SOURCE_NAME, doc_id),
     }
+    # 持たないメモに "extra": null を並べない(recall の既定項目と同じ考え方)
+    if extra:
+        created["extra"] = extra
+    return created
 
 
 def update(
@@ -309,19 +355,23 @@ def update(
     text: str | None = None,
     title: str | None = None,
     tags: str | None = None,
+    extra: dict | None = None,
 ) -> dict | None:
     """メモを 1 件書き換える。渡した項目だけを差し替え、None の項目は今のまま。
 
     - `tags` は丸ごと置き換え(カンマ区切り)。空文字を渡すと全部外れる ——
       「1 個だけ足す」はできない(部分編集を許すと、読み手が今の値を知らないまま
       消してしまう。置き換えなら送った値がそのまま結果になる)
+    - `extra` も同じく丸ごと置き換え。空の dict を渡すと外れる
     - `updated_at` は現在時刻になる。recall は新しい順なので、**書き換えたメモは
       先頭に浮く**(「最新の判断が上に来る」は想起の用途では望ましい側)
     - タイトルの衝突は `add` と同じ規則で doc_id を足して逃がす
     - 見つからなければ None(HTTP 層が 404 にする)
     """
-    if text is None and title is None and tags is None:
-        raise HTTPException(400, {"error": "nothing to update: pass text, title or tags"})
+    if text is None and title is None and tags is None and extra is None:
+        raise HTTPException(
+            400, {"error": "nothing to update: pass text, title, tags or extra"}
+        )
     if text is not None and not text.strip():
         raise HTTPException(400, {"error": "text must not be empty"})
     if title is not None and not title.strip():
@@ -332,7 +382,7 @@ def update(
     try:
         with conn:
             row = conn.execute(
-                "SELECT title, body, tags FROM docs WHERE doc_id = ?", (doc_id,)
+                "SELECT title, body, tags, extra FROM docs WHERE doc_id = ?", (doc_id,)
             ).fetchone()
             if row is None:
                 return None
@@ -347,14 +397,16 @@ def update(
 
             old_tags = json.loads(row["tags"] or "[]")
             new_tags = split_tags(tags) if tags is not None else old_tags
+            new_extra = extra if extra is not None else _load_extra(row["extra"])
 
             now = _now()
             conn.execute(
-                "UPDATE docs SET title = ?, opening = ?, body = ?, tags = ?, updated_at = ?"
-                " WHERE doc_id = ?",
+                "UPDATE docs SET title = ?, opening = ?, body = ?, tags = ?, updated_at = ?,"
+                " extra = ? WHERE doc_id = ?",
                 (
                     new_title, new_body[:TITLE_MAX_CHARS * 4], new_body,
-                    json.dumps(new_tags, ensure_ascii=False), now, doc_id,
+                    json.dumps(new_tags, ensure_ascii=False), now,
+                    _dump_extra(new_extra), doc_id,
                 ),
             )
             # external content の FTS は自動では追従しない。'delete' に書き換え前の値を
@@ -384,13 +436,16 @@ def update(
                     )
     finally:
         conn.close()
-    return {
+    updated = {
         "doc_id": doc_id,
         "title": new_title,
         "tags": new_tags,
         "updated_at": now,
         "url": doc_url(SOURCE_NAME, doc_id),
     }
+    if new_extra:
+        updated["extra"] = new_extra
+    return updated
 
 
 def delete(doc_id: int) -> bool:
@@ -428,13 +483,13 @@ def parse_recall_fields(fields: str | None) -> list[str]:
     requested = [f.strip() for f in fields.split(",") if f.strip()]
     if not requested:
         return list(RECALL_FIELDS)
-    unknown = [f for f in requested if f not in RECALL_FIELDS]
+    unknown = [f for f in requested if f not in RECALL_ALLOWED_FIELDS]
     if unknown:
         raise HTTPException(
             400,
             {
                 "error": f"unknown fields: {', '.join(unknown)}",
-                "allowed_fields": list(RECALL_FIELDS),
+                "allowed_fields": list(RECALL_ALLOWED_FIELDS),
             },
         )
     return requested
@@ -498,7 +553,7 @@ def recall(
     (total,) = db.query(path, f"SELECT COUNT(*) FROM docs d{clause}", tuple(params))[0]
     rows = db.query(
         path,
-        "SELECT d.doc_id, d.title, d.body, d.tags, d.updated_at"
+        "SELECT d.doc_id, d.title, d.body, d.tags, d.extra, d.updated_at"
         f" FROM docs d{clause}"
         " ORDER BY d.updated_at DESC, d.doc_id DESC LIMIT ? OFFSET ?",
         (*params, limit, offset),
@@ -517,6 +572,7 @@ def _recall_note(row, fields: list[str], max_chars: int) -> dict:
         "title": row["title"],
         "text": row["body"],
         "tags": json.loads(row["tags"] or "[]"),
+        "extra": _load_extra(row["extra"]),
         "updated_at": row["updated_at"],
         "url": doc_url(SOURCE_NAME, row["doc_id"]),
     }

@@ -34,9 +34,12 @@ ignore = [
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI は「引数の既定値に宣言を書く」作りなので、B008(既定値で関数を呼ぶな)が
 # そのまま当たる。これは回避策の余地がある間違いではなくフレームワークの書き方
-# なので、指摘のほうを外す。Query / Body は既定で除外されているが、
-# multipart を受ける File / Form は自分で並べる必要がある。
-extend-immutable-calls = ["fastapi.File", "fastapi.Form"]
+# なので、指摘のほうを外す。
+#
+# ruff は**型注釈が不変なら B008 を出さない**ので、`str | None = Body(...)` は
+# 並べなくても通る。並べる必要があるのは注釈が可変型のとき —— JSON をそのまま
+# 受ける `dict | None = Body(...)` や、multipart を受ける File / Form が当たる。
+extend-immutable-calls = ["fastapi.Body", "fastapi.File", "fastapi.Form"]
 
 [tool.ruff.lint.per-file-ignores]
 # 自動生成のカタログ(scripts/gen_osm_regions.py / gen_wikipedia_editions.py が作る)。

@@ -140,6 +140,19 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       ツール定義(`tag_guide()`)として配る**。クライアント側の CLAUDE.md に写しを
       持たせると写しごとにずれる(実際に NAS と nas に割れた)。語彙を変えるのは
       この定数だけでよい —— テストが「語彙がツール定義に載ること」を突き合わせる
+    - **タスク・ルールはタグで表す**(`todo` / `着手中` / `完了` / `難所` / `rule` /
+      `無効` / `project` / `アーカイブ`。所属プロジェクトはリポジトリ名のタグ)。
+      **専用のテーブルも列も足さない** —— 種別も状態も絞り込みの軸でしかないので、
+      `doc_tags` の索引がそのまま効く。状態のタグが無いものが「未着手」で、
+      これなら既存の `todo` メモに手を入れずタスクとして扱える
+    - **タグで表せないものだけ `docs.extra`(JSON)に置く**。いまは並び順
+      (`sort_order`)だけ。**`recall` の既定の項目には入れない** —— 入れると
+      `extra` を持たないほとんどのメモにも `"extra": null` が並び、`recall` を読む
+      AI のコンテキストを食う(`RECALL_OPTIONAL_FIELDS`。要る側が `fields` で名指しする)
+    - **`Body(...)` を既定値に持つ引数を増やしたら、MCP 側で明示的に渡すこと**。
+      `app/mcp_server.py` は FastAPI を通さず `app/main.py` のハンドラを直接呼ぶので、
+      省略すると `FieldInfo` オブジェクトがそのまま保存側へ流れる
+      (`tests/test_notes.py` の `test_mcp_remember_still_works_without_extra` が押さえる)
     - **置き場を取り込み本体(`/data/corpus`)と分けるのは性能上の理由**。
       `registry.data_dir_fingerprint()` が `CHIEZO_DATA_DIR/*.db` の mtime/size を 5 秒ごとに
       見て、変われば**全ソース再走査(`COUNT(*)` 込み)**する。同じ場所に置くとメモ 1 件ごとに

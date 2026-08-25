@@ -938,8 +938,11 @@ def remember(
     text: str = Body(..., embed=True, min_length=1, description="覚えておく内容"),
     title: str | None = Body(None, embed=True, description="省略時は本文の 1 行目から作る"),
     tags: str | None = Body(None, embed=True, description="カンマ区切り"),
+    extra: dict | None = Body(
+        None, embed=True, description="タグで表せない構造(並び順など)。省略時は持たない"
+    ),
 ):
-    created = notes.add(text=text, title=title, tags=tags)
+    created = notes.add(text=text, title=title, tags=tags, extra=extra)
     # 作られたばかり(初回の追記)ならソースとして登録し直す
     if notes.SOURCE_NAME not in request.app.state.sources:
         request.app.state.sources = scan_all(request.app.state.data_dir)
@@ -957,7 +960,11 @@ def recall_notes(
     limit: int = Query(notes.RECALL_LIMIT_DEFAULT, ge=1, le=notes.RECALL_LIMIT_MAX),
     offset: int = Query(0, ge=0),
     fields: str | None = Query(
-        None, description=f"返す項目。カンマ区切り。省略時は全部({','.join(notes.RECALL_FIELDS)})"
+        None,
+        description=(
+            f"返す項目。カンマ区切り。省略時は {','.join(notes.RECALL_FIELDS)}。"
+            f"名指ししたときだけ返るもの: {','.join(notes.RECALL_OPTIONAL_FIELDS)}"
+        ),
     ),
     max_chars: int = Query(
         notes.RECALL_MAX_CHARS_DEFAULT,
@@ -980,8 +987,11 @@ def update_note(
     tags: str | None = Body(
         None, embed=True, description="カンマ区切りで丸ごと置き換え。空文字で全部外す。省略は今のまま"
     ),
+    extra: dict | None = Body(
+        None, embed=True, description="丸ごと置き換え。空の dict で外す。省略は今のまま"
+    ),
 ):
-    updated = notes.update(doc_id, text=text, title=title, tags=tags)
+    updated = notes.update(doc_id, text=text, title=title, tags=tags, extra=extra)
     if updated is None:
         raise HTTPException(404, {"error": f"note not found: doc_id={doc_id}"})
     return updated

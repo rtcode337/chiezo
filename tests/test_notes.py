@@ -274,6 +274,78 @@ class TestUpdate:
         ).status_code == 400
 
 
+class TestExtra:
+    """タグで表せない構造(並び順など)の置き場。タスク・ルールの画面が使う。"""
+
+    @pytest.fixture()
+    def created(self, client):
+        return client.post(
+            "/v1/notes",
+            json={"text": "浅草寺に行く", "tags": "todo", "extra": {"sort_order": 30}},
+        ).json()
+
+    def test_stored_and_returned_when_named(self, client, created):
+        assert created["extra"] == {"sort_order": 30}
+        got = client.get(
+            "/v1/notes/recall", params={"fields": "doc_id,extra"}
+        ).json()["notes"][0]
+        assert got == {"doc_id": created["doc_id"], "extra": {"sort_order": 30}}
+
+    def test_absent_from_the_default_recall(self, client, created):
+        """既定に入れると、持たないメモにも "extra": null が並んでコンテキストを食う。"""
+        note = client.get("/v1/notes/recall").json()["notes"][0]
+        assert "extra" not in note
+
+    def test_notes_without_extra_report_none_when_named(self, client):
+        client.post("/v1/notes", json={"text": "ただのメモ"})
+        note = client.get(
+            "/v1/notes/recall", params={"fields": "extra"}
+        ).json()["notes"][0]
+        assert note == {"extra": None}
+
+    def test_extra_is_listed_as_an_allowed_field(self, client, created):
+        res = client.get("/v1/notes/recall", params={"fields": "nope"})
+        assert res.status_code == 400
+        assert "extra" in res.json()["allowed_fields"]
+
+    def test_replaced_wholesale(self, client, created):
+        res = client.patch(
+            f"/v1/notes/{created['doc_id']}", json={"extra": {"sort_order": 10}}
+        )
+        assert res.json()["extra"] == {"sort_order": 10}
+
+    def test_empty_dict_clears_it(self, client, created):
+        res = client.patch(f"/v1/notes/{created['doc_id']}", json={"extra": {}})
+        assert "extra" not in res.json()
+        note = client.get(
+            "/v1/notes/recall", params={"fields": "extra"}
+        ).json()["notes"][0]
+        assert note == {"extra": None}
+
+    def test_survives_an_update_that_does_not_mention_it(self, client, created):
+        client.patch(f"/v1/notes/{created['doc_id']}", json={"text": "泉岳寺に行く"})
+        note = client.get(
+            "/v1/notes/recall", params={"fields": "extra"}
+        ).json()["notes"][0]
+        assert note == {"extra": {"sort_order": 30}}
+
+    def test_extra_alone_is_enough_to_update(self, client, created):
+        """並び替えは本文もタグも変えないので、extra だけの更新が通らないと使えない。"""
+        res = client.patch(
+            f"/v1/notes/{created['doc_id']}", json={"extra": {"sort_order": 1}}
+        )
+        assert res.status_code == 200
+
+    def test_mcp_remember_still_works_without_extra(self, client):
+        """MCP は FastAPI を通さずハンドラを直接呼ぶので、Body(...) の既定値が
+        そのまま引数に入る。省略した extra を素通しすると FieldInfo が保存側へ流れる。
+        """
+        from tests.test_mcp import call_tool
+
+        stored = call_tool(client, "remember", {"text": "extra を渡さない経路"})
+        assert stored["isError"] is False
+
+
 class TestTagGuide:
     """定番タグの語彙はサーバー側の 1 か所(CANONICAL_TAGS)から配る。"""
 
