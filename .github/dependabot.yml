@@ -12,7 +12,7 @@ updates:
   # Python 依存(app = 配信、ingest = 取り込み、ルート = 開発・CI 用)
   - package-ecosystem: pip
     directories:
-      - /api
+      - /app
       - /ingest
       - /
     schedule:
@@ -22,7 +22,7 @@ updates:
   # Dockerfile のベースイメージ(python:3.12-slim)
   - package-ecosystem: docker
     directories:
-      - /api
+      - /app
       - /ingest
     schedule:
       interval: weekly

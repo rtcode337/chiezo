@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 # `tasks-frontend` を `npm run build` した中身。イメージでは Dockerfile が
 # ここへ置く(WORKDIR の直下)。手元で試すときは
@@ -24,15 +24,34 @@ def static_dir() -> Path:
 
 
 def resolve(root: Path, path: str) -> Path | None:
-    """配信してよい実ファイル。**置き場の外を指していたら配らない**(../ 対策)。"""
+    """配信してよい実ファイル。**置き場の外を指していたら配らない**。
+
+    URL から来た文字列をそのままパスに使うので、2 段で守る:
+
+    1. **組み立てる前に弾く** —— `..` を含むもの、絶対パス、Windows のドライブ指定
+       (`C:`)。ここで落とせば、そもそも外を指すパスを作らない
+    2. **解決してから親子関係を確かめる** —— 1 だけではシンボリックリンクを辿った先が
+       置き場の外、という抜け道が残る(`resolve()` はリンクを解決するので、
+       解決後のパスで見れば塞げる)
+
+    どちらか片方では足りない。1 は意図を明示して静的解析にも追えるようにする段で、
+    実際に外を防いでいるのは 2 のほう。
+    """
     if not path:
         return None
+    candidate_rel = PurePosixPath(path)
+    if candidate_rel.is_absolute() or any(part == ".." for part in candidate_rel.parts):
+        return None
+    if any(":" in part for part in candidate_rel.parts):
+        return None
     try:
-        candidate = (root / path).resolve()
         base = root.resolve()
+        candidate = (base / candidate_rel).resolve()
     except OSError:
         return None
-    if candidate != base and base not in candidate.parents:
+    try:
+        candidate.relative_to(base)
+    except ValueError:
         return None
     return candidate if candidate.is_file() else None
 

@@ -163,3 +163,40 @@ class TestOtherNotes:
         rest = client.get("/api/notes", params={"limit": 1, "offset": 1}).json()
         assert len(rest["items"]) == 1
         assert rest["items"][0]["title"] != page["items"][0]["title"]
+
+
+class TestStaticPathsStayInside:
+    """URL から来た文字列をそのままパスに使うので、置き場の外へ出さないこと。
+
+    `..` を含むもの・絶対パス・ドライブ指定は組み立てる前に弾き、そのうえで
+    解決後の親子関係も確かめる(シンボリックリンクで外を指す抜け道が残るため)。
+    """
+
+    @pytest.mark.parametrize("path", [
+        "../../../../etc/passwd",
+        "..%2f..%2fetc%2fpasswd",
+        "assets/../../../etc/passwd",
+        "/etc/passwd",
+        "C:/windows/system32/config/sam",
+    ])
+    def test_traversal_is_refused(self, client, path):
+        res = client.get(f"/tasks/{path}")
+        # 殻(SPA のルーティング)に落ちるか 404。**外のファイルの中身は返らない**
+        assert res.status_code in (200, 404)
+        assert "root:" not in res.text
+
+    def test_the_resolver_itself_refuses_escapes(self, static_dir):
+        from app.tasks_static import resolve
+
+        assert resolve(static_dir, "assets/index-abc.js") is not None
+        for bad in ("../secret", "assets/../../secret", "/etc/passwd", "C:/x"):
+            assert resolve(static_dir, bad) is None, bad
+
+    def test_a_symlink_out_of_the_root_is_refused(self, static_dir, tmp_path):
+        """`..` を弾くだけでは足りない —— 解決後の親子関係で塞ぐ。"""
+        from app.tasks_static import resolve
+
+        secret = tmp_path / "secret.txt"
+        secret.write_text("root:x:0:0", encoding="utf-8")
+        (static_dir / "assets" / "escape.js").symlink_to(secret)
+        assert resolve(static_dir, "assets/escape.js") is None
