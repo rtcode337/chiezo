@@ -169,8 +169,12 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     - **DDL は `ingest/core.py` の写し**(api は ingest を import しない)。ずれると
       「notes だけ filter が 409」のように静かに壊れるので、`tests/test_notes.py` が
       ingest 側から作った DB と `sqlite_master` を突き合わせて落とす
-    - `doc_count` は走査時の値だが notes は指紋に入らないので、書いた側
-      (`main._refresh_notes_count`)で数え直す
+    - **件数は読む側が数え直す**(`notes.count()` / `refresh_count()`)。`doc_count` は
+      走査時の値で、notes は指紋に入らないので走査のきっかけが起きない。かつては
+      書いた側で直していたが、**書き手は chiezo-api だけではない** —— やること層は
+      別プロセス(chiezo-tasks)から書くので追いつかない(実際に件数が 12 のまま
+      実体 42 になっていた)。短期記憶は数十〜数千件なので、読むたびに数えても
+      長期側の 150 万件を数え直すのとは費用がまるで違う
     - **想起の主役は全文検索ではなく時系列の見込み**。「さっき話したあの件」は語が
       一致しないため、`recall` は `q` を省いて `updated_at` 順に引ける形にしてある
       (`idx_docs_updated` は notes だけが持つ。コアスキーマの追加ではないので
@@ -539,7 +543,17 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `40rem` 以下(スマホ)は余白を詰め、ボタンと入力欄を指で押せる大きさにする
   - `/`(GET) — `/admin` へ 302 リダイレクト
   - `/admin`・`/admin/osm`・`/admin/wikipedia`(GET) — 簡易 HTML 管理画面(画面に何が出るかは
-    `docs/api-reference.md`「人間向けの画面」節が正)。実装側の要点は 3 つ: ジョブ実行中は `page_shell` の
+    `docs/api-reference.md`「人間向けの画面」節が正)。
+    **画面は知識の 2 層をそのまま節に分ける**: 長期記憶(`mutable` でないソース = ingest が
+    ダンプから焼く読み取り専用のもの)と短期記憶(`app/notes.py`。唯一書き込める置き場)。
+    **1 つの表に混ぜない** —— 混ぜていた頃は notes の行にも再構築ボタンが出ていて、
+    押すと trigger が `unknown source` を返すだけなのに、確認ダイアログだけが
+    「ダンプの取得からやり直します」と言っていた(**唯一書き込めるソースで、
+    消えたと読める文言がいちばん危ない行に出ていた**)。件数の出どころも違い、
+    長期は走査時の値、短期は描画時に数える(`notes.count()`)。
+    短期の節は**中身そのものを出さず、件数とタグの分布まで**にする ——
+    1 件ずつ読むのはブラウズ画面の仕事で、そちらは見に行った人だけが見る。
+    実装側の要点は 3 つ: ジョブ実行中は `page_shell` の
     `refresh` で 5 秒ごとに自動リロードする / `osm_<国>` 195 件と `<lang>wiki` 348 件は
     そのまま並べると他のソースが埋もれるので `group` で 1 行に畳み、国・言語の選択だけを
     `/admin/osm`(大陸ごとの `<details>`)・`/admin/wikipedia`(`WIKIPEDIA_TIERS` の記事数階層ごと)
@@ -557,7 +571,9 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   - `/admin/rebuild/{source}`(POST) — 登録済みソースの再構築(init と同じプロキシで、
     要求条件だけ逆: **登録済みであることを要求**し、未登録は 404。未登録の取り込みは init 側)。
     ソースの正は trigger 側の `ADAPTERS` なので、カタログに無い登録済みソースでも trigger に
-    判断を委ねる。管理画面は「最新のスキーマバージョン」(`latest_schema_version()` —
+    判断を委ねる。**例外は短期記憶(`Source.mutable`)で、ここで 409 にする** ——
+    ダンプから焼くソースではないので trigger も断るが、そこまで行かせると
+    「実行しようとして失敗した」に見える。管理画面は「最新のスキーマバージョン」(`latest_schema_version()` —
     trigger の `GET /sources` が返す `schema_version` = ingest の `core.SCHEMA_VERSION`。
     取れなければ api の `max(SUPPORTED_SCHEMA_VERSIONS)` で代替)を表示し、
     それより古い DB の行に注意書きを付けて再構築を促す

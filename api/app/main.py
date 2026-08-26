@@ -215,6 +215,7 @@ def apple_touch_icon():
 @app.get("/healthz")
 def healthz(request: Request):
     sources: dict[str, Source] = request.app.state.sources
+    notes.refresh_count(sources)
     return {
         "status": "ok",
         "sources": {
@@ -226,6 +227,9 @@ def healthz(request: Request):
 @app.get("/v1/sources")
 def list_sources(request: Request):
     sources: dict[str, Source] = request.app.state.sources
+    # 短期記憶(notes)の件数だけは走査で追えないので、読む直前に数え直す
+    # (理由は notes.count())。長期側は走査で数えた値をそのまま使う。
+    notes.refresh_count(sources)
     return {
         "sources": [
             {
@@ -915,23 +919,6 @@ def random_docs(
 # tags・/notes/ のブラウズ画面もそのまま効く(ソース種別を意識しない設計のおかげ)。
 
 
-def _refresh_notes_count(request: Request) -> None:
-    """ソース表の doc_count を追記のたびに直す。
-
-    doc_count は走査時に数えた値で、走査は /data の変化でしか走らない(notes は別
-    ディレクトリなので指紋に入らない)。放っておくと /v1/sources と管理画面の件数が
-    増えないままになるので、書いた側で直す。
-    """
-    src = request.app.state.sources.get(notes.SOURCE_NAME)
-    if src is None:
-        return
-    try:
-        (count,) = db.query(src.path, "SELECT COUNT(*) FROM docs")[0]
-        src.doc_count = count
-    except Exception:
-        log.debug("could not refresh notes doc_count", exc_info=True)
-
-
 @app.post("/v1/notes")
 def remember(
     request: Request,
@@ -943,10 +930,10 @@ def remember(
     ),
 ):
     created = notes.add(text=text, title=title, tags=tags, extra=extra)
-    # 作られたばかり(初回の追記)ならソースとして登録し直す
+    # 作られたばかり(初回の追記)ならソースとして登録し直す。件数は読む側が
+    # 数え直すので、ここでは触らない(notes.count() 参照)。
     if notes.SOURCE_NAME not in request.app.state.sources:
         request.app.state.sources = scan_all(request.app.state.data_dir)
-    _refresh_notes_count(request)
     return created
 
 
@@ -1001,7 +988,6 @@ def update_note(
 def forget(request: Request, doc_id: int):
     if not notes.delete(doc_id):
         raise HTTPException(404, {"error": f"note not found: doc_id={doc_id}"})
-    _refresh_notes_count(request)
     return {"deleted": doc_id}
 
 

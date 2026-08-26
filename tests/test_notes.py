@@ -567,3 +567,55 @@ class TestClaudeConfig:
         others = block.replace(self._section(block), "")
         assert "- **jawiki**" in others
         assert "<タイトル>" not in others
+
+
+class TestShortTermIsNotARebuildableSource:
+    """短期記憶は長期記憶と同じ扱いにしない(管理画面・件数)。
+
+    知識を 2 層に分けた結果として、notes は「ダンプから焼くソース」の枠に
+    入らなくなった。混ぜていた頃の壊れ方を両側から固定する。
+    """
+
+    def test_admin_does_not_offer_rebuild(self, client):
+        """再構築ボタンを出さないこと。
+
+        出していた頃は、押しても trigger が unknown source を返すだけなのに、
+        確認ダイアログだけが「ダンプの取得からやり直します」と言っていた
+        —— 唯一書き込めるソースで、消えたと読める文言が出ていた。
+        """
+        html = client.get("/admin").text
+        assert 'action="/admin/rebuild/notes"' not in html
+        # 長期側にはボタンが出たままであること(消しすぎていない)
+        assert 'action="/admin/rebuild/jawiki"' in html
+
+    def test_rebuild_is_refused(self, client, monkeypatch):
+        """URL を直に叩かれても trigger まで行かせない。"""
+        monkeypatch.setattr("app.views.admin.TRIGGER_URL", "http://example.invalid")
+        res = client.post("/admin/rebuild/notes")
+        assert res.status_code == 409
+        assert res.json()["error"] == "source is not rebuildable: notes"
+
+    def test_admin_shows_the_short_term_section(self, client):
+        from app import notes
+
+        notes.add(text="短期記憶の節に出る", tags="決定")
+        html = client.get("/admin").text
+        assert "短期記憶" in html
+        assert "覚えていること: 1 件" in html
+        assert "決定 1" in html
+
+    def test_source_count_follows_writes_that_skip_the_rest_api(self, client):
+        """REST の口を通らない書き込みでも件数が追いつくこと。
+
+        やること層(chiezo-tasks)は別プロセスから app/notes.py を直接呼ぶので、
+        書いた側で数え直す形では追いつかなかった(件数が 12 のまま実体 42 になった)。
+        """
+        from app import notes
+
+        def listed() -> int:
+            sources = {s["name"]: s for s in client.get("/v1/sources").json()["sources"]}
+            return sources["notes"]["docs"]
+
+        before = listed()
+        notes.add(text="別プロセスからの書き込み")
+        assert listed() == before + 1

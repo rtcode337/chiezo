@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
-from app import answer, build_info, capabilities, claude_config, media
+from app import answer, build_info, capabilities, claude_config, media, notes
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
 from app.pages import CHAT_PATH, browse_url, esc, page_shell
 from app.registry import SUPPORTED_SCHEMA_VERSIONS, Source
@@ -165,6 +165,51 @@ def _job_status_html(job: dict | None) -> str:
     return "\n".join(lines)
 
 
+def _short_term_section_html(sources: dict[str, Source]) -> str:
+    """短期記憶(notes)の節。
+
+    長期側の表に混ぜない理由が 2 つある。ダンプも再構築も持たないこと —— 混ぜていた
+    頃は再構築ボタンが出ていて、押すと trigger が unknown source を返すだけなのに、
+    確認ダイアログだけが「ダンプの取得からやり直します」と言っていた(唯一書き込める
+    ソースで、消えたと読める文言がいちばん危ない行に出ていた)。もう 1 つは件数の
+    出どころが違うこと(走査ではなく描画時に数える。notes.count() 参照)。
+
+    中身そのものは出さず、件数とタグの分布までに留める。1 件ずつ読むのはブラウズ画面の
+    仕事で、そちらは見に行った人だけが見る。
+    """
+    if not notes.is_enabled():
+        return (
+            '<p class="muted">短期記憶は無効です。書き込み可能なディレクトリを'
+            " <code>CHIEZO_NOTES_DIR</code> に設定すると有効になります。</p>"
+        )
+    total = notes.count()
+    if not total:
+        return (
+            '<p class="muted">まだ何も覚えていません。MCP の <code>remember</code> か'
+            " <code>POST /v1/notes</code> で書き込めます。</p>"
+        )
+    tags = notes.tag_summary()
+    tag_html = (
+        '<p class="muted">タグ: '
+        + " / ".join(f"{esc(tag)} {docs:,}" for tag, docs in tags)
+        + "</p>"
+        if tags
+        else ""
+    )
+    browse = esc(browse_url(notes.SOURCE_NAME))
+    return f"""
+<p>覚えていること: {total:,} 件</p>
+{tag_html}
+<p><a href="{browse}">→ 短期記憶を検索する</a></p>
+<p class="muted">
+長期記憶と同じ口で引ける(<code>/v1/notes/search|doc|filter|tags</code>)。
+書き込みは MCP の <code>remember</code> か <code>POST /v1/notes</code>、
+新しい順に思い出すのは <code>/v1/notes/recall</code>。
+ダンプから焼くソースではないので、再構築はできない。
+</p>
+"""
+
+
 def _answer_status_html() -> str:
     """管理画面に出す「使う」層の状態(既定では無効なので、その旨を出す)。
 
@@ -201,6 +246,11 @@ async def admin(request: Request):
             return str(version)
         return f'{version} <span class="stale">(最新: {latest_schema})</span>'
 
+    # 知識は 2 層あり、扱いが違う(下の _short_term_section_html):
+    # 長期(大脳)= ingest が焼く読み取り専用のソース、短期(海馬)= 唯一書き込める notes。
+    long_term = {n: s for n, s in sources.items() if not s.mutable}
+    short_term = {n: s for n, s in sources.items() if s.mutable}
+
     rows = "\n".join(
         f"<tr>"
         f"<td><a href=\"{esc(browse_url(s.name))}\">{esc(s.name)}</a></td>"
@@ -218,7 +268,7 @@ async def admin(request: Request):
         f"</form>"
         f"</td>"
         f"</tr>"
-        for s in sorted(sources.values(), key=lambda s: s.name)
+        for s in sorted(long_term.values(), key=lambda s: s.name)
     )
     if not rows:
         rows = '<tr><td colspan="8">登録済みのソースはありません</td></tr>'
@@ -272,7 +322,14 @@ async def admin(request: Request):
 
     body = f"""
 <h1>Chiezo 管理画面</h1>
-<p>登録ソース数: {len(sources)} / 最新のスキーマバージョン: {latest_schema}</p>
+<p class="muted">
+知識は 2 層。<strong>長期記憶</strong>は ingest がダンプから焼く読み取り専用のソースで、
+更新は再構築(ブルーグリーン)だけ。<strong>短期記憶</strong>は Chiezo で唯一書き込める
+置き場で、覚えたことがその場で積まれる。引くときの口はどちらも同じ。
+</p>
+
+<h2>長期記憶(ためた知識)</h2>
+<p>登録ソース数: {len(long_term)} / 最新のスキーマバージョン: {latest_schema}</p>
 <table>
 <thead>
 <tr><th>name</th><th>kind</th><th>lang</th><th>docs</th><th>dump_date</th><th>built_at</th><th>schema_version</th><th></th></tr>
@@ -289,7 +346,7 @@ async def admin(request: Request):
 
 {_job_status_html(job)}
 
-<h2>未初期化データの初期化</h2>
+<h3>未初期化データの初期化</h3>
 <table>
 <thead>
 <tr><th>name</th><th>kind</th><th>lang</th><th></th></tr>
@@ -298,6 +355,9 @@ async def admin(request: Request):
 {init_rows}
 </tbody>
 </table>
+
+<h2>短期記憶(覚えたこと)</h2>
+{_short_term_section_html(short_term)}
 
 <h2>ためた知識を使う AI</h2>
 {_answer_status_html()}
@@ -547,12 +607,25 @@ def admin_rebuild(source: str, request: Request):
     init と同じ ingest の一括取り込みで、ブルーグリーン(別ファイル構築 → シンボリック
     リンク差し替え)なので構築中も現行 DB での配信は続く。ソースの正は trigger 側の
     ADAPTERS なので、カタログに無い登録済みソースでも trigger に判断を委ねる。
+
+    ただし短期記憶(`mutable` なソース)だけはここで断る。ダンプから焼くソースでは
+    ないので trigger も unknown source を返すが、そこまで行かせると「実行しようとした
+    が失敗した」に見える。書き込める唯一のソースについては、素通しにしない。
     """
     if not TRIGGER_URL:
         raise HTTPException(503, {"error": "chiezo-trigger is not configured (CHIEZO_TRIGGER_URL unset)"})
     sources: dict[str, Source] = request.app.state.sources
-    if source not in sources:
+    src = sources.get(source)
+    if src is None:
         raise HTTPException(404, {"error": f"source not initialized: {source}"})
+    if src.mutable:
+        raise HTTPException(
+            409,
+            {
+                "error": f"source is not rebuildable: {source}",
+                "hint": "短期記憶はダンプから焼くソースではないので再構築の対象にならない",
+            },
+        )
     return _proxy_trigger_run(source)
 
 

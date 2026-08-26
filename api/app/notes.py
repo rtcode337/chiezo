@@ -499,6 +499,56 @@ def delete(doc_id: int) -> bool:
     return True
 
 
+def count() -> int | None:
+    """いま覚えている件数。無効・未作成・読めないときは None。
+
+    ソース表の `doc_count` は `/data` の走査で数えた値だが、notes は別ディレクトリに
+    置いてあるので走査のきっかけ(指紋の変化)がそもそも起きない。しかも書き手は
+    chiezo-api だけではない —— やること層は別プロセス(chiezo-tasks)から書くので、
+    書いた側で直す形では追いつかない(実際に件数が 12 のまま実体 42 になっていた)。
+    そこで読む側が数える。短期記憶は数十〜数千件なので、走査のたびに長期側の
+    150 万件を数え直すのとは費用がまるで違う。
+    """
+    path = notes_path()
+    if path is None or not path.exists():
+        return None
+    try:
+        return db.query(path, "SELECT COUNT(*) FROM docs")[0][0]
+    except sqlite3.Error:
+        log.debug("could not count notes", exc_info=True)
+        return None
+
+
+def refresh_count(sources: dict) -> None:
+    """ソース表の件数を実件数で直す。ソース一覧を読む側の入口で呼ぶ。"""
+    src = sources.get(SOURCE_NAME)
+    if src is None:
+        return
+    current = count()
+    if current is not None:
+        src.doc_count = current
+
+
+def tag_summary(limit: int = 24) -> list[tuple[str, int]]:
+    """タグと文書数を多い順に。短期記憶に何が溜まっているかの見取り図。
+
+    集計表(`tag_counts`)を引くだけなので、メモが増えても走査は増えない。
+    """
+    path = notes_path()
+    if path is None or not path.exists():
+        return []
+    try:
+        rows = db.query(
+            path,
+            "SELECT tag, docs FROM tag_counts ORDER BY docs DESC, tag LIMIT ?",
+            (limit,),
+        )
+    except sqlite3.Error:
+        log.debug("could not read notes tag_counts", exc_info=True)
+        return []
+    return [(row["tag"], row["docs"]) for row in rows]
+
+
 def parse_recall_fields(fields: str | None) -> list[str]:
     """`fields` を項目の並びに直す。空なら全項目(これまでの応答と同じ)。"""
     if not fields:
