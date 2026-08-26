@@ -8,9 +8,15 @@
 # 取り残されていた(上書きにすれば構造上ずれない)。
 # タグを :local にしてあるのは、pull した本番イメージと取り違えないため。
 # 「答える」層(推論・検索エンジン)は公開イメージをそのまま使うのでここには出てこない。
+#
+# api だけコンテキストがリポジトリのルート。やること画面(tasks-frontend/)を同じ
+# イメージへ焼くので、api/ の中だけでは足りない(CI も同じ組み合わせでビルドしている)。
+# 手元では data/ が数十 GB あるが、ルートの .dockerignore が除くので daemon へは送られない。
 services:
   chiezo-api:
-    build: ./api
+    build:
+      context: .
+      dockerfile: api/Dockerfile
     image: ghcr.io/rtcode337/chiezo-api:local
 
   chiezo-trigger:
