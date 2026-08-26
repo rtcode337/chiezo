@@ -73,18 +73,28 @@ def test_standalone_covers_base_env():
     )
 
 
-def test_standalone_covers_the_tasks_service():
-    """やること層(外に出す面)も単体定義に追従していること。
+def test_standalone_keeps_the_tasks_service_commented_out():
+    """やること層は単体定義では既定で立てないこと。
+
+    画面は本体(`chiezo-app` の `/tasks`)からも認証なしで使える。このサービスが
+    要るのは**外へ公開する**ときだけで、そのときは認証の設定を 3 つとも埋める必要が
+    ある —— 既定で立ててしまうと、埋まっていないまま 401 を返し続ける口が開く。
+    """
+    doc = yaml.safe_load(STANDALONE.read_text(encoding="utf-8"))
+    assert "chiezo-tasks" not in doc["services"], (
+        "単体定義の chiezo-tasks は既定でコメントアウトしておくこと"
+        "(外へ公開する人だけがコメントを外す)"
+    )
+
+
+def test_standalone_still_documents_the_tasks_service():
+    """コメントアウトしても、外に出すときに要る設定は書き残しておくこと。
 
     ここが取り残されると、単体定義で立てた環境だけ「画面が無い」か、
     もっと悪くて「設定を書く場所が分からないまま 401 が返り続ける」になる。
     """
-    doc = yaml.safe_load(STANDALONE.read_text(encoding="utf-8"))
-    assert "chiezo-tasks" in doc["services"], (
-        "docker-compose.standalone.example.yml に chiezo-tasks が無い。"
-        "docker-compose.yml に追従させること"
-    )
     text = STANDALONE.read_text(encoding="utf-8")
+    assert "#chiezo-tasks:" in text
     base = _service_env_keys(BASE, "chiezo-tasks")
     # 認証まわりは CHIEZO_ で始まらないので、名前を直に並べて見張る
     base |= {"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "ALLOWED_EMAIL", "PUBLIC_BASE_URL"}

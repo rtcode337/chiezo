@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { RouterLink } from 'vue-router'
+import { useSessionStore } from '@/stores/session'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import UserMenu from '@/components/UserMenu.vue'
+
+// 本体(chiezo-app)に埋め込まれているときは認証が無いので、利用者メニューの
+// 代わりに管理画面への戻り口を出す。SPA の外へ出るので RouterLink ではなく <a>
+const session = useSessionStore()
 </script>
 
 <template>
@@ -12,7 +17,8 @@ import UserMenu from '@/components/UserMenu.vue'
         <RouterLink to="/" class="header__link" active-class="header__link--active" exact-active-class="header__link--active">トップ</RouterLink>
         <RouterLink to="/rules" class="header__link" active-class="header__link--active">ルール</RouterLink>
         <ThemeToggle />
-        <UserMenu />
+        <a v-if="session.embedded" href="/admin" class="header__link">管理画面</a>
+        <UserMenu v-else />
       </nav>
     </div>
   </header>

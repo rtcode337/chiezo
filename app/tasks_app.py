@@ -14,14 +14,13 @@ from __future__ import annotations
 
 import logging
 import mimetypes
-import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 
 from app import db, notes, tasks_api, tasks_auth
+from app.tasks_static import cache_headers, resolve, static_dir
 
 log = logging.getLogger("chiezo.tasks")
 
@@ -67,19 +66,10 @@ def create_app() -> FastAPI:
 
 # ---- 画面(Vue の成果物)の配信 ---------------------------------------------
 
-# `tasks-frontend` を `npm run build` した中身。イメージでは Dockerfile が
-# ここへ置く(WORKDIR の直下)。手元で試すときは
-# `CHIEZO_TASKS_STATIC_DIR=tasks-frontend/dist`。
-DEFAULT_STATIC_DIR = "/srv/chiezo/tasks-static"
-
 # 機械向けの口。ここに前方一致するものは画面に落とさない —— 落とすと、
 # 綴りを間違えた API 呼び出しに index.html が 200 で返り、画面側が
 # 「JSON が来るはず」のところで壊れて原因を追いにくくなる。
 API_PREFIXES = ("/api/", "/oauth2/", "/login/")
-
-
-def static_dir() -> Path:
-    return Path(os.environ.get("CHIEZO_TASKS_STATIC_DIR", DEFAULT_STATIC_DIR))
 
 
 def _serve_spa(app: FastAPI) -> None:
@@ -100,9 +90,9 @@ def _serve_spa(app: FastAPI) -> None:
                 status_code=503,
                 content={"error": {"code": "no_static", "message": "画面がまだ置かれていません"}},
             )
-        file = _resolve(root, path)
+        file = resolve(root, path)
         if file is not None:
-            return FileResponse(file, headers=_cache_headers(file, root))
+            return FileResponse(file, headers=cache_headers(file, root))
         # 画面のルーティングは SPA 側が持つので、残りは殻を返す
         index = root / "index.html"
         if not index.is_file():
@@ -111,32 +101,6 @@ def _serve_spa(app: FastAPI) -> None:
                 content={"error": {"code": "no_static", "message": "画面がまだ置かれていません"}},
             )
         return FileResponse(index, headers={"Cache-Control": "no-cache"})
-
-
-def _resolve(root: Path, path: str) -> Path | None:
-    """配信してよい実ファイル。**置き場の外を指していたら配らない**(../ 対策)。"""
-    if not path:
-        return None
-    try:
-        candidate = (root / path).resolve()
-        base = root.resolve()
-    except OSError:
-        return None
-    if candidate != base and base not in candidate.parents:
-        return None
-    return candidate if candidate.is_file() else None
-
-
-def _cache_headers(file: Path, root: Path) -> dict:
-    """Vite が名前にハッシュを付けた資材だけ長く持たせる。
-
-    殻(index.html)と Service Worker を長く持たせると、更新しても古い版が
-    出続ける。逆にハッシュ付きの資材は中身が変われば名前も変わるので、
-    長く持たせても取り違えない。
-    """
-    if file.parent == root.resolve() / "assets":
-        return {"Cache-Control": "public, max-age=31536000, immutable"}
-    return {"Cache-Control": "no-cache"}
 
 
 app = create_app()

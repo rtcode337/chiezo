@@ -14,7 +14,12 @@ import type {
   TaskInput,
   TaskStatus,
 } from './types'
-import { beginRequest, endRequest, notifyRequestFailure } from '@/lib/network'
+import {
+  beginRequest,
+  endRequest,
+  notifyRequestFailure,
+  notifyUnauthorized,
+} from '@/lib/network'
 
 /** 未認証。呼び出し側はログイン画面へ誘導する。 */
 export class UnauthorizedError extends Error {
@@ -94,6 +99,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     }
 
     if (response.status === 401) {
+      notifyUnauthorized()
       throw new UnauthorizedError()
     }
     if (response.status === 204) {

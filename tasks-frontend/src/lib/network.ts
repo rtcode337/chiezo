@@ -23,11 +23,25 @@ export function endRequest() {
 // 通信失敗(リクエストが届かない・応答が返らない)の通知先
 let failureHandler: (() => void) | null = null
 
-/** 通信失敗時の処理を登録する。App.vue がダイアログ表示とログイン画面への誘導を登録する。 */
+/** 通信失敗時の処理を登録する。App.vue がダイアログ表示を登録する。 */
 export function onRequestFailure(handler: () => void) {
   failureHandler = handler
 }
 
 export function notifyRequestFailure() {
   failureHandler?.()
+}
+
+// 未認証(401)の通知先。**通信失敗とは分けてある** —— 戻る先が違うため。
+// 認証が切れたときはログイン画面へ送れば直るが、通信失敗は認証の問題ではないので、
+// 送っても直らないうえ、やりかけの操作を見失う。
+let unauthorizedHandler: (() => void) | null = null
+
+/** 未認証時の処理を登録する。App.vue がログイン画面への誘導を登録する。 */
+export function onUnauthorized(handler: () => void) {
+  unauthorizedHandler = handler
+}
+
+export function notifyUnauthorized() {
+  unauthorizedHandler?.()
 }

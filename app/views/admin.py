@@ -277,11 +277,17 @@ def _short_term_section_html(sources: dict[str, Source]) -> str:
             '<p class="muted">短期記憶は無効です。書き込み可能なディレクトリを'
             " <code>CHIEZO_NOTES_DIR</code> に設定すると有効になります。</p>"
         )
+    # やること層への入口はメモが 0 件でも出す(タスクはこれから足すもの)
+    tasks_link = (
+        '<p><a href="/tasks/">→ やること(タスク・ルール)</a> '
+        '<span class="muted">短期記憶の上にタグで載っている層。'
+        "ここからは認証なしで開く</span></p>"
+    )
     total = notes.count()
     if not total:
         return (
             '<p class="muted">まだ何も覚えていません。MCP の <code>remember</code> か'
-            " <code>POST /v1/notes</code> で書き込めます。</p>"
+            " <code>POST /v1/notes</code> で書き込めます。</p>" + tasks_link
         )
     tags = notes.tag_summary()
     tag_html = (
@@ -296,6 +302,7 @@ def _short_term_section_html(sources: dict[str, Source]) -> str:
 <p>覚えていること: {total:,} 件</p>
 {tag_html}
 <p><a href="{browse}">→ 短期記憶を検索する</a></p>
+{tasks_link}
 <p class="muted">
 長期記憶と同じ口で引ける(<code>/v1/notes/search|doc|filter|tags</code>)。
 書き込みは MCP の <code>remember</code> か <code>POST /v1/notes</code>、

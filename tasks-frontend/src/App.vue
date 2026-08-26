@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import { OfflineError } from '@/api/client'
-import { inFlightRequests, onRequestFailure } from '@/lib/network'
+import { inFlightRequests, onRequestFailure, onUnauthorized } from '@/lib/network'
 import { currentRefreshHandler } from '@/lib/pullToRefresh'
 import { isDragActive } from '@/lib/dragSort'
 import ErrorBanner from '@/components/ErrorBanner.vue'
@@ -37,17 +37,26 @@ watch(
 )
 
 // ---- 通信失敗 ----
-// リクエストが届かない・応答が返らないときはダイアログを 1 回出してログイン画面へ戻す。
-// 並行するリクエストが同時に失敗しても連続でダイアログを出さない
+// リクエストが届かない・応答が返らないときはダイアログを 1 回出す。**画面は動かさない**
+// —— 認証の問題ではないので、ログイン画面へ送っても直らないし、やりかけの操作を見失う
+// (埋め込みの面ではそもそも戻る先が無く、押しても 404 になるログインボタンが出ていた)。
+// 並行するリクエストが同時に失敗しても、ダイアログを続けざまに出さない
+const FAILURE_QUIET_MS = 1000
 let failureNotified = false
 onRequestFailure(() => {
-  if (failureNotified || route.name === 'login') return
+  if (failureNotified) return
   failureNotified = true
-  window.alert('サーバーとの通信に失敗しました。ログイン画面に戻ります。')
+  window.alert('サーバーとの通信に失敗しました。')
+  window.setTimeout(() => (failureNotified = false), FAILURE_QUIET_MS)
+})
+
+// ---- 未認証 ----
+// 認証が切れた(401)ときだけログイン画面へ送る。ここは送れば直る失敗なので誘導してよい。
+// 埋め込みの面は認証を持たないので、この経路には来ない
+onUnauthorized(() => {
+  if (route.name === 'login') return
   session.reset()
-  void router.replace({ name: 'login' }).finally(() => {
-    failureNotified = false
-  })
+  void router.replace({ name: 'login' })
 })
 
 // 認証確認(/api/me)が済み、ログイン済みと分かるまで画面を描画しない。
@@ -134,7 +143,7 @@ onMounted(async () => {
       await router.replace({ name: 'home' })
     }
   } catch (error) {
-    // 通信失敗は onRequestFailure 側でダイアログ→ログイン画面に誘導済みなのでここでは出さない
+    // 通信失敗は onRequestFailure 側でダイアログを出しているので、ここでは出さない
     if (!(error instanceof OfflineError)) {
       bootError.value = error instanceof Error ? error.message : String(error)
     }

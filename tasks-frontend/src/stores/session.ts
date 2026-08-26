@@ -9,10 +9,18 @@ import type { Me } from '@/api/types'
 export const useSessionStore = defineStore('session', () => {
   const me = ref<Me | null>(null)
   const checked = ref(false)
+  /**
+   * 本体(chiezo-app)に埋め込まれて動いているか(認証を持たない面)。
+   * **ログイン状態とは別に持つ** —— これはサーバーの構成であって、通信の成否や
+   * セッションの有無で変わらない。ヘッダーが利用者メニューの代わりに管理画面への
+   * 戻り口を出すかの判断に使う。
+   */
+  const embedded = ref(false)
 
   async function load(): Promise<boolean> {
     try {
       me.value = await api.me()
+      embedded.value = me.value.embedded === true
       return true
     } catch (error) {
       if (error instanceof UnauthorizedError) {
@@ -45,5 +53,5 @@ export const useSessionStore = defineStore('session', () => {
     window.location.assign('/oauth2/authorization/google')
   }
 
-  return { me, checked, load, reset, login, logout }
+  return { me, checked, embedded, load, reset, login, logout }
 })

@@ -1,7 +1,14 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
+/**
+ * 画面の居場所。外に出す面(chiezo-tasks)はルート直下だが、本体(chiezo-app)に
+ * 埋め込まれるときは `/tasks/` の下になり、殻に `<base href="/tasks/">` が
+ * 差し込まれてくる。ビルドを 1 つに保つため、ここで実行時に読む。
+ */
+const base = document.querySelector('base')?.getAttribute('href') ?? '/'
+
 export const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(base),
   routes: [
     { path: '/', name: 'home', component: () => import('./views/HomeView.vue') },
     { path: '/login', name: 'login', component: () => import('./views/LoginView.vue') },

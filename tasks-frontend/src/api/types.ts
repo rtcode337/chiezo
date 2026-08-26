@@ -105,6 +105,11 @@ export interface Me {
   email: string
   name?: string | null
   pictureUrl?: string | null
+  /**
+   * 本体(chiezo-app)に埋め込まれて動いているか。LAN 内・認証なしの面なので、
+   * ログインもログアウトも無い代わりに管理画面へ戻れる。
+   */
+  embedded?: boolean
 }
 
 export interface Paged<T> {

@@ -35,6 +35,7 @@ from app import (
     memory,
     notes,
     providers,
+    tasks_api,
     usage,
     usage_store,
     websearch,
@@ -65,6 +66,7 @@ from app.views import ai_settings as views_ai_settings
 from app.views import ai_usage as views_ai_usage
 from app.views import browse as views_browse
 from app.views import chat as views_chat
+from app.views import tasks as views_tasks
 
 log = logging.getLogger("chiezo.app")
 
@@ -1675,6 +1677,31 @@ app.include_router(views_ai_settings.router)
 app.include_router(views_ai_usage.router)
 app.include_router(views_browse.router)
 app.include_router(views_chat.router)
+app.include_router(views_tasks.router)
+
+# ---- やること層(タスク・ルール)------------------------------------------------
+#
+# 外に出す面(`app/tasks_app.py` = chiezo-tasks)と**同じ REST をそのまま**、
+# 認証なしで載せる。本体は LAN 内・認証なしの前提で、ここには既にメモを消せる口も
+# 取り込みを起こせる管理画面もある —— やること層だけ守っても増えるものが無い。
+# 画面は上の `views_tasks`(`/tasks`)。
+app.include_router(tasks_api.router)
+# エラーの形は面ごとに違う(本体は `{"error": "..."}`、やること層は
+# `{"error": {"code", "message"}}`)。例外ハンドラはアプリ単位でしか差せないので、
+# 効かせる範囲を `/api` の下に限る。
+tasks_api.install_error_handlers(app, only_under="/api/")
+
+
+@app.get("/api/me")
+def tasks_me():
+    """画面が最初に引く「いま誰か」。
+
+    本体側は認証を持たないので、**誰でもない代わりに埋め込みであることを伝える**。
+    画面はこれを見てログイン画面へ飛ばすのをやめ、ログアウトの代わりに管理画面への
+    戻り口を出す(`tasks-frontend/src/components/AppHeader.vue`)。
+    外に出す面では `app/tasks_auth.py` の同じパスが本物の利用者を返す。
+    """
+    return {"email": "", "name": None, "pictureUrl": None, "embedded": True}
 
 
 # ---- MCP(Streamable HTTP) ---------------------------------------------------

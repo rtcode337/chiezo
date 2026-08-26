@@ -64,11 +64,23 @@ def _error_body(status: int, detail) -> dict:
     return {"error": {"code": _CODES.get(status, "unknown"), "message": str(message)}}
 
 
-def install_error_handlers(app) -> None:
-    """やること層のアプリに、画面が読めるエラーの形を仕込む。"""
+def install_error_handlers(app, only_under: str | None = None) -> None:
+    """やること層のアプリに、画面が読めるエラーの形を仕込む。
+
+    `only_under` を渡すと、そのパスの下だけをこの形にして、外れたものは今までどおりの
+    扱いに戻す。本体(`chiezo-app`)にも同じ REST を載せているため —— あちらのエラーは
+    `{"error": "..."}` と平たく、この層は `{"error": {"code", "message"}}` で、
+    例外ハンドラはアプリ単位でしか差せない。区別せずに差すと本体側のエラーが
+    全部この形に変わる(実際に 28 件のテストが落ちた)。
+    """
+    previous = app.exception_handlers.get(HTTPException)
 
     @app.exception_handler(HTTPException)
     async def _http_error(request: Request, exc: HTTPException):
+        if only_under and not request.url.path.startswith(only_under):
+            if previous is not None:
+                return await previous(request, exc)
+            raise exc
         return JSONResponse(status_code=exc.status_code, content=_error_body(exc.status_code, exc.detail))
 
 
