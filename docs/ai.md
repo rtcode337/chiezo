@@ -22,7 +22,7 @@ Claude Code の代わりにローカル LLM で立てて同居させたのがこ
 
 ## 使いはじめる
 
-推論サーバと検索エンジンの**コンテナは `docker-compose.answer.yml` に外出し**してあります
+推論サーバと検索エンジンの**コンテナは `docker-compose.llm.yml` に外出し**してあります
 (chiezo-app 側の設定は本体の `docker-compose.yml` にあります)。重ねなければコンテナは
 立たず、Chiezo は検索 API・MCP として動きます。
 
@@ -30,13 +30,13 @@ Claude Code の代わりにローカル LLM で立てて同居させたのがこ
 cp .env.example .env
 # .env の CHIEZO_LLM_URL=http://chiezo-llm:7011/v1 の行のコメントを外す
 
-docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile answer up -d
+docker compose -f docker-compose.yml -f docker-compose.llm.yml --profile llm up -d
 docker compose logs -f chiezo-llm     # 初回はモデルのダウンロード(約 2.5GB)
 ```
 
 毎回 `-f` を並べるのが煩わしければ、`.env` に
-`COMPOSE_FILE=docker-compose.yml:docker-compose.answer.yml` と書けば以後は
-`docker compose --profile answer up -d` で済みます。
+`COMPOSE_FILE=docker-compose.yml:docker-compose.llm.yml` と書けば以後は
+`docker compose --profile llm up -d` で済みます。
 
 起動するのは推論サーバ(`chiezo-llm` = llama.cpp の `llama-server`)と
 検索エンジン(`searxng`)の 2 つです。**推論を LAN の別マシン(Ollama 等)に任せるなら
@@ -252,7 +252,7 @@ gpt-image が **403** を返したら、OpenAI の開発者コンソールで**�
 自分の GPU で回すには、GPU のあるホストで:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.image.yml --profile image up -d
+docker compose -f docker-compose.yml -f docker-compose.comfyui.yml --profile comfyui up -d
 ```
 
 **モデル(チェックポイント)は自分で置いてください** —— 数 GB あり、ライセンスも
@@ -472,8 +472,11 @@ CHIEZO_WEB_SEARCH_URL=http://searxng:7012/search   # 同居(本体の compose �
 #CHIEZO_WEB_SEARCH_RESULTS=5                       # 1 回に見る件数
 ```
 
-ポートは**内も外も 7012**です(7010 = API・7011 = 推論の隣に揃えてあります)。同居なら
-サービス名で、別ホストなら `docker-compose.lan.yml` が公開する 7012 を指します。
+ポートは**内も外も 7012**です(7010 = API・7011 = 推論の隣に揃えてあります)。ホストへは
+公開せず、`chiezo-app` からサービス名で引きます —— SearXNG は本体の compose にあるので、
+`chiezo-app` を立てるマシンには必ず一緒に立てられます(検索の中継なので軽い)。
+別ホストのものを指す構成は用意していません(`docker-compose.lan.yml` が開けるのは
+GPU の要るものだけ)。
 
 これは **Chiezo 本体ではなく「使う」層(= Chiezo を使う側)の機能**です。知識ベースそのものは
 引き続き外へ出ません。とはいえ外に出る以上は、次を守っています。
@@ -490,7 +493,7 @@ web 検索を使うかどうかは、上の `CHIEZO_WEB_SEARCH_URL` を書くか
 立っているだけでは外へ検索を投げません。
 
 **推論サーバとは独立しています。** 話す相手が Gemini や Claude Code でも web 検索は要るのに、
-以前は `--profile answer` に入れていたせいで、検索を使いたいだけで数 GB の推論サーバまで
+以前は `--profile llm` に入れていたせいで、検索を使いたいだけで数 GB の推論サーバまで
 立ち上げることになっていました。要らない環境では
 `docker compose up -d chiezo-app chiezo-trigger` のようにサービスを選んで起動します。
 
@@ -511,7 +514,7 @@ OpenRouter・OpenAI)。CLI ブリッジ(Claude Code / Codex / Antigravity)は
 足してあります。無いと Chiezo 側は「JSON ではない」というエラーとして扱います。
 
 ```bash
-# 動いているか確かめる(コンテナの外から見るなら docker-compose.lan.yml を重ねて 7012)
+# 動いているか確かめる(ホストには公開していないのでコンテナの中から叩く)
 docker compose exec searxng wget -qO- "http://localhost:7012/search?q=test&format=json" | head -c 200
 ```
 
@@ -545,7 +548,7 @@ docker compose exec searxng wget -qO- "http://localhost:7012/search?q=test&forma
 
 | 相手 | 使えるようにするには |
 |---|---|
-| 推論サーバ（同梱の llama.cpp） | `--profile answer` で立ち上げる → on |
+| 推論サーバ（同梱の llama.cpp） | `--profile llm` で立ち上げる → on |
 | Gemini | API キーを登録 → on |
 | OpenRouter | API キーを登録 → on |
 | Claude Code | ブリッジのコメントを外して起動 → 認証情報を登録 → on |
@@ -1081,7 +1084,7 @@ Chiezo からは OpenAI 互換の `reasoning_effort` として送られます
 
 Chiezo が要求するのは OpenAI 互換の `/v1/chat/completions` だけなので、`CHIEZO_LLM_URL` を
 差し替えれば Ollama・LM Studio・GPU 付きの別マシンなど何にでも向けられます
-(その場合 `--profile answer` は不要です)。
+(その場合 `--profile llm` は不要です)。
 
 ```bash
 CHIEZO_LLM_URL=http://<推論サーバのIP>:11434/v1   # Ollama
@@ -1104,7 +1107,7 @@ Hugging Face の GGUF リポジトリを `<user>/<repo>:<quant>` の形で指定
 上書きファイルを重ねて起動します(ホストに nvidia-container-toolkit が要ります)。
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.cuda.yml --profile answer up -d
+docker compose -f docker-compose.yml -f docker-compose.llm.cuda.yml --profile llm up -d
 ```
 
 **この上書きは NVIDIA 専用**です。イメージが CUDA ビルドで、`gpus: all` も NVIDIA

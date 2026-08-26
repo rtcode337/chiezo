@@ -557,7 +557,7 @@ async def chat_page(
 <div class="log">
 <p class="stale">「使う」層は無効です。</p>
 <p class="muted">推論サーバの OpenAI 互換 URL を <code>CHIEZO_LLM_URL</code> に設定すると
-有効になります(compose なら <code>docker compose --profile answer up -d</code>)。</p>
+有効になります(compose なら <code>docker compose --profile llm up -d</code>)。</p>
 </div>
 <div class="composer"><div class="composer-box">
 <textarea name="q" rows="3" placeholder="話しかける(いまは無効です)" disabled></textarea>

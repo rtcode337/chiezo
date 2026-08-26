@@ -21,7 +21,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 BASE = ROOT / "docker-compose.yml"
 STANDALONE = ROOT / "docker-compose.standalone.example.yml"
-ANSWER = ROOT / "docker-compose.answer.yml"
+ANSWER = ROOT / "docker-compose.llm.yml"
 
 # 単体定義にはあえて載せていないもの。ここに足すときは「なぜ単体定義に要らないか」を書くこと。
 STANDALONE_EXEMPT = {
@@ -30,7 +30,7 @@ STANDALONE_EXEMPT = {
     "CHIEZO_INGEST_IMAGE",
 }
 
-# 「答える」層の上書き(docker-compose.answer.yml)が持つコンテナ。推論サーバだけ ——
+# 「答える」層の上書き(docker-compose.llm.yml)が持つコンテナ。推論サーバだけ ——
 # 検索エンジン(SearXNG)は本体側にある(web 検索と推論は独立していて、chiezo が agent
 # ループを回す相手なら検索は要るのに、以前は検索のために推論サーバまで立ち上がっていた)。
 ANSWER_CONTAINERS = {"chiezo-llm"}
@@ -190,7 +190,7 @@ def test_overrides_do_not_duplicate_base():
     overrides = [
         p for p in _compose_files()
         if p.name not in {"docker-compose.yml", "docker-compose.standalone.example.yml",
-                          "docker-compose.answer.yml"}
+                          "docker-compose.llm.yml"}
     ]
     base_lines = len(BASE.read_text(encoding="utf-8").splitlines())
     for path in overrides:

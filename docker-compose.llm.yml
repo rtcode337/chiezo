@@ -1,9 +1,9 @@
 # 「答える」層(/v1/ask・/v1/chat・/ai/chat)の推論サーバを自分で立てるための上書き。
 # 本体(docker-compose.yml)と重ねて使う:
 #
-#   docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile answer up -d
+#   docker compose -f docker-compose.yml -f docker-compose.llm.yml --profile llm up -d
 #
-# GPU で動かすなら docker-compose.cuda.yml を後ろに重ねる(そちらが正)。
+# GPU で動かすなら docker-compose.llm.cuda.yml を後ろに重ねる(そちらが正)。
 #
 # このファイルにあるのはコンテナだけで、chiezo-app に渡す設定
 # (CHIEZO_LLM_URL 以下)は本体側にある —— 推論を LAN の別マシン(Ollama 等)に
@@ -16,10 +16,10 @@ services:
   # 推論サーバ(OpenAI 互換)。配信側 chiezo-app が数百 MB で動く前提を壊さないため、
   # 推論は必ず別プロセスに置く。モデルは起動時に Hugging Face から取ってきて ./models に
   # キャッシュする(初回だけ数 GB)。別のモデルにするなら .env の CHIEZO_LLM_HF_REPO。
-  # ここは CPU 版。NVIDIA の GPU なら docker-compose.cuda.yml を重ねる。
+  # ここは CPU 版。NVIDIA の GPU なら docker-compose.llm.cuda.yml を重ねる。
   chiezo-llm:
     image: ghcr.io/ggml-org/llama.cpp:server-b10156
-    profiles: ["answer"]
+    profiles: ["llm"]
     # ホストへは公開しない(chiezo-app からのみ到達する)。LAN の別ホストの
     # chiezo-app から使うなら docker-compose.lan.yml を重ねる。
     environment:

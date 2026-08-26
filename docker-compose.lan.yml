@@ -1,41 +1,35 @@
-# 「答える」層を LAN の別ホストで動く chiezo-app から使うための公開。
-# docker-compose.answer.yml に重ねる(GPU を使うなら cuda の後ろ):
+# GPU の要るものを LAN の別ホストから使うための公開。開けるのは推論サーバと画像生成で、
+# **どちらも GPU のあるマシンに置く必然性がある**もの。
+# docker-compose.llm.yml に重ねる(GPU を使うなら cuda の後ろ):
 #
-#   docker compose -f docker-compose.yml -f docker-compose.answer.yml \
-#                  -f docker-compose.cuda.yml -f docker-compose.lan.yml \
-#                  --profile answer up -d chiezo-llm searxng
+#   docker compose -f docker-compose.yml -f docker-compose.llm.yml \
+#                  -f docker-compose.llm.cuda.yml -f docker-compose.lan.yml \
+#                  --profile llm up -d chiezo-llm
 #
-# SearXNG だけを別ホストへ出すなら answer / cuda は要らない(本体にあるため):
-#
-#   docker compose -f docker-compose.yml -f docker-compose.lan.yml up -d searxng
+# 検索エンジン(SearXNG)はここに無い。本体の compose に入っていて、chiezo-app を
+# 立てるマシンには必ず一緒に立てられるので、別ホストのものを指す理由が無いため
+# (検索の中継なので軽い)。
 #
 # 相手側の chiezo-app には .env でこう渡す(このホストの IP に読み替える):
 #
 #   CHIEZO_LLM_URL=http://<このホストのIP>:7011/v1
-#   CHIEZO_WEB_SEARCH_URL=http://<このホストのIP>:7012/search
 #   CHIEZO_IMAGE_URL=http://<このホストのIP>:7014
 #
 # 同じホストに chiezo-app がいるなら重ねない。 その場合はサービス名で届くので
-# (http://chiezo-llm:7011/v1・http://searxng:7012/search・http://chiezo-image:7014)、
-# 口を開ける理由が無い。
+# (http://chiezo-llm:7011/v1・http://chiezo-image:7014)、口を開ける理由が無い。
 #
-# 開ける以上は前提を承知しておくこと —— どれも認証が無い。推論サーバと画像生成は
-# 誰でも VRAM を使えるようになり(空きが尽きるとホストごとページングで固まる)、
-# 検索エンジンは外向きの検索の中継そのものになる。ComfyUI は画面も付いてくるので、
-# LAN の誰でもワークフローを流せる。ルーターでポート開放しないこと。
+# 開ける以上は前提を承知しておくこと —— どちらも認証が無い。誰でも VRAM を使える
+# ようになり(空きが尽きるとホストごとページングで固まる)、ComfyUI は画面も
+# 付いてくるので LAN の誰でもワークフローを流せる。ルーターでポート開放しないこと。
 # 推論に鍵を掛けるなら llama-server の --api-key と相手側の CHIEZO_LLM_API_KEY を揃える。
 services:
   chiezo-llm:
     ports:
       - "7011:7011"
 
-  searxng:
-    ports:
-      - "7012:7012"
-
   # 画像生成(ComfyUI)。GPU のあるマシンで立てて、別ホストの chiezo-app から使う
   # ときに開ける。相手側には CHIEZO_IMAGE_URL=http://<このホストのIP>:7014 を渡す。
-  # 定義は docker-compose.image.yml 側なので、そちらも重ねて --profile image を付ける。
+  # 定義は docker-compose.comfyui.yml 側なので、そちらも重ねて --profile comfyui を付ける。
   chiezo-image:
     ports:
       - "7014:7014"

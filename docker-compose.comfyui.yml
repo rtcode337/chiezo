@@ -1,7 +1,7 @@
 # 絵と音の生成(MCP の image_generate / audio_generate)を自分の GPU で回すための上書き。
 # 本体(docker-compose.yml)と重ねて使う:
 #
-#   docker compose -f docker-compose.yml -f docker-compose.image.yml --profile image up -d
+#   docker compose -f docker-compose.yml -f docker-compose.comfyui.yml --profile comfyui up -d
 #
 # NVIDIA の GPU が要る(NVIDIA Container Toolkit を入れておくこと)。
 # GPU が別のマシンにあるなら、このファイルは重ねない —— そちらで ComfyUI を動かし、
@@ -25,7 +25,7 @@ services:
     # ComfyUI に公式のイメージは無い。保守されているコミュニティのものをタグで固定する
     # (:latest は 2026 年半ばに廃止された。cu126-slim = NVIDIA 向け)。
     image: ${CHIEZO_IMAGE_IMAGE:-yanwk/comfyui-boot:cu126-slim}
-    profiles: ["image"]
+    profiles: ["comfyui"]
     # ホストへは公開しない(chiezo-app からのみ到達する)。
     # 手元のブラウザで ComfyUI の画面を触りたいときだけ ports を足す
     environment:

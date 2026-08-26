@@ -439,7 +439,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `docs/design-notes.md`「「使う」層はなぜ 2 段の RAG か」が正。実装側の要点:
     - **`CHIEZO_LLM_URL` が機能フラグを兼ねる**(未設定 = 丸ごと無効、`/v1/ask` は 503)。
       推論はこのプロセスに入れない。ここがするのは OpenAI 互換の `/chat/completions` を
-      叩くことだけで、モデルは別コンテナ(compose の profile `answer` の `chiezo-llm`
+      叩くことだけで、モデルは別コンテナ(compose の profile `llm` の `chiezo-llm`
       = llama.cpp の `llama-server`)か LAN 上の別マシンにいる
     - **検索は `app/main.py` のエンドポイント関数をそのまま呼ぶ**(`app/mcp_server.py` と
       同じ方針。取り出し方を二重に持つと片方だけ直されて必ずずれる)。FastAPI の
@@ -508,7 +508,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   **MCP は任意**(`CHIEZO_BRIDGE_MCP_URL` を空にすると繋がない)。Chiezo 専用の部品ではなく、
   他のアプリからも使えるサービスとして立てられる。
   **本体には入れない** —— `chiezo-app` が数百 MB で動く前提を崩さないため(推論を同居させないのと
-  同じ理由)。既定では立たず、`docker-compose.answer.yml` のコメントを外した人だけが pull する。
+  同じ理由)。既定では立たず、`docker-compose.llm.yml` のコメントを外した人だけが pull する。
   - **プロンプトの渡し方は CLI ごとに違う。** claude / codex は標準入力から読むが、
     **agy(Antigravity)は `-p` の引数でしか受け取らない** —— 標準入力は読まず
     (`-p -` は "-" をプロンプトそのものとして扱う)、プロンプトを取るファイル用のフラグも無い。
@@ -1320,7 +1320,7 @@ python tests/fixtures/make_geonames_fixture.py
 docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 
 # 「答える」層(推論サーバ + 検索エンジン)も立てる。GPU なら cuda を後ろに重ねる
-docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile answer up -d
+docker compose -f docker-compose.yml -f docker-compose.llm.yml --profile llm up -d
 ```
 
 実データを落とさずに取り込みを試すなら、`DUMP_FILE`(ダウンロードを飛ばして手元のファイルを使う)
@@ -1423,7 +1423,9 @@ SQLite ファイルで、配信側 chiezo-app は read-only immutable で開く�
   `CHIEZO_LLM_MODEL` の既定値。**日本語名は付けない**(表記は `Chiezo` に一本化する)。
 - 認証なし・LAN 内前提。ルーターでポート開放しないこと。chiezo-trigger・chiezo-llm・searxng は
   ホストへポート公開せず、chiezo-app からのみ内部ネットワーク経由で到達可能にすること
-  (別ホストの chiezo-app から使うときだけ `docker-compose.lan.yml` で開ける)。
+  (**GPU の要るもの**= chiezo-llm・chiezo-image だけは、別ホストの chiezo-app から使う
+  ために `docker-compose.lan.yml` で開ける。**searxng はそこに入れない** ——
+  本体の compose にあって chiezo-app と必ず同居できるので、別ホストのものを指す理由が無い)。
 - **待ち受けは 7010 = API・7011 = 推論・7012 = 検索エンジン・7013 = CLI ブリッジ・
   7014 = 絵と音の生成(ComfyUI)で、コンテナの内と外を同じ番号にする**。
   番号が食い違うと URL を書くたびにどちらか迷う。既定が違うイメージは環境変数で寄せる ——
@@ -1432,7 +1434,7 @@ SQLite ファイルで、配信側 chiezo-app は read-only immutable で開く�
 - **「使う」層は既定で無効のまま保つ**。推論を chiezo-app の中で動かさない(配信側が
   数百 MB で動く前提)。LLM を呼ぶコードは `app/answer.py` と `app/agent.py` に閉じ、
   検索・文書取得は `app/main.py` の関数(agent は MCP の道具)を再利用する。compose では
-  `docker-compose.answer.yml` を重ねて profile `answer` を付けたときだけコンテナが
+  `docker-compose.llm.yml` を重ねて profile `llm` を付けたときだけコンテナが
   起動する状態を崩さない。
   **素の既定は `rag` + `grounded=1`**(小さな機械でも安全に動く側)。潤沢な環境では
   `CHIEZO_ASK_DEFAULT_MODE` / `_GROUNDED` で倒せるが、**素の既定は変えない**。
@@ -1443,12 +1445,15 @@ SQLite ファイルで、配信側 chiezo-app は read-only immutable で開く�
   セッションを持つと read-only・複数ワーカーの前提が崩れる(MCP をステートレスにしたのと同じ)。
 - **compose は「本体 + 上書き」に保つ**。`docker-compose.yml` は検索 API・MCP としての
   Chiezo(chiezo-app + chiezo-trigger + chiezo-ingest)だけを持ち、足すものは上書きを
-  重ねる:`build`(手元ビルド)→ `answer`(推論と検索エンジン)→ `cuda`(GPU)→
-  `lan`(「答える」層を別ホストへ公開)。重ねる順はこの並び。
+  重ねる:`build`(手元ビルド)→ `llm`(推論サーバ)→ `llm.cuda`(その推論を GPU で)→
+  `comfyui`(絵と音の生成)→ `lan`(GPU の要るものを別ホストへ公開)。重ねる順はこの並び。
+  **ファイル名は中身のコンテナに合わせる**(profile も同じ名前)——
+  `answer` / `image` と呼んでいた頃は、前者が層の名前でファイルの中身とずれ、
+  後者は「画像」とも「Docker イメージ」とも読めた。
   **上書きに本体の設定を写さないこと** —— 以前 `build` が本体の完全なコピーで、
   web 検索と回答パイプラインの設定が抜けたまま取り残された。`tests/test_compose_files.py`
   が行数で見張っている。
-- **「答える」層は、コンテナだけを `docker-compose.answer.yml` に置く**。chiezo-app に渡す
+- **「答える」層は、コンテナだけを `docker-compose.llm.yml` に置く**。chiezo-app に渡す
   設定(`CHIEZO_LLM_URL` 以下)は本体側に残す —— 推論を LAN の別マシンに任せる使い方では、
   コンテナは要らず設定だけが要るため。
 - **`searxng`(web 検索の道具が引く検索エンジン)は本体の compose に置く。** 推論とは
@@ -1470,7 +1475,7 @@ SQLite ファイルで、配信側 chiezo-app は read-only immutable で開く�
   **SearXNG の既定は HTML しか返さない**ので `search.formats` に `json` を足してある。
   **`SEARXNG_SECRET` は渡さない** —— 上流の entrypoint はそれを読まず、
   settings.yml が既にあれば触らない(秘密の値は `configs` の中で決める)。
-- **絵と音の生成の ComfyUI は `docker-compose.image.yml`(profile `image`)に置く**。
+- **絵と音の生成の ComfyUI は `docker-compose.comfyui.yml`(profile `comfyui`)に置く**。
   GPU が要るので既定では立てない。**GPU が別マシンにあるなら重ねず、`CHIEZO_IMAGE_URL` で
   そちらを指す**(推論サーバと同じ逃げ道)。**モデルは同梱も自動取得もしない** ——
   数 GB あり、ライセンスも配布条件もモデルごとに違う。**絵・音・動画で別のファイルが要る**
@@ -1480,7 +1485,7 @@ SQLite ファイルで、配信側 chiezo-app は read-only immutable で開く�
   対応しているのは Wan 系だけで、3 つのうち 1 つでも欠けるとグラフごと通らない)。
   **置き場はホストの `./models/comfyui/ComfyUI/models/` の下**(上書きが `./models/comfyui` を
   コンテナの `/root` に繋ぐので、ComfyUI 本体が展開される 1 段下になる)。
-- **GPU の設定は `docker-compose.cuda.yml`(上書きファイル)に閉じる**。`gpus: all` は
+- **GPU の設定は `docker-compose.llm.cuda.yml`(上書きファイル)に閉じる**。`gpus: all` は
   GPU の無い環境では起動そのものが失敗するので、本体の compose には書かない。
   **この上書きは NVIDIA 専用**(イメージが CUDA ビルドで、`gpus: all` も NVIDIA
   Container Toolkit の経路)なのでファイル名も `gpu` ではなく `cuda` にしてある。

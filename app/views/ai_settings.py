@@ -391,7 +391,7 @@ async def section_html(request: Request | None = None) -> str:
 読み取り専用でマウントして読むので、登録すればブリッジの再起動なしで効く
 （<strong>Antigravity だけは例外</strong>で、API キーを持たずコンテナ内で 1 回サインインする）。</p>
 <p><strong>自前の GPU(ComfyUI)は「話す相手」ではない。</strong>
-<code>docker-compose.image.yml</code> を重ねて立てるか、別マシンのものを
+<code>docker-compose.comfyui.yml</code> を重ねて立てるか、別マシンのものを
 <code>CHIEZO_IMAGE_URL</code> で指す(compose が無ければ後者が早い)。<strong>モデルは自分で置く</strong>
 —— 絵と音で別のファイルが要る(置き場は <code>docs/ai.md</code>)。</p>
 <p class="stale">⚠️ Chiezo は認証なし・LAN 内前提。ここに入れた認証情報は、この画面を開ける人なら

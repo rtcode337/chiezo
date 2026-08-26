@@ -3,7 +3,7 @@
 設計の要点:
 
 - 推論は同居させない。この層がするのは OpenAI 互換の `/chat/completions` を叩くことだけで、
-  モデルは別コンテナ(compose の profile `answer` の `chiezo-llm`)か LAN 上の別マシンにいる。
+  モデルは別コンテナ(compose の profile `llm` の `chiezo-llm`)か LAN 上の別マシンにいる。
   配信側 chiezo-app が数百 MB で動く前提を壊さないため、ここにモデルを抱えない。
 - `CHIEZO_LLM_URL` が機能フラグを兼ねる。未設定なら使う層は丸ごと無効
   (`/v1/ask` は 503、管理画面にも無効と出る)。既定では起動しないことをこの 1 変数で守る。

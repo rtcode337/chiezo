@@ -83,8 +83,8 @@ PROVIDERS: tuple[Provider, ...] = (
         credential=CRED_OPTIONAL,
         billing="自前（電気代のみ）",
         model_required=False,
-        setup="docker-compose.answer.yml を重ねて "
-        "`docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile answer up -d` "
+        setup="docker-compose.llm.yml を重ねて "
+        "`docker compose -f docker-compose.yml -f docker-compose.llm.yml --profile llm up -d` "
         "で立ち上げてください。LAN の別マシンで動かしているなら、その URL を "
         "CHIEZO_LLM_URL に設定します（認証を掛けているなら API キーも入れてください）。",
         # llama-server は 1 プロセス 1 モデルなので、名乗る名前は相手に聞くのが正しい。

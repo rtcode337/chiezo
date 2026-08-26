@@ -10,11 +10,13 @@
 # chiezo-ingest)。足すものは上書きファイルを重ねる。どれも数行〜数十行で、
 # 重ねる順は下の並びどおり(後のファイルが勝つ):
 #
-#   docker-compose.build.yml    手元でビルドして :local タグで動かす(本番は pull)
-#   docker-compose.answer.yml   「答える」層(推論サーバ + 検索エンジン)
-#   docker-compose.cuda.yml     推論を NVIDIA の GPU で動かす(answer に重ねる)
-#   docker-compose.lan.yml      「答える」層を LAN の別ホストの chiezo-app へ公開する
+#   docker-compose.build.yml      手元でビルドして :local タグで動かす(本番は pull)
+#   docker-compose.llm.yml        推論サーバ(chiezo-llm)
+#   docker-compose.llm.cuda.yml   その推論を NVIDIA の GPU で動かす(llm に重ねる)
+#   docker-compose.comfyui.yml    絵と音の生成(ComfyUI)。これ自体が NVIDIA 前提
+#   docker-compose.lan.yml        GPU の要るものを LAN の別ホストへ公開する
 #
+# ファイル名は中身のコンテナに合わせてある(profile も同じ名前)。
 # 使い分けは docs/operations.md、「答える」層は docs/ai.md が正。
 
 # 取り込み系コンテナ共通のリソース制限(YAML アンカー)。cpu_shares は「良き隣人」のための
@@ -85,7 +87,7 @@ services:
       # 同居の推論サーバも Gemini も OpenRouter も CLI ブリッジも同じ扱いで、URL は
       # app/providers.py に決め打ち。ユーザーが入れるのは API キーと on/off と
       # モデルだけで、保存先が下の CHIEZO_STATE_DIR。
-      # 推論サーバ・検索エンジンのコンテナは docker-compose.answer.yml にある。
+      # 推論サーバのコンテナは docker-compose.llm.yml にある(検索エンジンはこのファイル)。
       - CHIEZO_STATE_DIR=/data/state
       # 推論サーバを別マシンで動かしている場合だけ、その URL を書く。
       # 同居(chiezo-llm)なら書かなくてよい —— コンテナ名で辿り着けるので決め打ちが効く。
@@ -308,9 +310,9 @@ services:
   #    interval: 60s
 
   # agent モードの道具 `web_search` が引く検索エンジン。推論サーバとは独立して立てる ——
-  # 話す相手が Gemini や Claude Code でも web 検索は要るのに、以前は
-  # docker-compose.answer.yml にあったせいで「検索を使いたいだけ」で数 GB の推論サーバまで
-  # 立ち上げることになっていた。使うかどうかは chiezo-app 側の CHIEZO_WEB_SEARCH_URL
+  # ローカルの推論サーバでも Gemini でも、chiezo が agent ループを回す相手なら web 検索は
+  # 要るのに、以前は「答える」層の上書きに置いていたせいで「検索を使いたいだけ」で
+  # 数 GB の推論サーバまで立ち上げることになっていた。使うかどうかは chiezo-app 側の CHIEZO_WEB_SEARCH_URL
   # (既定は空 = 使わない)で決まるので、立っているだけでは外へ検索を投げない。
   # 要らない環境では `docker compose up -d chiezo-app chiezo-trigger` のように選んで起動する。
   #

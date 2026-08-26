@@ -7,9 +7,11 @@ venv/
 # Claude Code のローカル設定(セッションごとの許可設定など。共有しない)
 .claude/
 
-# データディレクトリ(DB・ダンプはリポジトリ管理外)
-data/*
-!data/.gitkeep
+# データディレクトリ(DB・ダンプ・短期記憶・管理画面の設定。リポジトリ管理外)。
+# ディレクトリごと無視してよい —— 無ければ compose の chiezo-init が起動時に
+# 作って所有者を合わせる(バインド先が無いと Docker が root 所有で作るため、
+# それを直す係がもともと居る)。.gitkeep で器だけ残す必要はない。
+data/
 
 # ローカルの環境設定(例は .env.example)
 .env
@@ -17,15 +19,6 @@ data/*
 # 実値を書いた単体定義(雛形は docker-compose.standalone.example.yml)。
 # 置き場の絶対パス・接続先の IP を書き込んで使うものなのでコミットしない
 docker-compose.standalone.yml
-
-# notes(短期記憶)の DB。ユーザーが書いた内容そのものなのでコミットしない
-notes/
-
-# 管理画面から入れた設定(話す相手の on/off・API キー)。API キーが入るのでコミットしない。
-# ディレクトリ自体は残す(マウント先が無いと compose が root 所有で作ってしまう)ので、
-# `state/` ではなく `state/*` にして .gitkeep だけ通す。
-state/*
-!state/.gitkeep
 
 # 「答える」層の GGUF キャッシュ(数 GB。イメージにも repo にも入れない)
 models/

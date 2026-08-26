@@ -201,10 +201,10 @@ OpenAI 互換 API を喋る別プロセスに任せる(配信側が数百 MB で
 ```bash
 cp .env.example .env
 # .env の CHIEZO_LLM_URL=http://chiezo-llm:7011/v1 の行のコメントを外す
-docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile answer up -d
+docker compose -f docker-compose.yml -f docker-compose.llm.yml --profile llm up -d
 ```
 
-推論サーバのコンテナは `docker-compose.answer.yml` に分けてある
+推論サーバのコンテナは `docker-compose.llm.yml` に分けてある
 (LAN の別マシンの LLM を指すだけなら重ねなくてよい)。**検索エンジン(SearXNG)は本体側**で、
 `docker compose up -d` で一緒に立つ(素のイメージに compose の `configs` で設定を流し込むので、
 リポジトリを置けない環境でも立てられる)。使うのは **Chiezo が agent ループを回す相手だけ**で、

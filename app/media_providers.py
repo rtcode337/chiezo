@@ -119,8 +119,8 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         url="http://chiezo-image:7014",
         credential=CRED_NONE,
         billing="自前(電気代のみ)",
-        setup="docker-compose.image.yml を重ねて "
-        "`docker compose -f docker-compose.yml -f docker-compose.image.yml --profile image up -d` "
+        setup="docker-compose.comfyui.yml を重ねて "
+        "`docker compose -f docker-compose.yml -f docker-compose.comfyui.yml --profile comfyui up -d` "
         "で立ち上げてください(NVIDIA の GPU が要ります)。GPU が別のマシンにあるなら、"
         "そちらで ComfyUI を動かして URL を CHIEZO_IMAGE_URL に設定します。",
         # チェックポイントは置いたものによるので、相手(`/object_info`)に聞く。
