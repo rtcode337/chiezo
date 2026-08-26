@@ -181,3 +181,14 @@ def test_overrides_do_not_duplicate_base():
             f"{path.name} が本体を写している疑い(実質 {len(body)} 行)。"
             "上書きには本体との違いだけを書くこと"
         )
+
+
+def test_the_app_does_not_depend_on_the_trigger():
+    """読むだけの使い方で chiezo-trigger を立てずに済むこと。
+
+    depends_on に書くと、取り込みを一切しない構成でも一緒に立ち上げることになる。
+    居ないときは管理画面がそのぶんのボタンを押せなくする(app/views/admin.py)。
+    """
+    doc = yaml.safe_load(BASE.read_text(encoding="utf-8"))
+    deps = doc["services"]["chiezo-app"].get("depends_on") or {}
+    assert "chiezo-trigger" not in deps

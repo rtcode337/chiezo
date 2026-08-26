@@ -281,6 +281,25 @@ docker build ./api \
   --build-arg BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ```
 
+## どのコンテナが何に要るか
+
+読むだけなら `chiezo-app` の 1 つで動きます。追加のコンテナが要るのは、長期記憶へ
+書き込むとき(初期化・再構築・固化)だけです。
+
+| コンテナ | 何に要るか | 既定 |
+|---|---|---|
+| `chiezo-app` | 短期記憶の読み書き、長期記憶の読み、固化の素材配り、画面・MCP・REST の全部 | 常駐 |
+| `chiezo-init` | `data/` の下に `corpus/` `notes/` `state/` を作り、所有者を合わせる。手で用意すれば無くてもよい | 起動時に 1 回 |
+| `chiezo-trigger` | 長期記憶への書き込みを起こす(初期化・再構築・固化) | 常駐(軽い) |
+| `chiezo-ingest` | 管理画面を使わず CLI から取り込むとき | 起動しない(profile `ingest`) |
+| `searxng` | web 検索の道具が引く検索エンジン。`CHIEZO_WEB_SEARCH_URL` が空なら使わない | 常駐 |
+| `chiezo-tasks` | [やること画面](tasks.md)。`chiezo-app` と同じイメージで command 違い | 常駐 |
+
+取り込みを一切しない構成にするなら、`chiezo-trigger` のサービスごと消して構いません
+(`chiezo-app` はこれに依存していません)。その状態では管理画面の初期化・再構築・固化の
+ボタンが押せなくなり、なぜ押せないのかも画面に出ます。読み取りと短期記憶への書き込みは
+今までどおり動きます。
+
 ## chiezo-trigger(管理画面からの初期化・再構築)
 
 `chiezo-ingest` と同じイメージを使い回し、CMD だけ `server.py`(FastAPI)の起動に差し替えた
@@ -296,7 +315,10 @@ wikipedia 言語版の表示名・自称・記事数)と、このイメージが
 (`chiezo-app` の環境変数 `CHIEZO_TRIGGER_URL=http://chiezo-trigger:8080`)。管理画面の
 「初期化」ボタン(`POST /admin/init/{source}`)と「再構築」ボタン
 (`POST /admin/rebuild/{source}`。登録済みソースのみ受け付ける)はこのサービスへのプロキシです。
-`CHIEZO_TRIGGER_URL` が未設定なら管理画面の初期化・再構築機能は無効化されます(ボタンが押せません)。
+**このサービスが居なければ、管理画面の初期化・再構築・固化のボタンは押せません**
+(`CHIEZO_TRIGGER_URL` が未設定のときも、設定してあって到達できないときも同じ扱いです)。
+押せてしまうと返るのは 502 だけで、なぜ動かないのかが画面から読めないためで、
+代わりに「読むだけならこのままで動きます」と状態欄に出します。
 
 `GET /sources` の結果は chiezo-app が `CHIEZO_CATALOG_TTL` 秒(既定 300)キャッシュします。
 大半はイメージに焼かれた静的な表ですが、プラグインはマウントで実行時に足せるので、

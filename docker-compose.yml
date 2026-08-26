@@ -115,12 +115,12 @@ services:
       - CHIEZO_WEB_SEARCH_RESULTS=${CHIEZO_WEB_SEARCH_RESULTS-}
       - CHIEZO_WEB_SEARCH_TIMEOUT=${CHIEZO_WEB_SEARCH_TIMEOUT-}
     depends_on:
-      # 置き場の用意(chiezo-init)が済んでから起動する。trigger は管理画面の
-      # 初期化ボタンの相手で、居ないと画面から取り込みを起こせない
+      # 置き場の用意(chiezo-init)が済んでから起動する。
+      # trigger には依存させない —— あれは長期記憶へ書き込むとき(初期化・再構築・固化)
+      # だけの相手で、読むだけなら要らない。ここに書くと、取り込みを一切しない使い方でも
+      # 立ち上げることになる。居なければ管理画面がそのぶんのボタンを押せなくする。
       chiezo-init:
         condition: service_completed_successfully
-      chiezo-trigger:
-        condition: service_started
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:7010/healthz"]

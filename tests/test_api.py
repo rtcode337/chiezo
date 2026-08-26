@@ -678,6 +678,32 @@ class TestAdminAndBrowse:
         assert calls == ["http://trigger.internal/run/jawiki"]
 
 
+class TestWithoutTheTrigger:
+    """chiezo-trigger は長期記憶へ書き込むときだけの相手で、居ない構成が普通にある。
+
+    その状態でボタンが押せてしまうと、返るのは 502 だけで「なぜ動かないのか」が
+    画面から読めない。押せなくしたうえで、読むだけなら動くことを画面に書く。
+    """
+
+    def test_buttons_are_disabled_when_it_is_not_configured(self, client, monkeypatch):
+        monkeypatch.setattr("app.views.admin.TRIGGER_URL", None)
+        html = client.get("/admin").text
+        assert '<button type="submit" disabled>再構築</button>' in html
+        assert "読むだけならこのままで動きます" in html
+
+    def test_buttons_are_disabled_when_it_is_unreachable(self, client, monkeypatch):
+        monkeypatch.setattr("app.views.admin.TRIGGER_URL", "http://example.invalid")
+        html = client.get("/admin").text
+        assert '<button type="submit" disabled>再構築</button>' in html
+        assert "読むだけならこのままで動きます" in html
+
+    def test_reading_still_works(self, client, monkeypatch):
+        """検索も文書取得も trigger とは無関係に動くこと。"""
+        monkeypatch.setattr("app.views.admin.TRIGGER_URL", None)
+        assert client.get("/v1/jawiki/search", params={"q": "東京"}).status_code == 200
+        assert client.get("/healthz").json()["status"] == "ok"
+
+
 class TestClaudeConfig:
     """「いま設定を吐き出したら何が出るか」のプレビュー(管理画面)。"""
 

@@ -138,12 +138,36 @@ def _memory_hint(meta: dict) -> str:
     return f"{memory_gb:.0f} GiB" if memory_gb else ""
 
 
+def run_buttons_disabled(job: dict | None) -> str:
+    """取り込みを起こすボタンの `disabled` 属性。
+
+    起こせるのは chiezo-trigger が居るときだけ。**未設定でも到達不能でも押せなくする**
+    —— 押せると 502 が返るだけで、なぜ動かないのかが画面から読めない。長期記憶へ
+    書き込むとき(初期化・再構築・固化)しか要らない相手なので、立てない使い方が普通にある。
+    実行中に押せないのは、同時に 1 ジョブしか受け付けないため。
+    """
+    if not TRIGGER_URL:
+        return " disabled"
+    if job is None or job.get("state") in ("unreachable", "running"):
+        return " disabled"
+    return ""
+
+
 def _job_status_html(job: dict | None) -> str:
     if job is None:
         return (
             '<div class="job-status">'
-            "初期化トリガー(chiezo-trigger)は設定されていません"
-            " (CHIEZO_TRIGGER_URL 未設定)。"
+            "取り込みトリガー(chiezo-trigger)は設定されていません"
+            " (CHIEZO_TRIGGER_URL 未設定)。長期記憶への書き込み(初期化・再構築・固化)は"
+            "できませんが、読むだけならこのままで動きます。"
+            "</div>"
+        )
+    if job.get("state") == "unreachable":
+        return (
+            '<div class="job-status error">'
+            f"<p>{esc(job.get('error') or 'chiezo-trigger に到達できません')}</p>"
+            "<p>長期記憶への書き込み(初期化・再構築・固化)はできません。"
+            "読むだけならこのままで動きます。</p>"
             "</div>"
         )
     state = job.get("state", "idle")
@@ -309,7 +333,7 @@ async def admin(request: Request):
     sources: dict[str, Source] = request.app.state.sources
     job = _fetch_trigger_status()
     job_running = bool(job and job.get("state") == "running")
-    disabled = " disabled" if not TRIGGER_URL or job_running else ""
+    disabled = run_buttons_disabled(job)
     latest_schema = latest_schema_version()
 
     def schema_cell(version: int) -> str:
@@ -472,7 +496,7 @@ def admin_osm(request: Request, q: str | None = Query(None, description="国名�
     catalog = {n: m for n, m in initializable_sources().items() if m.get("group") == "osm"}
     job = _fetch_trigger_status()
     job_running = bool(job and job.get("state") == "running")
-    disabled = " disabled" if not TRIGGER_URL or job_running else ""
+    disabled = run_buttons_disabled(job)
 
     total = len(catalog)
     needle = (q or "").strip().lower()
@@ -566,7 +590,7 @@ def admin_wikipedia(request: Request, q: str | None = Query(None, description="�
     }
     job = _fetch_trigger_status()
     job_running = bool(job and job.get("state") == "running")
-    disabled = " disabled" if not TRIGGER_URL or job_running else ""
+    disabled = run_buttons_disabled(job)
 
     total = len(catalog)
     needle = (q or "").strip().lower()
@@ -658,7 +682,13 @@ def _proxy_trigger_run(source: str) -> RedirectResponse:
         # 例外の文字列は内部 URL 等を含みうるのでレスポンスに載せない(上の
         # _fetch_trigger_status と同じ理由。詳細はログへ)。
         log.warning("chiezo-trigger run request failed: %s", e)
-        raise HTTPException(502, {"error": "chiezo-trigger unreachable (details in app logs)"}) from e
+        raise HTTPException(
+            502,
+            {
+                "error": "chiezo-trigger unreachable (details in app logs)",
+                "hint": "長期記憶へ書き込むときだけ要るサービス。立てるまで初期化・再構築・固化はできない",
+            },
+        ) from e
     if res.status_code >= 400:
         raise HTTPException(res.status_code, res.json())
     return RedirectResponse(url="/admin", status_code=303)
