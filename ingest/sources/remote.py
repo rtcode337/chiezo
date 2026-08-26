@@ -86,6 +86,35 @@ def _get_json(url: str, timeout: float) -> dict:
         return json.loads(res.read().decode("utf-8"))
 
 
+def _http_error_detail(e: urllib.error.HTTPError) -> str:
+    """断られた理由を本文から拾う。
+
+    `str(HTTPError)` は "HTTP Error 409: Conflict" にしかならず、プラグインが本文へ
+    書いた理由と次にすることが落ちる。取り込みの失敗は管理画面に 1 行しか出ないので、
+    ここで拾わないと「押したら 409 が出た」までしか分からない。
+
+    本文の形は 2 つ許す —— `{"error": …, "hint": …}` と、FastAPI の既定である
+    `{"detail": {…}}`。相手は別実装なので、JSON でないことも普通にありうる
+    (プロキシの HTML など)。その場合は先頭だけ添える。
+    """
+    try:
+        body = e.read().decode("utf-8", "replace").strip()
+    except OSError:
+        body = ""
+    detail = ""
+    try:
+        raw = json.loads(body)
+    except ValueError:
+        raw = None
+    if isinstance(raw, dict):
+        if isinstance(raw.get("detail"), dict):
+            raw = raw["detail"]
+        detail = " / ".join(str(raw[k]) for k in ("error", "hint") if raw.get(k))
+    elif body:
+        detail = body[:200]
+    return f"HTTP {e.code} {e.reason}" + (f": {detail}" if detail else "")
+
+
 def _parse_catalog(base: str, payload: dict) -> list[RemoteSource]:
     entries = payload.get("sources")
     if not isinstance(entries, list):
@@ -173,8 +202,11 @@ class RemotePluginAdapter:
         log.info("fetching %s from %s", self.source, self.src.base_url)
         # 日付は本文の 1 行目にあるので、いったん仮の名前で落としてから付け直す
         staging = workdir / f"{self.source}.ndjson.part"
-        with urllib.request.urlopen(url, timeout=None) as res, staging.open("wb") as f:
-            shutil.copyfileobj(res, f)
+        try:
+            with urllib.request.urlopen(url, timeout=None) as res, staging.open("wb") as f:
+                shutil.copyfileobj(res, f)
+        except urllib.error.HTTPError as e:
+            raise PluginError(f"{self.source}: {_http_error_detail(e)}") from None
         dump_date = self._apply_meta(staging)
         path = workdir / f"{self.source}-{dump_date}.ndjson"
         staging.replace(path)

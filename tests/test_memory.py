@@ -301,6 +301,16 @@ class TestAdminScreen:
         assert "短期記憶から移す(固化)" in html
         assert "固化を待っているメモ" in html
 
+    def test_the_burn_button_is_disabled_with_an_empty_queue(self, client):
+        """焼くものが無いときは押せないこと。
+
+        押せると取り込みが始まってすぐ 409 で落ち、画面には HTTP のステータスしか
+        残らない(何をすれば直るのかが読めない)。
+        """
+        remember(client, "印の付いていないメモ")
+        html = client.get("/admin").text
+        assert "焼くものが無いので" in html
+
     def test_sweeping_from_the_form_moves_the_mark(self, client, data_dir):
         note = remember(client, "焼かれる決まり", title="決まり")
         mark(client, note["doc_id"], TARGET)

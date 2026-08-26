@@ -27,6 +27,7 @@ class _Handler(BaseHTTPRequestHandler):
     catalog: ClassVar[dict] = {}
     meta: ClassVar[dict | None] = None
     docs: ClassVar[list] = []
+    refuse: ClassVar[tuple[int, bytes] | None] = None  # /fetch を断る(状態, 本文)
 
     def do_GET(self):
         if self.path == "/sources":
@@ -38,6 +39,14 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         if self.path.startswith("/fetch"):
+            if self.refuse is not None:
+                status, body = self.refuse
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             lines = [{"meta": self.meta}] if self.meta is not None else []
             lines += self.docs
             body = "".join(json.dumps(d, ensure_ascii=False) + "\n" for d in lines).encode()
@@ -63,6 +72,7 @@ def plugin():
     }]}
     _Handler.meta = {"dump_date": "20260805"}
     _Handler.docs = DOCS
+    _Handler.refuse = None
     server = HTTPServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -101,6 +111,27 @@ class TestCatalog:
 
 
 class TestAdapter:
+    def test_a_refusal_carries_the_reason_from_the_body(self, plugin, tmp_path):
+        """断られた理由を本文から拾うこと。
+
+        `str(HTTPError)` のままだと管理画面に "HTTP Error 409: Conflict" しか出ず、
+        何をすれば直るのかが読めない(素材が空で断られたときに実際にそうなった)。
+        """
+        _Handler.refuse = (409, json.dumps(
+            {"error": "nothing to consolidate", "hint": "印を付けたメモがない"},
+            ensure_ascii=False,
+        ).encode())
+        adapter = remote.load_remote_adapters(plugin)["private_docs"]()
+        with pytest.raises(remote.PluginError, match="nothing to consolidate"):
+            adapter.fetch(tmp_path)
+
+    def test_a_refusal_without_json_still_names_the_status(self, plugin, tmp_path):
+        """相手は別実装なので、本文が JSON とは限らない。"""
+        _Handler.refuse = (503, b"<html>upstream is down</html>")
+        adapter = remote.load_remote_adapters(plugin)["private_docs"]()
+        with pytest.raises(remote.PluginError, match="HTTP 503"):
+            adapter.fetch(tmp_path)
+
     def test_fetch_and_iter_docs(self, plugin, tmp_path):
         adapter = remote.load_remote_adapters(plugin)["private_docs"]()
         path, dump_date = adapter.fetch(tmp_path)

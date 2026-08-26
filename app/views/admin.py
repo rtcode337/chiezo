@@ -207,6 +207,15 @@ def _memory_html(sources: dict[str, Source], disabled: str) -> str:
     state = memory.status(sources)
     name = memory.SOURCE_NAME
     burn = f"/admin/rebuild/{name}" if state["consolidated"] else f"/admin/init/{name}"
+    # 待ちが 1 件も無いときは押せなくする。素材が空だと配る側(`/v1/memory/fetch`)が
+    # 409 で断るので、押せると取り込みが始まってすぐ失敗し、画面には HTTP の
+    # ステータスしか残らない。焼くものが無いことは押す前から分かっている。
+    empty = not state["pending"]
+    burn_disabled = disabled or (" disabled" if empty else "")
+    waiting = f'<strong>{state["pending"]:,} 件</strong>' if not empty else (
+        '<strong>0 件</strong> <span class="muted">(焼くものが無いので「固化する」は'
+        "押せません)</span>"
+    )
     if state["consolidated"]:
         long_term = (
             f'<a href="{esc(browse_url(name))}">{state["docs"]:,} 件</a>'
@@ -217,10 +226,10 @@ def _memory_html(sources: dict[str, Source], disabled: str) -> str:
     return f"""
 <p>
 長期記憶(<code>{esc(name)}</code>): {long_term}<br>
-固化を待っているメモ: <strong>{state["pending"]:,} 件</strong>
+固化を待っているメモ: {waiting}
 </p>
 <form class="init-form" method="post" action="{esc(burn)}">
-<button type="submit"{disabled}>固化する</button></form>
+<button type="submit"{burn_disabled}>固化する</button></form>
 <form class="init-form" method="post" action="/admin/memory/sweep"
  onsubmit="return confirm('長期側へ移せたメモの印を{esc(notes.CONSOLIDATE_TAG)}から
 {esc(notes.CONSOLIDATED_TAG)}に付け替えます。よろしいですか?')">
