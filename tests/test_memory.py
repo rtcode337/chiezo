@@ -381,7 +381,7 @@ class TestAdminScreen:
         add_theme(client)
         remember(client, "まだ焼いていない決まり", tags="rule")
         html = client.get("/admin").text
-        assert "長期記憶へ移す(固化)" in html
+        assert "短期記憶から移す(固化)" in html
         assert "決まりごと" in html
 
     def test_a_theme_can_be_added_from_the_form(self, client):

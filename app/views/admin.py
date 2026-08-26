@@ -300,7 +300,7 @@ def _short_term_section_html(sources: dict[str, Source]) -> str:
 長期記憶と同じ口で引ける(<code>/v1/notes/search|doc|filter|tags</code>)。
 書き込みは MCP の <code>remember</code> か <code>POST /v1/notes</code>、
 新しい順に思い出すのは <code>/v1/notes/recall</code>。
-ダンプから焼くソースではないので、再構築はできない。
+取り込みで焼くソースではないので、再構築はできない(書き込みが直接届く唯一の場所)。
 </p>
 """
 
@@ -342,7 +342,8 @@ async def admin(request: Request):
         return f'{version} <span class="stale">(最新: {latest_schema})</span>'
 
     # 知識は 2 層あり、扱いが違う(下の _short_term_section_html):
-    # 長期(大脳)= ingest が焼く読み取り専用のソース、短期(海馬)= 唯一書き込める notes。
+    # 長期(大脳)= 取り込みで焼く読み取り専用のソース(素材はダンプか、固めた短期記憶)、
+    # 短期(海馬)= 唯一書き込める notes。
     long_term = {n: s for n, s in sources.items() if not s.mutable}
     short_term = {n: s for n, s in sources.items() if s.mutable}
 
@@ -421,10 +422,13 @@ async def admin(request: Request):
     body = f"""
 <h1>Chiezo 管理画面</h1>
 <p class="muted">
-知識は 2 層。<strong>長期記憶</strong>は ingest がダンプから焼く読み取り専用のソースで、
-更新は再構築(ブルーグリーン)だけ。<strong>短期記憶</strong>は Chiezo で唯一書き込める
-置き場で、覚えたことがその場で積まれる。引くときの口はどちらも同じ。
+知識は 2 層。<strong>短期記憶</strong>は Chiezo で唯一書き込める置き場で、覚えたことが
+その場で積まれる。<strong>長期記憶</strong>は読み取り専用のソースで、ダンプから焼いたものと、
+短期記憶から移した(固化した)ものが並ぶ。引くときの口はどちらも同じ。
 </p>
+
+<h2 id="short-term">短期記憶(覚えたこと)</h2>
+{_short_term_section_html(short_term)}
 
 <h2>長期記憶(ためた知識)</h2>
 <p>登録ソース数: {len(long_term)} / 最新のスキーマバージョン: {latest_schema}</p>
@@ -444,6 +448,9 @@ async def admin(request: Request):
 
 {_job_status_html(job)}
 
+<h3 id="consolidation">短期記憶から移す(固化)</h3>
+{_memory_themes_html(sources, disabled)}
+
 <h3>未初期化データの初期化</h3>
 <table>
 <thead>
@@ -453,12 +460,6 @@ async def admin(request: Request):
 {init_rows}
 </tbody>
 </table>
-
-<h2 id="short-term">短期記憶(覚えたこと)</h2>
-{_short_term_section_html(short_term)}
-
-<h3>長期記憶へ移す(固化)</h3>
-{_memory_themes_html(sources, disabled)}
 
 <h2>ためた知識を使う AI</h2>
 {_answer_status_html()}
@@ -715,7 +716,7 @@ def admin_rebuild(source: str, request: Request):
     リンク差し替え)なので構築中も現行 DB での配信は続く。ソースの正は trigger 側の
     ADAPTERS なので、カタログに無い登録済みソースでも trigger に判断を委ねる。
 
-    ただし短期記憶(`mutable` なソース)だけはここで断る。ダンプから焼くソースでは
+    ただし短期記憶(`mutable` なソース)だけはここで断る。取り込みで焼くソースでは
     ないので trigger も unknown source を返すが、そこまで行かせると「実行しようとした
     が失敗した」に見える。書き込める唯一のソースについては、素通しにしない。
     """
@@ -730,7 +731,7 @@ def admin_rebuild(source: str, request: Request):
             409,
             {
                 "error": f"source is not rebuildable: {source}",
-                "hint": "短期記憶はダンプから焼くソースではないので再構築の対象にならない",
+                "hint": "短期記憶は取り込みで焼くソースではないので再構築の対象にならない",
             },
         )
     return _proxy_trigger_run(source)
@@ -746,7 +747,7 @@ def admin_add_memory_theme(
     """固化のテーマを足す(管理画面のフォーム)。実体は app/memory.py。"""
     sources: dict[str, Source] = request.app.state.sources
     memory.add_theme(name, label, tags, taken=set(sources))
-    return RedirectResponse(url="/admin#short-term", status_code=303)
+    return RedirectResponse(url="/admin#consolidation", status_code=303)
 
 
 @router.post("/admin/memory/{name}/sweep")
@@ -754,7 +755,7 @@ def admin_sweep_memory_theme(name: str, request: Request):
     """焼き上がりを確かめて、短期側に固化の印を付ける。"""
     theme = memory.require_theme(name)
     memory.sweep(theme, request.app.state.sources)
-    return RedirectResponse(url="/admin#short-term", status_code=303)
+    return RedirectResponse(url="/admin#consolidation", status_code=303)
 
 
 @router.post("/admin/memory/{name}/delete")
@@ -762,7 +763,7 @@ def admin_remove_memory_theme(name: str):
     """テーマの定義だけを消す(焼いた長期記憶はそのまま残る)。"""
     memory.require_theme(name)
     memory.remove_theme(name)
-    return RedirectResponse(url="/admin#short-term", status_code=303)
+    return RedirectResponse(url="/admin#consolidation", status_code=303)
 
 
 def request_origin(request: Request) -> str:

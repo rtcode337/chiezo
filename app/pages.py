@@ -106,8 +106,11 @@ APPLE_TOUCH_ICON_PNG = base64.b64decode(
 
 PAGE_STYLE = """
   body { font-family: system-ui, sans-serif; margin: 2rem; color: #222; }
-  h1 { font-size: 1.25rem; }
-  h2 { font-size: 1.05rem; margin-top: 2rem; }
+  /* h3 まで明示する。指定を欠くとブラウザ既定(1.17em)が効いて、h2 より h3 が
+     大きくなる —— 節の深さと見出しの大きさが逆転していた。 */
+  h1 { font-size: 1.3rem; }
+  h2 { font-size: 1.1rem; margin-top: 2rem; }
+  h3 { font-size: 0.98rem; margin-top: 1.5rem; }
   table { border-collapse: collapse; margin-top: 1rem; width: 100%; }
   th, td { border: 1px solid #ccc; padding: 0.4rem 0.8rem; text-align: left; vertical-align: top; }
   th { background: #f0f0f0; }

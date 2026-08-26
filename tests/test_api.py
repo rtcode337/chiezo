@@ -1604,3 +1604,22 @@ class TestBuildVersion:
         monkeypatch.setenv("CHIEZO_BUILD_TIME", "きのう")
 
         assert build_info.describe() == "日時不明 (abc1234)"
+
+
+class TestHeadingSizes:
+    def test_they_shrink_with_depth(self):
+        """節が深くなるほど見出しが小さくなること。
+
+        指定を欠いたレベルにはブラウザ既定(h3 なら 1.17em)が効くので、h2 だけ
+        小さくしていると h3 のほうが大きくなる。実際に管理画面でそうなっていた。
+        """
+        import re
+
+        from app.pages import PAGE_STYLE
+
+        sizes = {
+            int(m.group(1)): float(m.group(2))
+            for m in re.finditer(r"^  h([1-6]) \{ font-size: ([\d.]+)rem", PAGE_STYLE, re.M)
+        }
+        assert set(sizes) == {1, 2, 3}, "使っている見出しレベルは全部明示すること"
+        assert sizes[1] > sizes[2] > sizes[3]

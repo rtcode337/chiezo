@@ -572,7 +572,7 @@ class TestClaudeConfig:
 class TestShortTermIsNotARebuildableSource:
     """短期記憶は長期記憶と同じ扱いにしない(管理画面・件数)。
 
-    知識を 2 層に分けた結果として、notes は「ダンプから焼くソース」の枠に
+    知識を 2 層に分けた結果として、notes は「取り込みで焼くソース」の枠に
     入らなくなった。混ぜていた頃の壊れ方を両側から固定する。
     """
 
