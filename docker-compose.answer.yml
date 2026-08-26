@@ -5,7 +5,7 @@
 #
 # GPU で動かすなら docker-compose.cuda.yml を後ろに重ねる(そちらが正)。
 #
-# このファイルにあるのはコンテナだけで、chiezo-api に渡す設定
+# このファイルにあるのはコンテナだけで、chiezo-app に渡す設定
 # (CHIEZO_LLM_URL 以下)は本体側にある —— 推論を LAN の別マシン(Ollama 等)に
 # 任せる使い方では、コンテナは要らず設定だけが要るため。
 #
@@ -13,15 +13,15 @@
 # web 検索と推論は独立していて(相手が Gemini や Claude Code でも web 検索は要る)、
 # 検索を使いたいだけで数 GB の推論サーバまで立ち上げることになっていた。
 services:
-  # 推論サーバ(OpenAI 互換)。配信側 chiezo-api が数百 MB で動く前提を壊さないため、
+  # 推論サーバ(OpenAI 互換)。配信側 chiezo-app が数百 MB で動く前提を壊さないため、
   # 推論は必ず別プロセスに置く。モデルは起動時に Hugging Face から取ってきて ./models に
   # キャッシュする(初回だけ数 GB)。別のモデルにするなら .env の CHIEZO_LLM_HF_REPO。
   # ここは CPU 版。NVIDIA の GPU なら docker-compose.cuda.yml を重ねる。
   chiezo-llm:
     image: ghcr.io/ggml-org/llama.cpp:server-b10156
     profiles: ["answer"]
-    # ホストへは公開しない(chiezo-api からのみ到達する)。LAN の別ホストの
-    # chiezo-api から使うなら docker-compose.lan.yml を重ねる。
+    # ホストへは公開しない(chiezo-app からのみ到達する)。LAN の別ホストの
+    # chiezo-app から使うなら docker-compose.lan.yml を重ねる。
     environment:
       # llama-server は全オプションに LLAMA_ARG_* の環境変数を持つので command は上書きしない
       - LLAMA_ARG_HF_REPO=${CHIEZO_LLM_HF_REPO:-ggml-org/gemma-3-4b-it-GGUF:Q4_K_M}

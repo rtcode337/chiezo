@@ -4,16 +4,16 @@
 #   docker compose pull && docker compose up -d
 #
 # 障害時は :latest ではなく :sha-xxxxxxx を指定すれば任意の時点に戻せる
-# (CHIEZO_API_IMAGE / CHIEZO_INGEST_IMAGE で上書き可)。
+# (CHIEZO_APP_IMAGE / CHIEZO_INGEST_IMAGE で上書き可)。
 #
-# このファイルは検索 API・MCP としての Chiezo だけ(chiezo-api + chiezo-trigger +
+# このファイルは検索 API・MCP としての Chiezo だけ(chiezo-app + chiezo-trigger +
 # chiezo-ingest)。足すものは上書きファイルを重ねる。どれも数行〜数十行で、
 # 重ねる順は下の並びどおり(後のファイルが勝つ):
 #
 #   docker-compose.build.yml    手元でビルドして :local タグで動かす(本番は pull)
 #   docker-compose.answer.yml   「答える」層(推論サーバ + 検索エンジン)
 #   docker-compose.cuda.yml     推論を NVIDIA の GPU で動かす(answer に重ねる)
-#   docker-compose.lan.yml      「答える」層を LAN の別ホストの chiezo-api へ公開する
+#   docker-compose.lan.yml      「答える」層を LAN の別ホストの chiezo-app へ公開する
 #
 # 使い分けは docs/operations.md、「答える」層は docs/ai.md が正。
 
@@ -33,11 +33,11 @@ x-ingest-limits: &ingest-limits
 services:
   # data/ の下に corpus/・notes/・state/ を作り、所有者を実行ユーザーに合わせる
   # ワンショット。corpus も chown する —— 取り込み側(trigger / ingest)が書くため。
-  # api が壊さない保証は所有者ではなく、api 側だけ corpus を read-only で重ねることで作る。
+  # app が壊さない保証は所有者ではなく、app 側だけ corpus を read-only で重ねることで作る。
   # バインドするホストのディレクトリは data/ 1つだけにして、
   # 中の切り分けはこちらが持つ —— bind 先がホストに無いと Docker が root 所有で
-  # 作ってしまい、非 root で動く api がメモも設定も書けずに落ちる。
-  # api も ingest もこれの完了を待つので、いちばん先に置いてある。
+  # 作ってしまい、非 root で動く app がメモも設定も書けずに落ちる。
+  # app も ingest もこれの完了を待つので、いちばん先に置いてある。
   # mkdir と chown だけなので、小さな汎用イメージを使う(手元ビルドの構成でも
   # GHCR を引きに行かせないため)
   chiezo-init:
@@ -52,8 +52,8 @@ services:
       - ./data:/data
     restart: "no"
 
-  chiezo-api:
-    image: ${CHIEZO_API_IMAGE:-ghcr.io/rtcode337/chiezo-api:latest}
+  chiezo-app:
+    image: ${CHIEZO_APP_IMAGE:-ghcr.io/rtcode337/chiezo-app:latest}
     ports:
       # host:container。8000 は他のアプリと衝突しやすいので避けている。
       - "7010:7010"
@@ -61,7 +61,7 @@ services:
       # バインドするホストのディレクトリは data/ 1つだけ。下が corpus/(取り込んだ
       # 本体)・notes/(短期記憶)・state/(管理画面の設定)で、作るのは chiezo-init。
       - ./data:/data
-      # corpus だけは読み取り専用で重ねる。 api は読むだけで、書くのは ingest 側
+      # corpus だけは読み取り専用で重ねる。 app は読むだけで、書くのは ingest 側
       # (取り違えて壊さないための線引きを、同じ 1 本の置き場のまま保つ)
       - ./data/corpus:/data/corpus:ro
     # 実行ユーザー。既定は 10001 = ホストに実在しない番号(抜け出されてもホストの
@@ -70,7 +70,7 @@ services:
     user: "${CHIEZO_UID:-10001}:${CHIEZO_GID:-10001}"
     environment:
       # 走査するのは corpus/ だけ。 notes を同じ場所に置くと、メモを 1 件書くたびに
-      # jawiki 150 万件の COUNT が走る(api/app/main.py の data_dir_fingerprint 参照)
+      # jawiki 150 万件の COUNT が走る(app/main.py の data_dir_fingerprint 参照)
       - CHIEZO_DATA_DIR=/data/corpus
       # 「覚える」層(/v1/notes)。空にすると機能ごと無効になる。
       - CHIEZO_NOTES_DIR=/data/notes
@@ -83,7 +83,7 @@ services:
       - CHIEZO_MCP_ALLOWED_HOSTS=${CHIEZO_MCP_ALLOWED_HOSTS-}
       # 「答える」層(/v1/ask・/ai/chat)。話す相手は管理画面(/admin)から on/off する ——
       # 同居の推論サーバも Gemini も OpenRouter も CLI ブリッジも同じ扱いで、URL は
-      # api/app/providers.py に決め打ち。ユーザーが入れるのは API キーと on/off と
+      # app/providers.py に決め打ち。ユーザーが入れるのは API キーと on/off と
       # モデルだけで、保存先が下の CHIEZO_STATE_DIR。
       # 推論サーバ・検索エンジンのコンテナは docker-compose.answer.yml にある。
       - CHIEZO_STATE_DIR=/data/state
@@ -128,7 +128,7 @@ services:
 
   # やること(タスク・ルール)。**外に出すのはこれだけ。**
   #
-  # chiezo-api と同じイメージで、command だけ差し替えて別のアプリを起動する。
+  # chiezo-app と同じイメージで、command だけ差し替えて別のアプリを起動する。
   # 面をプロセスごと分けてあるのは、本体を公開すると サーバー側の鍵で AI を叩く口・
   # 課金の走る生成の口・取り込みを起こせる管理画面・メモを消せる口まで一緒に外へ
   # 出てしまうため(docs/tasks.md)。
@@ -137,7 +137,7 @@ services:
   # /api は 401 を返し続ける。** 設定が無いときに素通しすると外に出した瞬間に
   # 丸見えになるので、足りないときは閉じる側に倒してある。
   chiezo-tasks:
-    image: ${CHIEZO_API_IMAGE:-ghcr.io/rtcode337/chiezo-api:latest}
+    image: ${CHIEZO_APP_IMAGE:-ghcr.io/rtcode337/chiezo-app:latest}
     # --proxy-headers を付けるのは、リバースプロキシの後ろで client の IP と
     # scheme を正しく見るため。**--forwarded-allow-ips に信頼できるプロキシを
     # 指定すること** —— 既定(127.0.0.1)のままだと別コンテナのプロキシからの
@@ -184,7 +184,7 @@ services:
 
   # 管理画面からの「未初期化データの初期化」を受けて ingest を実行する内部専用トリガー。
   # ingest イメージを流用し、CMD だけ server:app(FastAPI)起動に上書きする。
-  # ホストへポート公開せず、chiezo-api からのみ docker 内部ネットワーク経由で到達できる。
+  # ホストへポート公開せず、chiezo-app からのみ docker 内部ネットワーク経由で到達できる。
   chiezo-trigger:
     image: ${CHIEZO_INGEST_IMAGE:-ghcr.io/rtcode337/chiezo-ingest:latest}
     command: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080"]
@@ -196,11 +196,11 @@ services:
     user: "${CHIEZO_UID:-10001}:${CHIEZO_GID:-10001}"
     environment:
       - CHIEZO_DATA_DIR=/data/corpus
-      # 記憶の固化(短期記憶 → 長期記憶)。chiezo-api がプラグインとして素材を配るので、
+      # 記憶の固化(短期記憶 → 長期記憶)。chiezo-app がプラグインとして素材を配るので、
       # 焼くのは普通の取り込みと同じ経路になる(管理画面の初期化・再構築ボタンにも
       # そのまま並ぶ)。テーマを 1 つも作っていなければ何も配らない。
       # 外部のプラグインを足すときは、この後ろにカンマ区切りで URL を並べる。
-      - CHIEZO_PLUGIN_SOURCES=${CHIEZO_PLUGIN_SOURCES:-http://chiezo-api:7010/v1/memory}
+      - CHIEZO_PLUGIN_SOURCES=${CHIEZO_PLUGIN_SOURCES:-http://chiezo-app:7010/v1/memory}
     restart: unless-stopped
     # トリガー経由の取り込みが暴走しても、OOM killer がホスト全体(同居する
     # 他のコンテナ)を巻き込まないよう上限を設ける。取り込み本体と同じ *_LIMITS。
@@ -243,7 +243,7 @@ services:
   # (ブリッジは Chiezo の設定 DB を読み取り専用でマウントして読む)。
   # 立ち上げるまでは管理画面の on が押せない(到達確認に落ちるため)。
   #
-  # ホストへポートは公開しない(chiezo-api からのみ到達すればよい)。
+  # ホストへポートは公開しない(chiezo-app からのみ到達すればよい)。
   #
   #chiezo-bridge-claude:
   #  image: ghcr.io/rtcode337/chiezo-bridge:latest
@@ -251,11 +251,11 @@ services:
   #    # 認証情報は Chiezo の設定 DB から読む(管理画面から登録できるようにするため)。
   #    # 読み取り専用。ブリッジは書かない
   #    # **ブリッジは `/state/settings.db` を決め打ちで読む**(CHIEZO_BRIDGE_STATE_DB の
-  #    # 既定)。api 側の置き場が data/ の下へ移っても、こちらのマウント先は /state のまま
+  #    # 既定)。app 側の置き場が data/ の下へ移っても、こちらのマウント先は /state のまま
   #    - ./data/state:/state:ro
   #  environment:
   #    - CHIEZO_BRIDGE_CLI=claude
-  #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp
+  #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp
   #    - CHIEZO_BRIDGE_TIMEOUT=${CHIEZO_BRIDGE_TIMEOUT:-300}
   #  restart: unless-stopped
   #  # CLI は待ち時間の長い相手なので、CPU が競合したら取り込みや推論へ譲る
@@ -268,11 +268,11 @@ services:
   #  image: ghcr.io/rtcode337/chiezo-bridge:latest
   #  volumes:
   #    # **ブリッジは `/state/settings.db` を決め打ちで読む**(CHIEZO_BRIDGE_STATE_DB の
-  #    # 既定)。api 側の置き場が data/ の下へ移っても、こちらのマウント先は /state のまま
+  #    # 既定)。app 側の置き場が data/ の下へ移っても、こちらのマウント先は /state のまま
   #    - ./data/state:/state:ro
   #  environment:
   #    - CHIEZO_BRIDGE_CLI=codex
-  #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp
+  #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp
   #    - CHIEZO_BRIDGE_TIMEOUT=${CHIEZO_BRIDGE_TIMEOUT:-300}
   #  restart: unless-stopped
   #  cpu_shares: 512
@@ -299,7 +299,7 @@ services:
   #    - chiezo-antigravity-home:/srv/bridge/home
   #  environment:
   #    - CHIEZO_BRIDGE_CLI=antigravity
-  #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp
+  #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp
   #    - CHIEZO_BRIDGE_TIMEOUT=${CHIEZO_BRIDGE_TIMEOUT:-300}
   #  restart: unless-stopped
   #  cpu_shares: 512
@@ -310,9 +310,9 @@ services:
   # agent モードの道具 `web_search` が引く検索エンジン。推論サーバとは独立して立てる ——
   # 話す相手が Gemini や Claude Code でも web 検索は要るのに、以前は
   # docker-compose.answer.yml にあったせいで「検索を使いたいだけ」で数 GB の推論サーバまで
-  # 立ち上げることになっていた。使うかどうかは chiezo-api 側の CHIEZO_WEB_SEARCH_URL
+  # 立ち上げることになっていた。使うかどうかは chiezo-app 側の CHIEZO_WEB_SEARCH_URL
   # (既定は空 = 使わない)で決まるので、立っているだけでは外へ検索を投げない。
-  # 要らない環境では `docker compose up -d chiezo-api chiezo-trigger` のように選んで起動する。
+  # 要らない環境では `docker compose up -d chiezo-app chiezo-trigger` のように選んで起動する。
   #
   # 設定を焼き込んだ自前のイメージを使う(`searxng/Dockerfile`。素の SearXNG に
   # settings.yml を足しただけ)。マウントで渡していた頃は、**リポジトリを置けない環境
@@ -326,7 +326,7 @@ services:
       # プリファレンスの Cookie と画像プロキシの署名に使う値。Chiezo は JSON の検索しか
       # 叩かないので既定のままでよい(気にするなら .env で置き換える)。
       - SEARXNG_SECRET=${CHIEZO_WEB_SEARCH_SECRET:-chiezo-lan}
-      # 待ち受けを 7012 にする(既定は 8080)。chiezo-api の 7010・推論の 7011 と
+      # 待ち受けを 7012 にする(既定は 8080)。chiezo-app の 7010・推論の 7011 と
       # 揃えて、コンテナの内と外で番号が食い違わないようにするため。
       # この image は uvicorn ではなく granian で動くので、効くのは GRANIAN_PORT
       # (SearXNG 側の SEARXNG_PORT は設定ファイルの値で、待ち受けには使われない)。

@@ -1,7 +1,7 @@
 """CLI ブリッジ — Claude Code / Codex CLI を OpenAI 互換の口に見せる。
 
 (ファイル名が `server.py` でないのは `ingest/server.py` と衝突するため。テストは
-リポジトリ共通の pythonpath で api / ingest / bridge をまとめて読むので、名前は全体で一意にする。)
+リポジトリ共通の pythonpath で app / ingest / bridge をまとめて読むので、名前は全体で一意にする。)
 
 Chiezo の「使う」層(`app/answer.py`)が要求するのは OpenAI 互換の `/chat/completions` だけ
 なので、ローカルの推論サーバでも Gemini でも同じ 1 本の口で扱える。ところが Claude Code と
@@ -11,7 +11,7 @@ Codex は HTTP ではなく CLI で、サブスクの枠で使うにはその CL
 
 設計の要点:
 
-- 別コンテナに置く。Chiezo 本体(`chiezo-api`)は数百 MB で動く前提があり、CLI を
+- 別コンテナに置く。Chiezo 本体(`chiezo-app`)は数百 MB で動く前提があり、CLI を
   同居させるとその前提が崩れる。推論を同居させないのと同じ理由。
 - 道具は CLI 自身に引かせる。Chiezo の MCP(`/mcp`)を CLI に繋ぐので、
   「検索して答える」の段取りはブリッジ側で組まない —— Claude Code も Codex も
@@ -24,7 +24,7 @@ Codex は HTTP ではなく CLI で、サブスクの枠で使うにはその CL
 - 組み込みの道具は全部切る。ファイルの読み書きやシェルは、知識ベースに答えるのに
   要らないうえ危ない。CLI に渡すのは Chiezo の MCP だけにする。
 - 認証情報は Chiezo の設定 DB から読む(`/state/settings.db` を読み取り専用でマウント)。
-  こうすると Chiezo の管理画面から登録できる —— chiezo-api に「トークンを返す口」を
+  こうすると Chiezo の管理画面から登録できる —— chiezo-app に「トークンを返す口」を
   開けずに済むのが要点で、認証なしの LAN サービスにそんな口を足したくない。
   DB が無い・空のときは環境変数(`CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_AUTH_JSON`)に落ちる。
   Antigravity だけは別 —— API キー方式が無く、コンテナ内で 1 回サインインした結果を
@@ -64,7 +64,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 CLI = os.environ.get("CHIEZO_BRIDGE_CLI", "claude").strip().lower()
 # Chiezo の MCP の URL。CLI はここから search / doc / filter … を引く。
 # 空にすると MCP を繋がない(道具の要らない用途で使うとき)。
-MCP_URL = os.environ.get("CHIEZO_BRIDGE_MCP_URL", "http://chiezo-api:7010/mcp").strip()
+MCP_URL = os.environ.get("CHIEZO_BRIDGE_MCP_URL", "http://chiezo-app:7010/mcp").strip()
 # CLI に渡すモデル。空なら CLI の既定(サブスクの枠を無駄に食わないよう明示するのが望ましい)。
 MODEL = os.environ.get("CHIEZO_BRIDGE_MODEL", "").strip()
 # 1 回の呼び出しの上限秒数。CLI は道具を何度も引くので推論サーバより長くなる。
@@ -160,8 +160,8 @@ def disallowed_for(web: bool) -> str:
 
 MCP_CONFIG_PATH = "/tmp/chiezo-mcp.json"
 
-# Chiezo の設定 DB(chiezo-api と共有。読み取り専用でマウントする)。
-# テーブルの形は api/app/settings_store.py との約束。同じリポジトリの 2 つのイメージが
+# Chiezo の設定 DB(chiezo-app と共有。読み取り専用でマウントする)。
+# テーブルの形は app/settings_store.py との約束。同じリポジトリの 2 つのイメージが
 # 1 つのファイルを挟んで話すので、片方だけ変えると黙って読めなくなる。
 STATE_DB = os.environ.get("CHIEZO_BRIDGE_STATE_DB", "/state/settings.db")
 
@@ -637,8 +637,8 @@ async def health(check: bool = False) -> dict:
 # 「認証を確かめる」(`AUTH_CHECK`)と同じ方針にしてある。
 #
 # claude はここに来ない。 claude CLI には使用量を出すサブコマンドが無く
-# (`/usage` は対話画面の中だけ)、代わりに Chiezo が `api.anthropic.com` の
-# `/api/oauth/usage` を同じトークンで直に引く(`api/app/usage.py`)。
+# (`/usage` は対話画面の中だけ)、代わりに Chiezo が `app.anthropic.com` の
+# `/api/oauth/usage` を同じトークンで直に引く(`app/usage.py`)。
 USAGE_CLIS = frozenset({"codex", "antigravity"})
 
 # Antigravity から使用量を引くコマンド。print モードのスラッシュコマンドで、

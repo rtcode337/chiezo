@@ -1,4 +1,4 @@
-# 「答える」層を LAN の別ホストで動く chiezo-api から使うための公開。
+# 「答える」層を LAN の別ホストで動く chiezo-app から使うための公開。
 # docker-compose.answer.yml に重ねる(GPU を使うなら cuda の後ろ):
 #
 #   docker compose -f docker-compose.yml -f docker-compose.answer.yml \
@@ -9,13 +9,13 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.lan.yml up -d searxng
 #
-# 相手側の chiezo-api には .env でこう渡す(このホストの IP に読み替える):
+# 相手側の chiezo-app には .env でこう渡す(このホストの IP に読み替える):
 #
 #   CHIEZO_LLM_URL=http://<このホストのIP>:7011/v1
 #   CHIEZO_WEB_SEARCH_URL=http://<このホストのIP>:7012/search
 #   CHIEZO_IMAGE_URL=http://<このホストのIP>:7014
 #
-# 同じホストに chiezo-api がいるなら重ねない。 その場合はサービス名で届くので
+# 同じホストに chiezo-app がいるなら重ねない。 その場合はサービス名で届くので
 # (http://chiezo-llm:7011/v1・http://searxng:7012/search・http://chiezo-image:7014)、
 # 口を開ける理由が無い。
 #
@@ -33,7 +33,7 @@ services:
     ports:
       - "7012:7012"
 
-  # 画像生成(ComfyUI)。GPU のあるマシンで立てて、別ホストの chiezo-api から使う
+  # 画像生成(ComfyUI)。GPU のあるマシンで立てて、別ホストの chiezo-app から使う
   # ときに開ける。相手側には CHIEZO_IMAGE_URL=http://<このホストのIP>:7014 を渡す。
   # 定義は docker-compose.image.yml 側なので、そちらも重ねて --profile image を付ける。
   chiezo-image:

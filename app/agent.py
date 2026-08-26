@@ -47,7 +47,7 @@ from app import answer, notes, providers, websearch
 from app.mcp_server import INSTRUCTIONS, build_mcp
 from app.pages import browse_url, doc_url
 
-log = logging.getLogger("chiezo.api")
+log = logging.getLogger("chiezo.app")
 
 # agent に渡す Chiezo の道具(MCP に出しているものから借りる)。ここは読み取り専用。
 KNOWLEDGE_TOOLS = ("sources", "search", "doc", "filter", "tags", "titles", "links")

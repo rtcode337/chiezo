@@ -17,8 +17,8 @@
 # ソースプラグインは下のコメントを外すと使える(この環境ではオーバーレイを重ねられないので
 # ここに直接書いてある)。
 #
-# 「答える」層は、chiezo-api に渡す設定だけを載せてコンテナは載せていない。 推論サーバと
-# 検索エンジンは別サーバーで動かしているものを指せば済み(chiezo-api は OpenAI 互換の口を
+# 「答える」層は、chiezo-app に渡す設定だけを載せてコンテナは載せていない。 推論サーバと
+# 検索エンジンは別サーバーで動かしているものを指せば済み(chiezo-app は OpenAI 互換の口を
 # 叩くだけ)、貼り付けて動かすような小さな実行環境で同居させる前提も無いため。同じホストに
 # 立てるなら、上書きを重ねられる環境で docker-compose.answer.yml を使うこと。
 #
@@ -33,14 +33,14 @@
 # 書式は「ホスト側の絶対パス:コンテナ側」。`type: bind` の長い形は使わない ——
 # 古い Docker だとホスト側のディレクトリを自動で作らない
 x-data-volume: &data-volume "/path/to/chiezo/data:/data"
-# corpus だけは api に読み取り専用で重ねる(書くのは取り込み側。取り違えて壊さないため)。
+# corpus だけは app に読み取り専用で重ねる(書くのは取り込み側。取り違えて壊さないため)。
 # 上を書き換えたらここも同じ親に揃えること —— YAML のアンカーは文字列の一部に
 # 差し込めないので、置き場のパスだけ2行に分かれる
 x-corpus-volume: &corpus-volume "/path/to/chiezo/data/corpus:/data/corpus:ro"
 # CLI ブリッジ(下のほうで畳んである)が読む設定 DB。読み取り専用で渡す。
 # 上と同じ親に揃えること。**コンテナ側は /state のまま** —— ブリッジは
 # /state/settings.db を決め打ちで読む(CHIEZO_BRIDGE_STATE_DB の既定)ので、
-# api 側の置き場が data/ の下へ移ってもここは変えない
+# app 側の置き場が data/ の下へ移ってもここは変えない
 x-state-volume: &state-volume "/path/to/chiezo/data/state:/state:ro"
 
 # ---- ここだけ編集(必要なときだけ): 実行ユーザー ----
@@ -51,11 +51,11 @@ x-run-as: &run-as "10001:10001"
 
 services:
   # 置き場の下に corpus/・notes/・state/ を作り、所有者を実行ユーザーに合わせる
-  # ワンショット。corpus も chown する(取り込み側が書くため。api 側は
+  # ワンショット。corpus も chown する(取り込み側が書くため。app 側は
   # corpus を read-only で重ねてあるので、そちらからは書けない)。
   # bind 先がホストに無いと Docker が root 所有で作ってしまい、
-  # 非 root で動く api がメモも設定も書けずに落ちる。
-  # api も trigger もこれの完了を待つので、いちばん先に置いてある
+  # 非 root で動く app がメモも設定も書けずに落ちる。
+  # app も trigger もこれの完了を待つので、いちばん先に置いてある
   chiezo-init:
     image: alpine:3.24
     container_name: chiezo-init
@@ -70,12 +70,12 @@ services:
     restart: "no"
 
   # やること(タスク・ルール)。**外に出すのはこれだけ。**
-  # chiezo-api と同じイメージで、command だけ差し替えて別のアプリを起動する。
+  # chiezo-app と同じイメージで、command だけ差し替えて別のアプリを起動する。
   # 本体(7010)を公開してはいけない —— サーバー側の鍵で AI を叩く口・課金の走る
   # 生成の口・取り込みを起こせる管理画面・メモを消せる口まで一緒に外へ出るため。
   # 詳しくは docs/tasks.md。使わないならこのサービスごと消してよい。
   chiezo-tasks:
-    image: ghcr.io/rtcode337/chiezo-api:latest
+    image: ghcr.io/rtcode337/chiezo-app:latest
     container_name: chiezo-tasks
     # --forwarded-allow-ips には信頼できるプロキシの IP を書く。既定(127.0.0.1)の
     # ままだと別コンテナのプロキシからのヘッダが無視され、レート制限のキーが
@@ -120,10 +120,10 @@ services:
     restart: unless-stopped
 
   # 検索 API・MCP・管理画面。これが本体で、単体で起動する。
-  chiezo-api:
+  chiezo-app:
     # 障害時は :latest ではなく :sha-xxxxxxx を指定すれば任意の時点に戻せる
-    image: ghcr.io/rtcode337/chiezo-api:latest
-    container_name: chiezo-api
+    image: ghcr.io/rtcode337/chiezo-app:latest
+    container_name: chiezo-app
     ports:
       # host:container。8000 は他のアプリと衝突しやすいので避けている
       - "7010:7010"
@@ -153,7 +153,7 @@ services:
       # ---- 「答える」層(/v1/ask・/v1/chat・/ai/chat)を使う場合 ----
       # 話す相手は管理画面(/admin)の「話す相手」から on/off する。
       # 同居の推論サーバも Gemini も OpenRouter も CLI ブリッジも同じ扱いで、URL は
-      # api/app/providers.py に決め打ち。入れるのは API キーと on/off とモデルだけで、
+      # app/providers.py に決め打ち。入れるのは API キーと on/off とモデルだけで、
       # 保存先は上の CHIEZO_STATE_DIR。
       #
       # ここに書くのは、推論サーバを別マシンで動かしている場合の URL だけ。
@@ -213,7 +213,7 @@ services:
 
   # agent モードの道具 `web_search` が引く検索エンジン。設定を焼き込んだイメージなので、
   # リポジトリが無くてもこれだけで立つ(素の searxng/searxng は settings.yml を要求する)。
-  # ホストへは公開しない —— 使うのは chiezo-api だけで、外向きの検索の中継になるため。
+  # ホストへは公開しない —— 使うのは chiezo-app だけで、外向きの検索の中継になるため。
   # 使わないなら、このブロックごと消して上の CHIEZO_WEB_SEARCH_URL も空にする。
   searxng:
     image: ghcr.io/rtcode337/chiezo-searxng:latest
@@ -234,7 +234,7 @@ services:
 
   # 管理画面からの「未初期化データの初期化」を受けて ingest を実行する内部専用トリガー。
   # ingest イメージを流用し、CMD だけ server:app(FastAPI)起動に上書きする。
-  # ホストへポート公開せず、chiezo-api からのみ docker 内部ネットワーク経由で到達できる。
+  # ホストへポート公開せず、chiezo-app からのみ docker 内部ネットワーク経由で到達できる。
   chiezo-trigger:
     image: ghcr.io/rtcode337/chiezo-ingest:latest
     container_name: chiezo-trigger
@@ -248,14 +248,14 @@ services:
     user: *run-as
     environment:
       CHIEZO_DATA_DIR: /data/corpus
-      # 記憶の固化(短期記憶 → 長期記憶)。chiezo-api がプラグインとして素材を配るので、
+      # 記憶の固化(短期記憶 → 長期記憶)。chiezo-app がプラグインとして素材を配るので、
       # 焼くのは普通の取り込みと同じ経路になる(管理画面の初期化・再構築ボタンに並ぶ)。
       # テーマを 1 つも作っていなければ何も配らない。
       #
       # ---- 別コンテナのソースプラグインも使う場合 ----
       # 下の chiezo-plugin を有効にしたら、その URL をカンマ区切りで後ろに並べる。
       # プラグインが提供するソースが管理画面の「未初期化データの初期化」に出る。
-      CHIEZO_PLUGIN_SOURCES: http://chiezo-api:7010/v1/memory
+      CHIEZO_PLUGIN_SOURCES: http://chiezo-app:7010/v1/memory
     restart: unless-stopped
     # 「良き隣人」のための相対ウェイト(既定 1024 の半分)。CPU が競合したときだけ
     # 他のコンテナへ譲り、空いていれば全力で使える。ハード上限の cpus は使わない ——
@@ -284,7 +284,7 @@ services:
   #    - *state-volume
   #  environment:
   #    CHIEZO_BRIDGE_CLI: claude
-  #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-api:7010/mcp
+  #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-app:7010/mcp
   #  restart: unless-stopped
   #  #cpu_shares: 512
   #
@@ -295,7 +295,7 @@ services:
   #    - *state-volume
   #  environment:
   #    CHIEZO_BRIDGE_CLI: codex
-  #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-api:7010/mcp
+  #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-app:7010/mcp
   #  restart: unless-stopped
   #  #cpu_shares: 512
   #
@@ -319,7 +319,7 @@ services:
   #      target: /srv/bridge/home
   #  environment:
   #    CHIEZO_BRIDGE_CLI: antigravity
-  #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-api:7010/mcp
+  #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-app:7010/mcp
   #  restart: unless-stopped
   #  #cpu_shares: 512
 

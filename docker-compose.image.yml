@@ -5,7 +5,7 @@
 #
 # NVIDIA の GPU が要る(NVIDIA Container Toolkit を入れておくこと)。
 # GPU が別のマシンにあるなら、このファイルは重ねない —— そちらで ComfyUI を動かし、
-# chiezo-api には CHIEZO_IMAGE_URL でその URL を渡せばよい(推論サーバと同じ逃げ道)。
+# chiezo-app には CHIEZO_IMAGE_URL でその URL を渡せばよい(推論サーバと同じ逃げ道)。
 #
 # モデル(チェックポイント)は自分で置く。 数 GB あり、ライセンスも配布条件も
 # モデルごとに違うので、こちらでは同梱も自動取得もしない。
@@ -26,7 +26,7 @@ services:
     # (:latest は 2026 年半ばに廃止された。cu126-slim = NVIDIA 向け)。
     image: ${CHIEZO_IMAGE_IMAGE:-yanwk/comfyui-boot:cu126-slim}
     profiles: ["image"]
-    # ホストへは公開しない(chiezo-api からのみ到達する)。
+    # ホストへは公開しない(chiezo-app からのみ到達する)。
     # 手元のブラウザで ComfyUI の画面を触りたいときだけ ports を足す
     environment:
       # 待ち受けを 7014 にする(既定は 8188)。7010 = API・7011 = 推論・7012 = 検索・

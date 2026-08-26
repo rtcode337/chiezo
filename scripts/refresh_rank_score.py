@@ -16,9 +16,9 @@ bm25 に掛け合わせて使う。ところが古い DB は:
 
 使い方:
 
-    docker compose stop chiezo-api          # 読み取り中の DB を書き換えないため
+    docker compose stop chiezo-app          # 読み取り中の DB を書き換えないため
     python3 scripts/refresh_rank_score.py data/jawiki.db data/geonames.db
-    docker compose start chiezo-api
+    docker compose start chiezo-app
 
 何度実行しても結果は同じ(`extra` から毎回計算し直す)。
 """
@@ -103,7 +103,7 @@ def refresh(db_path: Path) -> int:
             "SELECT title, rank_score FROM docs ORDER BY rank_score DESC LIMIT 5"
         ).fetchall()
         print("  上位:", ", ".join(f"{t}({s:.3f})" for t, s in top))
-        print(f"done in {time.monotonic() - started:.0f}s. restart chiezo-api to pick it up.")
+        print(f"done in {time.monotonic() - started:.0f}s. restart chiezo-app to pick it up.")
         return changed
     finally:
         conn.close()

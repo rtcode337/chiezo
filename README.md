@@ -51,7 +51,7 @@ geonames と osm の使い分けは
 
 API は FastAPI + uvicorn(ポート 7010)、認証なし・LAN 内前提。未初期化ソースの取り込みは
 管理画面から起動できる(内部専用の `chiezo-trigger` サービス経由。ホストへポート公開せず、
-`chiezo-api` からのみ到達可能)。
+`chiezo-app` からのみ到達可能)。
 
 ## セットアップ
 
@@ -71,7 +71,7 @@ docker compose --profile ingest run --rm -e SOURCE=osm_japan chiezo-ingest
 # 2''. geonames を取り込む(全世界の地名。ダンプ約 400MB + 別名 191MB)
 docker compose --profile ingest run --rm -e SOURCE=geonames chiezo-ingest
 
-# 3. 取り込みが終われば chiezo-api が数秒以内に自動で新しい DB を読み込む(再起動は不要)
+# 3. 取り込みが終われば chiezo-app が数秒以内に自動で新しい DB を読み込む(再起動は不要)
 curl -s http://localhost:7010/v1/sources
 ```
 
@@ -106,7 +106,7 @@ curl -sG "$BASE/v1/osm_japan/filter?limit=200" \
 
 ### MCP / Claude Code から使う
 
-chiezo-api 自身が MCP サーバーなので、クライアント側に何もインストールせずに繋がる。
+chiezo-app 自身が MCP サーバーなので、クライアント側に何もインストールせずに繋がる。
 Claude Code 用の設定(CLAUDE.md ブロック・権限ルール・MCP 登録)は、稼働中の Chiezo に
 問い合わせて生成できる。
 
@@ -191,7 +191,7 @@ Chiezo を引ける AI とブラウザから話せる(`/ai/chat`)。1 問 1 答�
 これは知識ベース本体の機能ではなく、Chiezo を使う側をこのリポジトリが用意しているもの
 (Claude Code 向けの設定を生成するスクリプトと同じ位置づけ)。どう引けば当たるか
 —— 短い語は前方一致に落ちる、カテゴリの列挙は `filter?tag=` —— を知っているのはここなので、
-道具立てとプロンプトもここで持つ。推論そのものは chiezo-api の中では動かさず、
+道具立てとプロンプトもここで持つ。推論そのものは chiezo-app の中では動かさず、
 OpenAI 互換 API を喋る別プロセスに任せる(配信側が数百 MB で動く前提を崩さないため)。
 有効になるのは `CHIEZO_LLM_URL` を設定したときだけ。
 
@@ -233,7 +233,7 @@ docker compose --profile ingest run --rm chiezo-ingest   # ダンプ更新(ブ�
 ```
 
 ingest は毎回 `data/corpus/<source>-<date>.db` を新規構築し、検証が通ったらシンボリックリンク
-`data/corpus/<source>.db` を差し替える(旧世代は 1 つ保持)。差し替えは chiezo-api が数秒以内に
+`data/corpus/<source>.db` を差し替える(旧世代は 1 つ保持)。差し替えは chiezo-app が数秒以内に
 自動検知するので、再起動も停止時間も要らない。
 
 取り込みの環境変数・スキーマ移行・rank_score の入れ直し・メモリ方針・別マシンでのビルドと
@@ -273,7 +273,7 @@ docker compose up -d          # chiezo-init が所有者を揃える
 ```
 
 Docker で実行する(リポジトリはバインドマウントするだけなので `data/` の大きさは
-関係しない)。手元に環境を作るなら Python 3.12 を使う(`api/` と `ingest/` のイメージ・
+関係しない)。手元に環境を作るなら Python 3.12 を使う(`app/` と `ingest/` のイメージ・
 CI と同じ系列。依存に C 拡張が含まれるため、別のバージョンでは import から落ちる)。
 
 ```bash
@@ -293,9 +293,9 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 DB を構築して全エンドポイントを検証する。ネットワーク・実データは要らない。
 
 CI(`.github/workflows/ci.yml`)は push / PR でこのテストを実行し、main への push で
-`ghcr.io/rtcode337/chiezo-api` / `ghcr.io/rtcode337/chiezo-ingest` のマルチアーキ
+`ghcr.io/rtcode337/chiezo-app` / `ghcr.io/rtcode337/chiezo-ingest` のマルチアーキ
 (amd64 / arm64)イメージを GHCR へ公開する。`docker-compose.yml` はこのイメージを
-pull して使うので、`api/` や `ingest/` を変更してローカルで動作確認するときは
+pull して使うので、`app/` や `ingest/` を変更してローカルで動作確認するときは
 ビルド版を使う。
 
 ```bash
@@ -308,8 +308,8 @@ compose は「本体 + 上書き」の形にしてある。本体(`docker-compos
 
 ### アイコンを変えたとき
 
-原本は `assets/icon.svg` で、`api/app/pages.py` に 2 つの派生物を埋め込んである
-(api イメージのビルドコンテキストは `api/` のみで `assets/` を含まないため)。
+原本は `assets/icon.svg` で、`app/pages.py` に 2 つの派生物を埋め込んである
+(app イメージのビルドコンテキストは `app/` のみで `assets/` を含まないため)。
 原本を変えたら両方を作り直す。
 
 - `FAVICON_DATA_URI` — SVG を最小化した data URI(ブラウザタブ用)

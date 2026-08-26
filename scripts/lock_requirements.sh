@@ -12,7 +12,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-PYTHON_VERSION=3.12   # api/ingest の Dockerfile・CI と揃える
+PYTHON_VERSION=3.12   # app/ingest の Dockerfile・CI と揃える
 
 if ! command -v uv >/dev/null 2>&1; then
     echo "uv が要ります: pip install uv(または https://docs.astral.sh/uv/)" >&2
@@ -24,7 +24,7 @@ fi
 # そのままロックに残り、置き場所が違うだけで差分が出る。
 cd "$ROOT"
 
-for target in api/requirements ingest/requirements requirements-dev; do
+for target in app/requirements ingest/requirements requirements-dev; do
     echo "==> $target.txt" >&2
     uv pip compile \
         --quiet --generate-hashes --python-version "$PYTHON_VERSION" \

@@ -23,7 +23,7 @@ from pydantic.alias_generators import to_camel
 
 from app import tasks
 
-log = logging.getLogger("chiezo.api")
+log = logging.getLogger("chiezo.app")
 
 router = APIRouter(prefix="/api")
 

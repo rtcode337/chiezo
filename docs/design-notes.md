@@ -301,7 +301,7 @@ jawiki ではそれぞれ 160〜190 万件)は、メモリではなくディス�
 
 ### 配信側: 数百 MB で動く
 
-chiezo-api は読み取り専用の immutable SQLite を開くだけなので、1GB 級の小型機でも
+chiezo-app は読み取り専用の immutable SQLite を開くだけなので、1GB 級の小型機でも
 配信できます。効いてくるのはメモリではなくディスク(jawiki.db 約 42GB の空き)です。
 
 この前提があるため、**配信側の常駐メモリを増やす変更は採りません**。形態素トークナイザを
@@ -347,11 +347,11 @@ jawiki 150 万件の COUNT が走ります**。分ければ干渉せず、`/data
 
 ### スキーマは写しを持ち、テストでずれを止める
 
-notes の DDL は `api/app/notes.py` にあります。実体は ingest の `core.py` と同じものですが、
-**api は ingest を import しません**(コンテナも依存関係も別)。写しがずれると
+notes の DDL は `app/notes.py` にあります。実体は ingest の `core.py` と同じものですが、
+**app は ingest を import しません**(コンテナも依存関係も別)。写しがずれると
 「notes だけ `filter` が 409」「`tags` が空」のように静かに壊れるので、
 `tests/test_notes.py` が ingest の `core.CORE_SCHEMA_DDL` から作った DB と
-`sqlite_master` を突き合わせて落とします(`api/app/known_sources.py` と同じ精神で、
+`sqlite_master` を突き合わせて落とします(`app/known_sources.py` と同じ精神で、
 複製そのものは許し、腐りをテストで止める)。
 
 ### 想起の主役はおそらく全文検索ではない
@@ -410,7 +410,7 @@ jawiki も geonames も何度でもダンプから作り直せるが、固化ソ
 ### 固化に新しい仕掛けを起こさない
 
 素材を配る口は、別コンテナのプラグイン(`ingest/sources/remote.py`)と**まったく同じ契約**に
-してある。`GET {base}/sources` と `GET {base}/fetch?source=` の 2 つを chiezo-api が話すだけで、
+してある。`GET {base}/sources` と `GET {base}/fetch?source=` の 2 つを chiezo-app が話すだけで、
 DB の構築・FTS・タグ転置表・世代切り替え・検証は本体の仕掛けがそのまま効く。固化は
 「Chiezo 自身をプラグインとして持つ」形になり、管理画面の初期化・再構築ボタンにもそのまま乗る。
 
@@ -760,7 +760,7 @@ Chiezo は **AI のための知識ベース**です。それを使う AI は普�
   あるのは変わらず、**知識ベース本体は今も外へ出ません**(ingest がダンプを取る以外)。
   外へ出うるのは使う側で、それは Claude Code が Chiezo と web 検索の両方を持っているのと
   同じ関係です。ただし出る以上は、どれが web 由来か分かること・本文を取りに行かないこと・
-  自分でレート制限をかけることを守ります([websearch.py](../api/app/websearch.py))
+  自分でレート制限をかけることを守ります([websearch.py](../app/websearch.py))
 - **話す相手は Chiezo ではなく AI**。画面の見出しは `AI(Qwen3-8B)と話す` のように
   モデル名を名乗り、システムプロンプトにも「Chiezo はあなたが引く知識であって、あなた自身では
   ない」と書いてあります。ここを曖昧にすると、知識ベースと、それを使うモデルの区別が
@@ -804,7 +804,7 @@ agent モードで会話していて、いちばん質を落としていたの�
 人間は 0 件を見て自分で気づけますが、モデルは同じ壁に何度もぶつかります。同じ理由で、
 道具の失敗(404 の候補、409 の移行案内)もモデルに素通しする設計にしてあります。
 
-### 推論を api プロセスに入れない
+### 推論を app プロセスに入れない
 
 配信側が数百 MB で動く前提(上の「メモリ方針」)は、この層でも崩しません。
 `app/answer.py` がするのは OpenAI 互換の `/chat/completions` を叩くことだけで、

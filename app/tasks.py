@@ -37,7 +37,7 @@ from fastapi import HTTPException
 
 from app import db, notes, settings_store
 
-log = logging.getLogger("chiezo.api")
+log = logging.getLogger("chiezo.app")
 
 # ---- タグの語彙(正は notes.CANONICAL_TAGS。ここは参照するための名前) ----------
 TAG_TASK = "todo"

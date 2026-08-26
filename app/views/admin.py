@@ -21,7 +21,7 @@ from app.pages import CHAT_PATH, browse_url, esc, page_shell
 from app.registry import SUPPORTED_SCHEMA_VERSIONS, Source
 from app.views import ai_settings, ai_usage
 
-log = logging.getLogger("chiezo.api")
+log = logging.getLogger("chiezo.app")
 
 router = APIRouter()
 
@@ -44,14 +44,14 @@ def _fetch_trigger_status() -> dict | None:
         # 例外の文字列は管理画面にそのまま埋め込まれる。接続エラーの文言は内部 URL
         # (CHIEZO_TRIGGER_URL)等を含みうるので画面には出さず、詳細はログに残すだけにする
         # (CodeQL: Information exposure through an exception)。
-        return {"state": "unreachable", "error": "chiezo-trigger に到達できません(詳細は api コンテナのログ)"}
+        return {"state": "unreachable", "error": "chiezo-trigger に到達できません(詳細は app コンテナのログ)"}
 
 
 # chiezo-trigger のソースカタログのプロセス内キャッシュ。中身の大半は trigger のイメージに
 # 焼かれた静的な表(osm_<国> だけで 195 件)だが、それだけとは限らない:
 # `CHIEZO_PLUGIN_SOURCES` のプラグインは実行時に足せるので、trigger を入れ替えた
 # あとにカタログが増える。一度取ったら永久に持ち続けると、プラグインを足したのに管理画面へ
-# 出ないまま api の再起動を待つことになる。そこで有効期限を持たせる。
+# 出ないまま app の再起動を待つことになる。そこで有効期限を持たせる。
 _catalog_cache: dict[str, dict] | None = None
 # trigger(= ingest イメージ)が焼くスキーマバージョン。カタログと一緒に受け取る
 _catalog_schema_version: int | None = None
@@ -106,7 +106,7 @@ def latest_schema_version() -> int:
 
     正は ingest 側(`core.SCHEMA_VERSION`)で、chiezo-trigger の `GET /sources` が
     カタログと一緒に返す。trigger が未設定・到達不能・古い(schema_version を返さない)
-    ときは、api が対応できる最大バージョンで代替する(通常は両者一致する)。
+    ときは、app が対応できる最大バージョンで代替する(通常は両者一致する)。
     """
     _fetch_trigger_catalog()
     return _catalog_schema_version or max(SUPPORTED_SCHEMA_VERSIONS)
@@ -169,7 +169,7 @@ def _memory_themes_html(sources: dict[str, Source], disabled: str) -> str:
     """固化(短期記憶 → 長期記憶)のテーマ一覧と操作。
 
     焼くこと自体は普通の取り込みと同じ経路なので、ボタンの行き先は初期化・再構築と
-    同じ(`chiezo-api` がプラグインとして素材を配る)。ここが持つのはテーマの定義と、
+    同じ(`chiezo-app` がプラグインとして素材を配る)。ここが持つのはテーマの定義と、
     焼き上がりを確かめてから短期側に印を付ける「片付ける」だけ。
     """
     if not memory.is_enabled():
@@ -658,7 +658,7 @@ def _proxy_trigger_run(source: str) -> RedirectResponse:
         # 例外の文字列は内部 URL 等を含みうるのでレスポンスに載せない(上の
         # _fetch_trigger_status と同じ理由。詳細はログへ)。
         log.warning("chiezo-trigger run request failed: %s", e)
-        raise HTTPException(502, {"error": "chiezo-trigger unreachable (details in api logs)"}) from e
+        raise HTTPException(502, {"error": "chiezo-trigger unreachable (details in app logs)"}) from e
     if res.status_code >= 400:
         raise HTTPException(res.status_code, res.json())
     return RedirectResponse(url="/admin", status_code=303)

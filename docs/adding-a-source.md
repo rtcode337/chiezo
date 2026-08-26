@@ -11,7 +11,7 @@ API・DB スキーマ・共通フレームの変更は不要です。
 
 ```bash
 docker compose --profile ingest run --rm -e SOURCE=enwiki chiezo-ingest
-# 取り込みが終われば chiezo-api が数秒以内に自動で新しい DB を読み込む(再起動は不要)
+# 取り込みが終われば chiezo-app が数秒以内に自動で新しい DB を読み込む(再起動は不要)
 ```
 
 管理画面の `/admin` → `wikipedia` 行の「言語を選ぶ」(`/admin/wikipedia`)からも初期化できます。
@@ -126,17 +126,17 @@ ADAPTERS = {
 
 ### 3. 管理画面の初期化ボタン
 
-`ADAPTERS` に追加すれば自動的に出ます(chiezo-api は ingest のコードを import しませんが、
+`ADAPTERS` に追加すれば自動的に出ます(chiezo-app は ingest のコードを import しませんが、
 `chiezo-trigger` の `GET /sources` からソース名・kind・lang を受け取るため)。
 
-`api/app/known_sources.py` の `KNOWN_SOURCES` は、`chiezo-trigger` が未設定・到達不能なときに
+`app/known_sources.py` の `KNOWN_SOURCES` は、`chiezo-trigger` が未設定・到達不能なときに
 管理画面を空にしないための控えです。追記は必須ではありません。
 
 ### 4. 取り込む
 
 ```bash
 docker compose --profile ingest run --rm -e SOURCE=aozora chiezo-ingest
-# 取り込みが終われば chiezo-api が数秒以内に自動で新しい DB を読み込む(再起動は不要)
+# 取り込みが終われば chiezo-app が数秒以内に自動で新しい DB を読み込む(再起動は不要)
 ```
 
 これで `/v1/aozora/search` などの全エンドポイントが自動的に使えるようになります
@@ -150,10 +150,10 @@ docker compose --profile ingest run --rm -e SOURCE=aozora chiezo-ingest
 
 ### 前提: 配信側は最初から何も要らない
 
-chiezo-api はソース種別を知りません。`data/<名前>.db` にコアスキーマの SQLite が
+chiezo-app はソース種別を知りません。`data/<名前>.db` にコアスキーマの SQLite が
 置かれていれば、それだけで登録されて `search` / `doc` / `filter` / `tags` / MCP /
 ブラウズ画面が全部使えます。**「別リポジトリで `.db` を焼いて `data/` に置く」だけなら、
-以下の設定すら要りません**(chiezo-api が数秒以内に検知します)。
+以下の設定すら要りません**(chiezo-app が数秒以内に検知します)。
 
 以下が要るのは、**取り込み自体を Chiezo に任せたい**場合です(管理画面の初期化・再構築
 ボタンから回せるようになります)。
@@ -231,7 +231,7 @@ docker compose --profile ingest run --rm -e SOURCE=private_docs chiezo-ingest
 
 ### スキーマバージョンについて
 
-`schema_version` は「api がどの機能を出せるか」の指標です(2 で `filter`、3 で `tag`、
+`schema_version` は「app がどの機能を出せるか」の指標です(2 で `filter`、3 で `tag`、
 4 で `bbox` と大きな並べ替え)。DDL は `core.py` にあるので、上のようにイメージを
 継承していれば最新版が自動的に焼かれます。**独自に `.db` を組み立てる場合は、
 `core.CORE_SCHEMA_DDL` 一式をそのまま使ってください** — 索引が欠けると
@@ -257,5 +257,5 @@ docker compose --profile ingest run --rm \
 2. コアスキーマ(meta / docs / aliases / docs_fts / doc_tags / tag_counts / doc_coords)は
    全ソース共通。
    足りないフィールドは `extra` に逃がし、コアスキーマ変更は最終手段
-   (変更時は `schema_version` を上げ、api 側で複数バージョン対応)。
+   (変更時は `schema_version` を上げ、app 側で複数バージョン対応)。
 3. `fetch()` は再開可能に、`iter_docs()` はストリーミングで。

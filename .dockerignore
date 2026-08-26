@@ -1,4 +1,4 @@
-# api イメージはリポジトリ全体を文脈にする(やること画面を同じイメージへ焼くため)。
+# app イメージはリポジトリ全体を文脈にする(やること画面を同じイメージへ焼くため)。
 # 除かないと、取り込んだ本体(data/ は数十 GB)や GGUF まで丸ごと送られる。
 
 .git/
@@ -25,7 +25,7 @@ __pycache__/
 tasks-frontend/node_modules/
 tasks-frontend/dist/
 
-# api イメージに要らない兄弟
+# app イメージに要らない兄弟
 ingest/
 bridge/
 searxng/

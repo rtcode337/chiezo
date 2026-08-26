@@ -256,7 +256,7 @@ def validate_db(adapter: SourceAdapter, db_path: Path) -> None:
             ).fetchone()
             if row is None:
                 raise RuntimeError(f"validation failed: sample title not found: {title!r}")
-            # trigram トークナイザは 3 文字未満を扱えない(api/app/fts.py の MIN_TRIGRAM_LEN と同じ閾値)。
+            # trigram トークナイザは 3 文字未満を扱えない(app/fts.py の MIN_TRIGRAM_LEN と同じ閾値)。
             # API 自体もその場合はタイトル前方一致にフォールバックするため、FTS 検証は対象外。
             if len(title) < 3:
                 continue

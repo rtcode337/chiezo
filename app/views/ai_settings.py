@@ -377,7 +377,7 @@ async def section_html(request: Request | None = None) -> str:
 <summary>この節について</summary>
 <p>Chiezo にためた知識を引ける AI と、絵や音を作る相手をここで増やす。
 <strong>相手の URL は決まっているので設定に出さない</strong>
-(<code>api/app/providers.py</code> と <code>api/app/media_providers.py</code> に決め打ち)
+(<code>app/providers.py</code> と <code>app/media_providers.py</code> に決め打ち)
 —— 入れるのは認証情報と、使うかどうかだけ。</p>
 <p><strong>1 つの相手で複数のことができる。</strong>「できること」の欄が、その相手で
 いま何ができるか（話す・絵・音）を示す。<strong>鍵と on/off は相手ごとに 1 つ</strong>なので、
@@ -386,7 +386,7 @@ async def section_html(request: Request | None = None) -> str:
 <p><strong>Claude Code CLI / Codex CLI / Antigravity CLI は CLI なので、別コンテナ(ブリッジ)を
 立てて使う。</strong>立てるとここが押せるようになる（手順は各行の「登録する」「使えるようにするには」の中）。
 <strong>compose のファイルが無い環境でも立てられる</strong> —— <code>docker run</code> で、
-<strong>コンテナ名を <code>chiezo-bridge-&lt;CLI 名&gt;</code> にして chiezo-api と同じネットワークに繋ぐ</strong>
+<strong>コンテナ名を <code>chiezo-bridge-&lt;CLI 名&gt;</code> にして chiezo-app と同じネットワークに繋ぐ</strong>
 のが条件（この名前で呼びに行くため）。<strong>認証情報はこの画面から登録する</strong> —— ブリッジが設定 DB を
 読み取り専用でマウントして読むので、登録すればブリッジの再起動なしで効く
 （<strong>Antigravity だけは例外</strong>で、API キーを持たずコンテナ内で 1 回サインインする）。</p>

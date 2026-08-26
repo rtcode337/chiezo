@@ -142,7 +142,7 @@ class TestRecall:
         assert len(rest["notes"]) == 1
 
     def test_limit_is_clamped_for_direct_callers(self, filled, monkeypatch):
-        """MCP は api の関数を直接呼ぶので、FastAPI の Query 検証を通らない。"""
+        """MCP は app の関数を直接呼ぶので、FastAPI の Query 検証を通らない。"""
         from app import notes
 
         monkeypatch.setattr(notes, "RECALL_LIMIT_MAX", 2)
@@ -194,7 +194,7 @@ class TestRecall:
         assert "body" in body["error"] and "text" in body["allowed_fields"]
 
     def test_max_chars_is_clamped_for_direct_callers(self, filled):
-        """MCP は api の関数を直接呼ぶ。負の添字は末尾を削る意味になってしまう。"""
+        """MCP は app の関数を直接呼ぶ。負の添字は末尾を削る意味になってしまう。"""
         from app import notes
 
         note = notes.recall(max_chars=-3)["notes"][0]
@@ -433,7 +433,7 @@ class TestReaderIsNotImmutable:
 
 
 class TestSchemaStaysInSyncWithIngest:
-    """api は ingest を import しないので DDL の写しを持っている。ずれたら落とす。
+    """app は ingest を import しないので DDL の写しを持っている。ずれたら落とす。
 
     ずれると「notes だけ filter が 409」「tags が空」のように静かに壊れるため、
     ここで ingest の core.py から作った DB と実際に突き合わせる。

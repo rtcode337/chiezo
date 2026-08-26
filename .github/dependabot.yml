@@ -9,7 +9,7 @@
 # `scripts/lock_requirements.sh` を回して requirements.txt を作り直す。
 version: 2
 updates:
-  # Python 依存(api = 配信、ingest = 取り込み、ルート = 開発・CI 用)
+  # Python 依存(app = 配信、ingest = 取り込み、ルート = 開発・CI 用)
   - package-ecosystem: pip
     directories:
       - /api

@@ -1072,8 +1072,8 @@ class TestUpstreamReason:
     def test_it_reads_the_openai_shape(self):
         from app import answer
 
-        body = '{"error": {"message": "invalid api key", "type": "invalid_request_error"}}'
-        assert answer._upstream_reason(body) == "invalid api key"
+        body = '{"error": {"message": "invalid app key", "type": "invalid_request_error"}}'
+        assert answer._upstream_reason(body) == "invalid app key"
 
     def test_it_reads_a_plain_detail_string(self):
         from app import answer

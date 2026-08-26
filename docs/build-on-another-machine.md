@@ -135,7 +135,7 @@ docker pull ghcr.io/rtcode337/chiezo-ingest:latest
 
 **pull は毎回やること。** ローカルに古い `latest` が残っていると、タグは同じなので見た目では
 気づけないまま古い版で焼いてしまう。そのイメージが作る DB の `schema_version` は、
-取り込みを走らせずに聞ける(配信機の chiezo-api が期待する版より古いと新機能が使えないので、
+取り込みを走らせずに聞ける(配信機の chiezo-app が期待する版より古いと新機能が使えないので、
 数時間かける前にここで確かめる):
 
 ```bash
@@ -225,7 +225,7 @@ Windows 側からは、エクスプローラで `\\wsl$\Ubuntu\home\<ユーザ�
 
 ### 5. 配信機へ配置する
 
-配信機の data ディレクトリに置き、`<ソース名>.db` として見えるようにする(chiezo-api が数秒以内に自動で読み込む。再起動は不要)。
+配信機の data ディレクトリに置き、`<ソース名>.db` として見えるようにする(chiezo-app が数秒以内に自動で読み込む。再起動は不要)。
 
 ```bash
 cp jawiki-20260701.db /path/to/chiezo/data/
@@ -234,7 +234,7 @@ ln -sfn jawiki-20260701.db jawiki.db    # シンボリックリンクが使え�
 curl -s http://localhost:7010/v1/sources   # 数秒待って新しい dump_date / schema_version が出れば成功
 ```
 
-配信側(chiezo-api)は読み取り専用の immutable SQLite を開くだけなので、**メモリ数百 MB の小型機でも動く**。
+配信側(chiezo-app)は読み取り専用の immutable SQLite を開くだけなので、**メモリ数百 MB の小型機でも動く**。
 効いてくるのはメモリではなくディスク(jawiki なら 42GB の空きが要る)。
 
 ### 6. ビルド機の後片付け

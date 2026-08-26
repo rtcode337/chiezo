@@ -1,8 +1,8 @@
 """chiezo-trigger: 管理画面からの初期化リクエストを受けて ingest を実行する内部専用サービス。
 
-chiezo-api とは別コンテナ(ingest イメージを流用し、CMD だけ本ファイルの uvicorn 起動に
+chiezo-app とは別コンテナ(ingest イメージを流用し、CMD だけ本ファイルの uvicorn 起動に
 差し替える)。/data への書き込み権限を持つのはこのサービスと one-shot の chiezo-ingest
-プロファイルのみで、chiezo-api は引き続き /data を read-only でマウントする。
+プロファイルのみで、chiezo-app は引き続き /data を read-only でマウントする。
 Docker の内部ネットワークのみで到達可能にし、ホストへポート公開しない
 (docker-compose.yml 参照)。
 
@@ -77,15 +77,15 @@ def healthz():
 def sources():
     """取り込める(= 初期化できる)ソースのカタログ。
 
-    chiezo-api の管理画面がこれを引いて「未初期化データの初期化」を組み立てる。
-    ソース定義は ingest 側にしかなく、api は ingest のコードを import しない
+    chiezo-app の管理画面がこれを引いて「未初期化データの初期化」を組み立てる。
+    ソース定義は ingest 側にしかなく、app は ingest のコードを import しない
     (コンテナも依存関係も別)ため、名前・種別・表示用のメタだけを HTTP で渡す。
-    `osm_<国>` 195 件・`<lang>wiki` 348 件は、api 側で 1 行ずつ持たせるのは現実的でない。
+    `osm_<国>` 195 件・`<lang>wiki` 348 件は、app 側で 1 行ずつ持たせるのは現実的でない。
 
     アダプタは実体化せずに答える(カタログ由来だけで 500 超あり、全部作ると無駄が大きい)。
 
     `schema_version` はこのイメージが焼くスキーマバージョン(`core.SCHEMA_VERSION`)。
-    管理画面が「最新のスキーマバージョン」と再構築を促す表示に使う(api 側の対応最大
+    管理画面が「最新のスキーマバージョン」と再構築を促す表示に使う(app 側の対応最大
     バージョンと通常は一致するが、正はあくまで取り込みを実行する ingest 側)。
     """
     from core import SCHEMA_VERSION, is_low_memory_build
@@ -97,7 +97,7 @@ def sources():
     # (OSM_NODE_INDEX > BUILD_PROFILE=low_memory > 既定。sources/osm.py の
     # node_index_kind と同じ優先順)。管理画面の必要メモリ表示が実際の実行条件と
     # 食い違わないよう、ここで解決してから返す。memory_gb は「RAM 索引で焼く場合の
-    # 目安」のままでよい(api 側がディスク索引時の 2 GiB 表示を組み立てる)。
+    # 目安」のままでよい(app 側がディスク索引時の 2 GiB 表示を組み立てる)。
     forced_node_index = os.environ.get("OSM_NODE_INDEX") or (
         "sparse_file_array" if is_low_memory_build() else None
     )

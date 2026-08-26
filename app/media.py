@@ -3,7 +3,7 @@
 なぜ非同期(ジョブ)なのか。 生成は数秒〜数分かかる。MCP の道具呼び出しで数分待つと
 呼び出し側が先に切れるので、頼む口は job を返し、進み具合は別の口で引く。
 
-なぜ SQLite なのか。 chiezo-api は `--workers 2` で動く。プロセス内の辞書に持つと、
+なぜ SQLite なのか。 chiezo-app は `--workers 2` で動く。プロセス内の辞書に持つと、
 頼んだワーカーと状態を聞かれたワーカーが別だったときに「そんなジョブは無い」になる。
 設定 DB(`settings.db`)とは別ファイルにする —— あちらは CLI ブリッジが読み取り専用で
 マウントしているので、書き込みの多い表を同居させたくない。
@@ -304,7 +304,7 @@ def _save(job_id: str, index: int, item) -> JobFile:
 
     return JobFile(
         path=str(directory / name),
-        # chiezo-api が配る URL(`GET /media/<日付>/<名前>`)
+        # chiezo-app が配る URL(`GET /media/<日付>/<名前>`)
         url=f"/media/{day}/{name}",
         seed=item.seed,
         model=item.model,
@@ -694,7 +694,7 @@ MAX_TRANSCRIBE_BYTES = 200 * 1024 * 1024
 async def load_audio(path: str = "", url: str = "") -> tuple[bytes, str, str]:
     """文字起こしに渡す音を読む。置き場の中か、サーバーから届く URL からだけ。
 
-    手元のファイルの絶対パスは受け取らない。 chiezo-api はコンテナの中で動くので、
+    手元のファイルの絶対パスは受け取らない。 chiezo-app はコンテナの中で動くので、
     頼んだ人のディスクは見えない —— 受け取れるように見せると、あるはずのファイルが
     「見つからない」と返ってきて、原因が分からないまま終わる。
     自分のファイルを渡したいときは `POST /v1/media/transcribe` に multipart で送る。

@@ -3,7 +3,7 @@
 Chiezo から知識を**取り出す**口の詳細仕様です。経路は 3 つあり、どれも中身は同じ関数を呼びます。
 
 - [REST](#rest) — `curl` と人間向け HTML 画面
-- [MCP](#mcp-から使うmcp) — Streamable HTTP。chiezo-api 自身が MCP サーバー
+- [MCP](#mcp-から使うmcp) — Streamable HTTP。chiezo-app 自身が MCP サーバー
 - [Claude Code 連携](#claude-code-から使う設定ファイル自動生成) — CLAUDE.md ブロック・権限・MCP 登録の自動生成
 
 なぜこの形なのかは [設計メモ](design-notes.md) が正です。
@@ -152,7 +152,7 @@ curl -s -X DELETE "$BASE/v1/notes/3"                             # 取り消し
 タグには**定番の語彙**があります(`todo` = 作業、`着手中`、`完了`、`難所`、`rule`、`無効`、
 `project`、`アーカイブ`、`決定`、`runbook`、`環境`、`本番`、`設計メモ`、`トラブルシュート`。
 プロジェクトはリポジトリ名を小文字で)。
-語彙は `api/app/notes.py` の `CANONICAL_TAGS` が 1 か所で持ち、MCP の `remember` の
+語彙は `app/notes.py` の `CANONICAL_TAGS` が 1 か所で持ち、MCP の `remember` の
 ツール定義として配られます —— 書き手が変わっても同じ意味に同じ表記が付くようにするためで、
 ここに無いタグも自由に付けられます。curl で書くときもこの表記に合わせてください。
 
@@ -194,7 +194,7 @@ curl -s "$BASE/v1/memory/themes" \
 ```
 
 固化そのものは**普通の取り込み**です(管理画面の「固化する」ボタン、または
-`chiezo-trigger` の `POST /run/rules`)。chiezo-api がプラグインとして素材を配るので、
+`chiezo-trigger` の `POST /run/rules`)。chiezo-app がプラグインとして素材を配るので、
 DB の構築・世代切り替え・検証は取り込み側の仕掛けがそのまま使われます。焼き上がったら
 「片付ける」(`POST /v1/memory/themes/rules/sweep`)で、長期側へ移せたメモに `固化` の
 タグが付き、`recall` の既定から外れます。短期側から実際に消すのはその後で、
@@ -222,7 +222,7 @@ DB の構築・世代切り替え・検証は取り込み側の仕掛けがそ�
 | 変数 | 既定 | 説明 |
 |---|---|---|
 | `CHIEZO_STATE_DIR` | `/data/state`(compose) | テーマの置き場。**空にすると固化ごと無効** |
-| `CHIEZO_PLUGIN_SOURCES` | `http://chiezo-api:7010/v1/memory`(compose) | 取り込み側(`chiezo-trigger`)が素材を取りに行く先。外部プラグインを足すときは後ろにカンマ区切りで並べる |
+| `CHIEZO_PLUGIN_SOURCES` | `http://chiezo-app:7010/v1/memory`(compose) | 取り込み側(`chiezo-trigger`)が素材を取りに行く先。外部プラグインを足すときは後ろにカンマ区切りで並べる |
 
 素材が空のとき(未固化のメモが無い / 墓標で全部落ちる)は 409 で断ります。空の DB を
 焼いても中身が消えるだけなので、流し始める前に止めます。
@@ -255,7 +255,7 @@ DB の構築・世代切り替え・検証は取り込み側の仕掛けがそ�
 そのまま反映されます。
 初期化・再構築のボタンを押すと [`chiezo-trigger`](operations.md#chiezo-trigger管理画面からの初期化再構築)に
 ジョブが積まれ、進行状況(ログ tail 込み)が管理画面に表示されます(実行中は自動でリロードされます)。
-ジョブが完了すると、chiezo-api が `data/` の変化(シンボリックリンクの差し替え)を数秒以内に
+ジョブが完了すると、chiezo-app が `data/` の変化(シンボリックリンクの差し替え)を数秒以内に
 検知して自動で新しい DB に切り替わります(再起動は不要。検知間隔は
 `CHIEZO_RESCAN_INTERVAL` 秒、既定 5。0 以下で無効化でき、その場合は従来どおり再起動で反映)。
 
@@ -292,7 +292,7 @@ notes のような小さなソースを頭から確かめる導線)で、検索�
 ## MCP から使う(`/mcp`)
 
 REST と同じ機能を MCP(Model Context Protocol)のツールとしても提供しています。
-**chiezo-api 自身が MCP サーバー**なので、クライアント側に何もインストールせずに繋がります。
+**chiezo-app 自身が MCP サーバー**なので、クライアント側に何もインストールせずに繋がります。
 
 ```bash
 claude mcp add --transport http chiezo http://<サーバーIP>:7010/mcp

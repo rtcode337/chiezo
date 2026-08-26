@@ -93,7 +93,7 @@ docker compose up -d chiezo-tasks
 # → http://localhost:7015
 ```
 
-**chiezo-api と同じイメージ**で、`command` だけ差し替えて別のアプリを起動している。
+**chiezo-app と同じイメージ**で、`command` だけ差し替えて別のアプリを起動している。
 画面(Vue の成果物)もそのイメージに焼いてあるので、pull するものは 1 つで済む。
 
 ## cc-tasks から移す
@@ -122,7 +122,7 @@ docker compose up -d chiezo-tasks
 ## 画面(`tasks-frontend/`)
 
 cc-tasks の Vue 3 + Vite + `vite-plugin-pwa` をそのまま持ってきた。**サーバー
-レンダリングの管理画面(`api/app/views/`)とは別系統**で、こちらだけビルドステップを持つ
+レンダリングの管理画面(`app/views/`)とは別系統**で、こちらだけビルドステップを持つ
 —— PWA・ドラッグ並び替え・オフラインを HTML 文字列の組み立てに載せ直すのは割に合わない。
 
 ```bash
@@ -132,7 +132,7 @@ npm run build          # vue-tsc の型検査込み。成果物は dist/
 
 # 開発中(API と画面を別々に上げる)
 CHIEZO_NOTES_DIR=./notes CHIEZO_STATE_DIR=./state CHIEZO_TASKS_DEV=true \
-  PYTHONPATH=api .venv/bin/python -m uvicorn app.tasks_app:app --port 7015
+  PYTHONPATH=app .venv/bin/python -m uvicorn app.tasks_app:app --port 7015
 npm run dev            # :7016 → /api・/oauth2・/login を :7015 へ中継
 ```
 
@@ -158,4 +158,4 @@ npm run dev            # :7016 → /api・/oauth2・/login を :7015 へ中継
 - **エラーは `{"error": {"code", "message"}}`**。画面が `error.message` をそのまま
   表示するので、本体の `{"error": "..."}` に揃えると案内の文言が消える
 
-一覧は `api/app/tasks_api.py` を参照。
+一覧は `app/tasks_api.py` を参照。

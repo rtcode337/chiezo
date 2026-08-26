@@ -150,10 +150,10 @@ PROVIDERS: tuple[Provider, ...] = (
         "compose があるなら docker-compose.yml の該当サービスのコメントを外すだけです。\n"
         "\n"
         "**compose のファイルが無い環境**では docker run で立てます。\n"
-        "条件は「コンテナ名」と「chiezo-api と同じネットワークに繋ぐ」の 2 つだけです。\n"
+        "条件は「コンテナ名」と「chiezo-app と同じネットワークに繋ぐ」の 2 つだけです。\n"
         "`docker run -d --name chiezo-bridge-claude --network <chiezo と同じ> "
         "-v <state のパス>:/state:ro -e CHIEZO_BRIDGE_CLI=claude "
-        "-e CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp --restart unless-stopped "
+        "-e CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp --restart unless-stopped "
         "ghcr.io/rtcode337/chiezo-bridge:latest`\n"
         "\n"
         "ブリッジは設定 DB を読み取り専用でマウントして読むので、"
@@ -166,7 +166,7 @@ PROVIDERS: tuple[Provider, ...] = (
         efforts=("low", "medium", "high", "xhigh", "max"),
         # 枠は出せない。 claude CLI には使用量を出すサブコマンドが無く
         # （`/usage` は対話画面の中だけ）、CLI 自身が叩いている口
-        # （`api.anthropic.com/api/oauth/usage`）は `user:profile` を要求する一方、
+        # （`app.anthropic.com/api/oauth/usage`）は `user:profile` を要求する一方、
         # Chiezo が預かるのは `claude setup-token` の長期トークン —— あれは安全のため
         # 推論だけに絞られていて、このスコープを持たない（実測で HTTP 403）。
         # かつては経路を残して 403 の理由を画面に出していたが、**取れないものを
@@ -190,7 +190,7 @@ PROVIDERS: tuple[Provider, ...] = (
         "サインインを求められます（実測）。手順は 2 段階です。\n"
         "\n"
         "**(1) コンテナ chiezo-bridge-antigravity を立てる。**\n"
-        "コンテナ名はこのとおりにし、chiezo-api と同じネットワークに繋ぎ、"
+        "コンテナ名はこのとおりにし、chiezo-app と同じネットワークに繋ぎ、"
         "**書き込めるホームを渡します**（サインイン結果がそこに残るので、"
         "コンテナを作り直しても消えません）。\n"
         "**ホストのディレクトリではなく名前付きボリュームを使ってください** —— "
@@ -198,7 +198,7 @@ PROVIDERS: tuple[Provider, ...] = (
         "root 所有で作るため、サインインの保存が `permission denied` で落ちます。\n"
         "`docker run -d --name chiezo-bridge-antigravity --network <chiezo と同じ> "
         "-v chiezo-antigravity-home:/srv/bridge/home -e CHIEZO_BRIDGE_CLI=antigravity "
-        "-e CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp --restart unless-stopped "
+        "-e CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp --restart unless-stopped "
         "ghcr.io/rtcode337/chiezo-bridge:latest`\n"
         "どうしてもホストのパスに置くなら、先に作って "
         "`sudo chown -R 1000:1000 <ディレクトリ>` してからバインドします。\n"

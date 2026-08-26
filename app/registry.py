@@ -12,7 +12,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-log = logging.getLogger("chiezo.api")
+log = logging.getLogger("chiezo.app")
 
 
 @dataclass

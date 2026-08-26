@@ -19,7 +19,7 @@ def browse_url(source: str, suffix: str = "") -> str:
 def doc_url(source: str, doc_id: int) -> str:
     return browse_url(source, f"doc/{doc_id}")
 
-# プロジェクトアイコン(assets/icon.svg が原本。api イメージのビルドコンテキストは api/ のみで
+# プロジェクトアイコン(assets/icon.svg が原本。app イメージのビルドコンテキストは app/ のみで
 # assets/ を含まないため、最小化した data URI をここに埋め込んで配信する。原本を変えたら更新)
 FAVICON_DATA_URI = (
     "data:image/svg+xml;base64,"

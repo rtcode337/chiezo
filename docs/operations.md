@@ -6,7 +6,7 @@
 ## ダンプ更新(ブルーグリーン)
 
 ingest は毎回 `data/<source>-<date>.db` を新規構築し、検証が通ったらシンボリックリンク
-`data/<source>.db` を差し替えます。旧世代は 1 つだけ残します。差し替えは chiezo-api が
+`data/<source>.db` を差し替えます。旧世代は 1 つだけ残します。差し替えは chiezo-app が
 数秒以内に自動検知して新しい DB へ切り替わるので、再起動も停止時間もありません。
 
 ```bash
@@ -70,9 +70,9 @@ docker compose --profile ingest run --rm chiezo-ingest
 数分〜十数分。3 の DB を 4 にするだけなら jawiki で 1 分弱)。
 
 ```bash
-docker compose stop chiezo-api        # 読み取り中の DB を書き換えないため
+docker compose stop chiezo-app        # 読み取り中の DB を書き換えないため
 python3 scripts/add_tag_index.py data/jawiki.db data/osm_japan.db
-docker compose start chiezo-api
+docker compose start chiezo-app
 ```
 
 シンボリックリンク(`jawiki.db`)を渡してよく(実体の世代ファイルを書き換えます)、
@@ -107,9 +107,9 @@ docker compose start chiezo-api
 いずれも取り込み済みの `extra` を読み直すだけで、**ダンプの取り直しは要りません**。
 
 ```bash
-docker compose stop chiezo-api
+docker compose stop chiezo-app
 python3 scripts/refresh_rank_score.py data/jawiki.db data/geonames.db
-docker compose start chiezo-api
+docker compose start chiezo-app
 ```
 
 jawiki は数分〜十数分かかります。SSH 越しに実行するなら、接続が切れても止まらないよう
@@ -191,7 +191,7 @@ not enough memory to build osm_japan: 2.0 GiB available < 12.0 GiB required.
 3. `BUILD_MEMORY_GB=<n>` で必要量を上書き、`SKIP_MEMORY_CHECK=1` で検査を無効化(見積もりが
    実態と合わないと分かっている場合のみ)
 
-**配信側はメモリ数百 MB で動きます。** chiezo-api は読み取り専用の immutable SQLite を開くだけなので、
+**配信側はメモリ数百 MB で動きます。** chiezo-app は読み取り専用の immutable SQLite を開くだけなので、
 1GB 級の小型機でも配信できます。効いてくるのはメモリではなくディスク(jawiki.db 約 42GB の空き)。
 
 ## 別マシンでビルドして .db を配布する
@@ -208,7 +208,7 @@ export/import も配信機でのビルドも要りません(SQLite のファイ�
 docker pull ghcr.io/rtcode337/chiezo-ingest:latest
 
 # 2. そのイメージが作る DB の schema_version を確かめる(取り込みを走らせずに聞けます)。
-#    配信中の chiezo-api が期待するより古いと新機能が使えないので、数時間かける前にここで確認
+#    配信中の chiezo-app が期待するより古いと新機能が使えないので、数時間かける前にここで確認
 docker run --rm ghcr.io/rtcode337/chiezo-ingest:latest \
   python -c "import core; print(core.SCHEMA_VERSION)"
 
@@ -220,7 +220,7 @@ docker logs -f chiezo-build                      # 進捗(Ctrl-C で抜けても
 docker wait chiezo-build && docker rm chiezo-build
 
 # 4. 出来た世代ファイルを配信機へコピーし、<ソース名>.db として見えるようにする
-#    (リンクを差し替えれば chiezo-api が数秒以内に自動で読み込む。再起動は不要)
+#    (リンクを差し替えれば chiezo-app が数秒以内に自動で読み込む。再起動は不要)
 cp jawiki-20260701.db /path/to/chiezo/data/
 ln -sfn jawiki-20260701.db /path/to/chiezo/data/jawiki.db
 ```
@@ -292,13 +292,13 @@ wikipedia 言語版の表示名・自称・記事数)と、このイメージが
 (`schema_version`)を返し、管理画面の初期化一覧・国選択画面・言語選択画面・
 「最新のスキーマバージョン」表示はこれを読んで組み立てます。
 
-ホストへはポート公開せず、docker の内部ネットワーク経由で `chiezo-api` からのみ到達できます
-(`chiezo-api` の環境変数 `CHIEZO_TRIGGER_URL=http://chiezo-trigger:8080`)。管理画面の
+ホストへはポート公開せず、docker の内部ネットワーク経由で `chiezo-app` からのみ到達できます
+(`chiezo-app` の環境変数 `CHIEZO_TRIGGER_URL=http://chiezo-trigger:8080`)。管理画面の
 「初期化」ボタン(`POST /admin/init/{source}`)と「再構築」ボタン
 (`POST /admin/rebuild/{source}`。登録済みソースのみ受け付ける)はこのサービスへのプロキシです。
 `CHIEZO_TRIGGER_URL` が未設定なら管理画面の初期化・再構築機能は無効化されます(ボタンが押せません)。
 
-`GET /sources` の結果は chiezo-api が `CHIEZO_CATALOG_TTL` 秒(既定 300)キャッシュします。
+`GET /sources` の結果は chiezo-app が `CHIEZO_CATALOG_TTL` 秒(既定 300)キャッシュします。
 大半はイメージに焼かれた静的な表ですが、プラグインはマウントで実行時に足せるので、
 永久に持つと足したソースが管理画面に出ません。取り直しに失敗したときは**古いカタログを
 そのまま使い続けます**(trigger が一時的に落ちただけで一覧が空になるのを避けるため)。
@@ -306,8 +306,8 @@ wikipedia 言語版の表示名・自称・記事数)と、このイメージが
 compose が `.env` から受け取ります(`.env.example` の「1. Chiezo 本体」)。
 
 新ソースは `ingest/sources/__init__.py` の `ADAPTERS` に追加するだけで管理画面にも出ます
-(`chiezo-api` は ingest のコードを import しませんが、上記の `GET /sources` 経由で名前を受け取ります)。
-`api/app/known_sources.py` の `KNOWN_SOURCES` は、`chiezo-trigger` が未設定・到達不能なときに
+(`chiezo-app` は ingest のコードを import しませんが、上記の `GET /sources` 経由で名前を受け取ります)。
+`app/known_sources.py` の `KNOWN_SOURCES` は、`chiezo-trigger` が未設定・到達不能なときに
 管理画面を空にしないための控えです(必須の複製ではありません)。
 
 ## `.env` を置けない環境で起動する(単体定義)
@@ -326,21 +326,21 @@ cat docker-compose.standalone.yml
 書きます** —— 貼り付けて登録する環境では相対パス(`./data`)の基準が読めないためです。
 どちらのディレクトリも**あらかじめ作っておいてください**(取り込んだ `.db` は data に置く)。
 
-起動するのは `chiezo-api` と `chiezo-trigger` の 2 つで、通常の `docker-compose.yml` と同じく
+起動するのは `chiezo-app` と `chiezo-trigger` の 2 つで、通常の `docker-compose.yml` と同じく
 trigger はホストへ公開されず、管理画面の初期化ボタンから内部ネットワーク経由で叩かれます。
 **「答える」層は設定だけを載せてあり、コンテナは含みません** —— 推論サーバと検索エンジンは
-別サーバーで動かしているものを指せば済み(chiezo-api は OpenAI 互換の口を叩くだけ)、
+別サーバーで動かしているものを指せば済み(chiezo-app は OpenAI 互換の口を叩くだけ)、
 貼り付けて動かすような実行環境で同居させる前提も無いためです。同じホストに立てるなら、
 上書きを重ねられる環境で `docker-compose.answer.yml` を使ってください。
 
 `cpu_shares` のように受け付けない実行環境がある項目は、行ごと消しても動きます。
 **`docker-compose.yml` を変えたらこのファイルも追従させてください**(値が直書きのぶん、
 黙って古くなります)。追従漏れは `tests/test_compose_files.py` が検知します —— 本体が
-`chiezo-api` に渡している設定が、コメントとしてでもこのファイルに出てくるかを照合します。
+`chiezo-app` に渡している設定が、コメントとしてでもこのファイルに出てくるかを照合します。
 
 ## ソースの追加・削除
 
-`data/` に `<source>.db` を置く(または消す)だけです(chiezo-api が数秒以内に自動で検知します)。
+`data/` に `<source>.db` を置く(または消す)だけです(chiezo-app が数秒以内に自動で検知します)。
 新しい種類のソースの取り込み方は [adding-a-source.md](adding-a-source.md) を参照してください。
 
 **このリポジトリに入れられないソース**(公開できないプライベートな情報など)は、
@@ -383,18 +383,18 @@ COMPOSE_FILE=docker-compose.yml:../my-plugin/docker-compose.plugin.yml
 `/mcp` は既定で Host ヘッダの検証(DNS リバインディング対策)を**無効**にしています。
 MCP SDK の既定は「localhost 系の Host しか受け付けない」で、そのままだと LAN の別マシンから
 繋いだ時点で 421 になり、このサービスの使い方が成立しないためです(REST 側も認証なし・
-LAN 内前提なので方針は揃っています)。絞りたい場合は `chiezo-api` の環境変数
+LAN 内前提なので方針は揃っています)。絞りたい場合は `chiezo-app` の環境変数
 `CHIEZO_MCP_ALLOWED_HOSTS` に許可する Host をカンマ区切りで指定してください
 (例: `<LAN の IP>:7010,localhost:*`。末尾 `:*` でポート任意)。
 
 「使う」層(`/v1/ask`・`/v1/chat`・`/ai/chat`)も同じ方針です。推論コンテナ `chiezo-llm` は
-ホストへポートを公開せず、chiezo-api からのみ到達できます。ただし到達できる相手は誰でも
+ホストへポートを公開せず、chiezo-app からのみ到達できます。ただし到達できる相手は誰でも
 推論を起動できる(比較的重い処理を認証なしで回せる)点は、初期化ボタンと同様に留意してください。
 質問文が外部へ送られることはありません(推論も検索もローカルで完結します)。
 
 `chiezo-trigger` はホストへポートを公開していません(`docker-compose.yml` に `ports:` の記載なし)。
-`chiezo-api` からのみ内部ネットワーク経由で到達できます。管理画面の初期化ボタンは
-`chiezo-api` にも認証を課していないため、`/admin` に到達できる相手は誰でも初期化を起動できます
+`chiezo-app` からのみ内部ネットワーク経由で到達できます。管理画面の初期化ボタンは
+`chiezo-app` にも認証を課していないため、`/admin` に到達できる相手は誰でも初期化を起動できます
 (LAN 内前提のこのサービス全体の認証なし方針と同一線上ですが、ダウンロード・構築という
 比較的重い処理を誰でも起動できる点は留意してください)。
 

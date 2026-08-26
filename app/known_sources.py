@@ -1,6 +1,6 @@
 """既知ソースの静的な一覧(chiezo-trigger に繋がらないときの代替)。
 
-chiezo-api は ingest 側のアダプタ実装を import しない(コンテナが別・依存関係も別のため)。
+chiezo-app は ingest 側のアダプタ実装を import しない(コンテナが別・依存関係も別のため)。
 管理画面の「初期化」に出すソース名は、通常は chiezo-trigger の `GET /sources`
 (ingest/server.py)から取る。OSM の国別ソースは 195 件あり、こちらへ手で複製するのは
 現実的でないため、カタログの正は ingest 側の 1 か所だけにしてある。

@@ -6,7 +6,7 @@ Chiezo の compose は「本体 + 上書き」に分けてあり、上書き側�
 本体を変えたときに手で追従させるしかない。実際に 2 回取り残された
 (web 検索の設定一式と、回答パイプラインの調整)。
 
-そこで「本体の chiezo-api に渡している環境変数が、単体定義にも(コメントとしてでも)
+そこで「本体の chiezo-app に渡している環境変数が、単体定義にも(コメントとしてでも)
 出てきているか」を照合する。コメントでよいことにしてあるのは、単体定義では
 任意の設定をコメントアウトで並べておくのが作法だから。
 
@@ -26,7 +26,7 @@ ANSWER = ROOT / "docker-compose.answer.yml"
 # 単体定義にはあえて載せていないもの。ここに足すときは「なぜ単体定義に要らないか」を書くこと。
 STANDALONE_EXEMPT = {
     # イメージのタグは単体定義では直書きする(${...} が解決できないため)
-    "CHIEZO_API_IMAGE",
+    "CHIEZO_APP_IMAGE",
     "CHIEZO_INGEST_IMAGE",
 }
 
@@ -62,8 +62,8 @@ def _service_env_keys(compose_path: Path, service: str) -> set[str]:
 
 
 def test_standalone_covers_base_env():
-    """本体が chiezo-api に渡す設定は、単体定義にも出てくること。"""
-    base = _service_env_keys(BASE, "chiezo-api") - STANDALONE_EXEMPT
+    """本体が chiezo-app に渡す設定は、単体定義にも出てくること。"""
+    base = _service_env_keys(BASE, "chiezo-app") - STANDALONE_EXEMPT
     text = STANDALONE.read_text(encoding="utf-8")
     missing = sorted(k for k in base if k not in text)
     assert not missing, (
@@ -96,14 +96,14 @@ def test_the_tasks_service_shares_the_api_image():
     """同じイメージから起動していること(コマンドだけで面を分ける作りの担保)。"""
     doc = yaml.safe_load(BASE.read_text(encoding="utf-8"))
     services = doc["services"]
-    assert services["chiezo-tasks"]["image"] == services["chiezo-api"]["image"]
+    assert services["chiezo-tasks"]["image"] == services["chiezo-app"]["image"]
     assert services["chiezo-tasks"]["command"][1] == "app.tasks_app:app"
 
 
 def test_only_the_tasks_service_is_meant_to_be_public():
     """本体は 7010、やること層は 7015。ポートが混ざっていないこと。"""
     doc = yaml.safe_load(BASE.read_text(encoding="utf-8"))
-    assert doc["services"]["chiezo-api"]["ports"] == ["7010:7010"]
+    assert doc["services"]["chiezo-app"]["ports"] == ["7010:7010"]
     assert doc["services"]["chiezo-tasks"]["ports"] == ["7015:7015"]
 
 
@@ -141,14 +141,14 @@ def test_standalone_has_the_websearch_container():
 
 
 def test_answer_overlay_defines_only_containers():
-    """「答える」層の上書きが持つのはコンテナだけで、chiezo-api の設定は本体側にあること。
+    """「答える」層の上書きが持つのはコンテナだけで、chiezo-app の設定は本体側にあること。
 
     推論を LAN の別マシンに任せる使い方では、コンテナは要らず設定だけが要る。
     設定をこちらへ移すと、その使い方でこのファイルを重ねる羽目になる。
     """
     doc = yaml.safe_load(ANSWER.read_text(encoding="utf-8"))
     assert set(doc["services"]) == ANSWER_CONTAINERS
-    assert "CHIEZO_LLM_URL" in _service_env_keys(BASE, "chiezo-api"), (
+    assert "CHIEZO_LLM_URL" in _service_env_keys(BASE, "chiezo-app"), (
         "「答える」層の機能フラグ(CHIEZO_LLM_URL)は本体側に置くこと"
     )
 

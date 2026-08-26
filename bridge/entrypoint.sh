@@ -8,7 +8,7 @@
 set -euo pipefail
 
 CLI="${CHIEZO_BRIDGE_CLI:-claude}"
-MCP_URL="${CHIEZO_BRIDGE_MCP_URL:-http://chiezo-api:7010/mcp}"
+MCP_URL="${CHIEZO_BRIDGE_MCP_URL:-http://chiezo-app:7010/mcp}"
 
 case "${CLI}" in
     claude)

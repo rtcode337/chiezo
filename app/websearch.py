@@ -28,7 +28,7 @@ import time
 
 import httpx
 
-log = logging.getLogger("chiezo.api")
+log = logging.getLogger("chiezo.app")
 
 # 相手への礼儀としての最小間隔(秒)。ツールループは何度でも呼びうるので、ここで待たせる。
 MIN_INTERVAL = 1.0

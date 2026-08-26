@@ -1,6 +1,6 @@
 """記憶の固化(短期記憶 → 長期記憶)のテスト。
 
-api が配る素材を、取り込み側(`ingest/sources/remote.py`)の仕掛けで実際に焼くところまで
+app が配る素材を、取り込み側(`ingest/sources/remote.py`)の仕掛けで実際に焼くところまで
 通す。契約を挟んで両側が別のリポジトリ相当に分かれているので、片側だけのモックで
 済ませると「配れてはいるが焼けない」が通ってしまう。
 """
@@ -40,7 +40,7 @@ def add_theme(client, name="rules", tags="rule", label="決まりごと"):
 
 
 def consolidate(client, data_dir, name="rules"):
-    """api が配る素材を取り込み側で焼き、api に登録し直す(固化の 1 往復)。"""
+    """app が配る素材を取り込み側で焼き、app に登録し直す(固化の 1 往復)。"""
     import main as ingest_main
 
     from app import main
@@ -52,7 +52,7 @@ def consolidate(client, data_dir, name="rules"):
     ndjson.write_text(res.text, encoding="utf-8")
 
     adapter = RemotePluginAdapter(
-        RemoteSource(base_url="http://chiezo-api:7010/v1/memory", name=name, kind="memory")
+        RemoteSource(base_url="http://chiezo-app:7010/v1/memory", name=name, kind="memory")
     )
     # 1 行目の meta から日付と検証条件を受け取るところも本番と同じ経路で通す
     dump_date = adapter._apply_meta(ndjson)

@@ -19,7 +19,7 @@ from app.fts import build_match_query, escape_like
 from app.pages import browse_url, doc_url, esc, page_shell
 from app.registry import TAG_MIN_SCHEMA_VERSION
 
-log = logging.getLogger("chiezo.api")
+log = logging.getLogger("chiezo.app")
 
 router = APIRouter()
 

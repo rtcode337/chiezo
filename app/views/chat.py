@@ -16,7 +16,7 @@ from app import agent, answer, notes, providers, websearch
 from app.pages import CHAT_PATH, CHAT_STYLE, esc, page_shell
 from app.registry import Source
 
-log = logging.getLogger("chiezo.api")
+log = logging.getLogger("chiezo.app")
 
 router = APIRouter()
 

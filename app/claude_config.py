@@ -51,7 +51,7 @@ _TAG_SAMPLE_TIMEOUT = 2.0
 _LINKS_SAMPLE_ROWS = 200_000
 
 # フッターの生成時刻に使う。人が読む行なので JST(CLAUDE.md「日時は JST で見せる」)。
-# 書式ごと `app/jst.py` に集めてある —— 実行環境のローカル時刻に任せると、api コンテナの
+# 書式ごと `app/jst.py` に集めてある —— 実行環境のローカル時刻に任せると、app コンテナの
 # TZ 次第で表記が変わる。
 JST = jst.JST
 
@@ -440,7 +440,7 @@ def hook_settings_json() -> str:
     """settings.json の `hooks` へマージされる断片。
 
     フック本体の設置先はクライアント側(`--user` か `--project` か)で変わり
-    api からは見えないので、コマンドは `{{HOOK_PATH}}` のままにしておき、
+    app からは見えないので、コマンドは `{{HOOK_PATH}}` のままにしておき、
     絶対パスへの差し替えは gen_claude_config.sh が行う。
     """
     return (

@@ -9,13 +9,13 @@
   取得元は公開ダンプ(Wikipedia / OpenStreetMap / GeoNames)に限らず、このリポジトリに
   入れられないものは**別コンテナのプラグイン**(`CHIEZO_PLUGIN_SOURCES`)から足せる。
   更新はブルーグリーン
-- **取り出す** — `api/` が **MCP**(`/mcp`)と **REST**(`/v1/...`)の 2 経路で出す。
+- **取り出す** — `app/` が **MCP**(`/mcp`)と **REST**(`/v1/...`)の 2 経路で出す。
   Claude Code 向けには「いつ Chiezo を使うか」を書いた CLAUDE.md ブロックも生成する
-- **覚える** — `api/app/notes.py` が **Chiezo で唯一書き込めるソース** `notes` を持つ。
+- **覚える** — `app/notes.py` が **Chiezo で唯一書き込めるソース** `notes` を持つ。
   **書き手は AI でもよい**(MCP の `remember`)。「覚えておいて」と言われたことを溜め、
   `recall` で新しい順に引く。CLAUDE.md や記憶ファイルと違い**常駐するのはツール定義だけ**
   なので、件数が増えてもコンテキストを食わない
-- **固める** — `api/app/memory.py` が、覚えたことのうち**確定したもの**をテーマごとに
+- **固める** — `app/memory.py` が、覚えたことのうち**確定したもの**をテーマごとに
   読み取り専用のソースへ焼く(短期記憶 → 長期記憶)。**焼くのは ingest** で、ここは
   取り込み側と同じプラグインの契約で素材を配るだけ。素材は**前世代 + 未固化のメモ**なので、
   追加・更新・削除が 1 本のフローに乗る
@@ -28,20 +28,20 @@
 これとは**性質の違う層**がもう 1 つある。**「使う」層(任意・既定では無効)** —
 **Chiezo を上手に引ける AI を Chiezo 自身が用意する**もので、知識ベース本体の機能ではない
 (`scripts/gen_claude_config.sh` が Claude Code 用の設定を配るのと同じ考え方。どう引けば
-当たるかをいちばん知っているここが、道具立てとプロンプトを持つ)。`api/app/answer.py` が
+当たるかをいちばん知っているここが、道具立てとプロンプトを持つ)。`app/answer.py` が
 `/v1/ask` と ブラウザの `/ai/chat` を受ける。推論は同居させず OpenAI 互換 API を叩くだけで、
 **`CHIEZO_LLM_URL` 未設定が既定 = 丸ごと無効**(配信側が数百 MB で動く前提を壊さないため)。
-`?mode=agent` では `api/app/agent.py` が MCP と同じ道具を LLM 自身に引かせる
+`?mode=agent` では `app/agent.py` が MCP と同じ道具を LLM 自身に引かせる
 (GPU + 8B 級が前提なので**既定は 1 回検索する `rag`**)。会話として続けるのが
 `/v1/chat`(履歴はクライアントが持つ)、足りないぶんを外から補うのが
-`api/app/websearch.py`(既定では無効)。知識ベース本体は今までどおり外を叩かない。
+`app/websearch.py`(既定では無効)。知識ベース本体は今までどおり外を叩かない。
 
 現在の収録ソースは日本語 Wikipedia = `jawiki`、OpenStreetMap 日本抽出 = `osm_japan`、
 GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か国から選んで増やせる)。
 
 ## アーキテクチャ
 
-- `api/` — **chiezo-api**: FastAPI + uvicorn の常駐コンテナ。起動時に `CHIEZO_DATA_DIR`(既定 `/data`)を走査し、
+- `app/` — **chiezo-app**: FastAPI + uvicorn の常駐コンテナ。起動時に `CHIEZO_DATA_DIR`(既定 `/data`)を走査し、
   ファイル名の stem と `meta.source` が一致する `*.db` をソースとして登録する(世代ファイル
   `jawiki-20260701.db` は登録されず、シンボリックリンク `jawiki.db` のみ登録される)。
   - `app/main.py` — **機械向けの口とアプリの組み立て**(/, /healthz, /apple-touch-icon.png,
@@ -175,12 +175,12 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       `INSERT INTO docs_fts(rowid, title, body) SELECT …` しているのと同じことを 1 件ずつやる。
       削除は `INSERT INTO docs_fts(docs_fts, rowid, title, body) VALUES ('delete', …)` が要る
       (入れたときと同じ値を渡さないと索引に残る)
-    - **DDL は `ingest/core.py` の写し**(api は ingest を import しない)。ずれると
+    - **DDL は `ingest/core.py` の写し**(app は ingest を import しない)。ずれると
       「notes だけ filter が 409」のように静かに壊れるので、`tests/test_notes.py` が
       ingest 側から作った DB と `sqlite_master` を突き合わせて落とす
     - **件数は読む側が数え直す**(`notes.count()` / `refresh_count()`)。`doc_count` は
       走査時の値で、notes は指紋に入らないので走査のきっかけが起きない。かつては
-      書いた側で直していたが、**書き手は chiezo-api だけではない** —— やること層は
+      書いた側で直していたが、**書き手は chiezo-app だけではない** —— やること層は
       別プロセス(chiezo-tasks)から書くので追いつかない(実際に件数が 12 のまま
       実体 42 になっていた)。短期記憶は数十〜数千件なので、読むたびに数えても
       長期側の 150 万件を数え直すのとは費用がまるで違う
@@ -189,7 +189,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       (`idx_docs_updated` は notes だけが持つ。コアスキーマの追加ではないので
       `schema_version` は上げない)
     - **`limit`/`offset` の上限は `notes.recall()` の中で担保する**。REST の
-      `Query(ge=1, le=…)` は HTTP の口にしか効かず、MCP と agent は api の関数を
+      `Query(ge=1, le=…)` は HTTP の口にしか効かず、MCP と agent は app の関数を
       Python から直接呼ぶので通らない。SQLite は **`LIMIT -1` を「無制限」と解釈する**ため、
       素通しすると頁を送る意図の呼び出しが静かに全件取得になる。`max_chars` の負値も
       同じ理由でここで 0 に丸める(Python の負の添字は末尾を削る意味になる)
@@ -212,9 +212,9 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `docs/design-notes.md`「長期記憶と短期記憶を分ける」が正。実装側の要点:
     - **新しい仕掛けを起こさない**。`ingest/sources/remote.py`(別コンテナのプラグイン)と
       **まったく同じ 2 つの口**(`GET {base}/sources` / `GET {base}/fetch?source=`)を
-      chiezo-api が話すので、DB の構築・FTS・タグ転置表・世代切り替え・検証は本体の
+      chiezo-app が話すので、DB の構築・FTS・タグ転置表・世代切り替え・検証は本体の
       仕掛けがそのまま効く。compose は chiezo-trigger の `CHIEZO_PLUGIN_SOURCES` に
-      `http://chiezo-api:7010/v1/memory` を渡してあり、**固化は普通の取り込みとして走る**
+      `http://chiezo-app:7010/v1/memory` を渡してあり、**固化は普通の取り込みとして走る**
       (管理画面の初期化・再構築ボタンもそのまま使える)
     - **素材は「前世代の固化ソース + 短期記憶の未固化ぶん」**。長期記憶も更新される
       (確定したつもりの知識は変わる)のに、**固化ソースには外に素材が無い** ——
@@ -296,7 +296,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       落とすと、綴りを間違えた API 呼び出しに殻が 200 で返って原因を追えなくなる。
       ハッシュの付いた `/assets/` だけ長く持たせ、殻と Service Worker は `no-cache`
   - `tasks-frontend/` — **やること画面(Vue 3 + Vite + PWA)**。cc-tasks から移した。
-    使い方は `docs/tasks.md`「画面」が正。**サーバーレンダリングの `api/app/views/` とは
+    使い方は `docs/tasks.md`「画面」が正。**サーバーレンダリングの `app/views/` とは
     別系統**で、ここだけビルドステップを持つ。
     - **クエリの真偽は空文字を「絞り込まない」として受けること**(`_optional_bool`)。
       画面は「全件」を `?archived=`(値だけ空)で送るので、FastAPI に `bool` として
@@ -335,7 +335,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     (推論サーバ・CLI ブリッジ)は**立っていなければ on にできない**(到達確認は並行に
     行う。直列だと立っていない相手の数だけ画面が遅れる)。`app/answer.py` 側でも弾く。
     **CLI の認証情報も管理画面から入れる** —— ブリッジが設定 DB(`/data/state`)を読み取り専用で
-    マウントして要求のたびに読むため(再起動は要らない)。chiezo-api に「トークンを返す口」を
+    マウントして要求のたびに読むため(再起動は要らない)。chiezo-app に「トークンを返す口」を
     開けずに済むのが要点。**そのため settings.db は WAL にしない** —— WAL の読み手は -shm への
     書き込みを要求し、read-only のマウントでは `unable to open database file` になる。
     **journal_mode はファイルに焼き付く属性**なので `PRAGMA` を書かないだけでは既存の
@@ -351,7 +351,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     「使用量」節)。**数を 2 つ持ち、混ぜない**:
     - **相手が言う枠**(`quota`)…… 相手の勘定なので**残りが分かる**が、**聞ける相手が限られる**。
       聞き方は `Provider.usage`(`app/providers.py`)で相手ごとに決まる ——
-      claude は `api.anthropic.com/api/oauth/usage`(**CLI の `/usage` と同じ口**。
+      claude は `app.anthropic.com/api/oauth/usage`(**CLI の `/usage` と同じ口**。
       CLI 側に出口が無く、ブリッジが立っていなくても引けるので直に引く)——
       ただし**`claude setup-token` の長期トークンでは通らない**(実測: HTTP 403
       `OAuth token does not meet scope requirement user:profile`。長期トークンは
@@ -389,7 +389,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   - `app/jst.py` — **人に見せる日時の書式(JST 固定)**。保存と比較は UTC のまま、
     表示の直前だけここを通す。**変換と書式を 1 か所に集める** —— 画面ごとに書くと
     同じサーバーの中で表記も時差もばらつく。`astimezone()` に任せないのは、
-    api コンテナの `TZ` 次第で表示が変わるため(`TZ` はログを読みやすくするためのもので、
+    app コンテナの `TZ` 次第で表示が変わるため(`TZ` はログを読みやすくするためのもので、
     画面の正しさをそこに依存させない)。
   - `app/answer.py` — **「使う」層(`/v1/ask`・`/ai/chat`)の本体**。要求するのは
     OpenAI 互換の `/chat/completions` だけなので、ローカルの推論サーバでも Gemini・OpenRouter でも、
@@ -470,7 +470,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   —— codex の vendor パスに x86_64 が直書きしてあるので、arm64 を作るならそこも変える。
   **MCP は任意**(`CHIEZO_BRIDGE_MCP_URL` を空にすると繋がない)。Chiezo 専用の部品ではなく、
   他のアプリからも使えるサービスとして立てられる。
-  **本体には入れない** —— `chiezo-api` が数百 MB で動く前提を崩さないため(推論を同居させないのと
+  **本体には入れない** —— `chiezo-app` が数百 MB で動く前提を崩さないため(推論を同居させないのと
   同じ理由)。既定では立たず、`docker-compose.answer.yml` のコメントを外した人だけが pull する。
   - **プロンプトの渡し方は CLI ごとに違う。** claude / codex は標準入力から読むが、
     **agy(Antigravity)は `-p` の引数でしか受け取らない** —— 標準入力は読まず
@@ -502,12 +502,12 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `codex account authentication required to read rate limits` が返る = メソッドは実在する。
     **サインイン済みで返る中身はまだ見ていない**)、
     antigravity は print モードのスラッシュコマンド。**claude はここに来ない** ——
-    CLI に出口が無いので Chiezo が `api.anthropic.com` に直に聞く(`app/usage.py`)。
+    CLI に出口が無いので Chiezo が `app.anthropic.com` に直に聞く(`app/usage.py`)。
     **相手の返事の形は決め打ちにしない**(`_windows_in` が入れ子のどこにあっても
     「使用率で言う窓」「残量で言う窓」を拾う)—— 版が変わって 1 段増えるだけで
     「取れない」に変わるため。**読めなければ数字を作らず、CLI の返事をそのまま返す**
   - ファイル名が `server.py` でなく `cli_bridge.py` なのは `ingest/server.py` と衝突するため
-    (テストは api / ingest / bridge を同じ pythonpath で読む)
+    (テストは app / ingest / bridge を同じ pythonpath で読む)
 
   - `app/agent.py` — **agent モード(`/v1/ask?mode=agent`)の本体**。LLM 自身に道具を
     引かせるループ。使い方・環境変数は `docs/ai.md`「agent モード(モデルに道具を引かせる)」節が、
@@ -571,14 +571,14 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     国選択画面の大陸表示名・言語選択画面の記事数階層(`WIKIPEDIA_TIERS`)。
     初期化できるソースの正は ingest 側の `ADAPTERS` で、通常は
     `chiezo-trigger` の `GET /sources` から受け取る(`views/admin.py` の `initializable_sources()`。
-    osm 国別 195 件 + wikipedia 言語版 348 件あり、api 側に複製すると必ず腐るため)
+    osm 国別 195 件 + wikipedia 言語版 348 件あり、app 側に複製すると必ず腐るため)
   - `app/pages.py` — 管理画面・ブラウズ画面共通の HTML 組み立てヘルパー(`page_shell`, `esc`)と、
     画面の URL(`browse_url` / `doc_url`。出典のリンクもここを通すので、移すときに漏れない)。
     **URL を HTML に埋めるときも `esc()` を通すこと** — `browse_url` の中の
     `urllib.parse.quote` は percent-encode であって HTML のエスケープではない
     (CodeQL に反射型 XSS として指摘された。`tests/test_api.py::TestUrlLayout` が固定)。
     ファビコンは `assets/icon.svg` を最小化した data URI(`FAVICON_DATA_URI`)として埋め込む
-    (api イメージのビルドコンテキストは `api/` のみで `assets/` を含まないため。原本を変えたら更新)。
+    (app イメージのビルドコンテキストは `app/` のみで `assets/` を含まないため。原本を変えたら更新)。
     iPhone の「ホーム画面に追加」用に 180×180 の PNG(`APPLE_TOUCH_ICON_PNG`)も持ち、
     `page_shell` が `<link rel="apple-touch-icon">` を出す + `main.py` が
     `/apple-touch-icon.png` で配信する — iOS は SVG や data URI のファビコンをホームアイコンに
@@ -628,7 +628,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     ダンプから焼くソースではないので trigger も断るが、そこまで行かせると
     「実行しようとして失敗した」に見える。管理画面は「最新のスキーマバージョン」(`latest_schema_version()` —
     trigger の `GET /sources` が返す `schema_version` = ingest の `core.SCHEMA_VERSION`。
-    取れなければ api の `max(SUPPORTED_SCHEMA_VERSIONS)` で代替)を表示し、
+    取れなければ app の `max(SUPPORTED_SCHEMA_VERSIONS)` で代替)を表示し、
     それより古い DB の行に注意書きを付けて再構築を促す
   - `/admin/claude-config`(GET/HTML)・`/admin/claude-config.txt`(GET/text/plain)・
     `/admin/claude-config.permissions.json`(GET/application/json)・
@@ -638,7 +638,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     Claude 連携設定の生成 API。現在の登録ソースから CLAUDE.md ブロックと
     **権限ファイル(`settings.json`/`settings.local.json` の `permissions.allow`)**、
     および任意で入れる**自動許可フック**を生成して配信する(実ファイルは書き換えない。
-    ホームの `~/.claude/CLAUDE.md` 等はクライアント側にあり api からは見えないため)。
+    ホームの `~/.claude/CLAUDE.md` 等はクライアント側にあり app からは見えないため)。
     `gen_claude_config.sh` はこれらのエンドポイントを取得して書き込む。
     HTML はプレビュー + コピーボタン付き。
     curl 例・許可ルールのベース URL はアクセス元 URL のプロトコル・ホスト名・ポート
@@ -662,11 +662,11 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     来る語が読み取り専用の許可リスト内か・`$(…)`/`eval` 等でコマンド位置を隠していないか)
     で判定し、条件を満たすときだけ `permissionDecision: "allow"` を返す。
     外れたら**何も出力しない**(= 通常の許可プロンプトに戻る)ので、判定に迷ったら
-    黙るのが正。api プロセスからは import も実行もされず、`claude_config.hook_script()`
+    黙るのが正。app プロセスからは import も実行もされず、`claude_config.hook_script()`
     がソースを読んで `CHIEZO_ORIGIN` の行だけ差し替えて配信する。文字列テンプレートに
     せず実ファイルで持つのは、通常の Python として lint・テストできるようにするため
     (`tests/test_claude_hook.py` が判定の許可/拒否を両側から固定している)
-  - `app/claude_config.py` — 上記ブロックの生成ロジック。**生成の正はここ(api 側)に置く**。
+  - `app/claude_config.py` — 上記ブロックの生成ロジック。**生成の正はここ(app 側)に置く**。
     同一プロセスの DB を schema_version と索引付きの `WHERE lat IS NOT NULL LIMIT 1` 等で
     直接引くので、HTTP プローブと違い巨大ソース(jawiki)でも timeout の false-negative が出ない。
     ただし**索引の無い列を同じ形で探ってはいけない**: `links` は生成列でも索引付きでもないので
@@ -678,7 +678,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       見出しやタグが載るとコミットされて意図せず共有される。`<タイトル>`・`<タグ名>` に落とす
     - **文書数は載せない**。取り込みと notes への書き込みで変わり、ブロックを貼り替えない限り
       古い数字が残る。正確な件数はブロック自身が案内している `/v1/sources` で引ける
-    - 生成時刻のフッターは **JST 固定**(`JST` 定数)。人が読む行なので、api コンテナの
+    - 生成時刻のフッターは **JST 固定**(`JST` 定数)。人が読む行なので、app コンテナの
       TZ 次第で表記が変わらないようにする
   - `/search/{source}/`(GET) — 検索フォーム(HTML)。**画面はすべて前置きの下に置く**
     (`/admin`・`/search/…`・`/ai/…`)。以前はソース名をそのままルート直下に置いていて、
@@ -698,7 +698,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `/v1/memory/themes/{name}/sweep`(POST) — 「固める」層の REST(人と画面が使う側)。
   - `/v1/memory/sources`・`/v1/memory/fetch?source=`(GET) — **同じ層の、取り込み側が
     読む口**。`ingest/sources/remote.py` の契約そのままなので、`CHIEZO_PLUGIN_SOURCES` に
-    `<この api>/v1/memory` を並べるだけで固化が普通の取り込みとして走る。
+    `<この app>/v1/memory` を並べるだけで固化が普通の取り込みとして走る。
     素材が空・墓標で全部落ちるときは 409(流し始める前に断る)
   - `/admin/memory/themes`(POST)・`/admin/memory/{name}/sweep|delete`(POST) —
     管理画面のフォームから叩く口(303 で `/admin#short-term` へ戻す)。
@@ -728,7 +728,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     **待たない**(job を返し `image_status` / `audio_status` で引く。生成は数秒〜数分で、
     待つと呼び出し側が先に切れる)。**中身そのものは返さない**(1 つ 1〜2MB あり、道具の結果はまるごと
     コンテキストに載る。返すのはパスと URL)。**ジョブは SQLite に持つ** ——
-    chiezo-api は `--workers 2` なので、プロセス内の辞書だと頼んだワーカーと聞かれた
+    chiezo-app は `--workers 2` なので、プロセス内の辞書だと頼んだワーカーと聞かれた
     ワーカーが別のときに「そんなジョブは無い」になる。設定 DB とは別ファイル
     (あちらは CLI ブリッジが読み取り専用でマウントしている)。**中断は Exception では
     拾えない** —— MCP の接続が切れるとタスクごと畳まれ、`except Exception` を素通りして
@@ -1066,7 +1066,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     全世界の地名を得る手段としては桁違いに非効率だった。
   - `sources/__init__.py` — アダプタレジストリ(新ソースはここに 1 行追加するだけ。
     管理画面には `chiezo-trigger` の `GET /sources` 経由で自動的に出るので、
-    `api/app/known_sources.py` への複製は不要)。
+    `app/known_sources.py` への複製は不要)。
     `osm_<国>`(下の `osm_regions.py` から 195 件)と `<lang>wiki`(下の
     `wikipedia_editions.py` から 348 件)だけは例外で、自動生成カタログから機械的に登録している。
     **このリポジトリに入れられないソース(プライベートな情報・ライセンスの都合)は
@@ -1088,7 +1088,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     - **ダンプ日付は 8 桁のほか秒まで入れた 14 桁も許す**。世代ファイル名になる値で、
       **1 日に何度も焼くもの**(記憶の固化)では日付だけだと前世代を上書きしてしまう
     - **空のカタログは正常**。配るソースが実行時に決まるプラグイン(記憶の固化 =
-      `api/app/memory.py`)では、まだ何も無い状態が起動直後の普通の姿になる。
+      `app/memory.py`)では、まだ何も無い状態が起動直後の普通の姿になる。
       ここで落としていた頃は、テーマを 1 つも作っていないだけでカタログ取得が丸ごと 500
       になっていた(**この経路は Chiezo 自身が使う**ので、外部プラグインだけの話ではない)
   - `sources/osm_regions.py` — **自動生成物**。Geofabrik の国別抽出カタログ
@@ -1116,7 +1116,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     (名前・kind・lang と、osm 国別ソースの表示名・region・pbf サイズ・必要メモリ、
     wikipedia 言語版の表示名・自称・記事数)と、このイメージが焼くスキーマバージョン
     (`schema_version` = `core.SCHEMA_VERSION`。管理画面の「最新のスキーマバージョン」表示の正)を返す
-    (管理画面の初期化一覧と国・言語選択画面はこれを読む。api 側は `CHIEZO_CATALOG_TTL` 秒
+    (管理画面の初期化一覧と国・言語選択画面はこれを読む。app 側は `CHIEZO_CATALOG_TTL` 秒
     〔既定 300〕キャッシュする — 大半は焼かれた静的な表だが、プラグインはマウントで実行時に
     足せるので永久に持てない。取り直しに失敗したら**古いカタログを捨てない**
     〔控えの `KNOWN_SOURCES` に落ちると管理画面から 545 件が消える〕。アダプタは実体化せずに答える。
@@ -1126,17 +1126,17 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `GET /status` で state(idle/running/done/error)・
     source・started_at/finished_at・error・ログ tail(`chiezo.ingest` logger に登録した
     `_TailHandler` 経由)を返す。状態はプロセス内メモリのみ(永続化なし)。
-    ホストへポート公開せず、`chiezo-api` からのみ docker 内部ネットワーク経由で到達可能
-    (`chiezo-api` 側は環境変数 `CHIEZO_TRIGGER_URL` で URL を知る。未設定なら管理画面の
+    ホストへポート公開せず、`chiezo-app` からのみ docker 内部ネットワーク経由で到達可能
+    (`chiezo-app` 側は環境変数 `CHIEZO_TRIGGER_URL` で URL を知る。未設定なら管理画面の
     初期化機能は無効)
-- `scripts/` — 補助スクリプト(api/ingest 本体ではない運用ツール)
+- `scripts/` — 補助スクリプト(app/ingest 本体ではない運用ツール)
   - `gen_claude_config.sh` — Chiezo 連携用の Claude 設定生成器。**使い方・オプション一覧は
     `docs/api-reference.md`「Claude Code から使う(設定ファイル自動生成)」節が正**で、
     ここには実装側の要点だけ置く:
     - `curl` + POSIX ツールのみで動く(**既存 JSON へのマージにだけ jq か python3 が要る**。
       どちらでも同じ結果になるよう両方の実装を持ち、jq を優先する)。
       稼働中の Chiezo の `/admin/claude-config.*` を取得して書き込むだけの薄いクライアントで、
-      **生成の正は api 側 `app/claude_config.py`**。ベース URL はサーバーがアクセス元 URL から
+      **生成の正は app 側 `app/claude_config.py`**。ベース URL はサーバーがアクセス元 URL から
       導出するので、接続に使った URL がそのまま生成物の curl 例・許可ルールになる
     - `--with-hook` を付けたときだけ自動許可フックも設置する。**既定では設置しない** —
       Claude が打つ Bash を毎回検査して自動承認しうる仕掛けで権限ルールより影響が広く、
@@ -1177,7 +1177,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     揃っていればそれで、無ければ **CI と同じ Python 3.12 のイメージを組み立てて** Docker で
     回す。ホストの python が 3.12 でない環境(依存に C 拡張があるので import から落ちる)で
     準備なしにテストを通せるようにするためのもの。入れるのは `requirements-dev.txt`
-    (api + ingest + pytest + ruff を 1 本にまとめたロック)—— **2 つのロックを同時に
+    (app + ingest + pytest + ruff を 1 本にまとめたロック)—— **2 つのロックを同時に
     渡してはいけない**。共通の依存(fastapi 等)が二重指定になり pip が断る。
     **Docker のビルドコンテキストはロック 1 つだけの一時ディレクトリにすること** —
     リポジトリのルートを渡すと
@@ -1215,7 +1215,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   GPU もモデルも要らないので CI で回る
 - `pyproject.toml` — **開発ツールの設定だけ**(ruff / pytest)。`[project]` は持たない ——
   pip で配るライブラリではなく、依存の違う 2 つのイメージとして動くアプリだから。
-  - `pythonpath = ["api", "ingest"]` で両方を import 可能にする。以前は
+  - `pythonpath = ["app", "ingest"]` で両方を import 可能にする。以前は
     `tests/conftest.py` が `sys.path` を書き換えていたが、それは設定の置き場が無いことの
     回避策だった
   - ruff は `line-length = 120`(既定の 88 は日本語コメントに短すぎる)、
@@ -1224,10 +1224,10 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
 - `*/requirements.in` / `requirements.txt` — **直接の依存は `.in` に範囲(>=)で書き、
   実際に入る版は `.txt`(全依存 + ハッシュ)で固定する**。作り直しは
   `scripts/lock_requirements.sh`(uv pip compile)。`.txt` を手で編集しない。
-  ルートの `requirements-dev.in` は api + ingest + pytest + ruff をまとめたもので、
+  ルートの `requirements-dev.in` は app + ingest + pytest + ruff をまとめたもので、
   CI と `run_tests.sh` の Docker 経路が使う
 - `.github/workflows/ci.yml` — push / PR で `ruff check` と pytest を実行し、main への
-  push で `chiezo-api` / `chiezo-ingest` / `chiezo-bridge` / `chiezo-searxng` の 4 イメージを
+  push で `chiezo-app` / `chiezo-ingest` / `chiezo-bridge` / `chiezo-searxng` の 4 イメージを
   マルチアーキ(amd64 / arm64。bridge だけ amd64)で
   GHCR へ公開(cc-tasks / travel-log の docker-publish と同じダイジェストマージ方式。
   arm64 の無料ランナーが public 限定のため、リポジトリが private の間は公開ジョブをスキップ)。
@@ -1269,7 +1269,7 @@ python tests/fixtures/make_fixture.py
 python tests/fixtures/make_osm_fixture.py
 python tests/fixtures/make_geonames_fixture.py
 
-# api/ ingest/ を変更したときのローカルビルドでの動作確認
+# app/ ingest/ を変更したときのローカルビルドでの動作確認
 # (docker-compose.yml は GHCR の公開イメージを pull するので、こちらを重ねないと反映されない)
 docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 
@@ -1317,22 +1317,22 @@ osm ソースは**国スケールに留める**(大陸スケールはディス�
 構築 1 日以上で非現実的。全世界カバーは `geonames` の担当)。
 
 **ビルド機と配信機を分けられる**のが設計の要なので壊さないこと: `.db` は自己完結した単一
-SQLite ファイルで、配信側 chiezo-api は read-only immutable で開くだけの常駐 80〜150MB。
+SQLite ファイルで、配信側 chiezo-app は read-only immutable で開くだけの常駐 80〜150MB。
 効いてくるのはメモリでなくディスク(jawiki.db 約 42GB)。手順は `docs/operations.md`
 「別マシンでビルドして .db を配布する」と `docs/build-on-another-machine.md`。
 
 ## 実装上の約束事
 
-- **Python は 3.12 に留める**(api/ingest の Dockerfile・CI・開発環境で揃える)。現行の最新は
+- **Python は 3.12 に留める**(app/ingest の Dockerfile・CI・開発環境で揃える)。現行の最新は
   3.14 で、**2026-08 に実測した限りテストは 3.14 でも全件通る**が、依存のうち
   `mwparserfromhell` だけ cp314 の wheel がまだ無く、sdist からのビルドになる
   (純 Python のフォールバックに落とすと wikitext 解析が桁で遅くなるので、C 拡張は死守する)。
   ingest イメージにビルド道具の出し入れを常設することになり、イメージは +7MB(276→283MB)で
   済むがビルド時間を 2 アーキぶん恒久的に払う。**上流が cp314 wheel を出した時点で上げる** —
   そのときは `FROM` の行と CI の `python-version` を変えるだけで済む(dependabot が週次で見ている)。
-  api 側の依存は 3.14 でも全部 wheel があるので、待っているのは ingest の都合だけ。
+  app 側の依存は 3.14 でも全部 wheel があるので、待っているのは ingest の都合だけ。
 - コアスキーマ(meta / docs / aliases / docs_fts)は全ソース共通。ソース固有情報は `docs.extra`(JSON)へ。
-  変更は最終手段で、`schema_version` を上げ api 側で複数バージョン対応する。
+  変更は最終手段で、`schema_version` を上げ app 側で複数バージョン対応する。
 - ソース間で JOIN しない。API はソース種別を意識せず docs/aliases/docs_fts のみ参照する。
 - FTS5 は trigram。ユーザー入力は必ずフレーズエスケープしてから MATCH に渡す(`app/fts.py` 経由)。
   **形態素トークナイザへの差し替えは 2026-07 に候補 2 つを実測して見送っている**
@@ -1349,11 +1349,11 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
 - 運用 DB は読み取り専用(`immutable=1`)。更新はブルーグリーン(別ファイル構築 → シンボリックリンク差し替え)のみ。
   **例外は `notes` の 1 ソースだけ**(`app/notes.py`)。書き込みは `CHIEZO_NOTES_DIR` 配下に
   閉じ、`/data` は read-only マウントのまま保つこと。そのソースだけ読み手も `mode=ro` に落とす。
-  差し替えは api が自動検知する: lifespan の常駐タスクが `CHIEZO_RESCAN_INTERVAL` 秒(既定 5)ごとに
+  差し替えは app が自動検知する: lifespan の常駐タスクが `CHIEZO_RESCAN_INTERVAL` 秒(既定 5)ごとに
   `/data` の指紋(`registry.data_dir_fingerprint`)を見て、変わっていれば再走査(`main.refresh_sources`)。
   スレッドローカルの接続キャッシュも `db.get_connection` がリンク先の inode を見て開き直すので再起動不要。
   `/data` への書き込み権限を持つのは chiezo-ingest(one-shot)と chiezo-trigger(常駐)だけで、
-  chiezo-api は引き続き read-only マウント。
+  chiezo-app は引き続き read-only マウント。
 - エラーレスポンスは `{"error": "..."}` 形式。**例外の文言や相手の応答本文をそのまま
   載せない**(接続先のホスト名などが内部構成の手がかりになる。認証が無いぶん、
   読めてよいのは「繋がらない/遅い/相手が 500」の区別まで)。詳細は `log` に残し、
@@ -1370,20 +1370,20 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
     行で切ると全部が誤検出になる)
 - **製品名は `Chiezo`(大文字始まり)、識別子は `chiezo`(小文字)**。散文・見出し・画面の
   文言・LLM へのプロンプト・エラーメッセージは `Chiezo` で書く。小文字のまま据え置くのは
-  **値として意味を持つもの**だけ: サービス名(`chiezo-api` / `chiezo-ingest` / `chiezo-trigger` /
+  **値として意味を持つもの**だけ: サービス名(`chiezo-app` / `chiezo-ingest` / `chiezo-trigger` /
   `chiezo-llm`)、イメージ名、環境変数の接頭辞 `CHIEZO_`、MCP 登録名(`claude_config.MCP_SERVER_NAME`
   = `"chiezo"`)、CLAUDE.md ブロックのマーカー(`<!-- BEGIN chiezo … -->`。変えると既存の
   埋め込みを差し替えられなくなる)、`User-Agent`(`chiezo-ingest/0.1` と揃えた機械可読トークン)、
   `CHIEZO_LLM_MODEL` の既定値。**日本語名は付けない**(表記は `Chiezo` に一本化する)。
 - 認証なし・LAN 内前提。ルーターでポート開放しないこと。chiezo-trigger・chiezo-llm・searxng は
-  ホストへポート公開せず、chiezo-api からのみ内部ネットワーク経由で到達可能にすること
-  (別ホストの chiezo-api から使うときだけ `docker-compose.lan.yml` で開ける)。
+  ホストへポート公開せず、chiezo-app からのみ内部ネットワーク経由で到達可能にすること
+  (別ホストの chiezo-app から使うときだけ `docker-compose.lan.yml` で開ける)。
 - **待ち受けは 7010 = API・7011 = 推論・7012 = 検索エンジン・7013 = CLI ブリッジ・
   7014 = 絵と音の生成(ComfyUI)で、コンテナの内と外を同じ番号にする**。
   番号が食い違うと URL を書くたびにどちらか迷う。既定が違うイメージは環境変数で寄せる ——
   searxng は granian で動くので `GRANIAN_PORT`(SearXNG の `SEARXNG_PORT` は設定ファイルの
   値で待ち受けには使われない)。ComfyUI は `CLI_ARGS` の `--port`(既定は 8188)。
-- **「使う」層は既定で無効のまま保つ**。推論を chiezo-api の中で動かさない(配信側が
+- **「使う」層は既定で無効のまま保つ**。推論を chiezo-app の中で動かさない(配信側が
   数百 MB で動く前提)。LLM を呼ぶコードは `app/answer.py` と `app/agent.py` に閉じ、
   検索・文書取得は `app/main.py` の関数(agent は MCP の道具)を再利用する。compose では
   `docker-compose.answer.yml` を重ねて profile `answer` を付けたときだけコンテナが
@@ -1396,13 +1396,13 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
 - **会話の状態をサーバーに持たせない**。`/v1/chat` は履歴を毎回まるごと受け取る。
   セッションを持つと read-only・複数ワーカーの前提が崩れる(MCP をステートレスにしたのと同じ)。
 - **compose は「本体 + 上書き」に保つ**。`docker-compose.yml` は検索 API・MCP としての
-  Chiezo(chiezo-api + chiezo-trigger + chiezo-ingest)だけを持ち、足すものは上書きを
+  Chiezo(chiezo-app + chiezo-trigger + chiezo-ingest)だけを持ち、足すものは上書きを
   重ねる:`build`(手元ビルド)→ `answer`(推論と検索エンジン)→ `cuda`(GPU)→
   `lan`(「答える」層を別ホストへ公開)。重ねる順はこの並び。
   **上書きに本体の設定を写さないこと** —— 以前 `build` が本体の完全なコピーで、
   web 検索と回答パイプラインの設定が抜けたまま取り残された。`tests/test_compose_files.py`
   が行数で見張っている。
-- **「答える」層は、コンテナだけを `docker-compose.answer.yml` に置く**。chiezo-api に渡す
+- **「答える」層は、コンテナだけを `docker-compose.answer.yml` に置く**。chiezo-app に渡す
   設定(`CHIEZO_LLM_URL` 以下)は本体側に残す —— 推論を LAN の別マシンに任せる使い方では、
   コンテナは要らず設定だけが要るため。
 - **`searxng`(web 検索の道具が引く検索エンジン)は本体の compose に置く。** 推論とは
@@ -1436,19 +1436,19 @@ SQLite ファイルで、配信側 chiezo-api は read-only immutable で開く�
   Vulkan は `/dev/dri`)ため、対応するなら別の上書きファイルを起こすこと。
 - **`docker-compose.standalone.example.yml` は「`.env` もシェルの環境変数も無い環境」向けの単体定義**。
   管理画面に YAML を貼り付けて起動するタイプの環境では `${...}` を解決できず、profile も
-  付けられないため、値を直接書き・使うサービスだけを並べてある(chiezo-api + chiezo-trigger)。
+  付けられないため、値を直接書き・使うサービスだけを並べてある(chiezo-app + chiezo-trigger)。
   **「答える」層は設定だけを載せ、コンテナは載せない** —— 推論サーバと検索エンジンは
   別サーバーのものを指せば済み、この環境で同居させる前提が無いため(本体側と同じ
   「設定は残す・コンテナは外す」の分け方)。編集箇所は先頭の置き場アンカー
   (`x-data-dir` / `x-notes-dir`)に集約し、**ホスト側は絶対パス**にする
   (貼り付けて登録する環境では相対パスの基準が読めない)。
   `docker-compose.yml` を変えたらこちらも追従させること —— 値が直書きなぶん古くなりやすい。
-  **追従漏れは `tests/test_compose_files.py` が検知する**(本体の chiezo-api に渡している
+  **追従漏れは `tests/test_compose_files.py` が検知する**(本体の chiezo-app に渡している
   環境変数が、コメントとしてでも単体定義に出てくるかを照合。実際に 2 回取り残された)。
   **実値を書いたコピー(`docker-compose.standalone.yml`)は `.gitignore` 済み**。
   リポジトリに置くのは雛形(`.example`)だけで、置き場の絶対パス・接続先の IP を
   コミットしない(追跡したままだと、手元で書き換えたものが `git add` に巻き込まれる)。
-- コード(api/ ingest/ の挙動・エンドポイント・環境変数など)を変更したら、同じ変更で
+- コード(app/ ingest/ の挙動・エンドポイント・環境変数など)を変更したら、同じ変更で
   README.md(入口。概要・セットアップ・各機能の要約とリンク)と、対応する docs/ の詳細
   (`api-reference.md` = API 仕様と画面 / `ai.md` = 「使う」層 /
   `operations.md` = 取り込みと運用 / `design-notes.md` = なぜこの形か)、および本ファイル

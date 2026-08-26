@@ -4,7 +4,7 @@
 
 - 推論は同居させない。この層がするのは OpenAI 互換の `/chat/completions` を叩くことだけで、
   モデルは別コンテナ(compose の profile `answer` の `chiezo-llm`)か LAN 上の別マシンにいる。
-  配信側 chiezo-api が数百 MB で動く前提を壊さないため、ここにモデルを抱えない。
+  配信側 chiezo-app が数百 MB で動く前提を壊さないため、ここにモデルを抱えない。
 - `CHIEZO_LLM_URL` が機能フラグを兼ねる。未設定なら使う層は丸ごと無効
   (`/v1/ask` は 503、管理画面にも無効と出る)。既定では起動しないことをこの 1 変数で守る。
 - 話す相手は複数持てる(バックエンド)。`CHIEZO_LLM_URL` が名前なしの既定で、
@@ -41,7 +41,7 @@ from starlette.concurrency import run_in_threadpool
 from app import ai_log, providers, settings_store, usage_store
 from app.pages import doc_url
 
-log = logging.getLogger("chiezo.api")
+log = logging.getLogger("chiezo.app")
 
 # 検索 1 本あたり見る上位件数(この中から本文を取る文書を選ぶ)
 SEARCH_LIMIT = 5

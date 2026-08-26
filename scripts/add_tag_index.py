@@ -23,9 +23,9 @@
 
 使い方:
 
-    docker compose stop chiezo-api          # 読み取り中の DB を書き換えないため
+    docker compose stop chiezo-app          # 読み取り中の DB を書き換えないため
     python3 scripts/add_tag_index.py data/jawiki.db
-    docker compose start chiezo-api
+    docker compose start chiezo-app
 
 シンボリックリンク(`jawiki.db`)を渡してよい(実体の世代ファイルを書き換える)。
 すでに 4 の DB に対しては何もしない。中断した場合はもう一度実行すればよい
@@ -132,7 +132,7 @@ def upgrade(db_path: Path, vacuum: bool = False, batch: int = DEFAULT_BATCH) -> 
 
         conn.execute("UPDATE meta SET schema_version = ?", (TARGET_VERSION,))
         conn.commit()
-        print(f"done in {time.monotonic() - started:.0f}s. restart chiezo-api to pick it up.")
+        print(f"done in {time.monotonic() - started:.0f}s. restart chiezo-app to pick it up.")
         return tag_rows
     finally:
         conn.close()

@@ -1,4 +1,4 @@
-"""chiezo-api の REST(設計書 §5)。
+"""chiezo-app の REST(設計書 §5)。
 
 このモジュールが持つのは機械向けの口(`/v1/...`)とアプリの組み立て
 (lifespan・例外ハンドラ・画面 router の登録・`/mcp` のマウント)。
@@ -66,7 +66,7 @@ from app.views import ai_usage as views_ai_usage
 from app.views import browse as views_browse
 from app.views import chat as views_chat
 
-log = logging.getLogger("chiezo.api")
+log = logging.getLogger("chiezo.app")
 
 # /data の変化(ブルーグリーン切り替え・DB コピー)を検知する定期再走査の間隔(秒)。
 # 0 以下で無効(= 従来どおり再起動でのみ反映)。compose は未設定の変数を `VAR=`(空文字)
@@ -116,7 +116,7 @@ def refresh_sources(app: FastAPI) -> bool:
     """/data の指紋が前回と変わっていればソースを再走査して差し替える(変わったら True)。
 
     ingest のブルーグリーン切り替え(世代ファイルへのリネーム + シンボリックリンク差し替え)や
-    別マシンで焼いた DB のコピーを、api の再起動なしで反映するための入口。指紋を先に取って
+    別マシンで焼いた DB のコピーを、app の再起動なしで反映するための入口。指紋を先に取って
     から走査するので、走査中にさらに変化があっても次回の呼び出しで拾い直せる。
     接続の開き直しはここではなく db.get_connection が実体の inode を見て行う。
     """
@@ -1007,7 +1007,7 @@ def forget(request: Request, doc_id: int):
 #   /v1/memory/sources|fetch  … 取り込み側が使う(ingest/sources/remote.py の契約)
 #
 # 後者は別コンテナのプラグインとまったく同じ契約なので、`CHIEZO_PLUGIN_SOURCES` に
-# `<この api>/v1/memory` を並べるだけで、固化が普通の取り込みとして走る。
+# `<この app>/v1/memory` を並べるだけで、固化が普通の取り込みとして走る。
 
 
 @app.get("/v1/memory/themes")

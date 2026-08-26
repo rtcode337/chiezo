@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-# api/ と ingest/ への import パスは pyproject.toml の pythonpath で通している。
+# app/ と ingest/ への import パスは pyproject.toml の pythonpath で通している。
 ROOT = Path(__file__).resolve().parents[1]
 
 # 画面の URL(人が打つもの・リンクされるものなので、変えたらテストが落ちてよい契約)。

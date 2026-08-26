@@ -19,7 +19,7 @@ Chiezo なら常駐するのは MCP のツール定義(数百字)だけで、中
   分けておけば干渉しないし、`/data` の read-only マウントも崩さずに済む。
 - スキーマはコアスキーマそのもの。だから `search` / `doc` / `filter` / `tags` /
   ブラウズ画面 / MCP が、ソース種別を意識しない設計のおかげでそのまま効く。
-  DDL は ingest の `core.py` にあるが、api は ingest を import しない(コンテナが別)
+  DDL は ingest の `core.py` にあるが、app は ingest を import しない(コンテナが別)
   ため写しを持つ。ずれると静かに壊れるので、`tests/test_notes.py` が ingest 側の
   `core.CORE_SCHEMA_DDL` から作った DB とスキーマを突き合わせて落とす。
 - `docs_fts` は external content 方式(`content='docs'`)なので自動では同期しない。
@@ -43,7 +43,7 @@ from app import db
 from app.fts import build_match_query
 from app.pages import doc_url
 
-log = logging.getLogger("chiezo.api")
+log = logging.getLogger("chiezo.app")
 
 SOURCE_NAME = "notes"
 SOURCE_KIND = "notes"
@@ -523,7 +523,7 @@ def count() -> int | None:
 
     ソース表の `doc_count` は `/data` の走査で数えた値だが、notes は別ディレクトリに
     置いてあるので走査のきっかけ(指紋の変化)がそもそも起きない。しかも書き手は
-    chiezo-api だけではない —— やること層は別プロセス(chiezo-tasks)から書くので、
+    chiezo-app だけではない —— やること層は別プロセス(chiezo-tasks)から書くので、
     書いた側で直す形では追いつかない(実際に件数が 12 のまま実体 42 になっていた)。
     そこで読む側が数える。短期記憶は数十〜数千件なので、走査のたびに長期側の
     150 万件を数え直すのとは費用がまるで違う。
@@ -615,7 +615,7 @@ def recall(
     ほかの経路は今までどおり全部を見せる —— 隠すのは時系列の想起だけ)。
 
     上限はここで担保する。REST の `Query(ge=1, le=…)` は HTTP の口にしか効かず、
-    MCP(`app/mcp_server.py`)は api の関数を Python から直接呼ぶので通らない。
+    MCP(`app/mcp_server.py`)は app の関数を Python から直接呼ぶので通らない。
     SQLite は `LIMIT -1` を「無制限」と解釈するため、負の値がそのまま届くと
     全件返る(頁を送る意図の呼び出しが静かに全件取得になる)。同じ理由で
     `max_chars` の負値もここで 0 に丸める(負の添字は末尾を削る意味になる)。

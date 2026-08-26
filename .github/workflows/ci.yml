@@ -1,5 +1,5 @@
 # push / PR でテストを実行し、main への push で Docker イメージをビルドして GHCR へ公開する。
-#   ghcr.io/<owner>/chiezo-api    … 配信 API(api/Dockerfile)
+#   ghcr.io/<owner>/chiezo-app    … 配信 API(app/Dockerfile)
 #   ghcr.io/<owner>/chiezo-ingest … 取り込みバッチ + chiezo-trigger(ingest/Dockerfile)
 #   ghcr.io/<owner>/chiezo-bridge … CLI ブリッジ(bridge/Dockerfile)。Claude Code / Codex CLI を
 #                                   OpenAI 互換の口に見せる。既定では立たず、使う人だけが pull する
@@ -98,7 +98,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [api, ingest, bridge, searxng]
+        image: [app, ingest, bridge, searxng]
         arch:
           - platform: linux/amd64
             runner: ubuntu-latest
@@ -137,10 +137,10 @@ jobs:
       - id: build
         uses: docker/build-push-action@v7
         with:
-          # api だけリポジトリ全体を文脈にする。やること画面(tasks-frontend/)を
+          # app だけリポジトリ全体を文脈にする。やること画面(tasks-frontend/)を
           # 同じイメージへ焼き、公開する面は compose の command だけで分けるため。
           # 送る量はルートの .dockerignore で絞ってある(data/ は数十 GB ある)
-          context: ${{ matrix.image == 'api' && '.' || format('./{0}', matrix.image) }}
+          context: ${{ matrix.image == 'app' && '.' || format('./{0}', matrix.image) }}
           file: ./${{ matrix.image }}/Dockerfile
           platforms: ${{ matrix.arch.platform }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -175,7 +175,7 @@ jobs:
       packages: write
     strategy:
       matrix:
-        image: [api, ingest, bridge, searxng]
+        image: [app, ingest, bridge, searxng]
     runs-on: ubuntu-latest
     steps:
       - name: Download digests

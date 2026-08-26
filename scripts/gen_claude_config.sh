@@ -4,7 +4,7 @@
 # 稼働中の Chiezo の設定生成 API(GET /admin/claude-config.txt)に問い合わせて、
 # その環境の Claude に「Chiezo に載っている知識が必要なら Chiezo を使う」よう促す
 # CLAUDE.md ブロックを取得し、対象ファイルへ書き込む。生成の正は Chiezo 本体
-# (api/app/claude_config.py)にあり、このスクリプトは取得と書き込みだけを行う。
+# (app/claude_config.py)にあり、このスクリプトは取得と書き込みだけを行う。
 # ブロック内の curl 例のベース URL は、Chiezo 側が「このスクリプトがアクセスして
 # きた URL のプロトコル・ホスト名・ポート」から導出する。
 # POSIX シェル + curl だけで動く。
@@ -64,7 +64,7 @@
 
 BEGIN_MARK='<!-- BEGIN chiezo (auto-generated) -->'
 END_MARK='<!-- END chiezo -->'
-HOOK_FILENAME='chiezo-autoallow.py'   # api 側 claude_config.HOOK_FILENAME と一致させる
+HOOK_FILENAME='chiezo-autoallow.py'   # app 側 claude_config.HOOK_FILENAME と一致させる
 
 BASE="${CHIEZO_URL:-http://localhost:7010}"
 TARGET=""
@@ -75,7 +75,7 @@ WITHPERM=1
 WITHHOOK=0          # フックは明示的な --with-hook のときだけ設置する
 WITHMCP=1           # MCP 登録は既定で行う(--no-mcp で無効化)
 TIMEOUT=10
-MCP_NAME='chiezo'   # api 側 claude_config.MCP_SERVER_NAME と一致させる
+MCP_NAME='chiezo'   # app 側 claude_config.MCP_SERVER_NAME と一致させる
 
 die() { echo "error: $*" >&2; exit 1; }
 

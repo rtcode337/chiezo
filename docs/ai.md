@@ -12,8 +12,8 @@ Claude Code の代わりにローカル LLM で立てて同居させたのがこ
 いるものです。** `scripts/gen_claude_config.sh` が Claude Code 用の設定(いつ Chiezo を使うか・
 どう引くか)を配るのと同じ考え方で、どう引けば当たるか —— 短い語は前方一致に落ちる、
 カテゴリの列挙は `filter?tag=` を使う —— をいちばん知っているのはここなので、道具立てと
-プロンプトもここで持ちます。推論そのものは chiezo-api の中では動かさず、
-**OpenAI 互換 API を喋る別プロセス**に任せます(配信側 chiezo-api がメモリ数百 MB で
+プロンプトもここで持ちます。推論そのものは chiezo-app の中では動かさず、
+**OpenAI 互換 API を喋る別プロセス**に任せます(配信側 chiezo-app がメモリ数百 MB で
 動く前提を壊さないため)。
 
 有効になるのは `CHIEZO_LLM_URL` を設定したときだけです。設定しなければ `/v1/ask` は 503 を返し、
@@ -23,7 +23,7 @@ Claude Code の代わりにローカル LLM で立てて同居させたのがこ
 ## 使いはじめる
 
 推論サーバと検索エンジンの**コンテナは `docker-compose.answer.yml` に外出し**してあります
-(chiezo-api 側の設定は本体の `docker-compose.yml` にあります)。重ねなければコンテナは
+(chiezo-app 側の設定は本体の `docker-compose.yml` にあります)。重ねなければコンテナは
 立たず、Chiezo は検索 API・MCP として動きます。
 
 ```bash
@@ -44,7 +44,7 @@ docker compose logs -f chiezo-llm     # 初回はモデルのダウンロード(
 
 モデルは起動時に Hugging Face から取得して `./models` にキャッシュするので、
 2 回目以降のダウンロードはありません。`chiezo-trigger` と同じくホストへポートを公開せず、
-chiezo-api からのみ内部ネットワーク経由で到達します(別ホストの chiezo-api から使うなら
+chiezo-app からのみ内部ネットワーク経由で到達します(別ホストの chiezo-app から使うなら
 `docker-compose.lan.yml` を重ねます)。
 
 ## 話す(ブラウザ)
@@ -192,7 +192,7 @@ image_status(job_id)                    … 仕上がり。files に保存先の
 既定は **`codex`** —— **かつては自前の GPU(`comfyui`)を既定にしていました**が、
 外へ出さず枠も食わない代わりに出来が落ちるので、名指ししない呼び出しが良い相手へ行くように
 入れ替えてあります。**枠を使いたくないときは `backend="comfyui"` と名指ししてください。**
-順位は `api/app/media_providers.py` の `PREFERENCE`(種類ごとの表)にあります。
+順位は `app/media_providers.py` の `PREFERENCE`(種類ごとの表)にあります。
 
 **`elevenlabs` に自社の絵のモデルはありません。** 他社のモデルを 1 つの口から選べる
 だけなので、同じモデルを OpenAI や Gemini に直接頼めるならそちらのほうが枠の要件が
@@ -492,7 +492,7 @@ web 検索を使うかどうかは、上の `CHIEZO_WEB_SEARCH_URL` を書くか
 **推論サーバとは独立しています。** 話す相手が Gemini や Claude Code でも web 検索は要るのに、
 以前は `--profile answer` に入れていたせいで、検索を使いたいだけで数 GB の推論サーバまで
 立ち上げることになっていました。要らない環境では
-`docker compose up -d chiezo-api chiezo-trigger` のようにサービスを選んで起動します。
+`docker compose up -d chiezo-app chiezo-trigger` のようにサービスを選んで起動します。
 
 設定は `searxng/settings.yml` に入っていて、**イメージに焼き込んで配っています**
 (`ghcr.io/rtcode337/chiezo-searxng`。素の SearXNG に設定を 1 つ足しただけ)。
@@ -546,13 +546,13 @@ docker compose exec searxng wget -qO- "http://localhost:7012/search?q=test&forma
 | Antigravity CLI | ブリッジのコメントを外して起動 → **コンテナ内で1回サインイン** → on |
 
 **CLI の認証情報も管理画面から登録します。** ブリッジのコンテナが設定 DB（`/state`）を
-**読み取り専用でマウント**して、要求のたびに読むためです。chiezo-api に「トークンを返す口」を
+**読み取り専用でマウント**して、要求のたびに読むためです。chiezo-app に「トークンを返す口」を
 開けずに済むのが要点で、認証なしの LAN サービスにそんな口は足したくありません。
 **登録し直してもブリッジの再起動は要りません。**
 
 **同居の推論サーバも外部のサービスも CLI も、扱いは全部同じです。** 特別扱いする相手はありません。
 相手の URL は 1 つに決まっている（Gemini の OpenAI 互換の口は 1 つだけ、コンテナ名は compose で
-決まっている）ので、`api/app/providers.py` に決め打ちしてあります。決まっているものを設定にすると、
+決まっている）ので、`app/providers.py` に決め打ちしてあります。決まっているものを設定にすると、
 書き間違いの余地を増やすだけなので置いていません。
 
 **入れるのは 3 つだけです。**
@@ -817,14 +817,14 @@ NAS のコンテナマネージャーのように**リポジトリを置けな�
 守るのは 2 つだけです。
 
 - **コンテナ名を `chiezo-bridge-<CLI 名>` にする**（`chiezo-bridge-claude` など）。
-  Chiezo はこの名前で呼びに行きます（URL は `api/app/providers.py` に決め打ち）
-- **chiezo-api と同じ Docker ネットワークに繋ぐ**（名前で解決できないと届きません）
+  Chiezo はこの名前で呼びに行きます（URL は `app/providers.py` に決め打ち）
+- **chiezo-app と同じ Docker ネットワークに繋ぐ**（名前で解決できないと届きません）
 
 ```bash
 # Claude Code CLI / Codex CLI —— 認証情報は設定 DB から読むので、読み取り専用で渡す
 docker run -d --name chiezo-bridge-claude --network <chiezo と同じネットワーク> \
   -v <state のパス>:/state:ro \
-  -e CHIEZO_BRIDGE_CLI=claude -e CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp \
+  -e CHIEZO_BRIDGE_CLI=claude -e CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp \
   --restart unless-stopped ghcr.io/rtcode337/chiezo-bridge:latest
 ```
 
@@ -836,7 +836,7 @@ Google アカウントのサインインを求められます（`GEMINI_API_KEY`
 ```bash
 docker run -d --name chiezo-bridge-antigravity --network <chiezo と同じネットワーク> \
   -v chiezo-antigravity-home:/srv/bridge/home \
-  -e CHIEZO_BRIDGE_CLI=antigravity -e CHIEZO_BRIDGE_MCP_URL=http://chiezo-api:7010/mcp \
+  -e CHIEZO_BRIDGE_CLI=antigravity -e CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp \
   --restart unless-stopped ghcr.io/rtcode337/chiezo-bridge:latest
 
 # サインイン（1 回だけ。表示された URL を手元のブラウザで開き、出たコードを貼り戻す）
@@ -1014,7 +1014,7 @@ codex login --device-auth          # → ~/.codex/auth.json の中身
 | 環境変数 | 既定 | 説明 |
 |---|---|---|
 | `CHIEZO_BRIDGE_CLI` | `claude` | 包む CLI（`claude` / `codex` / `antigravity`） |
-| `CHIEZO_BRIDGE_MCP_URL` | `http://chiezo-api:7010/mcp` | CLI に繋ぐ Chiezo の MCP。**空にすると繋がない** |
+| `CHIEZO_BRIDGE_MCP_URL` | `http://chiezo-app:7010/mcp` | CLI に繋ぐ Chiezo の MCP。**空にすると繋がない** |
 | `CHIEZO_BRIDGE_STATE_DB` | `/state/settings.db` | 認証情報を読む Chiezo の設定 DB（読み取り専用でマウント） |
 | `CHIEZO_BRIDGE_MODEL` | （CLI の既定） | 何も選ばれなかったときのモデル。会話画面で選んだものが優先される |
 | `CHIEZO_BRIDGE_MODELS` | （下記） | 会話画面に出すモデルの候補（カンマ区切り） |
@@ -1129,13 +1129,13 @@ GPU メモリをシステムメモリへ退避し、ホストごとページン�
 思考が待ち時間としてそのまま積み上がるためです。品質を優先するなら
 `CHIEZO_LLM_THINK_BUDGET=-1` で戻せます。
 
-**配信機に同居させないでください。** chiezo-api 自体は従来どおり数百 MB で動きますが、
+**配信機に同居させないでください。** chiezo-app 自体は従来どおり数百 MB で動きますが、
 推論はモデルサイズぶんのメモリを持っていきます。小型の配信機で使うなら、推論は
 LAN 上の別マシンに置いて `CHIEZO_LLM_URL` で指すのが素直です。
 
 ## 環境変数
 
-chiezo-api 側:
+chiezo-app 側:
 
 | 変数 | 既定 | 説明 |
 |---|---|---|
@@ -1160,6 +1160,6 @@ chiezo-api 側:
 `LLAMA_ARG_*` 環境変数を compose に足せば効きます。
 
 推論コンテナのイメージはタグを固定してあります(`server-b10156`)。dependabot は
-`api/` `ingest/` の Dockerfile しか見ていないので、更新するときは compose の
+`app/` `ingest/` の Dockerfile しか見ていないので、更新するときは compose の
 このタグを手で上げてください(タグ一覧は
 [GHCR](https://github.com/ggml-org/llama.cpp/pkgs/container/llama.cpp))。

@@ -1,19 +1,19 @@
 # 開発ツールの設定だけを置く。配布物のメタデータ(`[project]`)は持たない ——
-# Chiezo は pip で配るライブラリではなく、2 つのイメージ(chiezo-api / chiezo-ingest)
-# として動くアプリケーションで、依存もイメージごとに別だから(api に osmium を入れない)。
-# 依存は api/requirements.in・ingest/requirements.in が正で、実際に入るバージョンは
+# Chiezo は pip で配るライブラリではなく、2 つのイメージ(chiezo-app / chiezo-ingest)
+# として動くアプリケーションで、依存もイメージごとに別だから(app に osmium を入れない)。
+# 依存は app/requirements.in・ingest/requirements.in が正で、実際に入るバージョンは
 # それをコンパイルした requirements.txt に固定してある。
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# api/ と ingest/ を import 可能にする。以前は tests/conftest.py が sys.path を
+# app/ と ingest/ を import 可能にする。以前は tests/conftest.py が sys.path を
 # 書き換えていたが、それは「pytest の設定を書く場所が無い」ことの回避策だった。
 # bridge/ は CLI ブリッジ(別イメージ)。CLI を起動しない部分 —— プロンプトの組み立てと
 # 起動コマンドの組み方 —— はここでテストする。
 # "." はテストどうしの import(`from tests.test_mcp import rpc`)のため。
 # 素の `pytest` は CWD を sys.path に入れないので、これが無いと
 # `python -m pytest`(CI の叩き方)でしか通らない。
-pythonpath = [".", "api", "ingest", "bridge"]
+pythonpath = [".", "ingest", "bridge"]
 
 [tool.ruff]
 target-version = "py312"
@@ -48,6 +48,6 @@ extend-immutable-calls = ["fastapi.Body", "fastapi.File", "fastapi.Form"]
 "ingest/sources/wikipedia_editions.py" = ["E501"]
 
 [tool.ruff.lint.isort]
-# api は app パッケージ、ingest は単一モジュール(core / sources / lookup)で置いてある。
+# app はパッケージ(リポジトリ直下)、ingest は単一モジュール(core / sources / lookup)。
 # 指定しないと第三者パッケージ扱いになり、並びが実態と食い違う。
 known-first-party = ["app", "core", "lookup", "server", "sources"]

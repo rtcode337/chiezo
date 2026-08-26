@@ -1,8 +1,8 @@
 # ---- やること画面(Vue)を組む ----------------------------------------------
 #
 # 出来た成果物だけを下の段へ持っていくので、node は最終イメージに残らない。
-# 画面と API を**同じイメージ**にしてあるのは、公開する面をコマンドだけで分ける
-# ためで、成果物は 200KB 程度なので API 側に積んでも実害が無い(docs/tasks.md)。
+# 画面と本体を同じイメージにしてあるのは、公開する面をコマンドだけで分けるためで、
+# 成果物は 200KB 程度なので本体側に積んでも実害が無い(docs/tasks.md)。
 FROM node:24-slim AS web
 WORKDIR /build
 # 依存の取得だけ先にやると、画面のソースを直しても層のキャッシュが効く
@@ -23,12 +23,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
 
 WORKDIR /srv/chiezo
 
-COPY api/requirements.txt .
+COPY app/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY api/app ./app
+COPY app ./app
 
-# 画面の成果物。chiezo-tasks だけがここから配る(chiezo-api は口を持たない)
+# 画面の成果物。chiezo-tasks だけがここから配る(chiezo-app は口を持たない)
 COPY --from=web /build/dist ./tasks-static
 
 # どのコミットが動いているかを画面に出すための情報。 タグは latest で上書きされ、

@@ -48,7 +48,7 @@ from fastapi import HTTPException
 from app import db, notes, settings_store
 from app.jst import to_jst
 
-log = logging.getLogger("chiezo.api")
+log = logging.getLogger("chiezo.app")
 
 STATE_FILE = "memory.db"
 
