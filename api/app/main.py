@@ -32,6 +32,7 @@ from app import (
     db,
     media,
     media_providers,
+    memory,
     notes,
     providers,
     usage,
@@ -958,10 +959,17 @@ def recall_notes(
         ge=0,
         description="本文の頭から返す文字数。切ったら truncated が立つ。0 で切らない",
     ),
+    consolidated: bool = Query(
+        False,
+        description=(
+            f"長期記憶へ移し終えたもの({notes.CONSOLIDATED_TAG})も含める。"
+            "既定は含めない(思い出す先が長期側に移っているため)"
+        ),
+    ),
 ):
     return notes.recall(
         q=q, since=since, until=until, tag=tag, limit=limit, offset=offset,
-        fields=fields, max_chars=max_chars,
+        fields=fields, max_chars=max_chars, consolidated=consolidated,
     )
 
 
@@ -989,6 +997,81 @@ def forget(request: Request, doc_id: int):
     if not notes.delete(doc_id):
         raise HTTPException(404, {"error": f"note not found: doc_id={doc_id}"})
     return {"deleted": doc_id}
+
+
+# ---- 固化(短期記憶 → 長期記憶) ---------------------------------------------
+#
+# 実体は app/memory.py。ここは HTTP の口だけを持つ。口は 2 種類あり、性格が違う:
+#
+#   /v1/memory/themes*        … 人と画面が使う(テーマの定義と、焼いた後の片付け)
+#   /v1/memory/sources|fetch  … 取り込み側が使う(ingest/sources/remote.py の契約)
+#
+# 後者は別コンテナのプラグインとまったく同じ契約なので、`CHIEZO_PLUGIN_SOURCES` に
+# `<この api>/v1/memory` を並べるだけで、固化が普通の取り込みとして走る。
+
+
+@app.get("/v1/memory/themes")
+def list_memory_themes(request: Request):
+    sources: dict[str, Source] = request.app.state.sources
+    return {
+        "enabled": memory.is_enabled(),
+        "themes": [
+            {
+                "name": t.name,
+                "label": t.label,
+                "tags": t.tags,
+                # まだ焼いていないテーマは長期側のソースを持たない
+                "consolidated": t.name in sources,
+                "docs": sources[t.name].doc_count if t.name in sources else 0,
+                "built_at": sources[t.name].built_at if t.name in sources else None,
+                "pending": len(memory.pending(t)),
+            }
+            for t in memory.themes()
+        ],
+    }
+
+
+@app.post("/v1/memory/themes")
+def add_memory_theme(
+    request: Request,
+    name: str = Body(..., embed=True, description="ソース名になる。英数字とアンダースコアだけ"),
+    label: str | None = Body(None, embed=True, description="画面に出す名前。省略時は name"),
+    tags: str = Body(..., embed=True, description="対象にするタグ。カンマ区切りで AND"),
+):
+    sources: dict[str, Source] = request.app.state.sources
+    theme = memory.add_theme(name, label, tags, taken=set(sources))
+    return {"name": theme.name, "label": theme.label, "tags": theme.tags}
+
+
+@app.delete("/v1/memory/themes/{name}")
+def remove_memory_theme(name: str):
+    memory.require_theme(name)
+    memory.remove_theme(name)
+    # 焼いた DB は消さない(消すのは取り込み側の仕事で、ここは定義を外すだけ)
+    return {"removed": name}
+
+
+@app.post("/v1/memory/themes/{name}/sweep")
+def sweep_memory_theme(name: str, request: Request):
+    theme = memory.require_theme(name)
+    return memory.sweep(theme, request.app.state.sources)
+
+
+@app.get("/v1/memory/sources")
+def memory_plugin_catalog():
+    """取り込み側が読むカタログ(プラグインの契約)。"""
+    return memory.catalog()
+
+
+@app.get("/v1/memory/fetch")
+def memory_plugin_fetch(
+    request: Request,
+    source: str = Query(..., description="テーマ名"),
+):
+    """焼く素材(NDJSON)。プラグインの契約なので、返す形は remote.py が読む形。"""
+    theme = memory.require_theme(source)
+    body = memory.ndjson(theme, request.app.state.sources)
+    return Response(content=body, media_type="application/x-ndjson")
 
 
 # ---- 使う(ローカル LLM。既定では無効) ---------------------------------------

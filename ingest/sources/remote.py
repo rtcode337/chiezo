@@ -88,8 +88,12 @@ def _get_json(url: str, timeout: float) -> dict:
 
 def _parse_catalog(base: str, payload: dict) -> list[RemoteSource]:
     entries = payload.get("sources")
-    if not isinstance(entries, list) or not entries:
-        raise PluginError(f"{base}/sources must return a non-empty 'sources' list")
+    if not isinstance(entries, list):
+        raise PluginError(f"{base}/sources must return a 'sources' list")
+    # 空は正常。配るソースが実行時に決まるプラグイン(記憶の固化 =
+    # `api/app/memory.py` はテーマを足すまで 1 つも配らない)では、まだ何も無い状態が
+    # 起動直後の普通の姿になる。ここで落とすと、テーマを 1 つも作っていないだけで
+    # 取り込み側のカタログ取得が丸ごと 500 になっていた。
     out: list[RemoteSource] = []
     for entry in entries:
         if not isinstance(entry, dict):

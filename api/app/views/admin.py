@@ -11,11 +11,11 @@ import time
 from urllib.parse import quote
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
-from app import answer, build_info, capabilities, claude_config, media, notes
+from app import answer, build_info, capabilities, claude_config, media, memory, notes
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
 from app.pages import CHAT_PATH, browse_url, esc, page_shell
 from app.registry import SUPPORTED_SCHEMA_VERSIONS, Source
@@ -165,6 +165,77 @@ def _job_status_html(job: dict | None) -> str:
     return "\n".join(lines)
 
 
+def _memory_themes_html(sources: dict[str, Source], disabled: str) -> str:
+    """固化(短期記憶 → 長期記憶)のテーマ一覧と操作。
+
+    焼くこと自体は普通の取り込みと同じ経路なので、ボタンの行き先は初期化・再構築と
+    同じ(`chiezo-api` がプラグインとして素材を配る)。ここが持つのはテーマの定義と、
+    焼き上がりを確かめてから短期側に印を付ける「片付ける」だけ。
+    """
+    if not memory.is_enabled():
+        return (
+            '<p class="muted">固化は無効です。書き込み可能なディレクトリを'
+            " <code>CHIEZO_STATE_DIR</code> に設定すると使えます。</p>"
+        )
+    rows = []
+    for theme in memory.themes():
+        src = sources.get(theme.name)
+        waiting = len(memory.pending(theme))
+        burn = f"/admin/rebuild/{esc(theme.name)}" if src else f"/admin/init/{esc(theme.name)}"
+        long_term = (
+            f'<a href="{esc(browse_url(theme.name))}">{src.doc_count:,} 件</a>'
+            f' <span class="muted">({esc(src.dump_date or "")})</span>'
+            if src
+            else '<span class="muted">まだ焼いていない</span>'
+        )
+        rows.append(
+            f"<tr>"
+            f"<td>{esc(theme.label)}<br><span class=\"muted\">{esc(theme.name)}</span></td>"
+            f"<td>{esc(' + '.join(theme.tags))}</td>"
+            f"<td>{waiting:,}</td>"
+            f"<td>{long_term}</td>"
+            f"<td>"
+            f'<form class="init-form" method="post" action="{burn}">'
+            f'<button type="submit"{disabled}>固化する</button></form>'
+            f'<form class="init-form" method="post" action="/admin/memory/{esc(theme.name)}/sweep" '
+            f"onsubmit=\"return confirm('長期側へ移せたメモに固化の印を付けます"
+            f"(思い出す先が長期側になり、recall の既定から外れます)。よろしいですか?')\">"
+            f'<button type="submit">片付ける</button></form>'
+            f'<form class="init-form" method="post" action="/admin/memory/{esc(theme.name)}/delete" '
+            f"onsubmit=\"return confirm('テーマの定義を消します(焼いた長期記憶はそのまま残ります)。"
+            f"よろしいですか?')\">"
+            f'<button type="submit">定義を消す</button></form>'
+            f"</td>"
+            f"</tr>"
+        )
+    body = "\n".join(rows) or '<tr><td colspan="5">テーマはまだありません</td></tr>'
+    canonical = " / ".join(esc(t) for t in notes.CANONICAL_TAGS)
+    return f"""
+<table>
+<thead>
+<tr><th>テーマ</th><th>対象のタグ</th><th>未固化</th><th>長期記憶</th><th></th></tr>
+</thead>
+<tbody>
+{body}
+</tbody>
+</table>
+<form class="init-form" method="post" action="/admin/memory/themes">
+<input type="text" name="name" placeholder="ソース名(英数字)" required>
+<input type="text" name="label" placeholder="表示名">
+<input type="text" name="tags" placeholder="対象のタグ(カンマ区切りで AND)" required>
+<button type="submit">テーマを足す</button>
+</form>
+<p class="muted">
+テーマ名はそのままソース名になる(焼くと <code>/v1/&lt;名前&gt;/search</code> で引ける)。
+「固化する」は取り込みを起こし、素材は<strong>前世代の長期記憶 + 未固化のメモ</strong>。
+同じ見出しのメモがあれば上書きされ、<code>{esc(notes.TOMBSTONE_TAG)}</code> タグの付いた
+メモは長期側から同じ見出しを落とす。焼き上がったら「片付ける」で短期側に
+<code>{esc(notes.CONSOLIDATED_TAG)}</code> の印が付く。<br>
+定番のタグ: {canonical}
+</p>
+"""
+
+
 def _short_term_section_html(sources: dict[str, Source]) -> str:
     """短期記憶(notes)の節。
 
@@ -284,7 +355,10 @@ async def admin(request: Request):
     }
     rows_source = {
         n: m for n, m in uninitialized.items()
-        if m.get("group") not in ("osm", "wikipedia")
+        # 固化のテーマ(kind=memory)はここに出さない。長期記憶に足すという意味では
+        # 同じだが、素材は外のダンプではなく短期記憶なので、操作は下の固化の節に集める
+        # (両方に出すと、どちらを押せばいいのか読めない)
+        if m.get("group") not in ("osm", "wikipedia") and m.get("kind") != "memory"
     }
     init_rows = "\n".join(
         f"<tr>"
@@ -356,8 +430,11 @@ async def admin(request: Request):
 </tbody>
 </table>
 
-<h2>短期記憶(覚えたこと)</h2>
+<h2 id="short-term">短期記憶(覚えたこと)</h2>
 {_short_term_section_html(short_term)}
+
+<h3>長期記憶へ移す(固化)</h3>
+{_memory_themes_html(sources, disabled)}
 
 <h2>ためた知識を使う AI</h2>
 {_answer_status_html()}
@@ -627,6 +704,35 @@ def admin_rebuild(source: str, request: Request):
             },
         )
     return _proxy_trigger_run(source)
+
+
+@router.post("/admin/memory/themes")
+def admin_add_memory_theme(
+    request: Request,
+    name: str = Form(...),
+    label: str = Form(""),
+    tags: str = Form(...),
+):
+    """固化のテーマを足す(管理画面のフォーム)。実体は app/memory.py。"""
+    sources: dict[str, Source] = request.app.state.sources
+    memory.add_theme(name, label, tags, taken=set(sources))
+    return RedirectResponse(url="/admin#short-term", status_code=303)
+
+
+@router.post("/admin/memory/{name}/sweep")
+def admin_sweep_memory_theme(name: str, request: Request):
+    """焼き上がりを確かめて、短期側に固化の印を付ける。"""
+    theme = memory.require_theme(name)
+    memory.sweep(theme, request.app.state.sources)
+    return RedirectResponse(url="/admin#short-term", status_code=303)
+
+
+@router.post("/admin/memory/{name}/delete")
+def admin_remove_memory_theme(name: str):
+    """テーマの定義だけを消す(焼いた長期記憶はそのまま残る)。"""
+    memory.require_theme(name)
+    memory.remove_theme(name)
+    return RedirectResponse(url="/admin#short-term", status_code=303)
 
 
 def request_origin(request: Request) -> str:

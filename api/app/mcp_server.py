@@ -603,11 +603,16 @@ def _register_memory_tools(mcp: MCPServer, app: FastAPI) -> None:
         max_chars: Annotated[int, Field(description=(
             "本文の頭から返す文字数。0 で切らない"
         ))] = notes.RECALL_MAX_CHARS_DEFAULT,
+        consolidated: Annotated[bool, Field(description=(
+            f"長期記憶へ移し終えたもの({notes.CONSOLIDATED_TAG})も含める。"
+            "既定は含めない —— そちらは長期側のソースを search / doc で引く"
+        ))] = False,
     ) -> dict:
         return await run_in_threadpool(
             _call, api.recall_notes,
             request=_request(app), q=q, since=since, until=until, tag=tag,
             limit=limit, offset=offset, fields=fields, max_chars=max_chars,
+            consolidated=consolidated,
         )
 
     @mcp.tool(description=(

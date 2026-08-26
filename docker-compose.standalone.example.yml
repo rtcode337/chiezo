@@ -248,10 +248,14 @@ services:
     user: *run-as
     environment:
       CHIEZO_DATA_DIR: /data/corpus
-      # ---- 別コンテナのソースプラグインを使う場合 ----
-      # 下の chiezo-plugin を有効にしたら、その URL をカンマ区切りで並べる。
+      # 記憶の固化(短期記憶 → 長期記憶)。chiezo-api がプラグインとして素材を配るので、
+      # 焼くのは普通の取り込みと同じ経路になる(管理画面の初期化・再構築ボタンに並ぶ)。
+      # テーマを 1 つも作っていなければ何も配らない。
+      #
+      # ---- 別コンテナのソースプラグインも使う場合 ----
+      # 下の chiezo-plugin を有効にしたら、その URL をカンマ区切りで後ろに並べる。
       # プラグインが提供するソースが管理画面の「未初期化データの初期化」に出る。
-      #CHIEZO_PLUGIN_SOURCES: http://chiezo-plugin:8080
+      CHIEZO_PLUGIN_SOURCES: http://chiezo-api:7010/v1/memory
     restart: unless-stopped
     # 「良き隣人」のための相対ウェイト(既定 1024 の半分)。CPU が競合したときだけ
     # 他のコンテナへ譲り、空いていれば全力で使える。ハード上限の cpus は使わない ——
