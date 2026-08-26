@@ -67,6 +67,18 @@ def consolidate(client, data_dir, name="rules"):
 
 
 class TestPluginContract:
+    def test_the_dump_date_carries_seconds(self, client, data_dir, tmp_path):
+        """固化が渡す日付を取り込み側が受け取れること(8 桁固定だと落ちて当日に丸まる)。"""
+        from sources.remote import RemotePluginAdapter, RemoteSource
+
+        add_theme(client)
+        remember(client, "何かの決まり", tags="rule")
+        path = tmp_path / "rules.ndjson"
+        path.write_text(client.get("/v1/memory/fetch", params={"source": "rules"}).text)
+
+        adapter = RemotePluginAdapter(RemoteSource(base_url="x", name="rules", kind="memory"))
+        assert len(adapter._apply_meta(path)) == 14
+
     def test_empty_catalog_is_accepted_by_the_ingest_side(self):
         """テーマが 1 つも無い状態は正常。
 
@@ -229,6 +241,26 @@ class TestConsolidation:
         assert client.get(
             "/v1/rules/doc", params={"title": "要らない決まり"}
         ).status_code == 404
+
+    def test_a_second_burn_on_the_same_day_keeps_the_previous_generation(self, client, data_dir):
+        """同じ日に焼き直しても前世代が残ること。
+
+        世代ファイルは `<source>-<日付>.db` で、切り替えは 1 つ前を残す作り。
+        日付までしか持たなかった頃は、2 回目が同じファイル名になって前世代を
+        上書きしていた —— 固化は 1 日に何度も走るので、戻り先が消えていた。
+        """
+        add_theme(client)
+        note = remember(client, "古い内容", tags="rule", title="決まり")
+        first = consolidate(client, data_dir)
+        client.post("/v1/memory/themes/rules/sweep")
+
+        client.patch(f"/v1/notes/{note['doc_id']}", json={"text": "新しい内容"})
+        second = consolidate(client, data_dir)
+
+        assert first != second
+        generations = sorted(p.name for p in data_dir.glob("rules-*.db"))
+        assert generations == [f"rules-{first}.db", f"rules-{second}.db"]
+        assert (data_dir / "rules.db").resolve().name == f"rules-{second}.db"
 
     def test_refuses_to_empty_the_source(self, client, data_dir):
         """墓標で全部落ちるときは断る。

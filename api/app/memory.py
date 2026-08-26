@@ -40,7 +40,7 @@ import logging
 import re
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -343,6 +343,21 @@ def material(theme: Theme, sources: dict) -> list[dict]:
     return sorted(merged.values(), key=lambda d: d["doc_id"])
 
 
+def _dump_date(theme: Theme, sources: dict) -> str:
+    """世代ファイル名になる値(JST・秒まで)。
+
+    日付だけだと、1 日に何度も焼く固化では 2 回目が同じファイル名になり、
+    切り替えが前世代を上書きして戻り先が消える。秒まで入れてもまだ足りない ——
+    現行世代と同じ値になるときは 1 秒進める(実際にテストが同じ秒で 2 回焼いて踏んだ)。
+    """
+    now = to_jst(datetime.now(UTC))
+    stamp = now.strftime("%Y%m%d%H%M%S")
+    current = sources.get(theme.name)
+    if current is not None and current.dump_date == stamp:
+        stamp = (now + timedelta(seconds=1)).strftime("%Y%m%d%H%M%S")
+    return stamp
+
+
 def ndjson(theme: Theme, sources: dict) -> str:
     """`GET {base}/fetch?source=` の中身(1 行目が meta、以降は 1 行 1 文書)。
 
@@ -371,8 +386,7 @@ def ndjson(theme: Theme, sources: dict) -> str:
         )
     meta = {
         "meta": {
-            # 世代ファイル名になる = 人が見る日付なので JST で数える
-            "dump_date": to_jst(datetime.now(UTC)).strftime("%Y%m%d"),
+            "dump_date": _dump_date(theme, sources),
             "min_docs": MIN_DOCS,
             "sample_titles": [d["title"] for d in docs[:SAMPLE_TITLES]],
         }

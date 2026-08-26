@@ -185,6 +185,13 @@ class RemotePluginAdapter:
         """1 行目の `meta` を読み、検証条件を上書きしてダンプ日付を返す。
 
         meta が無ければ取り込んだ日を日付にする(常に最新しか配らないプラグイン向け)。
+
+        日付は 8 桁(`YYYYMMDD`)のほか、**秒まで入れた 14 桁も許す**。世代ファイル名は
+        `<source>-<日付>.db` で、切り替えは「1 つ前の世代」を残す作りなので、同じ値で
+        焼き直すと同じファイルを上書きして戻り先が消える。ダンプ由来のソースは日付が
+        変わるので 8 桁で足りるが、**1 日に何度も焼くもの**(記憶の固化 =
+        `api/app/memory.py`)では日付だけでは足りない。区切りを入れられないのは、
+        `-` が世代ファイル名の区切りそのものだから。
         """
         with path.open(encoding="utf-8") as f:
             first = f.readline().strip()
@@ -204,7 +211,9 @@ class RemotePluginAdapter:
             except (TypeError, ValueError):
                 log.warning("plugin %s: ignoring invalid min_docs=%r", self.source, min_docs)
         dump_date = str(meta.get("dump_date") or "").strip()
-        return dump_date if re.fullmatch(r"\d{8}", dump_date) else datetime.now(UTC).strftime("%Y%m%d")
+        if re.fullmatch(r"\d{8}(\d{6})?", dump_date):
+            return dump_date
+        return datetime.now(UTC).strftime("%Y%m%d")
 
     def iter_docs(self, path: Path) -> Iterator[Doc]:
         """NDJSON を 1 行ずつ `Doc` にする。
