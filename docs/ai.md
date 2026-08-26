@@ -494,11 +494,18 @@ web 検索を使うかどうかは、上の `CHIEZO_WEB_SEARCH_URL` を書くか
 立ち上げることになっていました。要らない環境では
 `docker compose up -d chiezo-app chiezo-trigger` のようにサービスを選んで起動します。
 
-設定は `searxng/settings.yml` に入っていて、**イメージに焼き込んで配っています**
-(`ghcr.io/rtcode337/chiezo-searxng`。素の SearXNG に設定を 1 つ足しただけ)。
-マウントで渡していた頃は、**リポジトリを置けない環境(単体定義)では立てられません**でした。
-手元で設定をいじるときは、compose で
-`./searxng/settings.yml:/etc/searxng/settings.yml:ro` を重ねてください。
+使うのは **Chiezo が agent ループを回す相手だけ**です(ローカルの推論サーバ・Gemini・
+OpenRouter・OpenAI)。CLI ブリッジ(Claude Code / Codex / Antigravity)は
+**CLI 自身の web 検索**を引くので、SearXNG は通りません。`rag` モードも道具を渡さないので
+使いません。
+
+設定は**素の SearXNG に compose の `configs` で流し込みます**(独自イメージもマウントも
+作りません)。**焼き込みでもマウントでもいけません**: 上流のイメージは `/etc/searxng` を
+`VOLUME` 宣言しているので、焼き込んだ設定は匿名ボリュームに隠れます(実際に 0 バイトの
+`settings.yml` に隠され、既定の継承ごと失われて `KeyError: 'default_doi_resolver'` で
+起動しなくなっていました)。マウントはリポジトリを置けない環境(単体定義)で使えません。
+`configs` はボリュームより深いパスへ置かれるので、どちらの問題も起きません。
+設定をいじるときは `docker-compose.yml` 末尾の `configs` を直してください。
 
 **SearXNG の既定は HTML しか返さない**ので、設定で `search.formats` に `json` を
 足してあります。無いと Chiezo 側は「JSON ではない」というエラーとして扱います。

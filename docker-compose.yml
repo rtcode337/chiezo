@@ -314,18 +314,18 @@ services:
   # (既定は空 = 使わない)で決まるので、立っているだけでは外へ検索を投げない。
   # 要らない環境では `docker compose up -d chiezo-app chiezo-trigger` のように選んで起動する。
   #
-  # 設定を焼き込んだ自前のイメージを使う(`searxng/Dockerfile`。素の SearXNG に
-  # settings.yml を足しただけ)。マウントで渡していた頃は、**リポジトリを置けない環境
-  # (単体定義)では立てられなかった**。手元で設定をいじるときだけ、この上に
-  # `./searxng/settings.yml:/etc/searxng/settings.yml:ro` を重ねればよい。
-  # 設定の中身は「既定値 + Chiezo から API として引くための 3 点」——
-  # SearXNG の既定は html だけを返すので search.formats に json を足してある。
+  # 設定は下の configs で流し込む(このファイルの末尾)。中身は「既定値 + Chiezo から
+  # API として引くための 3 点」—— SearXNG の既定は html だけを返すので
+  # search.formats に json を足してある。
   searxng:
-    image: ${CHIEZO_SEARXNG_IMAGE:-ghcr.io/rtcode337/chiezo-searxng:latest}
+    # 素の SearXNG。設定は下の configs で流し込む(独自イメージもマウントも要らない)。
+    # 上流のタグは固定する(:latest にしない)—— 検索エンジンの実装は頻繁に変わり、
+    # 黙って壊れると「web 検索だけ効かない」という分かりにくい壊れ方をする。
+    image: ${CHIEZO_SEARXNG_IMAGE:-searxng/searxng:2026.7.31-057a77168}
+    configs:
+      - source: chiezo-searxng-settings
+        target: /etc/searxng/settings.yml
     environment:
-      # プリファレンスの Cookie と画像プロキシの署名に使う値。Chiezo は JSON の検索しか
-      # 叩かないので既定のままでよい(気にするなら .env で置き換える)。
-      - SEARXNG_SECRET=${CHIEZO_WEB_SEARCH_SECRET:-chiezo-lan}
       # 待ち受けを 7012 にする(既定は 8080)。chiezo-app の 7010・推論の 7011 と
       # 揃えて、コンテナの内と外で番号が食い違わないようにするため。
       # この image は uvicorn ではなく granian で動くので、効くのは GRANIAN_PORT
@@ -337,6 +337,31 @@ services:
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:7012/healthz"]
       interval: 60s
+
+# SearXNG の設定。**イメージにもホストのファイルにも置かない** ——
+# 上流のイメージは /etc/searxng を VOLUME 宣言しているので、焼き込んでも匿名ボリュームに
+# 隠される(実際に空の settings.yml に隠されて起動しなくなっていた)。ホストのファイルを
+# 重ねる形も、リポジトリを置けない環境(YAML を貼るだけの構成)では使えない。
+# configs はボリュームより深いパスへ置かれるので、どちらの問題も起きない。
+#
+# 中身は既定値を土台に、Chiezo から API として引くために要る 3 点だけ
+# (`use_default_settings: true`)。
+configs:
+  chiezo-searxng-settings:
+    content: |
+      use_default_settings: true
+      server:
+        # 秘密の値ではない(LAN 内前提の既定)。プリファレンスの Cookie と画像プロキシの
+        # 署名に使う値で、Chiezo は JSON の検索しか叩かないため既定のままで動く。
+        secret_key: "${CHIEZO_WEB_SEARCH_SECRET:-chiezo-lan}"
+        # API として叩くので bot 判定を切る。LAN の外へ出すなら true に戻すこと
+        limiter: false
+        # 画像のプロキシは使わない(返すのはタイトル・要約・URL だけなので要らない)
+        image_proxy: false
+      search:
+        # この行が要。SearXNG の既定は html だけで、Chiezo は format=json で引くため、
+        # 足さないと HTML が返り「JSON ではない」というエラーとして扱われる。
+        formats: [html, json]
 
 # サインイン結果の置き場(Antigravity)。ホストのディレクトリにしないのは、
 # 無いときに Docker が root 所有で作ってしまい、非 root のブリッジが書けなくなるため。

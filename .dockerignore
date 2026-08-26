@@ -28,7 +28,6 @@ tasks-frontend/dist/
 # app イメージに要らない兄弟
 ingest/
 bridge/
-searxng/
 scripts/
 tests/
 docs/

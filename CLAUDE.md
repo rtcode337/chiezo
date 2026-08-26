@@ -1273,7 +1273,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   ルートの `requirements-dev.in` は app + ingest + pytest + ruff をまとめたもので、
   CI と `run_tests.sh` の Docker 経路が使う
 - `.github/workflows/ci.yml` — push / PR で `ruff check` と pytest を実行し、main への
-  push で `chiezo-app` / `chiezo-ingest` / `chiezo-bridge` / `chiezo-searxng` の 4 イメージを
+  push で `chiezo-app` / `chiezo-ingest` / `chiezo-bridge` の 3 イメージを
   マルチアーキ(amd64 / arm64。bridge だけ amd64)で
   GHCR へ公開(cc-tasks / travel-log の docker-publish と同じダイジェストマージ方式。
   arm64 の無料ランナーが public 限定のため、リポジトリが private の間は公開ジョブをスキップ)。
@@ -1452,17 +1452,24 @@ SQLite ファイルで、配信側 chiezo-app は read-only immutable で開く�
   設定(`CHIEZO_LLM_URL` 以下)は本体側に残す —— 推論を LAN の別マシンに任せる使い方では、
   コンテナは要らず設定だけが要るため。
 - **`searxng`(web 検索の道具が引く検索エンジン)は本体の compose に置く。** 推論とは
-  独立しているため —— 話す相手が Gemini や Claude Code でも web 検索は要るのに、
-  「答える」層の上書きに置いていた頃は、検索を使いたいだけで数 GB の推論サーバまで
-  立ち上がっていた。**profile は付けない**(本体を上げれば立つ)。使うかは
-  `CHIEZO_WEB_SEARCH_URL`(既定は空)が決めるので、立っているだけでは外へ検索を投げない。
-  **設定はマウントせずイメージに焼き込む**(`searxng/Dockerfile` → `chiezo-searxng`)——
-  マウントだと、リポジトリを置けない環境(単体定義)では立てられなかった。
-  手元で設定をいじるときだけ、compose でマウントを重ねればよい。
-  設定は `searxng/settings.yml`(既定値 + Chiezo から API として引くための 3 点)。
+  独立しているため —— ローカルの推論サーバでも Gemini でも、**chiezo が agent ループを
+  回す相手**なら web 検索は要るのに、「答える」層の上書きに置いていた頃は、検索を
+  使いたいだけで数 GB の推論サーバまで立ち上がっていた。**profile は付けない**
+  (本体を上げれば立つ)。使うかは `CHIEZO_WEB_SEARCH_URL`(既定は空)が決めるので、
+  立っているだけでは外へ検索を投げない。
+  **使うのは chiezo が agent ループを回す相手だけ** —— CLI ブリッジ(claude / codex /
+  antigravity)は CLI 自身の web 検索を引くので、ここは通らない(`agent.bridge_web_allowed`)。
+  **設定は compose の `configs` で流し込む**(素の `searxng/searxng` を使い、
+  独自イメージもマウントも作らない)。**焼き込みでもマウントでもいけない**:
+  上流のイメージは `/etc/searxng` を **VOLUME 宣言している**ので、焼き込んだ設定は
+  匿名ボリュームに隠れる(実際に 0 バイトの settings.yml に隠されて
+  `KeyError: 'default_doi_resolver'` で起動しなくなっていた —— 既定の継承ごと
+  失われるため)。マウントはリポジトリを置けない環境(単体定義)で使えない。
+  `configs` はボリュームより深いパスへ置かれるので、どちらの問題も起きない。
+  設定の中身は既定値 + Chiezo から API として引くための 3 点で、
   **SearXNG の既定は HTML しか返さない**ので `search.formats` に `json` を足してある。
-  手元でマウントして試すときは**読み取り専用**にすること —— 書き込み可にするとイメージが
-  ディレクトリごと uid 977 に chown し、ホスト側から編集できなくなる。
+  **`SEARXNG_SECRET` は渡さない** —— 上流の entrypoint はそれを読まず、
+  settings.yml が既にあれば触らない(秘密の値は `configs` の中で決める)。
 - **絵と音の生成の ComfyUI は `docker-compose.image.yml`(profile `image`)に置く**。
   GPU が要るので既定では立てない。**GPU が別マシンにあるなら重ねず、`CHIEZO_IMAGE_URL` で
   そちらを指す**(推論サーバと同じ逃げ道)。**モデルは同梱も自動取得もしない** ——

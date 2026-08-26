@@ -219,25 +219,19 @@ services:
   # ホストへは公開しない —— 使うのは chiezo-app だけで、外向きの検索の中継になるため。
   # 使わないなら、このブロックごと消して上の CHIEZO_WEB_SEARCH_URL も空にする。
   searxng:
-    image: ghcr.io/rtcode337/chiezo-searxng:latest
+    # 素の SearXNG。設定は下の configs で流し込む(独自イメージもマウントも要らない)。
+    # 上流のイメージは /etc/searxng を VOLUME 宣言しているので、設定を焼き込んでも
+    # 匿名ボリュームに隠される。configs はボリュームより深いパスへ置かれるので届く。
+    image: searxng/searxng:2026.7.31-057a77168
     container_name: chiezo-searxng
+    configs:
+      - source: chiezo-searxng-settings
+        target: /etc/searxng/settings.yml
     environment:
-      # プリファレンスの Cookie と画像プロキシの署名に使う値(LAN 内前提の既定のまま)
-      SEARXNG_SECRET: "chiezo-lan"
       # 待ち受けを 7012 にする(既定は 8080)。この image は granian で動くので
-      # 効くのは GRANIAN_PORT(SEARXNG_PORT は設定ファイル側の値)
+      # 効くのは GRANIAN_PORT(SearXNG の SEARXNG_PORT は設定ファイル側の値)
       GRANIAN_PORT: "7012"
     restart: unless-stopped
-    # 既定では畳んである —— この項目を受け付けない実行環境がある
-    # (NAS のコンテナマネージャー等)。使える環境なら外すと「良き隣人」になる
-    #cpu_shares: 512
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:7012/healthz"]
-      interval: 60s
-
-  # 管理画面からの「未初期化データの初期化」を受けて ingest を実行する内部専用トリガー。
-  # ingest イメージを流用し、CMD だけ server:app(FastAPI)起動に上書きする。
-  # ホストへポート公開せず、chiezo-app からのみ docker 内部ネットワーク経由で到達できる。
   chiezo-trigger:
     image: ghcr.io/rtcode337/chiezo-ingest:latest
     container_name: chiezo-trigger
@@ -356,3 +350,21 @@ services:
 # 無いときに Docker が root 所有で作ってしまい、非 root のブリッジが書けなくなるため。
 volumes:
   chiezo-antigravity-home:
+
+# SearXNG の設定。**イメージにもホストのファイルにも置かない** —— 上流のイメージは
+# /etc/searxng を VOLUME 宣言しているので焼き込んでも匿名ボリュームに隠され、
+# ホストのファイルを重ねる形はこの環境(YAML を貼るだけ)では使えない。
+# 中身は既定値を土台に、Chiezo から API として引くために要る 3 点だけ。
+configs:
+  chiezo-searxng-settings:
+    content: |
+      use_default_settings: true
+      server:
+        # 秘密の値ではない(LAN 内前提の既定)。Chiezo は JSON の検索しか叩かない
+        secret_key: "chiezo-lan"
+        # API として叩くので bot 判定を切る。LAN の外へ出すなら true に戻すこと
+        limiter: false
+        image_proxy: false
+      search:
+        # SearXNG の既定は html だけ。Chiezo は format=json で引くので足す
+        formats: [html, json]

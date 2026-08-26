@@ -206,9 +206,10 @@ docker compose -f docker-compose.yml -f docker-compose.answer.yml --profile answ
 
 推論サーバのコンテナは `docker-compose.answer.yml` に分けてある
 (LAN の別マシンの LLM を指すだけなら重ねなくてよい)。**検索エンジン(SearXNG)は本体側**で、
-`docker compose up -d` で一緒に立つ(設定を焼き込んだ `chiezo-searxng` を使うので、
-リポジトリを置けない環境でも立てられる) —— 話す相手が Gemini や Claude Code でも web 検索は
-使えるようにするため。使うかどうかは `CHIEZO_WEB_SEARCH_URL` を書くかで決まる。
+`docker compose up -d` で一緒に立つ(素のイメージに compose の `configs` で設定を流し込むので、
+リポジトリを置けない環境でも立てられる)。使うのは **Chiezo が agent ループを回す相手だけ**で、
+CLI ブリッジ(Claude Code など)は CLI 自身の検索を引く。使うかどうかは
+`CHIEZO_WEB_SEARCH_URL` を書くかで決まる。
 
 **絵・音・動画・声を作らせることもできる**(MCP の `image_generate` / `audio_generate` /
 `video_generate` / `speech_generate` / `transcribe`)。ゲーム素材や図版・効果音・BGM・

@@ -31,13 +31,13 @@ STANDALONE_EXEMPT = {
 }
 
 # 「答える」層の上書き(docker-compose.answer.yml)が持つコンテナ。推論サーバだけ ——
-# 検索エンジン(SearXNG)は本体側にある(web 検索と推論は独立していて、相手が Gemini や
-# Claude Code でも検索は要るのに、以前は検索のために推論サーバまで立ち上がっていた)。
+# 検索エンジン(SearXNG)は本体側にある(web 検索と推論は独立していて、chiezo が agent
+# ループを回す相手なら検索は要るのに、以前は検索のために推論サーバまで立ち上がっていた)。
 ANSWER_CONTAINERS = {"chiezo-llm"}
 
 # 単体定義には載せないコンテナ。 推論サーバはモデルの置き場(数 GB)と GPU の設定が
 # 環境ごとに違い、別サーバーのものを指せば済むため。
-# (SearXNG は設定を焼き込んだイメージにしたので、単体定義にも載せてある)
+# (SearXNG は素のイメージ + configs で設定を流し込むので、単体定義にも載せてある)
 STANDALONE_EXCLUDED_CONTAINERS = {"chiezo-llm"}
 
 # リポジトリが持たない compose は見ない。 単体定義に実値を書いた
@@ -129,25 +129,36 @@ def test_standalone_has_no_answer_containers():
 def test_websearch_container_is_in_the_base():
     """SearXNG は本体側にあること(推論サーバと同居させない)。
 
-    web 検索と推論は独立している —— 話す相手が Gemini や Claude Code でも検索は要るのに、
-    「答える」層の上書きに置いていた頃は、検索を使いたいだけで数 GB の推論サーバまで
-    立ち上げることになっていた。
+    web 検索と推論は独立している —— ローカルの推論サーバでも Gemini でも、chiezo が
+    agent ループを回す相手なら検索は要るのに、「答える」層の上書きに置いていた頃は、
+    検索を使いたいだけで数 GB の推論サーバまで立ち上げることになっていた。
     """
     base = yaml.safe_load(BASE.read_text(encoding="utf-8"))
     assert "searxng" in base["services"]
     # profile を付けない(本体を上げれば一緒に立つ)
     assert not base["services"]["searxng"].get("profiles")
-    # 設定はマウントではなくイメージに焼き込む —— マウントだと、リポジトリを置けない
-    # 環境(単体定義)では立てられない
-    assert not base["services"]["searxng"].get("volumes")
-    assert "chiezo-searxng" in base["services"]["searxng"]["image"]
 
 
-def test_standalone_has_the_websearch_container():
-    """単体定義でも SearXNG が立つこと(設定を焼き込んだイメージなので置ける)。"""
-    doc = yaml.safe_load(STANDALONE.read_text(encoding="utf-8"))
-    assert "searxng" in doc["services"]
-    assert not doc["services"]["searxng"].get("volumes")
+@pytest.mark.parametrize("path", [BASE, STANDALONE])
+def test_the_websearch_settings_ride_on_configs(path: Path):
+    """設定は configs で流し込むこと(独自イメージもマウントも作らない)。
+
+    上流のイメージは `/etc/searxng` を VOLUME 宣言しているので、**設定を焼き込んでも
+    匿名ボリュームに隠れる** —— 実際に空の settings.yml に隠されて起動しなくなっていた。
+    ホストのファイルを重ねる形も、リポジトリを置けない環境(単体定義)では使えない。
+    configs はボリュームより深いパスへ置かれるので、どちらの問題も起きない。
+    """
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    searxng = doc["services"]["searxng"]
+    assert not searxng.get("volumes"), "設定をマウントで渡さないこと"
+    assert "chiezo-searxng" not in searxng["image"], "独自イメージを作らないこと"
+    targets = [c["target"] for c in searxng["configs"]]
+    assert "/etc/searxng/settings.yml" in targets
+    content = doc["configs"]["chiezo-searxng-settings"]["content"]
+    # 既定を土台にすること。継承を切ると default_doi_resolver 等が消えて起動に失敗する
+    assert "use_default_settings: true" in content
+    # Chiezo は format=json で引く。既定は html だけなので、この行が無いと検索が壊れる
+    assert "formats: [html, json]" in content
 
 
 def test_answer_overlay_defines_only_containers():
