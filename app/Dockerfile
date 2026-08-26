@@ -3,7 +3,7 @@
 # 出来た成果物だけを下の段へ持っていくので、node は最終イメージに残らない。
 # 画面と本体を同じイメージにしてあるのは、公開する面をコマンドだけで分けるためで、
 # 成果物は 200KB 程度なので本体側に積んでも実害が無い(docs/tasks.md)。
-FROM node:24-slim AS web
+FROM node:25-slim AS web
 WORKDIR /build
 # 依存の取得だけ先にやると、画面のソースを直しても層のキャッシュが効く
 COPY tasks-frontend/package.json tasks-frontend/package-lock.json ./
