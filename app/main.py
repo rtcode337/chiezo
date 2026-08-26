@@ -1003,76 +1003,40 @@ def forget(request: Request, doc_id: int):
 
 # ---- 固化(短期記憶 → 長期記憶) ---------------------------------------------
 #
-# 実体は app/memory.py。ここは HTTP の口だけを持つ。口は 2 種類あり、性格が違う:
+# 実体は app/memory.py。ここは HTTP の口だけを持つ。口は 2 つで、性格が違う:
 #
-#   /v1/memory/themes*        … 人と画面が使う(テーマの定義と、焼いた後の片付け)
-#   /v1/memory/sources|fetch  … 取り込み側が使う(ingest/sources/remote.py の契約)
+#   /v1/memory/status|sweep … 人と画面が使う(いま何件待っているか、焼いた後の片付け)
+#   /v1/memory/fetch        … 取り込み側が使う(素材の NDJSON)
 #
-# 後者は別コンテナのプラグインとまったく同じ契約なので、`CHIEZO_PLUGIN_SOURCES` に
-# `<この app>/v1/memory` を並べるだけで、固化が普通の取り込みとして走る。
+# **焼く口はここに無い**。固化は普通の取り込みなので、起こすのは chiezo-trigger
+# (管理画面のボタン)か CLI(`SOURCE=memory`)。ソースの定義は ingest 側が持っている
+# (`ingest/sources/memory.py`)ので、設定を足さなくても一覧に出る。
+#
+# **`固化対象` を付ける口も無い**。ただのタグなので `PATCH /v1/notes/{id}` か MCP の
+# `update` で付く —— 専用の口を足すと、同じことをする経路が 2 つになる。
 
 
-@app.get("/v1/memory/themes")
-def list_memory_themes(request: Request):
-    sources: dict[str, Source] = request.app.state.sources
-    return {
-        "enabled": memory.is_enabled(),
-        "themes": [
-            {
-                "name": t.name,
-                "label": t.label,
-                "tags": t.tags,
-                # まだ焼いていないテーマは長期側のソースを持たない
-                "consolidated": t.name in sources,
-                "docs": sources[t.name].doc_count if t.name in sources else 0,
-                "built_at": sources[t.name].built_at if t.name in sources else None,
-                "pending": len(memory.pending(t)),
-            }
-            for t in memory.themes()
-        ],
-    }
+@app.get("/v1/memory/status")
+def memory_status(request: Request):
+    """いま何件が固化を待っていて、長期側に何件あるか。"""
+    return memory.status(request.app.state.sources)
 
 
-@app.post("/v1/memory/themes")
-def add_memory_theme(
-    request: Request,
-    name: str = Body(..., embed=True, description="ソース名になる。英数字とアンダースコアだけ"),
-    label: str | None = Body(None, embed=True, description="画面に出す名前。省略時は name"),
-    tags: str = Body(..., embed=True, description="対象にするタグ。カンマ区切りで AND"),
-):
-    sources: dict[str, Source] = request.app.state.sources
-    theme = memory.add_theme(name, label, tags, taken=set(sources))
-    return {"name": theme.name, "label": theme.label, "tags": theme.tags}
-
-
-@app.delete("/v1/memory/themes/{name}")
-def remove_memory_theme(name: str):
-    memory.require_theme(name)
-    memory.remove_theme(name)
-    # 焼いた DB は消さない(消すのは取り込み側の仕事で、ここは定義を外すだけ)
-    return {"removed": name}
-
-
-@app.post("/v1/memory/themes/{name}/sweep")
-def sweep_memory_theme(name: str, request: Request):
-    theme = memory.require_theme(name)
-    return memory.sweep(theme, request.app.state.sources)
-
-
-@app.get("/v1/memory/sources")
-def memory_plugin_catalog():
-    """取り込み側が読むカタログ(プラグインの契約)。"""
-    return memory.catalog()
+@app.post("/v1/memory/sweep")
+def memory_sweep(request: Request):
+    """焼き上がりを確かめて、短期側の印を `固化対象` から `固化` に付け替える。"""
+    return memory.sweep(request.app.state.sources)
 
 
 @app.get("/v1/memory/fetch")
-def memory_plugin_fetch(
+def memory_fetch(
     request: Request,
-    source: str = Query(..., description="テーマ名"),
+    source: str = Query(memory.SOURCE_NAME, description="取り込み側が渡す名前(1 つだけ)"),
 ):
-    """焼く素材(NDJSON)。プラグインの契約なので、返す形は remote.py が読む形。"""
-    theme = memory.require_theme(source)
-    body = memory.ndjson(theme, request.app.state.sources)
+    """焼く素材(NDJSON)。返す形は `ingest/sources/remote.py` が読む形。"""
+    if source != memory.SOURCE_NAME:
+        raise HTTPException(404, {"error": f"unknown source: {source}"})
+    body = memory.ndjson(request.app.state.sources)
     return Response(content=body, media_type="application/x-ndjson")
 
 

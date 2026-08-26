@@ -232,6 +232,16 @@ services:
       # 効くのは GRANIAN_PORT(SearXNG の SEARXNG_PORT は設定ファイル側の値)
       GRANIAN_PORT: "7012"
     restart: unless-stopped
+    # 既定では畳んである —— この項目を受け付けない実行環境がある
+    # (NAS のコンテナマネージャー等)。使える環境なら外すと「良き隣人」になる
+    #cpu_shares: 512
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7012/healthz"]
+      interval: 60s
+
+  # 管理画面からの「未初期化データの初期化」を受けて ingest を実行する内部専用トリガー。
+  # ingest イメージを流用し、CMD だけ server:app(FastAPI)起動に上書きする。
+  # ホストへポート公開せず、chiezo-app からのみ docker 内部ネットワーク経由で到達できる。
   chiezo-trigger:
     image: ghcr.io/rtcode337/chiezo-ingest:latest
     container_name: chiezo-trigger
@@ -245,14 +255,14 @@ services:
     user: *run-as
     environment:
       CHIEZO_DATA_DIR: /data/corpus
-      # 記憶の固化(短期記憶 → 長期記憶)。chiezo-app がプラグインとして素材を配るので、
-      # 焼くのは普通の取り込みと同じ経路になる(管理画面の初期化・再構築ボタンに並ぶ)。
-      # テーマを 1 つも作っていなければ何も配らない。
-      #
-      # ---- 別コンテナのソースプラグインも使う場合 ----
-      # 下の chiezo-plugin を有効にしたら、その URL をカンマ区切りで後ろに並べる。
+      # 固化(短期記憶 → 長期記憶)の素材を取りに行く先。**組み込みのソースなので
+      # 設定は要らない** —— サービス名で届くこの既定のまま使う。
+      CHIEZO_APP_URL: http://chiezo-app:7010
+      # ---- 別コンテナのソースプラグインを使う場合 ----
+      # 下の chiezo-plugin を有効にしたら、その URL をカンマ区切りで並べる。
       # プラグインが提供するソースが管理画面の「未初期化データの初期化」に出る。
-      CHIEZO_PLUGIN_SOURCES: http://chiezo-app:7010/v1/memory
+      # (固化はプラグインではなく組み込みなので、ここに書く必要は無い)
+      #CHIEZO_PLUGIN_SOURCES: http://chiezo-plugin:8080
     restart: unless-stopped
     # 「良き隣人」のための相対ウェイト(既定 1024 の半分)。CPU が競合したときだけ
     # 他のコンテナへ譲り、空いていれば全力で使える。ハード上限の cpus は使わない ——

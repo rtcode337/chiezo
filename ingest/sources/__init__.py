@@ -22,6 +22,7 @@ from collections.abc import Callable
 
 from core import SourceAdapter
 from sources.geonames import GeonamesAdapter
+from sources.memory import memory_adapter
 from sources.osm import DEFAULT_VALIDATION, OsmAdapter
 from sources.osm_regions import OSM_REGIONS, OsmRegion
 from sources.remote import load_remote_adapters
@@ -41,6 +42,10 @@ ADAPTERS: dict[str, Callable[[], SourceAdapter]] = {
     # ぶん約 400MB・1 ソースで全世界を賄える(その代わり店舗・営業時間は持たない)。
     # 店舗レベルの詳細が要る国だけ、下の osm_<国> を個別に取り込む。
     "geonames": lambda: GeonamesAdapter(),
+    # 長期記憶(短期記憶を固めたもの)。素材は配信側(app/memory.py)が配り、こちらは
+    # 取りに行って焼くだけ。**組み込みにしてある**ので、設定を足さなくても管理画面の
+    # 一覧に出るし、SOURCE=memory で CLI からも回せる(sources/memory.py)。
+    "memory": memory_adapter,
 }
 
 

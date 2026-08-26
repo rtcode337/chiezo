@@ -198,11 +198,13 @@ services:
     user: "${CHIEZO_UID:-10001}:${CHIEZO_GID:-10001}"
     environment:
       - CHIEZO_DATA_DIR=/data/corpus
-      # 記憶の固化(短期記憶 → 長期記憶)。chiezo-app がプラグインとして素材を配るので、
-      # 焼くのは普通の取り込みと同じ経路になる(管理画面の初期化・再構築ボタンにも
-      # そのまま並ぶ)。テーマを 1 つも作っていなければ何も配らない。
-      # 外部のプラグインを足すときは、この後ろにカンマ区切りで URL を並べる。
-      - CHIEZO_PLUGIN_SOURCES=${CHIEZO_PLUGIN_SOURCES:-http://chiezo-app:7010/v1/memory}
+      # 固化(短期記憶 → 長期記憶)の素材を取りに行く先。**組み込みのソースなので
+      # 設定は要らない** —— サービス名で届くこの既定のまま使う。配信側を別ホストで
+      # 動かしている構成でだけ書き換える。
+      - CHIEZO_APP_URL=${CHIEZO_APP_URL:-http://chiezo-app:7010}
+      # 別コンテナのソースプラグインを使うときだけ、その URL をカンマ区切りで並べる
+      # (固化はプラグインではなく組み込みなので、ここに書く必要は無い)。
+      - CHIEZO_PLUGIN_SOURCES=${CHIEZO_PLUGIN_SOURCES-}
     restart: unless-stopped
     # トリガー経由の取り込みが暴走しても、OOM killer がホスト全体(同居する
     # 他のコンテナ)を巻き込まないよう上限を設ける。取り込み本体と同じ *_LIMITS。
@@ -221,8 +223,12 @@ services:
       - ./data:/data
     user: "${CHIEZO_UID:-10001}:${CHIEZO_GID:-10001}"
     environment:
-      - SOURCE=jawiki
+      # 取り込むソース。`-e SOURCE=memory` にすると固化(短期記憶 → 長期記憶)が走る
+      - SOURCE=${SOURCE:-jawiki}
       - CHIEZO_DATA_DIR=/data/corpus
+      # 固化の素材を取りに行く先(組み込みソースなので通常は既定のまま)
+      - CHIEZO_APP_URL=${CHIEZO_APP_URL:-http://chiezo-app:7010}
+      - CHIEZO_PLUGIN_SOURCES=${CHIEZO_PLUGIN_SOURCES-}
     # 取り込みのメモリ上限。以前 jawiki 取り込みが対応表(リダイレクト/ページビュー/
     # wikidata)を dict で数 GB 抱えてホストごと OOM で落ちたため、(1) それらを
     # ディスク上の一時 SQLite に逃がした上で(ingest/lookup.py)、(2) 念のため
