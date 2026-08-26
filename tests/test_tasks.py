@@ -49,14 +49,17 @@ class TestTasks:
         assert tasks.TAG_IN_PROGRESS in moved.tags
 
     def test_no_status_tag_means_not_started(self, client):
-        """移植前から todo タグで書かれていたメモが、そのままタスクとして並ぶこと。"""
-        client.post("/v1/notes", json={"text": "前から書いてあったメモ", "tags": "todo,環境"})
+        """task タグで書かれたメモが、そのままタスクとして並ぶこと。
+
+        専用のテーブルを持たない作りの要。メモに task を付ければタスクになる。
+        """
+        client.post("/v1/notes", json={"text": "前から書いてあったメモ", "tags": "task,環境"})
         listed = tasks.list_tasks()
         assert [t.title for t in listed] == ["前から書いてあったメモ"]
         assert listed[0].status == tasks.STATUS_TODO
 
     def test_created_at_falls_back_to_updated_at_for_old_memos(self, client):
-        created = client.post("/v1/notes", json={"text": "古いメモ", "tags": "todo"}).json()
+        created = client.post("/v1/notes", json={"text": "古いメモ", "tags": "task"}).json()
         task = tasks.require_task(created["doc_id"])
         assert task.created_at == created["updated_at"]
 
@@ -68,7 +71,7 @@ class TestTasks:
     def test_free_tags_survive_an_update(self, client):
         """メモとして付けたタグを、タスクの操作で落とさないこと。"""
         created = client.post(
-            "/v1/notes", json={"text": "調べ物", "tags": "todo,トラブルシュート"}
+            "/v1/notes", json={"text": "調べ物", "tags": "task,トラブルシュート"}
         ).json()
         updated = tasks.update_task(created["doc_id"], status=tasks.STATUS_DONE)
         assert "トラブルシュート" in updated.tags and tasks.TAG_DONE in updated.tags
@@ -173,7 +176,7 @@ class TestProjects:
             tasks.create_project("arrow-puzzle")
         assert e.value.status_code == 409
 
-    @pytest.mark.parametrize("name", ["todo", "完了", "project", "決定", "環境"])
+    @pytest.mark.parametrize("name", ["task", "完了", "project", "決定", "環境"])
     def test_structural_and_canonical_tags_are_rejected_as_names(self, client, name):
         """名前はそのままタスクに付くタグになるので、種別や状態と読まれる語は使えない。"""
         with pytest.raises(Exception) as e:
@@ -183,7 +186,7 @@ class TestProjects:
     def test_a_task_links_once_the_project_appears(self, client):
         """先に書いたメモのタグが、同名のプロジェクトを作った瞬間に紐づくこと。"""
         created = client.post(
-            "/v1/notes", json={"text": "前から書いてあった", "tags": "todo,pihole-monitor"}
+            "/v1/notes", json={"text": "前から書いてあった", "tags": "task,pihole-monitor"}
         ).json()
         assert tasks.require_task(created["doc_id"]).project is None
         tasks.create_project("pihole-monitor")
@@ -381,3 +384,63 @@ class TestRulesRepoUrl:
     def test_blank_clears_it(self, client, state_dir):
         tasks.set_rules_repo_url("https://example.com/kiyaku")
         assert tasks.set_rules_repo_url("   ") is None
+
+
+class TestTodoMigration:
+    """`todo` → `task` の付け替え(`scripts/migrate_todo_to_task.py`)。
+
+    タスクを表すタグを分けたときの移行。**流さないとこれまでのタスクが画面から消える**
+    ので、付け替えが 3 つの表(docs.tags / doc_tags / tag_counts)を揃って直すことと、
+    何度流しても増えないことを押さえる。
+    """
+
+    def _script(self):
+        import importlib.util
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parents[1] / "scripts" / "migrate_todo_to_task.py"
+        spec = importlib.util.spec_from_file_location("migrate_todo_to_task", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def _run(self, notes_dir, apply=True):
+        import sqlite3
+
+        module = self._script()
+        conn = sqlite3.connect(notes_dir / "notes.db")
+        try:
+            targets = module._targets(conn)
+            if apply:
+                with conn:
+                    for doc_id, _, tags in targets:
+                        module._swap(conn, doc_id, tags)
+                conn.execute("DELETE FROM tag_counts WHERE docs <= 0")
+                conn.commit()
+        finally:
+            conn.close()
+        return targets
+
+    def test_old_todo_memos_become_tasks(self, client, notes_dir):
+        client.post("/v1/notes", json={"text": "前からのタスク", "tags": "todo,環境"})
+        assert tasks.list_tasks() == []
+
+        assert len(self._run(notes_dir)) == 1
+        listed = tasks.list_tasks()
+        assert [t.title for t in listed] == ["前からのタスク"]
+        # メモとして付けていたタグは残す
+        assert "環境" in listed[0].tags and "todo" not in listed[0].tags
+
+    def test_it_can_be_run_twice(self, client, notes_dir):
+        client.post("/v1/notes", json={"text": "前からのタスク", "tags": "todo"})
+        self._run(notes_dir)
+        assert self._run(notes_dir) == []
+        assert len(tasks.list_tasks()) == 1
+
+    def test_tag_counts_stay_in_step(self, client, notes_dir):
+        """3 つの表がずれると絞り込みが静かに壊れる。"""
+        client.post("/v1/notes", json={"text": "前からのタスク", "tags": "todo"})
+        self._run(notes_dir)
+        counts = {t["tag"]: t["docs"] for t in client.get("/v1/notes/tags").json()["tags"]}
+        assert counts.get("task") == 1
+        assert "todo" not in counts

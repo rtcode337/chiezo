@@ -114,3 +114,52 @@ class TestApi:
 class TestAdminLink:
     def test_the_short_term_section_links_to_it(self, client):
         assert '<a href="/tasks/">' in client.get("/admin").text
+
+
+class TestOtherNotes:
+    """そのほかのメモ(タスク・プロジェクト・ルールのどれでもないもの)。"""
+
+    def _fill(self, client):
+        from app import notes
+
+        notes.add(text="WSL2 へ移行すると決めた", title="移行の決定", tags="決定,環境")
+        notes.add(text="復旧の手順", title="復旧手順", tags="runbook")
+        notes.add(text="これはタスク", title="やること", tags="task")
+        notes.add(text="これはルール", title="決まり", tags="rule")
+        notes.add(text="これはプロジェクト", title="ぷろじぇくと", tags="project")
+
+    def test_it_lists_only_what_no_other_page_shows(self, client):
+        self._fill(client)
+        listed = client.get("/api/notes").json()
+        assert listed["total"] == 2
+        assert {n["title"] for n in listed["items"]} == {"移行の決定", "復旧手順"}
+
+    def test_newest_first(self, client):
+        self._fill(client)
+        titles = [n["title"] for n in client.get("/api/notes").json()["items"]]
+        assert titles == ["復旧手順", "移行の決定"]
+
+    def test_it_can_be_narrowed_by_tag(self, client):
+        self._fill(client)
+        listed = client.get("/api/notes", params={"tag": "決定"}).json()
+        assert [n["title"] for n in listed["items"]] == ["移行の決定"]
+
+    def test_tags_count_only_these_notes(self, client):
+        """タスクやルールに付いたタグまで混ぜない(絞り込みの候補にならないため)。"""
+        self._fill(client)
+        counts = {t["tag"]: t["docs"] for t in client.get("/api/notes/tags").json()}
+        assert counts == {"決定": 1, "環境": 1, "runbook": 1}
+
+    def test_each_note_links_to_the_browse_screen(self, client):
+        """全文と生の項目は本体のブラウズ画面で見る(画面側は抜粋まで)。"""
+        self._fill(client)
+        note = client.get("/api/notes").json()["items"][0]
+        assert note["url"] == f"/search/notes/doc/{note['id']}"
+
+    def test_paging(self, client):
+        self._fill(client)
+        page = client.get("/api/notes", params={"limit": 1}).json()
+        assert page["total"] == 2 and len(page["items"]) == 1
+        rest = client.get("/api/notes", params={"limit": 1, "offset": 1}).json()
+        assert len(rest["items"]) == 1
+        assert rest["items"][0]["title"] != page["items"][0]["title"]

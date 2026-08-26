@@ -349,3 +349,40 @@ def update_rule(rule_id: int, body: RuleInput) -> dict:
 @router.delete("/rules/{rule_id}", status_code=204)
 def delete_rule(rule_id: int) -> None:
     tasks.delete_rule(rule_id)
+
+
+# ---- そのほかのメモ ----------------------------------------------------------
+#
+# タスク・プロジェクト・ルールのどれでもないメモ。短期記憶に溜まる大半はこちらで、
+# 画面から見る手段が無かった(決定・環境・runbook・トラブルシュート…)。
+# **読み取りだけ**にしてある —— 書くのは MCP の remember か本体の REST で、
+# ここに増やすと同じことをする口が 3 つになる。
+
+
+def _note_json(note: tasks.Note) -> dict:
+    return {
+        "id": note.doc_id,
+        "title": note.title,
+        "body": note.body,
+        "tags": note.tags,
+        "createdAt": note.created_at,
+        "updatedAt": note.updated_at,
+        # 本体のブラウズ画面へ渡す入口。全文と生の項目はあちらで見られる
+        "url": f"/search/notes/doc/{note.doc_id}",
+    }
+
+
+@router.get("/notes")
+def list_notes(
+    tag: str | None = Query(None, description="タグで絞る。カンマ区切りで AND"),
+    limit: int = Query(50, ge=1, le=tasks.NOTE_PAGE_SIZE_MAX),
+    offset: int = Query(0, ge=0),
+) -> dict:
+    items, total = tasks.list_notes(tag=tag, limit=limit, offset=offset)
+    return {"items": [_note_json(n) for n in items], "total": total}
+
+
+@router.get("/notes/tags")
+def list_note_tags() -> list[dict]:
+    """絞り込みの候補。**そのほかのメモに付いているものだけ**を数える。"""
+    return [{"tag": tag, "docs": docs} for tag, docs in tasks.note_tags()]

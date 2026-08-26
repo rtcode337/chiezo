@@ -1,6 +1,8 @@
 import type {
   ImportRulesResult,
   Me,
+  Note,
+  NoteTag,
   Paged,
   Project,
   ProjectInput,
@@ -190,6 +192,17 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+
+  listNotes: (params: { tag?: string; limit?: number; offset?: number } = {}) => {
+    const query = new URLSearchParams()
+    if (params.tag) query.set('tag', params.tag)
+    if (params.limit !== undefined) query.set('limit', String(params.limit))
+    if (params.offset !== undefined) query.set('offset', String(params.offset))
+    const suffix = query.toString()
+    return request<{ items: Note[]; total: number }>(`/api/notes${suffix ? `?${suffix}` : ''}`)
+  },
+
+  noteTags: () => request<NoteTag[]>('/api/notes/tags'),
 
   listRules: () => request<Rule[]>('/api/rules'),
 

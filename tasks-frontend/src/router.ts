@@ -14,6 +14,8 @@ export const router = createRouter({
     { path: '/login', name: 'login', component: () => import('./views/LoginView.vue') },
     { path: '/done', name: 'done-tasks', component: () => import('./views/DoneTasksView.vue') },
     { path: '/rules', name: 'rules', component: () => import('./views/RulesView.vue') },
+    // タスク・プロジェクト・ルールのどれでもないメモ。他のどの画面にも出ない
+    { path: '/notes', name: 'notes', component: () => import('./views/NotesView.vue') },
     // タスク一覧・詳細・編集の専用画面は廃止。未完了はトップ、完了は /done、
     // 編集はカードを押してモーダル。古いブックマーク (/tasks 等) はフォールバックでトップへ
     // プロジェクト専用画面は廃止。作成・編集・並び替えはすべてトップで行う。

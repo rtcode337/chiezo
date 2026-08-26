@@ -136,3 +136,23 @@ export interface ProjectInput {
   description?: string | null
   archived?: boolean
 }
+
+/**
+ * そのほかのメモ(タスク・プロジェクト・ルールのどれでもない短期記憶)。
+ * 読むだけの型で、書く口は画面に持たない。
+ */
+export interface Note {
+  id: number
+  title: string
+  body: string
+  tags: string[]
+  createdAt: string
+  updatedAt: string
+  /** 本体のブラウズ画面。全文と生の項目はあちらで見る */
+  url: string
+}
+
+export interface NoteTag {
+  tag: string
+  docs: number
+}
