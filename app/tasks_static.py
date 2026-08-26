@@ -36,6 +36,10 @@ def resolve(root: Path, path: str) -> Path | None:
 
     どちらか片方では足りない。1 は意図を明示して静的解析にも追えるようにする段で、
     実際に外を防いでいるのは 2 のほう。
+
+    2 を `pathlib` の `relative_to()` ではなく `os.path.realpath` + 接頭辞の比較で
+    書いているのは、**静的解析(CodeQL)が前者を検証と認めない**ため。防いでいるものは
+    同じだが、報告が消えないと本物の指摘が埋もれる。
     """
     if not path:
         return None
@@ -45,15 +49,14 @@ def resolve(root: Path, path: str) -> Path | None:
     if any(":" in part for part in candidate_rel.parts):
         return None
     try:
-        base = root.resolve()
-        candidate = (base / candidate_rel).resolve()
+        base = os.path.realpath(root)
+        candidate = os.path.realpath(os.path.join(base, *candidate_rel.parts))
     except OSError:
         return None
-    try:
-        candidate.relative_to(base)
-    except ValueError:
+    if candidate != base and not candidate.startswith(base + os.sep):
         return None
-    return candidate if candidate.is_file() else None
+    resolved = Path(candidate)
+    return resolved if resolved.is_file() else None
 
 
 def cache_headers(file: Path, root: Path) -> dict:

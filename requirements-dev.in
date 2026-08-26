@@ -1,6 +1,6 @@
-# 開発・CI 用。テストは api と ingest の両方を import するので、両方の依存を入れる。
+# 開発・CI 用。テストは app と ingest の両方を import するので、両方の依存を入れる。
 # `requirements-dev.txt` へコンパイルして使う(手順は下の requirements.in と同じ)。
--r api/requirements.in
+-r app/requirements.in
 -r ingest/requirements.in
 
 pytest>=8.4

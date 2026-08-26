@@ -1,4 +1,4 @@
-# ブリッジは HTTP の受け口だけを持つ。Chiezo 本体(api/requirements.txt)とは
+# ブリッジは HTTP の受け口だけを持つ。Chiezo 本体(app/requirements.txt)とは
 # 別のロックにしてある —— こちらは CLI を包むだけで、DB も MCP サーバも要らないため。
 fastapi==0.141.1
 pydantic==2.13.4
