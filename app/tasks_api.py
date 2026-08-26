@@ -88,8 +88,8 @@ def install_error_handlers(app, only_under: str | None = None) -> None:
 
 
 def _project_ids() -> dict[str, int]:
-    """プロジェクト名 → doc_id。所属はタグ(名前)で持つので、外に出すときに引き直す。"""
-    return {p.name: p.doc_id for p in tasks.list_projects()}
+    """プロジェクト名 → id。所属はタグ(名前)で持つので、外に出すときに引き直す。"""
+    return {p.name: p.id for p in tasks.list_projects()}
 
 
 def _project_name(project_id: int) -> str:
@@ -114,7 +114,7 @@ def _task_json(task: tasks.Task, project_ids: dict[str, int]) -> dict:
 
 def _project_json(project: tasks.Project) -> dict:
     return {
-        "id": project.doc_id,
+        "id": project.id,
         "name": project.name,
         "repoUrls": project.repo_urls,
         "description": project.description or None,

@@ -368,53 +368,148 @@ def delete_task(doc_id: int) -> None:
 
 
 # ---- プロジェクト -----------------------------------------------------------
+#
+# **全プロジェクトを 1 件のメモに JSON で持つ**。1 プロジェクト 1 メモにしていた頃は、
+# タスクの入れ物の定義でしかないものが短期記憶に 1 件ずつ並び、並び替えのたびに
+# メモを 1 件ずつ書き換えていた。1 件にまとめると、並びは配列の順そのもので表せて、
+# 一覧も読み書きも 1 文書で済む。
+#
+# **タスクの所属は今までどおり名前のタグ**。この JSON が持つのは入れ物の定義だけで、
+# 紐づけには関わらない(だから JSON が壊れてもタスクの所属は失われない)。
+#
+# JSON は `extra` ではなく**本文**に置く。目に見えるところに無いと直せないし、
+# `recall` の既定は `extra` を返さないので、中身が読めなくなるため。
+
+# 集約したメモの見出し。`project` タグと合わせて 1 件だけ存在する。
+PROJECTS_TITLE = "プロジェクト"
+
+# 本文が壊れていた(手で編集して JSON でなくなった等)ときに備える。**黙って
+# 作り直さない** —— 中身ごと消えるので、読めないことを見せて人に直させる。
+PROJECTS_BROKEN = "プロジェクトのメモが JSON として読めません"
+
 
 @dataclass(frozen=True)
 class Project:
-    doc_id: int
+    id: int
     name: str
     description: str
     repo_urls: list[str]
     archived: bool
+    # 並びは配列の順そのもの。外に出すときだけ 1 始まりの番号に直す(画面の型に合わせる)
     sort_order: int
     created_at: str
     updated_at: str
 
 
-def _project_of(row) -> Project:
-    extra = _extra_of(row)
-    body = (row["body"] or "").strip()
-    # 本文はタイトル行から始まる(notes は空本文を許さないので名前を入れてある)
-    description = body[len(row["title"]):].strip() if body.startswith(row["title"]) else body
+def _projects_row():
+    """プロジェクトを集約したメモ。まだ 1 件も作っていなければ None。"""
+    rows = _rows_tagged(TAG_PROJECT)
+    if not rows:
+        return None
+    # 移行前のメモが残っていても落ちないよう、見出しの一致を優先して選ぶ
+    for row in rows:
+        if row["title"] == PROJECTS_TITLE:
+            return row
+    return rows[0]
+
+
+def _project_from_json(item: dict, index: int) -> Project:
     return Project(
-        doc_id=row["doc_id"],
-        name=row["title"],
-        description=description,
-        repo_urls=list(extra.get("repo_urls") or []),
-        archived=TAG_ARCHIVED in _tags_of(row),
-        sort_order=int(extra.get("sort_order") or 0),
-        created_at=_created_at(row),
-        updated_at=row["updated_at"],
+        id=int(item.get("id") or 0),
+        name=str(item.get("name") or ""),
+        description=str(item.get("description") or ""),
+        repo_urls=[str(u) for u in (item.get("repo_urls") or [])],
+        archived=bool(item.get("archived")),
+        sort_order=index + 1,
+        created_at=str(item.get("created_at") or ""),
+        updated_at=str(item.get("updated_at") or ""),
     )
 
 
+def _load_payload() -> tuple[list[Project], int]:
+    """プロジェクトの並びと、次に配る id。
+
+    **次の id を JSON に持つ**のは、消した番号を配り直さないため —— `max(id) + 1` だと
+    最後の 1 件を消した後に 1 から配り直してしまい、画面が持っている古い参照が
+    黙って別のプロジェクトを指す。
+    """
+    row = _projects_row()
+    if row is None:
+        return [], 1
+    try:
+        payload = json.loads(row["body"] or "{}")
+        items = payload["projects"]
+        if not isinstance(items, list):
+            raise ValueError("projects must be a list")
+    except (ValueError, KeyError, TypeError) as e:
+        raise _bad_request(f"{PROJECTS_BROKEN}: {e}") from None
+    projects = [
+        _project_from_json(item, i) for i, item in enumerate(items) if isinstance(item, dict)
+    ]
+    # next_id を持たない古い形(移行直後など)は、その時点の最大値から続ける
+    next_id = payload.get("next_id")
+    fallback = max((p.id for p in projects), default=0) + 1
+    return projects, max(int(next_id or 0), fallback)
+
+
+def _load_projects() -> list[Project]:
+    return _load_payload()[0]
+
+
+def _to_json(projects: list[Project], next_id: int) -> str:
+    return json.dumps(
+        {
+            "next_id": next_id,
+            "projects": [
+                {
+                    "id": p.id,
+                    "name": p.name,
+                    "description": p.description,
+                    "repo_urls": p.repo_urls,
+                    "archived": p.archived,
+                    "created_at": p.created_at,
+                    "updated_at": p.updated_at,
+                }
+                for p in projects
+            ]
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _save_projects(projects: list[Project], next_id: int | None = None) -> None:
+    """並びごと書き戻す。**配列の順が表示順**なので、並べ替えもここを通る。"""
+    if next_id is None:
+        next_id = max((p.id for p in projects), default=0) + 1
+    body = _to_json(projects, next_id)
+    row = _projects_row()
+    if row is None:
+        notes.add(text=body, title=PROJECTS_TITLE, tags=TAG_PROJECT)
+        return
+    notes.update(row["doc_id"], text=body, title=PROJECTS_TITLE, tags=TAG_PROJECT)
+
+
+def _project_names() -> set[str]:
+    return {p.name for p in _load_projects()}
+
+
 def list_projects(archived: bool | None = None) -> list[Project]:
-    projects = [_project_of(row) for row in _rows_tagged(TAG_PROJECT)]
+    projects = _load_projects()
     if archived is not None:
         projects = [p for p in projects if p.archived == archived]
-    projects.sort(key=lambda p: (p.sort_order, p.name))
     return projects
 
 
-def require_project(doc_id: int) -> Project:
-    row = _row(doc_id)
-    if row is None or TAG_PROJECT not in _tags_of(row):
-        raise _not_found(f"プロジェクトが見つかりません: doc_id={doc_id}")
-    return _project_of(row)
+def require_project(project_id: int) -> Project:
+    for project in _load_projects():
+        if project.id == project_id:
+            return project
+    raise _not_found(f"プロジェクトが見つかりません: id={project_id}")
 
 
 def require_project_by_name(name: str) -> Project:
-    for project in list_projects():
+    for project in _load_projects():
         if project.name == name:
             return project
     raise _not_found(f"プロジェクトが見つかりません: {name}")
@@ -451,25 +546,26 @@ def create_project(
     repo_urls: list[str] | None = None,
 ) -> Project:
     name = _require_project_name(name)
-    if any(p.name == name for p in list_projects()):
+    projects, next_id = _load_payload()
+    if any(p.name == name for p in projects):
         raise _conflict(f"同名のプロジェクトが既にあります: {name}")
-    order = max((p.sort_order for p in list_projects()), default=0) + 1
-    description = (description or "").strip()
-    created = notes.add(
-        text=f"{name}\n\n{description}" if description else name,
-        title=name,
-        tags=TAG_PROJECT,
-        extra={
-            "created_at": _now(),
-            "sort_order": order,
-            "repo_urls": _clean_repo_urls(repo_urls),
-        },
+    now = _now()
+    created = Project(
+        id=next_id,
+        name=name,
+        description=(description or "").strip(),
+        repo_urls=_clean_repo_urls(repo_urls),
+        archived=False,
+        sort_order=len(projects) + 1,
+        created_at=now,
+        updated_at=now,
     )
-    return require_project(created["doc_id"])
+    _save_projects([*projects, created], next_id=next_id + 1)
+    return require_project(created.id)
 
 
 def update_project(
-    doc_id: int,
+    project_id: int,
     name: str | None = None,
     description: str | None = None,
     repo_urls: list[str] | None = None,
@@ -480,9 +576,10 @@ def update_project(
     アーカイブは**未完了のタスクが 0 件のときだけ**通す。片付いていないタスクごと
     一覧から消えると、放り込んだものを取りこぼすため(戻すのはいつでもよい)。
     """
-    current = require_project(doc_id)
+    projects, next_id = _load_payload()
+    current = require_project(project_id)
     new_name = _require_project_name(name) if name is not None else current.name
-    if new_name != current.name and any(p.name == new_name for p in list_projects()):
+    if new_name != current.name and any(p.name == new_name for p in projects):
         raise _conflict(f"同名のプロジェクトが既にあります: {new_name}")
 
     if archived and not current.archived:
@@ -492,26 +589,21 @@ def update_project(
                 f"未完了のタスクが {incomplete} 件あるためアーカイブできません: {current.name}"
             )
 
-    new_description = description.strip() if description is not None else current.description
-    new_urls = _clean_repo_urls(repo_urls) if repo_urls is not None else current.repo_urls
-    new_archived = archived if archived is not None else current.archived
-
-    row = _row(doc_id)
-    extra = _extra_of(row)
-    extra["repo_urls"] = new_urls
-    tags = [TAG_PROJECT] + ([TAG_ARCHIVED] if new_archived else [])
-
-    notes.update(
-        doc_id,
-        text=f"{new_name}\n\n{new_description}" if new_description else new_name,
-        title=new_name,
-        tags=",".join(tags),
-        extra=extra,
+    updated = Project(
+        id=current.id,
+        name=new_name,
+        description=description.strip() if description is not None else current.description,
+        repo_urls=_clean_repo_urls(repo_urls) if repo_urls is not None else current.repo_urls,
+        archived=archived if archived is not None else current.archived,
+        sort_order=current.sort_order,
+        created_at=current.created_at,
+        updated_at=_now(),
     )
+    _save_projects([updated if p.id == current.id else p for p in projects], next_id=next_id)
     # 名前はタスク側にタグとして写っているので、変えたら付け替える
     if new_name != current.name:
         _rename_project_tag(current.name, new_name)
-    return require_project(doc_id)
+    return require_project(project_id)
 
 
 def _rename_project_tag(old: str, new: str) -> None:
@@ -521,29 +613,29 @@ def _rename_project_tag(old: str, new: str) -> None:
         notes.update(row["doc_id"], tags=",".join(tags))
 
 
-def delete_project(doc_id: int) -> None:
+def delete_project(project_id: int) -> None:
     """アーカイブ済みのプロジェクトを、紐づくタスクごと消す。
 
     アーカイブしていないものは消せない —— アーカイブ自体が「未完了 0 件」を
     条件にしているので、片付いたことを確かめる一段を必ず通させるため。
     """
-    current = require_project(doc_id)
+    projects, next_id = _load_payload()
+    current = require_project(project_id)
     if not current.archived:
         raise _bad_request(f"アーカイブしてからでないと削除できません: {current.name}")
     for task in list_tasks(current.name):
         notes.delete(task.doc_id)
-    notes.delete(doc_id)
+    _save_projects([p for p in projects if p.id != current.id], next_id=next_id)
 
 
-def reorder_projects(doc_ids: list[int]) -> list[Project]:
-    """並び替え。`doc_ids` は全プロジェクト(アーカイブ含む)を望む順で過不足なく。"""
-    existing = {p.doc_id for p in list_projects()}
-    if not doc_ids or set(doc_ids) != existing or len(set(doc_ids)) != len(doc_ids):
-        raise _bad_request("doc_ids には全プロジェクトの doc_id を過不足なく指定してください")
-    for index, doc_id in enumerate(doc_ids, start=1):
-        extra = _extra_of(_row(doc_id))
-        extra["sort_order"] = index
-        notes.set_extra(doc_id, extra)
+def reorder_projects(project_ids: list[int]) -> list[Project]:
+    """並び替え。`project_ids` は全プロジェクト(アーカイブ含む)を望む順で過不足なく。"""
+    projects, next_id = _load_payload()
+    existing = {p.id for p in projects}
+    if not project_ids or set(project_ids) != existing or len(set(project_ids)) != len(project_ids):
+        raise _bad_request("ids には全プロジェクトの id を過不足なく指定してください")
+    by_id = {p.id: p for p in projects}
+    _save_projects([by_id[i] for i in project_ids], next_id=next_id)
     return list_projects()
 
 

@@ -201,47 +201,50 @@ class TestProjects:
     def test_rename_retags_its_tasks(self, client):
         project = tasks.create_project("old-name")
         task = tasks.create_task("あ", project=project.name)
-        tasks.update_project(project.doc_id, name="new-name")
+        tasks.update_project(project.id, name="new-name")
         assert tasks.require_task(task.doc_id).project == "new-name"
 
     def test_archive_is_blocked_while_tasks_remain(self, client):
         project = tasks.create_project("arrow-puzzle")
         tasks.create_task("残っている", project=project.name)
         with pytest.raises(Exception) as e:
-            tasks.update_project(project.doc_id, archived=True)
+            tasks.update_project(project.id, archived=True)
         assert e.value.status_code == 400
 
     def test_archive_passes_once_everything_is_done(self, client):
         project = tasks.create_project("arrow-puzzle")
         task = tasks.create_task("片付ける", project=project.name)
         tasks.update_task(task.doc_id, status=tasks.STATUS_DONE)
-        assert tasks.update_project(project.doc_id, archived=True).archived is True
+        assert tasks.update_project(project.id, archived=True).archived is True
 
     def test_delete_requires_archive_first(self, client):
         project = tasks.create_project("arrow-puzzle")
         with pytest.raises(Exception) as e:
-            tasks.delete_project(project.doc_id)
+            tasks.delete_project(project.id)
         assert e.value.status_code == 400
 
     def test_delete_takes_its_tasks_with_it(self, client):
         project = tasks.create_project("arrow-puzzle")
         task = tasks.create_task("片付ける", project=project.name)
         tasks.update_task(task.doc_id, status=tasks.STATUS_DONE)
-        tasks.update_project(project.doc_id, archived=True)
-        tasks.delete_project(project.doc_id)
-        assert client.get("/v1/notes/recall").json()["total"] == 0
+        tasks.update_project(project.id, archived=True)
+        tasks.delete_project(project.id)
+        assert tasks.list_projects() == []
+        assert tasks.list_tasks() == []
+        # プロジェクトを集約したメモ自体は残る(中身が空になるだけ)
+        assert client.get("/v1/notes/recall").json()["total"] == 1
 
     def test_reorder_requires_every_id(self, client):
         a = tasks.create_project("a")
         tasks.create_project("b")
         with pytest.raises(Exception) as e:
-            tasks.reorder_projects([a.doc_id])
+            tasks.reorder_projects([a.id])
         assert e.value.status_code == 400
 
     def test_reorder_numbers_from_one(self, client):
         a = tasks.create_project("a")
         b = tasks.create_project("b")
-        assert [p.doc_id for p in tasks.reorder_projects([b.doc_id, a.doc_id])] == [b.doc_id, a.doc_id]
+        assert [p.id for p in tasks.reorder_projects([b.id, a.id])] == [b.id, a.id]
 
 
 class TestTagCountsStayConsistent:
@@ -444,3 +447,156 @@ class TestTodoMigration:
         counts = {t["tag"]: t["docs"] for t in client.get("/v1/notes/tags").json()["tags"]}
         assert counts.get("task") == 1
         assert "todo" not in counts
+
+
+class TestProjectsAreOneNote:
+    """プロジェクトは 1 件のメモに JSON でまとまっている。
+
+    1 プロジェクト 1 メモにしていた頃は、タスクの入れ物の定義でしかないものが
+    短期記憶に 1 件ずつ並び、並び替えのたびにメモを書き換えていた。
+    """
+
+    def test_they_live_in_a_single_note(self, client):
+        tasks.create_project("arrow-puzzle")
+        tasks.create_project("travel-log")
+        listed = client.get("/v1/notes/recall", params={"tag": "project"}).json()
+        assert listed["total"] == 1
+        assert listed["notes"][0]["title"] == tasks.PROJECTS_TITLE
+
+    def test_the_body_is_readable_json(self, client):
+        """本文に置くのは、目に見えないと直せないから(extra は recall に出ない)。"""
+        import json
+
+        tasks.create_project("arrow-puzzle", description="矢印パズル")
+        row = client.get("/v1/notes/recall", params={"tag": "project", "max_chars": 0}).json()
+        payload = json.loads(row["notes"][0]["text"])
+        assert [p["name"] for p in payload["projects"]] == ["arrow-puzzle"]
+        assert payload["projects"][0]["description"] == "矢印パズル"
+
+    def test_ids_are_not_note_ids(self, client):
+        """id は JSON の中で採番する。メモの doc_id とは無関係。"""
+        first = tasks.create_project("one")
+        second = tasks.create_project("two")
+        assert [first.id, second.id] == [1, 2]
+
+    def test_ids_are_not_reused_after_a_delete(self, client):
+        """消した番号を配り直すと、画面が持つ古い参照が別のものを指す。"""
+        first = tasks.create_project("one")
+        tasks.update_project(first.id, archived=True)
+        tasks.delete_project(first.id)
+        assert tasks.create_project("two").id != first.id
+
+    def test_order_is_the_array_order(self, client):
+        a = tasks.create_project("a")
+        b = tasks.create_project("b")
+        assert [p.name for p in tasks.reorder_projects([b.id, a.id])] == ["b", "a"]
+        assert [p.name for p in tasks.list_projects()] == ["b", "a"]
+
+    def test_tasks_keep_their_link_through_the_name(self, client):
+        """紐づけはタグ(名前)のまま。JSON は入れ物の定義しか持たない。"""
+        project = tasks.create_project("arrow-puzzle")
+        task = tasks.create_task("直す", project=project.name)
+        assert tasks.require_task(task.doc_id).project == "arrow-puzzle"
+        tasks.update_project(project.id, name="arrow-puzzle-2")
+        assert tasks.require_task(task.doc_id).project == "arrow-puzzle-2"
+
+    def test_a_broken_body_is_reported_not_swallowed(self, client):
+        """手で壊したときに黙って作り直さない(中身ごと消えるため)。"""
+        tasks.create_project("arrow-puzzle")
+        row = client.get("/v1/notes/recall", params={"tag": "project"}).json()["notes"][0]
+        client.patch(f"/v1/notes/{row['doc_id']}", json={"text": "これは JSON ではない"})
+        with pytest.raises(Exception) as e:
+            tasks.list_projects()
+        assert e.value.status_code == 400
+        assert tasks.PROJECTS_BROKEN in str(e.value.detail)
+
+    def test_it_does_not_show_up_in_other_notes(self, client):
+        """`project` タグを持つので「そのほかのメモ」には出ない。"""
+        tasks.create_project("arrow-puzzle")
+        items, total = tasks.list_notes()
+        assert total == 0 and items == []
+
+
+class TestProjectMigration:
+    """1 プロジェクト 1 メモ → 1 件の JSON メモ(`scripts/migrate_projects_to_one_note.py`)。
+
+    **id は元の doc_id を引き継ぐ**ので、画面が持っている projectId がそのまま通る。
+    """
+
+    def _run(self, notes_dir):
+        import importlib.util
+        import sqlite3
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parents[1] / "scripts" / "migrate_projects_to_one_note.py"
+        spec = importlib.util.spec_from_file_location("migrate_projects", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        conn = sqlite3.connect(notes_dir / "notes.db")
+        try:
+            projects = module._collect(conn)
+            if projects:
+                with conn:
+                    module._write(conn, projects)
+        finally:
+            conn.close()
+        return projects
+
+    def _old_style(self, client, name, description="", repo_urls=None, order=1, archived=False):
+        """移行前の形(1 プロジェクト 1 メモ)を手で作る。"""
+        tags = "project,アーカイブ" if archived else "project"
+        return client.post("/v1/notes", json={
+            "text": f"{name}\n\n{description}" if description else name,
+            "title": name,
+            "tags": tags,
+            "extra": {"sort_order": order, "repo_urls": repo_urls or []},
+        }).json()
+
+    def test_old_notes_become_one(self, client, notes_dir):
+        a = self._old_style(client, "arrow-puzzle", "矢印パズル", ["https://example.com/a"], order=2)
+        b = self._old_style(client, "travel-log", order=1)
+
+        moved = self._run(notes_dir)
+        assert len(moved) == 2
+
+        listed = tasks.list_projects()
+        # 並びは移行前の sort_order を引き継ぐ
+        assert [p.name for p in listed] == ["travel-log", "arrow-puzzle"]
+        assert [p.id for p in listed] == [b["doc_id"], a["doc_id"]]
+        arrow = tasks.require_project(a["doc_id"])
+        assert arrow.description == "矢印パズル"
+        assert arrow.repo_urls == ["https://example.com/a"]
+
+    def test_the_old_notes_are_gone(self, client, notes_dir):
+        self._old_style(client, "arrow-puzzle")
+        self._run(notes_dir)
+        listed = client.get("/v1/notes/recall", params={"tag": "project"}).json()
+        assert listed["total"] == 1
+        assert listed["notes"][0]["title"] == tasks.PROJECTS_TITLE
+
+    def test_archived_survives(self, client, notes_dir):
+        self._old_style(client, "old-one", archived=True)
+        self._run(notes_dir)
+        assert tasks.list_projects(archived=True)[0].name == "old-one"
+
+    def test_tasks_keep_their_project(self, client, notes_dir):
+        """紐づけはタグ(名前)なので、まとめても切れない。"""
+        self._old_style(client, "arrow-puzzle")
+        created = client.post(
+            "/v1/notes", json={"text": "直す", "tags": "task,arrow-puzzle"}
+        ).json()
+        self._run(notes_dir)
+        assert tasks.require_task(created["doc_id"]).project == "arrow-puzzle"
+
+    def test_new_ids_continue_from_the_old_ones(self, client, notes_dir):
+        """引き継いだ id とぶつからないところから採番を続けること。"""
+        a = self._old_style(client, "arrow-puzzle")
+        self._run(notes_dir)
+        assert tasks.create_project("あとから").id > a["doc_id"]
+
+    def test_it_can_be_run_twice(self, client, notes_dir):
+        self._old_style(client, "arrow-puzzle")
+        self._run(notes_dir)
+        assert self._run(notes_dir) == []
+        assert [p.name for p in tasks.list_projects()] == ["arrow-puzzle"]
