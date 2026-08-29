@@ -4,7 +4,6 @@ import { RouterLink } from 'vue-router'
 import { useTaskStore } from '@/stores/tasks'
 import { useProjectStore } from '@/stores/projects'
 import { usePullToRefresh } from '@/lib/pullToRefresh'
-import { useColumnFlow } from '@/lib/columnFlow'
 import { buildTaskGroups, withUnlinkedGroup } from '@/lib/groups'
 import ErrorBanner from '@/components/ErrorBanner.vue'
 import ProjectFormModal from '@/components/ProjectFormModal.vue'
@@ -20,7 +19,6 @@ const projects = useProjectStore()
 usePullToRefresh(() => Promise.all([projects.load(true), tasks.load(true)]))
 
 // 広い画面の段組み。折り返しが要らない量のときは使ったぶんの幅に絞って中央へ
-const flow = useColumnFlow()
 
 // アーカイブ済みはここには出さない。/archived で見る。
 // 出すのは未完了(done 以外)= 未着手 + 着手中。
@@ -103,7 +101,7 @@ async function save() {
 
     <!-- 未完了のタスク。広い画面では **入力欄も同じ段の流れに入れる** ——
          そうしないと入力欄の右側が空いたままになる(入力欄の下からしか流れない) -->
-    <section :ref="flow" class="list column-flow">
+    <section class="list column-flow">
       <!-- やりたいことをさっと書いて放り込む -->
       <form class="entry" @submit.prevent="save">
         <textarea

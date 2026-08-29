@@ -4,7 +4,6 @@ import { RouterLink } from 'vue-router'
 import { useTaskStore } from '@/stores/tasks'
 import { useProjectStore } from '@/stores/projects'
 import { usePullToRefresh } from '@/lib/pullToRefresh'
-import { useColumnFlow } from '@/lib/columnFlow'
 import { buildTaskGroups } from '@/lib/groups'
 import ErrorBanner from '@/components/ErrorBanner.vue'
 import ProjectFormModal from '@/components/ProjectFormModal.vue'
@@ -22,7 +21,6 @@ const projects = useProjectStore()
 usePullToRefresh(() => Promise.all([projects.load(true), tasks.load(true)]))
 
 // 広い画面の段組み。折り返しが要らない量のときは使ったぶんの幅に絞って中央へ
-const flow = useColumnFlow()
 
 const error = ref<string | null>(null)
 const editingProject = ref<Project | null>(null)
@@ -65,7 +63,7 @@ const editingTask = ref<Task | null>(null)
 
     <template v-else>
       <p class="hint">「編集」から <strong>アーカイブから戻す</strong> と、トップに戻ります。</p>
-      <div :ref="flow" class="column-flow">
+      <div class="column-flow">
         <ProjectGroups
           :groups="groups"
           :sortable="false"

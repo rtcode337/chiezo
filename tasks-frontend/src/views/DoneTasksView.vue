@@ -4,7 +4,6 @@ import { RouterLink } from 'vue-router'
 import { api } from '@/api/client'
 import { useProjectStore } from '@/stores/projects'
 import { usePullToRefresh } from '@/lib/pullToRefresh'
-import { useColumnFlow } from '@/lib/columnFlow'
 import { buildTaskGroups, withUnlinkedGroup } from '@/lib/groups'
 import { compareInProject } from '@/stores/tasks'
 import ErrorBanner from '@/components/ErrorBanner.vue'
@@ -28,7 +27,6 @@ const editingTask = ref<Task | null>(null)
 usePullToRefresh(() => load())
 
 // 広い画面の段組み。折り返しが要らない量のときは使ったぶんの幅に絞って中央へ
-const flow = useColumnFlow()
 
 /** 完了タスクを持つプロジェクトだけ出す。トップと違って「放り込み先」の意味が無いため */
 const groups = computed(() => {
@@ -77,7 +75,7 @@ function drop(taskId: number) {
     <p v-else-if="done.length === 0" class="muted">完了したタスクはありません。</p>
 
     <!-- 完了分は並べ替える意味が無いので sortable は付けない -->
-    <div v-else :ref="flow" class="column-flow">
+    <div v-else class="column-flow">
       <ProjectGroups
         :groups="groups"
         :sortable="false"
