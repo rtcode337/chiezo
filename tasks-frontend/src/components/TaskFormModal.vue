@@ -26,6 +26,8 @@ const saving = ref(false)
 const form = reactive({
   projectId: props.task.projectId ?? null,
   title: props.task.title,
+  // 本文はタイトル行を除いた残り(API が同じ形で返す)。古い版のキャッシュには無いので既定を置く
+  body: props.task.body ?? '',
 })
 
 async function save() {
@@ -38,6 +40,8 @@ async function save() {
       // 「プロジェクトなし」は 0 で送る。undefined(= 未指定)だと「変更しない」になり紐づけが外れない
       projectId: form.projectId ?? UNLINK_PROJECT_ID,
       title: form.title.trim(),
+      // 空文字も送る(消したいことがあるため)。undefined だと「変更しない」になる
+      body: form.body.trim(),
     })
     emit('close')
   } catch (e) {
@@ -74,6 +78,13 @@ async function remove() {
       <label class="field">
         <span class="field__label">タスク内容<span class="field__required">必須</span></span>
         <textarea v-model="form.title" rows="4" required placeholder="やりたいこと" />
+      </label>
+
+      <!-- 本文。MCP や CLI から作ったタスクは説明を持っていることがあり、
+           これが無いと画面からは読むことも直すこともできなかった -->
+      <label class="field">
+        <span class="field__label">本文<span class="field__hint">任意</span></span>
+        <textarea v-model="form.body" rows="6" placeholder="詳しい説明・メモ(任意)" />
       </label>
 
       <label class="field">
@@ -167,6 +178,13 @@ async function remove() {
   margin-left: 0.5rem;
   font-weight: 400;
   color: var(--danger);
+}
+
+/* 「必須」と同じ位置に置く任意の印。色だけ落として、並びは揃える */
+.field__hint {
+  margin-left: 0.5rem;
+  font-weight: 400;
+  color: var(--muted-dim);
 }
 
 .actions {

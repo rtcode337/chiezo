@@ -21,6 +21,8 @@ export interface Task {
   /** 未分類(どのプロジェクトにも紐づいていない)なら欠落する(JSON は null を落とす設定) */
   projectId?: number | null
   title: string
+  /** 本文(タイトル行を除いた残り)。1 行だけのタスクでは空文字 */
+  body: string
   status: TaskStatus
   /** 「修正が大変そう」の印。付いたカードは一覧で水色になる。状態(status)とは別軸 */
   flagged: boolean
@@ -124,6 +126,8 @@ export interface TaskInput {
   /** 更新では undefined = 変更しない、{@link UNLINK_PROJECT_ID}(0) = 紐づけを外す */
   projectId?: number
   title?: string
+  /** 本文(タイトル行を除いた残り)。undefined = 変更しない、空文字 = 消す */
+  body?: string
   status?: TaskStatus
   /** 「修正が大変そう」の印。undefined = 変更しない */
   flagged?: boolean

@@ -100,6 +100,9 @@ def _task_json(task: tasks.Task, project_ids: dict[str, int]) -> dict:
     body = {
         "id": task.doc_id,
         "title": task.title,
+        # 画面が編集するのは**タイトル行を除いた残り**。メモ本体はタイトルを先頭に含むので、
+        # そのまま返すと編集画面にタイトルが二重に出る(直しても保存で組み立て直される)
+        "body": tasks.body_rest(task),
         "status": task.status,
         "flagged": task.flagged,
         "sortOrder": task.sort_order,

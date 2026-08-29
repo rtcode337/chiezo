@@ -44,7 +44,9 @@ def _task(api, title="あ", **kw):
 class TestShape:
     def test_task_fields_are_camel_case(self, api):
         task = _task(api)
-        assert set(task) == {"id", "title", "status", "flagged", "sortOrder", "createdAt", "updatedAt"}
+        assert set(task) == {
+            "id", "title", "body", "status", "flagged", "sortOrder", "createdAt", "updatedAt",
+        }
 
     def test_project_id_is_absent_when_unassigned(self, api):
         """画面の型が「未分類なら欠落する」前提。null を入れると分岐が増える。"""
@@ -229,6 +231,65 @@ class TestTransfer:
             ["arrow-puzzle / やること", "未分類のやること"]
         )
         assert len(api.get("/api/tasks").json()) == 2
+
+    def test_body_survives_the_round_trip(self, api):
+        """画面から本文を編集できるようにしたので、書き出しにも残す。"""
+        task = _task(api, "調べる")
+        api.patch(f"/api/tasks/{task['id']}", json={"body": "手順は README にある"})
+        assert api.get(f"/api/tasks/{task['id']}").json()["body"] == "手順は README にある"
+
+        exported = api.get("/api/tasks/export").json()
+        assert exported["unassignedTasks"][0]["body"] == "手順は README にある"
+
+        # 別のプロジェクトへ取り込み直しても本文が付いてくる
+        exported["projects"] = [{"name": "別", "repoUrls": [], "tasks": exported["unassignedTasks"]}]
+        exported["unassignedTasks"] = []
+        api.post("/api/tasks/import", json=exported)
+        moved = [t for t in api.get("/api/tasks").json() if t.get("projectId")]
+        assert moved and moved[0]["body"] == "手順は README にある"
+
+    def test_body_is_not_duplicated_when_the_title_was_made_unique(self, api):
+        """docs.title は UNIQUE。同じ 1 行目のタスクは notes 側で `… (doc_id)` になる。
+
+        本文の切り出しが前置きの完全一致だけだと、その場合にタイトル行が本文として
+        画面に出て、保存でもう一度足されて二重になる。
+        """
+        _task(api, "同じ見出し")
+        second = _task(api, "同じ見出し", body="こちらが本文")
+        assert second["title"] != "同じ見出し"  # notes 側が一意化している
+        assert second["body"] == "こちらが本文"
+
+    def test_export_includes_projects_without_tasks(self, api):
+        """プロジェクトはタスクの入れ物である前に、リポジトリと説明を持つ設定そのもの。
+
+        いまタスクが無いという理由で落とすと、作り直しのたびに手で足し直すことになる。
+        """
+        _project(api, "空っぽ", repoUrls=["https://example.com/e"], description="まだ何も無い")
+        exported = api.get("/api/tasks/export").json()
+        entry = next(p for p in exported["projects"] if p["name"] == "空っぽ")
+        assert entry["tasks"] == []
+        assert entry["repoUrls"] == ["https://example.com/e"]
+        assert entry["description"] == "まだ何も無い"
+
+    def test_archived_project_without_tasks_is_dropped(self, api):
+        """アーカイブ済みで中身も無いものは戻したい箱ではない。"""
+        project = _project(api, "終わった")
+        api.patch(f"/api/projects/{project['id']}", json={"archived": True})
+        exported = api.get("/api/tasks/export").json()
+        assert [p["name"] for p in exported["projects"]] == []
+
+    def test_import_creates_a_project_that_has_no_tasks(self, api):
+        data = {
+            "version": 1,
+            "projects": [
+                {"name": "空っぽ", "description": "説明も戻す", "repoUrls": [], "tasks": []}
+            ],
+            "unassignedTasks": [],
+        }
+        result = api.post("/api/tasks/import", json=data).json()
+        assert result["createdProjects"] == ["空っぽ"] and result["createdTasks"] == []
+        created = next(p for p in api.get("/api/projects").json() if p["name"] == "空っぽ")
+        assert created["description"] == "説明も戻す"
 
     def test_import_creates_missing_projects(self, api):
         data = {

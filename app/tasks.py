@@ -317,7 +317,7 @@ def update_task(
 
     new_body = None
     if body is not None or title is not None:
-        rest = body.strip() if body is not None else _body_rest(current)
+        rest = body.strip() if body is not None else body_rest(current)
         new_body = f"{new_title}\n\n{rest}" if rest else new_title
 
     updated = notes.update(
@@ -331,12 +331,30 @@ def update_task(
     return require_task(doc_id)
 
 
-def _body_rest(task: Task) -> str:
-    """本文からタイトル行を除いた残り。タイトルだけのタスクなら空。"""
-    body = task.body
-    if body.startswith(task.title):
-        return body[len(task.title):].strip()
-    return body.strip()
+def body_rest(task: Task) -> str:
+    """本文からタイトル行を除いた残り。タイトルだけのタスクなら空。
+
+    **メモ本体はタイトルを先頭に含む**(検索でタイトルも引けるようにするため)ので、
+    画面に出す・画面から受け取る「本文」はこの残りのほう。両方を持つと、
+    どちらを直せばよいのか画面から分からなくなる。
+
+    **保存されたタイトルと 1 行目が食い違うことがある。** `docs.title` は UNIQUE なので、
+    同じ 1 行目のメモが既にあると notes 側が `… (doc_id)` を足して一意にする
+    (`notes.add` / `notes.update`)。前置きの完全一致だけで削ると、この場合に
+    タイトル行が本文として画面に出てしまい、保存でもう一度足されて二重になる。
+    """
+    head, sep, rest = task.body.partition("\n\n")
+    if sep and _is_title_line(head, task):
+        return rest.strip()
+    if task.body.startswith(task.title):
+        return task.body[len(task.title):].strip()
+    return task.body.strip()
+
+
+def _is_title_line(line: str, task: Task) -> bool:
+    """本文の 1 行目がこのタスクのタイトル行か(一意化の接尾辞ぶんを見込む)。"""
+    line = line.strip()
+    return line == task.title or f"{line} ({task.doc_id})" == task.title
 
 
 def reorder_tasks(project: str | None, doc_ids: list[int]) -> list[Task]:
@@ -892,24 +910,32 @@ EXPORT_FORMAT_VERSION = 1
 
 
 def _exported(items: list[Task]) -> list[dict]:
-    return [{"title": t.title, "status": t.status, "flagged": t.flagged} for t in items]
+    return [
+        {"title": t.title, "body": body_rest(t), "status": t.status, "flagged": t.flagged}
+        for t in items
+    ]
 
 
 def export_tasks() -> dict:
     """未完了タスクを書き出す。プロジェクトは表示順、タスクは各プロジェクト内の並び順。
 
-    未完了タスクを持たないプロジェクトは含めない —— 戻したいのはタスクなので、
-    空のプロジェクトまで作ると復元先に使っていない箱が増える。
+    **中身が空でも、アーカイブしていないプロジェクトは書き出す** —— プロジェクトは
+    タスクの入れ物である前に、リポジトリと説明を持つ設定そのもの。作り直しのたびに
+    手で足し直すことになるので、いまタスクが無いという理由で落とさない。
+    **アーカイブ済みで中身も無いものだけ落とす**(戻したい箱ではないため。
+    タスクが残っているアーカイブ済みプロジェクトは、そのタスクごと書き出す)。
     """
     projects = []
     for project in list_projects():
         items = list_active_tasks(project.name)
-        if items:
-            projects.append({
-                "name": project.name,
-                "repoUrls": project.repo_urls,
-                "tasks": _exported(items),
-            })
+        if not items and project.archived:
+            continue
+        projects.append({
+            "name": project.name,
+            "description": project.description or "",
+            "repoUrls": project.repo_urls,
+            "tasks": _exported(items),
+        })
     unassigned = [t for t in list_active_tasks() if t.project is None]
     return {
         "version": EXPORT_FORMAT_VERSION,
@@ -928,8 +954,9 @@ def _transfer_key(project_name: str, title: str) -> str:
 def import_tasks(data: dict | None, dry_run: bool = False) -> dict:
     """書き出したものを読み込む。
 
-    プロジェクトは**名前で照合し、無ければ作る**(リポジトリも一緒に登録する)。
+    プロジェクトは**名前で照合し、無ければ作る**(説明とリポジトリも一緒に登録する)。
     既にあるものは触らない —— 復元のたびに手元の設定を上書きされると困る。
+    **タスクを持たないプロジェクトも作る**(書き出した側が空でも出しているため)。
 
     タスクは**同じプロジェクトに同じタイトルの未完了タスクがあれば飛ばす**。
     同じファイルを二度読んでも増えないようにするため(復元は繰り返し試すことがある)。
@@ -938,7 +965,9 @@ def import_tasks(data: dict | None, dry_run: bool = False) -> dict:
     entries = data.get("projects") or []
     unassigned = data.get("unassignedTasks") or []
     if not entries and not unassigned:
-        raise _bad_request("読み込めるタスクがありません。書き出した JSON を貼り付けてください")
+        raise _bad_request(
+            "読み込めるプロジェクト・タスクがありません。書き出した JSON を貼り付けてください"
+        )
     version = int(data.get("version") or EXPORT_FORMAT_VERSION)
     if version > EXPORT_FORMAT_VERSION:
         raise _bad_request(
@@ -960,7 +989,11 @@ def import_tasks(data: dict | None, dry_run: bool = False) -> dict:
             result["createdProjects"].append(name)
             existing_names.add(name)
             if not dry_run:
-                create_project(name, repo_urls=entry.get("repoUrls"))
+                create_project(
+                    name,
+                    description=entry.get("description") or None,
+                    repo_urls=entry.get("repoUrls"),
+                )
         _import_into(name, entry.get("tasks"), taken, result, dry_run)
     _import_into("", unassigned, taken, result, dry_run)
     return result
@@ -989,6 +1022,7 @@ def _import_into(
             status = item.get("status") or STATUS_TODO
             create_task(
                 title,
+                body=item.get("body") or None,
                 project=project_name or None,
                 status=status if status in STATUSES else STATUS_TODO,
                 flagged=bool(item.get("flagged")),
