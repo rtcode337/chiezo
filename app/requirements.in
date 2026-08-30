@@ -5,7 +5,7 @@ httpx>=0.28.1
 # MCP サーバー(/mcp、Streamable HTTP)。REST と同じ関数を MCP ツールとしても公開する。
 # 2.0 で `mcp.server.fastmcp.FastMCP` が `mcp.server.mcpserver.MCPServer` になった
 # (移行済み)。3.x はまた作り直しになりうるので上限を張っておく。
-mcp>=2.0,<3
+mcp>=2.1.1,<3
 # multipart のフォームを受け取る(/v1/media/transcribe が音のファイルを受ける)。
 # mcp 経由でも入るが、直接使うものは直接書く —— 上流が外した日に、
 # 使っていない依存が消えただけのつもりで口が 1 つ壊れる。
