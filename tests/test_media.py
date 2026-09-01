@@ -1630,14 +1630,75 @@ class TestElevenLabsImage:
         assert media_backends._aspect_of("1024x1536") == "2:3"
 
     def test_seedを断られたと分かる(self):
-        err = HTTPException(422, {"detail": [{
-            "type": "extra_forbidden",
-            "loc": ["body", "gemini-3-pro-image", "seed"],
-            "msg": "Extra inputs are not permitted",
-        }]})
+        # **remote_error が包んだ形で来る。** 相手が返した 422 ではなく 502 になり、
+        # 本文は文字列として detail に入る —— ここを取り違えて一度直し損ねた
+        err = HTTPException(502, {
+            "error": "ElevenLabs(声・効果音・曲・絵・動画) が 422 を返しました",
+            "detail": '{"detail":[{"type":"extra_forbidden",'
+                      '"loc":["body","gpt-image-2","seed"],'
+                      '"msg":"Extra inputs are not permitted","input":1808058667}]}',
+        })
         assert media_backends._rejects_seed(err)
 
     def test_関係のないエラーはseedのせいにしない(self):
-        assert not media_backends._rejects_seed(
-            HTTPException(422, {"detail": [{"loc": ["body", "aspect_ratio"]}]}))
-        assert not media_backends._rejects_seed(HTTPException(402, {"error": "plan"}))
+        assert not media_backends._rejects_seed(HTTPException(502, {
+            "error": "ElevenLabs が 422 を返しました",
+            "detail": '{"detail":[{"loc":["body","aspect_ratio"],"msg":"bad"}]}',
+        }))
+        assert not media_backends._rejects_seed(HTTPException(502, {
+            "error": "ElevenLabs が 402 を返しました",
+            "detail": '{"detail":{"code":"paid_plan_required"}}',
+        }))
+
+
+def fake_elevenlabs_seed_reject():
+    """1 回目は seed を理由に 422、seed が無ければ通す相手。
+
+    **本番で踏んだ形をそのまま真似る** —— 相手の 422 は remote_error が 502 に
+    包み直すので、包む前の状態コードで判定していると再送に入らない。
+    """
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/flows/image") and request.method == "POST":
+            body = json.loads(request.content)
+            seen.append(body)
+            if "seed" in body:
+                return httpx.Response(422, json={"detail": [{
+                    "type": "extra_forbidden",
+                    "loc": ["body", body.get("model_id", "gpt-image-2"), "seed"],
+                    "msg": "Extra inputs are not permitted",
+                }]})
+            return httpx.Response(200, json={"id": "g1", "status": "pending"})
+        if path.endswith("/flows/image/g1"):
+            return httpx.Response(200, json={
+                "id": "g1", "status": "completed",
+                "content_url": "https://example.invalid/out.png",
+                "content_mime_type": "image/png",
+            })
+        if path.endswith("/out.png"):
+            return httpx.Response(200, content=PNG)
+        return httpx.Response(404)
+
+    handler.seen = seen
+    return handler
+
+
+class TestElevenLabsImageRetry:
+    def test_seedを断られたら外して投げ直す(self, state):
+        settings_store.set_credential("elevenlabs", "el-k")
+        settings_store.set_enabled("elevenlabs", True)
+        handler = fake_elevenlabs_seed_reject()
+        use(state, handler)
+
+        image = asyncio.run(media_backends.generate(
+            "elevenlabs", media_backends.ImageRequest(prompt="test", size="1024x1536"),
+        ))
+
+        assert image.data == PNG
+        # 2 回投げていて、2 回目には seed が無い
+        assert len(handler.seen) == 2
+        assert "seed" in handler.seen[0] and "seed" not in handler.seen[1]
+        # 縦横比も相手が受け付ける値になっている（2:3 は無い）
+        assert handler.seen[0]["aspect_ratio"] in media_backends._ELEVENLABS_IMAGE_ASPECTS

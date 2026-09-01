@@ -1416,11 +1416,17 @@ async def _elevenlabs_image(
 
 
 def _rejects_seed(err: HTTPException) -> bool:
-    """「seed は受け付けない」と断られたか。"""
-    if err.status_code not in (400, 422):
-        return False
+    """「seed は受け付けない」と断られたか。
+
+    **相手の状態コードで判定しない。** 相手のエラーは [remote_error] が 502 に
+    包んで返すので、ここへ来る `status_code` は常に 502 であって、向こうが返した
+    422 ではない。見るのは本文のほう(一度これを取り違えて、直したつもりのまま
+    同じ 422 が返り続けた)。
+    """
     detail = json.dumps(err.detail, ensure_ascii=False) if err.detail else ""
-    return "seed" in detail and ("extra_forbidden" in detail or "not permitted" in detail)
+    if "seed" not in detail:
+        return False
+    return "extra_forbidden" in detail or "not permitted" in detail
 
 
 async def _elevenlabs_video(
