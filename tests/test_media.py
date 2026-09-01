@@ -1609,3 +1609,35 @@ class TestNewBackendLists:
         first, second = asyncio.run(twice())
 
         assert first == second and asked["n"] == 1
+
+
+class TestElevenLabsImage:
+    """ElevenLabs の画像は、こちらの都合をそのまま送ると断られる。
+
+    どちらも実際に 422 を踏んで分かったもの:
+    - 1024x1536 は 2:3 だが、向こうに 2:3 は無い
+    - `gemini-3-pro-image` は `seed` を受け付けない(`extra_forbidden`)
+    """
+
+    def test_受け付ける縦横比の中から選ぶ(self):
+        # 2:3 を送ると断られるので、近い 3:4 に寄せる
+        got = media_backends._aspect_of(
+            "1024x1536", media_backends._ELEVENLABS_IMAGE_ASPECTS)
+        assert got in media_backends._ELEVENLABS_IMAGE_ASPECTS
+        assert got == "3:4"
+
+    def test_絞らなければ従来どおり(self):
+        assert media_backends._aspect_of("1024x1536") == "2:3"
+
+    def test_seedを断られたと分かる(self):
+        err = HTTPException(422, {"detail": [{
+            "type": "extra_forbidden",
+            "loc": ["body", "gemini-3-pro-image", "seed"],
+            "msg": "Extra inputs are not permitted",
+        }]})
+        assert media_backends._rejects_seed(err)
+
+    def test_関係のないエラーはseedのせいにしない(self):
+        assert not media_backends._rejects_seed(
+            HTTPException(422, {"detail": [{"loc": ["body", "aspect_ratio"]}]}))
+        assert not media_backends._rejects_seed(HTTPException(402, {"error": "plan"}))

@@ -532,10 +532,19 @@ _ASPECTS = (
 )
 
 
-def _aspect_of(size: str) -> str:
+def _aspect_of(size: str, allowed: tuple[str, ...] = ()) -> str:
+    """`size` にいちばん近い縦横比の名前。
+
+    `allowed` を渡すと、その中からだけ選ぶ。**相手が受け付ける比は限られている**
+    ので、こちらの表から近いものを選んで送ると 422 で断られる
+    (ElevenLabs は 2:3 を受け付けず、`3:4` か `9:16` しか無い)。
+    """
     width, height = parse_size(size)
     ratio = width / height
-    return min(_ASPECTS, key=lambda pair: abs(pair[0] - ratio))[1]
+    table = _ASPECTS if not allowed else tuple(p for p in _ASPECTS if p[1] in allowed)
+    if not table:
+        table = _ASPECTS
+    return min(table, key=lambda pair: abs(pair[0] - ratio))[1]
 
 
 async def _gemini_generate(
@@ -1370,6 +1379,11 @@ async def _elevenlabs_flow(
     return file.content, str(done.get("content_mime_type") or "")
 
 
+# ElevenLabs の画像が受け付ける縦横比。**こちらの表の近いものを送ると断られる**
+# (1024x1536 は 2:3 だが、向こうに 2:3 は無く 422 になる)。
+_ELEVENLABS_IMAGE_ASPECTS = ("1:1", "3:4", "4:3", "16:9", "9:16")
+
+
 async def _elevenlabs_image(
     spec: media_providers.MediaProvider, req: ImageRequest, seed: int
 ) -> GeneratedImage:
@@ -1377,15 +1391,36 @@ async def _elevenlabs_image(
     body = {
         "model_id": model,
         "prompt": req.prompt,
-        "aspect_ratio": _aspect_of(req.size),
+        "aspect_ratio": _aspect_of(req.size, _ELEVENLABS_IMAGE_ASPECTS),
         "resolution": _elevenlabs_resolution(req.size),
         # seed を受け付ける数少ない外部の相手(同じ絵を作り直せる)
         "seed": seed,
     }
-    data, mime = await _elevenlabs_flow(
-        spec, "image", body, every=2.0, timeout=GENERATE_TIMEOUT, what="画像"
-    )
+    try:
+        data, mime = await _elevenlabs_flow(
+            spec, "image", body, every=2.0, timeout=GENERATE_TIMEOUT, what="画像"
+        )
+    except HTTPException as err:
+        # **seed を受け付けないモデルがある。** 弾かれたら seed を外して投げ直す
+        # (gemini-3-pro-image は `extra_forbidden` を返す)。モデルの一覧を
+        # 持たずに済むよう、断られてから外す形にしてある —— 向こうに
+        # モデルが増えても、こちらを直さなくてよい
+        if not _rejects_seed(err):
+            raise
+        body.pop("seed", None)
+        data, mime = await _elevenlabs_flow(
+            spec, "image", body, every=2.0, timeout=GENERATE_TIMEOUT, what="画像"
+        )
+        seed = 0  # 使わなかったので、作り直しの手掛かりとして残さない
     return GeneratedImage(data, mime or "image/png", seed, model)
+
+
+def _rejects_seed(err: HTTPException) -> bool:
+    """「seed は受け付けない」と断られたか。"""
+    if err.status_code not in (400, 422):
+        return False
+    detail = json.dumps(err.detail, ensure_ascii=False) if err.detail else ""
+    return "seed" in detail and ("extra_forbidden" in detail or "not permitted" in detail)
 
 
 async def _elevenlabs_video(
