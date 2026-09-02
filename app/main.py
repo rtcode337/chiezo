@@ -1421,6 +1421,8 @@ async def ai_complete(body: AiCompleteRequest) -> dict:
 
 class ImageRequest(BaseModel):
     prompt: str
+    # 何案かを 1 組として見比べるための名前。同じ名前を付けた依頼が画面で横に並ぶ
+    group: str = ""
     # 相手。空なら既定(自前の GPU)
     backend: str | None = None
     model: str | None = None
@@ -1434,6 +1436,8 @@ class ImageRequest(BaseModel):
 
 class AudioRequestBody(BaseModel):
     prompt: str
+    # 何案かを 1 組として見比べるための名前。同じ名前を付けた依頼が画面で横に並ぶ
+    group: str = ""
     # 相手。空なら既定(自前の GPU)
     backend: str | None = None
     model: str | None = None
@@ -1531,6 +1535,7 @@ async def media_image(body: ImageRequest) -> dict:
         count=body.count,
         negative=body.negative,
         steps=body.steps,
+        group=body.group,
     )
 
 
@@ -1621,6 +1626,37 @@ async def media_job(job_id: str) -> dict:
 @app.get("/v1/media/jobs")
 async def media_jobs(limit: int = Query(20, ge=1, le=100)) -> dict:
     return {"jobs": media.recent_jobs(limit)}
+
+
+@app.get("/v1/media/groups")
+async def media_groups(limit: int = Query(20, ge=1, le=100)) -> dict:
+    """見比べる組の一覧。画面がこれを読んで、案を横に並べる。"""
+    return {"groups": media.job_groups(limit)}
+
+
+class PickBody(BaseModel):
+    # 選んだ理由や注文。頼んだ側が次に活かせるように、一言だけ添えられる
+    note: str = ""
+
+
+@app.post("/v1/media/jobs/{job_id}/pick")
+async def media_pick(job_id: str, body: PickBody) -> dict:
+    """この案を採用と印す。同じ組の他の印は外れる。"""
+    return media.pick_job(job_id, body.note)
+
+
+@app.delete("/v1/media/jobs/{job_id}/pick")
+async def media_unpick(job_id: str) -> dict:
+    """採用の印を外す。"""
+    return media.unpick_job(job_id)
+
+
+@app.get("/v1/media/picks")
+async def media_picks(
+    limit: int = Query(20, ge=1, le=100), group: str = Query("")
+) -> dict:
+    """採用された案。**依頼した AI はここを見に来る。**"""
+    return {"picks": media.picked_jobs(limit, group.strip())}
 
 
 @app.get("/media/{path:path}", include_in_schema=False)

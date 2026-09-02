@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 
-from app import db, notes, tasks_api, tasks_auth
+from app import db, media, notes, tasks_api, tasks_auth
 from app.tasks_static import cache_headers, resolve, static_dir
 
 log = logging.getLogger("chiezo.tasks")
@@ -44,6 +44,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Chiezo tasks", lifespan=lifespan, docs_url=None, redoc_url=None)
     tasks_api.install_error_handlers(app)
     app.include_router(tasks_api.router)
+    _serve_media(app)
     # 認証・CSRF・レート制限・セキュリティヘッダ。**ルーターより後に仕込む**
     # (Starlette のミドルウェアは後から足したものが外側に来るので、
     #  ここで足したものが全ルートを包む)
@@ -69,7 +70,19 @@ def create_app() -> FastAPI:
 # 機械向けの口。ここに前方一致するものは画面に落とさない —— 落とすと、
 # 綴りを間違えた API 呼び出しに index.html が 200 で返り、画面側が
 # 「JSON が来るはず」のところで壊れて原因を追いにくくなる。
-API_PREFIXES = ("/api/", "/oauth2/", "/login/")
+API_PREFIXES = ("/api/", "/media/", "/oauth2/", "/login/")
+
+
+def _serve_media(app: FastAPI) -> None:
+    """出来た絵と音を配る。**見比べの画面がこれを読む。**
+
+    生成の口(`/v1/media/image` 等)は載せない —— あちらは課金が走る。ここは
+    出来上がったものを見る・聴くだけで、置き場の外は返さない(`../` を踏ませない)。
+    """
+
+    @app.get("/media/{path:path}", include_in_schema=False)
+    async def media_file(path: str):
+        return FileResponse(media.resolve(path))
 
 
 def _serve_spa(app: FastAPI) -> None:

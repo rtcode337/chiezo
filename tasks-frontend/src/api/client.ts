@@ -15,6 +15,8 @@ import type {
   TaskImportResult,
   TaskInput,
   TaskStatus,
+  MediaGroup,
+  MediaJob,
 } from './types'
 import {
   beginRequest,
@@ -192,6 +194,20 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+
+  /** 生成物の見比べ。頼んだ AI が group で束ねた案が組になって返る。 */
+  listMediaGroups: (limit = 20) =>
+    request<{ groups: MediaGroup[] }>(`/api/media/groups?limit=${limit}`),
+
+  /** この案を採用と印す。**同じ組の他の印は外れる。** */
+  pickMedia: (jobId: string, note = '') =>
+    request<MediaJob>(`/api/media/jobs/${jobId}/pick`, {
+      method: 'POST',
+      body: JSON.stringify({ note }),
+    }),
+
+  unpickMedia: (jobId: string) =>
+    request<MediaJob>(`/api/media/jobs/${jobId}/pick`, { method: 'DELETE' }),
 
   listNotes: (params: { tag?: string; limit?: number; offset?: number } = {}) => {
     const query = new URLSearchParams()

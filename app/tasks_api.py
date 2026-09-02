@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
-from app import tasks
+from app import media, tasks
 
 log = logging.getLogger("chiezo.app")
 
@@ -389,3 +389,40 @@ def list_notes(
 def list_note_tags() -> list[dict]:
     """絞り込みの候補。**そのほかのメモに付いているものだけ**を数える。"""
     return [{"tag": tag, "docs": docs} for tag, docs in tasks.note_tags()]
+
+
+# ---- 生成物の見比べ ----------------------------------------------------------
+#
+# **読むのと印を付けるだけ。** 生成そのもの(`/v1/media/image` など)は課金が走るので、
+# 外に出すこの面には載せない(`app/tasks_app.py` の冒頭)。ここにあるのは
+# 「作られたものを並べて、どれがいいかを選ぶ」ところまで。
+
+
+@router.get("/media/groups")
+def media_groups(limit: int = Query(20, ge=1, le=100)) -> dict:
+    """見比べる組。頼んだ AI が同じ `group` を付けた案がまとまって並ぶ。"""
+    return {"groups": media.job_groups(limit)}
+
+
+class MediaPickInput(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    note: str = ""
+
+
+@router.post("/media/jobs/{job_id}/pick")
+def media_pick(job_id: str, body: MediaPickInput) -> dict:
+    """この案を採用と印す。**頼んだ AI はこれを見に来る。**"""
+    return media.pick_job(job_id, body.note)
+
+
+@router.delete("/media/jobs/{job_id}/pick")
+def media_unpick(job_id: str) -> dict:
+    return media.unpick_job(job_id)
+
+
+@router.get("/media/picks")
+def media_picks(
+    limit: int = Query(20, ge=1, le=100), group: str = Query("")
+) -> dict:
+    return {"picks": media.picked_jobs(limit, group.strip())}

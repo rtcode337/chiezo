@@ -1702,3 +1702,118 @@ class TestElevenLabsImageRetry:
         assert "seed" in handler.seen[0] and "seed" not in handler.seen[1]
         # 縦横比も相手が受け付ける値になっている（2:3 は無い）
         assert handler.seen[0]["aspect_ratio"] in media_backends._ELEVENLABS_IMAGE_ASPECTS
+
+
+class TestCompareAndPick:
+    """何案かを組にして見比べ、選んだものを頼んだ側へ返す道。
+
+    **会話で番号を伝える形にしない。** 選ぶ人と頼んだ AI が別のやり取りにいると
+    拾えないため、印は記録に残して API から引く。
+    """
+
+    def test_同じ名前を付けた依頼がひと組になる(self, state):
+        for i in range(3):
+            media.create_job(f"案{i}", backend="comfyui", group="ホームランの音")
+        media.create_job("無関係", backend="comfyui")
+
+        groups = media.job_groups()
+        named = [g for g in groups if g["group"] == "ホームランの音"]
+        assert len(named) == 1
+        assert len(named[0]["jobs"]) == 3
+        # 名前の無い依頼も 1 件 1 組として出る（消えると「作られなかった」と見える）
+        assert any(g["group"] == "" for g in groups)
+
+    def test_組の中は古い順に並ぶ(self, state):
+        made = [media.create_job(f"案{i}", backend="comfyui", group="組") for i in range(3)]
+        group = next(g for g in media.job_groups() if g["group"] == "組")
+        assert [j["id"] for j in group["jobs"]] == [j["id"] for j in made]
+
+    def test_採用すると印が付き頼んだ側から引ける(self, state):
+        a = media.create_job("案A", backend="comfyui", group="組")
+        media.create_job("案B", backend="comfyui", group="組")
+
+        media.pick_job(a["id"], "これが一番短い")
+
+        picks = media.picked_jobs()
+        assert [p["id"] for p in picks] == [a["id"]]
+        assert picks[0]["picked_note"] == "これが一番短い"
+
+    def test_ひと組から選べるのは1つ(self, state):
+        a = media.create_job("案A", backend="comfyui", group="組")
+        b = media.create_job("案B", backend="comfyui", group="組")
+
+        media.pick_job(a["id"])
+        media.pick_job(b["id"])
+
+        # 後から選んだほうだけが残る（前の印は外れる）
+        assert [p["id"] for p in media.picked_jobs(group="組")] == [b["id"]]
+
+    def test_別の組の採用は外れない(self, state):
+        a = media.create_job("案A", backend="comfyui", group="音")
+        b = media.create_job("案B", backend="comfyui", group="絵")
+
+        media.pick_job(a["id"])
+        media.pick_job(b["id"])
+
+        assert {p["id"] for p in media.picked_jobs()} == {a["id"], b["id"]}
+
+    def test_印は外せる(self, state):
+        a = media.create_job("案A", backend="comfyui", group="組")
+        media.pick_job(a["id"])
+        media.unpick_job(a["id"])
+        assert media.picked_jobs() == []
+
+    def test_知らないjobは断る(self, state):
+        with pytest.raises(HTTPException) as err:
+            media.pick_job("nope")
+        assert err.value.status_code == 404
+
+
+class TestCompareApi:
+    """やること層（外に出す面）から見比べと採用ができること。
+
+    **生成の口はここに無い。** 課金が走るものは載せない、という切り分けを
+    崩していないかも一緒に見る。
+    """
+
+    @pytest.fixture()
+    def client(self, state, tmp_path, monkeypatch):
+        """ログイン済みのやること層。認証を素通しさせない(画面が踏む経路をそのまま試す)。"""
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("CHIEZO_NOTES_DIR", str(tmp_path / "notes"))
+        monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client")
+        monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "test-secret")
+        monkeypatch.setenv("ALLOWED_EMAIL", "someone@example.com")
+        from app import tasks_auth
+        from app.tasks_app import create_app
+
+        session_id = tasks_auth._store(
+            "user", tasks_auth.SESSION_TTL, email="someone@example.com", name="Someone"
+        )
+        csrf = "test-csrf-token"
+        with TestClient(create_app(), headers={tasks_auth.CSRF_HEADER: csrf}) as c:
+            c.cookies.set(tasks_auth.SESSION_COOKIE, session_id)
+            c.cookies.set(tasks_auth.CSRF_COOKIE, csrf)
+            yield c
+
+    def test_組と採用が画面から扱える(self, client):
+        a = media.create_job("案A", backend="comfyui", group="ホームランの音")
+        media.create_job("案B", backend="comfyui", group="ホームランの音")
+
+        got = client.get("/api/media/groups").json()
+        named = [g for g in got["groups"] if g["group"] == "ホームランの音"]
+        assert len(named) == 1 and len(named[0]["jobs"]) == 2
+
+        client.post(f"/api/media/jobs/{a['id']}/pick", json={"note": "短いほう"})
+        picks = client.get("/api/media/picks").json()["picks"]
+        assert [p["id"] for p in picks] == [a["id"]]
+        assert picks[0]["picked_note"] == "短いほう"
+
+        client.delete(f"/api/media/jobs/{a['id']}/pick")
+        assert client.get("/api/media/picks").json()["picks"] == []
+
+    def test_生成の口は外に出していない(self, client):
+        # 総取りの SPA は GET/HEAD しか受けないので、POST は 405 になる(いずれにせよ届かない)
+        for path in ("/v1/media/image", "/v1/media/audio", "/v1/media/video"):
+            assert client.post(path, json={"prompt": "x"}).status_code in (404, 405)

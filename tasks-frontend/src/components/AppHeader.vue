@@ -16,6 +16,7 @@ const session = useSessionStore()
       <nav class="header__nav">
         <RouterLink to="/" class="header__link" active-class="header__link--active" exact-active-class="header__link--active">トップ</RouterLink>
         <RouterLink to="/rules" class="header__link" active-class="header__link--active">ルール</RouterLink>
+        <RouterLink to="/media" class="header__link" active-class="header__link--active">見比べ</RouterLink>
         <RouterLink to="/notes" class="header__link" active-class="header__link--active">メモ</RouterLink>
         <ThemeToggle />
         <a v-if="session.embedded" href="/admin" class="header__link">管理画面</a>

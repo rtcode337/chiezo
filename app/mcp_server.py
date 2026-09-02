@@ -304,6 +304,7 @@ def _register_image_tools(mcp: MCPServer) -> None:
         seed: int = 0,
         count: int = 1,
         negative: str = "",
+        group: str = "",
     ) -> dict:
         return _call(
             media.start_image_job,
@@ -314,6 +315,7 @@ def _register_image_tools(mcp: MCPServer) -> None:
             seed=seed,
             count=count,
             negative=negative,
+            group=group,
         )
 
     @mcp.tool(description=(
@@ -365,6 +367,7 @@ def _register_audio_tools(mcp: MCPServer) -> None:
         lyrics: str = "",
         negative: str = "",
         loop: bool = False,
+        group: str = "",
     ) -> dict:
         return _call(
             media.start_audio_job,
@@ -378,7 +381,18 @@ def _register_audio_tools(mcp: MCPServer) -> None:
             lyrics=lyrics,
             negative=negative,
             loop=loop,
+            group=group,
         )
+
+    @mcp.tool(description=(
+        "**人が画面で選んだ案**を返す。何案か作って group で束ねておくと、"
+        "やること画面の「見比べ」で聴き比べ・見比べたうえで採用が押される。"
+        "ここを引けば、どれが選ばれたか(と、添えられた一言)が分かる。"
+        "group を渡すとその組だけ。**会話で番号を聞くのではなく、ここを見ること** —— "
+        "選ぶ人と頼んだ側が別のやり取りにいても拾える。"
+    ))
+    async def media_picks(limit: int = 20, group: str = "") -> dict:
+        return {"picks": media.picked_jobs(limit, group)}
 
     @mcp.tool(description=(
         "audio_generate の仕上がりを確認する。state は queued / running / done / "

@@ -223,7 +223,10 @@ CLI ブリッジ(Claude Code など)は CLI 自身の検索を引く。使うか
 `video_generate` / `speech_generate` / `transcribe`)。ゲーム素材や図版・効果音・BGM・
 短い動画・読み上げを、自分の GPU(ComfyUI)か外部(Gemini / OpenAI / ElevenLabs)を選んで
 作る —— 知識を引くのとは別の仕事だが、**MCP の登録先を増やさない**ために同じサーバーに
-載せてある。詳しくは [docs/ai.md](docs/ai.md)「絵を描かせる」以降。
+載せてある。**何案か作って人に選んでもらえる** —— `group` に同じ名前を付けて頼むと、
+やること画面の「見比べ」に依頼文つきで並び、選ばれたものを `media_picks` で引ける
+(音は AI 自身が聴けないので、聴き比べる手段はここだけ)。
+詳しくは [docs/ai.md](docs/ai.md)「絵を描かせる」以降。
 
 **各 AI の使用量も見られる**(管理画面の「使用量」節と `GET /v1/ai/usage`)。
 相手が言う枠の残り —— Claude Code の 5 時間・週、Codex の窓、OpenRouter のクレジット ——

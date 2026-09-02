@@ -160,3 +160,38 @@ export interface NoteTag {
   tag: string
   docs: number
 }
+
+/** 生成物の 1 件（絵か音）。chiezo の media の job をそのまま受ける。 */
+export interface MediaFile {
+  path: string
+  url: string
+  seed: number
+  model: string
+  seconds: number
+}
+
+export interface MediaJob {
+  id: string
+  kind: string
+  backend: string
+  model: string
+  prompt: string
+  state: string
+  error: string | null
+  files: MediaFile[]
+  created_at: string
+  group_name: string | null
+  picked_at: string | null
+  picked_note: string | null
+  sound: string | null
+  seconds: number | null
+  size: string | null
+}
+
+/** 見比べる組。頼んだ AI が同じ名前を付けた案がまとまる。 */
+export interface MediaGroup {
+  group: string
+  kind: string
+  created_at: string
+  jobs: MediaJob[]
+}

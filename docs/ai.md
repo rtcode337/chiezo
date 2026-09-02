@@ -154,7 +154,7 @@ OpenAI / ElevenLabs / CLI のサブスク枠)を選んで**作れます。
 
 ```
 image_backends()                        … 頼める相手・モデル・サイズ(使えない相手は理由つき)
-image_generate(prompt, backend?, model?, size?, seed?, count?, negative?)
+image_generate(prompt, backend?, model?, size?, seed?, count?, negative?, group?)
                                         … job_id を返す(**待たない**)
 image_status(job_id)                    … 仕上がり。files に保存先のパスと URL
 ```
@@ -275,7 +275,7 @@ ComfyUI の既定は 8188 ですが、番号が食い違うと URL を書くた�
 
 ```
 audio_backends()                        … 頼める相手・モデル・種類と長さの上限
-audio_generate(prompt, sound?, backend?, model?, seconds?, seed?, count?, lyrics?, loop?)
+audio_generate(prompt, sound?, backend?, model?, seconds?, seed?, count?, lyrics?, loop?, group?)
                                         … job_id を返す(**待たない**)
 audio_status(job_id)                    … 仕上がり。files に保存先のパスと URL
 ```
@@ -321,6 +321,30 @@ audio_status(job_id)                    … 仕上がり。files に保存先の
 聞く口は無く(読み込んで初めて分かる)、GPU にモデルを載せてから間違いに気づくのは高くつきます。
 名前を変えて置いたときは `model` で名指ししてください。名前に `audio` か `ace` を含むものだけを
 音のチェックポイントとして扱うので、**絵のモデルと同じ置き場でも混ざりません**。
+
+
+## 何案か作って選んでもらう(見比べ)
+
+**どれがいいかを人に決めてほしいときは、`group` に同じ名前を付けて何案か頼みます。**
+同じ名前の依頼はやること画面の「見比べ」(`/media`)に 1 組として並び、依頼文つきで
+見比べ・聴き比べできます。**音は AI 自身が聴けない**ので、聴いてもらう手段はここだけです。
+
+```
+image_generate(..., group="ホームランの音")   … 同じ名前の依頼が 1 組になる
+audio_generate(..., group="ホームランの音")
+media_picks(limit?, group?)                  … 人が選んだ案(と、添えられた一言)
+```
+
+REST では `POST /v1/media/image|audio` の本体に `group` を、採用の読み出しは
+`GET /v1/media/picks`(やること層は `GET /api/media/picks`)を使います。
+
+- **会話で「何番がいい?」と聞かないこと。** 選ぶ人と頼んだ AI が別のやり取りにいると
+  拾えません。印は画面で付けてもらい、`media_picks` を見に来ます
+- **1 組から選ばれるのは 1 つ。** 選び直されたら前の印は外れています
+- 名前を付けなかった依頼も、画面では 1 件 1 組として並びます ——
+  消すと「作られなかった」と読めるため
+- 画面から生成は頼めません(課金が走る口は外に出す面に載せていないため)。
+  あの画面が持つのは「作られたものを読む」と「印を付ける」だけです
 
 ## 動画を作らせる(MCP の `video_*`)
 

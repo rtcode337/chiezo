@@ -16,6 +16,9 @@ export const router = createRouter({
     { path: '/rules', name: 'rules', component: () => import('./views/RulesView.vue') },
     // タスク・プロジェクト・ルールのどれでもないメモ。他のどの画面にも出ない
     { path: '/notes', name: 'notes', component: () => import('./views/NotesView.vue') },
+    // AI が作った絵・音を、依頼文つきで並べて選ぶ。**音は AI 自身が聴けない**ので、
+    // 何案か作らせたときに人が確かめる場所がここしかない
+    { path: '/media', name: 'media', component: () => import('./views/MediaView.vue') },
     // タスク一覧・詳細・編集の専用画面は廃止。未完了はトップ、完了は /done、
     // 編集はカードを押してモーダル。古いブックマーク (/tasks 等) はフォールバックでトップへ
     // プロジェクト専用画面は廃止。作成・編集・並び替えはすべてトップで行う。

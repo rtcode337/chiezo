@@ -84,7 +84,14 @@ CREATE TABLE IF NOT EXISTS jobs (
 
 # 後から足した列。既にある表は CREATE TABLE IF NOT EXISTS では変わらないので、
 # 足りないものだけ ALTER する(設定 DB と同じやり方)。
-_ADDED_COLUMNS = {"sound": "TEXT", "seconds": "REAL", "voice": "TEXT"}
+# **後から足した列。** 起動時に無ければ ALTER TABLE で足すので、
+# 既にある DB でもそのまま動く（作り直しが要らない）。
+# group_name … 何案かを 1 組として並べるための名前。頼む側が付ける
+# picked_at / picked_note … 画面で「採用」を押した印と、そのときの一言
+_ADDED_COLUMNS = {
+    "sound": "TEXT", "seconds": "REAL", "voice": "TEXT",
+    "group_name": "TEXT", "picked_at": "TEXT", "picked_note": "TEXT",
+}
 
 
 @dataclass
@@ -219,9 +226,11 @@ def _insert(job: dict) -> None:
     with _connect() as conn:
         conn.execute(
             "INSERT INTO jobs (id, kind, backend, model, prompt, size, seed, count,"
-            " state, error, files, created_at, updated_at, sound, seconds, voice)"
+            " state, error, files, created_at, updated_at, sound, seconds, voice,"
+            " group_name, picked_at, picked_note)"
             " VALUES (:id, :kind, :backend, :model, :prompt, :size, :seed, :count,"
-            " :state, :error, :files, :created_at, :updated_at, :sound, :seconds, :voice)",
+            " :state, :error, :files, :created_at, :updated_at, :sound, :seconds, :voice,"
+            " :group_name, :picked_at, :picked_note)",
             {**job, "files": json.dumps(job["files"], ensure_ascii=False)},
         )
 
@@ -362,6 +371,7 @@ def create_job(
     sound: str = "",
     seconds: float = 0.0,
     voice: str = "",
+    group: str = "",
 ) -> dict:
     """頼みを検査して記録するだけ(まだ作らない)。
 
@@ -429,6 +439,11 @@ def create_job(
         "sound": sound or None,
         "seconds": seconds or None,
         "voice": voice or None,
+        # **何案かを 1 組として見比べるための名前。** 頼む側が同じ名前を付けると、
+        # 画面で横に並ぶ。付けなければ単独の依頼として並ぶ
+        "group_name": (group or "").strip() or None,
+        "picked_at": None,
+        "picked_note": None,
     }
     _insert(job)
     cleanup()
@@ -560,13 +575,15 @@ def start_image_job(
     count: int = 1,
     negative: str = "",
     steps: int = 25,
+    group: str = "",
 ) -> dict:
     """頼みを受け付けて job を返す(生成は後ろで走る)。
 
     待たない。 呼び出し側は job を持って帰り、`image_status` で進み具合を見る ——
     生成は数秒〜数分かかり、待たせると呼び出し側が先に切れる。
     """
-    job = create_job(prompt, backend=backend, model=model, size=size, seed=seed, count=count)
+    job = create_job(prompt, backend=backend, model=model, size=size, seed=seed, count=count,
+                     group=group)
     request = media_backends.ImageRequest(
         prompt=job["prompt"], negative=negative, size=size, seed=seed, model=model, steps=steps
     )
@@ -585,6 +602,7 @@ def start_audio_job(
     negative: str = "",
     loop: bool = False,
     steps: int = 50,
+    group: str = "",
 ) -> dict:
     """音の頼みを受け付けて job を返す(生成は後ろで走る)。絵とまったく同じ扱い。"""
     job = create_job(
@@ -596,6 +614,7 @@ def start_audio_job(
         kind=media_providers.KIND_AUDIO,
         sound=sound,
         seconds=seconds,
+        group=group,
     )
     request = media_backends.AudioRequest(
         prompt=job["prompt"],
@@ -971,3 +990,79 @@ def resolve(relative: str) -> Path:
     if path is None or not path.is_file() or not path.resolve().is_relative_to(root):
         raise HTTPException(404, {"error": "not found"})
     return path
+
+
+def pick_job(job_id: str, note: str = "") -> dict:
+    """その案を「採用」と印す。**依頼した AI はこれを見に来る。**
+
+    人が画面で選んだことを、頼んだ側へ伝えるための唯一の経路。会話で番号を
+    伝えてもらう形にすると、AI が別のセッションだったときに拾えない。
+
+    同じ組で先に採用されていたものがあれば、そちらの印は外す —— 1 組から
+    選ぶのは 1 つ、という前提で画面も API も作ってある。
+    """
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(404, {"error": f"unknown job: {job_id}"})
+    if job.get("group_name"):
+        with _connect() as conn:
+            conn.execute(
+                "UPDATE jobs SET picked_at = NULL, picked_note = NULL"
+                " WHERE group_name = ? AND id != ?",
+                (job["group_name"], job_id),
+            )
+    _update(job_id, picked_at=_now(), picked_note=(note or "").strip() or None)
+    return get_job(job_id)
+
+
+def unpick_job(job_id: str) -> dict:
+    """採用の印を外す。"""
+    if get_job(job_id) is None:
+        raise HTTPException(404, {"error": f"unknown job: {job_id}"})
+    _update(job_id, picked_at=None, picked_note=None)
+    return get_job(job_id)
+
+
+def picked_jobs(limit: int = 20, group: str = "") -> list[dict]:
+    """採用された案を新しい順に。**依頼した AI が引く口。**"""
+    _reap_stale()
+    where = "picked_at IS NOT NULL"
+    params: list = []
+    if group:
+        where += " AND group_name = ?"
+        params.append(group)
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM jobs WHERE {where} ORDER BY picked_at DESC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def job_groups(limit: int = 20) -> list[dict]:
+    """見比べる組の一覧。**新しい順**で、組ごとに案をまとめて返す。
+
+    名前の無い依頼も 1 件 1 組として出す —— 画面で「まとめ忘れたぶんが消える」と、
+    人は生成されなかったと思ってしまう。
+    """
+    _reap_stale()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit * 8,)
+        ).fetchall()
+    groups: dict[str, dict] = {}
+    for row in rows:
+        job = _row_to_dict(row)
+        key = job.get("group_name") or f"__single__{job['id']}"
+        group = groups.setdefault(key, {
+            "group": job.get("group_name") or "",
+            "kind": job["kind"],
+            "created_at": job["created_at"],
+            "jobs": [],
+        })
+        group["jobs"].append(job)
+        group["created_at"] = max(group["created_at"], job["created_at"])
+    ordered = sorted(groups.values(), key=lambda g: g["created_at"], reverse=True)
+    for group in ordered:
+        group["jobs"].sort(key=lambda j: j["created_at"])
+    return ordered[:limit]
