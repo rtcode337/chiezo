@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import json
 import logging
 import os
@@ -982,11 +983,60 @@ class ImageRequest(BaseModel):
     size: str = "1024x1024"
     n: int = 1
     model: str | None = None
+    # 元にする絵(base64 の PNG)。**使い道が 2 つあり、指示の文面が逆になる**ので
+    # `image_mode` で言い分ける:
+    #   edit      … これを直す。直す箇所以外は 1 画素も変えない
+    #   reference … これを参考に別のものを描く。絵柄・色・線を合わせ、中身は新しく
+    # 一から描き直させると絵柄もポーズも毎回振れるので、どちらの用途でも元が要る。
+    image: str = ""
+    image_mode: str = "edit"
+
+
+# 元の絵を置くファイル名。 エージェントに名指しで伝えるので、決め打ちにする。
+SOURCE_NAME = "source.png"
+
+# 元の絵の使い道。 **文面が逆になる**ので、渡す側が言い分ける ——
+# 直すのに「参考に」と言うと別の絵を描き、参考にしたいのに「直せ」と言うと
+# 元の絵がそのまま返ってくる。
+MODE_EDIT = "edit"
+MODE_REFERENCE = "reference"
 
 
 def _image_prompt(body: ImageRequest, out_dir: str) -> str:
     """Codex に渡す指示。保存先と枚数を言い切る —— 相手はエージェントなので、
-    曖昧だと説明だけ返してファイルを書かないことがある。"""
+    曖昧だと説明だけ返してファイルを書かないことがある。
+
+    元の絵があるときは**編集の指示に切り替える**。「描いて」と言うと、置いてある絵を
+    参考にしただけの別の絵を描いてしまう —— 直す箇所以外は 1 画素も変えるな、と
+    言い切るのが要点。
+    """
+    if body.image and body.image_mode == MODE_REFERENCE:
+        return (
+            f"Look at the existing image {out_dir}/{SOURCE_NAME} and use it as a "
+            "reference for style only.\n\n"
+            f"{body.prompt}\n\n"
+            "Draw a NEW picture. Match the reference's drawing style exactly — the same "
+            "line weight and outline colour, the same flat colouring, the same "
+            "proportions and head-to-body ratio, the same level of detail and the same "
+            "framing and size. Do not copy its subject or its pose; draw what the "
+            "description above asks for. "
+            f"Save the new image as PNG into {out_dir}/ (use names like out-1.png), "
+            "leaving the reference file untouched. "
+            "Do not create any other files, do not write code, and do not explain. "
+            "When the file is saved, reply with just the file path."
+        )
+    if body.image:
+        return (
+            f"Edit the existing image {out_dir}/{SOURCE_NAME}.\n\n"
+            f"{body.prompt}\n\n"
+            "This is an edit, not a new drawing. Keep every other part of the picture "
+            "exactly as it is — same character, same colours, same line work, same "
+            "composition, same size. Do not redraw the parts you were not asked to "
+            f"change. Save the edited image as PNG into {out_dir}/ (use names like "
+            "out-1.png), leaving the original file untouched. "
+            "Do not create any other files, do not write code, and do not explain. "
+            "When the file is saved, reply with just the file path."
+        )
     return (
         f"Generate {body.n} image(s) at {body.size} for this description:\n\n"
         f"{body.prompt}\n\n"
@@ -1021,13 +1071,37 @@ def _existing(root: str) -> frozenset[str]:
     )
 
 
-def _collect_images(out_dir: str, since: float, seen: frozenset[str] = frozenset()) -> list[bytes]:
+def _write_source(body: ImageRequest, out_dir: str) -> str:
+    """直す元の絵を作業ディレクトリへ置く。置かなければ空文字。
+
+    **エージェントに見せられるのはこの作業ディレクトリだけ**(`-s workspace-write` /
+    `--dangerously-skip-permissions` で許してあるのがここ)。頼む側のディスクは
+    見えないので、絵そのものを base64 で受け取ってこちらで書く。
+    """
+    if not body.image:
+        return ""
+    try:
+        data = base64.b64decode(body.image, validate=True)
+    except (ValueError, binascii.Error) as e:
+        raise HTTPException(400, {"error": "image は base64 で渡してください"}) from e
+    path = os.path.join(out_dir, SOURCE_NAME)
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
+
+
+def _collect_images(
+    out_dir: str, since: float, seen: frozenset[str] = frozenset(), skip: str = ""
+) -> list[bytes]:
     """この実行で増えた画像を拾う。
 
     作業ディレクトリを先に見る。 そこは 1 回ごとに作り直すので取り違えようがない。
     内蔵ツールが既定の保存先へ置いた場合だけ、そちらを見る —— あちらは使い回される
     ので、走らせる前にあったもの(`seen`)を除く。mtime だけで選ぶと、
     同時に走った別の実行の絵まで拾ってしまう。
+
+    **置いた元の絵(`skip`)は拾わない。** こちらが今書いたものなので mtime も新しく、
+    除かないと「直っていない絵」を成果として返してしまう。
     """
     def scan(root: str, skip: frozenset[str]) -> list[tuple[float, str]]:
         found: list[tuple[float, str]] = []
@@ -1047,7 +1121,8 @@ def _collect_images(out_dir: str, since: float, seen: frozenset[str] = frozenset
                     found.append((stat.st_mtime, path))
         return found
 
-    found = scan(out_dir, frozenset()) or scan(_shared_root(), seen)
+    skipped = frozenset({skip}) if skip else frozenset()
+    found = scan(out_dir, skipped) or scan(_shared_root(), seen)
 
     out = []
     for _when, path in sorted(found):
@@ -1083,6 +1158,7 @@ async def _generate_images(body: ImageRequest) -> dict:
     started = time.time()
     seen = _existing(_shared_root())
     with tempfile.TemporaryDirectory(prefix="chiezo-image-") as out_dir:
+        source = _write_source(body, out_dir)
         prompt = _image_prompt(body, out_dir)
         if CLI == "antigravity":
             # agy はプロンプトを引数で取る(会話の口と同じ)。作業ディレクトリは
@@ -1132,7 +1208,7 @@ async def _generate_images(body: ImageRequest) -> dict:
             raise HTTPException(502, {"error": f"{CLI} failed", "exit_code": proc.returncode,
                                       "stderr": detail})
 
-        images = _collect_images(out_dir, started, seen)
+        images = _collect_images(out_dir, started, seen, skip=source)
 
     if not images:
         # 説明だけ返してファイルを書かないことがある(相手はエージェント)。

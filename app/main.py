@@ -31,6 +31,7 @@ from app import (
     capabilities,
     db,
     media,
+    media_backends,
     media_providers,
     memory,
     notes,
@@ -1423,6 +1424,11 @@ class ImageRequest(BaseModel):
     prompt: str
     # 何案かを 1 組として見比べるための名前。同じ名前を付けた依頼が画面で横に並ぶ
     group: str = ""
+    # 元にする絵。 前に作った絵のパス(image_status が返すもの)か、届く URL。
+    # `edit` は「これを直す(他は変えない)」、`reference` は「これを参考に別のものを
+    # 描く(絵柄を合わせ、中身は新しく)」。**両方は渡せない**(言い方が逆になる)
+    edit: str = ""
+    reference: str = ""
     # 相手。空なら既定(自前の GPU)
     backend: str | None = None
     model: str | None = None
@@ -1438,6 +1444,9 @@ class AudioRequestBody(BaseModel):
     prompt: str
     # 何案かを 1 組として見比べるための名前。同じ名前を付けた依頼が画面で横に並ぶ
     group: str = ""
+    # 参考にする音。前に作った音のパス(audio_status が返すもの)か、届く URL。
+    # 似た音色・雰囲気・楽器編成で作らせる(曲だけ)
+    reference: str = ""
     # 相手。空なら既定(自前の GPU)
     backend: str | None = None
     model: str | None = None
@@ -1523,9 +1532,33 @@ async def media_backends_list(
     return {"backends": await media.backends(kind), "kind": kind, "enabled": media.is_enabled()}
 
 
+def _edit_source(edit: str) -> tuple[str, str]:
+    """来た値を (path, url) に振り分ける。
+
+    呼ぶ側に 2 つの引数を書き分けさせない —— `image_status` が返すのはパスと URL の
+    両方で、どちらを持っているかは場面による。
+    """
+    return ("", edit) if edit.startswith(("http://", "https://")) else (edit, "")
+
+
+async def _source_image(edit: str, reference: str) -> tuple[bytes, str]:
+    """元にする絵と、その使い道を返す。
+
+    **両方は受け取らない。** 相手への言い方が逆(片方は「他を変えるな」、もう片方は
+    「別のものを描け」)なので、両方渡されたらどちらの意図か決めようがない。
+    """
+    if edit and reference:
+        raise HTTPException(400, {"error": "edit と reference は同時に渡せません"})
+    if not (edit or reference):
+        return b"", media_backends.SOURCE_EDIT
+    mode = media_backends.SOURCE_EDIT if edit else media_backends.SOURCE_REFERENCE
+    return await media.load_image(*_edit_source(edit or reference)), mode
+
+
 @app.post("/v1/media/image")
 async def media_image(body: ImageRequest) -> dict:
     """描き始めて job を返す(待たない)。進み具合は下の口で引く。"""
+    source, mode = await _source_image(body.edit, body.reference)
     return media.start_image_job(
         prompt=body.prompt,
         backend=(body.backend or "").strip(),
@@ -1536,12 +1569,15 @@ async def media_image(body: ImageRequest) -> dict:
         negative=body.negative,
         steps=body.steps,
         group=body.group,
+        source=source,
+        source_mode=mode,
     )
 
 
 @app.post("/v1/media/audio")
 async def media_audio(body: AudioRequestBody) -> dict:
     """作り始めて job を返す(待たない)。進み具合は絵と同じ口で引く。"""
+    source = await media.load_image(*_edit_source(body.reference)) if body.reference else b""
     return media.start_audio_job(
         prompt=body.prompt,
         backend=(body.backend or "").strip(),
@@ -1554,6 +1590,8 @@ async def media_audio(body: AudioRequestBody) -> dict:
         negative=body.negative,
         loop=body.loop,
         steps=body.steps,
+        group=body.group,
+        source=source,
     )
 
 

@@ -396,6 +396,7 @@ def create_job(
     seconds: float = 0.0,
     voice: str = "",
     group: str = "",
+    editing: bool = False,
 ) -> dict:
     """頼みを検査して記録するだけ(まだ作らない)。
 
@@ -424,6 +425,8 @@ def create_job(
 
     if kind == media_providers.KIND_AUDIO:
         sound, seconds = _check_audio(spec, sound, seconds)
+        if editing:
+            _check_reference(spec, sound)
     elif kind == media_providers.KIND_SPEECH:
         # 読み上げに大きさも尺も無い。声だけ確かめる(相手が持っていない声を
         # 渡すと、生成そのものが 400 で返ってくる)
@@ -443,6 +446,18 @@ def create_job(
                     "error": f"{spec.label} に {size} は頼めません(モデルの学習解像度から外れ、絵が崩れます)",
                     "sizes": list(spec.sizes),
                     "hint": "小さい素材が要るときは、一覧のサイズで描いてから縮小してください",
+                },
+            )
+        # 直せない相手に元の絵を渡されたら断る。 黙って一から描くと、直したつもりの
+        # 絵が全部描き変わって返り、受け取った側は見比べるまで気づけない。
+        if editing and not spec.edits:
+            raise HTTPException(
+                400,
+                {
+                    "error": f"{spec.label} は元の絵を直せません(一から描くことしかできません)",
+                    "backends": [p.id for p in media_providers.all_providers(media_providers.KIND_IMAGE)
+                                 if p.edits],
+                    "hint": "直せる相手を backend で名指ししてください",
                 },
             )
 
@@ -473,6 +488,32 @@ def create_job(
     cleanup()
 
     return job
+
+
+def _check_reference(spec: media_providers.MediaProvider, sound: str) -> None:
+    """参考音源を渡せる頼みかを見る。**黙って無視しない**。
+
+    無視して作ると、出てきた音を「参考にした結果」として受け取ってしまう ——
+    似ていない理由が分からないまま、プロンプトのほうを何度も書き直すことになる。
+    """
+    if not spec.audio_reference:
+        raise HTTPException(
+            400,
+            {
+                "error": f"{spec.label} は参考の音を受け取れません",
+                "backends": [p.id for p in media_providers.all_providers(media_providers.KIND_AUDIO)
+                             if p.audio_reference],
+                "hint": "受け取れる相手を backend で名指ししてください",
+            },
+        )
+    if sound != media_providers.SOUND_MUSIC:
+        raise HTTPException(
+            400,
+            {
+                "error": "参考の音を渡せるのは曲だけです(効果音の口は文字しか受け取りません)",
+                "hint": 'sound="music" で頼んでください',
+            },
+        )
 
 
 def _check_audio(
@@ -600,6 +641,8 @@ def start_image_job(
     negative: str = "",
     steps: int = 25,
     group: str = "",
+    source: bytes = b"",
+    source_mode: str = "edit",
 ) -> dict:
     """頼みを受け付けて job を返す(生成は後ろで走る)。
 
@@ -607,9 +650,10 @@ def start_image_job(
     生成は数秒〜数分かかり、待たせると呼び出し側が先に切れる。
     """
     job = create_job(prompt, backend=backend, model=model, size=size, seed=seed, count=count,
-                     group=group)
+                     group=group, editing=bool(source))
     request = media_backends.ImageRequest(
-        prompt=job["prompt"], negative=negative, size=size, seed=seed, model=model, steps=steps
+        prompt=job["prompt"], negative=negative, size=size, seed=seed, model=model,
+        steps=steps, source=source, source_mode=source_mode,
     )
     return _start(job, request, count)
 
@@ -627,6 +671,7 @@ def start_audio_job(
     loop: bool = False,
     steps: int = 50,
     group: str = "",
+    source: bytes = b"",
 ) -> dict:
     """音の頼みを受け付けて job を返す(生成は後ろで走る)。絵とまったく同じ扱い。"""
     job = create_job(
@@ -639,6 +684,7 @@ def start_audio_job(
         sound=sound,
         seconds=seconds,
         group=group,
+        editing=bool(source),
     )
     request = media_backends.AudioRequest(
         prompt=job["prompt"],
@@ -651,6 +697,7 @@ def start_audio_job(
         model=model,
         steps=steps,
         loop=loop,
+        source=source,
     )
     return _start(job, request, count)
 
@@ -732,6 +779,17 @@ def start_speech_job(
 # 文字起こしに渡せる音の上限。相手の上限より手前で断る(OpenAI は 25MB)。
 # ここは「メモリごと持っていかれない」ための歯止めなので、相手の上限より緩い。
 MAX_TRANSCRIBE_BYTES = 200 * 1024 * 1024
+
+
+async def load_image(path: str = "", url: str = "") -> bytes:
+    """直す元の絵を読む。**受け取り方は文字起こしと同じ規則**(置き場の中か URL)。
+
+    ここで受けるのはたいてい `image_status` が返したパスなので、**前に作った絵を
+    そのまま直しに出せる**。手元のファイルの絶対パスは受け取らない —— chiezo は
+    コンテナの中で動いていて、頼んだ人のディスクは見えない。
+    """
+    data, _name, _mime = await load_audio(path=path, url=url)
+    return data
 
 
 async def load_audio(path: str = "", url: str = "") -> tuple[bytes, str, str]:

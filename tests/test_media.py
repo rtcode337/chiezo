@@ -1925,3 +1925,151 @@ class TestPromptLanguage:
         # 指定しないときは 1 行も足さない
         plain = claude_config.build_block({}, "http://x.test", mcp=True, media=True)
         assert "依頼文は" not in plain
+
+
+class TestEditingAnExistingImage:
+    """前の絵を渡して一部だけ直す。
+
+    **一から描き直させると、直したい 1 か所以外も毎回描き変わる** —— 同じ文面で
+    頼んでも絵柄・ポーズ・大きさが振れるので、通っていたところまで作り直しになる。
+    """
+
+    def test_元の絵をブリッジへ送る(self, state):
+        settings_store.set_enabled("codex", True)
+        settings_store.set_credential("codex", '{"tokens": "…"}')
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            handler.sent = json.loads(request.content)
+            return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(PNG).decode()}]})
+
+        use(state, handler)
+        asyncio.run(media_backends.generate("codex", media_backends.ImageRequest(
+            prompt="5 コマ目だけ直す", size="1024x1536", source=PNG)))
+
+        # 絵そのものを送る（ブリッジは別のコンテナなので、こちらのパスは見えない）
+        assert base64.b64decode(handler.sent["image"]) == PNG
+
+    def test_渡さなければ今までどおり(self, state):
+        settings_store.set_enabled("codex", True)
+        settings_store.set_credential("codex", '{"tokens": "…"}')
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            handler.sent = json.loads(request.content)
+            return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(PNG).decode()}]})
+
+        use(state, handler)
+        asyncio.run(media_backends.generate(
+            "codex", media_backends.ImageRequest(prompt="盾", size="1024x1024")))
+
+        assert "image" not in handler.sent
+
+    def test_直せない相手には頼む前に断る(self, state):
+        # 黙って一から描くと、直したつもりの絵が全部描き変わって返る
+        with pytest.raises(HTTPException) as e:
+            media.start_image_job("直して", backend="comfyui", size="1024x1024", source=PNG)
+
+        assert e.value.status_code == 400
+        assert "codex" in e.value.detail["backends"]
+
+    def test_置き場の絵をパスで渡せる(self, state, tmp_path):
+        state.setenv("CHIEZO_MEDIA_DIR", str(tmp_path / "media"))
+        job = media.create_job("猫", backend="comfyui")
+        saved = media._save(job["id"], 0, media_backends.GeneratedImage(PNG, "image/png", 1, "m"))
+
+        # image_status が返すパスをそのまま渡せる（書き分けさせない）
+        assert asyncio.run(media.load_image(path=saved.path)) == PNG
+        assert asyncio.run(media.load_image(path=saved.url)) == PNG
+
+    def test_手元の絶対パスは受け取らない(self, state, tmp_path):
+        # chiezo はコンテナの中で動いていて、頼んだ人のディスクは見えない
+        outside = tmp_path / "手元.png"
+        outside.write_bytes(PNG)
+        with pytest.raises(HTTPException):
+            asyncio.run(media.load_image(path=str(outside)))
+
+    def test_参考として渡すと言い方が変わる(self, state):
+        settings_store.set_enabled("codex", True)
+        settings_store.set_credential("codex", '{"tokens": "…"}')
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            handler.sent = json.loads(request.content)
+            return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(PNG).decode()}]})
+
+        use(state, handler)
+        asyncio.run(media_backends.generate("codex", media_backends.ImageRequest(
+            prompt="同じ絵柄でヘビを描いて", source=PNG,
+            source_mode=media_backends.SOURCE_REFERENCE)))
+
+        assert handler.sent["image_mode"] == "reference"
+
+    def test_直すと参考は同時に渡せない(self, state):
+        from app import main as api
+
+        # 言い方が逆（片方は「他を変えるな」、もう片方は「別のものを描け」）なので、
+        # 両方来たらどちらの意図か決めようがない
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(api._source_image("/media/a.png", "/media/b.png"))
+        assert e.value.status_code == 400
+
+
+class TestAudioReference:
+    """参考の音を渡して、似た音色・雰囲気で作らせる（曲だけ）。
+
+    **効果音の口は文字しか受け取らない**ので、渡されたら断る —— 黙って無視すると、
+    出てきた音を「参考にした結果」として受け取り、似ていない理由が分からないまま
+    プロンプトのほうを書き直すことになる。
+    """
+
+    def test_先に登録してからidで参照する(self, state):
+        settings_store.set_enabled("elevenlabs", True)
+        settings_store.set_credential("elevenlabs", "key")
+        sent = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sent.append(str(request.url))
+            if request.url.path.endswith("/music/upload"):
+                return httpx.Response(200, json={"song_id": "SONG1"})
+            handler.body = json.loads(request.content)
+            return httpx.Response(200, content=b"MP3")
+
+        use(state, handler)
+        asyncio.run(media_backends.generate_audio("elevenlabs", media_backends.AudioRequest(
+            prompt="森の空き地の BGM", sound="music", seconds=30, source=b"REF")))
+
+        # 参照はファイルではなく id で指すので、compose の前に 1 往復が要る
+        assert sent[0].endswith("/music/upload")
+        chunk = handler.body["composition_plan"]["chunks"][0]
+        assert chunk["conditioning_ref"]["song_id"] == "SONG1"
+        assert chunk["duration_ms"] == 30000
+
+    def test_渡さなければ今までどおりの形(self, state):
+        settings_store.set_enabled("elevenlabs", True)
+        settings_store.set_credential("elevenlabs", "key")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            handler.body = json.loads(request.content)
+            return httpx.Response(200, content=b"MP3")
+
+        use(state, handler)
+        asyncio.run(media_backends.generate_audio("elevenlabs", media_backends.AudioRequest(
+            prompt="BGM", sound="music", seconds=30)))
+
+        assert "composition_plan" not in handler.body
+        assert handler.body["prompt"] == "BGM"
+
+    def test_効果音には渡せない(self, state):
+        settings_store.set_enabled("elevenlabs", True)
+        settings_store.set_credential("elevenlabs", "key")
+
+        with pytest.raises(HTTPException) as e:
+            media.start_audio_job("打撃音", backend="elevenlabs", sound="sfx", source=b"REF")
+
+        assert e.value.status_code == 400
+        assert "効果音" in e.value.detail["error"]
+
+    def test_受け取れない相手には断る(self, state):
+        with pytest.raises(HTTPException) as e:
+            media.start_audio_job("BGM", backend="comfyui", sound="music", source=b"REF")
+
+        assert e.value.status_code == 400
+        assert "elevenlabs" in e.value.detail["backends"]

@@ -74,6 +74,16 @@ class MediaProvider:
     owns_toggle: bool = False
     # URL を上書きできる環境変数(コンテナ名で辿り着けない相手のための逃げ道)
     url_env: str = ""
+    # 元の絵を渡して直せる相手か。 CLI ブリッジ越しの相手はエージェントなので、
+    # 作業ディレクトリに置いた絵を開いて直せる。外部サービスは口が別で
+    # (OpenAI は /images/edits、Gemini は入力画像のパート)、まだ対応していない ——
+    # **黙って無視して一から描くと、直したつもりの絵が全部描き変わって返る**ので、
+    # 出来ない相手には頼む前に断る。
+    edits: bool = False
+    # 参考の音を渡せる相手か。 **絵とは別に持つ** —— 同じ「元を渡せる」でも口も対応も
+    # 別物で、1 つの印にまとめると、絵を直せない相手に絵を渡しても素通りしてしまう
+    # (黙って一から描いた絵が「直した絵」として返る)。
+    audio_reference: bool = False
     # 枠の聞き方(`app/usage.py`)。空なら「この相手は枠を出さない」。
     # 「話す相手」の側にも同じ欄があるが、こちらは絵と音だけの相手のためのもの。
     usage: str = ""
@@ -165,6 +175,8 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         # 画素の指定は「言葉で頼む」形なので、こちらの語彙をそのまま渡す
         sizes=("1024x1024", "1536x1024", "1024x1536"),
         credential_from="codex",
+        # エージェントなので、作業ディレクトリに置いた絵を開いて直せる
+        edits=True,
         order=15,
     ),
     MediaProvider(
@@ -185,6 +197,7 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         # on/off は「話す相手」の行と共通。 同じサインインを使うので、
         # あちらを止めたら絵も止まる
         credential_from="antigravity",
+        edits=True,
         order=17,
         kinds=(KIND_IMAGE,),
     ),
@@ -268,6 +281,8 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         owns_toggle=True,
         # 枠を聞ける。 鍵だけで引ける口があり、生成も会話もしないので枠を食わない。
         usage=USAGE_ELEVENLABS,
+        # 曲は参考音源を受け取れる(登録してから id で参照する)
+        audio_reference=True,
         order=30,
         kinds=(KIND_AUDIO, KIND_SPEECH, KIND_TRANSCRIBE, KIND_IMAGE, KIND_VIDEO),
         # 絵と動画は他社のモデルを預かっているだけ(自社の絵のモデルは持っていない)。

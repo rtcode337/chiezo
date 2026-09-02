@@ -668,3 +668,84 @@ class TestAntigravityUsage:
         server = bridge()
 
         assert server._antigravity_windows("サインインしてください") == []
+
+
+class TestImageEditing:
+    """元の絵を渡されたら「一から描く」ではなく「これを直す」。
+
+    描き直させると、直したい 1 か所以外も毎回描き変わる —— 同じ文面で頼んでも
+    絵柄・ポーズ・大きさが振れるので、通っていたところまで作り直しになる。
+    """
+
+    def test_直す指示になる(self, bridge):
+        import base64
+
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        text = server._image_prompt(
+            server.ImageRequest(prompt="5 コマ目だけ直す",
+                                image=base64.b64encode(b"png").decode()),
+            "/tmp/work",
+        )
+
+        assert f"/tmp/work/{server.SOURCE_NAME}" in text
+        # 「参考にした別の絵」を描かせないため、変えない約束を言い切る
+        assert "not a new drawing" in text
+        assert "exactly as it is" in text
+
+    def test_渡さなければ今までどおり描く指示(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        text = server._image_prompt(server.ImageRequest(prompt="剣", n=1), "/tmp/work")
+
+        assert "Generate 1 image(s)" in text
+        assert "not a new drawing" not in text
+
+    def test_元の絵を作業ディレクトリへ置く(self, bridge, tmp_path):
+        import base64
+
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        # エージェントに見せられるのはこの作業ディレクトリだけ
+        path = server._write_source(
+            server.ImageRequest(prompt="直す", image=base64.b64encode(b"PNGDATA").decode()),
+            str(tmp_path),
+        )
+
+        assert (tmp_path / server.SOURCE_NAME).read_bytes() == b"PNGDATA"
+        assert path == str(tmp_path / server.SOURCE_NAME)
+
+    def test_置いた元の絵は成果として拾わない(self, bridge, tmp_path):
+        """今書いたものなので mtime も新しい。除かないと「直っていない絵」を返す。"""
+        import time as _t
+
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        started = _t.time()
+        source = tmp_path / server.SOURCE_NAME
+        source.write_bytes("もとの絵".encode())
+        edited = tmp_path / "out-1.png"
+        edited.write_bytes("直した絵".encode())
+
+        got = server._collect_images(str(tmp_path), started, skip=str(source))
+
+        assert got == ["直した絵".encode()]
+
+    def test_壊れたbase64は断る(self, bridge, tmp_path):
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        with pytest.raises(Exception) as e:
+            server._write_source(server.ImageRequest(prompt="x", image="これは base64 ではない"),
+                                 str(tmp_path))
+        assert "base64" in str(e.value)
+
+    def test_参考にするときは別の絵を描かせる(self, bridge):
+        import base64
+
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        text = server._image_prompt(
+            server.ImageRequest(prompt="同じ絵柄でヘビを描いて",
+                                image=base64.b64encode(b"png").decode(),
+                                image_mode=server.MODE_REFERENCE),
+            "/tmp/work",
+        )
+
+        # 絵柄は合わせる。中身は真似させない（同じ絵が返っては意味がない）
+        assert "Draw a NEW picture" in text
+        assert "Do not copy its subject" in text
+        assert "exactly as it is" not in text

@@ -295,6 +295,12 @@ def _register_image_tools(mcp: MCPServer) -> None:
         "(モデルの学習解像度を外れると絵が崩れるため)。アイコンのような小さい素材が要るときも、"
         "一覧のサイズで描いてから手元で縮小する。"
         "**seed を指定すると同じ絵を作り直せる**(ComfyUI のみ。指定しなければ毎回振り直す)。"
+        "**前の絵を元にできる**(どちらも image_status が返すパスか URL を渡す):"
+        "**edit = これを直す** —— 直す箇所以外は変えない。prompt には「どこをどう変えるか」"
+        "だけ書く。**reference = これを参考に別のものを描く** —— 絵柄・線・色・比率を"
+        "合わせたまま、中身は新しく描く(同じ絵柄で別のキャラを揃えるときに使う)。"
+        "**一から描き直させると絵柄もポーズも毎回振れる**ので、揃えたいときは必ずどちらかを渡す。"
+        "**元にできる相手は限られる**ので、出来ない相手を名指しすると 400 で断られる。"
     ))
     async def image_generate(
         prompt: str,
@@ -305,7 +311,12 @@ def _register_image_tools(mcp: MCPServer) -> None:
         count: int = 1,
         negative: str = "",
         group: str = "",
+        edit: str = "",
+        reference: str = "",
     ) -> dict:
+        from app import main as api
+
+        source, mode = await api._source_image(edit, reference)
         return _call(
             media.start_image_job,
             prompt=prompt,
@@ -316,6 +327,8 @@ def _register_image_tools(mcp: MCPServer) -> None:
             count=count,
             negative=negative,
             group=group,
+            source=source,
+            source_mode=mode,
         )
 
     @mcp.tool(description=(
@@ -368,7 +381,11 @@ def _register_audio_tools(mcp: MCPServer) -> None:
         negative: str = "",
         loop: bool = False,
         group: str = "",
+        reference: str = "",
     ) -> dict:
+        from app import main as api
+
+        source = await media.load_image(*api._edit_source(reference)) if reference else b""
         return _call(
             media.start_audio_job,
             prompt=prompt,
@@ -382,6 +399,7 @@ def _register_audio_tools(mcp: MCPServer) -> None:
             negative=negative,
             loop=loop,
             group=group,
+            source=source,
         )
 
     @mcp.tool(description=(

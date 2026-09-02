@@ -48,6 +48,13 @@ log = logging.getLogger("chiezo.media")
 GENERATE_TIMEOUT = float(os.environ.get("CHIEZO_IMAGE_TIMEOUT", "300") or 300)
 
 
+# 元にする絵の使い道。 **相手への言い方が逆になる**ので、渡す側が言い分ける ——
+# 直したいのに「参考に」と言うと別の絵が返り、参考にしたいのに「直せ」と言うと
+# 元の絵がほぼそのまま返ってくる。
+SOURCE_EDIT = "edit"
+SOURCE_REFERENCE = "reference"
+
+
 @dataclass(frozen=True)
 class ImageRequest:
     prompt: str
@@ -56,6 +63,11 @@ class ImageRequest:
     seed: int = 0
     model: str = ""
     steps: int = 25
+    # 元にする絵。 使い道が 2 つあり、相手への言い方が逆になるので mode で分ける ——
+    # `edit` は「これを直す(他は変えない)」、`reference` は「これを参考に別のものを
+    # 描く(絵柄を合わせ、中身は新しく)」。一から描かせると絵柄もポーズも毎回振れる。
+    source: bytes = b""
+    source_mode: str = "edit"
 
 
 @dataclass(frozen=True)
@@ -64,6 +76,12 @@ class GeneratedImage:
     mime: str
     seed: int
     model: str
+
+
+# 参考音源が効くのは曲だけ。 効果音の口(`/v1/sound-generation`)は text しか受け取らない
+# （公式リファレンスに file/audio に当たる項目が無い）。**黙って無視しない** ——
+# 渡したのに効かないと、出てきた音を「参考にした結果」として受け取ってしまう。
+REFERENCE_MAX_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -81,6 +99,9 @@ class AudioRequest:
     seed: int = 0
     model: str = ""
     steps: int = 50
+    # 参考にする音。 これに似た音色・雰囲気・楽器編成で作らせる（曲だけ）。
+    # 中身をそのまま渡すのは、相手に登録してから参照する形になっているため。
+    source: bytes = b""
     # 繋いで鳴らせる素材にするか。効くのは ElevenLabs の効果音だけ
     loop: bool = False
 
@@ -667,10 +688,15 @@ BRIDGE_IMAGE_MODELS = {"codex": "gpt-image-2", "antigravity": "antigravity-image
 async def _bridge_image_generate(
     spec: media_providers.MediaProvider, req: ImageRequest, seed: int
 ) -> GeneratedImage:
+    body: dict = {"prompt": req.prompt, "size": req.size, "n": 1}
+    if req.source:
+        # 絵そのものを送る。 ブリッジは別のコンテナなので、こちらのパスは見えない
+        body["image"] = base64.b64encode(req.source).decode()
+        body["image_mode"] = req.source_mode
     async with _client(GENERATE_TIMEOUT) as client:
         res = await client.post(
             f"{media_providers.url_of(spec)}/images/generations",
-            json={"prompt": req.prompt, "size": req.size, "n": 1},
+            json=body,
         )
     if res.status_code >= 400:
         raise remote_error(spec, res, "image")
@@ -943,12 +969,32 @@ async def _gemini_audio(
 # 効果音と曲で口が別(`/sound-generation` と `/music`)。返るのは JSON ではなく
 # 音のバイト列そのものなので、失敗したときだけ本文が JSON になる。
 # 鍵はこの相手のもの(会話ができないので借り先が無い)。
-def _elevenlabs_body(req: AudioRequest, model: str, seconds: float) -> tuple[str, dict]:
+def _elevenlabs_body(
+    req: AudioRequest, model: str, seconds: float, song_id: str = ""
+) -> tuple[str, dict]:
     if req.sound == media_providers.SOUND_MUSIC:
-        body: dict = {"prompt": req.prompt, "model_id": model}
+        prompt = req.prompt
         if req.lyrics:
-            body["prompt"] = f"{req.prompt}\n\nLyrics:\n{req.lyrics}"
-        else:
+            prompt = f"{req.prompt}\n\nLyrics:\n{req.lyrics}"
+        if song_id:
+            # **参考音源を使うときは形が変わる。** 素の prompt には参照を置く場所が
+            # 無いので、1 区間だけの composition plan にして、そこに参照を付ける
+            # (参照できるのは先頭 30 秒まで)。
+            chunk: dict = {
+                "text": prompt,
+                "conditioning_ref": {
+                    "song_id": song_id,
+                    "range": {"start_ms": 0,
+                              "end_ms": int(REFERENCE_MAX_SECONDS * 1000)},
+                },
+                "condition_strength": "high",
+            }
+            if seconds > 0:
+                chunk["duration_ms"] = int(seconds * 1000)
+            return "music", {"composition_plan": {"chunks": [chunk]}, "model_id": model}
+
+        body: dict = {"prompt": prompt, "model_id": model}
+        if not req.lyrics:
             # 歌詞を渡さないなら器楽で頼む(ゲームの BGM に歌が乗ると台詞と喧嘩する)
             body["force_instrumental"] = True
         if seconds > 0:
@@ -959,6 +1005,29 @@ def _elevenlabs_body(req: AudioRequest, model: str, seconds: float) -> tuple[str
     if seconds > 0:
         body["duration_seconds"] = seconds
     return "sound-generation", body
+
+
+async def _elevenlabs_upload(
+    spec: media_providers.MediaProvider, key: str, data: bytes
+) -> str:
+    """参考音源を相手に預けて id をもらう。
+
+    **参照はファイルではなく id で指す**(`conditioning_ref.song_id`)ので、
+    compose の前にこの 1 往復が要る。自分で作った音でも、外から持ってきた音でも
+    同じ口で登録できる。
+    """
+    async with _client(GENERATE_TIMEOUT) as client:
+        res = await client.post(
+            f"{media_providers.url_of(spec)}/music/upload",
+            headers={"xi-api-key": key},
+            files={"file": ("reference.mp3", data, "audio/mpeg")},
+        )
+    if res.status_code >= 400:
+        raise remote_error(spec, res, "audio")
+    song_id = (res.json() or {}).get("song_id", "")
+    if not song_id:
+        raise HTTPException(502, {"error": "ElevenLabs が参考音源の id を返しませんでした"})
+    return song_id
 
 
 async def _elevenlabs_audio(
@@ -979,7 +1048,9 @@ async def _elevenlabs_audio(
         "music_v2" if req.sound == media_providers.SOUND_MUSIC else "eleven_text_to_sound_v2"
     )
     seconds = resolve_seconds(spec, req.sound, req.seconds)
-    path, body = _elevenlabs_body(req, model, seconds)
+    # 参考音源は先に登録して id をもらう（compose 側はその id で参照する）
+    song_id = await _elevenlabs_upload(spec, key, req.source) if req.source else ""
+    path, body = _elevenlabs_body(req, model, seconds, song_id)
 
     async with _client(GENERATE_TIMEOUT) as client:
         res = await client.post(
