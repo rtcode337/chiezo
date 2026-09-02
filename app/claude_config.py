@@ -468,6 +468,15 @@ def hook_settings_json() -> str:
     )
 
 
+def _spaced(word: str) -> str:
+    """欧文の語を日本語の地の文に入れるときは前後に空白を置く。
+
+    「依頼文はEnglishで書く」は詰まって読みにくい(日本語は分かち書きしないので、
+    欧文だけが単語の切れ目を失う)。全角の語はそのままでよい。
+    """
+    return f" {word} " if word.isascii() else word
+
+
 def build_block(
     sources: dict[str, Source],
     base_url: str,
@@ -476,6 +485,7 @@ def build_block(
     mcp: bool = False,
     media: bool = False,
     usable: dict[str, set[str]] | None = None,
+    prompt_language: str = "",
 ) -> str:
     """CLAUDE.md に貼る Chiezo ブロック(マーカー込み)を組み立てて返す。
 
@@ -578,6 +588,11 @@ def build_block(
             "アイコンのような小さい素材も、一覧のサイズで描いてから手元で縮小する",
             "- **同じ絵を作り直すときは seed を指定する**(自前の GPU のときだけ再現できる)。"
             "キャラの別ポーズのように「揃えたい」場面で効く",
+            *(
+                [f"- **依頼文は{_spaced(prompt_language)}で書く**(このサーバーの設定。"
+                 "絵・音・動画・声のどれも同じ)"]
+                if prompt_language else []
+            ),
             "",
             "### 音を作る(このサーバーで生成できる)",
             "",

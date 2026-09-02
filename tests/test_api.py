@@ -1623,3 +1623,43 @@ class TestHeadingSizes:
         }
         assert set(sizes) == {1, 2, 3}, "使っている見出しレベルは全部明示すること"
         assert sizes[1] > sizes[2] > sizes[3]
+
+
+class TestAdminFailures:
+    """管理画面の「AI 依頼の失敗」節。
+
+    **会話と生成を分けない。** どちらで落ちたか分かっていない人が探せなくなるため、
+    種類は列で示して 1 枚の表に並べる。
+    """
+
+    @pytest.fixture()
+    def admin(self, tmp_path, built_data_dir, monkeypatch):
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        from app.main import app
+
+        with TestClient(app) as c:
+            yield c
+
+    def test_会話と生成の失敗が同じ表に並ぶ(self, admin):
+        from app import ai_log
+
+        ai_log.record(backend="claude", model="opus", effort="high", status=0,
+                      reason="claude exited 1", prompt_bytes=307 * 1024)
+        ai_log.record(backend="comfyui", model="", effort="", status=502,
+                      reason="GPU が落ちています", prompt_bytes=42, kind="image")
+
+        html = admin.get("/admin").text
+        assert "AI 依頼の失敗" in html
+        assert "claude exited 1" in html and "GPU が落ちています" in html
+        # 種類の列で見分ける
+        assert "会話" in html and "画像" in html
+        # 状態 0 は「そもそも繋がらなかった」—— 0 とだけ書くと成功に読める
+        assert "届かず" in html
+
+    def test_記録が無ければそう書く(self, admin):
+        assert "まだ記録がありません" in admin.get("/admin").text
+
+    def test_置き場が無ければ設定を案内する(self, client):
+        # module 版の client は CHIEZO_STATE_DIR を持たない
+        assert "CHIEZO_STATE_DIR" in client.get("/admin").text

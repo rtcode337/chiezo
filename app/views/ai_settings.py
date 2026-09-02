@@ -403,7 +403,39 @@ async def section_html(request: Request | None = None) -> str:
 {chr(10).join(rows)}
 </tbody>
 </table>
+
+{_prompt_language_html()}
 """
+
+
+def _prompt_language_html() -> str:
+    """依頼文の言語を選ぶところ。
+
+    **Chiezo はプロンプトを書かない。** 書くのはこのサーバーを使う AI なので、
+    ここで決めた言語は生成される CLAUDE.md ブロック(`app/claude_config.py`)の
+    「依頼文は〜で書く」という 1 行になって届く。設定を変えたら**設定ファイルを
+    配り直すまで、読む側の手元は古いまま**なので、そう書いておく。
+    """
+    current = settings_store.prompt_language()
+    options = "".join(
+        f'<option value="{esc(code)}"{" selected" if code == current else ""}>{esc(label)}</option>'
+        for code, label in (
+            *settings_store.PROMPT_LANGUAGES.items(),
+            ("", "指定しない"),
+        )
+    )
+    return f"""<h3>依頼文の言語</h3>
+<p class="muted">
+絵・音・動画・声を頼むときの<strong>依頼文をどの言語で書いてもらうか</strong>。
+Chiezo 自身は依頼文を書かないので、これは
+<a href="/admin/claude-config">生成される設定</a>に「この言語で依頼する」の 1 行として載る
+—— <strong>設定ファイルを配り直すまで、読む側の手元は変わらない</strong>
+(<code>scripts/gen_claude_config.sh</code>)。
+</p>
+<form method="post" action="/admin/ai/prompt-language">
+<select name="language">{options}</select>
+<button type="submit">保存</button>
+</form>"""
 
 
 def _require_provider(provider: str) -> providers.Provider:
@@ -513,6 +545,14 @@ async def test_media_connection(provider: str = Form(...)):
     ok, why = await media.check(provider)
     params = urlencode({"media_tested": provider, "media_ok": "1" if ok else "0", "media_why": why})
     return RedirectResponse(f"/admin?{params}#{SECTION_ANCHOR}", status_code=303)
+
+
+@router.post("/admin/ai/prompt-language")
+async def set_prompt_language(language: str = Form("")):
+    """依頼文の言語を保存する。知らないコードは「指定しない」として受ける。"""
+    settings_store.require_path()
+    settings_store.set_prompt_language(language.strip())
+    return RedirectResponse(url=BACK_TO_SECTION, status_code=303)
 
 
 @router.post("/admin/ai/layer")

@@ -1630,8 +1630,17 @@ async def media_jobs(limit: int = Query(20, ge=1, le=100)) -> dict:
 
 @app.get("/v1/media/groups")
 async def media_groups(limit: int = Query(20, ge=1, le=100)) -> dict:
-    """見比べる組の一覧。画面がこれを読んで、案を横に並べる。"""
+    """見比べる組の一覧(見出し・日時・種類・件数まで)。案の中身は下の口で。"""
     return {"groups": media.job_groups(limit)}
+
+
+@app.get("/v1/media/groups/{key:path}")
+async def media_group(key: str) -> dict:
+    """組を 1 つ。開いたときだけ案の中身を運ぶ。"""
+    group = media.job_group(key)
+    if group is None:
+        raise HTTPException(404, {"error": f"unknown group: {key}"})
+    return group
 
 
 class PickBody(BaseModel):

@@ -400,8 +400,17 @@ def list_note_tags() -> list[dict]:
 
 @router.get("/media/groups")
 def media_groups(limit: int = Query(20, ge=1, le=100)) -> dict:
-    """見比べる組。頼んだ AI が同じ `group` を付けた案がまとまって並ぶ。"""
+    """見比べる組の一覧。**見出し・日時・種類・件数まで**で、案の中身は運ばない。"""
     return {"groups": media.job_groups(limit)}
+
+
+@router.get("/media/groups/{key:path}")
+def media_group(key: str) -> dict:
+    """組を 1 つ。画面で開いたときだけ、案の中身(絵・音と依頼文)を取る。"""
+    group = media.job_group(key)
+    if group is None:
+        raise HTTPException(404, {"code": "not_found", "message": "見つかりません"})
+    return group
 
 
 class MediaPickInput(BaseModel):

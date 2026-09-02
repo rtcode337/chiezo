@@ -19,6 +19,12 @@ export const router = createRouter({
     // AI が作った絵・音を、依頼文つきで並べて選ぶ。**音は AI 自身が聴けない**ので、
     // 何案か作らせたときに人が確かめる場所がここしかない
     { path: '/media', name: 'media', component: () => import('./views/MediaView.vue') },
+    // 一覧と中身を分けてある —— 一覧に絵と音を並べると、開くつもりのないものまで運ぶ
+    {
+      path: '/media/:key',
+      name: 'media-group',
+      component: () => import('./views/MediaGroupView.vue'),
+    },
     // タスク一覧・詳細・編集の専用画面は廃止。未完了はトップ、完了は /done、
     // 編集はカードを押してモーダル。古いブックマーク (/tasks 等) はフォールバックでトップへ
     // プロジェクト専用画面は廃止。作成・編集・並び替えはすべてトップで行う。

@@ -37,7 +37,7 @@ from pathlib import Path
 import httpx
 from fastapi import HTTPException
 
-from app import media_backends, media_providers, settings_store, usage_store
+from app import ai_log, media_backends, media_providers, settings_store, usage_store
 
 log = logging.getLogger("chiezo.media")
 
@@ -349,6 +349,7 @@ async def _run(job_id: str, backend: str, req, count: int, kind: str) -> None:
         log.warning("media job %s cancelled", job_id)
         _update(job_id, state="failed" if not files else "partial",
                 error="生成が中断されました", files=files)
+        _note_failure(job_id, backend, kind, 0, "生成が中断されました")
         raise
     except Exception as e:
         # どんな失敗でも記録して返す。 ここで投げても受け取る相手がいない
@@ -358,6 +359,29 @@ async def _run(job_id: str, backend: str, req, count: int, kind: str) -> None:
         log.warning("media job %s failed: %s", job_id, message[:300])
         # 出来たぶんは残す。 3 つ頼んで 2 つ出来たなら、その 2 つは使える
         _update(job_id, state="failed" if not files else "partial", error=message[:1000], files=files)
+        _note_failure(job_id, backend, kind, getattr(e, "status_code", 0), message)
+
+
+def _note_failure(job_id: str, backend: str, kind: str, status: int, reason: str) -> None:
+    """生成の失敗も会話と同じ控えに残す(`app/ai_log.py`)。
+
+    **job にも `error` は書いてある**が、あれは頼んだ本人が `image_status` で
+    引くためのもので、置き場の掃除(`KEEP_DAYS`)で消える。失敗を後から見に来る人は
+    「何の依頼が落ちたか」を job_id で知っているわけではないので、会話の失敗と
+    同じ 1 枚の表に並べる。
+
+    **プロンプトの中身は残さない**(大きさだけ)。控えの流儀は会話と揃える。
+    """
+    job = get_job(job_id) or {}
+    ai_log.record(
+        backend=backend,
+        model=job.get("model") or "",
+        effort="",
+        status=status,
+        reason=reason,
+        prompt_bytes=len((job.get("prompt") or "").encode()),
+        kind=kind,
+    )
 
 
 def create_job(
@@ -1039,23 +1063,38 @@ def picked_jobs(limit: int = 20, group: str = "") -> list[dict]:
     return [_row_to_dict(row) for row in rows]
 
 
-def job_groups(limit: int = 20) -> list[dict]:
-    """見比べる組の一覧。**新しい順**で、組ごとに案をまとめて返す。
+# 名前を付けなかった依頼の鍵。 画面の URL に載るので、組の名前と衝突しない形にする。
+SINGLE_KEY_PREFIX = "job:"
 
-    名前の無い依頼も 1 件 1 組として出す —— 画面で「まとめ忘れたぶんが消える」と、
-    人は生成されなかったと思ってしまう。
+
+def group_key(job: dict) -> str:
+    """その依頼が属する組の鍵。名前が無ければ依頼そのものを 1 組とする。"""
+    return job.get("group_name") or f"{SINGLE_KEY_PREFIX}{job['id']}"
+
+
+def group_title(job: dict) -> str:
+    """一覧に出す見出し。名前が無い依頼は**依頼文の 1 行目**を借りる。
+
+    「(名前なし)」と並べると、どれがどれだか一覧からは選べない —— 見出しは
+    中身を開くかどうかを決めるためのものなので、手掛かりを必ず持たせる。
     """
-    _reap_stale()
-    with _connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit * 8,)
-        ).fetchall()
+    if name := (job.get("group_name") or "").strip():
+        return name
+    head = (job.get("prompt") or "").strip().splitlines()
+    first = head[0].strip() if head else ""
+    return first[:60] or "(依頼文なし)"
+
+
+def _grouped(rows: list[sqlite3.Row]) -> list[dict]:
+    """依頼の行を組にまとめる。**新しい順**、組の中は頼んだ順。"""
     groups: dict[str, dict] = {}
     for row in rows:
         job = _row_to_dict(row)
-        key = job.get("group_name") or f"__single__{job['id']}"
+        key = group_key(job)
         group = groups.setdefault(key, {
+            "key": key,
             "group": job.get("group_name") or "",
+            "title": group_title(job),
             "kind": job["kind"],
             "created_at": job["created_at"],
             "jobs": [],
@@ -1065,4 +1104,44 @@ def job_groups(limit: int = 20) -> list[dict]:
     ordered = sorted(groups.values(), key=lambda g: g["created_at"], reverse=True)
     for group in ordered:
         group["jobs"].sort(key=lambda j: j["created_at"])
-    return ordered[:limit]
+        # 一覧で使う要約。 中身を開かなくても「何案あって、もう選んだか」が読める
+        group["count"] = len(group["jobs"])
+        group["picked"] = any(j["picked_at"] for j in group["jobs"])
+    return ordered
+
+
+def job_groups(limit: int = 20) -> list[dict]:
+    """見比べる組の一覧。
+
+    名前の無い依頼も 1 件 1 組として出す —— 画面で「まとめ忘れたぶんが消える」と、
+    人は生成されなかったと思ってしまう。
+    """
+    _reap_stale()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit * 8,)
+        ).fetchall()
+    groups = _grouped(rows)[:limit]
+    # 一覧が運ぶのは見出し・日時・種類・件数まで。 案そのものは開いたときに取る
+    return [{k: v for k, v in g.items() if k != "jobs"} for g in groups]
+
+
+def job_group(key: str) -> dict | None:
+    """組を 1 つ。**一覧と詳細で口を分ける**ため。
+
+    一覧に全部の案を積んで返すと、開くつもりのない依頼の中身まで毎回運ぶことになる。
+    """
+    _reap_stale()
+    if key.startswith(SINGLE_KEY_PREFIX):
+        job = get_job(key[len(SINGLE_KEY_PREFIX):])
+        if job is None or job.get("group_name"):
+            return None
+        with _connect() as conn:
+            rows = conn.execute("SELECT * FROM jobs WHERE id = ?", (job["id"],)).fetchall()
+    else:
+        with _connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM jobs WHERE group_name = ? ORDER BY created_at", (key,)
+            ).fetchall()
+    grouped = _grouped(rows)
+    return grouped[0] if grouped else None

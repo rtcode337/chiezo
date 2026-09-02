@@ -56,6 +56,26 @@ CREATE TABLE IF NOT EXISTS ai_failures (
 CREATE INDEX IF NOT EXISTS ix_ai_failures_at ON ai_failures(at DESC);
 """
 
+# 後から足した列。 既にある DB には起動時の ALTER TABLE で足す（作り直しは要らない）。
+_ADDED_COLUMNS = {"kind": "TEXT NOT NULL DEFAULT 'chat'"}
+
+# 何の依頼だったか。 会話も生成も同じ表に残す —— 失敗を探す人は「AI に頼んだことが
+# 落ちた」を見に来るのであって、それが会話だったか絵だったかを先に知ってはいない。
+# 値は job の kind（`app/media_providers.py`）と揃え、会話だけこちらで名前を持つ。
+KIND_CHAT = "chat"
+
+KIND_LABELS = {
+    KIND_CHAT: "会話",
+    "image": "画像",
+    "audio": "音",
+    "video": "動画",
+    "speech": "読み上げ",
+}
+
+
+def kind_label(kind: str) -> str:
+    return KIND_LABELS.get(kind, kind or KIND_CHAT)
+
 
 def db_path() -> Path | None:
     d = settings_store.state_dir()
@@ -68,6 +88,10 @@ def _connect(path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=DELETE")
     conn.executescript(SCHEMA)
+    have = {row["name"] for row in conn.execute("PRAGMA table_info(ai_failures)")}
+    for name, kind in _ADDED_COLUMNS.items():
+        if name not in have:
+            conn.execute(f"ALTER TABLE ai_failures ADD COLUMN {name} {kind}")
     return conn
 
 
@@ -79,6 +103,7 @@ def record(
     status: int,
     reason: str,
     prompt_bytes: int,
+    kind: str = KIND_CHAT,
 ) -> None:
     """失敗を 1 件残す。呼び出し側の失敗にはしない（控えが取れなくても答えは返す）。"""
     path = db_path()
@@ -87,8 +112,8 @@ def record(
     try:
         with _connect(path) as conn:
             conn.execute(
-                "INSERT INTO ai_failures (at, backend, model, effort, status, reason, prompt_bytes)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO ai_failures (at, backend, model, effort, status, reason,"
+                " prompt_bytes, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     datetime.now(UTC).isoformat(timespec="seconds"),
                     backend,
@@ -97,6 +122,7 @@ def record(
                     status,
                     (reason or "")[:REASON_MAX],
                     prompt_bytes,
+                    kind or KIND_CHAT,
                 ),
             )
             # 古いものから捨てる。件数で切るのは、失敗の頻度が読めないため
@@ -122,7 +148,7 @@ def recent(limit: int = 50) -> list[dict]:
             rows = [
                 dict(r)
                 for r in conn.execute(
-                    "SELECT at, backend, model, effort, status, reason, prompt_bytes"
+                    "SELECT at, backend, model, effort, status, reason, prompt_bytes, kind"
                     " FROM ai_failures ORDER BY id DESC LIMIT ?",
                     (max(1, min(limit, MAX_ROWS)),),
                 )

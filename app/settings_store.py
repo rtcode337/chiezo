@@ -190,6 +190,54 @@ def set_flag(key: str, value: str | None) -> None:
             )
 
 
+# ---- 依頼文の言語 ------------------------------------------------------------
+#
+# 絵・音・動画・声を頼むときのプロンプトを、どの言語で書いてもらうか。
+# **ここは「相手をどう呼ぶか」ではなく「頼む人にどう書いてほしいか」の設定**なので、
+# 相手ごとの設定(provider_settings)ではなくサーバー全体のフラグに置く。
+# 効かせ先は生成される CLAUDE.md ブロック(`app/claude_config.py`)——
+# 実際にプロンプトを書くのは Chiezo ではなく、それを読む AI だから。
+
+FLAG_PROMPT_LANGUAGE = "prompt_language"
+
+# 選べる言語。**自由入力にしない** —— そのまま配る設定ファイルの文面になるので、
+# 綴りの揺れがそのまま「読む側への曖昧な指示」になる。
+PROMPT_LANGUAGES = {
+    "ja": "日本語",
+    "en": "English",
+}
+
+# 既定。 空 = 指定しない(ブロックに 1 行も足さない)。
+PROMPT_LANGUAGE_DEFAULT = "ja"
+
+
+def prompt_language() -> str:
+    """依頼文を書く言語のコード。`""` は「指定しない」。"""
+    value = get_flag(FLAG_PROMPT_LANGUAGE)
+    if value is None:
+        return PROMPT_LANGUAGE_DEFAULT
+    return value if value in PROMPT_LANGUAGES else ""
+
+
+def prompt_language_label() -> str:
+    """人に見せる言語名。指定しないときは空。"""
+    return PROMPT_LANGUAGES.get(prompt_language(), "")
+
+
+def set_prompt_language(code: str) -> None:
+    """言語を保存する。知らないコードは「指定しない」として扱う。
+
+    保存する値を「指定しない」と「未設定」で分ける必要がある —— 未設定は既定
+    (日本語)に落ちるので、消すだけでは「指定しない」を表せない。
+    """
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO flags (key, value, updated_at) VALUES (?, ?, ?)"
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (FLAG_PROMPT_LANGUAGE, code if code in PROMPT_LANGUAGES else "", _now()),
+        )
+
+
 def load_all() -> dict[str, ProviderSetting]:
     """全プロバイダの設定。保存先が無い環境では空を返す（例外にしない）。
 

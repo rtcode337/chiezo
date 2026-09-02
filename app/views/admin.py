@@ -15,11 +15,20 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
-from app import answer, build_info, capabilities, claude_config, media, memory, notes
+from app import (
+    answer,
+    build_info,
+    capabilities,
+    claude_config,
+    media,
+    memory,
+    notes,
+    settings_store,
+)
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
 from app.pages import CHAT_PATH, browse_url, esc, page_shell
 from app.registry import SUPPORTED_SCHEMA_VERSIONS, Source
-from app.views import ai_settings, ai_usage
+from app.views import ai_failures, ai_settings, ai_usage
 
 log = logging.getLogger("chiezo.app")
 
@@ -460,6 +469,8 @@ async def admin(request: Request):
 
 {ai_usage.section_html(request)}
 
+{ai_failures.section_html()}
+
 <h2>Claude Code 連携設定</h2>
 <p class="muted">
 いま設定を吐き出したら(<code>scripts/gen_claude_config.sh</code>)どういう内容になるかのプレビュー。
@@ -779,6 +790,9 @@ async def admin_claude_config_raw(
         claude_config.build_block,
         sources, request_origin(request),
         hook=hook, mcp=mcp, media=media.tools_enabled(), usable=usable,
+        # 依頼文の言語は管理画面で決める。 プロンプトを書くのは Chiezo ではなく
+        # このブロックを読む AI なので、設定はここで文面になって届く
+        prompt_language=settings_store.prompt_language_label(),
     )
 
 
@@ -840,6 +854,7 @@ async def admin_claude_config(request: Request):
     block = await run_in_threadpool(
         claude_config.build_block, sources, base,
         mcp=True, media=media.tools_enabled(), usable=await capabilities.usable_now(),
+        prompt_language=settings_store.prompt_language_label(),
     )
     perms = claude_config.permission_json(base)
     hook = claude_config.hook_settings_json()

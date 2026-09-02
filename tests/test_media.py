@@ -1719,13 +1719,39 @@ class TestCompareAndPick:
         groups = media.job_groups()
         named = [g for g in groups if g["group"] == "ホームランの音"]
         assert len(named) == 1
-        assert len(named[0]["jobs"]) == 3
+        assert named[0]["count"] == 3
         # 名前の無い依頼も 1 件 1 組として出る（消えると「作られなかった」と見える）
         assert any(g["group"] == "" for g in groups)
 
+    def test_一覧は案の中身を運ばない(self, state):
+        media.create_job("案", backend="comfyui", group="組")
+        # 開くつもりのない依頼の絵・音・依頼文まで毎回運ばないこと
+        assert all("jobs" not in g for g in media.job_groups())
+
+    def test_名前の無い依頼は依頼文の1行目を見出しにする(self, state):
+        media.create_job("森の空き地で遊ぶどうぶつ\n二行目は使わない", backend="comfyui")
+        group = media.job_groups()[0]
+        assert group["title"] == "森の空き地で遊ぶどうぶつ"
+
+    def test_組を1つだけ開ける(self, state):
+        made = [media.create_job(f"案{i}", backend="comfyui", group="組") for i in range(2)]
+        media.create_job("別の組", backend="comfyui", group="ほか")
+
+        group = media.job_group("組")
+        assert [j["id"] for j in group["jobs"]] == [j["id"] for j in made]
+
+    def test_名前の無い依頼も鍵で開ける(self, state):
+        job = media.create_job("ひとつだけ", backend="comfyui")
+        key = media.group_key(job)
+        assert [j["id"] for j in media.job_group(key)["jobs"]] == [job["id"]]
+
+    def test_知らない組はNone(self, state):
+        assert media.job_group("無い組") is None
+        assert media.job_group("job:deadbeef") is None
+
     def test_組の中は古い順に並ぶ(self, state):
         made = [media.create_job(f"案{i}", backend="comfyui", group="組") for i in range(3)]
-        group = next(g for g in media.job_groups() if g["group"] == "組")
+        group = media.job_group("組")
         assert [j["id"] for j in group["jobs"]] == [j["id"] for j in made]
 
     def test_採用すると印が付き頼んだ側から引ける(self, state):
@@ -1803,7 +1829,12 @@ class TestCompareApi:
 
         got = client.get("/api/media/groups").json()
         named = [g for g in got["groups"] if g["group"] == "ホームランの音"]
-        assert len(named) == 1 and len(named[0]["jobs"]) == 2
+        assert len(named) == 1 and named[0]["count"] == 2
+
+        # 一覧から開くと、そこで初めて案の中身が来る
+        detail = client.get("/api/media/groups/ホームランの音").json()
+        assert [j["id"] for j in detail["jobs"]] == [a["id"], detail["jobs"][1]["id"]]
+        assert client.get("/api/media/groups/無い組").status_code == 404
 
         client.post(f"/api/media/jobs/{a['id']}/pick", json={"note": "短いほう"})
         picks = client.get("/api/media/picks").json()["picks"]
@@ -1817,3 +1848,80 @@ class TestCompareApi:
         # 総取りの SPA は GET/HEAD しか受けないので、POST は 405 になる(いずれにせよ届かない)
         for path in ("/v1/media/image", "/v1/media/audio", "/v1/media/video"):
             assert client.post(path, json={"prompt": "x"}).status_code in (404, 405)
+
+
+class TestFailuresAreRecorded:
+    """生成の失敗も、会話と同じ控え(`app/ai_log.py`)に残ること。
+
+    job にも `error` は書いてあるが、あれは頼んだ本人が引くためのもので置き場の
+    掃除で消える。**後から「何が落ちたか」を見に来る人**のために、会話の失敗と
+    同じ 1 枚の表へ並べる。
+    """
+
+    def test_失敗が種類つきで残る(self, state):
+        from app import ai_log
+
+        job = media.create_job("森の空き地", backend="comfyui")
+
+        async def boom(kind, backend, req):
+            raise HTTPException(502, {"error": "GPU が落ちています"})
+
+        state.setattr(media_backends, "generate_for", boom)
+        asyncio.run(media._run(
+            job["id"], "comfyui", media_backends.ImageRequest(prompt="森の空き地"), 1,
+            media_providers.KIND_IMAGE))
+
+        rows = ai_log.recent()
+        assert len(rows) == 1
+        assert rows[0]["kind"] == "image"
+        assert rows[0]["backend"] == "comfyui"
+        assert rows[0]["status"] == 502
+        assert "GPU が落ちています" in rows[0]["reason"]
+        # 依頼文の中身は残さない（大きさだけ）
+        assert rows[0]["prompt_bytes"] == len("森の空き地".encode())
+        assert "森の空き地" not in rows[0]["reason"]
+
+    def test_成功したときは残らない(self, state):
+        from app import ai_log
+
+        use(state, fake_comfy())
+        job = media.create_job("猫", backend="comfyui")
+        asyncio.run(media._run(
+            job["id"], "comfyui", media_backends.ImageRequest(prompt="猫"), 1,
+            media_providers.KIND_IMAGE))
+
+        assert media.get_job(job["id"])["state"] == "done"
+        assert ai_log.recent() == []
+
+
+class TestPromptLanguage:
+    """依頼文の言語。**Chiezo は依頼文を書かない**ので、設定は配る設定ファイルの文面になる。"""
+
+    def test_既定は日本語(self, state):
+        assert settings_store.prompt_language() == "ja"
+        assert settings_store.prompt_language_label() == "日本語"
+
+    def test_選んだ言語が残る(self, state):
+        settings_store.set_prompt_language("en")
+        assert settings_store.prompt_language_label() == "English"
+
+    def test_指定しないを選べる(self, state):
+        # 未設定は既定（日本語）に落ちるので、消すだけでは「指定しない」を表せない
+        settings_store.set_prompt_language("")
+        assert settings_store.prompt_language() == ""
+        assert settings_store.prompt_language_label() == ""
+
+    def test_知らないコードは指定しないとして扱う(self, state):
+        settings_store.set_prompt_language("kl_KL")
+        assert settings_store.prompt_language() == ""
+
+    def test_設定ファイルに1行として載る(self, state):
+        from app import claude_config
+
+        block = claude_config.build_block(
+            {}, "http://x.test", mcp=True, media=True, prompt_language="日本語"
+        )
+        assert "依頼文は日本語で書く" in block
+        # 指定しないときは 1 行も足さない
+        plain = claude_config.build_block({}, "http://x.test", mcp=True, media=True)
+        assert "依頼文は" not in plain

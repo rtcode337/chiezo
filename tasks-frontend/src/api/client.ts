@@ -16,6 +16,7 @@ import type {
   TaskInput,
   TaskStatus,
   MediaGroup,
+  MediaGroupSummary,
   MediaJob,
 } from './types'
 import {
@@ -195,9 +196,13 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  /** 生成物の見比べ。頼んだ AI が group で束ねた案が組になって返る。 */
+  /** 見比べの一覧。**見出しと件数まで**で、絵・音は運ばれない。 */
   listMediaGroups: (limit = 20) =>
-    request<{ groups: MediaGroup[] }>(`/api/media/groups?limit=${limit}`),
+    request<{ groups: MediaGroupSummary[] }>(`/api/media/groups?limit=${limit}`),
+
+  /** 組を 1 つ開く。ここで初めて案の中身を取る。 */
+  getMediaGroup: (key: string) =>
+    request<MediaGroup>(`/api/media/groups/${encodeURIComponent(key)}`),
 
   /** この案を採用と印す。**同じ組の他の印は外れる。** */
   pickMedia: (jobId: string, note = '') =>

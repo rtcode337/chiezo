@@ -188,10 +188,18 @@ export interface MediaJob {
   size: string | null
 }
 
-/** 見比べる組。頼んだ AI が同じ名前を付けた案がまとまる。 */
-export interface MediaGroup {
+/** 見比べる組の一覧に出るぶん。**案の中身は運ばない**（開いたときに取る）。 */
+export interface MediaGroupSummary {
+  key: string
   group: string
+  title: string
   kind: string
   created_at: string
+  count: number
+  picked: boolean
+}
+
+/** 開いた 1 組。ここで初めて案（絵・音と依頼文）が付く。 */
+export interface MediaGroup extends MediaGroupSummary {
   jobs: MediaJob[]
 }
