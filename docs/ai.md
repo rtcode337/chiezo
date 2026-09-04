@@ -1116,6 +1116,27 @@ codex login --device-auth          # → ~/.codex/auth.json の中身
 環境変数（`CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_AUTH_JSON`）でも渡せます —— 設定 DB を
 マウントできない環境向けの逃げ道で、DB に無ければそちらへ落ちます。
 
+**Codex は `$CODEX_HOME` を書き込み可能なボリュームにしてください**（compose の
+`chiezo-codex-home`。コメントを外せばそのまま付きます）。登録する auth.json は「種」で、
+Codex は access token が切れると refresh token で更新をかけ、その結果を同じファイルへ
+書きます。相手は更新のたびに refresh token を回転させて古いほうを無効にするので、
+**回転後のファイルが失われて登録時の内容に戻ると、次の更新が使用済みのトークンで走り、
+サインインし直すまで復旧しません**：
+
+```
+Your refresh token has already been used to generate a new access token.
+Please try signing in again.
+```
+
+期限切れとは無関係のタイミングで起きるので、「まだ有効なはずなのに 502」に見えます。
+こうなったら `codex login` からやり直して、出てきた auth.json を管理画面で登録し直して
+ください（登録し直したものは指紋で見分けるので、ちゃんと効きます）。
+
+同じ理由で、**認証情報がホーム配下で回る CLI（codex / antigravity）はブリッジが
+1 本ずつ動かします**。2 本同時に更新をかけると片方が上の失効を踏むためで、
+並行に投げても順番待ちになります（claude は環境変数で受け取るので回らず、待ちません）。
+枠の確認のような短い問い合わせは待ち続けずに 503 を返します。
+
 ブリッジのイメージ（`ghcr.io/rtcode337/chiezo-bridge`）には両方の CLI が入っていて、
 `CHIEZO_BRIDGE_CLI` で役割を決めます。
 

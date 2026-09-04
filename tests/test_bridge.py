@@ -131,6 +131,151 @@ class TestAntigravityCredential:
         assert server.apply_credential() == ""
 
 
+class TestCodexCredential:
+    """登録された auth.json は「種」で、置いてよいのは最初の 1 回だけ。
+
+    Codex は access token が切れると refresh token で更新をかけ、相手は更新のたびに
+    refresh token を回転させて古いほうを無効にする。回転後の auth.json を登録時の
+    内容へ戻すと、次の更新が使用済みの refresh token で走り、盗用とみなされて
+    一連の権限ごと失効する(`Your refresh token has already been used ...`)。
+    サインインし直すまで戻らない壊れ方なので、上書きの条件をここで見張る。
+    """
+
+    def _server(self, bridge, tmp_path, monkeypatch, credential: str):
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        return bridge(CHIEZO_BRIDGE_CLI="codex", CODEX_AUTH_JSON=credential)
+
+    def test_it_places_the_credential_when_there_is_none(self, bridge, tmp_path, monkeypatch):
+        server = self._server(bridge, tmp_path, monkeypatch, '{"tokens": {"refresh_token": "r0"}}')
+        assert server.apply_credential() == ""
+        assert (tmp_path / "auth.json").read_text(encoding="utf-8") == '{"tokens": {"refresh_token": "r0"}}'
+
+    def test_it_leaves_a_rotated_file_alone(self, bridge, tmp_path, monkeypatch):
+        """CLI が回した後に登録時の内容へ戻すと、使用済みのトークンで更新をかけて失効する。"""
+        server = self._server(bridge, tmp_path, monkeypatch, '{"tokens": {"refresh_token": "r0"}}')
+        server.apply_credential()
+        rotated = '{"tokens": {"refresh_token": "r1"}}'
+        (tmp_path / "auth.json").write_text(rotated, encoding="utf-8")
+
+        assert server.apply_credential() == ""
+        assert (tmp_path / "auth.json").read_text(encoding="utf-8") == rotated
+
+    def test_registering_a_new_credential_wins(self, bridge, tmp_path, monkeypatch):
+        """回転を残すのと、登録し直しを効かせるのは両立する(指紋で見分ける)。"""
+        server = self._server(bridge, tmp_path, monkeypatch, '{"tokens": {"refresh_token": "r0"}}')
+        server.apply_credential()
+        (tmp_path / "auth.json").write_text('{"tokens": {"refresh_token": "r1"}}', encoding="utf-8")
+
+        server = self._server(bridge, tmp_path, monkeypatch, '{"tokens": {"refresh_token": "new"}}')
+        assert server.apply_credential() == ""
+        assert (tmp_path / "auth.json").read_text(encoding="utf-8") == '{"tokens": {"refresh_token": "new"}}'
+
+    def test_a_restart_does_not_roll_the_file_back(self, bridge, tmp_path, monkeypatch):
+        """指紋はホームに残るので、ブリッジを立て直しても回転後の内容が生き残る。"""
+        server = self._server(bridge, tmp_path, monkeypatch, '{"tokens": {"refresh_token": "r0"}}')
+        server.apply_credential()
+        rotated = '{"tokens": {"refresh_token": "r1"}}'
+        (tmp_path / "auth.json").write_text(rotated, encoding="utf-8")
+
+        server = self._server(bridge, tmp_path, monkeypatch, '{"tokens": {"refresh_token": "r0"}}')
+        assert server.apply_credential() == ""
+        assert (tmp_path / "auth.json").read_text(encoding="utf-8") == rotated
+
+    def test_an_older_home_without_a_seed_is_adopted(self, bridge, tmp_path, monkeypatch):
+        """指紋を残す前の版から上がってきた場合。中身が同じなら書き直さない。"""
+        credential = '{"tokens": {"refresh_token": "r0"}}'
+        (tmp_path / "auth.json").write_text(credential, encoding="utf-8")
+        server = self._server(bridge, tmp_path, monkeypatch, credential)
+
+        assert server.apply_credential() == ""
+        assert (tmp_path / ".credential-seed").exists()
+        # 指紋が付いた後は、回転させても戻らない
+        (tmp_path / "auth.json").write_text('{"tokens": {"refresh_token": "r1"}}', encoding="utf-8")
+        server.apply_credential()
+        assert (tmp_path / "auth.json").read_text(encoding="utf-8") == '{"tokens": {"refresh_token": "r1"}}'
+
+    def test_the_seed_holds_no_secret(self, bridge, tmp_path, monkeypatch):
+        server = self._server(bridge, tmp_path, monkeypatch, '{"tokens": {"refresh_token": "r0"}}')
+        server.apply_credential()
+        assert "r0" not in (tmp_path / ".credential-seed").read_text(encoding="utf-8")
+
+
+class TestOneCallAtATime:
+    """認証情報が回る CLI は、CLI の起動を 1 本ずつにする。
+
+    2 本が同時に access token の期限切れに当たると、同じ refresh token で更新をかける。
+    1 本目の更新で古いほうは無効になるので、2 本目は使用済みのトークンを出すことになり、
+    盗用とみなされて失効する。サインインし直すまで戻らないので、待たせてでも避ける。
+    """
+
+    def _run(self, coro):
+        import asyncio
+
+        return asyncio.run(coro)
+
+    def test_rotating_clis_run_one_at_a_time(self, bridge):
+        import asyncio
+
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+
+        async def scenario():
+            running = 0
+            peak = 0
+
+            async def one():
+                nonlocal running, peak
+                async with server.cli_slot():
+                    running += 1
+                    peak = max(peak, running)
+                    await asyncio.sleep(0)
+                    running -= 1
+
+            await asyncio.gather(*(one() for _ in range(4)))
+            return peak
+
+        assert self._run(scenario()) == 1
+
+    def test_a_credential_that_does_not_rotate_is_not_held_up(self, bridge):
+        """Claude は環境変数で受け取るので回らない。待たせる理由がない。"""
+        import asyncio
+
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+
+        async def scenario():
+            running = 0
+            peak = 0
+
+            async def one():
+                nonlocal running, peak
+                async with server.cli_slot():
+                    running += 1
+                    peak = max(peak, running)
+                    await asyncio.sleep(0)
+                    running -= 1
+
+            await asyncio.gather(*(one() for _ in range(4)))
+            return peak
+
+        assert self._run(scenario()) == 4
+
+    def test_short_questions_do_not_wait_forever(self, bridge):
+        """枠の確認のような短い問い合わせは、長い会話の後ろで待ち続けない。"""
+
+        from fastapi import HTTPException
+
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+
+        async def scenario():
+            async with server.cli_slot():
+                try:
+                    async with server.cli_slot(0.01):
+                        return "取れた"
+                except HTTPException as e:
+                    return e.status_code
+
+        assert self._run(scenario()) == 503
+
+
 class TestMcpConfig:
     def test_config_points_at_chiezo_over_streamable_http(self, bridge, tmp_path):
 

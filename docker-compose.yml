@@ -278,6 +278,12 @@ services:
   #    # **ブリッジは `/state/settings.db` を決め打ちで読む**(CHIEZO_BRIDGE_STATE_DB の
   #    # 既定)。app 側の置き場が data/ の下へ移っても、こちらのマウント先は /state のまま
   #    - ./data/state:/state:ro
+  #    # Codex は access token が切れると refresh token で更新をかけ、その結果を
+  #    # $CODEX_HOME/auth.json へ書く。相手は更新のたびに refresh token を回転させて
+  #    # 古いほうを無効にするので、ここを永続化しないとコンテナを作り直すたびに
+  #    # 登録時のトークンへ戻り、使用済みのもので更新をかけて失効する
+  #    # (`Your refresh token has already been used ...` でサインインし直しになる)。
+  #    - chiezo-codex-home:/srv/bridge/.codex
   #  environment:
   #    - CHIEZO_BRIDGE_CLI=codex
   #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp
@@ -375,3 +381,4 @@ configs:
 # 無いときに Docker が root 所有で作ってしまい、非 root のブリッジが書けなくなるため。
 volumes:
   chiezo-antigravity-home:
+  chiezo-codex-home:

@@ -32,6 +32,9 @@ Codex は HTTP ではなく CLI で、サブスクの枠で使うにはその CL
   コンテナを作り直しても消えない。
   読むのは要求のたびなので、鍵を登録し直してもブリッジの再起動は要らない。
   イメージには何も焼かない。
+  ただし Codex の auth.json は、登録された内容をそのまま書き戻してはいけない ——
+  CLI がトークンを回した後だと、使用済みのもので更新をかけて失効する
+  (`_seed_auth_file`)。書き込み可能なホームを渡して、回した結果を残すこと。
 - ストリーミングは 1 チャンク。CLI の応答を待ち切ってから SSE に載せる。
   差分で流すには CLI ごとに `--output-format stream-json` / `--json` の解析が要り、
   2 つ分の解析を抱えるだけの価値がまだ無い(Chiezo 側は差分の粒度を問わない)。
@@ -41,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hashlib
 import json
 import logging
 import os
@@ -224,21 +228,106 @@ def apply_credential() -> str:
         os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = value
         return ""
     if CLI == "codex":
-        home = os.environ.get("CODEX_HOME", "/srv/bridge/.codex")
-        os.makedirs(home, mode=0o700, exist_ok=True)
-        path = os.path.join(home, "auth.json")
-        # 中身が変わったときだけ書く(毎回書くと更新時刻が動き続ける)。
-        try:
-            with open(path, encoding="utf-8") as f:
-                if f.read() == value:
-                    return ""
-        except OSError:
-            pass
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(value)
-        os.chmod(path, 0o600)
+        _seed_auth_file(value)
         return ""
     return f"未対応の CHIEZO_BRIDGE_CLI: {CLI}"
+
+
+def _codex_home() -> str:
+    return os.environ.get("CODEX_HOME", "/srv/bridge/.codex")
+
+
+def _read_text(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def _seed_auth_file(value: str) -> None:
+    """登録された認証情報を Codex の auth.json へ「種」として置く。
+
+    上書きしてよいのは、ファイルがまだ無いときと、管理画面で登録し直したときだけ。
+    既にあるものへ DB の値を書き戻してはいけない —— access token が切れると Codex は
+    refresh token で更新をかけ、相手はそのたびに refresh token を回転させて古いほうを
+    無効にする。回転後の auth.json を登録時の内容へ戻すと、次の更新が使用済みの
+    refresh token で走り、盗用とみなされて一連の権限ごと失効する
+    (`Your refresh token has already been used to generate a new access token.`)。
+    こうなるとサインインし直すまで戻らない。
+
+    「登録し直したか」はファイルの中身との比較では判断できない(回転で中身は変わる)ので、
+    最後に流し込んだ DB の値の指紋を隣に残して、そちらと突き合わせる。
+    残すのはハッシュだけで、トークンそのものは書かない。
+    """
+    home = _codex_home()
+    os.makedirs(home, mode=0o700, exist_ok=True)
+    path = os.path.join(home, "auth.json")
+    seed_path = os.path.join(home, ".credential-seed")
+    seed = hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    if os.path.exists(path):
+        if _read_text(seed_path).strip() == seed:
+            # 流し込んだのと同じものが登録されている。ファイルは CLI のものなので触らない。
+            return
+        if _read_text(path) == value:
+            # 指紋を残す前の版から上がってきた場合。中身は同じなので指紋だけ付ける。
+            _write_seed(seed_path, seed)
+            return
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(value)
+    os.chmod(path, 0o600)
+    _write_seed(seed_path, seed)
+    log.info("認証情報を %s へ置きました", path)
+
+
+def _write_seed(seed_path: str, seed: str) -> None:
+    with open(seed_path, "w", encoding="utf-8") as f:
+        f.write(seed)
+    os.chmod(seed_path, 0o600)
+
+
+# 認証情報をホーム配下に持つ CLI。CLI 自身が中身を書き換える(トークンの回転)。
+ROTATING_CREDENTIAL = frozenset({"codex", "antigravity"})
+
+# CLI の起動を 1 本ずつにする枠。理由は 2 つ。
+#
+# 認証情報が回るため。2 本が同時に走り、どちらも access token の期限切れに当たると、
+# 同じ refresh token で更新をかける。相手は 1 本目で回転させて古いほうを無効にするので、
+# 2 本目は使用済みのトークンを出すことになり、盗用とみなされて一連の権限ごと失効する
+# (`_seed_auth_file` を参照)。サインインし直すまで戻らないので、待たせてでも避ける。
+#
+# もう 1 つは画像の保存先。内蔵ツールは共有の保存先($CODEX_HOME/generated_images)へ
+# 置くことがあり、同時に走らせると「どれがこの実行のものか」が mtime では決まらない
+# —— 実際に 4 件を同時に頼んで、4 件とも同じ絵が返った。
+#
+# 認証情報を環境変数で受け取る CLI は回転しないので、待たせない(素通りする)。
+_CLI_LOCK = asyncio.Lock()
+
+# 枠が空くのを待つ上限。会話は待たせる(いつ終わるか分からないが、失敗させるよりよい)が、
+# 枠の確認のような短い問い合わせは待ち続けない —— 長い会話の後ろに並ぶと、
+# 画面が数分固まったまま何も言わないことになる。
+LOCK_WAIT = 30.0
+
+
+@asynccontextmanager
+async def cli_slot(wait: float | None = None) -> AsyncIterator[None]:
+    """CLI を 1 本ずつ走らせる枠。要らない相手は素通りする。"""
+    if CLI not in ROTATING_CREDENTIAL:
+        yield
+        return
+    try:
+        await asyncio.wait_for(_CLI_LOCK.acquire(), timeout=wait)
+    except TimeoutError:
+        raise HTTPException(
+            503, {"error": f"{CLI} は別の呼び出しを実行中です(認証情報の更新が競合するため"
+                           f" 1 本ずつ動かしています)。しばらく待って試してください"},
+        ) from None
+    try:
+        yield
+    finally:
+        _CLI_LOCK.release()
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -475,7 +564,8 @@ async def run_cli(
                  ", via file" if prompt_path else "")
         # agy はプロンプトを引数かファイルで受け取っているので、標準入力には流さない。
         payload = b"" if CLI == "antigravity" else prompt.encode("utf-8")
-        return await _spawn(cmd, payload, out_path, timeout)
+        async with cli_slot():
+            return await _spawn(cmd, payload, out_path, timeout)
     finally:
         # 中身はプロンプトそのものなので、答えを返す前に必ず消す。
         if prompt_path:
@@ -597,10 +687,14 @@ async def check_auth() -> tuple[bool, str]:
     if not cmd:
         return False, f"未対応の CLI: {CLI}"
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
-        )
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+        async with cli_slot(LOCK_WAIT):
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except HTTPException:
+        # 枠が空かなかっただけ。認証が切れているわけではないので、そう書く。
+        return False, "別の呼び出しを実行中のため確認できませんでした"
     except (TimeoutError, OSError) as e:
         return False, f"確認に失敗: {e}"
     if proc.returncode == 0:
@@ -930,11 +1024,12 @@ async def usage() -> dict:
     if reason := apply_credential():
         raise HTTPException(401, {"error": reason})
 
-    if CLI == "codex":
-        windows, raw = await _codex_usage()
-    else:
-        raw = await _run_for_usage(ANTIGRAVITY_USAGE_CMD)
-        windows = _antigravity_windows(raw)
+    async with cli_slot(LOCK_WAIT):
+        if CLI == "codex":
+            windows, raw = await _codex_usage()
+        else:
+            raw = await _run_for_usage(ANTIGRAVITY_USAGE_CMD)
+            windows = _antigravity_windows(raw)
     return {
         "cli": CLI,
         "windows": windows,
@@ -1046,20 +1141,13 @@ def _image_prompt(body: ImageRequest, out_dir: str) -> str:
     )
 
 
-# 画像は 1 回ずつ走らせる。 内蔵ツールは共有の保存先
-# ($CODEX_HOME/generated_images)へ置くことがあり、同時に走らせると
-# 「どれがこの実行のものか」が mtime では決まらない —— 実際に 4 件を同時に頼んで、
-# 4 件とも同じ絵が返った。1 枚 1 分以上かかる相手なので、直列でも困らない。
-_IMAGE_LOCK = asyncio.Lock()
-
-
 def _shared_root() -> str:
     """内蔵ツールの既定の保存先。使い回されるので中身は前回のものが残る。
 
     これは Codex の話。Antigravity は頼んだ場所へ直接書くので、
     こちらを見るのは「作業ディレクトリに何も無かったとき」の保険にしかならない。
     """
-    return os.path.join(os.environ.get("CODEX_HOME", "/srv/bridge/.codex"), "generated_images")
+    return os.path.join(_codex_home(), "generated_images")
 
 
 def _existing(root: str) -> frozenset[str]:
@@ -1150,7 +1238,8 @@ async def images_generations(body: ImageRequest):
     if reason := apply_credential():
         raise HTTPException(401, {"error": reason})
 
-    async with _IMAGE_LOCK:
+    # 1 枚 1 分以上かかる相手なので、枠が空くまで待つ(会話と同じ扱い)。
+    async with cli_slot():
         return await _generate_images(body)
 
 
