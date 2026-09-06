@@ -82,8 +82,20 @@ class TestCommand:
         """agy だけプロンプトを引数で取る（claude/codex は標準入力から読む）。"""
         server = bridge(CHIEZO_BRIDGE_CLI="antigravity", CHIEZO_BRIDGE_TIMEOUT="600")
         assert server.build_command("/tmp/out.txt", "こんにちは") == [
-            "agy", "-p", "こんにちは", "--print-timeout", "595s",
+            "agy", "-p", "こんにちは", "--dangerously-skip-permissions",
+            "--print-timeout", "595s",
         ]
+
+    def test_antigravity_skips_permissions_even_for_a_short_prompt(self, bridge):
+        """道具を使うかは長さではなくモデルが決める。
+
+        MCP(chiezo)を繋いであり web で調べる頼み方もするので、短いプロンプトでも
+        道具は要る。print モードには確認の対話が無く、付けずにいると道具が要った瞬間に
+        `invalid arguments: - missing properties 'toolSummary', 'toolAction'` で落ちる
+        (agy の版を 1.1.13 → 1.1.27 に上げても同じだった)。
+        """
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+        assert "--dangerously-skip-permissions" in server.build_command("/tmp/out.txt", "q")
 
     def test_antigravity_gets_the_deadline_as_print_timeout(self, bridge):
         """agy は print モードに自前の待ち時間(既定 5 分)を持つ。

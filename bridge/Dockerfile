@@ -29,9 +29,11 @@ RUN npm install -g @anthropic-ai/claude-code @openai/codex
 #
 # インストーラは常に最新版を入れる(版の指定は無い)が、この RUN は入力が変わらないので
 # ビルドキャッシュに当たると古い agy のまま出来上がる。AGY_MIN_VERSION を上げると
-# 層が作り直され、入った版がそれ未満なら失敗させる —— 古い agy が「invalid arguments:
-# missing properties 'toolSummary', 'toolAction'」で落ちる(1.1.13 で実測)のに、
-# 再ビルドしても直らないという形を防ぐ。
+# 層が作り直され、入った版がそれ未満なら失敗させる —— 「版を上げたつもりで古いまま」を
+# 防ぐための仕掛けで、版そのものが直してくれるわけではない。
+# 「invalid arguments: - missing properties 'toolSummary', 'toolAction'」は 1.1.13 でも
+# 1.1.27 でも出た。あれは版ではなく権限の確認の問題で、cli_bridge.py の
+# build_command が `--dangerously-skip-permissions` を常に付けることで避けている。
 ARG AGY_MIN_VERSION=1.1.27
 RUN set -eux; \
     apt-get update; \

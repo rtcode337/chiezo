@@ -497,20 +497,26 @@ def build_command(
         # そのため Linux の単一引数の長さ上限(MAX_ARG_STRLEN = 128KiB)に当たりうる ——
         # 超えると実行前に E2BIG で落ちる。
         #
-        # 長いときだけファイル経由にする。 短いプロンプトは今までどおり引数で渡す ——
-        # そちらは道具も権限も要らず、確実に動く経路だから。長いときは prompt_path へ
-        # 書き出し、読む先だけを引数で伝えて、CLI にファイルを読ませる。
+        # 長いときだけファイル経由にする。 短いプロンプトは引数で渡す。長いときは
+        # prompt_path へ書き出し、読む先だけを引数で伝えて、CLI にファイルを読ませる。
         # 認証はコンテナ内でサインイン済みである前提(HOME 配下のキャッシュ)。
         if prompt_path:
             cmd = [
                 "agy", "-p", LONG_PROMPT_INSTRUCTION.format(path=prompt_path),
                 # 読ませるファイルを作業対象に入れる。
                 "--add-dir", os.path.dirname(prompt_path),
-                # 非対話なので、権限の確認を出されると待ち続けて固まる。
-                "--dangerously-skip-permissions",
             ]
         else:
             cmd = ["agy", "-p", prompt]
+        # 権限の確認は長さに関わらず外す。 以前は「短いプロンプトは道具も権限も要らない」
+        # として付けていなかったが、道具を使うかは長さではなくモデルが決める ——
+        # MCP(chiezo)を繋いであり、web で調べる頼み方もするので、短くても道具は要る。
+        # print モードには確認の対話が無く、道具が要った瞬間に
+        # `invalid arguments: - missing properties 'toolSummary', 'toolAction'` で落ちる
+        # (agy 1.1.13 でも 1.1.27 でも同じ。版を上げても直らなかった)。
+        # 絵を描く口(ImageRequest)は最初からこれを付けていて、そちらは通っていた。
+        # 見える範囲は使い捨てのコンテナの中だけなので、許してよい。
+        cmd.append("--dangerously-skip-permissions")
         # agy は print モードに自前の待ち時間を持つ(--print-timeout、既定 5 分)。
         # 渡さないと、ブリッジの上限を伸ばしても 5 分で agy 側が先に諦める。
         # ブリッジの締め切りより数秒手前にして、切れたときは agy 自身の理由が返るようにする
