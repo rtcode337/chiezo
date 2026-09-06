@@ -10,29 +10,27 @@ Wikipedia や OSM のような**まとまったダンプが無い**ことは知�
 ## 置き方の決めごと
 
 - **溜まる先は長期記憶(`corpus/`)。焼くのは ingest**。固化(`app/memory.py`)と
-  まったく同じ形にしてある —— 素材を配るのはこちら、焼くのは向こう。
+  まったく同じ形で、素材を配るのはこちら、焼くのは向こう。
   **長期記憶へ書けるのは ingest だけ**という線を、この層のためにも崩さない
   (`chiezo-app` は `/data/corpus` を読み取り専用で重ねてマウントしている)。
-- **毎回焼き直すが、中身は積み上がる**。素材が「**前世代 + 新しく集めたぶん**」なので、
-  ブルーグリーン(全件の作り直し)に乗せたまま追記として振る舞う。固化と同じ仕掛けで、
-  世代は今と 1 つ前だけが残る(`ingest/main.py` の `switch_db`)。
-- **集めたものは焼くまで待ち行列に置く**(`CHIEZO_COLLECT_DIR`。既定 `/data/collect`)。
-  notes には混ぜない —— 短期記憶が収集物で何千件も埋まると `recall` も画面も
-  使い物にならなくなる。待ち行列は**ソースとして登録しない**(引けるのは焼いた後)。
-- **待ち行列のスキーマもコアスキーマ**(notes と同じ写し)。焼く素材をそのまま
-  組み立てられるようにするため。読み手は `mode=ro`。
-- **同じ見出しが再び来たら飛ばす**(重複を増やさない)。**見出しが重複の鍵**で、
-  焼くときも前世代の同じ見出しを置き換える。
+- **集めるのは焼くとき**(`/v1/collect/fetch` が呼ばれた瞬間に AI へ聞く)。
+  **待ち行列を持たない** —— 素材が「前世代 + いま集めたぶん」なので、
+  **焼くこと自体が積み上げの仕組み**になっていて、集めた時点と焼く時点を分ける理由が無い。
+  分けていた頃は置き場・掃除の口・画面・環境変数が要り、「待ち行列と溜め先」という
+  二重の概念まで抱えていた。
+- **払った AI の呼び出しは無駄にしない**。取り込み側は返した NDJSON を他のダンプと同じく
+  `dumps/` へ置き、焼きに失敗しても**次はそのファイルを読み直す**
+  (`ingest/sources/collect.py`)。ダンプを落として構築する他のソースと同じ振る舞い。
+- **毎回焼き直すが、中身は積み上がる**。ブルーグリーン(全件の作り直し)に乗せたまま
+  追記として振る舞い、世代は今と 1 つ前だけが残る(`ingest/main.py` の `switch_db`)。
 - **定義は notes の 1 件に JSON でまとめて持つ**(`app/tasks.py` のプロジェクトと同じ流儀)。
   収集ごとに 1 メモにすると短期記憶に並んで邪魔になるうえ、並び順を持てない。
-- **時計は Chiezo が持つ**(`due_collections` を叩く常駐タスク)。ホストの cron に
-  出さないのは、間隔を画面から変えられるようにするため。**次にいつ走るかも持つ**ので、
-  画面は「30 分ごと / 次は 14:20」と出せる。
-- **焼くのは ingest。素材を配るのがこちら**(`catalog` / `ndjson` / `sweep`)。
-  契約は固化(`app/memory.py`)と同じで、違うのは**1 つではなく可変**なところ ——
-  収集は実行時に増えるので、ingest 側は `ADAPTERS` に固定で並べずカタログを聞きに来る。
-- **片付けは焼き上がりを確かめてから**(`sweep`)。先に消すと、焼きに失敗したときに
-  集めたものが失われる。
+  **集めたものは notes に入れない** —— 短期記憶が収集物で埋まると `recall` も画面も
+  使い物にならなくなる(そもそも通り道に置かない)。
+- **時計は Chiezo が持つ**(`due_collections`)。ホストの cron に出さないのは、間隔を
+  画面から変えられるようにするため。**時計が叩くのは ingest**(chiezo-trigger)で、
+  「集めて焼く」が 1 つの操作になっている。
+- **同じ見出しは前世代を置き換える**。**見出しが重複の鍵**。
 
 ## 収集の 1 回
 
@@ -57,16 +55,13 @@ import json
 import logging
 import os
 import re
-import sqlite3
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 from fastapi import HTTPException
 
 from app import db, notes
 from app.jst import to_jst
-from app.pages import doc_url
 
 log = logging.getLogger("chiezo.app")
 
@@ -118,33 +113,31 @@ SAMPLE = {
 }
 
 
-def collect_dir() -> Path | None:
-    """溜め先。**未設定なら機能ごと無効**(notes の `CHIEZO_NOTES_DIR` と同じ流儀)。"""
-    raw = os.environ.get("CHIEZO_COLLECT_DIR", "").strip()
-    return Path(raw) if raw else None
-
-
-def is_enabled() -> bool:
-    # 定義の置き場が notes なので、notes が無効なら収集も成り立たない
-    return collect_dir() is not None and notes.is_enabled()
-
-
-def require_dir() -> Path:
-    directory = collect_dir()
-    if directory is None or not notes.is_enabled():
+def require_enabled() -> None:
+    """使える形になっていなければ断る。"""
+    if not is_enabled():
         raise HTTPException(
             503,
             {
                 "error": "collection is disabled",
-                "hint": "CHIEZO_COLLECT_DIR(溜め先)と CHIEZO_NOTES_DIR(定義の置き場)"
-                        "の両方を設定すると有効になる",
+                "hint": "CHIEZO_NOTES_DIR(収集の定義の置き場)と CHIEZO_TRIGGER_URL"
+                        "(取り込みを起こす相手)を設定すると有効になる。"
+                        "集めたものは長期記憶へ焼かれるので、途中の置き場は要らない",
             },
         )
-    return directory
 
 
-def db_path(name: str) -> Path:
-    return require_dir() / f"{name}.db"
+def is_enabled() -> bool:
+    """定義の置き場(notes)と、取り込みを起こす相手(chiezo-trigger)が揃っていること。
+
+    **専用の置き場は持たない** —— 集めたものは焼くときに作って ingest へ渡すだけ。
+
+    trigger を条件に入れるのは、**それが無いと集める手段が 1 つも無い**から。
+    集めるのは取り込みの中で起きるので、取り込みを起こせない面
+    (corpus を持たないタスク専用の面など)では定義を置いても永遠に走らない。
+    そこで見本の定義まで作ると、**使えない機能の設定が短期記憶に 1 件混ざる**だけになる。
+    """
+    return notes.is_enabled() and bool(os.environ.get("CHIEZO_TRIGGER_URL", "").strip())
 
 
 def _now() -> datetime:
@@ -344,7 +337,6 @@ def create(
         next_run_at=now,
     )
     save([*existing, item])
-    ensure_db(name)
     return item
 
 
@@ -410,174 +402,19 @@ def update(name: str, **fields) -> Collection:
     return updated
 
 
-def remove(name: str, drop_data: bool = False) -> None:
-    """定義を消す。**溜めたものは既定で残す** —— 定義を消すのと、集めたものを
+def remove(name: str) -> None:
+    """定義を消す。**焼いたものは残る**(長期記憶のソースとして)。
 
-    捨てるのは別の意思決定だから(間違えて消したときに取り返しがつかない)。
+    定義を消すのと、集まったものを捨てるのは別の意思決定だから —— 後者は
+    ソースの削除(管理画面の長期記憶の側)でやる。
     """
     items = load()
     if not any(c.name == name for c in items):
         raise HTTPException(404, {"error": f"収集「{name}」がありません"})
     save([c for c in items if c.name != name])
-    if drop_data:
-        path = collect_dir() / f"{name}.db" if collect_dir() else None
-        if path and path.exists():
-            path.unlink()
-            log.info("collect: dropped data for %s", name)
 
 
 # ---- 溜め先(コアスキーマの DB。notes と同じ形)---------------------------------
-
-
-def _connect(path: Path) -> sqlite3.Connection:
-    """書き込み用の接続(notes と同じ。WAL で読み手を止めずに追記する)。"""
-    conn = sqlite3.connect(path, timeout=10.0)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA busy_timeout=10000")
-    return conn
-
-
-def ensure_db(name: str) -> Path:
-    """収集先の DB が無ければ作る。スキーマは notes と同じコアスキーマ。"""
-    path = db_path(name)
-    if path.exists():
-        return path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = _connect(path)
-    try:
-        with conn:
-            conn.executescript(notes.SCHEMA_DDL)
-            conn.executescript(notes.INDEX_DDL)
-            # 時系列で引きたい(最近集めたものから見たい)ので notes と同じ索引を張る
-            conn.executescript(notes.NOTES_INDEX_DDL)
-            conn.execute(
-                "INSERT INTO meta (source, source_kind, lang, dump_date, schema_version, built_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (name, SOURCE_KIND, None, None, notes.SCHEMA_VERSION, _iso(_now())),
-            )
-    finally:
-        conn.close()
-    log.info("collect: created db at %s", path)
-    return path
-
-
-def append(name: str, items: list[dict]) -> tuple[int, int]:
-    """集めたものを追記する。返すのは (足した数, 飛ばした数)。
-
-    **同じ見出しが既にあれば飛ばす**。notes は衝突したら `(doc_id)` を足して別物として
-    残すが、こちらは繰り返し同じことを聞く前提なので、それでは同じニュースが実行のたびに
-    増える。**見出しが重複の鍵**という割り切り。
-    """
-    path = ensure_db(name)
-    now = _iso(_now())
-    added = skipped = 0
-    conn = _connect(path)
-    try:
-        with conn:
-            for item in items[:MAX_ITEMS_PER_RUN]:
-                title = (item.get("title") or "").strip()[:notes.TITLE_MAX_CHARS]
-                body = (item.get("body") or "").strip()[:MAX_BODY_CHARS]
-                if not title or not body:
-                    skipped += 1
-                    continue
-                if conn.execute("SELECT 1 FROM docs WHERE title = ?", (title,)).fetchone():
-                    skipped += 1
-                    continue
-                (doc_id,) = conn.execute(
-                    "SELECT COALESCE(MAX(doc_id), 0) + 1 FROM docs"
-                ).fetchone()
-                tags = [str(t).strip() for t in (item.get("tags") or []) if str(t).strip()]
-                extra = {}
-                url = (item.get("url") or "").strip()
-                if url:
-                    extra["url"] = url
-                # いつ集めたかは必ず残す(古い情報かどうかを読む側が判断できるように)
-                extra["collected_at"] = now
-                conn.execute(
-                    "INSERT INTO docs (doc_id, title, opening, body, tags, links, updated_at,"
-                    " rank_score, extra) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        doc_id, title, body[:notes.TITLE_MAX_CHARS * 4], body,
-                        json.dumps(tags, ensure_ascii=False), None, now, 0.0,
-                        json.dumps(extra, ensure_ascii=False),
-                    ),
-                )
-                # external content なので FTS には手で入れる(notes と同じ)
-                conn.execute(
-                    "INSERT INTO docs_fts(rowid, title, body) VALUES (?, ?, ?)",
-                    (doc_id, title, body),
-                )
-                for tag in tags:
-                    conn.execute(
-                        "INSERT INTO doc_tags (tag, doc_id) VALUES (?, ?)", (tag, doc_id)
-                    )
-                    conn.execute(
-                        "INSERT INTO tag_counts (tag, docs) VALUES (?, 1)"
-                        " ON CONFLICT(tag) DO UPDATE SET docs = docs + 1",
-                        (tag,),
-                    )
-                added += 1
-    finally:
-        conn.close()
-    return added, skipped
-
-
-def count(name: str) -> int:
-    """溜まっている件数。まだ 1 件も無ければ 0。
-
-    **走査時の値ではなく数え直す**(notes と同じ)。収集の DB は `/data` の指紋に
-    入らないので、走査のきっかけが起きず `doc_count` が古いまま残る。
-    """
-    path = collect_dir() / f"{name}.db" if collect_dir() else None
-    if path is None or not path.exists():
-        return 0
-    try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    except sqlite3.Error:
-        return 0
-    try:
-        (total,) = conn.execute("SELECT COUNT(*) FROM docs").fetchone()
-        return int(total)
-    except sqlite3.Error:
-        return 0
-    finally:
-        conn.close()
-
-
-def sample(name: str, limit: int = 5) -> list[dict]:
-    """直近に集めたもの(新しい順)。画面が「何が入ったか」を見せるのに使う。"""
-    path = collect_dir() / f"{name}.db" if collect_dir() else None
-    if path is None or not path.exists():
-        return []
-    try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
-    except sqlite3.Error:
-        return []
-    try:
-        rows = conn.execute(
-            "SELECT doc_id, title, updated_at FROM docs ORDER BY updated_at DESC, doc_id DESC"
-            " LIMIT ?",
-            (max(1, min(limit, 50)),),
-        ).fetchall()
-        return [
-            {
-                "doc_id": r["doc_id"],
-                "title": r["title"],
-                "updated_at": r["updated_at"],
-                "url": doc_url(name, r["doc_id"]),
-            }
-            for r in rows
-        ]
-    except sqlite3.Error:
-        return []
-    finally:
-        conn.close()
-
-
-# ---- 走らせる ------------------------------------------------------------------
 
 
 SYSTEM_PROMPT = (
@@ -701,6 +538,22 @@ def record_result(
     return updated
 
 
+def mark_started(name: str) -> Collection:
+    """取り込みを起こしたので、次回の予定だけ進める。
+
+    **結果は控えない** —— 実際に集められたかは、取り込みが素材を取りに来たとき
+    (`ndjson`)に分かる。ここで「成功」と書くと、起こしただけのものが成功に見える。
+    """
+    current = get(name)
+    updated = replace(
+        current,
+        next_run_at=_iso(_now() + timedelta(minutes=current.interval_minutes)),
+        updated_at=_iso(_now()),
+    )
+    _replace_one(name, updated)
+    return updated
+
+
 def due_collections(at: datetime | None = None) -> list[Collection]:
     """いま走らせるべき収集(予定の早い順)。無効なものは含まない。"""
     if not is_enabled():
@@ -713,15 +566,12 @@ def due_collections(at: datetime | None = None) -> list[Collection]:
 
 
 def to_public(item: Collection) -> dict:
-    """画面と REST に返す形。**溜まっている件数と次回の予定を必ず入れる**
+    """画面と REST に返す形。**次回の予定を必ず入れる**
 
-    (「30 分ごと・次は 14:20・いま 128 件」まで見えて初めて、動いているか判断できる)。
+    (「30 分ごと・次は 14:20」まで見えて初めて、動いているか判断できる。
+    溜まった件数は長期記憶の側にあるので、画面はソース表から取る)。
     """
-    return {
-        **item.__dict__,
-        "docs": count(item.name),
-        "url": f"/search/{item.name}/",
-    }
+    return {**item.__dict__, "url": f"/search/{item.name}/"}
 
 
 # ---- 焼く素材を配る(ingest が取りに来る。固化とまったく同じ契約)--------------
@@ -755,6 +605,31 @@ def catalog() -> list[dict]:
             "memory_gb": 0.5,
         }
         for c in items
+    ]
+
+
+def recent(name: str, sources: dict, limit: int = 5) -> list[dict]:
+    """焼いてあるもののうち新しい順に何件か(何が集まっているかの手掛かり)。
+
+    **見に行く先は長期記憶** —— 途中の置き場を持たないので、集めたものはここにしかない。
+    まだ 1 度も焼いていなければ空(ソースそのものが無い)。
+    """
+    src = sources.get(name)
+    if src is None or limit <= 0:
+        return []
+    rows = db.query(
+        src.path,
+        "SELECT title, opening, updated_at, extra FROM docs ORDER BY updated_at DESC LIMIT ?",
+        (limit,),
+    )
+    return [
+        {
+            "title": row["title"],
+            "opening": row["opening"],
+            "updated_at": row["updated_at"],
+            "extra": load_json(row["extra"]),
+        }
+        for row in rows
     ]
 
 
@@ -799,51 +674,62 @@ def load_json(raw) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
-def staged(name: str) -> list[dict]:
-    """待ち行列に溜まっている文書(焼く前のもの)。"""
-    path = collect_dir() / f"{name}.db" if collect_dir() else None
-    if path is None or not path.exists():
-        return []
-    rows = db.query(
-        path,
-        "SELECT doc_id, title, opening, body, tags, updated_at, extra FROM docs"
-        " ORDER BY doc_id",
-    )
-    out = []
-    for row in rows:
-        try:
-            tags = json.loads(row["tags"] or "[]")
-        except ValueError:
-            tags = []
-        out.append({
-            "title": row["title"],
-            "opening": row["opening"],
-            "body": row["body"],
-            "tags": [str(t) for t in tags],
-            "updated_at": row["updated_at"],
-            "extra": load_json(row["extra"]),
-        })
-    return out
+def material(name: str, sources: dict, collected: list[dict]) -> tuple[list[dict], int, int]:
+    """焼く素材(前世代 + いま集めたぶん)を doc_id 順に組み立て、初物と既出の数も返す。
 
+    **ここが「毎回焼き直すのに積み上がる」の要**。前世代を混ぜるので、ブルーグリーンの
+    全件作り直しに乗せたまま追記として振る舞う(固化と同じ)。
 
-def material(name: str, sources: dict) -> list[dict]:
-    """焼く素材(前世代 + 待ち行列)を doc_id 順に組み立てる。
-
-    **`doc_id` は前世代のものを引き継ぐ** —— 焼き直しても文書の URL が変わらないように
-    (固化と同じ)。同じ見出しは待ち行列の側で置き換える(新しく集めたほうが正しい)。
+    **`doc_id` は前世代のものを引き継ぐ** —— 焼き直しても文書の URL が変わらないように。
+    同じ見出しは新しく集めたほうで置き換える(そちらが新しいので正しい)。
     """
     merged = _previous(name, sources)
     next_id = max((d["doc_id"] for d in merged.values()), default=0) + 1
-    for doc in staged(name):
+    now = _iso(_now())
+    added = skipped = 0
+    for raw in collected[:MAX_ITEMS_PER_RUN]:
+        doc = _to_doc(raw, now)
+        if doc is None:
+            skipped += 1
+            continue
         title = doc["title"]
         previous = merged.get(title)
         if previous is None:
             doc_id = next_id
             next_id += 1
+            added += 1
         else:
+            # 同じ見出しは既出。**上書きはする**(新しく集めたほうが新しい)が、
+            # 積み上がった件数は増えないので「追加」には数えない
             doc_id = previous["doc_id"]
+            skipped += 1
         merged[title] = {**doc, "doc_id": doc_id}
-    return sorted(merged.values(), key=lambda d: d["doc_id"])
+    return sorted(merged.values(), key=lambda d: d["doc_id"]), added, skipped
+
+
+def _to_doc(raw: dict, now: str) -> dict | None:
+    """AI が返した 1 件を、焼ける形に整える。見出しか本文が無いものは捨てる。
+
+    **いつ集めたかは必ず残す**(`extra.collected_at`)—— 読む側が古い情報かどうかを
+    判断できるように。
+    """
+    title = (raw.get("title") or "").strip()[:notes.TITLE_MAX_CHARS]
+    body = (raw.get("body") or "").strip()[:MAX_BODY_CHARS]
+    if not title or not body:
+        return None
+    tags = [str(t).strip() for t in (raw.get("tags") or []) if str(t).strip()]
+    extra = {"collected_at": now}
+    if url := (raw.get("url") or "").strip():
+        extra["url"] = url
+    return {
+        "doc_id": 0,  # material が前世代から引き継ぐか、新しく振る
+        "title": title,
+        "opening": body[:notes.TITLE_MAX_CHARS * 4],
+        "body": body,
+        "tags": tags,
+        "updated_at": now,
+        "extra": extra,
+    }
 
 
 def _dump_date(name: str, sources: dict) -> str:
@@ -860,20 +746,20 @@ def _dump_date(name: str, sources: dict) -> str:
     return stamp
 
 
-def ndjson(name: str, sources: dict) -> str:
-    """取り込み側が読む素材(1 行目が meta、以降は 1 行 1 文書)。
+def ndjson(name: str, sources: dict, collected: list[dict]) -> tuple[str, int, int]:
+    """取り込み側が読む素材(1 行目が meta、以降は 1 行 1 文書)と、初物・既出の数。
 
     **空なら 409 で断る** —— 流し始めた後ではステータスを変えられないので、
     先に全部組み立ててから返す(固化と同じ判断。収集物はたかだか数万件)。
     """
     get(name)  # 知らない収集は 404
-    docs = material(name, sources)
+    docs, added, skipped = material(name, sources, collected)
     if not docs:
         raise HTTPException(
             409,
             {
-                "error": f"収集「{name}」にはまだ焼くものがありません",
-                "hint": "「いま走らせる」で 1 回集めてから焼いてください",
+                "error": f"収集「{name}」は 1 件も集められませんでした",
+                "hint": "プロンプトを見直すか、相手を替えてから試してください",
             },
         )
     meta = {
@@ -885,57 +771,4 @@ def ndjson(name: str, sources: dict) -> str:
     }
     lines = [json.dumps(meta, ensure_ascii=False)]
     lines.extend(json.dumps(d, ensure_ascii=False) for d in docs)
-    return "\n".join(lines) + "\n"
-
-
-def sweep(name: str, sources: dict) -> dict:
-    """焼き上がりを確かめて、待ち行列から片付ける。
-
-    **焼く前に押しても何も起きない**(長期側に入っていないものは残す)。
-    固化の `sweep` と同じ考え方で、**移せたことを確かめてから**消す ——
-    先に消すと、焼きに失敗したときに集めたものが失われる。
-    """
-    src = sources.get(name)
-    if src is None:
-        return {"source": name, "cleared": 0, "remaining": count(name)}
-    baked = {row["title"] for row in db.query(src.path, "SELECT title FROM docs")}
-    path = db_path(name)
-    cleared = 0
-    conn = _connect(path)
-    try:
-        with conn:
-            for row in conn.execute("SELECT doc_id, title FROM docs").fetchall():
-                if row["title"] not in baked:
-                    continue
-                doc_id = row["doc_id"]
-                conn.execute("DELETE FROM docs WHERE doc_id = ?", (doc_id,))
-                # external content なので FTS からも手で落とす(notes と同じ)
-                conn.execute(
-                    "INSERT INTO docs_fts(docs_fts, rowid, title, body)"
-                    " VALUES ('delete', ?, ?, ?)",
-                    (doc_id, row["title"], ""),
-                )
-                conn.execute("DELETE FROM doc_tags WHERE doc_id = ?", (doc_id,))
-                cleared += 1
-            # タグの集計は残った行から作り直す(1 件ずつ引くより確実)
-            conn.execute("DELETE FROM tag_counts")
-            conn.execute(
-                "INSERT INTO tag_counts (tag, docs)"
-                " SELECT tag, COUNT(*) FROM doc_tags GROUP BY tag"
-            )
-    finally:
-        conn.close()
-    return {"source": name, "cleared": cleared, "remaining": count(name)}
-
-
-def register_mutable(paths: list) -> None:
-    """待ち行列の DB を「追記される」と db 側へ伝える(`scan_all` から呼ぶ)。
-
-    **ソースとしては登録しない** —— 引けるのは ingest が焼いた後の `corpus/` 側で、
-    待ち行列は焼く前の置き場でしかない。ただし `db.query` で読むので、
-    `immutable=1` で開かれないようにする必要はある(notes と同じ理由)。
-    """
-    directory = collect_dir()
-    if directory is None:
-        return
-    paths.extend(sorted(directory.glob("*.db")))
+    return "\n".join(lines) + "\n", added, skipped

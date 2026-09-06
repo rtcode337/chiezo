@@ -366,13 +366,14 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
     """
     if not collect.is_enabled():
         return (
-            '<p class="muted">収集は無効です。溜め先(<code>CHIEZO_COLLECT_DIR</code>)と'
-            "短期記憶(<code>CHIEZO_NOTES_DIR</code>)を設定すると使えます。</p>"
+            '<p class="muted">収集は無効です。'
+            "<code>CHIEZO_NOTES_DIR</code>(収集の定義の置き場)と"
+            "<code>CHIEZO_TRIGGER_URL</code>(取り込みを起こす相手)を設定すると使えます。"
+            "<br>集めるのも焼くのも取り込みの中で起きるので、途中の置き場は要りません。</p>"
         )
     items = collect.load()
     rows = []
     for item in items:
-        state = collect.to_public(item)
         due = jst.parse(item.next_run_at or "")
         last = jst.parse(item.last_run_at or "")
         if item.last_status == "ok":
@@ -399,10 +400,6 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'<a href="{esc(browse_url(item.name))}">{src.doc_count:,} 件</a>'
             if src is not None else "まだ焼いていない"
         )
-        # 焼くのは普通の取り込み。初回は init、2 回目以降は rebuild
-        bake = f"/admin/init/{item.name}" if src is None else f"/admin/rebuild/{item.name}"
-        # 待ち行列が空なら押せない(素材が無いと配信側が 409 で断る。固化と同じ)
-        bake_disabled = disabled or (" disabled" if state["docs"] == 0 and src is None else "")
         # 誰が置いたのかは、有効にするか決める手がかり(外のアプリも置けるため)
         requester = (
             f'<br><span class="muted">依頼元: {esc(item.requested_by)}</span>'
@@ -437,16 +434,14 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f"</details></td>"
             f"<td>{item.interval_minutes} 分ごと</td>"
             f"<td>{when}</td>"
-            f'<td>{state["docs"]:,} 件<br>'
-            f'<span class="muted">長期記憶: {baked_docs}</span></td>'
+            f"<td>{baked_docs}</td>"
             f"<td>{result}</td>"
             f"<td>"
             f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/toggle">'
             f'<button type="submit">{toggle_label}</button></form>'
-            f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/run">'
-            f'<button type="submit">いま走らせる</button></form>'
-            f'<form class="init-form" method="post" action="{esc(bake)}"{disabled}>'
-            f'<button type="submit"{bake_disabled}>長期記憶へ焼く</button></form>'
+            f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/run"'
+            f"{disabled}>"
+            f'<button type="submit"{disabled}>いま集めて焼く</button></form>'
             f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/delete"'
             f" onsubmit=\"return confirm('収集「{esc(item.name)}」の設定を消します"
             "(溜めたものは残ります)。よろしいですか?')\">"
@@ -456,7 +451,7 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
     table = f"""
 <table>
 <thead>
-<tr><th>name</th><th>間隔</th><th>次にいつ</th><th>溜まった数</th><th>前回</th><th></th></tr>
+<tr><th>name</th><th>間隔</th><th>次にいつ</th><th>長期記憶</th><th>前回</th><th></th></tr>
 </thead>
 <tbody>
 {"".join(rows)}
@@ -489,8 +484,10 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
 <p class="muted">
 まとまったダンプの無いもの(直近のニュース、入れ替わりの速い店、人物の関係)を
 AI に集めさせて溜めていく層。<strong>溜め先は収集ごとに別のソース</strong>なので、
-<code>/v1/&lt;name&gt;/search</code> やブラウズ画面でそのまま引ける。追記していくので、
-取り込みのような全件の作り直しは起きない(同じ見出しが再び来たら飛ばす)。<br>
+<code>/v1/&lt;name&gt;/search</code> やブラウズ画面でそのまま引ける。<br>
+<strong>集めるのも焼くのも取り込みの中で起きる</strong>ので、押すボタンは 1 つだけ
+(途中の待ち行列は無い)。焼き直しは全件だが素材に前世代を混ぜるので、
+中身は追記として積み上がる(同じ見出しは新しいほうで置き換わる)。<br>
 プロンプトの <code>{{cursor}}</code> が実行ごとに進む印に置き換わり、AI が
 <code>next_cursor</code> で次を返す。これで「前回以降のニュース」「次の地域」
 「次に調べる人」が同じ仕組みに乗る。返させる形は
@@ -940,8 +937,12 @@ enwiki はその数倍)。ページビュー突合のため全プロジェクト
     )
 
 
-def _proxy_trigger_run(source: str) -> RedirectResponse:
-    """chiezo-trigger の POST /run/{source} へプロキシし、管理画面へ戻す(init / rebuild 共通)。"""
+def trigger_run(source: str) -> None:
+    """chiezo-trigger の POST /run/{source} を叩く。失敗は HTTPException にする。
+
+    **画面へ戻さない形も要る** —— 収集の時計(`app/main.py`)がここから取り込みを
+    起こすので、リダイレクトを返されると使えない。
+    """
     try:
         res = httpx.post(f"{TRIGGER_URL}/run/{source}", timeout=TRIGGER_TIMEOUT)
     except httpx.HTTPError as e:
@@ -957,6 +958,11 @@ def _proxy_trigger_run(source: str) -> RedirectResponse:
         ) from e
     if res.status_code >= 400:
         raise HTTPException(res.status_code, res.json())
+
+
+def _proxy_trigger_run(source: str) -> RedirectResponse:
+    """上を叩いて管理画面へ戻す(init / rebuild 共通)。"""
+    trigger_run(source)
     return RedirectResponse(url="/admin", status_code=303)
 
 
@@ -1100,15 +1106,17 @@ def admin_collect_delete(name: str):
 
 
 @router.post("/admin/collect/{name}/run")
-async def admin_collect_run(name: str, request: Request):
-    """予定を待たずに 1 回走らせる(管理画面の「いま走らせる」)。
+def admin_collect_run(name: str):
+    """予定を待たずに 1 回、集めて焼く(管理画面の「いま集めて焼く」)。
 
-    実体は `/v1/collect/{name}/run` と同じ。**失敗しても例外にしない**(結果は
-    定義側に控えるので、戻った画面の「前回」の欄に理由が出る)。
+    **止めている収集もここからは走らせる** —— 有効にする前に一度試せないと、
+    プロンプトが通るかを確かめる手段が無くなる。REST の `/v1/collect/{name}/run` は
+    同じことを断る(外のアプリに勝手な実行を許さないため)。画面を開けるのは
+    Chiezo を操作している人だけ、という前提の差。
     """
-    from app.main import collect_run_now
+    from app.main import start_collection_bake
 
-    await collect_run_now(request, name)
+    start_collection_bake(name)
     return RedirectResponse(url="/admin#collect", status_code=303)
 
 

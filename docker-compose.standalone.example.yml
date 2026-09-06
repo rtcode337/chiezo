@@ -142,8 +142,6 @@ services:
       CHIEZO_DATA_DIR: /data/corpus
       # 「覚える」層(/v1/notes)。空にすると機能ごと無効になる
       CHIEZO_NOTES_DIR: /data/notes
-      # 集める層の溜め先(未設定なら収集は無効)
-      CHIEZO_COLLECT_DIR: /data/collect
       # 管理画面の初期化ボタンから叩く chiezo-trigger の内部 URL(ホストには公開しない)。
       # サービス名で引くので、下の chiezo-trigger の名前を変えるならここも合わせる
       CHIEZO_TRIGGER_URL: http://chiezo-trigger:8080

@@ -10,6 +10,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
+import re
+import sqlite3
 
 import pytest
 
@@ -27,9 +30,9 @@ def enabled(tmp_path, monkeypatch):
     from app import db
 
     notes_dir = tmp_path / "notes"
-    collect_dir = tmp_path / "collect"
     monkeypatch.setenv("CHIEZO_NOTES_DIR", str(notes_dir))
-    monkeypatch.setenv("CHIEZO_COLLECT_DIR", str(collect_dir))
+    # 取り込みを起こせない面では収集そのものが成り立たないので、これも要る
+    monkeypatch.setenv("CHIEZO_TRIGGER_URL", "http://chiezo-trigger:7011")
     db.set_mutable_paths([notes_dir / "notes.db"])
     return tmp_path
 
@@ -39,18 +42,61 @@ def sample(enabled):
     return collect.create("news", prompt="{cursor} 以降", interval_minutes=60)
 
 
-class TestDefinitions:
-    def test_it_is_disabled_without_a_place_to_put_things(self, tmp_path, monkeypatch):
-        """置き場が無ければ機能ごと無効(notes と同じ流儀)。"""
-        monkeypatch.delenv("CHIEZO_COLLECT_DIR", raising=False)
-        monkeypatch.setenv("CHIEZO_NOTES_DIR", str(tmp_path))
-        assert not collect.is_enabled()
+@pytest.fixture
+def baked(tmp_path):
+    """焼き上がった長期記憶の代わり(コアスキーマの読み取り専用 DB)を作る。
 
-    def test_notes_alone_is_not_enough(self, tmp_path, monkeypatch):
+    素材に前世代が混ざるかを見るには「1 度焼いた後」の状態が要るが、本物の取り込みは
+    ここでは回せない。焼き上がりが満たしている条件はコアスキーマなので、それだけ作る。
+    """
+    from app import notes
+
+    def make(docs):
+        path = tmp_path / "baked.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(notes.SCHEMA_DDL)
+        for i, (title, body) in enumerate(docs, start=1):
+            conn.execute(
+                "INSERT INTO docs (doc_id, title, opening, body, tags, updated_at, rank_score)"
+                " VALUES (?, ?, ?, ?, '[]', '2026-01-01T00:00:00+00:00', 0.0)",
+                (i, title, body, body),
+            )
+        conn.commit()
+        conn.close()
+
+        class Src:
+            def __init__(self, path):
+                self.path = path
+                self.dump_date = "20260101000000"
+
+        return {"news": Src(path)}
+
+    return make
+
+
+class TestDefinitions:
+    def test_it_needs_no_place_of_its_own(self, enabled):
+        """要る置き場は定義のぶんだけ。
+
+        集めたものは取り込みの中で焼かれるので、**途中の置き場は持たない**。
+        """
+        assert collect.is_enabled()
+
+    def test_without_notes_it_is_disabled(self, enabled, monkeypatch):
         """定義の置き場が notes なので、notes が無効なら収集も成り立たない。"""
-        monkeypatch.setenv("CHIEZO_COLLECT_DIR", str(tmp_path))
         monkeypatch.delenv("CHIEZO_NOTES_DIR", raising=False)
         assert not collect.is_enabled()
+
+    def test_without_a_way_to_bake_it_is_disabled(self, enabled, monkeypatch):
+        """取り込みを起こせない面では、定義を置いても永遠に走らない。
+
+        **見本の定義まで作らない**のが要点 —— 使えない機能の設定が短期記憶に
+        1 件混ざるだけになる(タスク専用の面のように corpus を持たない構成)。
+        """
+        monkeypatch.delenv("CHIEZO_TRIGGER_URL", raising=False)
+        assert not collect.is_enabled()
+        collect.ensure_sample()
+        assert collect.load() == []
 
     def test_the_name_becomes_a_source_so_it_is_checked(self, enabled):
         """名前はソース名・ファイル名・URL になるので狭く取る。"""
@@ -192,40 +238,59 @@ class TestRequestingFromOutside:
         assert [c.name for c in collect.due_collections()] == []
 
 
-class TestAppending:
-    def test_it_appends_instead_of_rebuilding(self, sample):
-        """2 回に分けて入れたものが両方残る(取り込みのような洗い替えをしない)。"""
-        assert collect.append("news", [{"title": "1件目", "body": "本文"}]) == (1, 0)
-        assert collect.append("news", [{"title": "2件目", "body": "本文"}]) == (1, 0)
-        assert collect.count("news") == 2
+class TestMaterial:
+    """焼く素材の組み立て(`material`)。**集めたものはここにしか現れない**。
 
-    def test_the_same_headline_is_skipped(self, sample):
+    途中の置き場を持たないので、集めたぶんは前世代と混ざって素材になり、そのまま
+    取り込みへ流れる。積み上がるかどうかはここで決まる。
+    """
+
+    def test_it_appends_instead_of_rebuilding(self, sample, baked):
+        """前世代に足す形になる(取り込みのような洗い替えをしない)。"""
+        sources = baked([("前に集めた", "本文")])
+        docs, added, skipped = collect.material(
+            "news", sources, [{"title": "いま集めた", "body": "本文"}]
+        )
+        assert [d["title"] for d in docs] == ["前に集めた", "いま集めた"]
+        assert (added, skipped) == (1, 0)
+
+    def test_the_same_headline_is_not_counted_twice(self, sample, baked):
         """繰り返し同じことを聞く前提なので、見出しが重複の鍵。
 
         notes は衝突したら `(doc_id)` を足して別物として残すが、それでは同じ
         ニュースが実行のたびに増える。
         """
-        item = [{"title": "同じ見出し", "body": "本文"}]
-        assert collect.append("news", item) == (1, 0)
-        assert collect.append("news", item) == (0, 1)
-        assert collect.count("news") == 1
+        sources = baked([("同じ見出し", "古い本文")])
+        docs, added, skipped = collect.material(
+            "news", sources, [{"title": "同じ見出し", "body": "新しい本文"}]
+        )
+        assert len(docs) == 1
+        assert (added, skipped) == (0, 1)
+        # 数は増えないが、中身は新しく集めたほうで置き換える
+        assert docs[0]["body"] == "新しい本文"
 
     def test_items_without_a_title_or_body_are_skipped(self, sample):
-        assert collect.append("news", [{"title": "", "body": "x"}, {"title": "y"}]) == (0, 2)
+        docs, added, skipped = collect.material(
+            "news", {}, [{"title": "", "body": "x"}, {"title": "y"}]
+        )
+        assert docs == []
+        assert (added, skipped) == (0, 2)
 
     def test_it_records_when_it_was_collected(self, sample):
         """古い情報かどうかを読む側が判断できるように、集めた時刻を必ず残す。"""
-        collect.append("news", [{"title": "見出し", "body": "本文", "url": "https://example.com"}])
-        assert collect.sample("news")[0]["title"] == "見出し"
+        docs, _, _ = collect.material(
+            "news", {}, [{"title": "見出し", "body": "本文", "url": "https://example.com"}]
+        )
+        assert docs[0]["extra"]["collected_at"]
+        assert docs[0]["extra"]["url"] == "https://example.com"
 
     def test_collected_data_does_not_land_in_notes(self, sample):
         """溜め先は notes と別。混ぜると短期記憶が収集物で埋まる(この層の芯)。"""
         from app import notes
 
         before = notes.count()
-        collect.append("news", [{"title": "見出し", "body": "本文"}])
+        collect.material("news", {}, [{"title": "見出し", "body": "本文"}])
         assert notes.count() == before
-        assert collect.count("news") == 1
 
 
 class TestCursor:
@@ -318,77 +383,45 @@ class TestBaking:
     """長期記憶へ焼く(固化と同じ形)。
 
     **毎回焼き直すのに積み上がる**のがこの層の芯なので、素材に前世代が入ることと、
-    焼き上がりを確かめてから待ち行列を片付けることを押さえる。
+    doc_id が動かないことを押さえる。
     """
 
-    def _fake_source(self, tmp_path, docs):
-        """焼き上がった長期記憶の代わり(コアスキーマの読み取り専用 DB)。"""
-        import sqlite3
-
-        from app import notes
-
-        path = tmp_path / "baked.db"
-        conn = sqlite3.connect(path)
-        conn.executescript(notes.SCHEMA_DDL)
-        for i, (title, body) in enumerate(docs, start=1):
-            conn.execute(
-                "INSERT INTO docs (doc_id, title, opening, body, tags, updated_at, rank_score)"
-                " VALUES (?, ?, ?, ?, '[]', '2026-01-01T00:00:00+00:00', 0.0)",
-                (i, title, body, body),
-            )
-        conn.commit()
-        conn.close()
-
-        class Src:
-            def __init__(self, path):
-                self.path = path
-                self.dump_date = "20260101000000"
-
-        return {"news": Src(path)}
-
-    def test_the_material_is_previous_generation_plus_the_queue(self, sample, tmp_path):
+    def test_the_material_is_previous_generation_plus_what_was_just_collected(
+        self, sample, baked
+    ):
         """ここが「全件の作り直しに乗せたまま追記になる」仕掛け。"""
-        from app import db
-
-        sources = self._fake_source(tmp_path, [("焼いてある", "前世代の本文")])
-        db.set_mutable_paths([])
-        collect.append("news", [{"title": "新しく集めた", "body": "本文"}])
-        titles = [d["title"] for d in collect.material("news", sources)]
+        sources = baked([("焼いてある", "前世代の本文")])
+        body, _, _ = collect.ndjson("news", sources, [{"title": "新しく集めた", "body": "本文"}])
+        titles = [json.loads(line)["title"] for line in body.splitlines()[1:]]
         assert titles == ["焼いてある", "新しく集めた"]
 
-    def test_it_keeps_doc_ids_so_urls_do_not_move(self, sample, tmp_path):
+    def test_it_keeps_doc_ids_so_urls_do_not_move(self, sample, baked):
         """焼き直しても文書の URL が変わらないようにする(固化と同じ)。"""
-        sources = self._fake_source(tmp_path, [("焼いてある", "前世代の本文")])
-        collect.append("news", [{"title": "焼いてある", "body": "新しい本文"}])
-        docs = {d["title"]: d for d in collect.material("news", sources)}
-        assert docs["焼いてある"]["doc_id"] == 1
-        # 同じ見出しは新しく集めたほうで置き換える
-        assert docs["焼いてある"]["body"] == "新しい本文"
+        sources = baked([("焼いてある", "前世代の本文")])
+        docs, _, _ = collect.material("news", sources, [{"title": "焼いてある", "body": "新しい本文"}])
+        assert docs[0]["doc_id"] == 1
 
-    def test_nothing_to_bake_is_refused(self, sample, tmp_path):
-        """流し始めた後ではステータスを変えられないので、先に断る。"""
+    def test_the_first_line_is_the_meta(self, sample):
+        """取り込み側は 1 行目から世代の日付と検証条件を読む。"""
+        body, _, _ = collect.ndjson("news", {}, [{"title": "見出し", "body": "本文"}])
+        meta = json.loads(body.splitlines()[0])["meta"]
+        assert re.fullmatch(r"\d{14}", meta["dump_date"])
+        assert meta["sample_titles"] == ["見出し"]
+
+    def test_nothing_to_bake_is_refused(self, sample):
+        """流し始めた後ではステータスを変えられないので、先に断る。
+
+        **集められなかった回で焼かせない**のが要点 —— 前世代のまま新しい世代が
+        できると、集められなかったことが世代の履歴から消える。
+        """
         import fastapi
 
         with pytest.raises(fastapi.HTTPException) as got:
-            collect.ndjson("news", {})
+            collect.ndjson("news", {}, [])
         assert got.value.status_code == 409
 
-    def test_the_queue_is_only_cleared_after_it_landed(self, sample, tmp_path):
-        """先に消すと、焼きに失敗したときに集めたものが失われる。"""
-        collect.append("news", [{"title": "焼いてある", "body": "本文"}, {"title": "まだ", "body": "本文"}])
-        sources = self._fake_source(tmp_path, [("焼いてある", "本文")])
-        result = collect.sweep("news", sources)
-        assert result["cleared"] == 1
-        assert result["remaining"] == 1
-        assert [d["title"] for d in collect.staged("news")] == ["まだ"]
-
-    def test_sweeping_before_baking_does_nothing(self, sample):
-        collect.append("news", [{"title": "見出し", "body": "本文"}])
-        assert collect.sweep("news", {})["cleared"] == 0
-        assert collect.count("news") == 1
-
     def test_the_catalog_lists_definitions_even_when_empty(self, sample):
-        """一覧に出ないと、管理画面に焼く導線が出ない。"""
+        """一覧に出ないと、取り込み側がこのソースを焼けない。"""
         assert [c["name"] for c in collect.catalog()] == ["news"]
 
 
@@ -411,14 +444,69 @@ class TestParsing:
 
 
 class TestDeletion:
-    def test_deleting_the_definition_keeps_the_data(self, sample):
-        """定義を消すのと、集めたものを捨てるのは別の意思決定。"""
-        collect.append("news", [{"title": "見出し", "body": "本文"}])
+    def test_deleting_the_definition_keeps_the_data(self, sample, baked):
+        """定義を消すのと、焼いたものを捨てるのは別の意思決定。
+
+        長期記憶へ書けるのは取り込みだけなので、ここから消す手段はそもそも無い。
+        """
         collect.remove("news")
         assert collect.load() == []
-        assert collect.count("news") == 1
+        assert baked([("見出し", "本文")])["news"].path.exists()
 
-    def test_it_can_drop_the_data_when_asked(self, sample):
-        collect.append("news", [{"title": "見出し", "body": "本文"}])
-        collect.remove("news", drop_data=True)
-        assert collect.count("news") == 0
+
+class TestRest:
+    """REST の受け口(`/v1/collect/…`)。
+
+    **固定のパスが名前として解釈されないこと**が主眼 —— `/{name}` を先に宣言すると
+    `/sources` や `/fetch` が 404 になる(`app/tasks_api.py` で踏んだのと同じ罠)。
+    ついでに、外へ開けておける理由(呼んだだけでは AI が動かない)も押さえる。
+    """
+
+    @pytest.fixture()
+    def client(self, enabled, built_data_dir, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        from app.main import app
+
+        with TestClient(app) as c:
+            yield c
+
+    def test_the_fixed_paths_are_not_read_as_names(self, client, sample):
+        """`/sources` と `/fetch` は収集の名前ではない。"""
+        listed = client.get("/v1/collect/sources").json()["sources"]
+        # 起動時に見本も置かれるので、作ったぶんが混ざっていることだけ見る
+        assert "news" in [s["name"] for s in listed]
+        # 名前を渡さない /fetch は 422(名前として 404 にならない)
+        assert client.get("/v1/collect/fetch").status_code == 422
+
+    def test_one_collection_comes_with_what_was_baked(self, client, sample):
+        """設定だけでは、プロンプトを直すかの判断ができない。"""
+        body = client.get("/v1/collect/news").json()
+        assert body["name"] == "news"
+        # まだ 1 度も焼いていないので空(焼き先のソースがそもそも無い)
+        assert body["recent"] == []
+
+    def test_an_unknown_collection_is_404(self, client, sample):
+        assert client.get("/v1/collect/nosuch").status_code == 404
+
+    def test_running_a_stopped_collection_is_refused(self, client, sample):
+        """呼んだだけでは AI が動かない、が外へ開けておける理由。"""
+        res = client.post("/v1/collect/news/run")
+        assert res.status_code == 403
+
+    def test_enabled_is_not_in_the_patch_shape(self, client, sample):
+        """有効にするかを REST から触れると、依頼と実行を分けた意味が消える。"""
+        client.patch("/v1/collect/news", json={"enabled": True, "interval_minutes": 120})
+        assert collect.get("news").enabled is False
+        assert collect.get("news").interval_minutes == 120
+
+    def test_a_request_from_outside_is_created_stopped(self, client, enabled):
+        res = client.post(
+            "/v1/collect",
+            json={"name": "asked", "prompt": "{cursor}", "interval_minutes": 60,
+                  "requested_by": "travel-log"},
+        )
+        assert res.status_code == 200
+        assert res.json()["enabled"] is False
+        assert res.json()["requested_by"] == "travel-log"

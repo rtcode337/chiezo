@@ -112,12 +112,10 @@ def scan_all(data_dir: Path) -> dict[str, Source]:
     notes_dir = notes.notes_dir()
     if notes_dir is not None:
         sources.update(scan_sources(notes_dir, mutable=True))
-    # 収集は**ソースとして登録しない**(引けるのは ingest が焼いた後の corpus 側)。
-    # ただし待ち行列の DB は app が読み書きするので、`immutable=1` で開かせない
-    mutable_paths = [s.path for s in sources.values() if s.mutable]
-    collect.register_mutable(mutable_paths)
+    # 収集した中身は `corpus/` 側に焼かれるので、ここで足すものは無い
+    # (焼く前の置き場も持たない。`app/collect.py` 参照)
     # 追記される DB は immutable で開けない、と db 側に伝える
-    db.set_mutable_paths(mutable_paths)
+    db.set_mutable_paths(s.path for s in sources.values() if s.mutable)
     return sources
 
 
@@ -161,14 +159,16 @@ COLLECT_TICK_SECONDS = float(os.environ.get("CHIEZO_COLLECT_TICK_SECONDS", "60")
 
 
 async def _run_collections(app: FastAPI) -> None:
-    """予定の来た収集を順に走らせる常駐タスク(`app/collect.py`)。
+    """予定の来た収集を ingest に起こさせる常駐タスク(`app/collect.py`)。
 
-    **1 周に 1 件ずつ**にしてある。CLI ブリッジ越しの相手は同時に 1 本しか動かないので、
-    まとめて投げても待ち行列になるだけで、失敗したときの巻き添えが増える。
+    **叩くのは chiezo-trigger**。集めるのも焼くのも取り込みの中で起きる(素材を配るとき
+    に AI へ聞く)ので、時計がすることは「取り込みを 1 本始める」だけになる。
 
-    **失敗しても止めない**。理由は 2 つで、①相手が一時的に落ちているだけのことがある、
-    ②止めると次の周期も来ないので、直っても動き出さない。結果は定義側に控えるので、
-    何が起きたかは画面から読める。
+    **1 周に 1 件ずつ**にしてある。trigger は同時に 1 ジョブしか受けないうえ、
+    CLI ブリッジ越しの相手も同時に 1 本しか動かない。
+
+    **混んでいれば次の周期へ回す**(429/409)。予定は進めないので、空いたときに走る。
+    **失敗しても止めない** —— 止めると、一度こけた収集が二度と走らなくなる。
     """
     while True:
         await asyncio.sleep(COLLECT_TICK_SECONDS)
@@ -176,9 +176,28 @@ async def _run_collections(app: FastAPI) -> None:
             due = await asyncio.to_thread(collect.due_collections)
             if not due:
                 continue
-            await run_collection(due[0].name)
+            await asyncio.to_thread(start_collection_bake, due[0].name)
         except Exception:
             log.exception("collection tick failed")
+
+
+def start_collection_bake(name: str) -> dict:
+    """収集の取り込みを 1 本起こす(集めるのも焼くのも向こうで起きる)。
+
+    **予定は起こせたときだけ進める** —— trigger が混んでいて断られたのに次回へ送ると、
+    その回は黙って飛ばされる。
+    """
+    from app.views.admin import TRIGGER_URL, trigger_run
+
+    if not TRIGGER_URL:
+        raise HTTPException(503, {
+            "error": "chiezo-trigger が設定されていません(CHIEZO_TRIGGER_URL 未設定)",
+            "hint": "集めるのも焼くのも取り込みの中で起きるので、trigger が要る",
+        })
+    trigger_run(name)
+    # **起こせたときだけ予定を進める** —— 混んでいて断られたのに次回へ送ると、
+    # その回は黙って飛ばされる(trigger_run が例外にするのでここへは来ない)
+    return collect.to_public(collect.mark_started(name))
 
 
 async def _ask_for_collection(item, messages: list[dict]) -> str:
@@ -227,30 +246,32 @@ async def draft_collection_prompt(
     return draft
 
 
-async def run_collection(name: str) -> dict:
-    """収集を 1 回走らせて、結果を定義側に控える。
+async def collect_material(name: str, sources: dict) -> str:
+    """いま AI に集めさせて、焼く素材(NDJSON)を組み立てる。
 
-    AI を呼ぶところだけが非同期で、読み書きはスレッドへ逃がす(SQLite はブロッキング)。
-    **例外にせず必ず控えを残す** —— 無人で回る層なので、その場に居合わせない人が
-    後から「何が起きたか」を読めることのほうが大事(`/v1/ai/failures` と同じ考え方)。
+    **取り込みの中で呼ばれる**(`/v1/collect/fetch`)。集めた瞬間に焼かれるので、
+    途中に置き場が要らない。**結果は必ず定義側に控える** —— 無人で回る層なので、
+    その場に居合わせない人が後から「何が起きたか」を読めることのほうが大事。
+
+    **失敗は例外にする**(控えを残したうえで)。素材を返せないまま取り込みを続けさせると、
+    前世代のまま焼き直した新しい世代ができて、集められなかったことが履歴から消える。
     """
     item = await asyncio.to_thread(collect.get, name)
     try:
         content = await _ask_for_collection(item, collect.build_messages(item))
         items, next_cursor = collect.parse_response(content or "")
-        added, skipped = await asyncio.to_thread(collect.append, name, items)
-        updated = await asyncio.to_thread(
-            collect.record_result, name,
-            status="ok", added=added, skipped=skipped, next_cursor=next_cursor,
-        )
-        log.info("collect %s: added=%d skipped=%d", name, added, skipped)
+        body, added, skipped = await asyncio.to_thread(collect.ndjson, name, sources, items)
     except Exception as e:
         reason = f"{type(e).__name__}: {e}"
         log.warning("collect %s failed: %s", name, reason)
-        updated = await asyncio.to_thread(
-            collect.record_result, name, status="error", error=reason
-        )
-    return collect.to_public(updated)
+        await asyncio.to_thread(collect.record_result, name, status="error", error=reason)
+        raise
+    await asyncio.to_thread(
+        collect.record_result,
+        name, status="ok", added=added, skipped=skipped, next_cursor=next_cursor,
+    )
+    log.info("collect %s: added=%d skipped=%d", name, added, skipped)
+    return body
 
 
 @asynccontextmanager
@@ -1203,7 +1224,7 @@ def collect_list():
     3 つ揃って初めて「動いているか」が判断できるので、一覧の時点で載せる
     (件数だけ別の口にすると、画面が収集の数だけ問い合わせることになる)。
     """
-    collect.require_dir()
+    collect.require_enabled()
     return {"collections": [collect.to_public(c) for c in collect.load()]}
 
 
@@ -1217,7 +1238,7 @@ def collect_create(request: Request, body: CollectionCreate):
     定期実行が始まってしまうのは困る。`requested_by` に名乗ってもらうと、
     有効にするか決める人の手がかりになる(印であって認証ではない)。
     """
-    collect.require_dir()
+    collect.require_enabled()
     item = collect.create(
         name=body.name.strip(),
         prompt=body.prompt,
@@ -1249,27 +1270,39 @@ def collect_sources_catalog():
 
 
 @app.get("/v1/collect/fetch")
-def collect_fetch(request: Request, source: str = Query(..., description="焼く収集の名前")):
-    """焼く素材(NDJSON)。**前世代 + 待ち行列**を返す。
+async def collect_fetch(request: Request, source: str = Query(..., description="焼く収集の名前")):
+    """焼く素材(NDJSON)。**ここで AI に集めさせる。**
 
-    前世代を混ぜるのが「毎回焼き直すのに積み上がる」の要(固化と同じ)。
-    返す形は `ingest/sources/remote.py` が読む形。
+    取り込みの中から呼ばれるので、集めた瞬間に焼かれる —— 途中に置き場が要らない。
+    返すのは**前世代 + いま集めたぶん**で、前世代を混ぜるのが「毎回焼き直すのに
+    積み上がる」の要(固化と同じ)。返す形は `ingest/sources/remote.py` が読む形。
+
+    **AI の応答ぶん待たせる**(十数秒〜数分)。取り込み側は待つ前提で作られている
+    (ダンプのダウンロードも同じくらいかかる)。
     """
-    collect.require_dir()
-    body = collect.ndjson(source, request.app.state.sources)
+    collect.require_enabled()
+    body = await collect_material(source, request.app.state.sources)
     return Response(content=body, media_type="application/x-ndjson")
 
 
 @app.get("/v1/collect/{name}")
-def collect_get(name: str, samples: int = Query(5, ge=0, le=50)):
-    collect.require_dir()
+def collect_get(request: Request, name: str, samples: int = Query(5, ge=0, le=50)):
+    """1 つぶんの設定と、**焼いてあるもののうち新しい数件**。
+
+    見本を添えるのは、プロンプトを直すかどうかの判断に「実際に何が集まったか」が
+    要るため。途中の置き場を持たないので、見に行く先は長期記憶になる。
+    """
+    collect.require_enabled()
     item = collect.get(name)
-    return {**collect.to_public(item), "recent": collect.sample(name, samples)}
+    return {
+        **collect.to_public(item),
+        "recent": collect.recent(name, request.app.state.sources, samples),
+    }
 
 
 @app.patch("/v1/collect/{name}")
 def collect_patch(name: str, body: CollectionPatch):
-    collect.require_dir()
+    collect.require_enabled()
     return collect.to_public(collect.update(name, **body.model_dump(exclude_none=True)))
 
 
@@ -1279,7 +1312,7 @@ def collect_delete(
     drop_data: bool = Query(False, description="溜めたものも消す(既定は残す)"),
 ):
     """定義を消す。**溜めたものは既定で残す** —— 消すのは別の意思決定だから。"""
-    collect.require_dir()
+    collect.require_enabled()
     collect.remove(name, drop_data=drop_data)
     return {"ok": True, "dropped": drop_data}
 
@@ -1300,45 +1333,32 @@ async def collect_draft(body: CollectionDraft):
     決まり(返させる JSON の形・`{cursor}` の使い方・title が重複の鍵)を
     こちらが system で教えるので、頼む側は「何を集めたいか」だけ書けばよい。
     """
-    collect.require_dir()
+    collect.require_enabled()
     if not (body.want.strip() or body.name):
         raise HTTPException(400, {"error": "want か name のどちらかが要ります"})
     draft = await draft_collection_prompt(body.want, body.current, body.feedback, body.name)
     return {"prompt": draft}
 
 
-@app.post("/v1/collect/{name}/sweep")
-def collect_sweep(request: Request, name: str):
-    """焼き上がりを確かめて、待ち行列から片付ける。
-
-    **焼く前に押しても何も起きない**(長期側に入っていないものは残る)。
-    先に消すと、焼きに失敗したときに集めたものが失われる。
-    """
-    collect.require_dir()
-    return collect.sweep(name, request.app.state.sources)
-
-
 @app.post("/v1/collect/{name}/run")
-async def collect_run_now(request: Request, name: str):
-    """予定を待たずに 1 回走らせる。**止めている収集は断る**。
+def collect_run_now(name: str):
+    """予定を待たずに 1 回、集めて焼く。**止めている収集は断る**。
 
     有効にしていないものをここから走らせられると、`enabled` を REST から
     触れなくした意味が無くなる(呼ぶたびに 1 回ぶんの AI が動く)。
-    **管理画面の「いま走らせる」はこの口を通さない**ので、有効にする前の試し撃ちは
+    **管理画面の「いま集めて焼く」はこの口を通さない**ので、有効にする前の試し撃ちは
     そちらからできる —— 画面を開けるのは Chiezo を操作している人だけ、という前提。
 
-    **走らせた後はソースを取り直す**(初回は DB がまだ登録されていないので、
-    そのままだと検索に出てこない)。
+    **返るのは「起こした」まで**。取り込みは向こうで走るので、進み具合は
+    管理画面(または chiezo-trigger の `/status`)で見る。
     """
-    collect.require_dir()
+    collect.require_enabled()
     if not collect.get(name).enabled:
         raise HTTPException(403, {
             "error": f"収集「{name}」は止まっています",
             "hint": "動かすかどうかは Chiezo 側で決めます(管理画面の「有効にする」)",
         })
-    result = await run_collection(name)
-    request.app.state.sources = scan_all(request.app.state.data_dir)
-    return result
+    return start_collection_bake(name)
 
 
 # ---- 使う(ローカル LLM。既定では無効) ---------------------------------------

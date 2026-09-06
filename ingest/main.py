@@ -343,6 +343,10 @@ def run(source: str, data_dir: Path) -> Path:
     build_db(adapter, dump_path, dump_date, building_path)
     validate_db(adapter, building_path)
     final_path = switch_db(data_dir, source, dump_date, building_path)
+    # 焼き上がりを見届けてから後片付けをするアダプタ向け(集めたソースは素材を捨てる)。
+    # 未対応のアダプタでは単にスキップされる
+    if on_success := getattr(adapter, "on_success", None):
+        on_success(final_path)
     log.info("done: %s", final_path)
     log.info("the API will pick up the new DB automatically within a few seconds")
     return final_path

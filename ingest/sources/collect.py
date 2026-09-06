@@ -11,11 +11,18 @@
 **毎回焼き直すが、中身は積み上がる。** 素材が「前世代 + 新しく集めたぶん」なので、
 ブルーグリーン(全件の作り直し)に乗せたまま追記として振る舞う —— 世代は今と 1 つ前
 だけが残る(`main.switch_db`)。
+
+**集めるのは `/fetch` の中**(取り込みの中で AI が動く)。**取ってきたものは
+他のソースのダンプと同じように `dumps/` に置き、焼き上がってから消す** ——
+途中で落ちても、次に走らせたときは AI を呼び直さずその場に残ったものから焼ける。
+ダンプが二度と手に入らない類のデータなので、他のソースより取り直しの代償が大きい
+(AI の 1 回ぶんが消える)。
 """
 from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 
 from core import SourceAdapter
 from sources.remote import PluginError, RemotePluginAdapter, RemoteSource, _get_json
@@ -36,6 +43,46 @@ def app_base_url() -> str:
 
 def base_url() -> str:
     return f"{app_base_url()}/v1/collect"
+
+
+class CollectAdapter(RemotePluginAdapter):
+    """`RemotePluginAdapter` に「取り直さない」だけを足したもの。
+
+    素材は AI が集めたその 1 回ぶんで、取り直せば同じものは返ってこない
+    (`{cursor}` が進んでいるので次の範囲になる)。焼く前に落ちたときのために
+    `dumps/` に残ったものを拾い、**焼き上がってから消す**。
+    """
+
+    def __init__(self, src: RemoteSource) -> None:
+        super().__init__(src)
+        self._staged: Path | None = None
+
+    def fetch(self, workdir: Path) -> tuple[Path, str]:
+        if leftover := self._leftover(workdir):
+            date = leftover.stem.rsplit("-", 1)[-1]
+            log.info("reusing staged material %s (skipping the AI call)", leftover.name)
+            self._staged = leftover
+            self._apply_meta(leftover)
+            return leftover, date
+        path, date = super().fetch(workdir)
+        self._staged = path
+        return path, date
+
+    def _leftover(self, workdir: Path) -> Path | None:
+        """前回の取り込みが焼き切れずに残した素材。新しいものを採る。"""
+        found = sorted(workdir.glob(f"{self.source}-*.ndjson"))
+        return found[-1] if found else None
+
+    def on_success(self, _final_path: Path) -> None:
+        """焼けたので素材を捨てる。
+
+        **残すと次回が古い素材を焼き直す** —— `_leftover` が拾ってしまい、
+        AI が呼ばれないまま同じ中身が積み上がる。中身はもう DB に入っている。
+        """
+        if self._staged and self._staged.exists():
+            log.info("removing staged material %s", self._staged.name)
+            self._staged.unlink()
+        self._staged = None
 
 
 def _source(entry: dict) -> RemoteSource:
@@ -71,12 +118,12 @@ def catalog() -> list[RemoteSource]:
 
 def adapters() -> dict[str, callable]:
     """`ADAPTERS` に混ぜる形(名前 → 生成関数)。"""
-    return {src.name: (lambda s=src: RemotePluginAdapter(s)) for src in catalog()}
+    return {src.name: (lambda s=src: CollectAdapter(s)) for src in catalog()}
 
 
 def adapter_for(name: str) -> SourceAdapter | None:
     """名前で 1 つだけ引く(`get_adapter` から呼ぶ)。"""
     for src in catalog():
         if src.name == name:
-            return RemotePluginAdapter(src)
+            return CollectAdapter(src)
     return None
