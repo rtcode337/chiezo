@@ -90,6 +90,7 @@ def sources():
     """
     from core import SCHEMA_VERSION, is_low_memory_build
     from sources import ADAPTERS, remote
+    from sources import collect as collect_sources
     from sources.osm_regions import CONTINENTS, OSM_REGIONS
     from sources.wikipedia_editions import WIKIPEDIA_EDITIONS
 
@@ -132,6 +133,15 @@ def sources():
             "memory_gb": region.memory_gb,
             "node_index": forced_node_index or region.node_index,
         }
+    # 集めたソース(app/collect.py が定義を持つ)。実行時に増えるので、
+    # ここで配信側に聞いて並べる —— 一覧に出ないと管理画面から焼く導線が出ない。
+    for src in collect_sources.catalog():
+        catalog[src.name] = {
+            "kind": src.kind,
+            "lang": src.lang,
+            "label": src.label,
+            "memory_gb": src.memory_gb,
+        }
     # 別コンテナのプラグイン(CHIEZO_PLUGIN_SOURCES)が提供するソース。
     # 落ちていても catalog() が警告だけ出して飛ばすので、ここで止まることはない
     # (プラグイン 1 つの不調で管理画面の一覧が丸ごと消えるほうが困る)。
@@ -163,7 +173,10 @@ def start_run(source: str):
     # プラグインのソースもここで通す。 `/sources` に出したものは実行できなければ
     # ならない —— 管理画面はカタログからボタンを組み立てるので、片方だけ知っていると
     # 「ボタンはあるのに押すと unknown source」になる(実際にそうなった)。
-    if source not in ADAPTERS and source not in {s.name for s in remote.catalog()}:
+    from sources import collect as collect_sources
+
+    known = {s.name for s in remote.catalog()} | {s.name for s in collect_sources.catalog()}
+    if source not in ADAPTERS and source not in known:
         raise HTTPException(404, {"error": f"unknown source: {source}"})
     with _lock:
         if _status["state"] == "running":

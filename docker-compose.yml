@@ -76,6 +76,9 @@ services:
       - CHIEZO_DATA_DIR=/data/corpus
       # 「覚える」層(/v1/notes)。空にすると機能ごと無効になる。
       - CHIEZO_NOTES_DIR=/data/notes
+      # 集める層(app/collect.py)の溜め先。**未設定なら時計も回らない**。
+      # notes と分けるのは、短期記憶が収集物で埋まらないようにするため
+      - CHIEZO_COLLECT_DIR=/data/collect
       # 管理画面の初期化ボタンから叩く chiezo-trigger の内部 URL(ホストには公開しない)。
       - CHIEZO_TRIGGER_URL=http://chiezo-trigger:8080
       # 本体の調整(どれも既定のままなら書かなくてよい。空文字なら既定に倒れる)。
@@ -163,6 +166,9 @@ services:
     user: "${CHIEZO_UID:-10001}:${CHIEZO_GID:-10001}"
     environment:
       - CHIEZO_NOTES_DIR=/data/notes
+      # 集める層(app/collect.py)の溜め先。**未設定なら時計も回らない**。
+      # notes と分けるのは、短期記憶が収集物で埋まらないようにするため
+      - CHIEZO_COLLECT_DIR=/data/collect
       - CHIEZO_STATE_DIR=/data/state
       # ログインを許す Google アカウント 1 件と、その資格情報。
       # 3 つとも揃わないと /api は 401 のまま(素通しはしない)

@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import time
+from pathlib import Path
 from urllib.parse import quote
 
 import httpx
@@ -20,6 +22,8 @@ from app import (
     build_info,
     capabilities,
     claude_config,
+    collect,
+    jst,
     media,
     memory,
     notes,
@@ -254,6 +258,240 @@ def _memory_html(sources: dict[str, Source], disabled: str) -> str:
 """
 
 
+def _disk_html(data_dir: Path) -> str:
+    """データの置き場があるディスクの空き。
+
+    **コンテナの中から見える**。`/data` は bind マウントなのでホストの実体の統計が返り、
+    ホストで `df` を打った値と一致する(実測で一致を確認済み)。
+
+    出す理由は、**この画面から始まる操作がディスクを一番食う**から ——
+    取り込み 1 回で数十 GB 増えることがあり(jawiki の DB は 42GB)、
+    足りないまま走らせると数時間かけて最後に失敗する。押す前に見えるところに置く。
+
+    単位は GiB(`df -h` と同じ数え方。GB で書くと df の表示と食い違って見える)。
+    """
+    try:
+        usage = shutil.disk_usage(data_dir)
+    except OSError as e:
+        return f'<span class="muted">ディスクの空きを取れません: {esc(str(e))}</span>'
+    gib = 1024**3
+    free_gib = usage.free / gib
+    used_pct = 100 * usage.used / usage.total if usage.total else 0
+    text = (
+        f"ディスクの空き: {free_gib:,.0f} GiB "
+        f'<span class="muted">/ 全体 {usage.total / gib:,.0f} GiB({used_pct:.0f}% 使用)</span>'
+    )
+    # 取り込み 1 回で数十 GB 増えることがあるので、そのくらいを切ったら目立たせる
+    if free_gib < 20 or used_pct >= 95:
+        return f'<span class="stale">⚠️ {text}(取り込みには足りないかもしれません)</span>'
+    return text
+
+
+def _consult_page_html(name: str | None, want: str, draft: str, error: str) -> str:
+    """AI が書いた指示文の案を見せて、直して保存できる 1 枚。
+
+    **案は保存しない**。押されるまで何も変わらない —— 相談は何度でもやり直すもので、
+    途中の案が勝手に入れ替わると、気に入っていた前の案に戻れない。
+
+    **もう一度相談する側にも案を持ち回る**ので、「ここをこう直して」を重ねられる
+    (Chiezo が状態を持たない作りに合わせて、毎回まるごと渡す)。
+    """
+    heading = f"「{esc(name)}」のプロンプトを相談する" if name else "新しい収集のプロンプトを相談する"
+    # 既存を直すなら保存先はその収集、新規ならフォームごと作る
+    if name:
+        save = (
+            f'<form method="post" action="/admin/collect/{esc(name)}/edit" class="collect-form">'
+            f'<input type="hidden" name="description" value="{esc(collect.get(name).description)}">'
+            f'<input type="hidden" name="interval_minutes" value="{collect.get(name).interval_minutes}">'
+            f'<input type="hidden" name="cursor" value="{esc(collect.get(name).cursor)}">'
+            f'<p><label>この案(直してから保存できる)<br>'
+            f'<textarea name="prompt" rows="12">{esc(draft)}</textarea></label></p>'
+            f'<button type="submit">この内容で保存する</button></form>'
+        )
+    else:
+        save = (
+            '<form method="post" action="/admin/collect/create" class="collect-form">'
+            '<p><label>name(ソース名になる)<br>'
+            '<input name="name" required pattern="[a-z][a-z0-9_]{1,30}"></label></p>'
+            f'<p><label>説明<br><input name="description" value="{esc(want)}"></label></p>'
+            f'<p><label>間隔(分)<br><input name="interval_minutes" type="number"'
+            f' min="{collect.MIN_INTERVAL_MINUTES}" value="360"></label></p>'
+            f'<p><label>この案(直してから保存できる)<br>'
+            f'<textarea name="prompt" rows="12">{esc(draft)}</textarea></label></p>'
+            '<p><label><input type="checkbox" name="web" value="1" checked> web 検索を開ける</label></p>'
+            '<button type="submit">この内容で追加する(止めた状態で作る)</button></form>'
+        )
+    again = (
+        '<form method="post" action="/admin/collect/consult" class="collect-form">'
+        f'<input type="hidden" name="name" value="{esc(name or "")}">'
+        f'<input type="hidden" name="want" value="{esc(want)}">'
+        f'<textarea name="current" hidden>{esc(draft)}</textarea>'
+        '<p><label>もう一度相談する(どう直したいか)<br>'
+        '<input name="feedback" placeholder="例: 件数を減らして、出典を必ず付けさせて"></label></p>'
+        "<button type=\"submit\">この案を直してもらう</button></form>"
+    )
+    body = f"""
+<h1>{heading}</h1>
+{error}
+<p class="muted">集めたいもの: {esc(want) or "(指定なし)"}</p>
+{save}
+{again}
+<p class="muted"><a href="/admin#collect">管理画面へ戻る</a>(保存しなければ何も変わりません)</p>
+"""
+    return page_shell("プロンプトの相談", body)
+
+
+def _collect_html(sources: dict[str, Source], disabled: str) -> str:
+    """収集(AI に集めさせて溜めていく)の節。
+
+    **出すのは「間隔・次にいつ走るか・いま何件」の 3 つ**。無人で回る層なので、
+    これが揃って初めて「動いているか」を画面から判断できる —— 件数だけでは
+    止まっているのか集まっていないのか分からず、予定だけでは溜まっているか分からない。
+
+    **前回の結果も出す**。失敗しても時計は止めない作りなので、こけたまま静かに
+    回り続ける状態がありうる。理由を出さないと気づけない。
+
+    **追加も画面からできる**。REST だけにしていた頃は、この層を使い始めるのに
+    curl を書く必要があった —— 設定を足すのは画面の仕事である。
+    """
+    if not collect.is_enabled():
+        return (
+            '<p class="muted">収集は無効です。溜め先(<code>CHIEZO_COLLECT_DIR</code>)と'
+            "短期記憶(<code>CHIEZO_NOTES_DIR</code>)を設定すると使えます。</p>"
+        )
+    items = collect.load()
+    rows = []
+    for item in items:
+        state = collect.to_public(item)
+        due = jst.parse(item.next_run_at or "")
+        last = jst.parse(item.last_run_at or "")
+        if item.last_status == "ok":
+            result = (
+                f'<span class="muted">{jst.format(last) if last else ""}</span>'
+                f"<br>+{item.last_added} 件"
+                + (f'<span class="muted">(重複 {item.last_skipped})</span>'
+                   if item.last_skipped else "")
+            )
+        elif item.last_status == "error":
+            result = f'<span class="stale">失敗: {esc(item.last_error or "")}</span>'
+        else:
+            result = '<span class="muted">まだ走っていない</span>'
+        # 止めている収集は行ごと薄くする(「AI の相手」の表と同じ扱い)
+        cls = "" if item.enabled else ' class="off"'
+        when = (
+            esc(jst.format(due)) if (item.enabled and due)
+            else '<span class="muted">止めている</span>'
+        )
+        toggle_label = "止める" if item.enabled else "有効にする"
+        # 焼き先(長期記憶)の様子。まだ 1 度も焼いていなければそう出す
+        src = sources.get(item.name)
+        baked_docs = (
+            f'<a href="{esc(browse_url(item.name))}">{src.doc_count:,} 件</a>'
+            if src is not None else "まだ焼いていない"
+        )
+        # 焼くのは普通の取り込み。初回は init、2 回目以降は rebuild
+        bake = f"/admin/init/{item.name}" if src is None else f"/admin/rebuild/{item.name}"
+        # 待ち行列が空なら押せない(素材が無いと配信側が 409 で断る。固化と同じ)
+        bake_disabled = disabled or (" disabled" if state["docs"] == 0 and src is None else "")
+        # 誰が置いたのかは、有効にするか決める手がかり(外のアプリも置けるため)
+        requester = (
+            f'<br><span class="muted">依頼元: {esc(item.requested_by)}</span>'
+            if item.requested_by else ""
+        )
+        rows.append(
+            f"<tr{cls}>"
+            f'<td><a href="{esc(browse_url(item.name))}">{esc(item.name)}</a>'
+            f'<br><span class="muted">{esc(item.description)}</span>{requester}'
+            f"<details><summary>プロンプト</summary>"
+            f'<pre class="prompt-view">{esc(item.prompt)}</pre>'
+            f'<p class="muted">進み具合(次の実行で {{cursor}} に入る値): '
+            f'<code>{esc(item.cursor) or "(まだ無し)"}</code></p>'
+            f"<details><summary>編集する</summary>"
+            f'<form method="post" action="/admin/collect/{esc(item.name)}/edit" class="collect-form">'
+            f'<p><label>説明<br><input name="description" value="{esc(item.description)}"></label></p>'
+            f'<p><label>間隔(分)<br><input name="interval_minutes" type="number"'
+            f' min="{collect.MIN_INTERVAL_MINUTES}" value="{item.interval_minutes}"></label></p>'
+            f'<p><label>プロンプト<br><textarea name="prompt" rows="10">{esc(item.prompt)}</textarea></label></p>'
+            f'<p><label>進み具合(空にすると最初から)<br>'
+            f'<input name="cursor" value="{esc(item.cursor)}"></label></p>'
+            f'<button type="submit">保存する</button></form></details>'
+            f"<details><summary>AI に相談して直す</summary>"
+            f'<form method="post" action="/admin/collect/consult" class="collect-form">'
+            f'<input type="hidden" name="name" value="{esc(item.name)}">'
+            f'<p><label>どう直したいか<br>'
+            f'<textarea name="feedback" rows="4"'
+            f' placeholder="例: 件数を5件に減らし、海外のニュースも入れて。'
+            f'出典は必ず付けさせて。"></textarea></label></p>'
+            f'<p class="muted">AI に聞くので十数秒〜1分ほどかかります。案は保存されないので、見てから決められます。</p>'
+            f'<button type="submit">相談する</button></form></details>'
+            f"</details></td>"
+            f"<td>{item.interval_minutes} 分ごと</td>"
+            f"<td>{when}</td>"
+            f'<td>{state["docs"]:,} 件<br>'
+            f'<span class="muted">長期記憶: {baked_docs}</span></td>'
+            f"<td>{result}</td>"
+            f"<td>"
+            f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/toggle">'
+            f'<button type="submit">{toggle_label}</button></form>'
+            f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/run">'
+            f'<button type="submit">いま走らせる</button></form>'
+            f'<form class="init-form" method="post" action="{esc(bake)}"{disabled}>'
+            f'<button type="submit"{bake_disabled}>長期記憶へ焼く</button></form>'
+            f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/delete"'
+            f" onsubmit=\"return confirm('収集「{esc(item.name)}」の設定を消します"
+            "(溜めたものは残ります)。よろしいですか?')\">"
+            f'<button type="submit">削除</button></form>'
+            f"</td></tr>"
+        )
+    table = f"""
+<table>
+<thead>
+<tr><th>name</th><th>間隔</th><th>次にいつ</th><th>溜まった数</th><th>前回</th><th></th></tr>
+</thead>
+<tbody>
+{"".join(rows)}
+</tbody>
+</table>
+""" if rows else '<p class="muted">まだ収集がありません。下のフォームから作れます。</p>'
+    return f"""
+{table}
+<details><summary>収集を追加する</summary>
+<form method="post" action="/admin/collect/create" class="collect-form">
+<p><label>name(ソース名になる。英小文字・数字・_)<br>
+<input name="name" required pattern="[a-z][a-z0-9_]{{1,30}}" placeholder="tech_news"></label></p>
+<p><label>説明(画面に出るだけ)<br>
+<input name="description" placeholder="技術ニュース"></label></p>
+<p><label>間隔(分。{collect.MIN_INTERVAL_MINUTES} 以上)<br>
+<input name="interval_minutes" type="number" min="{collect.MIN_INTERVAL_MINUTES}" value="360"></label></p>
+<p><label>プロンプト<br>
+<textarea name="prompt" rows="6" required
+ placeholder="{esc(collect.SAMPLE["prompt"])}"></textarea></label></p>
+<p><label><input type="checkbox" name="web" value="1" checked> web 検索を開ける</label></p>
+<button type="submit">追加する(止めた状態で作る)</button>
+</form>
+<form method="post" action="/admin/collect/consult" class="collect-form">
+<p class="muted">プロンプトの書き方が決まらないときは、AI に書いてもらってから直せる。</p>
+<p><label>集めたいもの(ふつうの言葉で)<br>
+<input name="want" required placeholder="近所の飲食店を、地域を変えながら少しずつ"></label></p>
+<button type="submit">AI に相談する</button>
+</form>
+</details>
+<p class="muted">
+まとまったダンプの無いもの(直近のニュース、入れ替わりの速い店、人物の関係)を
+AI に集めさせて溜めていく層。<strong>溜め先は収集ごとに別のソース</strong>なので、
+<code>/v1/&lt;name&gt;/search</code> やブラウズ画面でそのまま引ける。追記していくので、
+取り込みのような全件の作り直しは起きない(同じ見出しが再び来たら飛ばす)。<br>
+プロンプトの <code>{{cursor}}</code> が実行ごとに進む印に置き換わり、AI が
+<code>next_cursor</code> で次を返す。これで「前回以降のニュース」「次の地域」
+「次に調べる人」が同じ仕組みに乗る。返させる形は
+<code>{{"items":[{{"title","body","tags","url"}}],"next_cursor"}}</code> で、
+<strong>title が重複の鍵</strong>。<br>
+<strong>追加したものは止めた状態で作る</strong> —— プロンプトを見直してから
+「有効にする」で動き出す(いきなり AI の枠を使わない)。
+</p>
+"""
+
+
 def _short_term_section_html(sources: dict[str, Source]) -> str:
     """短期記憶(notes)の節。
 
@@ -432,7 +670,8 @@ async def admin(request: Request):
 {_short_term_section_html(short_term)}
 
 <h2>長期記憶(ためた知識)</h2>
-<p>登録ソース数: {len(long_term)} / 最新のスキーマバージョン: {latest_schema}</p>
+<p>登録ソース数: {len(long_term)} / 最新のスキーマバージョン: {latest_schema}<br>
+{_disk_html(request.app.state.data_dir)}</p>
 <table>
 <thead>
 <tr><th>name</th><th>kind</th><th>lang</th><th>docs</th><th>dump_date</th><th>built_at</th><th>schema_version</th><th></th></tr>
@@ -448,6 +687,9 @@ async def admin(request: Request):
 </p>
 
 {_job_status_html(job)}
+
+<h3 id="collect">集める(AI に集めさせて溜める)</h3>
+{_collect_html(sources, disabled)}
 
 <h3 id="consolidation">短期記憶から移す(固化)</h3>
 {_memory_html(sources, disabled)}
@@ -738,6 +980,116 @@ def admin_rebuild(source: str, request: Request):
             },
         )
     return _proxy_trigger_run(source)
+
+
+@router.post("/admin/collect/create")
+async def admin_collect_create(request: Request):
+    """画面のフォームから収集を作る。
+
+    **止めた状態で作る**(REST の `POST /v1/collect` は有効で作る)。画面から足すのは
+    たいてい書きながら考える場面で、送った瞬間に AI を呼び始めるのは驚きが大きい ——
+    プロンプトを見直してから「有効にする」を押す流れにする。
+    """
+    form = await request.form()
+    interval = str(form.get("interval_minutes") or "").strip()
+    item = collect.create(
+        name=str(form.get("name") or "").strip(),
+        prompt=str(form.get("prompt") or ""),
+        interval_minutes=int(interval) if interval.isdigit() else 360,
+        description=str(form.get("description") or "").strip(),
+        web=bool(form.get("web")),
+    )
+    collect.update(item.name, enabled=False)
+    # 作った時点で空の DB ができるので、ソースを取り直して検索に出るようにする。
+    # main を関数の中で import するのは、views → main の循環参照を避けるため
+    # (main が router を include する側。下の「いま走らせる」と同じ書き方)
+    from app.main import scan_all
+
+    request.app.state.sources = scan_all(request.app.state.data_dir)
+    return RedirectResponse(url="/admin#collect", status_code=303)
+
+
+@router.post("/admin/collect/{name}/edit")
+async def admin_collect_edit(name: str, request: Request):
+    """プロンプト・説明・間隔・進み具合を書き換える。
+
+    **進み具合(カーソル)もここで直せる**。集め直したい・別の地域から始めたい、が
+    プロンプトを書き換えるのと同じ場面で起きるため(値を消せば最初から)。
+    """
+    form = await request.form()
+    interval = str(form.get("interval_minutes") or "").strip()
+    collect.update(
+        name,
+        prompt=str(form.get("prompt") or ""),
+        description=str(form.get("description") or ""),
+        interval_minutes=int(interval) if interval.isdigit() else None,
+        # 空にできるように、cursor だけは None ではなく空文字を通す
+        cursor=str(form.get("cursor") or ""),
+    )
+    return RedirectResponse(url="/admin#collect", status_code=303)
+
+
+@router.post("/admin/collect/consult")
+async def admin_collect_consult(request: Request):
+    """AI にプロンプトの案を書いてもらい、そのまま直して保存できる画面を返す。
+
+    **リダイレクトせずにその場で返す**。案は数百字あってクエリに載らないし、
+    保存する前に手で直したいから —— 案を出す・直す・保存するを 1 枚に置く。
+
+    **この画面だけ待たせる**(AI の応答ぶん、十数秒〜1 分)。管理画面は JS を持たない
+    ので、待っている間の見せ方は作れない。押す前に、時間がかかることをボタンの
+    近くに書いてある。
+    """
+    from app.main import draft_collection_prompt
+
+    form = await request.form()
+    name = str(form.get("name") or "").strip() or None
+    want = str(form.get("want") or "").strip()
+    feedback = str(form.get("feedback") or "").strip()
+    current = str(form.get("current") or "").strip()
+    if name and not current:
+        current = collect.get(name).prompt
+    if not want and name:
+        want = collect.get(name).description or name
+    try:
+        draft = await draft_collection_prompt(want, current, feedback, name)
+        error = ""
+    except HTTPException as e:
+        detail = e.detail if isinstance(e.detail, dict) else {"error": str(e.detail)}
+        draft = current
+        error = f'<p class="stale">⚠️ 相談できませんでした: {esc(str(detail))}</p>'
+    return HTMLResponse(_consult_page_html(name, want, draft, error))
+
+
+@router.post("/admin/collect/{name}/toggle")
+def admin_collect_toggle(name: str):
+    """有効・無効を切り替える(見本を動かし始める入口でもある)。"""
+    current = collect.get(name)
+    collect.update(name, enabled=not current.enabled)
+    return RedirectResponse(url="/admin#collect", status_code=303)
+
+
+@router.post("/admin/collect/{name}/delete")
+def admin_collect_delete(name: str):
+    """設定を消す。**溜めたものは残す** —— 消すのは別の意思決定だから
+
+    (画面から気軽に押せるぶん、取り返しのつく側に倒す)。
+    """
+    collect.remove(name)
+    return RedirectResponse(url="/admin#collect", status_code=303)
+
+
+@router.post("/admin/collect/{name}/run")
+async def admin_collect_run(name: str, request: Request):
+    """予定を待たずに 1 回走らせる(管理画面の「いま走らせる」)。
+
+    実体は `/v1/collect/{name}/run` と同じ。**失敗しても例外にしない**(結果は
+    定義側に控えるので、戻った画面の「前回」の欄に理由が出る)。
+    """
+    from app.main import collect_run_now
+
+    await collect_run_now(request, name)
+    return RedirectResponse(url="/admin#collect", status_code=303)
 
 
 @router.post("/admin/memory/sweep")

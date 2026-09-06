@@ -11,6 +11,7 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager, suppress
+from dataclasses import replace
 from pathlib import Path
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
@@ -29,6 +30,7 @@ from app import (
     ai_log,
     answer,
     capabilities,
+    collect,
     db,
     media,
     media_backends,
@@ -110,8 +112,12 @@ def scan_all(data_dir: Path) -> dict[str, Source]:
     notes_dir = notes.notes_dir()
     if notes_dir is not None:
         sources.update(scan_sources(notes_dir, mutable=True))
+    # 収集は**ソースとして登録しない**(引けるのは ingest が焼いた後の corpus 側)。
+    # ただし待ち行列の DB は app が読み書きするので、`immutable=1` で開かせない
+    mutable_paths = [s.path for s in sources.values() if s.mutable]
+    collect.register_mutable(mutable_paths)
     # 追記される DB は immutable で開けない、と db 側に伝える
-    db.set_mutable_paths(s.path for s in sources.values() if s.mutable)
+    db.set_mutable_paths(mutable_paths)
     return sources
 
 
@@ -149,6 +155,104 @@ async def _watch_data_dir(app: FastAPI) -> None:
             log.exception("periodic source rescan failed")
 
 
+# 収集の時計を回す間隔(秒)。**予定そのものは各収集が `next_run_at` で持つ**ので、
+# ここは「見に来る頻度」でしかない。細かくしても AI の呼び出しは増えない
+COLLECT_TICK_SECONDS = float(os.environ.get("CHIEZO_COLLECT_TICK_SECONDS", "60"))
+
+
+async def _run_collections(app: FastAPI) -> None:
+    """予定の来た収集を順に走らせる常駐タスク(`app/collect.py`)。
+
+    **1 周に 1 件ずつ**にしてある。CLI ブリッジ越しの相手は同時に 1 本しか動かないので、
+    まとめて投げても待ち行列になるだけで、失敗したときの巻き添えが増える。
+
+    **失敗しても止めない**。理由は 2 つで、①相手が一時的に落ちているだけのことがある、
+    ②止めると次の周期も来ないので、直っても動き出さない。結果は定義側に控えるので、
+    何が起きたかは画面から読める。
+    """
+    while True:
+        await asyncio.sleep(COLLECT_TICK_SECONDS)
+        try:
+            due = await asyncio.to_thread(collect.due_collections)
+            if not due:
+                continue
+            await run_collection(due[0].name)
+        except Exception:
+            log.exception("collection tick failed")
+
+
+async def _ask_for_collection(item, messages: list[dict]) -> str:
+    """収集の設定(相手・モデル・深さ・web)で AI に 1 往復投げる。
+
+    収集の実行と、プロンプトの相談の**両方から使う** —— 同じ相手で試せないと、
+    相談で作った指示文が本番で通るか分からない。
+    """
+    cfg = await answer.ensure_model(
+        answer.require_settings(item.backend, item.model, item.effort)
+    )
+    spec = providers.get(cfg.name)
+    via_bridge = bool(spec and spec.bridge)
+    if item.web and not via_bridge and websearch.is_enabled():
+        return await agent.complete_with_web(cfg, messages)
+    extra = {"chiezo_web": True} if item.web and via_bridge else {}
+    return answer.content_of(await answer.complete_message(cfg, messages, **extra))
+
+
+async def draft_collection_prompt(
+    want: str, current: str = "", feedback: str = "", name: str | None = None
+) -> str:
+    """AI と相談して、収集の指示文の案を作る。
+
+    **相談は web 検索を開けない**(指示文を書くのに外を見る必要が無く、そのぶん速い)。
+    既存の収集を直すときはその相手・モデルを使う —— 本番と違う相手で書いた案は、
+    本番で通るか分からない。
+    """
+    item = collect.get(name) if name else None
+    settings = (
+        item if item is not None
+        else collect.Collection(
+            name="", description="", prompt="", interval_minutes=60, enabled=False,
+            backend=None, model=None, effort=None, web=False, cursor="",
+            created_at="", updated_at="",
+        )
+    )
+    # 相談のときだけ web を閉じる(指示文を書くのに外は要らない)
+    settings = replace(settings, web=False)
+    content = await _ask_for_collection(
+        settings, collect.build_draft_messages(want, current, feedback)
+    )
+    draft = collect.clean_draft(content or "")
+    if not draft:
+        raise HTTPException(502, {"error": "AI が指示文を返しませんでした"})
+    return draft
+
+
+async def run_collection(name: str) -> dict:
+    """収集を 1 回走らせて、結果を定義側に控える。
+
+    AI を呼ぶところだけが非同期で、読み書きはスレッドへ逃がす(SQLite はブロッキング)。
+    **例外にせず必ず控えを残す** —— 無人で回る層なので、その場に居合わせない人が
+    後から「何が起きたか」を読めることのほうが大事(`/v1/ai/failures` と同じ考え方)。
+    """
+    item = await asyncio.to_thread(collect.get, name)
+    try:
+        content = await _ask_for_collection(item, collect.build_messages(item))
+        items, next_cursor = collect.parse_response(content or "")
+        added, skipped = await asyncio.to_thread(collect.append, name, items)
+        updated = await asyncio.to_thread(
+            collect.record_result, name,
+            status="ok", added=added, skipped=skipped, next_cursor=next_cursor,
+        )
+        log.info("collect %s: added=%d skipped=%d", name, added, skipped)
+    except Exception as e:
+        reason = f"{type(e).__name__}: {e}"
+        log.warning("collect %s failed: %s", name, reason)
+        updated = await asyncio.to_thread(
+            collect.record_result, name, status="error", error=reason
+        )
+    return collect.to_public(updated)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     data_dir = Path(os.environ.get("CHIEZO_DATA_DIR", "/data"))
@@ -158,10 +262,24 @@ async def lifespan(app: FastAPI):
     # notes(唯一書き込めるソース)は ingest を回さずに使えるよう、無ければここで作る
     notes.ensure_db()
     app.state.sources = scan_all(data_dir)
+    # 収集の見本を置く(まだ 1 件も無いときだけ・止めた状態)。空の画面からは
+    # プロンプトの書き方が分からないので、手本を 1 つ見せてから始めてもらう。
+    # **必ず scan_all の後に呼ぶ** —— あれが notes を `mutable` として登録するまで、
+    # `db.query` は `immutable=1` で開く。それは「開いている間 1 バイトも変わらない」
+    # という宣言なので SQLite は WAL を見に行かず、**前のプロセスが WAL に書いた行が
+    # 見えない**。見えないまま「まだ定義が無い」と判断して見本を作り直し、
+    # `docs.title` の衝突で「収集 (11)」のような二重の定義ができた(実際に踏んだ)
+    collect.ensure_sample()
     if not app.state.sources:
         log.warning("no sources registered from %s", data_dir)
     watcher = (
         asyncio.create_task(_watch_data_dir(app)) if RESCAN_INTERVAL_SECONDS > 0 else None
+    )
+    # 収集の時計。置き場が無ければ回さない(機能フラグと同じ扱い)
+    collector = (
+        asyncio.create_task(_run_collections(app))
+        if collect.is_enabled() and COLLECT_TICK_SECONDS > 0
+        else None
     )
     # MCP(/mcp)はここで組み立てて起動する。理由が 2 つある:
     #  1. セッションマネージャは lifespan の中で run() しないとタスクグループが張られず、
@@ -180,10 +298,11 @@ async def lifespan(app: FastAPI):
         async with mcp.session_manager.run():
             yield
     finally:
-        if watcher is not None:
-            watcher.cancel()
-            with suppress(asyncio.CancelledError):
-                await watcher
+        for task in (watcher, collector):
+            if task is not None:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
 
 
 app = FastAPI(title="Chiezo", version="0.2", lifespan=lifespan)
@@ -1039,6 +1158,187 @@ def memory_fetch(
         raise HTTPException(404, {"error": f"unknown source: {source}"})
     body = memory.ndjson(request.app.state.sources)
     return Response(content=body, media_type="application/x-ndjson")
+
+
+# ---- 集める(AI に集めさせて溜めていく。既定では無効)-------------------------
+#
+# 実体は `app/collect.py`。**溜め先は notes と別のソース**で、収集ごとに 1 つ持つ。
+# 定義は notes の 1 件に JSON でまとめ、時計は上の `_run_collections` が回す。
+
+
+class CollectionCreate(BaseModel):
+    name: str = PydField(description="ソース名になる。英小文字・数字・_")
+    prompt: str = PydField(description="AI へ渡す本文。{cursor} が今の進み具合に置き換わる")
+    interval_minutes: int = 60
+    description: str = ""
+    backend: str | None = None
+    model: str | None = None
+    effort: str | None = None
+    web: bool = True
+    requested_by: str = PydField("", description="依頼元の名乗り(画面に出る手がかり)")
+
+
+class CollectionPatch(BaseModel):
+    """渡した項目だけ差し替える(未指定は触らない)。
+
+    **`enabled` はここに無い。** 動かすかどうかは Chiezo 側だけが決める
+    (`/admin` の「有効にする」)—— 置いてしまうと、外のアプリが自分で作った収集を
+    自分で動かせることになり、「依頼」を分けた意味が消える。
+    """
+
+    description: str | None = None
+    prompt: str | None = None
+    interval_minutes: int | None = None
+    backend: str | None = None
+    model: str | None = None
+    effort: str | None = None
+    web: bool | None = None
+    cursor: str | None = None
+
+
+@app.get("/v1/collect")
+def collect_list():
+    """収集の一覧。**間隔・次にいつ走るか・溜まった件数**まで返す。
+
+    3 つ揃って初めて「動いているか」が判断できるので、一覧の時点で載せる
+    (件数だけ別の口にすると、画面が収集の数だけ問い合わせることになる)。
+    """
+    collect.require_dir()
+    return {"collections": [collect.to_public(c) for c in collect.load()]}
+
+
+@app.post("/v1/collect")
+def collect_create(request: Request, body: CollectionCreate):
+    """収集を**依頼する**(外のアプリからも呼べる)。
+
+    **作られるのは必ず止めた状態**で、動き出すのは Chiezo の管理画面で
+    「有効にする」を押したときだけ。**呼んだだけで AI が動き出さない**ことが、
+    この口を外へ開けておける理由 —— 悪意が無くても、試しに叩いただけで
+    定期実行が始まってしまうのは困る。`requested_by` に名乗ってもらうと、
+    有効にするか決める人の手がかりになる(印であって認証ではない)。
+    """
+    collect.require_dir()
+    item = collect.create(
+        name=body.name.strip(),
+        prompt=body.prompt,
+        interval_minutes=body.interval_minutes,
+        description=body.description,
+        backend=body.backend,
+        model=body.model,
+        effort=body.effort,
+        web=body.web,
+        requested_by=body.requested_by,
+    )
+    # 作った時点で空の DB ができる。**ここでソースを取り直さないと、1 回目が走るまで
+    # `/v1/<name>/search` が 404 になる**(まだ登録されていないソースに見える)
+    request.app.state.sources = scan_all(request.app.state.data_dir)
+    return collect.to_public(item)
+
+
+# **固定のパスは `/{name}` より先に宣言する。** 後ろに置くと `sources` や `fetch` が
+# 名前として解釈され、「収集「sources」がありません」で 404 になる
+# (`app/tasks_api.py` で同じ罠を踏んでいる)。
+@app.get("/v1/collect/sources")
+def collect_sources_catalog():
+    """焼ける収集の一覧(ingest が引くカタログ)。
+
+    固化と同じ契約(`ingest/sources/remote.py`)。**無効なら空で返す** ——
+    404 にすると、収集を使っていない構成で ingest 側が毎回エラーを踏む。
+    """
+    return {"sources": collect.catalog()}
+
+
+@app.get("/v1/collect/fetch")
+def collect_fetch(request: Request, source: str = Query(..., description="焼く収集の名前")):
+    """焼く素材(NDJSON)。**前世代 + 待ち行列**を返す。
+
+    前世代を混ぜるのが「毎回焼き直すのに積み上がる」の要(固化と同じ)。
+    返す形は `ingest/sources/remote.py` が読む形。
+    """
+    collect.require_dir()
+    body = collect.ndjson(source, request.app.state.sources)
+    return Response(content=body, media_type="application/x-ndjson")
+
+
+@app.get("/v1/collect/{name}")
+def collect_get(name: str, samples: int = Query(5, ge=0, le=50)):
+    collect.require_dir()
+    item = collect.get(name)
+    return {**collect.to_public(item), "recent": collect.sample(name, samples)}
+
+
+@app.patch("/v1/collect/{name}")
+def collect_patch(name: str, body: CollectionPatch):
+    collect.require_dir()
+    return collect.to_public(collect.update(name, **body.model_dump(exclude_none=True)))
+
+
+@app.delete("/v1/collect/{name}")
+def collect_delete(
+    name: str,
+    drop_data: bool = Query(False, description="溜めたものも消す(既定は残す)"),
+):
+    """定義を消す。**溜めたものは既定で残す** —— 消すのは別の意思決定だから。"""
+    collect.require_dir()
+    collect.remove(name, drop_data=drop_data)
+    return {"ok": True, "dropped": drop_data}
+
+
+class CollectionDraft(BaseModel):
+    """プロンプトの相談。`name` を渡すとその収集の相手・いまの指示文を踏まえて直す。"""
+
+    want: str = PydField("", description="集めたいものをふつうの言葉で")
+    current: str = PydField("", description="いまの指示文(直したいとき)")
+    feedback: str = PydField("", description="どう直したいか")
+    name: str | None = None
+
+
+@app.post("/v1/collect/draft")
+async def collect_draft(body: CollectionDraft):
+    """AI に収集の指示文を書いてもらう(**保存はしない**)。
+
+    決まり(返させる JSON の形・`{cursor}` の使い方・title が重複の鍵)を
+    こちらが system で教えるので、頼む側は「何を集めたいか」だけ書けばよい。
+    """
+    collect.require_dir()
+    if not (body.want.strip() or body.name):
+        raise HTTPException(400, {"error": "want か name のどちらかが要ります"})
+    draft = await draft_collection_prompt(body.want, body.current, body.feedback, body.name)
+    return {"prompt": draft}
+
+
+@app.post("/v1/collect/{name}/sweep")
+def collect_sweep(request: Request, name: str):
+    """焼き上がりを確かめて、待ち行列から片付ける。
+
+    **焼く前に押しても何も起きない**(長期側に入っていないものは残る)。
+    先に消すと、焼きに失敗したときに集めたものが失われる。
+    """
+    collect.require_dir()
+    return collect.sweep(name, request.app.state.sources)
+
+
+@app.post("/v1/collect/{name}/run")
+async def collect_run_now(request: Request, name: str):
+    """予定を待たずに 1 回走らせる。**止めている収集は断る**。
+
+    有効にしていないものをここから走らせられると、`enabled` を REST から
+    触れなくした意味が無くなる(呼ぶたびに 1 回ぶんの AI が動く)。
+    **管理画面の「いま走らせる」はこの口を通さない**ので、有効にする前の試し撃ちは
+    そちらからできる —— 画面を開けるのは Chiezo を操作している人だけ、という前提。
+
+    **走らせた後はソースを取り直す**(初回は DB がまだ登録されていないので、
+    そのままだと検索に出てこない)。
+    """
+    collect.require_dir()
+    if not collect.get(name).enabled:
+        raise HTTPException(403, {
+            "error": f"収集「{name}」は止まっています",
+            "hint": "動かすかどうかは Chiezo 側で決めます(管理画面の「有効にする」)",
+        })
+    result = await run_collection(name)
+    request.app.state.sources = scan_all(request.app.state.data_dir)
+    return result
 
 
 # ---- 使う(ローカル LLM。既定では無効) ---------------------------------------

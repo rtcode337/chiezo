@@ -21,10 +21,12 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from core import SourceAdapter
+from sources import collect as collect_sources
 from sources.geonames import GeonamesAdapter
 from sources.memory import memory_adapter
 from sources.osm import DEFAULT_VALIDATION, OsmAdapter
 from sources.osm_regions import OSM_REGIONS, OsmRegion
+from sources.overture import overture_japan
 from sources.remote import load_remote_adapters
 from sources.wikipedia import DEFAULT_VALIDATION as WIKIPEDIA_DEFAULT_VALIDATION
 from sources.wikipedia import WikipediaAdapter
@@ -46,6 +48,11 @@ ADAPTERS: dict[str, Callable[[], SourceAdapter]] = {
     # 取りに行って焼くだけ。**組み込みにしてある**ので、設定を足さなくても管理画面の
     # 一覧に出るし、SOURCE=memory で CLI からも回せる(sources/memory.py)。
     "memory": memory_adapter,
+    # 店舗・施設の POI。**OSM は店舗レベルでは穴が多い**(実測: 新宿 1km 四方で
+    # osm_japan の飲食店 884 件に対し Overture は 4,466 件で、老舗も OSM には無かった)。
+    # ライセンスは CDLA Permissive 2.0 / Apache 2.0 で ODbL の継承が付かず、
+    # OSM のデータも含まないので osm_japan と混ぜても伝播しない(sources/overture.py)。
+    "overture_japan": overture_japan,
 }
 
 
@@ -100,6 +107,10 @@ ADAPTERS.update({
 def get_adapter(source: str) -> SourceAdapter:
     if source in ADAPTERS:
         return ADAPTERS[source]()
+    # 集めたソース(app/collect.py)。実行時に増えるので ADAPTERS に固定で並べられず、
+    # 配信側のカタログをその場で引く(固化と同じ契約だが、1 つではなく可変)。
+    if (adapter := collect_sources.adapter_for(source)) is not None:
+        return adapter
     # 別コンテナのプラグイン(CHIEZO_PLUGIN_SOURCES)。問い合わせるのはここで初めて ——
     # import 時に聞きに行くと、プラグインが起動していない間は本体を立てられなくなる。
     remote = load_remote_adapters()
