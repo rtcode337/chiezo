@@ -163,8 +163,10 @@ def _overview_html(usable: dict[str, set[str]]) -> str:
         else:
             body = f'<span class="muted">{esc(item["label"])}<br>未対応</span>'
         cells.append(f"<td>{body}</td>")
+    # **colspan は数え上げる**。決め打ちにしていた頃は 6 で、分類が 7 つに増えた時点で
+    # 見出しと中身の列数がずれていた(分類は増える側なので、また必ずずれる)
     return (
-        '<table class="ai-settings"><thead><tr><th colspan="6">'
+        f'<table class="ai-settings"><thead><tr><th colspan="{len(cells)}">'
         "chiezo 経由で AI に頼めること</th></tr></thead>"
         f"<tbody><tr>{''.join(cells)}</tr></tbody></table>"
     )

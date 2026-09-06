@@ -105,12 +105,23 @@ APPLE_TOUCH_ICON_PNG = base64.b64decode(
 )
 
 PAGE_STYLE = """
-  body { font-family: system-ui, sans-serif; margin: 2rem; color: #222; }
-  /* h3 まで明示する。指定を欠くとブラウザ既定(1.17em)が効いて、h2 より h3 が
-     大きくなる —— 節の深さと見出しの大きさが逆転していた。 */
-  h1 { font-size: 1.3rem; }
-  h2 { font-size: 1.1rem; margin-top: 2rem; }
-  h3 { font-size: 0.98rem; margin-top: 1.5rem; }
+  body { font-family: system-ui, sans-serif; margin: 2rem; color: #222;
+         max-width: 76rem; }
+  /* 見出しの深さを**大きさだけで**表さない。h2 と h3 の差は 0.1rem ほどしか取れず
+     (画面が縦に伸びるので h2 を大きくしすぎられない)、字の大きさだけでは
+     「いまどの節の中にいるか」が読み取れなかった。**帯・罫・字間・字色**を
+     組み合わせて、大きさに頼らず段が分かるようにする。 */
+  h1, h2, h3 { line-height: 1.35; }
+  h1 { font-size: 1.35rem; margin: 0 0 1.5rem; padding-bottom: 0.6rem;
+       border-bottom: 2px solid #5560E0; }
+  /* h2 は左に太い帯。ページを縦に流し読みしても、節の начало が目に入る */
+  h2 { font-size: 1.12rem; margin: 2.6rem 0 0.8rem; padding: 0.15rem 0 0.15rem 0.7rem;
+       border-left: 4px solid #5560E0; }
+  /* h3 は帯を細く短く、字を小さく灰色寄りに。h2 の「中」だと一目で分かる字面にする */
+  h3 { font-size: 0.95rem; margin: 1.8rem 0 0.6rem; padding-left: 0.7rem;
+       color: #444; border-left: 2px solid #b9bdf0; letter-spacing: 0.02em; }
+  /* h2 の中身は少し内側へ寄せる。罫の下に入るものが「その節のもの」だと見える */
+  h2 + p, h2 + table, h2 + div, h2 + details, h2 + form { margin-top: 0.6rem; }
   table { border-collapse: collapse; margin-top: 1rem; width: 100%; }
   th, td { border: 1px solid #ccc; padding: 0.4rem 0.8rem; text-align: left; vertical-align: top; }
   th { background: #f0f0f0; }
@@ -163,6 +174,17 @@ PAGE_STYLE = """
   .meter-fill { display: block; height: 100%; background: #5560E0; }
   .meter-fill.mid { background: #d9a400; }
   .meter-fill.high { background: #c0392b; }
+  /* 収集のプロンプトは、まず**読む形**で見せる(入力欄が並ぶと中身を確かめにくい)。
+     直すのは中の details を開いてから。 */
+  pre.prompt-view { white-space: pre-wrap; word-break: break-word; margin: 0.4rem 0;
+                    background: #f7f7fa; border-left: 3px solid #b9bdf0;
+                    padding: 0.6rem 0.8rem; font-size: 0.85rem; line-height: 1.6; }
+  /* 入れ子の details は一段内側へ寄せる(どちらを開いているか分かるように) */
+  details details { margin-left: 0.8rem; border-left: 2px solid #eee; padding-left: 0.8rem; }
+  form.collect-form textarea { width: 100%; max-width: 46rem; box-sizing: border-box;
+                               font-family: inherit; font-size: 0.85rem; padding: 0.4rem 0.5rem; }
+  form.collect-form input[type=text], form.collect-form input:not([type]) { width: 28rem; max-width: 100%; }
+  form.collect-form p { margin: 0.5rem 0; }
   details { margin-top: 1rem; }
   details > summary { cursor: pointer; font-weight: bold; padding: 0.3rem 0; }
   pre.doc-body { white-space: pre-wrap; word-break: break-word; }
