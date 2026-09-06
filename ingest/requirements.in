@@ -11,3 +11,8 @@ mwparserfromhell>=0.6
 # one-shot の chiezo-ingest 実行(main.py)自体は使わない。
 fastapi>=0.141.1
 uvicorn[standard]>=0.52.4
+
+# Overture Places(sources/overture.py)を S3 の GeoParquet から bbox 指定で抜くのに使う。
+# **全世界は数百 GB あるので、落としてから絞るのではなく S3 上で絞る** —— その述語の
+# 押し下げができるのが DuckDB。pyosmium / mwparserfromhell と同じ「そのソースだけの依存」
+duckdb>=1.1
