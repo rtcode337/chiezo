@@ -1150,7 +1150,7 @@ Please try signing in again.
 | `CHIEZO_BRIDGE_EFFORTS` | （下記） | 会話画面に出す「考える量」の候補（カンマ区切り） |
 | `CHIEZO_BRIDGE_ALLOWED_TOOLS` | `mcp__chiezo` | CLI に許す道具。書き込み（`remember`）まで止めるならここを絞る |
 | `CHIEZO_BRIDGE_DISALLOWED_TOOLS` | （組み込み一式） | 塞ぐ組み込みの道具。**`ToolSearch` を入れないこと**（MCP が引けなくなる）。`WebSearch` / `WebFetch` は要求ごとに開く |
-| `CHIEZO_BRIDGE_TIMEOUT` | `300` | 1 回の上限（秒）。CLI は道具を何度も引くので推論サーバより長い |
+| `CHIEZO_BRIDGE_TIMEOUT` | `840` | 1 回の上限（秒）。CLI は道具を何度も引くので推論サーバより長い。chiezo-app が待つ `CHIEZO_ANSWER_TIMEOUT`（既定 900）より短くしておく（待つ側が先に切れると理由が見えない）。Antigravity にはこの値を `--print-timeout` としても渡す（agy 自前の待ち時間は既定 5 分で、渡さないとそちらが先に切れる） |
 | `CHIEZO_BRIDGE_USAGE_CMD` | `agy,-p,/credits,--output-format,json` | 使用量を聞くコマンド（Antigravity のみ。カンマ区切り）。**実地で確かめられていない**ので差し替えられるようにしてある |
 | `CHIEZO_BRIDGE_USAGE_TIMEOUT` | `60` | 使用量を聞くときの上限（秒） |
 
@@ -1273,7 +1273,7 @@ chiezo-app 側:
 | `CHIEZO_LLM_LABEL` | `推論サーバ` | その相手を選ぶセレクトに出す名前 |
 | `CHIEZO_LLM_MODEL` | `chiezo` | リクエストに載せるモデル名。llama-server は 1 プロセス 1 モデルなので何でもよい |
 | `CHIEZO_LLM_API_KEY` | (なし) | 設定すると `Authorization: Bearer` を送る |
-| `CHIEZO_ANSWER_TIMEOUT` | 相手による | 相手を待つ時間(秒)。DB クエリの 5 秒とは別枠。**CLI ブリッジ経由は 900、API で直に叩く相手と推論サーバは 120**。ブリッジは道具を何度も引くので桁が違ううえ、ブリッジ自身の上限(`CHIEZO_BRIDGE_TIMEOUT`。既定 300 / compose 600)より**待つ側が長くないと**、向こうの判断が見えないまま ReadTimeout になる |
+| `CHIEZO_ANSWER_TIMEOUT` | 相手による | 相手を待つ時間(秒)。DB クエリの 5 秒とは別枠。**CLI ブリッジ経由は 900、API で直に叩く相手と推論サーバは 120**。ブリッジは道具を何度も引くので桁が違ううえ、ブリッジ自身の上限(`CHIEZO_BRIDGE_TIMEOUT`。既定 840)より**待つ側が長くないと**、向こうの判断が見えないまま ReadTimeout になる |
 | `CHIEZO_ANSWER_DOCS` | `4` | 根拠として本文を取ってくる文書数 |
 | `CHIEZO_ANSWER_MAX_CHARS` | `6000` | 抜粋の合計文字数の上限 |
 | `CHIEZO_ASK_DEFAULT_MODE` | `rag` | `mode` を省いたときの既定 |

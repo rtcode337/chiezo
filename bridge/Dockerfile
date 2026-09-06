@@ -26,12 +26,21 @@ RUN npm install -g @anthropic-ai/claude-code @openai/codex
 # 証明書を開けずに失敗する。そして `curl | bash` は curl が落ちても成功扱いになるので、
 # 一度ファイルへ落としてから実行し、最後に agy が動くことまで確かめる ——
 # ここを素通りさせると、CLI の入っていないイメージが黙って出来上がる(実際に踏んだ)。
+#
+# インストーラは常に最新版を入れる(版の指定は無い)が、この RUN は入力が変わらないので
+# ビルドキャッシュに当たると古い agy のまま出来上がる。AGY_MIN_VERSION を上げると
+# 層が作り直され、入った版がそれ未満なら失敗させる —— 古い agy が「invalid arguments:
+# missing properties 'toolSummary', 'toolAction'」で落ちる(1.1.13 で実測)のに、
+# 再ビルドしても直らないという形を防ぐ。
+ARG AGY_MIN_VERSION=1.1.27
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl; \
     curl -fsSL https://antigravity.google/cli/install.sh -o /tmp/agy-install.sh; \
     bash /tmp/agy-install.sh --dir /usr/local/bin; \
-    /usr/local/bin/agy --version; \
+    installed="$(/usr/local/bin/agy --version | tr -d '[:space:]')"; \
+    echo "agy ${installed} (required >= ${AGY_MIN_VERSION})"; \
+    test "$(printf '%s\n%s\n' "${AGY_MIN_VERSION}" "${installed}" | sort -V | head -n1)" = "${AGY_MIN_VERSION}"; \
     rm -f /tmp/agy-install.sh; \
     rm -rf /var/lib/apt/lists/*
 

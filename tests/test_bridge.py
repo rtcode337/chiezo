@@ -16,7 +16,8 @@ def bridge(monkeypatch):
     """環境変数を差し替えてから読み込み直す(設定はモジュール読み込み時に確定するため)。"""
     def _load(**env):
         for key in ("CHIEZO_BRIDGE_CLI", "CHIEZO_BRIDGE_MODEL", "CHIEZO_BRIDGE_MCP_URL",
-                    "CHIEZO_BRIDGE_MODEL_LABEL", "CHIEZO_BRIDGE_ALLOWED_TOOLS"):
+                    "CHIEZO_BRIDGE_MODEL_LABEL", "CHIEZO_BRIDGE_ALLOWED_TOOLS",
+                    "CHIEZO_BRIDGE_TIMEOUT"):
             monkeypatch.delenv(key, raising=False)
         for key, value in env.items():
             monkeypatch.setenv(key, value)
@@ -79,8 +80,26 @@ class TestCommand:
 
     def test_antigravity_takes_the_prompt_as_an_argument(self, bridge):
         """agy だけプロンプトを引数で取る（claude/codex は標準入力から読む）。"""
-        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
-        assert server.build_command("/tmp/out.txt", "こんにちは") == ["agy", "-p", "こんにちは"]
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity", CHIEZO_BRIDGE_TIMEOUT="600")
+        assert server.build_command("/tmp/out.txt", "こんにちは") == [
+            "agy", "-p", "こんにちは", "--print-timeout", "595s",
+        ]
+
+    def test_antigravity_gets_the_deadline_as_print_timeout(self, bridge):
+        """agy は print モードに自前の待ち時間(既定 5 分)を持つ。
+
+        渡さないと、ブリッジの上限をいくら伸ばしても 5 分で agy が先に諦める
+        (web 検索を伴う調査が「timed out」で落ち続けていた原因の片方)。
+        ブリッジの締め切りの数秒手前にして、切れたときは agy 自身の理由が返るようにする。
+        """
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity", CHIEZO_BRIDGE_TIMEOUT="840")
+        cmd = server.build_command("/tmp/out.txt", "q")
+        assert cmd[cmd.index("--print-timeout") + 1] == "835s"
+        # 1 回ごとの指定(chiezo_timeout)があればそちらに合わせる
+        cmd = server.build_command("/tmp/out.txt", "q", timeout=120)
+        assert cmd[cmd.index("--print-timeout") + 1] == "115s"
+        # 極端に短くても 0 や負にはしない
+        assert server.agy_print_timeout(3) == "1s"
 
     def test_antigravity_reads_a_long_prompt_from_a_file(self, bridge):
         """引数渡しなので Linux の単一引数の上限(128KiB)に当たる。
@@ -494,6 +513,15 @@ class TestPerRequestLimits:
         server = bridge(CHIEZO_BRIDGE_CLI="claude", CHIEZO_BRIDGE_TIMEOUT="42")
         assert server.resolve_timeout(None) == 42.0
         assert server.resolve_timeout(120) == 120.0
+
+    def test_default_timeout_stays_under_the_callers_wait(self, bridge):
+        """既定は chiezo-app が待つ 900 秒より短い。
+
+        待つ側が先に切れると、向こうの判断(504 の理由)が一切見えなくなる。
+        300 秒だった頃は web 検索を伴う調査が日常的に切れていた。
+        """
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        assert 600 <= server.TIMEOUT < 900
 
     def test_a_meaningless_timeout_is_refused(self, bridge):
         import fastapi

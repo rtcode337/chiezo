@@ -73,7 +73,12 @@ MCP_URL = os.environ.get("CHIEZO_BRIDGE_MCP_URL", "http://chiezo-app:7010/mcp").
 # CLI に渡すモデル。空なら CLI の既定(サブスクの枠を無駄に食わないよう明示するのが望ましい)。
 MODEL = os.environ.get("CHIEZO_BRIDGE_MODEL", "").strip()
 # 1 回の呼び出しの上限秒数。CLI は道具を何度も引くので推論サーバより長くなる。
-TIMEOUT = float(os.environ.get("CHIEZO_BRIDGE_TIMEOUT", "300") or 300)
+# 既定は 840 秒 —— 呼ぶ側(chiezo-app の CHIEZO_ANSWER_TIMEOUT、既定 900)より 1 分短くして、
+# 切れたときに向こうの ReadTimeout ではなくこちらの 504(理由つき)が画面に届くようにする。
+# 300 秒だった頃は web 検索を伴う調査が「timed out after 300s」で日常的に落ちていた。
+# agy は自前の待ち時間(--print-timeout、既定 5 分)も持つので、build_command が
+# ここで決めた上限を渡して二重の締め切りにならないようにする。
+TIMEOUT = float(os.environ.get("CHIEZO_BRIDGE_TIMEOUT", "840") or 840)
 # 名乗るモデル名(`/v1/models` と応答の model に載る。Chiezo の見出しがこれを出す)。
 MODEL_LABEL = os.environ.get("CHIEZO_BRIDGE_MODEL_LABEL", "").strip() or (
     MODEL
@@ -429,6 +434,11 @@ def resolve_effort(requested: str | None) -> str:
     return name
 
 
+def agy_print_timeout(limit: float) -> str:
+    """agy の --print-timeout に渡す値(Go の duration 表記)。ブリッジの締め切りの数秒手前。"""
+    return f"{max(1, int(limit) - 5)}s"
+
+
 def resolve_timeout(requested: float | None) -> float:
     """この 1 回の上限秒数。指定が無ければ起動時の既定。
 
@@ -445,6 +455,7 @@ def resolve_timeout(requested: float | None) -> float:
 def build_command(
     out_path: str, prompt: str = "", model: str = "", effort: str = "",
     web: bool = False, max_turns: int | None = None, prompt_path: str = "",
+    timeout: float | None = None,
 ) -> list[str]:
     """CLI の起動コマンドを組む。プロンプトは標準入力から渡す。
 
@@ -500,6 +511,11 @@ def build_command(
             ]
         else:
             cmd = ["agy", "-p", prompt]
+        # agy は print モードに自前の待ち時間を持つ(--print-timeout、既定 5 分)。
+        # 渡さないと、ブリッジの上限を伸ばしても 5 分で agy 側が先に諦める。
+        # ブリッジの締め切りより数秒手前にして、切れたときは agy 自身の理由が返るようにする
+        # (同時に切れるとブリッジが kill してしまい、agy が書いた理由が残らない)。
+        cmd += ["--print-timeout", agy_print_timeout(resolve_timeout(timeout))]
         if model:
             cmd += ["--model", model]
         if effort:
@@ -559,7 +575,7 @@ async def run_cli(
         except OSError as e:
             raise HTTPException(500, {"error": f"プロンプトを書き出せませんでした: {e}"}) from e
     try:
-        cmd = build_command(out_path, prompt, model, effort, web, max_turns, prompt_path)
+        cmd = build_command(out_path, prompt, model, effort, web, max_turns, prompt_path, timeout)
         log.info("running %s (prompt %d bytes%s)", cmd[0], len(prompt.encode("utf-8")),
                  ", via file" if prompt_path else "")
         # agy はプロンプトを引数かファイルで受け取っているので、標準入力には流さない。
@@ -1252,7 +1268,9 @@ async def _generate_images(body: ImageRequest) -> dict:
         if CLI == "antigravity":
             # agy はプロンプトを引数で取る(会話の口と同じ)。作業ディレクトリは
             # cwd で渡し、確認は出させない(非対話なので待ちに入ると固まる)。
-            cmd = ["agy", "-p", prompt, "--dangerously-skip-permissions"]
+            cmd = ["agy", "-p", prompt, "--dangerously-skip-permissions",
+                   # 会話の口と同じく、agy 自前の 5 分の待ち時間をこちらの上限に合わせる。
+                   "--print-timeout", agy_print_timeout(IMAGE_TIMEOUT)]
             if body.model or MODEL:
                 cmd += ["--model", body.model or MODEL]
             payload = b""
