@@ -10,7 +10,7 @@
 |--------------------------|------|
 | タスク                   | tag `todo` の文書 |
 | 状態 未着手              | 状態のタグが無い(既定。既存のメモに手を入れずに済む) |
-| 状態 着手中 / 完了       | tag `着手中` / `完了` |
+| 状態 着手中 / 完了       | tag `着手中` / `完了`(完了にすると `固化対象` も付く) |
 | 「直すのが大変そう」の印 | tag `難所`(状態とは別軸) |
 | タスクの所属             | プロジェクト名のタグ(リポジトリ名をそのまま使う既存の慣習に乗る) |
 | プロジェクト             | tag `project` の文書。見出しが名前、本文が説明 |
@@ -234,6 +234,16 @@ def _task_tags(status: str, flagged: bool, project: str | None, keep: list[str])
     """タスクのタグを組み立てる。`keep` に渡した「構造でもプロジェクトでもないタグ」は残す。
 
     メモとして付けた `環境` や `トラブルシュート` を、タスクの操作で落とさないため。
+
+    **完了にしたら固化の対象にする**(`notes.CONSOLIDATE_TAG` を足す)。片付いたタスクは
+    「やった記録」として残す価値があり、しかも**待ち行列からは外れてほしい**もので、
+    固化はまさにその 2 つを同時にやる(長期記憶へ移し、`recall` の既定から外す)。
+    完了のたびに人が印を付けて回るなら、結局そこが抜ける。
+
+    **戻したら外す**。完了でなくなったものは「やった記録」ではないので、
+    次の固化の素材から下ろす。ただし**すでに焼き終えたもの(`固化`)には触らない** ——
+    長期側に入っているという事実は、こちらの都合で書き換えるものではない
+    (焼き直しが要るかは notes 側が本文の変更で判断する)。
     """
     tags = [TAG_TASK]
     if status in STATUS_TAGS:
@@ -242,7 +252,10 @@ def _task_tags(status: str, flagged: bool, project: str | None, keep: list[str])
         tags.append(TAG_FLAGGED)
     if project:
         tags.append(project)
-    tags.extend(t for t in keep if t not in tags)
+    rest = [t for t in keep if t != notes.CONSOLIDATE_TAG]
+    if status == STATUS_DONE and notes.CONSOLIDATED_TAG not in rest:
+        rest.append(notes.CONSOLIDATE_TAG)
+    tags.extend(t for t in rest if t not in tags)
     return ",".join(tags)
 
 

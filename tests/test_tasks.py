@@ -5,7 +5,7 @@
 """
 import pytest
 
-from app import tasks
+from app import notes, tasks
 
 
 @pytest.fixture()
@@ -252,7 +252,59 @@ class TestTagCountsStayConsistent:
         task = tasks.create_task("あ")
         tasks.update_task(task.doc_id, status=tasks.STATUS_DONE)
         counts = {t["tag"]: t["docs"] for t in client.get("/v1/notes/tags").json()["tags"]}
-        assert counts == {tasks.TAG_TASK: 1, tasks.TAG_DONE: 1}
+        # 完了にすると固化の対象にもなる(下の TestDoneTasksBecomeConsolidationTargets)
+        assert counts == {
+            tasks.TAG_TASK: 1,
+            tasks.TAG_DONE: 1,
+            notes.CONSOLIDATE_TAG: 1,
+        }
+
+
+class TestDoneTasksBecomeConsolidationTargets:
+    """片付いたタスクは、そのまま長期記憶へ移る待ち行列に乗る。
+
+    完了したタスクは「やった記録」として残す価値があり、しかも待ち行列からは
+    外れてほしい —— 固化はその 2 つを同時にやる。完了のたびに人が印を付けて
+    回るなら、結局そこが抜ける。
+    """
+
+    def test_completing_a_task_marks_it_for_consolidation(self, client):
+        task = tasks.create_task("片付いた作業")
+        assert notes.CONSOLIDATE_TAG not in tasks.require_task(task.doc_id).tags
+        tasks.update_task(task.doc_id, status=tasks.STATUS_DONE)
+        assert notes.CONSOLIDATE_TAG in tasks.require_task(task.doc_id).tags
+
+    def test_it_shows_up_as_pending_consolidation(self, client):
+        task = tasks.create_task("片付いた作業")
+        tasks.update_task(task.doc_id, status=tasks.STATUS_DONE)
+        assert client.get("/v1/memory/status").json()["pending"] == 1
+
+    def test_reopening_a_task_takes_it_off_the_queue(self, client):
+        """完了でなくなったものは「やった記録」ではないので、素材から下ろす。"""
+        task = tasks.create_task("やり直す作業")
+        tasks.update_task(task.doc_id, status=tasks.STATUS_DONE)
+        tasks.update_task(task.doc_id, status=tasks.STATUS_TODO)
+        assert notes.CONSOLIDATE_TAG not in tasks.require_task(task.doc_id).tags
+
+    def test_it_does_not_re_queue_something_already_baked(self, client):
+        """焼き終えた事実は、こちらの都合で書き換えない。"""
+        task = tasks.create_task("焼いた作業")
+        tasks.update_task(task.doc_id, status=tasks.STATUS_DONE)
+        # 固化して片付いた状態(sweep 後)を作る
+        notes.update(task.doc_id, tags=f"{tasks.TAG_TASK},{tasks.TAG_DONE},{notes.CONSOLIDATED_TAG}")
+        tasks.update_task(task.doc_id, flagged=True)  # 完了のまま別の項目を触る
+        tags = tasks.require_task(task.doc_id).tags
+        assert notes.CONSOLIDATED_TAG in tags
+        assert notes.CONSOLIDATE_TAG not in tags
+
+    def test_other_tags_survive(self, client):
+        """メモとして付けたタグを、タスクの操作で落とさない(既存の約束)。"""
+        task = tasks.create_task("あ")
+        notes.update(task.doc_id, tags=f"{tasks.TAG_TASK},環境")
+        tasks.update_task(task.doc_id, status=tasks.STATUS_DONE)
+        tags = tasks.require_task(task.doc_id).tags
+        assert "環境" in tags
+        assert notes.CONSOLIDATE_TAG in tags
 
 
 class TestRules:
