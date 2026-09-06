@@ -135,7 +135,7 @@ def section_html(request: Request | None = None) -> str:
     """管理画面に差し込む「使用量」節。"""
     if not usage_store.is_enabled():
         return (
-            f'<h2 id="{SECTION_ANCHOR}">使用量</h2>\n'
+            f'<h3 id="{SECTION_ANCHOR}">使用量</h3>\n'
             '<p class="muted">記録の置き場がありません。書き込み可能なディレクトリを'
             " <code>CHIEZO_STATE_DIR</code> に設定すると、使用量を出せるようになります。</p>"
         )
@@ -177,7 +177,7 @@ def section_html(request: Request | None = None) -> str:
         "(相手を呼ぶと溜まりはじめます)。</p>"
     )
 
-    return f"""<h2 id="{SECTION_ANCHOR}">使用量</h2>
+    return f"""<h3 id="{SECTION_ANCHOR}">使用量</h3>
 {banner}
 <details>
 <summary>この節について</summary>

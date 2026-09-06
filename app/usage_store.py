@@ -174,6 +174,38 @@ def spent(since: datetime) -> dict[str, Spent]:
     }
 
 
+def recent_calls(limit: int = 100) -> list[dict]:
+    """成功した呼び出しを新しい順に返す(管理画面の依頼履歴で使う)。
+
+    **集計(`spent`)とは別の口**。あちらは「いくら使ったか」を数えるためのもので、
+    こちらは「いつ何を頼んだか」を並べるためのもの —— 同じ表を読むが、
+    欲しい形が違う(1 行ずつ・新しい順・件数を絞る)。
+    """
+    if not is_enabled():
+        return []
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                "SELECT provider, model, kind, at, input_tokens, output_tokens FROM calls"
+                " ORDER BY at DESC, id DESC LIMIT ?",
+                (max(1, limit),),
+            ).fetchall()
+    except (sqlite3.Error, OSError) as e:
+        log.warning("usage recent_calls failed: %s", e)
+        return []
+    return [
+        {
+            "at": r["at"],
+            "backend": r["provider"],
+            "model": r["model"] or "",
+            "kind": r["kind"] or "chat",
+            "input_tokens": r["input_tokens"],
+            "output_tokens": r["output_tokens"],
+        }
+        for r in rows
+    ]
+
+
 def first_recorded_at() -> str | None:
     """いちばん古い記録の時刻。「いつからの数か」を画面と API に出すため ——
     出さないと、入れたばかりの環境の「0 回」が「使っていない」と読めてしまう。"""

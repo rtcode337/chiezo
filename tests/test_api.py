@@ -1612,6 +1612,10 @@ class TestHeadingSizes:
 
         指定を欠いたレベルにはブラウザ既定(h3 なら 1.17em)が効くので、h2 だけ
         小さくしていると h3 のほうが大きくなる。実際に管理画面でそうなっていた。
+
+        **大きさだけで段を表しているわけではない**(h1 は下線、h2 は太い帯、
+        h3 は細い帯、h4 は字面だけ)。それでも大きさの逆転は起こしてはいけないので、
+        使うレベルが増えたらここも増やす。
         """
         import re
 
@@ -1621,15 +1625,17 @@ class TestHeadingSizes:
             int(m.group(1)): float(m.group(2))
             for m in re.finditer(r"^  h([1-6]) \{ font-size: ([\d.]+)rem", PAGE_STYLE, re.M)
         }
-        assert set(sizes) == {1, 2, 3}, "使っている見出しレベルは全部明示すること"
-        assert sizes[1] > sizes[2] > sizes[3]
+        assert set(sizes) == {1, 2, 3, 4}, "使っている見出しレベルは全部明示すること"
+        assert sizes[1] > sizes[2] > sizes[3] > sizes[4]
 
 
-class TestAdminFailures:
-    """管理画面の「AI 依頼の失敗」節。
+class TestAdminHistory:
+    """管理画面の「AI への依頼」節。
 
-    **会話と生成を分けない。** どちらで落ちたか分かっていない人が探せなくなるため、
-    種類は列で示して 1 枚の表に並べる。
+    **成功と失敗を分けない。** 失敗だけを見ていた頃は「落ちていないのに結果が変」
+    「そもそも呼べていたのか」が読めなかった。同じ 1 本の流れなので同じ表に並べ、
+    結果の欄で見分ける。**会話と生成も分けない** —— どちらで落ちたか分かって
+    いない人が探せなくなるため、種類は列で示す。
     """
 
     @pytest.fixture()
@@ -1650,15 +1656,66 @@ class TestAdminFailures:
                       reason="GPU が落ちています", prompt_bytes=42, kind="image")
 
         html = admin.get("/admin").text
-        assert "AI 依頼の失敗" in html
+        assert "AI への依頼" in html
         assert "claude exited 1" in html and "GPU が落ちています" in html
         # 種類の列で見分ける
         assert "会話" in html and "画像" in html
         # 状態 0 は「そもそも繋がらなかった」—— 0 とだけ書くと成功に読める
         assert "届かず" in html
 
+    def test_成功した依頼も同じ表に出る(self, admin):
+        """通ったかどうかが読めないと、「呼べていたのか」から調べ直しになる。"""
+        from app import usage_store
+
+        usage_store.record("claude", model="opus", input_tokens=120, output_tokens=34)
+        html = admin.get("/admin").text
+        assert "成功" in html
+        # トークンは相手が言ったときだけ出す
+        assert "入 120" in html and "出 34" in html
+
+    def test_失敗だけに絞れる(self, admin):
+        from app import ai_log, usage_store
+
+        usage_store.record("claude", model="opus")
+        ai_log.record(backend="comfyui", model="", effort="", status=502,
+                      reason="GPU が落ちています", prompt_bytes=42, kind="image")
+        only = admin.get("/admin?ai_failed=1").text
+        assert "GPU が落ちています" in only
+        # 絞り込み中は成功の行を出さない
+        assert "すべて見る" in only
+
+    def test_ページを送れる(self, admin):
+        """無人で回る層があるので、依頼は放っておいても増える。"""
+        from app import ai_log
+        from app.views import ai_history
+
+        for i in range(ai_history.PAGE_SIZE + 3):
+            ai_log.record(backend="claude", model="", effort="", status=502,
+                          reason=f"失敗 {i}", prompt_bytes=1)
+        first = admin.get("/admin").text
+        # 新しい順なので、いちばん古いものは 1 ページ目に出ない
+        assert "失敗 0" not in first
+        assert "失敗 12" in first
+        second = admin.get("/admin?ai_page=2").text
+        assert "失敗 0" in second
+
+    def test_おかしなページ番号は範囲に寄せる(self, admin):
+        """手で URL をいじられても落とさない。
+
+        **範囲の外は最後のページに寄せる** —— 空の表と「2 / 1 ページ」を見せても
+        何が起きたのか読めない(絞り込みを切り替えると件数が減るので普通に起こる)。
+        """
+        from app import ai_log
+
+        ai_log.record(backend="claude", model="", effort="", status=502,
+                      reason="ただ 1 件", prompt_bytes=1)
+        for q in ("abc", "-5", "99999"):
+            html = admin.get(f"/admin?ai_page={q}").text
+            assert "1 / 1 ページ" in html
+            assert "ただ 1 件" in html
+
     def test_記録が無ければそう書く(self, admin):
-        assert "まだ記録がありません" in admin.get("/admin").text
+        assert "まだ何も頼んでいません" in admin.get("/admin").text
 
     def test_置き場が無ければ設定を案内する(self, client):
         # module 版の client は CHIEZO_STATE_DIR を持たない

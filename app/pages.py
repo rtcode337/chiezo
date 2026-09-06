@@ -111,7 +111,7 @@ PAGE_STYLE = """
      (画面が縦に伸びるので h2 を大きくしすぎられない)、字の大きさだけでは
      「いまどの節の中にいるか」が読み取れなかった。**帯・罫・字間・字色**を
      組み合わせて、大きさに頼らず段が分かるようにする。 */
-  h1, h2, h3 { line-height: 1.35; }
+  h1, h2, h3, h4 { line-height: 1.35; }
   h1 { font-size: 1.35rem; margin: 0 0 1.5rem; padding-bottom: 0.6rem;
        border-bottom: 2px solid #5560E0; }
   /* h2 は左に太い帯。ページを縦に流し読みしても、節の начало が目に入る */
@@ -120,6 +120,10 @@ PAGE_STYLE = """
   /* h3 は帯を細く短く、字を小さく灰色寄りに。h2 の「中」だと一目で分かる字面にする */
   h3 { font-size: 0.95rem; margin: 1.8rem 0 0.6rem; padding-left: 0.7rem;
        color: #444; border-left: 2px solid #b9bdf0; letter-spacing: 0.02em; }
+  /* h4 は帯を持たせず、字面だけで一段下がったと分かるようにする。帯を 3 種類に
+     増やすと、どれが上位なのか色の濃さで読ませることになって読み取りづらい */
+  h4 { font-size: 0.9rem; margin: 1.4rem 0 0.5rem; color: #555;
+       padding-left: 1.4rem; font-weight: 600; }
   /* h2 の中身は少し内側へ寄せる。罫の下に入るものが「その節のもの」だと見える */
   h2 + p, h2 + table, h2 + div, h2 + details, h2 + form { margin-top: 0.6rem; }
   table { border-collapse: collapse; margin-top: 1rem; width: 100%; }

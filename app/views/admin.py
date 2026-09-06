@@ -32,7 +32,7 @@ from app import (
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
 from app.pages import CHAT_PATH, browse_url, esc, page_shell
 from app.registry import SUPPORTED_SCHEMA_VERSIONS, Source
-from app.views import ai_failures, ai_settings, ai_usage
+from app.views import ai_history, ai_settings, ai_usage
 
 log = logging.getLogger("chiezo.app")
 
@@ -256,6 +256,16 @@ def _memory_html(sources: dict[str, Source], disabled: str) -> str:
 「短期記憶を順に見て、残す価値があるものに印を付けて」と頼めば回る。
 </p>
 """
+
+
+def _history_args(request: Request) -> tuple[int, bool]:
+    """「AI への依頼」節のページと絞り込みをクエリから読む。
+
+    **おかしな値は 1 ページ目に寄せる**(手で URL をいじられても落とさない)。
+    """
+    raw = request.query_params.get("ai_page", "1")
+    page = int(raw) if raw.isdigit() and int(raw) > 0 else 1
+    return page, request.query_params.get("ai_failed") == "1"
 
 
 def _disk_html(data_dir: Path) -> str:
@@ -666,10 +676,12 @@ async def admin(request: Request):
 短期記憶から移した(固化した)ものが並ぶ。引くときの口はどちらも同じ。
 </p>
 
-<h2 id="short-term">短期記憶(覚えたこと)</h2>
+<h2>知識(溜めて引く)</h2>
+
+<h3 id="short-term">短期記憶(覚えたこと)</h3>
 {_short_term_section_html(short_term)}
 
-<h2>長期記憶(ためた知識)</h2>
+<h3>長期記憶(ためた知識)</h3>
 <p>登録ソース数: {len(long_term)} / 最新のスキーマバージョン: {latest_schema}<br>
 {_disk_html(request.app.state.data_dir)}</p>
 <table>
@@ -688,13 +700,13 @@ async def admin(request: Request):
 
 {_job_status_html(job)}
 
-<h3 id="collect">集める(AI に集めさせて溜める)</h3>
+<h4 id="collect">集める(AI に集めさせて溜める)</h4>
 {_collect_html(sources, disabled)}
 
-<h3 id="consolidation">短期記憶から移す(固化)</h3>
+<h4 id="consolidation">短期記憶から移す(固化)</h4>
 {_memory_html(sources, disabled)}
 
-<h3>未初期化データの初期化</h3>
+<h4>未初期化データの初期化</h4>
 <table>
 <thead>
 <tr><th>name</th><th>kind</th><th>lang</th><th></th></tr>
@@ -704,23 +716,31 @@ async def admin(request: Request):
 </tbody>
 </table>
 
-<h2>ためた知識を使う AI</h2>
+<h2>AI と鍵(貸し出すもの)</h2>
+<p class="muted">
+呼ぶ側に認証情報を持たせないための面。鍵はここで預かり、話せる相手と、
+絵・音・動画・声を作る相手を同じ表で扱う。
+</p>
+
+<h3>ためた知識を使う AI</h3>
 {_answer_status_html()}
 
 {await ai_settings.section_html(request)}
 
 {ai_usage.section_html(request)}
 
-{ai_failures.section_html()}
+{ai_history.section_html(*_history_args(request))}
 
-<h2>Claude Code 連携設定</h2>
+<h2>このサーバー</h2>
+
+<h3>Claude Code 連携設定</h3>
 <p class="muted">
 いま設定を吐き出したら(<code>scripts/gen_claude_config.sh</code>)どういう内容になるかのプレビュー。
 現在の登録ソースから生成した CLAUDE.md ブロックを表示する(実ファイルは書き換えない)。
 </p>
 <p><a href="/admin/claude-config">→ 生成される設定を見る</a></p>
 
-<h2>いま動いているビルド</h2>
+<h3>いま動いているビルド</h3>
 <p class="muted">
 {esc(build_info.describe())}<br>
 ビルド日時(JST)とビルド元のコミット。手元の <code>git log -1</code> と見比べれば、

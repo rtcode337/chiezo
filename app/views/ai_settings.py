@@ -278,7 +278,7 @@ async def section_html(request: Request | None = None) -> str:
     """
     if not settings_store.is_enabled():
         return (
-            f'<h2 id="{SECTION_ANCHOR}">AI の相手</h2>\n'
+            f'<h3 id="{SECTION_ANCHOR}">AI の相手</h3>\n'
             '<p class="muted">設定の保存先がありません。書き込み可能なディレクトリを'
             " <code>CHIEZO_STATE_DIR</code> に設定すると、ここから相手を追加できます"
             "(compose では <code>./state:/state</code> をマウント済み)。</p>"
@@ -370,7 +370,7 @@ async def section_html(request: Request | None = None) -> str:
         "(既定は <code>CHIEZO_STATE_DIR</code> の下)に設定してください。</p>"
     )
 
-    return f"""<h2 id="{SECTION_ANCHOR}">AI の相手</h2>
+    return f"""<h3 id="{SECTION_ANCHOR}">AI の相手</h3>
 {banner}
 {master}
 {media_note}
@@ -426,7 +426,7 @@ def _prompt_language_html() -> str:
             ("", "指定しない"),
         )
     )
-    return f"""<h3>依頼文の言語</h3>
+    return f"""<h4>依頼文の言語</h4>
 <p class="muted">
 絵・音・動画・声を頼むときの<strong>依頼文をどの言語で書いてもらうか</strong>。
 Chiezo 自身は依頼文を書かないので、これは
