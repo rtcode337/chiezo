@@ -196,7 +196,10 @@ class TestDeletingASource:
         assert got.value.status_code == 400
 
     def test_it_never_touches_anything_outside_the_data_dir(self, trigger, tmp_path):
-        """名前の検査を抜けても、置き場の外は消さない。"""
+        """名前の検査を抜けても、置き場の外へは届かない。
+
+        消す対象は名前から組み立てず、置き場に並んでいるものから選ぶ。
+        """
         server, _make = trigger
         outside = tmp_path.parent / "outside.db"
         outside.write_text("消えては困るもの")

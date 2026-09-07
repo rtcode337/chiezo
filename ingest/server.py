@@ -197,8 +197,8 @@ def delete_source(name: str):
     if not SOURCE_NAME_RE.match(name):
         raise HTTPException(400, {"error": f"invalid source name: {name}"})
 
-    link = DATA_DIR / f"{name}.db"
-    if not link.exists() and not link.is_symlink():
+    link = _find_link(name)
+    if link is None:
         raise HTTPException(404, {"error": f"unknown source: {name}"})
 
     kind = _source_kind(link)
@@ -235,37 +235,41 @@ def _source_kind(link: Path) -> str | None:
         conn.close()
 
 
-def _within_data_dir(path: Path) -> bool:
-    """消してよい置き場の中を指しているか。
+def _entries(directory: Path) -> list[Path]:
+    """ディレクトリの直下にあるものを並べる。無ければ空。
 
-    名前は `SOURCE_NAME_RE` で狭めてあるので本来ここへは来ないが、消す操作は
-    取り消せないので、組み立てたパスの側でももう一度確かめる(呼ぶ側の検査漏れが
-    そのままファイルの削除にならないように)。
-
-    **リンクは辿らずに `..` だけを畳んで比べる**。世代の実体もリンクも消す対象
-    なので `resolve()` してしまうと自分が消すものを見失うし、置き場の一部
-    (`dumps/` など)を別のディスクへリンクしてある構成では、正しい対象まで
-    「外」と見なして消し残すことになる。
+    **消す対象は名前から組み立てず、ここで並べたものから選ぶ**。組み立てると
+    渡された名前がそのままパスになるので、名前の検査に穴があいた瞬間に置き場の
+    外へ届いてしまう。並べたものから選ぶ限り、届く先は置き場の中に限られる。
+    壊れたリンク(切り替えの途中で残ったもの)も並ぶ。
     """
-    root = Path(os.path.normpath(DATA_DIR))
-    return Path(os.path.normpath(path)).is_relative_to(root)
+    try:
+        return list(directory.iterdir())
+    except OSError:
+        return []
+
+
+def _find_link(name: str) -> Path | None:
+    """いま配信しているものを指すリンク。無ければ None。"""
+    return next((p for p in _entries(DATA_DIR) if p.name == f"{name}.db"), None)
 
 
 def _remove_source_files(name: str) -> list[str]:
     """世代・リンク・焼く前に残った素材を消す。消えたものの名前を返す。"""
-    targets = [DATA_DIR / f"{name}.db", *DATA_DIR.glob(f"{name}-*.db")]
+    generation = f"{name}-"
+    targets = [
+        p
+        for p in _entries(DATA_DIR)
+        if p.name == f"{name}.db" or (p.name.startswith(generation) and p.name.endswith(".db"))
+    ]
     # 焼く前に落ちて残っている素材(次の実行が読み直すもの)も一緒に片付ける
-    targets += list((DATA_DIR / "dumps").glob(f"{name}-*"))
+    targets += [p for p in _entries(DATA_DIR / "dumps") if p.name.startswith(generation)]
 
     removed = []
     for path in targets:
-        if not _within_data_dir(path):
-            log.warning("refused to remove outside the data dir: %s", path)
-            continue
         try:
-            if path.is_symlink() or path.exists():
-                path.unlink()
-                removed.append(path.name)
+            path.unlink()
+            removed.append(path.name)
         except OSError as e:
             log.warning("could not remove %s: %s", path, e)
     return removed
