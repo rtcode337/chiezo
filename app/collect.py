@@ -61,6 +61,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi import HTTPException
 
 from app import db, notes
+from app import extract as extraction
 from app.jst import to_jst
 
 log = logging.getLogger("chiezo.app")
@@ -227,6 +228,10 @@ class Collection:
     # 作り直しで、前世代の何割を下回ったら断るか。0 なら守りを外す。
     # 足すほうでは使わない(そもそも減らないので)
     keep_ratio: float = DEFAULT_KEEP_RATIO
+    # 最初の 1 回を機械的に埋める指定(`app/extract.py`)。無ければ毎回 AI に集めさせる。
+    # **持つのは指定であって中身の知識ではない** —— どのソースのどのタグを引くかは
+    # 依頼した側が書く。進み具合が空のときだけ使い、以降は AI が肉付けする
+    extract: dict | None = None
     # 誰が置いたか。外のアプリが名乗った文字列で、**印であって認証ではない**
     # (LAN 内・認証なしの前提なので偽れる)。有効にするか決める人の手がかり
     requested_by: str = ""
@@ -288,6 +293,7 @@ def _from_json(item: dict) -> Collection:
         cursor=str(item.get("cursor") or ""),
         mode=normalize_mode(item.get("mode")),
         keep_ratio=normalize_keep_ratio(item.get("keep_ratio")),
+        extract=extraction.to_json(extraction.normalize(item.get("extract"))),
         requested_by=str(item.get("requested_by") or ""),
         created_at=str(item.get("created_at") or ""),
         updated_at=str(item.get("updated_at") or ""),
@@ -391,6 +397,7 @@ def create(
     requested_by: str = "",
     mode: str = MODE_APPEND,
     keep_ratio: float | None = None,
+    extract_spec=None,
 ) -> Collection:
     if not NAME_RE.match(name):
         raise HTTPException(400, {
@@ -427,6 +434,7 @@ def create(
         keep_ratio=(
             DEFAULT_KEEP_RATIO if keep_ratio is None else normalize_keep_ratio(keep_ratio)
         ),
+        extract=extraction.to_json(extraction.normalize(extract_spec)),
         requested_by=requested_by.strip()[:80],
         created_at=now,
         updated_at=now,
@@ -480,7 +488,7 @@ def update(name: str, **fields) -> Collection:
     current = get(name)
     allowed = {
         "description", "prompt", "interval_minutes", "enabled",
-        "backend", "model", "effort", "web", "cursor", "mode", "keep_ratio",
+        "backend", "model", "effort", "web", "cursor", "mode", "keep_ratio", "extract",
     }
     patch = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if "interval_minutes" in patch:
@@ -489,6 +497,9 @@ def update(name: str, **fields) -> Collection:
         raise HTTPException(400, {"error": f"mode は {' / '.join(MODES)} のどれかにしてください"})
     if "keep_ratio" in patch:
         patch["keep_ratio"] = normalize_keep_ratio(patch["keep_ratio"])
+    if "extract" in patch:
+        # 空のオブジェクトを渡したら「使わない」に戻す(消す手段がここしかない)
+        patch["extract"] = extraction.to_json(extraction.normalize(patch["extract"] or None))
     # 相手・モデル・深さは**空文字を「指定しない」に倒す**。画面のフォームは空欄を
     # 空文字で送ってくるが、持ち回るときは None でないと「未指定」の意味にならない
     # (読み直せば `_from_json` が同じことをするが、保存直後の値とずれる)

@@ -32,6 +32,7 @@ from app import (
     capabilities,
     collect,
     db,
+    extract,
     media,
     media_backends,
     media_providers,
@@ -254,6 +255,21 @@ async def draft_collection_prompt(
     return draft
 
 
+async def _collect_items(item, previous: dict, sources: dict) -> tuple[list[dict], str | None]:
+    """1 回ぶん集める。**最初の 1 回だけ機械的に埋められる**。
+
+    抽出の指定を持っていて、まだ進み具合が入っていなければ AI を呼ばず、手元の
+    長期記憶から引いて組み立てる —— 名前や年代のような**既に書いてあること**を
+    AI に書かせると、存在しないものが混ざるうえ、毎回違うものが返る。
+    進み具合が入った 2 回目からは、いつもどおり AI が肉付けする。
+    """
+    if item.extract and not item.cursor:
+        spec = extract.normalize(item.extract)
+        return await asyncio.to_thread(extract.run, spec, sources)
+    content = await _ask_for_collection(item, collect.build_messages(item, previous))
+    return collect.parse_response(content or "")
+
+
 async def collect_material(name: str, sources: dict) -> str:
     """いま AI に集めさせて、焼く素材(NDJSON)を組み立てる。
 
@@ -269,8 +285,7 @@ async def collect_material(name: str, sources: dict) -> str:
     # 消えたものを数える相手であり、doc_id を引き継ぐ元でもある
     previous = await asyncio.to_thread(collect.previous_docs, name, sources)
     try:
-        content = await _ask_for_collection(item, collect.build_messages(item, previous))
-        items, next_cursor = collect.parse_response(content or "")
+        items, next_cursor = await _collect_items(item, previous, sources)
         body, diff = await asyncio.to_thread(collect.ndjson, item, sources, previous, items)
     except Exception as e:
         reason = f"{type(e).__name__}: {e}"
@@ -306,8 +321,7 @@ async def collect_preview(name: str, sources: dict) -> dict:
     """
     item = await asyncio.to_thread(collect.get, name)
     previous = await asyncio.to_thread(collect.previous_docs, name, sources)
-    content = await _ask_for_collection(item, collect.build_messages(item, previous))
-    items, next_cursor = collect.parse_response(content or "")
+    items, next_cursor = await _collect_items(item, previous, sources)
     _docs, diff = await asyncio.to_thread(collect.material, item, previous, items)
     return {
         "name": name,
@@ -1301,6 +1315,12 @@ class CollectionCreate(BaseModel):
         description="作り直しで前世代の何割を下回ったら断るか(0 で守りを外す)",
     )
     requested_by: str = PydField("", description="依頼元の名乗り(画面に出る手がかり)")
+    extract: dict | None = PydField(
+        None,
+        description="最初の 1 回を AI ではなく機械的に埋める指定"
+        "(どのソースの・どのタグを・何件・タグをどう読み替えるか)。"
+        "進み具合が空のときだけ使い、2 回目からは AI が肉付けする",
+    )
 
 
 class CollectionPatch(BaseModel):
@@ -1321,6 +1341,9 @@ class CollectionPatch(BaseModel):
     cursor: str | None = None
     mode: str | None = None
     keep_ratio: float | None = None
+    extract: dict | None = PydField(
+        None, description="抽出の指定。空のオブジェクトを渡すと外れる"
+    )
 
 
 @app.get("/v1/collect")
@@ -1356,6 +1379,7 @@ def collect_create(request: Request, body: CollectionCreate):
         web=body.web,
         mode=body.mode,
         keep_ratio=body.keep_ratio,
+        extract_spec=body.extract,
         requested_by=body.requested_by,
     )
     # 作った時点で空の DB ができる。**ここでソースを取り直さないと、1 回目が走るまで
@@ -1445,6 +1469,55 @@ def collect_delete(name: str):
     collect.require_enabled()
     collect.remove(name)
     return {"ok": True}
+
+
+class ExtractDraft(BaseModel):
+    """依頼文から抽出の指定を書かせる。`name` を渡すとその収集の相手といまの指定を踏まえる。"""
+
+    want: str = PydField("", description="どういう条件で抽出してほしいかを、ふつうの言葉で")
+    name: str | None = PydField(None, description="直したい収集の名前(相手と現在の指定を使う)")
+
+
+@app.post("/v1/collect/draft-extract")
+async def collect_draft_extract(request: Request, body: ExtractDraft):
+    """依頼文を**抽出の指定**にして返す。**保存はしない**。
+
+    ここだけ AI が要る。指定さえできれば以降は AI を呼ばずに同じ結果が出るので、
+    **決定的なのは指定のほうで、AI は書き起こす係**にすぎない。
+
+    書けたら**その場で引いてみて、何件あるか・最初の数件がどうなるかを添えて返す** ——
+    タグは完全一致でしか引けないので、それらしい名前を書かれると静かな 0 件になる。
+    0 件のときは実在するタグ名を候補として返す(書いた本人には確かめようがない)。
+    """
+    collect.require_enabled()
+    if not body.want.strip():
+        raise HTTPException(400, {"error": "want(集めたいもの)を入れてください"})
+    sources = request.app.state.sources
+    item = collect.get(body.name) if body.name else None
+    current = item.extract if item else None
+    settings = replace(
+        item or collect.Collection(
+            name="", description="", prompt="", interval_minutes=60, enabled=False,
+            backend=None, model=None, effort=None, web=False, cursor="",
+            created_at="", updated_at="",
+        ),
+        # 指定を書くのに外は要らない(引く先は手元の長期記憶)
+        web=False,
+    )
+    content = await _ask_for_collection(
+        settings, extract.build_draft_messages(body.want, sources, current)
+    )
+    spec = extract.normalize(extract.parse_draft(content or ""))
+    return {"extract": extract.to_json(spec), **await asyncio.to_thread(_probe, spec, sources)}
+
+
+def _probe(spec: dict, sources: dict) -> dict:
+    """書けた指定を実際に引いてみる。**保存する前に空振りが分かる**ようにする。"""
+    items, _cursor = extract.run(spec, sources)
+    probed = {"total": len(items), "sample": items[:3]}
+    if not items:
+        probed["candidates"] = extract.similar_tags(spec, sources)
+    return probed
 
 
 class CollectionDraft(BaseModel):

@@ -5,6 +5,7 @@ DB を触らない。Claude Code 連携の設定を配る口(`/admin/claude-conf
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -326,6 +327,10 @@ def _consult_page_html(name: str | None, want: str, draft: str, error: str) -> s
             f'<input type="hidden" name="description" value="{esc(collect.get(name).description)}">'
             f'<input type="hidden" name="interval_minutes" value="{collect.get(name).interval_minutes}">'
             f'<input type="hidden" name="cursor" value="{esc(collect.get(name).cursor)}">'
+            # 載せないと既定へ戻る（集め方は「足す」に、抽出の指定は空に）。
+            # 相談で直したいのはプロンプトだけなので、他はそのまま持ち回る
+            f'<input type="hidden" name="mode" value="{esc(collect.get(name).mode)}">'
+            f'<textarea name="extract" hidden>{esc(_extract_json(collect.get(name)))}</textarea>'
             f'<p><label>この案(直してから保存できる)<br>'
             f'<textarea name="prompt" rows="12">{esc(draft)}</textarea></label></p>'
             f'<button type="submit">この内容で保存する</button></form>'
@@ -504,6 +509,13 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
         )
         # 作り直しは「返らなかったものが消える」ので、行のいちばん目立つところに出す
         mode_mark = ' <span class="stale">整理</span>' if item.is_refine() else ""
+        # 次の 1 回が機械で埋まるかどうかは、押す前に見えていないと分からない
+        if item.extract:
+            mode_mark += (
+                ' <span class="muted">抽出</span>'
+                if item.cursor
+                else ' <span class="stale">次は抽出</span>'
+            )
         # 消す前の確認。**行の組み立てとは別に作る** —— 隣り合った文字列は
         # 三項演算子より先につながるので、行の途中で分岐を書くと後ろの断片まで
         # else 側へ吸い込まれ、開始タグの無い <form> ができる(実際にそうなった)
@@ -540,11 +552,29 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'<p><label>消えすぎの歯止め(前の何割を下回ったら止めるか。0 で外す)<br>'
             f'<input name="keep_ratio" type="number" step="0.05" min="0" max="1"'
             f' value="{item.keep_ratio}"></label></p>'
+            f'<p><label>抽出の指定(JSON。空なら毎回 AI に集めさせる)<br>'
+            f'<textarea name="extract" rows="8" spellcheck="false">'
+            f"{esc(_extract_json(item))}</textarea></label></p>"
+            f'<p class="muted">指定を入れると、<strong>進み具合が空のあいだの 1 回だけ</strong>'
+            f" AI を呼ばず、手元の長期記憶から機械的に組み立てる(名前・年代・出典のように"
+            f" 既に書いてあることは、書かせると混ざるが引けば済む)。"
+            f" 進み具合が入った次からは、いつもどおり AI が肉付けする。"
+            f" 進み具合を空にすれば、また機械のほうから始まる。</p>"
             f'<p class="muted">整理にすると、AI にいまの内容を読ませたうえで、'
             f" 直すものと足すものだけを返させます(触れなかったものはそのまま残ります)。"
             f" プロンプトに <code>{{current}}</code> を入れてください"
             f"(そこへ今ある内容が差し込まれます)。消すのは AI が墓標を付けたときだけです。</p>"
             f'<button type="submit">保存する</button></form></details>'
+            f"<details><summary>AI に抽出の指定を書かせる</summary>"
+            f'<form method="post" action="/admin/collect/draft-extract" class="collect-form">'
+            f'<input type="hidden" name="name" value="{esc(item.name)}">'
+            f'<p><label>どういう条件で抽出してほしいか<br>'
+            f'<textarea name="want" rows="3"'
+            f' placeholder="例: 印象派の画家を有名な順に30人。年代と様式が分かるように"'
+            f"></textarea></label></p>"
+            f'<p class="muted">書かせるのは指定だけで、保存はしません。'
+            f" 書けたらその場で引いてみて、何件あるか・最初の数件がどうなるかを出します。</p>"
+            f'<button type="submit">指定を書かせる</button></form></details>'
             f"<details><summary>AI に相談して直す</summary>"
             f'<form method="post" action="/admin/collect/consult" class="collect-form">'
             f'<input type="hidden" name="name" value="{esc(item.name)}">'
@@ -1222,6 +1252,8 @@ async def admin_collect_edit(name: str, request: Request):
         # 空にできるように、cursor だけは None ではなく空文字を通す
         cursor=str(form.get("cursor") or ""),
         mode=collect.normalize_mode(form.get("mode")),
+        # 空欄は「使わない」。指定を外せるのはここだけ
+        extract=_parse_extract(form.get("extract")),
         # 0 も意味のある値(守りを外す)なので、空のときだけ触らない
         keep_ratio=_ratio(form.get("keep_ratio")),
         # 相手・モデル・深さは**空を「既定にまかせる」として通す** ——
@@ -1263,6 +1295,89 @@ async def admin_collect_consult(request: Request):
         draft = current
         error = f'<p class="stale">⚠️ 相談できませんでした: {esc(str(detail))}</p>'
     return HTMLResponse(_consult_page_html(name, want, draft, error))
+
+
+@router.post("/admin/collect/draft-extract")
+async def admin_collect_draft_extract(request: Request):
+    """依頼文から抽出の指定を書かせて、**引いた結果と一緒に**見せる。
+
+    **保存はしない**。指定は保存すると次の実行の中身が変わるので、
+    何件取れて何が出るかを見てから決められるようにする。
+
+    **この画面も待たせる**(AI の応答ぶん)。管理画面は JS を持たない。
+    """
+    from app.main import ExtractDraft, collect_draft_extract
+
+    form = await request.form()
+    name = str(form.get("name") or "").strip() or None
+    want = str(form.get("want") or "").strip()
+    try:
+        drafted = await collect_draft_extract(
+            request, ExtractDraft(want=want, name=name)
+        )
+        error = ""
+    except HTTPException as e:
+        log.warning("draft extract refused: name=%s status=%s detail=%r", name, e.status_code, e.detail)
+        drafted = None
+        error = f'<p class="stale">⚠️ 書けませんでした({_refusal_text(e.status_code)})</p>'
+    except Exception as e:
+        log.exception("draft extract failed: name=%s", name)
+        drafted = None
+        error = f'<p class="stale">⚠️ 書けませんでした({esc(type(e).__name__)})</p>'
+    return HTMLResponse(_draft_extract_page_html(name, want, drafted, error))
+
+
+def _draft_extract_page_html(name: str | None, want: str, drafted: dict | None, error: str) -> str:
+    """書けた指定と、それで実際に引けたものを 1 枚に置く。
+
+    **引いた結果を必ず添える** —— タグは完全一致でしか引けないので、それらしい
+    名前を書かれると静かな 0 件になる。保存してから気づくと、次の実行まで分からない。
+    """
+    if drafted is None:
+        result = ""
+        save = ""
+    else:
+        spec_json = json.dumps(drafted["extract"], ensure_ascii=False, indent=2)
+        samples = "".join(
+            f"<li><strong>{esc(item['title'])}</strong>"
+            f'<br><span class="muted">{esc(" / ".join(item["tags"])) or "(タグなし)"}</span>'
+            f'<br><span class="muted">{esc(item.get("url", ""))}</span></li>'
+            for item in drafted["sample"]
+        )
+        candidates = drafted.get("candidates") or []
+        hint = (
+            '<p class="stale">1 件も取れませんでした。タグは完全一致でしか引けません。'
+            f'実在するタグ: {esc(" / ".join(candidates))}</p>'
+            if not drafted["total"] and candidates
+            else ""
+        )
+        result = (
+            f"<p>この指定で <strong>{drafted['total']} 件</strong>取れます。</p>"
+            f"{hint}<ul>{samples}</ul>"
+        )
+        current = collect.get(name) if name else None
+        save = (
+            f'<form method="post" action="/admin/collect/{esc(name)}/edit" class="collect-form">'
+            f'<input type="hidden" name="description" value="{esc(current.description)}">'
+            f'<input type="hidden" name="interval_minutes" value="{current.interval_minutes}">'
+            f'<input type="hidden" name="cursor" value="{esc(current.cursor)}">'
+            f'<input type="hidden" name="mode" value="{esc(current.mode)}">'
+            f'<textarea name="prompt" hidden>{esc(current.prompt)}</textarea>'
+            f'<p><label>この指定(直してから保存できる)<br>'
+            f'<textarea name="extract" rows="16" spellcheck="false">{esc(spec_json)}</textarea>'
+            f"</label></p>"
+            f'<button type="submit">この指定で保存する</button></form>'
+        ) if current else ""
+
+    body = f"""
+<h1>{esc(name or "")}の抽出の指定を書かせる</h1>
+{error}
+<p class="muted">頼んだこと: {esc(want) or "(指定なし)"}</p>
+{result}
+{save}
+<p class="muted"><a href="/admin#collect">管理画面へ戻る</a>(保存しなければ何も変わりません)</p>
+"""
+    return page_shell("抽出の指定", body)
 
 
 @router.post("/admin/collect/{name}/toggle")
@@ -1343,6 +1458,29 @@ def _ratio(raw) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+
+def _extract_json(item) -> str:
+    """抽出の指定を、編集できる文字列にする。持っていなければ空。"""
+    if not item.extract:
+        return ""
+    return json.dumps(item.extract, ensure_ascii=False, indent=2)
+
+
+def _parse_extract(raw):
+    """フォームの文字列を指定に戻す。**空欄は「使わない」**。
+
+    JSON として読めないものはその場で断る。保存してしまうと、次に走ったときに
+    初めて分かる —— 無人で回る層なので、そのとき見ている人はいない。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    try:
+        value = json.loads(text)
+    except ValueError as e:
+        raise HTTPException(400, {"error": f"抽出の指定が JSON として読めません: {e}"}) from None
+    return value
 
 
 def _refusal_text(status: int) -> str:
