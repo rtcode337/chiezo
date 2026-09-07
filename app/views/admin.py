@@ -1345,10 +1345,13 @@ def _draft_extract_page_html(name: str | None, want: str, drafted: dict | None, 
             for item in drafted["sample"]
         )
         candidates = drafted.get("candidates") or []
+        # 0 件だけが失敗ではない。それらしい一般名は「実在はするが数件しか
+        # 付いていないタグ」に当たり、静かに痩せた結果になる
+        listed = " / ".join(f"{c['tag']}({c['docs']} 件)" for c in candidates)
         hint = (
-            '<p class="stale">1 件も取れませんでした。タグは完全一致でしか引けません。'
-            f'実在するタグ: {esc(" / ".join(candidates))}</p>'
-            if not drafted["total"] and candidates
+            '<p class="stale">頼んだ件数に届きませんでした。タグは完全一致でしか'
+            f"引けません。実在するタグ: {esc(listed)}</p>"
+            if candidates
             else ""
         )
         result = (

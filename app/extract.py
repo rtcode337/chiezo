@@ -388,12 +388,13 @@ def parse_draft(content: str) -> dict:
     return value
 
 
-def similar_tags(spec: dict, sources: dict, limit: int = 10) -> list[str]:
-    """0 件だったときの当てずっぽうを、実在するタグ名で置き換えるための候補。
+def similar_tags(spec: dict, sources: dict, limit: int = 15) -> list[dict]:
+    """書かれたタグに似た、**実在するタグ**を文書数つきで返す。
 
     **書いた本人には確かめようがない** —— タグは完全一致でしか引けないので、
-    それらしい名前を書いた瞬間に静かな 0 件になる。実在する名前を返して、
-    書き直せるようにする。
+    それらしい名前を書いた瞬間に静かな 0 件になる。「画家」のような一般名も同じで、
+    実在はするが数件しか付いておらず、欲しいものは「19世紀フランスの画家」の側にある。
+    実在する名前を数と一緒に返して、選び直せるようにする。
     """
     from app import db
 
@@ -403,12 +404,37 @@ def similar_tags(spec: dict, sources: dict, limit: int = 10) -> list[str]:
     # 書かれたタグを部分一致で探す。長い語ほど当たらないので、短くしながら試す
     wanted = spec["tag"].split(",")[0].strip()
     for length in range(len(wanted), 1, -1):
-        needle = wanted[:length]
         rows = db.query(
             src.path,
-            "SELECT tag FROM tag_counts WHERE tag LIKE ? ORDER BY docs DESC LIMIT ?",
-            (f"%{needle}%", limit),
+            "SELECT tag, docs FROM tag_counts WHERE tag LIKE ? ORDER BY docs DESC LIMIT ?",
+            (f"%{wanted[:length]}%", limit),
         )
         if rows:
-            return [row[0] for row in rows]
+            return [{"tag": row[0], "docs": row[1]} for row in rows]
     return []
+
+
+def build_retry_messages(want: str, spec: dict, total: int, candidates: list[dict]) -> list[dict]:
+    """取れた数が足りなかったときに、**実在するタグを見せて選び直させる**本文。
+
+    1 度だけ投げ直す。タグ名は手元にしか無く、書く側は当てるしかない ——
+    当てさせるより、実在するものを見せたほうが早いし確かめられる。
+    """
+    listed = "\n".join(f"- {c['tag']}({c['docs']} 件)" for c in candidates)
+    return [
+        {"role": "system", "content": SPEC_GUIDE},
+        {
+            "role": "user",
+            "content": (
+                f"集めたいもの: {want.strip()}\n\n"
+                "さきほどの指定:\n"
+                + json.dumps(to_json(spec), ensure_ascii=False, indent=2)
+                + f"\n\nこの指定では {total} 件しか取れませんでした"
+                f"(頼まれた件数は {spec['limit']} 件)。\n"
+                "実在するタグは次のとおりです(文書数つき)。この中から選び直してください。\n"
+                "1 つで足りなければ、カンマ区切りで複数書けます(そのどれかを持つものが取れます)。\n"
+                f"{listed}\n\n"
+                "選び直した指定を JSON で返してください。"
+            ),
+        },
+    ]

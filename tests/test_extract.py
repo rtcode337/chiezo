@@ -337,7 +337,51 @@ class TestWritingTheSpecFromARequest:
         body = client.post("/v1/collect/draft-extract", json={"want": "都道府県"}).json()
 
         assert body["total"] == 0
-        assert "日本の都道府県" in body["candidates"]
+        assert {"tag": "日本の都道府県", "docs": 2} in body["candidates"]
+
+    def test_a_thin_pick_gets_one_more_go_with_the_real_tags(self, client, monkeypatch):
+        """「画家」のような一般名は実在するが数件しか付いていない。
+
+        それらしい名前を当てるしかない側に、実在するタグを見せて選び直させる。
+        """
+        from app import main
+
+        asked = []
+
+        async def reply(_settings, messages):
+            asked.append(messages)
+            # 1 回目は当てずっぽう、2 回目は見せられた中から選ぶ
+            return json.dumps(
+                {"source": "jawiki", "tag": "都道府県" if len(asked) == 1 else "日本の都道府県"}
+            )
+
+        monkeypatch.setattr(main, "_ask_for_collection", reply)
+
+        body = client.post("/v1/collect/draft-extract", json={"want": "都道府県を30件"}).json()
+
+        assert body["extract"]["tag"] == "日本の都道府県"
+        assert body["total"] == 2
+        # 選び直しには、実在するタグを文書数つきで見せている
+        assert "日本の都道府県(2 件)" in asked[1][1]["content"]
+
+    def test_it_keeps_the_first_pick_when_the_second_is_no_better(self, client, monkeypatch):
+        """投げ直して悪くなるくらいなら、最初のものを返す。"""
+        from app import main
+
+        asked = []
+
+        async def reply(_settings, messages):
+            asked.append(messages)
+            return json.dumps(
+                {"source": "jawiki", "tag": "日本の都道府県" if len(asked) == 1 else "存在しない"}
+            )
+
+        monkeypatch.setattr(main, "_ask_for_collection", reply)
+
+        body = client.post("/v1/collect/draft-extract", json={"want": "都道府県を30件"}).json()
+
+        assert body["extract"]["tag"] == "日本の都道府県"
+        assert body["total"] == 2
 
     def test_a_spec_that_cannot_be_run_is_refused(self, client, monkeypatch):
         self._answer(monkeypatch, json.dumps({"source": "jawiki"}))
@@ -406,13 +450,14 @@ class TestTheAdminScreen:
         assert "クロード・モネ" in html
         assert html.count("<form") == html.count("</form>")
 
-    def test_pulling_nothing_says_which_tags_are_real(self, stored):
+    def test_a_thin_result_says_which_tags_are_real(self, stored):
         from app.views import admin
 
         drafted = {"extract": extract.to_json(spec()), "total": 0, "sample": [],
-                   "candidates": ["印象派の画家"]}
+                   "candidates": [{"tag": "印象派の画家", "docs": 39}]}
 
         html = admin._draft_extract_page_html("painters", "画家", drafted, "")
 
-        assert "1 件も取れませんでした" in html
-        assert "印象派の画家" in html
+        assert "頼んだ件数に届きませんでした" in html
+        # 数まで出す。「実在はするが数件しか付いていない」タグを選ばないため
+        assert "印象派の画家(39 件)" in html

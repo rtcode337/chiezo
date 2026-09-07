@@ -1508,16 +1508,41 @@ async def collect_draft_extract(request: Request, body: ExtractDraft):
         settings, extract.build_draft_messages(body.want, sources, current)
     )
     spec = extract.normalize(extract.parse_draft(content or ""))
-    return {"extract": extract.to_json(spec), **await asyncio.to_thread(_probe, spec, sources)}
+    probed = await asyncio.to_thread(_probe, spec, sources)
+
+    # 足りなければ、**実在するタグを見せて 1 度だけ選び直させる**。タグ名は手元に
+    # しか無いので、書く側は当てるしかない —— 「画家」のような一般名は実在するが
+    # 数件しか付いておらず、欲しいものは「19世紀フランスの画家」の側にある。
+    # 選び直しても増えなければ、最初の指定のほうを返す(悪くしない)
+    if probed["total"] < spec["limit"] and probed["candidates"]:
+        content = await _ask_for_collection(
+            settings,
+            extract.build_retry_messages(body.want, spec, probed["total"], probed["candidates"]),
+        )
+        try:
+            retried = extract.normalize(extract.parse_draft(content or ""))
+            reprobed = await asyncio.to_thread(_probe, retried, sources)
+        except HTTPException as e:
+            log.warning("draft extract retry refused: %r", e.detail)
+            retried, reprobed = None, None
+        if retried and reprobed["total"] > probed["total"]:
+            spec, probed = retried, reprobed
+
+    return {"extract": extract.to_json(spec), **probed}
 
 
 def _probe(spec: dict, sources: dict) -> dict:
-    """書けた指定を実際に引いてみる。**保存する前に空振りが分かる**ようにする。"""
+    """書けた指定を実際に引いてみる。**保存する前に空振りが分かる**ようにする。
+
+    候補は取れた数に関わらず添える —— 0 件だけが失敗ではない。それらしい一般名を
+    書くと「実在はするが数件しか付いていないタグ」に当たり、静かに痩せた図になる。
+    """
     items, _cursor = extract.run(spec, sources)
-    probed = {"total": len(items), "sample": items[:3]}
-    if not items:
-        probed["candidates"] = extract.similar_tags(spec, sources)
-    return probed
+    return {
+        "total": len(items),
+        "sample": items[:3],
+        "candidates": extract.similar_tags(spec, sources) if len(items) < spec["limit"] else [],
+    }
 
 
 class CollectionDraft(BaseModel):
