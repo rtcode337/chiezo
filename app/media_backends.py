@@ -47,6 +47,14 @@ log = logging.getLogger("chiezo.media")
 # 1 枚あたりの上限。GPU でも SDXL は数秒〜数十秒かかる(混んでいれば待たされる)。
 GENERATE_TIMEOUT = float(os.environ.get("CHIEZO_IMAGE_TIMEOUT", "300") or 300)
 
+# CLI ブリッジ越しに描かせるときの上限。**頼む側は、描く側より長く待つ。**
+# ブリッジは自前で 600 秒(`CHIEZO_BRIDGE_IMAGE_TIMEOUT`)まで粘るので、こちらが
+# 300 秒で見切ると**描き上がる寸前の絵を捨てたうえ、相手の枠だけ使う**ことになる
+# (実際に、絵の編集がちょうど 300 秒で毎回落ちた)。少し余裕を足して待つ
+BRIDGE_IMAGE_TIMEOUT = float(
+    os.environ.get("CHIEZO_BRIDGE_IMAGE_TIMEOUT", "600") or 600
+) + 30
+
 
 # 元にする絵の使い道。 **相手への言い方が逆になる**ので、渡す側が言い分ける ——
 # 直したいのに「参考に」と言うと別の絵が返り、参考にしたいのに「直せ」と言うと
@@ -235,7 +243,11 @@ def timeout_for(kind: str) -> float:
     `media._reap_stale` が「もう誰も面倒を見ていない job」を畳む基準にも使うので、
     生成側と後始末側で別々の数字を持たせない。
     """
-    return VIDEO_TIMEOUT if kind == media_providers.KIND_VIDEO else GENERATE_TIMEOUT
+    if kind == media_providers.KIND_VIDEO:
+        return VIDEO_TIMEOUT
+    # **ブリッジのぶんまで見込む。** 短いほうを基準にすると、まだ描いている job を
+    # 「もう誰も面倒を見ていない」と畳んでしまう
+    return max(GENERATE_TIMEOUT, BRIDGE_IMAGE_TIMEOUT)
 
 
 @dataclass(frozen=True)
@@ -693,7 +705,7 @@ async def _bridge_image_generate(
         # 絵そのものを送る。 ブリッジは別のコンテナなので、こちらのパスは見えない
         body["image"] = base64.b64encode(req.source).decode()
         body["image_mode"] = req.source_mode
-    async with _client(GENERATE_TIMEOUT) as client:
+    async with _client(BRIDGE_IMAGE_TIMEOUT) as client:
         res = await client.post(
             f"{media_providers.url_of(spec)}/images/generations",
             json=body,

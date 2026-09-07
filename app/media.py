@@ -355,7 +355,13 @@ async def _run(job_id: str, backend: str, req, count: int, kind: str) -> None:
         # どんな失敗でも記録して返す。 ここで投げても受け取る相手がいない
         # (走っているのは背後のタスク)ので、理由は job に書いて image_status で見せる
         detail = getattr(e, "detail", None)
-        message = json.dumps(detail, ensure_ascii=False) if detail else str(e)
+        # **文言の無い例外がある。** `TimeoutError` は `str()` が空なので、そのまま
+        # 書くと「失敗したが理由は空」の job が残り、時間切れなのか何なのか分からない
+        # (実際にそうなった)。文言が無ければ型の名前を残す
+        message = (
+            json.dumps(detail, ensure_ascii=False) if detail
+            else (str(e) or f"{type(e).__name__}(理由の文言なし)")
+        )
         log.warning("media job %s failed: %s", job_id, message[:300])
         # 出来たぶんは残す。 3 つ頼んで 2 つ出来たなら、その 2 つは使える
         _update(job_id, state="failed" if not files else "partial", error=message[:1000], files=files)
