@@ -1132,6 +1132,16 @@ MODE_EDIT = "edit"
 MODE_REFERENCE = "reference"
 
 
+# 元の絵の渡し方を名指しする一文(Codex のみ)。 内蔵ツールには入力画像の口が 2 つあり、
+# **会話に添付された絵を使うほう**を選ばれると、こちらはファイルで渡しているので
+# `requested the last 1 conversation images, but only 0 were available` で終わる。
+# 名指しするとファイルパスのほうを使う(実測で口が切り替わった)。
+SOURCE_HINT = (
+    " Pass the file path above to the image tool's referenced_image_paths; "
+    "do not use conversation images — none are attached."
+)
+
+
 def _image_prompt(body: ImageRequest, out_dir: str) -> str:
     """Codex に渡す指示。保存先と枚数を言い切る —— 相手はエージェントなので、
     曖昧だと説明だけ返してファイルを書かないことがある。
@@ -1140,10 +1150,11 @@ def _image_prompt(body: ImageRequest, out_dir: str) -> str:
     参考にしただけの別の絵を描いてしまう —— 直す箇所以外は 1 画素も変えるな、と
     言い切るのが要点。
     """
+    hint = SOURCE_HINT if body.image and CLI == "codex" else ""
     if body.image and body.image_mode == MODE_REFERENCE:
         return (
             f"Look at the existing image {out_dir}/{SOURCE_NAME} and use it as a "
-            "reference for style only.\n\n"
+            f"reference for style only.{hint}\n\n"
             f"{body.prompt}\n\n"
             "Draw a NEW picture. Match the reference's drawing style exactly — the same "
             "line weight and outline colour, the same flat colouring, the same "
@@ -1157,7 +1168,7 @@ def _image_prompt(body: ImageRequest, out_dir: str) -> str:
         )
     if body.image:
         return (
-            f"Edit the existing image {out_dir}/{SOURCE_NAME}.\n\n"
+            f"Edit the existing image {out_dir}/{SOURCE_NAME}.{hint}\n\n"
             f"{body.prompt}\n\n"
             "This is an edit, not a new drawing. Keep every other part of the picture "
             "exactly as it is — same character, same colours, same line work, same "
@@ -1174,6 +1185,38 @@ def _image_prompt(body: ImageRequest, out_dir: str) -> str:
         "Do not create any other files, do not write code, and do not explain. "
         "When the file is saved, reply with just the file path."
     )
+
+
+def image_command(out_dir: str, model: str = "") -> list[str]:
+    """Codex に絵を描かせる起動コマンド。プロンプトは標準入力から渡す。
+
+    **codex 自前のサンドボックスは使わない。** 隔離はこのコンテナが受け持つ
+    (ブリッジ専用・使い捨て・作業ディレクトリは 1 回ごとに作り直す)。
+
+    使わせると**元の絵を読めない**。 codex は許可されたファイルの読み書きを
+    bubblewrap 越しに行うが、非特権のユーザー名前空間を作れないホストでは
+    その補助プロセスが起動できない —— `unable to read referenced image at
+    …/source.png: fs sandbox helper failed: bwrap: No permissions to create a new
+    namespace`。**書き出しは内蔵ツールが直に行うので通り、読みだけが落ちる**ため、
+    一から描くのは成功して編集だけが「画像を保存しませんでした」に見えていた
+    (そう見えるので、原因を絵の側に探すことになる)。
+
+    **会話の口は read-only のまま**(`build_command`)—— あちらはファイルに触らない。
+    """
+    cmd = [
+        "codex", "exec",
+        # /srv は git リポジトリではないので、既定の拒否を外す
+        "--skip-git-repo-check",
+        # セッションをディスクに残さない(コンテナは使い捨て)
+        "--ephemeral",
+        "-s", "danger-full-access",
+        "-c", 'approval_policy="never"',
+        "-C", out_dir,
+    ]
+    if model:
+        cmd += ["-m", model]
+    cmd.append("-")  # プロンプトは標準入力から
+    return cmd
 
 
 def _shared_root() -> str:
@@ -1294,18 +1337,7 @@ async def _generate_images(body: ImageRequest) -> dict:
                 cmd += ["--model", body.model or MODEL]
             payload = b""
         else:
-            cmd = [
-                "codex", "exec",
-                "--skip-git-repo-check",
-                "--ephemeral",
-                # この作業ディレクトリにだけ書かせる(会話の口は read-only のまま)
-                "-s", "workspace-write",
-                "-c", 'approval_policy="never"',
-                "-C", out_dir,
-            ]
-            if body.model or MODEL:
-                cmd += ["-m", body.model or MODEL]
-            cmd.append("-")
+            cmd = image_command(out_dir, body.model or MODEL)
             payload = prompt.encode("utf-8")
 
         log.info("running %s image tool (prompt %d bytes)", CLI, len(prompt.encode("utf-8")))

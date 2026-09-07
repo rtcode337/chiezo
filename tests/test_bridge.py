@@ -855,6 +855,64 @@ class TestAntigravityUsage:
         assert server._antigravity_windows("サインインしてください") == []
 
 
+class TestImageSandbox:
+    """**元の絵を読むのに、codex 自前のサンドボックスが邪魔になる。**
+
+    codex は許可されたファイルの読み書きを bubblewrap 越しに行うが、非特権の
+    ユーザー名前空間を作れないホストでは補助プロセスが起動できない。書き出しは
+    内蔵ツールが直に行うので通り、**読みだけが落ちる** —— そのせいで一から描くのは
+    成功し、編集だけが「画像を保存しませんでした」に見えていた。
+    """
+
+    def test_画像の口はサンドボックスを使わない(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        cmd = server.image_command("/tmp/work")
+
+        assert cmd[cmd.index("-s") + 1] == "danger-full-access"
+        assert "-C" in cmd and cmd[cmd.index("-C") + 1] == "/tmp/work"
+
+    def test_元の絵の渡し方を名指しする(self, bridge):
+        """内蔵ツールには入力画像の口が 2 つあり、会話に添付された絵を使うほうを
+        選ばれると、ファイルで渡しているこちらでは 0 枚になって終わる。"""
+        import base64
+
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        text = server._image_prompt(
+            server.ImageRequest(prompt="構えさせる",
+                                image=base64.b64encode(b"png").decode()),
+            "/tmp/work",
+        )
+
+        assert "referenced_image_paths" in text
+        assert "conversation images" in text
+
+    def test_元の絵が無ければ名指ししない(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        text = server._image_prompt(server.ImageRequest(prompt="剣"), "/tmp/work")
+
+        assert "referenced_image_paths" not in text
+
+    def test_antigravity_には名指ししない(self, bridge):
+        """あちらは別のツールなので、codex の引数名を書いても雑音にしかならない。"""
+        import base64
+
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+        text = server._image_prompt(
+            server.ImageRequest(prompt="構えさせる",
+                                image=base64.b64encode(b"png").decode()),
+            "/tmp/work",
+        )
+
+        assert "referenced_image_paths" not in text
+
+    def test_会話の口は_read_only_のまま(self, bridge):
+        """隔離を外すのは絵を読む必要がある口だけ。会話はファイルに触らない。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        cmd = server.build_command("/tmp/out.txt", prompt="こんにちは")
+
+        assert cmd[cmd.index("-s") + 1] == "read-only"
+
+
 class TestFailureDetail:
     """CLI が何と言ったかを控えに残す。**残すのは末尾。**"""
 
