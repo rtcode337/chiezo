@@ -194,3 +194,33 @@ class TestDeletingASource:
         with pytest.raises(fastapi.HTTPException) as got:
             server.delete_source("../etc/passwd")
         assert got.value.status_code == 400
+
+    def test_it_never_touches_anything_outside_the_data_dir(self, trigger, tmp_path):
+        """名前の検査を抜けても、置き場の外は消さない。"""
+        server, _make = trigger
+        outside = tmp_path.parent / "outside.db"
+        outside.write_text("消えては困るもの")
+
+        assert server._remove_source_files("../outside") == []
+        assert outside.exists()
+
+    def test_a_linked_dumps_dir_is_still_cleaned(self, trigger, tmp_path):
+        """置き場の一部を別のディスクへ逃がしてある構成でも消し残さない。
+
+        リンクを辿って比べると、正しい対象まで「外」と見なしてしまう。
+        """
+        server, make = trigger
+        make("spots", "collect")
+        elsewhere = tmp_path.parent / "dumps_elsewhere"
+        elsewhere.mkdir()
+        material = tmp_path / "dumps" / "spots-20260101.ndjson"
+        (elsewhere / material.name).write_text(material.read_text())
+        import shutil
+
+        shutil.rmtree(tmp_path / "dumps")
+        (tmp_path / "dumps").symlink_to(elsewhere)
+
+        removed = server._remove_source_files("spots")
+
+        assert "spots-20260101.ndjson" in removed
+        assert not (elsewhere / "spots-20260101.ndjson").exists()

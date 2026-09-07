@@ -523,7 +523,7 @@ class TestRest:
             "sample_news"
         ]
 
-    def test_an_unknown_collection_is_404(self, client, sample):
+    def test_deleting_an_unknown_collection_is_404(self, client, sample):
         assert client.delete("/v1/collect/nosuch").status_code == 404
 
     def test_previewing_a_stopped_collection_is_refused(self, client, sample):

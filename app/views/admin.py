@@ -293,7 +293,9 @@ def _disk_html(data_dir: Path) -> str:
     try:
         usage = shutil.disk_usage(data_dir)
     except OSError as e:
-        return f'<span class="muted">ディスクの空きを取れません: {esc(str(e))}</span>'
+        # 例外の文字列は置き場のパスを含む。画面には種別だけ出し、詳細はログに残す
+        log.warning("could not read disk usage for %s: %s", data_dir, e)
+        return f'<span class="muted">ディスクの空きを取れません({type(e).__name__})</span>'
     gib = 1024**3
     free_gib = usage.free / gib
     used_pct = 100 * usage.used / usage.total if usage.total else 0
@@ -1339,6 +1341,19 @@ def _ratio(raw) -> float | None:
         return None
 
 
+def _refusal_text(status: int) -> str:
+    """下見を断られた理由の一言。**この表にある文言しか画面へ出さない**。"""
+    if status == 404:
+        return "その収集はありません"
+    if status == 403:
+        return "止めている収集です"
+    if status == 400:
+        return "収集の設定が受け付けられません。詳細は app コンテナのログ"
+    if status in (502, 504):
+        return "頼んだ AI から結果を受け取れません。詳細は app コンテナのログ"
+    return "詳細は app コンテナのログ"
+
+
 @router.post("/admin/collect/{name}/preview")
 async def admin_collect_preview(name: str, request: Request):
     """**焼かずに**1 回集めさせて、前世代との差分を見せる。
@@ -1358,13 +1373,16 @@ async def admin_collect_preview(name: str, request: Request):
         result = await collect_preview(name, request.app.state.sources)
         error = ""
     except HTTPException as e:
-        detail = e.detail if isinstance(e.detail, dict) else {"error": str(e.detail)}
+        # 断り方は配信側が組み立てた文言だが、そのまま画面へ流すと接続先や相手の
+        # 応答本文まで一緒に出る。**どの種類で断られたか**だけを出し、中身はログに残す
+        log.warning("collect preview refused: name=%s status=%s detail=%r", name, e.status_code, e.detail)
         result = None
-        error = f'<p class="stale">⚠️ 試せませんでした: {esc(str(detail))}</p>'
+        error = f'<p class="stale">⚠️ 試せませんでした({_refusal_text(e.status_code)})</p>'
     except Exception as e:
-        # 相手の落ち方は読めない。画面まで持って行って理由を見せる
+        # 相手の落ち方は読めない。種別だけ画面に出す(文言はログへ)
+        log.exception("collect preview failed: name=%s", name)
         result = None
-        error = f'<p class="stale">⚠️ 試せませんでした: {esc(f"{type(e).__name__}: {e}")}</p>'
+        error = f'<p class="stale">⚠️ 試せませんでした({esc(type(e).__name__)})</p>'
     return HTMLResponse(_preview_page_html(name, result, error))
 
 
