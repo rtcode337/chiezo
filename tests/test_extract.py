@@ -146,6 +146,23 @@ class TestPullingFromWhatIsAlreadyThere:
         assert "様式:印象派" in items[0]["tags"]
         assert "様式:象徴派" in items[0]["tags"]
 
+    def test_it_can_leave_out_what_it_does_not_want(self, source):
+        """カテゴリは持ち主の職業を選ばない。
+
+        「画家」のカテゴリには絵も描く俳優や作家が入っていて、人気の順に取ると
+        そちらが先に並ぶ（実際に俳優が 2 人、上位 30 人に入った）。
+        """
+        docs = [
+            {"title": "絵も描く俳優", "tags": ["印象派の画家", "アメリカ合衆国の男優"], "rank": 0.95},
+            {"title": "本職の画家", "tags": ["印象派の画家", "1840年生", "1926年没"], "rank": 0.5},
+        ]
+
+        items, _cursor = extract.run(
+            spec(not_tag="アメリカ合衆国の男優"), source(docs)
+        )
+
+        assert [i["title"] for i in items] == ["本職の画家"]
+
     def test_the_original_tags_do_not_come_along(self, source):
         """カテゴリはソースの都合で付いている。読む側に選ばせない。"""
         items, _cursor = extract.run(spec(), source(painters()))
@@ -221,6 +238,7 @@ class TestRefusingABrokenSpec:
         given = {
             "source": "jawiki",
             "tag": "印象派の画家",
+            "not_tag": "アメリカ合衆国の男優",
             "limit": 30,
             "body": "opening",
             "url": "https://ja.wikipedia.org/wiki/{title}",

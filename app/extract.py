@@ -75,6 +75,7 @@ def normalize(raw) -> dict | None:
 
     source = str(raw.get("source") or "").strip()
     tag = str(raw.get("tag") or "").strip()
+    not_tag = str(raw.get("not_tag") or "").strip()
     if not source:
         raise _bad("source(引くソース名)を入れてください")
     if not tag:
@@ -99,6 +100,7 @@ def normalize(raw) -> dict | None:
     spec = {
         "source": source,
         "tag": tag,
+        "not_tag": not_tag,
         "limit": limit,
         "body": body_field,
         "url": str(raw.get("url") or "").strip(),
@@ -178,6 +180,7 @@ def to_json(spec: dict | None) -> dict | None:
     return {
         "source": spec["source"],
         "tag": spec["tag"],
+        "not_tag": spec["not_tag"],
         "limit": spec["limit"],
         "body": spec["body"],
         "url": spec["url"],
@@ -209,6 +212,15 @@ def run(spec: dict, sources: dict) -> tuple[list[dict], str]:
             "hint": "タグの転置表が入る前のスキーマで焼かれている。取り込み直すと使える",
         })
     set_sql, params = id_set
+    # 外したいタグは EXCEPT で引く。**カテゴリは持ち主の職業を選ばない** ——
+    # 「20 世紀アメリカ合衆国の画家」には絵も描く俳優や作家が入っていて、
+    # 人気の順に取ると本来欲しい人より先に並ぶ(実際にそうなった)
+    if excluded := split_tags(spec["not_tag"]):
+        set_sql += (
+            f" EXCEPT SELECT doc_id FROM doc_tags WHERE tag IN ({','.join('?' * len(excluded))})"
+        )
+        params = [*params, *excluded]
+
     rows = db.query(
         src.path,
         f"SELECT title, {spec['body']} AS body, tags, extra FROM docs"
@@ -222,6 +234,10 @@ def run(spec: dict, sources: dict) -> tuple[list[dict], str]:
         "extract %s tag=%r: %d docs -> %d items", spec["source"], spec["tag"], len(rows), len(items)
     )
     return items, spec["cursor"]
+
+
+def split_tags(raw: str) -> list[str]:
+    return [t.strip() for t in (raw or "").split(",") if t.strip()]
 
 
 def _to_item(row: dict, spec: dict) -> dict | None:
@@ -327,6 +343,7 @@ SPEC_GUIDE = """抽出の指定は次の形の JSON です。
 {
   "source": "引くソース名",
   "tag": "絞り込むタグ(完全一致。カンマ区切りで複数書くと、そのどれかを持つもの)",
+  "not_tag": "外すタグ(カンマ区切り。これを持つものは、tag に当たっていても取らない)",
   "limit": 30,
   "body": "opening(冒頭。既定) か body(全文)",
   "url": "出典の作り方。{title} と、そのソースが extra に持っている値を差し込める",
@@ -348,6 +365,9 @@ SPEC_GUIDE = """抽出の指定は次の形の JSON です。
 守ること。
 - source は実在するソース名。tag は**そのソースに実在するタグ**(前方一致や部分一致
   ではなく完全一致で引くので、それらしい名前を作ると 0 件になる)
+- **カテゴリは持ち主の職業を選ばない。** 「画家」のカテゴリには、絵も描く俳優や作家が
+  入っている。人気の順に取るとそちらが先に並ぶので、混ぜたくないものがはっきり
+  しているときは `not_tag` で外す(例: 俳優・作家のカテゴリ)
 - 並び順は書けない。ソースが持っている順(ページビューや人口の多い順)で上から取る
 - 元のタグは持ち越さない。読む側が要るタグだけを読み替えで作る
 
