@@ -893,3 +893,57 @@ class TestTheCollectSectionMarkup:
         html = admin._collect_html({"news": baked}, "")
         assert "1,234 件" in html
         assert html.count("<form") == html.count("</form>")
+
+
+class TestTellingWhetherAnIngestIsRunning:
+    """外のアプリが**押す前に**判断できるように、取り込みの状態を配る。
+
+    走っている間は「いま集めて」を断るので、押してから断られるのではなく、
+    押せないことが見えているほうがよい。
+    """
+
+    @pytest.fixture()
+    def client(self, enabled, built_data_dir, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        from app.main import app
+
+        with TestClient(app) as c:
+            yield c
+
+    def test_it_says_when_something_is_running(self, client, monkeypatch):
+        from app.views import admin
+
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://trigger.invalid")
+        monkeypatch.setattr(
+            admin,
+            "_fetch_trigger_status",
+            lambda: {"state": "running", "source": "news", "started_at": "2026-09-07T00:00:00+00:00"},
+        )
+
+        body = client.get("/v1/ingest/status").json()
+
+        assert body["running"] is True
+        assert body["source"] == "news"
+
+    def test_it_does_not_hand_out_the_log(self, client, monkeypatch):
+        """取り込みのログには置き場のパスのような内部の事情が混ざる。"""
+        from app.views import admin
+
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://trigger.invalid")
+        monkeypatch.setattr(
+            admin, "_fetch_trigger_status", lambda: {"state": "idle", "log_tail": ["/data/…"]}
+        )
+
+        body = client.get("/v1/ingest/status").json()
+
+        assert body["running"] is False
+        assert "log_tail" not in body
+
+    def test_without_a_trigger_it_says_so(self, client, monkeypatch):
+        from app.views import admin
+
+        monkeypatch.setattr(admin, "TRIGGER_URL", None)
+
+        assert client.get("/v1/ingest/status").status_code == 503

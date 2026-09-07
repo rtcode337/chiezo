@@ -1346,6 +1346,34 @@ class CollectionPatch(BaseModel):
     )
 
 
+@app.get("/v1/ingest/status")
+def ingest_status():
+    """いま取り込みが走っているか。**外のアプリが押す前に判断できるように**。
+
+    集めるのも焼くのも取り込みの中で起きるので、走っている間に「いま集めて」と
+    頼んでも 409 で断られる。押してから断られるのと、押せないことが見えているのとでは
+    別物なので、状態のほうを配る。
+
+    **返すのは状態と対象だけ**(ログの中身は返さない。管理画面から読めれば足りるうえ、
+    取り込みのログには置き場のパスのような内部の事情が混ざる)。
+    """
+    from app.views.admin import TRIGGER_URL, _fetch_trigger_status
+
+    if not TRIGGER_URL:
+        raise HTTPException(503, {
+            "error": "chiezo-trigger が設定されていません(CHIEZO_TRIGGER_URL 未設定)",
+        })
+    status = _fetch_trigger_status() or {}
+    state = status.get("state") or "unknown"
+    return {
+        "state": state,
+        "running": state == "running",
+        "source": status.get("source"),
+        "started_at": status.get("started_at"),
+        "finished_at": status.get("finished_at"),
+    }
+
+
 @app.get("/v1/collect")
 def collect_list():
     """収集の一覧。**間隔・次にいつ走るか・溜まった件数**まで返す。
