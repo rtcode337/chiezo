@@ -285,6 +285,22 @@ curl -s -X PATCH "$BASE/v1/collect/tech_news" -H 'Content-Type: application/json
 curl -sG "$BASE/v1/tech_news/search" --data-urlencode "q=<検索語>"
 ```
 
+**溜まったものは新しい順に引ける**(`GET /v1/<name>/recent`。MCP の `recent`)。
+`search` は語が要り、`filter` はタグや属性なので、「この 1 日で何が入ったか」を引く
+手段がこれまで無かった —— 集めたものを読む側(重要なものを選ばせる、通知の候補にする)が
+まず訊くのはこれ。`since` に前回の `updated_at` を渡すと続きだけを取り直せる。
+
+```bash
+curl -sG "$BASE/v1/tech_news/recent?limit=20"
+curl -sG "$BASE/v1/tech_news/recent" --data-urlencode "since=2026-09-07T00:00:00+00:00"
+```
+
+**`since` はその時刻を含む**。時刻は秒までしか持たないので、「より後」にすると
+同じ秒に入ったものを黙って落とす —— 取りこぼすより、同じものが 1 件返るほうが後から直せる
+(読む側は `doc_id` で重複を落とす)。**対応するのは溜まっていくソースだけ**で、
+ダンプ由来のソースは 409 で断る(`updated_at` が新しさを表さないうえ、索引が無いので
+全走査になる)。
+
 **`{cursor}` が要**。実行ごとに進む印で、AI が答えの `next_cursor` で次を返す。
 これで「前回以降」「次の地域」「次に調べる人」が同じ 1 つの仕組みに乗る。
 

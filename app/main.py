@@ -49,6 +49,7 @@ from app.deps import (
     relevance_order,
     require_attributes,
     require_filter_schema,
+    require_recency_index,
     require_tag_schema,
 )
 from app.fts import build_match_query, escape_like
@@ -99,6 +100,13 @@ FILTER_ALLOWED_FIELDS = [
     "doc_id", "title", "feature", "area", "lat", "lon", "wikidata",
     "opening", "body", "tags", "links", "updated_at", "rank_score", "extra",
 ]
+
+# 新しい順に引く口。溜まっていくソース(集めたもの)を「この 1 日で何が入ったか」で
+# 読むためのもの。**既定に本文を入れない** —— 一覧として読むので、まず見出しと
+# 冒頭が要る(全文は doc で取り直す)
+RECENT_DEFAULT_FIELDS = ["doc_id", "title", "opening", "tags", "updated_at", "extra"]
+RECENT_LIMIT_DEFAULT = 20
+RECENT_LIMIT_MAX = 200
 
 
 def scan_all(data_dir: Path) -> dict[str, Source]:
@@ -990,6 +998,56 @@ def filter_docs(
 
 TAGS_LIMIT_DEFAULT = 50
 TAGS_LIMIT_MAX = 500
+
+
+@app.get("/v1/{source}/recent")
+def recent_docs(
+    request: Request,
+    source: str,
+    since: str | None = Query(
+        None, description="この時刻**以降**だけ(ISO8601。updated_at と同じ書き方)"
+    ),
+    limit: int = Query(RECENT_LIMIT_DEFAULT, ge=1, le=RECENT_LIMIT_MAX),
+    offset: int = Query(0, ge=0),
+    fields: str | None = None,
+    max_chars: int = Query(0, ge=0),
+):
+    """**新しい順**に文書を並べる(溜まっていくソース向け)。
+
+    `search` は語が要り、`filter` はタグや属性での絞り込みなので、
+    **「この 1 日で何が入ったか」を引く手段がこれまで無かった**。集めたものを
+    読む側(重要なものを選ばせる、通知の候補にする)はまずこれを訊く。
+
+    **持っていないソースは 409 で断る**(`require_recency_index`)。`updated_at` の
+    索引はコアスキーマに無いので、黙って通すと `docs` の全走査になり、しかも
+    ダンプ由来のソースでは並べても意味を成さない(記事の版や取り込み時刻なので)。
+
+    `since` は**その時刻を含む**。時刻は秒までしか持たないので、「より後」にすると
+    **同じ秒に入ったものを黙って落とす** —— 取りこぼすより、同じものが 1 件返るほうが
+    後から直せる。読む側は応答の `updated_at` を次の `since` に渡し、`doc_id` で
+    重複を落とす(並びが `updated_at` の降順・`doc_id` の降順で固定なので、
+    突き合わせは 1 件見るだけで済む)。
+    """
+    src = get_source(request, source)
+    require_recency_index(src)
+    field_list = parse_fields(fields, RECENT_DEFAULT_FIELDS, FILTER_ALLOWED_FIELDS)
+    where, params = "", []
+    if since:
+        where = " WHERE updated_at >= ?"
+        params.append(since)
+    rows = db.query(
+        src.path,
+        f"SELECT {', '.join(field_list)} FROM docs INDEXED BY idx_docs_updated{where}"
+        " ORDER BY updated_at DESC, doc_id DESC LIMIT ? OFFSET ?",
+        (*params, limit, offset),
+    )
+    return {
+        "source": src.name,
+        "since": since,
+        "limit": limit,
+        "offset": offset,
+        "docs": [doc_response(r, field_list, max_chars) for r in rows],
+    }
 
 
 @app.get("/v1/{source}/tags")

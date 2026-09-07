@@ -206,6 +206,12 @@ def build_db(adapter: SourceAdapter, dump_path: Path, dump_date: str, building_p
 
         log.info("creating indexes...")
         conn.executescript(CORE_INDEX_DDL)
+        # 溜まっていくソースだけが名乗る追加の索引(新しい順に引くため)。
+        # コアに入れないのは、全ソースに足すと `SCHEMA_VERSION` を上げることになり、
+        # 新しさに意味の無いソースまで焼き直しを要求してしまうから
+        if extra := getattr(adapter, "extra_index_ddl", None):
+            log.info("creating extra indexes for %s", adapter.source)
+            conn.executescript(extra)
         conn.commit()
 
         # tag_counts は doc_tags の索引ができてから作る(tag 順に並んでいるので

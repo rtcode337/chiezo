@@ -78,6 +78,44 @@ def require_filter_schema(src: Source) -> None:
         )
 
 
+def has_recency_index(src: Source) -> bool:
+    """新しい順に引く索引(`idx_docs_updated`)を持っているか。
+
+    **コアスキーマには入っていない**(溜まっていくソースだけが持つ)。
+    `sqlite_master` を 1 行引くだけなので、毎回確かめてよい。
+    """
+    try:
+        rows = db.query(
+            src.path,
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_docs_updated'",
+        )
+    except Exception:
+        # 読めないソースは「持っていない」でよい(断る側へ倒す)
+        return False
+    return bool(rows)
+
+
+def require_recency_index(src: Source) -> None:
+    """新しい順に引けないソースを明示的に断る。
+
+    **黙って全走査させない。** `updated_at` の索引はコアスキーマに無いので、
+    持たないソースで並べ替えると `docs` を全部読むことになる(jawiki なら 150 万行)。
+    しかも**ダンプ由来のソースでは並べても意味を成さない** —— `updated_at` は
+    記事の版や取り込み時刻で、新しさの順にはならない。
+    """
+    if not has_recency_index(src):
+        raise HTTPException(
+            409,
+            {
+                "error": f"source {src.name} cannot be listed by recency",
+                "reason": "新しい順に引く索引を持っていません",
+                "hint": "溜まっていくソース(集めたもの・覚えたこと)だけが対応しています。"
+                        "ダンプ由来のソースは updated_at が新しさを表さないので、"
+                        "search / filter で引いてください",
+            },
+        )
+
+
 def require_tag_schema(src: Source) -> None:
     """タグ転置表(doc_tags)が無い古い DB を明示的に断る。
 

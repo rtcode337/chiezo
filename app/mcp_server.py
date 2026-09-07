@@ -243,6 +243,28 @@ def build_mcp(app: FastAPI) -> MCPServer:
             limit=limit, offset=offset,
         )
 
+    @mcp.tool(description=(
+        "**新しい順**に文書を並べる。「この 1 日で何が入ったか」を引くための道具で、"
+        "search(語が要る)でも filter(タグや属性)でも取れない読み方。"
+        "対応しているのは**溜まっていくソース**だけ(集めたもの・覚えたこと)——"
+        "ダンプ由来のソースは 409 で断る(updated_at が新しさを表さないため)。"
+        "since にこの道具が返した updated_at を渡すと、その続きだけを取り直せる"
+        "(**その時刻を含む**ので、同じものが 1 件返りうる。doc_id で落とす)。"
+    ))
+    async def recent(
+        source: str,
+        since: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+        fields: str | None = None,
+        max_chars: int = 0,
+    ) -> dict:
+        return await run_in_threadpool(
+            _call, api.recent_docs,
+            request=_request(app), source=source, since=since,
+            limit=limit, offset=offset, fields=fields, max_chars=max_chars,
+        )
+
     @mcp.tool(description="タイトルの前方一致候補を返す。表記揺れの確認や短い語の引き当てに使う。")
     async def titles(source: str, prefix: str, limit: int = 20) -> dict:
         return await run_in_threadpool(

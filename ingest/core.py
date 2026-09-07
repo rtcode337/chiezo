@@ -124,6 +124,17 @@ CREATE INDEX idx_tag_counts_docs ON tag_counts(docs DESC, tag);
 CREATE INDEX idx_docs_rank ON docs(rank_score DESC, title);
 """
 
+# 新しい順に引くための索引。**コアには入れない** —— 全ソースに足すと
+# `SCHEMA_VERSION` を上げることになり、jawiki の焼き直し(数時間)まで要求してしまう。
+# しかも**新しさに意味があるソースは限られる**(集めたもの・覚えたこと・固めたもの)。
+# ダンプ由来のソースの `updated_at` は記事の版や取り込み時刻で、並べても意味を成さない。
+#
+# 欲しいアダプタが `extra_index_ddl` で名乗る(`ingest/main.py` が
+# `CORE_INDEX_DDL` の後に流す)。索引を足すだけなので、スキーマの約束は変わらない。
+RECENCY_INDEX_DDL = """
+CREATE INDEX idx_docs_updated ON docs(updated_at DESC, doc_id DESC);
+"""
+
 # docs 投入後に doc_tags を組み立てる SQL(索引を張る前に流す)。
 # docs から作り直す方式にしているのは、docs 側が INSERT OR REPLACE を使う(同じ doc_id が
 # 二度来ても最後の 1 件が残る)ため。行ごとに append すると置き換えられた古いタグが残る。
@@ -259,6 +270,11 @@ class SourceAdapter(Protocol):
     # 実際に使えるメモリと突き合わせ、足りなければ構築せず中止する。取り込みは潤沢メモリの
     # マシンで回す前提で、上限で締めて OOM に殺されるより先に落とすほうが安全なため。
     min_build_memory_gb: float
+
+    # 新しい順に引けるようにするか(`RECENCY_INDEX_DDL` を足す)。
+    # **新しさに意味があるソースだけが名乗る** —— 溜まっていく類のもの。
+    # ダンプ由来のソースが名乗ると、意味の無い並びに索引ぶんの容量を払うことになる
+    extra_index_ddl: str | None = None
 
     def fetch(self, workdir: Path) -> tuple[Path, str]:
         """元データを取得し (ローカルパス, ダンプ日付YYYYMMDD) を返す(再開可能に)。"""

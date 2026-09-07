@@ -24,7 +24,7 @@ import logging
 import os
 from pathlib import Path
 
-from core import SourceAdapter
+from core import RECENCY_INDEX_DDL, SourceAdapter
 from sources.remote import PluginError, RemotePluginAdapter, RemoteSource, _get_json
 
 log = logging.getLogger("chiezo.ingest")
@@ -52,6 +52,10 @@ class CollectAdapter(RemotePluginAdapter):
     (`{cursor}` が進んでいるので次の範囲になる)。焼く前に落ちたときのために
     `dumps/` に残ったものを拾い、**焼き上がってから消す**。
     """
+
+    # 集めたものは**溜まっていく**ので、新しい順に引けるようにする。
+    # 「この 1 日で何が入ったか」は、この層でいちばん訊かれる問い
+    extra_index_ddl = RECENCY_INDEX_DDL
 
     def __init__(self, src: RemoteSource) -> None:
         super().__init__(src)

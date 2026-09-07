@@ -630,3 +630,69 @@ class TestShortTermIsNotARebuildableSource:
         before = listed()
         notes.add(text="別プロセスからの書き込み")
         assert listed() == before + 1
+
+
+class TestRecent:
+    """新しい順に引く(`/v1/{source}/recent`)。
+
+    `search` は語が要り、`filter` はタグや属性なので、「この 1 日で何が入ったか」を
+    引く手段がこれまで無かった。溜まっていくソースを読む側(重要なものを選ばせる、
+    通知の候補にする)がまず訊くのはこれ。
+    """
+
+    def test_it_lists_newest_first(self, client):
+        from app import notes
+
+        notes.add(text="古いほう", tags="決定")
+        notes.add(text="新しいほう", tags="決定")
+
+        docs = client.get("/v1/notes/recent").json()["docs"]
+        assert [d["title"] for d in docs][:2] == ["新しいほう", "古いほう"]
+
+    def test_since_does_not_drop_what_shares_the_second(self, client):
+        """読む側がカーソルとして持ち回れば、前回以降だけを取り直せる。
+
+        **時刻は秒までしか持たない**ので、`since` は「より後」ではなく「以降」。
+        「より後」にすると同じ秒に入ったものを黙って落とす —— 取りこぼすより、
+        同じものが 1 件返るほうが後から直せる。
+        """
+        from app import notes
+
+        notes.add(text="1件目")
+        first = client.get("/v1/notes/recent").json()["docs"][0]
+
+        notes.add(text="2件目")
+        docs = client.get("/v1/notes/recent", params={"since": first["updated_at"]}).json()["docs"]
+        titles = [d["title"] for d in docs]
+
+        assert "2件目" in titles
+        # 同じ秒に入っていれば境目のものも返る(重複は doc_id で落とす)
+        assert titles == ["2件目", "1件目"] or titles == ["2件目"]
+
+    def test_the_body_is_not_in_the_default_fields(self, client):
+        """一覧として読むので、まず見出しと冒頭。全文は doc で取り直す。"""
+        from app import notes
+
+        notes.add(text="見出し\n本文はそれなりに長い")
+        doc = client.get("/v1/notes/recent").json()["docs"][0]
+        assert "opening" in doc
+        assert "body" not in doc
+
+    def test_a_source_without_the_index_is_refused(self, client):
+        """黙って全走査させない。ダンプ由来のソースは並べても意味を成さない。
+
+        `updated_at` は記事の版や取り込み時刻なので、新しさの順にはならない。
+        しかも索引がコアスキーマに無いので、通すと docs を全部読むことになる
+        (jawiki なら 150 万行)。
+        """
+        res = client.get("/v1/jawiki/recent")
+        assert res.status_code == 409
+        assert "recency" in res.json()["error"]
+
+    def test_it_is_reachable_from_mcp(self, client):
+        """引かせたい相手は AI なので、MCP の道具として出ていること。"""
+        from app.mcp_server import build_mcp
+
+        mcp = build_mcp(client.app)
+        names = {t.name for t in mcp._tool_manager.list_tools()}
+        assert "recent" in names

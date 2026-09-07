@@ -24,6 +24,9 @@ TOOL_ENDPOINTS = {
     "tags": ("list_tags", {"source": "jawiki"}),
     "titles": ("titles", {"source": "jawiki", "prefix": "東京"}),
     "links": ("links", {"source": "jawiki", "title": "東京都"}),
+    # 新しい順に引く道具。jawiki は索引を持たないので 409 になるが、
+    # ここで見ているのはシグネチャの一致なので相手は何でもよい
+    "recent": ("recent_docs", {"source": "jawiki"}),
 }
 
 

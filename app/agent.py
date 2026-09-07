@@ -50,7 +50,7 @@ from app.pages import browse_url, doc_url
 log = logging.getLogger("chiezo.app")
 
 # agent に渡す Chiezo の道具(MCP に出しているものから借りる)。ここは読み取り専用。
-KNOWLEDGE_TOOLS = ("sources", "search", "doc", "filter", "tags", "titles", "links")
+KNOWLEDGE_TOOLS = ("sources", "search", "doc", "filter", "tags", "titles", "links", "recent")
 
 # 「覚える」層の道具。`remember` は Chiezo で唯一の書き込みなので分けてある。
 # 当初は「質問の副作用でメモが増えるのは予想外の変化」として渡していなかったが、
