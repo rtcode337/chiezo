@@ -17,6 +17,10 @@
 
 トークン数の `NULL` は「相手が言わなかった」、`0` は「使わなかった」。 混ぜると、
 数を返さない相手(CLI ブリッジ)が「0 トークンで動く相手」に見える。
+
+やり取りの目方も残す(`prompt_bytes` / `reply_bytes` / `ms`)。 **中身は持たない**まま
+「何をした呼び出しか」を読めるようにするため —— トークン数を言わない相手では、
+これが無いと控えに相手の名前と時刻しか残らない。
 """
 from __future__ import annotations
 
@@ -47,7 +51,13 @@ CREATE TABLE IF NOT EXISTS calls (
     kind     TEXT NOT NULL DEFAULT 'chat',
     at       TEXT NOT NULL,
     input_tokens  INTEGER,
-    output_tokens INTEGER
+    output_tokens INTEGER,
+    -- やり取りの大きさと所要時間。**中身は残さない**(依頼文と応答には呼んだ側の
+    -- 材料がそのまま入る)。大きさと時間だけなら中身を持たずに「何をした呼び出しか」
+    -- が読める —— 短い問いに長く答えたのか、絵を 1 枚描かせて 6 分待ったのか。
+    prompt_bytes  INTEGER,
+    reply_bytes   INTEGER,
+    ms            INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_calls_at ON calls(at);
 CREATE TABLE IF NOT EXISTS quota (
@@ -59,6 +69,15 @@ CREATE TABLE IF NOT EXISTS quota (
     error      TEXT NOT NULL DEFAULT ''
 );
 """
+
+
+# 後から足した列。 既にある DB には接続時の ALTER TABLE で足す
+# (`ai_log` と同じ流儀。作り直しは要らず、古い行は NULL のまま残る)。
+_ADDED_COLUMNS = {
+    "prompt_bytes": "INTEGER",
+    "reply_bytes": "INTEGER",
+    "ms": "INTEGER",
+}
 
 
 @dataclass(frozen=True)
@@ -102,6 +121,10 @@ def _connect() -> sqlite3.Connection:
     # マウントしていることが多く、共有ファイルシステムでは WAL が使えないことがある。
     conn.execute("PRAGMA journal_mode=DELETE")
     conn.executescript(_SCHEMA)
+    have = {row["name"] for row in conn.execute("PRAGMA table_info(calls)")}
+    for name, kind in _ADDED_COLUMNS.items():
+        if name not in have:
+            conn.execute(f"ALTER TABLE calls ADD COLUMN {name} {kind}")
     return conn
 
 
@@ -122,18 +145,27 @@ def record(
     kind: str = "chat",
     input_tokens: int | None = None,
     output_tokens: int | None = None,
+    prompt_bytes: int | None = None,
+    reply_bytes: int | None = None,
+    ms: int | None = None,
 ) -> None:
-    """呼び出しを 1 件残す。失敗しても例外にしない(会話を止めないため)。"""
+    """呼び出しを 1 件残す。失敗しても例外にしない(会話を止めないため)。
+
+    `prompt_bytes` / `reply_bytes` / `ms` は**やり取りの目方**。分からなければ
+    `None` のままでよい(古い行と同じ扱いになる)。**中身は渡さない** ——
+    ここに残すのは大きさと時間だけで、依頼文も応答も持たない。
+    """
     global _last_prune
     if not is_enabled() or not provider:
         return
     try:
         with _connect() as conn:
             conn.execute(
-                "INSERT INTO calls (provider, model, kind, at, input_tokens, output_tokens)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO calls (provider, model, kind, at, input_tokens, output_tokens,"
+                " prompt_bytes, reply_bytes, ms)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (provider, model or "", kind, _now().isoformat(timespec="seconds"),
-                 input_tokens, output_tokens),
+                 input_tokens, output_tokens, prompt_bytes, reply_bytes, ms),
             )
             now = time.monotonic()
             if now - _last_prune > _PRUNE_INTERVAL:
@@ -186,7 +218,8 @@ def recent_calls(limit: int = 100) -> list[dict]:
     try:
         with _connect() as conn:
             rows = conn.execute(
-                "SELECT provider, model, kind, at, input_tokens, output_tokens FROM calls"
+                "SELECT provider, model, kind, at, input_tokens, output_tokens,"
+                "       prompt_bytes, reply_bytes, ms FROM calls"
                 " ORDER BY at DESC, id DESC LIMIT ?",
                 (max(1, limit),),
             ).fetchall()
@@ -201,6 +234,9 @@ def recent_calls(limit: int = 100) -> list[dict]:
             "kind": r["kind"] or "chat",
             "input_tokens": r["input_tokens"],
             "output_tokens": r["output_tokens"],
+            "prompt_bytes": r["prompt_bytes"],
+            "reply_bytes": r["reply_bytes"],
+            "ms": r["ms"],
         }
         for r in rows
     ]

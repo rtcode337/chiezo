@@ -1673,6 +1673,30 @@ class TestAdminHistory:
         # トークンは相手が言ったときだけ出す
         assert "入 120" in html and "出 34" in html
 
+    def test_成功した依頼はやり取りの目方が読める(self, admin):
+        """**成功の行に「相手が言わなかった」しか出ないと、何をした呼び出しか読めない。**
+
+        中身は残さない約束なので、読めるようにするのは大きさと時間のほう ——
+        トークン数を言わない相手(CLI ブリッジ・絵と音)ではこれが唯一の手がかりになる。
+        """
+        from app import usage_store
+
+        usage_store.record("antigravity", kind="image",
+                           prompt_bytes=495, reply_bytes=1_400_000, ms=371_000)
+        html = admin.get("/admin").text
+        assert "依頼 495 B" in html and "応答 1.3 MB" in html
+        assert "6 分 11 秒" in html
+        # 目方が読めるなら、トークンを言わなかったことをわざわざ書かない
+        assert "相手が言わなかった" not in html
+
+    def test_目方を残す前の控えは回数だけと出す(self, admin):
+        """古い行は測っていないだけで、相手が黙っていたわけではない。"""
+        from app import usage_store
+
+        usage_store.record("claude", model="opus")
+        html = admin.get("/admin").text
+        assert "控えは回数だけ" in html
+
     def test_失敗だけに絞れる(self, admin):
         from app import ai_log, usage_store
 

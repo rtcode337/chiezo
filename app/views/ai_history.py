@@ -51,13 +51,55 @@ def _tokens(row: dict) -> str:
     """使ったトークン。**None は「相手が言わなかった」、0 は「使わなかった」**。
 
     混ぜると、数を返さない相手(CLI ブリッジ)が「0 トークンで動く相手」に見える。
+    **言わなかったときは何も返さない** —— そのぶんは目方(`_weight`)が埋める。
     """
     parts = [
         f"入 {row['input_tokens']:,}" if row["input_tokens"] is not None else "",
         f"出 {row['output_tokens']:,}" if row["output_tokens"] is not None else "",
     ]
-    body = " / ".join(p for p in parts if p)
-    return body or '<span class="muted">相手が言わなかった</span>'
+    return " / ".join(p for p in parts if p)
+
+
+def _took(ms: int) -> str:
+    if ms >= 60_000:
+        return f"{ms // 60_000} 分 {ms % 60_000 // 1000} 秒"
+    if ms >= 1000:
+        return f"{ms / 1000:.1f} 秒"
+    return f"{ms} ミリ秒"
+
+
+def _weight(row: dict) -> str:
+    """やり取りの目方。**「どういうやり取りだったか」はここで読む。**
+
+    中身は残していないので、読めるのは大きさと時間だけ —— それでも
+    「短く聞いて長く答えさせた」「絵を 1 枚描かせて 6 分待った」の区別は付く。
+    トークン数を言わない相手(CLI ブリッジ・絵と音)ではこちらが唯一の手がかりになる。
+    """
+    sent, got, ms = row.get("prompt_bytes"), row.get("reply_bytes"), row.get("ms")
+    flow = " → ".join(
+        p for p in (
+            f"依頼 {_size(sent)}" if sent is not None else "",
+            f"応答 {_size(got)}" if got is not None else "",
+        ) if p
+    )
+    return " / ".join(p for p in (flow, _took(ms) if ms is not None else "") if p)
+
+
+def _detail(row: dict) -> str:
+    """成功した呼び出しの「中身」の欄。
+
+    **目方を先に出す。** トークン数は相手が言ったときだけ足す —— 以前は
+    トークンだけを出していたので、言わない相手の行が「相手が言わなかった」の
+    一言になり、成功したのに何をした呼び出しなのか読めなかった。
+    """
+    lines = [p for p in (_weight(row), _tokens(row)) if p]
+    if not lines:
+        # 目方を残す前の古い控え。**「言わなかった」ではない**(こちらが測っていない)
+        return '<span class="muted">控えは回数だけ</span>'
+    body = f'<span class="snippet">{lines[0]}</span>'
+    if len(lines) > 1:
+        body += f'<br><span class="muted">{lines[1]}</span>'
+    return body
 
 
 def entries(failed_only: bool = False) -> list[dict]:
@@ -118,7 +160,7 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
             who += f'<br><span class="muted">{esc(row["model"])}</span>'
         if row["ok"]:
             result = '<span class="muted">成功</span>'
-            detail = _tokens(row)
+            detail = _detail(row)
         else:
             result = f'<span class="stale">{esc(_status(row["status"]))}</span>'
             detail = (
@@ -135,7 +177,9 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
 <p class="muted">
 会話・絵・音・動画・声のどれでも、頼んだものは新しい順にここへ残る。
 <strong>プロンプトと応答は残していない</strong> —— 呼んだ側の材料がそのまま入るため。
-失敗のときだけ理由と依頼文の大きさを残してあるのは、失敗が大きさに寄っているのかを
+かわりに<strong>やり取りの目方</strong>(依頼文と応答の大きさ・かかった時間)を残してあるので、
+中身を持たずに「短く聞いて長く答えさせた」「絵を 1 枚描かせて何分も待った」の区別は付く。
+失敗のときは理由と依頼文の大きさを残す —— 失敗が大きさに寄っているのかを
 後から見分けられるようにするため。{toggle}<br>
 成功の控えは {usage_store.KEEP_DAYS} 日、失敗の控えは直近 {ai_log.MAX_ROWS} 件まで。
 機械で読むなら <code>GET /v1/ai/failures</code>。

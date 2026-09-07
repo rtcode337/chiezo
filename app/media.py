@@ -29,6 +29,7 @@ import mimetypes
 import os
 import re
 import sqlite3
+import time
 import uuid
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -173,11 +174,16 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
 
 # 走っているはずの job を「もう動いていない」と見なすまでの猶予。1 つぶんの上限 + 余裕
 # (更新は 1 つ出来るごとに入るので、これを超えて無音なら誰も面倒を見ていない)。
-STALE_AFTER = media_backends.GENERATE_TIMEOUT + 60
+#
+# **上限は生成側と同じところから引く**(`media_backends.timeout_for`)。ここだけ別の
+# 定数を見ていると、長く粘る相手を描いている最中に畳んでしまう —— CLI ブリッジ越しの
+# 絵の編集は 630 秒まで待つ作りなのに、こちらが 360 秒で「応答が途絶えました」と
+# 書いて捨てていた(6 分粘った編集が毎回それで消えた)。
+STALE_AFTER = media_backends.timeout_for(media_providers.KIND_IMAGE) + 60
 
 # 動画は待ち時間の桁が違う。 絵と同じ猶予で畳むと、まだ相手の中で作っている最中の
 # job を「中断された」と書いてしまい、出来上がった動画を取りに行けなくなる。
-STALE_AFTER_VIDEO = media_backends.VIDEO_TIMEOUT + 60
+STALE_AFTER_VIDEO = media_backends.timeout_for(media_providers.KIND_VIDEO) + 60
 
 
 def _reap_stale() -> None:
@@ -334,10 +340,19 @@ async def _run(job_id: str, backend: str, req, count: int, kind: str) -> None:
         for index in range(count):
             # seed は 1 つごとにずらす(同じ頼みで同じものが並んでも選べない)
             one = replace(req, seed=(req.seed + index) if req.seed else 0)
+            started = time.monotonic()
             item = await media_backends.generate_for(kind, backend, one)
             # 1 枚 = 1 回。 絵と音も同じサブスクの枠を食う(Codex / Antigravity)ので、
             # 会話と同じ表に残す —— 分けると「話していないのに枠が減った」が読めない。
-            usage_store.record(backend, model=item.model, kind=kind)
+            # **目方も一緒に残す**(依頼文の大きさ・出来たものの大きさ・かかった時間)。
+            # 絵と音の相手はトークン数を言わないので、これが無いと控えに相手の名前しか
+            # 残らず、何を頼んだ呼び出しなのかが後から読めない。
+            usage_store.record(
+                backend, model=item.model, kind=kind,
+                prompt_bytes=len((getattr(one, "prompt", "") or "").encode()),
+                reply_bytes=len(item.data or b""),
+                ms=int((time.monotonic() - started) * 1000),
+            )
             files.append(asdict(_save(job_id, index, item)))
             _update(job_id, files=files, model=item.model, seed=files[0]["seed"])
         _update(job_id, state="done", files=files)
@@ -864,13 +879,20 @@ async def transcribe(
             },
         )
 
+    started = time.monotonic()
     result = await media_backends.transcribe(
         chosen,
         media_backends.TranscribeRequest(
             data=data, filename=filename, mime=mime, model=model, language=language
         ),
     )
-    usage_store.record(chosen, model=result.model, kind=media_providers.KIND_TRANSCRIBE)
+    # 文字起こしは「送った音の大きさ → 返ってきた文の大きさ」で目方を取る
+    usage_store.record(
+        chosen, model=result.model, kind=media_providers.KIND_TRANSCRIBE,
+        prompt_bytes=len(data or b""),
+        reply_bytes=len((result.text or "").encode()),
+        ms=int((time.monotonic() - started) * 1000),
+    )
     return {"text": result.text, "model": result.model,
             "language": result.language, "backend": chosen}
 

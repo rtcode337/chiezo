@@ -323,6 +323,16 @@ class TestJobs:
         assert done["state"] == "failed"
         assert "中断" in done["error"]
 
+    def test_猶予は生成側が待つ上限より長い(self, state):
+        """**畳む側が、描かせる側より先に見切ってはいけない。**
+
+        CLI ブリッジ越しの絵は自前で 10 分粘る作りなのに、こちらの猶予だけ
+        短い定数(300 秒 + 60)を見ていたため、6 分粘っていた編集を毎回
+        「応答が途絶えました」と書いて捨てていた —— 相手の枠だけ使って成果は消える。
+        """
+        assert media.STALE_AFTER > media_backends.BRIDGE_IMAGE_TIMEOUT
+        assert media.STALE_AFTER_VIDEO > media_backends.VIDEO_TIMEOUT
+
     def test_stale_running_job_is_reaped(self, state):
         """ワーカーごと落ちると `_run` の後始末すら通らない。
         running のまま残った job は、読み出すときに畳む。"""

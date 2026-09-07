@@ -576,8 +576,14 @@ def _note_failure(cfg: Settings, messages: list[dict], status: int, reason: str)
         effort=cfg.effort,
         status=status,
         reason=reason,
-        prompt_bytes=sum(len((m.get("content") or "").encode()) for m in messages),
+        prompt_bytes=_prompt_bytes(messages),
     )
+
+
+def _prompt_bytes(messages: list[dict]) -> int:
+    """送った依頼文の大きさ。**成功の控えと失敗の控えで同じ測り方**にする ——
+    別々に数えると、同じ呼び出しが 2 つの表で違う大きさになる。"""
+    return sum(len((m.get("content") or "").encode()) for m in messages)
 
 
 def _upstream_error(exc: Exception) -> HTTPException:
@@ -629,7 +635,14 @@ async def _post_with_retry(client: httpx.AsyncClient, cfg: Settings, payload: di
     return res  # 到達しない(ループの最後で必ず返す)
 
 
-def _record_usage(cfg: Settings, usage: dict | None) -> None:
+def _record_usage(
+    cfg: Settings,
+    usage: dict | None,
+    *,
+    prompt_bytes: int | None = None,
+    reply_bytes: int | None = None,
+    ms: int | None = None,
+) -> None:
     """1 往復ぶんを使用量に残す(`app/usage_store.py`)。
 
     相手がトークン数を言わなければ `None` のまま残す。 0 と書くと、数を返さない相手
@@ -654,6 +667,11 @@ def _record_usage(cfg: Settings, usage: dict | None) -> None:
         # OpenAI 互換は prompt/completion。相手によっては input/output で名乗る。
         input_tokens=_count("prompt_tokens", "input_tokens"),
         output_tokens=_count("completion_tokens", "output_tokens"),
+        # **トークン数を言わない相手のための目方。** 大きさと時間なら必ず測れるので、
+        # 「何も分からない呼び出し」が控えに並ばずに済む(CLI ブリッジがこれに当たる)。
+        prompt_bytes=prompt_bytes,
+        reply_bytes=reply_bytes,
+        ms=ms,
     )
 
 
@@ -663,6 +681,7 @@ async def complete_message(cfg: Settings, messages: list[dict], **extra) -> dict
     `_complete` が本文だけを返すのに対し、こちらは `tool_calls` を含む assistant
     メッセージをそのまま返す(agent モードは次のターンにこれを丸ごと積み直す必要がある)。
     """
+    started = time.monotonic()
     try:
         async with _llm_client(cfg) as client:
             res = await _post_with_retry(
@@ -685,7 +704,13 @@ async def complete_message(cfg: Settings, messages: list[dict], **extra) -> dict
         raise HTTPException(502, {"error": f"unexpected llm response: {e}"}) from None
     if not isinstance(message, dict):
         raise HTTPException(502, {"error": "unexpected llm response: message is not an object"})
-    _record_usage(cfg, body.get("usage"))
+    _record_usage(
+        cfg,
+        body.get("usage"),
+        prompt_bytes=_prompt_bytes(messages),
+        reply_bytes=len((content_of(message) or "").encode()),
+        ms=int((time.monotonic() - started) * 1000),
+    )
     return message
 
 
@@ -716,6 +741,8 @@ async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator
     混雑(429/503)は流し始める前だけ引き直す。 1 文字でも返した後に引き直すと、
     画面に同じ答えが二重に出る。
     """
+    started = time.monotonic()
+    sent = 0
     for wait in (*RETRY_WAITS, None):
         try:
             async with _llm_client(cfg) as client, client.stream(
@@ -745,11 +772,19 @@ async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator
                     except (json.JSONDecodeError, KeyError, IndexError, TypeError):
                         continue  # 使い物にならないフレームは黙って捨てる
                     if delta:
+                        sent += len(delta.encode())
                         yield delta
                 # 流し切ったら 1 回ぶん残す。 差分の応答にトークン数は載らない
                 # (`stream_options` を送れば載る相手もいるが、送ると 400 で断る相手がいる)
-                # ので、回数だけを記録する。
-                _record_usage(cfg, None)
+                # ので、**流したぶんの大きさと時間**で目方を残す(数えるのは
+                # こちらを通った差分だけなので、中身を持たずに済む)。
+                _record_usage(
+                    cfg,
+                    None,
+                    prompt_bytes=_prompt_bytes(messages),
+                    reply_bytes=sent,
+                    ms=int((time.monotonic() - started) * 1000),
+                )
                 return
         except httpx.HTTPError as e:
             err = _upstream_error(e)
