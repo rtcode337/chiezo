@@ -107,13 +107,22 @@ class OvertureAdapter:
 
         **決め打ちにしない** —— 毎月出るので、書いた翌月には無くなって
         「No files found」で落ちる(実際に古い版を書いて踏んだ)。
+
+        **`release/*` では引けない。** S3 にディレクトリという実体は無く、
+        DuckDB の glob は `*` に対して「その下にあるオブジェクト」しか返さない ——
+        リリース名はプレフィックスの一部でしかないので、**エラーにならずに 0 件**が
+        返る。そこで `**` で葉のファイルまで辿り、パスからリリース名を切り出す。
+        リリースは 2 世代しか置かれないので、全件辿っても数秒で終わる。
         """
         rows = conn.execute(
-            f"SELECT file FROM glob('{S3_BASE}/*') ORDER BY file DESC"
+            f"""
+            SELECT DISTINCT regexp_extract(file, 'release/([^/]+)/', 1) AS release
+            FROM glob('{S3_BASE}/**')
+            ORDER BY release DESC
+            """
         ).fetchall()
-        releases = [str(r[0]).rstrip("/").rsplit("/", 1)[-1] for r in rows]
         # `2026-08-19.0` の形だけを見る(将来別のものが並んでも拾わない)
-        valid = [r for r in releases if len(r) >= 10 and r[:4].isdigit()]
+        valid = [r for r in (str(row[0]) for row in rows) if len(r) >= 10 and r[:4].isdigit()]
         if not valid:
             raise SystemExit("overture のリリースが見つかりません(S3 の場所が変わった可能性)")
         return valid[0]

@@ -57,7 +57,14 @@ def _run_job(source: str) -> None:
         with _lock:
             _status["state"] = "done"
             _status["finished_at"] = datetime.now(UTC).isoformat(timespec="seconds")
-    except Exception as e:
+    # SystemExit も捕まえる。取り込み側は「設定が違う」類の行き止まり
+    # (リリースが見つからない・依存が入っていない)を raise SystemExit で表すが、
+    # これは Exception ではないので素通りする —— ジョブは daemon スレッドなので、
+    # 抜けた瞬間にスレッドだけ黙って死に、state が "running" のまま残る。
+    # そうなると画面は「走っている」を映し続け、さらに start_run が 409 で
+    # 新しい取り込みを断り続ける(コンテナを再起動するまで直らない)。
+    # KeyboardInterrupt は含めない(こちらは止めに来た合図なので通す)。
+    except (Exception, SystemExit) as e:
         log.exception("ingest job failed: source=%s", source)
         with _lock:
             _status["state"] = "error"

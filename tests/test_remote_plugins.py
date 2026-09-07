@@ -235,3 +235,62 @@ class TestTrigger:
 
     def test_run_still_rejects_unknown_sources(self, trigger):
         assert trigger.post("/run/nope").status_code == 404
+
+
+class TestJobFailures:
+    """取り込みが行き止まりに当たったときの後始末(`server._run_job`)。
+
+    **状態が `running` のまま残らないこと**が主眼。残ると画面は走っていると
+    映し続けるうえ、`start_run` が 409 で新しい取り込みを断り続ける ——
+    コンテナを再起動するまで、どのソースも焼けなくなる。
+    """
+
+    @pytest.fixture()
+    def trigger(self):
+        from fastapi.testclient import TestClient
+
+        import server
+
+        server._status.update(state="idle", source=None, started_at=None,
+                              finished_at=None, error=None)
+        return TestClient(server.app)
+
+    def _run(self, monkeypatch, boom):
+        import server
+
+        monkeypatch.setattr("server.DATA_DIR", "/tmp")
+        monkeypatch.setitem(__import__("sys").modules, "main", _FakeMain(boom))
+        server._run_job("geonames")
+        return server._status
+
+    def test_a_dead_end_is_recorded_as_an_error(self, trigger, monkeypatch):
+        """取り込み側は「設定が違う」を SystemExit で表す。
+
+        SystemExit は Exception ではないので、`except Exception` だけでは
+        素通りする —— daemon スレッドなので、抜けた瞬間に黙って死ぬ。
+        """
+        status = self._run(monkeypatch, SystemExit("overture のリリースが見つかりません"))
+        assert status["state"] == "error"
+        assert "リリースが見つかりません" in status["error"]
+        assert status["finished_at"] is not None
+
+    def test_an_ordinary_failure_is_still_recorded(self, trigger, monkeypatch):
+        status = self._run(monkeypatch, RuntimeError("ダンプが壊れている"))
+        assert status["state"] == "error"
+        assert "ダンプが壊れている" in status["error"]
+
+    def test_success_is_recorded(self, trigger, monkeypatch):
+        status = self._run(monkeypatch, None)
+        assert status["state"] == "done"
+        assert status["error"] is None
+
+
+class _FakeMain:
+    """`from main import run` の差し替え(取り込みそのものは走らせない)。"""
+
+    def __init__(self, boom):
+        self._boom = boom
+
+    def run(self, source, data_dir):
+        if self._boom is not None:
+            raise self._boom
