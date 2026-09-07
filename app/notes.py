@@ -553,6 +553,24 @@ def refresh_count(sources: dict) -> None:
         src.doc_count = current
 
 
+def last_updated() -> str | None:
+    """最後に書かれた時刻(ISO8601)。まだ 1 件も無ければ None。
+
+    長期側の `built_at`(焼いた時刻)に当たるもの。短期記憶にはダンプも取り込みも
+    無いので、代わりに**最後に何かが書かれた時刻**が「動いているか」の手掛かりになる。
+    `idx_docs_updated` があるので、件数が増えても索引の端を見るだけで済む。
+    """
+    path = notes_path()
+    if path is None or not path.exists():
+        return None
+    try:
+        rows = db.query(path, "SELECT updated_at FROM docs ORDER BY updated_at DESC LIMIT 1")
+    except sqlite3.Error:
+        log.debug("could not read the latest note", exc_info=True)
+        return None
+    return rows[0]["updated_at"] if rows else None
+
+
 def tag_summary(limit: int = 24) -> list[tuple[str, int]]:
     """タグと文書数を多い順に。短期記憶に何が溜まっているかの見取り図。
 

@@ -257,10 +257,13 @@ async def collect_material(name: str, sources: dict) -> str:
     前世代のまま焼き直した新しい世代ができて、集められなかったことが履歴から消える。
     """
     item = await asyncio.to_thread(collect.get, name)
+    # 前世代は 1 度だけ読んで使い回す。プロンプトへ差し込む素材であり、
+    # 消えたものを数える相手であり、doc_id を引き継ぐ元でもある
+    previous = await asyncio.to_thread(collect.previous_docs, name, sources)
     try:
-        content = await _ask_for_collection(item, collect.build_messages(item))
+        content = await _ask_for_collection(item, collect.build_messages(item, previous))
         items, next_cursor = collect.parse_response(content or "")
-        body, added, skipped = await asyncio.to_thread(collect.ndjson, name, sources, items)
+        body, diff = await asyncio.to_thread(collect.ndjson, item, sources, previous, items)
     except Exception as e:
         reason = f"{type(e).__name__}: {e}"
         log.warning("collect %s failed: %s", name, reason)
@@ -268,10 +271,44 @@ async def collect_material(name: str, sources: dict) -> str:
         raise
     await asyncio.to_thread(
         collect.record_result,
-        name, status="ok", added=added, skipped=skipped, next_cursor=next_cursor,
+        name,
+        status="ok",
+        added=diff["added"],
+        skipped=diff["skipped"],
+        removed=diff["removed"],
+        removed_titles=diff["removed_titles"],
+        next_cursor=next_cursor,
     )
-    log.info("collect %s: added=%d skipped=%d", name, added, skipped)
+    log.info(
+        "collect %s (%s): added=%d kept=%d removed=%d skipped=%d",
+        name, item.mode, diff["added"], diff["kept"], diff["removed"], diff["skipped"],
+    )
     return body
+
+
+async def collect_preview(name: str, sources: dict) -> dict:
+    """いま AI に集めさせて、**焼かずに**前世代との差分だけ返す。
+
+    プロンプトを育てるための道具。作り直し(整理)は前世代を置き換えるので、
+    「何が増えて・何が残って・何が消えるか」を見てから焼けないと、直しようがない
+    (件数と勘で調整することになる)。
+
+    **長期記憶には一切書かない。定義側の控えも進めない** —— カーソルも次回の予定も
+    動かさないので、試したことが本番の進み具合に混ざらない。
+    """
+    item = await asyncio.to_thread(collect.get, name)
+    previous = await asyncio.to_thread(collect.previous_docs, name, sources)
+    content = await _ask_for_collection(item, collect.build_messages(item, previous))
+    items, next_cursor = collect.parse_response(content or "")
+    _docs, diff = await asyncio.to_thread(collect.material, item, previous, items)
+    return {
+        "name": name,
+        "mode": item.mode,
+        **diff,
+        "next_cursor": next_cursor,
+        # 焼こうとしたら止まるかどうか。止まる理由もそのまま出す
+        "blocked": collect.shrink_blocked(item, diff),
+    }
 
 
 @asynccontextmanager
@@ -1196,6 +1233,14 @@ class CollectionCreate(BaseModel):
     model: str | None = None
     effort: str | None = None
     web: bool = True
+    mode: str = PydField(
+        collect.MODE_APPEND,
+        description="append(集める。前世代に足す) / rebuild(整理する。返したものが新しい全体)",
+    )
+    keep_ratio: float | None = PydField(
+        None,
+        description="作り直しで前世代の何割を下回ったら断るか(0 で守りを外す)",
+    )
     requested_by: str = PydField("", description="依頼元の名乗り(画面に出る手がかり)")
 
 
@@ -1215,6 +1260,8 @@ class CollectionPatch(BaseModel):
     effort: str | None = None
     web: bool | None = None
     cursor: str | None = None
+    mode: str | None = None
+    keep_ratio: float | None = None
 
 
 @app.get("/v1/collect")
@@ -1248,6 +1295,8 @@ def collect_create(request: Request, body: CollectionCreate):
         model=body.model,
         effort=body.effort,
         web=body.web,
+        mode=body.mode,
+        keep_ratio=body.keep_ratio,
         requested_by=body.requested_by,
     )
     # 作った時点で空の DB ができる。**ここでソースを取り直さないと、1 回目が走るまで
@@ -1283,6 +1332,26 @@ async def collect_fetch(request: Request, source: str = Query(..., description="
     collect.require_enabled()
     body = await collect_material(source, request.app.state.sources)
     return Response(content=body, media_type="application/x-ndjson")
+
+
+@app.post("/v1/collect/{name}/preview")
+async def collect_preview_now(request: Request, name: str):
+    """**焼かずに**1 回集めさせて、前世代との差分だけ返す。
+
+    **止めている収集は断る**(`run` と同じ)。焼かないとはいえ AI は 1 回動くので、
+    外のアプリが自分で作った収集を自分で回せる状態にはしない。
+    **管理画面の「試しに集めて差分を見る」はこの口を通さない**ので、有効にする前の
+    試し撃ちはそちらからできる。
+
+    長期記憶には一切書かず、カーソルも次回の予定も動かさない。
+    """
+    collect.require_enabled()
+    if not collect.get(name).enabled:
+        raise HTTPException(403, {
+            "error": f"収集「{name}」は止まっています",
+            "hint": "動かすかどうかは Chiezo 側で決めます(管理画面の「有効にする」)",
+        })
+    return await collect_preview(name, request.app.state.sources)
 
 
 @app.get("/v1/collect/{name}")

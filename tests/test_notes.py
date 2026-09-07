@@ -596,13 +596,24 @@ class TestShortTermIsNotARebuildableSource:
         assert res.json()["error"] == "source is not rebuildable: notes"
 
     def test_admin_shows_the_short_term_section(self, client):
+        """長期側と同じ体裁の表で出る。**列は写しにしない**。
+
+        ダンプも取り込みも無いので `dump_date` と `built_at` は書きようがなく、
+        代わりに「最後に書かれた」を出す —— 短期記憶で「動いているか」を言えるのはそこ。
+        """
         from app import notes
 
         notes.add(text="短期記憶の節に出る", tags="決定")
         html = client.get("/admin").text
         assert "短期記憶" in html
-        assert "覚えていること: 1 件" in html
+        assert "最後に書かれた" in html
         assert "決定 1" in html
+        # 長期側にしか意味の無い列は持ち込まない
+        section = html[html.index("短期記憶(覚えたこと)"):html.index("長期記憶(ためた知識)")]
+        assert "dump_date" not in section
+        assert "built_at" not in section
+        # 件数とスキーマは長期側と同じ意味なので同じ出し方にする
+        assert "schema_version" in section
 
     def test_source_count_follows_writes_that_skip_the_rest_api(self, client):
         """REST の口を通らない書き込みでも件数が追いつくこと。

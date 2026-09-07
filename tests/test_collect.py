@@ -51,8 +51,8 @@ def baked(tmp_path):
     """
     from app import notes
 
-    def make(docs):
-        path = tmp_path / "baked.db"
+    def make(docs, name="news"):
+        path = tmp_path / f"baked_{name}.db"
         conn = sqlite3.connect(path)
         conn.executescript(notes.SCHEMA_DDL)
         for i, (title, body) in enumerate(docs, start=1):
@@ -69,7 +69,7 @@ def baked(tmp_path):
                 self.path = path
                 self.dump_date = "20260101000000"
 
-        return {"news": Src(path)}
+        return {name: Src(path)}
 
     return make
 
@@ -248,11 +248,13 @@ class TestMaterial:
     def test_it_appends_instead_of_rebuilding(self, sample, baked):
         """前世代に足す形になる(取り込みのような洗い替えをしない)。"""
         sources = baked([("前に集めた", "本文")])
-        docs, added, skipped = collect.material(
-            "news", sources, [{"title": "いま集めた", "body": "本文"}]
+        docs, diff = collect.material(
+            collect.get("news"),
+            collect.previous_docs("news", sources),
+            [{"title": "いま集めた", "body": "本文"}],
         )
         assert [d["title"] for d in docs] == ["前に集めた", "いま集めた"]
-        assert (added, skipped) == (1, 0)
+        assert (diff["added"], diff["skipped"], diff["removed"]) == (1, 0, 0)
 
     def test_the_same_headline_is_not_counted_twice(self, sample, baked):
         """繰り返し同じことを聞く前提なので、見出しが重複の鍵。
@@ -261,35 +263,39 @@ class TestMaterial:
         ニュースが実行のたびに増える。
         """
         sources = baked([("同じ見出し", "古い本文")])
-        docs, added, skipped = collect.material(
-            "news", sources, [{"title": "同じ見出し", "body": "新しい本文"}]
+        docs, diff = collect.material(
+            collect.get("news"),
+            collect.previous_docs("news", sources),
+            [{"title": "同じ見出し", "body": "新しい本文"}],
         )
         assert len(docs) == 1
-        assert (added, skipped) == (0, 1)
+        assert (diff["added"], diff["skipped"]) == (0, 1)
         # 数は増えないが、中身は新しく集めたほうで置き換える
         assert docs[0]["body"] == "新しい本文"
 
     def test_items_without_a_title_or_body_are_skipped(self, sample):
-        docs, added, skipped = collect.material(
-            "news", {}, [{"title": "", "body": "x"}, {"title": "y"}]
+        docs, diff = collect.material(
+            collect.get("news"), {}, [{"title": "", "body": "x"}, {"title": "y"}]
         )
         assert docs == []
-        assert (added, skipped) == (0, 2)
+        assert (diff["added"], diff["skipped"]) == (0, 2)
 
     def test_it_records_when_it_was_collected(self, sample):
         """古い情報かどうかを読む側が判断できるように、集めた時刻を必ず残す。"""
-        docs, _, _ = collect.material(
-            "news", {}, [{"title": "見出し", "body": "本文", "url": "https://example.com"}]
+        docs, _diff = collect.material(
+            collect.get("news"), {}, [{"title": "見出し", "body": "本文", "url": "https://example.com"}]
         )
         assert docs[0]["extra"]["collected_at"]
         assert docs[0]["extra"]["url"] == "https://example.com"
+        # web を開けて集めたかも残す(公開リポジトリへ出すかの判断材料になる)
+        assert docs[0]["extra"]["web"] is True
 
     def test_collected_data_does_not_land_in_notes(self, sample):
         """溜め先は notes と別。混ぜると短期記憶が収集物で埋まる(この層の芯)。"""
         from app import notes
 
         before = notes.count()
-        collect.material("news", {}, [{"title": "見出し", "body": "本文"}])
+        collect.material(collect.get("news"), {}, [{"title": "見出し", "body": "本文"}])
         assert notes.count() == before
 
 
@@ -391,19 +397,30 @@ class TestBaking:
     ):
         """ここが「全件の作り直しに乗せたまま追記になる」仕掛け。"""
         sources = baked([("焼いてある", "前世代の本文")])
-        body, _, _ = collect.ndjson("news", sources, [{"title": "新しく集めた", "body": "本文"}])
+        body, _diff = collect.ndjson(
+            collect.get("news"),
+            sources,
+            collect.previous_docs("news", sources),
+            [{"title": "新しく集めた", "body": "本文"}],
+        )
         titles = [json.loads(line)["title"] for line in body.splitlines()[1:]]
         assert titles == ["焼いてある", "新しく集めた"]
 
     def test_it_keeps_doc_ids_so_urls_do_not_move(self, sample, baked):
         """焼き直しても文書の URL が変わらないようにする(固化と同じ)。"""
         sources = baked([("焼いてある", "前世代の本文")])
-        docs, _, _ = collect.material("news", sources, [{"title": "焼いてある", "body": "新しい本文"}])
+        docs, _diff = collect.material(
+            collect.get("news"),
+            collect.previous_docs("news", sources),
+            [{"title": "焼いてある", "body": "新しい本文"}],
+        )
         assert docs[0]["doc_id"] == 1
 
     def test_the_first_line_is_the_meta(self, sample):
         """取り込み側は 1 行目から世代の日付と検証条件を読む。"""
-        body, _, _ = collect.ndjson("news", {}, [{"title": "見出し", "body": "本文"}])
+        body, _diff = collect.ndjson(
+            collect.get("news"), {}, {}, [{"title": "見出し", "body": "本文"}]
+        )
         meta = json.loads(body.splitlines()[0])["meta"]
         assert re.fullmatch(r"\d{14}", meta["dump_date"])
         assert meta["sample_titles"] == ["見出し"]
@@ -417,7 +434,7 @@ class TestBaking:
         import fastapi
 
         with pytest.raises(fastapi.HTTPException) as got:
-            collect.ndjson("news", {}, [])
+            collect.ndjson(collect.get("news"), {}, {}, [])
         assert got.value.status_code == 409
 
     def test_the_catalog_lists_definitions_even_when_empty(self, sample):
@@ -495,6 +512,36 @@ class TestRest:
         res = client.post("/v1/collect/news/run")
         assert res.status_code == 403
 
+    def test_previewing_a_stopped_collection_is_refused(self, client, sample):
+        """焼かないとはいえ AI は 1 回動くので、`run` と同じ扱いにする。
+
+        外のアプリが自分で作った収集を自分で回せる状態にはしない。
+        """
+        assert client.post("/v1/collect/news/preview").status_code == 403
+
+    def test_the_mode_comes_back_on_the_definition(self, client, enabled):
+        """依頼した側が、足すのか作り直すのかを確かめられるようにする。"""
+        res = client.post(
+            "/v1/collect",
+            json={
+                "name": "tidy",
+                "prompt": "いまの内容:\n{current}\n整理して",
+                "interval_minutes": 60,
+                "mode": "rebuild",
+            },
+        )
+        assert res.status_code == 200
+        assert res.json()["mode"] == "rebuild"
+        assert client.get("/v1/collect/tidy").json()["keep_ratio"] == collect.DEFAULT_KEEP_RATIO
+
+    def test_a_rebuild_without_the_material_placeholder_is_refused(self, client, enabled):
+        """外から依頼するときも、素材の差し込み口が無いものは作らせない。"""
+        res = client.post(
+            "/v1/collect",
+            json={"name": "bad", "prompt": "整理して", "interval_minutes": 60, "mode": "rebuild"},
+        )
+        assert res.status_code == 400
+
     def test_enabled_is_not_in_the_patch_shape(self, client, sample):
         """有効にするかを REST から触れると、依頼と実行を分けた意味が消える。"""
         client.patch("/v1/collect/news", json={"enabled": True, "interval_minutes": 120})
@@ -510,3 +557,161 @@ class TestRest:
         assert res.status_code == 200
         assert res.json()["enabled"] is False
         assert res.json()["requested_by"] == "travel-log"
+
+
+class TestRebuildMode:
+    """整理する(`mode=rebuild`)。**返したものがそのまま新しい全体になる**。
+
+    足すほうと違って**落とされたものは消える**ので、この層でいちばん壊れると
+    痛い経路。押さえるのは 4 つ —— 素材が渡ること、消えることが差分に出ること、
+    減りすぎたら止まること、doc_id が動かないこと。
+    """
+
+    @pytest.fixture
+    def rebuild(self, enabled):
+        return collect.create(
+            "spots",
+            prompt="いまの分類:\n{current}\nこれを整理し直して",
+            interval_minutes=60,
+            mode=collect.MODE_REBUILD,
+        )
+
+    def test_the_material_placeholder_is_required(self, enabled):
+        """素材の差し込み口が無いまま作り直させない。
+
+        無いと AI は今ある内容を知らないまま「全体」を答えることになり、
+        返らなかったものが全部消える。作る時点で弾くのがいちばん安い。
+        """
+        import fastapi
+
+        with pytest.raises(fastapi.HTTPException) as got:
+            collect.create("x", prompt="整理して", interval_minutes=60, mode=collect.MODE_REBUILD)
+        assert got.value.status_code == 400
+
+    def test_switching_to_rebuild_checks_the_prompt_too(self, sample):
+        """集め方だけ切り替えても、組み合わせで確かめ直す。"""
+        import fastapi
+
+        with pytest.raises(fastapi.HTTPException):
+            collect.update("news", mode=collect.MODE_REBUILD)
+
+    def test_the_current_contents_go_into_the_prompt(self, rebuild, baked):
+        """今ある内容を読ませないと「整理し直す」が成り立たない。"""
+        sources = baked([("ラーメン", "麺の店"), ("カフェ", "喫茶")], "spots")
+        user = collect.build_messages(
+            collect.get("spots"), collect.previous_docs("spots", sources)
+        )[1]["content"]
+        assert "ラーメン" in user and "カフェ" in user
+        assert "{current}" not in user
+
+    def test_it_tells_the_ai_that_what_is_not_returned_disappears(self, rebuild):
+        """返さなかったものが消えることを、system で言い切っておく。"""
+        system = collect.build_messages(collect.get("spots"), {})[0]["content"]
+        assert "消える" in system
+
+    def test_what_is_not_returned_is_removed(self, rebuild, baked):
+        """作り直しの芯。前世代にあって返ってこなかったものは落ちる。"""
+        sources = baked([("残す", "本文"), ("落とす", "本文")], "spots")
+        docs, diff = collect.material(
+            collect.get("spots"),
+            collect.previous_docs("spots", sources),
+            [{"title": "残す", "body": "整えた本文"}, {"title": "新入り", "body": "本文"}],
+        )
+        assert [d["title"] for d in docs] == ["残す", "新入り"]
+        assert (diff["added"], diff["kept"], diff["removed"]) == (1, 1, 1)
+        assert diff["removed_titles"] == ["落とす"]
+
+    def test_surviving_docs_keep_their_doc_id(self, rebuild, baked):
+        """整理し直しても、残ったものの URL は動かさない。"""
+        sources = baked([("残す", "本文"), ("落とす", "本文")], "spots")
+        docs, _diff = collect.material(
+            collect.get("spots"),
+            collect.previous_docs("spots", sources),
+            [{"title": "残す", "body": "整えた本文"}],
+        )
+        assert docs[0]["doc_id"] == 1
+
+    def test_the_same_headline_twice_in_one_answer_is_dropped(self, rebuild):
+        """1 回の答えの中の重複は後から来たほうを捨てる(足すほうには無い経路)。"""
+        docs, diff = collect.material(
+            collect.get("spots"),
+            {},
+            [{"title": "同じ", "body": "A"}, {"title": "同じ", "body": "B"}],
+        )
+        assert len(docs) == 1
+        assert docs[0]["body"] == "A"
+        assert diff["skipped"] == 1
+
+    def test_shrinking_too_much_is_refused(self, rebuild, baked):
+        """AI が変な日に当たった 1 回で、育てた分類が消えるのを止める。
+
+        **焼く前に断る**のが要点 —— 通すと次の世代ができて、戻すには世代を
+        巻き戻すしかなくなる。
+        """
+        import fastapi
+
+        sources = baked([(f"分類{i}", "本文") for i in range(1, 11)], "spots")
+        previous = collect.previous_docs("spots", sources)
+        with pytest.raises(fastapi.HTTPException) as got:
+            collect.ndjson(
+                collect.get("spots"), sources, previous, [{"title": "分類1", "body": "本文"}]
+            )
+        assert got.value.status_code == 409
+        assert "作り直しを止めました" in got.value.detail["error"]
+
+    def test_the_guard_can_be_turned_off_on_purpose(self, rebuild, baked):
+        """意図して大きく減らすときの逃げ道。外したことは定義に残る。"""
+        collect.update("spots", keep_ratio=0)
+        sources = baked([(f"分類{i}", "本文") for i in range(1, 11)], "spots")
+        body, diff = collect.ndjson(
+            collect.get("spots"),
+            sources,
+            collect.previous_docs("spots", sources),
+            [{"title": "分類1", "body": "本文"}],
+        )
+        assert diff["removed"] == 9
+        assert len(body.splitlines()) == 2  # meta + 1 件
+
+    def test_appending_never_removes_anything(self, sample, baked):
+        """足すほうには消える経路が無い(だから歯止めも要らない)。"""
+        sources = baked([("前に集めた", "本文")])
+        _docs, diff = collect.material(
+            collect.get("news"),
+            collect.previous_docs("news", sources),
+            [{"title": "いま集めた", "body": "本文"}],
+        )
+        assert diff["removed"] == 0
+        assert collect.shrink_blocked(collect.get("news"), diff) is None
+
+    def test_the_first_build_is_not_blocked(self, rebuild):
+        """まだ何も無いところへの 1 回目は、減りようがないので通す。"""
+        docs, diff = collect.material(
+            collect.get("spots"), {}, [{"title": "分類", "body": "本文"}]
+        )
+        assert docs and collect.shrink_blocked(collect.get("spots"), diff) is None
+
+    def test_truncated_material_says_so(self, rebuild):
+        """入り切らなかったことを本文に書く。
+
+        黙って切ると、AI は見えなかったぶんを「無かったもの」として落とす。
+        """
+        previous = {
+            f"見出し{i}": {"doc_id": i, "title": f"見出し{i}", "body": "本文", "tags": []}
+            for i in range(collect.MAX_MATERIAL_DOCS + 50)
+        }
+        text, shown = collect.render_material(previous)
+        assert shown == collect.MAX_MATERIAL_DOCS
+        assert "対象外" in text
+
+    def test_an_unknown_mode_falls_back_to_appending(self, enabled):
+        """壊れた定義でいきなり作り直させない(消える側へ倒さない)。"""
+        assert collect.normalize_mode("いいかげんな値") == collect.MODE_APPEND
+        assert collect.normalize_mode(None) == collect.MODE_APPEND
+
+    def test_the_removed_headlines_are_recorded(self, rebuild):
+        """消えたものが見えないと、プロンプトを直す判断ができない。"""
+        updated = collect.record_result(
+            "spots", status="ok", added=1, removed=2, removed_titles=["A", "B"]
+        )
+        assert updated.last_removed == 2
+        assert updated.last_removed_titles == ["A", "B"]

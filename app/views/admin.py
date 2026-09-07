@@ -169,7 +169,7 @@ def run_buttons_disabled(job: dict | None) -> str:
 def _job_status_html(job: dict | None) -> str:
     if job is None:
         return (
-            '<div class="job-status">'
+            '<div class="job-status" id="job">'
             "取り込みトリガー(chiezo-trigger)は設定されていません"
             " (CHIEZO_TRIGGER_URL 未設定)。長期記憶への書き込み(初期化・再構築・固化)は"
             "できませんが、読むだけならこのままで動きます。"
@@ -177,7 +177,7 @@ def _job_status_html(job: dict | None) -> str:
         )
     if job.get("state") == "unreachable":
         return (
-            '<div class="job-status error">'
+            '<div class="job-status error" id="job">'
             f"<p>{esc(job.get('error') or 'chiezo-trigger に到達できません')}</p>"
             "<p>長期記憶への書き込み(初期化・再構築・固化)はできません。"
             "読むだけならこのままで動きます。</p>"
@@ -185,7 +185,7 @@ def _job_status_html(job: dict | None) -> str:
         )
     state = job.get("state", "idle")
     css = f"job-status {state}" if state in ("running", "error") else "job-status"
-    lines = [f'<div class="{css}">', f"<p>状態: {esc(state)}"]
+    lines = [f'<div class="{css}" id="job">', f"<p>状態: {esc(state)}"]
     if job.get("source"):
         lines.append(f" / ソース: {esc(job['source'])}")
     if job.get("started_at"):
@@ -198,6 +198,15 @@ def _job_status_html(job: dict | None) -> str:
     log_tail = job.get("log_tail")
     if log_tail:
         lines.append('<div class="log-tail">' + esc("\n".join(log_tail)) + "</div>")
+    if state == "running":
+        # **自動では読み直さない。** 走っている間 5 秒ごとに読み直していた頃は、
+        # 開いた `<details>` は閉じ、書きかけの入力は消え、押そうとしたボタンは
+        # 読み直しに攫われた —— 取り込みは数時間かかるので、その間ずっと画面が
+        # 使えないことになる。進み具合を見たい人がここから読み直す
+        lines.append(
+            '<p><a href="/admin#job">進み具合を読み直す</a>'
+            ' <span class="muted">(自動では読み直しません)</span></p>'
+        )
     lines.append("</div>")
     return "\n".join(lines)
 
@@ -351,6 +360,22 @@ def _consult_page_html(name: str | None, want: str, draft: str, error: str) -> s
     return page_shell("プロンプトの相談", body)
 
 
+MODE_LABELS = {
+    "append": "集める(前世代に足す)",
+    "rebuild": "整理する(返したものが新しい全体。消えるものが出る)",
+}
+
+
+def _mode_select(current: str) -> str:
+    """集め方を選ぶセレクト。**既定は足すほう** —— 消える側を既定にしない。"""
+    options = "".join(
+        f'<option value="{esc(mode)}"{" selected" if mode == current else ""}>'
+        f"{esc(MODE_LABELS[mode])}</option>"
+        for mode in collect.MODES
+    )
+    return f'<select name="mode">{options}</select>'
+
+
 def _collect_html(sources: dict[str, Source], disabled: str) -> str:
     """収集(AI に集めさせて溜めていく)の節。
 
@@ -377,11 +402,23 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
         due = jst.parse(item.next_run_at or "")
         last = jst.parse(item.last_run_at or "")
         if item.last_status == "ok":
+            # 作り直しは「消えた件数」まで出す —— 増えた数だけでは、整理の結果
+            # 何が落ちたのか読めない(見出しは開いたところに出す)
+            removed = (
+                f'<br><span class="stale">-{item.last_removed} 件</span>'
+                if item.last_removed else ""
+            )
+            dropped = (
+                f'<details><summary class="muted">消えたもの</summary>'
+                f'<div class="muted">{esc("、".join(item.last_removed_titles))}</div></details>'
+                if item.last_removed_titles else ""
+            )
             result = (
                 f'<span class="muted">{jst.format(last) if last else ""}</span>'
                 f"<br>+{item.last_added} 件"
                 + (f'<span class="muted">(重複 {item.last_skipped})</span>'
                    if item.last_skipped else "")
+                + removed + dropped
             )
         elif item.last_status == "error":
             result = f'<span class="stale">失敗: {esc(item.last_error or "")}</span>'
@@ -405,9 +442,12 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'<br><span class="muted">依頼元: {esc(item.requested_by)}</span>'
             if item.requested_by else ""
         )
+        # 作り直しは「返らなかったものが消える」ので、行のいちばん目立つところに出す
+        mode_mark = ' <span class="stale">整理(作り直し)</span>' if item.is_rebuild() else ""
         rows.append(
             f"<tr{cls}>"
             f'<td><a href="{esc(browse_url(item.name))}">{esc(item.name)}</a>'
+            f"{mode_mark}"
             f'<br><span class="muted">{esc(item.description)}</span>{requester}'
             f"<details><summary>プロンプト</summary>"
             f'<pre class="prompt-view">{esc(item.prompt)}</pre>'
@@ -421,6 +461,13 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'<p><label>プロンプト<br><textarea name="prompt" rows="10">{esc(item.prompt)}</textarea></label></p>'
             f'<p><label>進み具合(空にすると最初から)<br>'
             f'<input name="cursor" value="{esc(item.cursor)}"></label></p>'
+            f"<p><label>集め方<br>{_mode_select(item.mode)}</label></p>"
+            f'<p><label>作り直しの歯止め(前の何割を下回ったら止めるか。0 で外す)<br>'
+            f'<input name="keep_ratio" type="number" step="0.05" min="0" max="1"'
+            f' value="{item.keep_ratio}"></label></p>'
+            f'<p class="muted">整理(作り直し)にすると、AI が返したものがそのまま'
+            f" 新しい全体になります。プロンプトに <code>{{current}}</code> を入れてください"
+            f"(そこへ今ある内容が差し込まれます)。</p>"
             f'<button type="submit">保存する</button></form></details>'
             f"<details><summary>AI に相談して直す</summary>"
             f'<form method="post" action="/admin/collect/consult" class="collect-form">'
@@ -439,6 +486,9 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f"<td>"
             f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/toggle">'
             f'<button type="submit">{toggle_label}</button></form>'
+            f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/preview">'
+            f'<button type="submit" title="AI に 1 回集めさせて、焼かずに差分だけ見ます">'
+            f"試しに集めて差分を見る</button></form>"
             f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/run"'
             f"{disabled}>"
             f'<button type="submit"{disabled}>いま集めて焼く</button></form>'
@@ -468,6 +518,9 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
 <input name="description" placeholder="技術ニュース"></label></p>
 <p><label>間隔(分。{collect.MIN_INTERVAL_MINUTES} 以上)<br>
 <input name="interval_minutes" type="number" min="{collect.MIN_INTERVAL_MINUTES}" value="360"></label></p>
+<p><label>集め方<br>{_mode_select(collect.MODE_APPEND)}</label></p>
+<p class="muted">整理(作り直し)を選ぶときは、プロンプトに <code>{{current}}</code> を入れる
+(そこへ今ある内容が差し込まれ、AI が返したものがそのまま新しい全体になる)。</p>
 <p><label>プロンプト<br>
 <textarea name="prompt" rows="6" required
  placeholder="{esc(collect.SAMPLE["prompt"])}"></textarea></label></p>
@@ -500,13 +553,25 @@ AI に集めさせて溜めていく層。<strong>溜め先は収集ごとに別
 
 
 def _short_term_section_html(sources: dict[str, Source]) -> str:
-    """短期記憶(notes)の節。
+    """短期記憶(notes)の節。**長期側と同じ体裁の表で出す**。
 
-    長期側の表に混ぜない理由が 2 つある。ダンプも再構築も持たないこと —— 混ぜていた
-    頃は再構築ボタンが出ていて、押すと trigger が unknown source を返すだけなのに、
-    確認ダイアログだけが「ダンプの取得からやり直します」と言っていた(唯一書き込める
-    ソースで、消えたと読める文言がいちばん危ない行に出ていた)。もう 1 つは件数の
-    出どころが違うこと(走査ではなく描画時に数える。notes.count() 参照)。
+    表にするのは、見に来る人が知りたいことが長期側と同じだから —— 何件あって、
+    最後に動いたのはいつで、いまの形(スキーマ)で引けるのか。かつては件数を 1 行の
+    文で出し、その下に検索への入口を別に置いていたが、隣の節と見比べるときに
+    目の動かし方が変わるだけだった。
+
+    **列は長期側の写しにしない。** ダンプも取り込みも無いので `dump_date` と
+    `built_at` は書きようがなく、空欄が並ぶ。**代わりに「最後に書かれた時刻」を出す**
+    —— 短期記憶で「動いているか」を言えるのはそこ。`lang` も notes は持たない。
+
+    **操作の列は持たない**。長期側の右端は再構築ボタンだが、短期記憶は取り込みで
+    焼くソースではないので押すものが無い。検索への入口は名前がそのままリンクなので、
+    「検索する」を別の列に置くと**同じ行き先が 1 行に 2 つ**並んで幅を食うだけになる。
+
+    **表に混ぜないのは今までどおり**。再構築ボタンが出ていた頃は、押すと trigger が
+    unknown source を返すだけなのに、確認ダイアログだけが「ダンプの取得からやり直します」
+    と言っていた(唯一書き込めるソースで、消えたと読める文言がいちばん危ない行に出ていた)。
+    件数の出どころも違う(走査ではなく描画時に数える。`notes.count()` 参照)。
 
     中身そのものは出さず、件数とタグの分布までに留める。1 件ずつ読むのはブラウズ画面の
     仕事で、そちらは見に行った人だけが見る。
@@ -528,6 +593,34 @@ def _short_term_section_html(sources: dict[str, Source]) -> str:
             '<p class="muted">まだ何も覚えていません。MCP の <code>remember</code> か'
             " <code>POST /v1/notes</code> で書き込めます。</p>" + tasks_link
         )
+    browse = esc(browse_url(notes.SOURCE_NAME))
+    src = sources.get(notes.SOURCE_NAME)
+    # スキーマは長期側と同じ意味(古いと filter / tag が効かない)ので同じ出し方にする
+    latest = latest_schema_version()
+    version = src.schema_version if src is not None else None
+    if version is None:
+        schema_cell = '<span class="muted">不明</span>'
+    elif version >= latest:
+        schema_cell = str(version)
+    else:
+        schema_cell = f'{version} <span class="stale">(最新: {latest})</span>'
+    written = jst.parse(notes.last_updated() or "")
+    table = f"""
+<table>
+<thead>
+<tr><th>name</th><th>kind</th><th>docs</th><th>最後に書かれた</th><th>schema_version</th></tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="{browse}">{esc(notes.SOURCE_NAME)}</a></td>
+<td>{esc(notes.SOURCE_KIND)}</td>
+<td>{total:,}</td>
+<td>{esc(jst.format(written)) if written else '<span class="muted">—</span>'}</td>
+<td>{schema_cell}</td>
+</tr>
+</tbody>
+</table>
+"""
     tags = notes.tag_summary()
     tag_html = (
         '<p class="muted">タグ: '
@@ -536,17 +629,16 @@ def _short_term_section_html(sources: dict[str, Source]) -> str:
         if tags
         else ""
     )
-    browse = esc(browse_url(notes.SOURCE_NAME))
     return f"""
-<p>覚えていること: {total:,} 件</p>
+{table}
 {tag_html}
-<p><a href="{browse}">→ 短期記憶を検索する</a></p>
 {tasks_link}
 <p class="muted">
 長期記憶と同じ口で引ける(<code>/v1/notes/search|doc|filter|tags</code>)。
 書き込みは MCP の <code>remember</code> か <code>POST /v1/notes</code>、
 新しい順に思い出すのは <code>/v1/notes/recall</code>。
-取り込みで焼くソースではないので、再構築はできない(書き込みが直接届く唯一の場所)。
+取り込みで焼くソースではないので、ダンプの日付も焼いた時刻も持たない
+(再構築もできない。書き込みが直接届く唯一の場所)。
 </p>
 """
 
@@ -578,7 +670,6 @@ def _answer_status_html() -> str:
 async def admin(request: Request):
     sources: dict[str, Source] = request.app.state.sources
     job = _fetch_trigger_status()
-    job_running = bool(job and job.get("state") == "running")
     disabled = run_buttons_disabled(job)
     latest_schema = latest_schema_version()
 
@@ -667,13 +758,13 @@ async def admin(request: Request):
 
     body = f"""
 <h1>Chiezo 管理画面</h1>
+
+<h2>知識(溜めて引く)</h2>
 <p class="muted">
 知識は 2 層。<strong>短期記憶</strong>は Chiezo で唯一書き込める置き場で、覚えたことが
 その場で積まれる。<strong>長期記憶</strong>は読み取り専用のソースで、ダンプから焼いたものと、
 短期記憶から移した(固化した)ものが並ぶ。引くときの口はどちらも同じ。
 </p>
-
-<h2>知識(溜めて引く)</h2>
 
 <h3 id="short-term">短期記憶(覚えたこと)</h3>
 {_short_term_section_html(short_term)}
@@ -745,7 +836,7 @@ async def admin(request: Request):
 のあと、ここが新しくなっていなければ古いイメージのままになっている。
 </p>
 """
-    return HTMLResponse(content=page_shell("管理画面", body, refresh=5 if job_running else None))
+    return HTMLResponse(content=page_shell("管理画面", body))
 
 
 @router.get("/admin/osm", response_class=HTMLResponse)
@@ -758,7 +849,6 @@ def admin_osm(request: Request, q: str | None = Query(None, description="国名�
     sources: dict[str, Source] = request.app.state.sources
     catalog = {n: m for n, m in initializable_sources().items() if m.get("group") == "osm"}
     job = _fetch_trigger_status()
-    job_running = bool(job and job.get("state") == "running")
     disabled = run_buttons_disabled(job)
 
     total = len(catalog)
@@ -835,7 +925,7 @@ Geofabrik の国別抽出 {total} 件{f"(絞り込み: {len(catalog)} 件)" if n
 {''.join(blocks)}
 """
     return HTMLResponse(
-        content=page_shell("OSM 国別の初期化", body, refresh=5 if job_running else None)
+        content=page_shell("OSM 国別の初期化", body)
     )
 
 
@@ -852,7 +942,6 @@ def admin_wikipedia(request: Request, q: str | None = Query(None, description="�
         n: m for n, m in initializable_sources().items() if m.get("group") == "wikipedia"
     }
     job = _fetch_trigger_status()
-    job_running = bool(job and job.get("state") == "running")
     disabled = run_buttons_disabled(job)
 
     total = len(catalog)
@@ -933,7 +1022,7 @@ enwiki はその数倍)。ページビュー突合のため全プロジェクト
 {''.join(blocks)}
 """
     return HTMLResponse(
-        content=page_shell("Wikipedia 言語版の初期化", body, refresh=5 if job_running else None)
+        content=page_shell("Wikipedia 言語版の初期化", body)
     )
 
 
@@ -1024,6 +1113,7 @@ async def admin_collect_create(request: Request):
         interval_minutes=int(interval) if interval.isdigit() else 360,
         description=str(form.get("description") or "").strip(),
         web=bool(form.get("web")),
+        mode=collect.normalize_mode(form.get("mode")),
     )
     collect.update(item.name, enabled=False)
     # 作った時点で空の DB ができるので、ソースを取り直して検索に出るようにする。
@@ -1051,6 +1141,9 @@ async def admin_collect_edit(name: str, request: Request):
         interval_minutes=int(interval) if interval.isdigit() else None,
         # 空にできるように、cursor だけは None ではなく空文字を通す
         cursor=str(form.get("cursor") or ""),
+        mode=collect.normalize_mode(form.get("mode")),
+        # 0 も意味のある値(守りを外す)なので、空のときだけ触らない
+        keep_ratio=_ratio(form.get("keep_ratio")),
     )
     return RedirectResponse(url="/admin#collect", status_code=303)
 
@@ -1118,6 +1211,89 @@ def admin_collect_run(name: str):
 
     start_collection_bake(name)
     return RedirectResponse(url="/admin#collect", status_code=303)
+
+
+def _ratio(raw) -> float | None:
+    """歯止めの入力。**空は「触らない」、0 は「守りを外す」**(混ぜない)。"""
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+@router.post("/admin/collect/{name}/preview")
+async def admin_collect_preview(name: str, request: Request):
+    """**焼かずに**1 回集めさせて、前世代との差分を見せる。
+
+    整理(作り直し)を育てるための道具。何が増えて・何が残って・何が消えるかを
+    見てから焼けないと、プロンプトの直しようがない(件数と勘で調整することになる)。
+
+    **止めている収集もここからは見られる**(「いま集めて焼く」と同じ判断)。
+    REST の `/v1/collect/{name}/preview` は止まっているものを断る。
+
+    **この画面も待たせる**(AI の応答ぶん)。管理画面は JS を持たないので、
+    待っている間の見せ方は作れない。
+    """
+    from app.main import collect_preview
+
+    try:
+        result = await collect_preview(name, request.app.state.sources)
+        error = ""
+    except HTTPException as e:
+        detail = e.detail if isinstance(e.detail, dict) else {"error": str(e.detail)}
+        result = None
+        error = f'<p class="stale">⚠️ 試せませんでした: {esc(str(detail))}</p>'
+    except Exception as e:
+        # 相手の落ち方は読めない。画面まで持って行って理由を見せる
+        result = None
+        error = f'<p class="stale">⚠️ 試せませんでした: {esc(f"{type(e).__name__}: {e}")}</p>'
+    return HTMLResponse(_preview_page_html(name, result, error))
+
+
+def _preview_page_html(name: str, result: dict | None, error: str) -> str:
+    """下見の結果 1 枚。**焼いていないことを最初に書く**。
+
+    数字だけ見せると「もう入れ替わった」と読める —— この画面を見に来る人は
+    まさにそれを心配して押している。
+    """
+    if result is None:
+        body = error
+    else:
+        blocked = (
+            f'<p class="stale">⚠️ このまま焼こうとすると止まります: {esc(result["blocked"])}</p>'
+            if result.get("blocked") else ""
+        )
+        removed = (
+            f'<p>消えるもの: {esc("、".join(result["removed_titles"]))}'
+            + ("ほか" if result["removed"] > len(result["removed_titles"]) else "")
+            + "</p>"
+            if result["removed_titles"] else ""
+        )
+        body = (
+            f"{error}{blocked}"
+            f"<table><thead><tr><th>前</th><th>後</th><th>増える</th>"
+            f"<th>残る</th><th>消える</th><th>捨てた答え</th></tr></thead><tbody>"
+            f"<tr><td>{result['previous']}</td><td>{result['total']}</td>"
+            f"<td>+{result['added']}</td><td>{result['kept']}</td>"
+            f"<td>{result['removed']}</td><td>{result['skipped']}</td></tr>"
+            f"</tbody></table>{removed}"
+            f'<p class="muted">進み具合の次の値: <code>'
+            f'{esc(str(result.get("next_cursor") or "(返らなかった)"))}</code></p>'
+        )
+    return page_shell(
+        f"{name} を試しに集める",
+        f"""
+<h3>「{esc(name)}」を試しに集めた結果</h3>
+<p class="muted">集め方: {esc(MODE_LABELS.get(str(result["mode"]), "") if result else "")}</p>
+<p><strong>まだ焼いていません。</strong>長期記憶は変わっておらず、進み具合も次回の予定も
+動いていません。この数字を見てから「いま集めて焼く」を押します。</p>
+{body}
+<p class="muted"><a href="/admin#collect">管理画面へ戻る</a></p>
+""",
+    )
 
 
 @router.post("/admin/memory/sweep")

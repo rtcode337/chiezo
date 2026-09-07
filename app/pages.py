@@ -348,20 +348,23 @@ CHAT_STYLE = """
 """
 
 
-def page_shell(title: str, body: str, refresh: int | None = None, style: str = "") -> str:
+def page_shell(title: str, body: str, style: str = "") -> str:
     """共通の外枠。`style` は画面ごとの上乗せ(会話画面だけが使う)。
 
     `title` はページ名だけを渡す(「Chiezo — 」は付けない)。タブの表記は他のプロダクトと
     そろえて「Chiezo — <ページ名>」で統一し、空ならアプリの正式名「AI知識ベース」を出す。
+
+    **自動リロード(`<meta http-equiv="refresh">`)は持たない。** 取り込み中の管理画面で
+    使っていたが、開いた `<details>` は閉じ、書きかけの入力は消え、押そうとしたボタンは
+    読み直しに攫われる —— 取り込みは数時間かかるので、その間ずっと画面が使えなくなる。
+    進み具合は、見たい人が自分で読み直す。
     """
     tab_title = f"Chiezo — {title or 'AI知識ベース'}"
-    refresh_tag = f'<meta http-equiv="refresh" content="{refresh}">' if refresh else ""
     return f"""<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-{refresh_tag}
 <link rel="icon" href="{FAVICON_DATA_URI}">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <title>{html.escape(tab_title)}</title>

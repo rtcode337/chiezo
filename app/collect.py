@@ -55,7 +55,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
@@ -83,6 +83,39 @@ MAX_ITEMS_PER_RUN = 200
 
 # 本文の上限。1 件がこれを超えるものは切る(引くための索引であって全文の保管庫ではない)
 MAX_BODY_CHARS = 20_000
+
+# 集め方。**足すのか、作り直すのか**で、素材の作り方も要る守りも変わる。
+#
+# - append(集める): 前世代 + 今回のぶん。外から新しいものを取ってきて積む。
+#   同じ見出しは置き換わるだけなので、失敗しても既にあるものは壊れない。
+# - rebuild(整理する): 今回返ってきたものが**そのまま新しい全体**になる。
+#   既にある内容を AI に読ませて、分類をやり直す・重複をまとめる・言い回しを揃える、
+#   といった育て方をするためのもの。**落とされたものは消える**ので、
+#   append には要らなかった歯止め(`keep_ratio`)がここで要る。
+MODE_APPEND = "append"
+MODE_REBUILD = "rebuild"
+MODES = (MODE_APPEND, MODE_REBUILD)
+
+# 作り直しのプロンプトに必ず入れてもらう印。ここに前世代の中身が差し込まれる。
+# **無いまま作り直すと、AI は今ある内容を知らないまま「全体」を答える**ことになり、
+# 育てたものが 1 回で消える。だから作るときに弾く
+MATERIAL_PLACEHOLDER = "{current}"
+
+# 作り直しで、前世代の何割を下回ったら焼くのを断るか。
+# **既定で守る側に倒す** —— AI が変な日に当たった 1 回で、育てた分類が消えるのは重い。
+# 意図して減らすときは、この値を下げるか 0 にして守りを外す(画面から変えられる)。
+DEFAULT_KEEP_RATIO = 0.5
+
+# 作り直しのときにプロンプトへ差し込む前世代の上限。
+# **収まらなければ切って、切ったことを AI に伝える** —— 黙って切ると、
+# 見えなかったぶんを「無かったもの」として落とした答えが返る。
+MAX_MATERIAL_DOCS = 300
+MAX_MATERIAL_CHARS = 40_000
+# 差し込む 1 件の本文の長さ。全文を渡すと件数が入らない
+MATERIAL_BODY_CHARS = 200
+
+# 控えに残す「消えた見出し」の数。全部持つと定義のメモが太るので頭だけ
+MAX_REMOVED_SAMPLE = 10
 
 # 最初から置いておく見本。**止めた状態で置く** —— 有効なものを黙って足すと、
 # 設定した覚えのない AI の呼び出しが枠を食う。画面の「有効にする」で動き出す。
@@ -180,6 +213,11 @@ class Collection:
     cursor: str
     created_at: str
     updated_at: str
+    # 集め方(`MODES`)。既定は足すほう —— 既にある定義の意味を変えない
+    mode: str = MODE_APPEND
+    # 作り直しで、前世代の何割を下回ったら断るか。0 なら守りを外す。
+    # 足すほうでは使わない(そもそも減らないので)
+    keep_ratio: float = DEFAULT_KEEP_RATIO
     # 誰が置いたか。外のアプリが名乗った文字列で、**印であって認証ではない**
     # (LAN 内・認証なしの前提なので偽れる)。有効にするか決める人の手がかり
     requested_by: str = ""
@@ -189,7 +227,15 @@ class Collection:
     last_error: str | None = None
     last_added: int = 0
     last_skipped: int = 0
+    # 作り直しで消えた件数と、その見出しの頭のほう。
+    # **消えたものが見えないとプロンプトを直せない** —— 件数だけでは
+    # 「何が落ちたのか」が分からない
+    last_removed: int = 0
+    last_removed_titles: list[str] = field(default_factory=list)
     next_run_at: str | None = None
+
+    def is_rebuild(self) -> bool:
+        return self.mode == MODE_REBUILD
 
     def due_at(self) -> datetime:
         """次に走る時刻。持っていなければ「いますぐ」。"""
@@ -231,6 +277,8 @@ def _from_json(item: dict) -> Collection:
         effort=item.get("effort") or None,
         web=bool(item.get("web", True)),
         cursor=str(item.get("cursor") or ""),
+        mode=normalize_mode(item.get("mode")),
+        keep_ratio=normalize_keep_ratio(item.get("keep_ratio")),
         requested_by=str(item.get("requested_by") or ""),
         created_at=str(item.get("created_at") or ""),
         updated_at=str(item.get("updated_at") or ""),
@@ -239,8 +287,37 @@ def _from_json(item: dict) -> Collection:
         last_error=item.get("last_error") or None,
         last_added=int(item.get("last_added") or 0),
         last_skipped=int(item.get("last_skipped") or 0),
+        last_removed=int(item.get("last_removed") or 0),
+        last_removed_titles=[str(t) for t in (item.get("last_removed_titles") or [])],
         next_run_at=item.get("next_run_at") or None,
     )
+
+
+def normalize_mode(value) -> str:
+    """知らない集め方は足すほうへ倒す。壊れた定義でいきなり作り直させない。"""
+    return value if value in MODES else MODE_APPEND
+
+
+def normalize_keep_ratio(value) -> float:
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_KEEP_RATIO
+    return min(max(ratio, 0.0), 1.0)
+
+
+def check_prompt(mode: str, prompt: str) -> None:
+    """作り直しのプロンプトに素材の差し込み口があるかを確かめる。
+
+    **無いまま作り直させない**。AI は今ある内容を知らないまま「全体」を答えることに
+    なり、返ってこなかったものは全部消える。作る時点で弾くのがいちばん安い。
+    """
+    if mode == MODE_REBUILD and MATERIAL_PLACEHOLDER not in prompt:
+        raise HTTPException(400, {
+            "error": f"作り直しのプロンプトには {MATERIAL_PLACEHOLDER} を入れてください",
+            "reason": "ここへ今ある内容が差し込まれる。無いと、AI は今の内容を"
+                      "知らないまま全体を答えることになり、返らなかったものは消える",
+        })
 
 
 def _to_json(items: list[Collection]) -> str:
@@ -301,6 +378,8 @@ def create(
     effort: str | None = None,
     web: bool = True,
     requested_by: str = "",
+    mode: str = MODE_APPEND,
+    keep_ratio: float | None = None,
 ) -> Collection:
     if not NAME_RE.match(name):
         raise HTTPException(400, {
@@ -309,6 +388,9 @@ def create(
         })
     if not prompt.strip():
         raise HTTPException(400, {"error": "prompt must not be empty"})
+    if mode not in MODES:
+        raise HTTPException(400, {"error": f"mode は {' / '.join(MODES)} のどれかにしてください"})
+    check_prompt(mode, prompt)
     existing = load()
     if any(c.name == name for c in existing):
         raise HTTPException(409, {"error": f"収集「{name}」はすでにあります"})
@@ -330,6 +412,10 @@ def create(
         effort=effort,
         web=web,
         cursor="",
+        mode=mode,
+        keep_ratio=(
+            DEFAULT_KEEP_RATIO if keep_ratio is None else normalize_keep_ratio(keep_ratio)
+        ),
         requested_by=requested_by.strip()[:80],
         created_at=now,
         updated_at=now,
@@ -383,11 +469,21 @@ def update(name: str, **fields) -> Collection:
     current = get(name)
     allowed = {
         "description", "prompt", "interval_minutes", "enabled",
-        "backend", "model", "effort", "web", "cursor",
+        "backend", "model", "effort", "web", "cursor", "mode", "keep_ratio",
     }
     patch = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if "interval_minutes" in patch:
         patch["interval_minutes"] = max(int(patch["interval_minutes"]), MIN_INTERVAL_MINUTES)
+    if "mode" in patch and patch["mode"] not in MODES:
+        raise HTTPException(400, {"error": f"mode は {' / '.join(MODES)} のどれかにしてください"})
+    if "keep_ratio" in patch:
+        patch["keep_ratio"] = normalize_keep_ratio(patch["keep_ratio"])
+    # 集め方かプロンプトのどちらを変えても、組み合わせで確かめ直す ——
+    # 片方だけ見ていると、作り直しへ切り替えたときに素材の差し込み口が無いまま通る
+    check_prompt(
+        patch.get("mode", current.mode),
+        patch.get("prompt", current.prompt),
+    )
     updated = replace(current, **patch, updated_at=_iso(_now()))
     if ("interval_minutes" in patch or "enabled" in patch) and current.last_run_at:
         # 間隔を縮めたのに次回が遠いままだと、変えた実感が出ない。前回から測り直す。
@@ -426,15 +522,60 @@ SYSTEM_PROMPT = (
 )
 
 
-def build_messages(item: Collection) -> list[dict]:
-    """AI へ渡す本文。`{cursor}` を今のカーソルで置き換える。
+REBUILD_SYSTEM_PROMPT = (
+    "既にある内容を整理し直して JSON だけで返す。前置き・説明・コードブロックの記号は付けない。"
+    " 形式: {\"items\":[{\"title\":\"見出し\",\"body\":\"本文\","
+    "\"tags\":[\"タグ\"],\"url\":\"出典URL\"}],\"next_cursor\":\"次に進む印\"}"
+    " **返したものがそのまま新しい全体になる。返さなかったものは消える。**"
+    " 残すものは、手を入れないものも含めて必ず返すこと。"
+    " title は同一性の鍵。同じものを指す見出しは同じ文字列にする。"
+    " 分からない項目は null。"
+)
+
+
+def render_material(previous: dict[str, dict]) -> tuple[str, int]:
+    """前世代を、プロンプトへ差し込める形にする。差し込んだ件数も返す。
+
+    **入り切らなければ切って、切ったことを本文に書く** —— 黙って切ると、AI は
+    見えなかったぶんを「無かったもの」として落とし、歯止めが無ければそのまま消える。
+    """
+    if not previous:
+        return "(まだ何も入っていません。最初の内容を作ってください)", 0
+    lines: list[str] = []
+    used = 0
+    docs = list(previous.values())
+    for doc in docs[:MAX_MATERIAL_DOCS]:
+        tags = "/".join(doc.get("tags") or [])
+        body = (doc.get("body") or "")[:MATERIAL_BODY_CHARS].replace("\n", " ")
+        line = f"- {doc['title']}" + (f" 【{tags}】" if tags else "") + (f" — {body}" if body else "")
+        if used + len(line) > MAX_MATERIAL_CHARS:
+            break
+        lines.append(line)
+        used += len(line)
+    shown = len(lines)
+    head = f"いまの内容(全 {len(docs)} 件"
+    head += f"。うち {shown} 件だけ載せています)" if shown < len(docs) else ")"
+    if shown < len(docs):
+        head += "\n※ 載っていないものは今回の対象外です。載っているぶんだけを整理してください。"
+    return head + ":\n" + "\n".join(lines), shown
+
+
+def build_messages(item: Collection, previous: dict[str, dict] | None = None) -> list[dict]:
+    """AI へ渡す本文。`{cursor}` を今のカーソルで、`{current}` を今ある内容で置き換える。
 
     **カーソルが空でも壊さない**(初回は空文字が入るだけ)。テンプレートに `{cursor}` が
     無い収集は、毎回同じことを聞く形になる。
+
+    `{current}` は作り直し(整理)のためのもの。今ある内容を読ませて、分類をやり直す・
+    重複をまとめる・言い回しを揃える、といった育て方をするときに使う。
     """
     user = item.prompt.replace("{cursor}", item.cursor or "(まだ無し。最初から)")
+    if MATERIAL_PLACEHOLDER in user:
+        material_text, _shown = render_material(previous or {})
+        user = user.replace(MATERIAL_PLACEHOLDER, material_text)
+    system = REBUILD_SYSTEM_PROMPT if item.is_rebuild() else SYSTEM_PROMPT
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
 
@@ -514,6 +655,8 @@ def record_result(
     status: str,
     added: int = 0,
     skipped: int = 0,
+    removed: int = 0,
+    removed_titles: list[str] | None = None,
     error: str | None = None,
     next_cursor: str | None = None,
 ) -> Collection:
@@ -531,6 +674,8 @@ def record_result(
         last_error=(error or "")[:500] or None,
         last_added=added,
         last_skipped=skipped,
+        last_removed=removed,
+        last_removed_titles=list(removed_titles or []),
         next_run_at=_iso(now + timedelta(minutes=current.interval_minutes)),
         updated_at=_iso(now),
     )
@@ -633,11 +778,15 @@ def recent(name: str, sources: dict, limit: int = 5) -> list[dict]:
     ]
 
 
-def _previous(name: str, sources: dict) -> dict[str, dict]:
+def previous_docs(name: str, sources: dict) -> dict[str, dict]:
     """前世代(焼き上がっている `corpus/` 側)の全文書(見出し → 文書)。
 
-    **これが「毎回焼き直すのに積み上がる」の要**。素材に前世代を混ぜるので、
+    **これが「毎回焼き直すのに積み上がる」の要**。足すほうでは素材に前世代を混ぜるので、
     ブルーグリーンの全件作り直しに乗せたまま追記として振る舞う(固化と同じ)。
+
+    **作り直しでも要る** —— プロンプトへ差し込む素材であり、消えたものを数える相手であり、
+    残ったものの `doc_id` を引き継ぐ元でもある。取り込みの経路では 1 度だけ読んで
+    使い回す(同じものを 3 回読みに行かない)。
     """
     src = sources.get(name)
     if src is None:
@@ -674,51 +823,98 @@ def load_json(raw) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
-def material(name: str, sources: dict, collected: list[dict]) -> tuple[list[dict], int, int]:
-    """焼く素材(前世代 + いま集めたぶん)を doc_id 順に組み立て、初物と既出の数も返す。
+def material(
+    item: Collection, previous: dict[str, dict], collected: list[dict]
+) -> tuple[list[dict], dict]:
+    """焼く素材と、前世代との差分を組み立てる。
 
-    **ここが「毎回焼き直すのに積み上がる」の要**。前世代を混ぜるので、ブルーグリーンの
-    全件作り直しに乗せたまま追記として振る舞う(固化と同じ)。
+    集め方で作り方が変わる:
 
-    **`doc_id` は前世代のものを引き継ぐ** —— 焼き直しても文書の URL が変わらないように。
-    同じ見出しは新しく集めたほうで置き換える(そちらが新しいので正しい)。
+    - **足す(append)**: 前世代 + 今回のぶん。同じ見出しは今回のほうで置き換える
+      (そちらが新しいので正しい)。**前世代は必ず残る**ので、失敗しても壊れない。
+    - **作り直す(rebuild)**: 今回のぶん**だけ**が新しい全体になる。前世代にあって
+      今回返ってこなかった見出しは消える。整理そのものが目的なので、
+      消えること自体は正しい振る舞い —— 消えすぎを止めるのは `shrink_blocked`。
+
+    **`doc_id` は前世代のものを引き継ぐ**。どちらの集め方でも、残った文書の URL が
+    焼き直しで変わらないようにするため。
     """
-    merged = _previous(name, sources)
-    next_id = max((d["doc_id"] for d in merged.values()), default=0) + 1
+    merged = dict(previous) if not item.is_rebuild() else {}
+    next_id = max((d["doc_id"] for d in previous.values()), default=0) + 1
     now = _iso(_now())
     added = skipped = 0
     for raw in collected[:MAX_ITEMS_PER_RUN]:
-        doc = _to_doc(raw, now)
+        doc = _to_doc(raw, now, item.web)
         if doc is None:
             skipped += 1
             continue
         title = doc["title"]
-        previous = merged.get(title)
-        if previous is None:
+        if item.is_rebuild() and title in merged:
+            # 同じ答えの中に同じ見出しが 2 つ。後から来たほうは捨てる
+            # (足すほうでは「前世代と同じ」を意味するので、ここには来ない)
+            skipped += 1
+            continue
+        kept_before = previous.get(title)
+        if kept_before is None:
             doc_id = next_id
             next_id += 1
             added += 1
         else:
-            # 同じ見出しは既出。**上書きはする**(新しく集めたほうが新しい)が、
-            # 積み上がった件数は増えないので「追加」には数えない
-            doc_id = previous["doc_id"]
-            skipped += 1
+            # 既に持っている見出し。**上書きはする**(今回のほうが新しい)。
+            # 足すほうでは積み上がった件数が増えないので「追加」には数えない
+            doc_id = kept_before["doc_id"]
+            if not item.is_rebuild():
+                skipped += 1
         merged[title] = {**doc, "doc_id": doc_id}
-    return sorted(merged.values(), key=lambda d: d["doc_id"]), added, skipped
+    removed_titles = [t for t in previous if t not in merged]
+    diff = {
+        "previous": len(previous),
+        "total": len(merged),
+        "added": added,
+        "kept": len(merged) - added,
+        "removed": len(removed_titles),
+        "skipped": skipped,
+        "removed_titles": removed_titles[:MAX_REMOVED_SAMPLE],
+    }
+    return sorted(merged.values(), key=lambda d: d["doc_id"]), diff
 
 
-def _to_doc(raw: dict, now: str) -> dict | None:
+def shrink_blocked(item: Collection, diff: dict) -> str | None:
+    """作り直しで減りすぎていたら、その理由の文。問題なければ None。
+
+    **AI が変な日に当たった 1 回で、育てた分類が消えるのを止める**のがここ。
+    足すほうには要らない(そもそも減らない)。`keep_ratio` を 0 にすると外れる ——
+    意図して大きく減らすときのための逃げ道で、外したことが定義に残る。
+    """
+    if not item.is_rebuild() or item.keep_ratio <= 0 or not diff["previous"]:
+        return None
+    floor = diff["previous"] * item.keep_ratio
+    if diff["total"] >= floor:
+        return None
+    sample = "、".join(diff["removed_titles"][:5])
+    return (
+        f"作り直しの結果が {diff['total']} 件で、前の {diff['previous']} 件から"
+        f"{diff['removed']} 件減ります(下限 {floor:.0f} 件)。"
+        + (f"消えるもの: {sample} ほか。" if sample else "")
+    )
+
+
+def _to_doc(raw: dict, now: str, web: bool) -> dict | None:
     """AI が返した 1 件を、焼ける形に整える。見出しか本文が無いものは捨てる。
 
     **いつ集めたかは必ず残す**(`extra.collected_at`)—— 読む側が古い情報かどうかを
     判断できるように。
+
+    **web を開けて集めたかも残す**(`extra.web`)。手元に置くだけなら私的利用の範囲でも、
+    公開リポジトリへ出すかどうかは別の判断になる。後から「これは外から取ったものか」を
+    辿れないと、その判断ができない(出典 `url` と合わせて手掛かりにする)。
     """
     title = (raw.get("title") or "").strip()[:notes.TITLE_MAX_CHARS]
     body = (raw.get("body") or "").strip()[:MAX_BODY_CHARS]
     if not title or not body:
         return None
     tags = [str(t).strip() for t in (raw.get("tags") or []) if str(t).strip()]
-    extra = {"collected_at": now}
+    extra = {"collected_at": now, "web": bool(web)}
     if url := (raw.get("url") or "").strip():
         extra["url"] = url
     return {
@@ -746,29 +942,42 @@ def _dump_date(name: str, sources: dict) -> str:
     return stamp
 
 
-def ndjson(name: str, sources: dict, collected: list[dict]) -> tuple[str, int, int]:
-    """取り込み側が読む素材(1 行目が meta、以降は 1 行 1 文書)と、初物・既出の数。
+def ndjson(
+    item: Collection, sources: dict, previous: dict[str, dict], collected: list[dict]
+) -> tuple[str, dict]:
+    """取り込み側が読む素材(1 行目が meta、以降は 1 行 1 文書)と、前世代との差分。
 
     **空なら 409 で断る** —— 流し始めた後ではステータスを変えられないので、
     先に全部組み立ててから返す(固化と同じ判断。収集物はたかだか数万件)。
+
+    **作り直しで減りすぎていても断る**。ここが後戻りできる最後の地点で、
+    通してしまうと次の世代が焼き上がり、戻すには世代を巻き戻すしかなくなる。
     """
-    get(name)  # 知らない収集は 404
-    docs, added, skipped = material(name, sources, collected)
+    docs, diff = material(item, previous, collected)
     if not docs:
         raise HTTPException(
             409,
             {
-                "error": f"収集「{name}」は 1 件も集められませんでした",
+                "error": f"収集「{item.name}」は 1 件も集められませんでした",
                 "hint": "プロンプトを見直すか、相手を替えてから試してください",
+            },
+        )
+    if reason := shrink_blocked(item, diff):
+        raise HTTPException(
+            409,
+            {
+                "error": f"収集「{item.name}」の作り直しを止めました: {reason}",
+                "hint": "プロンプトを直すか、意図して減らすなら keep_ratio を下げてください"
+                        "(0 で守りを外す)。焼いていないので、いまの内容はそのままです",
             },
         )
     meta = {
         "meta": {
-            "dump_date": _dump_date(name, sources),
+            "dump_date": _dump_date(item.name, sources),
             "min_docs": 1,
             "sample_titles": [docs[0]["title"]],
         }
     }
     lines = [json.dumps(meta, ensure_ascii=False)]
     lines.extend(json.dumps(d, ensure_ascii=False) for d in docs)
-    return "\n".join(lines) + "\n", added, skipped
+    return "\n".join(lines) + "\n", diff
