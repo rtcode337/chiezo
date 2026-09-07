@@ -13,6 +13,7 @@ import datetime as dt
 import json
 import re
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -849,3 +850,46 @@ class TestDeletingWithTheSource:
         assert admin._drop_collect_source("news") is False
         collect.remove("news")
         assert [c.name for c in collect.load()] == []
+class TestTheCollectSectionMarkup:
+    """画面の HTML そのものを見る。
+
+    組み立てが壊れても例外にはならないので、テストが通ったまま画面だけが
+    崩れる(実際に、開始タグを失った form の属性が本文として表示された)。
+    """
+
+    def _html(self, sample):
+        from app.views import admin
+
+        return admin._collect_html({}, "")
+
+    def test_every_form_is_opened_and_closed(self, sample):
+        html = self._html(sample)
+        assert html.count("<form") == html.count("</form>")
+        # 属性が本文へ漏れていない(開始タグを失った form の証拠)
+        assert "onsubmit=" not in html.replace('" onsubmit=', "")
+
+    def test_an_empty_collection_can_still_be_deleted(self, sample):
+        """まだ何も溜まっていない収集の行にも削除の導線が要る。"""
+        html = self._html(sample)
+        assert '/admin/collect/news/delete"' in html
+        assert "まだ何も溜まっていません" in html
+        assert html.count(">削除</button>") == len(collect.load())
+
+    def test_a_collection_with_data_warns_about_what_goes_with_it(self, sample, monkeypatch):
+        """溜めたものも一緒に消えることを、押す前に出す。"""
+        from app.registry import Source
+        from app.views import admin
+
+        baked = Source(
+            name="news",
+            kind="collect",
+            lang="ja",
+            dump_date=None,
+            schema_version=4,
+            built_at="2026-09-07T00:00:00+00:00",
+            doc_count=1234,
+            path=Path("/data/news.db"),
+        )
+        html = admin._collect_html({"news": baked}, "")
+        assert "1,234 件" in html
+        assert html.count("<form") == html.count("</form>")

@@ -504,6 +504,15 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
         )
         # 作り直しは「返らなかったものが消える」ので、行のいちばん目立つところに出す
         mode_mark = ' <span class="stale">整理</span>' if item.is_refine() else ""
+        # 消す前の確認。**行の組み立てとは別に作る** —— 隣り合った文字列は
+        # 三項演算子より先につながるので、行の途中で分岐を書くと後ろの断片まで
+        # else 側へ吸い込まれ、開始タグの無い <form> ができる(実際にそうなった)
+        delete_confirm = (
+            f"収集「{item.name}」の設定と、溜めたもの({src.doc_count:,} 件)を"
+            "まとめて消します。元に戻せません。よろしいですか?"
+            if src is not None
+            else f"収集「{item.name}」の設定を消します(まだ何も溜まっていません)。よろしいですか?"
+        )
         rows.append(
             f"<tr{cls}>"
             f'<td><a href="{esc(browse_url(item.name))}">{esc(item.name)}</a>'
@@ -561,12 +570,7 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f"{disabled}>"
             f'<button type="submit"{disabled}>いま集めて焼く</button></form>'
             f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/delete"'
-            f" onsubmit=\"return confirm('収集「{esc(item.name)}」の設定と、"
-            f"溜めたもの({src.doc_count:,} 件)をまとめて消します。"
-            "元に戻せません。よろしいですか?')\">"
-            if src is not None
-            else f" onsubmit=\"return confirm('収集「{esc(item.name)}」の設定を消します"
-            "(まだ何も溜まっていません)。よろしいですか?')\">"
+            f" onsubmit=\"return confirm('{esc(delete_confirm)}')\">"
             f'<button type="submit">削除</button></form>'
             f"</td></tr>"
         )
