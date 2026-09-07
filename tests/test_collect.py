@@ -534,6 +534,22 @@ class TestRest:
         assert res.json()["mode"] == "rebuild"
         assert client.get("/v1/collect/tidy").json()["keep_ratio"] == collect.DEFAULT_KEEP_RATIO
 
+    def test_the_backend_comes_back_on_the_definition(self, client, enabled):
+        """依頼した側が、誰に頼むことになったかを確かめられる。"""
+        res = client.post(
+            "/v1/collect",
+            json={
+                "name": "asked",
+                "prompt": "{cursor}",
+                "interval_minutes": 60,
+                "backend": "antigravity",
+                "model": "haiku",
+            },
+        )
+        assert res.status_code == 200
+        assert res.json()["backend"] == "antigravity"
+        assert client.get("/v1/collect/asked").json()["model"] == "haiku"
+
     def test_a_rebuild_without_the_material_placeholder_is_refused(self, client, enabled):
         """外から依頼するときも、素材の差し込み口が無いものは作らせない。"""
         res = client.post(
@@ -715,3 +731,40 @@ class TestRebuildMode:
         )
         assert updated.last_removed == 2
         assert updated.last_removed_titles == ["A", "B"]
+
+
+class TestBackend:
+    """誰に頼むか。**未指定なら Chiezo の既定**(有効な相手の先頭)。
+
+    収集は無人で回るので、後から「どの相手に頼んでいたのか」が読めることが要る。
+    """
+
+    def test_it_is_unset_by_default(self, sample):
+        """既定にまかせる、が初期状態。"""
+        item = collect.get("news")
+        assert item.backend is None
+        assert item.model is None
+
+    def test_it_can_be_named_when_requested(self, enabled):
+        """外のアプリから相手まで指定して依頼できる。"""
+        item = collect.create(
+            "named", prompt="{cursor}", interval_minutes=60,
+            backend="antigravity", model="haiku",
+        )
+        assert item.backend == "antigravity"
+        assert item.model == "haiku"
+
+    def test_an_empty_value_means_leave_it_to_chiezo(self, sample):
+        """画面のフォームは空欄を空文字で送る。それを「指定しない」に倒す。
+
+        倒さないと、保存直後だけ空文字を持ち回ることになり、読み直した後の
+        値(None)とずれる。
+        """
+        collect.update("news", backend="antigravity", model="haiku")
+        assert collect.get("news").backend == "antigravity"
+
+        updated = collect.update("news", backend="", model="")
+        assert updated.backend is None
+        assert updated.model is None
+        # 読み直しても同じ
+        assert collect.get("news").backend is None

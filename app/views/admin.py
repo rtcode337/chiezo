@@ -27,6 +27,7 @@ from app import (
     media,
     memory,
     notes,
+    providers,
     settings_store,
 )
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
@@ -366,6 +367,63 @@ MODE_LABELS = {
 }
 
 
+def _backend_select(current: str | None) -> str:
+    """相手を選ぶセレクト。**空が「Chiezo の既定にまかせる」**。
+
+    候補は**有効にしてある相手だけ**(`answer.backend_names()`)—— 無効な相手を選べても
+    走らせた瞬間に断られる。**描画のときに相手へ問い合わせない**ので、モデルの一覧は
+    `app/providers.py` が持つ控えを使う(管理画面の他の表と同じ流儀)。
+
+    **いま選ばれている相手が無効になっていても選択肢に残す** —— 落とすと、保存し直した
+    瞬間に既定へ倒れて、誰に頼んでいたのかが画面から消える。
+    """
+    enabled = answer.backend_names()
+    names = list(enabled)
+    if current and current not in names:
+        names.append(current)
+    options = ['<option value="">Chiezo の既定にまかせる</option>']
+    for name in names:
+        spec = providers.get(name)
+        label = spec.label if spec else name
+        if name not in enabled:
+            label += "(いまは無効)"
+        selected = " selected" if name == current else ""
+        options.append(f'<option value="{esc(name)}"{selected}>{esc(label)}</option>')
+    return f'<select name="backend">{"".join(options)}</select>'
+
+
+def _backend_hint() -> str:
+    """相手ごとに渡せるモデルと深さ。**選ぶ前に読めるところに置く**。
+
+    セレクトを連動させるには JS が要る(この画面は持たない)ので、一覧を添えて
+    手で書いてもらう。空にすれば相手の既定に任せられる。
+    """
+    lines = []
+    for name in answer.backend_names():
+        spec = providers.get(name)
+        if spec is None:
+            continue
+        parts = []
+        if spec.models:
+            parts.append("モデル: " + " / ".join(spec.models))
+        if spec.efforts:
+            parts.append("深さ: " + " / ".join(spec.efforts))
+        lines.append(f"{esc(spec.label)} — " + ("、".join(parts) if parts else "指定なしでよい"))
+    if not lines:
+        return ""
+    return '<p class="muted">' + "<br>".join(lines) + "</p>"
+
+
+def _backend_label(item) -> str:
+    """行に出す相手の名前。未指定なら既定だと分かるように書く。"""
+    if not item.backend:
+        return '<span class="muted">既定にまかせる</span>'
+    spec = providers.get(item.backend)
+    label = esc(spec.label if spec else item.backend)
+    detail = " / ".join(x for x in (item.model, item.effort) if x)
+    return label + (f'<br><span class="muted">{esc(detail)}</span>' if detail else "")
+
+
 def _mode_select(current: str) -> str:
     """集め方を選ぶセレクト。**既定は足すほう** —— 消える側を既定にしない。"""
     options = "".join(
@@ -461,6 +519,12 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'<p><label>プロンプト<br><textarea name="prompt" rows="10">{esc(item.prompt)}</textarea></label></p>'
             f'<p><label>進み具合(空にすると最初から)<br>'
             f'<input name="cursor" value="{esc(item.cursor)}"></label></p>'
+            f"<p><label>頼む相手<br>{_backend_select(item.backend)}</label></p>"
+            f'<p><label>モデル(空なら相手の既定)<br>'
+            f'<input name="model" value="{esc(item.model or "")}"></label></p>'
+            f'<p><label>考える量(空なら相手の既定)<br>'
+            f'<input name="effort" value="{esc(item.effort or "")}"></label></p>'
+            f"{_backend_hint()}"
             f"<p><label>集め方<br>{_mode_select(item.mode)}</label></p>"
             f'<p><label>作り直しの歯止め(前の何割を下回ったら止めるか。0 で外す)<br>'
             f'<input name="keep_ratio" type="number" step="0.05" min="0" max="1"'
@@ -479,6 +543,7 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'<p class="muted">AI に聞くので十数秒〜1分ほどかかります。案は保存されないので、見てから決められます。</p>'
             f'<button type="submit">相談する</button></form></details>'
             f"</details></td>"
+            f"<td>{_backend_label(item)}</td>"
             f"<td>{item.interval_minutes} 分ごと</td>"
             f"<td>{when}</td>"
             f"<td>{baked_docs}</td>"
@@ -501,7 +566,7 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
     table = f"""
 <table>
 <thead>
-<tr><th>name</th><th>間隔</th><th>次にいつ</th><th>長期記憶</th><th>前回</th><th></th></tr>
+<tr><th>name</th><th>相手</th><th>間隔</th><th>次にいつ</th><th>長期記憶</th><th>前回</th><th></th></tr>
 </thead>
 <tbody>
 {"".join(rows)}
@@ -518,6 +583,8 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
 <input name="description" placeholder="技術ニュース"></label></p>
 <p><label>間隔(分。{collect.MIN_INTERVAL_MINUTES} 以上)<br>
 <input name="interval_minutes" type="number" min="{collect.MIN_INTERVAL_MINUTES}" value="360"></label></p>
+<p><label>頼む相手<br>{_backend_select(None)}</label></p>
+{_backend_hint()}
 <p><label>集め方<br>{_mode_select(collect.MODE_APPEND)}</label></p>
 <p class="muted">整理(作り直し)を選ぶときは、プロンプトに <code>{{current}}</code> を入れる
 (そこへ今ある内容が差し込まれ、AI が返したものがそのまま新しい全体になる)。</p>
@@ -1114,6 +1181,7 @@ async def admin_collect_create(request: Request):
         description=str(form.get("description") or "").strip(),
         web=bool(form.get("web")),
         mode=collect.normalize_mode(form.get("mode")),
+        backend=_blank_to_none(form.get("backend")),
     )
     collect.update(item.name, enabled=False)
     # 作った時点で空の DB ができるので、ソースを取り直して検索に出るようにする。
@@ -1144,6 +1212,11 @@ async def admin_collect_edit(name: str, request: Request):
         mode=collect.normalize_mode(form.get("mode")),
         # 0 も意味のある値(守りを外す)なので、空のときだけ触らない
         keep_ratio=_ratio(form.get("keep_ratio")),
+        # 相手・モデル・深さは**空を「既定にまかせる」として通す** ——
+        # `collect.update` は None を「触らない」と読むので、空文字で渡して消す
+        backend=str(form.get("backend") or ""),
+        model=str(form.get("model") or ""),
+        effort=str(form.get("effort") or ""),
     )
     return RedirectResponse(url="/admin#collect", status_code=303)
 
@@ -1211,6 +1284,11 @@ def admin_collect_run(name: str):
 
     start_collection_bake(name)
     return RedirectResponse(url="/admin#collect", status_code=303)
+
+
+def _blank_to_none(raw) -> str | None:
+    """空欄は「指定しない」。作るときは None を渡す(既定にまかせる)。"""
+    return str(raw or "").strip() or None
 
 
 def _ratio(raw) -> float | None:

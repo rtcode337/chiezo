@@ -478,6 +478,12 @@ def update(name: str, **fields) -> Collection:
         raise HTTPException(400, {"error": f"mode は {' / '.join(MODES)} のどれかにしてください"})
     if "keep_ratio" in patch:
         patch["keep_ratio"] = normalize_keep_ratio(patch["keep_ratio"])
+    # 相手・モデル・深さは**空文字を「指定しない」に倒す**。画面のフォームは空欄を
+    # 空文字で送ってくるが、持ち回るときは None でないと「未指定」の意味にならない
+    # (読み直せば `_from_json` が同じことをするが、保存直後の値とずれる)
+    for key in ("backend", "model", "effort"):
+        if key in patch and not str(patch[key]).strip():
+            patch[key] = None
     # 集め方かプロンプトのどちらを変えても、組み合わせで確かめ直す ——
     # 片方だけ見ていると、作り直しへ切り替えたときに素材の差し込み口が無いまま通る
     check_prompt(
