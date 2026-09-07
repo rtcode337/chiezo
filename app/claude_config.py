@@ -294,6 +294,36 @@ def _emit_source(base: str, src: Source, out: list[str]) -> None:
             )
         return
 
+    if src.kind == "overture":
+        paren = "Overture Maps の店舗・施設辞典"
+        out.append(
+            f"- **{name}**({paren}): 飲食店・宿・小売・寺社・駅などの POI と座標。"
+            "**OSM 辞典より件数が多く、店の URL と電話番号が入っていることが多い**"
+            "(代わりに住所は自由記述で、`extra.area` は空のことが多い)"
+        )
+        out.append(f'  - 検索:   `curl -sG "{base}/v1/{name}/search?limit=5" --data-urlencode "q={query}"`')
+        out.append(
+            f'  - 座標等: `curl -sG "{base}/v1/{name}/doc?fields=title,extra" --data-urlencode "title={title}"`'
+            " (extra に lat/lon・住所・website・phone・confidence)"
+        )
+        if has_filter:
+            tag = _example_tag(src, sample_tags) or "restaurant"
+            out.append(
+                f'  - 範囲抽出: `curl -sG "{base}/v1/{name}/filter?bbox=35.68,139.69,35.70,139.71&limit=200"'
+                f' --data-urlencode "feature=category={tag}"`'
+                " (bbox は `min_lat,min_lon,max_lat,max_lon`。"
+                "種別は OSM 辞典と同じ書き方で `category=<カテゴリ>` を渡す。カンマ区切りで複数可。"
+                "**1 回に返るのは 500 件まで**なので、多いときは `total` を見て `offset` で継ぐ)"
+            )
+            out.append(
+                f'  - カテゴリ探し: `curl -sG "{base}/v1/{name}/tags?limit=20"'
+                ' --data-urlencode "contains=restaurant"`'
+                " (Overture のカテゴリ名は独自なので、**推測で書かず先にここで確かめる** ——"
+                "存在しない名前を渡してもエラーにならず 0 件が返るだけ。"
+                "日本の神社・寺は `church_cathedral` に入っている)"
+            )
+        return
+
     # その他(geonames 等)
     paren = f"kind={src.kind or '?'}"
     out.append(f"- **{name}**({paren})")
