@@ -121,3 +121,76 @@ class TestStagedMaterial:
         adapter = collect.adapter_for("sample_news")
         path, _ = adapter.fetch(tmp_path)
         assert [d.title for d in adapter.iter_docs(path)] == ["見出し"]
+
+
+class TestDeletingASource:
+    """焼いたソースを消す口(`DELETE /source/{name}`)。
+
+    **消せるのは集めたものだけ**。ダンプ由来のソースは作り直すのに数時間かかるうえ、
+    この口は収集の設定を消すついでに呼ばれる —— 名前の取り違えで jawiki が飛ぶ
+    経路を作らない。
+    """
+
+    @pytest.fixture
+    def trigger(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        import server
+
+        monkeypatch.setattr(server, "DATA_DIR", tmp_path)
+        (tmp_path / "dumps").mkdir()
+
+        def make(name, kind):
+            generation = tmp_path / f"{name}-20260101.db"
+            conn = sqlite3.connect(generation)
+            conn.execute("CREATE TABLE meta (source TEXT, source_kind TEXT)")
+            conn.execute("INSERT INTO meta VALUES (?, ?)", (name, kind))
+            conn.commit()
+            conn.close()
+            (tmp_path / f"{name}.db").symlink_to(generation.name)
+            (tmp_path / "dumps" / f"{name}-20260101.ndjson").write_text("{}")
+            return generation
+
+        return server, make
+
+    def test_it_removes_generations_link_and_leftovers(self, trigger, tmp_path):
+        server, make = trigger
+        make("spots", "collect")
+
+        result = server.delete_source("spots")
+
+        assert result["ok"] is True
+        assert not (tmp_path / "spots.db").is_symlink()
+        assert not (tmp_path / "spots-20260101.db").exists()
+        # 焼く前に残った素材も片付ける(次の実行が読み直してしまうため)
+        assert not (tmp_path / "dumps" / "spots-20260101.ndjson").exists()
+
+    def test_a_dump_derived_source_is_refused(self, trigger, tmp_path):
+        """取り違えで jawiki が飛ぶ経路を作らない。"""
+        import fastapi
+
+        server, make = trigger
+        make("jawiki", "wikipedia")
+
+        with pytest.raises(fastapi.HTTPException) as got:
+            server.delete_source("jawiki")
+
+        assert got.value.status_code == 409
+        assert (tmp_path / "jawiki.db").is_symlink()
+
+    def test_an_unknown_source_is_404(self, trigger):
+        import fastapi
+
+        server, _make = trigger
+        with pytest.raises(fastapi.HTTPException) as got:
+            server.delete_source("nosuch")
+        assert got.value.status_code == 404
+
+    def test_a_bad_name_is_refused(self, trigger):
+        """ファイル名になるので、名前は狭く取る。"""
+        import fastapi
+
+        server, _make = trigger
+        with pytest.raises(fastapi.HTTPException) as got:
+            server.delete_source("../etc/passwd")
+        assert got.value.status_code == 400

@@ -362,8 +362,8 @@ def _consult_page_html(name: str | None, want: str, draft: str, error: str) -> s
 
 
 MODE_LABELS = {
-    "append": "集める(前世代に足す)",
-    "rebuild": "整理する(返したものが新しい全体。消えるものが出る)",
+    "append": "集める(外から取ってきて積む)",
+    "refine": "整理する(いまの内容を読ませて、直すものと足すものを返させる)",
 }
 
 
@@ -501,7 +501,7 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             if item.requested_by else ""
         )
         # 作り直しは「返らなかったものが消える」ので、行のいちばん目立つところに出す
-        mode_mark = ' <span class="stale">整理(作り直し)</span>' if item.is_rebuild() else ""
+        mode_mark = ' <span class="stale">整理</span>' if item.is_refine() else ""
         rows.append(
             f"<tr{cls}>"
             f'<td><a href="{esc(browse_url(item.name))}">{esc(item.name)}</a>'
@@ -526,12 +526,13 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'<input name="effort" value="{esc(item.effort or "")}"></label></p>'
             f"{_backend_hint()}"
             f"<p><label>集め方<br>{_mode_select(item.mode)}</label></p>"
-            f'<p><label>作り直しの歯止め(前の何割を下回ったら止めるか。0 で外す)<br>'
+            f'<p><label>消えすぎの歯止め(前の何割を下回ったら止めるか。0 で外す)<br>'
             f'<input name="keep_ratio" type="number" step="0.05" min="0" max="1"'
             f' value="{item.keep_ratio}"></label></p>'
-            f'<p class="muted">整理(作り直し)にすると、AI が返したものがそのまま'
-            f" 新しい全体になります。プロンプトに <code>{{current}}</code> を入れてください"
-            f"(そこへ今ある内容が差し込まれます)。</p>"
+            f'<p class="muted">整理にすると、AI にいまの内容を読ませたうえで、'
+            f" 直すものと足すものだけを返させます(触れなかったものはそのまま残ります)。"
+            f" プロンプトに <code>{{current}}</code> を入れてください"
+            f"(そこへ今ある内容が差し込まれます)。消すのは AI が墓標を付けたときだけです。</p>"
             f'<button type="submit">保存する</button></form></details>'
             f"<details><summary>AI に相談して直す</summary>"
             f'<form method="post" action="/admin/collect/consult" class="collect-form">'
@@ -558,8 +559,12 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f"{disabled}>"
             f'<button type="submit"{disabled}>いま集めて焼く</button></form>'
             f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/delete"'
-            f" onsubmit=\"return confirm('収集「{esc(item.name)}」の設定を消します"
-            "(溜めたものは残ります)。よろしいですか?')\">"
+            f" onsubmit=\"return confirm('収集「{esc(item.name)}」の設定と、"
+            f"溜めたもの({src.doc_count:,} 件)をまとめて消します。"
+            "元に戻せません。よろしいですか?')\">"
+            if src is not None
+            else f" onsubmit=\"return confirm('収集「{esc(item.name)}」の設定を消します"
+            "(まだ何も溜まっていません)。よろしいですか?')\">"
             f'<button type="submit">削除</button></form>'
             f"</td></tr>"
         )
@@ -586,8 +591,9 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
 <p><label>頼む相手<br>{_backend_select(None)}</label></p>
 {_backend_hint()}
 <p><label>集め方<br>{_mode_select(collect.MODE_APPEND)}</label></p>
-<p class="muted">整理(作り直し)を選ぶときは、プロンプトに <code>{{current}}</code> を入れる
-(そこへ今ある内容が差し込まれ、AI が返したものがそのまま新しい全体になる)。</p>
+<p class="muted">整理を選ぶときは、プロンプトに <code>{{current}}</code> を入れる
+(そこへ今ある内容が差し込まれる)。返さなかったものはそのまま残り、消えるのは AI が
+墓標を付けたときだけ。</p>
 <p><label>プロンプト<br>
 <textarea name="prompt" rows="6" required
  placeholder="{esc(collect.SAMPLE["prompt"])}"></textarea></label></p>
@@ -1262,13 +1268,44 @@ def admin_collect_toggle(name: str):
 
 
 @router.post("/admin/collect/{name}/delete")
-def admin_collect_delete(name: str):
-    """設定を消す。**溜めたものは残す** —— 消すのは別の意思決定だから
+def admin_collect_delete(request: Request, name: str):
+    """設定と、焼いたソースをまとめて消す。
 
-    (画面から気軽に押せるぶん、取り返しのつく側に倒す)。
+    **画面からは 1 つの操作にする。** 設定だけ消して中身が残ると、一覧から
+    消えたのに検索には出続けるものができ、後から辿る手段が無くなる
+    (収集の定義が消えているので、どこから来たのかも読めない)。
+
+    **消せるのは trigger だけ**(`chiezo-app` は `corpus/` を読み取り専用で
+    マウントしている)。向こうは種別を確かめて、集めたものだけを消す。
+    **ソースを消せなくても設定は消す** —— trigger が立っていない構成は普通に
+    あるので、そこで操作ごと止めない。
     """
+    dropped = _drop_collect_source(name)
     collect.remove(name)
-    return RedirectResponse(url="/admin#collect", status_code=303)
+    # 消した後のソース表を作り直す(消えたものが一覧に残らないように)
+    from app.main import scan_all
+
+    request.app.state.sources = scan_all(request.app.state.data_dir)
+    return RedirectResponse(url=f"/admin#collect{'' if dropped else '&kept'}", status_code=303)
+
+
+def _drop_collect_source(name: str) -> bool:
+    """焼いたソースを trigger に消させる。消せたかどうかを返す。
+
+    **失敗しても例外にしない。** ここは設定を消すついでの片付けで、
+    trigger が居ない・まだ 1 度も焼いていない、はどちらも普通の状態。
+    """
+    if not TRIGGER_URL:
+        return False
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            res = client.delete(f"{TRIGGER_URL}/source/{name}")
+        if res.status_code == 200:
+            return True
+        log.warning("could not drop source %s: %s %s", name, res.status_code, res.text[:200])
+    except httpx.HTTPError as e:
+        log.warning("could not reach the trigger to drop %s: %s", name, e)
+    return False
 
 
 @router.post("/admin/collect/{name}/run")

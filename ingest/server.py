@@ -27,6 +27,12 @@ log = logging.getLogger("chiezo.trigger")
 DATA_DIR = Path(os.environ.get("CHIEZO_DATA_DIR", "/data"))
 LOG_TAIL_LINES = 200
 
+# 消してよいソースの種別。**集めたものだけ** —— ダンプ由来のものは作り直すのに
+# 数時間かかるうえ、この口は収集の設定を消すついでに呼ばれる
+COLLECT_KIND = "collect"
+# ファイル名になるので狭く取る(`app/collect.py` の NAME_RE と同じ形)
+SOURCE_NAME_RE = __import__("re").compile(r"^[a-z][a-z0-9_]{1,30}$")
+
 _lock = threading.Lock()
 _status: dict = {
     "state": "idle",  # idle | running | done | error
@@ -165,6 +171,83 @@ def sources():
         "continents": list(CONTINENTS),
         "schema_version": SCHEMA_VERSION,
     }
+
+
+@app.delete("/source/{name}")
+def delete_source(name: str):
+    """焼いたソースを消す。**集めたものだけ**が対象。
+
+    **消せるのはここだけ**。`chiezo-app` は `corpus/` を読み取り専用でマウントして
+    いるので、あちらからはファイルに触れない(長期記憶へ書けるのは ingest だけ、
+    という線の裏返し)。
+
+    **種別を確かめてから消す**(`meta.source_kind` が `collect`)。ダンプ由来の
+    ソースは作り直すのに数時間かかるうえ、この口は収集の設定を消すついでに
+    呼ばれる —— 名前の取り違えで jawiki が飛ぶ経路を作らない。
+
+    消すのは、いまの世代・1 つ前の世代・シンボリックリンク・焼く前に残った素材。
+    **走っている最中は断る**(切り替えの途中を壊さないため)。
+    """
+    with _lock:
+        if _status["state"] == "running":
+            raise HTTPException(409, {"error": "ingest is running"})
+
+    if not SOURCE_NAME_RE.match(name):
+        raise HTTPException(400, {"error": f"invalid source name: {name}"})
+
+    link = DATA_DIR / f"{name}.db"
+    if not link.exists() and not link.is_symlink():
+        raise HTTPException(404, {"error": f"unknown source: {name}"})
+
+    kind = _source_kind(link)
+    if kind != COLLECT_KIND:
+        raise HTTPException(
+            409,
+            {
+                "error": f"source {name} is not deletable here",
+                "reason": f"source_kind={kind!r}(消せるのは集めたものだけ)",
+                "hint": "ダンプ由来のソースは作り直しに時間がかかるので、"
+                        "この口からは消せないようにしてある",
+            },
+        )
+
+    removed = _remove_source_files(name)
+    log.info("deleted source %s (%d files)", name, len(removed))
+    return {"ok": True, "source": name, "removed": removed}
+
+
+def _source_kind(link: Path) -> str | None:
+    """焼いてある DB の meta から種別を読む。読めなければ None。"""
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(f"file:{link}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute("SELECT source_kind FROM meta LIMIT 1").fetchone()
+        return row[0] if row else None
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
+def _remove_source_files(name: str) -> list[str]:
+    """世代・リンク・焼く前に残った素材を消す。消えたものの名前を返す。"""
+    targets = [DATA_DIR / f"{name}.db", *DATA_DIR.glob(f"{name}-*.db")]
+    # 焼く前に落ちて残っている素材(次の実行が読み直すもの)も一緒に片付ける
+    targets += list((DATA_DIR / "dumps").glob(f"{name}-*"))
+
+    removed = []
+    for path in targets:
+        try:
+            if path.is_symlink() or path.exists():
+                path.unlink()
+                removed.append(path.name)
+        except OSError as e:
+            log.warning("could not remove %s: %s", path, e)
+    return removed
 
 
 @app.get("/status")

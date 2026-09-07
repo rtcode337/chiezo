@@ -1293,7 +1293,8 @@ class CollectionCreate(BaseModel):
     web: bool = True
     mode: str = PydField(
         collect.MODE_APPEND,
-        description="append(集める。前世代に足す) / rebuild(整理する。返したものが新しい全体)",
+        description="append(集める。外から取ってきて積む) / "
+        "refine(整理する。いまの内容を読ませて、直すものと足すものを返させる)",
     )
     keep_ratio: float | None = PydField(
         None,
@@ -1434,14 +1435,16 @@ def collect_patch(name: str, body: CollectionPatch):
 
 
 @app.delete("/v1/collect/{name}")
-def collect_delete(
-    name: str,
-    drop_data: bool = Query(False, description="溜めたものも消す(既定は残す)"),
-):
-    """定義を消す。**溜めたものは既定で残す** —— 消すのは別の意思決定だから。"""
+def collect_delete(name: str):
+    """定義を消す。**溜めたものは残る**。
+
+    **外のアプリに、溜まったものを消す手段は渡さない** —— 消すのは別の意思決定で、
+    しかも取り消せない。まとめて消したいときは管理画面の「削除」を使う
+    (画面を開けるのは Chiezo を操作している人だけ、という前提の差)。
+    """
     collect.require_enabled()
-    collect.remove(name, drop_data=drop_data)
-    return {"ok": True, "dropped": drop_data}
+    collect.remove(name)
+    return {"ok": True}
 
 
 class CollectionDraft(BaseModel):

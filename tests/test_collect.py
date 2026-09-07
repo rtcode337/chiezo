@@ -16,7 +16,7 @@ import sqlite3
 
 import pytest
 
-from app import collect
+from app import collect, notes
 
 
 @pytest.fixture
@@ -512,6 +512,20 @@ class TestRest:
         res = client.post("/v1/collect/news/run")
         assert res.status_code == 403
 
+    def test_it_removes_the_definition(self, client, sample):
+        """溜めたものは残る（外のアプリに消す手段は渡さない）。
+
+        `remove` から引数が消えたときに口の側が取り残され、**呼ぶと必ず 500** に
+        なっていた。実際に押して初めて分かった。
+        """
+        assert client.delete("/v1/collect/news").status_code == 200
+        assert [c["name"] for c in client.get("/v1/collect").json()["collections"]] == [
+            "sample_news"
+        ]
+
+    def test_an_unknown_collection_is_404(self, client, sample):
+        assert client.delete("/v1/collect/nosuch").status_code == 404
+
     def test_previewing_a_stopped_collection_is_refused(self, client, sample):
         """焼かないとはいえ AI は 1 回動くので、`run` と同じ扱いにする。
 
@@ -527,11 +541,11 @@ class TestRest:
                 "name": "tidy",
                 "prompt": "いまの内容:\n{current}\n整理して",
                 "interval_minutes": 60,
-                "mode": "rebuild",
+                "mode": "refine",
             },
         )
         assert res.status_code == 200
-        assert res.json()["mode"] == "rebuild"
+        assert res.json()["mode"] == "refine"
         assert client.get("/v1/collect/tidy").json()["keep_ratio"] == collect.DEFAULT_KEEP_RATIO
 
     def test_the_backend_comes_back_on_the_definition(self, client, enabled):
@@ -554,7 +568,7 @@ class TestRest:
         """外から依頼するときも、素材の差し込み口が無いものは作らせない。"""
         res = client.post(
             "/v1/collect",
-            json={"name": "bad", "prompt": "整理して", "interval_minutes": 60, "mode": "rebuild"},
+            json={"name": "bad", "prompt": "整理して", "interval_minutes": 60, "mode": "refine"},
         )
         assert res.status_code == 400
 
@@ -575,43 +589,40 @@ class TestRest:
         assert res.json()["requested_by"] == "travel-log"
 
 
-class TestRebuildMode:
-    """整理する(`mode=rebuild`)。**返したものがそのまま新しい全体になる**。
+class TestRefineMode:
+    """整理する(`mode=refine`)。**いまの内容を読ませて、直すものと足すものを返させる**。
 
-    足すほうと違って**落とされたものは消える**ので、この層でいちばん壊れると
-    痛い経路。押さえるのは 4 つ —— 素材が渡ること、消えることが差分に出ること、
-    減りすぎたら止まること、doc_id が動かないこと。
+    **返さなかったものはそのまま残る**のがこの層の芯。かつては「返ったものが新しい
+    全体」にしていたが、それだと返し忘れが黙って消えた —— 無人で毎日回る層でいちばん
+    起きやすい壊れ方で、1 件ずつ削れていくのは歯止めをすり抜ける。
+    消すのは墓標で明示したときだけ(固化と同じ契約)。
     """
 
     @pytest.fixture
-    def rebuild(self, enabled):
+    def refine(self, enabled):
         return collect.create(
             "spots",
             prompt="いまの分類:\n{current}\nこれを整理し直して",
             interval_minutes=60,
-            mode=collect.MODE_REBUILD,
+            mode=collect.MODE_REFINE,
         )
 
     def test_the_material_placeholder_is_required(self, enabled):
-        """素材の差し込み口が無いまま作り直させない。
-
-        無いと AI は今ある内容を知らないまま「全体」を答えることになり、
-        返らなかったものが全部消える。作る時点で弾くのがいちばん安い。
-        """
+        """今あるものを読ませずに整理はできない。作る時点で弾く。"""
         import fastapi
 
         with pytest.raises(fastapi.HTTPException) as got:
-            collect.create("x", prompt="整理して", interval_minutes=60, mode=collect.MODE_REBUILD)
+            collect.create("x", prompt="整理して", interval_minutes=60, mode=collect.MODE_REFINE)
         assert got.value.status_code == 400
 
-    def test_switching_to_rebuild_checks_the_prompt_too(self, sample):
+    def test_switching_to_refine_checks_the_prompt_too(self, sample):
         """集め方だけ切り替えても、組み合わせで確かめ直す。"""
         import fastapi
 
         with pytest.raises(fastapi.HTTPException):
-            collect.update("news", mode=collect.MODE_REBUILD)
+            collect.update("news", mode=collect.MODE_REFINE)
 
-    def test_the_current_contents_go_into_the_prompt(self, rebuild, baked):
+    def test_the_current_contents_go_into_the_prompt(self, refine, baked):
         """今ある内容を読ませないと「整理し直す」が成り立たない。"""
         sources = baked([("ラーメン", "麺の店"), ("カフェ", "喫茶")], "spots")
         user = collect.build_messages(
@@ -620,70 +631,89 @@ class TestRebuildMode:
         assert "ラーメン" in user and "カフェ" in user
         assert "{current}" not in user
 
-    def test_it_tells_the_ai_that_what_is_not_returned_disappears(self, rebuild):
-        """返さなかったものが消えることを、system で言い切っておく。"""
+    def test_it_tells_the_ai_that_untouched_things_stay(self, refine):
+        """変えないものまで返させない。返し忘れで消えないことが要点。"""
         system = collect.build_messages(collect.get("spots"), {})[0]["content"]
-        assert "消える" in system
+        assert "そのまま残る" in system
+        assert notes.TOMBSTONE_TAG in system
 
-    def test_what_is_not_returned_is_removed(self, rebuild, baked):
-        """作り直しの芯。前世代にあって返ってこなかったものは落ちる。"""
-        sources = baked([("残す", "本文"), ("落とす", "本文")], "spots")
+    def test_what_is_not_returned_stays(self, refine, baked):
+        """**返し忘れで消えない**。ここが「作り直し」から変えたところ。"""
+        sources = baked([("残る", "本文"), ("触れない", "本文")], "spots")
         docs, diff = collect.material(
             collect.get("spots"),
             collect.previous_docs("spots", sources),
-            [{"title": "残す", "body": "整えた本文"}, {"title": "新入り", "body": "本文"}],
+            [{"title": "残る", "body": "直した本文"}, {"title": "新入り", "body": "本文"}],
         )
-        assert [d["title"] for d in docs] == ["残す", "新入り"]
-        assert (diff["added"], diff["kept"], diff["removed"]) == (1, 1, 1)
-        assert diff["removed_titles"] == ["落とす"]
+        assert sorted(d["title"] for d in docs) == ["新入り", "残る", "触れない"]
+        assert (diff["added"], diff["updated"], diff["removed"]) == (1, 1, 0)
+        # 直したほうは中身が入れ替わる
+        assert next(d for d in docs if d["title"] == "残る")["body"] == "直した本文"
 
-    def test_surviving_docs_keep_their_doc_id(self, rebuild, baked):
+    def test_a_tombstone_removes_one(self, refine, baked):
+        """消すのは明示したときだけ。固化と同じ墓標の契約。"""
+        sources = baked([("残る", "本文"), ("消す", "本文")], "spots")
+        docs, diff = collect.material(
+            collect.get("spots"),
+            collect.previous_docs("spots", sources),
+            [{"title": "消す", "body": "", "tags": [notes.TOMBSTONE_TAG]}],
+        )
+        assert [d["title"] for d in docs] == ["残る"]
+        assert diff["removed"] == 1
+        assert diff["removed_titles"] == ["消す"]
+
+    def test_a_tombstone_for_something_absent_does_nothing(self, refine):
+        """持っていないものへの墓標は、消すものが無いだけ。"""
+        _docs, diff = collect.material(
+            collect.get("spots"), {}, [{"title": "居ない", "tags": [notes.TOMBSTONE_TAG]}]
+        )
+        assert diff["removed"] == 0
+        assert diff["skipped"] == 1
+
+    def test_appending_ignores_tombstones(self, sample, baked):
+        """集めるほうは墓標を読まない(消す経路そのものが無い)。"""
+        sources = baked([("消えない", "本文")])
+        docs, diff = collect.material(
+            collect.get("news"),
+            collect.previous_docs("news", sources),
+            [{"title": "消えない", "body": "本文", "tags": [notes.TOMBSTONE_TAG]}],
+        )
+        assert [d["title"] for d in docs] == ["消えない"]
+        assert diff["removed"] == 0
+
+    def test_surviving_docs_keep_their_doc_id(self, refine, baked):
         """整理し直しても、残ったものの URL は動かさない。"""
-        sources = baked([("残す", "本文"), ("落とす", "本文")], "spots")
+        sources = baked([("残る", "本文"), ("触れない", "本文")], "spots")
         docs, _diff = collect.material(
             collect.get("spots"),
             collect.previous_docs("spots", sources),
-            [{"title": "残す", "body": "整えた本文"}],
+            [{"title": "残る", "body": "直した本文"}],
         )
-        assert docs[0]["doc_id"] == 1
+        assert next(d for d in docs if d["title"] == "残る")["doc_id"] == 1
 
-    def test_the_same_headline_twice_in_one_answer_is_dropped(self, rebuild):
-        """1 回の答えの中の重複は後から来たほうを捨てる(足すほうには無い経路)。"""
-        docs, diff = collect.material(
-            collect.get("spots"),
-            {},
-            [{"title": "同じ", "body": "A"}, {"title": "同じ", "body": "B"}],
-        )
-        assert len(docs) == 1
-        assert docs[0]["body"] == "A"
-        assert diff["skipped"] == 1
+    def test_removing_too_much_is_refused(self, refine, baked):
+        """墓標での大量削除は焼く前に断る。
 
-    def test_shrinking_too_much_is_refused(self, rebuild, baked):
-        """AI が変な日に当たった 1 回で、育てた分類が消えるのを止める。
-
-        **焼く前に断る**のが要点 —— 通すと次の世代ができて、戻すには世代を
-        巻き戻すしかなくなる。
+        返し忘れでは減らなくなったので、ここが止めるのは**明示的な大量削除**だけ。
+        そのぶん、止まったときの意味が鋭い。
         """
         import fastapi
 
         sources = baked([(f"分類{i}", "本文") for i in range(1, 11)], "spots")
         previous = collect.previous_docs("spots", sources)
+        graves = [{"title": f"分類{i}", "tags": [notes.TOMBSTONE_TAG]} for i in range(1, 10)]
         with pytest.raises(fastapi.HTTPException) as got:
-            collect.ndjson(
-                collect.get("spots"), sources, previous, [{"title": "分類1", "body": "本文"}]
-            )
+            collect.ndjson(collect.get("spots"), sources, previous, graves)
         assert got.value.status_code == 409
-        assert "作り直しを止めました" in got.value.detail["error"]
+        assert "整理を止めました" in got.value.detail["error"]
 
-    def test_the_guard_can_be_turned_off_on_purpose(self, rebuild, baked):
+    def test_the_guard_can_be_turned_off_on_purpose(self, refine, baked):
         """意図して大きく減らすときの逃げ道。外したことは定義に残る。"""
         collect.update("spots", keep_ratio=0)
         sources = baked([(f"分類{i}", "本文") for i in range(1, 11)], "spots")
+        graves = [{"title": f"分類{i}", "tags": [notes.TOMBSTONE_TAG]} for i in range(1, 10)]
         body, diff = collect.ndjson(
-            collect.get("spots"),
-            sources,
-            collect.previous_docs("spots", sources),
-            [{"title": "分類1", "body": "本文"}],
+            collect.get("spots"), sources, collect.previous_docs("spots", sources), graves
         )
         assert diff["removed"] == 9
         assert len(body.splitlines()) == 2  # meta + 1 件
@@ -699,17 +729,10 @@ class TestRebuildMode:
         assert diff["removed"] == 0
         assert collect.shrink_blocked(collect.get("news"), diff) is None
 
-    def test_the_first_build_is_not_blocked(self, rebuild):
-        """まだ何も無いところへの 1 回目は、減りようがないので通す。"""
-        docs, diff = collect.material(
-            collect.get("spots"), {}, [{"title": "分類", "body": "本文"}]
-        )
-        assert docs and collect.shrink_blocked(collect.get("spots"), diff) is None
-
-    def test_truncated_material_says_so(self, rebuild):
+    def test_truncated_material_says_so(self, refine):
         """入り切らなかったことを本文に書く。
 
-        黙って切ると、AI は見えなかったぶんを「無かったもの」として落とす。
+        黙って切ると、AI は見えなかったぶんを「無かったもの」として扱う。
         """
         previous = {
             f"見出し{i}": {"doc_id": i, "title": f"見出し{i}", "body": "本文", "tags": []}
@@ -719,12 +742,17 @@ class TestRebuildMode:
         assert shown == collect.MAX_MATERIAL_DOCS
         assert "対象外" in text
 
-    def test_an_unknown_mode_falls_back_to_appending(self, enabled):
-        """壊れた定義でいきなり作り直させない(消える側へ倒さない)。"""
+    def test_the_old_name_is_read_as_refining(self, enabled):
+        """「作り直し」と呼んでいた頃の定義は、育てる側へ読み替える。
+
+        当時の意図は「整理したい」で、置き換えはその実現手段でしかなかった。
+        知らない値は足すほうへ倒す(壊れた定義でいきなり消す側へ寄せない)。
+        """
+        assert collect.normalize_mode("rebuild") == collect.MODE_REFINE
         assert collect.normalize_mode("いいかげんな値") == collect.MODE_APPEND
         assert collect.normalize_mode(None) == collect.MODE_APPEND
 
-    def test_the_removed_headlines_are_recorded(self, rebuild):
+    def test_the_removed_headlines_are_recorded(self, refine):
         """消えたものが見えないと、プロンプトを直す判断ができない。"""
         updated = collect.record_result(
             "spots", status="ok", added=1, removed=2, removed_titles=["A", "B"]
@@ -768,3 +796,56 @@ class TestBackend:
         assert updated.model is None
         # 読み直しても同じ
         assert collect.get("news").backend is None
+
+
+class TestDeletingWithTheSource:
+    """設定を消したら、焼いたものも消す。
+
+    **画面からは 1 つの操作にする** —— 設定だけ消して中身が残ると、一覧から
+    消えたのに検索には出続けるものができ、どこから来たのかも読めなくなる。
+    """
+
+    def test_the_trigger_is_asked_to_drop_the_source(self, sample, monkeypatch):
+        """消せるのは trigger だけ(app は corpus を読み取り専用で持つ)。"""
+        from app.views import admin
+
+        called = []
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://trigger.invalid")
+
+        class FakeResponse:
+            status_code = 200
+            text = "{}"
+
+        class FakeClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def delete(self, url):
+                called.append(url)
+                return FakeResponse()
+
+        monkeypatch.setattr(admin.httpx, "Client", FakeClient)
+        assert admin._drop_collect_source("news") is True
+        assert called == ["http://trigger.invalid/source/news"]
+
+    def test_it_does_not_blow_up_without_a_trigger(self, sample, monkeypatch):
+        """trigger が居ない構成は普通にある。そこで操作ごと止めない。"""
+        from app.views import admin
+
+        monkeypatch.setattr(admin, "TRIGGER_URL", None)
+        assert admin._drop_collect_source("news") is False
+
+    def test_the_definition_goes_even_if_the_source_stays(self, sample, monkeypatch):
+        """ソースを消せなくても設定は消す(片付けは「ついで」なので)。"""
+        from app.views import admin
+
+        monkeypatch.setattr(admin, "TRIGGER_URL", None)
+        assert admin._drop_collect_source("news") is False
+        collect.remove("news")
+        assert [c.name for c in collect.load()] == []

@@ -84,17 +84,26 @@ MAX_ITEMS_PER_RUN = 200
 # 本文の上限。1 件がこれを超えるものは切る(引くための索引であって全文の保管庫ではない)
 MAX_BODY_CHARS = 20_000
 
-# 集め方。**足すのか、作り直すのか**で、素材の作り方も要る守りも変わる。
+# 集め方。**外から取ってくるのか、既にあるものを育てるのか**で、
+# 素材の作り方も要る守りも変わる。**どちらも前世代を消さない**。
 #
 # - append(集める): 前世代 + 今回のぶん。外から新しいものを取ってきて積む。
-#   同じ見出しは置き換わるだけなので、失敗しても既にあるものは壊れない。
-# - rebuild(整理する): 今回返ってきたものが**そのまま新しい全体**になる。
-#   既にある内容を AI に読ませて、分類をやり直す・重複をまとめる・言い回しを揃える、
-#   といった育て方をするためのもの。**落とされたものは消える**ので、
-#   append には要らなかった歯止め(`keep_ratio`)がここで要る。
+#   AI には今の内容を見せない(見せる必要が無く、そのぶん安い)。
+# - refine(整理する): 前世代を**読ませたうえで**、直すものと足すものだけを返させる。
+#   分類をやり直す・重複をまとめる・言い回しを揃える、といった育て方のためのもの。
+#   **返さなかったものはそのまま残る**。かつては「返ったものが新しい全体」に
+#   していたが、それだと**返し忘れが黙って消える** —— 無人で毎日回る層でいちばん
+#   起きやすい壊れ方で、しかも歯止めは半分を切るまで働かないので、1 件ずつ削れて
+#   いくのは毎回すり抜けた。件数が受け取りの上限(MAX_ITEMS_PER_RUN)を超えると
+#   「全部返す」自体が成り立たない、という詰みもあった。
+#   **消すのは墓標で明示したときだけ**(固化とまったく同じ契約)。
 MODE_APPEND = "append"
-MODE_REBUILD = "rebuild"
-MODES = (MODE_APPEND, MODE_REBUILD)
+MODE_REFINE = "refine"
+MODES = (MODE_APPEND, MODE_REFINE)
+
+# 「作り直し」と呼んでいた頃の値。**育てる側へ読み替える** —— 当時の意図は
+# 「整理したい」で、置き換えはその実現手段でしかなかった
+LEGACY_MODES = {"rebuild": MODE_REFINE}
 
 # 作り直しのプロンプトに必ず入れてもらう印。ここに前世代の中身が差し込まれる。
 # **無いまま作り直すと、AI は今ある内容を知らないまま「全体」を答える**ことになり、
@@ -234,8 +243,8 @@ class Collection:
     last_removed_titles: list[str] = field(default_factory=list)
     next_run_at: str | None = None
 
-    def is_rebuild(self) -> bool:
-        return self.mode == MODE_REBUILD
+    def is_refine(self) -> bool:
+        return self.mode == MODE_REFINE
 
     def due_at(self) -> datetime:
         """次に走る時刻。持っていなければ「いますぐ」。"""
@@ -294,8 +303,10 @@ def _from_json(item: dict) -> Collection:
 
 
 def normalize_mode(value) -> str:
-    """知らない集め方は足すほうへ倒す。壊れた定義でいきなり作り直させない。"""
-    return value if value in MODES else MODE_APPEND
+    """知らない集め方は足すほうへ倒す。壊れた定義でいきなり消す側へ寄せない。"""
+    if value in MODES:
+        return value
+    return LEGACY_MODES.get(value, MODE_APPEND)
 
 
 def normalize_keep_ratio(value) -> float:
@@ -312,11 +323,11 @@ def check_prompt(mode: str, prompt: str) -> None:
     **無いまま作り直させない**。AI は今ある内容を知らないまま「全体」を答えることに
     なり、返ってこなかったものは全部消える。作る時点で弾くのがいちばん安い。
     """
-    if mode == MODE_REBUILD and MATERIAL_PLACEHOLDER not in prompt:
+    if mode == MODE_REFINE and MATERIAL_PLACEHOLDER not in prompt:
         raise HTTPException(400, {
-            "error": f"作り直しのプロンプトには {MATERIAL_PLACEHOLDER} を入れてください",
-            "reason": "ここへ今ある内容が差し込まれる。無いと、AI は今の内容を"
-                      "知らないまま全体を答えることになり、返らなかったものは消える",
+            "error": f"整理のプロンプトには {MATERIAL_PLACEHOLDER} を入れてください",
+            "reason": "ここへ今ある内容が差し込まれる。無いと、AI は今あるものを"
+                      "知らないまま書くことになり、直すことも重複をまとめることもできない",
         })
 
 
@@ -528,13 +539,16 @@ SYSTEM_PROMPT = (
 )
 
 
-REBUILD_SYSTEM_PROMPT = (
-    "既にある内容を整理し直して JSON だけで返す。前置き・説明・コードブロックの記号は付けない。"
+REFINE_SYSTEM_PROMPT = (
+    "既にある内容を育てる。JSON だけで返し、前置き・説明・コードブロックの記号は付けない。"
     " 形式: {\"items\":[{\"title\":\"見出し\",\"body\":\"本文\","
     "\"tags\":[\"タグ\"],\"url\":\"出典URL\"}],\"next_cursor\":\"次に進む印\"}"
-    " **返したものがそのまま新しい全体になる。返さなかったものは消える。**"
-    " 残すものは、手を入れないものも含めて必ず返すこと。"
-    " title は同一性の鍵。同じものを指す見出しは同じ文字列にする。"
+    " **返すのは、直すものと新しく足すものだけでよい。**"
+    " 触れなかったものはそのまま残るので、変えないものを返す必要はない。"
+    " title は同一性の鍵。**同じ見出しで返すと、その 1 件が置き換わる**。"
+    " **消したいものは、その見出しで tags に「" + notes.TOMBSTONE_TAG + "」を入れて返す**"
+    "(墓標。本文は空でよい)。重複をまとめるときは、まとめた先を返し、"
+    "元のものに墓標を付ける。"
     " 分からない項目は null。"
 )
 
@@ -579,7 +593,7 @@ def build_messages(item: Collection, previous: dict[str, dict] | None = None) ->
     if MATERIAL_PLACEHOLDER in user:
         material_text, _shown = render_material(previous or {})
         user = user.replace(MATERIAL_PLACEHOLDER, material_text)
-    system = REBUILD_SYSTEM_PROMPT if item.is_rebuild() else SYSTEM_PROMPT
+    system = REFINE_SYSTEM_PROMPT if item.is_refine() else SYSTEM_PROMPT
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -834,49 +848,59 @@ def material(
 ) -> tuple[list[dict], dict]:
     """焼く素材と、前世代との差分を組み立てる。
 
-    集め方で作り方が変わる:
+    **どちらの集め方でも前世代から始める。** 返ってこなかったものは残る ——
+    集める(append)は外から積むだけなので当然だが、育てる(refine)でも同じにしてある。
+    かつては refine を「返ったものが新しい全体」にしていたが、それだと**返し忘れが
+    黙って消える**。無人で回る層でいちばん起きやすい壊れ方で、しかも 1 件ずつ削れて
+    いくのは歯止め(`shrink_blocked`)をすり抜ける。
 
-    - **足す(append)**: 前世代 + 今回のぶん。同じ見出しは今回のほうで置き換える
-      (そちらが新しいので正しい)。**前世代は必ず残る**ので、失敗しても壊れない。
-    - **作り直す(rebuild)**: 今回のぶん**だけ**が新しい全体になる。前世代にあって
-      今回返ってこなかった見出しは消える。整理そのものが目的なので、
-      消えること自体は正しい振る舞い —— 消えすぎを止めるのは `shrink_blocked`。
+    違うのは 2 つだけ:
 
-    **`doc_id` は前世代のものを引き継ぐ**。どちらの集め方でも、残った文書の URL が
-    焼き直しで変わらないようにするため。
+    - **同じ見出しをどう数えるか。** 集めるほうは「既に持っていた」ので追加に数えない。
+      育てるほうは**直しに来ている**ので、置き換わったことを `updated` に数える。
+    - **墓標を読むかどうか。** 育てるほうだけ、`削除` の付いた見出しを落とす
+      (固化とまったく同じ契約)。**消すのは明示したときだけ**。
+
+    **`doc_id` は前世代のものを引き継ぐ**。残った文書の URL が焼き直しで変わらないため。
     """
-    merged = dict(previous) if not item.is_rebuild() else {}
+    merged = dict(previous)
     next_id = max((d["doc_id"] for d in previous.values()), default=0) + 1
     now = _iso(_now())
-    added = skipped = 0
+    added = updated = skipped = 0
+    removed_titles: list[str] = []
     for raw in collected[:MAX_ITEMS_PER_RUN]:
+        title = (raw.get("title") or "").strip()[:notes.TITLE_MAX_CHARS]
+        if item.is_refine() and title and _is_tombstone(raw):
+            # 墓標。**持っていないものへの墓標は数えない**(消すものが無い)
+            if merged.pop(title, None) is not None:
+                removed_titles.append(title)
+            else:
+                skipped += 1
+            continue
         doc = _to_doc(raw, now, item.web)
         if doc is None:
             skipped += 1
             continue
         title = doc["title"]
-        if item.is_rebuild() and title in merged:
-            # 同じ答えの中に同じ見出しが 2 つ。後から来たほうは捨てる
-            # (足すほうでは「前世代と同じ」を意味するので、ここには来ない)
-            skipped += 1
-            continue
         kept_before = previous.get(title)
         if kept_before is None:
             doc_id = next_id
             next_id += 1
             added += 1
         else:
-            # 既に持っている見出し。**上書きはする**(今回のほうが新しい)。
-            # 足すほうでは積み上がった件数が増えないので「追加」には数えない
             doc_id = kept_before["doc_id"]
-            if not item.is_rebuild():
+            if item.is_refine():
+                updated += 1
+            else:
+                # 集めるほうで同じ見出しが来るのは「もう持っている」の意味。
+                # 中身は新しいほうで置き換えるが、積み上がった件数は増えない
                 skipped += 1
         merged[title] = {**doc, "doc_id": doc_id}
-    removed_titles = [t for t in previous if t not in merged]
     diff = {
         "previous": len(previous),
         "total": len(merged),
         "added": added,
+        "updated": updated,
         "kept": len(merged) - added,
         "removed": len(removed_titles),
         "skipped": skipped,
@@ -885,21 +909,28 @@ def material(
     return sorted(merged.values(), key=lambda d: d["doc_id"]), diff
 
 
+def _is_tombstone(raw: dict) -> bool:
+    """墓標か(消してほしい、の印)。固化と同じタグを使う。"""
+    tags = raw.get("tags") or []
+    return any(str(t).strip() == notes.TOMBSTONE_TAG for t in tags)
+
+
 def shrink_blocked(item: Collection, diff: dict) -> str | None:
-    """作り直しで減りすぎていたら、その理由の文。問題なければ None。
+    """墓標で減りすぎていたら、その理由の文。問題なければ None。
 
     **AI が変な日に当たった 1 回で、育てた分類が消えるのを止める**のがここ。
-    足すほうには要らない(そもそも減らない)。`keep_ratio` を 0 にすると外れる ——
-    意図して大きく減らすときのための逃げ道で、外したことが定義に残る。
+    返し忘れでは減らなくなったので、ここが止めるのは**明示的な大量削除**だけになった
+    —— そのぶん、止まったときの意味が鋭い(AI が「全部要らない」と言っている)。
+    足すほうには要らない(そもそも減らない)。`keep_ratio` を 0 にすると外れる。
     """
-    if not item.is_rebuild() or item.keep_ratio <= 0 or not diff["previous"]:
+    if not item.is_refine() or item.keep_ratio <= 0 or not diff["previous"]:
         return None
     floor = diff["previous"] * item.keep_ratio
     if diff["total"] >= floor:
         return None
     sample = "、".join(diff["removed_titles"][:5])
     return (
-        f"作り直しの結果が {diff['total']} 件で、前の {diff['previous']} 件から"
+        f"整理の結果が {diff['total']} 件で、前の {diff['previous']} 件から"
         f"{diff['removed']} 件減ります(下限 {floor:.0f} 件)。"
         + (f"消えるもの: {sample} ほか。" if sample else "")
     )
@@ -972,7 +1003,7 @@ def ndjson(
         raise HTTPException(
             409,
             {
-                "error": f"収集「{item.name}」の作り直しを止めました: {reason}",
+                "error": f"収集「{item.name}」の整理を止めました: {reason}",
                 "hint": "プロンプトを直すか、意図して減らすなら keep_ratio を下げてください"
                         "(0 で守りを外す)。焼いていないので、いまの内容はそのままです",
             },
