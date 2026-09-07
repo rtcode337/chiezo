@@ -1325,8 +1325,16 @@ async def _generate_images(body: ImageRequest) -> dict:
 
     if not images:
         # 説明だけ返してファイルを書かないことがある(相手はエージェント)。
-        # 呼ぶ側が「作れなかった」と分かるようにする
-        raise HTTPException(502, {"error": f"{CLI} が画像を保存しませんでした"})
+        # **そのとき何と言ったかを必ず添える。** 添えないと、断られたのか・
+        # 保存先を間違えたのか・そもそも描けなかったのかが呼ぶ側から一切たどれない
+        # (実際、絵の編集が 2 回続けて失敗したときに理由が分からず足止めになった)。
+        # 終了コードは 0 なので `failure_detail` の経路には来ない
+        said = failure_detail(stdout, stderr)
+        log.error("%s image tool wrote no image: %s", CLI, said or "(何も言わなかった)")
+        raise HTTPException(502, {
+            "error": f"{CLI} が画像を保存しませんでした",
+            "said": said or "(何も言わなかった)",
+        })
 
     return {
         "created": int(started),
