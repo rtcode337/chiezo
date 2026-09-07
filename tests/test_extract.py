@@ -364,6 +364,28 @@ class TestWritingTheSpecFromARequest:
         # 選び直しには、実在するタグを文書数つきで見せている
         assert "日本の都道府県(2 件)" in asked[1][1]["content"]
 
+    def test_a_pick_that_is_only_a_little_short_is_left_alone(self, client, monkeypatch):
+        """少し足りないだけで投げ直さない。
+
+        投げ直すと、件数を満たそうとして条件のほうが広がる（頼んだ範囲の外まで
+        タグを足しにいく）。足りないままのほうが、頼んだものだけが入っている。
+        """
+        from app import main
+
+        asked = []
+
+        async def reply(_settings, messages):
+            asked.append(messages)
+            return json.dumps({"source": "jawiki", "tag": "日本の都道府県", "limit": 3})
+
+        monkeypatch.setattr(main, "_ask_for_collection", reply)
+
+        body = client.post("/v1/collect/draft-extract", json={"want": "都道府県を3件"}).json()
+
+        # 3 件頼んで 2 件。半端だが、広げさせるほどではない
+        assert body["total"] == 2
+        assert len(asked) == 1
+
     def test_it_keeps_the_first_pick_when_the_second_is_no_better(self, client, monkeypatch):
         """投げ直して悪くなるくらいなら、最初のものを返す。"""
         from app import main

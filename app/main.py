@@ -1514,7 +1514,7 @@ async def collect_draft_extract(request: Request, body: ExtractDraft):
     # しか無いので、書く側は当てるしかない —— 「画家」のような一般名は実在するが
     # 数件しか付いておらず、欲しいものは「19世紀フランスの画家」の側にある。
     # 選び直しても増えなければ、最初の指定のほうを返す(悪くしない)
-    if probed["total"] < spec["limit"] and probed["candidates"]:
+    if probed["total"] < spec["limit"] * extract.RETRY_BELOW and probed["candidates"]:
         content = await _ask_for_collection(
             settings,
             extract.build_retry_messages(body.want, spec, probed["total"], probed["candidates"]),
