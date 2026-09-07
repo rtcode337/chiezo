@@ -608,12 +608,25 @@ def failure_detail(stdout: bytes, stderr: bytes) -> str:
     上限に当たったのかが後から一切たどれない。
 
     順は stderr → stdout。普通の失敗は stderr に出るので、そちらを先に読ませる。
+
+    **切り詰めるのは頭のほう。** 理由は最後に来る —— CLI の stdout は名乗りと
+    受け取ったプロンプトの復唱から始まるので、頭から 500 字取ると
+    「OpenAI Codex v0.147.0 / workdir: … / user …」だけが残り、肝心の言い分が
+    まるごと落ちる(実測: 絵を保存しなかった理由を調べたのに、控えに残っていたのは
+    名乗りと自分が送った依頼文だけだった)。
     """
     parts = [
         s.decode("utf-8", "replace").strip()
         for s in (stderr, stdout)
     ]
-    return " / ".join(p for p in parts if p)[:DETAIL_MAX]
+    return _tail(" / ".join(p for p in parts if p), DETAIL_MAX)
+
+
+def _tail(text: str, limit: int) -> str:
+    """末尾を残して切り詰める。落としたことが分かるよう頭に印を付ける。"""
+    if len(text) <= limit:
+        return text
+    return "…" + text[-(limit - 1):]
 
 
 async def _spawn(cmd: list[str], payload: bytes, out_path: str, timeout: float | None) -> str:

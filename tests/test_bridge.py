@@ -855,6 +855,31 @@ class TestAntigravityUsage:
         assert server._antigravity_windows("サインインしてください") == []
 
 
+class TestFailureDetail:
+    """CLI が何と言ったかを控えに残す。**残すのは末尾。**"""
+
+    def test_長い出力は頭を落として末尾を残す(self, bridge):
+        """理由は最後に来る。
+
+        CLI の stdout は名乗りと受け取ったプロンプトの復唱から始まるので、
+        頭から取ると「OpenAI Codex v0.147.0 / workdir: … / user …」だけが残り、
+        肝心の言い分がまるごと落ちる(実測: 絵を保存しなかった理由を調べたのに、
+        控えに残っていたのは名乗りと自分が送った依頼文だけだった)。
+        """
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        noise = "OpenAI Codex v0.147.0 workdir: /tmp/x " + "復唱 " * 400
+        said = server.failure_detail((noise + "画像は保存しませんでした").encode(), b"")
+
+        assert said.endswith("画像は保存しませんでした")
+        assert len(said) <= server.DETAIL_MAX
+        # 落としたことが分かるように印を付ける
+        assert said.startswith("…")
+
+    def test_短い出力はそのまま残す(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        assert server.failure_detail(b"", b"exit 1") == "exit 1"
+
+
 class TestImageEditing:
     """元の絵を渡されたら「一から描く」ではなく「これを直す」。
 
