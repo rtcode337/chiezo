@@ -510,6 +510,29 @@ class TestWritingTheSpecFromARequest:
         assert body["extract"]["tag"] == "日本の都道府県"
         assert body["total"] == 2
 
+    def test_the_caller_can_name_who_writes_it(self, client, monkeypatch):
+        """収集を作る前にも書かせるので、名前で相手を引けない。
+
+        指定を書くのは道具を何度も引く仕事なので、遅い相手だと十数分待つことになる。
+        """
+        from app import main
+
+        seen = {}
+
+        async def reply(settings, _messages):
+            seen["backend"] = settings.backend
+            seen["model"] = settings.model
+            return json.dumps({"source": "jawiki", "tag": "日本の都道府県"})
+
+        monkeypatch.setattr(main, "_ask_for_collection", reply)
+
+        client.post(
+            "/v1/collect/draft-extract",
+            json={"want": "都道府県", "backend": "claude", "model": "haiku"},
+        )
+
+        assert seen == {"backend": "claude", "model": "haiku"}
+
     def test_the_ai_can_say_it_cannot_be_pulled(self, client, monkeypatch):
         """引けないものを無理に指定へ落とすと、当たらないタグで静かな 0 件になる。
 

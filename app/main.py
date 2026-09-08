@@ -1504,6 +1504,11 @@ class ExtractDraft(BaseModel):
 
     want: str = PydField("", description="どういう条件で抽出してほしいかを、ふつうの言葉で")
     name: str | None = PydField(None, description="直したい収集の名前(相手と現在の指定を使う)")
+    # **収集を作る前にも書かせる**ので、そのときは名前で相手を引けない。
+    # 指定を書くのは道具を何度も引く仕事なので、遅い相手だと十数分待つことになる
+    backend: str | None = PydField(None, description="書かせる相手(未指定なら Chiezo の既定)")
+    model: str | None = PydField(None, description="モデル(未指定なら相手の既定)")
+    effort: str | None = PydField(None, description="考える量(未指定なら相手の既定)")
 
 
 @app.post("/v1/collect/draft-extract")
@@ -1523,15 +1528,19 @@ async def collect_draft_extract(request: Request, body: ExtractDraft):
     sources = request.app.state.sources
     item = collect.get(body.name) if body.name else None
     current = item.extract if item else None
-    settings = replace(
-        item or collect.Collection(
-            name="", description="", prompt="", interval_minutes=60, enabled=False,
-            backend=None, model=None, effort=None, web=False, cursor="",
-            created_at="", updated_at="",
-        ),
-        # 指定を書くのに外は要らない(引く先は手元の長期記憶)
-        web=False,
+    base_settings = item or collect.Collection(
+        name="", description="", prompt="", interval_minutes=60, enabled=False,
+        backend=None, model=None, effort=None, web=False, cursor="",
+        created_at="", updated_at="",
     )
+    # 名指しがあればそちらを使う(収集を作る前は、名前で相手を引けない)
+    named = {
+        key: value
+        for key, value in (("backend", body.backend), ("model", body.model), ("effort", body.effort))
+        if value
+    }
+    # 指定を書くのに外は要らない(引く先は手元の長期記憶)
+    settings = replace(base_settings, **named, web=False)
     content = await _ask_for_collection(
         settings, extract.build_draft_messages(body.want, sources, current)
     )
