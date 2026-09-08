@@ -79,8 +79,27 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,30}$")
 # 間隔の下限。AI を呼ぶので、分より短い間隔を許すと枠を焼くだけになる
 MIN_INTERVAL_MINUTES = 5
 
-# 1 回の収集で受け取る件数の上限。多すぎる答えは切って捨てる(次の回で続けられる)
-MAX_ITEMS_PER_RUN = 200
+# 1 回で焼ける素材の大きさ(バイト)。**件数ではなく大きさで縛る。**
+#
+# かつては受け取る件数を 200 で切っていた。AI の暴走した答えを止めるためだったが、
+# あれは守るべきものを何も守っていなかった:
+#
+# - プロンプトが膨らむ心配は `render_material` が文字数で見ており(`MAX_MATERIAL_CHARS`)、
+#   しかも切ったことを AI に伝える。収集が何件持っていても効く
+# - 応答時間は相手ごとのタイムアウトが縛っている(`app/answer.py` の `Settings.timeout`)
+# - 件数は大きさの代理にならない。1 件は `MAX_BODY_CHARS` まで許すので、
+#   200 件でも 4 MB になりうるし、短い数千件は 1 MB に収まる
+#
+# 実際に危ないのは `ndjson` が素材を 1 本の文字列で組むところで、そこはバイト数でしか
+# 測れない。**数千件・数万件を集めたいことは普通にある**ので、件数の側に天井を作らない。
+#
+# **超えたら黙って切らずに断る**(`app/extract.py` と同じ判断)。切ったことは
+# 返り値から分からないので、絞ったつもりの無い収集が「そこまでしか無い」ように見える
+# —— 実測: 索引から 6,875 件に当たった抽出が 200 件で止まり、控えに残ったのは
+# 「ok・200 件追加」だけで、当たった件数も切ったことも痕跡が無かった。
+MAX_MATERIAL_BYTES = int(
+    os.environ.get("CHIEZO_COLLECT_MAX_MATERIAL_BYTES", "") or 64 * 1024 * 1024
+)
 
 # 本文の上限。1 件がこれを超えるものは切る(引くための索引であって全文の保管庫ではない)
 MAX_BODY_CHARS = 20_000
@@ -95,8 +114,8 @@ MAX_BODY_CHARS = 20_000
 #   **返さなかったものはそのまま残る**。かつては「返ったものが新しい全体」に
 #   していたが、それだと**返し忘れが黙って消える** —— 無人で毎日回る層でいちばん
 #   起きやすい壊れ方で、しかも歯止めは半分を切るまで働かないので、1 件ずつ削れて
-#   いくのは毎回すり抜けた。件数が受け取りの上限(MAX_ITEMS_PER_RUN)を超えると
-#   「全部返す」自体が成り立たない、という詰みもあった。
+#   いくのは毎回すり抜けた。そもそも前世代は入り切るぶんしか見せられない
+#   (`MAX_MATERIAL_CHARS`)ので、育つほど「全部返す」自体が成り立たなくなる。
 #   **消すのは墓標で明示したときだけ**(固化とまったく同じ契約)。
 MODE_APPEND = "append"
 MODE_REFINE = "refine"
@@ -859,6 +878,10 @@ def material(
 ) -> tuple[list[dict], dict]:
     """焼く素材と、前世代との差分を組み立てる。
 
+    **受け取る件数は絞らない。** 大きさの天井は `ndjson` がバイト数で見る
+    (`MAX_MATERIAL_BYTES` に理由)。ここで件数を切ると、集まった件数と焼けた件数が
+    黙って食い違う。
+
     **どちらの集め方でも前世代から始める。** 返ってこなかったものは残る ——
     集める(append)は外から積むだけなので当然だが、育てる(refine)でも同じにしてある。
     かつては refine を「返ったものが新しい全体」にしていたが、それだと**返し忘れが
@@ -879,7 +902,7 @@ def material(
     now = _iso(_now())
     added = updated = skipped = 0
     removed_titles: list[str] = []
-    for raw in collected[:MAX_ITEMS_PER_RUN]:
+    for raw in collected:
         title = (raw.get("title") or "").strip()[:notes.TITLE_MAX_CHARS]
         if item.is_refine() and title and _is_tombstone(raw):
             # 墓標。**持っていないものへの墓標は数えない**(消すものが無い)
@@ -916,6 +939,9 @@ def material(
         "removed": len(removed_titles),
         "skipped": skipped,
         "removed_titles": removed_titles[:MAX_REMOVED_SAMPLE],
+        # 集めた側が返した件数。**焼ける件数(`total`)とは別に出す** —— 一致しない
+        # ときに、捨てたのか前世代と重なったのかを読み分けられるようにするため
+        "collected": len(collected),
     }
     return sorted(merged.values(), key=lambda d: d["doc_id"]), diff
 
@@ -996,10 +1022,14 @@ def ndjson(
     """取り込み側が読む素材(1 行目が meta、以降は 1 行 1 文書)と、前世代との差分。
 
     **空なら 409 で断る** —— 流し始めた後ではステータスを変えられないので、
-    先に全部組み立ててから返す(固化と同じ判断。収集物はたかだか数万件)。
+    先に全部組み立ててから返す(固化と同じ判断)。
 
     **作り直しで減りすぎていても断る**。ここが後戻りできる最後の地点で、
     通してしまうと次の世代が焼き上がり、戻すには世代を巻き戻すしかなくなる。
+
+    **大きすぎても断る**。素材を 1 本の文字列で組む場所なので、ここだけは
+    実際のバイト数でしか測れない(`MAX_MATERIAL_BYTES`)。積みながら見て、
+    超えた時点で止める —— 全部組んでから測ると、測るために膨らませることになる。
     """
     docs, diff = material(item, previous, collected)
     if not docs:
@@ -1027,5 +1057,21 @@ def ndjson(
         }
     }
     lines = [json.dumps(meta, ensure_ascii=False)]
-    lines.extend(json.dumps(d, ensure_ascii=False) for d in docs)
+    used = len(lines[0].encode())
+    for n, doc in enumerate(docs, 1):
+        line = json.dumps(doc, ensure_ascii=False)
+        used += len(line.encode()) + 1
+        if used > MAX_MATERIAL_BYTES:
+            raise HTTPException(
+                409,
+                {
+                    "error": f"収集「{item.name}」の素材が大きすぎます"
+                             f"({len(docs):,} 件のうち {n:,} 件目で"
+                             f" {MAX_MATERIAL_BYTES / 1024 / 1024:.0f} MB を超えました)",
+                    "hint": "1 回に集める件数を減らすか、本文を短くしてください"
+                            "(天井は CHIEZO_COLLECT_MAX_MATERIAL_BYTES で変えられます)。"
+                            "焼いていないので、いまの内容はそのままです",
+                },
+            )
+        lines.append(line)
     return "\n".join(lines) + "\n", diff

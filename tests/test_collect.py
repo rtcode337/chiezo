@@ -443,6 +443,53 @@ class TestBaking:
         assert [c["name"] for c in collect.catalog()] == ["news"]
 
 
+class TestHowMuchIsAccepted:
+    """受け取る量の天井は**件数ではなく大きさ**で、超えたら黙って切らずに断る。
+
+    かつては件数(200)で切っていて、しかも黙って切っていた。切られたことは
+    返り値からもデータからも分からないので、数千件当たった収集が「そこまでしか
+    無い」ように見えた。守るべきものは大きさなので、測る軸をそちらへ移した。
+    """
+
+    def test_thousands_of_items_are_accepted(self, sample):
+        """**数千件を集めたいことは普通にある。** 件数では切らない。"""
+        collected = [{"title": f"見出し {i}", "body": "本文"} for i in range(3_000)]
+        docs, diff = collect.material(collect.get("news"), {}, collected)
+        assert len(docs) == 3_000
+        assert diff["added"] == 3_000
+
+    def test_the_collected_count_is_reported_next_to_what_was_baked(self, sample):
+        """集めた件数と焼ける件数を別々に出す。
+
+        一致しないときに「捨てた」のか「前世代と重なった」のかを読み分けられないと、
+        プロンプトの直しようがない。
+        """
+        collected = [{"title": "同じ見出し", "body": "本文"}] * 3
+        _docs, diff = collect.material(collect.get("news"), {}, collected)
+        assert diff["collected"] == 3
+        assert diff["total"] == 1
+
+    def test_material_that_is_too_large_is_refused_not_trimmed(self, sample, monkeypatch):
+        """大きすぎたら 409。**焼かないので、いまの内容はそのまま残る。**"""
+        import fastapi
+
+        monkeypatch.setattr(collect, "MAX_MATERIAL_BYTES", 2_000)
+        collected = [{"title": f"見出し {i}", "body": "本文" * 100} for i in range(50)]
+        with pytest.raises(fastapi.HTTPException) as got:
+            collect.ndjson(collect.get("news"), {}, {}, collected)
+        assert got.value.status_code == 409
+        # 断る理由に件数と天井を書く（何件目で超えたのかが分からないと直せない）
+        assert "大きすぎます" in got.value.detail["error"]
+
+    def test_a_collection_under_the_ceiling_still_bakes(self, sample, monkeypatch):
+        """天井は暴走を止めるためのもので、普段の収集に当たってはいけない。"""
+        monkeypatch.setattr(collect, "MAX_MATERIAL_BYTES", 1024 * 1024)
+        collected = [{"title": f"見出し {i}", "body": "本文"} for i in range(500)]
+        body, diff = collect.ndjson(collect.get("news"), {}, {}, collected)
+        assert len(body.splitlines()) == 501  # meta 1 行 + 500 件
+        assert diff["collected"] == 500
+
+
 class TestParsing:
     def test_it_digs_the_json_out_of_a_wrapped_answer(self):
         """前置きやコードブロックが混ざるのは普通に起きる。"""
