@@ -112,7 +112,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   `jawiki-20260701.db` は登録されず、シンボリックリンク `jawiki.db` のみ登録される)。
   - `app/main.py` — **機械向けの口とアプリの組み立て**(/, /healthz, /apple-touch-icon.png,
     /v1/sources, /v1/{source}/search|doc|filter|tags|titles|links|random, /v1/ask, /v1/chat,
-    /v1/ai/backends, /v1/ai/complete, /v1/ai/failures, /v1/ai/usage、
+    /v1/ai/backends, /v1/ai/complete, /v1/ai/failures, /v1/ai/inflight, /v1/ai/usage、
     lifespan・例外ハンドラ・画面 router の登録・MCP の /mcp のマウント。
     MCP の実体は下の `app/mcp_server.py`)。
     **人間向けの HTML はここに置かない**(`app/views/`)。以前は 2,473 行の 1 ファイルに
@@ -1262,6 +1262,18 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     後から見分けるため(実測では寄っていなかった: 307KB が落ちた 90 分後に 324KB が通っている)。
     置き場は `state/ai_failures.db`(`app/ai_log.py`)。**`settings.db` とは別のファイル** ——
     あちらは消してはいけない設定、こちらは消してよい観測。`MAX_ROWS` で頭打ちにする
+  - `/v1/ai/inflight`(GET) — **いま走っている依頼**(`calls` = 相手との往復、
+    `jobs` = 絵と音と動画と読み上げ)。控えの表に行が立つのは**往復が終わってから**なので、
+    走っている最中は何も見えなかった —— 頼んだ本人が待っているうちは分かるが、無人で
+    回る層が動かしているぶんは、遅いのか止まっているのか呼べてすらいないのかの区別が
+    付かない(CLI ブリッジ越しの相手は数分かかる)。始まりに 1 行立て、**終わったら
+    `finally` で消す**(成功でも失敗でも時間切れでも)。中身は残さず、相手・モデル・
+    種類・依頼文の大きさ・開始時刻まで。置き場は `state/ai_inflight.db`
+    (`app/ai_inflight.py`)。**期限は始めた側が行に書く** —— 待つ秒数は相手で桁が違う
+    (ブリッジ 900 秒 / 直叩き 120 秒)ので、掃除する側が 1 つの数字で切ると、粘っている
+    相手を消すか止まったものを何十分も残すかのどちらかになる。**プロセスの中の変数に
+    持たない**(`--workers 2` なので、画面を出したワーカーと走らせているワーカーが
+    別だと何も見えない)。ワーカーごと落ちて `end()` を通らなかった行は期限で消える
   - **`complete` の `web=true` で相手自身の web 検索を開ける**(既定は開けない)。
     ニュースの収集のように「いまの外の情報」が要る仕事を、`/v1/chat` の抽出を混ぜずに
     頼めるようにするため(例: paper-trade-advisor の市況ニュース収集・銘柄調査)。

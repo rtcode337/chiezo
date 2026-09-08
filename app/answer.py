@@ -31,6 +31,7 @@ import os
 import re
 import time
 from collections.abc import AsyncIterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
@@ -38,7 +39,7 @@ import httpx
 from fastapi import HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
-from app import ai_log, providers, settings_store, usage_store
+from app import ai_inflight, ai_log, providers, settings_store, usage_store
 from app.pages import doc_url
 
 log = logging.getLogger("chiezo.app")
@@ -586,6 +587,30 @@ def _prompt_bytes(messages: list[dict]) -> int:
     return sum(len((m.get("content") or "").encode()) for m in messages)
 
 
+@contextmanager
+def _inflight(cfg: Settings, messages: list[dict]):
+    """走っているあいだだけ控えに 1 行立てる(`app/ai_inflight.py`)。
+
+    残す場所を `_note_failure` と揃えているのは、相手と依頼文の大きさがここにしか
+    ないため。期限に `cfg.timeout` を渡すのは、待つ秒数が相手で桁が違うから ——
+    掃除する側は 1 つの数字で切れない。
+
+    **消すのは `finally`**。 成功でも失敗でも、時間切れでも消えないと、
+    画面に「ずっと走っている依頼」が残って本物が埋もれる。
+    """
+    token = ai_inflight.begin(
+        backend=cfg.name,
+        model=cfg.model,
+        effort=cfg.effort,
+        prompt_bytes=_prompt_bytes(messages),
+        timeout=cfg.timeout,
+    )
+    try:
+        yield
+    finally:
+        ai_inflight.end(token)
+
+
 def _upstream_error(exc: Exception) -> HTTPException:
     """推論サーバ側の失敗を、Chiezo のエラー形式に翻訳する。
 
@@ -682,28 +707,29 @@ async def complete_message(cfg: Settings, messages: list[dict], **extra) -> dict
     メッセージをそのまま返す(agent モードは次のターンにこれを丸ごと積み直す必要がある)。
     """
     started = time.monotonic()
-    try:
-        async with _llm_client(cfg) as client:
-            res = await _post_with_retry(
-                client, cfg, _payload(cfg, messages, stream=False, **extra)
-            )
-    except httpx.HTTPError as e:
-        err = _upstream_error(e)
-        _note_failure(cfg, messages, err.status_code, str(err.detail.get("reason", "")))
-        raise err from None
-    if res.status_code >= 400:
-        # 相手の応答本文もそのまま返さない(上と同じ理由)。ログには残す。
-        log.warning("llm error %s: %s", res.status_code, res.text[:500])
-        detail = _llm_error(res.status_code, res.text, cfg.model)
-        _note_failure(cfg, messages, res.status_code, detail.get("reason", detail["error"]))
-        raise HTTPException(502, detail)
-    try:
-        body = res.json()
-        message = body["choices"][0]["message"]
-    except (KeyError, IndexError, TypeError, ValueError) as e:
-        raise HTTPException(502, {"error": f"unexpected llm response: {e}"}) from None
-    if not isinstance(message, dict):
-        raise HTTPException(502, {"error": "unexpected llm response: message is not an object"})
+    with _inflight(cfg, messages):
+        try:
+            async with _llm_client(cfg) as client:
+                res = await _post_with_retry(
+                    client, cfg, _payload(cfg, messages, stream=False, **extra)
+                )
+        except httpx.HTTPError as e:
+            err = _upstream_error(e)
+            _note_failure(cfg, messages, err.status_code, str(err.detail.get("reason", "")))
+            raise err from None
+        if res.status_code >= 400:
+            # 相手の応答本文もそのまま返さない(上と同じ理由)。ログには残す。
+            log.warning("llm error %s: %s", res.status_code, res.text[:500])
+            detail = _llm_error(res.status_code, res.text, cfg.model)
+            _note_failure(cfg, messages, res.status_code, detail.get("reason", detail["error"]))
+            raise HTTPException(502, detail)
+        try:
+            body = res.json()
+            message = body["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError, ValueError) as e:
+            raise HTTPException(502, {"error": f"unexpected llm response: {e}"}) from None
+        if not isinstance(message, dict):
+            raise HTTPException(502, {"error": "unexpected llm response: message is not an object"})
     _record_usage(
         cfg,
         body.get("usage"),
@@ -743,53 +769,57 @@ async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator
     """
     started = time.monotonic()
     sent = 0
-    for wait in (*RETRY_WAITS, None):
-        try:
-            async with _llm_client(cfg) as client, client.stream(
-                "POST", cfg.endpoint, json=_payload(cfg, messages, stream=True, **extra)
-            ) as res:
-                if res.status_code in RETRY_STATUSES and wait is not None:
-                    await res.aread()
-                    log.info("llm %s; retrying in %.0fs", res.status_code, wait)
-                    await asyncio.sleep(wait)
-                    continue
-                if res.status_code >= 400:
-                    body = (await res.aread()).decode("utf-8", "replace")
-                    log.warning("llm error %s: %s", res.status_code, body[:500])
-                    detail = _llm_error(res.status_code, body, cfg.model)
-                    _note_failure(cfg, messages, res.status_code,
-                                  detail.get("reason", detail["error"]))
-                    raise HTTPException(502, detail)
-                async for line in res.aiter_lines():
-                    if not line.startswith("data:"):
+    # **流しているあいだも走っている扱いにする。** 画面へ 1 文字ずつ届いていても、
+    # 相手との往復はまだ終わっていない(引き直しも含めて 1 本と数える)。
+    # 途中で読み手が去っても、生成器が閉じられるときに `finally` が消しに来る。
+    with _inflight(cfg, messages):
+        for wait in (*RETRY_WAITS, None):
+            try:
+                async with _llm_client(cfg) as client, client.stream(
+                    "POST", cfg.endpoint, json=_payload(cfg, messages, stream=True, **extra)
+                ) as res:
+                    if res.status_code in RETRY_STATUSES and wait is not None:
+                        await res.aread()
+                        log.info("llm %s; retrying in %.0fs", res.status_code, wait)
+                        await asyncio.sleep(wait)
                         continue
-                    data = line[len("data:"):].strip()
-                    if not data or data == "[DONE]":
-                        continue
-                    try:
-                        chunk = json.loads(data)
-                        delta = chunk["choices"][0]["delta"].get("content") or ""
-                    except (json.JSONDecodeError, KeyError, IndexError, TypeError):
-                        continue  # 使い物にならないフレームは黙って捨てる
-                    if delta:
-                        sent += len(delta.encode())
-                        yield delta
-                # 流し切ったら 1 回ぶん残す。 差分の応答にトークン数は載らない
-                # (`stream_options` を送れば載る相手もいるが、送ると 400 で断る相手がいる)
-                # ので、**流したぶんの大きさと時間**で目方を残す(数えるのは
-                # こちらを通った差分だけなので、中身を持たずに済む)。
-                _record_usage(
-                    cfg,
-                    None,
-                    prompt_bytes=_prompt_bytes(messages),
-                    reply_bytes=sent,
-                    ms=int((time.monotonic() - started) * 1000),
-                )
-                return
-        except httpx.HTTPError as e:
-            err = _upstream_error(e)
-            _note_failure(cfg, messages, err.status_code, str(err.detail.get("reason", "")))
-            raise err from None
+                    if res.status_code >= 400:
+                        body = (await res.aread()).decode("utf-8", "replace")
+                        log.warning("llm error %s: %s", res.status_code, body[:500])
+                        detail = _llm_error(res.status_code, body, cfg.model)
+                        _note_failure(cfg, messages, res.status_code,
+                                      detail.get("reason", detail["error"]))
+                        raise HTTPException(502, detail)
+                    async for line in res.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[len("data:"):].strip()
+                        if not data or data == "[DONE]":
+                            continue
+                        try:
+                            chunk = json.loads(data)
+                            delta = chunk["choices"][0]["delta"].get("content") or ""
+                        except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+                            continue  # 使い物にならないフレームは黙って捨てる
+                        if delta:
+                            sent += len(delta.encode())
+                            yield delta
+                    # 流し切ったら 1 回ぶん残す。 差分の応答にトークン数は載らない
+                    # (`stream_options` を送れば載る相手もいるが、送ると 400 で断る相手がいる)
+                    # ので、**流したぶんの大きさと時間**で目方を残す(数えるのは
+                    # こちらを通った差分だけなので、中身を持たずに済む)。
+                    _record_usage(
+                        cfg,
+                        None,
+                        prompt_bytes=_prompt_bytes(messages),
+                        reply_bytes=sent,
+                        ms=int((time.monotonic() - started) * 1000),
+                    )
+                    return
+            except httpx.HTTPError as e:
+                err = _upstream_error(e)
+                _note_failure(cfg, messages, err.status_code, str(err.detail.get("reason", "")))
+                raise err from None
 
 
 # ---- 段 1: クエリ生成 -------------------------------------------------------

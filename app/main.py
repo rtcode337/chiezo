@@ -27,6 +27,7 @@ from pydantic import Field as PydField
 
 from app import (
     agent,
+    ai_inflight,
     ai_log,
     answer,
     capabilities,
@@ -1904,6 +1905,31 @@ async def ai_failures(limit: int = 50) -> dict:
     (`app/ai_log.py`)。大きさだけ残すのは、失敗が大きさに寄っているのかを見分けるため。
     """
     return {"failures": ai_log.recent(limit)}
+
+
+@app.get("/v1/ai/inflight")
+async def ai_inflight_now(limit: int = Query(50, ge=1, le=200)) -> dict:
+    """いま走っている AI への依頼(会話も生成も)。
+
+    控えの表(`/v1/ai/failures` と使用量)に行が立つのは往復が**終わってから**なので、
+    走っている最中は何も見えなかった。頼んだ本人が待っているうちは分かるが、無人で
+    回る層が動かしているぶんは、遅いのか止まっているのか呼べてすらいないのかの
+    区別が付かない。
+
+    2 つに分けて返す。**素材の持ち主が違う**ためで、片方に寄せると意味が壊れる:
+
+    - `calls` …… 相手との 1 往復(`app/ai_inflight.py`)。始まりに 1 行立て、
+      終わったら消える。中身は残さない(相手・モデル・種類・依頼文の大きさ・開始時刻)
+    - `jobs` …… 絵と音と動画と読み上げ(`app/media.py`)。こちらは元から job として
+      状態を持っているので、`queued` と `running` をそのまま出す
+
+    走らせたまま落ちたぶんは期限で消える(`--workers 2` なので、片方が再起動すれば
+    走っていた往復は消えて行だけが残る)。
+    """
+    return {
+        "calls": ai_inflight.running(limit),
+        "jobs": media.running_jobs(limit),
+    }
 
 
 @app.get("/v1/ai/usage")

@@ -14,7 +14,9 @@
 """
 from __future__ import annotations
 
-from app import ai_log, settings_store, usage_store
+from datetime import UTC, datetime
+
+from app import ai_inflight, ai_log, media, settings_store, usage_store
 from app.jst import format as format_jst
 from app.jst import parse as parse_jst
 from app.pages import esc
@@ -102,6 +104,51 @@ def _detail(row: dict) -> str:
     return body
 
 
+def _elapsed(started: str) -> str:
+    """始まってからの経過。**走っている行はこれが要**で、日時だけでは
+    「遅い」のか「止まっている」のかが読めない。"""
+    at = parse_jst(started)
+    if at is None:
+        return ""
+    secs = int((datetime.now(UTC) - at).total_seconds())
+    return _took(max(secs, 0) * 1000)
+
+
+def running_rows() -> list[dict]:
+    """いま走っているものを、表に並べられる形で新しい順に。
+
+    **会話と生成を 1 本に混ぜる**(`entries` が成功と失敗を混ぜるのと同じ理由)。
+    見る人は「AI に頼んだことが走っているか」を知りたいのであって、それが会話だったか
+    絵だったかを先に知ってはいない。
+    """
+    rows = [
+        {
+            "at": r["at"],
+            "kind": r.get("kind") or ai_log.KIND_CHAT,
+            "backend": r["backend"],
+            "model": r.get("model") or "",
+            "state": "走っている",
+            "prompt_bytes": r.get("prompt_bytes"),
+        }
+        for r in ai_inflight.running()
+    ]
+    rows += [
+        {
+            "at": j["created_at"],
+            "kind": j.get("kind") or "",
+            "backend": j.get("backend") or "",
+            "model": j.get("model") or "",
+            # 生成は順番待ちがある。**待ちと走行を混ぜない** —— 混ぜると
+            # 「相手が遅い」と「自分の順番がまだ」の区別が付かない
+            "state": "順番待ち" if j.get("state") == "queued" else "走っている",
+            # 依頼文そのものは出さない(この表は中身を持たない約束)。大きさだけ
+            "prompt_bytes": len((j.get("prompt") or "").encode()),
+        }
+        for j in media.running_jobs()
+    ]
+    return sorted(rows, key=lambda r: r.get("at") or "", reverse=True)
+
+
 def entries(failed_only: bool = False) -> list[dict]:
     """成功と失敗を新しい順に混ぜた一覧。"""
     rows = [{**r, "ok": False} for r in ai_log.recent(MAX_SCAN)]
@@ -134,6 +181,10 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
             " <code>CHIEZO_STATE_DIR</code> に設定すると、依頼の控えが残るようになります。</p>"
         )
 
+    # 走っているものは**ページから外して常に先頭に出す**。控えの表は新しい順に
+    # 送っていくものだが、走っているぶんは「いまの状態」なので、2 ページ目を見て
+    # いるあいだに見えなくなっては用をなさない。件数にも数えない(結果がまだ無い)。
+    running = running_rows()
     rows = entries(failed_only)
     # **範囲の外は最後のページに寄せる**。空の表と「2 / 1 ページ」を見せても
     # 何が起きたのか読めない(絞り込みを切り替えると件数が減るので普通に起こる)
@@ -145,7 +196,7 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
         f'<a href="?#{SECTION_ANCHOR}">すべて見る</a>' if failed_only
         else f'<a href="?ai_failed=1#{SECTION_ANCHOR}">失敗だけ見る</a>'
     )
-    if not rows:
+    if not rows and not running:
         empty = "まだ落ちていません。" if failed_only else "まだ何も頼んでいません。"
         return (
             f'<h3 id="{SECTION_ANCHOR}">AI への依頼</h3>\n'
@@ -153,6 +204,19 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
         )
 
     body = []
+    for row in running:
+        who = esc(row["backend"])
+        if row["model"]:
+            who += f'<br><span class="muted">{esc(row["model"])}</span>'
+        detail = f'<span class="muted">依頼 {esc(_size(row["prompt_bytes"]))}</span>'
+        body.append(
+            '<tr class="job-status running">'
+            f"<td>{esc(_when(row['at']))}</td>"
+            f"<td>{esc(ai_log.kind_label(row['kind']))}</td><td>{who}</td>"
+            f'<td>{esc(row["state"])}<br>'
+            f'<span class="muted">{esc(_elapsed(row["at"]))}</span></td>'
+            f"<td>{detail}</td></tr>"
+        )
     for row in shown:
         kind = esc(ai_log.kind_label(row.get("kind") or ai_log.KIND_CHAT))
         who = esc(row["backend"])
@@ -173,16 +237,28 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
             f"<td>{result}</td><td>{detail}</td></tr>"
         )
 
+    # 走っているものがあるときだけ読み直す導線を出す。画面は JS を持たないので、
+    # 自分では変わらない —— 出しっぱなしにすると、何も走っていないのに
+    # 「更新すれば何か出る」と読める
+    now_running = (
+        f'<br><strong>いま {len(running)} 件走っている。</strong>'
+        f'<a href="?#{SECTION_ANCHOR}">進み具合を読み直す</a>'
+        if running else ""
+    )
     return f"""<h3 id="{SECTION_ANCHOR}">AI への依頼</h3>
 <p class="muted">
 会話・絵・音・動画・声のどれでも、頼んだものは新しい順にここへ残る。
+<strong>走っている最中のものは表の先頭</strong>に出て、終わると結果の行に変わる ——
+控えが書かれるのは往復が終わってからなので、これが無いと、無人で回っているぶんは
+遅いのか止まっているのか呼べてすらいないのかが読めない。{now_running}
 <strong>プロンプトと応答は残していない</strong> —— 呼んだ側の材料がそのまま入るため。
 かわりに<strong>やり取りの目方</strong>(依頼文と応答の大きさ・かかった時間)を残してあるので、
 中身を持たずに「短く聞いて長く答えさせた」「絵を 1 枚描かせて何分も待った」の区別は付く。
 失敗のときは理由と依頼文の大きさを残す —— 失敗が大きさに寄っているのかを
 後から見分けられるようにするため。{toggle}<br>
 成功の控えは {usage_store.KEEP_DAYS} 日、失敗の控えは直近 {ai_log.MAX_ROWS} 件まで。
-機械で読むなら <code>GET /v1/ai/failures</code>。
+機械で読むなら <code>GET /v1/ai/failures</code>、走っているものは
+<code>GET /v1/ai/inflight</code>。
 </p>
 <table>
 <thead>

@@ -228,6 +228,27 @@ def recent_jobs(limit: int = 20) -> list[dict]:
     return [_row_to_dict(row) for row in rows]
 
 
+def running_jobs(limit: int = 50) -> list[dict]:
+    """まだ出来上がっていない生成の依頼(新しい順)。
+
+    `recent_jobs` と分けてあるのは、こちらが「いま走っているもの」を見る口だから ——
+    出来上がったぶんを混ぜると、走っている数が読めなくなる。
+
+    **生成を止めてある環境では空を返す**(例外にしない)。この口は管理画面の描画から
+    呼ばれるので、絵と音を使わない環境で画面ごと 503 になっては困る。
+    """
+    if media_dir() is None:
+        return []
+    _reap_stale()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE state IN ('queued', 'running')"
+            " ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
 def _insert(job: dict) -> None:
     with _connect() as conn:
         conn.execute(
