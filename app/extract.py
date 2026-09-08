@@ -17,7 +17,7 @@
     {
       "source": "jawiki",
       "tag": "印象派の画家",
-      "limit": 30,
+      "limit": 30,   ← 書かなければ全部。AI に読ませる側の都合で絞るときだけ書く
       "body": "opening",
       "url": "https://ja.wikipedia.org/wiki/{title}",
       "tags": [
@@ -42,15 +42,26 @@ from fastapi import HTTPException
 
 log = logging.getLogger("chiezo.app")
 
-# 1 回の抽出で取る上限。長期記憶へ焼くものなので、桁が変わると焼く時間も変わる
-MAX_LIMIT = 500
-DEFAULT_LIMIT = 30
+# **件数は既定では絞らない。** 引くのは手元の索引を 1 本引くだけで、AI の枠も時間も
+# 使わない —— 30 件に絞る理由は取る側には無い(絞りたいのは AI に読ませる側)。
+#
+# 上限は「当たりすぎ」を止めるためだけに置く。**黙って切らずに断る** ——
+# 切ったことは返り値から分からないので、絞ったつもりのない指定が
+# 「そこまでしか無い」ように見えてしまう(実際に 30 件で止まっているのを、
+# 機械抽出の限界だと受け取られた)。
+MAX_ROWS = 20_000
 # タグの読み替えの上限。指定が肥大すると、1 件あたりの正規表現の回数がそのまま伸びる
 MAX_RULES = 20
 MAX_PATTERNS_PER_RULE = 4
 MAX_PATTERN_CHARS = 200
 # 1 件から作るタグの上限(読み替えが総当たりで当たったときの歯止め)
 MAX_TAGS_PER_DOC = 30
+# 別の文書を引いてくる読み替えで、1 件から取れる数の上限
+MAX_TAKE = 5
+# つながりの見方。**相互は片側よりずっと強い** —— 有名な画家どうしは片側なら
+# 12% が繋がってしまい毛玉になるが、相互は 7% で、しかも中身が正しかった
+# (マティス↔ピカソ、マネ↔モネ、ムンク↔ゴッホ)
+LINK_KINDS = ("mutual", "out")
 # 本文に使える欄。**長い本文は取らない** —— 焼くのは要点で、全文は元のソースにある
 BODY_FIELDS = ("opening", "body")
 DEFAULT_BODY_FIELD = "opening"
@@ -60,6 +71,21 @@ DEFAULT_CURSOR = "抽出済み"
 # **少し足りないだけで投げ直さない** —— 件数を満たそうとして条件のほうが広がる
 # (「西洋近代絵画」と頼んだのに 14 世紀からの欧州全体になった)
 RETRY_BELOW = 0.5
+# 件数を書いていないときに「痩せている」と見なす数。**0 件だけが失敗ではない** ——
+# 「画家」のような一般名は実在するが数件しか付いておらず、欲しいものは
+# 「19 世紀フランスの画家」の側にある(実際にそう書かれ、7 件しか取れなかった)
+THIN_ROWS = 10
+
+
+def looks_thin(spec: dict, got: int) -> bool:
+    """取れた数が、頼んだものに対して少なすぎないか。
+
+    件数を書いていれば、その数に対して。書いていなければ、絶対数で見る
+    (書いていないときは「全部でこれだけ」なので、少ないのは選んだタグのせい)。
+    """
+    if limit := spec["limit"]:
+        return got < limit * RETRY_BELOW
+    return got < THIN_ROWS
 
 
 def normalize(raw) -> dict | None:
@@ -81,11 +107,16 @@ def normalize(raw) -> dict | None:
     if not tag:
         raise _bad("tag(絞り込むタグ)を入れてください")
 
-    try:
-        limit = int(raw.get("limit") or DEFAULT_LIMIT)
-    except (TypeError, ValueError):
-        raise _bad("limit は数で書いてください") from None
-    limit = min(max(limit, 1), MAX_LIMIT)
+    # **書かなければ全部**。書いたときだけ、その数で切る
+    limit = raw.get("limit")
+    if limit in (None, "", 0):
+        limit = None
+    else:
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            raise _bad("limit は数で書いてください") from None
+        limit = min(max(limit, 1), MAX_ROWS)
 
     body_field = str(raw.get("body") or DEFAULT_BODY_FIELD).strip()
     if body_field not in BODY_FIELDS:
@@ -129,6 +160,21 @@ def _normalize_rule(raw) -> dict:
     if not fmt:
         raise _bad("読み替えには format(作るタグの形)が要ります")
 
+    # 別の文書を引いてくる読み替え。**この文書のタグではなく、他の文書の見出し**を
+    # 入れる(「クロード・モネの作品」を引いて代表作を出す、のような)
+    if from_tag := str(raw.get("from_tag") or "").strip():
+        try:
+            take = min(max(int(raw.get("take") or 1), 1), MAX_TAKE)
+        except (TypeError, ValueError):
+            raise _bad("take は数で書いてください") from None
+        return {"kind": "from_tag", "tag": from_tag, "format": fmt, "take": take}
+
+    # 記事どうしのつながり。**この抽出に入っているものだけ**を相手にする
+    if linked := str(raw.get("linked") or "").strip():
+        if linked not in LINK_KINDS:
+            raise _bad(f"linked は {' / '.join(LINK_KINDS)} のどれかにしてください")
+        return {"kind": "linked", "how": linked, "format": fmt}
+
     patterns = raw.get("patterns")
     if patterns is None:
         single = str(raw.get("pattern") or "").strip()
@@ -170,6 +216,12 @@ def to_json(spec: dict | None) -> dict | None:
     for rule in spec["tags"]:
         if rule["kind"] == "const":
             rules.append({"const": rule["value"]})
+        elif rule["kind"] == "from_tag":
+            rules.append({
+                "from_tag": rule["tag"], "format": rule["format"], "take": rule["take"]
+            })
+        elif rule["kind"] == "linked":
+            rules.append({"linked": rule["how"], "format": rule["format"]})
         elif rule["kind"] == "each":
             rules.append({"pattern": rule["patterns"][0].pattern, "format": rule["format"]})
         else:
@@ -189,13 +241,8 @@ def to_json(spec: dict | None) -> dict | None:
     }
 
 
-def run(spec: dict, sources: dict) -> tuple[list[dict], str]:
-    """指定どおりに引いて、集める層が読む形(items)にして返す。
-
-    返す形は AI に書かせたときとまったく同じ(`title` / `body` / `tags` / `url`)。
-    後ろの工程から見れば、誰が作ったものかは区別が付かない。
-    """
-    from app import db
+def _doc_ids(spec: dict, sources: dict):
+    """指定に当たる doc_id を返す SELECT を組む。"""
     from app.main import build_doc_id_set
 
     src = sources.get(spec["source"])
@@ -220,15 +267,61 @@ def run(spec: dict, sources: dict) -> tuple[list[dict], str]:
             f" EXCEPT SELECT doc_id FROM doc_tags WHERE tag IN ({','.join('?' * len(excluded))})"
         )
         params = [*params, *excluded]
+    return src, set_sql, list(params)
+
+
+def count(spec: dict, sources: dict) -> int:
+    """指定が当たる件数。**取れた数ではなく、当たっている数**。
+
+    取った数だけを見せると、絞られていることに気づけない。
+    """
+    from app import db
+
+    src, set_sql, params = _doc_ids(spec, sources)
+    (matched,) = db.query(src.path, f"SELECT COUNT(*) FROM ({set_sql})", tuple(params))[0]
+    return matched
+
+
+def run(spec: dict, sources: dict) -> tuple[list[dict], str]:
+    """指定どおりに引いて、集める層が読む形(items)にして返す。
+
+    返す形は AI に書かせたときとまったく同じ(`title` / `body` / `tags` / `url`)。
+    後ろの工程から見れば、誰が作ったものかは区別が付かない。
+
+    **件数を書いていなければ全部取る。** 当たりすぎているときは黙って切らずに断る ——
+    切ったことは返り値から分からないので、絞ったつもりのない指定が「そこまでしか無い」
+    ように見えてしまう。
+    """
+    from app import db
+
+    src, set_sql, params = _doc_ids(spec, sources)
+    limit = spec["limit"]
+    if limit is None:
+        matched = count(spec, sources)
+        if matched > MAX_ROWS:
+            raise HTTPException(409, {
+                "error": f"この指定は {matched:,} 件に当たります"
+                         f"(一度に取れるのは {MAX_ROWS:,} 件まで)",
+                "hint": "タグを絞るか、limit に取る件数を書いてください",
+            })
+        limit = MAX_ROWS
 
     rows = db.query(
         src.path,
-        f"SELECT title, {spec['body']} AS body, tags, extra FROM docs"
+        f"SELECT title, {spec['body']} AS body, tags, extra, links FROM docs"
         f" WHERE doc_id IN ({set_sql}) ORDER BY rank_score DESC, title LIMIT ?",
-        (*params, spec["limit"]),
+        (*params, limit),
     )
 
-    items = [_to_item(dict(row), spec) for row in rows]
+    # つながりは**この抽出に入っているものだけ**が相手なので、先に全部読んでから作る
+    rows = [dict(row) for row in rows]
+    context = {
+        "src": src,
+        "links": {
+            (row.get("title") or "").strip(): _link_set(row.get("links")) for row in rows
+        },
+    }
+    items = [_to_item(row, spec, context) for row in rows]
     items = [item for item in items if item]
     log.info(
         "extract %s tag=%r: %d docs -> %d items", spec["source"], spec["tag"], len(rows), len(items)
@@ -240,7 +333,12 @@ def split_tags(raw: str) -> list[str]:
     return [t.strip() for t in (raw or "").split(",") if t.strip()]
 
 
-def _to_item(row: dict, spec: dict) -> dict | None:
+def _link_set(raw) -> set[str]:
+    """記事から出ているリンク先。節への飛び先(`記事名#節名`)は記事名まで畳む。"""
+    return {str(link).split("#", 1)[0].strip() for link in _json_list(raw)}
+
+
+def _to_item(row: dict, spec: dict, context: dict) -> dict | None:
     """1 行を 1 件にする。本文が空のものは落とす(焼く側でも落ちる)。"""
     title = (row.get("title") or "").strip()
     body = (row.get("body") or "").strip()
@@ -250,7 +348,11 @@ def _to_item(row: dict, spec: dict) -> dict | None:
     tags = [str(t) for t in _json_list(row.get("tags"))]
     extra = _json_map(row.get("extra"))
 
-    item = {"title": title, "body": body, "tags": _apply_rules(spec["tags"], tags)}
+    item = {
+        "title": title,
+        "body": body,
+        "tags": _apply_rules(spec["tags"], tags, title, context),
+    }
     if template := spec["url"]:
         item["url"] = _fill(template, {"title": title, **{
             k: str(v) for k, v in extra.items() if isinstance(v, (str, int, float))
@@ -279,7 +381,7 @@ def _json_map(raw) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def _apply_rules(rules: list[dict], tags: list[str]) -> list[str]:
+def _apply_rules(rules: list[dict], tags: list[str], title: str, context: dict) -> list[str]:
     """引いてきたタグを、依頼した側が読める形に読み替える。
 
     **元のタグは持ち越さない。** カテゴリはソースの都合で付いているもので、
@@ -294,6 +396,10 @@ def _apply_rules(rules: list[dict], tags: list[str]) -> list[str]:
             for tag in tags:
                 if found := pattern.match(tag):
                     out.append(_fill_groups(rule["format"], [found]))
+        elif rule["kind"] == "from_tag":
+            out.extend(_from_tag(rule, title, context))
+        elif rule["kind"] == "linked":
+            out.extend(_linked(rule, title, context))
         else:
             found = [_first_match(pattern, tags) for pattern in rule["patterns"]]
             # 1 つでも当たらなければ作らない(「1840-」のような半端を残さない)
@@ -306,6 +412,44 @@ def _apply_rules(rules: list[dict], tags: list[str]) -> list[str]:
             seen.add(tag)
             unique.append(tag)
     return unique[:MAX_TAGS_PER_DOC]
+
+
+def _from_tag(rule: dict, title: str, context: dict) -> list[str]:
+    """この文書の見出しから作ったタグで、別の文書を引く。
+
+    「クロード・モネの作品」のようなカテゴリがあるので、そこから人気の順に取れば
+    代表作になる(実測で 30 人中 20 人に作品のカテゴリがあった)。**無ければ何も作らない**。
+    """
+    from app import db
+
+    src = context["src"]
+    tag = _fill(rule["tag"], {"title": title})
+    rows = db.query(
+        src.path,
+        "SELECT title FROM docs WHERE doc_id IN"
+        " (SELECT doc_id FROM doc_tags WHERE tag = ?)"
+        " ORDER BY rank_score DESC, title LIMIT ?",
+        (tag, rule["take"]),
+    )
+    return [_fill(rule["format"], {"1": row[0]}) for row in rows]
+
+
+def _linked(rule: dict, title: str, context: dict) -> list[str]:
+    """この抽出に入っている文書のうち、記事がリンクしている相手。
+
+    **相互リンクを既定にする。** 片側だけだと、有名なものどうしが軒並み繋がって
+    毛玉になる(実測で 12% が繋がった)。相互は 7% まで落ちて、しかも残った組は
+    実際に関係のある相手だった。
+    """
+    links = context["links"]
+    mine = links.get(title, set())
+    others = [
+        other
+        for other in links
+        if other != title and other in mine
+        and (rule["how"] == "out" or title in links.get(other, set()))
+    ]
+    return [_fill(rule["format"], {"1": other}) for other in others]
 
 
 def _first_match(pattern: re.Pattern, tags: list[str]):
@@ -338,29 +482,54 @@ def _fill(template: str, values: dict[str, str]) -> str:
 
 # ---- 依頼文から指定を書かせる ------------------------------------------------
 
-SPEC_GUIDE = """抽出の指定は次の形の JSON です。
+SPEC_GUIDE = """依頼を読んで、**まず「手元の索引から機械的に引けるか」を決めてください**。
+
+引けるなら、抽出の指定を書いてください。引けないなら
+`{"extract": null, "reason": "引けない理由"}` を返してください。指定さえ書ければ、
+そのあとは AI を呼ばずに何万件でも一度に取れます(1000 件を 10 件ずつ AI に書かせると
+100 回かかりますが、指定なら 1 秒で終わります)。
+
+**決める前に、道具で確かめてください。** あなたには Chiezo の道具が渡してあります ——
+どんなタグが実在するか(tags)、そのタグに何件当たるか(filter)、記事から何が
+リンクされているか(links)、1 件がどんなタグを持っているか(doc)。
+**タグ名は当てずっぽうでは当たりません**(完全一致でしか引けないので、それらしい
+名前を書くと静かな 0 件になります)。実在する名前を引いてから書いてください。
+
+抽出の指定は次の形の JSON です。
 
 {
   "source": "引くソース名",
   "tag": "絞り込むタグ(完全一致。カンマ区切りで複数書くと、そのどれかを持つもの)",
   "not_tag": "外すタグ(カンマ区切り。これを持つものは、tag に当たっていても取らない)",
-  "limit": 30,
+  "limit": 30,   ← 書かなければ全部。AI に読ませる側の都合で絞るときだけ書く
   "body": "opening(冒頭。既定) か body(全文)",
   "url": "出典の作り方。{title} と、そのソースが extra に持っている値を差し込める",
   "tags": [
     {"const": "そのまま付ける固定のタグ"},
     {"pattern": "^(.+)派の画家$", "format": "様式:{1}"},
-    {"patterns": ["^(\\d{3,4})年生$", "^(\\d{3,4})年没$"], "format": "年代:{1}-{2}"}
+    {"patterns": ["^(\\d{3,4})年生$", "^(\\d{3,4})年没$"], "format": "年代:{1}-{2}"},
+    {"from_tag": "{title}の作品", "format": "代表作:{1}", "take": 1},
+    {"linked": "mutual", "format": "関連:{1}"}
   ],
   "cursor": "抽出し終えた印(次の実行はここから肉付けになる)"
 }
 
-タグの読み替えは 3 通りです。
+タグの読み替えは 5 通りです。
 - const: 固定の 1 つ。読む側が「これは何の一覧か」を見分ける目印に使う
 - pattern: **当たったタグごとに 1 つ**作る。1 件に複数付きうるもの向け
 - patterns: **全部当たったときだけ 1 つ**作る。2 つのタグを 1 つにまとめる読み方。
   1 つでも当たらなければ作らない(半端なタグを残さない)
+- from_tag: **この文書の見出しから作ったタグで、別の文書を引く**(`{title}` が入る)。
+  「クロード・モネの作品」のようなカテゴリがあるので、人気の順に取れば代表作になる。
+  `take` で何件取るか(既定 1)。そのカテゴリが無ければ何も作らない
+- linked: **この抽出に入っている文書のうち、記事がリンクしている相手**を出す。
+  `mutual`(相互にリンクしているものだけ)と `out`(こちらから張っているもの)。
+  片側だと有名なものどうしが軒並み繋がって毛玉になるので、**まず mutual を使う**
 `{1}` `{2}` は、当たった順に括弧で捕まえた中身が入ります。
+
+**書いていないことは引けませんが、書いてあることは全部引けます。** 関係や代表作も、
+カテゴリやリンクの形で書いてあれば取れます。AI に書かせるのは、そのどれでも
+取れないものだけにしてください。
 
 守ること。
 - source は実在するソース名。tag は**そのソースに実在するタグ**(前方一致や部分一致
@@ -369,6 +538,8 @@ SPEC_GUIDE = """抽出の指定は次の形の JSON です。
   入っている。人気の順に取るとそちらが先に並ぶので、混ぜたくないものがはっきり
   しているときは `not_tag` で外す(例: 俳優・作家のカテゴリ)
 - 並び順は書けない。ソースが持っている順(ページビューや人口の多い順)で上から取る
+- **件数は絞らなくてよい。** 引くのは手元の索引を 1 本引くだけで、AI の枠も時間も
+  使わない。「有名なほうから N 件」と頼まれたときだけ limit を書く
 - 元のタグは持ち越さない。読む側が要るタグだけを読み替えで作る
 
 出力は JSON だけ。前置き・説明・コードブロックの記号は付けない。"""
@@ -395,7 +566,11 @@ def build_draft_messages(want: str, sources: dict, current: dict | None = None) 
 
 
 def parse_draft(content: str) -> dict:
-    """AI の答えから指定を取り出す。前置きやコードブロックが混ざっても拾う。"""
+    """AI の答えから指定を取り出す。前置きやコードブロックが混ざっても拾う。
+
+    **「機械では引けない」も答えのうち**(`{"extract": null, "reason": …}`)。
+    引けないものを無理に指定へ落とすと、当たらないタグで静かな 0 件になる。
+    """
     stripped = re.sub(r"```(?:json)?", "", content or "").strip()
     start, end = stripped.find("{"), stripped.rfind("}")
     if start < 0 or end <= start:

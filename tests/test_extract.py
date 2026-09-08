@@ -31,8 +31,9 @@ def source(tmp_path):
         conn.executescript(notes.SCHEMA_DDL)
         for doc_id, doc in enumerate(docs, start=1):
             conn.execute(
-                "INSERT INTO docs (doc_id, title, opening, body, tags, extra, updated_at,"
-                " rank_score) VALUES (?, ?, ?, ?, ?, ?, '2026-01-01T00:00:00+00:00', ?)",
+                "INSERT INTO docs (doc_id, title, opening, body, tags, extra, links,"
+                " updated_at, rank_score)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, '2026-01-01T00:00:00+00:00', ?)",
                 (
                     doc_id,
                     doc["title"],
@@ -40,6 +41,7 @@ def source(tmp_path):
                     doc.get("body", doc["title"] + "の本文。"),
                     json.dumps(doc.get("tags", []), ensure_ascii=False),
                     json.dumps(doc["extra"], ensure_ascii=False) if doc.get("extra") else None,
+                    json.dumps(doc.get("links", []), ensure_ascii=False),
                     doc.get("rank", 0.0),
                 ),
             )
@@ -113,6 +115,11 @@ class TestPullingFromWhatIsAlreadyThere:
 
         assert [i["title"] for i in items] == ["クロード・モネ", "葛飾北斎", "エドゥアール・マネ"]
 
+    def test_it_takes_everything_when_no_number_was_given(self, source):
+        items, _cursor = extract.run(spec(limit=0, tag="1840年生,1832年生,1760年生"), source(painters()))
+
+        assert len(items) == 3
+
     def test_it_stops_at_the_limit(self, source):
         items, _cursor = extract.run(spec(limit=1), source(painters()))
 
@@ -162,6 +169,59 @@ class TestPullingFromWhatIsAlreadyThere:
         )
 
         assert [i["title"] for i in items] == ["本職の画家"]
+
+    def test_it_can_pull_a_work_from_another_article(self, source):
+        """「クロード・モネの作品」のようなカテゴリから、人気の順に代表作を取る。"""
+        docs = [
+            {"title": "クロード・モネ", "tags": ["印象派の画家"], "rank": 0.9},
+            {"title": "睡蓮", "tags": ["クロード・モネの作品"], "rank": 0.3},
+            {"title": "印象・日の出", "tags": ["クロード・モネの作品"], "rank": 0.8},
+        ]
+
+        items, _cursor = extract.run(
+            spec(tags=[{"from_tag": "{title}の作品", "format": "代表作:{1}", "take": 1}]),
+            source(docs),
+        )
+
+        assert items[0]["tags"] == ["代表作:印象・日の出"]
+
+    def test_a_painter_without_a_works_category_gets_nothing(self, source):
+        items, _cursor = extract.run(
+            spec(tags=[{"from_tag": "{title}の作品", "format": "代表作:{1}"}]),
+            source([{"title": "作品の無い画家", "tags": ["印象派の画家"], "rank": 0.5}]),
+        )
+
+        assert items[0]["tags"] == []
+
+    def test_it_can_read_the_links_between_what_it_pulled(self, source):
+        """**相互リンクだけ**を見る。片側だと有名どうしが軒並み繋がって毛玉になる。"""
+        docs = [
+            {"title": "マネ", "tags": ["印象派の画家"], "links": ["モネ", "ドガ"], "rank": 0.9},
+            {"title": "モネ", "tags": ["印象派の画家"], "links": ["マネ"], "rank": 0.8},
+            {"title": "ドガ", "tags": ["印象派の画家"], "links": [], "rank": 0.7},
+        ]
+
+        items, _cursor = extract.run(
+            spec(tags=[{"linked": "mutual", "format": "関連:{1}"}]), source(docs)
+        )
+
+        by_title = {i["title"]: i["tags"] for i in items}
+        assert by_title["マネ"] == ["関連:モネ"]
+        assert by_title["モネ"] == ["関連:マネ"]
+        # 片側しか張っていない相手は出ない
+        assert by_title["ドガ"] == []
+
+    def test_links_outside_the_extraction_are_not_edges(self, source):
+        """図に出ない相手への線は引かない（Chiezo は図を知らないが、集合は知っている）。"""
+        docs = [
+            {"title": "画家", "tags": ["印象派の画家"], "links": ["外の人"], "rank": 0.5},
+        ]
+
+        items, _cursor = extract.run(
+            spec(tags=[{"linked": "mutual", "format": "関連:{1}"}]), source(docs)
+        )
+
+        assert items[0]["tags"] == []
 
     def test_the_original_tags_do_not_come_along(self, source):
         """カテゴリはソースの都合で付いている。読む側に選ばせない。"""
@@ -228,10 +288,15 @@ class TestRefusingABrokenSpec:
 
         assert got.value.status_code == 400
 
+    def test_no_limit_means_everything(self):
+        """引くのは索引を 1 本引くだけ。取る側に件数を絞る理由は無い。"""
+        assert extract.normalize({"source": "j", "tag": "t"})["limit"] is None
+        assert extract.normalize({"source": "j", "tag": "t", "limit": 0})["limit"] is None
+
     def test_a_huge_limit_is_clamped_instead_of_refused(self):
         """件数は書き間違えても意味が通る。断るより上限で止めるほうが親切。"""
-        assert extract.normalize({"source": "j", "tag": "t", "limit": 10_000})["limit"] \
-            == extract.MAX_LIMIT
+        assert extract.normalize({"source": "j", "tag": "t", "limit": 10_000_000})["limit"] \
+            == extract.MAX_ROWS
 
     def test_it_can_be_written_back_as_it_was_given(self):
         """定義に残すので、書いた正規表現がそのまま読み返せる必要がある。"""
@@ -331,6 +396,28 @@ class TestWritingTheSpecFromARequest:
 
         monkeypatch.setattr(main, "_ask_for_collection", reply)
 
+    def test_it_says_how_many_the_tag_matches_not_just_what_it_took(self, client, monkeypatch):
+        """取った数だけ見せると、絞られていることに気づけない。"""
+        self._answer(monkeypatch, json.dumps({
+            "source": "jawiki", "tag": "日本の都道府県", "limit": 1,
+        }))
+
+        body = client.post("/v1/collect/draft-extract", json={"want": "都道府県を1件"}).json()
+
+        assert body["total"] == 1
+        assert body["matched"] == 2
+
+    def test_too_many_is_refused_instead_of_cut(self, client, monkeypatch):
+        """黙って切ると、絞ったつもりのない指定が「そこまでしか無い」ように見える。"""
+        monkeypatch.setattr(extract, "MAX_ROWS", 1)
+        self._answer(monkeypatch, json.dumps({"source": "jawiki", "tag": "日本の都道府県"}))
+
+        res = client.post("/v1/collect/draft-extract", json={"want": "都道府県を全部"})
+
+        assert res.status_code == 409
+        # 何件に当たっているかを言う（言わないと、どこまで絞ればよいか分からない）
+        assert "2" in json.dumps(res.json(), ensure_ascii=False)
+
     def test_it_comes_back_with_what_the_spec_actually_pulls(self, client, monkeypatch):
         """保存する前に空振りが分かるように、その場で引いた結果を添える。"""
         self._answer(monkeypatch, json.dumps({
@@ -422,6 +509,23 @@ class TestWritingTheSpecFromARequest:
 
         assert body["extract"]["tag"] == "日本の都道府県"
         assert body["total"] == 2
+
+    def test_the_ai_can_say_it_cannot_be_pulled(self, client, monkeypatch):
+        """引けないものを無理に指定へ落とすと、当たらないタグで静かな 0 件になる。
+
+        頼んだ側は今までどおり AI に集めさせればよい。
+        """
+        self._answer(monkeypatch, json.dumps({
+            "extract": None,
+            "reason": "その日のニュースは長期記憶に入っていないので、外から集めるしかありません",
+        }))
+
+        body = client.post(
+            "/v1/collect/draft-extract", json={"want": "今日のニュースを10件"}
+        ).json()
+
+        assert body["extract"] is None
+        assert "外から集める" in body["reason"]
 
     def test_a_spec_that_cannot_be_run_is_refused(self, client, monkeypatch):
         self._answer(monkeypatch, json.dumps({"source": "jawiki"}))

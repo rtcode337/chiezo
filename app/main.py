@@ -1535,14 +1535,23 @@ async def collect_draft_extract(request: Request, body: ExtractDraft):
     content = await _ask_for_collection(
         settings, extract.build_draft_messages(body.want, sources, current)
     )
-    spec = extract.normalize(extract.parse_draft(content or ""))
+    drafted = extract.parse_draft(content or "")
+
+    # **「機械では引けない」も答えのうち。** 引けないものを無理に指定へ落とすと、
+    # 当たらないタグで静かな 0 件になる。頼んだ側は今までどおり AI に集めさせればよい
+    if drafted.get("extract", drafted) is None:
+        reason = str(drafted.get("reason") or "").strip()
+        log.info("draft extract: 機械では引けないと判断された: %s", reason)
+        return {"extract": None, "reason": reason, "total": 0, "matched": 0, "sample": []}
+
+    spec = extract.normalize(drafted.get("extract") if "extract" in drafted else drafted)
     probed = await asyncio.to_thread(_probe, spec, sources)
 
     # 足りなければ、**実在するタグを見せて 1 度だけ選び直させる**。タグ名は手元に
     # しか無いので、書く側は当てるしかない —— 「画家」のような一般名は実在するが
     # 数件しか付いておらず、欲しいものは「19世紀フランスの画家」の側にある。
     # 選び直しても増えなければ、最初の指定のほうを返す(悪くしない)
-    if probed["total"] < spec["limit"] * extract.RETRY_BELOW and probed["candidates"]:
+    if probed["candidates"]:
         content = await _ask_for_collection(
             settings,
             extract.build_retry_messages(body.want, spec, probed["total"], probed["candidates"]),
@@ -1566,10 +1575,14 @@ def _probe(spec: dict, sources: dict) -> dict:
     書くと「実在はするが数件しか付いていないタグ」に当たり、静かに痩せた図になる。
     """
     items, _cursor = extract.run(spec, sources)
+    matched = extract.count(spec, sources)
+    # **当たっている数も返す。** 取った数だけ見せると、絞られていることに気づけない
+    # (614 件に当たっているのに 30 件返っても、見ている側には分からない)
     return {
         "total": len(items),
+        "matched": matched,
         "sample": items[:3],
-        "candidates": extract.similar_tags(spec, sources) if len(items) < spec["limit"] else [],
+        "candidates": extract.similar_tags(spec, sources) if extract.looks_thin(spec, len(items)) else [],
     }
 
 
