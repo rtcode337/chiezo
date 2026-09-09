@@ -399,11 +399,47 @@ def _backend_select(current: str | None) -> str:
     return f'<select name="backend">{"".join(options)}</select>'
 
 
+def _candidate_select(field: str, current: str | None, candidates, empty_label: str) -> str:
+    """候補から選ぶセレクト(モデル・考える量)。
+
+    **いま入っている値が候補に無くても選択肢に残す**(`_backend_select` と同じ理由)
+    —— 落とすと保存し直した瞬間に既定へ倒れて、何を指定していたのかが画面から消える。
+    相手が控えを持たない・その項目を持たない場合は候補が空になるが、**セレクト自体は
+    出す** —— 消すと、JS が候補を入れに来たときに入れる先が無い。
+    """
+    names = list(candidates)
+    if current and current not in names:
+        names.append(current)
+    options = [f'<option value="">{esc(empty_label)}</option>']
+    for name in names:
+        selected = " selected" if name == current else ""
+        options.append(f'<option value="{esc(name)}"{selected}>{esc(name)}</option>')
+    return f'<select name="{field}">{"".join(options)}</select>'
+
+
+def _model_select(backend: str | None, current: str | None) -> str:
+    """モデルのセレクト。**候補は控え**(`app/providers.py`)から取る。
+
+    ここで相手に問い合わせない —— 管理画面の描画で外へ出ると、相手が落ちている
+    ときにページ全体が待たされる(`_backend_select` と同じ約束)。選び直すときだけ
+    `GET /ai/models` を引いて入れ替える(下の `COLLECT_BACKEND_SCRIPT`)。
+    """
+    spec = providers.get(answer.normalize_backend(backend))
+    return _candidate_select("model", current, spec.models if spec else (), "相手の既定")
+
+
+def _effort_select(backend: str | None, current: str | None) -> str:
+    """考える量のセレクト。持たない相手では候補が空(「相手の既定」だけ)になる。"""
+    return _candidate_select(
+        "effort", current, providers.efforts_of(answer.normalize_backend(backend)), "相手の既定"
+    )
+
+
 def _backend_hint() -> str:
     """相手ごとに渡せるモデルと深さ。**選ぶ前に読めるところに置く**。
 
-    セレクトを連動させるには JS が要る(この画面は持たない)ので、一覧を添えて
-    手で書いてもらう。空にすれば相手の既定に任せられる。
+    モデルと深さはセレクトで選べるが、あれは**いま選んでいる相手のぶんだけ**なので、
+    「どの相手に替えれば何が使えるか」はここでしか読めない。相手を選ぶ前に効く。
     """
     lines = []
     for name in answer.backend_names():
@@ -439,6 +475,58 @@ def _mode_select(current: str) -> str:
         for mode in collect.MODES
     )
     return f'<select name="mode">{options}</select>'
+
+
+# 相手を選び直したときに、モデルと考える量の候補を入れ替える。
+#
+# **フォームは 1 ページに何枚もある**(収集ごとに 1 枚 + 追加用)ので、id では捕まえない
+# —— 同じ id が並ぶと最初の 1 枚しか動かない。`change` を document で受けて、
+# **そのフォームの中だけ**を書き換える。
+#
+# **初期表示は JS 抜きで正しい**(サーバー側が、いま選ばれている相手の候補で組む)。
+# ここが動かない環境で失われるのは「相手を替えた直後に候補が入れ替わること」だけで、
+# 相手を保存してから選び直せば同じところへ行ける。
+#
+# 候補を控えではなく `GET /ai/models` から取るのは、**選び直すのは人が待っている
+# 場面だから** —— そこでだけ相手に聞きに行けば、控えが古くても実物に追いつける
+# (描画のときに聞かない理由は `_model_select` にある)。
+COLLECT_BACKEND_SCRIPT = """<script>
+document.addEventListener('change', function (ev) {
+  var sel = ev.target;
+  if (!sel.matches || !sel.matches('.collect-form select[name="backend"]')) { return; }
+  var form = sel.closest('form');
+  var model = form.querySelector('select[name="model"]');
+  var effort = form.querySelector('select[name="effort"]');
+  if (!model && !effort) { return; }
+  // 入れ替わるまで触らせない(古い候補のまま保存されるのを防ぐ)
+  [model, effort].forEach(function (el) { if (el) { el.disabled = true; } });
+  fetch('/ai/models?backend=' + encodeURIComponent(sel.value))
+    .then(function (r) { return r.ok ? r.json() : { models: [], efforts: [] }; })
+    .then(function (d) {
+      fill(model, d.models || []);
+      fill(effort, d.efforts || []);
+    })
+    .finally(function () {
+      [model, effort].forEach(function (el) { if (el) { el.disabled = false; } });
+    });
+  function fill(el, names) {
+    if (!el) { return; }
+    // 選んでいた値は候補に無くても残す(サーバー側の組み立てと同じ約束)
+    var keep = el.value;
+    el.innerHTML = '';
+    var head = document.createElement('option');
+    head.value = ''; head.textContent = '相手の既定';
+    el.appendChild(head);
+    if (keep && names.indexOf(keep) < 0) { names = names.concat([keep]); }
+    names.forEach(function (id) {
+      var o = document.createElement('option');
+      o.value = id; o.textContent = id;
+      if (id === keep) { o.selected = true; }
+      el.appendChild(o);
+    });
+  }
+});
+</script>"""
 
 
 def _collect_html(sources: dict[str, Source], disabled: str) -> str:
@@ -543,10 +631,8 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'<p><label>進み具合(空にすると最初から)<br>'
             f'<input name="cursor" value="{esc(item.cursor)}"></label></p>'
             f"<p><label>頼む相手<br>{_backend_select(item.backend)}</label></p>"
-            f'<p><label>モデル(空なら相手の既定)<br>'
-            f'<input name="model" value="{esc(item.model or "")}"></label></p>'
-            f'<p><label>考える量(空なら相手の既定)<br>'
-            f'<input name="effort" value="{esc(item.effort or "")}"></label></p>'
+            f"<p><label>モデル<br>{_model_select(item.backend, item.model)}</label></p>"
+            f"<p><label>考える量<br>{_effort_select(item.backend, item.effort)}</label></p>"
             f"{_backend_hint()}"
             f"<p><label>集め方<br>{_mode_select(item.mode)}</label></p>"
             f'<p><label>消えすぎの歯止め(前の何割を下回ったら止めるか。0 で外す)<br>'
@@ -658,6 +744,7 @@ AI に集めさせて溜めていく層。<strong>溜め先は収集ごとに別
 <strong>追加したものは止めた状態で作る</strong> —— プロンプトを見直してから
 「有効にする」で動き出す(いきなり AI の枠を使わない)。
 </p>
+{COLLECT_BACKEND_SCRIPT}
 """
 
 

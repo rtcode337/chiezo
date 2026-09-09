@@ -942,6 +942,57 @@ class TestTheCollectSectionMarkup:
         assert html.count("<form") == html.count("</form>")
 
 
+class TestPickingTheModelAndTheEffort:
+    """モデルと考える量は**選ぶ**もので、手で書くものではない。
+
+    自由入力だった頃は、相手ごとに違う候補を画面の下の一覧から読んで写す作りだった
+    —— 綴りを間違えても保存でき、走らせるまで気づけない。
+    """
+
+    def _html(self, sample):
+        from app.views import admin
+
+        return admin._collect_html({}, "")
+
+    def test_they_are_selects_not_free_text(self, sample):
+        html = self._html(sample)
+        assert '<select name="model">' in html
+        assert '<select name="effort">' in html
+        assert '<input name="model"' not in html
+        assert '<input name="effort"' not in html
+
+    def test_leaving_it_to_the_backend_is_the_first_choice(self, sample):
+        """空が「相手の既定」。**先頭に置く** —— 指定しないのが普通の使い方。"""
+        from app.views import admin
+
+        html = admin._candidate_select("model", None, ["a", "b"], "相手の既定")
+        assert html.index("相手の既定") < html.index(">a<")
+
+    def test_a_value_outside_the_candidates_survives(self, sample):
+        """候補から落とすと、保存し直した瞬間に既定へ倒れて指定が消える
+        (`_backend_select` と同じ約束)。"""
+        from app.views import admin
+
+        html = admin._candidate_select("model", "消えたモデル", ["a"], "相手の既定")
+        assert '<option value="消えたモデル" selected>' in html
+
+    def test_the_select_is_there_even_when_the_backend_has_no_candidates(self, sample):
+        """候補が空でもセレクトは出す —— 消すと、JS が候補を入れに来たとき入れ先が無い。"""
+        from app.views import admin
+
+        assert '<select name="effort">' in admin._candidate_select(
+            "effort", None, [], "相手の既定"
+        )
+
+    def test_the_script_finds_forms_by_class_not_by_id(self, sample):
+        """フォームは 1 ページに何枚もあるので、id で捕まえると 1 枚しか動かない。"""
+        from app.views import admin
+
+        assert 'select[name="backend"]' in admin.COLLECT_BACKEND_SCRIPT
+        assert "getElementById" not in admin.COLLECT_BACKEND_SCRIPT
+        assert admin.COLLECT_BACKEND_SCRIPT in self._html(sample)
+
+
 class TestTellingWhetherAnIngestIsRunning:
     """外のアプリが**押す前に**判断できるように、取り込みの状態を配る。
 
