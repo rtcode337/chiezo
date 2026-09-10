@@ -18,6 +18,14 @@ const group = ref<MediaGroup | null>(null)
 const error = ref<string | null>(null)
 const loading = ref(false)
 const noteFor = ref<Record<string, string>>({})
+/** 文章の中身。**開いたときに取りに行く** —— job には本文を持たせていない
+ *  （一覧を引くたびに何万字も運ばないため、置き場のファイルとして持っている）。 */
+const bodyFor = ref<Record<string, string>>({})
+/** 全文を出しているか。長い文章は畳んでおく（端末では 4 万字がそのまま並ぶと読めない）。 */
+const openFor = ref<Record<string, boolean>>({})
+
+/** 畳んでいるときに見せる長さ。ここまでで「読む価値があるか」は判断できる。 */
+const PREVIEW_CHARS = 600
 
 const key = computed(() => String(route.params.key ?? ''))
 
@@ -26,11 +34,48 @@ async function load() {
   try {
     group.value = await api.getMediaGroup(key.value)
     error.value = null
+    await loadBodies()
   } catch (e) {
     error.value = e instanceof Error ? e.message : '読み込めませんでした'
   } finally {
     loading.value = false
   }
+}
+
+/**
+ * 文章の本文を取ってくる。**絵や音と違って `<img>` / `<audio>` が勝手に取ってくれない**
+ * ので、ここで読みに行く。取れなかった案は飛ばす（1 本の失敗で組ごと出せなくしない）。
+ */
+async function loadBodies() {
+  const jobs = (group.value?.jobs ?? []).filter((j) => j.kind === 'text')
+  await Promise.all(
+    jobs.map(async (job) => {
+      const url = job.files[0]?.url
+      if (!url || bodyFor.value[job.id] !== undefined) return
+      try {
+        const res = await fetch(url)
+        bodyFor.value[job.id] = res.ok ? await res.text() : '（本文を読めませんでした）'
+      } catch {
+        bodyFor.value[job.id] = '（本文を読めませんでした）'
+      }
+    }),
+  )
+}
+
+function shown(job: MediaJob): string {
+  const text = bodyFor.value[job.id] ?? ''
+  if (openFor.value[job.id] || text.length <= PREVIEW_CHARS) return text
+  return text.slice(0, PREVIEW_CHARS) + '…'
+}
+
+function longEnough(job: MediaJob): boolean {
+  return (bodyFor.value[job.id] ?? '').length > PREVIEW_CHARS
+}
+
+/** 文字数。**一覧で長さが読める**ように job の `seconds` に入れてある。 */
+function chars(job: MediaJob): string {
+  const n = job.seconds ?? (bodyFor.value[job.id] ?? '').length
+  return n ? `${Math.round(n).toLocaleString('ja-JP')} 字` : ''
 }
 
 async function pick(job: MediaJob) {
@@ -49,6 +94,12 @@ async function unpick(job: MediaJob) {
   } catch (e) {
     error.value = e instanceof Error ? e.message : '取り消せませんでした'
   }
+}
+
+/** 種類の呼び名。**そのまま出さない** —— 画面に英語の識別子が出ると、
+ *  何の組なのかを読む人が推測することになる。 */
+function kindLabel(kind: string): string {
+  return { audio: '音', image: '画像', video: '動画', speech: '読み上げ', text: '文章' }[kind] ?? kind
 }
 
 /** 案の見出し。組の中の何番目かは並び順で決まる（頼んだ順）。 */
@@ -78,7 +129,7 @@ watch(key, load)
     <template v-if="group">
       <h1 class="group__title">{{ group.title }}</h1>
       <p class="group__meta">
-        {{ group.kind === 'audio' ? '音' : group.kind === 'image' ? '画像' : group.kind }}
+        {{ kindLabel(group.kind) }}
         ・ {{ group.count }} 案 ・ {{ when(group.created_at) }}
       </p>
 
@@ -99,7 +150,19 @@ watch(key, load)
             <span v-if="job.error" class="item__error">{{ job.error }}</span>
           </p>
 
-          <template v-for="file in job.files" :key="file.url">
+          <template v-if="job.kind === 'text'">
+            <p v-if="chars(job)" class="item__chars">{{ chars(job) }}</p>
+            <pre class="item__text">{{ shown(job) }}</pre>
+            <button
+              v-if="longEnough(job)"
+              type="button"
+              class="btn btn--quiet"
+              @click="openFor[job.id] = !openFor[job.id]"
+            >
+              {{ openFor[job.id] ? '畳む' : '全文を読む' }}
+            </button>
+          </template>
+          <template v-else v-for="file in job.files" :key="file.url">
             <img v-if="job.kind === 'image'" :src="file.url" :alt="label(index)" class="item__image" />
             <audio v-else :src="file.url" controls preload="none" class="item__audio" />
           </template>
@@ -242,5 +305,26 @@ watch(key, load)
 .item__note {
   font-size: 0.85rem;
   color: var(--muted);
+}
+/* 文章の案。**等幅にしない** —— 読み物なので、長く読める字面のほうがよい。
+   改行はそのまま出す（Markdown として組み直すと、見比べの邪魔になる装飾が入る）。 */
+.item__text {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--panel, #fff);
+  font-family: inherit;
+  font-size: 0.92rem;
+  line-height: 1.9;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.item__chars {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
 }
 </style>

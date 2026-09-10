@@ -2143,6 +2143,16 @@ _MEDIA_KINDS = (
 )
 
 
+class MediaTextRequest(BaseModel):
+    prompt: str
+    # どの相手に書かせるか。空なら「先頭の相手」(`/v1/ai/complete` と同じ規則)
+    backend: str | None = None
+    model: str | None = None
+    effort: str | None = None
+    # 何案かを 1 組として見比べるための名前。絵や音と同じ扱い
+    group: str | None = None
+
+
 @app.get("/v1/media/backends")
 async def media_backends_list(
     kind: str = Query(media_providers.KIND_IMAGE,
@@ -2253,6 +2263,36 @@ async def media_speech(body: SpeechRequestBody) -> dict:
         seed=body.seed,
         count=body.count,
     )
+
+
+@app.post("/v1/media/text")
+async def media_text(body: MediaTextRequest) -> dict:
+    """文章を書かせる。**すぐには返らない**(job_id を返す)。
+
+    `/v1/ai/complete` との違いは 1 つだけ —— **結果が job として残る**ので、
+    何案か書かせて画面で読み比べ、採用の印を付けられる。長い文章ほど、
+    会話に貼って読ませるより画面で読むほうが早い。
+
+    絵や音と同じ表に入るので、`/v1/media/groups` も `/v1/media/picks` も
+    そのまま使える。
+    """
+    return media.start_text_job(
+        prompt=body.prompt,
+        backend=(body.backend or "").strip(),
+        model=(body.model or "").strip(),
+        effort=(body.effort or "").strip(),
+        group=(body.group or "").strip(),
+    )
+
+
+@app.post("/v1/media/jobs/{job_id}/cancel")
+async def media_cancel(job_id: str) -> dict:
+    """走っている(または並んでいる)生成を止める。
+
+    **向こう側の CLI までは止まらない**(こちらの待ち枠が空くだけ)。
+    詳しくは `media.cancel_job`。
+    """
+    return media.cancel_job(job_id)
 
 
 @app.post("/v1/media/transcribe")

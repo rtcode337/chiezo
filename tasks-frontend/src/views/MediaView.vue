@@ -36,7 +36,7 @@ function when(iso: string): string {
 }
 
 function kindLabel(kind: string): string {
-  return { image: '画像', audio: '音', video: '動画', speech: '読み上げ' }[kind] ?? kind
+  return { image: '画像', audio: '音', video: '動画', speech: '読み上げ', text: '文章' }[kind] ?? kind
 }
 
 usePullToRefresh(load)
@@ -53,7 +53,7 @@ onMounted(load)
     <ErrorBanner v-if="error" :message="error" />
 
     <p v-if="!loading && groups.length === 0" class="media__empty">
-      まだ何も作られていません。AI に絵や音を頼むと、ここに並びます。
+      まだ何も作られていません。AI に絵・音・文章を頼むと、ここに並びます。
     </p>
 
     <ul v-else class="list">

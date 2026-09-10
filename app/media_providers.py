@@ -34,9 +34,13 @@ KIND_AUDIO = "audio"
 KIND_VIDEO = "video"
 KIND_SPEECH = "speech"  # 読み上げ(TTS)
 KIND_TRANSCRIBE = "transcribe"  # 文字起こし(STT)
+# 文章。**話せる AI に書かせたものを、絵や音と同じ job として残す**ための種類。
+# 相手は media の相手ではなく「話せる AI」(`app/answer.py`)なので、
+# `media_providers` には相手が登録されていない —— 検査は `create_text_job` が別に行う。
+KIND_TEXT = "text"
 
 # 頼んで後から引き取るものだけ。文字起こしは送ったその場で文字が返るので入らない。
-JOB_KINDS = (KIND_IMAGE, KIND_AUDIO, KIND_VIDEO, KIND_SPEECH)
+JOB_KINDS = (KIND_IMAGE, KIND_AUDIO, KIND_VIDEO, KIND_SPEECH, KIND_TEXT)
 
 # 音の種類。効果音と曲は同じ「音」でもモデルが別物なので、頼むときに選ばせる ——
 # 相手によっては口そのものが分かれている(ElevenLabs)し、自前の GPU でも

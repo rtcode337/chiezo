@@ -143,6 +143,9 @@ def running_rows() -> list[dict]:
             "state": "順番待ち" if j.get("state") == "queued" else "走っている",
             # 依頼文そのものは出さない(この表は中身を持たない約束)。大きさだけ
             "prompt_bytes": len((j.get("prompt") or "").encode()),
+            # **止められるのは生成だけ。** 会話(`ai_inflight`)は相手との 1 往復で、
+            # 掴んでいるのは呼んだ側のタスクなので、この画面からは手が届かない
+            "job_id": j.get("id") or "",
         }
         for j in media.running_jobs()
     ]
@@ -209,6 +212,15 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
         if row["model"]:
             who += f'<br><span class="muted">{esc(row["model"])}</span>'
         detail = f'<span class="muted">依頼 {esc(_size(row["prompt_bytes"]))}</span>'
+        # **暴走したものを止める口。** 押すと待ち枠がすぐ空くので、後ろで並んでいる
+        # ぶんが先へ進める(向こう側の CLI は自分の時間切れまで走り続ける)
+        if row.get("job_id"):
+            detail += (
+                f'<form method="post" action="/admin/media/{esc(row["job_id"])}/cancel"'
+                ' onsubmit="return confirm(\'この生成を止めますか。'
+                '向こう側の処理はすぐには止まりません\')">'
+                '<button type="submit" class="danger">止める</button></form>'
+            )
         body.append(
             '<tr class="job-status running">'
             f"<td>{esc(_when(row['at']))}</td>"

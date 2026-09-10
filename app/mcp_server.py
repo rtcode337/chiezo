@@ -354,6 +354,39 @@ def _register_image_tools(mcp: MCPServer) -> None:
         )
 
     @mcp.tool(description=(
+        "文章を書かせる(シナリオ・記事・案の下書きなど)。**すぐには返らない** —— "
+        "job_id を返すので text_status で仕上がりを確認する。返るのは保存先のパスと URL で、"
+        "本文そのものは返らない(要るならそのパスを読む)。"
+        "**`/v1/ai/complete` との違いは、結果が job として残ること。** "
+        "group に同じ名前を付けて何案か頼むと、やること画面の「見比べ」に並んで"
+        "**人が読み比べて採用できる** —— 長い文章を会話に貼って読ませるより早く、"
+        "別のやり取りにいる人にも渡せる。選ばれたものは media_picks で引く。"
+        "backend は ai_backends の相手(codex / antigravity など)。空なら先頭の相手。"
+    ))
+    async def text_generate(
+        prompt: str,
+        backend: str = "",
+        model: str = "",
+        effort: str = "",
+        group: str = "",
+    ) -> dict:
+        return _call(
+            media.start_text_job,
+            prompt=prompt, backend=backend, model=model, effort=effort, group=group,
+        )
+
+    @mcp.tool(description=(
+        "text_generate の仕上がりを確認する。state は queued / running / done / failed。"
+        "done なら files に保存先のパスと URL(.md)が入る。**本文は返らない**ので、"
+        "読むならそのパスを開く。seconds には書かれた文字数が入っている。"
+    ))
+    async def text_status(job_id: str) -> dict:
+        job = media.get_job(job_id)
+        if job is None:
+            raise ValueError(f"unknown job: {job_id}")
+        return job
+
+    @mcp.tool(description=(
         "image_generate の仕上がりを確認する。state は queued / running / done / "
         "partial(一部だけ描けた)/ failed。done なら files に保存先のパスと URL、"
         "使われた seed とモデルが入る。"

@@ -1263,6 +1263,20 @@ def admin_init(source: str, request: Request):
     return _proxy_trigger_run(source)
 
 
+@router.post("/admin/media/{job_id}/cancel")
+def admin_media_cancel(job_id: str):
+    """走っている生成を止める(「AI への依頼」の表の「止める」)。
+
+    **こちらの待ち枠を空けるのが主目的。** 向こう側の CLI までは止まらないので、
+    相手のプロセスは自分の時間切れまで走り続ける —— それでも枠が空けば、
+    後ろで順番待ちしていた依頼は先へ進める。
+    """
+    from app import media
+
+    media.cancel_job(job_id)
+    return RedirectResponse("/admin#ai-history", status_code=303)
+
+
 @router.post("/admin/rebuild/{source}")
 def admin_rebuild(source: str, request: Request):
     """登録済みソースの再構築(管理画面の「再構築」ボタン)。

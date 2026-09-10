@@ -214,6 +214,10 @@ export const api = {
   unpickMedia: (jobId: string) =>
     request<MediaJob>(`/api/media/jobs/${jobId}/pick`, { method: 'DELETE' }),
 
+  /** 走っている生成を止める。**向こう側の処理はすぐには止まらない**（待ち枠が空くだけ）。 */
+  cancelMedia: (jobId: string) =>
+    request<MediaJob>(`/api/media/jobs/${jobId}/cancel`, { method: 'POST' }),
+
   listNotes: (params: { tag?: string; limit?: number; offset?: number } = {}) => {
     const query = new URLSearchParams()
     if (params.tag) query.set('tag', params.tag)

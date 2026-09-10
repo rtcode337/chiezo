@@ -430,6 +430,12 @@ def media_unpick(job_id: str) -> dict:
     return media.unpick_job(job_id)
 
 
+@router.post("/media/jobs/{job_id}/cancel")
+def media_cancel(job_id: str) -> dict:
+    """走っている生成を止める(画面の「止める」)。"""
+    return media.cancel_job(job_id)
+
+
 @router.get("/media/picks")
 def media_picks(
     limit: int = Query(20, ge=1, le=100), group: str = Query("")

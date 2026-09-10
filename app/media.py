@@ -31,6 +31,8 @@ import re
 import sqlite3
 import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -45,7 +47,30 @@ log = logging.getLogger("chiezo.media")
 # 走らせたタスクは掴んでおく。 `asyncio.create_task` の戻り値を捨てると、
 # イベントループは弱参照しか持たないため実行中に回収されることがある
 # (生成の途中で黙って止まる)。終わったら外す。
-_RUNNING: set[asyncio.Task] = set()
+#
+# **job_id で引けるようにしてある**。暴走したものを画面から止めるには、
+# どの job がどのタスクかが分からないといけない(`cancel_job`)。
+_RUNNING: dict[str, asyncio.Task] = {}
+
+# 相手ごとに 1 本ずつ走らせる枠。**待ち行列をこちら側に持つ**ための仕掛け。
+#
+# CLI をかぶせた相手(codex / antigravity)は、ブリッジ側で既に 1 本ずつに絞られている
+# (認証情報の回転と、内蔵ツールの保存先の取り合いのため)。ところが**待たされている
+# 時間も、こちらの時間切れに算入されていた** —— 一度に何件も投げると、後ろの数件は
+# 生成に入る前に打ち切られる(実測で 12 件投げて後ろ 4 件が同じ 630 秒で失敗した)。
+#
+# 順番が来てから HTTP を始めれば、時間切れは「生成にかかった時間」だけで決まる。
+# 待っている job は queued のまま残るので、画面でも「並んでいる」ことが読める。
+_SLOTS: dict[str, asyncio.Semaphore] = {}
+
+# 並んでいるあいだ、job の更新時刻を触り直す間隔。
+# **これが無いと `_reap_stale` が「誰も面倒を見ていない」と判断して畳む** ——
+# 順番待ちは無音なので、待っているだけで失敗にされてしまう。
+QUEUE_HEARTBEAT = 45.0
+
+# 順番が来たかを見に行く間隔。**プロセスの外の状況は DB でしか読めない**ので、
+# こちらは待つのではなく覗きに行く。
+QUEUE_POLL = 2.0
 
 # 置いたものを残す日数。放っておくと際限なく溜まる(1 枚 1〜2MB)。
 KEEP_DAYS = int(os.environ.get("CHIEZO_MEDIA_KEEP_DAYS", "14") or 14)
@@ -348,6 +373,224 @@ def _save(job_id: str, index: int, item) -> JobFile:
     )
 
 
+def _track(job_id: str, task: asyncio.Task) -> None:
+    """走らせたタスクを job_id で引けるようにしておく(終わったら外す)。"""
+    _RUNNING[job_id] = task
+    task.add_done_callback(lambda _t, jid=job_id: _RUNNING.pop(jid, None))
+
+
+def _serialized(backend: str) -> bool:
+    """その相手は 1 本ずつしか走らせられないか。
+
+    CLI をかぶせた相手がこれに当たる。ブリッジ側が既に直列化しているので、
+    こちらで並べても待たされるだけ —— なら**待つ場所をこちら側に持つ**ほうがよい。
+    順番待ちの時間が、向こうへの HTTP の時間切れに入らなくなる。
+    """
+    from app import providers
+
+    spec = providers.get(backend)
+    return bool(spec is not None and getattr(spec, "bridge", False))
+
+
+def _others_running(backend: str, job_id: str) -> bool:
+    """同じ相手の生成が、いま他に走っているか。
+
+    **プロセスの中の枠だけでは足りない。** chiezo-app は `--workers 2` で動くので、
+    ワーカーが違えば同じ相手に 2 本同時に投げられてしまう —— そうなると
+    ブリッジ側の直列化に引っかかり、待たされたぶんが時間切れに算入されて元に戻る。
+    走っているかどうかは DB にしか書いていないので、そこを見る。
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE backend = ? AND state = 'running' AND id != ?",
+            (backend, job_id),
+        ).fetchone()
+    return bool(row[0])
+
+
+@asynccontextmanager
+async def _slot(backend: str, job_id: str = "") -> AsyncIterator[None]:
+    """順番を待ってから中身を走らせる。要らない相手は素通りする。
+
+    枠は 2 段。**プロセスの中は待ち合わせ、プロセスの外は覗きに行く** ——
+    後者は共有できる状態が DB しか無いので、待つのではなく見に行くしかない。
+
+    待っているあいだは job の更新時刻を触り続ける —— 触らないと
+    `_reap_stale` に「無音だから畳む」と判断される(並んでいるだけで失敗になる)。
+
+    **取りこぼしはある。** 別のワーカーと同時に「空いている」と読むと 2 本走りうるが、
+    その場合もブリッジ側の直列化が受け止める(そちらは待たされるだけで失敗しない)。
+    """
+    if not _serialized(backend):
+        yield
+        return
+
+    slot = _SLOTS.setdefault(backend, asyncio.Semaphore(1))
+    beat: asyncio.Task | None = None
+    if job_id:
+        async def _heartbeat() -> None:
+            while True:
+                await asyncio.sleep(QUEUE_HEARTBEAT)
+                _update(job_id)  # 更新時刻だけ触る
+        beat = asyncio.create_task(_heartbeat())
+    try:
+        async with slot:
+            while job_id and _others_running(backend, job_id):
+                await asyncio.sleep(QUEUE_POLL)
+            if beat:
+                beat.cancel()
+                beat = None
+            yield
+    finally:
+        if beat:
+            beat.cancel()
+
+
+def cancel_job(job_id: str) -> dict:
+    """走っている(または並んでいる)生成を止める。**画面から押せるようにするための口。**
+
+    止めると `_run` / `_run_text` が `CancelledError` を拾って job に書き残すので、
+    running のまま取り残されることはない。
+
+    **向こう側の CLI までは止まらない。** ブリッジへの HTTP を切るだけなので、
+    相手のプロセスは自分の時間切れ(`CHIEZO_BRIDGE_IMAGE_TIMEOUT`)まで走り続ける。
+    こちらの枠はすぐ空くので、後ろで待っている job は先へ進める。
+    """
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(404, {"error": f"unknown job: {job_id}"})
+    if job["state"] not in ("queued", "running"):
+        raise HTTPException(409, {"error": f"already {job['state']}", "job": job})
+    task = _RUNNING.get(job_id)
+    if task is None:
+        # ワーカーごと入れ替わった後などで、タスクが手元に無い。
+        # それでも「止めた」と書いて畳む —— running のまま残すと永遠に待たれる
+        _update(job_id, state="failed", error="停止しました(タスクは既にありません)")
+        return get_job(job_id)
+    task.cancel()
+    return get_job(job_id)
+
+
+def create_text_job(prompt: str, backend: str = "", model: str = "",
+                    effort: str = "", group: str = "") -> dict:
+    """文章の頼みを記録する(まだ書かせない)。
+
+    **絵や音と同じ表に入れる。** 見比べの画面も採用の印も kind を問わずに動くので、
+    文章だけ別の置き場を作らない —— 分けると、選んだ結果を引く口も画面も二重になる。
+
+    相手の検査だけは別に行う。文章を書くのは `media_providers` の相手ではなく
+    「話せる AI」(`app/answer.py`)なので、あちらの一覧と突き合わせる。
+    """
+    from app import answer  # 遅い import。answer は media を知らない側なので、ここで断つ
+
+    require_dir()
+    if not prompt.strip():
+        raise HTTPException(400, {"error": "prompt must not be empty"})
+
+    chosen = answer.normalize_backend(backend) if backend else ""
+    names = answer.backend_names()
+    if not names:
+        raise HTTPException(503, {"error": "話せる相手が設定されていません"})
+    if not chosen:
+        chosen = names[0]
+    if chosen not in names:
+        raise HTTPException(404, {"error": f"unknown backend: {chosen}", "backends": names})
+
+    job = {
+        "id": uuid.uuid4().hex,
+        "kind": media_providers.KIND_TEXT,
+        "backend": chosen,
+        "model": model,
+        "prompt": prompt.strip(),
+        "size": None,
+        "seed": 0,
+        "count": 1,
+        "state": "queued",
+        "error": None,
+        "files": [],
+        "created_at": _now(),
+        "updated_at": _now(),
+        "sound": None,
+        # 文章に尺は無いが、**書かせた文字数をここに入れる** ——
+        # 一覧で「どれが長いか」が開かずに分かる
+        "seconds": None,
+        "voice": effort or None,
+        "group_name": (group or "").strip() or None,
+        "picked_at": None,
+        "picked_note": None,
+    }
+    _insert(job)
+    cleanup()
+    return job
+
+
+def start_text_job(prompt: str, backend: str = "", model: str = "",
+                   effort: str = "", group: str = "") -> dict:
+    """頼みを受け付けて job を返す(生成は後ろで走る)。
+
+    待たない。長い文章は数分かかるので、待たせると呼び出し側が先に切れる ——
+    絵や音とまったく同じ扱いにしてある。
+    """
+    job = create_text_job(prompt, backend=backend, model=model, effort=effort, group=group)
+    task = asyncio.create_task(_run_text(job["id"], job["backend"], job["prompt"],
+                                         model=model, effort=effort))
+    _track(job["id"], task)
+    return job
+
+
+async def _run_text(job_id: str, backend: str, prompt: str,
+                    model: str = "", effort: str = "") -> None:
+    """文章を 1 本書かせて、ファイルとして残す。
+
+    **出来たものをファイルに落とす**のは、絵や音と同じ形に揃えるため。
+    job の列に本文を積むと、一覧を引くたびに何万字も運ぶことになる ——
+    見出しだけ見たい画面のほうが多い。
+    """
+    from app import answer
+
+    async with _slot(backend):
+        _update(job_id, state="running")
+        started = time.monotonic()
+        try:
+            cfg = await answer.ensure_model(
+                answer.require_settings(backend, model or None, effort or None))
+            content = answer.content_of(
+                await answer.complete_message(cfg, [{"role": "user", "content": prompt}]))
+            if not (content or "").strip():
+                raise HTTPException(502, {"error": "empty response from llm"})
+
+            day = datetime.now(UTC).strftime("%Y%m%d")
+            directory = require_dir() / day
+            directory.mkdir(parents=True, exist_ok=True)
+            name = f"{job_id}-0.md"
+            (directory / name).write_text(content, encoding="utf-8")
+            file = asdict(JobFile(path=str(directory / name), url=f"/media/{day}/{name}",
+                                  seed=0, model=cfg.model, seconds=0.0))
+
+            usage_store.record(
+                backend, model=cfg.model, kind=media_providers.KIND_TEXT,
+                prompt_bytes=len(prompt.encode()), reply_bytes=len(content.encode()),
+                ms=int((time.monotonic() - started) * 1000),
+            )
+            # 文字数を seconds の列に入れておく(一覧で長さが読める)。
+            # 列を増やさないのは、この 1 種類のために表の形を変えたくないため
+            _update(job_id, state="done", files=[file], model=cfg.model,
+                    seconds=float(len(content)))
+        except asyncio.CancelledError:
+            log.warning("text job %s cancelled", job_id)
+            _update(job_id, state="failed", error="生成が中断されました")
+            _note_failure(job_id, backend, media_providers.KIND_TEXT, 0, "生成が中断されました")
+            raise
+        except Exception as e:
+            detail = getattr(e, "detail", None)
+            message = (json.dumps(detail, ensure_ascii=False) if detail
+                       else (str(e) or f"{type(e).__name__}(理由の文言なし)"))
+            log.warning("text job %s failed: %s", job_id, message[:300])
+            _update(job_id, state="failed", error=message[:1000])
+            _note_failure(job_id, backend, media_providers.KIND_TEXT,
+                          getattr(e, "status_code", 0), message)
+
+
 async def _run(job_id: str, backend: str, req, count: int, kind: str) -> None:
     """頼まれたぶんを順に作って記録する。1 つごとに書く —— 途中で失敗しても、
     そこまでの成果は残す(GPU の時間を捨てない)。
@@ -355,27 +598,30 @@ async def _run(job_id: str, backend: str, req, count: int, kind: str) -> None:
     絵・音・動画・声で違うのは呼ぶ関数だけなので、進み方の面倒はここに 1 つだけ置く
     (呼び分けは `media_backends.generate_for`)。
     """
-    _update(job_id, state="running")
     files: list[dict] = []
     try:
         for index in range(count):
             # seed は 1 つごとにずらす(同じ頼みで同じものが並んでも選べない)
             one = replace(req, seed=(req.seed + index) if req.seed else 0)
-            started = time.monotonic()
-            item = await media_backends.generate_for(kind, backend, one)
-            # 1 枚 = 1 回。 絵と音も同じサブスクの枠を食う(Codex / Antigravity)ので、
-            # 会話と同じ表に残す —— 分けると「話していないのに枠が減った」が読めない。
-            # **目方も一緒に残す**(依頼文の大きさ・出来たものの大きさ・かかった時間)。
-            # 絵と音の相手はトークン数を言わないので、これが無いと控えに相手の名前しか
-            # 残らず、何を頼んだ呼び出しなのかが後から読めない。
-            usage_store.record(
-                backend, model=item.model, kind=kind,
-                prompt_bytes=len((getattr(one, "prompt", "") or "").encode()),
-                reply_bytes=len(item.data or b""),
-                ms=int((time.monotonic() - started) * 1000),
-            )
-            files.append(asdict(_save(job_id, index, item)))
-            _update(job_id, files=files, model=item.model, seed=files[0]["seed"])
+            # **順番を待ってから始める。** 待つ場所をこちらに持つことで、
+            # 向こうへの時間切れが「生成にかかった時間」だけで決まる(`_slot`)
+            async with _slot(backend, job_id):
+                _update(job_id, state="running")
+                started = time.monotonic()
+                item = await media_backends.generate_for(kind, backend, one)
+                # 1 枚 = 1 回。 絵と音も同じサブスクの枠を食う(Codex / Antigravity)ので、
+                # 会話と同じ表に残す —— 分けると「話していないのに枠が減った」が読めない。
+                # **目方も一緒に残す**(依頼文の大きさ・出来たものの大きさ・かかった時間)。
+                # 絵と音の相手はトークン数を言わないので、これが無いと控えに相手の名前しか
+                # 残らず、何を頼んだ呼び出しなのかが後から読めない。
+                usage_store.record(
+                    backend, model=item.model, kind=kind,
+                    prompt_bytes=len((getattr(one, "prompt", "") or "").encode()),
+                    reply_bytes=len(item.data or b""),
+                    ms=int((time.monotonic() - started) * 1000),
+                )
+                files.append(asdict(_save(job_id, index, item)))
+                _update(job_id, files=files, model=item.model, seed=files[0]["seed"])
         _update(job_id, state="done", files=files)
     except asyncio.CancelledError:
         # 中断は Exception ではない(BaseException)ので、下の except では拾えない。
@@ -928,9 +1174,7 @@ def _start(job: dict, request, count: int) -> dict:
     task = asyncio.create_task(
         _run(job["id"], job["backend"], request, count, job["kind"])
     )
-    _RUNNING.add(task)
-    task.add_done_callback(_RUNNING.discard)
-
+    _track(job["id"], task)
     return job
 
 

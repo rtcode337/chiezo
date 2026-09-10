@@ -7,6 +7,7 @@
 """
 import asyncio
 import base64
+import contextlib
 import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
@@ -2083,3 +2084,188 @@ class TestAudioReference:
 
         assert e.value.status_code == 400
         assert "elevenlabs" in e.value.detail["backends"]
+
+
+class TestTextJobs:
+    """文章も job として残す(見比べの画面で読み比べて選べるようにするため)。
+
+    絵や音と違って本文はファイルに落とし、job には持たせない —— 一覧を引くたびに
+    何万字も運ばないため。
+    """
+
+    def _answer(self, monkeypatch, content="書いたもの", model="fake-1"):
+        """`app/answer.py` を演じる。外にも推論サーバにも出ない。"""
+        from app import answer
+
+        cfg = answer.Settings(
+            name="codex", url="http://x/v1", model=model, api_key=None, timeout=10.0,
+            effort="", docs=1, max_chars=100, agent_max_steps=1,
+            agent_tool_chars=100, agent_timeout=10.0,
+        )
+
+        async def ensure_model(_c):
+            return cfg
+
+        async def complete_message(_cfg, _messages, **_kw):
+            # `complete_message` が返すのは assistant のメッセージそのもの
+            # (`content_of` がここから本文を取り出す)
+            return {"role": "assistant", "content": content}
+
+        monkeypatch.setattr(answer, "backend_names", lambda: ["codex", "antigravity"])
+        monkeypatch.setattr(answer, "normalize_backend", lambda n: (n or "").strip().lower())
+        monkeypatch.setattr(answer, "require_settings", lambda *a, **k: cfg)
+        monkeypatch.setattr(answer, "ensure_model", ensure_model)
+        monkeypatch.setattr(answer, "complete_message", complete_message)
+
+    def test_the_text_lands_in_a_file_and_the_job_keeps_only_the_pointer(self, state):
+        self._answer(state, content="いち\nに\nさん")
+        job = media.create_text_job("書いて", backend="codex", group="組")
+        asyncio.run(media._run_text(job["id"], "codex", "書いて"))
+
+        done = media.get_job(job["id"])
+        assert done["state"] == "done"
+        assert done["files"][0]["url"].endswith(".md")
+        # **本文は job に載らない**(載せると一覧が重くなる)
+        assert "いち" not in json.dumps(done, ensure_ascii=False)
+        from pathlib import Path
+        assert Path(done["files"][0]["path"]).read_text(encoding="utf-8") == "いち\nに\nさん"
+        # 長さは一覧で読めるように控える
+        assert done["seconds"] == len("いち\nに\nさん")
+
+    def test_it_shows_up_in_the_same_group_as_pictures_and_sound(self, state):
+        self._answer(state)
+        for _ in range(2):
+            job = media.create_text_job("書いて", backend="codex", group="読み比べ")
+            asyncio.run(media._run_text(job["id"], "codex", "書いて"))
+
+        group = media.job_group("読み比べ")
+        assert group["kind"] == media_providers.KIND_TEXT
+        assert len(group["jobs"]) == 2
+        # 採用の印も絵や音とまったく同じ仕組みで付く
+        media.pick_job(group["jobs"][0]["id"], note="こっち")
+        assert media.picked_jobs(group="読み比べ")[0]["picked_note"] == "こっち"
+
+    def test_an_unknown_backend_is_refused_before_anything_runs(self, state):
+        self._answer(state)
+        with pytest.raises(HTTPException) as e:
+            media.create_text_job("書いて", backend="いない相手")
+        assert e.value.status_code == 404
+
+    def test_an_empty_answer_is_a_failure_with_a_reason(self, state):
+        self._answer(state, content="   ")
+        job = media.create_text_job("書いて", backend="codex")
+        asyncio.run(media._run_text(job["id"], "codex", "書いて"))
+        done = media.get_job(job["id"])
+        assert done["state"] == "failed"
+        assert done["error"]
+
+
+class TestQueueAndCancel:
+    """待ち行列と、走っているものを止める口。
+
+    **待たされている時間を時間切れに算入しない**のがこの仕掛けの目的
+    (一度に何件も投げると、後ろのぶんが生成に入る前に打ち切られていた)。
+    """
+
+    def test_the_same_backend_runs_one_at_a_time(self, state):
+        """CLI をかぶせた相手は 1 本ずつ。**重ならないこと**を実際に確かめる。"""
+        state.setattr(media, "_serialized", lambda backend: True)
+        media._SLOTS.clear()
+        peak = 0
+        now = 0
+
+        async def one():
+            nonlocal peak, now
+            async with media._slot("codex"):
+                now += 1
+                peak = max(peak, now)
+                await asyncio.sleep(0.01)
+                now -= 1
+
+        async def all_four():
+            await asyncio.gather(*(one() for _ in range(4)))
+
+        asyncio.run(all_four())
+        assert peak == 1
+
+    def test_other_backends_are_not_made_to_wait(self, state):
+        """鍵で叩く相手は並べてよい(認証情報も保存先も取り合わない)。"""
+        state.setattr(media, "_serialized", lambda backend: False)
+        media._SLOTS.clear()
+        peak = 0
+        now = 0
+
+        async def one():
+            nonlocal peak, now
+            async with media._slot("elevenlabs"):
+                now += 1
+                peak = max(peak, now)
+                await asyncio.sleep(0.01)
+                now -= 1
+
+        async def all_three():
+            await asyncio.gather(*(one() for _ in range(3)))
+
+        asyncio.run(all_three())
+        assert peak == 3
+
+    def test_cancelling_writes_the_reason_into_the_job(self, state):
+        """止めたら running のまま残さない(残すと永遠に待たれる)。"""
+        job = media.create_job("絵", backend="comfyui", group="")
+
+        async def forever(_kind, _backend, _req):
+            await asyncio.sleep(60)
+
+        state.setattr(media.media_backends, "generate_for", forever)
+
+        async def scenario():
+            req = media_backends.ImageRequest(prompt="絵")
+            task = asyncio.create_task(media._run(job["id"], "comfyui", req, 1, "image"))
+            media._track(job["id"], task)
+            # `_run` の中に入るまで待つ
+            await asyncio.sleep(0)
+            media.cancel_job(job["id"])
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        asyncio.run(scenario())
+        done = media.get_job(job["id"])
+        assert done["state"] == "failed"
+        assert "中断" in (done["error"] or "")
+
+    def test_a_finished_job_cannot_be_cancelled(self, state):
+        job = media.create_job("絵", backend="comfyui")
+        media._update(job["id"], state="done")
+        with pytest.raises(HTTPException) as e:
+            media.cancel_job(job["id"])
+        assert e.value.status_code == 409
+
+    def test_it_also_waits_for_jobs_running_in_another_worker(self, state):
+        """**プロセスの中の枠だけでは足りない**（`--workers 2` で動くため）。
+
+        DB に「走っている」と書かれた同じ相手の job があるあいだは、順番を待つ。
+        """
+        state.setattr(media, "_serialized", lambda backend: True)
+        media._SLOTS.clear()
+        other = media.create_job("絵", backend="comfyui")
+        media._update(other["id"], state="running")   # 別のワーカーが走らせている想定
+        mine = media.create_job("絵", backend="comfyui")
+        entered = False
+
+        async def scenario():
+            nonlocal entered
+
+            async def wait_turn():
+                nonlocal entered
+                async with media._slot("comfyui", mine["id"]):
+                    entered = True
+
+            task = asyncio.create_task(wait_turn())
+            await asyncio.sleep(0.05)
+            assert not entered, "他が走っているあいだは入れてはいけない"
+            media._update(other["id"], state="done")  # 向こうが終わった
+            await asyncio.wait_for(task, timeout=5)
+
+        state.setattr(media, "QUEUE_POLL", 0.01)
+        asyncio.run(scenario())
+        assert entered
