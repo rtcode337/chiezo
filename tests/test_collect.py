@@ -1337,10 +1337,27 @@ class TestTheCollectSectionMarkup:
         html = self._html(sample)
         assert "opus" in html and "high" in html
 
-    def test_the_schedule_lives_with_the_sweep_not_the_collection(self, sample):
-        """間隔も次の予定も巡回ごとに違うので、収集の行に 1 つだけ出すと嘘になる。"""
+    def test_each_sweep_gets_its_own_row(self, sample):
+        """間隔も次の予定も前回も巡回ごとに違うので、収集に 1 行だけ与えると嘘になる。
+
+        **折り畳みの中ではなく表に出す** —— この表は「動いているか」を読むためのもの
+        なので、いちいち開かせるなら出していないのと同じ。
+        """
+        collect.update(
+            "news",
+            sweeps=[
+                {"name": "ざっと", "interval_minutes": 360},
+                {"name": "じっくり", "interval_minutes": 1440},
+            ],
+        )
         html = self._html(sample)
-        assert "<th>間隔</th>" not in html.split("<details><summary>巡回</summary>")[0]
+        body = html.split("<tbody>")[1].split("</tbody>")[0]
+
+        # 名前と操作は行をまたがせる（収集のものなので）
+        assert 'rowspan="2"' in body
+        # 巡回は表にそのまま並ぶ
+        assert "ざっと" in body and "じっくり" in body
+        assert "1440 分ごと" in body
 
     def test_a_collection_without_sweeps_still_shows_one(self, sample):
         """定義そのものが 1 本の巡回として動くので、行が消えると止まって見える。"""

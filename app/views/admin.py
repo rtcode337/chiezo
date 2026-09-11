@@ -575,16 +575,19 @@ SWEEPS_EXAMPLE = json.dumps(
 )
 
 
-def _sweeps_html(item) -> str:
-    """巡回の一覧 —— 「どれくらいの頻度で、1 回にどれだけ見るか」。
+def _sweep_cells(item) -> list[str]:
+    """巡回 1 本ぶんのセル(巡回・相手・間隔・次にいつ・一周のうち・前回)。
+
+    **「集める」の表にそのまま並べる。** 折り畳みの中へ入れていた頃は、動いているかを
+    見るのにいちいち開くことになった —— この表はそれを読むための表なのに。
 
     **1 行に「一周のうちどこまで」を出す。** ざっとが一周した区画をじっくりは
     まだ見ていない、が普通に起きるので、巡回ごとに出さないと進み具合が読めない。
 
-    巡回を書いていない収集にも 1 行出る(定義そのものが 1 本の巡回として動くため)。
+    巡回を書いていない収集にも 1 つ出る(定義そのものが 1 本の巡回として動くため)。
     """
     total = len(item.partitions)
-    rows = []
+    cells = []
     for sweep in collect.sweeps_of(item):
         visited, _ = partitioning.progress(item.partitions, sweep.name)
         # **相手は巡回ごとに変えられる。** ざっとは安い相手で数をこなし、じっくりは
@@ -601,7 +604,6 @@ def _sweeps_html(item) -> str:
         else:
             last = jst.parse(sweep.last_run_at or "")
             result = esc(jst.format(last)) if last else '<span class="muted">まだ</span>'
-        cls = "" if sweep.enabled else ' class="off"'
         # **止めている巡回に「いますぐ」と出さない**(予定を持っていないだけで走らない)
         if not sweep.enabled:
             when = '<span class="muted">止めている</span>'
@@ -609,21 +611,16 @@ def _sweeps_html(item) -> str:
             when = esc(jst.format(due))
         else:
             when = '<span class="muted">いますぐ</span>'
-        rows.append(
-            f"<tr{cls}><td>{esc(sweep.name)}</td>"
-            f"<td>{who}</td>"
+        name = esc(sweep.name) + ("" if sweep.enabled else ' <span class="muted">(止)</span>')
+        cells.append(
+            f"<td>{name}</td><td>{who}</td>"
             f"<td>{sweep.interval_minutes} 分ごと"
             + (f'<br><span class="muted">{sweep.cover_days:g} 日で一周</span>'
                if sweep.cover_days else "")
             + f"</td><td>{when}</td>"
-            f"<td>{where}</td><td>{result}</td></tr>"
+            f"<td>{where}</td><td>{result}</td>"
         )
-    return (
-        "<details><summary>巡回</summary>"
-        "<table><thead><tr><th>巡回</th><th>頼む相手</th><th>間隔</th><th>次にいつ</th>"
-        "<th>一周のうち</th><th>前回</th></tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody></table></details>"
-    )
+    return cells
 
 
 def _partition_html(item) -> str:
@@ -819,16 +816,21 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             if src is not None
             else f"収集「{item.name}」の設定を消します(まだ何も溜まっていません)。よろしいですか?"
         )
+        # **巡回ごとに 1 行。** 間隔も次の予定も前回も相手も巡回ごとに違うので、
+        # 収集に 1 行だけ与えると、そこに出る値はどちらか片方のものにしかならない。
+        # 名前と溜まった件数と操作は収集のものなので、行をまたがせる
+        sweep_cells = _sweep_cells(item)
+        span = f' rowspan="{len(sweep_cells)}"' if len(sweep_cells) > 1 else ""
         rows.append(
             f"<tr{cls}>"
-            f'<td><a href="{esc(browse_url(item.name))}">{esc(item.name)}</a>'
+            f'<td{span}><a href="{esc(browse_url(item.name))}">{esc(item.name)}</a>'
             f"{mode_mark}"
             f'<br><span class="muted">{esc(item.description)}</span>{requester}'
             f"<details><summary>プロンプト</summary>"
             f'<pre class="prompt-view">{esc(item.prompt)}</pre>'
             f'<p class="muted">進み具合(次の実行で {{cursor}} に入る値): '
             f'<code>{esc(item.cursor) or "(まだ無し)"}</code></p>'
-            f"{_sweeps_html(item)}{_partition_html(item)}"
+            f"{_partition_html(item)}"
             f"<details><summary>編集する</summary>"
             f'<form method="post" action="/admin/collect/{esc(item.name)}/edit" class="collect-form">'
             f'<p><label>説明<br><input name="description" value="{esc(item.description)}"></label></p>'
@@ -923,10 +925,10 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'<p class="muted">AI に聞くので十数秒〜1分ほどかかります。案は保存されないので、見てから決められます。</p>'
             f'<button type="submit">相談する</button></form></details>'
             f"</details></td>"
-            f"<td>{_backend_label(item)}</td>"
-            f"<td>{baked_docs}</td>"
-            f"<td>{result}</td>"
-            f"<td>"
+            + sweep_cells[0]
+            + f"<td{span}>{baked_docs}</td>"
+            f"<td{span}>{result}</td>"
+            f"<td{span}>"
             f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/toggle">'
             f'<button type="submit">{toggle_label}</button></form>'
             f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/preview">'
@@ -940,10 +942,13 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'<button type="submit">削除</button></form>'
             f"</td></tr>"
         )
+        # 2 本目からは巡回のぶんだけ。左右のセルは 1 行目から伸びている
+        rows += [f"<tr{cls}>{cells}</tr>" for cells in sweep_cells[1:]]
     table = f"""
 <table>
 <thead>
-<tr><th>name</th><th>既定の相手</th><th>長期記憶</th><th>前回</th><th></th></tr>
+<tr><th>name</th><th>巡回</th><th>頼む相手</th><th>間隔</th><th>次にいつ</th>
+<th>一周のうち</th><th>その巡回の前回</th><th>長期記憶</th><th>前回</th><th></th></tr>
 </thead>
 <tbody>
 {"".join(rows)}
