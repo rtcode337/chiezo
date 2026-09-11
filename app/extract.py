@@ -50,6 +50,12 @@ log = logging.getLogger("chiezo.app")
 # 「そこまでしか無い」ように見えてしまう(実際に 30 件で止まっているのを、
 # 機械抽出の限界だと受け取られた)。
 MAX_ROWS = 20_000
+# 末尾一致で広げられるタグの数。**黙って切らずに断る**(このファイルの流儀)。
+# SQLite の変数の上限(既定 32,766)には遠いが、ここまで来たら指定のほうが広すぎる。
+# 実測: 日本語版 Wikipedia の「〜の画家」で 323 件
+MAX_SUFFIX_TAGS = 900
+# 末尾一致に要る長さ。短い語は何にでも当たる(「家」だけで数万のカテゴリが並ぶ)
+MIN_SUFFIX_CHARS = 3
 # タグの読み替えの上限。指定が肥大すると、1 件あたりの正規表現の回数がそのまま伸びる
 MAX_RULES = 20
 MAX_PATTERNS_PER_RULE = 4
@@ -101,11 +107,17 @@ def normalize(raw) -> dict | None:
 
     source = str(raw.get("source") or "").strip()
     tag = str(raw.get("tag") or "").strip()
+    tag_suffix = str(raw.get("tag_suffix") or "").strip()
     not_tag = str(raw.get("not_tag") or "").strip()
     if not source:
         raise _bad("source(引くソース名)を入れてください")
-    if not tag:
-        raise _bad("tag(絞り込むタグ)を入れてください")
+    if not tag and not tag_suffix:
+        raise _bad("tag(絞り込むタグ)か tag_suffix(タグの末尾)を入れてください")
+    if tag_suffix and len(tag_suffix) < MIN_SUFFIX_CHARS:
+        raise _bad(
+            f"tag_suffix は {MIN_SUFFIX_CHARS} 文字以上にしてください"
+            "(短い語は何にでも当たります)"
+        )
 
     # **書かなければ全部**。書いたときだけ、その数で切る
     limit = raw.get("limit")
@@ -131,6 +143,12 @@ def normalize(raw) -> dict | None:
     spec = {
         "source": source,
         "tag": tag,
+        # **カテゴリの「族」をそのまま指せるようにする。** 1 つずつ書き並べる形だと、
+        # 書く側が名前を思い出しで補うことになり、抜けても気づけない —— 実際、
+        # 画家の一覧で「アメリカ合衆国」が丸ごと落ち、「イギリス」と書いたせいで
+        # 中身の大半がある「イングランド」が取れていなかった。末尾で指せば
+        # **推測が要らず、あとからカテゴリが増えても勝手に入る**
+        "tag_suffix": tag_suffix,
         "not_tag": not_tag,
         "limit": limit,
         "body": body_field,
@@ -208,6 +226,39 @@ def _bad(message: str) -> HTTPException:
     return HTTPException(400, {"error": message})
 
 
+def resolve_tags(spec: dict, src) -> list[str]:
+    """指定に当たるタグ名を実体で返す。
+
+    **末尾一致は `tag_counts` で展開する。** あれはタグ名 → 文書数の集計表(重複を
+    畳んだ 29 万行)なので、転置表(764 万行)を舐めずに済む。展開してから普段どおり
+    `IN (...)` で引くので、doc_tags 側は今までと同じ索引の使い方になる。
+
+    **当たりすぎたら黙って切らずに断る**(このファイルの流儀)。切ると、広すぎる
+    指定が「そこまでしか無い」ように見える。
+    """
+    from app import db
+
+    tags = split_tags(spec["tag"])
+    if suffix := spec["tag_suffix"]:
+        # LIKE のメタ文字は素通しにしない(`_` は 1 文字に当たる)
+        pattern = "%" + suffix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        rows = db.query(
+            src.path,
+            "SELECT tag FROM tag_counts WHERE tag LIKE ? ESCAPE '\\'"
+            " ORDER BY docs DESC, tag LIMIT ?",
+            (pattern, MAX_SUFFIX_TAGS + 1),
+        )
+        found = [row["tag"] for row in rows]
+        if len(found) > MAX_SUFFIX_TAGS:
+            raise HTTPException(409, {
+                "error": f"tag_suffix「{suffix}」は {MAX_SUFFIX_TAGS:,} 件を超えるタグに当たります",
+                "hint": "もっと長い末尾にするか、tag に書き並べてください",
+            })
+        seen = set(tags)
+        tags += [t for t in found if t not in seen]
+    return tags
+
+
 def to_json(spec: dict | None) -> dict | None:
     """定義に持たせる形(正規表現は書いた文字列のまま残す)。"""
     if not spec:
@@ -232,6 +283,7 @@ def to_json(spec: dict | None) -> dict | None:
     return {
         "source": spec["source"],
         "tag": spec["tag"],
+        "tag_suffix": spec["tag_suffix"],
         "not_tag": spec["not_tag"],
         "limit": spec["limit"],
         "body": spec["body"],
@@ -252,7 +304,14 @@ def _doc_ids(spec: dict, sources: dict):
             "hint": "まだ焼いていないか、名前が違う(/v1/sources で確かめられる)",
         })
 
-    id_set = build_doc_id_set(src, tag=spec["tag"])
+    tags = resolve_tags(spec, src)
+    if not tags:
+        raise HTTPException(409, {
+            "error": "この指定に当たるタグが 1 つもありません",
+            "hint": f"tag_suffix「{spec['tag_suffix']}」で終わるタグが"
+                    f"ソース「{spec['source']}」にない。/v1/<source>/tags で確かめられる",
+        })
+    id_set = build_doc_id_set(src, tags=tags)
     if id_set is None:
         raise HTTPException(409, {
             "error": f"ソース「{spec['source']}」はタグで絞り込めません",
@@ -496,11 +555,19 @@ SPEC_GUIDE = """依頼を読んで、**まず「手元の索引から機械的�
 **タグ名は当てずっぽうでは当たりません**(完全一致でしか引けないので、それらしい
 名前を書くと静かな 0 件になります)。実在する名前を引いてから書いてください。
 
+**同じ形の名前がずらりと並ぶなら、書き並べずに `tag_suffix` を使ってください。**
+「〜の画家」「〜の作曲家」のように**族をなすカテゴリ**は、数が多いうえに名前の付き方が
+揃っていません —— 書き並べると必ず取りこぼします(実例: 地域を書き並べた指定で
+「アメリカ合衆国」が丸ごと落ち、「イギリス」と書いたせいで中身の大半がある
+「イングランド」が取れていなかった)。末尾で指せば**推測が要らず、あとから
+カテゴリが増えても勝手に入ります**。要らないものは `not_tag` で外してください。
+
 抽出の指定は次の形の JSON です。
 
 {
   "source": "引くソース名",
   "tag": "絞り込むタグ(完全一致。カンマ区切りで複数書くと、そのどれかを持つもの)",
+  "tag_suffix": "タグの末尾(これで終わるタグ全部。tag と併用でき、両方の和になる)",
   "not_tag": "外すタグ(カンマ区切り。これを持つものは、tag に当たっていても取らない)",
   "limit": 30,   ← 書かなければ全部。AI に読ませる側の都合で絞るときだけ書く
   "body": "opening(冒頭。既定) か body(全文)",
@@ -602,7 +669,9 @@ def similar_tags(spec: dict, sources: dict, limit: int = 15) -> list[dict]:
     if src is None:
         return []
     # 書かれたタグを部分一致で探す。長い語ほど当たらないので、短くしながら試す
-    wanted = spec["tag"].split(",")[0].strip()
+    wanted = (spec["tag"].split(",")[0] or spec["tag_suffix"]).strip()
+    if not wanted:
+        return []
     for length in range(len(wanted), 1, -1):
         rows = db.query(
             src.path,

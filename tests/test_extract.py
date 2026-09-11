@@ -49,6 +49,13 @@ def source(tmp_path):
                 conn.execute(
                     "INSERT INTO doc_tags (tag, doc_id) VALUES (?, ?)", (tag, doc_id)
                 )
+                # 焼き上がりには集計表も入る。**末尾一致はここを引く**
+                # （転置表は jawiki で 764 万行あり、舐めさせるわけにいかない）
+                conn.execute(
+                    "INSERT INTO tag_counts (tag, docs) VALUES (?, 1)"
+                    " ON CONFLICT(tag) DO UPDATE SET docs = docs + 1",
+                    (tag,),
+                )
         conn.commit()
         conn.close()
         return {
@@ -315,6 +322,93 @@ class TestRefusingABrokenSpec:
             "cursor": "抽出済み",
         }
 
+        assert extract.to_json(extract.normalize(given)) == {**given, "tag_suffix": ""}
+
+
+class TestPickingAWholeFamilyOfTags:
+    """`tag_suffix` —— 「〜の画家」のような**族をなすカテゴリ**をまとめて指す。
+
+    書き並べる形だと、書く側が名前を思い出しで補うことになり、抜けても気づけない。
+    実際に、地域を書き並べた画家の指定で「アメリカ合衆国」が丸ごと落ち、
+    「イギリス」と書いたせいで中身の大半がある「イングランド」が取れていなかった。
+    """
+
+    def test_it_takes_every_tag_that_ends_with_it(self, source):
+        docs = [
+            {"title": "モネ", "tags": ["19世紀フランスの画家"]},
+            {"title": "ホッパー", "tags": ["20世紀アメリカ合衆国の画家"]},
+            {"title": "ターナー", "tags": ["19世紀イングランドの画家"]},
+            {"title": "ある俳優", "tags": ["20世紀アメリカ合衆国の男優"]},
+        ]
+        spec = extract.normalize({"source": "jawiki", "tag_suffix": "の画家"})
+        items, _cursor = extract.run(spec, source(docs))
+        assert sorted(i["title"] for i in items) == ["ターナー", "ホッパー", "モネ"]
+
+    def test_it_can_be_combined_with_exact_tags(self, source):
+        """族に入らない 1 つを足したいことがある(様式のカテゴリなど)。"""
+        docs = [
+            {"title": "モネ", "tags": ["19世紀フランスの画家"]},
+            {"title": "北斎", "tags": ["浮世絵師"]},
+        ]
+        spec = extract.normalize(
+            {"source": "jawiki", "tag": "浮世絵師", "tag_suffix": "の画家"}
+        )
+        items, _cursor = extract.run(spec, source(docs))
+        assert sorted(i["title"] for i in items) == ["モネ", "北斎"]
+
+    def test_what_is_not_wanted_still_comes_off_with_not_tag(self, source):
+        docs = [
+            {"title": "モネ", "tags": ["19世紀フランスの画家"]},
+            {"title": "絵も描く俳優", "tags": ["20世紀フランスの画家", "俳優"]},
+        ]
+        spec = extract.normalize(
+            {"source": "jawiki", "tag_suffix": "の画家", "not_tag": "俳優"}
+        )
+        items, _cursor = extract.run(spec, source(docs))
+        assert [i["title"] for i in items] == ["モネ"]
+
+    def test_a_short_suffix_is_refused(self):
+        """短い語は何にでも当たる(「家」だけで数万のカテゴリが並ぶ)。"""
+        with pytest.raises(HTTPException):
+            extract.normalize({"source": "jawiki", "tag_suffix": "家"})
+
+    def test_neither_a_tag_nor_a_suffix_is_refused(self):
+        with pytest.raises(HTTPException):
+            extract.normalize({"source": "jawiki"})
+
+    def test_a_suffix_that_matches_nothing_says_so(self, source):
+        """静かな 0 件にしない(それらしい末尾を書いた側には確かめようがない)。"""
+        spec = extract.normalize({"source": "jawiki", "tag_suffix": "の陶芸家"})
+        with pytest.raises(HTTPException):
+            extract.run(spec, source([{"title": "モネ", "tags": ["19世紀フランスの画家"]}]))
+
+    def test_too_many_tags_are_refused_not_truncated(self, source, monkeypatch):
+        """切ると、広すぎる指定が「そこまでしか無い」ように見える。"""
+        monkeypatch.setattr(extract, "MAX_SUFFIX_TAGS", 2)
+        docs = [{"title": f"画家{i}", "tags": [f"{i}世紀某国の画家"]} for i in range(5)]
+        spec = extract.normalize({"source": "jawiki", "tag_suffix": "の画家"})
+        with pytest.raises(HTTPException):
+            extract.run(spec, source(docs))
+
+    def test_the_wildcards_in_a_suffix_are_not_special(self, source):
+        """`_` は LIKE では 1 文字に当たる。素通しにすると当たりすぎる。"""
+        docs = [{"title": "モネ", "tags": ["19世紀フランスの画家"]}]
+        spec = extract.normalize({"source": "jawiki", "tag_suffix": "_の画家"})
+        with pytest.raises(HTTPException):
+            extract.run(spec, source(docs))
+
+    def test_the_suffix_survives_a_round_trip(self):
+        given = {
+            "source": "jawiki",
+            "tag": "",
+            "tag_suffix": "の画家",
+            "not_tag": "俳優",
+            "limit": None,
+            "body": "opening",
+            "url": "",
+            "tags": [],
+            "cursor": "抽出済み",
+        }
         assert extract.to_json(extract.normalize(given)) == given
 
 

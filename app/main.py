@@ -910,6 +910,7 @@ def build_doc_id_set(
     bbox: str | None = None,
     wikidata: str | None = None,
     tag: str | None = None,
+    tags: list[str] | None = None,
 ) -> tuple[str, list] | None:
     """絞り込み条件を「doc_id を返す SELECT」に変換する(/filter 用)。行本体を読まない。
 
@@ -932,7 +933,7 @@ def build_doc_id_set(
     索引だけで引けない組み合わせ(古い schema_version)では None を返す。呼び出し側は
     従来の WHERE 句(build_attribute_filters)へ落ちる。
     """
-    if not any((feature, area, bbox, wikidata, tag)):
+    if not any((feature, area, bbox, wikidata, tag, tags)):
         return None
     if src.schema_version < FILTER_MIN_SCHEMA_VERSION:
         return None
@@ -941,10 +942,13 @@ def build_doc_id_set(
     require_attributes(src, feature=feature, area=area)
     parts: list[str] = []
     params: list = []
-    if tag:
+    if tag or tags:
         if src.schema_version < TAG_MIN_SCHEMA_VERSION:
             return None
-        tags = split_tags(tag)
+        # **タグ名を実体の配列で受け取れる**(`tags`)。カンマ区切りの文字列に畳むと、
+        # カンマを含むタグ名が 2 つに割れる —— 末尾一致で広げたタグ名は
+        # こちらが作った文字列ではないので、区切り文字が入っていないと言い切れない
+        tags = list(tags) if tags else split_tags(tag)
         # 1 文書が指定タグを 2 つ持てば 2 行出るので、複数指定のときだけ畳む
         # (総件数を数えるのに効く。単一タグなら重複しないので並べ替えを足さない)。
         distinct = "DISTINCT " if len(tags) > 1 else ""
