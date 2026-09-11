@@ -899,6 +899,31 @@ class TestRest:
     def test_an_unknown_collection_is_404(self, client, sample):
         assert client.get("/v1/collect/nosuch").status_code == 404
 
+    def test_creating_carries_the_sweeps(self, client, sample):
+        """作る口が受け取らないと、外のアプリが渡した巡回が黙って落ちる。
+
+        PATCH にだけ足して作成側を忘れていたので、antenna が作った収集は巡回を
+        1 本も持たないまま動いていた(渡したほうには何も返らない)。
+        """
+        client.post(
+            "/v1/collect",
+            json={
+                "name": "two_ways",
+                "prompt": "{partition} {current}",
+                "mode": "refine",
+                "interval_minutes": 360,
+                "partition": {"by": "title", "target": 20},
+                "sweeps": [
+                    {"name": "ざっと", "interval_minutes": 360, "cover_days": 7},
+                    {"name": "じっくり", "interval_minutes": 1440, "effort": "high"},
+                ],
+            },
+        )
+        body = client.get("/v1/collect/two_ways").json()
+        assert [s["name"] for s in body["sweeps"]] == ["ざっと", "じっくり"]
+        assert body["sweeps"][1]["effort"] == "high"
+        assert body["partition"] == {"by": "title", "target": 20}
+
     def test_changes_is_not_read_as_a_name(self, client, sample, monkeypatch, tmp_path):
         """`/changes` も固定のパス(`/sources` と同じ罠を踏まない)。"""
         from app import collect_log

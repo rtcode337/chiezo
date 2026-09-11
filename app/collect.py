@@ -682,6 +682,7 @@ def create(
     extract_spec=None,
     partition_spec=None,
     feed_spec=None,
+    sweeps=None,
 ) -> Collection:
     if not NAME_RE.match(name):
         raise HTTPException(400, {
@@ -721,6 +722,7 @@ def create(
         extract=extraction.to_json(extraction.normalize(extract_spec)),
         partition=partitioning.to_json(partitioning.normalize(partition_spec)),
         feed=feeds.to_json(feeds.normalize(feed_spec)),
+        sweeps=normalize_sweeps(sweeps),
         requested_by=requested_by.strip()[:80],
         created_at=now,
         updated_at=now,

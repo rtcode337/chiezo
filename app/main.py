@@ -1433,6 +1433,13 @@ class CollectionCreate(BaseModel):
         "**取ってきたものをそのまま溜めるわけではない** —— プロンプトの {feed} へ"
         "参考として差し込むだけで、何を溜めるかは AI が決める(自分でも調べる)",
     )
+    sweeps: list[dict] | None = PydField(
+        None,
+        description="巡回。**同じ収集を別々の時計で回す**ためのもので、"
+        "ざっと全体を拾うもの(cover_days に一周の日数)と、少数をじっくり調べるもの"
+        "(partitions_per_run と強いモデル)を分けて持てる。"
+        "書かなければ、interval_minutes で 1 本だけ回る",
+    )
     partition: dict | None = PydField(
         None,
         description="回る先の割り方(by=geo / tag / title、target、母集団の source など)。"
@@ -1552,6 +1559,7 @@ def collect_create(request: Request, body: CollectionCreate):
         extract_spec=body.extract,
         partition_spec=body.partition,
         feed_spec=body.feed,
+        sweeps=body.sweeps,
         requested_by=body.requested_by,
     )
     # 作った時点で空の DB ができる。**ここでソースを取り直さないと、1 回目が走るまで
