@@ -754,36 +754,6 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
     items = collect.load()
     rows = []
     for item in items:
-        last = jst.parse(item.last_run_at or "")
-        if item.last_status == "ok":
-            # 作り直しは「消えた件数」まで出す —— 増えた数だけでは、整理の結果
-            # 何が落ちたのか読めない(見出しは開いたところに出す)
-            removed = (
-                f'<br><span class="stale">-{item.last_removed} 件</span>'
-                if item.last_removed else ""
-            )
-            dropped = (
-                f'<details><summary class="muted">消えたもの</summary>'
-                f'<div class="muted">{esc("、".join(item.last_removed_titles))}</div></details>'
-                if item.last_removed_titles else ""
-            )
-            # 整理の回は足すものが無くても大量に直っていることがあり、
-            # 追加だけ出すと「何もしなかった」ように読める
-            changed = (
-                f'<br><span class="muted">直し {item.last_updated} 件</span>'
-                if item.last_updated else ""
-            )
-            result = (
-                f'<span class="muted">{jst.format(last) if last else ""}</span>'
-                f"<br>+{item.last_added} 件"
-                + (f'<span class="muted">(重複 {item.last_skipped})</span>'
-                   if item.last_skipped else "")
-                + changed + removed + dropped
-            )
-        elif item.last_status == "error":
-            result = f'<span class="stale">失敗: {esc(item.last_error or "")}</span>'
-        else:
-            result = '<span class="muted">まだ走っていない</span>'
         # 止めている収集は行ごと薄くする(「AI の相手」の表と同じ扱い)
         cls = "" if item.enabled else ' class="off"'
         toggle_label = "止める" if item.enabled else "有効にする"
@@ -925,10 +895,9 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'<p class="muted">AI に聞くので十数秒〜1分ほどかかります。案は保存されないので、見てから決められます。</p>'
             f'<button type="submit">相談する</button></form></details>'
             f"</details></td>"
-            + sweep_cells[0]
             + f"<td{span}>{baked_docs}</td>"
-            f"<td{span}>{result}</td>"
-            f"<td{span}>"
+            + sweep_cells[0]
+            + f"<td{span}>"
             f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/toggle">'
             f'<button type="submit">{toggle_label}</button></form>'
             f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/preview">'
@@ -947,8 +916,8 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
     table = f"""
 <table>
 <thead>
-<tr><th>name</th><th>巡回</th><th>頼む相手</th><th>間隔</th><th>次にいつ</th>
-<th>一周のうち</th><th>その巡回の前回</th><th>長期記憶</th><th>前回</th><th></th></tr>
+<tr><th>名前</th><th>件数</th><th>巡回</th><th>頼む相手</th><th>間隔</th>
+<th>次にいつ</th><th>一周のうち</th><th>前回</th><th></th></tr>
 </thead>
 <tbody>
 {"".join(rows)}
