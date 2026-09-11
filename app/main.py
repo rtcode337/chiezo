@@ -325,6 +325,14 @@ async def collect_material(name: str, sources: dict) -> str:
     **失敗は例外にする**(控えを残したうえで)。素材を返せないまま取り込みを続けさせると、
     前世代のまま焼き直した新しい世代ができて、集められなかったことが履歴から消える。
     """
+    # **ここから先の AI 呼び出しは「収集」のもの**（`app/ai_inflight.py`）。
+    # 無人で回る層なので、走っているものを見に来た人が
+    # 「これは自分が頼んだものではない」と分かる必要がある
+    with ai_inflight.called_by(f"collect:{name}"):
+        return await _collect_material(name, sources)
+
+
+async def _collect_material(name: str, sources: dict) -> str:
     item = await asyncio.to_thread(collect.get, name)
     # 前世代は 1 度だけ読んで使い回す。プロンプトへ差し込む素材であり、
     # 消えたものを数える相手であり、doc_id を引き継ぐ元でもある
@@ -2240,12 +2248,14 @@ async def ai_complete(body: AiCompleteRequest) -> dict:
                     "CLI ブリッジ経由の相手(claude / codex / antigravity)を選んでください",
         })
 
-    if want_web and not via_bridge:
-        # SearXNG を道具として貸す(往復あり)。知識ベースの道具は渡さない。
-        content = await agent.complete_with_web(cfg, messages)
-    else:
-        extra = {"chiezo_web": True} if want_web else {}
-        content = answer.content_of(await answer.complete_message(cfg, messages, **extra))
+    # **外のアプリからの依頼**。収集の時計が動かしているぶんと見分けるための印
+    with ai_inflight.called_by("api"):
+        if want_web and not via_bridge:
+            # SearXNG を道具として貸す(往復あり)。知識ベースの道具は渡さない。
+            content = await agent.complete_with_web(cfg, messages)
+        else:
+            extra = {"chiezo_web": True} if want_web else {}
+            content = answer.content_of(await answer.complete_message(cfg, messages, **extra))
     if not content:
         raise HTTPException(502, {"error": "empty response from llm"})
 

@@ -101,10 +101,11 @@ class TestQuota:
 
         assert backend_of(body, "gemini")["quota"]["supported"] is False
         assert backend_of(body, "local")["quota"]["supported"] is False
-        # Claude もこちら側。 CLI に出口が無く、CLI 自身が叩いている口は user:profile を
-        # 要求するのに対し、Chiezo が預かるのは setup-token(推論だけに絞られている)。
-        # 取れないものをエラーとして出し続けるより「出さない」と書く。
-        assert backend_of(body, "claude")["quota"]["supported"] is False
+        # **claude は出せる側。** CLI に print モードで聞けば取れる
+        # (`claude -p "/usage"`。実測)。かつては Anthropic の口を直に叩いていて、
+        # あちらが user:profile を要求するせいで 403 だった —— 口が無いのではなく、
+        # 叩く口を間違えていた。
+        assert backend_of(body, "claude")["quota"]["supported"] is True
         assert backend_of(body, "codex")["quota"]["supported"] is True
 
     def test_it_does_not_ask_anyone_unless_told_to(self, env):
@@ -145,14 +146,11 @@ class TestQuota:
             settings_store.set_credential("claude", "sk-ant-oat01-test")
             env.setattr(usage, "_client", lambda *a, **k: httpx.AsyncClient(
                 transport=httpx.MockTransport(handler)))
-            body = client.get("/v1/ai/usage",
-                              params={"refresh": 1, "backend": "claude"}).json()
+            # 枠を出せない相手で確かめる(claude は出せるようになったので、
+            # あちらを使うと「取り直した」ことになって検査にならない)
+            client.get("/v1/ai/usage", params={"backend": "gemini"}).json()
 
         assert asked == []
-        quota = backend_of(body, "claude")["quota"]
-        assert quota["supported"] is False
-        # 「出さない」であって「取れなかった」ではない —— 理由を書く欄は空のまま。
-        assert quota["error"] == ""
 
     def test_the_value_is_kept_so_the_screen_does_not_have_to_ask(self, env):
         """一度取った枠は控える(次に開いたときは聞きに行かずに出す)。"""
@@ -200,7 +198,7 @@ class TestQuota:
     def test_the_screen_refuses_to_refresh_what_cannot_be_asked(self, env):
         """枠を出さない相手の「取り直す」は受け付けない(押す口も画面に出さない)。"""
         with make_client(env, ReplyLLM()) as client:
-            res = client.post("/admin/ai/usage", data={"provider": "claude"},
+            res = client.post("/admin/ai/usage", data={"provider": "gemini"},
                               follow_redirects=False)
 
         assert res.status_code == 400
@@ -558,16 +556,107 @@ class TestBridgeSide:
 
         from fastapi.testclient import TestClient
 
+        # **枠を出せない CLI はもう無い**(claude も print モードで取れる)ので、
+        # 「対応していない CLI」を仮に立てて確かめる
         monkeypatch.setenv("CHIEZO_BRIDGE_CLI", "claude")
         monkeypatch.setenv("CHIEZO_BRIDGE_MCP_URL", "")
         import cli_bridge
 
         server = importlib.reload(cli_bridge)
+        monkeypatch.setattr(server, "USAGE_CLIS", frozenset({"codex"}))
         with TestClient(server.app) as client:
             assert client.get("/usage").status_code == 404
 
-    def test_only_the_clis_that_can_answer_have_the_endpoint(self):
-        """claude はここに来ない(Chiezo が Anthropic に直に聞く)。"""
+    def test_claude_reports_what_it_used_not_what_is_left(self):
+        """**claude は「使った割合」を言う**（Antigravity は「残り」）。
+        取り違えると、使い切った枠が「まだ全部残っている」ように出る。"""
         import cli_bridge
 
-        assert set(cli_bridge.USAGE_CLIS) == {"antigravity", "codex"}
+        raw = (
+            '{"result": "You are currently using your subscription\n\n'
+            "Current session: 20% used \u00b7 resets Sep 11, 11pm (Asia/Tokyo)\n"
+            'Current week (all models): 80% used \u00b7 resets Sep 13, 3pm (Asia/Tokyo)"}'
+        )
+        windows = cli_bridge._claude_windows(raw)
+        assert [w["used_percent"] for w in windows] == [20.0, 80.0]
+        assert windows[0]["label"] == "Current session"
+        assert "Sep 11" in windows[0]["resets_at"]
+
+    def test_a_warning_in_front_of_the_json_does_not_break_it(self):
+        """**stderr を stdout に混ぜて読んでいる**ので、CLI の警告 1 行で
+        `json.loads` が落ちる（実測: `Warning: no stdin data received in 3s`）。"""
+        import cli_bridge
+
+        raw = 'Warning: no stdin data received in 3s\n{"result": "Current session: 5% used"}'
+        assert [w["used_percent"] for w in cli_bridge._claude_windows(raw)] == [5.0]
+
+    def test_a_plain_report_without_json_still_reads(self):
+        import cli_bridge
+
+        assert len(cli_bridge._claude_windows("Current week (Fable): 11% used")) == 1
+
+    def test_a_busy_cli_returns_the_last_value_instead_of_failing(self, monkeypatch):
+        """**走っている最中こそ枠を見たい。** 枠を聞くにも CLI を 1 本起こすので
+        待ち枠が要り、長い会話の後ろでは取れない —— 断るより、古いと分かる形で
+        値を返すほうが役に立つ。"""
+        import asyncio
+        import importlib
+
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("CHIEZO_BRIDGE_CLI", "codex")
+        monkeypatch.setenv("CHIEZO_BRIDGE_MCP_URL", "")
+        import cli_bridge
+
+        server = importlib.reload(cli_bridge)
+        monkeypatch.setattr(server, "apply_credential", lambda: "")
+
+        calls = []
+
+        async def fake_read():
+            calls.append(1)
+            return {"cli": "codex", "windows": [{"id": "w", "label": "週", "used_percent": 42.0}],
+                    "reason": "", "taken_at": "2026-09-11T10:00:00+00:00", "stale": False}
+
+        monkeypatch.setattr(server, "_read_usage", fake_read)
+        with TestClient(server.app) as client:
+            first = client.get("/usage").json()
+            assert first["stale"] is False
+            assert first["windows"][0]["used_percent"] == 42.0
+
+            # 枠を塞いだまま聞く（別の呼び出しが走っている状態）
+            monkeypatch.setattr(server, "LOCK_WAIT", 0.01)
+            asyncio.new_event_loop().run_until_complete(server._CLI_LOCK.acquire())
+            busy = client.get("/usage").json()
+
+        assert busy["stale"] is True
+        assert busy["windows"][0]["used_percent"] == 42.0   # 最後の値
+        assert "実行中" in busy["reason"]
+        assert len(calls) == 1                              # CLI は 1 回しか起こしていない
+
+    def test_a_busy_cli_without_any_record_still_says_why(self, monkeypatch):
+        """控えが無いうちは断る（**嘘の 0% を出さない**）。"""
+        import asyncio
+        import importlib
+
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("CHIEZO_BRIDGE_CLI", "codex")
+        monkeypatch.setenv("CHIEZO_BRIDGE_MCP_URL", "")
+        import cli_bridge
+
+        server = importlib.reload(cli_bridge)
+        monkeypatch.setattr(server, "apply_credential", lambda: "")
+        monkeypatch.setattr(server, "LOCK_WAIT", 0.01)
+        with TestClient(server.app) as client:
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(server._CLI_LOCK.acquire())
+            assert client.get("/usage").status_code == 503
+
+    def test_every_cli_can_be_asked(self):
+        """**3 つとも print モードか app-server で取れる**(実測)。
+        claude だけ Chiezo が Anthropic に直に聞いていた頃は、
+        預かっているトークンのスコープ不足で 403 になっていた。"""
+        import cli_bridge
+
+        assert set(cli_bridge.USAGE_CLIS) == {"antigravity", "claude", "codex"}

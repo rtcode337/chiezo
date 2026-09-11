@@ -86,6 +86,42 @@ class TestTheRecord:
         )
         assert ai_inflight.running()[0]["job_id"] == ""
 
+    def test_it_remembers_who_asked(self, state_env):
+        """**無人で回る層と、外のアプリからの依頼を見分ける。**
+        待たされているときに見に来た人がまず知りたいのは「これは自分が頼んだものか」。"""
+        from app import ai_inflight
+
+        with ai_inflight.called_by("collect:sample_news"):
+            ai_inflight.begin(
+                backend="codex", model="", effort="", prompt_bytes=1, timeout=900.0
+            )
+        assert ai_inflight.running()[0]["caller"] == "collect:sample_news"
+
+    def test_a_call_with_no_mark_leaves_it_blank(self, state_env):
+        """**「不明」と書かない。** 空欄のほうが読み違えない。"""
+        from app import ai_inflight
+
+        ai_inflight.begin(backend="codex", model="", effort="", prompt_bytes=1, timeout=900.0)
+        assert ai_inflight.running()[0]["caller"] == ""
+
+    def test_the_mark_does_not_leak_out_of_the_block(self, state_env):
+        from app import ai_inflight
+
+        with ai_inflight.called_by("collect:x"):
+            pass
+        ai_inflight.begin(backend="codex", model="", effort="", prompt_bytes=1, timeout=900.0)
+        assert ai_inflight.running()[0]["caller"] == ""
+
+    def test_the_name_is_opened_for_people(self):
+        """`collect:sample_news` では何のことか読めない。"""
+        from app import ai_inflight
+
+        assert ai_inflight.caller_label("collect:sample_news") == "収集(sample_news)"
+        assert ai_inflight.caller_label("api") == "外のアプリ"
+        assert ai_inflight.caller_label("") == ""
+        # 知らない印は素のまま出す（消すより読めるほうがよい）
+        assert ai_inflight.caller_label("なにか") == "なにか"
+
     def test_an_old_record_without_the_new_columns_still_opens(self, state_env):
         """列を足した版を古い `state/` に当てても読めること。
         **動いている最中に入れ替わる**ので、読めなくなると走行中の表が落ちる。"""
@@ -330,6 +366,43 @@ class TestEndpoint:
             got = client.get("/v1/ai/inflight").json()
         assert [c["backend"] for c in got["calls"]] == ["claude"]
         assert got["calls"][0]["prompt_bytes"] == 42
+
+
+class TestWhereTheMarkIsPut:
+    """**入口で巻けているか。** 印の仕組みがあることと、実際に付くことは別物
+    （表情の差し替えと同じで、仕組みだけ入れて素材が 0 枚、が起きる）。"""
+
+    def test_an_outside_app_is_marked_as_such(self, state_env):
+        """`/v1/ai/complete` は外のアプリ向けの口。"""
+        from app import ai_inflight, answer, usage_store
+
+        seen = []
+        state_env.setattr(
+            answer, "_llm_client",
+            lambda cfg: httpx.AsyncClient(
+                transport=httpx.MockTransport(lambda r: httpx.Response(200, json={
+                    "model": "gpt-5-codex",
+                    "choices": [{"message": {"role": "assistant", "content": "はい"}}],
+                }))
+            ),
+        )
+        real = ai_inflight.begin
+
+        def spy(**kw):
+            seen.append(ai_inflight.current_caller())
+            return real(**kw)
+
+        state_env.setattr(ai_inflight, "begin", spy)
+        with make_client(state_env, None) as client:
+            res = client.post("/v1/ai/complete", json={
+                "backend": "local", "messages": [{"role": "user", "content": "やあ"}],
+            })
+            assert res.status_code == 200
+
+        assert seen == ["api"]
+        # 済んだ控えにも同じ値が残る（終わった後も見分けが付く）
+        if usage_store.is_enabled():
+            assert usage_store.recent_calls(5)[0]["caller"] == "api"
 
 
 class TestTheScreen:

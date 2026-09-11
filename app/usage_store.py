@@ -77,6 +77,9 @@ _ADDED_COLUMNS = {
     "prompt_bytes": "INTEGER",
     "reply_bytes": "INTEGER",
     "ms": "INTEGER",
+    # 誰が頼んだか（`collect:<名前>` / `api` / …）。無人で回る層のぶんと、
+    # 外のアプリが頼んだぶんを後から見分けるため（`app/ai_inflight.py` が持つ印）
+    "caller": "TEXT",
 }
 
 
@@ -148,6 +151,7 @@ def record(
     prompt_bytes: int | None = None,
     reply_bytes: int | None = None,
     ms: int | None = None,
+    caller: str = "",
 ) -> None:
     """呼び出しを 1 件残す。失敗しても例外にしない(会話を止めないため)。
 
@@ -162,10 +166,10 @@ def record(
         with _connect() as conn:
             conn.execute(
                 "INSERT INTO calls (provider, model, kind, at, input_tokens, output_tokens,"
-                " prompt_bytes, reply_bytes, ms)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " prompt_bytes, reply_bytes, ms, caller)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (provider, model or "", kind, _now().isoformat(timespec="seconds"),
-                 input_tokens, output_tokens, prompt_bytes, reply_bytes, ms),
+                 input_tokens, output_tokens, prompt_bytes, reply_bytes, ms, caller or ""),
             )
             now = time.monotonic()
             if now - _last_prune > _PRUNE_INTERVAL:
@@ -219,7 +223,7 @@ def recent_calls(limit: int = 100) -> list[dict]:
         with _connect() as conn:
             rows = conn.execute(
                 "SELECT provider, model, kind, at, input_tokens, output_tokens,"
-                "       prompt_bytes, reply_bytes, ms FROM calls"
+                "       prompt_bytes, reply_bytes, ms, caller FROM calls"
                 " ORDER BY at DESC, id DESC LIMIT ?",
                 (max(1, limit),),
             ).fetchall()
@@ -232,6 +236,7 @@ def recent_calls(limit: int = 100) -> list[dict]:
             "backend": r["provider"],
             "model": r["model"] or "",
             "kind": r["kind"] or "chat",
+            "caller": r["caller"] or "",
             "input_tokens": r["input_tokens"],
             "output_tokens": r["output_tokens"],
             "prompt_bytes": r["prompt_bytes"],

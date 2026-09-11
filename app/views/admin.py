@@ -19,6 +19,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
 from app import (
+    ai_inflight,
     ai_log,
     answer,
     build_info,
@@ -32,6 +33,8 @@ from app import (
     notes,
     providers,
     settings_store,
+    usage,
+    usage_store,
 )
 from app import partition as partitioning
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
@@ -202,7 +205,15 @@ def _job_status_html(job: dict | None) -> str:
         lines.append(f"<p>エラー: {esc(job['error'])}</p>")
     log_tail = job.get("log_tail")
     if log_tail:
-        lines.append('<div class="log-tail">' + esc("\n".join(log_tail)) + "</div>")
+        # **走っている間だけ開いておく。** 終わったログは「見に行けば読める」で足り、
+        # 出しっぱなしにすると、何も起きていない画面の大半をログが占める
+        # （玄関にも同じものが出るので、なおさら邪魔になる）。
+        # `open` を状態で決めるので、走り始めれば読み直したときに自然と開く
+        opened = " open" if state == "running" else ""
+        lines.append(
+            f'<details class="job-log"{opened}><summary>実行ログ</summary>'
+            '<div class="log-tail">' + esc("\n".join(log_tail)) + "</div></details>"
+        )
     if state == "running":
         # **自動では読み直さない。** 走っている間 5 秒ごとに読み直していた頃は、
         # 開いた `<details>` は閉じ、書きかけの入力は消え、押そうとしたボタンは
@@ -1114,21 +1125,92 @@ PAGES = (
 
 
 def nav_html(current: str) -> str:
-    """面のあいだを行き来する帯。**どの面にも同じものを出す** ——
-    玄関へ戻ってから選び直す、を毎回させない。
+    """どの面にも出す見出しの帯。**左に名前、右に面へのリンク**。
 
-    別のモジュールの面（`views/media_compare.py`）からも呼ぶので公開している ——
-    写しを持つと、面が増えたときに片方の帯にだけ出ないことになる。
+    **玄関へ戻ってから選び直す、を毎回させない。** 別のモジュールの面
+    （`views/media_compare.py`）からも呼ぶので公開している —— 写しを持つと、
+    面が増えたときに片方の帯にだけ出ないことになる。
+
+    **狭い画面ではプルダウンに畳む。** 面が増えるほど 1 行に入らなくなり、
+    入らなければ折り返して見出しが 2 段 3 段になる。**JS は持たない**
+    （管理画面の流儀）ので `<details>` で開閉する。
+
+    横に並べる版と畳んだ版の**両方を出し、CSS がどちらかを消す** ——
+    片方だけを出し分けるには画面の幅を知る必要があり、それは描く側には分からない。
+    並びの素は `PAGES` の 1 か所なので、二度書いてもずれない。
     """
-    links = []
-    for path, label, _note in PAGES:
-        if path == current:
-            links.append(f'<strong>{esc(label)}</strong>')
-        else:
-            links.append(f'<a href="{path}">{esc(label)}</a>')
-    return '<nav class="admin-nav"><a href="/admin">管理画面</a>' + "".join(
-        f" · {link}" for link in links
-    ) + "</nav>"
+    def items():
+        # **玄関も並びの 1 つにする。** 見出しをリンクにすると、名前を押したら
+        # 移動することに気づけない —— 行き先は行き先として並べる
+        yield "/admin", "トップ", current == "/admin"
+        for path, label, _note in PAGES:
+            yield path, label, path == current
+
+    # **`data-label` を添える。** 太字にすると字の幅が変わり、見ている面が
+    # 移るたびに帯の中身が左右へずれる。CSS がこの文字列で「太字にしたときの幅」を
+    # 先に取っておくので、太くしても動かない（下の `.admin-nav a::after`）
+    wide = "".join(
+        f'<span class="admin-here" data-label="{esc(label)}">{esc(label)}</span>' if here
+        else f'<a href="{path}" data-label="{esc(label)}">{esc(label)}</a>'
+        for path, label, here in items()
+    )
+    folded = "".join(
+        f'<a href="{path}"{" class=\"admin-here\"" if here else ""}>{esc(label)}</a>'
+        for path, label, here in items()
+    )
+    # いま見ている面の名前を summary に出す。**「メニュー」とだけ書かない** ——
+    # 畳んでいるあいだ、どこに居るのかが画面から消える
+    here_label = next((label for _p, label, h in items() if h), "メニュー")
+    return f"""
+<header class="admin-head">
+  <span class="admin-brand">Chiezo 管理画面</span>
+  <nav class="admin-nav">{wide}</nav>
+  <details class="admin-menu">
+    <summary>{esc(here_label)}</summary>
+    <div class="admin-menu-panel">{folded}</div>
+  </details>
+</header>"""
+
+
+def _usage_html() -> str:
+    """玄関に出す「枠の残り」。**有効にしてある相手だけ**を、いちばん詰まっている窓で。
+
+    ここは概況なので、相手ごとの窓を全部並べない —— 見たいのは
+    「重い仕事を頼んでよいか」で、それは**いちばん使っている窓**で決まる。
+    詳しくは「AI と鍵」の面（`views/ai_usage.py`）。
+
+    **描くときに相手へ問い合わせない**（`usage.rows()` は控えを読むだけ）。
+    玄関は何度も開く画面なので、開くたびに外へ出ると相手のレート制限に当たる。
+    """
+    if not usage_store.is_enabled():
+        return ""
+    cells = []
+    for row in usage.rows():
+        if not row["enabled"]:
+            continue
+        # **`quota` は `usage.Quota`（dataclass）で、dict ではない。**
+        # 一度 `.get()` で読んで 500 にした —— 有効な相手が 1 つも無い素の状態では
+        # ここを通らないので、テストでは気づけなかった
+        windows = [w for w in (getattr(row.get("quota"), "windows", None) or [])
+                   if w.used_percent is not None]
+        if not windows:
+            continue
+        # いちばん使っている窓を 1 つだけ
+        worst = max(windows, key=lambda w: w.used_percent)
+        pct = worst.used_percent
+        # 8 割を超えたら色を変える —— 数字だけだと、並んだときに危ない行が沈む
+        klass = "stale" if pct >= 80 else "muted"
+        cells.append(
+            f'<span class="usage-chip"><b>{esc(row["label"])}</b> '
+            f'<span class="{klass}">{pct:.0f}%</span> '
+            f'<span class="muted">{esc(str(worst.label or ""))[:18]}</span></span>'
+        )
+    if not cells:
+        return ""
+    return (
+        '<p class="usage-strip">枠の残り: ' + " ".join(cells)
+        + ' <a href="/admin/ai#ai-usage">→ 詳しく</a></p>'
+    )
 
 
 @router.get("/admin", response_class=HTMLResponse)
@@ -1167,10 +1249,13 @@ def admin(request: Request):
         for path, label, note in PAGES
     )
 
+    # **玄関にも同じ帯を出す。** ここだけ帯が無いと、面から戻ってきたときに
+    # リンクの位置が変わる（見出しは帯が持つので `<h1>` は置かない）
     body = f"""
-<h1>Chiezo 管理画面</h1>
+{nav_html("/admin")}
 <p>{_disk_html(request.app.state.data_dir)}</p>
 {_job_status_html(job)}
+{_usage_html()}
 {_running_html(running)}
 <div class="admin-cards">
 {cards}
@@ -1184,7 +1269,10 @@ def _running_html(running: list[dict]) -> str:
 
     ここだけ表なのは、**待たされているときに見に来る画面がここだから** ——
     数だけでは「何が遅いのか」が分からず、結局 AI の面まで開くことになる。
-    出すのは相手・種類・経過までで、詳しくは AI の面が受け持つ。
+
+    **中身も出す**(`ai_history._prompt`)。同じ相手へ似た大きさの依頼を 2 本
+    投げていると、相手と経過だけではどちらが遅いのか分からない ——
+    畳んであるので、開いた人にだけ全文が出る。
 
     **走っていないときは何も出さない。** 空の表を置くと、いつも何かが動いていない
     ことのほうが目立つ。
@@ -1198,14 +1286,17 @@ def _running_html(running: list[dict]) -> str:
         # 同じ依頼が玄関と表で違って見える(経過の `elapsed` と同じ理由)
         f"<td>{ai_history.who_html(r['backend'], r.get('model') or '')}</td>"
         f"<td>{esc(r['state'])}</td>"
-        f'<td class="muted">{esc(ai_history.elapsed(r["at"]))}</td></tr>'
+        f'<td class="muted">{esc(ai_history.elapsed(r["at"]))}</td>'
+        f'<td>{ai_history.caller_html(r.get("caller") or "")}</td>'
+        f'<td>{ai_history.prompt_html(r.get("prompt") or "", r.get("prompt_bytes"))}</td></tr>'
         for r in running
     )
 
     return f"""
 <h2>いま走っている AI への依頼</h2>
 <table>
-<thead><tr><th>依頼</th><th>相手</th><th>状態</th><th>経過</th></tr></thead>
+<thead><tr><th>依頼</th><th>相手</th><th>状態</th><th>経過</th>
+<th>依頼元</th><th>中身</th></tr></thead>
 <tbody>{rows}</tbody>
 </table>
 <p class="muted">詳しくは <a href="/admin/ai#ai-history">AI と鍵</a>。</p>
@@ -1758,7 +1849,9 @@ async def admin_collect_consult(request: Request):
     if not want and name:
         want = collect.get(name).description or name
     try:
-        draft = await draft_collection_prompt(want, current, feedback, name)
+        # **人が押して始めた依頼**。収集の時計が動かしているぶんと見分ける
+        with ai_inflight.called_by("admin"):
+            draft = await draft_collection_prompt(want, current, feedback, name)
         error = ""
     except HTTPException as e:
         detail = e.detail if isinstance(e.detail, dict) else {"error": str(e.detail)}
@@ -1782,9 +1875,10 @@ async def admin_collect_draft_extract(request: Request):
     name = str(form.get("name") or "").strip() or None
     want = str(form.get("want") or "").strip()
     try:
-        drafted = await collect_draft_extract(
-            request, ExtractDraft(want=want, name=name)
-        )
+        with ai_inflight.called_by("admin"):
+            drafted = await collect_draft_extract(
+                request, ExtractDraft(want=want, name=name)
+            )
         error = ""
     except HTTPException as e:
         log.warning("draft extract refused: name=%s status=%s detail=%r", name, e.status_code, e.detail)

@@ -728,6 +728,7 @@ async def _run_text(job_id: str, backend: str, prompt: str,
 
             usage_store.record(
                 backend, model=ran_model, kind=media_providers.KIND_TEXT,
+                caller=ai_inflight.current_caller() or "media",
                 prompt_bytes=len(prompt.encode()), reply_bytes=len(content.encode()),
                 ms=int((time.monotonic() - started) * 1000),
             )
@@ -774,7 +775,7 @@ async def _run(job_id: str, backend: str, req, count: int, kind: str) -> None:
                 # 絵と音の相手はトークン数を言わないので、これが無いと控えに相手の名前しか
                 # 残らず、何を頼んだ呼び出しなのかが後から読めない。
                 usage_store.record(
-                    backend, model=item.model, kind=kind,
+                    backend, model=item.model, kind=kind, caller="media",
                     prompt_bytes=len((getattr(one, "prompt", "") or "").encode()),
                     reply_bytes=len(item.data or b""),
                     ms=int((time.monotonic() - started) * 1000),
@@ -1314,7 +1315,7 @@ async def transcribe(
     )
     # 文字起こしは「送った音の大きさ → 返ってきた文の大きさ」で目方を取る
     usage_store.record(
-        chosen, model=result.model, kind=media_providers.KIND_TRANSCRIBE,
+        chosen, model=result.model, kind=media_providers.KIND_TRANSCRIBE, caller="media",
         prompt_bytes=len(data or b""),
         reply_bytes=len((result.text or "").encode()),
         ms=int((time.monotonic() - started) * 1000),

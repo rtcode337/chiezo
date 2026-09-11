@@ -62,6 +62,54 @@ PROMPT_MAX = 20_000
 # ジョブの都合を持つことになる）。
 _JOB: ContextVar[str] = ContextVar("chiezo_ai_inflight_job", default="")
 
+# **誰が頼んだか。** 無人で回る層（収集の時計）が動かしているぶんと、外のアプリが
+# 頼んだぶんを見分けるための印 —— 待たされているときに見に来た人がまず知りたいのは
+# 「これは自分が頼んだものか」なので、相手とモデルだけでは足りない。
+#
+# 引数で引き回さないのは `_JOB` と同じ理由（会話の口までは何段も挟まっている）。
+_CALLER: ContextVar[str] = ContextVar("chiezo_ai_inflight_caller", default="")
+
+# 画面に出す呼び名。**素の id のまま出さない** —— `collect:sample_news` では
+# 何のことか読めない。知らない id は素のまま出す（消すより読めるほうがよい）。
+CALLER_LABELS = {
+    "api": "外のアプリ",
+    "ask": "答える層",
+    "chat": "会話",
+    "agent": "agent",
+    "admin": "管理画面",
+    "media": "生成の依頼",
+    "memory": "記憶の固化",
+}
+
+
+def caller_label(caller: str) -> str:
+    """`collect:<名前>` は「収集(名前)」に開く。それ以外は表を引く。"""
+    if not caller:
+        return ""
+    head, _, rest = caller.partition(":")
+    if head == "collect":
+        return f"収集({rest})" if rest else "収集"
+    return CALLER_LABELS.get(head, caller)
+
+
+@contextmanager
+def called_by(caller: str):
+    """このかたまりの中で立つ控えに、頼んだ側の名前を付ける。
+
+    **入口で 1 回だけ巻く。** 途中の層で巻き直すと、いちばん内側の名前が残って
+    「誰が始めたのか」が消える。
+    """
+    token = _CALLER.set(caller or "")
+    try:
+        yield
+    finally:
+        _CALLER.reset(token)
+
+
+def current_caller() -> str:
+    """いま巻かれている依頼元。使用量の控え（`usage_store`）も同じ値を残す。"""
+    return _CALLER.get("")
+
 
 @contextmanager
 def on_behalf_of(job_id: str):
@@ -91,7 +139,9 @@ CREATE TABLE IF NOT EXISTS ai_inflight (
     -- 送った依頼文（`PROMPT_MAX` で切る）。終われば行ごと消える。
     prompt       TEXT    NOT NULL DEFAULT '',
     -- この往復を抱えている生成ジョブ。直に呼ばれたものは空。
-    job_id       TEXT    NOT NULL DEFAULT ''
+    job_id       TEXT    NOT NULL DEFAULT '',
+    -- 誰が頼んだか（`collect:<名前>` / `api` / `ask` / …）。分からなければ空。
+    caller       TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_ai_inflight_at ON ai_inflight(at DESC);
 """
@@ -121,7 +171,7 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
     入れ替わる**ので、消すのではなく足すほうが静かに済む。
     """
     have = {r["name"] for r in conn.execute("PRAGMA table_info(ai_inflight)")}
-    for name in ("prompt", "job_id"):
+    for name in ("prompt", "job_id", "caller"):
         if name not in have:
             with suppress(sqlite3.Error):
                 conn.execute(
@@ -165,7 +215,8 @@ def begin(
             _reap_stale(conn)
             cur = conn.execute(
                 "INSERT INTO ai_inflight (at, expires_at, backend, model, effort, kind,"
-                " prompt_bytes, prompt, job_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " prompt_bytes, prompt, job_id, caller)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     now.isoformat(timespec="seconds"),
                     (
@@ -178,6 +229,7 @@ def begin(
                     prompt_bytes,
                     (prompt or "")[:PROMPT_MAX],
                     _JOB.get(""),
+                    _CALLER.get(""),
                 ),
             )
             return cur.lastrowid
@@ -215,7 +267,7 @@ def running(limit: int = 50) -> list[dict]:
                 dict(r)
                 for r in conn.execute(
                     "SELECT at, expires_at, backend, model, effort, kind, prompt_bytes,"
-                    " prompt, job_id FROM ai_inflight ORDER BY id DESC LIMIT ?",
+                    " prompt, job_id, caller FROM ai_inflight ORDER BY id DESC LIMIT ?",
                     (max(1, limit),),
                 )
             ]

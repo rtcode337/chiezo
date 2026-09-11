@@ -55,6 +55,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -767,9 +768,13 @@ async def health(check: bool = False) -> dict:
 # 「認証を確かめる」(`AUTH_CHECK`)と同じ方針にしてある。
 #
 # claude はここに来ない。 claude CLI には使用量を出すサブコマンドが無く
-# (`/usage` は対話画面の中だけ)、代わりに Chiezo が `app.anthropic.com` の
-# `/api/oauth/usage` を同じトークンで直に引く(`app/usage.py`)。
-USAGE_CLIS = frozenset({"codex", "antigravity"})
+# **claude も print モードのスラッシュコマンドで取れる**(実測)。
+# `claude -p "/usage"` は会話を始めず、CLI 自身の報告が `result` に入って返る ——
+# かつては「CLI に出口が無い」として Chiezo が `app.anthropic.com/api/oauth/usage` を
+# 直に引いていたが、**あちらは `user:profile` を要求する**ので、預かっている
+# `claude setup-token` の長期トークン(推論だけに絞られている)では 403 になっていた。
+# CLI に聞けば、CLI が持っている資格情報で通る。
+USAGE_CLIS = frozenset({"codex", "antigravity", "claude"})
 
 # Antigravity から使用量を引くコマンド。print モードのスラッシュコマンドで、
 # モデルの応答を待たずに CLI 自身が報告を返す(会話も始めず、枠も食わない)。
@@ -782,7 +787,64 @@ ANTIGRAVITY_USAGE_CMD = [
     e.strip() for e in os.environ.get("CHIEZO_BRIDGE_USAGE_CMD", "").split(",") if e.strip()
 ] or ["agy", "-p", "/usage", "--output-format", "json"]
 
+# Claude から使用量を引くコマンド。Antigravity と同じ print モードのスラッシュコマンド。
+CLAUDE_USAGE_CMD = ["claude", "-p", "/usage", "--output-format", "json"]
+
 USAGE_TIMEOUT = float(os.environ.get("CHIEZO_BRIDGE_USAGE_TIMEOUT", "60") or 60)
+
+# claude の報告の 1 行。 実測の形:
+#   Current session: 20% used · resets Sep 11, 11pm (Asia/Tokyo)
+#   Current week (all models): 80% used · resets Sep 13, 3pm (Asia/Tokyo)
+#
+# **これは「使った割合」で、Antigravity の「残り」とは逆**。取り違えると、
+# 使い切った枠が「まだ全部残っている」ように出る。
+# 区切りは中黒(·)だが、版によって変わりうるので**「resets」から後ろ**として読む。
+_CLAUDE_USAGE_RE = re.compile(
+    r"^(?P<name>[^:]+):\s*(?P<percent>[0-9.]+)%\s*used\b(?:.*?resets\s+(?P<resets>.+?))?\s*$"
+)
+
+
+def _json_tail(raw: str) -> str:
+    """先に混ざった警告を落として、JSON の本体だけを返す。
+
+    **stderr を stdout に混ぜて読んでいる**(`_run_for_usage`)ので、CLI が
+    警告を 1 行吐くだけで `json.loads` が落ちる —— 実測で
+    `Warning: no stdin data received in 3s, …` が前に付いた。
+    最初の `{` から後ろを見る。JSON が無ければそのまま返す（人向けの行として読ませる）。
+    """
+    at = raw.find("{")
+    return raw[at:] if at >= 0 else raw
+
+
+def _claude_windows(raw: str) -> list[dict]:
+    """claude の返事から窓を組む。
+
+    `--output-format json` の `result` に人向けの報告がそのまま入っている。
+    **JSON の外側は見ない** —— あそこにあるのはその場の会話のトークン数(全部 0)で、
+    サブスクの枠ではない。
+    """
+    text = raw
+    with suppress(ValueError):
+        payload = json.loads(_json_tail(raw))
+        if isinstance(payload, dict):
+            text = str(payload.get("result") or "")
+    windows = []
+    for line in text.splitlines():
+        if not (found := _CLAUDE_USAGE_RE.match(line.strip())):
+            continue
+        name = found["name"].strip()
+        windows.append({
+            "id": name,
+            "label": name,
+            # **そのまま使う**(残りへ引き算しない。claude は使った割合を言う)
+            "used_percent": round(float(found["percent"]), 1),
+            "used": None,
+            "limit": None,
+            "unit": "",
+            "window_minutes": None,
+            "resets_at": (found["resets"] or "").strip(),
+        })
+    return windows
 
 
 def _as_number(value) -> float | None:
@@ -1047,30 +1109,63 @@ async def _codex_usage() -> tuple[list[dict], str]:
             await proc.wait()
 
 
+# 最後に取れた枠。**走っている最中に聞かれたときの受け皿**。
+#
+# 枠を聞くにも CLI を 1 本起こすので、認証情報が回る相手では待ち枠が要り、
+# 長い会話の後ろでは取れない(`LOCK_WAIT` で諦める)。そこで**諦める代わりに
+# 最後の値を返す** —— 走っている最中こそ枠を見たい場面なのに、そこだけ何も
+# 出ないのでは用をなさない。**古い値だと分かる形で返す**(`stale` と `taken_at`)。
+_LAST_USAGE: dict | None = None
+
+
+async def _read_usage() -> dict:
+    """CLI に枠を聞いて、窓の一覧に直す。**待ち枠は取らない**(呼ぶ側の仕事)。"""
+    if CLI == "codex":
+        windows, raw = await _codex_usage()
+    elif CLI == "claude":
+        raw = await _run_for_usage(CLAUDE_USAGE_CMD)
+        windows = _claude_windows(raw)
+    else:
+        raw = await _run_for_usage(ANTIGRAVITY_USAGE_CMD)
+        windows = _antigravity_windows(raw)
+    return {
+        "cli": CLI,
+        "windows": windows,
+        # 窓を組めなかったときだけ意味を持つ(Chiezo がそのまま画面に出す)。
+        "reason": "" if windows else raw[:300],
+        "taken_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "stale": False,
+    }
+
+
 @app.get("/usage")
 async def usage() -> dict:
     """サブスクの枠(使用量と、いつ戻るか)を CLI に聞く。
 
     返すのは正規化した窓の一覧と、読めなかったときのための生の返事
     (`reason`)—— 数字にできなくても、CLI が何と言ったかは画面に出せる。
+
+    **走っている最中は最後の値を返す。** 枠を聞くにも CLI を 1 本起こすので、
+    認証情報が回る相手では 1 本ずつしか動かせない(`cli_slot`)。断るより、
+    **古いと分かる形で値を返す**ほうが役に立つ —— 見たいのは、まさに
+    何かを走らせている最中だから。
     """
+    global _LAST_USAGE
     if CLI not in USAGE_CLIS:
         raise HTTPException(404, {"error": f"{CLI} は使用量を出せません"})
     if reason := apply_credential():
         raise HTTPException(401, {"error": reason})
 
-    async with cli_slot(LOCK_WAIT):
-        if CLI == "codex":
-            windows, raw = await _codex_usage()
-        else:
-            raw = await _run_for_usage(ANTIGRAVITY_USAGE_CMD)
-            windows = _antigravity_windows(raw)
-    return {
-        "cli": CLI,
-        "windows": windows,
-        # 窓を組めなかったときだけ意味を持つ(Chiezo がそのまま画面に出す)。
-        "reason": "" if windows else raw[:300],
-    }
+    try:
+        async with cli_slot(LOCK_WAIT):
+            _LAST_USAGE = await _read_usage()
+            return _LAST_USAGE
+    except HTTPException as e:
+        # 待ち枠が取れなかった(= 別の呼び出しが走っている)。控えがあればそれを返す
+        if e.status_code != 503 or _LAST_USAGE is None:
+            raise
+        return {**_LAST_USAGE, "stale": True,
+                "reason": "別の呼び出しを実行中のため、最後に取れた値を返しています"}
 
 
 @app.get("/v1/models")

@@ -53,8 +53,21 @@ def _size(nbytes: int) -> str:
 PROMPT_HEAD = 60
 
 
-def _prompt(text: str, nbytes: int | None) -> str:
+def caller_html(caller: str) -> str:
+    """誰が頼んだか。**分からないときは空欄にする** ——
+    「不明」と書くより、書いていないほうが読み違えない。
+
+    玄関（`/admin`）からも呼ぶので公開している（`who_html` と同じ理由）。
+    """
+    label = ai_inflight.caller_label(caller)
+    return f'<span class="muted">{esc(label)}</span>' if label else ""
+
+
+def prompt_html(text: str, nbytes: int | None) -> str:
     """走っている依頼の「何を頼んでいるか」。頭を出し、全文は畳んでおく。
+
+    玄関（`/admin`）からも同じ書き方で出すので公開している —— 別々に書くと、
+    同じ依頼が 2 つの画面で違って見える（`who_html` / `elapsed` と同じ理由）。
 
     **大きさだけでは足りない。** 同じ相手に同じくらいの依頼を 2 本投げていると、
     どちらを止めるべきかが読めない —— 止める判断に要るのは中身のほう。
@@ -193,6 +206,7 @@ def running_rows() -> list[dict]:
             "state": "走っている",
             "prompt_bytes": r.get("prompt_bytes"),
             "prompt": r.get("prompt") or "",
+            "caller": r.get("caller") or "",
         }
         for r in ai_inflight.running()
         if (r.get("job_id") or "") not in job_ids
@@ -210,6 +224,8 @@ def running_rows() -> list[dict]:
             # **何を頼んでいるかを出す。** 相手と大きさだけでは、同じ相手へ投げた
             # 2 本のどちらを止めるべきかが読めない
             "prompt": j.get("prompt") or "",
+            # 生成の job は外の口から積まれる（画面からは頼めない）
+            "caller": "media",
             # **止められるのは生成だけ。** 会話(`ai_inflight`)は相手との 1 往復で、
             # 掴んでいるのは呼んだ側のタスクなので、この画面からは手が届かない
             "job_id": j.get("id") or "",
@@ -276,7 +292,8 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
     body = []
     for row in running:
         who = who_html(row["backend"], row.get("model") or "")
-        detail = _prompt(row.get("prompt") or "", row.get("prompt_bytes"))
+        detail = prompt_html(row.get("prompt") or "", row.get("prompt_bytes"))
+        origin = caller_html(row.get("caller") or "")
         # **暴走したものを止める口。** 押すと待ち枠がすぐ空くので、後ろで並んでいる
         # ぶんが先へ進める(向こう側の CLI は自分の時間切れまで走り続ける)
         if row.get("job_id"):
@@ -289,7 +306,8 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
         body.append(
             '<tr class="job-status running">'
             f"<td>{esc(_when(row['at']))}</td>"
-            f"<td>{esc(ai_log.kind_label(row['kind']))}</td><td>{who}</td>"
+            f"<td>{esc(ai_log.kind_label(row['kind']))}</td>"
+            f"<td>{origin}</td><td>{who}</td>"
             f'<td>{esc(row["state"])}<br>'
             f'<span class="muted">{esc(elapsed(row["at"]))}</span></td>'
             f"<td>{detail}</td></tr>"
@@ -297,6 +315,7 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
     for row in shown:
         kind = esc(ai_log.kind_label(row.get("kind") or ai_log.KIND_CHAT))
         who = who_html(row["backend"], row.get("model") or "")
+        origin = caller_html(row.get("caller") or "")
         if row["ok"]:
             result = '<span class="muted">成功</span>'
             detail = _detail(row)
@@ -308,7 +327,8 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
             )
         body.append(
             f'<tr{"" if row["ok"] else ' class="off"'}>'
-            f"<td>{esc(_when(row['at']))}</td><td>{kind}</td><td>{who}</td>"
+            f"<td>{esc(_when(row['at']))}</td><td>{kind}</td>"
+            f"<td>{origin}</td><td>{who}</td>"
             f"<td>{result}</td><td>{detail}</td></tr>"
         )
 
@@ -337,7 +357,7 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
 </p>
 <table>
 <thead>
-<tr><th>日時(JST)</th><th>依頼</th><th>相手</th><th>結果</th><th>中身</th></tr>
+<tr><th>日時(JST)</th><th>依頼</th><th>依頼元</th><th>相手</th><th>結果</th><th>中身</th></tr>
 </thead>
 <tbody>
 {"".join(body)}

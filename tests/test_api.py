@@ -1791,6 +1791,55 @@ class TestAdminPages:
         # 数が出ないと、開いた面が空なのか壊れているのかが読めない
         assert "ソース" in client.get("/admin").text
 
+    def test_the_entrance_shows_how_full_the_quotas_are(self, client):
+        """**重い仕事を頼む前に、押す画面で枠が見える。**
+        相手ごとの窓を全部並べず、いちばん詰まっている 1 つだけ出す。"""
+        from app import usage, usage_store
+
+        if not usage_store.is_enabled():
+            return
+        text = client.get("/admin").text
+        # 有効な相手がいない素の状態では出さない（空の帯を置かない）
+        has_quota = any(
+            (r.get("quota") or {}).get("windows") for r in usage.rows() if r["enabled"]
+        )
+        assert ("枠の残り" in text) is bool(has_quota)
+
+    def test_the_entrance_reads_the_quota_object_not_a_dict(self, client, monkeypatch):
+        """**`usage.rows()` の `quota` は dataclass で、dict ではない。**
+        一度 `.get()` で読んで玄関が 500 になった —— 有効な相手が 1 つも無い
+        素の状態ではそこを通らないので、テストが素通りしていた。"""
+        from app import usage, usage_store
+        from app.views import admin as views_admin
+
+        monkeypatch.setattr(usage_store, "is_enabled", lambda: True)
+        monkeypatch.setattr(usage, "rows", lambda: [{
+            "id": "codex", "label": "Codex CLI", "enabled": True, "billing": "",
+            "quota": usage.Quota(supported=True, windows=[
+                usage.Window(id="w1", label="週", used_percent=42.0),
+                usage.Window(id="w2", label="5 時間", used_percent=91.5),
+            ]),
+            "spent": {},
+        }])
+        html = views_admin._usage_html()
+        assert "Codex CLI" in html
+        assert "92%" in html          # いちばん詰まっている窓を出す
+        assert "42%" not in html      # 全部は並べない
+        assert "stale" in html        # 8 割を超えたら色を変える
+        assert client.get("/admin").status_code == 200
+
+    def test_the_entrance_says_nothing_when_no_quota_is_known(self, monkeypatch):
+        """空の帯を置かない（枠が取れていないのに見出しだけ出ると、0% に読める）。"""
+        from app import usage, usage_store
+        from app.views import admin as views_admin
+
+        monkeypatch.setattr(usage_store, "is_enabled", lambda: True)
+        monkeypatch.setattr(usage, "rows", lambda: [
+            {"id": "gemini", "label": "Gemini", "enabled": True, "billing": "",
+             "quota": usage.Quota(), "spent": {}},
+        ])
+        assert views_admin._usage_html() == ""
+
     def test_the_entrance_shows_the_disk(self, client):
         """**この画面から始まる操作がディスクを一番食う**（取り込み 1 回で数十 GB）。
         押す前に見えるところに置く。"""

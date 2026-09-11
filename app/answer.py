@@ -709,6 +709,9 @@ def _record_usage(
         cfg.name,
         model=model,
         kind="chat",
+        # **誰が頼んだか**（`app/ai_inflight.py` が入口で巻いた印）。
+        # 走っている表と同じ値を残すので、終わった後も見分けが付く
+        caller=ai_inflight.current_caller(),
         # OpenAI 互換は prompt/completion。相手によっては input/output で名乗る。
         input_tokens=_count("prompt_tokens", "input_tokens"),
         output_tokens=_count("completion_tokens", "output_tokens"),

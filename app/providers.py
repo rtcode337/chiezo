@@ -164,16 +164,17 @@ PROVIDERS: tuple[Provider, ...] = (
         models=("sonnet", "fable", "opus", "haiku"),
         # `claude --help` の --effort（実測で 5 つとも通る）。
         efforts=("low", "medium", "high", "xhigh", "max"),
-        # 枠は出せない。 claude CLI には使用量を出すサブコマンドが無く
-        # （`/usage` は対話画面の中だけ）、CLI 自身が叩いている口
-        # （`app.anthropic.com/api/oauth/usage`）は `user:profile` を要求する一方、
-        # Chiezo が預かるのは `claude setup-token` の長期トークン —— あれは安全のため
-        # 推論だけに絞られていて、このスコープを持たない（実測で HTTP 403）。
-        # かつては経路を残して 403 の理由を画面に出していたが、**取れないものを
-        # エラーとして出し続けるだけ**なので「枠を出さない相手」に倒した。
-        # 取れるようにする道はある（`claude auth login` の資格情報なら実測で 200）が、
-        # あれは CLI が数時間ごとに更新するものなので、設定 DB に貼る形には向かない
-        # —— やるならコンテナの中でサインインする（docs/ai.md）。
+        # 枠はブリッジ越しに CLI へ聞く（`USAGE_BRIDGE`）。
+        # **`claude -p "/usage"` で取れる**（実測）—— print モードのスラッシュコマンドで、
+        # 会話を始めずに CLI 自身の報告が `result` に入って返る。
+        #
+        # かつては「CLI に出口が無い」として Chiezo が `app.anthropic.com` の
+        # `/api/oauth/usage` を直に引いていたが、**あの口は `user:profile` を要求する**
+        # 一方、預かっているのは `claude setup-token` の長期トークンで、
+        # あれは安全のため推論だけに絞られている（実測で HTTP 403）。
+        # **口が無いのではなく、叩く口を間違えていた。** CLI に聞けば、
+        # CLI が持っている資格情報で通る。
+        usage=USAGE_BRIDGE,
         bridge=True,
         order=30,
     ),

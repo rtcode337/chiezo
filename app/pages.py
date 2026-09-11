@@ -204,12 +204,71 @@ PAGE_STYLE = """
   details.prompt-open > summary { font-weight: normal; padding: 0.1rem 0; }
   .muted { color: #666; font-size: 0.85rem; }
   .pager { display: flex; gap: 1rem; align-items: baseline; margin-top: 1rem; }
+  /* 玄関の「枠の残り」。**1 行に収める** —— 概況なので、相手ごとに段を作らない */
+  .usage-strip { display: flex; flex-wrap: wrap; gap: 0.4rem 0.9rem;
+                 align-items: baseline; font-size: 0.85rem; margin: 0.6rem 0; }
+  .usage-chip { white-space: nowrap; }
+  /* 取り込みの実行ログ。**走っている間だけ開く**（`views/admin.py`）ので、
+     畳んだときに場所を取らない体裁にする */
+  details.job-log { margin-top: 0.5rem; }
+  details.job-log > summary { font-weight: normal; padding: 0.1rem 0; font-size: 0.85rem; }
   /* どの画面にも出すビルドの印。**本文の邪魔をしない薄さ**で、下端に置く */
   .page-footer { margin-top: 2.5rem; padding-top: .9rem; border-top: 1px solid #e2e2ea;
                  color: #8a8a99; font-size: .78rem; line-height: 1.7; }
   /* 管理画面を 3 つの面に分けたので、どこにいるかと、どこへ行けるかを常に出す */
-  .admin-nav { margin-bottom: 1rem; font-size: .9rem; }
-  .admin-nav strong { color: #111; }
+  /* どの面にも出す見出しの帯（`views/admin.py` の `nav_html`）。
+     **左に名前、右に面へのリンク。** 狭いときはプルダウンに畳む —— 面が増えるほど
+     1 行に入らなくなり、入らなければ見出しが 2 段 3 段になる。 */
+  .admin-head { display: flex; align-items: baseline; gap: 1rem;
+                padding-bottom: .6rem; margin-bottom: 1.2rem;
+                border-bottom: 1px solid #e5e5ec; }
+  /* **名前はリンクにしない。** 押したら移動することに気づけないので、
+     行き先は行き先として並べる（並びの先頭が「トップ」） */
+  .admin-brand { font-weight: 700; font-size: 1rem; color: #111; white-space: nowrap; }
+  /* **右へ寄せる。** 名前とリンクのあいだを伸ばす（gap では寄らない） */
+  .admin-nav { margin-left: auto; display: flex; gap: 1rem; font-size: .9rem;
+               flex-wrap: nowrap; }
+  /* **太字にしても幅が変わらないようにする。**
+     いま見ている面だけを太くすると字幅が変わり、面を移るたびに帯の中身が
+     左右へずれる。そこで**どの項目にも「太字にしたときの文字」を高さ 0 で
+     重ねておき**、その幅で列を確保する —— 太くなっても、もう広がる余地がない。 */
+  .admin-nav a, .admin-nav .admin-here {
+    display: inline-flex; flex-direction: column; align-items: center;
+    /* **余白は gap だけに持たせる。** 素の `nav a` が右に 1rem を持っているので、
+       そのままだとリンクにだけ余白が付き、いま見ている面（`<span>`）との差が
+       そのまま位置のずれになる —— 太字のせいに見えて、実は余白だった */
+    margin: 0;
+  }
+  .admin-nav a::after, .admin-nav .admin-here::after {
+    content: attr(data-label);
+    font-weight: 700;
+    height: 0; overflow: hidden; visibility: hidden; pointer-events: none;
+  }
+  /* いま見ている面は押せない（押しても同じ場所なので、リンクに見せない） */
+  .admin-nav .admin-here { font-weight: 700; color: #111; cursor: default; }
+  .admin-menu .admin-here { font-weight: 700; color: #111; }
+
+  /* 畳んだ版。**広い画面では出さない**（横に並ぶ版があるので） */
+  .admin-menu { display: none; margin-left: auto; position: relative; }
+  .admin-menu > summary { cursor: pointer; font-size: .9rem; font-weight: 600;
+                          padding: .15rem .5rem; border: 1px solid #d8d8e0;
+                          border-radius: .4rem; background: #fff; list-style: none; }
+  .admin-menu > summary::-webkit-details-marker { display: none; }
+  .admin-menu > summary::after { content: " ▾"; color: #666; }
+  .admin-menu-panel { position: absolute; right: 0; top: calc(100% + .3rem); z-index: 20;
+                      display: flex; flex-direction: column; gap: .1rem;
+                      min-width: 10rem; padding: .4rem;
+                      border: 1px solid #d8d8e0; border-radius: .5rem; background: #fff;
+                      box-shadow: 0 6px 18px rgba(0, 0, 0, .12); }
+  .admin-menu-panel a { padding: .35rem .5rem; border-radius: .3rem;
+                        text-decoration: none; font-size: .9rem; }
+  .admin-menu-panel a:hover { background: #f2f2f7; }
+
+  /* 面が 4 つ並ぶと、この幅から 1 行に入らなくなる（実測） */
+  @media (max-width: 44rem) {
+    .admin-nav { display: none; }
+    .admin-menu { display: block; }
+  }
   /* 玄関の入口。**表は置かない** —— 数と状態だけ出して、直しに行くのは各面 */
   .admin-cards { display: grid; gap: 1rem; margin-top: 1.5rem; }
   @media (min-width: 46rem) { .admin-cards { grid-template-columns: repeat(3, 1fr); } }
