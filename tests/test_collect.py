@@ -319,6 +319,78 @@ class TestCursor:
         assert collect.get("news").cursor == "A"
 
 
+class TestCoveredAreas:
+    """端から端まで舐める収集の「どこを終えたか」。
+
+    `cursor` が「次はどこ」の 1 本なのに対し、こちらは一覧 ——
+    全部を舐めきったかも、取りこぼしがどこかも、一覧が無いと分からない。
+    """
+
+    def test_a_run_piles_up_what_it_covered(self, sample):
+        collect.record_result("news", status="ok", covered=["A", "B"])
+        collect.record_result("news", status="ok", covered=["C"])
+        assert collect.get("news").covered == ["A", "B", "C"]
+
+    def test_covering_the_same_place_again_does_not_move_it(self, sample):
+        """並びが「回った順」として読めるほうが、どこまで進んだかを追いやすい。"""
+        collect.record_result("news", status="ok", covered=["A", "B"])
+        collect.record_result("news", status="ok", covered=["A", "C"])
+        assert collect.get("news").covered == ["A", "B", "C"]
+
+    def test_the_covered_list_goes_into_the_prompt(self, sample):
+        collect.update("news", prompt="まだのところ: {covered}")
+        collect.record_result("news", status="ok", covered=["東京都新宿区"])
+        user = collect.build_messages(collect.get("news"))[1]["content"]
+        assert "東京都新宿区" in user
+
+    def test_an_empty_covered_list_does_not_break_the_prompt(self, sample):
+        collect.update("news", prompt="まだのところ: {covered}")
+        user = collect.build_messages(collect.get("news"))[1]["content"]
+        assert "{covered}" not in user
+
+    def test_it_says_how_many_were_left_out(self, sample):
+        """黙って切ると、AI からは「そこまでしか回っていない」ように見えて回り直す。"""
+        # 差し込みは文字数で見るので、そこを超える量を積む
+        many = [f"地域{i:05d}" for i in range(collect.MAX_COVERED_PROMPT_CHARS // 4)]
+        collect.record_result("news", status="ok", covered=many)
+        text = collect.render_covered(collect.get("news").covered)
+        assert len(text) <= collect.MAX_COVERED_PROMPT_CHARS + 200
+        assert f"全 {len(many)} 件" in text
+        # 新しいほうを載せる(次にどこへ行くかを決めるのに効くのはそちら)
+        assert many[-1] in text
+
+    def test_the_stored_list_is_bounded_by_characters_not_count(self, sample):
+        """件数は大きさの代理にならない(このファイル冒頭の但し書きと同じ理由)。"""
+        long_one = "あ" * collect.MAX_COVERED_ITEM_CHARS
+        collect.record_result(
+            "news",
+            status="ok",
+            covered=[f"{i}{long_one}" for i in range(collect.MAX_COVERED_CHARS // 100)],
+        )
+        stored = collect.get("news").covered
+        assert sum(len(t) for t in stored) <= collect.MAX_COVERED_CHARS
+
+    def test_a_nationwide_sweep_never_hits_the_limit(self, sample):
+        """全国を市区町村で舐めても当たらない大きさに置いてある。"""
+        collect.record_result(
+            "news", status="ok", covered=[f"都道府県{i // 40}市区町村{i}" for i in range(1_800)]
+        )
+        assert len(collect.get("news").covered) == 1_800
+
+    def test_patching_an_empty_list_starts_the_round_over(self, sample):
+        """2 周目を粗いまま繰り返させず、精度を上げて回り直したいときに使う。"""
+        collect.record_result("news", status="ok", covered=["A"])
+        collect.update("news", covered=[])
+        assert collect.get("news").covered == []
+
+    def test_the_list_endpoint_leaves_the_places_out(self, sample):
+        """上限まで積むと 1 件で数百 KB になり、収集の数だけ倍になる。"""
+        collect.record_result("news", status="ok", covered=["A", "B"])
+        listed = collect.to_public(collect.get("news"), with_covered=False)
+        assert "covered" not in listed
+        assert listed["covered_count"] == 2
+
+
 class TestSchedule:
     def test_a_failed_run_is_still_scheduled_again(self, sample):
         """止めると、一度こけた収集が二度と走らなくなる。"""
@@ -493,11 +565,20 @@ class TestHowMuchIsAccepted:
 class TestParsing:
     def test_it_digs_the_json_out_of_a_wrapped_answer(self):
         """前置きやコードブロックが混ざるのは普通に起きる。"""
-        items, cursor = collect.parse_response(
+        items, cursor, covered = collect.parse_response(
             '調べました。\n```json\n{"items":[{"title":"X","body":"Y"}],"next_cursor":"Z"}\n```'
         )
         assert items == [{"title": "X", "body": "Y"}]
         assert cursor == "Z"
+        # covered は舐める収集だけが返す。書かなくても壊れない
+        assert covered == []
+
+    def test_it_reads_the_covered_areas_when_present(self):
+        """端から端まで舐める収集は「今回どこを回ったか」を名乗る。"""
+        _items, _cursor, covered = collect.parse_response(
+            '{"items":[],"next_cursor":"次","covered":["東京都新宿区"," 東京都渋谷区 ",""]}'
+        )
+        assert covered == ["東京都新宿区", "東京都渋谷区"]
 
     def test_a_missing_items_array_is_an_error(self):
         with pytest.raises(ValueError):

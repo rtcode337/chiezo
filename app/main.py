@@ -256,7 +256,9 @@ async def draft_collection_prompt(
     return draft
 
 
-async def _collect_items(item, previous: dict, sources: dict) -> tuple[list[dict], str | None]:
+async def _collect_items(
+    item, previous: dict, sources: dict
+) -> tuple[list[dict], str | None, list[str]]:
     """1 回ぶん集める。**最初の 1 回だけ機械的に埋められる**。
 
     抽出の指定を持っていて、まだ進み具合が入っていなければ AI を呼ばず、手元の
@@ -266,7 +268,9 @@ async def _collect_items(item, previous: dict, sources: dict) -> tuple[list[dict
     """
     if item.extract and not item.cursor:
         spec = extract.normalize(item.extract)
-        return await asyncio.to_thread(extract.run, spec, sources)
+        items, next_cursor = await asyncio.to_thread(extract.run, spec, sources)
+        # 機械的に埋める回は「どこを回ったか」を名乗らない(範囲の概念が無い)
+        return items, next_cursor, []
     content = await _ask_for_collection(item, collect.build_messages(item, previous))
     return collect.parse_response(content or "")
 
@@ -286,7 +290,7 @@ async def collect_material(name: str, sources: dict) -> str:
     # 消えたものを数える相手であり、doc_id を引き継ぐ元でもある
     previous = await asyncio.to_thread(collect.previous_docs, name, sources)
     try:
-        items, next_cursor = await _collect_items(item, previous, sources)
+        items, next_cursor, covered = await _collect_items(item, previous, sources)
         body, diff = await asyncio.to_thread(collect.ndjson, item, sources, previous, items)
     except Exception as e:
         reason = f"{type(e).__name__}: {e}"
@@ -302,6 +306,7 @@ async def collect_material(name: str, sources: dict) -> str:
         removed=diff["removed"],
         removed_titles=diff["removed_titles"],
         next_cursor=next_cursor,
+        covered=covered,
     )
     log.info(
         "collect %s (%s): added=%d kept=%d removed=%d skipped=%d",
@@ -322,13 +327,16 @@ async def collect_preview(name: str, sources: dict) -> dict:
     """
     item = await asyncio.to_thread(collect.get, name)
     previous = await asyncio.to_thread(collect.previous_docs, name, sources)
-    items, next_cursor = await _collect_items(item, previous, sources)
+    items, next_cursor, covered = await _collect_items(item, previous, sources)
     _docs, diff = await asyncio.to_thread(collect.material, item, previous, items)
     return {
         "name": name,
         "mode": item.mode,
         **diff,
         "next_cursor": next_cursor,
+        # **下見では積まない。** 進み具合を動かさないのが下見の約束なので、
+        # 「今回どこを回ったと名乗ったか」だけ見せる(積むのは焼くときだけ)
+        "covered": covered,
         # 焼こうとしたら止まるかどうか。止まる理由もそのまま出す
         "blocked": collect.shrink_blocked(item, diff),
     }
@@ -1340,6 +1348,13 @@ class CollectionPatch(BaseModel):
     effort: str | None = None
     web: bool | None = None
     cursor: str | None = None
+    covered: list[str] | None = PydField(
+        None,
+        description=(
+            "回り終えた印。空の配列を渡すと最初から回り直せる"
+            "(2 周目を粗いまま繰り返させず、精度を上げて回り直したいときに使う)"
+        ),
+    )
     mode: str | None = None
     keep_ratio: float | None = None
     extract: dict | None = PydField(
@@ -1383,7 +1398,9 @@ def collect_list():
     (件数だけ別の口にすると、画面が収集の数だけ問い合わせることになる)。
     """
     collect.require_enabled()
-    return {"collections": [collect.to_public(c) for c in collect.load()]}
+    return {
+        "collections": [collect.to_public(c, with_covered=False) for c in collect.load()]
+    }
 
 
 @app.post("/v1/collect")

@@ -130,6 +130,26 @@ LEGACY_MODES = {"rebuild": MODE_REFINE}
 # 育てたものが 1 回で消える。だから作るときに弾く
 MATERIAL_PLACEHOLDER = "{current}"
 
+# 回り終えた印を差し込む場所。**`{cursor}` と役割が違う** ——
+# あちらは「次はどこ」の 1 本、こちらは「どこを終えたか」の一覧。
+# 全部を舐めきったかも、取りこぼしがどこかも、一覧が無いと書きようがない
+COVERED_PLACEHOLDER = "{covered}"
+
+# 積んでおく印の大きさ(文字数)。**件数ではなく文字数で見る** ——
+# このファイルの冒頭に書いたとおり、件数は大きさの代理にならない
+# (印は「新宿区」のような短いものも、長い範囲の書き方も来る)。
+#
+# **何件までと決めるのは Chiezo の仕事ではない。** どこまで細かく回るかは依頼した側の
+# プロンプトが決めることで、こちらが持つのは「定義のメモが際限なく太らない」歯止めだけ。
+# 全国を市区町村で舐めても 2 万字ほどなので、**普通の使い方では当たらない**大きさに置く。
+MAX_COVERED_CHARS = 200_000
+# 1 件の印の長さ。**印であって本文ではない**ので、長い説明が混ざったら切る
+MAX_COVERED_ITEM_CHARS = 200
+# プロンプトへ差し込むときの文字数。**素材の差し込み(`MAX_MATERIAL_CHARS`)と同じ流儀**で、
+# ここだけは当たりうる —— 1 回ぶんの本文に収める必要があるため。
+# 載せきれないぶんは件数として伝える(黙って切らない)
+MAX_COVERED_PROMPT_CHARS = 20_000
+
 # 作り直しで、前世代の何割を下回ったら焼くのを断るか。
 # **既定で守る側に倒す** —— AI が変な日に当たった 1 回で、育てた分類が消えるのは重い。
 # 意図して減らすときは、この値を下げるか 0 にして守りを外す(画面から変えられる)。
@@ -242,6 +262,16 @@ class Collection:
     cursor: str
     created_at: str
     updated_at: str
+    # 回り終えた印の積み上げ。`prompt` の `{covered}` に入り、AI が `covered` で返す。
+    #
+    # **`cursor` が「次はどこ」なら、こちらは「どこを終えたか」。** 1 本の印だけでは、
+    # 全部を舐めきったかも、取りこぼしがどこかも分からない —— 「2 周目で埋める」
+    # 「この範囲はもう集めてある」を外から判断するには、終えたものの一覧が要る。
+    #
+    # **中身が何かは知らない**(地域名でも人物名でもよい)。Chiezo は AI が返した
+    # 文字列を積んで `{covered}` で見せ返すだけで、意味は依頼した側のプロンプトが持つ
+    # —— 抽出の指定(`app/extract.py`)と同じ線。
+    covered: list[str] = field(default_factory=list)
     # 集め方(`MODES`)。既定は足すほう —— 既にある定義の意味を変えない
     mode: str = MODE_APPEND
     # 作り直しで、前世代の何割を下回ったら断るか。0 なら守りを外す。
@@ -310,6 +340,7 @@ def _from_json(item: dict) -> Collection:
         effort=item.get("effort") or None,
         web=bool(item.get("web", True)),
         cursor=str(item.get("cursor") or ""),
+        covered=normalize_covered(item.get("covered")),
         mode=normalize_mode(item.get("mode")),
         keep_ratio=normalize_keep_ratio(item.get("keep_ratio")),
         extract=extraction.to_json(extraction.normalize(item.get("extract"))),
@@ -325,6 +356,64 @@ def _from_json(item: dict) -> Collection:
         last_removed_titles=[str(t) for t in (item.get("last_removed_titles") or [])],
         next_run_at=item.get("next_run_at") or None,
     )
+
+
+def normalize_covered(value) -> list[str]:
+    """回り終えた印を均す(文字列だけ・前後の空白を落とす・重複を外す)。
+
+    **大きさは文字数で見る**(`MAX_COVERED_CHARS`)。超えたら古いほうから落とす ——
+    「最近どこを回ったか」のほうが、次にどこへ行くかを決める役に立つ。
+    普通の使い方では当たらない大きさなので、ここはメモが際限なく太らない歯止め。
+    """
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, (str, int, float)):
+            continue
+        text = str(raw).strip()[:MAX_COVERED_ITEM_CHARS]
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    # 古いほうから落として収める(1 件ずつ引くので、境目で切れた印が残らない)
+    used = sum(len(t) for t in out)
+    start = 0
+    while used > MAX_COVERED_CHARS and start < len(out):
+        used -= len(out[start])
+        start += 1
+    return out[start:]
+
+
+def merge_covered(current: list[str], added: list[str]) -> list[str]:
+    """回り終えた印を積む。**同じものは後ろへ動かさない** —— 並びが「回った順」
+    として読めるほうが、どこまで進んだかを追いやすい(2 周目に入ったことも見える)。
+    """
+    seen = set(current)
+    return normalize_covered(current + [a for a in normalize_covered(added) if a not in seen])
+
+
+def render_covered(covered: list[str]) -> str:
+    """`{covered}` に差し込む文字列。**入るだけ新しいほうから載せる**
+    (`MAX_COVERED_PROMPT_CHARS`。素材の差し込みと同じ流儀で、文字数で見る)。
+
+    **載せきれないぶんは件数で伝える** —— 黙って切ると、AI からは
+    「そこまでしか回っていない」ように見えて、既に回ったところへ戻る。
+    """
+    if not covered:
+        return "(まだ無し。最初から)"
+    shown: list[str] = []
+    used = 0
+    for text in reversed(covered):
+        if used + len(text) + 1 > MAX_COVERED_PROMPT_CHARS:
+            break
+        shown.append(text)
+        used += len(text) + 1
+    shown.reverse()
+    head = f"回り終えたもの(全 {len(covered)} 件"
+    head += f"。うち新しい {len(shown)} 件を載せています)" if len(shown) < len(covered) else ")"
+    return head + ":\n" + "、".join(shown)
 
 
 def normalize_mode(value) -> str:
@@ -507,7 +596,7 @@ def update(name: str, **fields) -> Collection:
     current = get(name)
     allowed = {
         "description", "prompt", "interval_minutes", "enabled",
-        "backend", "model", "effort", "web", "cursor", "mode", "keep_ratio", "extract",
+        "backend", "model", "effort", "web", "cursor", "covered", "mode", "keep_ratio", "extract",
     }
     patch = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if "interval_minutes" in patch:
@@ -516,6 +605,10 @@ def update(name: str, **fields) -> Collection:
         raise HTTPException(400, {"error": f"mode は {' / '.join(MODES)} のどれかにしてください"})
     if "keep_ratio" in patch:
         patch["keep_ratio"] = normalize_keep_ratio(patch["keep_ratio"])
+    if "covered" in patch:
+        # **空の配列を渡せば最初から回り直せる**(消す手段がここしかない)。
+        # 2 周目を粗いまま繰り返させず、一度リセットして精度を上げ直したいときに使う
+        patch["covered"] = normalize_covered(patch["covered"])
     if "extract" in patch:
         # 空のオブジェクトを渡したら「使わない」に戻す(消す手段がここしかない)
         patch["extract"] = extraction.to_json(extraction.normalize(patch["extract"] or None))
@@ -566,6 +659,9 @@ SYSTEM_PROMPT = (
     "\"tags\":[\"タグ\"],\"url\":\"出典URL\"}],\"next_cursor\":\"次に進む印\"}"
     " title は重複の鍵になるので、同じものを指す見出しは同じ文字列にする。"
     " 出典が分かるものは url を必ず入れる。分からない項目は null。"
+    " **端から端まで舐めていく指示のときは covered(今回回り終えた範囲の配列)も返す。**"
+    " 次回そこへ戻らずに済み、全部を回り終えたかも分かる。"
+    " 舐める指示でなければ書かなくてよい。"
 )
 
 
@@ -618,8 +714,13 @@ def build_messages(item: Collection, previous: dict[str, dict] | None = None) ->
 
     `{current}` は作り直し(整理)のためのもの。今ある内容を読ませて、分類をやり直す・
     重複をまとめる・言い回しを揃える、といった育て方をするときに使う。
+
+    `{covered}` は**回り終えたものの一覧**。「まだのところへ進め」「全部回り終えたら
+    最初から精度を上げて回り直せ」のような、周回の指示が書けるようになる。
     """
     user = item.prompt.replace("{cursor}", item.cursor or "(まだ無し。最初から)")
+    if COVERED_PLACEHOLDER in user:
+        user = user.replace(COVERED_PLACEHOLDER, render_covered(item.covered))
     if MATERIAL_PLACEHOLDER in user:
         material_text, _shown = render_material(previous or {})
         user = user.replace(MATERIAL_PLACEHOLDER, material_text)
@@ -639,6 +740,10 @@ DRAFT_SYSTEM = (
     "- 指示文には {cursor} を入れる。**実行のたびに前回の続きへ進む印**で、"
     "AI が next_cursor で次の値を返す(「前回以降の日付」「次に回る地域」"
     "「次に調べる人」など、集めるものに合う進み方を決める)\n"
+    "- **端から端まで舐めていく collection では {covered} も入れる**。"
+    "回り終えたものの一覧が差し込まれるので、「まだのところへ進め」"
+    "「全部回り終えたら精度を上げて最初から回り直せ」と書ける。"
+    "その場合は返す形に covered(今回回り終えた範囲の配列)も足すよう頼む\n"
     "- 1回に集める件数を書く\n"
     "出力は**指示文そのものだけ**。前置き・見出し・コードブロックの記号・"
     "「以下が指示文です」のような説明は一切付けない。"
@@ -676,8 +781,8 @@ def clean_draft(content: str) -> str:
     return text.strip()
 
 
-def parse_response(content: str) -> tuple[list[dict], str | None]:
-    """AI の答えから items と next_cursor を取り出す。
+def parse_response(content: str) -> tuple[list[dict], str | None, list[str]]:
+    """AI の答えから items と next_cursor と covered を取り出す。
 
     前置きやコードブロックが混ざっても拾えるように、`{` 〜 `}` を切り出してから読む
     (小型モデルでなくても、この手の付け足しは普通に起きる)。
@@ -696,6 +801,9 @@ def parse_response(content: str) -> tuple[list[dict], str | None]:
     return (
         [i for i in items if isinstance(i, dict)],
         str(next_cursor) if isinstance(next_cursor, (str, int, float)) and next_cursor else None,
+        # **返さなくても壊れない** —— 周回を使わない収集は covered を書かないので、
+        # 空のまま積まれずに進む(既にある収集の意味を変えないため)
+        normalize_covered(payload.get("covered")),
     )
 
 
@@ -709,6 +817,7 @@ def record_result(
     removed_titles: list[str] | None = None,
     error: str | None = None,
     next_cursor: str | None = None,
+    covered: list[str] | None = None,
 ) -> Collection:
     """1 回ぶんの結果を定義側へ書き戻し、次回の予定を入れる。
 
@@ -719,6 +828,7 @@ def record_result(
     updated = replace(
         current,
         cursor=next_cursor if next_cursor is not None else current.cursor,
+        covered=merge_covered(current.covered, covered or []),
         last_run_at=_iso(now),
         last_status=status,
         last_error=(error or "")[:500] or None,
@@ -760,13 +870,21 @@ def due_collections(at: datetime | None = None) -> list[Collection]:
     )
 
 
-def to_public(item: Collection) -> dict:
+def to_public(item: Collection, *, with_covered: bool = True) -> dict:
     """画面と REST に返す形。**次回の予定を必ず入れる**
 
     (「30 分ごと・次は 14:20」まで見えて初めて、動いているか判断できる。
     溜まった件数は長期記憶の側にあるので、画面はソース表から取る)。
+
+    **一覧では回り終えた印そのものを載せない**(`with_covered=False`)——
+    上限まで積むと 1 件で数百 KB になり、収集の数だけ倍になる。件数だけ載せて、
+    中身は 1 件ぶんの口(`GET /v1/collect/{name}`)で取ってもらう。
     """
-    return {**item.__dict__, "url": f"/search/{item.name}/"}
+    data = {**item.__dict__, "url": f"/search/{item.name}/"}
+    data["covered_count"] = len(item.covered)
+    if not with_covered:
+        data.pop("covered", None)
+    return data
 
 
 # ---- 焼く素材を配る(ingest が取りに来る。固化とまったく同じ契約)--------------
