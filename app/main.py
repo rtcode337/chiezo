@@ -1823,8 +1823,12 @@ def start_focus_bake(name: str, raw: dict) -> dict:
     `start_collection_bake` と分けてあるのはここ 1 点のため —— あちらは次回の予定を
     進める(それが定時の巡回の時計)。割り込みで進めると、頼むたびに一周が伸びる。
 
-    **起こせてから控える。** 先に控えると、trigger が混んで断られたときに依頼だけが
-    残り、次に走る定時の回が割り込みとして走ってしまう。
+    **控えるのが先、起こすのが後。** 逆にすると、起こされた取り込みが素材を取りに来た
+    ときにまだ依頼が書かれておらず、その回はふつうの巡回として走る —— 依頼は残るので、
+    **次の定時の回を乗っ取る**。押した人からは「押した瞬間に巡回が前倒しで動いただけ」
+    に見え、頼んだものはいつまでも走らない(実際にそうなった)。
+
+    **起こせなかったら取り下げる。** 残すと、次に走る定時の回が割り込みとして走る。
     """
     from app.views.admin import TRIGGER_URL, trigger_run
 
@@ -1837,8 +1841,15 @@ def start_focus_bake(name: str, raw: dict) -> dict:
             "error": "chiezo-trigger が設定されていません(CHIEZO_TRIGGER_URL 未設定)",
             "hint": "集めるのも焼くのも取り込みの中で起きるので、trigger が要る",
         })
-    trigger_run(name)
-    return {"name": name, "focus": collect.request_focus(name, focus).to_json()}
+    collect.request_focus(name, focus)
+
+    try:
+        trigger_run(name)
+    except Exception:
+        collect.clear_focus(name)
+        raise
+
+    return {"name": name, "focus": focus.to_json()}
 
 
 @app.post("/v1/collect/{name}/focus")

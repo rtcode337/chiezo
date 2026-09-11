@@ -1322,9 +1322,21 @@ def request_focus(name: str, focus: Focus) -> Focus:
     """割り込みの依頼を控える。**起こすのは呼んだ側**(`main.start_focus_bake`)。
 
     取り込みは収集の名前しか運べないので、素材を作る側が読めるところへ置いておく。
+
+    **控えるのが先、起こすのが後。** 逆にすると、起こされた取り込みが素材を取りに来た
+    ときにまだ依頼が書かれておらず、その回はふつうの巡回として走る —— 依頼は残るので、
+    **次の定時の回を乗っ取る**。押した人からは「押した瞬間に巡回が前倒しで動いただけ」
+    に見え、頼んだものはいつまでも走らない(実際にそうなった)。
     """
     _replace_one(name, replace(get(name), pending_focus=focus.to_json(), updated_at=_iso(_now())))
     return focus
+
+
+def clear_focus(name: str) -> None:
+    """控えた割り込みを取り下げる。**起こせなかったときに呼ぶ** ——
+    残すと、次に走る定時の回が割り込みとして走ってしまう。
+    """
+    _replace_one(name, replace(get(name), pending_focus=None, updated_at=_iso(_now())))
 
 
 def due_sweeps(at: datetime | None = None) -> list[tuple[Collection, Sweep]]:

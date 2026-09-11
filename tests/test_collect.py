@@ -987,6 +987,44 @@ class TestRest:
         res = client.post("/v1/collect/news/run")
         assert res.status_code == 403
 
+    def test_the_request_is_written_before_the_ingest_is_woken(self, client, sample, monkeypatch):
+        """**控えるのが先、起こすのが後。**
+
+        逆にすると、起こされた取り込みが素材を取りに来たときにまだ依頼が書かれて
+        おらず、その回はふつうの巡回として走る —— 依頼は残るので、次の定時の回を
+        乗っ取る。押した人からは「押した瞬間に巡回が前倒しで動いただけ」に見えて、
+        頼んだものはいつまでも走らない。
+        """
+        from app.views import admin
+
+        seen = {}
+
+        def fake_trigger(source):
+            # 起こされた時点で、もう依頼が読める状態になっていること
+            seen["pending"] = collect.get(source).pending_focus
+
+        monkeypatch.setattr(admin, "trigger_run", fake_trigger)
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://chiezo-trigger:7011")
+        collect.update("news", enabled=True)
+
+        res = client.post("/v1/collect/news/focus", json={"note": "直して", "titles": ["A"]})
+        assert res.status_code == 200
+        assert seen["pending"]["note"] == "直して"
+
+    def test_a_refused_wake_up_takes_the_request_back(self, client, sample, monkeypatch):
+        """起こせなかったのに依頼だけ残すと、次に走る定時の回が割り込みとして走る。"""
+        from app.views import admin
+
+        def refuse(_source):
+            raise HTTPException(409, {"error": "取り込みが走っています"})
+
+        monkeypatch.setattr(admin, "trigger_run", refuse)
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://chiezo-trigger:7011")
+        collect.update("news", enabled=True)
+
+        assert client.post("/v1/collect/news/focus", json={"note": "直して"}).status_code == 409
+        assert collect.get("news").pending_focus is None
+
     def test_focusing_on_a_stopped_collection_is_refused(self, client, sample):
         """割り込みも AI を 1 回動かすので、`run` と同じ扱いにする。"""
         res = client.post("/v1/collect/news/focus", json={"note": "直して"})
