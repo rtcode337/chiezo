@@ -590,19 +590,34 @@ def _serialized(backend: str) -> bool:
 
 
 def _others_running(backend: str, job_id: str) -> bool:
-    """同じ相手の生成が、いま他に走っているか。
+    """同じ相手が、いま他の仕事で塞がっているか。
 
     **プロセスの中の枠だけでは足りない。** chiezo-app は `--workers 2` で動くので、
     ワーカーが違えば同じ相手に 2 本同時に投げられてしまう —— そうなると
     ブリッジ側の直列化に引っかかり、待たされたぶんが時間切れに算入されて元に戻る。
     走っているかどうかは DB にしか書いていないので、そこを見る。
+
+    **生成の表だけを見ていては足りない。** 同じ CLI は**会話でも掴まれる** ——
+    収集の層は無人で回っていて、1 回が数分かかる。その最中に絵を頼むと、
+    こちらは「空いている」と読んで投げ、ブリッジ側で順番待ちになり、
+    **待たされたぶんがこちらの時間切れに算入される**(絵が 10 分ちょうどで
+    落ち続けたのがこれ)。会話は別の記録なので、そちらも覗く。
     """
     with _connect() as conn:
         row = conn.execute(
             "SELECT COUNT(*) FROM jobs WHERE backend = ? AND state = 'running' AND id != ?",
             (backend, job_id),
         ).fetchone()
-    return bool(row[0])
+    if row[0]:
+        return True
+
+    from app import ai_inflight
+
+    # 自分のために走っている会話(文章の生成)は数えない —— それを待つと自分待ちになる
+    return any(
+        call.get("backend") == backend and call.get("job_id") != job_id
+        for call in ai_inflight.running(limit=50)
+    )
 
 
 @asynccontextmanager

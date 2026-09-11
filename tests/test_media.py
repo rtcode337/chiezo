@@ -2119,6 +2119,44 @@ class TestAudioReference:
         assert "elevenlabs" in e.value.detail["backends"]
 
 
+class TestWaitingForTheSameCli:
+    """**同じ CLI は、絵だけでなく会話でも掴まれる。**
+
+    収集の層は無人で回っていて 1 回が数分かかる。その最中に絵を頼むと、
+    生成の表には何も無いので「空いている」と読んで投げてしまい、ブリッジ側で
+    順番待ちになる —— **待たされたぶんがこちらの時間切れに算入される**。
+    絵がちょうど 10 分で落ち続けたのがこれ。
+    """
+
+    def test_会話が走っている間は空きと見なさない(self, state, monkeypatch):
+        from app import ai_inflight
+
+        monkeypatch.setattr(
+            ai_inflight, "running",
+            lambda limit=50: [{"backend": "antigravity", "kind": "chat", "job_id": None}],
+        )
+        assert media._others_running("antigravity", "この依頼") is True
+        # 別の相手なら関係ない
+        assert media._others_running("codex", "この依頼") is False
+
+    def test_自分のための会話は待たない(self, state, monkeypatch):
+        """文章の生成は中で会話の口を呼ぶ。**自分を待つと永久に始まらない。**"""
+        from app import ai_inflight
+
+        monkeypatch.setattr(
+            ai_inflight, "running",
+            lambda limit=50: [{"backend": "codex", "kind": "chat", "job_id": "この依頼"}],
+        )
+        assert media._others_running("codex", "この依頼") is False
+
+    def test_記録が無くても落ちない(self, state, monkeypatch):
+        """`ai_inflight` は置き場が無ければ空を返す。生成を止めない。"""
+        from app import ai_inflight
+
+        monkeypatch.setattr(ai_inflight, "running", lambda limit=50: [])
+        assert media._others_running("codex", "この依頼") is False
+
+
 class TestShowingWhatItWasMadeFrom:
     """**元にしたものを画面に出す。**
 
