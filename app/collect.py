@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 from dataclasses import dataclass, field, replace
@@ -79,6 +80,17 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,30}$")
 
 # 間隔の下限。AI を呼ぶので、分より短い間隔を許すと枠を焼くだけになる
 MIN_INTERVAL_MINUTES = 5
+
+# 巡回(`Sweep`)の名前。**書いていない収集は、定義そのものが 1 本の巡回**として振る舞う。
+# こうしておくと、区画の記録も時計も「巡回ごと」の 1 本道になる(場合分けが増えない)。
+DEFAULT_SWEEP_NAME = "既定"
+# 1 つの収集に持てる巡回の数。**2〜3 本で足りる** —— ざっと全体を拾うものと、
+# 少数をじっくり調べるもの。増やすほど同じ収集に対する AI の呼び出しが重なる
+MAX_SWEEPS = 8
+# 1 回で見る区画の上限。**区画ごとに AI を 1 回呼ぶ**(素材をその区画のぶんに
+# 絞るのが区画の意味なので、まとめて聞くと絞った意味が消える)ため、
+# 1 回の取り込みが何十分にもならないようにここで止める
+MAX_PARTITIONS_PER_RUN = 20
 
 # 1 回で焼ける素材の大きさ(バイト)。**件数ではなく大きさで縛る。**
 #
@@ -260,6 +272,12 @@ class Collection:
     # 割り出した区画の台帳。1 件は `{"key", "count", "visited_at"}`。
     # **巡回の記録はここだけが持つ** —— 割り直しても引き継ぐ(`partitioning.refresh`)
     partitions: list[dict] = field(default_factory=list)
+    # 巡回(`Sweep`)。**空なら定義そのものが 1 本の巡回**。
+    # ざっと全体を拾うものと、少数をじっくり調べるものを別々の時計で回すために持つ
+    sweeps: list[dict] = field(default_factory=list)
+    # いま起こしてある取り込みが、どの巡回のものか。**取り込みは名前しか運べない**
+    # (`GET /v1/collect/fetch?source=…`)ので、起こした側がここに書いて渡す
+    pending_sweep: str = ""
     # 集め方(`MODES`)。既定は足すほう —— 既にある定義の意味を変えない
     mode: str = MODE_APPEND
     # 作り直しで、前世代の何割を下回ったら断るか。0 なら守りを外す。
@@ -293,11 +311,158 @@ class Collection:
         return self.mode == MODE_REFINE
 
     def due_at(self) -> datetime:
+        """次に走る時刻。**巡回のうちいちばん早いもの**(持っていなければ「いますぐ」)。
+
+        巡回を書いていない収集では、自分の `next_run_at` がそのまま出る。
+        """
+        return min((s.due_at() for s in sweeps_of(self)), default=_now())
+
+    def is_due(self, at: datetime | None = None) -> bool:
+        return self.enabled and self.due_at() <= (at or _now())
+
+
+@dataclass(frozen=True)
+class Sweep:
+    """1 本の巡回 —— 「どれくらいの頻度で、1 回にどれだけ見るか」。
+
+    **1 つの収集に 2 種類の直し方が要る。** ざっと全体を拾って訂正するもの
+    (1 週間で一周するくらいの頻度と量)と、少数をじっくり調べるもの。
+    進み方も、頼む相手も、1 回に食べる量も違うので、`interval_minutes` 1 本では表せない。
+
+    **区画の巡回記録は巡回ごとに持つ**(`partitions[].visits`)。ざっとが一周した区画を
+    じっくりはまだ見ていない、が普通に起きる。
+
+    書いていない収集では、定義そのものが 1 本の巡回になる(`DEFAULT_SWEEP_NAME`)。
+    """
+
+    name: str
+    prompt: str
+    interval_minutes: int
+    enabled: bool
+    backend: str | None
+    model: str | None
+    effort: str | None
+    # 一周にかける日数。**書けば 1 回に見る区画数を Chiezo が計算する** ——
+    # 手で書かせると、区画が増えた日に一周が静かに伸びる(そして誰も気づかない)
+    cover_days: float | None = None
+    # 1 回に見る区画数を直に決める。`cover_days` より優先
+    partitions_per_run: int | None = None
+    next_run_at: str | None = None
+    last_run_at: str | None = None
+    last_status: str | None = None
+    last_error: str | None = None
+
+    def due_at(self) -> datetime:
         """次に走る時刻。持っていなければ「いますぐ」。"""
         return _parse(self.next_run_at) or _now()
 
     def is_due(self, at: datetime | None = None) -> bool:
-        return self.enabled and self.due_at() <= (at or _now())
+        """**予定を持っていない巡回は、いますぐ走る。** 足したばかりの巡回がそれで、
+        「いま」を取り直して比べると必ず未来になり、永遠に走らない(実際にそうなった)。
+        """
+        at = at or _now()
+        return self.enabled and (_parse(self.next_run_at) or at) <= at
+
+    def per_run(self, total_partitions: int) -> int:
+        """1 回に見る区画の数。
+
+        **`cover_days` から計算するのが本命。** 「7 日で一周」とだけ書けば、区画が
+        増えても 1 回あたりが自動で増える —— 区画数を手で追いかけなくてよくなる。
+        """
+        if self.partitions_per_run:
+            return max(1, min(self.partitions_per_run, MAX_PARTITIONS_PER_RUN))
+        if self.cover_days and total_partitions:
+            runs = self.cover_days * 24 * 60 / self.interval_minutes
+            if runs >= 1:
+                return max(1, min(math.ceil(total_partitions / runs), MAX_PARTITIONS_PER_RUN))
+        return 1
+
+    def applied_to(self, item: Collection) -> Collection:
+        """この巡回の相手・モデル・深さを載せた定義(AI へ投げるときに使う)。"""
+        return replace(item, backend=self.backend, model=self.model, effort=self.effort)
+
+    def to_json(self) -> dict:
+        return {k: v for k, v in self.__dict__.items() if v is not None}
+
+
+def sweeps_of(item: Collection) -> list[Sweep]:
+    """この収集の巡回。**書いていなければ定義そのものが 1 本**。
+
+    場合分けを外へ漏らさないための形 —— 呼ぶ側はいつでも「巡回の一覧」を相手にする。
+    """
+    if not item.sweeps:
+        return [Sweep(
+            name=DEFAULT_SWEEP_NAME,
+            prompt=item.prompt,
+            interval_minutes=item.interval_minutes,
+            enabled=True,
+            backend=item.backend,
+            model=item.model,
+            effort=item.effort,
+            next_run_at=item.next_run_at,
+            last_run_at=item.last_run_at,
+            last_status=item.last_status,
+            last_error=item.last_error,
+        )]
+    return [_sweep_from_json(raw, item) for raw in item.sweeps[:MAX_SWEEPS]]
+
+
+def _sweep_from_json(raw: dict, item: Collection) -> Sweep:
+    """**書いていない項目は収集のものを使う。** 巡回ごとに全部書かせない
+    (違うところだけ書けば済むほうが、2 本目を足すときに間違えにくい)。
+    """
+    return Sweep(
+        name=str(raw.get("name") or DEFAULT_SWEEP_NAME).strip()[:40],
+        prompt=str(raw.get("prompt") or "") or item.prompt,
+        interval_minutes=max(
+            int(raw.get("interval_minutes") or item.interval_minutes), MIN_INTERVAL_MINUTES
+        ),
+        enabled=bool(raw.get("enabled", True)),
+        backend=raw.get("backend") or item.backend,
+        model=raw.get("model") or item.model,
+        effort=raw.get("effort") or item.effort,
+        cover_days=float(raw["cover_days"]) if raw.get("cover_days") else None,
+        partitions_per_run=(
+            int(raw["partitions_per_run"]) if raw.get("partitions_per_run") else None
+        ),
+        next_run_at=raw.get("next_run_at") or None,
+        last_run_at=raw.get("last_run_at") or None,
+        last_status=raw.get("last_status") or None,
+        last_error=raw.get("last_error") or None,
+    )
+
+
+def normalize_sweeps(raw) -> list[dict]:
+    """巡回の一覧を均す。**名前が鍵**なので、空や重複は落とす。
+
+    区画の記録が名前で引かれる(`partitions[].visits`)ため、同じ名前が 2 本あると
+    片方の進み具合がもう片方に化ける。
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for item in raw[:MAX_SWEEPS]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()[:40]
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append({**item, "name": name})
+    return out
+
+
+def sweep_named(item: Collection, name: str | None) -> Sweep:
+    """名前で引く。**知らない名前なら、次に走るはずの巡回へ倒す** ——
+    巡回を消したあとに走りかけの取り込みが素材を取りに来ることがある。
+    """
+    sweeps = sweeps_of(item)
+    for sweep in sweeps:
+        if sweep.name == name:
+            return sweep
+    due = [s for s in sweeps if s.enabled]
+    return min(due or sweeps, key=lambda s: s.due_at())
 
 
 def _defs_row():
@@ -334,6 +499,8 @@ def _from_json(item: dict) -> Collection:
         cursor=str(item.get("cursor") or ""),
         partition=partitioning.to_json(partitioning.normalize(item.get("partition"))),
         partitions=partitioning.normalize_ledger(item.get("partitions")),
+        sweeps=normalize_sweeps(item.get("sweeps")),
+        pending_sweep=str(item.get("pending_sweep") or ""),
         mode=normalize_mode(item.get("mode")),
         keep_ratio=normalize_keep_ratio(item.get("keep_ratio")),
         extract=extraction.to_json(extraction.normalize(item.get("extract"))),
@@ -535,7 +702,7 @@ def update(name: str, **fields) -> Collection:
     allowed = {
         "description", "prompt", "interval_minutes", "enabled",
         "backend", "model", "effort", "web", "cursor", "mode", "keep_ratio", "extract",
-        "partition", "partitions",
+        "partition", "partitions", "sweeps",
     }
     patch = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if "interval_minutes" in patch:
@@ -553,6 +720,16 @@ def update(name: str, **fields) -> Collection:
         # 勝つ(割り出した結果を持ち込みたいのに、こちらが消してしまうため)
         if patch["partition"] != current.partition and "partitions" not in patch:
             patch["partitions"] = []
+    if "sweeps" in patch:
+        patch["sweeps"] = normalize_sweeps(patch["sweeps"])
+        # **巡回の名前が消えたら、その巡回の記録も台帳から落とす** ——
+        # 残しておくと、同じ名前で作り直したとき前の進み具合が引き継がれる
+        names = {raw["name"] for raw in patch["sweeps"]}
+        if names:
+            patch["partitions"] = [
+                {**p, "visits": {k: v for k, v in (p.get("visits") or {}).items() if k in names}}
+                for p in patch.get("partitions", current.partitions)
+            ]
     if "partitions" in patch:
         # **空の配列を渡せば最初から回り直せる**(消す手段がここしかない)。
         # 2 周目を粗いまま繰り返させず、一度リセットして精度を上げ直したいときに使う
@@ -694,6 +871,7 @@ def build_messages(
     previous: dict[str, dict] | None = None,
     partition_key: str | None = None,
     sources: dict | None = None,
+    sweep: Sweep | None = None,
 ) -> list[dict]:
     """AI へ渡す本文。`{cursor}` を今のカーソルで、`{current}` を今ある内容で置き換える。
 
@@ -707,7 +885,8 @@ def build_messages(
     `{partition}` は**今回見る範囲**。Chiezo が台帳から選んで渡す(`app/partition.py`)。
     矩形だけでは AI にどこか分からないので、近くのものを数件添えた文になる。
     """
-    user = item.prompt.replace("{cursor}", item.cursor or "(まだ無し。最初から)")
+    prompt = (sweep.prompt if sweep else "") or item.prompt
+    user = prompt.replace("{cursor}", item.cursor or "(まだ無し。最初から)")
     spec = partitioning.normalize(item.partition) if item.partition else None
     if PARTITION_PLACEHOLDER in user:
         user = user.replace(
@@ -812,7 +991,8 @@ def record_result(
     removed_titles: list[str] | None = None,
     error: str | None = None,
     next_cursor: str | None = None,
-    partition: str | None = None,
+    sweep: str | None = None,
+    visited: list[str] | None = None,
     partitions: list[dict] | None = None,
 ) -> Collection:
     """1 回ぶんの結果を定義側へ書き戻し、次回の予定を入れる。
@@ -824,13 +1004,16 @@ def record_result(
     """
     current = get(name)
     now = _now()
+    this = sweep_named(current, sweep)
     ledger = partitions if partitions is not None else current.partitions
-    if partition and status == "ok":
-        ledger = partitioning.mark_visited(ledger, partition, _iso(now))
+    if visited and status == "ok":
+        ledger = partitioning.mark_visited(ledger, visited, this.name, _iso(now))
     updated = replace(
         current,
         cursor=next_cursor if next_cursor is not None else current.cursor,
         partitions=ledger,
+        # **走り終えたので、どの巡回を起こしてあるかは忘れる**
+        pending_sweep="",
         last_run_at=_iso(now),
         last_status=status,
         last_error=(error or "")[:500] or None,
@@ -839,38 +1022,85 @@ def record_result(
         last_skipped=skipped,
         last_removed=removed,
         last_removed_titles=list(removed_titles or []),
-        next_run_at=_iso(now + timedelta(minutes=current.interval_minutes)),
         updated_at=_iso(now),
+        **_advance(current, this, now, status=status, error=error),
     )
     _replace_one(name, updated)
     return updated
 
 
-def mark_started(name: str) -> Collection:
+def _advance(
+    current: Collection, sweep: Sweep, now: datetime, *, status: str, error: str | None
+) -> dict:
+    """走った巡回の次回の予定と控えを進める。
+
+    **巡回を書いていない収集では、定義そのものの欄が進む** —— 場合分けが要るのは
+    ここだけで、呼ぶ側はどちらかを気にしなくてよい。
+    """
+    nxt = _iso(now + timedelta(minutes=sweep.interval_minutes))
+    if not current.sweeps:
+        return {"next_run_at": nxt}
+    return {"sweeps": [
+        {
+            **raw,
+            "next_run_at": nxt,
+            "last_run_at": _iso(now),
+            "last_status": status,
+            "last_error": (error or "")[:500] or None,
+        }
+        if raw.get("name") == sweep.name else raw
+        for raw in current.sweeps
+    ]}
+
+
+def mark_started(name: str, sweep: str | None = None) -> Collection:
     """取り込みを起こしたので、次回の予定だけ進める。
+
+    **どの巡回を起こしたかを控える**(`pending_sweep`)。取り込みは収集の名前しか
+    運べない(`GET /v1/collect/fetch?source=…`)ので、素材を作る側はここを読む。
 
     **結果は控えない** —— 実際に集められたかは、取り込みが素材を取りに来たとき
     (`ndjson`)に分かる。ここで「成功」と書くと、起こしただけのものが成功に見える。
     """
     current = get(name)
+    this = sweep_named(current, sweep)
+    now = _now()
     updated = replace(
         current,
-        next_run_at=_iso(_now() + timedelta(minutes=current.interval_minutes)),
-        updated_at=_iso(_now()),
+        pending_sweep=this.name,
+        updated_at=_iso(now),
+        **_advance(current, this, now, status=current.last_status, error=current.last_error),
     )
     _replace_one(name, updated)
     return updated
 
 
-def due_collections(at: datetime | None = None) -> list[Collection]:
-    """いま走らせるべき収集(予定の早い順)。無効なものは含まない。"""
+def due_sweeps(at: datetime | None = None) -> list[tuple[Collection, Sweep]]:
+    """いま走らせるべき(収集, 巡回)の組を、予定の早い順に。
+
+    **止めている収集は 1 本も出さない** —— 巡回ごとの `enabled` は、有効な収集の中で
+    どの巡回を回すかの話で、収集そのものの可否とは別の段。
+    """
     if not is_enabled():
         return []
     now = at or _now()
-    return sorted(
-        (c for c in load() if c.is_due(now)),
-        key=lambda c: c.due_at(),
-    )
+    pairs = [
+        (c, sweep)
+        for c in load() if c.enabled
+        for sweep in sweeps_of(c) if sweep.is_due(now)
+    ]
+    return sorted(pairs, key=lambda pair: pair[1].due_at())
+
+
+def due_collections(at: datetime | None = None) -> list[Collection]:
+    """いま走らせるべき収集(予定の早い順・重複なし)。"""
+    seen: set[str] = set()
+    out = []
+    for item, _sweep in due_sweeps(at):
+        if item.name not in seen:
+            seen.add(item.name)
+            out.append(item)
+    return out
 
 
 def to_public(item: Collection, *, with_partitions: bool = True) -> dict:
@@ -884,11 +1114,22 @@ def to_public(item: Collection, *, with_partitions: bool = True) -> dict:
     中身は 1 件ぶんの口(`GET /v1/collect/{name}`)で取ってもらう。
     """
     data = {**item.__dict__, "url": f"/search/{item.name}/"}
-    visited, total = partitioning.progress(item.partitions)
-    data["partitions_visited"] = visited
-    data["partitions_total"] = total
-    # 次にどこを見るかは、動いているかの判断に要る(予定だけでは進んでいるか分からない)
-    data["next_partition"] = partitioning.due(item.partitions)
+    sweeps = sweeps_of(item)
+    # **一覧に出す予定は、巡回のうちいちばん早いもの。** 巡回を書いている収集では
+    # 定義側の `next_run_at` が進まないので、そのまま出すと止まって見える
+    data["next_run_at"] = _iso(item.due_at()) if item.enabled else item.next_run_at
+    data["partitions_total"] = len(item.partitions)
+    # 進み具合と次の行き先は**巡回ごと**。ざっとが一周した区画を、じっくりは
+    # まだ見ていない、が普通に起きる
+    data["sweeps"] = [
+        {
+            **sweep.to_json(),
+            "partitions_visited": partitioning.progress(item.partitions, sweep.name)[0],
+            "next_partition": partitioning.due(item.partitions, sweep.name),
+            "partitions_per_run": sweep.per_run(len(item.partitions)),
+        }
+        for sweep in sweeps
+    ]
     if not with_partitions:
         data.pop("partitions", None)
     return data

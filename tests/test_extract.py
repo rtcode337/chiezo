@@ -324,7 +324,7 @@ class TestWhenItIsUsedInsteadOfTheAI:
     async def _items(self, item, sources):
         from app.main import _collect_items
 
-        return await _collect_items(item, {}, sources)
+        return await _collect_items(item, {}, sources, [])
 
     def test_the_first_run_does_not_ask_the_ai(self, source, monkeypatch):
         import asyncio

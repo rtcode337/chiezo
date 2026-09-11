@@ -389,15 +389,20 @@ def refresh(built: list[dict], current: list[dict]) -> list[dict]:
     引き継がないと、割り直すたびに全区画が「まだ見ていない」に戻り、一周が
     永遠に終わらない。鍵が変わった区画(割られた・統合された)は新しく始まる。
     """
-    seen = {p["key"]: p.get("visited_at") for p in current}
+    seen = {p["key"]: dict(p.get("visits") or {}) for p in current}
     return [
-        {"key": p["key"], "count": int(p.get("count") or 0), "visited_at": seen.get(p["key"])}
+        {"key": p["key"], "count": int(p.get("count") or 0), "visits": seen.get(p["key"], {})}
         for p in built
     ]
 
 
 def normalize_ledger(raw) -> list[dict]:
-    """定義のメモから読んだ台帳を均す(壊れた行は落とす)。"""
+    """定義のメモから読んだ台帳を均す(壊れた行は落とす)。
+
+    **記録は巡回ごとに持つ**(`visits`)。2 種類の巡回 —— ざっと全体を拾うものと、
+    少数をじっくり調べるもの —— は進み方が違うので、1 つの日付では表せない。
+    ざっとが一周した区画を、じっくりはまだ見ていない、が普通に起きる。
+    """
     if not isinstance(raw, list):
         return []
     out = []
@@ -407,11 +412,12 @@ def normalize_ledger(raw) -> list[dict]:
         key = str(item.get("key") or "").strip()
         if not key:
             continue
-        out.append({
-            "key": key,
-            "count": int(item.get("count") or 0),
-            "visited_at": item.get("visited_at") or None,
-        })
+        raw_visits = item.get("visits")
+        visits = (
+            {str(k): str(v) for k, v in raw_visits.items() if v}
+            if isinstance(raw_visits, dict) else {}
+        )
+        out.append({"key": key, "count": int(item.get("count") or 0), "visits": visits})
     return out
 
 
@@ -435,24 +441,39 @@ def outgrown(spec: dict, partitions: list[dict], docs: dict[str, dict]) -> bool:
     return any(n > limit for n in counts.values())
 
 
-def due(partitions: list[dict]) -> str | None:
-    """次に見る区画。**まだ見ていないものが先、次に古いもの**。
+def pick(partitions: list[dict], sweep_name: str, count: int = 1) -> list[str]:
+    """次に見る区画を、古い順に `count` 件。**まだ見ていないものが先**。
 
     一周の速さは巡回の側が決める(ここは順番だけを持つ)。
     """
-    if not partitions:
-        return None
-    return min(partitions, key=lambda p: (p.get("visited_at") or "", p["key"]))["key"]
+    ordered = sorted(
+        partitions, key=lambda p: ((p.get("visits") or {}).get(sweep_name) or "", p["key"])
+    )
+    return [p["key"] for p in ordered[: max(0, count)]]
 
 
-def mark_visited(partitions: list[dict], key: str, at: str) -> list[dict]:
+def due(partitions: list[dict], sweep_name: str) -> str | None:
+    """次に見る区画を 1 つ。無ければ None。"""
+    picked = pick(partitions, sweep_name, 1)
+    return picked[0] if picked else None
+
+
+def mark_visited(
+    partitions: list[dict], keys: list[str], sweep_name: str, at: str
+) -> list[dict]:
     """見終わった印を付ける。知らない鍵は黙って無視する(割り直しと行き違う)。"""
-    return [{**p, "visited_at": at} if p["key"] == key else p for p in partitions]
+    marked = set(keys)
+    return [
+        {**p, "visits": {**(p.get("visits") or {}), sweep_name: at}}
+        if p["key"] in marked else p
+        for p in partitions
+    ]
 
 
-def progress(partitions: list[dict]) -> tuple[int, int]:
-    """(一度でも見た区画, 全区画)。「一周したか」を出すのに使う。"""
-    return sum(1 for p in partitions if p.get("visited_at")), len(partitions)
+def progress(partitions: list[dict], sweep_name: str) -> tuple[int, int]:
+    """(その巡回が一度でも見た区画, 全区画)。「一周したか」を出すのに使う。"""
+    seen = sum(1 for p in partitions if (p.get("visits") or {}).get(sweep_name))
+    return seen, len(partitions)
 
 
 # ---- プロンプトへ渡す ----------------------------------------------------------

@@ -179,7 +179,8 @@ async def _run_collections(app: FastAPI) -> None:
     に AI へ聞く)ので、時計がすることは「取り込みを 1 本始める」だけになる。
 
     **1 周に 1 件ずつ**にしてある。trigger は同時に 1 ジョブしか受けないうえ、
-    CLI ブリッジ越しの相手も同時に 1 本しか動かない。
+    CLI ブリッジ越しの相手も同時に 1 本しか動かない。**起こすのは(収集, 巡回)の組**
+    —— 同じ収集に「ざっと」と「じっくり」が別の時計で載っているため。
 
     **混んでいれば次の周期へ回す**(429/409)。予定は進めないので、空いたときに走る。
     **失敗しても止めない** —— 止めると、一度こけた収集が二度と走らなくなる。
@@ -187,19 +188,23 @@ async def _run_collections(app: FastAPI) -> None:
     while True:
         await asyncio.sleep(COLLECT_TICK_SECONDS)
         try:
-            due = await asyncio.to_thread(collect.due_collections)
+            due = await asyncio.to_thread(collect.due_sweeps)
             if not due:
                 continue
-            await asyncio.to_thread(start_collection_bake, due[0].name)
+            item, sweep = due[0]
+            await asyncio.to_thread(start_collection_bake, item.name, sweep.name)
         except Exception:
             log.exception("collection tick failed")
 
 
-def start_collection_bake(name: str) -> dict:
+def start_collection_bake(name: str, sweep: str | None = None) -> dict:
     """収集の取り込みを 1 本起こす(集めるのも焼くのも向こうで起きる)。
 
     **予定は起こせたときだけ進める** —— trigger が混んでいて断られたのに次回へ送ると、
     その回は黙って飛ばされる。
+
+    **どの巡回を起こしたかは定義側に控える**(`pending_sweep`)。取り込みは収集の
+    名前しか運べないので、素材を作る側はそこを読む。
     """
     from app.views.admin import TRIGGER_URL, trigger_run
 
@@ -211,7 +216,7 @@ def start_collection_bake(name: str) -> dict:
     trigger_run(name)
     # **起こせたときだけ予定を進める** —— 混んでいて断られたのに次回へ送ると、
     # その回は黙って飛ばされる(trigger_run が例外にするのでここへは来ない)
-    return collect.to_public(collect.mark_started(name))
+    return collect.to_public(collect.mark_started(name, sweep))
 
 
 async def _ask_for_collection(item, messages: list[dict]) -> str:
@@ -261,7 +266,7 @@ async def draft_collection_prompt(
 
 
 async def _collect_items(
-    item, previous: dict, sources: dict, partition_key: str | None = None
+    item, previous: dict, sources: dict, keys: list[str], sweep=None
 ) -> tuple[list[dict], str | None]:
     """1 回ぶん集める。**最初の 1 回だけ機械的に埋められる**。
 
@@ -269,15 +274,29 @@ async def _collect_items(
     長期記憶から引いて組み立てる —— 名前や年代のような**既に書いてあること**を
     AI に書かせると、存在しないものが混ざるうえ、毎回違うものが返る。
     進み具合が入った 2 回目からは、いつもどおり AI が肉付けする。
+
+    **区画ごとに 1 回ずつ聞く。** まとめて 1 回で聞くこともできるが、それだと
+    `{current}` がその区画のぶんだけになる意味が消える(区画を切った理由そのもの)。
+    1 回に何区画まで見るかは巡回が決める(`Sweep.per_run`)。
+
+    **途中でこけたら、そこまでのぶんも捨てる。** 半端に焼くと、見終わっていない区画に
+    印が付くか、印の付いていない区画の中身だけが入れ替わる —— どちらも後から読めない。
     """
     if item.extract and not item.cursor:
         spec = extract.normalize(item.extract)
         items, next_cursor = await asyncio.to_thread(extract.run, spec, sources)
         return items, next_cursor
-    content = await _ask_for_collection(
-        item, collect.build_messages(item, previous, partition_key, sources)
-    )
-    return collect.parse_response(content or "")
+    asked = item if sweep is None else sweep.applied_to(item)
+    collected: list[dict] = []
+    cursor = None
+    for key in keys or [None]:
+        content = await _ask_for_collection(
+            asked, collect.build_messages(item, previous, key, sources, sweep)
+        )
+        items, next_cursor = collect.parse_response(content or "")
+        collected += items
+        cursor = next_cursor or cursor
+    return collected, cursor
 
 
 async def collect_material(name: str, sources: dict) -> str:
@@ -297,15 +316,18 @@ async def collect_material(name: str, sources: dict) -> str:
     # **区画は集める前に決める。** 何を見るかが決まっていないと、渡す素材も
     # 差し込む文も作れない(台帳が無ければ空で返り、今までどおり全体を見る)
     ledger = await asyncio.to_thread(collect.plan_partitions, item, sources, previous)
-    key = partitioning.due(ledger)
+    # **どの巡回のぶんかは、起こした側が控えてある**(取り込みは名前しか運べない)
+    sweep = collect.sweep_named(item, item.pending_sweep)
+    keys = partitioning.pick(ledger, sweep.name, sweep.per_run(len(ledger)))
     try:
-        items, next_cursor = await _collect_items(item, previous, sources, key)
+        items, next_cursor = await _collect_items(item, previous, sources, keys, sweep)
         body, diff = await asyncio.to_thread(collect.ndjson, item, sources, previous, items)
     except Exception as e:
         reason = f"{type(e).__name__}: {e}"
         log.warning("collect %s failed: %s", name, reason)
         await asyncio.to_thread(
-            collect.record_result, name, status="error", error=reason, partitions=ledger
+            collect.record_result,
+            name, status="error", error=reason, sweep=sweep.name, partitions=ledger,
         )
         await asyncio.to_thread(
             collect_log.record, name, status=collect_log.STATUS_ERROR, error=reason
@@ -321,13 +343,14 @@ async def collect_material(name: str, sources: dict) -> str:
         updated=diff["updated"],
         removed_titles=diff["removed_titles"],
         next_cursor=next_cursor,
-        partition=key,
+        sweep=sweep.name,
+        visited=keys,
         partitions=ledger,
     )
     await asyncio.to_thread(collect_log.record, name, status=collect_log.STATUS_OK, diff=diff)
     log.info(
-        "collect %s (%s%s): added=%d updated=%d kept=%d removed=%d skipped=%d",
-        name, item.mode, f" {key}" if key else "",
+        "collect %s (%s/%s%s): added=%d updated=%d kept=%d removed=%d skipped=%d",
+        name, item.mode, sweep.name, f" {len(keys)} 区画" if keys else "",
         diff["added"], diff["updated"], diff["kept"], diff["removed"], diff["skipped"],
     )
     return body
@@ -346,8 +369,11 @@ async def collect_preview(name: str, sources: dict) -> dict:
     item = await asyncio.to_thread(collect.get, name)
     previous = await asyncio.to_thread(collect.previous_docs, name, sources)
     ledger = await asyncio.to_thread(collect.plan_partitions, item, sources, previous)
-    key = partitioning.due(ledger)
-    items, next_cursor = await _collect_items(item, previous, sources, key)
+    sweep = collect.sweep_named(item, None)
+    # **下見は 1 区画だけ。** 何区画でも見られるが、下見は「この指示文でどうなるか」を
+    # 見るためのもので、1 区画あれば分かる(そのぶん安く、待たされない)
+    keys = partitioning.pick(ledger, sweep.name, 1)
+    items, next_cursor = await _collect_items(item, previous, sources, keys, sweep)
     _docs, diff = await asyncio.to_thread(collect.material, item, previous, items)
     return {
         "name": name,
@@ -356,7 +382,8 @@ async def collect_preview(name: str, sources: dict) -> dict:
         "next_cursor": next_cursor,
         # **下見では印を付けない。** 進み具合を動かさないのが下見の約束なので、
         # 「今回どこを見たか」だけ見せる(台帳を進めるのは焼くときだけ)
-        "partition": key,
+        "sweep": sweep.name,
+        "partition": keys[0] if keys else None,
         # 焼こうとしたら止まるかどうか。止まる理由もそのまま出す
         "blocked": collect.shrink_blocked(item, diff),
     }
@@ -1390,6 +1417,13 @@ class CollectionPatch(BaseModel):
             "区画の台帳。空の配列を渡すと割り直して最初から回り直せる"
             "(2 周目を粗いまま繰り返させず、精度を上げて回り直したいときに使う)"
         ),
+    )
+    sweeps: list[dict] | None = PydField(
+        None,
+        description="巡回。**同じ収集を別々の時計で回す**ためのもので、"
+        "ざっと全体を拾うもの(cover_days に一周の日数)と、少数をじっくり調べるもの"
+        "(partitions_per_run と強いモデル)を分けて持てる。"
+        "空の配列を渡すと、上の interval_minutes で 1 本だけ回る形に戻る",
     )
 
 

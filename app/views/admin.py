@@ -547,26 +547,82 @@ PARTITION_EXAMPLE = json.dumps(
 # 見たいのは「次にどこを見るか」と「どれくらい回ったか」で、全件の一覧ではない
 PARTITION_SAMPLES = 12
 
+SWEEPS_EXAMPLE = json.dumps(
+    [
+        {"name": "ざっと", "interval_minutes": 360, "cover_days": 7},
+        {
+            "name": "じっくり", "interval_minutes": 1440,
+            "partitions_per_run": 1, "effort": "high",
+        },
+    ],
+    ensure_ascii=False,
+)
+
+
+def _sweeps_html(item) -> str:
+    """巡回の一覧 —— 「どれくらいの頻度で、1 回にどれだけ見るか」。
+
+    **1 行に「一周のうちどこまで」を出す。** ざっとが一周した区画をじっくりは
+    まだ見ていない、が普通に起きるので、巡回ごとに出さないと進み具合が読めない。
+
+    巡回を書いていない収集にも 1 行出る(定義そのものが 1 本の巡回として動くため)。
+    """
+    total = len(item.partitions)
+    rows = []
+    for sweep in collect.sweeps_of(item):
+        visited, _ = partitioning.progress(item.partitions, sweep.name)
+        due = jst.parse(sweep.next_run_at or "")
+        where = (
+            f"{total:,} のうち {visited:,}"
+            f'<br><span class="muted">1 回に {sweep.per_run(total)} 区画</span>'
+            if total else '<span class="muted">区画なし</span>'
+        )
+        if sweep.last_status == "error":
+            result = f'<span class="stale">失敗: {esc(sweep.last_error or "")}</span>'
+        else:
+            last = jst.parse(sweep.last_run_at or "")
+            result = esc(jst.format(last)) if last else '<span class="muted">まだ</span>'
+        cls = "" if sweep.enabled else ' class="off"'
+        # **止めている巡回に「いますぐ」と出さない**(予定を持っていないだけで走らない)
+        if not sweep.enabled:
+            when = '<span class="muted">止めている</span>'
+        elif due:
+            when = esc(jst.format(due))
+        else:
+            when = '<span class="muted">いますぐ</span>'
+        rows.append(
+            f"<tr{cls}><td>{esc(sweep.name)}</td>"
+            f"<td>{sweep.interval_minutes} 分ごと"
+            + (f'<br><span class="muted">{sweep.cover_days:g} 日で一周</span>'
+               if sweep.cover_days else "")
+            + f"</td><td>{when}</td>"
+            f"<td>{where}</td><td>{result}</td></tr>"
+        )
+    return (
+        "<details><summary>巡回</summary>"
+        "<table><thead><tr><th>巡回</th><th>間隔</th><th>次にいつ</th>"
+        "<th>一周のうち</th><th>前回</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table></details>"
+    )
+
 
 def _partition_html(item) -> str:
     """区画の進み具合。持っていない収集には何も出さない。
 
-    **出すのは「いくつ回り終えたか」と「次はどこか」**。一周したかどうかが読めて
-    初めて、間隔と 1 回あたりの量が足りているかを判断できる。
+    **出すのは「どう割れたか」だけ。** どこまで回ったかは巡回ごとに違うので
+    `_sweeps_html` の側にある。
     """
     if not item.partition:
         return ""
-    visited, total = partitioning.progress(item.partitions)
+    total = len(item.partitions)
     if not total:
         return (
             '<p class="muted">区画: まだ割っていません'
             "(次の実行で対象の空間を割ってから回り始めます)。</p>"
         )
-    nxt = partitioning.due(item.partitions)
     rows = "".join(
         f"<tr><td>{esc(p['key'])}</td><td>{p['count']:,}</td>"
-        f'<td>{esc(jst.format(jst.parse(p["visited_at"]))) if p.get("visited_at") else ""}</td>'
-        "</tr>"
+        f"<td>{esc('、'.join(sorted((p.get('visits') or {}).keys())))}</td></tr>"
         for p in item.partitions[:PARTITION_SAMPLES]
     )
     more = (
@@ -574,10 +630,9 @@ def _partition_html(item) -> str:
         if total > PARTITION_SAMPLES else ""
     )
     return (
-        f'<p class="muted">区画: {total:,} のうち {visited:,} を回り終えた。'
-        f'次は <code>{esc(nxt or "")}</code></p>'
+        f'<p class="muted">区画: {total:,}</p>'
         "<details><summary>区画の一覧</summary>"
-        "<table><thead><tr><th>区画</th><th>母集団</th><th>最後に見たのは</th></tr></thead>"
+        "<table><thead><tr><th>区画</th><th>母集団</th><th>見終えた巡回</th></tr></thead>"
         f"<tbody>{rows}</tbody></table>{more}</details>"
     )
 
@@ -751,7 +806,7 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'<pre class="prompt-view">{esc(item.prompt)}</pre>'
             f'<p class="muted">進み具合(次の実行で {{cursor}} に入る値): '
             f'<code>{esc(item.cursor) or "(まだ無し)"}</code></p>'
-            f"{_partition_html(item)}"
+            f"{_sweeps_html(item)}{_partition_html(item)}"
             f"<details><summary>編集する</summary>"
             f'<form method="post" action="/admin/collect/{esc(item.name)}/edit" class="collect-form">'
             f'<p><label>説明<br><input name="description" value="{esc(item.description)}"></label></p>'
@@ -774,6 +829,15 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'<p><label>区画の指定(JSON。空なら区画を持たない)<br>'
             f'<textarea name="partition" rows="6" spellcheck="false">'
             f"{esc(_partition_json(item))}</textarea></label></p>"
+            f'<p><label>巡回(JSON の配列。空なら上の間隔で 1 本だけ回る)<br>'
+            f'<textarea name="sweeps" rows="8" spellcheck="false">'
+            f"{esc(_sweeps_json(item))}</textarea></label></p>"
+            f'<p class="muted">巡回を書くと、<strong>同じ収集を別々の時計で回せる</strong>'
+            f" —— ざっと全体を拾って訂正するものと、少数をじっくり調べるもの。"
+            f" <code>cover_days</code> に「7」と書けば<strong>1 回に見る区画数は"
+            f"自動で決まる</strong>(区画が増えれば 1 回あたりも増える)。"
+            f" 書かなかった項目は上の設定を使う。"
+            f" 例: <code>{esc(SWEEPS_EXAMPLE)}</code></p>"
             f'<p class="muted">区画を入れると、<strong>対象としている空間を密度で割って</strong>'
             f" 1 回に 1 区画ずつ順に回る。プロンプトに <code>{{partition}}</code> を入れると"
             f" そこへ今回見る範囲が差し込まれる。<strong>まだ 1 件も集めていない範囲にも"
@@ -1622,6 +1686,7 @@ async def admin_collect_edit(name: str, request: Request):
         # 空欄は「使わない」。指定を外せるのはここだけ
         extract=_parse_extract(form.get("extract")),
         partition=_parse_partition(form.get("partition")),
+        sweeps=_parse_sweeps(form.get("sweeps")),
         # 0 も意味のある値(守りを外す)なので、空のときだけ触らない
         keep_ratio=_ratio(form.get("keep_ratio")),
         # 相手・モデル・深さは**空を「既定にまかせる」として通す** ——
@@ -1841,6 +1906,11 @@ def _partition_json(item) -> str:
     return _spec_json(item.partition)
 
 
+def _sweeps_json(item) -> str:
+    """巡回の一覧を、編集できる文字列にする。持っていなければ空。"""
+    return _spec_json(item.sweeps)
+
+
 def _spec_json(spec) -> str:
     return json.dumps(spec, ensure_ascii=False, indent=2) if spec else ""
 
@@ -1851,6 +1921,17 @@ def _parse_extract(raw):
 
 def _parse_partition(raw):
     return _parse_spec(raw, "区画")
+
+
+def _parse_sweeps(raw):
+    """**空欄は「巡回を書かない」**(定義そのものが 1 本の巡回として動く)。"""
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    value = _parse_spec(text, "巡回")
+    if not isinstance(value, list):
+        raise HTTPException(400, {"error": "巡回は配列で書いてください"})
+    return value
 
 
 def _parse_spec(raw, label: str):

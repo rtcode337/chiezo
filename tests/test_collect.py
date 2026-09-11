@@ -337,16 +337,19 @@ class TestPartitionLedger:
     def test_the_oldest_one_comes_next(self, sample):
         """まだ見ていないものが先、次に古いもの。"""
         self._with_ledger(["A", "B"])
-        collect.record_result("news", status="ok", partition="A")
-        assert partitioning.due(collect.get("news").partitions) == "B"
-        collect.record_result("news", status="ok", partition="B")
-        assert partitioning.due(collect.get("news").partitions) == "A"
+        collect.record_result("news", status="ok", visited=["A"])
+        ledger = collect.get("news").partitions
+        assert partitioning.due(ledger, collect.DEFAULT_SWEEP_NAME) == "B"
+        collect.record_result("news", status="ok", visited=["B"])
+        ledger = collect.get("news").partitions
+        assert partitioning.due(ledger, collect.DEFAULT_SWEEP_NAME) == "A"
 
     def test_a_failed_run_does_not_mark_it_seen(self, sample):
         """一度も見られていない区画が「見終わった」に混ざると、一周が嘘になる。"""
         self._with_ledger(["A", "B"])
-        collect.record_result("news", status="error", partition="A", error="落ちた")
-        assert partitioning.due(collect.get("news").partitions) == "A"
+        collect.record_result("news", status="error", visited=["A"], error="落ちた")
+        ledger = collect.get("news").partitions
+        assert partitioning.due(ledger, collect.DEFAULT_SWEEP_NAME) == "A"
 
     def test_the_partition_goes_into_the_prompt(self, sample):
         collect.update("news", prompt="この範囲を調べて: {partition}")
@@ -369,18 +372,141 @@ class TestPartitionLedger:
     def test_patching_an_empty_ledger_starts_the_round_over(self, sample):
         """2 周目を粗いまま繰り返させず、精度を上げて回り直したいときに使う。"""
         self._with_ledger(["A"])
-        collect.record_result("news", status="ok", partition="A")
+        collect.record_result("news", status="ok", visited=["A"])
         collect.update("news", partitions=[])
         assert collect.get("news").partitions == []
 
     def test_the_list_endpoint_leaves_the_ledger_out(self, sample):
         """上限まで割ると 1 件で数百 KB になり、収集の数だけ倍になる。"""
         self._with_ledger(["A", "B"])
-        collect.record_result("news", status="ok", partition="A")
+        collect.record_result("news", status="ok", visited=["A"])
         listed = collect.to_public(collect.get("news"), with_partitions=False)
         assert "partitions" not in listed
-        assert (listed["partitions_visited"], listed["partitions_total"]) == (1, 2)
-        assert listed["next_partition"] == "B"
+        assert listed["partitions_total"] == 2
+        assert listed["sweeps"][0]["partitions_visited"] == 1
+        assert listed["sweeps"][0]["next_partition"] == "B"
+
+
+class TestSweeps:
+    """1 つの収集に 2 種類の直し方 —— ざっと全体を拾うものと、少数をじっくり調べるもの。
+
+    進み方も頼む相手も 1 回に食べる量も違うので、`interval_minutes` 1 本では表せない。
+    """
+
+    def _two_sweeps(self):
+        collect.update(
+            "news",
+            partition={"by": "title", "target": 100},
+            partitions=[{"key": k, "count": 1} for k in ["A", "B", "C", "D"]],
+            sweeps=[
+                {"name": "ざっと", "interval_minutes": 360, "cover_days": 7},
+                {"name": "じっくり", "interval_minutes": 1440,
+                 "partitions_per_run": 1, "model": "opus"},
+            ],
+        )
+
+    def test_a_collection_without_sweeps_is_one_sweep(self, sample):
+        """場合分けを外へ漏らさない。呼ぶ側はいつでも巡回の一覧を相手にする。"""
+        sweeps = collect.sweeps_of(sample)
+        assert [s.name for s in sweeps] == [collect.DEFAULT_SWEEP_NAME]
+        assert sweeps[0].prompt == sample.prompt
+        assert sweeps[0].interval_minutes == sample.interval_minutes
+
+    def test_what_is_not_written_falls_back_to_the_collection(self, sample):
+        """違うところだけ書けば済むほうが、2 本目を足すときに間違えにくい。"""
+        self._two_sweeps()
+        rough, deep = collect.sweeps_of(collect.get("news"))
+        assert rough.prompt == sample.prompt
+        assert rough.model is None
+        assert deep.model == "opus"
+        assert deep.interval_minutes == 1440
+
+    def test_covering_in_a_week_decides_how_many_to_take(self, sample):
+        """手で書かせると、区画が増えた日に一周が静かに伸びる。"""
+        self._two_sweeps()
+        rough, deep = collect.sweeps_of(collect.get("news"))
+        # 6 時間ごと・7 日で一周 = 28 回。4 区画なら 1 回 1 区画で足りる
+        assert rough.per_run(4) == 1
+        # 区画が増えれば 1 回あたりも増える(手で追いかけなくてよい)
+        assert rough.per_run(280) == 10
+        # 直に書いてあればそちらが勝つ
+        assert deep.per_run(280) == 1
+
+    def test_one_run_never_eats_everything(self, sample):
+        """区画ごとに AI を 1 回呼ぶので、1 回の取り込みが何十分にもならないように。"""
+        self._two_sweeps()
+        rough = collect.sweeps_of(collect.get("news"))[0]
+        assert rough.per_run(100_000) == collect.MAX_PARTITIONS_PER_RUN
+
+    def test_each_sweep_keeps_its_own_progress(self, sample):
+        """ざっとが一周した区画を、じっくりはまだ見ていない、が普通に起きる。"""
+        self._two_sweeps()
+        collect.record_result("news", status="ok", sweep="ざっと", visited=["A", "B"])
+        ledger = collect.get("news").partitions
+        assert partitioning.progress(ledger, "ざっと") == (2, 4)
+        assert partitioning.progress(ledger, "じっくり") == (0, 4)
+        assert partitioning.due(ledger, "じっくり") == "A"
+
+    def test_only_the_sweep_that_ran_moves_its_clock(self, sample):
+        self._two_sweeps()
+        collect.record_result("news", status="ok", sweep="ざっと")
+        rough, deep = collect.sweeps_of(collect.get("news"))
+        assert rough.next_run_at is not None
+        assert deep.next_run_at is None
+
+    def test_a_stopped_sweep_never_comes_due(self, sample):
+        """止めるのに消さなくてよい(消すと進み具合まで消える)。"""
+        collect.update(
+            "news", enabled=True,
+            sweeps=[{"name": "ざっと"}, {"name": "じっくり", "enabled": False}],
+        )
+        due = collect.due_sweeps()
+        assert [s.name for _c, s in due] == ["ざっと"]
+
+    def test_a_stopped_collection_runs_no_sweep_at_all(self, sample):
+        """巡回ごとの enabled は、有効な収集の中でどれを回すかの話。"""
+        collect.update("news", sweeps=[{"name": "ざっと"}])
+        assert collect.due_sweeps() == []
+
+    def test_starting_one_remembers_which(self, sample):
+        """取り込みは収集の名前しか運べないので、起こした側が控える。"""
+        collect.update("news", enabled=True, sweeps=[{"name": "ざっと"}, {"name": "じっくり"}])
+        collect.mark_started("news", "じっくり")
+        item = collect.get("news")
+        assert item.pending_sweep == "じっくり"
+        assert collect.sweep_named(item, item.pending_sweep).name == "じっくり"
+        # 走り終えたら忘れる
+        collect.record_result("news", status="ok", sweep="じっくり")
+        assert collect.get("news").pending_sweep == ""
+
+    def test_an_unknown_sweep_falls_back_to_the_next_one(self, sample):
+        """巡回を消したあとに、走りかけの取り込みが素材を取りに来ることがある。"""
+        collect.update("news", enabled=True, sweeps=[{"name": "ざっと"}])
+        assert collect.sweep_named(collect.get("news"), "消えた巡回").name == "ざっと"
+
+    def test_duplicate_names_are_dropped(self, sample):
+        """名前が鍵なので、2 本あると片方の進み具合がもう片方に化ける。"""
+        collect.update("news", sweeps=[{"name": "ざっと"}, {"name": "ざっと"}, {"name": ""}])
+        assert [s["name"] for s in collect.get("news").sweeps] == ["ざっと"]
+
+    def test_removing_a_sweep_drops_its_marks(self, sample):
+        """同じ名前で作り直したとき、前の進み具合が引き継がれないように。"""
+        self._two_sweeps()
+        collect.record_result("news", status="ok", sweep="じっくり", visited=["A"])
+        collect.update("news", sweeps=[{"name": "ざっと"}])
+        ledger = collect.get("news").partitions
+        assert all("じっくり" not in (p["visits"] or {}) for p in ledger)
+
+    def test_the_soonest_sweep_is_what_the_list_shows(self, sample):
+        """巡回を書いた収集では定義側の予定が進まないので、そのまま出すと止まって見える。"""
+        collect.update(
+            "news", enabled=True,
+            sweeps=[
+                {"name": "ざっと", "next_run_at": "2030-01-01T00:00:00+00:00"},
+                {"name": "じっくり", "next_run_at": "2026-01-01T00:00:00+00:00"},
+            ],
+        )
+        assert collect.to_public(collect.get("news"))["next_run_at"].startswith("2026-01-01")
 
 
 class TestSchedule:
@@ -1022,16 +1148,24 @@ class TestTheCollectSectionMarkup:
             "news",
             partition={"by": "title", "target": 100},
             partitions=[
-                {"key": "あ〜き", "count": 100, "visited_at": "2026-09-01T00:00:00+00:00"},
+                {"key": "あ〜き", "count": 100, "visits": {"ざっと": "2026-09-01T00:00:00+00:00"}},
                 {"key": "く〜そ", "count": 80},
             ],
+            sweeps=[{"name": "ざっと", "cover_days": 7}],
         )
         html = self._html(sample)
-        assert "2 のうち 1 を回り終えた" in html
+        # 進み具合は巡回ごとに出る
+        assert "2 のうち 1" in html
+        assert "7 日で一周" in html
         assert "く〜そ" in html
 
     def test_a_collection_without_partitions_says_nothing(self, sample):
         assert "区画:" not in self._html(sample)
+
+    def test_a_collection_without_sweeps_still_shows_one(self, sample):
+        """定義そのものが 1 本の巡回として動くので、行が消えると止まって見える。"""
+        html = self._html(sample)
+        assert collect.DEFAULT_SWEEP_NAME in html
 
     def test_the_recent_changes_are_shown(self, sample, monkeypatch, tmp_path):
         """「直近どこに修正が入ったか」は表の「前回」列とは別に要る。

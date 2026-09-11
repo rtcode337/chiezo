@@ -221,37 +221,54 @@ class TestTheLedger:
     def test_resplitting_keeps_what_was_already_seen(self):
         """引き継がないと、割り直すたびに一周が最初に戻り、永遠に終わらない。"""
         current = [
-            {"key": "A", "count": 1, "visited_at": "2026-09-01T00:00:00+00:00"},
-            {"key": "B", "count": 1, "visited_at": None},
+            {"key": "A", "count": 1, "visits": {"ざっと": "2026-09-01T00:00:00+00:00"}},
+            {"key": "B", "count": 1, "visits": {}},
         ]
         built = [{"key": "A", "count": 2}, {"key": "C", "count": 3}]
         merged = partition.refresh(built, current)
-        assert merged[0]["visited_at"] == "2026-09-01T00:00:00+00:00"
+        assert merged[0]["visits"] == {"ざっと": "2026-09-01T00:00:00+00:00"}
         assert merged[0]["count"] == 2
         # 鍵が変わった区画は新しく始まる
-        assert merged[1] == {"key": "C", "count": 3, "visited_at": None}
+        assert merged[1] == {"key": "C", "count": 3, "visits": {}}
 
     def test_the_unseen_ones_come_first(self):
         ledger = [
-            {"key": "A", "count": 1, "visited_at": "2026-09-01T00:00:00+00:00"},
-            {"key": "B", "count": 1, "visited_at": None},
+            {"key": "A", "count": 1, "visits": {"ざっと": "2026-09-01T00:00:00+00:00"}},
+            {"key": "B", "count": 1, "visits": {}},
         ]
-        assert partition.due(ledger) == "B"
-        marked = partition.mark_visited(ledger, "B", "2026-09-02T00:00:00+00:00")
-        assert partition.due(marked) == "A"
-        assert partition.progress(marked) == (2, 2)
+        assert partition.due(ledger, "ざっと") == "B"
+        marked = partition.mark_visited(ledger, ["B"], "ざっと", "2026-09-02T00:00:00+00:00")
+        assert partition.due(marked, "ざっと") == "A"
+        assert partition.progress(marked, "ざっと") == (2, 2)
+
+    def test_each_sweep_keeps_its_own_progress(self):
+        """ざっとが一周した区画を、じっくりはまだ見ていない、が普通に起きる。"""
+        ledger = [{"key": "A", "count": 1, "visits": {}}, {"key": "B", "count": 1, "visits": {}}]
+        ledger = partition.mark_visited(ledger, ["A", "B"], "ざっと", "2026-09-01T00:00:00+00:00")
+        assert partition.progress(ledger, "ざっと") == (2, 2)
+        assert partition.progress(ledger, "じっくり") == (0, 2)
+        assert partition.due(ledger, "じっくり") == "A"
+
+    def test_it_can_hand_out_several_at_once(self):
+        """1 回に何区画見るかは巡回が決める(ここは順番だけを持つ)。"""
+        ledger = [{"key": k, "count": 1, "visits": {}} for k in ["A", "B", "C"]]
+        assert partition.pick(ledger, "ざっと", 2) == ["A", "B"]
+        ledger = partition.mark_visited(ledger, ["A", "B"], "ざっと", "2026-09-01T00:00:00+00:00")
+        assert partition.pick(ledger, "ざっと", 2) == ["C", "A"]
 
     def test_an_unknown_key_is_ignored(self):
         """割り直しと行き違ったときに、知らない鍵で落ちない。"""
-        ledger = [{"key": "A", "count": 1, "visited_at": None}]
-        assert partition.mark_visited(ledger, "消えた区画", "2026-09-02T00:00:00+00:00") == ledger
+        ledger = [{"key": "A", "count": 1, "visits": {}}]
+        assert partition.mark_visited(
+            ledger, ["消えた区画"], "ざっと", "2026-09-02T00:00:00+00:00"
+        ) == ledger
 
     def test_an_empty_ledger_has_nothing_due(self):
-        assert partition.due([]) is None
+        assert partition.due([], "ざっと") is None
 
     def test_a_broken_row_is_dropped(self):
         assert partition.normalize_ledger([{"key": ""}, "文字列", {"key": "A"}]) == [
-            {"key": "A", "count": 0, "visited_at": None}
+            {"key": "A", "count": 0, "visits": {}}
         ]
 
 
