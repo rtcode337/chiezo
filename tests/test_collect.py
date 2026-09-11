@@ -16,6 +16,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
 from app import collect, notes
 from app import partition as partitioning
@@ -509,6 +510,116 @@ class TestSweeps:
         assert collect.to_public(collect.get("news"))["next_run_at"].startswith("2026-01-01")
 
 
+class TestFocus:
+    """割り込み —— 「ここが間違っているから直して」を、巡回とは別の道で頼む。
+
+    約束は 1 つ、**定時の巡回に影響を出さない**こと。進み具合・どの巡回の予定・
+    区画の巡回記録のどれも動かさない —— 動くのは中身だけ。
+    """
+
+    @pytest.fixture
+    def ready(self, sample):
+        collect.update(
+            "news",
+            enabled=True,
+            cursor="2026-09-01",
+            partition={"by": "title", "target": 100},
+            partitions=[{"key": k, "count": 1} for k in ["A", "B"]],
+        )
+        return collect.get("news")
+
+    def test_a_request_without_a_note_is_refused(self, ready):
+        """何をどう直すかが無い割り込みは、1 回ぶんの AI の呼び出しにしかならない。"""
+        with pytest.raises(HTTPException):
+            collect.require_focus({"titles": ["X"]})
+
+    def test_it_does_not_move_the_cursor_or_the_clock(self, ready):
+        collect.request_focus(
+            "news", collect.require_focus({"note": "住所を直して", "titles": ["○○食堂"]})
+        )
+        before = collect.get("news")
+        collect.record_result(
+            "news", status="ok", next_cursor="2026-09-30", visited=["A"], focus=True
+        )
+        after = collect.get("news")
+        assert after.cursor == "2026-09-01"
+        assert after.next_run_at == before.next_run_at
+        # 見ていない区画に印が付かない
+        assert after.partitions == before.partitions
+
+    def test_a_normal_run_still_moves_everything(self, ready):
+        """割り込みだけが特別。ふつうの回は今までどおり進む。"""
+        before = collect.get("news")
+        collect.record_result("news", status="ok", next_cursor="2026-09-30", visited=["A"])
+        after = collect.get("news")
+        assert after.cursor == "2026-09-30"
+        assert after.next_run_at != before.next_run_at
+        assert partitioning.progress(after.partitions, collect.DEFAULT_SWEEP_NAME) == (1, 2)
+
+    def test_the_request_is_cleared_even_when_it_fails(self, ready):
+        """残すと、次に走る定時の回が割り込みとして走ってしまう。"""
+        collect.request_focus("news", collect.require_focus({"note": "直して"}))
+        collect.record_result("news", status="error", error="落ちた", focus=True)
+        assert collect.get("news").pending_focus is None
+
+    def test_the_named_ones_are_always_shown(self, ready):
+        """区画を渡すだけでは、直してほしい 1 件が差し込みに載る保証がない。"""
+        focus = collect.normalize_focus({"note": "住所を直して", "titles": ["○○食堂"]})
+        previous = {
+            "○○食堂": {"title": "○○食堂", "body": "旧住所", "tags": ["飲食店"]},
+            "別の店": {"title": "別の店", "body": "関係ない"},
+        }
+        user = collect.build_messages(
+            collect.get("news"), previous, None, {}, None, focus
+        )[1]["content"]
+        assert "住所を直して" in user
+        assert "○○食堂" in user
+        assert "いつもの巡回ではありません" in user
+
+    def test_it_does_not_call_a_focus_the_whole_thing(self, ready):
+        """区画を渡されていない割り込みの対象は名指しされたものだけで、範囲ではない。"""
+        collect.update("news", prompt="この範囲: {partition}")
+        focus = collect.normalize_focus({"note": "直して", "titles": ["A"]})
+        user = collect.build_messages(collect.get("news"), {}, None, {}, None, focus)[1]["content"]
+        assert "(全体)" not in user
+        assert "名指しされたものが対象" in user
+
+    def test_a_headline_it_does_not_have_is_said_so(self, ready):
+        """名指しされたのに無いのは、見出しの書き方が違うか入っていないか。
+
+        どちらも AI に伝わっていたほうが答えが良くなる(黙って落とさない)。
+        """
+        focus = collect.normalize_focus({"note": "直して", "titles": ["まだ無い店"]})
+        user = collect.build_messages(collect.get("news"), {}, None, {}, None, focus)[1]["content"]
+        assert "まだ無い店" in user
+        assert "まだ入っていない見出し" in user
+
+    def test_naming_alone_does_not_drag_in_everything(self, ready):
+        """区画を渡されていないのに全件を差し込むと、直す相手が切り落とされる。"""
+        focus = collect.normalize_focus({"note": "直して", "titles": ["A店"]})
+        previous = {f"店{i}": {"title": f"店{i}", "body": "本文"} for i in range(100)}
+        previous["A店"] = {"title": "A店", "body": "本文"}
+        docs, scoped = collect.scoped_docs(collect.get("news"), previous, None, focus)
+        assert list(docs) == ["A店"]
+        assert scoped is True
+
+    def test_it_is_always_a_refine(self, ready):
+        """足すだけの収集でも、名指しで渡された 1 件を直せないと割り込みの意味が無い。"""
+        assert not collect.get("news").is_refine()
+        focus = collect.normalize_focus({"note": "直して"})
+        system = collect.build_messages(
+            collect.get("news"), {}, None, {}, None, focus
+        )[0]["content"]
+        assert "墓標" in system
+
+    def test_too_many_names_are_cut(self, ready):
+        """名指しは訂正のためのもの。数十件も並べるなら区画を指すほうが早い。"""
+        focus = collect.normalize_focus(
+            {"note": "直して", "titles": [f"店{i}" for i in range(200)]}
+        )
+        assert len(focus.titles) == collect.MAX_FOCUS_TITLES
+
+
 class TestSchedule:
     def test_a_failed_run_is_still_scheduled_again(self, sample):
         """止めると、一度こけた収集が二度と走らなくなる。"""
@@ -766,6 +877,15 @@ class TestRest:
         """呼んだだけでは AI が動かない、が外へ開けておける理由。"""
         res = client.post("/v1/collect/news/run")
         assert res.status_code == 403
+
+    def test_focusing_on_a_stopped_collection_is_refused(self, client, sample):
+        """割り込みも AI を 1 回動かすので、`run` と同じ扱いにする。"""
+        res = client.post("/v1/collect/news/focus", json={"note": "直して"})
+        assert res.status_code == 403
+
+    def test_a_focus_without_a_note_is_refused(self, client, sample):
+        collect.update("news", enabled=True)
+        assert client.post("/v1/collect/news/focus", json={"note": " "}).status_code == 400
 
     def test_it_removes_the_definition(self, client, sample):
         """溜めたものは残る（外のアプリに消す手段は渡さない）。

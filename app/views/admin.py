@@ -665,7 +665,7 @@ def _collect_changes_html(limit: int = 30) -> str:
         when = esc(jst.format(at)) if at else esc(row["at"])
         if row["status"] != collect_log.STATUS_OK:
             rows.append(
-                f"<tr><td>{when}</td><td>{esc(row['name'])}</td>"
+                f"<tr><td>{when}</td><td>{esc(row['name'])}</td><td>{esc(row['sweep'])}</td>"
                 f'<td colspan="2"><span class="stale">失敗: {esc(row["error"])}</span></td></tr>'
             )
             continue
@@ -689,14 +689,21 @@ def _collect_changes_html(limit: int = 30) -> str:
             f'<div class="muted">{"<br>".join(moved)}</div></details>'
             if moved else ""
         )
+        # **どこを見た回かを出す。** 「直近どこに修正が入ったか」は、件数だけでは
+        # 答えにならない —— ざっとの回なのか割り込みなのかも、どの範囲かも読めない
+        scope = (
+            f'<br><span class="muted">{esc("、".join(row["scope"]))}</span>'
+            if row["scope"] else ""
+        )
         rows.append(
             f"<tr><td>{when}</td><td>{esc(row['name'])}</td>"
+            f"<td>{esc(row['sweep'])}{scope}</td>"
             f'<td>{summary}</td><td>{row["total"]:,} 件{detail}</td></tr>'
         )
     return f"""
 <details open><summary>直近の変更</summary>
 <table>
-<thead><tr><th>いつ</th><th>収集</th><th>変化</th><th>焼いた後</th></tr></thead>
+<thead><tr><th>いつ</th><th>収集</th><th>どの回</th><th>変化</th><th>焼いた後</th></tr></thead>
 <tbody>
 {"".join(rows)}
 </tbody>
@@ -864,6 +871,21 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'<p class="muted">書かせるのは指定だけで、保存はしません。'
             f" 書けたらその場で引いてみて、何件あるか・最初の数件がどうなるかを出します。</p>"
             f'<button type="submit">指定を書かせる</button></form></details>'
+            f"<details><summary>この部分を集中的に直させる</summary>"
+            f'<form method="post" action="/admin/collect/{esc(item.name)}/focus"'
+            f' class="collect-form"{disabled}>'
+            f'<p><label>どう直してほしいか<br>'
+            f'<textarea name="note" rows="3" required'
+            f' placeholder="例: この店は移転しているはず。住所を確かめて直して"'
+            f"></textarea></label></p>"
+            f'<p><label>直す見出し(1 行に 1 つ。空でもよい)<br>'
+            f'<textarea name="titles" rows="3"></textarea></label></p>'
+            f'<p><label>見てほしい区画(空なら上の見出しだけを見る)<br>'
+            f'<input name="partition" value=""></label></p>'
+            f'<p class="muted">定時の巡回には影響しません —— 進み具合も、次にいつ走るかも、'
+            f"区画の巡回記録も動きません。<strong>必ず「直す」側で走ります</strong>"
+            f"(集めるだけの収集でも、名指ししたものを直せます)。</p>"
+            f'<button type="submit"{disabled}>いま直させる</button></form></details>'
             f"<details><summary>AI に相談して直す</summary>"
             f'<form method="post" action="/admin/collect/consult" class="collect-form">'
             f'<input type="hidden" name="name" value="{esc(item.name)}">'
@@ -1877,6 +1899,26 @@ def admin_collect_run(name: str):
     from app.main import start_collection_bake
 
     start_collection_bake(name)
+    return RedirectResponse(url="/admin/memory#collect", status_code=303)
+
+
+@router.post("/admin/collect/{name}/focus")
+async def admin_collect_focus(name: str, request: Request):
+    """この部分を集中的に直させる(管理画面の「いま直させる」)。
+
+    **定時の巡回には影響しない** —— 進み具合も、どの巡回の予定も、区画の巡回記録も
+    動かさない。**止めている収集もここからは走らせる**(`run` と同じ理由)。
+    """
+    from app.main import start_focus_bake
+
+    form = await request.form()
+    titles = [t.strip() for t in str(form.get("titles") or "").splitlines() if t.strip()]
+    start_focus_bake(name, {
+        "note": str(form.get("note") or ""),
+        "titles": titles,
+        "partition": str(form.get("partition") or ""),
+        "requested_by": "管理画面",
+    })
     return RedirectResponse(url="/admin/memory#collect", status_code=303)
 
 

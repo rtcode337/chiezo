@@ -92,6 +92,12 @@ MAX_SWEEPS = 8
 # 1 回の取り込みが何十分にもならないようにここで止める
 MAX_PARTITIONS_PER_RUN = 20
 
+# 割り込み(`Focus`)で名指しできる見出しの数。**名指しは訂正のためのもの**なので、
+# 数十件も並べるなら区画を指すほうが早い
+MAX_FOCUS_TITLES = 50
+# 割り込みの指示文の長さ。プロンプトへそのまま入るので、本文ぶんの枠に収める
+MAX_FOCUS_NOTE_CHARS = 2_000
+
 # 1 回で焼ける素材の大きさ(バイト)。**件数ではなく大きさで縛る。**
 #
 # かつては受け取る件数を 200 で切っていた。AI の暴走した答えを止めるためだったが、
@@ -278,6 +284,9 @@ class Collection:
     # いま起こしてある取り込みが、どの巡回のものか。**取り込みは名前しか運べない**
     # (`GET /v1/collect/fetch?source=…`)ので、起こした側がここに書いて渡す
     pending_sweep: str = ""
+    # 起こしてある割り込みの依頼(`Focus`)。**同じ理由でここに置く** ——
+    # 取り込みは収集の名前しか運べないので、頼んだ側が書いて渡す
+    pending_focus: dict | None = None
     # 集め方(`MODES`)。既定は足すほう —— 既にある定義の意味を変えない
     mode: str = MODE_APPEND
     # 作り直しで、前世代の何割を下回ったら断るか。0 なら守りを外す。
@@ -465,6 +474,56 @@ def sweep_named(item: Collection, name: str | None) -> Sweep:
     return min(due or sweeps, key=lambda s: s.due_at())
 
 
+@dataclass(frozen=True)
+class Focus:
+    """割り込み —— 「ここが間違っているから直して」を、巡回とは別の道で頼む。
+
+    **定時の巡回に影響を出さない**のが約束。進み具合(`cursor`)も、どの巡回の予定も、
+    区画の巡回記録も動かさない —— 動くのは中身だけ。そうでないと、割り込むたびに
+    一周が伸びたり、見ていない区画に印が付いたりする。
+
+    **名指しできる**(`titles`)。「この見出しのここが間違っている」を指せないと、
+    訂正そのものが頼めない —— 区画を渡すだけでは、直してほしい 1 件が
+    `{current}` に載る保証がない。
+
+    **割り込みは必ず「直す」側で走る**(整理の約束で AI に頼む)。足すだけの収集でも、
+    名指しで渡された 1 件を直せなければ割り込みの意味が無い。
+    """
+
+    note: str
+    partition: str | None = None
+    titles: list[str] = field(default_factory=list)
+    requested_by: str = ""
+    requested_at: str = ""
+
+    def to_json(self) -> dict:
+        return {k: v for k, v in self.__dict__.items() if v}
+
+
+def normalize_focus(raw) -> Focus | None:
+    """割り込みの依頼を均す。指示文が無ければ受け付けない。
+
+    **指示文を必須にする** —— 何をどう直すかが書かれていない割り込みは、
+    ただの 1 回ぶんの AI の呼び出しにしかならない(巡回でやれば済む)。
+    """
+    if not isinstance(raw, dict):
+        return None
+    note = str(raw.get("note") or "").strip()[:MAX_FOCUS_NOTE_CHARS]
+    if not note:
+        return None
+    titles = [
+        str(t).strip()[:notes.TITLE_MAX_CHARS]
+        for t in (raw.get("titles") or []) if str(t).strip()
+    ]
+    return Focus(
+        note=note,
+        partition=str(raw.get("partition") or "").strip() or None,
+        titles=titles[:MAX_FOCUS_TITLES],
+        requested_by=str(raw.get("requested_by") or "").strip()[:80],
+        requested_at=str(raw.get("requested_at") or "") or _iso(_now()),
+    )
+
+
 def _defs_row():
     """定義をまとめたメモ。まだ 1 件も作っていなければ None。
 
@@ -501,6 +560,9 @@ def _from_json(item: dict) -> Collection:
         partitions=partitioning.normalize_ledger(item.get("partitions")),
         sweeps=normalize_sweeps(item.get("sweeps")),
         pending_sweep=str(item.get("pending_sweep") or ""),
+        pending_focus=(
+            focus.to_json() if (focus := normalize_focus(item.get("pending_focus"))) else None
+        ),
         mode=normalize_mode(item.get("mode")),
         keep_ratio=normalize_keep_ratio(item.get("keep_ratio")),
         extract=extraction.to_json(extraction.normalize(item.get("extract"))),
@@ -825,7 +887,7 @@ def render_material(previous: dict[str, dict], scoped: bool = False) -> tuple[st
     """
     if not previous:
         return (
-            "(この範囲には、まだ何も入っていません)" if scoped
+            "(今回の対象には、まだ何も入っていません)" if scoped
             else "(まだ何も入っていません。最初の内容を作ってください)"
         ), 0
     lines: list[str] = []
@@ -840,7 +902,7 @@ def render_material(previous: dict[str, dict], scoped: bool = False) -> tuple[st
         lines.append(line)
         used += len(line)
     shown = len(lines)
-    head = ("この範囲にいま入っているもの(全 " if scoped else "いまの内容(全 ") + f"{len(docs)} 件"
+    head = ("今回の対象にいま入っているもの(全 " if scoped else "いまの内容(全 ") + f"{len(docs)} 件"
     head += f"。うち {shown} 件だけ載せています)" if shown < len(docs) else ")"
     if shown < len(docs):
         head += "\n※ 載っていないものは今回の対象外です。載っているぶんだけを整理してください。"
@@ -848,7 +910,10 @@ def render_material(previous: dict[str, dict], scoped: bool = False) -> tuple[st
 
 
 def scoped_docs(
-    item: Collection, previous: dict[str, dict], partition_key: str | None
+    item: Collection,
+    previous: dict[str, dict],
+    partition_key: str | None,
+    focus: Focus | None = None,
 ) -> tuple[dict[str, dict], bool]:
     """今回の区画に入る文書だけに絞る。絞ったかどうかも返す。
 
@@ -856,6 +921,10 @@ def scoped_docs(
     「今回の対象外」になる(`MAX_MATERIAL_CHARS`)。区画で切れば全部見せられるので、
     漏れているものを足させることも、重複をまとめることも初めて成り立つ。
     """
+    if focus is not None and not partition_key:
+        # **名指しだけの割り込みでは、名指しされたものが全体。** 区画を渡されていない
+        # のに全件を差し込むと入り切らず、直す相手が切り落とされる
+        return {t: previous[t] for t in focus.titles if t in previous}, True
     if not (item.partition and partition_key):
         return previous, False
     spec = partitioning.normalize(item.partition)
@@ -866,12 +935,47 @@ def scoped_docs(
     }, True
 
 
+def render_focus(
+    focus: Focus, item: Collection, previous: dict[str, dict], partition_key: str | None
+) -> str:
+    """割り込みの指示を、プロンプトの後ろに足す文にする。
+
+    **いつもの回ではないと最初に言う。** 巡回のプロンプトをそのまま使うので、
+    断らないと AI は「この範囲を一通り調べる」ほうへ引っ張られる。
+
+    **名指しされたものは必ず載せる。** 区画に入っていなくても、`{current}` に
+    載っていなくても載せる —— 直す相手が見えていない訂正は頼めない。
+    """
+    parts = [
+        "【この回はいつもの巡回ではありません】",
+        "次の指示にだけ従ってください。**範囲を広げず、ここに書かれていないものは"
+        "触らないこと**(触れなかったものはそのまま残ります)。",
+        f"\n指示: {focus.note}",
+    ]
+    if named := [previous[t] for t in focus.titles if t in previous]:
+        lines = "\n".join(
+            f"- {doc['title']}"
+            + (f" 【{'/'.join(doc.get('tags') or [])}】" if doc.get("tags") else "")
+            + (f" — {(doc.get('body') or '')[:MATERIAL_BODY_CHARS]}" if doc.get("body") else "")
+            for doc in named
+        )
+        parts.append(f"\n直す対象:\n{lines}")
+    # **手元に無い見出しも隠さない。** 名指しされたのに無いのは、見出しの書き方が
+    # 違うか、そもそも入っていないか —— どちらも AI に伝わっていたほうが答えが良くなる
+    if missing := [t for t in focus.titles if t not in previous]:
+        parts.append(
+            "\nまだ入っていない見出し(名指しされたが手元に無い): " + "、".join(missing)
+        )
+    return "\n".join(parts)
+
+
 def build_messages(
     item: Collection,
     previous: dict[str, dict] | None = None,
     partition_key: str | None = None,
     sources: dict | None = None,
     sweep: Sweep | None = None,
+    focus: Focus | None = None,
 ) -> list[dict]:
     """AI へ渡す本文。`{cursor}` を今のカーソルで、`{current}` を今ある内容で置き換える。
 
@@ -888,17 +992,27 @@ def build_messages(
     prompt = (sweep.prompt if sweep else "") or item.prompt
     user = prompt.replace("{cursor}", item.cursor or "(まだ無し。最初から)")
     spec = partitioning.normalize(item.partition) if item.partition else None
+    if focus is not None:
+        partition_key = focus.partition or partition_key
     if PARTITION_PLACEHOLDER in user:
-        user = user.replace(
-            PARTITION_PLACEHOLDER,
-            partitioning.describe(spec, partition_key, sources or {})
-            if (spec and partition_key) else "(全体)",
-        )
+        if spec and partition_key:
+            where = partitioning.describe(spec, partition_key, sources or {})
+        elif focus is not None:
+            # **「全体」と言わない。** 区画を渡されていない割り込みの対象は
+            # 名指しされたものだけで、範囲ではない
+            where = "(この回は範囲ではなく、下に名指しされたものが対象です)"
+        else:
+            where = "(全体)"
+        user = user.replace(PARTITION_PLACEHOLDER, where)
     if MATERIAL_PLACEHOLDER in user:
-        docs, scoped = scoped_docs(item, previous or {}, partition_key)
+        docs, scoped = scoped_docs(item, previous or {}, partition_key, focus)
         material_text, _shown = render_material(docs, scoped)
         user = user.replace(MATERIAL_PLACEHOLDER, material_text)
-    system = REFINE_SYSTEM_PROMPT if item.is_refine() else SYSTEM_PROMPT
+    if focus is not None:
+        user += "\n\n" + render_focus(focus, item, previous or {}, partition_key)
+    # **割り込みは必ず「直す」側で頼む。** 足すだけの収集でも、名指しで渡された 1 件を
+    # 直せなければ割り込みの意味が無い
+    system = REFINE_SYSTEM_PROMPT if (item.is_refine() or focus is not None) else SYSTEM_PROMPT
     if spec and spec["by"] == partitioning.BY_GEO:
         system += GEO_SYSTEM_NOTE
     return [
@@ -994,6 +1108,7 @@ def record_result(
     sweep: str | None = None,
     visited: list[str] | None = None,
     partitions: list[dict] | None = None,
+    focus: bool = False,
 ) -> Collection:
     """1 回ぶんの結果を定義側へ書き戻し、次回の予定を入れる。
 
@@ -1001,19 +1116,27 @@ def record_result(
 
     **見た区画に印を付けるのは成功したときだけ。** 失敗した回に印を付けると、
     一度も見られていない区画が「回り終えた」に混ざり、一周が嘘になる。
+
+    **割り込みの回は、時計にも進み具合にも触らない**(`focus`)。進み具合・どの巡回の
+    予定・区画の巡回記録のどれも動かさない —— 動かすと、割り込むたびに一周が伸びたり、
+    見ていない区画に印が付いたりする。**成否にかかわらず依頼は片付ける** ——
+    残すと、次に走る定時の回が割り込みとして走ってしまう。
     """
     current = get(name)
     now = _now()
     this = sweep_named(current, sweep)
     ledger = partitions if partitions is not None else current.partitions
-    if visited and status == "ok":
+    if visited and status == "ok" and not focus:
         ledger = partitioning.mark_visited(ledger, visited, this.name, _iso(now))
     updated = replace(
         current,
-        cursor=next_cursor if next_cursor is not None else current.cursor,
+        cursor=(
+            current.cursor if focus or next_cursor is None else next_cursor
+        ),
         partitions=ledger,
         # **走り終えたので、どの巡回を起こしてあるかは忘れる**
         pending_sweep="",
+        pending_focus=None if focus else current.pending_focus,
         last_run_at=_iso(now),
         last_status=status,
         last_error=(error or "")[:500] or None,
@@ -1023,7 +1146,7 @@ def record_result(
         last_removed=removed,
         last_removed_titles=list(removed_titles or []),
         updated_at=_iso(now),
-        **_advance(current, this, now, status=status, error=error),
+        **({} if focus else _advance(current, this, now, status=status, error=error)),
     )
     _replace_one(name, updated)
     return updated
@@ -1073,6 +1196,31 @@ def mark_started(name: str, sweep: str | None = None) -> Collection:
     )
     _replace_one(name, updated)
     return updated
+
+
+def require_focus(raw: dict) -> Focus:
+    """割り込みの依頼を読む。**読めなければ断る**。
+
+    **取り込みを起こす前に呼ぶ。** 起こしてから断ると、指示文の無い依頼のために
+    1 本ぶんの取り込みが走る(そして何も直らない)。
+    """
+    focus = normalize_focus(raw)
+    if focus is None:
+        raise HTTPException(400, {
+            "error": "note(どう直してほしいか)を書いてください",
+            "reason": "何をどう直すかが書かれていない割り込みは、1 回ぶんの AI の"
+                      "呼び出しにしかならない(巡回でやれば済む)",
+        })
+    return focus
+
+
+def request_focus(name: str, focus: Focus) -> Focus:
+    """割り込みの依頼を控える。**起こすのは呼んだ側**(`main.start_focus_bake`)。
+
+    取り込みは収集の名前しか運べないので、素材を作る側が読めるところへ置いておく。
+    """
+    _replace_one(name, replace(get(name), pending_focus=focus.to_json(), updated_at=_iso(_now())))
+    return focus
 
 
 def due_sweeps(at: datetime | None = None) -> list[tuple[Collection, Sweep]]:

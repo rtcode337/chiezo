@@ -73,6 +73,18 @@ CREATE INDEX IF NOT EXISTS ix_collect_runs_at ON collect_runs(at DESC);
 CREATE INDEX IF NOT EXISTS ix_collect_runs_name ON collect_runs(name, id DESC);
 """
 
+# 後から足した列。既にある DB には接続時の ALTER TABLE で足す(作り直しは要らない)。
+# **どの巡回が・どこを見た回か**。これが無いと「直近どこに修正が入ったか」に答えられない
+# —— 件数だけでは、ざっとの回なのか割り込みなのかも、どの範囲の話かも読めない。
+_ADDED_COLUMNS = {
+    "sweep": "TEXT NOT NULL DEFAULT ''",
+    "scope": "TEXT NOT NULL DEFAULT ''",
+}
+
+# 割り込みの回に入る巡回の名前。**巡回の名前と同じ欄に入れる** ——
+# 読む人が知りたいのは「どういう回だったか」で、それが巡回か割り込みかは同じ問いの答え
+FOCUS_LABEL = "割り込み"
+
 
 def db_path() -> Path | None:
     d = settings_store.state_dir()
@@ -85,6 +97,10 @@ def _connect(path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=DELETE")
     conn.executescript(SCHEMA)
+    have = {row["name"] for row in conn.execute("PRAGMA table_info(collect_runs)")}
+    for name, kind in _ADDED_COLUMNS.items():
+        if name not in have:
+            conn.execute(f"ALTER TABLE collect_runs ADD COLUMN {name} {kind}")
     return conn
 
 
@@ -102,7 +118,15 @@ def _read_titles(raw) -> list[str]:
     return []
 
 
-def record(name: str, *, status: str, diff: dict | None = None, error: str = "") -> None:
+def record(
+    name: str,
+    *,
+    status: str,
+    diff: dict | None = None,
+    error: str = "",
+    sweep: str = "",
+    scope: list[str] | None = None,
+) -> None:
     """1 回ぶんを残す。**呼び出し側の失敗にはしない**(控えが取れなくても収集は続く)。
 
     `diff` は `app/collect.py` の `material` が返すもの。失敗した回は None で呼ぶ。
@@ -115,8 +139,8 @@ def record(name: str, *, status: str, diff: dict | None = None, error: str = "")
         with _connect(path) as conn:
             conn.execute(
                 "INSERT INTO collect_runs (at, name, status, total, added, updated, removed,"
-                " skipped, added_titles, updated_titles, removed_titles, error)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " skipped, added_titles, updated_titles, removed_titles, error, sweep, scope)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     datetime.now(UTC).isoformat(timespec="seconds"),
                     name,
@@ -130,6 +154,8 @@ def record(name: str, *, status: str, diff: dict | None = None, error: str = "")
                     _titles(d.get("updated_titles")),
                     _titles(d.get("removed_titles")),
                     (error or "")[:REASON_MAX],
+                    sweep or "",
+                    _titles(scope),
                 ),
             )
             # 古いものから捨てる。件数で切るのは、実行の頻度が収集ごとに違うため
@@ -149,7 +175,7 @@ def recent(name: str | None = None, limit: int = 50) -> list[dict]:
         return []
     sql = (
         "SELECT at, name, status, total, added, updated, removed, skipped,"
-        " added_titles, updated_titles, removed_titles, error FROM collect_runs"
+        " added_titles, updated_titles, removed_titles, error, sweep, scope FROM collect_runs"
     )
     args: list = []
     if name:
@@ -163,7 +189,7 @@ def recent(name: str | None = None, limit: int = 50) -> list[dict]:
         try:
             for r in conn.execute(sql, tuple(args)):
                 row = dict(r)
-                for key in ("added_titles", "updated_titles", "removed_titles"):
+                for key in ("added_titles", "updated_titles", "removed_titles", "scope"):
                     row[key] = _read_titles(row[key])
                 rows.append(row)
         finally:

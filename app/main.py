@@ -266,7 +266,7 @@ async def draft_collection_prompt(
 
 
 async def _collect_items(
-    item, previous: dict, sources: dict, keys: list[str], sweep=None
+    item, previous: dict, sources: dict, keys: list[str], sweep=None, focus=None
 ) -> tuple[list[dict], str | None]:
     """1 回ぶん集める。**最初の 1 回だけ機械的に埋められる**。
 
@@ -291,7 +291,7 @@ async def _collect_items(
     cursor = None
     for key in keys or [None]:
         content = await _ask_for_collection(
-            asked, collect.build_messages(item, previous, key, sources, sweep)
+            asked, collect.build_messages(item, previous, key, sources, sweep, focus)
         )
         items, next_cursor = collect.parse_response(content or "")
         collected += items
@@ -318,19 +318,35 @@ async def collect_material(name: str, sources: dict) -> str:
     ledger = await asyncio.to_thread(collect.plan_partitions, item, sources, previous)
     # **どの巡回のぶんかは、起こした側が控えてある**(取り込みは名前しか運べない)
     sweep = collect.sweep_named(item, item.pending_sweep)
-    keys = partitioning.pick(ledger, sweep.name, sweep.per_run(len(ledger)))
+    focus = collect.normalize_focus(item.pending_focus)
+    if focus is not None:
+        # **割り込みは 1 回きり。** 見るのは頼まれたところだけで、区画の順番には触らない
+        keys = [focus.partition] if focus.partition else []
+        # 割り込みは必ず「直す」側で焼く(足すだけの収集でも、名指しの 1 件を直せないと
+        # 割り込みの意味が無い)。ndjson へ渡す定義もそちらへ倒す
+        baked_as = replace(item, mode=collect.MODE_REFINE)
+    else:
+        keys = partitioning.pick(ledger, sweep.name, sweep.per_run(len(ledger)))
+        baked_as = item
+    label = collect_log.FOCUS_LABEL if focus is not None else sweep.name
     try:
-        items, next_cursor = await _collect_items(item, previous, sources, keys, sweep)
-        body, diff = await asyncio.to_thread(collect.ndjson, item, sources, previous, items)
+        items, next_cursor = await _collect_items(
+            item, previous, sources, keys, sweep, focus
+        )
+        body, diff = await asyncio.to_thread(
+            collect.ndjson, baked_as, sources, previous, items
+        )
     except Exception as e:
         reason = f"{type(e).__name__}: {e}"
         log.warning("collect %s failed: %s", name, reason)
         await asyncio.to_thread(
             collect.record_result,
             name, status="error", error=reason, sweep=sweep.name, partitions=ledger,
+            focus=focus is not None,
         )
         await asyncio.to_thread(
-            collect_log.record, name, status=collect_log.STATUS_ERROR, error=reason
+            collect_log.record,
+            name, status=collect_log.STATUS_ERROR, error=reason, sweep=label, scope=keys,
         )
         raise
     await asyncio.to_thread(
@@ -346,11 +362,15 @@ async def collect_material(name: str, sources: dict) -> str:
         sweep=sweep.name,
         visited=keys,
         partitions=ledger,
+        focus=focus is not None,
     )
-    await asyncio.to_thread(collect_log.record, name, status=collect_log.STATUS_OK, diff=diff)
+    await asyncio.to_thread(
+        collect_log.record,
+        name, status=collect_log.STATUS_OK, diff=diff, sweep=label, scope=keys,
+    )
     log.info(
         "collect %s (%s/%s%s): added=%d updated=%d kept=%d removed=%d skipped=%d",
-        name, item.mode, sweep.name, f" {len(keys)} 区画" if keys else "",
+        name, baked_as.mode, label, f" {len(keys)} 区画" if keys else "",
         diff["added"], diff["updated"], diff["kept"], diff["removed"], diff["skipped"],
     )
     return body
@@ -1719,6 +1739,71 @@ async def collect_draft(body: CollectionDraft):
         raise HTTPException(400, {"error": "want か name のどちらかが要ります"})
     draft = await draft_collection_prompt(body.want, body.current, body.feedback, body.name)
     return {"prompt": draft}
+
+
+class CollectionFocus(BaseModel):
+    """割り込み —— 「ここが間違っているから直して」を、巡回とは別の道で頼む。"""
+
+    note: str = PydField(
+        description="どう直してほしいか。**これが無いと受け付けない** —— "
+        "何をどう直すかが書かれていない割り込みは、1 回ぶんの AI の呼び出しに"
+        "しかならない(巡回でやれば済む)",
+    )
+    titles: list[str] = PydField(
+        default_factory=list,
+        description="直してほしい見出し。**名指ししたものは必ず AI に見せる** —— "
+        "区画を渡すだけでは、直してほしい 1 件が差し込みに載る保証がない",
+    )
+    partition: str | None = PydField(
+        None, description="見てほしい区画。省くと、名指ししたものだけを見る"
+    )
+    requested_by: str = PydField("", description="依頼元の名乗り(画面に出る手がかり)")
+
+
+def start_focus_bake(name: str, raw: dict) -> dict:
+    """割り込みを 1 本起こす。**予定は進めない**。
+
+    `start_collection_bake` と分けてあるのはここ 1 点のため —— あちらは次回の予定を
+    進める(それが定時の巡回の時計)。割り込みで進めると、頼むたびに一周が伸びる。
+
+    **起こせてから控える。** 先に控えると、trigger が混んで断られたときに依頼だけが
+    残り、次に走る定時の回が割り込みとして走ってしまう。
+    """
+    from app.views.admin import TRIGGER_URL, trigger_run
+
+    # **依頼が読めるかを最初に見る。** 起こしてから断ると、指示文の無い依頼のために
+    # 1 本ぶんの取り込みが走る(そして何も直らない)。サーバーの設定より先に見るのは、
+    # 読めない依頼は設定がどうであれ読めないから —— 理由を取り違えさせない
+    focus = collect.require_focus(raw)
+    if not TRIGGER_URL:
+        raise HTTPException(503, {
+            "error": "chiezo-trigger が設定されていません(CHIEZO_TRIGGER_URL 未設定)",
+            "hint": "集めるのも焼くのも取り込みの中で起きるので、trigger が要る",
+        })
+    trigger_run(name)
+    return {"name": name, "focus": collect.request_focus(name, focus).to_json()}
+
+
+@app.post("/v1/collect/{name}/focus")
+def collect_focus_now(name: str, body: CollectionFocus):
+    """**この部分を集中的に直して**、を割り込ませる。**止めている収集は断る**。
+
+    **定時の巡回に影響を出さない**のが約束 —— 進み具合(`cursor`)も、どの巡回の
+    予定も、区画の巡回記録も動かさない。動くのは中身だけ。動かすと、割り込むたびに
+    一周が伸びたり、見ていない区画に印が付いたりする。
+
+    **必ず「直す」側で走る**。足すだけの収集でも、名指しで渡された 1 件を直せなければ
+    割り込みの意味が無い。
+
+    **返るのは「起こした」まで**(`run` と同じ)。取り込みは向こうで走る。
+    """
+    collect.require_enabled()
+    if not collect.get(name).enabled:
+        raise HTTPException(403, {
+            "error": f"収集「{name}」は止まっています",
+            "hint": "動かすかどうかは Chiezo 側で決めます(管理画面の「有効にする」)",
+        })
+    return start_focus_bake(name, body.model_dump())
 
 
 @app.post("/v1/collect/{name}/run")
