@@ -140,6 +140,19 @@ PAGE_STYLE = """
               background: #111; color: #ddd;
               padding: 0.6rem; font-family: monospace; font-size: 0.85rem; white-space: pre-wrap; }
   .snippet { color: #555; }
+  /* 走っている依頼の全文。畳んであるものを開いたときだけ出る。
+     高さを決めて中でスクロールさせるのは、数千字の依頼を開いた拍子に
+     表の他の行が画面の外へ押し出されないようにするため —— 走っているものを
+     見比べる画面なので、1 件を開くと他が読めなくなるのでは意味がない。 */
+  .prompt-body { max-height: 16rem; max-width: 40rem; overflow-y: auto;
+                 white-space: pre-wrap; word-break: break-word;
+                 background: #f7f6f3; border: 1px solid #e5e2dc;
+                 padding: 0.6rem; margin: 0.4rem 0;
+                 font-size: 0.8rem; line-height: 1.5; }
+  /* 表の中に置く details は、本文向けの体裁(太字・上下の余白)を抑える
+     (table.ai-settings に掛けているのと同じ調整) */
+  details.prompt-open { margin-top: 0.2rem; }
+  details.prompt-open > summary { font-weight: normal; padding: 0.1rem 0; }
   .muted { color: #666; font-size: 0.85rem; }
   .pager { display: flex; gap: 1rem; align-items: baseline; margin-top: 1rem; }
   /* どの画面にも出すビルドの印。**本文の邪魔をしない薄さ**で、下端に置く */

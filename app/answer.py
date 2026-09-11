@@ -44,6 +44,12 @@ from app.pages import doc_url
 
 log = logging.getLogger("chiezo.app")
 
+# モデルを選ばなかったときに置く名前。**モデル名ではなく「そちらで決めて」の印**で、
+# 自分で決められる相手(CLI ブリッジ・1 プロセス 1 モデルの推論サーバ)へ送る。
+# **これを記録に残さない** —— 画面の相手欄に出ると、そういう名前のモデルが
+# 走ったように読める(実際に走ったのは claude-opus-5 なり gpt-5-codex なり)。
+PLACEHOLDER_MODEL = "chiezo"
+
 # 検索 1 本あたり見る上位件数(この中から本文を取る文書を選ぶ)
 SEARCH_LIMIT = 5
 # クエリ生成に許す検索クエリの本数
@@ -84,6 +90,11 @@ class Settings:
     # 古くなる（実測: 保存も選択もしていない Gemini が 404 になった＝その名前のモデルが
     # 消えていた）ので、当てた場合は後から相手に聞いて選び直す（`ensure_model`）。
     model_is_fallback: bool = False
+    # **実際に走ったモデル**。往復が終わってから `complete_message` が埋める
+    # (`model_of`)。走る前には分からないので、`model`(送る値)とは別に持つ ——
+    # 混ぜて `model` を書き換えると、次のターンで選んでいないモデルを名指しで
+    # 送ることになる(agent は同じ `cfg` を使い回す)。
+    ran_model: str = ""
 
     @property
     def endpoint(self) -> str:
@@ -226,7 +237,7 @@ def load_settings(
         url=_normalize_base_url(providers.url_of(spec)),
         # 空でも通る相手（1 プロセス 1 モデルの推論サーバ・CLI ブリッジ）がいるので、
         # 決まらないときは無難な既定を置く。
-        model=chosen or "chiezo",
+        model=chosen or PLACEHOLDER_MODEL,
         api_key=stored.credential or None,
         # DB の 5 秒とは別枠。CPU 推論は数十秒級になる。
         #
@@ -298,7 +309,7 @@ async def model_label(cfg: Settings) -> str | None:
     呼び出し側が相手の名前（`Claude Code`）に落とせるよう、ここは None を返す。
     """
     # 設定で決まっているモデルがあればそれを名乗る（相手に聞くのは決まっていないときだけ）。
-    explicit = cfg.model if cfg.model and cfg.model != "chiezo" else ""
+    explicit = cfg.model if cfg.model and cfg.model != PLACEHOLDER_MODEL else ""
     if explicit:
         return short_model_name(explicit)
     now = time.monotonic()
@@ -595,15 +606,23 @@ def _inflight(cfg: Settings, messages: list[dict]):
     ないため。期限に `cfg.timeout` を渡すのは、待つ秒数が相手で桁が違うから ——
     掃除する側は 1 つの数字で切れない。
 
+    **依頼文そのものも渡す。** 失敗の控え（`_note_failure`）には大きさしか残さないが、
+    あちらは溜め続ける表で、こちらは終われば消える表 —— 止めるかどうかを決めるには
+    「いま何を頼んでいるか」が要る（`ai_inflight` の決めごとを参照）。
+
     **消すのは `finally`**。 成功でも失敗でも、時間切れでも消えないと、
     画面に「ずっと走っている依頼」が残って本物が埋もれる。
     """
     token = ai_inflight.begin(
         backend=cfg.name,
-        model=cfg.model,
+        # **仮の名前は残さない**(`PLACEHOLDER_MODEL`)。走る前なので実物はまだ
+        # 分からず、印をそのまま書くと「chiezo というモデルで走っている」と読める。
+        # 空なら画面は相手の名前だけを出す —— 嘘の名前が並ぶよりよい
+        model="" if cfg.model == PLACEHOLDER_MODEL else cfg.model,
         effort=cfg.effort,
         prompt_bytes=_prompt_bytes(messages),
         timeout=cfg.timeout,
+        prompt="\n\n".join((m.get("content") or "") for m in messages),
     )
     try:
         yield
@@ -664,6 +683,7 @@ def _record_usage(
     cfg: Settings,
     usage: dict | None,
     *,
+    model: str = "",
     prompt_bytes: int | None = None,
     reply_bytes: int | None = None,
     ms: int | None = None,
@@ -687,7 +707,7 @@ def _record_usage(
 
     usage_store.record(
         cfg.name,
-        model=cfg.model,
+        model=model,
         kind="chat",
         # OpenAI 互換は prompt/completion。相手によっては input/output で名乗る。
         input_tokens=_count("prompt_tokens", "input_tokens"),
@@ -730,14 +750,34 @@ async def complete_message(cfg: Settings, messages: list[dict], **extra) -> dict
             raise HTTPException(502, {"error": f"unexpected llm response: {e}"}) from None
         if not isinstance(message, dict):
             raise HTTPException(502, {"error": "unexpected llm response: message is not an object"})
+    cfg.ran_model = model_of(body, cfg)
     _record_usage(
         cfg,
         body.get("usage"),
+        model=cfg.ran_model,
         prompt_bytes=_prompt_bytes(messages),
         reply_bytes=len((content_of(message) or "").encode()),
         ms=int((time.monotonic() - started) * 1000),
     )
     return message
+
+
+def model_of(body: dict | None, cfg: Settings) -> str:
+    """**実際に走ったモデル**。相手の応答が名乗ったものを採る。
+
+    こちらが送った `cfg.model` は、選んでいないときは `PLACEHOLDER_MODEL` という
+    ただの印なので、そのまま控えると「chiezo というモデルで走った」ように読める。
+    OpenAI 互換の応答は `model` を持ち、CLI ブリッジもそこに実物を載せてくる ——
+    **走った後にしか分からないことなので、走った後に聞く**。
+
+    名乗らない相手・印をそのまま返す相手のときは、こちらが送った値に落ちる
+    (それも印なら空。**相手の名前だけが残るほうが、嘘の名前が残るよりよい**)。
+    """
+    said = (body or {}).get("model") if isinstance(body, dict) else None
+    name = (said or "").strip() if isinstance(said, str) else ""
+    if name and name != PLACEHOLDER_MODEL:
+        return name
+    return "" if cfg.model == PLACEHOLDER_MODEL else cfg.model
 
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.S)
@@ -769,6 +809,7 @@ async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator
     """
     started = time.monotonic()
     sent = 0
+    ran_as = ""
     # **流しているあいだも走っている扱いにする。** 画面へ 1 文字ずつ届いていても、
     # 相手との往復はまだ終わっていない(引き直しも含めて 1 本と数える)。
     # 途中で読み手が去っても、生成器が閉じられるときに `finally` が消しに来る。
@@ -801,6 +842,10 @@ async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator
                             delta = chunk["choices"][0]["delta"].get("content") or ""
                         except (json.JSONDecodeError, KeyError, IndexError, TypeError):
                             continue  # 使い物にならないフレームは黙って捨てる
+                        # 差分のフレームも実際に走ったモデルを名乗る。**最初に
+                        # 分かった時点で覚える** —— 流し終えてから聞き直せる相手はいない
+                        if not ran_as:
+                            ran_as = model_of(chunk, cfg)
                         if delta:
                             sent += len(delta.encode())
                             yield delta
@@ -811,6 +856,7 @@ async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator
                     _record_usage(
                         cfg,
                         None,
+                        model=ran_as or model_of(None, cfg),
                         prompt_bytes=_prompt_bytes(messages),
                         reply_bytes=sent,
                         ms=int((time.monotonic() - started) * 1000),

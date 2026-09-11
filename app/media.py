@@ -40,7 +40,14 @@ from pathlib import Path
 import httpx
 from fastapi import HTTPException
 
-from app import ai_log, media_backends, media_providers, settings_store, usage_store
+from app import (
+    ai_inflight,
+    ai_log,
+    media_backends,
+    media_providers,
+    settings_store,
+    usage_store,
+)
 
 log = logging.getLogger("chiezo.media")
 
@@ -554,8 +561,17 @@ async def _run_text(job_id: str, backend: str, prompt: str,
         try:
             cfg = await answer.ensure_model(
                 answer.require_settings(backend, model or None, effort or None))
-            content = answer.content_of(
-                await answer.complete_message(cfg, [{"role": "user", "content": prompt}]))
+            # **この往復はこのジョブのもの**だと控えに書かせる。書かないと、
+            # 画面にジョブの行と会話の行が別々に立ち、1 本の依頼が 2 件に見える
+            # (絵や音は外の生成 API を叩くので、こうはならない)。
+            with ai_inflight.on_behalf_of(job_id):
+                message = await answer.complete_message(
+                    cfg, [{"role": "user", "content": prompt}])
+            content = answer.content_of(message)
+            # **控えるのは実際に走ったモデル**。`cfg.model` は選ばなかったときに
+            # 置く印(`answer.PLACEHOLDER_MODEL`)なので、そのまま残すと画面に
+            # そういう名前のモデルが走ったように出る
+            ran_model = cfg.ran_model or cfg.model
             if not (content or "").strip():
                 raise HTTPException(502, {"error": "empty response from llm"})
 
@@ -565,16 +581,16 @@ async def _run_text(job_id: str, backend: str, prompt: str,
             name = f"{job_id}-0.md"
             (directory / name).write_text(content, encoding="utf-8")
             file = asdict(JobFile(path=str(directory / name), url=f"/media/{day}/{name}",
-                                  seed=0, model=cfg.model, seconds=0.0))
+                                  seed=0, model=ran_model, seconds=0.0))
 
             usage_store.record(
-                backend, model=cfg.model, kind=media_providers.KIND_TEXT,
+                backend, model=ran_model, kind=media_providers.KIND_TEXT,
                 prompt_bytes=len(prompt.encode()), reply_bytes=len(content.encode()),
                 ms=int((time.monotonic() - started) * 1000),
             )
             # 文字数を seconds の列に入れておく(一覧で長さが読める)。
             # 列を増やさないのは、この 1 種類のために表の形を変えたくないため
-            _update(job_id, state="done", files=[file], model=cfg.model,
+            _update(job_id, state="done", files=[file], model=ran_model,
                     seconds=float(len(content)))
         except asyncio.CancelledError:
             log.warning("text job %s cancelled", job_id)

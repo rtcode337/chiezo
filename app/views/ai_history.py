@@ -49,6 +49,58 @@ def _size(nbytes: int) -> str:
     return f"{nbytes} B"
 
 
+# 畳んだ状態で見せる頭の長さ。1 行あれば「どの依頼か」は見分けが付く。
+PROMPT_HEAD = 60
+
+
+def _prompt(text: str, nbytes: int | None) -> str:
+    """走っている依頼の「何を頼んでいるか」。頭を出し、全文は畳んでおく。
+
+    **大きさだけでは足りない。** 同じ相手に同じくらいの依頼を 2 本投げていると、
+    どちらを止めるべきかが読めない —— 止める判断に要るのは中身のほう。
+    それでも畳むのは、依頼文が数千字あるのが普通で、広げたまま並べると
+    走っている行が画面を埋めて、他に何が動いているかが見えなくなるため。
+
+    控えは `ai_inflight.PROMPT_MAX` で切れているので、切れたことを示す
+    （読み手が「これで全部だ」と思って判断しないように）。
+    """
+    size = f'<span class="muted">依頼 {esc(_size(nbytes))}</span>' if nbytes is not None else ""
+    body = (text or "").strip()
+    if not body:
+        return size or '<span class="muted">依頼文は控えていない</span>'
+    head = body.replace("\n", " ")[:PROMPT_HEAD]
+    if len(body) > PROMPT_HEAD:
+        head += "…"
+    cut = ""
+    if len(body) >= ai_inflight.PROMPT_MAX:
+        cut = f'<p class="muted">ここまでで控えは打ち切り（{ai_inflight.PROMPT_MAX:,} 字）。</p>'
+    return (
+        f'<details class="prompt-open"><summary>{esc(head)}</summary>'
+        f'<pre class="prompt-body">{esc(body)}</pre>{cut}</details>'
+        f'{("<br>" + size) if size else ""}'
+    )
+
+
+# モデルを選ばずに頼んだ行の表示。**空欄にしない** —— 空だと「取れなかった」とも
+# 「モデルを持たない相手」とも読めるが、実際は「相手の既定に任せた」が起きたこと。
+DEFAULT_MODEL_LABEL = "既定"
+
+
+def who_html(backend: str, model: str) -> str:
+    """相手の欄。相手の名前の下にモデルを添える。
+
+    玄関（`/admin`）からも同じ書き方で出すので公開している —— 別々に書くと、
+    同じ依頼が 2 つの画面で違って見える（`elapsed` と同じ理由）。
+
+    **モデルが無いのは 2 通りある**が、どちらも「相手の既定に任せた」で説明が付く ——
+    走る前の行は実物がまだ分からず(`answer.PLACEHOLDER_MODEL` を送っている)、
+    終わった行は相手が名乗らなかった。どちらも人がするのは同じ(気にするなら
+    モデルを名指しで頼み直す)なので、書き分けない。
+    """
+    name = (model or "").strip() or DEFAULT_MODEL_LABEL
+    return f'{esc(backend)}<br><span class="muted">{esc(name)}</span>'
+
+
 def _tokens(row: dict) -> str:
     """使ったトークン。**None は「相手が言わなかった」、0 は「使わなかった」**。
 
@@ -124,7 +176,14 @@ def running_rows() -> list[dict]:
     **会話と生成を 1 本に混ぜる**(`entries` が成功と失敗を混ぜるのと同じ理由)。
     見る人は「AI に頼んだことが走っているか」を知りたいのであって、それが会話だったか
     絵だったかを先に知ってはいない。
+
+    **同じ依頼を 2 行にしない。** 文章の生成は中で会話の口を呼ぶので、ジョブと会話の
+    両方に行が立つ —— 走っているのは 1 本なので、ジョブ側に紐づいた会話は落とす。
+    落とすのはジョブ側が出ているものだけで、紐は持っているのにジョブが見当たらない
+    ぶんは残す(取りこぼすより、余分に出るほうがまだ読める)。
     """
+    jobs = media.running_jobs()
+    job_ids = {j.get("id") for j in jobs}
     rows = [
         {
             "at": r["at"],
@@ -133,8 +192,10 @@ def running_rows() -> list[dict]:
             "model": r.get("model") or "",
             "state": "走っている",
             "prompt_bytes": r.get("prompt_bytes"),
+            "prompt": r.get("prompt") or "",
         }
         for r in ai_inflight.running()
+        if (r.get("job_id") or "") not in job_ids
     ]
     rows += [
         {
@@ -145,13 +206,15 @@ def running_rows() -> list[dict]:
             # 生成は順番待ちがある。**待ちと走行を混ぜない** —— 混ぜると
             # 「相手が遅い」と「自分の順番がまだ」の区別が付かない
             "state": "順番待ち" if j.get("state") == "queued" else "走っている",
-            # 依頼文そのものは出さない(この表は中身を持たない約束)。大きさだけ
             "prompt_bytes": len((j.get("prompt") or "").encode()),
+            # **何を頼んでいるかを出す。** 相手と大きさだけでは、同じ相手へ投げた
+            # 2 本のどちらを止めるべきかが読めない
+            "prompt": j.get("prompt") or "",
             # **止められるのは生成だけ。** 会話(`ai_inflight`)は相手との 1 往復で、
             # 掴んでいるのは呼んだ側のタスクなので、この画面からは手が届かない
             "job_id": j.get("id") or "",
         }
-        for j in media.running_jobs()
+        for j in jobs
     ]
     return sorted(rows, key=lambda r: r.get("at") or "", reverse=True)
 
@@ -212,10 +275,8 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
 
     body = []
     for row in running:
-        who = esc(row["backend"])
-        if row["model"]:
-            who += f'<br><span class="muted">{esc(row["model"])}</span>'
-        detail = f'<span class="muted">依頼 {esc(_size(row["prompt_bytes"]))}</span>'
+        who = who_html(row["backend"], row.get("model") or "")
+        detail = _prompt(row.get("prompt") or "", row.get("prompt_bytes"))
         # **暴走したものを止める口。** 押すと待ち枠がすぐ空くので、後ろで並んでいる
         # ぶんが先へ進める(向こう側の CLI は自分の時間切れまで走り続ける)
         if row.get("job_id"):
@@ -235,9 +296,7 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
         )
     for row in shown:
         kind = esc(ai_log.kind_label(row.get("kind") or ai_log.KIND_CHAT))
-        who = esc(row["backend"])
-        if row.get("model"):
-            who += f'<br><span class="muted">{esc(row["model"])}</span>'
+        who = who_html(row["backend"], row.get("model") or "")
         if row["ok"]:
             result = '<span class="muted">成功</span>'
             detail = _detail(row)

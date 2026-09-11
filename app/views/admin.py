@@ -950,9 +950,10 @@ def _running_html(running: list[dict]) -> str:
 
     rows = "".join(
         f"<tr><td>{esc(ai_log.kind_label(r['kind']))}</td>"
-        f"<td>{esc(r['backend'])}"
-        + (f'<br><span class="muted">{esc(r["model"])}</span>' if r["model"] else "")
-        + f"</td><td>{esc(r['state'])}</td>"
+        # 相手とモデルの書き方は `ai_history` と共有する —— 別々に書くと、
+        # 同じ依頼が玄関と表で違って見える(経過の `elapsed` と同じ理由)
+        f"<td>{ai_history.who_html(r['backend'], r.get('model') or '')}</td>"
+        f"<td>{esc(r['state'])}</td>"
         f'<td class="muted">{esc(ai_history.elapsed(r["at"]))}</td></tr>'
         for r in running
     )
