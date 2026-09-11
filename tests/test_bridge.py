@@ -369,6 +369,26 @@ class TestModelSelection:
         assert bridge(CHIEZO_BRIDGE_CLI="codex").MODELS == ()
         assert bridge(CHIEZO_BRIDGE_CLI="antigravity").MODELS == ()
 
+    def test_a_cli_without_models_advertises_none(self, bridge):
+        """**「選べるもの」を答える口なので、無いなら空**。
+
+        かつては、選べるものが無いときに名乗る名前を 1 つだけ返していた（見出しが
+        空にならないようにするため）。同じ口をモデルの選択肢も引いているので、
+        「Antigravity CLI」がモデルの候補として画面に並び、選べてしまった
+        —— 選ぶと、意味のない名前が相手へ渡り続ける。
+        """
+        from fastapi.testclient import TestClient
+
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+        with TestClient(server.app) as client:
+            assert client.get("/v1/models").json()["data"] == []
+
+    def test_the_name_it_goes_by_still_rides_on_the_answer(self, bridge):
+        """見出しは困らない —— 応答の `model` に名乗る名前が載っている。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+        body = server._completion("こたえ")
+        assert body["model"] == server.MODEL_LABEL
+
     def test_the_list_can_be_given_from_outside(self, bridge):
         server = bridge(CHIEZO_BRIDGE_CLI="codex", CHIEZO_BRIDGE_MODELS="gpt-x, gpt-y ")
         assert server.MODELS == ("gpt-x", "gpt-y")

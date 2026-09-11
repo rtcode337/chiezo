@@ -1170,14 +1170,22 @@ async def usage() -> dict:
 
 @app.get("/v1/models")
 async def models() -> dict:
-    """会話画面のモデル選択と、Chiezo の見出し(`model_label()`)がここを引く。
+    """**選べるモデル**の一覧。選べるものが無い CLI では空を返す。
 
-    選べるものが無い CLI では、名乗る名前を 1 つだけ返す(見出しが空にならないため)。
+    かつては、選べるものが無いときに名乗る名前(`MODEL_LABEL`)を 1 つだけ返していた。
+    Chiezo の見出しが空にならないようにするためだったが、**同じ口をモデルの選択肢も
+    引いている** —— 結果、Antigravity のようにモデルを取らない CLI で
+    「Antigravity CLI」がモデルの候補として画面に並び、選べてしまった
+    (選ぶと、意味のない名前が相手へ渡り続ける)。
+
+    **ここは「選べるもの」を答える口**なので、無いなら空が正しい。見出しは困らない ——
+    応答の `model` に名乗る名前が載っており(`chat_completion`)、Chiezo はそちらを
+    実際に走ったモデルとして読む。一覧から名乗れないときは相手の名前へ落ちる
+    (`app/views/chat.py`)。
     """
-    ids = MODELS or (MODEL_LABEL,)
     return {
         "object": "list",
-        "data": [{"id": i, "object": "model", "owned_by": "chiezo-bridge"} for i in ids],
+        "data": [{"id": i, "object": "model", "owned_by": "chiezo-bridge"} for i in MODELS],
     }
 
 
