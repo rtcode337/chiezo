@@ -36,6 +36,7 @@ from app import (
     collect_log,
     db,
     extract,
+    feeds,
     media,
     media_backends,
     media_providers,
@@ -265,8 +266,23 @@ async def draft_collection_prompt(
     return draft
 
 
+async def _harvest(item) -> dict | None:
+    """外向きの道具(`app/feeds.py`)を回して、参考の素材を取る。
+
+    **落ちても収集は止めない。** これは参考であって情報源ではなく、AI は自分でも
+    調べる —— 1 本の不調で収集ごと止めるほうが損。取れなかった数は素材の中で伝える。
+    """
+    spec = feeds.normalize(item.feed)
+    if spec is None:
+        return None
+    # 「前回より後」の基準は収集の最後の実行。**巡回ごとには持たない** ——
+    # 道具は外から拾うためのもので、区画を回る巡回とは噛み合わない(付けるなら
+    # 集める側の収集で、そちらは巡回を分けない)
+    return await feeds.fetch(spec, item.last_run_at)
+
+
 async def _collect_items(
-    item, previous: dict, sources: dict, keys: list[str], sweep=None, focus=None
+    item, previous: dict, sources: dict, keys: list[str], sweep=None, focus=None, feed=None
 ) -> tuple[list[dict], str | None]:
     """1 回ぶん集める。**最初の 1 回だけ機械的に埋められる**。
 
@@ -291,7 +307,7 @@ async def _collect_items(
     cursor = None
     for key in keys or [None]:
         content = await _ask_for_collection(
-            asked, collect.build_messages(item, previous, key, sources, sweep, focus)
+            asked, collect.build_messages(item, previous, key, sources, sweep, focus, feed)
         )
         items, next_cursor = collect.parse_response(content or "")
         collected += items
@@ -330,8 +346,9 @@ async def collect_material(name: str, sources: dict) -> str:
         baked_as = item
     label = collect_log.FOCUS_LABEL if focus is not None else sweep.name
     try:
+        feed = await _harvest(item)
         items, next_cursor = await _collect_items(
-            item, previous, sources, keys, sweep, focus
+            item, previous, sources, keys, sweep, focus, feed
         )
         body, diff = await asyncio.to_thread(
             collect.ndjson, baked_as, sources, previous, items
@@ -393,7 +410,8 @@ async def collect_preview(name: str, sources: dict) -> dict:
     # **下見は 1 区画だけ。** 何区画でも見られるが、下見は「この指示文でどうなるか」を
     # 見るためのもので、1 区画あれば分かる(そのぶん安く、待たされない)
     keys = partitioning.pick(ledger, sweep.name, 1)
-    items, next_cursor = await _collect_items(item, previous, sources, keys, sweep)
+    feed = await _harvest(item)
+    items, next_cursor = await _collect_items(item, previous, sources, keys, sweep, None, feed)
     _docs, diff = await asyncio.to_thread(collect.material, item, previous, items)
     return {
         "name": name,
@@ -1397,6 +1415,12 @@ class CollectionCreate(BaseModel):
         "(どのソースの・どのタグを・何件・タグをどう読み替えるか)。"
         "進み具合が空のときだけ使い、2 回目からは AI が肉付けする",
     )
+    feed: dict | None = PydField(
+        None,
+        description="外向きの道具(RSS / Atom)。urls に取ってくる先を書く。"
+        "**取ってきたものをそのまま溜めるわけではない** —— プロンプトの {feed} へ"
+        "参考として差し込むだけで、何を溜めるかは AI が決める(自分でも調べる)",
+    )
     partition: dict | None = PydField(
         None,
         description="回る先の割り方(by=geo / tag / title、target、母集団の source など)。"
@@ -1425,6 +1449,9 @@ class CollectionPatch(BaseModel):
     keep_ratio: float | None = None
     extract: dict | None = PydField(
         None, description="抽出の指定。空のオブジェクトを渡すと外れる"
+    )
+    feed: dict | None = PydField(
+        None, description="外向きの道具。空のオブジェクトを渡すと外れる"
     )
     partition: dict | None = PydField(
         None,
@@ -1512,6 +1539,7 @@ def collect_create(request: Request, body: CollectionCreate):
         keep_ratio=body.keep_ratio,
         extract_spec=body.extract,
         partition_spec=body.partition,
+        feed_spec=body.feed,
         requested_by=body.requested_by,
     )
     # 作った時点で空の DB ができる。**ここでソースを取り直さないと、1 回目が走るまで

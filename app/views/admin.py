@@ -547,6 +547,11 @@ PARTITION_EXAMPLE = json.dumps(
 # 見たいのは「次にどこを見るか」と「どれくらい回ったか」で、全件の一覧ではない
 PARTITION_SAMPLES = 12
 
+FEED_EXAMPLE = json.dumps(
+    {"urls": ["https://example.com/feed", "https://example.org/atom"], "since": "last_run"},
+    ensure_ascii=False,
+)
+
 SWEEPS_EXAMPLE = json.dumps(
     [
         {"name": "ざっと", "interval_minutes": 360, "cover_days": 7},
@@ -833,6 +838,15 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'<p><label>抽出の指定(JSON。空なら毎回 AI に集めさせる)<br>'
             f'<textarea name="extract" rows="8" spellcheck="false">'
             f"{esc(_extract_json(item))}</textarea></label></p>"
+            f'<p><label>外向きの道具(JSON。空なら道具なし)<br>'
+            f'<textarea name="feed" rows="5" spellcheck="false">'
+            f"{esc(_feed_json(item))}</textarea></label></p>"
+            f'<p class="muted">RSS / Atom を機械的に取ってきて、プロンプトの'
+            f" <code>{{feed}}</code> へ<strong>参考として</strong>差し込む。"
+            f"<strong>取ってきたものをそのまま溜めるわけではない</strong> ——"
+            f" AI は自分でも調べ、渡されたぶんも含めて採否を判断する。"
+            f" 取りに行くのは見出し・要約・URL・日付だけで、ページ本文は取らない。"
+            f" 例: <code>{esc(FEED_EXAMPLE)}</code></p>"
             f'<p><label>区画の指定(JSON。空なら区画を持たない)<br>'
             f'<textarea name="partition" rows="6" spellcheck="false">'
             f"{esc(_partition_json(item))}</textarea></label></p>"
@@ -1708,6 +1722,7 @@ async def admin_collect_edit(name: str, request: Request):
         # 空欄は「使わない」。指定を外せるのはここだけ
         extract=_parse_extract(form.get("extract")),
         partition=_parse_partition(form.get("partition")),
+        feed=_parse_feed(form.get("feed")),
         sweeps=_parse_sweeps(form.get("sweeps")),
         # 0 も意味のある値(守りを外す)なので、空のときだけ触らない
         keep_ratio=_ratio(form.get("keep_ratio")),
@@ -1943,6 +1958,11 @@ def _extract_json(item) -> str:
     return _spec_json(item.extract)
 
 
+def _feed_json(item) -> str:
+    """外向きの道具の指定を、編集できる文字列にする。持っていなければ空。"""
+    return _spec_json(item.feed)
+
+
 def _partition_json(item) -> str:
     """区画の指定を、編集できる文字列にする。持っていなければ空。"""
     return _spec_json(item.partition)
@@ -1963,6 +1983,10 @@ def _parse_extract(raw):
 
 def _parse_partition(raw):
     return _parse_spec(raw, "区画")
+
+
+def _parse_feed(raw):
+    return _parse_spec(raw, "フィード")
 
 
 def _parse_sweeps(raw):

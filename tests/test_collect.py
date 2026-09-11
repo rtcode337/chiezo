@@ -510,6 +510,49 @@ class TestSweeps:
         assert collect.to_public(collect.get("news"))["next_run_at"].startswith("2026-01-01")
 
 
+class TestTheOutwardTool:
+    """外向きの道具(`{feed}`)—— 取ってきたものは**参考**で、情報源ではない。"""
+
+    def test_the_harvest_goes_into_the_prompt(self, sample):
+        collect.update("news", prompt="拾ってきたもの:\n{feed}\n上を参考に集めて。")
+        harvest = {
+            "items": [{
+                "title": "見出し", "url": "https://example.com/1",
+                "summary": "要約", "at": "", "from": "ためし新聞",
+            }],
+            "failed": 0, "tried": 1,
+        }
+        user = collect.build_messages(
+            collect.get("news"), {}, None, {}, None, None, harvest
+        )[1]["content"]
+        assert "見出し" in user
+        assert "参考です" in user
+        assert "{feed}" not in user
+
+    def test_without_a_tool_the_placeholder_says_so(self, sample):
+        """差し込み口だけ残ると、AI は「渡されるはずのものが空だった」と読んで待つ。"""
+        collect.update("news", prompt="拾ってきたもの: {feed}")
+        user = collect.build_messages(collect.get("news"))[1]["content"]
+        assert "{feed}" not in user
+        assert "道具は付いていません" in user
+
+    def test_the_spec_survives_a_round_trip(self, sample):
+        collect.update("news", feed={"urls": ["https://example.com/feed"], "since": "last_run"})
+        stored = collect.get("news").feed
+        assert stored["urls"] == ["https://example.com/feed"]
+        assert stored["since"] == "last_run"
+
+    def test_an_empty_object_takes_the_tool_off(self, sample):
+        collect.update("news", feed={"urls": ["https://example.com/feed"]})
+        collect.update("news", feed={})
+        assert collect.get("news").feed is None
+
+    def test_a_broken_spec_is_refused_when_it_is_written(self, sample):
+        """実行時に落ちると、無人で回っている最中に「集められなかった」だけが残る。"""
+        with pytest.raises(HTTPException):
+            collect.update("news", feed={"urls": ["ftp://example.com/feed"]})
+
+
 class TestFocus:
     """割り込み —— 「ここが間違っているから直して」を、巡回とは別の道で頼む。
 

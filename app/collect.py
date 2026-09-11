@@ -61,7 +61,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
 
-from app import collect_log, db, notes
+from app import collect_log, db, feeds, notes
 from app import extract as extraction
 from app import partition as partitioning
 from app.jst import to_jst
@@ -153,6 +153,11 @@ MATERIAL_PLACEHOLDER = "{current}"
 # あちらは「次はどこ」を AI に決めさせる 1 本、こちらは Chiezo が台帳から選んで渡す
 # 1 区画。回る先を数え上げられるので、一周したかも取りこぼしも台帳の側で分かる。
 PARTITION_PLACEHOLDER = "{partition}"
+
+# 外向きの道具(`app/feeds.py`)が取ってきたものを差し込む場所。
+# **素材であって情報源ではない** —— 何を溜めるかは AI が決める(自分でも調べる)。
+# `{current}` が「いま手元にあるもの」なら、こちらは「外で拾ってきたもの」
+FEED_PLACEHOLDER = "{feed}"
 
 # 作り直しで、前世代の何割を下回ったら焼くのを断るか。
 # **既定で守る側に倒す** —— AI が変な日に当たった 1 回で、育てた分類が消えるのは重い。
@@ -275,6 +280,9 @@ class Collection:
     # こちら側で分かる。**割るのは対象としている空間であって、集まったものではない**
     # —— 集まった点だけから作ると、まだ 1 件も集めていない範囲に区画が生まれない。
     partition: dict | None = None
+    # 外向きの道具の指定(`app/feeds.py`)。RSS / Atom を機械的に取ってきて
+    # `{feed}` へ差し込む。**取ってきたものをそのまま溜めるわけではない**
+    feed: dict | None = None
     # 割り出した区画の台帳。1 件は `{"key", "count", "visited_at"}`。
     # **巡回の記録はここだけが持つ** —— 割り直しても引き継ぐ(`partitioning.refresh`)
     partitions: list[dict] = field(default_factory=list)
@@ -557,6 +565,7 @@ def _from_json(item: dict) -> Collection:
         web=bool(item.get("web", True)),
         cursor=str(item.get("cursor") or ""),
         partition=partitioning.to_json(partitioning.normalize(item.get("partition"))),
+        feed=feeds.to_json(feeds.normalize(item.get("feed"))),
         partitions=partitioning.normalize_ledger(item.get("partitions")),
         sweeps=normalize_sweeps(item.get("sweeps")),
         pending_sweep=str(item.get("pending_sweep") or ""),
@@ -672,6 +681,7 @@ def create(
     keep_ratio: float | None = None,
     extract_spec=None,
     partition_spec=None,
+    feed_spec=None,
 ) -> Collection:
     if not NAME_RE.match(name):
         raise HTTPException(400, {
@@ -710,6 +720,7 @@ def create(
         ),
         extract=extraction.to_json(extraction.normalize(extract_spec)),
         partition=partitioning.to_json(partitioning.normalize(partition_spec)),
+        feed=feeds.to_json(feeds.normalize(feed_spec)),
         requested_by=requested_by.strip()[:80],
         created_at=now,
         updated_at=now,
@@ -764,7 +775,7 @@ def update(name: str, **fields) -> Collection:
     allowed = {
         "description", "prompt", "interval_minutes", "enabled",
         "backend", "model", "effort", "web", "cursor", "mode", "keep_ratio", "extract",
-        "partition", "partitions", "sweeps",
+        "partition", "partitions", "sweeps", "feed",
     }
     patch = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if "interval_minutes" in patch:
@@ -796,6 +807,9 @@ def update(name: str, **fields) -> Collection:
         # **空の配列を渡せば最初から回り直せる**(消す手段がここしかない)。
         # 2 周目を粗いまま繰り返させず、一度リセットして精度を上げ直したいときに使う
         patch["partitions"] = partitioning.normalize_ledger(patch["partitions"])
+    if "feed" in patch:
+        # 空のオブジェクトを渡したら道具を外す(消す手段がここしかない)
+        patch["feed"] = feeds.to_json(feeds.normalize(patch["feed"] or None))
     if "extract" in patch:
         # 空のオブジェクトを渡したら「使わない」に戻す(消す手段がここしかない)
         patch["extract"] = extraction.to_json(extraction.normalize(patch["extract"] or None))
@@ -976,6 +990,7 @@ def build_messages(
     sources: dict | None = None,
     sweep: Sweep | None = None,
     focus: Focus | None = None,
+    feed: dict | None = None,
 ) -> list[dict]:
     """AI へ渡す本文。`{cursor}` を今のカーソルで、`{current}` を今ある内容で置き換える。
 
@@ -1004,6 +1019,13 @@ def build_messages(
         else:
             where = "(全体)"
         user = user.replace(PARTITION_PLACEHOLDER, where)
+    if FEED_PLACEHOLDER in user:
+        # **道具を付けていなければ、その旨を入れて消す。** 差し込み口だけ残ると、
+        # AI は「渡されるはずのものが空だった」と読んで待つ
+        user = user.replace(
+            FEED_PLACEHOLDER,
+            feeds.render(feed) if feed else "(この収集に外向きの道具は付いていません)",
+        )
     if MATERIAL_PLACEHOLDER in user:
         docs, scoped = scoped_docs(item, previous or {}, partition_key, focus)
         material_text, _shown = render_material(docs, scoped)
