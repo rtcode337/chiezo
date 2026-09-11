@@ -380,6 +380,149 @@ def _save(job_id: str, index: int, item) -> JobFile:
     )
 
 
+# 手元で作ったものを持ち込んだ依頼の相手。**生成した相手の名前と同じ列に入る**ので、
+# 実在の相手と紛れない名前にする（`media_providers` に無い ID なので引いても None）。
+UPLOAD_BACKEND = "upload"
+
+# 受け取る上限。**動画は数十 MB ある**ので、絵の感覚で切ると持ち込めない。
+UPLOAD_MAX_BYTES = int(
+    os.environ.get("CHIEZO_MEDIA_UPLOAD_MAX_BYTES", str(128 * 1024 * 1024))
+    or 128 * 1024 * 1024
+)
+
+# 持ち込めるものと、その種類の見分け方。**何でも受け取らない** —— ここは
+# 生成物を見比べる場所なので、置き場を汎用のファイル置き場にしない。
+UPLOAD_KINDS = (
+    ("image/", media_providers.KIND_IMAGE),
+    ("audio/", media_providers.KIND_AUDIO),
+    ("video/", media_providers.KIND_VIDEO),
+    ("text/", media_providers.KIND_TEXT),
+)
+
+# 相手が種類を名乗らなかったときの見分け。**拡張子は当てにならない**ので後の手段。
+UPLOAD_SUFFIXES = {
+    ".png": media_providers.KIND_IMAGE, ".jpg": media_providers.KIND_IMAGE,
+    ".jpeg": media_providers.KIND_IMAGE, ".webp": media_providers.KIND_IMAGE,
+    ".gif": media_providers.KIND_IMAGE, ".svg": media_providers.KIND_IMAGE,
+    ".mp3": media_providers.KIND_AUDIO, ".wav": media_providers.KIND_AUDIO,
+    ".flac": media_providers.KIND_AUDIO, ".ogg": media_providers.KIND_AUDIO,
+    ".m4a": media_providers.KIND_AUDIO,
+    ".mp4": media_providers.KIND_VIDEO, ".webm": media_providers.KIND_VIDEO,
+    ".mov": media_providers.KIND_VIDEO,
+    ".md": media_providers.KIND_TEXT, ".txt": media_providers.KIND_TEXT,
+    ".json": media_providers.KIND_TEXT,
+}
+
+
+def upload_kind(mime: str, filename: str) -> str:
+    """持ち込まれたものの種類。**まず相手の名乗り、次に拡張子**。
+
+    どちらも当てにならないことがある（`application/octet-stream` で送ってくる相手、
+    拡張子の無いファイル）ので 2 段にする。**どちらでも決まらなければ断る** ——
+    黙って「絵」として置くと、見比べの画面が壊れた絵を並べることになる。
+    """
+    low = (mime or "").strip().lower()
+    for prefix, kind in UPLOAD_KINDS:
+        if low.startswith(prefix):
+            return kind
+    # markdown は text/markdown で来ることも application/* で来ることもある
+    if low in ("application/json", "application/markdown", "application/x-markdown"):
+        return media_providers.KIND_TEXT
+    return UPLOAD_SUFFIXES.get(Path(filename or "").suffix.lower(), "")
+
+
+def save_upload(
+    *,
+    stream,
+    filename: str,
+    mime: str,
+    prompt: str = "",
+    group: str = "",
+    kind: str = "",
+    model: str = "",
+) -> dict:
+    """手元で作ったものを持ち込んで、見比べに 1 件として並べる。
+
+    **なぜ要るか。** 見比べに載せる手段が「chiezo に作らせる」しか無かったので、
+    手元で仕上げたものや、別の道具で作ったものを並べられなかった ——
+    比べたいのは出どころではなく出来のほうなのに、出どころで弾いていた。
+
+    **走らせずに `done` で作る。** 生成の job と同じ表に入れるので、見比べも
+    採用の印も掃除も、kind を問わずそのまま効く（別の表にすると、この 3 つを
+    もう 1 組持つことになる）。
+
+    **書きながら数える。** 全部読んでから測ると、上限を超える大きさをいったん
+    抱えることになる。超えたら**書きかけを消してから断る**（残すと、置き場に
+    誰の持ち物でもないファイルが溜まる）。
+    """
+    directory = require_dir()
+    chosen = (kind or "").strip().lower() or upload_kind(mime, filename)
+    if chosen not in media_providers.JOB_KINDS:
+        raise HTTPException(400, {
+            "error": f"持ち込めない種類です: {mime or '(名乗りなし)'} / {filename or '(名前なし)'}",
+            "kinds": list(media_providers.JOB_KINDS),
+            "hint": "kind を明示するか、拡張子の付いた名前で送ってください",
+        })
+
+    job_id = uuid.uuid4().hex
+    day = datetime.now(UTC).strftime("%Y%m%d")
+    target_dir = directory / day
+    target_dir.mkdir(parents=True, exist_ok=True)
+    suffix = Path(filename or "").suffix.lower()
+    if not (suffix[1:].isalnum() if suffix else False):
+        suffix = "." + _extension(mime)
+    name = f"{job_id}-0{suffix}"
+    path = target_dir / name
+
+    size = 0
+    try:
+        with path.open("wb") as out:
+            while chunk := stream.read(1024 * 1024):
+                size += len(chunk)
+                if size > UPLOAD_MAX_BYTES:
+                    raise HTTPException(413, {
+                        "error": f"大きすぎます（上限 {UPLOAD_MAX_BYTES:,} バイト）",
+                        "hint": "CHIEZO_MEDIA_UPLOAD_MAX_BYTES で変えられます",
+                    })
+                out.write(chunk)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    if size == 0:
+        path.unlink(missing_ok=True)
+        raise HTTPException(400, {"error": "中身が空です"})
+
+    # 文章は長さを `seconds` に入れる（`_run_text` と同じ置き方。一覧で長さが読める）
+    seconds = 0.0
+    if chosen == media_providers.KIND_TEXT:
+        with contextlib.suppress(OSError, UnicodeDecodeError):
+            seconds = float(len(path.read_text(encoding="utf-8")))
+
+    file = asdict(JobFile(path=str(path), url=f"/media/{day}/{name}",
+                          seed=0, model=model.strip(), seconds=seconds))
+    now = _now()
+    job = {
+        "id": job_id, "kind": chosen, "backend": UPLOAD_BACKEND,
+        "model": model.strip(),
+        # **見出しになるので、空なら元のファイル名に落とす。** 名前の無い依頼は
+        # 依頼文の 1 行目を見出しにする作りなので、空のままだと一覧で区別が付かない
+        "prompt": (prompt or "").strip() or (filename or "持ち込んだもの"),
+        "size": "", "seed": 0, "count": 1, "state": "done", "error": None,
+        "files": [file], "created_at": now, "updated_at": now,
+        "sound": None, "seconds": seconds, "voice": None,
+        "group_name": (group or "").strip() or None,
+        "picked_at": None, "picked_note": None,
+    }
+    _insert(job)
+    log.info("uploaded %s (%s, %d bytes) as job %s", filename, chosen, size, job_id)
+    return _row_to_dict_like(job)
+
+
+def _row_to_dict_like(job: dict) -> dict:
+    """`_insert` に渡した形を、読み出したときと同じ形にして返す。"""
+    return {**job, "files": list(job["files"])}
+
+
 def _track(job_id: str, task: asyncio.Task) -> None:
     """走らせたタスクを job_id で引けるようにしておく(終わったら外す)。"""
     _RUNNING[job_id] = task

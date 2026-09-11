@@ -24,6 +24,7 @@ from fastapi.responses import (
 )
 from pydantic import BaseModel
 from pydantic import Field as PydField
+from starlette.concurrency import run_in_threadpool
 
 from app import (
     agent,
@@ -72,6 +73,7 @@ from app.views import ai_settings as views_ai_settings
 from app.views import ai_usage as views_ai_usage
 from app.views import browse as views_browse
 from app.views import chat as views_chat
+from app.views import media_compare as views_media_compare
 from app.views import tasks as views_tasks
 
 log = logging.getLogger("chiezo.app")
@@ -2341,6 +2343,35 @@ async def media_transcribe(
     )
 
 
+@app.post("/v1/media/upload")
+async def media_upload(
+    file: UploadFile = File(..., description="見比べに並べたいもの（絵・音・動画・文章）"),
+    prompt: str = Form("", description="何を作ったものか（見出しになる。空ならファイル名）"),
+    group: str = Form("", description="見比べで束ねる名前。同じ名前が 1 組になる"),
+    kind: str = Form("", description="image / audio / video / text。空なら中身から見分ける"),
+    model: str = Form("", description="手元で使った道具やモデルの名前（控え）"),
+) -> dict:
+    """**手元で作ったものを持ち込む。** 生成させずに見比べへ 1 件足す口。
+
+    これが無かったころは、見比べに載せる手段が「chiezo に作らせる」しか無かった ——
+    手元で仕上げたものや別の道具で作ったものを、生成させたものと並べられなかった。
+    比べたいのは出どころではなく出来のほうなので、出どころで弾かない。
+
+    multipart で受ける（`transcribe` と同じ理由。送る側が既に中身を持っているので、
+    base64 に膨らませて JSON に載せる意味がない）。**生成の口ではないので課金は走らない。**
+    """
+    return await run_in_threadpool(
+        media.save_upload,
+        stream=file.file,
+        filename=file.filename or "",
+        mime=file.content_type or "",
+        prompt=prompt,
+        group=group,
+        kind=kind,
+        model=model,
+    )
+
+
 @app.get("/v1/media/jobs/{job_id}")
 async def media_job(job_id: str) -> dict:
     job = media.get_job(job_id)
@@ -2411,6 +2442,7 @@ app.include_router(views_admin.router)
 app.include_router(views_ai_settings.router)
 app.include_router(views_ai_usage.router)
 app.include_router(views_browse.router)
+app.include_router(views_media_compare.router)
 app.include_router(views_chat.router)
 app.include_router(views_tasks.router)
 

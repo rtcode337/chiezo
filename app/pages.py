@@ -144,6 +144,55 @@ PAGE_STYLE = """
      高さを決めて中でスクロールさせるのは、数千字の依頼を開いた拍子に
      表の他の行が画面の外へ押し出されないようにするため —— 走っているものを
      見比べる画面なので、1 件を開くと他が読めなくなるのでは意味がない。 */
+  /* 見比べ(`views/media_compare.py`)。**案を横に並べる** —— 縦に積むと
+     スクロールしながら記憶で比べることになり、見比べにならない。
+     幅は 16rem 下限の自動折り返しで、画面が狭ければ 1 列に落ちる。 */
+  .media-grid { display: grid; gap: 1rem; margin-top: 1rem;
+                grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); }
+  .media-card { border: 1px solid #e5e2dc; border-radius: 6px; padding: 0.8rem;
+                background: #fdfcfa; }
+  /* 採用したものは枠で示す。**文字だけだと、案が増えるほど見落とす** */
+  .media-card.picked { border-color: #6b8f5e; background: #f4f8f2; }
+  .media-picked { color: #4a6b3f; font-weight: bold; margin: 0.4rem 0; }
+  /* 絵と動画は枠に収める。原寸で貼ると 1 枚で画面が埋まって並ばない */
+  .media-img { max-width: 100%; height: auto; display: block; border-radius: 4px; }
+  .media-card audio { width: 100%; margin: 0.4rem 0; }
+  .media-card input[type=text] { width: 100%; margin-bottom: 0.4rem;
+                                 font-size: 0.85rem; }
+  /* 押すと全画面。**小さい絵の上に重ねる**ので、押せる範囲は中身そのものにする */
+  .media-open { display: block; color: inherit; text-decoration: none; }
+  .media-open:hover { opacity: 0.85; }
+
+  /* 全画面の覆い(`views/media_compare.py` の `_modal`)。
+     **JS を持たずに開閉する** —— `#` で飛ぶと `:target` が当たって出て、
+     別の `#` へ移ると消える。管理画面は JS を持たない流儀なので、
+     ここだけ例外にしない。 */
+  .media-modal { display: none; }
+  .media-modal:target { display: block; position: fixed; inset: 0; z-index: 50; }
+  /* 背景にも閉じるリンクを敷く(覆いの外を押したら閉じる) */
+  .media-modal-back { position: absolute; inset: 0; background: rgba(20, 18, 15, 0.72); }
+  .media-modal-body { position: relative; width: 94vw; max-width: 64rem;
+                      max-height: 92vh; overflow-y: auto; margin: 4vh auto;
+                      background: #fdfcfa; border-radius: 8px; padding: 1rem 1.2rem;
+                      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35); }
+  /* 見出しと閉じるは上に貼り付ける —— 長い文章を読み下した先でも閉じられるように */
+  .media-modal-bar { position: sticky; top: -1rem; display: flex; gap: 1rem;
+                     align-items: baseline; justify-content: space-between;
+                     background: #fdfcfa; padding: 0.4rem 0 0.6rem;
+                     border-bottom: 1px solid #e5e2dc; margin: -1rem 0 0.8rem; }
+  .media-modal-bar span { color: #666; font-size: 0.85rem; }
+  .media-modal-close { white-space: nowrap; }
+  /* 全画面の中身。絵は枠いっぱい、文章は読みやすい行の高さに戻す
+     (カードの中は詰めてあるが、読むときは詰めない) */
+  .media-full-img { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  .media-full-text { white-space: pre-wrap; word-break: break-word;
+                     font-size: 0.95rem; line-height: 1.9; margin: 0; }
+  .media-text { margin-top: 0.4rem; }
+  .media-text > summary { font-weight: normal; padding: 0.1rem 0; color: #555; }
+  .media-body { max-height: 22rem; overflow-y: auto; white-space: pre-wrap;
+                word-break: break-word; background: #f7f6f3;
+                border: 1px solid #e5e2dc; padding: 0.6rem; margin: 0.4rem 0;
+                font-size: 0.8rem; line-height: 1.6; }
   .prompt-body { max-height: 16rem; max-width: 40rem; overflow-y: auto;
                  white-space: pre-wrap; word-break: break-word;
                  background: #f7f6f3; border: 1px solid #e5e2dc;

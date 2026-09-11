@@ -869,13 +869,18 @@ def _answer_status_html() -> str:
 PAGES = (
     ("/admin/memory", "記憶", "溜めて引く。短期記憶・長期記憶・集める・固化・初期化"),
     ("/admin/ai", "AI と鍵", "貸し出すもの。話せる相手、使用量、依頼の履歴"),
+    ("/admin/media", "見比べ", "作らせたものを並べて選ぶ。手元のものも持ち込める"),
     ("/admin/server", "その他", "このサーバー。Claude Code 連携といま動いているビルド"),
 )
 
 
-def _nav_html(current: str) -> str:
+def nav_html(current: str) -> str:
     """面のあいだを行き来する帯。**どの面にも同じものを出す** ——
-    玄関へ戻ってから選び直す、を毎回させない。"""
+    玄関へ戻ってから選び直す、を毎回させない。
+
+    別のモジュールの面（`views/media_compare.py`）からも呼ぶので公開している ——
+    写しを持つと、面が増えたときに片方の帯にだけ出ないことになる。
+    """
     links = []
     for path, label, _note in PAGES:
         if path == current:
@@ -1059,7 +1064,7 @@ def admin_memory(request: Request):
         init_rows = '<tr><td colspan="4">未初期化のソースはありません</td></tr>'
 
     body = f"""
-{_nav_html("/admin/memory")}
+{nav_html("/admin/memory")}
 <h1>記憶(溜めて引く)</h1>
 <p class="muted">
 知識は 2 層。<strong>短期記憶</strong>は Chiezo で唯一書き込める置き場で、覚えたことが
@@ -1113,7 +1118,7 @@ def admin_memory(request: Request):
 async def admin_ai(request: Request):
     """AI と鍵の面。**呼ぶ側に認証情報を持たせないための面**をここにまとめる。"""
     body = f"""
-{_nav_html("/admin/ai")}
+{nav_html("/admin/ai")}
 <h1>AI と鍵(貸し出すもの)</h1>
 <p class="muted">
 呼ぶ側に認証情報を持たせないための面。鍵はここで預かり、話せる相手と、
@@ -1136,7 +1141,7 @@ async def admin_ai(request: Request):
 def admin_server(_request: Request):
     """このサーバー自身のこと。どちらも**読むだけ**で、押して変わるものは無い。"""
     body = f"""
-{_nav_html("/admin/server")}
+{nav_html("/admin/server")}
 <h1>このサーバー</h1>
 
 <h2>Claude Code 連携設定</h2>
