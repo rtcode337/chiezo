@@ -47,6 +47,7 @@ from app import (
     usage_store,
     websearch,
 )
+from app import partition as partitioning
 from app.deps import (
     exact_title_first,
     get_source,
@@ -260,8 +261,8 @@ async def draft_collection_prompt(
 
 
 async def _collect_items(
-    item, previous: dict, sources: dict
-) -> tuple[list[dict], str | None, list[str]]:
+    item, previous: dict, sources: dict, partition_key: str | None = None
+) -> tuple[list[dict], str | None]:
     """1 回ぶん集める。**最初の 1 回だけ機械的に埋められる**。
 
     抽出の指定を持っていて、まだ進み具合が入っていなければ AI を呼ばず、手元の
@@ -272,9 +273,10 @@ async def _collect_items(
     if item.extract and not item.cursor:
         spec = extract.normalize(item.extract)
         items, next_cursor = await asyncio.to_thread(extract.run, spec, sources)
-        # 機械的に埋める回は「どこを回ったか」を名乗らない(範囲の概念が無い)
-        return items, next_cursor, []
-    content = await _ask_for_collection(item, collect.build_messages(item, previous))
+        return items, next_cursor
+    content = await _ask_for_collection(
+        item, collect.build_messages(item, previous, partition_key, sources)
+    )
     return collect.parse_response(content or "")
 
 
@@ -292,13 +294,19 @@ async def collect_material(name: str, sources: dict) -> str:
     # 前世代は 1 度だけ読んで使い回す。プロンプトへ差し込む素材であり、
     # 消えたものを数える相手であり、doc_id を引き継ぐ元でもある
     previous = await asyncio.to_thread(collect.previous_docs, name, sources)
+    # **区画は集める前に決める。** 何を見るかが決まっていないと、渡す素材も
+    # 差し込む文も作れない(台帳が無ければ空で返り、今までどおり全体を見る)
+    ledger = await asyncio.to_thread(collect.plan_partitions, item, sources, previous)
+    key = partitioning.due(ledger)
     try:
-        items, next_cursor, covered = await _collect_items(item, previous, sources)
+        items, next_cursor = await _collect_items(item, previous, sources, key)
         body, diff = await asyncio.to_thread(collect.ndjson, item, sources, previous, items)
     except Exception as e:
         reason = f"{type(e).__name__}: {e}"
         log.warning("collect %s failed: %s", name, reason)
-        await asyncio.to_thread(collect.record_result, name, status="error", error=reason)
+        await asyncio.to_thread(
+            collect.record_result, name, status="error", error=reason, partitions=ledger
+        )
         await asyncio.to_thread(
             collect_log.record, name, status=collect_log.STATUS_ERROR, error=reason
         )
@@ -313,12 +321,13 @@ async def collect_material(name: str, sources: dict) -> str:
         updated=diff["updated"],
         removed_titles=diff["removed_titles"],
         next_cursor=next_cursor,
-        covered=covered,
+        partition=key,
+        partitions=ledger,
     )
     await asyncio.to_thread(collect_log.record, name, status=collect_log.STATUS_OK, diff=diff)
     log.info(
-        "collect %s (%s): added=%d updated=%d kept=%d removed=%d skipped=%d",
-        name, item.mode,
+        "collect %s (%s%s): added=%d updated=%d kept=%d removed=%d skipped=%d",
+        name, item.mode, f" {key}" if key else "",
         diff["added"], diff["updated"], diff["kept"], diff["removed"], diff["skipped"],
     )
     return body
@@ -336,16 +345,18 @@ async def collect_preview(name: str, sources: dict) -> dict:
     """
     item = await asyncio.to_thread(collect.get, name)
     previous = await asyncio.to_thread(collect.previous_docs, name, sources)
-    items, next_cursor, covered = await _collect_items(item, previous, sources)
+    ledger = await asyncio.to_thread(collect.plan_partitions, item, sources, previous)
+    key = partitioning.due(ledger)
+    items, next_cursor = await _collect_items(item, previous, sources, key)
     _docs, diff = await asyncio.to_thread(collect.material, item, previous, items)
     return {
         "name": name,
         "mode": item.mode,
         **diff,
         "next_cursor": next_cursor,
-        # **下見では積まない。** 進み具合を動かさないのが下見の約束なので、
-        # 「今回どこを回ったと名乗ったか」だけ見せる(積むのは焼くときだけ)
-        "covered": covered,
+        # **下見では印を付けない。** 進み具合を動かさないのが下見の約束なので、
+        # 「今回どこを見たか」だけ見せる(台帳を進めるのは焼くときだけ)
+        "partition": key,
         # 焼こうとしたら止まるかどうか。止まる理由もそのまま出す
         "blocked": collect.shrink_blocked(item, diff),
     }
@@ -1339,6 +1350,12 @@ class CollectionCreate(BaseModel):
         "(どのソースの・どのタグを・何件・タグをどう読み替えるか)。"
         "進み具合が空のときだけ使い、2 回目からは AI が肉付けする",
     )
+    partition: dict | None = PydField(
+        None,
+        description="回る先の割り方(by=geo / tag / title、target、母集団の source など)。"
+        "**割るのは対象としている空間**なので、まだ 1 件も集めていない範囲にも区画ができる。"
+        "プロンプトの {partition} に今回見る範囲が差し込まれる",
+    )
 
 
 class CollectionPatch(BaseModel):
@@ -1357,17 +1374,22 @@ class CollectionPatch(BaseModel):
     effort: str | None = None
     web: bool | None = None
     cursor: str | None = None
-    covered: list[str] | None = PydField(
-        None,
-        description=(
-            "回り終えた印。空の配列を渡すと最初から回り直せる"
-            "(2 周目を粗いまま繰り返させず、精度を上げて回り直したいときに使う)"
-        ),
-    )
     mode: str | None = None
     keep_ratio: float | None = None
     extract: dict | None = PydField(
         None, description="抽出の指定。空のオブジェクトを渡すと外れる"
+    )
+    partition: dict | None = PydField(
+        None,
+        description="区画の割り方。空のオブジェクトを渡すと外れる。"
+        "**割り方を変えると台帳は作り直す**(鍵の意味が変わるため)",
+    )
+    partitions: list[dict] | None = PydField(
+        None,
+        description=(
+            "区画の台帳。空の配列を渡すと割り直して最初から回り直せる"
+            "(2 周目を粗いまま繰り返させず、精度を上げて回り直したいときに使う)"
+        ),
     )
 
 
@@ -1408,7 +1430,7 @@ def collect_list():
     """
     collect.require_enabled()
     return {
-        "collections": [collect.to_public(c, with_covered=False) for c in collect.load()]
+        "collections": [collect.to_public(c, with_partitions=False) for c in collect.load()]
     }
 
 
@@ -1435,6 +1457,7 @@ def collect_create(request: Request, body: CollectionCreate):
         mode=body.mode,
         keep_ratio=body.keep_ratio,
         extract_spec=body.extract,
+        partition_spec=body.partition,
         requested_by=body.requested_by,
     )
     # 作った時点で空の DB ができる。**ここでソースを取り直さないと、1 回目が走るまで

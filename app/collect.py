@@ -62,6 +62,7 @@ from fastapi import HTTPException
 
 from app import collect_log, db, notes
 from app import extract as extraction
+from app import partition as partitioning
 from app.jst import to_jst
 
 log = logging.getLogger("chiezo.app")
@@ -130,25 +131,10 @@ LEGACY_MODES = {"rebuild": MODE_REFINE}
 # 育てたものが 1 回で消える。だから作るときに弾く
 MATERIAL_PLACEHOLDER = "{current}"
 
-# 回り終えた印を差し込む場所。**`{cursor}` と役割が違う** ——
-# あちらは「次はどこ」の 1 本、こちらは「どこを終えたか」の一覧。
-# 全部を舐めきったかも、取りこぼしがどこかも、一覧が無いと書きようがない
-COVERED_PLACEHOLDER = "{covered}"
-
-# 積んでおく印の大きさ(文字数)。**件数ではなく文字数で見る** ——
-# このファイルの冒頭に書いたとおり、件数は大きさの代理にならない
-# (印は「新宿区」のような短いものも、長い範囲の書き方も来る)。
-#
-# **何件までと決めるのは Chiezo の仕事ではない。** どこまで細かく回るかは依頼した側の
-# プロンプトが決めることで、こちらが持つのは「定義のメモが際限なく太らない」歯止めだけ。
-# 全国を市区町村で舐めても 2 万字ほどなので、**普通の使い方では当たらない**大きさに置く。
-MAX_COVERED_CHARS = 200_000
-# 1 件の印の長さ。**印であって本文ではない**ので、長い説明が混ざったら切る
-MAX_COVERED_ITEM_CHARS = 200
-# プロンプトへ差し込むときの文字数。**素材の差し込み(`MAX_MATERIAL_CHARS`)と同じ流儀**で、
-# ここだけは当たりうる —— 1 回ぶんの本文に収める必要があるため。
-# 載せきれないぶんは件数として伝える(黙って切らない)
-MAX_COVERED_PROMPT_CHARS = 20_000
+# いま見る区画を差し込む場所。**`{cursor}` と役割が違う** ——
+# あちらは「次はどこ」を AI に決めさせる 1 本、こちらは Chiezo が台帳から選んで渡す
+# 1 区画。回る先を数え上げられるので、一周したかも取りこぼしも台帳の側で分かる。
+PARTITION_PLACEHOLDER = "{partition}"
 
 # 作り直しで、前世代の何割を下回ったら焼くのを断るか。
 # **既定で守る側に倒す** —— AI が変な日に当たった 1 回で、育てた分類が消えるのは重い。
@@ -264,16 +250,16 @@ class Collection:
     cursor: str
     created_at: str
     updated_at: str
-    # 回り終えた印の積み上げ。`prompt` の `{covered}` に入り、AI が `covered` で返す。
+    # 回る先の割り方(`app/partition.py`)。無ければ区画を持たない収集。
     #
-    # **`cursor` が「次はどこ」なら、こちらは「どこを終えたか」。** 1 本の印だけでは、
-    # 全部を舐めきったかも、取りこぼしがどこかも分からない —— 「2 周目で埋める」
-    # 「この範囲はもう集めてある」を外から判断するには、終えたものの一覧が要る。
-    #
-    # **中身が何かは知らない**(地域名でも人物名でもよい)。Chiezo は AI が返した
-    # 文字列を積んで `{covered}` で見せ返すだけで、意味は依頼した側のプロンプトが持つ
-    # —— 抽出の指定(`app/extract.py`)と同じ線。
-    covered: list[str] = field(default_factory=list)
+    # **`cursor` が「次はどこ」を AI に決めさせるのに対し、こちらは Chiezo が
+    # 台帳から選んで渡す。** 回る先を数え上げられるので、一周したかも取りこぼしも
+    # こちら側で分かる。**割るのは対象としている空間であって、集まったものではない**
+    # —— 集まった点だけから作ると、まだ 1 件も集めていない範囲に区画が生まれない。
+    partition: dict | None = None
+    # 割り出した区画の台帳。1 件は `{"key", "count", "visited_at"}`。
+    # **巡回の記録はここだけが持つ** —— 割り直しても引き継ぐ(`partitioning.refresh`)
+    partitions: list[dict] = field(default_factory=list)
     # 集め方(`MODES`)。既定は足すほう —— 既にある定義の意味を変えない
     mode: str = MODE_APPEND
     # 作り直しで、前世代の何割を下回ったら断るか。0 なら守りを外す。
@@ -346,7 +332,8 @@ def _from_json(item: dict) -> Collection:
         effort=item.get("effort") or None,
         web=bool(item.get("web", True)),
         cursor=str(item.get("cursor") or ""),
-        covered=normalize_covered(item.get("covered")),
+        partition=partitioning.to_json(partitioning.normalize(item.get("partition"))),
+        partitions=partitioning.normalize_ledger(item.get("partitions")),
         mode=normalize_mode(item.get("mode")),
         keep_ratio=normalize_keep_ratio(item.get("keep_ratio")),
         extract=extraction.to_json(extraction.normalize(item.get("extract"))),
@@ -363,64 +350,6 @@ def _from_json(item: dict) -> Collection:
         last_removed_titles=[str(t) for t in (item.get("last_removed_titles") or [])],
         next_run_at=item.get("next_run_at") or None,
     )
-
-
-def normalize_covered(value) -> list[str]:
-    """回り終えた印を均す(文字列だけ・前後の空白を落とす・重複を外す)。
-
-    **大きさは文字数で見る**(`MAX_COVERED_CHARS`)。超えたら古いほうから落とす ——
-    「最近どこを回ったか」のほうが、次にどこへ行くかを決める役に立つ。
-    普通の使い方では当たらない大きさなので、ここはメモが際限なく太らない歯止め。
-    """
-    if not isinstance(value, list):
-        return []
-    out: list[str] = []
-    seen: set[str] = set()
-    for raw in value:
-        if not isinstance(raw, (str, int, float)):
-            continue
-        text = str(raw).strip()[:MAX_COVERED_ITEM_CHARS]
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        out.append(text)
-    # 古いほうから落として収める(1 件ずつ引くので、境目で切れた印が残らない)
-    used = sum(len(t) for t in out)
-    start = 0
-    while used > MAX_COVERED_CHARS and start < len(out):
-        used -= len(out[start])
-        start += 1
-    return out[start:]
-
-
-def merge_covered(current: list[str], added: list[str]) -> list[str]:
-    """回り終えた印を積む。**同じものは後ろへ動かさない** —— 並びが「回った順」
-    として読めるほうが、どこまで進んだかを追いやすい(2 周目に入ったことも見える)。
-    """
-    seen = set(current)
-    return normalize_covered(current + [a for a in normalize_covered(added) if a not in seen])
-
-
-def render_covered(covered: list[str]) -> str:
-    """`{covered}` に差し込む文字列。**入るだけ新しいほうから載せる**
-    (`MAX_COVERED_PROMPT_CHARS`。素材の差し込みと同じ流儀で、文字数で見る)。
-
-    **載せきれないぶんは件数で伝える** —— 黙って切ると、AI からは
-    「そこまでしか回っていない」ように見えて、既に回ったところへ戻る。
-    """
-    if not covered:
-        return "(まだ無し。最初から)"
-    shown: list[str] = []
-    used = 0
-    for text in reversed(covered):
-        if used + len(text) + 1 > MAX_COVERED_PROMPT_CHARS:
-            break
-        shown.append(text)
-        used += len(text) + 1
-    shown.reverse()
-    head = f"回り終えたもの(全 {len(covered)} 件"
-    head += f"。うち新しい {len(shown)} 件を載せています)" if len(shown) < len(covered) else ")"
-    return head + ":\n" + "、".join(shown)
 
 
 def normalize_mode(value) -> str:
@@ -513,6 +442,7 @@ def create(
     mode: str = MODE_APPEND,
     keep_ratio: float | None = None,
     extract_spec=None,
+    partition_spec=None,
 ) -> Collection:
     if not NAME_RE.match(name):
         raise HTTPException(400, {
@@ -550,6 +480,7 @@ def create(
             DEFAULT_KEEP_RATIO if keep_ratio is None else normalize_keep_ratio(keep_ratio)
         ),
         extract=extraction.to_json(extraction.normalize(extract_spec)),
+        partition=partitioning.to_json(partitioning.normalize(partition_spec)),
         requested_by=requested_by.strip()[:80],
         created_at=now,
         updated_at=now,
@@ -603,7 +534,8 @@ def update(name: str, **fields) -> Collection:
     current = get(name)
     allowed = {
         "description", "prompt", "interval_minutes", "enabled",
-        "backend", "model", "effort", "web", "cursor", "covered", "mode", "keep_ratio", "extract",
+        "backend", "model", "effort", "web", "cursor", "mode", "keep_ratio", "extract",
+        "partition", "partitions",
     }
     patch = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if "interval_minutes" in patch:
@@ -612,10 +544,19 @@ def update(name: str, **fields) -> Collection:
         raise HTTPException(400, {"error": f"mode は {' / '.join(MODES)} のどれかにしてください"})
     if "keep_ratio" in patch:
         patch["keep_ratio"] = normalize_keep_ratio(patch["keep_ratio"])
-    if "covered" in patch:
+    if "partition" in patch:
+        # 空のオブジェクトを渡したら区画を持たない収集に戻す(消す手段がここしかない)。
+        # **割り方を変えたら台帳は捨てる** —— 鍵の意味が変わるので、引き継ぐと
+        # 前の割り方で見た記録が新しい区画に付く
+        patch["partition"] = partitioning.to_json(partitioning.normalize(patch["partition"] or None))
+        # **台帳を明示的に渡されていなければ捨てる。** 両方渡されたときは渡したほうが
+        # 勝つ(割り出した結果を持ち込みたいのに、こちらが消してしまうため)
+        if patch["partition"] != current.partition and "partitions" not in patch:
+            patch["partitions"] = []
+    if "partitions" in patch:
         # **空の配列を渡せば最初から回り直せる**(消す手段がここしかない)。
         # 2 周目を粗いまま繰り返させず、一度リセットして精度を上げ直したいときに使う
-        patch["covered"] = normalize_covered(patch["covered"])
+        patch["partitions"] = partitioning.normalize_ledger(patch["partitions"])
     if "extract" in patch:
         # 空のオブジェクトを渡したら「使わない」に戻す(消す手段がここしかない)
         patch["extract"] = extraction.to_json(extraction.normalize(patch["extract"] or None))
@@ -671,9 +612,14 @@ SYSTEM_PROMPT = (
     "\"tags\":[\"タグ\"],\"url\":\"出典URL\"}],\"next_cursor\":\"次に進む印\"}"
     " title は重複の鍵になるので、同じものを指す見出しは同じ文字列にする。"
     " 出典が分かるものは url を必ず入れる。分からない項目は null。"
-    " **端から端まで舐めていく指示のときは covered(今回回り終えた範囲の配列)も返す。**"
-    " 次回そこへ戻らずに済み、全部を回り終えたかも分かる。"
-    " 舐める指示でなければ書かなくてよい。"
+)
+
+
+# 矩形で区画を割っている収集にだけ足す。**座標が無いと、集めたものがどの区画にも
+# 入らない** —— 次にその区画を見るとき「まだ何も無い」と見えて、同じものを集め直す。
+GEO_SYSTEM_NOTE = (
+    " **1 件ごとに lat(緯度)と lon(経度)を数で入れる。**"
+    " 分からないものは入れなくてよいが、入っていないものは今回の範囲に属さない扱いになる。"
 )
 
 
@@ -691,14 +637,20 @@ REFINE_SYSTEM_PROMPT = (
 )
 
 
-def render_material(previous: dict[str, dict]) -> tuple[str, int]:
+def render_material(previous: dict[str, dict], scoped: bool = False) -> tuple[str, int]:
     """前世代を、プロンプトへ差し込める形にする。差し込んだ件数も返す。
 
     **入り切らなければ切って、切ったことを本文に書く** —— 黙って切ると、AI は
     見えなかったぶんを「無かったもの」として落とし、歯止めが無ければそのまま消える。
+
+    `scoped` は「今回の区画のぶんだけを渡している」の印。**区画で切ってあれば
+    普通は全部入る**ので、切られたときの意味が変わる(区画が大きすぎる)。
     """
     if not previous:
-        return "(まだ何も入っていません。最初の内容を作ってください)", 0
+        return (
+            "(この範囲には、まだ何も入っていません)" if scoped
+            else "(まだ何も入っていません。最初の内容を作ってください)"
+        ), 0
     lines: list[str] = []
     used = 0
     docs = list(previous.values())
@@ -711,14 +663,38 @@ def render_material(previous: dict[str, dict]) -> tuple[str, int]:
         lines.append(line)
         used += len(line)
     shown = len(lines)
-    head = f"いまの内容(全 {len(docs)} 件"
+    head = ("この範囲にいま入っているもの(全 " if scoped else "いまの内容(全 ") + f"{len(docs)} 件"
     head += f"。うち {shown} 件だけ載せています)" if shown < len(docs) else ")"
     if shown < len(docs):
         head += "\n※ 載っていないものは今回の対象外です。載っているぶんだけを整理してください。"
     return head + ":\n" + "\n".join(lines), shown
 
 
-def build_messages(item: Collection, previous: dict[str, dict] | None = None) -> list[dict]:
+def scoped_docs(
+    item: Collection, previous: dict[str, dict], partition_key: str | None
+) -> tuple[dict[str, dict], bool]:
+    """今回の区画に入る文書だけに絞る。絞ったかどうかも返す。
+
+    **これが区画のいちばんの利得。** 全体を差し込もうとすると入り切らず、切ったぶんは
+    「今回の対象外」になる(`MAX_MATERIAL_CHARS`)。区画で切れば全部見せられるので、
+    漏れているものを足させることも、重複をまとめることも初めて成り立つ。
+    """
+    if not (item.partition and partition_key):
+        return previous, False
+    spec = partitioning.normalize(item.partition)
+    return {
+        title: doc
+        for title, doc in previous.items()
+        if partitioning.belongs(spec, partition_key, doc)
+    }, True
+
+
+def build_messages(
+    item: Collection,
+    previous: dict[str, dict] | None = None,
+    partition_key: str | None = None,
+    sources: dict | None = None,
+) -> list[dict]:
     """AI へ渡す本文。`{cursor}` を今のカーソルで、`{current}` を今ある内容で置き換える。
 
     **カーソルが空でも壊さない**(初回は空文字が入るだけ)。テンプレートに `{cursor}` が
@@ -726,17 +702,26 @@ def build_messages(item: Collection, previous: dict[str, dict] | None = None) ->
 
     `{current}` は作り直し(整理)のためのもの。今ある内容を読ませて、分類をやり直す・
     重複をまとめる・言い回しを揃える、といった育て方をするときに使う。
+    **区画を持つ収集では、その区画のぶんだけが入る**。
 
-    `{covered}` は**回り終えたものの一覧**。「まだのところへ進め」「全部回り終えたら
-    最初から精度を上げて回り直せ」のような、周回の指示が書けるようになる。
+    `{partition}` は**今回見る範囲**。Chiezo が台帳から選んで渡す(`app/partition.py`)。
+    矩形だけでは AI にどこか分からないので、近くのものを数件添えた文になる。
     """
     user = item.prompt.replace("{cursor}", item.cursor or "(まだ無し。最初から)")
-    if COVERED_PLACEHOLDER in user:
-        user = user.replace(COVERED_PLACEHOLDER, render_covered(item.covered))
+    spec = partitioning.normalize(item.partition) if item.partition else None
+    if PARTITION_PLACEHOLDER in user:
+        user = user.replace(
+            PARTITION_PLACEHOLDER,
+            partitioning.describe(spec, partition_key, sources or {})
+            if (spec and partition_key) else "(全体)",
+        )
     if MATERIAL_PLACEHOLDER in user:
-        material_text, _shown = render_material(previous or {})
+        docs, scoped = scoped_docs(item, previous or {}, partition_key)
+        material_text, _shown = render_material(docs, scoped)
         user = user.replace(MATERIAL_PLACEHOLDER, material_text)
     system = REFINE_SYSTEM_PROMPT if item.is_refine() else SYSTEM_PROMPT
+    if spec and spec["by"] == partitioning.BY_GEO:
+        system += GEO_SYSTEM_NOTE
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -752,10 +737,10 @@ DRAFT_SYSTEM = (
     "- 指示文には {cursor} を入れる。**実行のたびに前回の続きへ進む印**で、"
     "AI が next_cursor で次の値を返す(「前回以降の日付」「次に回る地域」"
     "「次に調べる人」など、集めるものに合う進み方を決める)\n"
-    "- **端から端まで舐めていく collection では {covered} も入れる**。"
-    "回り終えたものの一覧が差し込まれるので、「まだのところへ進め」"
-    "「全部回り終えたら精度を上げて最初から回り直せ」と書ける。"
-    "その場合は返す形に covered(今回回り終えた範囲の配列)も足すよう頼む\n"
+    "- **端から端まで舐めていく collection では {partition} を入れる**。"
+    "そこへ「今回見る範囲」が差し込まれる(Chiezo が対象の空間を区画に割って、"
+    "順に配る)。指示文は「この範囲について調べて」「この範囲に足すべきものが"
+    "無いか確かめて」のように書く。範囲の選び方を AI に決めさせてはいけない\n"
     "- 1回に集める件数を書く\n"
     "出力は**指示文そのものだけ**。前置き・見出し・コードブロックの記号・"
     "「以下が指示文です」のような説明は一切付けない。"
@@ -793,8 +778,8 @@ def clean_draft(content: str) -> str:
     return text.strip()
 
 
-def parse_response(content: str) -> tuple[list[dict], str | None, list[str]]:
-    """AI の答えから items と next_cursor と covered を取り出す。
+def parse_response(content: str) -> tuple[list[dict], str | None]:
+    """AI の答えから items と next_cursor を取り出す。
 
     前置きやコードブロックが混ざっても拾えるように、`{` 〜 `}` を切り出してから読む
     (小型モデルでなくても、この手の付け足しは普通に起きる)。
@@ -813,9 +798,6 @@ def parse_response(content: str) -> tuple[list[dict], str | None, list[str]]:
     return (
         [i for i in items if isinstance(i, dict)],
         str(next_cursor) if isinstance(next_cursor, (str, int, float)) and next_cursor else None,
-        # **返さなくても壊れない** —— 周回を使わない収集は covered を書かないので、
-        # 空のまま積まれずに進む(既にある収集の意味を変えないため)
-        normalize_covered(payload.get("covered")),
     )
 
 
@@ -830,18 +812,25 @@ def record_result(
     removed_titles: list[str] | None = None,
     error: str | None = None,
     next_cursor: str | None = None,
-    covered: list[str] | None = None,
+    partition: str | None = None,
+    partitions: list[dict] | None = None,
 ) -> Collection:
     """1 回ぶんの結果を定義側へ書き戻し、次回の予定を入れる。
 
     **失敗しても次回の予定は入れる** —— 入れないと、一度こけた収集が二度と走らなくなる。
+
+    **見た区画に印を付けるのは成功したときだけ。** 失敗した回に印を付けると、
+    一度も見られていない区画が「回り終えた」に混ざり、一周が嘘になる。
     """
     current = get(name)
     now = _now()
+    ledger = partitions if partitions is not None else current.partitions
+    if partition and status == "ok":
+        ledger = partitioning.mark_visited(ledger, partition, _iso(now))
     updated = replace(
         current,
         cursor=next_cursor if next_cursor is not None else current.cursor,
-        covered=merge_covered(current.covered, covered or []),
+        partitions=ledger,
         last_run_at=_iso(now),
         last_status=status,
         last_error=(error or "")[:500] or None,
@@ -884,20 +873,24 @@ def due_collections(at: datetime | None = None) -> list[Collection]:
     )
 
 
-def to_public(item: Collection, *, with_covered: bool = True) -> dict:
+def to_public(item: Collection, *, with_partitions: bool = True) -> dict:
     """画面と REST に返す形。**次回の予定を必ず入れる**
 
     (「30 分ごと・次は 14:20」まで見えて初めて、動いているか判断できる。
     溜まった件数は長期記憶の側にあるので、画面はソース表から取る)。
 
-    **一覧では回り終えた印そのものを載せない**(`with_covered=False`)——
-    上限まで積むと 1 件で数百 KB になり、収集の数だけ倍になる。件数だけ載せて、
+    **一覧では台帳そのものを載せない**(`with_partitions=False`)——
+    上限まで割ると 1 件で数百 KB になり、収集の数だけ倍になる。進み具合だけ載せて、
     中身は 1 件ぶんの口(`GET /v1/collect/{name}`)で取ってもらう。
     """
     data = {**item.__dict__, "url": f"/search/{item.name}/"}
-    data["covered_count"] = len(item.covered)
-    if not with_covered:
-        data.pop("covered", None)
+    visited, total = partitioning.progress(item.partitions)
+    data["partitions_visited"] = visited
+    data["partitions_total"] = total
+    # 次にどこを見るかは、動いているかの判断に要る(予定だけでは進んでいるか分からない)
+    data["next_partition"] = partitioning.due(item.partitions)
+    if not with_partitions:
+        data.pop("partitions", None)
     return data
 
 
@@ -1003,6 +996,26 @@ def load_json(raw) -> dict | None:
     except (ValueError, TypeError):
         return None
     return value if isinstance(value, dict) else None
+
+
+def plan_partitions(item: Collection, sources: dict, previous: dict[str, dict]) -> list[dict]:
+    """この回に使う区画の台帳。必要なら割り直す(`app/partition.py`)。
+
+    **毎回は割り直さない。** 母集団を外のソースから取っているなら、こちらが何件
+    集めようと点の数は変わらないので、区画は動かないほうがよい —— 動かすと
+    巡回の記録が毎回リセットされ、一周が永遠に終わらない。
+    自分自身を割っているときだけ、育って `target` を超えた区画が出たら割り直す。
+
+    **割り直しても巡回の記録は引き継ぐ**(`partitioning.refresh`)。
+    """
+    if not item.partition:
+        return []
+    spec = partitioning.normalize(item.partition)
+    if item.partitions and not partitioning.outgrown(spec, item.partitions, previous):
+        return item.partitions
+    built = partitioning.build(spec, sources, previous)
+    log.info("partition %s: %d 区画", item.name, len(built))
+    return partitioning.refresh(built, item.partitions)
 
 
 def material(
@@ -1131,6 +1144,12 @@ def _to_doc(raw: dict, now: str, web: bool) -> dict | None:
     extra = {"collected_at": now, "web": bool(web)}
     if url := (raw.get("url") or "").strip():
         extra["url"] = url
+    # **座標は運ぶ**。矩形で区画を割る収集では、これが無いと集めたものがどの区画にも
+    # 入らない(次に同じ区画を見たとき「まだ何も無い」と見えて、同じものを集め直す)。
+    # ついでにコアスキーマの生成列に乗るので、`filter?bbox=` で普通のソースとして引ける
+    lat, lon = _coords(raw)
+    if lat is not None:
+        extra["lat"], extra["lon"] = lat, lon
     return {
         "doc_id": 0,  # material が前世代から引き継ぐか、新しく振る
         "title": title,
@@ -1140,6 +1159,17 @@ def _to_doc(raw: dict, now: str, web: bool) -> dict | None:
         "updated_at": now,
         "extra": extra,
     }
+
+
+def _coords(raw: dict) -> tuple[float | None, float | None]:
+    """AI が返した 1 件から座標を取る。**数でなければ持たない**(文字列を素通ししない)。"""
+    try:
+        lat, lon = float(raw["lat"]), float(raw["lon"])
+    except (KeyError, TypeError, ValueError):
+        return None, None
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None, None
+    return lat, lon
 
 
 def _dump_date(name: str, sources: dict) -> str:

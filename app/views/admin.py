@@ -33,6 +33,7 @@ from app import (
     providers,
     settings_store,
 )
+from app import partition as partitioning
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
 from app.pages import CHAT_PATH, browse_url, esc, page_shell
 from app.registry import SUPPORTED_SCHEMA_VERSIONS, Source
@@ -531,6 +532,56 @@ document.addEventListener('change', function (ev) {
 </script>"""
 
 
+PARTITION_EXAMPLE = json.dumps(
+    {
+        "by": "geo",
+        "target": 200,
+        "source": "osm_japan",
+        "feature": "amenity=restaurant",
+        "bbox": [20.0, 122.0, 46.0, 154.0],
+    },
+    ensure_ascii=False,
+)
+
+# 一覧に出す区画の数。**全部は出さない** —— 数千区画あるので、画面が読めなくなる。
+# 見たいのは「次にどこを見るか」と「どれくらい回ったか」で、全件の一覧ではない
+PARTITION_SAMPLES = 12
+
+
+def _partition_html(item) -> str:
+    """区画の進み具合。持っていない収集には何も出さない。
+
+    **出すのは「いくつ回り終えたか」と「次はどこか」**。一周したかどうかが読めて
+    初めて、間隔と 1 回あたりの量が足りているかを判断できる。
+    """
+    if not item.partition:
+        return ""
+    visited, total = partitioning.progress(item.partitions)
+    if not total:
+        return (
+            '<p class="muted">区画: まだ割っていません'
+            "(次の実行で対象の空間を割ってから回り始めます)。</p>"
+        )
+    nxt = partitioning.due(item.partitions)
+    rows = "".join(
+        f"<tr><td>{esc(p['key'])}</td><td>{p['count']:,}</td>"
+        f'<td>{esc(jst.format(jst.parse(p["visited_at"]))) if p.get("visited_at") else ""}</td>'
+        "</tr>"
+        for p in item.partitions[:PARTITION_SAMPLES]
+    )
+    more = (
+        f'<p class="muted">ほか {total - PARTITION_SAMPLES:,} 区画。</p>'
+        if total > PARTITION_SAMPLES else ""
+    )
+    return (
+        f'<p class="muted">区画: {total:,} のうち {visited:,} を回り終えた。'
+        f'次は <code>{esc(nxt or "")}</code></p>'
+        "<details><summary>区画の一覧</summary>"
+        "<table><thead><tr><th>区画</th><th>母集団</th><th>最後に見たのは</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>{more}</details>"
+    )
+
+
 def _collect_changes_html(limit: int = 30) -> str:
     """直近どこに修正が入ったか(`app/collect_log.py`)。
 
@@ -700,6 +751,7 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'<pre class="prompt-view">{esc(item.prompt)}</pre>'
             f'<p class="muted">進み具合(次の実行で {{cursor}} に入る値): '
             f'<code>{esc(item.cursor) or "(まだ無し)"}</code></p>'
+            f"{_partition_html(item)}"
             f"<details><summary>編集する</summary>"
             f'<form method="post" action="/admin/collect/{esc(item.name)}/edit" class="collect-form">'
             f'<p><label>説明<br><input name="description" value="{esc(item.description)}"></label></p>'
@@ -719,6 +771,15 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'<p><label>抽出の指定(JSON。空なら毎回 AI に集めさせる)<br>'
             f'<textarea name="extract" rows="8" spellcheck="false">'
             f"{esc(_extract_json(item))}</textarea></label></p>"
+            f'<p><label>区画の指定(JSON。空なら区画を持たない)<br>'
+            f'<textarea name="partition" rows="6" spellcheck="false">'
+            f"{esc(_partition_json(item))}</textarea></label></p>"
+            f'<p class="muted">区画を入れると、<strong>対象としている空間を密度で割って</strong>'
+            f" 1 回に 1 区画ずつ順に回る。プロンプトに <code>{{partition}}</code> を入れると"
+            f" そこへ今回見る範囲が差し込まれる。<strong>まだ 1 件も集めていない範囲にも"
+            f"区画ができる</strong>ので、「この範囲に足すべきものが無いか確かめて」が書ける。"
+            f" 母集団(<code>source</code>)を書けば、そのソースが知っている密度で割る。"
+            f" 例: <code>{esc(PARTITION_EXAMPLE)}</code></p>"
             f'<p class="muted">指定を入れると、<strong>進み具合が空のあいだの 1 回だけ</strong>'
             f" AI を呼ばず、手元の長期記憶から機械的に組み立てる(名前・年代・出典のように"
             f" 既に書いてあることは、書かせると混ざるが引けば済む)。"
@@ -1560,6 +1621,7 @@ async def admin_collect_edit(name: str, request: Request):
         mode=collect.normalize_mode(form.get("mode")),
         # 空欄は「使わない」。指定を外せるのはここだけ
         extract=_parse_extract(form.get("extract")),
+        partition=_parse_partition(form.get("partition")),
         # 0 も意味のある値(守りを外す)なので、空のときだけ触らない
         keep_ratio=_ratio(form.get("keep_ratio")),
         # 相手・モデル・深さは**空を「既定にまかせる」として通す** ——
@@ -1771,12 +1833,27 @@ def _ratio(raw) -> float | None:
 
 def _extract_json(item) -> str:
     """抽出の指定を、編集できる文字列にする。持っていなければ空。"""
-    if not item.extract:
-        return ""
-    return json.dumps(item.extract, ensure_ascii=False, indent=2)
+    return _spec_json(item.extract)
+
+
+def _partition_json(item) -> str:
+    """区画の指定を、編集できる文字列にする。持っていなければ空。"""
+    return _spec_json(item.partition)
+
+
+def _spec_json(spec) -> str:
+    return json.dumps(spec, ensure_ascii=False, indent=2) if spec else ""
 
 
 def _parse_extract(raw):
+    return _parse_spec(raw, "抽出")
+
+
+def _parse_partition(raw):
+    return _parse_spec(raw, "区画")
+
+
+def _parse_spec(raw, label: str):
     """フォームの文字列を指定に戻す。**空欄は「使わない」**。
 
     JSON として読めないものはその場で断る。保存してしまうと、次に走ったときに
@@ -1788,7 +1865,7 @@ def _parse_extract(raw):
     try:
         value = json.loads(text)
     except ValueError as e:
-        raise HTTPException(400, {"error": f"抽出の指定が JSON として読めません: {e}"}) from None
+        raise HTTPException(400, {"error": f"{label}の指定が JSON として読めません: {e}"}) from None
     return value
 
 
