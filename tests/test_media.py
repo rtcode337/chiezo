@@ -2086,6 +2086,41 @@ class TestAudioReference:
         assert "elevenlabs" in e.value.detail["backends"]
 
 
+class TestGroupingEveryKind:
+    """**何案か作って選ぶのは種類を問わず起きる。** 絵と音にだけ `group` が付いていて、
+    動画と読み上げでは取りこぼしていた（読み上げを 5 案作っても束にならなかった）。"""
+
+    def test_speech_can_be_grouped(self, state):
+        """**記録するところまでを見る。** `start_*_job` は走らせるところまで進むので
+        イベントループが要る —— 束ねる名前が job に載るかは `create_job` で決まる。"""
+        from app import media, media_providers
+
+        job = media.create_job("聞こえますか。", backend="elevenlabs",
+                               kind=media_providers.KIND_SPEECH, voice="",
+                               group="呼びかけの声")
+        assert job["group_name"] == "呼びかけの声"
+
+    def test_video_can_be_grouped(self, state):
+        from app import media, media_providers
+
+        job = media.create_job("草原", backend="elevenlabs",
+                               kind=media_providers.KIND_VIDEO, size="1280x720",
+                               seconds=4, group="場面の動画")
+        assert job["group_name"] == "場面の動画"
+
+    def test_every_job_kind_takes_a_group(self):
+        """**口が増えたときに取りこぼさないための検査。**
+        job を作る関数はどれも `group` を受け取ること。"""
+        import inspect
+
+        from app import media
+
+        for fn in (media.start_image_job, media.start_audio_job,
+                   media.start_video_job, media.start_speech_job,
+                   media.create_text_job):
+            assert "group" in inspect.signature(fn).parameters, fn.__name__
+
+
 class TestTextJobs:
     """文章も job として残す(見比べの画面で読み比べて選べるようにするため)。
 

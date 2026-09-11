@@ -2338,6 +2338,10 @@ class VideoRequestBody(BaseModel):
     # 音も一緒に作らせるか(効くのは Veo 系だけ)
     audio: bool = True
     steps: int = 20
+    # 見比べで束ねる名前。**絵と音だけに付けていて、動画と読み上げでは
+    # 取りこぼしていた** —— 何案か作って選ぶのは種類を問わず起きることなので、
+    # job を作る口はどれも受け取る
+    group: str | None = None
 
 
 class SpeechRequestBody(BaseModel):
@@ -2354,6 +2358,8 @@ class SpeechRequestBody(BaseModel):
     instructions: str = ""
     seed: int = 0
     count: int = 1
+    # 見比べで束ねる名前(上の動画と同じ理由)
+    group: str | None = None
 
 
 @app.get("/v1/capabilities")
@@ -2482,6 +2488,7 @@ async def media_video(body: VideoRequestBody) -> dict:
         negative=body.negative,
         audio=body.audio,
         steps=body.steps,
+        group=(body.group or "").strip(),
     )
 
 
@@ -2498,6 +2505,7 @@ async def media_speech(body: SpeechRequestBody) -> dict:
         instructions=body.instructions,
         seed=body.seed,
         count=body.count,
+        group=(body.group or "").strip(),
     )
 
 

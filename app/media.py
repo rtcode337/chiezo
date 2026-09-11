@@ -1161,6 +1161,7 @@ def start_video_job(
     negative: str = "",
     audio: bool = True,
     steps: int = 20,
+    group: str = "",
 ) -> dict:
     """動画の頼みを受け付けて job を返す。絵や音より待つ(数分〜十数分)。"""
     job = create_job(
@@ -1172,6 +1173,7 @@ def start_video_job(
         count=count,
         kind=media_providers.KIND_VIDEO,
         seconds=seconds,
+        group=group,
     )
     request = media_backends.VideoRequest(
         prompt=job["prompt"],
@@ -1197,6 +1199,7 @@ def start_speech_job(
     instructions: str = "",
     seed: int = 0,
     count: int = 1,
+    group: str = "",
 ) -> dict:
     """読み上げの頼みを受け付けて job を返す。
 
@@ -1211,6 +1214,7 @@ def start_speech_job(
         count=count,
         kind=media_providers.KIND_SPEECH,
         voice=voice,
+        group=group,
     )
     request = media_backends.SpeechRequest(
         prompt=job["prompt"],

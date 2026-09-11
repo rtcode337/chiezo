@@ -517,6 +517,7 @@ def _register_video_tools(mcp: MCPServer) -> None:
         count: int = 1,
         negative: str = "",
         audio: bool = True,
+        group: str = "",
     ) -> dict:
         return _call(
             media.start_video_job,
@@ -529,6 +530,7 @@ def _register_video_tools(mcp: MCPServer) -> None:
             count=count,
             negative=negative,
             audio=audio,
+            group=group,
         )
 
     @mcp.tool(description=(
@@ -575,6 +577,7 @@ def _register_voice_tools(mcp: MCPServer) -> None:
         language: str = "",
         instructions: str = "",
         count: int = 1,
+        group: str = "",
     ) -> dict:
         return _call(
             media.start_speech_job,
@@ -586,6 +589,7 @@ def _register_voice_tools(mcp: MCPServer) -> None:
             language=language,
             instructions=instructions,
             count=count,
+            group=group,
         )
 
     @mcp.tool(description=(
