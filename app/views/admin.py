@@ -587,6 +587,9 @@ def _sweeps_html(item) -> str:
     rows = []
     for sweep in collect.sweeps_of(item):
         visited, _ = partitioning.progress(item.partitions, sweep.name)
+        # **相手は巡回ごとに変えられる。** ざっとは安い相手で数をこなし、じっくりは
+        # 考える量を上げる、という分け方をするためのもの
+        who = _backend_label(sweep)
         due = jst.parse(sweep.next_run_at or "")
         where = (
             f"{total:,} のうち {visited:,}"
@@ -608,6 +611,7 @@ def _sweeps_html(item) -> str:
             when = '<span class="muted">いますぐ</span>'
         rows.append(
             f"<tr{cls}><td>{esc(sweep.name)}</td>"
+            f"<td>{who}</td>"
             f"<td>{sweep.interval_minutes} 分ごと"
             + (f'<br><span class="muted">{sweep.cover_days:g} 日で一周</span>'
                if sweep.cover_days else "")
@@ -616,7 +620,7 @@ def _sweeps_html(item) -> str:
         )
     return (
         "<details><summary>巡回</summary>"
-        "<table><thead><tr><th>巡回</th><th>間隔</th><th>次にいつ</th>"
+        "<table><thead><tr><th>巡回</th><th>頼む相手</th><th>間隔</th><th>次にいつ</th>"
         "<th>一周のうち</th><th>前回</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table></details>"
     )
@@ -753,7 +757,6 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
     items = collect.load()
     rows = []
     for item in items:
-        due = jst.parse(item.next_run_at or "")
         last = jst.parse(item.last_run_at or "")
         if item.last_status == "ok":
             # 作り直しは「消えた件数」まで出す —— 増えた数だけでは、整理の結果
@@ -786,10 +789,6 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             result = '<span class="muted">まだ走っていない</span>'
         # 止めている収集は行ごと薄くする(「AI の相手」の表と同じ扱い)
         cls = "" if item.enabled else ' class="off"'
-        when = (
-            esc(jst.format(due)) if (item.enabled and due)
-            else '<span class="muted">止めている</span>'
-        )
         toggle_label = "止める" if item.enabled else "有効にする"
         # 焼き先(長期記憶)の様子。まだ 1 度も焼いていなければそう出す
         src = sources.get(item.name)
@@ -868,6 +867,9 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f" —— ざっと全体を拾って訂正するものと、少数をじっくり調べるもの。"
             f" <code>cover_days</code> に「7」と書けば<strong>1 回に見る区画数は"
             f"自動で決まる</strong>(区画が増えれば 1 回あたりも増える)。"
+            f" <strong>頼む相手も巡回ごとに変えられる</strong>"
+            f"(<code>backend</code> / <code>model</code> / <code>effort</code>)——"
+            f" ざっとは安い相手で数をこなし、じっくりは考える量を上げる、という分け方ができる。"
             f" 書かなかった項目は上の設定を使う。"
             f" 例: <code>{esc(SWEEPS_EXAMPLE)}</code></p>"
             f'<p class="muted">区画を入れると、<strong>対象としている空間を密度で割って</strong>'
@@ -922,8 +924,6 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'<button type="submit">相談する</button></form></details>'
             f"</details></td>"
             f"<td>{_backend_label(item)}</td>"
-            f"<td>{item.interval_minutes} 分ごと</td>"
-            f"<td>{when}</td>"
             f"<td>{baked_docs}</td>"
             f"<td>{result}</td>"
             f"<td>"
@@ -943,7 +943,7 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
     table = f"""
 <table>
 <thead>
-<tr><th>name</th><th>相手</th><th>間隔</th><th>次にいつ</th><th>長期記憶</th><th>前回</th><th></th></tr>
+<tr><th>name</th><th>既定の相手</th><th>長期記憶</th><th>前回</th><th></th></tr>
 </thead>
 <tbody>
 {"".join(rows)}

@@ -1325,6 +1325,23 @@ class TestTheCollectSectionMarkup:
     def test_a_collection_without_partitions_says_nothing(self, sample):
         assert "区画:" not in self._html(sample)
 
+    def test_each_sweep_can_have_its_own_ai(self, sample):
+        """ざっとは安い相手で数をこなし、じっくりは考える量を上げる、が書ける。"""
+        collect.update(
+            "news",
+            sweeps=[
+                {"name": "ざっと", "interval_minutes": 360},
+                {"name": "じっくり", "interval_minutes": 1440, "model": "opus", "effort": "high"},
+            ],
+        )
+        html = self._html(sample)
+        assert "opus" in html and "high" in html
+
+    def test_the_schedule_lives_with_the_sweep_not_the_collection(self, sample):
+        """間隔も次の予定も巡回ごとに違うので、収集の行に 1 つだけ出すと嘘になる。"""
+        html = self._html(sample)
+        assert "<th>間隔</th>" not in html.split("<details><summary>巡回</summary>")[0]
+
     def test_a_collection_without_sweeps_still_shows_one(self, sample):
         """定義そのものが 1 本の巡回として動くので、行が消えると止まって見える。"""
         html = self._html(sample)
