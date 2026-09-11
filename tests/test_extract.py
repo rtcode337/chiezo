@@ -435,7 +435,7 @@ class TestWhenItIsUsedInsteadOfTheAI:
             created_at="", updated_at="", extract=extract.to_json(spec()),
         )
 
-        items, cursor = asyncio.run(self._items(item, source(painters())))
+        items, cursor, _note = asyncio.run(self._items(item, source(painters())))
 
         assert [i["title"] for i in items] == ["クロード・モネ", "エドゥアール・マネ"]
         assert cursor == extract.DEFAULT_CURSOR
@@ -457,7 +457,7 @@ class TestWhenItIsUsedInsteadOfTheAI:
             extract=extract.to_json(spec()),
         )
 
-        items, cursor = asyncio.run(self._items(item, source(painters())))
+        items, cursor, _note = asyncio.run(self._items(item, source(painters())))
 
         assert [i["title"] for i in items] == ["肉付け"]
         assert cursor == "次"

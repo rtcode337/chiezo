@@ -480,6 +480,26 @@ class TestSweeps:
         collect.record_result("news", status="ok", sweep="じっくり")
         assert collect.get("news").pending_sweep == ""
 
+    def test_starting_one_does_not_copy_the_last_failure(self, sample):
+        """**起こしただけで「走った」ことにしない。**
+
+        収集ぜんたいの前回の状態を渡していたせいで、ざっとが落ちた直後にじっくりを
+        起こすと、じっくりにもその失敗が写っていた —— 走っている最中なのに
+        「失敗」と出て、どちらが落ちたのか分からなくなる。
+        """
+        collect.update("news", enabled=True, sweeps=[{"name": "ざっと"}, {"name": "じっくり"}])
+        collect.record_result("news", status="error", sweep="ざっと", error="落ちた")
+
+        collect.mark_started("news", "じっくり")
+        rough, deep = collect.sweeps_of(collect.get("news"))
+
+        assert rough.last_status == "error"
+        # 起こしただけなので、まだ何も控えていない
+        assert deep.last_status is None
+        assert deep.last_run_at is None
+        # 予定だけは進む
+        assert deep.next_run_at is not None
+
     def test_an_unknown_sweep_falls_back_to_the_next_one(self, sample):
         """巡回を消したあとに、走りかけの取り込みが素材を取りに来ることがある。"""
         collect.update("news", enabled=True, sweeps=[{"name": "ざっと"}])
@@ -837,11 +857,32 @@ class TestHowMuchIsAccepted:
 class TestParsing:
     def test_it_digs_the_json_out_of_a_wrapped_answer(self):
         """前置きやコードブロックが混ざるのは普通に起きる。"""
-        items, cursor = collect.parse_response(
+        items, cursor, note = collect.parse_response(
             '調べました。\n```json\n{"items":[{"title":"X","body":"Y"}],"next_cursor":"Z"}\n```'
         )
         assert items == [{"title": "X", "body": "Y"}]
         assert cursor == "Z"
+        assert note == ""
+
+    def test_a_cut_off_answer_keeps_what_was_read(self):
+        """**丸ごと捨てない。** 答えが長くなると相手の上限に当たって末尾が欠けることが
+        あり、実際に本番で起きた。捨てると、その回に払った AI の呼び出しが全部無駄に
+        なるうえ、同じ区画を次も同じ長さで聞くので繰り返し落ちる。
+        """
+        items, cursor, note = collect.parse_response(
+            '{"items": [{"title": "A", "body": "あ"},'
+            ' {"title": "B", "body": "い{ろ}は"}, {"title": "C", "bo'
+        )
+        # 本文に「{」が入っていても数え違えない
+        assert [i["title"] for i in items] == ["A", "B"]
+        # 切れているので次の印は読めない（半端な値を進めると、そこから先が飛ぶ）
+        assert cursor is None
+        # **拾ったことは黙っていない**
+        assert "2 件" in note
+
+    def test_a_cut_off_answer_with_nothing_readable_is_still_an_error(self):
+        with pytest.raises(ValueError):
+            collect.parse_response('{"items": [{"title": "A"')
 
     def test_a_missing_items_array_is_an_error(self):
         with pytest.raises(ValueError):

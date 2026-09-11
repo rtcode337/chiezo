@@ -56,6 +56,7 @@ import logging
 import math
 import os
 import re
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
@@ -1095,17 +1096,37 @@ def clean_draft(content: str) -> str:
     return text.strip()
 
 
-def parse_response(content: str) -> tuple[list[dict], str | None]:
-    """AI の答えから items と next_cursor を取り出す。
+def parse_response(content: str) -> tuple[list[dict], str | None, str]:
+    """AI の答えから items と next_cursor を取り出す。3 つめは断り書き(無ければ空)。
 
     前置きやコードブロックが混ざっても拾えるように、`{` 〜 `}` を切り出してから読む
     (小型モデルでなくても、この手の付け足しは普通に起きる)。
+
+    **途中で切れていたら、読めたところまでを拾う**(`_salvage`)。答えが長くなると
+    相手の上限に当たって末尾が欠けることがあり、実際に本番で起きた
+    (`JSONDecodeError: Expecting ',' delimiter: line 1 column 7949`)。
+    そこで丸ごと捨てると、**その回に払った AI の呼び出しが全部無駄になる**うえ、
+    同じ区画を次も同じ長さで聞くので繰り返し落ちる。
+
+    **拾ったことは黙っていない。** 断り書きを返して、控えと画面に出す ——
+    「集まりが少ない」のが世の中の都合なのか答えが切れたせいなのかで、次にすることが違う。
     """
     stripped = re.sub(r"```(?:json)?", "", content).strip()
-    start, end = stripped.find("{"), stripped.rfind("}")
-    if start < 0 or end <= start:
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start < 0:
         raise ValueError("JSON オブジェクトが見つかりません")
-    payload = json.loads(stripped[start : end + 1])
+    try:
+        payload = json.loads(stripped[start : end + 1]) if end > start else None
+    except ValueError:
+        payload = None
+    if payload is None:
+        items = _salvage(stripped[start:])
+        if not items:
+            raise ValueError("JSON として読めず、拾えるものもありませんでした")
+        # 切れているので次の印は読めない(半端な値を進めると、そこから先が飛ぶ)
+        log.warning("collect response was cut off; salvaged %d items", len(items))
+        return items, None, f"答えが途中で切れていたので、読めた {len(items)} 件だけ拾いました"
     if not isinstance(payload, dict):
         raise ValueError("トップレベルがオブジェクトではありません")
     items = payload.get("items")
@@ -1115,7 +1136,52 @@ def parse_response(content: str) -> tuple[list[dict], str | None]:
     return (
         [i for i in items if isinstance(i, dict)],
         str(next_cursor) if isinstance(next_cursor, (str, int, float)) and next_cursor else None,
+        "",
     )
+
+
+def _salvage(text: str) -> list[dict]:
+    """途中で切れた答えから、**そこまでに閉じている 1 件ずつ**を拾う。
+
+    **`items` の中だけを見る。** いちばん外側の `{` から数えると、中の 1 件ずつを
+    切り出せない(外側が閉じていないので、深さが 0 に戻らない)。
+
+    文字列の中の `{` `}` を数えないよう、引用符と逃がし記号を見ながら進む
+    (本文に「{」が入っていることは普通にある)。
+    """
+    head = re.search(r'"items"\s*:\s*\[', text)
+    if head is None:
+        return []
+    found: list[dict] = []
+    depth = 0
+    begin = -1
+    in_string = False
+    escaped = False
+    for index, ch in enumerate(text[head.end():], start=head.end()):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            if depth == 0:
+                begin = index
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and begin >= 0:
+                with suppress(ValueError):
+                    value = json.loads(text[begin : index + 1])
+                    if isinstance(value, dict):
+                        found.append(value)
+            elif depth < 0:
+                depth = 0
+    return found
 
 
 def record_result(
@@ -1177,9 +1243,19 @@ def record_result(
 
 
 def _advance(
-    current: Collection, sweep: Sweep, now: datetime, *, status: str, error: str | None
+    current: Collection,
+    sweep: Sweep,
+    now: datetime,
+    *,
+    status: str | None = None,
+    error: str | None = None,
 ) -> dict:
-    """走った巡回の次回の予定と控えを進める。
+    """走った巡回の次回の予定を進める。結果も渡されていれば一緒に控える。
+
+    **起こしただけのときは結果を渡さない**(`status=None`)。渡すと、起こした時点で
+    「走った」ことになる —— 収集ぜんたいの前回の状態を渡していたせいで、
+    **ざっとが落ちた直後にじっくりを起こすと、じっくりにもその失敗が写っていた**
+    (走っている最中なのに失敗と出る)。
 
     **巡回を書いていない収集では、定義そのものの欄が進む** —— 場合分けが要るのは
     ここだけで、呼ぶ側はどちらかを気にしなくてよい。
@@ -1187,15 +1263,17 @@ def _advance(
     nxt = _iso(now + timedelta(minutes=sweep.interval_minutes))
     if not current.sweeps:
         return {"next_run_at": nxt}
-    return {"sweeps": [
-        {
-            **raw,
-            "next_run_at": nxt,
+    result = (
+        {}
+        if status is None
+        else {
             "last_run_at": _iso(now),
             "last_status": status,
             "last_error": (error or "")[:500] or None,
         }
-        if raw.get("name") == sweep.name else raw
+    )
+    return {"sweeps": [
+        {**raw, "next_run_at": nxt, **result} if raw.get("name") == sweep.name else raw
         for raw in current.sweeps
     ]}
 
@@ -1216,7 +1294,9 @@ def mark_started(name: str, sweep: str | None = None) -> Collection:
         current,
         pending_sweep=this.name,
         updated_at=_iso(now),
-        **_advance(current, this, now, status=current.last_status, error=current.last_error),
+        # **結果は渡さない。** 起こしただけで「走った」ことにすると、直前に別の巡回が
+        # 落ちていたときに、その失敗がこちらへ写る
+        **_advance(current, this, now),
     )
     _replace_one(name, updated)
     return updated

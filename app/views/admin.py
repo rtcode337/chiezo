@@ -766,10 +766,15 @@ def _collect_changes_html(limit: int = 30) -> str:
             f'<br><span class="muted">{esc("、".join(row["scope"]))}</span>'
             if row["scope"] else ""
         )
+        # 成功した回にも断り書きが付くことがある(答えが途中で切れた等)。
+        # **件数だけ見て「少ない」と読まれないように**、そこへ並べて出す
+        note = (
+            f'<br><span class="stale">{esc(row["error"])}</span>' if row["error"] else ""
+        )
         rows.append(
             f"<tr><td>{when}</td><td>{esc(row['name'])}</td>"
             f"<td>{esc(row['sweep'])}{scope}</td>"
-            f'<td>{summary}</td><td>{row["total"]:,} 件{detail}</td></tr>'
+            f'<td>{summary}{note}</td><td>{row["total"]:,} 件{detail}</td></tr>'
         )
     return f"""
 <details open><summary>直近の変更</summary>

@@ -283,7 +283,7 @@ async def _harvest(item) -> dict | None:
 
 async def _collect_items(
     item, previous: dict, sources: dict, keys: list[str], sweep=None, focus=None, feed=None
-) -> tuple[list[dict], str | None]:
+) -> tuple[list[dict], str | None, str]:
     """1 回ぶん集める。**最初の 1 回だけ機械的に埋められる**。
 
     抽出の指定を持っていて、まだ進み具合が入っていなければ AI を呼ばず、手元の
@@ -301,18 +301,23 @@ async def _collect_items(
     if item.extract and not item.cursor:
         spec = extract.normalize(item.extract)
         items, next_cursor = await asyncio.to_thread(extract.run, spec, sources)
-        return items, next_cursor
+        return items, next_cursor, ""
     asked = item if sweep is None else sweep.applied_to(item)
     collected: list[dict] = []
     cursor = None
+    notes: list[str] = []
     for key in keys or [None]:
         content = await _ask_for_collection(
             asked, collect.build_messages(item, previous, key, sources, sweep, focus, feed)
         )
-        items, next_cursor = collect.parse_response(content or "")
+        items, next_cursor, note = collect.parse_response(content or "")
         collected += items
         cursor = next_cursor or cursor
-    return collected, cursor
+        # **どの区画で切れたかまで残す。** 何区画かまとめて回るので、
+        # 「切れました」だけでは次にどこを狭めればよいか分からない
+        if note:
+            notes.append(f"{key}: {note}" if key else note)
+    return collected, cursor, " / ".join(notes)
 
 
 async def collect_material(name: str, sources: dict) -> str:
@@ -355,7 +360,7 @@ async def _collect_material(name: str, sources: dict) -> str:
     label = collect_log.FOCUS_LABEL if focus is not None else sweep.name
     try:
         feed = await _harvest(item)
-        items, next_cursor = await _collect_items(
+        items, next_cursor, note = await _collect_items(
             item, previous, sources, keys, sweep, focus, feed
         )
         body, diff = await asyncio.to_thread(
@@ -391,7 +396,7 @@ async def _collect_material(name: str, sources: dict) -> str:
     )
     await asyncio.to_thread(
         collect_log.record,
-        name, status=collect_log.STATUS_OK, diff=diff, sweep=label, scope=keys,
+        name, status=collect_log.STATUS_OK, diff=diff, sweep=label, scope=keys, error=note,
     )
     log.info(
         "collect %s (%s/%s%s): added=%d updated=%d kept=%d removed=%d skipped=%d",
@@ -419,7 +424,9 @@ async def collect_preview(name: str, sources: dict) -> dict:
     # 見るためのもので、1 区画あれば分かる(そのぶん安く、待たされない)
     keys = partitioning.pick(ledger, sweep.name, 1)
     feed = await _harvest(item)
-    items, next_cursor = await _collect_items(item, previous, sources, keys, sweep, None, feed)
+    items, next_cursor, note = await _collect_items(
+        item, previous, sources, keys, sweep, None, feed
+    )
     _docs, diff = await asyncio.to_thread(collect.material, item, previous, items)
     return {
         "name": name,
@@ -430,6 +437,8 @@ async def collect_preview(name: str, sources: dict) -> dict:
         # 「今回どこを見たか」だけ見せる(台帳を進めるのは焼くときだけ)
         "sweep": sweep.name,
         "partition": keys[0] if keys else None,
+        # 答えが途中で切れていたら、そう出す(件数だけ見て「少ない」と読まれないように)
+        "note": note,
         # 焼こうとしたら止まるかどうか。止まる理由もそのまま出す
         "blocked": collect.shrink_blocked(item, diff),
     }
