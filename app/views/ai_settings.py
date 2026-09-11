@@ -71,7 +71,7 @@ SECTION_ANCHOR = "ai-providers"
 
 # 「接続を試す」の結果は節の中に出るので、戻り先にこの印を付ける。
 # 付けないとページの先頭へ戻され、結果が画面外のままになる（実際に読めなかった）。
-BACK_TO_SECTION = f"/admin#{SECTION_ANCHOR}"
+BACK_TO_SECTION = f"/admin/ai#{SECTION_ANCHOR}"
 
 
 # kind → 分類。音だけここに載らない（1 つの kind が音楽と SE に割れるため、

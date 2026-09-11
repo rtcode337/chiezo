@@ -583,7 +583,7 @@ class TestShortTermIsNotARebuildableSource:
         確認ダイアログだけが「ダンプの取得からやり直します」と言っていた
         —— 唯一書き込めるソースで、消えたと読める文言が出ていた。
         """
-        html = client.get("/admin").text
+        html = client.get("/admin/memory").text
         assert 'action="/admin/rebuild/notes"' not in html
         # 長期側にはボタンが出たままであること(消しすぎていない)
         assert 'action="/admin/rebuild/jawiki"' in html
@@ -604,7 +604,7 @@ class TestShortTermIsNotARebuildableSource:
         from app import notes
 
         notes.add(text="短期記憶の節に出る", tags="決定")
-        html = client.get("/admin").text
+        html = client.get("/admin/memory").text
         assert "短期記憶" in html
         assert "最後に書かれた" in html
         assert "決定 1" in html

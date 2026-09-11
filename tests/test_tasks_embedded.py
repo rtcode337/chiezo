@@ -113,7 +113,7 @@ class TestApi:
 
 class TestAdminLink:
     def test_the_short_term_section_links_to_it(self, client):
-        assert '<a href="/tasks/">' in client.get("/admin").text
+        assert '<a href="/tasks/">' in client.get("/admin/memory").text
 
 
 class TestOtherNotes:

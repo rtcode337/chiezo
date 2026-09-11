@@ -104,9 +104,13 @@ def _detail(row: dict) -> str:
     return body
 
 
-def _elapsed(started: str) -> str:
+def elapsed(started: str) -> str:
     """始まってからの経過。**走っている行はこれが要**で、日時だけでは
-    「遅い」のか「止まっている」のかが読めない。"""
+    「遅い」のか「止まっている」のかが読めない。
+
+    玄関（`/admin`）からも同じ書き方で出すので公開している —— 別々に書くと、
+    同じ依頼が 2 つの画面で違う経過に見える。
+    """
     at = parse_jst(started)
     if at is None:
         return ""
@@ -226,7 +230,7 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
             f"<td>{esc(_when(row['at']))}</td>"
             f"<td>{esc(ai_log.kind_label(row['kind']))}</td><td>{who}</td>"
             f'<td>{esc(row["state"])}<br>'
-            f'<span class="muted">{esc(_elapsed(row["at"]))}</span></td>'
+            f'<span class="muted">{esc(elapsed(row["at"]))}</span></td>'
             f"<td>{detail}</td></tr>"
         )
     for row in shown:

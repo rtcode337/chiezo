@@ -503,6 +503,8 @@ class TestTriggerCatalogCache:
 
 class TestAdminAndBrowse:
     def test_root_redirects_to_admin(self, client):
+        # 転送先は玄関。**面を名指ししない** —— どの面を先に見たいかは人によるので、
+        # まず全体の様子が読めるところへ置く
         res = client.get("/", follow_redirects=False)
         assert res.status_code in (302, 307)
         assert res.headers["location"] == "/admin"
@@ -516,22 +518,22 @@ class TestAdminAndBrowse:
         assert res.content.startswith(b"\x89PNG\r\n\x1a\n")
 
     def test_pages_link_apple_touch_icon(self, client):
-        res = client.get("/admin")
+        res = client.get("/admin/memory")
         assert '<link rel="apple-touch-icon" href="/apple-touch-icon.png">' in res.text
 
     def test_admin_lists_registered_source(self, client):
-        res = client.get("/admin")
+        res = client.get("/admin/memory")
         assert res.status_code == 200
         assert "jawiki" in res.text
 
     def test_admin_lists_uninitialized_source(self, client):
-        res = client.get("/admin")
+        res = client.get("/admin/memory")
         assert res.status_code == 200
         assert "geonames" in res.text
 
     def test_admin_groups_osm_countries_into_one_row(self, client):
         """osm_<国> は 195 件あるので、一覧には出さず 1 行にまとめて国選択へ誘導する。"""
-        res = client.get("/admin")
+        res = client.get("/admin/memory")
         assert res.status_code == 200
         assert "osm_japan" not in res.text
         assert '<a href="/admin/osm">' in res.text
@@ -579,7 +581,7 @@ class TestAdminAndBrowse:
 
     def test_admin_groups_wikipedia_languages_into_one_row(self, client):
         """<lang>wiki は 348 件あるので、一覧には出さず 1 行にまとめて言語選択へ誘導する。"""
-        res = client.get("/admin")
+        res = client.get("/admin/memory")
         assert res.status_code == 200
         assert "enwiki" not in res.text
         assert '<a href="/admin/wikipedia">' in res.text
@@ -631,7 +633,7 @@ class TestAdminAndBrowse:
     def test_admin_shows_latest_schema_version(self, client):
         from app.registry import SUPPORTED_SCHEMA_VERSIONS
 
-        res = client.get("/admin")
+        res = client.get("/admin/memory")
         assert f"最新のスキーマバージョン: {max(SUPPORTED_SCHEMA_VERSIONS)}" in res.text
 
     def test_admin_marks_stale_schema_version(self, client, monkeypatch):
@@ -639,12 +641,12 @@ class TestAdminAndBrowse:
         from app.registry import SUPPORTED_SCHEMA_VERSIONS
 
         latest = max(SUPPORTED_SCHEMA_VERSIONS)
-        assert f"(最新: {latest})" not in client.get("/admin").text
+        assert f"(最新: {latest})" not in client.get("/admin/memory").text
         monkeypatch.setattr(client.app.state.sources["jawiki"], "schema_version", 1)
-        assert f"(最新: {latest})" in client.get("/admin").text
+        assert f"(最新: {latest})" in client.get("/admin/memory").text
 
     def test_admin_shows_rebuild_button_for_registered_source(self, client):
-        res = client.get("/admin")
+        res = client.get("/admin/memory")
         assert 'action="/admin/rebuild/jawiki"' in res.text
 
     def test_admin_rebuild_without_trigger_configured(self, client):
@@ -674,7 +676,7 @@ class TestAdminAndBrowse:
         monkeypatch.setattr("app.views.admin.httpx.post", fake_post)
         res = client.post("/admin/rebuild/jawiki", follow_redirects=False)
         assert res.status_code == 303
-        assert res.headers["location"] == "/admin"
+        assert res.headers["location"] == "/admin/memory"
         assert calls == ["http://trigger.internal/run/jawiki"]
 
 
@@ -687,13 +689,13 @@ class TestWithoutTheTrigger:
 
     def test_buttons_are_disabled_when_it_is_not_configured(self, client, monkeypatch):
         monkeypatch.setattr("app.views.admin.TRIGGER_URL", None)
-        html = client.get("/admin").text
+        html = client.get("/admin/memory").text
         assert '<button type="submit" disabled>再構築</button>' in html
         assert "読むだけならこのままで動きます" in html
 
     def test_buttons_are_disabled_when_it_is_unreachable(self, client, monkeypatch):
         monkeypatch.setattr("app.views.admin.TRIGGER_URL", "http://example.invalid")
-        html = client.get("/admin").text
+        html = client.get("/admin/memory").text
         assert '<button type="submit" disabled>再構築</button>' in html
         assert "読むだけならこのままで動きます" in html
 
@@ -1006,7 +1008,7 @@ class TestClaudeConfig:
         assert "許可プロンプトは出ない" not in text  # フックは --with-hook のときだけ
 
     def test_admin_links_to_config_page(self, client):
-        res = client.get("/admin")
+        res = client.get("/admin/server")
         assert '/admin/claude-config' in res.text
 
 
@@ -1506,7 +1508,7 @@ class TestUrlLayout:
     def test_every_link_on_the_admin_page_points_at_the_new_layout(self, client):
         import re
 
-        html = client.get("/admin").text
+        html = client.get("/admin/memory").text
         stale = [
             href for href in re.findall(r'href="(/[^"]*)"', html)
             if not href.startswith(
@@ -1655,7 +1657,7 @@ class TestAdminHistory:
         ai_log.record(backend="comfyui", model="", effort="", status=502,
                       reason="GPU が落ちています", prompt_bytes=42, kind="image")
 
-        html = admin.get("/admin").text
+        html = admin.get("/admin/ai").text
         assert "AI への依頼" in html
         assert "claude exited 1" in html and "GPU が落ちています" in html
         # 種類の列で見分ける
@@ -1668,7 +1670,7 @@ class TestAdminHistory:
         from app import usage_store
 
         usage_store.record("claude", model="opus", input_tokens=120, output_tokens=34)
-        html = admin.get("/admin").text
+        html = admin.get("/admin/ai").text
         assert "成功" in html
         # トークンは相手が言ったときだけ出す
         assert "入 120" in html and "出 34" in html
@@ -1683,7 +1685,7 @@ class TestAdminHistory:
 
         usage_store.record("antigravity", kind="image",
                            prompt_bytes=495, reply_bytes=1_400_000, ms=371_000)
-        html = admin.get("/admin").text
+        html = admin.get("/admin/ai").text
         assert "依頼 495 B" in html and "応答 1.3 MB" in html
         assert "6 分 11 秒" in html
         # 目方が読めるなら、トークンを言わなかったことをわざわざ書かない
@@ -1694,7 +1696,7 @@ class TestAdminHistory:
         from app import usage_store
 
         usage_store.record("claude", model="opus")
-        html = admin.get("/admin").text
+        html = admin.get("/admin/ai").text
         assert "控えは回数だけ" in html
 
     def test_失敗だけに絞れる(self, admin):
@@ -1703,7 +1705,7 @@ class TestAdminHistory:
         usage_store.record("claude", model="opus")
         ai_log.record(backend="comfyui", model="", effort="", status=502,
                       reason="GPU が落ちています", prompt_bytes=42, kind="image")
-        only = admin.get("/admin?ai_failed=1").text
+        only = admin.get("/admin/ai?ai_failed=1").text
         assert "GPU が落ちています" in only
         # 絞り込み中は成功の行を出さない
         assert "すべて見る" in only
@@ -1716,11 +1718,11 @@ class TestAdminHistory:
         for i in range(ai_history.PAGE_SIZE + 3):
             ai_log.record(backend="claude", model="", effort="", status=502,
                           reason=f"失敗 {i}", prompt_bytes=1)
-        first = admin.get("/admin").text
+        first = admin.get("/admin/ai").text
         # 新しい順なので、いちばん古いものは 1 ページ目に出ない
         assert "失敗 0" not in first
         assert "失敗 12" in first
-        second = admin.get("/admin?ai_page=2").text
+        second = admin.get("/admin/ai?ai_page=2").text
         assert "失敗 0" in second
 
     def test_おかしなページ番号は範囲に寄せる(self, admin):
@@ -1734,13 +1736,103 @@ class TestAdminHistory:
         ai_log.record(backend="claude", model="", effort="", status=502,
                       reason="ただ 1 件", prompt_bytes=1)
         for q in ("abc", "-5", "99999"):
-            html = admin.get(f"/admin?ai_page={q}").text
+            html = admin.get(f"/admin/ai?ai_page={q}").text
             assert "1 / 1 ページ" in html
             assert "ただ 1 件" in html
 
     def test_記録が無ければそう書く(self, admin):
-        assert "まだ何も頼んでいません" in admin.get("/admin").text
+        assert "まだ何も頼んでいません" in admin.get("/admin/ai").text
 
     def test_置き場が無ければ設定を案内する(self, client):
         # module 版の client は CHIEZO_STATE_DIR を持たない
-        assert "CHIEZO_STATE_DIR" in client.get("/admin").text
+        assert "CHIEZO_STATE_DIR" in client.get("/admin/ai").text
+
+class TestBuildFooter:
+    """どの画面にもビルドの印を出す。
+
+    見たいのは「自分がいま見ている画面が新しいのか」で、それは管理画面の中だけの
+    関心ではない。会話画面やブラウズ画面で様子がおかしいときも、まずここを見れば
+    古いイメージのままかどうかが分かる。
+    """
+
+    def test_every_screen_carries_it(self, client):
+        for path in ("/admin", "/admin/memory", "/admin/ai", "/admin/server", "/ai/chat"):
+            assert '<footer class="page-footer">' in client.get(path).text
+
+    def test_it_says_so_when_the_build_is_unknown(self, client):
+        # 空欄にすると「出ていない」のか「情報が無い」のかが読めない
+        from app import build_info
+
+        assert build_info.UNKNOWN in client.get("/admin").text
+
+
+class TestAdminPages:
+    """管理画面は 3 つの面に分かれている。
+
+    1 枚に積み上げていた頃は、知識・AI・サーバーが縦に並び、いま見たい節に着くまで
+    無関係な表を何度もスクロールすることになっていた。見に来る目的が違う。
+    """
+
+    def test_the_entrance_links_to_every_page(self, client):
+        html = client.get("/admin").text
+        for path in ("/admin/memory", "/admin/ai", "/admin/server"):
+            assert f'href="{path}"' in html
+
+    def test_the_entrance_does_not_list_the_sources(self, client):
+        """玄関は**いま何が起きているか**だけ。ソースの表を直しに行くのは記憶の面。"""
+        # **<style> を除いてから見る** —— 共通の外枠の CSS にコメントで
+        # 見出し名が書いてあり、素の本文検索では当たってしまう
+        html = re.sub(r"<style>.*?</style>", "", client.get("/admin").text, flags=re.S)
+        assert "schema_version" not in html
+        # 押すものは置かない（「再構築」の語は、取り込みを起こせないときの案内に出る）
+        assert "/admin/rebuild/" not in html
+
+    def test_the_entrance_says_how_much_is_stored(self, client):
+        # 数が出ないと、開いた面が空なのか壊れているのかが読めない
+        assert "ソース" in client.get("/admin").text
+
+    def test_the_entrance_shows_the_disk(self, client):
+        """**この画面から始まる操作がディスクを一番食う**（取り込み 1 回で数十 GB）。
+        押す前に見えるところに置く。"""
+        assert "ディスクの空き" in client.get("/admin").text
+
+    def test_nothing_running_shows_no_table(self, client):
+        """空の表を置くと、いつも何かが動いていないことのほうが目立つ。"""
+        assert "いま走っている AI への依頼" not in client.get("/admin").text
+
+    def test_every_page_can_reach_the_others(self, client):
+        """**どの面にも同じ帯を出す** —— 玄関へ戻ってから選び直す、を毎回させない。"""
+        for path in ("/admin/memory", "/admin/ai", "/admin/server"):
+            html = client.get(path).text
+            assert 'class="admin-nav"' in html
+            for other in ("/admin/memory", "/admin/ai", "/admin/server"):
+                if other != path:
+                    assert f'href="{other}"' in html
+
+    def test_a_running_request_shows_up_at_the_entrance(self, tmp_path, built_data_dir, monkeypatch):
+        """**待たされているときに見に来る画面がここ**なので、数だけでは足りない
+        —— 何が遅いのかが分からず、結局 AI の面まで開くことになる。"""
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        from app import ai_inflight
+        from app.main import app
+
+        with TestClient(app) as c:
+            ai_inflight.begin(
+                backend="claude", model="fable", effort="", prompt_bytes=42, timeout=900.0
+            )
+            html = c.get("/admin").text
+
+        assert "いま走っている AI への依頼" in html
+        assert "claude" in html
+        # 詳しくは AI の面へ送る（玄関は概況まで）
+        assert 'href="/admin/ai#ai-history"' in html
+
+    def test_each_page_holds_only_its_own_section(self, client):
+        memory = client.get("/admin/memory").text
+        ai = client.get("/admin/ai").text
+        server = client.get("/admin/server").text
+
+        assert "長期記憶" in memory and "長期記憶" not in ai
+        assert "AI への依頼" in ai and "AI への依頼" not in memory
+        assert "いま動いているビルド" in server and "いま動いているビルド" not in memory

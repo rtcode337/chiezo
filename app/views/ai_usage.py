@@ -20,7 +20,7 @@ from app.pages import esc
 router = APIRouter()
 
 SECTION_ANCHOR = "ai-usage"
-BACK_TO_SECTION = f"/admin#{SECTION_ANCHOR}"
+BACK_TO_SECTION = f"/admin/ai#{SECTION_ANCHOR}"
 
 # Chiezo が使ったぶんを出す窓の見出し(`usage.SPENT_WINDOWS` と同じ並び)。
 _SPENT_LABELS = {"5h": "直近 5 時間", "24h": "直近 24 時間", "7d": "直近 7 日"}

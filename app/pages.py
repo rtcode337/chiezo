@@ -142,6 +142,18 @@ PAGE_STYLE = """
   .snippet { color: #555; }
   .muted { color: #666; font-size: 0.85rem; }
   .pager { display: flex; gap: 1rem; align-items: baseline; margin-top: 1rem; }
+  /* どの画面にも出すビルドの印。**本文の邪魔をしない薄さ**で、下端に置く */
+  .page-footer { margin-top: 2.5rem; padding-top: .9rem; border-top: 1px solid #e2e2ea;
+                 color: #8a8a99; font-size: .78rem; line-height: 1.7; }
+  /* 管理画面を 3 つの面に分けたので、どこにいるかと、どこへ行けるかを常に出す */
+  .admin-nav { margin-bottom: 1rem; font-size: .9rem; }
+  .admin-nav strong { color: #111; }
+  /* 玄関の入口。**表は置かない** —— 数と状態だけ出して、直しに行くのは各面 */
+  .admin-cards { display: grid; gap: 1rem; margin-top: 1.5rem; }
+  @media (min-width: 46rem) { .admin-cards { grid-template-columns: repeat(3, 1fr); } }
+  .admin-card { border: 1px solid #e2e2ea; border-radius: .8rem; padding: 1rem 1.1rem; background: #fff; }
+  .admin-card h2 { margin: 0 0 .3rem; font-size: 1.05rem; }
+  .admin-card p { margin: .25rem 0 0; font-size: .85rem; line-height: 1.7; }
   .stale { color: #c0392b; font-size: 0.85rem; }
   /* 管理画面の「話す相手」の表。設定を一度入れたら開かない場所なので、1 行を低く保つ
      (本文と同じ字の大きさだと、手順の説明が入る列で行が伸びすぎる)。 */
@@ -372,8 +384,25 @@ def page_shell(title: str, body: str, style: str = "") -> str:
 </head>
 <body>
 {body}
+<footer class="page-footer">{_build_stamp()}</footer>
 </body>
 </html>"""
+
+
+def _build_stamp() -> str:
+    """どの画面にも出す、いま動いているビルドの印。
+
+    **見たいのは「自分がいま見ている画面が新しいのか」**で、それは管理画面の中だけの
+    関心ではない。会話画面やブラウズ画面で様子がおかしいときも、まずここを見れば
+    古いイメージのままかどうかが分かる。
+
+    **import は関数の中で行う。** `build_info` は起動時の値を読むだけだが、
+    `pages` は他の app モジュールに依存しない位置に置いてある（views が main を
+    import すると循環参照になるため、共有物はここへ降ろす、という置き方）。
+    """
+    from app import build_info
+
+    return esc(build_info.describe())
 
 
 def esc(value) -> str:

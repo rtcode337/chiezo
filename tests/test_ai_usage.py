@@ -353,7 +353,7 @@ class TestAdminSection:
     def test_the_screen_shows_both_numbers_and_a_refresh_button(self, env):
         with make_client(env, ReplyLLM()) as client:
             complete(client, messages=[{"role": "user", "content": "やあ"}])
-            html = client.get("/admin").text
+            html = client.get("/admin/ai").text
 
         assert 'id="ai-usage"' in html
         assert "相手が言う枠" in html and "Chiezo が使ったぶん" in html

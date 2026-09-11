@@ -19,6 +19,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
 from app import (
+    ai_log,
     answer,
     build_info,
     capabilities,
@@ -206,7 +207,7 @@ def _job_status_html(job: dict | None) -> str:
         # 読み直しに攫われた —— 取り込みは数時間かかるので、その間ずっと画面が
         # 使えないことになる。進み具合を見たい人がここから読み直す
         lines.append(
-            '<p><a href="/admin#job">進み具合を読み直す</a>'
+            '<p><a href="/admin/memory#job">進み具合を読み直す</a>'
             ' <span class="muted">(自動では読み直しません)</span></p>'
         )
     lines.append("</div>")
@@ -363,7 +364,7 @@ def _consult_page_html(name: str | None, want: str, draft: str, error: str) -> s
 <p class="muted">集めたいもの: {esc(want) or "(指定なし)"}</p>
 {save}
 {again}
-<p class="muted"><a href="/admin#collect">管理画面へ戻る</a>(保存しなければ何も変わりません)</p>
+<p class="muted"><a href="/admin/memory#collect">管理画面へ戻る</a>(保存しなければ何も変わりません)</p>
 """
     return page_shell("プロンプトの相談", body)
 
@@ -862,8 +863,112 @@ def _answer_status_html() -> str:
     )
 
 
+# 管理画面の面。**1 枚に積み上げない** —— 知識・AI・サーバーは見に来る目的が違い、
+# 縦に並べると、いま見たい節に着くまで無関係な表を何度もスクロールすることになる。
+# 玄関に要約を置き、深いところは選んで入る。
+PAGES = (
+    ("/admin/memory", "記憶", "溜めて引く。短期記憶・長期記憶・集める・固化・初期化"),
+    ("/admin/ai", "AI と鍵", "貸し出すもの。話せる相手、使用量、依頼の履歴"),
+    ("/admin/server", "その他", "このサーバー。Claude Code 連携といま動いているビルド"),
+)
+
+
+def _nav_html(current: str) -> str:
+    """面のあいだを行き来する帯。**どの面にも同じものを出す** ——
+    玄関へ戻ってから選び直す、を毎回させない。"""
+    links = []
+    for path, label, _note in PAGES:
+        if path == current:
+            links.append(f'<strong>{esc(label)}</strong>')
+        else:
+            links.append(f'<a href="{path}">{esc(label)}</a>')
+    return '<nav class="admin-nav"><a href="/admin">管理画面</a>' + "".join(
+        f" · {link}" for link in links
+    ) + "</nav>"
+
+
 @router.get("/admin", response_class=HTMLResponse)
-async def admin(request: Request):
+def admin(request: Request):
+    """玄関。**いま何が起きているかが 1 画面で読めること**だけを受け持つ。
+
+    表は持たない —— 数と状態だけを出して、直しに行くのは各面。
+    """
+    sources: dict[str, Source] = request.app.state.sources
+    job = _fetch_trigger_status()
+    long_term = {n: s for n, s in sources.items() if not s.mutable}
+    short_term = {n: s for n, s in sources.items() if s.mutable}
+    running = ai_history.running_rows()
+
+    docs = sum(s.doc_count for s in long_term.values())
+    notes_docs = sum(s.doc_count for s in short_term.values())
+    collections = collect.load() if collect.is_enabled() else []
+    enabled_collections = [c for c in collections if c.enabled]
+
+    summary = {
+        "/admin/memory": (
+            f"長期 {len(long_term)} ソース / {docs:,} 文書、短期 {notes_docs:,} 件。"
+            f"収集 {len(collections)} 件(有効 {len(enabled_collections)} 件)"
+        ),
+        "/admin/ai": (
+            f"話せる相手 {len(answer.backend_names())} 件。"
+            + (f"<strong>いま {len(running)} 件走っている</strong>" if running else "いま走っているものは無い")
+        ),
+        "/admin/server": esc(build_info.describe().splitlines()[0] if build_info.describe() else ""),
+    }
+
+    cards = "\n".join(
+        f'<div class="admin-card"><h2><a href="{path}">{esc(label)}</a></h2>'
+        f'<p class="muted">{esc(note)}</p>'
+        f'<p>{summary.get(path, "")}</p></div>'
+        for path, label, note in PAGES
+    )
+
+    body = f"""
+<h1>Chiezo 管理画面</h1>
+<p>{_disk_html(request.app.state.data_dir)}</p>
+{_job_status_html(job)}
+{_running_html(running)}
+<div class="admin-cards">
+{cards}
+</div>
+"""
+    return HTMLResponse(content=page_shell("管理画面", body))
+
+
+def _running_html(running: list[dict]) -> str:
+    """いま走っている AI への依頼。**玄関に出す唯一の表**。
+
+    ここだけ表なのは、**待たされているときに見に来る画面がここだから** ——
+    数だけでは「何が遅いのか」が分からず、結局 AI の面まで開くことになる。
+    出すのは相手・種類・経過までで、詳しくは AI の面が受け持つ。
+
+    **走っていないときは何も出さない。** 空の表を置くと、いつも何かが動いていない
+    ことのほうが目立つ。
+    """
+    if not running:
+        return ""
+
+    rows = "".join(
+        f"<tr><td>{esc(ai_log.kind_label(r['kind']))}</td>"
+        f"<td>{esc(r['backend'])}"
+        + (f'<br><span class="muted">{esc(r["model"])}</span>' if r["model"] else "")
+        + f"</td><td>{esc(r['state'])}</td>"
+        f'<td class="muted">{esc(ai_history.elapsed(r["at"]))}</td></tr>'
+        for r in running
+    )
+
+    return f"""
+<h2>いま走っている AI への依頼</h2>
+<table>
+<thead><tr><th>依頼</th><th>相手</th><th>状態</th><th>経過</th></tr></thead>
+<tbody>{rows}</tbody>
+</table>
+<p class="muted">詳しくは <a href="/admin/ai#ai-history">AI と鍵</a>。</p>
+"""
+
+
+@router.get("/admin/memory", response_class=HTMLResponse)
+def admin_memory(request: Request):
     sources: dict[str, Source] = request.app.state.sources
     job = _fetch_trigger_status()
     disabled = run_buttons_disabled(job)
@@ -953,19 +1058,18 @@ async def admin(request: Request):
         init_rows = '<tr><td colspan="4">未初期化のソースはありません</td></tr>'
 
     body = f"""
-<h1>Chiezo 管理画面</h1>
-
-<h2>知識(溜めて引く)</h2>
+{_nav_html("/admin/memory")}
+<h1>記憶(溜めて引く)</h1>
 <p class="muted">
 知識は 2 層。<strong>短期記憶</strong>は Chiezo で唯一書き込める置き場で、覚えたことが
 その場で積まれる。<strong>長期記憶</strong>は読み取り専用のソースで、ダンプから焼いたものと、
 短期記憶から移した(固化した)ものが並ぶ。引くときの口はどちらも同じ。
 </p>
 
-<h3 id="short-term">短期記憶(覚えたこと)</h3>
+<h2 id="short-term">短期記憶(覚えたこと)</h2>
 {_short_term_section_html(short_term)}
 
-<h3>長期記憶(ためた知識)</h3>
+<h2>長期記憶(ためた知識)</h2>
 <p>登録ソース数: {len(long_term)} / 最新のスキーマバージョン: {latest_schema}<br>
 {_disk_html(request.app.state.data_dir)}</p>
 <table>
@@ -984,13 +1088,13 @@ async def admin(request: Request):
 
 {_job_status_html(job)}
 
-<h4 id="collect">集める(AI に集めさせて溜める)</h4>
+<h2 id="collect">集める(AI に集めさせて溜める)</h2>
 {_collect_html(sources, disabled)}
 
-<h4 id="consolidation">短期記憶から移す(固化)</h4>
+<h2 id="consolidation">短期記憶から移す(固化)</h2>
 {_memory_html(sources, disabled)}
 
-<h4>未初期化データの初期化</h4>
+<h2>未初期化データの初期化</h2>
 <table>
 <thead>
 <tr><th>name</th><th>kind</th><th>lang</th><th></th></tr>
@@ -1000,13 +1104,22 @@ async def admin(request: Request):
 </tbody>
 </table>
 
-<h2>AI と鍵(貸し出すもの)</h2>
+"""
+    return HTMLResponse(content=page_shell("記憶", body))
+
+
+@router.get("/admin/ai", response_class=HTMLResponse)
+async def admin_ai(request: Request):
+    """AI と鍵の面。**呼ぶ側に認証情報を持たせないための面**をここにまとめる。"""
+    body = f"""
+{_nav_html("/admin/ai")}
+<h1>AI と鍵(貸し出すもの)</h1>
 <p class="muted">
 呼ぶ側に認証情報を持たせないための面。鍵はここで預かり、話せる相手と、
 絵・音・動画・声を作る相手を同じ表で扱う。
 </p>
 
-<h3>ためた知識を使う AI</h3>
+<h2>ためた知識を使う AI</h2>
 {_answer_status_html()}
 
 {await ai_settings.section_html(request)}
@@ -1014,17 +1127,25 @@ async def admin(request: Request):
 {ai_usage.section_html(request)}
 
 {ai_history.section_html(*_history_args(request))}
+"""
+    return HTMLResponse(content=page_shell("AI と鍵", body))
 
-<h2>このサーバー</h2>
 
-<h3>Claude Code 連携設定</h3>
+@router.get("/admin/server", response_class=HTMLResponse)
+def admin_server(_request: Request):
+    """このサーバー自身のこと。どちらも**読むだけ**で、押して変わるものは無い。"""
+    body = f"""
+{_nav_html("/admin/server")}
+<h1>このサーバー</h1>
+
+<h2>Claude Code 連携設定</h2>
 <p class="muted">
 いま設定を吐き出したら(<code>scripts/gen_claude_config.sh</code>)どういう内容になるかのプレビュー。
 現在の登録ソースから生成した CLAUDE.md ブロックを表示する(実ファイルは書き換えない)。
 </p>
 <p><a href="/admin/claude-config">→ 生成される設定を見る</a></p>
 
-<h3>いま動いているビルド</h3>
+<h2>いま動いているビルド</h2>
 <p class="muted">
 {esc(build_info.describe())}<br>
 ビルド日時(JST)とビルド元のコミット。手元の <code>git log -1</code> と見比べれば、
@@ -1032,7 +1153,7 @@ async def admin(request: Request):
 のあと、ここが新しくなっていなければ古いイメージのままになっている。
 </p>
 """
-    return HTMLResponse(content=page_shell("管理画面", body))
+    return HTMLResponse(content=page_shell("このサーバー", body))
 
 
 @router.get("/admin/osm", response_class=HTMLResponse)
@@ -1248,7 +1369,7 @@ def trigger_run(source: str) -> None:
 def _proxy_trigger_run(source: str) -> RedirectResponse:
     """上を叩いて管理画面へ戻す(init / rebuild 共通)。"""
     trigger_run(source)
-    return RedirectResponse(url="/admin", status_code=303)
+    return RedirectResponse(url="/admin/memory", status_code=303)
 
 
 @router.post("/admin/init/{source}")
@@ -1274,7 +1395,7 @@ def admin_media_cancel(job_id: str):
     from app import media
 
     media.cancel_job(job_id)
-    return RedirectResponse("/admin#ai-history", status_code=303)
+    return RedirectResponse("/admin/ai#ai-history", status_code=303)
 
 
 @router.post("/admin/rebuild/{source}")
@@ -1333,7 +1454,7 @@ async def admin_collect_create(request: Request):
     from app.main import scan_all
 
     request.app.state.sources = scan_all(request.app.state.data_dir)
-    return RedirectResponse(url="/admin#collect", status_code=303)
+    return RedirectResponse(url="/admin/memory#collect", status_code=303)
 
 
 @router.post("/admin/collect/{name}/edit")
@@ -1363,7 +1484,7 @@ async def admin_collect_edit(name: str, request: Request):
         model=str(form.get("model") or ""),
         effort=str(form.get("effort") or ""),
     )
-    return RedirectResponse(url="/admin#collect", status_code=303)
+    return RedirectResponse(url="/admin/memory#collect", status_code=303)
 
 
 @router.post("/admin/collect/consult")
@@ -1479,7 +1600,7 @@ def _draft_extract_page_html(name: str | None, want: str, drafted: dict | None, 
 <p class="muted">頼んだこと: {esc(want) or "(指定なし)"}</p>
 {result}
 {save}
-<p class="muted"><a href="/admin#collect">管理画面へ戻る</a>(保存しなければ何も変わりません)</p>
+<p class="muted"><a href="/admin/memory#collect">管理画面へ戻る</a>(保存しなければ何も変わりません)</p>
 """
     return page_shell("抽出の指定", body)
 
@@ -1489,7 +1610,7 @@ def admin_collect_toggle(name: str):
     """有効・無効を切り替える(見本を動かし始める入口でもある)。"""
     current = collect.get(name)
     collect.update(name, enabled=not current.enabled)
-    return RedirectResponse(url="/admin#collect", status_code=303)
+    return RedirectResponse(url="/admin/memory#collect", status_code=303)
 
 
 @router.post("/admin/collect/{name}/delete")
@@ -1511,7 +1632,7 @@ def admin_collect_delete(request: Request, name: str):
     from app.main import scan_all
 
     request.app.state.sources = scan_all(request.app.state.data_dir)
-    return RedirectResponse(url=f"/admin#collect{'' if dropped else '&kept'}", status_code=303)
+    return RedirectResponse(url=f"/admin/memory#collect{'' if dropped else '&kept'}", status_code=303)
 
 
 def _drop_collect_source(name: str) -> bool:
@@ -1545,7 +1666,7 @@ def admin_collect_run(name: str):
     from app.main import start_collection_bake
 
     start_collection_bake(name)
-    return RedirectResponse(url="/admin#collect", status_code=303)
+    return RedirectResponse(url="/admin/memory#collect", status_code=303)
 
 
 def _blank_to_none(raw) -> str | None:
@@ -1670,7 +1791,7 @@ def _preview_page_html(name: str, result: dict | None, error: str) -> str:
 <p><strong>まだ焼いていません。</strong>長期記憶は変わっておらず、進み具合も次回の予定も
 動いていません。この数字を見てから「いま集めて焼く」を押します。</p>
 {body}
-<p class="muted"><a href="/admin#collect">管理画面へ戻る</a></p>
+<p class="muted"><a href="/admin/memory#collect">管理画面へ戻る</a></p>
 """,
     )
 
@@ -1679,7 +1800,7 @@ def _preview_page_html(name: str, result: dict | None, error: str) -> str:
 def admin_sweep_memory(request: Request):
     """焼き上がりを確かめて、短期側の印を `固化対象` から `固化` に付け替える。"""
     memory.sweep(request.app.state.sources)
-    return RedirectResponse(url="/admin#consolidation", status_code=303)
+    return RedirectResponse(url="/admin/memory#consolidation", status_code=303)
 
 
 def request_origin(request: Request) -> str:

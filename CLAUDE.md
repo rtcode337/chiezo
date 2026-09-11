@@ -60,7 +60,7 @@ Chiezo はそれが持てないものを預かる側にいる。
 
 ためた知識(公開ダンプ)と固めた知識(自分のメモ)はどちらも `corpus/` の読み取り専用
 ソースで、**引く口はまったく同じ**。違うのは素材が外にあるか手元にあるかだけ。
-**画面では「長期記憶」「短期記憶」と呼ぶ**(`/admin` の 2 節)。
+**画面では「長期記憶」「短期記憶」と呼ぶ**(`/admin/memory` の 2 節)。
 
 ### 鍵と、話せる AI
 
@@ -978,6 +978,12 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `include_router` する。`admin.py`(管理画面と chiezo-trigger へのプロキシ、
     Claude Code 連携設定の配布。`TRIGGER_URL` もここ)/ `browse.py`(`/search/{source}/`)/
     `chat.py`(`/ai/chat` と会話画面の JS)
+  - **管理画面は 3 つの面に分かれている**(`PAGES`)。`/admin/memory`(記憶)/ `/admin/ai`
+    (AI と鍵)/ `/admin/server`(その他)で、`/admin` は玄関。**1 枚に積み上げない** ——
+    見に来る目的が違うものを縦に並べると、いま見たい節に着くまで無関係な表を何度も
+    スクロールすることになる。**玄関は表を持たない**(数と状態だけ出して、直しに行くのは各面)。
+    **どの面にも同じ帯を出す**(`_nav_html`)—— 玄関へ戻ってから選び直す、を毎回させない。
+    `/` からの転送先は玄関のまま(どの面を先に見たいかは人によるので名指ししない)
   - `app/deps.py` — **REST と画面が共有する下ごしらえ**(`get_source`、ORDER BY 断片の
     `exact_title_first` / `relevance_order`、古い DB を断る `require_*`)。
     **ここは app の他モジュールを import しない** —— views が main を import すると
@@ -1151,7 +1157,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `ingest/sources/remote.py` の契約そのまま。素材が空・墓標で全部落ちるときは
     409(流し始める前に断る)
   - `/admin/memory/sweep`(POST) — 管理画面のフォームから叩く口(303 で
-    `/admin#consolidation` へ戻す)。**焼くこと自体の口は持たない** —— 普通の取り込みなので
+    `/admin/memory#consolidation` へ戻す)。**焼くこと自体の口は持たない** —— 普通の取り込みなので
     `/admin/init|rebuild` を使う。**`固化対象` を付ける口も持たない** —— ただのタグなので
     `PATCH /v1/notes/{id}` か MCP の `update` で付く
   - `/v1/ask`(GET) — 「使う」層の REST。`stream=0`(既定)は JSON 一括、`stream=1` は

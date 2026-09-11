@@ -297,7 +297,7 @@ class TestAdminScreen:
     def test_it_shows_the_queue(self, client):
         note = remember(client, "まだ焼いていない")
         mark(client, note["doc_id"], TARGET)
-        html = client.get("/admin").text
+        html = client.get("/admin/memory").text
         assert "短期記憶から移す(固化)" in html
         assert "固化を待っているメモ" in html
 
@@ -308,7 +308,7 @@ class TestAdminScreen:
         残らない(何をすれば直るのかが読めない)。
         """
         remember(client, "印の付いていないメモ")
-        html = client.get("/admin").text
+        html = client.get("/admin/memory").text
         assert "焼くものが無いので" in html
 
     def test_sweeping_from_the_form_moves_the_mark(self, client, data_dir):

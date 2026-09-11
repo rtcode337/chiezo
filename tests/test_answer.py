@@ -102,7 +102,7 @@ class TestDisabled:
         assert 'name="q"' in res.text
 
     def test_admin_shows_the_feature_as_disabled(self, disabled_client):
-        res = disabled_client.get("/admin")
+        res = disabled_client.get("/admin/ai")
         assert res.status_code == 200
         assert "まだ話せる相手がいません" in res.text
         # 相手を増やす入口(「話す相手」節)も同じページに出ていること
@@ -377,7 +377,7 @@ class TestAskPage:
         """相手ごとに 1 行。 話す相手と絵・音の相手を分けていた頃は、同じ相手が
         2 か所に出ていて、どちらの on/off が効くのか画面から読めなかった。"""
         with make_client(monkeypatch_env, FakeLLM()) as client:
-            res = client.get("/admin")
+            res = client.get("/admin/ai")
 
         assert "AI の相手" in res.text
         assert "できること" in res.text
@@ -390,7 +390,7 @@ class TestAskPage:
     def test_admin_greys_out_the_providers_that_are_off(self, monkeypatch_env):
         """いまどちらの状態かを、ボタンの文字だけに頼らせない。"""
         with make_client(monkeypatch_env, FakeLLM()) as client:
-            res = client.get("/admin")
+            res = client.get("/admin/ai")
 
         assert 'class="off"' in res.text
         # 有効にするボタンの文言は「無効にする」と同じ長さに揃える（並ぶと目立つため）
@@ -399,7 +399,7 @@ class TestAskPage:
 
     def test_admin_links_to_the_chat_page_when_enabled(self, monkeypatch_env):
         with make_client(monkeypatch_env, FakeLLM()) as client:
-            res = client.get("/admin")
+            res = client.get("/admin/ai")
         assert f'href="{CHAT_PATH}"' in res.text
 
 
@@ -971,8 +971,8 @@ class TestConnectionTest:
         from app.main import app
 
         with TestClient(app) as client:
-            ok = client.get("/admin", params={"tested": "gemini", "ok": "1"}).text
-            ng = client.get("/admin", params={"tested": "gemini", "ok": "0", "why": "だめ"}).text
+            ok = client.get("/admin/ai", params={"tested": "gemini", "ok": "1"}).text
+            ng = client.get("/admin/ai", params={"tested": "gemini", "ok": "0", "why": "だめ"}).text
         assert "✅ Gemini と話せます。" in ok
         assert "⚠️ Gemini と話せません: だめ" in ng
 

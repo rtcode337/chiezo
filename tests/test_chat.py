@@ -364,7 +364,7 @@ class TestChatPageLayout:
     def test_admin_pages_keep_their_own_plain_look(self, monkeypatch_env):
         """会話画面のスタイルは管理画面に漏らさない(あちらは素っ気ないままでよい)。"""
         with make_client(monkeypatch_env, ToolLLM()) as client:
-            assert "composer-box" not in client.get("/admin").text
+            assert "composer-box" not in client.get("/admin/memory").text
             assert "composer-box" in client.get(CHAT_PATH).text
 
 
