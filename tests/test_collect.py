@@ -1362,6 +1362,37 @@ class TestTheCollectSectionMarkup:
         html = self._html(sample)
         assert "opus" in html and "high" in html
 
+    def test_the_prompt_opens_in_a_row_of_its_own(self, sample):
+        """名前のセルの中で開くと、巡回のぶん背の高い行のどこかに長いフォームが挟まり、
+        どの巡回の設定を触っているのか分からなくなる。
+        """
+        collect.update("news", sweeps=[{"name": "ざっと"}, {"name": "じっくり"}])
+        body = self._html(sample).split("<tbody>")[1].split("</tbody>")[0]
+
+        # プロンプトは列をまたぐ行に出る（名前のセルの中ではない）
+        assert 'colspan="9"' in body
+        assert body.index('colspan="9"') > body.index("じっくり")
+
+    def test_sweeps_are_fields_not_json(self, sample):
+        """JSON を直に書かせると、間隔ひとつ変えるのに配列の構文を相手にすることになる。
+
+        間隔・相手・モデル・考える量はもともと「1 本ぶんの設定」なので、その一組を
+        繰り返せるようにすれば足りる。
+        """
+        collect.update("news", sweeps=[{"name": "ざっと"}, {"name": "じっくり"}])
+        html = self._html(sample)
+
+        assert '<textarea name="sweeps"' not in html
+        assert html.count('<input name="sweep_name"') == 3  # 2 本 + 足すための空枠
+        assert '<select name="sweep_backend">' in html
+        assert "名前を消すと、この巡回は無くなります" in html
+
+    def test_one_sweep_needs_no_name_to_delete(self, sample):
+        """1 本しか無いときは、消す案内を出さない（消したら回らなくなる）。"""
+        html = self._html(sample)
+        assert "名前を消すと、この巡回は無くなります" not in html
+        assert "名前を書くと増えます" in html
+
     def test_each_sweep_gets_its_own_row(self, sample):
         """間隔も次の予定も前回も巡回ごとに違うので、収集に 1 行だけ与えると嘘になる。
 
@@ -1439,6 +1470,83 @@ class TestTheCollectSectionMarkup:
         assert html.count("<form") == html.count("</form>")
 
 
+class TestEditingTheSweeps:
+    """巡回の欄は繰り返せる。**名前を書けば増え、消せば減る**。
+
+    足す口も消す口も名前 1 つで済ませてある —— 行ごとにボタンを付けると、押した先で
+    何が起きるかを別に説明することになる。
+    """
+
+    @pytest.fixture()
+    def client(self, enabled, built_data_dir, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        from app.main import app
+
+        with TestClient(app) as c:
+            yield c
+
+    def _save(self, client, rows, **extra):
+        # **繰り返す欄は「鍵 → 値の並び」で渡す。** タプルの列で渡すと httpx が
+        # 生のデータとして扱い、フォームとして届かない
+        data = {"prompt": "{cursor} 以降", "description": "", "cursor": "",
+                "mode": "append", "keep_ratio": "", "extract": "",
+                "partition": "", "feed": "", **extra}
+        for key in ("name", "interval", "cover_days", "per_run",
+                    "backend", "model", "effort", "enabled"):
+            data[f"sweep_{key}"] = [row.get(key, "") for row in rows]
+        res = client.post("/admin/collect/news/edit", data=data, follow_redirects=False)
+        assert res.status_code in (200, 303), res.text[:400]
+        return res
+
+    def test_writing_a_name_adds_one(self, client, sample):
+        self._save(client, [
+            {"name": "ざっと", "interval": "360", "cover_days": "7", "enabled": "1"},
+            {"name": "じっくり", "interval": "1440", "per_run": "1",
+             "backend": "claude", "model": "opus", "effort": "high", "enabled": "1"},
+        ])
+        rough, deep = collect.sweeps_of(collect.get("news"))
+        assert (rough.name, rough.interval_minutes, rough.cover_days) == ("ざっと", 360, 7.0)
+        assert (deep.name, deep.partitions_per_run, deep.model) == ("じっくり", 1, "opus")
+        assert deep.effort == "high"
+
+    def test_clearing_the_name_removes_it(self, client, sample):
+        self._save(client, [
+            {"name": "ざっと", "interval": "360", "enabled": "1"},
+            {"name": "じっくり", "interval": "1440", "enabled": "1"},
+        ])
+        assert len(collect.get("news").sweeps) == 2
+
+        self._save(client, [
+            {"name": "ざっと", "interval": "360", "enabled": "1"},
+            {"name": "", "interval": "1440", "enabled": "1"},
+        ])
+        assert [s.name for s in collect.sweeps_of(collect.get("news"))] == ["ざっと"]
+
+    def test_an_unnamed_lone_sweep_is_kept_as_the_collection_itself(self, client, sample):
+        """1 本しか持たない収集に一覧を持たせると、「既定」という名前だけが画面に増える。
+
+        **名前を付けたものは名前のまま残す** —— 2 本目を消したときに 1 本目の名前まで
+        化けると、何を消したのか分からなくなる（上のテストがそこを縛っている）。
+        """
+        self._save(client, [{"name": "既定", "interval": "120",
+                             "backend": "claude", "enabled": "1"}])
+        item = collect.get("news")
+        assert item.sweeps == []
+        assert item.interval_minutes == 120
+        assert item.backend == "claude"
+
+    def test_a_stopped_sweep_survives_the_round_trip(self, client, sample):
+        """止めるのに消さなくてよい（消すと進み具合まで消える）。"""
+        self._save(client, [
+            {"name": "ざっと", "interval": "360", "enabled": "1"},
+            {"name": "じっくり", "interval": "1440", "enabled": ""},
+        ])
+        _rough, deep = collect.sweeps_of(collect.get("news"))
+        assert deep.enabled is False
+
+
 class TestPickingTheModelAndTheEffort:
     """モデルと考える量は**選ぶ**もので、手で書くものではない。
 
@@ -1453,10 +1561,11 @@ class TestPickingTheModelAndTheEffort:
 
     def test_they_are_selects_not_free_text(self, sample):
         html = self._html(sample)
-        assert '<select name="model">' in html
-        assert '<select name="effort">' in html
-        assert '<input name="model"' not in html
-        assert '<input name="effort"' not in html
+        # 巡回ごとに 1 組ずつ出る（相手も巡回ごとに変えられるので）
+        assert '<select name="sweep_model">' in html
+        assert '<select name="sweep_effort">' in html
+        assert '<input name="sweep_model"' not in html
+        assert '<input name="sweep_effort"' not in html
 
     def test_leaving_it_to_the_backend_is_the_first_choice(self, sample):
         """空が「相手の既定」。**先頭に置く** —— 指定しないのが普通の使い方。"""
@@ -1485,7 +1594,7 @@ class TestPickingTheModelAndTheEffort:
         """フォームは 1 ページに何枚もあるので、id で捕まえると 1 枚しか動かない。"""
         from app.views import admin
 
-        assert 'select[name="backend"]' in admin.COLLECT_BACKEND_SCRIPT
+        assert 'select[name$="backend"]' in admin.COLLECT_BACKEND_SCRIPT
         assert "getElementById" not in admin.COLLECT_BACKEND_SCRIPT
         assert admin.COLLECT_BACKEND_SCRIPT in self._html(sample)
 

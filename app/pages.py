@@ -316,6 +316,20 @@ PAGE_STYLE = """
   pre.prompt-view { white-space: pre-wrap; word-break: break-word; margin: 0.4rem 0;
                     background: #f7f7fa; border-left: 3px solid #b9bdf0;
                     padding: 0.6rem 0.8rem; font-size: 0.85rem; line-height: 1.6; }
+  /* プロンプトと設定は、収集の行とは別に**列をまたぐ 1 行**で出す。名前のセルの
+     中で開くと、巡回のぶん背の高い行のどこかに長いフォームが挟まり、どの巡回の
+     設定を触っているのか分からない。ここは行というより「その収集の作業場」なので、
+     上の行と続いていることが分かる程度に背景を落とす。 */
+  td.collect-detail { background: #fbfbfe; border-top: 0; padding: 0.2rem 0.8rem 0.8rem; }
+  /* 巡回の設定は 1 本ぶんずつ枠で囲う。**繰り返す欄なので、どこまでが 1 本か
+     見えないと隣の巡回の値を直してしまう。** */
+  fieldset.sweeps { margin: 0.6rem 0; border: 1px solid #e3e5f2; border-radius: 6px;
+                    padding: 0.4rem 0.8rem 0.6rem; }
+  fieldset.sweeps legend { padding: 0 0.3rem; font-size: 0.85rem; font-weight: 600; }
+  .sweep-row { border-top: 1px dashed #e3e5f2; padding-top: 0.5rem; margin-top: 0.5rem; }
+  .sweep-row:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+  .sweep-row p { margin: 0.3rem 0; }
+  td.collect-detail > details { margin: 0; }
   /* 入れ子の details は一段内側へ寄せる(どちらを開いているか分かるように) */
   details details { margin-left: 0.8rem; border-left: 2px solid #eee; padding-left: 0.8rem; }
   form.collect-form textarea { width: 100%; max-width: 46rem; box-sizing: border-box;

@@ -10,6 +10,7 @@ import logging
 import os
 import shutil
 import time
+from contextlib import suppress
 from pathlib import Path
 from urllib.parse import quote
 
@@ -388,7 +389,7 @@ MODE_LABELS = {
 }
 
 
-def _backend_select(current: str | None) -> str:
+def _backend_select(current: str | None, field: str = "backend") -> str:
     """相手を選ぶセレクト。**空が「Chiezo の既定にまかせる」**。
 
     候補は**有効にしてある相手だけ**(`answer.backend_names()`)—— 無効な相手を選べても
@@ -410,7 +411,7 @@ def _backend_select(current: str | None) -> str:
             label += "(いまは無効)"
         selected = " selected" if name == current else ""
         options.append(f'<option value="{esc(name)}"{selected}>{esc(label)}</option>')
-    return f'<select name="backend">{"".join(options)}</select>'
+    return f'<select name="{field}">{"".join(options)}</select>'
 
 
 def _candidate_select(field: str, current: str | None, candidates, empty_label: str) -> str:
@@ -431,7 +432,7 @@ def _candidate_select(field: str, current: str | None, candidates, empty_label: 
     return f'<select name="{field}">{"".join(options)}</select>'
 
 
-def _model_select(backend: str | None, current: str | None) -> str:
+def _model_select(backend: str | None, current: str | None, field: str = "model") -> str:
     """モデルのセレクト。**候補は控え**(`app/providers.py`)から取る。
 
     ここで相手に問い合わせない —— 管理画面の描画で外へ出ると、相手が落ちている
@@ -439,13 +440,13 @@ def _model_select(backend: str | None, current: str | None) -> str:
     `GET /ai/models` を引いて入れ替える(下の `COLLECT_BACKEND_SCRIPT`)。
     """
     spec = providers.get(answer.normalize_backend(backend))
-    return _candidate_select("model", current, spec.models if spec else (), "相手の既定")
+    return _candidate_select(field, current, spec.models if spec else (), "相手の既定")
 
 
-def _effort_select(backend: str | None, current: str | None) -> str:
+def _effort_select(backend: str | None, current: str | None, field: str = "effort") -> str:
     """考える量のセレクト。持たない相手では候補が空(「相手の既定」だけ)になる。"""
     return _candidate_select(
-        "effort", current, providers.efforts_of(answer.normalize_backend(backend)), "相手の既定"
+        field, current, providers.efforts_of(answer.normalize_backend(backend)), "相手の既定"
     )
 
 
@@ -507,10 +508,14 @@ def _mode_select(current: str) -> str:
 COLLECT_BACKEND_SCRIPT = """<script>
 document.addEventListener('change', function (ev) {
   var sel = ev.target;
-  if (!sel.matches || !sel.matches('.collect-form select[name="backend"]')) { return; }
-  var form = sel.closest('form');
-  var model = form.querySelector('select[name="model"]');
-  var effort = form.querySelector('select[name="effort"]');
+  var field = sel.name;
+  if (!sel.matches || !sel.matches('.collect-form select[name$="backend"]')) { return; }
+  // **書き換えるのはその 1 本のぶんだけ。** 巡回は何本でも並ぶので、form の中を
+  // まとめて探すと、どれを選び直しても先頭の巡回のモデルが入れ替わる
+  var box = sel.closest('.sweep-row') || sel.closest('form');
+  var prefix = field === 'backend' ? '' : 'sweep_';
+  var model = box.querySelector('select[name="' + prefix + 'model"]');
+  var effort = box.querySelector('select[name="' + prefix + 'effort"]');
   if (!model && !effort) { return; }
   // 入れ替わるまで触らせない(古い候補のまま保存されるのを防ぐ)
   [model, effort].forEach(function (el) { if (el) { el.disabled = true; } });
@@ -563,16 +568,65 @@ FEED_EXAMPLE = json.dumps(
     ensure_ascii=False,
 )
 
-SWEEPS_EXAMPLE = json.dumps(
-    [
-        {"name": "ざっと", "interval_minutes": 360, "cover_days": 7},
-        {
-            "name": "じっくり", "interval_minutes": 1440,
-            "partitions_per_run": 1, "effort": "high",
-        },
-    ],
-    ensure_ascii=False,
-)
+def _sweeps_form(item) -> str:
+    """巡回の設定欄。**何本でも書ける形にする**。
+
+    JSON を直に書かせていた頃は、間隔ひとつ変えるのに配列の構文を相手にすることに
+    なった。**間隔・相手・モデル・考える量はもともと「1 本ぶんの設定」**なので、
+    その一組を繰り返せるようにすれば足りる。
+
+    **空の枠を 1 つ余分に出す。** 足すための導線が他に無く、名前を書けば増える。
+    名前を消せば消える(消す口を別に作らずに済む)。
+    """
+    sweeps = collect.sweeps_of(item)
+    blocks = [_sweep_fields(s, len(sweeps) > 1) for s in sweeps]
+    blocks.append(_sweep_fields(None, False))
+    return (
+        '<fieldset class="sweeps"><legend>巡回(何本でも書ける)</legend>'
+        '<p class="muted"><strong>同じ収集を別々の時計で回すためのもの。</strong>'
+        "ざっと全体を拾うもの(「一周の日数」を書く)と、少数をじっくり調べるもの"
+        "(「1 回に見る区画」と強いモデル)を分けて持てる。"
+        "<strong>名前を書けば増え、消せば減る。</strong>"
+        "1 本だけなら、その設定がそのまま収集の設定になる。</p>"
+        + "".join(blocks)
+        + "</fieldset>"
+    )
+
+
+def _sweep_fields(sweep, removable: bool) -> str:
+    """巡回 1 本ぶんの欄。`sweep` が None なら空の枠(足すため)。"""
+    name = sweep.name if sweep else ""
+    interval = sweep.interval_minutes if sweep else collect.MIN_INTERVAL_MINUTES * 12
+    cover = f"{sweep.cover_days:g}" if sweep and sweep.cover_days else ""
+    per_run = sweep.partitions_per_run if sweep and sweep.partitions_per_run else ""
+    backend = sweep.backend if sweep else None
+    enabled = sweep.enabled if sweep else True
+    hint = (
+        '<span class="muted">名前を消すと、この巡回は無くなります</span>'
+        if removable else '<span class="muted">名前を書くと増えます</span>'
+    )
+    return (
+        '<div class="sweep-row">'
+        f'<p><label>名前<br><input name="sweep_name" value="{esc(name)}"'
+        f' placeholder="ざっと"></label> {hint}</p>'
+        f'<p><label>間隔(分)<br><input name="sweep_interval" type="number"'
+        f' min="{collect.MIN_INTERVAL_MINUTES}" value="{interval}"></label></p>'
+        '<p><label>一周の日数(区画を全部見終わるまで。空なら下の区画数を使う)<br>'
+        f'<input name="sweep_cover_days" type="number" step="0.5" min="0.5"'
+        f' value="{esc(str(cover))}"></label></p>'
+        '<p><label>1 回に見る区画(空なら上の日数から計算する)<br>'
+        f'<input name="sweep_per_run" type="number" min="1"'
+        f' max="{collect.MAX_PARTITIONS_PER_RUN}" value="{esc(str(per_run))}"></label></p>'
+        f'<p><label>頼む相手<br>{_backend_select(backend, "sweep_backend")}</label></p>'
+        f'<p><label>モデル<br>'
+        f'{_model_select(backend, sweep.model if sweep else None, "sweep_model")}</label></p>'
+        f'<p><label>考える量<br>'
+        f'{_effort_select(backend, sweep.effort if sweep else None, "sweep_effort")}</label></p>'
+        '<p><label>動かすか<br><select name="sweep_enabled">'
+        f'<option value="1"{" selected" if enabled else ""}>動かす</option>'
+        f'<option value=""{"" if enabled else " selected"}>止める</option>'
+        "</select></label></p></div>"
+    )
 
 
 def _sweep_cells(item) -> list[str]:
@@ -791,11 +845,11 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
         # 名前と溜まった件数と操作は収集のものなので、行をまたがせる
         sweep_cells = _sweep_cells(item)
         span = f' rowspan="{len(sweep_cells)}"' if len(sweep_cells) > 1 else ""
-        rows.append(
-            f"<tr{cls}>"
-            f'<td{span}><a href="{esc(browse_url(item.name))}">{esc(item.name)}</a>'
-            f"{mode_mark}"
-            f'<br><span class="muted">{esc(item.description)}</span>{requester}'
+        # **開いたものは行をまたぐ 1 行に出す。** 名前のセルの中で開くと、
+        # 巡回のぶん背の高い行のどこかに長いフォームが挟まり、どの巡回の設定を
+        # 触っているのか分からなくなる(実際、じっくりの行の横に開いて見えた)。
+        # 幅いっぱいに出せば、長いプロンプトが細い桁へ折り返されることもない
+        detail = (
             f"<details><summary>プロンプト</summary>"
             f'<pre class="prompt-view">{esc(item.prompt)}</pre>'
             f'<p class="muted">進み具合(次の実行で {{cursor}} に入る値): '
@@ -804,14 +858,10 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f"<details><summary>編集する</summary>"
             f'<form method="post" action="/admin/collect/{esc(item.name)}/edit" class="collect-form">'
             f'<p><label>説明<br><input name="description" value="{esc(item.description)}"></label></p>'
-            f'<p><label>間隔(分)<br><input name="interval_minutes" type="number"'
-            f' min="{collect.MIN_INTERVAL_MINUTES}" value="{item.interval_minutes}"></label></p>'
+            f"{_sweeps_form(item)}"
             f'<p><label>プロンプト<br><textarea name="prompt" rows="10">{esc(item.prompt)}</textarea></label></p>'
             f'<p><label>進み具合(空にすると最初から)<br>'
             f'<input name="cursor" value="{esc(item.cursor)}"></label></p>'
-            f"<p><label>頼む相手<br>{_backend_select(item.backend)}</label></p>"
-            f"<p><label>モデル<br>{_model_select(item.backend, item.model)}</label></p>"
-            f"<p><label>考える量<br>{_effort_select(item.backend, item.effort)}</label></p>"
             f"{_backend_hint()}"
             f"<p><label>集め方<br>{_mode_select(item.mode)}</label></p>"
             f'<p><label>消えすぎの歯止め(前の何割を下回ったら止めるか。0 で外す)<br>'
@@ -832,18 +882,7 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'<p><label>区画の指定(JSON。空なら区画を持たない)<br>'
             f'<textarea name="partition" rows="6" spellcheck="false">'
             f"{esc(_partition_json(item))}</textarea></label></p>"
-            f'<p><label>巡回(JSON の配列。空なら上の間隔で 1 本だけ回る)<br>'
-            f'<textarea name="sweeps" rows="8" spellcheck="false">'
-            f"{esc(_sweeps_json(item))}</textarea></label></p>"
-            f'<p class="muted">巡回を書くと、<strong>同じ収集を別々の時計で回せる</strong>'
-            f" —— ざっと全体を拾って訂正するものと、少数をじっくり調べるもの。"
-            f" <code>cover_days</code> に「7」と書けば<strong>1 回に見る区画数は"
-            f"自動で決まる</strong>(区画が増えれば 1 回あたりも増える)。"
-            f" <strong>頼む相手も巡回ごとに変えられる</strong>"
-            f"(<code>backend</code> / <code>model</code> / <code>effort</code>)——"
-            f" ざっとは安い相手で数をこなし、じっくりは考える量を上げる、という分け方ができる。"
-            f" 書かなかった項目は上の設定を使う。"
-            f" 例: <code>{esc(SWEEPS_EXAMPLE)}</code></p>"
+
             f'<p class="muted">区画を入れると、<strong>対象としている空間を密度で割って</strong>'
             f" 1 回に 1 区画ずつ順に回る。プロンプトに <code>{{partition}}</code> を入れると"
             f" そこへ今回見る範囲が差し込まれる。<strong>まだ 1 件も集めていない範囲にも"
@@ -894,7 +933,13 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'出典は必ず付けさせて。"></textarea></label></p>'
             f'<p class="muted">AI に聞くので十数秒〜1分ほどかかります。案は保存されないので、見てから決められます。</p>'
             f'<button type="submit">相談する</button></form></details>'
-            f"</details></td>"
+        )
+        rows.append(
+            f"<tr{cls}>"
+            f'<td{span}><a href="{esc(browse_url(item.name))}">{esc(item.name)}</a>'
+            f"{mode_mark}"
+            f'<br><span class="muted">{esc(item.description)}</span>{requester}'
+            f"</td>"
             + f"<td{span}>{baked_docs}</td>"
             + sweep_cells[0]
             + f"<td{span}>"
@@ -913,6 +958,9 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
         )
         # 2 本目からは巡回のぶんだけ。左右のセルは 1 行目から伸びている
         rows += [f"<tr{cls}>{cells}</tr>" for cells in sweep_cells[1:]]
+        # プロンプトと設定は**列をまたぐ 1 行**に出す。列の中に押し込むと、長い本文が
+        # 細い桁へ折り返されて読めず、どの巡回の設定を触っているのかも分からない
+        rows.append(f'<tr{cls}><td colspan="9" class="collect-detail">{detail}</td></tr>')
     table = f"""
 <table>
 <thead>
@@ -1775,12 +1823,22 @@ async def admin_collect_edit(name: str, request: Request):
     プロンプトを書き換えるのと同じ場面で起きるため(値を消せば最初から)。
     """
     form = await request.form()
-    interval = str(form.get("interval_minutes") or "").strip()
+    sweeps = _parse_sweeps_form(form)
+    # **名前を付けていない 1 本なら、収集そのものの設定として持つ。** 巡回を 1 本しか
+    # 持たない収集に一覧を持たせると、「既定」という名前だけが画面に増える。
+    # **名前を付けたものは名前のまま残す** —— 2 本目を消したときに 1 本目の名前まで
+    # 「既定」へ化けると、何を消したのか分からなくなる
+    lone = (
+        sweeps[0]
+        if len(sweeps) == 1 and sweeps[0]["name"] == collect.DEFAULT_SWEEP_NAME
+        else None
+    )
     collect.update(
         name,
+        sweeps=[] if lone else sweeps,
         prompt=str(form.get("prompt") or ""),
         description=str(form.get("description") or ""),
-        interval_minutes=int(interval) if interval.isdigit() else None,
+        interval_minutes=(lone or {}).get("interval_minutes"),
         # 空にできるように、cursor だけは None ではなく空文字を通す
         cursor=str(form.get("cursor") or ""),
         mode=collect.normalize_mode(form.get("mode")),
@@ -1788,14 +1846,14 @@ async def admin_collect_edit(name: str, request: Request):
         extract=_parse_extract(form.get("extract")),
         partition=_parse_partition(form.get("partition")),
         feed=_parse_feed(form.get("feed")),
-        sweeps=_parse_sweeps(form.get("sweeps")),
         # 0 も意味のある値(守りを外す)なので、空のときだけ触らない
         keep_ratio=_ratio(form.get("keep_ratio")),
         # 相手・モデル・深さは**空を「既定にまかせる」として通す** ——
-        # `collect.update` は None を「触らない」と読むので、空文字で渡して消す
-        backend=str(form.get("backend") or ""),
-        model=str(form.get("model") or ""),
-        effort=str(form.get("effort") or ""),
+        # `collect.update` は None を「触らない」と読むので、空文字で渡して消す。
+        # 巡回が 2 本以上あるときは巡回の側が持つので、収集の側は空に戻す
+        backend=str((lone or {}).get("backend") or ""),
+        model=str((lone or {}).get("model") or ""),
+        effort=str((lone or {}).get("effort") or ""),
     )
     return RedirectResponse(url="/admin/memory#collect", status_code=303)
 
@@ -2036,11 +2094,6 @@ def _partition_json(item) -> str:
     return _spec_json(item.partition)
 
 
-def _sweeps_json(item) -> str:
-    """巡回の一覧を、編集できる文字列にする。持っていなければ空。"""
-    return _spec_json(item.sweeps)
-
-
 def _spec_json(spec) -> str:
     return json.dumps(spec, ensure_ascii=False, indent=2) if spec else ""
 
@@ -2057,15 +2110,39 @@ def _parse_feed(raw):
     return _parse_spec(raw, "フィード")
 
 
-def _parse_sweeps(raw):
-    """**空欄は「巡回を書かない」**(定義そのものが 1 本の巡回として動く)。"""
-    text = str(raw or "").strip()
-    if not text:
-        return []
-    value = _parse_spec(text, "巡回")
-    if not isinstance(value, list):
-        raise HTTPException(400, {"error": "巡回は配列で書いてください"})
-    return value
+def _parse_sweeps_form(form) -> list[dict]:
+    """繰り返しの欄から巡回を組み立てる。**名前の無い枠は読まない**。
+
+    足す口も消す口も名前 1 つで済ませている —— 書けば増え、消せば減る。
+    行ごとにボタンを付けると、押した先で何が起きるかを別に説明することになる。
+    """
+    names = form.getlist("sweep_name")
+    fields = {
+        key: form.getlist(f"sweep_{key}")
+        for key in ("interval", "cover_days", "per_run", "backend", "model", "effort", "enabled")
+    }
+    out = []
+    for index, raw_name in enumerate(names):
+        name = str(raw_name or "").strip()
+        if not name:
+            continue
+
+        def at(key, i=index):
+            values = fields[key]
+            return str(values[i]).strip() if i < len(values) else ""
+
+        sweep = {"name": name, "enabled": bool(at("enabled"))}
+        if at("interval").isdigit():
+            sweep["interval_minutes"] = int(at("interval"))
+        for key, field in (("cover_days", "cover_days"), ("partitions_per_run", "per_run")):
+            if value := at(field):
+                with suppress(ValueError):
+                    sweep[key] = float(value) if key == "cover_days" else int(value)
+        for key in ("backend", "model", "effort"):
+            if value := at(key):
+                sweep[key] = value
+        out.append(sweep)
+    return out
 
 
 def _parse_spec(raw, label: str):
