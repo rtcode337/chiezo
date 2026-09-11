@@ -33,6 +33,7 @@ from app import (
     answer,
     capabilities,
     collect,
+    collect_log,
     db,
     extract,
     media,
@@ -298,6 +299,9 @@ async def collect_material(name: str, sources: dict) -> str:
         reason = f"{type(e).__name__}: {e}"
         log.warning("collect %s failed: %s", name, reason)
         await asyncio.to_thread(collect.record_result, name, status="error", error=reason)
+        await asyncio.to_thread(
+            collect_log.record, name, status=collect_log.STATUS_ERROR, error=reason
+        )
         raise
     await asyncio.to_thread(
         collect.record_result,
@@ -306,13 +310,16 @@ async def collect_material(name: str, sources: dict) -> str:
         added=diff["added"],
         skipped=diff["skipped"],
         removed=diff["removed"],
+        updated=diff["updated"],
         removed_titles=diff["removed_titles"],
         next_cursor=next_cursor,
         covered=covered,
     )
+    await asyncio.to_thread(collect_log.record, name, status=collect_log.STATUS_OK, diff=diff)
     log.info(
-        "collect %s (%s): added=%d kept=%d removed=%d skipped=%d",
-        name, item.mode, diff["added"], diff["kept"], diff["removed"], diff["skipped"],
+        "collect %s (%s): added=%d updated=%d kept=%d removed=%d skipped=%d",
+        name, item.mode,
+        diff["added"], diff["updated"], diff["kept"], diff["removed"], diff["skipped"],
     )
     return body
 
@@ -1483,6 +1490,25 @@ async def collect_preview_now(request: Request, name: str):
             "hint": "動かすかどうかは Chiezo 側で決めます(管理画面の「有効にする」)",
         })
     return await collect_preview(name, request.app.state.sources)
+
+
+# **`/{name}` より先に置く。** 後ろに置くと `changes` が収集の名前として解釈される
+# (`/v1/collect/sources` と同じ罠)。
+@app.get("/v1/collect/changes")
+def collect_changes(
+    name: str | None = Query(None, description="収集の名前。省略すると全部の収集"),
+    limit: int = Query(50, ge=1, le=500),
+):
+    """**直近どこに修正が入ったか**(`app/collect_log.py`)。
+
+    定義側の控え(`last_added` など)は**最新の 1 回で上書きされる**ので、
+    「減り続けているのか、ある日だけ荒れたのか」はここでしか読めない。
+
+    **記録の置き場(`CHIEZO_STATE_DIR`)が無ければ空で返す。** 404 にすると、
+    控えを持たない構成で読む側が毎回エラーを踏む(`/v1/collect/sources` と同じ判断)。
+    """
+    collect.require_enabled()
+    return {"changes": collect_log.recent(name, limit)}
 
 
 @app.get("/v1/collect/{name}")

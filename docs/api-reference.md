@@ -336,9 +336,19 @@ curl -s -X POST "$BASE/v1/collect/tech_news/run" | jq .
 curl -s -X PATCH "$BASE/v1/collect/tech_news" -H 'Content-Type: application/json' \
   -d '{"interval_minutes": 240, "backend": "antigravity"}'
 
+# 直近どこに修正が入ったか(新しい順。name を省くと全部の収集)
+curl -sG "$BASE/v1/collect/changes" --data-urlencode "name=tech_news" | jq .
+
 # 溜めたものを引く(普通のソースとして)
 curl -sG "$BASE/v1/tech_news/search" --data-urlencode "q=<検索語>"
 ```
+
+**変更履歴は 1 回 = 1 行で残る**(`GET /v1/collect/changes`)。一覧に出る `last_added` などは
+**最新の 1 回で上書きされる**ので、6 時間ごとに回る収集なら朝には昨夜の 1 回しか残っていない
+—— 減り続けているのか、ある日だけ荒れたのかは並べないと読めない。1 行には件数のほかに
+**動いた見出しの頭のほう**(足した・直した・消した)が入る。**失敗も 1 行として残る** ——
+「走ったが何も入らなかった」と「そもそも走っていない」は別物で、成功だけ残すと同じ空白に見える。
+記録先は `CHIEZO_STATE_DIR` の `collect_runs.db` で、**未設定なら空で返す**(404 にはしない)。
 
 **溜まったものは新しい順に引ける**(`GET /v1/<name>/recent`。MCP の `recent`)。
 `search` は語が要り、`filter` はタグや属性なので、「この 1 日で何が入ったか」を引く

@@ -60,7 +60,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
 
-from app import db, notes
+from app import collect_log, db, notes
 from app import extract as extraction
 from app.jst import to_jst
 
@@ -163,8 +163,10 @@ MAX_MATERIAL_CHARS = 40_000
 # 差し込む 1 件の本文の長さ。全文を渡すと件数が入らない
 MATERIAL_BODY_CHARS = 200
 
-# 控えに残す「消えた見出し」の数。全部持つと定義のメモが太るので頭だけ
-MAX_REMOVED_SAMPLE = 10
+# 控えに残す見出しの数(足した・直した・消した、それぞれ)。**頭のほうだけ** ——
+# 全部持つと定義のメモも変更履歴も太る(初期構築の 1 回で数千件が並ぶ)。
+# 読むのは「何が動いたか」の手がかりであって、全件の一覧ではない
+MAX_TITLE_SAMPLE = 20
 
 # 最初から置いておく見本。**止めた状態で置く** —— 有効なものを黙って足すと、
 # 設定した覚えのない AI の呼び出しが枠を食う。画面の「有効にする」で動き出す。
@@ -289,6 +291,10 @@ class Collection:
     last_status: str | None = None  # "ok" | "error"
     last_error: str | None = None
     last_added: int = 0
+    # 育てるほうで置き換わった件数。**足した件数と別に持つ** —— 整理の回は
+    # 足すものが無くても大量に直っていることがあり、追加だけ見ていると
+    # 「何もしなかった」ように読める
+    last_updated: int = 0
     last_skipped: int = 0
     # 作り直しで消えた件数と、その見出しの頭のほう。
     # **消えたものが見えないとプロンプトを直せない** —— 件数だけでは
@@ -351,6 +357,7 @@ def _from_json(item: dict) -> Collection:
         last_status=item.get("last_status") or None,
         last_error=item.get("last_error") or None,
         last_added=int(item.get("last_added") or 0),
+        last_updated=int(item.get("last_updated") or 0),
         last_skipped=int(item.get("last_skipped") or 0),
         last_removed=int(item.get("last_removed") or 0),
         last_removed_titles=[str(t) for t in (item.get("last_removed_titles") or [])],
@@ -643,11 +650,16 @@ def remove(name: str) -> None:
 
     定義を消すのと、集まったものを捨てるのは別の意思決定だから —— 後者は
     ソースの削除(管理画面の長期記憶の側)でやる。
+
+    **変更履歴は落とす**(`app/collect_log.py`)。名前がそのままソース名なので、
+    同じ名前で作り直すのは普通に起きる —— 残しておくと、前の収集が足した・消した
+    ものが新しい収集の履歴に混ざって見える。
     """
     items = load()
     if not any(c.name == name for c in items):
         raise HTTPException(404, {"error": f"収集「{name}」がありません"})
     save([c for c in items if c.name != name])
+    collect_log.forget(name)
 
 
 # ---- 溜め先(コアスキーマの DB。notes と同じ形)---------------------------------
@@ -812,6 +824,7 @@ def record_result(
     *,
     status: str,
     added: int = 0,
+    updated: int = 0,
     skipped: int = 0,
     removed: int = 0,
     removed_titles: list[str] | None = None,
@@ -833,6 +846,7 @@ def record_result(
         last_status=status,
         last_error=(error or "")[:500] or None,
         last_added=added,
+        last_updated=updated,
         last_skipped=skipped,
         last_removed=removed,
         last_removed_titles=list(removed_titles or []),
@@ -1019,6 +1033,8 @@ def material(
     next_id = max((d["doc_id"] for d in previous.values()), default=0) + 1
     now = _iso(_now())
     added = updated = skipped = 0
+    added_titles: list[str] = []
+    updated_titles: list[str] = []
     removed_titles: list[str] = []
     for raw in collected:
         title = (raw.get("title") or "").strip()[:notes.TITLE_MAX_CHARS]
@@ -1039,10 +1055,12 @@ def material(
             doc_id = next_id
             next_id += 1
             added += 1
+            added_titles.append(title)
         else:
             doc_id = kept_before["doc_id"]
             if item.is_refine():
                 updated += 1
+                updated_titles.append(title)
             else:
                 # 集めるほうで同じ見出しが来るのは「もう持っている」の意味。
                 # 中身は新しいほうで置き換えるが、積み上がった件数は増えない
@@ -1056,7 +1074,11 @@ def material(
         "kept": len(merged) - added,
         "removed": len(removed_titles),
         "skipped": skipped,
-        "removed_titles": removed_titles[:MAX_REMOVED_SAMPLE],
+        # 動いた見出しの頭のほう。**件数だけでは何が起きたか読めない** ——
+        # 「10 件消えた」と「この 10 件が消えた」では、プロンプトを直せるかが違う
+        "added_titles": added_titles[:MAX_TITLE_SAMPLE],
+        "updated_titles": updated_titles[:MAX_TITLE_SAMPLE],
+        "removed_titles": removed_titles[:MAX_TITLE_SAMPLE],
         # 集めた側が返した件数。**焼ける件数(`total`)とは別に出す** —— 一致しない
         # ときに、捨てたのか前世代と重なったのかを読み分けられるようにするため
         "collected": len(collected),

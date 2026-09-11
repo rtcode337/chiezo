@@ -636,6 +636,23 @@ class TestRest:
     def test_an_unknown_collection_is_404(self, client, sample):
         assert client.get("/v1/collect/nosuch").status_code == 404
 
+    def test_changes_is_not_read_as_a_name(self, client, sample, monkeypatch, tmp_path):
+        """`/changes` も固定のパス(`/sources` と同じ罠を踏まない)。"""
+        from app import collect_log
+
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        collect_log.record("news", status=collect_log.STATUS_OK, diff={"added": 3})
+        collect_log.record("other", status=collect_log.STATUS_OK, diff={"added": 1})
+        body = client.get("/v1/collect/changes").json()
+        assert [c["name"] for c in body["changes"]] == ["other", "news"]
+        one = client.get("/v1/collect/changes", params={"name": "news"}).json()
+        assert [c["added"] for c in one["changes"]] == [3]
+
+    def test_changes_is_empty_without_a_place_to_record(self, client, sample, monkeypatch):
+        """控えを持たない構成で、読む側が毎回エラーを踏まないように。"""
+        monkeypatch.delenv("CHIEZO_STATE_DIR", raising=False)
+        assert client.get("/v1/collect/changes").json() == {"changes": []}
+
     def test_running_a_stopped_collection_is_refused(self, client, sample):
         """呼んだだけでは AI が動かない、が外へ開けておける理由。"""
         res = client.post("/v1/collect/news/run")
@@ -791,6 +808,17 @@ class TestRefineMode:
         assert diff["removed"] == 1
         assert diff["removed_titles"] == ["消す"]
 
+    def test_the_diff_names_what_moved(self, refine, baked):
+        """件数だけでは、何が起きたのか読めない(変更履歴に残す元になる)。"""
+        sources = baked([("残る", "本文")], "spots")
+        _docs, diff = collect.material(
+            collect.get("spots"),
+            collect.previous_docs("spots", sources),
+            [{"title": "残る", "body": "直した本文"}, {"title": "新入り", "body": "本文"}],
+        )
+        assert diff["added_titles"] == ["新入り"]
+        assert diff["updated_titles"] == ["残る"]
+
     def test_a_tombstone_for_something_absent_does_nothing(self, refine):
         """持っていないものへの墓標は、消すものが無いだけ。"""
         _docs, diff = collect.material(
@@ -888,6 +916,15 @@ class TestRefineMode:
         )
         assert updated.last_removed == 2
         assert updated.last_removed_titles == ["A", "B"]
+
+    def test_the_number_of_edits_is_recorded(self, refine):
+        """整理の回は、足すものが無くても大量に直っていることがある。
+
+        追加だけ控えていると「何もしなかった」ように読める(実際に数えては
+        いたのに、書き戻すところで落としていた)。
+        """
+        updated = collect.record_result("spots", status="ok", added=0, updated=7)
+        assert updated.last_updated == 7
 
 
 class TestBackend:
@@ -995,6 +1032,29 @@ class TestTheCollectSectionMarkup:
         assert html.count("<form") == html.count("</form>")
         # 属性が本文へ漏れていない(開始タグを失った form の証拠)
         assert "onsubmit=" not in html.replace('" onsubmit=', "")
+
+    def test_the_recent_changes_are_shown(self, sample, monkeypatch, tmp_path):
+        """「直近どこに修正が入ったか」は表の「前回」列とは別に要る。
+
+        あちらは最新の 1 回で上書きされるので、並べないと読めない。
+        """
+        from app import collect_log
+
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        collect_log.record(
+            "news",
+            status=collect_log.STATUS_OK,
+            diff={"total": 12, "added": 2, "removed": 1, "removed_titles": ["古い見出し"]},
+        )
+        html = self._html(sample)
+        assert "直近の変更" in html
+        assert "古い見出し" in html
+        assert html.count("<table") == html.count("</table>")
+
+    def test_without_a_place_to_record_it_says_so(self, sample, monkeypatch):
+        """空の表を出すと「まだ動いていない」に読める(実際は記録していないだけ)。"""
+        monkeypatch.delenv("CHIEZO_STATE_DIR", raising=False)
+        assert "変更履歴は記録していません" in self._html(sample)
 
     def test_an_empty_collection_can_still_be_deleted(self, sample):
         """まだ何も溜まっていない収集の行にも削除の導線が要る。"""

@@ -25,6 +25,7 @@ from app import (
     capabilities,
     claude_config,
     collect,
+    collect_log,
     jst,
     media,
     memory,
@@ -530,6 +531,76 @@ document.addEventListener('change', function (ev) {
 </script>"""
 
 
+def _collect_changes_html(limit: int = 30) -> str:
+    """直近どこに修正が入ったか(`app/collect_log.py`)。
+
+    **表の「前回」列とは別に要る。** あちらは最新の 1 回で上書きされるので、
+    6 時間ごとに回る収集なら朝には昨夜の 1 回しか残っていない。減り続けているのか、
+    ある日だけ荒れたのかは、並べて初めて読める。
+
+    **控えの置き場が無ければ、何も出さずに理由だけ出す** —— 空の表を出すと
+    「まだ動いていない」と読めてしまう(実際は記録していないだけ)。
+    """
+    if collect_log.db_path() is None:
+        return (
+            '<details><summary>直近の変更</summary>'
+            '<p class="muted">変更履歴は記録していません。'
+            "<code>CHIEZO_STATE_DIR</code> を設定すると残ります。</p></details>"
+        )
+    changes = collect_log.recent(limit=limit)
+    if not changes:
+        return (
+            '<details><summary>直近の変更</summary>'
+            '<p class="muted">まだ 1 回も走っていません。</p></details>'
+        )
+    rows = []
+    for row in changes:
+        at = jst.parse(row["at"] or "")
+        when = esc(jst.format(at)) if at else esc(row["at"])
+        if row["status"] != collect_log.STATUS_OK:
+            rows.append(
+                f"<tr><td>{when}</td><td>{esc(row['name'])}</td>"
+                f'<td colspan="2"><span class="stale">失敗: {esc(row["error"])}</span></td></tr>'
+            )
+            continue
+        # 動かなかった回も 1 行として出す。**空白にしない** —— 走ったが何も
+        # 変わらなかったのと、走っていないのは別物
+        marks = []
+        if row["added"]:
+            marks.append(f"+{row['added']}")
+        if row["updated"]:
+            marks.append(f"直し {row['updated']}")
+        if row["removed"]:
+            marks.append(f'<span class="stale">-{row["removed"]}</span>')
+        summary = " / ".join(marks) or '<span class="muted">変化なし</span>'
+        moved = []
+        for label, key in (("足した", "added_titles"), ("直した", "updated_titles"),
+                           ("消した", "removed_titles")):
+            if row[key]:
+                moved.append(f"{label}: " + esc("、".join(row[key])))
+        detail = (
+            f'<details><summary class="muted">動いたもの</summary>'
+            f'<div class="muted">{"<br>".join(moved)}</div></details>'
+            if moved else ""
+        )
+        rows.append(
+            f"<tr><td>{when}</td><td>{esc(row['name'])}</td>"
+            f'<td>{summary}</td><td>{row["total"]:,} 件{detail}</td></tr>'
+        )
+    return f"""
+<details open><summary>直近の変更</summary>
+<table>
+<thead><tr><th>いつ</th><th>収集</th><th>変化</th><th>焼いた後</th></tr></thead>
+<tbody>
+{"".join(rows)}
+</tbody>
+</table>
+<p class="muted">新しい順に最大 {limit} 件。
+記録は <code>state/collect_runs.db</code> に残り、古いものから捨てられる。</p>
+</details>
+"""
+
+
 def _collect_html(sources: dict[str, Source], disabled: str) -> str:
     """収集(AI に集めさせて溜めていく)の節。
 
@@ -567,12 +638,18 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
                 f'<div class="muted">{esc("、".join(item.last_removed_titles))}</div></details>'
                 if item.last_removed_titles else ""
             )
+            # 整理の回は足すものが無くても大量に直っていることがあり、
+            # 追加だけ出すと「何もしなかった」ように読める
+            changed = (
+                f'<br><span class="muted">直し {item.last_updated} 件</span>'
+                if item.last_updated else ""
+            )
             result = (
                 f'<span class="muted">{jst.format(last) if last else ""}</span>'
                 f"<br>+{item.last_added} 件"
                 + (f'<span class="muted">(重複 {item.last_skipped})</span>'
                    if item.last_skipped else "")
-                + removed + dropped
+                + changed + removed + dropped
             )
         elif item.last_status == "error":
             result = f'<span class="stale">失敗: {esc(item.last_error or "")}</span>'
@@ -703,6 +780,7 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
 """ if rows else '<p class="muted">まだ収集がありません。下のフォームから作れます。</p>'
     return f"""
 {table}
+{_collect_changes_html()}
 <details><summary>収集を追加する</summary>
 <form method="post" action="/admin/collect/create" class="collect-form">
 <p><label>name(ソース名になる。英小文字・数字・_)<br>
