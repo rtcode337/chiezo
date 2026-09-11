@@ -2434,24 +2434,28 @@ def _edit_source(edit: str) -> tuple[str, str]:
     return ("", edit) if edit.startswith(("http://", "https://")) else (edit, "")
 
 
-async def _source_image(edit: str, reference: str) -> tuple[bytes, str]:
-    """元にする絵と、その使い道を返す。
+async def _source_image(edit: str, reference: str) -> tuple[bytes, str, str]:
+    """元にする絵と、その使い道と、**指し先の文字列**を返す。
 
     **両方は受け取らない。** 相手への言い方が逆(片方は「他を変えるな」、もう片方は
     「別のものを描け」)なので、両方渡されたらどちらの意図か決めようがない。
+
+    3 つ目を返すのは**画面に出すため**。中身(bytes)は相手へ渡したら消えるので、
+    どこのものを元にしたかは指し先を控えておくしかない。
     """
     if edit and reference:
         raise HTTPException(400, {"error": "edit と reference は同時に渡せません"})
     if not (edit or reference):
-        return b"", media_backends.SOURCE_EDIT
+        return b"", media_backends.SOURCE_EDIT, ""
     mode = media_backends.SOURCE_EDIT if edit else media_backends.SOURCE_REFERENCE
-    return await media.load_image(*_edit_source(edit or reference)), mode
+    ref = edit or reference
+    return await media.load_image(*_edit_source(ref)), mode, ref
 
 
 @app.post("/v1/media/image")
 async def media_image(body: ImageRequest) -> dict:
     """描き始めて job を返す(待たない)。進み具合は下の口で引く。"""
-    source, mode = await _source_image(body.edit, body.reference)
+    source, mode, ref = await _source_image(body.edit, body.reference)
     return media.start_image_job(
         prompt=body.prompt,
         backend=(body.backend or "").strip(),
@@ -2464,6 +2468,7 @@ async def media_image(body: ImageRequest) -> dict:
         group=body.group,
         source=source,
         source_mode=mode,
+        source_ref=ref,
     )
 
 
@@ -2485,6 +2490,7 @@ async def media_audio(body: AudioRequestBody) -> dict:
         steps=body.steps,
         group=body.group,
         source=source,
+        source_ref=body.reference or "",
     )
 
 

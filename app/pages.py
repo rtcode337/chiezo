@@ -189,7 +189,12 @@ PAGE_STYLE = """
                      font-size: 0.95rem; line-height: 1.9; margin: 0; }
   .media-text { margin-top: 0.4rem; }
   .media-text > summary { font-weight: normal; padding: 0.1rem 0; color: #555; }
-  .media-body { max-height: 22rem; overflow-y: auto; white-space: pre-wrap;
+  /* 元にしたもの。**出来上がりより小さく出す** —— 主役は生成物のほうで、
+   これは「何を元にしたか」が分かればよい */
+.media-source img, .media-source video { max-width: 12rem; }
+.media-source audio { width: 100%; }
+
+.media-body { max-height: 22rem; overflow-y: auto; white-space: pre-wrap;
                 word-break: break-word; background: #f7f6f3;
                 border: 1px solid #e5e2dc; padding: 0.6rem; margin: 0.4rem 0;
                 font-size: 0.8rem; line-height: 1.6; }

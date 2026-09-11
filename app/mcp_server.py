@@ -338,7 +338,7 @@ def _register_image_tools(mcp: MCPServer) -> None:
     ) -> dict:
         from app import main as api
 
-        source, mode = await api._source_image(edit, reference)
+        source, mode, ref = await api._source_image(edit, reference)
         return _call(
             media.start_image_job,
             prompt=prompt,
@@ -351,6 +351,7 @@ def _register_image_tools(mcp: MCPServer) -> None:
             group=group,
             source=source,
             source_mode=mode,
+            source_ref=ref,
         )
 
     @mcp.tool(description=(
@@ -455,6 +456,7 @@ def _register_audio_tools(mcp: MCPServer) -> None:
             loop=loop,
             group=group,
             source=source,
+            source_ref=reference,
         )
 
     @mcp.tool(description=(

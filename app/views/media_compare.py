@@ -185,6 +185,39 @@ def _preview(job: dict) -> str:
     return "".join(out) or '<p class="muted">中身が無い</p>'
 
 
+# 元にしたものの使い道。**言葉にして出す** —— `edit` / `reference` のままだと、
+# 「直した」のか「参考にした」のかが読み手に伝わらない(結果の読み方が変わる)
+SOURCE_LABELS = {"edit": "これを直した", "reference": "これを参考にした"}
+
+
+def _source_block(job: dict) -> str:
+    """**元にしたものを、依頼文と並べて出す。**
+
+    依頼文だけでは、出来上がりを読めないことがある —— 参考にしたものの欠点を
+    そのまま引き継いだ生成物を前に、「指示が悪いのか、参考が悪いのか」を
+    切り分けられなかった。元にしたものが見えれば、そこで分かる。
+
+    **種類は job の kind で決める。** 絵の参考は絵、曲の参考は音、と揃うので、
+    出来上がりと同じ見せ方でよい。
+    """
+    url = (job.get("source_url") or "").strip()
+    if not url:
+        return ""
+    label = SOURCE_LABELS.get(job.get("source_mode") or "", "これを元にした")
+    kind = job.get("kind") or ""
+    if kind == media_providers.KIND_VIDEO:
+        view = f'<video class="media-img" src="{esc(url)}" controls preload="none"></video>'
+    elif kind in (media_providers.KIND_AUDIO, media_providers.KIND_SPEECH):
+        view = f'<audio src="{esc(url)}" controls preload="none"></audio>'
+    else:
+        view = f'<img class="media-img" src="{esc(url)}" alt="">'
+    return (
+        f'<details class="media-text"><summary>{esc(label)}</summary>'
+        f'<div class="media-source">{view}'
+        f'<p class="muted"><a href="{esc(url)}">元のファイルを開く</a></p></div></details>'
+    )
+
+
 @router.get("/admin/media", response_class=HTMLResponse)
 def admin_media(
     _request: Request,
@@ -291,6 +324,7 @@ def admin_media_group(_request: Request, key: str):
             f'<p class="muted">{_who(job)}</p>'
             f'<details class="media-text"><summary>依頼文</summary>'
             f'<pre class="media-body">{esc(job.get("prompt") or "")}</pre></details>'
+            f"{_source_block(job)}"
             f"{mark}</div>"
         )
 

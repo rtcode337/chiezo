@@ -324,15 +324,32 @@ class TestJobs:
         assert done["state"] == "failed"
         assert "中断" in done["error"]
 
-    def test_猶予は生成側が待つ上限より長い(self, state):
+    def test_印を打っている間は生成が長くても畳まれない(self, state):
         """**畳む側が、描かせる側より先に見切ってはいけない。**
 
-        CLI ブリッジ越しの絵は自前で 10 分粘る作りなのに、こちらの猶予だけ
-        短い定数(300 秒 + 60)を見ていたため、6 分粘っていた編集を毎回
-        「応答が途絶えました」と書いて捨てていた —— 相手の枠だけ使って成果は消える。
+        CLI ブリッジ越しの絵は自前で 10 分粘る。かつては猶予を「生成の上限 + 60 秒」に
+        していたが、それだと**止まったことに気づくのが 11 分半後**になっていた。
+        いまは走っている側が印を打つ(`_heartbeat`)ので、猶予は短くてよい ——
+        ただし**印が続いている限り、どれだけ長い生成でも畳まれない**こと。
         """
-        assert media.STALE_AFTER > media_backends.BRIDGE_IMAGE_TIMEOUT
-        assert media.STALE_AFTER_VIDEO > media_backends.VIDEO_TIMEOUT
+        assert media.STALE_AFTER > media.HEARTBEAT_SEC * 2, "打ち損ねの余裕が要る"
+        job = media.create_job("猫", backend="comfyui")
+        media._update(job["id"], state="running")
+        # 相手が粘っている最中（ブリッジの上限より長く経っても、印は続いている）
+        long_run = media_backends.BRIDGE_IMAGE_TIMEOUT + 120
+        old = (datetime.now(UTC) - timedelta(seconds=long_run)).isoformat()
+        with media._connect() as conn:
+            conn.execute("UPDATE jobs SET created_at = ? WHERE id = ?", (old, job["id"]))
+        media._touch(job["id"])          # 直前に打たれた印
+        assert media.get_job(job["id"])["state"] == "running"
+
+    def test_印は終わった依頼には打たない(self, state):
+        """終わりの時刻が後ろへずれると、いつ出来上がったのかが読めなくなる。"""
+        job = media.create_job("猫", backend="comfyui")
+        media._update(job["id"], state="done")
+        done_at = media.get_job(job["id"])["updated_at"]
+        media._touch(job["id"])
+        assert media.get_job(job["id"])["updated_at"] == done_at
 
     def test_stale_running_job_is_reaped(self, state):
         """ワーカーごと落ちると `_run` の後始末すら通らない。
@@ -1350,17 +1367,33 @@ class TestVideoRequests:
         assert done["state"] == "done"
         assert done["files"][0]["path"].endswith(".mp4")
 
-    def test_a_running_video_is_not_reaped_on_the_image_schedule(self, state):
-        """動画だけ猶予が長い。 絵と同じ基準で畳むと、まだ相手の中で作っている
-        最中の job を「中断された」と書いてしまい、出来た動画を取りに行けなくなる。"""
+    def test_面倒を見ている動画は畳まない(self, state):
+        """動画は待ち時間の桁が違う(数分〜十数分)。
+
+        かつては kind ごとに猶予を持っていたが、**印を打つようにしたので要らなくなった**
+        —— 見ているのは「生成に何秒かかるか」ではなく「面倒を見ている者がいるか」。
+        印が続いている限り、絵より桁の大きい動画でも畳まれない。
+        """
         job = media.create_job("猫", backend="comfyui", size="848x480",
                                kind=media_providers.KIND_VIDEO, seconds=2.0)
-        stale = (datetime.now(UTC) - timedelta(seconds=media.STALE_AFTER + 60)).isoformat()
         media._update(job["id"], state="running")
+        # 動画の上限ぶん経っていても、印が続いていれば走っているものとして扱う
+        long_run = media_backends.VIDEO_TIMEOUT + 300
+        began = (datetime.now(UTC) - timedelta(seconds=long_run)).isoformat()
+        with media._connect() as conn:
+            conn.execute("UPDATE jobs SET created_at = ? WHERE id = ?", (began, job["id"]))
+        media._touch(job["id"])
+        assert media.get_job(job["id"])["state"] == "running"
+
+    def test_印が途絶えた動画は畳む(self, state):
+        """こちらは逆。**再起動などで面倒を見る者が消えたら、短い猶予で気づく。**"""
+        job = media.create_job("猫", backend="comfyui", size="848x480",
+                               kind=media_providers.KIND_VIDEO, seconds=2.0)
+        media._update(job["id"], state="running")
+        stale = (datetime.now(UTC) - timedelta(seconds=media.STALE_AFTER + 10)).isoformat()
         with media._connect() as conn:
             conn.execute("UPDATE jobs SET updated_at = ? WHERE id = ?", (stale, job["id"]))
-
-        assert media.get_job(job["id"])["state"] == "running"
+        assert media.get_job(job["id"])["state"] == "failed"
 
 
 # ---- 声(読み上げと文字起こし)------------------------------------------------
@@ -2084,6 +2117,57 @@ class TestAudioReference:
 
         assert e.value.status_code == 400
         assert "elevenlabs" in e.value.detail["backends"]
+
+
+class TestShowingWhatItWasMadeFrom:
+    """**元にしたものを画面に出す。**
+
+    依頼文だけでは出来上がりを読めないことがある —— 参考にしたものの欠点を
+    そのまま引き継いだ生成物を前に、「指示が悪いのか、参考が悪いのか」を
+    切り分けられなかった。指し先を控えておけば、画面で並べて見られる。
+    """
+
+    def test_display_url_accepts_only_what_the_page_can_read(self):
+        # 置き場のパスも URL も、画面から開ける形へ揃える
+        assert media._source_display_url("/data/state/media/20260911/a.png") == "/media/20260911/a.png"
+        assert media._source_display_url("/media/20260911/a.png") == "/media/20260911/a.png"
+        assert media._source_display_url("https://example.com/a.png") == "https://example.com/a.png"
+        # 読めない形は控えない（壊れた画像の枠を出さないため）
+        assert media._source_display_url("") is None
+        assert media._source_display_url("/tmp/local.png") is None
+
+    def test_image_job_remembers_its_source(self, state):
+        job = media.create_job(
+            "直して", backend="codex", editing=True,
+            source_ref="/media/20260911/a.png", source_mode="edit",
+        )
+        assert job["source_url"] == "/media/20260911/a.png"
+        assert job["source_mode"] == "edit"
+        # 読み直しても残る（列として持っているか）
+        assert media.get_job(job["id"])["source_url"] == "/media/20260911/a.png"
+
+    def test_nothing_is_remembered_without_a_source(self, state):
+        job = media.create_job("一から描いて", backend="codex")
+        assert job["source_url"] is None
+        assert job["source_mode"] is None
+
+    def test_the_page_shows_the_source_for_every_kind(self):
+        from app.views import media_compare
+
+        image = media_compare._source_block(
+            {"id": "x", "kind": "image", "source_url": "/media/d/a.png", "source_mode": "edit"})
+        assert "これを直した" in image and "<img" in image
+
+        audio = media_compare._source_block(
+            {"id": "y", "kind": "audio", "source_url": "/media/d/a.mp3", "source_mode": "reference"})
+        assert "これを参考にした" in audio and "<audio" in audio
+
+        video = media_compare._source_block(
+            {"id": "z", "kind": "video", "source_url": "/media/d/a.mp4", "source_mode": "reference"})
+        assert "<video" in video
+
+        # 元にしていない依頼には何も出さない
+        assert media_compare._source_block({"id": "w", "kind": "image"}) == ""
 
 
 class TestGroupingEveryKind:

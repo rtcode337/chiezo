@@ -121,10 +121,32 @@ CREATE TABLE IF NOT EXISTS jobs (
 # 既にある DB でもそのまま動く（作り直しが要らない）。
 # group_name … 何案かを 1 組として並べるための名前。頼む側が付ける
 # picked_at / picked_note … 画面で「採用」を押した印と、そのときの一言
+# source_url / source_mode … 元にした絵の置き場と、その使い道(edit / reference)。
+#   **画面に出すために控える。** 依頼文だけ見えても、何を元にしたかが分からないと
+#   出来上がりを読めない —— 参考にした絵の欠点をそのまま引き継いだ生成物を前に、
+#   「指示が悪いのか、参考が悪いのか」を切り分けられなかった
 _ADDED_COLUMNS = {
     "sound": "TEXT", "seconds": "REAL", "voice": "TEXT",
     "group_name": "TEXT", "picked_at": "TEXT", "picked_note": "TEXT",
+    "source_url": "TEXT", "source_mode": "TEXT",
 }
+
+
+def _source_display_url(ref: str) -> str | None:
+    """元にした絵を、**画面から開ける URL** に直す。
+
+    受け取る形は 3 通りある(`image_status` が返すパス / 置き場の URL / 外の URL)。
+    置き場の中のものは `/media/...` に揃える —— 画面はそこからしか読めない。
+    外の URL はそのまま。**読めない形なら控えない**(壊れた画像の枠を出さない)。
+    """
+    ref = (ref or "").strip()
+    if not ref:
+        return None
+    if ref.startswith(("http://", "https://")):
+        return ref
+    if "/media/" in ref:
+        return "/media/" + ref.split("/media/", 1)[-1].lstrip("/")
+    return None
 
 
 @dataclass
@@ -204,18 +226,20 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     return job
 
 
-# 走っているはずの job を「もう動いていない」と見なすまでの猶予。1 つぶんの上限 + 余裕
-# (更新は 1 つ出来るごとに入るので、これを超えて無音なら誰も面倒を見ていない)。
-#
-# **上限は生成側と同じところから引く**(`media_backends.timeout_for`)。ここだけ別の
-# 定数を見ていると、長く粘る相手を描いている最中に畳んでしまう —— CLI ブリッジ越しの
-# 絵の編集は 630 秒まで待つ作りなのに、こちらが 360 秒で「応答が途絶えました」と
-# 書いて捨てていた(6 分粘った編集が毎回それで消えた)。
-STALE_AFTER = media_backends.timeout_for(media_providers.KIND_IMAGE) + 60
+# 生きている印を打つ間隔。**走っている間ずっと打つ**(順番待ちも生成中も `_run` の中)。
+HEARTBEAT_SEC = 20
 
-# 動画は待ち時間の桁が違う。 絵と同じ猶予で畳むと、まだ相手の中で作っている最中の
-# job を「中断された」と書いてしまい、出来上がった動画を取りに行けなくなる。
-STALE_AFTER_VIDEO = media_backends.timeout_for(media_providers.KIND_VIDEO) + 60
+# 印が途絶えてから「もう誰も面倒を見ていない」と見なすまでの猶予。
+#
+# **印を打つようにしたので、生成にかかる時間とは無関係になった。** かつては
+# 「1 つぶんの上限 + 60 秒」で、更新が入るのは 1 枚出来たときだけだったため、
+# **止まったことに気づくまで 11 分半かかった**(CLI ブリッジ越しの絵)。
+# しかも動画は桁が違うので別の数字が要り、猶予を縮めると「まだ作っている最中のものを
+# 失敗にする」、伸ばすと「止まったものを何十分も running のまま残す」の板挟みだった。
+#
+# 印があれば、待っている相手が遅いことと、面倒を見る側が消えたことを**区別できる**。
+# 打ち損ね(イベントループが一時的に詰まる)を見越して、間隔の 4 回ぶん強を取る。
+STALE_AFTER = HEARTBEAT_SEC * 4 + 10
 
 
 def _reap_stale() -> None:
@@ -225,23 +249,44 @@ def _reap_stale() -> None:
     そこも通らない**(`--workers 2` で動くので、片方が再起動すれば走っていた生成は消える)。
     running のまま残ると image_status が永遠に running を返し、呼び出し側は待ち続ける。
 
-    猶予は kind ごとに変える。 動画だけ桁が違うので、1 つの数字で畳むと
-    「まだ作っている最中のものを失敗にする」か「止まったものを何十分も running のまま
-    残す」かのどちらかになる。
+    **走っている側が印を打つ**(`_heartbeat`)ので、猶予は kind で変えなくてよい ——
+    見ているのは「生成に何秒かかるか」ではなく「面倒を見ている者がいるか」。
     """
     now = datetime.now(UTC)
     reason = "生成が中断されました(応答が途絶えました)"
     with _connect() as conn:
-        for kind_sql, params, grace in (
-            ("kind = ?", [media_providers.KIND_VIDEO], STALE_AFTER_VIDEO),
-            ("kind != ?", [media_providers.KIND_VIDEO], STALE_AFTER),
-        ):
-            limit = (now - timedelta(seconds=grace)).isoformat()
-            conn.execute(
-                "UPDATE jobs SET state = 'failed', error = ?, updated_at = ?"
-                f" WHERE state IN ('queued', 'running') AND {kind_sql} AND updated_at < ?",
-                [reason, _now(), *params, limit],
-            )
+        limit = (now - timedelta(seconds=STALE_AFTER)).isoformat()
+        conn.execute(
+            "UPDATE jobs SET state = 'failed', error = ?, updated_at = ?"
+            " WHERE state IN ('queued', 'running') AND updated_at < ?",
+            [reason, _now(), limit],
+        )
+
+
+def _touch(job_id: str) -> None:
+    """**まだ誰かが面倒を見ている**、という印だけを更新する。
+
+    状態も中身も触らない。 終わった job には打たない(終わりの時刻が後ろへずれると、
+    いつ出来上がったのかが読めなくなる)。
+    """
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE jobs SET updated_at = ? WHERE id = ? AND state IN ('queued', 'running')",
+            (_now(), job_id),
+        )
+
+
+async def _heartbeat(job_id: str) -> None:
+    """走っている間、一定の間隔で印を打ち続ける。
+
+    **これが無いと、止まったことに気づくのが生成の制限時間ぶん遅れる。**
+    chiezo が再起動されると走っていた生成はそこで消えるが、job は running のまま残り、
+    引きに来た側は「まだ作っている」と読んで待ち続ける(実際に、落ちた 2 本が
+    running のまま残り、気づいたのは 14 分後だった)。
+    """
+    while True:
+        await asyncio.sleep(HEARTBEAT_SEC)
+        _touch(job_id)
 
 
 def get_job(job_id: str) -> dict | None:
@@ -286,10 +331,10 @@ def _insert(job: dict) -> None:
         conn.execute(
             "INSERT INTO jobs (id, kind, backend, model, prompt, size, seed, count,"
             " state, error, files, created_at, updated_at, sound, seconds, voice,"
-            " group_name, picked_at, picked_note)"
+            " group_name, picked_at, picked_note, source_url, source_mode)"
             " VALUES (:id, :kind, :backend, :model, :prompt, :size, :seed, :count,"
             " :state, :error, :files, :created_at, :updated_at, :sound, :seconds, :voice,"
-            " :group_name, :picked_at, :picked_note)",
+            " :group_name, :picked_at, :picked_note, :source_url, :source_mode)",
             {**job, "files": json.dumps(job["files"], ensure_ascii=False)},
         )
 
@@ -512,6 +557,8 @@ def save_upload(
         "sound": None, "seconds": seconds, "voice": None,
         "group_name": (group or "").strip() or None,
         "picked_at": None, "picked_note": None,
+        # 持ち込んだものに「元にした絵」は無い
+        "source_url": None, "source_mode": None,
     }
     _insert(job)
     log.info("uploaded %s (%s, %d bytes) as job %s", filename, chosen, size, job_id)
@@ -668,6 +715,8 @@ def create_text_job(prompt: str, backend: str = "", model: str = "",
         "group_name": (group or "").strip() or None,
         "picked_at": None,
         "picked_note": None,
+        # 文章に元の絵は無い
+        "source_url": None, "source_mode": None,
     }
     _insert(job)
     cleanup()
@@ -759,6 +808,9 @@ async def _run(job_id: str, backend: str, req, count: int, kind: str) -> None:
     (呼び分けは `media_backends.generate_for`)。
     """
     files: list[dict] = []
+    # **順番待ちの間も印を打つ。** 待ち枠は `_slot` の中＝ここより内側なので、
+    # 先に始めておけば「混んでいて待っている」と「面倒を見る側が消えた」を区別できる
+    beat = asyncio.create_task(_heartbeat(job_id))
     try:
         for index in range(count):
             # seed は 1 つごとにずらす(同じ頼みで同じものが並んでも選べない)
@@ -808,6 +860,8 @@ async def _run(job_id: str, backend: str, req, count: int, kind: str) -> None:
         # 出来たぶんは残す。 3 つ頼んで 2 つ出来たなら、その 2 つは使える
         _update(job_id, state="failed" if not files else "partial", error=message[:1000], files=files)
         _note_failure(job_id, backend, kind, getattr(e, "status_code", 0), message)
+    finally:
+        beat.cancel()
 
 
 def _note_failure(job_id: str, backend: str, kind: str, status: int, reason: str) -> None:
@@ -845,6 +899,8 @@ def create_job(
     voice: str = "",
     group: str = "",
     editing: bool = False,
+    source_ref: str = "",
+    source_mode: str = "",
 ) -> dict:
     """頼みを検査して記録するだけ(まだ作らない)。
 
@@ -931,6 +987,10 @@ def create_job(
         "group_name": (group or "").strip() or None,
         "picked_at": None,
         "picked_note": None,
+        # **元にした絵の置き場を控える。** 中身(bytes)は持たない ——
+        # 置き場にあるものを指しているだけなので、指し先を覚えておけば画面から出せる
+        "source_url": _source_display_url(source_ref) if editing else None,
+        "source_mode": (source_mode or None) if editing else None,
     }
     _insert(job)
     cleanup()
@@ -1091,6 +1151,7 @@ def start_image_job(
     group: str = "",
     source: bytes = b"",
     source_mode: str = "edit",
+    source_ref: str = "",
 ) -> dict:
     """頼みを受け付けて job を返す(生成は後ろで走る)。
 
@@ -1098,7 +1159,8 @@ def start_image_job(
     生成は数秒〜数分かかり、待たせると呼び出し側が先に切れる。
     """
     job = create_job(prompt, backend=backend, model=model, size=size, seed=seed, count=count,
-                     group=group, editing=bool(source))
+                     group=group, editing=bool(source),
+                     source_ref=source_ref, source_mode=source_mode)
     request = media_backends.ImageRequest(
         prompt=job["prompt"], negative=negative, size=size, seed=seed, model=model,
         steps=steps, source=source, source_mode=source_mode,
@@ -1120,6 +1182,7 @@ def start_audio_job(
     steps: int = 50,
     group: str = "",
     source: bytes = b"",
+    source_ref: str = "",
 ) -> dict:
     """音の頼みを受け付けて job を返す(生成は後ろで走る)。絵とまったく同じ扱い。"""
     job = create_job(
@@ -1133,6 +1196,9 @@ def start_audio_job(
         seconds=seconds,
         group=group,
         editing=bool(source),
+        source_ref=source_ref,
+        # 音の参考は「参考にする」しかない(直すという言い方が無い)
+        source_mode=media_backends.SOURCE_REFERENCE,
     )
     request = media_backends.AudioRequest(
         prompt=job["prompt"],
