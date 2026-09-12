@@ -2398,6 +2398,9 @@ class ImageRequest(BaseModel):
     count: int = 1
     negative: str = ""
     steps: int = 25
+    # **誰が頼んだか**(画面に出る手がかり)。必須にはしない —— 名乗りが無いだけで
+    # 断るのは、鍵だけ借りに来るこの口の値打ちに合わない。話す口と同じ扱い
+    requested_by: str = ""
 
 
 class AudioRequestBody(BaseModel):
@@ -2422,6 +2425,9 @@ class AudioRequestBody(BaseModel):
     # 繋いで鳴らせる素材にするか(効くのは ElevenLabs の効果音だけ)
     loop: bool = False
     steps: int = 50
+    # **誰が頼んだか**(画面に出る手がかり)。必須にはしない —— 名乗りが無いだけで
+    # 断るのは、鍵だけ借りに来るこの口の値打ちに合わない。話す口と同じ扱い
+    requested_by: str = ""
 
 
 class VideoRequestBody(BaseModel):
@@ -2442,6 +2448,9 @@ class VideoRequestBody(BaseModel):
     # 取りこぼしていた** —— 何案か作って選ぶのは種類を問わず起きることなので、
     # job を作る口はどれも受け取る
     group: str | None = None
+    # **誰が頼んだか**(画面に出る手がかり)。必須にはしない —— 名乗りが無いだけで
+    # 断るのは、鍵だけ借りに来るこの口の値打ちに合わない。話す口と同じ扱い
+    requested_by: str = ""
 
 
 class SpeechRequestBody(BaseModel):
@@ -2460,6 +2469,9 @@ class SpeechRequestBody(BaseModel):
     count: int = 1
     # 見比べで束ねる名前(上の動画と同じ理由)
     group: str | None = None
+    # **誰が頼んだか**(画面に出る手がかり)。必須にはしない —— 名乗りが無いだけで
+    # 断るのは、鍵だけ借りに来るこの口の値打ちに合わない。話す口と同じ扱い
+    requested_by: str = ""
 
 
 @app.get("/v1/capabilities")
@@ -2493,6 +2505,9 @@ class MediaTextRequest(BaseModel):
     effort: str | None = None
     # 何案かを 1 組として見比べるための名前。絵や音と同じ扱い
     group: str | None = None
+    # **誰が頼んだか**(画面に出る手がかり)。必須にはしない —— 名乗りが無いだけで
+    # 断るのは、鍵だけ借りに来るこの口の値打ちに合わない。話す口と同じ扱い
+    requested_by: str = ""
 
 
 @app.get("/v1/media/backends")
@@ -2536,7 +2551,7 @@ async def _source_image(edit: str, reference: str) -> tuple[bytes, str, str]:
 
 
 @app.post("/v1/media/image")
-async def media_image(body: ImageRequest) -> dict:
+async def media_image(body: ImageRequest, request: Request) -> dict:
     """描き始めて job を返す(待たない)。進み具合は下の口で引く。"""
     source, mode, ref = await _source_image(body.edit, body.reference)
     return media.start_image_job(
@@ -2552,11 +2567,12 @@ async def media_image(body: ImageRequest) -> dict:
         source=source,
         source_mode=mode,
         source_ref=ref,
+        requested_by=media.caller_name(body.requested_by, request.headers.get("user-agent", "")),
     )
 
 
 @app.post("/v1/media/audio")
-async def media_audio(body: AudioRequestBody) -> dict:
+async def media_audio(body: AudioRequestBody, request: Request) -> dict:
     """作り始めて job を返す(待たない)。進み具合は絵と同じ口で引く。"""
     source = await media.load_image(*_edit_source(body.reference)) if body.reference else b""
     return media.start_audio_job(
@@ -2574,11 +2590,12 @@ async def media_audio(body: AudioRequestBody) -> dict:
         group=body.group,
         source=source,
         source_ref=body.reference or "",
+        requested_by=media.caller_name(body.requested_by, request.headers.get("user-agent", "")),
     )
 
 
 @app.post("/v1/media/video")
-async def media_video(body: VideoRequestBody) -> dict:
+async def media_video(body: VideoRequestBody, request: Request) -> dict:
     """作り始めて job を返す(待たない)。進み具合は絵と同じ口で引く。
 
     絵より待つ(数分〜十数分)ので、呼ぶ側は間を空けて引きに来ること。
@@ -2595,11 +2612,12 @@ async def media_video(body: VideoRequestBody) -> dict:
         audio=body.audio,
         steps=body.steps,
         group=(body.group or "").strip(),
+        requested_by=media.caller_name(body.requested_by, request.headers.get("user-agent", "")),
     )
 
 
 @app.post("/v1/media/speech")
-async def media_speech(body: SpeechRequestBody) -> dict:
+async def media_speech(body: SpeechRequestBody, request: Request) -> dict:
     """読み上げ始めて job を返す(待たない)。進み具合は絵と同じ口で引く。"""
     return media.start_speech_job(
         text=body.text,
@@ -2612,11 +2630,12 @@ async def media_speech(body: SpeechRequestBody) -> dict:
         seed=body.seed,
         count=body.count,
         group=(body.group or "").strip(),
+        requested_by=media.caller_name(body.requested_by, request.headers.get("user-agent", "")),
     )
 
 
 @app.post("/v1/media/text")
-async def media_text(body: MediaTextRequest) -> dict:
+async def media_text(body: MediaTextRequest, request: Request) -> dict:
     """文章を書かせる。**すぐには返らない**(job_id を返す)。
 
     `/v1/ai/complete` との違いは 1 つだけ —— **結果が job として残る**ので、
@@ -2632,6 +2651,7 @@ async def media_text(body: MediaTextRequest) -> dict:
         model=(body.model or "").strip(),
         effort=(body.effort or "").strip(),
         group=(body.group or "").strip(),
+        requested_by=media.caller_name(body.requested_by, request.headers.get("user-agent", "")),
     )
 
 
@@ -2669,11 +2689,13 @@ async def media_transcribe(
 
 @app.post("/v1/media/upload")
 async def media_upload(
+    request: Request,
     file: UploadFile = File(..., description="見比べに並べたいもの（絵・音・動画・文章）"),
     prompt: str = Form("", description="何を作ったものか（見出しになる。空ならファイル名）"),
     group: str = Form("", description="見比べで束ねる名前。同じ名前が 1 組になる"),
     kind: str = Form("", description="image / audio / video / text。空なら中身から見分ける"),
     model: str = Form("", description="手元で使った道具やモデルの名前（控え）"),
+    requested_by: str = Form("", description="誰が持ち込んだかの名乗り（画面に出る）"),
 ) -> dict:
     """**手元で作ったものを持ち込む。** 生成させずに見比べへ 1 件足す口。
 
@@ -2693,6 +2715,7 @@ async def media_upload(
         group=group,
         kind=kind,
         model=model,
+        requested_by=media.caller_name(requested_by, request.headers.get("user-agent", "")),
     )
 
 

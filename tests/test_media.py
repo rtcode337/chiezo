@@ -16,7 +16,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
-from app import media, media_backends, media_providers, settings_store
+from app import ai_inflight, media, media_backends, media_providers, settings_store
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
 MP3 = b"ID3" + b"0" * 64
@@ -2426,3 +2426,51 @@ class TestQueueAndCancel:
         state.setattr(media, "QUEUE_POLL", 0.01)
         asyncio.run(scenario())
         assert entered
+
+
+class TestRememberingWhoAsked:
+    """**誰が頼んだかを残す。**
+
+    同じ表に外のアプリ・無人で回る層・手元の道具のぶんが並ぶので、相手とモデルだけでは
+    「これは自分が頼んだものか」も「どれが枠を食っているのか」も読めない ——
+    見に覚えのない依頼が 1 件出てきたとき、出どころを当てる手がかりが何も残らなかった。
+    """
+
+    def test_the_name_is_kept_with_the_job(self, state):
+        job = media.create_job("絵", backend="comfyui", requested_by="arrow-puzzle")
+        assert job["requested_by"] == "arrow-puzzle"
+        # 読み直しても残る（列として持っているか）
+        assert media.get_job(job["id"])["requested_by"] == "arrow-puzzle"
+
+    def test_a_nameless_request_is_still_accepted(self, state):
+        """**名乗りは必須にしない。** 鍵だけ借りに来る使い方を塞ぐことになる。"""
+        job = media.create_job("絵", backend="comfyui")
+        assert job["requested_by"] is None
+
+    def test_the_name_is_flattened_before_it_reaches_the_page(self, state):
+        """外から来る値をそのまま画面の欄に入れない（改行を畳み、長さを切る)。"""
+        job = media.create_job("絵", backend="comfyui", requested_by="  外の\nアプリ  ")
+        assert job["requested_by"] == "外の アプリ"
+
+        long = media.create_job("絵", backend="comfyui", requested_by="あ" * 200)
+        assert len(long["requested_by"]) == ai_inflight.CALLER_NAME_MAX
+
+    def test_it_falls_back_to_the_user_agent(self):
+        """**名乗らない相手こそ出どころを知りたい。** 自己申告が無ければ通信の名乗りへ落とす。
+
+        MCP は 1 往復ごとに独立しているので `initialize` の clientInfo は残らない ——
+        毎回必ず届くのは HTTP のヘッダのほうで、拾えるのはそこだけ。
+        """
+        assert media.caller_name("arrow-puzzle", "python-httpx/0.28") == "arrow-puzzle"
+        # 推し量ったぶんは括って残す（自分で名乗った値と読み違えないように）
+        assert media.caller_name("", "claude-code/1.2.3") == "名乗り無し(claude-code/1.2.3)"
+        assert media.caller_name("", "") == ""
+
+    def test_the_compare_page_shows_who_asked(self):
+        from app.views import media_compare
+
+        who = media_compare._who(
+            {"backend": "comfyui", "model": "sdxl", "requested_by": "arrow-puzzle"})
+        assert "依頼元: arrow-puzzle" in who
+        # 名乗りが無ければ欄ごと出さない（空の「依頼元:」を並べない）
+        assert "依頼元" not in media_compare._who({"backend": "comfyui", "model": "sdxl"})

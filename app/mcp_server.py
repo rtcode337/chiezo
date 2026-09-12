@@ -26,7 +26,7 @@ from types import SimpleNamespace
 from typing import Annotated, Any
 
 from fastapi import FastAPI, HTTPException
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
@@ -103,6 +103,20 @@ def _call(fn: Callable[..., Any], **kwargs: Any) -> Any:
     except HTTPException as e:
         detail = e.detail if isinstance(e.detail, dict) else {"error": str(e.detail)}
         raise ToolError(json.dumps(detail, ensure_ascii=False)) from None
+
+
+def _caller(ctx: Context | None, requested_by: str) -> str:
+    """誰が頼んだかとして残す名。**名乗りが無ければ User-Agent へ落とす**。
+
+    MCP は 1 往復ごとに独立している(`stateless_http=True`)ので、`initialize` の
+    clientInfo はツールを呼ぶ時点には残っていない —— 実際 `ctx.session.client_params`
+    は None になる。毎回必ず届くのは HTTP のヘッダのほうなので、そこから拾う。
+    """
+    agent = ""
+    if ctx is not None:
+        headers = ctx.headers
+        agent = (dict(headers).get("user-agent", "") if headers else "")
+    return media.caller_name(requested_by, agent)
 
 
 def build_mcp_app(mcp: MCPServer) -> Starlette:
@@ -335,6 +349,10 @@ def _register_image_tools(mcp: MCPServer) -> None:
         group: str = "",
         edit: str = "",
         reference: str = "",
+        requested_by: Annotated[str, Field(description=(
+            "あなたの名乗り(例: claude-code)。**必ず入れる** —— 同じ表に外のアプリと無人で回る層が並ぶので、"
+            "名乗りが無いと、後から見て誰が枠を食ったのか追えない"))] = "",
+        ctx: Context | None = None,
     ) -> dict:
         from app import main as api
 
@@ -352,6 +370,7 @@ def _register_image_tools(mcp: MCPServer) -> None:
             source=source,
             source_mode=mode,
             source_ref=ref,
+            requested_by=_caller(ctx, requested_by),
         )
 
     @mcp.tool(description=(
@@ -370,10 +389,15 @@ def _register_image_tools(mcp: MCPServer) -> None:
         model: str = "",
         effort: str = "",
         group: str = "",
+        requested_by: Annotated[str, Field(description=(
+            "あなたの名乗り(例: claude-code)。**必ず入れる** —— 同じ表に外のアプリと無人で回る層が並ぶので、"
+            "名乗りが無いと、後から見て誰が枠を食ったのか追えない"))] = "",
+        ctx: Context | None = None,
     ) -> dict:
         return _call(
             media.start_text_job,
             prompt=prompt, backend=backend, model=model, effort=effort, group=group,
+            requested_by=_caller(ctx, requested_by),
         )
 
     @mcp.tool(description=(
@@ -438,6 +462,10 @@ def _register_audio_tools(mcp: MCPServer) -> None:
         loop: bool = False,
         group: str = "",
         reference: str = "",
+        requested_by: Annotated[str, Field(description=(
+            "あなたの名乗り(例: claude-code)。**必ず入れる** —— 同じ表に外のアプリと無人で回る層が並ぶので、"
+            "名乗りが無いと、後から見て誰が枠を食ったのか追えない"))] = "",
+        ctx: Context | None = None,
     ) -> dict:
         from app import main as api
 
@@ -457,6 +485,7 @@ def _register_audio_tools(mcp: MCPServer) -> None:
             group=group,
             source=source,
             source_ref=reference,
+            requested_by=_caller(ctx, requested_by),
         )
 
     @mcp.tool(description=(
@@ -520,6 +549,10 @@ def _register_video_tools(mcp: MCPServer) -> None:
         negative: str = "",
         audio: bool = True,
         group: str = "",
+        requested_by: Annotated[str, Field(description=(
+            "あなたの名乗り(例: claude-code)。**必ず入れる** —— 同じ表に外のアプリと無人で回る層が並ぶので、"
+            "名乗りが無いと、後から見て誰が枠を食ったのか追えない"))] = "",
+        ctx: Context | None = None,
     ) -> dict:
         return _call(
             media.start_video_job,
@@ -533,6 +566,7 @@ def _register_video_tools(mcp: MCPServer) -> None:
             negative=negative,
             audio=audio,
             group=group,
+            requested_by=_caller(ctx, requested_by),
         )
 
     @mcp.tool(description=(
@@ -580,6 +614,10 @@ def _register_voice_tools(mcp: MCPServer) -> None:
         instructions: str = "",
         count: int = 1,
         group: str = "",
+        requested_by: Annotated[str, Field(description=(
+            "あなたの名乗り(例: claude-code)。**必ず入れる** —— 同じ表に外のアプリと無人で回る層が並ぶので、"
+            "名乗りが無いと、後から見て誰が枠を食ったのか追えない"))] = "",
+        ctx: Context | None = None,
     ) -> dict:
         return _call(
             media.start_speech_job,
@@ -592,6 +630,7 @@ def _register_voice_tools(mcp: MCPServer) -> None:
             instructions=instructions,
             count=count,
             group=group,
+            requested_by=_caller(ctx, requested_by),
         )
 
     @mcp.tool(description=(

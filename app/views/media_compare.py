@@ -87,7 +87,16 @@ def _who(job: dict) -> str:
         spec = media_providers.get(backend)
         who = spec.label if spec else (backend or "?")
     model = (job.get("model") or "").strip()
-    return f"{esc(who)}<br><span class=\"muted\">{esc(model)}</span>" if model else esc(who)
+    # **頼んだ側も並べる。** 相手とモデルだけでは「これは自分が頼んだものか」が
+    # 読めない —— 同じ表に外のアプリと無人で回る層のぶんが混ざって並ぶため
+    lines = [esc(who)]
+    if model:
+        lines.append(esc(model))
+    if by := (job.get("requested_by") or "").strip():
+        lines.append(f"依頼元: {esc(by)}")
+    head, *rest = lines
+    tail = "".join(f'<br><span class="muted">{line}</span>' for line in rest)
+    return head + tail
 
 
 def _text_of(job: dict) -> str:

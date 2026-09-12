@@ -125,11 +125,45 @@ CREATE TABLE IF NOT EXISTS jobs (
 #   **画面に出すために控える。** 依頼文だけ見えても、何を元にしたかが分からないと
 #   出来上がりを読めない —— 参考にした絵の欠点をそのまま引き継いだ生成物を前に、
 #   「指示が悪いのか、参考が悪いのか」を切り分けられなかった
+# requested_by … 頼んだ側の名乗り。**相手とモデルだけでは投げ主が読めない** ——
+#   MCP でも REST でも同じ表に入るので、外のアプリが作ったものと、無人で回る層が
+#   作ったものが混ざる。枠を食っているのが誰かを追えないと、見に覚えのない依頼が
+#   1 件出てきたときに、出どころを当てる手がかりが何も残らない
 _ADDED_COLUMNS = {
     "sound": "TEXT", "seconds": "REAL", "voice": "TEXT",
     "group_name": "TEXT", "picked_at": "TEXT", "picked_note": "TEXT",
     "source_url": "TEXT", "source_mode": "TEXT",
+    "requested_by": "TEXT",
 }
+
+
+def _requested_by(name: str) -> str | None:
+    """名乗りを均す。**外から来る値をそのまま画面の欄に入れない**
+    (改行を畳み、長さを切る)。話す口の `ai_inflight.caller_of` と同じ規則。
+    """
+    clean = " ".join((name or "").split())[:ai_inflight.CALLER_NAME_MAX]
+    return clean or None
+
+
+def caller_name(named: str = "", agent: str = "") -> str:
+    """頼んだ側の名として残す文字列を組む。
+
+    **自己申告だけに頼らない。** 名乗りを必須にすると「鍵だけ借りに来る」使い方を
+    塞ぐので必須にはできないが、任意にすれば名乗らない相手が残る ——
+    そして**いちばん出どころを知りたいのは、名乗らずに来たほうの依頼**である。
+    そこで、名乗りが無ければ通信の名乗り(User-Agent)へ落とす。
+
+    MCP は 1 往復ごとに独立している(stateless)ので、`initialize` で渡される
+    clientInfo はツールを呼ぶ時点では残っていない。**毎回必ず届くのは HTTP の
+    ヘッダのほう**なので、拾えるのはこちらだけ。
+
+    推し量ったぶんは括って残す —— 自分で名乗った値と見分けが付かないと、
+    「このアプリは名乗る作りになっている」と読み違える。
+    """
+    if clean := " ".join((named or "").split()):
+        return clean
+    ua = " ".join((agent or "").split())
+    return f"名乗り無し({ua})" if ua else ""
 
 
 def _source_display_url(ref: str) -> str | None:
@@ -331,10 +365,10 @@ def _insert(job: dict) -> None:
         conn.execute(
             "INSERT INTO jobs (id, kind, backend, model, prompt, size, seed, count,"
             " state, error, files, created_at, updated_at, sound, seconds, voice,"
-            " group_name, picked_at, picked_note, source_url, source_mode)"
+            " group_name, picked_at, picked_note, source_url, source_mode, requested_by)"
             " VALUES (:id, :kind, :backend, :model, :prompt, :size, :seed, :count,"
             " :state, :error, :files, :created_at, :updated_at, :sound, :seconds, :voice,"
-            " :group_name, :picked_at, :picked_note, :source_url, :source_mode)",
+            " :group_name, :picked_at, :picked_note, :source_url, :source_mode, :requested_by)",
             {**job, "files": json.dumps(job["files"], ensure_ascii=False)},
         )
 
@@ -485,6 +519,7 @@ def save_upload(
     group: str = "",
     kind: str = "",
     model: str = "",
+    requested_by: str = "",
 ) -> dict:
     """手元で作ったものを持ち込んで、見比べに 1 件として並べる。
 
@@ -559,6 +594,7 @@ def save_upload(
         "picked_at": None, "picked_note": None,
         # 持ち込んだものに「元にした絵」は無い
         "source_url": None, "source_mode": None,
+        "requested_by": _requested_by(requested_by),
     }
     _insert(job)
     log.info("uploaded %s (%s, %d bytes) as job %s", filename, chosen, size, job_id)
@@ -684,7 +720,7 @@ def cancel_job(job_id: str) -> dict:
 
 
 def create_text_job(prompt: str, backend: str = "", model: str = "",
-                    effort: str = "", group: str = "") -> dict:
+                    effort: str = "", group: str = "", requested_by: str = "") -> dict:
     """文章の頼みを記録する(まだ書かせない)。
 
     **絵や音と同じ表に入れる。** 見比べの画面も採用の印も kind を問わずに動くので、
@@ -732,6 +768,7 @@ def create_text_job(prompt: str, backend: str = "", model: str = "",
         "picked_note": None,
         # 文章に元の絵は無い
         "source_url": None, "source_mode": None,
+        "requested_by": _requested_by(requested_by),
     }
     _insert(job)
     cleanup()
@@ -739,13 +776,14 @@ def create_text_job(prompt: str, backend: str = "", model: str = "",
 
 
 def start_text_job(prompt: str, backend: str = "", model: str = "",
-                   effort: str = "", group: str = "") -> dict:
+                   effort: str = "", group: str = "", requested_by: str = "") -> dict:
     """頼みを受け付けて job を返す(生成は後ろで走る)。
 
     待たない。長い文章は数分かかるので、待たせると呼び出し側が先に切れる ——
     絵や音とまったく同じ扱いにしてある。
     """
-    job = create_text_job(prompt, backend=backend, model=model, effort=effort, group=group)
+    job = create_text_job(prompt, backend=backend, model=model, effort=effort, group=group,
+                          requested_by=requested_by)
     task = asyncio.create_task(_run_text(job["id"], job["backend"], job["prompt"],
                                          model=model, effort=effort))
     _track(job["id"], task)
@@ -916,6 +954,7 @@ def create_job(
     editing: bool = False,
     source_ref: str = "",
     source_mode: str = "",
+    requested_by: str = "",
 ) -> dict:
     """頼みを検査して記録するだけ(まだ作らない)。
 
@@ -1006,6 +1045,9 @@ def create_job(
         # 置き場にあるものを指しているだけなので、指し先を覚えておけば画面から出せる
         "source_url": _source_display_url(source_ref) if editing else None,
         "source_mode": (source_mode or None) if editing else None,
+        # **誰が頼んだか。** 名乗らなければ空のまま —— 名乗りが無いだけで
+        # 断るのは、鍵だけ借りに来るこの口の値打ちに合わない(話す口と同じ扱い)
+        "requested_by": _requested_by(requested_by),
     }
     _insert(job)
     cleanup()
@@ -1167,6 +1209,7 @@ def start_image_job(
     source: bytes = b"",
     source_mode: str = "edit",
     source_ref: str = "",
+    requested_by: str = "",
 ) -> dict:
     """頼みを受け付けて job を返す(生成は後ろで走る)。
 
@@ -1175,7 +1218,8 @@ def start_image_job(
     """
     job = create_job(prompt, backend=backend, model=model, size=size, seed=seed, count=count,
                      group=group, editing=bool(source),
-                     source_ref=source_ref, source_mode=source_mode)
+                     source_ref=source_ref, source_mode=source_mode,
+                     requested_by=requested_by)
     request = media_backends.ImageRequest(
         prompt=job["prompt"], negative=negative, size=size, seed=seed, model=model,
         steps=steps, source=source, source_mode=source_mode,
@@ -1198,6 +1242,7 @@ def start_audio_job(
     group: str = "",
     source: bytes = b"",
     source_ref: str = "",
+    requested_by: str = "",
 ) -> dict:
     """音の頼みを受け付けて job を返す(生成は後ろで走る)。絵とまったく同じ扱い。"""
     job = create_job(
@@ -1214,6 +1259,7 @@ def start_audio_job(
         source_ref=source_ref,
         # 音の参考は「参考にする」しかない(直すという言い方が無い)
         source_mode=media_backends.SOURCE_REFERENCE,
+        requested_by=requested_by,
     )
     request = media_backends.AudioRequest(
         prompt=job["prompt"],
@@ -1243,6 +1289,7 @@ def start_video_job(
     audio: bool = True,
     steps: int = 20,
     group: str = "",
+    requested_by: str = "",
 ) -> dict:
     """動画の頼みを受け付けて job を返す。絵や音より待つ(数分〜十数分)。"""
     job = create_job(
@@ -1255,6 +1302,7 @@ def start_video_job(
         kind=media_providers.KIND_VIDEO,
         seconds=seconds,
         group=group,
+        requested_by=requested_by,
     )
     request = media_backends.VideoRequest(
         prompt=job["prompt"],
@@ -1281,6 +1329,7 @@ def start_speech_job(
     seed: int = 0,
     count: int = 1,
     group: str = "",
+    requested_by: str = "",
 ) -> dict:
     """読み上げの頼みを受け付けて job を返す。
 
@@ -1296,6 +1345,7 @@ def start_speech_job(
         kind=media_providers.KIND_SPEECH,
         voice=voice,
         group=group,
+        requested_by=requested_by,
     )
     request = media_backends.SpeechRequest(
         prompt=job["prompt"],
