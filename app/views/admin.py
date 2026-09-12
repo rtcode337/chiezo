@@ -774,6 +774,23 @@ def _sweep_run_forms(name: str, sweep: str, disabled: str) -> str:
     )
 
 
+def _graves_html(item) -> str:
+    """墓場(消したものの見出し)。持っていない収集には何も出さない。
+
+    **読めるところに出す。** 消す回と足す回が別々に走るので、これが無いと
+    「なぜこの人が入ってこないのか」が画面から読めない —— 消し間違いに気づく
+    手立てが、ここを見ることしか無い。
+    """
+    if not item.graves:
+        return ""
+    return (
+        f'<p class="muted">墓場: {len(item.graves):,}'
+        "(消したものの見出し。<strong>足す回はここにあるものを連れ戻さない</strong>。"
+        "消し間違いは下の「編集する」から外せる)</p>"
+        f'<pre class="prompt-view">{esc(chr(10).join(item.graves))}</pre>'
+    )
+
+
 def _partition_html(item) -> str:
     """区画の進み具合。持っていない収集には何も出さない。
 
@@ -913,6 +930,7 @@ def _collect_detail_html(item, disabled: str) -> str:
         f'<p class="muted">進み具合(次の実行で {{cursor}} に入る値): '
         f'<code>{esc(item.cursor) or "(まだ無し)"}</code></p>'
         f"{_partition_html(item)}"
+        f"{_graves_html(item)}"
         f"<details><summary>編集する</summary>"
         f'<form method="post" action="/admin/collect/{esc(item.name)}/edit" class="collect-form">'
         f'<p><label>説明<br><input name="description" value="{esc(item.description)}"></label></p>'
@@ -920,6 +938,13 @@ def _collect_detail_html(item, disabled: str) -> str:
         f'<p><label>プロンプト<br><textarea name="prompt" rows="10">{esc(item.prompt)}</textarea></label></p>'
         f'<p><label>進み具合(空にすると最初から)<br>'
         f'<input name="cursor" value="{esc(item.cursor)}"></label></p>'
+        f'<p><label>墓場(1 行に 1 つ。消したものを、消したままにする)<br>'
+        f'<textarea name="graves" rows="6" spellcheck="false">'
+        f"{esc(chr(10).join(item.graves))}</textarea></label></p>"
+        f'<p class="muted">ここにある見出しは<strong>足す回が連れ戻さない</strong>。'
+        f" 消す回と足す回は別々に走るので、残しておかないと"
+        f"「画家ではない」として外した人が次の回で戻ってくる。"
+        f" 消し間違えたら、その行を消せば入ってくるようになる。</p>"
         f"{_backend_hint()}"
         f"<p><label>集め方<br>{_mode_select(item.mode)}</label></p>"
         f'<p><label>消えすぎの歯止め(前の何割を下回ったら止めるか。0 で外す)<br>'
@@ -1955,6 +1980,8 @@ async def admin_collect_edit(name: str, request: Request):
         interval_minutes=(lone or {}).get("interval_minutes"),
         # 空にできるように、cursor だけは None ではなく空文字を通す
         cursor=str(form.get("cursor") or ""),
+        # **空にできる**(消し間違いの逃げ道)。1 行 1 件で読む
+        graves=[t.strip() for t in str(form.get("graves") or "").splitlines() if t.strip()],
         mode=collect.normalize_mode(form.get("mode")),
         # 空欄は「使わない」。指定を外せるのはここだけ
         extract=_parse_extract(form.get("extract")),

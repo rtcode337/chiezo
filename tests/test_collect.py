@@ -927,6 +927,82 @@ class TestAddingOnly:
         assert find.only_new is True
 
 
+class TestTheGraveyard:
+    """消したものを、消したままにする。
+
+    **消す回と足す回は別々に走る。** 足すほうは「いま名簿にいるか」しか見られず、
+    なぜ居ないのか(一度も入っていないのか、調べたうえで外したのか)までは分からない
+    —— 実際に、ざっとが「画家ではない」として外した人を、次の名簿の回が丸ごと
+    連れ戻した(本番の履歴で 1,330 件の 1 件目がそれだった)。
+    """
+
+    @pytest.fixture
+    def refine(self, sample):
+        collect.update("news", mode="refine", prompt="いまの内容:\n{current}\n直して")
+        return collect.get("news")
+
+    def test_a_tombstone_digs_a_grave(self, refine):
+        previous = {"俳優さん": {"doc_id": 1, "title": "俳優さん", "body": "本文"}}
+        _docs, diff = collect.material(
+            refine, previous, [{"title": "俳優さん", "tags": [notes.TOMBSTONE_TAG]}]
+        )
+        assert diff["graves"] == ["俳優さん"]
+
+        collect.record_result("news", status="ok", removed=1, graves=diff["graves"])
+        assert collect.get("news").graves == ["俳優さん"]
+
+    def test_what_is_buried_does_not_come_back(self, refine):
+        collect.update("news", graves=["俳優さん"])
+        docs, diff = collect.material(
+            collect.get("news"), {},
+            [{"title": "俳優さん", "body": "画家です"}, {"title": "モネ", "body": "画家です"}],
+        )
+        assert [d["title"] for d in docs] == ["モネ"]
+        assert diff["added"] == 1
+        assert diff["skipped"] == 1
+
+    def test_the_mechanical_sweep_cannot_bring_it_back_either(self, refine):
+        """名簿の回は指定から引き直すので、外したはずの人がまた当たる。"""
+        collect.update("news", graves=["俳優さん"])
+        _docs, diff = collect.material(
+            collect.get("news"), {},
+            [{"title": "俳優さん", "body": "カテゴリに「〜の画家」があるので当たった"}],
+            only_new=True,
+        )
+        assert diff["added"] == 0
+
+    def test_something_already_there_is_still_updated(self, refine):
+        """墓場が効くのは**足すとき**だけ。いるものを直す回は今までどおり。"""
+        collect.update("news", graves=["モネ"])
+        previous = {"モネ": {"doc_id": 1, "title": "モネ", "body": "古い"}}
+        docs, diff = collect.material(
+            collect.get("news"), previous, [{"title": "モネ", "body": "新しい"}]
+        )
+        assert diff["updated"] == 1
+        assert docs[0]["body"] == "新しい"
+
+    def test_a_grave_can_be_lifted(self, refine):
+        """消し間違いの逃げ道。**人が決める**(画面から外せる)。"""
+        collect.update("news", graves=["モネ"])
+        collect.update("news", graves=[])
+        _docs, diff = collect.material(
+            collect.get("news"), {}, [{"title": "モネ", "body": "画家です"}]
+        )
+        assert diff["added"] == 1
+
+    def test_the_whole_removal_is_buried_not_just_the_head(self, refine):
+        """控えは頭の 10 件だが、墓場は全部 —— 切ると、切れたぶんが戻ってくる。"""
+        many = collect.MAX_TITLE_SAMPLE + 5
+        previous = {f"俳優{i}": {"doc_id": i, "title": f"俳優{i}", "body": "本文"}
+                    for i in range(1, many + 1)}
+        _docs, diff = collect.material(
+            collect.get("news"), previous,
+            [{"title": f"俳優{i}", "tags": [notes.TOMBSTONE_TAG]} for i in range(1, many + 1)],
+        )
+        assert len(diff["removed_titles"]) == collect.MAX_TITLE_SAMPLE
+        assert len(diff["graves"]) == many
+
+
 class TestKeepingTheClockAcrossAPatch:
     """設定を送り直しても、巡回の進み具合は引き継ぐ。
 

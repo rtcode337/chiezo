@@ -431,6 +431,8 @@ async def _collect_material(name: str, sources: dict) -> str:
         removed=diff["removed"],
         updated=diff["updated"],
         removed_titles=diff["removed_titles"],
+        # **消したものは墓場へ。** 残さないと、次の足す回が連れ戻す
+        graves=diff.get("graves"),
         next_cursor=next_cursor,
         sweep=sweep.name,
         visited=keys,

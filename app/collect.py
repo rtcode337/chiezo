@@ -96,6 +96,9 @@ FOCUS_SWEEP_NAME = "割り込み"
 # 1 つの収集に持てる巡回の数。**2〜3 本で足りる** —— ざっと全体を拾うものと、
 # 少数をじっくり調べるもの。増やすほど同じ収集に対する AI の呼び出しが重なる
 MAX_SWEEPS = 8
+# 墓場に置ける見出しの数。**捨てたぶんはもう守らない**(足す回が連れ戻す)ので
+# 多めに取る。定義は notes の 1 件なので、際限なくは持てない
+MAX_GRAVES = 2_000
 # 1 回で見る区画の上限。**区画ごとに AI を 1 回呼ぶ**(素材をその区画のぶんに
 # 絞るのが区画の意味なので、まとめて聞くと絞った意味が消える)ため、
 # 1 回の取り込みが何十分にもならないようにここで止める
@@ -318,6 +321,14 @@ class Collection:
     # 誰が置いたか。外のアプリが名乗った文字列で、**印であって認証ではない**
     # (LAN 内・認証なしの前提なので偽れる)。有効にするか決める人の手がかり
     requested_by: str = ""
+    # **墓場** —— 消したものの見出し。消したままにするために持つ。
+    #
+    # **消す回と足す回が別々に走る**ので、これが無いと消したものが戻ってくる。
+    # 足すほうは「いま名簿にいるか」しか見られず、**なぜ居ないのかまでは分からない**
+    # (一度も入っていないのか、調べたうえで外したのか)。実際に、ざっとが
+    # 「画家ではない」として外した人を、次の名簿の回が丸ごと連れ戻した。
+    # **戻すのは人が決める** —— 画面から外せる(消し間違いの逃げ道)
+    graves: list[str] = field(default_factory=list)
     # ここから下は実行のたびに書き換わる控え
     last_run_at: str | None = None
     last_status: str | None = None  # "ok" | "error"
@@ -488,6 +499,24 @@ def _sweep_from_json(raw: dict, item: Collection) -> Sweep:
         last_status=raw.get("last_status") or None,
         last_error=raw.get("last_error") or None,
     )
+
+
+def normalize_graves(raw) -> list[str]:
+    """墓場を均す。**重複は落とし、古いものから捨てる**。
+
+    定義は notes の 1 件に入るので、際限なく増やせない。**捨てた墓標は
+    もう守らない**(そのうち足す回が連れ戻す)ので、上限は多めに取ってある。
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        title = str(item or "").strip()[:notes.TITLE_MAX_CHARS]
+        if title and title not in seen:
+            seen.add(title)
+            out.append(title)
+    return out[-MAX_GRAVES:]
 
 
 def normalize_sweeps(raw) -> list[dict]:
@@ -691,6 +720,7 @@ def _from_json(item: dict) -> Collection:
         last_skipped=int(item.get("last_skipped") or 0),
         last_removed=int(item.get("last_removed") or 0),
         last_removed_titles=[str(t) for t in (item.get("last_removed_titles") or [])],
+        graves=normalize_graves(item.get("graves")),
         next_run_at=item.get("next_run_at") or None,
     )
 
@@ -882,7 +912,7 @@ def update(name: str, **fields) -> Collection:
     allowed = {
         "description", "prompt", "interval_minutes", "enabled",
         "backend", "model", "effort", "web", "cursor", "mode", "keep_ratio", "extract",
-        "partition", "partitions", "sweeps", "feed",
+        "partition", "partitions", "sweeps", "feed", "graves",
     }
     patch = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if "interval_minutes" in patch:
@@ -916,6 +946,9 @@ def update(name: str, **fields) -> Collection:
                 {**p, "visits": {k: v for k, v in (p.get("visits") or {}).items() if k in names}}
                 for p in patch.get("partitions", current.partitions)
             ]
+    if "graves" in patch:
+        # **空の配列を渡せば墓場を空にできる**(消し間違いの逃げ道はここだけ)
+        patch["graves"] = normalize_graves(patch["graves"])
     if "partitions" in patch:
         # **空の配列を渡せば最初から回り直せる**(消す手段がここしかない)。
         # 2 周目を粗いまま繰り返させず、一度リセットして精度を上げ直したいときに使う
@@ -1313,6 +1346,7 @@ def record_result(
     sweep: str | None = None,
     visited: list[str] | None = None,
     partitions: list[dict] | None = None,
+    graves: list[str] | None = None,
     focus: bool = False,
 ) -> Collection:
     """1 回ぶんの結果を定義側へ書き戻し、次回の予定を入れる。
@@ -1321,6 +1355,11 @@ def record_result(
 
     **見た区画に印を付けるのは成功したときだけ。** 失敗した回に印を付けると、
     一度も見られていない区画が「回り終えた」に混ざり、一周が嘘になる。
+
+    **消したものは墓場へ足す**(`graves`)。消す回と足す回は別々に走るので、
+    残しておかないと次の足す回が連れ戻す —— 足すほうは「いま名簿にいるか」しか
+    見られず、なぜ居ないのか(一度も入っていないのか、調べたうえで外したのか)までは
+    分からない。**割り込みの回でも足す**(消したのは消したこと)。
 
     **割り込みの回は、時計にも進み具合にも触らない**(`focus`)。進み具合・どの巡回の
     予定・区画の巡回記録のどれも動かさない —— 動かすと、割り込むたびに一周が伸びたり、
@@ -1350,6 +1389,7 @@ def record_result(
         last_skipped=skipped,
         last_removed=removed,
         last_removed_titles=list(removed_titles or []),
+        graves=normalize_graves([*current.graves, *(graves or [])]),
         updated_at=_iso(now),
         **({} if focus else _advance(current, this, now, status=status, error=error)),
     )
@@ -1534,8 +1574,11 @@ def to_public(item: Collection, *, with_partitions: bool = True) -> dict:
         }
         for sweep in sweeps
     ]
+    data["graves_total"] = len(item.graves)
     if not with_partitions:
+        # **一覧には墓場も載せない**(台帳と同じ理由。数だけ載せる)
         data.pop("partitions", None)
+        data.pop("graves", None)
     return data
 
 
@@ -1774,8 +1817,15 @@ def material(
     added_titles: list[str] = []
     updated_titles: list[str] = []
     removed_titles: list[str] = []
+    graves = set(item.graves)
     for raw in collected:
         title = (raw.get("title") or "").strip()[:notes.TITLE_MAX_CHARS]
+        # **墓場にあるものは足さない。** 消す回と足す回は別々に走るので、
+        # 足すほうは「いま名簿にいるか」しか見られない —— なぜ居ないのか
+        # (一度も入っていないのか、調べたうえで外したのか)までは分からない
+        if title and title not in merged and title in graves:
+            skipped += 1
+            continue
         if only_new and title in merged:
             # **足すだけの回。** 既にあるものには触らない(数えるだけ)
             skipped += 1
@@ -1821,6 +1871,9 @@ def material(
         "added_titles": added_titles[:MAX_TITLE_SAMPLE],
         "updated_titles": updated_titles[:MAX_TITLE_SAMPLE],
         "removed_titles": removed_titles[:MAX_TITLE_SAMPLE],
+        # **墓場に入れるぶんは切らない。** 控え(上の頭 10 件)は読ませるためのもので、
+        # こちらは「消したままにする」ための一覧 —— 切ると、切れたぶんが戻ってくる
+        "graves": removed_titles,
         # 集めた側が返した件数。**焼ける件数(`total`)とは別に出す** —— 一致しない
         # ときに、捨てたのか前世代と重なったのかを読み分けられるようにするため
         "collected": len(collected),
