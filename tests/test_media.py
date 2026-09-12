@@ -1988,7 +1988,7 @@ class TestEditingAnExistingImage:
 
         use(state, handler)
         asyncio.run(media_backends.generate("codex", media_backends.ImageRequest(
-            prompt="5 コマ目だけ直す", size="1024x1536", source=PNG)))
+            prompt="5 コマ目だけ直す", size="1024x1536", sources=(PNG,))))
 
         # 絵そのものを送る（ブリッジは別のコンテナなので、こちらのパスは見えない）
         assert base64.b64decode(handler.sent["image"]) == PNG
@@ -2010,7 +2010,7 @@ class TestEditingAnExistingImage:
     def test_直せない相手には頼む前に断る(self, state):
         # 黙って一から描くと、直したつもりの絵が全部描き変わって返る
         with pytest.raises(HTTPException) as e:
-            media.start_image_job("直して", backend="comfyui", size="1024x1024", source=PNG)
+            media.start_image_job("直して", backend="comfyui", size="1024x1024", sources=(PNG,))
 
         assert e.value.status_code == 400
         assert "codex" in e.value.detail["backends"]
@@ -2041,7 +2041,7 @@ class TestEditingAnExistingImage:
 
         use(state, handler)
         asyncio.run(media_backends.generate("codex", media_backends.ImageRequest(
-            prompt="同じ絵柄でヘビを描いて", source=PNG,
+            prompt="同じ絵柄でヘビを描いて", sources=(PNG,),
             source_mode=media_backends.SOURCE_REFERENCE)))
 
         assert handler.sent["image_mode"] == "reference"
@@ -2177,7 +2177,7 @@ class TestShowingWhatItWasMadeFrom:
     def test_image_job_remembers_its_source(self, state):
         job = media.create_job(
             "直して", backend="codex", editing=True,
-            source_ref="/media/20260911/a.png", source_mode="edit",
+            source_refs=("/media/20260911/a.png",), source_mode="edit",
         )
         assert job["source_url"] == "/media/20260911/a.png"
         assert job["source_mode"] == "edit"
@@ -2474,3 +2474,40 @@ class TestRememberingWhoAsked:
         assert "依頼元: arrow-puzzle" in who
         # 名乗りが無ければ欄ごと出さない（空の「依頼元:」を並べない）
         assert "依頼元" not in media_compare._who({"backend": "comfyui", "model": "sdxl"})
+
+
+class TestSeveralReferencesAtOnce:
+    """**参考は複数渡せる。** 役割が分かれることがあるため —— 姿勢の見本と
+    絵柄の見本を同時に渡す、など。役割の名前は持たず、渡した順で指す。
+    """
+
+    def test_every_reference_is_remembered(self, state):
+        job = media.create_job(
+            "この姿勢で、この絵柄で", backend="codex", editing=True,
+            source_refs=("/media/d/pose.png", "/media/d/style.png"),
+            source_mode="reference",
+        )
+        assert job["source_url"] == "/media/d/pose.png\n/media/d/style.png"
+        assert media.get_job(job["id"])["source_url"].count("\n") == 1
+
+    def test_the_page_shows_them_all_with_their_order(self):
+        from app.views import media_compare
+
+        html = media_compare._source_block({
+            "id": "x", "kind": "image", "source_mode": "reference",
+            "source_url": "/media/d/pose.png\n/media/d/style.png",
+        })
+        assert html.count("<img") == 2
+        assert "2 枚" in html and "1 枚目" in html and "2 枚目" in html
+
+    def test_a_single_reference_still_reads_as_before(self):
+        """前から入っている「1 本だけの行」も、そのまま読めること。"""
+        from app.views import media_compare
+
+        html = media_compare._source_block({
+            "id": "x", "kind": "image", "source_mode": "reference",
+            "source_url": "/media/d/only.png",
+        })
+        assert html.count("<img") == 1
+        assert "枚目" not in html
+

@@ -359,7 +359,7 @@ def _register_image_tools(mcp: MCPServer) -> None:
         negative: str = "",
         group: str = "",
         edit: str = "",
-        reference: str = "",
+        reference: str | list[str] = "",
         requested_by: Annotated[str, Field(description=(
             "あなたの名乗り(例: claude-code)。**必ず入れる** —— 同じ表に外のアプリと無人で回る層が並ぶので、"
             "名乗りが無いと、後から見て誰が枠を食ったのか追えない"))] = "",
@@ -378,9 +378,9 @@ def _register_image_tools(mcp: MCPServer) -> None:
             count=count,
             negative=negative,
             group=group,
-            source=source,
+            sources=source,
             source_mode=mode,
-            source_ref=ref,
+            source_refs=ref,
             requested_by=_caller(ctx, requested_by),
         )
 

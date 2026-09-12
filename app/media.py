@@ -166,6 +166,14 @@ def caller_name(named: str = "", agent: str = "") -> str:
     return f"名乗り無し({ua})" if ua else ""
 
 
+def _source_display_urls(refs: tuple[str, ...] | list[str]) -> str | None:
+    """複数の指し先を 1 つの欄に畳む。**改行で繋ぐ** —— URL に改行は入らないので、
+    前から使っている「1 本だけ入った行」もそのまま読める(列を増やさずに済む)。
+    """
+    urls = [u for u in (_source_display_url(r) for r in refs) if u]
+    return "\n".join(urls) or None
+
+
 def _source_display_url(ref: str) -> str | None:
     """元にした絵を、**画面から開ける URL** に直す。
 
@@ -952,7 +960,7 @@ def create_job(
     voice: str = "",
     group: str = "",
     editing: bool = False,
-    source_ref: str = "",
+    source_refs: tuple[str, ...] = (),
     source_mode: str = "",
     requested_by: str = "",
 ) -> dict:
@@ -1043,7 +1051,7 @@ def create_job(
         "picked_note": None,
         # **元にした絵の置き場を控える。** 中身(bytes)は持たない ——
         # 置き場にあるものを指しているだけなので、指し先を覚えておけば画面から出せる
-        "source_url": _source_display_url(source_ref) if editing else None,
+        "source_url": _source_display_urls(source_refs) if editing else None,
         "source_mode": (source_mode or None) if editing else None,
         # **誰が頼んだか。** 名乗らなければ空のまま —— 名乗りが無いだけで
         # 断るのは、鍵だけ借りに来るこの口の値打ちに合わない(話す口と同じ扱い)
@@ -1206,9 +1214,9 @@ def start_image_job(
     negative: str = "",
     steps: int = 25,
     group: str = "",
-    source: bytes = b"",
+    sources: tuple[bytes, ...] = (),
     source_mode: str = "edit",
-    source_ref: str = "",
+    source_refs: tuple[str, ...] = (),
     requested_by: str = "",
 ) -> dict:
     """頼みを受け付けて job を返す(生成は後ろで走る)。
@@ -1217,12 +1225,12 @@ def start_image_job(
     生成は数秒〜数分かかり、待たせると呼び出し側が先に切れる。
     """
     job = create_job(prompt, backend=backend, model=model, size=size, seed=seed, count=count,
-                     group=group, editing=bool(source),
-                     source_ref=source_ref, source_mode=source_mode,
+                     group=group, editing=bool(sources),
+                     source_refs=tuple(source_refs), source_mode=source_mode,
                      requested_by=requested_by)
     request = media_backends.ImageRequest(
         prompt=job["prompt"], negative=negative, size=size, seed=seed, model=model,
-        steps=steps, source=source, source_mode=source_mode,
+        steps=steps, sources=tuple(sources), source_mode=source_mode,
     )
     return _start(job, request, count)
 
@@ -1256,7 +1264,7 @@ def start_audio_job(
         seconds=seconds,
         group=group,
         editing=bool(source),
-        source_ref=source_ref,
+        source_refs=(source_ref,) if source_ref else (),
         # 音の参考は「参考にする」しかない(直すという言い方が無い)
         source_mode=media_backends.SOURCE_REFERENCE,
         requested_by=requested_by,
@@ -1791,3 +1799,4 @@ def job_group(key: str) -> dict | None:
             ).fetchall()
     grouped = _grouped(rows)
     return grouped[0] if grouped else None
+

@@ -209,21 +209,32 @@ def _source_block(job: dict) -> str:
     **種類は job の kind で決める。** 絵の参考は絵、曲の参考は音、と揃うので、
     出来上がりと同じ見せ方でよい。
     """
-    url = (job.get("source_url") or "").strip()
-    if not url:
+    urls = [u for u in (job.get("source_url") or "").split("\n") if u.strip()]
+    if not urls:
         return ""
     label = SOURCE_LABELS.get(job.get("source_mode") or "", "これを元にした")
+    if len(urls) > 1:
+        # **何枚目かを出す。** 役割は依頼文の中で「1 枚目は姿勢」のように書かれるので、
+        # 番号が合っていないと、どれがどの役だったのか読み手が辿れない
+        label += f"（{len(urls)} 枚）"
     kind = job.get("kind") or ""
-    if kind == media_providers.KIND_VIDEO:
-        view = f'<video class="media-img" src="{esc(url)}" controls preload="none"></video>'
-    elif kind in (media_providers.KIND_AUDIO, media_providers.KIND_SPEECH):
-        view = f'<audio src="{esc(url)}" controls preload="none"></audio>'
-    else:
-        view = f'<img class="media-img" src="{esc(url)}" alt="">'
+    blocks = []
+    for i, url in enumerate(urls, 1):
+        url = url.strip()
+        if kind == media_providers.KIND_VIDEO:
+            view = f'<video class="media-img" src="{esc(url)}" controls preload="none"></video>'
+        elif kind in (media_providers.KIND_AUDIO, media_providers.KIND_SPEECH):
+            view = f'<audio src="{esc(url)}" controls preload="none"></audio>'
+        else:
+            view = f'<img class="media-img" src="{esc(url)}" alt="">'
+        nth = f"{i} 枚目: " if len(urls) > 1 else ""
+        blocks.append(
+            f'<div class="media-source">{view}'
+            f'<p class="muted">{esc(nth)}<a href="{esc(url)}">元のファイルを開く</a></p></div>'
+        )
     return (
         f'<details class="media-text"><summary>{esc(label)}</summary>'
-        f'<div class="media-source">{view}'
-        f'<p class="muted"><a href="{esc(url)}">元のファイルを開く</a></p></div></details>'
+        + "".join(blocks) + "</details>"
     )
 
 

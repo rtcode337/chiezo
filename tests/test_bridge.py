@@ -998,7 +998,7 @@ class TestImageEditing:
         )
 
         assert (tmp_path / server.SOURCE_NAME).read_bytes() == b"PNGDATA"
-        assert path == str(tmp_path / server.SOURCE_NAME)
+        assert path == [str(tmp_path / server.SOURCE_NAME)]
 
     def test_置いた元の絵は成果として拾わない(self, bridge, tmp_path):
         """今書いたものなので mtime も新しい。除かないと「直っていない絵」を返す。"""
@@ -1011,7 +1011,7 @@ class TestImageEditing:
         edited = tmp_path / "out-1.png"
         edited.write_bytes("直した絵".encode())
 
-        got = server._collect_images(str(tmp_path), started, skip=str(source))
+        got = server._collect_images(str(tmp_path), started, skip=[str(source)])
 
         assert got == ["直した絵".encode()]
 
@@ -1037,3 +1037,48 @@ class TestImageEditing:
         assert "Draw a NEW picture" in text
         assert "Do not copy its subject" in text
         assert "exactly as it is" not in text
+
+
+class TestSeveralReferences:
+    """**参考は複数受ける。** 役割が分かれることがある(姿勢の見本と絵柄の見本など)。
+    役割の名前は持たず、**渡した順にファイル名が決まる**ので、依頼文の中で
+    「1 枚目は姿勢」と書けばよい。
+    """
+
+    def test_each_reference_gets_its_own_file(self, bridge, tmp_path):
+        import base64
+
+        server = bridge()
+        body = server.ImageRequest(
+            prompt="この姿勢で",
+            images=[base64.b64encode(b"A").decode(), base64.b64encode(b"B").decode()],
+            image_mode=server.MODE_REFERENCE,
+        )
+        paths = server._write_source(body, str(tmp_path))
+        assert [p.split("/")[-1] for p in paths] == ["source.png", "source-2.png"]
+        assert (tmp_path / "source.png").read_bytes() == b"A"
+        assert (tmp_path / "source-2.png").read_bytes() == b"B"
+
+    def test_the_prompt_names_them_in_order(self, bridge, tmp_path):
+        import base64
+
+        server = bridge()
+        body = server.ImageRequest(
+            prompt="1 枚目は姿勢、2 枚目は絵柄",
+            images=[base64.b64encode(b"A").decode(), base64.b64encode(b"B").decode()],
+            image_mode=server.MODE_REFERENCE,
+        )
+        prompt = server._image_prompt(body, str(tmp_path))
+        assert "source.png" in prompt and "source-2.png" in prompt
+        assert prompt.index("source.png") < prompt.index("source-2.png")
+
+    def test_an_old_caller_sending_one_image_still_works(self, bridge, tmp_path):
+        """`images` を知らない頼み方(`image` だけ)も、今までどおり通ること。"""
+        import base64
+
+        server = bridge()
+        body = server.ImageRequest(
+            prompt="直して", image=base64.b64encode(b"A").decode(),
+        )
+        assert server._write_source(body, str(tmp_path)) == [str(tmp_path / "source.png")]
+        assert "source-2.png" not in server._image_prompt(body, str(tmp_path))

@@ -2399,7 +2399,11 @@ class ImageRequest(BaseModel):
     # `edit` は「これを直す(他は変えない)」、`reference` は「これを参考に別のものを
     # 描く(絵柄を合わせ、中身は新しく)」。**両方は渡せない**(言い方が逆になる)
     edit: str = ""
-    reference: str = ""
+    # **参考は何枚でも渡せる**(文字列 1 本でも配列でも受ける)。役割が分かれることが
+    # あるため —— 姿勢の見本と絵柄の見本を同時に渡す、など。**役割の名前は持たない**。
+    # 渡した順に相手側のファイル名が決まるので、「1 枚目は姿勢、2 枚目は絵柄」と
+    # 依頼文に書けばよい。**直すほう(`edit`)は 1 枚だけ**
+    reference: str | list[str] = ""
     # 相手。空なら既定(自前の GPU)
     backend: str | None = None
     model: str | None = None
@@ -2543,22 +2547,31 @@ def _edit_source(edit: str) -> tuple[str, str]:
     return ("", edit) if edit.startswith(("http://", "https://")) else (edit, "")
 
 
-async def _source_image(edit: str, reference: str) -> tuple[bytes, str, str]:
-    """元にする絵と、その使い道と、**指し先の文字列**を返す。
+async def _source_image(
+    edit: str, reference: str | list[str]
+) -> tuple[tuple[bytes, ...], str, tuple[str, ...]]:
+    """元にする絵と、その使い道と、**指し先の並び**を返す。
 
     **両方は受け取らない。** 相手への言い方が逆(片方は「他を変えるな」、もう片方は
     「別のものを描け」)なので、両方渡されたらどちらの意図か決めようがない。
 
+    **参考は複数、直すのは 1 枚。** 何枚も同時に直すという指示は成立しない。
+
     3 つ目を返すのは**画面に出すため**。中身(bytes)は相手へ渡したら消えるので、
     どこのものを元にしたかは指し先を控えておくしかない。
     """
-    if edit and reference:
+    refs = [reference] if isinstance(reference, str) else list(reference)
+    refs = [r.strip() for r in refs if r and r.strip()]
+    if edit and refs:
         raise HTTPException(400, {"error": "edit と reference は同時に渡せません"})
-    if not (edit or reference):
-        return b"", media_backends.SOURCE_EDIT, ""
-    mode = media_backends.SOURCE_EDIT if edit else media_backends.SOURCE_REFERENCE
-    ref = edit or reference
-    return await media.load_image(*_edit_source(ref)), mode, ref
+    if not (edit or refs):
+        return (), media_backends.SOURCE_EDIT, ()
+    if edit:
+        mode, refs = media_backends.SOURCE_EDIT, [edit]
+    else:
+        mode = media_backends.SOURCE_REFERENCE
+    loaded = tuple([await media.load_image(*_edit_source(r)) for r in refs])
+    return loaded, mode, tuple(refs)
 
 
 @app.post("/v1/media/image")
@@ -2575,9 +2588,9 @@ async def media_image(body: ImageRequest, request: Request) -> dict:
         negative=body.negative,
         steps=body.steps,
         group=body.group,
-        source=source,
+        sources=source,
         source_mode=mode,
-        source_ref=ref,
+        source_refs=ref,
         requested_by=media.caller_name(body.requested_by, request.headers.get("user-agent", "")),
     )
 

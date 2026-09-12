@@ -83,7 +83,13 @@ class ImageRequest:
     # 元にする絵。 使い道が 2 つあり、相手への言い方が逆になるので mode で分ける ——
     # `edit` は「これを直す(他は変えない)」、`reference` は「これを参考に別のものを
     # 描く(絵柄を合わせ、中身は新しく)」。一から描かせると絵柄もポーズも毎回振れる。
-    source: bytes = b""
+    #
+    # **参考は複数渡せる。** 役割が分かれることがあるため(姿勢の見本と絵柄の見本を
+    # 同時に渡す、など)。**役割の名前は持たない** —— 渡した順に相手側のファイル名が
+    # 決まるので、「1 枚目は姿勢、2 枚目は絵柄」と依頼文で書けばよい。
+    # 種類を増やすより、そのほうが後から効く。**直すほう(edit)は 1 枚だけ**
+    # (何枚も同時に直すという指示が成立しない)。
+    sources: tuple[bytes, ...] = ()
     source_mode: str = "edit"
 
 
@@ -710,9 +716,12 @@ async def _bridge_image_generate(
     spec: media_providers.MediaProvider, req: ImageRequest, seed: int
 ) -> GeneratedImage:
     body: dict = {"prompt": req.prompt, "size": req.size, "n": 1}
-    if req.source:
-        # 絵そのものを送る。 ブリッジは別のコンテナなので、こちらのパスは見えない
-        body["image"] = base64.b64encode(req.source).decode()
+    if req.sources:
+        # 絵そのものを送る。 ブリッジは別のコンテナなので、こちらのパスは見えない。
+        # **`image` にも 1 枚目を入れる** —— ブリッジが古いままでも、
+        # 少なくとも 1 枚は届く(こちらだけ先に焼き直したときに黙って無視されない)
+        body["image"] = base64.b64encode(req.sources[0]).decode()
+        body["images"] = [base64.b64encode(data).decode() for data in req.sources]
         body["image_mode"] = req.source_mode
     async with _client(BRIDGE_IMAGE_TIMEOUT) as client:
         res = await client.post(

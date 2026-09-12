@@ -1235,11 +1235,22 @@ class ImageRequest(BaseModel):
     #   reference … これを参考に別のものを描く。絵柄・色・線を合わせ、中身は新しく
     # 一から描き直させると絵柄もポーズも毎回振れるので、どちらの用途でも元が要る。
     image: str = ""
+    # **参考は複数受ける**(役割が分かれることがある —— 姿勢の見本と絵柄の見本など)。
+    # `image` は 1 枚目と同じものが入る(頼む側が古いときの逃げ道)。
+    # **直すほう(edit)は 1 枚だけ** —— 何枚も同時に直すという指示が成立しない。
+    images: list[str] = []
     image_mode: str = "edit"
 
 
 # 元の絵を置くファイル名。 エージェントに名指しで伝えるので、決め打ちにする。
 SOURCE_NAME = "source.png"
+
+
+def source_name(index: int) -> str:
+    """複数渡されたときのファイル名。**1 枚のときは今までと同じ名前**にする ——
+    `source-1.png` に変えると、エージェントに名指しで伝えている文面も変わる。
+    """
+    return SOURCE_NAME if index == 0 else f"source-{index + 1}.png"
 
 # 元の絵の使い道。 **文面が逆になる**ので、渡す側が言い分ける ——
 # 直すのに「参考に」と言うと別の絵を描き、参考にしたいのに「直せ」と言うと
@@ -1266,11 +1277,19 @@ def _image_prompt(body: ImageRequest, out_dir: str) -> str:
     参考にしただけの別の絵を描いてしまう —— 直す箇所以外は 1 画素も変えるな、と
     言い切るのが要点。
     """
-    hint = SOURCE_HINT if body.image and CLI == "codex" else ""
-    if body.image and body.image_mode == MODE_REFERENCE:
+    encoded = body.images or ([body.image] if body.image else [])
+    hint = SOURCE_HINT if encoded and CLI == "codex" else ""
+    if encoded and body.image_mode == MODE_REFERENCE:
+        # **渡した順にファイルを名指しする。** 役割(姿勢の見本・絵柄の見本…)は
+        # こちらでは決めない —— 依頼文の中で「1 枚目は…」と書けるように、
+        # 順番とファイル名の対応だけを伝える
+        listed = ", ".join(f"{out_dir}/{source_name(i)}" for i in range(len(encoded)))
+        plural = "images" if len(encoded) > 1 else "image"
+        order = (" They are listed in the order the request refers to them "
+                 "(the 1st, the 2nd, and so on)." if len(encoded) > 1 else "")
         return (
-            f"Look at the existing image {out_dir}/{SOURCE_NAME} and use it as a "
-            f"reference for style only.{hint}\n\n"
+            f"Look at the existing {plural} {listed} and use them as "
+            f"references.{order}{hint}\n\n"
             f"{body.prompt}\n\n"
             "Draw a NEW picture. Match the reference's drawing style exactly — the same "
             "line weight and outline colour, the same flat colouring, the same "
@@ -1282,7 +1301,7 @@ def _image_prompt(body: ImageRequest, out_dir: str) -> str:
             "Do not create any other files, do not write code, and do not explain. "
             "When the file is saved, reply with just the file path."
         )
-    if body.image:
+    if encoded:
         return (
             f"Edit the existing image {out_dir}/{SOURCE_NAME}.{hint}\n\n"
             f"{body.prompt}\n\n"
@@ -1353,27 +1372,32 @@ def _existing(root: str) -> frozenset[str]:
     )
 
 
-def _write_source(body: ImageRequest, out_dir: str) -> str:
+def _write_source(body: ImageRequest, out_dir: str) -> list[str]:
     """直す元の絵を作業ディレクトリへ置く。置かなければ空文字。
 
     **エージェントに見せられるのはこの作業ディレクトリだけ**(`-s workspace-write` /
     `--dangerously-skip-permissions` で許してあるのがここ)。頼む側のディスクは
     見えないので、絵そのものを base64 で受け取ってこちらで書く。
     """
-    if not body.image:
-        return ""
-    try:
-        data = base64.b64decode(body.image, validate=True)
-    except (ValueError, binascii.Error) as e:
-        raise HTTPException(400, {"error": "image は base64 で渡してください"}) from e
-    path = os.path.join(out_dir, SOURCE_NAME)
-    with open(path, "wb") as f:
-        f.write(data)
-    return path
+    encoded = body.images or ([body.image] if body.image else [])
+    if not encoded:
+        return []
+    paths = []
+    for i, item in enumerate(encoded):
+        try:
+            data = base64.b64decode(item, validate=True)
+        except (ValueError, binascii.Error) as e:
+            raise HTTPException(400, {"error": "image は base64 で渡してください"}) from e
+        path = os.path.join(out_dir, source_name(i))
+        with open(path, "wb") as f:
+            f.write(data)
+        paths.append(path)
+    return paths
 
 
 def _collect_images(
-    out_dir: str, since: float, seen: frozenset[str] = frozenset(), skip: str = ""
+    out_dir: str, since: float, seen: frozenset[str] = frozenset(),
+    skip: tuple[str, ...] | list[str] = ()
 ) -> list[bytes]:
     """この実行で増えた画像を拾う。
 
@@ -1403,7 +1427,7 @@ def _collect_images(
                     found.append((stat.st_mtime, path))
         return found
 
-    skipped = frozenset({skip}) if skip else frozenset()
+    skipped = frozenset(skip)
     found = scan(out_dir, skipped) or scan(_shared_root(), seen)
 
     out = []
@@ -1441,7 +1465,7 @@ async def _generate_images(body: ImageRequest) -> dict:
     started = time.time()
     seen = _existing(_shared_root())
     with tempfile.TemporaryDirectory(prefix="chiezo-image-") as out_dir:
-        source = _write_source(body, out_dir)
+        sources = _write_source(body, out_dir)
         prompt = _image_prompt(body, out_dir)
         if CLI == "antigravity":
             # agy はプロンプトを引数で取る(会話の口と同じ)。作業ディレクトリは
@@ -1482,7 +1506,7 @@ async def _generate_images(body: ImageRequest) -> dict:
             raise HTTPException(502, {"error": f"{CLI} failed", "exit_code": proc.returncode,
                                       "stderr": detail})
 
-        images = _collect_images(out_dir, started, seen, skip=source)
+        images = _collect_images(out_dir, started, seen, skip=sources)
 
     if not images:
         # 説明だけ返してファイルを書かないことがある(相手はエージェント)。
