@@ -553,6 +553,50 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Chiezo", version="0.2", lifespan=lifespan)
 
 
+# **AI を使う口。ここへはブリッジを通さない。**
+#
+# 相手を指名して頼んでいるのに、指名された側が別の相手へ聞きに行く —— 依頼として
+# 成立していないし、誰が答えたのかも誰の枠を使ったのかも読めなくなる。
+# 詳しい理由と、道具を取り上げるだけでは止まらないことは `media.refuse_bridge_caller`。
+#
+# **口ごとに書かずに 1 か所で見る。** 口ごとだと、付け忘れが「枠が二重に減って
+# 初めて気づく」類の漏れになる。中間層なら**本体の検査より手前**でもある ——
+# 口ごとの検査は、本体が壊れているときに素通りして 422 になっていた。
+_AI_PATHS = (
+    "/v1/ask",
+    "/v1/chat",
+    "/v1/ai/complete",
+    "/v1/media/image",
+    "/v1/media/audio",
+    "/v1/media/video",
+    "/v1/media/speech",
+    "/v1/media/text",
+    "/v1/media/transcribe",
+    "/v1/collect/draft",
+)
+
+
+def _asks_an_ai(path: str) -> bool:
+    """その口は AI を使うか。**読む口(search / doc / filter)は通す** ——
+    ブリッジの値打ちは「Chiezo の知識を引かせる」ことなので。
+    """
+    if path.rstrip("/") in _AI_PATHS or path.startswith("/v1/collect/draft"):
+        return True
+    # 収集の「今すぐ 1 回」。名前が途中に入るので後ろで見る
+    return path.startswith("/v1/collect/") and path.rstrip("/").endswith("/run")
+
+
+@app.middleware("http")
+async def refuse_orders_from_the_cli(request: Request, call_next):
+    """Chiezo が動かしている CLI からの、AI を使う口への依頼を断る。"""
+    if _asks_an_ai(request.url.path):
+        try:
+            media.refuse_bridge_caller(request.client.host if request.client else "")
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content=exc.detail)
+    return await call_next(request)
+
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     payload = exc.detail if isinstance(exc.detail, dict) else {"error": str(exc.detail)}
@@ -1843,7 +1887,7 @@ class CollectionDraft(BaseModel):
 
 
 @app.post("/v1/collect/draft")
-async def collect_draft(body: CollectionDraft):
+async def collect_draft(body: CollectionDraft, request: Request):
     """AI に収集の指示文を書いてもらう(**保存はしない**)。
 
     決まり(返させる JSON の形・`{cursor}` の使い方・title が重複の鍵)を
@@ -1945,6 +1989,7 @@ def collect_focus_now(name: str, body: CollectionFocus):
 
 @app.post("/v1/collect/{name}/run")
 def collect_run_now(
+    request: Request,
     name: str,
     sweep: str | None = Query(None, description="走らせる巡回の名前(省くと次に走るはずのもの)"),
 ):
@@ -2320,7 +2365,7 @@ async def ai_usage(
 
 
 @app.post("/v1/ai/complete")
-async def ai_complete(body: AiCompleteRequest) -> dict:
+async def ai_complete(body: AiCompleteRequest, request: Request) -> dict:
     """渡されたメッセージをそのまま相手へ投げて、本文を返す(1 往復)。
 
     道具は既定では渡さない。`web=true` のときだけ相手自身の web 検索を開ける
@@ -2538,13 +2583,6 @@ async def media_backends_list(
     return {"backends": await media.backends(kind), "kind": kind, "enabled": media.is_enabled()}
 
 
-def _refuse_bridge(request: Request) -> None:
-    """**Chiezo が動かしている CLI からの生成依頼を断る。** 理由は
-    `media.refuse_bridge_caller`(頼まれた側が頼み返すと、枠も時間も二重に掛かる)。
-    """
-    media.refuse_bridge_caller(request.client.host if request.client else "")
-
-
 def _edit_source(edit: str) -> tuple[str, str]:
     """来た値を (path, url) に振り分ける。
 
@@ -2584,7 +2622,6 @@ async def _source_image(
 @app.post("/v1/media/image")
 async def media_image(body: ImageRequest, request: Request) -> dict:
     """描き始めて job を返す(待たない)。進み具合は下の口で引く。"""
-    _refuse_bridge(request)
     source, mode, ref = await _source_image(body.edit, body.reference)
     return media.start_image_job(
         prompt=body.prompt,
@@ -2606,7 +2643,6 @@ async def media_image(body: ImageRequest, request: Request) -> dict:
 @app.post("/v1/media/audio")
 async def media_audio(body: AudioRequestBody, request: Request) -> dict:
     """作り始めて job を返す(待たない)。進み具合は絵と同じ口で引く。"""
-    _refuse_bridge(request)
     source = await media.load_image(*_edit_source(body.reference)) if body.reference else b""
     return media.start_audio_job(
         prompt=body.prompt,
@@ -2633,7 +2669,6 @@ async def media_video(body: VideoRequestBody, request: Request) -> dict:
 
     絵より待つ(数分〜十数分)ので、呼ぶ側は間を空けて引きに来ること。
     """
-    _refuse_bridge(request)
     return media.start_video_job(
         prompt=body.prompt,
         backend=(body.backend or "").strip(),
@@ -2653,7 +2688,6 @@ async def media_video(body: VideoRequestBody, request: Request) -> dict:
 @app.post("/v1/media/speech")
 async def media_speech(body: SpeechRequestBody, request: Request) -> dict:
     """読み上げ始めて job を返す(待たない)。進み具合は絵と同じ口で引く。"""
-    _refuse_bridge(request)
     return media.start_speech_job(
         text=body.text,
         backend=(body.backend or "").strip(),
@@ -2680,7 +2714,6 @@ async def media_text(body: MediaTextRequest, request: Request) -> dict:
     絵や音と同じ表に入るので、`/v1/media/groups` も `/v1/media/picks` も
     そのまま使える。
     """
-    _refuse_bridge(request)
     return media.start_text_job(
         prompt=body.prompt,
         backend=(body.backend or "").strip(),
@@ -2703,6 +2736,7 @@ async def media_cancel(job_id: str) -> dict:
 
 @app.post("/v1/media/transcribe")
 async def media_transcribe(
+    request: Request,
     file: UploadFile = File(..., description="文字起こしする音声・動画"),
     backend: str = Form(""),
     model: str = Form(""),

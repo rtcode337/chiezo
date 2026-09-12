@@ -1885,3 +1885,56 @@ class TestAdminPages:
         assert "長期記憶" in memory and "長期記憶" not in ai
         assert "AI への依頼" in ai and "AI への依頼" not in memory
         assert "いま動いているビルド" in server and "いま動いているビルド" not in memory
+
+
+class TestNotTakingOrdersFromTheCliItDrives:
+    """**Chiezo が動かしている CLI から、AI を使う口への依頼を断る。**
+
+    相手を指名して頼んでいるのに、指名された側が別の相手へ聞きに行く ——
+    依頼として成立していないし、誰が答えたのかも誰の枠を使ったのかも読めなくなる。
+
+    **道具を取り上げるだけでは止まらない。** MCP から生成の道具を外した口を
+    用意しても、ブリッジ越しの相手はシェルを持っているので REST の口を直接叩ける
+    (実際に `Python-urllib/3.11` から、こちらの依頼文を英訳した生成が立った)。
+
+    **この一覧は取りこぼしうる。** AI を使う口が増えたらここにも足すこと ——
+    足し忘れは、枠が二重に減って初めて気づく類の漏れになる。
+    """
+
+    ASKING = (
+        ("GET", "/v1/ask?q=test"),
+        ("POST", "/v1/chat"),
+        ("POST", "/v1/ai/complete"),
+        ("POST", "/v1/media/image"),
+        ("POST", "/v1/media/audio"),
+        ("POST", "/v1/media/video"),
+        ("POST", "/v1/media/speech"),
+        ("POST", "/v1/media/text"),
+        ("POST", "/v1/media/transcribe"),
+        ("POST", "/v1/collect/draft"),
+        ("POST", "/v1/collect/draft-extract"),
+        ("POST", "/v1/collect/whatever/run"),
+    )
+
+    @pytest.fixture()
+    def as_bridge(self, monkeypatch):
+        from app import media
+
+        monkeypatch.setattr(media, "bridge_addresses", lambda: frozenset({"testclient"}))
+
+    def test_every_way_of_asking_an_ai_is_refused(self, client, as_bridge):
+        for method, path in self.ASKING:
+            res = client.request(method, path, json={})
+            assert res.status_code == 403, f"{method} {path} が通ってしまった"
+            assert "AI への依頼" in res.text
+
+    def test_reading_is_still_allowed(self, client, as_bridge):
+        """ブリッジの値打ちは「Chiezo の知識を引かせる」ことなので、読む口は通す。"""
+        for path in ("/v1/sources", "/v1/jawiki/search?q=東京"):
+            assert client.get(path).status_code != 403
+
+    def test_everyone_else_is_let_through(self, client, monkeypatch):
+        from app import media
+
+        monkeypatch.setattr(media, "bridge_addresses", frozenset)
+        assert client.post("/v1/media/image", json={}).status_code != 403
