@@ -1874,6 +1874,12 @@ class TestTheCollectSectionMarkup:
 
         return admin._collect_html({}, "")
 
+    def _detail(self, name="news"):
+        """収集 1 つぶんの面。**一覧には出さないもの**(プロンプト・区画・直す口)。"""
+        from app.views import admin
+
+        return admin._collect_detail_html(collect.get(name), "")
+
     def test_every_form_is_opened_and_closed(self, sample):
         html = self._html(sample)
         assert html.count("<form") == html.count("</form>")
@@ -1932,7 +1938,8 @@ class TestTheCollectSectionMarkup:
         # 進み具合は巡回ごとに出る
         assert "2 のうち 1" in html
         assert "7 日で一周" in html
-        assert "く〜そ" in html
+        # 区画の一覧は収集の面へ。**途中で切らない**（どこがまだかを読みに来る面なので）
+        assert "く〜そ" in self._detail()
 
     def test_a_collection_without_partitions_says_nothing(self, sample):
         assert "区画:" not in self._html(sample)
@@ -1949,17 +1956,23 @@ class TestTheCollectSectionMarkup:
         html = self._html(sample)
         assert "opus" in html and "high" in html
 
-    def test_the_prompt_opens_in_a_row_of_its_own(self, sample):
-        """名前のセルの中で開くと、巡回のぶん背の高い行のどこかに長いフォームが挟まり、
-        どの巡回の設定を触っているのか分からなくなる。
+    def test_the_name_opens_the_collection_page(self, sample):
+        """**一覧の中で開かない。** 折り畳みに押し込んでいた頃は、開くたびに表が
+        縦へ伸びて他の収集の行が画面外へ出ていた —— 読みに来た人はその収集だけを
+        見に来ているので、専用の面に置けば畳む理由が無い。
         """
         collect.update("news", sweeps=[{"name": "ざっと"}, {"name": "じっくり"}])
-        body = self._html(sample).split("<tbody>")[1].split("</tbody>")[0]
+        html = self._html(sample)
 
-        # プロンプトは列をまたぐ行に出る（名前のセルの中ではない）
-        header = self._html(sample).split("<thead>")[1].split("</thead>")[0]
-        assert f'colspan="{header.count("<th>")}"' in body
-        assert body.index("colspan=") > body.index("じっくり")
+        assert '<a href="/admin/collect/news">news</a>' in html
+        # プロンプトも設定も、一覧には出さない（下の「収集を追加する」は別物）
+        assert "<summary>プロンプト</summary>" not in html
+        assert "/admin/collect/news/edit" not in html
+        assert '<input name="sweep_name"' not in html
+        # 面のほうには畳まずに出る
+        detail = self._detail()
+        assert '<pre class="prompt-view">' in detail
+        assert "<summary>プロンプト</summary>" not in detail
 
     def test_sweeps_are_fields_not_json(self, sample):
         """JSON を直に書かせると、間隔ひとつ変えるのに配列の構文を相手にすることになる。
@@ -1968,7 +1981,7 @@ class TestTheCollectSectionMarkup:
         繰り返せるようにすれば足りる。
         """
         collect.update("news", sweeps=[{"name": "ざっと"}, {"name": "じっくり"}])
-        html = self._html(sample)
+        html = self._detail()
 
         assert '<textarea name="sweeps"' not in html
         assert html.count('<input name="sweep_name"') == 3  # 2 本 + 足すための空枠
@@ -1977,7 +1990,7 @@ class TestTheCollectSectionMarkup:
 
     def test_one_sweep_needs_no_name_to_delete(self, sample):
         """1 本しか無いときは、消す案内を出さない（消したら回らなくなる）。"""
-        html = self._html(sample)
+        html = self._detail()
         assert "名前を消すと、この巡回は無くなります" not in html
         assert "名前を書くと増えます" in html
 
@@ -2056,6 +2069,74 @@ class TestTheCollectSectionMarkup:
         html = admin._collect_html({"news": baked}, "")
         assert "1,234 件" in html
         assert html.count("<form") == html.count("</form>")
+
+
+class TestTheCollectionPage:
+    """収集 1 つぶんの面(`/admin/collect/{name}`)。
+
+    一覧の折り畳みに押し込んでいた頃は、開くたびに表が縦へ伸びて他の収集の行が
+    画面外へ出ていた。読みに来た人はその収集だけを見に来ているので、専用の面に
+    置けば畳む理由が無い。
+    """
+
+    @pytest.fixture()
+    def client(self, enabled, built_data_dir, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        from app.main import app
+
+        with TestClient(app) as c:
+            yield c
+
+    def test_it_opens_with_everything_unfolded(self, client, sample):
+        collect.update("news", sweeps=[{"name": "ざっと"}, {"name": "じっくり"}])
+        html = client.get("/admin/collect/news").text
+
+        assert '<pre class="prompt-view">' in html
+        assert "<summary>プロンプト</summary>" not in html
+        # 巡回の表も、直す口も同じ面にある
+        assert "ざっと" in html and "じっくり" in html
+        assert "/admin/collect/news/edit" in html
+        assert "/admin/collect/news/focus" in html
+        # まだ焼いていない収集には、溜まったものへの入口を出さない(404 になるだけ)
+        assert "まだ焼いていない" in html
+
+    def test_every_partition_is_listed(self, client, sample):
+        """**途中で切らない。** ここは「どこを見ていて、どこがまだか」を読む面。"""
+        keys = [partitioning.title_key(f"あ{i}", f"い{i}") for i in range(30)]
+        collect.update(
+            "news",
+            partition={"by": "title", "target": 10},
+            partitions=[{"key": k, "count": 10} for k in keys],
+        )
+        html = client.get("/admin/collect/news").text
+
+        for key in keys:
+            assert esc_key(key) in html
+        assert "ほか" not in html
+
+    def test_the_changes_are_only_this_one(self, client, sample, monkeypatch, tmp_path):
+        """その収集の面なので、名前の列は出さない(全部同じ名前が並ぶだけ)。"""
+        from app import collect_log
+
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        collect_log.record("news", status=collect_log.STATUS_OK, diff={"total": 1, "added": 1})
+        collect_log.record("other", status=collect_log.STATUS_OK, diff={"total": 9, "added": 9})
+
+        html = client.get("/admin/collect/news").text
+        assert "直近の変更" in html
+        assert "other" not in html
+        assert "<th>収集</th>" not in html
+
+    def test_an_unknown_collection_is_404(self, client, sample):
+        assert client.get("/admin/collect/nosuch").status_code == 404
+
+
+def esc_key(key: str) -> str:
+    from app.pages import esc
+
+    return esc(key)
 
 
 class TestWhatChangedInOneDoc:
@@ -2289,7 +2370,9 @@ class TestPickingTheModelAndTheEffort:
         return admin._collect_html({}, "")
 
     def test_they_are_selects_not_free_text(self, sample):
-        html = self._html(sample)
+        from app.views import admin
+
+        html = admin._collect_detail_html(collect.get("news"), "")
         # 巡回ごとに 1 組ずつ出る（相手も巡回ごとに変えられるので）
         assert '<select name="sweep_model">' in html
         assert '<select name="sweep_effort">' in html

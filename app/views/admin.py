@@ -475,10 +475,13 @@ def _backend_hint() -> str:
 
 def _backend_label(item) -> str:
     """行に出す相手の名前。未指定なら既定だと分かるように書く。"""
-    if not item.backend:
-        return '<span class="muted">既定にまかせる</span>'
-    spec = providers.get(item.backend)
-    label = esc(spec.label if spec else item.backend)
+    spec = providers.get(item.backend) if item.backend else None
+    label = (
+        esc(spec.label if spec else item.backend)
+        if item.backend else '<span class="muted">既定にまかせる</span>'
+    )
+    # **相手を選んでいなくても、モデルと考える量は出す。** 相手は既定でよいが
+    # 考える量だけ上げている、が普通にある —— 出さないと、そこが空欄に見える
     detail = " / ".join(x for x in (item.model, item.effort) if x)
     return label + (f'<br><span class="muted">{esc(detail)}</span>' if detail else "")
 
@@ -559,10 +562,6 @@ PARTITION_EXAMPLE = json.dumps(
     },
     ensure_ascii=False,
 )
-
-# 一覧に出す区画の数。**全部は出さない** —— 数千区画あるので、画面が読めなくなる。
-# 見たいのは「次にどこを見るか」と「どれくらい回ったか」で、全件の一覧ではない
-PARTITION_SAMPLES = 12
 
 FEED_EXAMPLE = json.dumps(
     {"urls": ["https://example.com/feed", "https://example.org/atom"], "since": "last_run"},
@@ -789,24 +788,22 @@ def _partition_html(item) -> str:
             '<p class="muted">区画: まだ割っていません'
             "(次の実行で対象の空間を割ってから回り始めます)。</p>"
         )
+    # **途中で切らない。** ここを読みに来るのは「どこを見ていて、どこがまだか」を
+    # 知りたいときなので、頭の数件だけ出しても答えにならない(325 区画なら 325 行)。
+    # 一覧の表に混ぜていた頃は縦に伸びすぎたが、収集 1 つぶんの面なら並べてよい
     rows = "".join(
         f"<tr><td>{esc(p['key'])}</td><td>{p['count']:,}</td>"
         f"<td>{esc('、'.join(sorted((p.get('visits') or {}).keys())))}</td></tr>"
-        for p in item.partitions[:PARTITION_SAMPLES]
-    )
-    more = (
-        f'<p class="muted">ほか {total - PARTITION_SAMPLES:,} 区画。</p>'
-        if total > PARTITION_SAMPLES else ""
+        for p in item.partitions
     )
     return (
         f'<p class="muted">区画: {total:,}</p>'
-        "<details><summary>区画の一覧</summary>"
         "<table><thead><tr><th>区画</th><th>母集団</th><th>見終えた巡回</th></tr></thead>"
-        f"<tbody>{rows}</tbody></table>{more}</details>"
+        f"<tbody>{rows}</tbody></table>"
     )
 
 
-def _collect_changes_html(limit: int = 30) -> str:
+def _collect_changes_html(limit: int = 30, name: str | None = None) -> str:
     """直近どこに修正が入ったか(`app/collect_log.py`)。
 
     **表の「前回」列とは別に要る。** あちらは最新の 1 回で上書きされるので、
@@ -822,7 +819,7 @@ def _collect_changes_html(limit: int = 30) -> str:
             '<p class="muted">変更履歴は記録していません。'
             "<code>CHIEZO_STATE_DIR</code> を設定すると残ります。</p></details>"
         )
-    changes = collect_log.recent(limit=limit)
+    changes = collect_log.recent(name, limit=limit)
     if not changes:
         return (
             '<details><summary>直近の変更</summary>'
@@ -840,7 +837,7 @@ def _collect_changes_html(limit: int = 30) -> str:
         )
         if row["status"] != collect_log.STATUS_OK:
             rows.append(
-                f"<tr><td>{when}</td><td>{esc(row['name'])}</td><td>{esc(row['sweep'])}</td>"
+                f"<tr><td>{when}</td>{_changes_name_cell(row, name)}<td>{esc(row['sweep'])}</td>"
                 f"<td>{who}</td>"
                 f'<td colspan="2"><span class="stale">失敗: {esc(row["error"])}</span></td></tr>'
             )
@@ -880,14 +877,14 @@ def _collect_changes_html(limit: int = 30) -> str:
             f'<br><span class="stale">{esc(row["error"])}</span>' if row["error"] else ""
         )
         rows.append(
-            f"<tr><td>{when}</td><td>{esc(row['name'])}</td>"
+            f"<tr><td>{when}</td>{_changes_name_cell(row, name)}"
             f"<td>{esc(row['sweep'])}{scope}</td><td>{who}</td>"
             f'<td>{summary}{note}</td><td>{row["total"]:,} 件{detail}</td></tr>'
         )
     return f"""
 <details open><summary>直近の変更</summary>
 <table>
-<thead><tr><th>いつ</th><th>収集</th><th>どの回</th><th>頼んだ相手</th>
+<thead><tr><th>いつ</th>{"" if name else "<th>収集</th>"}<th>どの回</th><th>頼んだ相手</th>
 <th>変化</th><th>焼いた後</th></tr></thead>
 <tbody>
 {"".join(rows)}
@@ -897,6 +894,104 @@ def _collect_changes_html(limit: int = 30) -> str:
 記録は <code>state/collect_runs.db</code> に残り、古いものから捨てられる。</p>
 </details>
 """
+
+
+def _changes_name_cell(row: dict, name: str | None) -> str:
+    """収集の名前の欄。**1 つの収集の面では出さない**(全部同じ名前が並ぶだけ)。"""
+    return "" if name else f"<td>{esc(row['name'])}</td>"
+
+
+def _collect_detail_html(item, disabled: str) -> str:
+    """1 つの収集の中身(プロンプト・進み具合・区画・直す口)。
+
+    **畳まない。** 一覧の中で開いていた頃は、開くたびに表が縦へ伸びて、
+    他の収集の行が画面外へ押し出されていた —— 読みに来た人はその収集だけを
+    見に来ているので、専用の面に置けば畳む理由が無い。
+    """
+    return (
+        f'<pre class="prompt-view">{esc(item.prompt)}</pre>'
+        f'<p class="muted">進み具合(次の実行で {{cursor}} に入る値): '
+        f'<code>{esc(item.cursor) or "(まだ無し)"}</code></p>'
+        f"{_partition_html(item)}"
+        f"<details><summary>編集する</summary>"
+        f'<form method="post" action="/admin/collect/{esc(item.name)}/edit" class="collect-form">'
+        f'<p><label>説明<br><input name="description" value="{esc(item.description)}"></label></p>'
+        f"{_sweeps_form(item)}"
+        f'<p><label>プロンプト<br><textarea name="prompt" rows="10">{esc(item.prompt)}</textarea></label></p>'
+        f'<p><label>進み具合(空にすると最初から)<br>'
+        f'<input name="cursor" value="{esc(item.cursor)}"></label></p>'
+        f"{_backend_hint()}"
+        f"<p><label>集め方<br>{_mode_select(item.mode)}</label></p>"
+        f'<p><label>消えすぎの歯止め(前の何割を下回ったら止めるか。0 で外す)<br>'
+        f'<input name="keep_ratio" type="number" step="0.05" min="0" max="1"'
+        f' value="{item.keep_ratio}"></label></p>'
+        f'<p><label>抽出の指定(JSON。空なら毎回 AI に集めさせる)<br>'
+        f'<textarea name="extract" rows="8" spellcheck="false">'
+        f"{esc(_extract_json(item))}</textarea></label></p>"
+        f'<p><label>外向きの道具(JSON。空なら道具なし)<br>'
+        f'<textarea name="feed" rows="5" spellcheck="false">'
+        f"{esc(_feed_json(item))}</textarea></label></p>"
+        f'<p class="muted">RSS / Atom を機械的に取ってきて、プロンプトの'
+        f" <code>{{feed}}</code> へ<strong>参考として</strong>差し込む。"
+        f"<strong>取ってきたものをそのまま溜めるわけではない</strong> ——"
+        f" AI は自分でも調べ、渡されたぶんも含めて採否を判断する。"
+        f" 取りに行くのは見出し・要約・URL・日付だけで、ページ本文は取らない。"
+        f" 例: <code>{esc(FEED_EXAMPLE)}</code></p>"
+        f'<p><label>区画の指定(JSON。空なら区画を持たない)<br>'
+        f'<textarea name="partition" rows="6" spellcheck="false">'
+        f"{esc(_partition_json(item))}</textarea></label></p>"
+
+        f'<p class="muted">区画を入れると、<strong>対象としている空間を密度で割って</strong>'
+        f" 1 回に 1 区画ずつ順に回る。プロンプトに <code>{{partition}}</code> を入れると"
+        f" そこへ今回見る範囲が差し込まれる。<strong>まだ 1 件も集めていない範囲にも"
+        f"区画ができる</strong>ので、「この範囲に足すべきものが無いか確かめて」が書ける。"
+        f" 母集団(<code>source</code>)を書けば、そのソースが知っている密度で割る。"
+        f" 例: <code>{esc(PARTITION_EXAMPLE)}</code></p>"
+        f'<p class="muted">指定を入れると、<strong>進み具合が空のあいだの 1 回だけ</strong>'
+        f" AI を呼ばず、手元の長期記憶から機械的に組み立てる(名前・年代・出典のように"
+        f" 既に書いてあることは、書かせると混ざるが引けば済む)。"
+        f" 進み具合が入った次からは、いつもどおり AI が肉付けする。"
+        f" 進み具合を空にすれば、また機械のほうから始まる。</p>"
+        f'<p class="muted">整理にすると、AI にいまの内容を読ませたうえで、'
+        f" 直すものと足すものだけを返させます(触れなかったものはそのまま残ります)。"
+        f" プロンプトに <code>{{current}}</code> を入れてください"
+        f"(そこへ今ある内容が差し込まれます)。消すのは AI が墓標を付けたときだけです。</p>"
+        f'<button type="submit">保存する</button></form></details>'
+        f"<details><summary>AI に抽出の指定を書かせる</summary>"
+        f'<form method="post" action="/admin/collect/draft-extract" class="collect-form">'
+        f'<input type="hidden" name="name" value="{esc(item.name)}">'
+        f'<p><label>どういう条件で抽出してほしいか<br>'
+        f'<textarea name="want" rows="3"'
+        f' placeholder="例: 印象派の画家を有名な順に30人。年代と様式が分かるように"'
+        f"></textarea></label></p>"
+        f'<p class="muted">書かせるのは指定だけで、保存はしません。'
+        f" 書けたらその場で引いてみて、何件あるか・最初の数件がどうなるかを出します。</p>"
+        f'<button type="submit">指定を書かせる</button></form></details>'
+        f"<details><summary>この部分を集中的に直させる</summary>"
+        f'<form method="post" action="/admin/collect/{esc(item.name)}/focus"'
+        f' class="collect-form"{disabled}>'
+        f'<p><label>どう直してほしいか<br>'
+        f'<textarea name="note" rows="3" required'
+        f' placeholder="例: この店は移転しているはず。住所を確かめて直して"'
+        f"></textarea></label></p>"
+        f'<p><label>直す見出し(1 行に 1 つ。空でもよい)<br>'
+        f'<textarea name="titles" rows="3"></textarea></label></p>'
+        f'<p><label>見てほしい区画(空なら上の見出しだけを見る)<br>'
+        f'<input name="partition" value=""></label></p>'
+        f'<p class="muted">定時の巡回には影響しません —— 進み具合も、次にいつ走るかも、'
+        f"区画の巡回記録も動きません。<strong>必ず「直す」側で走ります</strong>"
+        f"(集めるだけの収集でも、名指ししたものを直せます)。</p>"
+        f'<button type="submit"{disabled}>いま直させる</button></form></details>'
+        f"<details><summary>AI に相談して直す</summary>"
+        f'<form method="post" action="/admin/collect/consult" class="collect-form">'
+        f'<input type="hidden" name="name" value="{esc(item.name)}">'
+        f'<p><label>どう直したいか<br>'
+        f'<textarea name="feedback" rows="4"'
+        f' placeholder="例: 件数を5件に減らし、海外のニュースも入れて。'
+        f'出典は必ず付けさせて。"></textarea></label></p>'
+        f'<p class="muted">AI に聞くので十数秒〜1分ほどかかります。案は保存されないので、見てから決められます。</p>'
+        f'<button type="submit">相談する</button></form></details>'
+    )
 
 
 def _collect_html(sources: dict[str, Source], disabled: str) -> str:
@@ -959,98 +1054,9 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
         # 名前と溜まった件数と操作は収集のものなので、行をまたがせる
         sweep_cells = _sweep_cells(item, disabled)
         span = f' rowspan="{len(sweep_cells)}"' if len(sweep_cells) > 1 else ""
-        # **開いたものは行をまたぐ 1 行に出す。** 名前のセルの中で開くと、
-        # 巡回のぶん背の高い行のどこかに長いフォームが挟まり、どの巡回の設定を
-        # 触っているのか分からなくなる(実際、じっくりの行の横に開いて見えた)。
-        # 幅いっぱいに出せば、長いプロンプトが細い桁へ折り返されることもない
-        detail = (
-            f"<details><summary>プロンプト</summary>"
-            f'<pre class="prompt-view">{esc(item.prompt)}</pre>'
-            f'<p class="muted">進み具合(次の実行で {{cursor}} に入る値): '
-            f'<code>{esc(item.cursor) or "(まだ無し)"}</code></p>'
-            f"{_partition_html(item)}"
-            f"<details><summary>編集する</summary>"
-            f'<form method="post" action="/admin/collect/{esc(item.name)}/edit" class="collect-form">'
-            f'<p><label>説明<br><input name="description" value="{esc(item.description)}"></label></p>'
-            f"{_sweeps_form(item)}"
-            f'<p><label>プロンプト<br><textarea name="prompt" rows="10">{esc(item.prompt)}</textarea></label></p>'
-            f'<p><label>進み具合(空にすると最初から)<br>'
-            f'<input name="cursor" value="{esc(item.cursor)}"></label></p>'
-            f"{_backend_hint()}"
-            f"<p><label>集め方<br>{_mode_select(item.mode)}</label></p>"
-            f'<p><label>消えすぎの歯止め(前の何割を下回ったら止めるか。0 で外す)<br>'
-            f'<input name="keep_ratio" type="number" step="0.05" min="0" max="1"'
-            f' value="{item.keep_ratio}"></label></p>'
-            f'<p><label>抽出の指定(JSON。空なら毎回 AI に集めさせる)<br>'
-            f'<textarea name="extract" rows="8" spellcheck="false">'
-            f"{esc(_extract_json(item))}</textarea></label></p>"
-            f'<p><label>外向きの道具(JSON。空なら道具なし)<br>'
-            f'<textarea name="feed" rows="5" spellcheck="false">'
-            f"{esc(_feed_json(item))}</textarea></label></p>"
-            f'<p class="muted">RSS / Atom を機械的に取ってきて、プロンプトの'
-            f" <code>{{feed}}</code> へ<strong>参考として</strong>差し込む。"
-            f"<strong>取ってきたものをそのまま溜めるわけではない</strong> ——"
-            f" AI は自分でも調べ、渡されたぶんも含めて採否を判断する。"
-            f" 取りに行くのは見出し・要約・URL・日付だけで、ページ本文は取らない。"
-            f" 例: <code>{esc(FEED_EXAMPLE)}</code></p>"
-            f'<p><label>区画の指定(JSON。空なら区画を持たない)<br>'
-            f'<textarea name="partition" rows="6" spellcheck="false">'
-            f"{esc(_partition_json(item))}</textarea></label></p>"
-
-            f'<p class="muted">区画を入れると、<strong>対象としている空間を密度で割って</strong>'
-            f" 1 回に 1 区画ずつ順に回る。プロンプトに <code>{{partition}}</code> を入れると"
-            f" そこへ今回見る範囲が差し込まれる。<strong>まだ 1 件も集めていない範囲にも"
-            f"区画ができる</strong>ので、「この範囲に足すべきものが無いか確かめて」が書ける。"
-            f" 母集団(<code>source</code>)を書けば、そのソースが知っている密度で割る。"
-            f" 例: <code>{esc(PARTITION_EXAMPLE)}</code></p>"
-            f'<p class="muted">指定を入れると、<strong>進み具合が空のあいだの 1 回だけ</strong>'
-            f" AI を呼ばず、手元の長期記憶から機械的に組み立てる(名前・年代・出典のように"
-            f" 既に書いてあることは、書かせると混ざるが引けば済む)。"
-            f" 進み具合が入った次からは、いつもどおり AI が肉付けする。"
-            f" 進み具合を空にすれば、また機械のほうから始まる。</p>"
-            f'<p class="muted">整理にすると、AI にいまの内容を読ませたうえで、'
-            f" 直すものと足すものだけを返させます(触れなかったものはそのまま残ります)。"
-            f" プロンプトに <code>{{current}}</code> を入れてください"
-            f"(そこへ今ある内容が差し込まれます)。消すのは AI が墓標を付けたときだけです。</p>"
-            f'<button type="submit">保存する</button></form></details>'
-            f"<details><summary>AI に抽出の指定を書かせる</summary>"
-            f'<form method="post" action="/admin/collect/draft-extract" class="collect-form">'
-            f'<input type="hidden" name="name" value="{esc(item.name)}">'
-            f'<p><label>どういう条件で抽出してほしいか<br>'
-            f'<textarea name="want" rows="3"'
-            f' placeholder="例: 印象派の画家を有名な順に30人。年代と様式が分かるように"'
-            f"></textarea></label></p>"
-            f'<p class="muted">書かせるのは指定だけで、保存はしません。'
-            f" 書けたらその場で引いてみて、何件あるか・最初の数件がどうなるかを出します。</p>"
-            f'<button type="submit">指定を書かせる</button></form></details>'
-            f"<details><summary>この部分を集中的に直させる</summary>"
-            f'<form method="post" action="/admin/collect/{esc(item.name)}/focus"'
-            f' class="collect-form"{disabled}>'
-            f'<p><label>どう直してほしいか<br>'
-            f'<textarea name="note" rows="3" required'
-            f' placeholder="例: この店は移転しているはず。住所を確かめて直して"'
-            f"></textarea></label></p>"
-            f'<p><label>直す見出し(1 行に 1 つ。空でもよい)<br>'
-            f'<textarea name="titles" rows="3"></textarea></label></p>'
-            f'<p><label>見てほしい区画(空なら上の見出しだけを見る)<br>'
-            f'<input name="partition" value=""></label></p>'
-            f'<p class="muted">定時の巡回には影響しません —— 進み具合も、次にいつ走るかも、'
-            f"区画の巡回記録も動きません。<strong>必ず「直す」側で走ります</strong>"
-            f"(集めるだけの収集でも、名指ししたものを直せます)。</p>"
-            f'<button type="submit"{disabled}>いま直させる</button></form></details>'
-            f"<details><summary>AI に相談して直す</summary>"
-            f'<form method="post" action="/admin/collect/consult" class="collect-form">'
-            f'<input type="hidden" name="name" value="{esc(item.name)}">'
-            f'<p><label>どう直したいか<br>'
-            f'<textarea name="feedback" rows="4"'
-            f' placeholder="例: 件数を5件に減らし、海外のニュースも入れて。'
-            f'出典は必ず付けさせて。"></textarea></label></p>'
-            f'<p class="muted">AI に聞くので十数秒〜1分ほどかかります。案は保存されないので、見てから決められます。</p>'
-            f'<button type="submit">相談する</button></form></details>'
-        )
         rows.append(
             f"<tr{cls}>"
-            f'<td{span}><a href="{esc(browse_url(item.name))}">{esc(item.name)}</a>'
+            f'<td{span}><a href="/admin/collect/{esc(quote(item.name))}">{esc(item.name)}</a>'
             f"{mode_mark}"
             f'<br><span class="muted">{esc(item.description)}</span>{requester}'
             f"</td>"
@@ -1066,9 +1072,6 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
         )
         # 2 本目からは巡回のぶんだけ。左右のセルは 1 行目から伸びている
         rows += [f"<tr{cls}>{cells}</tr>" for cells in sweep_cells[1:]]
-        # プロンプトと設定は**列をまたぐ 1 行**に出す。列の中に押し込むと、長い本文が
-        # 細い桁へ折り返されて読めず、どの巡回の設定を触っているのかも分からない
-        rows.append(f'<tr{cls}><td colspan="10" class="collect-detail">{detail}</td></tr>')
     table = f"""
 <table>
 <thead>
@@ -2384,6 +2387,50 @@ def _preview_page_html(name: str, result: dict | None, error: str) -> str:
 <p class="muted"><a href="/admin/memory#collect">管理画面へ戻る</a></p>
 """,
     )
+
+
+@router.get("/admin/collect/{name}", response_class=HTMLResponse)
+def admin_collect_detail(request: Request, name: str):
+    """収集 1 つぶんの面。**一覧から名前を押すとここへ来る**。
+
+    **一覧の中で開かない。** 折り畳みの中に押し込んでいた頃は、開くたびに表が縦へ
+    伸びて他の収集の行が画面外へ出ていた —— 読みに来た人はその収集だけを見に来て
+    いるので、専用の面に置けば畳む理由が無い。
+
+    **区画は省かずに全部出す。** 一覧では頭の数件で足りるが(どう割れたかが分かれば
+    よい)、ここは「どこを見ていて、どこがまだか」を読みに来る面なので、
+    途中で切ると読めない。
+    """
+    collect.require_enabled()
+    item = collect.get(name)
+    src = request.app.state.sources.get(name)
+    job = _fetch_trigger_status()
+    disabled = run_buttons_disabled(job)
+    baked = (
+        f'<a href="{esc(browse_url(name))}">{src.doc_count:,} 件</a>'
+        if src is not None else '<span class="muted">まだ焼いていない</span>'
+    )
+    body = f"""
+{nav_html("/admin/memory")}
+<h1>{esc(name)}</h1>
+<p class="muted">{esc(item.description)}
+{'<br>依頼元: ' + esc(item.requested_by) if item.requested_by else ''}</p>
+<p>長期記憶: {baked} / 集め方: {esc(MODE_LABELS.get(item.mode, item.mode))}
+/ 状態: {'有効' if item.enabled else '<span class="stale">止まっている</span>'}</p>
+<table>
+<thead>
+<tr><th>巡回</th><th>頼む相手</th><th>間隔</th>
+<th>次にいつ</th><th>一周のうち</th><th>前回</th><th>実行</th></tr>
+</thead>
+<tbody>
+{"".join(f"<tr>{cells}</tr>" for cells in _sweep_cells(item, disabled))}
+</tbody>
+</table>
+{_collect_detail_html(item, disabled)}
+{_collect_changes_html(name=name)}
+<p class="muted"><a href="/admin/memory#collect">集める の一覧へ戻る</a></p>
+"""
+    return HTMLResponse(content=page_shell(name, body))
 
 
 @router.get("/admin/collect/{name}/doc", response_class=HTMLResponse)
