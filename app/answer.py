@@ -708,6 +708,9 @@ def _record_usage(
     usage_store.record(
         cfg.name,
         model=model,
+        # **考える量も残す。** モデルと同じくらい結果と時間を左右するのに、
+        # 成功した行にだけ入っていなかった
+        effort=cfg.effort or "",
         kind="chat",
         # **誰が頼んだか**（`app/ai_inflight.py` が入口で巻いた印）。
         # 走っている表と同じ値を残すので、終わった後も見分けが付く

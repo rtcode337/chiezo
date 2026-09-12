@@ -99,8 +99,8 @@ def prompt_html(text: str, nbytes: int | None) -> str:
 DEFAULT_MODEL_LABEL = "既定"
 
 
-def who_html(backend: str, model: str) -> str:
-    """相手の欄。相手の名前の下にモデルを添える。
+def who_html(backend: str, model: str, effort: str = "") -> str:
+    """相手の欄。相手の名前の下にモデルと考える量を添える。
 
     玄関（`/admin`）からも同じ書き方で出すので公開している —— 別々に書くと、
     同じ依頼が 2 つの画面で違って見える（`elapsed` と同じ理由）。
@@ -111,7 +111,13 @@ def who_html(backend: str, model: str) -> str:
     モデルを名指しで頼み直す)なので、書き分けない。
     """
     name = (model or "").strip() or DEFAULT_MODEL_LABEL
-    return f'{esc(backend)}<br><span class="muted">{esc(name)}</span>'
+    # **考える量も同じ欄に出す。** モデルと同じくらい結果と時間を左右するので、
+    # 「同じ相手・同じモデルなのに片方だけ遅い」の理由がここに出ていないと読めない。
+    # **選ばなかったときは何も書かない**(相手の既定に任せた、はモデル側の「既定」で
+    # 言えている —— 空欄を 2 つ並べても読み取れるものが増えない)
+    depth = (effort or "").strip()
+    detail = f"{name} / {depth}" if depth else name
+    return f'{esc(backend)}<br><span class="muted">{esc(detail)}</span>'
 
 
 def _tokens(row: dict) -> str:
@@ -203,6 +209,7 @@ def running_rows() -> list[dict]:
             "kind": r.get("kind") or ai_log.KIND_CHAT,
             "backend": r["backend"],
             "model": r.get("model") or "",
+            "effort": r.get("effort") or "",
             "state": "走っている",
             "prompt_bytes": r.get("prompt_bytes"),
             "prompt": r.get("prompt") or "",
@@ -291,7 +298,7 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
 
     body = []
     for row in running:
-        who = who_html(row["backend"], row.get("model") or "")
+        who = who_html(row["backend"], row.get("model") or "", row.get("effort") or "")
         detail = prompt_html(row.get("prompt") or "", row.get("prompt_bytes"))
         origin = caller_html(row.get("caller") or "")
         # **暴走したものを止める口。** 押すと待ち枠がすぐ空くので、後ろで並んでいる
@@ -314,7 +321,7 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
         )
     for row in shown:
         kind = esc(ai_log.kind_label(row.get("kind") or ai_log.KIND_CHAT))
-        who = who_html(row["backend"], row.get("model") or "")
+        who = who_html(row["backend"], row.get("model") or "", row.get("effort") or "")
         origin = caller_html(row.get("caller") or "")
         if row["ok"]:
             result = '<span class="muted">成功</span>'

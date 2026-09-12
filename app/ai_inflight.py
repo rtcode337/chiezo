@@ -73,6 +73,7 @@ _CALLER: ContextVar[str] = ContextVar("chiezo_ai_inflight_caller", default="")
 # 何のことか読めない。知らない id は素のまま出す（消すより読めるほうがよい）。
 CALLER_LABELS = {
     "api": "外のアプリ",
+    "collect": "収集",
     "ask": "答える層",
     "chat": "会話",
     "agent": "agent",
@@ -82,14 +83,32 @@ CALLER_LABELS = {
 }
 
 
+# 名乗りの長さ。画面の欄に収まるところで切る(外から来る値なので上限が要る)
+CALLER_NAME_MAX = 60
+
+
 def caller_label(caller: str) -> str:
-    """`collect:<名前>` は「収集(名前)」に開く。それ以外は表を引く。"""
+    """`collect:<名前>` は「収集(名前)」に開く。それ以外は表を引く。
+
+    **`<種別>:<名乗り>` はどの種別でも開く** —— 外のアプリは
+    `api:<requested_by>` で名乗るので、`api` とだけ出したのでは
+    「どのアプリが頼んだのか」が読めない(そこがいちばん知りたいところ)。
+    """
     if not caller:
         return ""
     head, _, rest = caller.partition(":")
-    if head == "collect":
-        return f"収集({rest})" if rest else "収集"
-    return CALLER_LABELS.get(head, caller)
+    label = CALLER_LABELS.get(head)
+    if label is None:
+        return caller
+    return f"{label}({rest})" if rest else label
+
+
+def caller_of(kind: str, name: str = "") -> str:
+    """控えに残す印を組む。**名乗りは切って均す** —— 外から来る値なので、
+    改行や長すぎるものがそのまま画面の欄に入らないようにする。
+    """
+    clean = " ".join((name or "").split())[:CALLER_NAME_MAX]
+    return f"{kind}:{clean}" if clean else kind
 
 
 @contextmanager

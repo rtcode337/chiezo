@@ -1058,6 +1058,7 @@ curl -s "$BASE/v1/ai/backends" | jq .
 curl -s "$BASE/v1/ai/complete" -H 'Content-Type: application/json' -d '{
   "backend": "gemini",
   "model": "gemini-2.5-flash",
+  "requested_by": "tech-antenna",
   "messages": [
     {"role": "system", "content": "あなたは技術情報のダイジェストを書く編集者。"},
     {"role": "user", "content": "材料A / 材料B"}
@@ -1066,6 +1067,14 @@ curl -s "$BASE/v1/ai/complete" -H 'Content-Type: application/json' -d '{
 ```
 
 相手を知らなければ 404(選べる相手の一覧つき)、「答える」層が無効なら 503 です。
+
+**`requested_by` で名乗れます**(管理画面の「AI への依頼」の依頼元に出る)。
+**必須にはしていません** —— 名乗りが無いだけで AI を借りられなくなるのは、
+この口の値打ち(鍵だけ借りる)に合わないため。ただし**無名の依頼は後から追えません**:
+無人で回る層(収集の時計)と外のアプリが同じ表に並ぶので、待たされている人が
+「これは自分が頼んだものか」を判断できず、枠を食っている相手も特定できません。
+**AI に叩かせるときは必ず入れてください** —— 配っている CLAUDE.md ブロックにも
+そう書いてあります。
 
 ### ブリッジを直接使う(認証情報の置き場を共有する)
 

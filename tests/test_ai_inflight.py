@@ -122,6 +122,24 @@ class TestTheRecord:
         # 知らない印は素のまま出す（消すより読めるほうがよい）
         assert ai_inflight.caller_label("なにか") == "なにか"
 
+    def test_an_outside_app_can_say_who_it_is(self):
+        """「外のアプリ」とだけ出しても、どれが枠を食っているのかは読めない。"""
+        from app import ai_inflight
+
+        assert ai_inflight.caller_of("api", "pta") == "api:pta"
+        assert ai_inflight.caller_label("api:pta") == "外のアプリ(pta)"
+        # 名乗りが無ければ今までどおり
+        assert ai_inflight.caller_of("api", "") == "api"
+        assert ai_inflight.caller_of("api", "   ") == "api"
+
+    def test_a_long_or_multiline_name_is_tidied(self):
+        """外から来る値なので、そのまま画面の欄に入れない。"""
+        from app import ai_inflight
+
+        assert ai_inflight.caller_of("api", "行を\n跨ぐ  名乗り") == "api:行を 跨ぐ 名乗り"
+        long = ai_inflight.caller_of("api", "あ" * 200)
+        assert len(long.partition(":")[2]) == ai_inflight.CALLER_NAME_MAX
+
     def test_an_old_record_without_the_new_columns_still_opens(self, state_env):
         """列を足した版を古い `state/` に当てても読めること。
         **動いている最中に入れ替わる**ので、読めなくなると走行中の表が落ちる。"""
@@ -331,6 +349,55 @@ class TestAroundTheCall:
             assert res.status_code == 200
             assert client.get("/v1/ai/inflight").json()["calls"] == []
         assert ai_inflight.running() == []
+
+    def test_the_name_the_caller_gave_is_kept(self, state_env):
+        """「外のアプリ」とだけ残しても、どれが枠を食っているのかは読めない。"""
+        from app import answer, usage_store
+
+        seen = {}
+
+        def reply(_request):
+            seen["caller"] = __import__("app.ai_inflight", fromlist=["x"]).current_caller()
+            return httpx.Response(200, json={
+                "choices": [{"message": {"role": "assistant", "content": "はい"}}]
+            })
+
+        state_env.setattr(
+            answer, "_llm_client",
+            lambda cfg: httpx.AsyncClient(transport=httpx.MockTransport(reply)),
+        )
+        with make_client(state_env, None) as client:
+            assert client.post("/v1/ai/complete", json={
+                "backend": "local",
+                "requested_by": "pta",
+                "messages": [{"role": "user", "content": "こんにちは"}],
+            }).status_code == 200
+
+        assert seen["caller"] == "api:pta"
+        # 終わった後も見分けが付く(使用量の控えにも同じ値が残る)
+        assert usage_store.recent_calls(1)[0]["caller"] == "api:pta"
+
+    def test_it_still_works_without_a_name(self, state_env):
+        """**必須にしない。** 名乗りが無いだけで AI を借りられなくなるのは、
+        この口の値打ち(鍵だけ借りる)に合わない。
+        """
+        from app import answer, usage_store
+
+        state_env.setattr(
+            answer, "_llm_client",
+            lambda cfg: httpx.AsyncClient(
+                transport=httpx.MockTransport(
+                    lambda r: httpx.Response(200, json={
+                        "choices": [{"message": {"role": "assistant", "content": "はい"}}]
+                    })
+                )
+            ),
+        )
+        with make_client(state_env, None) as client:
+            assert client.post("/v1/ai/complete", json={
+                "backend": "local", "messages": [{"role": "user", "content": "こんにちは"}],
+            }).status_code == 200
+        assert usage_store.recent_calls(1)[0]["caller"] == "api"
 
     def test_the_row_is_gone_even_when_the_call_fails(self, state_env):
         """**消すのは finally**。失敗のときに残ると、落ちた依頼が走り続けて見える。"""

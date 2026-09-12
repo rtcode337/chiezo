@@ -776,9 +776,16 @@ def _collect_changes_html(limit: int = 30) -> str:
     for row in changes:
         at = jst.parse(row["at"] or "")
         when = esc(jst.format(at)) if at else esc(row["at"])
+        # **誰に頼んだ回かを出す。**「AI への依頼」の表と同じ書き方にそろえる ——
+        # 同じ依頼が 2 つの画面で違って見えると、突き合わせるときに読み替えが要る
+        who = (
+            ai_history.who_html(row["backend"], row["model"], row["effort"])
+            if row["backend"] else '<span class="muted">—</span>'
+        )
         if row["status"] != collect_log.STATUS_OK:
             rows.append(
                 f"<tr><td>{when}</td><td>{esc(row['name'])}</td><td>{esc(row['sweep'])}</td>"
+                f"<td>{who}</td>"
                 f'<td colspan="2"><span class="stale">失敗: {esc(row["error"])}</span></td></tr>'
             )
             continue
@@ -815,13 +822,14 @@ def _collect_changes_html(limit: int = 30) -> str:
         )
         rows.append(
             f"<tr><td>{when}</td><td>{esc(row['name'])}</td>"
-            f"<td>{esc(row['sweep'])}{scope}</td>"
+            f"<td>{esc(row['sweep'])}{scope}</td><td>{who}</td>"
             f'<td>{summary}{note}</td><td>{row["total"]:,} 件{detail}</td></tr>'
         )
     return f"""
 <details open><summary>直近の変更</summary>
 <table>
-<thead><tr><th>いつ</th><th>収集</th><th>どの回</th><th>変化</th><th>焼いた後</th></tr></thead>
+<thead><tr><th>いつ</th><th>収集</th><th>どの回</th><th>頼んだ相手</th>
+<th>変化</th><th>焼いた後</th></tr></thead>
 <tbody>
 {"".join(rows)}
 </tbody>
@@ -1347,7 +1355,7 @@ def _running_html(running: list[dict]) -> str:
         f"<tr><td>{esc(ai_log.kind_label(r['kind']))}</td>"
         # 相手とモデルの書き方は `ai_history` と共有する —— 別々に書くと、
         # 同じ依頼が玄関と表で違って見える(経過の `elapsed` と同じ理由)
-        f"<td>{ai_history.who_html(r['backend'], r.get('model') or '')}</td>"
+        f"<td>{ai_history.who_html(r['backend'], r.get('model') or '', r.get('effort') or '')}</td>"
         f"<td>{esc(r['state'])}</td>"
         f'<td class="muted">{esc(ai_history.elapsed(r["at"]))}</td>'
         f'<td>{ai_history.caller_html(r.get("caller") or "")}</td>'

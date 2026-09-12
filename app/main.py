@@ -340,6 +340,17 @@ async def collect_material(name: str, sources: dict) -> str:
         return await _collect_material(name, sources)
 
 
+def _default_backend_name() -> str:
+    """名指ししなかったときに頼むことになる相手。**控えを残すためだけに引く**。
+
+    ここで断らない —— 相手が 1 つも有効でなければ呼び出し自体が先に落ちるので、
+    控えのために例外を足す意味が無い(控えが取れないだけで収集を止めない、と同じ判断)。
+    """
+    with suppress(Exception):
+        return (answer.backend_names() or [""])[0]
+    return ""
+
+
 async def _collect_material(name: str, sources: dict) -> str:
     item = await asyncio.to_thread(collect.get, name)
     # 前世代は 1 度だけ読んで使い回す。プロンプトへ差し込む素材であり、
@@ -369,6 +380,15 @@ async def _collect_material(name: str, sources: dict) -> str:
         keys = partitioning.pick(ledger, sweep.name, sweep.per_run(len(ledger)))
         baked_as = item
     label = collect_log.FOCUS_LABEL if focus is not None else sweep.name
+    # **誰に頼んだ回かも控える。** 巡回ごとに相手を変えられるので、回の名前だけでは
+    # 何で走ったのか読めない。**「既定にまかせる」は名前に開いて残す** ——
+    # 空欄のまま残すと、後から読む人には既定がどれだったのか確かめようがない
+    # (相手の一覧は設定しだいで変わる)
+    who = {
+        "backend": sweep.backend or _default_backend_name(),
+        "model": sweep.model or "",
+        "effort": sweep.effort or "",
+    }
     try:
         feed = await _harvest(item)
         items, next_cursor, note = await _collect_items(
@@ -388,6 +408,7 @@ async def _collect_material(name: str, sources: dict) -> str:
         await asyncio.to_thread(
             collect_log.record,
             name, status=collect_log.STATUS_ERROR, error=reason, sweep=label, scope=keys,
+            **who,
         )
         raise
     await asyncio.to_thread(
@@ -408,6 +429,7 @@ async def _collect_material(name: str, sources: dict) -> str:
     await asyncio.to_thread(
         collect_log.record,
         name, status=collect_log.STATUS_OK, diff=diff, sweep=label, scope=keys, error=note,
+        **who,
     )
     log.info(
         "collect %s (%s/%s%s): added=%d updated=%d kept=%d removed=%d skipped=%d",
@@ -2149,6 +2171,11 @@ class AiCompleteRequest(BaseModel):
     # CLI ブリッジで包んだ相手だけが持つ道具なので、それ以外に頼まれたら断る
     # —— 黙って道具無しで答えさせると、呼ぶ側は「調べた結果」として受け取ってしまう。
     web: bool | None = None
+    # **誰が頼んだか**(画面の「依頼元」に出る)。**必須にはしない** —— 名乗りが
+    # 無いだけで AI を借りられなくなるのは、この口の値打ち(鍵だけ借りる)に合わない。
+    # ただし**無名の依頼は後から追えない**: 待たされている人が「これは自分のか」を
+    # 判断できず、枠を食っている相手も特定できない。名乗ってほしい。
+    requested_by: str | None = None
 
 
 @app.get("/v1/ai/backends")
@@ -2311,8 +2338,10 @@ async def ai_complete(body: AiCompleteRequest) -> dict:
                     "CLI ブリッジ経由の相手(claude / codex / antigravity)を選んでください",
         })
 
-    # **外のアプリからの依頼**。収集の時計が動かしているぶんと見分けるための印
-    with ai_inflight.called_by("api"):
+    # **外のアプリからの依頼**。収集の時計が動かしているぶんと見分けるための印で、
+    # 名乗り(`requested_by`)があれば一緒に残す —— 「外のアプリ」とだけ出しても、
+    # どのアプリが枠を食っているのかは読めない
+    with ai_inflight.called_by(ai_inflight.caller_of("api", body.requested_by or "")):
         if want_web and not via_bridge:
             # SearXNG を道具として貸す(往復あり)。知識ベースの道具は渡さない。
             content = await agent.complete_with_web(cfg, messages)

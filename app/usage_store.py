@@ -80,6 +80,9 @@ _ADDED_COLUMNS = {
     # 誰が頼んだか（`collect:<名前>` / `api` / …）。無人で回る層のぶんと、
     # 外のアプリが頼んだぶんを後から見分けるため（`app/ai_inflight.py` が持つ印）
     "caller": "TEXT",
+    # 考える量。**モデルと同じくらい結果と時間を左右する**のに、失敗の控え
+    # （`ai_log`）にしか無かったので、成功した行だけ何で走ったのか読めなかった
+    "effort": "TEXT",
 }
 
 
@@ -145,6 +148,7 @@ def record(
     provider: str,
     *,
     model: str = "",
+    effort: str = "",
     kind: str = "chat",
     input_tokens: int | None = None,
     output_tokens: int | None = None,
@@ -165,10 +169,11 @@ def record(
     try:
         with _connect() as conn:
             conn.execute(
-                "INSERT INTO calls (provider, model, kind, at, input_tokens, output_tokens,"
-                " prompt_bytes, reply_bytes, ms, caller)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (provider, model or "", kind, _now().isoformat(timespec="seconds"),
+                "INSERT INTO calls (provider, model, effort, kind, at, input_tokens,"
+                " output_tokens, prompt_bytes, reply_bytes, ms, caller)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (provider, model or "", effort or "", kind,
+                 _now().isoformat(timespec="seconds"),
                  input_tokens, output_tokens, prompt_bytes, reply_bytes, ms, caller or ""),
             )
             now = time.monotonic()
@@ -222,7 +227,7 @@ def recent_calls(limit: int = 100) -> list[dict]:
     try:
         with _connect() as conn:
             rows = conn.execute(
-                "SELECT provider, model, kind, at, input_tokens, output_tokens,"
+                "SELECT provider, model, effort, kind, at, input_tokens, output_tokens,"
                 "       prompt_bytes, reply_bytes, ms, caller FROM calls"
                 " ORDER BY at DESC, id DESC LIMIT ?",
                 (max(1, limit),),
@@ -235,6 +240,7 @@ def recent_calls(limit: int = 100) -> list[dict]:
             "at": r["at"],
             "backend": r["provider"],
             "model": r["model"] or "",
+            "effort": r["effort"] or "",
             "kind": r["kind"] or "chat",
             "caller": r["caller"] or "",
             "input_tokens": r["input_tokens"],

@@ -79,6 +79,12 @@ CREATE INDEX IF NOT EXISTS ix_collect_runs_name ON collect_runs(name, id DESC);
 _ADDED_COLUMNS = {
     "sweep": "TEXT NOT NULL DEFAULT ''",
     "scope": "TEXT NOT NULL DEFAULT ''",
+    # **誰に頼んだ回か。** 巡回ごとに相手を変えられるようになったので、
+    # 名前だけでは何で走ったのか読めない —— 「じっくりだけ荒れている」が
+    # 相手のせいなのか考える量のせいなのかは、ここが並んで初めて見分けられる
+    "backend": "TEXT NOT NULL DEFAULT ''",
+    "model": "TEXT NOT NULL DEFAULT ''",
+    "effort": "TEXT NOT NULL DEFAULT ''",
 }
 
 # 割り込みの回に入る巡回の名前。**巡回の名前と同じ欄に入れる** ——
@@ -126,10 +132,17 @@ def record(
     error: str = "",
     sweep: str = "",
     scope: list[str] | None = None,
+    backend: str = "",
+    model: str = "",
+    effort: str = "",
 ) -> None:
     """1 回ぶんを残す。**呼び出し側の失敗にはしない**(控えが取れなくても収集は続く)。
 
     `diff` は `app/collect.py` の `material` が返すもの。失敗した回は None で呼ぶ。
+
+    **誰に頼んだ回かも残す**(`backend` / `model` / `effort`)。巡回ごとに相手を
+    変えられるので、回の名前だけでは何で走ったのか読めない —— 「じっくりだけ荒れて
+    いる」が相手のせいなのか考える量のせいなのかは、並べて初めて見分けられる。
     """
     path = db_path()
     if path is None:
@@ -139,8 +152,9 @@ def record(
         with _connect(path) as conn:
             conn.execute(
                 "INSERT INTO collect_runs (at, name, status, total, added, updated, removed,"
-                " skipped, added_titles, updated_titles, removed_titles, error, sweep, scope)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " skipped, added_titles, updated_titles, removed_titles, error, sweep, scope,"
+                " backend, model, effort)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     datetime.now(UTC).isoformat(timespec="seconds"),
                     name,
@@ -156,6 +170,9 @@ def record(
                     (error or "")[:REASON_MAX],
                     sweep or "",
                     _titles(scope),
+                    backend or "",
+                    model or "",
+                    effort or "",
                 ),
             )
             # 古いものから捨てる。件数で切るのは、実行の頻度が収集ごとに違うため
@@ -175,7 +192,8 @@ def recent(name: str | None = None, limit: int = 50) -> list[dict]:
         return []
     sql = (
         "SELECT at, name, status, total, added, updated, removed, skipped,"
-        " added_titles, updated_titles, removed_titles, error, sweep, scope FROM collect_runs"
+        " added_titles, updated_titles, removed_titles, error, sweep, scope,"
+        " backend, model, effort FROM collect_runs"
     )
     args: list = []
     if name:

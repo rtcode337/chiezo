@@ -1599,6 +1599,19 @@ class TestTheCollectSectionMarkup:
         assert 'name="sweep" value="割り込み"' not in html
         assert "時計なし" in html
 
+    def test_the_changes_say_who_ran_it(self, sample, monkeypatch, tmp_path):
+        """巡回ごとに相手を変えられるので、回の名前だけでは何で走ったのか読めない。"""
+        from app import collect_log
+
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        collect_log.record(
+            "news", status=collect_log.STATUS_OK, diff={"total": 3, "added": 3},
+            sweep="じっくり", backend="claude", model="opus", effort="high",
+        )
+        html = self._html(sample)
+        assert "claude" in html
+        assert "opus / high" in html
+
     def test_the_partition_progress_is_shown(self, sample):
         """一周したかどうかが読めて初めて、間隔と 1 回あたりの量を判断できる。"""
         collect.update(
