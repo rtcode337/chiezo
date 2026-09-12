@@ -70,7 +70,17 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 CLI = os.environ.get("CHIEZO_BRIDGE_CLI", "claude").strip().lower()
 # Chiezo の MCP の URL。CLI はここから search / doc / filter … を引く。
 # 空にすると MCP を繋がない(道具の要らない用途で使うとき)。
-MCP_URL = os.environ.get("CHIEZO_BRIDGE_MCP_URL", "http://chiezo-app:7010/mcp").strip()
+#
+# **既定は `/mcp/knowledge`(生成の道具を出さない口)。** `/mcp` を向けると、
+# Chiezo が絵を頼んだ相手が Chiezo に絵を頼み返す —— 1 枚頼んだだけで、
+# 頼まれた側が依頼文を言い換えて別の相手へ投げ、こちらの依頼文もそのまま回した。
+# 枠を余計に食ううえ、描く前に別の生成を待つので時間も伸びる。
+# **道具を名前で絞れるのは claude だけ**(下の ALLOWED_TOOLS)で、codex と
+# antigravity は `mcp add chiezo --url` で丸ごと繋がるため、**どの CLI にも効く
+# つまみは接続先しか無い**。
+MCP_URL = os.environ.get(
+    "CHIEZO_BRIDGE_MCP_URL", "http://chiezo-app:7010/mcp/knowledge"
+).strip()
 # CLI に渡すモデル。空なら CLI の既定(サブスクの枠を無駄に食わないよう明示するのが望ましい)。
 MODEL = os.environ.get("CHIEZO_BRIDGE_MODEL", "").strip()
 # 1 回の呼び出しの上限秒数。CLI は道具を何度も引くので推論サーバより長くなる。

@@ -265,7 +265,7 @@ services:
   #    - ./data/state:/state:ro
   #  environment:
   #    - CHIEZO_BRIDGE_CLI=claude
-  #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp
+  #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp/knowledge
   #    - CHIEZO_BRIDGE_TIMEOUT=${CHIEZO_BRIDGE_TIMEOUT:-840}
   #  restart: unless-stopped
   #  # CLI は待ち時間の長い相手なので、CPU が競合したら取り込みや推論へ譲る
@@ -288,7 +288,7 @@ services:
   #    - chiezo-codex-home:/srv/bridge/.codex
   #  environment:
   #    - CHIEZO_BRIDGE_CLI=codex
-  #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp
+  #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp/knowledge
   #    - CHIEZO_BRIDGE_TIMEOUT=${CHIEZO_BRIDGE_TIMEOUT:-840}
   #  restart: unless-stopped
   #  cpu_shares: 512
@@ -315,7 +315,7 @@ services:
   #    - chiezo-antigravity-home:/srv/bridge/home
   #  environment:
   #    - CHIEZO_BRIDGE_CLI=antigravity
-  #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp
+  #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp/knowledge
   #    - CHIEZO_BRIDGE_TIMEOUT=${CHIEZO_BRIDGE_TIMEOUT:-840}
   #  restart: unless-stopped
   #  cpu_shares: 512

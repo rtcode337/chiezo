@@ -528,8 +528,12 @@ async def lifespan(app: FastAPI):
     app.state.mcp = mcp
     # session_manager は streamable_http_app() を先に呼んでからでないと取れない。
     app.state.mcp_asgi = build_mcp_app(mcp)
+    # **CLI ブリッジ用の、生成の道具を出さない口。** 理由は `build_mcp` の説明にある
+    # (絵を頼んだ相手が絵を頼み返す)。塞ぐ手立てが接続先しか無いので、口を分ける
+    knowledge = build_mcp(app, with_media=False)
+    app.state.mcp_knowledge_asgi = build_mcp_app(knowledge)
     try:
-        async with mcp.session_manager.run():
+        async with mcp.session_manager.run(), knowledge.session_manager.run():
             yield
     finally:
         for task in (watcher, collector):
@@ -2833,5 +2837,18 @@ async def _mcp_asgi(scope, receive, send):
     await inner(scope, receive, send)
 
 
+async def _mcp_knowledge_asgi(scope, receive, send):
+    """`/mcp/knowledge` を、生成の道具を出さない MCP アプリへ委譲する。
+
+    **`/mcp` より先にマウントする。** Starlette は登録順に照合するので、
+    後にすると `/mcp` が配下ごと拾ってしまう。
+    """
+    inner = getattr(app.state, "mcp_knowledge_asgi", None)
+    if inner is None:  # lifespan を通らずに呼ばれた場合(通常は起こらない)
+        raise RuntimeError("MCP app is not initialized (lifespan did not run)")
+    await inner(scope, receive, send)
+
+
 # ツールの実体は上のエンドポイント関数そのもの(app/mcp_server.py 参照)。
+app.mount("/mcp/knowledge", _mcp_knowledge_asgi)
 app.mount("/mcp", _mcp_asgi)

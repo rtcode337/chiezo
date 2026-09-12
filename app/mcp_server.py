@@ -134,11 +134,22 @@ def build_mcp_app(mcp: MCPServer) -> Starlette:
     )
 
 
-def build_mcp(app: FastAPI) -> MCPServer:
+def build_mcp(app: FastAPI, with_media: bool = True) -> MCPServer:
     """FastAPI アプリに紐づく MCP サーバーを組み立てて返す。
 
     `app/main.py` の末尾から呼ばれる。main を遅延 import しているのは循環参照を
     避けるため(呼ばれる時点で main の関数定義は済んでいる)。
+
+    **`with_media=False` は CLI ブリッジ向けの口**(`/mcp/knowledge`)。
+    絵・音・動画・声を作る道具を出さない —— **出すと、Chiezo が絵を頼んだ相手が
+    Chiezo に絵を頼み返す**。実際に起きた: 1 枚頼んだだけで、頼まれた側が依頼文を
+    英語に言い換えて別の相手へ 2 本、こちらの依頼文をそのまま 1 本、計 3 本を積んだ
+    (どれも組名が無く、サイズだけがこちらの指定を引き継いでいたので足が付いた)。
+    枠を余計に食うだけでなく、頼まれた側が描く前に別の生成を待つので**時間も伸びる**。
+
+    **塞ぐ場所は URL でしかない。** ブリッジは 3 つの CLI を包んでいるが、道具を
+    名前で絞れるのは claude だけで(`--allowed-tools`)、codex と antigravity は
+    `mcp add chiezo --url` で丸ごと繋がる。**どの CLI にも効くつまみは接続先だけ**。
     """
     from app import main as api
 
@@ -304,7 +315,7 @@ def build_mcp(app: FastAPI) -> MCPServer:
         _register_memory_tools(mcp, app)
 
     # 絵と音の生成も同じ扱い —— 置き場が無い・「答える」層が止まっているなら道具ごと出さない
-    if media.tools_enabled():
+    if with_media and media.tools_enabled():
         _register_image_tools(mcp)
         _register_audio_tools(mcp)
         _register_video_tools(mcp)

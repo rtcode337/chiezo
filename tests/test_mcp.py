@@ -48,8 +48,13 @@ def client(built_data_dir, monkeypatch_module):
 
 def rpc(client, method: str, params: dict | None = None, rpc_id: int = 1) -> dict:
     """JSON-RPC を 1 回投げ、SSE フレームから result / error を取り出す。"""
+    return rpc_at(client, "/mcp/", method, params, rpc_id)
+
+
+def rpc_at(client, path: str, method: str, params: dict | None = None, rpc_id: int = 1) -> dict:
+    """口を指定して JSON-RPC を 1 回投げる(`/mcp/` と `/mcp/knowledge/` を比べるため)。"""
     res = client.post(
-        "/mcp/",
+        path,
         headers=MCP_HEADERS,
         json={"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params or {}},
     )
@@ -198,3 +203,44 @@ class TestStaysInSyncWithRest:
         call_tool(client, "search", {"source": "jawiki", "q": "東京"})
         leaked = [k for k, v in seen.items() if isinstance(v, params.Query)]
         assert not leaked, f"Query の既定値が値として渡っている: {leaked}"
+
+
+class TestTheBridgeCannotAskForMore:
+    """**Chiezo が絵を頼んだ相手に、絵を頼む道具を渡さない。**
+
+    渡していた頃は、1 枚頼んだだけで頼まれた側が 3 本を積んだ —— 依頼文を英語に
+    言い換えて別の相手へ 2 本、こちらの依頼文をそのまま 1 本。どれも組名が無く、
+    サイズだけがこちらの指定を引き継いでいた。枠を余計に食ううえ、頼まれた側が
+    描く前に別の生成を待つので時間も伸びる。
+
+    **塞ぐ手立ては接続先しか無い。** 道具を名前で絞れるのは claude だけで、
+    codex と antigravity は `mcp add chiezo --url` で丸ごと繋がる。
+    """
+
+    def test_the_bridge_endpoint_is_mounted_and_answers(self, client):
+        """**`/mcp` より先にマウントする**(後にすると `/mcp` が配下ごと拾う)。"""
+        knowledge = {
+            t["name"] for t in
+            rpc_at(client, "/mcp/knowledge/", "tools/list")["result"]["tools"]
+        }
+        assert "search" in knowledge and "doc" in knowledge, "知識は引けること"
+
+    def test_the_bridge_endpoint_offers_no_way_to_generate(self, monkeypatch):
+        """作る道具が出ている状態で比べる(置き場が無いと、どちらの口にも出ない)。"""
+        import anyio
+
+        from app import mcp_server, media
+        from app.main import app
+
+        monkeypatch.setattr(media, "tools_enabled", lambda: True)
+
+        async def names_of(with_media: bool) -> set[str]:
+            mcp = mcp_server.build_mcp(app, with_media=with_media)
+            return {t.name for t in await mcp.list_tools()}
+
+        full = anyio.run(names_of, True)
+        bridge = anyio.run(names_of, False)
+        makers = {n for n in full if n.endswith("_generate")}
+        assert makers, "前提: 普通の口には作る道具がある"
+        assert not (makers & bridge), f"ブリッジに渡ってはいけない: {makers & bridge}"
+        assert "search" in bridge, "知識は引けること"

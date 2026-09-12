@@ -1409,6 +1409,15 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     (末尾が user でなければ 400)。**サーバーは会話の状態を持たない** — 履歴はクライアントが
     持って毎回送る(読み取り専用・LAN 内・複数ワーカーの前提を崩さないため。MCP を
     ステートレスにしたのと同じ判断)。rag / agent とも `/v1/ask` と同じ実装に流す
+  - `/mcp/knowledge`(POST) — **CLI ブリッジ向けの MCP。生成の道具を出さない**
+    (`build_mcp(app, with_media=False)`)。**出すと、Chiezo が絵を頼んだ相手が
+    Chiezo に絵を頼み返す** —— 1 枚頼んだだけで、頼まれた側が依頼文を英語に言い換えて
+    別の相手へ 2 本、こちらの依頼文をそのまま 1 本、計 3 本を積んだ(どれも組名が無く、
+    サイズだけがこちらの指定を引き継いでいたので足が付いた)。枠を余計に食うだけでなく、
+    頼まれた側が描く前に別の生成を待つので**時間も伸びる**。**塞ぐ手立ては接続先しか
+    無い** —— 道具を名前で絞れるのは claude だけ(`--allowed-tools`)で、codex と
+    antigravity は `mcp add chiezo --url` で丸ごと繋がる。`/mcp` より**先に**
+    マウントすること(後にすると `/mcp` が配下ごと拾う)
   - `/v1/media/backends?kind=`(GET) / `/v1/media/image`・`/audio`・`/video`・`/speech`
     ・`/transcribe`(POST) / `/v1/media/jobs/{id}`(GET) / `/media/{path}`(GET)
     — **絵・音・動画・声を作る口**
