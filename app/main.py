@@ -379,6 +379,11 @@ async def _collect_material(name: str, sources: dict) -> str:
         # 割り込みは必ず「直す」側で焼く(足すだけの収集でも、名指しの 1 件を直せないと
         # 割り込みの意味が無い)。ndjson へ渡す定義もそちらへ倒す
         baked_as = replace(item, mode=collect.MODE_REFINE)
+    elif sweep.use_extract:
+        # **機械で引く回は区画を見ない。** 指定を 1 本引いて全部を返すので、
+        # 区画を選ぶと**見てもいない区画に「回った」印が付く**(一周が嘘になる)
+        keys = []
+        baked_as = item
     else:
         keys = partitioning.pick(ledger, sweep.name, sweep.per_run(len(ledger)))
         baked_as = item

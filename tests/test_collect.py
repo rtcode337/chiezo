@@ -710,6 +710,44 @@ class TestTheMechanicalSweep:
         assert (roster.use_extract, roster.only_new) == (True, True)
         assert (flesh.use_extract, flesh.only_new) == (False, False)
 
+    def test_it_does_not_claim_to_have_walked_the_partitions(self, sample, monkeypatch, tmp_path):
+        """**機械で引く回は区画を見ない。** 指定を 1 本引いて全部を返すので、
+        区画に印を付けると、見てもいない区画が「回り終えた」に混ざる(一周が嘘になる)。
+        """
+        import asyncio
+
+        from app import extract, main
+
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        collect.update(
+            "news",
+            enabled=True,
+            extract={"source": "jawiki", "tag": "画家"},
+            partition={"by": "title", "target": 10},
+            partitions=[{"key": partitioning.title_key("あ", "お"), "count": 10}],
+            sweeps=[{"name": "名簿", "use_extract": True, "only_new": True}],
+        )
+        monkeypatch.setattr(
+            extract, "run", lambda spec, sources: ([{"title": "草間彌生", "body": "本文"}], "")
+        )
+        async def no_feed(_item):
+            return None
+
+        monkeypatch.setattr(main, "_harvest", no_feed)
+        monkeypatch.setattr(
+            main.collect, "ndjson", lambda *a, **k: ("", {
+                "added": 1, "updated": 0, "removed": 0, "skipped": 0, "total": 1,
+                "kept": 0, "previous": 0, "collected": 1,
+                "removed_titles": [], "added_titles": ["草間彌生"], "updated_titles": [],
+            })
+        )
+        collect.update("news", sweeps=[{"name": "名簿", "use_extract": True, "only_new": True}])
+        collect.mark_started("news", "名簿")
+        asyncio.run(main._collect_material("news", {}))
+
+        visited, total = partitioning.progress(collect.get("news").partitions, "名簿")
+        assert (visited, total) == (0, 1)
+
     def test_it_pulls_from_the_index_even_after_the_cursor_moved(self, sample, monkeypatch):
         """1 回目だけでなく、頼まれた回はいつでも機械で引く。"""
         import asyncio
