@@ -131,6 +131,10 @@ PAGE_STYLE = """
   th { background: #f0f0f0; }
   nav a { margin-right: 1rem; }
   form.init-form { display: inline; }
+  /* 巡回ごとの「今すぐ実行 / ドライラン」。名前の下に小さく並べる —— 巡回の欄に
+     置くのは、どの設定で走るのかが押す場所から読めるようにするため */
+  .sweep-run { margin-top: 0.3rem; display: flex; gap: 0.3rem; flex-wrap: wrap; }
+  .sweep-run button { font-size: 0.8rem; padding: 0.15rem 0.5rem; }
   .job-status { border: 1px solid #ccc; padding: 0.6rem 1rem; margin-top: 1rem; background: #fafafa; }
   .job-status.running { border-color: #d9a400; background: #fff8e1; }
   .job-status.error { border-color: #c0392b; background: #fdecea; }

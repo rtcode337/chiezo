@@ -214,6 +214,9 @@ def start_collection_bake(name: str, sweep: str | None = None) -> dict:
             "error": "chiezo-trigger が設定されていません(CHIEZO_TRIGGER_URL 未設定)",
             "hint": "集めるのも焼くのも取り込みの中で起きるので、trigger が要る",
         })
+    # **時計を持たない巡回は単独では走らせない**(割り込みで頼まれたときだけ動く)。
+    # 起こす前に断る —— 起こしてから断ると、1 本ぶんの取り込みが空振りする
+    collect.require_runnable(collect.get(name), sweep)
     trigger_run(name)
     # **起こせたときだけ予定を進める** —— 混んでいて断られたのに次回へ送ると、
     # その回は黙って飛ばされる(trigger_run が例外にするのでここへは来ない)
@@ -346,8 +349,16 @@ async def _collect_material(name: str, sources: dict) -> str:
     # 差し込む文も作れない(台帳が無ければ空で返り、今までどおり全体を見る)
     ledger = await asyncio.to_thread(collect.plan_partitions, item, sources, previous)
     # **どの巡回のぶんかは、起こした側が控えてある**(取り込みは名前しか運べない)
-    sweep = collect.sweep_named(item, item.pending_sweep)
     focus = collect.normalize_focus(item.pending_focus)
+    # **割り込みは割り込み用の巡回で走らせる**(`on_demand`)。定時の巡回の設定を
+    # 流用すると、どちらの都合で選んだ相手なのかが言えなくなる ——
+    # 割り込みは人が待っている場面なので、速い相手に頼みたい / 1 件をじっくり
+    # 調べさせたい、のどちらもある
+    sweep = (
+        collect.sweep_for_focus(item, focus)
+        if focus is not None
+        else collect.sweep_named(item, item.pending_sweep)
+    )
     if focus is not None:
         # **割り込みは 1 回きり。** 見るのは頼まれたところだけで、区画の順番には触らない
         keys = [focus.partition] if focus.partition else []
@@ -406,7 +417,7 @@ async def _collect_material(name: str, sources: dict) -> str:
     return body
 
 
-async def collect_preview(name: str, sources: dict) -> dict:
+async def collect_preview(name: str, sources: dict, sweep_name: str | None = None) -> dict:
     """いま AI に集めさせて、**焼かずに**前世代との差分だけ返す。
 
     プロンプトを育てるための道具。作り直し(整理)は前世代を置き換えるので、
@@ -417,9 +428,11 @@ async def collect_preview(name: str, sources: dict) -> dict:
     動かさないので、試したことが本番の進み具合に混ざらない。
     """
     item = await asyncio.to_thread(collect.get, name)
+    # **どの巡回のつもりで試すかを選べる。** 相手も 1 回に見る量も巡回ごとに違うので、
+    # 名指しできないと「じっくりで聞いたらどうなるか」を試せない
+    sweep = collect.require_runnable(item, sweep_name)
     previous = await asyncio.to_thread(collect.previous_docs, name, sources)
     ledger = await asyncio.to_thread(collect.plan_partitions, item, sources, previous)
-    sweep = collect.sweep_named(item, None)
     # **下見は 1 区画だけ。** 何区画でも見られるが、下見は「この指示文でどうなるか」を
     # 見るためのもので、1 区画あれば分かる(そのぶん安く、待たされない)
     keys = partitioning.pick(ledger, sweep.name, 1)
@@ -1607,12 +1620,16 @@ async def collect_fetch(request: Request, source: str = Query(..., description="
 
 
 @app.post("/v1/collect/{name}/preview")
-async def collect_preview_now(request: Request, name: str):
+async def collect_preview_now(
+    request: Request,
+    name: str,
+    sweep: str | None = Query(None, description="どの巡回のつもりで試すか(省くと次に走るはずのもの)"),
+):
     """**焼かずに**1 回集めさせて、前世代との差分だけ返す。
 
     **止めている収集は断る**(`run` と同じ)。焼かないとはいえ AI は 1 回動くので、
     外のアプリが自分で作った収集を自分で回せる状態にはしない。
-    **管理画面の「試しに集めて差分を見る」はこの口を通さない**ので、有効にする前の
+    **管理画面の「ドライラン」はこの口を通さない**ので、有効にする前の
     試し撃ちはそちらからできる。
 
     長期記憶には一切書かず、カーソルも次回の予定も動かさない。
@@ -1623,7 +1640,7 @@ async def collect_preview_now(request: Request, name: str):
             "error": f"収集「{name}」は止まっています",
             "hint": "動かすかどうかは Chiezo 側で決めます(管理画面の「有効にする」)",
         })
-    return await collect_preview(name, request.app.state.sources)
+    return await collect_preview(name, request.app.state.sources, sweep)
 
 
 # **`/{name}` より先に置く。** 後ろに置くと `changes` が収集の名前として解釈される
@@ -1814,6 +1831,17 @@ class CollectionFocus(BaseModel):
     partition: str | None = PydField(
         None, description="見てほしい区画。省くと、名指ししたものだけを見る"
     )
+    prompt: str | None = PydField(
+        None,
+        description="**その回だけの依頼文**(差し込み口 `{cursor}` などはいつもどおり効く)。"
+        "**保存しない** —— 定義のプロンプトは育てながら使うもので、1 回きりの"
+        "頼みごとで書き換わると、次の定時の回が知らない文で走ることになる",
+    )
+    sweep: str | None = PydField(
+        None,
+        description="どの巡回の設定(相手・モデル・考える量)で走らせるか。"
+        "省くと、時計を持たない巡回(`on_demand`)がある収集ではそれを使う",
+    )
     requested_by: str = PydField("", description="依頼元の名乗り(画面に出る手がかり)")
 
 
@@ -1875,16 +1903,23 @@ def collect_focus_now(name: str, body: CollectionFocus):
 
 
 @app.post("/v1/collect/{name}/run")
-def collect_run_now(name: str):
+def collect_run_now(
+    name: str,
+    sweep: str | None = Query(None, description="走らせる巡回の名前(省くと次に走るはずのもの)"),
+):
     """予定を待たずに 1 回、集めて焼く。**止めている収集は断る**。
 
     有効にしていないものをここから走らせられると、`enabled` を REST から
     触れなくした意味が無くなる(呼ぶたびに 1 回ぶんの AI が動く)。
-    **管理画面の「いま集めて焼く」はこの口を通さない**ので、有効にする前の試し撃ちは
+    **管理画面の「今すぐ実行」はこの口を通さない**ので、有効にする前の試し撃ちは
     そちらからできる —— 画面を開けるのは Chiezo を操作している人だけ、という前提。
 
     **返るのは「起こした」まで**。取り込みは向こうで走るので、進み具合は
     管理画面(または chiezo-trigger の `/status`)で見る。
+
+    **巡回を名指しできる。** 相手も 1 回に見る量も巡回ごとに違うので、
+    「じっくりのほうを今すぐ 1 回」が頼めないと、名指しした意味が半分になる。
+    **時計を持たない巡回は断る**(割り込みで頼まれたときだけ動くもの)。
     """
     collect.require_enabled()
     if not collect.get(name).enabled:
@@ -1892,7 +1927,7 @@ def collect_run_now(name: str):
             "error": f"収集「{name}」は止まっています",
             "hint": "動かすかどうかは Chiezo 側で決めます(管理画面の「有効にする」)",
         })
-    return start_collection_bake(name)
+    return start_collection_bake(name, sweep)
 
 
 # ---- 使う(ローカル LLM。既定では無効) ---------------------------------------

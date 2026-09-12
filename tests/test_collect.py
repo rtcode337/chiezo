@@ -683,6 +683,101 @@ class TestFocus:
         assert len(focus.titles) == collect.MAX_FOCUS_TITLES
 
 
+class TestTheOnDemandSweep:
+    """割り込みも巡回として定義しておく —— **時計を持たない 1 本**。
+
+    定時の巡回と同じ書き方で置けるので、頼む相手を割り込みだけ別にできる。
+    人が待っている場面なので速い相手に頼みたい / 1 件をじっくり調べさせたい、の
+    どちらもあり、定時の設定を流用すると「どちらの都合で選んだ相手か」が言えない。
+    """
+
+    @pytest.fixture
+    def ready(self, sample):
+        collect.update(
+            "news",
+            enabled=True,
+            sweeps=[
+                {"name": "ざっと", "interval_minutes": 360, "backend": "codex"},
+                {"name": "じっくり", "interval_minutes": 1440, "backend": "claude",
+                 "effort": "high"},
+                {"name": "割り込み", "on_demand": True, "backend": "antigravity"},
+            ],
+        )
+        return collect.get("news")
+
+    def test_it_never_comes_due(self, ready):
+        """時計を持たない巡回は、定時には走らない(頼まれたときだけ)。"""
+        due = {s.name for _c, s in collect.due_sweeps()}
+        assert "割り込み" not in due
+        assert "ざっと" in due
+
+    def test_it_does_not_drag_the_collection_forward(self, ready):
+        """予定が空なのを「いますぐ」と読む規則をそのまま当てると、毎周走ってしまう。"""
+        sweep = collect.sweep_named(ready, "割り込み")
+        assert sweep.on_demand is True
+        assert sweep.is_due() is False
+        assert sweep.due_at() == collect.NEVER
+
+    def test_a_focus_runs_with_its_own_backend(self, ready):
+        """割り込みは割り込み用の巡回で走る。"""
+        focus = collect.normalize_focus({"note": "直して"})
+        assert collect.sweep_for_focus(ready, focus).backend == "antigravity"
+
+    def test_a_focus_can_name_another_sweep(self, ready):
+        """「じっくりの相手で、いま 1 回だけ」を頼めるようにするため。"""
+        focus = collect.normalize_focus({"note": "直して", "sweep": "じっくり"})
+        picked = collect.sweep_for_focus(ready, focus)
+        assert (picked.backend, picked.effort) == ("claude", "high")
+
+    def test_without_one_it_falls_back_to_the_next_scheduled_sweep(self, sample):
+        """定義していない収集でも割り込みは頼める。"""
+        collect.update("news", enabled=True, backend="codex")
+        focus = collect.normalize_focus({"note": "直して"})
+        assert collect.sweep_for_focus(collect.get("news"), focus).backend == "codex"
+
+    def test_a_scheduled_run_never_picks_it(self, ready):
+        """起こした巡回が分からなくなったときも、時計を持たない側へは倒さない。"""
+        assert collect.sweep_named(ready, "消えた巡回").on_demand is False
+
+
+class TestTheInjectedPrompt:
+    """その回だけの依頼文。**保存しない**。
+
+    定義のプロンプトは育てながら使うもので、1 回きりの頼みごとで書き換わると、
+    次の定時の回が知らない文で走ることになる。
+    """
+
+    @pytest.fixture
+    def ready(self, sample):
+        collect.update("news", enabled=True, prompt="いつもの依頼文 {cursor}")
+        return collect.get("news")
+
+    def test_the_given_one_is_used_for_that_run(self, ready):
+        focus = collect.normalize_focus(
+            {"note": "直して", "prompt": "この回だけの依頼文 {cursor}"}
+        )
+        user = collect.build_messages(ready, {}, None, {}, None, focus)[1]["content"]
+        assert "この回だけの依頼文" in user
+        assert "いつもの依頼文" not in user
+
+    def test_the_placeholders_still_work(self, ready):
+        collect.update("news", cursor="2026-09-01")
+        focus = collect.normalize_focus({"note": "直して", "prompt": "続きから: {cursor}"})
+        user = collect.build_messages(collect.get("news"), {}, None, {}, None, focus)[1]["content"]
+        assert "続きから: 2026-09-01" in user
+
+    def test_it_is_not_saved(self, ready):
+        collect.request_focus(
+            "news", collect.require_focus({"note": "直して", "prompt": "この回だけ"})
+        )
+        assert collect.get("news").prompt == "いつもの依頼文 {cursor}"
+
+    def test_without_one_the_saved_prompt_is_used(self, ready):
+        focus = collect.normalize_focus({"note": "直して"})
+        user = collect.build_messages(ready, {}, None, {}, None, focus)[1]["content"]
+        assert "いつもの依頼文" in user
+
+
 class TestSchedule:
     def test_a_failed_run_is_still_scheduled_again(self, sample):
         """止めると、一度こけた収集が二度と走らなくなる。"""
@@ -987,6 +1082,59 @@ class TestRest:
         res = client.post("/v1/collect/news/run")
         assert res.status_code == 403
 
+    def test_a_sweep_can_be_named_when_running_now(self, client, sample, monkeypatch):
+        """「じっくりのほうを今すぐ 1 回」が頼めないと、分けて持った意味が半分になる。"""
+        from app.views import admin
+
+        monkeypatch.setattr(admin, "trigger_run", lambda _source: None)
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://chiezo-trigger:7011")
+        collect.update("news", enabled=True, sweeps=[
+            {"name": "ざっと", "interval_minutes": 360},
+            {"name": "じっくり", "interval_minutes": 1440},
+        ])
+
+        res = client.post("/v1/collect/news/run", params={"sweep": "じっくり"})
+        assert res.status_code == 200
+        assert collect.get("news").pending_sweep == "じっくり"
+
+    def test_a_clockless_sweep_cannot_be_run_on_its_own(self, client, sample, monkeypatch):
+        """**画面でボタンを出さないだけにしない。** 口が受け付けるなら、いつか誰かが叩く。
+
+        時計を持たない巡回は自前の依頼文を持たないので、そのまま走らせても
+        収集のプロンプトで普通の回が 1 本増えるだけになる。
+        """
+        from app.views import admin
+
+        woken = []
+        monkeypatch.setattr(admin, "trigger_run", woken.append)
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://chiezo-trigger:7011")
+        collect.update("news", enabled=True, sweeps=[
+            {"name": "ざっと", "interval_minutes": 360},
+            {"name": "割り込み", "on_demand": True},
+        ])
+
+        res = client.post("/v1/collect/news/run", params={"sweep": "割り込み"})
+        assert res.status_code == 400
+        # **起こす前に断る** —— 起こしてから断ると、1 本ぶんの取り込みが空振りする
+        assert woken == []
+        assert client.post(
+            "/v1/collect/news/preview", params={"sweep": "割り込み"}
+        ).status_code == 400
+
+    def test_an_unknown_sweep_is_refused_instead_of_falling_back(self, client, sample, monkeypatch):
+        """名指しで押した側に別の巡回を走らせて返すのは、意図と違うものが動いたことになる。"""
+        from app.views import admin
+
+        woken = []
+        monkeypatch.setattr(admin, "trigger_run", woken.append)
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://chiezo-trigger:7011")
+        collect.update("news", enabled=True, sweeps=[{"name": "ざっと", "interval_minutes": 360}])
+
+        assert client.post(
+            "/v1/collect/news/run", params={"sweep": "消えた巡回"}
+        ).status_code == 404
+        assert woken == []
+
     def test_the_request_is_written_before_the_ingest_is_woken(self, client, sample, monkeypatch):
         """**控えるのが先、起こすのが後。**
 
@@ -1024,6 +1172,24 @@ class TestRest:
 
         assert client.post("/v1/collect/news/focus", json={"note": "直して"}).status_code == 409
         assert collect.get("news").pending_focus is None
+
+    def test_the_prompt_rides_along_without_being_saved(self, client, sample, monkeypatch):
+        """その回だけの依頼文。**定義のプロンプトは育てたまま**にしておく。"""
+        from app.views import admin
+
+        monkeypatch.setattr(admin, "trigger_run", lambda _source: None)
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://chiezo-trigger:7011")
+        collect.update("news", enabled=True, prompt="いつもの依頼文 {cursor}")
+
+        res = client.post(
+            "/v1/collect/news/focus",
+            json={"note": "直して", "prompt": "この回だけ {cursor}", "sweep": "じっくり"},
+        )
+        assert res.status_code == 200
+        item = collect.get("news")
+        assert item.prompt == "いつもの依頼文 {cursor}"
+        assert item.pending_focus["prompt"] == "この回だけ {cursor}"
+        assert item.pending_focus["sweep"] == "じっくり"
 
     def test_focusing_on_a_stopped_collection_is_refused(self, client, sample):
         """割り込みも AI を 1 回動かすので、`run` と同じ扱いにする。"""
@@ -1409,6 +1575,30 @@ class TestTheCollectSectionMarkup:
         # 属性が本文へ漏れていない(開始タグを失った form の証拠)
         assert "onsubmit=" not in html.replace('" onsubmit=', "")
 
+    def test_each_sweep_can_be_run_on_its_own(self, sample):
+        """相手も 1 回に見る量も巡回ごとに違うので、収集に 1 つだけ置くと
+        「どの設定で走ったのか」が押した本人にも読めない。
+        """
+        collect.update("news", sweeps=[
+            {"name": "ざっと", "interval_minutes": 360},
+            {"name": "じっくり", "interval_minutes": 1440},
+        ])
+        html = self._html(sample)
+        assert html.count(">今すぐ実行</button>") == 2
+        assert html.count(">ドライラン</button>") == 2
+        assert html.count('name="sweep" value="じっくり"') == 2
+
+    def test_a_clockless_sweep_has_no_buttons(self, sample):
+        """割り込み用の 1 本は、自前の依頼文を持たないので単独では走らせない。"""
+        collect.update("news", sweeps=[
+            {"name": "ざっと", "interval_minutes": 360},
+            {"name": "割り込み", "on_demand": True},
+        ])
+        html = self._html(sample)
+        assert html.count(">今すぐ実行</button>") == 1
+        assert 'name="sweep" value="割り込み"' not in html
+        assert "時計なし" in html
+
     def test_the_partition_progress_is_shown(self, sample):
         """一周したかどうかが読めて初めて、間隔と 1 回あたりの量を判断できる。"""
         collect.update(
@@ -1573,7 +1763,7 @@ class TestEditingTheSweeps:
                 "mode": "append", "keep_ratio": "", "extract": "",
                 "partition": "", "feed": "", **extra}
         for key in ("name", "interval", "cover_days", "per_run",
-                    "backend", "model", "effort", "enabled"):
+                    "backend", "model", "effort", "enabled", "clock"):
             data[f"sweep_{key}"] = [row.get(key, "") for row in rows]
         res = client.post("/admin/collect/news/edit", data=data, follow_redirects=False)
         assert res.status_code in (200, 303), res.text[:400]
@@ -1589,6 +1779,25 @@ class TestEditingTheSweeps:
         assert (rough.name, rough.interval_minutes, rough.cover_days) == ("ざっと", 360, 7.0)
         assert (deep.name, deep.partitions_per_run, deep.model) == ("じっくり", 1, "opus")
         assert deep.effort == "high"
+
+    def test_a_sweep_can_be_left_without_a_clock(self, client, sample):
+        """割り込み用の 1 本。定時には走らず、頼まれたときだけ動く。"""
+        self._save(client, [
+            {"name": "ざっと", "interval": "360", "enabled": "1", "clock": "interval"},
+            {"name": "割り込み", "backend": "codex", "enabled": "1", "clock": "on_demand"},
+        ])
+        rough, on_demand = collect.sweeps_of(collect.get("news"))
+        assert rough.on_demand is False
+        assert on_demand.on_demand is True
+        assert on_demand.is_due() is False
+        assert on_demand.backend == "codex"
+
+    def test_a_form_without_the_clock_still_runs_on_a_clock(self, client, sample):
+        """**時計を失うのは名指しされたときだけ。** 欄を持たないフォームから保存されても、
+        全部の巡回が黙って止まることがあってはならない。
+        """
+        self._save(client, [{"name": "ざっと", "interval": "360", "enabled": "1"}])
+        assert collect.sweeps_of(collect.get("news"))[0].on_demand is False
 
     def test_clearing_the_name_removes_it(self, client, sample):
         self._save(client, [

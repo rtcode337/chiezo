@@ -82,9 +82,16 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,30}$")
 # 間隔の下限。AI を呼ぶので、分より短い間隔を許すと枠を焼くだけになる
 MIN_INTERVAL_MINUTES = 5
 
+# 時計を持たない巡回の「次に走る時刻」。**「無い」を日時で表す** ——
+# 予定の早い順に並べるところ(`due_sweeps` / `Collection.due_at`)が 1 本道のままで済む
+NEVER = datetime(9999, 12, 31, tzinfo=UTC)
+
 # 巡回(`Sweep`)の名前。**書いていない収集は、定義そのものが 1 本の巡回**として振る舞う。
 # こうしておくと、区画の記録も時計も「巡回ごと」の 1 本道になる(場合分けが増えない)。
 DEFAULT_SWEEP_NAME = "既定"
+# 割り込み用の巡回の名前(見本として作るときに使う)。**名前で選ばない** ——
+# 選ぶときに見るのは `on_demand` のほうで、名前は画面に出る札でしかない
+FOCUS_SWEEP_NAME = "割り込み"
 # 1 つの収集に持てる巡回の数。**2〜3 本で足りる** —— ざっと全体を拾うものと、
 # 少数をじっくり調べるもの。増やすほど同じ収集に対する AI の呼び出しが重なる
 MAX_SWEEPS = 8
@@ -98,6 +105,8 @@ MAX_PARTITIONS_PER_RUN = 20
 MAX_FOCUS_TITLES = 50
 # 割り込みの指示文の長さ。プロンプトへそのまま入るので、本文ぶんの枠に収める
 MAX_FOCUS_NOTE_CHARS = 2_000
+# その回だけ差し込む依頼文の長さ。定義のプロンプトと同じ立場なので、同じだけ許す
+MAX_PROMPT_CHARS = 20_000
 
 # 1 回で焼ける素材の大きさ(バイト)。**件数ではなく大きさで縛る。**
 #
@@ -365,19 +374,34 @@ class Sweep:
     cover_days: float | None = None
     # 1 回に見る区画数を直に決める。`cover_days` より優先
     partitions_per_run: int | None = None
+    # **時計を持たない巡回**(割り込み用)。定時には走らず、頼まれたときだけ動く。
+    # 相手・モデル・考える量を**定時のものとは別に決めておく**ためにある ——
+    # 割り込みは人が待っている場面なので、速い相手に頼みたい / 逆に 1 件を
+    # じっくり調べさせたい、のどちらもあり、定時の巡回の設定を流用できない
+    on_demand: bool = False
     next_run_at: str | None = None
     last_run_at: str | None = None
     last_status: str | None = None
     last_error: str | None = None
 
     def due_at(self) -> datetime:
-        """次に走る時刻。持っていなければ「いますぐ」。"""
+        """次に走る時刻。持っていなければ「いますぐ」。
+
+        **時計を持たない巡回は「来ない」**(`NEVER`)—— 予定が空なのを「いますぐ」と
+        読む規則をそのまま当てると、割り込み用の巡回が毎周走ってしまう。
+        """
+        if self.on_demand:
+            return NEVER
         return _parse(self.next_run_at) or _now()
 
     def is_due(self, at: datetime | None = None) -> bool:
         """**予定を持っていない巡回は、いますぐ走る。** 足したばかりの巡回がそれで、
         「いま」を取り直して比べると必ず未来になり、永遠に走らない(実際にそうなった)。
+
+        **時計を持たない巡回は、定時には走らない**(頼まれたときだけ)。
         """
+        if self.on_demand:
+            return False
         at = at or _now()
         return self.enabled and (_parse(self.next_run_at) or at) <= at
 
@@ -443,6 +467,7 @@ def _sweep_from_json(raw: dict, item: Collection) -> Sweep:
         partitions_per_run=(
             int(raw["partitions_per_run"]) if raw.get("partitions_per_run") else None
         ),
+        on_demand=bool(raw.get("on_demand")),
         next_run_at=raw.get("next_run_at") or None,
         last_run_at=raw.get("last_run_at") or None,
         last_status=raw.get("last_status") or None,
@@ -479,8 +504,32 @@ def sweep_named(item: Collection, name: str | None) -> Sweep:
     for sweep in sweeps:
         if sweep.name == name:
             return sweep
-    due = [s for s in sweeps if s.enabled]
+    due = [s for s in sweeps if s.enabled and not s.on_demand]
     return min(due or sweeps, key=lambda s: s.due_at())
+
+
+def sweep_for_focus(item: Collection, focus: Focus | None = None) -> Sweep:
+    """割り込みを走らせるときの設定(相手・モデル・考える量・指示文)。
+
+    **割り込みも巡回として定義しておく**(`on_demand`)。定時のものと同じ書き方で
+    置いておけるので、頼む相手を割り込みだけ別にできる —— 人が待っている場面なので
+    速い相手に頼みたい / 1 件をじっくり調べさせたい、のどちらもあり、
+    定時の巡回の設定を流用すると「どちらの都合で選んだ相手か」が言えなくなる。
+
+    **名指しがあればそれを使う**(`focus.sweep`)—— 「じっくりの相手で、いま 1 回だけ」
+    を頼めるようにするため。無ければ時計を持たない巡回、それも無ければ
+    `sweep_named` と同じ倒し方をする(定義していない収集でも割り込みは頼める)。
+    """
+    sweeps = sweeps_of(item)
+    named = (focus.sweep if focus else None) or None
+    if named:
+        for sweep in sweeps:
+            if sweep.name == named:
+                return sweep
+    for sweep in sweeps:
+        if sweep.on_demand:
+            return sweep
+    return sweep_named(item, None)
 
 
 @dataclass(frozen=True)
@@ -502,6 +551,13 @@ class Focus:
     note: str
     partition: str | None = None
     titles: list[str] = field(default_factory=list)
+    # **その回だけの依頼文**(`{cursor}` などの差し込み口はいつもどおり効く)。
+    # **保存しない** —— 定義のプロンプトは育てながら使うもので、1 回きりの頼みごとで
+    # 書き換わると、次の定時の回が知らない文で走ることになる
+    prompt: str | None = None
+    # どの巡回の設定(相手・モデル・考える量)で走らせるか。書かなければ
+    # 時計を持たない巡回(`on_demand`)
+    sweep: str | None = None
     requested_by: str = ""
     requested_at: str = ""
 
@@ -528,6 +584,8 @@ def normalize_focus(raw) -> Focus | None:
         note=note,
         partition=str(raw.get("partition") or "").strip() or None,
         titles=titles[:MAX_FOCUS_TITLES],
+        prompt=str(raw.get("prompt") or "").strip()[:MAX_PROMPT_CHARS] or None,
+        sweep=str(raw.get("sweep") or "").strip()[:40] or None,
         requested_by=str(raw.get("requested_by") or "").strip()[:80],
         requested_at=str(raw.get("requested_at") or "") or _iso(_now()),
     )
@@ -1007,7 +1065,9 @@ def build_messages(
     `{partition}` は**今回見る範囲**。Chiezo が台帳から選んで渡す(`app/partition.py`)。
     矩形だけでは AI にどこか分からないので、近くのものを数件添えた文になる。
     """
-    prompt = (sweep.prompt if sweep else "") or item.prompt
+    # **その回だけの依頼文を差し込める**(`focus.prompt`)。保存はしないので、
+    # 定義のプロンプトは育てたまま、1 回きりの頼みごとを別の文で走らせられる
+    prompt = (focus.prompt if focus else None) or (sweep.prompt if sweep else "") or item.prompt
     user = prompt.replace("{cursor}", item.cursor or "(まだ無し。最初から)")
     spec = partitioning.normalize(item.partition) if item.partition else None
     if focus is not None:
@@ -1300,6 +1360,31 @@ def mark_started(name: str, sweep: str | None = None) -> Collection:
     )
     _replace_one(name, updated)
     return updated
+
+
+def require_runnable(item: Collection, name: str | None) -> Sweep:
+    """名指しされた巡回を、**単独で走らせてよいか確かめてから**返す。
+
+    **時計を持たない巡回は断る。** あれは割り込みで頼まれたときだけ動く 1 本で、
+    自前の依頼文を持たない —— そのまま走らせると収集のプロンプトで普通の回が
+    1 本増えるだけになり、「割り込み用に相手を分けておく」という置いた意味が消える。
+
+    **画面でボタンを出さないだけにしない。** 口が受け付けるなら、いつか誰かが叩く。
+
+    **知らない名前も断る。** `sweep_named` は次に走るはずの巡回へ倒すが、あれは
+    取り込みが素材を取りに来たときの逃げ道 —— 名指しで押した側に別の巡回を
+    走らせて返すのは、押した人の意図とは違うものが動いたことになる。
+    """
+    if name and not any(s.name == name for s in sweeps_of(item)):
+        raise HTTPException(404, {"error": f"巡回「{name}」はありません"})
+    sweep = sweep_named(item, name)
+    if sweep.on_demand:
+        raise HTTPException(400, {
+            "error": f"巡回「{sweep.name}」は時計を持たないので、単独では走らせられません",
+            "hint": "割り込み(POST /v1/collect/{name}/focus)で頼んでください"
+                    " —— この巡回は、そのときの相手と考える量を決めておくためのものです",
+        })
+    return sweep
 
 
 def require_focus(raw: dict) -> Focus:

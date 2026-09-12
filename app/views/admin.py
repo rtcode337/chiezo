@@ -586,6 +586,9 @@ def _sweeps_form(item) -> str:
         '<p class="muted"><strong>同じ収集を別々の時計で回すためのもの。</strong>'
         "ざっと全体を拾うもの(「一周の日数」を書く)と、少数をじっくり調べるもの"
         "(「1 回に見る区画」と強いモデル)を分けて持てる。"
+        "<strong>時計を持たない巡回も置ける</strong> —— 割り込み"
+        "(「ここが間違っているから直して」)を頼まれたときだけ動く 1 本で、"
+        "頼む相手を定時のものと別に決めておくためのもの。"
         "<strong>名前を書けば増え、消せば減る。</strong>"
         "1 本だけなら、その設定がそのまま収集の設定になる。</p>"
         + "".join(blocks)
@@ -601,6 +604,7 @@ def _sweep_fields(sweep, removable: bool) -> str:
     per_run = sweep.partitions_per_run if sweep and sweep.partitions_per_run else ""
     backend = sweep.backend if sweep else None
     enabled = sweep.enabled if sweep else True
+    on_demand = bool(sweep and sweep.on_demand)
     hint = (
         '<span class="muted">名前を消すと、この巡回は無くなります</span>'
         if removable else '<span class="muted">名前を書くと増えます</span>'
@@ -609,6 +613,13 @@ def _sweep_fields(sweep, removable: bool) -> str:
         '<div class="sweep-row">'
         f'<p><label>名前<br><input name="sweep_name" value="{esc(name)}"'
         f' placeholder="ざっと"></label> {hint}</p>'
+        # **「持たない」は名指しでしか選べない値にする。** 空文字で表すと、この欄を
+        # 持たないフォームから保存したときに、全部の巡回が黙って時計を失う
+        '<p><label>時計<br><select name="sweep_clock">'
+        f'<option value="interval"{"" if on_demand else " selected"}>間隔で回す</option>'
+        f'<option value="on_demand"{" selected" if on_demand else ""}>'
+        "持たない(割り込みで頼まれたときだけ)</option>"
+        "</select></label></p>"
         f'<p><label>間隔(分)<br><input name="sweep_interval" type="number"'
         f' min="{collect.MIN_INTERVAL_MINUTES}" value="{interval}"></label></p>'
         '<p><label>一周の日数(区画を全部見終わるまで。空なら下の区画数を使う)<br>'
@@ -629,7 +640,7 @@ def _sweep_fields(sweep, removable: bool) -> str:
     )
 
 
-def _sweep_cells(item) -> list[str]:
+def _sweep_cells(item, disabled: str = "") -> list[str]:
     """巡回 1 本ぶんのセル(巡回・相手・間隔・次にいつ・一周のうち・前回)。
 
     **「集める」の表にそのまま並べる。** 折り畳みの中へ入れていた頃は、動いているかを
@@ -661,20 +672,51 @@ def _sweep_cells(item) -> list[str]:
         # **止めている巡回に「いますぐ」と出さない**(予定を持っていないだけで走らない)
         if not sweep.enabled:
             when = '<span class="muted">止めている</span>'
+        elif sweep.on_demand:
+            when = '<span class="muted">頼まれたとき</span>'
         elif due:
             when = esc(jst.format(due))
         else:
             when = '<span class="muted">いますぐ</span>'
         name = esc(sweep.name) + ("" if sweep.enabled else ' <span class="muted">(止)</span>')
-        cells.append(
-            f"<td>{name}</td><td>{who}</td>"
-            f"<td>{sweep.interval_minutes} 分ごと"
+        # **押す口は巡回の欄に置く。** 相手も 1 回に見る量も巡回ごとに違うので、
+        # 収集に 1 つだけ置くと「どの設定で走ったのか」が押した本人にも分からない。
+        # **時計を持たない巡回には出さない** —— あれは割り込みで頼まれたときだけ
+        # 動く 1 本で、自前の依頼文を持たない(口のほうでも断る)
+        name += "" if sweep.on_demand else _sweep_run_forms(item.name, sweep.name, disabled)
+        every = (
+            '<span class="muted">時計なし</span>'
+            if sweep.on_demand
+            else f"{sweep.interval_minutes} 分ごと"
             + (f'<br><span class="muted">{sweep.cover_days:g} 日で一周</span>'
                if sweep.cover_days else "")
+        )
+        cells.append(
+            f"<td>{name}</td><td>{who}</td>"
+            f"<td>{every}"
             + f"</td><td>{when}</td>"
             f"<td>{where}</td><td>{result}</td>"
         )
     return cells
+
+
+def _sweep_run_forms(name: str, sweep: str, disabled: str) -> str:
+    """その巡回を 1 回だけ動かす 2 つの口。
+
+    **ドライランは焼かない**(差分を見るだけ)ので、取り込みが走っていても押せる。
+    **今すぐ実行は焼く**ので、trigger が居ないときと取り込み中は押せない。
+    """
+    field = f'<input type="hidden" name="sweep" value="{esc(sweep)}">'
+    return (
+        f'<div class="sweep-run">'
+        f'<form class="init-form" method="post" action="/admin/collect/{esc(name)}/run"{disabled}>'
+        f'{field}<button type="submit"{disabled}'
+        f' title="この巡回で 1 回、集めて焼きます">今すぐ実行</button></form>'
+        f'<form class="init-form" method="post" action="/admin/collect/{esc(name)}/preview">'
+        f'{field}<button type="submit"'
+        f' title="この巡回で 1 回集めさせて、焼かずに差分だけ見ます">ドライラン</button></form>'
+        f"</div>"
+    )
 
 
 def _partition_html(item) -> str:
@@ -848,7 +890,7 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
         # **巡回ごとに 1 行。** 間隔も次の予定も前回も相手も巡回ごとに違うので、
         # 収集に 1 行だけ与えると、そこに出る値はどちらか片方のものにしかならない。
         # 名前と溜まった件数と操作は収集のものなので、行をまたがせる
-        sweep_cells = _sweep_cells(item)
+        sweep_cells = _sweep_cells(item, disabled)
         span = f' rowspan="{len(sweep_cells)}"' if len(sweep_cells) > 1 else ""
         # **開いたものは行をまたぐ 1 行に出す。** 名前のセルの中で開くと、
         # 巡回のぶん背の高い行のどこかに長いフォームが挟まり、どの巡回の設定を
@@ -950,12 +992,6 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             + f"<td{span}>"
             f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/toggle">'
             f'<button type="submit">{toggle_label}</button></form>'
-            f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/preview">'
-            f'<button type="submit" title="AI に 1 回集めさせて、焼かずに差分だけ見ます">'
-            f"試しに集めて差分を見る</button></form>"
-            f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/run"'
-            f"{disabled}>"
-            f'<button type="submit"{disabled}>いま集めて焼く</button></form>'
             f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/delete"'
             f" onsubmit=\"return confirm('{esc(delete_confirm)}')\">"
             f'<button type="submit">削除</button></form>'
@@ -2034,17 +2070,21 @@ def _drop_collect_source(name: str) -> bool:
 
 
 @router.post("/admin/collect/{name}/run")
-def admin_collect_run(name: str):
-    """予定を待たずに 1 回、集めて焼く(管理画面の「いま集めて焼く」)。
+async def admin_collect_run(name: str, request: Request):
+    """予定を待たずに 1 回、集めて焼く(管理画面の「今すぐ実行」)。
 
     **止めている収集もここからは走らせる** —— 有効にする前に一度試せないと、
     プロンプトが通るかを確かめる手段が無くなる。REST の `/v1/collect/{name}/run` は
     同じことを断る(外のアプリに勝手な実行を許さないため)。画面を開けるのは
     Chiezo を操作している人だけ、という前提の差。
+
+    **巡回ごとに押せる。** 相手も 1 回に見る量も巡回ごとに違うので、
+    「じっくりのほうを今すぐ 1 回」が押せないと、分けて持った意味が半分になる。
     """
     from app.main import start_collection_bake
 
-    start_collection_bake(name)
+    form = await request.form()
+    start_collection_bake(name, str(form.get("sweep") or "") or None)
     return RedirectResponse(url="/admin/memory#collect", status_code=303)
 
 
@@ -2124,7 +2164,10 @@ def _parse_sweeps_form(form) -> list[dict]:
     names = form.getlist("sweep_name")
     fields = {
         key: form.getlist(f"sweep_{key}")
-        for key in ("interval", "cover_days", "per_run", "backend", "model", "effort", "enabled")
+        for key in (
+            "interval", "cover_days", "per_run", "backend", "model", "effort",
+            "enabled", "clock",
+        )
     }
     out = []
     for index, raw_name in enumerate(names):
@@ -2137,6 +2180,11 @@ def _parse_sweeps_form(form) -> list[dict]:
             return str(values[i]).strip() if i < len(values) else ""
 
         sweep = {"name": name, "enabled": bool(at("enabled"))}
+        # **時計を持たない巡回**(割り込み用)。定時には走らず、頼まれたときだけ動く。
+        # 名指しされたときだけにする —— 欄を持たないフォームから保存されたときに、
+        # 全部の巡回が黙って時計を失うのを避ける
+        if at("clock") == "on_demand":
+            sweep["on_demand"] = True
         if at("interval").isdigit():
             sweep["interval_minutes"] = int(at("interval"))
         for key, field in (("cover_days", "cover_days"), ("partitions_per_run", "per_run")):
@@ -2181,12 +2229,15 @@ def _refusal_text(status: int) -> str:
 
 @router.post("/admin/collect/{name}/preview")
 async def admin_collect_preview(name: str, request: Request):
-    """**焼かずに**1 回集めさせて、前世代との差分を見せる。
+    """**焼かずに**1 回集めさせて、前世代との差分を見せる(管理画面の「ドライラン」)。
 
     整理(作り直し)を育てるための道具。何が増えて・何が残って・何が消えるかを
     見てから焼けないと、プロンプトの直しようがない(件数と勘で調整することになる)。
 
-    **止めている収集もここからは見られる**(「いま集めて焼く」と同じ判断)。
+    **巡回ごとに押せる** —— 相手も 1 回に見る量も巡回ごとに違うので、
+    「じっくりで聞いたらどうなるか」は名指しできないと試せない。
+
+    **止めている収集もここからは見られる**(「今すぐ実行」と同じ判断)。
     REST の `/v1/collect/{name}/preview` は止まっているものを断る。
 
     **この画面も待たせる**(AI の応答ぶん)。管理画面は JS を持たないので、
@@ -2194,8 +2245,10 @@ async def admin_collect_preview(name: str, request: Request):
     """
     from app.main import collect_preview
 
+    form = await request.form()
+    sweep = str(form.get("sweep") or "") or None
     try:
-        result = await collect_preview(name, request.app.state.sources)
+        result = await collect_preview(name, request.app.state.sources, sweep)
         error = ""
     except HTTPException as e:
         # 断り方は配信側が組み立てた文言だが、そのまま画面へ流すと接続先や相手の
@@ -2247,7 +2300,7 @@ def _preview_page_html(name: str, result: dict | None, error: str) -> str:
 <h3>「{esc(name)}」を試しに集めた結果</h3>
 <p class="muted">集め方: {esc(MODE_LABELS.get(str(result["mode"]), "") if result else "")}</p>
 <p><strong>まだ焼いていません。</strong>長期記憶は変わっておらず、進み具合も次回の予定も
-動いていません。この数字を見てから「いま集めて焼く」を押します。</p>
+動いていません。この数字を見てから「今すぐ実行」を押します。</p>
 {body}
 <p class="muted"><a href="/admin/memory#collect">管理画面へ戻る</a></p>
 """,
