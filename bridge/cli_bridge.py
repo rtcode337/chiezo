@@ -1211,7 +1211,10 @@ async def models() -> dict:
 # サンドボックスを緩める。 会話の口は読み取り専用で動かしているが、
 # 画像はファイルとして書き出されるので書き込みを許さないと 1 枚も残らない。
 # 許すのはこの 1 回のために作った作業ディレクトリだけで、書けた画像を読んだら消す。
-IMAGE_TIMEOUT = float(os.environ.get("CHIEZO_BRIDGE_IMAGE_TIMEOUT", "600") or 600)
+# 絵 1 枚の上限。**会話より長く取る** —— 相手はエージェントなので、読んで・
+# 道具を使って・描く、をひと通り踏む。実測で成功が 140〜575 秒、
+# **元の絵を渡すと倍近く**かかる(参考なし 中央 316 秒 / 参考あり 中央 545 秒)。
+IMAGE_TIMEOUT = float(os.environ.get("CHIEZO_BRIDGE_IMAGE_TIMEOUT", "1200") or 1200)
 
 # 生成物として拾う拡張子。どちらの CLI も PNG で保存する(サイズ指定つきでも変わらない)。
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
