@@ -497,6 +497,37 @@ def normalize_sweeps(raw) -> list[dict]:
     return out
 
 
+# 巡回が自分で持っている進み具合。**設定を送り直しても引き継ぐ** ——
+# 設定を書く側(外のアプリや画面のフォーム)はこれらを持っていないので、
+# 素直に置き換えると押すたびに時計が巻き戻る。
+SWEEP_PROGRESS_FIELDS = ("next_run_at", "last_run_at", "last_status", "last_error")
+
+
+def _keep_schedule(incoming: list[dict], current: list[dict]) -> list[dict]:
+    """送られてきた巡回に、**同じ名前の巡回が持っていた進み具合を引き継ぐ**。
+
+    **これが無いと、設定を更新するたびに全部の巡回がいますぐ走る。** 予定を
+    持っていない巡回は「いますぐ」として扱う規則(`Sweep.is_due`)があるので、
+    次回の予定を落とした瞬間に全部が due になる —— 押した人は設定を直しただけの
+    つもりなのに、収集が 1 本走り出す(実際にそうなった)。前回の結果も同じ理由で
+    引き継ぐ: 落とすと画面の「前回」が「まだ」に戻り、動いていないように見える。
+
+    **名前が鍵**(区画の巡回記録と同じ)。名指しで書かれていればそちらが勝つので、
+    予定を明示的に動かしたい呼び出しは今までどおり通る。
+    """
+    before = {raw.get("name"): raw for raw in (current or []) if isinstance(raw, dict)}
+    out = []
+    for raw in incoming:
+        kept = before.get(raw["name"]) or {}
+        carried = {
+            key: kept[key]
+            for key in SWEEP_PROGRESS_FIELDS
+            if key not in raw and kept.get(key) is not None
+        }
+        out.append({**raw, **carried})
+    return out
+
+
 def sweep_named(item: Collection, name: str | None) -> Sweep:
     """名前で引く。**知らない名前なら、次に走るはずの巡回へ倒す** ——
     巡回を消したあとに走りかけの取り込みが素材を取りに来ることがある。
@@ -856,7 +887,7 @@ def update(name: str, **fields) -> Collection:
         if patch["partition"] != current.partition and "partitions" not in patch:
             patch["partitions"] = []
     if "sweeps" in patch:
-        patch["sweeps"] = normalize_sweeps(patch["sweeps"])
+        patch["sweeps"] = _keep_schedule(normalize_sweeps(patch["sweeps"]), current.sweeps)
         # **巡回の名前が消えたら、その巡回の記録も台帳から落とす** ——
         # 残しておくと、同じ名前で作り直したとき前の進み具合が引き継がれる
         names = {raw["name"] for raw in patch["sweeps"]}

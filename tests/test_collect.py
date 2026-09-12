@@ -683,6 +683,67 @@ class TestFocus:
         assert len(focus.titles) == collect.MAX_FOCUS_TITLES
 
 
+class TestKeepingTheClockAcrossAPatch:
+    """設定を送り直しても、巡回の進み具合は引き継ぐ。
+
+    **これが無いと、設定を更新するたびに全部の巡回がいますぐ走る。** 予定を
+    持っていない巡回は「いますぐ」として扱う規則があるので、次回の予定を落とした
+    瞬間に全部が due になる —— 押した人は設定を直しただけのつもりなのに、
+    収集が 1 本走り出す(実際にそうなった)。
+    """
+
+    @pytest.fixture
+    def running(self, sample):
+        collect.update("news", enabled=True, sweeps=[
+            {"name": "ざっと", "interval_minutes": 360},
+            {"name": "じっくり", "interval_minutes": 1440},
+        ])
+        # 1 回走ったことにして、予定と前回を持たせる
+        collect.mark_started("news", "ざっと")
+        collect.record_result("news", status="ok", added=3, sweep="ざっと")
+        return collect.get("news")
+
+    def test_the_schedule_survives_a_settings_patch(self, running):
+        before = collect.sweep_named(running, "ざっと")
+        assert before.next_run_at and before.last_run_at
+
+        # 外のアプリが送ってくるのは設定だけ(予定は持っていない)
+        collect.update("news", sweeps=[
+            {"name": "ざっと", "interval_minutes": 360, "backend": "codex"},
+            {"name": "じっくり", "interval_minutes": 1440},
+        ])
+        after = collect.sweep_named(collect.get("news"), "ざっと")
+
+        assert after.backend == "codex"
+        assert after.next_run_at == before.next_run_at
+        assert after.last_run_at == before.last_run_at
+        assert after.last_status == before.last_status
+
+    def test_it_does_not_start_running_right_after_a_patch(self, running):
+        """設定を直しただけで収集が走り出さないこと(これが本題)。"""
+        collect.update("news", sweeps=[
+            {"name": "ざっと", "interval_minutes": 360, "backend": "codex"},
+        ])
+        assert collect.sweep_named(collect.get("news"), "ざっと").is_due() is False
+
+    def test_a_new_sweep_still_runs_at_once(self, running):
+        """足したばかりの巡回は今までどおり「いますぐ」。"""
+        collect.update("news", sweeps=[
+            {"name": "ざっと", "interval_minutes": 360},
+            {"name": "三本目", "interval_minutes": 60},
+        ])
+        assert collect.sweep_named(collect.get("news"), "三本目").is_due() is True
+
+    def test_an_explicit_schedule_still_wins(self, running):
+        """名指しで書かれていればそちらが勝つ(予定を動かしたい呼び出しは通る)。"""
+        collect.update("news", sweeps=[
+            {"name": "ざっと", "interval_minutes": 360,
+             "next_run_at": "2030-01-01T00:00:00+00:00"},
+        ])
+        after = collect.sweep_named(collect.get("news"), "ざっと")
+        assert after.next_run_at == "2030-01-01T00:00:00+00:00"
+
+
 class TestTheOnDemandSweep:
     """割り込みも巡回として定義しておく —— **時計を持たない 1 本**。
 
