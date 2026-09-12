@@ -1652,8 +1652,9 @@ class TestTheCollectSectionMarkup:
         body = self._html(sample).split("<tbody>")[1].split("</tbody>")[0]
 
         # プロンプトは列をまたぐ行に出る（名前のセルの中ではない）
-        assert 'colspan="9"' in body
-        assert body.index('colspan="9"') > body.index("じっくり")
+        header = self._html(sample).split("<thead>")[1].split("</thead>")[0]
+        assert f'colspan="{header.count("<th>")}"' in body
+        assert body.index("colspan=") > body.index("じっくり")
 
     def test_sweeps_are_fields_not_json(self, sample):
         """JSON を直に書かせると、間隔ひとつ変えるのに配列の構文を相手にすることになる。
@@ -1750,6 +1751,111 @@ class TestTheCollectSectionMarkup:
         html = admin._collect_html({"news": baked}, "")
         assert "1,234 件" in html
         assert html.count("<form") == html.count("</form>")
+
+
+class TestWhatChangedInOneDoc:
+    """動いた 1 件が、どう書き換わったかを出す。
+
+    「直近の変更」に並ぶのは見出しの名前までで、そこからは何が変わったのか読めない
+    —— 件数と名前が分かっても、プロンプトを直す判断に要るのは中身の変化のほう。
+    """
+
+    @pytest.fixture()
+    def generations(self, tmp_path):
+        """世代ファイルを 2 つと、シンボリックリンクを作る(焼き上がりと同じ形)。"""
+        from app import notes
+
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+
+        def write(stamp, docs):
+            path = corpus / f"news-{stamp}.db"
+            conn = sqlite3.connect(path)
+            conn.executescript(notes.SCHEMA_DDL)
+            for i, (title, body, tags) in enumerate(docs, start=1):
+                conn.execute(
+                    "INSERT INTO docs (doc_id, title, opening, body, tags, updated_at,"
+                    " rank_score) VALUES (?, ?, ?, ?, ?, '2026-01-01T00:00:00+00:00', 0.0)",
+                    (i, title, body, body, json.dumps(tags, ensure_ascii=False)),
+                )
+            conn.commit()
+            conn.close()
+            return path
+
+        write("20260101000000", [
+            ("残る店", "旧住所にあります。\n電話は 03-0000-0000。", ["飲食店"]),
+            ("消える店", "本文", []),
+        ])
+        live = write("20260102000000", [
+            ("残る店", "新住所へ移転しました。\n電話は 03-0000-0000。", ["飲食店", "移転"]),
+            ("増える店", "新しく入りました。", []),
+        ])
+        link = corpus / "news.db"
+        link.symlink_to(live)
+
+        class Src:
+            path = link
+            dump_date = "20260102000000"
+
+        return {"news": Src()}
+
+    def test_it_shows_both_generations(self, generations):
+        v = collect.doc_versions("news", generations, "残る店")
+        assert v["before"]["body"].startswith("旧住所")
+        assert v["now"]["body"].startswith("新住所")
+        assert (v["before_stamp"], v["now_stamp"]) == ("20260101000000", "20260102000000")
+
+    def test_an_added_one_has_no_before(self, generations):
+        v = collect.doc_versions("news", generations, "増える店")
+        assert v["before"] is None
+        assert v["now"]["body"] == "新しく入りました。"
+
+    def test_a_removed_one_has_no_now(self, generations):
+        v = collect.doc_versions("news", generations, "消える店")
+        assert v["now"] is None
+        assert v["before"]["body"] == "本文"
+
+    def test_an_unknown_title_breaks_nothing(self, generations):
+        v = collect.doc_versions("news", generations, "知らない店")
+        assert (v["now"], v["before"]) == (None, None)
+
+    def test_the_page_shows_what_moved(self, generations):
+        from app.views import admin
+
+        html = admin._doc_diff_page_html(
+            "news", "残る店", collect.doc_versions("news", generations, "残る店")
+        )
+        # どの世代どうしを比べたかを必ず出す（古い回の行から来た人が取り違えないように）
+        assert "1 つ前(2026-01-01 00:00) → いま(2026-01-02 00:00)" in html
+        assert "書き換わったもの" in html
+        # 本文は行単位の差分、タグは別に出す
+        assert "旧住所にあります。" in html and "新住所へ移転しました。" in html
+        assert "足したタグ" in html and "移転" in html
+        # 動いていない行は差分に出ない（n=2 の文脈としては出るので、印だけ見る）
+        assert '<span class="added">' in html and '<span class="removed">' in html
+
+    def test_the_page_says_when_there_is_nothing_to_compare(self, generations):
+        from app.views import admin
+
+        html = admin._doc_diff_page_html(
+            "news", "知らない店", collect.doc_versions("news", generations, "知らない店")
+        )
+        assert "いまの世代にも 1 つ前の世代にもありません" in html
+
+    def test_the_titles_in_the_changes_are_clickable(self, sample, monkeypatch, tmp_path):
+        """名前だけ並べても「どう書き換わったか」は読めない。"""
+        from app import collect_log
+        from app.views import admin
+
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        collect_log.record(
+            "news", status=collect_log.STATUS_OK,
+            diff={"total": 1, "updated": 1, "updated_titles": ["A & B"]},
+        )
+        html = admin._collect_html({}, "")
+        assert "/admin/collect/news/doc?title=A%20%26%20B" in html
+        # 見出しそのものは HTML としてエスケープして出す
+        assert ">A &amp; B</a>" in html
 
 
 class TestEditingTheSweeps:

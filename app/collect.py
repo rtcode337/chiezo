@@ -59,6 +59,7 @@ import re
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from fastapi import HTTPException
 
@@ -1541,6 +1542,76 @@ def recent(name: str, sources: dict, limit: int = 5) -> list[dict]:
         }
         for row in rows
     ]
+
+
+def doc_versions(name: str, sources: dict, title: str) -> dict:
+    """1 件の見出しについて、**いまの世代と 1 つ前の世代**の中身を返す。
+
+    「直近の変更」に並ぶのは動いた見出しの名前までで、**何がどう変わったのかは
+    そこからは読めない** —— 件数と名前が分かっても、プロンプトを直す判断には
+    「どう書き換わったか」が要る。
+
+    **比べられるのは 1 つ前まで**(ブルーグリーンが残す世代がそこまで)。
+    それより古い回の行から来ても、出せるのは最新の焼き直しのぶん —— 読む人が
+    取り違えないよう、**どの世代どうしを比べたかを一緒に返す**。
+    """
+    src = sources.get(name)
+    if src is None:
+        return {"now": None, "before": None, "now_stamp": "", "before_stamp": ""}
+    before_path = _previous_generation(src.path)
+    return {
+        "now": _doc_at(src.path, title),
+        "before": _doc_at(before_path, title) if before_path else None,
+        "now_stamp": src.dump_date or "",
+        "before_stamp": _stamp_of(before_path) if before_path else "",
+    }
+
+
+def _previous_generation(current: Path) -> Path | None:
+    """1 つ前の世代のファイル。**シンボリックリンクの指す先は外す**。
+
+    世代は `<ソース名>-<日付>.db` で、切り替えのときに 1 つ前だけ残る
+    (`ingest/main.py`)。名前に入っている日付が並び順そのものなので、
+    新しい順に並べて 2 番目を採ればよい。
+    """
+    with suppress(OSError):
+        live = current.resolve()
+        peers = sorted(
+            (p for p in live.parent.glob(f"{live.name.split('-')[0]}-*.db") if p != live),
+            reverse=True,
+        )
+        return peers[0] if peers else None
+    return None
+
+
+def _stamp_of(path: Path) -> str:
+    """世代ファイルの名前に入っている日付(`<名前>-<日付>.db` の日付)。"""
+    stem = path.stem
+    return stem.partition("-")[2]
+
+
+def _doc_at(path: Path, title: str) -> dict | None:
+    """その世代の 1 件。**無ければ None**(足された前・消された後がこれに当たる)。"""
+    with suppress(Exception):
+        rows = db.query(
+            path,
+            "SELECT title, body, tags, updated_at FROM docs WHERE title = ? LIMIT 1",
+            (title,),
+        )
+        if rows:
+            row = rows[0]
+            # **`load_json` は使えない**(あれは dict しか通さない。タグは配列)
+            try:
+                tags = json.loads(row["tags"] or "[]")
+            except ValueError:
+                tags = []
+            return {
+                "title": row["title"],
+                "body": row["body"] or "",
+                "tags": [str(t) for t in tags] if isinstance(tags, list) else [],
+                "updated_at": row["updated_at"] or "",
+            }
+    return None
 
 
 def previous_docs(name: str, sources: dict) -> dict[str, dict]:

@@ -135,6 +135,14 @@ PAGE_STYLE = """
      置くのは、どの設定で走るのかが押す場所から読めるようにするため */
   .sweep-run { margin-top: 0.3rem; display: flex; gap: 0.3rem; flex-wrap: wrap; }
   .sweep-run button { font-size: 0.8rem; padding: 0.15rem 0.5rem; }
+  /* 本文の差分。足した行と落とした行を色で分ける（記号だけだと目で追えない） */
+  .doc-diff { white-space: pre-wrap; word-break: break-word; background: #fafafa;
+              border: 1px solid #ddd; padding: 0.6rem 0.8rem; }
+  .doc-diff .added { color: #1a7f37; }
+  .doc-diff .removed { color: #b42318; }
+  /* 畳んだ節の見出し。h3 を summary の中に入れるので、行を分けずに並べる
+     （見出しのレベルは残しつつ、開閉の三角と同じ行に見せる） */
+  summary > h3 { display: inline; font-size: 1rem; }
   .job-status { border: 1px solid #ccc; padding: 0.6rem 1rem; margin-top: 1rem; background: #fafafa; }
   .job-status.running { border-color: #d9a400; background: #fff8e1; }
   .job-status.error { border-color: #c0392b; background: #fdecea; }

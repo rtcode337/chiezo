@@ -5,6 +5,7 @@ DB を触らない。Claude Code 連携の設定を配る口(`/admin/claude-conf
 """
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 import os
@@ -679,11 +680,15 @@ def _sweep_cells(item, disabled: str = "") -> list[str]:
         else:
             when = '<span class="muted">いますぐ</span>'
         name = esc(sweep.name) + ("" if sweep.enabled else ' <span class="muted">(止)</span>')
-        # **押す口は巡回の欄に置く。** 相手も 1 回に見る量も巡回ごとに違うので、
+        # **押す口は巡回ごとに 1 つずつ。** 相手も 1 回に見る量も巡回ごとに違うので、
         # 収集に 1 つだけ置くと「どの設定で走ったのか」が押した本人にも分からない。
         # **時計を持たない巡回には出さない** —— あれは割り込みで頼まれたときだけ
         # 動く 1 本で、自前の依頼文を持たない(口のほうでも断る)
-        name += "" if sweep.on_demand else _sweep_run_forms(item.name, sweep.name, disabled)
+        run = (
+            '<span class="muted">—</span>'
+            if sweep.on_demand
+            else _sweep_run_forms(item.name, sweep.name, disabled)
+        )
         every = (
             '<span class="muted">時計なし</span>'
             if sweep.on_demand
@@ -695,9 +700,21 @@ def _sweep_cells(item, disabled: str = "") -> list[str]:
             f"<td>{name}</td><td>{who}</td>"
             f"<td>{every}"
             + f"</td><td>{when}</td>"
-            f"<td>{where}</td><td>{result}</td>"
+            f"<td>{where}</td><td>{result}</td><td>{run}</td>"
         )
     return cells
+
+
+def _doc_link(name: str, title: str) -> str:
+    """動いた 1 件への入口。押すと、どう書き換わったかを別の画面で出す。
+
+    **percent-encode してから HTML のエスケープを通す**(`quote` は HTML の
+    エスケープではない)—— 見出しには `&` も `#` も入りうる。
+    """
+    return (
+        f'<a href="/admin/collect/{esc(quote(name))}/doc?title={esc(quote(title))}">'
+        f"{esc(title)}</a>"
+    )
 
 
 def _sweep_run_forms(name: str, sweep: str, disabled: str) -> str:
@@ -799,11 +816,14 @@ def _collect_changes_html(limit: int = 30) -> str:
         if row["removed"]:
             marks.append(f'<span class="stale">-{row["removed"]}</span>')
         summary = " / ".join(marks) or '<span class="muted">変化なし</span>'
+        # **見出しは押せるようにする。** 名前だけ並べても「どう書き換わったか」は
+        # 読めず、プロンプトを直す判断には中身の変化のほうが要る
         moved = []
         for label, key in (("足した", "added_titles"), ("直した", "updated_titles"),
                            ("消した", "removed_titles")):
             if row[key]:
-                moved.append(f"{label}: " + esc("、".join(row[key])))
+                links = "、".join(_doc_link(row["name"], t) for t in row[key])
+                moved.append(f"{label}: {links}")
         detail = (
             f'<details><summary class="muted">動いたもの</summary>'
             f'<div class="muted">{"<br>".join(moved)}</div></details>'
@@ -865,7 +885,7 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
     for item in items:
         # 止めている収集は行ごと薄くする(「AI の相手」の表と同じ扱い)
         cls = "" if item.enabled else ' class="off"'
-        toggle_label = "止める" if item.enabled else "有効にする"
+        toggle_label = "止める" if item.enabled else "有効化"
         # 焼き先(長期記憶)の様子。まだ 1 度も焼いていなければそう出す
         src = sources.get(item.name)
         baked_docs = (
@@ -1009,12 +1029,12 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
         rows += [f"<tr{cls}>{cells}</tr>" for cells in sweep_cells[1:]]
         # プロンプトと設定は**列をまたぐ 1 行**に出す。列の中に押し込むと、長い本文が
         # 細い桁へ折り返されて読めず、どの巡回の設定を触っているのかも分からない
-        rows.append(f'<tr{cls}><td colspan="9" class="collect-detail">{detail}</td></tr>')
+        rows.append(f'<tr{cls}><td colspan="10" class="collect-detail">{detail}</td></tr>')
     table = f"""
 <table>
 <thead>
 <tr><th>名前</th><th>件数</th><th>巡回</th><th>頼む相手</th><th>間隔</th>
-<th>次にいつ</th><th>一周のうち</th><th>前回</th><th></th></tr>
+<th>次にいつ</th><th>一周のうち</th><th>前回</th><th>実行</th><th></th></tr>
 </thead>
 <tbody>
 {"".join(rows)}
@@ -1495,13 +1515,10 @@ def admin_memory(request: Request):
 
 {_job_status_html(job)}
 
-<h2 id="collect">集める(AI に集めさせて溜める)</h2>
-{_collect_html(sources, disabled)}
-
-<h2 id="consolidation">短期記憶から移す(固化)</h2>
-{_memory_html(sources, disabled)}
-
-<h2>未初期化データの初期化</h2>
+<!-- **長期記憶の中に畳んでおく。** ここを開くのは新しいソースを入れるときだけで、
+     日々見に来るのは上の一覧と下の「集める」のほう —— 同じ高さで並べると、
+     見たい節に着くまで使わない表を何度もまたぐことになる -->
+<details id="init"><summary><h3>未初期化データの初期化</h3></summary>
 <table>
 <thead>
 <tr><th>name</th><th>kind</th><th>lang</th><th></th></tr>
@@ -1510,7 +1527,13 @@ def admin_memory(request: Request):
 {init_rows}
 </tbody>
 </table>
+</details>
 
+<h2 id="collect">集める(AI に集めさせて溜める)</h2>
+{_collect_html(sources, disabled)}
+
+<h2 id="consolidation">短期記憶から移す(固化)</h2>
+{_memory_html(sources, disabled)}
 """
     return HTMLResponse(content=page_shell("記憶", body))
 
@@ -2313,6 +2336,135 @@ def _preview_page_html(name: str, result: dict | None, error: str) -> str:
 <p class="muted"><a href="/admin/memory#collect">管理画面へ戻る</a></p>
 """,
     )
+
+
+@router.get("/admin/collect/{name}/doc", response_class=HTMLResponse)
+def admin_collect_doc(request: Request, name: str, title: str = Query(..., description="見出し")):
+    """動いた 1 件が、**どう書き換わったか**を出す。
+
+    「直近の変更」に並ぶのは見出しの名前までで、そこからは何が変わったのか読めない ——
+    件数と名前が分かっても、プロンプトを直す判断に要るのは「どう書き換わったか」のほう。
+
+    **比べられるのは 1 つ前の世代まで**(ブルーグリーンが残すのがそこまで)。
+    古い回の行から来ても出せるのは最新の焼き直しのぶんなので、**どの世代どうしを
+    比べたかを画面に書く** —— 書かないと、その回の変更として読まれる。
+    """
+    versions = collect.doc_versions(name, request.app.state.sources, title)
+    return HTMLResponse(_doc_diff_page_html(name, title, versions))
+
+
+def _doc_diff_page_html(name: str, title: str, versions: dict) -> str:
+    now, before = versions["now"], versions["before"]
+    if now is None and before is None:
+        body = (
+            '<p class="muted">この見出しは、いまの世代にも 1 つ前の世代にもありません。'
+            "比べられるのは 1 つ前の世代までなので、それより古い回に動いたものは"
+            "追えません。</p>"
+        )
+    else:
+        body = (
+            f"<p>{_what_happened(now, before)}</p>"
+            f"{_tag_diff_html(now, before)}"
+            f"{_body_diff_html(now, before)}"
+        )
+    return page_shell(
+        f"{title} の変更",
+        f"""
+<h3>{esc(title)}</h3>
+<p class="muted">収集「{esc(name)}」 / {_generations_html(versions)}</p>
+{body}
+<p class="muted"><a href="/admin/memory#collect">管理画面へ戻る</a></p>
+""",
+    )
+
+
+def _generations_html(versions: dict) -> str:
+    """どの世代どうしを比べたか。**必ず出す** —— 古い回の行から来た人が、
+    最新の焼き直しの差分をその回の変更として読まないように。
+    """
+    now = _generation_label(versions["now_stamp"])
+    before = _generation_label(versions["before_stamp"])
+    if not before:
+        return f"いまの世代({now})だけ。1 つ前の世代はまだありません"
+    return f"1 つ前({before}) → いま({now})の比較"
+
+
+def _generation_label(stamp: str) -> str:
+    """世代の日付(`YYYYMMDDHHMMSS`)を読める形に。読めなければそのまま。"""
+    raw = (stamp or "").strip()
+    if len(raw) == 14 and raw.isdigit():
+        return f"{raw[:4]}-{raw[4:6]}-{raw[6:8]} {raw[8:10]}:{raw[10:12]}"
+    if len(raw) == 8 and raw.isdigit():
+        return f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+    return esc(raw)
+
+
+def _what_happened(now: dict | None, before: dict | None) -> str:
+    if before is None:
+        return "<strong>足されたもの</strong>(1 つ前の世代にはありませんでした)"
+    if now is None:
+        return '<span class="stale"><strong>消えたもの</strong></span>(いまの世代にはありません)'
+    if (now["body"], sorted(now["tags"])) == (before["body"], sorted(before["tags"])):
+        return ("<strong>中身は変わっていません</strong>(直した回に名前が挙がっていても、"
+                "本文もタグも同じなら書き換わっていない)")
+    return "<strong>書き換わったもの</strong>"
+
+
+def _tag_diff_html(now: dict | None, before: dict | None) -> str:
+    """タグの出入り。**本文と分けて出す** —— この層のタグは図の線や分類そのもので、
+    本文の差分に紛れると、何が増えて何が落ちたのか読み取れない。
+    """
+    after = set((now or {}).get("tags") or [])
+    prior = set((before or {}).get("tags") or [])
+    added = sorted(after - prior)
+    gone = sorted(prior - after)
+    if not added and not gone:
+        return ""
+    parts = []
+    if added:
+        parts.append("<strong>足したタグ</strong>: " + esc("、".join(added)))
+    if gone:
+        parts.append('<span class="stale"><strong>外したタグ</strong>: '
+                     + esc("、".join(gone)) + "</span>")
+    return "<p>" + "<br>".join(parts) + "</p>"
+
+
+def _body_diff_html(now: dict | None, before: dict | None) -> str:
+    """本文の差分。**行単位の差分にする** —— 全文を 2 つ並べると、長い本文では
+    どこが動いたのか目で探すことになる(この層の本文は数百字ある)。
+
+    **片側しか無いときは、そちらを丸ごと出す**(足された / 消えた、がそれ)。
+    """
+    after = (now or {}).get("body") or ""
+    prior = (before or {}).get("body") or ""
+    if not prior or not after:
+        text = after or prior
+        return f'<pre class="prompt-view">{esc(text)}</pre>' if text else ""
+    lines = list(difflib.unified_diff(
+        prior.splitlines(), after.splitlines(), lineterm="", n=2,
+    ))
+    # 先頭 2 行(`---` / `+++`)はファイル名の欄で、ここでは意味を持たない
+    body = "\n".join(lines[2:])
+    if not body.strip():
+        return ""
+    return f'<pre class="doc-diff">{_colour_diff(body)}</pre>'
+
+
+def _colour_diff(text: str) -> str:
+    """差分に色を付ける。**先にエスケープしてから印を置く** —— 順番を逆にすると、
+    本文にタグを書かれた時点で入り込む(会話画面の Markdown と同じ順番の話)。
+    """
+    out = []
+    for line in esc(text).splitlines():
+        if line.startswith("+"):
+            out.append(f'<span class="added">{line}</span>')
+        elif line.startswith("-"):
+            out.append(f'<span class="removed">{line}</span>')
+        elif line.startswith("@@"):
+            out.append(f'<span class="muted">{line}</span>')
+        else:
+            out.append(line)
+    return "\n".join(out)
 
 
 @router.post("/admin/memory/sweep")
