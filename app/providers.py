@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 # 認証情報の要りかた。「API キー」と呼ばない —— API キーなのは Gemini と OpenRouter だけで、
 # Claude Code は OAuth トークン、Codex は auth.json の中身が入る。画面の出し分けと「on にできるか」の判定に使う。
@@ -279,3 +280,22 @@ def efforts_of(provider_id: str) -> tuple[str, ...]:
     """その相手で選べるエフォート（空なら画面に出さない）。"""
     p = get(provider_id)
     return p.efforts if p else ()
+
+
+def bridge_hostnames() -> tuple[str, ...]:
+    """CLI ブリッジのホスト名。**そこから来た依頼を断るために使う。**
+
+    ブリッジ越しの相手はシェルを持っている(`--dangerously-skip-permissions` /
+    `danger-full-access`)ので、**MCP の道具を取り上げても行き先は消えない** ——
+    `curl` でも Python でも REST の口を直接叩ける(実際に叩かれた: 依頼元が
+    `Python-urllib/3.11` の生成が、こちらの依頼文を英訳した内容で立った)。
+    塞ぐなら経路ではなく入口。
+    """
+    names = []
+    for spec in PROVIDERS:
+        if not spec.bridge:
+            continue
+        host = urlsplit(url_of(spec)).hostname
+        if host:
+            names.append(host)
+    return tuple(dict.fromkeys(names))

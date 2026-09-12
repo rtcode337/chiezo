@@ -2538,6 +2538,13 @@ async def media_backends_list(
     return {"backends": await media.backends(kind), "kind": kind, "enabled": media.is_enabled()}
 
 
+def _refuse_bridge(request: Request) -> None:
+    """**Chiezo が動かしている CLI からの生成依頼を断る。** 理由は
+    `media.refuse_bridge_caller`(頼まれた側が頼み返すと、枠も時間も二重に掛かる)。
+    """
+    media.refuse_bridge_caller(request.client.host if request.client else "")
+
+
 def _edit_source(edit: str) -> tuple[str, str]:
     """来た値を (path, url) に振り分ける。
 
@@ -2577,6 +2584,7 @@ async def _source_image(
 @app.post("/v1/media/image")
 async def media_image(body: ImageRequest, request: Request) -> dict:
     """描き始めて job を返す(待たない)。進み具合は下の口で引く。"""
+    _refuse_bridge(request)
     source, mode, ref = await _source_image(body.edit, body.reference)
     return media.start_image_job(
         prompt=body.prompt,
@@ -2598,6 +2606,7 @@ async def media_image(body: ImageRequest, request: Request) -> dict:
 @app.post("/v1/media/audio")
 async def media_audio(body: AudioRequestBody, request: Request) -> dict:
     """作り始めて job を返す(待たない)。進み具合は絵と同じ口で引く。"""
+    _refuse_bridge(request)
     source = await media.load_image(*_edit_source(body.reference)) if body.reference else b""
     return media.start_audio_job(
         prompt=body.prompt,
@@ -2624,6 +2633,7 @@ async def media_video(body: VideoRequestBody, request: Request) -> dict:
 
     絵より待つ(数分〜十数分)ので、呼ぶ側は間を空けて引きに来ること。
     """
+    _refuse_bridge(request)
     return media.start_video_job(
         prompt=body.prompt,
         backend=(body.backend or "").strip(),
@@ -2643,6 +2653,7 @@ async def media_video(body: VideoRequestBody, request: Request) -> dict:
 @app.post("/v1/media/speech")
 async def media_speech(body: SpeechRequestBody, request: Request) -> dict:
     """読み上げ始めて job を返す(待たない)。進み具合は絵と同じ口で引く。"""
+    _refuse_bridge(request)
     return media.start_speech_job(
         text=body.text,
         backend=(body.backend or "").strip(),
@@ -2669,6 +2680,7 @@ async def media_text(body: MediaTextRequest, request: Request) -> dict:
     絵や音と同じ表に入るので、`/v1/media/groups` も `/v1/media/picks` も
     そのまま使える。
     """
+    _refuse_bridge(request)
     return media.start_text_job(
         prompt=body.prompt,
         backend=(body.backend or "").strip(),

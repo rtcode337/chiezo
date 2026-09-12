@@ -16,7 +16,14 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
-from app import ai_inflight, media, media_backends, media_providers, settings_store
+from app import (
+    ai_inflight,
+    media,
+    media_backends,
+    media_providers,
+    providers,
+    settings_store,
+)
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
 MP3 = b"ID3" + b"0" * 64
@@ -2531,3 +2538,32 @@ class TestSeveralReferencesAtOnce:
         assert html.count("<img") == 1
         assert "枚目" not in html
 
+
+class TestNotTakingOrdersFromTheCliItDrives:
+    """**Chiezo が絵を頼んだ相手から、Chiezo への生成依頼を受け取らない。**
+
+    1 枚頼んだだけで何本も積まれ、頼まれた側は自分が積んだぶんの完了を待つので
+    生成そのものの時間も倍になった(生やした回 平均 688 秒 / 生やさない回 平均 374 秒)。
+
+    **道具を取り上げるだけでは止まらない。** MCP から生成の道具を外した口を
+    用意しても、相手はシェルを持っているので REST の口を直接叩ける ——
+    実際に `Python-urllib/3.11` から、こちらの依頼文を英訳した生成が立った。
+    """
+
+    def test_a_request_from_the_bridge_is_refused(self, state):
+        state.setattr(media, "bridge_addresses", lambda: frozenset({"172.18.0.9"}))
+        with pytest.raises(HTTPException) as err:
+            media.refuse_bridge_caller("172.18.0.9")
+        assert err.value.status_code == 403
+
+    def test_everyone_else_is_let_through(self, state):
+        state.setattr(media, "bridge_addresses", lambda: frozenset({"172.18.0.9"}))
+        media.refuse_bridge_caller("192.168.1.20")
+        media.refuse_bridge_caller("")
+
+    def test_an_unresolvable_bridge_blocks_nobody(self, state):
+        """立てていない環境で、画面ごと落ちたり全部断ったりしないこと。"""
+        state.setattr(providers, "bridge_hostnames", lambda: ("chiezo-bridge-nowhere",))
+        state.setattr(media, "_bridge_addrs", (0.0, frozenset()))
+        assert media.bridge_addresses() == frozenset()
+        media.refuse_bridge_caller("172.18.0.9")
