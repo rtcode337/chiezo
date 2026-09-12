@@ -2476,6 +2476,26 @@ class TestRememberingWhoAsked:
         assert "依頼元" not in media_compare._who({"backend": "comfyui", "model": "sdxl"})
 
 
+class TestGoingBackThroughTheGroups:
+    """**遡れること。** 新しい 20 組だけを出していた頃は、それより前がまだ残って
+    いるのに手が届かず、置き場の掃除で消えたものと区別が付かなかった。
+    """
+
+    def test_the_second_page_continues_where_the_first_stopped(self, state):
+        for i in range(6):
+            media.create_job(f"案 {i}", backend="comfyui", group=f"組{i}")
+        first = [g["title"] for g in media.job_groups(3)]
+        second = [g["title"] for g in media.job_groups(3, 3)]
+        assert len(first) == 3 and len(second) == 3
+        assert not set(first) & set(second), "同じ組が 2 度出てはいけない"
+        # 新しい順に並ぶので、後の頁ほど古い
+        assert first + second == [f"組{i}" for i in range(5, -1, -1)]
+
+    def test_past_the_end_is_empty_not_an_error(self, state):
+        media.create_job("案", backend="comfyui", group="組")
+        assert media.job_groups(20, 100) == []
+
+
 class TestSeveralReferencesAtOnce:
     """**参考は複数渡せる。** 役割が分かれることがあるため —— 姿勢の見本と
     絵柄の見本を同時に渡す、など。役割の名前は持たず、渡した順で指す。

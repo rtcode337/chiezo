@@ -1764,18 +1764,25 @@ def _grouped(rows: list[sqlite3.Row]) -> list[dict]:
     return ordered
 
 
-def job_groups(limit: int = 20) -> list[dict]:
-    """見比べる組の一覧。
+def job_groups(limit: int = 20, offset: int = 0) -> list[dict]:
+    """見比べる組の一覧(新しい順)。
 
     名前の無い依頼も 1 件 1 組として出す —— 画面で「まとめ忘れたぶんが消える」と、
     人は生成されなかったと思ってしまう。
+
+    **`offset` で遡れる。** 無かった頃は、画面が常に「新しい 20 組」だけを出していて、
+    それより前は**まだ残っているのに手が届かなかった**(掃除で消えたと読まれた)。
+
+    **束ねてから数えるので、行はまとめて読む。** 1 組あたりの案は数件なので、
+    欲しい組数の数倍を読めば足りる —— 組の切れ目は SQL では数えられない。
     """
     _reap_stale()
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit * 8,)
+            "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?",
+            ((offset + limit) * 8,),
         ).fetchall()
-    groups = _grouped(rows)[:limit]
+    groups = _grouped(rows)[offset:offset + limit]
     # 一覧が運ぶのは見出し・日時・種類・件数まで。 案そのものは開いたときに取る
     return [{k: v for k, v in g.items() if k != "jobs"} for g in groups]
 

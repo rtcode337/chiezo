@@ -2757,9 +2757,12 @@ async def media_jobs(limit: int = Query(20, ge=1, le=100)) -> dict:
 
 
 @app.get("/v1/media/groups")
-async def media_groups(limit: int = Query(20, ge=1, le=100)) -> dict:
+async def media_groups(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0, description="遡る数(新しい順に数えて何組目から)"),
+) -> dict:
     """見比べる組の一覧(見出し・日時・種類・件数まで)。案の中身は下の口で。"""
-    return {"groups": media.job_groups(limit)}
+    return {"groups": media.job_groups(limit, offset)}
 
 
 @app.get("/v1/media/groups/{key:path}")

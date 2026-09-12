@@ -238,12 +238,36 @@ def _source_block(job: dict) -> str:
     )
 
 
+def _pager(page: int, has_next: bool, limit: int) -> str:
+    """前後の頁へのリンク。**JS を持たないのでクエリで送る**(画面全体と同じ流儀)。
+
+    最後の頁が何番かは出さない —— 総数を数えるには全件を束ね直すことになる。
+    """
+    def link(target: int, label: str, enabled: bool) -> str:
+        if not enabled:
+            return f'<span class="muted">{label}</span>'
+        q = f"?page={target}" + (f"&limit={limit}" if limit != GROUPS_PER_PAGE else "")
+        return f'<a href="/admin/media{q}">{label}</a>'
+
+    return (
+        f'<p class="muted">{link(page - 1, "← 新しい", page > 1)}'
+        f'　{page} 頁目　'
+        f'{link(page + 1, "古い →", has_next)}</p>'
+    )
+
+
 @router.get("/admin/media", response_class=HTMLResponse)
 def admin_media(
     _request: Request,
     limit: int = Query(GROUPS_PER_PAGE, ge=1, le=100),
+    page: int = Query(1, ge=1),
 ):
-    """組の一覧。**中身は運ばない**(見出し・日時・種類・件数まで)。"""
+    """組の一覧。**中身は運ばない**(見出し・日時・種類・件数まで)。
+
+    **遡れるようにしてある。** 新しい 20 組だけを出していた頃は、それより前が
+    まだ残っているのに手が届かず、掃除で消えたものと区別が付かなかった
+    (置き場の掃除は `media.KEEP_DAYS` で、そちらとは別の話)。
+    """
     from app.views.admin import nav_html
 
     if not media.is_enabled():
@@ -256,7 +280,11 @@ def admin_media(
 """
         return HTMLResponse(content=page_shell("見比べ", body))
 
-    groups = media.job_groups(limit)
+    # **1 組ぶん多く引いて、次があるかを見る。** 総数を数えるには全件を束ね直す
+    # ことになるので、「次の頁があるか」だけ分かれば足りる形にする
+    offset = (page - 1) * limit
+    found = media.job_groups(limit + 1, offset)
+    groups, has_next = found[:limit], len(found) > limit
     if not groups:
         rows = (
             '<p class="muted">まだ何もありません。'
@@ -287,6 +315,7 @@ def admin_media(
 選ぶ人と頼んだ側が別のやり取りにいると拾えないので、印はこの画面で付けます。
 </p>
 {rows}
+{_pager(page, has_next, limit)}
 <h2>手元で作ったものを並べる</h2>
 <p class="muted">
 生成させたものだけでなく、<strong>手元で仕上げたものや別の道具で作ったものも持ち込めます</strong>

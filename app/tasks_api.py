@@ -399,9 +399,12 @@ def list_note_tags() -> list[dict]:
 
 
 @router.get("/media/groups")
-def media_groups(limit: int = Query(20, ge=1, le=100)) -> dict:
+def media_groups(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0, description="遡る数(新しい順に数えて何組目から)"),
+) -> dict:
     """見比べる組の一覧。**見出し・日時・種類・件数まで**で、案の中身は運ばない。"""
-    return {"groups": media.job_groups(limit)}
+    return {"groups": media.job_groups(limit, offset)}
 
 
 @router.get("/media/groups/{key:path}")
