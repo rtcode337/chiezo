@@ -580,8 +580,8 @@ def _sweeps_form(item) -> str:
     名前を消せば消える(消す口を別に作らずに済む)。
     """
     sweeps = collect.sweeps_of(item)
-    blocks = [_sweep_fields(s, len(sweeps) > 1) for s in sweeps]
-    blocks.append(_sweep_fields(None, False))
+    blocks = [_sweep_fields(s, len(sweeps) > 1, item.prompt) for s in sweeps]
+    blocks.append(_sweep_fields(None, False, item.prompt))
     return (
         '<fieldset class="sweeps"><legend>巡回(何本でも書ける)</legend>'
         '<p class="muted"><strong>同じ収集を別々の時計で回すためのもの。</strong>'
@@ -590,6 +590,9 @@ def _sweeps_form(item) -> str:
         "<strong>時計を持たない巡回も置ける</strong> —— 割り込み"
         "(「ここが間違っているから直して」)を頼まれたときだけ動く 1 本で、"
         "頼む相手を定時のものと別に決めておくためのもの。"
+        "<strong>依頼文も巡回ごとに書ける</strong>(空なら収集のもの)—— "
+        "頼むことが巡回ごとに違う(埋める / 見直して消す / 漏れを足す)のに、"
+        "1 つの文で全部を頼むと、どの回も同じ薄さの仕事になる。"
         "<strong>名前を書けば増え、消せば減る。</strong>"
         "1 本だけなら、その設定がそのまま収集の設定になる。</p>"
         + "".join(blocks)
@@ -597,7 +600,7 @@ def _sweeps_form(item) -> str:
     )
 
 
-def _sweep_fields(sweep, removable: bool) -> str:
+def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
     """巡回 1 本ぶんの欄。`sweep` が None なら空の枠(足すため)。"""
     name = sweep.name if sweep else ""
     interval = sweep.interval_minutes if sweep else collect.MIN_INTERVAL_MINUTES * 12
@@ -606,6 +609,16 @@ def _sweep_fields(sweep, removable: bool) -> str:
     backend = sweep.backend if sweep else None
     enabled = sweep.enabled if sweep else True
     on_demand = bool(sweep and sweep.on_demand)
+    only_new = bool(sweep and sweep.only_new)
+    use_extract = bool(sweep and sweep.use_extract)
+    # **巡回ごとの依頼文。** 空なら収集のものを使う ——
+    # 頼むことが巡回ごとに違う(埋める / 見直して消す / 漏れを足す)のに、
+    # 1 つの文で全部を頼むと、どの回も同じ薄さの仕事になる
+    own_prompt = (sweep.prompt if sweep else "") or ""
+    # **収集のものを引き継いでいるだけなら空で見せる**(`Sweep.prompt` は
+    # 書いていなければ収集のものに落ちるので、そのまま出すと写しが並ぶ)
+    if own_prompt == shared_prompt:
+        own_prompt = ""
     hint = (
         '<span class="muted">名前を消すと、この巡回は無くなります</span>'
         if removable else '<span class="muted">名前を書くと増えます</span>'
@@ -634,6 +647,26 @@ def _sweep_fields(sweep, removable: bool) -> str:
         f'{_model_select(backend, sweep.model if sweep else None, "sweep_model")}</label></p>'
         f'<p><label>考える量<br>'
         f'{_effort_select(backend, sweep.effort if sweep else None, "sweep_effort")}</label></p>'
+        # **足すだけの回は、既にある見出しに触らない。** 「漏れているものを足して」と
+        # 頼む回に要る印で、AI の判断に頼らずにここで保証する —— 見せられるのはその
+        # 区画のぶんだけなので、AI には「もう居るかどうか」が分からない
+        '<p><label>この巡回の依頼文(空なら収集のものを使う)<br>'
+        f'<textarea name="sweep_prompt" rows="6"'
+        f' placeholder="この巡回にだけ頼みたいことがあれば">{esc(own_prompt)}</textarea>'
+        "</label></p>"
+        # **引き方**(AI に頼むか、抽出の指定で機械に引かせるか)。機械の回は
+        # 名簿を最新に保つためのもので、AI を呼ばない ——「足すだけ」と組にして使う
+        '<p><label>引き方<br><select name="sweep_source">'
+        f'<option value="ai"{"" if use_extract else " selected"}>AI に頼む</option>'
+        f'<option value="extract"{" selected" if use_extract else ""}>'
+        "機械で引く(抽出の指定をもう一度走らせる)</option>"
+        "</select></label></p>"
+        '<p><label>集め方<br><select name="sweep_merge">'
+        f'<option value="all"{"" if only_new else " selected"}>'
+        "収集の設定にまかせる</option>"
+        f'<option value="only_new"{" selected" if only_new else ""}>'
+        "足すだけ(既にある見出しには触らない)</option>"
+        "</select></label></p>"
         '<p><label>動かすか<br><select name="sweep_enabled">'
         f'<option value="1"{" selected" if enabled else ""}>動かす</option>'
         f'<option value=""{"" if enabled else " selected"}>止める</option>'
@@ -680,6 +713,12 @@ def _sweep_cells(item, disabled: str = "") -> list[str]:
         else:
             when = '<span class="muted">いますぐ</span>'
         name = esc(sweep.name) + ("" if sweep.enabled else ' <span class="muted">(止)</span>')
+        # **足すだけの回はそう出す。** 同じ収集の中で、消す力を持つ回と持たない回が
+        # 並ぶので、名前だけでは読み分けられない
+        if sweep.only_new:
+            name += '<br><span class="muted">足すだけ</span>'
+        if sweep.use_extract:
+            name += '<br><span class="muted">機械で引く</span>'
         # **押す口は巡回ごとに 1 つずつ。** 相手も 1 回に見る量も巡回ごとに違うので、
         # 収集に 1 つだけ置くと「どの設定で走ったのか」が押した本人にも分からない。
         # **時計を持たない巡回には出さない** —— あれは割り込みで頼まれたときだけ
@@ -2197,7 +2236,7 @@ def _parse_sweeps_form(form) -> list[dict]:
         key: form.getlist(f"sweep_{key}")
         for key in (
             "interval", "cover_days", "per_run", "backend", "model", "effort",
-            "enabled", "clock",
+            "enabled", "clock", "merge", "prompt", "source",
         )
     }
     out = []
@@ -2216,6 +2255,15 @@ def _parse_sweeps_form(form) -> list[dict]:
         # 全部の巡回が黙って時計を失うのを避ける
         if at("clock") == "on_demand":
             sweep["on_demand"] = True
+        # **足すだけ**も名指しのときだけ(欄を持たないフォームから集め方が変わらないように)
+        if at("merge") == "only_new":
+            sweep["only_new"] = True
+        # **空欄は「収集のものを使う」**(巡回ごとに全部書かせない)
+        if prompt := at("prompt"):
+            sweep["prompt"] = prompt
+        # **機械で引く**も名指しのときだけ(欄を持たないフォームから引き方が変わらないように)
+        if at("source") == "extract":
+            sweep["use_extract"] = True
         if at("interval").isdigit():
             sweep["interval_minutes"] = int(at("interval"))
         for key, field in (("cover_days", "cover_days"), ("partitions_per_run", "per_run")):

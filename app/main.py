@@ -301,7 +301,10 @@ async def _collect_items(
     **途中でこけたら、そこまでのぶんも捨てる。** 半端に焼くと、見終わっていない区画に
     印が付くか、印の付いていない区画の中身だけが入れ替わる —— どちらも後から読めない。
     """
-    if item.extract and not item.cursor:
+    # **機械で引く回**(`Sweep.use_extract`)か、**進み具合が空の 1 回目**。
+    # 前者は名簿を最新に保つための回 —— 外のカテゴリは増えていくのに、1 回目しか
+    # 機械で埋めないと、そのあと増えたぶんは永遠に入らない
+    if item.extract and ((sweep is not None and sweep.use_extract) or not item.cursor):
         spec = extract.normalize(item.extract)
         items, next_cursor = await asyncio.to_thread(extract.run, spec, sources)
         return items, next_cursor, ""
@@ -395,7 +398,10 @@ async def _collect_material(name: str, sources: dict) -> str:
             item, previous, sources, keys, sweep, focus, feed
         )
         body, diff = await asyncio.to_thread(
-            collect.ndjson, baked_as, sources, previous, items
+            # **足すだけの回は、既にある見出しに触らない。** 割り込みは別 ——
+            # あれは名指しで「ここを直して」なので、必ず直す側で走る
+            collect.ndjson, baked_as, sources, previous, items,
+            focus is None and sweep.only_new,
         )
     except Exception as e:
         reason = f"{type(e).__name__}: {e}"
@@ -462,7 +468,9 @@ async def collect_preview(name: str, sources: dict, sweep_name: str | None = Non
     items, next_cursor, note = await _collect_items(
         item, previous, sources, keys, sweep, None, feed
     )
-    _docs, diff = await asyncio.to_thread(collect.material, item, previous, items)
+    _docs, diff = await asyncio.to_thread(
+        collect.material, item, previous, items, sweep.only_new
+    )
     return {
         "name": name,
         "mode": item.mode,

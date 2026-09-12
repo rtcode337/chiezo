@@ -113,11 +113,16 @@ def normalize(raw) -> dict | None:
         raise _bad("source(引くソース名)を入れてください")
     if not tag and not tag_suffix:
         raise _bad("tag(絞り込むタグ)か tag_suffix(タグの末尾)を入れてください")
-    if tag_suffix and len(tag_suffix) < MIN_SUFFIX_CHARS:
-        raise _bad(
-            f"tag_suffix は {MIN_SUFFIX_CHARS} 文字以上にしてください"
-            "(短い語は何にでも当たります)"
-        )
+    # **末尾は書き並べられる**(`tag` と同じくカンマ区切り)。同じものを指す
+    # カテゴリの呼び方が 1 つとは限らない —— 画家の名簿では「〜の画家」だけを
+    # 書いていたせいで「〜の女性画家」が丸ごと落ちていた(実測で 44 カテゴリ・
+    # 1,877 記事。草間彌生もそこにいた)
+    for one in split_tags(tag_suffix):
+        if len(one) < MIN_SUFFIX_CHARS:
+            raise _bad(
+                f"tag_suffix は {MIN_SUFFIX_CHARS} 文字以上にしてください"
+                "(短い語は何にでも当たります)"
+            )
 
     # **書かなければ全部**。書いたときだけ、その数で切る
     limit = raw.get("limit")
@@ -239,7 +244,7 @@ def resolve_tags(spec: dict, src) -> list[str]:
     from app import db
 
     tags = split_tags(spec["tag"])
-    if suffix := spec["tag_suffix"]:
+    for suffix in split_tags(spec["tag_suffix"]):
         # LIKE のメタ文字は素通しにしない(`_` は 1 文字に当たる)
         pattern = "%" + suffix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         rows = db.query(
@@ -562,12 +567,17 @@ SPEC_GUIDE = """依頼を読んで、**まず「手元の索引から機械的�
 「イングランド」が取れていなかった)。末尾で指せば**推測が要らず、あとから
 カテゴリが増えても勝手に入ります**。要らないものは `not_tag` で外してください。
 
+**同じものの呼び方が 1 つとは限りません。** 末尾はカンマ区切りで何個でも書けるので、
+別の呼び方のカテゴリも一緒に指してください(実例: 画家の名簿で「の画家」だけを
+書いていたせいで「〜の女性画家」が丸ごと落ちていた —— 44 カテゴリ・1,877 記事)。
+
 抽出の指定は次の形の JSON です。
 
 {
   "source": "引くソース名",
   "tag": "絞り込むタグ(完全一致。カンマ区切りで複数書くと、そのどれかを持つもの)",
-  "tag_suffix": "タグの末尾(これで終わるタグ全部。tag と併用でき、両方の和になる)",
+  "tag_suffix": "タグの末尾(これで終わるタグ全部。カンマ区切りで何個でも書ける。"
+               "tag と併用でき、全部の和になる)",
   "not_tag": "外すタグ(カンマ区切り。これを持つものは、tag に当たっていても取らない)",
   "limit": 30,   ← 書かなければ全部。AI に読ませる側の都合で絞るときだけ書く
   "body": "opening(冒頭。既定) か body(全文)",

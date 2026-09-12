@@ -375,6 +375,18 @@ class Sweep:
     cover_days: float | None = None
     # 1 回に見る区画数を直に決める。`cover_days` より優先
     partitions_per_run: int | None = None
+    # **機械で引く巡回**(`extract` の指定を、AI を呼ばずにもう一度走らせる)。
+    # **名簿を最新に保つための回**で、外のカテゴリは増えていくのに、機械で埋めるのは
+    # 「進み具合が空の 1 回目だけ」だった —— そのあと増えたぶんは永遠に入らない。
+    # **足すだけ(`only_new`)と組にして使う** —— 組にしないと、AI が肉付けしたぶんを
+    # 名簿の薄い内容で上書きする(機械は影響関係も代表作も持っていない)
+    use_extract: bool = False
+    # **足すだけの巡回**。既にある見出しが返ってきても触らない ——
+    # 「漏れているものを足す」を頼む回に要る印で、**AI の判断に頼らずに保証する**。
+    # 見せられるのはその区画のぶんだけなので、AI には「もう居るかどうか」が分からない
+    # (別の括りに入っていることも、タグが間違っていることもある)。触らせると、
+    # 既にいる有名なものが薄い内容で上書きされ、持っていたタグごと落ちる。
+    only_new: bool = False
     # **時計を持たない巡回**(割り込み用)。定時には走らず、頼まれたときだけ動く。
     # 相手・モデル・考える量を**定時のものとは別に決めておく**ためにある ——
     # 割り込みは人が待っている場面なので、速い相手に頼みたい / 逆に 1 件を
@@ -469,6 +481,8 @@ def _sweep_from_json(raw: dict, item: Collection) -> Sweep:
             int(raw["partitions_per_run"]) if raw.get("partitions_per_run") else None
         ),
         on_demand=bool(raw.get("on_demand")),
+        only_new=bool(raw.get("only_new")),
+        use_extract=bool(raw.get("use_extract")),
         next_run_at=raw.get("next_run_at") or None,
         last_run_at=raw.get("last_run_at") or None,
         last_status=raw.get("last_status") or None,
@@ -888,6 +902,12 @@ def update(name: str, **fields) -> Collection:
             patch["partitions"] = []
     if "sweeps" in patch:
         patch["sweeps"] = _keep_schedule(normalize_sweeps(patch["sweeps"]), current.sweeps)
+        # **巡回ごとの依頼文も、収集のものと同じだけ確かめる** —— 整理の回に
+        # `{current}` が無いと、AI は今あるものを知らないまま書くことになる。
+        # 保存してしまうと、次に走ったときに初めて分かる(無人で回る層なので誰も見ていない)
+        for raw in patch["sweeps"]:
+            if raw.get("prompt"):
+                check_prompt(patch.get("mode", current.mode), str(raw["prompt"]))
         # **巡回の名前が消えたら、その巡回の記録も台帳から落とす** ——
         # 残しておくと、同じ名前で作り直したとき前の進み具合が引き継がれる
         names = {raw["name"] for raw in patch["sweeps"]}
@@ -1035,10 +1055,13 @@ def scoped_docs(
     if not (item.partition and partition_key):
         return previous, False
     spec = partitioning.normalize(item.partition)
+    # **鍵の範囲だけで判じない**(`partition_of`)。見出しで割った区画は、鍵が
+    # 「最初の見出し〜最後の見出し」なので**区画と区画のあいだが誰のものでもなく**、
+    # あとから足した見出しがそこへ落ちると、以後どの回にも出てこなくなる
     return {
         title: doc
         for title, doc in previous.items()
-        if partitioning.belongs(spec, partition_key, doc)
+        if partitioning.partition_of(spec, item.partitions, doc) == partition_key
     }, True
 
 
@@ -1711,7 +1734,10 @@ def plan_partitions(item: Collection, sources: dict, previous: dict[str, dict]) 
 
 
 def material(
-    item: Collection, previous: dict[str, dict], collected: list[dict]
+    item: Collection,
+    previous: dict[str, dict],
+    collected: list[dict],
+    only_new: bool = False,
 ) -> tuple[list[dict], dict]:
     """焼く素材と、前世代との差分を組み立てる。
 
@@ -1724,6 +1750,13 @@ def material(
     かつては refine を「返ったものが新しい全体」にしていたが、それだと**返し忘れが
     黙って消える**。無人で回る層でいちばん起きやすい壊れ方で、しかも 1 件ずつ削れて
     いくのは歯止め(`shrink_blocked`)をすり抜ける。
+
+    **`only_new` の回は、既にある見出しに触らない**(足すだけ)。「漏れているものを
+    足して」と頼む回に要る印で、**AI の判断に頼らずにここで保証する** —— 見せられるのは
+    その区画のぶんだけなので、AI には「もう居るかどうか」が分からない(別の括りに
+    入っていることも、タグが間違っていることもある)。触らせると、既にいる有名なものが
+    薄い内容で上書きされ、持っていたタグごと落ちる。**墓標も読まない** ——
+    足すだけの回に消す力を持たせない。
 
     違うのは 2 つだけ:
 
@@ -1743,7 +1776,11 @@ def material(
     removed_titles: list[str] = []
     for raw in collected:
         title = (raw.get("title") or "").strip()[:notes.TITLE_MAX_CHARS]
-        if item.is_refine() and title and _is_tombstone(raw):
+        if only_new and title in merged:
+            # **足すだけの回。** 既にあるものには触らない(数えるだけ)
+            skipped += 1
+            continue
+        if item.is_refine() and not only_new and title and _is_tombstone(raw):
             # 墓標。**持っていないものへの墓標は数えない**(消すものが無い)
             if merged.pop(title, None) is not None:
                 removed_titles.append(title)
@@ -1879,7 +1916,11 @@ def _dump_date(name: str, sources: dict) -> str:
 
 
 def ndjson(
-    item: Collection, sources: dict, previous: dict[str, dict], collected: list[dict]
+    item: Collection,
+    sources: dict,
+    previous: dict[str, dict],
+    collected: list[dict],
+    only_new: bool = False,
 ) -> tuple[str, dict]:
     """取り込み側が読む素材(1 行目が meta、以降は 1 行 1 文書)と、前世代との差分。
 
@@ -1893,7 +1934,7 @@ def ndjson(
     実際のバイト数でしか測れない(`MAX_MATERIAL_BYTES`)。積みながら見て、
     超えた時点で止める —— 全部組んでから測ると、測るために膨らませることになる。
     """
-    docs, diff = material(item, previous, collected)
+    docs, diff = material(item, previous, collected, only_new)
     if not docs:
         raise HTTPException(
             409,

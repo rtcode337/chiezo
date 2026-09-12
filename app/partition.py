@@ -434,10 +434,9 @@ def outgrown(spec: dict, partitions: list[dict], docs: dict[str, dict]) -> bool:
     limit = spec["target"] * 2
     counts = dict.fromkeys((p["key"] for p in partitions), 0)
     for doc in docs.values():
-        for key in counts:
-            if belongs(spec, key, doc):
-                counts[key] += 1
-                break
+        key = partition_of(spec, partitions, doc)
+        if key in counts:
+            counts[key] += 1
     return any(n > limit for n in counts.values())
 
 
@@ -492,6 +491,44 @@ def belongs(spec: dict, key: str, doc: dict) -> bool:
     bounds = parse_title_key(key)
     title = str(doc.get("title") or "")
     return bool(bounds) and bounds[0] <= title <= bounds[1]
+
+
+def partition_of(spec: dict, partitions: list[dict], doc: dict) -> str | None:
+    """その文書がどの区画のものか。**入るところが無ければ None**。
+
+    **見出しで割った区画は、鍵の範囲だけを見てはいけない。** 鍵は
+    「その区画の最初の見出し〜最後の見出し」なので、**区画と区画のあいだは
+    誰のものでもない** —— あとから足した見出しがそこへ落ちると、以後どの回にも
+    出てこなくなる(`{current}` にも入らないので、AI からも見えない)。
+    本番の台帳では境目が 324 か所あり、足した見出しのおよそ 25 件に 1 件が当たる。
+
+    **区切りは「どこから始まるか」で読む。** いちばん近い手前の区画に入れれば、
+    見出しの線の上に隙間が無くなる(最初の区画より手前も、その区画のもの)。
+
+    矩形とタグはそのまま —— 矩形は親を割って作るので隙間が無く、タグは
+    「そのタグを持つものだけ」が初めから約束。
+    """
+    if not partitions:
+        return None
+    if spec["by"] != BY_TITLE:
+        for p in partitions:
+            if belongs(spec, p["key"], doc):
+                return p["key"]
+        return None
+    title = str(doc.get("title") or "")
+    starts = sorted(
+        (bounds[0], p["key"])
+        for p in partitions
+        if (bounds := parse_title_key(p["key"]))
+    )
+    if not starts:
+        return None
+    picked = starts[0][1]
+    for start, key in starts:
+        if start > title:
+            break
+        picked = key
+    return picked
 
 
 def describe(spec: dict, key: str, sources: dict) -> str:

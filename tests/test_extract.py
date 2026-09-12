@@ -344,6 +344,28 @@ class TestPickingAWholeFamilyOfTags:
         items, _cursor = extract.run(spec, source(docs))
         assert sorted(i["title"] for i in items) == ["ターナー", "ホッパー", "モネ"]
 
+    def test_several_suffixes_can_be_written(self, source):
+        """**同じものの呼び方が 1 つとは限らない。**
+
+        画家の名簿で「の画家」だけを書いていたせいで、「〜の女性画家」が丸ごと
+        落ちていた(本番の実測で 44 カテゴリ・1,877 記事)。
+        """
+        docs = [
+            {"title": "モネ", "tags": ["19世紀フランスの画家"]},
+            {"title": "草間彌生", "tags": ["20世紀日本の女性画家"]},
+            {"title": "ある俳優", "tags": ["20世紀日本の男優"]},
+        ]
+        spec = extract.normalize(
+            {"source": "jawiki", "tag_suffix": "の画家,の女性画家"}
+        )
+        items, _cursor = extract.run(spec, source(docs))
+        assert sorted(i["title"] for i in items) == ["モネ", "草間彌生"]
+
+    def test_a_short_one_among_them_is_still_refused(self, source):
+        """短い末尾は何にでも当たる。1 つでも混ざっていれば断る。"""
+        with pytest.raises(HTTPException):
+            extract.normalize({"source": "jawiki", "tag_suffix": "の画家,家"})
+
     def test_it_can_be_combined_with_exact_tags(self, source):
         """族に入らない 1 つを足したいことがある(様式のカテゴリなど)。"""
         docs = [

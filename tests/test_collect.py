@@ -683,6 +683,212 @@ class TestFocus:
         assert len(focus.titles) == collect.MAX_FOCUS_TITLES
 
 
+class TestTheMechanicalSweep:
+    """機械で引く巡回 —— 名簿を最新に保つための回。
+
+    機械で埋めるのは「進み具合が空の 1 回目だけ」だった。外のカテゴリは増えていくのに、
+    そのあと増えたぶんは永遠に入らない。**足すだけと組にして使う** ——
+    組にしないと、AI が肉付けしたぶんを名簿の薄い内容で上書きする。
+    """
+
+    @pytest.fixture
+    def client(self, enabled, built_data_dir, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        from app.main import app
+
+        with TestClient(app) as c:
+            yield c
+
+    def test_the_sweep_carries_the_mark(self, sample):
+        collect.update("news", sweeps=[
+            {"name": "名簿", "interval_minutes": 1440, "use_extract": True, "only_new": True},
+            {"name": "肉付け", "interval_minutes": 360},
+        ])
+        roster, flesh = collect.sweeps_of(collect.get("news"))
+        assert (roster.use_extract, roster.only_new) == (True, True)
+        assert (flesh.use_extract, flesh.only_new) == (False, False)
+
+    def test_it_pulls_from_the_index_even_after_the_cursor_moved(self, sample, monkeypatch):
+        """1 回目だけでなく、頼まれた回はいつでも機械で引く。"""
+        import asyncio
+
+        from app import extract, main
+
+        collect.update(
+            "news",
+            cursor="2026-09-01",
+            extract={"source": "jawiki", "tag": "画家"},
+            sweeps=[{"name": "名簿", "use_extract": True, "only_new": True}],
+        )
+        monkeypatch.setattr(
+            extract, "run", lambda spec, sources: ([{"title": "草間彌生", "body": "本文"}], "")
+        )
+        item = collect.get("news")
+        items, _cursor, _note = asyncio.run(
+            main._collect_items(item, {}, {}, [], collect.sweep_named(item, "名簿"))
+        )
+        assert [i["title"] for i in items] == ["草間彌生"]
+
+
+class TestPerSweepPrompt:
+    """依頼文は巡回ごとに書ける。**空なら収集のもの**。
+
+    頼むことが巡回ごとに違う(埋める / 見直して消す / 漏れを足す)のに、1 つの文で
+    全部を頼むと、どの回も同じ薄さの仕事になる。
+    """
+
+    def test_a_sweep_can_have_its_own(self, sample):
+        collect.update("news", sweeps=[
+            {"name": "更新", "interval_minutes": 360},
+            {"name": "漏れ探し", "interval_minutes": 1440, "prompt": "{cursor} 以降で漏れを足して"},
+        ])
+        update, find = collect.sweeps_of(collect.get("news"))
+        # 書かなかったほうは収集のものを引き継ぐ
+        assert update.prompt == collect.get("news").prompt
+        assert find.prompt == "{cursor} 以降で漏れを足して"
+
+    def test_the_sweep_prompt_is_what_gets_asked(self, sample):
+        collect.update("news", sweeps=[{"name": "漏れ探し", "prompt": "漏れを足して"}])
+        sweep = collect.sweep_named(collect.get("news"), "漏れ探し")
+        user = collect.build_messages(collect.get("news"), {}, None, {}, sweep)[1]["content"]
+        assert "漏れを足して" in user
+
+    def test_a_refine_sweep_without_the_material_is_refused(self, sample):
+        """整理の回に `{current}` が無いと、AI は今あるものを知らないまま書く。
+
+        保存してしまうと、次に走ったときに初めて分かる(無人で回る層なので誰も見ていない)。
+        """
+        collect.update("news", mode="refine", prompt="いまの内容:\n{current}\n直して")
+        with pytest.raises(HTTPException):
+            collect.update("news", sweeps=[{"name": "漏れ探し", "prompt": "漏れを足して"}])
+
+
+class TestNoGapBetweenPartitions:
+    """見出しで割った区画に**隙間を作らない**。
+
+    鍵は「その区画の最初の見出し〜最後の見出し」なので、鍵の範囲だけで判ずると
+    **区画と区画のあいだが誰のものでもなくなる** —— あとから足した見出しがそこへ
+    落ちると、以後どの回にも出てこない(`{current}` にも入らないので AI からも見えない)。
+    本番の台帳では境目が 324 か所あり、足した見出しのおよそ 25 件に 1 件が当たる。
+    """
+
+    @pytest.fixture
+    def ledger(self):
+        return [
+            {"key": partitioning.title_key("あ", "お"), "count": 10},
+            {"key": partitioning.title_key("さ", "そ"), "count": 10},
+        ]
+
+    def _spec(self):
+        return partitioning.normalize({"by": "title", "target": 10})
+
+    def test_a_headline_between_two_partitions_has_a_home(self, ledger):
+        # 「か」は「お」と「さ」のあいだ —— 鍵の範囲だけ見るとどこにも入らない
+        spec = self._spec()
+        assert not partitioning.belongs(spec, ledger[0]["key"], {"title": "か"})
+        assert not partitioning.belongs(spec, ledger[1]["key"], {"title": "か"})
+        # 手前の区画のものとして扱う
+        assert partitioning.partition_of(spec, ledger, {"title": "か"}) == ledger[0]["key"]
+
+    def test_a_headline_before_everything_has_a_home(self, ledger):
+        """いちばん手前より前も、最初の区画のもの(端にも隙間を作らない)。"""
+        assert partitioning.partition_of(
+            self._spec(), ledger, {"title": "ああ"}
+        ) == ledger[0]["key"]
+
+    def test_the_material_shows_it(self, sample):
+        """区画の素材に入らなければ、AI からは無かったことになる。"""
+        collect.update(
+            "news",
+            mode="refine",
+            prompt="いまの内容:\n{current}\n直して",
+            partition={"by": "title", "target": 10},
+            partitions=[
+                {"key": partitioning.title_key("あ", "お"), "count": 10},
+                {"key": partitioning.title_key("さ", "そ"), "count": 10},
+            ],
+        )
+        previous = {"か": {"title": "か", "body": "あとから足したもの"}}
+        docs, scoped = collect.scoped_docs(
+            collect.get("news"), previous, partitioning.title_key("あ", "お")
+        )
+        assert list(docs) == ["か"]
+        assert scoped is True
+
+
+class TestAddingOnly:
+    """足すだけの巡回 —— **既にある見出しには触らない**。
+
+    「漏れているものを足して」と頼む回に要る印で、**AI の判断に頼らずにここで保証する**。
+    見せられるのはその区画のぶんだけなので、AI には「もう居るかどうか」が分からない
+    (別の括りに入っていることも、タグが間違っていることもある)。触らせると、既にいる
+    有名なものが薄い内容で上書きされ、持っていたタグごと落ちる。
+    """
+
+    @pytest.fixture
+    def refine(self, sample):
+        collect.update("news", mode="refine", prompt="いまの内容:\n{current}\n直して")
+        return collect.get("news")
+
+    def test_an_existing_headline_is_left_alone(self, refine):
+        previous = {
+            "ゴッホ": {"doc_id": 1, "title": "ゴッホ", "body": "詳しい本文",
+                      "tags": ["画家", "様式:ポスト印象派", "代表作:ひまわり"]},
+        }
+        # AI が「もう居る」と知らずに、薄い内容で返してきた
+        docs, diff = collect.material(
+            refine, previous,
+            [{"title": "ゴッホ", "body": "画家です", "tags": ["画家"]}],
+            only_new=True,
+        )
+        kept = {d["title"]: d for d in docs}["ゴッホ"]
+        assert kept["body"] == "詳しい本文"
+        assert "代表作:ひまわり" in kept["tags"]
+        assert diff["updated"] == 0
+        assert diff["skipped"] == 1
+
+    def test_a_new_headline_is_added(self, refine):
+        docs, diff = collect.material(
+            refine, {"ゴッホ": {"doc_id": 1, "title": "ゴッホ", "body": "本文"}},
+            [{"title": "草間彌生", "body": "画家です", "tags": ["画家"]}],
+            only_new=True,
+        )
+        assert diff["added"] == 1
+        assert diff["added_titles"] == ["草間彌生"]
+        assert {d["title"] for d in docs} == {"ゴッホ", "草間彌生"}
+
+    def test_it_cannot_delete(self, refine):
+        """足すだけの回に消す力を持たせない。"""
+        previous = {"ゴッホ": {"doc_id": 1, "title": "ゴッホ", "body": "本文"}}
+        docs, diff = collect.material(
+            refine, previous,
+            [{"title": "ゴッホ", "tags": [notes.TOMBSTONE_TAG]}],
+            only_new=True,
+        )
+        assert diff["removed"] == 0
+        assert [d["title"] for d in docs] == ["ゴッホ"]
+
+    def test_without_the_mark_it_updates_as_before(self, refine):
+        """印を付けていない回は今までどおり(直しに来ているので置き換わる)。"""
+        previous = {"ゴッホ": {"doc_id": 1, "title": "ゴッホ", "body": "古い本文"}}
+        docs, diff = collect.material(
+            refine, previous, [{"title": "ゴッホ", "body": "新しい本文"}]
+        )
+        assert diff["updated"] == 1
+        assert docs[0]["body"] == "新しい本文"
+
+    def test_the_sweep_carries_the_mark(self, sample):
+        collect.update("news", sweeps=[
+            {"name": "更新", "interval_minutes": 360},
+            {"name": "漏れ探し", "interval_minutes": 1440, "only_new": True},
+        ])
+        update, find = collect.sweeps_of(collect.get("news"))
+        assert update.only_new is False
+        assert find.only_new is True
+
+
 class TestKeepingTheClockAcrossAPatch:
     """設定を送り直しても、巡回の進み具合は引き継ぐ。
 
@@ -1943,7 +2149,7 @@ class TestEditingTheSweeps:
                 "mode": "append", "keep_ratio": "", "extract": "",
                 "partition": "", "feed": "", **extra}
         for key in ("name", "interval", "cover_days", "per_run",
-                    "backend", "model", "effort", "enabled", "clock"):
+                    "backend", "model", "effort", "enabled", "clock", "merge"):
             data[f"sweep_{key}"] = [row.get(key, "") for row in rows]
         res = client.post("/admin/collect/news/edit", data=data, follow_redirects=False)
         assert res.status_code in (200, 303), res.text[:400]
@@ -1959,6 +2165,23 @@ class TestEditingTheSweeps:
         assert (rough.name, rough.interval_minutes, rough.cover_days) == ("ざっと", 360, 7.0)
         assert (deep.name, deep.partitions_per_run, deep.model) == ("じっくり", 1, "opus")
         assert deep.effort == "high"
+
+    def test_a_sweep_can_be_marked_add_only(self, client, sample):
+        """漏れを足す回に、消す力も上書きする力も持たせない。"""
+        self._save(client, [
+            {"name": "更新", "interval": "360", "enabled": "1", "clock": "interval",
+             "merge": "all"},
+            {"name": "漏れ探し", "interval": "1440", "enabled": "1", "clock": "interval",
+             "merge": "only_new"},
+        ])
+        update, find = collect.sweeps_of(collect.get("news"))
+        assert update.only_new is False
+        assert find.only_new is True
+
+    def test_a_form_without_the_merge_field_does_not_change_it(self, client, sample):
+        """欄を持たないフォームから保存されても、集め方が黙って変わらないこと。"""
+        self._save(client, [{"name": "更新", "interval": "360", "enabled": "1"}])
+        assert collect.sweeps_of(collect.get("news"))[0].only_new is False
 
     def test_a_sweep_can_be_left_without_a_clock(self, client, sample):
         """割り込み用の 1 本。定時には走らず、頼まれたときだけ動く。"""
