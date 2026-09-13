@@ -282,8 +282,8 @@ def efforts_of(provider_id: str) -> tuple[str, ...]:
     return p.efforts if p else ()
 
 
-def bridge_hostnames() -> tuple[str, ...]:
-    """CLI ブリッジのホスト名。**そこから来た依頼を断るために使う。**
+def bridge_hostnames() -> tuple[tuple[str, str], ...]:
+    """CLI ブリッジの (相手の id, ホスト名)。**そこから来た依頼を見分けるために使う。**
 
     ブリッジ越しの相手はシェルを持っている(`--dangerously-skip-permissions` /
     `danger-full-access`)ので、**MCP の道具を取り上げても行き先は消えない** ——
@@ -291,11 +291,11 @@ def bridge_hostnames() -> tuple[str, ...]:
     `Python-urllib/3.11` の生成が、こちらの依頼文を英訳した内容で立った)。
     塞ぐなら経路ではなく入口。
     """
-    names = []
+    found = []
     for spec in PROVIDERS:
         if not spec.bridge:
             continue
         host = urlsplit(url_of(spec)).hostname
         if host:
-            names.append(host)
-    return tuple(dict.fromkeys(names))
+            found.append((spec.id, host))
+    return tuple(found)

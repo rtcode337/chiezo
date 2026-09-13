@@ -1899,6 +1899,9 @@ class TestNotTakingOrdersFromTheCliItDrives:
     用意しても、ブリッジ越しの相手はシェルを持っているので REST の口を直接叩ける
     (実際に `Python-urllib/3.11` から、こちらの依頼文を英訳した生成が立った)。
 
+    **生成の口はここに無い。** あちらは「会話している相手に、その相手自身を頼む」のは
+    通すので、相手まで見る検査が本体側にある(`tests/test_media.py`)。
+
     **この一覧は取りこぼしうる。** AI を使う口が増えたらここにも足すこと ——
     足し忘れは、枠が二重に減って初めて気づく類の漏れになる。
     """
@@ -1907,11 +1910,6 @@ class TestNotTakingOrdersFromTheCliItDrives:
         ("GET", "/v1/ask?q=test"),
         ("POST", "/v1/chat"),
         ("POST", "/v1/ai/complete"),
-        ("POST", "/v1/media/image"),
-        ("POST", "/v1/media/audio"),
-        ("POST", "/v1/media/video"),
-        ("POST", "/v1/media/speech"),
-        ("POST", "/v1/media/text"),
         ("POST", "/v1/media/transcribe"),
         ("POST", "/v1/collect/draft"),
         ("POST", "/v1/collect/draft-extract"),
@@ -1922,7 +1920,8 @@ class TestNotTakingOrdersFromTheCliItDrives:
     def as_bridge(self, monkeypatch):
         from app import media
 
-        monkeypatch.setattr(media, "bridge_addresses", lambda: frozenset({"testclient"}))
+        monkeypatch.setattr(
+            media, "bridge_addresses", lambda: {"testclient": "antigravity"})
 
     def test_every_way_of_asking_an_ai_is_refused(self, client, as_bridge):
         for method, path in self.ASKING:
@@ -1938,5 +1937,5 @@ class TestNotTakingOrdersFromTheCliItDrives:
     def test_everyone_else_is_let_through(self, client, monkeypatch):
         from app import media
 
-        monkeypatch.setattr(media, "bridge_addresses", frozenset)
+        monkeypatch.setattr(media, "bridge_addresses", dict)
         assert client.post("/v1/media/image", json={}).status_code != 403

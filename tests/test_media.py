@@ -2540,30 +2540,49 @@ class TestSeveralReferencesAtOnce:
 
 
 class TestNotTakingOrdersFromTheCliItDrives:
-    """**Chiezo が絵を頼んだ相手から、Chiezo への生成依頼を受け取らない。**
+    """**Chiezo が動かしている CLI から、別の相手へ回す依頼を断る。**
 
-    1 枚頼んだだけで何本も積まれ、頼まれた側は自分が積んだぶんの完了を待つので
-    生成そのものの時間も倍になった(生やした回 平均 688 秒 / 生やさない回 平均 374 秒)。
+    相手を指名して頼んでいるのに、指名された側が別の相手に聞きに行く ——
+    依頼として成立していないし、誰の枠を使ったのかも読めなくなる。
+    実際に `Python-urllib/3.11` や `curl` から、こちらの依頼文を英訳した生成が
+    自前の GPU へ次々に積まれた(道具を取り上げても、相手はシェルを持っている)。
 
-    **道具を取り上げるだけでは止まらない。** MCP から生成の道具を外した口を
-    用意しても、相手はシェルを持っているので REST の口を直接叩ける ——
-    実際に `Python-urllib/3.11` から、こちらの依頼文を英訳した生成が立った。
+    **会話している相手に、その相手自身を頼むのは通す。** 指名した相手が作って
+    持ってくるのは筋が通っている —— 塞ぎたいのは「別の相手に回す」ほうだった。
     """
 
-    def test_a_request_from_the_bridge_is_refused(self, state):
-        state.setattr(media, "bridge_addresses", lambda: frozenset({"172.18.0.9"}))
+    def test_passing_the_work_to_someone_else_is_refused(self, state):
+        state.setattr(media, "bridge_addresses", lambda: {"172.18.0.9": "antigravity"})
         with pytest.raises(HTTPException) as err:
-            media.refuse_bridge_caller("172.18.0.9")
+            media.refuse_bridge_caller("172.18.0.9", "comfyui")
         assert err.value.status_code == 403
 
+    def test_asking_for_no_one_in_particular_is_refused(self, state):
+        """相手を書かない依頼も断る。既定の相手に回るので、指名と変わらない。"""
+        state.setattr(media, "bridge_addresses", lambda: {"172.18.0.9": "antigravity"})
+        with pytest.raises(HTTPException):
+            media.refuse_bridge_caller("172.18.0.9", "")
+
+    def test_asking_itself_is_allowed(self, state):
+        state.setattr(media, "bridge_addresses", lambda: {"172.18.0.9": "antigravity"})
+        state.setattr(media, "_drawing_now", lambda backend: False)
+        media.refuse_bridge_caller("172.18.0.9", "antigravity")
+
+    def test_asking_itself_while_it_is_already_drawing_is_refused(self, state):
+        """**生成中は断る。** 通すと、1 回の依頼が毎回もう 1 本を生む。"""
+        state.setattr(media, "bridge_addresses", lambda: {"172.18.0.9": "antigravity"})
+        state.setattr(media, "_drawing_now", lambda backend: True)
+        with pytest.raises(HTTPException):
+            media.refuse_bridge_caller("172.18.0.9", "antigravity")
+
     def test_everyone_else_is_let_through(self, state):
-        state.setattr(media, "bridge_addresses", lambda: frozenset({"172.18.0.9"}))
-        media.refuse_bridge_caller("192.168.1.20")
-        media.refuse_bridge_caller("")
+        state.setattr(media, "bridge_addresses", lambda: {"172.18.0.9": "antigravity"})
+        media.refuse_bridge_caller("192.168.1.20", "comfyui")
+        media.refuse_bridge_caller("", "comfyui")
 
     def test_an_unresolvable_bridge_blocks_nobody(self, state):
         """立てていない環境で、画面ごと落ちたり全部断ったりしないこと。"""
-        state.setattr(providers, "bridge_hostnames", lambda: ("chiezo-bridge-nowhere",))
-        state.setattr(media, "_bridge_addrs", (0.0, frozenset()))
-        assert media.bridge_addresses() == frozenset()
-        media.refuse_bridge_caller("172.18.0.9")
+        state.setattr(providers, "bridge_hostnames", lambda: (("codex", "nowhere"),))
+        state.setattr(media, "_bridge_addrs", (0.0, {}))
+        assert media.bridge_addresses() == {}
+        media.refuse_bridge_caller("172.18.0.9", "comfyui")

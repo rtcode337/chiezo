@@ -1816,23 +1816,37 @@ _BRIDGE_ADDR_TTL = 60.0
 _bridge_addrs: tuple[float, frozenset[str]] = (0.0, frozenset())
 
 
-def bridge_addresses() -> frozenset[str]:
-    """CLI ブリッジのコンテナの住所。引けない相手は黙って飛ばす
-    (立てていない環境で画面ごと落ちては困る)。"""
+def bridge_addresses() -> dict[str, str]:
+    """CLI ブリッジのコンテナの住所 → その相手の id。引けない相手は黙って飛ばす
+    (立てていない環境で画面ごと落ちては困る)。
+
+    **どの相手から来たのかまで見る。** 断るだけなら住所の集合で足りるが、
+    「会話している相手が、その相手自身に頼む」は通したいので、誰かを知る必要がある。
+    """
     global _bridge_addrs
     now = time.monotonic()
     if now - _bridge_addrs[0] < _BRIDGE_ADDR_TTL:
         return _bridge_addrs[1]
-    found = set()
-    for host in providers.bridge_hostnames():
+    found: dict[str, str] = {}
+    for provider_id, host in providers.bridge_hostnames():
         with contextlib.suppress(OSError):
             for info in socket.getaddrinfo(host, None):
-                found.add(info[4][0])
-    _bridge_addrs = (now, frozenset(found))
+                found[info[4][0]] = provider_id
+    _bridge_addrs = (now, found)
     return _bridge_addrs[1]
 
 
-def refuse_bridge_caller(host: str) -> None:
+def _drawing_now(backend: str) -> bool:
+    """その相手が、いま生成を走らせている最中か。
+
+    **生成中の相手には頼ませない。** 絵を描かせている最中に同じ相手へ絵を頼み返すと、
+    1 回の依頼が毎回もう 1 本を生む —— 実際にそうなって、こちらの依頼文を英訳した
+    生成や `test` が次々に積まれた。会話中なら 1 往復で終わるので、そちらは通す。
+    """
+    return any(j.get("backend") == backend for j in running_jobs())
+
+
+def refuse_bridge_caller(host: str, backend: str = "") -> None:
     """**ブリッジから来た「AI に頼む」依頼を断る。**
 
     **相手を指名して頼んでいるのに、指名された側が別の相手に聞きに行く** ——
@@ -1850,8 +1864,15 @@ def refuse_bridge_caller(host: str) -> None:
     **読むほうは塞がない。** ブリッジの値打ちは「Chiezo の知識を引かせる」ことなので、
     検索も文書も短期記憶も通す。塞ぐのは**AI を使う口**だけ。
     """
-    if host and host in bridge_addresses():
-        raise HTTPException(403, {
+    caller = bridge_addresses().get(host) if host else None
+    if not caller:
+        return
+    # **会話している相手に、その相手自身を頼むのは通す。** 指名した相手が作って
+    # 持ってくるのは筋が通っている —— 塞ぎたいのは「別の相手に回す」ほうだった。
+    # ただし生成中は断る(上の `_drawing_now`)
+    if backend and backend == caller and not _drawing_now(caller):
+        return
+    raise HTTPException(403, {
             "error": "AI への依頼は受け取れません",
             "reason": "Chiezo が依頼した CLI から、Chiezo への依頼が届いています。"
                       "指名された相手が別の相手へ聞きに行くと、誰が答えたのかも"

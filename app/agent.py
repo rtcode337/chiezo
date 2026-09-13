@@ -43,7 +43,7 @@ from urllib.parse import quote
 from fastapi import HTTPException, Request
 from mcp.server.mcpserver.exceptions import ToolError
 
-from app import answer, notes, providers, websearch
+from app import answer, media_backends, media_providers, notes, providers, websearch
 from app.mcp_server import INSTRUCTIONS, build_mcp
 from app.pages import browse_url, doc_url
 
@@ -61,6 +61,24 @@ NOTE_TOOLS = ("remember", "recall")
 
 # 「この名前は agent が実行してよい」の全体(実際に渡すかは呼び出しごとに決まる)
 AGENT_TOOLS = KNOWLEDGE_TOOLS
+
+# 会話の相手に「作らせる」道具。**いま話している相手にしか頼めない。**
+#
+# 相手を選ばせない —— 指名して話している相手が、別の相手に作らせて持ってくるのは
+# 依頼として成立しないし、誰の枠を使ったのかも読めなくなる(ブリッジ越しの相手が
+# 実際にそれをやった。`media.refuse_bridge_caller`)。そこで **`backend` は道具の
+# 引数から外し**、こちらが会話の相手で埋める。
+#
+# **その相手が作れる種類のときだけ出す。** 作れない相手に道具を並べても、
+# 呼ばれて断るだけで文脈を食う(使えないものを並べない、という MCP と同じ流儀)。
+MEDIA_TOOLS: dict[str, str] = {
+    "image_generate": media_providers.KIND_IMAGE,
+    "audio_generate": media_providers.KIND_AUDIO,
+}
+
+# 道具から外す引数。**相手は会話の相手に固定**し、元にする絵は渡さない ——
+# 会話の相手はこちらの置き場のパスを知らないので、指しようがない
+_MEDIA_ARGS_HIDDEN = ("backend", "edit", "reference")
 
 # 出典として持ち帰る文書の上限(道具の応答には 50 件単位で並ぶので、そのまま
 # 積むと出典欄が結果一覧になる)。
@@ -149,13 +167,40 @@ def _mcp(app):
     return mcp
 
 
-async def tool_specs(app, web: bool = False, notes: bool = False) -> list[dict]:
+def _without_choosing_the_backend(schema: dict) -> dict:
+    """道具の引数から、相手と「元にする絵」を落とす。
+
+    **相手を選ばせない**のが要点(上の `MEDIA_ARGS_HIDDEN` の説明)。
+    必須の欄には入っていないので、落としても定義は壊れない。
+    """
+    props = {k: v for k, v in (schema.get("properties") or {}).items()
+             if k not in _MEDIA_ARGS_HIDDEN}
+    return {**schema, "properties": props}
+
+
+def media_tools_for(backend: str) -> dict[str, str]:
+    """その相手に渡す「作らせる」道具。作れない相手には何も渡さない。
+
+    **ブリッジ越しの相手には渡らない。** あちらは道具のループを通らず自分の MCP を
+    使うので、そもそもここへ来ない —— そのうえ入口でも断ってある。自分自身に
+    頼ませても、CLI の枠を自分で掴んだまま待つので必ず固まる。
+    """
+    spec = media_providers.get(backend)
+    if spec is None or media_backends.unusable_reason(spec):
+        return {}
+    return {name: kind for name, kind in MEDIA_TOOLS.items() if kind in spec.kinds}
+
+
+async def tool_specs(
+    app, web: bool = False, notes: bool = False, backend: str = ""
+) -> list[dict]:
     """MCP のツール定義を OpenAI の function 形式へ写す。
 
     説明文(description)も入力スキーマも MCP のものをそのまま使う。ここで書き直すと
     「MCP 経由では正しく引けるのに agent では引けない」というずれが必ず生まれる。
     """
-    allowed = set(KNOWLEDGE_TOOLS) | (set(NOTE_TOOLS) if notes else set())
+    making = media_tools_for(backend)
+    allowed = set(KNOWLEDGE_TOOLS) | (set(NOTE_TOOLS) if notes else set()) | set(making)
     tools = await _mcp(app).list_tools()
     specs = [
         {
@@ -163,7 +208,10 @@ async def tool_specs(app, web: bool = False, notes: bool = False) -> list[dict]:
             "function": {
                 "name": t.name,
                 "description": t.description or "",
-                "parameters": t.input_schema,
+                "parameters": (
+                    _without_choosing_the_backend(t.input_schema)
+                    if t.name in making else t.input_schema
+                ),
             },
         }
         for t in tools
@@ -238,7 +286,8 @@ def _tool_error_payload(text: str) -> dict:
 
 
 async def execute(
-    app, name: str, arguments: dict, web: bool = False, notes_ok: bool = False
+    app, name: str, arguments: dict, web: bool = False, notes_ok: bool = False,
+    backend: str = "",
 ) -> tuple[bool, Any]:
     """道具を 1 つ実行する。戻りは (成功したか, 応答)。
 
@@ -252,7 +301,15 @@ async def execute(
         return "error" not in payload, payload
     if name in NOTE_TOOLS and not notes_ok:
         return False, {"error": "notes are disabled for this conversation"}
-    if name not in KNOWLEDGE_TOOLS and name not in NOTE_TOOLS:
+    making = media_tools_for(backend)
+    if name in MEDIA_TOOLS:
+        if name not in making:
+            return False, {"error": f"{backend} ではこれを作れません"}
+        # **相手はこちらが埋める。** モデルが選んだ値は捨てる —— 引数から
+        # 外してあるが、入れてきたときに黙って通すと、別の相手の枠が減る
+        arguments = {**arguments, "backend": backend,
+                     "requested_by": f"会話({backend})"}
+    elif name not in KNOWLEDGE_TOOLS and name not in NOTE_TOOLS:
         return False, {"error": f"unknown tool: {name}"}
     try:
         raw = await _mcp(app).call_tool(name, arguments)
@@ -536,7 +593,7 @@ async def stream(
         return
     use_web = web_allowed(web)
     use_notes = notes_allowed(notes)
-    tools = await tool_specs(app, use_web, use_notes)
+    tools = await tool_specs(app, use_web, use_notes, cfg.name)
     # 履歴は本文だけを積み直す(過去のターンの道具のやり取りまで積むと文脈が際限なく伸び、
     # モデルが古い検索結果を根拠にし始める。何を引くかは毎ターン引き直させる)。
     past = [
@@ -588,7 +645,8 @@ async def stream(
                 ok, payload = called[key]
                 payload = repeated_payload(payload)
             else:
-                ok, payload = await execute(app, name, arguments, use_web, use_notes)
+                ok, payload = await execute(
+                    app, name, arguments, use_web, use_notes, cfg.name)
                 called[key] = (ok, payload)
             if ok:
                 if name == websearch.TOOL_NAME:

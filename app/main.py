@@ -562,15 +562,12 @@ app = FastAPI(title="Chiezo", version="0.2", lifespan=lifespan)
 # **口ごとに書かずに 1 か所で見る。** 口ごとだと、付け忘れが「枠が二重に減って
 # 初めて気づく」類の漏れになる。中間層なら**本体の検査より手前**でもある ——
 # 口ごとの検査は、本体が壊れているときに素通りして 422 になっていた。
+# **生成の口はここに並べない。** あちらは「会話している相手に、その相手自身を
+# 頼む」のは通すので、本体(`_refuse_bridge_for`)で相手まで見て判断する。
 _AI_PATHS = (
     "/v1/ask",
     "/v1/chat",
     "/v1/ai/complete",
-    "/v1/media/image",
-    "/v1/media/audio",
-    "/v1/media/video",
-    "/v1/media/speech",
-    "/v1/media/text",
     "/v1/media/transcribe",
     "/v1/collect/draft",
 )
@@ -2583,6 +2580,16 @@ async def media_backends_list(
     return {"backends": await media.backends(kind), "kind": kind, "enabled": media.is_enabled()}
 
 
+def _refuse_bridge_for(request: Request, backend: str) -> None:
+    """**Chiezo が動かしている CLI からの生成依頼。** 相手まで見て判断する ——
+    会話している相手に、その相手自身を頼むのは通す(理由は
+    `media.refuse_bridge_caller`)。別の相手へ回すのと、生成中の相手は断る。
+    """
+    media.refuse_bridge_caller(
+        request.client.host if request.client else "", (backend or "").strip().lower()
+    )
+
+
 def _edit_source(edit: str) -> tuple[str, str]:
     """来た値を (path, url) に振り分ける。
 
@@ -2622,6 +2629,7 @@ async def _source_image(
 @app.post("/v1/media/image")
 async def media_image(body: ImageRequest, request: Request) -> dict:
     """描き始めて job を返す(待たない)。進み具合は下の口で引く。"""
+    _refuse_bridge_for(request, body.backend or "")
     source, mode, ref = await _source_image(body.edit, body.reference)
     return media.start_image_job(
         prompt=body.prompt,
@@ -2643,6 +2651,7 @@ async def media_image(body: ImageRequest, request: Request) -> dict:
 @app.post("/v1/media/audio")
 async def media_audio(body: AudioRequestBody, request: Request) -> dict:
     """作り始めて job を返す(待たない)。進み具合は絵と同じ口で引く。"""
+    _refuse_bridge_for(request, body.backend or "")
     source = await media.load_image(*_edit_source(body.reference)) if body.reference else b""
     return media.start_audio_job(
         prompt=body.prompt,
@@ -2669,6 +2678,7 @@ async def media_video(body: VideoRequestBody, request: Request) -> dict:
 
     絵より待つ(数分〜十数分)ので、呼ぶ側は間を空けて引きに来ること。
     """
+    _refuse_bridge_for(request, body.backend or "")
     return media.start_video_job(
         prompt=body.prompt,
         backend=(body.backend or "").strip(),
@@ -2688,6 +2698,7 @@ async def media_video(body: VideoRequestBody, request: Request) -> dict:
 @app.post("/v1/media/speech")
 async def media_speech(body: SpeechRequestBody, request: Request) -> dict:
     """読み上げ始めて job を返す(待たない)。進み具合は絵と同じ口で引く。"""
+    _refuse_bridge_for(request, body.backend or "")
     return media.start_speech_job(
         text=body.text,
         backend=(body.backend or "").strip(),
@@ -2714,6 +2725,7 @@ async def media_text(body: MediaTextRequest, request: Request) -> dict:
     絵や音と同じ表に入るので、`/v1/media/groups` も `/v1/media/picks` も
     そのまま使える。
     """
+    _refuse_bridge_for(request, body.backend or "")
     return media.start_text_job(
         prompt=body.prompt,
         backend=(body.backend or "").strip(),
