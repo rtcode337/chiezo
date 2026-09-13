@@ -710,6 +710,42 @@ class TestTheMechanicalSweep:
         assert (roster.use_extract, roster.only_new) == (True, True)
         assert (flesh.use_extract, flesh.only_new) == (False, False)
 
+    def test_no_backend_can_be_set_on_a_mechanical_sweep(self, sample):
+        """選んでも何も起きない欄は、設定したつもりを作る。
+
+        機械で引く回は AI を呼ばずに返すので、相手もモデルも読まれない。
+        """
+        from app.views import admin
+
+        collect.update("news", sweeps=[{"name": "名簿", "use_extract": True}])
+        html = admin._sweep_table_body(collect.get("news"), "")
+        roster = html.split("名簿 の設定")[1].split("</details>")[0]
+
+        assert '<select name="sweep_backend">' not in roster
+        assert "AI を呼ばないので、相手は選べません" in roster
+        # 足すための空枠は AI に頼む前提なので、そちらには出る
+        assert html.count('<select name="sweep_backend">') == 1
+
+    def test_a_mechanical_sweep_drops_the_backend_on_save(self, sample):
+        """口を隠すだけでは足りない —— 効かない設定が控えに残ると、
+        後から読む人には「この回は AI で走っている」と見える。
+        """
+        from app.views import admin
+
+        class _Form:
+            def getlist(self, key):
+                return {
+                    "sweep_name": ["名簿"],
+                    "sweep_source": ["extract"],
+                    "sweep_backend": ["claude"],
+                    "sweep_enabled": ["1"],
+                }.get(key, [])
+
+        [sweep] = admin._parse_sweeps_form(_Form())
+
+        assert sweep["use_extract"] is True
+        assert "backend" not in sweep
+
     def test_it_does_not_claim_to_have_walked_the_partitions(self, sample, monkeypatch, tmp_path):
         """**機械で引く回は区画を見ない。** 指定を 1 本引いて全部を返すので、
         区画に印を付けると、見てもいない区画が「回り終えた」に混ざる(一周が嘘になる)。
@@ -2093,6 +2129,12 @@ class TestTheCollectSectionMarkup:
 
         return admin._collect_detail_html(collect.get(name), "")
 
+    def _table(self, name="news"):
+        """巡回の表の中身。**設定はここに畳んで置く**(一覧と詳細で同じもの)。"""
+        from app.views import admin
+
+        return admin._sweep_table_body(collect.get(name), "")
+
     def test_a_running_collection_has_no_delete_button(self, sample):
         """動いている収集を消すと、走っている最中の 1 回が焼く先の定義を失う。"""
         collect.update("news", enabled=True)
@@ -2191,10 +2233,13 @@ class TestTheCollectSectionMarkup:
         html = self._html(sample)
 
         assert '<a href="/admin/collect/news">news</a>' in html
-        # プロンプトも設定も、一覧には出さない（下の「収集を追加する」は別物）
+        # プロンプトと収集ぜんたいの設定は、一覧には出さない（下の「収集を追加する」は別物）
         assert "<summary>プロンプト</summary>" not in html
         assert "/admin/collect/news/edit" not in html
-        assert '<input name="sweep_name"' not in html
+        # **巡回の設定だけは行の下に畳んで置く** —— 見ている行の真下でなければ、
+        # どの行のものかを名前で照合することになる
+        assert '<tr class="sweep-edit">' in html
+        assert "<summary>ざっと の設定</summary>" in html
         # 面のほうには畳まずに出る
         detail = self._detail()
         assert '<pre class="prompt-view">' in detail
@@ -2207,16 +2252,26 @@ class TestTheCollectSectionMarkup:
         繰り返せるようにすれば足りる。
         """
         collect.update("news", sweeps=[{"name": "ざっと"}, {"name": "じっくり"}])
-        html = self._detail()
+        html = self._table()
 
         assert '<textarea name="sweeps"' not in html
         assert html.count('<input name="sweep_name"') == 3  # 2 本 + 足すための空枠
         assert '<select name="sweep_backend">' in html
         assert "名前を消すと、この巡回は無くなります" in html
 
+    def test_each_sweep_saves_on_its_own(self, sample):
+        """全部を送り直していた頃は、1 本の間隔を直すのに他の巡回まで上書きしていた。"""
+        collect.update("news", sweeps=[{"name": "ざっと"}, {"name": "じっくり"}])
+        html = self._table()
+
+        assert html.count("この巡回を保存") == 3  # 2 本 + 足すための空枠
+        assert html.count('action="/admin/collect/news/sweep"') == 3
+        # どの巡回を書き換えるかは鍵で渡す（改名できるように、名前とは別に持つ）
+        assert '<input type="hidden" name="sweep_key" value="ざっと">' in html
+
     def test_one_sweep_needs_no_name_to_delete(self, sample):
         """1 本しか無いときは、消す案内を出さない（消したら回らなくなる）。"""
-        html = self._detail()
+        html = self._table()
         assert "名前を消すと、この巡回は無くなります" not in html
         assert "名前を書くと増えます" in html
 
@@ -2236,8 +2291,9 @@ class TestTheCollectSectionMarkup:
         html = self._html(sample)
         body = html.split("<tbody>")[1].split("</tbody>")[0]
 
-        # 名前と操作は行をまたがせる（収集のものなので）
-        assert 'rowspan="2"' in body
+        # 名前と操作は行をまたがせる（収集のものなので）。
+        # 伸ばす先は巡回の行 2 本 + その下の設定の行 2 本 + 足すための 1 行
+        assert 'rowspan="5"' in body
         # 巡回は表にそのまま並ぶ
         assert "ざっと" in body and "じっくり" in body
         assert "1440 分ごと" in body
@@ -2471,10 +2527,11 @@ class TestWhatChangedInOneDoc:
 
 
 class TestEditingTheSweeps:
-    """巡回の欄は繰り返せる。**名前を書けば増え、消せば減る**。
+    """巡回の設定は、その行の下に畳んで置く。**1 本ずつ保存する**。
 
-    足す口も消す口も名前 1 つで済ませてある —— 行ごとにボタンを付けると、押した先で
-    何が起きるかを別に説明することになる。
+    収集ぜんたいの編集フォームに全部を並べていた頃は、1 本の間隔を直すのに他の巡回まで
+    送り直していた —— 別のセッションが同時に別の巡回を直していると、後から押したほうで
+    上書きされる。**名前を書けば増え、消せば減る**のは変えていない。
     """
 
     @pytest.fixture()
@@ -2487,18 +2544,25 @@ class TestEditingTheSweeps:
         with TestClient(app) as c:
             yield c
 
-    def _save(self, client, rows, **extra):
-        # **繰り返す欄は「鍵 → 値の並び」で渡す。** タプルの列で渡すと httpx が
-        # 生のデータとして扱い、フォームとして届かない
-        data = {"prompt": "{cursor} 以降", "description": "", "cursor": "",
-                "mode": "append", "keep_ratio": "", "extract": "",
-                "partition": "", "feed": "", **extra}
-        for key in ("name", "interval", "cover_days", "per_run",
-                    "backend", "model", "effort", "enabled", "clock", "merge"):
-            data[f"sweep_{key}"] = [row.get(key, "") for row in rows]
-        res = client.post("/admin/collect/news/edit", data=data, follow_redirects=False)
+    def _save_one(self, client, row, key=""):
+        """巡回 1 本ぶんを保存する。`key` は書き換える相手(空なら足す)。"""
+        data = {"sweep_key": key}
+        for field in ("name", "interval", "cover_days", "per_run",
+                      "backend", "model", "effort", "enabled", "clock", "merge", "source"):
+            data[f"sweep_{field}"] = row.get(field, "")
+        res = client.post("/admin/collect/news/sweep", data=data, follow_redirects=False)
         assert res.status_code in (200, 303), res.text[:400]
         return res
+
+    def _save(self, client, rows):
+        """並べて書いたぶんを、上から 1 本ずつ保存する。
+
+        既にある名前は書き換え、無い名前は足す(画面の「巡回を足す」と同じ)。
+        """
+        for row in rows:
+            existing = [s["name"] for s in collect.get("news").sweeps]
+            key = row.get("key", row.get("name") if row.get("name") in existing else "")
+            self._save_one(client, row, key)
 
     def test_writing_a_name_adds_one(self, client, sample):
         self._save(client, [
@@ -2554,10 +2618,7 @@ class TestEditingTheSweeps:
         ])
         assert len(collect.get("news").sweeps) == 2
 
-        self._save(client, [
-            {"name": "ざっと", "interval": "360", "enabled": "1"},
-            {"name": "", "interval": "1440", "enabled": "1"},
-        ])
+        self._save_one(client, {"name": "", "interval": "1440", "enabled": "1"}, key="じっくり")
         assert [s.name for s in collect.sweeps_of(collect.get("news"))] == ["ざっと"]
 
     def test_an_unnamed_lone_sweep_is_kept_as_the_collection_itself(self, client, sample):
@@ -2566,8 +2627,8 @@ class TestEditingTheSweeps:
         **名前を付けたものは名前のまま残す** —— 2 本目を消したときに 1 本目の名前まで
         化けると、何を消したのか分からなくなる（上のテストがそこを縛っている）。
         """
-        self._save(client, [{"name": "既定", "interval": "120",
-                             "backend": "claude", "enabled": "1"}])
+        self._save_one(client, {"name": "既定", "interval": "120",
+                                "backend": "claude", "enabled": "1"})
         item = collect.get("news")
         assert item.sweeps == []
         assert item.interval_minutes == 120
@@ -2598,7 +2659,7 @@ class TestPickingTheModelAndTheEffort:
     def test_they_are_selects_not_free_text(self, sample):
         from app.views import admin
 
-        html = admin._collect_detail_html(collect.get("news"), "")
+        html = admin._sweep_table_body(collect.get("news"), "")
         # 巡回ごとに 1 組ずつ出る（相手も巡回ごとに変えられるので）
         assert '<select name="sweep_model">' in html
         assert '<select name="sweep_effort">' in html

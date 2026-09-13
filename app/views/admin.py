@@ -569,37 +569,6 @@ FEED_EXAMPLE = json.dumps(
     ensure_ascii=False,
 )
 
-def _sweeps_form(item) -> str:
-    """巡回の設定欄。**何本でも書ける形にする**。
-
-    JSON を直に書かせていた頃は、間隔ひとつ変えるのに配列の構文を相手にすることに
-    なった。**間隔・相手・モデル・考える量はもともと「1 本ぶんの設定」**なので、
-    その一組を繰り返せるようにすれば足りる。
-
-    **空の枠を 1 つ余分に出す。** 足すための導線が他に無く、名前を書けば増える。
-    名前を消せば消える(消す口を別に作らずに済む)。
-    """
-    sweeps = collect.sweeps_of(item)
-    blocks = [_sweep_fields(s, len(sweeps) > 1, item.prompt) for s in sweeps]
-    blocks.append(_sweep_fields(None, False, item.prompt))
-    return (
-        '<fieldset class="sweeps"><legend>巡回(何本でも書ける)</legend>'
-        '<p class="muted"><strong>同じ収集を別々の時計で回すためのもの。</strong>'
-        "ざっと全体を拾うもの(「一周の日数」を書く)と、少数をじっくり調べるもの"
-        "(「1 回に見る区画」と強いモデル)を分けて持てる。"
-        "<strong>時計を持たない巡回も置ける</strong> —— 割り込み"
-        "(「ここが間違っているから直して」)を頼まれたときだけ動く 1 本で、"
-        "頼む相手を定時のものと別に決めておくためのもの。"
-        "<strong>依頼文も巡回ごとに書ける</strong>(空なら収集のもの)—— "
-        "頼むことが巡回ごとに違う(埋める / 見直して消す / 漏れを足す)のに、"
-        "1 つの文で全部を頼むと、どの回も同じ薄さの仕事になる。"
-        "<strong>名前を書けば増え、消せば減る。</strong>"
-        "1 本だけなら、その設定がそのまま収集の設定になる。</p>"
-        + "".join(blocks)
-        + "</fieldset>"
-    )
-
-
 def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
     """巡回 1 本ぶんの欄。`sweep` が None なら空の枠(足すため)。"""
     name = sweep.name if sweep else ""
@@ -643,11 +612,7 @@ def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
         '<p><label>1 回に見る区画(空なら上の日数から計算する)<br>'
         f'<input name="sweep_per_run" type="number" min="1"'
         f' max="{collect.MAX_PARTITIONS_PER_RUN}" value="{esc(str(per_run))}"></label></p>'
-        f'<p><label>頼む相手<br>{_backend_select(backend, "sweep_backend")}</label></p>'
-        f'<p><label>モデル<br>'
-        f'{_model_select(backend, sweep.model if sweep else None, "sweep_model")}</label></p>'
-        f'<p><label>考える量<br>'
-        f'{_effort_select(backend, sweep.effort if sweep else None, "sweep_effort")}</label></p>'
+        f"{_sweep_backend_fields(sweep, backend, use_extract or use_feed)}"
         # **足すだけの回は、既にある見出しに触らない。** 「漏れているものを足して」と
         # 頼む回に要る印で、AI の判断に頼らずにここで保証する —— 見せられるのはその
         # 区画のぶんだけなので、AI には「もう居るかどうか」が分からない
@@ -676,6 +641,66 @@ def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
         f'<option value=""{"" if enabled else " selected"}>止める</option>'
         "</select></label></p></div>"
     )
+
+
+# 巡回の表の列数(巡回・相手・間隔・次にいつ・一周のうち・前回・実行)。
+# 設定の行はこれを全部つないで 1 つのセルにする
+SWEEP_COLUMNS = 7
+
+
+def _sweep_backend_fields(sweep, backend, mechanical: bool) -> str:
+    """頼む相手の欄。**機械で引く巡回には出さない**。
+
+    出していた頃は、選んでも何も起きなかった —— 機械の回は AI を呼ばずに返すので、
+    相手もモデルも読まれない。**選べるのに効かない欄は、設定したつもりを作る**。
+    """
+    if mechanical:
+        return (
+            '<p class="muted">この引き方では AI を呼ばないので、相手は選べません'
+            "(「AI に頼む」にして保存すると出ます)。</p>"
+        )
+    return (
+        f'<p><label>頼む相手<br>{_backend_select(backend, "sweep_backend")}</label></p>'
+        f'<p><label>モデル<br>'
+        f'{_model_select(backend, sweep.model if sweep else None, "sweep_model")}</label></p>'
+        f'<p><label>考える量<br>'
+        f'{_effort_select(backend, sweep.effort if sweep else None, "sweep_effort")}</label></p>'
+    )
+
+
+def _sweep_edit_row(item, sweep, columns: int, removable: bool = True) -> str:
+    """巡回 1 本ぶんの設定を、その行の下に畳んで置く。
+
+    **その巡回だけを保存できる。** 収集ぜんたいの編集フォームに全部の巡回を並べて
+    いた頃は、1 本の間隔を直すのに全部を送り直していた —— 別のセッションが同時に
+    別の巡回を直していると、後から押したほうで上書きされる。
+
+    **見ている行の真下に置く。** 設定が離れたところにあると、どの行のものかを
+    名前で照合することになる。
+    """
+    key = sweep.name if sweep else ""
+    label = f"{esc(sweep.name)} の設定" if sweep else "巡回を足す"
+    return (
+        f'<tr class="sweep-edit"><td colspan="{columns}">'
+        f"<details><summary>{label}</summary>"
+        f'<form method="post" action="/admin/collect/{esc(quote(item.name))}/sweep"'
+        ' class="collect-form">'
+        f'<input type="hidden" name="sweep_key" value="{esc(key)}">'
+        f"{_sweep_fields(sweep, sweep is not None and removable, item.prompt)}"
+        '<p><button type="submit">この巡回を保存</button></p>'
+        "</form></details></td></tr>"
+    )
+
+
+def _sweep_table_body(item, disabled: str = "") -> str:
+    """巡回の表の中身(行と、その下に畳んだ設定)。**一覧と詳細で同じものを出す**。"""
+    sweeps = collect.sweeps_of(item)
+    rows = []
+    for cells, sweep in zip(_sweep_cells(item, disabled), sweeps, strict=False):
+        rows.append(f"<tr>{cells}</tr>")
+        rows.append(_sweep_edit_row(item, sweep, SWEEP_COLUMNS, len(sweeps) > 1))
+    rows.append(_sweep_edit_row(item, None, SWEEP_COLUMNS))
+    return "".join(rows)
 
 
 def _sweep_cells(item, disabled: str = "") -> list[str]:
@@ -941,7 +966,6 @@ def _collect_detail_html(item, disabled: str) -> str:
         f"<details><summary>編集する</summary>"
         f'<form method="post" action="/admin/collect/{esc(item.name)}/edit" class="collect-form">'
         f'<p><label>説明<br><input name="description" value="{esc(item.description)}"></label></p>'
-        f"{_sweeps_form(item)}"
         f'<p><label>プロンプト<br><textarea name="prompt" rows="10">{esc(item.prompt)}</textarea></label></p>'
         f'<p><label>進み具合(空にすると最初から)<br>'
         f'<input name="cursor" value="{esc(item.cursor)}"></label></p>'
@@ -1096,7 +1120,14 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
         # 収集に 1 行だけ与えると、そこに出る値はどちらか片方のものにしかならない。
         # 名前と溜まった件数と操作は収集のものなので、行をまたがせる
         sweep_cells = _sweep_cells(item, disabled)
-        span = f' rowspan="{len(sweep_cells)}"' if len(sweep_cells) > 1 else ""
+        sweeps = collect.sweeps_of(item)
+        # 巡回 1 本につき「行」と「設定の行」の 2 行。最後に足すための 1 行
+        edit_rows = [
+            _sweep_edit_row(item, s, SWEEP_COLUMNS, len(sweeps) > 1) for s in sweeps
+        ]
+        edit_rows.append(_sweep_edit_row(item, None, SWEEP_COLUMNS))
+        span_rows = len(sweep_cells) + len(edit_rows)
+        span = f' rowspan="{span_rows}"' if span_rows > 1 else ""
         rows.append(
             f"<tr{cls}>"
             f'<td{span}><a href="/admin/collect/{esc(quote(item.name))}">{esc(item.name)}</a>'
@@ -1111,8 +1142,14 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f"{delete_form}"
             f"</td></tr>"
         )
-        # 2 本目からは巡回のぶんだけ。左右のセルは 1 行目から伸びている
-        rows += [f"<tr{cls}>{cells}</tr>" for cells in sweep_cells[1:]]
+        # 設定の行は、その巡回のすぐ下へ。**離れたところに置くと、どの行のものかを
+        # 名前で照合することになる**。2 本目からの巡回は左右のセルが 1 行目から伸びている
+        rows.append(edit_rows[0])
+        for cells, edit in zip(sweep_cells[1:], edit_rows[1:], strict=False):
+            rows.append(f"<tr{cls}>{cells}</tr>")
+            rows.append(edit)
+        # 足すための行は最後に(名前を書けば増える)
+        rows.append(edit_rows[-1])
     table = f"""
 <table>
 <thead>
@@ -1997,22 +2034,12 @@ async def admin_collect_edit(name: str, request: Request):
     プロンプトを書き換えるのと同じ場面で起きるため(値を消せば最初から)。
     """
     form = await request.form()
-    sweeps = _parse_sweeps_form(form)
-    # **名前を付けていない 1 本なら、収集そのものの設定として持つ。** 巡回を 1 本しか
-    # 持たない収集に一覧を持たせると、「既定」という名前だけが画面に増える。
-    # **名前を付けたものは名前のまま残す** —— 2 本目を消したときに 1 本目の名前まで
-    # 「既定」へ化けると、何を消したのか分からなくなる
-    lone = (
-        sweeps[0]
-        if len(sweeps) == 1 and sweeps[0]["name"] == collect.DEFAULT_SWEEP_NAME
-        else None
-    )
+    # **巡回には触らない。** 設定は巡回ごとの行から保存する —— ここで全部を
+    # 送り直していた頃は、1 本の間隔を直すのに他の巡回まで上書きしていた
     collect.update(
         name,
-        sweeps=[] if lone else sweeps,
         prompt=str(form.get("prompt") or ""),
         description=str(form.get("description") or ""),
-        interval_minutes=(lone or {}).get("interval_minutes"),
         # 空にできるように、cursor だけは None ではなく空文字を通す
         cursor=str(form.get("cursor") or ""),
         # **空にできる**(消し間違いの逃げ道)。1 行 1 件で読む
@@ -2024,13 +2051,50 @@ async def admin_collect_edit(name: str, request: Request):
         feed=_parse_feed(form.get("feed")),
         # 0 も意味のある値(守りを外す)なので、空のときだけ触らない
         keep_ratio=_ratio(form.get("keep_ratio")),
-        # 相手・モデル・深さは**空を「既定にまかせる」として通す** ——
-        # `collect.update` は None を「触らない」と読むので、空文字で渡して消す。
-        # 巡回が 2 本以上あるときは巡回の側が持つので、収集の側は空に戻す
-        backend=str((lone or {}).get("backend") or ""),
-        model=str((lone or {}).get("model") or ""),
-        effort=str((lone or {}).get("effort") or ""),
     )
+    return RedirectResponse(url="/admin/memory#collect", status_code=303)
+
+
+@router.post("/admin/collect/{name}/sweep")
+async def admin_collect_sweep(name: str, request: Request):
+    """巡回 1 本ぶんの設定を保存する。**その 1 本だけ**を書き換える。
+
+    **名前を消すと、その巡回が消える**(足す口も消す口も名前 1 つで済ませている)。
+    名前を書き換えれば改名になる —— そのときは予定と控えを引き継がない
+    (`collect.update` は名前で突き合わせるため)。
+
+    巡回を 1 本も持たない収集では、**収集そのものの設定**として書く。1 本しか
+    持たない収集に一覧を持たせると、「既定」という名前だけが画面に増える。
+    """
+    form = await request.form()
+    parsed = _parse_sweeps_form(form)
+    key = str(form.get("sweep_key") or "").strip()
+    item = collect.get(name)
+    current = list(item.sweeps)
+    sweep = parsed[0] if parsed else None
+
+    # **名前を付けていない 1 本は、収集そのものの設定。** 1 本しか持たない収集に
+    # 一覧を持たせると、「既定」という名前だけが画面に増える。
+    # **名前を書いて保存したものは巡回になる**(まだ 1 本も持っていない収集でも)
+    if sweep is not None and not current and sweep["name"] == collect.DEFAULT_SWEEP_NAME:
+        collect.update(
+            name,
+            interval_minutes=sweep.get("interval_minutes"),
+            # 空は「既定にまかせる」として通す(`collect.update` は None を「触らない」と読む)
+            backend=str(sweep.get("backend") or ""),
+            model=str(sweep.get("model") or ""),
+            effort=str(sweep.get("effort") or ""),
+        )
+        return RedirectResponse(url="/admin/memory#collect", status_code=303)
+
+    if sweep is None:
+        # 名前を消した = この巡回を消す
+        merged = [s for s in current if str(s.get("name") or "") != key]
+    elif key and any(str(s.get("name") or "") == key for s in current):
+        merged = [sweep if str(s.get("name") or "") == key else s for s in current]
+    else:
+        merged = [*current, sweep]
+    collect.update(name, sweeps=merged)
     return RedirectResponse(url="/admin/memory#collect", status_code=303)
 
 
@@ -2346,7 +2410,11 @@ def _parse_sweeps_form(form) -> list[dict]:
             if value := at(field):
                 with suppress(ValueError):
                     sweep[key] = float(value) if key == "cover_days" else int(value)
+        # **機械で引く回に相手は要らない。** 残すと、効かない設定が控えに残り、
+        # 後から読む人には「この回は AI で走っている」と見える
         for key in ("backend", "model", "effort"):
+            if sweep.get("use_extract") or sweep.get("use_feed"):
+                break
             if value := at(key):
                 sweep[key] = value
         out.append(sweep)
@@ -2496,7 +2564,7 @@ def admin_collect_detail(request: Request, name: str):
 <th>次にいつ</th><th>一周のうち</th><th>前回</th><th>実行</th></tr>
 </thead>
 <tbody>
-{"".join(f"<tr>{cells}</tr>" for cells in _sweep_cells(item, disabled))}
+{_sweep_table_body(item, disabled)}
 </tbody>
 </table>
 {_collect_detail_html(item, disabled)}
