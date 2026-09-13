@@ -346,6 +346,11 @@ class TestOsmClaudeConfig:
         しか返らない理由が分からず、取れないものを取ろうとして空回りする。
         """
         text = client.get("/admin/claude-config.txt").text
-        assert "/v1/osm_japan/links" in text
-        assert "`wikipedia` タグから作った対応記事のタイトル" in text
-        assert "タグの無い地物は空配列" in text
+        assert "/v1/<source>/links" in text
+        # **その kind でだけ効く癖は `/v1/sources` が返す**（設定には焼き込まない）
+        from app import claude_config
+
+        osm = client.app.state.sources["osm_japan"]
+        hints = " ".join(claude_config.describe(osm)["hints"])
+        assert "`wikipedia` タグから作った対応記事のタイトル" in hints
+        assert "タグの無い地物は空配列" in hints

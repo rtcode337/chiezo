@@ -32,6 +32,7 @@ from app import (
     ai_log,
     answer,
     capabilities,
+    claude_config,
     collect,
     collect_log,
     db,
@@ -673,6 +674,11 @@ def list_sources(request: Request):
                 "docs": s.doc_count,
                 "schema_version": s.schema_version,
                 "built_at": s.built_at,
+                # **何ができるか・何が入っているかもここで返す。**
+                # 以前は設定ファイル(CLAUDE.md)に 23 ソースぶん焼き込んでいたが、
+                # あれは生成した瞬間の写しで、増えるたびに人が再生成しないと古くなる。
+                # 古い一覧は無いものへ投げさせ、**あるものを使わせない**
+                **claude_config.describe(s),
             }
             for s in sources.values()
         ]

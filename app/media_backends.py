@@ -48,6 +48,14 @@ log = logging.getLogger("chiezo.media")
 # 1 枚あたりの上限。GPU でも SDXL は数秒〜数十秒かかる(混んでいれば待たされる)。
 GENERATE_TIMEOUT = float(os.environ.get("CHIEZO_IMAGE_TIMEOUT", "300") or 300)
 
+# **「何が置いてあるか」を聞くときの上限。** 生成と同じ 5 秒では長すぎる ——
+# LAN 内の相手は、生きていればミリ秒で答える。5 秒待つ意味があるのは生成のときだけ。
+#
+# ここが効くのは相手が落ちているとき。繋がらない相手を 1 つ抱えているだけで、
+# 無関係な口が遅くなっていた（実測: `/v1/capabilities` が 15.5 秒。中で kind ごとに
+# 同じ相手へ 3 回聞いて、3 回とも 5 秒待っていた）。
+LIST_TIMEOUT = float(os.environ.get("CHIEZO_LIST_TIMEOUT", "1.5") or 1.5)
+
 # CLI ブリッジ越しに描かせるときの上限。**頼む側は、描く側より長く待つ。**
 # ブリッジも同じ環境変数を読んで自前で粘るので、こちらが先に見切ると
 # **描き上がる寸前の絵を捨てたうえ、相手の枠だけ使う**ことになる
@@ -519,7 +527,7 @@ def _comfy_graph(
     return graph
 
 
-async def comfy_controlnet_models(url: str, timeout: float = 5.0) -> list[str]:
+async def comfy_controlnet_models(url: str, timeout: float = LIST_TIMEOUT) -> list[str]:
     """置いてある ControlNet。**姿勢のものだけ**を拾う(名前で見分ける) ——
     輪郭や深度のものを姿勢の見本に使うと、線をそのままなぞった絵が返る。"""
     with contextlib.suppress(Exception):
@@ -547,7 +555,7 @@ async def comfy_upload(url: str, data: bytes, name: str = "chiezo-source.png") -
     return str(body.get("name") or name)
 
 
-async def comfy_models(url: str, timeout: float = 5.0) -> list[str]:
+async def comfy_models(url: str, timeout: float = LIST_TIMEOUT) -> list[str]:
     """置いてあるチェックポイントを相手に聞く(置いたものは環境ごとに違う)。"""
     async with _client(timeout) as client:
         res = await client.get(f"{url}/object_info/CheckpointLoaderSimple")
@@ -875,7 +883,7 @@ def is_audio_checkpoint(name: str) -> bool:
     return any(hint in name.lower() for hint in _AUDIO_HINTS)
 
 
-async def comfy_image_models(url: str, timeout: float = 5.0) -> list[str]:
+async def comfy_image_models(url: str, timeout: float = LIST_TIMEOUT) -> list[str]:
     """置いてある絵のチェックポイント。
 
     音のものを混ぜない。 置き場が同じ(`models/checkpoints`)なので、素の一覧には
@@ -886,7 +894,7 @@ async def comfy_image_models(url: str, timeout: float = 5.0) -> list[str]:
     return [name for name in await comfy_models(url, timeout) if not is_audio_checkpoint(name)]
 
 
-async def comfy_audio_models(url: str, timeout: float = 5.0) -> list[str]:
+async def comfy_audio_models(url: str, timeout: float = LIST_TIMEOUT) -> list[str]:
     """置いてある音のチェックポイント。曲(ACE-Step)を先に並べる。"""
     names = [name for name in await comfy_models(url, timeout) if is_audio_checkpoint(name)]
     return sorted(names, key=lambda name: (not _is_ace(name), name))
@@ -904,7 +912,7 @@ def pick_audio_model(names: list[str], sound: str) -> str:
     return order[0] if order else ""
 
 
-async def comfy_text_encoders(url: str, timeout: float = 5.0) -> list[str]:
+async def comfy_text_encoders(url: str, timeout: float = LIST_TIMEOUT) -> list[str]:
     """`CLIPLoader` に置いてある text encoder。Stable Audio Open にだけ要る
     (ACE-Step は all-in-one なので不要)。"""
     async with _client(timeout) as client:
@@ -1239,7 +1247,7 @@ def comfy_video_length(seconds: float) -> int:
     return max(5, (frames + 1) // 4 * 4 + 1)
 
 
-async def _comfy_names(url: str, node: str, field: str, timeout: float = 5.0) -> list[str]:
+async def _comfy_names(url: str, node: str, field: str, timeout: float = LIST_TIMEOUT) -> list[str]:
     """`/object_info` の 1 ノードから、選べる名前の一覧を取る。
 
     動画は読むものが 3 つ(UNet・text encoder・VAE)あり、**どれが欠けても
@@ -1252,7 +1260,7 @@ async def _comfy_names(url: str, node: str, field: str, timeout: float = 5.0) ->
     return [str(name) for name in info]
 
 
-async def comfy_video_models(url: str, timeout: float = 5.0) -> list[str]:
+async def comfy_video_models(url: str, timeout: float = LIST_TIMEOUT) -> list[str]:
     """置いてある動画のモデル(`models/diffusion_models`)。"""
     names = await _comfy_names(url, "UNETLoader", "unet_name", timeout)
     return [name for name in names if is_video_model(name)]
@@ -1975,7 +1983,7 @@ async def leonardo_models(spec: media_providers.MediaProvider) -> list[str]:
     if not key:
         return []
     with contextlib.suppress(Exception):
-        async with _client(15.0) as client:
+        async with _client(LIST_TIMEOUT * 4) as client:
             res = await client.get(
                 f"{media_providers.url_of(spec)}/platformModels",
                 headers={"authorization": f"Bearer {key}", "accept": "application/json"},

@@ -518,57 +518,35 @@ class TestMcpTools:
 
 
 class TestClaudeConfig:
-    """CLAUDE.md ブロックにメモの中身を引き写さないこと(app/claude_config.py)。
+    """**ソースの一覧は設定ファイルに焼き込まない。** 生成した瞬間の写しになり、
+    増えるたびに人が再生成しないと古いまま —— 古い一覧は無いものへ投げさせ、
+    あるものを使わせない。一覧と説明は `/v1/sources` が返す。
 
-    例示のタイトル・タグは DB の実データから採るが、notes はユーザーが手元で書いたメモで
-    機密が混じりうる。ブロックはリポジトリ側(`--project`)にも生成できるので、
-    見出しやタグが載るとコミットされて意図せず共有される。
+    **引き写さない規則はそのまま効く。** notes は手元で書いたメモで機密が混じりうる
+    ので、実データを例示に出さない（設定ファイルはリポジトリ側にも生成でき、
+    メモの見出しやタグがコミットされて意図せず共有される）。
     """
 
-    SECRET_TITLE = "社外に出せない相談ごと"
-    SECRET_TAG = "機密"
+    def test_the_block_tells_you_to_ask_instead_of_listing(self, client):
+        block = client.get("/admin/claude-config.txt").text
+        assert "/v1/sources" in block
+        assert "- **notes**(kind=notes)" not in block, "一覧を焼き込まないこと"
 
-    @pytest.fixture()
-    def block(self, client):
-        client.post(
-            "/v1/notes",
-            json={"text": f"{self.SECRET_TITLE}\n\n本文も出さない", "tags": self.SECRET_TAG},
-        )
-        return client.get("/admin/claude-config.txt").text
+    def test_a_writable_source_never_quotes_its_own_contents(self, client):
+        from app import claude_config
 
-    def _section(self, block: str) -> str:
-        """notes の行だけを切り出す(次のソースの見出しまで)。"""
-        lines = block.splitlines()
-        start = next(i for i, line in enumerate(lines) if line.startswith("- **notes**"))
-        rest = lines[start + 1:]
-        end = next((i for i, line in enumerate(rest) if line.startswith("- **")), len(rest))
-        return "\n".join(lines[start:start + 1 + end])
+        notes = client.app.state.sources.get("notes")
+        assert notes is not None
+        got = claude_config.describe(notes)
+        assert got["sample"] == {"title": "", "tag": ""}, "手元のメモを引き写さないこと"
 
-    def test_notes_is_listed(self, block):
-        assert "- **notes**(kind=notes)" in block
+    def test_a_public_source_does_quote_real_values(self, client):
+        """公開ダンプ由来なら引き写してよい（例示が具体的なほうが通る）。"""
+        from app import claude_config
 
-    def test_the_memo_is_not_quoted(self, block):
-        assert self.SECRET_TITLE not in block
-        assert self.SECRET_TAG not in block
-
-    def test_examples_use_placeholders(self, block):
-        section = self._section(block)
-        assert '--data-urlencode "q=<検索語>"' in section
-        assert '--data-urlencode "title=<タイトル>"' in section
-        assert '--data-urlencode "tag=<タグ名>"' in section
-
-    def test_public_sources_still_quote_real_titles(self, block):
-        """公開ダンプ由来のソースは実在タイトルで例示したまま(引用を止めるのは notes だけ)。
-
-        プレースホルダーは「その API をどう呼ぶか」しか伝えない。実在タイトルは
-        `多摩川 (relation:32007)` のようなそのソース特有の表記まで見せられるので、
-        載せてよいソースでは落とさない。
-        """
-        others = block.replace(self._section(block), "")
-        assert "- **jawiki**" in others
-        assert "<タイトル>" not in others
-
-
+        jawiki = client.app.state.sources.get("jawiki")
+        assert jawiki is not None
+        assert claude_config.describe(jawiki)["sample"]["title"]
 class TestShortTermIsNotARebuildableSource:
     """短期記憶は長期記憶と同じ扱いにしない(管理画面・件数)。
 

@@ -366,18 +366,18 @@ def _who(usable: dict[str, set[str]] | None, *kinds: tuple[str, str]) -> str:
     声の節は読み上げと文字起こし)。相手が同じなら 1 文にまとめ、違えば書き分ける
     —— 「曲は作れるが効果音は作れない」相手がいるので、まとめると嘘になる。
     """
+    # **相手の名前は焼き込まない。** ソースと同じ理由 —— 生成した瞬間の写しになり、
+    # 相手を足したり止めたりするたびに古くなる。古い名前は、いない相手へ投げさせ、
+    # **いる相手を使わせない**。どこで聞けるかだけ書く。
     if not usable:
         return ""
     found = [(label, [_short(n) for n in capabilities.providers_for(usable, cap)])
              for cap, label in kinds]
-    ready = [(label, names) for label, names in found if names]
+    ready = [label for label, names in found if names]
     if not ready:
         return ""
-    lists = {tuple(names) for _, names in ready}
-    if len(lists) == 1 and len(ready) == len(kinds):
-        return f"**いまこのサーバーで使えるのは {'・'.join(ready[0][1])}**。"
-    parts = (f"{label}は {'・'.join(names)}" for label, names in ready)
-    return f"**{'、'.join(parts)} が使える**。"
+    return (f"**{'・'.join(ready)}を頼める相手は、そのときどきで変わる。** "
+            "名前を覚えず、毎回一覧で確かめること。")
 
 
 # 手分けの相手に出さない相手。 このブロックを読むのは Claude Code なので、
@@ -706,17 +706,47 @@ def build_block(
             "毎回プロンプトになるので、取得は `curl`→`jq` の読み取りだけで完結させる。"
         )
 
+    # **ソースの一覧は焼き込まない。** 以前は 23 ソースぶんの curl 例を並べていたが、
+    # あれは生成した瞬間の写しで、**増えるたびに人が再生成しないと古いまま**になる。
+    # 古い一覧は害のほうが大きい —— 無いものへ投げるし、**あるのに使わない**。
+    # 引き方だけ書いて、何があるかは毎回聞かせる。
     out += [
         "",
-        "### 収録ソース",
+        "### どのソースがあるかは、毎回聞く",
+        "",
+        f'**一覧 → `curl -s "{base}/v1/sources"`。** ここに載っていないソースは無い。'
+        "返るのは名前・種類・件数に加えて、**そのソースで何ができるか**(`can`)と"
+        "**一言**(`note`)、例示に使える実在の値(`sample`)。"
+        "`can` に入っていない引き方は、そのソースでは通らない。",
+        "",
+        "| `can` | 引き方（`<source>` は一覧の `name`） |",
+        "|---|---|",
+        f'| `search` | `curl -sG "{base}/v1/<source>/search?limit=5" --data-urlencode "q=<語>"` |',
+        f'| `doc` | `curl -sG "{base}/v1/<source>/doc?fields=title,opening,tags"'
+        ' --data-urlencode "title=<タイトル>"`（本文は `max_chars=8000`） |',
+        f'| `titles` | `curl -sG "{base}/v1/<source>/titles" --data-urlencode "prefix=<語>"` |',
+        f'| `tags` | `curl -sG "{base}/v1/<source>/tags?limit=20" --data-urlencode "contains=<語>"`'
+        "（実在するタグ名を件数つきで。`filter` は完全一致なので先にここで確かめる） |",
+        f'| `filter` | `curl -sG "{base}/v1/<source>/filter?limit=200" --data-urlencode "tag=<タグ>"`'
+        "（`total` で件数、`offset` でページング） |",
+        f'| `bbox` | `curl -sG "{base}/v1/<source>/filter?bbox=<南>,<西>,<北>,<東>"`'
+        "（座標で範囲抽出。**ジオコーディング API を叩く必要はない**） |",
+        f'| `wikidata` | `curl -s "{base}/v1/<source>/filter?wikidata=Q17221&fields=title,extra"`'
+        "（Q 番号 → 文書。**wikidata.org を叩く必要はない**） |",
+        f'| `links` | `curl -sG "{base}/v1/<source>/links" --data-urlencode "title=<タイトル>"`'
+        "（**出リンクのみ**で、被リンク(この記事を指している記事)は取れない。"
+        "重複と `記事名#節名` が混じるので、`doc` に渡す前に重複を落として"
+        "`#` の前で切ること） |",
+        f'| `pageviews` | `curl -sG "{base}/v1/<source>/doc?fields=title,extra"'
+        ' --data-urlencode "title=<タイトル>"`（`extra.pageviews_month` が知名度の目安。'
+        "**Wikimedia の API を叩く必要はない**） |",
+        "",
+        "- **同名の別物があるときは `doc` の応答に `alternatives` が付く。**"
+        ' `--data-urlencode "area=<行政区>"` や `--data-urlencode "feature=<種別>"` で絞る',
+        "- **カテゴリの列挙は `filter?tag=` を使う。** 本文の全文検索で `Category:` 行を"
+        "探してはいけない —— ソートキー付きの記事(`[[Category:X|よみがな]]`)は"
+        "本文側にカテゴリ名が残らず、静かに取りこぼす",
     ]
-
-    ordered = sorted(sources.values(), key=lambda s: s.name)
-    if ordered:
-        for src in ordered:
-            _emit_source(base, src, out)
-    else:
-        out.append("- (生成時点で登録済みソースは 0 件だった。取り込み後に本ブロックを再生成すること)")
 
     out.append("")
     # 再生成の案内には今回のフラグを引き継がせる(既定と違う選択をした環境で
@@ -733,3 +763,65 @@ def build_block(
     )
     out.append(END_MARK)
     return "\n".join(out) + "\n"
+
+
+# ソースごとの一言。**kind から引く**（ソースが増えても書き足さずに済む）。
+_SOURCE_NOTES = {
+    "wikipedia": "一般知識・人物・作品・地名・用語・出来事など",
+    "osm": "地名・行政区・自然地物に加え、病院/学校/店舗/観光地などの施設、"
+           "駅・空港・港・IC/SA などの交通インフラと座標",
+    "overture": "飲食店・宿・小売・寺社・駅などの POI と座標。"
+                "**OSM 辞典より件数が多く、店の URL と電話番号が入っていることが多い**"
+                "（代わりに住所は自由記述）",
+    "geonames": "全世界の地名と座標",
+    "notes": "手元で書いた短期記憶。**中身は例示に引き写さない**",
+    "collect": "AI が定期的に集めて焼いたもの。何が入っているかは中身を見る",
+}
+
+
+_SOURCE_HINTS = {
+    "osm": ["`links` が返すのは `wikipedia` タグから作った対応記事のタイトル。"
+            "言語プレフィックスは外してあるので、Wikipedia 側の `doc?title=` に"
+            "そのまま渡せる（タグの無い地物は空配列）"],
+    "overture": ["カテゴリ名は独自なので、**推測で書かずに `tags?contains=` で確かめる**"],
+    "notes": ["手元で書いたもの。**中身を例示に引き写さない**（`sample` は空で返る）"],
+}
+
+
+def describe(src: Source) -> dict:
+    """そのソースの説明と、**何ができるか**。
+
+    **設定ファイルに焼き込まない。** 以前は 23 ソースぶんの curl 例を CLAUDE.md に
+    並べていたが、あれは生成した瞬間の写しで、**ソースが増えるたびに人が再生成しないと
+    古いまま**になる。古い一覧は害のほうが大きい —— 無いものへ投げるし、
+    **あるのに使わない**。一覧は引くもの、という形へ寄せる。
+
+    返すのは「何ができるか」（`can`）と一言（`note`）と、例示に使える実在の値
+    （`sample`）まで。**URL の組み立て方は設定側に置く** —— そちらは
+    ソースが増えても変わらない知識なので、焼き込む価値がある。
+    """
+    title, extra_keys, sample_tags = _sample(src)
+    if not _quotable(src):
+        title, sample_tags = "", []
+    can = ["search", "doc"]
+    if src.schema_version >= TAG_MIN_SCHEMA_VERSION:
+        can += ["tags", "titles"]
+    if src.schema_version >= FILTER_MIN_SCHEMA_VERSION:
+        can.append("filter")
+        if _has_value(src, "lat"):
+            can.append("bbox")
+        if "wikidata" in extra_keys:
+            can.append("wikidata")
+    if _has_links(src):
+        can.append("links")
+    if "pageviews_month" in extra_keys:
+        can.append("pageviews")
+    return {
+        "note": _SOURCE_NOTES.get(src.kind, ""),
+        # **そのソースだけの注意。** 引き方の一般則は設定側にあるので、
+        # ここに置くのは「この kind でだけ効く癖」に限る
+        "hints": _SOURCE_HINTS.get(src.kind, []),
+        "can": can,
+        "extra": sorted(extra_keys),
+        "sample": {"title": title, "tag": (sample_tags or [""])[0]},
+    }

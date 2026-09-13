@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from app import answer, media, media_providers, providers, settings_store
@@ -133,8 +134,13 @@ async def usable_now() -> dict[str, set[str]]:
         media_providers.KIND_TRANSCRIBE: TRANSCRIBE,
     }
     if media.is_enabled():
-        for kind in (*simple, media_providers.KIND_AUDIO):
-            for entry in await media.backends(kind):
+        # **kind ごとの問い合わせは並べて投げる。** 順に待つと、相手が落ちている
+        # ときに「1 つの相手への待ち時間 × kind の数」になる（実測 15.5 秒）。
+        # 同じ相手へ同じことを聞いているだけなので、待つのは 1 回ぶんでよい
+        kinds = (*simple, media_providers.KIND_AUDIO)
+        found = await asyncio.gather(*(media.backends(k) for k in kinds))
+        for kind, entries in zip(kinds, found, strict=True):
+            for entry in entries:
                 if not entry["usable"]:
                     continue
                 if kind in simple:

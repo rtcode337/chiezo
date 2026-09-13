@@ -717,8 +717,8 @@ class TestClaudeConfig:
         assert text.startswith("<!-- BEGIN chiezo (auto-generated) -->")
         assert text.rstrip().endswith("<!-- END chiezo -->")
         # 登録済みソースが例示コマンドとして載る
-        assert "- **jawiki**" in text
-        assert "/v1/jawiki/search" in text
+        assert "/v1/sources" in text, "一覧を引く手順が書かれていること"
+        assert "/v1/<source>/search" in text
 
     def test_config_txt_steers_category_lookups_to_the_tag_filter(self, client):
         """カテゴリ列挙を本文の全文検索でやらせないための指示が載ること。
@@ -727,10 +727,10 @@ class TestClaudeConfig:
         ソートキー付きの記事(ラーメン二郎など)を黙って取りこぼす。
         """
         text = client.get("/admin/claude-config.txt").text
-        assert "/v1/jawiki/filter?limit=200&fields=title,tags" in text
-        assert 'tag=日本の都道府県' in text  # 実在するタグから例示している
+        assert "/v1/<source>/filter" in text
         assert "本文の全文検索で `Category:` 行を探してはいけない" in text
-        assert "/v1/jawiki/tags?limit=20" in text
+        assert "本文の全文検索で `Category:` 行を探してはいけない" in text
+        assert "/v1/<source>/tags?limit=20" in text
 
     def test_config_txt_documents_the_links_pitfalls(self, client):
         """links の例示には、素直に使うと外す 3 点(出リンクのみ・重複・節付き)を添える。
@@ -739,8 +739,8 @@ class TestClaudeConfig:
         そのまま doc に渡して 404 を踏んだりする。
         """
         text = client.get("/admin/claude-config.txt").text
-        assert "/v1/jawiki/links" in text
-        assert "被リンク(この記事を指している記事)は取れない" in text
+        assert "/v1/<source>/links" in text
+        assert "出リンクのみ" in text
         assert "`#` の前で切ること" in text
 
     def test_config_txt_omits_doc_counts(self, client):
@@ -750,7 +750,7 @@ class TestClaudeConfig:
         古い数字が残る。正確な件数は同じブロックが案内している `/v1/sources` で引ける。
         """
         text = client.get("/admin/claude-config.txt").text
-        assert "- **jawiki**(ja Wikipedia):" in text
+        assert "`can`" in text
         assert re.search(r"\d+件", text) is None
 
     def test_config_footer_timestamp_is_jst(self, client):
@@ -811,45 +811,29 @@ class TestClaudeConfig:
             {}, "http://x.test", usable={}
         )
 
-    def test_config_names_the_backends_that_can_actually_make_things(self, client):
-        """絵と音の節では相手を名指しする。 「外部の生成 AI を選べる」だけだと、
-        いま何に頼めるのかが読み取れず、外のサービスを探しに行かれる。"""
+    def test_the_block_does_not_name_the_backends(self):
+        """**相手の名前は焼き込まない。** ソースと同じ理由 —— 相手を足したり止めたり
+        するたびに古くなり、いない相手へ投げさせ、いる相手を使わせない。
+
+        分類（絵・音・…）が使えること自体は書く。1 つも使えないなら節ごと出さない
+        —— 勧められて呼んでから断られるのでは、読んだ側は何が悪いのか分からない。
+        """
         from app import capabilities, claude_config
 
-        usable = {
-            "codex": {capabilities.IMAGE},
-            "elevenlabs": {capabilities.MUSIC, capabilities.SFX},
-        }
-        block = claude_config.build_block(
-            {}, "http://x.test", mcp=True, media=True, usable=usable
-        )
-
-        assert "いまこのサーバーで使えるのは Codex CLI**。" in block
-        # 但し書き(`ElevenLabs(声・効果音・…)`)は落として短く出す
-        assert "いまこのサーバーで使えるのは ElevenLabs**。" in block
-        # 頼める相手のいない分類には何も書かない(動画・読み上げ)
-        assert "動画は" not in block
-
-    def test_config_splits_the_sentence_when_the_backends_differ(self, client):
-        """曲と効果音で相手が違うことがある(Lyria は曲しか作れない)。
-        まとめて書くと、作れない相手に頼ませることになる。"""
-        from app import capabilities, claude_config
-
-        usable = {"elevenlabs": {capabilities.MUSIC, capabilities.SFX},
-                  "comfyui": {capabilities.SFX}}
-        block = claude_config.build_block(
-            {}, "http://x.test", mcp=True, media=True, usable=usable
-        )
-
-        # 自前の GPU は後ろ。 先に名前を出したものに頼まれるので、出来のよい順に並べる
-        assert "**曲は ElevenLabs、効果音は ElevenLabs・ComfyUI が使える**。" in block
+        usable = {"codex": {capabilities.IMAGE}}
+        got = claude_config._who(usable, (capabilities.IMAGE, "画像"))
+        assert "毎回一覧で確かめる" in got
+        assert "codex" not in got and "Codex" not in got
+        # 1 つも使えない分類は、そもそも書かない
+        assert claude_config._who(usable, (capabilities.VIDEO, "動画")) == ""
+        assert claude_config._who({}, (capabilities.IMAGE, "画像")) == ""
 
     def test_config_txt_base_url_is_derived_from_request(self, client):
         """curl 例のベース URL はアクセス元(プロトコル・ホスト名・ポート)から導出する。"""
         res = client.get("/admin/claude-config.txt")
         # TestClient のベースは http://testserver
         assert 'ベース URL: `http://testserver`' in res.text
-        assert "http://testserver/v1/jawiki/search" in res.text
+        assert "http://testserver/v1/<source>/search" in res.text
 
     def test_config_txt_host_header_keeps_port(self, client):
         """Host ヘッダのポートが生成 URL に残る(非標準ポート公開)。"""
@@ -857,7 +841,7 @@ class TestClaudeConfig:
             "/admin/claude-config.txt", headers={"Host": "192.168.1.10:9000"}
         )
         assert 'ベース URL: `http://192.168.1.10:9000`' in res.text
-        assert "http://192.168.1.10:9000/v1/jawiki/search" in res.text
+        assert "http://192.168.1.10:9000/v1/<source>/search" in res.text
 
     def test_config_txt_honors_forwarded_headers(self, client):
         """リバースプロキシ越しは X-Forwarded-Proto / X-Forwarded-Host を優先する。
@@ -917,7 +901,7 @@ class TestClaudeConfig:
         assert "`$(...)`" in withhook
         # それ以外は同じブロック
         assert withhook.startswith("<!-- BEGIN chiezo (auto-generated) -->")
-        assert "- **jawiki**" in withhook
+        assert "/v1/sources" in withhook
 
     def test_mcp_json_returns_server_entry(self, client):
         """MCP 登録断片(.mcp.json の中身)。URL はアクセス元から導出した <base>/mcp。"""
@@ -949,7 +933,7 @@ class TestClaudeConfig:
         assert "--no-mcp" not in withmcp
         # それ以外は同じブロック
         assert withmcp.startswith("<!-- BEGIN chiezo (auto-generated) -->")
-        assert "- **jawiki**" in withmcp
+        assert "/v1/sources" in withmcp
 
     def test_hook_script_is_served_with_origin_baked_in(self, client):
         """フック本体は、アクセス元から導出したベース URL を埋め込んで配られる。"""
