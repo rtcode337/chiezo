@@ -2573,6 +2573,19 @@ class TestTheCollectSectionMarkup:
 
         return admin._sweep_table_body(collect.get(name), "")
 
+    def test_the_progress_link_stays_on_the_page(self, sample):
+        """取り込みの様子は玄関にも初期化の面にも出る。
+
+        行き先を書き切っていたせいで、**どこから押しても記憶の画面へ飛んでいた** ——
+        見ていた画面から連れ出される。
+        """
+        from app.views import admin
+
+        html = admin._job_status_html({"state": "running", "source": "jawiki"})
+
+        assert 'href="?#job"' in html
+        assert "/admin/memory#job" not in html
+
     def test_the_kind_is_the_first_mark_on_the_row(self, sample):
         """一覧でまず見えるのは種類。
 
