@@ -1548,6 +1548,16 @@ class CollectionCreate(BaseModel):
         "(どのソースの・どのタグを・何件・タグをどう読み替えるか)。"
         "進み具合が空のときだけ使い、2 回目からは AI が肉付けする",
     )
+    kind: str | None = PydField(
+        None,
+        description="収集の種類。flow(流れ。時とともに増える流れを追い、古いものは"
+        "順に落とす)か stock(網羅。ある括りの全部を集めて精査し続ける。既定)",
+    )
+    keep_days: int | None = PydField(
+        None,
+        description="流れの収集が持つ日数(既定 30)。0 なら期限では落とさない。"
+        "網羅では使わない",
+    )
     verify_tags: list[dict] | None = PydField(
         None,
         description="タグの値が実在するかを確かめる指定。"
@@ -1599,6 +1609,8 @@ class CollectionPatch(BaseModel):
     verify_tags: list[dict] | None = PydField(
         None, description="タグの値が実在するかを確かめる指定。空の配列を渡すと外れる"
     )
+    kind: str | None = PydField(None, description="収集の種類(flow / stock)")
+    keep_days: int | None = PydField(None, description="流れの収集が持つ日数。0 で落とさない")
     feed: dict | None = PydField(
         None, description="外向きの道具。空のオブジェクトを渡すと外れる"
     )
@@ -1687,6 +1699,8 @@ def collect_create(request: Request, body: CollectionCreate):
         mode=body.mode,
         keep_ratio=body.keep_ratio,
         extract_spec=body.extract,
+        kind=collect.normalize_kind(body.kind),
+        keep_days=body.keep_days,
         verify_tags=body.verify_tags,
         partition_spec=body.partition,
         feed_spec=body.feed,

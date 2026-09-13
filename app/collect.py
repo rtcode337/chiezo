@@ -150,6 +150,25 @@ MAX_BODY_CHARS = 20_000
 #   いくのは毎回すり抜けた。そもそも前世代は入り切るぶんしか見せられない
 #   (`MAX_MATERIAL_CHARS`)ので、育つほど「全部返す」自体が成り立たなくなる。
 #   **消すのは墓標で明示したときだけ**(固化とまったく同じ契約)。
+# 収集の**種類**。`mode` とは別の軸 —— あちらは「返ってきた 1 件で何ができるか」で、
+# こちらは「その収集が何を集めているのか」。
+#
+# **流れ**(`KIND_FLOW`) —— 時とともに増える流れを追う。直近だけが対象で、
+#   古いものは順に要らなくなる(ニュース、いま話題の映画、直近のイベント)。
+# **網羅**(`KIND_STOCK`) —— ある括りの全部を集める。増減はしても、
+#   **古いものが要らなくなることはなく**、端から端まで精査し続ける
+#   (画家の関連図、全国の食事処)。
+#
+# 分かれるのは言い方だけではない —— 区画で全部を回るのは網羅だけ、
+# 期限で落とすのは流れだけ、`{current}` と `{recent}` の使い分けもここで決まる。
+KIND_FLOW = "flow"
+KIND_STOCK = "stock"
+KINDS = (KIND_FLOW, KIND_STOCK)
+
+# 流れの収集が、何日ぶんを持つか。**既定は 30 日** —— ニュースなら十分に振り返れて、
+# 量も抑えられる。0 なら期限では落とさない
+DEFAULT_KEEP_DAYS = 30
+
 MODE_APPEND = "append"
 MODE_REFINE = "refine"
 MODES = (MODE_APPEND, MODE_REFINE)
@@ -328,6 +347,12 @@ class Collection:
     # 最初の 1 回を機械的に埋める指定(`app/extract.py`)。無ければ毎回 AI に集めさせる。
     # **持つのは指定であって中身の知識ではない** —— どのソースのどのタグを引くかは
     # 依頼した側が書く。進み具合が空のときだけ使い、以降は AI が肉付けする
+    # 収集の種類(`KINDS`)。**既定は網羅** —— 期限で落とすのは流れだけなので、
+    # 知らないうちに消えるほうへは倒さない
+    kind: str = KIND_STOCK
+    # 流れの収集が持つ日数。0 なら期限では落とさない。**網羅では使わない**
+    # (あちらは古いものが要らなくなることがない)
+    keep_days: int = 0
     extract: dict | None = None
     # **タグの値が実在するかを確かめる指定**。`[{"prefix": "代表作", "source": "jawiki"}]`
     # と書くと、`代表作:<見出し>` の見出しが jawiki に無いタグを**焼く前に落とす**。
@@ -524,6 +549,51 @@ def _sweep_from_json(raw: dict, item: Collection) -> Sweep:
         last_status=raw.get("last_status") or None,
         last_error=raw.get("last_error") or None,
     )
+
+
+def normalize_kind(raw) -> str:
+    """収集の種類を均す。**読めない値は網羅に倒す**(期限で消えないほう)。"""
+    value = str(raw or "").strip()
+    return value if value in KINDS else KIND_STOCK
+
+
+def normalize_keep_days(raw, kind: str) -> int:
+    """持つ日数を均す。**網羅では常に 0**(古いものが要らなくなることがない)。"""
+    if kind != KIND_FLOW:
+        return 0
+    if raw in (None, ""):
+        return DEFAULT_KEEP_DAYS
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_KEEP_DAYS
+
+
+def expired_docs(item: Collection, docs: list[dict]) -> tuple[list[dict], int]:
+    """期限を過ぎた文書を落とす。落とした数も返す。
+
+    **流れの収集だけ**(`KIND_FLOW`)。あちらは時とともに増える流れを追っていて、
+    古いものは順に要らなくなる —— 落とさないと、ニュースの収集は永久に増え続ける。
+    **網羅では何もしない** —— そちらは古いものが要らなくなることがなく、
+    端から端まで精査し続ける対象なので、期限で消すと穴が開く。
+
+    **日付は記事のほう**(`extra.published_at`)を先に見る。集めた日だけで数えると、
+    半年前の記事を今日拾ったものが 30 日生き残る。
+    """
+    if item.kind != KIND_FLOW or item.keep_days <= 0 or not docs:
+        return docs, 0
+    limit = _iso(_now() - timedelta(days=item.keep_days))
+    kept = [d for d in docs if _doc_time(d) >= limit]
+    return kept, len(docs) - len(kept)
+
+
+def _doc_time(doc: dict) -> str:
+    """その 1 件の日付。**読めなければ「いま」として扱う**(落とさない側へ倒す)。"""
+    extra = doc.get("extra") or {}
+    for value in (extra.get("published_at"), extra.get("collected_at"), doc.get("updated_at")):
+        if isinstance(value, str) and value.strip():
+            return value
+    return _iso(_now())
 
 
 def normalize_verify_tags(raw) -> list[dict]:
@@ -815,6 +885,8 @@ def _from_json(item: dict) -> Collection:
         mode=normalize_mode(item.get("mode")),
         keep_ratio=normalize_keep_ratio(item.get("keep_ratio")),
         extract=extraction.to_json(extraction.normalize(item.get("extract"))),
+        kind=normalize_kind(item.get("kind")),
+        keep_days=normalize_keep_days(item.get("keep_days"), normalize_kind(item.get("kind"))),
         verify_tags=normalize_verify_tags(item.get("verify_tags")),
         requested_by=str(item.get("requested_by") or ""),
         created_at=str(item.get("created_at") or ""),
@@ -927,6 +999,8 @@ def create(
     mode: str = MODE_APPEND,
     keep_ratio: float | None = None,
     extract_spec=None,
+    kind: str = KIND_STOCK,
+    keep_days=None,
     verify_tags=None,
     partition_spec=None,
     feed_spec=None,
@@ -968,6 +1042,8 @@ def create(
             DEFAULT_KEEP_RATIO if keep_ratio is None else normalize_keep_ratio(keep_ratio)
         ),
         extract=extraction.to_json(extraction.normalize(extract_spec)),
+        kind=normalize_kind(kind),
+        keep_days=normalize_keep_days(keep_days, normalize_kind(kind)),
         verify_tags=normalize_verify_tags(verify_tags),
         partition=partitioning.to_json(partitioning.normalize(partition_spec)),
         feed=feeds.to_json(feeds.normalize(feed_spec)),
@@ -1027,6 +1103,7 @@ def update(name: str, **fields) -> Collection:
         "description", "prompt", "interval_minutes", "enabled",
         "backend", "model", "effort", "web", "cursor", "mode", "keep_ratio", "extract",
         "partition", "partitions", "sweeps", "feed", "graves", "verify_tags",
+        "kind", "keep_days",
     }
     patch = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if "interval_minutes" in patch:
@@ -1076,6 +1153,17 @@ def update(name: str, **fields) -> Collection:
     if "verify_tags" in patch:
         # 空の配列を渡したら「確かめない」に戻す
         patch["verify_tags"] = normalize_verify_tags(patch["verify_tags"] or None)
+    if "kind" in patch:
+        patch["kind"] = normalize_kind(patch["kind"])
+    # **種類を変えたら日数も引き直す**(網羅へ移したのに日数が残ると、
+    # 次に流れへ戻したときに古い設定で消え始める)
+    kind = patch.get("kind", current.kind)
+    if "keep_days" in patch or "kind" in patch:
+        # **流れへ移したときは既定を入れる。** 網羅の 0 は「使わない」の意味なので、
+        # そのまま持ち越すと「期限では落とさない」になってしまう
+        moved_in = kind == KIND_FLOW and current.kind != KIND_FLOW
+        given = patch.get("keep_days", None if moved_in else current.keep_days)
+        patch["keep_days"] = normalize_keep_days(given, kind)
     # 相手・モデル・深さは**空文字を「指定しない」に倒す**。画面のフォームは空欄を
     # 空文字で送ってくるが、持ち回るときは None でないと「未指定」の意味にならない
     # (読み直せば `_from_json` が同じことをするが、保存直後の値とずれる)
@@ -2214,6 +2302,9 @@ def ndjson(
                 "hint": "プロンプトを見直すか、相手を替えてから試してください",
             },
         )
+    # **期限で落とすのは、減りすぎの歯止めを見たあと。** あれは AI が変な日に当たって
+    # 大量に消すのを止めるためのもので、こちらは意図して落としている
+    docs, diff["expired"] = expired_docs(item, docs)
     if reason := shrink_blocked(item, diff):
         raise HTTPException(
             409,

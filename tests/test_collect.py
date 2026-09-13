@@ -922,6 +922,86 @@ class TestWhatCameInSinceLastTime:
         assert "きのう" in messages[-1]["content"]
 
 
+def _iso_now():
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+class TestTheKindOfCollection:
+    """収集の**種類** —— 流れを追うのか、括りの全部を精査するのか。
+
+    `mode` とは別の軸。あちらは「返ってきた 1 件で何ができるか」で、こちらは
+    「その収集が何を集めているのか」。**流れ**は時とともに増えるものを追っていて、
+    古いものは順に要らなくなる(ニュース)。**網羅**はある括りの全部が対象で、
+    増減はしても古いものが要らなくなることはない(画家の名簿、全国の食事処)。
+    """
+
+    def test_the_default_never_deletes_by_age(self, sample):
+        """**既定は網羅。** 期限で落とすのは流れだけなので、知らないうちに消える
+        ほうへは倒さない。"""
+        assert collect.get("news").kind == collect.KIND_STOCK
+        assert collect.get("news").keep_days == 0
+
+    def test_a_flow_keeps_thirty_days_by_default(self, sample):
+        collect.update("news", kind="flow")
+        item = collect.get("news")
+
+        assert (item.kind, item.keep_days) == ("flow", collect.DEFAULT_KEEP_DAYS)
+
+    def test_moving_back_to_stock_clears_the_days(self, sample):
+        """網羅へ移したのに日数が残ると、次に流れへ戻したときに古い設定で消え始める。"""
+        collect.update("news", kind="flow", keep_days=7)
+        collect.update("news", kind="stock")
+
+        assert collect.get("news").keep_days == 0
+
+    def test_old_documents_fall_out_of_a_flow(self, sample):
+        collect.update("news", kind="flow", keep_days=30)
+        old = "2026-01-01T00:00:00+00:00"
+        docs = [
+            {"title": "きのう", "extra": {"published_at": _iso_now()}},
+            {"title": "むかし", "extra": {"published_at": old}},
+        ]
+
+        kept, dropped = collect.expired_docs(collect.get("news"), docs)
+
+        assert [d["title"] for d in kept] == ["きのう"]
+        assert dropped == 1
+
+    def test_the_article_date_wins_over_the_day_it_arrived(self, sample):
+        """集めた日だけで数えると、半年前の記事を今日拾ったものが 30 日生き残る。"""
+        collect.update("news", kind="flow", keep_days=30)
+        docs = [
+            {"title": "古い記事", "extra": {
+                "published_at": "2026-01-01T00:00:00+00:00", "collected_at": _iso_now(),
+            }}
+        ]
+
+        _kept, dropped = collect.expired_docs(collect.get("news"), docs)
+
+        assert dropped == 1
+
+    def test_a_stock_never_drops_by_age(self, sample):
+        """古いものが要らなくなることがないので、期限で消すと穴が開く。"""
+        collect.update("news", kind="stock")
+        docs = [{"title": "むかし", "extra": {"published_at": "2020-01-01T00:00:00+00:00"}}]
+
+        kept, dropped = collect.expired_docs(collect.get("news"), docs)
+
+        assert len(kept) == 1
+        assert dropped == 0
+
+    def test_a_document_without_a_date_stays(self, sample):
+        """読めなければ落とさない側へ倒す。"""
+        collect.update("news", kind="flow", keep_days=1)
+
+        kept, dropped = collect.expired_docs(collect.get("news"), [{"title": "日付なし"}])
+
+        assert len(kept) == 1
+        assert dropped == 0
+
+
 class TestVerifyingTags:
     """タグの値が実在するかを、**焼く前に**確かめる。
 

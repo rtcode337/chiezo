@@ -385,6 +385,14 @@ def _consult_page_html(name: str | None, want: str, draft: str, error: str) -> s
     return page_shell("プロンプトの相談", body)
 
 
+# 収集の**種類**の言い方。`mode` とは別の軸 —— あちらは「返ってきた 1 件で何が
+# できるか」、こちらは「その収集が何を集めているのか」
+KIND_LABELS = {
+    collect.KIND_FLOW: "流れ(時とともに増えるものを追う。古いものは順に落とす)",
+    collect.KIND_STOCK: "網羅(ある括りの全部を集めて、端から端まで精査し続ける)",
+}
+
+
 MODE_LABELS = {
     "append": "集める(外から取ってきて積む)",
     "refine": "整理する(いまの内容を読ませて、直すものと足すものを返させる)",
@@ -1054,6 +1062,21 @@ def _collect_detail_html(item, disabled: str) -> str:
         f'<p><label>抽出の指定(JSON。空なら毎回 AI に集めさせる)<br>'
         f'<textarea name="extract" rows="8" spellcheck="false">'
         f"{esc(_extract_json(item))}</textarea></label></p>"
+        f'<p><label>種類<br><select name="kind">'
+        + "".join(
+            f'<option value="{esc(value)}"{" selected" if item.kind == value else ""}>'
+            f"{esc(label)}</option>"
+            for value, label in KIND_LABELS.items()
+        )
+        + "</select></label></p>"
+        f'<p class="muted"><strong>流れ</strong>はニュースのように時とともに増えるもの。'
+        f"直近だけが対象で、古いものは順に要らなくなる。"
+        f"<strong>網羅</strong>は画家の名簿や全国の食事処のように、ある括りの全部が対象。"
+        f"増減はしても<strong>古いものが要らなくなることはない</strong>ので、"
+        f"期限では落とさない(区画で全部を回るのもこちらだけ)。</p>"
+        f'<p><label>持つ日数(流れのときだけ。0 なら期限では落とさない)<br>'
+        f'<input name="keep_days" type="number" min="0" value="{item.keep_days}">'
+        f"</label></p>"
         f'<p><label>タグの確かめ方(JSON。空なら確かめない)<br>'
         f'<textarea name="verify_tags" rows="4" spellcheck="false">'
         f"{esc(_verify_tags_json(item))}</textarea></label></p>"
@@ -2132,6 +2155,8 @@ async def admin_collect_edit(name: str, request: Request):
         feed=_parse_feed(form.get("feed")),
         # **空の配列で外せる**(消す手段がここしかない)
         verify_tags=_parse_verify_tags(form.get("verify_tags")),
+        kind=collect.normalize_kind(form.get("kind")),
+        keep_days=str(form.get("keep_days") or "").strip() or None,
         # 0 も意味のある値(守りを外す)なので、空のときだけ触らない
         keep_ratio=_ratio(form.get("keep_ratio")),
     )
@@ -2655,7 +2680,9 @@ def admin_collect_detail(request: Request, name: str):
 <h1>{esc(name)}</h1>
 <p class="muted">{esc(item.description)}
 {'<br>依頼元: ' + esc(item.requested_by) if item.requested_by else ''}</p>
-<p>長期記憶: {baked} / 集め方: {esc(MODE_LABELS.get(item.mode, item.mode))}
+<p>種類: {esc(KIND_LABELS.get(item.kind, item.kind))}
+{'／ ' + str(item.keep_days) + ' 日ぶんを持つ' if item.keep_days else ''}
+<br>長期記憶: {baked} / 集め方: {esc(MODE_LABELS.get(item.mode, item.mode))}
 / 状態: {'有効' if item.enabled else '<span class="stale">止まっている</span>'}</p>
 <table>
 <thead>
