@@ -111,6 +111,25 @@ COMMONS_BASE = "https://upload.wikimedia.org/wikipedia/commons"
 USER_AGENT = "chiezo-ingest/0.1 (https://github.com/; contact via repo issues)"
 
 
+# SQL ダンプの文字列リテラルの中の逃がし方。**外さないと名前そのものが変わる**。
+_SQL_ESCAPES = {
+    "\\'": "'", '\\"': '"', "\\\\": "\\",
+    "\\n": "\n", "\\r": "\r", "\\t": "\t", "\\0": "\0", "\\Z": "\x1a",
+}
+_SQL_ESCAPE_RE = re.compile(r"\\.")
+
+
+def unescape_sql(value: str) -> str:
+    """SQL ダンプの文字列リテラルから、逃がしのバックスラッシュを外す。
+
+    ダンプの中では `'` が `\\'`、`"` が `\\"` と書かれている。**外さずに使うと、
+    名前に `\\` が 1 文字混ざったまま**になり、置き場の枝もファイル名も両方ずれる
+    (枝は名前の MD5 で決まるので、1 文字違えば別の枝になる)。
+    知らない逃がし方は、後ろの 1 文字をそのまま残す(MySQL の決まり)。
+    """
+    return _SQL_ESCAPE_RE.sub(lambda m: _SQL_ESCAPES.get(m.group(0), m.group(0)[1]), value)
+
+
 def commons_url(name: str) -> str | None:
     """Commons のファイル名から、その画像の URL を組む。**API は叩かない**。
 
@@ -120,7 +139,7 @@ def commons_url(name: str) -> str | None:
 
     `page_image_free` に入るのは**自由に使える画像だけ**なので、行き先は必ず Commons。
     """
-    cleaned = (name or "").replace(" ", "_").strip()
+    cleaned = unescape_sql(name or "").replace(" ", "_").strip()
     if not cleaned or "/" in cleaned:
         return None
     digest = hashlib.md5(cleaned.encode("utf-8"), usedforsecurity=False).hexdigest()

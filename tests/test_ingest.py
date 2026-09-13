@@ -180,6 +180,28 @@ class TestCommonsUrl:
         # 空白は `_`(ハッシュを取る前に直す —— 直さないと置き場が変わる)
         assert url.endswith("Claude_Monet%2C_Impression%2C_soleil_levant.jpg")
 
+    def test_the_dump_escaping_comes_off_first(self):
+        """ダンプの中では `'` が `\\'` と書かれている。
+
+        **外さないと名前そのものが変わる** —— 枝は名前の MD5 で決まるので、
+        1 文字混ざるだけで別の枝を指し、ファイル名側にも `%5C` が残る
+        (実測で 8,786 件が 404 になっていた)。
+        """
+        from sources.wikipedia import commons_url
+
+        escaped = commons_url("Ca\\'_Rezzonico_-_Eraclito_1705.jpg")
+
+        assert escaped == commons_url("Ca'_Rezzonico_-_Eraclito_1705.jpg")
+        assert "%5C" not in escaped
+
+    def test_a_backslash_in_the_name_survives(self):
+        """逃がしの `\\\\` は 1 本のバックスラッシュに戻る(名前の一部なので消さない)。"""
+        from sources.wikipedia import unescape_sql
+
+        assert unescape_sql("a\\\\b") == "a\\b"
+        # 知らない逃がし方は後ろの 1 文字を残す(MySQL の決まり)
+        assert unescape_sql("a\\qb") == "aqb"
+
     def test_nothing_without_a_name(self):
         from sources.wikipedia import commons_url
 
