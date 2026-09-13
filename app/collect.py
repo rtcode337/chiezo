@@ -440,6 +440,15 @@ class Sweep:
     # 代わりに、**枠を使わずに毎時回せる** —— 重要度を付ける・まとめる・漏れを探す、
     # といった判断の要る仕事は別の巡回が AI に頼む(名簿と肉付けを分けるのと同じ形)
     use_feed: bool = False
+    # **一度きりの巡回**。走ったら時計を持たなくなる(押せばまた走る)。
+    # 名簿のように、元のデータが変わらない限り何度やっても同じ回のためのもの ——
+    # 毎週回しても結果は変わらず、その 1 回ぶんの取り込みが無駄になる
+    once: bool = False
+    # **先に一周してほしい巡回**。その巡回が全区画を一度でも見終えるまで走らない。
+    # 区画の材料(分類や数のタグ)を埋める回が先に一周していないと、後の回は
+    # 「この区画に居ない」を理由に見当違いのことをする —— 実際、名簿を作った直後の
+    # 漏れ探しは、既に名簿に居る画家を 20 人挙げて終わった
+    after: str = ""
     # **足すだけの巡回**。既にある見出しが返ってきても触らない ——
     # 「漏れているものを足す」を頼む回に要る印で、**AI の判断に頼らずに保証する**。
     # 見せられるのはその区画のぶんだけなので、AI には「もう居るかどうか」が分からない
@@ -462,7 +471,7 @@ class Sweep:
         **時計を持たない巡回は「来ない」**(`NEVER`)—— 予定が空なのを「いますぐ」と
         読む規則をそのまま当てると、割り込み用の巡回が毎周走ってしまう。
         """
-        if self.on_demand:
+        if self.on_demand or (self.once and self.last_run_at):
             return NEVER
         return _parse(self.next_run_at) or _now()
 
@@ -471,8 +480,12 @@ class Sweep:
         「いま」を取り直して比べると必ず未来になり、永遠に走らない(実際にそうなった)。
 
         **時計を持たない巡回は、定時には走らない**(頼まれたときだけ)。
+
+        **一度きりの巡回は、走ったらもう走らない**(`once`)—— 元のデータが変わらない
+        限り何度やっても同じなので、その 1 回ぶんの取り込みが無駄になる。
+        押せばいつでも走る(口のほうでは断らない)。
         """
-        if self.on_demand:
+        if self.on_demand or (self.once and self.last_run_at):
             return False
         at = at or _now()
         return self.enabled and (_parse(self.next_run_at) or at) <= at
@@ -543,6 +556,8 @@ def _sweep_from_json(raw: dict, item: Collection) -> Sweep:
         only_new=bool(raw.get("only_new")),
         use_extract=bool(raw.get("use_extract")),
         use_feed=bool(raw.get("use_feed")),
+        once=bool(raw.get("once")),
+        after=str(raw.get("after") or "").strip()[:40],
         next_run_at=raw.get("next_run_at") or None,
         last_run_at=raw.get("last_run_at") or None,
         last_status=raw.get("last_status") or None,
@@ -1603,16 +1618,23 @@ def record_result(
     見られず、なぜ居ないのか(一度も入っていないのか、調べたうえで外したのか)までは
     分からない。**割り込みの回でも足す**(消したのは消したこと)。
 
-    **割り込みの回は、時計にも進み具合にも触らない**(`focus`)。進み具合・どの巡回の
-    予定・区画の巡回記録のどれも動かさない —— 動かすと、割り込むたびに一周が伸びたり、
-    見ていない区画に印が付いたりする。**成否にかかわらず依頼は片付ける** ——
+    **割り込みの回は、時計にも進み具合にも触らない**(`focus`)。進み具合と次の予定を
+    動かすと、割り込むたびに一周が伸びる。**成否にかかわらず依頼は片付ける** ——
     残すと、次に走る定時の回が割り込みとして走ってしまう。
+
+    **区画を名指しされた割り込みだけは、その区画に印を付ける。** 先に見てほしい
+    ところを頼んだのだから、巡回が同じところをもう一度見る必要は無い。
+    画家だけを名指しした割り込みには付けない(渡す `visited` が空になる)。
     """
     current = get(name)
     now = _now()
     this = sweep_named(current, sweep)
     ledger = partitions if partitions is not None else current.partitions
-    if visited and status == "ok" and not focus:
+    # **区画を名指しされた割り込みは、その区画に印を付ける。** 先に見てほしいところを
+    # 頼んだのだから、巡回が同じところをもう一度見る必要は無い。
+    # **名指しが画家だけの割り込みは付けない** —— 1 人見ただけで区画を見終えたことに
+    # すると、その区画の残りが誰にも見られなくなる(渡す `visited` が空になる)
+    if visited and status == "ok":
         ledger = partitioning.mark_visited(ledger, visited, this.name, _iso(now))
     # **巻き戻せるだけの控えを残す。** 設定を直してからやり直したい、が普通に起きる。
     # 割り込みは何も動かさないので控えない(戻すものが無い)
@@ -1830,9 +1852,30 @@ def due_sweeps(at: datetime | None = None) -> list[tuple[Collection, Sweep]]:
     pairs = [
         (c, sweep)
         for c in load() if c.enabled
-        for sweep in sweeps_of(c) if sweep.is_due(now)
+        for sweep in sweeps_of(c) if sweep.is_due(now) and waited_for(c, sweep)
     ]
     return sorted(pairs, key=lambda pair: pair[1].due_at())
+
+
+def waited_for(item: Collection, sweep: Sweep) -> bool:
+    """先に一周してほしい巡回が、もう一周したか(`Sweep.after`)。
+
+    **区画の材料を埋める回が先に一周していないと、後の回は見当違いのことをする** ——
+    実際、名簿を作った直後の漏れ探しは、区画の外に居るだけの画家を「漏れ」として
+    20 人挙げ、すべて既存だった。
+
+    **区画を持たない収集では「1 回でも走ったか」で見る**(一周という概念が無い)。
+    知らない名前を指していたら待たない —— 待つ相手が居ないのに永久に止まる方が悪い。
+    """
+    if not sweep.after:
+        return True
+    others = {s.name for s in sweeps_of(item)}
+    if sweep.after not in others:
+        return True
+    if not item.partitions:
+        return any(s.name == sweep.after and s.last_run_at for s in sweeps_of(item))
+    visited, total = partitioning.progress(item.partitions, sweep.after)
+    return bool(total) and visited >= total
 
 
 def due_collections(at: datetime | None = None) -> list[Collection]:
@@ -2085,7 +2128,7 @@ def plan_partitions(item: Collection, sources: dict, previous: dict[str, dict]) 
         return item.partitions
     built = partitioning.build(spec, sources, previous)
     log.info("partition %s: %d 区画", item.name, len(built))
-    return partitioning.refresh(built, item.partitions)
+    return partitioning.refresh(built, item.partitions, spec)
 
 
 def material(

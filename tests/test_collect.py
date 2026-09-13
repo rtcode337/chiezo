@@ -597,18 +597,28 @@ class TestFocus:
             collect.require_focus({"titles": ["X"]})
 
     def test_it_does_not_move_the_cursor_or_the_clock(self, ready):
+        """割り込むたびに一周が伸びたり、進み具合が飛んだりしない。"""
         collect.request_focus(
             "news", collect.require_focus({"note": "住所を直して", "titles": ["○○食堂"]})
         )
         before = collect.get("news")
+        # 画家だけを名指しした割り込みは、区画を渡さない(印も付かない)
         collect.record_result(
-            "news", status="ok", next_cursor="2026-09-30", visited=["A"], focus=True
+            "news", status="ok", next_cursor="2026-09-30", visited=[], focus=True
         )
         after = collect.get("news")
         assert after.cursor == "2026-09-01"
         assert after.next_run_at == before.next_run_at
-        # 見ていない区画に印が付かない
         assert after.partitions == before.partitions
+
+    def test_a_focus_on_a_partition_marks_it(self, ready):
+        """**先に見てほしいところを頼んだのだから**、巡回が同じところを
+        もう一度見る必要は無い。"""
+        collect.record_result("news", status="ok", visited=["A"], focus=True)
+
+        assert partitioning.progress(collect.get("news").partitions, collect.DEFAULT_SWEEP_NAME)[0] == 1
+        # 時計と進み具合は動かないまま
+        assert collect.get("news").cursor == "2026-09-01"
 
     def test_a_normal_run_still_moves_everything(self, ready):
         """割り込みだけが特別。ふつうの回は今までどおり進む。"""

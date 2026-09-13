@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 
 from fastapi import HTTPException
 
@@ -46,7 +47,22 @@ log = logging.getLogger("chiezo.app")
 BY_GEO = "geo"
 BY_TAG = "tag"
 BY_TITLE = "title"
-KINDS = (BY_GEO, BY_TAG, BY_TITLE)
+# 分類のタグ × 数のタグ。**帯で割る** —— 同じ括りの中を、数の軸に沿って
+# 人数が揃うところで区切る。密なところは幅が狭く、疎なところは広くなる。
+#
+# **数の軸の最小単位より細かくは割らない。** 「フランスの 1660 年生まれ」を 2 つに
+# 分けると、その区画に「この範囲の全員」が並ばなくなり、**漏れを探す問いが
+# 成り立たなくなる**(区画に居ない人を漏れとして挙げてしまう)。
+BY_BAND = "band"
+KINDS = (BY_GEO, BY_TAG, BY_TITLE, BY_BAND)
+
+# 帯の鍵の区切り。分類の値に出てこない字を使う
+BAND_SEP = "|"
+# 数の軸を持たないものの置き場。**そこでは漏れ探しが成り立たない**(「値が
+# 分からないものの集合」に漏れという概念が無い)ので、見出し順で割ってよい
+BAND_UNKNOWN = "不明"
+# 分類のタグを持たないものの置き場の名前(指定で変えられる)
+DEFAULT_OTHER = "その他"
 
 # 1 区画あたりの目安。**厳密な上限ではない** —— 二分では割り切れないので、
 # 実際の区画はこれの半分から等倍のあいだに散らばる。
@@ -107,9 +123,17 @@ def normalize(raw) -> dict | None:
         "tag": str(raw.get("tag") or "").strip() or None,
         "bbox": _bbox(raw.get("bbox")),
         "prefix": str(raw.get("prefix") or "").strip() or None,
+        # 帯で割るときの数の軸(タグの頭)と、分類を持たないものの置き場の名前
+        "value": str(raw.get("value") or "").strip() or None,
+        "other": str(raw.get("other") or "").strip() or DEFAULT_OTHER,
     }
     if by == BY_TAG and not spec["prefix"]:
         raise _bad("by=tag には prefix が要ります(例: 「地域:」)")
+    if by == BY_BAND and not (spec["prefix"] and spec["value"]):
+        raise _bad(
+            "by=band には prefix(分類のタグの頭。例: 「地域:」)と"
+            " value(数のタグの頭。例: 「年代:」)が要ります"
+        )
     return spec
 
 
@@ -133,10 +157,17 @@ def _bbox(raw) -> list[float] | None:
 
 
 def to_json(spec: dict | None) -> dict | None:
-    """定義のメモへ書ける形。**空の鍵は落とす**(読むときに邪魔なだけ)。"""
+    """定義のメモへ書ける形。**空の鍵は落とす**(読むときに邪魔なだけ)。
+
+    **既定のままの鍵も落とす** —— 書かなかったものが書いたことになって残ると、
+    指定を見ただけでは「決めたのか任せたのか」が読めない。
+    """
     if not spec:
         return None
-    return {k: v for k, v in spec.items() if v not in (None, "")}
+    out = {k: v for k, v in spec.items() if v not in (None, "")}
+    if out.get("other") == DEFAULT_OTHER:
+        out.pop("other")
+    return out
 
 
 # ---- 割る ---------------------------------------------------------------------
@@ -152,6 +183,8 @@ def build(spec: dict, sources: dict, own: dict[str, dict] | None = None) -> list
         return _geo(spec, _points(spec, sources, own or {}))
     if spec["by"] == BY_TAG:
         return _tags(spec, sources, own or {})
+    if spec["by"] == BY_BAND:
+        return _bands(spec, own or {})
     return _titles(spec, sources, own or {})
 
 
@@ -371,6 +404,100 @@ def _titles(spec: dict, sources: dict, own: dict[str, dict]) -> list[dict]:
     return out
 
 
+def _bands(spec: dict, own: dict[str, dict]) -> list[dict]:
+    """分類ごとに、数の軸を人数で区切る。
+
+    **人の少ない分類ほど幅が広くなる。** 連続する値を足していって `target` に
+    届いたところで区切るだけなので、密なところは自然に狭くなる。
+
+    **最小単位(値ひとつ)より細かくは割らない。** 1 つの値に `target` を超える数が
+    集まっていても、そのまま 1 区画にする —— 分けると「この範囲の全員」が並ばなくなり、
+    漏れを探す問いが成り立たない。
+
+    **値を持たないものは分類ごとの置き場へ**(見出し順で `target` ごとに区切る)。
+    そこは漏れ探しの対象ではないので、見出しで割ってよい。
+    """
+    groups: dict[str, dict[int, list[str]]] = {}
+    unknown: dict[str, list[str]] = {}
+    for title, doc in own.items():
+        tags = doc.get("tags") or []
+        name = tag_value(tags, spec["prefix"]) or spec["other"]
+        if (number := _number_in(tag_value(tags, spec["value"]))) is None:
+            unknown.setdefault(name, []).append(title)
+        else:
+            groups.setdefault(name, {}).setdefault(number, []).append(title)
+    out: list[dict] = []
+    for name in sorted(groups) + [n for n in sorted(unknown) if n not in groups]:
+        out += _bands_of(spec, name, groups.get(name, {}))
+        out += _unknown_bands(spec, name, unknown.get(name, []))
+        if len(out) >= MAX_PARTITIONS:
+            break
+    return out[:MAX_PARTITIONS]
+
+
+def _bands_of(spec: dict, name: str, by_number: dict[int, list[str]]) -> list[dict]:
+    """1 つの分類ぶんの帯。連続する値を `target` に届くまで足していく。"""
+    out, start, count = [], None, 0
+    for number in sorted(by_number):
+        start = number if start is None else start
+        count += len(by_number[number])
+        if count >= spec["target"]:
+            out.append({"key": band_key(name, start, number), "count": count})
+            start, count = None, 0
+    if start is not None:
+        out.append({"key": band_key(name, start, max(by_number)), "count": count})
+    return out
+
+
+def _unknown_bands(spec: dict, name: str, titles: list[str]) -> list[dict]:
+    """値を持たないものの置き場。**見出し順で区切る**(漏れ探しの対象ではないため)。"""
+    out = []
+    for i in range(0, len(titles), spec["target"]):
+        chunk = sorted(titles)[i : i + spec["target"]]
+        out.append({
+            "key": band_key(name, BAND_UNKNOWN, title_key(chunk[0], chunk[-1])),
+            "count": len(chunk),
+        })
+    return out
+
+
+def band_key(name: str, start, end) -> str:
+    """`フランス|1840-1869` / `フランス|不明|あ〜す`。"""
+    if start == BAND_UNKNOWN:
+        return f"{name}{BAND_SEP}{BAND_UNKNOWN}{BAND_SEP}{end}"
+    return f"{name}{BAND_SEP}{start}-{end}"
+
+
+def parse_band_key(key: str) -> tuple[str, int | None, int | None, str | None] | None:
+    """`(分類, 始まり, 終わり, 見出しの範囲)`。読めなければ None。"""
+    parts = key.split(BAND_SEP)
+    if len(parts) == 3 and parts[1] == BAND_UNKNOWN:
+        return parts[0], None, None, parts[2]
+    if len(parts) != 2:
+        return None
+    first, _, last = parts[1].partition("-")
+    if not first.isdigit() or not last.isdigit():
+        return None
+    return parts[0], int(first), int(last), None
+
+
+def _number_in(value: str | None) -> int | None:
+    """タグの値から最初の数を読む(`1840-1926` → `1840`)。無ければ None。"""
+    found = re.search(r"\d+", value or "")
+    return int(found.group()) if found else None
+
+
+def tag_value(tags, prefix: str) -> str | None:
+    """`地域:フランス` → `フランス`。**最初の 1 つだけ** ——
+    1 文書は必ず 1 区画に入れる(またがると「一周した」が数えられない)。"""
+    head = prefix if prefix.endswith(":") else prefix + ":"
+    for tag in tags:
+        text = str(tag)
+        if text.startswith(head):
+            return text[len(head):].strip() or None
+    return None
+
+
 def title_key(first: str, last: str) -> str:
     return f"{first[:MAX_TITLE_KEY_CHARS]}〜{last[:MAX_TITLE_KEY_CHARS]}"
 
@@ -383,17 +510,54 @@ def parse_title_key(key: str) -> tuple[str, str] | None:
 # ---- 台帳(定義のメモに入る)---------------------------------------------------
 
 
-def refresh(built: list[dict], current: list[dict]) -> list[dict]:
+def refresh(built: list[dict], current: list[dict], spec: dict | None = None) -> list[dict]:
     """割り直した区画に、**前の巡回の記録を引き継ぐ**。
 
     引き継がないと、割り直すたびに全区画が「まだ見ていない」に戻り、一周が
-    永遠に終わらない。鍵が変わった区画(割られた・統合された)は新しく始まる。
+    永遠に終わらない。
+
+    **鍵が変わった区画も引き継ぐ**(`spec` を渡したとき)。割られた区画の子は、
+    **親の記録をそのまま写す** —— 写さないと、区画が育つたびにそこだけ
+    一周が巻き戻る。親は「その子を含んでいた区画」として探す。
     """
     seen = {p["key"]: dict(p.get("visits") or {}) for p in current}
     return [
-        {"key": p["key"], "count": int(p.get("count") or 0), "visits": seen.get(p["key"], {})}
+        {
+            "key": p["key"],
+            "count": int(p.get("count") or 0),
+            "visits": seen.get(p["key"]) or _inherited(spec, p["key"], current),
+        }
         for p in built
     ]
+
+
+def _inherited(spec: dict | None, key: str, current: list[dict]) -> dict:
+    """その区画を含んでいた区画の記録。無ければ空(新しく始まる)。"""
+    if spec is None or not current:
+        return {}
+    for parent in current:
+        if _covers(spec, parent["key"], key):
+            return dict(parent.get("visits") or {})
+    return {}
+
+
+def _covers(spec: dict, parent: str, child: str) -> bool:
+    """`parent` の範囲が `child` を含むか。**帯と見出しだけ**(順序のある軸)。"""
+    if spec["by"] == BY_BAND:
+        a, b = parse_band_key(parent), parse_band_key(child)
+        if a is None or b is None or a[0] != b[0]:
+            return False
+        if a[3] is not None or b[3] is not None:
+            # 値の分からない置き場どうしは、見出しの範囲で見る
+            return bool(a[3] and b[3]) and _within(parse_title_key(a[3]), parse_title_key(b[3]))
+        return a[1] <= b[1] and b[2] <= a[2]
+    if spec["by"] == BY_TITLE:
+        return _within(parse_title_key(parent), parse_title_key(child))
+    return False
+
+
+def _within(outer, inner) -> bool:
+    return bool(outer and inner and outer[0] <= inner[0] and inner[1] <= outer[1])
 
 
 def normalize_ledger(raw) -> list[dict]:
@@ -538,6 +702,8 @@ def partition_of(spec: dict, partitions: list[dict], doc: dict) -> str | None:
     """
     if not partitions:
         return None
+    if spec["by"] == BY_BAND:
+        return _band_of(spec, partitions, doc)
     if spec["by"] != BY_TITLE:
         for p in partitions:
             if belongs(spec, p["key"], doc):
@@ -559,6 +725,34 @@ def partition_of(spec: dict, partitions: list[dict], doc: dict) -> str | None:
     return picked
 
 
+def _band_of(spec: dict, partitions: list[dict], doc: dict) -> str | None:
+    """その文書がどの帯か。**タグからそのつど導く**(文書の側には何も書かない)。"""
+    tags = doc.get("tags") or []
+    name = tag_value(tags, spec["prefix"]) or spec["other"]
+    number = _number_in(tag_value(tags, spec["value"]))
+    title = str(doc.get("title") or "")
+    unknown = []
+    for p in partitions:
+        parsed = parse_band_key(p["key"])
+        if parsed is None or parsed[0] != name:
+            continue
+        if parsed[3] is not None:
+            unknown.append((p["key"], parsed[3]))
+        elif number is not None and parsed[1] <= number <= parsed[2]:
+            return p["key"]
+    if number is not None:
+        # 値はあるが、その分類にまだ帯が無い(割り直しの前に入った)
+        return None
+    # 値を持たないものは置き場へ。**見出しの範囲で判ずる**(始まりが自分以下の
+    # うち、いちばん大きいもの)—— 範囲の内側だけを見ると、境目が誰のものでもなくなる
+    best = None
+    for key, bounds in sorted(unknown, key=lambda x: x[1]):
+        parsed = parse_title_key(bounds)
+        if parsed and parsed[0] <= title:
+            best = key
+    return best or (unknown[0][0] if unknown else None)
+
+
 def describe(spec: dict, key: str, sources: dict) -> str:
     """`{partition}` に差し込む文。
 
@@ -577,6 +771,20 @@ def describe(spec: dict, key: str, sources: dict) -> str:
         return where
     if spec["by"] == BY_TAG:
         return f"タグ「{key}」が付くもの"
+    if spec["by"] == BY_BAND:
+        parsed = parse_band_key(key)
+        if parsed is None:
+            return key
+        name, first, last, bounds = parsed
+        where = f"「{spec['prefix'].rstrip(':')}」が{name}のもの"
+        if bounds is not None:
+            return (
+                f"{where}のうち、「{spec['value'].rstrip(':')}」が分かっていないもの"
+                f"(見出しが「{parse_title_key(bounds)[0]}」から"
+                f"「{parse_title_key(bounds)[1]}」まで)"
+            )
+        span = f"{first}" if first == last else f"{first}〜{last}"
+        return f"{where}で、「{spec['value'].rstrip(':')}」が {span} のもの"
     bounds = parse_title_key(key)
     return f"見出しが「{bounds[0]}」から「{bounds[1]}」までのもの" if bounds else key
 

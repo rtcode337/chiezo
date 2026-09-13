@@ -345,3 +345,92 @@ class TestTheSecondLap:
 
         assert partition.oldest_visit(partitions, "ざっと") == "2026-09-10T00:00:00+00:00"
         assert partition.oldest_visit(partitions, "じっくり") is None
+
+
+class TestBands:
+    """分類 × 数で割る(`by=band`)。
+
+    **辞書順はやめた。** 「Kage〜おおやちき」のような塊には何の意味も無く、
+    同じ区画に入った 2 つに関係が無い —— 漏れも影響関係も見つけようがない。
+    分類(地域)と数(生年)で割れば、流派と世代の塊になる。
+    """
+
+    def spec(self, target=10):
+        return partition.normalize(
+            {"by": "band", "prefix": "地域:", "value": "年代:", "target": target}
+        )
+
+    def docs(self, *rows):
+        return {
+            title: {"title": title, "tags": tags}
+            for title, tags in rows
+        }
+
+    def test_it_groups_by_the_category_then_the_number(self):
+        own = self.docs(
+            *[(f"ふ{i}", ["地域:フランス", f"年代:{1840 + i}-1926"]) for i in range(12)],
+            ("に", ["地域:日本", "年代:1840-1900"]),
+        )
+        built = partition.build(self.spec(), {}, own)
+        keys = [p["key"] for p in built]
+
+        assert "フランス|1840-1849" in keys
+        assert "日本|1840-1840" in keys
+
+    def test_a_sparse_category_gets_a_wide_band(self):
+        """人の少ないところは、年の幅が自然に広がる。"""
+        own = self.docs(
+            ("あ", ["地域:カナダ", "年代:1810-1880"]),
+            ("い", ["地域:カナダ", "年代:1866-1950"]),
+        )
+        built = partition.build(self.spec(), {}, own)
+
+        # 2 人しかいないので、1 区画が 56 年ぶんを覆う
+        assert [p["key"] for p in built] == ["カナダ|1810-1866"]
+
+    def test_one_number_is_never_split(self):
+        """**「フランスの 1660 年生まれ」を 2 つに分けない。** 分けると
+        「この範囲の全員」が並ばなくなり、漏れを探す問いが成り立たない。"""
+        own = self.docs(*[(f"ひと{i}", ["地域:日本", "年代:1907-1990"]) for i in range(25)])
+        built = partition.build(self.spec(), {}, own)
+
+        assert [p["key"] for p in built] == ["日本|1907-1907"]
+        assert built[0]["count"] == 25
+
+    def test_things_without_a_number_get_their_own_place(self):
+        """値の分からないものの集合に漏れという概念は無いので、見出しで割ってよい。"""
+        own = self.docs(*[(f"ひと{i:02d}", ["地域:日本"]) for i in range(4)])
+        built = partition.build(self.spec(), {}, own)
+
+        assert all("|不明|" in p["key"] for p in built)
+        assert sum(p["count"] for p in built) == 4
+
+    def test_everything_lands_somewhere(self):
+        """入るところの無い文書は、以後どの回にも出てこない。"""
+        own = self.docs(
+            ("あ", ["地域:フランス", "年代:1840-1926"]),
+            ("い", ["地域:日本"]),
+            ("う", []),
+        )
+        spec = self.spec()
+        built = partition.build(spec, {}, own)
+        keys = {p["key"] for p in built}
+
+        for title, doc in own.items():
+            assert partition.partition_of(spec, built, doc) in keys, title
+
+    def test_the_split_keeps_the_visits(self):
+        """**割られた区画の子は、親の記録を写す** —— 写さないと、区画が育つたびに
+        そこだけ一周が巻き戻る。"""
+        spec = self.spec()
+        current = [{"key": "フランス|1840-1900", "count": 6, "visits": {"ざっと": "2026-09-01"}}]
+        built = [{"key": "フランス|1840-1860", "count": 3}, {"key": "フランス|1861-1900", "count": 3}]
+
+        got = partition.refresh(built, current, spec)
+
+        assert [p["visits"] for p in got] == [{"ざっと": "2026-09-01"}, {"ざっと": "2026-09-01"}]
+
+    def test_the_description_says_the_category_and_the_span(self):
+        spec = self.spec()
+        assert "フランス" in partition.describe(spec, "フランス|1840-1869", {})
+        assert "1840〜1869" in partition.describe(spec, "フランス|1840-1869", {})
