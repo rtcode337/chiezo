@@ -1586,6 +1586,33 @@ class TestRest:
         # 断ったのだから残っている
         assert collect.get("news").name == "news"
 
+    def test_the_pressed_sweep_is_recorded_before_the_trigger_wakes(
+        self, client, sample, monkeypatch
+    ):
+        """取り込みが先に素材を取りに来ると、控えがまだ空で「次に走るはずの巡回」へ倒れる。
+
+        押した巡回ではないものが走る —— しかも控えには走った巡回の名前が残るので、
+        後から見ても取り違えに見えない。
+        """
+        from app.views import admin
+
+        collect.update("news", sweeps=[
+            # 予定がいちばん近いのはこちら(倒れるとこっちが走る)
+            {"name": "ざっと", "interval_minutes": 5},
+            {"name": "じっくり", "interval_minutes": 1440},
+        ])
+        seen = {}
+
+        def wake(_name):
+            # 取り込みが素材を取りに来たときに読むのと同じ控え
+            seen["pending"] = collect.get("news").pending_sweep
+
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://trigger.test")
+        monkeypatch.setattr(admin, "trigger_run", wake)
+        client.post("/admin/collect/news/run", data={"sweep": "じっくり"})
+
+        assert seen["pending"] == "じっくり"
+
     def test_an_unknown_collection_is_404(self, client, sample):
         assert client.get("/v1/collect/nosuch").status_code == 404
 

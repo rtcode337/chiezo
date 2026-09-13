@@ -217,11 +217,16 @@ def start_collection_bake(name: str, sweep: str | None = None) -> dict:
         })
     # **時計を持たない巡回は単独では走らせない**(割り込みで頼まれたときだけ動く)。
     # 起こす前に断る —— 起こしてから断ると、1 本ぶんの取り込みが空振りする
-    collect.require_runnable(collect.get(name), sweep)
+    this = collect.require_runnable(collect.get(name), sweep)
+    # **どの巡回のぶんかは、起こす前に控える。** 取り込みは収集の名前しか運べないので、
+    # 素材を作る側は控えを読む —— 起こしてから書くと、取り込みのほうが先に素材を
+    # 取りに来たときに控えがまだ空で、「次に走るはずの巡回」へ倒れる
+    # (押した巡回ではないものが走る)
+    collect.mark_pending(name, this.name)
     trigger_run(name)
     # **起こせたときだけ予定を進める** —— 混んでいて断られたのに次回へ送ると、
     # その回は黙って飛ばされる(trigger_run が例外にするのでここへは来ない)
-    return collect.to_public(collect.mark_started(name, sweep))
+    return collect.to_public(collect.mark_started(name, this.name))
 
 
 async def _ask_for_collection(item, messages: list[dict]) -> str:

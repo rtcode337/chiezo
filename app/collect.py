@@ -1505,6 +1505,21 @@ def _advance(
     ]}
 
 
+def mark_pending(name: str, sweep: str | None = None) -> Collection:
+    """どの巡回のぶんを起こすかだけを控える。**予定は進めない**。
+
+    **起こす前に書く。** 取り込みは収集の名前しか運べない
+    (`GET /v1/collect/fetch?source=…`)ので、素材を作る側はここを読む ——
+    起こしてから書くと、取り込みのほうが先に素材を取りに来たときに控えがまだ空で、
+    「次に走るはずの巡回」へ倒れる(押した巡回ではないものが走る)。
+    """
+    current = get(name)
+    this = sweep_named(current, sweep)
+    updated = replace(current, pending_sweep=this.name, updated_at=_iso(_now()))
+    _replace_one(name, updated)
+    return updated
+
+
 def mark_started(name: str, sweep: str | None = None) -> Collection:
     """取り込みを起こしたので、次回の予定だけ進める。
 
