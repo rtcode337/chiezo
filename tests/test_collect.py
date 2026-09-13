@@ -904,6 +904,30 @@ class TestWhatCameInSinceLastTime:
             previous, "2026-09-10T00:00:00+00:00"
         )
 
+    def test_the_first_run_of_a_sweep_sees_everything(self, sample):
+        """**1 回目は区切らない。** 収集ぜんたいの前回へ倒していたせいで、その巡回の
+        1 回目が必ず空になった —— 直前に別の巡回が走っていれば基準は数分前になる。
+
+        本番では、見出しが 60 件足した 3 分後に初めての情報更新と要約が走り、
+        そろって 0 件で終わった。
+        """
+        import dataclasses
+
+        collect.update("news", prompt="{recent} をまとめて", sweeps=[{"name": "要約"}])
+        # **収集ぜんたいの前回**は、直前に別の巡回が走っていれば数分前になる
+        item = dataclasses.replace(collect.get("news"), last_run_at="2026-09-12T00:00:00+00:00")
+        previous = {
+            "さっき入った": {
+                "title": "さっき入った", "body": "",
+                "updated_at": "2026-09-11T00:00:00+00:00",
+            }
+        }
+        messages = collect.build_messages(
+            item, previous, None, {}, collect.sweep_named(item, "要約")
+        )
+
+        assert "さっき入った" in messages[-1]["content"]
+
     def test_the_clock_is_the_sweeps_own(self, sample):
         """収集の前回を基準にすると、集めたばかりのぶんしか入らない(要約が空になる)。"""
         collect.update(

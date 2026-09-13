@@ -1241,6 +1241,9 @@ def render_recent(previous: dict[str, dict], since: str | None) -> str:
 
     **時刻が読めないものは入れる。** 落とすと静かに 0 件になり、
     「何も入らなかった」のか「何も無かった」のかが読めなくなる。
+
+    **基準が無ければ区切らない**(その巡回の 1 回目)。いま入っているものが
+    まるごと差分になる —— 初めての要約が空で終わるのはおかしい。
     """
     cutoff = _at(since)
     fresh = [d for d in previous.values() if cutoff is None or _at(d.get("updated_at")) is None
@@ -1394,10 +1397,12 @@ def build_messages(
         material_text, _shown = render_material(docs, scoped)
         user = user.replace(MATERIAL_PLACEHOLDER, material_text)
     if RECENT_PLACEHOLDER in user:
-        # **基準はその巡回の前回**(収集ぜんたいの前回ではない)。要約の回と集める回は
-        # 別々の時計で走るので、収集の前回を基準にすると、集めたばかりのぶんしか
-        # 入らない(要約が毎回ほとんど空になる)
-        since = (sweep.last_run_at if sweep else None) or item.last_run_at
+        # **基準はその巡回の前回だけ**(収集ぜんたいの前回へは倒さない)。
+        # 倒していたせいで、**その巡回の 1 回目が必ず空になった** —— 直前に別の巡回が
+        # 走っていれば、基準はその数分前になる。実際、初めての要約と情報更新が
+        # そろって 0 件で終わった(本番の履歴。見出しが 60 件足した 3 分後だった)。
+        # **走ったことが無ければ区切らない** —— 1 回目は「いまあるもの全部」が差分
+        since = sweep.last_run_at if sweep else None
         user = user.replace(RECENT_PLACEHOLDER, render_recent(previous or {}, since))
     if focus is not None:
         user += "\n\n" + render_focus(focus, item, previous or {}, partition_key)
