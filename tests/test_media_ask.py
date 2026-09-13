@@ -94,3 +94,23 @@ class TestTheFormIsActuallyOnThePage:
         html = client.get("/admin/media").text
         assert "作ってもらう" in html
         assert 'action="/admin/media/ask"' in html
+
+
+class TestPagingLinks:
+    """**受け取った値を素で HTML へ繋がない。** 入口の型を知らないと安全と言えない
+    書き方は残さない(解析器も「クエリの値がそのまま入っている」と読む)。
+    """
+
+    def test_the_query_is_built_not_concatenated(self):
+        from app.views import media_compare
+
+        html = media_compare._pager(page=2, has_next=True, limit=50)
+        assert "?page=1&amp;limit=50" in html or "?page=1&limit=50" in html
+        assert "?page=3" in html
+
+    def test_the_default_page_size_is_left_out_of_the_url(self):
+        from app.views import media_compare
+
+        html = media_compare._pager(
+            page=1, has_next=True, limit=media_compare.GROUPS_PER_PAGE)
+        assert "limit=" not in html

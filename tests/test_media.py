@@ -2586,7 +2586,7 @@ class TestNotTakingOrdersFromTheCliItDrives:
     def test_an_unresolvable_bridge_blocks_nobody(self, state):
         """立てていない環境で、画面ごと落ちたり全部断ったりしないこと。"""
         state.setattr(providers, "bridge_hostnames", lambda: (("codex", "nowhere"),))
-        state.setattr(media, "_bridge_addrs", (0.0, {}))
+        state.setattr(media, "_bridge_addrs", None)
         assert media.bridge_addresses() == {}
         media.refuse_bridge_caller("172.18.0.9", "comfyui")
 
@@ -2718,3 +2718,16 @@ class TestLeonardo:
                 media_providers.get("leonardo"),
                 media_backends.ImageRequest(prompt="城"), 0))
         assert e.value.status_code == 401
+
+
+class TestTheAddressCacheOnAFreshMachine:
+    """**立ち上げ直後の機械で踏んだ。** `time.monotonic()` は起動からの秒数なので、
+    まっさらな機械では猶予より小さく、まだ引いていない初期値がそのまま返っていた。
+    動かしっぱなしの機械では起きないので、CI でだけ落ちた。
+    """
+
+    def test_the_first_call_actually_looks_it_up(self, state):
+        state.setattr(media, "_bridge_addrs", None)
+        state.setattr(media.time, "monotonic", lambda: 1.0)  # 起動から 1 秒
+        state.setattr(providers, "bridge_hostnames", lambda: (("codex", "localhost"),))
+        assert media.bridge_addresses(), "初期値を返さず、引きに行くこと"

@@ -220,7 +220,7 @@ async def refresh_all_usage():
     params = {"usage_refreshed_all": len(done) - len(failed)}
     if failed:
         params["usage_error"] = "、".join(failed)[:300]
-    return RedirectResponse(f"/admin?{urlencode(params)}#{SECTION_ANCHOR}", status_code=303)
+    return RedirectResponse(f"/admin/ai?{urlencode(params)}#{SECTION_ANCHOR}", status_code=303)
 
 
 @router.post("/admin/ai/usage")
@@ -235,4 +235,4 @@ async def refresh_usage(provider: str = Form(...)):
     params = {"usage_refreshed": spec.id}
     if quota.error:
         params["usage_error"] = quota.error[:300]
-    return RedirectResponse(f"/admin?{urlencode(params)}#{SECTION_ANCHOR}", status_code=303)
+    return RedirectResponse(f"/admin/ai?{urlencode(params)}#{SECTION_ANCHOR}", status_code=303)

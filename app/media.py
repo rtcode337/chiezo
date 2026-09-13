@@ -1833,7 +1833,10 @@ def job_group(key: str) -> dict | None:
 # ブリッジのコンテナの住所を引き直す間合い。**引きっぱなしにしない** ——
 # コンテナは立て直すと住所が変わるので、古いままだと素通りする。
 _BRIDGE_ADDR_TTL = 60.0
-_bridge_addrs: tuple[float, frozenset[str]] = (0.0, frozenset())
+# **まだ引いていない印は `None` にする。** 0.0 を入れると、立ち上げ直後の機械では
+# `time.monotonic()`(起動からの秒数)が猶予より小さく、**初期値がそのまま返る** ——
+# 動かしっぱなしの機械では起きないので、まっさらな機械でだけ落ちる
+_bridge_addrs: tuple[float, dict[str, str]] | None = None
 
 
 def bridge_addresses() -> dict[str, str]:
@@ -1845,7 +1848,7 @@ def bridge_addresses() -> dict[str, str]:
     """
     global _bridge_addrs
     now = time.monotonic()
-    if now - _bridge_addrs[0] < _BRIDGE_ADDR_TTL:
+    if _bridge_addrs is not None and now - _bridge_addrs[0] < _BRIDGE_ADDR_TTL:
         return _bridge_addrs[1]
     found: dict[str, str] = {}
     for provider_id, host in providers.bridge_hostnames():

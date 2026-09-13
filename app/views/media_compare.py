@@ -27,7 +27,7 @@
 from __future__ import annotations
 
 import logging
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -246,12 +246,17 @@ def _pager(page: int, has_next: bool, limit: int) -> str:
     def link(target: int, label: str, enabled: bool) -> str:
         if not enabled:
             return f'<span class="muted">{label}</span>'
-        q = f"?page={target}" + (f"&limit={limit}" if limit != GROUPS_PER_PAGE else "")
-        return f'<a href="/admin/media{q}">{label}</a>'
+        # **クエリは組み立てに任せる。** 素で繋ぐと、受け取った値がそのまま
+        # HTML へ入る形になる —— FastAPI が int に直しているので実害は無いが、
+        # 「入口の型を知らないと安全と言えない」書き方は残さない
+        params = {"page": int(target)}
+        if limit != GROUPS_PER_PAGE:
+            params["limit"] = int(limit)
+        return f'<a href="/admin/media?{esc(urlencode(params))}">{esc(label)}</a>'
 
     return (
         f'<p class="muted">{link(page - 1, "← 新しい", page > 1)}'
-        f'　{page} 頁目　'
+        f'　{esc(int(page))} 頁目　'
         f'{link(page + 1, "古い →", has_next)}</p>'
     )
 

@@ -546,7 +546,7 @@ async def test_media_connection(provider: str = Form(...)):
     """絵と音を作る相手と実際に話せるか確かめる(結果はクエリで画面へ返す)。"""
     ok, why = await media.check(provider)
     params = urlencode({"media_tested": provider, "media_ok": "1" if ok else "0", "media_why": why})
-    return RedirectResponse(f"/admin?{params}#{SECTION_ANCHOR}", status_code=303)
+    return RedirectResponse(f"/admin/ai?{params}#{SECTION_ANCHOR}", status_code=303)
 
 
 @router.post("/admin/ai/prompt-language")
@@ -600,7 +600,7 @@ async def test_connection(provider: str = Form(...)):
     params = {"tested": spec.id, "ok": "1" if ok else "0"}
     if why:
         params["why"] = why[:300]
-    return RedirectResponse(url=f"/admin?{urlencode(params)}#{SECTION_ANCHOR}", status_code=303)
+    return RedirectResponse(url=f"/admin/ai?{urlencode(params)}#{SECTION_ANCHOR}", status_code=303)
 
 
 @router.get("/ai/models")
