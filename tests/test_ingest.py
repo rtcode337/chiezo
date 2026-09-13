@@ -729,3 +729,108 @@ class TestTriggerCatalogEndpoint:
         from core import SCHEMA_VERSION
 
         assert trigger_client.get("/sources").json()["schema_version"] == SCHEMA_VERSION
+
+
+class TestRepairingImageUrls:
+    """焼いてしまった DB の画像 URL を直す道具(`ingest/repair_image_urls.py`)。
+
+    取り込みは直したが、既に焼いた DB はそのまま残る。壊れているのは URL の
+    組み立てだけで本文もタグも索引も無傷なので、数時間かけて焼き直す必要が無い。
+    """
+
+    @staticmethod
+    def _db(tmp_path, rows):
+        import json
+        import sqlite3
+
+        path = tmp_path / "jawiki.db"
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE docs (doc_id INTEGER PRIMARY KEY, title TEXT, extra TEXT)")
+        conn.executemany(
+            "INSERT INTO docs (doc_id, title, extra) VALUES (?, ?, ?)",
+            [(i, title, json.dumps(extra)) for i, (title, extra) in enumerate(rows, 1)],
+        )
+        conn.commit()
+        conn.close()
+        return path
+
+    @staticmethod
+    def _image_of(path, doc_id):
+        import json
+        import sqlite3
+
+        conn = sqlite3.connect(path)
+        try:
+            (raw,) = conn.execute(
+                "SELECT extra FROM docs WHERE doc_id = ?", (doc_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        return json.loads(raw).get("image")
+
+    def test_it_rebuilds_the_branch_and_the_name(self, tmp_path):
+        """枝は名前の MD5 で決まるので、**名前だけ直しても届かない**。"""
+        import repair_image_urls
+
+        from sources.wikipedia import commons_url
+
+        broken = (
+            "https://upload.wikimedia.org/wikipedia/commons/e/e0/"
+            "Ca%5C%27_Rezzonico.jpg"
+        )
+        path = self._db(tmp_path, [("ヘラクレイトス", {"image": broken})])
+
+        assert repair_image_urls.repair(path) == (1, 1)
+
+        assert self._image_of(path, 1) == commons_url("Ca'_Rezzonico.jpg")
+        assert "%5C" not in self._image_of(path, 1)
+
+    def test_it_leaves_the_untouched_ones_alone(self, tmp_path):
+        """壊れていないものは見に行かない(`%5C` を含む行だけを引く)。"""
+        import repair_image_urls
+
+        fine = "https://upload.wikimedia.org/wikipedia/commons/7/76/Mona_Lisa.jpg"
+        path = self._db(tmp_path, [("モナ・リザ", {"image": fine})])
+
+        assert repair_image_urls.repair(path) == (0, 0)
+        assert self._image_of(path, 1) == fine
+
+    def test_running_it_twice_changes_nothing(self, tmp_path):
+        """当て終わった DB にもう一度当てても平気(途中で止めたら流し直せる)。"""
+        import repair_image_urls
+
+        broken = (
+            "https://upload.wikimedia.org/wikipedia/commons/e/e0/"
+            "Ca%5C%27_Rezzonico.jpg"
+        )
+        path = self._db(tmp_path, [("ヘラクレイトス", {"image": broken})])
+        repair_image_urls.repair(path)
+        first = self._image_of(path, 1)
+
+        assert repair_image_urls.repair(path) == (0, 0)
+        assert self._image_of(path, 1) == first
+
+    def test_other_things_in_extra_survive(self, tmp_path):
+        """書き換えるのは image だけ(同じ行の他の値を落とさない)。"""
+        import repair_image_urls
+
+        path = self._db(tmp_path, [(
+            "ヘラクレイトス",
+            {
+                "image": "https://upload.wikimedia.org/wikipedia/commons/e/e0/A%5C%27b.jpg",
+                "wikidata": "Q41155",
+                "pageviews_month": 1234,
+            },
+        )])
+
+        repair_image_urls.repair(path)
+
+        import json
+        import sqlite3
+
+        conn = sqlite3.connect(path)
+        (raw,) = conn.execute("SELECT extra FROM docs WHERE doc_id = 1").fetchone()
+        conn.close()
+        extra = json.loads(raw)
+        assert extra["wikidata"] == "Q41155"
+        assert extra["pageviews_month"] == 1234
