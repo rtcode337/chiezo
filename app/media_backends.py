@@ -34,6 +34,7 @@ import json
 import logging
 import os
 import random
+import time
 import wave
 from dataclasses import dataclass
 
@@ -91,6 +92,12 @@ class ImageRequest:
     # (何枚も同時に直すという指示が成立しない)。
     sources: tuple[bytes, ...] = ()
     source_mode: str = "edit"
+    # **姿勢の見本(骨組み)。** `sources` とは役割が別なので混ぜない ——
+    # あちらは「これを直す / 絵柄を合わせる」で、こちらは「この姿勢で描く」。
+    # ComfyUI では ControlNet に、CLI ブリッジ越しの相手には参考の 1 枚として渡る。
+    # **言葉で姿勢は伝わらない**(相手もコマ数も変えて 13 回とも同じ足が前に出た)ので、
+    # 絵で渡す口が要る
+    pose: bytes = b""
 
 
 @dataclass(frozen=True)
@@ -437,8 +444,30 @@ async def _await_remote(check, *, every: float, timeout: float, what: str):
 # そのまま受け取る作りで、「プロンプトとサイズだけ渡す」口は無い。テンプレを 1 つ持ち、
 # 差し込む値(モデル・プロンプト・除外プロンプト・サイズ・seed・ステップ)だけを埋める。
 # ノード番号は文字列(ComfyUI の約束)。
-def _comfy_graph(req: ImageRequest, model: str, width: int, height: int, seed: int) -> dict:
-    return {
+# 元の絵をどれだけ残すか（img2img の `denoise`）。**小さいほど元に近い。**
+# `edit`(これを直す)は元を保ちたいので低く、`reference`(絵柄だけ合わせて中身は新しく)は
+# 構図まで引きずられると別のものが描けないので高くする。
+COMFY_DENOISE = {SOURCE_EDIT: 0.45, SOURCE_REFERENCE: 0.75}
+
+# 骨組みをどれだけ効かせるか（ControlNet の `strength`）。**1.0 では固すぎる** ——
+# 棒人間の線をなぞった絵が返る。少し緩めて、姿勢だけを写させる。
+COMFY_POSE_STRENGTH = 0.85
+
+
+def _comfy_graph(
+    req: ImageRequest, model: str, width: int, height: int, seed: int,
+    init_name: str = "", pose_name: str = "", controlnet: str = "",
+) -> dict:
+    """text-to-image のグラフ。**元の絵と骨組みは、あれば継ぎ足す。**
+
+    継ぎ足しにしているのは、3 通りのグラフを別々に持ちたくないため ——
+    サンプラーの設定や保存先が 3 か所に散ると、片方だけ直したときに気づけない。
+
+    - `init_name` … 元にする絵(img2img)。空の潜在画像の代わりに、これを符号化して渡す
+    - `pose_name` … 姿勢の見本(ControlNet)。条件付けの側に差し込む。
+      **絵そのものは出力に出ない** —— 姿勢だけが効く
+    """
+    graph: dict = {
         "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": model}},
         "2": {"class_type": "CLIPTextEncode", "inputs": {"text": req.prompt, "clip": ["1", 1]}},
         "3": {"class_type": "CLIPTextEncode", "inputs": {"text": req.negative, "clip": ["1", 1]}},
@@ -464,6 +493,58 @@ def _comfy_graph(req: ImageRequest, model: str, width: int, height: int, seed: i
         "6": {"class_type": "VAEDecode", "inputs": {"samples": ["5", 0], "vae": ["1", 2]}},
         "7": {"class_type": "SaveImage", "inputs": {"filename_prefix": "chiezo", "images": ["6", 0]}},
     }
+    if init_name:
+        # 元の絵を潜在空間へ入れて、そこから描き直す（空の潜在画像は使わない）
+        graph["10"] = {"class_type": "LoadImage", "inputs": {"image": init_name}}
+        graph["11"] = {"class_type": "VAEEncode",
+                       "inputs": {"pixels": ["10", 0], "vae": ["1", 2]}}
+        graph["5"]["inputs"]["latent_image"] = ["11", 0]
+        graph["5"]["inputs"]["denoise"] = COMFY_DENOISE.get(req.source_mode, 0.6)
+    if pose_name and controlnet:
+        graph["20"] = {"class_type": "LoadImage", "inputs": {"image": pose_name}}
+        graph["21"] = {"class_type": "ControlNetLoader",
+                       "inputs": {"control_net_name": controlnet}}
+        # **正負の両方に掛ける。** 片側だけだと、姿勢を外した絵に罰が掛からず
+        # 効きが半分になる(`ControlNetApplyAdvanced` が 2 つ返すのはそのため)
+        graph["22"] = {
+            "class_type": "ControlNetApplyAdvanced",
+            "inputs": {
+                "strength": COMFY_POSE_STRENGTH, "start_percent": 0.0, "end_percent": 1.0,
+                "positive": ["2", 0], "negative": ["3", 0],
+                "control_net": ["21", 0], "image": ["20", 0],
+            },
+        }
+        graph["5"]["inputs"]["positive"] = ["22", 0]
+        graph["5"]["inputs"]["negative"] = ["22", 1]
+    return graph
+
+
+async def comfy_controlnet_models(url: str, timeout: float = 5.0) -> list[str]:
+    """置いてある ControlNet。**姿勢のものだけ**を拾う(名前で見分ける) ——
+    輪郭や深度のものを姿勢の見本に使うと、線をそのままなぞった絵が返る。"""
+    with contextlib.suppress(Exception):
+        names = await _comfy_names(url, "ControlNetLoader", "control_net_name", timeout)
+        return [n for n in names if "pose" in n.lower()]
+    return []
+
+
+async def comfy_upload(url: str, data: bytes, name: str = "chiezo-source.png") -> str:
+    """絵を ComfyUI へ置いて、グラフから指せる名前を返す。
+
+    **こちらのパスは向こうから見えない**(別のコンテナ、別のマシンのこともある)ので、
+    中身を送って置いてもらうしかない。同じ名前で上書きさせる —— 溜め続けると、
+    使い捨ての絵が向こうの置き場に残り続ける。
+    """
+    async with _client(GENERATE_TIMEOUT) as client:
+        res = await client.post(
+            f"{url}/upload/image",
+            files={"image": (name, data, "image/png")},
+            data={"overwrite": "true", "type": "input"},
+        )
+    if res.status_code >= 400:
+        raise HTTPException(502, {"error": f"ComfyUI が絵を受け取りませんでした({res.status_code})"})
+    body = res.json()
+    return str(body.get("name") or name)
 
 
 async def comfy_models(url: str, timeout: float = 5.0) -> list[str]:
@@ -495,8 +576,25 @@ async def _comfy_generate(
             )
         model = available[0]
 
+    # **元の絵と骨組みは、先に向こうへ置く。** こちらのパスは向こうから見えない
+    init_name = await comfy_upload(url, req.sources[0], "chiezo-init.png") if req.sources else ""
+    pose_name = ""
+    controlnet = ""
+    if req.pose:
+        controlnet = next(iter(await comfy_controlnet_models(url)), "")
+        if not controlnet:
+            raise HTTPException(502, {
+                "error": "ComfyUI に姿勢の ControlNet が置かれていません",
+                "hint": "models/controlnet に openpose の .safetensors を置いてください"
+                        "(名前に pose を含むものを姿勢用として扱います)",
+            })
+        pose_name = await comfy_upload(url, req.pose, "chiezo-pose.png")
+
     data, _ = await _comfy_execute(
-        url, _comfy_graph(req, model, width, height, seed), "images", "画像"
+        url,
+        _comfy_graph(req, model, width, height, seed,
+                     init_name=init_name, pose_name=pose_name, controlnet=controlnet),
+        "images", "画像",
     )
     return GeneratedImage(data, "image/png", seed, model)
 
@@ -719,13 +817,16 @@ async def _bridge_image_generate(
     spec: media_providers.MediaProvider, req: ImageRequest, seed: int
 ) -> GeneratedImage:
     body: dict = {"prompt": req.prompt, "size": req.size, "n": 1}
-    if req.sources:
+    # **姿勢の見本も参考の 1 枚として渡す。** 向こうは ControlNet を持たないので、
+    # 「この姿勢で」と依頼文で言うしかない —— 渡す順は姿勢が先(依頼文がそう指す)
+    sources = ((req.pose,) if req.pose else ()) + tuple(req.sources)
+    if sources:
         # 絵そのものを送る。 ブリッジは別のコンテナなので、こちらのパスは見えない。
         # **`image` にも 1 枚目を入れる** —— ブリッジが古いままでも、
         # 少なくとも 1 枚は届く(こちらだけ先に焼き直したときに黙って無視されない)
-        body["image"] = base64.b64encode(req.sources[0]).decode()
-        body["images"] = [base64.b64encode(data).decode() for data in req.sources]
-        body["image_mode"] = req.source_mode
+        body["image"] = base64.b64encode(sources[0]).decode()
+        body["images"] = [base64.b64encode(data).decode() for data in sources]
+        body["image_mode"] = SOURCE_REFERENCE if req.pose else req.source_mode
     async with _client(BRIDGE_IMAGE_TIMEOUT) as client:
         res = await client.post(
             f"{media_providers.url_of(spec)}/images/generations",
@@ -1853,6 +1954,97 @@ async def _gemini_transcribe(
     return Transcript("".join(parts).strip(), model, req.language)
 
 
+# ---- Leonardo.Ai -------------------------------------------------------------
+#
+# **頼んで、出来るのを待って、URL から取りに行く**の 3 段。絵をその場で返さない
+# 相手なので、ComfyUI と同じく「投げる → 待つ → 引き取る」になる。
+#
+# **鍵は web アプリの契約とは別建て**。公式の言い方が
+# "API access is separate from free or web app subscriptions" なので、
+# 月額を払っただけの鍵では 401 が返り続ける。
+
+LEONARDO_POLL_SEC = 3.0
+
+
+async def leonardo_models(spec: media_providers.MediaProvider) -> list[str]:
+    """選べるモデル。**相手に聞く** —— 控えを持つと、向こうで増えたぶんが
+    永遠に選べなくなる(ComfyUI と同じ考え方)。返すのは `名前 (id)` の形で、
+    人が選ぶのは名前、こちらが渡すのは id。
+    """
+    key = credential_of(spec)
+    if not key:
+        return []
+    with contextlib.suppress(Exception):
+        async with _client(15.0) as client:
+            res = await client.get(
+                f"{media_providers.url_of(spec)}/platformModels",
+                headers={"authorization": f"Bearer {key}", "accept": "application/json"},
+            )
+        res.raise_for_status()
+        found = res.json().get("custom_models") or []
+        return [f"{m.get('name') or '?'} ({m.get('id')})" for m in found if m.get("id")]
+    return []
+
+
+def _leonardo_model_id(model: str) -> str:
+    """`名前 (id)` からも素の id からも取り出す。**人が選ぶのは名前**なので、
+    一覧の値をそのまま渡されても通るようにしておく。"""
+    model = (model or "").strip()
+    return model[model.rfind("(") + 1: model.rfind(")")].strip() if model.endswith(")") else model
+
+
+async def _leonardo_image(
+    spec: media_providers.MediaProvider, req: ImageRequest, seed: int
+) -> GeneratedImage:
+    key = credential_of(spec)
+    if not key:
+        raise HTTPException(401, {"error": f"{spec.label} の鍵が未登録です"})
+    model = _leonardo_model_id(req.model) or _leonardo_model_id(
+        next(iter(await leonardo_models(spec)), "")
+    )
+    if not model:
+        raise HTTPException(502, {
+            "error": f"{spec.label} のモデル一覧を引けませんでした",
+            "hint": "鍵が API 用のものか(web アプリの契約とは別建て)を確かめてください",
+        })
+    width, height = parse_size(req.size)
+    url = media_providers.url_of(spec)
+    headers = {"authorization": f"Bearer {key}", "accept": "application/json",
+               "content-type": "application/json"}
+    body: dict = {"prompt": req.prompt, "modelId": model,
+                  "width": width, "height": height, "num_images": 1}
+    if req.negative:
+        body["negative_prompt"] = req.negative
+    if seed:
+        body["seed"] = seed
+
+    async with _client(GENERATE_TIMEOUT) as client:
+        res = await client.post(f"{url}/generations", json=body, headers=headers)
+        if res.status_code >= 400:
+            raise remote_error(spec, res, "image")
+        ident = ((res.json().get("sdGenerationJob") or {}).get("generationId") or "")
+        if not ident:
+            raise HTTPException(502, {"error": f"{spec.label} が生成の番号を返しませんでした"})
+
+        # **出来るまで引き直す。** 向こうは投げた時点では絵を持っていない
+        deadline = time.monotonic() + GENERATE_TIMEOUT
+        while time.monotonic() < deadline:
+            await asyncio.sleep(LEONARDO_POLL_SEC)
+            got = await client.get(f"{url}/generations/{ident}", headers=headers)
+            if got.status_code >= 400:
+                raise remote_error(spec, got, "image")
+            job = got.json().get("generations_by_pk") or {}
+            if job.get("status") == "FAILED":
+                raise HTTPException(502, {"error": f"{spec.label} が生成に失敗しました"})
+            images = job.get("generated_images") or []
+            if job.get("status") == "COMPLETE" and images:
+                picture = await client.get(images[0]["url"])
+                picture.raise_for_status()
+                return GeneratedImage(picture.content, "image/png", seed, model)
+    raise HTTPException(504, {
+        "error": f"{spec.label} が {GENERATE_TIMEOUT:.0f}s で終わりませんでした"})
+
+
 # ---- 相手の登録表 ------------------------------------------------------------
 #
 # kind ごとに 1 つ。 「その相手に頼めるか」は `media_providers.kinds` にも
@@ -1865,6 +2057,7 @@ GENERATORS = {
     "gemini": _gemini_generate,
     "openai": _openai_generate,
     "elevenlabs": _elevenlabs_image,
+    "leonardo": _leonardo_image,
 }
 
 

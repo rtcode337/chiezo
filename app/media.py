@@ -1230,6 +1230,8 @@ def start_image_job(
     sources: tuple[bytes, ...] = (),
     source_mode: str = "edit",
     source_refs: tuple[str, ...] = (),
+    pose: bytes = b"",
+    pose_ref: str = "",
     requested_by: str = "",
 ) -> dict:
     """頼みを受け付けて job を返す(生成は後ろで走る)。
@@ -1238,12 +1240,14 @@ def start_image_job(
     生成は数秒〜数分かかり、待たせると呼び出し側が先に切れる。
     """
     job = create_job(prompt, backend=backend, model=model, size=size, seed=seed, count=count,
-                     group=group, editing=bool(sources),
-                     source_refs=tuple(source_refs), source_mode=source_mode,
-                     requested_by=requested_by)
+                     group=group, editing=bool(sources) or bool(pose),
+                     # **姿勢の見本も画面に出す。** どの骨組みで描かせたのかが
+                     # 見えないと、返ってきた絵が姿勢どおりかを確かめようがない
+                     source_refs=((pose_ref,) if pose_ref else ()) + tuple(source_refs),
+                     source_mode=source_mode, requested_by=requested_by)
     request = media_backends.ImageRequest(
         prompt=job["prompt"], negative=negative, size=size, seed=seed, model=model,
-        steps=steps, sources=tuple(sources), source_mode=source_mode,
+        steps=steps, sources=tuple(sources), source_mode=source_mode, pose=pose,
     )
     return _start(job, request, count)
 
@@ -1591,6 +1595,11 @@ async def backends(kind: str = media_providers.KIND_IMAGE) -> list[dict]:
             else:
                 if not models:
                     usable, reason = False, missing
+        elif spec.id == "leonardo" and kind == media_providers.KIND_IMAGE:
+            # **モデルは相手に聞く**(控えを持つと、向こうで増えたぶんが選べない)。
+            # 引けなくても使えない扱いにはしない —— 名前を指定すれば通るので、
+            # 一覧が空なだけ(鍵が API 用でないときは生成の側が理由つきで断る)
+            models = await media_backends.leonardo_models(spec)
 
         entry = {
             "id": spec.id,

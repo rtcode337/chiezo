@@ -2458,6 +2458,11 @@ class ImageRequest(BaseModel):
     # 渡した順に相手側のファイル名が決まるので、「1 枚目は姿勢、2 枚目は絵柄」と
     # 依頼文に書けばよい。**直すほう(`edit`)は 1 枚だけ**
     reference: str | list[str] = ""
+    # **姿勢の見本（骨組みの絵）。** `edit` / `reference` とは役割が別 ——
+    # あちらは「これを直す / 絵柄を合わせる」で、こちらは**この姿勢で描く**。
+    # 自前の GPU では ControlNet に、CLI ブリッジ越しの相手には参考の 1 枚として渡る。
+    # **言葉で姿勢は伝わらない**ので、絵で渡す口が要る
+    pose: str = ""
     # 相手。空なら既定(自前の GPU)
     backend: str | None = None
     model: str | None = None
@@ -2643,6 +2648,7 @@ async def media_image(body: ImageRequest, request: Request) -> dict:
     """描き始めて job を返す(待たない)。進み具合は下の口で引く。"""
     _refuse_bridge_for(request, body.backend or "")
     source, mode, ref = await _source_image(body.edit, body.reference)
+    pose = await media.load_image(*_edit_source(body.pose)) if body.pose else b""
     return media.start_image_job(
         prompt=body.prompt,
         backend=(body.backend or "").strip(),
@@ -2656,6 +2662,8 @@ async def media_image(body: ImageRequest, request: Request) -> dict:
         sources=source,
         source_mode=mode,
         source_refs=ref,
+        pose=pose,
+        pose_ref=body.pose,
         requested_by=media.caller_name(body.requested_by, request.headers.get("user-agent", "")),
     )
 

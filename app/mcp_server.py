@@ -360,6 +360,10 @@ def _register_image_tools(mcp: MCPServer) -> None:
         group: str = "",
         edit: str = "",
         reference: str | list[str] = "",
+        pose: Annotated[str, Field(description=(
+            "姿勢の見本（骨組みを描いた絵）のパスか URL。**この姿勢で描かせる** —— "
+            "edit / reference とは役割が別で、あちらは「これを直す / 絵柄を合わせる」。"
+            "**言葉で姿勢は伝わらない**ので、逆の足を前に出すような指定はここで渡す"))] = "",
         requested_by: Annotated[str, Field(description=(
             "あなたの名乗り(例: claude-code)。**必ず入れる** —— 同じ表に外のアプリと無人で回る層が並ぶので、"
             "名乗りが無いと、後から見て誰が枠を食ったのか追えない"))] = "",
@@ -381,6 +385,8 @@ def _register_image_tools(mcp: MCPServer) -> None:
             sources=source,
             source_mode=mode,
             source_refs=ref,
+            pose=await media.load_image(*api._edit_source(pose)) if pose else b"",
+            pose_ref=pose,
             requested_by=_caller(ctx, requested_by),
         )
 

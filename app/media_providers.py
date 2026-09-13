@@ -140,6 +140,9 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         # チェックポイントは置いたものによるので、相手(`/object_info`)に聞く。
         models=(),
         exact_sizes=True,
+        # **元の絵を受け取れる。** `/upload/image` へ置いてから、グラフで
+        # img2img（`edit` / `reference`）と ControlNet（`pose`）に繋ぐ
+        edits=True,
         url_env="CHIEZO_IMAGE_URL",
         owns_toggle=True,
         order=0,
@@ -271,6 +274,29 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         transcribe_models=("gemini-3.7-flash", "gemini-3.5-flash"),
     ),
     MediaProvider(
+        id="leonardo",
+        label="Leonardo.Ai(ゲーム素材向けの生成)",
+        url="https://cloud.leonardo.ai/api/rest/v1",
+        credential=CRED_REQUIRED,
+        # **web アプリの契約とは別建て**。公式の言い方は "API access is separate from
+        # free or web app subscriptions" / "usage is billed in dollars" で、
+        # 月額に付いてくる枠では叩けない。ここを読み違えると、契約したのに
+        # 401 が返り続けることになる。
+        billing="従量課金(ドル建て。**web アプリの契約とは別に API クレジットを買う**)",
+        setup="管理画面(/admin の「AI の相手」)で Leonardo.Ai の API キーを登録し、"
+        "「使う」を押してください。**web アプリの契約では叩けません** —— "
+        "API Access の画面で API クレジットを購入すると鍵が作れます。",
+        # 「話す相手」に対応が無い(会話はできない)ので、鍵と on/off を自分で持つ。
+        # ComfyUI・ElevenLabs と同じ扱い。
+        credential_from="",
+        owns_toggle=True,
+        # モデルは相手に聞く(`platformModels`)。控えを持つと、向こうで増えたぶんが
+        # 永遠に選べなくなる —— ComfyUI と同じ考え方。
+        models=(),
+        order=40,
+        kinds=(KIND_IMAGE,),
+    ),
+    MediaProvider(
         id="elevenlabs",
         label="ElevenLabs(声・効果音・曲・絵・動画)",
         url="https://api.elevenlabs.io/v1",
@@ -328,7 +354,10 @@ BY_ID = {p.id: p for p in PROVIDERS}
 # 名指しすればこれまでどおり使える。ここに無い相手は listed の後ろ(画面の並びのまま)
 # に回る。相手を足したらこの表にも足すこと(`tests/test_media.py` が欠けを見張っている)。
 PREFERENCE: dict[str, tuple[str, ...]] = {
-    KIND_IMAGE: ("codex", "antigravity", "gemini", "openai", "comfyui", "elevenlabs"),
+    # Leonardo を後ろにしてあるのは、**ドル建ての従量課金**だから —— 既定で選ばれると、
+    # 頼むたびに黙って請求が伸びる。名指しすれば使える(出来の問題ではない)。
+    KIND_IMAGE: ("codex", "antigravity", "gemini", "openai", "comfyui",
+                 "elevenlabs", "leonardo"),
     KIND_AUDIO: ("elevenlabs", "gemini", "comfyui"),
     KIND_VIDEO: ("gemini", "openai", "comfyui", "elevenlabs"),
     KIND_SPEECH: ("elevenlabs", "gemini", "openai"),

@@ -2015,12 +2015,15 @@ class TestEditingAnExistingImage:
         assert "image" not in handler.sent
 
     def test_直せない相手には頼む前に断る(self, state):
-        # 黙って一から描くと、直したつもりの絵が全部描き変わって返る
+        # 黙って一から描くと、直したつもりの絵が全部描き変わって返る。
+        # **自前の GPU は直せる側になった**(グラフに img2img を足した)ので、
+        # ここで使うのは外の口が別になっている相手のほう
         with pytest.raises(HTTPException) as e:
-            media.start_image_job("直して", backend="comfyui", size="1024x1024", sources=(PNG,))
+            media.start_image_job("直して", backend="gemini", size="1024x1024", sources=(PNG,))
 
         assert e.value.status_code == 400
         assert "codex" in e.value.detail["backends"]
+        assert "comfyui" in e.value.detail["backends"], "自前の GPU も直せる側に並ぶこと"
 
     def test_置き場の絵をパスで渡せる(self, state, tmp_path):
         state.setenv("CHIEZO_MEDIA_DIR", str(tmp_path / "media"))
@@ -2586,3 +2589,132 @@ class TestNotTakingOrdersFromTheCliItDrives:
         state.setattr(media, "_bridge_addrs", (0.0, {}))
         assert media.bridge_addresses() == {}
         media.refuse_bridge_caller("172.18.0.9", "comfyui")
+
+
+class TestDrawingFromAPictureOnOurOwnGpu:
+    """**自前の GPU にも絵を渡せるようにする。** 前は text-to-image の 1 本しか
+    グラフが無く、`edits=False` だったので、参考を渡すと頼む前に断られていた。
+
+    役割で繋ぎ先が変わる —— `edit` / `reference` は img2img、`pose` は ControlNet。
+    **言葉で姿勢は伝わらない**(相手もコマ数も変えて 13 回とも同じ足が前に出た)ので、
+    姿勢は別の口で渡す。
+    """
+
+    def test_an_edit_keeps_more_of_the_original_than_a_reference(self):
+        """`edit` は「これを直す」、`reference` は「絵柄だけ合わせて中身は新しく」。"""
+        edit = media_backends._comfy_graph(
+            media_backends.ImageRequest(prompt="x", source_mode="edit"),
+            "m.safetensors", 1024, 1024, 1, init_name="a.png")
+        ref = media_backends._comfy_graph(
+            media_backends.ImageRequest(prompt="x", source_mode="reference"),
+            "m.safetensors", 1024, 1024, 1, init_name="a.png")
+        assert edit["5"]["inputs"]["denoise"] < ref["5"]["inputs"]["denoise"]
+        # 空の潜在画像ではなく、置いた絵から描き直す
+        assert edit["5"]["inputs"]["latent_image"] == ["11", 0]
+
+    def test_a_pose_goes_through_controlnet_on_both_sides(self):
+        """片側だけだと、姿勢を外した絵に罰が掛からず効きが半分になる。"""
+        graph = media_backends._comfy_graph(
+            media_backends.ImageRequest(prompt="x"), "m.safetensors", 1024, 1024, 1,
+            pose_name="p.png", controlnet="openpose.safetensors")
+        assert graph["5"]["inputs"]["positive"] == ["22", 0]
+        assert graph["5"]["inputs"]["negative"] == ["22", 1]
+        # 骨組みそのものは出力に出ない（姿勢だけが効く）
+        assert graph["7"]["inputs"]["images"] == ["6", 0]
+
+    def test_without_a_picture_the_graph_is_what_it_always_was(self):
+        """継ぎ足しにしてあるので、渡さなければ今までと同じグラフになる。"""
+        graph = media_backends._comfy_graph(
+            media_backends.ImageRequest(prompt="x"), "m.safetensors", 1024, 1024, 1)
+        assert set(graph) == {"1", "2", "3", "4", "5", "6", "7"}
+        assert graph["5"]["inputs"]["denoise"] == 1.0
+
+    def test_the_pose_is_handed_to_a_cli_as_the_first_reference(self):
+        """向こうは ControlNet を持たないので、依頼文で「1 枚目は姿勢」と指せるよう
+        先頭に置く。"""
+        req = media_backends.ImageRequest(
+            prompt="x", pose=b"POSE", sources=(b"STYLE",), source_mode="edit")
+        sent = {}
+
+        class _Res:
+            status_code = 200
+            @staticmethod
+            def json():
+                return {"data": [{"b64_json": base64.b64encode(PNG).decode()}]}
+
+        class _Client:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def post(self, url, json=None, **kw):
+                sent.update(json or {})
+                return _Res()
+
+        with patch.object(media_backends, "_client", lambda *a, **k: _Client()):
+            asyncio.run(media_backends._bridge_image_generate(
+                media_providers.get("codex"), req, 0))
+        assert [base64.b64decode(x) for x in sent["images"]] == [b"POSE", b"STYLE"]
+        # 姿勢を渡すときは「直す」ではなく「参考にする」言い方になる
+        assert sent["image_mode"] == media_backends.SOURCE_REFERENCE
+
+
+class TestLeonardo:
+    """**web アプリの契約とは別建て。** 公式の言い方が "API access is separate from
+    free or web app subscriptions" / "usage is billed in dollars" なので、月額に
+    付いてくる枠では叩けない。読み違えると、契約したのに 401 が返り続ける。
+    """
+
+    def test_it_is_never_the_default(self):
+        """ドル建ての従量課金なので、既定で選ばれると黙って請求が伸びる。"""
+        assert media_providers.default_backend(media_providers.KIND_IMAGE) != "leonardo"
+        assert "leonardo" in [p.id for p in
+                              media_providers.all_providers(media_providers.KIND_IMAGE)]
+
+    def test_the_model_can_be_given_by_name_or_by_id(self):
+        """人が選ぶのは名前、渡すのは id。一覧の値をそのまま渡されても通ること。"""
+        pick = media_backends._leonardo_model_id
+        assert pick("Anime XL (abc-123)") == "abc-123"
+        assert pick("abc-123") == "abc-123"
+        assert pick("") == ""
+
+    def test_it_asks_then_waits_then_fetches(self, state):
+        """投げた時点では絵を持たない相手なので、出来るまで引き直す。"""
+        state.setattr(media_backends, "credential_of", lambda spec: "KEY")
+        state.setattr(media_backends, "LEONARDO_POLL_SEC", 0)
+        calls = []
+
+        class _Res:
+            def __init__(self, payload, content=b""):
+                self._payload, self.content, self.status_code = payload, content, 200
+            def json(self): return self._payload
+            def raise_for_status(self): return None
+
+        class _Client:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def post(self, url, **kw):
+                calls.append("post")
+                return _Res({"sdGenerationJob": {"generationId": "g1"}})
+            async def get(self, url, **kw):
+                calls.append(url.rsplit("/", 1)[-1])
+                if url.endswith("g1"):
+                    done = calls.count("g1") > 1
+                    return _Res({"generations_by_pk": {
+                        "status": "COMPLETE" if done else "PENDING",
+                        "generated_images": [{"url": "https://x/pic.png"}] if done else [],
+                    }})
+                return _Res({}, content=PNG)
+
+        state.setattr(media_backends, "_client", lambda *a, **k: _Client())
+        out = asyncio.run(media_backends._leonardo_image(
+            media_providers.get("leonardo"),
+            media_backends.ImageRequest(prompt="城", model="Anime (m-1)"), 0))
+        assert out.data == PNG and out.model == "m-1"
+        assert calls.count("g1") == 2, "出来るまで引き直すこと"
+
+    def test_a_missing_key_is_refused_before_anything_is_spent(self, state):
+        state.setattr(media_backends, "credential_of", lambda spec: "")
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(media_backends._leonardo_image(
+                media_providers.get("leonardo"),
+                media_backends.ImageRequest(prompt="城"), 0))
+        assert e.value.status_code == 401
