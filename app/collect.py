@@ -494,6 +494,17 @@ class Sweep:
         at = at or _now()
         return self.enabled and (_parse(self.next_run_at) or at) <= at
 
+    def walks_partitions(self) -> bool:
+        """この回が区画を歩くか。**機械で引く回は歩かない**。
+
+        指定を 1 本引いて全部を返すので、区画に印を付けない —— 付けると、
+        見てもいない区画が「回り終えた」に混ざる(一周が嘘になる)。
+
+        **一周を数える側はここを見る。** 歩かない回の一周は「1 回走ったこと」で、
+        区画の印では永遠に数え終わらない。
+        """
+        return not (self.use_extract or self.use_feed)
+
     def per_run(self, total_partitions: int) -> int:
         """1 回に見る区画の数。
 
@@ -1875,6 +1886,10 @@ def lapped(item: Collection, sweep: Sweep) -> bool:
     """
     if not sweep.one_lap or not item.partitions:
         return False
+    if not sweep.walks_partitions():
+        # **歩かない回の一周は 1 回**(`Sweep.walks_partitions`)。区画の印で数えると、
+        # 印を付けない回は永遠に一周し終わらず、止まるはずの巡回が回り続ける
+        return bool(sweep.last_run_at)
     visited, total = partitioning.progress(item.partitions, sweep.name)
     return bool(total) and visited >= total
 
@@ -1891,11 +1906,17 @@ def waited_for(item: Collection, sweep: Sweep) -> bool:
     """
     if not sweep.after:
         return True
-    others = {s.name for s in sweeps_of(item)}
-    if sweep.after not in others:
+    others = {s.name: s for s in sweeps_of(item)}
+    before = others.get(sweep.after)
+    if before is None:
         return True
-    if not item.partitions:
-        return any(s.name == sweep.after and s.last_run_at for s in sweeps_of(item))
+    # **区画を歩かない回は、1 回走れば一周**(`Sweep.walks_partitions`)。
+    # 機械で引く回は区画に印を付けないので、一周を印で数えると 0 / 全区画 のまま
+    # 動かず、**その回を待つ巡回は二度と走らない** —— 実際、名簿を待つ「ざっと」が
+    # 1 回目(まだ区画が無く、下の枝に落ちた)を最後に止まっていた。
+    # 一度きりの回も同じ(`once`。もう走らないので、区画を回り切ることは無い)
+    if not item.partitions or not before.walks_partitions() or before.once:
+        return bool(before.last_run_at)
     visited, total = partitioning.progress(item.partitions, sweep.after)
     return bool(total) and visited >= total
 

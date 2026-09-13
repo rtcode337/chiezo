@@ -1115,6 +1115,52 @@ class TestOrderingTheSweeps:
         assert collect.lapped(*self._sweep("ざっと")) is True
         assert "ざっと" not in [s.name for _c, s in collect.due_sweeps()]
 
+    def test_waiting_on_a_mechanical_sweep_needs_only_one_run(self, enabled):
+        """**機械で引く回は区画に印を付けない**(指定を 1 本引いて全部を返すため)。
+
+        一周を区画の印で数えると 0 / 全区画 のまま動かず、その回を待つ巡回は
+        二度と走らない —— 本番で、名簿を待つ「ざっと」が 1 回目(まだ区画が無く、
+        件数の枝に落ちた)を最後に 6 時間止まっていた。
+        """
+        collect.create("news", prompt="{cursor} と {current}", interval_minutes=60)
+        collect.update(
+            "news",
+            enabled=True,
+            extract={"source": "jawiki", "tag": "画家"},
+            partition={"by": "title", "target": 10},
+            sweeps=[{"name": "名簿", "use_extract": True, "once": True},
+                    {"name": "ざっと", "after": "名簿"}],
+        )
+        # 名簿がまだ走っていないうちは待つ
+        assert collect.waited_for(*self._sweep("ざっと")) is False
+
+        collect.record_result("news", status="ok", sweep="名簿")
+        # その回が区画を作った(印は付かない —— 機械で引く回は区画を歩かない)
+        collect.update("news", partitions=[
+            {"key": partitioning.title_key("あ", "お"), "count": 10},
+            {"key": partitioning.title_key("か", "こ"), "count": 10},
+        ])
+
+        assert collect.waited_for(*self._sweep("ざっと")) is True
+        assert "ざっと" in [s.name for _c, s in collect.due_sweeps()]
+
+    def test_a_mechanical_lap_ends_after_one_run(self, enabled):
+        """一周したら止まる回が機械で引くなら、1 回で一周(印では数え終わらない)。"""
+        collect.create("news", prompt="{cursor}", interval_minutes=60)
+        collect.update(
+            "news",
+            enabled=True,
+            extract={"source": "jawiki", "tag": "画家"},
+            partition={"by": "title", "target": 10},
+            partitions=[{"key": partitioning.title_key("あ", "お"), "count": 10}],
+            sweeps=[{"name": "名簿", "use_extract": True, "one_lap": True}],
+        )
+        assert collect.lapped(*self._sweep("名簿")) is False
+
+        collect.record_result("news", status="ok", sweep="名簿")
+
+        assert collect.lapped(*self._sweep("名簿")) is True
+
     def test_an_unknown_name_does_not_block(self, staged):
         """待つ相手が居ないのに永久に止まる方が悪い。"""
         collect.update("news", sweeps=[{"name": "調査", "after": "居ない巡回"}])
