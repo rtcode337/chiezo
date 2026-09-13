@@ -2455,8 +2455,26 @@ class TestTheCollectSectionMarkup:
         ])
         html = self._html(sample)
         assert html.count(">今すぐ実行</button>") == 2
-        assert html.count(">ドライラン</button>") == 2
-        assert html.count('name="sweep" value="じっくり"') == 2
+        assert html.count('name="sweep" value="じっくり"') == 1
+
+        # **ドライランは面のほうだけ。** 押した先で結果を読む口なので、
+        # 読みに来る場所に置く —— 一覧に並べると収集の数だけ場所を食う
+        assert ">ドライラン</button>" not in html
+        assert self._table().count(">ドライラン</button>") == 2
+
+    def test_a_mechanical_sweep_says_it_uses_no_ai(self, sample):
+        """「既定にまかせる」は『誰に頼むかは Chiezo が決める』の意味で、
+        頼むこと自体は起きるように読める —— 機械で引く回は AI を呼ばない。
+        """
+        collect.update("news", sweeps=[
+            {"name": "名簿", "use_extract": True},
+            {"name": "肉付け", "interval_minutes": 360},
+        ])
+        html = self._html(sample)
+
+        assert "AI 利用無し" in html
+        # AI に頼む回のほうは、これまでどおり既定だと分かるように書く
+        assert "既定にまかせる" in html
 
     def test_a_clockless_sweep_has_no_buttons(self, sample):
         """割り込み用の 1 本は、自前の依頼文を持たないので単独では走らせない。"""
@@ -2527,13 +2545,16 @@ class TestTheCollectSectionMarkup:
         # プロンプトと収集ぜんたいの設定は、一覧には出さない（下の「収集を追加する」は別物）
         assert "<summary>プロンプト</summary>" not in html
         assert "/admin/collect/news/edit" not in html
-        # **巡回の設定だけは行の下に畳んで置く** —— 見ている行の真下でなければ、
-        # どの行のものかを名前で照合することになる
-        assert '<tr class="sweep-edit">' in html
+        # **巡回の設定も一覧には出さない。** 直しに来る場所は収集の面で、
+        # 一覧は「動いているか」を読むための表 —— 畳んであっても、収集の数だけ
+        # 行が増えて、見たいものが画面の外へ押し出される
+        assert '<tr class="sweep-edit">' not in html
+        assert "巡回を足す" not in html
+        # 面のほうには出る
+        assert '<tr class="sweep-edit">' in self._table()
         # **名前は繰り返さない**（すぐ上の行に出ているし、名前入りだと
         # 下の巡回の見出しに見える）
-        assert "<summary>設定</summary>" in html
-        assert "ざっと の設定" not in html
+        assert "<summary>設定</summary>" in self._table()
         # 面のほうには畳まずに出る
         detail = self._detail()
         assert '<pre class="prompt-view">' in detail
@@ -2585,9 +2606,8 @@ class TestTheCollectSectionMarkup:
         html = self._html(sample)
         body = html.split("<tbody>")[1].split("</tbody>")[0]
 
-        # 名前と操作は行をまたがせる（収集のものなので）。
-        # 伸ばす先は巡回の行 2 本 + その下の設定の行 2 本 + 足すための 1 行
-        assert 'rowspan="5"' in body
+        # 名前と操作は行をまたがせる（収集のものなので）
+        assert 'rowspan="2"' in body
         # 巡回は表にそのまま並ぶ
         assert "ざっと" in body and "じっくり" in body
         assert "1440 分ごと" in body

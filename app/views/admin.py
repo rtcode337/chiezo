@@ -479,7 +479,14 @@ def _backend_hint() -> str:
 
 
 def _backend_label(item) -> str:
-    """行に出す相手の名前。未指定なら既定だと分かるように書く。"""
+    """行に出す相手の名前。未指定なら既定だと分かるように書く。
+
+    **AI を呼ばない回には「既定にまかせる」と出さない** —— あれは「誰に頼むかは
+    Chiezo が決める」の意味で、頼むこと自体は起きるように読める。機械で引く回は
+    そもそも AI を呼ばない。
+    """
+    if getattr(item, "use_extract", False) or getattr(item, "use_feed", False):
+        return '<span class="muted">AI 利用無し</span>'
     spec = providers.get(item.backend) if item.backend else None
     label = (
         esc(spec.label if spec else item.backend)
@@ -703,7 +710,7 @@ def _sweep_table_body(item, disabled: str = "") -> str:
     return "".join(rows)
 
 
-def _sweep_cells(item, disabled: str = "") -> list[str]:
+def _sweep_cells(item, disabled: str = "", dry: bool = True) -> list[str]:
     """巡回 1 本ぶんのセル(巡回・相手・間隔・次にいつ・一周のうち・前回)。
 
     **「集める」の表にそのまま並べる。** 折り畳みの中へ入れていた頃は、動いているかを
@@ -770,7 +777,7 @@ def _sweep_cells(item, disabled: str = "") -> list[str]:
         run = (
             '<span class="muted">—</span>'
             if sweep.on_demand
-            else _sweep_run_forms(item.name, sweep.name, disabled)
+            else _sweep_run_forms(item.name, sweep.name, disabled, dry)
         )
         every = (
             '<span class="muted">時計なし</span>'
@@ -800,22 +807,28 @@ def _doc_link(name: str, title: str) -> str:
     )
 
 
-def _sweep_run_forms(name: str, sweep: str, disabled: str) -> str:
-    """その巡回を 1 回だけ動かす 2 つの口。
+def _sweep_run_forms(name: str, sweep: str, disabled: str, dry: bool = True) -> str:
+    """その巡回を 1 回だけ動かす口。
 
     **ドライランは焼かない**(差分を見るだけ)ので、取り込みが走っていても押せる。
     **今すぐ実行は焼く**ので、trigger が居ないときと取り込み中は押せない。
+
+    **一覧にはドライランを出さない**(`dry=False`)。あれは押した先で結果を読む口で、
+    読みに来る場所は収集の面 —— 一覧に並べると、収集の数だけ場所を食う。
     """
     field = f'<input type="hidden" name="sweep" value="{esc(sweep)}">'
+    preview = (
+        f'<form class="init-form" method="post" action="/admin/collect/{esc(name)}/preview">'
+        f'{field}<button type="submit"'
+        f' title="この巡回で 1 回集めさせて、焼かずに差分だけ見ます">ドライラン</button></form>'
+        if dry else ""
+    )
     return (
         f'<div class="sweep-run">'
         f'<form class="init-form" method="post" action="/admin/collect/{esc(name)}/run"{disabled}>'
         f'{field}<button type="submit"{disabled}'
         f' title="この巡回で 1 回、集めて焼きます">今すぐ実行</button></form>'
-        f'<form class="init-form" method="post" action="/admin/collect/{esc(name)}/preview">'
-        f'{field}<button type="submit"'
-        f' title="この巡回で 1 回集めさせて、焼かずに差分だけ見ます">ドライラン</button></form>'
-        f"</div>"
+        f"{preview}</div>"
     )
 
 
@@ -1213,15 +1226,11 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
         # **巡回ごとに 1 行。** 間隔も次の予定も前回も相手も巡回ごとに違うので、
         # 収集に 1 行だけ与えると、そこに出る値はどちらか片方のものにしかならない。
         # 名前と溜まった件数と操作は収集のものなので、行をまたがせる
-        sweep_cells = _sweep_cells(item, disabled)
-        sweeps = collect.sweeps_of(item)
-        # 巡回 1 本につき「行」と「設定の行」の 2 行。最後に足すための 1 行
-        edit_rows = [
-            _sweep_edit_row(item, s, SWEEP_COLUMNS, len(sweeps) > 1) for s in sweeps
-        ]
-        edit_rows.append(_sweep_edit_row(item, None, SWEEP_COLUMNS))
-        span_rows = len(sweep_cells) + len(edit_rows)
-        span = f' rowspan="{span_rows}"' if span_rows > 1 else ""
+        # **一覧には巡回の設定を出さない。** 直しに来る場所は収集の面で、
+        # 一覧は「動いているか」を読むための表 —— 畳んであっても、収集の数だけ
+        # 行が増えて、見たいものが画面の外へ押し出される
+        sweep_cells = _sweep_cells(item, disabled, dry=False)
+        span = f' rowspan="{len(sweep_cells)}"' if len(sweep_cells) > 1 else ""
         rows.append(
             f"<tr{cls}>"
             f'<td{span}><a href="/admin/collect/{esc(quote(item.name))}">{esc(item.name)}</a>'
@@ -1236,14 +1245,8 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f"{delete_form}"
             f"</td></tr>"
         )
-        # 設定の行は、その巡回のすぐ下へ。**離れたところに置くと、どの行のものかを
-        # 名前で照合することになる**。2 本目からの巡回は左右のセルが 1 行目から伸びている
-        rows.append(edit_rows[0])
-        for cells, edit in zip(sweep_cells[1:], edit_rows[1:], strict=False):
-            rows.append(f"<tr{cls}>{cells}</tr>")
-            rows.append(edit)
-        # 足すための行は最後に(名前を書けば増える)
-        rows.append(edit_rows[-1])
+        # 2 本目からは巡回のぶんだけ。左右のセルは 1 行目から伸びている
+        rows += [f"<tr{cls}>{cells}</tr>" for cells in sweep_cells[1:]]
     table = f"""
 <table>
 <thead>
