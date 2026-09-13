@@ -1081,6 +1081,17 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             if src is not None
             else f"収集「{item.name}」の設定を消します(まだ何も溜まっていません)。よろしいですか?"
         )
+        # **消す口は、止めてある収集にだけ出す。** 動いている収集を消すと、
+        # 走っている最中の 1 回が行き先を失う(焼く先の定義がもう無い)。
+        # 止めるほうが先、という順番を画面の側で示す
+        delete_form = (
+            f'<form class="init-form" method="post"'
+            f' action="/admin/collect/{esc(item.name)}/delete"'
+            f" onsubmit=\"return confirm('{esc(delete_confirm)}')\">"
+            f'<button type="submit">削除</button></form>'
+            if not item.enabled
+            else '<span class="muted">止めると消せます</span>'
+        )
         # **巡回ごとに 1 行。** 間隔も次の予定も前回も相手も巡回ごとに違うので、
         # 収集に 1 行だけ与えると、そこに出る値はどちらか片方のものにしかならない。
         # 名前と溜まった件数と操作は収集のものなので、行をまたがせる
@@ -1097,9 +1108,7 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             + f"<td{span}>"
             f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/toggle">'
             f'<button type="submit">{toggle_label}</button></form>'
-            f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/delete"'
-            f" onsubmit=\"return confirm('{esc(delete_confirm)}')\">"
-            f'<button type="submit">削除</button></form>'
+            f"{delete_form}"
             f"</td></tr>"
         )
         # 2 本目からは巡回のぶんだけ。左右のセルは 1 行目から伸びている
@@ -2167,6 +2176,15 @@ def admin_collect_delete(request: Request, name: str):
     **ソースを消せなくても設定は消す** —— trigger が立っていない構成は普通に
     あるので、そこで操作ごと止めない。
     """
+    # **動いている収集は消さない。** 口を隠すだけでは足りない —— URL は届くし、
+    # 消した拍子に走っていた 1 回は焼く先の定義を失う。止めるほうが先
+    # **無い名前でも 404 にしない**(消す操作は、既に無いなら done でよい)
+    item = next((c for c in collect.load() if c.name == name), None)
+    if item is not None and item.enabled:
+        raise HTTPException(409, {
+            "error": f"収集「{name}」は動いています",
+            "hint": "先に「止める」を押してから消してください",
+        })
     dropped = _drop_collect_source(name)
     collect.remove(name)
     # 消した後のソース表を作り直す(消えたものが一覧に残らないように)

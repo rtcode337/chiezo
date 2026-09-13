@@ -1542,6 +1542,14 @@ class TestRest:
 
         assert collect.recent("news", sources)[0]["tags"] == ["まとめ"]
 
+    def test_deleting_a_running_collection_is_refused(self, client, sample):
+        """口を隠すだけでは足りない —— URL は届く。"""
+        collect.update("news", enabled=True)
+
+        assert client.post("/admin/collect/news/delete").status_code == 409
+        # 断ったのだから残っている
+        assert collect.get("news").name == "news"
+
     def test_an_unknown_collection_is_404(self, client, sample):
         assert client.get("/v1/collect/nosuch").status_code == 404
 
@@ -2084,6 +2092,19 @@ class TestTheCollectSectionMarkup:
         from app.views import admin
 
         return admin._collect_detail_html(collect.get(name), "")
+
+    def test_a_running_collection_has_no_delete_button(self, sample):
+        """動いている収集を消すと、走っている最中の 1 回が焼く先の定義を失う。"""
+        collect.update("news", enabled=True)
+        html = self._html(sample)
+
+        assert "/delete" not in html
+        assert "止めると消せます" in html
+
+    def test_a_stopped_collection_can_be_deleted(self, sample):
+        html = self._html(sample)
+
+        assert "/admin/collect/news/delete" in html
 
     def test_every_form_is_opened_and_closed(self, sample):
         html = self._html(sample)
