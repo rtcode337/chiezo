@@ -204,3 +204,50 @@ class TestWhatTheAiSees:
     def test_an_empty_harvest_says_so(self, serve):
         serve({"https://example.com/feed": RSS.replace("<item>", "<skip>")})
         assert "1 件も取れませんでした" in feeds.render(run({"urls": ["https://example.com/feed"]}))
+
+
+class TestKeepingItRaw:
+    """機械的にそのまま溜める側(巡回の引き方が「外の道具で引く」のとき)。
+
+    **AI を呼ばずに入る唯一の外向きの経路**なので、入るものの形と、
+    どの束のものかを後から引けることを押さえる。
+    """
+
+    def test_it_makes_items_the_collect_layer_can_bake(self, serve):
+        serve({"https://example.com/feed": RSS})
+        items = feeds.to_items(run({"urls": ["https://example.com/feed"]}))
+
+        assert [i["title"] for i in items] == ["新しいほう", "古いほう"]
+        assert items[0]["body"] == "要約のようなもの。"
+        assert items[0]["url"] == "https://example.com/2"
+        # 配信日は運ぶ(「前回から今回まで」を数えるのに要る)
+        assert items[0]["at"].startswith("2026-09-10")
+
+    def test_the_source_is_always_a_tag(self, serve):
+        """同じ束に何本も混ざるので、出典がタグに無いと後から外せない。"""
+        serve({"https://example.com/feed": RSS})
+        items = feeds.to_items(run({"urls": ["https://example.com/feed"]}))
+
+        assert "ためし新聞" in items[0]["tags"]
+
+    def test_a_url_can_carry_its_own_tags(self, serve):
+        """ニュースと記事と論文が同じところに溜まっても、タグで分けて取り出せる。"""
+        serve({"https://example.com/feed": RSS})
+        spec = {"urls": [{"url": "https://example.com/feed", "tags": ["ニュース"]}]}
+        items = feeds.to_items(asyncio.run(feeds.fetch(feeds.normalize(spec))))
+
+        assert items[0]["tags"] == ["ニュース", "ためし新聞"]
+
+    def test_untagged_urls_stay_plain_strings_in_the_note(self):
+        """読むのは人なので、付いていない鍵を並べるだけの形にはしない。"""
+        spec = feeds.normalize({"urls": ["https://example.com/feed"]})
+
+        assert feeds.to_json(spec)["urls"] == ["https://example.com/feed"]
+
+    def test_a_headline_without_a_summary_still_gets_in(self, serve):
+        """本文は取りに行かない契約。ここで捨てると、そのフィードは丸ごと入らない。"""
+        serve({"https://example.com/feed": RSS.replace("<description>要約のようなもの。</description>", "")})
+        items = feeds.to_items(run({"urls": ["https://example.com/feed"]}))
+
+        assert items[0]["title"] == "新しいほう"
+        assert "配信されていません" in items[0]["body"]

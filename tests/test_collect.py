@@ -770,6 +770,79 @@ class TestTheMechanicalSweep:
         assert [i["title"] for i in items] == ["草間彌生"]
 
 
+class TestTheOutwardSweep:
+    """外の道具で引く巡回 —— フィードの見出しをそのまま溜める回。
+
+    **AI を呼ばずに外から入る唯一の経路**。取りこぼしも宣伝記事も引き受ける代わりに、
+    枠を使わずに回せる —— 重要度を付ける・まとめる・漏れを探す、といった判断の要る
+    仕事は別の巡回が AI に頼む(名簿と肉付けを分けるのと同じ形)。
+    """
+
+    def test_the_sweep_carries_the_mark(self, sample):
+        collect.update("news", sweeps=[
+            {"name": "取り込み", "interval_minutes": 60, "use_feed": True, "only_new": True},
+            {"name": "整理", "interval_minutes": 360},
+        ])
+        outward, tidy = collect.sweeps_of(collect.get("news"))
+        assert (outward.use_feed, outward.only_new) == (True, True)
+        assert tidy.use_feed is False
+
+    def test_it_bakes_what_the_feed_handed_over(self, sample, monkeypatch):
+        """AI は呼ばない。**呼ぶと、機械で取れるものまで書き換わる**。"""
+        import asyncio
+
+        from app import main
+
+        collect.update("news", sweeps=[{"name": "取り込み", "use_feed": True}])
+        item = collect.get("news")
+        harvest = {
+            "items": [{
+                "title": "見出し", "url": "https://example.com/1",
+                "summary": "要約", "at": "2026-09-10T03:00:00+00:00", "from": "ためし新聞",
+                "tags": ["ニュース"],
+            }],
+            "failed": 0, "tried": 1,
+        }
+
+        def no_ai(*args, **kwargs):
+            raise AssertionError("外の道具で引く回は AI を呼ばない")
+
+        monkeypatch.setattr(main, "_ask_for_collection", no_ai)
+        items, cursor, _note = asyncio.run(
+            main._collect_items(
+                item, {}, {}, [], collect.sweep_named(item, "取り込み"), None, harvest
+            )
+        )
+
+        assert [i["title"] for i in items] == ["見出し"]
+        assert items[0]["tags"] == ["ニュース", "ためし新聞"]
+        # **進み具合には触らない**。次にどこから読むかは道具の側が決める
+        assert cursor is None
+
+    def test_a_missing_tool_is_said_out_loud(self, sample):
+        """道具を付け忘れた収集が、黙って 0 件で回り続けないように。"""
+        import asyncio
+
+        from app import main
+
+        collect.update("news", sweeps=[{"name": "取り込み", "use_feed": True}])
+        item = collect.get("news")
+        items, _cursor, note = asyncio.run(
+            main._collect_items(item, {}, {}, [], collect.sweep_named(item, "取り込み"))
+        )
+
+        assert items == []
+        assert "外向きの道具" in note
+
+    def test_the_published_date_is_kept_apart_from_the_day_it_arrived(self, sample):
+        """集めた日だけだと、半年前の記事を今日拾ったのかが読めない。"""
+        docs, _diff = collect.material(
+            sample, {}, [{"title": "見出し", "body": "要約", "at": "2026-09-10T03:00:00+00:00"}]
+        )
+
+        assert docs[0]["extra"]["published_at"].startswith("2026-09-10")
+
+
 class TestPerSweepPrompt:
     """依頼文は巡回ごとに書ける。**空なら収集のもの**。
 

@@ -611,6 +611,7 @@ def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
     on_demand = bool(sweep and sweep.on_demand)
     only_new = bool(sweep and sweep.only_new)
     use_extract = bool(sweep and sweep.use_extract)
+    use_feed = bool(sweep and sweep.use_feed)
     # **巡回ごとの依頼文。** 空なら収集のものを使う ——
     # 頼むことが巡回ごとに違う(埋める / 見直して消す / 漏れを足す)のに、
     # 1 つの文で全部を頼むと、どの回も同じ薄さの仕事になる
@@ -657,9 +658,12 @@ def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
         # **引き方**(AI に頼むか、抽出の指定で機械に引かせるか)。機械の回は
         # 名簿を最新に保つためのもので、AI を呼ばない ——「足すだけ」と組にして使う
         '<p><label>引き方<br><select name="sweep_source">'
-        f'<option value="ai"{"" if use_extract else " selected"}>AI に頼む</option>'
+        f'<option value="ai"{"" if use_extract or use_feed else " selected"}>'
+        "AI に頼む</option>"
         f'<option value="extract"{" selected" if use_extract else ""}>'
         "機械で引く(抽出の指定をもう一度走らせる)</option>"
+        f'<option value="feed"{" selected" if use_feed else ""}>'
+        "外の道具で引く(フィードの見出しをそのまま溜める)</option>"
         "</select></label></p>"
         '<p><label>集め方<br><select name="sweep_merge">'
         f'<option value="all"{"" if only_new else " selected"}>'
@@ -719,6 +723,8 @@ def _sweep_cells(item, disabled: str = "") -> list[str]:
             name += '<br><span class="muted">足すだけ</span>'
         if sweep.use_extract:
             name += '<br><span class="muted">機械で引く</span>'
+        if sweep.use_feed:
+            name += '<br><span class="muted">外の道具で引く</span>'
         # **押す口は巡回ごとに 1 つずつ。** 相手も 1 回に見る量も巡回ごとに違うので、
         # 収集に 1 つだけ置くと「どの設定で走ったのか」が押した本人にも分からない。
         # **時計を持たない巡回には出さない** —— あれは割り込みで頼まれたときだけ
@@ -2314,6 +2320,8 @@ def _parse_sweeps_form(form) -> list[dict]:
         # **機械で引く**も名指しのときだけ(欄を持たないフォームから引き方が変わらないように)
         if at("source") == "extract":
             sweep["use_extract"] = True
+        if at("source") == "feed":
+            sweep["use_feed"] = True
         if at("interval").isdigit():
             sweep["interval_minutes"] = int(at("interval"))
         for key, field in (("cover_days", "cover_days"), ("partitions_per_run", "per_run")):

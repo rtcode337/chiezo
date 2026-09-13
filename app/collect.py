@@ -392,6 +392,11 @@ class Sweep:
     # **足すだけ(`only_new`)と組にして使う** —— 組にしないと、AI が肉付けしたぶんを
     # 名簿の薄い内容で上書きする(機械は影響関係も代表作も持っていない)
     use_extract: bool = False
+    # **外の道具で引く巡回**(`app/feeds.py`)。RSS / Atom が配っている見出し・要約・
+    # URL・配信日を、AI を呼ばずにそのまま溜める。取りこぼしも宣伝記事も引き受ける
+    # 代わりに、**枠を使わずに毎時回せる** —— 重要度を付ける・まとめる・漏れを探す、
+    # といった判断の要る仕事は別の巡回が AI に頼む(名簿と肉付けを分けるのと同じ形)
+    use_feed: bool = False
     # **足すだけの巡回**。既にある見出しが返ってきても触らない ——
     # 「漏れているものを足す」を頼む回に要る印で、**AI の判断に頼らずに保証する**。
     # 見せられるのはその区画のぶんだけなので、AI には「もう居るかどうか」が分からない
@@ -494,6 +499,7 @@ def _sweep_from_json(raw: dict, item: Collection) -> Sweep:
         on_demand=bool(raw.get("on_demand")),
         only_new=bool(raw.get("only_new")),
         use_extract=bool(raw.get("use_extract")),
+        use_feed=bool(raw.get("use_feed")),
         next_run_at=raw.get("next_run_at") or None,
         last_run_at=raw.get("last_run_at") or None,
         last_status=raw.get("last_status") or None,
@@ -1926,6 +1932,10 @@ def _to_doc(raw: dict, now: str, web: bool) -> dict | None:
     extra = {"collected_at": now, "web": bool(web)}
     if url := (raw.get("url") or "").strip():
         extra["url"] = url
+    # **配信日は、集めた日と別に持つ**。フィードから機械的に溜めるときに入る ——
+    # 集めた日だけだと、半年前の記事を今日拾ったのか、今日出たものなのかが読めない
+    if at := _published(raw.get("at")):
+        extra["published_at"] = at
     # **座標は運ぶ**。矩形で区画を割る収集では、これが無いと集めたものがどの区画にも
     # 入らない(次に同じ区画を見たとき「まだ何も無い」と見えて、同じものを集め直す)。
     # ついでにコアスキーマの生成列に乗るので、`filter?bbox=` で普通のソースとして引ける
@@ -1941,6 +1951,17 @@ def _to_doc(raw: dict, now: str, web: bool) -> dict | None:
         "updated_at": now,
         "extra": extra,
     }
+
+
+def _published(raw) -> str:
+    """配信日。**読めなければ持たない**(崩れた日付を素通ししない)。"""
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    try:
+        value = datetime.fromisoformat(raw.strip())
+    except ValueError:
+        return ""
+    return _iso(value if value.tzinfo else value.replace(tzinfo=UTC))
 
 
 def _coords(raw: dict) -> tuple[float | None, float | None]:

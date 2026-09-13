@@ -6,14 +6,19 @@
 どちらも狙いは同じで、**AI が間違えるところと、間違えないところを分ける**こと ——
 見出しと URL と日付は機械が正確に取れる。何が重要でどう束ねるかは取れない。
 
-## これは素材であって、情報源ではない
+## 使い道は 2 つある
 
-**取ってきたものをそのまま溜めない。** `{feed}` でプロンプトへ差し込むだけで、
-何を DB へ入れるかは AI が決める —— 自分でも web を検索し、渡されたぶんも含めて
-採否を判断する。だから道具が取りこぼしても穴にはならないし、道具が拾った宣伝記事が
-そのまま溜まることもない。
+**1. AI への素材として差し込む**(`{feed}`)。何を DB へ入れるかは AI が決める ——
+自分でも web を検索し、渡されたぶんも含めて採否を判断する。だから道具が
+取りこぼしても穴にはならないし、道具が拾った宣伝記事がそのまま溜まることもない。
 
-**溜まるのは常に AI が書いたもの。** 生のまま入る経路は作っていない。
+**2. 機械的にそのまま溜める**(巡回の引き方が「外の道具で引く」のとき)。
+`app/extract.py` が手元の名簿を機械で埋めるのと同じ役割で、**見出し・要約・URL・
+配信日という、機械が正確に取れるものだけ**を入れる。AI は呼ばない。
+
+**どちらを使うかは巡回が決める。** 2 は「取りこぼしたものは入らない」「拾った宣伝記事も
+入る」を引き受ける代わりに、**枠を使わずに毎時回せる**。判断の要る仕事(重要度を付ける、
+まとめる、漏れを探す)は別の巡回が AI に頼む —— 名簿と肉付けを分けるのと同じ形。
 
 ## 外へ出る以上は守る(`app/websearch.py` と同じ契約)
 
@@ -63,6 +68,9 @@ DEFAULT_LIMIT = 60
 MAX_BYTES = 2 * 1024 * 1024
 # 1 件の要約の長さ。長い本文を丸ごと載せる相手がいるので切る
 MAX_SUMMARY_CHARS = 300
+# 1 本のフィードに付けられるタグの数。**束の名前を書くためのもの**で、
+# 分類をここで済ませるためのものではない(それは AI の巡回の仕事)
+MAX_TAGS = 5
 
 # 前回の実行より後のものだけを渡す、の印
 SINCE_LAST_RUN = "last_run"
@@ -77,6 +85,28 @@ def _bad(message: str) -> HTTPException:
     return HTTPException(400, {"error": f"フィードの指定が読めません: {message}"})
 
 
+def _one_url(raw) -> dict:
+    """1 本ぶんの指定。**ただの URL でも、タグ付きのオブジェクトでも書ける**。
+
+    タグを書けるようにしてあるのは、機械で溜めるときに**どの束のものか**を
+    後から引けるようにするため —— ニュースと記事と論文が同じところに溜まっても、
+    タグで分けて取り出せる。フィード自身の名前(配信元)は取ってきたときに分かるので、
+    ここに書くのは配信元では表せない区別だけでよい。
+    """
+    if isinstance(raw, str):
+        raw = {"url": raw}
+    if not isinstance(raw, dict):
+        raise _bad("urls には URL の文字列か、url を持つオブジェクトを書いてください")
+    url = str(raw.get("url") or "").strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise _bad(f"http(s) の URL を書いてください: {url or '(空)'}")
+    tags = [str(t).strip() for t in (raw.get("tags") or []) if str(t).strip()]
+    if len(tags) > MAX_TAGS:
+        raise _bad(f"1 本に付けられるタグは {MAX_TAGS} 個まで")
+    return {"url": url, "tags": tags[:MAX_TAGS]}
+
+
 def normalize(raw) -> dict | None:
     """指定を検証して、欠けている鍵を埋めた形にする。無ければ None。
 
@@ -87,15 +117,11 @@ def normalize(raw) -> dict | None:
         return None
     if not isinstance(raw, dict):
         raise _bad("オブジェクトで書いてください")
-    urls = [str(u).strip() for u in (raw.get("urls") or []) if str(u).strip()]
+    urls = [_one_url(u) for u in (raw.get("urls") or []) if u]
     if not urls:
         raise _bad("urls に 1 本以上書いてください")
     if len(urls) > MAX_URLS:
         raise _bad(f"urls は {MAX_URLS} 本まで(いまは {len(urls)} 本)")
-    for url in urls:
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https") or not parsed.netloc:
-            raise _bad(f"http(s) の URL を書いてください: {url}")
     try:
         limit = int(raw.get("limit") or DEFAULT_LIMIT)
     except (TypeError, ValueError):
@@ -110,10 +136,16 @@ def normalize(raw) -> dict | None:
 
 
 def to_json(spec: dict | None) -> dict | None:
-    """定義のメモへ書ける形。**空の鍵は落とす**(読むときに邪魔なだけ)。"""
+    """定義のメモへ書ける形。**空の鍵は落とす**(読むときに邪魔なだけ)。
+
+    タグを付けていない出典は **URL の文字列のまま書く** —— 読むのは人なので、
+    付いていない鍵を並べるだけの `{"url": …, "tags": []}` にはしない。
+    """
     if not spec:
         return None
-    return {k: v for k, v in spec.items() if v not in (None, "")}
+    out = {k: v for k, v in spec.items() if v not in (None, "")}
+    out["urls"] = [one["url"] if not one["tags"] else one for one in spec["urls"]]
+    return out
 
 
 async def _throttle() -> None:
@@ -145,15 +177,16 @@ async def fetch(spec: dict, since: str | None = None) -> dict:
     cutoff = _parse(since) if spec["since"] == SINCE_LAST_RUN else None
     items: list[dict] = []
     failed = 0
-    for url in spec["urls"]:
+    for one in spec["urls"]:
         await _throttle()
         try:
-            entries = await _fetch_one(url)
+            entries = await _fetch_one(one["url"])
         except (httpx.HTTPError, ElementTree.ParseError, ValueError) as e:
             # 例外の文言(接続先のホスト名等が入る)はログにだけ残す
-            log.info("feed fetch failed %s: %r", url, e)
+            log.info("feed fetch failed %s: %r", one["url"], e)
             failed += 1
             continue
+        entries = [{**e, "tags": one["tags"]} for e in entries]
         items += [e for e in entries if cutoff is None or _after(e["at"], cutoff)]
     # **新しい順に切る。** 何本のフィードから来たかに関わらず、読む側に効くのは新しさ
     items.sort(key=lambda e: e["at"] or "", reverse=True)
@@ -261,6 +294,53 @@ def _after(at: str, cutoff: datetime) -> bool:
         return datetime.fromisoformat(at) > cutoff
     except ValueError:
         return True
+
+
+def to_items(result: dict) -> list[dict]:
+    """取ってきた見出しを、集める層が読む形(items)にして返す。
+
+    返す形は AI に書かせたときとまったく同じ(`title` / `body` / `tags` / `url`)で、
+    後ろの工程から見れば誰が作ったものかは区別が付かない(`app/extract.py` と同じ)。
+
+    **要約を配っていないフィードがある。** 本文は取りに行かない契約なので、
+    そのときは「配られていない」とだけ書く —— 見出しだけの 1 件でも、URL と配信日が
+    あれば読む側は辿れる(ここで捨てると、そのフィードは丸ごと入らない)。
+
+    **配信日は運ぶ**(`at`)。機械が正確に取れるものの 1 つで、しかも
+    「前回の要約から今回まで」を数えるのに要る。
+    """
+    out = []
+    for entry in result.get("items") or []:
+        title = (entry.get("title") or "").strip()
+        if not title:
+            continue
+        summary = (entry.get("summary") or "").strip()
+        source = (entry.get("from") or "").strip()
+        out.append({
+            "title": title,
+            "body": summary or f"{source}の配信。要約は配信されていません。",
+            "tags": _tags_of(entry),
+            "url": entry.get("url") or "",
+            "at": entry.get("at") or "",
+        })
+    return out
+
+
+def _tags_of(entry: dict) -> list[str]:
+    """その 1 件に付けるタグ —— 束の名前(指定に書いたもの)と配信元。
+
+    **配信元は必ず入れる。** 同じ束に何本ものフィードが混ざるので、
+    どこから来たのかがタグに無いと、後から出典ごとに外すことができない。
+    """
+    tags = list(entry.get("tags") or [])
+    if source := (entry.get("from") or "").strip():
+        tags.append(source)
+    seen, out = set(), []
+    for tag in tags:
+        if tag not in seen:
+            seen.add(tag)
+            out.append(tag)
+    return out
 
 
 def render(result: dict) -> str:
