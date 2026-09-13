@@ -42,6 +42,7 @@ import logging
 import time
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from itertools import zip_longest
 from urllib.parse import urlparse
 from xml.etree import ElementTree
 
@@ -76,6 +77,14 @@ MAX_TAGS = 5
 SINCE_LAST_RUN = "last_run"
 
 _ATOM = "{http://www.w3.org/2005/Atom}"
+# RSS 1.0(RDF)。**`<item>` が `<channel>` の外に並ぶ** —— RSS 2.0 のつもりで
+# `channel` の下だけを見ていると、この形の配信元は丸ごと 0 件になる
+# (実際、いちばん件数の多い配信元が一件も入っていなかった)
+_RSS1 = "{http://purl.org/rss/1.0/}"
+# 1 件ごとの絵。配信元によって置き場が違う(どれも「フィードが配っているもの」で、
+# ページを取りに行くわけではない)
+_MEDIA = "{http://search.yahoo.com/mrss/}"
+_HATENA = "{http://www.hatena.ne.jp/info/xmlns#}"
 
 _last_call = 0.0
 _lock = asyncio.Lock()
@@ -175,7 +184,7 @@ async def fetch(spec: dict, since: str | None = None) -> dict:
     (`app/websearch.py` と同じ扱い)。取れなかった相手は数だけ返す。
     """
     cutoff = _parse(since) if spec["since"] == SINCE_LAST_RUN else None
-    items: list[dict] = []
+    per_source: list[list[dict]] = []
     failed = 0
     for one in spec["urls"]:
         await _throttle()
@@ -187,10 +196,33 @@ async def fetch(spec: dict, since: str | None = None) -> dict:
             failed += 1
             continue
         entries = [{**e, "tags": one["tags"]} for e in entries]
-        items += [e for e in entries if cutoff is None or _after(e["at"], cutoff)]
-    # **新しい順に切る。** 何本のフィードから来たかに関わらず、読む側に効くのは新しさ
-    items.sort(key=lambda e: e["at"] or "", reverse=True)
-    return {"items": items[: spec["limit"]], "failed": failed, "tried": len(spec["urls"])}
+        kept = [e for e in entries if cutoff is None or _after(e["at"], cutoff)]
+        kept.sort(key=lambda e: e["at"] or "", reverse=True)
+        per_source.append(kept)
+    return {
+        "items": _fair_share(per_source, spec["limit"]),
+        "failed": failed,
+        "tried": len(spec["urls"]),
+    }
+
+
+def _fair_share(per_source: list[list[dict]], limit: int) -> list[dict]:
+    """配信元ごとに順番に取って、最後に新しい順へ並べ直す。
+
+    **まとめてから新しい順に切ると、更新の遅い配信元が永久に入らない** ——
+    速い配信元が上限を埋めてしまうため。実際に、数日おきに出る配信元が
+    1 件も入らないまま回り続けていた(1 日 60 件を超える配信元が同居していた)。
+    """
+    taken: list[dict] = []
+    for row in zip_longest(*per_source):
+        for entry in row:
+            if entry is not None and len(taken) < limit:
+                taken.append(entry)
+        if len(taken) >= limit:
+            break
+    # **新しい順に並べ直す。** 読む側に効くのは新しさ(どの配信元から来たかではない)
+    taken.sort(key=lambda e: e["at"] or "", reverse=True)
+    return taken
 
 
 async def _fetch_one(url: str) -> list[dict]:
@@ -226,22 +258,50 @@ def _text(node, *paths: str) -> str:
 def _source_name(root, url: str) -> str:
     """出典の名前。取れなければホスト名(どこから来たかは必ず出す)。"""
     channel = root.find("channel")
-    name = _text(channel, "title") if channel is not None else _text(root, f"{_ATOM}title")
-    return name or urlparse(url).netloc
+    if channel is None:
+        channel = root.find(f"{_RSS1}channel")
+    name = _text(channel, "title", f"{_RSS1}title") if channel is not None else ""
+    return name or _text(root, f"{_ATOM}title") or urlparse(url).netloc
+
+
+def _items(root) -> list:
+    """RSS の 1 件ずつ。**RSS 1.0 は `<channel>` の外に並ぶ**ので、両方を見る。"""
+    channel = root.find("channel")
+    if channel is not None and (found := channel.findall("item")):
+        return found
+    # RSS 1.0(RDF)。名前空間つきの `<item>` が root の直下に並ぶ
+    return root.findall(f"{_RSS1}item")
+
+
+def _image(item) -> str:
+    """1 件に付いている絵の URL。**フィードが配っているものだけ**を読む
+    (ページを取りに行くのは本文を取ることになるので、しない)。"""
+    for tag in (f"{_MEDIA}thumbnail", f"{_MEDIA}content", "enclosure"):
+        found = item.find(tag)
+        if found is not None:
+            url = (found.get("url") or "").strip()
+            kind = (found.get("type") or "").strip()
+            # enclosure は音声や動画にも使われる。型が読めないことも普通にある
+            if url and (not kind or kind.startswith("image") or tag != "enclosure"):
+                return url
+    return _text(item, f"{_HATENA}imageurl")
 
 
 def _rss(root) -> list[dict]:
-    channel = root.find("channel")
-    if channel is None:
+    items = _items(root)
+    if not items:
         return []
     return [
         {
-            "title": _text(item, "title"),
-            "url": _text(item, "link"),
-            "summary": _text(item, "description")[:MAX_SUMMARY_CHARS],
+            "title": _text(item, "title", f"{_RSS1}title"),
+            "url": _text(item, "link", f"{_RSS1}link"),
+            "summary": _text(
+                item, "description", f"{_RSS1}description"
+            )[:MAX_SUMMARY_CHARS],
             "at": _when(_text(item, "pubDate", "{http://purl.org/dc/elements/1.1/}date")),
+            "image": _image(item),
         }
-        for item in channel.findall("item")
+        for item in items
     ]
 
 
@@ -254,6 +314,7 @@ def _atom(root) -> list[dict]:
             "url": (link.get("href") if link is not None else "") or "",
             "summary": _text(entry, f"{_ATOM}summary", f"{_ATOM}content")[:MAX_SUMMARY_CHARS],
             "at": _when(_text(entry, f"{_ATOM}updated", f"{_ATOM}published")),
+            "image": _image(entry),
         })
     return out
 
@@ -322,6 +383,8 @@ def to_items(result: dict) -> list[dict]:
             "tags": _tags_of(entry),
             "url": entry.get("url") or "",
             "at": entry.get("at") or "",
+            # **フィードが配っている絵**(ページを取りに行くわけではない)
+            "image": entry.get("image") or "",
         })
     return out
 

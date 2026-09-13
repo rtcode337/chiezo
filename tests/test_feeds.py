@@ -34,6 +34,24 @@ RSS = """<?xml version="1.0" encoding="UTF-8"?>
 </rss>
 """
 
+RSS1 = """<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns="http://purl.org/rss/1.0/"
+         xmlns:hatena="http://www.hatena.ne.jp/info/xmlns#"
+         xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel rdf:about="https://example.net/hot">
+    <title>ためしブックマーク</title>
+  </channel>
+  <item rdf:about="https://example.net/1">
+    <title>集まっている話</title>
+    <link>https://example.net/1</link>
+    <description>みんなが読んでいる。</description>
+    <dc:date>2026-09-12T10:00:00+09:00</dc:date>
+    <hatena:imageurl>https://example.net/thumb.png</hatena:imageurl>
+  </item>
+</rdf:RDF>
+"""
+
 ATOM = """<?xml version="1.0" encoding="utf-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
   <title>ためしブログ</title>
@@ -204,6 +222,50 @@ class TestWhatTheAiSees:
     def test_an_empty_harvest_says_so(self, serve):
         serve({"https://example.com/feed": RSS.replace("<item>", "<skip>")})
         assert "1 件も取れませんでした" in feeds.render(run({"urls": ["https://example.com/feed"]}))
+
+
+class TestTheShapesOfFeeds:
+    """配信元ごとに形が違う。**読めない形があると、その配信元は丸ごと 0 件になる**。"""
+
+    def test_rss1_items_live_outside_the_channel(self, serve):
+        """RSS 1.0(RDF)は `<item>` が `<channel>` の外に並ぶ。
+
+        RSS 2.0 のつもりで channel の下だけを見ていると、この形の配信元は
+        一件も入らない —— 実際、いちばん件数の多い配信元がそうなっていた。
+        """
+        serve({"https://example.net/hot": RSS1})
+        got = run({"urls": ["https://example.net/hot"]})
+
+        assert [e["title"] for e in got["items"]] == ["集まっている話"]
+        assert got["items"][0]["from"] == "ためしブックマーク"
+        assert got["items"][0]["url"] == "https://example.net/1"
+
+    def test_the_image_comes_along(self, serve):
+        """**フィードが配っている絵だけ**を読む（ページは取りに行かない）。"""
+        serve({"https://example.net/hot": RSS1})
+        items = feeds.to_items(run({"urls": ["https://example.net/hot"]}))
+
+        assert items[0]["image"] == "https://example.net/thumb.png"
+
+    def test_a_slow_source_is_not_pushed_out(self, serve):
+        """**まとめてから新しい順に切ると、更新の遅い配信元が永久に入らない** ——
+        速い配信元が上限を埋めてしまうため。
+        """
+        fast = "".join(
+            f"<item><title>速い{i}</title><link>https://example.com/{i}</link>"
+            f"<pubDate>Fri, 12 Sep 2026 {i:02d}:00:00 +0900</pubDate></item>"
+            for i in range(10)
+        )
+        serve({
+            "https://example.com/feed": RSS.replace("<item>", fast + "<item>", 1),
+            "https://example.net/hot": RSS1,
+        })
+        got = run({
+            "urls": ["https://example.com/feed", "https://example.net/hot"],
+            "limit": 3,
+        })
+
+        assert "ためしブックマーク" in [e["from"] for e in got["items"]]
 
 
 class TestKeepingItRaw:

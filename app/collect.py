@@ -2197,6 +2197,10 @@ def _to_doc(raw: dict, now: str, web: bool) -> dict | None:
     # 集めた日だけだと、半年前の記事を今日拾ったのか、今日出たものなのかが読めない
     if at := _published(raw.get("at")):
         extra["published_at"] = at
+    # **絵の URL**(画像そのものは持たない)。jawiki の代表画像と同じ鍵にしてある ——
+    # 読む側は「この 1 件の絵」としてだけ見ればよく、どこから来たかは問わない
+    if image := _http_url(raw.get("image")):
+        extra["image"] = image
     # **座標は運ぶ**。矩形で区画を割る収集では、これが無いと集めたものがどの区画にも
     # 入らない(次に同じ区画を見たとき「まだ何も無い」と見えて、同じものを集め直す)。
     # ついでにコアスキーマの生成列に乗るので、`filter?bbox=` で普通のソースとして引ける
@@ -2212,6 +2216,12 @@ def _to_doc(raw: dict, now: str, web: bool) -> dict | None:
         "updated_at": now,
         "extra": extra,
     }
+
+
+def _http_url(raw) -> str:
+    """http(s) の URL だけを通す。**それ以外は持たない**(画面がそのまま指すため)。"""
+    value = str(raw or "").strip()
+    return value if value.startswith(("http://", "https://")) else ""
 
 
 def _published(raw) -> str:
