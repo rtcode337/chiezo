@@ -1067,6 +1067,72 @@ class TestTheKindOfCollection:
         assert dropped == 0
 
 
+class TestOrderingTheSweeps:
+    """巡回の順番。**区画の材料が揃うまで、区画ごとの仕事は成り立たない**。
+
+    名簿を作った直後の漏れ探しは、区画の外に居るだけの画家を 20 人挙げ、すべて既存
+    だった —— 年代の分からない人が 3 割いたので、その人たちは別の区画にいた。
+    """
+
+    @pytest.fixture
+    def staged(self, enabled):
+        item = collect.create("news", prompt="{cursor} と {current}", interval_minutes=60)
+        collect.update(
+            "news",
+            enabled=True,
+            partition={"by": "title", "target": 10},
+            partitions=[{"key": partitioning.title_key("あ", "お"), "count": 10},
+                        {"key": partitioning.title_key("か", "こ"), "count": 10}],
+            sweeps=[{"name": "ざっと", "one_lap": True},
+                    {"name": "調査", "after": "ざっと"}],
+        )
+        return item
+
+    def _sweep(self, name):
+        item = collect.get("news")
+        return item, collect.sweep_named(item, name)
+
+    def test_the_later_sweep_waits_for_a_full_lap(self, staged):
+        # 走り出しは、先の回だけ
+        assert [s.name for _c, s in collect.due_sweeps()] == ["ざっと"]
+        assert collect.waited_for(*self._sweep("調査")) is False
+
+        # 半分だけ見てもまだ待つ
+        collect.record_result("news", status="ok", sweep="ざっと", visited=["あ〜お"])
+        assert collect.waited_for(*self._sweep("調査")) is False
+
+        collect.record_result("news", status="ok", sweep="ざっと", visited=["か〜こ"])
+        assert collect.waited_for(*self._sweep("調査")) is True
+
+    def test_the_first_sweep_stops_after_its_lap(self, staged):
+        """一周したら止まる。**止めないと 2 周目 3 周目が回り続け、同じことを
+        何度も聞くために枠を使う**。"""
+        assert collect.lapped(*self._sweep("ざっと")) is False
+
+        for key in ("あ〜お", "か〜こ"):
+            collect.record_result("news", status="ok", sweep="ざっと", visited=[key])
+
+        assert collect.lapped(*self._sweep("ざっと")) is True
+        assert "ざっと" not in [s.name for _c, s in collect.due_sweeps()]
+
+    def test_an_unknown_name_does_not_block(self, staged):
+        """待つ相手が居ないのに永久に止まる方が悪い。"""
+        collect.update("news", sweeps=[{"name": "調査", "after": "居ない巡回"}])
+
+        assert collect.waited_for(*self._sweep("調査")) is True
+
+    def test_a_once_sweep_runs_only_once(self, sample):
+        """元のデータが変わらない限り何度やっても同じ回。押せばまた走る。"""
+        collect.update("news", enabled=True, sweeps=[{"name": "名簿", "once": True}])
+        assert [s.name for _c, s in collect.due_sweeps()] == ["名簿"]
+
+        collect.record_result("news", status="ok", sweep="名簿")
+
+        assert collect.due_sweeps() == []
+        # 口のほうでは断らない(押せば走る)
+        assert collect.require_runnable(collect.get("news"), "名簿").name == "名簿"
+
+
 class TestRedoingTheLastRun:
     """最後の 1 回をやり直す。
 

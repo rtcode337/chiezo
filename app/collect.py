@@ -444,6 +444,10 @@ class Sweep:
     # 名簿のように、元のデータが変わらない限り何度やっても同じ回のためのもの ——
     # 毎週回しても結果は変わらず、その 1 回ぶんの取り込みが無駄になる
     once: bool = False
+    # **一周したら止まる巡回**。区画の材料を埋めるような、一度行き渡れば用の済む回。
+    # 止めないと 2 周目 3 周目が回り続け、**同じことを何度も聞くために枠を使う** ——
+    # そのあとの手入れは、区画ごとに回る回が引き継ぐ
+    one_lap: bool = False
     # **先に一周してほしい巡回**。その巡回が全区画を一度でも見終えるまで走らない。
     # 区画の材料(分類や数のタグ)を埋める回が先に一周していないと、後の回は
     # 「この区画に居ない」を理由に見当違いのことをする —— 実際、名簿を作った直後の
@@ -557,6 +561,7 @@ def _sweep_from_json(raw: dict, item: Collection) -> Sweep:
         use_extract=bool(raw.get("use_extract")),
         use_feed=bool(raw.get("use_feed")),
         once=bool(raw.get("once")),
+        one_lap=bool(raw.get("one_lap")),
         after=str(raw.get("after") or "").strip()[:40],
         next_run_at=raw.get("next_run_at") or None,
         last_run_at=raw.get("last_run_at") or None,
@@ -1852,9 +1857,26 @@ def due_sweeps(at: datetime | None = None) -> list[tuple[Collection, Sweep]]:
     pairs = [
         (c, sweep)
         for c in load() if c.enabled
-        for sweep in sweeps_of(c) if sweep.is_due(now) and waited_for(c, sweep)
+        for sweep in sweeps_of(c)
+        if sweep.is_due(now) and waited_for(c, sweep) and not lapped(c, sweep)
     ]
     return sorted(pairs, key=lambda pair: pair[1].due_at())
+
+
+def lapped(item: Collection, sweep: Sweep) -> bool:
+    """一周したら止まる巡回が、もう一周したか(`Sweep.one_lap`)。
+
+    **区画の材料を埋めるような回は、行き渡れば用が済む。** 止めないと 2 周目 3 周目が
+    回り続け、同じことを何度も聞くために枠を使う —— そのあとの手入れは、区画ごとに
+    回る回が引き継ぐ。
+
+    **区画を持たない収集では止めない**(一周という概念が無い。それは `once` の話)。
+    押せばいつでも走る(口のほうでは断らない)。
+    """
+    if not sweep.one_lap or not item.partitions:
+        return False
+    visited, total = partitioning.progress(item.partitions, sweep.name)
+    return bool(total) and visited >= total
 
 
 def waited_for(item: Collection, sweep: Sweep) -> bool:
