@@ -165,6 +165,30 @@ class TestPlaintext:
         assert tags == ["日本の博物館"]
 
 
+class TestCommonsUrl:
+    """Commons の URL は**手元で組める**(API を叩く必要が無い)。
+
+    置き場は「ファイル名の MD5 の頭 1 文字 / 頭 2 文字」で決まる規則。
+    """
+
+    def test_it_builds_the_path_from_the_hash(self):
+        from sources.wikipedia import commons_url
+
+        url = commons_url("Claude Monet, Impression, soleil levant.jpg")
+
+        assert url.startswith("https://upload.wikimedia.org/wikipedia/commons/5/54/")
+        # 空白は `_`(ハッシュを取る前に直す —— 直さないと置き場が変わる)
+        assert url.endswith("Claude_Monet%2C_Impression%2C_soleil_levant.jpg")
+
+    def test_nothing_without_a_name(self):
+        from sources.wikipedia import commons_url
+
+        assert commons_url("") is None
+        assert commons_url(None) is None
+        # 区切りを含む値は組み立てられない(ファイル名ではない)
+        assert commons_url("a/b.jpg") is None
+
+
 class TestWikidataIds:
     """page_props ダンプ(記事 → wikidata の Q 番号)の取り込み。"""
 
@@ -187,17 +211,23 @@ class TestWikidataIds:
             "(2,'page_image_free','Sensoji.jpg',NULL),"
             "(2,'wikibase_item','Q188206',NULL);\n",
         )
-        with adapter._load_page_props() as props:
+        props, images = adapter._load_page_props()
+        with props, images:
             assert len(props) == 2
             assert props.get(1) == "Q1490"
             assert props.get(2) == "Q188206"
-            assert props.get(3) is None  # defaultsort / page_image_free は拾わない
+            assert props.get(3) is None  # defaultsort は拾わない
+            # **代表画像も同じ 1 回の走査で拾う**(数百 MiB を 2 度解かない)
+            assert len(images) == 1
+            assert images.get(2).endswith("/Sensoji.jpg")
+            assert images.get(1) is None
 
     def test_no_dump_means_no_ids(self):
         # ダンプ未取得ならヌルオブジェクト(ディスク上の一時 DB も作らない)
-        props = make_test_adapter()._load_page_props()
+        props, images = make_test_adapter()._load_page_props()
         assert len(props) == 0
         assert props.get(1) is None
+        assert images.get(1) is None
 
     def test_ids_land_in_extra(self, tmp_path, fixture_dump):
         adapter = make_test_adapter()
@@ -207,6 +237,17 @@ class TestWikidataIds:
         docs = {d.title: d for d in adapter.iter_docs(fixture_dump)}
         assert docs["東京都"].extra["wikidata"] == "Q1490"
         # 対応が無い記事は extra ごと None のまま(既存の振る舞いを変えない)
+        assert docs["浅草寺"].extra is None
+
+    def test_the_lead_image_lands_in_extra(self, tmp_path, fixture_dump):
+        """**読む側が Wikipedia を叩かずに絵を出せる**ようにするための値。"""
+        adapter = make_test_adapter()
+        adapter._page_props_path = self._write_page_props(
+            tmp_path, "INSERT INTO `page_props` VALUES (1,'page_image_free','Tokyo.jpg',NULL);\n"
+        )
+        docs = {d.title: d for d in adapter.iter_docs(fixture_dump)}
+
+        assert docs["東京都"].extra["image"].endswith("/Tokyo.jpg")
         assert docs["浅草寺"].extra is None
 
     def test_lookup_temp_files_are_cleaned_up(self, tmp_path, fixture_dump):

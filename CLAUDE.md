@@ -1884,6 +1884,13 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     (`WIKI_DOMAIN` 未登録の wiki_id では突合をスキップ)。あわせて `page_props` SQL ダンプから
     `wikibase_item`(wikidata の Q 番号)を正規表現で拾い `extra.wikidata` に入れる
     (`filter?wikidata=` での逆引き用。OSM 側の `wikidata` タグと突き合わせられる)。
+    **同じ 1 回の走査で代表画像も拾う**(`page_image_free` → `extra.image`)——
+    数百 MiB のダンプを 2 度解かないため。値は Commons の URL で、
+    **API は叩かずに手元で組む**(置き場はファイル名の MD5 の頭 1 文字 / 頭 2 文字で
+    決まる規則。`commons_url`)。**読む側が画像を出すのに Wikipedia を叩かなくて済む**
+    ようにするための値で、画像そのものは持たない(指すだけ)。
+    **`page_image_free` のほうだけを読む** —— `page_image` には非フリーの局所
+    アップロードが入り、そちらは Commons に無いので URL を組めない。
     記事の代表座標も wikitext から取り、`extra.lat` / `extra.lon` に入れる
     (`{{Coord}}` 系テンプレートの位置引数・度分秒に加え、駅や空港の Infobox が持つ
     `緯度度`/`経度度`・`latd`/`longd` のような名前付き引数にも対応。**`基礎情報 会社` は

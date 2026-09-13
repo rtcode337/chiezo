@@ -26,10 +26,12 @@ from __future__ import annotations
 import bz2
 import contextlib
 import gzip
+import hashlib
 import logging
 import os
 import re
 import subprocess
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
@@ -95,9 +97,34 @@ _MAGIC_WORD_RE = re.compile("|".join(f"__{w}__" for w in _MAGIC_WORDS))
 # page_props SQL ダンプ中の `(<page_id>,'wikibase_item','Q123',...)` を拾う。
 _WIKIBASE_ITEM_RE = re.compile(r"\((\d+),'wikibase_item','(Q\d+)'")
 
+# 同じダンプにある代表画像のファイル名(`page_image_free`)。
+# **自由に使える画像だけが入る** —— 非フリーの局所アップロードは `page_image` のほうで、
+# そちらは Commons に無いので URL を組めない(だから free のほうだけを読む)。
+_PAGE_IMAGE_RE = re.compile(r"\((\d+),'page_image_free','((?:[^'\\]|\\.)*)'")
+
+# Commons の置き場。**URL は手元で組める**(API を叩く必要が無い) ——
+# ファイル名の MD5 の頭 1 文字 / 頭 2 文字がそのままディレクトリになる規則。
+COMMONS_BASE = "https://upload.wikimedia.org/wikipedia/commons"
+
 # Wikimedia は User-Agent の無い/汎用スクリプト由来のリクエストを 403 で拒否するため、
 # 連絡先付きの UA を明示する(https://meta.wikimedia.org/wiki/User-Agent_policy)。
 USER_AGENT = "chiezo-ingest/0.1 (https://github.com/; contact via repo issues)"
+
+
+def commons_url(name: str) -> str | None:
+    """Commons のファイル名から、その画像の URL を組む。**API は叩かない**。
+
+    置き場は「ファイル名(空白は `_`)の MD5 の頭 1 文字 / 頭 2 文字」で決まるので、
+    手元で計算できる。**読む側が Wikipedia を叩かずに絵を出せる**ようにするための
+    値で、画像そのものは持たない(指すだけ)。
+
+    `page_image_free` に入るのは**自由に使える画像だけ**なので、行き先は必ず Commons。
+    """
+    cleaned = (name or "").replace(" ", "_").strip()
+    if not cleaned or "/" in cleaned:
+        return None
+    digest = hashlib.md5(cleaned.encode("utf-8"), usedforsecurity=False).hexdigest()
+    return f"{COMMONS_BASE}/{digest[0]}/{digest[:2]}/{urllib.parse.quote(cleaned)}"
 
 
 def _http_get(url: str, timeout: int = 60) -> str:
@@ -277,28 +304,38 @@ class WikipediaAdapter:
         self._page_props_path = dest
         return dest
 
-    def _load_page_props(self) -> DiskLookup | EmptyLookup:
-        """page_id → wikidata の Q 番号。
+    def _load_page_props(self) -> tuple[DiskLookup | EmptyLookup, DiskLookup | EmptyLookup]:
+        """page_id → wikidata の Q 番号 と、page_id → 代表画像の URL。
 
         page_props は MediaWiki の SQL ダンプ(巨大な INSERT 文の羅列)なので、
         行として読まず `(page_id,'propname','value',...)` のタプルを正規表現で拾う。
-        必要なのは propname='wikibase_item' の行だけ。
+        読むのは propname='wikibase_item' と 'page_image_free' の行だけ。
+
+        **画像も同じ 1 回の走査で拾う。** ダンプは数百 MiB あるので、
+        別々に読むと同じものを 2 度解くことになる。
 
         ja Wikipedia では 186 万件あり dict で持つと約 270MiB を常駐で占める。
         取り込みループからの点引きにしか使わないため、ディスク上の一時 SQLite に置く
         (`lookup.DiskLookup`。詳しい理由は同モジュールの docstring)。
         """
         if self._page_props_path is None:
-            return EMPTY
+            return EMPTY, EMPTY
         props = DiskLookup(self._page_props_path.with_suffix(".lookup.db"))
+        images = DiskLookup(self._page_props_path.with_suffix(".images.db"))
         with gzip.open(self._page_props_path, "rt", encoding="utf-8", errors="replace") as f:
             for chunk in f:
                 props.extend(
                     (int(page_id), qid) for page_id, qid in _WIKIBASE_ITEM_RE.findall(chunk)
                 )
+                images.extend(
+                    (int(page_id), commons_url(name))
+                    for page_id, name in _PAGE_IMAGE_RE.findall(chunk)
+                    if commons_url(name)
+                )
         props.finish()
-        log.info("loaded wikidata ids for %d pages", len(props))
-        return props
+        images.finish()
+        log.info("loaded wikidata ids for %d pages, images for %d", len(props), len(images))
+        return props, images
 
     def _load_pageviews(self) -> DiskLookup | EmptyLookup:
         """page_id → 月間合計閲覧数(アクセス種別 desktop/mobile-web/mobile-app 合算)。
@@ -368,20 +405,22 @@ class WikipediaAdapter:
         fetch_pageviews() / fetch_page_props() 済みなら、docs.extra に月間閲覧数と
         wikidata の Q 番号を載せる。
 
-        3 つの対応表(リダイレクト・ページビュー・wikidata)はいずれも件数が百万単位で、
+        4 つの対応表(リダイレクト・ページビュー・wikidata・代表画像)はいずれも件数が百万単位で、
         メモリに載せるとホストごと OOM を招くためディスク上の一時 SQLite に置く
         (`ingest/lookup.py`)。中断時にも消えるよう finally で必ず後始末する。
         """
         redirect_targets = self._collect_redirects(path)
         pageviews = self._load_pageviews()
-        wikidata_ids = self._load_page_props()
+        wikidata_ids, images = self._load_page_props()
         try:
-            yield from self._iter_docs(path, redirect_targets, pageviews, wikidata_ids)
+            yield from self._iter_docs(path, redirect_targets, pageviews, wikidata_ids, images)
         finally:
-            for lookup in (redirect_targets, pageviews, wikidata_ids):
+            for lookup in (redirect_targets, pageviews, wikidata_ids, images):
                 lookup.close()
 
-    def _iter_docs(self, path: Path, redirect_targets, pageviews, wikidata_ids) -> Iterator[Doc]:
+    def _iter_docs(
+        self, path: Path, redirect_targets, pageviews, wikidata_ids, images=EMPTY
+    ) -> Iterator[Doc]:
         for elem in self._iter_pages(path):
             ns_elem = _child(elem, "ns")
             if ns_elem is None or (ns_elem.text or "0") != "0":
@@ -409,6 +448,10 @@ class WikipediaAdapter:
                 extra["pageviews_period"] = self._pageview_period
             if qid := wikidata_ids.get(doc_id):
                 extra["wikidata"] = qid
+            # **代表画像の URL。** 画像そのものは持たない(指すだけ)。
+            # 読む側が Wikipedia の API を叩かずに絵を出せるようにするためのもの
+            if image := images.get(doc_id):
+                extra["image"] = image
             yield Doc(
                 doc_id=doc_id,
                 title=title,
