@@ -843,6 +843,49 @@ class TestTheOutwardSweep:
         assert docs[0]["extra"]["published_at"].startswith("2026-09-10")
 
 
+class TestWhatCameInSinceLastTime:
+    """`{recent}` —— 前回この巡回が走ってから後に入ったもの。
+
+    溜まっていく一方の収集(ニュースのような)で、要約や重要度付けを頼む回に要る。
+    全部を差し込むと入り切らないし、入ったとしても毎回同じものを読み直すことになる。
+    """
+
+    def test_it_only_shows_what_is_newer(self):
+        previous = {
+            "ふるい": {"title": "ふるい", "body": "", "updated_at": "2026-09-01T00:00:00+00:00"},
+            "あたらしい": {"title": "あたらしい", "body": "", "updated_at": "2026-09-12T00:00:00+00:00"},
+        }
+        text = collect.render_recent(previous, "2026-09-10T00:00:00+00:00")
+
+        assert "あたらしい" in text
+        assert "ふるい" not in text
+
+    def test_nothing_new_says_so(self):
+        previous = {"ふるい": {"title": "ふるい", "body": "", "updated_at": "2026-09-01T00:00:00+00:00"}}
+
+        assert "新しく入ったものはありません" in collect.render_recent(
+            previous, "2026-09-10T00:00:00+00:00"
+        )
+
+    def test_the_clock_is_the_sweeps_own(self, sample):
+        """収集の前回を基準にすると、集めたばかりのぶんしか入らない(要約が空になる)。"""
+        collect.update(
+            "news",
+            prompt="{recent} をまとめて",
+            last_run_at="2026-09-12T00:00:00+00:00",
+            sweeps=[{"name": "要約", "last_run_at": "2026-09-01T00:00:00+00:00"}],
+        )
+        item = collect.get("news")
+        previous = {
+            "きのう": {"title": "きのう", "body": "", "updated_at": "2026-09-11T00:00:00+00:00"}
+        }
+        messages = collect.build_messages(
+            item, previous, None, {}, collect.sweep_named(item, "要約")
+        )
+
+        assert "きのう" in messages[-1]["content"]
+
+
 class TestPerSweepPrompt:
     """依頼文は巡回ごとに書ける。**空なら収集のもの**。
 
@@ -1485,6 +1528,19 @@ class TestRest:
         assert body["name"] == "news"
         # まだ 1 度も焼いていないので空(焼き先のソースがそもそも無い)
         assert body["recent"] == []
+
+    def test_what_was_baked_carries_its_tags(self, baked, sample):
+        """同じ収集の中に種類の違うもの(記事とまとめ)が混ざる。
+
+        **タグにしか出ていない**ので、無いと読む側が見分けられない。
+        """
+        sources = baked([("見出し", "本文")])
+        conn = sqlite3.connect(sources["news"].path)
+        conn.execute("UPDATE docs SET tags = ?", (json.dumps(["まとめ"]),))
+        conn.commit()
+        conn.close()
+
+        assert collect.recent("news", sources)[0]["tags"] == ["まとめ"]
 
     def test_an_unknown_collection_is_404(self, client, sample):
         assert client.get("/v1/collect/nosuch").status_code == 404

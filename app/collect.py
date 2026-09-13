@@ -173,6 +173,12 @@ PARTITION_PLACEHOLDER = "{partition}"
 # `{current}` が「いま手元にあるもの」なら、こちらは「外で拾ってきたもの」
 FEED_PLACEHOLDER = "{feed}"
 
+# 前回この巡回が走ってから後に入ったものを差し込む場所。
+# **`{current}` と役割が違う** —— あちらは「いま手元にある全部」、こちらは「その差分」。
+# 溜まっていく一方の収集(ニュースのような)で、要約や重要度付けを頼む回に要る:
+# 全部を差し込むと入り切らないし、入ったとしても毎回同じものを読み直すことになる。
+RECENT_PLACEHOLDER = "{recent}"
+
 # 作り直しで、前世代の何割を下回ったら焼くのを断るか。
 # **既定で守る側に倒す** —— AI が変な日に当たった 1 回で、育てた分類が消えるのは重い。
 # 意図して減らすときは、この値を下げるか 0 にして守りを外す(画面から変えられる)。
@@ -752,9 +758,14 @@ def check_prompt(mode: str, prompt: str) -> None:
     **無いまま作り直させない**。AI は今ある内容を知らないまま「全体」を答えることに
     なり、返ってこなかったものは全部消える。作る時点で弾くのがいちばん安い。
     """
-    if mode == MODE_REFINE and MATERIAL_PLACEHOLDER not in prompt:
+    # **`{recent}` でもよい。** 見せ方が違うだけで、どちらも「今あるもの」を渡す口
+    # —— 溜まっていく一方の収集では、全部を差し込むと入り切らない(そのための差分)
+    if mode == MODE_REFINE and not any(
+        p in prompt for p in (MATERIAL_PLACEHOLDER, RECENT_PLACEHOLDER)
+    ):
         raise HTTPException(400, {
-            "error": f"整理のプロンプトには {MATERIAL_PLACEHOLDER} を入れてください",
+            "error": f"整理のプロンプトには {MATERIAL_PLACEHOLDER} か"
+                     f" {RECENT_PLACEHOLDER} を入れてください",
             "reason": "ここへ今ある内容が差し込まれる。無いと、AI は今あるものを"
                       "知らないまま書くことになり、直すことも重複をまとめることもできない",
         })
@@ -1075,6 +1086,55 @@ def render_material(previous: dict[str, dict], scoped: bool = False) -> tuple[st
     return head + ":\n" + "\n".join(lines), shown
 
 
+def render_recent(previous: dict[str, dict], since: str | None) -> str:
+    """前回から後に入ったものを、プロンプトへ差し込める形にする。
+
+    **溜まっていく一方の収集のための差し込み**。全部を渡すと入り切らないうえ、
+    毎回同じものを読み直すことになる —— 要約も重要度付けも、新しく入ったぶんにしか
+    意味が無い。
+
+    **時刻が読めないものは入れる。** 落とすと静かに 0 件になり、
+    「何も入らなかった」のか「何も無かった」のかが読めなくなる。
+    """
+    cutoff = _at(since)
+    fresh = [d for d in previous.values() if cutoff is None or _at(d.get("updated_at")) is None
+             or _at(d.get("updated_at")) > cutoff]
+    if not fresh:
+        return "(前回から新しく入ったものはありません)"
+    # **新しい順**。入り切らずに切れるときに、残るのが古いほうでは意味が無い
+    fresh.sort(key=lambda d: d.get("updated_at") or "", reverse=True)
+    lines: list[str] = []
+    used = 0
+    for doc in fresh[:MAX_MATERIAL_DOCS]:
+        tags = "/".join(doc.get("tags") or [])
+        body = (doc.get("body") or "")[:MATERIAL_BODY_CHARS].replace("\n", " ")
+        when = ((doc.get("extra") or {}).get("published_at") or "")[:10]
+        line = (
+            f"- {doc['title']}"
+            + (f" ({when})" if when else "")
+            + (f" 【{tags}】" if tags else "")
+            + (f" — {body}" if body else "")
+        )
+        if used + len(line) > MAX_MATERIAL_CHARS:
+            break
+        lines.append(line)
+        used += len(line)
+    head = f"前回から新しく入ったもの(全 {len(fresh)} 件"
+    head += f"。うち {len(lines)} 件だけ載せています)" if len(lines) < len(fresh) else ")"
+    return head + ":\n" + "\n".join(lines)
+
+
+def _at(raw) -> datetime | None:
+    """控えの時刻を読む。**読めなければ None**(比べる相手にしない)。"""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        value = datetime.fromisoformat(raw.strip())
+    except ValueError:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
 def scoped_docs(
     item: Collection,
     previous: dict[str, dict],
@@ -1187,6 +1247,12 @@ def build_messages(
         docs, scoped = scoped_docs(item, previous or {}, partition_key, focus)
         material_text, _shown = render_material(docs, scoped)
         user = user.replace(MATERIAL_PLACEHOLDER, material_text)
+    if RECENT_PLACEHOLDER in user:
+        # **基準はその巡回の前回**(収集ぜんたいの前回ではない)。要約の回と集める回は
+        # 別々の時計で走るので、収集の前回を基準にすると、集めたばかりのぶんしか
+        # 入らない(要約が毎回ほとんど空になる)
+        since = (sweep.last_run_at if sweep else None) or item.last_run_at
+        user = user.replace(RECENT_PLACEHOLDER, render_recent(previous or {}, since))
     if focus is not None:
         user += "\n\n" + render_focus(focus, item, previous or {}, partition_key)
     # **割り込みは必ず「直す」側で頼む。** 足すだけの収集でも、名指しで渡された 1 件を
@@ -1633,13 +1699,17 @@ def recent(name: str, sources: dict, limit: int = 5) -> list[dict]:
         return []
     rows = db.query(
         src.path,
-        "SELECT title, opening, updated_at, extra FROM docs ORDER BY updated_at DESC LIMIT ?",
+        "SELECT title, opening, tags, updated_at, extra FROM docs"
+        " ORDER BY updated_at DESC LIMIT ?",
         (limit,),
     )
     return [
         {
             "title": row["title"],
             "opening": row["opening"],
+            # **どんな 1 件かはタグにしか出ていない。** 同じ収集の中に種類の違うもの
+            # (記事とまとめ、など)が混ざるので、無いと読む側が見分けられない
+            "tags": load_tags(row["tags"]),
             "updated_at": row["updated_at"],
             "extra": load_json(row["extra"]),
         }
@@ -1750,6 +1820,15 @@ def previous_docs(name: str, sources: dict) -> dict[str, dict]:
             "extra": load_json(row["extra"]),
         }
     return out
+
+
+def load_tags(raw) -> list[str]:
+    """タグの列。**読めなければ空**(壊れた控えで落とさない)。"""
+    try:
+        value = json.loads(raw or "[]")
+    except (ValueError, TypeError):
+        return []
+    return [str(t) for t in value] if isinstance(value, list) else []
 
 
 def load_json(raw) -> dict | None:
