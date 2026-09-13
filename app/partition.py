@@ -483,6 +483,20 @@ def oldest_visit(partitions: list[dict], sweep_name: str) -> str | None:
     return min(visits)
 
 
+def forget_visits(partitions: list[dict], keys: list[str], sweep_name: str) -> list[dict]:
+    """その巡回が見た印を、名指しの区画から外す。
+
+    **最後の 1 回をやり直すときに要る** —— 印が残ったままだと、やり直した回が
+    次の区画へ進んでしまい、直したかったところを見ないまま一周が進む。
+    """
+    targets = set(keys)
+    return [
+        {**p, "visits": {k: v for k, v in (p.get("visits") or {}).items() if k != sweep_name}}
+        if p["key"] in targets else p
+        for p in partitions
+    ]
+
+
 def progress(partitions: list[dict], sweep_name: str) -> tuple[int, int]:
     """(その巡回が一度でも見た区画, 全区画)。「一周したか」を出すのに使う。"""
     seen = sum(1 for p in partitions if (p.get("visits") or {}).get(sweep_name))

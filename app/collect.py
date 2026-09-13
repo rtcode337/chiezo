@@ -333,6 +333,13 @@ class Collection:
     # いま起こしてある取り込みが、どの巡回のものか。**取り込みは名前しか運べない**
     # (`GET /v1/collect/fetch?source=…`)ので、起こした側がここに書いて渡す
     pending_sweep: str = ""
+    # **最後の 1 回を巻き戻すための控え**。設定を直してからやり直したい、が普通に
+    # 起きる —— そのとき戻せるのは**定義の側だけ**(焼いた世代は 1 つ前までしか
+    # 残らないので、対象の巡回が最後でなければ中身は戻せない)。
+    # 戻すのは進み具合と区画の印だけで、**墓場は戻さない** ——
+    # 消したのは意図してのことなので、やり直しで連れ戻さない。
+    # 1 回ぶんしか持たない(「最後の 1 回」だけをやり直す口なので)
+    last_undo: dict | None = None
     # 起こしてある割り込みの依頼(`Focus`)。**同じ理由でここに置く** ——
     # 取り込みは収集の名前しか運べないので、頼んだ側が書いて渡す
     pending_focus: dict | None = None
@@ -871,6 +878,7 @@ def _from_json(item: dict) -> Collection:
         partitions=partitioning.normalize_ledger(item.get("partitions")),
         sweeps=normalize_sweeps(item.get("sweeps")),
         pending_sweep=str(item.get("pending_sweep") or ""),
+        last_undo=item.get("last_undo") if isinstance(item.get("last_undo"), dict) else None,
         pending_focus=(
             focus.to_json() if (focus := normalize_focus(item.get("pending_focus"))) else None
         ),
@@ -1606,8 +1614,17 @@ def record_result(
     ledger = partitions if partitions is not None else current.partitions
     if visited and status == "ok" and not focus:
         ledger = partitioning.mark_visited(ledger, visited, this.name, _iso(now))
+    # **巻き戻せるだけの控えを残す。** 設定を直してからやり直したい、が普通に起きる。
+    # 割り込みは何も動かさないので控えない(戻すものが無い)
+    undo = current.last_undo if focus else {
+        "sweep": this.name,
+        "cursor": current.cursor,
+        "visited": list(visited or []),
+        "at": _iso(now),
+    }
     updated = replace(
         current,
+        last_undo=undo,
         cursor=(
             current.cursor if focus or next_cursor is None else next_cursor
         ),
@@ -1704,6 +1721,39 @@ def mark_started(name: str, sweep: str | None = None) -> Collection:
     )
     _replace_one(name, updated)
     return updated
+
+
+def rewind(name: str) -> Sweep:
+    """最後の 1 回を**やり直せる状態まで巻き戻す**。戻した先の巡回を返す。
+
+    設定を直してからやり直したい、が普通に起きる。**戻せるのは定義の側だけ** ——
+    焼いた世代は 1 つ前までしか残らないので、対象の巡回が最後でなければ中身は
+    戻せない。だからここでは**進み具合と区画の印**だけを戻し、そのうえでもう一度
+    走らせる(集め直した結果で上書きする)。
+
+    **墓場は戻さない。** 消したのは意図してのことなので、やり直しで連れ戻さない。
+    """
+    current = get(name)
+    undo = current.last_undo or {}
+    sweep_name = str(undo.get("sweep") or "")
+    if not sweep_name:
+        raise HTTPException(409, {
+            "error": f"収集「{name}」には、やり直せる回がありません",
+            "hint": "1 回走ってからでないと、戻す先がない",
+        })
+    this = require_runnable(current, sweep_name)
+    ledger = partitioning.forget_visits(
+        current.partitions, list(undo.get("visited") or []), sweep_name
+    )
+    _replace_one(name, replace(
+        current,
+        cursor=str(undo.get("cursor") or ""),
+        partitions=ledger,
+        # **1 回ぶんしか持たない。** 戻したらもう使えない(同じ回を二度は戻せない)
+        last_undo=None,
+        updated_at=_iso(_now()),
+    ))
+    return this
 
 
 def require_runnable(item: Collection, name: str | None) -> Sweep:

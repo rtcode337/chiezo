@@ -1027,6 +1027,35 @@ def _changes_name_cell(row: dict, name: str | None) -> str:
     return "" if name else f"<td>{esc(row['name'])}</td>"
 
 
+def _redo_form(item, disabled: str) -> str:
+    """最後の 1 回をやり直す口。**戻す先が無ければ出さない**。
+
+    押すと進み具合と区画の印を戻してから走らせる。**中身は戻さない**ので、
+    そのことを押す前に書いておく(焼いた世代は 1 つ前までしか残らない)。
+    """
+    undo = item.last_undo or {}
+    if not undo.get("sweep"):
+        return ""
+    when = jst.format(jst.parse(str(undo.get("at") or ""))) if undo.get("at") else ""
+    confirm = (
+        f"「{undo['sweep']}」の最後の 1 回をやり直します。"
+        "進み具合と区画の印は戻しますが、集めた中身は戻りません"
+        "(もう一度集めた結果で上書きされます)。よろしいですか?"
+    )
+    return (
+        '<p class="muted">最後に走ったのは '
+        f"<strong>{esc(str(undo['sweep']))}</strong>"
+        + (f"({esc(when)})" if when else "")
+        + "。設定を直したなら、同じところからやり直せる。</p>"
+        f'<form class="init-form" method="post"'
+        f' action="/admin/collect/{esc(quote(item.name))}/redo"{disabled}'
+        f" onsubmit=\"return confirm('{esc(confirm)}')\">"
+        f'<button type="submit"{disabled}'
+        ' title="進み具合と区画の印を戻してから、もう一度走らせます">'
+        "最後の 1 回をやり直す</button></form>"
+    )
+
+
 def _collect_detail_html(item, disabled: str) -> str:
     """1 つの収集の中身(プロンプト・進み具合・区画・直す口)。
 
@@ -1038,6 +1067,7 @@ def _collect_detail_html(item, disabled: str) -> str:
         f'<pre class="prompt-view">{esc(item.prompt)}</pre>'
         f'<p class="muted">進み具合(次の実行で {{cursor}} に入る値): '
         f'<code>{esc(item.cursor) or "(まだ無し)"}</code></p>'
+        f"{_redo_form(item, disabled)}"
         f"{_partition_html(item)}"
         f"{_graves_html(item)}"
         f"<details><summary>編集する</summary>"
@@ -2395,6 +2425,25 @@ async def admin_collect_run(name: str, request: Request):
     start_collection_bake(name, str(form.get("sweep") or "") or None)
     # **押したところへ戻す。** 一覧へ返していた頃は、走らせた本人が結果を見に行くのに
     # もう一度その収集を探すことになった(見たいのは、いま押した 1 つの進み具合)
+    return RedirectResponse(url=f"/admin/collect/{quote(name)}", status_code=303)
+
+
+@router.post("/admin/collect/{name}/redo")
+async def admin_collect_redo(name: str, request: Request):
+    """最後の 1 回を、やり直せる状態まで巻き戻してもう一度走らせる。
+
+    **設定を直してからやり直したい**、が普通に起きる(依頼文を直した・相手を替えた)。
+    そのまま「今すぐ実行」を押すと、進み具合が先へ進んでいるので**次のぶんを
+    集めてしまう** —— 直したかった回は二度と来ない。
+
+    **戻せるのは定義の側だけ。** 焼いた世代は 1 つ前までしか残らないので、対象の
+    巡回が最後でなければ中身は戻せない。進み具合と区画の印を戻したうえで、
+    もう一度集めさせて上書きする。
+    """
+    from app.main import start_collection_bake
+
+    sweep = collect.rewind(name)
+    start_collection_bake(name, sweep.name)
     return RedirectResponse(url=f"/admin/collect/{quote(name)}", status_code=303)
 
 

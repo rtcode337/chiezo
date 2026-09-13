@@ -1057,6 +1057,86 @@ class TestTheKindOfCollection:
         assert dropped == 0
 
 
+class TestRedoingTheLastRun:
+    """最後の 1 回をやり直す。
+
+    設定を直してからやり直したい、が普通に起きる(依頼文を直した・相手を替えた)。
+    そのまま「今すぐ実行」を押すと、進み具合が先へ進んでいるので**次のぶんを
+    集めてしまう** —— 直したかった回は二度と来ない。
+
+    **戻せるのは定義の側だけ。** 焼いた世代は 1 つ前までしか残らないので、対象の
+    巡回が最後でなければ中身は戻せない。
+    """
+
+    def test_the_cursor_goes_back(self, sample):
+        collect.update("news", cursor="2026-09-01", sweeps=[{"name": "ざっと"}])
+        collect.record_result("news", status="ok", sweep="ざっと", next_cursor="2026-09-08")
+        assert collect.get("news").cursor == "2026-09-08"
+
+        collect.rewind("news")
+
+        assert collect.get("news").cursor == "2026-09-01"
+
+    def test_the_partition_marks_go_back(self, sample):
+        """印が残ったままだと、やり直した回が次の区画へ進んでしまう。"""
+        collect.update(
+            "news",
+            sweeps=[{"name": "ざっと"}],
+            partitions=[{"key": "あ", "count": 1}, {"key": "い", "count": 1}],
+        )
+        collect.record_result("news", status="ok", sweep="ざっと", visited=["あ"])
+        assert partitioning.progress(collect.get("news").partitions, "ざっと") == (1, 2)
+
+        collect.rewind("news")
+
+        assert partitioning.progress(collect.get("news").partitions, "ざっと") == (0, 2)
+
+    def test_the_graveyard_stays(self, sample):
+        """消したのは意図してのこと。やり直しで連れ戻さない。"""
+        collect.update("news", sweeps=[{"name": "ざっと"}])
+        collect.record_result("news", status="ok", sweep="ざっと", graves=["消した人"])
+
+        collect.rewind("news")
+
+        assert collect.get("news").graves == ["消した人"]
+
+    def test_it_can_only_be_used_once(self, sample):
+        """同じ回を二度は戻せない(1 回ぶんしか控えていない)。"""
+        collect.update("news", cursor="a", sweeps=[{"name": "ざっと"}])
+        collect.record_result("news", status="ok", sweep="ざっと", next_cursor="b")
+        collect.rewind("news")
+
+        with pytest.raises(HTTPException):
+            collect.rewind("news")
+
+    def test_nothing_to_redo_is_refused(self, sample):
+        """1 回走ってからでないと、戻す先がない。"""
+        with pytest.raises(HTTPException):
+            collect.rewind("news")
+
+    def test_an_interrupt_leaves_no_trace(self, sample):
+        """割り込みは進み具合にも区画にも触らないので、戻すものが無い。"""
+        collect.update("news", cursor="a", sweeps=[{"name": "ざっと"}])
+        collect.record_result("news", status="ok", sweep="ざっと", next_cursor="b")
+        collect.record_result("news", status="ok", sweep="ざっと", focus=True, next_cursor="c")
+
+        # 割り込みの前の回が、そのまま戻し先として残っている
+        assert collect.get("news").last_undo["cursor"] == "a"
+
+    def test_the_screen_offers_it_only_when_there_is_something_to_redo(self, sample):
+        from app.views import admin
+
+        assert "最後の 1 回をやり直す" not in admin._collect_detail_html(collect.get("news"), "")
+
+        collect.update("news", sweeps=[{"name": "ざっと"}])
+        collect.record_result("news", status="ok", sweep="ざっと", next_cursor="b")
+        html = admin._collect_detail_html(collect.get("news"), "")
+
+        assert "最後の 1 回をやり直す" in html
+        # 中身は戻らないことを、押す前に書く
+        assert "集めた中身は戻りません" in html
+
+
 class TestVerifyingTags:
     """タグの値が実在するかを、**焼く前に**確かめる。
 
