@@ -880,6 +880,27 @@ class TestTheOutwardSweep:
         assert docs[0]["extra"]["published_at"].startswith("2026-09-10")
 
 
+class TestTellingTheAiTheTime:
+    """`{now}` —— いまの日時(日本時間)。
+
+    **AI はいまが何日の何時かを知らない**(学習した時点で止まっている)。聞けば
+    それらしい日付を作ってしまうので、回ごとに違う見出しを付けさせたい場面で要る。
+    """
+
+    def test_it_is_replaced_with_japanese_time(self, sample):
+        collect.update("news", prompt="いまは {now} です")
+        content = collect.build_messages(collect.get("news"), {})[-1]["content"]
+
+        assert "{now}" not in content
+        assert "JST" in content
+
+    def test_a_prompt_without_it_is_untouched(self, sample):
+        collect.update("news", prompt="{cursor} 以降を集めて")
+        content = collect.build_messages(collect.get("news"), {})[-1]["content"]
+
+        assert "JST" not in content
+
+
 class TestWhatCameInSinceLastTime:
     """`{recent}` —— 前回この巡回が走ってから後に入ったもの。
 

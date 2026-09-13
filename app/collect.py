@@ -63,7 +63,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from app import collect_log, db, feeds, notes
+from app import collect_log, db, feeds, jst, notes
 from app import extract as extraction
 from app import partition as partitioning
 from app.jst import to_jst
@@ -189,6 +189,11 @@ FEED_PLACEHOLDER = "{feed}"
 # 溜まっていく一方の収集(ニュースのような)で、要約や重要度付けを頼む回に要る:
 # 全部を差し込むと入り切らないし、入ったとしても毎回同じものを読み直すことになる。
 RECENT_PLACEHOLDER = "{recent}"
+
+# いまの日時(日本時間)を差し込む場所。**AI はいまが何日の何時かを知らない** ——
+# 学習した時点で止まっているので、聞けばそれらしい日付を作ってしまう。
+# 「1 日に 2 回まとめる」のように、回ごとに違う見出しを付けさせたい場面で要る。
+NOW_PLACEHOLDER = "{now}"
 
 # 作り直しで、前世代の何割を下回ったら焼くのを断るか。
 # **既定で守る側に倒す** —— AI が変な日に当たった 1 回で、育てた分類が消えるのは重い。
@@ -1396,6 +1401,9 @@ def build_messages(
         docs, scoped = scoped_docs(item, previous or {}, partition_key, focus)
         material_text, _shown = render_material(docs, scoped)
         user = user.replace(MATERIAL_PLACEHOLDER, material_text)
+    if NOW_PLACEHOLDER in user:
+        # **人が読むものは日本時間**(この文はそのまま見出しや本文へ写される)
+        user = user.replace(NOW_PLACEHOLDER, jst.format(_now()))
     if RECENT_PLACEHOLDER in user:
         # **基準はその巡回の前回だけ**(収集ぜんたいの前回へは倒さない)。
         # 倒していたせいで、**その巡回の 1 回目が必ず空になった** —— 直前に別の巡回が
