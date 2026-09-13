@@ -668,7 +668,8 @@ class TestFocus:
 
     def test_it_is_always_a_refine(self, ready):
         """足すだけの収集でも、名指しで渡された 1 件を直せないと割り込みの意味が無い。"""
-        assert not collect.get("news").is_refine()
+        # 足すだけの依頼文（今あるものを差し込んでいない）でも
+        assert collect.edits_what_is_there(collect.get("news").prompt) is False
         focus = collect.normalize_focus({"note": "直して"})
         system = collect.build_messages(
             collect.get("news"), {}, None, {}, None, focus
@@ -922,6 +923,15 @@ class TestWhatCameInSinceLastTime:
         assert "きのう" in messages[-1]["content"]
 
 
+def edited(item, previous, collected):
+    """**直す回として**素材を組む。
+
+    直す回かどうかは、その回の依頼文が語る(`edits_what_is_there`)。
+    ここを通るテストは「今あるものを読ませている回」を見ているので、印を立てて呼ぶ。
+    """
+    return collect.material(item, previous, collected, False, True)
+
+
 def _iso_now():
     from datetime import UTC, datetime
 
@@ -1107,14 +1117,18 @@ class TestPerSweepPrompt:
         user = collect.build_messages(collect.get("news"), {}, None, {}, sweep)[1]["content"]
         assert "漏れを足して" in user
 
-    def test_a_refine_sweep_without_the_material_is_refused(self, sample):
-        """整理の回に `{current}` が無いと、AI は今あるものを知らないまま書く。
+    def test_a_sweep_without_the_material_just_adds(self, sample):
+        """**断らない。** 今あるものを差し込んでいない回は、足すだけの回になる ——
+        AI は今あるものを知らないので、消す力を持たせられないだけ。
 
-        保存してしまうと、次に走ったときに初めて分かる(無人で回る層なので誰も見ていない)。
+        収集ぜんたいの設定だった頃は、巡回ごとに決められないので作る時点で弾くしか
+        なかった。いまは回ごとに決まるので、弾く理由が無い。
         """
-        collect.update("news", mode="refine", prompt="いまの内容:\n{current}\n直して")
-        with pytest.raises(HTTPException):
-            collect.update("news", sweeps=[{"name": "漏れ探し", "prompt": "漏れを足して"}])
+        collect.update("news", prompt="いまの内容:\n{current}\n直して")
+        collect.update("news", sweeps=[{"name": "漏れ探し", "prompt": "漏れを足して"}])
+
+        [sweep] = collect.sweeps_of(collect.get("news"))
+        assert collect.edits_what_is_there(sweep.prompt, sweep.only_new) is False
 
 
 class TestNoGapBetweenPartitions:
@@ -1225,9 +1239,7 @@ class TestAddingOnly:
     def test_without_the_mark_it_updates_as_before(self, refine):
         """印を付けていない回は今までどおり(直しに来ているので置き換わる)。"""
         previous = {"ゴッホ": {"doc_id": 1, "title": "ゴッホ", "body": "古い本文"}}
-        docs, diff = collect.material(
-            refine, previous, [{"title": "ゴッホ", "body": "新しい本文"}]
-        )
+        docs, diff = edited(refine, previous, [{"title": "ゴッホ", "body": "新しい本文"}])
         assert diff["updated"] == 1
         assert docs[0]["body"] == "新しい本文"
 
@@ -1257,9 +1269,7 @@ class TestTheGraveyard:
 
     def test_a_tombstone_digs_a_grave(self, refine):
         previous = {"俳優さん": {"doc_id": 1, "title": "俳優さん", "body": "本文"}}
-        _docs, diff = collect.material(
-            refine, previous, [{"title": "俳優さん", "tags": [notes.TOMBSTONE_TAG]}]
-        )
+        _docs, diff = edited(refine, previous, [{"title": "俳優さん", "tags": [notes.TOMBSTONE_TAG]}])
         assert diff["graves"] == ["俳優さん"]
 
         collect.record_result("news", status="ok", removed=1, graves=diff["graves"])
@@ -1289,9 +1299,7 @@ class TestTheGraveyard:
         """墓場が効くのは**足すとき**だけ。いるものを直す回は今までどおり。"""
         collect.update("news", graves=["モネ"])
         previous = {"モネ": {"doc_id": 1, "title": "モネ", "body": "古い"}}
-        docs, diff = collect.material(
-            collect.get("news"), previous, [{"title": "モネ", "body": "新しい"}]
-        )
+        docs, diff = edited(collect.get("news"), previous, [{"title": "モネ", "body": "新しい"}])
         assert diff["updated"] == 1
         assert docs[0]["body"] == "新しい"
 
@@ -1309,7 +1317,7 @@ class TestTheGraveyard:
         many = collect.MAX_TITLE_SAMPLE + 5
         previous = {f"俳優{i}": {"doc_id": i, "title": f"俳優{i}", "body": "本文"}
                     for i in range(1, many + 1)}
-        _docs, diff = collect.material(
+        _docs, diff = edited(
             collect.get("news"), previous,
             [{"title": f"俳優{i}", "tags": [notes.TOMBSTONE_TAG]} for i in range(1, many + 1)],
         )
@@ -1975,19 +1983,20 @@ class TestRest:
         """
         assert client.post("/v1/collect/news/preview").status_code == 403
 
-    def test_the_mode_comes_back_on_the_definition(self, client, enabled):
-        """依頼した側が、足すのか作り直すのかを確かめられるようにする。"""
+    def test_the_kind_comes_back_on_the_definition(self, client, enabled):
+        """依頼した側が、流れとして扱われるのか網羅なのかを確かめられるようにする。"""
         res = client.post(
             "/v1/collect",
             json={
                 "name": "tidy",
                 "prompt": "いまの内容:\n{current}\n整理して",
                 "interval_minutes": 60,
-                "mode": "refine",
+                "kind": "flow",
             },
         )
         assert res.status_code == 200
-        assert res.json()["mode"] == "refine"
+        assert res.json()["kind"] == "flow"
+        assert res.json()["keep_days"] == collect.DEFAULT_KEEP_DAYS
         assert client.get("/v1/collect/tidy").json()["keep_ratio"] == collect.DEFAULT_KEEP_RATIO
 
     def test_the_backend_comes_back_on_the_definition(self, client, enabled):
@@ -2006,13 +2015,6 @@ class TestRest:
         assert res.json()["backend"] == "antigravity"
         assert client.get("/v1/collect/asked").json()["model"] == "haiku"
 
-    def test_a_rebuild_without_the_material_placeholder_is_refused(self, client, enabled):
-        """外から依頼するときも、素材の差し込み口が無いものは作らせない。"""
-        res = client.post(
-            "/v1/collect",
-            json={"name": "bad", "prompt": "整理して", "interval_minutes": 60, "mode": "refine"},
-        )
-        assert res.status_code == 400
 
     def test_enabled_is_not_in_the_patch_shape(self, client, sample):
         """有効にするかを REST から触れると、依頼と実行を分けた意味が消える。"""
@@ -2032,7 +2034,11 @@ class TestRest:
 
 
 class TestRefineMode:
-    """整理する(`mode=refine`)。**いまの内容を読ませて、直すものと足すものを返させる**。
+    """今あるものを直す回。**いまの内容を読ませて、直すものと足すものを返させる**。
+
+    **収集の設定ではなく、その回の依頼文が語る**(`edits_what_is_there`)——
+    今あるものを差し込んでいれば直す回、差し込んでいなければ足すだけの回。
+    収集ぜんたいの設定(`mode`)として持っていた頃は、巡回ごとに決められなかった。
 
     **返さなかったものはそのまま残る**のがこの層の芯。かつては「返ったものが新しい
     全体」にしていたが、それだと返し忘れが黙って消えた —— 無人で毎日回る層でいちばん
@@ -2046,23 +2052,18 @@ class TestRefineMode:
             "spots",
             prompt="いまの分類:\n{current}\nこれを整理し直して",
             interval_minutes=60,
-            mode=collect.MODE_REFINE,
         )
 
-    def test_the_material_placeholder_is_required(self, enabled):
-        """今あるものを読ませずに整理はできない。作る時点で弾く。"""
-        import fastapi
+    def test_the_prompt_says_whether_it_edits(self, enabled):
+        """今あるものを差し込んでいなければ、AI は今あるものを知らない ——
+        知らないまま消す力を持たせられない。"""
+        assert collect.edits_what_is_there("いまの分類:\n{current}\n整理して") is True
+        assert collect.edits_what_is_there("{recent} をまとめて") is True
+        assert collect.edits_what_is_there("{cursor} 以降を10件集めて") is False
 
-        with pytest.raises(fastapi.HTTPException) as got:
-            collect.create("x", prompt="整理して", interval_minutes=60, mode=collect.MODE_REFINE)
-        assert got.value.status_code == 400
-
-    def test_switching_to_refine_checks_the_prompt_too(self, sample):
-        """集め方だけ切り替えても、組み合わせで確かめ直す。"""
-        import fastapi
-
-        with pytest.raises(fastapi.HTTPException):
-            collect.update("news", mode=collect.MODE_REFINE)
+    def test_an_add_only_sweep_never_edits(self):
+        """漏れを足す回は今あるものを見せるが、触れてはいけない。"""
+        assert collect.edits_what_is_there("{current} に無いものを足して", only_new=True) is False
 
     def test_the_current_contents_go_into_the_prompt(self, refine, baked):
         """今ある内容を読ませないと「整理し直す」が成り立たない。"""
@@ -2086,6 +2087,8 @@ class TestRefineMode:
             collect.get("spots"),
             collect.previous_docs("spots", sources),
             [{"title": "残る", "body": "直した本文"}, {"title": "新入り", "body": "本文"}],
+            False,
+            True,
         )
         assert sorted(d["title"] for d in docs) == ["新入り", "残る", "触れない"]
         assert (diff["added"], diff["updated"], diff["removed"]) == (1, 1, 0)
@@ -2095,7 +2098,7 @@ class TestRefineMode:
     def test_a_tombstone_removes_one(self, refine, baked):
         """消すのは明示したときだけ。固化と同じ墓標の契約。"""
         sources = baked([("残る", "本文"), ("消す", "本文")], "spots")
-        docs, diff = collect.material(
+        docs, diff = edited(
             collect.get("spots"),
             collect.previous_docs("spots", sources),
             [{"title": "消す", "body": "", "tags": [notes.TOMBSTONE_TAG]}],
@@ -2107,7 +2110,7 @@ class TestRefineMode:
     def test_the_diff_names_what_moved(self, refine, baked):
         """件数だけでは、何が起きたのか読めない(変更履歴に残す元になる)。"""
         sources = baked([("残る", "本文")], "spots")
-        _docs, diff = collect.material(
+        _docs, diff = edited(
             collect.get("spots"),
             collect.previous_docs("spots", sources),
             [{"title": "残る", "body": "直した本文"}, {"title": "新入り", "body": "本文"}],
@@ -2117,7 +2120,7 @@ class TestRefineMode:
 
     def test_a_tombstone_for_something_absent_does_nothing(self, refine):
         """持っていないものへの墓標は、消すものが無いだけ。"""
-        _docs, diff = collect.material(
+        _docs, diff = edited(
             collect.get("spots"), {}, [{"title": "居ない", "tags": [notes.TOMBSTONE_TAG]}]
         )
         assert diff["removed"] == 0
@@ -2156,7 +2159,7 @@ class TestRefineMode:
         previous = collect.previous_docs("spots", sources)
         graves = [{"title": f"分類{i}", "tags": [notes.TOMBSTONE_TAG]} for i in range(1, 10)]
         with pytest.raises(fastapi.HTTPException) as got:
-            collect.ndjson(collect.get("spots"), sources, previous, graves)
+            collect.ndjson(collect.get("spots"), sources, previous, graves, False, True)
         assert got.value.status_code == 409
         assert "整理を止めました" in got.value.detail["error"]
 
@@ -2166,7 +2169,8 @@ class TestRefineMode:
         sources = baked([(f"分類{i}", "本文") for i in range(1, 11)], "spots")
         graves = [{"title": f"分類{i}", "tags": [notes.TOMBSTONE_TAG]} for i in range(1, 10)]
         body, diff = collect.ndjson(
-            collect.get("spots"), sources, collect.previous_docs("spots", sources), graves
+            collect.get("spots"), sources, collect.previous_docs("spots", sources),
+            graves, False, True,
         )
         assert diff["removed"] == 9
         assert len(body.splitlines()) == 2  # meta + 1 件
@@ -2195,15 +2199,6 @@ class TestRefineMode:
         assert shown == collect.MAX_MATERIAL_DOCS
         assert "対象外" in text
 
-    def test_the_old_name_is_read_as_refining(self, enabled):
-        """「作り直し」と呼んでいた頃の定義は、育てる側へ読み替える。
-
-        当時の意図は「整理したい」で、置き換えはその実現手段でしかなかった。
-        知らない値は足すほうへ倒す(壊れた定義でいきなり消す側へ寄せない)。
-        """
-        assert collect.normalize_mode("rebuild") == collect.MODE_REFINE
-        assert collect.normalize_mode("いいかげんな値") == collect.MODE_APPEND
-        assert collect.normalize_mode(None) == collect.MODE_APPEND
 
     def test_the_removed_headlines_are_recorded(self, refine):
         """消えたものが見えないと、プロンプトを直す判断ができない。"""
@@ -2334,6 +2329,28 @@ class TestTheCollectSectionMarkup:
         from app.views import admin
 
         return admin._sweep_table_body(collect.get(name), "")
+
+    def test_the_kind_is_the_first_mark_on_the_row(self, sample):
+        """一覧でまず見えるのは種類。
+
+        「整理」を目立たせていたせいで、それが種類のことだと読まれた —— あれは
+        返ってきた 1 件で何ができるかの話でしかない。
+        """
+        collect.update(
+            "news", kind="flow", keep_days=30, mode="refine", prompt="{cursor} {recent}"
+        )
+        html = self._html(sample)
+
+        assert '<span class="stale">流れ</span>' in html
+        # 消えることは押す前に見えている必要がある
+        assert "30 日ぶん" in html
+
+    def test_a_stock_says_so(self, sample):
+        collect.update("news", kind="stock")
+        html = self._html(sample)
+
+        assert '<span class="stale">網羅</span>' in html
+        assert "日ぶん" not in html
 
     def test_a_running_collection_has_no_delete_button(self, sample):
         """動いている収集を消すと、走っている最中の 1 回が焼く先の定義を失う。"""

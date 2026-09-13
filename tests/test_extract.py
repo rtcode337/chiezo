@@ -702,20 +702,18 @@ class TestTheAdminScreen:
         monkeypatch.setenv("CHIEZO_NOTES_DIR", str(notes_dir))
         monkeypatch.setenv("CHIEZO_TRIGGER_URL", "http://chiezo-trigger:7011")
         db.set_mutable_paths([notes_dir / "notes.db"])
-        collect.create("painters", prompt="{cursor} と {current}", interval_minutes=60,
-                       mode=collect.MODE_REFINE)
+        collect.create("painters", prompt="{cursor} と {current}", interval_minutes=60)
         return collect.update("painters", extract=extract.to_json(spec()))
 
     def test_consulting_about_the_prompt_keeps_the_rest(self, stored):
         """相談から保存したときに、フォームに載っていない項目が既定へ戻らないこと。
 
-        載せていないと、集め方が「足す」に戻り、抽出の指定が消える。
+        載せていないと、抽出の指定が消える。
         """
         from app.views import admin
 
         html = admin._consult_page_html("painters", "画家", "新しい指示文", "")
 
-        assert 'name="mode" value="refine"' in html
         assert "印象派の画家" in html
 
     def test_the_drafted_spec_comes_with_what_it_pulls(self, stored):

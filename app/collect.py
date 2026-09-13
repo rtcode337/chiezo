@@ -169,14 +169,6 @@ KINDS = (KIND_FLOW, KIND_STOCK)
 # 量も抑えられる。0 なら期限では落とさない
 DEFAULT_KEEP_DAYS = 30
 
-MODE_APPEND = "append"
-MODE_REFINE = "refine"
-MODES = (MODE_APPEND, MODE_REFINE)
-
-# 「作り直し」と呼んでいた頃の値。**育てる側へ読み替える** —— 当時の意図は
-# 「整理したい」で、置き換えはその実現手段でしかなかった
-LEGACY_MODES = {"rebuild": MODE_REFINE}
-
 # 作り直しのプロンプトに必ず入れてもらう印。ここに前世代の中身が差し込まれる。
 # **無いまま作り直すと、AI は今ある内容を知らないまま「全体」を答える**ことになり、
 # 育てたものが 1 回で消える。だから作るときに弾く
@@ -339,8 +331,6 @@ class Collection:
     # 起こしてある割り込みの依頼(`Focus`)。**同じ理由でここに置く** ——
     # 取り込みは収集の名前しか運べないので、頼んだ側が書いて渡す
     pending_focus: dict | None = None
-    # 集め方(`MODES`)。既定は足すほう —— 既にある定義の意味を変えない
-    mode: str = MODE_APPEND
     # 作り直しで、前世代の何割を下回ったら断るか。0 なら守りを外す。
     # 足すほうでは使わない(そもそも減らないので)
     keep_ratio: float = DEFAULT_KEEP_RATIO
@@ -389,9 +379,6 @@ class Collection:
     last_removed: int = 0
     last_removed_titles: list[str] = field(default_factory=list)
     next_run_at: str | None = None
-
-    def is_refine(self) -> bool:
-        return self.mode == MODE_REFINE
 
     def due_at(self) -> datetime:
         """次に走る時刻。**巡回のうちいちばん早いもの**(持っていなければ「いますぐ」)。
@@ -882,7 +869,6 @@ def _from_json(item: dict) -> Collection:
         pending_focus=(
             focus.to_json() if (focus := normalize_focus(item.get("pending_focus"))) else None
         ),
-        mode=normalize_mode(item.get("mode")),
         keep_ratio=normalize_keep_ratio(item.get("keep_ratio")),
         extract=extraction.to_json(extraction.normalize(item.get("extract"))),
         kind=normalize_kind(item.get("kind")),
@@ -904,13 +890,6 @@ def _from_json(item: dict) -> Collection:
     )
 
 
-def normalize_mode(value) -> str:
-    """知らない集め方は足すほうへ倒す。壊れた定義でいきなり消す側へ寄せない。"""
-    if value in MODES:
-        return value
-    return LEGACY_MODES.get(value, MODE_APPEND)
-
-
 def normalize_keep_ratio(value) -> float:
     try:
         ratio = float(value)
@@ -919,23 +898,21 @@ def normalize_keep_ratio(value) -> float:
     return min(max(ratio, 0.0), 1.0)
 
 
-def check_prompt(mode: str, prompt: str) -> None:
-    """作り直しのプロンプトに素材の差し込み口があるかを確かめる。
+def edits_what_is_there(prompt: str, only_new: bool = False) -> bool:
+    """その回が、**既にあるものを直す回か**。
 
-    **無いまま作り直させない**。AI は今ある内容を知らないまま「全体」を答えることに
-    なり、返ってこなかったものは全部消える。作る時点で弾くのがいちばん安い。
+    収集ぜんたいの設定として持っていた頃(`mode`)は、巡回ごとに決められなかった。
+    いまは巡回ごとに決まるので、収集の側に置く意味が無い —— **依頼文がそれを
+    語っている**。今あるものを差し込んでいる(`{current}` / `{recent}`)なら、
+    AI は「直すものと足すものだけ返す」仕事をしていて、墓標で消すこともできる。
+    差し込んでいないなら、AI は今あるものを知らないので、消す力を持たせられない。
+
+    **足すだけの回は、差し込んでいても直す回ではない**(`only_new`)——
+    漏れを足す回は今あるものを見せるが、触れてはいけない。
     """
-    # **`{recent}` でもよい。** 見せ方が違うだけで、どちらも「今あるもの」を渡す口
-    # —— 溜まっていく一方の収集では、全部を差し込むと入り切らない(そのための差分)
-    if mode == MODE_REFINE and not any(
-        p in prompt for p in (MATERIAL_PLACEHOLDER, RECENT_PLACEHOLDER)
-    ):
-        raise HTTPException(400, {
-            "error": f"整理のプロンプトには {MATERIAL_PLACEHOLDER} か"
-                     f" {RECENT_PLACEHOLDER} を入れてください",
-            "reason": "ここへ今ある内容が差し込まれる。無いと、AI は今あるものを"
-                      "知らないまま書くことになり、直すことも重複をまとめることもできない",
-        })
+    if only_new:
+        return False
+    return any(p in (prompt or "") for p in (MATERIAL_PLACEHOLDER, RECENT_PLACEHOLDER))
 
 
 def _to_json(items: list[Collection]) -> str:
@@ -996,7 +973,6 @@ def create(
     effort: str | None = None,
     web: bool = True,
     requested_by: str = "",
-    mode: str = MODE_APPEND,
     keep_ratio: float | None = None,
     extract_spec=None,
     kind: str = KIND_STOCK,
@@ -1013,9 +989,6 @@ def create(
         })
     if not prompt.strip():
         raise HTTPException(400, {"error": "prompt must not be empty"})
-    if mode not in MODES:
-        raise HTTPException(400, {"error": f"mode は {' / '.join(MODES)} のどれかにしてください"})
-    check_prompt(mode, prompt)
     existing = load()
     if any(c.name == name for c in existing):
         raise HTTPException(409, {"error": f"収集「{name}」はすでにあります"})
@@ -1037,7 +1010,6 @@ def create(
         effort=effort,
         web=web,
         cursor="",
-        mode=mode,
         keep_ratio=(
             DEFAULT_KEEP_RATIO if keep_ratio is None else normalize_keep_ratio(keep_ratio)
         ),
@@ -1101,15 +1073,13 @@ def update(name: str, **fields) -> Collection:
     current = get(name)
     allowed = {
         "description", "prompt", "interval_minutes", "enabled",
-        "backend", "model", "effort", "web", "cursor", "mode", "keep_ratio", "extract",
+        "backend", "model", "effort", "web", "cursor", "keep_ratio", "extract",
         "partition", "partitions", "sweeps", "feed", "graves", "verify_tags",
         "kind", "keep_days",
     }
     patch = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if "interval_minutes" in patch:
         patch["interval_minutes"] = max(int(patch["interval_minutes"]), MIN_INTERVAL_MINUTES)
-    if "mode" in patch and patch["mode"] not in MODES:
-        raise HTTPException(400, {"error": f"mode は {' / '.join(MODES)} のどれかにしてください"})
     if "keep_ratio" in patch:
         patch["keep_ratio"] = normalize_keep_ratio(patch["keep_ratio"])
     if "partition" in patch:
@@ -1123,12 +1093,6 @@ def update(name: str, **fields) -> Collection:
             patch["partitions"] = []
     if "sweeps" in patch:
         patch["sweeps"] = _keep_schedule(normalize_sweeps(patch["sweeps"]), current.sweeps)
-        # **巡回ごとの依頼文も、収集のものと同じだけ確かめる** —— 整理の回に
-        # `{current}` が無いと、AI は今あるものを知らないまま書くことになる。
-        # 保存してしまうと、次に走ったときに初めて分かる(無人で回る層なので誰も見ていない)
-        for raw in patch["sweeps"]:
-            if raw.get("prompt"):
-                check_prompt(patch.get("mode", current.mode), str(raw["prompt"]))
         # **巡回の名前が消えたら、その巡回の記録も台帳から落とす** ——
         # 残しておくと、同じ名前で作り直したとき前の進み具合が引き継がれる
         names = {raw["name"] for raw in patch["sweeps"]}
@@ -1170,12 +1134,6 @@ def update(name: str, **fields) -> Collection:
     for key in ("backend", "model", "effort"):
         if key in patch and not str(patch[key]).strip():
             patch[key] = None
-    # 集め方かプロンプトのどちらを変えても、組み合わせで確かめ直す ——
-    # 片方だけ見ていると、作り直しへ切り替えたときに素材の差し込み口が無いまま通る
-    check_prompt(
-        patch.get("mode", current.mode),
-        patch.get("prompt", current.prompt),
-    )
     updated = replace(current, **patch, updated_at=_iso(_now()))
     if ("interval_minutes" in patch or "enabled" in patch) and current.last_run_at:
         # 間隔を縮めたのに次回が遠いままだと、変えた実感が出ない。前回から測り直す。
@@ -1445,7 +1403,10 @@ def build_messages(
         user += "\n\n" + render_focus(focus, item, previous or {}, partition_key)
     # **割り込みは必ず「直す」側で頼む。** 足すだけの収集でも、名指しで渡された 1 件を
     # 直せなければ割り込みの意味が無い
-    system = REFINE_SYSTEM_PROMPT if (item.is_refine() or focus is not None) else SYSTEM_PROMPT
+    # **直す回かどうかは、その回の依頼文が語っている**(`edits_what_is_there`)。
+    # 割り込みは必ず直す側 —— 名指しで渡された 1 件を直せなければ意味が無い
+    edits = focus is not None or edits_what_is_there(prompt, sweep.only_new if sweep else False)
+    system = REFINE_SYSTEM_PROMPT if edits else SYSTEM_PROMPT
     if spec and spec["by"] == partitioning.BY_GEO:
         system += GEO_SYSTEM_NOTE
     return [
@@ -2069,6 +2030,7 @@ def material(
     previous: dict[str, dict],
     collected: list[dict],
     only_new: bool = False,
+    edits: bool = False,
 ) -> tuple[list[dict], dict]:
     """焼く素材と、前世代との差分を組み立てる。
 
@@ -2089,12 +2051,16 @@ def material(
     薄い内容で上書きされ、持っていたタグごと落ちる。**墓標も読まない** ——
     足すだけの回に消す力を持たせない。
 
-    違うのは 2 つだけ:
+    **直す回かどうか**(`edits`)で違うのは 2 つだけ:
 
-    - **同じ見出しをどう数えるか。** 集めるほうは「既に持っていた」ので追加に数えない。
-      育てるほうは**直しに来ている**ので、置き換わったことを `updated` に数える。
-    - **墓標を読むかどうか。** 育てるほうだけ、`削除` の付いた見出しを落とす
+    - **同じ見出しをどう数えるか。** 直しに来ていない回では「既に持っていた」ので
+      追加に数えない。直す回では、置き換わったことを `updated` に数える。
+    - **墓標を読むかどうか。** 直す回だけ、`削除` の付いた見出しを落とす
       (固化とまったく同じ契約)。**消すのは明示したときだけ**。
+
+    直す回かどうかは**その回の依頼文が語っている**(`edits_what_is_there`)——
+    今あるものを差し込んでいなければ、AI は今あるものを知らないので、
+    消す力を持たせられない。
 
     **`doc_id` は前世代のものを引き継ぐ**。残った文書の URL が焼き直しで変わらないため。
     """
@@ -2118,7 +2084,7 @@ def material(
             # **足すだけの回。** 既にあるものには触らない(数えるだけ)
             skipped += 1
             continue
-        if item.is_refine() and not only_new and title and _is_tombstone(raw):
+        if edits and title and _is_tombstone(raw):
             # 墓標。**持っていないものへの墓標は数えない**(消すものが無い)
             if merged.pop(title, None) is not None:
                 removed_titles.append(title)
@@ -2138,7 +2104,7 @@ def material(
             added_titles.append(title)
         else:
             doc_id = kept_before["doc_id"]
-            if item.is_refine():
+            if edits:
                 updated += 1
                 updated_titles.append(title)
             else:
@@ -2175,7 +2141,7 @@ def _is_tombstone(raw: dict) -> bool:
     return any(str(t).strip() == notes.TOMBSTONE_TAG for t in tags)
 
 
-def shrink_blocked(item: Collection, diff: dict) -> str | None:
+def shrink_blocked(item: Collection, diff: dict, edits: bool = False) -> str | None:
     """墓標で減りすぎていたら、その理由の文。問題なければ None。
 
     **AI が変な日に当たった 1 回で、育てた分類が消えるのを止める**のがここ。
@@ -2183,7 +2149,7 @@ def shrink_blocked(item: Collection, diff: dict) -> str | None:
     —— そのぶん、止まったときの意味が鋭い(AI が「全部要らない」と言っている)。
     足すほうには要らない(そもそも減らない)。`keep_ratio` を 0 にすると外れる。
     """
-    if not item.is_refine() or item.keep_ratio <= 0 or not diff["previous"]:
+    if not edits or item.keep_ratio <= 0 or not diff["previous"]:
         return None
     floor = diff["previous"] * item.keep_ratio
     if diff["total"] >= floor:
@@ -2277,6 +2243,7 @@ def ndjson(
     previous: dict[str, dict],
     collected: list[dict],
     only_new: bool = False,
+    edits: bool = False,
 ) -> tuple[str, dict]:
     """取り込み側が読む素材(1 行目が meta、以降は 1 行 1 文書)と、前世代との差分。
 
@@ -2290,7 +2257,7 @@ def ndjson(
     実際のバイト数でしか測れない(`MAX_MATERIAL_BYTES`)。積みながら見て、
     超えた時点で止める —— 全部組んでから測ると、測るために膨らませることになる。
     """
-    docs, diff = material(item, previous, collected, only_new)
+    docs, diff = material(item, previous, collected, only_new, edits)
     # **実在しない見出しを指すタグは、焼く前に落とす。** 読む側は「タグがある =
     # 押せば何か出る」と受け取るので、混ざっていると押しても何も出ないものが並ぶ
     docs, diff["tags_dropped"] = verified_docs(item, docs, sources)
@@ -2305,7 +2272,7 @@ def ndjson(
     # **期限で落とすのは、減りすぎの歯止めを見たあと。** あれは AI が変な日に当たって
     # 大量に消すのを止めるためのもので、こちらは意図して落としている
     docs, diff["expired"] = expired_docs(item, docs)
-    if reason := shrink_blocked(item, diff):
+    if reason := shrink_blocked(item, diff, edits):
         raise HTTPException(
             409,
             {

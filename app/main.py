@@ -393,9 +393,8 @@ async def _collect_material(name: str, sources: dict) -> str:
     if focus is not None:
         # **割り込みは 1 回きり。** 見るのは頼まれたところだけで、区画の順番には触らない
         keys = [focus.partition] if focus.partition else []
-        # 割り込みは必ず「直す」側で焼く(足すだけの収集でも、名指しの 1 件を直せないと
-        # 割り込みの意味が無い)。ndjson へ渡す定義もそちらへ倒す
-        baked_as = replace(item, mode=collect.MODE_REFINE)
+        # 割り込みは必ず「直す」側で焼く(名指しの 1 件を直せないと割り込みの意味が無い)
+        baked_as = item
     elif sweep.use_extract or sweep.use_feed:
         # **機械で引く回は区画を見ない。** 指定を 1 本引いて全部を返すので、
         # 区画を選ぶと**見てもいない区画に「回った」印が付く**(一周が嘘になる)
@@ -404,6 +403,11 @@ async def _collect_material(name: str, sources: dict) -> str:
     else:
         keys = partitioning.pick(ledger, sweep.name, sweep.per_run(len(ledger)))
         baked_as = item
+    # **直す回かどうかは、その回の依頼文が語っている。** 収集ぜんたいの設定として
+    # 持っていた頃(`mode`)は巡回ごとに決められなかった —— いまは巡回ごとに決まる
+    edits = focus is not None or collect.edits_what_is_there(
+        sweep.prompt or item.prompt, sweep.only_new
+    )
     label = collect_log.FOCUS_LABEL if focus is not None else sweep.name
     # **誰に頼んだ回かも控える。** 巡回ごとに相手を変えられるので、回の名前だけでは
     # 何で走ったのか読めない。**「既定にまかせる」は名前に開いて残す** ——
@@ -423,7 +427,7 @@ async def _collect_material(name: str, sources: dict) -> str:
             # **足すだけの回は、既にある見出しに触らない。** 割り込みは別 ——
             # あれは名指しで「ここを直して」なので、必ず直す側で走る
             collect.ndjson, baked_as, sources, previous, items,
-            focus is None and sweep.only_new,
+            focus is None and sweep.only_new, edits,
         )
     except Exception as e:
         reason = f"{type(e).__name__}: {e}"
@@ -463,7 +467,7 @@ async def _collect_material(name: str, sources: dict) -> str:
     )
     log.info(
         "collect %s (%s/%s%s): added=%d updated=%d kept=%d removed=%d skipped=%d",
-        name, baked_as.mode, label, f" {len(keys)} 区画" if keys else "",
+        name, "直す" if edits else "足す", label, f" {len(keys)} 区画" if keys else "",
         diff["added"], diff["updated"], diff["kept"], diff["removed"], diff["skipped"],
     )
     return body
@@ -492,12 +496,15 @@ async def collect_preview(name: str, sources: dict, sweep_name: str | None = Non
     items, next_cursor, note = await _collect_items(
         item, previous, sources, keys, sweep, None, feed
     )
+    edits = collect.edits_what_is_there(
+        sweep.prompt or item.prompt, sweep.only_new
+    )
     _docs, diff = await asyncio.to_thread(
-        collect.material, item, previous, items, sweep.only_new
+        collect.material, item, previous, items, sweep.only_new, edits
     )
     return {
         "name": name,
-        "mode": item.mode,
+        "edits": edits,
         **diff,
         "next_cursor": next_cursor,
         # **下見では印を付けない。** 進み具合を動かさないのが下見の約束なので、
@@ -1532,11 +1539,6 @@ class CollectionCreate(BaseModel):
     model: str | None = None
     effort: str | None = None
     web: bool = True
-    mode: str = PydField(
-        collect.MODE_APPEND,
-        description="append(集める。外から取ってきて積む) / "
-        "refine(整理する。いまの内容を読ませて、直すものと足すものを返させる)",
-    )
     keep_ratio: float | None = PydField(
         None,
         description="作り直しで前世代の何割を下回ったら断るか(0 で守りを外す)",
@@ -1601,7 +1603,6 @@ class CollectionPatch(BaseModel):
     effort: str | None = None
     web: bool | None = None
     cursor: str | None = None
-    mode: str | None = None
     keep_ratio: float | None = None
     extract: dict | None = PydField(
         None, description="抽出の指定。空のオブジェクトを渡すと外れる"
@@ -1696,7 +1697,6 @@ def collect_create(request: Request, body: CollectionCreate):
         model=body.model,
         effort=body.effort,
         web=body.web,
-        mode=body.mode,
         keep_ratio=body.keep_ratio,
         extract_spec=body.extract,
         kind=collect.normalize_kind(body.kind),

@@ -346,7 +346,6 @@ def _consult_page_html(name: str | None, want: str, draft: str, error: str) -> s
             f'<input type="hidden" name="cursor" value="{esc(collect.get(name).cursor)}">'
             # 載せないと既定へ戻る（集め方は「足す」に、抽出の指定は空に）。
             # 相談で直したいのはプロンプトだけなので、他はそのまま持ち回る
-            f'<input type="hidden" name="mode" value="{esc(collect.get(name).mode)}">'
             f'<textarea name="extract" hidden>{esc(_extract_json(collect.get(name)))}</textarea>'
             f'<p><label>この案(直してから保存できる)<br>'
             f'<textarea name="prompt" rows="12">{esc(draft)}</textarea></label></p>'
@@ -385,17 +384,14 @@ def _consult_page_html(name: str | None, want: str, draft: str, error: str) -> s
     return page_shell("プロンプトの相談", body)
 
 
-# 収集の**種類**の言い方。`mode` とは別の軸 —— あちらは「返ってきた 1 件で何が
-# できるか」、こちらは「その収集が何を集めているのか」
+# 収集の**種類**の言い方。その収集が何を集めているのか
+# (返ってきた 1 件で何ができるかは、巡回ごとに決まる)
+# 一覧の行に出す短い印。**説明はここでは書かない**(面のほうに出る)
+KIND_MARKS = {collect.KIND_FLOW: "流れ", collect.KIND_STOCK: "網羅"}
+
 KIND_LABELS = {
     collect.KIND_FLOW: "流れ(時とともに増えるものを追う。古いものは順に落とす)",
     collect.KIND_STOCK: "網羅(ある括りの全部を集めて、端から端まで精査し続ける)",
-}
-
-
-MODE_LABELS = {
-    "append": "集める(外から取ってきて積む)",
-    "refine": "整理する(いまの内容を読ませて、直すものと足すものを返させる)",
 }
 
 
@@ -493,16 +489,6 @@ def _backend_label(item) -> str:
     # 考える量だけ上げている、が普通にある —— 出さないと、そこが空欄に見える
     detail = " / ".join(x for x in (item.model, item.effort) if x)
     return label + (f'<br><span class="muted">{esc(detail)}</span>' if detail else "")
-
-
-def _mode_select(current: str) -> str:
-    """集め方を選ぶセレクト。**既定は足すほう** —— 消える側を既定にしない。"""
-    options = "".join(
-        f'<option value="{esc(mode)}"{" selected" if mode == current else ""}>'
-        f"{esc(MODE_LABELS[mode])}</option>"
-        for mode in collect.MODES
-    )
-    return f'<select name="mode">{options}</select>'
 
 
 # 相手を選び直したときに、モデルと考える量の候補を入れ替える。
@@ -1055,7 +1041,6 @@ def _collect_detail_html(item, disabled: str) -> str:
         f"「画家ではない」として外した人が次の回で戻ってくる。"
         f" 消し間違えたら、その行を消せば入ってくるようになる。</p>"
         f"{_backend_hint()}"
-        f"<p><label>集め方<br>{_mode_select(item.mode)}</label></p>"
         f'<p><label>消えすぎの歯止め(前の何割を下回ったら止めるか。0 で外す)<br>'
         f'<input name="keep_ratio" type="number" step="0.05" min="0" max="1"'
         f' value="{item.keep_ratio}"></label></p>'
@@ -1190,11 +1175,17 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             f'<br><span class="muted">依頼元: {esc(item.requested_by)}</span>'
             if item.requested_by else ""
         )
-        # 作り直しは「返らなかったものが消える」ので、行のいちばん目立つところに出す
-        mode_mark = ' <span class="stale">整理</span>' if item.is_refine() else ""
+        # **一覧でまず見えるのは種類。** 流れか網羅かで、その収集が何をしているのかが
+        # 決まる —— 「整理」は返ってきた 1 件で何ができるかの話でしかなく、
+        # そちらを目立たせていたせいで、種類のことだと読まれた
+        kind_mark = f' <span class="stale">{esc(KIND_MARKS[item.kind])}</span>'
+        # 期限で落とすのは流れだけ。**消えることは押す前に見えている必要がある**
+        if item.keep_days:
+            kind_mark += f' <span class="muted">{item.keep_days} 日ぶん</span>'
+
         # 次の 1 回が機械で埋まるかどうかは、押す前に見えていないと分からない
         if item.extract:
-            mode_mark += (
+            kind_mark += (
                 ' <span class="muted">抽出</span>'
                 if item.cursor
                 else ' <span class="stale">次は抽出</span>'
@@ -1234,7 +1225,7 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
         rows.append(
             f"<tr{cls}>"
             f'<td{span}><a href="/admin/collect/{esc(quote(item.name))}">{esc(item.name)}</a>'
-            f"{mode_mark}"
+            f"{kind_mark}"
             f'<br><span class="muted">{esc(item.description)}</span>{requester}'
             f"</td>"
             + f"<td{span}>{baked_docs}</td>"
@@ -1278,7 +1269,6 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
 <input name="interval_minutes" type="number" min="{collect.MIN_INTERVAL_MINUTES}" value="360"></label></p>
 <p><label>頼む相手<br>{_backend_select(None)}</label></p>
 {_backend_hint()}
-<p><label>集め方<br>{_mode_select(collect.MODE_APPEND)}</label></p>
 <p class="muted">整理を選ぶときは、プロンプトに <code>{{current}}</code> を入れる
 (そこへ今ある内容が差し込まれる)。返さなかったものはそのまま残り、消えるのは AI が
 墓標を付けたときだけ。</p>
@@ -2117,7 +2107,6 @@ async def admin_collect_create(request: Request):
         interval_minutes=int(interval) if interval.isdigit() else 360,
         description=str(form.get("description") or "").strip(),
         web=bool(form.get("web")),
-        mode=collect.normalize_mode(form.get("mode")),
         backend=_blank_to_none(form.get("backend")),
     )
     collect.update(item.name, enabled=False)
@@ -2148,7 +2137,6 @@ async def admin_collect_edit(name: str, request: Request):
         cursor=str(form.get("cursor") or ""),
         # **空にできる**(消し間違いの逃げ道)。1 行 1 件で読む
         graves=[t.strip() for t in str(form.get("graves") or "").splitlines() if t.strip()],
-        mode=collect.normalize_mode(form.get("mode")),
         # 空欄は「使わない」。指定を外せるのはここだけ
         extract=_parse_extract(form.get("extract")),
         partition=_parse_partition(form.get("partition")),
@@ -2310,7 +2298,6 @@ def _draft_extract_page_html(name: str | None, want: str, drafted: dict | None, 
             f'<input type="hidden" name="description" value="{esc(current.description)}">'
             f'<input type="hidden" name="interval_minutes" value="{current.interval_minutes}">'
             f'<input type="hidden" name="cursor" value="{esc(current.cursor)}">'
-            f'<input type="hidden" name="mode" value="{esc(current.mode)}">'
             f'<textarea name="prompt" hidden>{esc(current.prompt)}</textarea>'
             f'<p><label>この指定(直してから保存できる)<br>'
             f'<textarea name="extract" rows="16" spellcheck="false">{esc(spec_json)}</textarea>'
@@ -2645,7 +2632,7 @@ def _preview_page_html(name: str, result: dict | None, error: str) -> str:
         f"{name} を試しに集める",
         f"""
 <h3>「{esc(name)}」を試しに集めた結果</h3>
-<p class="muted">集め方: {esc(MODE_LABELS.get(str(result["mode"]), "") if result else "")}</p>
+<p class="muted">{'今あるものを直す回です' if result and result.get("edits") else '足すだけの回です'}</p>
 <p><strong>まだ焼いていません。</strong>長期記憶は変わっておらず、進み具合も次回の予定も
 動いていません。この数字を見てから「今すぐ実行」を押します。</p>
 {body}
@@ -2682,7 +2669,7 @@ def admin_collect_detail(request: Request, name: str):
 {'<br>依頼元: ' + esc(item.requested_by) if item.requested_by else ''}</p>
 <p>種類: {esc(KIND_LABELS.get(item.kind, item.kind))}
 {'／ ' + str(item.keep_days) + ' 日ぶんを持つ' if item.keep_days else ''}
-<br>長期記憶: {baked} / 集め方: {esc(MODE_LABELS.get(item.mode, item.mode))}
+<br>長期記憶: {baked}
 / 状態: {'有効' if item.enabled else '<span class="stale">止まっている</span>'}</p>
 <table>
 <thead>
