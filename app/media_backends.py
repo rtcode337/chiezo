@@ -99,6 +99,9 @@ class GeneratedImage:
     mime: str
     seed: int
     model: str
+    # 相手が何をしたか(CLI の stdout/stderr)。**ブリッジ越しのときだけ入る** ——
+    # シェルを渡している相手の手順は、ここにしか出ない
+    trace: str = ""
 
 
 # 参考音源が効くのは曲だけ。 効果音の口(`/v1/sound-generation`)は text しか受け取らない
@@ -731,8 +734,9 @@ async def _bridge_image_generate(
     if res.status_code >= 400:
         raise remote_error(spec, res, "image")
 
+    body_out = res.json()
     data = next(
-        (item.get("b64_json") for item in res.json().get("data", []) if item.get("b64_json")),
+        (item.get("b64_json") for item in body_out.get("data", []) if item.get("b64_json")),
         None,
     )
     if not data:
@@ -740,7 +744,8 @@ async def _bridge_image_generate(
 
     # seed は受け付けない。 記録だけしておく(再現できるのは ComfyUI 側だけ)
     model = BRIDGE_IMAGE_MODELS.get(spec.id, spec.id)
-    return GeneratedImage(base64.b64decode(data), "image/png", seed, model)
+    return GeneratedImage(base64.b64decode(data), "image/png", seed, model,
+                          trace=str(body_out.get("trace") or ""))
 
 
 # ---- ComfyUI(音)-----------------------------------------------------------

@@ -23,6 +23,7 @@ from starlette.concurrency import run_in_threadpool
 from app import (
     ai_inflight,
     ai_log,
+    ai_transcript,
     answer,
     build_info,
     capabilities,
@@ -1604,6 +1605,24 @@ def admin_memory(request: Request):
     return HTMLResponse(content=page_shell("記憶", body))
 
 
+def _int_arg(request: Request, name: str, fallback: int) -> int:
+    """クエリの数。**読めない値は既定に落とす** —— 画面は JS を持たないので、
+    人が URL を手で書き換えることがある(そこで 500 にしては困る)。"""
+    with suppress(TypeError, ValueError):
+        return max(1, int(request.query_params.get(name, fallback)))
+    return fallback
+
+
+@router.get("/admin/ai/transcripts/{ident}", response_class=PlainTextResponse)
+def admin_ai_transcript(ident: str):
+    """控えの全文。**そのまま出す** —— CLI の出力は整形すると意味が変わる
+    (空白と改行で区切りを表す相手がいる)。"""
+    text = ai_transcript.full_text(ident)
+    if text is None:
+        raise HTTPException(404, {"error": "その控えはありません(掃除で消えたか、無効)"})
+    return PlainTextResponse(text, media_type="text/plain; charset=utf-8")
+
+
 @router.get("/admin/ai", response_class=HTMLResponse)
 async def admin_ai(request: Request):
     """AI と鍵の面。**呼ぶ側に認証情報を持たせないための面**をここにまとめる。"""
@@ -1623,6 +1642,8 @@ async def admin_ai(request: Request):
 {ai_usage.section_html(request)}
 
 {ai_history.section_html(*_history_args(request))}
+
+{ai_history.transcripts_html(_int_arg(request, "tr_page", 1))}
 """
     return HTMLResponse(content=page_shell("AI と鍵", body))
 

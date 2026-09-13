@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from app import ai_inflight, ai_log, media, settings_store, usage_store
+from app import ai_inflight, ai_log, ai_transcript, media, settings_store, usage_store
 from app.jst import format as format_jst
 from app.jst import parse as parse_jst
 from app.pages import esc
@@ -373,3 +373,84 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
 </tbody>
 </table>
 {_pager(page, len(rows), failed_only)}"""
+
+
+# ---- やり取りの控え ---------------------------------------------------------
+#
+# **成功・失敗の一覧とは行が対応しない。** あちらは相手とモデルと目方の控えで、
+# こちらは中身の控え。別の表なので節を分ける —— 無理に突き合わせると、
+# 同じ秒に並んだ行がずれたときに、別の呼び出しの中身を見せることになる。
+
+TRANSCRIPTS_ANCHOR = "ai-transcripts"
+TRANSCRIPTS_PER_PAGE = 20
+
+
+def _part(label: str, head: str, nbytes: int | None = None) -> str:
+    """依頼文・途中経過・応答のひとかたまり。**空なら節ごと出さない**。"""
+    if not (head or "").strip():
+        return ""
+    size = f'（{esc(_size(nbytes))}）' if nbytes else ""
+    return (
+        f'<p class="muted">{esc(label)}{size}</p>'
+        f'<pre class="media-body">{esc(head)}</pre>'
+    )
+
+
+def transcripts_html(page: int = 1) -> str:
+    """渡したものと返ってきたものの控え。
+
+    **一覧には先頭だけ出す**(`ai_transcript.HEAD_MAX`)。全文は別の口で開く ——
+    CLI は長い作業ログを吐くので、一覧に全部並べると読めなくなる。
+    """
+    if not ai_transcript.is_enabled():
+        return (
+            f'<h3 id="{TRANSCRIPTS_ANCHOR}">やり取りの控え</h3>'
+            '<p class="muted">控えていません。'
+            "<code>CHIEZO_AI_TRANSCRIPT_DAYS</code> に日数を入れると、"
+            "渡した依頼文・相手の出力・応答を残します。</p>"
+        )
+    offset = (max(1, page) - 1) * TRANSCRIPTS_PER_PAGE
+    found = ai_transcript.recent(TRANSCRIPTS_PER_PAGE + 1, offset)
+    rows, has_next = found[:TRANSCRIPTS_PER_PAGE], len(found) > TRANSCRIPTS_PER_PAGE
+    if not rows:
+        return (
+            f'<h3 id="{TRANSCRIPTS_ANCHOR}">やり取りの控え</h3>'
+            '<p class="muted">まだ何もありません。</p>'
+        )
+
+    cells = []
+    for row in rows:
+        state = "成功" if row["ok"] else '<span class="stale">失敗</span>'
+        inside = (
+            _part("依頼文", row["prompt"], row["prompt_bytes"])
+            + _part("相手の出力（途中経過）", row["trace"])
+            + _part("応答", row["reply"], row["reply_bytes"])
+            + f'<p><a href="/admin/ai/transcripts/{esc(row["id"])}">全文を開く</a></p>'
+        )
+        cells.append(
+            f"<tr><td>{esc(_when(row['at']))}</td>"
+            f"<td>{esc(ai_log.kind_label(row['kind']))}</td>"
+            f"<td>{caller_html(row['caller'])}</td>"
+            f"<td>{who_html(row['backend'], row['model'], '')}</td>"
+            f"<td>{state}</td>"
+            f'<td><details><summary>中身</summary>{inside}</details></td></tr>'
+        )
+
+    def link(target: int, label: str, enabled: bool) -> str:
+        if not enabled:
+            return f'<span class="muted">{label}</span>'
+        return f'<a href="?tr_page={target}#{TRANSCRIPTS_ANCHOR}">{label}</a>'
+
+    return (
+        f'<h3 id="{TRANSCRIPTS_ANCHOR}">やり取りの控え</h3>'
+        '<p class="muted">AI に渡したものと、相手が返したもの。'
+        "<strong>CLI ブリッジ越しの相手にはシェルを渡している</strong>ので、"
+        "何をしたのかは「相手の出力」に出る。"
+        f"{ai_transcript.KEEP_DAYS} 日で捨てる"
+        "（<code>CHIEZO_AI_TRANSCRIPT_DAYS=0</code> で止まる）。</p>"
+        "<table><thead><tr><th>いつ</th><th>種類</th><th>依頼元</th>"
+        "<th>相手</th><th>結果</th><th></th></tr></thead>"
+        f"<tbody>{''.join(cells)}</tbody></table>"
+        f'<p class="muted">{link(page - 1, "← 新しい", page > 1)}'
+        f"　{page} 頁目　{link(page + 1, '古い →', has_next)}</p>"
+    )

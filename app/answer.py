@@ -39,7 +39,7 @@ import httpx
 from fastapi import HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
-from app import ai_inflight, ai_log, providers, settings_store, usage_store
+from app import ai_inflight, ai_log, ai_transcript, providers, settings_store, usage_store
 from app.pages import doc_url
 
 log = logging.getLogger("chiezo.app")
@@ -590,6 +590,31 @@ def _note_failure(cfg: Settings, messages: list[dict], status: int, reason: str)
         reason=reason,
         prompt_bytes=_prompt_bytes(messages),
     )
+    _note_transcript(cfg, messages, reply=reason, ok=False)
+
+
+def _note_transcript(
+    cfg: Settings, messages: list[dict], *, reply: str = "", ok: bool = True,
+    trace: str = "",
+) -> None:
+    """渡したものと返ってきたものを控える(`app/ai_transcript.py`)。
+
+    **`ai_log` とは別の控え。** あちらは「中身は残さない」を決めごとにしていて、
+    そこは変えない。こちらは**シェルを渡している相手が何をしたか**を後から読むためで、
+    `CHIEZO_AI_TRANSCRIPT_DAYS=0` で丸ごと止められる。
+    """
+    ai_transcript.record(
+        backend=cfg.name,
+        model=cfg.ran_model or cfg.model,
+        kind="chat",
+        caller=ai_inflight.current_caller(),
+        ok=ok,
+        prompt="\n\n".join(
+            f"[{m.get('role')}] {m.get('content') or ''}" for m in messages
+        ),
+        trace=trace,
+        reply=reply,
+    )
 
 
 def _prompt_bytes(messages: list[dict]) -> int:
@@ -765,6 +790,7 @@ async def complete_message(cfg: Settings, messages: list[dict], **extra) -> dict
         reply_bytes=len((content_of(message) or "").encode()),
         ms=int((time.monotonic() - started) * 1000),
     )
+    _note_transcript(cfg, messages, reply=content_of(message) or "")
     return message
 
 

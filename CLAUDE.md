@@ -1432,6 +1432,16 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     叩ける(実際に叩かれた: 依頼元が `Python-urllib/3.11` の生成が、こちらの
     依頼文を英訳した内容で立った)。**塞ぐなら経路ではなく入口**。
     読む口(search / doc / filter)は通す —— ブリッジの値打ちはそちらなので
+  - **AI に渡したものと返ってきたものを控える**(`app/ai_transcript.py`。
+    `state/ai_transcripts.db` + `state/ai-transcripts/<日付>/<id>.txt`)。
+    **`app/ai_log.py` の「中身は残さない」は変えない** —— あちらは失敗の観測で、
+    こちらは**シェルを渡している相手が何をしたか**を読むための別の控え
+    (`--dangerously-skip-permissions` / `danger-full-access` を渡しているので、
+    同じ権限で何でもできる。実際、頼んでいない生成を curl で立てられた)。
+    残すのは依頼文・**相手の生の出力(CLI の stdout/stderr)**・応答の 3 つで、
+    途中経過がいちばん効く。**一覧は先頭 `HEAD_MAX` 字だけ、全文はファイル**
+    (DB に何十 KB も積むと一覧を引くたびに運ぶ)。行とファイルは同じ日数で捨て、
+    `CHIEZO_AI_TRANSCRIPT_DAYS=0` で丸ごと止まる
   - `/mcp/knowledge`(POST) — **CLI ブリッジ向けの MCP。生成の道具を出さない**
     (`build_mcp(app, with_media=False)`)。**出すと、Chiezo が絵を頼んだ相手が
     Chiezo に絵を頼み返す** —— 1 枚頼んだだけで、頼まれた側が依頼文を英語に言い換えて

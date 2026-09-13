@@ -44,6 +44,7 @@ from fastapi import HTTPException
 from app import (
     ai_inflight,
     ai_log,
+    ai_transcript,
     media_backends,
     media_providers,
     providers,
@@ -894,6 +895,16 @@ async def _run(job_id: str, backend: str, req, count: int, kind: str) -> None:
                     prompt_bytes=len((getattr(one, "prompt", "") or "").encode()),
                     reply_bytes=len(item.data or b""),
                     ms=int((time.monotonic() - started) * 1000),
+                )
+                # **相手が何をしたかを控える。** ブリッジ越しの相手はシェルを持って
+                # いるので、手順は CLI の出力にしか出ない(`item.trace`)。
+                # 出来たものは job の files から辿れるので、ここでは持たない
+                ai_transcript.record(
+                    backend=backend, model=item.model, kind=kind,
+                    caller=(get_job(job_id) or {}).get("requested_by") or "media",
+                    prompt=getattr(one, "prompt", "") or "",
+                    trace=getattr(item, "trace", "") or "",
+                    reply=f"{len(item.data or b''):,} バイト / {item.mime}",
                 )
                 files.append(asdict(_save(job_id, index, item)))
                 _update(job_id, files=files, model=item.model, seed=files[0]["seed"])

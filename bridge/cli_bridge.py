@@ -609,6 +609,22 @@ async def run_cli(
 # 失敗の理由として持ち帰る文字数の上限。全部載せると応答もログも読めなくなる。
 DETAIL_MAX = 500
 
+# 持ち帰る出力の上限。**全部は運ばない** —— CLI は長い作業ログを吐くことがあり、
+# 応答に丸ごと載せると、頼む側の控えも通信も膨らむ。
+TRACE_MAX = 20_000
+
+
+def _trace(stdout: bytes, stderr: bytes) -> str:
+    """CLI が何をしたか。**stdout と stderr の両方**を、出た順ではなく名札つきで返す
+    (どちらに出たかで意味が違う相手がいる。`failure_detail` と同じ理由)。"""
+    parts = []
+    for name, raw in (("stdout", stdout), ("stderr", stderr)):
+        text = (raw or b"").decode("utf-8", "replace").strip()
+        if text:
+            parts.append(f"[{name}]\n{text}")
+    return "\n\n".join(parts)[:TRACE_MAX]
+
+
 def failure_detail(stdout: bytes, stderr: bytes) -> str:
     """CLI が非ゼロで終わったときの理由を組む。
 
@@ -1524,6 +1540,10 @@ async def _generate_images(body: ImageRequest) -> dict:
     return {
         "created": int(started),
         "data": [{"b64_json": base64.b64encode(data).decode()} for data in images[: body.n]],
+        # **成功したときも CLI の出力を返す。** 相手はシェルを持っているので、
+        # 何をしたのかはここにしか出ない。前は失敗したときしか拾っていなかったので、
+        # うまくいった回に何をしていたのかが誰にも読めなかった
+        "trace": _trace(stdout, stderr),
     }
 
 
