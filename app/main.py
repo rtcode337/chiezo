@@ -380,6 +380,11 @@ async def _collect_material(name: str, sources: dict) -> str:
     # **区画は集める前に決める。** 何を見るかが決まっていないと、渡す素材も
     # 差し込む文も作れない(台帳が無ければ空で返り、今までどおり全体を見る)
     ledger = await asyncio.to_thread(collect.plan_partitions, item, sources, previous)
+    # **割り直した台帳で素材を組む。** 定義に入っているのは走る前の台帳なので、
+    # この回で割り直したときに食い違う —— 区画を選ぶのは新しい台帳から、
+    # どの文書がその区画かを判ずるのは古い台帳から、になり、**差し込みが丸ごと空になる**
+    # (名簿を作り直した直後の回がまさにそれで、AI は「誰も居ない」と読んで何も返さない)
+    item = replace(item, partitions=ledger)
     # **どの巡回のぶんかは、起こした側が控えてある**(取り込みは名前しか運べない)
     focus = collect.normalize_focus(item.pending_focus)
     # **割り込みは割り込み用の巡回で走らせる**(`on_demand`)。定時の巡回の設定を
@@ -490,6 +495,11 @@ async def collect_preview(name: str, sources: dict, sweep_name: str | None = Non
     sweep = collect.require_runnable(item, sweep_name)
     previous = await asyncio.to_thread(collect.previous_docs, name, sources)
     ledger = await asyncio.to_thread(collect.plan_partitions, item, sources, previous)
+    # **割り直した台帳で素材を組む。** 定義に入っているのは走る前の台帳なので、
+    # この回で割り直したときに食い違う —— 区画を選ぶのは新しい台帳から、
+    # どの文書がその区画かを判ずるのは古い台帳から、になり、**差し込みが丸ごと空になる**
+    # (名簿を作り直した直後の回がまさにそれで、AI は「誰も居ない」と読んで何も返さない)
+    item = replace(item, partitions=ledger)
     # **下見は 1 区画だけ。** 何区画でも見られるが、下見は「この指示文でどうなるか」を
     # 見るためのもので、1 区画あれば分かる(そのぶん安く、待たされない)
     keys = partitioning.pick(ledger, sweep.name, 1)

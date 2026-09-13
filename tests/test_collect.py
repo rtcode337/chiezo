@@ -1256,6 +1256,48 @@ class TestPerSweepPrompt:
         assert collect.edits_what_is_there(sweep.prompt, sweep.only_new) is False
 
 
+class TestReplanningInTheSameRun:
+    """区画を割り直した回でも、素材は**新しい台帳**で組む。
+
+    定義に入っているのは走る前の台帳なので、この回で割り直すと食い違う ——
+    区画を選ぶのは新しい台帳から、どの文書がその区画かを判ずるのは古い台帳から、
+    になる。**差し込みが丸ごと空になり**、AI は「誰も居ない」と読んで何も返さない。
+
+    名簿を作り直した直後の回がまさにそれだった(本番で、9,439 人を入れ直した次の
+    回が `{"items":[]}` で終わっていた)。
+    """
+
+    def test_the_material_uses_the_new_ledger(self, sample):
+        spec = {"by": "title", "target": 10}
+        # 走る前の台帳は 1 区画。いまの中身では割り直される
+        collect.update(
+            "news",
+            prompt="いま入っているもの:\n{current}\n{partition} を直して",
+            partition=spec,
+            partitions=[{"key": partitioning.title_key("あ", "ん"), "count": 1}],
+        )
+        previous = {
+            f"ひと{i:03d}": {"doc_id": i, "title": f"ひと{i:03d}", "body": "本文", "tags": []}
+            for i in range(1, 61)
+        }
+        item = collect.get("news")
+        ledger = collect.plan_partitions(item, {}, previous)
+        assert ledger != item.partitions, "この回で割り直されるはず"
+        keys = partitioning.pick(ledger, "既定", 1)
+
+        # 古い台帳のまま組むと、どの文書もその区画に入らない
+        stale = collect.build_messages(item, previous, keys[0], {})[-1]["content"]
+        assert "まだ何も入っていません" in stale
+
+        # 新しい台帳で組めば、その区画の文書が入る
+        import dataclasses
+
+        fresh = collect.build_messages(
+            dataclasses.replace(item, partitions=ledger), previous, keys[0], {}
+        )[-1]["content"]
+        assert "まだ何も入っていません" not in fresh
+
+
 class TestNoGapBetweenPartitions:
     """見出しで割った区画に**隙間を作らない**。
 
