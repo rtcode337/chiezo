@@ -257,7 +257,7 @@ def _pager(page: int, has_next: bool, limit: int) -> str:
 
 
 @router.get("/admin/media", response_class=HTMLResponse)
-def admin_media(
+async def admin_media(
     _request: Request,
     limit: int = Query(GROUPS_PER_PAGE, ge=1, le=100),
     page: int = Query(1, ge=1),
@@ -304,6 +304,10 @@ def admin_media(
             f"<th>採用</th><th>頼んだ日時</th></tr></thead><tbody>{cells}</tbody></table>"
         )
 
+    # 頼む口は別のモジュールが持つ（作る話と見る話を混ぜない）
+    from app.views.media_ask import section_html as ask_section
+
+    ask_html = await ask_section()
     body = f"""
 {nav_html("/admin/media")}
 <h1>見比べ</h1>
@@ -316,6 +320,7 @@ def admin_media(
 </p>
 {rows}
 {_pager(page, has_next, limit)}
+{ask_html}
 <h2>手元で作ったものを並べる</h2>
 <p class="muted">
 生成させたものだけでなく、<strong>手元で仕上げたものや別の道具で作ったものも持ち込めます</strong>

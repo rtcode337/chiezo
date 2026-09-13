@@ -76,6 +76,7 @@ from app.views import ai_settings as views_ai_settings
 from app.views import ai_usage as views_ai_usage
 from app.views import browse as views_browse
 from app.views import chat as views_chat
+from app.views import media_ask as views_media_ask
 from app.views import media_compare as views_media_compare
 from app.views import tasks as views_tasks
 
@@ -308,6 +309,17 @@ async def _collect_items(
         spec = extract.normalize(item.extract)
         items, next_cursor = await asyncio.to_thread(extract.run, spec, sources)
         return items, next_cursor, ""
+    # **外の道具で引く回**(`Sweep.use_feed`)。フィードが配っている見出しを
+    # そのまま溜める。**進み具合には触らない** —— 次にどこから読むかは
+    # 道具の側が「前回の実行より後」で決める(`feeds.SINCE_LAST_RUN`)
+    if sweep is not None and sweep.use_feed:
+        if feed is None:
+            return [], None, "この収集に外向きの道具が付いていません"
+        note = ""
+        if failed := feed.get("failed"):
+            # 黙って減らさない —— 少ないのが世の中の都合か、道具の不調かで意味が違う
+            note = f"{feed.get('tried')} 件の出典のうち {failed} 件は取れませんでした"
+        return feeds.to_items(feed), None, note
     asked = item if sweep is None else sweep.applied_to(item)
     collected: list[dict] = []
     cursor = None
@@ -379,7 +391,7 @@ async def _collect_material(name: str, sources: dict) -> str:
         # 割り込みは必ず「直す」側で焼く(足すだけの収集でも、名指しの 1 件を直せないと
         # 割り込みの意味が無い)。ndjson へ渡す定義もそちらへ倒す
         baked_as = replace(item, mode=collect.MODE_REFINE)
-    elif sweep.use_extract:
+    elif sweep.use_extract or sweep.use_feed:
         # **機械で引く回は区画を見ない。** 指定を 1 本引いて全部を返すので、
         # 区画を選ぶと**見てもいない区画に「回った」印が付く**(一周が嘘になる)
         keys = []
@@ -2874,6 +2886,9 @@ app.include_router(views_admin.router)
 app.include_router(views_ai_settings.router)
 app.include_router(views_ai_usage.router)
 app.include_router(views_browse.router)
+# **見比べより先に登録する。** あちらの `/admin/media/{key:path}` は総取りなので、
+# 後にすると `/admin/media/ask` が組の名前として吸われる
+app.include_router(views_media_ask.router)
 app.include_router(views_media_compare.router)
 app.include_router(views_chat.router)
 app.include_router(views_tasks.router)
