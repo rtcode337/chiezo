@@ -74,6 +74,12 @@ MAX_TARGET = 5_000
 # 2,000 区画 = 1 日 300 区画見ても 1 週間で一周できない数なので、普通の使い方では当たらない。
 MAX_PARTITIONS = 2_000
 
+# 端数を前の帯へ入れてよい上限(`target` の何倍まで)。**ちょうどで切らない**ための遊び。
+# 切りのいいところで閉じると、その次の 1 人が 1 人だけの帯になる(「アイルランド
+# 1928-1928 に 1 人」)。区画は「この範囲の全員」を並べて漏れを問う単位なので、
+# 1 人の区画に問う意味はほとんど無く、区画の数と 1 回ぶんの依頼だけが増える
+BAND_SLACK = 1.2
+
 # 二分の深さ。同じ座標に固まった点は割り切れないので、止まらなくならないための保険。
 MAX_DEPTH = 24
 
@@ -435,30 +441,56 @@ def _bands(spec: dict, own: dict[str, dict]) -> list[dict]:
     return out[:MAX_PARTITIONS]
 
 
+def _band_cap(spec: dict) -> int:
+    """1 つの帯に入れてよい上限。`target` に遊び(`BAND_SLACK`)を足したもの。"""
+    return max(spec["target"], round(spec["target"] * BAND_SLACK))
+
+
 def _bands_of(spec: dict, name: str, by_number: dict[int, list[str]]) -> list[dict]:
-    """1 つの分類ぶんの帯。連続する値を `target` に届くまで足していく。"""
-    out, start, count = [], None, 0
+    """1 つの分類ぶんの帯。連続する値を `target` に届くまで足していく。
+
+    **端数は前の帯へ入れる**(上限に収まるときだけ)。閉じた帯は必ず `target` 以上
+    なので、小さい帯になりうるのは最後の 1 つだけ —— そこを前へ寄せれば、
+    1 人だけの区画は出なくなる。
+    """
+    spans: list[list] = []
+    start: int | None = None
+    count = 0
     for number in sorted(by_number):
         start = number if start is None else start
         count += len(by_number[number])
         if count >= spec["target"]:
-            out.append({"key": band_key(name, start, number), "count": count})
+            spans.append([start, number, count])
             start, count = None, 0
     if start is not None:
-        out.append({"key": band_key(name, start, max(by_number)), "count": count})
-    return out
+        end = max(by_number)
+        if spans and spans[-1][2] + count <= _band_cap(spec):
+            spans[-1][1], spans[-1][2] = end, spans[-1][2] + count
+        else:
+            spans.append([start, end, count])
+    return [{"key": band_key(name, a, b), "count": n} for a, b, n in spans]
 
 
 def _unknown_bands(spec: dict, name: str, titles: list[str]) -> list[dict]:
-    """値を持たないものの置き場。**見出し順で区切る**(漏れ探しの対象ではないため)。"""
-    out = []
-    for i in range(0, len(titles), spec["target"]):
-        chunk = sorted(titles)[i : i + spec["target"]]
-        out.append({
+    """値を持たないものの置き場。**見出し順で区切る**(漏れ探しの対象ではないため)。
+
+    ここも端数は前へ寄せる(`_bands_of` と同じ理由)。
+    """
+    ordered = sorted(titles)
+    chunks: list[list[str]] = []
+    for i in range(0, len(ordered), spec["target"]):
+        chunks.append(ordered[i : i + spec["target"]])
+    if len(chunks) > 1 and len(chunks[-1]) + len(chunks[-2]) <= _band_cap(spec):
+        # **先に取り出してから足す**(足しながら pop すると、番号が 1 つずれる)
+        tail = chunks.pop()
+        chunks[-1] += tail
+    return [
+        {
             "key": band_key(name, BAND_UNKNOWN, title_key(chunk[0], chunk[-1])),
             "count": len(chunk),
-        })
-    return out
+        }
+        for chunk in chunks
+    ]
 
 
 def band_key(name: str, start, end) -> str:
@@ -585,23 +617,51 @@ def normalize_ledger(raw) -> list[dict]:
     return out
 
 
-def outgrown(spec: dict, partitions: list[dict], docs: dict[str, dict]) -> bool:
-    """割り直したほうがよいか。**自分自身が母集団のときだけ意味がある**。
+def counts_of(spec: dict, partitions: list[dict], docs: dict[str, dict]) -> dict[str, int]:
+    """区画ごとの、いまの件数。**数える意味の無いときは空を返す**。
 
-    母集団を外のソースから取っているなら、こちらが何件集めようと点の数は変わらない
-    —— 区画は動かないほうがよい(動かすと巡回の記録が毎回リセットされる)。
-    自分自身を割っているときは、育つにつれて密なところが `target` を超えていくので、
-    **超えた区画が出たら割り直す**。
+    - **母集団が外のソースなら数えない。** 区画の大きさはあちらが持っていて、
+      こちらが何件集めようと点の数は変わらない
+    - **母集団が読めていない回も数えない。** まだ 1 度も焼けていない回と、焼いた
+      ものが読めなかった回はここでは区別が付かない —— 0 を答えにすると、
+      読めなかっただけの回に「全区画が空」と映る
     """
-    if spec["source"] or not partitions:
-        return False
-    limit = spec["target"] * 2
+    if spec["source"] or not partitions or not docs:
+        return {}
     counts = dict.fromkeys((p["key"] for p in partitions), 0)
     for doc in docs.values():
         key = partition_of(spec, partitions, doc)
         if key in counts:
             counts[key] += 1
-    return any(n > limit for n in counts.values())
+    return counts
+
+
+def outgrown(spec: dict, counts: dict[str, int]) -> bool:
+    """割り直したほうがよいか。**数えられていなければ動かさない**(`counts_of`)。
+
+    自分自身を割っているときは、育つにつれて密なところが `target` を超えていくので、
+    **超えた区画が出たら割り直す**。
+
+    **空になった区画が出たときも割り直す。** 中身が別の区画へ移ることがある
+    (年代の分からなかった人に年代が入ると、本来の帯へ移る)。空の区画は回ってきても
+    渡すものが無く、AI に空の範囲を見せて 1 回ぶんの枠を捨てることになる。
+    割り直せば、その区画は組み立てられないので消える。
+    """
+    limit = spec["target"] * 2
+    return any(n > limit or n == 0 for n in counts.values())
+
+
+def counted(partitions: list[dict], counts: dict[str, int]) -> list[dict]:
+    """いまの件数を台帳へ書き戻す。**割り直しはしない**。
+
+    台帳の数は割ったときの写しで、以後は更新されない —— 中身が別の区画へ移っても
+    次に割り直すまで古い数が出続ける。実際、一周目に配った 6 区画は全員が本来の
+    帯へ移って空になったのに、画面には割ったときの 25〜27 が出たままだった。
+    割り直すかどうかの判定でどのみち数えているので、同じ数を書き戻す。
+    """
+    if not counts:
+        return partitions
+    return [{**p, "count": counts.get(p["key"], 0)} for p in partitions]
 
 
 def pick(partitions: list[dict], sweep_name: str, count: int = 1) -> list[str]:

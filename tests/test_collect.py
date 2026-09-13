@@ -1332,6 +1332,37 @@ class TestPerSweepPrompt:
         assert collect.edits_what_is_there(sweep.prompt, sweep.only_new) is False
 
 
+class TestTheLedgerCountFollowsTheContents:
+    """割り直さない回でも件数は取り直す。
+
+    台帳の数は割ったときの写しで、中身が別の区画へ移っても古い数が出続けていた ——
+    本番では、一周目に配った 6 区画の全員が本来の帯へ移って空になったのに、
+    画面には割ったときの 25〜27 が出たままだった。
+    """
+
+    def test_the_count_is_taken_again_without_resplitting(self, sample):
+        collect.update(
+            "news",
+            partition={"by": "title", "target": 10},
+            partitions=[
+                {"key": partitioning.title_key("あ", "い"), "count": 9},
+                {"key": partitioning.title_key("う", "え"), "count": 9},
+            ],
+        )
+        previous = {
+            "あ": {"doc_id": 1, "title": "あ", "tags": []},
+            "う": {"doc_id": 2, "title": "う", "tags": []},
+            "え": {"doc_id": 3, "title": "え", "tags": []},
+        }
+        item = collect.get("news")
+
+        ledger = collect.plan_partitions(item, {}, previous)
+
+        # 割り直してはいない(鍵はそのまま)
+        assert [p["key"] for p in ledger] == [p["key"] for p in item.partitions]
+        assert [p["count"] for p in ledger] == [1, 2]
+
+
 class TestReplanningInTheSameRun:
     """区画を割り直した回でも、素材は**新しい台帳**で組む。
 
@@ -3047,6 +3078,27 @@ class TestWhatChangedInOneDoc:
         assert "足したタグ" in html and "移転" in html
         # 動いていない行は差分に出ない（n=2 の文脈としては出るので、印だけ見る）
         assert '<span class="added">' in html and '<span class="removed">' in html
+
+    def test_the_page_links_to_what_is_in_there_now(self, generations):
+        """差分に出るのは本文とタグだけ。出典も extra も、同じタグの他の文書への
+        導線もここには無いので、いまの中身を開ける入口を添える。
+        """
+        from app.views import admin
+
+        versions = collect.doc_versions("news", generations, "残る店")
+        html = admin._doc_diff_page_html("news", "残る店", versions)
+
+        assert f'/search/news/doc/{versions["now"]["doc_id"]}' in html
+        assert "いまの中身を見る" in html
+
+    def test_a_removed_one_has_nothing_to_open(self, generations):
+        """消えたものはいまの世代に無いので、指す先が無い。"""
+        from app.views import admin
+
+        html = admin._doc_diff_page_html(
+            "news", "消える店", collect.doc_versions("news", generations, "消える店")
+        )
+        assert "いまの中身を見る" not in html
 
     def test_the_page_says_when_there_is_nothing_to_compare(self, generations):
         from app.views import admin

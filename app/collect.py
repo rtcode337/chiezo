@@ -2060,7 +2060,7 @@ def _doc_at(path: Path, title: str) -> dict | None:
     with suppress(Exception):
         rows = db.query(
             path,
-            "SELECT title, body, tags, updated_at FROM docs WHERE title = ? LIMIT 1",
+            "SELECT doc_id, title, body, tags, updated_at FROM docs WHERE title = ? LIMIT 1",
             (title,),
         )
         if rows:
@@ -2071,6 +2071,8 @@ def _doc_at(path: Path, title: str) -> dict | None:
             except ValueError:
                 tags = []
             return {
+                # **世代ごとに違う番号**。いまの世代のものだけが、いまの中身を指せる
+                "doc_id": row["doc_id"],
                 "title": row["title"],
                 "body": row["body"] or "",
                 "tags": [str(t) for t in tags] if isinstance(tags, list) else [],
@@ -2139,15 +2141,21 @@ def plan_partitions(item: Collection, sources: dict, previous: dict[str, dict]) 
     **毎回は割り直さない。** 母集団を外のソースから取っているなら、こちらが何件
     集めようと点の数は変わらないので、区画は動かないほうがよい —— 動かすと
     巡回の記録が毎回リセットされ、一周が永遠に終わらない。
-    自分自身を割っているときだけ、育って `target` を超えた区画が出たら割り直す。
+    自分自身を割っているときだけ、育って `target` を超えた区画や空になった区画が
+    出たら割り直す。
+
+    **割り直さない回でも、件数だけは取り直す**(`partitioning.counted`)。
+    台帳の数は割ったときの写しなので、中身が別の区画へ移っても古い数が出続ける ——
+    判定のためにどのみち数えているので、同じ数を書き戻す。
 
     **割り直しても巡回の記録は引き継ぐ**(`partitioning.refresh`)。
     """
     if not item.partition:
         return []
     spec = partitioning.normalize(item.partition)
-    if item.partitions and not partitioning.outgrown(spec, item.partitions, previous):
-        return item.partitions
+    counts = partitioning.counts_of(spec, item.partitions, previous)
+    if item.partitions and not partitioning.outgrown(spec, counts):
+        return partitioning.counted(item.partitions, counts)
     built = partitioning.build(spec, sources, previous)
     log.info("partition %s: %d 区画", item.name, len(built))
     return partitioning.refresh(built, item.partitions, spec)

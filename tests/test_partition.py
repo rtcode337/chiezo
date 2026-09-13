@@ -273,20 +273,78 @@ class TestTheLedger:
 
 
 class TestWhenToResplit:
+    def resplit(self, spec, ledger, docs):
+        """数えてから判ずる(本番も同じ順で、数えた結果は台帳へも書き戻される)。"""
+        return partition.outgrown(spec, partition.counts_of(spec, ledger, docs))
+
     def test_an_outside_population_does_not_move(self, source):
         """こちらが何件集めようと点の数は変わらない。動かすと記録が毎回消える。"""
         spec = partition.normalize({"by": "title", "target": 10, "source": "osm_japan"})
         ledger = [{"key": "あ〜ん", "count": 10, "visited_at": None}]
         many = {f"あ{i}": {"title": f"あ{i}"} for i in range(100)}
-        assert partition.outgrown(spec, ledger, many) is False
+        assert self.resplit(spec, ledger, many) is False
 
     def test_splitting_itself_follows_the_growth(self):
         """自分自身を割っているときは、育って target を超えたら割り直す。"""
         spec = partition.normalize({"by": "title", "target": 10})
         ledger = [{"key": "あ〜ん", "count": 10, "visited_at": None}]
-        assert partition.outgrown(spec, ledger, {"あ": {"title": "あ"}}) is False
+        assert self.resplit(spec, ledger, {"あ": {"title": "あ"}}) is False
         many = {f"あ{i}": {"title": f"あ{i}"} for i in range(30)}
-        assert partition.outgrown(spec, ledger, many) is True
+        assert self.resplit(spec, ledger, many) is True
+
+    def test_an_emptied_partition_triggers_a_resplit(self):
+        """中身は別の区画へ移ることがある(年代が入ると本来の帯へ移る)。
+
+        空の区画は回ってきても渡すものが無く、AI に空の範囲を見せて 1 回ぶんの枠を
+        捨てることになる。割り直せば組み立てられないので消える。
+        """
+        spec = partition.normalize({"by": "title", "target": 10})
+        ledger = [{"key": "あ〜い", "count": 2}, {"key": "う〜え", "count": 2}]
+
+        both = {"あ": {"title": "あ"}, "う": {"title": "う"}}
+        assert self.resplit(spec, ledger, both) is False
+
+        # 「う〜え」の中身が無くなった
+        assert self.resplit(spec, ledger, {"あ": {"title": "あ"}}) is True
+
+    def test_nothing_moves_while_the_population_is_unreadable(self):
+        """まだ 1 度も焼けていない回と、焼いたものが読めなかった回は区別が付かない。
+
+        0 を答えにすると、読めなかっただけの回に台帳ごと捨てることになる。
+        """
+        spec = partition.normalize({"by": "title", "target": 10})
+        ledger = [{"key": "あ〜い", "count": 2}]
+
+        assert self.resplit(spec, ledger, {}) is False
+
+
+class TestTheCountInTheLedger:
+    """台帳の数は**割ったときの写し**で、以後は更新されない。
+
+    中身は別の区画へ移る(年代が入ると本来の帯へ移る)。一周目に配った 6 区画は
+    全員が移って空になったのに、画面には割ったときの 25〜27 が出たままだった。
+    """
+
+    def spec(self):
+        return partition.normalize({"by": "title", "target": 10})
+
+    def test_it_is_taken_again_without_resplitting(self):
+        spec = self.spec()
+        ledger = [{"key": "あ〜い", "count": 9}, {"key": "う〜え", "count": 9}]
+        docs = {"あ": {"title": "あ"}, "う": {"title": "う"}, "え": {"title": "え"}}
+
+        counts = partition.counts_of(spec, ledger, docs)
+        fresh = partition.counted(ledger, counts)
+
+        assert [(p["key"], p["count"]) for p in fresh] == [("あ〜い", 1), ("う〜え", 2)]
+        # 鍵は動かない(割り直してはいない)
+        assert [p["key"] for p in fresh] == [p["key"] for p in ledger]
+
+    def test_it_keeps_the_old_number_when_nothing_can_be_counted(self):
+        """読めなかっただけの回に 0 を書き込まない。"""
+        ledger = [{"key": "あ〜い", "count": 9}]
+
+        assert partition.counted(ledger, {}) == ledger
 
 
 class TestWhatIsHandedToTheAI:
@@ -368,7 +426,7 @@ class TestBands:
 
     def test_it_groups_by_the_category_then_the_number(self):
         own = self.docs(
-            *[(f"ふ{i}", ["地域:フランス", f"年代:{1840 + i}-1926"]) for i in range(12)],
+            *[(f"ふ{i}", ["地域:フランス", f"年代:{1840 + i}-1926"]) for i in range(10)],
             ("に", ["地域:日本", "年代:1840-1900"]),
         )
         built = partition.build(self.spec(), {}, own)
@@ -396,6 +454,41 @@ class TestBands:
 
         assert [p["key"] for p in built] == ["日本|1907-1907"]
         assert built[0]["count"] == 25
+
+    def test_the_leftover_joins_the_band_before_it(self):
+        """**ちょうどで切らない。** 切りのいいところで閉じると、その次の 1 人が
+        1 人だけの帯になる(「アイルランド 1928-1928 に 1 人」)。区画は
+        「この範囲の全員」を並べて漏れを問う単位なので、1 人に問う意味はほとんど無く、
+        区画の数と 1 回ぶんの依頼だけが増える。
+        """
+        own = self.docs(
+            *[(f"あ{i}", ["地域:アイルランド", f"年代:{1700 + i}-1800"]) for i in range(10)],
+            ("はぐれ", ["地域:アイルランド", "年代:1928-1990"]),
+        )
+        built = partition.build(self.spec(), {}, own)
+
+        assert [p["key"] for p in built] == ["アイルランド|1700-1928"]
+        assert built[0]["count"] == 11
+
+    def test_the_leftover_stays_apart_when_it_does_not_fit(self):
+        """遊びを超えるなら寄せない(寄せると 1 回に渡す量が膨らむ)。"""
+        own = self.docs(
+            *[(f"あ{i}", ["地域:アイルランド", f"年代:{1700 + i}-1800"]) for i in range(10)],
+            *[(f"い{i}", ["地域:アイルランド", f"年代:{1920 + i}-1990"]) for i in range(5)],
+        )
+        built = partition.build(self.spec(), {}, own)
+
+        # target 10 の 2 割増しは 12。10 + 5 は入らないので別のまま
+        assert len(built) == 2
+        assert [p["count"] for p in built] == [10, 5]
+
+    def test_the_leftover_of_the_unknown_place_joins_too(self):
+        """値の分からない置き場も同じ(1 件だけの置き場を作らない)。"""
+        own = self.docs(*[(f"ひと{i:02d}", ["地域:日本"]) for i in range(11)])
+        built = partition.build(self.spec(), {}, own)
+
+        assert len(built) == 1
+        assert built[0]["count"] == 11
 
     def test_things_without_a_number_get_their_own_place(self):
         """値の分からないものの集合に漏れという概念は無いので、見出しで割ってよい。"""

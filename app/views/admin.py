@@ -2778,8 +2778,22 @@ def _doc_diff_page_html(name: str, title: str, versions: dict) -> str:
 <h3>{esc(title)}</h3>
 <p class="muted">収集「{esc(name)}」 / {_generations_html(versions)}</p>
 {body}
-<p class="muted"><a href="/admin/memory#collect">管理画面へ戻る</a></p>
+<p class="muted">{_doc_now_link(name, now)}<a href="/admin/memory#collect">管理画面へ戻る</a></p>
 """,
+    )
+
+
+def _doc_now_link(name: str, now: dict | None) -> str:
+    """**いま入っている中身への入口**。差分はタグと本文だけを切り出したものなので、
+    出典も extra も、同じタグの他の文書への導線もここには出ない。
+
+    **消えたものには出さない**(いまの世代に無いので、指す先が無い)。
+    """
+    doc_id = (now or {}).get("doc_id")
+    if doc_id is None:
+        return ""
+    return (
+        f'<a href="/search/{esc(quote(name))}/doc/{doc_id}">いまの中身を見る</a> / '
     )
 
 
