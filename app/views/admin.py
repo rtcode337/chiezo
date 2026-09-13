@@ -1186,12 +1186,9 @@ def _short_term_section_html(sources: dict[str, Source]) -> str:
             '<p class="muted">短期記憶は無効です。書き込み可能なディレクトリを'
             " <code>CHIEZO_NOTES_DIR</code> に設定すると有効になります。</p>"
         )
-    # やること層への入口はメモが 0 件でも出す(タスクはこれから足すもの)
-    tasks_link = (
-        '<p><a href="/tasks/">→ やること(タスク・ルール)</a> '
-        '<span class="muted">短期記憶の上にタグで載っている層。'
-        "ここからは認証なしで開く</span></p>"
-    )
+    # 入口は帯のメニューが持つ（`PAGES`）。ここに重ねると、同じ行き先が
+    # 画面の中と帯の両方に出て、どちらが本筋なのか読めなくなる
+    tasks_link = ""
     total = notes.count()
     if not total:
         return (
@@ -1278,6 +1275,9 @@ PAGES = (
     ("/admin/memory", "記憶", "溜めて引く。短期記憶・長期記憶・集める・固化・初期化"),
     ("/admin/ai", "AI と鍵", "貸し出すもの。話せる相手、使用量、依頼の履歴"),
     ("/admin/media", "見比べ", "作らせたものを並べて選ぶ。手元のものも持ち込める"),
+    # **外に開く面。** 認証なしで開くので、帯からも行けるようにしておく ——
+    # 記憶の画面の中に埋めていた頃は、そこを開いた人しか存在に気づけなかった
+    ("/tasks/", "やること", "タスクとルール。短期記憶の上にタグで載る層"),
     ("/admin/server", "その他", "このサーバー。Claude Code 連携といま動いているビルド"),
 )
 
@@ -1564,8 +1564,7 @@ def admin_memory(request: Request):
 {_short_term_section_html(short_term)}
 
 <h2>長期記憶(ためた知識)</h2>
-<p>登録ソース数: {len(long_term)} / 最新のスキーマバージョン: {latest_schema}<br>
-{_disk_html(request.app.state.data_dir)}</p>
+<p>登録ソース数: {len(long_term)} / 最新のスキーマバージョン: {latest_schema}</p>
 <table>
 <thead>
 <tr><th>name</th><th>kind</th><th>lang</th><th>docs</th><th>dump_date</th><th>built_at</th><th>schema_version</th><th></th></tr>
