@@ -318,6 +318,12 @@ PAGE_STYLE = """
   table.ai-settings tr.off button:not([disabled]) { color: #111; }
   /* 押せないボタン（条件を満たしていない）は、見た目でもそう分かるようにする */
   table.ai-settings button[disabled] { color: #999; cursor: not-allowed; }
+  /* 巡回の設定は、その巡回の行の続きとして出す。**上の余白と枠線を取る** ——
+     離して置くと、折り畳みの見出しが「下の巡回の見出し」に見える(実際にそう読まれた)。 */
+  tr.sweep-edit td { border-top: 0; padding-top: 0; }
+  tr.sweep-edit > td > details > summary { font-weight: normal; padding: 0.1rem 0; color: #555; }
+  tr.sweep-edit .sweep-row { margin-top: 0.4rem; }
+
   /* 使用量の表。枠の欄は折り返す —— 1 行が「帯 + 使用率 + 戻る時刻」で長く、
      nowrap のままだと狭い画面でこの列だけが伸びて他を押し潰す。 */
   table.ai-usage td { white-space: normal; }

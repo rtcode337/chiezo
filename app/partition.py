@@ -469,6 +469,20 @@ def mark_visited(
     ]
 
 
+def oldest_visit(partitions: list[dict], sweep_name: str) -> str | None:
+    """その巡回がいちばん長く見ていない区画の、前回の時刻。まだ一周していなければ None。
+
+    **一周したあとの進み具合はこれで読む。** 「見終えた区画 / 全区画」は一周すると
+    総数に張り付いて動かなくなる —— 区画は消えないので、2 周目からは
+    「どこまで来たか」ではなく「いちばん古いところがいつのものか」が知りたい値になる
+    (次に見るのは必ずそこ。`pick` が古い順に配る)。
+    """
+    visits = [(p.get("visits") or {}).get(sweep_name) or "" for p in partitions]
+    if not visits or not all(visits):
+        return None
+    return min(visits)
+
+
 def progress(partitions: list[dict], sweep_name: str) -> tuple[int, int]:
     """(その巡回が一度でも見た区画, 全区画)。「一周したか」を出すのに使う。"""
     seen = sum(1 for p in partitions if (p.get("visits") or {}).get(sweep_name))

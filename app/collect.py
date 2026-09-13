@@ -197,6 +197,11 @@ MATERIAL_BODY_CHARS = 200
 # 読むのは「何が動いたか」の手がかりであって、全件の一覧ではない
 MAX_TITLE_SAMPLE = 20
 
+# タグの確かめ方をいくつまで書けるか。**指定であって分類ではない**ので、少なくてよい
+MAX_VERIFY_TAGS = 8
+# 実在を確かめる問い合わせ 1 回ぶんの見出しの数(SQLite の上限に余裕を持たせる)
+VERIFY_CHUNK = 400
+
 # 最初から置いておく見本。**止めた状態で置く** —— 有効なものを黙って足すと、
 # 設定した覚えのない AI の呼び出しが枠を食う。画面の「有効にする」で動き出す。
 #
@@ -324,6 +329,14 @@ class Collection:
     # **持つのは指定であって中身の知識ではない** —— どのソースのどのタグを引くかは
     # 依頼した側が書く。進み具合が空のときだけ使い、以降は AI が肉付けする
     extract: dict | None = None
+    # **タグの値が実在するかを確かめる指定**。`[{"prefix": "代表作", "source": "jawiki"}]`
+    # と書くと、`代表作:<見出し>` の見出しが jawiki に無いタグを**焼く前に落とす**。
+    #
+    # AI は「その画家の代表作」を挙げられても、**それが記事として存在するかは知らない**
+    # —— 読む側は「タグがある = 押せば何か出る」と受け取るので、実在しない見出しが
+    # 混ざると、押しても何も出ないものが並ぶ。**確かめられるのはこちら**(長期記憶を
+    # 持っているのはこの層)なので、集める側で落とす
+    verify_tags: list[dict] = field(default_factory=list)
     # 誰が置いたか。外のアプリが名乗った文字列で、**印であって認証ではない**
     # (LAN 内・認証なしの前提なので偽れる)。有効にするか決める人の手がかり
     requested_by: str = ""
@@ -511,6 +524,87 @@ def _sweep_from_json(raw: dict, item: Collection) -> Sweep:
         last_status=raw.get("last_status") or None,
         last_error=raw.get("last_error") or None,
     )
+
+
+def normalize_verify_tags(raw) -> list[dict]:
+    """タグの確かめ方を均す。**読めない指定は断る**(黙って無視すると効かないまま回る)。"""
+    if raw in (None, "", []):
+        return []
+    if not isinstance(raw, list):
+        raise HTTPException(400, {"error": "verify_tags は配列で書いてください"})
+    out = []
+    for one in raw[:MAX_VERIFY_TAGS]:
+        if not isinstance(one, dict):
+            raise HTTPException(400, {"error": "verify_tags の中身はオブジェクトで書いてください"})
+        prefix = str(one.get("prefix") or "").strip()
+        source = str(one.get("source") or "").strip()
+        if not prefix or not source:
+            raise HTTPException(400, {
+                "error": "verify_tags には prefix(タグの頭)と source(照らすソース名)が要ります",
+            })
+        out.append({"prefix": prefix, "source": source})
+    return out
+
+
+def verified_docs(item: Collection, docs: list[dict], sources: dict) -> tuple[list[dict], int]:
+    """実在しない見出しを指すタグを落とす。落とした数も返す。
+
+    **焼く前に、全部に対して掛ける**(集めたぶんだけではない)。既に入っているものにも
+    同じ指定を当てないと、前に入った間違いが残り続ける —— 1 回焼き直せば揃う。
+
+    **照らす先が無ければ何もしない**(ソースがまだ焼かれていない等)。
+    知らないものを「無い」と読むと、正しいタグまで落ちる。
+    """
+    rules = normalize_verify_tags(item.verify_tags)
+    if not rules or not docs:
+        return docs, 0
+    dropped = 0
+    out = docs
+    for rule in rules:
+        src = sources.get(rule["source"])
+        if src is None:
+            continue
+        head = rule["prefix"] + ":"
+        wanted = {
+            _tag_head(tag, head)
+            for doc in out
+            for tag in (doc.get("tags") or [])
+            if str(tag).startswith(head)
+        }
+        wanted.discard("")
+        if not wanted:
+            continue
+        alive = _existing_titles(src.path, wanted)
+        kept = []
+        for doc in out:
+            tags = doc.get("tags") or []
+            keep = [
+                tag for tag in tags
+                if not str(tag).startswith(head) or _tag_head(tag, head) in alive
+            ]
+            dropped += len(tags) - len(keep)
+            kept.append({**doc, "tags": keep} if len(keep) != len(tags) else doc)
+        out = kept
+    return out, dropped
+
+
+def _tag_head(tag, prefix: str) -> str:
+    """`代表作:印象・日の出` → `印象・日の出`。**3 つ組のタグは 1 つ目だけを見る**
+    (`影響元:名前:理由` のような形があるため)。"""
+    return str(tag)[len(prefix):].split(":", 1)[0].strip()
+
+
+def _existing_titles(path, titles: set[str]) -> set[str]:
+    """そのソースに実在する見出しだけを返す。**問い合わせは分けて投げる**
+    (SQLite が 1 文に取れる値の数に上限があるため)。"""
+    found: set[str] = set()
+    ordered = list(titles)
+    for start in range(0, len(ordered), VERIFY_CHUNK):
+        chunk = ordered[start:start + VERIFY_CHUNK]
+        marks = ",".join("?" * len(chunk))
+        rows = db.query(path, f"SELECT title FROM docs WHERE title IN ({marks})", tuple(chunk))
+        found.update(row["title"] for row in rows)
+    return found
 
 
 def normalize_graves(raw) -> list[str]:
@@ -721,6 +815,7 @@ def _from_json(item: dict) -> Collection:
         mode=normalize_mode(item.get("mode")),
         keep_ratio=normalize_keep_ratio(item.get("keep_ratio")),
         extract=extraction.to_json(extraction.normalize(item.get("extract"))),
+        verify_tags=normalize_verify_tags(item.get("verify_tags")),
         requested_by=str(item.get("requested_by") or ""),
         created_at=str(item.get("created_at") or ""),
         updated_at=str(item.get("updated_at") or ""),
@@ -832,6 +927,7 @@ def create(
     mode: str = MODE_APPEND,
     keep_ratio: float | None = None,
     extract_spec=None,
+    verify_tags=None,
     partition_spec=None,
     feed_spec=None,
     sweeps=None,
@@ -872,6 +968,7 @@ def create(
             DEFAULT_KEEP_RATIO if keep_ratio is None else normalize_keep_ratio(keep_ratio)
         ),
         extract=extraction.to_json(extraction.normalize(extract_spec)),
+        verify_tags=normalize_verify_tags(verify_tags),
         partition=partitioning.to_json(partitioning.normalize(partition_spec)),
         feed=feeds.to_json(feeds.normalize(feed_spec)),
         sweeps=normalize_sweeps(sweeps),
@@ -929,7 +1026,7 @@ def update(name: str, **fields) -> Collection:
     allowed = {
         "description", "prompt", "interval_minutes", "enabled",
         "backend", "model", "effort", "web", "cursor", "mode", "keep_ratio", "extract",
-        "partition", "partitions", "sweeps", "feed", "graves",
+        "partition", "partitions", "sweeps", "feed", "graves", "verify_tags",
     }
     patch = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if "interval_minutes" in patch:
@@ -976,6 +1073,9 @@ def update(name: str, **fields) -> Collection:
     if "extract" in patch:
         # 空のオブジェクトを渡したら「使わない」に戻す(消す手段がここしかない)
         patch["extract"] = extraction.to_json(extraction.normalize(patch["extract"] or None))
+    if "verify_tags" in patch:
+        # 空の配列を渡したら「確かめない」に戻す
+        patch["verify_tags"] = normalize_verify_tags(patch["verify_tags"] or None)
     # 相手・モデル・深さは**空文字を「指定しない」に倒す**。画面のフォームは空欄を
     # 空文字で送ってくるが、持ち回るときは None でないと「未指定」の意味にならない
     # (読み直せば `_from_json` が同じことをするが、保存直後の値とずれる)
@@ -2103,6 +2203,9 @@ def ndjson(
     超えた時点で止める —— 全部組んでから測ると、測るために膨らませることになる。
     """
     docs, diff = material(item, previous, collected, only_new)
+    # **実在しない見出しを指すタグは、焼く前に落とす。** 読む側は「タグがある =
+    # 押せば何か出る」と受け取るので、混ざっていると押しても何も出ないものが並ぶ
+    docs, diff["tags_dropped"] = verified_docs(item, docs, sources)
     if not docs:
         raise HTTPException(
             409,

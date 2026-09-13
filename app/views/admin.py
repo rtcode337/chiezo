@@ -564,6 +564,10 @@ PARTITION_EXAMPLE = json.dumps(
     ensure_ascii=False,
 )
 
+VERIFY_TAGS_EXAMPLE = json.dumps(
+    [{"prefix": "代表作", "source": "jawiki"}], ensure_ascii=False
+)
+
 FEED_EXAMPLE = json.dumps(
     {"urls": ["https://example.com/feed", "https://example.org/atom"], "since": "last_run"},
     ensure_ascii=False,
@@ -679,7 +683,9 @@ def _sweep_edit_row(item, sweep, columns: int, removable: bool = True) -> str:
     名前で照合することになる。
     """
     key = sweep.name if sweep else ""
-    label = f"{esc(sweep.name)} の設定" if sweep else "巡回を足す"
+    # **「〜の設定」と名前を繰り返さない。** すぐ上の行にその名前が出ているし、
+    # 名前入りだと下の巡回の見出しに見える(実際にそう読まれた)
+    label = "設定" if sweep else "巡回を足す"
     return (
         f'<tr class="sweep-edit"><td colspan="{columns}">'
         f"<details><summary>{label}</summary>"
@@ -722,11 +728,24 @@ def _sweep_cells(item, disabled: str = "") -> list[str]:
         # 考える量を上げる、という分け方をするためのもの
         who = _backend_label(sweep)
         due = jst.parse(sweep.next_run_at or "")
-        where = (
-            f"{total:,} のうち {visited:,}"
-            f'<br><span class="muted">1 回に {sweep.per_run(total)} 区画</span>'
-            if total else '<span class="muted">区画なし</span>'
-        )
+        # **一周したあとは「いちばん古い区画」を出す。** 「見終えた / 全区画」は
+        # 一周すると総数に張り付いて動かなくなる —— 区画は消えないので、2 周目からは
+        # 「どこまで来たか」ではなく「いちばん古いところがいつのものか」が読みたい値
+        oldest = partitioning.oldest_visit(item.partitions, sweep.name) if total else None
+        if not total:
+            where = '<span class="muted">区画なし</span>'
+        elif oldest:
+            where = (
+                "一周した"
+                f'<br><span class="muted">いちばん古い区画: '
+                f'{esc(jst.format(jst.parse(oldest)) or "")}</span>'
+                f'<br><span class="muted">1 回に {sweep.per_run(total)} 区画</span>'
+            )
+        else:
+            where = (
+                f"{total:,} のうち {visited:,}"
+                f'<br><span class="muted">1 回に {sweep.per_run(total)} 区画</span>'
+            )
         if sweep.last_status == "error":
             result = f'<span class="stale">失敗: {esc(sweep.last_error or "")}</span>'
         else:
@@ -823,6 +842,16 @@ def _graves_html(item) -> str:
     )
 
 
+# 区画の表に出す件数。**残りは畳む** —— 全部出すと、その下にある変更履歴まで
+# 面の外へ押し出される
+PARTITION_HEAD = 10
+
+
+def _verify_tags_json(item) -> str:
+    """タグの確かめ方を、欄に出せる形で。持っていなければ空。"""
+    return json.dumps(item.verify_tags, ensure_ascii=False, indent=2) if item.verify_tags else ""
+
+
 def _partition_html(item) -> str:
     """区画の進み具合。持っていない収集には何も出さない。
 
@@ -837,18 +866,59 @@ def _partition_html(item) -> str:
             '<p class="muted">区画: まだ割っていません'
             "(次の実行で対象の空間を割ってから回り始めます)。</p>"
         )
-    # **途中で切らない。** ここを読みに来るのは「どこを見ていて、どこがまだか」を
-    # 知りたいときなので、頭の数件だけ出しても答えにならない(325 区画なら 325 行)。
-    # 一覧の表に混ぜていた頃は縦に伸びすぎたが、収集 1 つぶんの面なら並べてよい
-    rows = "".join(
-        f"<tr><td>{esc(p['key'])}</td><td>{p['count']:,}</td>"
-        f"<td>{esc('、'.join(sorted((p.get('visits') or {}).keys())))}</td></tr>"
-        for p in item.partitions
+    # **頭の 10 件だけ出して、残りは畳む。** 全部を出すと 325 行が面を埋めて、
+    # その下にある変更履歴まで押し出される。**捨てはしない** —— ここを読みに来るのは
+    # 「どこを見ていて、どこがまだか」を知りたいときなので、開けば全部ある
+    def row(p):
+        return (
+            f"<tr><td>{esc(p['key'])}</td><td>{p['count']:,}</td>"
+            f"<td>{esc('、'.join(sorted((p.get('visits') or {}).keys())))}</td></tr>"
+        )
+
+    head = "".join(row(p) for p in item.partitions[:PARTITION_HEAD])
+    rest = item.partitions[PARTITION_HEAD:]
+    more = (
+        "<details><summary>"
+        f"残りの {len(rest):,} 区画を見る</summary>"
+        "<table><thead><tr><th>区画</th><th>母集団</th><th>見終えた巡回</th></tr></thead>"
+        f"<tbody>{''.join(row(p) for p in rest)}</tbody></table></details>"
+        if rest else ""
     )
     return (
         f'<p class="muted">区画: {total:,}</p>'
         "<table><thead><tr><th>区画</th><th>母集団</th><th>見終えた巡回</th></tr></thead>"
-        f"<tbody>{rows}</tbody></table>"
+        f"<tbody>{head}</tbody></table>{more}"
+    )
+
+
+def _collect_running_html(name: str | None = None) -> str:
+    """いま走っている収集の 1 行。**終わったものの控えとは別に出す**。
+
+    控え(`app/collect_log.py`)は終わってから 1 行になるので、押した直後は何も出ない
+    —— 走っているのかどうかを確かめるのに、別の画面まで見に行くことになっていた。
+    """
+    rows = [
+        row for row in ai_inflight.running()
+        if str(row.get("caller") or "").startswith("collect:")
+        and (name is None or row.get("caller") == f"collect:{name}")
+    ]
+    if not rows:
+        return ""
+    cells = "".join(
+        f"<tr><td>{esc(jst.format(jst.parse(row.get('at') or '')) or '')}</td>"
+        f"<td>{esc(ai_inflight.caller_label(str(row.get('caller') or '')))}</td>"
+        f"<td>{esc(str(row.get('backend') or ''))}"
+        + (f' <span class="muted">{esc(str(row.get("model") or ""))}</span>'
+           if row.get("model") else "")
+        + "</td>"
+        + '<td><span class="job-status running">走っています</span></td></tr>'
+        for row in rows
+    )
+    return (
+        f'<p class="muted">いま {len(rows)} 件走っています'
+        "(終わると下の「直近の変更」に 1 行増えます)。</p>"
+        "<table><thead><tr><th>始めた時刻</th><th>収集</th><th>相手</th><th>状態</th>"
+        f"</tr></thead><tbody>{cells}</tbody></table>"
     )
 
 
@@ -984,6 +1054,16 @@ def _collect_detail_html(item, disabled: str) -> str:
         f'<p><label>抽出の指定(JSON。空なら毎回 AI に集めさせる)<br>'
         f'<textarea name="extract" rows="8" spellcheck="false">'
         f"{esc(_extract_json(item))}</textarea></label></p>"
+        f'<p><label>タグの確かめ方(JSON。空なら確かめない)<br>'
+        f'<textarea name="verify_tags" rows="4" spellcheck="false">'
+        f"{esc(_verify_tags_json(item))}</textarea></label></p>"
+        f'<p class="muted"><code>{esc(VERIFY_TAGS_EXAMPLE)}</code> と書くと、'
+        f"<code>代表作:&lt;見出し&gt;</code> の見出しがそのソースに無いタグを"
+        f"<strong>焼く前に落とす</strong>。AI は代表作を挙げられても"
+        f"<strong>それが記事として存在するかは知らない</strong> —— 読む側は"
+        f"「タグがある = 押せば何か出る」と受け取るので、実在しない見出しが混ざると"
+        f"押しても何も出ないものが並ぶ。<strong>既に入っているものにも掛かる</strong>"
+        f"(1 回焼き直せば揃う)。</p>"
         f'<p><label>外向きの道具(JSON。空なら道具なし)<br>'
         f'<textarea name="feed" rows="5" spellcheck="false">'
         f"{esc(_feed_json(item))}</textarea></label></p>"
@@ -1163,6 +1243,7 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
 """ if rows else '<p class="muted">まだ収集がありません。下のフォームから作れます。</p>'
     return f"""
 {table}
+{_collect_running_html()}
 {_collect_changes_html()}
 <details><summary>収集を追加する</summary>
 <form method="post" action="/admin/collect/create" class="collect-form">
@@ -2049,6 +2130,8 @@ async def admin_collect_edit(name: str, request: Request):
         extract=_parse_extract(form.get("extract")),
         partition=_parse_partition(form.get("partition")),
         feed=_parse_feed(form.get("feed")),
+        # **空の配列で外せる**(消す手段がここしかない)
+        verify_tags=_parse_verify_tags(form.get("verify_tags")),
         # 0 も意味のある値(守りを外す)なので、空のときだけ触らない
         keep_ratio=_ratio(form.get("keep_ratio")),
     )
@@ -2085,7 +2168,7 @@ async def admin_collect_sweep(name: str, request: Request):
             model=str(sweep.get("model") or ""),
             effort=str(sweep.get("effort") or ""),
         )
-        return RedirectResponse(url="/admin/memory#collect", status_code=303)
+        return RedirectResponse(url=f"/admin/collect/{quote(name)}", status_code=303)
 
     if sweep is None:
         # 名前を消した = この巡回を消す
@@ -2095,7 +2178,9 @@ async def admin_collect_sweep(name: str, request: Request):
     else:
         merged = [*current, sweep]
     collect.update(name, sweeps=merged)
-    return RedirectResponse(url="/admin/memory#collect", status_code=303)
+    # **直したところへ戻す。** 一覧へ返していた頃は、直した結果を見るのに
+    # もう一度その収集を探すことになった
+    return RedirectResponse(url=f"/admin/collect/{quote(name)}", status_code=303)
 
 
 @router.post("/admin/collect/consult")
@@ -2293,7 +2378,9 @@ async def admin_collect_run(name: str, request: Request):
 
     form = await request.form()
     start_collection_bake(name, str(form.get("sweep") or "") or None)
-    return RedirectResponse(url="/admin/memory#collect", status_code=303)
+    # **押したところへ戻す。** 一覧へ返していた頃は、走らせた本人が結果を見に行くのに
+    # もう一度その収集を探すことになった(見たいのは、いま押した 1 つの進み具合)
+    return RedirectResponse(url=f"/admin/collect/{quote(name)}", status_code=303)
 
 
 @router.post("/admin/collect/{name}/focus")
@@ -2361,6 +2448,18 @@ def _parse_partition(raw):
 
 def _parse_feed(raw):
     return _parse_spec(raw, "フィード")
+
+
+def _parse_verify_tags(raw):
+    """タグの確かめ方の欄。**空なら空の配列**(「確かめない」を送れるようにする)。"""
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    try:
+        value = json.loads(text)
+    except ValueError as e:
+        raise HTTPException(400, {"error": f"タグの確かめ方が JSON として読めません: {e}"}) from None
+    return collect.normalize_verify_tags(value)
 
 
 def _parse_sweeps_form(form) -> list[dict]:
@@ -2525,7 +2624,7 @@ def _preview_page_html(name: str, result: dict | None, error: str) -> str:
 <p><strong>まだ焼いていません。</strong>長期記憶は変わっておらず、進み具合も次回の予定も
 動いていません。この数字を見てから「今すぐ実行」を押します。</p>
 {body}
-<p class="muted"><a href="/admin/memory#collect">管理画面へ戻る</a></p>
+<p class="muted"><a href="/admin/collect/{esc(quote(name))}">「{esc(name)}」へ戻る</a></p>
 """,
     )
 
@@ -2568,6 +2667,7 @@ def admin_collect_detail(request: Request, name: str):
 </tbody>
 </table>
 {_collect_detail_html(item, disabled)}
+{_collect_running_html(name)}
 {_collect_changes_html(name=name)}
 <p class="muted"><a href="/admin/memory#collect">集める の一覧へ戻る</a></p>
 """

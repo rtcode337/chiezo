@@ -719,7 +719,7 @@ class TestTheMechanicalSweep:
 
         collect.update("news", sweeps=[{"name": "名簿", "use_extract": True}])
         html = admin._sweep_table_body(collect.get("news"), "")
-        roster = html.split("名簿 の設定")[1].split("</details>")[0]
+        roster = html.split("<summary>設定</summary>")[1].split("</details>")[0]
 
         assert '<select name="sweep_backend">' not in roster
         assert "AI を呼ばないので、相手は選べません" in roster
@@ -920,6 +920,88 @@ class TestWhatCameInSinceLastTime:
         )
 
         assert "きのう" in messages[-1]["content"]
+
+
+class TestVerifyingTags:
+    """タグの値が実在するかを、**焼く前に**確かめる。
+
+    AI は「その画家の代表作」を挙げられても、**それが記事として存在するかは知らない**。
+    読む側は「タグがある = 押せば何か出る」と受け取るので、実在しない見出しが混ざると、
+    押しても何も出ないものが並ぶ。**確かめられるのはこちら**(長期記憶を持っている層)。
+    """
+
+    def test_it_runs_over_everything_that_is_baked(self, sample, baked):
+        """**既に入っているものにも掛ける。** 掛けないと、前に入った間違いが残り続ける。"""
+        sources = baked([("印象・日の出", "モネの絵")], name="jawiki")
+        collect.update("news", verify_tags=[{"prefix": "代表作", "source": "jawiki"}])
+        previous = {
+            "ルノワール": {
+                "doc_id": 1, "title": "ルノワール", "opening": "", "body": "説明",
+                "tags": ["画家", "代表作:実在しない絵"], "updated_at": "2026-01-01T00:00:00+00:00",
+                "extra": None,
+            }
+        }
+
+        docs, diff = collect.verified_docs(
+            collect.get("news"),
+            [
+                {"title": "モネ", "tags": ["画家", "代表作:印象・日の出", "代表作:無い絵"]},
+                {"title": "ルノワール", "tags": previous["ルノワール"]["tags"]},
+            ],
+            sources,
+        )
+
+        assert [d["tags"] for d in docs] == [["画家", "代表作:印象・日の出"], ["画家"]]
+        assert diff == 2
+
+    def test_three_part_tags_are_judged_by_the_first_piece(self, sample, baked):
+        """`影響元:名前:理由` のような形があるので、見出しは 1 つ目だけ。"""
+        sources = baked([("クロード・モネ", "画家")], name="jawiki")
+        collect.update("news", verify_tags=[{"prefix": "影響元", "source": "jawiki"}])
+
+        docs, dropped = collect.verified_docs(
+            collect.get("news"),
+            [{"title": "誰か", "tags": ["影響元:クロード・モネ:光の扱い", "影響元:居ない人:何か"]}],
+            sources,
+        )
+
+        assert docs[0]["tags"] == ["影響元:クロード・モネ:光の扱い"]
+        assert dropped == 1
+
+    def test_an_unbaked_source_changes_nothing(self, sample):
+        """知らないものを「無い」と読むと、正しいタグまで落ちる。"""
+        collect.update("news", verify_tags=[{"prefix": "代表作", "source": "jawiki"}])
+
+        docs, dropped = collect.verified_docs(
+            collect.get("news"), [{"title": "モネ", "tags": ["代表作:印象・日の出"]}], {}
+        )
+
+        assert docs[0]["tags"] == ["代表作:印象・日の出"]
+        assert dropped == 0
+
+    def test_without_the_spec_nothing_is_touched(self, sample, baked):
+        sources = baked([("印象・日の出", "モネの絵")], name="jawiki")
+
+        docs, dropped = collect.verified_docs(
+            collect.get("news"), [{"title": "モネ", "tags": ["代表作:何でも"]}], sources
+        )
+
+        assert docs[0]["tags"] == ["代表作:何でも"]
+        assert dropped == 0
+
+    def test_the_spec_survives_a_round_trip(self, sample):
+        collect.update("news", verify_tags=[{"prefix": "代表作", "source": "jawiki"}])
+
+        assert collect.get("news").verify_tags == [{"prefix": "代表作", "source": "jawiki"}]
+
+        # 空の配列で外せる(消す手段がここしかない)
+        collect.update("news", verify_tags=[])
+        assert collect.get("news").verify_tags == []
+
+    def test_a_spec_without_a_source_is_refused(self, sample):
+        """黙って無視すると、確かめているつもりの収集が確かめずに回り続ける。"""
+        with pytest.raises(HTTPException):
+            collect.update("news", verify_tags=[{"prefix": "代表作"}])
 
 
 class TestPerSweepPrompt:
@@ -1586,6 +1668,17 @@ class TestRest:
         # 断ったのだから残っている
         assert collect.get("news").name == "news"
 
+    def test_running_it_lands_on_that_collection(self, client, sample, monkeypatch):
+        """走らせた本人が結果を見に行くのに、もう一度その収集を探すことになっていた。"""
+        from app.views import admin
+
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://trigger.test")
+        monkeypatch.setattr(admin, "trigger_run", lambda _name: None)
+        res = client.post("/admin/collect/news/run", data={}, follow_redirects=False)
+
+        assert res.status_code == 303
+        assert res.headers["location"] == "/admin/collect/news"
+
     def test_the_pressed_sweep_is_recorded_before_the_trigger_wakes(
         self, client, sample, monkeypatch
     ):
@@ -2175,6 +2268,56 @@ class TestTheCollectSectionMarkup:
 
         assert "/admin/collect/news/delete" in html
 
+    def test_what_is_running_now_is_shown(self, sample, monkeypatch):
+        """控えは終わってから 1 行になるので、押した直後は何も出なかった。
+
+        走っているのかを確かめるのに、別の画面まで見に行くことになっていた。
+        """
+        from app import ai_inflight
+        from app.views import admin
+
+        monkeypatch.setattr(
+            ai_inflight,
+            "running",
+            lambda limit=50: [
+                {"at": "2026-09-13T00:00:00+00:00", "caller": "collect:news",
+                 "backend": "claude", "model": "opus"},
+                # 会話のぶんは混ぜない（ここは収集の面）
+                {"at": "2026-09-13T00:00:00+00:00", "caller": "chat", "backend": "codex"},
+            ],
+        )
+
+        html = admin._collect_running_html("news")
+        assert "いま 1 件走っています" in html
+        assert "収集(news)" in html
+        assert "codex" not in html
+
+    def test_nothing_running_shows_nothing(self, sample, monkeypatch):
+        """空の表を出すと「動いていない」ではなく「壊れている」に見える。"""
+        from app import ai_inflight
+        from app.views import admin
+
+        monkeypatch.setattr(ai_inflight, "running", lambda limit=50: [])
+        assert admin._collect_running_html("news") == ""
+
+    def test_only_the_first_partitions_are_listed(self, sample):
+        """全部を出すと、その下にある変更履歴まで面の外へ押し出される。"""
+        from app.views import admin
+
+        collect.update(
+            "news",
+            partition={"by": "title", "target": 10},
+            partitions=[{"key": f"区画{i}", "count": 1} for i in range(25)],
+        )
+        html = admin._partition_html(collect.get("news"))
+
+        assert "区画0" in html
+        assert "区画9" in html
+        # **捨てはしない** —— 開けば全部ある
+        assert "残りの 15 区画を見る" in html
+        assert "区画24" in html
+        assert html.index("残りの 15 区画を見る") < html.index("区画24")
+
     def test_every_form_is_opened_and_closed(self, sample):
         html = self._html(sample)
         assert html.count("<form") == html.count("</form>")
@@ -2266,7 +2409,10 @@ class TestTheCollectSectionMarkup:
         # **巡回の設定だけは行の下に畳んで置く** —— 見ている行の真下でなければ、
         # どの行のものかを名前で照合することになる
         assert '<tr class="sweep-edit">' in html
-        assert "<summary>ざっと の設定</summary>" in html
+        # **名前は繰り返さない**（すぐ上の行に出ているし、名前入りだと
+        # 下の巡回の見出しに見える）
+        assert "<summary>設定</summary>" in html
+        assert "ざっと の設定" not in html
         # 面のほうには畳まずに出る
         detail = self._detail()
         assert '<pre class="prompt-view">' in detail

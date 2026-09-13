@@ -1548,6 +1548,12 @@ class CollectionCreate(BaseModel):
         "(どのソースの・どのタグを・何件・タグをどう読み替えるか)。"
         "進み具合が空のときだけ使い、2 回目からは AI が肉付けする",
     )
+    verify_tags: list[dict] | None = PydField(
+        None,
+        description="タグの値が実在するかを確かめる指定。"
+        '[{"prefix": "代表作", "source": "jawiki"}] と書くと、'
+        "`代表作:<見出し>` の見出しがそのソースに無いタグを焼く前に落とす",
+    )
     feed: dict | None = PydField(
         None,
         description="外向きの道具(RSS / Atom)。urls に取ってくる先を書く。"
@@ -1589,6 +1595,9 @@ class CollectionPatch(BaseModel):
     keep_ratio: float | None = None
     extract: dict | None = PydField(
         None, description="抽出の指定。空のオブジェクトを渡すと外れる"
+    )
+    verify_tags: list[dict] | None = PydField(
+        None, description="タグの値が実在するかを確かめる指定。空の配列を渡すと外れる"
     )
     feed: dict | None = PydField(
         None, description="外向きの道具。空のオブジェクトを渡すと外れる"
@@ -1678,6 +1687,7 @@ def collect_create(request: Request, body: CollectionCreate):
         mode=body.mode,
         keep_ratio=body.keep_ratio,
         extract_spec=body.extract,
+        verify_tags=body.verify_tags,
         partition_spec=body.partition,
         feed_spec=body.feed,
         sweeps=body.sweeps,

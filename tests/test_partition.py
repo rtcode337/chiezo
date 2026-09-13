@@ -308,3 +308,40 @@ class TestWhatIsHandedToTheAI:
         """座標が無いものは、次にその区画を見るとき「まだ無い」と見える。"""
         spec = partition.normalize({"by": "geo", "target": 50})
         assert not partition.belongs(spec, "43.0000,141.0000/44.5000,143.0000", {"title": "X"})
+
+
+class TestTheSecondLap:
+    """一周したあとの進み具合。
+
+    **「見終えた / 全区画」は一周すると総数に張り付いて動かなくなる**。区画は消えないので、
+    2 周目からは「どこまで来たか」ではなく「いちばん古いところがいつのものか」が
+    読みたい値になる —— 次に見るのは必ずそこ。
+    """
+
+    def test_the_oldest_comes_first_on_the_second_lap(self):
+        partitions = [
+            {"key": "あ", "count": 1, "visits": {"ざっと": "2026-09-10T00:00:00+00:00"}},
+            {"key": "い", "count": 1, "visits": {"ざっと": "2026-09-01T00:00:00+00:00"}},
+            {"key": "う", "count": 1, "visits": {"ざっと": "2026-09-05T00:00:00+00:00"}},
+        ]
+
+        assert partition.pick(partitions, "ざっと", 2) == ["い", "う"]
+
+    def test_the_oldest_visit_is_only_known_after_a_full_lap(self):
+        partitions = [
+            {"key": "あ", "count": 1, "visits": {"ざっと": "2026-09-10T00:00:00+00:00"}},
+            {"key": "い", "count": 1},
+        ]
+        # まだ見ていない区画があるうちは、そちらが先(「いちばん古い」は意味を持たない)
+        assert partition.oldest_visit(partitions, "ざっと") is None
+        assert partition.pick(partitions, "ざっと", 1) == ["い"]
+
+        walked = partition.mark_visited(partitions, ["い"], "ざっと", "2026-09-12T00:00:00+00:00")
+        assert partition.oldest_visit(walked, "ざっと") == "2026-09-10T00:00:00+00:00"
+
+    def test_another_sweep_walks_on_its_own(self):
+        """ざっとが一周した区画を、じっくりはまだ見ていない、が普通に起きる。"""
+        partitions = [{"key": "あ", "count": 1, "visits": {"ざっと": "2026-09-10T00:00:00+00:00"}}]
+
+        assert partition.oldest_visit(partitions, "ざっと") == "2026-09-10T00:00:00+00:00"
+        assert partition.oldest_visit(partitions, "じっくり") is None
