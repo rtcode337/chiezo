@@ -1409,6 +1409,75 @@ class TestTheLedgerCountFollowsTheContents:
         assert [p["count"] for p in ledger] == [1, 2]
 
 
+class TestTheCountAfterTheRun:
+    """見終わった区画の人数は、**その回で動いたあとの数**で出す。
+
+    回の頭で数えた値のままだと必ず 1 回ぶん古い —— 本番では、ざっとが見終わった
+    6 区画が全員よそへ移って空になったのに、台帳には見る前の 26〜33 が出ていた。
+    """
+
+    def test_it_counts_the_generation_it_is_about_to_bake(self, sample):
+        collect.update(
+            "news",
+            partition={"by": "band", "prefix": "地域", "value": "年代", "target": 10},
+            partitions=[
+                {"key": partitioning.band_key("その他", 1850, 1860), "count": 2},
+                {"key": partitioning.band_key("日本", 1850, 1860), "count": 0},
+            ],
+        )
+        item = collect.get("news")
+        # 地域が入って、2 人とも「その他」から「日本」へ移った世代
+        docs = [
+            {"title": "あ", "tags": ["年代:1855-1900", "地域:日本"]},
+            {"title": "い", "tags": ["年代:1858-1910", "地域:日本"]},
+        ]
+
+        counts = collect.partition_counts(item, docs)
+
+        assert counts[partitioning.band_key("その他", 1850, 1860)] == 0
+        assert counts[partitioning.band_key("日本", 1850, 1860)] == 2
+
+    def test_a_collection_without_partitions_counts_nothing(self, sample):
+        item = collect.get("news")
+
+        assert collect.partition_counts(item, [{"title": "あ", "tags": []}]) == {}
+
+    def test_the_run_writes_the_new_count_into_the_ledger(self, sample, monkeypatch, tmp_path):
+        """1 回まわしたあと、台帳に載るのは**焼いたあとの人数**。"""
+        import asyncio
+
+        from app import main
+
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        moved = partitioning.band_key("その他", 1850, 1860)
+        landed = partitioning.band_key("日本", 1850, 1860)
+        collect.update(
+            "news",
+            enabled=True,
+            partition={"by": "band", "prefix": "地域", "value": "年代", "target": 10},
+            partitions=[{"key": moved, "count": 2}, {"key": landed, "count": 0}],
+            sweeps=[{"name": "ざっと"}],
+        )
+
+        async def no_feed(_item):
+            return None
+
+        monkeypatch.setattr(main, "_harvest", no_feed)
+
+        async def collected(*_args, **_kwargs):
+            return [{
+                "title": "あ", "body": "本文", "tags": ["年代:1855-1900", "地域:日本"],
+            }], None, ""
+
+        monkeypatch.setattr(main, "_collect_items", collected)
+        collect.mark_started("news", "ざっと")
+        asyncio.run(main._collect_material("news", {}))
+
+        after = {p["key"]: p["count"] for p in collect.get("news").partitions}
+        assert after[moved] == 0, "見終わった区画は、移ったあとの人数で出る"
+        assert after[landed] == 1
+
+
 class TestReplanningInTheSameRun:
     """区画を割り直した回でも、素材は**新しい台帳**で組む。
 

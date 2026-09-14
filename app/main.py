@@ -463,7 +463,9 @@ async def _collect_material(name: str, sources: dict) -> str:
         next_cursor=next_cursor,
         sweep=sweep.name,
         visited=keys,
-        partitions=ledger,
+        # **焼いたあとの人数で台帳を書き直す。** 回の頭で数えた値のままにすると、
+        # 見終わったばかりの区画が見る前の人数で出る(`collect.partition_counts`)
+        partitions=partitioning.counted(ledger, diff.get("partition_counts") or {}),
         focus=focus is not None,
     )
     await asyncio.to_thread(

@@ -1243,6 +1243,17 @@ REFINE_SYSTEM_PROMPT = (
 )
 
 
+def partition_counts(item: Collection, docs: list[dict]) -> dict[str, int]:
+    """焼こうとしている世代を、区画ごとに数える。区画を持たない収集では空。"""
+    if not item.partition or not item.partitions:
+        return {}
+    return partitioning.counts_of(
+        partitioning.normalize(item.partition),
+        item.partitions,
+        {doc["title"]: doc for doc in docs},
+    )
+
+
 def render_material(previous: dict[str, dict], scoped: bool = False) -> tuple[str, int]:
     """前世代を、プロンプトへ差し込める形にする。差し込んだ件数も返す。
 
@@ -2448,6 +2459,11 @@ def ndjson(
                         "(0 で守りを外す)。焼いていないので、いまの内容はそのままです",
             },
         )
+    # **焼いたあとの人数を数えて渡す。** 台帳の数は回の頭で取ったものなので、
+    # その回で中身が動くと必ず 1 回ぶん古い —— 見終わったばかりの区画が、
+    # 見る前の人数のまま出る(年代や地域が入って別の帯へ移った人が、まだそこに
+    # 居るように見える)。数え直す相手は、いま焼こうとしている世代そのもの
+    diff["partition_counts"] = partition_counts(item, docs)
     meta = {
         "meta": {
             "dump_date": _dump_date(item.name, sources),
