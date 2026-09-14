@@ -225,6 +225,10 @@ PAGE_STYLE = """
   .usage-strip { display: flex; flex-wrap: wrap; gap: 0.4rem 0.9rem;
                  align-items: baseline; font-size: 0.85rem; margin: 0.6rem 0; }
   .usage-chip { white-space: nowrap; }
+  /* 帯の中の「取り直す」。**帯から浮かせない** —— 数字の並びを切らないよう、
+     文字の大きさに合わせた控えめな見た目にする */
+  form.usage-refresh { display: inline; }
+  form.usage-refresh button { font-size: 0.85rem; padding: 0.1rem 0.5rem; }
   /* 取り込みの実行ログ。**走っている間だけ開く**（`views/admin.py`）ので、
      畳んだときに場所を取らない体裁にする */
   details.job-log { margin-top: 0.5rem; }

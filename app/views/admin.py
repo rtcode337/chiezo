@@ -1560,11 +1560,25 @@ def _usage_html() -> str:
             f'<span class="{klass}">{pct:.0f}%</span> '
             f'<span class="muted">{esc(str(worst.label or ""))[:18]}</span></span>'
         )
+    # **取り直す口を玄関にも置く。** ここは「重い仕事を頼んでよいか」を見に来る
+    # 画面なので、数字が古いと判断できない —— 取り直すために AI の面まで開くのは、
+    # 見に来た目的から遠い。**押した画面へ戻る**(`back`)
+    button = (
+        ai_usage.refresh_all_form("取り直す", back="/admin", klass="usage-refresh")
+        if usage.refreshable() else ""
+    )
     if not cells:
-        return ""
+        # 控えがまだ 1 つも無いときも、取り直す口だけは出す ——
+        # 出さないと、最初の 1 回を玄関から始められない
+        if not button:
+            return ""
+        return (
+            '<p class="usage-strip">枠の残り: '
+            f'<span class="muted">まだ取っていません</span> {button}</p>'
+        )
     return (
         '<p class="usage-strip">枠の残り: ' + " ".join(cells)
-        + ' <a href="/admin/ai#ai-usage">→ 詳しく</a></p>'
+        + f' {button}<a href="/admin/ai#ai-usage">→ 詳しく</a></p>'
     )
 
 

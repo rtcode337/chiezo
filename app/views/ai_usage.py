@@ -117,6 +117,20 @@ def _refresh_button(row: dict) -> str:
     )
 
 
+# 押した人を連れ出さないための行き先。**玄関にも同じボタンがある**ので、
+# 書き切ると、どこから押しても AI の面へ飛ばされる(見ていた画面から追い出される)。
+DEFAULT_BACK = "/admin/ai"
+
+
+def _back_to(raw: str | None) -> str:
+    """戻り先。**この管理画面の中だけ**を通す。
+
+    外から任意の URL を入れられる口にしない(押した先が別のサイトになる)。
+    """
+    path = (raw or "").strip()
+    return path if path.startswith("/admin") and "//" not in path else DEFAULT_BACK
+
+
 def _refresh_all_button() -> str:
     """まとめて取り直すボタン。 相手が 1 つも無いときは出さない
     —— 押しても何も起きないボタンは、壊れているのか設定が足りないのか読めない。"""
@@ -124,10 +138,18 @@ def _refresh_all_button() -> str:
     if not targets:
         return ('<p class="muted">まとめて取り直せる相手がいません'
                 "(枠を聞ける相手を「使う」にすると出ます)。</p>")
+    return refresh_all_form(f"使う相手の枠を全部取り直す({len(targets)} 件)")
+
+
+def refresh_all_form(label: str, back: str = DEFAULT_BACK, klass: str = "init-form") -> str:
+    """まとめて取り直すボタン 1 つぶん。**玄関からも使う**ので、ここが正。
+
+    `back` に押した画面を渡すと、そこへ戻る(書き切ると連れ出される)。
+    """
     return (
-        '<form method="post" action="/admin/ai/usage/all" class="init-form">'
-        f'<button type="submit">使う相手の枠を全部取り直す({len(targets)} 件)</button>'
-        "</form>"
+        f'<form method="post" action="/admin/ai/usage/all" class="{esc(klass)}">'
+        f'<input type="hidden" name="back" value="{esc(back)}">'
+        f'<button type="submit">{esc(label)}</button></form>'
     )
 
 
@@ -209,18 +231,23 @@ API からは <code>GET /v1/ai/usage</code>(取り直すなら <code>?refresh=1<
 
 
 @router.post("/admin/ai/usage/all")
-async def refresh_all_usage():
+async def refresh_all_usage(back: str = Form(DEFAULT_BACK)):
     """枠を聞ける相手をまとめて取り直す(並行に聞く)。
 
     行ごとに押すと相手の数だけ往復することになる。取れなかった相手がいても
     残りは取り直し、誰が取れなかったかを画面に出す。
+
+    **押した画面へ戻す**(`back`)。玄関にも同じボタンがあるので、行き先を
+    書き切ると、どこから押しても AI の面へ連れて行かれる。
     """
     done = await usage.refresh_all()
     failed = [usage.label_of(pid) for pid, quota in done.items() if quota.error]
     params = {"usage_refreshed_all": len(done) - len(failed)}
     if failed:
         params["usage_error"] = "、".join(failed)[:300]
-    return RedirectResponse(f"/admin/ai?{urlencode(params)}#{SECTION_ANCHOR}", status_code=303)
+    return RedirectResponse(
+        f"{_back_to(back)}?{urlencode(params)}#{SECTION_ANCHOR}", status_code=303
+    )
 
 
 @router.post("/admin/ai/usage")

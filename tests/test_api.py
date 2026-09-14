@@ -1826,6 +1826,48 @@ class TestAdminPages:
         ])
         assert views_admin._usage_html() == ""
 
+    def test_the_entrance_can_refresh_the_quota(self, monkeypatch):
+        """**取り直す口を玄関にも置く。**
+
+        ここは「重い仕事を頼んでよいか」を見に来る画面なので、数字が古いと
+        判断できない —— そのために AI の面まで開くのは、見に来た目的から遠い。
+        """
+        from app import usage, usage_store
+        from app.views import admin as views_admin
+
+        monkeypatch.setattr(usage_store, "is_enabled", lambda: True)
+        monkeypatch.setattr(usage, "refreshable", lambda: ["claude"])
+        monkeypatch.setattr(usage, "rows", lambda: [])
+
+        html = views_admin._usage_html()
+
+        assert 'action="/admin/ai/usage/all"' in html
+        # **押した画面へ戻す** —— 行き先を書き切ると、玄関から押した人が
+        # AI の面へ連れて行かれる
+        assert 'name="back" value="/admin"' in html
+        # 控えがまだ無くても、最初の 1 回を玄関から始められる
+        assert "まだ取っていません" in html
+
+    def test_the_entrance_does_not_offer_what_cannot_be_asked(self, monkeypatch):
+        """聞ける相手がいなければボタンも出さない(押しても何も起きない口を置かない)。"""
+        from app import usage, usage_store
+        from app.views import admin as views_admin
+
+        monkeypatch.setattr(usage_store, "is_enabled", lambda: True)
+        monkeypatch.setattr(usage, "refreshable", lambda: [])
+        monkeypatch.setattr(usage, "rows", lambda: [])
+
+        assert views_admin._usage_html() == ""
+
+    def test_refreshing_comes_back_to_where_it_was_pressed(self):
+        """外の URL へは戻さない(押した先が別のサイトになる)。"""
+        from app.views import ai_usage
+
+        assert ai_usage._back_to("/admin") == "/admin"
+        assert ai_usage._back_to("https://example.com") == ai_usage.DEFAULT_BACK
+        assert ai_usage._back_to("//example.com") == ai_usage.DEFAULT_BACK
+        assert ai_usage._back_to(None) == ai_usage.DEFAULT_BACK
+
     def test_the_entrance_shows_the_disk(self, client):
         """**この画面から始まる操作がディスクを一番食う**（取り込み 1 回で数十 GB）。
         押す前に見えるところに置く。"""
