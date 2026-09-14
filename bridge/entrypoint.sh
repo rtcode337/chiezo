@@ -30,7 +30,14 @@ case "${CLI}" in
         # を対話で 1 回実行して、表示される URL で済ませる。
         mkdir -p "${HOME}"
         agy mcp remove chiezo >/dev/null 2>&1 || true
-        [ -n "${MCP_URL}" ] && agy mcp add chiezo --url "${MCP_URL}" >/dev/null 2>&1 || true
+        # URL は位置引数(`agy mcp add [flags] <name> <commandOrUrl>`)。`--url` というフラグは
+        # 無く、<name> の後ろに置いたフラグは拒否される —— codex と同じ書き方にしていたため
+        # 登録は一度も通っておらず、`agy mcp list` は `No MCP servers configured.` のままだった。
+        # 出力も戻り値も捨てない: 繋がっていないことに気づけないと、道具を持たない相手として
+        # 黙って動き続ける(知識ベースを引けるつもりの頼み方が、引かずに答えられる)。
+        if [ -n "${MCP_URL}" ]; then
+            agy mcp add chiezo "${MCP_URL}"
+        fi
         ;;
     *)
         echo "ERROR: 未対応の CHIEZO_BRIDGE_CLI: ${CLI}（claude / codex / antigravity）" >&2

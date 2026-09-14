@@ -76,8 +76,8 @@ CLI = os.environ.get("CHIEZO_BRIDGE_CLI", "claude").strip().lower()
 # 頼まれた側が依頼文を言い換えて別の相手へ投げ、こちらの依頼文もそのまま回した。
 # 枠を余計に食ううえ、描く前に別の生成を待つので時間も伸びる。
 # **道具を名前で絞れるのは claude だけ**(下の ALLOWED_TOOLS)で、codex と
-# antigravity は `mcp add chiezo --url` で丸ごと繋がるため、**どの CLI にも効く
-# つまみは接続先しか無い**。
+# antigravity は起動時の `mcp add`(entrypoint.sh)で丸ごと繋がるため、**どの CLI にも効く
+# つまみは接続先しか無い**。引数の形は CLI ごとに違う(codex は `--url`、agy は位置引数)。
 MCP_URL = os.environ.get(
     "CHIEZO_BRIDGE_MCP_URL", "http://chiezo-app:7010/mcp/knowledge"
 ).strip()
