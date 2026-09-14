@@ -982,3 +982,36 @@ class TestPullingFromSeveralSources:
         assert isinstance(written, list)
         assert [one["source"] for one in written] == ["jawiki", "osm_japan"]
         assert isinstance(extract.to_json(extract.normalize({"source": "jawiki", "tag": "画家"})), dict)
+
+
+class TestWhenTheSourceIsTooSlow:
+    """名簿を引くのは取り込みの中で動く背景の仕事で、誰も応答を待っていない。
+
+    読み口の 5 秒はそこに当てない —— あれは人が待っている問い合わせを守る数で、
+    地図の名簿のように数十万件に当たる指定は並べ替えだけで数秒かかる。
+    """
+
+    def test_it_gets_more_time_than_a_reader_does(self):
+        from app import db
+
+        assert extract.EXTRACT_TIMEOUT_SECONDS > db.QUERY_TIMEOUT_SECONDS
+
+    def test_it_says_which_source_ran_out(self, source, monkeypatch):
+        """**打ち切りをそのまま上げない。** 控えに「QueryTimeout」の一語だけが
+        残ると、何本も書いてある指定のどれが重かったのかを後から辿れない
+        (無人で回る層なので、そのとき見ている人はいない)。
+        """
+        from app import db
+
+        def too_slow(*_args, **_kwargs):
+            raise db.QueryTimeout()
+
+        monkeypatch.setattr(db, "query", too_slow)
+        spec = extract.normalize({"source": "jawiki", "tag": "印象派の画家", "limit": 30})
+
+        with pytest.raises(HTTPException) as caught:
+            extract.run(spec, source(painters()))
+
+        assert caught.value.status_code == 504
+        assert "jawiki" in caught.value.detail["error"]
+        assert "limit" in caught.value.detail["hint"]

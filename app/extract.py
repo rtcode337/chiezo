@@ -59,6 +59,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 
 from fastapi import HTTPException
 
@@ -80,6 +81,13 @@ MAX_ROWS = 120_000
 # 1 つの収集に書ける抽出の本数。**ソースをまたいで名簿を作るため**のもので、
 # 上限は取れる件数(`MAX_ROWS` × 本数)が素材の上限に収まる範囲に置く
 MAX_SPECS = 5
+
+# 名簿を引くときの持ち時間。**読み口の 5 秒(`db.QUERY_TIMEOUT_SECONDS`)には収まらない**
+# —— あれは人が待っている問い合わせを守るための数で、ここは取り込みの中で動く
+# 背景の仕事(誰も応答を待っていない)。地図の名簿のように数十万件に当たる指定は、
+# 並べ替えだけで数秒かかる —— 5 秒で打ち切ると **QueryTimeout だけが控えに残り、
+# どの指定のどこが重かったのかは誰にも分からない**(実際にそうなった)
+EXTRACT_TIMEOUT_SECONDS = 120.0
 
 # その本が「勝ちにいく」と書ける項目(`provides`)。書かなければ全部を取りにいく。
 # **タグはここに入れない** —— タグは競争ではなく足し算で、どの本のタグも残る
@@ -357,6 +365,7 @@ def resolve_tags(spec: dict, src) -> list[str]:
             "SELECT tag FROM tag_counts WHERE tag LIKE ? ESCAPE '\\'"
             " ORDER BY docs DESC, tag LIMIT ?",
             (pattern, MAX_SUFFIX_TAGS + 1),
+            timeout=EXTRACT_TIMEOUT_SECONDS,
         )
         found = [row["tag"] for row in rows]
         if len(found) > MAX_SUFFIX_TAGS:
@@ -465,7 +474,12 @@ def count(spec, sources: dict) -> int:
     total = 0
     for one in specs(spec):
         src, set_sql, params = _doc_ids(one, sources)
-        (matched,) = db.query(src.path, f"SELECT COUNT(*) FROM ({set_sql})", tuple(params))[0]
+        (matched,) = db.query(
+            src.path,
+            f"SELECT COUNT(*) FROM ({set_sql})",
+            tuple(params),
+            timeout=EXTRACT_TIMEOUT_SECONDS,
+        )[0]
         total += matched
     return total
 
@@ -499,7 +513,7 @@ def run(spec, sources: dict) -> tuple[list[dict], str]:
     pulled = []
     cursor = DEFAULT_CURSOR
     for index, one in enumerate(written):
-        items, cursor_of = _run_one(one, sources)
+        items, cursor_of = _timed_run(one, sources)
         if index == 0:
             cursor = cursor_of
         pulled.append((one, items))
@@ -514,6 +528,31 @@ def run(spec, sources: dict) -> tuple[list[dict], str]:
         for item in items:
             _merge_item(merged, item, PROVIDED_FIELDS)
     return list(merged.values()), cursor
+
+
+def _timed_run(spec: dict, sources: dict) -> tuple[list[dict], str]:
+    """1 本ぶんを引いて、かかった時間を控える。
+
+    **どの本で詰まったかを言える形にする。** 打ち切りがそのまま上がると控えに
+    残るのは「QueryTimeout」の一語だけで、**何本も書いてある指定のどれが重かったのかを
+    後から辿れない**(無人で回る層なので、そのとき見ている人はいない)。
+    """
+    from app import db
+
+    started = time.monotonic()
+    try:
+        items, cursor = _run_one(spec, sources)
+    except db.QueryTimeout:
+        raise HTTPException(504, {
+            "error": f"ソース「{spec['source']}」の抽出が"
+                     f"{EXTRACT_TIMEOUT_SECONDS:.0f} 秒で終わりませんでした",
+            "hint": "tag を絞るか limit に取る件数を書いてください"
+                    "(当たっている件数は収集の画面で確かめられます)",
+        }) from None
+    log.info(
+        "extract %s: %d items in %.1fs", spec["source"], len(items), time.monotonic() - started
+    )
+    return items, cursor
 
 
 def _merge_item(merged: dict[str, dict], item: dict, claims) -> None:
@@ -567,6 +606,7 @@ def _run_one(spec: dict, sources: dict) -> tuple[list[dict], str]:
         f"SELECT title, {spec['body']} AS body, tags, extra, links FROM docs"
         f" WHERE doc_id IN ({set_sql}) ORDER BY rank_score DESC, title LIMIT ?",
         (*params, limit),
+        timeout=EXTRACT_TIMEOUT_SECONDS,
     )
 
     # つながりは**この抽出に入っているものだけ**が相手なので、先に全部読んでから作る
@@ -691,6 +731,7 @@ def _from_tag(rule: dict, title: str, context: dict) -> list[str]:
         " (SELECT doc_id FROM doc_tags WHERE tag = ?)"
         " ORDER BY rank_score DESC, title LIMIT ?",
         (tag, rule["take"]),
+        timeout=EXTRACT_TIMEOUT_SECONDS,
     )
     return [_fill(rule["format"], {"1": row[0]}) for row in rows]
 
