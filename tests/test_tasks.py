@@ -4,6 +4,7 @@
 本体とずれないことも同時に確かめる。
 """
 import pytest
+from fastapi import HTTPException
 
 from app import notes, tasks
 
@@ -305,6 +306,136 @@ class TestDoneTasksBecomeConsolidationTargets:
         tags = tasks.require_task(task.doc_id).tags
         assert "環境" in tags
         assert notes.CONSOLIDATE_TAG in tags
+
+
+class TestWhatMovedToLongTerm:
+    """長期記憶へ移したタスクとルールも、**画面に出す**。
+
+    固化は「もう触らないものを短期から下ろす」操作なので、下ろした瞬間に消えると
+    片付いたタスクも寝かせたルールも見えなくなる —— 移した先に残っているのに
+    読めないのでは、移す気にならない。**読めるが直せない**。
+    """
+
+    @pytest.fixture()
+    def moved(self, client, tmp_path, monkeypatch):
+        """長期記憶の側に、タスク 1 件とルール 1 件が焼けている状態を作る。"""
+        import json
+        import sqlite3
+
+        path = tmp_path / "corpus" / "memory.db"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path)
+        conn.executescript(notes.SCHEMA_DDL)
+        conn.executescript(notes.INDEX_DDL)
+        conn.execute(
+            "INSERT INTO meta (source, source_kind, lang, dump_date, schema_version, built_at)"
+            " VALUES ('memory', 'memory', NULL, NULL, ?, '2026-01-01T00:00:00+00:00')",
+            (notes.SCHEMA_VERSION,),
+        )
+        rows = [
+            (1, "焼いた作業", [tasks.TAG_TASK, tasks.TAG_DONE, notes.CONSOLIDATED_TAG]),
+            (2, "寝かせた決まり", [tasks.TAG_RULE, notes.CONSOLIDATED_TAG]),
+        ]
+        for doc_id, title, tags in rows:
+            conn.execute(
+                "INSERT INTO docs (doc_id, title, opening, body, tags, updated_at, rank_score)"
+                " VALUES (?, ?, ?, ?, ?, '2026-01-01T00:00:00+00:00', 0.0)",
+                (doc_id, title, title, f"{title}\n本文", json.dumps(tags, ensure_ascii=False)),
+            )
+            for tag in tags:
+                conn.execute("INSERT INTO doc_tags (tag, doc_id) VALUES (?, ?)", (tag, doc_id))
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(tmp_path / "corpus"))
+        return path
+
+    def test_a_frozen_task_is_listed(self, moved):
+        [task] = [t for t in tasks.list_tasks() if t.frozen]
+
+        assert task.title == "焼いた作業"
+        assert task.status == tasks.STATUS_DONE
+        # **短期側と番号が重ならない**(別の DB で採番されているため)
+        assert task.doc_id < 0
+
+    def test_it_shows_up_among_the_done_ones(self, moved):
+        """片付いたタスクこそ、あまり触らないぶん見えなくなると困る。"""
+        titles = [t.title for t in tasks.list_done_tasks()["items"]]
+
+        assert "焼いた作業" in titles
+
+    def test_a_frozen_task_cannot_be_changed(self, moved):
+        [task] = [t for t in tasks.list_tasks() if t.frozen]
+
+        with pytest.raises(Exception) as e:
+            tasks.update_task(task.doc_id, title="直せるはず")
+        assert "長期記憶へ移したものは直せません" in str(e.value)
+
+        with pytest.raises(HTTPException):
+            tasks.delete_task(task.doc_id)
+
+    def test_a_frozen_rule_still_counts(self, moved):
+        """**逃がした途端に効かなくなっては、逃がす気にならない。**"""
+        [rule] = [r for r in tasks.list_rules() if r.frozen]
+
+        assert rule.title == "寝かせた決まり"
+        assert "寝かせた決まり" in tasks.combined()
+
+    def test_frozen_rules_come_last(self, moved):
+        """並び順は短期側でしか振り直せないので、間に混ぜると位置が動いて見える。"""
+        tasks.create_rule("いま使う決まり", "- 本文")
+
+        assert [r.frozen for r in tasks.list_rules()] == [False, True]
+
+    def test_reordering_ignores_what_moved(self, moved):
+        """直せないものを混ぜると、渡す側が必ず失敗する。"""
+        rule = tasks.create_rule("いま使う決まり", "- 本文")
+
+        assert [r.doc_id for r in tasks.reorder_rules([rule.doc_id]) if not r.frozen] == [
+            rule.doc_id
+        ]
+
+    def test_the_api_says_which_ones_are_frozen(self, client, moved):
+        body = client.get("/api/rules").json()
+
+        assert [r["frozen"] for r in body] == [True]
+
+    def test_nothing_breaks_before_anything_is_burned(self, client):
+        """まだ 1 度も焼いていない面では、短期側だけが出る。"""
+        tasks.create_task("いまのタスク")
+
+        assert [t.frozen for t in tasks.list_tasks()] == [False]
+
+
+class TestSendingARuleToLongTerm:
+    """**もう触らないルールを長期記憶へ逃がす。**
+
+    無効(連結から外す = もう効かせない)とは違い、**効かせたまま直す対象から
+    下ろす**ための道。
+    """
+
+    def test_it_marks_the_rule(self, client):
+        rule = tasks.create_rule("寝かせる決まり", "- 本文")
+
+        tasks.mark_rule_for_long_term(rule.doc_id)
+
+        assert notes.CONSOLIDATE_TAG in tasks._tags_of(tasks._row(rule.doc_id))
+        # 印が付いただけで、まだ効いている
+        assert "寝かせる決まり" in tasks.combined()
+
+    def test_it_joins_the_queue(self, client):
+        rule = tasks.create_rule("寝かせる決まり", "- 本文")
+
+        tasks.mark_rule_for_long_term(rule.doc_id)
+
+        assert client.get("/v1/memory/status").json()["pending"] == 1
+
+    def test_the_api_takes_it(self, client):
+        rule = tasks.create_rule("寝かせる決まり", "- 本文")
+
+        res = client.post(f"/api/rules/{rule.doc_id}/consolidate")
+
+        assert res.status_code == 200
+        assert res.json()["frozen"] is False  # まだ焼いていない
 
 
 class TestRules:

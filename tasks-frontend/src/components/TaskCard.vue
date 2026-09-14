@@ -22,8 +22,10 @@ const emit = defineEmits<{
 
 <template>
   <!-- 本文を押すと編集モーダル。専用の編集ボタンは置かない -->
-  <div class="card" :class="{ 'card--flagged': task.flagged }">
-    <button type="button" class="card__memo" @click="emit('edit')">{{ task.title }}</button>
+  <div class="card" :class="{ 'card--flagged': task.flagged, 'card--frozen': task.frozen }">
+    <!-- 長期記憶へ移したものは押しても直せないので、押せる見た目にしない -->
+    <span v-if="task.frozen" class="card__memo card__memo--frozen">{{ task.title }}</span>
+    <button v-else type="button" class="card__memo" @click="emit('edit')">{{ task.title }}</button>
 
     <!-- 右カラム。メモが複数行なら伸びて、ボタンの下端がメモの下端に揃う -->
     <div class="card__side">
@@ -32,6 +34,7 @@ const emit = defineEmits<{
       <span class="card__tools" data-no-drag>
         <!-- 「修正が大変そう」の印。押すたびに付け外しする(状態は面の色で見せる) -->
         <button
+          v-if="!task.frozen"
           type="button"
           class="icon-button flag"
           :class="{ 'flag--on': task.flagged }"
@@ -55,8 +58,18 @@ const emit = defineEmits<{
         <ClaudeCodeButton :task="task" :repo-urls="repoUrls" />
       </span>
       <span class="card__buttons" data-no-drag>
+        <!-- **長期記憶へ移したものは直せない。** 押せるものを並べて断るより、
+             出さないほうがよい(理由は札で言う) -->
+        <span v-if="task.frozen" class="frozen-note" title="長期記憶へ移したもの(直せません)">
+          長期記憶
+        </span>
         <!-- 完了済みの一覧では同じ位置が「戻す」になる -->
-        <button v-if="task.status === 'done'" type="button" class="btn" @click="emit('reopen')">
+        <button
+          v-else-if="task.status === 'done'"
+          type="button"
+          class="btn"
+          @click="emit('reopen')"
+        >
           未着手に戻す
         </button>
         <template v-else>
@@ -129,6 +142,26 @@ const emit = defineEmits<{
 
 .card__memo:hover {
   color: var(--accent);
+}
+
+/* 長期記憶へ移したもの。**押せない**ので、押せる見た目にしない */
+.card--frozen {
+  opacity: 0.75;
+}
+
+.card__memo--frozen {
+  cursor: default;
+}
+
+/* 操作のボタンの代わりに出す札。なぜ押すものが無いのかを言う */
+.frozen-note {
+  align-self: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.125rem 0.5rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
 }
 
 /* 上に印 / コピー / ✳、下に完了ボタン */

@@ -46,6 +46,30 @@ async function save() {
   }
 }
 
+/**
+ * 長期記憶へ逃がす。**無効にするのとは違う** —— 無効は連結から外す(もう効かせない)
+ * の意味で、こちらは効かせたまま直す対象から下ろす。もう触るつもりは無いが
+ * 守らせたいルールのための道。
+ */
+async function sendToLongTerm() {
+  const rule = props.rule
+  if (!rule) return
+  if (
+    !window.confirm(
+      `ルール「${rule.title}」を長期記憶へ逃がします。\n` +
+        '次の固化で移り、そのあとは直せなくなります(効果は続きます)。よろしいですか?',
+    )
+  )
+    return
+  error.value = null
+  try {
+    await rules.consolidate(rule.id)
+    emit('close')
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
 async function remove() {
   const rule = props.rule
   if (!rule) return
@@ -84,6 +108,10 @@ async function remove() {
       </label>
 
       <div class="actions">
+        <!-- もう触らないものを長期記憶へ。**効果は続く**ので、無効にするのとは別 -->
+        <button v-if="rule" type="button" class="button button--ghost" @click="sendToLongTerm">
+          長期記憶へ
+        </button>
         <button type="button" class="button button--ghost" @click="emit('close')">
           キャンセル
         </button>
