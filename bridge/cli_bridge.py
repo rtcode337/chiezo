@@ -447,6 +447,49 @@ def _catalog_efforts(catalog: list[dict]) -> tuple[str, ...]:
     return tuple(e for e in levels[0] if e in shared)
 
 
+# codex に控えを取り直させるときのモデル名。**存在しない名前を渡す**(下の
+# `_warm_codex_catalog`)。実在する名前を書くと、その名前で 1 往復ぶん枠を使う。
+CATALOG_PROBE_MODEL = "chiezo-probe-not-a-model"
+
+# 控えを取り直させるのは 1 回だけ。取れなかったとき(サインイン前・CLI が居ない)に
+# 聞かれるたび codex を起こすと、画面を開くだけで何本も立ち上がる。
+_CATALOG_WARMED = False
+
+
+async def _warm_codex_catalog() -> None:
+    """codex に `models_cache.json` を取り直させる。**会話はさせない**。
+
+    あの控えは **codex がセッションを立ち上げるときに取りに行く**もので、
+    一度も走らせていない置き場には無い —— 作り直したコンテナで「codex だけ
+    モデルが選べない」のはこれが理由だった(1 回使えば出る、では順序が逆)。
+    `doctor` も `login status` も `app-server` も取りに行かない(どれも実測)。
+
+    **存在しないモデル名で 1 回起こす。** 控えを取る段は立ち上げにあるので先に
+    済み、そのあとの呼び出しは相手が 400 で弾く —— 生成は走らないので枠を使わない
+    (実測で 2 秒・終了コード 1)。実在する名前を書くと、そこで 1 往復ぶん使う。
+
+    **取れなくても止めない。** 次に聞かれたときはコードの控えに落ちるだけで、
+    codex を使えば普通に書かれる。
+    """
+    global _CATALOG_WARMED
+    if _CATALOG_WARMED or _codex_catalog():
+        return
+    if apply_credential():
+        # 認証情報を置けない = 起こしても取れない。**印は立てない**ので、
+        # 管理画面から登録したあとに聞かれれば、そこで取りに行く
+        return
+    _CATALOG_WARMED = True
+    with suppress(Exception):
+        await _run_text([
+            "codex", "exec", "--skip-git-repo-check", "--ephemeral",
+            "-s", "read-only", "-c", 'approval_policy="never"',
+            # **プロンプトは引数で渡す**(`-` は標準入力から読む形で、
+            # `_run_text` は標準入力を閉じている)。中身は相手まで届かない
+            "-m", CATALOG_PROBE_MODEL, "x",
+        ])
+    log.info("codex catalog after warming: %d 件", len(_codex_catalog()))
+
+
 async def _ask_models() -> tuple[str, ...]:
     """CLI に一覧を聞く。**聞けるのは Antigravity だけ**(実測)。
 
@@ -456,6 +499,7 @@ async def _ask_models() -> tuple[str, ...]:
       代わりに置き場のファイルを読む(`_codex_catalog`)
     """
     if CLI == "codex":
+        await _warm_codex_catalog()
         return tuple(str(m["slug"]) for m in _codex_catalog())
     if not MODEL_LIST_CMD:
         return ()

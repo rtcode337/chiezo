@@ -550,6 +550,9 @@ class TestBridgeSide:
         import cli_bridge
 
         server = importlib.reload(cli_bridge)
+        # **手元の CLI へ手を伸ばさせない**（立ち上がりで何が選べるかを聞きに行く）
+        server._PROBED = True
+        server._CATALOG_WARMED = True
         monkeypatch.setattr(server, "ANTIGRAVITY_USAGE_CMD", [
             sys.executable, "-c",
             'print(\'{"buckets": [{"name": "prompt", "used": 10, "remaining": 90}]}\')',
@@ -574,6 +577,9 @@ class TestBridgeSide:
         import cli_bridge
 
         server = importlib.reload(cli_bridge)
+        # **手元の CLI へ手を伸ばさせない**（立ち上がりで何が選べるかを聞きに行く）
+        server._PROBED = True
+        server._CATALOG_WARMED = True
         monkeypatch.setattr(server, "ANTIGRAVITY_USAGE_CMD", [
             sys.executable, "-c", "print('Please sign in first.')",
         ])
@@ -595,6 +601,9 @@ class TestBridgeSide:
         import cli_bridge
 
         server = importlib.reload(cli_bridge)
+        # **手元の CLI へ手を伸ばさせない**（立ち上がりで何が選べるかを聞きに行く）
+        server._PROBED = True
+        server._CATALOG_WARMED = True
         monkeypatch.setattr(server, "USAGE_CLIS", frozenset({"codex"}))
         with TestClient(server.app) as client:
             assert client.get("/usage").status_code == 404
@@ -641,6 +650,9 @@ class TestBridgeSide:
         import cli_bridge
 
         server = importlib.reload(cli_bridge)
+        # **手元の CLI へ手を伸ばさせない**（立ち上がりで何が選べるかを聞きに行く）
+        server._PROBED = True
+        server._CATALOG_WARMED = True
         monkeypatch.setattr(server, "apply_credential", lambda: "")
 
         calls = []
@@ -678,6 +690,9 @@ class TestBridgeSide:
         import cli_bridge
 
         server = importlib.reload(cli_bridge)
+        # **手元の CLI へ手を伸ばさせない**（立ち上がりで何が選べるかを聞きに行く）
+        server._PROBED = True
+        server._CATALOG_WARMED = True
         monkeypatch.setattr(server, "apply_credential", lambda: "")
         monkeypatch.setattr(server, "LOCK_WAIT", 0.01)
         with TestClient(server.app) as client:

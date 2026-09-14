@@ -469,6 +469,57 @@ class TestModelSelection:
         # 段階はモデルごとに違うので、**どれと組み合わせても通るものだけ**を並べる
         assert server._catalog_efforts(catalog) == ("low", "high")
 
+    def test_codex_asks_the_cli_to_fetch_the_list_once(self, bridge, tmp_path, monkeypatch):
+        """**控えはセッションを立ち上げたときにしか書かれない。**
+
+        作り直したコンテナで「codex だけモデルが選べない」のはこれが理由だった
+        (1 回使えば出る、では順序が逆)。存在しないモデル名で起こせば、控えを取る
+        段だけが済んで、そのあとの呼び出しは相手が弾く —— 生成は走らない。
+        """
+        import asyncio
+
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        # 認証情報が置けないと起こさない作りなので、置けたことにする
+        monkeypatch.setattr(server, "apply_credential", lambda: "")
+        ran = []
+
+        async def fake_run(cmd):
+            ran.append(cmd)
+            (tmp_path / "models_cache.json").write_text(json.dumps({"models": [
+                {"slug": "gpt-a", "visibility": "list", "priority": 1,
+                 "supported_reasoning_levels": [{"effort": "low"}]},
+            ]}), encoding="utf-8")
+            return ""
+
+        monkeypatch.setattr(server, "_run_text", fake_run)
+
+        assert asyncio.run(server._ask_models()) == ("gpt-a",)
+        [cmd] = ran
+        assert cmd[cmd.index("-m") + 1] == server.CATALOG_PROBE_MODEL
+        # **実在する名前を書くと、そこで 1 往復ぶん枠を使う**
+        assert server.CATALOG_PROBE_MODEL not in server._codex_catalog()
+
+    def test_it_does_not_keep_waking_the_cli(self, bridge, tmp_path, monkeypatch):
+        """取れなかったときに聞かれるたび起こすと、画面を開くだけで何本も立ち上がる。"""
+        import asyncio
+
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        # 認証情報が置けないと起こさない作りなので、置けたことにする
+        monkeypatch.setattr(server, "apply_credential", lambda: "")
+        ran = []
+
+        async def fake_run(cmd):
+            ran.append(cmd)
+            return ""  # 取れなかった(サインイン前)
+
+        monkeypatch.setattr(server, "_run_text", fake_run)
+
+        for _ in range(3):
+            assert asyncio.run(server._ask_models()) == ()
+        assert len(ran) == 1
+
     def test_codex_without_the_file_offers_nothing(self, bridge, tmp_path, monkeypatch):
         """**サインイン前は控えが無い**。そこで名前を作ると、選ぶと必ず失敗する候補が並ぶ。"""
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))

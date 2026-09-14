@@ -455,14 +455,23 @@ async def available_efforts(backend: str) -> list[str]:
     CLI ブリッジは起動時に CLI 自身へ聞いたものを名乗るので、版が上がって段階が
     増えても、こちらを書き換えずに追いつく。
 
-    **選んでも効かない相手では空を返す**(`providers.selectable_efforts`)。
+    **選んでも効かない相手では空を返す**(`model_carries_effort`)。
     ここが空でも `normalize_effort` は今までどおり受け取る —— 既に保存されている
     設定から飛んでくるので、弾くと保存し直せなくなる。
+
+    **「控えが空」を「聞かなくていい」と読まない。** 控えが空なのは 2 通りあり、
+    意味が正反対になる —— 選んでも効かない相手(空が答え)と、**一覧を CLI 側しか
+    知らない相手**(聞かないと何も出ない)。codex がまさに後者で、聞きに行く前に
+    打ち切っていたせいで段階がひとつも出なかった。
     """
     name = normalize_backend(backend)
     spec = providers.get(name)
-    fallback = list(providers.selectable_efforts(name))
-    if spec is None or not spec.bridge or not fallback:
+    if spec is None:
+        return []
+    if spec.model_carries_effort:
+        return []
+    fallback = list(providers.efforts_of(name))
+    if not spec.bridge:
         return fallback
     return await _remembered("efforts", name, lambda: _fetch_efforts(name), fallback)
 
