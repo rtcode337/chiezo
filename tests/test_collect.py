@@ -2579,7 +2579,7 @@ class TestRest:
     def test_creating_carries_the_sweeps(self, client, sample):
         """作る口が受け取らないと、外のアプリが渡した巡回が黙って落ちる。
 
-        PATCH にだけ足して作成側を忘れていたので、antenna が作った収集は巡回を
+        PATCH にだけ足して作成側を忘れていたので、外のアプリが作った収集は巡回を
         1 本も持たないまま動いていた(渡したほうには何も返らない)。
         """
         client.post(

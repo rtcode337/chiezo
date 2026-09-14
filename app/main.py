@@ -807,7 +807,7 @@ def search(
     tag: str | None = Query(None, description="タグ(Wikipedia のカテゴリ等)で絞る。カンマ区切りで複数可(OR)"),
     limit: int = Query(SEARCH_LIMIT_DEFAULT, ge=1, le=SEARCH_LIMIT_MAX),
     offset: int = Query(0, ge=0),
-    include_removed: bool = Query(False, description="消えたもの(chiezo_removed)も含める"),
+    include_removed: bool = Query(False, description="消えたもの(_chiezo_removed)も含める"),
 ):
     src = get_source(request, source)
     extra_where, extra_params = build_attribute_filters(
@@ -966,7 +966,7 @@ def get_doc_by_title(
     tag: str | None = Query(None, description="タグ(Wikipedia のカテゴリ等)で絞る。カンマ区切りで複数可(OR)"),
     fields: str | None = None,
     max_chars: int = Query(0, ge=0),
-    include_removed: bool = Query(False, description="消えたもの(chiezo_removed)も含める"),
+    include_removed: bool = Query(False, description="消えたもの(_chiezo_removed)も含める"),
 ):
     src = get_source(request, source)
     field_list = parse_fields(fields)
@@ -1254,7 +1254,7 @@ def filter_docs(
     fields: str | None = None,
     limit: int = Query(FILTER_LIMIT_DEFAULT, ge=1, le=FILTER_LIMIT_MAX),
     offset: int = Query(0, ge=0),
-    include_removed: bool = Query(False, description="消えたもの(chiezo_removed)も含める"),
+    include_removed: bool = Query(False, description="消えたもの(_chiezo_removed)も含める"),
     max_chars: int = Query(0, ge=0),
 ):
     """属性で文書を絞り込み一括で列挙する(全文検索ではなく等価・範囲条件)。
@@ -1328,7 +1328,7 @@ def recent_docs(
     offset: int = Query(0, ge=0),
     fields: str | None = None,
     max_chars: int = Query(0, ge=0),
-    include_removed: bool = Query(False, description="消えたもの(chiezo_removed)も含める"),
+    include_removed: bool = Query(False, description="消えたもの(_chiezo_removed)も含める"),
 ):
     """**新しい順**に文書を並べる(溜まっていくソース向け)。
 
@@ -1429,7 +1429,7 @@ def titles(
     source: str,
     prefix: str = Query(..., min_length=1),
     limit: int = Query(20, ge=1, le=100),
-    include_removed: bool = Query(False, description="消えたもの(chiezo_removed)も含める"),
+    include_removed: bool = Query(False, description="消えたもの(_chiezo_removed)も含める"),
 ):
     src = get_source(request, source)
     hidden, hidden_params = removed_clause(src, include_removed)
@@ -1466,7 +1466,7 @@ def random_docs(
     request: Request,
     source: str,
     limit: int = Query(5, ge=1, le=50),
-    include_removed: bool = Query(False, description="消えたもの(chiezo_removed)も含める"),
+    include_removed: bool = Query(False, description="消えたもの(_chiezo_removed)も含める"),
 ):
     src = get_source(request, source)
     hidden, hidden_params = removed_clause(src, include_removed)
@@ -1575,7 +1575,7 @@ def forget(request: Request, doc_id: int):
 # (管理画面のボタン)か CLI(`SOURCE=memory`)。ソースの定義は ingest 側が持っている
 # (`ingest/sources/memory.py`)ので、設定を足さなくても一覧に出る。
 #
-# **`固化対象` を付ける口も無い**。ただのタグなので `PATCH /v1/notes/{id}` か MCP の
+# **`_chiezo_consolidate` を付ける口も無い**。ただのタグなので `PATCH /v1/notes/{id}` か MCP の
 # `update` で付く —— 専用の口を足すと、同じことをする経路が 2 つになる。
 
 
@@ -1884,7 +1884,7 @@ def collect_partition(
     **1 回の依頼に載る量が上限**だった(入り切らないぶんは黙って落ちる)。
     ここから引けば、AI が必要なだけ自分で辿れる。
 
-    **消えたものも返す**(`chiezo_removed` が付いたまま)。何を外したのかが
+    **消えたものも返す**(`_chiezo_removed` が付いたまま)。何を外したのかが
     分からないと、同じものをもう一度挙げることになる —— 読み口の既定と違うのは、
     ここが「集める層のための口」だから。
 

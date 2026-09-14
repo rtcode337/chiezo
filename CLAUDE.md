@@ -65,7 +65,7 @@ Chiezo はそれが持てないものを預かる側にいる。
   埋まると `recall` も画面も使えなくなる。**時計は Chiezo が持つ**ので間隔は画面から変えられる
 - **固める** — `app/memory.py` が、覚えたことのうち**残す価値があると判断したもの**を
   読み取り専用のソース 1 つ(`memory`)へ焼く(短期記憶 → 長期記憶)。**焼くのは ingest**
-  で、ここは素材を配るだけ。素材は**前世代 + `固化対象` のメモ**なので、追加・更新・削除が
+  で、ここは素材を配るだけ。素材は**前世代 + `_chiezo_consolidate` のメモ**なので、追加・更新・削除が
   1 本のフローに乗る。**判定の口は持たない** —— ただのタグなので `update` で付き、
   AI に 1 件ずつ吟味させられる(眠っている間に海馬から大脳へ移すのと同じ役回り)
 
@@ -290,7 +290,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     - **切ったものには `truncated: true` を立てる**。黙って切ると「これで全部」と
       読まれる —— 504 を 0 件と読むのと同じ取りこぼし方をするため、全文が要ると
       分かる印を必ず返す(取り直し先は `/v1/notes/doc/{doc_id}`)
-    - **固化の印(`CONSOLIDATED_TAG` = `固化`)が付いたものは `recall` の既定から外れる**
+    - **固化の印(`CONSOLIDATED_TAG` = `_chiezo_consolidated`)が付いたものは `recall` の既定から外れる**
       (思い出す先が長期側へ移ったため)。隠すのは**時系列の想起だけ**で、
       `search` / `filter` / `tags` は今までどおり全部見せる —— 控えがまだ手元にあることは
       隠さない。明示的に見たいときは `consolidated=true`
@@ -1622,7 +1622,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     409(流し始める前に断る)
   - `/admin/memory/sweep`(POST) — 管理画面のフォームから叩く口(303 で
     `/admin/memory#consolidation` へ戻す)。**焼くこと自体の口は持たない** —— 普通の取り込みなので
-    `/admin/init|rebuild` を使う。**`固化対象` を付ける口も持たない** —— ただのタグなので
+    `/admin/init|rebuild` を使う。**`_chiezo_consolidate` を付ける口も持たない** —— ただのタグなので
     `PATCH /v1/notes/{id}` か MCP の `update` で付く
   - `/v1/ask`(GET) — 「使う」層の REST。`stream=0`(既定)は JSON 一括、`stream=1` は
     SSE(`references` → `delta` × n → `done`、失敗時は `error` を挟む)。
