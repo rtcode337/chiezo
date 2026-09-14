@@ -3626,6 +3626,73 @@ class TestWhatChangedInOneDoc:
         assert ">A &amp; B</a>" in html
 
 
+class TestSeeingTheMachineStore:
+    """設定の置き場(`app/machine_store.py`)を読めるようにする。
+
+    **人が触らない置き場だが、見えないままでは確かめようがない。** 収集が消えた・
+    戻ってきたのような話を追うとき、まず知りたいのは「設定がどこに、いつの姿で
+    残っているか」のほう。
+    """
+
+    def test_it_is_registered_as_an_ordinary_source(self, sample, tmp_path):
+        """**専用の読み口を作らない。** コアスキーマで持てば、検索も中身の閲覧も
+        普通のソースと同じ口でできる(短期記憶が `notes` として登録されているのと同じ)。
+        """
+        from app import machine_store
+        from app.main import scan_all
+        from app.registry import SUPPORTED_SCHEMA_VERSIONS
+
+        sources = scan_all(tmp_path / "corpus")
+        src = sources[machine_store.SOURCE_NAME]
+
+        assert src.kind == machine_store.SOURCE_KIND
+        assert src.schema_version in SUPPORTED_SCHEMA_VERSIONS
+        # 追記される置き場なので immutable では開けない
+        assert src.mutable
+        assert src.doc_count == 1
+
+    def test_the_definition_is_searchable(self, sample):
+        """中身は全文検索にも載る(索引は書くときに一緒に入れる)。"""
+        from app import db, machine_store
+
+        path = machine_store.db_path()
+        rows = db.query(
+            path,
+            "SELECT d.title FROM docs_fts f JOIN docs d ON d.doc_id = f.rowid"
+            " WHERE docs_fts MATCH ?",
+            ('"news"',),
+        )
+
+        assert [r["title"] for r in rows] == [f"{collect.DEFS_KIND}/{collect.DEFS_KEY}"]
+
+    def test_rewriting_keeps_the_same_doc_id(self, sample):
+        """書き換えのたびに文書の URL が変わらないようにする。"""
+        from app import machine_store
+
+        [before] = machine_store.records()
+        collect.create("another", prompt="p", interval_minutes=60)
+        [after] = machine_store.records()
+
+        assert after["doc_id"] == before["doc_id"]
+        assert after["bytes"] > before["bytes"]
+
+    def test_the_screen_points_at_the_source(self, sample):
+        from app import machine_store
+        from app.views import admin
+
+        html = admin._machine_html({})
+
+        assert f"{collect.DEFS_KIND}/{collect.DEFS_KEY}" in html
+        assert f"/search/{machine_store.SOURCE_NAME}/doc/" in html
+
+    def test_it_says_so_when_there_is_no_place(self, monkeypatch):
+        from app.views import admin
+
+        monkeypatch.delenv("CHIEZO_STATE_DIR", raising=False)
+
+        assert "設定の置き場は無効です" in admin._machine_html({})
+
+
 class TestEditingTheSweeps:
     """巡回の設定は、その行の下に畳んで置く。**1 本ずつ保存する**。
 

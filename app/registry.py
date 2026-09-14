@@ -118,6 +118,16 @@ def data_dir_fingerprint(data_dir: Path) -> dict[str, tuple[int, int, int, int]]
     return fp
 
 
+def scan_source(db_path: Path, mutable: bool = False) -> Source | None:
+    """1 つのファイルだけを見る。**置き場を名指しで足すときに使う**。
+
+    ディレクトリごと舐めない理由 —— 設定の置き場(`CHIEZO_STATE_DIR`)には使用量や
+    失敗の控えのようにソースではない DB も並ぶので、舐めると再走査のたびに
+    「meta が無い」の警告がそのぶん出る。
+    """
+    return _load_source(db_path, mutable) if db_path.is_file() else None
+
+
 def scan_sources(data_dir: Path, mutable: bool = False) -> dict[str, Source]:
     sources: dict[str, Source] = {}
     if not data_dir.is_dir():

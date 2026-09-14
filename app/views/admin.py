@@ -32,6 +32,7 @@ from app import (
     collect_log,
     db,
     jst,
+    machine_store,
     media,
     memory,
     notes,
@@ -1448,6 +1449,58 @@ def _short_term_section_html(sources: dict[str, Source]) -> str:
 """
 
 
+def _machine_html(sources: dict[str, Source]) -> str:
+    """設定の置き場(`app/machine_store.py`)の節。**短期記憶と同じ体裁の表で出す**。
+
+    **短期記憶の表には混ぜない。** 中身は設定(いまは収集の定義)で、覚えたことでは
+    ない —— 人が消せる場所に置くと収集がまるごと消え、固化の対象に紛れると長期記憶に
+    設定が焼かれる。だから置き場を分けてあるのだが、**分けた結果まったく見えなく
+    なっていた**。収集が消えた・戻ってきたのような話を追うとき、まず確かめたいのは
+    「設定がどこに、いつの姿で残っているか」。
+
+    **専用の読み口は作らない。** コアスキーマで持っているので、検索も中身の閲覧も
+    普通のソースと同じ口でできる(`/v1/machine/search` / `/search/machine/`)——
+    ここに出すのは、そこへの入口と「何がいつ書かれたか」まで。
+    """
+    if not machine_store.is_enabled():
+        return (
+            '<p class="muted">設定の置き場は無効です。書き込み可能なディレクトリを'
+            " <code>CHIEZO_STATE_DIR</code> に設定すると有効になります。</p>"
+        )
+    rows = machine_store.records()
+    if not rows:
+        return '<p class="muted">まだ何も置かれていません。</p>'
+    browse = esc(browse_url(machine_store.SOURCE_NAME))
+    src = sources.get(machine_store.SOURCE_NAME)
+    cells = "".join(
+        f'<tr><td><a href="/search/{esc(quote(machine_store.SOURCE_NAME))}'
+        f'/doc/{r["doc_id"]}">{esc(r["title"])}</a></td>'
+        f'<td>{r["bytes"]:,}</td>'
+        f'<td>{esc(jst.format(jst.parse(r["updated_at"])) if r["updated_at"] else "")}</td></tr>'
+        for r in rows
+    )
+    return f"""
+<p class="muted">
+<a href="{browse}">{esc(machine_store.SOURCE_NAME)}</a> として登録してあります
+(kind: {esc(machine_store.SOURCE_KIND)} / schema_version:
+{src.schema_version if src is not None else '<span class="muted">不明</span>'})。
+検索も中身の閲覧も普通のソースと同じ口でできます
+(<code>/v1/{esc(machine_store.SOURCE_NAME)}/search</code>)。
+</p>
+<table>
+<thead><tr><th>名前</th><th>大きさ(バイト)</th><th>最後に書かれた</th></tr></thead>
+<tbody>{cells}</tbody>
+</table>
+<p class="muted">
+ここは<strong>機械が書き換える置き場</strong>で、人が覚えたことは入らない
+(そちらは短期記憶)。分けてあるのは、人が消すと収集がまるごと消えること、
+固化に紛れると長期記憶に設定が焼かれること、1 件のメモに収める都合で中身に
+上限が要ることの 3 つを避けるため。<strong>直す口は持たない</strong> ——
+ここを手で書き換えても、次に機械が書いた拍子に消える(直すのはそれぞれの画面から)。
+</p>
+"""
+
+
 def _answer_status_html() -> str:
     """管理画面に出す「使う」層の状態(既定では無効なので、その旨を出す)。
 
@@ -1693,6 +1746,8 @@ def admin_memory(request: Request):
     # 知識は 2 層あり、扱いが違う(下の _short_term_section_html):
     # 長期(大脳)= 取り込みで焼く読み取り専用のソース(素材はダンプか、固めた短期記憶)、
     # 短期(海馬)= 唯一書き込める notes。
+    # **設定の置き場(machine)も書き込める側に居る**が、あれは覚えたことではないので
+    # 自分の節に出す(下の _machine_html)。ここの表は notes だけを見る。
     long_term = {n: s for n, s in sources.items() if not s.mutable}
     short_term = {n: s for n, s in sources.items() if s.mutable}
 
@@ -1779,6 +1834,9 @@ def admin_memory(request: Request):
 
 <h2 id="short-term">短期記憶(覚えたこと)</h2>
 {_short_term_section_html(short_term)}
+
+<h2 id="machine">設定の置き場(機械が書くもの)</h2>
+{_machine_html(sources)}
 
 <h2>長期記憶(ためた知識)</h2>
 <p>登録ソース数: {len(long_term)} / 最新のスキーマバージョン: {latest_schema}</p>

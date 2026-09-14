@@ -38,6 +38,7 @@ from app import (
     db,
     extract,
     feeds,
+    machine_store,
     media,
     media_backends,
     media_providers,
@@ -70,6 +71,7 @@ from app.registry import (
     TAG_MIN_SCHEMA_VERSION,
     Source,
     data_dir_fingerprint,
+    scan_source,
     scan_sources,
 )
 from app.views import admin as views_admin
@@ -129,6 +131,16 @@ def scan_all(data_dir: Path) -> dict[str, Source]:
     notes_dir = notes.notes_dir()
     if notes_dir is not None:
         sources.update(scan_sources(notes_dir, mutable=True))
+    # 設定の置き場(機械が書き換えるもの)も普通のソースとして出す。
+    # **人が触らない置き場だが、見えないままでは確かめようがない** —— 収集が
+    # 消えた・戻ってきたのような話を追うとき、まず知りたいのは「設定がどこに、
+    # いつの姿で残っているか」。**ファイルを名指しで足す**(ディレクトリを舐めると、
+    # ソースではない控えの DB のぶんだけ警告が出る)
+    machine_path = machine_store.ensure_db()
+    if machine_path is not None:
+        machine_src = scan_source(machine_path, mutable=True)
+        if machine_src is not None:
+            sources[machine_src.name] = machine_src
     # 収集した中身は `corpus/` 側に焼かれるので、ここで足すものは無い
     # (焼く前の置き場も持たない。`app/collect.py` 参照)
     # 追記される DB は immutable で開けない、と db 側に伝える

@@ -39,7 +39,15 @@ import httpx
 from fastapi import HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
-from app import ai_inflight, ai_log, ai_transcript, providers, settings_store, usage_store
+from app import (
+    ai_inflight,
+    ai_log,
+    ai_transcript,
+    machine_store,
+    providers,
+    settings_store,
+    usage_store,
+)
 from app.pages import doc_url
 
 log = logging.getLogger("chiezo.app")
@@ -1007,6 +1015,13 @@ PLAN_SYSTEM = """\
 
 
 def source_catalog(request: Request) -> list[dict]:
+    """答えの根拠に使えるソースの一覧。
+
+    **設定の置き場は入れない**(`machine_store.SOURCE_KIND`)。あれは機械が書いた
+    設定で、知識ではない —— 載せると「浅草寺はどこ」の検索が収集の定義にも飛び、
+    当たれば設定の中身が根拠として答えに混ざる。引きたい人は普通のソースとして
+    引けるまま(画面からも `/v1/machine/search` からも)。
+    """
     sources = request.app.state.sources
     return [
         {
@@ -1017,6 +1032,7 @@ def source_catalog(request: Request) -> list[dict]:
             "hint": KIND_HINTS.get(s.kind, ""),
         }
         for s in sorted(sources.values(), key=lambda s: s.name)
+        if s.kind != machine_store.SOURCE_KIND
     ]
 
 
