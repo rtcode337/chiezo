@@ -179,11 +179,12 @@ def build_mcp(app: FastAPI, with_media: bool = True) -> MCPServer:
         feature: str | None = None,
         bbox: str | None = None,
         tag: str | None = None,
+        include_removed: bool = False,
     ) -> dict:
         return await run_in_threadpool(
             _call, api.search,
             request=_request(app), source=source, q=q, limit=limit, offset=offset,
-            area=area, feature=feature, bbox=bbox, tag=tag,
+            area=area, feature=feature, bbox=bbox, tag=tag, include_removed=include_removed,
         )
 
     @mcp.tool(
@@ -207,11 +208,13 @@ def build_mcp(app: FastAPI, with_media: bool = True) -> MCPServer:
         feature: str | None = None,
         bbox: str | None = None,
         tag: str | None = None,
+        include_removed: bool = False,
     ) -> dict:
         return await run_in_threadpool(
             _call, api.get_doc_by_title,
             request=_request(app), source=source, title=title, fields=fields,
             max_chars=max_chars, area=area, feature=feature, bbox=bbox, tag=tag,
+            include_removed=include_removed,
         )
 
     @mcp.tool(
@@ -240,12 +243,13 @@ def build_mcp(app: FastAPI, with_media: bool = True) -> MCPServer:
         limit: int = 50,
         offset: int = 0,
         max_chars: int = MCP_DOC_MAX_CHARS,
+        include_removed: bool = False,
     ) -> dict:
         return await run_in_threadpool(
             _call, api.filter_docs,
             request=_request(app), source=source, feature=feature, area=area, bbox=bbox,
             wikidata=wikidata, tag=tag, fields=fields, limit=limit, offset=offset,
-            max_chars=max_chars,
+            max_chars=max_chars, include_removed=include_removed,
         )
 
     @mcp.tool(
@@ -283,18 +287,23 @@ def build_mcp(app: FastAPI, with_media: bool = True) -> MCPServer:
         offset: int = 0,
         fields: str | None = None,
         max_chars: int = 0,
+        include_removed: bool = False,
     ) -> dict:
         return await run_in_threadpool(
             _call, api.recent_docs,
             request=_request(app), source=source, since=since,
             limit=limit, offset=offset, fields=fields, max_chars=max_chars,
+            include_removed=include_removed,
         )
 
     @mcp.tool(description="タイトルの前方一致候補を返す。表記揺れの確認や短い語の引き当てに使う。")
-    async def titles(source: str, prefix: str, limit: int = 20) -> dict:
+    async def titles(
+        source: str, prefix: str, limit: int = 20, include_removed: bool = False
+    ) -> dict:
         return await run_in_threadpool(
             _call, api.titles,
             request=_request(app), source=source, prefix=prefix, limit=limit,
+            include_removed=include_removed,
         )
 
     @mcp.tool(description=(

@@ -7,9 +7,12 @@
 import pytest
 from fastapi.testclient import TestClient
 
-TARGET = "固化対象"
-DONE = "固化"
-TOMB = "削除"
+from app import notes
+
+# 機械が意味を持たせるタグは `chiezo_` 前置き(`app/notes.py` の TAG_PREFIX)
+TARGET = notes.CONSOLIDATE_TAG
+DONE = notes.CONSOLIDATED_TAG
+TOMB = notes.TOMBSTONE_TAG
 
 
 @pytest.fixture()

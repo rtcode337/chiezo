@@ -674,3 +674,81 @@ class TestRecent:
         mcp = build_mcp(client.app)
         names = {t.name for t in mcp._tool_manager.list_tools()}
         assert "recent" in names
+
+
+class TestHidingWhatWasRemoved:
+    """**消えたものは既定で返さない**(`notes.REMOVED_TAG`)。
+
+    読む側が全員「この印を除く」を覚えていなくても出てこないようにするため ——
+    新しい読み手を書くたびに同じ約束を思い出す必要があるのは、いつか必ず抜ける。
+    """
+
+    @pytest.fixture()
+    def two_notes(self, client):
+        from app import notes
+
+        client.post("/v1/notes", json={"title": "生きている話", "text": "こちらは残る"})
+        client.post(
+            "/v1/notes",
+            json={"title": "消えた話", "text": "こちらは消えた", "tags": notes.REMOVED_TAG},
+        )
+        return client
+
+    def test_search_leaves_it_out(self, two_notes):
+        titles = [r["title"] for r in two_notes.get(
+            "/v1/notes/search", params={"q": "こちら"}
+        ).json()["results"]]
+
+        assert titles == ["生きている話"]
+
+    def test_search_can_ask_for_it(self, two_notes):
+        """**逆に、消したものも含めて探せる。**"""
+        titles = [r["title"] for r in two_notes.get(
+            "/v1/notes/search", params={"q": "こちら", "include_removed": "true"}
+        ).json()["results"]]
+
+        assert sorted(titles) == ["消えた話", "生きている話"]
+
+    def test_the_document_itself_is_not_handed_out(self, two_notes):
+        assert two_notes.get("/v1/notes/doc", params={"title": "消えた話"}).status_code == 404
+        assert two_notes.get(
+            "/v1/notes/doc", params={"title": "消えた話", "include_removed": "true"}
+        ).status_code == 200
+
+    def test_titles_leave_it_out(self, two_notes):
+        got = two_notes.get("/v1/notes/titles", params={"prefix": "消えた"}).json()["titles"]
+
+        assert got == []
+
+    def test_filter_leaves_it_out(self, two_notes):
+        from app import notes
+
+        body = two_notes.get(
+            "/v1/notes/filter", params={"tag": notes.REMOVED_TAG}
+        ).json()
+
+        assert body["total"] == 0
+
+    def test_filter_can_ask_for_it(self, two_notes):
+        from app import notes
+
+        body = two_notes.get(
+            "/v1/notes/filter",
+            params={"tag": notes.REMOVED_TAG, "include_removed": "true"},
+        ).json()
+
+        assert [r["title"] for r in body["results"]] == ["消えた話"]
+
+    def test_recent_leaves_it_out(self, two_notes):
+        titles = [r["title"] for r in two_notes.get("/v1/notes/recent").json()["docs"]]
+
+        assert titles == ["生きている話"]
+
+    def test_recent_can_ask_for_it(self, two_notes):
+        titles = [
+            r["title"] for r in two_notes.get(
+                "/v1/notes/recent", params={"include_removed": "true"}
+            ).json()["docs"]
+        ]
+
+        assert sorted(titles) == ["消えた話", "生きている話"]

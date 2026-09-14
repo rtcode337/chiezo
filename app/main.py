@@ -794,14 +794,16 @@ def search(
     tag: str | None = Query(None, description="タグ(Wikipedia のカテゴリ等)で絞る。カンマ区切りで複数可(OR)"),
     limit: int = Query(SEARCH_LIMIT_DEFAULT, ge=1, le=SEARCH_LIMIT_MAX),
     offset: int = Query(0, ge=0),
+    include_removed: bool = Query(False, description="消えたもの(chiezo_removed)も含める"),
 ):
     src = get_source(request, source)
     extra_where, extra_params = build_attribute_filters(
-        src, area=area, feature=feature, bbox=bbox, tag=tag
+        src, area=area, feature=feature, bbox=bbox, tag=tag, include_removed=include_removed
     )
     # FTS 側は docs に別名 d を付けて JOIN するため、列名を修飾した版も用意する
     extra_where_d, _ = build_attribute_filters(
-        src, area=area, feature=feature, bbox=bbox, tag=tag, column_prefix="d."
+        src, area=area, feature=feature, bbox=bbox, tag=tag, column_prefix="d.",
+        include_removed=include_removed,
     )
     match = build_match_query(q)
     # ORDER BY の「タイトル完全一致を最上位に」段へ渡す検索語
@@ -951,12 +953,16 @@ def get_doc_by_title(
     tag: str | None = Query(None, description="タグ(Wikipedia のカテゴリ等)で絞る。カンマ区切りで複数可(OR)"),
     fields: str | None = None,
     max_chars: int = Query(0, ge=0),
+    include_removed: bool = Query(False, description="消えたもの(chiezo_removed)も含める"),
 ):
     src = get_source(request, source)
     field_list = parse_fields(fields)
-    where, params = build_attribute_filters(src, area=area, feature=feature, bbox=bbox, tag=tag)
+    where, params = build_attribute_filters(
+        src, area=area, feature=feature, bbox=bbox, tag=tag, include_removed=include_removed
+    )
     where_d, _ = build_attribute_filters(
-        src, area=area, feature=feature, bbox=bbox, tag=tag, column_prefix="d."
+        src, area=area, feature=feature, bbox=bbox, tag=tag, column_prefix="d.",
+        include_removed=include_removed,
     )
     rows = fetch_doc_candidates(src, title, where, tuple(params), where_d)
     if not rows:
@@ -987,6 +993,26 @@ def get_doc_by_id(
 # ---- 属性での絞り込み抽出 ---------------------------------------------------
 
 
+def removed_clause(
+    src: Source, include_removed: bool = False, column_prefix: str = ""
+) -> tuple[str, list]:
+    """**消えたものを外す**断片(`notes.REMOVED_TAG`)。
+
+    既定で外す —— 読む側が全員「この印を除く」を覚えていなくても、消したものが
+    出てこないようにするため。新しい読み手を書くたびに同じ約束を思い出す必要が
+    あるのは、いつか必ず抜ける。含めたいときだけ `include_removed` を渡す。
+
+    **タグの索引を持たない古いソースでは何もしない**(絞りようが無い)。
+    """
+    if include_removed or src.schema_version < TAG_MIN_SCHEMA_VERSION:
+        return "", []
+    return (
+        f" AND {column_prefix or 'docs.'}doc_id NOT IN"
+        " (SELECT dt.doc_id FROM doc_tags dt WHERE dt.tag = ?)",
+        [notes.REMOVED_TAG],
+    )
+
+
 def build_attribute_filters(
     src: Source,
     *,
@@ -996,14 +1022,16 @@ def build_attribute_filters(
     wikidata: str | None = None,
     tag: str | None = None,
     column_prefix: str = "",
+    include_removed: bool = False,
 ) -> tuple[str, list]:
     """属性条件を ` AND ...` の形の SQL 断片とパラメータに変換する。
 
-    条件が 1 つも指定されなければ空文字を返すので、呼び出し側の SQL に無条件で
-    連結してよい(その場合 schema_version の検査もしない = 既存 DB でも従来どおり動く)。
+    条件が 1 つも指定されなくても、**消えたものを外す断片だけは付く**
+    (`removed_clause`)。呼び出し側の SQL に無条件で連結してよい。
     """
+    hidden, hidden_params = removed_clause(src, include_removed, column_prefix)
     if not any((feature, area, bbox, wikidata, tag)):
-        return "", []
+        return hidden, hidden_params
     require_filter_schema(src)
     require_attributes(src, feature=feature, area=area)
     p = column_prefix
@@ -1040,7 +1068,7 @@ def build_attribute_filters(
         else:
             where.append(f"{p}lat BETWEEN ? AND ? AND {p}lon BETWEEN ? AND ?")
         params.extend([min_lat, max_lat, min_lon, max_lon])
-    return "".join(f" AND {clause}" for clause in where), params
+    return "".join(f" AND {clause}" for clause in where) + hidden, params + hidden_params
 
 
 # 引数は (min_lat, max_lat, min_lon, max_lon) の順。上の params.extend と合わせてある。
@@ -1065,6 +1093,7 @@ def build_doc_id_set(
     wikidata: str | None = None,
     tag: str | None = None,
     tags: list[str] | None = None,
+    include_removed: bool = False,
 ) -> tuple[str, list] | None:
     """絞り込み条件を「doc_id を返す SELECT」に変換する(/filter 用)。行本体を読まない。
 
@@ -1133,7 +1162,13 @@ def build_doc_id_set(
     if wikidata:
         parts.append("SELECT doc_id FROM docs INDEXED BY idx_docs_wikidata WHERE wikidata = ?")
         params.append(wikidata)
-    return " INTERSECT ".join(parts), params
+    joined = " INTERSECT ".join(parts)
+    if not include_removed and src.schema_version >= TAG_MIN_SCHEMA_VERSION:
+        # **消えたものを外す**(`notes.REMOVED_TAG`)。EXCEPT なら doc_tags の索引の
+        # 中だけで終わるので、INTERSECT の並びに足しても行本体は読まない
+        joined = f"{joined} EXCEPT SELECT doc_id FROM doc_tags WHERE tag = ?"
+        params.append(notes.REMOVED_TAG)
+    return joined, params
 
 
 # docs の行を 1 件読む費用は、idx_docs_rank を 1 件走る費用の何倍か(下の
@@ -1206,6 +1241,7 @@ def filter_docs(
     fields: str | None = None,
     limit: int = Query(FILTER_LIMIT_DEFAULT, ge=1, le=FILTER_LIMIT_MAX),
     offset: int = Query(0, ge=0),
+    include_removed: bool = Query(False, description="消えたもの(chiezo_removed)も含める"),
     max_chars: int = Query(0, ge=0),
 ):
     """属性で文書を絞り込み一括で列挙する(全文検索ではなく等価・範囲条件)。
@@ -1226,7 +1262,8 @@ def filter_docs(
         )
 
     id_set = build_doc_id_set(
-        src, feature=feature, area=area, bbox=bbox, wikidata=wikidata, tag=tag
+        src, feature=feature, area=area, bbox=bbox, wikidata=wikidata, tag=tag,
+        include_removed=include_removed,
     )
     if id_set is not None:
         # 索引だけで doc_id の集合に落ちた場合。総件数はその集合を数えるだけで済み
@@ -1238,7 +1275,8 @@ def filter_docs(
     else:
         # 古い schema_version の DB 向けの旧経路(索引が足りず docs 側で判定する)。
         where, params = build_attribute_filters(
-            src, feature=feature, area=area, bbox=bbox, wikidata=wikidata, tag=tag
+            src, feature=feature, area=area, bbox=bbox, wikidata=wikidata, tag=tag,
+            include_removed=include_removed,
         )
         clause = where.removeprefix(" AND ")
         (total,) = db.query(
@@ -1277,6 +1315,7 @@ def recent_docs(
     offset: int = Query(0, ge=0),
     fields: str | None = None,
     max_chars: int = Query(0, ge=0),
+    include_removed: bool = Query(False, description="消えたもの(chiezo_removed)も含める"),
 ):
     """**新しい順**に文書を並べる(溜まっていくソース向け)。
 
@@ -1301,6 +1340,11 @@ def recent_docs(
     if since:
         where = " WHERE updated_at >= ?"
         params.append(since)
+    # **消えたものを外す**。`WHERE` がまだ無いときは自分で立てる
+    hidden, hidden_params = removed_clause(src, include_removed)
+    if hidden:
+        where += hidden if where else " WHERE 1=1" + hidden
+        params.extend(hidden_params)
     rows = db.query(
         src.path,
         f"SELECT {', '.join(field_list)} FROM docs INDEXED BY idx_docs_updated{where}"
@@ -1372,13 +1416,15 @@ def titles(
     source: str,
     prefix: str = Query(..., min_length=1),
     limit: int = Query(20, ge=1, le=100),
+    include_removed: bool = Query(False, description="消えたもの(chiezo_removed)も含める"),
 ):
     src = get_source(request, source)
+    hidden, hidden_params = removed_clause(src, include_removed)
     rows = db.query(
         src.path,
         "SELECT doc_id, title FROM docs WHERE title LIKE ? ESCAPE '\\'"
-        " ORDER BY rank_score DESC, title LIMIT ?",
-        (escape_like(prefix) + "%", limit),
+        f"{hidden} ORDER BY rank_score DESC, title LIMIT ?",
+        (escape_like(prefix) + "%", *hidden_params, limit),
     )
     return {"source": source, "prefix": prefix, "titles": [dict(r) for r in rows]}
 
@@ -1407,12 +1453,14 @@ def random_docs(
     request: Request,
     source: str,
     limit: int = Query(5, ge=1, le=50),
+    include_removed: bool = Query(False, description="消えたもの(chiezo_removed)も含める"),
 ):
     src = get_source(request, source)
+    hidden, hidden_params = removed_clause(src, include_removed)
     rows = db.query(
         src.path,
-        "SELECT doc_id, title FROM docs ORDER BY RANDOM() LIMIT ?",
-        (limit,),
+        f"SELECT doc_id, title FROM docs WHERE 1=1{hidden} ORDER BY RANDOM() LIMIT ?",
+        (*hidden_params, limit),
     )
     return {"source": source, "results": [dict(r) for r in rows]}
 
