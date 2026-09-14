@@ -1409,6 +1409,157 @@ class TestTheLedgerCountFollowsTheContents:
         assert [p["count"] for p in ledger] == [1, 2]
 
 
+class TestCarryingFactsIntoTheDoc:
+    """集める側が運んできた事実を、焼く 1 件の脇に載せる。
+
+    **読む側が 1 件ずつ引き直さなくて済むように。** 知名度は元の長期記憶に載って
+    いるので、図を開くたびに画家の数だけ往復するのは筋が悪い。
+    """
+
+    def test_it_lands_in_the_extra(self, sample):
+        docs, _diff = collect.material(
+            collect.get("news"), {},
+            [{"title": "モネ", "body": "画家です", "extra": {"pageviews_month": 8869}}],
+        )
+
+        assert docs[0]["extra"]["pageviews_month"] == 8869
+        # 元から載せているものは消えない
+        assert docs[0]["extra"]["collected_at"]
+
+    def test_nested_values_do_not_ride_along(self, sample):
+        """1 件の脇に添える札であって、記事を丸ごと写す場所ではない。"""
+        docs, _diff = collect.material(
+            collect.get("news"), {},
+            [{"title": "モネ", "body": "画家です", "extra": {
+                "pageviews_month": 8869, "本文": {"節": "長い入れ子"}, "並び": [1, 2, 3],
+            }}],
+        )
+
+        assert docs[0]["extra"]["pageviews_month"] == 8869
+        assert "本文" not in docs[0]["extra"]
+        assert "並び" not in docs[0]["extra"]
+
+    def test_an_edit_does_not_drop_the_facts(self, sample):
+        """**AI が手を入れる回には、運んだ事実は返ってこない。**
+
+        置き換えてしまうと最初の手入れで静かに消える。1 件ずつ減るので
+        消えすぎの歯止めもすり抜ける。
+        """
+        collect.update("news", prompt="いまの内容:\n{current}\n直して")
+        previous = {"モネ": {
+            "doc_id": 1, "title": "モネ", "body": "古い",
+            "extra": {"pageviews_month": 8869, "collected_at": "むかし"},
+        }}
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous,
+            [{"title": "モネ", "body": "新しい"}], edits=True,
+        )
+
+        assert docs[0]["extra"]["pageviews_month"] == 8869
+        # 今回の回の印は新しいほうで上書きする
+        assert docs[0]["extra"]["collected_at"] != "むかし"
+
+    def test_an_add_only_run_fills_in_a_missing_fact(self, sample):
+        """**指定に鍵を足しても、既にいるものには届かないままだった。**
+
+        名簿は足すだけの回なので、焼き直しても全員が飛ばされる —— 後から
+        知名度を運ぶようにしても、既にいる 9,000 人には永遠に入らない。
+        """
+        previous = {"モネ": {
+            "doc_id": 1, "title": "モネ", "body": "育てた本文",
+            "tags": ["画家", "様式:印象派"], "extra": {"collected_at": "むかし"},
+        }}
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous,
+            [{"title": "モネ", "body": "機械の要約", "tags": ["画家"],
+              "extra": {"pageviews_month": 8869}}],
+            only_new=True,
+        )
+
+        assert docs[0]["extra"]["pageviews_month"] == 8869
+        # **中身は動かさない**(足すだけの回の約束)
+        assert docs[0]["body"] == "育てた本文"
+        assert docs[0]["tags"] == ["画家", "様式:印象派"]
+        assert docs[0]["extra"]["collected_at"] == "むかし"
+
+    def test_an_add_only_run_does_not_overwrite_a_fact(self, sample):
+        """先に入っている値は動かさない。"""
+        previous = {"モネ": {
+            "doc_id": 1, "title": "モネ", "body": "本文", "tags": [],
+            "extra": {"pageviews_month": 100},
+        }}
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous,
+            [{"title": "モネ", "body": "本文", "extra": {"pageviews_month": 8869}}],
+            only_new=True,
+        )
+
+        assert docs[0]["extra"]["pageviews_month"] == 100
+
+    def test_a_null_removes_the_key(self, sample):
+        """**書かなければ残る作りなので、落とす口がどこかに要る。**
+
+        間違って入った値（ページビューが不当に高い、など）を直せないと、
+        重ねる作りは「一度入ったら消せない」になる。
+        """
+        collect.update("news", prompt="いまの内容:\n{current}\n直して")
+        previous = {"モネ": {
+            "doc_id": 1, "title": "モネ", "body": "古い",
+            "extra": {"pageviews_month": 8869, "うその値": 1},
+        }}
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous,
+            [{"title": "モネ", "body": "新しい", "extra": {"うその値": None}}],
+            edits=True,
+        )
+
+        assert "うその値" not in docs[0]["extra"]
+        # 言われていないものは残る
+        assert docs[0]["extra"]["pageviews_month"] == 8869
+
+    def test_an_add_only_run_never_removes(self, sample):
+        """足すだけの回は、印が来ても何も落とさない。"""
+        previous = {"モネ": {
+            "doc_id": 1, "title": "モネ", "body": "本文", "tags": [],
+            "extra": {"pageviews_month": 8869},
+        }}
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous,
+            [{"title": "モネ", "body": "本文", "extra": {"pageviews_month": None}}],
+            only_new=True,
+        )
+
+        assert docs[0]["extra"]["pageviews_month"] == 8869
+
+    def test_the_number_of_facts_has_a_ceiling(self, sample):
+        """消さない作りなので、天井を置かないと回を重ねるだけ増える。"""
+        collect.update("news", prompt="いまの内容:\n{current}\n直して")
+        previous = {"モネ": {
+            "doc_id": 1, "title": "モネ", "body": "古い",
+            "extra": {f"k{i}": i for i in range(collect.MAX_EXTRA_KEYS + 5)},
+        }}
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous, [{"title": "モネ", "body": "新しい"}], edits=True,
+        )
+
+        assert len(docs[0]["extra"]) <= collect.MAX_EXTRA_KEYS
+
+    def test_the_collected_at_is_not_overwritten(self, sample):
+        """運ばれてきた値で、こちらが付ける印を上書きさせない。"""
+        docs, _diff = collect.material(
+            collect.get("news"), {},
+            [{"title": "モネ", "body": "画家です", "extra": {"collected_at": "うそ"}}],
+        )
+
+        assert docs[0]["extra"]["collected_at"] != "うそ"
+
+
 class TestTheCountAfterTheRun:
     """見終わった区画の人数は、**その回で動いたあとの数**で出す。
 

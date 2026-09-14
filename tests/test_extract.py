@@ -322,7 +322,9 @@ class TestRefusingABrokenSpec:
             "cursor": "抽出済み",
         }
 
-        assert extract.to_json(extract.normalize(given)) == {**given, "tag_suffix": ""}
+        assert extract.to_json(extract.normalize(given)) == {
+            **given, "tag_suffix": "", "extra": [],
+        }
 
 
 class TestPickingAWholeFamilyOfTags:
@@ -429,6 +431,7 @@ class TestPickingAWholeFamilyOfTags:
             "body": "opening",
             "url": "",
             "tags": [],
+            "extra": [],
             "cursor": "抽出済み",
         }
         assert extract.to_json(extract.normalize(given)) == given
@@ -742,3 +745,52 @@ class TestTheAdminScreen:
         assert "頼んだ件数に届きませんでした" in html
         # 数まで出す。「実在はするが数件しか付いていない」タグを選ばないため
         assert "印象派の画家(39 件)" in html
+
+
+class TestCarryingFactsFromTheArticle:
+    """元の記事に載っている事実を、そのまま運ぶ(`extra`)。
+
+    知名度(月次ページビュー)のような値は既に長期記憶にあるので、読む側が 1 件ずつ
+    引き直す理由が無い —— 引き直していた頃は、図を開くたびに画家の数だけ往復していた。
+    """
+
+    def spec(self, **over):
+        return extract.normalize({
+            "source": "jawiki", "tag": "画家", "extra": ["pageviews_month"], **over,
+        })
+
+    def test_it_copies_the_named_keys(self, source):
+        docs = [{"title": "モネ", "tags": ["画家"],
+                 "extra": {"pageviews_month": 8869, "wikidata": "Q296"}}]
+
+        items, _cursor = extract.run(self.spec(), source(docs))
+
+        # 名指ししたものだけ。**丸写しにはしない**
+        assert items[0]["extra"] == {"pageviews_month": 8869}
+
+    def test_a_missing_key_is_skipped(self, source):
+        """記事によって持っている値が違う(ページビューを持たない記事もある)。"""
+        docs = [{"title": "無名さん", "tags": ["画家"], "extra": {"wikidata": "Q1"}}]
+
+        items, _cursor = extract.run(self.spec(), source(docs))
+
+        assert "extra" not in items[0]
+
+    def test_nothing_is_carried_without_the_spec(self, source):
+        docs = [{"title": "モネ", "tags": ["画家"], "extra": {"pageviews_month": 8869}}]
+
+        items, _cursor = extract.run(self.spec(extra=[]), source(docs))
+
+        assert "extra" not in items[0]
+
+    def test_too_many_keys_are_refused(self):
+        """1 件の脇に添える札であって、記事を丸ごと写す場所ではない。"""
+        with pytest.raises(HTTPException):
+            extract.normalize({
+                "source": "jawiki", "tag": "画家",
+                "extra": [f"k{i}" for i in range(extract.MAX_CARRIED_KEYS + 1)],
+            })
+
+    def test_it_must_be_a_list(self):
+        with pytest.raises(HTTPException):
+            extract.normalize({"source": "jawiki", "tag": "画家", "extra": "pageviews_month"})

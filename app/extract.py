@@ -20,6 +20,7 @@
       "limit": 30,   ← 書かなければ全部。AI に読ませる側の都合で絞るときだけ書く
       "body": "opening",
       "url": "https://ja.wikipedia.org/wiki/{title}",
+      "extra": ["pageviews_month"],   ← 元の記事の extra から、この鍵だけ写す
       "tags": [
         {"const": "作曲家"},
         {"patterns": ["^(\\\\d{3,4})年生$", "^(\\\\d{3,4})年没$"], "format": "年代:{1}-{2}"},
@@ -58,6 +59,10 @@ MAX_SUFFIX_TAGS = 900
 MIN_SUFFIX_CHARS = 3
 # タグの読み替えの上限。指定が肥大すると、1 件あたりの正規表現の回数がそのまま伸びる
 MAX_RULES = 20
+# 元の記事の `extra` から写せる鍵の数。**写すのは事実だけ** —— 知名度や座標のような、
+# 既に長期記憶に載っていて AI に書かせる意味の無い値を運ぶための口。
+# 際限なく写せるようにすると、集めた 1 件が元の記事の丸写しになる
+MAX_CARRIED_KEYS = 10
 MAX_PATTERNS_PER_RULE = 4
 MAX_PATTERN_CHARS = 200
 # 1 件から作るタグの上限(読み替えが総当たりで当たったときの歯止め)
@@ -145,6 +150,13 @@ def normalize(raw) -> dict | None:
     if len(rules) > MAX_RULES:
         raise _bad(f"tags の読み替えは {MAX_RULES} 個までです")
 
+    carried = raw.get("extra") or []
+    if not isinstance(carried, list):
+        raise _bad("extra は写したい鍵の配列で書いてください")
+    if len(carried) > MAX_CARRIED_KEYS:
+        raise _bad(f"extra に書ける鍵は {MAX_CARRIED_KEYS} 個までです")
+    carried = [str(k).strip() for k in carried if str(k).strip()]
+
     spec = {
         "source": source,
         "tag": tag,
@@ -159,6 +171,9 @@ def normalize(raw) -> dict | None:
         "body": body_field,
         "url": str(raw.get("url") or "").strip(),
         "tags": [_normalize_rule(rule) for rule in rules],
+        # **元の記事に載っている事実を、そのまま運ぶ。** 知名度(月次ページビュー)の
+        # ような値は既に長期記憶にあるので、読む側が 1 件ずつ引き直す理由が無い
+        "extra": carried,
         "cursor": str(raw.get("cursor") or DEFAULT_CURSOR).strip() or DEFAULT_CURSOR,
     }
     return spec
@@ -294,6 +309,7 @@ def to_json(spec: dict | None) -> dict | None:
         "body": spec["body"],
         "url": spec["url"],
         "tags": rules,
+        "extra": spec["extra"],
         "cursor": spec["cursor"],
     }
 
@@ -421,6 +437,10 @@ def _to_item(row: dict, spec: dict, context: dict) -> dict | None:
         item["url"] = _fill(template, {"title": title, **{
             k: str(v) for k, v in extra.items() if isinstance(v, (str, int, float))
         }})
+    # **元の記事の事実をそのまま運ぶ。** 無い鍵は黙って飛ばす —— 記事によって
+    # 持っている値が違う(ページビューを持たない記事もある)
+    if carried := {k: extra[k] for k in spec["extra"] if k in extra}:
+        item["extra"] = carried
     return item
 
 

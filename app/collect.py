@@ -99,6 +99,14 @@ MAX_SWEEPS = 8
 # 墓場に置ける見出しの数。**捨てたぶんはもう守らない**(足す回が連れ戻す)ので
 # 多めに取る。定義は notes の 1 件なので、際限なくは持てない
 MAX_GRAVES = 2_000
+# 1 件の脇に運べる事実の数と長さ(`_carried`)。**札であって記事ではない**ので、
+# 際限なく運べるようにはしない
+MAX_CARRIED_KEYS = 10
+MAX_CARRIED_KEY_CHARS = 40
+MAX_CARRIED_CHARS = 200
+# 1 件が持てる脇書きの数。**重ねる作りなので、天井はこちらに要る** ——
+# 言われていないものを消さない以上、放っておくと回を重ねるだけ増える
+MAX_EXTRA_KEYS = 20
 # 墓標に添える理由の長さ。**1 行で足りる** —— なぜ外したかが読めればよく、
 # 本文を丸ごと残す場所ではない(定義は notes の 1 件に収まる必要がある)
 MAX_GRAVE_WHY_CHARS = 200
@@ -1269,7 +1277,8 @@ GEO_SYSTEM_NOTE = (
 REFINE_SYSTEM_PROMPT = (
     "既にある内容を育てる。JSON だけで返し、前置き・説明・コードブロックの記号は付けない。"
     " 形式: {\"items\":[{\"title\":\"見出し\",\"body\":\"本文\","
-    "\"tags\":[\"タグ\"],\"url\":\"出典URL\"}],\"next_cursor\":\"次に進む印\"}"
+    "\"tags\":[\"タグ\"],\"url\":\"出典URL\",\"extra\":{\"鍵\":\"値\"}}],"
+    "\"next_cursor\":\"次に進む印\"}"
     " **返すのは、直すものと新しく足すものだけでよい。**"
     " 触れなかったものはそのまま残るので、変えないものを返す必要はない。"
     " title は同一性の鍵。**同じ見出しで返すと、その 1 件が置き換わる**。"
@@ -1277,6 +1286,8 @@ REFINE_SYSTEM_PROMPT = (
     "(墓標)。**そのとき本文に、なぜ消すのかを 1 行で書く** ——"
     "消したものは後から一覧でしか見えないので、理由が無いと消し間違いに気づけない。"
     "重複をまとめるときは、まとめた先を返し、元のものに墓標を付ける。"
+    " **脇書き(extra)は書いたものだけが変わる。** 触れなかった鍵はそのまま残るので、"
+    "変えないものを書く必要は無い。**落としたい鍵だけ null を書く**。"
     " 分からない項目は null。"
 )
 
@@ -2288,7 +2299,11 @@ def material(
             skipped += 1
             continue
         if only_new and title in merged:
-            # **足すだけの回。** 既にあるものには触らない(数えるだけ)
+            # **足すだけの回。** 既にあるものには触らない(数えるだけ)。
+            # **ただし、まだ持っていない脇書きは受け取る** —— 機械で運ぶ事実
+            # (知名度など)を後から指定に足しても、既にいる人には永遠に届かない。
+            # **持っている値は上書きしない**ので、育てた中身は動かない
+            merged[title] = _with_new_facts(merged[title], raw)
             skipped += 1
             continue
         if edits and title and _is_tombstone(raw):
@@ -2307,12 +2322,19 @@ def material(
         title = doc["title"]
         kept_before = previous.get(title)
         if kept_before is None:
+            # 新しい 1 件。重ねる相手が居ないので、印(null)を解くだけ
+            doc["extra"] = _merge_extra({}, doc["extra"])
             doc_id = next_id
             next_id += 1
             added += 1
             added_titles.append(title)
         else:
             doc_id = kept_before["doc_id"]
+            # **前の世代の脇書きに重ねる**(`_merge_extra`)。言われていないものは残る
+            before_extra = kept_before.get("extra")
+            doc["extra"] = _merge_extra(
+                before_extra if isinstance(before_extra, dict) else {}, doc["extra"]
+            )
             if edits:
                 updated += 1
                 updated_titles.append(title)
@@ -2386,7 +2408,10 @@ def _to_doc(raw: dict, now: str, web: bool) -> dict | None:
     if not title or not body:
         return None
     tags = [str(t).strip() for t in (raw.get("tags") or []) if str(t).strip()]
-    extra = {"collected_at": now, "web": bool(web)}
+    # **運ばれてきた事実を先に置く。** 集める側が元の記事から写した値(知名度など)が
+    # ここに入る —— 下で入れるものが鍵を持っていたら、そちらを優先する。
+    # **この時点では「消して」の印(null)も混じる**(重ねるときに解く)
+    extra = {**_carried(raw.get("extra")), "collected_at": now, "web": bool(web)}
     if url := (raw.get("url") or "").strip():
         extra["url"] = url
     # **配信日は、集めた日と別に持つ**。フィードから機械的に溜めるときに入る ——
@@ -2412,6 +2437,64 @@ def _to_doc(raw: dict, now: str, web: bool) -> dict | None:
         "updated_at": now,
         "extra": extra,
     }
+
+
+def _with_new_facts(doc: dict, raw: dict) -> dict:
+    """既にある 1 件に、**まだ持っていない脇書きだけ**を足す。
+
+    足すだけの回は中身に触らないが、機械で運ぶ事実は別 —— 指定に鍵を足しても、
+    既にいるものには届かないままになる(名簿を焼き直しても全員が飛ばされる)。
+    **持っている値は上書きしない**ので、育てた中身も、先に入った事実も動かない。
+    """
+    extra = doc.get("extra") if isinstance(doc.get("extra"), dict) else {}
+    # **消しの印は効かせない**(足すだけの回は、何も落とさない)
+    fresh = {
+        k: v for k, v in _carried(raw.get("extra")).items()
+        if v is not None and k not in extra
+    }
+    return {**doc, "extra": _merge_extra(extra, fresh)} if fresh else doc
+
+
+def _carried(raw) -> dict:
+    """運ばれてきた事実。**そのまま載る値だけを通す**。
+
+    載せるのは「元の長期記憶に書いてある事実」で、読む側が 1 件ずつ引き直さなくて
+    済むようにするためのもの(知名度・座標など)。**入れ子は通さない** ——
+    ここは 1 件の脇に添える札で、記事を丸ごと写す場所ではない。
+
+    **null はそのまま通す**(「この鍵を消して」の印。解くのは `_merge_extra`)。
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for key, value in list(raw.items())[:MAX_CARRIED_KEYS]:
+        name = str(key).strip()[:MAX_CARRIED_KEY_CHARS]
+        if not name or not (value is None or isinstance(value, (str, int, float, bool))):
+            continue
+        out[name] = value[:MAX_CARRIED_CHARS] if isinstance(value, str) else value
+    return out
+
+
+def _merge_extra(before: dict, now: dict) -> dict:
+    """脇書きを重ねる。**言われていないものは消さない**。
+
+    1 件は焼くたびに丸ごと置き換わるが、脇書きだけは別に扱う —— 機械で運んだ事実
+    (知名度・座標)は、AI が手を入れる回には返ってこない。置き換えると最初の手入れで
+    静かに消える(この層でいちばん起きやすい壊れ方で、1 件ずつ減るので
+    消えすぎの歯止めもすり抜ける)。
+
+    **`null` は「この鍵を消して」の印。** 書かなければ残る作りなので、
+    間違って入った値を落とす口がどこかに要る。
+
+    **数に天井を置く。** 消さない作りなので、置かないと回を重ねるだけ増える。
+    """
+    out = dict(before)
+    for key, value in now.items():
+        if value is None:
+            out.pop(key, None)
+        else:
+            out[key] = value
+    return dict(list(out.items())[:MAX_EXTRA_KEYS])
 
 
 def _http_url(raw) -> str:
