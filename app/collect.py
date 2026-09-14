@@ -63,7 +63,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from app import collect_log, db, feeds, jst, notes
+from app import collect_log, db, feeds, jst, machine_store, notes
 from app import extract as extraction
 from app import partition as partitioning
 from app.jst import to_jst
@@ -73,8 +73,9 @@ log = logging.getLogger("chiezo.app")
 SOURCE_KIND = "collect"
 
 # 定義をまとめて持つメモ(notes 側)。プロジェクトと同じく 1 件に配列で持つ
-DEFS_TITLE = "収集"
-DEFS_TAG = "収集"
+# 機械の置き場での置き所(`app/machine_store.py`)
+DEFS_KIND = "collect"
+DEFS_KEY = "definitions"
 DEFS_BROKEN = "収集のメモが JSON として読めません"
 
 # 収集ソースの名前に使える文字。**ファイル名とソース名とURLになる**ので狭く取る
@@ -265,7 +266,7 @@ def require_enabled() -> None:
             503,
             {
                 "error": "collection is disabled",
-                "hint": "CHIEZO_NOTES_DIR(収集の定義の置き場)と CHIEZO_TRIGGER_URL"
+                "hint": "CHIEZO_STATE_DIR(収集の定義の置き場)と CHIEZO_TRIGGER_URL"
                         "(取り込みを起こす相手)を設定すると有効になる。"
                         "集めたものは長期記憶へ焼かれるので、途中の置き場は要らない",
             },
@@ -273,16 +274,17 @@ def require_enabled() -> None:
 
 
 def is_enabled() -> bool:
-    """定義の置き場(notes)と、取り込みを起こす相手(chiezo-trigger)が揃っていること。
+    """定義の置き場(`state/machine.db`)と、取り込みを起こす相手(chiezo-trigger)が
+    揃っていること。
 
-    **専用の置き場は持たない** —— 集めたものは焼くときに作って ingest へ渡すだけ。
+    **集めたものの置き場は持たない** —— 焼くときに作って ingest へ渡すだけ。
 
     trigger を条件に入れるのは、**それが無いと集める手段が 1 つも無い**から。
     集めるのは取り込みの中で起きるので、取り込みを起こせない面
     (corpus を持たないタスク専用の面など)では定義を置いても永遠に走らない。
     そこで見本の定義まで作ると、**使えない機能の設定が短期記憶に 1 件混ざる**だけになる。
     """
-    return notes.is_enabled() and bool(os.environ.get("CHIEZO_TRIGGER_URL", "").strip())
+    return machine_store.is_enabled() and bool(os.environ.get("CHIEZO_TRIGGER_URL", "").strip())
 
 
 def _now() -> datetime:
@@ -911,24 +913,9 @@ def normalize_focus(raw) -> Focus | None:
     )
 
 
-def _defs_row():
-    """定義をまとめたメモ。まだ 1 件も作っていなければ None。
-
-    タグで引くのは `app/tasks.py` と同じ形。あちらの `_rows_tagged` を借りずに
-    ここで書いているのは、collect が tasks(やること層)に依存する理由が無いため。
-    """
-    path = notes.require_path()
-    notes.ensure_db()
-    rows = db.query(
-        path,
-        "SELECT doc_id, title, body FROM docs"
-        " WHERE doc_id IN (SELECT doc_id FROM doc_tags WHERE tag = ?)",
-        (DEFS_TAG,),
-    )
-    for row in rows:
-        if row["title"] == DEFS_TITLE:
-            return row
-    return None
+def _stored() -> str | None:
+    """いまの定義(JSON の文字列)。まだ 1 度も置いていなければ None。"""
+    return machine_store.get(DEFS_KIND, DEFS_KEY)
 
 
 def _from_json(item: dict) -> Collection:
@@ -1012,11 +999,11 @@ def load() -> list[Collection]:
     **本文が壊れていたら黙って作り直さない** —— 中身ごと消えるので、読めないことを
     見せて人に直させる(プロジェクトと同じ判断)。
     """
-    row = _defs_row()
-    if row is None:
+    body = _stored()
+    if body is None:
         return []
     try:
-        payload = json.loads(row["body"] or "{}")
+        payload = json.loads(body or "{}")
         raw = payload["collections"]
         if not isinstance(raw, list):
             raise ValueError("collections must be a list")
@@ -1026,12 +1013,7 @@ def load() -> list[Collection]:
 
 
 def save(items: list[Collection]) -> None:
-    body = _to_json(items)
-    row = _defs_row()
-    if row is None:
-        notes.add(text=body, title=DEFS_TITLE, tags=DEFS_TAG)
-        return
-    notes.update(row["doc_id"], text=body, title=DEFS_TITLE, tags=DEFS_TAG)
+    machine_store.put(DEFS_KIND, DEFS_KEY, _to_json(items))
 
 
 def get(name: str) -> Collection:

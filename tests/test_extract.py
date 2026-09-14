@@ -499,6 +499,8 @@ class TestWritingTheSpecFromARequest:
 
         notes_dir = tmp_path / "notes"
         monkeypatch.setenv("CHIEZO_NOTES_DIR", str(notes_dir))
+        # 定義の置き場（`state/machine.db`）。人が読む短期記憶とは別のファイル
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
         monkeypatch.setenv("CHIEZO_TRIGGER_URL", "http://chiezo-trigger:7011")
         monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
         db.set_mutable_paths([notes_dir / "notes.db"])
@@ -703,6 +705,8 @@ class TestTheAdminScreen:
 
         notes_dir = tmp_path / "notes"
         monkeypatch.setenv("CHIEZO_NOTES_DIR", str(notes_dir))
+        # 定義の置き場（`state/machine.db`）。人が読む短期記憶とは別のファイル
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
         monkeypatch.setenv("CHIEZO_TRIGGER_URL", "http://chiezo-trigger:7011")
         db.set_mutable_paths([notes_dir / "notes.db"])
         collect.create("painters", prompt="{cursor} と {current}", interval_minutes=60)

@@ -34,6 +34,8 @@ def enabled(tmp_path, monkeypatch):
 
     notes_dir = tmp_path / "notes"
     monkeypatch.setenv("CHIEZO_NOTES_DIR", str(notes_dir))
+    # **定義の置き場**(`state/machine.db`)。人が読む短期記憶とは別のファイル
+    monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
     # 取り込みを起こせない面では収集そのものが成り立たないので、これも要る
     monkeypatch.setenv("CHIEZO_TRIGGER_URL", "http://chiezo-trigger:7011")
     db.set_mutable_paths([notes_dir / "notes.db"])
@@ -85,10 +87,19 @@ class TestDefinitions:
         """
         assert collect.is_enabled()
 
-    def test_without_notes_it_is_disabled(self, enabled, monkeypatch):
-        """定義の置き場が notes なので、notes が無効なら収集も成り立たない。"""
-        monkeypatch.delenv("CHIEZO_NOTES_DIR", raising=False)
+    def test_without_a_place_for_the_definition_it_is_disabled(self, enabled, monkeypatch):
+        """定義の置き場（`state/machine.db`）が無ければ、収集も成り立たない。
+
+        **短期記憶とは別のファイル**。あちらは人と AI が読み書きする場所で、
+        機械が毎回書き換える設定を混ぜると、人が消せてしまう。
+        """
+        monkeypatch.delenv("CHIEZO_STATE_DIR", raising=False)
         assert not collect.is_enabled()
+
+    def test_it_does_not_need_the_short_term_memory(self, enabled, monkeypatch):
+        """短期記憶が無くても成り立つ（定義はもうあちらに置いていない）。"""
+        monkeypatch.delenv("CHIEZO_NOTES_DIR", raising=False)
+        assert collect.is_enabled()
 
     def test_without_a_way_to_bake_it_is_disabled(self, enabled, monkeypatch):
         """取り込みを起こせない面では、定義を置いても永遠に走らない。
@@ -153,10 +164,9 @@ class TestDefinitions:
         """定義が読めなくなったら黙って作り直さない(中身ごと消えるため)。"""
         import fastapi
 
-        from app import notes
+        from app import machine_store
 
-        row = collect._defs_row()
-        notes.update(row["doc_id"], text="これはJSONではない")
+        machine_store.put(collect.DEFS_KIND, collect.DEFS_KEY, "これはJSONではない")
         with pytest.raises(fastapi.HTTPException):
             collect.load()
 
@@ -197,21 +207,22 @@ class TestSample:
         assert "{cursor}" in collect.SAMPLE["prompt"]
         assert "next_cursor" in collect.SAMPLE["prompt"]
 
-    def test_it_never_makes_a_second_definition_note(self, enabled):
-        """定義のメモは 1 件だけ。
+    def test_the_definition_lives_outside_the_short_term_memory(self, enabled):
+        """**人が読む場所に混ぜない。**
 
-        `notes.add` は見出しが衝突すると `(doc_id)` を足して別物として残すので、
-        定義が「見えなかった」ときに二重の設定ができる。本番で実際に踏んだ
-        (起動順が悪く、追記された行が `immutable` の読み手に見えていなかった)。
+        メモとして置いていた頃は、`notes.add` が見出しの衝突で `(doc_id)` を足すため、
+        定義が「見えなかった」ときに二重の設定ができた（本番で実際に踏んだ ——
+        起動順が悪く、追記された行が `immutable` の読み手に見えていなかった）。
+        鍵で 1 件に決まる置き場なら、その壊れ方そのものが無くなる。
         """
-        from app import notes
+        from app import machine_store, notes
 
         collect.ensure_sample()
-        collect.remove(collect.SAMPLE_NAME)  # 空の定義メモが残る
+        collect.remove(collect.SAMPLE_NAME)
         collect.ensure_sample()
-        titles = [n["title"] for n in notes.recall(limit=50)["notes"]]
-        assert titles.count(collect.DEFS_TITLE) == 1
-        assert not any(t.startswith(f"{collect.DEFS_TITLE} (") for t in titles)
+
+        assert machine_store.get(collect.DEFS_KIND, collect.DEFS_KEY)
+        assert notes.recall(limit=50)["notes"] == []
 
     def test_turning_it_on_makes_it_due(self, enabled):
         collect.ensure_sample()
@@ -2482,8 +2493,15 @@ class TestRest:
         assert [c["added"] for c in one["changes"]] == [3]
 
     def test_changes_is_empty_without_a_place_to_record(self, client, sample, monkeypatch):
-        """控えを持たない構成で、読む側が毎回エラーを踏まないように。"""
-        monkeypatch.delenv("CHIEZO_STATE_DIR", raising=False)
+        """控えを持たない構成で、読む側が毎回エラーを踏まないように。
+
+        **定義の置き場とは分けて試す。** どちらも `CHIEZO_STATE_DIR` の下に
+        あるので、環境変数を消すと「収集そのものが無効」になって、
+        確かめたいこと（控えが無いときに空を返す）を通り過ぎてしまう。
+        """
+        from app import collect_log
+
+        monkeypatch.setattr(collect_log, "db_path", lambda: None)
         assert client.get("/v1/collect/changes").json() == {"changes": []}
 
     def test_running_a_stopped_collection_is_refused(self, client, sample):
@@ -3273,7 +3291,9 @@ class TestTheCollectSectionMarkup:
 
     def test_without_a_place_to_record_it_says_so(self, sample, monkeypatch):
         """空の表を出すと「まだ動いていない」に読める(実際は記録していないだけ)。"""
-        monkeypatch.delenv("CHIEZO_STATE_DIR", raising=False)
+        from app import collect_log
+
+        monkeypatch.setattr(collect_log, "db_path", lambda: None)
         assert "変更履歴は記録していません" in self._html(sample)
 
     def test_an_empty_collection_can_still_be_deleted(self, sample):
