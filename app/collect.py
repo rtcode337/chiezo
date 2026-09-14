@@ -107,6 +107,9 @@ MAX_CARRIED_CHARS = 200
 # 言われていないものを消さない以上、放っておくと回を重ねるだけ増える
 MAX_EXTRA_KEYS = 20
 # 墓標に添える理由の長さ。**1 行で足りる** —— なぜ外したかが読めればよく、
+# 本文はそのまま残る(理由で上書きしない)ので、長く書かせる先はこちらではない
+MAX_REMOVED_REASON_CHARS = 400
+
 # 1 回で見る区画の上限。**区画ごとに AI を 1 回呼ぶ**(素材をその区画のぶんに
 # 絞るのが区画の意味なので、まとめて聞くと絞った意味が消える)ため、
 # 1 回の取り込みが何十分にもならないようにここで止める
@@ -1191,7 +1194,10 @@ def render_material(previous: dict[str, dict], scoped: bool = False) -> tuple[st
         tags = doc.get("tags") or []
         gone = notes.REMOVED_TAG in tags
         removed += 1 if gone else 0
-        body = (doc.get("body") or "")[:MATERIAL_BODY_CHARS].replace("\n", " ")
+        # **消えたものは、本文ではなく消した理由を見せる。** 本文は戻すときのために
+        # そのまま残してあるが、ここで読ませたいのは「なぜもう一度足してはいけないか」
+        text = removed_reason(doc) if gone else (doc.get("body") or "")
+        body = text[:MATERIAL_BODY_CHARS].replace("\n", " ")
         # **消えたものはそう見えるように書く。** タグだけで示すと、AI は生きている
         # 1 件として扱って直そうとする。**印はタグにも残す** —— 外して見せると、
         # AI がタグごと写して返したときに黙って戻ってしまう(戻すのは明示的な操作にする)
@@ -2359,21 +2365,31 @@ def _to_doc(raw: dict, now: str, web: bool) -> dict | None:
 
 
 def _buried(doc: dict, raw: dict, now: str) -> dict:
-    """消えた印を付けた 1 件。**中身は残す**(理由があれば本文に置き換える)。
+    """消えた印を付けた 1 件。**本文も理由も、両方残す**。
 
     **持っていたタグは残す。** 外したあとも「どういう条件でここに入ったのか」が
-    読めないと、消し間違いを確かめようがない。**理由は本文に書かせている**
-    (`REFINE_SYSTEM_PROMPT`)。
+    読めないと、消し間違いを確かめようがない。
+
+    **理由は本文に書かせている**(`REFINE_SYSTEM_PROMPT`)が、**本文を理由で
+    置き換えない** —— 置き換えていた頃は、消し間違いを戻すときに元の中身が
+    もう無かった。印を外せば戻せる作りなのに、戻ってくるのが「なぜ消したか」の
+    1 行だけでは、育てたぶんを集め直すことになる。理由は脇書きへ置く。
     """
     tags = [t for t in (doc.get("tags") or []) if t != notes.REMOVED_TAG]
-    why = (raw.get("body") or "").strip()[:MAX_BODY_CHARS]
+    why = (raw.get("body") or "").strip()[:MAX_REMOVED_REASON_CHARS]
+    extra = doc.get("extra") if isinstance(doc.get("extra"), dict) else {}
     return {
         **doc,
-        "body": why or doc.get("body") or "",
-        "opening": (why or doc.get("opening") or "")[:notes.TITLE_MAX_CHARS * 4],
         "tags": [*tags, notes.REMOVED_TAG],
+        "extra": {**extra, "removed_reason": why, "removed_at": now},
         "updated_at": now,
     }
+
+
+def removed_reason(doc: dict) -> str:
+    """その 1 件を消した理由。持っていなければ空。"""
+    extra = doc.get("extra")
+    return (extra.get("removed_reason") or "").strip() if isinstance(extra, dict) else ""
 
 
 def _with_new_facts(doc: dict, raw: dict) -> dict:

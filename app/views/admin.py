@@ -849,21 +849,24 @@ def _removed_html(item, sources: dict) -> str:
     src = sources.get(item.name)
     if src is None or src.schema_version < TAG_MIN_SCHEMA_VERSION:
         return ""
+    # **出すのは消した理由**(本文ではない)。本文は戻すときのために残してあるが、
+    # ここを見に来る人が確かめたいのは「なぜ消えたのか」のほう
     rows = db.query(
         src.path,
-        "SELECT title, opening FROM docs WHERE doc_id IN"
+        "SELECT title, json_extract(extra, '$.removed_reason') AS why FROM docs WHERE doc_id IN"
         " (SELECT doc_id FROM doc_tags WHERE tag = ?) ORDER BY updated_at DESC LIMIT ?",
         (notes.REMOVED_TAG, REMOVED_HEAD + 1),
     )
     if not rows:
         return ""
     shown = rows[:REMOVED_HEAD]
-    lines = [r["title"] + (f' —— {r["opening"]}' if r["opening"] else "") for r in shown]
+    lines = [r["title"] + (f' —— {r["why"]}' if r["why"] else "") for r in shown]
     more = "、ほかにもあります" if len(rows) > REMOVED_HEAD else ""
     return (
         f'<p class="muted">消えたもの: 新しい {len(shown):,} 件{more}'
         "(<strong>読み口からは返りません</strong>。足す回も連れ戻しません。"
-        "戻すには、その文書から印を外します)</p>"
+        "<strong>本文はそのまま残しています</strong>ので、"
+        "その文書から印を外せば元の中身のまま戻ります)</p>"
         f'<pre class="prompt-view">{esc(chr(10).join(lines))}</pre>'
     )
 

@@ -1890,8 +1890,10 @@ class TestWhatWasRemoved:
         # **元のタグは残す** —— どういう条件でここに入ったのかが読めないと、
         # 消し間違いを確かめようがない
         assert "画家" in doc["tags"]
-        # 理由は本文に置く
-        assert doc["body"] == "絵ではなく演技で知られる人"
+        # **本文はそのまま。** 理由で置き換えていた頃は、消し間違いを戻すときに
+        # 元の中身がもう無く、育てたぶんを集め直すことになっていた
+        assert doc["body"] == "本文"
+        assert collect.removed_reason(doc) == "絵ではなく演技で知られる人"
         assert diff["removed_titles"] == ["俳優さん"]
 
     def test_a_tombstone_without_a_reason_keeps_the_body(self, refine):
@@ -1903,6 +1905,22 @@ class TestWhatWasRemoved:
 
         assert docs[0]["body"] == "もとの本文"
         assert notes.REMOVED_TAG in docs[0]["tags"]
+
+    def test_the_reason_does_not_bury_what_was_already_noted(self, refine):
+        """理由は脇書きへ足すだけ。**先に入っていた事実は動かさない**。"""
+        previous = {"俳優さん": {
+            "doc_id": 1, "title": "俳優さん", "body": "本文",
+            "extra": {"pageviews_month": 120},
+        }}
+
+        docs, _diff = self._edit(
+            refine, previous,
+            [{"title": "俳優さん", "body": "画家ではない", "tags": [notes.TOMBSTONE_TAG]}],
+        )
+
+        assert docs[0]["extra"]["pageviews_month"] == 120
+        assert docs[0]["extra"]["removed_reason"] == "画家ではない"
+        assert docs[0]["extra"]["removed_at"]
 
     def test_what_was_removed_does_not_come_back(self, refine):
         """足す回は「もう持っている」として素通りする(`only_new`)。"""
@@ -1979,6 +1997,23 @@ class TestWhatWasRemoved:
         assert "【消えたもの】モネ" not in text
         assert "もう一度足さないでください" in text
 
+    def test_the_material_shows_why_it_went_rather_than_the_body(self, refine):
+        """**読ませたいのは「なぜもう一度足してはいけないか」**。
+
+        本文は戻すときのために残してあるが、消えた 1 件でそれを読ませても、
+        AI には生きているものと区別が付かない。
+        """
+        previous = {"俳優さん": {
+            "doc_id": 1, "title": "俳優さん", "body": "生涯と代表作",
+            "tags": ["画家", notes.REMOVED_TAG],
+            "extra": {"removed_reason": "絵ではなく演技で知られる人"},
+        }}
+
+        text, _shown = collect.render_material(previous, scoped=True)
+
+        assert "絵ではなく演技で知られる人" in text
+        assert "生涯と代表作" not in text
+
     def test_the_mark_stays_in_the_tags_too(self, refine):
         """**外して見せると、AI がタグごと写して返したときに黙って戻る。**
 
@@ -2014,14 +2049,17 @@ class TestWhatWasRemoved:
         conn = sqlite3.connect(path)
         conn.executescript(notes.SCHEMA_DDL)
         rows = [
-            (1, "俳優さん", "絵ではなく演技で知られる人", ["画家", notes.REMOVED_TAG]),
-            (2, "モネ", "画家です", ["画家"]),
+            (1, "俳優さん", "生涯と代表作", ["画家", notes.REMOVED_TAG],
+             {"removed_reason": "絵ではなく演技で知られる人"}),
+            (2, "モネ", "画家です", ["画家"], {}),
         ]
-        for doc_id, title, body, tags in rows:
+        for doc_id, title, body, tags, extra in rows:
             conn.execute(
-                "INSERT INTO docs (doc_id, title, opening, body, tags, updated_at, rank_score)"
-                " VALUES (?, ?, ?, ?, ?, '2026-01-01T00:00:00+00:00', 0.0)",
-                (doc_id, title, body, body, json.dumps(tags, ensure_ascii=False)),
+                "INSERT INTO docs"
+                " (doc_id, title, opening, body, tags, extra, updated_at, rank_score)"
+                " VALUES (?, ?, ?, ?, ?, ?, '2026-01-01T00:00:00+00:00', 0.0)",
+                (doc_id, title, body, body, json.dumps(tags, ensure_ascii=False),
+                 json.dumps(extra, ensure_ascii=False)),
             )
             for tag in tags:
                 conn.execute(
@@ -2037,7 +2075,9 @@ class TestWhatWasRemoved:
 
         html = admin._removed_html(collect.get("news"), {"news": Src()})
 
+        # 出るのは消した理由（本文ではない）—— ここを読む人が確かめたいのはそちら
         assert "俳優さん —— 絵ではなく演技で知られる人" in html
+        assert "生涯と代表作" not in html
         assert "モネ" not in html
 
 
