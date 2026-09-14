@@ -119,6 +119,7 @@ CLI_COMMAND = {"claude": "claude", "codex": "codex", "antigravity": "agy"}.get(C
 # モデルの一覧を出すコマンド。**持っているのは Antigravity だけ**(実測) ——
 # claude は `models` サブコマンドが無く(`error: unknown command 'models'`)、
 # codex もサブコマンドに無い(0.147.0 の `--help` で確認)。
+# codex は代わりに置き場のファイルから読む(`_codex_catalog`)。
 MODEL_LIST_CMD = {"antigravity": ["agy", "models"]}.get(CLI, [])
 
 # 手で渡された一覧(あれば最優先)。空なら CLI に聞き、それも駄目なら上の控え。
@@ -140,7 +141,7 @@ _FOUND_MODELS: tuple[str, ...] = ()
 DEFAULT_EFFORTS = {
     "claude": ("low", "medium", "high", "xhigh", "max"),  # claude --help（5 つとも実測）
     "antigravity": ("low", "medium", "high"),  # agy --help
-    "codex": (),  # codex exec --help に無い（設定キーは確かめていないので出さない）
+    "codex": (),  # 置き場のファイルから読む（`_codex_catalog`）。無ければ選ばせない
 }
 GIVEN_EFFORTS = tuple(
     e.strip().lower()
@@ -403,13 +404,59 @@ async def _probe_cli() -> None:
     )
 
 
+def _codex_catalog() -> list[dict]:
+    """codex が自分で落としてくるモデルの控えを読む(`models_cache.json`)。
+
+    codex には一覧を出すコマンドが無いが、置き場($CODEX_HOME)にサーバーから取った
+    一覧が置かれる —— slug・画面に出してよいか・受け付ける考える量が入っている。
+    **CLI を起こさずに読める**ので、枠も食わず、待ち時間も無い。
+
+    `visibility` が `list` のものだけを拾う。残りは内部用(自動レビュー等)で、
+    選ばせても意味が無い。並びは `priority` の昇順 —— 先頭が既定のモデルになる。
+    """
+    path = os.path.join(_codex_home(), "models_cache.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            found = json.load(f).get("models") or []
+    except (OSError, ValueError, AttributeError):
+        return []
+    listed = [
+        m for m in found
+        if isinstance(m, dict) and m.get("slug") and m.get("visibility") == "list"
+    ]
+    listed.sort(key=lambda m: m.get("priority") or 0)
+    return listed
+
+
+def _catalog_efforts(catalog: list[dict]) -> tuple[str, ...]:
+    """控えから、**どのモデルでも通る段階**だけを並べる。
+
+    codex は考える量をモデルごとに持つ(最上位だけが max を受ける、など)。
+    ブリッジは相手ごとに 1 本の一覧しか名乗れないので、全部のモデルが受ける段階に
+    絞る —— こうすると、並んだ候補はどのモデルと組み合わせても通る。
+    緩めて union にすると、モデルを選び直した拍子に通らない組み合わせができる。
+    """
+    levels = [
+        [str(e["effort"]) for e in (m.get("supported_reasoning_levels") or []) if e.get("effort")]
+        for m in catalog
+    ]
+    if not levels or not all(levels):
+        return ()
+    shared = set(levels[0]).intersection(*levels[1:])
+    # 並びは先頭のモデルのものに揃える(控えは弱い順に並んでいる)
+    return tuple(e for e in levels[0] if e in shared)
+
+
 async def _ask_models() -> tuple[str, ...]:
-    """CLI に一覧を聞く。**持っているのは Antigravity だけ**(実測)。
+    """CLI に一覧を聞く。**聞けるのは Antigravity だけ**(実測)。
 
     - `agy models` …… `<slug><空白><表示名>` が 1 行 1 件
     - `claude` …… `models` サブコマンドが無い(`error: unknown command 'models'`)
-    - `codex` …… サブコマンドに `models` が無い(0.147.0 の `--help` で確認)
+    - `codex` …… サブコマンドに `models` が無い(0.149.0 の `--help` で確認)。
+      代わりに置き場のファイルを読む(`_codex_catalog`)
     """
+    if CLI == "codex":
+        return tuple(str(m["slug"]) for m in _codex_catalog())
     if not MODEL_LIST_CMD:
         return ()
     return _parse_models(await _run_text(MODEL_LIST_CMD))
@@ -435,11 +482,15 @@ _EFFORT_HELP_RE = re.compile(r"--effort[^\n]*\n?[^(]{0,200}\(([a-z,\s]+)\)")
 
 
 async def _ask_efforts() -> tuple[str, ...]:
-    """CLI のヘルプから段階を読む。**読めなければ空**(控えへ落ちる)。
+    """CLI から段階を読む。**読めなければ空**(控えへ落ちる)。
 
-    一覧を出す口は無いので、ヘルプの文面が頼り。**書き方が変われば静かに空になる**が、
-    実在しない段階を並べるより害が小さい(CLI は値を検証せず、黙って既定で動く)。
+    codex は置き場の控えに段階が書いてある(`_catalog_efforts`)。
+    claude と agy は一覧を出す口が無いので、ヘルプの文面が頼り ——
+    **書き方が変われば静かに空になる**が、実在しない段階を並べるより害が小さい
+    (CLI は値を検証せず、黙って既定で動く)。
     """
+    if CLI == "codex":
+        return _catalog_efforts(_codex_catalog())
     return _parse_efforts(await _run_text([CLI_COMMAND, "--help"]))
 
 
@@ -465,7 +516,16 @@ async def _run_text(cmd: list[str]) -> str:
             *cmd, stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
         )
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=PROBE_TIMEOUT)
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=PROBE_TIMEOUT)
+        except (TimeoutError, asyncio.CancelledError):
+            # **待つのをやめたら、相手も終わらせる。** 裏で聞いている最中に
+            # 止められることがある(立ち上がりの途中で落としたとき)ので、
+            # 置き去りにすると CLI が 1 本残り、見ている者のいないまま動き続ける
+            proc.kill()
+            with suppress(Exception):
+                await proc.wait()
+            raise
     return (out or b"").decode("utf-8", errors="replace")
 
 
@@ -474,10 +534,16 @@ async def lifespan(_: FastAPI):
     # Claude Code に渡す MCP 設定は起動時に書く(Codex は entrypoint.sh が config へ入れる)。
     if CLI == "claude" and MCP_URL:
         _write_mcp_config()
-    # **起動時には聞かない。** 立ち上がりを CLI の都合で遅らせないため、
-    # 聞くのは最初に聞かれたとき(`_probe_cli`)
+    # 何が選べるかは**立ち上がってすぐ、裏で聞いておく**。聞かれてから聞きに行くと、
+    # 最初に画面を開いた人が CLI の起動ぶん(実測で数秒)待つことになる ——
+    # しかも待った末に返るのは同じ答えなので、待たせる意味が無い。
+    # 裏へ回すのは、CLI が居ない・サインイン前のときに立ち上がりごと止めないため。
+    probe = asyncio.create_task(_probe_cli())
     log.info("bridge ready: cli=%s model=%s mcp=%s", CLI, MODEL_LABEL, MCP_URL or "(繋がない)")
-    yield
+    try:
+        yield
+    finally:
+        probe.cancel()
 
 
 app = FastAPI(title="Chiezo CLI bridge", lifespan=lifespan)
@@ -680,6 +746,11 @@ def build_command(
         ]
         if model:
             cmd += ["-m", model]
+        # 考える量に専用のフラグは無く、設定キーで渡す。 codex は起動時の見出しに
+        # `reasoning effort: <値>` と書くので、渡ったことはそこで確かめられる
+        # (値そのものは CLI では検証されず、通らない値は API が enum の誤りとして返す)。
+        if effort:
+            cmd += ["-c", f"model_reasoning_effort={effort}"]
         cmd.append("-")  # プロンプトは標準入力から
         return cmd
 

@@ -375,42 +375,102 @@ async def check_credential(cfg: Settings) -> tuple[bool, str]:
     return False, f"HTTP {res.status_code}: {res.text[:200]}"
 
 
-# 相手が名乗るモデルの控え。管理画面と会話画面が開くたびに聞かずに済むよう覚えておく。
-_MODELS_CACHE: dict[str, tuple[float, list[str]]] = {}
-# 考える量も同じ形で控える。**相手に聞く口ができた**ので、決め打ちは保険に下がった
-_EFFORTS_CACHE: dict[str, tuple[float, list[str]]] = {}
-MODELS_TTL = 300.0
+# 相手が名乗る一覧の控え。**一度取れたら取り直さない** ——
+# 一覧が変わるのは CLI やサービスの版が上がったときで、そこは必ず再起動を伴う。
+# 引かれる回数は多い(画面を開くたび・巡回の設定を触るたび)ので、
+# 「聞きに行くことがある」状態を残しておくと、そのうちの 1 回が数秒待たされる。
+_MODELS_CACHE: dict[str, list[str]] = {}
+_EFFORTS_CACHE: dict[str, list[str]] = {}
+# 聞けなかった相手を、次に試してよくなる時刻。**控えに落ちたことは覚えない** ——
+# 落とした値を覚えると、相手が立ち上がるより先に聞いた 1 回のせいで、
+# 決め打ちの一覧が再起動まで居座る。かといって毎回聞きに行くと、
+# 相手が落ちている間ずっと画面が重くなるので、しばらく置いてから試し直す。
+_RETRY_AT: dict[tuple[str, str], float] = {}
+RETRY_WAIT = 60.0
+
+
+async def _remembered(kind: str, name: str, fetch, fallback: list[str]) -> list[str]:
+    """相手に聞いた一覧を控え、**以降はそれを返すだけにする**。
+
+    聞く相手が CLI を包んだブリッジだと、答えるまでに数秒かかる(CLI の起動ぶん)。
+    一覧は頻繁に引かれるので、期限で取り直す作りにすると、そのたびに誰か 1 人が
+    その数秒を払う —— しかも返るのは前と同じ一覧である。**起動時に 1 回取り
+    (`warm_choices`)、あとは控えを返す**。取り直したいときは立て直す。
+
+    `fetch` は**聞けなかったとき None を返す**。そこでコードの控えを覚えてしまうと、
+    相手が立ち上がるより先に聞いただけで決め打ちが居座るので、覚えずに返す。
+    """
+    cache = _MODELS_CACHE if kind == "models" else _EFFORTS_CACHE
+    if (cached := cache.get(name)) is not None:
+        return cached
+    key = (kind, name)
+    if time.monotonic() < _RETRY_AT.get(key, 0.0):
+        return fallback
+    found = await fetch()
+    if found:
+        cache[name] = found
+        return found
+    _RETRY_AT[key] = time.monotonic() + RETRY_WAIT
+    return fallback
+
+
+def forget_choices() -> None:
+    """控えを捨てる。**立て直したときと同じ状態に戻す**。
+
+    使うのはテストだけ。取り直す口を画面に置かないのは、一覧が変わるのは
+    CLI やサービスの版が上がったときで、そこは必ず立て直しを伴うため。
+    """
+    _MODELS_CACHE.clear()
+    _EFFORTS_CACHE.clear()
+    _RETRY_AT.clear()
+
+
+async def warm_choices() -> None:
+    """選べるモデルと考える量を、起動直後に控えておく。
+
+    **ここが唯一の「聞きに行く」場面**(`_remembered`)。以降は控えを返すだけなので、
+    画面を何度開いても相手には届かない。相手が立ち上がる前に聞いてしまった場合だけ、
+    次に引かれたときに試し直す。
+    """
+    names = backend_names()
+    await asyncio.gather(
+        *(available_models(n) for n in names),
+        *(available_efforts(n) for n in names),
+        return_exceptions=True,
+    )
 
 
 async def available_efforts(backend: str) -> list[str]:
-    """会話や巡回で選べる「考える量」。
+    """会話や巡回で**選ばせる**「考える量」。
 
     **相手に聞くのを優先し、聞けなければコードの控え**(`available_models` と同じ約束)。
-    CLI ブリッジは起動時に CLI のヘルプから読み取ったものを名乗るので、
-    版が上がって段階が増えても、こちらを書き換えずに追いつく。
+    CLI ブリッジは起動時に CLI 自身へ聞いたものを名乗るので、版が上がって段階が
+    増えても、こちらを書き換えずに追いつく。
+
+    **選んでも効かない相手では空を返す**(`providers.selectable_efforts`)。
+    ここが空でも `normalize_effort` は今までどおり受け取る —— 既に保存されている
+    設定から飛んでくるので、弾くと保存し直せなくなる。
     """
     name = normalize_backend(backend)
     spec = providers.get(name)
-    fallback = list(providers.efforts_of(name))
-    if spec is None or not spec.bridge:
+    fallback = list(providers.selectable_efforts(name))
+    if spec is None or not spec.bridge or not fallback:
         return fallback
-    now = time.monotonic()
-    cached = _EFFORTS_CACHE.get(name)
-    if cached and now - cached[0] < MODELS_TTL:
-        return cached[1]
-    found: list[str] = []
+    return await _remembered("efforts", name, lambda: _fetch_efforts(name), fallback)
+
+
+async def _fetch_efforts(name: str) -> list[str] | None:
+    """ブリッジの `/efforts` を引く。**聞けなければ None**(控えの判断は呼ぶ側)。"""
     cfg = load_settings(name)
-    if cfg is not None:
-        base = cfg.url.removesuffix("/v1")
-        try:
-            async with _llm_client(cfg) as client:
-                res = await client.get(f"{base}/efforts", timeout=5.0)
-            found = [str(e) for e in (res.json().get("efforts") or []) if e]
-        except (httpx.HTTPError, ValueError, TypeError, AttributeError, KeyError):
-            found = []
-    out = found or fallback
-    _EFFORTS_CACHE[name] = (now, out)
-    return out
+    if cfg is None:
+        return None
+    base = cfg.url.removesuffix("/v1")
+    try:
+        async with _llm_client(cfg) as client:
+            res = await client.get(f"{base}/efforts", timeout=5.0)
+        return [str(e) for e in (res.json().get("efforts") or []) if e]
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError, KeyError):
+        return None
 
 
 async def available_models(backend: str) -> list[str]:
@@ -421,30 +481,23 @@ async def available_models(backend: str) -> list[str]:
     一覧を持たない相手もいる。両方あるときは相手の答えが正。
     """
     name = normalize_backend(backend)
-    now = time.monotonic()
-    cached = _MODELS_CACHE.get(name)
-    if cached and now - cached[0] < MODELS_TTL:
-        return cached[1]
-
-    fallback: list[str] = []
     spec = providers.get(name)
-    if spec is not None:
-        fallback = list(spec.models)
+    fallback = list(spec.models) if spec is not None else []
+    return await _remembered("models", name, lambda: _fetch_models(name), fallback)
 
-    models: list[str] = []
+
+async def _fetch_models(name: str) -> list[str] | None:
+    """相手の `/models` を引く。**聞けなければ None**(控えの判断は呼ぶ側)。"""
     cfg = load_settings(name)
-    if cfg is not None:
-        try:
-            async with _llm_client(cfg) as client:
-                res = await client.get(f"{cfg.url}/models", timeout=5.0)
-            entries = res.json().get("data") or []
-            models = [normalize_model_id(str(e.get("id"))) for e in entries if e.get("id")]
-        except (httpx.HTTPError, ValueError, TypeError, AttributeError, KeyError):
-            models = []
-
-    out = models or fallback
-    _MODELS_CACHE[name] = (now, out)
-    return out
+    if cfg is None:
+        return None
+    try:
+        async with _llm_client(cfg) as client:
+            res = await client.get(f"{cfg.url}/models", timeout=5.0)
+        entries = res.json().get("data") or []
+        return [normalize_model_id(str(e.get("id"))) for e in entries if e.get("id")]
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError, KeyError):
+        return None
 
 
 def default_mode() -> str:

@@ -543,6 +543,10 @@ async def lifespan(app: FastAPI):
     watcher = (
         asyncio.create_task(_watch_data_dir(app)) if RESCAN_INTERVAL_SECONDS > 0 else None
     )
+    # 選べるモデルと考える量を、裏で先に聞いておく(`answer.warm_choices`)。
+    # CLI ブリッジは聞かれてから CLI を起こすので、冷えたまま開くと一覧が出るまで数秒
+    # かかる —— 最初に画面を開いた人にそれを払わせない。立ち上がりは待たせない
+    choices = asyncio.create_task(answer.warm_choices())
     # 収集の時計。置き場が無ければ回さない(機能フラグと同じ扱い)
     collector = (
         asyncio.create_task(_run_collections(app))
@@ -570,7 +574,7 @@ async def lifespan(app: FastAPI):
         async with mcp.session_manager.run(), knowledge.session_manager.run():
             yield
     finally:
-        for task in (watcher, collector):
+        for task in (watcher, collector, choices):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -2395,7 +2399,14 @@ async def ai_backends() -> dict:
     モデルは相手に聞けた場合はその答え(聞けなければコードの控え)。
     """
     names = answer.backend_names()
-    models = await asyncio.gather(*(answer.available_models(name) for name in names))
+    # **どちらも `answer` 側を通す**(控えを返すだけなので速い)。
+    # 決め打ちを直に読んでいた頃は、ブリッジが名乗る段階も、選んでも効かない相手で
+    # 欄を隠す判断も、この口にだけ届いていなかった —— 呼ぶ側の画面と Chiezo 自身の
+    # 画面で、並ぶ候補が食い違うことになる
+    models, efforts = await asyncio.gather(
+        asyncio.gather(*(answer.available_models(name) for name in names)),
+        asyncio.gather(*(answer.available_efforts(name) for name in names)),
+    )
 
     return {
         "backends": [
@@ -2403,7 +2414,7 @@ async def ai_backends() -> dict:
                 "id": name,
                 "label": answer.backend_label(name),
                 "models": list(available),
-                "efforts": list(providers.efforts_of(name)),
+                "efforts": list(levels),
                 # モデルを必ず指定しないといけない相手か(false なら「既定」を選べる)
                 "model_required": bool(spec.model_required) if spec else True,
                 # web 検索を開けるか(`/v1/ai/complete` の `web=true`)。
@@ -2412,7 +2423,7 @@ async def ai_backends() -> dict:
                 # 出さないと、選べてしまってから 400 で断られることになる
                 "web": bool(spec and spec.bridge) or websearch.is_enabled(),
             }
-            for name, available in zip(names, models, strict=True)
+            for name, available, levels in zip(names, models, efforts, strict=True)
             for spec in (providers.get(name),)
         ]
     }

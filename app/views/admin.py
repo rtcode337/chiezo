@@ -456,7 +456,8 @@ def _model_select(backend: str | None, current: str | None, field: str = "model"
 def _effort_select(backend: str | None, current: str | None, field: str = "effort") -> str:
     """考える量のセレクト。持たない相手では候補が空(「相手の既定」だけ)になる。"""
     return _candidate_select(
-        field, current, providers.efforts_of(answer.normalize_backend(backend)), "相手の既定"
+        field, current, providers.selectable_efforts(answer.normalize_backend(backend)),
+        "相手の既定",
     )
 
 
@@ -474,8 +475,10 @@ def _backend_hint() -> str:
         parts = []
         if spec.models:
             parts.append("モデル: " + " / ".join(spec.models))
-        if spec.efforts:
-            parts.append("深さ: " + " / ".join(spec.efforts))
+        # **選べるぶんだけを書く**(セレクトと食い違わせない)。モデルの名前に
+        # 考える量が埋まっている相手では、深さの欄そのものが出ない
+        if levels := providers.selectable_efforts(name):
+            parts.append("深さ: " + " / ".join(levels))
         lines.append(f"{esc(spec.label)} — " + ("、".join(parts) if parts else "指定なしでよい"))
     if not lines:
         return ""

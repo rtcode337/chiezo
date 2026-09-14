@@ -17,7 +17,7 @@ def monkeypatch_env(monkeypatch, built_data_dir, tmp_path):
     monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
     # モデル一覧はプロセス内にキャッシュされる(TTL つき)。他のテストが入れた値を
     # 引き継ぐと、この偽の相手が名乗った一覧と食い違う
-    answer._MODELS_CACHE.clear()
+    answer.forget_choices()
     return monkeypatch
 
 

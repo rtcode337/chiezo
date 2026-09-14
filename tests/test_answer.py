@@ -456,7 +456,7 @@ class TestBackends:
                 monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
         # 相手に聞いたモデル一覧の控えは、テスト間で持ち越さない
-        answer._MODELS_CACHE.clear()
+        answer.forget_choices()
         answer._MODEL_LABEL_CACHE.clear()
 
     def test_local_is_just_another_provider(self):
@@ -623,7 +623,7 @@ class TestStaleModelName:
 
         settings_store.set_credential("gemini", "k")
         settings_store.set_enabled("gemini", True)
-        answer._MODELS_CACHE.clear()
+        answer.forget_choices()
         monkeypatch.setattr(
             answer, "_llm_client",
             lambda cfg: httpx.AsyncClient(transport=httpx.MockTransport(
@@ -787,7 +787,7 @@ class TestModelCandidates:
         from app import answer
 
         monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
-        answer._MODELS_CACHE.clear()
+        answer.forget_choices()
 
     def test_falls_back_to_the_code_candidates(self):
         """相手に聞けないときはコードの控えを使う（無効な相手は聞きにいけない）。"""
@@ -815,6 +815,110 @@ class TestModelCandidates:
             lambda cfg: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         )
         assert asyncio.run(answer.available_models("openrouter")) == ["x/y:free", "a/b:free"]
+
+    def test_it_asks_once_and_then_only_answers(self, monkeypatch):
+        """**一度取れたら取り直さない。** 一覧は頻繁に引かれる（画面を開くたび・
+        巡回の設定を触るたび）ので、期限で取り直す作りにすると、そのたびに誰か 1 人が
+        相手の起動ぶん（CLI ブリッジでは実測 8 秒台）を払う —— 返るのは前と同じ一覧。
+        """
+        import asyncio
+
+        from app import answer, settings_store
+
+        settings_store.set_credential("openrouter", "k")
+        settings_store.set_verified("openrouter", True)
+        settings_store.set_enabled("openrouter", True)
+        asked = []
+
+        def handler(request):
+            asked.append(1)
+            return httpx.Response(200, json={"data": [{"id": f"m{len(asked)}"}]})
+
+        monkeypatch.setattr(
+            answer, "_llm_client",
+            lambda cfg: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+
+        async def go():
+            return [await answer.available_models("openrouter") for _ in range(3)]
+
+        assert asyncio.run(go()) == [["m1"], ["m1"], ["m1"]]
+        assert len(asked) == 1
+
+    def test_a_backend_that_was_not_up_yet_is_asked_again(self, monkeypatch):
+        """**聞けなかったことは覚えない。** 相手が立ち上がるより先に聞いた 1 回で
+        コードの決め打ちを覚えてしまうと、立て直すまでそれが居座る。
+        """
+        import asyncio
+
+        from app import answer, providers, settings_store
+
+        settings_store.set_credential("openrouter", "k")
+        settings_store.set_verified("openrouter", True)
+        settings_store.set_enabled("openrouter", True)
+        asked = []
+
+        def handler(request):
+            asked.append(1)
+            if len(asked) == 1:
+                raise httpx.ConnectError("まだ立ち上がっていない")
+            return httpx.Response(200, json={"data": [{"id": "m1"}]})
+
+        monkeypatch.setattr(
+            answer, "_llm_client",
+            lambda cfg: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+
+        async def go():
+            cold = await answer.available_models("openrouter")
+            # 聞けなかった直後は、相手を叩き続けずに控えを返す
+            same = await answer.available_models("openrouter")
+            answer._RETRY_AT.clear()  # 試してよくなる時刻まで進んだことにする
+            return cold, same, await answer.available_models("openrouter")
+
+        cold, same, later = asyncio.run(go())
+        assert cold == list(providers.get("openrouter").models)
+        assert same == cold
+        assert len(asked) == 2  # 立て続けには聞きに行かない
+        assert later == ["m1"]  # 立ち上がったら、そちらが正
+
+
+class TestSelectableEfforts:
+    """**選んでも効かない欄は出さない。** ただし、既に保存されている設定から
+    飛んでくるので、飛んできたものは今までどおり受け取る。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean(self, monkeypatch, tmp_path):
+        from app import answer
+
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        answer.forget_choices()
+
+    def test_a_backend_that_bakes_it_into_the_model_name_offers_none(self):
+        """Antigravity は考える量が slug に埋まっている（`gemini-3.8-flash-high`）。
+
+        モデルを選んだ時点で送らなくなるので、欄を出すと「選べるのに効かない」になる。
+        """
+        import asyncio
+
+        from app import answer, providers
+
+        assert providers.get("antigravity").model_carries_effort
+        assert providers.selectable_efforts("antigravity") == ()
+        assert asyncio.run(answer.available_efforts("antigravity")) == []
+
+    def test_it_still_takes_one_that_was_already_saved(self):
+        """出さないことと、受け取らないことは別。弾くと保存し直せなくなる。"""
+        from app import answer
+
+        assert answer.normalize_effort("antigravity", "high") == "high"
+        assert answer.normalize_effort("antigravity", "xhigh") == ""  # 元から無い段階
+
+    def test_other_backends_keep_their_levels(self):
+        from app import providers
+
+        assert providers.selectable_efforts("claude") == providers.efforts_of("claude")
 
 
 class TestAnswerLayerSwitch:

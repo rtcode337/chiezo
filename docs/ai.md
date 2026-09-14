@@ -1201,16 +1201,32 @@ Please try signing in again.
 間違っていれば CLI のエラーがそのまま画面に出ます。`-` で始まる名前だけは拒みます
 （引数として渡すので、CLI のフラグとして解釈されてしまうため）。
 
-| CLI | 候補 | 備考 |
+| CLI | 候補 | どこから取るか |
 |---|---|---|
-| Claude Code | `sonnet` / `fable` / `opus` / `haiku` | `claude --help` のエイリアス（4 つとも実測） |
-| Codex CLI | （なし） | 一覧を出す口が無い |
-| Antigravity CLI | `gemini-3.8-flash-{high,medium,low}` / `gemini-3.7-flash-…` / `gemini-3.6-flash-…` / `gemini-3.1-pro-{high,low}` / `claude-sonnet-4-6` / `claude-opus-4-6-thinking` / `gpt-oss-120b-medium` | `agy models` の出力（実測）。**考える量が名前に埋まっている** |
+| Claude Code | `sonnet` / `fable` / `opus` / `haiku` | `claude --help` のエイリアス（4 つとも実測。コードの控え） |
+| Codex CLI | `gpt-6-astra` / `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.5` | `$CODEX_HOME/models_cache.json`（codex 自身が落としてくる控え） |
+| Antigravity CLI | `gemini-3.8-flash-{high,medium,low}` / `gemini-3.7-flash-…` / `gemini-3.6-flash-…` / `gemini-3.1-pro-{high,low}` / `claude-sonnet-4-6` / `claude-opus-4-6-thinking` / `gpt-oss-120b-medium` | `agy models` の出力 |
 
-**Antigravity でモデルを選ぶと、考える量を送りません。** slug のほうが持っているので、
-両方渡すと `--model gemini-3.8-flash-high --effort low` のような食い違う組み合わせを
-作れてしまい、**どちらが勝つかは agy 次第でこちらからは読めません**。モデルを
-選ばなかったときは今までどおり送ります（相手の既定モデルに効きます）。
+**Codex には一覧を出すコマンドがありません**が、置き場にサーバーから取った控えが
+落ちています（slug・画面に出してよいか・受け付ける考える量）。**CLI を起こさずに読める**
+ので、枠も食わず待ち時間もありません。サインイン前は控えが無いので候補も空になります
+（そこで名前を作ると、選ぶと必ず失敗する候補が並びます）。
+
+**一覧は立ち上がってすぐ、裏で聞いておきます。** 聞かれてから聞きに行くと、最初に画面を
+開いた人が CLI の起動ぶん（実測で数秒）待つことになり、しかも待った末に返るのは同じ
+答えです。Chiezo 側も**起動時に 1 回聞いて、あとは控えを返すだけ**にしてあります
+（`app/answer.py`）。一覧が変わるのは CLI やサービスの版が上がったときで、そこは必ず
+立て直しを伴うので、期限で取り直す意味がありません。相手が立ち上がる前に聞いてしまった
+ときだけ、しばらく置いてから試し直します。
+
+**Antigravity には考える量の欄を出しません。** slug のほうが持っているので、モデルを
+選んだ時点で送らなくなります —— 両方渡すと `--model gemini-3.8-flash-high --effort low`
+のような食い違う組み合わせを作れてしまい、**どちらが勝つかは agy 次第でこちらからは
+読めません**。**選んだつもりが効いていないのは、欄が無いより悪い**ので、選ばせるのを
+やめました。
+
+**出さないことと、受け取らないことは別です。** 既に保存されている設定からは今までどおり
+飛んでくるので、飛んできたものは受け取ります（弾くと、その設定を保存し直せなくなる）。
 
 **Claude と GPT は Gemini と別の枠です**（週 / 5 時間がそれぞれに立ちます）。Gemini 側を
 使い切ったときの逃げ先になりますが、**同じ Google AI の契約**なので、契約ごと替えたい
@@ -1236,7 +1252,16 @@ Claude Code の既定は `claude-sonnet-5` です。ただし **Gemini や OpenR
 |---|---|---|
 | Claude Code | `low` / `medium` / `high` / `xhigh` / `max` | `claude --help`（5 つとも実測） |
 | Antigravity CLI | `low` / `medium` / `high` | `agy --help`（`xhigh` / `max` は無い） |
-| Codex CLI | （なし） | `codex exec --help` に無い |
+| Codex CLI | `low` / `medium` / `high` / `xhigh` | `$CODEX_HOME/models_cache.json` |
+
+**Codex の段階はモデルごとに違います**（最上位のモデルだけが `max` を受けるなど）。
+ブリッジは相手ごとに 1 本の一覧しか名乗れないので、**どのモデルと組み合わせても通る
+段階だけ**に絞ります。union にすると、モデルを選び直した拍子に通らない組み合わせが
+できます。
+
+**Codex には考える量のフラグがありません**。設定キー（`-c model_reasoning_effort=<段階>`）
+で渡します。渡ったことは codex が起動時に出す見出し（`reasoning effort: <段階>`）で
+確かめられます。
 
 **モデル名と違い、一覧に無い値は 400 で拒みます。** claude は `--effort bogus` を
 エラーにも警告にもせず**黙って既定で動く**（実測）ので、通すと「選んだのに効いていない」

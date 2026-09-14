@@ -22,7 +22,12 @@ def bridge(monkeypatch):
         for key, value in env.items():
             monkeypatch.setenv(key, value)
         import cli_bridge
-        return importlib.reload(cli_bridge)
+        server = importlib.reload(cli_bridge)
+        # **手元の CLI へ手を伸ばさせない。** 立ち上がりで一覧を聞きに行く作りなので、
+        # そのままだと走らせた機械のサインイン状態で結果が変わる（しかも CLI が
+        # 1 本起きる）。聞き取りそのものは `_ask_*` / `_parse_*` を直に呼んで確かめる
+        server._PROBED = True
+        return server
     return _load
 
 
@@ -440,6 +445,51 @@ class TestModelSelection:
 
         assert server._parse_efforts("--effort  好きなだけ考えてよい\n") == ()
         assert server.efforts_now() == ("low", "medium", "high", "xhigh", "max")
+
+    def test_codex_reads_its_list_from_the_file_the_cli_keeps(self, bridge, tmp_path, monkeypatch):
+        """codex には一覧を出すコマンドが無いが、置き場に控えが落ちている。
+
+        **CLI を起こさずに読める**ので、枠も食わず待ち時間も無い。
+        """
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        (tmp_path / "models_cache.json").write_text(json.dumps({"models": [
+            {"slug": "gpt-b", "visibility": "list", "priority": 4,
+             "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}]},
+            {"slug": "gpt-a", "visibility": "list", "priority": 1,
+             "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"},
+                                            {"effort": "max"}]},
+            {"slug": "内部用", "visibility": "hide", "priority": 2,
+             "supported_reasoning_levels": [{"effort": "low"}]},
+        ]}), encoding="utf-8")
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+
+        catalog = server._codex_catalog()
+        # 画面に出してよいものだけを、既定が先頭に来る並びで
+        assert [m["slug"] for m in catalog] == ["gpt-a", "gpt-b"]
+        # 段階はモデルごとに違うので、**どれと組み合わせても通るものだけ**を並べる
+        assert server._catalog_efforts(catalog) == ("low", "high")
+
+    def test_codex_without_the_file_offers_nothing(self, bridge, tmp_path, monkeypatch):
+        """**サインイン前は控えが無い**。そこで名前を作ると、選ぶと必ず失敗する候補が並ぶ。"""
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+
+        assert server._codex_catalog() == []
+        assert server._catalog_efforts([]) == ()
+
+    def test_codex_takes_the_effort_as_a_setting(self, bridge):
+        """考える量に専用のフラグは無く、設定キーで渡す（`codex exec --help` に無い）。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        cmd = server.build_command("/tmp/out.txt", "q", "", "high")
+
+        assert "-c" in cmd
+        assert "model_reasoning_effort=high" in cmd
+
+    def test_codex_without_an_effort_leaves_the_setting_alone(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        cmd = server.build_command("/tmp/out.txt", "q", "", "")
+
+        assert not any(str(part).startswith("model_reasoning_effort=") for part in cmd)
 
     def test_the_list_can_be_given_from_outside(self, bridge):
         server = bridge(CHIEZO_BRIDGE_CLI="codex", CHIEZO_BRIDGE_MODELS="gpt-x, gpt-y ")

@@ -21,7 +21,7 @@ def env(monkeypatch, built_data_dir, tmp_path):
 
     monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
     monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
-    answer._MODELS_CACHE.clear()
+    answer.forget_choices()
     return monkeypatch
 
 

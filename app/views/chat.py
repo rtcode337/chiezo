@@ -481,7 +481,7 @@ async def chat_page(
     # エフォート（考える量）。持っている相手のときだけ出す —— 持たない相手に
     # 出しても送るだけ無駄で、選べたのに効かない、という分かりにくさが残る。
     effort_select = ""
-    effort_names = providers.efforts_of(current_backend)
+    effort_names = providers.selectable_efforts(current_backend)
     if effort_names:
         effort_options = '<option value="">考える量（既定）</option>' + "".join(
             f'<option value="{esc(e)}"{" selected" if e == effort else ""}>{esc(e)}</option>'

@@ -304,9 +304,27 @@ def label_of(provider_id: str) -> str:
 
 
 def efforts_of(provider_id: str) -> tuple[str, ...]:
-    """その相手で選べるエフォート（空なら画面に出さない）。"""
+    """その相手が**受け取れる**エフォート。
+
+    検証に使う値（`answer.normalize_effort`）なので、画面に出さない相手のぶんも
+    残す —— 既に保存されている設定から飛んでくるものを弾かないため。
+    """
     p = get(provider_id)
     return p.efforts if p else ()
+
+
+def selectable_efforts(provider_id: str) -> tuple[str, ...]:
+    """その相手で**選ばせる**エフォート（空なら画面に出さない）。
+
+    **モデルの名前に考える量が埋まっている相手では空**（Antigravity の
+    `gemini-3.8-flash-high` など）。あそこで選べても、モデルを選んだ時点で
+    送らなくなる（`model_carries_effort`）ので、**選べるのに効かない欄**になる。
+    選んだつもりが効いていないのは、欄が無いより悪い。
+    """
+    p = get(provider_id)
+    if p is None or p.model_carries_effort:
+        return ()
+    return p.efforts
 
 
 def bridge_hostnames() -> tuple[tuple[str, str], ...]:
