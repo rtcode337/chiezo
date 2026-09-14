@@ -240,9 +240,13 @@ def _memory_html(sources: dict[str, Source], disabled: str) -> str:
 
     焼くこと自体は普通の取り込みなので、ボタンの行き先は初期化・再構築と同じ
     (`chiezo-app` が素材を配り、ingest が焼く)。ここが持つのは**待ち行列の数**と、
-    焼き上がりを確かめてから短期側に印を付ける「片付ける」だけ。
+    移し終えたメモを短期側から消す「片付ける」だけ。
 
-    **`固化対象` を付ける口は置かない** —— ただのタグなので、短期記憶の画面や MCP の
+    **印の付け替えはボタンではない** —— 固化が済んだ時点で自分から動く
+    (`memory.catch_up`)。人が押して回る手順にしていた頃は、焼けているのに印が
+    「まだ移していない」のまま残り、次の固化で同じものをもう一度焼いていた。
+
+    **`_chiezo_consolidate` を付ける口は置かない** —— ただのタグなので、短期記憶の画面や MCP の
     `update` で付く。ここに足すと同じことをする経路が 2 つになる。
     """
     if not memory.is_enabled():
@@ -258,6 +262,8 @@ def _memory_html(sources: dict[str, Source], disabled: str) -> str:
     # ステータスしか残らない。焼くものが無いことは押す前から分かっている。
     empty = not state["pending"]
     burn_disabled = disabled or (" disabled" if empty else "")
+    # 移し終えたものが 1 件も無ければ、片付けるものも無い
+    sweep_disabled = "" if state["swept"] else " disabled"
     waiting = f'<strong>{state["pending"]:,} 件</strong>' if not empty else (
         '<strong>0 件</strong> <span class="muted">(焼くものが無いので「固化する」は'
         "押せません)</span>"
@@ -277,14 +283,19 @@ def _memory_html(sources: dict[str, Source], disabled: str) -> str:
 <form class="init-form" method="post" action="{esc(burn)}">
 <button type="submit"{burn_disabled}>固化する</button></form>
 <form class="init-form" method="post" action="/admin/memory/sweep"
- onsubmit="return confirm('長期側へ移せたメモの印を{esc(notes.CONSOLIDATE_TAG)}から
-{esc(notes.CONSOLIDATED_TAG)}に付け替えます。よろしいですか?')">
-<button type="submit">片付ける</button></form>
+ onsubmit="return confirm('長期記憶へ移し終えたメモ {state["swept"]:,} 件を、
+短期記憶から消します。長期側には同じ見出しの文書が残りますが、
+短期側のものは戻せません。よろしいですか?')">
+<button type="submit"{sweep_disabled}>片付ける({state["swept"]:,} 件)</button></form>
 <p class="muted">
 短期記憶のメモに <code>{esc(notes.CONSOLIDATE_TAG)}</code> を付けると、次の固化で
 長期記憶へ移る(見出しが同じものは上書き、<code>{esc(notes.TOMBSTONE_TAG)}</code> も
-付いていれば長期側から落とす)。焼き上がったら「片付ける」で
-<code>{esc(notes.CONSOLIDATED_TAG)}</code> に変わり、<code>recall</code> の既定から外れる。<br>
+付いていれば長期側から落とす)。<strong>焼き上がった時点で印が
+<code>{esc(notes.CONSOLIDATED_TAG)}</code> に変わり</strong>、<code>recall</code> の
+既定から外れる(長期側に反映されたことを確かめてから付くので、移っていないのに
+印だけ付くことは無い)。<br>
+「片付ける」は、その印が付いたメモを<strong>短期記憶から消す</strong> ——
+思い出す先が長期側へ移った控えなので、残すと同じ内容が 2 か所に積み上がる。<br>
 付けるのは人でも AI でもよい —— MCP の <code>update</code> でタグを足すだけなので、
 「短期記憶を順に見て、残す価値があるものに印を付けて」と頼めば回る。
 </p>
@@ -3069,7 +3080,7 @@ def _colour_diff(text: str) -> str:
 
 @router.post("/admin/memory/sweep")
 def admin_sweep_memory(request: Request):
-    """焼き上がりを確かめて、短期側の印を `固化対象` から `固化` に付け替える。"""
+    """長期記憶へ移し終えたメモを、短期記憶から消す。"""
     memory.sweep(request.app.state.sources)
     return RedirectResponse(url="/admin/memory#consolidation", status_code=303)
 

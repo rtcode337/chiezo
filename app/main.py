@@ -155,12 +155,19 @@ def refresh_sources(app: FastAPI) -> bool:
     別マシンで焼いた DB のコピーを、app の再起動なしで反映するための入口。指紋を先に取って
     から走査するので、走査中にさらに変化があっても次回の呼び出しで拾い直せる。
     接続の開き直しはここではなく db.get_connection が実体の inode を見て行う。
+
+    **固化の印もここで追いつかせる**(`memory.catch_up`)。長期側が変わったという
+    合図をいちばん早く受け取るのがここで、固化が終わったかどうかは他に知る手立てが
+    無い(焼くのは別のプロセス)。人が押して回る手順にしていた頃は、焼けているのに
+    印が「まだ移していない」のまま残り、次の固化で同じものをもう一度焼いていた。
     """
     fp = data_dir_fingerprint(app.state.data_dir)
     if fp == app.state.data_fingerprint:
         return False
     app.state.data_fingerprint = fp
     app.state.sources = scan_all(app.state.data_dir)
+    if moved := memory.catch_up(app.state.sources):
+        log.info("memory: marked %d note(s) as consolidated", moved)
     return True
 
 
@@ -1580,7 +1587,12 @@ def memory_status(request: Request):
 
 @app.post("/v1/memory/sweep")
 def memory_sweep(request: Request):
-    """焼き上がりを確かめて、短期側の印を `固化対象` から `固化` に付け替える。"""
+    """**長期記憶へ移し終えたメモを、短期記憶から消す。**
+
+    印の付け替えはここではない —— 固化が済んだ時点で自分から動く
+    (`memory.catch_up`)。ここがするのは、その印が付いたものを消すところまで。
+    **取り消せない**(長期側には同じ見出しの文書が残る)。
+    """
     return memory.sweep(request.app.state.sources)
 
 

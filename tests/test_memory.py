@@ -147,7 +147,6 @@ class TestUpdateAndDelete:
         before = client.get(
             "/v1/memory/doc", params={"title": "決まり", "fields": "doc_id,body"}
         ).json()
-        client.post("/v1/memory/sweep")
 
         # 本文を直すと固化の印が外れるので、もう一度 `固化対象` を付けて焼き直す
         client.patch(f"/v1/notes/{note['doc_id']}", json={"text": "新しい内容"})
@@ -166,7 +165,6 @@ class TestUpdateAndDelete:
         for note in (gone, stay):
             mark(client, note["doc_id"], TARGET)
         consolidate(client, data_dir)
-        client.post("/v1/memory/sweep")
 
         mark(client, gone["doc_id"], f"{TARGET},{TOMB}")
         consolidate(client, data_dir)
@@ -181,7 +179,6 @@ class TestUpdateAndDelete:
         note = remember(client, "唯一の決まり", title="決まり")
         mark(client, note["doc_id"], TARGET)
         consolidate(client, data_dir)
-        client.post("/v1/memory/sweep")
         mark(client, note["doc_id"], f"{TARGET},{TOMB}")
 
         res = client.get("/v1/memory/fetch")
@@ -193,7 +190,6 @@ class TestUpdateAndDelete:
         old = remember(client, "残ってほしい", title="古株")
         mark(client, old["doc_id"], TARGET)
         consolidate(client, data_dir)
-        client.post("/v1/memory/sweep")
 
         new = remember(client, "あとから来た", title="新入り")
         mark(client, new["doc_id"], TARGET)
@@ -210,7 +206,6 @@ class TestUpdateAndDelete:
         note = remember(client, "古い内容", title="決まり")
         mark(client, note["doc_id"], TARGET)
         first = consolidate(client, data_dir)
-        client.post("/v1/memory/sweep")
 
         client.patch(f"/v1/notes/{note['doc_id']}", json={"text": "新しい内容"})
         mark(client, note["doc_id"], TARGET)
@@ -221,59 +216,109 @@ class TestUpdateAndDelete:
         assert generations == [f"memory-{first}.db", f"memory-{second}.db"]
 
 
-class TestSweep:
-    def test_refuses_before_anything_is_burned(self, client):
-        note = remember(client, "まだ焼いていない")
-        mark(client, note["doc_id"], TARGET)
-        res = client.post("/v1/memory/sweep")
-        assert res.status_code == 409
-        assert "not consolidated yet" in res.json()["error"]
+class TestMarkingWhatMoved:
+    """**固化が済んだ時点で印が変わる。**
 
-    def test_the_mark_moves_from_target_to_done(self, client, data_dir):
+    人が押して回る手順にしていた頃は、焼けているのに印が「まだ移していない」の
+    まま残り、次の固化で同じものをもう一度焼いていた。
+    """
+
+    def test_the_mark_moves_when_the_burn_lands(self, client, data_dir):
         note = remember(client, "焼かれる決まり", title="決まり", tags="rule")
         mark(client, note["doc_id"], f"rule,{TARGET}")
+
         consolidate(client, data_dir)
 
-        assert client.post("/v1/memory/sweep").json()["marked"] == 1
         tags = client.get(f"/v1/notes/doc/{note['doc_id']}").json()["tags"]
         assert DONE in tags and TARGET not in tags
         # メモとして付けていたタグは残す
         assert "rule" in tags
 
+    def test_nothing_moves_before_the_burn(self, client):
+        """**焼く前に印だけ付かない。** 条件は「意図どおり長期側へ反映されたこと」。"""
+        from app import memory
+
+        note = remember(client, "まだ焼いていない")
+        mark(client, note["doc_id"], TARGET)
+
+        assert memory.catch_up(client.app.state.sources) == 0
+        assert TARGET in client.get(f"/v1/notes/doc/{note['doc_id']}").json()["tags"]
+
     def test_a_tombstone_is_marked_only_when_the_target_is_gone(self, client, data_dir):
+        from app import memory
+
         gone = remember(client, "消される決まり", title="要らない決まり")
         stay = remember(client, "残る決まり", title="残す決まり")
         for note in (gone, stay):
             mark(client, note["doc_id"], TARGET)
         consolidate(client, data_dir)
-        client.post("/v1/memory/sweep")
 
         mark(client, gone["doc_id"], f"{TARGET},{TOMB}")
         # まだ焼き直していないので、長期側には残っている = 反映されていない
-        assert client.post("/v1/memory/sweep").json()["marked"] == 0
+        assert memory.catch_up(client.app.state.sources) == 0
 
         consolidate(client, data_dir)
-        assert client.post("/v1/memory/sweep").json()["marked"] == 1
+        assert DONE in client.get(f"/v1/notes/doc/{gone['doc_id']}").json()["tags"]
 
     def test_consolidated_notes_drop_out_of_recall(self, client, data_dir):
         note = remember(client, "焼かれる決まり", title="決まり")
         remember(client, "まだ短期にいる", title="決めたこと")
         mark(client, note["doc_id"], TARGET)
         consolidate(client, data_dir)
-        client.post("/v1/memory/sweep")
 
         titles = [n["title"] for n in client.get("/v1/notes/recall").json()["notes"]]
         assert titles == ["決めたこと"]
 
     def test_search_still_sees_consolidated_notes(self, client, data_dir):
-        """隠すのは時系列の想起だけ。検索は今までどおり全部見せる。"""
+        """隠すのは時系列の想起だけ。検索は消すまで全部見せる。"""
+        note = remember(client, "焼かれる決まり", title="決まり")
+        mark(client, note["doc_id"], TARGET)
+        consolidate(client, data_dir)
+
+        hits = client.get("/v1/notes/search", params={"q": "焼かれる決まり"}).json()["results"]
+        assert [h["title"] for h in hits] == ["決まり"]
+
+
+class TestSweep:
+    """「片付ける」= **移し終えたメモを短期記憶から消す**。
+
+    思い出す先が長期側へ移った控えなので、残すと同じ内容が 2 か所に積み上がる ——
+    直すときにどちらが正か言えなくなる。
+    """
+
+    def test_it_removes_what_already_moved(self, client, data_dir):
+        note = remember(client, "焼かれる決まり", title="決まり")
+        keep = remember(client, "まだ短期にいる", title="決めたこと")
+        mark(client, note["doc_id"], TARGET)
+        consolidate(client, data_dir)
+
+        body = client.post("/v1/memory/sweep").json()
+        assert body["removed"] == 1 and body["titles"] == ["決まり"]
+
+        assert client.get(f"/v1/notes/doc/{note['doc_id']}").status_code == 404
+        # 印の付いていないメモには触らない
+        assert client.get(f"/v1/notes/doc/{keep['doc_id']}").status_code == 200
+
+    def test_the_long_term_copy_stays(self, client, data_dir):
+        """消えるのは控えのほうだけ(移った先には同じ見出しの文書がある)。"""
         note = remember(client, "焼かれる決まり", title="決まり")
         mark(client, note["doc_id"], TARGET)
         consolidate(client, data_dir)
         client.post("/v1/memory/sweep")
 
-        hits = client.get("/v1/notes/search", params={"q": "焼かれる決まり"}).json()["results"]
-        assert [h["title"] for h in hits] == ["決まり"]
+        assert client.get(
+            "/v1/memory/doc", params={"title": "決まり"}
+        ).status_code == 200
+
+    def test_it_leaves_what_has_not_moved_yet(self, client):
+        """焼く前のものは消さない(移した先が無い)。"""
+        note = remember(client, "まだ焼いていない")
+        mark(client, note["doc_id"], TARGET)
+
+        body = client.post("/v1/memory/sweep").json()
+
+        assert body["removed"] == 0 and body["pending"] == 1
+        assert client.get(f"/v1/notes/doc/{note['doc_id']}").status_code == 200
 
 
 class TestStatus:
@@ -314,11 +359,11 @@ class TestAdminScreen:
         html = client.get("/admin/memory").text
         assert "焼くものが無いので" in html
 
-    def test_sweeping_from_the_form_moves_the_mark(self, client, data_dir):
+    def test_sweeping_from_the_form_removes_what_moved(self, client, data_dir):
         note = remember(client, "焼かれる決まり", title="決まり")
         mark(client, note["doc_id"], TARGET)
         consolidate(client, data_dir)
 
         res = client.post("/admin/memory/sweep", follow_redirects=False)
         assert res.status_code == 303
-        assert DONE in client.get(f"/v1/notes/doc/{note['doc_id']}").json()["tags"]
+        assert client.get(f"/v1/notes/doc/{note['doc_id']}").status_code == 404

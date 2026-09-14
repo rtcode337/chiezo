@@ -20,18 +20,18 @@
 入っている)ので、設定を足さなくても管理画面の一覧に出るし、`SOURCE=memory` で CLI
 からも回せる。DB の構築・FTS・タグ転置表・世代切り替え・検証は本体の仕掛けがそのまま効く。
 
-## 素材は「前世代 + 固化対象」
+## 素材は「前世代 + 印の付いたメモ」
 
 長期記憶も更新される —— 確定したつもりの知識は変わるし、消したくもなる。ところが
 jawiki や geonames と違って、このソースには外に素材が無い(短期側を消した瞬間、
 中身は焼いた DB の中にしか残らない)。そこで自分自身を素材に含める:
 
-    前世代の `memory` の全文書 + `固化対象` のメモ(同じ見出しは短期側が勝つ)
+    前世代の `memory` の全文書 + `_chiezo_consolidate` のメモ(同じ見出しは短期側が勝つ)
 
 こうすると 1 本のフローに追加・更新・削除が全部乗る:
 
-- 追加 … 短期記憶に書いて `固化対象` を付ける
-- 更新 … 長期側と同じ見出しのメモに `固化対象` を付ける(焼くとき短期側が勝つ)
+- 追加 … 短期記憶に書いて `_chiezo_consolidate` を付ける
+- 更新 … 長期側と同じ見出しのメモに `_chiezo_consolidate` を付ける(焼くとき短期側が勝つ)
 - 削除 … そのメモに墓標のタグ(`notes.TOMBSTONE_TAG`)も付ける。対象ごと落ち、墓標も焼かない
 
 その場で書き換えるのではなく毎回作り直すので、焼き損じてもブルーグリーンの前世代へ
@@ -42,7 +42,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from fastapi import HTTPException
 
@@ -73,19 +75,43 @@ def is_enabled() -> bool:
     return notes.is_enabled()
 
 
+def long_term_path() -> Path | None:
+    """焼いた長期記憶のファイル。**登録表を通さずに引く**。
+
+    やること層は外に出す面(`chiezo-tasks`)からも動き、あちらは `/data` を走査しない
+    (読むのは短期記憶だけ)。固化したタスクとルールを読むのにそこまで要らないので、
+    ファイルを直に指す。**焼く前は None**(まだ 1 件も移していない)。
+    """
+    raw = os.environ.get("CHIEZO_DATA_DIR", "").strip()
+    if not raw:
+        return None
+    path = Path(raw) / f"{SOURCE_NAME}.db"
+    return path if path.exists() else None
+
+
 def pending() -> list[dict]:
-    """次に焼かれるもの —— `固化対象` が付いていて、まだ `固化` でないメモ。"""
+    """次に焼かれるもの —— 移す印が付いていて、まだ移し終えていないメモ。"""
+    return _tagged(notes.CONSOLIDATE_TAG, without=notes.CONSOLIDATED_TAG)
+
+
+def consolidated() -> list[dict]:
+    """**移し終えたメモ**。長期側に同じ見出しがあるので、短期から消してよいもの。"""
+    return _tagged(notes.CONSOLIDATED_TAG)
+
+
+def _tagged(tag: str, without: str | None = None) -> list[dict]:
     path = notes.notes_path()
     if path is None or not path.exists():
         return []
-    rows = db.query(
-        path,
+    sql = (
         "SELECT d.doc_id, d.title, d.body, d.tags, d.updated_at FROM docs d"
         " WHERE d.doc_id IN (SELECT doc_id FROM doc_tags WHERE tag = ?)"
-        " AND d.doc_id NOT IN (SELECT doc_id FROM doc_tags WHERE tag = ?)"
-        " ORDER BY d.doc_id",
-        (notes.CONSOLIDATE_TAG, notes.CONSOLIDATED_TAG),
     )
+    args: list[str] = [tag]
+    if without is not None:
+        sql += " AND d.doc_id NOT IN (SELECT doc_id FROM doc_tags WHERE tag = ?)"
+        args.append(without)
+    rows = db.query(path, sql + " ORDER BY d.doc_id", tuple(args))
     out: list[dict] = []
     for row in rows:
         try:
@@ -130,15 +156,15 @@ def _previous(sources: dict) -> dict[str, dict]:
 def _burnable_tags(tags: list[str]) -> list[str]:
     """長期側へ持っていくタグ。段取りのための 3 つだけ落とす。
 
-    `固化対象` と `固化` は短期側の状態で、長期側では全員がそうなので意味を持たない。
-    `削除` は指示であって知識ではない(そもそも墓標は焼かれない)。
+    `_chiezo_consolidate` と `_chiezo_consolidated` は短期側の状態で、長期側では全員がそうなので意味を持たない。
+    `_chiezo_tombstone` は指示であって知識ではない(そもそも墓標は焼かれない)。
     """
     dropped = (notes.CONSOLIDATE_TAG, notes.CONSOLIDATED_TAG, notes.TOMBSTONE_TAG)
     return [t for t in tags if t not in dropped]
 
 
 def material(sources: dict) -> list[dict]:
-    """焼く素材(前世代 + 固化対象)を doc_id 順に組み立てる。
+    """焼く素材(前世代 + 印の付いたメモ)を doc_id 順に組み立てる。
 
     `doc_id` は前世代のものを引き継ぐ。焼き直しても文書 URL
     (`/search/memory/doc/<id>`)が変わらないようにするため。
@@ -221,11 +247,16 @@ def ndjson(sources: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def sweep(sources: dict) -> dict:
-    """焼き上がりを確かめて、短期側の印を `固化対象` から `固化` に付け替える。
+def mark_consolidated(sources: dict) -> dict:
+    """焼き上がりを確かめて、短期側の印を「移す」から「移した」へ付け替える。
 
-    印の条件は「意図どおり長期側へ反映されていること」。通常のメモは同じ見出しが
-    長期側にあること、墓標は無くなっていること —— 焼く前に呼んでも何も起きない。
+    **固化が済んだ時点で自分から動く**(`main.refresh_sources` が長期側の変化に
+    気づいたら呼ぶ)。人が押して回る手順にしていた頃は、焼けているのに印が
+    「まだ移していない」のまま残り、次の固化で同じものをもう一度焼いていた。
+
+    印の条件は変えない —— 「意図どおり長期側へ反映されていること」。通常のメモは
+    同じ見出しが長期側にあること、墓標は無くなっていること。**焼く前に呼んでも
+    何も起きない**ので、反映されていないのに印だけ付く事故は起きないまま。
     """
     src = sources.get(SOURCE_NAME)
     if src is None:
@@ -258,6 +289,47 @@ def sweep(sources: dict) -> dict:
     }
 
 
+def catch_up(sources: dict) -> int:
+    """固化が済んでいれば印を付け替える。**待っているものが無ければ何もしない**。
+
+    長期側が変わるたびに呼ばれる(`main.refresh_sources`)ので、**ここが軽いことが
+    要る** —— 付け替える相手が居ないうちから長期側の見出しを全部読むと、
+    どのソースを焼き直しても数十万件の読み出しが 1 回増える。
+    """
+    if not is_enabled() or SOURCE_NAME not in sources or not pending():
+        return 0
+    try:
+        return mark_consolidated(sources)["marked"]
+    except HTTPException:
+        return 0
+
+
+def sweep(sources: dict) -> dict:
+    """**移し終えたメモを、短期記憶から消す。**
+
+    短期記憶は「思い出す」ための場所なので、長期側へ移したものが残り続けると、
+    同じ内容が 2 か所にある状態が積み上がる —— 直すときにどちらが正か言えなくなるし、
+    件数も見かけ上増え続ける。**移った先には同じ見出しの文書がある**ので、
+    消えるのは控えのほうだけ。
+
+    **消すのは印が付いているものだけ**(`mark_consolidated` が、長期側に反映されて
+    いることを確かめてから付ける)。**取り消せない**ので、押す側には確認を出す。
+    """
+    if not is_enabled():
+        raise HTTPException(503, {"error": "notes storage is disabled"})
+    removed: list[str] = []
+    for note in consolidated():
+        if notes.delete(note["doc_id"]):
+            removed.append(note["title"])
+    return {
+        "source": SOURCE_NAME,
+        "removed": len(removed),
+        "titles": removed,
+        # まだ焼かれていないぶん(消す対象ではない)
+        "pending": len(pending()),
+    }
+
+
 def status(sources: dict) -> dict:
     """画面と REST に出す状態。"""
     src = sources.get(SOURCE_NAME)
@@ -265,6 +337,8 @@ def status(sources: dict) -> dict:
         "enabled": is_enabled(),
         "source": SOURCE_NAME,
         "pending": len(pending()),
+        # 移し終えて、短期から消せるもの
+        "swept": len(consolidated()),
         "consolidated": src is not None,
         "docs": src.doc_count if src is not None else 0,
         "built_at": src.built_at if src is not None else None,
