@@ -126,17 +126,21 @@ DEFAULT_BACK = "/admin/ai"
 # 「`/admin` で始まるもの」で通していた頃は、**外から来た文字列をそのまま行き先に
 # 繋いでいた** —— 同じ生い立ちのままなので、読む側(と検査する側)には任意の URL を
 # 作れるように見える。行き先が数えられる以上、数え上げるほうが確か。
-BACK_PAGES = frozenset({"/admin", DEFAULT_BACK})
+BACK_PAGES = ("/admin", DEFAULT_BACK)
 
 
 def _back_to(raw: str | None) -> str:
     """戻り先。**このボタンを出している面だけ**を通す(`BACK_PAGES`)。
 
-    外から来た値をそのまま繋がない —— 押した先が別のサイトになる。
     知らない行き先は既定へ倒す(断らないのは、戻れないだけで害が無いため)。
+
+    **照合して通すのではなく、こちらが持っているほうを返す。** 見た目は同じでも、
+    返した文字列が外から来たものかどうかが違う —— 外から来た値は、途中に検査が
+    あっても「外から来た値」のまま行き先になる。返す先を数え上げてある以上、
+    そこから返せば、行き先に外の文字列が入る道が 1 本も残らない。
     """
     path = (raw or "").strip()
-    return path if path in BACK_PAGES else DEFAULT_BACK
+    return next((page for page in BACK_PAGES if page == path), DEFAULT_BACK)
 
 
 def _refresh_all_button() -> str:
