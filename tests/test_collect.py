@@ -1387,10 +1387,11 @@ class TestTheLedgerCountFollowsTheContents:
                 {"key": partitioning.title_key("う", "え"), "count": 9},
             ],
         )
+        # **まとめる大きさには落とさない**(`partitioning.merged`)。ここで見たいのは
+        # 「割り直さずに数だけ取り直す」ことなので、隣とまとまると確かめられない
         previous = {
-            "あ": {"doc_id": 1, "title": "あ", "tags": []},
-            "う": {"doc_id": 2, "title": "う", "tags": []},
-            "え": {"doc_id": 3, "title": "え", "tags": []},
+            t: {"doc_id": i, "title": t, "tags": []}
+            for i, t in enumerate(["あ", "ああ", "あい", "い", "う", "うう", "え", "ええ", "お"])
         }
         item = collect.get("news")
 
@@ -1398,7 +1399,7 @@ class TestTheLedgerCountFollowsTheContents:
 
         # 割り直してはいない(鍵はそのまま)
         assert [p["key"] for p in ledger] == [p["key"] for p in item.partitions]
-        assert [p["count"] for p in ledger] == [1, 2]
+        assert [p["count"] for p in ledger] == [4, 5]
 
 
 class TestCarryingFactsIntoTheDoc:
@@ -1598,7 +1599,9 @@ class TestTheCountAfterTheRun:
             "news",
             enabled=True,
             partition={"by": "band", "prefix": "地域", "value": "年代", "target": 10},
-            partitions=[{"key": moved, "count": 2}, {"key": landed, "count": 0}],
+            # **まとめる大きさには落とさない**(`partitioning.merged`)—— 隣と 1 つに
+            # なると、どちらの区画の数を見ているのか確かめられない
+            partitions=[{"key": moved, "count": 20}, {"key": landed, "count": 0}],
             sweeps=[{"name": "ざっと"}],
         )
 
@@ -1828,6 +1831,19 @@ class TestAskingForAPartition:
         assert body["total"] == 2
         # どの範囲なのかも言う(鍵だけでは読めない)
         assert body["describes"]
+
+    def test_the_screen_opens_the_same_range(self, client, spots, monkeypatch):
+        """画面も同じところを見る(口を二重に持たない)。"""
+        monkeypatch.setattr(client.app.state, "sources", spots, raising=False)
+
+        res = client.get(
+            "/admin/collect/spots/partition",
+            params={"key": partitioning.title_key("あ", "い")},
+        )
+
+        assert res.status_code == 200
+        assert "あ" in res.text and "い" in res.text
+        assert "う" not in res.text.split("<table>")[-1]
 
     def test_what_was_removed_comes_too(self, client, enabled, baked, monkeypatch):
         """**何を外したのかが分からないと、同じものをもう一度挙げることになる。**
@@ -3691,6 +3707,70 @@ class TestSeeingTheMachineStore:
         monkeypatch.delenv("CHIEZO_STATE_DIR", raising=False)
 
         assert "設定の置き場は無効です" in admin._machine_html({})
+
+
+class TestOpeningAPartition:
+    """区画の名前から、**その区画に入っているもの**へ。
+
+    鍵と数だけでは、割り方が合っているかを人が確かめようがない —— 合っているか
+    どうかは、並んだ顔ぶれを見て初めて分かる。
+    """
+
+    @pytest.fixture()
+    def partitioned(self, sample):
+        collect.update(
+            "news",
+            partition={"by": "band", "prefix": "地域", "value": "年代", "target": 10},
+            partitions=[{"key": partitioning.band_key("日本", 1800, 1900), "count": 2}],
+        )
+        return collect.get("news")
+
+    def test_the_name_links_to_what_is_inside(self, partitioned):
+        from app.views import admin
+
+        html = admin._partition_html(partitioned)
+
+        assert "/admin/collect/news/partition?key=" in html
+        assert "1800-1900" in html
+
+    def test_the_key_goes_in_the_query(self, partitioned):
+        """鍵はそのままクエリへ(区切りや記号を含む鍵でも指し先が崩れない)。"""
+        from app.views import admin
+
+        html = admin._partition_html(partitioned)
+
+        assert "partition?key=%E6%97%A5%E6%9C%AC" in html
+
+    def test_the_page_lists_the_members(self, partitioned):
+        from app.views import admin
+
+        members = {
+            "北斎": {"doc_id": 1, "title": "北斎", "body": "浮世絵師", "tags": ["地域:日本"]},
+            "写楽": {
+                "doc_id": 2, "title": "写楽", "body": "生涯と代表作",
+                "tags": ["地域:日本", notes.REMOVED_TAG],
+                "extra": {"removed_reason": "画家ではない"},
+            },
+        }
+        key = partitioned.partitions[0]["key"]
+
+        html = admin._partition_members_html("news", partitioned, key, members, {})
+
+        assert "北斎" in html and "写楽" in html
+        # 焼けているものは、いまの中身へ飛べる
+        assert "/search/news/doc/1" in html
+        # **消えたものもここには出す**(何を外したのかが見えないと判断に使えない)
+        assert "消えたもの: 画家ではない" in html
+
+    def test_an_empty_partition_says_so(self, partitioned):
+        """空欄だけを出すと「読めなかった」のか「居ない」のか分からない。"""
+        from app.views import admin
+
+        html = admin._partition_members_html(
+            "news", partitioned, partitioned.partitions[0]["key"], {}, {}
+        )
+
+        assert "1 件も入っていません" in html
 
 
 class TestEditingTheSweeps:

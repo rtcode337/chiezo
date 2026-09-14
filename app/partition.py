@@ -94,6 +94,15 @@ NEARBY_SAMPLES = 5
 # 見出しで割るときの鍵の長さ。長い見出しをそのまま鍵にすると台帳が太る
 MAX_TITLE_KEY_CHARS = 40
 
+# 隣とまとめてよい大きさ。`target` に届かないどころか、この割合にも満たないとき
+# だけ 1 つにする。**割り直しの引き金は「育った」と「空になった」しかない**ので、
+# 中身が別の区画へ移って痩せた帯も、母集団がそもそも小さい分類も、小さいまま
+# 残り続ける(本番の台帳では 407 区画のうち 18 が 1 人だった)。
+#
+# **`target` 丸ごとを閾値にしない。** ぎりぎり届かないものまでまとめると、
+# まとめた先が `target` を大きく超えて、割り直しと押し合いになる。
+MERGE_RATIO = 0.8
+
 
 def _bad(message: str) -> HTTPException:
     return HTTPException(400, {"error": f"区画の指定が読めません: {message}"})
@@ -649,6 +658,92 @@ def outgrown(spec: dict, counts: dict[str, int]) -> bool:
     """
     limit = spec["target"] * 2
     return any(n > limit or n == 0 for n in counts.values())
+
+
+def merged(spec: dict, partitions: list[dict]) -> list[dict]:
+    """細かく切れすぎた区画を、**隣と 1 つにする**。
+
+    まとめるのは 2 つとも満たすときだけ:
+
+    - **周回の記録が同じ** —— 片方だけ見終えている区画をくっつけると、見ていない
+      ぶんが「見終えた」に混ざる(逆に、見終えたぶんをもう一度回すことになる)。
+      割り直した直後はどれも空なので、そこでは大きさだけで決まる
+    - **合わせても `target` の `MERGE_RATIO` に満たない** —— くっつけた先が
+      `target` を超えては、割り直しと押し合いになる
+
+    **まとめられるのは「幅」で表した区画だけ。** 年代の帯、見出しの範囲、矩形は
+    幅なので、隣り合うぶんを覆う 1 つの幅がある —— **鍵の読み方も、どの文書が
+    どこへ入るかの規則も変わらない**。**幅で表していないものは対象外**:
+    分類の名前(国名)とタグがそれで、2 つの名前を 1 つの名前では表せない。
+    まとめるにはそこだけ別の鍵の形を作ることになり、そこまでして減らす区画ではない。
+
+    年代の帯をまとめると**あいだの空きも埋まる**。帯は「値が詰まっているところ」で
+    切るので `1689-1816` と `1818-1864` のように 1 年空くことがあり、そこに入る
+    値を持った文書はどの区画にも入らない(`_band_of` が None を返す)。
+    """
+    if spec["by"] == BY_TAG:
+        return partitions
+    limit = spec["target"] * MERGE_RATIO
+    out: list[dict] = []
+    for p in partitions:
+        one = {"key": p["key"], "count": int(p.get("count") or 0),
+               "visits": dict(p.get("visits") or {})}
+        joined = _joined(spec, out[-1], one, limit) if out else None
+        if joined is None:
+            out.append(one)
+        else:
+            out[-1] = joined
+    return out
+
+
+def _joined(spec: dict, left: dict, right: dict, limit: float) -> dict | None:
+    """2 つを 1 つにできるなら、その区画。できなければ None。"""
+    if left["visits"] != right["visits"]:
+        return None
+    count = left["count"] + right["count"]
+    if count >= limit:
+        return None
+    key = _joined_key(spec, left["key"], right["key"])
+    return None if key is None else {"key": key, "count": count, "visits": right["visits"]}
+
+
+def _joined_key(spec: dict, left: str, right: str) -> str | None:
+    """2 つの範囲を覆う 1 つの鍵。**1 つの範囲にならないなら None**。"""
+    if spec["by"] == BY_GEO:
+        return _joined_box(parse_geo_key(left), parse_geo_key(right))
+    if spec["by"] == BY_TITLE:
+        a, b = parse_title_key(left), parse_title_key(right)
+        return title_key(a[0], b[1]) if a and b else None
+    a, b = parse_band_key(left), parse_band_key(right)
+    if a is None or b is None or a[0] != b[0]:
+        # 分類が違うものはまたがない(まとめると、その分類の範囲を言えなくなる)
+        return None
+    if a[3] is None and b[3] is None:
+        return band_key(a[0], a[1], b[2])
+    if a[3] is not None and b[3] is not None:
+        # 値の分からないものの置き場どうしは、見出しの範囲でつなぐ
+        lo, hi = parse_title_key(a[3]), parse_title_key(b[3])
+        return band_key(a[0], BAND_UNKNOWN, title_key(lo[0], hi[1])) if lo and hi else None
+    # 年代の帯と「不明」の置き場は、1 つの範囲にならない
+    return None
+
+
+def _joined_box(a, b) -> str | None:
+    """2 つの矩形を覆う矩形。**辺がぴったり合うときだけ**(割った親へ戻るとき)。
+
+    ずれたまま囲む矩形を作ると、**隣の区画へ食い込む** —— そこの文書が 2 つの
+    区画に入ることになり、どちらで見せるかが並び順で決まってしまう。
+    親を二分して作る割り方なので、ぴったり合う組は普通に隣り合う。
+    """
+    if a is None or b is None:
+        return None
+    if a[0] == b[0] and a[2] == b[2] and a[3] == b[1]:
+        # 緯度がそろっていて、経度が接している
+        return geo_key((a[0], a[1], a[2], b[3]))
+    if a[1] == b[1] and a[3] == b[3] and a[2] == b[0]:
+        # 経度がそろっていて、緯度が接している
+        return geo_key((a[0], a[1], b[2], b[3]))
+    return None
 
 
 def counted(partitions: list[dict], counts: dict[str, int]) -> list[dict]:

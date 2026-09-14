@@ -13,7 +13,7 @@ import shutil
 import time
 from contextlib import suppress
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -909,7 +909,7 @@ def _partition_html(item) -> str:
     # 「どこを見ていて、どこがまだか」を知りたいときなので、開けば全部ある
     def row(p):
         return (
-            f"<tr><td>{esc(p['key'])}</td><td>{p['count']:,}</td>"
+            f"<tr><td>{_partition_link(item.name, p['key'])}</td><td>{p['count']:,}</td>"
             f"<td>{esc('、'.join(sorted((p.get('visits') or {}).keys())))}</td></tr>"
         )
 
@@ -927,6 +927,17 @@ def _partition_html(item) -> str:
         "<table><thead><tr><th>区画</th><th>母集団</th><th>見終えた巡回</th></tr></thead>"
         f"<tbody>{head}</tbody></table>{more}"
     )
+
+
+def _partition_link(name: str, key: str) -> str:
+    """区画の名前から、**その区画に入っているもの**へ。
+
+    区画は「この範囲の全員」を並べて漏れを問う単位なので、台帳に鍵と数が出ていても
+    中身が見えないと、割り方が合っているのかを人が確かめられない
+    (合っているかどうかは、並んだ顔ぶれを見て初めて分かる)。
+    """
+    href = f"/admin/collect/{quote(name)}/partition?{urlencode({'key': key})}"
+    return f'<a href="{esc(href)}">{esc(key)}</a>'
 
 
 def _collect_running_html(name: str | None = None) -> str:
@@ -2831,6 +2842,86 @@ def admin_collect_detail(request: Request, name: str):
 <p class="muted"><a href="/admin/memory#collect">集める の一覧へ戻る</a></p>
 """
     return HTMLResponse(content=page_shell(name, body))
+
+
+@router.get("/admin/collect/{name}/partition", response_class=HTMLResponse)
+def admin_collect_partition(
+    request: Request, name: str, key: str = Query(..., description="区画の鍵"),
+):
+    """**その区画に入っているものを全部**並べる。台帳の区画名から来る。
+
+    区画は「この範囲の全員」を並べて漏れを問う単位なので、鍵と数だけでは
+    割り方が合っているか人には確かめようがない —— 合っているかどうかは、
+    並んだ顔ぶれを見て初めて分かる(年代の分からない人がどこへ落ちているか、
+    分類の取り違えがどこに混ざっているか)。
+
+    **切らずに全部出す。** 1 区画は `target` の数倍で頭打ちになるので短く、
+    途中で切ると「この範囲の全員」を確かめるというこの面の用が足りない。
+
+    **消えたものも出す**(`/v1/collect/{name}/partition` と同じ約束)。
+    何を外したのかが見えないと、割り方の判断にも消し間違いの発見にも使えない。
+    """
+    collect.require_enabled()
+    item = collect.get(name)
+    sources = request.app.state.sources
+    if not item.partition:
+        body = '<p class="muted">この収集は区画を持っていません。</p>'
+    else:
+        members, _scoped = collect.scoped_docs(item, collect.previous_docs(name, sources), key)
+        body = _partition_members_html(name, item, key, members, sources)
+    return HTMLResponse(content=page_shell(
+        f"{key} / {name}",
+        f"""
+{nav_html("/admin/memory")}
+<h1>{esc(name)} の区画</h1>
+<p class="muted">{esc(key)}</p>
+{body}
+<p class="muted"><a href="/admin/collect/{esc(quote(name))}">{esc(name)} へ戻る</a></p>
+""",
+    ))
+
+
+def _partition_members_html(
+    name: str, item, key: str, members: dict[str, dict], sources: dict,
+) -> str:
+    """区画に入っているものの表。**見出しからいまの中身へ飛べるようにする**。"""
+    where = collect.describe_partition(item, key, sources)
+    if not members:
+        return (
+            f'<p class="muted">{esc(where)}</p>'
+            "<p>この区画には、いま 1 件も入っていません"
+            "(まだ集めていないか、中身が別の区画へ移ったかのどちらか)。</p>"
+        )
+    rows = "".join(
+        f"<tr><td>{_doc_title_html(name, doc)}</td>"
+        f"<td>{esc('、'.join(str(t) for t in (doc.get('tags') or [])))}</td>"
+        f"<td>{esc((doc.get('body') or '')[:120])}</td></tr>"
+        for doc in sorted(members.values(), key=lambda d: str(d.get("title") or ""))
+    )
+    return (
+        f'<p class="muted">{esc(where)}</p>'
+        f"<p>{len(members):,} 件</p>"
+        "<table><thead><tr><th>見出し</th><th>タグ</th><th>中身</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+    )
+
+
+def _doc_title_html(name: str, doc: dict) -> str:
+    """見出し。焼けているなら、いまの中身への入口にする。
+
+    **消えたものはそう見えるように書く** —— 並べておいて印が無いと、外したはずの
+    ものを「まだ居る」と読んでしまう。
+    """
+    title = str(doc.get("title") or "")
+    doc_id = doc.get("doc_id")
+    shown = (
+        f'<a href="/search/{esc(quote(name))}/doc/{doc_id}">{esc(title)}</a>'
+        if doc_id is not None else esc(title)
+    )
+    if notes.REMOVED_TAG in (doc.get("tags") or []):
+        why = collect.removed_reason(doc)
+        shown += ' <span class="muted">(消えたもの' + (f": {esc(why)}" if why else "") + ")</span>"
+    return shown
 
 
 @router.get("/admin/collect/{name}/doc", response_class=HTMLResponse)

@@ -2150,16 +2150,22 @@ def plan_partitions(item: Collection, sources: dict, previous: dict[str, dict]) 
     判定のためにどのみち数えているので、同じ数を書き戻す。
 
     **割り直しても巡回の記録は引き継ぐ**(`partitioning.refresh`)。
+
+    **小さすぎる区画は、割り直さない回でも隣とまとめる**(`partitioning.merged`)。
+    割り直しの引き金は「育った」と「空になった」しかないので、中身が別の区画へ
+    移って痩せた帯は、痩せたまま回り続ける —— 1 人のために 1 回ぶんの枠を使う
+    ことになる。まとめるのは周回の記録が同じ隣どうしだけなので、進み具合は動かない。
     """
     if not item.partition:
         return []
     spec = partitioning.normalize(item.partition)
     counts = partitioning.counts_of(spec, item.partitions, previous)
     if item.partitions and not partitioning.outgrown(spec, counts):
-        return partitioning.counted(item.partitions, counts)
+        return partitioning.merged(spec, partitioning.counted(item.partitions, counts))
     built = partitioning.build(spec, sources, previous)
-    log.info("partition %s: %d 区画", item.name, len(built))
-    return partitioning.refresh(built, item.partitions, spec)
+    ledger = partitioning.merged(spec, partitioning.refresh(built, item.partitions, spec))
+    log.info("partition %s: %d 区画(まとめる前 %d)", item.name, len(ledger), len(built))
+    return ledger
 
 
 def material(

@@ -318,6 +318,183 @@ class TestWhenToResplit:
         assert self.resplit(spec, ledger, {}) is False
 
 
+class TestMergingSmallPartitions:
+    """小さすぎる区画は、隣と 1 つにする。
+
+    割り直しの引き金は「育った」と「空になった」しかないので、中身が別の区画へ
+    移って痩せた帯も、母集団がそもそも小さい分類も、小さいまま回り続ける ——
+    1 人のために 1 回ぶんの枠を使うことになる(本番の台帳では 407 区画のうち
+    18 が 1 人だった)。
+    """
+
+    def spec(self, target: int = 10):
+        return partition.normalize({"by": "title", "target": target})
+
+    def test_it_joins_the_neighbour_when_both_are_small(self):
+        """合わせても `target` の 8 割に満たないなら 1 つでよい。
+
+        **まとめた先がまた 1 つの範囲になる** —— 鍵はただの広い範囲なので、
+        どの文書がどこへ入るかの規則はそのまま効く。
+        """
+        ledger = [
+            {"key": "あ〜い", "count": 3, "visits": {}},
+            {"key": "う〜え", "count": 4, "visits": {}},
+        ]
+
+        [one] = partition.merged(self.spec(), ledger)
+
+        assert one["key"] == "あ〜え"
+        assert one["count"] == 7
+
+    def test_it_leaves_them_alone_when_the_pair_is_big_enough(self):
+        """**`target` 丸ごとを閾値にしない。** ぎりぎり届かないものまでまとめると、
+        まとめた先が `target` を超えて、割り直しと押し合いになる。
+        """
+        ledger = [
+            {"key": "あ〜い", "count": 4, "visits": {}},
+            {"key": "う〜え", "count": 4, "visits": {}},
+        ]
+
+        assert [p["key"] for p in partition.merged(self.spec(), ledger)] == ["あ〜い", "う〜え"]
+
+    def test_it_does_not_join_across_a_different_lap(self):
+        """**片方だけ見終えている区画をくっつけない。**
+
+        くっつけると、見ていないぶんが「見終えた」に混ざる(逆に、見終えたぶんを
+        もう一度回すことにもなる)。
+        """
+        ledger = [
+            {"key": "あ〜い", "count": 1, "visits": {"ざっと": "2026-09-01T00:00:00+00:00"}},
+            {"key": "う〜え", "count": 1, "visits": {}},
+        ]
+
+        assert len(partition.merged(self.spec(), ledger)) == 2
+
+    def test_it_keeps_the_shared_lap(self):
+        """記録が同じ隣どうしなので、まとめても進み具合は動かない。"""
+        when = "2026-09-01T00:00:00+00:00"
+        ledger = [
+            {"key": "あ〜い", "count": 1, "visits": {"ざっと": when}},
+            {"key": "う〜え", "count": 1, "visits": {"ざっと": when}},
+        ]
+
+        [one] = partition.merged(self.spec(), ledger)
+
+        assert one["visits"] == {"ざっと": when}
+
+    def test_it_can_chain_until_it_is_big_enough(self):
+        """1 人の区画が並ぶところでは、届くまで続けて 1 つにする。"""
+        ledger = [{"key": f"{c}〜{c}", "count": 1, "visits": {}} for c in "あいうえおかきくけこ"]
+
+        out = partition.merged(self.spec(), ledger)
+
+        # 8 人でちょうど 8 割なので、そこは「満たない」に入らない
+        assert [p["count"] for p in out] == [7, 3]
+
+    def test_a_doc_lands_in_the_merged_partition(self):
+        """**まとめは「1 回に見せる単位」をくっつけただけ。**
+
+        どの文書がどこへ入るかの規則は変えないので、開いて判じてからまとめ先を返す。
+        """
+        spec = self.spec()
+        ledger = partition.merged(spec, [
+            {"key": partition.title_key("あ", "い"), "count": 1, "visits": {}},
+            {"key": partition.title_key("う", "え"), "count": 1, "visits": {}},
+        ])
+        key = ledger[0]["key"]
+
+        for title in ("あ", "う", "え"):
+            assert partition.partition_of(spec, ledger, {"title": title}) == key
+        assert partition.belongs(spec, key, {"title": "う"})
+        assert not partition.belongs(spec, key, {"title": "お"})
+
+    def test_it_does_not_cross_a_group(self):
+        """**分類はまたがない。** またぐと、その区画がどの範囲なのかを言えなくなる ——
+        範囲が言えなければ、漏れを問うこと自体が成り立たない。
+        """
+        spec = partition.normalize({"by": "band", "prefix": "地域", "value": "年代", "target": 10})
+        ledger = [
+            {"key": partition.band_key("日本", 1800, 1850), "count": 1, "visits": {}},
+            {"key": partition.band_key("朝鮮", 1288, 1900), "count": 1, "visits": {}},
+        ]
+
+        assert len(partition.merged(spec, ledger)) == 2
+
+    def test_it_does_not_join_a_band_to_the_unknown_pile(self):
+        """年代の帯と「値が分からないものの置き場」は、1 つの範囲にならない。"""
+        spec = partition.normalize({"by": "band", "prefix": "地域", "value": "年代", "target": 10})
+        ledger = [
+            {"key": partition.band_key("日本", 1800, 1850), "count": 1, "visits": {}},
+            {"key": partition.band_key("日本", partition.BAND_UNKNOWN, "あ〜い"),
+             "count": 1, "visits": {}},
+        ]
+
+        assert len(partition.merged(spec, ledger)) == 2
+
+    def test_the_unknown_piles_join_by_title(self):
+        spec = partition.normalize({"by": "band", "prefix": "地域", "value": "年代", "target": 10})
+        ledger = [
+            {"key": partition.band_key("日本", partition.BAND_UNKNOWN, "あ〜い"),
+             "count": 1, "visits": {}},
+            {"key": partition.band_key("日本", partition.BAND_UNKNOWN, "う〜え"),
+             "count": 1, "visits": {}},
+        ]
+
+        [one] = partition.merged(spec, ledger)
+
+        assert one["key"] == partition.band_key("日本", partition.BAND_UNKNOWN, "あ〜え")
+
+    def test_joining_bands_closes_the_gap_between_them(self):
+        """帯は「値が詰まっているところ」で切るので、あいだが 1 年空くことがある。
+
+        空いた年に入る文書はどの区画にも入らない —— まとめると、そこも埋まる。
+        """
+        spec = partition.normalize({"by": "band", "prefix": "地域", "value": "年代", "target": 10})
+        ledger = [
+            {"key": partition.band_key("日本", 1689, 1816), "count": 3, "visits": {}},
+            {"key": partition.band_key("日本", 1818, 1864), "count": 3, "visits": {}},
+        ]
+
+        [one] = partition.merged(spec, ledger)
+
+        assert one["key"] == partition.band_key("日本", 1689, 1864)
+        doc = {"title": "誰か", "tags": ["地域:日本", "年代:1817"]}
+        assert partition.partition_of(spec, [one], doc) == one["key"]
+
+    def test_rectangles_join_when_they_share_an_edge(self):
+        """矩形も「幅」なので、**割った親へ戻る組**は 1 つにできる。"""
+        spec = partition.normalize({"by": "geo", "target": 10})
+        ledger = [
+            {"key": partition.geo_key([0.0, 0.0, 1.0, 1.0]), "count": 1, "visits": {}},
+            {"key": partition.geo_key([1.0, 0.0, 2.0, 1.0]), "count": 1, "visits": {}},
+        ]
+
+        [one] = partition.merged(spec, ledger)
+
+        assert one["key"] == partition.geo_key([0.0, 0.0, 2.0, 1.0])
+
+    def test_rectangles_that_do_not_line_up_are_left_alone(self):
+        """**ずれたまま囲む矩形を作ると、隣の区画へ食い込む** ——
+        そこの文書が 2 つの区画に入り、どちらで見せるかが並び順で決まってしまう。
+        """
+        spec = partition.normalize({"by": "geo", "target": 10})
+        ledger = [
+            {"key": partition.geo_key([0.0, 0.0, 1.0, 1.0]), "count": 1, "visits": {}},
+            {"key": partition.geo_key([1.0, 0.5, 2.0, 2.0]), "count": 1, "visits": {}},
+        ]
+
+        assert len(partition.merged(spec, ledger)) == 2
+
+    def test_a_tag_is_left_alone(self):
+        """2 つのタグは 1 つのタグで表せない(名前は幅ではない)。"""
+        spec = partition.normalize({"by": "tag", "target": 10, "prefix": "地域:"})
+        ledger = [
+            {"key": "あ", "count": 1, "visits": {}},
+            {"key": "い", "count": 1, "visits": {}},
+        ]
+
+        assert len(partition.merged(spec, ledger)) == 2
+
 class TestTheCountInTheLedger:
     """台帳の数は**割ったときの写し**で、以後は更新されない。
 
