@@ -121,14 +121,22 @@ def _refresh_button(row: dict) -> str:
 # 書き切ると、どこから押しても AI の面へ飛ばされる(見ていた画面から追い出される)。
 DEFAULT_BACK = "/admin/ai"
 
+# 戻ってよい面。**このボタンを出している画面を名指しで並べる**。
+#
+# 「`/admin` で始まるもの」で通していた頃は、**外から来た文字列をそのまま行き先に
+# 繋いでいた** —— 同じ生い立ちのままなので、読む側(と検査する側)には任意の URL を
+# 作れるように見える。行き先が数えられる以上、数え上げるほうが確か。
+BACK_PAGES = frozenset({"/admin", DEFAULT_BACK})
+
 
 def _back_to(raw: str | None) -> str:
-    """戻り先。**この管理画面の中だけ**を通す。
+    """戻り先。**このボタンを出している面だけ**を通す(`BACK_PAGES`)。
 
-    外から任意の URL を入れられる口にしない(押した先が別のサイトになる)。
+    外から来た値をそのまま繋がない —— 押した先が別のサイトになる。
+    知らない行き先は既定へ倒す(断らないのは、戻れないだけで害が無いため)。
     """
     path = (raw or "").strip()
-    return path if path.startswith("/admin") and "//" not in path else DEFAULT_BACK
+    return path if path in BACK_PAGES else DEFAULT_BACK
 
 
 def _refresh_all_button() -> str:

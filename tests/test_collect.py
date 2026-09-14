@@ -3811,6 +3811,16 @@ class TestEditingTheSweeps:
             key = row.get("key", row.get("name") if row.get("name") in existing else "")
             self._save_one(client, row, key)
 
+    def test_it_goes_back_by_the_stored_name(self, client, sample):
+        """**行き先は保存できた側の名前から組む。**
+
+        要求に入っていた文字列をそのまま繋ぐと、名前の狭さ(`collect.NAME_RE`)が
+        効いていない場所が 1 つだけ残る —— 読む側にも「任意の URL を作れる」と見える。
+        """
+        res = self._save_one(client, {"name": "ざっと", "interval": "360", "enabled": "1"})
+
+        assert res.headers["location"] == "/admin/collect/news"
+
     def test_writing_a_name_adds_one(self, client, sample):
         self._save(client, [
             {"name": "ざっと", "interval": "360", "cover_days": "7", "enabled": "1"},

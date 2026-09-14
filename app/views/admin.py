@@ -940,6 +940,17 @@ def _partition_html(item) -> str:
     )
 
 
+def collect_page(item) -> str:
+    """その収集の面への行き先。**保存されている名前から組む**。
+
+    要求に入っていた文字列をそのまま繋がない —— 名前はソース名にもファイル名にも
+    URL にもなるので狭い字しか通らない(`collect.NAME_RE`)のに、行き先を組むところ
+    だけその約束の外に居ると、読む側にも検査する側にも「任意の URL を作れる」と
+    見える。保存できた側の名前を使えば、通った字しか入らない。
+    """
+    return f"/admin/collect/{quote(item.name, safe='')}"
+
+
 def _partition_link(name: str, key: str) -> str:
     """区画の名前から、**その区画に入っているもの**へ。
 
@@ -2329,7 +2340,7 @@ async def admin_collect_sweep(name: str, request: Request):
             model=str(sweep.get("model") or ""),
             effort=str(sweep.get("effort") or ""),
         )
-        return RedirectResponse(url=f"/admin/collect/{quote(name)}", status_code=303)
+        return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
 
     if sweep is None:
         # 名前を消した = この巡回を消す
@@ -2338,10 +2349,10 @@ async def admin_collect_sweep(name: str, request: Request):
         merged = [sweep if str(s.get("name") or "") == key else s for s in current]
     else:
         merged = [*current, sweep]
-    collect.update(name, sweeps=merged)
+    item = collect.update(name, sweeps=merged)
     # **直したところへ戻す。** 一覧へ返していた頃は、直した結果を見るのに
     # もう一度その収集を探すことになった
-    return RedirectResponse(url=f"/admin/collect/{quote(name)}", status_code=303)
+    return RedirectResponse(url=collect_page(item), status_code=303)
 
 
 @router.post("/admin/collect/consult")
@@ -2540,7 +2551,7 @@ async def admin_collect_run(name: str, request: Request):
     start_collection_bake(name, str(form.get("sweep") or "") or None)
     # **押したところへ戻す。** 一覧へ返していた頃は、走らせた本人が結果を見に行くのに
     # もう一度その収集を探すことになった(見たいのは、いま押した 1 つの進み具合)
-    return RedirectResponse(url=f"/admin/collect/{quote(name)}", status_code=303)
+    return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
 
 
 @router.post("/admin/collect/{name}/redo")
@@ -2559,7 +2570,7 @@ async def admin_collect_redo(name: str, request: Request):
 
     sweep = collect.rewind(name)
     start_collection_bake(name, sweep.name)
-    return RedirectResponse(url=f"/admin/collect/{quote(name)}", status_code=303)
+    return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
 
 
 @router.post("/admin/collect/{name}/focus")

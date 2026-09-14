@@ -450,6 +450,37 @@ class TestAdminSection:
         assert res.headers["location"].endswith("#ai-usage")
 
 
+class TestWhereTheButtonSendsYou:
+    """戻り先は、**このボタンを出している面だけ**を通す。
+
+    「`/admin` で始まるもの」で通していた頃は、外から来た文字列をそのまま行き先へ
+    繋いでいた —— 押した先が別のサイトになる余地を残さない。
+    """
+
+    def test_it_goes_back_to_the_page_that_showed_the_button(self, env):
+        with make_client(env, ReplyLLM()) as client:
+            res = client.post("/admin/ai/usage/all", data={"back": "/admin"},
+                              follow_redirects=False)
+
+        assert res.headers["location"].startswith("/admin?")
+
+    def test_anywhere_else_falls_back_to_the_ai_page(self, env):
+        from app.views import ai_usage
+
+        outside = [
+            "https://example.test/admin",   # 別のサイト
+            "//example.test/admin",         # プロトコル相対
+            "/admin/../../evil",            # 上へ抜ける
+            "/adminose",                    # 前方一致だけは通っていた
+            "",
+        ]
+        with make_client(env, ReplyLLM()) as client:
+            for back in outside:
+                res = client.post("/admin/ai/usage/all", data={"back": back},
+                                  follow_redirects=False)
+                assert res.headers["location"].startswith(ai_usage.DEFAULT_BACK), back
+
+
 class TestMediaCounts:
     def test_pictures_and_sound_are_counted_too(self, env, tmp_path):
         """絵と音も同じサブスクの枠を食うので、同じ表に残す。"""
