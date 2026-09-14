@@ -142,7 +142,7 @@ MAX_PROMPT_CHARS = 20_000
 # —— 実測: 索引から 6,875 件に当たった抽出が 200 件で止まり、控えに残ったのは
 # 「ok・200 件追加」だけで、当たった件数も切ったことも痕跡が無かった。
 MAX_MATERIAL_BYTES = int(
-    os.environ.get("CHIEZO_COLLECT_MAX_MATERIAL_BYTES", "") or 64 * 1024 * 1024
+    os.environ.get("CHIEZO_COLLECT_MAX_MATERIAL_BYTES", "") or 192 * 1024 * 1024
 )
 
 # 本文の上限。1 件がこれを超えるものは切る(引くための索引であって全文の保管庫ではない)
