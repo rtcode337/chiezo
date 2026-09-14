@@ -101,11 +101,12 @@ class TestQuota:
 
         assert backend_of(body, "gemini")["quota"]["supported"] is False
         assert backend_of(body, "local")["quota"]["supported"] is False
-        # **claude は出せる側。** CLI に print モードで聞けば取れる
-        # (`claude -p "/usage"`。実測)。かつては Anthropic の口を直に叩いていて、
-        # あちらが user:profile を要求するせいで 403 だった —— 口が無いのではなく、
-        # 叩く口を間違えていた。
-        assert backend_of(body, "claude")["quota"]["supported"] is True
+        # **claude は出せない側。** 試した 2 つがどちらも塞がっている ——
+        # `claude -p "/usage"` は対話画面の使用量パネルを出さず、会話を始めずに
+        # 終わった締めの集計しか返さない(実測で `Total cost: $0.0000` と 0 件の
+        # トークン)。Anthropic の `/api/oauth/usage` は user:profile を要求する一方、
+        # 預かっているのは推論だけに絞られた長期トークン(実測で 403)。
+        assert backend_of(body, "claude")["quota"]["supported"] is False
         assert backend_of(body, "codex")["quota"]["supported"] is True
 
     def test_it_does_not_ask_anyone_unless_told_to(self, env):

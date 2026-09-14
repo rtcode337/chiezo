@@ -770,16 +770,20 @@ Quotas API 側にあり、OpenAI の使用量は Admin キー（`sk-admin-…`�
 どちらもここに入れる鍵では引けません。画面には「この相手は枠を出さない」と出ます
 （空欄にすると「使っていない」と読めてしまうため）。
 
-**Claude Code CLI も取れます。** `claude -p "/usage"` —— print モードのスラッシュ
-コマンドで、会話を始めずに CLI 自身の報告が返ります（Antigravity と同じ形）。
+**Claude Code CLI からは取れません。** 試した 2 つがどちらも塞がっています。
 
-かつては「枠を出さない相手」に倒してありました。Chiezo が Anthropic の
-`/api/oauth/usage` を直に叩いていて、**あの口は `user:profile` を要求する**のに、
-預かっているのは `claude setup-token` の長期トークン（推論だけに絞られている）——
-実測で HTTP 403 でした。**口が無かったのではなく、叩く口を間違えていた**だけです。
+- `claude -p "/usage"` —— **対話画面の使用量パネルは print モードでは出ません。**
+  返るのは会話を始めずに終わった締めの集計で、実測では
+  `Total cost: $0.0000 / Total duration (API): 0s / Usage: 0 input, 0 output`
+  （`num_turns` も 0）。**欲しい数字がそもそも入っていない**ので、パースの直しようが
+  ありません。一時期これで取れると見て `USAGE_BRIDGE` に倒していましたが、
+  画面には生の JSON が「取れませんでした」として並ぶだけでした
+- `app.anthropic.com` の `/api/oauth/usage` —— **あの口は `user:profile` を要求する**
+  一方、預かっているのは `claude setup-token` の長期トークンで、あれは安全のため
+  推論だけに絞られています（実測で HTTP 403）
 
-**claude だけ「使った割合」で言います**（Antigravity は「残り」）。取り違えると、
-使い切った枠が「まだ全部残っている」ように出ます。
+画面には「この相手は枠を出さない」と出ます。**残りが知りたいときは Claude Code を
+対話で開いて `/usage` を見てください**（Chiezo からは覗けません）。
 
 **どの聞き方もモデルを呼びません。** 確かめるたびにサブスクの枠を食っては本末転倒なので、
 「接続を試す」と同じ方針です。
@@ -1201,7 +1205,17 @@ Please try signing in again.
 |---|---|---|
 | Claude Code | `sonnet` / `fable` / `opus` / `haiku` | `claude --help` のエイリアス（4 つとも実測） |
 | Codex CLI | （なし） | 一覧を出す口が無い |
-| Antigravity CLI | （なし） | `agy models` はあるが、サインイン済みでないと何も返さない |
+| Antigravity CLI | `gemini-3.8-flash-{high,medium,low}` / `gemini-3.7-flash-…` / `gemini-3.6-flash-…` / `gemini-3.1-pro-{high,low}` / `claude-sonnet-4-6` / `claude-opus-4-6-thinking` / `gpt-oss-120b-medium` | `agy models` の出力（実測）。**考える量が名前に埋まっている** |
+
+**Antigravity でモデルを選ぶと、考える量を送りません。** slug のほうが持っているので、
+両方渡すと `--model gemini-3.8-flash-high --effort low` のような食い違う組み合わせを
+作れてしまい、**どちらが勝つかは agy 次第でこちらからは読めません**。モデルを
+選ばなかったときは今までどおり送ります（相手の既定モデルに効きます）。
+
+**Claude と GPT は Gemini と別の枠です**（週 / 5 時間がそれぞれに立ちます）。Gemini 側を
+使い切ったときの逃げ先になりますが、**同じ Google AI の契約**なので、契約ごと替えたい
+ときは Claude Code や Codex の相手のほうが効きます（そちらは 4.6 より新しいモデルも
+選べます）。
 
 **確かめていない ID は並べません** —— 画面には出るのに選ぶと必ず失敗する選択肢に
 なるためです。入れたい場合は `CHIEZO_BRIDGE_MODELS` で渡してください。

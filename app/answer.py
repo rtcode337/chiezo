@@ -233,7 +233,10 @@ def load_settings(
     return Settings(
         name=name,
         model_is_fallback=from_fallback,
-        effort=normalize_effort(name, effort),
+        # **モデルの名前に考える量が埋まっている相手では、選んだときに送らない**
+        # (Antigravity の `gemini-3.8-flash-high` など)。両方渡すと食い違う
+        # 組み合わせを作れてしまい、どちらが勝つかは相手次第で読めない
+        effort="" if chosen and spec.model_carries_effort else normalize_effort(name, effort),
         url=_normalize_base_url(providers.url_of(spec)),
         # 空でも通る相手（1 プロセス 1 モデルの推論サーバ・CLI ブリッジ）がいるので、
         # 決まらないときは無難な既定を置く。

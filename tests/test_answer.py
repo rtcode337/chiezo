@@ -509,6 +509,35 @@ class TestBackends:
         assert cfg.api_key == "k"
         assert answer.backend_label("gemini") == "Gemini"
 
+    def test_the_effort_is_not_sent_when_the_model_carries_it(self):
+        """**Antigravity の slug には考える量が埋まっている**（`gemini-3.8-flash-high`）。
+
+        両方渡すと食い違う組み合わせを作れてしまい、どちらが勝つかは相手次第で
+        こちらからは読めない。モデル側に寄せる。
+        """
+        from app import answer, settings_store
+
+        settings_store.set_verified("antigravity", True)
+        settings_store.set_enabled("antigravity", True)
+
+        picked = answer.load_settings("antigravity", "gemini-3.8-flash-high", "low")
+        assert picked.model == "gemini-3.8-flash-high"
+        assert picked.effort == ""
+
+        # モデルを選ばなければ今までどおり送る（相手の既定モデルに効く）
+        default = answer.load_settings("antigravity", None, "low")
+        assert default.effort == "low"
+
+    def test_other_backends_still_send_the_effort_with_a_model(self):
+        from app import answer, settings_store
+
+        settings_store.set_credential("claude", "k")
+        settings_store.set_verified("claude", True)
+        settings_store.set_enabled("claude", True)
+
+        cfg = answer.load_settings("claude", "opus", "high")
+        assert (cfg.model, cfg.effort) == ("opus", "high")
+
     def test_enabled_without_a_credential_is_not_usable(self):
         """認証情報の要る相手を未登録のまま有効にしても使えない（設定を直に書き換えられた場合の保険）。"""
         from app import answer, settings_store

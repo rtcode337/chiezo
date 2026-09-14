@@ -56,6 +56,12 @@ class Provider:
     # 空なら画面に出さない —— 確かめていない相手には出さない。
     # 送ると `reasoning_effort` として相手に渡る（CLI ブリッジは `--effort` に直す）。
     efforts: tuple[str, ...] = ()
+    # モデルの名前に考える量が埋まっている相手か（Antigravity の
+    # `gemini-3.8-flash-high` など）。**True の相手では、モデルを選んだときに
+    # 考える量を送らない** —— 両方渡すと食い違う組み合わせを作れてしまい、
+    # どちらが勝つかは相手次第でこちらからは読めない。
+    # モデルを選ばなかったときは今までどおり送る（相手の既定モデルに効く）。
+    model_carries_effort: bool = False
     # その相手に MCP（Chiezo の道具）を引かせられるか。 引けない相手では agent モードに
     # 意味が無い（道具を渡す先が無く、モデルの知識だけで答える）ので、rag に倒す。
     can_use_mcp: bool = True
@@ -165,17 +171,21 @@ PROVIDERS: tuple[Provider, ...] = (
         models=("sonnet", "fable", "opus", "haiku"),
         # `claude --help` の --effort（実測で 5 つとも通る）。
         efforts=("low", "medium", "high", "xhigh", "max"),
-        # 枠はブリッジ越しに CLI へ聞く（`USAGE_BRIDGE`）。
-        # **`claude -p "/usage"` で取れる**（実測）—— print モードのスラッシュコマンドで、
-        # 会話を始めずに CLI 自身の報告が `result` に入って返る。
+        # **枠を聞く口が無い**（`USAGE_NONE`）。試した 2 つがどちらも塞がっている。
         #
-        # かつては「CLI に出口が無い」として Chiezo が `app.anthropic.com` の
-        # `/api/oauth/usage` を直に引いていたが、**あの口は `user:profile` を要求する**
-        # 一方、預かっているのは `claude setup-token` の長期トークンで、
+        # (1) `claude -p "/usage"` —— 対話画面の使用量パネルは print モードでは
+        # 出ない。返るのは会話を始めずに終わった締めの集計で、実測の `result` は
+        # `Total cost: $0.0000 / Total duration (API): 0s / Usage: 0 input, 0 output`
+        # （`num_turns` も 0）。**欲しい数字がそもそも入っていない**ので、
+        # パースの直しようが無い。
+        #
+        # (2) `app.anthropic.com` の `/api/oauth/usage` —— **あの口は `user:profile` を
+        # 要求する**一方、預かっているのは `claude setup-token` の長期トークンで、
         # あれは安全のため推論だけに絞られている（実測で HTTP 403）。
-        # **口が無いのではなく、叩く口を間違えていた。** CLI に聞けば、
-        # CLI が持っている資格情報で通る。
-        usage=USAGE_BRIDGE,
+        #
+        # 画面には「この相手は枠を出さない」と出る。**空欄にすると「使っていない」と
+        # 読めてしまう**ので、出さないことを出す。
+        usage=USAGE_NONE,
         bridge=True,
         order=30,
     ),
@@ -209,9 +219,26 @@ PROVIDERS: tuple[Provider, ...] = (
         "`docker exec -it chiezo-bridge-antigravity agy`\n"
         "表示される URL を手元のブラウザで開き、出てきた認証コードを貼り戻します。\n"
         "コンテナ管理画面しか無い環境では、その画面のコンソール機能から同じことをします。",
-        models=(),
+        # `agy models` が返す slug（実測）。**考える量が slug に埋まっている** ——
+        # だから、モデルを選んだときは `--effort` を送らない
+        # (`model_carries_effort`)。両方渡すと食い違う組み合わせを作れてしまい、
+        # どちらが勝つかは agy 次第でこちらからは読めない。
+        #
+        # **Claude と GPT は Gemini と別の枠**（週/5 時間がそれぞれに立つ）。
+        # Gemini 側を使い切ったときの逃げ先になる。ただし同じ Google AI の契約なので、
+        # 契約ごと替えたいときは claude や codex の相手のほうが効く。
+        models=(
+            "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
+            "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low",
+            "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low",
+            "gemini-3.1-pro-high", "gemini-3.1-pro-low",
+            "claude-sonnet-4-6", "claude-opus-4-6-thinking",
+            "gpt-oss-120b-medium",
+        ),
         # `agy --help` の --effort。claude と違い xhigh / max は無い。
+        # **モデルを選ばなかったときだけ効く**（選んだら slug のほうが持っている）。
         efforts=("low", "medium", "high"),
+        model_carries_effort=True,
         # 枠は CLI に聞くしかない。 残クレジットを取る RPC は持っているが、
         # 外から叩ける口としては公開されていない（画面の中で使われるだけ）。
         usage=USAGE_BRIDGE,
