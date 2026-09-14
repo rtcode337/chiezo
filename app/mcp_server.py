@@ -296,6 +296,22 @@ def build_mcp(app: FastAPI, with_media: bool = True) -> MCPServer:
             include_removed=include_removed,
         )
 
+    @mcp.tool(description=(
+        "集める層の**区画に入っているもの**を全部返す。"
+        "区画は「この範囲の全員」を並べて漏れを問う単位なので、"
+        "「この範囲に他に誰がいるか」「もう入っているか」はここで確かめる。"
+        "**消えたもの(chiezo_removed が付いたもの)も返る** —— 何を外したのかが"
+        "分からないと、同じものをもう一度挙げることになる。"
+        "鍵は依頼文に書かれている区画の鍵をそのまま渡す。"
+    ))
+    async def collect_partition(
+        name: str, key: str, limit: int = 200, offset: int = 0
+    ) -> dict:
+        return await run_in_threadpool(
+            _call, api.collect_partition,
+            request=_request(app), name=name, key=key, limit=limit, offset=offset,
+        )
+
     @mcp.tool(description="タイトルの前方一致候補を返す。表記揺れの確認や短い語の引き当てに使う。")
     async def titles(
         source: str, prefix: str, limit: int = 20, include_removed: bool = False

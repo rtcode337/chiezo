@@ -1234,10 +1234,20 @@ def render_material(previous: dict[str, dict], scoped: bool = False) -> tuple[st
     lines: list[str] = []
     used = 0
     docs = list(previous.values())
+    removed = 0
     for doc in docs[:MAX_MATERIAL_DOCS]:
-        tags = "/".join(doc.get("tags") or [])
+        tags = doc.get("tags") or []
+        gone = notes.REMOVED_TAG in tags
+        removed += 1 if gone else 0
         body = (doc.get("body") or "")[:MATERIAL_BODY_CHARS].replace("\n", " ")
-        line = f"- {doc['title']}" + (f" 【{tags}】" if tags else "") + (f" — {body}" if body else "")
+        # **消えたものはそう見えるように書く。** タグだけで示すと、AI は生きている
+        # 1 件として扱って直そうとする。**印はタグにも残す** —— 外して見せると、
+        # AI がタグごと写して返したときに黙って戻ってしまう(戻すのは明示的な操作にする)
+        line = (
+            f"- {'【消えたもの】' if gone else ''}{doc['title']}"
+            + (f" 【{'/'.join(tags)}】" if tags else "")
+            + (f" — {body}" if body else "")
+        )
         if used + len(line) > MAX_MATERIAL_CHARS:
             break
         lines.append(line)
@@ -1247,6 +1257,14 @@ def render_material(previous: dict[str, dict], scoped: bool = False) -> tuple[st
     head += f"。うち {shown} 件だけ載せています)" if shown < len(docs) else ")"
     if shown < len(docs):
         head += "\n※ 載っていないものは今回の対象外です。載っているぶんだけを整理してください。"
+    if removed:
+        # **なぜ載っているのかを言う。** 黙って並べると、消したものを「抜けている」と
+        # 読んで足し直される —— 載せているのは、同じものをもう一度挙げさせないため
+        head += (
+            f"\n※ うち {removed} 件は【消えたもの】です。**もう一度足さないでください**。"
+            f"消したのが間違いだと分かったときだけ、タグから「{notes.REMOVED_TAG}」を"
+            "外して同じ見出しで返せば戻ります。"
+        )
     return head + ":\n" + "\n".join(lines), shown
 
 
@@ -1300,6 +1318,13 @@ def _at(raw) -> datetime | None:
     except ValueError:
         return None
     return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def describe_partition(item: Collection, key: str, sources: dict) -> str:
+    """区画の鍵を、人にも AI にも読める範囲の言い方にする。持たない収集では空。"""
+    if not item.partition:
+        return ""
+    return partitioning.describe(partitioning.normalize(item.partition), key, sources)
 
 
 def scoped_docs(

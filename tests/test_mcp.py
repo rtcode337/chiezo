@@ -27,6 +27,9 @@ TOOL_ENDPOINTS = {
     # 新しい順に引く道具。jawiki は索引を持たないので 409 になるが、
     # ここで見ているのはシグネチャの一致なので相手は何でもよい
     "recent": ("recent_docs", {"source": "jawiki"}),
+    # 集める層の区画。収集が無ければ 503 / 404 になるが、ここで見ているのは
+    # シグネチャの一致なので中身は問わない
+    "collect_partition": ("collect_partition", {"name": "news", "key": "あ〜ん"}),
 }
 
 

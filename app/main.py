@@ -1849,6 +1849,57 @@ def collect_changes(
     return {"changes": collect_log.recent(name, limit)}
 
 
+@app.get("/v1/collect/{name}/partition")
+def collect_partition(
+    request: Request,
+    name: str,
+    key: str = Query(..., min_length=1, description="区画の鍵(`/v1/collect/{name}` の partitions)"),
+    limit: int = Query(200, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
+):
+    """**その区画に入っているものを全部**返す。
+
+    区画は「この範囲の全員」を並べて漏れを問う単位なので、中身を引けないと
+    その問いが成り立たない —— 差し込み(`{current}`)でしか見えなかったころは、
+    **1 回の依頼に載る量が上限**だった(入り切らないぶんは黙って落ちる)。
+    ここから引けば、AI が必要なだけ自分で辿れる。
+
+    **消えたものも返す**(`chiezo_removed` が付いたまま)。何を外したのかが
+    分からないと、同じものをもう一度挙げることになる —— 読み口の既定と違うのは、
+    ここが「集める層のための口」だから。
+
+    区画を持たない収集では 400 で断る(鍵の意味が無い)。
+    """
+    collect.require_enabled()
+    item = collect.get(name)
+    if not item.partition:
+        raise HTTPException(400, {
+            "error": f"収集「{name}」は区画を持っていません",
+            "hint": "区画の割り方は PATCH の partition で設定します",
+        })
+    previous = collect.previous_docs(name, request.app.state.sources)
+    members, _scoped = collect.scoped_docs(item, previous, key)
+    ordered = sorted(members.values(), key=lambda d: d["title"])
+    return {
+        "name": name,
+        "key": key,
+        "describes": collect.describe_partition(item, key, request.app.state.sources),
+        "total": len(ordered),
+        "limit": limit,
+        "offset": offset,
+        "docs": [
+            {
+                "title": d["title"],
+                "body": d.get("body") or "",
+                "tags": d.get("tags") or [],
+                "updated_at": d.get("updated_at") or "",
+                "extra": d.get("extra") or {},
+            }
+            for d in ordered[offset : offset + limit]
+        ],
+    }
+
+
 @app.get("/v1/collect/{name}")
 def collect_get(request: Request, name: str, samples: int = Query(5, ge=0, le=50)):
     """1 つぶんの設定と、**焼いてあるもののうち新しい数件**。

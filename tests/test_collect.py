@@ -1847,6 +1847,76 @@ class TestAddingOnly:
         assert find.only_new is True
 
 
+class TestAskingForAPartition:
+    """**区画の中身を、AI が自分で引けるようにする。**
+
+    区画は「この範囲の全員」を並べて漏れを問う単位なので、中身を引けないと
+    その問いが成り立たない —— 差し込み(`{current}`)でしか見えなかった頃は、
+    1 回の依頼に載る量が上限だった(入り切らないぶんは黙って落ちる)。
+    """
+
+    @pytest.fixture
+    def client(self, enabled, built_data_dir, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        from app.main import app
+
+        with TestClient(app) as c:
+            yield c
+
+    @pytest.fixture
+    def spots(self, enabled, baked):
+        collect.create("spots", prompt="{partition} を直して", interval_minutes=60)
+        collect.update(
+            "spots",
+            partition={"by": "title", "target": 10},
+            partitions=[
+                {"key": partitioning.title_key("あ", "い"), "count": 2},
+                {"key": partitioning.title_key("う", "え"), "count": 2},
+            ],
+        )
+        return baked([("あ", "本文"), ("い", "本文"), ("う", "本文")], "spots")
+
+    def _get(self, client, **params):
+        return client.get("/v1/collect/spots/partition", params=params)
+
+    def test_it_returns_everyone_in_that_range(self, client, spots, monkeypatch):
+        monkeypatch.setattr(client.app.state, "sources", spots, raising=False)
+
+        body = self._get(client, key=partitioning.title_key("あ", "い")).json()
+
+        assert [d["title"] for d in body["docs"]] == ["あ", "い"]
+        assert body["total"] == 2
+        # どの範囲なのかも言う(鍵だけでは読めない)
+        assert body["describes"]
+
+    def test_what_was_removed_comes_too(self, client, enabled, baked, monkeypatch):
+        """**何を外したのかが分からないと、同じものをもう一度挙げることになる。**
+
+        読み口の既定と違うのは、ここが集める層のための口だから。
+        """
+        collect.create("spots", prompt="{partition}", interval_minutes=60)
+        collect.update(
+            "spots",
+            partition={"by": "title", "target": 10},
+            partitions=[{"key": partitioning.title_key("あ", "ん"), "count": 2}],
+        )
+        sources = baked([("あ", "本文"), ("消えた人", "外した理由")], "spots")
+        monkeypatch.setattr(client.app.state, "sources", sources, raising=False)
+
+        body = self._get(client, key=partitioning.title_key("あ", "ん")).json()
+
+        assert "消えた人" in [d["title"] for d in body["docs"]]
+
+    def test_a_collection_without_partitions_is_refused(self, client, sample):
+        """区画を持たない収集では鍵の意味が無い(0 件ではなく理由を返す)。"""
+        res = client.get("/v1/collect/news/partition", params={"key": "なんでも"})
+
+        assert res.status_code == 400
+        assert "区画を持っていません" in res.json()["error"]
+
+
 class TestWhatWasRemoved:
     """消したものを、消したままにする。
 
@@ -1953,6 +2023,50 @@ class TestWhatWasRemoved:
 
         assert diff["total"] == 10, "件数は減らない"
         assert collect.shrink_blocked(collect.get("news"), diff, edits=True) is not None
+
+    def test_the_material_says_which_ones_are_gone(self, refine):
+        """**黙って並べると、消したものを「抜けている」と読んで足し直される。**
+
+        載せているのは、同じものをもう一度挙げさせないため。
+        """
+        previous = {
+            "モネ": {"doc_id": 1, "title": "モネ", "body": "画家です", "tags": ["画家"]},
+            "俳優さん": {"doc_id": 2, "title": "俳優さん", "body": "演技の人",
+                      "tags": ["画家", notes.REMOVED_TAG]},
+        }
+
+        text, _shown = collect.render_material(previous, scoped=True)
+
+        assert "【消えたもの】俳優さん" in text
+        assert "【消えたもの】モネ" not in text
+        assert "もう一度足さないでください" in text
+
+    def test_the_mark_stays_in_the_tags_too(self, refine):
+        """**外して見せると、AI がタグごと写して返したときに黙って戻る。**
+
+        戻すのは明示的な操作にする。
+        """
+        previous = {"俳優さん": {
+            "doc_id": 1, "title": "俳優さん", "body": "演技の人",
+            "tags": ["画家", notes.REMOVED_TAG],
+        }}
+
+        text, _shown = collect.render_material(previous, scoped=True)
+
+        assert notes.REMOVED_TAG in text
+
+    def test_dropping_the_mark_brings_it_back(self, refine):
+        """消したのが間違いだったときの戻し方。"""
+        previous = {"モネ": {
+            "doc_id": 1, "title": "モネ", "body": "消した理由",
+            "tags": ["画家", notes.REMOVED_TAG],
+        }}
+
+        docs, _diff = self._edit(
+            refine, previous, [{"title": "モネ", "body": "画家です", "tags": ["画家"]}]
+        )
+
+        assert notes.REMOVED_TAG not in docs[0]["tags"]
 
     def test_the_screen_shows_what_was_removed(self, refine, tmp_path):
         """消し間違いに気づく手立ては、ここを読むことしか無い。"""
