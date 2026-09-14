@@ -1263,14 +1263,18 @@ class TestRedoingTheLastRun:
 
         assert partitioning.progress(collect.get("news").partitions, "ざっと") == (0, 2)
 
-    def test_the_graveyard_stays(self, sample):
-        """消したのは意図してのこと。やり直しで連れ戻さない。"""
+    def test_what_was_removed_stays_removed(self, sample):
+        """消したのは意図してのこと。やり直しで連れ戻さない。
+
+        **消えた印は文書側にある**ので、やり直しが戻すのは進み具合だけ ——
+        定義に控えを持っていた頃と違い、ここで気にすることが無くなった。
+        """
         collect.update("news", sweeps=[{"name": "ざっと"}])
-        collect.record_result("news", status="ok", sweep="ざっと", graves=["消した人"])
+        collect.record_result("news", status="ok", sweep="ざっと", next_cursor="b")
 
         collect.rewind("news")
 
-        assert collect.grave_titles(collect.get("news").graves) == {"消した人"}
+        assert collect.get("news").cursor == ""
 
     def test_it_can_only_be_used_once(self, sample):
         """同じ回を二度は戻せない(1 回ぶんしか控えていない)。"""
@@ -1843,144 +1847,146 @@ class TestAddingOnly:
         assert find.only_new is True
 
 
-class TestTheGraveyard:
+class TestWhatWasRemoved:
     """消したものを、消したままにする。
 
     **消す回と足す回は別々に走る。** 足すほうは「いま名簿にいるか」しか見られず、
     なぜ居ないのか(一度も入っていないのか、調べたうえで外したのか)までは分からない
     —— 実際に、ざっとが「画家ではない」として外した人を、次の名簿の回が丸ごと
     連れ戻した(本番の履歴で 1,330 件の 1 件目がそれだった)。
+
+    **消さずに印を付けて残すことで、そこが解ける。** 見出しは既にいるので足す回は
+    素通りする。見出しの控え(墓場)を定義に持っていた頃は、1 件のメモに収める都合で
+    2,000 件の上限が要り、溢れると古いものから静かに戻っていた。
     """
 
     @pytest.fixture
     def refine(self, sample):
-        collect.update("news", mode="refine", prompt="いまの内容:\n{current}\n直して")
+        collect.update("news", prompt="いまの内容:\n{current}\n直して")
         return collect.get("news")
 
-    def test_a_tombstone_digs_a_grave(self, refine):
-        previous = {"俳優さん": {"doc_id": 1, "title": "俳優さん", "body": "本文"}}
-        _docs, diff = edited(refine, previous, [{"title": "俳優さん", "tags": [notes.TOMBSTONE_TAG]}])
-        assert [g["title"] for g in diff["graves"]] == ["俳優さん"]
+    def _edit(self, item, previous, collected):
+        return collect.material(item, previous, collected, edits=True)
 
-        collect.record_result("news", status="ok", removed=1, graves=diff["graves"])
-        assert collect.grave_titles(collect.get("news").graves) == {"俳優さん"}
+    def test_a_tombstone_marks_it_instead_of_deleting(self, refine):
+        previous = {"俳優さん": {"doc_id": 1, "title": "俳優さん", "body": "本文", "tags": ["画家"]}}
 
-    def test_the_reason_is_kept_with_the_grave(self, refine):
-        """**見出しだけでは、外したのが正しかったのかを確かめようがない。**
+        docs, diff = self._edit(
+            refine, previous,
+            [{"title": "俳優さん", "body": "絵ではなく演技で知られる人",
+              "tags": [notes.TOMBSTONE_TAG]}],
+        )
 
-        消したものは一覧でしか見えないので、理由が無いと消し間違いに気づけない。
-        理由は墓標の本文に書かせている(`REFINE_SYSTEM_PROMPT`)。
+        [doc] = docs
+        assert notes.REMOVED_TAG in doc["tags"]
+        # **元のタグは残す** —— どういう条件でここに入ったのかが読めないと、
+        # 消し間違いを確かめようがない
+        assert "画家" in doc["tags"]
+        # 理由は本文に置く
+        assert doc["body"] == "絵ではなく演技で知られる人"
+        assert diff["removed_titles"] == ["俳優さん"]
+
+    def test_a_tombstone_without_a_reason_keeps_the_body(self, refine):
+        previous = {"俳優さん": {"doc_id": 1, "title": "俳優さん", "body": "もとの本文"}}
+
+        docs, _diff = self._edit(
+            refine, previous, [{"title": "俳優さん", "tags": [notes.TOMBSTONE_TAG]}]
+        )
+
+        assert docs[0]["body"] == "もとの本文"
+        assert notes.REMOVED_TAG in docs[0]["tags"]
+
+    def test_what_was_removed_does_not_come_back(self, refine):
+        """足す回は「もう持っている」として素通りする(`only_new`)。"""
+        previous = {"俳優さん": {
+            "doc_id": 1, "title": "俳優さん", "body": "消した理由",
+            "tags": ["画家", notes.REMOVED_TAG],
+        }}
+
+        docs, diff = collect.material(
+            collect.get("news"), previous,
+            [{"title": "俳優さん", "body": "画家です"}, {"title": "モネ", "body": "画家です"}],
+            only_new=True,
+        )
+
+        assert diff["added"] == 1
+        assert {d["title"] for d in docs} == {"俳優さん", "モネ"}
+        # 印も理由も動かない
+        kept = next(d for d in docs if d["title"] == "俳優さん")
+        assert notes.REMOVED_TAG in kept["tags"]
+        assert kept["body"] == "消した理由"
+
+    def test_a_tombstone_for_something_absent_changes_nothing(self, refine):
+        """持っていないものへの墓標は数えない(消すものが無い)。"""
+        docs, diff = self._edit(refine, {}, [{"title": "居ない人", "tags": [notes.TOMBSTONE_TAG]}])
+
+        assert docs == []
+        assert diff["skipped"] == 1
+
+    def test_the_count_does_not_shrink(self, refine):
+        """**焼く件数は減らない**(印が付くだけ)。"""
+        previous = {
+            f"俳優{i}": {"doc_id": i, "title": f"俳優{i}", "body": "本文"} for i in range(1, 11)
+        }
+
+        docs, diff = self._edit(
+            refine, previous, [{"title": "俳優1", "tags": [notes.TOMBSTONE_TAG]}]
+        )
+
+        assert len(docs) == 10
+        assert diff["total"] == 10
+        assert collect.shrink_blocked(collect.get("news"), diff, edits=True) is None
+
+    def test_the_guard_counts_the_marks_not_the_count(self, refine):
+        """**件数そのものは減らない**ので、結果の件数で見ていると素通りする。
+
+        消えすぎの歯止めは「印を付けた件数」で数える。
         """
-        previous = {"俳優さん": {"doc_id": 1, "title": "俳優さん", "body": "本文"}}
-        _docs, diff = edited(refine, previous, [{
-            "title": "俳優さん", "body": "絵ではなく演技で知られる人", "tags": [notes.TOMBSTONE_TAG],
-        }])
+        previous = {
+            f"俳優{i}": {"doc_id": i, "title": f"俳優{i}", "body": "本文"} for i in range(1, 11)
+        }
 
-        collect.record_result("news", status="ok", removed=1, graves=diff["graves"])
+        _docs, diff = self._edit(
+            refine, previous,
+            [{"title": f"俳優{i}", "tags": [notes.TOMBSTONE_TAG]} for i in range(1, 11)],
+        )
 
-        [grave] = collect.get("news").graves
-        assert grave["why"] == "絵ではなく演技で知られる人"
-        assert grave["at"]
+        assert diff["total"] == 10, "件数は減らない"
+        assert collect.shrink_blocked(collect.get("news"), diff, edits=True) is not None
 
-    def test_a_grave_without_a_reason_still_works(self, refine):
-        """理由を書かずに墓標だけ返されても消す(消す判断のほうが先)。"""
-        previous = {"俳優さん": {"doc_id": 1, "title": "俳優さん", "body": "本文"}}
-        _docs, diff = edited(refine, previous, [{"title": "俳優さん", "tags": [notes.TOMBSTONE_TAG]}])
-
-        collect.record_result("news", status="ok", removed=1, graves=diff["graves"])
-
-        [grave] = collect.get("news").graves
-        assert grave["title"] == "俳優さん"
-        assert "why" not in grave
-
-    def test_editing_the_list_does_not_wipe_the_reasons(self, refine):
-        """画面の編集欄は 1 行 1 見出し。**書き戻すたびに理由が消えては残す意味が無い**。"""
-        collect.update("news", graves=[{"title": "俳優さん", "why": "演技で知られる人"}])
-
-        # 画面から「俳優さん」を残したまま保存し直した形
-        collect.update("news", graves=["俳優さん"])
-
-        assert collect.get("news").graves[0]["why"] == "演技で知られる人"
-
-    def test_the_old_shape_is_still_read(self, refine):
-        """理由を残す前に消したものは、見出しだけで入っている。"""
-        collect.update("news", graves=["俳優さん"])
-
-        assert collect.get("news").graves == [{"title": "俳優さん"}]
-
-    def test_the_screen_shows_why_it_was_removed(self, refine):
+    def test_the_screen_shows_what_was_removed(self, refine, tmp_path):
         """消し間違いに気づく手立ては、ここを読むことしか無い。"""
         from app.views import admin
 
-        collect.update("news", graves=[
-            {"title": "俳優さん", "why": "絵ではなく演技で知られる人"},
-            {"title": "むかし消した人"},
-        ])
+        path = tmp_path / "baked_news.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(notes.SCHEMA_DDL)
+        rows = [
+            (1, "俳優さん", "絵ではなく演技で知られる人", ["画家", notes.REMOVED_TAG]),
+            (2, "モネ", "画家です", ["画家"]),
+        ]
+        for doc_id, title, body, tags in rows:
+            conn.execute(
+                "INSERT INTO docs (doc_id, title, opening, body, tags, updated_at, rank_score)"
+                " VALUES (?, ?, ?, ?, ?, '2026-01-01T00:00:00+00:00', 0.0)",
+                (doc_id, title, body, body, json.dumps(tags, ensure_ascii=False)),
+            )
+            for tag in tags:
+                conn.execute(
+                    "INSERT INTO doc_tags (tag, doc_id) VALUES (?, ?)", (tag, doc_id)
+                )
+        conn.commit()
+        conn.close()
 
-        html = admin._graves_html(collect.get("news"))
+        class Src:
+            def __init__(self):
+                self.path = path
+                self.schema_version = 4
+
+        html = admin._removed_html(collect.get("news"), {"news": Src()})
 
         assert "俳優さん —— 絵ではなく演技で知られる人" in html
-        # 理由の無いものは見出しだけ(区切りを付けて空白を出さない)
-        assert "むかし消した人\n" in html or html.rstrip().endswith("むかし消した人</pre>")
-
-    def test_the_edit_box_lists_the_titles(self, refine):
-        """編集欄は 1 行 1 見出し(そこから戻しても理由は消えない)。"""
-        from app.views import admin
-
-        collect.update("news", graves=[{"title": "俳優さん", "why": "演技で知られる人"}])
-
-        html = admin._collect_detail_html(collect.get("news"), "")
-
-        assert ">俳優さん</textarea>" in html
-
-    def test_what_is_buried_does_not_come_back(self, refine):
-        collect.update("news", graves=["俳優さん"])
-        docs, diff = collect.material(
-            collect.get("news"), {},
-            [{"title": "俳優さん", "body": "画家です"}, {"title": "モネ", "body": "画家です"}],
-        )
-        assert [d["title"] for d in docs] == ["モネ"]
-        assert diff["added"] == 1
-        assert diff["skipped"] == 1
-
-    def test_the_mechanical_sweep_cannot_bring_it_back_either(self, refine):
-        """名簿の回は指定から引き直すので、外したはずの人がまた当たる。"""
-        collect.update("news", graves=["俳優さん"])
-        _docs, diff = collect.material(
-            collect.get("news"), {},
-            [{"title": "俳優さん", "body": "カテゴリに「〜の画家」があるので当たった"}],
-            only_new=True,
-        )
-        assert diff["added"] == 0
-
-    def test_something_already_there_is_still_updated(self, refine):
-        """墓場が効くのは**足すとき**だけ。いるものを直す回は今までどおり。"""
-        collect.update("news", graves=["モネ"])
-        previous = {"モネ": {"doc_id": 1, "title": "モネ", "body": "古い"}}
-        docs, diff = edited(collect.get("news"), previous, [{"title": "モネ", "body": "新しい"}])
-        assert diff["updated"] == 1
-        assert docs[0]["body"] == "新しい"
-
-    def test_a_grave_can_be_lifted(self, refine):
-        """消し間違いの逃げ道。**人が決める**(画面から外せる)。"""
-        collect.update("news", graves=["モネ"])
-        collect.update("news", graves=[])
-        _docs, diff = collect.material(
-            collect.get("news"), {}, [{"title": "モネ", "body": "画家です"}]
-        )
-        assert diff["added"] == 1
-
-    def test_the_whole_removal_is_buried_not_just_the_head(self, refine):
-        """控えは頭の 10 件だが、墓場は全部 —— 切ると、切れたぶんが戻ってくる。"""
-        many = collect.MAX_TITLE_SAMPLE + 5
-        previous = {f"俳優{i}": {"doc_id": i, "title": f"俳優{i}", "body": "本文"}
-                    for i in range(1, many + 1)}
-        _docs, diff = edited(
-            collect.get("news"), previous,
-            [{"title": f"俳優{i}", "tags": [notes.TOMBSTONE_TAG]} for i in range(1, many + 1)],
-        )
-        assert len(diff["removed_titles"]) == collect.MAX_TITLE_SAMPLE
-        assert len(diff["graves"]) == many
+        assert "モネ" not in html
 
 
 class TestKeepingTheClockAcrossAPatch:
@@ -2760,16 +2766,17 @@ class TestRefineMode:
         # 直したほうは中身が入れ替わる
         assert next(d for d in docs if d["title"] == "残る")["body"] == "直した本文"
 
-    def test_a_tombstone_removes_one(self, refine, baked):
-        """消すのは明示したときだけ。固化と同じ墓標の契約。"""
+    def test_a_tombstone_marks_one(self, refine, baked):
+        """消すのは明示したときだけ。**消さずに印を付けて残す**。"""
         sources = baked([("残る", "本文"), ("消す", "本文")], "spots")
         docs, diff = edited(
             collect.get("spots"),
             collect.previous_docs("spots", sources),
             [{"title": "消す", "body": "", "tags": [notes.TOMBSTONE_TAG]}],
         )
-        assert [d["title"] for d in docs] == ["残る"]
-        assert diff["removed"] == 1
+        marked = {d["title"]: d["tags"] for d in docs}
+        assert notes.REMOVED_TAG in marked["消す"]
+        assert notes.REMOVED_TAG not in marked["残る"]
         assert diff["removed_titles"] == ["消す"]
 
     def test_the_diff_names_what_moved(self, refine, baked):
@@ -2817,6 +2824,9 @@ class TestRefineMode:
 
         返し忘れでは減らなくなったので、ここが止めるのは**明示的な大量削除**だけ。
         そのぶん、止まったときの意味が鋭い。
+
+        **数えるのは印を付けた件数。** 消さずに残すので件数そのものは減らない ——
+        結果の件数で見ていると、9 割に印が付いた回が素通りする。
         """
         import fastapi
 
@@ -2838,7 +2848,8 @@ class TestRefineMode:
             graves, False, True,
         )
         assert diff["removed"] == 9
-        assert len(body.splitlines()) == 2  # meta + 1 件
+        # **消さずに残すので、焼く件数は減らない**(印が付くだけ)
+        assert len(body.splitlines()) == 11  # meta + 10 件
 
     def test_appending_never_removes_anything(self, sample, baked):
         """足すほうには消える経路が無い(だから歯止めも要らない)。"""

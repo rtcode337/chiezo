@@ -98,8 +98,6 @@ FOCUS_SWEEP_NAME = "割り込み"
 # 少数をじっくり調べるもの。増やすほど同じ収集に対する AI の呼び出しが重なる
 MAX_SWEEPS = 8
 # 墓場に置ける見出しの数。**捨てたぶんはもう守らない**(足す回が連れ戻す)ので
-# 多めに取る。定義は notes の 1 件なので、際限なくは持てない
-MAX_GRAVES = 2_000
 # 1 件の脇に運べる事実の数と長さ(`_carried`)。**札であって記事ではない**ので、
 # 際限なく運べるようにはしない
 MAX_CARRIED_KEYS = 10
@@ -109,8 +107,6 @@ MAX_CARRIED_CHARS = 200
 # 言われていないものを消さない以上、放っておくと回を重ねるだけ増える
 MAX_EXTRA_KEYS = 20
 # 墓標に添える理由の長さ。**1 行で足りる** —— なぜ外したかが読めればよく、
-# 本文を丸ごと残す場所ではない(定義は notes の 1 件に収まる必要がある)
-MAX_GRAVE_WHY_CHARS = 200
 # 1 回で見る区画の上限。**区画ごとに AI を 1 回呼ぶ**(素材をその区画のぶんに
 # 絞るのが区画の意味なので、まとめて聞くと絞った意味が消える)ため、
 # 1 回の取り込みが何十分にもならないようにここで止める
@@ -380,14 +376,6 @@ class Collection:
     # 誰が置いたか。外のアプリが名乗った文字列で、**印であって認証ではない**
     # (LAN 内・認証なしの前提なので偽れる)。有効にするか決める人の手がかり
     requested_by: str = ""
-    # **墓場** —— 消したものの見出し。消したままにするために持つ。
-    #
-    # **消す回と足す回が別々に走る**ので、これが無いと消したものが戻ってくる。
-    # 足すほうは「いま名簿にいるか」しか見られず、**なぜ居ないのかまでは分からない**
-    # (一度も入っていないのか、調べたうえで外したのか)。実際に、ざっとが
-    # 「画家ではない」として外した人を、次の名簿の回が丸ごと連れ戻した。
-    # **戻すのは人が決める** —— 画面から外せる(消し間違いの逃げ道)
-    graves: list[str] = field(default_factory=list)
     # ここから下は実行のたびに書き換わる控え
     last_run_at: str | None = None
     last_status: str | None = None  # "ok" | "error"
@@ -720,52 +708,6 @@ def _existing_titles(path, titles: set[str]) -> set[str]:
     return found
 
 
-def normalize_graves(raw) -> list[dict]:
-    """墓場を均す。**重複は落とし、古いものから捨てる**。
-
-    1 件は `{"title", "why", "at"}`。**理由も残す** —— 見出しだけだと、後から
-    「なぜこれが入ってこないのか」は分かっても「なぜ外したのか」が分からない。
-    消し間違いに気づく手立てがここしか無いので、判断の中身が要る。
-
-    **見出しだけの古い形も読む**(理由の無い墓標として扱う)。同じ見出しが
-    2 度来たら**後のほうを残す** —— 理由が付いた回のほうが新しい。
-
-    定義は notes の 1 件に入るので、際限なく増やせない。**捨てた墓標は
-    もう守らない**(そのうち足す回が連れ戻す)ので、上限は多めに取ってある。
-    """
-    if not isinstance(raw, list):
-        return []
-    out: dict[str, dict] = {}
-    for item in raw:
-        grave = _to_grave(item)
-        if grave:
-            # 後勝ち。並びは最初に出た位置のまま(古い順に捨てるため)
-            out.pop(grave["title"], None)
-            out[grave["title"]] = grave
-    return list(out.values())[-MAX_GRAVES:]
-
-
-def _to_grave(item) -> dict | None:
-    """墓標 1 件。文字列は見出しだけの古い形として読む。"""
-    raw = {"title": item} if isinstance(item, str) else item
-    if not isinstance(raw, dict):
-        return None
-    title = str(raw.get("title") or "").strip()[:notes.TITLE_MAX_CHARS]
-    if not title:
-        return None
-    grave = {"title": title}
-    if why := str(raw.get("why") or "").strip()[:MAX_GRAVE_WHY_CHARS]:
-        grave["why"] = why
-    if at := str(raw.get("at") or "").strip():
-        grave["at"] = at
-    return grave
-
-
-def grave_titles(graves: list[dict]) -> set[str]:
-    """墓場に入っている見出し。**足す回はここにあるものを連れ戻さない**。"""
-    return {g["title"] for g in graves}
-
-
 def normalize_sweeps(raw) -> list[dict]:
     """巡回の一覧を均す。**名前が鍵**なので、空や重複は落とす。
 
@@ -955,7 +897,6 @@ def _from_json(item: dict) -> Collection:
         last_skipped=int(item.get("last_skipped") or 0),
         last_removed=int(item.get("last_removed") or 0),
         last_removed_titles=[str(t) for t in (item.get("last_removed_titles") or [])],
-        graves=normalize_graves(item.get("graves")),
         next_run_at=item.get("next_run_at") or None,
     )
 
@@ -1139,7 +1080,7 @@ def update(name: str, **fields) -> Collection:
     allowed = {
         "description", "prompt", "interval_minutes", "enabled",
         "backend", "model", "effort", "web", "cursor", "keep_ratio", "extract",
-        "partition", "partitions", "sweeps", "feed", "graves", "verify_tags",
+        "partition", "partitions", "sweeps", "feed", "verify_tags",
         "kind", "keep_days",
     }
     patch = {k: v for k, v in fields.items() if k in allowed and v is not None}
@@ -1166,15 +1107,6 @@ def update(name: str, **fields) -> Collection:
                 {**p, "visits": {k: v for k, v in (p.get("visits") or {}).items() if k in names}}
                 for p in patch.get("partitions", current.partitions)
             ]
-    if "graves" in patch:
-        # **空の配列を渡せば墓場を空にできる**(消し間違いの逃げ道はここだけ)。
-        # **見出しだけで渡されたら、いまの理由を残す** —— 画面の編集欄は 1 行 1 見出しで、
-        # そこから送ると理由が付いていない。書き戻すたびに理由が消えては残す意味が無い
-        why = {g["title"]: g for g in current.graves}
-        patch["graves"] = normalize_graves([
-            why.get(g["title"], g) if not g.get("why") else g
-            for g in normalize_graves(patch["graves"])
-        ])
     if "partitions" in patch:
         # **空の配列を渡せば最初から回り直せる**(消す手段がここしかない)。
         # 2 周目を粗いまま繰り返させず、一度リセットして精度を上げ直したいときに使う
@@ -1661,7 +1593,6 @@ def record_result(
     sweep: str | None = None,
     visited: list[str] | None = None,
     partitions: list[dict] | None = None,
-    graves: list[str] | None = None,
     focus: bool = False,
 ) -> Collection:
     """1 回ぶんの結果を定義側へ書き戻し、次回の予定を入れる。
@@ -1671,10 +1602,10 @@ def record_result(
     **見た区画に印を付けるのは成功したときだけ。** 失敗した回に印を付けると、
     一度も見られていない区画が「回り終えた」に混ざり、一周が嘘になる。
 
-    **消したものは墓場へ足す**(`graves`)。消す回と足す回は別々に走るので、
-    残しておかないと次の足す回が連れ戻す —— 足すほうは「いま名簿にいるか」しか
-    見られず、なぜ居ないのか(一度も入っていないのか、調べたうえで外したのか)までは
-    分からない。**割り込みの回でも足す**(消したのは消したこと)。
+    **消したものは消えた印を付けて残す**(`notes.REMOVED_TAG`)。消してしまうと、
+    消す回と足す回が別々に走るせいで次の足す回が連れ戻す —— 足すほうは
+    「いま名簿にいるか」しか見られず、なぜ居ないのか(一度も入っていないのか、
+    調べたうえで外したのか)までは分からない。残せば見出しが既にいるので素通りする。
 
     **割り込みの回は、時計にも進み具合にも触らない**(`focus`)。進み具合と次の予定を
     動かすと、割り込むたびに一周が伸びる。**成否にかかわらず依頼は片付ける** ——
@@ -1720,7 +1651,6 @@ def record_result(
         last_skipped=skipped,
         last_removed=removed,
         last_removed_titles=list(removed_titles or []),
-        graves=normalize_graves([*current.graves, *(graves or [])]),
         updated_at=_iso(now),
         **({} if focus else _advance(current, this, now, status=status, error=error)),
     )
@@ -2029,11 +1959,8 @@ def to_public(item: Collection, *, with_partitions: bool = True) -> dict:
         }
         for sweep in sweeps
     ]
-    data["graves_total"] = len(item.graves)
     if not with_partitions:
-        # **一覧には墓場も載せない**(台帳と同じ理由。数だけ載せる)
         data.pop("partitions", None)
-        data.pop("graves", None)
     return data
 
 
@@ -2298,16 +2225,8 @@ def material(
     added_titles: list[str] = []
     updated_titles: list[str] = []
     removed_titles: list[str] = []
-    buried = grave_titles(item.graves)
-    graves: list[dict] = []
     for raw in collected:
         title = (raw.get("title") or "").strip()[:notes.TITLE_MAX_CHARS]
-        # **墓場にあるものは足さない。** 消す回と足す回は別々に走るので、
-        # 足すほうは「いま名簿にいるか」しか見られない —— なぜ居ないのか
-        # (一度も入っていないのか、調べたうえで外したのか)までは分からない
-        if title and title not in merged and title in buried:
-            skipped += 1
-            continue
         if only_new and title in merged:
             # **足すだけの回。** 既にあるものには触らない(数えるだけ)。
             # **ただし、まだ持っていない脇書きは受け取る** —— 機械で運ぶ事実
@@ -2317,11 +2236,22 @@ def material(
             skipped += 1
             continue
         if edits and title and _is_tombstone(raw):
-            # 墓標。**持っていないものへの墓標は数えない**(消すものが無い)
-            if merged.pop(title, None) is not None:
+            # 墓標。**消さずに印を付けて残す**(`notes.REMOVED_TAG`)。
+            #
+            # 消していた頃は、消す回と足す回が別々に走るせいで外したものが次の回で
+            # 戻ってきた。見出しの控え(墓場)を定義に持って止めていたが、あれは
+            # 1 件のメモに収める都合で 2,000 件の上限が要り、溢れると古いものから
+            # 静かに戻っていた。
+            #
+            # **残せば、その問題ごと消える。** 見出しは既にいるので足す回は素通りし
+            # (`only_new`)、上限も要らない。**読み口が既定で隠す**ので人には出ず、
+            # 集める層は焼いた DB を直に読むので **AI からは見えたまま** ——
+            # 何を外したかを自分で確かめられる。
+            # **持っていないものへの墓標は数えない**(消すものが無い)
+            if (before := merged.get(title)) is not None:
+                merged[title] = _buried(before, raw, now)
                 removed_titles.append(title)
-                # **なぜ外したかは本文に書かせている**(`REFINE_SYSTEM_PROMPT`)
-                graves.append(_to_grave({"title": title, "why": raw.get("body"), "at": now}))
+                updated += 1
             else:
                 skipped += 1
             continue
@@ -2366,9 +2296,6 @@ def material(
         "added_titles": added_titles[:MAX_TITLE_SAMPLE],
         "updated_titles": updated_titles[:MAX_TITLE_SAMPLE],
         "removed_titles": removed_titles[:MAX_TITLE_SAMPLE],
-        # **墓場に入れるぶんは切らない。** 控え(上の頭 10 件)は読ませるためのもので、
-        # こちらは「消したままにする」ための一覧 —— 切ると、切れたぶんが戻ってくる
-        "graves": graves,
         # 集めた側が返した件数。**焼ける件数(`total`)とは別に出す** —— 一致しない
         # ときに、捨てたのか前世代と重なったのかを読み分けられるようにするため
         "collected": len(collected),
@@ -2383,22 +2310,27 @@ def _is_tombstone(raw: dict) -> bool:
 
 
 def shrink_blocked(item: Collection, diff: dict, edits: bool = False) -> str | None:
-    """墓標で減りすぎていたら、その理由の文。問題なければ None。
+    """墓標で消しすぎていたら、その理由の文。問題なければ None。
 
     **AI が変な日に当たった 1 回で、育てた分類が消えるのを止める**のがここ。
     返し忘れでは減らなくなったので、ここが止めるのは**明示的な大量削除**だけになった
     —— そのぶん、止まったときの意味が鋭い(AI が「全部要らない」と言っている)。
     足すほうには要らない(そもそも減らない)。`keep_ratio` を 0 にすると外れる。
+
+    **数えるのは「印を付けた件数」**。消さずに印を付けて残すようになったので、
+    件数そのものは減らない —— 結果の件数で見ていると、9 割に印が付いた回が
+    素通りする(実際、この形にした直後の歯止めがそうなっていた)。
     """
     if not edits or item.keep_ratio <= 0 or not diff["previous"]:
         return None
     floor = diff["previous"] * item.keep_ratio
-    if diff["total"] >= floor:
+    left = diff["previous"] - diff["removed"]
+    if left >= floor:
         return None
     sample = "、".join(diff["removed_titles"][:5])
     return (
-        f"整理の結果が {diff['total']} 件で、前の {diff['previous']} 件から"
-        f"{diff['removed']} 件減ります(下限 {floor:.0f} 件)。"
+        f"整理の結果、前の {diff['previous']} 件のうち {diff['removed']} 件に"
+        f"消えた印が付き、残るのは {left} 件です(下限 {floor:.0f} 件)。"
         + (f"消えるもの: {sample} ほか。" if sample else "")
     )
 
@@ -2446,6 +2378,24 @@ def _to_doc(raw: dict, now: str, web: bool) -> dict | None:
         "tags": tags,
         "updated_at": now,
         "extra": extra,
+    }
+
+
+def _buried(doc: dict, raw: dict, now: str) -> dict:
+    """消えた印を付けた 1 件。**中身は残す**(理由があれば本文に置き換える)。
+
+    **持っていたタグは残す。** 外したあとも「どういう条件でここに入ったのか」が
+    読めないと、消し間違いを確かめようがない。**理由は本文に書かせている**
+    (`REFINE_SYSTEM_PROMPT`)。
+    """
+    tags = [t for t in (doc.get("tags") or []) if t != notes.REMOVED_TAG]
+    why = (raw.get("body") or "").strip()[:MAX_BODY_CHARS]
+    return {
+        **doc,
+        "body": why or doc.get("body") or "",
+        "opening": (why or doc.get("opening") or "")[:notes.TITLE_MAX_CHARS * 4],
+        "tags": [*tags, notes.REMOVED_TAG],
+        "updated_at": now,
     }
 
 

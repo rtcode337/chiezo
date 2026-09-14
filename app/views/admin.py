@@ -30,6 +30,7 @@ from app import (
     claude_config,
     collect,
     collect_log,
+    db,
     jst,
     media,
     memory,
@@ -42,7 +43,7 @@ from app import (
 from app import partition as partitioning
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
 from app.pages import CHAT_PATH, browse_url, esc, page_shell
-from app.registry import SUPPORTED_SCHEMA_VERSIONS, Source
+from app.registry import SUPPORTED_SCHEMA_VERSIONS, TAG_MIN_SCHEMA_VERSION, Source
 from app.views import ai_history, ai_settings, ai_usage
 
 log = logging.getLogger("chiezo.app")
@@ -835,33 +836,46 @@ def _sweep_run_forms(name: str, sweep: str, disabled: str, dry: bool = True) -> 
     )
 
 
-def _graves_html(item) -> str:
-    """墓場(消したものと、その理由)。持っていない収集には何も出さない。
+def _removed_html(item, sources: dict) -> str:
+    """消えたもの(消えた印の付いた文書)。**読めるところに出す**。
 
-    **読めるところに出す。** 消す回と足す回が別々に走るので、これが無いと
-    「なぜこの人が入ってこないのか」が画面から読めない —— 消し間違いに気づく
-    手立てが、ここを見ることしか無い。
+    消す回と足す回が別々に走るので、これが無いと「なぜこの人が入ってこないのか」が
+    画面から読めない —— 消し間違いに気づく手立てが、ここを見ることしか無い。
 
-    **理由も出す。** 見出しだけでは、外したのが正しかったのかを確かめようがない。
+    **中身は収集そのものにある**(`notes.REMOVED_TAG` の付いた文書)。定義に控えを
+    持っていた頃は 1 件のメモに収める都合で 2,000 件の上限が要り、溢れると古いものから
+    静かに戻っていた。文書に印を付けて残せば、その上限が要らない。
     """
-    if not item.graves:
+    src = sources.get(item.name)
+    if src is None or src.schema_version < TAG_MIN_SCHEMA_VERSION:
         return ""
+    rows = db.query(
+        src.path,
+        "SELECT title, opening FROM docs WHERE doc_id IN"
+        " (SELECT doc_id FROM doc_tags WHERE tag = ?) ORDER BY updated_at DESC LIMIT ?",
+        (notes.REMOVED_TAG, REMOVED_HEAD + 1),
+    )
+    if not rows:
+        return ""
+    shown = rows[:REMOVED_HEAD]
+    lines = [r["title"] + (f' —— {r["opening"]}' if r["opening"] else "") for r in shown]
+    more = "、ほかにもあります" if len(rows) > REMOVED_HEAD else ""
     return (
-        f'<p class="muted">墓場: {len(item.graves):,}'
-        "(消したものと、消した理由。<strong>足す回はここにあるものを連れ戻さない</strong>。"
-        "消し間違いは下の「編集する」から外せる)</p>"
-        f'<pre class="prompt-view">{esc(chr(10).join(_grave_lines(item.graves)))}</pre>'
+        f'<p class="muted">消えたもの: 新しい {len(shown):,} 件{more}'
+        "(<strong>読み口からは返りません</strong>。足す回も連れ戻しません。"
+        "戻すには、その文書から印を外します)</p>"
+        f'<pre class="prompt-view">{esc(chr(10).join(lines))}</pre>'
     )
 
-
-def _grave_lines(graves) -> list[str]:
-    """1 行 1 件。**理由が無いものは見出しだけ**(理由を残す前に消したもの)。"""
-    return [g["title"] + (f' —— {g["why"]}' if g.get("why") else "") for g in graves]
 
 
 # 区画の表に出す件数。**残りは畳む** —— 全部出すと、その下にある変更履歴まで
 # 面の外へ押し出される
 PARTITION_HEAD = 10
+
+# 消えたものの一覧に出す件数。**残りは畳む** —— 溜まり続けるので、全部出すと
+# その下にある変更履歴まで面の外へ押し出される
+REMOVED_HEAD = 20
 
 
 def _verify_tags_json(item) -> str:
@@ -1066,7 +1080,7 @@ def _redo_form(item, disabled: str) -> str:
     )
 
 
-def _collect_detail_html(item, disabled: str) -> str:
+def _collect_detail_html(item, disabled: str, sources: dict | None = None) -> str:
     """1 つの収集の中身(プロンプト・進み具合・区画・直す口)。
 
     **畳まない。** 一覧の中で開いていた頃は、開くたびに表が縦へ伸びて、
@@ -1079,21 +1093,14 @@ def _collect_detail_html(item, disabled: str) -> str:
         f'<code>{esc(item.cursor) or "(まだ無し)"}</code></p>'
         f"{_redo_form(item, disabled)}"
         f"{_partition_html(item)}"
-        f"{_graves_html(item)}"
+        f"{_removed_html(item, sources or {})}"
         f"<details><summary>編集する</summary>"
         f'<form method="post" action="/admin/collect/{esc(item.name)}/edit" class="collect-form">'
         f'<p><label>説明<br><input name="description" value="{esc(item.description)}"></label></p>'
         f'<p><label>プロンプト<br><textarea name="prompt" rows="10">{esc(item.prompt)}</textarea></label></p>'
         f'<p><label>進み具合(空にすると最初から)<br>'
         f'<input name="cursor" value="{esc(item.cursor)}"></label></p>'
-        f'<p><label>墓場(1 行に 1 つ。消したものを、消したままにする)<br>'
-        f'<textarea name="graves" rows="6" spellcheck="false">'
-        f'{esc(chr(10).join(g["title"] for g in item.graves))}</textarea></label></p>'
-        f'<p class="muted">ここにある見出しは<strong>足す回が連れ戻さない</strong>。'
-        f" 消す回と足す回は別々に走るので、残しておかないと"
-        f"「画家ではない」として外した人が次の回で戻ってくる。"
-        f" 消し間違えたら、その行を消せば入ってくるようになる。</p>"
-        f"{_backend_hint()}"
+f"{_backend_hint()}"
         f'<p><label>消えすぎの歯止め(前の何割を下回ったら止めるか。0 で外す)<br>'
         f'<input name="keep_ratio" type="number" step="0.05" min="0" max="1"'
         f' value="{item.keep_ratio}"></label></p>'
@@ -2178,8 +2185,6 @@ async def admin_collect_edit(name: str, request: Request):
         description=str(form.get("description") or ""),
         # 空にできるように、cursor だけは None ではなく空文字を通す
         cursor=str(form.get("cursor") or ""),
-        # **空にできる**(消し間違いの逃げ道)。1 行 1 件で読む
-        graves=[t.strip() for t in str(form.get("graves") or "").splitlines() if t.strip()],
         # 空欄は「使わない」。指定を外せるのはここだけ
         extract=_parse_extract(form.get("extract")),
         partition=_parse_partition(form.get("partition")),
@@ -2742,7 +2747,7 @@ def admin_collect_detail(request: Request, name: str):
 {_sweep_table_body(item, disabled)}
 </tbody>
 </table>
-{_collect_detail_html(item, disabled)}
+{_collect_detail_html(item, disabled, request.app.state.sources)}
 {_collect_running_html(name)}
 {_collect_changes_html(name=name)}
 <p class="muted"><a href="/admin/memory#collect">集める の一覧へ戻る</a></p>
