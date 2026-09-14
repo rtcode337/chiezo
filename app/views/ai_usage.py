@@ -107,12 +107,13 @@ def _spent_cell(row: dict) -> str:
     return "<br>".join(lines)
 
 
-def _refresh_button(row: dict) -> str:
+def _refresh_button(row: dict, back: str) -> str:
     if not row["quota"].supported:
         return '<span class="muted">—</span>'
     return (
         f'<form method="post" action="/admin/ai/usage" class="init-form">'
         f'<input type="hidden" name="provider" value="{esc(row["id"])}">'
+        f'<input type="hidden" name="back" value="{esc(back)}">'
         f'<button type="submit">取り直す</button></form>'
     )
 
@@ -165,6 +166,57 @@ def refresh_all_form(label: str, back: str = DEFAULT_BACK, klass: str = "init-fo
     )
 
 
+def banner_html(request: Request | None = None) -> str:
+    """取り直した結果の 1 行。**表を出す画面はどれも出す**(玄関を含む)。
+
+    押した画面へ戻ってくるので、戻った先に結果が出ないと、押したことが
+    伝わらない(取れなかった相手がいても気づけない)。
+    """
+    q = request.query_params if request is not None else {}
+    if refreshed := q.get("usage_refreshed"):
+        label = esc(usage.label_of(refreshed))
+        why = q.get("usage_error", "")
+        return (
+            f'<p class="stale">⚠️ {label} の使用量を取れません: {esc(why)}</p>' if why
+            else f'<p class="note">✅ {label} の使用量を取り直しました。</p>'
+        )
+    if (done := q.get("usage_refreshed_all")) is not None:
+        # 一気に取り直したとき。 取れた数と、取れなかった相手を並べる ——
+        # 「全部取り直しました」とだけ書くと、落ちている相手に気づけない。
+        why = q.get("usage_error", "")
+        return (
+            f'<p class="stale">⚠️ {esc(done)} 件を取り直しました'
+            f"(取れなかった相手: {esc(why)})。</p>" if why
+            else f'<p class="note">✅ {esc(done)} 件の使用量を取り直しました。</p>'
+        )
+    return ""
+
+
+def table_html(rows: list[dict], back: str = DEFAULT_BACK) -> str:
+    """使用量の表 1 つぶん。**玄関と AI の面で同じものを出す**ので、ここが正。
+
+    窓は相手が返したぶんを全部並べる —— いちばん詰まっている 1 つだけに
+    畳むと、5 時間の窓しか見えない相手が出る。重い仕事を頼んでよいかは、
+    **その仕事が収まる窓**(長い依頼なら週のほう)で決まるため。
+
+    `back` は行ごとの「取り直す」を押した人の戻り先。
+    """
+    body = "\n".join(
+        f'<tr{"" if row["enabled"] else ' class="off"'}>'
+        f'<td>{esc(row["label"])}</td>'
+        f"<td>{_quota_cell(row)}</td>"
+        f"<td>{_spent_cell(row)}</td>"
+        f"<td>{_refresh_button(row, back)}</td></tr>"
+        for row in rows
+    )
+    return f"""<table class="ai-settings ai-usage">
+<thead><tr><th>AI</th><th>相手が言う枠(残り)</th><th>Chiezo が使ったぶん</th><th></th></tr></thead>
+<tbody>
+{body}
+</tbody>
+</table>"""
+
+
 def section_html(request: Request | None = None) -> str:
     """管理画面に差し込む「使用量」節。"""
     if not usage_store.is_enabled():
@@ -172,35 +224,6 @@ def section_html(request: Request | None = None) -> str:
             f'<h3 id="{SECTION_ANCHOR}">使用量</h3>\n'
             '<p class="muted">記録の置き場がありません。書き込み可能なディレクトリを'
             " <code>CHIEZO_STATE_DIR</code> に設定すると、使用量を出せるようになります。</p>"
-        )
-
-    banner = ""
-    q = request.query_params if request is not None else {}
-    if refreshed := q.get("usage_refreshed"):
-        label = esc(usage.label_of(refreshed))
-        why = q.get("usage_error", "")
-        banner = (
-            f'<p class="stale">⚠️ {label} の使用量を取れません: {esc(why)}</p>' if why
-            else f'<p class="note">✅ {label} の使用量を取り直しました。</p>'
-        )
-    elif (done := q.get("usage_refreshed_all")) is not None:
-        # 一気に取り直したとき。 取れた数と、取れなかった相手を並べる ——
-        # 「全部取り直しました」とだけ書くと、落ちている相手に気づけない。
-        why = q.get("usage_error", "")
-        banner = (
-            f'<p class="stale">⚠️ {esc(done)} 件を取り直しました'
-            f"(取れなかった相手: {esc(why)})。</p>" if why
-            else f'<p class="note">✅ {esc(done)} 件の使用量を取り直しました。</p>'
-        )
-
-    rows = []
-    for row in usage.rows():
-        rows.append(
-            f'<tr{"" if row["enabled"] else ' class="off"'}>'
-            f'<td>{esc(row["label"])}</td>'
-            f"<td>{_quota_cell(row)}</td>"
-            f"<td>{_spent_cell(row)}</td>"
-            f"<td>{_refresh_button(row)}</td></tr>"
         )
 
     since = _when(usage_store.first_recorded_at() or "")
@@ -212,7 +235,7 @@ def section_html(request: Request | None = None) -> str:
     )
 
     return f"""<h3 id="{SECTION_ANCHOR}">使用量</h3>
-{banner}
+{banner_html(request)}
 <details>
 <summary>この節について</summary>
 <p><strong>数が 2 つあるのは、測っているものが違うから。</strong>
@@ -233,12 +256,7 @@ API からは <code>GET /v1/ai/usage</code>(取り直すなら <code>?refresh=1<
 </details>
 {since_note}
 {_refresh_all_button()}
-<table class="ai-settings ai-usage">
-<thead><tr><th>AI</th><th>相手が言う枠(残り)</th><th>Chiezo が使ったぶん</th><th></th></tr></thead>
-<tbody>
-{chr(10).join(rows)}
-</tbody>
-</table>
+{table_html(usage.rows())}
 """
 
 
@@ -263,8 +281,12 @@ async def refresh_all_usage(back: str = Form(DEFAULT_BACK)):
 
 
 @router.post("/admin/ai/usage")
-async def refresh_usage(provider: str = Form(...)):
-    """1 相手ぶん取り直す(結果はクエリで画面へ返す)。"""
+async def refresh_usage(provider: str = Form(...), back: str = Form(DEFAULT_BACK)):
+    """1 相手ぶん取り直す(結果はクエリで画面へ返す)。
+
+    **押した画面へ戻す**(`back`)。玄関にも同じ表があるので、行き先を書き切ると
+    どこから押しても AI の面へ連れて行かれる(まとめて取り直すボタンと同じ理由)。
+    """
     spec = usage.spec_of(provider)
     if spec is None:
         raise HTTPException(404, {"error": f"unknown provider: {provider}"})
@@ -274,4 +296,6 @@ async def refresh_usage(provider: str = Form(...)):
     params = {"usage_refreshed": spec.id}
     if quota.error:
         params["usage_error"] = quota.error[:300]
-    return RedirectResponse(f"/admin/ai?{urlencode(params)}#{SECTION_ANCHOR}", status_code=303)
+    return RedirectResponse(
+        f"{_back_to(back)}?{urlencode(params)}#{SECTION_ANCHOR}", status_code=303
+    )

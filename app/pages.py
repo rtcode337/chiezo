@@ -221,12 +221,12 @@ PAGE_STYLE = """
   details.prompt-open > summary { font-weight: normal; padding: 0.1rem 0; }
   .muted { color: #666; font-size: 0.85rem; }
   .pager { display: flex; gap: 1rem; align-items: baseline; margin-top: 1rem; }
-  /* 玄関の「枠の残り」。**1 行に収める** —— 概況なので、相手ごとに段を作らない */
+  /* 玄関の使用量の表に添える 1 行（取り直す口と、全部の相手への入口）。
+     **表の上に 1 行で収める** —— 表より先に目を引く見た目にしない */
   .usage-strip { display: flex; flex-wrap: wrap; gap: 0.4rem 0.9rem;
                  align-items: baseline; font-size: 0.85rem; margin: 0.6rem 0; }
-  .usage-chip { white-space: nowrap; }
-  /* 帯の中の「取り直す」。**帯から浮かせない** —— 数字の並びを切らないよう、
-     文字の大きさに合わせた控えめな見た目にする */
+  /* その行の中の「取り直す」。**行から浮かせない** —— 文字の大きさに合わせた
+     控えめな見た目にする */
   form.usage-refresh { display: inline; }
   form.usage-refresh button { font-size: 0.85rem; padding: 0.1rem 0.5rem; }
   /* 取り込みの実行ログ。**走っている間だけ開く**（`views/admin.py`）ので、

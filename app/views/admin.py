@@ -1619,39 +1619,23 @@ def nav_html(current: str) -> str:
 </header>"""
 
 
-def _usage_html() -> str:
-    """玄関に出す「枠の残り」。**有効にしてある相手だけ**を、いちばん詰まっている窓で。
+def _usage_html(request: Request | None = None) -> str:
+    """玄関に出す「使用量」。**有効にしてある相手だけ**を、AI の面と同じ表で。
 
-    ここは概況なので、相手ごとの窓を全部並べない —— 見たいのは
-    「重い仕事を頼んでよいか」で、それは**いちばん使っている窓**で決まる。
-    詳しくは「AI と鍵」の面（`views/ai_usage.py`）。
+    かつては 1 行の帯に畳み、相手ごとに**いちばん詰まっている窓**を 1 つだけ
+    出していた。あれでは**短い窓しか見えない相手が出る** —— 5 時間の窓が
+    詰まっていても週の窓が空いていれば重い仕事は頼めるので、片方だけでは
+    頼んでよいかを決められない。表なら窓が何本あっても段が増えるだけで済む。
+
+    **使わない相手は出さない**(玄関は概況で、設定を見に来る場所ではない)。
+    全部の相手と説明が要るときは「AI と鍵」の面（`views/ai_usage.py`）。
 
     **描くときに相手へ問い合わせない**（`usage.rows()` は控えを読むだけ）。
     玄関は何度も開く画面なので、開くたびに外へ出ると相手のレート制限に当たる。
     """
     if not usage_store.is_enabled():
         return ""
-    cells = []
-    for row in usage.rows():
-        if not row["enabled"]:
-            continue
-        # **`quota` は `usage.Quota`（dataclass）で、dict ではない。**
-        # 一度 `.get()` で読んで 500 にした —— 有効な相手が 1 つも無い素の状態では
-        # ここを通らないので、テストでは気づけなかった
-        windows = [w for w in (getattr(row.get("quota"), "windows", None) or [])
-                   if w.used_percent is not None]
-        if not windows:
-            continue
-        # いちばん使っている窓を 1 つだけ
-        worst = max(windows, key=lambda w: w.used_percent)
-        pct = worst.used_percent
-        # 8 割を超えたら色を変える —— 数字だけだと、並んだときに危ない行が沈む
-        klass = "stale" if pct >= 80 else "muted"
-        cells.append(
-            f'<span class="usage-chip"><b>{esc(row["label"])}</b> '
-            f'<span class="{klass}">{pct:.0f}%</span> '
-            f'<span class="muted">{esc(str(worst.label or ""))[:18]}</span></span>'
-        )
+    rows = [row for row in usage.rows() if row["enabled"]]
     # **取り直す口を玄関にも置く。** ここは「重い仕事を頼んでよいか」を見に来る
     # 画面なので、数字が古いと判断できない —— 取り直すために AI の面まで開くのは、
     # 見に来た目的から遠い。**押した画面へ戻る**(`back`)
@@ -1659,18 +1643,18 @@ def _usage_html() -> str:
         ai_usage.refresh_all_form("取り直す", back="/admin", klass="usage-refresh")
         if usage.refreshable() else ""
     )
-    if not cells:
-        # 控えがまだ 1 つも無いときも、取り直す口だけは出す ——
-        # 出さないと、最初の 1 回を玄関から始められない
-        if not button:
-            return ""
-        return (
-            '<p class="usage-strip">枠の残り: '
-            f'<span class="muted">まだ取っていません</span> {button}</p>'
-        )
+    if not rows:
+        # 使う相手が 1 つも無いときは何も出さない（列だけの表は、枠が取れて
+        # いないのか相手がいないのかが読めない）。枠がまだ取れていないだけなら
+        # 行は出る —— その行に「まだ取っていない」と書くので、最初の 1 回も
+        # 玄関から始められる
+        return ""
     return (
-        '<p class="usage-strip">枠の残り: ' + " ".join(cells)
-        + f' {button}<a href="/admin/ai#ai-usage">→ 詳しく</a></p>'
+        f'<h2 id="{ai_usage.SECTION_ANCHOR}">使用量</h2>\n'
+        f'{ai_usage.banner_html(request)}'
+        f'<p class="usage-strip">{button}'
+        '<a href="/admin/ai#ai-usage">→ 使わない相手も含めて見る</a></p>\n'
+        f'{ai_usage.table_html(rows, back="/admin")}'
     )
 
 
@@ -1678,7 +1662,8 @@ def _usage_html() -> str:
 def admin(request: Request):
     """玄関。**いま何が起きているかが 1 画面で読めること**だけを受け持つ。
 
-    表は持たない —— 数と状態だけを出して、直しに行くのは各面。
+    設定は持たない —— 状態と数、それに「いま頼めるか」を読むための表だけを出して、
+    直しに行くのは各面。
     """
     sources: dict[str, Source] = request.app.state.sources
     job = _fetch_trigger_status()
@@ -1716,7 +1701,7 @@ def admin(request: Request):
 {nav_html("/admin")}
 <p>{_disk_html(request.app.state.data_dir)}</p>
 {_job_status_html(job)}
-{_usage_html()}
+{_usage_html(request)}
 {_running_html(running)}
 <div class="admin-cards">
 {cards}
@@ -1726,9 +1711,9 @@ def admin(request: Request):
 
 
 def _running_html(running: list[dict]) -> str:
-    """いま走っている AI への依頼。**玄関に出す唯一の表**。
+    """いま走っている AI への依頼。
 
-    ここだけ表なのは、**待たされているときに見に来る画面がここだから** ——
+    ここが表なのは、**待たされているときに見に来る画面がここだから** ——
     数だけでは「何が遅いのか」が分からず、結局 AI の面まで開くことになる。
 
     **中身も出す**(`ai_history._prompt`)。同じ相手へ似た大きさの依頼を 2 本

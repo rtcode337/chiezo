@@ -1779,22 +1779,23 @@ class TestAdminPages:
 
     def test_the_entrance_shows_how_full_the_quotas_are(self, client):
         """**重い仕事を頼む前に、押す画面で枠が見える。**
-        相手ごとの窓を全部並べず、いちばん詰まっている 1 つだけ出す。"""
+        使う相手だけを、AI の面と同じ表で出す。"""
         from app import usage, usage_store
 
         if not usage_store.is_enabled():
             return
         text = client.get("/admin").text
-        # 有効な相手がいない素の状態では出さない（空の帯を置かない）
-        has_quota = any(
-            (r.get("quota") or {}).get("windows") for r in usage.rows() if r["enabled"]
-        )
-        assert ("枠の残り" in text) is bool(has_quota)
+        # 使う相手がいない素の状態では出さない（列だけの表を置かない）
+        has_enabled = any(r["enabled"] for r in usage.rows())
+        assert ("使用量" in text) is bool(has_enabled)
 
-    def test_the_entrance_reads_the_quota_object_not_a_dict(self, client, monkeypatch):
-        """**`usage.rows()` の `quota` は dataclass で、dict ではない。**
-        一度 `.get()` で読んで玄関が 500 になった —— 有効な相手が 1 つも無い
-        素の状態ではそこを通らないので、テストが素通りしていた。"""
+    def test_the_entrance_shows_every_window_not_just_the_tightest(self, client, monkeypatch):
+        """**窓は相手が返したぶんを全部出す。**
+
+        いちばん詰まっている 1 つに畳んでいた頃は、5 時間の窓しか見えない相手が
+        いた —— 短い窓が詰まっていても週の窓が空いていれば重い仕事は頼めるので、
+        片方だけでは頼んでよいかを決められない。
+        """
         from app import usage, usage_store
         from app.views import admin as views_admin
 
@@ -1802,29 +1803,63 @@ class TestAdminPages:
         monkeypatch.setattr(usage, "rows", lambda: [{
             "id": "codex", "label": "Codex CLI", "enabled": True, "billing": "",
             "quota": usage.Quota(supported=True, windows=[
-                usage.Window(id="w1", label="週", used_percent=42.0),
-                usage.Window(id="w2", label="5 時間", used_percent=91.5),
+                usage.Window(id="w1", label="直近 7 日", used_percent=42.0),
+                usage.Window(id="w2", label="直近 5 時間", used_percent=91.5),
             ]),
             "spent": {},
         }])
         html = views_admin._usage_html()
         assert "Codex CLI" in html
-        assert "92%" in html          # いちばん詰まっている窓を出す
-        assert "42%" not in html      # 全部は並べない
-        assert "stale" in html        # 8 割を超えたら色を変える
+        assert "92%" in html and "42%" in html
+        assert "直近 7 日" in html
         assert client.get("/admin").status_code == 200
 
-    def test_the_entrance_says_nothing_when_no_quota_is_known(self, monkeypatch):
-        """空の帯を置かない（枠が取れていないのに見出しだけ出ると、0% に読める）。"""
+    def test_the_entrance_only_shows_the_backends_in_use(self, monkeypatch):
+        """使わない相手は出さない（玄関は概況で、設定を見に来る場所ではない）。"""
         from app import usage, usage_store
         from app.views import admin as views_admin
 
         monkeypatch.setattr(usage_store, "is_enabled", lambda: True)
         monkeypatch.setattr(usage, "rows", lambda: [
-            {"id": "gemini", "label": "Gemini", "enabled": True, "billing": "",
+            {"id": "gemini", "label": "Gemini", "enabled": False, "billing": "",
+             "quota": usage.Quota(supported=True, windows=[
+                 usage.Window(id="w", label="直近 7 日", used_percent=3.0)]),
+             "spent": {}},
+            {"id": "codex", "label": "Codex CLI", "enabled": True, "billing": "",
+             "quota": usage.Quota(supported=True, windows=[
+                 usage.Window(id="w", label="直近 7 日", used_percent=18.0)]),
+             "spent": {}},
+        ])
+        html = views_admin._usage_html()
+        assert "Codex CLI" in html
+        assert "Gemini" not in html
+
+    def test_the_entrance_says_nothing_when_nothing_is_in_use(self, monkeypatch):
+        """使う相手が 1 つも無ければ何も出さない（列だけの表を置かない）。"""
+        from app import usage, usage_store
+        from app.views import admin as views_admin
+
+        monkeypatch.setattr(usage_store, "is_enabled", lambda: True)
+        monkeypatch.setattr(usage, "rows", lambda: [
+            {"id": "gemini", "label": "Gemini", "enabled": False, "billing": "",
              "quota": usage.Quota(), "spent": {}},
         ])
         assert views_admin._usage_html() == ""
+
+    def test_the_entrance_says_when_a_quota_was_never_fetched(self, monkeypatch):
+        """枠がまだ無い相手も行は出す（最初の 1 回を玄関から始められる）。"""
+        from app import usage, usage_store
+        from app.views import admin as views_admin
+
+        monkeypatch.setattr(usage_store, "is_enabled", lambda: True)
+        monkeypatch.setattr(usage, "refreshable", lambda: ["codex"])
+        monkeypatch.setattr(usage, "rows", lambda: [
+            {"id": "codex", "label": "Codex CLI", "enabled": True, "billing": "",
+             "quota": usage.Quota(supported=True), "spent": {}},
+        ])
+        html = views_admin._usage_html()
+        assert "まだ取っていない" in html
+        assert 'action="/admin/ai/usage/all"' in html
 
     def test_the_entrance_can_refresh_the_quota(self, monkeypatch):
         """**取り直す口を玄関にも置く。**
@@ -1837,16 +1872,19 @@ class TestAdminPages:
 
         monkeypatch.setattr(usage_store, "is_enabled", lambda: True)
         monkeypatch.setattr(usage, "refreshable", lambda: ["claude"])
-        monkeypatch.setattr(usage, "rows", lambda: [])
+        monkeypatch.setattr(usage, "rows", lambda: [
+            {"id": "claude", "label": "Claude Code CLI", "enabled": True, "billing": "",
+             "quota": usage.Quota(supported=True, windows=[
+                 usage.Window(id="w", label="直近 7 日", used_percent=10.0)]),
+             "spent": {}},
+        ])
 
         html = views_admin._usage_html()
 
         assert 'action="/admin/ai/usage/all"' in html
         # **押した画面へ戻す** —— 行き先を書き切ると、玄関から押した人が
-        # AI の面へ連れて行かれる
-        assert 'name="back" value="/admin"' in html
-        # 控えがまだ無くても、最初の 1 回を玄関から始められる
-        assert "まだ取っていません" in html
+        # AI の面へ連れて行かれる(行ごとのボタンも同じ)
+        assert html.count('name="back" value="/admin"') == 2
 
     def test_the_entrance_does_not_offer_what_cannot_be_asked(self, monkeypatch):
         """聞ける相手がいなければボタンも出さない(押しても何も起きない口を置かない)。"""
@@ -1855,9 +1893,12 @@ class TestAdminPages:
 
         monkeypatch.setattr(usage_store, "is_enabled", lambda: True)
         monkeypatch.setattr(usage, "refreshable", lambda: [])
-        monkeypatch.setattr(usage, "rows", lambda: [])
+        monkeypatch.setattr(usage, "rows", lambda: [
+            {"id": "claude", "label": "Claude Code CLI", "enabled": True, "billing": "",
+             "quota": usage.Quota(supported=False), "spent": {}},
+        ])
 
-        assert views_admin._usage_html() == ""
+        assert 'action="/admin/ai/usage/all"' not in views_admin._usage_html()
 
     def test_refreshing_comes_back_to_where_it_was_pressed(self):
         """外の URL へは戻さない(押した先が別のサイトになる)。"""
