@@ -104,13 +104,10 @@ class TestDefinitions:
     def test_without_a_way_to_bake_it_is_disabled(self, enabled, monkeypatch):
         """取り込みを起こせない面では、定義を置いても永遠に走らない。
 
-        **見本の定義まで作らない**のが要点 —— 使えない機能の設定が短期記憶に
-        1 件混ざるだけになる(タスク専用の面のように corpus を持たない構成)。
+        corpus を持たない面(タスク専用の構成など)では、定義を置いても走らない。
         """
         monkeypatch.delenv("CHIEZO_TRIGGER_URL", raising=False)
         assert not collect.is_enabled()
-        collect.ensure_sample()
-        assert collect.load() == []
 
     def test_the_name_becomes_a_source_so_it_is_checked(self, enabled):
         """名前はソース名・ファイル名・URL になるので狭く取る。"""
@@ -169,65 +166,6 @@ class TestDefinitions:
         machine_store.put(collect.DEFS_KIND, collect.DEFS_KEY, "これはJSONではない")
         with pytest.raises(fastapi.HTTPException):
             collect.load()
-
-
-class TestSample:
-    """最初から置いておく見本。**止めた状態**で、**消したら戻ってこない**。"""
-
-    def test_it_places_one_sample_when_empty(self, enabled):
-        collect.ensure_sample()
-        names = [c.name for c in collect.load()]
-        assert names == [collect.SAMPLE_NAME]
-
-    def test_the_sample_starts_disabled(self, enabled):
-        """有効なものを黙って足すと、設定した覚えのない AI の呼び出しが枠を食う。"""
-        collect.ensure_sample()
-        sample = collect.get(collect.SAMPLE_NAME)
-        assert not sample.enabled
-        assert [c.name for c in collect.due_collections()] == []
-
-    def test_it_does_not_come_back_after_being_deleted(self, enabled):
-        """消せない見本は見本ではない(起動のたびに押し付け直さない)。"""
-        collect.ensure_sample()
-        collect.remove(collect.SAMPLE_NAME)
-        collect.create("mine", prompt="p", interval_minutes=60)
-        collect.ensure_sample()
-        assert [c.name for c in collect.load()] == ["mine"]
-
-    def test_it_does_not_touch_existing_definitions(self, enabled):
-        collect.create("mine", prompt="p", interval_minutes=60)
-        collect.ensure_sample()
-        assert [c.name for c in collect.load()] == ["mine"]
-
-    def test_the_sample_shows_how_to_use_the_cursor(self, enabled):
-        """見本を置く理由は「書き方が分からないと始められない」ことなので、
-
-        `{cursor}` と `next_cursor` の両方が入っていないと見本にならない。
-        """
-        assert "{cursor}" in collect.SAMPLE["prompt"]
-        assert "next_cursor" in collect.SAMPLE["prompt"]
-
-    def test_the_definition_lives_outside_the_short_term_memory(self, enabled):
-        """**人が読む場所に混ぜない。**
-
-        メモとして置いていた頃は、`notes.add` が見出しの衝突で `(doc_id)` を足すため、
-        定義が「見えなかった」ときに二重の設定ができた（本番で実際に踏んだ ——
-        起動順が悪く、追記された行が `immutable` の読み手に見えていなかった）。
-        鍵で 1 件に決まる置き場なら、その壊れ方そのものが無くなる。
-        """
-        from app import machine_store, notes
-
-        collect.ensure_sample()
-        collect.remove(collect.SAMPLE_NAME)
-        collect.ensure_sample()
-
-        assert machine_store.get(collect.DEFS_KIND, collect.DEFS_KEY)
-        assert notes.recall(limit=50)["notes"] == []
-
-    def test_turning_it_on_makes_it_due(self, enabled):
-        collect.ensure_sample()
-        collect.update(collect.SAMPLE_NAME, enabled=True)
-        assert [c.name for c in collect.due_collections()] == [collect.SAMPLE_NAME]
 
 
 class TestRequestingFromOutside:
@@ -2315,15 +2253,22 @@ class TestDrafting:
         assert collect.clean_draft("  本文の {cursor} は残す  ") == "本文の {cursor} は残す"
 
 
-class TestSampleContent:
-    """見本の中身。**技術ニュースではなく、押さえておくべき一般のニュース**。"""
+class TestThePromptExample:
+    """収集を追加するときの下書き。**書き方が分からない人に、形を見せるためのもの**。
 
-    def test_the_sample_collects_general_news(self, enabled):
-        collect.ensure_sample()
-        prompt = collect.get(collect.SAMPLE_NAME).prompt
-        assert "押さえておくべき" in prompt
+    **ここから作られる収集は無い。** 見本の収集を勝手に置いていた頃は、消しても
+    全部消した拍子に戻ってきた(本番で踏んだ)。
+    """
+
+    def test_it_shows_what_to_write(self):
+        assert "押さえておくべき" in collect.PROMPT_EXAMPLE
         # 何を入れないかまで書いていないと、集まるものが散らかる
-        assert "芸能" in prompt
+        assert "芸能" in collect.PROMPT_EXAMPLE
+
+    def test_it_appears_in_the_form(self, enabled):
+        from app.views import admin
+
+        assert "押さえておくべき" in admin._collect_html({}, "")
 
 
 class TestBaking:
@@ -2754,9 +2699,8 @@ class TestRest:
         なっていた。実際に押して初めて分かった。
         """
         assert client.delete("/v1/collect/news").status_code == 200
-        assert [c["name"] for c in client.get("/v1/collect").json()["collections"]] == [
-            "sample_news"
-        ]
+        # **消したら空。** 勝手に見本が湧かない
+        assert client.get("/v1/collect").json()["collections"] == []
 
     def test_deleting_an_unknown_collection_is_404(self, client, sample):
         assert client.delete("/v1/collect/nosuch").status_code == 404

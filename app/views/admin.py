@@ -1324,7 +1324,7 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
 墓標を付けたときだけ。</p>
 <p><label>プロンプト<br>
 <textarea name="prompt" rows="6" required
- placeholder="{esc(collect.SAMPLE["prompt"])}"></textarea></label></p>
+ placeholder="{esc(collect.PROMPT_EXAMPLE)}"></textarea></label></p>
 <p><label><input type="checkbox" name="web" value="1" checked> web 検索を開ける</label></p>
 <button type="submit">追加する(止めた状態で作る)</button>
 </form>

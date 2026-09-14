@@ -538,14 +538,6 @@ async def lifespan(app: FastAPI):
     # notes(唯一書き込めるソース)は ingest を回さずに使えるよう、無ければここで作る
     notes.ensure_db()
     app.state.sources = scan_all(data_dir)
-    # 収集の見本を置く(まだ 1 件も無いときだけ・止めた状態)。空の画面からは
-    # プロンプトの書き方が分からないので、手本を 1 つ見せてから始めてもらう。
-    # **必ず scan_all の後に呼ぶ** —— あれが notes を `mutable` として登録するまで、
-    # `db.query` は `immutable=1` で開く。それは「開いている間 1 バイトも変わらない」
-    # という宣言なので SQLite は WAL を見に行かず、**前のプロセスが WAL に書いた行が
-    # 見えない**。見えないまま「まだ定義が無い」と判断して見本を作り直し、
-    # `docs.title` の衝突で「収集 (11)」のような二重の定義ができた(実際に踏んだ)
-    collect.ensure_sample()
     if not app.state.sources:
         log.warning("no sources registered from %s", data_dir)
     watcher = (

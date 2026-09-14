@@ -226,33 +226,23 @@ MAX_VERIFY_TAGS = 8
 # 実在を確かめる問い合わせ 1 回ぶんの見出しの数(SQLite の上限に余裕を持たせる)
 VERIFY_CHUNK = 400
 
-# 最初から置いておく見本。**止めた状態で置く** —— 有効なものを黙って足すと、
-# 設定した覚えのない AI の呼び出しが枠を食う。画面の「有効にする」で動き出す。
+# 収集を追加するときの下書き。**書き方が分からない人に、形を見せるためのもの**
+# (画面の入力欄の placeholder)。この層はプロンプト次第でどうにでもなるぶん、
+# 空の画面からは `{cursor}` の使い方を思いつけない。
 #
-# 見本を 1 つ置くのは、この層がプロンプト次第でどうにでもなるぶん、
-# **何をどう書けばよいかが分からないと始められない**ため(空の画面から
-# `{cursor}` の使い方は思いつかない)。消したければ普通に削除できる。
-# **見本と分かる名前にする。** `news` のような普通の名前だと、あとから同じものを
-# 作ろうとしたときにぶつかる(名前はソース名なので 1 つしか持てない)。
-# **ハイフンは使えない** —— 世代ファイル名 `<source>-<date>.db` の区切りと衝突するため
-# `NAME_RE` が弾く。
-SAMPLE_NAME = "sample_news"
-SAMPLE = {
-    "name": SAMPLE_NAME,
-    "description": "ニュース(見本。有効にすると6時間ごとに、押さえておくべきものを集める)",
-    "prompt": (
-        "{cursor} 以降に出たニュースのうち、**日本で暮らす人が押さえておくべきもの**を10件、"
-        "重要な順に。\n"
-        "政治・経済・災害・事故・事件・国際情勢と、暮らしに影響する制度や価格の変更を優先する。"
-        "芸能・ゴシップ・スポーツの勝敗・個人の炎上は入れない。\n"
-        "title は見出し(同じ話題は同じ見出しにする)、"
-        "body は3〜4文で「何が起きたか」と「なぜ押さえておくべきか」、"
-        "tags は分野を1〜2個(政治 / 経済 / 災害 / 事件 / 国際 / 社会 / 科学 など)、"
-        "url は出典。\n"
-        "next_cursor には、いちばん新しいニュースの日付を YYYY-MM-DD で入れる。"
-    ),
-    "interval_minutes": 360,
-}
+# **ここから作られる収集は無い。** 止めた状態の見本を置いていた頃は、消しても
+# 「まだ 1 件も無い」が成り立つ拍子に戻ってきた —— 消せない見本は見本ではない。
+PROMPT_EXAMPLE = (
+    "{cursor} 以降に出たニュースのうち、**日本で暮らす人が押さえておくべきもの**を10件、"
+    "重要な順に。\n"
+    "政治・経済・災害・事故・事件・国際情勢と、暮らしに影響する制度や価格の変更を優先する。"
+    "芸能・ゴシップ・スポーツの勝敗・個人の炎上は入れない。\n"
+    "title は見出し(同じ話題は同じ見出しにする)、"
+    "body は3〜4文で「何が起きたか」と「なぜ押さえておくべきか」、"
+    "tags は分野を1〜2個(政治 / 経済 / 災害 / 事件 / 国際 / 社会 / 科学 など)、"
+    "url は出典。\n"
+    "next_cursor には、いちばん新しいニュースの日付を YYYY-MM-DD で入れる。"
+)
 
 
 def require_enabled() -> None:
@@ -1034,44 +1024,6 @@ def create(
     )
     save([*existing, item])
     return item
-
-
-def ensure_sample() -> None:
-    """見本の収集を、まだ 1 件も無いときだけ置く。
-
-    **止めた状態で置く**(`enabled=False`)。有効なものを黙って足すと、設定した
-    覚えのない AI の呼び出しが枠を食う。画面の「有効にする」で動き出す。
-
-    **一度でも定義があれば触らない** —— 見本を消した人に、起動のたびに
-    押し付け直すことになるため(消せない見本は見本ではない)。
-    """
-    if not is_enabled():
-        return
-    try:
-        if load():
-            return
-    except HTTPException:
-        # 定義が壊れているときは触らない(直すのは人の仕事)
-        return
-    now = _iso(_now())
-    item = Collection(
-        name=SAMPLE["name"],
-        description=SAMPLE["description"],
-        prompt=SAMPLE["prompt"],
-        interval_minutes=SAMPLE["interval_minutes"],
-        enabled=False,
-        backend=None,
-        model=None,
-        effort=None,
-        web=True,
-        cursor="",
-        requested_by="見本",
-        created_at=now,
-        updated_at=now,
-        next_run_at=now,
-    )
-    save([item])
-    log.info("collect: placed the sample collection (%s, disabled)", item.name)
 
 
 def update(name: str, **fields) -> Collection:
