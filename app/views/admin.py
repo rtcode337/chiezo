@@ -755,11 +755,11 @@ def _sweep_cells(item, disabled: str = "", dry: bool = True) -> list[str]:
         else:
             last = jst.parse(sweep.last_run_at or "")
             result = esc(jst.format(last)) if last else '<span class="muted">まだ</span>'
-        # **止めている巡回に「いますぐ」と出さない**(予定を持っていないだけで走らない)
-        if not sweep.enabled:
-            when = '<span class="muted">止めている</span>'
-        elif sweep.on_demand:
-            when = '<span class="muted">頼まれたとき</span>'
+        # **走らない巡回に「いますぐ」と出さない**(予定を持っていないだけで走らない)。
+        # 理由を言うのは `collect.blocked_reason` だけ —— ここで場合分けを書き写すと、
+        # 片方だけが古くなる
+        if blocked := collect.blocked_reason(item, sweep):
+            when = f'<span class="muted">{esc(blocked)}</span>'
         elif due:
             when = esc(jst.format(due))
         else:

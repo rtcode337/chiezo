@@ -1954,6 +1954,31 @@ def lapped(item: Collection, sweep: Sweep) -> bool:
     return bool(total) and visited >= total
 
 
+def blocked_reason(item: Collection, sweep: Sweep) -> str:
+    """定時には走らない理由。走る予定なら空。
+
+    **予定を持っていないことと、走らないことは違う。** 予定が空なだけの巡回は
+    「いますぐ」だが、先の回を待っている巡回や一周して止まった巡回は走らない ——
+    どちらも予定が空なので、区別せずに出すと**いくら待っても動かないものを
+    待ち続ける**ことになる(実際、3 日かかる一周を待っている回が「いますぐ」と
+    出ていた)。
+
+    **走らない理由を言うのはここだけにする。** 読む側(画面・別のアプリ)が同じ
+    場合分けを書き写すと、片方だけが古くなる。
+    """
+    if not sweep.enabled:
+        return "止めている"
+    if sweep.on_demand:
+        return "頼まれたとき"
+    if sweep.once and sweep.last_run_at:
+        return "一度きり(済み)"
+    if lapped(item, sweep):
+        return "一周して止まった"
+    if not waited_for(item, sweep):
+        return f"「{sweep.after}」の一周待ち"
+    return ""
+
+
 def waited_for(item: Collection, sweep: Sweep) -> bool:
     """先に一周してほしい巡回が、もう一周したか(`Sweep.after`)。
 
@@ -2016,6 +2041,9 @@ def to_public(item: Collection, *, with_partitions: bool = True) -> dict:
             "partitions_visited": partitioning.progress(item.partitions, sweep.name)[0],
             "next_partition": partitioning.due(item.partitions, sweep.name),
             "partitions_per_run": sweep.per_run(len(item.partitions)),
+            # **なぜ定時に走らないか**(走るなら空)。読む側が場合分けを
+            # 書き写さずに済むよう、理由はこちらが言う
+            "blocked": blocked_reason(item, sweep),
         }
         for sweep in sweeps
     ]

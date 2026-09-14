@@ -1161,6 +1161,45 @@ class TestOrderingTheSweeps:
 
         assert collect.lapped(*self._sweep("名簿")) is True
 
+    def test_it_says_why_it_will_not_run(self, staged):
+        """**予定を持っていないことと、走らないことは違う。**
+
+        どちらも予定が空なので、区別せずに出すと「いますぐ」と書いてある回を
+        3 日待ち続けることになる(実際にそう見えていた)。
+        """
+        assert collect.blocked_reason(*self._sweep("調査")) == "「ざっと」の一周待ち"
+        # 先の回は走る予定なので、理由は無い
+        assert collect.blocked_reason(*self._sweep("ざっと")) == ""
+
+        for key in ("あ〜お", "か〜こ"):
+            collect.record_result("news", status="ok", sweep="ざっと", visited=[key])
+
+        assert collect.blocked_reason(*self._sweep("調査")) == ""
+        assert collect.blocked_reason(*self._sweep("ざっと")) == "一周して止まった"
+
+    def test_the_reason_rides_along_to_the_readers(self, staged):
+        """読む側が同じ場合分けを書き写さずに済むよう、理由はこちらが言う。"""
+        [_rough, survey] = collect.to_public(collect.get("news"))["sweeps"]
+
+        assert survey["name"] == "調査"
+        assert survey["blocked"] == "「ざっと」の一周待ち"
+
+    def test_a_sweep_that_will_run_has_no_reason(self, sample):
+        collect.update("news", enabled=True, sweeps=[{"name": "ざっと"}])
+
+        assert collect.blocked_reason(*self._sweep("ざっと")) == ""
+
+    def test_a_stopped_sweep_says_so(self, staged):
+        collect.update("news", sweeps=[{"name": "ざっと", "enabled": False}])
+
+        assert collect.blocked_reason(*self._sweep("ざっと")) == "止めている"
+
+    def test_a_once_sweep_says_it_is_done(self, sample):
+        collect.update("news", enabled=True, sweeps=[{"name": "名簿", "once": True}])
+        collect.record_result("news", status="ok", sweep="名簿")
+
+        assert collect.blocked_reason(*self._sweep("名簿")) == "一度きり(済み)"
+
     def test_an_unknown_name_does_not_block(self, staged):
         """待つ相手が居ないのに永久に止まる方が悪い。"""
         collect.update("news", sweeps=[{"name": "調査", "after": "居ない巡回"}])
