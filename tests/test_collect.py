@@ -1220,7 +1220,7 @@ class TestRedoingTheLastRun:
 
         collect.rewind("news")
 
-        assert collect.get("news").graves == ["消した人"]
+        assert collect.grave_titles(collect.get("news").graves) == {"消した人"}
 
     def test_it_can_only_be_used_once(self, sample):
         """同じ回を二度は戻せない(1 回ぶんしか控えていない)。"""
@@ -1659,10 +1659,78 @@ class TestTheGraveyard:
     def test_a_tombstone_digs_a_grave(self, refine):
         previous = {"俳優さん": {"doc_id": 1, "title": "俳優さん", "body": "本文"}}
         _docs, diff = edited(refine, previous, [{"title": "俳優さん", "tags": [notes.TOMBSTONE_TAG]}])
-        assert diff["graves"] == ["俳優さん"]
+        assert [g["title"] for g in diff["graves"]] == ["俳優さん"]
 
         collect.record_result("news", status="ok", removed=1, graves=diff["graves"])
-        assert collect.get("news").graves == ["俳優さん"]
+        assert collect.grave_titles(collect.get("news").graves) == {"俳優さん"}
+
+    def test_the_reason_is_kept_with_the_grave(self, refine):
+        """**見出しだけでは、外したのが正しかったのかを確かめようがない。**
+
+        消したものは一覧でしか見えないので、理由が無いと消し間違いに気づけない。
+        理由は墓標の本文に書かせている(`REFINE_SYSTEM_PROMPT`)。
+        """
+        previous = {"俳優さん": {"doc_id": 1, "title": "俳優さん", "body": "本文"}}
+        _docs, diff = edited(refine, previous, [{
+            "title": "俳優さん", "body": "絵ではなく演技で知られる人", "tags": [notes.TOMBSTONE_TAG],
+        }])
+
+        collect.record_result("news", status="ok", removed=1, graves=diff["graves"])
+
+        [grave] = collect.get("news").graves
+        assert grave["why"] == "絵ではなく演技で知られる人"
+        assert grave["at"]
+
+    def test_a_grave_without_a_reason_still_works(self, refine):
+        """理由を書かずに墓標だけ返されても消す(消す判断のほうが先)。"""
+        previous = {"俳優さん": {"doc_id": 1, "title": "俳優さん", "body": "本文"}}
+        _docs, diff = edited(refine, previous, [{"title": "俳優さん", "tags": [notes.TOMBSTONE_TAG]}])
+
+        collect.record_result("news", status="ok", removed=1, graves=diff["graves"])
+
+        [grave] = collect.get("news").graves
+        assert grave["title"] == "俳優さん"
+        assert "why" not in grave
+
+    def test_editing_the_list_does_not_wipe_the_reasons(self, refine):
+        """画面の編集欄は 1 行 1 見出し。**書き戻すたびに理由が消えては残す意味が無い**。"""
+        collect.update("news", graves=[{"title": "俳優さん", "why": "演技で知られる人"}])
+
+        # 画面から「俳優さん」を残したまま保存し直した形
+        collect.update("news", graves=["俳優さん"])
+
+        assert collect.get("news").graves[0]["why"] == "演技で知られる人"
+
+    def test_the_old_shape_is_still_read(self, refine):
+        """理由を残す前に消したものは、見出しだけで入っている。"""
+        collect.update("news", graves=["俳優さん"])
+
+        assert collect.get("news").graves == [{"title": "俳優さん"}]
+
+    def test_the_screen_shows_why_it_was_removed(self, refine):
+        """消し間違いに気づく手立ては、ここを読むことしか無い。"""
+        from app.views import admin
+
+        collect.update("news", graves=[
+            {"title": "俳優さん", "why": "絵ではなく演技で知られる人"},
+            {"title": "むかし消した人"},
+        ])
+
+        html = admin._graves_html(collect.get("news"))
+
+        assert "俳優さん —— 絵ではなく演技で知られる人" in html
+        # 理由の無いものは見出しだけ(区切りを付けて空白を出さない)
+        assert "むかし消した人\n" in html or html.rstrip().endswith("むかし消した人</pre>")
+
+    def test_the_edit_box_lists_the_titles(self, refine):
+        """編集欄は 1 行 1 見出し(そこから戻しても理由は消えない)。"""
+        from app.views import admin
+
+        collect.update("news", graves=[{"title": "俳優さん", "why": "演技で知られる人"}])
+
+        html = admin._collect_detail_html(collect.get("news"), "")
+
+        assert ">俳優さん</textarea>" in html
 
     def test_what_is_buried_does_not_come_back(self, refine):
         collect.update("news", graves=["俳優さん"])

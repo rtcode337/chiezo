@@ -836,20 +836,27 @@ def _sweep_run_forms(name: str, sweep: str, disabled: str, dry: bool = True) -> 
 
 
 def _graves_html(item) -> str:
-    """墓場(消したものの見出し)。持っていない収集には何も出さない。
+    """墓場(消したものと、その理由)。持っていない収集には何も出さない。
 
     **読めるところに出す。** 消す回と足す回が別々に走るので、これが無いと
     「なぜこの人が入ってこないのか」が画面から読めない —— 消し間違いに気づく
     手立てが、ここを見ることしか無い。
+
+    **理由も出す。** 見出しだけでは、外したのが正しかったのかを確かめようがない。
     """
     if not item.graves:
         return ""
     return (
         f'<p class="muted">墓場: {len(item.graves):,}'
-        "(消したものの見出し。<strong>足す回はここにあるものを連れ戻さない</strong>。"
+        "(消したものと、消した理由。<strong>足す回はここにあるものを連れ戻さない</strong>。"
         "消し間違いは下の「編集する」から外せる)</p>"
-        f'<pre class="prompt-view">{esc(chr(10).join(item.graves))}</pre>'
+        f'<pre class="prompt-view">{esc(chr(10).join(_grave_lines(item.graves)))}</pre>'
     )
+
+
+def _grave_lines(graves) -> list[str]:
+    """1 行 1 件。**理由が無いものは見出しだけ**(理由を残す前に消したもの)。"""
+    return [g["title"] + (f' —— {g["why"]}' if g.get("why") else "") for g in graves]
 
 
 # 区画の表に出す件数。**残りは畳む** —— 全部出すと、その下にある変更履歴まで
@@ -1081,7 +1088,7 @@ def _collect_detail_html(item, disabled: str) -> str:
         f'<input name="cursor" value="{esc(item.cursor)}"></label></p>'
         f'<p><label>墓場(1 行に 1 つ。消したものを、消したままにする)<br>'
         f'<textarea name="graves" rows="6" spellcheck="false">'
-        f"{esc(chr(10).join(item.graves))}</textarea></label></p>"
+        f'{esc(chr(10).join(g["title"] for g in item.graves))}</textarea></label></p>'
         f'<p class="muted">ここにある見出しは<strong>足す回が連れ戻さない</strong>。'
         f" 消す回と足す回は別々に走るので、残しておかないと"
         f"「画家ではない」として外した人が次の回で戻ってくる。"

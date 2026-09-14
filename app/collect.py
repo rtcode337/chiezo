@@ -99,6 +99,9 @@ MAX_SWEEPS = 8
 # 墓場に置ける見出しの数。**捨てたぶんはもう守らない**(足す回が連れ戻す)ので
 # 多めに取る。定義は notes の 1 件なので、際限なくは持てない
 MAX_GRAVES = 2_000
+# 墓標に添える理由の長さ。**1 行で足りる** —— なぜ外したかが読めればよく、
+# 本文を丸ごと残す場所ではない(定義は notes の 1 件に収まる必要がある)
+MAX_GRAVE_WHY_CHARS = 200
 # 1 回で見る区画の上限。**区画ごとに AI を 1 回呼ぶ**(素材をその区画のぶんに
 # 絞るのが区画の意味なので、まとめて聞くと絞った意味が消える)ため、
 # 1 回の取り込みが何十分にもならないようにここで止める
@@ -707,22 +710,50 @@ def _existing_titles(path, titles: set[str]) -> set[str]:
     return found
 
 
-def normalize_graves(raw) -> list[str]:
+def normalize_graves(raw) -> list[dict]:
     """墓場を均す。**重複は落とし、古いものから捨てる**。
+
+    1 件は `{"title", "why", "at"}`。**理由も残す** —— 見出しだけだと、後から
+    「なぜこれが入ってこないのか」は分かっても「なぜ外したのか」が分からない。
+    消し間違いに気づく手立てがここしか無いので、判断の中身が要る。
+
+    **見出しだけの古い形も読む**(理由の無い墓標として扱う)。同じ見出しが
+    2 度来たら**後のほうを残す** —— 理由が付いた回のほうが新しい。
 
     定義は notes の 1 件に入るので、際限なく増やせない。**捨てた墓標は
     もう守らない**(そのうち足す回が連れ戻す)ので、上限は多めに取ってある。
     """
     if not isinstance(raw, list):
         return []
-    out: list[str] = []
-    seen: set[str] = set()
+    out: dict[str, dict] = {}
     for item in raw:
-        title = str(item or "").strip()[:notes.TITLE_MAX_CHARS]
-        if title and title not in seen:
-            seen.add(title)
-            out.append(title)
-    return out[-MAX_GRAVES:]
+        grave = _to_grave(item)
+        if grave:
+            # 後勝ち。並びは最初に出た位置のまま(古い順に捨てるため)
+            out.pop(grave["title"], None)
+            out[grave["title"]] = grave
+    return list(out.values())[-MAX_GRAVES:]
+
+
+def _to_grave(item) -> dict | None:
+    """墓標 1 件。文字列は見出しだけの古い形として読む。"""
+    raw = {"title": item} if isinstance(item, str) else item
+    if not isinstance(raw, dict):
+        return None
+    title = str(raw.get("title") or "").strip()[:notes.TITLE_MAX_CHARS]
+    if not title:
+        return None
+    grave = {"title": title}
+    if why := str(raw.get("why") or "").strip()[:MAX_GRAVE_WHY_CHARS]:
+        grave["why"] = why
+    if at := str(raw.get("at") or "").strip():
+        grave["at"] = at
+    return grave
+
+
+def grave_titles(graves: list[dict]) -> set[str]:
+    """墓場に入っている見出し。**足す回はここにあるものを連れ戻さない**。"""
+    return {g["title"] for g in graves}
 
 
 def normalize_sweeps(raw) -> list[dict]:
@@ -1146,8 +1177,14 @@ def update(name: str, **fields) -> Collection:
                 for p in patch.get("partitions", current.partitions)
             ]
     if "graves" in patch:
-        # **空の配列を渡せば墓場を空にできる**(消し間違いの逃げ道はここだけ)
-        patch["graves"] = normalize_graves(patch["graves"])
+        # **空の配列を渡せば墓場を空にできる**(消し間違いの逃げ道はここだけ)。
+        # **見出しだけで渡されたら、いまの理由を残す** —— 画面の編集欄は 1 行 1 見出しで、
+        # そこから送ると理由が付いていない。書き戻すたびに理由が消えては残す意味が無い
+        why = {g["title"]: g for g in current.graves}
+        patch["graves"] = normalize_graves([
+            why.get(g["title"], g) if not g.get("why") else g
+            for g in normalize_graves(patch["graves"])
+        ])
     if "partitions" in patch:
         # **空の配列を渡せば最初から回り直せる**(消す手段がここしかない)。
         # 2 周目を粗いまま繰り返させず、一度リセットして精度を上げ直したいときに使う
@@ -1237,8 +1274,9 @@ REFINE_SYSTEM_PROMPT = (
     " 触れなかったものはそのまま残るので、変えないものを返す必要はない。"
     " title は同一性の鍵。**同じ見出しで返すと、その 1 件が置き換わる**。"
     " **消したいものは、その見出しで tags に「" + notes.TOMBSTONE_TAG + "」を入れて返す**"
-    "(墓標。本文は空でよい)。重複をまとめるときは、まとめた先を返し、"
-    "元のものに墓標を付ける。"
+    "(墓標)。**そのとき本文に、なぜ消すのかを 1 行で書く** ——"
+    "消したものは後から一覧でしか見えないので、理由が無いと消し間違いに気づけない。"
+    "重複をまとめるときは、まとめた先を返し、元のものに墓標を付ける。"
     " 分からない項目は null。"
 )
 
@@ -2239,13 +2277,14 @@ def material(
     added_titles: list[str] = []
     updated_titles: list[str] = []
     removed_titles: list[str] = []
-    graves = set(item.graves)
+    buried = grave_titles(item.graves)
+    graves: list[dict] = []
     for raw in collected:
         title = (raw.get("title") or "").strip()[:notes.TITLE_MAX_CHARS]
         # **墓場にあるものは足さない。** 消す回と足す回は別々に走るので、
         # 足すほうは「いま名簿にいるか」しか見られない —— なぜ居ないのか
         # (一度も入っていないのか、調べたうえで外したのか)までは分からない
-        if title and title not in merged and title in graves:
+        if title and title not in merged and title in buried:
             skipped += 1
             continue
         if only_new and title in merged:
@@ -2256,6 +2295,8 @@ def material(
             # 墓標。**持っていないものへの墓標は数えない**(消すものが無い)
             if merged.pop(title, None) is not None:
                 removed_titles.append(title)
+                # **なぜ外したかは本文に書かせている**(`REFINE_SYSTEM_PROMPT`)
+                graves.append(_to_grave({"title": title, "why": raw.get("body"), "at": now}))
             else:
                 skipped += 1
             continue
@@ -2295,7 +2336,7 @@ def material(
         "removed_titles": removed_titles[:MAX_TITLE_SAMPLE],
         # **墓場に入れるぶんは切らない。** 控え(上の頭 10 件)は読ませるためのもので、
         # こちらは「消したままにする」ための一覧 —— 切ると、切れたぶんが戻ってくる
-        "graves": removed_titles,
+        "graves": graves,
         # 集めた側が返した件数。**焼ける件数(`total`)とは別に出す** —— 一致しない
         # ときに、捨てたのか前世代と重なったのかを読み分けられるようにするため
         "collected": len(collected),
