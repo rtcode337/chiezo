@@ -357,7 +357,7 @@ class Collection:
     # 流れの収集が持つ日数。0 なら期限では落とさない。**網羅では使わない**
     # (あちらは古いものが要らなくなることがない)
     keep_days: int = 0
-    extract: dict | None = None
+    extract: dict | list[dict] | None = None
     # **タグの値が実在するかを確かめる指定**。`[{"prefix": "代表作", "source": "jawiki"}]`
     # と書くと、`代表作:<見出し>` の見出しが jawiki に無いタグを**焼く前に落とす**。
     #

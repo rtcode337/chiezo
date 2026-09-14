@@ -798,3 +798,187 @@ class TestCarryingFactsFromTheArticle:
     def test_it_must_be_a_list(self):
         with pytest.raises(HTTPException):
             extract.normalize({"source": "jawiki", "tag": "画家", "extra": "pageviews_month"})
+
+
+class TestPullingFromSeveralSources:
+    """ソースをまたいで 1 つの名簿にする。
+
+    見ているのは**先に書いたほうが勝つ**こと。どの項目をどのソースから採るかは、
+    本の順番と、その本が運ぶ `extra` の鍵で表す —— 項目ごとの順位を別に書ける
+    ようにはしていない(同じことを 2 通りで書けるだけになる)。
+    """
+
+    @staticmethod
+    def famous():
+        """百科事典の側。**説明を持っているが座標は持ち込まない**。"""
+        return [
+            {
+                "title": "すきやばし次郎",
+                "opening": "東京都中央区銀座にある寿司店。",
+                "tags": ["東京都の飲食店"],
+                "extra": {"pageviews_month": 12_000},
+                "rank": 0.9,
+            }
+        ]
+
+    @staticmethod
+    def mapped():
+        """地図の側。**座標を持っているが説明は持っていない**。"""
+        return [
+            {
+                "title": "すきやばし次郎",
+                "opening": "すきやばし次郎\n種別: 寿司店",
+                "tags": ["amenity=restaurant"],
+                "extra": {"lat": 35.67, "lon": 139.76},
+                "rank": 0.8,
+            },
+            {
+                "title": "近所の定食屋",
+                "opening": "近所の定食屋\n種別: 食堂",
+                "tags": ["amenity=restaurant"],
+                "extra": {"lat": 35.70, "lon": 139.70},
+                "rank": 0.5,
+            },
+        ]
+
+    def both(self, source):
+        return {
+            **source(self.famous(), name="jawiki"),
+            **source(self.mapped(), name="osm_japan"),
+        }
+
+    @staticmethod
+    def two_specs(**overrides):
+        """百科事典が説明で勝ち、地図が座標で勝つ形。
+
+        どちらも相手の項目を持っているので、順番だけでは表せない ——
+        譲る項目を `provides` から外して書く。
+        """
+        wiki = {
+            "source": "jawiki",
+            "tag": "東京都の飲食店",
+            "extra": ["lat", "lon", "pageviews_month"],
+            "provides": ["body", "url"],
+            "tags": [{"const": "出典:Wikipedia"}],
+        }
+        osm = {
+            "source": "osm_japan",
+            "tag": "amenity=restaurant",
+            "extra": ["lat", "lon"],
+            "provides": ["extra"],
+            "tags": [{"const": "出典:OSM"}],
+        }
+        return extract.normalize([{**wiki, **overrides.get("wiki", {})},
+                                  {**osm, **overrides.get("osm", {})}])
+
+    def test_it_makes_one_roster_out_of_every_source(self, source):
+        items, _cursor = extract.run(self.two_specs(), self.both(source))
+
+        assert sorted(i["title"] for i in items) == ["すきやばし次郎", "近所の定食屋"]
+
+    def test_each_field_goes_to_the_source_that_claims_it(self, source):
+        # 説明は百科事典、座標は地図。**順番だけでは表せない** ——
+        # どちらも相手の項目を持っているので、譲る側を書いて分ける
+        items, _cursor = extract.run(self.two_specs(), self.both(source))
+        famous = next(i for i in items if i["title"] == "すきやばし次郎")
+
+        assert famous["body"] == "東京都中央区銀座にある寿司店。"
+        assert (famous["extra"]["lat"], famous["extra"]["lon"]) == (35.67, 139.76)
+
+    def test_a_source_that_gave_up_a_field_still_fills_the_hole(self, source):
+        """**順位を譲ることと、穴を空けたままにすることは別**。
+
+        地図に載っていない 1 軒の座標は百科事典にしか無い。譲った本の値を捨てると、
+        その 1 軒はどの区画にも入らず、AI から永遠に見えなくなる。
+        """
+        only_in_wikipedia = [{
+            "title": "名店",
+            "opening": "由緒ある店。",
+            "tags": ["東京都の飲食店"],
+            "extra": {"lat": 34.7, "lon": 135.5},
+            "rank": 0.9,
+        }]
+        sources = {
+            **source(only_in_wikipedia, name="jawiki"),
+            **source(self.mapped(), name="osm_japan"),
+        }
+        items, _cursor = extract.run(self.two_specs(), sources)
+        alone = next(i for i in items if i["title"] == "名店")
+
+        assert (alone["extra"]["lat"], alone["extra"]["lon"]) == (34.7, 135.5)
+
+    def test_the_boilerplate_body_is_used_when_nothing_better_exists(self, source):
+        # 地図しか持っていない店は、地図の本文で埋まる（譲っただけで、捨てていない）
+        items, _cursor = extract.run(self.two_specs(), self.both(source))
+        ordinary = next(i for i in items if i["title"] == "近所の定食屋")
+
+        assert ordinary["body"].startswith("近所の定食屋")
+
+    def test_it_fills_key_by_key(self, source):
+        # **まるごと見ない。** 勝った本が 1 つでも鍵を持っていた時点で止めると、
+        # 譲った本が持つ別の鍵（ページビューや電話）が永遠に入らない
+        items, _cursor = extract.run(self.two_specs(), self.both(source))
+        famous = next(i for i in items if i["title"] == "すきやばし次郎")
+
+        assert famous["extra"]["pageviews_month"] == 12_000
+
+    def test_a_field_name_it_does_not_know_is_refused(self):
+        with pytest.raises(HTTPException, match="provides"):
+            extract.normalize({"source": "jawiki", "tag": "画家", "provides": ["tags"]})
+
+    def test_the_default_is_to_go_for_everything(self):
+        # 1 本しか書いていない指定に順位の話は無い。控えにも書かない
+        written = extract.to_json(extract.normalize({"source": "jawiki", "tag": "画家"}))
+
+        assert "provides" not in written
+
+    def test_tags_are_added_without_moving_the_ones_already_there(self, source):
+        # 読む側は先頭のタグを代表として使うので、後ろの本が並びを変えると意味が変わる
+        items, _cursor = extract.run(self.two_specs(), self.both(source))
+        famous = next(i for i in items if i["title"] == "すきやばし次郎")
+
+        assert famous["tags"] == ["出典:Wikipedia", "出典:OSM"]
+
+    def test_the_cursor_comes_from_the_first_source(self, source):
+        # 収集が持てる進み具合は 1 つしかない。選ぶなら優先の先頭がいちばん読める
+        specs = self.two_specs(wiki={"cursor": "名簿を作った"}, osm={"cursor": "地図から引いた"})
+        _items, cursor = extract.run(specs, self.both(source))
+
+        assert cursor == "名簿を作った"
+
+    def test_it_counts_every_source(self, source):
+        # どれか 1 本の数を見せると、他の本が当たっていないように見える
+        assert extract.count(self.two_specs(), self.both(source)) == 3
+
+    def test_the_same_source_twice_is_refused(self):
+        # 2 本目は「1 本目が埋めなかったところ」しか埋められない。
+        # **書けるが効かない指定**を残すと、効いていないことに気づけない
+        with pytest.raises(HTTPException, match="2 度"):
+            extract.normalize([
+                {"source": "jawiki", "tag": "画家"},
+                {"source": "jawiki", "tag": "彫刻家"},
+            ])
+
+    def test_too_many_specs_are_refused(self):
+        with pytest.raises(HTTPException, match=str(extract.MAX_SPECS)):
+            extract.normalize([
+                {"source": f"src{n}", "tag": "画家"} for n in range(extract.MAX_SPECS + 1)
+            ])
+
+    def test_an_empty_spec_in_the_list_is_refused(self):
+        with pytest.raises(HTTPException):
+            extract.normalize([{"source": "jawiki", "tag": "画家"}, {}])
+
+    def test_an_empty_list_means_no_extract_at_all(self):
+        assert extract.normalize([]) is None
+
+    def test_it_keeps_the_shape_it_was_written_in(self):
+        # 畳んで返すと、定義に控えたものが書いた人の書いたものと違う形になる
+        written = extract.to_json(extract.normalize([
+            {"source": "jawiki", "tag": "画家"},
+            {"source": "osm_japan", "tag": "amenity=restaurant"},
+        ]))
+
+        assert isinstance(written, list)
+        assert [one["source"] for one in written] == ["jawiki", "osm_japan"]
+        assert isinstance(extract.to_json(extract.normalize({"source": "jawiki", "tag": "画家"})), dict)

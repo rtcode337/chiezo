@@ -1628,11 +1628,15 @@ class CollectionCreate(BaseModel):
         description="作り直しで前世代の何割を下回ったら断るか(0 で守りを外す)",
     )
     requested_by: str = PydField("", description="依頼元の名乗り(画面に出る手がかり)")
-    extract: dict | None = PydField(
+    extract: dict | list[dict] | None = PydField(
         None,
         description="最初の 1 回を AI ではなく機械的に埋める指定"
         "(どのソースの・どのタグを・何件・タグをどう読み替えるか)。"
-        "進み具合が空のときだけ使い、2 回目からは AI が肉付けする",
+        "進み具合が空のときだけ使い、2 回目からは AI が肉付けする。"
+        "**配列で書くとソースをまたいで 1 つの名簿になる**"
+        "(同じ見出しが複数のソースに居たら畳む。どの本の値を採るかは項目ごとで、"
+        "その項目を勝ちにいくと書いた本(`provides`)のうち先頭のものが入る。"
+        "空いたところは書いた順にどの本からでも埋める)",
     )
     kind: str | None = PydField(
         None,
@@ -1688,8 +1692,8 @@ class CollectionPatch(BaseModel):
     web: bool | None = None
     cursor: str | None = None
     keep_ratio: float | None = None
-    extract: dict | None = PydField(
-        None, description="抽出の指定。空のオブジェクトを渡すと外れる"
+    extract: dict | list[dict] | None = PydField(
+        None, description="抽出の指定(配列で複数ソース)。空のオブジェクトを渡すと外れる"
     )
     verify_tags: list[dict] | None = PydField(
         None, description="タグの値が実在するかを確かめる指定。空の配列を渡すと外れる"

@@ -28,10 +28,31 @@
       ]
     }
 
+**指定は配列でも書ける**(ソースをまたいで 1 つの名簿にする)。同じ見出しが
+複数のソースに居たときは、**先に書いたほうが勝つ**——後ろのソースは、前が
+埋めなかったところだけを埋める。
+
+    "extract": [
+      {"source": "jawiki",         "tag": "東京都の飲食店", "extra": []},
+      {"source": "osm_japan",      "tag": "amenity=restaurant", "extra": ["lat", "lon"]},
+      {"source": "overture_japan", "tag": "restaurant", "extra": ["lat", "lon", "website"]}
+    ]
+
+**項目ごとの優先は `extra` の書き分けで表す。** 上の例なら、説明は先頭の Wikipedia が
+勝ち、座標は「Wikipedia が持ち込まない」ので次の OSM が勝つ。項目ごとの順位を別に
+書けるようにはしない —— 同じことを 2 通りで書けるだけになり、どちらが効くのかを
+読む人が指定から判断できなくなる。
+
 **並び順は指定できない。** 引く先のソースが持っている順(`rank_score` の降順 ——
 Wikipedia ならページビュー、地名なら人口)をそのまま使う。「有名なほうから N 件」は
 ここで既に満たされているので、指定側で並べ替えを書けるようにすると、同じことを
 2 通りで書けるだけになる。
+
+**順の無いソースに `limit` を書くと、切り口は見出し順になる。** 同じ種別の地物に
+同じ点しか付かないソースがあり(OSM の飲食店はどれも 0.4)、そこでは
+`rank_score` が並びを決めないので、**残るのは名前が先に来るものだけ**になる ——
+数字と英字の名前がまず入り、仮名の途中で切れる。**それを黙ってやらない**のが
+この層の流儀なので、そういうソースからは切らずに全部取る(取れない量なら断る)。
 """
 from __future__ import annotations
 
@@ -50,7 +71,19 @@ log = logging.getLogger("chiezo.app")
 # 切ったことは返り値から分からないので、絞ったつもりのない指定が
 # 「そこまでしか無い」ように見えてしまう(実際に 30 件で止まっているのを、
 # 機械抽出の限界だと受け取られた)。
-MAX_ROWS = 20_000
+# **本当の天井は素材の大きさのほう**(`collect.MAX_MATERIAL_BYTES` = 64 MB)。
+# ここは「当たりすぎ」を止めるためだけの数で、地図の名簿のように 1 件が短いものは
+# 10 万件でも 30 MB に収まる —— 低く置くと、**順の無いソースが見出し順で切られる**
+# (`limit` を書かせると黙って切れるので、切らずに済む高さにしておく)
+MAX_ROWS = 120_000
+
+# 1 つの収集に書ける抽出の本数。**ソースをまたいで名簿を作るため**のもので、
+# 上限は取れる件数(`MAX_ROWS` × 本数)が素材の上限に収まる範囲に置く
+MAX_SPECS = 5
+
+# その本が「勝ちにいく」と書ける項目(`provides`)。書かなければ全部を取りにいく。
+# **タグはここに入れない** —— タグは競争ではなく足し算で、どの本のタグも残る
+PROVIDED_FIELDS = ("body", "url", "extra")
 # 末尾一致で広げられるタグの数。**黙って切らずに断る**(このファイルの流儀)。
 # SQLite の変数の上限(既定 32,766)には遠いが、ここまで来たら指定のほうが広すぎる。
 # 実測: 日本語版 Wikipedia の「〜の画家」で 323 件
@@ -88,23 +121,68 @@ RETRY_BELOW = 0.5
 THIN_ROWS = 10
 
 
-def looks_thin(spec: dict, got: int) -> bool:
+def looks_thin(spec, got: int) -> bool:
     """取れた数が、頼んだものに対して少なすぎないか。
 
     件数を書いていれば、その数に対して。書いていなければ、絶対数で見る
     (書いていないときは「全部でこれだけ」なので、少ないのは選んだタグのせい)。
+
+    **1 本でも件数を書いていなければ、絶対数で見る** —— 書いていない本は
+    「全部」を頼んでいるので、頼んだ数を足し合わせようがない。
     """
-    if limit := spec["limit"]:
-        return got < limit * RETRY_BELOW
+    written = specs(spec)
+    limits = [one["limit"] for one in written]
+    if written and all(limits):
+        return got < sum(limits) * RETRY_BELOW
     return got < THIN_ROWS
 
 
-def normalize(raw) -> dict | None:
+def normalize(raw) -> dict | list[dict] | None:
     """指定を確かめて、実行できる形に整える。空なら None(抽出は使わない)。
+
+    **書いた形のまま返す** —— 1 本なら 1 つ、配列なら配列。畳んで返すと、
+    定義に控えたものが書いた人の書いたものと違う形になる(送り直すたびに揺れる)。
+    束ねて扱いたいところは `specs/1` を通す。
 
     **壊れた指定は作る時点で断る**。実行時に落ちると、無人で回っている最中に
     「集められなかった」だけが残り、どこが悪いのかは誰も見ていない。
     """
+    if raw in (None, "", {}, []):
+        return None
+    if isinstance(raw, list):
+        if len(raw) > MAX_SPECS:
+            raise _bad(f"抽出の指定は {MAX_SPECS} 本までです")
+        written = [normalize_one(one) for one in raw]
+        if any(one is None for one in written):
+            raise _bad("空の抽出の指定が混ざっています")
+        _reject_same_source(written)
+        return written
+    return normalize_one(raw)
+
+
+def specs(written) -> list[dict]:
+    """束ねて扱うための形。**書いた順がそのまま優先の順**。"""
+    if written is None:
+        return []
+    return written if isinstance(written, list) else [written]
+
+
+def _reject_same_source(written: list[dict]) -> None:
+    """同じソースを 2 度書かせない。
+
+    先に書いたほうが勝つ規則なので、2 本目は「1 本目が埋めなかったところ」しか
+    埋められない —— タグ違いで 2 度引きたいなら `tag` にカンマで書き並べれば済む。
+    **書けるが効かない指定**を残すと、効いていないことに気づけない。
+    """
+    seen = set()
+    for one in written:
+        if one["source"] in seen:
+            raise _bad(f"同じソース「{one['source']}」を 2 度書いています")
+        seen.add(one["source"])
+
+
+def normalize_one(raw) -> dict | None:
+    """1 本ぶんの指定を整える。"""
     if raw in (None, "", {}):
         return None
     if not isinstance(raw, dict):
@@ -150,6 +228,15 @@ def normalize(raw) -> dict | None:
     if len(rules) > MAX_RULES:
         raise _bad(f"tags の読み替えは {MAX_RULES} 個までです")
 
+    provided = raw.get("provides")
+    if provided is None:
+        provided = list(PROVIDED_FIELDS)
+    if not isinstance(provided, list):
+        raise _bad("provides は項目名の配列で書いてください")
+    provided = [str(f).strip() for f in provided if str(f).strip()]
+    if unknown := [f for f in provided if f not in PROVIDED_FIELDS]:
+        raise _bad(f"provides に書けるのは {' / '.join(PROVIDED_FIELDS)} です: {unknown[0]}")
+
     carried = raw.get("extra") or []
     if not isinstance(carried, list):
         raise _bad("extra は写したい鍵の配列で書いてください")
@@ -170,6 +257,9 @@ def normalize(raw) -> dict | None:
         "limit": limit,
         "body": body_field,
         "url": str(raw.get("url") or "").strip(),
+        # **この本が勝ちにいく項目。** 書いてない項目でも、どの本も埋めなかった
+        # ところは埋める(順位を譲るだけで、穴を空けたままにはしない)
+        "provides": tuple(provided),
         "tags": [_normalize_rule(rule) for rule in rules],
         # **元の記事に載っている事実を、そのまま運ぶ。** 知名度(月次ページビュー)の
         # ような値は既に長期記憶にあるので、読む側が 1 件ずつ引き直す理由が無い
@@ -279,10 +369,15 @@ def resolve_tags(spec: dict, src) -> list[str]:
     return tags
 
 
-def to_json(spec: dict | None) -> dict | None:
-    """定義に持たせる形(正規表現は書いた文字列のまま残す)。"""
+def to_json(spec) -> dict | list[dict] | None:
+    """定義に持たせる形(正規表現は書いた文字列のまま残す)。
+
+    **書いた形のまま返す** —— 1 本なら 1 つ、配列なら配列。
+    """
     if not spec:
         return None
+    if isinstance(spec, list):
+        return [to_json(one) for one in spec]
     rules = []
     for rule in spec["tags"]:
         if rule["kind"] == "const":
@@ -300,7 +395,7 @@ def to_json(spec: dict | None) -> dict | None:
                 "patterns": [p.pattern for p in rule["patterns"]],
                 "format": rule["format"],
             })
-    return {
+    written = {
         "source": spec["source"],
         "tag": spec["tag"],
         "tag_suffix": spec["tag_suffix"],
@@ -312,6 +407,12 @@ def to_json(spec: dict | None) -> dict | None:
         "extra": spec["extra"],
         "cursor": spec["cursor"],
     }
+    # **既定のままなら書かない。** 1 本しか書いていない指定に順位の話は無いので、
+    # 控えに出すと「これは何を譲っているのか」を毎回読ませることになる
+    # (`app/partition.py` の `other` と同じ判断)
+    if spec["provides"] != PROVIDED_FIELDS:
+        written["provides"] = list(spec["provides"])
+    return written
 
 
 def _doc_ids(spec: dict, sources: dict):
@@ -350,23 +451,98 @@ def _doc_ids(spec: dict, sources: dict):
     return src, set_sql, list(params)
 
 
-def count(spec: dict, sources: dict) -> int:
+def count(spec, sources: dict) -> int:
     """指定が当たる件数。**取れた数ではなく、当たっている数**。
 
     取った数だけを見せると、絞られていることに気づけない。
+
+    **何本あっても合計で返す。** 同じ見出しが複数のソースに居れば畳まれるので、
+    実際に溜まる数はこれより少ない —— それでも「当たっている数」としては足した数が
+    正しい(どれか 1 本の数を見せると、他の本が当たっていないように見える)。
     """
     from app import db
 
-    src, set_sql, params = _doc_ids(spec, sources)
-    (matched,) = db.query(src.path, f"SELECT COUNT(*) FROM ({set_sql})", tuple(params))[0]
-    return matched
+    total = 0
+    for one in specs(spec):
+        src, set_sql, params = _doc_ids(one, sources)
+        (matched,) = db.query(src.path, f"SELECT COUNT(*) FROM ({set_sql})", tuple(params))[0]
+        total += matched
+    return total
 
 
-def run(spec: dict, sources: dict) -> tuple[list[dict], str]:
+def run(spec, sources: dict) -> tuple[list[dict], str]:
     """指定どおりに引いて、集める層が読む形(items)にして返す。
 
     返す形は AI に書かせたときとまったく同じ(`title` / `body` / `tags` / `url`)。
     後ろの工程から見れば、誰が作ったものかは区別が付かない。
+
+    **何本書いてあっても 1 つの名簿にして返す。** 同じ見出しが複数のソースに居たら
+    畳む。どの本の値を採るかは**項目ごと**に決まる ——
+
+    1. まず、その項目を**勝ちにいくと書いた本**(`provides`)のうち、いちばん先に
+       書いてあるものが入る
+    2. それでも空いたところは、**書いた順にどの本からでも**埋める
+
+    2 周目が要るのは、**順位を譲ることと、穴を空けたままにすることは別**だから。
+    百科事典は座標で勝たせたくないが、地図に載っていない 1 軒の座標は百科事典に
+    しか無い —— 譲った本の値を捨てると、その 1 軒はどの区画にも入らず、
+    AI から永遠に見えなくなる(区画は座標で決まる)。
+
+    **タグは競争ではなく足し算**なので `provides` に入れない。どの本のタグも残り、
+    **前のものを先頭に残したまま**足す —— 読む側は先頭のタグを代表として使うので、
+    後ろの本が並びを変えると意味が変わる。
+
+    **進み具合は先頭の本のものを返す。** 本ごとに別々に持たせても、収集が持てる進み
+    具合は 1 つしかない —— どれかを選ぶなら、優先の先頭にするのがいちばん読める。
+    """
+    written = specs(spec)
+    pulled = []
+    cursor = DEFAULT_CURSOR
+    for index, one in enumerate(written):
+        items, cursor_of = _run_one(one, sources)
+        if index == 0:
+            cursor = cursor_of
+        pulled.append((one, items))
+
+    merged: dict[str, dict] = {}
+    # 1 周目。**その項目を勝ちにいくと書いた本だけ**が、先に書いた順で入る
+    for one, items in pulled:
+        for item in items:
+            _merge_item(merged, item, one["provides"])
+    # 2 周目。**譲った本の値でも、空いているところは埋める**
+    for _one, items in pulled:
+        for item in items:
+            _merge_item(merged, item, PROVIDED_FIELDS)
+    return list(merged.values()), cursor
+
+
+def _merge_item(merged: dict[str, dict], item: dict, claims) -> None:
+    """1 件を名簿へ入れる。**既に入っている値は上書きしない**。
+
+    `claims` はこの回に書き込んでよい項目。タグと見出しはいつでも入る。
+    """
+    existing = merged.get(item["title"])
+    if existing is None:
+        existing = merged[item["title"]] = {"title": item["title"], "tags": []}
+
+    for key in ("body", "url"):
+        if key in claims and not existing.get(key) and item.get(key):
+            existing[key] = item[key]
+
+    if added := [t for t in item.get("tags", []) if t not in existing["tags"]]:
+        existing["tags"] += added
+        del existing["tags"][MAX_TAGS_PER_DOC:]
+
+    # **鍵ごとに見る。** まるごと見ると、前の本が 1 つでも持っていた時点で
+    # 後ろの本の持つ別の鍵(電話やサイト)が入らない
+    if "extra" in claims and (carried := item.get("extra")):
+        into = existing.setdefault("extra", {})
+        for key, value in carried.items():
+            into.setdefault(key, value)
+
+
+def _run_one(spec: dict, sources: dict) -> tuple[list[dict], str]:
+    """1 本ぶんを引く。
 
     **件数を書いていなければ全部取る。** 当たりすぎているときは黙って切らずに断る ——
     切ったことは返り値から分からないので、絞ったつもりのない指定が「そこまでしか無い」
@@ -643,12 +819,15 @@ SPEC_GUIDE = """依頼を読んで、**まず「手元の索引から機械的�
 出力は JSON だけ。前置き・説明・コードブロックの記号は付けない。"""
 
 
-def build_draft_messages(want: str, sources: dict, current: dict | None = None) -> list[dict]:
+def build_draft_messages(want: str, sources: dict, current=None) -> list[dict]:
     """依頼文から指定を書かせるときの本文。
 
     **どのソースがあるかは渡す**(名前を知らなければ実在しないソースを書く)。
     タグまでは渡さない —— 1 つのソースに数十万のタグがあり、渡しきれない。
     書かせた指定は実際に引いてみて、0 件なら候補を添えて返す(`similar_tags`)。
+
+    **いまの指定は書いてある形のまま見せる**(配列なら配列)。畳んで見せると、
+    直してと頼まれた AI が 1 本に書き戻してしまい、他のソースが黙って落ちる。
     """
     catalog = ", ".join(
         f"{name}({src.kind})" for name, src in sorted(sources.items())
@@ -692,9 +871,17 @@ def similar_tags(spec: dict, sources: dict, limit: int = 15) -> list[dict]:
     それらしい名前を書いた瞬間に静かな 0 件になる。広い語も同じで、実在はするが
     数件しか付いておらず、欲しいものは時代や地域で絞った名前の側にある。
     実在する名前を数と一緒に返して、選び直せるようにする。
+
+    **見るのは先頭の 1 本だけ。** これを使うのは AI に指定を書かせる道で、
+    そこで書かせるのは 1 本(`/v1/collect/draft-extract`)——
+    束ねて渡されたときに全部の候補を混ぜると、どの本のための候補なのかが消える。
     """
     from app import db
 
+    written = specs(spec)
+    if not written:
+        return []
+    spec = written[0]
     src = sources.get(spec["source"])
     if src is None:
         return []
