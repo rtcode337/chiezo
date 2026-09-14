@@ -4007,3 +4007,36 @@ class TestTellingWhetherAnIngestIsRunning:
         monkeypatch.setattr(admin, "TRIGGER_URL", None)
 
         assert client.get("/v1/ingest/status").status_code == 503
+
+
+class TestTheTwoInsertionLimits:
+    """件数と文字数、どちらが先に当たるか。
+
+    区画を切る側は件数(`target`)で大きさを決めるので、**文字数のほうが先に
+    当たると、区画を件数どおりに切ったのに中身が全部は載らない**。そのとき
+    AI に届くのは「載っているぶんだけを整理してください」なので、漏れを問う
+    前提(この区画の全部が並んでいる)が黙って崩れる。
+    """
+
+    # AI が肉付けしたあとの 1 行(実測の中央値)。本文は MATERIAL_BODY_CHARS まで
+    # 書かれ、タグも 5 つ付く
+    MATURE_LINE_CHARS = 249
+
+    def test_the_count_runs_out_before_the_characters_do(self):
+        assert collect.MAX_MATERIAL_DOCS * self.MATURE_LINE_CHARS <= collect.MAX_MATERIAL_CHARS
+
+    def test_a_full_partition_fits_whole(self):
+        # 差し込みの件数いっぱいまで育った区画が、切られずに全部載ること
+        docs = {
+            f"店{n}": {
+                "title": f"店{n}",
+                "tags": ["食事処", "出典:OSM", "ジャンル:寿司", "地域:東京都", "ランク:C"],
+                "body": "所在地: 東京都中央区\n" + "あ" * collect.MATERIAL_BODY_CHARS,
+            }
+            for n in range(collect.MAX_MATERIAL_DOCS)
+        }
+
+        text, shown = collect.render_material(docs, scoped=True)
+
+        assert shown == collect.MAX_MATERIAL_DOCS
+        assert "今回の対象外" not in text
