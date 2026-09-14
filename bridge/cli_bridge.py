@@ -114,11 +114,24 @@ DEFAULT_MODELS = {
     "codex": (),
     "antigravity": (),
 }
-MODELS = tuple(
+# CLI の実行ファイル名。ヘルプを読むのに使う(`agy` だけ名前が違う)。
+CLI_COMMAND = {"claude": "claude", "codex": "codex", "antigravity": "agy"}.get(CLI, CLI)
+# モデルの一覧を出すコマンド。**持っているのは Antigravity だけ**(実測) ——
+# claude は `models` サブコマンドが無く(`error: unknown command 'models'`)、
+# codex もサブコマンドに無い(0.147.0 の `--help` で確認)。
+MODEL_LIST_CMD = {"antigravity": ["agy", "models"]}.get(CLI, [])
+
+# 手で渡された一覧(あれば最優先)。空なら CLI に聞き、それも駄目なら上の控え。
+GIVEN_MODELS = tuple(
     m.strip()
     for m in os.environ.get("CHIEZO_BRIDGE_MODELS", "").split(",")
     if m.strip()
-) or DEFAULT_MODELS.get(CLI, ())
+)
+# CLI から聞き取った一覧。**起動時に 1 回だけ聞く**(`_probe_cli`)。
+# 聞かれたときに聞きに行かないのは、**CLI を 1 本ずつしか動かせない**から ——
+# 会話が走っている最中に聞くと、30 秒待って断られる(`cli_slot`)。
+# 見たいのはまさに何かを走らせている最中なので、答えは先に持っておく。
+_FOUND_MODELS: tuple[str, ...] = ()
 
 # 選べるエフォート(考える量)。 CLI ごとに受け付ける段階が違う。
 #
@@ -129,11 +142,27 @@ DEFAULT_EFFORTS = {
     "antigravity": ("low", "medium", "high"),  # agy --help
     "codex": (),  # codex exec --help に無い（設定キーは確かめていないので出さない）
 }
-EFFORTS = tuple(
+GIVEN_EFFORTS = tuple(
     e.strip().lower()
     for e in os.environ.get("CHIEZO_BRIDGE_EFFORTS", "").split(",")
     if e.strip()
-) or DEFAULT_EFFORTS.get(CLI, ())
+)
+# CLI のヘルプから読み取った段階。**読めなければ空**にして控えへ落ちる ——
+# ヘルプの文面が変わったときに、黙って「選べない」になるほうが、
+# 実在しない段階を並べるより害が小さい。
+_FOUND_EFFORTS: tuple[str, ...] = ()
+# もう聞いたか。**1 回取れたら聞き直さない**(版が上がるのは再起動のとき)
+_PROBED = False
+
+
+def models_now() -> tuple[str, ...]:
+    """いま名乗るモデルの一覧。手渡し > CLI の答え > コードの控え。"""
+    return GIVEN_MODELS or _FOUND_MODELS or DEFAULT_MODELS.get(CLI, ())
+
+
+def efforts_now() -> tuple[str, ...]:
+    """いま名乗る考える量。手渡し > CLI の答え > コードの控え。"""
+    return GIVEN_EFFORTS or _FOUND_EFFORTS or DEFAULT_EFFORTS.get(CLI, ())
 
 # CLI に許す道具。既定は Chiezo の MCP だけ。書き込み(remember)まで止めたいときは
 # ここを `mcp__chiezo__search mcp__chiezo__doc …` のように絞る。
@@ -345,11 +374,108 @@ async def cli_slot(wait: float | None = None) -> AsyncIterator[None]:
         _CLI_LOCK.release()
 
 
+async def _probe_cli() -> None:
+    """CLI へ「何が選べるか」を聞き、控えておく。**1 回取れたらもう聞かない**。
+
+    **空いているときにしか聞かない。** CLI は 1 本ずつしか動かせない
+    (`cli_slot`。認証情報が回る相手では、2 本同時に走ると権限ごと失効しうる)ので、
+    走っている最中に割り込むと会話を待たせることになる —— ここで待つ価値は無い。
+    取れなければ控えを返し、次に聞かれたときにまた試す。
+
+    **取れなくても止めない。** コードの控えに落ちるだけで、名乗れないよりずっとよい。
+    """
+    global _PROBED, _FOUND_MODELS, _FOUND_EFFORTS
+    if _PROBED or _CLI_LOCK.locked():
+        return
+    _PROBED = True
+    # 認証情報を置いてから聞く(置く前だと、どの CLI も「サインインして」としか言わない)
+    apply_credential()
+    with suppress(Exception):
+        _FOUND_MODELS = await _ask_models()
+    with suppress(Exception):
+        _FOUND_EFFORTS = await _ask_efforts()
+    if not _FOUND_MODELS and not _FOUND_EFFORTS:
+        # 1 つも取れなかった(CLI が居ない・サインイン前)。次に聞かれたらまた試す
+        _PROBED = False
+    log.info(
+        "bridge can offer: models=%s efforts=%s",
+        ",".join(models_now()) or "(なし)", ",".join(efforts_now()) or "(なし)",
+    )
+
+
+async def _ask_models() -> tuple[str, ...]:
+    """CLI に一覧を聞く。**持っているのは Antigravity だけ**(実測)。
+
+    - `agy models` …… `<slug><空白><表示名>` が 1 行 1 件
+    - `claude` …… `models` サブコマンドが無い(`error: unknown command 'models'`)
+    - `codex` …… サブコマンドに `models` が無い(0.147.0 の `--help` で確認)
+    """
+    if not MODEL_LIST_CMD:
+        return ()
+    return _parse_models(await _run_text(MODEL_LIST_CMD))
+
+
+def _parse_models(out: str) -> tuple[str, ...]:
+    """`<slug><空白><表示名>` が 1 行 1 件。**飾りの行は拾わない**。
+
+    拾うと、選ぶと必ず失敗する候補が画面に並ぶ。slug は英小文字・数字・
+    ハイフン・ドットだけ(実測)。
+    """
+    found = [
+        slug for line in out.splitlines()
+        if (slug := line.strip().split(" ", 1)[0].strip())
+        and re.fullmatch(r"[a-z0-9][a-z0-9.\-]*", slug)
+    ]
+    return tuple(dict.fromkeys(found))
+
+
+# ヘルプに書かれた段階(`--effort <level>` の説明の括弧)。claude は
+# `(low, medium, high, xhigh, max)`、agy も同じ形で並べる(どちらも実測)。
+_EFFORT_HELP_RE = re.compile(r"--effort[^\n]*\n?[^(]{0,200}\(([a-z,\s]+)\)")
+
+
+async def _ask_efforts() -> tuple[str, ...]:
+    """CLI のヘルプから段階を読む。**読めなければ空**(控えへ落ちる)。
+
+    一覧を出す口は無いので、ヘルプの文面が頼り。**書き方が変われば静かに空になる**が、
+    実在しない段階を並べるより害が小さい(CLI は値を検証せず、黙って既定で動く)。
+    """
+    return _parse_efforts(await _run_text([CLI_COMMAND, "--help"]))
+
+
+def _parse_efforts(out: str) -> tuple[str, ...]:
+    """`--effort <level>` の説明の括弧から段階を読む。読めなければ空。"""
+    found = _EFFORT_HELP_RE.search(out)
+    if not found:
+        return ()
+    return tuple(
+        part.strip() for part in found.group(1).split(",")
+        if re.fullmatch(r"[a-z]+", part.strip())
+    )
+
+
+async def _run_text(cmd: list[str]) -> str:
+    """短い問い合わせを 1 本走らせて、標準出力を読む(枠は取る)。
+
+    **モデルを呼ばないコマンドだけ**をここへ通すこと —— 会話を 1 往復させると
+    確かめるたびにサブスクの枠を食う(`AUTH_CHECK` と同じ約束)。
+    """
+    async with cli_slot(LOCK_WAIT):
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=PROBE_TIMEOUT)
+    return (out or b"").decode("utf-8", errors="replace")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # Claude Code に渡す MCP 設定は起動時に書く(Codex は entrypoint.sh が config へ入れる)。
     if CLI == "claude" and MCP_URL:
         _write_mcp_config()
+    # **起動時には聞かない。** 立ち上がりを CLI の都合で遅らせないため、
+    # 聞くのは最初に聞かれたとき(`_probe_cli`)
     log.info("bridge ready: cli=%s model=%s mcp=%s", CLI, MODEL_LABEL, MCP_URL or "(繋がない)")
     yield
 
@@ -439,8 +565,8 @@ def resolve_effort(requested: str | None) -> str:
     name = (requested or "").strip().lower()
     if not name:
         return ""
-    if name not in EFFORTS:
-        allowed = ", ".join(EFFORTS) or "（この CLI は指定できません）"
+    if name not in efforts_now():
+        allowed = ", ".join(efforts_now()) or "（この CLI は指定できません）"
         raise HTTPException(400, {"error": f"使えないエフォートです: {name[:40]}", "allowed": allowed})
     return name
 
@@ -817,6 +943,8 @@ ANTIGRAVITY_USAGE_CMD = [
 CLAUDE_USAGE_CMD = ["claude", "-p", "/usage", "--output-format", "json"]
 
 USAGE_TIMEOUT = float(os.environ.get("CHIEZO_BRIDGE_USAGE_TIMEOUT", "60") or 60)
+# 「何が選べるか」を聞くときの上限。モデルを呼ばないので短くてよい
+PROBE_TIMEOUT = float(os.environ.get("CHIEZO_BRIDGE_PROBE_TIMEOUT", "30") or 30)
 
 # claude の報告の 1 行。 実測の形:
 #   Current session: 20% used · resets Sep 11, 11pm (Asia/Tokyo)
@@ -1194,6 +1322,17 @@ async def usage() -> dict:
                 "reason": "別の呼び出しを実行中のため、最後に取れた値を返しています"}
 
 
+@app.get("/efforts")
+async def efforts() -> dict:
+    """**選べる考える量**の一覧。持たない CLI では空を返す。
+
+    OpenAI 互換の口ではないので `/v1` の外に置く(`/usage` と同じ)。
+    **ここも CLI を起こさない** —— 起動時に読んだ控えを即答する。
+    """
+    await _probe_cli()
+    return {"efforts": list(efforts_now())}
+
+
 @app.get("/v1/models")
 async def models() -> dict:
     """**選べるモデル**の一覧。選べるものが無い CLI では空を返す。
@@ -1209,9 +1348,12 @@ async def models() -> dict:
     実際に走ったモデルとして読む。一覧から名乗れないときは相手の名前へ落ちる
     (`app/views/chat.py`)。
     """
+    await _probe_cli()
     return {
         "object": "list",
-        "data": [{"id": i, "object": "model", "owned_by": "chiezo-bridge"} for i in MODELS],
+        "data": [
+            {"id": i, "object": "model", "owned_by": "chiezo-bridge"} for i in models_now()
+        ],
     }
 
 

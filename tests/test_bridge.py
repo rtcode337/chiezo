@@ -358,16 +358,36 @@ class TestModelSelection:
 
     def test_it_advertises_the_models_it_accepts(self, bridge):
         server = bridge(CHIEZO_BRIDGE_CLI="claude")
-        assert server.MODELS == ("sonnet", "fable", "opus", "haiku")
+        assert server.models_now() == ("sonnet", "fable", "opus", "haiku")
 
     def test_the_first_model_is_the_cli_default(self, bridge):
         """見出しは一覧の先頭を名乗るので、CLI の既定(claude-sonnet-5)に揃える。"""
-        assert bridge(CHIEZO_BRIDGE_CLI="claude").MODELS[0] == "sonnet"
+        assert bridge(CHIEZO_BRIDGE_CLI="claude").models_now()[0] == "sonnet"
 
     def test_it_does_not_guess_ids_for_clis_without_a_list(self, bridge):
-        """確かめていない ID を並べない(選べるのに必ず失敗する選択肢になるため)。"""
-        assert bridge(CHIEZO_BRIDGE_CLI="codex").MODELS == ()
-        assert bridge(CHIEZO_BRIDGE_CLI="antigravity").MODELS == ()
+        """確かめていない ID を並べない(選べるのに必ず失敗する選択肢になるため)。
+
+        **CLI に聞けたらそちらが正**だが、聞けていないうちはここへ落ちる。
+        """
+        assert bridge(CHIEZO_BRIDGE_CLI="codex").models_now() == ()
+        assert bridge(CHIEZO_BRIDGE_CLI="antigravity").models_now() == ()
+
+    def test_what_the_cli_says_wins_over_the_fallback(self, bridge):
+        """**一覧を出せる CLI では、控えを当てにしない**(`agy models`)。
+
+        版が上がってモデルが増減しても、こちらを書き換えずに追いつく。
+        """
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+        server._FOUND_MODELS = ("gemini-3.8-flash-high", "claude-sonnet-4-6")
+
+        assert server.models_now() == ("gemini-3.8-flash-high", "claude-sonnet-4-6")
+
+    def test_a_given_list_still_wins_over_the_cli(self, bridge):
+        """手で渡したものがいちばん強い(逃げ道を塞がない)。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity", CHIEZO_BRIDGE_MODELS="only-this")
+        server._FOUND_MODELS = ("gemini-3.8-flash-high",)
+
+        assert server.models_now() == ("only-this",)
 
     def test_a_cli_without_models_advertises_none(self, bridge):
         """**「選べるもの」を答える口なので、無いなら空**。
@@ -389,9 +409,41 @@ class TestModelSelection:
         body = server._completion("こたえ")
         assert body["model"] == server.MODEL_LABEL
 
+    def test_it_reads_the_list_from_the_cli(self, bridge):
+        """`agy models` の出力（`<slug> <表示名>` が 1 行 1 件）を読む。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+
+        assert server._parse_models(
+            "gemini-3.8-flash-high     Gemini 3.8 Flash (High)\n"
+            "claude-sonnet-4-6         Claude Sonnet 4.6 (Thinking)\n"
+        ) == ("gemini-3.8-flash-high", "claude-sonnet-4-6")
+
+    def test_noise_in_the_output_is_not_taken_for_a_model(self, bridge):
+        """飾りや見出しの行を拾わない（拾うと、選ぶと必ず失敗する候補が並ぶ）。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+
+        assert server._parse_models("Available models:\n\n  ID   Name\n") == ()
+
+    def test_it_reads_the_efforts_from_the_help(self, bridge):
+        """`--effort <level>` の説明の括弧から読む（一覧を出す口は無い）。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+
+        assert server._parse_efforts(
+            "  --effort <level>    Effort level for the current session\n"
+            "                      (low, medium, high, xhigh, max)\n"
+        ) == ("low", "medium", "high", "xhigh", "max")
+
+    def test_an_unreadable_help_leaves_the_fallback(self, bridge):
+        """**書き方が変われば静かに空になる**。控えへ落ちるほうが、実在しない段階を
+        並べるより害が小さい（CLI は値を検証せず、黙って既定で動く）。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+
+        assert server._parse_efforts("--effort  好きなだけ考えてよい\n") == ()
+        assert server.efforts_now() == ("low", "medium", "high", "xhigh", "max")
+
     def test_the_list_can_be_given_from_outside(self, bridge):
         server = bridge(CHIEZO_BRIDGE_CLI="codex", CHIEZO_BRIDGE_MODELS="gpt-x, gpt-y ")
-        assert server.MODELS == ("gpt-x", "gpt-y")
+        assert server.models_now() == ("gpt-x", "gpt-y")
 
     def test_the_requested_model_reaches_the_cli(self, bridge):
         server = bridge(CHIEZO_BRIDGE_CLI="claude")
@@ -427,12 +479,12 @@ class TestEffortSelection:
     """考える量（エフォート）を会話ごとに選べること。"""
 
     def test_it_offers_what_the_cli_accepts(self, bridge):
-        assert bridge(CHIEZO_BRIDGE_CLI="claude").EFFORTS == (
+        assert bridge(CHIEZO_BRIDGE_CLI="claude").efforts_now() == (
             "low", "medium", "high", "xhigh", "max",
         )
         # agy に xhigh / max は無い
-        assert bridge(CHIEZO_BRIDGE_CLI="antigravity").EFFORTS == ("low", "medium", "high")
-        assert bridge(CHIEZO_BRIDGE_CLI="codex").EFFORTS == ()
+        assert bridge(CHIEZO_BRIDGE_CLI="antigravity").efforts_now() == ("low", "medium", "high")
+        assert bridge(CHIEZO_BRIDGE_CLI="codex").efforts_now() == ()
 
     def test_it_reaches_the_cli(self, bridge):
         server = bridge(CHIEZO_BRIDGE_CLI="claude")

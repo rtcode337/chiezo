@@ -607,8 +607,8 @@ async def test_connection(provider: str = Form(...)):
 async def list_models(request: Request, backend: str = ""):
     """会話画面がモデルとエフォートのセレクトを組み立てるために引く。
 
-    モデルは相手に聞けたらその一覧、聞けなければ `app/providers.py` の控え。
-    エフォートは聞く口が無いので控えだけ（持たない相手では空）。
+    モデルも考える量も、**相手に聞けたらその一覧、聞けなければ `app/providers.py` の控え**。
+    CLI ブリッジは起動時に CLI 自身へ聞いたものを名乗る（`agy models` と `--help`）。
     """
     name = answer.normalize_backend(backend)
     if name not in answer.backend_names():
@@ -617,7 +617,7 @@ async def list_models(request: Request, backend: str = ""):
     return {
         "backend": name,
         "models": await answer.available_models(name),
-        "efforts": list(providers.efforts_of(name)),
+        "efforts": await answer.available_efforts(name),
         # CLI ブリッジかどうか（会話画面のトグルの出し分けに使う）
         "bridge": bool(spec and spec.bridge),
     }

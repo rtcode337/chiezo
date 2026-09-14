@@ -377,7 +377,40 @@ async def check_credential(cfg: Settings) -> tuple[bool, str]:
 
 # 相手が名乗るモデルの控え。管理画面と会話画面が開くたびに聞かずに済むよう覚えておく。
 _MODELS_CACHE: dict[str, tuple[float, list[str]]] = {}
+# 考える量も同じ形で控える。**相手に聞く口ができた**ので、決め打ちは保険に下がった
+_EFFORTS_CACHE: dict[str, tuple[float, list[str]]] = {}
 MODELS_TTL = 300.0
+
+
+async def available_efforts(backend: str) -> list[str]:
+    """会話や巡回で選べる「考える量」。
+
+    **相手に聞くのを優先し、聞けなければコードの控え**(`available_models` と同じ約束)。
+    CLI ブリッジは起動時に CLI のヘルプから読み取ったものを名乗るので、
+    版が上がって段階が増えても、こちらを書き換えずに追いつく。
+    """
+    name = normalize_backend(backend)
+    spec = providers.get(name)
+    fallback = list(providers.efforts_of(name))
+    if spec is None or not spec.bridge:
+        return fallback
+    now = time.monotonic()
+    cached = _EFFORTS_CACHE.get(name)
+    if cached and now - cached[0] < MODELS_TTL:
+        return cached[1]
+    found: list[str] = []
+    cfg = load_settings(name)
+    if cfg is not None:
+        base = cfg.url.removesuffix("/v1")
+        try:
+            async with _llm_client(cfg) as client:
+                res = await client.get(f"{base}/efforts", timeout=5.0)
+            found = [str(e) for e in (res.json().get("efforts") or []) if e]
+        except (httpx.HTTPError, ValueError, TypeError, AttributeError, KeyError):
+            found = []
+    out = found or fallback
+    _EFFORTS_CACHE[name] = (now, out)
+    return out
 
 
 async def available_models(backend: str) -> list[str]:
