@@ -73,6 +73,26 @@ class TestReadingItBack:
         assert "curl" in html
         assert f"/admin/ai/transcripts/{ident}" in html
 
+    def test_a_cut_head_says_that_it_is_cut(self, store):
+        """**切れているならそう書く。** 印が無いと、目の前のものを全部だと思って
+        判断する —— 途中で終わっている応答を「途中で止まった」と読むことになる。"""
+        from app.views import ai_history
+
+        store.record(backend="codex", prompt="あ" * 5000, reply="い" * 5000)
+
+        html = ai_history.transcripts_html()
+
+        assert f"先頭 {store.HEAD_MAX:,} 字" in html
+        assert "全文を開く" in html
+
+    def test_a_short_one_says_nothing(self, store):
+        """切れていない控えに断り書きを出さない(毎行に付くと意味が薄れる)。"""
+        from app.views import ai_history
+
+        store.record(backend="codex", prompt="短い依頼", reply="短い応答")
+
+        assert "先頭" not in ai_history.transcripts_html()
+
     def test_turning_it_off_says_so_instead_of_showing_nothing(self, store, monkeypatch):
         monkeypatch.setattr(ai_transcript, "KEEP_DAYS", 0)
         from app.views import ai_history

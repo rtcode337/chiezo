@@ -386,13 +386,24 @@ TRANSCRIPTS_PER_PAGE = 20
 
 
 def _part(label: str, head: str, nbytes: int | None = None) -> str:
-    """依頼文・途中経過・応答のひとかたまり。**空なら節ごと出さない**。"""
+    """依頼文・途中経過・応答のひとかたまり。**空なら節ごと出さない**。
+
+    **切れているならそう書く**(`ai_transcript.HEAD_MAX`)。ここに出しているのは
+    控えの先頭だけで、全文はファイルにある —— 印が無いと、読み手は目の前のものを
+    全部だと思って判断する(途中で終わっている応答を「途中で止まった」と読む)。
+    大きさは添えてあるが、KB と字数は突き合わせられないので印にはならない。
+    """
     if not (head or "").strip():
         return ""
     size = f'（{esc(_size(nbytes))}）' if nbytes else ""
+    cut = (
+        f'<p class="muted">ここまでで先頭 {ai_transcript.HEAD_MAX:,} 字。'
+        "続きは下の「全文を開く」。</p>"
+        if len(head) >= ai_transcript.HEAD_MAX else ""
+    )
     return (
         f'<p class="muted">{esc(label)}{size}</p>'
-        f'<pre class="media-body">{esc(head)}</pre>'
+        f'<pre class="media-body">{esc(head)}</pre>{cut}'
     )
 
 
