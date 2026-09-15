@@ -49,6 +49,62 @@ class TestBackends:
         assert [b["id"] for b in body["backends"]] == []
 
 
+class TestBridges:
+    """立っているブリッジと、その版(`/v1/ai/bridges`)。
+
+    ブリッジは LAN に口を開けないので、外から版を確かめる手段がここしか無い。
+    """
+
+    @staticmethod
+    def _answers(monkeypatch, handler):
+        import httpx
+
+        real = httpx.AsyncClient
+        monkeypatch.setattr(
+            httpx, "AsyncClient",
+            lambda **kw: real(transport=httpx.MockTransport(handler), **kw),
+        )
+
+    def test_it_reports_the_commit_each_bridge_runs(self, monkeypatch):
+        import asyncio
+
+        import httpx
+
+        from app import answer
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "codex" in str(request.url):
+                return httpx.Response(200, json={
+                    "status": "ok", "cli": "codex", "model": "Codex CLI", "build": "dbef05b",
+                })
+            raise httpx.ConnectError("繋がらない")
+
+        self._answers(monkeypatch, handler)
+        rows = {row["id"]: row for row in asyncio.run(answer.bridge_builds())}
+
+        assert rows["codex"]["up"] is True
+        assert rows["codex"]["build"] == "dbef05b"
+        # **立てていない相手も理由つきで返す** —— 出さないと「繋がらない」と
+        # 「そもそも立てていない」を区別できない
+        assert rows["claude"]["up"] is False
+        assert "つながりません" in rows["claude"]["error"]
+
+    def test_an_old_bridge_reports_no_build(self, monkeypatch):
+        """`build` を焼き込む前のイメージは空で返る(手元で焼いたものも同じ)。"""
+        import asyncio
+
+        import httpx
+
+        from app import answer
+
+        self._answers(monkeypatch, lambda request: httpx.Response(
+            200, json={"status": "ok", "cli": "codex", "model": "Codex CLI"}))
+        rows = {row["id"]: row for row in asyncio.run(answer.bridge_builds())}
+
+        assert rows["codex"]["up"] is True
+        assert rows["codex"]["build"] == ""
+
+
 class TestComplete:
     def test_sends_the_prompt_as_given(self, monkeypatch_env):
         """抽出を混ぜない。 渡したメッセージがそのまま相手へ届く。"""

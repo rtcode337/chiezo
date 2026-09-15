@@ -2508,6 +2508,16 @@ async def ai_backends() -> dict:
     }
 
 
+@app.get("/v1/ai/bridges")
+async def ai_bridges() -> dict:
+    """立っている CLI ブリッジと、動かしているイメージのコミット(`build`)。
+
+    **問い合わせるのはこの口を叩いたときだけ。** 管理画面のように描画のたびに
+    聞きに行くと、落ちている相手があるだけで重くなる(`/v1/ai/backends` と同じ方針)。
+    """
+    return {"bridges": await answer.bridge_builds()}
+
+
 @app.get("/v1/ai/failures")
 async def ai_failures(limit: int = 50) -> dict:
     """AI への問い合わせが失敗したときの控え(新しい順)。

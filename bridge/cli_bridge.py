@@ -88,6 +88,10 @@ MCP_URL = os.environ.get(
 ).strip()
 if MCP_URL and not MCP_URL.endswith("/"):
     MCP_URL += "/"
+# どのコミットのイメージが動いているか(Dockerfile が焼き込む)。
+# **ブリッジは LAN に口を開けない**ので、動いている版を確かめる手段は
+# 立ち上がりのログと `/health` しかない。空なら手元で焼いたもの。
+BUILD_SHA = os.environ.get("CHIEZO_BRIDGE_BUILD_SHA", "").strip()
 # CLI に渡すモデル。空なら CLI の既定(サブスクの枠を無駄に食わないよう明示するのが望ましい)。
 MODEL = os.environ.get("CHIEZO_BRIDGE_MODEL", "").strip()
 # 1 回の呼び出しの上限秒数。CLI は道具を何度も引くので推論サーバより長くなる。
@@ -590,7 +594,8 @@ async def lifespan(_: FastAPI):
     # しかも待った末に返るのは同じ答えなので、待たせる意味が無い。
     # 裏へ回すのは、CLI が居ない・サインイン前のときに立ち上がりごと止めないため。
     probe = asyncio.create_task(_probe_cli())
-    log.info("bridge ready: cli=%s model=%s mcp=%s", CLI, MODEL_LABEL, MCP_URL or "(繋がない)")
+    log.info("bridge ready: cli=%s model=%s mcp=%s build=%s",
+             CLI, MODEL_LABEL, MCP_URL or "(繋がない)", BUILD_SHA or "(不明)")
     try:
         yield
     finally:
@@ -1058,7 +1063,9 @@ async def health(check: bool = False) -> dict:
     認証情報が置いてあるかを見るだけで即答する —— 管理画面は一覧を描くたびに
     全プロバイダを叩くので、既定は軽いほうにしてある。
     """
-    body = {"status": "ok", "cli": CLI, "model": MODEL_LABEL}
+    # `build` は動いているイメージのコミット。**版の食い違いを切り分けるため**に出す
+    # (ブリッジは LAN に口を開けないので、外から版を確かめる手段がここしかない)。
+    body = {"status": "ok", "cli": CLI, "model": MODEL_LABEL, "build": BUILD_SHA}
     if check:
         ok, reason = await check_auth()
         body["authenticated"] = ok

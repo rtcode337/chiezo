@@ -187,6 +187,35 @@ def backend_label(backend: str) -> str:
     return providers.label_of(backend)
 
 
+async def bridge_builds(timeout: float = 3.0) -> list[dict]:
+    """立っている CLI ブリッジと、それぞれが動かしているイメージのコミット。
+
+    **ブリッジは LAN に口を開けない**(compose の内側だけ)ので、外から版を確かめる
+    手段がここしか無い。版が分からないと、直したはずの不具合が「まだ古いイメージ」
+    なのか「直し方が違う」のか切り分けられず、往復を 1 回まるごと無駄にする
+    (実際に無駄にした)。
+
+    **立っていない相手も理由つきで返す。** 出さないと、繋がらないことと
+    「そもそもその相手を立てていない」ことが区別できない。
+    """
+    async def ask(spec) -> dict:
+        row = {"id": spec.id, "label": spec.label, "url": spec.url}
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                res = await client.get(f"{spec.url.rstrip('/')}/health")
+            body = res.json() if res.status_code == 200 else {}
+        except (httpx.HTTPError, ValueError) as e:
+            return {**row, "up": False, "error": f"つながりません: {e}"}
+        if not body:
+            return {**row, "up": False, "error": f"HTTP {res.status_code}"}
+        # `build` は焼き込まれたコミット。手元で焼いたイメージでは空になる
+        return {**row, "up": True, "build": str(body.get("build") or ""),
+                "cli": str(body.get("cli") or ""), "model": str(body.get("model") or "")}
+
+    specs = [spec for spec in providers.all_providers() if spec.bridge]
+    return list(await asyncio.gather(*(ask(spec) for spec in specs)))
+
+
 def normalize_effort(backend: str, effort: str | None) -> str:
     """選ばれたエフォートを検証する。知らない値は空（＝相手の既定）にする。
 

@@ -29,7 +29,21 @@ case "${CLI}" in
         mkdir -p "${CODEX_HOME}"
         chmod 700 "${CODEX_HOME}"
         codex mcp remove chiezo >/dev/null 2>&1 || true
-        [ -n "${MCP_URL}" ] && codex mcp add chiezo --url "${MCP_URL}"
+        if [ -n "${MCP_URL}" ]; then
+            codex mcp add chiezo --url "${MCP_URL}"
+            # 道具を引くたびの確認を外す。`approval_policy="never"` は「聞かない」で
+            # あって「許す」ではないので、これが無いと対話の無い exec では断られる ——
+            #   mcp: chiezo/sources (failed)
+            #   MCP tool call requires approval, but approval policy is never
+            # 繋がっているのに 1 件も引けず、相手は「道具なし」と答えて終わる。
+            # `codex mcp add` に承認のフラグは無いので、設定ファイルへ直に書く
+            # (書ける場所は `mcp add` が作った [mcp_servers.chiezo] の末尾)。
+            printf 'default_tools_approval_mode = "auto"\n' >> "${CODEX_HOME}/config.toml"
+            # **書けたことを確かめる。** 設定の形が変われば黙って効かなくなり、
+            # そのときは「道具はあるが 1 つも引けない」という分かりにくい姿になる。
+            codex mcp get chiezo 2>/dev/null | grep -q "default_tools_approval_mode: auto" \
+                || echo "WARNING: codex の MCP に承認の設定が入りませんでした(道具を引けない可能性)" >&2
+        fi
         ;;
     antigravity)
         # 認証はコンテナ内で 1 回サインインした結果を HOME 配下のキャッシュから読む

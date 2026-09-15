@@ -1208,6 +1208,20 @@ Please try signing in again.
 ブリッジのイメージ（`ghcr.io/rtcode337/chiezo-bridge`）には両方の CLI が入っていて、
 `CHIEZO_BRIDGE_CLI` で役割を決めます。
 
+**どの版が動いているかは `/v1/ai/bridges` で引けます。**
+
+```bash
+curl -s "$BASE/v1/ai/bridges"
+# {"bridges":[{"id":"codex","label":"Codex CLI","up":true,
+#              "build":"dbef05b…","cli":"codex","model":"Codex CLI"}, …]}
+```
+
+ブリッジは Chiezo と同じネットワークの内側にいて外に口を開けないので、**版を確かめる
+手段はこの口と、立ち上がりのログ（`bridge ready: … build=…`）だけ**です。版が分からないと、
+直したはずの不具合が「まだ古いイメージが動いている」のか「直し方が違う」のかを
+切り分けられません。`build` が空なら、手元で焼いたイメージ（CI を通していないもの）です。
+立てていない相手も理由つきで並びます（繋がらないことと、そもそも立てていないことは別）。
+
 | 環境変数 | 既定 | 説明 |
 |---|---|---|
 | `CHIEZO_BRIDGE_CLI` | `claude` | 包む CLI（`claude` / `codex` / `antigravity`） |

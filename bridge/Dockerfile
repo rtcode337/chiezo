@@ -100,6 +100,13 @@ ENV CODEX_HOME=/srv/bridge/.codex
 ENV HOME=/srv/bridge/home
 ENV CHIEZO_BRIDGE_PORT=7013
 
+# どのコミットのイメージが動いているか。**ブリッジは LAN に口を開けない**ので、
+# 動いている版を外から確かめる手段がこれしかない —— 版の食い違いに気づけないと、
+# 直したはずの不具合を追いかけ続けることになる(実際に 1 往復無駄にした)。
+# CI がすべてのイメージへ同じ build-arg を渡している。
+ARG BUILD_SHA=""
+ENV CHIEZO_BRIDGE_BUILD_SHA=$BUILD_SHA
+
 # 非 root で動かす。 claude は権限確認を飛ばす指定(--permission-mode
 # bypassPermissions)を root では拒む ——
 #   --dangerously-skip-permissions cannot be used with root/sudo privileges
