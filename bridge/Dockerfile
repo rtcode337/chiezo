@@ -17,7 +17,19 @@
 # ---- CLI を取り出すためだけのステージ ----
 FROM node:20-slim AS cli
 
-RUN npm install -g @anthropic-ai/claude-code @openai/codex
+# npm は毎回その時点の最新を入れるが、**この RUN は入力が変わらないので
+# ビルドキャッシュに当たると古い CLI のまま出来上がる**(agy と同じ罠)。
+# CODEX_MIN_VERSION を上げると層が作り直され、入った版がそれ未満なら失敗させる。
+# claude も同じ層なので一緒に新しくなる。
+#
+# 0.154.0 … これより古い CLI では、新しいモデルを名指ししても
+# 「The '…' model requires a newer version of Codex.」で 400 になる(実測)。
+ARG CODEX_MIN_VERSION=0.154.0
+RUN set -eux; \
+    npm install -g @anthropic-ai/claude-code @openai/codex; \
+    installed="$(codex --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"; \
+    echo "codex ${installed} (required >= ${CODEX_MIN_VERSION})"; \
+    test "$(printf '%s\n%s\n' "${CODEX_MIN_VERSION}" "${installed}" | sort -V | head -n1)" = "${CODEX_MIN_VERSION}"
 
 # Antigravity CLI は単一の Go バイナリで、npm では配布されていない。
 # インストーラが受け付けるのは --dir と --help だけ(--skip-aliases 等は無い)。
