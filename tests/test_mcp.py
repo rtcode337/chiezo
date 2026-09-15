@@ -228,6 +228,33 @@ class TestTheBridgeCannotAskForMore:
         }
         assert "search" in knowledge and "doc" in knowledge, "知識は引けること"
 
+    def test_reading_tools_say_they_only_read(self, client):
+        """**読むだけの道具にはその印を付ける。**
+
+        付けないと、相手は「書き込むかもしれない道具」として確認を出そうとする。
+        対話の無い実行では確認を出せないので、そのまま断られる —— 実測
+        (Codex CLI 0.154.0)では繋がっているのに 1 件も引けず、
+        `MCP tool call requires approval, but approval policy is never` を残して
+        「道具は無い」と答えて終わった。応答は普通に返るので気づきにくい。
+        """
+        tools = {
+            t["name"]: t for t in
+            rpc_at(client, "/mcp/knowledge/", "tools/list")["result"]["tools"]
+        }
+        for name in ("sources", "search", "doc", "filter", "tags", "titles", "links"):
+            assert tools[name]["annotations"]["readOnlyHint"] is True, name
+
+    def test_every_tool_on_this_endpoint_only_reads(self, client):
+        """**この口に出るものは全部、読むだけ。**
+
+        1 つでも書き込む道具が混じれば、それは口の取り違え(生成の道具を出さないのが
+        この口の役目)。印の付け忘れもここで落ちる。
+        """
+        tools = rpc_at(client, "/mcp/knowledge/", "tools/list")["result"]["tools"]
+        writers = [t["name"] for t in tools
+                   if not (t.get("annotations") or {}).get("readOnlyHint")]
+        assert writers == [], writers
+
     def test_the_bridge_endpoint_offers_no_way_to_generate(self, monkeypatch):
         """作る道具が出ている状態で比べる(置き場が無いと、どちらの口にも出ない)。"""
         import anyio
@@ -305,3 +332,4 @@ class TestTheToolsRefuseTheCliItDrives:
         monkeypatch.setattr(media, "bridge_addresses", dict)
         out = call_tool(media_client, "image_generate", {"prompt": "猫", "backend": "comfyui"})
         assert "AI への依頼" not in json.dumps(out["payload"], ensure_ascii=False)
+

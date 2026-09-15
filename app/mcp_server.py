@@ -29,6 +29,7 @@ from fastapi import FastAPI, HTTPException
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import ToolAnnotations
 from pydantic import Field
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
@@ -38,6 +39,17 @@ from app import media, media_providers, notes
 # doc のレスポンスはそのままモデルのコンテキストに載るので、REST(既定 0 = 無制限)より
 # 短く切る。jawiki には 10 万字級の記事があり、既定で全文を返すと 1 回で窓を潰す。
 MCP_DOC_MAX_CHARS = 4000
+
+# 読むだけの道具に付ける印。**付けないと、相手は「書き込むかもしれない道具」として扱う。**
+# 実測(Codex CLI 0.154.0): 対話の無い実行では確認を出せないので、そのまま断られる ——
+#   mcp: chiezo/sources (failed)
+#   MCP tool call requires approval, but approval policy is never
+# 繋がっているのに 1 件も引けず、相手は「道具は無い」と答えて終わる。応答は普通に
+# 返るので、やり取りの控えを開くまで気づけない。
+#
+# **付けるのは本当に読むだけのものに限る。** 覚える・消す・作る側(remember / update /
+# forget / *_generate / transcribe)には付けない —— あちらは確認を挟ませてよい。
+READ_ONLY = ToolAnnotations(read_only_hint=True)
 
 INSTRUCTIONS = """\
 LAN 内の読み取り専用ナレッジ API「Chiezo」。Wikipedia・OpenStreetMap・GeoNames を
@@ -187,11 +199,11 @@ def build_mcp(app: FastAPI, with_media: bool = True) -> MCPServer:
 
     mcp = MCPServer("chiezo", instructions=INSTRUCTIONS)
 
-    @mcp.tool(description="登録済みソースの一覧(名前・種類・言語・文書数・スキーマ版)を返す。")
+    @mcp.tool(annotations=READ_ONLY, description="登録済みソースの一覧(名前・種類・言語・文書数・スキーマ版)を返す。")
     async def sources() -> dict:
         return await run_in_threadpool(_call, api.list_sources, request=_request(app))
 
-    @mcp.tool(
+    @mcp.tool(annotations=READ_ONLY,
         description=(
             "全文検索。まずこれで当たりを付け、必要な文書だけ doc で取る。"
             "area / feature / bbox / tag で絞り込める(書式は filter と同じ。"
@@ -219,7 +231,7 @@ def build_mcp(app: FastAPI, with_media: bool = True) -> MCPServer:
             area=area, feature=feature, bbox=bbox, tag=tag, include_removed=include_removed,
         )
 
-    @mcp.tool(
+    @mcp.tool(annotations=READ_ONLY,
         description=(
             "タイトル完全一致(別名も解決)で 1 文書を取る。"
             f"body は既定で {MCP_DOC_MAX_CHARS} 字に切る(全文が要るなら max_chars を上げる)。"
@@ -249,7 +261,7 @@ def build_mcp(app: FastAPI, with_media: bool = True) -> MCPServer:
             include_removed=include_removed,
         )
 
-    @mcp.tool(
+    @mcp.tool(annotations=READ_ONLY,
         description=(
             "属性での一括抽出(全文検索ではなく等価・範囲条件の AND)。"
             "「カテゴリ○○の記事を全件」は tag、「京都府の博物館を全件」は feature+area、"
@@ -284,7 +296,7 @@ def build_mcp(app: FastAPI, with_media: bool = True) -> MCPServer:
             max_chars=max_chars, include_removed=include_removed,
         )
 
-    @mcp.tool(
+    @mcp.tool(annotations=READ_ONLY,
         description=(
             "タグ名(Wikipedia のカテゴリ等)を文書数つきで列挙する。"
             "filter の tag は完全一致なので、名前が不確かなときは先にこれで実在する名前を確かめる。"
@@ -304,7 +316,7 @@ def build_mcp(app: FastAPI, with_media: bool = True) -> MCPServer:
             limit=limit, offset=offset,
         )
 
-    @mcp.tool(description=(
+    @mcp.tool(annotations=READ_ONLY, description=(
         "**新しい順**に文書を並べる。「この 1 日で何が入ったか」を引くための道具で、"
         "search(語が要る)でも filter(タグや属性)でも取れない読み方。"
         "対応しているのは**溜まっていくソース**だけ(集めたもの・覚えたこと)——"
@@ -328,7 +340,7 @@ def build_mcp(app: FastAPI, with_media: bool = True) -> MCPServer:
             include_removed=include_removed,
         )
 
-    @mcp.tool(description=(
+    @mcp.tool(annotations=READ_ONLY, description=(
         "集める層の**区画に入っているもの**を全部返す。"
         "区画は「この範囲の全員」を並べて漏れを問う単位なので、"
         "「この範囲に他に誰がいるか」「もう入っているか」はここで確かめる。"
@@ -344,7 +356,9 @@ def build_mcp(app: FastAPI, with_media: bool = True) -> MCPServer:
             request=_request(app), name=name, key=key, limit=limit, offset=offset,
         )
 
-    @mcp.tool(description="タイトルの前方一致候補を返す。表記揺れの確認や短い語の引き当てに使う。")
+    @mcp.tool(
+        annotations=READ_ONLY,
+        description="タイトルの前方一致候補を返す。表記揺れの確認や短い語の引き当てに使う。")
     async def titles(
         source: str, prefix: str, limit: int = 20, include_removed: bool = False
     ) -> dict:
@@ -354,7 +368,7 @@ def build_mcp(app: FastAPI, with_media: bool = True) -> MCPServer:
             include_removed=include_removed,
         )
 
-    @mcp.tool(description=(
+    @mcp.tool(annotations=READ_ONLY, description=(
         "その文書から出ているリンク(関連文書のタイトル)の一覧を返す。"
         "出リンクのみで、被リンク(この文書を指している文書)は取れない。"
         "本文の出現順そのままなので重複があり、`記事名#節名` の形も混じる。"
@@ -476,7 +490,7 @@ def _register_image_tools(mcp: MCPServer) -> None:
             requested_by=_caller(ctx, requested_by),
         )
 
-    @mcp.tool(description=(
+    @mcp.tool(annotations=READ_ONLY, description=(
         "text_generate の仕上がりを確認する。state は queued / running / done / failed。"
         "done なら files に保存先のパスと URL(.md)が入る。**本文は返らない**ので、"
         "読むならそのパスを開く。seconds には書かれた文字数が入っている。"
@@ -487,7 +501,7 @@ def _register_image_tools(mcp: MCPServer) -> None:
             raise ValueError(f"unknown job: {job_id}")
         return job
 
-    @mcp.tool(description=(
+    @mcp.tool(annotations=READ_ONLY, description=(
         "image_generate の仕上がりを確認する。state は queued / running / done / "
         "partial(一部だけ描けた)/ failed。done なら files に保存先のパスと URL、"
         "使われた seed とモデルが入る。"
@@ -498,7 +512,7 @@ def _register_image_tools(mcp: MCPServer) -> None:
             raise ValueError(f"unknown job: {job_id}")
         return job
 
-    @mcp.tool(description=(
+    @mcp.tool(annotations=READ_ONLY, description=(
         "絵を頼める相手(自前の GPU・外部サービス)と、その相手で選べるモデル・サイズを返す。"
         "使えない相手も理由つきで出る。"
     ))
@@ -565,7 +579,7 @@ def _register_audio_tools(mcp: MCPServer) -> None:
             requested_by=_caller(ctx, requested_by),
         )
 
-    @mcp.tool(description=(
+    @mcp.tool(annotations=READ_ONLY, description=(
         "**人が画面で選んだ案**を返す。何案か作って group で束ねておくと、"
         "やること画面の「見比べ」で聴き比べ・見比べたうえで採用が押される。"
         "ここを引けば、どれが選ばれたか(と、添えられた一言)が分かる。"
@@ -575,7 +589,7 @@ def _register_audio_tools(mcp: MCPServer) -> None:
     async def media_picks(limit: int = 20, group: str = "") -> dict:
         return {"picks": media.picked_jobs(limit, group)}
 
-    @mcp.tool(description=(
+    @mcp.tool(annotations=READ_ONLY, description=(
         "audio_generate の仕上がりを確認する。state は queued / running / done / "
         "partial(一部だけ出来た)/ failed。done なら files に保存先のパスと URL、"
         "使われた seed とモデル、実際の長さが入る。"
@@ -586,7 +600,7 @@ def _register_audio_tools(mcp: MCPServer) -> None:
             raise ValueError(f"unknown job: {job_id}")
         return job
 
-    @mcp.tool(description=(
+    @mcp.tool(annotations=READ_ONLY, description=(
         "音を頼める相手(自前の GPU・外部サービス)と、その相手で選べるモデル・"
         "頼める種類と長さの上限を返す。使えない相手も理由つきで出る。"
         "sounds の値が 0 の種類は「長さを指定できない」("
@@ -647,7 +661,7 @@ def _register_video_tools(mcp: MCPServer) -> None:
             requested_by=_caller(ctx, requested_by),
         )
 
-    @mcp.tool(description=(
+    @mcp.tool(annotations=READ_ONLY, description=(
         "video_generate の仕上がりを確認する。state は queued / running / done / "
         "partial(一部だけ出来た)/ failed。done なら files に保存先のパスと URL、"
         "使われた seed とモデル、実際の長さが入る。"
@@ -658,7 +672,7 @@ def _register_video_tools(mcp: MCPServer) -> None:
             raise ValueError(f"unknown job: {job_id}")
         return job
 
-    @mcp.tool(description=(
+    @mcp.tool(annotations=READ_ONLY, description=(
         "動画を頼める相手(自前の GPU・外部サービス)と、その相手で選べるモデル・"
         "サイズ・**受け付ける尺の一覧**を返す。使えない相手も理由つきで出る。"
         "seconds が空の相手は「尺を指定できない」(モデルごとに決まっている)。"
@@ -712,7 +726,7 @@ def _register_voice_tools(mcp: MCPServer) -> None:
             requested_by=_caller(ctx, requested_by),
         )
 
-    @mcp.tool(description=(
+    @mcp.tool(annotations=READ_ONLY, description=(
         "speech_generate の仕上がりを確認する。state は queued / running / done / "
         "partial / failed。done なら files に保存先のパスと URL が入る。"
     ))
@@ -746,7 +760,7 @@ def _register_voice_tools(mcp: MCPServer) -> None:
             backend=backend, model=model, language=language,
         )
 
-    @mcp.tool(description=(
+    @mcp.tool(annotations=READ_ONLY, description=(
         "読み上げ・文字起こしを頼める相手と、選べるモデル・声を返す。"
         "使えない相手も理由つきで出る。kind は speech(読み上げ)/ transcribe(文字起こし)。"
     ))
@@ -791,7 +805,7 @@ def _register_memory_tools(mcp: MCPServer, app: FastAPI) -> None:
             request=_request(app), text=text, title=title, tags=tags, extra=None,
         )
 
-    @mcp.tool(description=(
+    @mcp.tool(annotations=READ_ONLY, description=(
         "以前 remember で保存したことを思い出す。**新しい順**に返る。"
         "「さっき話したあの件」「先月お願いしたあれ」のように過去のやり取りを"
         "指されたら、まずこれを引くこと。"
