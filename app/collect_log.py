@@ -85,6 +85,12 @@ _ADDED_COLUMNS = {
     "backend": "TEXT NOT NULL DEFAULT ''",
     "model": "TEXT NOT NULL DEFAULT ''",
     "effort": "TEXT NOT NULL DEFAULT ''",
+    # **集めるのにかかった時間**(ミリ秒)。回ごとに桁が違い(相手も区画の大きさも
+    # 回ごとに変わる)、**遅くなったことは件数からは読めない** —— 同じ件数を
+    # 返していても、5 分が 20 分になっていれば一周の見込みが 4 倍ずれる。
+    # 焼くぶんは含まない(控えを書いてから流すので、ここでは終わっていない)。
+    # 古い行は NULL のまま(測っていない、と「0 秒」は別)
+    "ms": "INTEGER",
 }
 
 # 割り込みの回に入る巡回の名前。**巡回の名前と同じ欄に入れる** ——
@@ -135,6 +141,7 @@ def record(
     backend: str = "",
     model: str = "",
     effort: str = "",
+    ms: int | None = None,
 ) -> None:
     """1 回ぶんを残す。**呼び出し側の失敗にはしない**(控えが取れなくても収集は続く)。
 
@@ -153,8 +160,8 @@ def record(
             conn.execute(
                 "INSERT INTO collect_runs (at, name, status, total, added, updated, removed,"
                 " skipped, added_titles, updated_titles, removed_titles, error, sweep, scope,"
-                " backend, model, effort)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " backend, model, effort, ms)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     datetime.now(UTC).isoformat(timespec="seconds"),
                     name,
@@ -173,6 +180,7 @@ def record(
                     backend or "",
                     model or "",
                     effort or "",
+                    ms,
                 ),
             )
             # 古いものから捨てる。件数で切るのは、実行の頻度が収集ごとに違うため
@@ -193,7 +201,7 @@ def recent(name: str | None = None, limit: int = 50) -> list[dict]:
     sql = (
         "SELECT at, name, status, total, added, updated, removed, skipped,"
         " added_titles, updated_titles, removed_titles, error, sweep, scope,"
-        " backend, model, effort FROM collect_runs"
+        " backend, model, effort, ms FROM collect_runs"
     )
     args: list = []
     if name:

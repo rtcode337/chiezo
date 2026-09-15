@@ -111,9 +111,15 @@ def stream(
     50 万件の地図の名簿で 1.8 GB になった(実測)。
 
     **持ち時間は読み口より長い**(`STREAM_TIMEOUT_SECONDS`)。使うのは取り込みの
-    中で動く背景の仕事で、誰も応答を待っていない。**打ち切りは 1 本の実行に対して
-    効く**ので、途中まで返してから切れることがある —— 呼ぶ側はそれを
-    「全部読めた」と取り違えないこと(数え直す側で件数を見る)。
+    中で動く背景の仕事で、誰も応答を待っていない。途中まで返してから切れることが
+    あるので、呼ぶ側はそれを「全部読めた」と取り違えないこと(数え直す側で件数を見る)。
+
+    **測るのは「次の 1 行が出てくるまで」で、流し終えるまでではない。**
+    1 行ずつ返すあいだ、時間を使っているのは読み手のほうで SQLite は止まっている ——
+    全体に締め切りを掛けると、**行数が多いほど読み手のせいで切れる**。
+    実際、60 万件を焼く回が 10 分 47 秒で `query timeout` になった(読み手は
+    焼く素材を組んで HTTP で流していただけで、どの問い合わせも詰まっていない)。
+    ここで止めたいのは**行が出てこない問い合わせ**なので、1 行返るたびに測り直す。
 
     **接続はスレッドごと**(`get_connection`)。回している最中に同じスレッドから
     同じ DB へ別の問い合わせを投げると、カーソルが絡む。
@@ -126,7 +132,10 @@ def stream(
 
     conn.set_progress_handler(_check, _PROGRESS_STEP)
     try:
-        yield from conn.execute(sql, params)
+        for row in conn.execute(sql, params):
+            yield row
+            # 読み手が返ってきてから測り直す(上の理由)
+            deadline = time.monotonic() + timeout
     except sqlite3.OperationalError as e:
         if "interrupted" in str(e):
             raise QueryTimeout() from e

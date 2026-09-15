@@ -2306,6 +2306,41 @@ class Edits:
         self._used = set()
 
 
+def plan_partitions_next(
+    item: Collection, sources: dict, previous, collected,
+    only_new: bool = False, edits: bool = False,
+) -> list[dict]:
+    """**これから焼く世代**で区画を割り直す(`plan_partitions` は前世代で割る)。
+
+    機械で名簿を作り直した回のためのもの。名簿は 1 回で母集団ごと入れ替わるのに、
+    台帳は次に走るまで古いまま —— **1 回に何区画を見るかは台帳から決まる**ので、
+    **次の巡回が AI を何回叩くのかが、始まるまで誰にも見えなかった**
+    (60 万件を 1 区画として持ったまま「1 回に 1 区画」と出る)。
+
+    **毎回やらない。** 定時の巡回が動かすのは 1 回に数百件で、割り直しの引き金
+    (育った・空になった)は次の回の頭で普通に効く —— そのために世代をもう 1 周
+    舐めるのは高い。入れ替わるのは機械で引く回だけ。
+    """
+    rows = _rows_of(previous)
+    return plan_partitions(
+        item, sources,
+        lambda: stream_docs(item, rows(), collected, only_new, edits),
+    )
+
+
+def uses_extract(item: Collection, sweep=None) -> bool:
+    """この回は機械で引くか。**判断は 1 か所に持つ** ——
+    条件を書き写すと、片方だけ直したときに「機械で引いたのに割り直さない」になる。
+
+    **機械で引く回**(`Sweep.use_extract`)か、**進み具合が空の 1 回目**。
+    前者は名簿を最新に保つための回 —— 外のカテゴリは増えていくのに、1 回目しか
+    機械で埋めないと、そのあと増えたぶんは永遠に入らない。
+    """
+    if not item.extract:
+        return False
+    return bool((sweep is not None and sweep.use_extract) or not item.cursor)
+
+
 def stream_docs(
     item: Collection,
     previous,

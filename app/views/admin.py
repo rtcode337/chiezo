@@ -1025,10 +1025,18 @@ def _collect_changes_html(limit: int = 30, name: str | None = None) -> str:
             ai_history.who_html(row["backend"], row["model"], row["effort"])
             if row["backend"] else '<span class="muted">—</span>'
         )
+        # **かかった時間を出す。** 件数からは遅くなったことが読めない —— 同じ件数を
+        # 返していても、5 分が 20 分になっていれば一周の見込みが 4 倍ずれる。
+        # 失敗の行にも出す(すぐ落ちたのか、待ち切って落ちたのかで打つ手が違う)。
+        # 測っていない古い行は空欄(0 秒と混ぜない)
+        spent = (
+            f'<span class="muted">{esc(ai_history.took(row["ms"]))}</span>'
+            if row.get("ms") is not None else ""
+        )
         if row["status"] != collect_log.STATUS_OK:
             rows.append(
                 f"<tr><td>{when}</td>{_changes_name_cell(row, name)}<td>{esc(row['sweep'])}</td>"
-                f"<td>{who}</td>"
+                f"<td>{who}</td><td>{spent}</td>"
                 f'<td colspan="2"><span class="stale">失敗: {esc(row["error"])}</span></td></tr>'
             )
             continue
@@ -1068,19 +1076,20 @@ def _collect_changes_html(limit: int = 30, name: str | None = None) -> str:
         )
         rows.append(
             f"<tr><td>{when}</td>{_changes_name_cell(row, name)}"
-            f"<td>{esc(row['sweep'])}{scope}</td><td>{who}</td>"
+            f"<td>{esc(row['sweep'])}{scope}</td><td>{who}</td><td>{spent}</td>"
             f'<td>{summary}{note}</td><td>{row["total"]:,} 件{detail}</td></tr>'
         )
     return f"""
 <details open><summary>直近の変更</summary>
 <table>
 <thead><tr><th>いつ</th>{"" if name else "<th>収集</th>"}<th>どの回</th><th>頼んだ相手</th>
-<th>変化</th><th>焼いた後</th></tr></thead>
+<th>かかった</th><th>変化</th><th>焼いた後</th></tr></thead>
 <tbody>
 {"".join(rows)}
 </tbody>
 </table>
-<p class="muted">新しい順に最大 {limit} 件。
+<p class="muted">新しい順に最大 {limit} 件。「かかった」は<strong>集めるのにかかった時間</strong>で、
+焼くぶんは入らない(控えを書いてから流すため)。
 記録は <code>state/collect_runs.db</code> に残り、古いものから捨てられる。</p>
 </details>
 """

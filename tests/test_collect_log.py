@@ -53,6 +53,40 @@ class TestRecord:
         assert rows[0]["error"] == "llm error 502"
         assert rows[0]["added"] == 0
 
+    def test_it_keeps_how_long_it_took(self, state_env):
+        """**遅くなったことは件数からは読めない。**
+
+        同じ件数を返していても、5 分が 20 分になっていれば一周の見込みが 4 倍ずれる。
+        """
+        collect_log.record("spots", status=collect_log.STATUS_OK, diff=DIFF, ms=372_000)
+        collect_log.record("spots", status=collect_log.STATUS_ERROR, error="切れた", ms=900_000)
+
+        rows = collect_log.recent()
+
+        assert [r["ms"] for r in rows] == [900_000, 372_000], "失敗した回も測る"
+
+    def test_a_run_that_was_not_measured_says_nothing(self, state_env):
+        """測っていない古い行は空のまま(0 秒と混ぜない)。"""
+        collect_log.record("spots", status=collect_log.STATUS_OK, diff=DIFF)
+
+        assert collect_log.recent()[0]["ms"] is None
+
+    def test_the_screen_shows_how_long_it_took(self, state_env):
+        from app.views import admin
+
+        collect_log.record("spots", status=collect_log.STATUS_OK, diff=DIFF, ms=372_000)
+
+        html = admin._collect_changes_html(name="spots")
+
+        assert "6 分 12 秒" in html
+
+    def test_the_screen_leaves_an_unmeasured_run_blank(self, state_env):
+        from app.views import admin
+
+        collect_log.record("spots", status=collect_log.STATUS_OK, diff=DIFF)
+
+        assert "ミリ秒" not in admin._collect_changes_html(name="spots")
+
     def test_it_returns_the_newest_first(self, state_env):
         for i in range(3):
             collect_log.record("spots", status=collect_log.STATUS_OK, diff={"added": i})

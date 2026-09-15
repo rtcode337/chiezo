@@ -1031,6 +1031,63 @@ class TestWhenTheSourceIsTooSlow:
         assert "limit" in caught.value.detail["hint"]
 
 
+class TestASlowReaderIsNotTheQuerysFault:
+    """**流し読みの締め切りは「次の 1 行が出てくるまで」**(`db.stream`)。
+
+    1 行ずつ返すあいだ、時間を使っているのは読み手のほうで SQLite は止まっている。
+    流し終えるまでに締め切りを掛けると、**行数が多いほど読み手のせいで切れる** ——
+    本番で 60 万件を焼く回が 10 分 47 秒で `query timeout` になった(読み手は
+    素材を組んで HTTP で流していただけで、どの問い合わせも詰まっていない)。
+    """
+
+    ROWS = 20_000
+
+    def _db(self, tmp_path):
+        """**打ち切りの判定が回る量**を入れる(`_PROGRESS_STEP` ごとに見るので、
+        数行では一度も判定されず、何を確かめても通ってしまう)。"""
+        import sqlite3
+
+        path = tmp_path / "rows.db"
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE t (n INTEGER)")
+        conn.executemany("INSERT INTO t VALUES (?)", [(n,) for n in range(self.ROWS)])
+        conn.commit()
+        conn.close()
+        return path
+
+    def test_a_slow_reader_does_not_run_out_the_clock(self, tmp_path):
+        """読み手が 1 行ずつ手間をかけても、合計で締め切りを超えたことにしない。"""
+        import time
+
+        from app import db
+
+        path = self._db(tmp_path)
+
+        seen = 0
+        for _row in db.stream(path, "SELECT n FROM t ORDER BY n", timeout=0.05):
+            # 1 行の手間は小さいが、行数を掛けると締め切りをはるかに超える
+            time.sleep(0.0001)
+            seen += 1
+
+        assert seen == self.ROWS
+
+    def test_a_query_that_never_returns_a_row_is_still_cut(self, tmp_path):
+        """**止めたいのはこちら。** 行が出てこない問い合わせは今までどおり切る。"""
+        import pytest as _pytest
+
+        from app import db
+
+        path = self._db(tmp_path)
+
+        with _pytest.raises(db.QueryTimeout):
+            # 自分自身との総当たり(4 億通り)を 1 行も返さない条件で回す
+            list(db.stream(
+                path,
+                "SELECT a.n FROM t a, t b WHERE a.n + b.n < 0",
+                timeout=0.05,
+            ))
+
+
 class TestKeepingTheRosterOffMemory:
     """引いた名簿は一時の SQLite に置く。**丸ごとは持たない**。
 

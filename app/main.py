@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from collections import deque
 from contextlib import asynccontextmanager, suppress
 from dataclasses import replace
@@ -328,10 +329,9 @@ async def _collect_items(
     **途中でこけたら、そこまでのぶんも捨てる。** 半端に焼くと、見終わっていない区画に
     印が付くか、印の付いていない区画の中身だけが入れ替わる —— どちらも後から読めない。
     """
-    # **機械で引く回**(`Sweep.use_extract`)か、**進み具合が空の 1 回目**。
-    # 前者は名簿を最新に保つための回 —— 外のカテゴリは増えていくのに、1 回目しか
-    # 機械で埋めないと、そのあと増えたぶんは永遠に入らない
-    if item.extract and ((sweep is not None and sweep.use_extract) or not item.cursor):
+    # **機械で引く回か**(`collect.uses_extract`)。条件はあちらが持つ ——
+    # 書き写すと、片方だけ直したときに食い違う
+    if collect.uses_extract(item, sweep):
         spec = extract.normalize(item.extract)
         items, next_cursor = await asyncio.to_thread(extract.run, spec, sources)
         return items, next_cursor, ""
@@ -393,6 +393,11 @@ def _default_backend_name() -> str:
 
 
 async def _collect_material(name: str, sources: dict) -> str:
+    # **かかった時間を測る。** 回ごとに桁が違い(相手も区画の大きさも回ごとに変わる)、
+    # **遅くなったことは件数からは読めない** —— 同じ件数を返していても、5 分が
+    # 20 分になっていれば一周の見込みが 4 倍ずれる。測るのは集めるところまでで、
+    # 焼くぶんは入らない(控えを書いてから流すので、ここではまだ終わっていない)
+    started = time.monotonic()
     item = await asyncio.to_thread(collect.get, name)
     # 前世代は 1 度だけ読んで使い回す。プロンプトへ差し込む素材であり、
     # 消えたものを数える相手であり、doc_id を引き継ぐ元でもある
@@ -467,6 +472,17 @@ async def _collect_material(name: str, sources: dict) -> str:
             focus is None and sweep.only_new, edits,
         )
         diff = plan["diff"]
+        # **機械で名簿を作り直した回は、その場で区画を割り直す。**
+        # 台帳は次に走るまで古いままで、**1 回に何区画を見るかはそこから決まる** ——
+        # 割り直さないと、次の巡回が AI を何回叩くのかが始まるまで誰にも見えない
+        # (60 万件を 1 区画として持ったまま「1 回に 1 区画」と出る)。
+        # **件数は割り直した台帳のものが正**なので、古い台帳で数えたぶんは使わない
+        if item.partition and collect.uses_extract(item, sweep):
+            ledger = await asyncio.to_thread(
+                collect.plan_partitions_next, item, sources, previous, items,
+                focus is None and sweep.only_new, edits,
+            )
+            diff["partition_counts"] = {}
     except Exception as e:
         if hasattr(items := locals().get("items"), "close"):
             items.close()
@@ -480,7 +496,7 @@ async def _collect_material(name: str, sources: dict) -> str:
         await asyncio.to_thread(
             collect_log.record,
             name, status=collect_log.STATUS_ERROR, error=reason, sweep=label, scope=keys,
-            **who,
+            ms=int((time.monotonic() - started) * 1000), **who,
         )
         raise
     await asyncio.to_thread(
@@ -496,14 +512,15 @@ async def _collect_material(name: str, sources: dict) -> str:
         sweep=sweep.name,
         visited=keys,
         # **焼いたあとの人数で台帳を書き直す。** 回の頭で数えた値のままにすると、
-        # 見終わったばかりの区画が見る前の人数で出る(`collect.partition_counts`)
+        # 見終わったばかりの区画が見る前の人数で出る(`collect.partition_counts`)。
+        # 割り直した回は数えた値を渡さない —— そちらは割ったときの数を持っている
         partitions=partitioning.counted(ledger, diff.get("partition_counts") or {}),
         focus=focus is not None,
     )
     await asyncio.to_thread(
         collect_log.record,
         name, status=collect_log.STATUS_OK, diff=diff, sweep=label, scope=keys, error=note,
-        **who,
+        ms=int((time.monotonic() - started) * 1000), **who,
     )
     log.info(
         "collect %s (%s/%s%s): added=%d updated=%d kept=%d removed=%d skipped=%d",

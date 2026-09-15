@@ -753,6 +753,79 @@ class TestTheMechanicalSweep:
         visited, total = partitioning.progress(collect.get("news").partitions, "名簿")
         assert (visited, total) == (0, 1)
 
+    def test_the_partitions_are_redrawn_right_after_the_roster(
+        self, sample, monkeypatch, tmp_path
+    ):
+        """**名簿を作り直した回に、その場で割り直す。**
+
+        名簿は 1 回で母集団ごと入れ替わるのに、台帳は次に走るまで古いまま。
+        **1 回に何区画を見るかは台帳から決まる**ので、割り直さないと
+        「次の巡回が AI を何回叩くのか」が始まるまで誰にも見えない
+        —— 全部を 1 区画として持ったまま「1 回に 1 区画」と出る。
+        """
+        import asyncio
+
+        from app import extract, main
+
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        collect.update(
+            "news",
+            enabled=True,
+            extract={"source": "jawiki", "tag": "画家"},
+            partition={"by": "title", "target": 10},
+            partitions=[{"key": partitioning.title_key("あ", "ん"), "count": 1}],
+            sweeps=[{"name": "名簿", "use_extract": True, "only_new": True}],
+        )
+        roster = [{"title": f"ひと{i:03d}", "body": "本文"} for i in range(1, 61)]
+        monkeypatch.setattr(extract, "run", lambda spec, sources: (roster, ""))
+
+        async def no_feed(_item):
+            return None
+
+        monkeypatch.setattr(main, "_harvest", no_feed)
+        collect.mark_started("news", "名簿")
+        asyncio.run(main._collect_material("news", {}))
+
+        ledger = collect.get("news").partitions
+        assert len(ledger) > 1, "60 件を 1 区画のまま置かない"
+        # 件数は割り直した台帳のものが入る(古い台帳で数えたぶんは使わない)
+        assert sum(p["count"] for p in ledger) == 60
+
+    def test_an_ordinary_sweep_does_not_redraw_them(self, sample, monkeypatch, tmp_path):
+        """毎回は割り直さない。定時の巡回が動かすのは 1 回に数百件で、
+        そのために世代をもう 1 周舐めるのは高い(引き金は次の回の頭で普通に効く)。"""
+        import asyncio
+
+        from app import main
+
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        seen = []
+        monkeypatch.setattr(
+            collect, "plan_partitions_next",
+            lambda *a, **k: seen.append(True) or [],
+        )
+        collect.update(
+            "news",
+            enabled=True,
+            prompt="{partition} を直して",
+            partition={"by": "title", "target": 10},
+            partitions=[{"key": partitioning.title_key("あ", "ん"), "count": 1}],
+            sweeps=[{"name": "ざっと", "interval_minutes": 60}],
+        )
+
+        async def answered(*_a, **_k):
+            return ([{"title": "ひと", "body": "本文"}], None, "")
+
+        async def no_feed(_item):
+            return None
+
+        monkeypatch.setattr(main, "_harvest", no_feed)
+        monkeypatch.setattr(main, "_collect_items", answered)
+        collect.mark_started("news", "ざっと")
+        asyncio.run(main._collect_material("news", {}))
+
+        assert not seen, "AI に頼む回では割り直さない"
+
     def test_it_pulls_from_the_index_even_after_the_cursor_moved(self, sample, monkeypatch):
         """1 回目だけでなく、頼まれた回はいつでも機械で引く。"""
         import asyncio

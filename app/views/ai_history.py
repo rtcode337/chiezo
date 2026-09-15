@@ -133,7 +133,11 @@ def _tokens(row: dict) -> str:
     return " / ".join(p for p in parts if p)
 
 
-def _took(ms: int) -> str:
+def took(ms: int) -> str:
+    """かかった時間の書き方。**画面で 1 つに揃える**ので公開している ——
+    収集の「直近の変更」も同じ書き方で出す(別々に書くと、同じ長さが画面ごとに
+    違う形で出る。`who_html` / `elapsed` と同じ理由)。
+    """
     if ms >= 60_000:
         return f"{ms // 60_000} 分 {ms % 60_000 // 1000} 秒"
     if ms >= 1000:
@@ -155,7 +159,7 @@ def _weight(row: dict) -> str:
             f"応答 {_size(got)}" if got is not None else "",
         ) if p
     )
-    return " / ".join(p for p in (flow, _took(ms) if ms is not None else "") if p)
+    return " / ".join(p for p in (flow, took(ms) if ms is not None else "") if p)
 
 
 def _detail(row: dict) -> str:
@@ -229,7 +233,7 @@ def elapsed(started: str) -> str:
     if at is None:
         return ""
     secs = int((datetime.now(UTC) - at).total_seconds())
-    return _took(max(secs, 0) * 1000)
+    return took(max(secs, 0) * 1000)
 
 
 def running_rows() -> list[dict]:
