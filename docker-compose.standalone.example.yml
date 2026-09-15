@@ -203,6 +203,11 @@ services:
       #CHIEZO_AGENT_MAX_STEPS: "6"      # 道具を呼べる回数の上限
       #CHIEZO_AGENT_TOOL_CHARS: "3000"  # 1 回の道具の結果をモデルに返す上限文字数
       #CHIEZO_AGENT_TIMEOUT: "180"      # ループ全体の締め切り(秒)
+      # 「集める」層が 1 回で焼ける素材の大きさ(バイト)。既定は 192 MB。
+      # 地図辞典から国ぶんの名簿を作るときだけ要る —— 住所・電話・サイトまで運ぶ
+      # 1 件は 474 バイト(実測)あり、60 万件なら 280 MB を超えて断られる。
+      # 素材は 1 本の文字列で組むので、上げたぶんはそのままメモリに載る。
+      #CHIEZO_COLLECT_MAX_MATERIAL_BYTES: "402653184"   # 384 MB
     depends_on:
       # 置き場の用意(chiezo-init)が済んでから起動する
       chiezo-init:
