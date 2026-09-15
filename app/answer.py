@@ -200,9 +200,14 @@ async def bridge_builds(timeout: float = 3.0) -> list[dict]:
     """
     async def ask(spec) -> dict:
         row = {"id": spec.id, "label": spec.label, "url": spec.url}
+        # **`/health` はブリッジのルートにある。** 相手の URL は OpenAI 互換の口
+        # (`…/v1`)を指しているので、そのまま足すと `/v1/health` を叩いて 404 になる
+        # (実際にそうして、3 本とも「立っていない」と読めてしまった)。
+        url = spec.url.rstrip("/")
+        base = url[: -len("/v1")] if url.endswith("/v1") else url
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                res = await client.get(f"{spec.url.rstrip('/')}/health")
+                res = await client.get(f"{base}/health")
             body = res.json() if res.status_code == 200 else {}
         except (httpx.HTTPError, ValueError) as e:
             return {**row, "up": False, "error": f"つながりません: {e}"}

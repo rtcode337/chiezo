@@ -73,6 +73,9 @@ class TestBridges:
         from app import answer
 
         def handler(request: httpx.Request) -> httpx.Response:
+            # **叩く先はブリッジのルート。** 相手の URL は OpenAI 互換の口(`…/v1`)を
+            # 指しているので、そのまま足すと `/v1/health` になって 404 が返る
+            assert request.url.path == "/health", request.url
             if "codex" in str(request.url):
                 return httpx.Response(200, json={
                     "status": "ok", "cli": "codex", "model": "Codex CLI", "build": "dbef05b",
