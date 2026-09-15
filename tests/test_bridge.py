@@ -79,6 +79,20 @@ class TestCommand:
         # プロンプトは標準入力から渡す(引数だと 128KiB の上限に当たる)
         assert cmd[-1] == "-"
 
+    def test_codex_can_reach_the_knowledge_tools_without_being_asked(self, bridge):
+        """**「聞かない」と「許す」は別。**
+
+        `approval_policy="never"` だけでは、確認の要る呼び出しは対話の無い exec で
+        断られる。実測(codex 0.154.0)では MCP が繋がっているのに 1 件も引けず、
+        `MCP tool call requires approval, but approval policy is never` を残して
+        「道具なし」と答えて終わった —— 応答は普通に返るので、控えを読むまで
+        気づけない。
+        """
+        cmd = bridge(CHIEZO_BRIDGE_CLI="codex").build_command("/tmp/out.txt")
+        assert 'mcp_servers.chiezo.default_tools_approval_mode="auto"' in cmd
+        # シェルのほうは読み取り専用のまま(広げたのは問い合わせだけ)
+        assert cmd[cmd.index("-s") + 1] == "read-only"
+
     def test_model_is_omitted_when_not_configured(self, bridge):
         server = bridge(CHIEZO_BRIDGE_CLI="claude")
         assert "--model" not in server.build_command("/tmp/out.txt")

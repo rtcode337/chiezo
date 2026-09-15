@@ -792,6 +792,18 @@ def build_command(
             # 生成されたシェルコマンドを実行させない
             "-s", "read-only",
             "-c", 'approval_policy="never"',
+            # **知識の道具(chiezo)は確認を挟まずに引かせる。**
+            # `approval_policy="never"` は「聞かない」であって「許す」ではないので、
+            # 確認の要る呼び出しは、対話の無い exec ではそのまま断られる ——
+            # 実測(codex 0.154.0):
+            #   mcp: chiezo/sources started
+            #   mcp: chiezo/sources (failed)
+            #   MCP tool call requires approval, but approval policy is never
+            # 繋がっているのに 1 件も引けず、相手は「道具なし」と答えて終わった。
+            # 繋ぐ先は読み取り専用の口(/mcp/knowledge/)で、生成の道具は出ない。
+            # シェルのほうは `-s read-only` のままなので、ここで広がるのは
+            # 「Chiezo に問い合わせてよいか」だけ。
+            "-c", 'mcp_servers.chiezo.default_tools_approval_mode="auto"',
             # 最後の発言だけをファイルへ。標準出力には進捗も混ざるので、本文はこちらから取る
             "-o", out_path,
         ]
