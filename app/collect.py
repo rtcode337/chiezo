@@ -1350,7 +1350,9 @@ def describe_partition(item: Collection, key: str, sources: dict) -> str:
     """区画の鍵を、人にも AI にも読める範囲の言い方にする。持たない収集では空。"""
     if not item.partition:
         return ""
-    return partitioning.describe(partitioning.normalize(item.partition), key, sources)
+    return partitioning.describe(
+        partitioning.normalize(item.partition), key, sources, item.partitions
+    )
 
 
 def scoped_docs(
@@ -1446,7 +1448,7 @@ def build_messages(
         partition_key = focus.partition or partition_key
     if PARTITION_PLACEHOLDER in user:
         if spec and partition_key:
-            where = partitioning.describe(spec, partition_key, sources or {})
+            where = partitioning.describe(spec, partition_key, sources or {}, item.partitions)
         elif focus is not None:
             # **「全体」と言わない。** 区画を渡されていない割り込みの対象は
             # 名指しされたものだけで、範囲ではない

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import itertools
 import json
 import re
 import sqlite3
@@ -303,9 +304,17 @@ class TestPartitionLedger:
 
     def test_the_partition_goes_into_the_prompt(self, sample):
         collect.update("news", prompt="この範囲を調べて: {partition}")
+        self._with_ledger(["あ〜き", "く〜そ"])
+        user = collect.build_messages(collect.get("news"), {}, "く〜そ")[1]["content"]
+        assert "く" in user and "{partition}" not in user
+
+    def test_the_only_partition_covers_everything(self, sample):
+        """区画が 1 つしか無いなら、その 1 つが全部を引き受ける
+        —— 鍵の範囲で伝えると、その外に漏れているものを誰も探しに行かない。"""
+        collect.update("news", prompt="この範囲を調べて: {partition}")
         self._with_ledger(["あ〜き"])
         user = collect.build_messages(collect.get("news"), {}, "あ〜き")[1]["content"]
-        assert "あ" in user and "{partition}" not in user
+        assert "見出しは問いません" in user and "{partition}" not in user
 
     def test_without_a_partition_the_placeholder_still_goes_away(self, sample):
         """区画を持たない収集で `{partition}` を書かれても壊さない。"""
@@ -1838,6 +1847,86 @@ class TestNoGapBetweenPartitions:
         )
         assert list(docs) == ["か"]
         assert scoped is True
+
+
+    def test_bands_leave_no_gap_between_neighbours(self):
+        """**帯にも隙間を作らない。**
+
+        帯は値の詰まっているところで切るので、そのまま書くと
+        `1600-1641` と `1700-1741` のあいだの年がどこにも属さない ——
+        そこに入るものはどの区画にも出てこないし、**「この範囲に足すべきものが
+        無いか」を問う回にも入らない**(誰もその年を探しに行かない)。
+        """
+        spec = partitioning.normalize(
+            {"by": "band", "prefix": "地域", "value": "年代", "target": 10}
+        )
+        own = {}
+        for i, year in enumerate(
+            [y for y in range(1600, 1612) for _ in range(3)]
+            + [y for y in range(1700, 1712) for _ in range(3)]
+        ):
+            own[f"人{i}"] = {"title": f"人{i}", "tags": ["地域:日本", f"年代:{year}"]}
+
+        built = partitioning.build(spec, {}, own)
+
+        spans = [partitioning.parse_band_key(p["key"]) for p in built]
+        for left, right in itertools.pairwise(spans):
+            assert left[2] + 1 == right[1], "帯の終わりは、次の帯の始まりの手前まで"
+        # 前は誰のものでもなかった年も、いまはどこかに入る
+        assert partitioning.partition_of(
+            spec, built, {"title": "間の人", "tags": ["地域:日本", "年代:1650"]}
+        ) is not None
+
+    def test_a_value_outside_every_band_has_a_home(self):
+        """割ったときの値の外(もっと古い・もっと新しい)も、端の帯が引き受ける。"""
+        spec = partitioning.normalize(
+            {"by": "band", "prefix": "地域", "value": "年代", "target": 10}
+        )
+        ledger = [
+            {"key": partitioning.band_key("日本", 1600, 1699), "count": 10},
+            {"key": partitioning.band_key("日本", 1700, 1799), "count": 10},
+        ]
+
+        older = partitioning.partition_of(
+            spec, ledger, {"title": "古い人", "tags": ["地域:日本", "年代:1500"]}
+        )
+        newer = partitioning.partition_of(
+            spec, ledger, {"title": "新しい人", "tags": ["地域:日本", "年代:2020"]}
+        )
+
+        assert older == ledger[0]["key"]
+        assert newer == ledger[1]["key"]
+
+    def test_the_prompt_says_how_far_the_partition_reaches(self):
+        """**受け持ちを鍵のまま伝えない。** 端の区画は外側も引き受けるので、
+        鍵どおりに伝えると、引き受けているのに誰も探しに行かない範囲ができる。"""
+        band = partitioning.normalize(
+            {"by": "band", "prefix": "地域", "value": "年代", "target": 10}
+        )
+        ledger = [
+            {"key": partitioning.band_key("日本", 1600, 1699), "count": 10},
+            {"key": partitioning.band_key("日本", 1700, 1799), "count": 10},
+        ]
+
+        # 値の軸には上限も下限も無いので、端は開いたまま言う
+        assert "1699 以下" in partitioning.describe(band, ledger[0]["key"], {}, ledger)
+        assert "1700 以上" in partitioning.describe(band, ledger[1]["key"], {}, ledger)
+        # 帯が 1 つしか無いなら、値では絞らない
+        alone = [ledger[0]]
+        only = partitioning.describe(band, alone[0]["key"], {}, alone)
+        assert "すべて" in only and "1600" not in only
+
+        title = partitioning.normalize({"by": "title", "target": 10})
+        titles = [
+            {"key": partitioning.title_key("あ", "お"), "count": 10},
+            {"key": partitioning.title_key("さ", "そ"), "count": 10},
+            {"key": partitioning.title_key("な", "の"), "count": 10},
+        ]
+
+        # 真ん中は次の始まりの手前まで、先頭と末尾はその外側も引き受ける
+        assert "「な」の手前まで" in partitioning.describe(title, titles[1]["key"], {}, titles)
+        assert "「さ」より前" in partitioning.describe(title, titles[0]["key"], {}, titles)
+        assert "「な」以降" in partitioning.describe(title, titles[2]["key"], {}, titles)
 
 
 class TestAddingOnly:

@@ -34,6 +34,7 @@
 """
 from __future__ import annotations
 
+import itertools
 import logging
 import math
 import re
@@ -461,6 +462,12 @@ def _bands_of(spec: dict, name: str, by_number: dict[int, list[str]]) -> list[di
     **端数は前の帯へ入れる**(上限に収まるときだけ)。閉じた帯は必ず `target` 以上
     なので、小さい帯になりうるのは最後の 1 つだけ —— そこを前へ寄せれば、
     1 人だけの区画は出なくなる。
+
+    **隣との間に隙間を空けない**(`_close_gaps`)。帯は「値の詰まっているところ」で
+    切るので、そのまま書くと `1689-1816` と `1818-1864` のように 1 年空く ——
+    **その年に入るものは、どの区画にも入らない**うえ、**「この範囲に足すべきものが
+    無いか」を問う回にも入らない**(隙間の年は誰にも聞かれない)。漏れを探すのが
+    区画の眼目なので、境目は必ずどちらかのものにする。
     """
     spans: list[list] = []
     start: int | None = None
@@ -477,7 +484,18 @@ def _bands_of(spec: dict, name: str, by_number: dict[int, list[str]]) -> list[di
             spans[-1][1], spans[-1][2] = end, spans[-1][2] + count
         else:
             spans.append([start, end, count])
+    _close_gaps(spans)
     return [{"key": band_key(name, a, b), "count": n} for a, b, n in spans]
+
+
+def _close_gaps(spans: list[list]) -> None:
+    """帯の終わりを、次の帯の始まりの手前まで伸ばす(隙間を残さない)。
+
+    伸ばすのは終わりだけ。**始まりを動かすと、既に入っているものが隣へ移る** ——
+    どちらへ寄せるかを決められるのは境目の側だけで、そこには誰も居ない。
+    """
+    for left, right in itertools.pairwise(spans):
+        left[1] = right[0] - 1
 
 
 def _unknown_bands(spec: dict, name: str, titles: list[str]) -> list[dict]:
@@ -937,23 +955,40 @@ def partition_of(spec: dict, partitions: list[dict], doc: dict) -> str | None:
 
 
 def _band_of(spec: dict, partitions: list[dict], doc: dict) -> str | None:
-    """その文書がどの帯か。**タグからそのつど導く**(文書の側には何も書かない)。"""
+    """その文書がどの帯か。**タグからそのつど導く**(文書の側には何も書かない)。
+
+    **帯の内側だけを見ない。** 帯は値の詰まっているところで切るので、割ったときの
+    値の外(いちばん古いより古い・いちばん新しいより新しい)が出てくる ——
+    範囲の内側だけで判ずると、そこに入ったものは**どの区画にも入らず、以後どの回にも
+    出てこない**(見出しで割った区画と同じ罠)。**始まりが自分以下のうち、いちばん
+    大きい帯**に入れれば、値の線の上に隙間が無くなる(いちばん古い帯より前も、
+    その帯のもの)。
+    """
     tags = doc.get("tags") or []
     name = tag_value(tags, spec["prefix"]) or spec["other"]
     number = _number_in(tag_value(tags, spec["value"]))
     title = str(doc.get("title") or "")
     unknown = []
+    bands = []
     for p in partitions:
         parsed = parse_band_key(p["key"])
         if parsed is None or parsed[0] != name:
             continue
         if parsed[3] is not None:
             unknown.append((p["key"], parsed[3]))
-        elif number is not None and parsed[1] <= number <= parsed[2]:
-            return p["key"]
+        else:
+            bands.append((parsed[1], p["key"]))
     if number is not None:
-        # 値はあるが、その分類にまだ帯が無い(割り直しの前に入った)
-        return None
+        if not bands:
+            # 値はあるが、その分類にまだ帯が無い(割り直しの前に入った)
+            return None
+        bands.sort()
+        picked = bands[0][1]
+        for start, key in bands:
+            if start > number:
+                break
+            picked = key
+        return picked
     # 値を持たないものは置き場へ。**見出しの範囲で判ずる**(始まりが自分以下の
     # うち、いちばん大きいもの)—— 範囲の内側だけを見ると、境目が誰のものでもなくなる
     best = None
@@ -964,11 +999,16 @@ def _band_of(spec: dict, partitions: list[dict], doc: dict) -> str | None:
     return best or (unknown[0][0] if unknown else None)
 
 
-def describe(spec: dict, key: str, sources: dict) -> str:
+def describe(spec: dict, key: str, sources: dict, partitions: list[dict] | None = None) -> str:
     """`{partition}` に差し込む文。
 
     **矩形だけ渡しても、そこがどこか分からない。** 母集団のソースから近くのものを
     数件添えて、どのあたりの話かを伝える(名前ではなく手がかり)。
+
+    **台帳を渡すと、範囲の端を「どこまでか」で言える**(`partitions`)。範囲で割った
+    区画は、鍵に書いてある値が**その区画の実際の受け持ちとは限らない** —— 端の区画は
+    その外側も引き受け、見出しで割った区画は次の始まりの手前までを引き受ける。
+    鍵のまま伝えると、**引き受けているのに誰も探しに行かない範囲**ができる。
     """
     if spec["by"] == BY_GEO:
         box = parse_geo_key(key)
@@ -994,10 +1034,59 @@ def describe(spec: dict, key: str, sources: dict) -> str:
                 f"(見出しが「{parse_title_key(bounds)[0]}」から"
                 f"「{parse_title_key(bounds)[1]}」まで)"
             )
-        span = f"{first}" if first == last else f"{first}〜{last}"
-        return f"{where}で、「{spec['value'].rstrip(':')}」が {span} のもの"
+        return _band_where(where, spec["value"].rstrip(":"), name, first, last, partitions)
     bounds = parse_title_key(key)
-    return f"見出しが「{bounds[0]}」から「{bounds[1]}」までのもの" if bounds else key
+    return _title_where(bounds, partitions) if bounds else key
+
+
+def _band_where(
+    where: str, value: str, name: str, first: int, last: int, partitions: list[dict] | None
+) -> str:
+    """帯の受け持ちを言葉にする。
+
+    **値の軸に上限も下限も無い。** どこからどこまでが有りうる値かは指定できないので、
+    端の帯は割ったときの値より外も引き受ける(`_band_of`)—— そこを鍵のまま
+    「1600〜1641」と伝えると、**引き受けているのに誰も探しに行かない範囲**ができる。
+    端は開いたまま「以上」「以下」で言い、**帯が 1 つしか無いなら値では絞らない**。
+    """
+    starts = sorted(
+        parsed[1]
+        for p in partitions or ()
+        if (parsed := parse_band_key(p["key"])) and parsed[0] == name and parsed[3] is None
+    )
+    lowest = bool(starts) and first <= starts[0]
+    highest = bool(starts) and first >= starts[-1]
+    if lowest and highest:
+        return f"{where}すべて(「{value}」は問いません —— この分類はこの 1 区画だけです)"
+    if lowest:
+        return f"{where}で、「{value}」が {last} 以下のもの"
+    if highest:
+        return f"{where}で、「{value}」が {first} 以上のもの"
+    span = f"{first}" if first == last else f"{first}〜{last}"
+    return f"{where}で、「{value}」が {span} のもの"
+
+
+def _title_where(bounds: tuple[str, str], partitions: list[dict] | None) -> str:
+    """見出しの範囲の受け持ちを言葉にする。
+
+    **区切りは「どこから始まるか」で読む**(`partition_of`)ので、区画は鍵の終わりでは
+    なく**次の区画の始まりの手前まで**を引き受ける。鍵のまま伝えると、境目に入る
+    見出しは誰にも探されない(先頭の区画はそれより前も、末尾はその先も引き受ける)。
+    """
+    starts = sorted(
+        parsed[0] for p in partitions or () if (parsed := parse_title_key(p["key"]))
+    )
+    if not starts:
+        return f"見出しが「{bounds[0]}」から「{bounds[1]}」までのもの"
+    following = [s for s in starts if s > bounds[0]]
+    lowest = bounds[0] <= starts[0]
+    if lowest and not following:
+        return "見出しは問いません(区画はこの 1 つだけです)"
+    if lowest:
+        return f"見出しが「{following[0]}」より前のもの"
+    if not following:
+        return f"見出しが「{bounds[0]}」以降のもの"
+    return f"見出しが「{bounds[0]}」から「{following[0]}」の手前までのもの"
 
 
 def _nearby(spec: dict, box, sources: dict) -> list[str]:
