@@ -227,6 +227,12 @@ DEFAULT_KEEP_RATIO = 0.5
 # **件数のほうが先に当たる高さに置く**(300 件 × 249 文字 ≒ 7.5 万)。
 MAX_MATERIAL_DOCS = 300
 MAX_MATERIAL_CHARS = 80_000
+# 消したものを載せる枠。**生きているものとは別に持つ。** 同じ枠から取ると、
+# **消すほど直す相手が見えなくなる** —— 精査を頼む収集ほど墓標が増えるので、
+# 区画の中身が墓標で埋まり、生きているものが押し出される。
+# 1 行は見出しと消した理由だけで本文を載せないぶん、同じ件数でも短い
+MAX_REMOVED_DOCS = 300
+MAX_REMOVED_CHARS = 20_000
 # 差し込む 1 件の本文の長さ。全文を渡すと件数が入らない
 MATERIAL_BODY_CHARS = 200
 
@@ -1173,14 +1179,35 @@ REFINE_SYSTEM_PROMPT = (
 
 
 def partition_counts(item: Collection, docs: list[dict]) -> dict[str, int]:
-    """焼こうとしている世代を、区画ごとに数える。区画を持たない収集では空。"""
+    """焼こうとしている世代を、区画ごとに数える。区画を持たない収集では空。
+
+    **数えるのは生きているものだけ**(`living`)—— 区画の大きさは「この回に
+    見てもらう量」なので、消したものを混ぜると実際より多く見える。
+    """
     if not item.partition or not item.partitions:
         return {}
     return partitioning.counts_of(
         partitioning.normalize(item.partition),
         item.partitions,
-        {doc["title"]: doc for doc in docs},
+        living({doc["title"]: doc for doc in docs}),
     )
+
+
+def is_removed(doc: dict) -> bool:
+    """消えたもの(`notes.REMOVED_TAG`)か。墓標(消してくれ、の指示)とは別物。"""
+    return notes.REMOVED_TAG in (doc.get("tags") or [])
+
+
+def living(docs: dict[str, dict]) -> dict[str, dict]:
+    """消えたものを外した文書。**区画の母集団はこちら**。
+
+    消したものは残り続ける(消えた印を付けて残すのがこの層の契約)ので、
+    母集団に混ぜると**精査を頼むほど区画が太る** —— 実際には見るものが無い
+    区画にも巡回の 1 回が割り当てられ、そのぶん AI の枠を捨てることになる。
+    差し込みには別の一覧として渡すので、消えたものが見えなくなるわけではない
+    (`render_material`)。
+    """
+    return {title: doc for title, doc in docs.items() if not is_removed(doc)}
 
 
 def render_material(previous: dict[str, dict], scoped: bool = False) -> tuple[str, int]:
@@ -1191,30 +1218,26 @@ def render_material(previous: dict[str, dict], scoped: bool = False) -> tuple[st
 
     `scoped` は「今回の区画のぶんだけを渡している」の印。**区画で切ってあれば
     普通は全部入る**ので、切られたときの意味が変わる(区画が大きすぎる)。
+
+    **消えたものは別の一覧にして後ろに置く**(`_render_removed`)。混ぜていた頃は
+    同じ枠を取り合うので、**消すほど直す相手が見えなくなった** —— 精査を頼む収集
+    ほど墓標が増えるため。返す件数は生きているものだけを数える。
     """
     if not previous:
         return (
             "(今回の対象には、まだ何も入っていません)" if scoped
             else "(まだ何も入っていません。最初の内容を作ってください)"
         ), 0
+    alive = [doc for doc in previous.values() if not is_removed(doc)]
+    gone = [doc for doc in previous.values() if is_removed(doc)]
     lines: list[str] = []
     used = 0
-    docs = list(previous.values())
-    removed = 0
-    for doc in docs[:MAX_MATERIAL_DOCS]:
+    for doc in alive[:MAX_MATERIAL_DOCS]:
         tags = doc.get("tags") or []
-        gone = notes.REMOVED_TAG in tags
-        removed += 1 if gone else 0
-        # **消えたものは、本文ではなく消した理由を見せる。** 本文は戻すときのために
-        # そのまま残してあるが、ここで読ませたいのは「なぜもう一度足してはいけないか」
-        text = removed_reason(doc) if gone else (doc.get("body") or "")
-        body = text[:MATERIAL_BODY_CHARS].replace("\n", " ")
-        # **消えたものはそう見えるように書く。** タグだけで示すと、AI は生きている
-        # 1 件として扱って直そうとする。**印はタグにも残す** —— 外して見せると、
-        # AI がタグごと写して返したときに黙って戻ってしまう(戻すのは明示的な操作にする)
+        body = (doc.get("body") or "")[:MATERIAL_BODY_CHARS].replace("\n", " ")
         line = (
-            f"- {'【消えたもの】' if gone else ''}{doc['title']}"
-            + (f" 【{'/'.join(tags)}】" if tags else "")
+            f"- {doc['title']}"
+            + (f" 【{'/'.join(str(t) for t in tags)}】" if tags else "")
             + (f" — {body}" if body else "")
         )
         if used + len(line) > MAX_MATERIAL_CHARS:
@@ -1222,19 +1245,53 @@ def render_material(previous: dict[str, dict], scoped: bool = False) -> tuple[st
         lines.append(line)
         used += len(line)
     shown = len(lines)
-    head = ("今回の対象にいま入っているもの(全 " if scoped else "いまの内容(全 ") + f"{len(docs)} 件"
-    head += f"。うち {shown} 件だけ載せています)" if shown < len(docs) else ")"
-    if shown < len(docs):
-        head += "\n※ 載っていないものは今回の対象外です。載っているぶんだけを整理してください。"
-    if removed:
-        # **なぜ載っているのかを言う。** 黙って並べると、消したものを「抜けている」と
-        # 読んで足し直される —— 載せているのは、同じものをもう一度挙げさせないため
-        head += (
-            f"\n※ うち {removed} 件は【消えたもの】です。**もう一度足さないでください**。"
-            f"消したのが間違いだと分かったときだけ、タグから「{notes.REMOVED_TAG}」を"
-            "外して同じ見出しで返せば戻ります。"
-        )
-    return head + ":\n" + "\n".join(lines), shown
+    if alive:
+        head = ("今回の対象にいま入っているもの(全 " if scoped else "いまの内容(全 ")
+        head += f"{len(alive)} 件"
+        head += f"。うち {shown} 件だけ載せています)" if shown < len(alive) else ")"
+        if shown < len(alive):
+            head += "\n※ 載っていないものは今回の対象外です。載っているぶんだけを整理してください。"
+        text = head + ":\n" + "\n".join(lines)
+    else:
+        # 消えたものしか無い区画。**「何も入っていません」で終わらせない** ——
+        # 下に消した一覧が続くので、空だと言い切ると食い違う
+        text = (
+            "今回の対象に、いま生きているものはありません" if scoped
+            else "いま生きているものはありません"
+        ) + "(下は消したものです)。"
+    if gone:
+        text += "\n\n" + _render_removed(gone)
+    return text, shown
+
+
+def _render_removed(docs: list[dict]) -> str:
+    """**この回の対象で消したもの**の一覧。生きているものとは別に渡す。
+
+    渡すのは「もう一度足させない」ため —— 黙って外すと、消したものを「抜けている」と
+    読んで足し直され、次の回にまた消すことになる。**本文ではなく消した理由を載せる**
+    (本文は戻すときのために残してあるが、ここで読ませたいのは、なぜもう一度
+    足してはいけないか)。
+
+    **印(`notes.REMOVED_TAG`)は 1 件ずつにも残す。** 外して見せると、AI が行を
+    そのまま写して返したときに黙って戻る —— 戻すのは明示的な操作にする。
+    """
+    lines: list[str] = []
+    used = 0
+    for doc in docs[:MAX_REMOVED_DOCS]:
+        why = removed_reason(doc)[:MATERIAL_BODY_CHARS].replace("\n", " ")
+        line = f"- {doc['title']} 【{notes.REMOVED_TAG}】" + (f" — {why}" if why else "")
+        if used + len(line) > MAX_REMOVED_CHARS:
+            break
+        lines.append(line)
+        used += len(line)
+    head = f"※ この対象で消したもの(全 {len(docs)} 件"
+    head += f"。うち {len(lines)} 件だけ載せています)" if len(lines) < len(docs) else ")"
+    head += (
+        "。**もう一度足さないでください。**"
+        f"消したのが間違いだと分かったときだけ、タグから「{notes.REMOVED_TAG}」を"
+        "外して同じ見出しで返せば戻ります"
+    )
+    return head + ":\n" + "\n".join(lines)
 
 
 def render_recent(previous: dict[str, dict], since: str | None) -> str:
@@ -2150,6 +2207,10 @@ def load_json(raw) -> dict | None:
 def plan_partitions(item: Collection, sources: dict, previous: dict[str, dict]) -> list[dict]:
     """この回に使う区画の台帳。必要なら割り直す(`app/partition.py`)。
 
+    **母集団に消えたものは入れない**(`living`)。区画の大きさは「この回に見て
+    もらう量」なので、消したものを混ぜると実際より多く見える —— 精査を頼む収集は
+    墓標が増え続けるので、中身が墓標だけの区画にも巡回の 1 回が回ってくる。
+
     **毎回は割り直さない。** 母集団を外のソースから取っているなら、こちらが何件
     集めようと点の数は変わらないので、区画は動かないほうがよい —— 動かすと
     巡回の記録が毎回リセットされ、一周が永遠に終わらない。
@@ -2170,10 +2231,14 @@ def plan_partitions(item: Collection, sources: dict, previous: dict[str, dict]) 
     if not item.partition:
         return []
     spec = partitioning.normalize(item.partition)
-    counts = partitioning.counts_of(spec, item.partitions, previous)
+    # **母集団は生きているものだけ**(`living`)。消したものは残り続けるので、
+    # 混ぜると**精査を頼むほど区画が太り**、見るものが無い区画にも巡回の 1 回が
+    # 割り当てられる。消えたものは差し込みには別の一覧として渡る
+    alive = living(previous)
+    counts = partitioning.counts_of(spec, item.partitions, alive)
     if item.partitions and not partitioning.outgrown(spec, counts):
         return partitioning.merged(spec, partitioning.counted(item.partitions, counts))
-    built = partitioning.build(spec, sources, previous)
+    built = partitioning.build(spec, sources, alive)
     ledger = partitioning.merged(spec, partitioning.refresh(built, item.partitions, spec))
     log.info("partition %s: %d 区画(まとめる前 %d)", item.name, len(ledger), len(built))
     return ledger

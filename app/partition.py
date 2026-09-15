@@ -560,15 +560,50 @@ def refresh(built: list[dict], current: list[dict], spec: dict | None = None) ->
     **鍵が変わった区画も引き継ぐ**(`spec` を渡したとき)。割られた区画の子は、
     **親の記録をそのまま写す** —— 写さないと、区画が育つたびにそこだけ
     一周が巻き戻る。親は「その子を含んでいた区画」として探す。
+
+    **新しい台帳が覆っていない区画は、落とさずに残す**(`_uncovered`)。
     """
     seen = {p["key"]: dict(p.get("visits") or {}) for p in current}
-    return [
+    out = [
         {
             "key": p["key"],
             "count": int(p.get("count") or 0),
             "visits": seen.get(p["key"]) or _inherited(spec, p["key"], current),
         }
         for p in built
+    ]
+    return out + _uncovered(spec, out, current)
+
+
+def _uncovered(spec: dict | None, built: list[dict], current: list[dict]) -> list[dict]:
+    """割り直しで落ちる区画のうち、**新しい台帳がどこも覆っていないもの**。
+
+    母集団が痩せると、そこは組み立てられずに消える —— **中身が消えたものだけに
+    なった区画がそれ**(区画は生きているものだけで割る)。消すと、そこは以後どの回にも
+    回ってこない: **漏れを探す仕事はそこにしか無い**ので、「この範囲に足すべきものが
+    無いか」を問う回ごと消えることになる。
+
+    **覆われているものは落とす。** 吸収先があるなら回る先は残っており、残すと
+    同じ範囲が二重に並ぶ。**残すのは行き場の無いぶんだけ**。
+
+    **覆われているかは両向きに見る。** 割られた区画は、子のどれ 1 つを取っても
+    親を覆わない —— 片向きだけで見ると、**割り直すたびに親が残って二重になる**。
+    新しい区画が中に入っているなら、その範囲は新しい台帳が引き受けている。
+
+    残したものは**後ろに置く**(`partition_of` は先に当たったほうを返す)。
+    新しい区画が取らなかったものだけが、ここへ落ちる。
+    """
+    if spec is None or not current:
+        return []
+    keys = {p["key"] for p in built}
+    return [
+        {"key": old["key"], "count": 0, "visits": dict(old.get("visits") or {})}
+        for old in current
+        if old["key"] not in keys
+        and not any(
+            _covers(spec, new["key"], old["key"]) or _covers(spec, old["key"], new["key"])
+            for new in built
+        )
     ]
 
 
@@ -583,7 +618,15 @@ def _inherited(spec: dict | None, key: str, current: list[dict]) -> dict:
 
 
 def _covers(spec: dict, parent: str, child: str) -> bool:
-    """`parent` の範囲が `child` を含むか。**帯と見出しだけ**(順序のある軸)。"""
+    """`parent` の範囲が `child` を含むか。**幅で表した区画だけ**(順序のある軸と矩形)。
+
+    分類の名前とタグは幅ではないので、含むかどうかを言えない(鍵が同じかどうかだけ)。
+    """
+    if spec["by"] == BY_GEO:
+        a, b = parse_geo_key(parent), parse_geo_key(child)
+        if a is None or b is None:
+            return False
+        return a[0] <= b[0] and a[1] <= b[1] and b[2] <= a[2] and b[3] <= a[3]
     if spec["by"] == BY_BAND:
         a, b = parse_band_key(parent), parse_band_key(child)
         if a is None or b is None or a[0] != b[0]:
@@ -654,7 +697,10 @@ def outgrown(spec: dict, counts: dict[str, int]) -> bool:
     **空になった区画が出たときも割り直す。** 中身が別の区画へ移ることがある
     (年代の分からなかった人に年代が入ると、本来の帯へ移る)。空の区画は回ってきても
     渡すものが無く、AI に空の範囲を見せて 1 回ぶんの枠を捨てることになる。
-    割り直せば、その区画は組み立てられないので消える。
+    割り直せば、そこは隣に吸収される。
+
+    **吸収先が無ければ消えない**(`_uncovered`)。新しい台帳がどこも覆っていない
+    範囲は残す —— 消すと、そこへ「足すべきものが無いか」を問う回ごと無くなる。
     """
     limit = spec["target"] * 2
     return any(n > limit or n == 0 for n in counts.values())
@@ -697,14 +743,24 @@ def merged(spec: dict, partitions: list[dict]) -> list[dict]:
 
 
 def _joined(spec: dict, left: dict, right: dict, limit: float) -> dict | None:
-    """2 つを 1 つにできるなら、その区画。できなければ None。"""
+    """2 つを 1 つにできるなら、その区画。できなければ None。
+
+    **出来た鍵が両方を含んでいることを確かめる。** まとめるのは隣どうしのつもりでも、
+    台帳に並んでいる順が範囲の順とは限らない(**覆われていない区画は後ろへ足す**ので、
+    そこだけ順が崩れる)。順が逆のまま帯を組むと `1900-1850` のような**中身を 1 つも
+    拾えない鍵**になり、その範囲の文書はどの区画にも入らなくなる。
+    """
     if left["visits"] != right["visits"]:
         return None
     count = left["count"] + right["count"]
     if count >= limit:
         return None
     key = _joined_key(spec, left["key"], right["key"])
-    return None if key is None else {"key": key, "count": count, "visits": right["visits"]}
+    if key is None or not (
+        _covers(spec, key, left["key"]) and _covers(spec, key, right["key"])
+    ):
+        return None
+    return {"key": key, "count": count, "visits": right["visits"]}
 
 
 def _joined_key(spec: dict, left: str, right: str) -> str | None:

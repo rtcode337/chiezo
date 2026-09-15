@@ -2905,9 +2905,16 @@ def _partition_members_html(
         f"<td>{esc((doc.get('body') or '')[:120])}</td></tr>"
         for doc in sorted(members.values(), key=lambda d: str(d.get("title") or ""))
     )
+    # **消えたものは数から外して、別に数える。** 台帳の件数は生きているものだけを
+    # 数えているので(`collect.living`)、ここで合わせて出さないと表の行数と食い違う
+    gone = sum(1 for doc in members.values() if collect.is_removed(doc))
+    count = (
+        f"{len(members) - gone:,} 件"
+        + (f'<span class="muted">(ほかに消えたもの {gone:,} 件)</span>' if gone else "")
+    )
     return (
         f'<p class="muted">{esc(where)}</p>'
-        f"<p>{len(members):,} 件</p>"
+        f"<p>{count}</p>"
         "<table><thead><tr><th>見出し</th><th>タグ</th><th>中身</th></tr></thead>"
         f"<tbody>{rows}</tbody></table>"
     )

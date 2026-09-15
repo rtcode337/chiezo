@@ -1402,6 +1402,127 @@ class TestTheLedgerCountFollowsTheContents:
         assert [p["count"] for p in ledger] == [4, 5]
 
 
+    def test_the_population_leaves_out_what_was_removed(self, sample):
+        """**消したものは区画の母集団に入れない。**
+
+        消したものは印を付けて残り続けるので、混ぜると精査を頼むほど区画が太る
+        —— 見るものが無い区画にも巡回の 1 回が回ってくることになる。
+        """
+        collect.update(
+            "news",
+            partition={"by": "title", "target": 10},
+            partitions=[
+                {"key": partitioning.title_key("あ", "い"), "count": 9},
+                {"key": partitioning.title_key("う", "え"), "count": 9},
+            ],
+        )
+        previous = {
+            t: {"doc_id": i, "title": t, "tags": ([notes.REMOVED_TAG] if gone else [])}
+            for i, (t, gone) in enumerate([
+                ("あ", False), ("ああ", True), ("あい", True), ("い", False),
+                ("う", False), ("うう", True), ("え", False), ("ええ", False), ("お", False),
+            ])
+        }
+
+        ledger = collect.plan_partitions(collect.get("news"), {}, previous)
+
+        # 9 件のうち 3 件は墓標。数えるのは残る 6 件だけ
+        assert sum(p["count"] for p in ledger) == 6
+
+    def test_a_partition_with_only_graves_counts_as_empty(self, sample):
+        """墓標だけの区画は「空」。空の区画は割り直しで消える(枠を捨てないため)。"""
+        item = collect.update(
+            "news",
+            partition={"by": "title", "target": 10},
+            partitions=[
+                {"key": partitioning.title_key("あ", "い"), "count": 2},
+                {"key": partitioning.title_key("う", "え"), "count": 2},
+            ],
+        )
+        previous = {
+            "あ": {"doc_id": 1, "title": "あ", "tags": [notes.REMOVED_TAG]},
+            "い": {"doc_id": 2, "title": "い", "tags": [notes.REMOVED_TAG]},
+            "う": {"doc_id": 3, "title": "う", "tags": []},
+            "え": {"doc_id": 4, "title": "え", "tags": []},
+        }
+        spec = partitioning.normalize(item.partition)
+
+        counts = partitioning.counts_of(spec, item.partitions, collect.living(previous))
+
+        assert list(counts.values()) == [0, 2]
+        # 空の区画があれば割り直す(その区画は組み立てられないので消える)
+        assert partitioning.outgrown(spec, counts)
+
+
+    def test_a_range_left_with_only_graves_stays_on_the_round(self, sample):
+        """**行き場の無くなった区画は落とさない。**
+
+        区画は生きているものだけで割るので、中身が消えたものだけになった帯は
+        組み立てられない —— 落とすと、そこは以後どの回にも回ってこない。
+        「この範囲に足すべきものが無いか」を問う回はそこにしか無いので、
+        漏れを探す仕事ごと消えることになる。
+        """
+        spec = {"by": "band", "prefix": "地域", "value": "年代", "target": 10}
+        gone = partitioning.band_key("日本", 1800, 1850)
+        collect.update(
+            "news", partition=spec,
+            partitions=[
+                {"key": gone, "count": 10, "visits": {"ざっと": "1"}},
+                {"key": partitioning.band_key("日本", 1900, 1950), "count": 10},
+            ],
+        )
+        previous = {
+            f"むかしの人{i}": {"doc_id": i, "title": f"むかしの人{i}",
+                          "tags": ["地域:日本", "年代:1800-1850", notes.REMOVED_TAG]}
+            for i in range(1, 11)
+        } | {
+            f"いまの人{i}": {"doc_id": 10 + i, "title": f"いまの人{i}",
+                         "tags": ["地域:日本", f"年代:19{i:02d}"]}
+            for i in range(1, 51)
+        }
+
+        ledger = collect.plan_partitions(collect.get("news"), {}, previous)
+
+        kept = [p for p in ledger if p["key"] == gone]
+        assert kept, "中身が墓標だけになった帯も、回る先としては残る"
+        # 巡回の記録は持ったまま(残したぶんだけ一周が巻き戻らない)
+        assert kept[0]["visits"] == {"ざっと": "1"}
+        assert kept[0]["count"] == 0
+
+    def test_merging_never_makes_a_range_that_holds_nothing(self, sample):
+        """**順が逆のまま帯を組むと、その範囲の文書がどこにも入らなくなる。**
+
+        覆われていない区画は台帳の後ろへ足すので、並び順が範囲の順とは限らない。
+        `1900-1850` のような鍵は 1 件も拾えず、静かな穴になる。
+        """
+        spec = partitioning.normalize({"by": "band", "prefix": "地域", "value": "年代",
+                                       "target": 10})
+        ledger = partitioning.merged(spec, [
+            {"key": partitioning.band_key("日本", 1900, 1950), "count": 1, "visits": {}},
+            {"key": partitioning.band_key("日本", 1800, 1850), "count": 1, "visits": {}},
+        ])
+
+        assert [p["key"] for p in ledger] == [
+            partitioning.band_key("日本", 1900, 1950),
+            partitioning.band_key("日本", 1800, 1850),
+        ], "並んでいないものはまとめない"
+
+    def test_a_split_parent_is_not_kept_twice(self, sample):
+        """割られた区画の親は残さない(子が引き受けているので、残すと二重になる)。"""
+        spec = {"by": "title", "target": 10}
+        parent = partitioning.title_key("あ", "ん")
+        collect.update("news", partition=spec, partitions=[{"key": parent, "count": 1}])
+        previous = {
+            f"ひと{i:03d}": {"doc_id": i, "title": f"ひと{i:03d}", "tags": []}
+            for i in range(1, 61)
+        }
+
+        ledger = collect.plan_partitions(collect.get("news"), {}, previous)
+
+        assert len(ledger) > 1, "この中身なら割り直されるはず"
+        assert parent not in [p["key"] for p in ledger]
+
+
 class TestCarryingFactsIntoTheDoc:
     """集める側が運んできた事実を、焼く 1 件の脇に載せる。
 
@@ -2000,6 +2121,8 @@ class TestWhatWasRemoved:
         """**黙って並べると、消したものを「抜けている」と読んで足し直される。**
 
         載せているのは、同じものをもう一度挙げさせないため。
+        **生きているものとは別の一覧にする** —— 混ぜると同じ枠を取り合うので、
+        消すほど直す相手が見えなくなる。
         """
         previous = {
             "モネ": {"doc_id": 1, "title": "モネ", "body": "画家です", "tags": ["画家"]},
@@ -2007,10 +2130,14 @@ class TestWhatWasRemoved:
                       "tags": ["画家", notes.REMOVED_TAG]},
         }
 
-        text, _shown = collect.render_material(previous, scoped=True)
+        text, shown = collect.render_material(previous, scoped=True)
 
-        assert "【消えたもの】俳優さん" in text
-        assert "【消えたもの】モネ" not in text
+        alive, _, removed = text.partition("※ この対象で消したもの")
+        assert "モネ" in alive and "俳優さん" not in alive
+        assert "俳優さん" in removed
+        # 生きているものの件数に、消えたものは入らない
+        assert "全 1 件" in alive
+        assert shown == 1
         assert "もう一度足さないでください" in text
 
     def test_the_material_shows_why_it_went_rather_than_the_body(self, refine):
@@ -3757,6 +3884,8 @@ class TestOpeningAPartition:
         html = admin._partition_members_html("news", partitioned, key, members, {})
 
         assert "北斎" in html and "写楽" in html
+        # 件数は生きているものだけ(台帳の数と揃える)。消えたものは別に数える
+        assert "1 件" in html and "ほかに消えたもの 1 件" in html
         # 焼けているものは、いまの中身へ飛べる
         assert "/search/news/doc/1" in html
         # **消えたものもここには出す**(何を外したのかが見えないと判断に使えない)
