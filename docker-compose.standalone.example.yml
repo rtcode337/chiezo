@@ -296,7 +296,7 @@ services:
   #    - *state-volume
   #  environment:
   #    CHIEZO_BRIDGE_CLI: claude
-  #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-app:7010/mcp/knowledge
+  #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-app:7010/mcp/knowledge/
   #  restart: unless-stopped
   #  #cpu_shares: 512
   #
@@ -313,7 +313,7 @@ services:
   #    - chiezo-codex-home:/srv/bridge/.codex
   #  environment:
   #    CHIEZO_BRIDGE_CLI: codex
-  #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-app:7010/mcp/knowledge
+  #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-app:7010/mcp/knowledge/
   #  restart: unless-stopped
   #  #cpu_shares: 512
   #
@@ -337,7 +337,7 @@ services:
   #      target: /srv/bridge/home
   #  environment:
   #    CHIEZO_BRIDGE_CLI: antigravity
-  #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-app:7010/mcp/knowledge
+  #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-app:7010/mcp/knowledge/
   #  restart: unless-stopped
   #  #cpu_shares: 512
 

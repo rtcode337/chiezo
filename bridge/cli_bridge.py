@@ -78,9 +78,16 @@ CLI = os.environ.get("CHIEZO_BRIDGE_CLI", "claude").strip().lower()
 # **道具を名前で絞れるのは claude だけ**(下の ALLOWED_TOOLS)で、codex と
 # antigravity は起動時の `mcp add`(entrypoint.sh)で丸ごと繋がるため、**どの CLI にも効く
 # つまみは接続先しか無い**。引数の形は CLI ごとに違う(codex は `--url`、agy は位置引数)。
+# **末尾のスラッシュは必須。** 無いと本体側が 404 を返し、CLI によってはその手前の
+# リダイレクトで落ちる —— 実測: Codex 0.154.0 は
+# `MCP HTTP redirects for non-loopback hostnames require HTTPS` で接続を捨てた
+# (以前の CLI は黙って辿っていたので、設定はそのままでも版が上がった日に道具が消える)。
+# 渡された値にも足す —— 書き手はこの違いを知らないまま貼り付ける。
 MCP_URL = os.environ.get(
-    "CHIEZO_BRIDGE_MCP_URL", "http://chiezo-app:7010/mcp/knowledge"
+    "CHIEZO_BRIDGE_MCP_URL", "http://chiezo-app:7010/mcp/knowledge/"
 ).strip()
+if MCP_URL and not MCP_URL.endswith("/"):
+    MCP_URL += "/"
 # CLI に渡すモデル。空なら CLI の既定(サブスクの枠を無駄に食わないよう明示するのが望ましい)。
 MODEL = os.environ.get("CHIEZO_BRIDGE_MODEL", "").strip()
 # 1 回の呼び出しの上限秒数。CLI は道具を何度も引くので推論サーバより長くなる。

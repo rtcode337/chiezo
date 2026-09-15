@@ -944,6 +944,13 @@ CLI ごとに分けず 1 枚にまとめてあります。
 なく、**「CLI を OpenAI 互換の口に見せるサービス」として他のアプリからも使えます** ——
 postgres を別コンテナで立てて複数のアプリが繋ぐのと同じ形です。
 
+**URL は末尾のスラッシュまで含めて渡します**(`…/mcp/knowledge/`)。無いと本体は 404 を返し、
+CLI によってはその手前のリダイレクトで接続ごと捨てます —— 実測で Codex 0.154.0 が
+`MCP HTTP redirects for non-loopback hostnames require HTTPS` で 3 回とも落ちました。
+**以前の CLI は黙って辿っていた**ので、設定を変えていなくても版が上がった日に道具だけが消えます
+(落ちるのは stderr の中だけで、応答は普通に返るため気づきにくい)。ブリッジは渡された URL にも
+スラッシュを足します。
+
 ブリッジは **Chiezo の MCP を CLI に繋ぎます**（既定は `/mcp/knowledge` ——
 **作る道具を出さない口**）。つまり検索して答える段取りは
 ブリッジ側で組まず、道具は CLI 自身が引きます —— Claude Code も Codex も、道具を自分で
@@ -984,7 +991,7 @@ NAS のコンテナマネージャーのように**リポジトリを置けな�
 # Claude Code CLI / Codex CLI —— 認証情報は設定 DB から読むので、読み取り専用で渡す
 docker run -d --name chiezo-bridge-claude --network <chiezo と同じネットワーク> \
   -v <state のパス>:/state:ro \
-  -e CHIEZO_BRIDGE_CLI=claude -e CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp/knowledge \
+  -e CHIEZO_BRIDGE_CLI=claude -e CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp/knowledge/ \
   --restart unless-stopped ghcr.io/rtcode337/chiezo-bridge:latest
 ```
 
@@ -996,7 +1003,7 @@ Google アカウントのサインインを求められます（`GEMINI_API_KEY`
 ```bash
 docker run -d --name chiezo-bridge-antigravity --network <chiezo と同じネットワーク> \
   -v chiezo-antigravity-home:/srv/bridge/home \
-  -e CHIEZO_BRIDGE_CLI=antigravity -e CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp/knowledge \
+  -e CHIEZO_BRIDGE_CLI=antigravity -e CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp/knowledge/ \
   --restart unless-stopped ghcr.io/rtcode337/chiezo-bridge:latest
 
 # サインイン（1 回だけ。表示された URL を手元のブラウザで開き、出たコードを貼り戻す）
@@ -1205,7 +1212,7 @@ Please try signing in again.
 |---|---|---|
 | `CHIEZO_BRIDGE_CLI` | `claude` | 包む CLI（`claude` / `codex` / `antigravity`） |
 | `CHIEZO_AI_TRANSCRIPT_DAYS` | `14` | AI に渡したものと返ってきたものを控える日数。**`0` で控えない**。相手の生の出力（CLI の stdout/stderr）も残すので、シェルを渡している相手が何をしたかを後から読める。管理画面では「AI への依頼」の表の**同じ行**から開ける（控えが先に消えた行は目方だけになる） |
-| `CHIEZO_BRIDGE_MCP_URL` | `http://chiezo-app:7010/mcp/knowledge` | CLI に繋ぐ Chiezo の MCP。**生成の道具を出さない口を向ける**(`/mcp` を向けると、絵を頼んだ相手に絵を頼む道具が渡る)。**空にすると繋がない** |
+| `CHIEZO_BRIDGE_MCP_URL` | `http://chiezo-app:7010/mcp/knowledge/` | CLI に繋ぐ Chiezo の MCP。**生成の道具を出さない口を向ける**(`/mcp` を向けると、絵を頼んだ相手に絵を頼む道具が渡る)。**空にすると繋がない** |
 | `CHIEZO_BRIDGE_STATE_DB` | `/state/settings.db` | 認証情報を読む Chiezo の設定 DB（読み取り専用でマウント） |
 | `CHIEZO_BRIDGE_MODEL` | （CLI の既定） | 何も選ばれなかったときのモデル。会話画面で選んだものが優先される |
 | `CHIEZO_BRIDGE_MODELS` | （下記） | 会話画面に出すモデルの候補（カンマ区切り） |

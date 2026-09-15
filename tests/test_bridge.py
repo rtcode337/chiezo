@@ -159,6 +159,24 @@ class TestOptionalMcp:
         assert "--mcp-config" in cmd
         assert cmd[cmd.index("--allowed-tools") + 1] == "mcp__chiezo"
 
+    def test_the_url_always_ends_with_a_slash(self, bridge):
+        """**末尾のスラッシュが無いと道具が丸ごと消える。**
+
+        本体は 404 を返し、CLI によってはその手前のリダイレクトで接続ごと捨てる
+        (実測: Codex 0.154.0 が
+        `MCP HTTP redirects for non-loopback hostnames require HTTPS` で 3 回とも落ちた)。
+        以前の CLI は黙って辿っていたので、**設定を変えていなくても版が上がった日に
+        繋がらなくなる** —— 落ちるのは stderr の中だけで、応答は普通に返る。
+        """
+        server = bridge(CHIEZO_BRIDGE_CLI="claude",
+                        CHIEZO_BRIDGE_MCP_URL="http://api.test:7010/mcp/knowledge")
+        assert server.MCP_URL == "http://api.test:7010/mcp/knowledge/"
+
+    def test_an_empty_url_stays_empty(self, bridge):
+        """空は「繋がない」の意味なので、スラッシュを足さない。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="claude", CHIEZO_BRIDGE_MCP_URL="")
+        assert server.MCP_URL == ""
+
 
 class TestAntigravityCredential:
     def test_it_has_nothing_to_place(self, bridge):
@@ -314,13 +332,13 @@ class TestOneCallAtATime:
 
 class TestMcpConfig:
     def test_config_points_at_chiezo_over_streamable_http(self, bridge, tmp_path):
-
+        """書き出す URL は末尾のスラッシュ付き(`TestOptionalMcp` の理由と同じ)。"""
         server = bridge(CHIEZO_BRIDGE_CLI="claude", CHIEZO_BRIDGE_MCP_URL="http://api.test:7010/mcp")
         server.MCP_CONFIG_PATH = str(tmp_path / "mcp.json")
         server._write_mcp_config()
         config = json.loads((tmp_path / "mcp.json").read_text(encoding="utf-8"))
         assert config == {
-            "mcpServers": {"chiezo": {"type": "http", "url": "http://api.test:7010/mcp"}}
+            "mcpServers": {"chiezo": {"type": "http", "url": "http://api.test:7010/mcp/"}}
         }
 
 

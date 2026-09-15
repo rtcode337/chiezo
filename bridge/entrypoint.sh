@@ -8,7 +8,16 @@
 set -euo pipefail
 
 CLI="${CHIEZO_BRIDGE_CLI:-claude}"
-MCP_URL="${CHIEZO_BRIDGE_MCP_URL:-http://chiezo-app:7010/mcp/knowledge}"
+MCP_URL="${CHIEZO_BRIDGE_MCP_URL:-http://chiezo-app:7010/mcp/knowledge/}"
+# 末尾のスラッシュを必ず付ける。無いと本体側が 404 を返し、CLI によっては
+# その手前のリダイレクトで落ちる —— 実測: Codex 0.154.0 は
+# `MCP HTTP redirects for non-loopback hostnames require HTTPS` で接続を捨て、
+# 3 回とも繋がらないまま走った。以前の CLI は黙って辿っていたので、
+# 設定を変えていないのに版を上げた日から道具だけが消える。
+case "${MCP_URL}" in
+    "" | */) ;;
+    *) MCP_URL="${MCP_URL}/" ;;
+esac
 
 case "${CLI}" in
     claude)
