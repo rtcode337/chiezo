@@ -191,6 +191,24 @@ def get(ident: str) -> dict | None:
     return None
 
 
+def get_many(idents) -> dict[str, dict]:
+    """id → 控え。**1 回の問い合わせでまとめて引く** ——
+    画面は 1 ページぶんの行に紐づく控えを一度に要るので、1 件ずつ引くと
+    ページの行数だけ往復することになる。無い id は結果に出ない。
+    """
+    wanted = [i for i in dict.fromkeys(idents) if i]
+    if not is_enabled() or not wanted:
+        return {}
+    with suppress(sqlite3.Error):
+        with _connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM transcripts WHERE id IN ({','.join('?' * len(wanted))})",
+                tuple(wanted),
+            ).fetchall()
+        return {row["id"]: dict(row) for row in rows}
+    return {}
+
+
 def prune(keep_days: int | None = None) -> None:
     """古い行とファイルを捨てる。**どちらも同じ日数**で揃える ——
     片方だけ残ると、一覧に出るのに開けない行ができる。"""

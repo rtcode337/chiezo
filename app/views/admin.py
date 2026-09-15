@@ -1934,8 +1934,6 @@ async def admin_ai(request: Request):
 {ai_usage.section_html(request)}
 
 {ai_history.section_html(*_history_args(request))}
-
-{ai_history.transcripts_html(_int_arg(request, "tr_page", 1))}
 """
     return HTMLResponse(content=page_shell("AI と鍵", body))
 

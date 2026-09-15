@@ -841,6 +841,70 @@ class TestCredentialFromAnotherApp:
         assert server.stored_credential() == "tok-from-env"
 
 
+class TestTellingWhatTheCliDid:
+    """**会話の回でも、CLI が何をしたかを持ち帰る。**
+
+    包んでいるのはシェルを持ったエージェントで、道具を何回引いたのかも途中で何に
+    躓いたのかも本文には出ない。絵の口では前から返していたのに会話の口では捨てて
+    いたので、頼む側の控えの「途中経過」はいつも空だった。
+    """
+
+    def _answered(self, server, monkeypatch, text="答え", trace="[stdout]\n道具を引いた"):
+        async def fake_run(*args, **kwargs):
+            return text, trace
+
+        monkeypatch.setattr(server, "run_cli", fake_run)
+
+    def test_the_reply_carries_what_the_cli_printed(self, bridge, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        self._answered(server, monkeypatch)
+
+        with TestClient(server.app) as client:
+            body = client.post(
+                "/v1/chat/completions", json={"messages": [{"role": "user", "content": "やあ"}]}
+            ).json()
+
+        assert body["choices"][0]["message"]["content"] == "答え"
+        # **互換の形の外側に置く** —— 知らない相手は捨てるだけで済む
+        assert body[server.TRACE_KEY] == "[stdout]\n道具を引いた"
+        assert "chiezo" not in json.dumps(body["choices"], ensure_ascii=False)
+
+    def test_the_stream_carries_it_in_the_closing_frame(self, bridge, monkeypatch):
+        """**本文の差分には混ぜない** —— 受け手はそれを答えとして足してしまう。"""
+        from fastapi.testclient import TestClient
+
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        self._answered(server, monkeypatch)
+
+        with TestClient(server.app) as client:
+            text = client.post(
+                "/v1/chat/completions",
+                json={"messages": [{"role": "user", "content": "やあ"}], "stream": True},
+            ).text
+
+        frames = [json.loads(line[len("data: "):]) for line in text.splitlines()
+                  if line.startswith("data: ") and "[DONE]" not in line]
+        assert frames[0]["choices"][0]["delta"]["content"] == "答え"
+        assert server.TRACE_KEY not in frames[0]
+        assert frames[-1][server.TRACE_KEY] == "[stdout]\n道具を引いた"
+
+    def test_nothing_printed_means_no_key(self, bridge, monkeypatch):
+        """空の項目を足さない(読む側が「取れなかった」と読み違える)。"""
+        from fastapi.testclient import TestClient
+
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        self._answered(server, monkeypatch, trace="")
+
+        with TestClient(server.app) as client:
+            body = client.post(
+                "/v1/chat/completions", json={"messages": [{"role": "user", "content": "やあ"}]}
+            ).json()
+
+        assert server.TRACE_KEY not in body
+
+
 class TestEveryCliIsWiredEndToEnd:
     """対応する CLI を足すとき、直す場所は 1 つではない。
 

@@ -818,8 +818,14 @@ def strip_cli_notices(text: str) -> str:
 async def run_cli(
     prompt: str, model: str = "", effort: str = "", web: bool = False,
     max_turns: int | None = None, timeout: float | None = None,
-) -> str:
-    """CLI を 1 回起動して本文を返す。失敗は HTTPException にする。"""
+) -> tuple[str, str]:
+    """CLI を 1 回起動して (本文, CLI が何をしたか) を返す。失敗は HTTPException にする。
+
+    **本文だけでは、相手が何をしたかが誰にも読めない。** 包んでいるのはシェルを
+    持ったエージェントで、道具を何回引いたのかも、途中で何に躓いたのかも、
+    出るのは CLI の出力のほう —— 絵の口では前から返していた(`/v1/images/generations`)
+    のに、会話の口では捨てていたので、**控えの「途中経過」がいつも空だった**。
+    """
     if reason := apply_credential():
         raise HTTPException(401, {"error": reason})
     out_path = f"/tmp/chiezo-answer-{uuid.uuid4().hex}.txt"
@@ -853,6 +859,10 @@ DETAIL_MAX = 500
 # 持ち帰る出力の上限。**全部は運ばない** —— CLI は長い作業ログを吐くことがあり、
 # 応答に丸ごと載せると、頼む側の控えも通信も膨らむ。
 TRACE_MAX = 20_000
+# CLI の出力を載せる鍵。**OpenAI 互換の形の外側に置く**ので、知らない相手は捨てるだけ。
+# 絵の口(`/v1/images/generations`)が `trace` で返しているのと同じもの ——
+# あちらは互換の形ではないので、素の名前で入れている。
+TRACE_KEY = "chiezo_trace"
 
 
 def _trace(stdout: bytes, stderr: bytes) -> str:
@@ -897,8 +907,10 @@ def _tail(text: str, limit: int) -> str:
     return "…" + text[-(limit - 1):]
 
 
-async def _spawn(cmd: list[str], payload: bytes, out_path: str, timeout: float | None) -> str:
-    """組み上げたコマンドを 1 回動かして本文を返す。"""
+async def _spawn(
+    cmd: list[str], payload: bytes, out_path: str, timeout: float | None
+) -> tuple[str, str]:
+    """組み上げたコマンドを 1 回動かして (本文, CLI が何をしたか) を返す。"""
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdin=asyncio.subprocess.PIPE,
@@ -936,11 +948,16 @@ async def _spawn(cmd: list[str], payload: bytes, out_path: str, timeout: float |
         text = strip_cli_notices(stdout.decode("utf-8", "replace").strip())
     if not text:
         raise HTTPException(502, {"error": f"{CLI} returned an empty answer"})
-    return text
+    return text, _trace(stdout, stderr)
 
 
-def _completion(text: str, model: str = "") -> dict:
-    return {
+def _completion(text: str, model: str = "", trace: str = "") -> dict:
+    """OpenAI 互換の応答。**CLI の出力は独自の鍵で添える**(`chiezo_trace`)。
+
+    形の中に混ぜない —— 互換の形を読む相手は知らない鍵を捨てるだけなので足せるが、
+    `choices` や `message` の中を勝手に増やすと、そこを厳密に読む相手が壊れる。
+    """
+    body = {
         "id": f"chatcmpl-{uuid.uuid4().hex}",
         "object": "chat.completion",
         "created": int(time.time()),
@@ -949,12 +966,19 @@ def _completion(text: str, model: str = "") -> dict:
             {"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}
         ],
     }
+    if trace:
+        body[TRACE_KEY] = trace
+    return body
 
 
-async def _sse(text: str, model: str = "") -> AsyncIterator[str]:
+async def _sse(text: str, model: str = "", trace: str = "") -> AsyncIterator[str]:
     """SSE で返す。差分は 1 つだけ(CLI を待ち切ってから流すため)。
 
     受け手(app/answer.py)は差分を順に足すだけなので、粒度は問われない。
+
+    **CLI の出力は締めの塊に載せる**(`TRACE_KEY`)。本文の差分に混ぜると、
+    受け手はそれを答えとして足してしまう —— 締めは差分が空なので、拾わない相手は
+    そのまま無視できる。
     """
     head = {
         "id": f"chatcmpl-{uuid.uuid4().hex}",
@@ -965,6 +989,8 @@ async def _sse(text: str, model: str = "") -> AsyncIterator[str]:
     }
     yield f"data: {json.dumps(head, ensure_ascii=False)}\n\n"
     tail = dict(head, choices=[{"index": 0, "delta": {}, "finish_reason": "stop"}])
+    if trace:
+        tail[TRACE_KEY] = trace
     yield f"data: {json.dumps(tail, ensure_ascii=False)}\n\n"
     yield "data: [DONE]\n\n"
 
@@ -1810,14 +1836,14 @@ async def chat_completions(body: ChatRequest):
         raise HTTPException(400, {"error": "messages must not be empty"})
     model = resolve_model(body.model)
     effort = resolve_effort(body.reasoning_effort)
-    text = await run_cli(
+    text, trace = await run_cli(
         build_prompt(body.messages), model, effort, body.chiezo_web,
         body.chiezo_max_turns, body.chiezo_timeout,
     )
     if body.stream:
         return StreamingResponse(
-            _sse(text, model),
+            _sse(text, model, trace),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
-    return JSONResponse(_completion(text, model))
+    return JSONResponse(_completion(text, model, trace))

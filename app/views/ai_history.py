@@ -175,6 +175,49 @@ def _detail(row: dict) -> str:
     return body
 
 
+def _part(label: str, head: str) -> str:
+    """依頼文・途中経過・応答のひとかたまり。**空なら節ごと出さない**。
+
+    **切れているならそう書く**(`ai_transcript.HEAD_MAX`)。ここに出しているのは
+    控えの先頭だけで、全文はファイルにある —— 印が無いと、読み手は目の前のものを
+    全部だと思って判断する(途中で終わっている応答を「途中で止まった」と読む)。
+
+    **大きさはここに書かない。** 同じ行の目方が既に出している(`_weight`)うえ、
+    控えの側は役割の名札を付けて綴じた文字列を測るので**わずかに大きい** ——
+    同じ 1 回に違う数が 2 つ並ぶ。
+    """
+    if not (head or "").strip():
+        return ""
+    cut = (
+        f'<p class="muted">ここまでで先頭 {ai_transcript.HEAD_MAX:,} 字。'
+        "続きは下の「全文を開く」。</p>"
+        if len(head) >= ai_transcript.HEAD_MAX else ""
+    )
+    return (
+        f'<p class="muted">{esc(label)}</p>'
+        f'<pre class="media-body">{esc(head)}</pre>{cut}'
+    )
+
+
+def transcript_html(kept: dict | None) -> str:
+    """控え(渡したもの・相手の出力・応答)を畳んで出す。無ければ空。
+
+    **目方の行と同じ 1 行に出す。** 別の表に分けていた頃は、同じ 1 回が 2 か所に
+    並び、突き合わせるには時刻と相手を目で照らすしかなかった(紐が無いので、
+    同じ秒に 2 本走っていると、どちらの中身なのか決められない)。
+    いまは呼び出しの行が控えの id を持つ(`usage_store` / `ai_log` の `transcript_id`)。
+    """
+    if not kept:
+        return ""
+    inside = (
+        _part("依頼文", kept.get("prompt") or "")
+        + _part("相手の出力(途中経過)", kept.get("trace") or "")
+        + _part("応答", kept.get("reply") or "")
+        + f'<p><a href="/admin/ai/transcripts/{esc(str(kept.get("id") or ""))}">全文を開く</a></p>'
+    )
+    return f'<details class="prompt-open"><summary>中身</summary>{inside}</details>'
+
+
 def elapsed(started: str) -> str:
     """始まってからの経過。**走っている行はこれが要**で、日時だけでは
     「遅い」のか「止まっている」のかが読めない。
@@ -321,6 +364,8 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
             f'<span class="muted">{esc(elapsed(row["at"]))}</span></td>'
             f"<td>{detail}</td></tr>"
         )
+    # **控えは 1 ページぶんまとめて引く**(行ごとに引くと表の行数だけ往復する)
+    kept = ai_transcript.get_many(r.get("transcript_id") or "" for r in shown)
     for row in shown:
         kind = esc(ai_log.kind_label(row.get("kind") or ai_log.KIND_CHAT))
         who = who_html(row["backend"], row.get("model") or "", row.get("effort") or "")
@@ -334,6 +379,7 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
                 f'<span class="snippet">{esc(row["reason"])}</span>'
                 f'<br><span class="muted">依頼文 {esc(_size(row["prompt_bytes"]))}</span>'
             )
+        detail += transcript_html(kept.get(row.get("transcript_id") or ""))
         body.append(
             f'<tr{"" if row["ok"] else ' class="off"'}>'
             f"<td>{esc(_when(row['at']))}</td><td>{kind}</td>"
@@ -355,12 +401,16 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
 <strong>走っている最中のものは表の先頭</strong>に出て、終わると結果の行に変わる ——
 控えが書かれるのは往復が終わってからなので、これが無いと、無人で回っているぶんは
 遅いのか止まっているのか呼べてすらいないのかが読めない。{now_running}
-<strong>プロンプトと応答は残していない</strong> —— 呼んだ側の材料がそのまま入るため。
-かわりに<strong>やり取りの目方</strong>(依頼文と応答の大きさ・かかった時間)を残してあるので、
-中身を持たずに「短く聞いて長く答えさせた」「絵を 1 枚描かせて何分も待った」の区別は付く。
-失敗のときは理由と依頼文の大きさを残す —— 失敗が大きさに寄っているのかを
-後から見分けられるようにするため。{toggle}<br>
-成功の控えは {usage_store.KEEP_DAYS} 日、失敗の控えは直近 {ai_log.MAX_ROWS} 件まで。
+どの行にも<strong>やり取りの目方</strong>(依頼文と応答の大きさ・かかった時間)が付く ——
+中身を持たなくても「短く聞いて長く答えさせた」「絵を 1 枚描かせて何分も待った」の区別が
+これで付く。失敗のときは理由と依頼文の大きさ。
+<strong>中身の控えがある行は、同じ行の「中身」から開ける</strong>
+(渡した依頼文・相手の出力・応答。<strong>CLI ブリッジ越しの相手にはシェルを渡している</strong>
+ので、何をしたのかは「相手の出力」にしか出ない)。{toggle}<br>
+残る長さはそれぞれ別で、<strong>成功の目方は {usage_store.KEEP_DAYS} 日・失敗は直近
+{ai_log.MAX_ROWS} 件・中身の控えは {ai_transcript.KEEP_DAYS} 日</strong>
+(<code>CHIEZO_AI_TRANSCRIPT_DAYS=0</code> で中身を丸ごと止められる) ——
+<strong>中身だけ先に消えた行は目方だけになる</strong>。
 機械で読むなら <code>GET /v1/ai/failures</code>、走っているものは
 <code>GET /v1/ai/inflight</code>。
 </p>
@@ -373,95 +423,3 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
 </tbody>
 </table>
 {_pager(page, len(rows), failed_only)}"""
-
-
-# ---- やり取りの控え ---------------------------------------------------------
-#
-# **成功・失敗の一覧とは行が対応しない。** あちらは相手とモデルと目方の控えで、
-# こちらは中身の控え。別の表なので節を分ける —— 無理に突き合わせると、
-# 同じ秒に並んだ行がずれたときに、別の呼び出しの中身を見せることになる。
-
-TRANSCRIPTS_ANCHOR = "ai-transcripts"
-TRANSCRIPTS_PER_PAGE = 20
-
-
-def _part(label: str, head: str, nbytes: int | None = None) -> str:
-    """依頼文・途中経過・応答のひとかたまり。**空なら節ごと出さない**。
-
-    **切れているならそう書く**(`ai_transcript.HEAD_MAX`)。ここに出しているのは
-    控えの先頭だけで、全文はファイルにある —— 印が無いと、読み手は目の前のものを
-    全部だと思って判断する(途中で終わっている応答を「途中で止まった」と読む)。
-    大きさは添えてあるが、KB と字数は突き合わせられないので印にはならない。
-    """
-    if not (head or "").strip():
-        return ""
-    size = f'（{esc(_size(nbytes))}）' if nbytes else ""
-    cut = (
-        f'<p class="muted">ここまでで先頭 {ai_transcript.HEAD_MAX:,} 字。'
-        "続きは下の「全文を開く」。</p>"
-        if len(head) >= ai_transcript.HEAD_MAX else ""
-    )
-    return (
-        f'<p class="muted">{esc(label)}{size}</p>'
-        f'<pre class="media-body">{esc(head)}</pre>{cut}'
-    )
-
-
-def transcripts_html(page: int = 1) -> str:
-    """渡したものと返ってきたものの控え。
-
-    **一覧には先頭だけ出す**(`ai_transcript.HEAD_MAX`)。全文は別の口で開く ——
-    CLI は長い作業ログを吐くので、一覧に全部並べると読めなくなる。
-    """
-    if not ai_transcript.is_enabled():
-        return (
-            f'<h3 id="{TRANSCRIPTS_ANCHOR}">やり取りの控え</h3>'
-            '<p class="muted">控えていません。'
-            "<code>CHIEZO_AI_TRANSCRIPT_DAYS</code> に日数を入れると、"
-            "渡した依頼文・相手の出力・応答を残します。</p>"
-        )
-    offset = (max(1, page) - 1) * TRANSCRIPTS_PER_PAGE
-    found = ai_transcript.recent(TRANSCRIPTS_PER_PAGE + 1, offset)
-    rows, has_next = found[:TRANSCRIPTS_PER_PAGE], len(found) > TRANSCRIPTS_PER_PAGE
-    if not rows:
-        return (
-            f'<h3 id="{TRANSCRIPTS_ANCHOR}">やり取りの控え</h3>'
-            '<p class="muted">まだ何もありません。</p>'
-        )
-
-    cells = []
-    for row in rows:
-        state = "成功" if row["ok"] else '<span class="stale">失敗</span>'
-        inside = (
-            _part("依頼文", row["prompt"], row["prompt_bytes"])
-            + _part("相手の出力（途中経過）", row["trace"])
-            + _part("応答", row["reply"], row["reply_bytes"])
-            + f'<p><a href="/admin/ai/transcripts/{esc(row["id"])}">全文を開く</a></p>'
-        )
-        cells.append(
-            f"<tr><td>{esc(_when(row['at']))}</td>"
-            f"<td>{esc(ai_log.kind_label(row['kind']))}</td>"
-            f"<td>{caller_html(row['caller'])}</td>"
-            f"<td>{who_html(row['backend'], row['model'], '')}</td>"
-            f"<td>{state}</td>"
-            f'<td><details><summary>中身</summary>{inside}</details></td></tr>'
-        )
-
-    def link(target: int, label: str, enabled: bool) -> str:
-        if not enabled:
-            return f'<span class="muted">{label}</span>'
-        return f'<a href="?tr_page={target}#{TRANSCRIPTS_ANCHOR}">{label}</a>'
-
-    return (
-        f'<h3 id="{TRANSCRIPTS_ANCHOR}">やり取りの控え</h3>'
-        '<p class="muted">AI に渡したものと、相手が返したもの。'
-        "<strong>CLI ブリッジ越しの相手にはシェルを渡している</strong>ので、"
-        "何をしたのかは「相手の出力」に出る。"
-        f"{ai_transcript.KEEP_DAYS} 日で捨てる"
-        "（<code>CHIEZO_AI_TRANSCRIPT_DAYS=0</code> で止まる）。</p>"
-        "<table><thead><tr><th>いつ</th><th>種類</th><th>依頼元</th>"
-        "<th>相手</th><th>結果</th><th></th></tr></thead>"
-        f"<tbody>{''.join(cells)}</tbody></table>"
-        f'<p class="muted">{link(page - 1, "← 新しい", page > 1)}'
-        f"　{page} 頁目　{link(page + 1, '古い →', has_next)}</p>"
-    )

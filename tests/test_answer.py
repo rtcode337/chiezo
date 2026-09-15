@@ -6,6 +6,7 @@
 """
 import asyncio
 import json
+from typing import ClassVar
 
 import httpx
 import pytest
@@ -689,6 +690,58 @@ class TestStaleModelName:
 
         assert "gemini-2.5-flash" in detail["hint"]
         assert "選び直す" in detail["hint"]
+
+
+class TestKeepingWhatTheCliDid:
+    """**相手が添えた CLI の出力を、控えの「途中経過」に残す。**
+
+    CLI ブリッジ越しの相手はシェルを持っているので、道具を何回引いたのかも
+    途中で何に躓いたのかも本文には出ない。拾わずに捨てていた頃は、控えの
+    「相手の出力(途中経過)」が会話の回では必ず空だった。
+    """
+
+    @staticmethod
+    def _answers(monkeypatch, body: dict):
+        from app import answer
+
+        monkeypatch.setattr(
+            answer, "_llm_client",
+            lambda cfg: httpx.AsyncClient(
+                transport=httpx.MockTransport(lambda _r: httpx.Response(200, json=body))
+            ),
+        )
+        return answer
+
+    def _ask(self, monkeypatch_env, tmp_path, body: dict):
+        from app import ai_transcript, settings_store
+
+        monkeypatch_env.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch_env.setattr(ai_transcript, "KEEP_DAYS", 14)
+        answer = self._answers(monkeypatch_env, body)
+        settings_store.set_credential("gemini", "k")
+        settings_store.set_enabled("gemini", True)
+        cfg = answer.require_settings("gemini")
+
+        asyncio.run(answer.complete_message(cfg, [{"role": "user", "content": "やあ"}]))
+        return ai_transcript.recent()[0]
+
+    REPLY: ClassVar[dict] = {"choices": [{"message": {"role": "assistant", "content": "はい"}}]}
+
+    def test_the_trace_the_bridge_sent_is_kept(self, monkeypatch_env, tmp_path):
+        from app import answer
+
+        row = self._ask(
+            monkeypatch_env, tmp_path,
+            {**self.REPLY, answer.TRACE_KEY: "[stdout]\n道具を引いた"},
+        )
+
+        assert row["trace"] == "[stdout]\n道具を引いた"
+
+    def test_a_reply_without_one_keeps_nothing(self, monkeypatch_env, tmp_path):
+        """添えない相手(直に叩く API)では空のまま。無い値を作らない。"""
+        row = self._ask(monkeypatch_env, tmp_path, self.REPLY)
+
+        assert row["trace"] == ""
 
 
 class TestBusyUpstream:

@@ -83,6 +83,11 @@ _ADDED_COLUMNS = {
     # 考える量。**モデルと同じくらい結果と時間を左右する**のに、失敗の控え
     # （`ai_log`）にしか無かったので、成功した行だけ何で走ったのか読めなかった
     "effort": "TEXT",
+    # やり取りの控え（`app/ai_transcript.py`）の id。**同じ 1 回を指す紐**で、
+    # これが無いと目方の行と中身の控えを突き合わせられない —— 時刻と相手で
+    # 寄せると、同じ秒に並んだ行がずれたときに別の呼び出しの中身を見せる。
+    # 控えを止めている・期限で消えた行では空のまま（その回は目方だけが残る）
+    "transcript_id": "TEXT",
 }
 
 
@@ -156,6 +161,7 @@ def record(
     reply_bytes: int | None = None,
     ms: int | None = None,
     caller: str = "",
+    transcript_id: str = "",
 ) -> None:
     """呼び出しを 1 件残す。失敗しても例外にしない(会話を止めないため)。
 
@@ -170,11 +176,12 @@ def record(
         with _connect() as conn:
             conn.execute(
                 "INSERT INTO calls (provider, model, effort, kind, at, input_tokens,"
-                " output_tokens, prompt_bytes, reply_bytes, ms, caller)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " output_tokens, prompt_bytes, reply_bytes, ms, caller, transcript_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (provider, model or "", effort or "", kind,
                  _now().isoformat(timespec="seconds"),
-                 input_tokens, output_tokens, prompt_bytes, reply_bytes, ms, caller or ""),
+                 input_tokens, output_tokens, prompt_bytes, reply_bytes, ms, caller or "",
+                 transcript_id or ""),
             )
             now = time.monotonic()
             if now - _last_prune > _PRUNE_INTERVAL:
@@ -228,7 +235,7 @@ def recent_calls(limit: int = 100) -> list[dict]:
         with _connect() as conn:
             rows = conn.execute(
                 "SELECT provider, model, effort, kind, at, input_tokens, output_tokens,"
-                "       prompt_bytes, reply_bytes, ms, caller FROM calls"
+                "       prompt_bytes, reply_bytes, ms, caller, transcript_id FROM calls"
                 " ORDER BY at DESC, id DESC LIMIT ?",
                 (max(1, limit),),
             ).fetchall()
@@ -248,6 +255,7 @@ def recent_calls(limit: int = 100) -> list[dict]:
             "prompt_bytes": r["prompt_bytes"],
             "reply_bytes": r["reply_bytes"],
             "ms": r["ms"],
+            "transcript_id": r["transcript_id"] or "",
         }
         for r in rows
     ]

@@ -57,7 +57,13 @@ CREATE INDEX IF NOT EXISTS ix_ai_failures_at ON ai_failures(at DESC);
 """
 
 # 後から足した列。 既にある DB には起動時の ALTER TABLE で足す（作り直しは要らない）。
-_ADDED_COLUMNS = {"kind": "TEXT NOT NULL DEFAULT 'chat'"}
+_ADDED_COLUMNS = {
+    "kind": "TEXT NOT NULL DEFAULT 'chat'",
+    # やり取りの控え（`app/ai_transcript.py`）の id。**同じ 1 回を指す紐**
+    # （`usage_store` と同じ理由）。ここは中身を持たない表なので、中身が要る人は
+    # この紐をたどる —— 失敗した回ほど、渡したものと相手の出力が要る
+    "transcript_id": "TEXT",
+}
 
 # 何の依頼だったか。 会話も生成も同じ表に残す —— 失敗を探す人は「AI に頼んだことが
 # 落ちた」を見に来るのであって、それが会話だったか絵だったかを先に知ってはいない。
@@ -104,6 +110,7 @@ def record(
     reason: str,
     prompt_bytes: int,
     kind: str = KIND_CHAT,
+    transcript_id: str = "",
 ) -> None:
     """失敗を 1 件残す。呼び出し側の失敗にはしない（控えが取れなくても答えは返す）。"""
     path = db_path()
@@ -113,7 +120,7 @@ def record(
         with _connect(path) as conn:
             conn.execute(
                 "INSERT INTO ai_failures (at, backend, model, effort, status, reason,"
-                " prompt_bytes, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                " prompt_bytes, kind, transcript_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     datetime.now(UTC).isoformat(timespec="seconds"),
                     backend,
@@ -123,6 +130,7 @@ def record(
                     (reason or "")[:REASON_MAX],
                     prompt_bytes,
                     kind or KIND_CHAT,
+                    transcript_id or "",
                 ),
             )
             # 古いものから捨てる。件数で切るのは、失敗の頻度が読めないため
@@ -148,8 +156,8 @@ def recent(limit: int = 50) -> list[dict]:
             rows = [
                 dict(r)
                 for r in conn.execute(
-                    "SELECT at, backend, model, effort, status, reason, prompt_bytes, kind"
-                    " FROM ai_failures ORDER BY id DESC LIMIT ?",
+                    "SELECT at, backend, model, effort, status, reason, prompt_bytes, kind,"
+                    "       transcript_id FROM ai_failures ORDER BY id DESC LIMIT ?",
                     (max(1, min(limit, MAX_ROWS)),),
                 )
             ]

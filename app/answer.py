@@ -688,6 +688,8 @@ def _note_failure(cfg: Settings, messages: list[dict], status: int, reason: str)
     残す場所を呼び出しの側にしているのは、相手とプロンプトの大きさがここにしかないため。
     `_llm_error` / `_upstream_error` は応答を組むだけで、どの相手にどれだけ送ったかを知らない。
     """
+    # **控えを先に書く。** 目方の行に紐を持たせるので、順が逆だと id が無い
+    ident = _note_transcript(cfg, messages, reply=reason, ok=False)
     ai_log.record(
         backend=cfg.name,
         model=cfg.model,
@@ -695,21 +697,21 @@ def _note_failure(cfg: Settings, messages: list[dict], status: int, reason: str)
         status=status,
         reason=reason,
         prompt_bytes=_prompt_bytes(messages),
+        transcript_id=ident,
     )
-    _note_transcript(cfg, messages, reply=reason, ok=False)
 
 
 def _note_transcript(
     cfg: Settings, messages: list[dict], *, reply: str = "", ok: bool = True,
     trace: str = "",
-) -> None:
+) -> str:
     """渡したものと返ってきたものを控える(`app/ai_transcript.py`)。
 
     **`ai_log` とは別の控え。** あちらは「中身は残さない」を決めごとにしていて、
     そこは変えない。こちらは**シェルを渡している相手が何をしたか**を後から読むためで、
     `CHIEZO_AI_TRANSCRIPT_DAYS=0` で丸ごと止められる。
     """
-    ai_transcript.record(
+    return ai_transcript.record(
         backend=cfg.name,
         model=cfg.ran_model or cfg.model,
         kind="chat",
@@ -818,8 +820,12 @@ def _record_usage(
     prompt_bytes: int | None = None,
     reply_bytes: int | None = None,
     ms: int | None = None,
+    transcript_id: str = "",
 ) -> None:
     """1 往復ぶんを使用量に残す(`app/usage_store.py`)。
+
+    `transcript_id` は**同じ 1 回の中身の控え**(`app/ai_transcript.py`)への紐。
+    画面はこれで目方と中身を 1 行にまとめる —— 無ければ目方だけの行になる。
 
     相手がトークン数を言わなければ `None` のまま残す。 0 と書くと、数を返さない相手
     (CLI ブリッジ)が「0 トークンで動く相手」に見える —— 回数だけは確かなので、
@@ -854,6 +860,7 @@ def _record_usage(
         prompt_bytes=prompt_bytes,
         reply_bytes=reply_bytes,
         ms=ms,
+        transcript_id=transcript_id,
     )
 
 
@@ -888,6 +895,8 @@ async def complete_message(cfg: Settings, messages: list[dict], **extra) -> dict
         if not isinstance(message, dict):
             raise HTTPException(502, {"error": "unexpected llm response: message is not an object"})
     cfg.ran_model = model_of(body, cfg)
+    # **控えを先に書く**(目方の行に紐を持たせるため。`_note_failure` と同じ順)
+    ident = _note_transcript(cfg, messages, reply=content_of(message) or "", trace=trace_of(body))
     _record_usage(
         cfg,
         body.get("usage"),
@@ -895,9 +904,26 @@ async def complete_message(cfg: Settings, messages: list[dict], **extra) -> dict
         prompt_bytes=_prompt_bytes(messages),
         reply_bytes=len((content_of(message) or "").encode()),
         ms=int((time.monotonic() - started) * 1000),
+        transcript_id=ident,
     )
-    _note_transcript(cfg, messages, reply=content_of(message) or "")
     return message
+
+
+# CLI ブリッジが応答に添える「相手が何をしたか」(`bridge/cli_bridge.py` の `TRACE_KEY`)。
+# **互換の形の外側に置かれた鍵**なので、他の相手の応答には入っていない。
+TRACE_KEY = "chiezo_trace"
+
+
+def trace_of(body: dict | None) -> str:
+    """相手が添えた CLI の出力。無ければ空。
+
+    **控えの「途中経過」はここからしか埋まらない。** 包んでいるのはシェルを持った
+    エージェントで、道具を何回引いたのかも途中で何に躓いたのかも本文には出ない。
+    """
+    if not isinstance(body, dict):
+        return ""
+    trace = body.get(TRACE_KEY)
+    return trace if isinstance(trace, str) else ""
 
 
 def model_of(body: dict | None, cfg: Settings) -> str:

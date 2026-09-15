@@ -890,21 +890,23 @@ async def _run(job_id: str, backend: str, req, count: int, kind: str) -> None:
                 # **目方も一緒に残す**(依頼文の大きさ・出来たものの大きさ・かかった時間)。
                 # 絵と音の相手はトークン数を言わないので、これが無いと控えに相手の名前しか
                 # 残らず、何を頼んだ呼び出しなのかが後から読めない。
-                usage_store.record(
-                    backend, model=item.model, kind=kind, caller="media",
-                    prompt_bytes=len((getattr(one, "prompt", "") or "").encode()),
-                    reply_bytes=len(item.data or b""),
-                    ms=int((time.monotonic() - started) * 1000),
-                )
                 # **相手が何をしたかを控える。** ブリッジ越しの相手はシェルを持って
                 # いるので、手順は CLI の出力にしか出ない(`item.trace`)。
-                # 出来たものは job の files から辿れるので、ここでは持たない
-                ai_transcript.record(
+                # 出来たものは job の files から辿れるので、ここでは持たない。
+                # **目方より先に書く** —— 目方の行に紐を持たせるため
+                ident = ai_transcript.record(
                     backend=backend, model=item.model, kind=kind,
                     caller=(get_job(job_id) or {}).get("requested_by") or "media",
                     prompt=getattr(one, "prompt", "") or "",
                     trace=getattr(item, "trace", "") or "",
                     reply=f"{len(item.data or b''):,} バイト / {item.mime}",
+                )
+                usage_store.record(
+                    backend, model=item.model, kind=kind, caller="media",
+                    prompt_bytes=len((getattr(one, "prompt", "") or "").encode()),
+                    reply_bytes=len(item.data or b""),
+                    ms=int((time.monotonic() - started) * 1000),
+                    transcript_id=ident,
                 )
                 files.append(asdict(_save(job_id, index, item)))
                 _update(job_id, files=files, model=item.model, seed=files[0]["seed"])

@@ -1204,7 +1204,7 @@ Please try signing in again.
 | 環境変数 | 既定 | 説明 |
 |---|---|---|
 | `CHIEZO_BRIDGE_CLI` | `claude` | 包む CLI（`claude` / `codex` / `antigravity`） |
-| `CHIEZO_AI_TRANSCRIPT_DAYS` | `14` | AI に渡したものと返ってきたものを控える日数。**`0` で控えない**。相手の生の出力(CLI の stdout/stderr)も残すので、シェルを渡している相手が何をしたかを後から読める |
+| `CHIEZO_AI_TRANSCRIPT_DAYS` | `14` | AI に渡したものと返ってきたものを控える日数。**`0` で控えない**。相手の生の出力（CLI の stdout/stderr）も残すので、シェルを渡している相手が何をしたかを後から読める。管理画面では「AI への依頼」の表の**同じ行**から開ける（控えが先に消えた行は目方だけになる） |
 | `CHIEZO_BRIDGE_MCP_URL` | `http://chiezo-app:7010/mcp/knowledge` | CLI に繋ぐ Chiezo の MCP。**生成の道具を出さない口を向ける**(`/mcp` を向けると、絵を頼んだ相手に絵を頼む道具が渡る)。**空にすると繋がない** |
 | `CHIEZO_BRIDGE_STATE_DB` | `/state/settings.db` | 認証情報を読む Chiezo の設定 DB（読み取り専用でマウント） |
 | `CHIEZO_BRIDGE_MODEL` | （CLI の既定） | 何も選ばれなかったときのモデル。会話画面で選んだものが優先される |
