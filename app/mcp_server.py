@@ -105,6 +105,34 @@ def _call(fn: Callable[..., Any], **kwargs: Any) -> Any:
         raise ToolError(json.dumps(detail, ensure_ascii=False)) from None
 
 
+def _peer(ctx: Context | None) -> str:
+    """その道具を呼んだ相手の住所。取れなければ空(stdio など HTTP でない経路)。
+
+    **見るのは接続元のアドレスだけ。** ヘッダは相手が名乗った値なので身元にならない。
+    """
+    if ctx is None:
+        return ""
+    try:
+        request = getattr(ctx.request_context, "request", None)
+    except (ValueError, AttributeError):
+        # 道具の外から呼ばれた(リクエストが無い)
+        return ""
+    return str(getattr(getattr(request, "client", None), "host", "") or "")
+
+
+def _refuse_bridge(ctx: Context | None, backend: str = "") -> None:
+    """**Chiezo が動かしている CLI からの「作らせる」依頼を断る**
+    (理由は `media.refuse_bridge_caller`。会話している相手が自分自身に頼むのは通る)。
+
+    **REST の口と別に、ここでも見る必要がある。** あちらは住所で断っているが
+    (`main._refuse_bridge_for`)、**MCP の道具はその検査を通らない** ——
+    ここは REST の関数を直に呼ぶので、本物のリクエストの無い器を渡している
+    (`_request`)。ブリッジが知識の口(`/mcp/knowledge`)ではなく生成の道具が出る
+    `/mcp` に繋がっていると、**絵を頼んだ相手が道具からそのまま頼み返せた**。
+    """
+    _call(media.refuse_bridge_caller, host=_peer(ctx), backend=(backend or "").strip().lower())
+
+
 def _caller(ctx: Context | None, requested_by: str) -> str:
     """誰が頼んだかとして残す名。**名乗りが無ければ User-Agent へ落とす**。
 
@@ -147,9 +175,13 @@ def build_mcp(app: FastAPI, with_media: bool = True) -> MCPServer:
     (どれも組名が無く、サイズだけがこちらの指定を引き継いでいたので足が付いた)。
     枠を余計に食うだけでなく、頼まれた側が描く前に別の生成を待つので**時間も伸びる**。
 
-    **塞ぐ場所は URL でしかない。** ブリッジは 3 つの CLI を包んでいるが、道具を
+    **この口を分けるのは一段目の守り。** ブリッジは 3 つの CLI を包んでいるが、道具を
     名前で絞れるのは claude だけで(`--allowed-tools`)、codex と antigravity は
-    `mcp add chiezo --url` で丸ごと繋がる。**どの CLI にも効くつまみは接続先だけ**。
+    起動時の `mcp add` で丸ごと繋がる —— **どの CLI にも効くつまみは接続先だけ**。
+
+    **二段目は道具そのもの**(`_refuse_bridge`)。接続先は設定で、**1 か所間違えれば
+    ループが戻る** —— 実際、配備では `/mcp` に繋がっていた(`agy mcp list` の登録先が
+    `http://chiezo-app:7010/mcp`)。作る道具は、呼んできた相手がブリッジなら断る。
     """
     from app import main as api
 
@@ -396,6 +428,7 @@ def _register_image_tools(mcp: MCPServer) -> None:
     ) -> dict:
         from app import main as api
 
+        _refuse_bridge(ctx, backend)
         source, mode, ref = await api._source_image(edit, reference)
         return _call(
             media.start_image_job,
@@ -436,6 +469,7 @@ def _register_image_tools(mcp: MCPServer) -> None:
             "名乗りが無いと、後から見て誰が枠を食ったのか追えない"))] = "",
         ctx: Context | None = None,
     ) -> dict:
+        _refuse_bridge(ctx, backend)
         return _call(
             media.start_text_job,
             prompt=prompt, backend=backend, model=model, effort=effort, group=group,
@@ -512,6 +546,7 @@ def _register_audio_tools(mcp: MCPServer) -> None:
         from app import main as api
 
         source = await media.load_image(*api._edit_source(reference)) if reference else b""
+        _refuse_bridge(ctx, backend)
         return _call(
             media.start_audio_job,
             prompt=prompt,
@@ -596,6 +631,7 @@ def _register_video_tools(mcp: MCPServer) -> None:
             "名乗りが無いと、後から見て誰が枠を食ったのか追えない"))] = "",
         ctx: Context | None = None,
     ) -> dict:
+        _refuse_bridge(ctx, backend)
         return _call(
             media.start_video_job,
             prompt=prompt,
@@ -661,6 +697,7 @@ def _register_voice_tools(mcp: MCPServer) -> None:
             "名乗りが無いと、後から見て誰が枠を食ったのか追えない"))] = "",
         ctx: Context | None = None,
     ) -> dict:
+        _refuse_bridge(ctx, backend)
         return _call(
             media.start_speech_job,
             text=text,
@@ -700,7 +737,9 @@ def _register_voice_tools(mcp: MCPServer) -> None:
         backend: str = "",
         model: str = "",
         language: str = "",
+        ctx: Context | None = None,
     ) -> dict:
+        _refuse_bridge(ctx, backend)
         data, name, mime = await media.load_audio(path=path, url=url)
         return await media.transcribe(
             data=data, filename=name, mime=mime,

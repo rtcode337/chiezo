@@ -247,3 +247,61 @@ class TestTheBridgeCannotAskForMore:
         assert makers, "前提: 普通の口には作る道具がある"
         assert not (makers & bridge), f"ブリッジに渡ってはいけない: {makers & bridge}"
         assert "search" in bridge, "知識は引けること"
+
+
+class TestTheToolsRefuseTheCliItDrives:
+    """**道具の口でも、Chiezo が動かしている CLI からの生成依頼を断る。**
+
+    REST の口は接続元の住所を見て断っているが(`main._refuse_bridge_for`)、
+    **MCP の道具はその検査を通らない** —— 道具は REST の関数を直に呼ぶので、
+    本物のリクエストの無い器を渡しているため。**ブリッジが知識の口ではなく
+    `/mcp` に繋がっていると、そこから丸ごと頼み返せた**(実際の配備でそうなっていた:
+    `agy mcp list` の登録先が `http://chiezo-app:7010/mcp`)。
+
+    接続先を直すのが第一だが、**入口でも断つ** —— 設定を 1 か所間違えただけで
+    ループが戻るのでは、守りとして弱い。
+    """
+
+    @pytest.fixture()
+    def media_client(self, built_data_dir, monkeypatch, tmp_path):
+        """作る道具が出ている口(置き場が要る)。"""
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        from app.main import app
+
+        with TestClient(app) as c:
+            yield c
+
+    @pytest.fixture()
+    def as_bridge(self, monkeypatch):
+        from app import media
+
+        monkeypatch.setattr(media, "bridge_addresses", lambda: {"testclient": "antigravity"})
+
+    MAKERS = (
+        ("image_generate", {"prompt": "猫", "backend": "comfyui"}),
+        ("audio_generate", {"prompt": "拍手", "backend": "elevenlabs"}),
+        ("video_generate", {"prompt": "波", "backend": "elevenlabs"}),
+        ("speech_generate", {"text": "こんにちは", "backend": "elevenlabs"}),
+        ("text_generate", {"prompt": "あらすじ", "backend": "codex"}),
+        ("transcribe", {"url": "http://x.test/a.mp3", "backend": "elevenlabs"}),
+    )
+
+    def test_every_way_of_making_something_is_refused(self, media_client, as_bridge):
+        for name, arguments in self.MAKERS:
+            out = call_tool(media_client, name, arguments)
+            assert out["isError"], f"{name} が通ってしまった"
+            assert "AI への依頼" in json.dumps(out["payload"], ensure_ascii=False), name
+
+    def test_reading_is_still_allowed(self, media_client, as_bridge):
+        """ブリッジの値打ちは「Chiezo の知識を引かせる」ことなので、読む道具は通す。"""
+        out = call_tool(media_client, "search", {"source": "jawiki", "q": "東京"})
+        assert not out["isError"]
+
+    def test_everyone_else_is_let_through(self, media_client, monkeypatch):
+        """ブリッジでない相手は今までどおり。断るのは入口だけで、道具は取り上げない。"""
+        from app import media
+
+        monkeypatch.setattr(media, "bridge_addresses", dict)
+        out = call_tool(media_client, "image_generate", {"prompt": "猫", "backend": "comfyui"})
+        assert "AI への依頼" not in json.dumps(out["payload"], ensure_ascii=False)
