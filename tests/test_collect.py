@@ -4258,3 +4258,81 @@ class TestTheTwoInsertionLimits:
 
         assert shown == collect.MAX_MATERIAL_DOCS
         assert "今回の対象外" not in text
+
+
+class TestBakingWithoutHoldingItAll:
+    """焼く素材は 1 行ずつ流す。**丸ごとは持たない**。
+
+    前世代を dict に読んで繋いでいた頃は、50 万件の地図の名簿で 1.8 GB + 460 MB
+    かかった。取り込み側は元から流し込みで受けている(`copyfileobj`)ので、
+    配信側だけが丸ごと持っていた。
+    """
+
+    @staticmethod
+    def item(**overrides):
+        base = dict(
+            name="probe", description="", prompt="", interval_minutes=60, enabled=False,
+            backend=None, model=None, effort=None, web=False, cursor="",
+            created_at="", updated_at="",
+        )
+        return collect.Collection(**{**base, **overrides})
+
+    @staticmethod
+    def rows(count):
+        """前世代の行。**呼ぶたびに新しく流れる**(2 周するため)。"""
+        def make():
+            for n in range(1, count + 1):
+                yield {
+                    "doc_id": n, "title": f"店{n}", "opening": "要約", "body": "本文",
+                    "tags": ["食事処"], "updated_at": "2026-01-01T00:00:00+00:00",
+                    "extra": {"lat": 35.0, "lon": 139.0},
+                }
+        return make
+
+    def test_it_yields_one_line_at_a_time(self):
+        lines = collect.bake_lines(self.item(), {}, self.rows(3), [])
+
+        assert not isinstance(lines, list)
+        out = list(lines)
+        # 1 行目は meta、以降が 1 行 1 文書
+        assert json.loads(out[0])["meta"]["min_docs"] == 1
+        assert [json.loads(line)["title"] for line in out[1:]] == ["店1", "店2", "店3"]
+
+    def test_the_same_shape_as_the_whole_string(self):
+        # 丸ごと組む道(`ndjson`)と、流す道が同じものを返すこと
+        whole, _diff = collect.ndjson(self.item(), {}, self.rows(3), [])
+        streamed = "\n".join(collect.bake_lines(self.item(), {}, self.rows(3), [])) + "\n"
+
+        assert streamed == whole
+
+    def test_it_refuses_before_the_first_line(self):
+        """**流し始めたら断れない。** 空なら 1 行目より前に止まること。"""
+        with pytest.raises(HTTPException) as caught:
+            list(collect.bake_lines(self.item(), {}, lambda: iter([]), []))
+
+        assert caught.value.status_code == 409
+
+    def test_it_reads_the_previous_generation_more_than_once(self):
+        # 数える周と流す周で 2 度読む。**1 度きりの iterator は受け取れない**
+        made = []
+
+        def rows():
+            made.append(1)
+            return iter([])
+
+        with pytest.raises(HTTPException):
+            list(collect.bake_lines(self.item(), {}, rows, []))
+
+        assert len(made) >= 1
+
+    def test_edits_are_the_side_it_holds(self):
+        """持つのは**小さいほう**。前世代ではなく、その回に直すぶん。"""
+        edits = collect.Edits([{"title": "店2", "body": "直した", "tags": ["食事処"]}])
+        diff = {}
+        docs = list(collect.stream_docs(self.item(), self.rows(3)(), edits, edits=True, diff=diff))
+
+        assert [d["title"] for d in docs] == ["店1", "店2", "店3"]
+        assert next(d for d in docs if d["title"] == "店2")["body"] == "直した"
+        assert diff["previous"] == 3
+        assert diff["updated"] == 1
+        assert diff["added"] == 0

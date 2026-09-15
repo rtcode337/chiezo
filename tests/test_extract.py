@@ -15,6 +15,19 @@ from fastapi import HTTPException
 from app import extract
 
 
+def run(spec, sources):
+    """`extract.run` を読み切って返す。
+
+    本番は 1 行ずつ流す(名簿が数十万件になるので丸ごとは持てない)が、テストは
+    丸ごと見たい —— 置き場は読み切ってから片づける。
+    """
+    roster, cursor = extract.run(spec, sources)
+    try:
+        return list(roster), cursor
+    finally:
+        if hasattr(roster, "close"):
+            roster.close()
+
 @pytest.fixture
 def source(tmp_path):
     """タグで引けるソース(焼き上がりと同じコアスキーマ)を作る。
@@ -111,30 +124,30 @@ def spec(**overrides):
 
 class TestPullingFromWhatIsAlreadyThere:
     def test_it_takes_only_the_tag_that_was_asked_for(self, source):
-        items, _cursor = extract.run(spec(), source(painters()))
+        items, _cursor = run(spec(), source(painters()))
 
         # 江戸時代の画家は入らない（同じ「画家」でも頼まれていない）
         assert [i["title"] for i in items] == ["クロード・モネ", "エドゥアール・マネ"]
 
     def test_it_keeps_the_order_the_source_already_has(self, source):
         """有名な順はソースが持っている（ページビュー由来の rank_score）。"""
-        items, _cursor = extract.run(spec(tag="1840年生,1832年生,1760年生"), source(painters()))
+        items, _cursor = run(spec(tag="1840年生,1832年生,1760年生"), source(painters()))
 
         assert [i["title"] for i in items] == ["クロード・モネ", "葛飾北斎", "エドゥアール・マネ"]
 
     def test_it_takes_everything_when_no_number_was_given(self, source):
-        items, _cursor = extract.run(spec(limit=0, tag="1840年生,1832年生,1760年生"), source(painters()))
+        items, _cursor = run(spec(limit=0, tag="1840年生,1832年生,1760年生"), source(painters()))
 
         assert len(items) == 3
 
     def test_it_stops_at_the_limit(self, source):
-        items, _cursor = extract.run(spec(limit=1), source(painters()))
+        items, _cursor = run(spec(limit=1), source(painters()))
 
         assert [i["title"] for i in items] == ["クロード・モネ"]
 
     def test_two_tags_become_one_range(self, source):
         """生年と没年は別々のタグ。読む側が要るのは年代なので、ここで 1 つにする。"""
-        items, _cursor = extract.run(spec(), source(painters()))
+        items, _cursor = run(spec(), source(painters()))
 
         assert "年代:1840-1926" in items[0]["tags"]
 
@@ -142,7 +155,7 @@ class TestPullingFromWhatIsAlreadyThere:
         """没年が無ければ年代を作らない（「1840-」のような半端を残さない）。"""
         docs = [{"title": "存命の画家", "tags": ["印象派の画家", "1940年生"], "rank": 0.5}]
 
-        items, _cursor = extract.run(spec(), source(docs))
+        items, _cursor = run(spec(), source(docs))
 
         assert not [t for t in items[0]["tags"] if t.startswith("年代:")]
 
@@ -155,7 +168,7 @@ class TestPullingFromWhatIsAlreadyThere:
             }
         ]
 
-        items, _cursor = extract.run(spec(), source(docs))
+        items, _cursor = run(spec(), source(docs))
 
         assert "様式:印象派" in items[0]["tags"]
         assert "様式:象徴派" in items[0]["tags"]
@@ -171,7 +184,7 @@ class TestPullingFromWhatIsAlreadyThere:
             {"title": "本職の画家", "tags": ["印象派の画家", "1840年生", "1926年没"], "rank": 0.5},
         ]
 
-        items, _cursor = extract.run(
+        items, _cursor = run(
             spec(not_tag="アメリカ合衆国の男優"), source(docs)
         )
 
@@ -185,7 +198,7 @@ class TestPullingFromWhatIsAlreadyThere:
             {"title": "印象・日の出", "tags": ["クロード・モネの作品"], "rank": 0.8},
         ]
 
-        items, _cursor = extract.run(
+        items, _cursor = run(
             spec(tags=[{"from_tag": "{title}の作品", "format": "代表作:{1}", "take": 1}]),
             source(docs),
         )
@@ -193,7 +206,7 @@ class TestPullingFromWhatIsAlreadyThere:
         assert items[0]["tags"] == ["代表作:印象・日の出"]
 
     def test_a_painter_without_a_works_category_gets_nothing(self, source):
-        items, _cursor = extract.run(
+        items, _cursor = run(
             spec(tags=[{"from_tag": "{title}の作品", "format": "代表作:{1}"}]),
             source([{"title": "作品の無い画家", "tags": ["印象派の画家"], "rank": 0.5}]),
         )
@@ -208,7 +221,7 @@ class TestPullingFromWhatIsAlreadyThere:
             {"title": "ドガ", "tags": ["印象派の画家"], "links": [], "rank": 0.7},
         ]
 
-        items, _cursor = extract.run(
+        items, _cursor = run(
             spec(tags=[{"linked": "mutual", "format": "関連:{1}"}]), source(docs)
         )
 
@@ -224,7 +237,7 @@ class TestPullingFromWhatIsAlreadyThere:
             {"title": "画家", "tags": ["印象派の画家"], "links": ["外の人"], "rank": 0.5},
         ]
 
-        items, _cursor = extract.run(
+        items, _cursor = run(
             spec(tags=[{"linked": "mutual", "format": "関連:{1}"}]), source(docs)
         )
 
@@ -232,20 +245,20 @@ class TestPullingFromWhatIsAlreadyThere:
 
     def test_the_original_tags_do_not_come_along(self, source):
         """カテゴリはソースの都合で付いている。読む側に選ばせない。"""
-        items, _cursor = extract.run(spec(), source(painters()))
+        items, _cursor = run(spec(), source(painters()))
 
         assert "19世紀フランスの画家" not in items[0]["tags"]
         assert items[0]["tags"][0] == "画家"
 
     def test_the_source_of_each_item_can_be_built_from_the_title(self, source):
-        items, _cursor = extract.run(
+        items, _cursor = run(
             spec(url="https://ja.wikipedia.org/wiki/{title}"), source(painters())
         )
 
         assert items[0]["url"] == "https://ja.wikipedia.org/wiki/クロード・モネ"
 
     def test_extra_can_fill_the_source_too(self, source):
-        items, _cursor = extract.run(
+        items, _cursor = run(
             spec(url="https://www.wikidata.org/wiki/{wikidata}"), source(painters())
         )
 
@@ -255,20 +268,20 @@ class TestPullingFromWhatIsAlreadyThere:
         """焼くのは要点。全文は元のソースにある。"""
         sources = source(painters())
 
-        assert extract.run(spec(), sources)[0][0]["body"] == "クロード・モネの要約。"
-        assert extract.run(spec(body="body"), sources)[0][0]["body"] == "クロード・モネの本文。"
+        assert run(spec(), sources)[0][0]["body"] == "クロード・モネの要約。"
+        assert run(spec(body="body"), sources)[0][0]["body"] == "クロード・モネの本文。"
 
     def test_it_marks_that_the_bulk_pass_is_done(self, source):
         """次の実行は「進み具合が入っている」ほうへ進む（＝ AI が肉付けする）。"""
         sources = source(painters())
 
-        assert extract.run(spec(), sources)[1] == extract.DEFAULT_CURSOR
+        assert run(spec(), sources)[1] == extract.DEFAULT_CURSOR
         # 印は指定側で決められる（依頼した側の言葉で書ける）
-        assert extract.run(spec(cursor="粗く作成済み"), sources)[1] == "粗く作成済み"
+        assert run(spec(cursor="粗く作成済み"), sources)[1] == "粗く作成済み"
 
     def test_an_unknown_source_says_so(self, source):
         with pytest.raises(HTTPException) as got:
-            extract.run(spec(source="nosuch"), source(painters()))
+            run(spec(source="nosuch"), source(painters()))
 
         assert got.value.status_code == 404
 
@@ -343,7 +356,7 @@ class TestPickingAWholeFamilyOfTags:
             {"title": "ある俳優", "tags": ["20世紀アメリカ合衆国の男優"]},
         ]
         spec = extract.normalize({"source": "jawiki", "tag_suffix": "の画家"})
-        items, _cursor = extract.run(spec, source(docs))
+        items, _cursor = run(spec, source(docs))
         assert sorted(i["title"] for i in items) == ["ターナー", "ホッパー", "モネ"]
 
     def test_several_suffixes_can_be_written(self, source):
@@ -360,7 +373,7 @@ class TestPickingAWholeFamilyOfTags:
         spec = extract.normalize(
             {"source": "jawiki", "tag_suffix": "の画家,の女性画家"}
         )
-        items, _cursor = extract.run(spec, source(docs))
+        items, _cursor = run(spec, source(docs))
         assert sorted(i["title"] for i in items) == ["モネ", "草間彌生"]
 
     def test_a_short_one_among_them_is_still_refused(self, source):
@@ -377,7 +390,7 @@ class TestPickingAWholeFamilyOfTags:
         spec = extract.normalize(
             {"source": "jawiki", "tag": "浮世絵師", "tag_suffix": "の画家"}
         )
-        items, _cursor = extract.run(spec, source(docs))
+        items, _cursor = run(spec, source(docs))
         assert sorted(i["title"] for i in items) == ["モネ", "北斎"]
 
     def test_what_is_not_wanted_still_comes_off_with_not_tag(self, source):
@@ -388,7 +401,7 @@ class TestPickingAWholeFamilyOfTags:
         spec = extract.normalize(
             {"source": "jawiki", "tag_suffix": "の画家", "not_tag": "俳優"}
         )
-        items, _cursor = extract.run(spec, source(docs))
+        items, _cursor = run(spec, source(docs))
         assert [i["title"] for i in items] == ["モネ"]
 
     def test_a_short_suffix_is_refused(self):
@@ -404,7 +417,7 @@ class TestPickingAWholeFamilyOfTags:
         """静かな 0 件にしない(それらしい末尾を書いた側には確かめようがない)。"""
         spec = extract.normalize({"source": "jawiki", "tag_suffix": "の陶芸家"})
         with pytest.raises(HTTPException):
-            extract.run(spec, source([{"title": "モネ", "tags": ["19世紀フランスの画家"]}]))
+            run(spec, source([{"title": "モネ", "tags": ["19世紀フランスの画家"]}]))
 
     def test_too_many_tags_are_refused_not_truncated(self, source, monkeypatch):
         """切ると、広すぎる指定が「そこまでしか無い」ように見える。"""
@@ -412,14 +425,14 @@ class TestPickingAWholeFamilyOfTags:
         docs = [{"title": f"画家{i}", "tags": [f"{i}世紀某国の画家"]} for i in range(5)]
         spec = extract.normalize({"source": "jawiki", "tag_suffix": "の画家"})
         with pytest.raises(HTTPException):
-            extract.run(spec, source(docs))
+            run(spec, source(docs))
 
     def test_the_wildcards_in_a_suffix_are_not_special(self, source):
         """`_` は LIKE では 1 文字に当たる。素通しにすると当たりすぎる。"""
         docs = [{"title": "モネ", "tags": ["19世紀フランスの画家"]}]
         spec = extract.normalize({"source": "jawiki", "tag_suffix": "_の画家"})
         with pytest.raises(HTTPException):
-            extract.run(spec, source(docs))
+            run(spec, source(docs))
 
     def test_the_suffix_survives_a_round_trip(self):
         given = {
@@ -767,7 +780,7 @@ class TestCarryingFactsFromTheArticle:
         docs = [{"title": "モネ", "tags": ["画家"],
                  "extra": {"pageviews_month": 8869, "wikidata": "Q296"}}]
 
-        items, _cursor = extract.run(self.spec(), source(docs))
+        items, _cursor = run(self.spec(), source(docs))
 
         # 名指ししたものだけ。**丸写しにはしない**
         assert items[0]["extra"] == {"pageviews_month": 8869}
@@ -776,14 +789,14 @@ class TestCarryingFactsFromTheArticle:
         """記事によって持っている値が違う(ページビューを持たない記事もある)。"""
         docs = [{"title": "無名さん", "tags": ["画家"], "extra": {"wikidata": "Q1"}}]
 
-        items, _cursor = extract.run(self.spec(), source(docs))
+        items, _cursor = run(self.spec(), source(docs))
 
         assert "extra" not in items[0]
 
     def test_nothing_is_carried_without_the_spec(self, source):
         docs = [{"title": "モネ", "tags": ["画家"], "extra": {"pageviews_month": 8869}}]
 
-        items, _cursor = extract.run(self.spec(extra=[]), source(docs))
+        items, _cursor = run(self.spec(extra=[]), source(docs))
 
         assert "extra" not in items[0]
 
@@ -872,14 +885,14 @@ class TestPullingFromSeveralSources:
                                   {**osm, **overrides.get("osm", {})}])
 
     def test_it_makes_one_roster_out_of_every_source(self, source):
-        items, _cursor = extract.run(self.two_specs(), self.both(source))
+        items, _cursor = run(self.two_specs(), self.both(source))
 
         assert sorted(i["title"] for i in items) == ["すきやばし次郎", "近所の定食屋"]
 
     def test_each_field_goes_to_the_source_that_claims_it(self, source):
         # 説明は百科事典、座標は地図。**順番だけでは表せない** ——
         # どちらも相手の項目を持っているので、譲る側を書いて分ける
-        items, _cursor = extract.run(self.two_specs(), self.both(source))
+        items, _cursor = run(self.two_specs(), self.both(source))
         famous = next(i for i in items if i["title"] == "すきやばし次郎")
 
         assert famous["body"] == "東京都中央区銀座にある寿司店。"
@@ -902,14 +915,14 @@ class TestPullingFromSeveralSources:
             **source(only_in_wikipedia, name="jawiki"),
             **source(self.mapped(), name="osm_japan"),
         }
-        items, _cursor = extract.run(self.two_specs(), sources)
+        items, _cursor = run(self.two_specs(), sources)
         alone = next(i for i in items if i["title"] == "名店")
 
         assert (alone["extra"]["lat"], alone["extra"]["lon"]) == (34.7, 135.5)
 
     def test_the_boilerplate_body_is_used_when_nothing_better_exists(self, source):
         # 地図しか持っていない店は、地図の本文で埋まる（譲っただけで、捨てていない）
-        items, _cursor = extract.run(self.two_specs(), self.both(source))
+        items, _cursor = run(self.two_specs(), self.both(source))
         ordinary = next(i for i in items if i["title"] == "近所の定食屋")
 
         assert ordinary["body"].startswith("近所の定食屋")
@@ -917,7 +930,7 @@ class TestPullingFromSeveralSources:
     def test_it_fills_key_by_key(self, source):
         # **まるごと見ない。** 勝った本が 1 つでも鍵を持っていた時点で止めると、
         # 譲った本が持つ別の鍵（ページビューや電話）が永遠に入らない
-        items, _cursor = extract.run(self.two_specs(), self.both(source))
+        items, _cursor = run(self.two_specs(), self.both(source))
         famous = next(i for i in items if i["title"] == "すきやばし次郎")
 
         assert famous["extra"]["pageviews_month"] == 12_000
@@ -934,7 +947,7 @@ class TestPullingFromSeveralSources:
 
     def test_tags_are_added_without_moving_the_ones_already_there(self, source):
         # 読む側は先頭のタグを代表として使うので、後ろの本が並びを変えると意味が変わる
-        items, _cursor = extract.run(self.two_specs(), self.both(source))
+        items, _cursor = run(self.two_specs(), self.both(source))
         famous = next(i for i in items if i["title"] == "すきやばし次郎")
 
         assert famous["tags"] == ["出典:Wikipedia", "出典:OSM"]
@@ -942,7 +955,7 @@ class TestPullingFromSeveralSources:
     def test_the_cursor_comes_from_the_first_source(self, source):
         # 収集が持てる進み具合は 1 つしかない。選ぶなら優先の先頭がいちばん読める
         specs = self.two_specs(wiki={"cursor": "名簿を作った"}, osm={"cursor": "地図から引いた"})
-        _items, cursor = extract.run(specs, self.both(source))
+        _items, cursor = run(specs, self.both(source))
 
         assert cursor == "名簿を作った"
 
@@ -1007,11 +1020,53 @@ class TestWhenTheSourceIsTooSlow:
             raise db.QueryTimeout()
 
         monkeypatch.setattr(db, "query", too_slow)
+        monkeypatch.setattr(db, "stream", too_slow)
         spec = extract.normalize({"source": "jawiki", "tag": "印象派の画家", "limit": 30})
 
         with pytest.raises(HTTPException) as caught:
-            extract.run(spec, source(painters()))
+            run(spec, source(painters()))
 
         assert caught.value.status_code == 504
         assert "jawiki" in caught.value.detail["error"]
         assert "limit" in caught.value.detail["hint"]
+
+
+class TestKeepingTheRosterOffMemory:
+    """引いた名簿は一時の SQLite に置く。**丸ごとは持たない**。
+
+    dict で持っていた頃は引いた件数ぶんのメモリが要り、日本の飲食店を 3 つの辞典から
+    引くと 68 万件で 2 GB を超えた。焼く側も 1 行ずつ受け取るようになったので、
+    ここも持たずに渡せる形にする。
+    """
+
+    def test_it_is_not_a_list(self, source):
+        roster, _cursor = extract.run(spec(), source(painters()))
+        try:
+            assert not isinstance(roster, list)
+            assert roster.count == 2
+            assert [i["title"] for i in roster] == ["クロード・モネ", "エドゥアール・マネ"]
+        finally:
+            roster.close()
+
+    def test_the_baking_side_can_pull_by_title(self, source):
+        """焼く側は「前世代を流しながら、その見出しに来ている直しを引く」形で回る。"""
+        roster, _cursor = extract.run(spec(), source(painters()))
+        try:
+            assert roster.take("クロード・モネ")["title"] == "クロード・モネ"
+            assert roster.take("居ない人") is None
+            # 取ったものは「残り」から外れる
+            assert [i["title"] for i in roster.rest()] == ["エドゥアール・マネ"]
+            roster.reset()
+            assert len(list(roster.rest())) == 2
+        finally:
+            roster.close()
+
+    def test_the_place_is_cleaned_up(self, source):
+        # 残すと一時ファイルが溜まる
+        roster, _cursor = extract.run(spec(), source(painters()))
+        path = Path(roster.path)
+        assert path.exists()
+
+        roster.close()
+
+        assert not path.exists()

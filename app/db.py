@@ -10,9 +10,13 @@ import os
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 QUERY_TIMEOUT_SECONDS = 5.0
+# 1 行ずつ回すときの持ち時間。**読み口の 5 秒はここに当てない** —— あれは人が
+# 待っている問い合わせを守る数で、こちらは取り込みの中で動く背景の仕事
+STREAM_TIMEOUT_SECONDS = 600.0
 _PROGRESS_STEP = 50_000  # この命令数ごとにタイムアウト判定
 
 _local = threading.local()
@@ -92,6 +96,43 @@ def close_thread_connections() -> None:
         for entry in conns.values():
             entry[0].close()
         conns.clear()
+
+
+def stream(
+    db_path: Path,
+    sql: str,
+    params: tuple | dict = (),
+    timeout: float = STREAM_TIMEOUT_SECONDS,
+) -> Iterator[sqlite3.Row]:
+    """1 行ずつ返す(`fetchall` しない)。
+
+    **数十万行を丸ごと持てない読み手のためのもの。** 集める層は焼き直しのたびに
+    前世代の全文書を舐めるので、`query` で受けると行の数だけメモリが要る ——
+    50 万件の地図の名簿で 1.8 GB になった(実測)。
+
+    **持ち時間は読み口より長い**(`STREAM_TIMEOUT_SECONDS`)。使うのは取り込みの
+    中で動く背景の仕事で、誰も応答を待っていない。**打ち切りは 1 本の実行に対して
+    効く**ので、途中まで返してから切れることがある —— 呼ぶ側はそれを
+    「全部読めた」と取り違えないこと(数え直す側で件数を見る)。
+
+    **接続はスレッドごと**(`get_connection`)。回している最中に同じスレッドから
+    同じ DB へ別の問い合わせを投げると、カーソルが絡む。
+    """
+    conn = get_connection(db_path)
+    deadline = time.monotonic() + timeout
+
+    def _check() -> int:
+        return 1 if time.monotonic() > deadline else 0
+
+    conn.set_progress_handler(_check, _PROGRESS_STEP)
+    try:
+        yield from conn.execute(sql, params)
+    except sqlite3.OperationalError as e:
+        if "interrupted" in str(e):
+            raise QueryTimeout() from e
+        raise
+    finally:
+        conn.set_progress_handler(None, 0)
 
 
 def query(

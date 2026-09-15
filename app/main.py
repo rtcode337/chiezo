@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import json
 import logging
 import os
@@ -395,7 +396,10 @@ async def _collect_material(name: str, sources: dict) -> str:
     item = await asyncio.to_thread(collect.get, name)
     # 前世代は 1 度だけ読んで使い回す。プロンプトへ差し込む素材であり、
     # 消えたものを数える相手であり、doc_id を引き継ぐ元でもある
-    previous = await asyncio.to_thread(collect.previous_docs, name, sources)
+    # **前世代は 1 行ずつ読む。** 丸ごと dict に読むと行の数だけメモリが要る ——
+    # 50 万件の地図の名簿で 1.8 GB になった(実測)。2 周するので、読み直せるように
+    # 「呼ぶと流れてくるもの」で渡す
+    previous = lambda: collect.stream_previous(name, sources)  # noqa: E731
     # **区画は集める前に決める。** 何を見るかが決まっていないと、渡す素材も
     # 差し込む文も作れない(台帳が無ければ空で返り、今までどおり全体を見る)
     ledger = await asyncio.to_thread(collect.plan_partitions, item, sources, previous)
@@ -445,16 +449,27 @@ async def _collect_material(name: str, sources: dict) -> str:
     }
     try:
         feed = await _harvest(item)
-        items, next_cursor, note = await _collect_items(
-            item, previous, sources, keys, sweep, focus, feed
+        # **差し込むぶんだけ取り出す。** 区画で切ってあれば、その区画のぶんだけ ——
+        # 全部を持つと、区画で切った意味がメモリの側から消える
+        for_prompt = await asyncio.to_thread(
+            collect.prompt_docs, item, previous, keys, focus
         )
-        body, diff = await asyncio.to_thread(
+        items, next_cursor, note = await _collect_items(
+            item, for_prompt, sources, keys, sweep, focus, feed
+        )
+        # **数えるのは流し始める前。** 流している途中でステータスは変えられないので、
+        # 断るならここで断る(`bake_survey`)。素材そのものは 1 行ずつ返すので、
+        # ここでは組み立てない —— 50 万件の名簿では 1 本の文字列が 460 MB になる
+        plan = await asyncio.to_thread(
             # **足すだけの回は、既にある見出しに触らない。** 割り込みは別 ——
             # あれは名指しで「ここを直して」なので、必ず直す側で走る
-            collect.ndjson, baked_as, sources, previous, items,
+            collect.bake_survey, baked_as, sources, previous, items,
             focus is None and sweep.only_new, edits,
         )
+        diff = plan["diff"]
     except Exception as e:
+        if hasattr(items := locals().get("items"), "close"):
+            items.close()
         reason = f"{type(e).__name__}: {e}"
         log.warning("collect %s failed: %s", name, reason)
         await asyncio.to_thread(
@@ -495,7 +510,20 @@ async def _collect_material(name: str, sources: dict) -> str:
         name, "直す" if edits else "足す", label, f" {len(keys)} 区画" if keys else "",
         diff["added"], diff["updated"], diff["kept"], diff["removed"], diff["skipped"],
     )
-    return body
+    # **控えを書いてから流す。** 読み手が途中で切っても、何をしたかは残る。
+    # **流し終えたら置き場を片づける** —— 抽出は一時の SQLite に名簿を載せるので、
+    # 残すとファイルが溜まる(`app/extract.py` の `Roster`)
+    def flow():
+        try:
+            yield from collect.bake_lines(
+                baked_as, sources, previous, items,
+                focus is None and sweep.only_new, edits, plan,
+            )
+        finally:
+            if hasattr(items, "close"):
+                items.close()
+
+    return flow()
 
 
 async def collect_preview(name: str, sources: dict, sweep_name: str | None = None) -> dict:
@@ -512,7 +540,8 @@ async def collect_preview(name: str, sources: dict, sweep_name: str | None = Non
     # **どの巡回のつもりで試すかを選べる。** 相手も 1 回に見る量も巡回ごとに違うので、
     # 名指しできないと「じっくりで聞いたらどうなるか」を試せない
     sweep = collect.require_runnable(item, sweep_name)
-    previous = await asyncio.to_thread(collect.previous_docs, name, sources)
+    # 焼く経路と同じく 1 行ずつ読む(丸ごと持つと、数十万件の収集で GB 単位になる)
+    previous = lambda: collect.stream_previous(name, sources)  # noqa: E731
     ledger = await asyncio.to_thread(collect.plan_partitions, item, sources, previous)
     # **割り直した台帳で素材を組む。** 定義に入っているのは走る前の台帳なので、
     # この回で割り直したときに食い違う —— 区画を選ぶのは新しい台帳から、
@@ -523,14 +552,20 @@ async def collect_preview(name: str, sources: dict, sweep_name: str | None = Non
     # 見るためのもので、1 区画あれば分かる(そのぶん安く、待たされない)
     keys = partitioning.pick(ledger, sweep.name, 1)
     feed = await _harvest(item)
+    for_prompt = await asyncio.to_thread(collect.prompt_docs, item, previous, keys, None)
     items, next_cursor, note = await _collect_items(
-        item, previous, sources, keys, sweep, None, feed
+        item, for_prompt, sources, keys, sweep, None, feed
     )
     edits = collect.edits_what_is_there(
         sweep.prompt or item.prompt, sweep.only_new
     )
-    _docs, diff = await asyncio.to_thread(
-        collect.material, item, previous, items, sweep.only_new, edits
+    # **下見でも丸ごとは組まない。** 数えるだけで足りる(焼かないので素材は要らない)
+    diff: dict = {}
+    await asyncio.to_thread(
+        lambda: deque(
+            collect.stream_docs(item, previous(), items, sweep.only_new, edits, diff),
+            maxlen=0,
+        )
     )
     return {
         "name": name,
@@ -1826,8 +1861,17 @@ async def collect_fetch(request: Request, source: str = Query(..., description="
     (ダンプのダウンロードも同じくらいかかる)。
     """
     collect.require_enabled()
-    body = await collect_material(source, request.app.state.sources)
-    return Response(content=body, media_type="application/x-ndjson")
+    lines = await collect_material(source, request.app.state.sources)
+
+    def flow():
+        for line in lines:
+            yield line.encode() + b"\n"
+
+    # **1 行ずつ流す。** 丸ごと組んでから返していた頃は、50 万件の名簿で 1 本の
+    # 文字列が 460 MB になった —— 取り込み側は元から流し込みで受けている
+    # (`ingest/sources/remote.py` が `copyfileobj` でそのままファイルへ落とす)。
+    # **断るのは流し始める前に済ませてある**(`collect.bake_survey`)
+    return StreamingResponse(flow(), media_type="application/x-ndjson")
 
 
 @app.post("/v1/collect/{name}/preview")
@@ -2042,7 +2086,14 @@ def _probe(spec: dict, sources: dict) -> dict:
     候補は取れた数に関わらず添える —— 0 件だけが失敗ではない。それらしい一般名を
     書くと「実在はするが数件しか付いていないタグ」に当たり、静かに痩せた図になる。
     """
-    items, _cursor = extract.run(spec, sources)
+    roster, _cursor = extract.run(spec, sources)
+    try:
+        # **下見なので読み切る。** ここは人が待っている道で、書けた指定が空振りか
+        # どうかを見るためのもの —— 引く件数は指定の側で絞られている
+        items = list(roster)
+    finally:
+        if hasattr(roster, "close"):
+            roster.close()
     matched = extract.count(spec, sources)
     # **当たっている数も返す。** 取った数だけ見せると、絞られていることに気づけない
     # (614 件に当たっているのに 30 件返っても、見ている側には分からない)

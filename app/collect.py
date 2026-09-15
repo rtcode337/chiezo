@@ -134,15 +134,19 @@ MAX_PROMPT_CHARS = 20_000
 # - 件数は大きさの代理にならない。1 件は `MAX_BODY_CHARS` まで許すので、
 #   200 件でも 4 MB になりうるし、短い数千件は 1 MB に収まる
 #
-# 実際に危ないのは `ndjson` が素材を 1 本の文字列で組むところで、そこはバイト数でしか
-# 測れない。**数千件・数万件を集めたいことは普通にある**ので、件数の側に天井を作らない。
+# **数千件・数万件を集めたいことは普通にある**ので、件数の側に天井を作らない。
+#
+# **もうメモリの話ではない。** 素材は 1 行ずつ流すようになった(`bake_lines`)ので、
+# ここが守っているのは「焼くのに現実的な大きさか」だけ —— 取り込み側はこれを
+# ファイルへ落としてから舐めるので、置き場と時間のほうが効く。
+# 実測では地図の名簿が 1 件 478 バイトで、68 万件でも 460 MB に収まる。
 #
 # **超えたら黙って切らずに断る**(`app/extract.py` と同じ判断)。切ったことは
 # 返り値から分からないので、絞ったつもりの無い収集が「そこまでしか無い」ように見える
 # —— 実測: 索引から 6,875 件に当たった抽出が 200 件で止まり、控えに残ったのは
 # 「ok・200 件追加」だけで、当たった件数も切ったことも痕跡が無かった。
 MAX_MATERIAL_BYTES = int(
-    os.environ.get("CHIEZO_COLLECT_MAX_MATERIAL_BYTES", "") or 192 * 1024 * 1024
+    os.environ.get("CHIEZO_COLLECT_MAX_MATERIAL_BYTES", "") or 1024 * 1024 * 1024
 )
 
 # 本文の上限。1 件がこれを超えるものは切る(引くための索引であって全文の保管庫ではない)
@@ -2229,6 +2233,10 @@ def plan_partitions(item: Collection, sources: dict, previous: dict[str, dict]) 
     割り直しの引き金は「育った」と「空になった」しかないので、中身が別の区画へ
     移って痩せた帯は、痩せたまま回り続ける —— 1 人のために 1 回ぶんの枠を使う
     ことになる。まとめるのは周回の記録が同じ隣どうしだけなので、進み具合は動かない。
+
+    **前世代は「呼ぶと流れてくるもの」でも受け取る。** 区画を割るのに要るのは
+    見出しとタグと脇書きだけで、本文は要らない —— 数十万件の収集では、本文まで
+    読むかどうかで必要なメモリが桁で変わる。
     """
     if not item.partition:
         return []
@@ -2236,7 +2244,7 @@ def plan_partitions(item: Collection, sources: dict, previous: dict[str, dict]) 
     # **母集団は生きているものだけ**(`living`)。消したものは残り続けるので、
     # 混ぜると**精査を頼むほど区画が太り**、見るものが無い区画にも巡回の 1 回が
     # 割り当てられる。消えたものは差し込みには別の一覧として渡る
-    alive = living(previous)
+    alive = _light_docs(previous) if callable(previous) else living(previous)
     counts = partitioning.counts_of(spec, item.partitions, alive)
     if item.partitions and not partitioning.outgrown(spec, counts):
         return partitioning.merged(spec, partitioning.counted(item.partitions, counts))
@@ -2244,6 +2252,152 @@ def plan_partitions(item: Collection, sources: dict, previous: dict[str, dict]) 
     ledger = partitioning.merged(spec, partitioning.refresh(built, item.partitions, spec))
     log.info("partition %s: %d 区画(まとめる前 %d)", item.name, len(ledger), len(built))
     return ledger
+
+
+class Edits:
+    """その回に集めたもの。**見出しで引ける形**で持つ。
+
+    前世代を 1 行ずつ流して重ねるようになったので、突き合わせの向きが逆になった
+    —— 前世代を dict に読んで集めたものを重ねるのではなく、**前世代を流しながら、
+    その見出しに来ている直しを引く**。引く側がここ。
+
+    **小さいほうを持つ**のが眼目。定時の巡回で直すのは 1 回に数百件だが、前世代は
+    数十万件になりうる(地図の名簿)。大きいほうを持つと、150 件直す回でも 2 GB 要る。
+    """
+
+    def __init__(self, collected):
+        self._by_title: dict[str, dict] = {}
+        self._order: list[str] = []
+        self.count = 0
+        for raw in collected:
+            self.count += 1
+            title = (raw.get("title") or "").strip()[:notes.TITLE_MAX_CHARS]
+            if title not in self._by_title:
+                self._order.append(title)
+            self._by_title[title] = raw
+        self._used: set[str] = set()
+
+    def take(self, title: str) -> dict | None:
+        """その見出しに来ている直し。**取ったら印を付ける**(あとで足す側から外す)。"""
+        raw = self._by_title.get(title)
+        if raw is not None:
+            self._used.add(title)
+        return raw
+
+    def rest(self):
+        """前世代に無かったぶん。**書いた順**で返す(並びが結果の並びになる)。"""
+        for title in self._order:
+            if title not in self._used:
+                yield self._by_title[title]
+
+    def reset(self) -> None:
+        """印を消して、もう一度流せるようにする(数える周と流す周で 2 度使う)。"""
+        self._used = set()
+
+
+def stream_docs(
+    item: Collection,
+    previous,
+    collected,
+    only_new: bool = False,
+    edits: bool = False,
+    diff: dict | None = None,
+):
+    """焼く素材を 1 件ずつ返す。`material` の中身で、**丸ごとは持たない**。
+
+    **前世代を外側にして回す。** 前世代は数十万件になりうるので、dict に読むと
+    行の数だけメモリが要る —— 50 万件の地図の名簿で 1.8 GB になった(実測)。
+    流しながら、その見出しに来ている直しを `collected` から引いて重ねる。
+
+    **並びは前世代の `doc_id` 順、そのあとに新しいぶん。** 前は最後に並べ直して
+    いたが、丸ごと持たないと並べ替えられない —— 前世代を `doc_id` 順に読めば
+    同じ並びになる(新しいぶんは採番の順で後ろに付く)。
+
+    `diff` を渡すと、数えた結果をそこへ書く(戻り値にできないため)。
+    """
+    counts = diff if diff is not None else {}
+    now = _iso(_now())
+    # **見出しで引ける形なら、そのまま使う。** 抽出が返す名簿は一時の SQLite に
+    # 載っている(`app/extract.py` の `Roster`)—— 数十万件を dict に積み直したら、
+    # 逃がした意味が消える
+    edits_of = collected if hasattr(collected, "take") else Edits(collected)
+    edits_of.reset()
+    added = updated = skipped = seen = 0
+    next_id = 0
+    added_titles: list[str] = []
+    updated_titles: list[str] = []
+    removed_titles: list[str] = []
+
+    for before in previous:
+        seen += 1
+        next_id = max(next_id, before["doc_id"])
+        title = before["title"]
+        raw = edits_of.take(title)
+        if raw is None:
+            yield before
+            continue
+        if only_new:
+            # **足すだけの回。** 既にあるものには触らない(数えるだけ)。
+            # ただし、まだ持っていない脇書きは受け取る
+            skipped += 1
+            yield _with_new_facts(before, raw)
+            continue
+        if edits and _is_tombstone(raw):
+            # 墓標。**消さずに印を付けて残す**
+            removed_titles.append(title)
+            updated += 1
+            yield _buried(before, raw, now)
+            continue
+        doc = _to_doc(raw, now, item.web)
+        if doc is None:
+            skipped += 1
+            yield before
+            continue
+        before_extra = before.get("extra")
+        doc["extra"] = _merge_extra(
+            before_extra if isinstance(before_extra, dict) else {}, doc["extra"]
+        )
+        if edits:
+            updated += 1
+            updated_titles.append(title)
+        else:
+            # 集めるほうで同じ見出しが来るのは「もう持っている」の意味
+            skipped += 1
+        yield {**doc, "doc_id": before["doc_id"]}
+
+    next_id += 1
+    for raw in edits_of.rest():
+        title = (raw.get("title") or "").strip()[:notes.TITLE_MAX_CHARS]
+        if only_new and edits and _is_tombstone(raw):
+            skipped += 1
+            continue
+        if edits and _is_tombstone(raw):
+            # **持っていないものへの墓標は数えない**(消すものが無い)
+            skipped += 1
+            continue
+        doc = _to_doc(raw, now, item.web)
+        if doc is None:
+            skipped += 1
+            continue
+        doc["extra"] = _merge_extra({}, doc["extra"])
+        added += 1
+        added_titles.append(doc["title"])
+        yield {**doc, "doc_id": next_id}
+        next_id += 1
+
+    counts.update({
+        "previous": seen,
+        "total": seen + added,
+        "added": added,
+        "updated": updated,
+        "kept": seen,
+        "removed": len(removed_titles),
+        "skipped": skipped,
+        "added_titles": added_titles[:MAX_TITLE_SAMPLE],
+        "updated_titles": updated_titles[:MAX_TITLE_SAMPLE],
+        "removed_titles": removed_titles[:MAX_TITLE_SAMPLE],
+        "collected": edits_of.count,
+    })
 
 
 def material(
@@ -2285,89 +2439,10 @@ def material(
 
     **`doc_id` は前世代のものを引き継ぐ**。残った文書の URL が焼き直しで変わらないため。
     """
-    merged = dict(previous)
-    next_id = max((d["doc_id"] for d in previous.values()), default=0) + 1
-    now = _iso(_now())
-    added = updated = skipped = 0
-    added_titles: list[str] = []
-    updated_titles: list[str] = []
-    removed_titles: list[str] = []
-    for raw in collected:
-        title = (raw.get("title") or "").strip()[:notes.TITLE_MAX_CHARS]
-        if only_new and title in merged:
-            # **足すだけの回。** 既にあるものには触らない(数えるだけ)。
-            # **ただし、まだ持っていない脇書きは受け取る** —— 機械で運ぶ事実
-            # (知名度など)を後から指定に足しても、既にいる人には永遠に届かない。
-            # **持っている値は上書きしない**ので、育てた中身は動かない
-            merged[title] = _with_new_facts(merged[title], raw)
-            skipped += 1
-            continue
-        if edits and title and _is_tombstone(raw):
-            # 墓標。**消さずに印を付けて残す**(`notes.REMOVED_TAG`)。
-            #
-            # 消していた頃は、消す回と足す回が別々に走るせいで外したものが次の回で
-            # 戻ってきた。見出しの控え(墓場)を定義に持って止めていたが、あれは
-            # 1 件のメモに収める都合で 2,000 件の上限が要り、溢れると古いものから
-            # 静かに戻っていた。
-            #
-            # **残せば、その問題ごと消える。** 見出しは既にいるので足す回は素通りし
-            # (`only_new`)、上限も要らない。**読み口が既定で隠す**ので人には出ず、
-            # 集める層は焼いた DB を直に読むので **AI からは見えたまま** ——
-            # 何を外したかを自分で確かめられる。
-            # **持っていないものへの墓標は数えない**(消すものが無い)
-            if (before := merged.get(title)) is not None:
-                merged[title] = _buried(before, raw, now)
-                removed_titles.append(title)
-                updated += 1
-            else:
-                skipped += 1
-            continue
-        doc = _to_doc(raw, now, item.web)
-        if doc is None:
-            skipped += 1
-            continue
-        title = doc["title"]
-        kept_before = previous.get(title)
-        if kept_before is None:
-            # 新しい 1 件。重ねる相手が居ないので、印(null)を解くだけ
-            doc["extra"] = _merge_extra({}, doc["extra"])
-            doc_id = next_id
-            next_id += 1
-            added += 1
-            added_titles.append(title)
-        else:
-            doc_id = kept_before["doc_id"]
-            # **前の世代の脇書きに重ねる**(`_merge_extra`)。言われていないものは残る
-            before_extra = kept_before.get("extra")
-            doc["extra"] = _merge_extra(
-                before_extra if isinstance(before_extra, dict) else {}, doc["extra"]
-            )
-            if edits:
-                updated += 1
-                updated_titles.append(title)
-            else:
-                # 集めるほうで同じ見出しが来るのは「もう持っている」の意味。
-                # 中身は新しいほうで置き換えるが、積み上がった件数は増えない
-                skipped += 1
-        merged[title] = {**doc, "doc_id": doc_id}
-    diff = {
-        "previous": len(previous),
-        "total": len(merged),
-        "added": added,
-        "updated": updated,
-        "kept": len(merged) - added,
-        "removed": len(removed_titles),
-        "skipped": skipped,
-        # 動いた見出しの頭のほう。**件数だけでは何が起きたか読めない** ——
-        # 「10 件消えた」と「この 10 件が消えた」では、プロンプトを直せるかが違う
-        "added_titles": added_titles[:MAX_TITLE_SAMPLE],
-        "updated_titles": updated_titles[:MAX_TITLE_SAMPLE],
-        "removed_titles": removed_titles[:MAX_TITLE_SAMPLE],
-        # 集めた側が返した件数。**焼ける件数(`total`)とは別に出す** —— 一致しない
-        # ときに、捨てたのか前世代と重なったのかを読み分けられるようにするため
-        "collected": len(collected),
-    }
-    return sorted(merged.values(), key=lambda d: d["doc_id"]), diff
+    counts: dict = {}
+    rows = sorted(previous.values(), key=lambda d: d["doc_id"])
+    docs = list(stream_docs(item, rows, collected, only_new, edits, counts))
+    return docs, counts
 
 
 def _is_tombstone(raw: dict) -> bool:
@@ -2576,6 +2651,230 @@ def _dump_date(name: str, sources: dict) -> str:
     return stamp
 
 
+def prompt_docs(item: Collection, previous, keys: list[str], focus=None) -> dict[str, dict]:
+    """プロンプトへ差し込むぶんだけを取り出す。
+
+    **区画で切ってあれば、その区画のぶんだけ**(数百件)。全部を持つと、区画で
+    切った意味がメモリの側から消える —— 150 件見る回のために数十万件を読むことになる。
+    区画を持たない収集(流れを追うもの)は、そもそも直近しか残らないので全部を持つ。
+
+    **名指しされた見出しは、どの区画でも拾う**(割り込み)。区画の外に居ることが
+    あるので、区画で絞ると名指しした 1 件が差し込みから消える。
+    """
+    if not callable(previous):
+        return previous or {}
+    named = set(focus.titles) if focus and focus.titles else set()
+    if not (keys and item.partition):
+        return {doc["title"]: doc for doc in previous()}
+    spec = partitioning.normalize(item.partition)
+    wanted = set(keys)
+    out: dict[str, dict] = {}
+    for doc in previous():
+        if doc["title"] in named:
+            out[doc["title"]] = doc
+            continue
+        if partitioning.partition_of(spec, item.partitions, doc) in wanted:
+            out[doc["title"]] = doc
+    return out
+
+
+def _light_docs(previous) -> dict[str, dict]:
+    """区画を割るためだけの、軽い写し(見出し・タグ・脇書き)。
+
+    **本文を持たない。** 区画に要るのは座標か分類だけで、本文は 1 件の大半を
+    占める —— 数十万件では、持つかどうかでメモリが桁で変わる。
+    **消えたものは入れない**(`living` と同じ判断)。
+    """
+    out: dict[str, dict] = {}
+    for doc in previous():
+        if is_removed(doc):
+            continue
+        out[doc["title"]] = {
+            "title": doc["title"],
+            "tags": doc.get("tags") or [],
+            "extra": doc.get("extra"),
+        }
+    return out
+
+
+def stream_previous(name: str, sources: dict):
+    """前世代を 1 行ずつ返す。`previous_docs` の流し込み版。
+
+    **丸ごと持てないから分けてある。** 集める層は焼き直しのたびに前世代を全部
+    舐めるので、dict に読むと行の数だけメモリが要る —— 50 万件の地図の名簿で
+    1.8 GB(実測)。**`doc_id` の順**で返すので、焼いたあとの並びも前世代のまま。
+    """
+    src = sources.get(name)
+    if src is None:
+        return
+    rows = db.stream(
+        src.path,
+        "SELECT doc_id, title, opening, body, tags, updated_at, extra FROM docs"
+        " ORDER BY doc_id",
+    )
+    for row in rows:
+        yield {
+            "doc_id": row["doc_id"],
+            "title": row["title"],
+            "opening": row["opening"],
+            "body": row["body"],
+            "tags": load_tags(row["tags"]),
+            "updated_at": row["updated_at"],
+            "extra": load_json(row["extra"]),
+        }
+
+
+def _rows_of(previous):
+    """前世代を**何度でも流せる形**にする。
+
+    2 周するので、1 度きりの iterator は受け取れない —— dict をもらったら
+    `doc_id` 順に並べて返し、呼べるものをもらったら呼ぶたびに新しく流させる。
+    """
+    if callable(previous):
+        return previous
+    rows = sorted((previous or {}).values(), key=lambda d: d["doc_id"])
+    return lambda: iter(rows)
+
+
+def bake_survey(item, sources: dict, previous, collected, only_new=False, edits=False) -> dict:
+    """焼く前の 1 周目。**数えるだけで、何も持たない**。
+
+    **流し始めたら断れない**(ステータスは 1 度しか送れない)。丸ごと組んでから
+    測っていた頃はそれで良かったが、1 行ずつ流すならここで先に数えて、断るなら
+    断ってから流し始める —— 前世代をもう 1 度読むことになるが、手元の SQLite を
+    `doc_id` の索引順に舐めるだけなので安い。
+
+    ついでに、**2 周目に要るものもここで用意する** —— 実在を確かめるタグの
+    引き当て(`verified_docs` と同じ規則)と、区画ごとの件数と、見本の見出し。
+
+    **大きさは絞り込む前の値で見る。** タグを落とすと縮むだけなので、天井の
+    判断としては安全側に倒れる。
+    """
+    rows = _rows_of(previous)
+    edits_of = collected if hasattr(collected, "take") else Edits(collected)
+    diff: dict = {}
+    limit = _expiry_limit(item)
+    rules = normalize_verify_tags(item.verify_tags)
+    wanted: dict[int, set[str]] = {n: set() for n, _ in enumerate(rules)}
+    spec = partitioning.normalize(item.partition) if item.partition else None
+    counts: dict[str, int] = {}
+    used = 0
+    total = 0
+    expired = 0
+    first_title = None
+
+    for doc in stream_docs(item, rows(), edits_of, only_new, edits, diff):
+        if limit is not None and _doc_time(doc) < limit:
+            expired += 1
+            continue
+        total += 1
+        if first_title is None:
+            first_title = doc["title"]
+        used += len(json.dumps(doc, ensure_ascii=False).encode()) + 1
+        if used > MAX_MATERIAL_BYTES:
+            raise HTTPException(409, {
+                "error": f"収集「{item.name}」の素材が大きすぎます"
+                         f"({total:,} 件目で"
+                         f" {MAX_MATERIAL_BYTES / 1024 / 1024:.0f} MB を超えました)",
+                "hint": "1 回に集める件数を減らすか、本文を短くしてください"
+                        "(天井は CHIEZO_COLLECT_MAX_MATERIAL_BYTES で変えられます)。"
+                        "焼いていないので、いまの内容はそのままです",
+            })
+        for n, rule in enumerate(rules):
+            head = rule["prefix"] + ":"
+            for tag in doc.get("tags") or []:
+                if str(tag).startswith(head) and (found := _tag_head(tag, head)):
+                    wanted[n].add(found)
+        if spec is not None and item.partitions and not is_removed(doc):
+            if key := partitioning.partition_of(spec, item.partitions, doc):
+                counts[key] = counts.get(key, 0) + 1
+
+    if not total:
+        raise HTTPException(409, {
+            "error": f"収集「{item.name}」は 1 件も集められませんでした",
+            "hint": "プロンプトを見直すか、相手を替えてから試してください",
+        })
+    diff["expired"] = expired
+    diff["partition_counts"] = counts
+    if reason := shrink_blocked(item, diff, edits):
+        raise HTTPException(409, {
+            "error": f"収集「{item.name}」の整理を止めました: {reason}",
+            "hint": "プロンプトを直すか、意図して減らすなら keep_ratio を下げてください"
+                    "(0 で守りを外す)。焼いていないので、いまの内容はそのままです",
+        })
+    alive = {}
+    for n, rule in enumerate(rules):
+        src = sources.get(rule["source"])
+        if src is not None and wanted[n]:
+            alive[n] = _existing_titles(src.path, wanted[n])
+    plan = {"diff": diff, "rules": rules, "alive": alive, "first_title": first_title}
+    # **落としたタグの数も、流し始める前に数える。** 控えに残すのはここで record する
+    # ためで、流しながら数えると「控えを書いたあとに分かる」ことになる。
+    # **指定を持つ収集だけ**もう 1 周する(持たない収集では 1 件も落ちない)
+    diff["tags_dropped"] = _count_dropped(item, plan, previous, collected, only_new, edits) \
+        if alive else 0
+    return plan
+
+
+def _count_dropped(item, plan, previous, collected, only_new, edits) -> int:
+    """実在しない見出しを指すタグを、いくつ落とすことになるか。"""
+    rows = _rows_of(previous)
+    limit = _expiry_limit(item)
+    dropped = 0
+    for doc in stream_docs(item, rows(), collected, only_new, edits):
+        if limit is not None and _doc_time(doc) < limit:
+            continue
+        for n, rule in enumerate(plan["rules"]):
+            if (known := plan["alive"].get(n)) is None:
+                continue
+            head = rule["prefix"] + ":"
+            tags = doc.get("tags") or []
+            dropped += sum(
+                1 for tag in tags
+                if str(tag).startswith(head) and _tag_head(tag, head) not in known
+            )
+    return dropped
+
+
+def bake_lines(item, sources: dict, previous, collected, only_new=False, edits=False,
+               survey: dict | None = None):
+    """焼く素材を 1 行ずつ返す。**2 周目**(数えるのは `bake_survey`)。"""
+    plan = survey or bake_survey(item, sources, previous, collected, only_new, edits)
+    rows = _rows_of(previous)
+    limit = _expiry_limit(item)
+
+    yield json.dumps({
+        "meta": {
+            "dump_date": _dump_date(item.name, sources),
+            "min_docs": 1,
+            "sample_titles": [plan["first_title"]],
+        }
+    }, ensure_ascii=False)
+
+    for doc in stream_docs(item, rows(), collected, only_new, edits):
+        if limit is not None and _doc_time(doc) < limit:
+            continue
+        for n, rule in enumerate(plan["rules"]):
+            if (known := plan["alive"].get(n)) is None:
+                continue
+            head = rule["prefix"] + ":"
+            tags = doc.get("tags") or []
+            keep = [
+                tag for tag in tags
+                if not str(tag).startswith(head) or _tag_head(tag, head) in known
+            ]
+            if len(keep) != len(tags):
+                doc = {**doc, "tags": keep}
+        yield json.dumps(doc, ensure_ascii=False)
+
+
+def _expiry_limit(item: Collection) -> str | None:
+    """期限で落とす境目。**流れの収集だけ**(網羅では穴が開く)。"""
+    if item.kind != KIND_FLOW or item.keep_days <= 0:
+        return None
+    return _iso(_now() - timedelta(days=item.keep_days))
+
+
 def ndjson(
     item: Collection,
     sources: dict,
@@ -2586,68 +2885,13 @@ def ndjson(
 ) -> tuple[str, dict]:
     """取り込み側が読む素材(1 行目が meta、以降は 1 行 1 文書)と、前世代との差分。
 
-    **空なら 409 で断る** —— 流し始めた後ではステータスを変えられないので、
-    先に全部組み立ててから返す(固化と同じ判断)。
+    **丸ごと 1 本の文字列にする形**。本番はこれを使わず 1 行ずつ流す
+    (`bake_lines`)—— 数十万件の収集では、繋いだだけで数百 MB になる。
+    ここに残してあるのは、**一度に見たい側**(テストと下見)のため。
 
-    **作り直しで減りすぎていても断る**。ここが後戻りできる最後の地点で、
-    通してしまうと次の世代が焼き上がり、戻すには世代を巻き戻すしかなくなる。
-
-    **大きすぎても断る**。素材を 1 本の文字列で組む場所なので、ここだけは
-    実際のバイト数でしか測れない(`MAX_MATERIAL_BYTES`)。積みながら見て、
-    超えた時点で止める —— 全部組んでから測ると、測るために膨らませることになる。
+    断る条件は `bake_survey` が持つ(空・減りすぎ・大きすぎ)。**流し始める前に
+    数える**ので、どちらの道でも同じところで同じ理由で止まる。
     """
-    docs, diff = material(item, previous, collected, only_new, edits)
-    # **実在しない見出しを指すタグは、焼く前に落とす。** 読む側は「タグがある =
-    # 押せば何か出る」と受け取るので、混ざっていると押しても何も出ないものが並ぶ
-    docs, diff["tags_dropped"] = verified_docs(item, docs, sources)
-    if not docs:
-        raise HTTPException(
-            409,
-            {
-                "error": f"収集「{item.name}」は 1 件も集められませんでした",
-                "hint": "プロンプトを見直すか、相手を替えてから試してください",
-            },
-        )
-    # **期限で落とすのは、減りすぎの歯止めを見たあと。** あれは AI が変な日に当たって
-    # 大量に消すのを止めるためのもので、こちらは意図して落としている
-    docs, diff["expired"] = expired_docs(item, docs)
-    if reason := shrink_blocked(item, diff, edits):
-        raise HTTPException(
-            409,
-            {
-                "error": f"収集「{item.name}」の整理を止めました: {reason}",
-                "hint": "プロンプトを直すか、意図して減らすなら keep_ratio を下げてください"
-                        "(0 で守りを外す)。焼いていないので、いまの内容はそのままです",
-            },
-        )
-    # **焼いたあとの人数を数えて渡す。** 台帳の数は回の頭で取ったものなので、
-    # その回で中身が動くと必ず 1 回ぶん古い —— 見終わったばかりの区画が、
-    # 見る前の人数のまま出る(年代や地域が入って別の帯へ移った人が、まだそこに
-    # 居るように見える)。数え直す相手は、いま焼こうとしている世代そのもの
-    diff["partition_counts"] = partition_counts(item, docs)
-    meta = {
-        "meta": {
-            "dump_date": _dump_date(item.name, sources),
-            "min_docs": 1,
-            "sample_titles": [docs[0]["title"]],
-        }
-    }
-    lines = [json.dumps(meta, ensure_ascii=False)]
-    used = len(lines[0].encode())
-    for n, doc in enumerate(docs, 1):
-        line = json.dumps(doc, ensure_ascii=False)
-        used += len(line.encode()) + 1
-        if used > MAX_MATERIAL_BYTES:
-            raise HTTPException(
-                409,
-                {
-                    "error": f"収集「{item.name}」の素材が大きすぎます"
-                             f"({len(docs):,} 件のうち {n:,} 件目で"
-                             f" {MAX_MATERIAL_BYTES / 1024 / 1024:.0f} MB を超えました)",
-                    "hint": "1 回に集める件数を減らすか、本文を短くしてください"
-                            "(天井は CHIEZO_COLLECT_MAX_MATERIAL_BYTES で変えられます)。"
-                            "焼いていないので、いまの内容はそのままです",
-                },
-            )
-        lines.append(line)
-    return "\n".join(lines) + "\n", diff
+    plan = bake_survey(item, sources, previous, collected, only_new, edits)
+    lines = list(bake_lines(item, sources, previous, collected, only_new, edits, plan))
+    return "\n".join(lines) + "\n", plan["diff"]

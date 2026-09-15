@@ -58,8 +58,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import sqlite3
+import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import suppress
 
 from fastapi import HTTPException
 
@@ -519,24 +524,25 @@ def run(spec, sources: dict) -> tuple[list[dict], str]:
     具合は 1 つしかない —— どれかを選ぶなら、優先の先頭にするのがいちばん読める。
     """
     written = specs(spec)
-    pulled = []
     cursor = DEFAULT_CURSOR
-    for index, one in enumerate(written):
-        items, cursor_of = _timed_run(one, sources)
-        if index == 0:
-            cursor = cursor_of
-        pulled.append((one, items))
-
-    merged: dict[str, dict] = {}
-    # 1 周目。**その項目を勝ちにいくと書いた本だけ**が、先に書いた順で入る
-    for one, items in pulled:
-        for item in items:
-            _merge_item(merged, item, one["provides"])
-    # 2 周目。**譲った本の値でも、空いているところは埋める**
-    for _one, items in pulled:
-        for item in items:
-            _merge_item(merged, item, PROVIDED_FIELDS)
-    return list(merged.values()), cursor
+    roster = Roster()
+    try:
+        # 1 周目。**その項目を勝ちにいくと書いた本だけ**が、先に書いた順で入る
+        for index, one in enumerate(written):
+            items, cursor_of = _timed_run(one, sources)
+            if index == 0:
+                cursor = cursor_of
+            for item in items:
+                roster.merge(item, one["provides"])
+        # 2 周目。**譲った本の値でも、空いているところは埋める**
+        for one in written:
+            items, _cursor = _timed_run(one, sources)
+            for item in items:
+                roster.merge(item, PROVIDED_FIELDS)
+    except BaseException:
+        roster.close()
+        raise
+    return roster, cursor
 
 
 def _timed_run(spec: dict, sources: dict) -> tuple[list[dict], str]:
@@ -549,19 +555,154 @@ def _timed_run(spec: dict, sources: dict) -> tuple[list[dict], str]:
     from app import db
 
     started = time.monotonic()
-    try:
-        items, cursor = _run_one(spec, sources)
-    except db.QueryTimeout:
-        raise HTTPException(504, {
+
+    def refused():
+        return HTTPException(504, {
             "error": f"ソース「{spec['source']}」の抽出が"
                      f"{EXTRACT_TIMEOUT_SECONDS:.0f} 秒で終わりませんでした",
             "hint": "tag を絞るか limit に取る件数を書いてください"
                     "(当たっている件数は収集の画面で確かめられます)",
-        }) from None
-    log.info(
-        "extract %s: %d items in %.1fs", spec["source"], len(items), time.monotonic() - started
-    )
-    return items, cursor
+        })
+
+    try:
+        items, cursor = _run_one(spec, sources)
+    except db.QueryTimeout:
+        raise refused() from None
+
+    def guarded():
+        # **打ち切りは回している最中に来る。** 1 行ずつ返すようになったので、
+        # 呼んだ瞬間ではなく、読み進めたところで切れる
+        seen = 0
+        try:
+            for item in items:
+                seen += 1
+                yield item
+        except db.QueryTimeout:
+            raise refused() from None
+        log.info(
+            "extract %s: %d items in %.1fs", spec["source"], seen, time.monotonic() - started
+        )
+
+    return guarded(), cursor
+
+
+class Roster:
+    """引いてきた名簿の置き場。**一時の SQLite に書く**。
+
+    dict で持っていた頃は、引いた件数ぶんのメモリが要った —— 日本の飲食店を
+    3 つの辞典から引くと 68 万件で、2 GB を超える(実測)。焼く側も 1 行ずつ
+    受け取るようになったので、ここも持たずに渡せる形にする。
+
+    **畳むのに見出しで引く必要がある**(同じ店が複数の辞典に居る)ので、ただの
+    ファイルではなく索引の要る置き場になる。SQLite ならその索引がただで付く。
+
+    **焼く層が読む約束**(`take` / `rest` / `reset` / `count`)に合わせてある ——
+    向こうは「前世代を流しながら、その見出しに来ている直しを引く」形で回る。
+    """
+
+    def __init__(self) -> None:
+        handle, self.path = tempfile.mkstemp(prefix="chiezo-roster-", suffix=".db")
+        os.close(handle)
+        # **スレッドを跨いで読む。** 引くのは別スレッド(`asyncio.to_thread`)で、
+        # 読むのは流し込みの最中 —— 触るのは一度に 1 つなので、見張りを外してよい
+        self.conn = sqlite3.connect(self.path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        # **同期を切る。** 一時の置き場なので、落ちたら作り直せばよい
+        self.conn.executescript(
+            "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;"
+            " CREATE TABLE items ("
+            "  title TEXT PRIMARY KEY, seq INTEGER, body TEXT, url TEXT,"
+            "  tags TEXT, extra TEXT, used INTEGER NOT NULL DEFAULT 0);"
+            " CREATE INDEX idx_items_rest ON items (used, seq);"
+        )
+        self._seq = 0
+
+    def merge(self, item: dict, claims) -> None:
+        """1 件を名簿へ入れる。**既に入っている値は上書きしない**。"""
+        row = self.conn.execute(
+            "SELECT seq, body, url, tags, extra FROM items WHERE title = ?", (item["title"],)
+        ).fetchone()
+        if row is None:
+            self._seq += 1
+            self.conn.execute(
+                "INSERT INTO items (title, seq, body, url, tags, extra)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    item["title"], self._seq,
+                    item.get("body") if "body" in claims else None,
+                    item.get("url") if "url" in claims else None,
+                    json.dumps(item.get("tags") or [], ensure_ascii=False),
+                    json.dumps(item.get("extra") or {}, ensure_ascii=False)
+                    if "extra" in claims else "{}",
+                ),
+            )
+            return
+
+        body = row["body"] or (item.get("body") if "body" in claims else None)
+        url = row["url"] or (item.get("url") if "url" in claims else None)
+        tags = json.loads(row["tags"])
+        added = [t for t in (item.get("tags") or []) if t not in tags]
+        if added:
+            tags = (tags + added)[:MAX_TAGS_PER_DOC]
+        extra = json.loads(row["extra"])
+        if "extra" in claims:
+            for key, value in (item.get("extra") or {}).items():
+                extra.setdefault(key, value)
+        self.conn.execute(
+            "UPDATE items SET body = ?, url = ?, tags = ?, extra = ? WHERE title = ?",
+            (body, url, json.dumps(tags, ensure_ascii=False),
+             json.dumps(extra, ensure_ascii=False), item["title"]),
+        )
+
+    def _to_item(self, row) -> dict:
+        item = {"title": row["title"], "tags": json.loads(row["tags"])}
+        if row["body"]:
+            item["body"] = row["body"]
+        if row["url"]:
+            item["url"] = row["url"]
+        if extra := json.loads(row["extra"]):
+            item["extra"] = extra
+        return item
+
+    @property
+    def count(self) -> int:
+        return self.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+
+    def take(self, title: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT title, body, url, tags, extra FROM items WHERE title = ?", (title,)
+        ).fetchone()
+        if row is None:
+            return None
+        self.conn.execute("UPDATE items SET used = 1 WHERE title = ?", (title,))
+        return self._to_item(row)
+
+    def rest(self) -> Iterator[dict]:
+        rows = self.conn.execute(
+            "SELECT title, body, url, tags, extra FROM items WHERE used = 0 ORDER BY seq"
+        )
+        for row in rows:
+            yield self._to_item(row)
+
+    def reset(self) -> None:
+        self.conn.execute("UPDATE items SET used = 0")
+
+    def __iter__(self) -> Iterator[dict]:
+        rows = self.conn.execute(
+            "SELECT title, body, url, tags, extra FROM items ORDER BY seq"
+        )
+        for row in rows:
+            yield self._to_item(row)
+
+    def __len__(self) -> int:
+        return self.count
+
+    def close(self) -> None:
+        """置き場を片づける。**残すと一時ファイルが溜まる**。"""
+        with suppress(Exception):
+            self.conn.close()
+        with suppress(Exception):
+            os.unlink(self.path)
 
 
 def _merge_item(merged: dict[str, dict], item: dict, claims) -> None:
@@ -589,7 +730,7 @@ def _merge_item(merged: dict[str, dict], item: dict, claims) -> None:
             into.setdefault(key, value)
 
 
-def _run_one(spec: dict, sources: dict) -> tuple[list[dict], str]:
+def _run_one(spec: dict, sources: dict) -> tuple[Iterator[dict], str]:
     """1 本ぶんを引く。
 
     **件数を書いていなければ全部取る。** 当たりすぎているときは黙って切らずに断る ——
@@ -610,28 +751,30 @@ def _run_one(spec: dict, sources: dict) -> tuple[list[dict], str]:
             })
         limit = MAX_ROWS
 
-    rows = db.query(
-        src.path,
+    sql = (
         f"SELECT title, {spec['body']} AS body, tags, extra, links FROM docs"
-        f" WHERE doc_id IN ({set_sql}) ORDER BY rank_score DESC, title LIMIT ?",
-        (*params, limit),
-        timeout=EXTRACT_TIMEOUT_SECONDS,
+        f" WHERE doc_id IN ({set_sql}) ORDER BY rank_score DESC, title LIMIT ?"
     )
+    args = (*params, limit)
 
-    # つながりは**この抽出に入っているものだけ**が相手なので、先に全部読んでから作る
-    rows = [dict(row) for row in rows]
-    context = {
-        "src": src,
-        "links": {
-            (row.get("title") or "").strip(): _link_set(row.get("links")) for row in rows
-        },
-    }
-    items = [_to_item(row, spec, context) for row in rows]
-    items = [item for item in items if item]
-    log.info(
-        "extract %s tag=%r: %d docs -> %d items", spec["source"], spec["tag"], len(rows), len(items)
-    )
-    return items, spec["cursor"]
+    # つながりは**この抽出に入っているものだけ**が相手なので、先に全部読んでから作る。
+    # **その規則を書いていなければ読まない** —— 数十万件の名簿では、見出しと
+    # リンク先を持つだけでメモリが要る(地図の名簿はそもそもリンクを持たない)
+    links = {}
+    if any(rule["kind"] == "linked" for rule in spec["tags"]):
+        for row in db.stream(src.path, sql, args, timeout=EXTRACT_TIMEOUT_SECONDS):
+            links[(row["title"] or "").strip()] = _link_set(row["links"])
+    context = {"src": src, "links": links}
+
+    def items():
+        seen = 0
+        for row in db.stream(src.path, sql, args, timeout=EXTRACT_TIMEOUT_SECONDS):
+            seen += 1
+            if item := _to_item(dict(row), spec, context):
+                yield item
+        log.info("extract %s tag=%r: %d docs", spec["source"], spec["tag"], seen)
+
+    return items(), spec["cursor"]
 
 
 def split_tags(raw: str) -> list[str]:
