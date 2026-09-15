@@ -4270,11 +4270,11 @@ class TestBakingWithoutHoldingItAll:
 
     @staticmethod
     def item(**overrides):
-        base = dict(
-            name="probe", description="", prompt="", interval_minutes=60, enabled=False,
-            backend=None, model=None, effort=None, web=False, cursor="",
-            created_at="", updated_at="",
-        )
+        base = {
+            "name": "probe", "description": "", "prompt": "", "interval_minutes": 60,
+            "enabled": False, "backend": None, "model": None, "effort": None,
+            "web": False, "cursor": "", "created_at": "", "updated_at": "",
+        }
         return collect.Collection(**{**base, **overrides})
 
     @staticmethod
@@ -4336,3 +4336,36 @@ class TestBakingWithoutHoldingItAll:
         assert diff["previous"] == 3
         assert diff["updated"] == 1
         assert diff["added"] == 0
+
+
+class TestShowingWhereItCameFrom:
+    """差し込みに出典を載せる。**見せなければ写しようがない**。
+
+    「上に並んでいるものの URL をそのまま写して」と頼んでいたのに、差し込む行に
+    URL が無かった —— まとめの節が全部「提供情報に記事URLの記載なし」になった(実測)。
+    """
+
+    @staticmethod
+    def doc(title, url=None):
+        return {
+            "doc_id": 1, "title": title, "body": "要約", "tags": ["ニュース"],
+            "updated_at": "2026-09-15T00:00:00+00:00",
+            "extra": {"url": url} if url else {},
+        }
+
+    def test_the_source_url_is_shown(self):
+        text = collect.render_recent({"記事": self.doc("記事", "https://example.com/1")}, None)
+
+        assert "https://example.com/1" in text
+
+    def test_an_item_without_one_still_shows(self):
+        # 出典が無いものを落とすと、件数だけが黙って減る
+        text = collect.render_recent({"記事": self.doc("記事")}, None)
+
+        assert "記事" in text
+
+    def test_a_url_that_is_not_one_is_left_out(self):
+        # 押せない文字列を出典として見せると、AI がそれを写す
+        text = collect.render_recent({"記事": self.doc("記事", "記載なし")}, None)
+
+        assert "記載なし" not in text

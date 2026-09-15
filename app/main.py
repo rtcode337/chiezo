@@ -7,10 +7,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections import deque
 import json
 import logging
 import os
+from collections import deque
 from contextlib import asynccontextmanager, suppress
 from dataclasses import replace
 from pathlib import Path

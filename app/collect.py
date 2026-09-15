@@ -1323,12 +1323,17 @@ def render_recent(previous: dict[str, dict], since: str | None) -> str:
     for doc in fresh[:MAX_MATERIAL_DOCS]:
         tags = "/".join(doc.get("tags") or [])
         body = (doc.get("body") or "")[:MATERIAL_BODY_CHARS].replace("\n", " ")
-        when = ((doc.get("extra") or {}).get("published_at") or "")[:10]
+        extra = doc.get("extra") or {}
+        when = (extra.get("published_at") or "")[:10]
         line = (
             f"- {doc['title']}"
             + (f" ({when})" if when else "")
             + (f" 【{tags}】" if tags else "")
             + (f" — {body}" if body else "")
+            # **出典も見せる。** 見せずに「上に並んでいるものの URL を写して」と
+            # 頼んでいた頃は、AI に写す先が無く「記事URLの記載なし」と書かれた
+            # (実測。まとめの節が全部そうなった)
+            + (f" 〈{url}〉" if (url := _source_url(extra)) else "")
         )
         if used + len(line) > MAX_MATERIAL_CHARS:
             break
@@ -1337,6 +1342,12 @@ def render_recent(previous: dict[str, dict], since: str | None) -> str:
     head = f"前回から新しく入ったもの(全 {len(fresh)} 件"
     head += f"。うち {len(lines)} 件だけ載せています)" if len(lines) < len(fresh) else ")"
     return head + ":\n" + "\n".join(lines)
+
+
+def _source_url(extra: dict) -> str:
+    """その 1 件の出典。**差し込みにも見せる** —— 見せなければ写しようがない。"""
+    url = str((extra or {}).get("url") or "").strip()
+    return url if url.startswith(("http://", "https://")) else ""
 
 
 def _at(raw) -> datetime | None:
@@ -2785,9 +2796,11 @@ def bake_survey(item, sources: dict, previous, collected, only_new=False, edits=
             for tag in doc.get("tags") or []:
                 if str(tag).startswith(head) and (found := _tag_head(tag, head)):
                     wanted[n].add(found)
-        if spec is not None and item.partitions and not is_removed(doc):
-            if key := partitioning.partition_of(spec, item.partitions, doc):
-                counts[key] = counts.get(key, 0) + 1
+        if (
+            spec is not None and item.partitions and not is_removed(doc)
+            and (key := partitioning.partition_of(spec, item.partitions, doc))
+        ):
+            counts[key] = counts.get(key, 0) + 1
 
     if not total:
         raise HTTPException(409, {
