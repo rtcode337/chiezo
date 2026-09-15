@@ -26,6 +26,21 @@ from app import (
 )
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
+
+
+def c2pa_png(name: str = "gpt-image", version: str = "2.0") -> bytes:
+    """Content Credentials を載せた PNG。並びは実物から起こした ——
+    `caBX` チャンクの CBOR に softwareAgent の名前と版が入る。
+    """
+    def text(raw: bytes) -> bytes:
+        return bytes([0x60 | len(raw)]) + raw
+
+    body = (b"\x6dsoftwareAgent\xa2"
+            + text(b"name") + text(name.encode())
+            + text(b"version") + text(version.encode()))
+    chunk = len(body).to_bytes(4, "big") + b"caBX" + body + b"\x00" * 4
+    return b"\x89PNG\r\n\x1a\n" + chunk
+
 MP3 = b"ID3" + b"0" * 64
 
 
@@ -284,6 +299,34 @@ class TestCodex:
         assert handler.sent["model"] == "gpt-5-codex"
         # 絵のモデルは向こうが決めるので、記録は「誰に描かせたか」を添える形
         assert image.model == "gpt-image-2 (gpt-5-codex)"
+
+    def test_reads_the_image_model_from_the_picture(self, state):
+        """描いたモデルは**絵そのもの**から読む(向こうは教えてくれない)。"""
+        settings_store.set_enabled("codex", True)
+        settings_store.set_credential("codex", '{"tokens": "…"}')
+        drawn = c2pa_png()
+
+        use(state, lambda request: httpx.Response(
+            200, json={"data": [{"b64_json": base64.b64encode(drawn).decode()}]}))
+
+        image = asyncio.run(media_backends.generate(
+            "codex", media_backends.ImageRequest(prompt="盾")))
+
+        # 控えの "gpt-image-2" ではなく、絵に書いてあった版が残る
+        assert image.model == "gpt-image-2.0"
+
+    def test_falls_back_when_the_picture_says_nothing(self, state):
+        """Content Credentials が無ければ控えの名前。**絵は返す**。"""
+        settings_store.set_enabled("codex", True)
+        settings_store.set_credential("codex", '{"tokens": "…"}')
+
+        use(state, lambda request: httpx.Response(
+            200, json={"data": [{"b64_json": base64.b64encode(PNG).decode()}]}))
+
+        image = asyncio.run(media_backends.generate(
+            "codex", media_backends.ImageRequest(prompt="盾")))
+
+        assert (image.data, image.model) == (PNG, "gpt-image-2")
 
     def test_follows_the_codex_switch_in_the_chat_providers(self, state):
         """鍵も on/off も「話す相手」の Codex と共通。"""

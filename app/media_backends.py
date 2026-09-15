@@ -817,8 +817,76 @@ async def _openai_generate(
 # 鍵はこちらに無い —— Codex は管理画面で登録された auth.json、
 # Antigravity はコンテナ内のサインイン結果を、ブリッジ側が読む。
 
-# 記録に残すモデル名。相手が決めるので、こちらは名前しか知らない。
+# 記録に残すモデル名の**控え**。返ってきた絵から読めなかったときだけ使う
+# (相手が決めるので、こちらは名前を推測しているにすぎない)。
 BRIDGE_IMAGE_MODELS = {"codex": "gpt-image-2", "antigravity": "antigravity-imagegen"}
+
+# Content Credentials(C2PA)は PNG の `caBX` チャンクに CBOR で入っている。
+C2PA_CHUNK = b"caBX"
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+# CBOR のテキスト 13 バイト = "softwareAgent"。名前ごと探して位置を合わせる
+SOFTWARE_AGENT = b"\x6dsoftwareAgent"
+
+
+def _png_chunk(data: bytes, want: bytes) -> bytes:
+    """PNG から名前の合うチャンクを 1 つ取り出す。無ければ空。"""
+    if not data.startswith(PNG_MAGIC):
+        return b""
+    i = 8
+    while i + 12 <= len(data):
+        length = int.from_bytes(data[i:i + 4], "big")
+        if data[i + 4:i + 8] == want:
+            return data[i + 8:i + 8 + length]
+        i += 12 + length
+    return b""
+
+
+def _cbor_text(blob: bytes, i: int) -> tuple[str, int]:
+    """位置 i の CBOR テキスト文字列を 1 つ読む。テキストでなければ ("", i)。"""
+    if i >= len(blob) or blob[i] >> 5 != 3:  # major type 3 = テキスト
+        return "", i
+    n, i = blob[i] & 0x1F, i + 1
+    if n < 24:
+        size = n
+    elif n == 24 and i < len(blob):
+        size, i = blob[i], i + 1
+    elif n == 25:
+        size, i = int.from_bytes(blob[i:i + 2], "big"), i + 2
+    else:
+        # これより長いモデル名は来ない。来たら読めなかった扱いにする
+        return "", i
+    return blob[i:i + size].decode("utf-8", "replace"), i + size
+
+
+def image_model_of(data: bytes) -> str:
+    """描いたモデルを、返ってきた絵そのものから読む。読めなければ空。
+
+    **エージェント越しに描かせると、どのモデルが描いたのかは知らされない** ——
+    こちらが頼んだのは CLI で、絵のモデルを選ぶのは向こうの内蔵ツールだから。
+    控えを書いておくしかなかったが、絵の側に Content Credentials が入っていて、
+    そこに作ったモデルの名前と版がある(実測で name=gpt-image / version=2.0)。
+
+    CBOR を丸ごと解かず、`softwareAgent` の並びだけを読む —— 欲しいのは 1 か所で、
+    解読器を抱えるとそちらの不具合で絵まで落ちる。読めなければ空を返し、
+    呼ぶ側が控えへ落ちる(**絵は返す** —— モデル名が分からないだけで失敗ではない)。
+    """
+    blob = _png_chunk(data, C2PA_CHUNK)
+    at = blob.find(SOFTWARE_AGENT)
+    if at < 0:
+        return ""
+    i = at + len(SOFTWARE_AGENT)
+    if i >= len(blob) or blob[i] >> 5 != 5:  # major type 5 = マップ
+        return ""
+    pairs, i = blob[i] & 0x1F, i + 1
+    found: dict[str, str] = {}
+    for _ in range(pairs if pairs < 24 else 0):
+        key, i = _cbor_text(blob, i)
+        value, i = _cbor_text(blob, i)
+        if not key:
+            break
+        found[key] = value
+    name, version = found.get("name", ""), found.get("version", "")
+    return f"{name}-{version}" if name and version else name
 
 
 async def _bridge_image_generate(
@@ -858,13 +926,14 @@ async def _bridge_image_generate(
         raise HTTPException(502, {"error": f"{spec.label} が画像を返しませんでした"})
 
     # seed は受け付けない。 記録だけしておく(再現できるのは ComfyUI 側だけ)
-    model = BRIDGE_IMAGE_MODELS.get(spec.id, spec.id)
+    raw = base64.b64decode(data)
+    model = image_model_of(raw) or BRIDGE_IMAGE_MODELS.get(spec.id, spec.id)
     if req.model:
         # **同じ絵のモデルでも、描かせたエージェントが違えば結果が変わる**
         # (依頼文の解釈も、描き直すかどうかも向こうが決める)。
         # どちらで頼んだのか後から追えるように添える
         model = f"{model} ({req.model})"
-    return GeneratedImage(base64.b64decode(data), "image/png", seed, model,
+    return GeneratedImage(raw, "image/png", seed, model,
                           trace=str(body_out.get("trace") or ""))
 
 
