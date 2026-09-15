@@ -267,6 +267,24 @@ class TestCodex:
         # 実際に描くのは gpt-image-2(モデルは Codex の内蔵ツールが決める)
         assert image.model == "gpt-image-2"
 
+    def test_passes_the_agent_model_through(self, state):
+        """`model` で選ぶのは絵のモデルではなく、描かせるエージェントのほう。"""
+        settings_store.set_enabled("codex", True)
+        settings_store.set_credential("codex", '{"tokens": "…"}')
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            handler.sent = json.loads(request.content)
+            return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(PNG).decode()}]})
+
+        use(state, handler)
+
+        image = asyncio.run(media_backends.generate(
+            "codex", media_backends.ImageRequest(prompt="盾", model="gpt-5-codex")))
+
+        assert handler.sent["model"] == "gpt-5-codex"
+        # 絵のモデルは向こうが決めるので、記録は「誰に描かせたか」を添える形
+        assert image.model == "gpt-image-2 (gpt-5-codex)"
+
     def test_follows_the_codex_switch_in_the_chat_providers(self, state):
         """鍵も on/off も「話す相手」の Codex と共通。"""
         settings_store.set_credential("codex", '{"tokens": "…"}')

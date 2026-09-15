@@ -825,6 +825,12 @@ async def _bridge_image_generate(
     spec: media_providers.MediaProvider, req: ImageRequest, seed: int
 ) -> GeneratedImage:
     body: dict = {"prompt": req.prompt, "size": req.size, "n": 1}
+    # **ここで選べるのは絵のモデルではなく、描かせるエージェントのモデル**
+    # (`codex -m` / `agy --model`)。絵そのものは CLI の内蔵ツールが決めるので
+    # こちらからは指定できない。渡さなければ向こうの既定(CHIEZO_BRIDGE_MODEL、
+    # それも空なら CLI の既定)で走る
+    if req.model:
+        body["model"] = req.model
     # **姿勢の見本も参考の 1 枚として渡す。** 向こうは ControlNet を持たないので、
     # 「この姿勢で」と依頼文で言うしかない —— 渡す順は姿勢が先(依頼文がそう指す)
     sources = ((req.pose,) if req.pose else ()) + tuple(req.sources)
@@ -853,6 +859,11 @@ async def _bridge_image_generate(
 
     # seed は受け付けない。 記録だけしておく(再現できるのは ComfyUI 側だけ)
     model = BRIDGE_IMAGE_MODELS.get(spec.id, spec.id)
+    if req.model:
+        # **同じ絵のモデルでも、描かせたエージェントが違えば結果が変わる**
+        # (依頼文の解釈も、描き直すかどうかも向こうが決める)。
+        # どちらで頼んだのか後から追えるように添える
+        model = f"{model} ({req.model})"
     return GeneratedImage(base64.b64decode(data), "image/png", seed, model,
                           trace=str(body_out.get("trace") or ""))
 
