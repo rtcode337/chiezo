@@ -2113,6 +2113,56 @@ async def images_generations(body: ImageRequest):
         return await _generate_images(body)
 
 
+# 進捗としてログへ流す 1 行の長さ。溢れた出力でログを埋めないための歯止め。
+PROGRESS_LINE_MAX = 300
+
+
+async def _pump(stream: asyncio.StreamReader, name: str, sink: list[bytes]) -> None:
+    """CLI の出力を読みながらログへ流し、同時に溜める。
+
+    **`communicate()` では、固まったときに何も残らない。** あれは相手が終わるまで
+    1 バイトも渡してくれないので、上限で打ち切って kill すると、そこまでの出力ごと
+    消える —— 実測で、20 分待って 504 になった回のログは「開始」と「504」の 2 行
+    だけで、相手が何をしていたのか(描いていたのか、確認を待っていたのか、
+    そもそも動いていなかったのか)を後から一切たどれなかった。
+
+    読みながら流せば、**止まっている最中でも `docker logs` で追える**。
+
+    `readline()` は使わない。 長い行(base64 を吐く相手がいる)で
+    `ValueError: Separator is not found, and chunk exceed the limit` になり、
+    出力を取りこぼす。塊で読んで、こちらで行に割る。
+    """
+    buf = b""
+    while chunk := await stream.read(8192):
+        sink.append(chunk)
+        buf += chunk
+        *lines, buf = buf.split(b"\n")
+        for raw in lines:
+            if text := raw.decode("utf-8", "replace").strip():
+                log.info("%s image %s| %s", CLI, name, _tail(text, PROGRESS_LINE_MAX))
+        # 改行を打たない相手で溜め込まない(溜めるのは sink の役目)
+        if len(buf) > PROGRESS_LINE_MAX * 4:
+            buf = buf[-PROGRESS_LINE_MAX:]
+    if text := buf.decode("utf-8", "replace").strip():
+        log.info("%s image %s| %s", CLI, name, _tail(text, PROGRESS_LINE_MAX))
+
+
+async def _feed(proc: asyncio.subprocess.Process, payload: bytes) -> None:
+    """標準入力へ渡して閉じる。**読まずに終える相手で落とさない**
+    (codex はプロンプトを標準入力から取るが、先に諦めると受け口が閉じている)。
+
+    読み出しと同時に走らせる。 先に書き切ろうとすると、相手が出力を吐き続けた
+    ときにパイプが詰まって、こちらも相手も進まなくなる。
+    """
+    try:
+        if payload:
+            proc.stdin.write(payload)
+            await proc.stdin.drain()
+        proc.stdin.close()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+
+
 async def _generate_images(body: ImageRequest) -> dict:
     started = time.time()
     seen = _existing(_shared_root())
@@ -2132,7 +2182,10 @@ async def _generate_images(body: ImageRequest) -> dict:
             cmd = image_command(out_dir, body.model or MODEL)
             payload = prompt.encode("utf-8")
 
-        log.info("running %s image tool (prompt %d bytes)", CLI, len(prompt.encode("utf-8")))
+        # **モデルもログに出す。** 指定しなければ CLI の既定(＝一番重いもの)で走るので、
+        # 遅かったときに「何で走っていたのか」が分からないと切り分けられない。
+        log.info("running %s image tool (prompt %d bytes, model=%s)", CLI,
+                 len(prompt.encode("utf-8")), body.model or MODEL or "(CLI の既定)")
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=out_dir,
@@ -2140,17 +2193,33 @@ async def _generate_images(body: ImageRequest) -> dict:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(payload),
-                timeout=IMAGE_TIMEOUT,
+        out_chunks: list[bytes] = []
+        err_chunks: list[bytes] = []
+
+        async def _run() -> None:
+            await asyncio.gather(
+                _feed(proc, payload),
+                _pump(proc.stdout, "out", out_chunks),
+                _pump(proc.stderr, "err", err_chunks),
             )
+            await proc.wait()
+
+        try:
+            await asyncio.wait_for(_run(), timeout=IMAGE_TIMEOUT)
         except TimeoutError:
             proc.kill()
             await proc.wait()
-            raise HTTPException(
-                504, {"error": f"{CLI} が {IMAGE_TIMEOUT:.0f}s で終わりませんでした"}
-            ) from None
+            # **打ち切るときこそ、言い分を残す。** ここを捨てていたせいで、
+            # 固まる相手の原因究明が一歩も進まなかった
+            said = failure_detail(b"".join(out_chunks), b"".join(err_chunks))
+            log.error("%s image tool timed out after %.0fs: %s",
+                      CLI, IMAGE_TIMEOUT, said or "(何も言わなかった)")
+            raise HTTPException(504, {
+                "error": f"{CLI} が {IMAGE_TIMEOUT:.0f}s で終わりませんでした",
+                "said": said or "(何も言わなかった)",
+            }) from None
+
+        stdout, stderr = b"".join(out_chunks), b"".join(err_chunks)
 
         if proc.returncode != 0:
             detail = failure_detail(stdout, stderr)

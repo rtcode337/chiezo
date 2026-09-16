@@ -840,6 +840,68 @@ class TestImageGeneration:
         assert server._collect_images(str(tmp_path), _t.time()) == []
 
 
+class TestImageProgressIsVisible:
+    """**固まったときこそ、相手の言い分を残す。**
+
+    以前は `communicate()` で終わるまで溜め、上限で kill していたので、
+    打ち切った回の出力がまるごと消えていた —— 20 分待って 504 になった回の
+    ログは「開始」と「504」の 2 行だけで、描いていたのか・確認を待っていたのか・
+    そもそも動いていなかったのかを後から切り分けられなかった。
+    """
+
+    def test_the_output_is_kept_while_it_runs(self, bridge):
+        import asyncio
+
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+
+        async def go() -> list[bytes]:
+            # StreamReader は動いているループの中でしか作れない
+            reader = asyncio.StreamReader()
+            reader.feed_data("考えています\n描いています\n".encode())
+            reader.feed_eof()
+            sink: list[bytes] = []
+            await server._pump(reader, "out", sink)
+            return sink
+
+        assert "描いています" in b"".join(asyncio.run(go())).decode()
+
+    def test_a_long_line_does_not_lose_the_output(self, bridge):
+        """base64 を吐く相手がいる。`readline()` だと限度超えで落ちて取りこぼす。"""
+        import asyncio
+
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+
+        async def go() -> list[bytes]:
+            reader = asyncio.StreamReader()
+            reader.feed_data(b"A" * 200_000 + "\n終わりました\n".encode())
+            reader.feed_eof()
+            sink: list[bytes] = []
+            await server._pump(reader, "out", sink)
+            return sink
+
+        got = b"".join(asyncio.run(go()))
+        assert len(got) > 200_000
+        assert "終わりました" in got.decode()
+
+    def test_a_timeout_carries_what_the_cli_said(self, bridge, monkeypatch):
+        import asyncio
+
+        import fastapi
+
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        monkeypatch.setattr(server, "IMAGE_TIMEOUT", 0.5)
+        monkeypatch.setattr(
+            server, "image_command",
+            lambda out_dir, model="": ["sh", "-c", "echo 権限の確認を待っています; sleep 2"],
+        )
+
+        with pytest.raises(fastapi.HTTPException) as got:
+            asyncio.run(server._generate_images(server.ImageRequest(prompt="剣")))
+
+        assert got.value.status_code == 504
+        assert "権限の確認を待っています" in got.value.detail["said"]
+
+
 class TestCredentialFromAnotherApp:
     """認証情報の置き場を共有すれば、Chiezo 以外のアプリからも使える。
 
