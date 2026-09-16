@@ -68,6 +68,27 @@ CREATE TABLE IF NOT EXISTS quota (
     payload    TEXT NOT NULL DEFAULT '[]',
     error      TEXT NOT NULL DEFAULT ''
 );
+-- 枠の推移。**上の `quota` は「いまどうか」しか持たない**(聞くたびに上書きする)ので、
+-- 「いつ跳ねたか」も「1 ポイントぶんが何回ぶんか」も読めなかった。2 点無いと差が
+-- 取れないので、聞いた値をここに積む。
+CREATE TABLE IF NOT EXISTS quota_samples (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider     TEXT NOT NULL,
+    -- 相手は枠を何本も持つ(5 時間と 7 日、モデルのグループごと)。**窓ごとに積む** ——
+    -- 混ぜると、別々に減る枠の差が 1 本の線に潰れる。
+    window_id    TEXT NOT NULL,
+    label        TEXT NOT NULL DEFAULT '',
+    at           TEXT NOT NULL,
+    used_percent REAL,
+    resets_at    TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_quota_samples ON quota_samples(provider, window_id, at);
+-- 定時に聞きに行く番の取り合い。**`--workers 2` なので両方が同時に起きる** ——
+-- 印を 1 つにして、取れたほうだけが聞きに行く(でないと CLI が 2 本立つ)。
+CREATE TABLE IF NOT EXISTS quota_polls (
+    provider TEXT PRIMARY KEY,
+    at       TEXT NOT NULL
+);
 """
 
 
@@ -188,6 +209,8 @@ def record(
                 _last_prune = now
                 cutoff = (_now() - timedelta(days=KEEP_DAYS)).isoformat(timespec="seconds")
                 conn.execute("DELETE FROM calls WHERE at < ?", (cutoff,))
+                # 枠の推移も同じ日数で捨てる(集計の窓より十分長い)
+                conn.execute("DELETE FROM quota_samples WHERE at < ?", (cutoff,))
     except (sqlite3.Error, OSError) as e:
         log.warning("usage record failed (%s): %s", provider, e)
 
@@ -349,12 +372,25 @@ def save_quota(provider: str, windows: list[dict], error: str = "") -> None:
                     (provider, error),
                 )
                 return
+            at = _now().isoformat(timespec="seconds")
             conn.execute(
                 "INSERT INTO quota (provider, fetched_at, payload, error) VALUES (?, ?, ?, ?)"
                 " ON CONFLICT(provider) DO UPDATE SET"
                 "   fetched_at=excluded.fetched_at, payload=excluded.payload, error=excluded.error",
-                (provider, _now().isoformat(timespec="seconds"),
-                 json.dumps(windows, ensure_ascii=False), error),
+                (provider, at, json.dumps(windows, ensure_ascii=False), error),
+            )
+            # **聞けた値はここにも積む**(`quota` は上書きなので推移が残らない)。
+            # 使用率を言わない窓は積まない —— 差を取る相手が無い。
+            conn.executemany(
+                "INSERT INTO quota_samples"
+                " (provider, window_id, label, at, used_percent, resets_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    (provider, str(w.get("id") or ""), str(w.get("label") or ""), at,
+                     float(w["used_percent"]), str(w.get("resets_at") or ""))
+                    for w in windows
+                    if isinstance(w, dict) and isinstance(w.get("used_percent"), int | float)
+                ],
             )
     except (sqlite3.Error, OSError) as e:
         log.warning("usage quota save failed (%s): %s", provider, e)
@@ -382,3 +418,117 @@ def load_quota() -> dict[str, dict]:
             "error": r["error"] or "",
         }
     return out
+
+
+def quota_trail(since: datetime) -> list[dict]:
+    """枠の推移を、相手 × 窓ごとにまとめて返す(古い順の点つき)。
+
+    **上がったぶんだけを足す**(`climbed`)。窓は転がって明けるので、下がった差は
+    「使ったぶんが戻った」であって「使わなかった」ではない —— 素直に引き算すると、
+    明けをまたいだ区間の消費が帳消しになる。
+
+    **点が 1 つしか無い窓も返す**(`climbed` は 0)。「まだ差が取れていない」と
+    「動いていない」は別なので、呼ぶ側で書き分けられるように点の数を添える。
+    """
+    if not is_enabled():
+        return []
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                "SELECT provider, window_id, label, at, used_percent, resets_at"
+                "  FROM quota_samples WHERE at >= ? AND used_percent IS NOT NULL"
+                # **同じ秒に 2 点入りうる**ので id まで見て並べる(積んだ順に読めないと、
+                # 上がり下がりの判定が入れ替わる)
+                " ORDER BY provider, window_id, at, id",
+                (since.astimezone(UTC).isoformat(timespec="seconds"),),
+            ).fetchall()
+    except (sqlite3.Error, OSError) as e:
+        log.warning("usage quota_trail failed: %s", e)
+        return []
+
+    trails: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        key = (r["provider"], r["window_id"])
+        trail = trails.setdefault(key, {
+            "provider": r["provider"], "window_id": r["window_id"],
+            "label": r["label"] or r["window_id"], "points": [], "climbed": 0.0, "resets_at": "",
+        })
+        percent = float(r["used_percent"])
+        if trail["points"] and percent > trail["points"][-1]["used_percent"]:
+            trail["climbed"] += percent - trail["points"][-1]["used_percent"]
+        trail["points"].append({"at": r["at"], "used_percent": percent})
+        # 見出しと明ける時刻は新しいほうを採る(窓が明けると次の時刻に変わる)
+        trail["label"] = r["label"] or trail["label"]
+        trail["resets_at"] = r["resets_at"] or trail["resets_at"]
+    return sorted(trails.values(), key=lambda t: (-t["climbed"], t["provider"]))
+
+
+def calls_since(provider: str, at: str) -> int:
+    """その時刻より後に、その相手を何回呼んだか。
+
+    **定時に聞きに行くかの判断に使う。** 何も呼んでいない相手の枠を聞きに行っても
+    前と同じ値が返るだけで、CLI を 1 本起こすぶんだけ損をする。
+
+    **その時刻を含めて数える。** 時刻は秒までしか持たないので、点を控えたのと
+    同じ秒に入った呼び出しを「より後」で切ると黙って落とす —— 取りこぼすより、
+    余分に 1 回聞きに行くほうが安全(`/v1/{source}/recent` の `since` と同じ判断)。
+    """
+    if not is_enabled() or not provider:
+        return 0
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM calls WHERE provider = ? AND at >= ?",
+                (provider, at or ""),
+            ).fetchone()
+    except (sqlite3.Error, OSError) as e:
+        log.warning("usage calls_since failed (%s): %s", provider, e)
+        return 0
+    return int(row["n"]) if row else 0
+
+
+def last_quota_sample_at(provider: str) -> str:
+    """その相手の枠を最後に控えた時刻(無ければ空)。"""
+    if not is_enabled() or not provider:
+        return ""
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT MAX(at) AS at FROM quota_samples WHERE provider = ?", (provider,)
+            ).fetchone()
+    except (sqlite3.Error, OSError) as e:
+        log.warning("usage last_quota_sample_at failed (%s): %s", provider, e)
+        return ""
+    return str(row["at"] or "") if row else ""
+
+
+def claim_quota_poll(provider: str, interval: timedelta) -> bool:
+    """定時に聞きに行く番を取る。取れたときだけ True。
+
+    **`--workers 2` なので、同じ周期で両方が起きる。** 印を 1 つにして
+    「前回より `interval` だけ前より古いときだけ書き換えられる」形にすると、
+    書き換えられたほう 1 つだけが聞きに行く —— 数える前に取り合うので、
+    2 本の CLI が同時に立つことがない。
+
+    **境界は「より古い」で見る**(`<`)。時刻は秒までしか持たないので、
+    同じ秒に起きた 2 つを「以下」で通すと、後から来たほうが書き換わった直後の
+    値を見て**両方とも番を取る**(排他の意味が消える)。
+
+    **失敗しても False を返すだけ**(聞きに行かないだけで、会話は止めない)。
+    """
+    if not is_enabled() or not provider:
+        return False
+    now = _now()
+    cutoff = (now - interval).isoformat(timespec="seconds")
+    try:
+        with _connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO quota_polls (provider, at) VALUES (?, ?)"
+                " ON CONFLICT(provider) DO UPDATE SET at = excluded.at"
+                " WHERE quota_polls.at < ?",
+                (provider, now.isoformat(timespec="seconds"), cutoff),
+            )
+            return cur.rowcount > 0
+    except (sqlite3.Error, OSError) as e:
+        log.warning("usage claim_quota_poll failed (%s): %s", provider, e)
+        return False

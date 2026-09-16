@@ -14,6 +14,7 @@ import time
 from collections import deque
 from contextlib import asynccontextmanager, suppress
 from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
@@ -194,6 +195,51 @@ async def _watch_data_dir(app: FastAPI) -> None:
 # 収集の時計を回す間隔(秒)。**予定そのものは各収集が `next_run_at` で持つ**ので、
 # ここは「見に来る頻度」でしかない。細かくしても AI の呼び出しは増えない
 COLLECT_TICK_SECONDS = float(os.environ.get("CHIEZO_COLLECT_TICK_SECONDS", "60"))
+
+
+# 枠を定時に聞きに行く間隔(分)。0 で止まる。**15 分は「跳ねた時刻を当てられる細かさ」
+# と「CLI を起こす回数」の折り合い** —— 枠を聞くだけでもモデルを呼ばない CLI が 1 本立つ。
+QUOTA_SAMPLE_MINUTES = answer._env_num("CHIEZO_QUOTA_SAMPLE_MINUTES", 15.0, float)
+
+# 見に来る頻度。取り合いと間隔は下の `_sample_quotas` が見るので、ここを細かくしても
+# 聞きに行く回数は増えない(`COLLECT_TICK_SECONDS` と同じ考え方)。
+QUOTA_TICK_SECONDS = float(os.environ.get("CHIEZO_QUOTA_TICK_SECONDS", "60"))
+
+
+async def _sample_quotas() -> None:
+    """枠の推移を控える常駐タスク(`app/usage_store.py` の `quota_samples`)。
+
+    **押したときだけ聞きに行く作りでは、推移が残らない。** 控えは「いまどうか」で
+    上書きされるので、無人で回る層が枠を食っても、跳ねた時刻も 1 ポイントぶんの
+    重さも後から読めなかった —— 2 点無いと差が取れない。
+
+    **呼んでいない相手には聞きに行かない**(`calls_since`)。前と同じ値が返るだけで、
+    CLI を 1 本起こすぶんだけ損をする。**ただし 1 点目だけは呼ばれていなくても採る**
+    —— 起点が無いと、次に呼んだぶんの差が取れない。
+
+    **番は取り合う**(`claim_quota_poll`)。`--workers 2` なので同じ周期で両方が
+    起きる —— 取れたほうだけが聞きに行く。
+
+    **失敗しても止めない**(理由は控えに残る)。止めると、一度こけた相手の推移が
+    二度と伸びない。
+    """
+    interval = timedelta(minutes=QUOTA_SAMPLE_MINUTES)
+    while True:
+        await asyncio.sleep(QUOTA_TICK_SECONDS)
+        try:
+            for provider_id in await asyncio.to_thread(usage.refreshable):
+                last = await asyncio.to_thread(usage_store.last_quota_sample_at, provider_id)
+                if last and not await asyncio.to_thread(
+                    usage_store.calls_since, provider_id, last
+                ):
+                    continue
+                if not await asyncio.to_thread(
+                    usage_store.claim_quota_poll, provider_id, interval
+                ):
+                    continue
+                await usage.refresh(provider_id)
+        except Exception:
+            log.exception("quota sampling tick failed")
 
 
 async def _run_collections(app: FastAPI) -> None:
@@ -624,6 +670,12 @@ async def lifespan(app: FastAPI):
         if collect.is_enabled() and COLLECT_TICK_SECONDS > 0
         else None
     )
+    # 枠の時計。置き場が無ければ回さない(記録できないので採っても残らない)
+    sampler = (
+        asyncio.create_task(_sample_quotas())
+        if usage_store.is_enabled() and QUOTA_SAMPLE_MINUTES > 0 and QUOTA_TICK_SECONDS > 0
+        else None
+    )
     # MCP(/mcp)はここで組み立てて起動する。理由が 2 つある:
     #  1. セッションマネージャは lifespan の中で run() しないとタスクグループが張られず、
     #     最初のリクエストで "Task group is not initialized" になる(python-sdk#1367)。
@@ -645,7 +697,7 @@ async def lifespan(app: FastAPI):
         async with mcp.session_manager.run(), knowledge.session_manager.run():
             yield
     finally:
-        for task in (watcher, collector, choices):
+        for task in (watcher, collector, sampler, choices):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):

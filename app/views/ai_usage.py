@@ -202,6 +202,90 @@ def breakdown_html(request: Request | None = None) -> str:
 {rest}"""
 
 
+TRAIL_ANCHOR = "ai-quota-trail"
+
+# 1 つの窓に出す観測点。畳んだ中に入るので多くてよいが、**古い点から読む価値が落ちる**
+# (跳ねたのがいつかを当てたいので、見たいのは直近のほう)。
+TRAIL_POINTS = 24
+
+
+def _percent(value: float) -> str:
+    """使用率の書き方。**小数を出さない** —— 相手が返すのは 0.1 刻みで、
+    跳ねたかどうかの判断に小数第 1 位は効かない(桁が増えるぶん読みにくい)。
+    """
+    return f"{value:.0f}%"
+
+
+def _climb(value: float) -> str:
+    """上がったぶん。**「ポイント」と書く** —— 使用率どうしの差なので、
+    「%」と書くと「前回の何 % 増えたのか」と読める。
+    """
+    return f"+{value:.0f} ポイント" if value >= 0.5 else "ほぼ動かず"
+
+
+def _trail_points_html(trail: dict) -> str:
+    """観測点を畳んで出す。**前回からの差を添える** —— 使用率だけを並べても、
+    どこで跳ねたのかは引き算しながら読むことになる。
+    """
+    points = trail["points"][-TRAIL_POINTS:]
+    rows = []
+    for i, point in enumerate(points):
+        prior = points[i - 1]["used_percent"] if i else None
+        delta = ""
+        if prior is not None:
+            step = point["used_percent"] - prior
+            # **下がった差はそのまま出す**(窓が明けた印)。0 に丸めると、
+            # 明けをまたいだ区間を「動かなかった」と読んでしまう
+            delta = f"{step:+.0f}" if abs(step) >= 0.5 else "—"
+        rows.append(
+            f'<tr><td>{esc(_when(point["at"]))}</td>'
+            f'<td>{esc(_percent(point["used_percent"]))}</td>'
+            f'<td class="muted">{esc(delta)}</td></tr>'
+        )
+    return (
+        f'<details><summary>{len(trail["points"])} 点</summary>'
+        '<table><thead><tr><th>時刻</th><th>使用率</th><th>前回から</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table></details>'
+    )
+
+
+def trail_html(request: Request | None = None) -> str:
+    """枠の推移 —— いつ跳ねたかを読むところ。
+
+    **控え(`quota`)は「いまどうか」しか持たない**ので、聞くたびに上書きされる。
+    無人で回る層が枠を食っても、跳ねた時刻も 1 ポイントぶんの重さも後から読めなかった。
+
+    **上がったぶんだけを足す**(`usage_store.quota_trail`)。窓は転がって明けるので、
+    下がった差は「戻った」であって「使わなかった」ではない。
+    """
+    window = breakdown_window(request)
+    span = next(delta for name, delta in usage.SPENT_WINDOWS if name == window)
+    trails = usage_store.quota_trail(datetime.now(UTC) - span)
+    head = f'<h4 id="{TRAIL_ANCHOR}">枠の推移</h4>'
+    if not trails:
+        return (f'{head}\n<p class="muted">この窓の観測はありません'
+                "(枠を聞ける相手を呼ぶと、定時に控えはじめます)。</p>")
+    body = "\n".join(
+        "<tr>"
+        f'<td>{esc(usage.label_of(t["provider"]))}<br>'
+        f'<span class="muted">{esc(t["label"])}</span></td>'
+        f'<td>{esc(_percent(t["points"][-1]["used_percent"]))}</td>'
+        f'<td>{esc(_climb(t["climbed"]))}</td>'
+        f"<td>{_trail_points_html(t)}</td>"
+        "</tr>"
+        for t in trails
+    )
+    return f"""{head}
+<table class="ai-settings ai-usage">
+<thead><tr><th>AI / 枠</th><th>いま</th><th>この窓で上がったぶん</th><th>観測</th></tr></thead>
+<tbody>
+{body}
+</tbody>
+</table>
+<p class="muted">上がったぶんだけを足している(窓が明けて下がった差は数えない)。
+同じ窓の依頼は上の内訳で見る。</p>"""
+
+
 def _refresh_button(row: dict, back: str) -> str:
     if not row["quota"].supported:
         return '<span class="muted">—</span>'
@@ -353,6 +437,7 @@ API からは <code>GET /v1/ai/usage</code>(取り直すなら <code>?refresh=1<
 {_refresh_all_button()}
 {table_html(usage.rows())}
 {breakdown_html(request)}
+{trail_html(request)}
 """
 
 

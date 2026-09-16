@@ -787,3 +787,107 @@ class TestBreakdown:
 
         assert "../secret" not in html
         assert 'id="ai-breakdown"' in html
+
+
+class TestQuotaTrail:
+    """枠の推移 —— 控えは「いまどうか」で上書きされるので、聞いた値を積む側。"""
+
+    def _window(self, percent: float) -> list[dict]:
+        return [{"id": "primary", "label": "直近 5 時間", "used_percent": percent}]
+
+    def test_asking_for_a_quota_leaves_a_point(self, env):
+        from datetime import UTC, datetime, timedelta
+
+        from app import usage_store
+
+        with make_client(env, ReplyLLM()):
+            usage_store.save_quota("codex", self._window(12.0))
+            trail = usage_store.quota_trail(datetime.now(UTC) - timedelta(hours=1))
+
+        assert [t["window_id"] for t in trail] == ["primary"]
+        assert trail[0]["points"][-1]["used_percent"] == 12.0
+        assert trail[0]["label"] == "直近 5 時間"
+
+    def test_only_the_climb_counts(self, env):
+        """窓は転がって明けるので、下がった差は「使わなかった」ではない。"""
+        from datetime import UTC, datetime, timedelta
+
+        from app import usage_store
+
+        with make_client(env, ReplyLLM()):
+            for percent in (10.0, 50.0, 5.0, 20.0):
+                usage_store.save_quota("codex", self._window(percent))
+            trail = usage_store.quota_trail(datetime.now(UTC) - timedelta(hours=1))
+
+        # 10 → 50 で +40、50 → 5 は明けたぶんなので数えず、5 → 20 で +15
+        assert trail[0]["climbed"] == 55.0
+
+    def test_a_failure_does_not_leave_a_point(self, env):
+        """取れなかった回を積むと、動いていない区間として読まれる。"""
+        from datetime import UTC, datetime, timedelta
+
+        from app import usage_store
+
+        with make_client(env, ReplyLLM()):
+            usage_store.save_quota("codex", [], "繋がりません")
+            trail = usage_store.quota_trail(datetime.now(UTC) - timedelta(hours=1))
+
+        assert trail == []
+
+    def test_the_screen_shows_when_it_moved(self, env):
+        from app import usage_store
+
+        with make_client(env, ReplyLLM()) as client:
+            usage_store.save_quota("codex", self._window(10.0))
+            usage_store.save_quota("codex", self._window(51.0))
+            html = client.get("/admin/ai").text
+
+        assert 'id="ai-quota-trail"' in html
+        assert "+41 ポイント" in html
+
+
+class TestQuotaSampling:
+    """定時に聞きに行くかの判断 —— 呼んでいない相手に聞きに行かないための部品。"""
+
+    def test_the_turn_is_claimed_only_once(self, env):
+        """`--workers 2` なので、同じ周期で両方が起きる。"""
+        from datetime import timedelta
+
+        from app import usage_store
+
+        with make_client(env, ReplyLLM()):
+            first = usage_store.claim_quota_poll("codex", timedelta(minutes=15))
+            second = usage_store.claim_quota_poll("codex", timedelta(minutes=15))
+
+        assert first is True
+        assert second is False
+
+    def test_the_turn_comes_back_after_the_interval(self, env):
+        import sqlite3
+        from datetime import UTC, datetime, timedelta
+
+        from app import usage_store
+
+        with make_client(env, ReplyLLM()):
+            usage_store.claim_quota_poll("codex", timedelta(minutes=15))
+            # 前回の番を 1 時間前に仕立てる(時刻は秒までなので、待たずに間隔を作る)
+            stale = (datetime.now(UTC) - timedelta(hours=1)).isoformat(timespec="seconds")
+            with sqlite3.connect(usage_store.db_path()) as conn:
+                conn.execute("UPDATE quota_polls SET at = ?", (stale,))
+            again = usage_store.claim_quota_poll("codex", timedelta(minutes=15))
+
+        assert again is True
+
+    def test_calls_are_counted_since_the_last_point(self, env):
+        """前の点より後に 1 度も呼んでいなければ、聞いても同じ値が返るだけ。"""
+        from app import usage_store
+
+        with make_client(env, ReplyLLM()):
+            usage_store.save_quota("codex", [{"id": "primary", "used_percent": 1.0}])
+            at = usage_store.last_quota_sample_at("codex")
+            quiet = usage_store.calls_since("codex", at)
+            usage_store.record("codex", caller="collect:painters")
+            busy = usage_store.calls_since("codex", at)
+
+        assert quiet == 0
+        assert busy == 1
