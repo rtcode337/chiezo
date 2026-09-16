@@ -269,6 +269,12 @@ services:
   #    # **ブリッジは `/state/settings.db` を決め打ちで読む**(CHIEZO_BRIDGE_STATE_DB の
   #    # 既定)。app 側の置き場が data/ の下へ移っても、こちらのマウント先は /state のまま
   #    - ./data/state:/state:ro
+  #    # **サインイン結果の置き場。** 登録を空にしてコンテナの中でサインインすると、
+  #    # 枠(`/usage`)まで取れる —— 登録できる `claude setup-token` の長期トークンは
+  #    # 推論だけに絞られていて、枠のパネルを出せない。ここが無いと、コンテナを
+  #    # 作り直すたびにサインインが消える。名前付きボリュームにする理由は
+  #    # antigravity のところに書いてある(非 root で動くため)
+  #    - chiezo-claude-home:/srv/bridge/home
   #  environment:
   #    - CHIEZO_BRIDGE_CLI=claude
   #    - CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp/knowledge/
@@ -389,4 +395,5 @@ configs:
 # 無いときに Docker が root 所有で作ってしまい、非 root のブリッジが書けなくなるため。
 volumes:
   chiezo-antigravity-home:
+  chiezo-claude-home:
   chiezo-codex-home:

@@ -276,6 +276,15 @@ def apply_credential() -> str:
         # API キー方式が無く、置くものが無い(サインイン結果は HOME のキャッシュにある)。
         return ""
     value = stored_credential()
+    if not value and CLI == "claude":
+        # **登録が無ければ、コンテナ内のサインイン結果に任せる**(antigravity と同じ形)。
+        # 断らないのは、**登録できるものとサインインでできることが違う**ため ——
+        # `claude setup-token` の長期トークンは推論だけに絞られていて、枠のパネルを
+        # 出せない(実測: `/usage` が締めの集計を返す)。枠まで欲しいなら、
+        # コンテナの中で 1 回サインインするほうを選べる必要がある。
+        # **サインインもしていなければ CLI 自身が断る**(`Not logged in · Please run
+        # /login` が返り、`is_error` で捕まる)ので、ここで先回りして断らない。
+        return ""
     if not value:
         return (
             f"{CLI} の認証情報が未登録です。"
@@ -1717,6 +1726,19 @@ _LAST_USAGE: dict | None = None
 REASON_MAX = 600
 
 
+# 会話を始めずに終わった print モードの締め。**枠のパネルではない。**
+# 数字はどれも 0 で、見せられても打つ手が分からない(実測の文面をそのまま判定に使う)。
+_WRAP_UP_MARKS = ("Total cost:", "Usage:")
+
+
+def _looks_like_a_wrap_up(text: str) -> bool:
+    """枠のパネルではなく、print モードの締めの集計かどうか。
+
+    **語で見る。** 数字で見分けようとすると、本当に使用量が 0 の日と区別できない。
+    """
+    return all(mark in text for mark in _WRAP_UP_MARKS)
+
+
 def _usage_reason(raw: str) -> str:
     """窓を組めなかったときに Chiezo へ渡す理由。**人向けの報告のほうを渡す。**
 
@@ -1732,7 +1754,16 @@ def _usage_reason(raw: str) -> str:
             if isinstance(payload.get(key), str) and payload[key].strip():
                 text = payload[key]
                 break
-    return text.strip()[:REASON_MAX]
+    text = text.strip()
+    if _looks_like_a_wrap_up(text):
+        # **そのまま出しても打つ手が分からない。** 0 が並んだ集計を見せられても、
+        # 壊れているのか、そもそも出せない頼み方をしているのかが読めない。
+        return ("枠のパネルではなく、会話を始めずに終わった締めの集計が返っています。"
+                "登録してある `claude setup-token` の長期トークンは推論だけに"
+                "絞られていて、枠を出せません —— コンテナの中で 1 回サインインし"
+                "(`docker exec -it <ブリッジのコンテナ> claude` で `/login`)、"
+                "管理画面の登録を空にしてください。")
+    return text[:REASON_MAX]
 
 
 async def _read_usage() -> dict:

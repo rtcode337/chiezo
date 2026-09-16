@@ -1639,3 +1639,48 @@ class TestFindingTheJson:
         })
 
         assert [w["used_percent"] for w in server._claude_windows(raw)] == [20.0, 25.0]
+
+
+class TestClaudeCanUseItsOwnSignIn:
+    """登録できるものと、サインインでできることが違う。
+
+    `claude setup-token` の長期トークンは推論だけに絞られていて、**枠のパネルを
+    出せない**(実測: `/usage` が会話を始めずに終わった締めの集計を返す)。
+    枠まで欲しい人が、コンテナの中のサインインを選べる必要がある。
+    """
+
+    def test_nothing_registered_is_not_an_error(self, bridge, monkeypatch):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        monkeypatch.setattr(server, "stored_credential", lambda: "")
+
+        assert server.apply_credential() == ""
+
+    def test_a_registered_token_still_wins(self, bridge, monkeypatch):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        monkeypatch.setattr(server, "stored_credential", lambda: "sk-ant-oat01-test")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+        assert server.apply_credential() == ""
+        assert server.os.environ["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-test"
+
+    def test_codex_still_needs_something_registered(self, bridge, monkeypatch):
+        """あちらは認証ファイルを置く方式で、置くものが無ければ動かない。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        monkeypatch.setattr(server, "stored_credential", lambda: "")
+
+        assert "未登録" in server.apply_credential()
+
+    def test_a_wrap_up_says_what_to_do(self, bridge):
+        """0 が並んだ集計を見せられても、壊れているのか頼み方が違うのか読めない。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        raw = json.dumps({"result": (
+            "Total cost: $0.0000\nTotal duration (API): 0s\n"
+            "Usage: 0 input, 0 output, 0 cache read, 0 cache write")})
+
+        assert "サインイン" in server._usage_reason(raw)
+
+    def test_a_real_panel_is_not_mistaken_for_one(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        raw = json.dumps({"result": "Current session: 20% used"})
+
+        assert server._usage_reason(raw) == "Current session: 20% used"
