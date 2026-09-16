@@ -982,3 +982,28 @@ class TestWindowOrder:
         assert [w.label for w in usage.ordered([first, second, short])] == [
             "5 時間", "session", "week",
         ]
+
+
+class TestClaudeDoesNotNeedARegisteredToken:
+    """登録が無くても有効にできる。**required にすると詰む** —— 枠を取るには
+    登録を空にする必要があるのに、空にすると二度と有効にできなくなる。
+    """
+
+    def test_a_registered_token_is_optional(self, env):
+        from app import providers
+
+        spec = providers.get("claude")
+
+        assert spec.credential == providers.CRED_OPTIONAL
+
+    def test_it_can_be_enabled_without_one(self, env):
+        """止めているのは「接続を試す」が通っていないことだけであってほしい。"""
+        from app import settings_store
+        from app.views import ai_settings
+
+        with make_client(env, ReplyLLM()):
+            settings_store.set_verified("claude", True)
+            row = next(r for r in ai_settings._rows() if r["spec"].id == "claude")
+
+        assert row["has_credential"] is False
+        assert row["can_enable"] is True

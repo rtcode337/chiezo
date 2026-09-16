@@ -147,11 +147,25 @@ PROVIDERS: tuple[Provider, ...] = (
         id="claude",
         label="Claude Code CLI",
         url="http://chiezo-bridge-claude:7013/v1",
-        credential=CRED_REQUIRED,
+        # **無くても動く。** 登録が空なら、コンテナの中でサインインした結果を CLI が
+        # 自分で使う（`bridge/cli_bridge.py` の `apply_credential`）。
+        # **required にしてはいけない** —— 枠を取るには登録を空にする必要があるのに、
+        # 空にすると二度と有効にできなくなる（実際に詰んだ）。
+        credential=CRED_OPTIONAL,
         billing="Claude のサブスクリプション（定額）",
         model_required=False,
-        setup="ブリッジのコンテナ **chiezo-bridge-claude** を立ててから、手元の端末で\n"
+        setup="ブリッジのコンテナ **chiezo-bridge-claude** を立ててから、"
+        "**どちらか一方**を選んでください。\n"
+        "\n"
+        "**枠（使用量）まで見たいなら、コンテナの中でサインインします。**\n"
+        "ここは**登録しないまま**にしてください ——\n"
+        "`docker exec -it chiezo-bridge-claude claude` を実行して `/login`。\n"
+        "**登録があるとそちらが優先される**ので、登録したままサインインしても枠は出ません。\n"
+        "サインイン結果を残すため、`/srv/bridge/home` を名前付きボリュームにしておくこと。\n"
+        "\n"
+        "**会話だけでよいなら、トークンを登録します。** 手元の端末で\n"
         "`claude setup-token` を実行し、発行されたトークンをここに登録してください。\n"
+        "この長期トークンは推論だけに絞られているので、**枠は出せません**。\n"
         "\n"
         "**コンテナ名はこのとおりにすること**（Chiezo はこの名前で呼びに行きます）。\n"
         "compose があるなら docker-compose.yml の該当サービスのコメントを外すだけです。\n"
