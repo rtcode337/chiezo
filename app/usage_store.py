@@ -261,6 +261,61 @@ def recent_calls(limit: int = 100) -> list[dict]:
     ]
 
 
+def breakdown(since: datetime) -> list[dict]:
+    """`since` 以降を、相手 × モデル × 考える量 × 依頼元で束ねて返す(多い順)。
+
+    **集計(`spent`)とは束ね方が違うだけの別口**。あちらは相手ごとの合計で
+    「どの枠が詰まっているか」を見るためのもの、こちらは詰まった枠の中身を
+    「何で走らせた、誰の依頼か」まで割るためのもの —— 相手の合計だけでは、
+    枠を食ったのが無人で回る層なのか外のアプリなのかが読めない。
+
+    **目方も返す**(`prompt_bytes` / `reply_bytes`)。CLI を包んだ相手は
+    トークン数を言わないので、回数だけでは 20 KB の依頼と 300 KB の依頼が
+    同じ 1 回に見える —— 枠を食ったのがどちらかは、そこでしか分からない。
+
+    モデル・考える量・依頼元が空の行は空のまま返す(「無い」と「分からない」を
+    呼ぶ側で書き分けられるように、ここでは埋めない)。
+    """
+    if not is_enabled():
+        return []
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                "SELECT provider, model, effort, caller,"
+                "       COUNT(*) AS requests,"
+                "       COALESCE(SUM(input_tokens), 0) AS input_tokens,"
+                "       COALESCE(SUM(output_tokens), 0) AS output_tokens,"
+                "       SUM(CASE WHEN input_tokens IS NULL AND output_tokens IS NULL"
+                "                THEN 1 ELSE 0 END) AS unknown,"
+                "       COALESCE(SUM(prompt_bytes), 0) AS prompt_bytes,"
+                "       COALESCE(SUM(reply_bytes), 0) AS reply_bytes,"
+                "       COALESCE(SUM(ms), 0) AS ms"
+                "  FROM calls WHERE at >= ?"
+                " GROUP BY provider, model, effort, caller"
+                " ORDER BY requests DESC, prompt_bytes DESC",
+                (since.astimezone(UTC).isoformat(timespec="seconds"),),
+            ).fetchall()
+    except (sqlite3.Error, OSError) as e:
+        log.warning("usage breakdown failed: %s", e)
+        return []
+    return [
+        {
+            "provider": r["provider"],
+            "model": r["model"] or "",
+            "effort": r["effort"] or "",
+            "caller": r["caller"] or "",
+            "requests": r["requests"],
+            "input_tokens": r["input_tokens"],
+            "output_tokens": r["output_tokens"],
+            "unknown": r["unknown"] or 0,
+            "prompt_bytes": r["prompt_bytes"],
+            "reply_bytes": r["reply_bytes"],
+            "ms": r["ms"],
+        }
+        for r in rows
+    ]
+
+
 def first_recorded_at() -> str | None:
     """いちばん古い記録の時刻。「いつからの数か」を画面と API に出すため ——
     出さないと、入れたばかりの環境の「0 回」が「使っていない」と読めてしまう。"""

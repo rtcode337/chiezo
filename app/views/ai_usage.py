@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, HTTPException, Request
@@ -16,6 +17,7 @@ from fastapi.responses import RedirectResponse
 
 from app import jst, usage, usage_store
 from app.pages import esc
+from app.views import ai_history
 
 router = APIRouter()
 
@@ -105,6 +107,99 @@ def _spent_cell(row: dict) -> str:
             text += ' <span class="muted">(トークン数なし)</span>'
         lines.append(text)
     return "<br>".join(lines)
+
+
+BREAKDOWN_ANCHOR = "ai-breakdown"
+
+# 内訳に出す窓の既定。**5 時間では無人で回る層の一周が入らず、7 日では今日の跳ね上がりが
+# 均される** —— 「いま枠を食っているのは誰か」を見に来る画面なので、その中間を既定にする。
+BREAKDOWN_DEFAULT_WINDOW = "24h"
+
+# 1 つの窓に出す行数。多い順に並べるので、枠を食っている組は必ず上に来る。
+# 全部出すと、1 回しか呼ばれていない組が画面の大半を占める。
+BREAKDOWN_ROWS = 20
+
+
+def breakdown_window(request: Request | None = None) -> str:
+    """内訳の窓をクエリから読む。
+
+    **照合して通すのではなく、こちらが持っているほうを返す**(`_back_to` と同じ理由)。
+    知らない値は既定へ倒す —— 窓が違うだけで、読めないものは何も無い。
+    """
+    raw = (request.query_params.get("spent_window") or "").strip() if request is not None else ""
+    return next((name for name, _ in usage.SPENT_WINDOWS if name == raw), BREAKDOWN_DEFAULT_WINDOW)
+
+
+def _window_links(current: str) -> str:
+    """窓の切り替え。**いま見ている窓は押せなくする**(押しても同じ画面が出るだけ)。"""
+    parts = []
+    for name, _ in usage.SPENT_WINDOWS:
+        label = esc(_SPENT_LABELS.get(name, name))
+        if name == current:
+            parts.append(f"<strong>{label}</strong>")
+        else:
+            parts.append(f'<a href="/admin/ai?spent_window={esc(name)}#{BREAKDOWN_ANCHOR}">{label}</a>')
+    return " / ".join(parts)
+
+
+def _breakdown_tokens(row: dict) -> str:
+    """トークンの欄。**言わなかった(`unknown`)と 0 を分ける**(`_spent_cell` と同じ理由)。
+
+    CLI を包んだ相手は 1 つも言わないので、全部が未取得なら言い切る ——
+    そこを 0 と書くと「0 トークンで動く相手」に見える。
+    """
+    if row["unknown"] >= row["requests"]:
+        return '<span class="muted">トークン数なし</span>'
+    text = f"{row['input_tokens']:,} in・{row['output_tokens']:,} out"
+    if row["unknown"]:
+        text += f' <span class="muted">(うち {row["unknown"]} 回は数なし)</span>'
+    return text
+
+
+def _breakdown_weight(row: dict) -> str:
+    """やり取りの目方。**回数の隣に要る** —— トークン数を言わない相手では、
+    20 KB の依頼と 300 KB の依頼が回数の上では同じ 1 回に見える。
+    枠を食ったのがどちらかは、ここでしか分からない。
+    """
+    return (f'依頼 {esc(ai_history.size(row["prompt_bytes"]))}'
+            f' → 応答 {esc(ai_history.size(row["reply_bytes"]))}')
+
+
+def breakdown_html(request: Request | None = None) -> str:
+    """使ったぶんの内訳 —— 相手 × モデル × 考える量 × 依頼元。
+
+    **相手ごとの合計だけでは、詰まった枠の中身が読めない。** 同じ相手に、無人で回る層の
+    巡回と外のアプリの依頼と手元からの問い合わせが混ざって入るので、
+    「使い切った」と分かっても次にどれを止めればよいかが決まらない。
+    """
+    window = breakdown_window(request)
+    span = next(delta for name, delta in usage.SPENT_WINDOWS if name == window)
+    rows = usage_store.breakdown(datetime.now(UTC) - span)
+    head = (f'<h4 id="{BREAKDOWN_ANCHOR}">内訳</h4>\n'
+            f'<p class="muted">{_window_links(window)}</p>')
+    if not rows:
+        return f'{head}\n<p class="muted">この窓の記録はありません。</p>'
+    shown = rows[:BREAKDOWN_ROWS]
+    body = "\n".join(
+        "<tr>"
+        f'<td>{ai_history.who_html(r["provider"], r["model"], r["effort"])}</td>'
+        f'<td>{ai_history.caller_html(r["caller"]) or "<span class=\"muted\">—</span>"}</td>'
+        f'<td>{r["requests"]:,} 回</td>'
+        f'<td class="snippet">{_breakdown_weight(r)}</td>'
+        f"<td>{_breakdown_tokens(r)}</td>"
+        "</tr>"
+        for r in shown
+    )
+    rest = (f'<p class="muted">多い順に {BREAKDOWN_ROWS} 組まで'
+            f"(この窓には {len(rows)} 組ありました)。</p>" if len(rows) > BREAKDOWN_ROWS else "")
+    return f"""{head}
+<table class="ai-settings ai-usage">
+<thead><tr><th>AI</th><th>依頼元</th><th>回数</th><th>やり取りの目方</th><th>トークン</th></tr></thead>
+<tbody>
+{body}
+</tbody>
+</table>
+{rest}"""
 
 
 def _refresh_button(row: dict, back: str) -> str:
@@ -257,6 +352,7 @@ API からは <code>GET /v1/ai/usage</code>(取り直すなら <code>?refresh=1<
 {since_note}
 {_refresh_all_button()}
 {table_html(usage.rows())}
+{breakdown_html(request)}
 """
 
 

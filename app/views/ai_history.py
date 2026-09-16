@@ -41,7 +41,10 @@ def _status(status: int) -> str:
     return "届かず" if not status else str(status)
 
 
-def _size(nbytes: int) -> str:
+def size(nbytes: int) -> str:
+    """やり取りの目方。**使用量の内訳(`views/ai_usage.py`)からも呼ぶので公開している**
+    —— 別々に書くと、同じバイト数が 2 つの画面で違う桁に見える。
+    """
     if nbytes >= 1024 * 1024:
         return f"{nbytes / 1024 / 1024:.1f} MB"
     if nbytes >= 1024:
@@ -77,10 +80,10 @@ def prompt_html(text: str, nbytes: int | None) -> str:
     控えは `ai_inflight.PROMPT_MAX` で切れているので、切れたことを示す
     （読み手が「これで全部だ」と思って判断しないように）。
     """
-    size = f'<span class="muted">依頼 {esc(_size(nbytes))}</span>' if nbytes is not None else ""
+    weight = f'<span class="muted">依頼 {esc(size(nbytes))}</span>' if nbytes is not None else ""
     body = (text or "").strip()
     if not body:
-        return size or '<span class="muted">依頼文は控えていない</span>'
+        return weight or '<span class="muted">依頼文は控えていない</span>'
     head = body.replace("\n", " ")[:PROMPT_HEAD]
     if len(body) > PROMPT_HEAD:
         head += "…"
@@ -90,7 +93,7 @@ def prompt_html(text: str, nbytes: int | None) -> str:
     return (
         f'<details class="prompt-open"><summary>{esc(head)}</summary>'
         f'<pre class="prompt-body">{esc(body)}</pre>{cut}</details>'
-        f'{("<br>" + size) if size else ""}'
+        f'{("<br>" + weight) if weight else ""}'
     )
 
 
@@ -155,8 +158,8 @@ def _weight(row: dict) -> str:
     sent, got, ms = row.get("prompt_bytes"), row.get("reply_bytes"), row.get("ms")
     flow = " → ".join(
         p for p in (
-            f"依頼 {_size(sent)}" if sent is not None else "",
-            f"応答 {_size(got)}" if got is not None else "",
+            f"依頼 {size(sent)}" if sent is not None else "",
+            f"応答 {size(got)}" if got is not None else "",
         ) if p
     )
     return " / ".join(p for p in (flow, took(ms) if ms is not None else "") if p)
@@ -381,7 +384,7 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
             result = f'<span class="stale">{esc(_status(row["status"]))}</span>'
             detail = (
                 f'<span class="snippet">{esc(row["reason"])}</span>'
-                f'<br><span class="muted">依頼文 {esc(_size(row["prompt_bytes"]))}</span>'
+                f'<br><span class="muted">依頼文 {esc(size(row["prompt_bytes"]))}</span>'
             )
         detail += transcript_html(kept.get(row.get("transcript_id") or ""))
         body.append(

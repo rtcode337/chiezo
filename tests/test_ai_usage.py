@@ -48,6 +48,14 @@ def backend_of(body: dict, name: str) -> dict:
     return next(b for b in body["backends"] if b["id"] == name)
 
 
+def breakdown_of(html: str) -> str:
+    """内訳の節だけを切り出す。**同じ画面に依頼履歴も並ぶ**ので、
+    ページ全体で照合すると、あちらの行を内訳の行として読んでしまう。
+    """
+    head = html.index('id="ai-breakdown"')
+    return html[head:html.index("</table>", head) + len("</table>")]
+
+
 class TestSpent:
     """Chiezo が使ったぶん —— 全部の相手で同じ物差しで測れる側。"""
 
@@ -707,3 +715,75 @@ class TestBridgeSide:
         import cli_bridge
 
         assert set(cli_bridge.USAGE_CLIS) == {"antigravity", "claude", "codex"}
+
+
+class TestBreakdown:
+    """内訳 —— 詰まった枠の中身を、相手 × モデル × 考える量 × 依頼元で割る側。"""
+
+    def test_the_same_backend_splits_by_model_effort_and_caller(self, env):
+        """相手ごとの合計だけでは、次にどれを止めればよいかが決まらない。"""
+        from app import usage_store
+
+        with make_client(env, ReplyLLM()) as client:
+            for _ in range(7):
+                usage_store.record("codex", model="gpt-5.5", effort="high",
+                                   caller="collect:painters", prompt_bytes=18_000)
+            usage_store.record("codex", model="gpt-5.5", effort="low",
+                               caller="api:pta", prompt_bytes=288_000)
+            table = breakdown_of(client.get("/admin/ai").text)
+
+        # 依頼元は開いて出す(素の印では読めない)
+        assert "収集(painters)" in table and "外のアプリ(pta)" in table
+        # 多い順。考える量が違えば別の行になる
+        assert table.index("7 回") < table.index("1 回")
+        assert "gpt-5.5 / high" in table and "gpt-5.5 / low" in table
+
+    def test_weight_is_shown_next_to_the_count(self, env):
+        """回数だけでは、小さい依頼と大きい依頼が同じ 1 回に見える。"""
+        from app import usage_store
+
+        with make_client(env, ReplyLLM()) as client:
+            usage_store.record("codex", caller="api:pta",
+                               prompt_bytes=288_000, reply_bytes=1_024)
+            table = breakdown_of(client.get("/admin/ai").text)
+
+        assert "依頼 281 KB → 応答 1 KB" in table
+
+    def test_a_backend_that_never_reports_tokens_says_so(self, env):
+        """0 と書くと「0 トークンで動く相手」に見える。"""
+        from app import usage_store
+
+        with make_client(env, ReplyLLM()) as client:
+            usage_store.record("codex", caller="api:pta")
+            table = breakdown_of(client.get("/admin/ai").text)
+
+        assert "トークン数なし" in table
+
+    def test_the_window_can_be_switched(self, env):
+        """5 時間では無人で回る層の一周が入らず、7 日では今日の跳ね上がりが均される。"""
+        import sqlite3
+        from datetime import UTC, datetime, timedelta
+
+        from app import usage_store
+
+        with make_client(env, ReplyLLM()) as client:
+            usage_store.record("codex", caller="collect:painters")
+            usage_store.record("antigravity", caller="collect:tech")
+            # 3 日前の呼び出しに仕立てる(記録の口は時刻を受け取らない)
+            stale = (datetime.now(UTC) - timedelta(days=3)).isoformat(timespec="seconds")
+            with sqlite3.connect(usage_store.db_path()) as conn:
+                conn.execute("UPDATE calls SET at = ? WHERE provider = 'antigravity'", (stale,))
+
+            day = breakdown_of(client.get("/admin/ai?spent_window=24h").text)
+            week = breakdown_of(client.get("/admin/ai?spent_window=7d").text)
+
+        assert "収集(tech)" not in day
+        assert "収集(tech)" in week
+
+    def test_an_unknown_window_falls_back_to_the_default(self, env):
+        """窓が違うだけで読めないものは無いので、断らずに既定へ倒す。"""
+        with make_client(env, ReplyLLM()) as client:
+            html = client.get("/admin/ai?spent_window=../secret").text
+
+        assert "../secret" not in html
+        assert 'id="ai-breakdown"' in html
