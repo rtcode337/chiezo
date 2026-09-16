@@ -15,7 +15,13 @@
 # そのぶんイメージは 1.56GB → 1.27GB に戻る。
 
 # ---- CLI を取り出すためだけのステージ ----
-FROM node:20-slim AS cli
+# **node の版が CLI の版の天井になる。** npm は engines に合う中でいちばん新しい版を
+# 選ぶので、古い node のままだと**黙って古い CLI が入る** —— claude-code は 2.1.198 から
+# `node >= 22` を要求していて、node 20 では 2.1.197 で頭打ちになっていた
+# (下限を付けて初めて気づいた。それまでは「キャッシュのせい」に見えていた)。
+# **実行ステージと同じ Debian(bookworm)のタグを選ぶ** —— claude.exe はここで
+# ビルドされた glibc に動的リンクしているので、ディストリビューションを跨ぐと動かない。
+FROM node:22-bookworm-slim AS cli
 
 # npm は毎回その時点の最新を入れるが、**この RUN は入力が変わらないので
 # ビルドキャッシュに当たると古い CLI のまま出来上がる**(agy と同じ罠)。
@@ -28,10 +34,12 @@ FROM node:20-slim AS cli
 #
 # codex 0.154.0 … これより古い CLI では、新しいモデルを名指ししても
 # 「The '…' model requires a newer version of Codex.」で 400 になる(実測)。
-# claude 2.1.273 … 別名(`opus` など)が指す先は CLI が決めるので、古いと
+# claude 2.1.267 … 別名(`opus` など)が指す先は CLI が決めるので、古いと
 # 新しい世代を選べない。print モードの `/usage` が枠を返すのもこの系列から。
+# **`stable` のタグに合わせてある** —— npm が入れるのは `latest` だが、あちらは
+# `next` と同じ版を指していることがあり、巻き戻されるとビルドが止まる。
 ARG CODEX_MIN_VERSION=0.154.0
-ARG CLAUDE_MIN_VERSION=2.1.273
+ARG CLAUDE_MIN_VERSION=2.1.267
 RUN set -eux; \
     npm install -g @anthropic-ai/claude-code @openai/codex; \
     installed="$(codex --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"; \
@@ -44,7 +52,7 @@ RUN set -eux; \
 # Antigravity CLI は単一の Go バイナリで、npm では配布されていない。
 # インストーラが受け付けるのは --dir と --help だけ(--skip-aliases 等は無い)。
 #
-# ca-certificates を先に入れる(node:20-slim には入っていない)。無いと curl が
+# ca-certificates を先に入れる(node の slim には入っていない)。無いと curl が
 # 証明書を開けずに失敗する。そして `curl | bash` は curl が落ちても成功扱いになるので、
 # 一度ファイルへ落としてから実行し、最後に agy が動くことまで確かめる ——
 # ここを素通りさせると、CLI の入っていないイメージが黙って出来上がる(実際に踏んだ)。
@@ -69,7 +77,7 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 # ---- 実行ステージ ----
-# node:20-slim と同じ Debian 12(bookworm)にする。 claude.exe はそこでビルドされた
+# 取り出しのステージと同じ Debian 12(bookworm)にする。 claude.exe はそこでビルドされた
 # glibc に動的リンクしているので、ディストリビューションを跨ぐと動かなくなる。
 FROM debian:bookworm-slim
 
