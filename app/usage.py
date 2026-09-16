@@ -177,7 +177,7 @@ async def _elevenlabs(spec, credential: str) -> list[Window]:
     if res.status_code in (401, 403):
         raise UsageError(f"認証情報が受け付けられませんでした(HTTP {res.status_code})")
     if res.status_code >= 400:
-        raise UsageError(f"HTTP {res.status_code}: {res.text[:300]}")
+        raise UsageError(f"HTTP {res.status_code}: {res.text[:REASON_MAX]}")
     try:
         body = res.json()
     except ValueError:
@@ -288,8 +288,16 @@ async def _bridge(spec: providers.Provider) -> list[Window]:
             )
         )
     if not windows:
-        raise UsageError(str(body.get("reason") or "CLI が使用量を返しませんでした")[:300])
+        raise UsageError(
+            str(body.get("reason") or "CLI が使用量を返しませんでした")[:REASON_MAX]
+        )
     return windows
+
+
+# 失敗の理由として持ち帰る長さ。**300 では足りなかった** —— 相手は人向けの報告を
+# 返してくるので、頭で切ると「なぜ駄目だったか」が枠の外へ落ちる(実際にそうなった)。
+# 絵と音の相手のエラー(`app/media_backends.py` の `remote_error`)と同じ長さにしてある。
+REASON_MAX = 600
 
 
 def _bridge_error(body: dict, status: int) -> str:
@@ -302,7 +310,7 @@ def _bridge_error(body: dict, status: int) -> str:
     if isinstance(detail, dict):
         detail = detail.get("error") or detail
     reason = body.get("error") or detail
-    return (str(reason) if reason else f"HTTP {status}")[:300]
+    return (str(reason) if reason else f"HTTP {status}")[:REASON_MAX]
 
 
 async def fetch(spec: providers.Provider) -> list[Window]:

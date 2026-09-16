@@ -1560,3 +1560,82 @@ class TestWindowNames:
         windows = server._windows_in({"a": {"primary": same}, "b": {"primary": dict(same)}})
 
         assert [w["id"] for w in windows] == ["primary"]
+
+
+class TestWhyTheQuotaCouldNotBeRead:
+    """窓を組めなかったときに、**なぜ読めなかったか**を持ち帰る。
+
+    CLI は人向けの報告を JSON の奥に入れてくる。envelope をそのまま切り詰めると、
+    並び順次第でセッション id やトークン数だけが残り、肝心の文面が枠の外へ落ちる
+    (実際にそうなった)。
+    """
+
+    def test_the_human_readable_part_is_what_travels(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        raw = json.dumps({
+            "is_error": False, "num_turns": 0, "session_id": "x" * 200,
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+            "result": "Not logged in · Please run /login",
+        })
+
+        assert server._usage_reason(raw) == "Not logged in · Please run /login"
+
+    def test_antigravity_says_it_in_another_field(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+        raw = json.dumps({"status": "failed", "response": "枠を読めませんでした"})
+
+        assert server._usage_reason(raw) == "枠を読めませんでした"
+
+    def test_something_unreadable_travels_as_it_is(self, bridge):
+        """codex の JSON-RPC はそれ自体が短いので、そのまま渡す。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+
+        assert server._usage_reason("rate limits unavailable") == "rate limits unavailable"
+
+    def test_it_is_cut_but_not_at_300(self, bridge):
+        """300 では足りなかった —— 頭で切ると打つ手が読めない。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        raw = json.dumps({"result": "あ" * 800})
+
+        assert len(server._usage_reason(raw)) == server.REASON_MAX
+
+
+class TestFindingTheJson:
+    """混ざった出力の中から JSON の本体を拾う(`_json_object`)。
+
+    stderr を stdout に混ぜて読んでいるので、CLI が警告を 1 行吐くだけで
+    素の `json.loads` は落ちる。
+    """
+
+    PANEL: ClassVar[str] = json.dumps({"result": "Current session: 20% used"})
+
+    def test_a_warning_in_front_is_stepped_over(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        raw = "Warning: no stdin data received in 3s\n" + self.PANEL
+
+        assert server._json_object(raw)["result"].startswith("Current session")
+
+    def test_a_brace_in_the_warning_does_not_break_it(self, bridge):
+        """**ここが「最初の `{` から後ろ」では駄目なところ。** 警告に `{` が 1 つ
+        混ざると、そこから読み始めて必ず失敗する —— しかも落ち方が「JSON が無い」と
+        同じなので、警告が出た日にだけ静かに読めなくなる。
+        """
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        raw = "Warning: config {foo} is deprecated\n" + self.PANEL
+
+        assert server._json_object(raw)["result"].startswith("Current session")
+
+    def test_no_json_at_all_is_not_an_answer(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+
+        assert server._json_object("Not logged in") is None
+
+    def test_the_panel_survives_a_noisy_line(self, bridge):
+        """窓まで組めることを通しで見る(拾えても読めなければ意味が無い)。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        raw = "note: {} \n" + json.dumps({
+            "result": ("Current session: 20% used · resets Sep 16, 7:10pm (UTC)\n"
+                       "Current week (all models): 25% used · resets Sep 20, 5:59am (UTC)"),
+        })
+
+        assert [w["used_percent"] for w in server._claude_windows(raw)] == [20.0, 25.0]

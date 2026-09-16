@@ -1052,11 +1052,8 @@ def _result_of(raw: str) -> tuple[str, dict, str]:
         return _codex_result(raw)
     if CLI not in ("claude", "antigravity"):
         return raw, {}, ""
-    try:
-        payload = json.loads(_json_tail(raw))
-    except ValueError:
-        return raw, {}, ""
-    if not isinstance(payload, dict):
+    payload = _json_object(raw)
+    if payload is None:
         return raw, {}, ""
 
     if CLI == "claude":
@@ -1301,16 +1298,40 @@ _CLAUDE_USAGE_RE = re.compile(
 )
 
 
-def _json_tail(raw: str) -> str:
-    """先に混ざった警告を落として、JSON の本体だけを返す。
+def _json_object(raw: str) -> dict | None:
+    """混ざった出力の中から、JSON の本体(辞書)を 1 つ取り出す。読めなければ None。
 
     **stderr を stdout に混ぜて読んでいる**(`_run_for_usage`)ので、CLI が
     警告を 1 行吐くだけで `json.loads` が落ちる —— 実測で
     `Warning: no stdin data received in 3s, …` が前に付いた。
-    最初の `{` から後ろを見る。JSON が無ければそのまま返す（人向けの行として読ませる）。
+
+    **「最初の `{` から後ろ」では足りない。** 警告のほうに `{` が 1 つでも
+    混ざっていると、そこから読み始めて必ず失敗する —— しかも落ち方が
+    「JSON が無い」と同じなので、警告が出た日にだけ静かに読めなくなる。
+    **`{` を順に試して、最初に読めたものを採る**(`raw_decode` は途中で
+    終わっていても、そこまでを 1 つの値として返す)。
+
+    **中身のあるものを採る。** 空の `{}` は警告のほうに混ざりうるが、CLI の本体が
+    空であることはない —— 最初に読めたものを無条件に採ると、飾りの `{}` を
+    本体として返してしまう(実際にそうなった)。最後まで空しか無ければそれを返す。
+
+    入れ子の `{` は外側が先に読めるので、いちばん大きいものを探す必要は無い。
     """
+    decoder = json.JSONDecoder()
+    empty: dict | None = None
     at = raw.find("{")
-    return raw[at:] if at >= 0 else raw
+    while at >= 0:
+        try:
+            value, _ = decoder.raw_decode(raw, at)
+        except ValueError:
+            at = raw.find("{", at + 1)
+            continue
+        if isinstance(value, dict):
+            if value:
+                return value
+            empty = empty if empty is not None else value
+        at = raw.find("{", at + 1)
+    return empty
 
 
 # claude が言う戻る時刻。**年を書かない**(実測: `Sep 16, 7:10pm (UTC)` /
@@ -1359,10 +1380,8 @@ def _claude_windows(raw: str) -> list[dict]:
     サブスクの枠ではない。
     """
     text = raw
-    with suppress(ValueError):
-        payload = json.loads(_json_tail(raw))
-        if isinstance(payload, dict):
-            text = str(payload.get("result") or "")
+    if (payload := _json_object(raw)) is not None:
+        text = str(payload.get("result") or "")
     windows = []
     for line in text.splitlines():
         if not (found := _CLAUDE_USAGE_RE.match(line.strip())):
@@ -1691,6 +1710,31 @@ async def _codex_usage() -> tuple[list[dict], str]:
 _LAST_USAGE: dict | None = None
 
 
+# 窓を組めなかったときに持ち帰る理由の長さ。**300 では足りなかった** ——
+# CLI は人向けの報告を JSON の奥に入れてくるので、頭で切ると metadata だけが残り、
+# 「なぜ読めなかったか」が枠の外へ落ちる(実際にそうなった)。
+# 外部の相手のエラー(`app/media_backends.py` の `remote_error`)と同じ長さにしてある。
+REASON_MAX = 600
+
+
+def _usage_reason(raw: str) -> str:
+    """窓を組めなかったときに Chiezo へ渡す理由。**人向けの報告のほうを渡す。**
+
+    CLI が返すのは envelope で、読ませたい文面はその中の 1 項目にある
+    (claude は `result`、agy は `response`)。envelope をそのまま切り詰めると、
+    並び順次第でセッション id やトークン数だけが残る。
+
+    読めなければ元の文字列を返す(codex の JSON-RPC はそれ自体が短い)。
+    """
+    text = raw
+    if (payload := _json_object(raw)) is not None:
+        for key in ("result", "response"):
+            if isinstance(payload.get(key), str) and payload[key].strip():
+                text = payload[key]
+                break
+    return text.strip()[:REASON_MAX]
+
+
 async def _read_usage() -> dict:
     """CLI に枠を聞いて、窓の一覧に直す。**待ち枠は取らない**(呼ぶ側の仕事)。"""
     if CLI == "codex":
@@ -1705,7 +1749,7 @@ async def _read_usage() -> dict:
         "cli": CLI,
         "windows": windows,
         # 窓を組めなかったときだけ意味を持つ(Chiezo がそのまま画面に出す)。
-        "reason": "" if windows else raw[:300],
+        "reason": "" if windows else _usage_reason(raw),
         "taken_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "stale": False,
     }
