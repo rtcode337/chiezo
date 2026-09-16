@@ -104,6 +104,10 @@ _ADDED_COLUMNS = {
     # 考える量。**モデルと同じくらい結果と時間を左右する**のに、失敗の控え
     # （`ai_log`）にしか無かったので、成功した行だけ何で走ったのか読めなかった
     "effort": "TEXT",
+    # キャッシュから読んだ入力。**`input_tokens` の内訳**（外に足すものではない）。
+    # 同じトークン数でも枠の減り方が違う（API の料金では 1/10 ほど）ので、
+    # 分けて持たないと「重い呼び出し」を読み違える
+    "cached_tokens": "INTEGER",
     # やり取りの控え（`app/ai_transcript.py`）の id。**同じ 1 回を指す紐**で、
     # これが無いと目方の行と中身の控えを突き合わせられない —— 時刻と相手で
     # 寄せると、同じ秒に並んだ行がずれたときに別の呼び出しの中身を見せる。
@@ -178,6 +182,7 @@ def record(
     kind: str = "chat",
     input_tokens: int | None = None,
     output_tokens: int | None = None,
+    cached_tokens: int | None = None,
     prompt_bytes: int | None = None,
     reply_bytes: int | None = None,
     ms: int | None = None,
@@ -197,12 +202,13 @@ def record(
         with _connect() as conn:
             conn.execute(
                 "INSERT INTO calls (provider, model, effort, kind, at, input_tokens,"
-                " output_tokens, prompt_bytes, reply_bytes, ms, caller, transcript_id)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " output_tokens, cached_tokens, prompt_bytes, reply_bytes, ms, caller,"
+                " transcript_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (provider, model or "", effort or "", kind,
                  _now().isoformat(timespec="seconds"),
-                 input_tokens, output_tokens, prompt_bytes, reply_bytes, ms, caller or "",
-                 transcript_id or ""),
+                 input_tokens, output_tokens, cached_tokens, prompt_bytes, reply_bytes, ms,
+                 caller or "", transcript_id or ""),
             )
             now = time.monotonic()
             if now - _last_prune > _PRUNE_INTERVAL:
@@ -308,6 +314,7 @@ def breakdown(since: datetime) -> list[dict]:
                 "       COUNT(*) AS requests,"
                 "       COALESCE(SUM(input_tokens), 0) AS input_tokens,"
                 "       COALESCE(SUM(output_tokens), 0) AS output_tokens,"
+                "       COALESCE(SUM(cached_tokens), 0) AS cached_tokens,"
                 "       SUM(CASE WHEN input_tokens IS NULL AND output_tokens IS NULL"
                 "                THEN 1 ELSE 0 END) AS unknown,"
                 "       COALESCE(SUM(prompt_bytes), 0) AS prompt_bytes,"
@@ -330,6 +337,7 @@ def breakdown(since: datetime) -> list[dict]:
             "requests": r["requests"],
             "input_tokens": r["input_tokens"],
             "output_tokens": r["output_tokens"],
+            "cached_tokens": r["cached_tokens"],
             "unknown": r["unknown"] or 0,
             "prompt_bytes": r["prompt_bytes"],
             "reply_bytes": r["reply_bytes"],

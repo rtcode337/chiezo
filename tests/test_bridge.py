@@ -102,7 +102,7 @@ class TestCommand:
         server = bridge(CHIEZO_BRIDGE_CLI="antigravity", CHIEZO_BRIDGE_TIMEOUT="600")
         assert server.build_command("/tmp/out.txt", "こんにちは") == [
             "agy", "-p", "こんにちは", "--dangerously-skip-permissions",
-            "--print-timeout", "595s",
+            "--print-timeout", "595s", "--output-format", "json",
         ]
 
     def test_antigravity_skips_permissions_even_for_a_short_prompt(self, bridge):
@@ -881,9 +881,10 @@ class TestTellingWhatTheCliDid:
     いたので、頼む側の控えの「途中経過」はいつも空だった。
     """
 
-    def _answered(self, server, monkeypatch, text="答え", trace="[stdout]\n道具を引いた"):
+    def _answered(self, server, monkeypatch, text="答え", trace="[stdout]\n道具を引いた",
+                  usage=None):
         async def fake_run(*args, **kwargs):
-            return text, trace
+            return text, trace, usage or {}, ""
 
         monkeypatch.setattr(server, "run_cli", fake_run)
 
@@ -1331,3 +1332,128 @@ class TestSeveralReferences:
         )
         assert server._write_source(body, str(tmp_path)) == [str(tmp_path / "source.png")]
         assert "source-2.png" not in server._image_prompt(body, str(tmp_path))
+
+
+class TestStructuredOutput:
+    """CLI の構造化出力から本文と使ったぶんを読む(`_result_of`)。
+
+    **CLI は起動しない。** 確かめるのは読み取りのほうで、出力そのものは
+    コンテナで 1 回走らせて採ってある(docs/ai.md)。
+    """
+
+    CLAUDE: ClassVar[str] = json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "result": "2です。",
+        "usage": {"input_tokens": 120, "cache_creation_input_tokens": 30,
+                  "cache_read_input_tokens": 900, "output_tokens": 7},
+        "modelUsage": {"claude-opus-4-8": {"inputTokens": 120}},
+    })
+
+    AGY: ClassVar[str] = json.dumps({
+        "status": "completed", "response": "2です。", "num_turns": 1,
+        "usage": {"input_tokens": 14046, "output_tokens": 73, "thinking_tokens": 68,
+                  "cache_read_tokens": 0, "total_tokens": 14119},
+    })
+
+    CODEX: ClassVar[str] = "\n".join([
+        json.dumps({"type": "thread.started", "thread_id": "t1"}),
+        json.dumps({"type": "turn.started"}),
+        json.dumps({"type": "item.completed",
+                    "item": {"id": "item_0", "type": "agent_message", "text": "2です。"}}),
+        json.dumps({"type": "turn.completed",
+                    "usage": {"input_tokens": 14610, "cached_input_tokens": 11520,
+                              "cache_write_input_tokens": 0, "output_tokens": 7,
+                              "reasoning_output_tokens": 0}}),
+    ])
+
+    def test_claude_reports_the_answer_and_the_tokens(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        text, usage, _ran = server._result_of(self.CLAUDE)
+
+        assert text == "2です。"
+        # Anthropic の input_tokens はキャッシュのぶんを含まないので、足して揃える
+        assert usage["prompt_tokens"] == 120 + 30 + 900
+        assert usage["completion_tokens"] == 7
+        assert usage["prompt_tokens_details"]["cached_tokens"] == 900
+
+    def test_claude_failing_is_not_an_answer(self, bridge):
+        """subtype は success のまま is_error が立つ(実測: 未サインインの回)。
+        終了コードだけを見ていると、その文面が答えとして保存される。
+        """
+        import fastapi
+
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        broken = json.dumps({
+            "type": "result", "subtype": "success", "is_error": True,
+            "result": "Not logged in · Please run /login",
+        })
+        with pytest.raises(fastapi.HTTPException) as caught:
+            server._result_of(broken)
+
+        assert caught.value.status_code == 502
+        assert "Not logged in" in caught.value.detail["stderr"]
+
+    def test_antigravity_counts_the_cache_inside_the_input(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+        text, usage, _ran = server._result_of(self.AGY)
+
+        assert text == "2です。"
+        assert usage["prompt_tokens"] == 14046
+        assert usage["total_tokens"] == 14046 + 73
+
+    def test_codex_reads_the_last_turn(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        text, usage, _ran = server._result_of(self.CODEX)
+
+        assert text == "2です。"
+        assert usage["prompt_tokens"] == 14610
+        assert usage["completion_tokens"] == 7
+        # cached は input の内訳。足すと、効いているほど大きく見える
+        assert usage["prompt_tokens_details"]["cached_tokens"] == 11520
+
+    def test_an_unreadable_output_still_answers(self, bridge):
+        """出力の形は CLI の版で変わりうる。落とすのはトークン数だけにする。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        text, usage, _ran = server._result_of("ただの文章")
+
+        assert text == "ただの文章"
+        assert usage == {}
+
+    def test_a_reply_without_numbers_says_nothing(self, bridge):
+        """0 を載せると、受け手は「0 トークンで動いた」と読む。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+        text, usage, _ran = server._result_of(json.dumps({"response": "はい"}))
+
+        assert text == "はい"
+        assert usage == {}
+
+
+class TestWhichModelActuallyRan:
+    """頼むのは別名(`opus`)で、どの世代に解決されるかは CLI が決める。
+
+    **頼んだ名前だけを控えていると、古い CLI が 1 世代前を選んでいても
+    画面からは分からない**(実際にそうなった)。
+    """
+
+    def test_the_model_it_names_wins(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        _text, _usage, ran = server._result_of(TestStructuredOutput.CLAUDE)
+
+        assert ran == "claude-opus-4-8"
+
+    def test_two_models_in_one_turn_name_none(self, bridge):
+        """どれを選んでも嘘になりうるので、分からないとして頼んだ名前を残す。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        mixed = json.dumps({
+            "type": "result", "is_error": False, "result": "はい",
+            "modelUsage": {"claude-opus-5": {}, "claude-haiku-4-5": {}},
+        })
+        _text, _usage, ran = server._result_of(mixed)
+
+        assert ran == ""
+
+    def test_a_backend_that_does_not_name_it_keeps_quiet(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+        _text, _usage, ran = server._result_of(TestStructuredOutput.AGY)
+
+        assert ran == ""

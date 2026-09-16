@@ -151,6 +151,10 @@ def _breakdown_tokens(row: dict) -> str:
     if row["unknown"] >= row["requests"]:
         return '<span class="muted">トークン数なし</span>'
     text = f"{row['input_tokens']:,} in・{row['output_tokens']:,} out"
+    # **キャッシュから読んだぶんは入力の内訳**(足し込まない)。同じトークン数でも
+    # 枠の減り方が違うので、分けて見えないと「重い呼び出し」を読み違える
+    if row.get("cached_tokens"):
+        text += f'<br><span class="muted">うち {row["cached_tokens"]:,} はキャッシュ</span>'
     if row["unknown"]:
         text += f' <span class="muted">(うち {row["unknown"]} 回は数なし)</span>'
     return text

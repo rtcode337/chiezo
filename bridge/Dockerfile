@@ -19,17 +19,27 @@ FROM node:20-slim AS cli
 
 # npm は毎回その時点の最新を入れるが、**この RUN は入力が変わらないので
 # ビルドキャッシュに当たると古い CLI のまま出来上がる**(agy と同じ罠)。
-# CODEX_MIN_VERSION を上げると層が作り直され、入った版がそれ未満なら失敗させる。
-# claude も同じ層なので一緒に新しくなる。
+# 下限を上げると層が作り直され、入った版がそれ未満なら失敗させる。
 #
-# 0.154.0 … これより古い CLI では、新しいモデルを名指ししても
+# **CLI ごとに下限を持つ。** 同じ層に入っているので新しくなるときは一緒だが、
+# 片方にしか下限が無いと、**もう片方は何度焼き直しても古いまま**になる ——
+# codex の下限だけを持っていた頃、claude は層が作り直されるまで動かず、
+# `opus` の別名が 1 世代前のモデルに解決されていた(実測)。
+#
+# codex 0.154.0 … これより古い CLI では、新しいモデルを名指ししても
 # 「The '…' model requires a newer version of Codex.」で 400 になる(実測)。
+# claude 2.1.273 … 別名(`opus` など)が指す先は CLI が決めるので、古いと
+# 新しい世代を選べない。print モードの `/usage` が枠を返すのもこの系列から。
 ARG CODEX_MIN_VERSION=0.154.0
+ARG CLAUDE_MIN_VERSION=2.1.273
 RUN set -eux; \
     npm install -g @anthropic-ai/claude-code @openai/codex; \
     installed="$(codex --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"; \
     echo "codex ${installed} (required >= ${CODEX_MIN_VERSION})"; \
-    test "$(printf '%s\n%s\n' "${CODEX_MIN_VERSION}" "${installed}" | sort -V | head -n1)" = "${CODEX_MIN_VERSION}"
+    test "$(printf '%s\n%s\n' "${CODEX_MIN_VERSION}" "${installed}" | sort -V | head -n1)" = "${CODEX_MIN_VERSION}"; \
+    claude_version="$(node -p "require('/usr/local/lib/node_modules/@anthropic-ai/claude-code/package.json').version")"; \
+    echo "claude ${claude_version} (required >= ${CLAUDE_MIN_VERSION})"; \
+    test "$(printf '%s\n%s\n' "${CLAUDE_MIN_VERSION}" "${claude_version}" | sort -V | head -n1)" = "${CLAUDE_MIN_VERSION}"
 
 # Antigravity CLI は単一の Go バイナリで、npm では配布されていない。
 # インストーラが受け付けるのは --dir と --help だけ(--skip-aliases 等は無い)。

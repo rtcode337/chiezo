@@ -891,3 +891,31 @@ class TestQuotaSampling:
 
         assert quiet == 0
         assert busy == 1
+
+
+class TestTokensFromTheBridge:
+    """CLI ブリッジが言うトークン数 —— 受け側は形を合わせるだけで記録できる。"""
+
+    def test_the_cache_is_kept_apart_from_the_input(self, env):
+        """キャッシュから読んだぶんは入力の内訳。同じトークン数でも枠の減り方が違う。"""
+        from app import usage_store
+
+        with make_client(env, ReplyLLM()) as client:
+            usage_store.record("codex", model="gpt-5.5", caller="api:pta",
+                               input_tokens=14610, output_tokens=7, cached_tokens=11520)
+            table = breakdown_of(client.get("/admin/ai").text)
+
+        assert "14,610 in・7 out" in table
+        assert "うち 11,520 はキャッシュ" in table
+
+    def test_a_reply_with_tokens_is_recorded(self, env):
+        """相手が言えば、こちらは形を合わせるだけで数が入る。"""
+        fake = ReplyLLM({"prompt_tokens": 14610, "completion_tokens": 7,
+                         "prompt_tokens_details": {"cached_tokens": 11520}})
+        with make_client(env, fake) as client:
+            complete(client, messages=[{"role": "user", "content": "やあ"}])
+            spent = backend_of(client.get("/v1/ai/usage").json(), "local")["spent"]["5h"]
+
+        assert spent["input_tokens"] == 14610
+        assert spent["output_tokens"] == 7
+        assert spent["unknown_tokens"] == 0

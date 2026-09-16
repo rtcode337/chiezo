@@ -735,7 +735,10 @@ def build_command(
             "--strict-mcp-config",
             # 非対話なので確認を出されると待ち続けて固まる。渡す道具は下の分岐で決まる。
             "--permission-mode", "bypassPermissions",
-            "--output-format", "text",
+            # **構造化して受け取る。** 素のテキストは最終的な答えしか運ばないので、
+            # 使ったトークン数も「エラーとして終わったか」も捨てていた
+            # (`_result_of`)。本文は `result` に入る。
+            "--output-format", "json",
         ]
         # 組み込みの道具(Bash・Read・WebFetch…)を塞ぐ。`--tools ""` は使えない
         # ——上の DEFAULT_DISALLOWED の説明のとおり、MCP の道具まで消えてしまう。
@@ -781,6 +784,8 @@ def build_command(
         # ブリッジの締め切りより数秒手前にして、切れたときは agy 自身の理由が返るようにする
         # (同時に切れるとブリッジが kill してしまい、agy が書いた理由が残らない)。
         cmd += ["--print-timeout", agy_print_timeout(resolve_timeout(timeout))]
+        # claude と同じ理由で構造化して受け取る。本文は `response` に入る(`_result_of`)
+        cmd += ["--output-format", "json"]
         if model:
             cmd += ["--model", model]
         if effort:
@@ -811,6 +816,12 @@ def build_command(
             "-c", 'mcp_servers.chiezo.default_tools_approval_mode="auto"',
             # 最後の発言だけをファイルへ。標準出力には進捗も混ざるので、本文はこちらから取る
             "-o", out_path,
+            # **進捗を行ごとの JSON で受け取る**(`_result_of`)。素の進捗は
+            # 「tokens used / 9,629」と合計しか書かないが、こちらには内訳が載る
+            # (実測: input_tokens / cached_input_tokens / output_tokens /
+            #  reasoning_output_tokens)。本文はファイルのほうから取るので、
+            # この切り替えで答えの取り方は変わらない
+            "--json",
         ]
         if model:
             cmd += ["-m", model]
@@ -842,8 +853,9 @@ def strip_cli_notices(text: str) -> str:
 async def run_cli(
     prompt: str, model: str = "", effort: str = "", web: bool = False,
     max_turns: int | None = None, timeout: float | None = None,
-) -> tuple[str, str]:
-    """CLI を 1 回起動して (本文, CLI が何をしたか) を返す。失敗は HTTPException にする。
+) -> tuple[str, str, dict, str]:
+    """CLI を 1 回起動して (本文, CLI が何をしたか, 使ったぶん, 実際に走ったモデル)
+    を返す。失敗は HTTPException にする。
 
     **本文だけでは、相手が何をしたかが誰にも読めない。** 包んでいるのはシェルを
     持ったエージェントで、道具を何回引いたのかも、途中で何に躓いたのかも、
@@ -931,10 +943,160 @@ def _tail(text: str, limit: int) -> str:
     return "…" + text[-(limit - 1):]
 
 
+def _tokens(entry, *names: str) -> int:
+    """トークン数を 1 つ読む。読めなければ 0(足し算に使うため)。"""
+    if not isinstance(entry, dict):
+        return 0
+    for name in names:
+        value = entry.get(name)
+        if isinstance(value, int | float):
+            return int(value)
+    return 0
+
+
+def _openai_usage(prompt: int, completion: int, cached: int) -> dict:
+    """OpenAI 互換の `usage`。**受け手(`app/answer.py`)が読む形に揃える**
+    —— こちらで独自の名前を作ると、読む側にも分岐が増える。
+
+    **`prompt_tokens` はキャッシュから読んだぶんを含む**(OpenAI の数え方)。
+    `cached_tokens` はその内訳で、外に足すものではない —— 二重に数えると、
+    キャッシュが効いているほど使用量が大きく見える。
+    """
+    if not (prompt or completion):
+        return {}
+    usage = {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+    }
+    if cached:
+        usage["prompt_tokens_details"] = {"cached_tokens": cached}
+    return usage
+
+
+def _only_model(entry) -> str:
+    """モデルごとの使用量から、実際に走った 1 つを拾う。
+
+    **1 つしか無いときだけ返す。** claude は `modelUsage` にモデルごとの内訳を
+    入れてくるが、途中で切り替わった回は 2 つ以上になる —— そこから 1 つを
+    選ぶと、**選び方によって署名が変わる**(どれを選んでも嘘になりうる)。
+    分からないときは空で返し、頼んだ名前を残す。
+    """
+    if not isinstance(entry, dict) or len(entry) != 1:
+        return ""
+    name = next(iter(entry))
+    return name if isinstance(name, str) and name.strip() else ""
+
+
+def _codex_result(raw: str) -> tuple[str, dict, str]:
+    """codex の行ごとの JSON(JSONL)から (本文, 使ったぶん) を読む。
+
+    **1 回の依頼が何往復もする**ので、出来事が 1 行ずつ流れてくる。要るのは 2 つだけ:
+
+    - `turn.completed` の `usage` …… その依頼ぜんぶの合計(実測: `input_tokens` /
+      `cached_input_tokens` / `cache_write_input_tokens` / `output_tokens` /
+      `reasoning_output_tokens`)。**最後のものを採る** —— 途中の行にも載りうる
+    - `item.completed` の `agent_message` …… 相手の発言。**本文は普通ファイルから
+      取る**(`-o`)ので、ここは書かれなかったときの受け皿
+
+    **`cached_input_tokens` は `input_tokens` の内訳**(実測で 11,520 / 14,610)。
+    足すと、キャッシュが効いているほど使用量が大きく見える。
+
+    **読めない行は黙って飛ばす。** 版が変わって知らない出来事が増えても、
+    要る 2 つが読めれば足りる。
+
+    **実際に走ったモデルは名乗ってこない**ので空で返す(頼んだ名前が残る)。
+    """
+    text = ""
+    usage: dict = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("type")
+        if kind == "turn.completed":
+            tokens = event.get("usage")
+            usage = _openai_usage(
+                _tokens(tokens, "input_tokens"),
+                _tokens(tokens, "output_tokens"),
+                _tokens(tokens, "cached_input_tokens"),
+            )
+        elif kind == "item.completed":
+            item = event.get("item")
+            if isinstance(item, dict) and item.get("type") == "agent_message":
+                text = str(item.get("text") or "") or text
+    return text or raw, usage, ""
+
+
+def _result_of(raw: str) -> tuple[str, dict, str]:
+    """CLI の構造化出力から (本文, 使ったぶん, 実際に走ったモデル) を読む。
+
+    **読めなければ本文だけ返す**(素のテキストとして扱う)。出力の形は CLI の版で
+    変わりうるので、読めなくなった日に**全部の呼び出しが落ちる**のでは割に合わない
+    —— 落とすのはトークン数だけにして、会話は通す。
+
+    **モデルは名乗ってきたときだけ返す。** こちらが送るのは別名(`opus` など)で、
+    どの世代に解決されるかは CLI が決める —— 頼んだ名前だけを控えていると、
+    **古い CLI が 1 世代前を選んでいても画面からは分からない**(実際にそうなった)。
+
+    **codex だけ行ごとの JSON**(JSONL)。あちらは 1 回の依頼が何往復もするので、
+    出来事が 1 行ずつ流れてくる —— 最後の `turn.completed` に使ったぶんが載る。
+    """
+    if CLI == "codex":
+        return _codex_result(raw)
+    if CLI not in ("claude", "antigravity"):
+        return raw, {}, ""
+    try:
+        payload = json.loads(_json_tail(raw))
+    except ValueError:
+        return raw, {}, ""
+    if not isinstance(payload, dict):
+        return raw, {}, ""
+
+    if CLI == "claude":
+        # **`subtype` は "success" のまま `is_error` が立つ**(実測: 未サインインの回)。
+        # 終了コードだけを見ていた頃は、その文面が答えとして保存されていた。
+        if payload.get("is_error"):
+            detail = str(payload.get("result") or "")[:300]
+            raise HTTPException(502, {"error": f"{CLI} failed", "stderr": detail})
+        text = str(payload.get("result") or "")
+        tokens = payload.get("usage")
+        # **Anthropic の `input_tokens` はキャッシュのぶんを含まない**ので、
+        # OpenAI の数え方に直すには足す(でないと入力が実際より小さく見える)。
+        cached = _tokens(tokens, "cache_read_input_tokens")
+        prompt = (_tokens(tokens, "input_tokens") + cached
+                  + _tokens(tokens, "cache_creation_input_tokens"))
+        return (text or raw,
+                _openai_usage(prompt, _tokens(tokens, "output_tokens"), cached),
+                _only_model(payload.get("modelUsage")))
+
+    text = str(payload.get("response") or "")
+    tokens = payload.get("usage")
+    # agy は `total_tokens` を入力 + 出力ちょうどで返す(実測)ので、
+    # キャッシュのぶんは入力の内訳として扱う(足さない)。
+    return text or raw, _openai_usage(
+        _tokens(tokens, "input_tokens"),
+        _tokens(tokens, "output_tokens"),
+        _tokens(tokens, "cache_read_tokens"),
+    ), ""
+
+
 async def _spawn(
     cmd: list[str], payload: bytes, out_path: str, timeout: float | None
-) -> tuple[str, str]:
-    """組み上げたコマンドを 1 回動かして (本文, CLI が何をしたか) を返す。"""
+) -> tuple[str, str, dict, str]:
+    """組み上げたコマンドを 1 回動かして
+    (本文, CLI が何をしたか, 使ったぶん, 実際に走ったモデル) を返す。
+
+    **使ったぶんは読めた相手のぶんだけ**(`_result_of`)。読めなければ空の辞書で、
+    受け手は「相手が言わなかった」として扱う —— 0 と書くと、数を返さない相手が
+    「0 トークンで動く相手」に見える。
+    """
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdin=asyncio.subprocess.PIPE,
@@ -968,14 +1130,18 @@ async def _spawn(
             # 消せなくても答えは返す(コンテナは使い捨てで、残っても次の起動で消える)。
             with suppress(OSError):
                 os.unlink(out_path)
+    # **使ったぶんは常に標準出力から読む。** codex は本文をファイルへ逃がしているが、
+    # トークン数はそちらに書かれない —— 本文の出どころと分けておく。
+    raw = strip_cli_notices(stdout.decode("utf-8", "replace").strip())
+    parsed, usage, ran_as = _result_of(raw)
     if not text:
-        text = strip_cli_notices(stdout.decode("utf-8", "replace").strip())
+        text = parsed.strip()
     if not text:
         raise HTTPException(502, {"error": f"{CLI} returned an empty answer"})
-    return text, _trace(stdout, stderr)
+    return text, _trace(stdout, stderr), usage, ran_as
 
 
-def _completion(text: str, model: str = "", trace: str = "") -> dict:
+def _completion(text: str, model: str = "", trace: str = "", usage: dict | None = None) -> dict:
     """OpenAI 互換の応答。**CLI の出力は独自の鍵で添える**(`chiezo_trace`)。
 
     形の中に混ぜない —— 互換の形を読む相手は知らない鍵を捨てるだけなので足せるが、
@@ -992,10 +1158,16 @@ def _completion(text: str, model: str = "", trace: str = "") -> dict:
     }
     if trace:
         body[TRACE_KEY] = trace
+    # **読めた相手のぶんだけ載せる。** 空の `usage` を載せると、受け手が
+    # 「0 トークンで動いた」と読む(言わなかったことと 0 は別)
+    if usage:
+        body["usage"] = usage
     return body
 
 
-async def _sse(text: str, model: str = "", trace: str = "") -> AsyncIterator[str]:
+async def _sse(
+    text: str, model: str = "", trace: str = "", usage: dict | None = None
+) -> AsyncIterator[str]:
     """SSE で返す。差分は 1 つだけ(CLI を待ち切ってから流すため)。
 
     受け手(app/answer.py)は差分を順に足すだけなので、粒度は問われない。
@@ -1015,6 +1187,10 @@ async def _sse(text: str, model: str = "", trace: str = "") -> AsyncIterator[str
     tail = dict(head, choices=[{"index": 0, "delta": {}, "finish_reason": "stop"}])
     if trace:
         tail[TRACE_KEY] = trace
+    # **使ったぶんも締めに載せる。** 差分のフレームには載せない —— 受け手は
+    # 差分を足しながら読むので、途中で数が変わると足し込む先が決まらない
+    if usage:
+        tail["usage"] = usage
     yield f"data: {json.dumps(tail, ensure_ascii=False)}\n\n"
     yield "data: [DONE]\n\n"
 
@@ -1862,14 +2038,18 @@ async def chat_completions(body: ChatRequest):
         raise HTTPException(400, {"error": "messages must not be empty"})
     model = resolve_model(body.model)
     effort = resolve_effort(body.reasoning_effort)
-    text, trace = await run_cli(
+    text, trace, usage, ran_as = await run_cli(
         build_prompt(body.messages), model, effort, body.chiezo_web,
         body.chiezo_max_turns, body.chiezo_timeout,
     )
+    # **名乗ってきたらそちらを返す。** こちらが送るのは別名(`opus` など)で、
+    # どの世代に解決されるかは CLI が決める —— 頼んだ名前を返していると、
+    # 古い CLI が 1 世代前を選んでいても頼んだ側からは分からない
+    model = ran_as or model
     if body.stream:
         return StreamingResponse(
-            _sse(text, model, trace),
+            _sse(text, model, trace, usage),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
-    return JSONResponse(_completion(text, model, trace))
+    return JSONResponse(_completion(text, model, trace, usage))

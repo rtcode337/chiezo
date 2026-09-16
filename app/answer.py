@@ -876,6 +876,15 @@ def _record_usage(
                 return int(value)
         return None
 
+    def _cached() -> int | None:
+        """キャッシュから読んだ入力。**OpenAI は入力の内訳として入れ子で言う**ので、
+        平らな名前しか見ない `_count` では拾えない(CLI ブリッジがこの形で返す)。
+        """
+        details = tokens.get("prompt_tokens_details")
+        if isinstance(details, dict) and isinstance(details.get("cached_tokens"), int | float):
+            return int(details["cached_tokens"])
+        return _count("cached_tokens", "cache_read_input_tokens")
+
     usage_store.record(
         cfg.name,
         model=model,
@@ -889,6 +898,8 @@ def _record_usage(
         # OpenAI 互換は prompt/completion。相手によっては input/output で名乗る。
         input_tokens=_count("prompt_tokens", "input_tokens"),
         output_tokens=_count("completion_tokens", "output_tokens"),
+        # **入力の内訳**(足し込まない)。同じトークン数でも枠の減り方が違う
+        cached_tokens=_cached(),
         # **トークン数を言わない相手のための目方。** 大きさと時間なら必ず測れるので、
         # 「何も分からない呼び出し」が控えに並ばずに済む(CLI ブリッジがこれに当たる)。
         prompt_bytes=prompt_bytes,
@@ -1008,6 +1019,8 @@ async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator
     started = time.monotonic()
     sent = 0
     ran_as = ""
+    # 締めのフレームに載ったトークン数(載せない相手では None のまま)
+    streamed_usage: dict | None = None
     # **流しているあいだも走っている扱いにする。** 画面へ 1 文字ずつ届いていても、
     # 相手との往復はまだ終わっていない(引き直しも含めて 1 本と数える)。
     # 途中で読み手が去っても、生成器が閉じられるときに `finally` が消しに来る。
@@ -1037,9 +1050,17 @@ async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator
                             continue
                         try:
                             chunk = json.loads(data)
-                            delta = chunk["choices"][0]["delta"].get("content") or ""
-                        except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+                        except json.JSONDecodeError:
                             continue  # 使い物にならないフレームは黙って捨てる
+                        # **締めのフレームに使ったぶんが載ることがある**(CLI ブリッジ)。
+                        # あれは差分を持たないので、本文を取り出す前に拾う ——
+                        # 後ろに置くと、差分が無いフレームとして捨ててしまう
+                        if isinstance(chunk, dict) and isinstance(chunk.get("usage"), dict):
+                            streamed_usage = chunk["usage"]
+                        try:
+                            delta = chunk["choices"][0]["delta"].get("content") or ""
+                        except (KeyError, IndexError, TypeError):
+                            continue
                         # 差分のフレームも実際に走ったモデルを名乗る。**最初に
                         # 分かった時点で覚える** —— 流し終えてから聞き直せる相手はいない
                         if not ran_as:
@@ -1047,13 +1068,14 @@ async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator
                         if delta:
                             sent += len(delta.encode())
                             yield delta
-                    # 流し切ったら 1 回ぶん残す。 差分の応答にトークン数は載らない
-                    # (`stream_options` を送れば載る相手もいるが、送ると 400 で断る相手がいる)
-                    # ので、**流したぶんの大きさと時間**で目方を残す(数えるのは
-                    # こちらを通った差分だけなので、中身を持たずに済む)。
+                    # 流し切ったら 1 回ぶん残す。 **こちらから `stream_options` は送らない**
+                    # (送ると 400 で断る相手がいる)ので、載っていれば拾い、
+                    # 載っていなければ**流したぶんの大きさと時間**で目方を残す ——
+                    # CLI ブリッジは締めのフレームに載せてくる。数えるのはこちらを
+                    # 通った差分だけなので、どちらでも中身を持たずに済む。
                     _record_usage(
                         cfg,
-                        None,
+                        streamed_usage,
                         model=ran_as or model_of(None, cfg),
                         prompt_bytes=_prompt_bytes(messages),
                         reply_bytes=sent,
