@@ -1453,6 +1453,11 @@ def _window_from(name: str, entry: dict) -> dict | None:
 # "Weekly Limit Remaining" が 2 つ並ぶ)—— この形だけは専用に読む。
 _WINDOW_LABELS = {"weekly": "直近 7 日", "5h": "直近 5 時間"}
 
+# 窓の長さ(分)。**並べる順を決めるのに要る** —— agy は週を先に返すが、
+# 詰まりやすいのは短いほうなので、受け取る側が短い順に並べ替える。
+# 見出しは上の表が作るので、ここを足しても画面の文言は変わらない。
+_WINDOW_MINUTES = {"weekly": 7 * 24 * 60, "5h": 5 * 60}
+
 # 上の `response` 側。 「グループ  窓の名前  残り%  戻る時刻」のタブ区切り。
 # `command.data` の形が変わったときの受け皿として持つ。
 _USAGE_LINE_RE = re.compile(
@@ -1483,7 +1488,7 @@ def _usage_windows(data: dict) -> list[dict]:
                 "used": None,
                 "limit": None,
                 "unit": "",
-                "window_minutes": None,
+                "window_minutes": _WINDOW_MINUTES.get(str(bucket.get("window") or "")),
                 "resets_at": bucket.get("reset_time") or None,
             })
     return windows
@@ -1538,8 +1543,14 @@ def _windows_in(payload, name: str = "") -> list[dict]:
     そのぶん、同じ窓が 2 つ以上の道筋で見つかることがある。codex は同じ枠を
     `rateLimits` と `rateLimitsByLimitId.<id>` の両方に入れてくるので、
     まとめないと画面に同じ窓が 2 行並ぶ。
+
+    **まとめた後で、名前がぶつかっていないかを見る**(`_unique_ids`)。
+    中身の違う別の窓に同じ名前が付いてくることがある(実測: codex は長さの違う
+    2 つの窓をどちらも `primary` と名乗る)。名前は推移を束ねる鍵なので、
+    ぶつかったままだと**別々の窓が 1 本の線に混ざる** —— 使用率が交互に
+    跳ね上がったり 0 に戻ったりして見える。
     """
-    return _dedupe(_collect(payload, name))
+    return _unique_ids(_dedupe(_collect(payload, name)))
 
 
 def _collect(payload, name: str = "") -> list[dict]:
@@ -1568,6 +1579,33 @@ def _dedupe(windows: list[dict]) -> list[dict]:
         seen.add(key)
         unique.append(window)
     return unique
+
+
+def _unique_ids(windows: list[dict]) -> list[dict]:
+    """名前のぶつかった窓を、窓の長さで呼び分ける。
+
+    **ぶつかったものは全部付け替える。** 片方に元の名前を残すと、どちらが残るかが
+    相手の並べ方次第になり、**次に聞いたときに入れ替わる** —— 推移を束ねる鍵が
+    回ごとに動くと、線がそのたびに繋ぎ変わる。
+
+    長さを持たない窓は見出しで、それも無ければ順番で呼び分ける。順番は最後の
+    手段で、相手の並べ方が変わると鍵も変わる —— それでも、混ざったままよりはよい。
+    """
+    counts: dict[str, int] = {}
+    for window in windows:
+        counts[window["id"]] = counts.get(window["id"], 0) + 1
+    out = []
+    for i, window in enumerate(windows):
+        if counts.get(window["id"], 0) < 2:
+            out.append(window)
+            continue
+        minutes = window.get("window_minutes")
+        if isinstance(minutes, int | float):
+            tail = f"{int(minutes)}m"
+        else:
+            tail = str(window.get("label") or "").strip() or str(i)
+        out.append(dict(window, id=f"{window['id']}-{tail}"))
+    return out
 
 
 async def _run_for_usage(cmd: list[str]) -> str:

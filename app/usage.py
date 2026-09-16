@@ -74,6 +74,10 @@ class Window:
     used: float | None = None
     limit: float | None = None
     unit: str = ""
+    # 窓の長さ(分)。**並べる順を決めるために持つ** —— 相手ごとに返す順が違い、
+    # 週が先に来る相手と 5 時間が先に来る相手が混ざっていた。長さが分からない
+    # 相手もいる(claude は文面から読むので持たない)ので None を許す。
+    window_minutes: float | None = None
 
     @property
     def remaining_percent(self) -> float | None:
@@ -280,6 +284,7 @@ async def _bridge(spec: providers.Provider) -> list[Window]:
                 used=entry.get("used") if isinstance(entry.get("used"), int | float) else None,
                 limit=entry.get("limit") if isinstance(entry.get("limit"), int | float) else None,
                 unit=str(entry.get("unit") or ""),
+                window_minutes=minutes if isinstance(minutes, int | float) else None,
             )
         )
     if not windows:
@@ -340,13 +345,27 @@ async def refresh(provider_id: str) -> Quota:
             error=str(e),
             windows=_windows_from(stored.get("windows", [])),
         )
+    windows = ordered(windows)
     usage_store.save_quota(spec.id, [asdict(w) for w in windows])
     return Quota(supported=True, fetched_at=_now_iso(), windows=windows)
 
 
+def ordered(windows: list[Window]) -> list[Window]:
+    """短い窓から並べる。**相手ごとに返す順が違う** —— 実測で codex は 5 時間が先、
+    antigravity は週が先だった。詰まりやすいのは短いほうなので、そこを上に出す。
+
+    **長さの分からない窓は末尾に、元の並びのまま置く**(claude は文面から読むので
+    長さを持たない)。安定な並べ替えなので、同じ長さの窓どうしの順も動かない。
+    """
+    return sorted(
+        windows,
+        key=lambda w: (1, 0.0) if not w.window_minutes else (0, float(w.window_minutes)),
+    )
+
+
 def _windows_from(raw: list) -> list[Window]:
     out = [_window_from(w) for w in raw if isinstance(w, dict)]
-    return [w for w in out if w is not None]
+    return ordered([w for w in out if w is not None])
 
 
 def _now_iso() -> str:

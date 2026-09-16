@@ -15,7 +15,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from app import jst, usage, usage_store
+from app import ai_inflight, jst, usage, usage_store
 from app.pages import esc
 from app.views import ai_history
 
@@ -227,28 +227,61 @@ def _climb(value: float) -> str:
     return f"+{value:.0f} ポイント" if value >= 0.5 else "ほぼ動かず"
 
 
+# 1 つの区間に並べる依頼の組。**上がった理由はたいてい上の 1〜2 組**なので、
+# ここを増やしても読む手間が増えるだけ。
+TRAIL_CALLS = 3
+
+
+def _interval_calls(provider: str, start: str, end: str) -> str:
+    """その区間に走っていた依頼。**使用率が動いた理由をここで読む。**
+
+    使用率だけでは「跳ねた」までしか分からず、どれを止めればよいかが決まらない。
+    **依頼元とモデルまで出す** —— 同じ相手でも、無人で回る層の巡回と外のアプリの
+    依頼では止め方がまったく違う。
+    """
+    rows = usage_store.calls_between(provider, start, end)
+    if not rows:
+        return '<span class="muted">依頼なし</span>'
+    shown = []
+    for row in rows[:TRAIL_CALLS]:
+        who = ai_inflight.caller_label(row["caller"]) or "(名乗りなし)"
+        model = f' {row["model"]}' if row["model"] else ""
+        shown.append(f'{esc(who)}{esc(model)} ×{row["requests"]}')
+    rest = len(rows) - len(shown)
+    if rest > 0:
+        shown.append(f"ほか {rest} 組")
+    total = sum(r["prompt_bytes"] for r in rows)
+    weight = f' <span class="muted">依頼 {esc(ai_history.size(total))}</span>' if total else ""
+    return " / ".join(shown) + weight
+
+
 def _trail_points_html(trail: dict) -> str:
-    """観測点を畳んで出す。**前回からの差を添える** —— 使用率だけを並べても、
-    どこで跳ねたのかは引き算しながら読むことになる。
+    """観測点を畳んで出す。**前回からの差と、そのあいだの依頼を添える** ——
+    使用率だけを並べても、どこで跳ねたのかは引き算しながら読むことになるし、
+    跳ねた理由は別の表を時刻で照らし合わせないと読めなかった。
     """
     points = trail["points"][-TRAIL_POINTS:]
     rows = []
     for i, point in enumerate(points):
-        prior = points[i - 1]["used_percent"] if i else None
+        prior = points[i - 1] if i else None
         delta = ""
+        calls = '<span class="muted">—</span>'
         if prior is not None:
-            step = point["used_percent"] - prior
+            step = point["used_percent"] - prior["used_percent"]
             # **下がった差はそのまま出す**(窓が明けた印)。0 に丸めると、
             # 明けをまたいだ区間を「動かなかった」と読んでしまう
             delta = f"{step:+.0f}" if abs(step) >= 0.5 else "—"
+            calls = _interval_calls(trail["provider"], prior["at"], point["at"])
         rows.append(
             f'<tr><td>{esc(_when(point["at"]))}</td>'
             f'<td>{esc(_percent(point["used_percent"]))}</td>'
-            f'<td class="muted">{esc(delta)}</td></tr>'
+            f'<td class="muted">{esc(delta)}</td>'
+            f'<td class="snippet">{calls}</td></tr>'
         )
     return (
         f'<details><summary>{len(trail["points"])} 点</summary>'
-        '<table><thead><tr><th>時刻</th><th>使用率</th><th>前回から</th></tr></thead>'
+        "<table><thead><tr><th>時刻</th><th>使用率</th><th>前回から</th>"
+        "<th>そのあいだの依頼</th></tr></thead>"
         f'<tbody>{"".join(rows)}</tbody></table></details>'
     )
 

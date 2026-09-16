@@ -917,3 +917,68 @@ class TestTokensFromTheBridge:
         assert spent["input_tokens"] == 14610
         assert spent["output_tokens"] == 7
         assert spent["unknown_tokens"] == 0
+
+
+class TestWhatMovedTheQuota:
+    """枠が動いた区間に何が走っていたか —— 止める相手を決めるのに要る。"""
+
+    def test_the_interval_lists_what_ran(self, env):
+        import sqlite3
+        from datetime import UTC, datetime, timedelta
+
+        from app import usage_store
+
+        with make_client(env, ReplyLLM()) as client:
+            window = {"id": "primary", "label": "直近 5 時間"}
+            usage_store.save_quota("codex", [dict(window, used_percent=10.0)])
+            # 1 点目より後、2 点目より前に走ったことにする
+            usage_store.record("codex", model="gpt-5.5", caller="collect:painters")
+            older = (datetime.now(UTC) - timedelta(minutes=5)).isoformat(timespec="seconds")
+            with sqlite3.connect(usage_store.db_path()) as conn:
+                conn.execute("UPDATE quota_samples SET at = ?", (older,))
+            usage_store.save_quota("codex", [dict(window, used_percent=51.0)])
+            html = client.get("/admin/ai").text
+
+        assert "収集(painters) gpt-5.5 ×1" in html
+
+    def test_the_boundary_is_not_counted_twice(self, env):
+        """観測のちょうどその秒に入ったぶんが、隣り合う 2 つの区間に出てはいけない。"""
+        from app import usage_store
+
+        with make_client(env, ReplyLLM()):
+            usage_store.record("codex", caller="api:pta")
+            at = usage_store.last_quota_sample_at("codex") or ""
+            usage_store.save_quota("codex", [{"id": "primary", "used_percent": 1.0}])
+            at = usage_store.last_quota_sample_at("codex")
+            # 始まりを含めない(その時刻までのぶんは前の区間に数えた)
+            assert usage_store.calls_between("codex", at, at) == []
+
+
+class TestWindowOrder:
+    """窓の並び —— 相手ごとに返す順が違うので、受け取る側で揃える。"""
+
+    def _window(self, name: str, minutes: float | None) -> "object":
+        from app.usage import Window
+
+        return Window(id=name, label=name, used_percent=1.0, window_minutes=minutes)
+
+    def test_the_short_window_comes_first(self, env):
+        """実測で codex は 5 時間が先、antigravity は週が先だった。"""
+        from app import usage
+
+        weekly = self._window("週", 7 * 24 * 60)
+        session = self._window("5 時間", 5 * 60)
+
+        assert [w.label for w in usage.ordered([weekly, session])] == ["5 時間", "週"]
+
+    def test_windows_without_a_length_keep_their_place_at_the_end(self, env):
+        """claude は文面から読むので長さを持たない。元の並びのまま末尾へ。"""
+        from app import usage
+
+        first = self._window("session", None)
+        second = self._window("week", None)
+        short = self._window("5 時間", 5 * 60)
+
+        assert [w.label for w in usage.ordered([first, second, short])] == [
+            "5 時間", "session", "week",
+        ]

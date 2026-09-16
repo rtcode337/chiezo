@@ -540,3 +540,45 @@ def claim_quota_poll(provider: str, interval: timedelta) -> bool:
     except (sqlite3.Error, OSError) as e:
         log.warning("usage claim_quota_poll failed (%s): %s", provider, e)
         return False
+
+
+def calls_between(provider: str, start: str, end: str) -> list[dict]:
+    """2 つの時刻のあいだに、その相手へ投げた依頼を束ねて返す(多い順)。
+
+    **枠が動いた区間に何が走っていたかを読むためのもの。** 使用率だけでは
+    「跳ねた」までしか分からず、止める相手を決められない。
+
+    **始まりは含めず、終わりは含める。** 区間は前の観測の直後から今の観測までで、
+    始まりを含めると**隣り合う区間が同じ呼び出しを二度数える**(観測のちょうどその
+    秒に入ったぶんが両方に出る)。
+    """
+    if not is_enabled() or not provider:
+        return []
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                "SELECT caller, model, effort,"
+                "       COUNT(*) AS requests,"
+                "       COALESCE(SUM(prompt_bytes), 0) AS prompt_bytes,"
+                "       COALESCE(SUM(input_tokens), 0) AS input_tokens,"
+                "       COALESCE(SUM(output_tokens), 0) AS output_tokens"
+                "  FROM calls WHERE provider = ? AND at > ? AND at <= ?"
+                " GROUP BY caller, model, effort"
+                " ORDER BY requests DESC, prompt_bytes DESC",
+                (provider, start or "", end or ""),
+            ).fetchall()
+    except (sqlite3.Error, OSError) as e:
+        log.warning("usage calls_between failed (%s): %s", provider, e)
+        return []
+    return [
+        {
+            "caller": r["caller"] or "",
+            "model": r["model"] or "",
+            "effort": r["effort"] or "",
+            "requests": r["requests"],
+            "prompt_bytes": r["prompt_bytes"],
+            "input_tokens": r["input_tokens"],
+            "output_tokens": r["output_tokens"],
+        }
+        for r in rows
+    ]

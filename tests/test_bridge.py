@@ -1512,3 +1512,51 @@ class TestClaudeQuota:
         """読み違えた時刻を出すより、相手の文面をそのまま出すほうがまだ読める。"""
         server = bridge(CHIEZO_BRIDGE_CLI="claude")
         assert server._claude_reset_at("Sep 20, 6am (JST)") == "Sep 20, 6am (JST)"
+
+
+class TestWindowNames:
+    """窓の名前は推移を束ねる鍵なので、ぶつかったままにしない。"""
+
+    # 実測(codex): 長さの違う 2 つの窓が、どちらも `primary` と名乗る
+    CLASH: ClassVar[dict] = {
+        "rateLimits": {
+            "primary": {"id": "primary", "used_percent": 76.0, "window_duration_mins": 300},
+            "secondary": {"id": "secondary", "used_percent": 32.0,
+                          "window_duration_mins": 10080},
+        },
+        "rateLimitsByLimitId": {
+            "weekly": {"id": "primary", "used_percent": 0.0, "window_duration_mins": 10080},
+        },
+    }
+
+    def test_two_windows_do_not_share_a_name(self, bridge):
+        """混ざると、別々の窓が 1 本の線になって 0% に戻ったように見える。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        windows = server._windows_in(self.CLASH)
+
+        assert len(windows) == 3
+        assert len({w["id"] for w in windows}) == 3
+
+    def test_the_length_tells_them_apart(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        ids = {w["id"] for w in server._windows_in(self.CLASH)}
+
+        # ぶつかったものは全部付け替える(片方に元の名前を残すと、次に聞いたときに
+        # どちらが残るかが相手の並べ方次第になる)
+        assert ids == {"primary-300m", "primary-10080m", "secondary"}
+
+    def test_a_name_that_does_not_clash_is_left_alone(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        windows = server._windows_in({
+            "rateLimits": {"primary": {"id": "primary", "used_percent": 5.0}},
+        })
+
+        assert [w["id"] for w in windows] == ["primary"]
+
+    def test_the_same_window_seen_twice_is_still_one(self, bridge):
+        """codex は同じ枠を 2 か所に入れてくる。まとめてから名前を見る。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        same = {"id": "primary", "used_percent": 5.0, "window_duration_mins": 300}
+        windows = server._windows_in({"a": {"primary": same}, "b": {"primary": dict(same)}})
+
+        assert [w["id"] for w in windows] == ["primary"]
