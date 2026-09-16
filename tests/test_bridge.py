@@ -6,6 +6,7 @@ CLI そのものは起動しない。確かめるのは「OpenAI 形式の入力
 """
 import importlib
 import json
+from datetime import timedelta
 from typing import ClassVar
 
 import pytest
@@ -1457,3 +1458,57 @@ class TestWhichModelActuallyRan:
         _text, _usage, ran = server._result_of(TestStructuredOutput.AGY)
 
         assert ran == ""
+
+
+class TestClaudeQuota:
+    """claude の枠 —— print モードのスラッシュコマンドが返す文面を読む。
+
+    **長らく「出せない相手」だった。** 当時の観測は締めの集計だけで、欲しい数字が
+    入っていなかった。CLI の版が上がって出るようになったので、読み取りを固定しておく。
+    """
+
+    PANEL: ClassVar[str] = json.dumps({
+        "type": "result", "subtype": "success", "is_error": False, "num_turns": 0,
+        "result": (
+            "You are currently using your subscription to power your Claude Code usage\n\n"
+            "Current session: 5% used · resets Sep 16, 7:10pm (UTC)\n"
+            "Current week (all models): 24% used · resets Sep 20, 6am (UTC)\n"
+            "Current week (Fable): 0% used · resets Sep 20, 6am (UTC)"
+        ),
+    })
+
+    def test_every_window_is_read(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        windows = server._claude_windows(self.PANEL)
+
+        assert [w["label"] for w in windows] == [
+            "Current session", "Current week (all models)", "Current week (Fable)",
+        ]
+        # **claude は「使った割合」で言う**(antigravity は「残り」)。裏返さない
+        assert [w["used_percent"] for w in windows] == [5.0, 24.0, 0.0]
+
+    def test_a_window_at_zero_is_not_dropped(self, bridge):
+        """0% は falsy なので、素直に書くと丸ごと消える。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        assert any(w["used_percent"] == 0.0 for w in server._claude_windows(self.PANEL))
+
+    def test_the_reset_time_is_squared_up(self, bridge):
+        """年が書かれていないので、いちばん近い将来として読む。"""
+        from datetime import UTC, datetime
+
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        when = server._claude_reset_at("Sep 20, 6am (UTC)")
+
+        parsed = datetime.fromisoformat(when)
+        assert (parsed.month, parsed.day, parsed.hour) == (9, 20, 6)
+        assert parsed.tzinfo is not None
+        assert parsed > datetime.now(UTC) - timedelta(days=2)
+
+    def test_minutes_may_be_missing_or_present(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        assert "T19:10:00" in server._claude_reset_at("Sep 16, 7:10pm (UTC)")
+
+    def test_an_unknown_zone_is_left_alone(self, bridge):
+        """読み違えた時刻を出すより、相手の文面をそのまま出すほうがまだ読める。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        assert server._claude_reset_at("Sep 20, 6am (JST)") == "Sep 20, 6am (JST)"

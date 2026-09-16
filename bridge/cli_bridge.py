@@ -55,7 +55,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -1313,6 +1313,44 @@ def _json_tail(raw: str) -> str:
     return raw[at:] if at >= 0 else raw
 
 
+# claude が言う戻る時刻。**年を書かない**(実測: `Sep 16, 7:10pm (UTC)` /
+# `Sep 20, 6am (UTC)`)。分を省く書き方もあるので、時計は 2 通り受ける。
+_CLAUDE_RESET_RE = re.compile(
+    r"^(?P<date>[A-Za-z]{3}\s+\d{1,2}),\s*(?P<time>\d{1,2}(?::\d{2})?\s*[apAP][mM])"
+    r"\s*\((?P<zone>[A-Za-z/]+)\)$"
+)
+
+
+def _claude_reset_at(raw: str) -> str:
+    """claude の「戻る時刻」を ISO に直す。読めなければそのまま返す。
+
+    **年が書かれていない**ので、いちばん近い将来として読む —— 年末をまたぐと
+    「もう明けている時刻」に見え、画面で戻る先が過去になる。
+
+    **`(UTC)` と書いてあるときだけ直す。** 別の呼び方で来たら手を出さない ——
+    読み違えた時刻を出すより、相手の文面をそのまま出すほうがまだ読める。
+    """
+    text = (raw or "").strip()
+    found = _CLAUDE_RESET_RE.match(text)
+    if not found or found["zone"].upper() != "UTC":
+        return text
+    clock = found["time"].replace(" ", "").upper()
+    stamp = f"{found['date']} {clock}"
+    for shape in ("%b %d %I:%M%p", "%b %d %I%p"):
+        try:
+            when = datetime.strptime(stamp, shape).replace(tzinfo=UTC)
+        except ValueError:
+            continue
+        now = datetime.now(UTC)
+        # 年は書かれていないので 1900 年で解かれる。**近い将来へ寄せる** ——
+        # 明ける時刻は普通そこから 1 週間以内にある
+        when = when.replace(year=now.year)
+        if when < now - timedelta(days=1):
+            when = when.replace(year=now.year + 1)
+        return when.isoformat(timespec="seconds")
+    return text
+
+
 def _claude_windows(raw: str) -> list[dict]:
     """claude の返事から窓を組む。
 
@@ -1339,7 +1377,7 @@ def _claude_windows(raw: str) -> list[dict]:
             "limit": None,
             "unit": "",
             "window_minutes": None,
-            "resets_at": (found["resets"] or "").strip(),
+            "resets_at": _claude_reset_at(found["resets"] or ""),
         })
     return windows
 

@@ -109,12 +109,10 @@ class TestQuota:
 
         assert backend_of(body, "gemini")["quota"]["supported"] is False
         assert backend_of(body, "local")["quota"]["supported"] is False
-        # **claude は出せない側。** 試した 2 つがどちらも塞がっている ——
-        # `claude -p "/usage"` は対話画面の使用量パネルを出さず、会話を始めずに
-        # 終わった締めの集計しか返さない(実測で `Total cost: $0.0000` と 0 件の
-        # トークン)。Anthropic の `/api/oauth/usage` は user:profile を要求する一方、
-        # 預かっているのは推論だけに絞られた長期トークン(実測で 403)。
-        assert backend_of(body, "claude")["quota"]["supported"] is False
+        # **CLI を包んだ 3 つはどれも出せる側。** claude は長らく出せない側に
+        # 置いてあったが、CLI の版が上がって print モードでもパネルが返るように
+        # なった(`app/providers.py` に当時の観測と今の文面を並べてある)。
+        assert backend_of(body, "claude")["quota"]["supported"] is True
         assert backend_of(body, "codex")["quota"]["supported"] is True
 
     def test_it_does_not_ask_anyone_unless_told_to(self, env):
@@ -137,11 +135,11 @@ class TestQuota:
 
         assert asked == ["https://openrouter.ai/api/v1/key"]
 
-    def test_claude_is_not_asked_at_all(self, env):
-        """Claude は枠を出さない相手なので、取り直しても外へは出ていかない。
+    def test_a_backend_without_a_way_to_ask_is_not_asked(self, env):
+        """枠を出さない相手は、取り直しても外へ出ていかない。
 
-        setup-token では 403 にしかならない口を叩き続けても、毎回同じ理由が
-        画面に出るだけで打つ手が無い(取れるようにする道は docs/ai.md)。
+        毎回同じ理由が画面に出るだけで打つ手が無いため。**claude はここには
+        入らない** —— CLI の版が上がって出せる側になった。
         """
         from app import settings_store, usage
 

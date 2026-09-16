@@ -787,6 +787,7 @@ CLI に聞かせる）ので、サブスクの枠を食いません。
 | 相手 | 聞き方 | 備考 |
 |---|---|---|
 | Codex CLI | ブリッジの `/usage` → `codex app-server` の `account/rateLimits/read` | **CLI に聞く**ので、期限切れになる access_token の更新はあちらがやる |
+| Claude Code CLI | ブリッジの `/usage` → `claude -p "/usage" --output-format json` | `result` に人向けのパネルがそのまま入る。**「使った割合」で言う**（Antigravity は「残り」）|
 | Antigravity CLI | ブリッジの `/usage` → `agy -p /usage` | **クレジット残高(`/credits`)ではなくモデルの枠**。窓はグループ × 週/5 時間 |
 | OpenRouter | `GET /api/v1/key` | クレジットの使用額と残高 |
 | ElevenLabs | `GET /v1/user/subscription` | 鍵だけで引ける。**声・効果音・曲・絵・動画が同じ 1 つの残量**を食う |
@@ -802,20 +803,27 @@ Quotas API 側にあり、OpenAI の使用量は Admin キー（`sk-admin-…`�
 どちらもここに入れる鍵では引けません。画面には「この相手は枠を出さない」と出ます
 （空欄にすると「使っていない」と読めてしまうため）。
 
-**Claude Code CLI からは取れません。** 試した 2 つがどちらも塞がっています。
+**Claude Code CLI も出せます**。長らく「出せない相手」として扱っていましたが、
+**CLI の版が上がって出るようになりました**。実測の `result`:
 
-- `claude -p "/usage"` —— **対話画面の使用量パネルは print モードでは出ません。**
-  返るのは会話を始めずに終わった締めの集計で、実測では
-  `Total cost: $0.0000 / Total duration (API): 0s / Usage: 0 input, 0 output`
-  （`num_turns` も 0）。**欲しい数字がそもそも入っていない**ので、パースの直しようが
-  ありません。一時期これで取れると見て `USAGE_BRIDGE` に倒していましたが、
-  画面には生の JSON が「取れませんでした」として並ぶだけでした
-- `app.anthropic.com` の `/api/oauth/usage` —— **あの口は `user:profile` を要求する**
-  一方、預かっているのは `claude setup-token` の長期トークンで、あれは安全のため
-  推論だけに絞られています（実測で HTTP 403）
+```
+You are currently using your subscription to power your Claude Code usage
 
-画面には「この相手は枠を出さない」と出ます。**残りが知りたいときは Claude Code を
-対話で開いて `/usage` を見てください**（Chiezo からは覗けません）。
+Current session: 5% used · resets Sep 16, 7:10pm (UTC)
+Current week (all models): 24% used · resets Sep 20, 6am (UTC)
+Current week (Fable): 0% used · resets Sep 20, 6am (UTC)
+```
+
+当時の観測は会話を始めずに終わった締めの集計だけで（`Total cost: $0.0000 /
+Usage: 0 input, 0 output`、`num_turns` も 0）、欲しい数字がそもそも入っていませんでした。
+**「取れない」と書いてある理由は、疑ってから消してください** ——あのときも口が
+無かったのではなく、叩く口を間違えていました（`/api/oauth/usage` のほうは今も
+`user:profile` を要求するので 403 のままです）。
+
+**戻る時刻には年が書かれていない**ので（`Sep 20, 6am (UTC)`）、ブリッジ側で
+いちばん近い将来として ISO に直します。`(UTC)` と書かれているときだけ直し、
+別の呼び方で来たら手を出しません——読み違えた時刻を出すより、相手の文面を
+そのまま出すほうがまだ読めます。
 
 **どの聞き方もモデルを呼びません。** 確かめるたびにサブスクの枠を食っては本末転倒なので、
 「接続を試す」と同じ方針です。

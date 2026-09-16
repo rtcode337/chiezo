@@ -426,11 +426,9 @@ def section_html(request: Request | None = None) -> str:
 <strong>聞ける相手が限られる</strong>。「Chiezo が使ったぶん」は Chiezo の勘定なので
 <strong>全部の相手で同じ物差し</strong>だが、<strong>残りは分からない</strong>
 —— <strong>Chiezo を通していない利用は入らない</strong>(手元の端末で回した CLI など)。</p>
-<p><strong>枠を聞けるのは Codex CLI・Antigravity CLI・ElevenLabs・OpenRouter だけ。</strong>
+<p><strong>枠を聞けるのは CLI を包んだ 3 つと ElevenLabs・OpenRouter だけ。</strong>
 Gemini は残量が Google Cloud の Quotas API 側にあり、OpenAI は Admin キーが要るので、
-どちらもここに入れる鍵では引けない。<strong>Claude Code CLI も出せない</strong>
-—— CLI 自身が叩いている口は <code>user:profile</code> を要求するが、Chiezo が預かる
-<code>claude setup-token</code> の長期トークンは推論だけに絞られているため。
+どちらもここに入れる鍵では引けない。
 聞ける相手は<strong>モデルを呼ばずに聞く</strong>(確かめるたびに枠を食っては本末転倒なので)。</p>
 <p><strong>開いたときには聞きに行かない。</strong>控えてある値と「いつ取ったか」を出し、
 取り直しはボタンで —— 落ちている相手がいると、その数だけ画面が遅れるため。

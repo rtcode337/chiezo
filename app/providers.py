@@ -171,21 +171,25 @@ PROVIDERS: tuple[Provider, ...] = (
         models=("sonnet", "fable", "opus", "haiku"),
         # `claude --help` の --effort（実測で 5 つとも通る）。
         efforts=("low", "medium", "high", "xhigh", "max"),
-        # **枠を聞く口が無い**（`USAGE_NONE`）。試した 2 つがどちらも塞がっている。
+        # 枠はブリッジの `/usage` から聞く（`claude -p "/usage" --output-format json`）。
+        # 実測の `result`:
+        #   You are currently using your subscription to power your Claude Code usage
+        #   Current session: 5% used · resets Sep 16, 7:10pm (UTC)
+        #   Current week (all models): 24% used · resets Sep 20, 6am (UTC)
+        #   Current week (Fable): 0% used · resets Sep 20, 6am (UTC)
         #
-        # (1) `claude -p "/usage"` —— 対話画面の使用量パネルは print モードでは
-        # 出ない。返るのは会話を始めずに終わった締めの集計で、実測の `result` は
-        # `Total cost: $0.0000 / Total duration (API): 0s / Usage: 0 input, 0 output`
-        # （`num_turns` も 0）。**欲しい数字がそもそも入っていない**ので、
-        # パースの直しようが無い。
+        # **かつては「出せない相手」だった。** 当時の観測は
+        # `Total cost: $0.0000 / Usage: 0 input, 0 output`（`num_turns` も 0）で、
+        # 締めの集計しか入っていなかった —— **CLI の版が上がって出るようになった**。
+        # 別に試した `app.anthropic.com` の `/api/oauth/usage` は今も塞がっている
+        # （あの口は `user:profile` を要求するが、預かっているのは `claude setup-token` の
+        # 長期トークンで、推論だけに絞られている。実測で HTTP 403）。
         #
-        # (2) `app.anthropic.com` の `/api/oauth/usage` —— **あの口は `user:profile` を
-        # 要求する**一方、預かっているのは `claude setup-token` の長期トークンで、
-        # あれは安全のため推論だけに絞られている（実測で HTTP 403）。
-        #
-        # 画面には「この相手は枠を出さない」と出る。**空欄にすると「使っていない」と
-        # 読めてしまう**ので、出さないことを出す。
-        usage=USAGE_NONE,
+        # **どちらの認証情報で通ったかは、まだ突き止めていない。** 測ったときの
+        # コンテナは、登録済みのトークン（依頼のたびに環境変数で置く）と、
+        # 手で `/login` したぶんの両方がありうる状態だった。ブリッジが聞くときは
+        # 前者しか置かないので、**画面の「取り直す」で 1 回確かめること**。
+        usage=USAGE_BRIDGE,
         bridge=True,
         order=30,
     ),
