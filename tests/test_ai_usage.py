@@ -955,7 +955,7 @@ class TestWhatMovedTheQuota:
 
 
 class TestWindowOrder:
-    """窓の並び —— 相手ごとに返す順が違うので、受け取る側で揃える。"""
+    """窓の並びと名前 —— 相手ごとに返す順が違い、名前もぶつかりうる。"""
 
     def _window(self, name: str, minutes: float | None) -> "object":
         from app.usage import Window
@@ -969,7 +969,7 @@ class TestWindowOrder:
         weekly = self._window("週", 7 * 24 * 60)
         session = self._window("5 時間", 5 * 60)
 
-        assert [w.label for w in usage.ordered([weekly, session])] == ["5 時間", "週"]
+        assert [w.label for w in usage.arranged([weekly, session])] == ["5 時間", "週"]
 
     def test_windows_without_a_length_keep_their_place_at_the_end(self, env):
         """claude は文面から読むので長さを持たない。元の並びのまま末尾へ。"""
@@ -979,7 +979,7 @@ class TestWindowOrder:
         second = self._window("week", None)
         short = self._window("5 時間", 5 * 60)
 
-        assert [w.label for w in usage.ordered([first, second, short])] == [
+        assert [w.label for w in usage.arranged([first, second, short])] == [
             "5 時間", "session", "week",
         ]
 
@@ -1007,3 +1007,76 @@ class TestClaudeDoesNotNeedARegisteredToken:
 
         assert row["has_credential"] is False
         assert row["can_enable"] is True
+
+    def test_windows_with_the_same_name_are_told_apart(self, env):
+        """名前は長さから作るので、同じ長さの窓が 2 つあると見分けが付かない
+        —— 実測で codex は 7 日の窓を 2 つ返す(別勘定で、値もまったく違う)。
+        """
+        from app import usage
+        from app.usage import Window
+
+        pair = [
+            Window(id="secondary", label="直近 7 日", used_percent=33.0,
+                   window_minutes=7 * 24 * 60),
+            Window(id="primary-10080m", label="直近 7 日", used_percent=0.0,
+                   window_minutes=7 * 24 * 60),
+        ]
+
+        assert [w.label for w in usage.arranged(pair)] == [
+            "直近 7 日(secondary)", "直近 7 日(primary-10080m)",
+        ]
+
+    def test_a_name_that_does_not_clash_is_left_alone(self, env):
+        from app import usage
+        from app.usage import Window
+
+        one = [Window(id="primary", label="直近 5 時間", used_percent=1.0,
+                      window_minutes=300)]
+
+        assert [w.label for w in usage.arranged(one)] == ["直近 5 時間"]
+
+
+class TestAWindowThatStoppedComing:
+    """相手が返さなくなった窓は下へ回す。**消さずに、伸びていないことを示す。**"""
+
+    def test_it_sinks_below_the_live_ones(self, env):
+        import sqlite3
+        from datetime import UTC, datetime, timedelta
+
+        from app import usage_store
+
+        with make_client(env, ReplyLLM()):
+            # 混ざって大きく上がった古い線(もう伸びない)
+            usage_store.save_quota("codex", [{"id": "primary", "label": "直近 7 日",
+                                              "used_percent": 5.0}])
+            usage_store.save_quota("codex", [{"id": "primary", "label": "直近 7 日",
+                                              "used_percent": 90.0}])
+            old = (datetime.now(UTC) - timedelta(hours=2)).isoformat(timespec="seconds")
+            with sqlite3.connect(usage_store.db_path()) as conn:
+                conn.execute("UPDATE quota_samples SET at = ?", (old,))
+            # いま伸びている線
+            usage_store.save_quota("codex", [{"id": "primary-300m", "label": "直近 5 時間",
+                                              "used_percent": 3.0}])
+            trails = usage_store.quota_trail(datetime.now(UTC) - timedelta(days=1))
+
+        assert [t["window_id"] for t in trails] == ["primary-300m", "primary"]
+        assert trails[0]["stale"] is False
+        assert trails[1]["stale"] is True
+
+    def test_the_screen_says_it_is_no_longer_reported(self, env):
+        import sqlite3
+        from datetime import UTC, datetime, timedelta
+
+        from app import usage_store
+
+        with make_client(env, ReplyLLM()) as client:
+            usage_store.save_quota("codex", [{"id": "primary", "label": "直近 7 日",
+                                              "used_percent": 90.0}])
+            old = (datetime.now(UTC) - timedelta(hours=2)).isoformat(timespec="seconds")
+            with sqlite3.connect(usage_store.db_path()) as conn:
+                conn.execute("UPDATE quota_samples SET at = ?", (old,))
+            usage_store.save_quota("codex", [{"id": "primary-300m", "label": "直近 5 時間",
+                                              "used_percent": 3.0}])
+            html = client.get("/admin/ai").text
+
+        assert "いまは返ってこない窓" in html

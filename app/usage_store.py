@@ -459,7 +459,8 @@ def quota_trail(since: datetime) -> list[dict]:
         key = (r["provider"], r["window_id"])
         trail = trails.setdefault(key, {
             "provider": r["provider"], "window_id": r["window_id"],
-            "label": r["label"] or r["window_id"], "points": [], "climbed": 0.0, "resets_at": "",
+            "label": r["label"] or r["window_id"], "points": [], "climbed": 0.0,
+            "resets_at": "", "stale": False,
         })
         percent = float(r["used_percent"])
         if trail["points"] and percent > trail["points"][-1]["used_percent"]:
@@ -468,7 +469,21 @@ def quota_trail(since: datetime) -> list[dict]:
         # 見出しと明ける時刻は新しいほうを採る(窓が明けると次の時刻に変わる)
         trail["label"] = r["label"] or trail["label"]
         trail["resets_at"] = r["resets_at"] or trail["resets_at"]
-    return sorted(trails.values(), key=lambda t: (-t["climbed"], t["provider"]))
+
+    # **相手が返さなくなった窓は下へ回す**(`stale`)。窓の名前が変わったり、枠の
+    # 出し方が変わったりすると、その名前の線はそこで伸びなくなる —— 混ざったまま
+    # 伸びていた頃の線が「上がったぶん」を大きく持っていると、**直したあとも
+    # 壊れた線が一番上に居座る**(実際にそう見えた)。
+    newest: dict[str, str] = {}
+    for trail in trails.values():
+        last = trail["points"][-1]["at"]
+        newest[trail["provider"]] = max(newest.get(trail["provider"], ""), last)
+    for trail in trails.values():
+        trail["stale"] = trail["points"][-1]["at"] < newest[trail["provider"]]
+    return sorted(
+        trails.values(),
+        key=lambda t: (t["stale"], -t["climbed"], t["provider"]),
+    )
 
 
 def calls_since(provider: str, at: str) -> int:

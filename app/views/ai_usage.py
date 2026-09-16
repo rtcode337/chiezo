@@ -286,6 +286,18 @@ def _trail_points_html(trail: dict) -> str:
     )
 
 
+def _stale_note(trail: dict) -> str:
+    """相手が返さなくなった窓の印。**消さずに、伸びていないことを書く。**
+
+    窓の名前が変わると、その名前の線はそこで止まる —— 消すと「あの数字は何だったのか」
+    を確かめようがなくなるが、生きている線と同じ顔で並んでいると読み違える。
+    """
+    if not trail.get("stale"):
+        return ""
+    return ('<br><span class="muted">いまは返ってこない窓'
+            "(名前が変わったか、相手が出さなくなった)</span>")
+
+
 def trail_html(request: Request | None = None) -> str:
     """枠の推移 —— いつ跳ねたかを読むところ。
 
@@ -303,9 +315,9 @@ def trail_html(request: Request | None = None) -> str:
         return (f'{head}\n<p class="muted">この窓の観測はありません'
                 "(枠を聞ける相手を呼ぶと、定時に控えはじめます)。</p>")
     body = "\n".join(
-        "<tr>"
+        f'<tr{" class=\"off\"" if t["stale"] else ""}>'
         f'<td>{esc(usage.label_of(t["provider"]))}<br>'
-        f'<span class="muted">{esc(t["label"])}</span></td>'
+        f'<span class="muted">{esc(t["label"])}</span>{_stale_note(t)}</td>'
         f'<td>{esc(_percent(t["points"][-1]["used_percent"]))}</td>'
         f'<td>{esc(_climb(t["climbed"]))}</td>'
         f"<td>{_trail_points_html(t)}</td>"

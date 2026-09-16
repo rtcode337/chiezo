@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -353,27 +353,41 @@ async def refresh(provider_id: str) -> Quota:
             error=str(e),
             windows=_windows_from(stored.get("windows", [])),
         )
-    windows = ordered(windows)
+    windows = arranged(windows)
     usage_store.save_quota(spec.id, [asdict(w) for w in windows])
     return Quota(supported=True, fetched_at=_now_iso(), windows=windows)
 
 
-def ordered(windows: list[Window]) -> list[Window]:
-    """短い窓から並べる。**相手ごとに返す順が違う** —— 実測で codex は 5 時間が先、
-    antigravity は週が先だった。詰まりやすいのは短いほうなので、そこを上に出す。
+def arranged(windows: list[Window]) -> list[Window]:
+    """画面に出す形に整える —— 短い窓から並べ、**同じ名前の窓を呼び分ける**。
 
+    並びは短い順。**相手ごとに返す順が違う** —— 実測で codex は 5 時間が先、
+    antigravity は週が先だった。詰まりやすいのは短いほうなので、そこを上に出す。
     **長さの分からない窓は末尾に、元の並びのまま置く**(claude は文面から読むので
     長さを持たない)。安定な並べ替えなので、同じ長さの窓どうしの順も動かない。
+
+    **名前は長さから作るので、同じ長さの窓が 2 つあると見分けが付かない** ——
+    実測で codex は 7 日の窓を 2 つ返す(片方は別勘定で、値もまったく違う)。
+    **ぶつかったものは全部、窓の id を添えて呼び分ける** —— 片方だけ素のままに
+    すると、どちらが素のままかが相手の並べ方次第になる(ブリッジ側で id を
+    呼び分けているのと同じ判断)。
     """
-    return sorted(
+    out = sorted(
         windows,
         key=lambda w: (1, 0.0) if not w.window_minutes else (0, float(w.window_minutes)),
     )
+    seen: dict[str, int] = {}
+    for w in out:
+        seen[w.label] = seen.get(w.label, 0) + 1
+    return [
+        replace(w, label=f"{w.label}({w.id})") if seen.get(w.label, 0) > 1 else w
+        for w in out
+    ]
 
 
 def _windows_from(raw: list) -> list[Window]:
     out = [_window_from(w) for w in raw if isinstance(w, dict)]
-    return ordered([w for w in out if w is not None])
+    return arranged([w for w in out if w is not None])
 
 
 def _now_iso() -> str:
