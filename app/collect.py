@@ -468,6 +468,12 @@ class Sweep:
     # 「この区画に居ない」を理由に見当違いのことをする —— 実際、名簿を作った直後の
     # 漏れ探しは、既に名簿に居る画家を 20 人挙げて終わった
     after: str = ""
+    # **誰に頼むかを、名前で外へ出す**(`app/workers.py`)。書いてあれば、
+    # 上の `backend` / `model` / `effort` ではなく**ワーカーの並びから選ぶ** ——
+    # 枠に余裕のある先頭に頼み、どれも詰まっていればその回は走らせない。
+    # 網羅の収集は端から端まで精査し続けるもので、**1 つの相手の枠で回し切れるとは
+    # 限らない** —— 詰まったところで止まるのではなく、振り替えて回り続けてほしい
+    worker: str = ""
     # **足すだけの巡回**。既にある見出しが返ってきても触らない ——
     # 「漏れているものを足す」を頼む回に要る印で、**AI の判断に頼らずに保証する**。
     # 見せられるのはその区画のぶんだけなので、AI には「もう居るかどうか」が分からない
@@ -534,8 +540,16 @@ class Sweep:
                 return max(1, min(math.ceil(total_partitions / runs), MAX_PARTITIONS_PER_RUN))
         return 1
 
-    def applied_to(self, item: Collection) -> Collection:
-        """この巡回の相手・モデル・深さを載せた定義(AI へ投げるときに使う)。"""
+    def applied_to(self, item: Collection, step=None) -> Collection:
+        """この巡回の相手・モデル・深さを載せた定義(AI へ投げるときに使う)。
+
+        **ワーカーが選んだ相手があればそちらが勝つ**(`step`)。巡回に書いてある
+        相手は「ワーカーを使わないとき」の指定で、両方書いてあるときに
+        どちらで走ったのか読めないほうが困る。
+        """
+        if step is not None:
+            return replace(item, backend=step.backend,
+                           model=step.model or None, effort=step.effort or None)
         return replace(item, backend=self.backend, model=self.model, effort=self.effort)
 
     def to_json(self) -> dict:
@@ -589,6 +603,7 @@ def _sweep_from_json(raw: dict, item: Collection) -> Sweep:
         once=bool(raw.get("once")),
         one_lap=bool(raw.get("one_lap")),
         after=str(raw.get("after") or "").strip()[:40],
+        worker=str(raw.get("worker") or "").strip()[:40],
         next_run_at=raw.get("next_run_at") or None,
         last_run_at=raw.get("last_run_at") or None,
         last_status=raw.get("last_status") or None,

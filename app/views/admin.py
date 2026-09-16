@@ -40,12 +40,13 @@ from app import (
     settings_store,
     usage,
     usage_store,
+    workers,
 )
 from app import partition as partitioning
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
 from app.pages import CHAT_PATH, browse_url, esc, page_shell
 from app.registry import SUPPORTED_SCHEMA_VERSIONS, TAG_MIN_SCHEMA_VERSION, Source
-from app.views import ai_history, ai_settings, ai_usage
+from app.views import ai_history, ai_settings, ai_usage, ai_workers
 
 log = logging.getLogger("chiezo.app")
 
@@ -683,13 +684,39 @@ def _sweep_backend_fields(sweep, backend, mechanical: bool) -> str:
             '<p class="muted">この引き方では AI を呼ばないので、相手は選べません'
             "(「AI に頼む」にして保存すると出ます)。</p>"
         )
+    chosen = (sweep.worker if sweep else "") or ""
     return (
+        f'<p><label>ワーカー<br>{_worker_select(chosen)}</label></p>'
+        '<p class="muted">ワーカーを選ぶと、<strong>下の相手ではなくその並びから'
+        "選びます</strong>(枠に余裕のある先頭に頼み、どれも詰まっていればその回は"
+        "走らせません)。並びは「AI と鍵」の面で決めます。</p>"
         f'<p><label>頼む相手<br>{_backend_select(backend, "sweep_backend")}</label></p>'
         f'<p><label>モデル<br>'
         f'{_model_select(backend, sweep.model if sweep else None, "sweep_model")}</label></p>'
         f'<p><label>考える量<br>'
         f'{_effort_select(backend, sweep.effort if sweep else None, "sweep_effort")}</label></p>'
     )
+
+
+def _worker_select(current: str) -> str:
+    """ワーカーを選ぶセレクト。**空が「使わない」**(下の相手で走る)。
+
+    **いま選ばれている名前が定義に無くても選択肢に残す** —— 落とすと、保存し直した
+    瞬間に「使わない」へ倒れて、何を指していたのかが画面から消える(相手のセレクトと
+    同じ理由)。定義が読めないときも同じ扱いにする。
+    """
+    try:
+        names = [w.name for w in workers.load()]
+    except ValueError:
+        names = []
+    if current and current not in names:
+        names.append(current)
+    options = ['<option value="">使わない(下の相手に頼む)</option>']
+    options += [
+        f'<option value="{esc(n)}"{" selected" if n == current else ""}>{esc(n)}</option>'
+        for n in names
+    ]
+    return f'<select name="sweep_worker">{"".join(options)}</select>'
 
 
 def _sweep_edit_row(item, sweep, columns: int, removable: bool = True) -> str:
@@ -1942,6 +1969,8 @@ async def admin_ai(request: Request):
 
 {ai_usage.section_html(request)}
 
+{ai_workers.section_html((_backend_select, _model_select, _effort_select))}
+
 {ai_history.section_html(*_history_args(request))}
 """
     return HTMLResponse(content=page_shell("AI と鍵", body))
@@ -2655,7 +2684,7 @@ def _parse_sweeps_form(form) -> list[dict]:
         key: form.getlist(f"sweep_{key}")
         for key in (
             "interval", "cover_days", "per_run", "backend", "model", "effort",
-            "enabled", "clock", "merge", "prompt", "source",
+            "enabled", "clock", "merge", "prompt", "source", "worker",
         )
     }
     out = []
@@ -2668,7 +2697,9 @@ def _parse_sweeps_form(form) -> list[dict]:
             values = fields[key]
             return str(values[i]).strip() if i < len(values) else ""
 
-        sweep = {"name": name, "enabled": bool(at("enabled"))}
+        # **ワーカーは空でも書く。** 「使わない」に戻せないと、一度名指ししたら
+        # 外せなくなる(このフォームだけが持つ欄なので、他から消される心配は無い)
+        sweep = {"name": name, "enabled": bool(at("enabled")), "worker": at("worker")}
         # **時計を持たない巡回**(割り込み用)。定時には走らず、頼まれたときだけ動く。
         # 名指しされたときだけにする —— 欄を持たないフォームから保存されたときに、
         # 全部の巡回が黙って時計を失うのを避ける

@@ -52,6 +52,7 @@ from app import (
     usage,
     usage_store,
     websearch,
+    workers,
 )
 from app import partition as partitioning
 from app.deps import (
@@ -80,6 +81,7 @@ from app.registry import (
 from app.views import admin as views_admin
 from app.views import ai_settings as views_ai_settings
 from app.views import ai_usage as views_ai_usage
+from app.views import ai_workers as views_ai_workers
 from app.views import browse as views_browse
 from app.views import chat as views_chat
 from app.views import media_ask as views_media_ask
@@ -206,6 +208,53 @@ QUOTA_SAMPLE_MINUTES = answer._env_num("CHIEZO_QUOTA_SAMPLE_MINUTES", 15.0, floa
 QUOTA_TICK_SECONDS = float(os.environ.get("CHIEZO_QUOTA_TICK_SECONDS", "60"))
 
 
+def _first_with_room(due: list) -> tuple | None:
+    """予定の来ている(収集, 巡回)のうち、**いま走らせてよい最初の組**。
+
+    ワーカーを名指ししていない回はいつでも走らせてよい —— 枠を見て振り替える
+    仕組みは、名指しした回だけの話。
+    """
+    for pair in due:
+        step, decided = _worker_step(pair[1])
+        if not decided or step is not None:
+            return pair
+    return None
+
+
+def _worker_of(sweep) -> workers.Worker | None:
+    """その巡回が使うワーカー。名指ししていなければ None。
+
+    **名前が見つからないときも None にする**(= 巡回に書いてある相手で走る)。
+    綴りを間違えただけで無人の層が止まるより、走って控えに相手が残るほうがよい ——
+    どちらで走ったかは変更履歴の相手の欄に出る。**理由はログに残す**。
+    """
+    name = getattr(sweep, "worker", "")
+    if not name:
+        return None
+    try:
+        found = workers.get(name)
+    except ValueError:
+        log.warning("worker definitions unreadable; falling back to the sweep's own backend")
+        return None
+    if found is None or not found.steps:
+        log.warning("worker %r not found (or empty); falling back to the sweep's own backend", name)
+        return None
+    return found
+
+
+def _worker_step(sweep) -> tuple[object | None, bool]:
+    """(頼む相手, ワーカーが決めているか)。
+
+    **2 つ目が要る。** 相手が None なのは 2 通りあり、次にすることが逆になる ——
+    ワーカーを使わない回(巡回の指定で走る)と、**どれも枠が詰まっている回**
+    (走らせずに見送る)。
+    """
+    worker = _worker_of(sweep)
+    if worker is None:
+        return None, False
+    return workers.pick(worker), True
+
+
 async def _sample_quotas() -> None:
     """枠の推移を控える常駐タスク(`app/usage_store.py` の `quota_samples`)。
 
@@ -261,7 +310,13 @@ async def _run_collections(app: FastAPI) -> None:
             due = await asyncio.to_thread(collect.due_sweeps)
             if not due:
                 continue
-            item, sweep = due[0]
+            # **枠の詰まっている回は飛ばして、後ろの回を先に走らせる。**
+            # 予定は進めないので、窓が明ければその回も次の周で走る
+            # (混んでいる trigger に断られたときと同じ扱い)。
+            picked = await asyncio.to_thread(_first_with_room, due)
+            if picked is None:
+                continue
+            item, sweep = picked
             await asyncio.to_thread(start_collection_bake, item.name, sweep.name)
         except Exception:
             log.exception("collection tick failed")
@@ -392,7 +447,16 @@ async def _collect_items(
             # 黙って減らさない —— 少ないのが世の中の都合か、道具の不調かで意味が違う
             note = f"{feed.get('tried')} 件の出典のうち {failed} 件は取れませんでした"
         return feeds.to_items(feed), None, note
-    asked = item if sweep is None else sweep.applied_to(item)
+    step, decided = _worker_step(sweep) if sweep is not None else (None, False)
+    if decided and step is None:
+        # **どれも詰まっているなら、無理に頼まない。** ここまで来ているのは時計が
+        # 起こした後なので、明けた窓が塞がったということ —— 断れば控えに理由が残り、
+        # 予定は進まないので次の周で走り直せる
+        raise HTTPException(429, {
+            "error": f"ワーカー「{sweep.worker}」のどの相手も枠に余裕がありません",
+            "hint": f"使用率が {workers.QUOTA_LIMIT:.0f}% を超えている相手は避けます",
+        })
+    asked = item if sweep is None else sweep.applied_to(item, step)
     collected: list[dict] = []
     cursor = None
     notes: list[str] = []
@@ -3198,6 +3262,7 @@ async def media_file(path: str):
 app.include_router(views_admin.router)
 app.include_router(views_ai_settings.router)
 app.include_router(views_ai_usage.router)
+app.include_router(views_ai_workers.router)
 app.include_router(views_browse.router)
 # **見比べより先に登録する。** あちらの `/admin/media/{key:path}` は総取りなので、
 # 後にすると `/admin/media/ask` が組の名前として吸われる

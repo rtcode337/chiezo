@@ -487,3 +487,23 @@ def label_of(provider_id: str) -> str:
     """画面に出す名前。絵と音だけの相手も引ける(`spec_of` と同じ範囲)。"""
     spec = spec_of(provider_id)
     return getattr(spec, "label", "") or provider_id
+
+
+def busiest(provider_id: str) -> float | None:
+    """その相手の枠のうち、**いちばん詰まっている窓**の使用率。控えを読むだけ。
+
+    **聞きに行かない。** ここは「いま頼んでよい相手か」を決めるために何度も呼ばれる
+    ので、呼ぶたびに CLI を起こすわけにいかない —— 控えは定時に更新されている
+    (`main._sample_quotas`)。
+
+    **分からないときは None。** 枠を出さない相手と、まだ一度も取れていない相手が
+    これに当たる。**0 と書き分ける** —— 0 は「まだ使っていない」で、頼んでよい相手。
+    """
+    row = usage_store.load_quota().get(provider_id)
+    if not row:
+        return None
+    percents = [
+        w.used_percent for w in _windows_from(row.get("windows", []))
+        if w.used_percent is not None
+    ]
+    return max(percents) if percents else None
