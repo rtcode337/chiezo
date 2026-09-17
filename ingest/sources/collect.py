@@ -24,7 +24,7 @@ import logging
 import os
 from pathlib import Path
 
-from core import RECENCY_INDEX_DDL, SourceAdapter
+from core import CHANGED_BY_INDEX_DDL, RECENCY_INDEX_DDL, SourceAdapter
 from sources.remote import PluginError, RemotePluginAdapter, RemoteSource, _get_json
 
 log = logging.getLogger("chiezo.ingest")
@@ -54,8 +54,11 @@ class CollectAdapter(RemotePluginAdapter):
     """
 
     # 集めたものは**溜まっていく**ので、新しい順に引けるようにする。
-    # 「この 1 日で何が入ったか」は、この層でいちばん訊かれる問い
-    extra_index_ddl = RECENCY_INDEX_DDL
+    # 「この 1 日で何が入ったか」は、この層でいちばん訊かれる問い。
+    # **どの回が動かしたか**でも引く —— 変更履歴(`app/collect_log.py`)は回ごとに
+    # 1 行で、動いた見出しは頭の 20 件しか残らないうえ、短い回の行が長い回の行を
+    # 押し流す。文書の側の印なら、回の間隔と関係なく引ける
+    extra_index_ddl = RECENCY_INDEX_DDL + CHANGED_BY_INDEX_DDL
 
     def __init__(self, src: RemoteSource) -> None:
         super().__init__(src)

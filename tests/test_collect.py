@@ -990,6 +990,99 @@ class TestTheOutwardSweep:
         assert docs[0]["extra"]["published_at"].startswith("2026-09-10")
 
 
+class TestTheMarkOnTheDocument:
+    """どの回が動かしたかを、文書の脇書きに 1 回分だけ残す(`collect._stamped`)。
+
+    **変更履歴を別に持つだけでは読めない問いがある。** 控え(`app/collect_log.py`)は
+    回ごとに 1 行で、動いた見出しは頭の 20 件まで。しかも回ごとの間隔は桁違いなので、
+    短い回の行が長い回の行を押し流す —— 「整理が何を直したのか」は、たいてい流れた後になる。
+    """
+
+    def test_a_new_one_says_which_sweep_added_it(self, sample):
+        docs, _diff = collect.material(
+            collect.get("news"), {}, [{"title": "モネ", "body": "画家です"}], sweep="見出し",
+        )
+
+        assert docs[0]["extra"][collect.CHANGED_BY_KEY] == "見出し"
+        assert docs[0]["extra"][collect.CHANGE_KEY] == collect.CHANGE_ADDED
+
+    def test_the_later_sweep_takes_the_mark_over(self, sample):
+        """**残すのは 1 回分だけ。** 溜めると 1 件ごとに際限なく伸びる。"""
+        collect.update("news", prompt="いまの内容:\n{current}\n直して")
+        previous = {"モネ": {
+            "doc_id": 1, "title": "モネ", "body": "古い",
+            "extra": {collect.CHANGED_BY_KEY: "見出し", collect.CHANGE_KEY: "added"},
+        }}
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous, [{"title": "モネ", "body": "新しい"}],
+            edits=True, sweep="整理",
+        )
+
+        assert docs[0]["extra"][collect.CHANGED_BY_KEY] == "整理"
+        assert docs[0]["extra"][collect.CHANGE_KEY] == collect.CHANGE_UPDATED
+
+    def test_a_tombstone_keeps_who_buried_it(self, sample):
+        collect.update("news", prompt="いまの内容:\n{current}\n直して")
+        previous = {"モネ": {"doc_id": 1, "title": "モネ", "body": "古い", "extra": {}}}
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous,
+            [{"title": "モネ", "body": "関心の外です", "tags": ["_chiezo_tombstone"]}],
+            edits=True, sweep="整理",
+        )
+
+        assert docs[0]["extra"][collect.CHANGED_BY_KEY] == "整理"
+        assert docs[0]["extra"][collect.CHANGE_KEY] == collect.CHANGE_REMOVED
+        assert collect.removed_reason(docs[0]) == "関心の外です"
+
+    def test_an_untouched_one_keeps_the_mark_it_had(self, sample):
+        """触っていない 1 件の印を書き換えると、「その回が動かしたもの」が嘘になる。"""
+        collect.update("news", prompt="いまの内容:\n{current}\n直して")
+        previous = {
+            "モネ": {
+                "doc_id": 1, "title": "モネ", "body": "古い",
+                "extra": {collect.CHANGED_BY_KEY: "整理"},
+            },
+            "ゴッホ": {"doc_id": 2, "title": "ゴッホ", "body": "古い", "extra": {}},
+        }
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous, [{"title": "ゴッホ", "body": "新しい"}],
+            edits=True, sweep="見出し",
+        )
+
+        by = {d["title"]: (d["extra"] or {}).get(collect.CHANGED_BY_KEY) for d in docs}
+        assert by == {"モネ": "整理", "ゴッホ": "見出し"}
+
+    def test_the_mark_rides_in_the_margin_not_the_text(self, sample):
+        """**検索の邪魔をしない。** 全文検索が索引するのは見出しと本文だけ
+        (`ingest/core.py` の `docs_fts`)なので、脇書きに置けば引っかからない。
+        本文やタグへ書くと、読む人にも AI にも「文書の中身」として見える。
+        """
+        docs, _diff = collect.material(
+            collect.get("news"), {}, [{"title": "モネ", "body": "画家です"}], sweep="整理",
+        )
+
+        assert "整理" not in docs[0]["body"]
+        assert "整理" not in docs[0]["title"]
+        assert "整理" not in docs[0]["tags"]
+        assert docs[0]["extra"][collect.CHANGED_BY_KEY] == "整理"
+
+    def test_the_mark_does_not_reach_the_prompt(self, sample):
+        """**本文精査の邪魔をしない。** 差し込む一覧に載るのは配信日と出典だけ。"""
+        previous = {"モネ": {
+            "doc_id": 1, "title": "モネ", "body": "画家です",
+            "updated_at": "2026-09-10T00:00:00+00:00",
+            "extra": {collect.CHANGED_BY_KEY: "整理", collect.CHANGE_KEY: "updated"},
+        }}
+
+        text = collect.render_recent(previous, "2026-09-09T00:00:00+00:00")
+
+        assert "整理" not in text
+        assert collect.CHANGED_BY_KEY not in text
+
+
 class TestTellingTheAiTheTime:
     """`{now}` —— いまの日時(日本時間)。
 
@@ -1802,7 +1895,12 @@ class TestCarryingFactsIntoTheDoc:
         assert docs[0]["extra"]["pageviews_month"] == 8869
 
     def test_the_number_of_facts_has_a_ceiling(self, sample):
-        """消さない作りなので、天井を置かないと回を重ねるだけ増える。"""
+        """消さない作りなので、天井を置かないと回を重ねるだけ増える。
+
+        **天井が掛かるのは運ばれてくる事実のほう。** こちらが押す印
+        (`changed_by` / `change`)は数が決まっていて上書きされるので増えない ——
+        天井の内側に入れると、脇書きの多い 1 件だけ印が付かないことになる。
+        """
         collect.update("news", prompt="いまの内容:\n{current}\n直して")
         previous = {"モネ": {
             "doc_id": 1, "title": "モネ", "body": "古い",
@@ -1813,7 +1911,12 @@ class TestCarryingFactsIntoTheDoc:
             collect.get("news"), previous, [{"title": "モネ", "body": "新しい"}], edits=True,
         )
 
-        assert len(docs[0]["extra"]) <= collect.MAX_EXTRA_KEYS
+        facts = {
+            k: v for k, v in docs[0]["extra"].items()
+            if k not in (collect.CHANGED_BY_KEY, collect.CHANGE_KEY)
+        }
+        assert len(facts) <= collect.MAX_EXTRA_KEYS
+        assert docs[0]["extra"][collect.CHANGE_KEY] == collect.CHANGE_UPDATED
 
     def test_the_collected_at_is_not_overwritten(self, sample):
         """運ばれてきた値で、こちらが付ける印を上書きさせない。"""
@@ -4511,3 +4614,82 @@ class TestShowingWhereItCameFrom:
         text = collect.render_recent({"記事": self.doc("記事", "記載なし")}, None)
 
         assert "記載なし" not in text
+
+
+class TestReadingWhatOneSweepMoved:
+    """その回が動かしたものを、焼いたものの側から引く(`collect.changed_here`)。
+
+    変更履歴(`app/collect_log.py`)は回ごとに 1 行で、動いた見出しは頭の 20 件まで。
+    1 回で数千件動く回では、何が動いたのかがほとんど読めない。
+    """
+
+    @pytest.fixture()
+    def baked(self, tmp_path):
+        from app import notes
+
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        path = corpus / "news.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(notes.SCHEMA_DDL)
+        rows = [
+            ("整理が直した", "整理", "updated", "2026-01-03T00:00:00+00:00"),
+            ("見出しが足した", "見出し", "added", "2026-01-04T00:00:00+00:00"),
+            ("整理が消した", "整理", "removed", "2026-01-02T00:00:00+00:00"),
+            ("誰も触っていない", None, None, "2026-01-01T00:00:00+00:00"),
+        ]
+        for i, (title, by, change, at) in enumerate(rows, start=1):
+            extra = {}
+            if by:
+                extra = {collect.CHANGED_BY_KEY: by, collect.CHANGE_KEY: change}
+            conn.execute(
+                "INSERT INTO docs (doc_id, title, opening, body, tags, updated_at,"
+                " extra, rank_score) VALUES (?, ?, ?, ?, '[]', ?, ?, 0.0)",
+                (i, title, "冒頭", "本文", at, json.dumps(extra, ensure_ascii=False)),
+            )
+        conn.commit()
+        conn.close()
+
+        class Src:
+            pass
+
+        Src.path = path
+        return {"news": Src()}
+
+    def test_it_returns_only_that_sweeps_marks_newest_first(self, baked):
+        titles = [d["title"] for d in collect.changed_here("news", baked, "整理")]
+        assert titles == ["整理が直した", "整理が消した"]
+
+    def test_what_it_did_comes_along(self, baked):
+        docs = collect.changed_here("news", baked, "整理")
+        assert docs[0]["extra"][collect.CHANGE_KEY] == collect.CHANGE_UPDATED
+        assert docs[1]["extra"][collect.CHANGE_KEY] == collect.CHANGE_REMOVED
+
+    def test_an_unknown_sweep_is_empty_not_everything(self, baked):
+        """絞ったのに全件が返ると、その回が動かしたことになってしまう。"""
+        assert collect.changed_here("news", baked, "居ない回") == []
+        assert collect.changed_here("news", baked, "") == []
+
+    def test_a_collection_that_was_never_baked_is_empty(self, baked):
+        assert collect.changed_here("nosuch", baked, "整理") == []
+
+    def test_the_screen_says_what_each_one_was(self, baked):
+        from app.views import admin
+
+        html = admin._changed_here_html("news", baked, "整理")
+
+        assert "「整理」が動かしたもの" in html
+        assert "直した" in html and "消した" in html
+        assert "見出しが足した" not in html
+
+    def test_the_screen_is_quiet_until_a_sweep_is_picked(self, baked):
+        from app.views import admin
+
+        assert admin._changed_here_html("news", baked, None) == ""
+
+    def test_the_screen_says_so_when_nothing_carries_the_mark(self, baked):
+        from app.views import admin
+
+        html = admin._changed_here_html("news", baked, "居ない回")
+
+        assert "ありません" in html

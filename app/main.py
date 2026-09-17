@@ -650,7 +650,7 @@ async def _collect_material(name: str, sources: dict) -> str:
         try:
             yield from collect.bake_lines(
                 baked_as, sources, previous, items,
-                focus is None and sweep.only_new, edits, plan,
+                focus is None and sweep.only_new, edits, plan, label,
             )
         finally:
             if hasattr(items, "close"):

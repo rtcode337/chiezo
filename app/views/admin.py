@@ -672,6 +672,10 @@ def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
 # 設定の行はこれを全部つないで 1 つのセルにする
 SWEEP_COLUMNS = 7
 
+# 「その回が動かしたもの」に出す件数。**全部は出さない** —— 1 回で数千件動く回が
+# あるので、天井を置かないと画面が開かなくなる。読みたいのは新しいほうから。
+CHANGED_HERE_LIMIT = 200
+
 
 def _sweep_backend_fields(sweep, backend, mechanical: bool) -> str:
     """頼む相手の欄。**機械で引く巡回には出さない**。
@@ -1018,6 +1022,63 @@ def _collect_running_html(name: str | None = None) -> str:
         "<table><thead><tr><th>始めた時刻</th><th>収集</th><th>相手</th><th>状態</th>"
         f"</tr></thead><tbody>{cells}</tbody></table>"
     )
+
+
+CHANGE_LABELS = {
+    collect.CHANGE_ADDED: "足した",
+    collect.CHANGE_UPDATED: "直した",
+    collect.CHANGE_REMOVED: "消した",
+}
+
+
+def _changed_here_html(name: str, sources: dict, sweep: str | None) -> str:
+    """その回が動かしたもの(`collect.changed_here`)。**回を選んだときだけ出す**。
+
+    **「直近の変更」では届かないところを埋める。** あちらは回ごとに 1 行で、
+    動いた見出しは頭の 20 件までしか残らない —— 1 回で数千件動く回では、
+    何が動いたのかがほとんど読めない。ここは焼いたものを文書の側から引くので、
+    その回が何回前に走っていようが、動かした全部が出る。
+
+    **出るのは「最後に動かした回」だけ。** 後の回が同じ 1 件に触れば、その 1 件は
+    そちらの一覧へ移る —— 印を 1 回分しか持たないため。書いておかないと、
+    整理が直したはずのものが見当たらない理由が読めない。
+    """
+    if not sweep:
+        return ""
+    docs = collect.changed_here(name, sources, sweep, limit=CHANGED_HERE_LIMIT)
+    head = f"<summary>「{esc(sweep)}」が動かしたもの</summary>"
+    if not docs:
+        return (
+            f'<details id="changed">{head}'
+            '<p class="muted">いま手元にあるもののうち、この回が最後に動かしたものは'
+            "ありません。</p></details>"
+        )
+    rows = []
+    for doc in docs:
+        at = jst.parse(doc["updated_at"] or "")
+        change = (doc.get("extra") or {}).get(collect.CHANGE_KEY) or ""
+        mark = CHANGE_LABELS.get(str(change), "")
+        rows.append(
+            f"<tr><td>{esc(jst.format(at)) if at else ''}</td>"
+            f'<td>{esc(mark) if mark else "<span class=\"muted\">—</span>"}</td>'
+            f"<td>{_doc_link(name, doc['title'])}"
+            f'<br><span class="muted">{esc((doc["opening"] or "")[:120])}</span></td></tr>'
+        )
+    more = (
+        f'<p class="muted">新しい順に {CHANGED_HERE_LIMIT} 件まで。</p>'
+        if len(docs) >= CHANGED_HERE_LIMIT else ""
+    )
+    return f"""
+<details id="changed" open>{head}
+<table>
+<thead><tr><th>いつ</th><th>何を</th><th>見出し</th></tr></thead>
+<tbody>{"".join(rows)}</tbody>
+</table>
+{more}
+<p class="muted">印は 1 件につき 1 回分だけなので、<strong>後の回が同じ見出しに触れば
+そちらへ移る</strong>。消えたものもここに出る(読み口からは返らないが、手元には残っている)。</p>
+</details>
+"""
 
 
 def _changes_filter_html(name: str | None, sweep: str | None) -> str:
@@ -2924,6 +2985,7 @@ def admin_collect_detail(
 {_collect_detail_html(item, disabled, request.app.state.sources)}
 {_collect_running_html(name)}
 {_collect_changes_html(name=name, sweep=sweep)}
+{_changed_here_html(name, request.app.state.sources, sweep)}
 <p class="muted"><a href="/admin/memory#collect">集める の一覧へ戻る</a></p>
 """
     return HTMLResponse(content=page_shell(name, body))

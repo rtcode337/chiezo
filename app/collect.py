@@ -2110,6 +2110,40 @@ def recent(name: str, sources: dict, limit: int = 5) -> list[dict]:
     ]
 
 
+def changed_here(name: str, sources: dict, sweep: str, limit: int = 100) -> list[dict]:
+    """その回が最後に動かしたものを、新しい順に(`_stamped` の印で引く)。
+
+    **変更履歴(`app/collect_log.py`)では答えられない問いのほう。** あちらは回ごとに
+    1 行で、動いた見出しは頭の 20 件までしか残らず、しかも回ごとの間隔は桁違いなので
+    短い回の行が長い回の行を押し流す。ここは**いま手元にあるものを文書の側から**引くので、
+    その回が何回前に走っていようが読める。
+
+    **読めるのは最後に動かした回だけ。** 後の回が同じ 1 件に触れば印はそちらに移る
+    (印は 1 回分しか持たない)—— 「整理が直したあと見出しが触った」ものは
+    見出しのほうに出る。
+    """
+    src = sources.get(name)
+    if src is None or not sweep or limit <= 0:
+        return []
+    rows = db.query(
+        src.path,
+        "SELECT title, opening, tags, updated_at, extra FROM docs"
+        f" WHERE json_extract(extra, '$.{CHANGED_BY_KEY}') = ?"
+        " ORDER BY updated_at DESC LIMIT ?",
+        (sweep, limit),
+    )
+    return [
+        {
+            "title": row["title"],
+            "opening": row["opening"],
+            "tags": load_tags(row["tags"]),
+            "updated_at": row["updated_at"],
+            "extra": load_json(row["extra"]),
+        }
+        for row in rows
+    ]
+
+
 def doc_versions(name: str, sources: dict, title: str) -> dict:
     """1 件の見出しについて、**いまの世代と 1 つ前の世代**の中身を返す。
 
@@ -2375,6 +2409,7 @@ def stream_docs(
     only_new: bool = False,
     edits: bool = False,
     diff: dict | None = None,
+    sweep: str = "",
 ):
     """焼く素材を 1 件ずつ返す。`material` の中身で、**丸ごとは持たない**。
 
@@ -2387,6 +2422,8 @@ def stream_docs(
     同じ並びになる(新しいぶんは採番の順で後ろに付く)。
 
     `diff` を渡すと、数えた結果をそこへ書く(戻り値にできないため)。
+
+    **動かした 1 件には、どの回が動かしたかを脇書きに残す**(`_stamped`)。
     """
     counts = diff if diff is not None else {}
     now = _iso(_now())
@@ -2419,7 +2456,7 @@ def stream_docs(
             # 墓標。**消さずに印を付けて残す**
             removed_titles.append(title)
             updated += 1
-            yield _buried(before, raw, now)
+            yield _stamped(_buried(before, raw, now), sweep, "removed")
             continue
         doc = _to_doc(raw, now, item.web)
         if doc is None:
@@ -2436,7 +2473,9 @@ def stream_docs(
         else:
             # 集めるほうで同じ見出しが来るのは「もう持っている」の意味
             skipped += 1
-        yield {**doc, "doc_id": before["doc_id"]}
+            yield {**doc, "doc_id": before["doc_id"]}
+            continue
+        yield _stamped({**doc, "doc_id": before["doc_id"]}, sweep, "updated")
 
     next_id += 1
     for raw in edits_of.rest():
@@ -2455,7 +2494,7 @@ def stream_docs(
         doc["extra"] = _merge_extra({}, doc["extra"])
         added += 1
         added_titles.append(doc["title"])
-        yield {**doc, "doc_id": next_id}
+        yield _stamped({**doc, "doc_id": next_id}, sweep, "added")
         next_id += 1
 
     counts.update({
@@ -2479,6 +2518,7 @@ def material(
     collected: list[dict],
     only_new: bool = False,
     edits: bool = False,
+    sweep: str = "",
 ) -> tuple[list[dict], dict]:
     """焼く素材と、前世代との差分を組み立てる。
 
@@ -2514,7 +2554,7 @@ def material(
     """
     counts: dict = {}
     rows = sorted(previous.values(), key=lambda d: d["doc_id"])
-    docs = list(stream_docs(item, rows, collected, only_new, edits, counts))
+    docs = list(stream_docs(item, rows, collected, only_new, edits, counts, sweep))
     return docs, counts
 
 
@@ -2616,6 +2656,50 @@ def _buried(doc: dict, raw: dict, now: str) -> dict:
         "extra": {**extra, "removed_reason": why, "removed_at": now},
         "updated_at": now,
     }
+
+
+CHANGE_ADDED = "added"
+CHANGE_UPDATED = "updated"
+CHANGE_REMOVED = "removed"
+
+# 脇書きに残す「最後に動かした回」の鍵。
+CHANGED_BY_KEY = "changed_by"
+CHANGE_KEY = "change"
+
+
+def _stamped(doc: dict, sweep: str, change: str) -> dict:
+    """動かした 1 件に、**どの回が・どう動かしたか**を脇書きとして押す。
+
+    **変更履歴を別に持つだけでは、読みたいほうが読めない。** 控え
+    (`app/collect_log.py`)は回ごとに 1 行で、動いた見出しは頭の 20 件しか
+    残らない。しかも回ごとの間隔は桁違いなので、短い回の行が長い回の行を押し流す
+    —— 「整理が何を直したのか」を引きに来ると、たいてい流れた後になる。
+    文書の側に押しておけば、**いま手元にあるものについては回の間隔と関係なく読める**。
+
+    **残すのは 1 回分だけ**(上書きする)。履歴を溜める場所ではない ——
+    溜めると 1 件ごとに際限なく伸び、焼き直すたびに全件がその分だけ重くなる。
+    「いつ」は既にある `updated_at` 列が持っているので、ここには持たない。
+
+    **脇書きに置くのは、検索と本文精査の邪魔をしないため。** 全文検索が索引するのは
+    見出しと本文だけ(`ingest/core.py` の `docs_fts`)、AI へ差し込む一覧に載るのも
+    配信日と出典だけ(`_current_line`)なので、ここへ入れたものはどちらにも出てこない。
+    本文やタグへ書くと、読む人にも AI にも「文書の中身」として見える。
+
+    **鍵の数の天井(`MAX_EXTRA_KEYS`)より後に押す。** あの天井は AI が運んでくる
+    事実が際限なく増えないためのもので、こちらが押す印まで落とすと、
+    脇書きの多い 1 件だけ印が付かないことになる(いちばん読みたい 1 件がそれになる)。
+    """
+    extra = doc.get("extra") if isinstance(doc.get("extra"), dict) else {}
+    stamp = {CHANGE_KEY: change}
+    if sweep:
+        stamp[CHANGED_BY_KEY] = sweep
+    return {**doc, "extra": {**extra, **stamp}}
+
+
+def changed_by(doc: dict) -> str:
+    """その 1 件を最後に動かした回。持っていなければ空。"""
+    extra = doc.get("extra")
+    return str((extra or {}).get(CHANGED_BY_KEY) or "") if isinstance(extra, dict) else ""
 
 
 def removed_reason(doc: dict) -> str:
@@ -2912,8 +2996,12 @@ def _count_dropped(item, plan, previous, collected, only_new, edits) -> int:
 
 
 def bake_lines(item, sources: dict, previous, collected, only_new=False, edits=False,
-               survey: dict | None = None):
-    """焼く素材を 1 行ずつ返す。**2 周目**(数えるのは `bake_survey`)。"""
+               survey: dict | None = None, sweep: str = ""):
+    """焼く素材を 1 行ずつ返す。**2 周目**(数えるのは `bake_survey`)。
+
+    **どの回が焼いたかはここで渡す。** 押すのは実際に焼かれる素材のほうで、
+    数える 1 周目ではない(あちらは件数しか使わない)。
+    """
     plan = survey or bake_survey(item, sources, previous, collected, only_new, edits)
     rows = _rows_of(previous)
     limit = _expiry_limit(item)
@@ -2926,7 +3014,7 @@ def bake_lines(item, sources: dict, previous, collected, only_new=False, edits=F
         }
     }, ensure_ascii=False)
 
-    for doc in stream_docs(item, rows(), collected, only_new, edits):
+    for doc in stream_docs(item, rows(), collected, only_new, edits, None, sweep):
         if limit is not None and _doc_time(doc) < limit:
             continue
         for n, rule in enumerate(plan["rules"]):

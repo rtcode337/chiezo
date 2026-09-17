@@ -135,6 +135,18 @@ RECENCY_INDEX_DDL = """
 CREATE INDEX idx_docs_updated ON docs(updated_at DESC, doc_id DESC);
 """
 
+# 「どの回が最後に動かしたか」で引くための索引(`app/collect.py` の `_stamped`)。
+# **これもコアには入れない** —— 押しているのは集める層だけで、ダンプ由来のソースの
+# 脇書きにこの鍵は無い。式索引なので列を足さずに済み、`SCHEMA_VERSION` は動かない。
+#
+# updated_at まで入れているのは、並び順まで索引で満たすため。無いと「その回が
+# 動かしたもの」を全部読んでから並べ替えることになり、**回の間隔が短い収集ほど
+# 重くなる**(1 回で数千件動く網羅の収集がそれに当たる)。
+CHANGED_BY_INDEX_DDL = """
+CREATE INDEX idx_docs_changed_by
+    ON docs(json_extract(extra, '$.changed_by'), updated_at DESC);
+"""
+
 # docs 投入後に doc_tags を組み立てる SQL(索引を張る前に流す)。
 # docs から作り直す方式にしているのは、docs 側が INSERT OR REPLACE を使う(同じ doc_id が
 # 二度来ても最後の 1 件が残る)ため。行ごとに append すると置き換えられた古いタグが残る。
