@@ -1390,3 +1390,94 @@ class TestBackendTimeout:
         assert answer._env_num("CHIEZO_ANSWER_TIMEOUT", 900.0, float) == 42.0
         monkeypatch.delenv("CHIEZO_ANSWER_TIMEOUT")
         assert answer._env_num("CHIEZO_ANSWER_TIMEOUT", 900.0, float) == 900.0
+
+
+class TestTheDefaultModelPerBackend:
+    """相手ごとの既定のモデル(`settings_store.set_model`)。
+
+    **会話のたびに選べるのは会話だけ。** 無人で回る層(収集・ワーカー)は画面の前に
+    人が居ないので、巡回ごとに書いていない限り「相手の既定」で走る —— 読む側
+    (`answer.chosen_model`)は前からここを見ていたが、書く口がどこにも無かった。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _state(self, monkeypatch, tmp_path, built_data_dir):
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+
+    def test_it_can_be_saved_from_the_screen(self):
+        from app import settings_store
+        from app.main import app
+
+        with TestClient(app) as client:
+            res = client.post(
+                "/admin/ai/model", data={"provider": "gemini", "model": "gemini-2.5-pro"},
+                follow_redirects=False,
+            )
+
+        assert res.status_code == 303
+        assert settings_store.load("gemini").model == "gemini-2.5-pro"
+
+    def test_an_empty_choice_hands_it_back_to_the_backend(self):
+        from app import settings_store
+        from app.main import app
+
+        settings_store.set_model("gemini", "gemini-2.5-pro")
+        with TestClient(app) as client:
+            client.post("/admin/ai/model", data={"provider": "gemini", "model": ""})
+
+        assert settings_store.load("gemini").model == ""
+
+    def test_the_gemini_prefix_is_stripped_before_saving(self):
+        """`models/` を付けたまま保存すると、選んだ瞬間に必ず 404 になる。"""
+        from app import settings_store
+        from app.main import app
+
+        with TestClient(app) as client:
+            client.post(
+                "/admin/ai/model",
+                data={"provider": "gemini", "model": "models/gemini-3.7-flash"},
+            )
+
+        assert settings_store.load("gemini").model == "gemini-3.7-flash"
+
+    def test_a_name_outside_the_candidates_is_still_accepted(self):
+        """一覧が取れていないことと「その名前が無い」ことは区別できない ——
+        弾くと、取れていないあいだは何も指定できなくなる。
+        """
+        from app import settings_store
+        from app.main import app
+
+        with TestClient(app) as client:
+            client.post("/admin/ai/model", data={"provider": "gemini", "model": "まだ無い"})
+
+        assert settings_store.load("gemini").model == "まだ無い"
+
+    def test_an_unknown_backend_is_404(self):
+        from app.main import app
+
+        with TestClient(app) as client:
+            res = client.post("/admin/ai/model", data={"provider": "nosuch", "model": "x"})
+
+        assert res.status_code == 404
+
+    def test_the_form_is_on_the_page_with_the_current_value(self):
+        from app import settings_store
+        from app.main import app
+
+        settings_store.set_model("gemini", "gemini-2.5-pro")
+        with TestClient(app) as client:
+            html = client.get("/admin/ai").text
+
+        assert "既定のモデル" in html
+        assert '<option value="gemini-2.5-pro" selected>' in html
+
+    def test_a_backend_with_no_candidates_says_why(self):
+        """セレクトだけ出すと、選べないのが Chiezo の都合に見える。"""
+        from app import providers
+        from app.views import ai_settings
+
+        html = ai_settings._model_form(providers.get("codex"), "", [])
+
+        assert "候補を出していません" in html
+        assert "<select" not in html

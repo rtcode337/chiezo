@@ -172,7 +172,48 @@ def _overview_html(usable: dict[str, set[str]]) -> str:
     )
 
 
-def _talk_cells(r: dict) -> tuple[str, str]:
+def _model_form(spec, current: str, choices: list[str]) -> str:
+    """その相手の**既定のモデル**を決めるところ。
+
+    **会話のたびに選べるのは会話だけ。** 無人で回る層(収集・ワーカー)は画面の前に
+    人が居ないので、巡回ごとに書いていない限り「相手の既定」で走る —— そこを
+    決める口がどこにも無いと、相手が既定にしているモデルしか使えない
+    (`answer.chosen_model` は前からここを読んでいたが、書く口が無かった)。
+
+    **候補が無ければ、そう言って空欄にしない。** codex のように一覧を相手から
+    取る相手では、取れていないことと「選ぶものが無い」ことが画面では見分けられない
+    —— セレクトだけ出すと、選べないのが Chiezo の都合に見える。
+    """
+    if not choices:
+        return (
+            '<details><summary>既定のモデル</summary>'
+            '<p class="muted">この相手は候補を出していません。'
+            "巡回やワーカーに書かない限り、相手が既定にしているモデルで走ります。</p>"
+            + (f'<p class="muted">いまの指定: <code>{esc(current)}</code></p>'
+               if current else "")
+            + "</details>"
+        )
+    # **いま入っている値は候補に無くても残す**(巡回の相手と同じ約束)——
+    # 落とすと、保存し直した瞬間に既定へ倒れて、何を指していたのかが画面から消える
+    names = choices if not current or current in choices else [*choices, current]
+    options = ['<option value="">相手の既定にまかせる</option>']
+    options += [
+        f'<option value="{esc(name)}"{" selected" if name == current else ""}>'
+        f"{esc(name)}</option>"
+        for name in names
+    ]
+    return (
+        '<details><summary>既定のモデル</summary>'
+        f'<form method="post" action="/admin/ai/model" class="init-form">'
+        f'<input type="hidden" name="provider" value="{spec.id}">'
+        f'<select name="model">{"".join(options)}</select>'
+        "<button type=\"submit\">保存</button></form>"
+        '<p class="muted">無人で回る層(収集・ワーカー)が、モデルを書いていないときに使う。'
+        "会話の画面はここを初期値にして、そのつど選び直せる。</p></details>"
+    )
+
+
+def _talk_cells(r: dict, choices: list[str] | None = None) -> tuple[str, str]:
     """「話す相手」側の認証情報の欄と操作の欄。"""
     spec = r["spec"]
     if not r["takes_credential"]:
@@ -221,6 +262,7 @@ def _talk_cells(r: dict) -> tuple[str, str]:
         f'<form method="post" action="/admin/ai/test" class="init-form">'
         f'<input type="hidden" name="provider" value="{spec.id}">'
         f"<button type=\"submit\">接続を試す</button></form>"
+        + _model_form(spec, r["model"], list(choices or []))
     )
     return cred, use
 
@@ -327,7 +369,8 @@ async def section_html(request: Request | None = None) -> str:
     for r in _rows():
         spec = r["spec"]
         talk_ids.add(spec.id)
-        cred, use = _talk_cells(r)
+        # 候補は控えから返る(起動時に 1 回聞いてある)ので、ここで待たされない
+        cred, use = _talk_cells(r, await answer.available_models(spec.id))
         if r["runnable"]:
             usable.setdefault(spec.id, set()).add(capabilities.CHAT)
         rows.append(
@@ -486,6 +529,21 @@ async def set_enabled(provider: str = Form(...), enabled: str = Form("0")):
                 {"error": f"先に「{spec.label}」の「接続を試す」を通してください", "hint": spec.setup},
             )
     settings_store.set_enabled(spec.id, want)
+    return RedirectResponse(url=BACK_TO_SECTION, status_code=303)
+
+
+@router.post("/admin/ai/model")
+async def set_model(provider: str = Form(...), model: str = Form("")):
+    """その相手の既定のモデルを決める。**空は「相手の既定にまかせる」**。
+
+    **候補に無い値も受ける。** 一覧は相手から取るもので、取れていないこと
+    (codex のように控えが要る相手)と「その名前が無い」ことをここで区別できない ——
+    弾くと、一覧が取れていないあいだは何も指定できなくなる。打ち間違いは
+    「接続を試す」で分かる。
+    """
+    spec = _require_provider(provider)
+    settings_store.require_path()
+    settings_store.set_model(spec.id, answer.normalize_model_id(model.strip()))
     return RedirectResponse(url=BACK_TO_SECTION, status_code=303)
 
 
