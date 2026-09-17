@@ -205,6 +205,23 @@ FEED_PLACEHOLDER = "{feed}"
 # 全部を差し込むと入り切らないし、入ったとしても毎回同じものを読み直すことになる。
 RECENT_PLACEHOLDER = "{recent}"
 
+# **別のソースに溜まったもの**を差し込む場所(`material`)。
+# **`{current}` とも `{feed}` とも役割が違う** —— あちらは「この収集の中身」と
+# 「外の RSS が配ったもの」で、こちらは**Chiezo に既に溜まっている別の収集**。
+#
+# 集めたものを材料にして別の見方を育てる、という置き方のために要る ——
+# 例えば「技術ニュースの収集」に溜まった記事を読んで、話題の網を別の収集に育てる。
+# 同じ収集に混ぜると、育てたものが流れの期限で消えるうえ、`{current}` が記事で
+# 埋まって、育てているものが差し込みから押し出される。
+#
+# **渡すのは前回この巡回が走ってから入ったぶんだけ**(`{recent}` と同じ読み方)。
+# 全部を渡すと入り切らず、毎回同じものを読み直すことになる。
+SOURCE_PLACEHOLDER = "{material}"
+
+# 材料として 1 回に渡す上限。**多すぎると読み切れない**(そのぶん枠も食う)
+DEFAULT_MATERIAL_LIMIT = 60
+MAX_MATERIAL_LIMIT = 300
+
 # いまの日時(日本時間)を差し込む場所。**AI はいまが何日の何時かを知らない** ——
 # 学習した時点で止まっているので、聞けばそれらしい日付を作ってしまう。
 # 「1 日に 2 回まとめる」のように、回ごとに違う見出しを付けさせたい場面で要る。
@@ -379,6 +396,11 @@ class Collection:
     # (あちらは古いものが要らなくなることがない)
     keep_days: int = 0
     extract: dict | list[dict] | None = None
+    # **材料に使う別のソース**(`{material}` で差し込む)。
+    # `{"source": "tazuna_tech", "tag": "ニュース,記事", "limit": 60}` と書くと、
+    # **前回この巡回が走ってから**そのソースに入ったものが渡る。
+    # **中身は写さない** —— 読むだけで、この収集に溜まるのは AI が返したものだけ
+    material: dict | None = None
     # **タグの値が実在するかを確かめる指定**。`[{"prefix": "代表作", "source": "jawiki"}]`
     # と書くと、`代表作:<見出し>` の見出しが jawiki に無いタグを**焼く前に落とす**。
     #
@@ -912,6 +934,7 @@ def _from_json(item: dict) -> Collection:
         ),
         keep_ratio=normalize_keep_ratio(item.get("keep_ratio")),
         extract=extraction.to_json(extraction.normalize(item.get("extract"))),
+        material=normalize_material(item.get("material")),
         kind=normalize_kind(item.get("kind")),
         keep_days=normalize_keep_days(item.get("keep_days"), normalize_kind(item.get("kind"))),
         verify_tags=normalize_verify_tags(item.get("verify_tags")),
@@ -928,6 +951,109 @@ def _from_json(item: dict) -> Collection:
         last_removed_titles=[str(t) for t in (item.get("last_removed_titles") or [])],
         next_run_at=item.get("next_run_at") or None,
     )
+
+
+def normalize_material(raw) -> dict | None:
+    """材料に使う別ソースの指定を均す。**読めない指定は断る**。
+
+    黙って無視すると、差し込み口だけが残った依頼文で走り続ける ——
+    AI からは「渡されるはずのものが空だった」としか見えない。
+
+    **ソースがあるかはここでは見ない。** 定義を置く時点ではまだ 1 度も焼かれて
+    いないことがあり(収集は作った直後が空)、存在で断ると鶏と卵になる。
+    走るときに無ければ、その旨を差し込みへ書く。
+    """
+    if raw in (None, "", {}):
+        return None
+    if not isinstance(raw, dict):
+        raise HTTPException(400, {"error": "material はオブジェクトで書いてください"})
+    source = str(raw.get("source") or "").strip()
+    if not source:
+        raise HTTPException(400, {
+            "error": "material.source(材料に読むソース名)を入れてください",
+            "hint": "例: {\"source\": \"tazuna_tech\", \"tag\": \"ニュース,記事\"}",
+        })
+    limit = raw.get("limit")
+    try:
+        limit = int(limit) if limit not in (None, "", 0) else DEFAULT_MATERIAL_LIMIT
+    except (TypeError, ValueError):
+        raise HTTPException(400, {"error": "material.limit は数で書いてください"}) from None
+    return {
+        "source": source[:80],
+        # **タグで絞れる。** 1 つの収集に種類の違うものが混ざる(記事とまとめ、など)
+        # ので、絞れないと材料にまとめが混ざる
+        "tag": str(raw.get("tag") or "").strip()[:200],
+        "limit": min(max(limit, 1), MAX_MATERIAL_LIMIT),
+    }
+
+
+def material_docs(spec: dict | None, sources: dict, since: str | None) -> list[dict]:
+    """材料に読むソースから、**前回から入ったもの**を新しい順に。
+
+    **まだ焼かれていないソースは空**(失敗ではない) —— 材料の側の収集がまだ 1 度も
+    走っていないだけのことがある。
+    """
+    if not spec:
+        return []
+    src = sources.get(spec["source"])
+    if src is None:
+        return []
+    tags = [t.strip() for t in (spec.get("tag") or "").split(",") if t.strip()]
+    where = "WHERE updated_at > ?"
+    args: list = [since or ""]
+    if tags:
+        where += (
+            " AND doc_id IN (SELECT doc_id FROM doc_tags WHERE tag IN"
+            f" ({','.join('?' * len(tags))}))"
+        )
+        args.extend(tags)
+    args.append(int(spec.get("limit") or DEFAULT_MATERIAL_LIMIT))
+    rows = db.query(
+        src.path,
+        "SELECT title, opening, tags, updated_at, extra FROM docs"
+        f" {where} ORDER BY updated_at DESC LIMIT ?",
+        tuple(args),
+    )
+    return [
+        {
+            "title": row["title"],
+            "opening": row["opening"],
+            "tags": load_tags(row["tags"]),
+            "updated_at": row["updated_at"],
+            "extra": load_json(row["extra"]),
+        }
+        for row in rows
+    ]
+
+
+def render_source_material(spec: dict | None, docs: list[dict]) -> str:
+    """材料をプロンプトへ差し込める形にする。
+
+    **何のソースを読んだかを書く** —— 空だったときに、指定が違うのか、向こうに
+    何も入っていないだけなのかが読めないと直しようがない。
+    """
+    if not spec:
+        return "(この収集に材料のソースは指定されていません)"
+    if not docs:
+        return f"(「{spec['source']}」に、前回から新しく入ったものはありません)"
+    lines = []
+    used = 0
+    for doc in docs:
+        tags = "/".join(doc.get("tags") or [])
+        body = (doc.get("opening") or "")[:MATERIAL_BODY_CHARS].replace("\n", " ")
+        extra = doc.get("extra") or {}
+        line = (
+            f"- {doc['title']}"
+            + (f" 【{tags}】" if tags else "")
+            + (f" — {body}" if body else "")
+            + (f" <{extra['url']}>" if extra.get("url") else "")
+        )
+        if used + len(line) > MAX_MATERIAL_CHARS:
+            lines.append(f"…(ここまで。「{spec['source']}」にはこの続きもあります)")
+            break
+        lines.append(line)
+        used += len(line)
+    return f"「{spec['source']}」に前回から入ったもの:\n" + "\n".join(lines)
 
 
 def normalize_keep_ratio(value) -> float:
@@ -1015,6 +1141,7 @@ def create(
     verify_tags=None,
     partition_spec=None,
     feed_spec=None,
+    material_spec=None,
     sweeps=None,
 ) -> Collection:
     if not NAME_RE.match(name):
@@ -1049,6 +1176,7 @@ def create(
             DEFAULT_KEEP_RATIO if keep_ratio is None else normalize_keep_ratio(keep_ratio)
         ),
         extract=extraction.to_json(extraction.normalize(extract_spec)),
+        material=normalize_material(material_spec),
         kind=normalize_kind(kind),
         keep_days=normalize_keep_days(keep_days, normalize_kind(kind)),
         verify_tags=normalize_verify_tags(verify_tags),
@@ -1072,7 +1200,7 @@ def update(name: str, **fields) -> Collection:
         "description", "prompt", "interval_minutes", "enabled",
         "backend", "model", "effort", "web", "cursor", "keep_ratio", "extract",
         "partition", "partitions", "sweeps", "feed", "verify_tags",
-        "kind", "keep_days",
+        "kind", "keep_days", "material",
     }
     patch = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if "interval_minutes" in patch:
@@ -1108,6 +1236,9 @@ def update(name: str, **fields) -> Collection:
     if "extract" in patch:
         # 空のオブジェクトを渡したら「使わない」に戻す(消す手段がここしかない)
         patch["extract"] = extraction.to_json(extraction.normalize(patch["extract"] or None))
+    if "material" in patch:
+        # 空のオブジェクトを渡したら材料のソースを外す(消す手段がここしかない)
+        patch["material"] = normalize_material(patch["material"] or None)
     if "verify_tags" in patch:
         # 空の配列を渡したら「確かめない」に戻す
         patch["verify_tags"] = normalize_verify_tags(patch["verify_tags"] or None)
@@ -1492,6 +1623,14 @@ def build_messages(
         user = user.replace(
             FEED_PLACEHOLDER,
             feeds.render(feed) if feed else "(この収集に外向きの道具は付いていません)",
+        )
+    if SOURCE_PLACEHOLDER in user:
+        # **基準はその巡回の前回**(`{recent}` と同じ読み方)。収集の前回に倒すと、
+        # 別の巡回が走った時刻でこの窓が食われる
+        since = sweep.last_run_at if sweep else None
+        user = user.replace(
+            SOURCE_PLACEHOLDER,
+            render_source_material(item.material, material_docs(item.material, sources or {}, since)),
         )
     if MATERIAL_PLACEHOLDER in user:
         docs, scoped = scoped_docs(item, previous or {}, partition_key, focus)

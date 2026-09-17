@@ -30,6 +30,8 @@ TOOL_ENDPOINTS = {
     # 集める層の区画。収集が無ければ 503 / 404 になるが、ここで見ているのは
     # シグネチャの一致なので中身は問わない
     "collect_partition": ("collect_partition", {"name": "news", "key": "あ〜ん"}),
+    # SQL で直に引く道具。**body は Pydantic** なので、道具の側で組み立てている
+    "query": ("query_source", {"source": "jawiki", "sql": "SELECT 1"}),
 }
 
 
@@ -254,6 +256,34 @@ class TestTheBridgeCannotAskForMore:
         writers = [t["name"] for t in tools
                    if not (t.get("annotations") or {}).get("readOnlyHint")]
         assert writers == [], writers
+
+    def test_the_bridge_endpoint_offers_no_way_to_write(self, monkeypatch):
+        """**短期記憶へ書く道具も渡さない。**
+
+        比べるのは短期記憶が有効な面(無効だと、どちらの口にも出ないので何も守れない
+        —— 上の「全部読むだけ」の検査は、まさにその状態を見ていた)。
+
+        あの口に繋ぐのは Chiezo 自身が動かしている CLI で、**集める回や答える回が
+        無人で書けると、人が覚えさせたものと機械が書いたものが同じ置き場で混ざる**。
+        読むほう(recall)は残す —— 覚えたことを踏まえて集めさせたい場面はある。
+        """
+        import anyio
+
+        from app import mcp_server, notes
+        from app.main import app
+
+        monkeypatch.setattr(notes, "is_enabled", lambda: True)
+
+        async def names_of(with_writes: bool) -> set[str]:
+            mcp = mcp_server.build_mcp(app, with_media=False, with_writes=with_writes)
+            return {t.name for t in await mcp.list_tools()}
+
+        full = anyio.run(names_of, True)
+        bridge = anyio.run(names_of, False)
+        writers = {"remember", "update", "forget"}
+        assert writers <= full, "前提: 普通の口には書く道具がある"
+        assert not (writers & bridge), f"ブリッジに渡ってはいけない: {writers & bridge}"
+        assert "recall" in bridge, "読むほうは残すこと"
 
     def test_the_bridge_endpoint_offers_no_way_to_generate(self, monkeypatch):
         """作る道具が出ている状態で比べる(置き場が無いと、どちらの口にも出ない)。"""

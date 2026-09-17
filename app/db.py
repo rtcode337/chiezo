@@ -144,6 +144,69 @@ def stream(
         conn.set_progress_handler(None, 0)
 
 
+# 読むだけの SQL に通す操作。**これ以外は authorizer が落とす** ——
+# 接続は読み取り専用で開いているので書き込みはそもそも通らないが、**ATTACH は通る**
+# (別のファイルを読み取り専用で足せる)。設定 DB のような、ソースではないものを
+# 開かせないための一段。
+_SELECT_ACTIONS = {
+    getattr(sqlite3, name)
+    for name in ("SQLITE_SELECT", "SQLITE_READ", "SQLITE_FUNCTION", "SQLITE_RECURSIVE")
+    if hasattr(sqlite3, name)
+}
+
+# 1 回に返す行数。**書いた側が LIMIT を忘れても切る**(忘れると全件が文字列になって返る)
+SELECT_LIMIT_DEFAULT = 50
+SELECT_LIMIT_MAX = 500
+
+
+def _reads_only(action, _arg1, _arg2, _db, _trigger):
+    return sqlite3.SQLITE_OK if action in _SELECT_ACTIONS else sqlite3.SQLITE_DENY
+
+
+def select(
+    db_path: Path,
+    sql: str,
+    limit: int = SELECT_LIMIT_DEFAULT,
+    timeout: float = QUERY_TIMEOUT_SECONDS,
+) -> tuple[list[str], list[sqlite3.Row], bool]:
+    """読むだけの SQL を 1 文流す。列名・行・切ったかどうかを返す。
+
+    **AI に SQL を書かせるための口**(`search` / `filter` では数えられないこと ——
+    タグの共起、期間ごとの件数、上位 N —— を数えるため)。守りは 3 つ:
+
+    - **接続は読み取り専用**(`get_connection`。`immutable=1` か `mode=ro`)
+    - **authorizer で SELECT 以外を落とす**。とくに `ATTACH` —— 読み取り専用でも
+      別のファイルは足せるので、ソースではない DB を開かれる道が残る
+    - **時間と行数で切る**(進み具合のハンドラと `LIMIT`)
+
+    **囲って LIMIT を付けるのも守りのうち。** `SELECT * FROM (<渡された文>) LIMIT ?`
+    にすると、書き手が忘れても切れるうえ、**問い合わせでない文はそこで構文エラー**になる。
+    """
+    limit = min(max(int(limit), 1), SELECT_LIMIT_MAX)
+    conn = get_connection(db_path)
+    deadline = time.monotonic() + timeout
+
+    def _check() -> int:
+        return 1 if time.monotonic() > deadline else 0
+
+    conn.set_progress_handler(_check, _PROGRESS_STEP)
+    conn.set_authorizer(_reads_only)
+    try:
+        cur = conn.execute(f"SELECT * FROM ({sql}) LIMIT ?", (limit + 1,))
+        rows = cur.fetchall()
+        columns = [d[0] for d in cur.description or []]
+    except sqlite3.OperationalError as e:
+        if "interrupted" in str(e):
+            raise QueryTimeout() from e
+        raise
+    finally:
+        # **必ず外す。** 接続はスレッドごとに使い回すので、付けたままにすると
+        # 次の検索まで SELECT しか通らなくなる
+        conn.set_authorizer(None)
+        conn.set_progress_handler(None, 0)
+    return columns, rows[:limit], len(rows) > limit
+
+
 def query(
     db_path: Path,
     sql: str,

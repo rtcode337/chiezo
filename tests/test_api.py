@@ -415,6 +415,66 @@ class TestTagFilter:
         assert "大阪府" in listing.text and "東京都" in listing.text
 
 
+class TestTheSqlWindow:
+    """SQL で直に引く口(`POST /v1/{source}/query`)。
+
+    **search / filter では数えられないこと**(タグの共起・期間ごとの件数・上位 N)の
+    ための口。読むだけで、書き換える道は開けない。
+    """
+
+    def test_it_reads(self, client):
+        body = client.post(
+            "/v1/jawiki/query",
+            json={"sql": "SELECT title FROM docs ORDER BY doc_id", "limit": 2},
+        ).json()
+
+        assert body["columns"] == ["title"]
+        assert len(body["rows"]) == 2
+
+    def test_it_counts_what_the_other_doors_cannot(self, client):
+        """タグの共起 —— これが引けないと、引く側が全件を持ち帰って自分で数えることになる。"""
+        body = client.post("/v1/jawiki/query", json={"sql": (
+            "SELECT a.tag AS x, b.tag AS y, COUNT(*) AS c FROM doc_tags a"
+            " JOIN doc_tags b ON a.doc_id = b.doc_id AND a.tag < b.tag"
+            " GROUP BY x, y ORDER BY c DESC"
+        )}).json()
+
+        assert body["columns"] == ["x", "y", "c"]
+
+    def test_limit_is_put_on_even_when_forgotten(self, client):
+        """忘れると全件が文字列になって返る。"""
+        body = client.post("/v1/jawiki/query", json={"sql": "SELECT doc_id FROM docs", "limit": 1}).json()
+
+        assert len(body["rows"]) == 1
+        assert body["truncated"] is True
+
+    def test_writing_is_refused(self, client):
+        for sql in ("DELETE FROM docs", "UPDATE docs SET title = 'x'", "INSERT INTO docs DEFAULT VALUES"):
+            assert client.post("/v1/jawiki/query", json={"sql": sql}).status_code == 400, sql
+
+    def test_attaching_another_file_is_refused(self, client):
+        """読み取り専用でも別のファイルは足せる —— ソースでない DB を開かせない。"""
+        assert client.post(
+            "/v1/jawiki/query", json={"sql": "ATTACH '/state/settings.db' AS s"}
+        ).status_code == 400
+
+    def test_only_one_statement(self, client):
+        """前半で条件を作って後半で別のことをする書き方を通さない。"""
+        assert client.post(
+            "/v1/jawiki/query", json={"sql": "SELECT 1; DROP TABLE docs"}
+        ).status_code == 400
+
+    def test_a_mistake_comes_back_as_it_is(self, client):
+        """握り潰すと、列名が違うのか表が無いのかを確かめようがない(AI はこれを読んで直す)。"""
+        body = client.post("/v1/jawiki/query", json={"sql": "SELECT nope FROM docs"})
+
+        assert body.status_code == 400
+        assert "nope" in str(body.json())
+
+    def test_an_unknown_source_is_not_found(self, client):
+        assert client.post("/v1/nosuch/query", json={"sql": "SELECT 1"}).status_code == 404
+
+
 class TestTitlesLinksRandom:
     def test_titles_prefix(self, client):
         res = client.get("/v1/jawiki/titles", params={"prefix": "浅草"})

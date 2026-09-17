@@ -67,6 +67,25 @@ curl -s "$BASE/v1/jawiki/filter?wikidata=Q17221&fields=title,extra" # Q 番号 �
   無指定 = 文書数の多い順)。`filter?tag=` はタグ名の**完全一致**なので、Wikipedia の
   カテゴリのように表記の揺れがあるものは、まずここで実在する名前を確かめてから引くのが
   確実です(`schema_version` 3 以降。4 以降は集計表を引くので部分一致も速い)。
+- `query`(POST) — **SQL で直に引きます**(`SELECT` だけ・読むだけ)。`search` / `filter`
+  では数えられないこと —— **タグの共起・期間ごとの件数・上位 N** —— のための口で、
+  無いと引く側が全件を持ち帰って自分で数えることになります。
+  **書き込み・`ATTACH`・`PRAGMA`・複数文は落とします**(接続は読み取り専用で開いたうえ、
+  authorizer が `SELECT` 以外を拒みます。とくに `ATTACH` は、読み取り専用でも別のファイルを
+  足せるため)。`LIMIT` は書かなくても付きます(既定 50・最大 500。切ったときは `truncated`)。
+  **エラーはそのまま返します** —— 列名が違うのか表が無いのかを確かめられないと直せません。
+
+  ```bash
+  curl -s "$BASE/v1/jawiki/query" -H 'Content-Type: application/json' -d '{
+    "sql": "SELECT a.tag, b.tag, COUNT(*) c FROM doc_tags a JOIN doc_tags b ON a.doc_id = b.doc_id AND a.tag < b.tag GROUP BY 1,2 ORDER BY c DESC",
+    "limit": 20
+  }'
+  ```
+
+  主な表(どのソースも同じ形): `docs(doc_id, title, opening, body, tags, links, updated_at,
+  rank_score, extra)`(`tags` / `links` / `extra` は JSON。`feature` / `area` / `lat` / `lon` /
+  `wikidata` は `extra` からの生成列)、`doc_tags(tag, doc_id)`、`tag_counts(tag, docs)`、
+  `aliases(alias, doc_id)`、`doc_coords(lat, lon, doc_id)`、`docs_fts(title, body)`。
 - `titles` / `links` / `random` — タイトル前方一致 / その文書から出ているリンク先の一覧 /
   ランダム抽出。`links` は**出リンクのみ**で、被リンク(その文書を指している文書)は取れません。
 - 全クエリ 5 秒タイムアウト(超過は 504)。エラーは `{"error": "..."}` 形式。
@@ -266,6 +285,35 @@ AI を呼ばずに手元から組み立てる。
 - **当たりすぎたら断る**(黙って切らない)。**1 つも当たらないときも断る** ——
   それらしい末尾を書いた側には、静かな 0 件を確かめようがない
 - 展開は `tag_counts`(タグ名 → 文書数の集計表)を引くので、転置表は舐めない
+
+#### 溜まった別のソースを材料にする(`{material}`)
+
+`{feed}` が外から引く道具なら、`material` は**Chiezo に既に溜まっているものを材料にする**
+指定。集めたものを読んで、**別の見方を別の収集に育てる**ための口で、例えば
+「技術ニュースの収集に溜まった記事を読んで、話題の網(トピック)を育てる」が書ける。
+
+```bash
+curl -s "$BASE/v1/collect" -H 'Content-Type: application/json' -d '{
+  "name": "tech_topics",
+  "description": "技術ニュースから育てる話題の網",
+  "prompt": "{material}\n\n{current}\n\n上の記事を読んで、話題の網を育ててください。",
+  "interval_minutes": 360,
+  "kind": "stock",
+  "material": {"source": "tech_news", "tag": "ニュース,記事", "limit": 60}
+}'
+```
+
+- **渡るのは、前回この巡回が走ってから**そのソースに入ったぶんだけ(`{recent}` と同じ読み方)。
+  全部を渡すと入り切らず、毎回同じものを読み直すことになる
+- **`tag` で絞れる。** 1 つの収集には種類の違うものが混ざる(記事とまとめ、など)ので、
+  絞れないと材料にまとめが混ざる
+- **中身は写さない。** 読むだけで、この収集に溜まるのは AI が返したものだけ ——
+  `extract`(別ソースから機械的に取り込む)とはそこが違う
+- **材料の側がまだ焼かれていなくても失敗にしない**(その収集がまだ 1 度も走っていない
+  だけのことがある)。空だったことは差し込みの文に書く
+
+**同じ収集に混ぜる形と比べたときの利得はここ。** 混ぜると、育てたものが流れの期限で
+消えるうえ、`{current}` が集めたもので埋まって、育てているほうが差し込みから押し出される。
 
 #### 外向きの道具(`{feed}`)
 

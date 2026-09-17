@@ -489,6 +489,77 @@ class TestSweeps:
         assert collect.to_public(collect.get("news"))["next_run_at"].startswith("2026-01-01")
 
 
+class TestTheMaterialSource:
+    """材料に別のソースを読む(`{material}`)。
+
+    **集めたものを材料にして、別の見方を別の収集に育てる**ための差し込み。
+    同じ収集に混ぜると、育てたものが流れの期限で消えるうえ、`{current}` が
+    集めたもので埋まって、育てているほうが差し込みから押し出される。
+    """
+
+    def test_it_reads_another_source(self, sample, baked):
+        collect.update("news", prompt="材料:\n{material}", material={"source": "tech"})
+        sources = baked([("Java 27 が出た", "本文")], name="tech")
+
+        user = collect.build_messages(collect.get("news"), {}, None, sources)[1]["content"]
+
+        assert "Java 27 が出た" in user
+        assert "{material}" not in user
+
+    def test_it_reads_only_what_came_after_that_sweep_ran(self, sample, baked):
+        """基準はその巡回の前回。収集の前回に倒すと、別の巡回が走った時刻で窓が食われる。"""
+        collect.update(
+            "news",
+            material={"source": "tech"},
+            sweeps=[{"name": "育てる", "interval_minutes": 60, "prompt": "{material}"}],
+        )
+        sources = baked([("古い記事", "本文")], name="tech")
+        item = collect.get("news")
+        sweep = collect.sweep_named(item, "育てる")
+
+        after = replace(sweep, last_run_at="2026-06-01T00:00:00+00:00")
+        user = collect.build_messages(item, {}, None, sources, after)[1]["content"]
+        assert "古い記事" not in user
+        assert "新しく入ったものはありません" in user
+
+        before = replace(sweep, last_run_at="2025-01-01T00:00:00+00:00")
+        assert "古い記事" in collect.build_messages(item, {}, None, sources, before)[1]["content"]
+
+    def test_a_source_that_is_not_baked_yet_is_not_an_error(self, sample):
+        """材料の側がまだ 1 度も走っていないだけのことがある。"""
+        collect.update("news", prompt="{material}", material={"source": "まだ無い"})
+
+        user = collect.build_messages(collect.get("news"), {}, None, {})[1]["content"]
+
+        assert "{material}" not in user
+        assert "新しく入ったものはありません" in user
+
+    def test_without_a_spec_the_placeholder_says_so(self, sample):
+        """差し込み口だけ残ると、AI は「渡されるはずのものが空だった」と読んで待つ。"""
+        collect.update("news", prompt="材料: {material}")
+
+        user = collect.build_messages(collect.get("news"))[1]["content"]
+
+        assert "{material}" not in user
+        assert "指定されていません" in user
+
+    def test_the_spec_survives_a_round_trip(self, sample):
+        collect.update("news", material={"source": "tech", "tag": "ニュース", "limit": 5})
+
+        assert collect.get("news").material == {"source": "tech", "tag": "ニュース", "limit": 5}
+
+    def test_an_empty_object_takes_it_off(self, sample):
+        collect.update("news", material={"source": "tech"})
+        collect.update("news", material={})
+
+        assert collect.get("news").material is None
+
+    def test_a_spec_without_a_source_is_refused(self, sample):
+        """黙って無視すると、差し込み口だけが残った依頼文で走り続ける。"""
+        with pytest.raises(HTTPException):
+            collect.update("news", material={"tag": "ニュース"})
+
+
 class TestTheOutwardTool:
     """外向きの道具(`{feed}`)—— 取ってきたものは**参考**で、情報源ではない。"""
 

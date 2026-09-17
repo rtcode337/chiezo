@@ -10,6 +10,8 @@ import asyncio
 import json
 import logging
 import os
+import re
+import sqlite3
 import time
 from collections import deque
 from contextlib import asynccontextmanager, suppress
@@ -761,7 +763,7 @@ async def lifespan(app: FastAPI):
     app.state.mcp_asgi = build_mcp_app(mcp)
     # **CLI ブリッジ用の、生成の道具を出さない口。** 理由は `build_mcp` の説明にある
     # (絵を頼んだ相手が絵を頼み返す)。塞ぐ手立てが接続先しか無いので、口を分ける
-    knowledge = build_mcp(app, with_media=False)
+    knowledge = build_mcp(app, with_media=False, with_writes=False)
     app.state.mcp_knowledge_asgi = build_mcp_app(knowledge)
     try:
         async with mcp.session_manager.run(), knowledge.session_manager.run():
@@ -1547,6 +1549,78 @@ def recent_docs(
     }
 
 
+class SourceQuery(BaseModel):
+    """ソースへ流す SQL(読むだけ)。"""
+
+    sql: str = PydField(
+        description="SELECT だけ。1 文だけ。LIMIT は付けなくてよい(こちらで付ける)",
+    )
+    limit: int = PydField(
+        db.SELECT_LIMIT_DEFAULT,
+        ge=1,
+        le=db.SELECT_LIMIT_MAX,
+        description="返す行数の上限",
+    )
+
+
+@app.post("/v1/{source}/query")
+def query_source(request: Request, source: str, body: SourceQuery):
+    """**SQL でソースを直に引く**(読むだけ)。
+
+    `search` / `filter` では数えられないことのための口 —— **タグの共起、期間ごとの
+    件数、上位 N**。どれも「集めたものから別の見方を育てる」ときに要るもので、
+    道具の側に無いと、引く側が全件を持ち帰って自分で数えることになる。
+
+    **通すのは SELECT(と WITH …… SELECT)だけ。** 接続は読み取り専用で開いており、
+    加えて authorizer が SELECT 以外を落とす —— とくに `ATTACH`(読み取り専用でも
+    別のファイルは足せるので、ソースでない DB を開かれる道が残る)。
+
+    **1 文だけ。** 複数文を許すと、前半で条件を作って後半で別のことをする書き方が通る。
+
+    主な表(どのソースも同じ形):
+
+    - `docs(doc_id, title, opening, body, tags, links, updated_at, rank_score, extra)`
+      —— `tags` / `links` / `extra` は JSON。`feature` / `area` / `lat` / `lon` /
+      `wikidata` は `extra` からの生成列
+    - `doc_tags(tag, doc_id)` —— タグの転置表。**共起を数えるならここ**
+    - `tag_counts(tag, docs)` —— タグごとの文書数(集計済み)
+    - `aliases(alias, doc_id)` / `doc_coords(lat, lon, doc_id)`
+    - `docs_fts(title, body)` —— 全文検索(`MATCH` で引く)
+    """
+    src = get_source(request, source)
+    sql = (body.sql or "").strip().rstrip(";").strip()
+    if not sql:
+        raise HTTPException(400, {"error": "sql を入れてください"})
+    if ";" in sql:
+        raise HTTPException(400, {
+            "error": "sql は 1 文だけにしてください",
+            "hint": "前半で条件を作って後半で別のことをする書き方を通さないため",
+        })
+    if not re.match(r"(?is)^\s*(select|with)\b", sql):
+        raise HTTPException(400, {
+            "error": "sql は SELECT(または WITH … SELECT)だけです",
+            "hint": "この口は読むだけ。書き換えは収集の側(AI が返した文書)からしか起きない",
+        })
+    try:
+        columns, rows, truncated = db.select(src.path, sql, body.limit)
+    except db.QueryTimeout:
+        raise HTTPException(504, {
+            "error": "時間内に終わりませんでした",
+            "hint": "絞り込みを足すか、LIMIT を小さくしてください",
+        }) from None
+    except sqlite3.OperationalError as e:
+        # **エラーはそのまま返す。** 握り潰すと、書いた側は列名が違うのか
+        # 表が無いのかを確かめようがない(AI はこれを読んで自分で直す)
+        raise HTTPException(400, {"error": str(e)}) from None
+    return {
+        "source": src.name,
+        "columns": columns,
+        "rows": [dict(r) for r in rows],
+        "count": len(rows),
+        "truncated": truncated,
+    }
+
+
 @app.get("/v1/{source}/tags")
 def list_tags(
     request: Request,
@@ -1834,6 +1908,14 @@ class CollectionCreate(BaseModel):
         "**取ってきたものをそのまま溜めるわけではない** —— プロンプトの {feed} へ"
         "参考として差し込むだけで、何を溜めるかは AI が決める(自分でも調べる)",
     )
+    material: dict | None = PydField(
+        None,
+        description="**材料に読む別のソース**。"
+        '{"source": "tazuna_tech", "tag": "ニュース,記事", "limit": 60} と書くと、'
+        "プロンプトの {material} へ**前回この巡回が走ってから**そのソースに入ったものが"
+        "差し込まれる。**中身は写さない**(読むだけ) —— 集めたものを材料にして、"
+        "別の見方を別の収集に育てるためのもの",
+    )
     sweeps: list[dict] | None = PydField(
         None,
         description="巡回。**同じ収集を別々の時計で回す**ためのもので、"
@@ -1876,6 +1958,9 @@ class CollectionPatch(BaseModel):
     keep_days: int | None = PydField(None, description="流れの収集が持つ日数。0 で落とさない")
     feed: dict | None = PydField(
         None, description="外向きの道具。空のオブジェクトを渡すと外れる"
+    )
+    material: dict | None = PydField(
+        None, description="材料に読む別のソース。空のオブジェクトを渡すと外れる"
     )
     partition: dict | None = PydField(
         None,
@@ -1966,6 +2051,7 @@ def collect_create(request: Request, body: CollectionCreate):
         verify_tags=body.verify_tags,
         partition_spec=body.partition,
         feed_spec=body.feed,
+        material_spec=body.material,
         sweeps=body.sweeps,
         requested_by=body.requested_by,
     )

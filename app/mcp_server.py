@@ -174,7 +174,7 @@ def build_mcp_app(mcp: MCPServer) -> Starlette:
     )
 
 
-def build_mcp(app: FastAPI, with_media: bool = True) -> MCPServer:
+def build_mcp(app: FastAPI, with_media: bool = True, with_writes: bool = True) -> MCPServer:
     """FastAPI アプリに紐づく MCP サーバーを組み立てて返す。
 
     `app/main.py` の末尾から呼ばれる。main を遅延 import しているのは循環参照を
@@ -190,6 +190,11 @@ def build_mcp(app: FastAPI, with_media: bool = True) -> MCPServer:
     **この口を分けるのは一段目の守り。** ブリッジは 3 つの CLI を包んでいるが、道具を
     名前で絞れるのは claude だけで(`--allowed-tools`)、codex と antigravity は
     起動時の `mcp add` で丸ごと繋がる —— **どの CLI にも効くつまみは接続先だけ**。
+
+    **`with_writes=False` も同じ口のためのもの。** 短期記憶へ書く道具
+    (remember / update / forget)を出さない —— あの口の相手は Chiezo 自身が動かして
+    いる CLI で、無人で書けると、人が覚えさせたものと機械が書いたものが同じ置き場で
+    混ざる。読むほう(recall)は残す。
 
     **二段目は道具そのもの**(`_refuse_bridge`)。接続先は設定で、**1 か所間違えれば
     ループが戻る** —— 実際、配備では `/mcp` に繋がっていた(`agy mcp list` の登録先が
@@ -317,6 +322,32 @@ def build_mcp(app: FastAPI, with_media: bool = True) -> MCPServer:
         )
 
     @mcp.tool(annotations=READ_ONLY, description=(
+        "**SQL でソースを直に引く**(SELECT だけ・読むだけ)。search / filter で"
+        "数えられないことのための道具 —— **タグの共起・期間ごとの件数・上位 N**。"
+        "書き込み・ATTACH・PRAGMA・複数文は落とす。LIMIT は付けなくてよい"
+        "(こちらで付ける)。時間切れあり。**エラーはそのまま返る**ので、"
+        "列名や表名を間違えたら読んで直すこと。"
+        "主な表(どのソースも同じ形): "
+        "docs(doc_id, title, opening, body, tags, links, updated_at, rank_score, extra。"
+        "tags/links/extra は JSON。feature/area/lat/lon/wikidata は extra からの生成列)、"
+        "doc_tags(tag, doc_id。**共起を数えるならここ**)、"
+        "tag_counts(tag, docs)、aliases(alias, doc_id)、doc_coords(lat, lon, doc_id)、"
+        "docs_fts(title, body。MATCH で引く)。"
+        "例: SELECT a.tag, b.tag, COUNT(*) c FROM doc_tags a JOIN doc_tags b"
+        " ON a.doc_id = b.doc_id AND a.tag < b.tag GROUP BY 1, 2 ORDER BY c DESC"
+    ))
+    async def query(
+        source: str,
+        sql: Annotated[str, Field(description="SELECT(または WITH … SELECT)を 1 文")],
+        limit: int = 50,
+    ) -> dict:
+        return await run_in_threadpool(
+            _call, api.query_source,
+            request=_request(app), source=source,
+            body=api.SourceQuery(sql=sql, limit=limit),
+        )
+
+    @mcp.tool(annotations=READ_ONLY, description=(
         "**新しい順**に文書を並べる。「この 1 日で何が入ったか」を引くための道具で、"
         "search(語が要る)でも filter(タグや属性)でも取れない読み方。"
         "対応しているのは**溜まっていくソース**だけ(集めたもの・覚えたこと)——"
@@ -383,7 +414,7 @@ def build_mcp(app: FastAPI, with_media: bool = True) -> MCPServer:
     # notes(短期記憶)は無効なこともあるので、有効なときだけ道具を出す。
     # ツール定義は常時コンテキストに載るため、使えないものを並べない。
     if notes.is_enabled():
-        _register_memory_tools(mcp, app)
+        _register_memory_tools(mcp, app, writes=with_writes)
 
     # 絵と音の生成も同じ扱い —— 置き場が無い・「答える」層が止まっているなら道具ごと出さない
     if with_media and media.tools_enabled():
@@ -770,7 +801,7 @@ def _register_voice_tools(mcp: MCPServer) -> None:
         return {"backends": await media.backends(kind), "kind": kind}
 
 
-def _register_memory_tools(mcp: MCPServer, app: FastAPI) -> None:
+def _register_memory_tools(mcp: MCPServer, app: FastAPI, writes: bool = True) -> None:
     """覚える・思い出す・書き換える・忘れるの 4 つ。
 
     remember / recall があることの意味は「常駐するのはこの定義(数百字)だけで、
@@ -778,32 +809,13 @@ def _register_memory_tools(mcp: MCPServer, app: FastAPI) -> None:
     毎回全部載るので、件数が増えるほど関係ない話にもトークンを払うことになる。
     update / forget は溜めたものの手入れ —— 古くなって誤解を招くメモを直せないと、
     想起の置き場として信用できなくなる。
+
+    **書き込む 3 つは `writes=False` で出さない**(`/mcp/knowledge`)。あの口に繋ぐのは
+    Chiezo 自身が動かしている CLI で、**集める回や答える回が無人で書けると、人が
+    覚えさせたものと機械が書いたものが同じ置き場で混ざる** —— 増えるのに気づくのは
+    溜まった後になる。読むほう(recall)は残す:覚えたことを踏まえて集めさせたい場面はある。
     """
     from app import main as api
-
-    @mcp.tool(description=(
-        "ユーザーが「覚えておいて」と言ったこと、後から参照する価値のある調査結果や"
-        "決定事項を Chiezo に保存する。保存先はローカルで、外部には出ない。"
-        "**text には内容そのものを書く**(「〜を調べた」のような見出しだけでは、"
-        "後から読んでも何も分からない)。**後で読み返す自分に向けて、それだけで意味が通る"
-        "文章にすること** — 挙げたものは列挙し、数値・固有名詞・日付はそのまま残す。"
-        "長さの制限は無いので、要約して削るより残すほうがよい。"
-        "title は省略してよい(本文の 1 行目から作る)。tags はカンマ区切りで、"
-        "後から絞り込むのに使える。"
-        + notes.tag_guide()
-    ))
-    async def remember(
-        text: Annotated[str, Field(description=(
-            "覚えておく内容そのもの。見出しや「〜について調べた」のような要約ラベルではなく、"
-            "後から読んで意味が通る本文を入れる(列挙・数値・固有名詞をそのまま残す)"
-        ))],
-        title: Annotated[str | None, Field(description="省略時は本文の 1 行目から作る")] = None,
-        tags: Annotated[str | None, Field(description="カンマ区切り")] = None,
-    ) -> dict:
-        return await run_in_threadpool(
-            _call, api.remember,
-            request=_request(app), text=text, title=title, tags=tags, extra=None,
-        )
 
     @mcp.tool(annotations=READ_ONLY, description=(
         "以前 remember で保存したことを思い出す。**新しい順**に返る。"
@@ -840,6 +852,33 @@ def _register_memory_tools(mcp: MCPServer, app: FastAPI) -> None:
             request=_request(app), q=q, since=since, until=until, tag=tag,
             limit=limit, offset=offset, fields=fields, max_chars=max_chars,
             consolidated=consolidated,
+        )
+
+    if not writes:
+        return
+
+    @mcp.tool(description=(
+        "ユーザーが「覚えておいて」と言ったこと、後から参照する価値のある調査結果や"
+        "決定事項を Chiezo に保存する。保存先はローカルで、外部には出ない。"
+        "**text には内容そのものを書く**(「〜を調べた」のような見出しだけでは、"
+        "後から読んでも何も分からない)。**後で読み返す自分に向けて、それだけで意味が通る"
+        "文章にすること** — 挙げたものは列挙し、数値・固有名詞・日付はそのまま残す。"
+        "長さの制限は無いので、要約して削るより残すほうがよい。"
+        "title は省略してよい(本文の 1 行目から作る)。tags はカンマ区切りで、"
+        "後から絞り込むのに使える。"
+        + notes.tag_guide()
+    ))
+    async def remember(
+        text: Annotated[str, Field(description=(
+            "覚えておく内容そのもの。見出しや「〜について調べた」のような要約ラベルではなく、"
+            "後から読んで意味が通る本文を入れる(列挙・数値・固有名詞をそのまま残す)"
+        ))],
+        title: Annotated[str | None, Field(description="省略時は本文の 1 行目から作る")] = None,
+        tags: Annotated[str | None, Field(description="カンマ区切り")] = None,
+    ) -> dict:
+        return await run_in_threadpool(
+            _call, api.remember,
+            request=_request(app), text=text, title=title, tags=tags, extra=None,
         )
 
     @mcp.tool(description=(
