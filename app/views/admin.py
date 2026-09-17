@@ -1020,27 +1020,57 @@ def _collect_running_html(name: str | None = None) -> str:
     )
 
 
-def _collect_changes_html(limit: int = 30, name: str | None = None) -> str:
+def _changes_filter_html(name: str | None, sweep: str | None) -> str:
+    """「どの回を見るか」の切り替え。**回が 1 本しかなければ出さない**(選ぶ先が無い)。
+
+    押した先はこの節へ戻す(`#changes`)—— 長い面の途中にある表なので、
+    絞り込んだ結果が画面の外に出ていると、押しても何も起きていないように見える。
+    """
+    names = collect_log.sweeps(name)
+    if len(names) < 2:
+        return ""
+    base = f"/admin/collect/{quote(name)}" if name else "/admin/memory"
+    links = [("すべて", None), *((one, one) for one in names)]
+    out = []
+    for label, value in links:
+        href = f"{base}?sweep={quote(value)}#changes" if value else f"{base}#changes"
+        out.append(
+            f"<strong>{esc(label)}</strong>" if value == sweep
+            else f'<a href="{esc(href)}">{esc(label)}</a>'
+        )
+    return f'<p class="muted">どの回を見るか: {" / ".join(out)}</p>'
+
+
+def _collect_changes_html(
+    limit: int = 30, name: str | None = None, sweep: str | None = None,
+) -> str:
     """直近どこに修正が入ったか(`app/collect_log.py`)。
 
     **表の「前回」列とは別に要る。** あちらは最新の 1 回で上書きされるので、
     6 時間ごとに回る収集なら朝には昨夜の 1 回しか残っていない。減り続けているのか、
     ある日だけ荒れたのかは、並べて初めて読める。
 
+    **回で絞れるようにする。** 間隔は回ごとに桁違いなので、新しい順に並べるだけでは
+    **短い回が長い回を押し流す** —— 1 時間ごとの回が 24 行を占めれば、4 時間ごとの
+    回の差分は 1 日ぶんも残らない。読みたいのは「整理が何を直したか」のほうなのに。
+
     **控えの置き場が無ければ、何も出さずに理由だけ出す** —— 空の表を出すと
     「まだ動いていない」と読めてしまう(実際は記録していないだけ)。
     """
     if collect_log.db_path() is None:
         return (
-            '<details><summary>直近の変更</summary>'
+            '<details id="changes"><summary>直近の変更</summary>'
             '<p class="muted">変更履歴は記録していません。'
             "<code>CHIEZO_STATE_DIR</code> を設定すると残ります。</p></details>"
         )
-    changes = collect_log.recent(name, limit=limit)
+    picker = _changes_filter_html(name, sweep)
+    changes = collect_log.recent(name, limit=limit, sweep=sweep)
     if not changes:
         return (
-            '<details><summary>直近の変更</summary>'
-            '<p class="muted">まだ 1 回も走っていません。</p></details>'
+            f'<details id="changes" open><summary>直近の変更</summary>{picker}'
+            '<p class="muted">'
+            + ("その回はまだ走っていません。" if sweep else "まだ 1 回も走っていません。")
+            + "</p></details>"
         )
     rows = []
     for row in changes:
@@ -1107,7 +1137,8 @@ def _collect_changes_html(limit: int = 30, name: str | None = None) -> str:
             f'<td>{summary}{note}</td><td>{row["total"]:,} 件{detail}</td></tr>'
         )
     return f"""
-<details open><summary>直近の変更</summary>
+<details id="changes" open><summary>直近の変更</summary>
+{picker}
 <table>
 <thead><tr><th>いつ</th>{"" if name else "<th>収集</th>"}<th>どの回</th><th>頼んだ相手</th>
 <th>かかった</th><th>変化</th><th>焼いた後</th></tr></thead>
@@ -1274,7 +1305,9 @@ f"{_backend_hint()}"
     )
 
 
-def _collect_html(sources: dict[str, Source], disabled: str) -> str:
+def _collect_html(
+    sources: dict[str, Source], disabled: str, sweep: str | None = None,
+) -> str:
     """収集(AI に集めさせて溜めていく)の節。
 
     **出すのは「間隔・次にいつ走るか・いま何件」の 3 つ**。無人で回る層なので、
@@ -1384,7 +1417,7 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
     return f"""
 {table}
 {_collect_running_html()}
-{_collect_changes_html()}
+{_collect_changes_html(sweep=sweep)}
 <details><summary>収集を追加する</summary>
 <form method="post" action="/admin/collect/create" class="collect-form">
 <p><label>name(ソース名になる。英小文字・数字・_)<br>
@@ -1786,7 +1819,10 @@ def _running_html(running: list[dict]) -> str:
 
 
 @router.get("/admin/memory", response_class=HTMLResponse)
-def admin_memory(request: Request):
+def admin_memory(
+    request: Request,
+    sweep: str | None = Query(None, description="直近の変更を、この回のぶんだけに絞る"),
+):
     sources: dict[str, Source] = request.app.state.sources
     job = _fetch_trigger_status()
     disabled = run_buttons_disabled(job)
@@ -1925,7 +1961,7 @@ def admin_memory(request: Request):
 </details>
 
 <h2 id="collect">集める(AI に集めさせて溜める)</h2>
-{_collect_html(sources, disabled)}
+{_collect_html(sources, disabled, sweep)}
 
 <h2 id="consolidation">短期記憶から移す(固化)</h2>
 {_memory_html(sources, disabled)}
@@ -2843,7 +2879,11 @@ def _preview_page_html(name: str, result: dict | None, error: str) -> str:
 
 
 @router.get("/admin/collect/{name}", response_class=HTMLResponse)
-def admin_collect_detail(request: Request, name: str):
+def admin_collect_detail(
+    request: Request,
+    name: str,
+    sweep: str | None = Query(None, description="直近の変更を、この回のぶんだけに絞る"),
+):
     """収集 1 つぶんの面。**一覧から名前を押すとここへ来る**。
 
     **一覧の中で開かない。** 折り畳みの中に押し込んでいた頃は、開くたびに表が縦へ
@@ -2883,7 +2923,7 @@ def admin_collect_detail(request: Request, name: str):
 </table>
 {_collect_detail_html(item, disabled, request.app.state.sources)}
 {_collect_running_html(name)}
-{_collect_changes_html(name=name)}
+{_collect_changes_html(name=name, sweep=sweep)}
 <p class="muted"><a href="/admin/memory#collect">集める の一覧へ戻る</a></p>
 """
     return HTMLResponse(content=page_shell(name, body))

@@ -398,19 +398,23 @@ async def draft_collection_prompt(
     return draft
 
 
-async def _harvest(item) -> dict | None:
-    """外向きの道具(`app/feeds.py`)を回して、参考の素材を取る。
+async def _harvest(item, sweep=None) -> dict | None:
+    """外向きの道具(`app/feeds.py`)を回して、素材を取る。
 
     **落ちても収集は止めない。** これは参考であって情報源ではなく、AI は自分でも
     調べる —— 1 本の不調で収集ごと止めるほうが損。取れなかった数は素材の中で伝える。
+
+    **「前回より後」の基準はその巡回の前回**(`{recent}` と同じ読み方)。収集の
+    前回を基準にすると、**別の巡回が走った時刻でその窓が食われる** —— 見出しを
+    溜める回が 1 時間おきでも、その直前に整理が走っていれば見るのは数分ぶんだけで、
+    あいだに配信されたものはどの回も溜めないまま流れていく。整理の側でも噛み合わない
+    (4 時間ごとに回るのに、差し込まれる見出しは直前の回からのぶんしかない)。
     """
     spec = feeds.normalize(item.feed)
     if spec is None:
         return None
-    # 「前回より後」の基準は収集の最後の実行。**巡回ごとには持たない** ——
-    # 道具は外から拾うためのもので、区画を回る巡回とは噛み合わない(付けるなら
-    # 集める側の収集で、そちらは巡回を分けない)
-    return await feeds.fetch(spec, item.last_run_at)
+    since = (sweep.last_run_at if sweep is not None else None) or item.last_run_at
+    return await feeds.fetch(spec, since)
 
 
 async def _collect_items(
@@ -556,14 +560,16 @@ async def _collect_material(name: str, sources: dict) -> str:
     # **誰に頼んだ回かも控える。** 巡回ごとに相手を変えられるので、回の名前だけでは
     # 何で走ったのか読めない。**「既定にまかせる」は名前に開いて残す** ——
     # 空欄のまま残すと、後から読む人には既定がどれだったのか確かめようがない
-    # (相手の一覧は設定しだいで変わる)
+    # (相手の一覧は設定しだいで変わる)。
+    # **AI を呼ばない回には誰も書かない**(`collect.asks_ai`)—— 既定の相手を
+    # 書いておくと、機械で引いた回が「その相手に頼んだ回」として履歴に並ぶ
     who = {
         "backend": sweep.backend or _default_backend_name(),
         "model": sweep.model or "",
         "effort": sweep.effort or "",
-    }
+    } if collect.asks_ai(item, sweep) else {"backend": "", "model": "", "effort": ""}
     try:
-        feed = await _harvest(item)
+        feed = await _harvest(item, sweep)
         # **差し込むぶんだけ取り出す。** 区画で切ってあれば、その区画のぶんだけ ——
         # 全部を持つと、区画で切った意味がメモリの側から消える
         for_prompt = await asyncio.to_thread(
@@ -678,7 +684,7 @@ async def collect_preview(name: str, sources: dict, sweep_name: str | None = Non
     # **下見は 1 区画だけ。** 何区画でも見られるが、下見は「この指示文でどうなるか」を
     # 見るためのもので、1 区画あれば分かる(そのぶん安く、待たされない)
     keys = partitioning.pick(ledger, sweep.name, 1)
-    feed = await _harvest(item)
+    feed = await _harvest(item, sweep)
     for_prompt = await asyncio.to_thread(collect.prompt_docs, item, previous, keys, None)
     items, next_cursor, note = await _collect_items(
         item, for_prompt, sources, keys, sweep, None, feed
@@ -2037,17 +2043,22 @@ async def collect_preview_now(
 def collect_changes(
     name: str | None = Query(None, description="収集の名前。省略すると全部の収集"),
     limit: int = Query(50, ge=1, le=500),
+    sweep: str | None = Query(None, description="巡回の名前。省略すると全部の回"),
 ):
     """**直近どこに修正が入ったか**(`app/collect_log.py`)。
 
     定義側の控え(`last_added` など)は**最新の 1 回で上書きされる**ので、
     「減り続けているのか、ある日だけ荒れたのか」はここでしか読めない。
 
+    **回で絞れる**(`sweep`)。間隔は回ごとに桁違いなので、新しい順に並べるだけでは
+    短い回が長い回を押し流す —— 1 時間ごとの回が並びを埋めると、4 時間ごとの回の
+    差分が残らない。
+
     **記録の置き場(`CHIEZO_STATE_DIR`)が無ければ空で返す。** 404 にすると、
     控えを持たない構成で読む側が毎回エラーを踏む(`/v1/collect/sources` と同じ判断)。
     """
     collect.require_enabled()
-    return {"changes": collect_log.recent(name, limit)}
+    return {"changes": collect_log.recent(name, limit, sweep)}
 
 
 @app.get("/v1/collect/{name}/partition")

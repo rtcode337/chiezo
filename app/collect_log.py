@@ -193,8 +193,15 @@ def record(
         log.warning("collect run log write failed: %r", e)
 
 
-def recent(name: str | None = None, limit: int = 50) -> list[dict]:
-    """直近の実行を新しい順に。`name` を渡すとその収集だけ。記録が無ければ空。"""
+def recent(
+    name: str | None = None, limit: int = 50, sweep: str | None = None,
+) -> list[dict]:
+    """直近の実行を新しい順に。`name` を渡すとその収集だけ。記録が無ければ空。
+
+    **`sweep` で回を絞れる。** 同じ収集の中でも回ごとに間隔が桁違いなので、
+    絞れないと**短い回の行が長い回の行を押し流す** —— 1 時間ごとに見出しを溜める回と
+    4 時間ごとに整理する回が並ぶと、新しい順に 30 件では整理の差分がほとんど残らない。
+    """
     path = db_path()
     if path is None or not path.exists():
         return []
@@ -204,9 +211,15 @@ def recent(name: str | None = None, limit: int = 50) -> list[dict]:
         " backend, model, effort, ms FROM collect_runs"
     )
     args: list = []
+    where = []
     if name:
-        sql += " WHERE name = ?"
+        where.append("name = ?")
         args.append(name)
+    if sweep:
+        where.append("sweep = ?")
+        args.append(sweep)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY id DESC LIMIT ?"
     args.append(max(1, min(limit, MAX_ROWS)))
     rows: list[dict] = []
@@ -221,6 +234,30 @@ def recent(name: str | None = None, limit: int = 50) -> list[dict]:
         finally:
             conn.close()
     return rows
+
+
+def sweeps(name: str | None = None) -> list[str]:
+    """履歴に出てくる回の名前を、新しく走った順に。絞り込みの選択肢に使う。
+
+    **控えの側から引く**(定義の巡回を並べない)—— 名前を変えた回や消した回の行は
+    履歴に残っているので、定義から作ると**目の前に出ている行を選べない**。
+    """
+    path = db_path()
+    if path is None or not path.exists():
+        return []
+    sql = "SELECT sweep, MAX(id) AS last FROM collect_runs WHERE sweep <> ''"
+    args: list = []
+    if name:
+        sql += " AND name = ?"
+        args.append(name)
+    sql += " GROUP BY sweep ORDER BY last DESC"
+    with suppress(sqlite3.Error):
+        conn = _connect(path)
+        try:
+            return [str(r["sweep"]) for r in conn.execute(sql, tuple(args))]
+        finally:
+            conn.close()
+    return []
 
 
 def forget(name: str) -> None:

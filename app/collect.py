@@ -2356,6 +2356,18 @@ def uses_extract(item: Collection, sweep=None) -> bool:
     return bool((sweep is not None and sweep.use_extract) or not item.cursor)
 
 
+def asks_ai(item: Collection, sweep=None) -> bool:
+    """この回は AI に頼むか。**判断は 1 か所に持つ**(`uses_extract` と同じ理由)。
+
+    機械で引く回も外の道具で引く回も AI を呼ばない。**呼ばない回の相手を控えに
+    残さない**ために要る —— 残すと、後から読む人には「この回は AI で走っている」と
+    見える(画面にも相手を出さない、と決めているのと同じ話)。
+    """
+    if uses_extract(item, sweep):
+        return False
+    return not (sweep is not None and sweep.use_feed)
+
+
 def stream_docs(
     item: Collection,
     previous,

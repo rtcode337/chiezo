@@ -14,6 +14,7 @@ import itertools
 import json
 import re
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -735,7 +736,7 @@ class TestTheMechanicalSweep:
         monkeypatch.setattr(
             extract, "run", lambda spec, sources: ([{"title": "草間彌生", "body": "本文"}], "")
         )
-        async def no_feed(_item):
+        async def no_feed(_item, _sweep=None):
             return None
 
         monkeypatch.setattr(main, "_harvest", no_feed)
@@ -779,7 +780,7 @@ class TestTheMechanicalSweep:
         roster = [{"title": f"ひと{i:03d}", "body": "本文"} for i in range(1, 61)]
         monkeypatch.setattr(extract, "run", lambda spec, sources: (roster, ""))
 
-        async def no_feed(_item):
+        async def no_feed(_item, _sweep=None):
             return None
 
         monkeypatch.setattr(main, "_harvest", no_feed)
@@ -816,7 +817,7 @@ class TestTheMechanicalSweep:
         async def answered(*_a, **_k):
             return ([{"title": "ひと", "body": "本文"}], None, "")
 
-        async def no_feed(_item):
+        async def no_feed(_item, _sweep=None):
             return None
 
         monkeypatch.setattr(main, "_harvest", no_feed)
@@ -911,6 +912,74 @@ class TestTheOutwardSweep:
 
         assert items == []
         assert "外向きの道具" in note
+
+    def test_the_window_starts_at_this_sweeps_own_last_run(self, sample, monkeypatch):
+        """**収集の前回を基準にすると、別の巡回が走った時刻でその窓が食われる。**
+
+        1 時間おきに溜める回でも、その直前に整理が走っていれば見るのは数分ぶんだけで、
+        あいだに配信されたものはどの回も溜めないまま流れていく。
+        """
+        import asyncio
+
+        from app import main
+
+        collect.update(
+            "news",
+            feed={"urls": ["https://example.com/feed"], "since": "last_run"},
+            sweeps=[
+                {"name": "取り込み", "interval_minutes": 60, "use_feed": True},
+                {"name": "整理", "interval_minutes": 240},
+            ],
+        )
+        collect.record_result("news", status="ok", sweep="取り込み")
+        item = replace(collect.get("news"), last_run_at="2026-09-10T05:29:00+00:00")
+        seen: list[str | None] = []
+
+        async def spy(_spec, since=None):
+            seen.append(since)
+            return {"items": [], "failed": 0, "tried": 1}
+
+        monkeypatch.setattr(main.feeds, "fetch", spy)
+        asyncio.run(main._harvest(item, collect.sweep_named(item, "取り込み")))
+
+        assert seen == [collect.sweep_named(item, "取り込み").last_run_at]
+        assert seen != ["2026-09-10T05:29:00+00:00"], "直前に走った別の回で窓が食われている"
+
+    def test_a_sweep_that_never_ran_falls_back_to_the_collection(self, sample, monkeypatch):
+        """足したばかりの回には前回が無い。**そこで全件を引き直さない**。"""
+        import asyncio
+
+        from app import main
+
+        collect.update(
+            "news",
+            feed={"urls": ["https://example.com/feed"], "since": "last_run"},
+            sweeps=[{"name": "取り込み", "interval_minutes": 60, "use_feed": True}],
+        )
+        item = replace(collect.get("news"), last_run_at="2026-09-10T05:29:00+00:00")
+        seen: list[str | None] = []
+
+        async def spy(_spec, since=None):
+            seen.append(since)
+            return {"items": [], "failed": 0, "tried": 1}
+
+        monkeypatch.setattr(main.feeds, "fetch", spy)
+        asyncio.run(main._harvest(item, collect.sweep_named(item, "取り込み")))
+
+        assert seen == ["2026-09-10T05:29:00+00:00"]
+
+    def test_no_one_is_written_down_as_having_been_asked(self, sample):
+        """**AI を呼ばない回に相手を控えない。** 既定の相手を書いておくと、
+        機械で引いた回が「その相手に頼んだ回」として履歴に並ぶ。
+        """
+        collect.update("news", sweeps=[
+            {"name": "取り込み", "use_feed": True},
+            {"name": "整理", "interval_minutes": 240},
+        ])
+        item = collect.get("news")
+
+        assert collect.asks_ai(item, collect.sweep_named(item, "取り込み")) is False
+        assert collect.asks_ai(item, collect.sweep_named(item, "整理")) is True
 
     def test_the_published_date_is_kept_apart_from_the_day_it_arrived(self, sample):
         """集めた日だけだと、半年前の記事を今日拾ったのかが読めない。"""
@@ -1808,7 +1877,7 @@ class TestTheCountAfterTheRun:
             sweeps=[{"name": "ざっと"}],
         )
 
-        async def no_feed(_item):
+        async def no_feed(_item, _sweep=None):
             return None
 
         monkeypatch.setattr(main, "_harvest", no_feed)

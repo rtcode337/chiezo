@@ -148,3 +148,95 @@ class TestForget:
     def test_forgetting_without_a_state_dir_is_fine(self, monkeypatch):
         monkeypatch.delenv("CHIEZO_STATE_DIR", raising=False)
         collect_log.forget("spots")
+
+
+class TestReadingOneSweepOnly:
+    """回ごとの間隔は桁違いなので、新しい順に並べるだけでは短い回が長い回を押し流す。"""
+
+    def _three_sweeps(self) -> None:
+        for _ in range(4):
+            collect_log.record(
+                "news", status=collect_log.STATUS_OK, diff={"added": 1}, sweep="見出し",
+            )
+        collect_log.record(
+            "news", status=collect_log.STATUS_OK, diff={"added": 9}, sweep="整理",
+        )
+        collect_log.record(
+            "news", status=collect_log.STATUS_OK, diff={"added": 1}, sweep="要約",
+        )
+
+    def test_the_long_sweep_survives_a_short_limit(self, state_env):
+        """1 時間ごとの回に押し流されると、4 時間ごとの回の差分が読めない。"""
+        self._three_sweeps()
+
+        assert [r["sweep"] for r in collect_log.recent("news", limit=2)] == ["要約", "整理"]
+        rows = collect_log.recent("news", limit=2, sweep="見出し")
+        assert [r["sweep"] for r in rows] == ["見出し", "見出し"]
+
+    def test_the_names_come_from_the_history(self, state_env):
+        """絞り込みの選択肢は控えの側から引く —— 定義から作ると、名前を変えた回や
+        消した回の行が目の前に出ているのに選べない。
+        """
+        self._three_sweeps()
+        assert collect_log.sweeps("news") == ["要約", "整理", "見出し"]
+
+    def test_another_collection_does_not_leak_in(self, state_env):
+        self._three_sweeps()
+        collect_log.record(
+            "spots", status=collect_log.STATUS_OK, diff={"added": 1}, sweep="ざっと",
+        )
+        assert "ざっと" not in collect_log.sweeps("news")
+        assert collect_log.sweeps() == ["ざっと", "要約", "整理", "見出し"]
+
+    def test_a_sweep_that_never_ran_is_empty_not_everything(self, state_env):
+        """絞ったのに全件が返ると、その回が走っていることになってしまう。"""
+        self._three_sweeps()
+        assert collect_log.recent("news", sweep="居ない回") == []
+
+    def test_without_a_state_dir_there_are_no_choices(self, monkeypatch):
+        monkeypatch.delenv("CHIEZO_STATE_DIR", raising=False)
+        assert collect_log.sweeps() == []
+
+
+class TestThePickerOnTheScreen:
+    def test_it_offers_every_sweep_and_a_way_back(self, state_env):
+        from app.views import admin
+
+        collect_log.record(
+            "news", status=collect_log.STATUS_OK, diff={"added": 1}, sweep="見出し",
+        )
+        collect_log.record(
+            "news", status=collect_log.STATUS_OK, diff={"added": 9}, sweep="整理",
+        )
+
+        html = admin._collect_changes_html(name="news", sweep="整理")
+
+        assert "/admin/collect/news?sweep=%E8%A6%8B%E5%87%BA%E3%81%97#changes" in html
+        assert "/admin/collect/news#changes" in html, "すべてへ戻れる"
+        assert "<strong>整理</strong>" in html, "いま見ている回は押せない"
+
+    def test_one_sweep_alone_gets_no_picker(self, state_env):
+        """選ぶ先が無いのに選択肢を出すと、押せるものを探して読まれる。"""
+        from app.views import admin
+
+        collect_log.record(
+            "news", status=collect_log.STATUS_OK, diff={"added": 1}, sweep="見出し",
+        )
+
+        assert "どの回を見るか" not in admin._collect_changes_html(name="news")
+
+    def test_an_empty_filter_says_which_emptiness_it_is(self, state_env):
+        """「その回はまだ」と「1 回も走っていない」は別物。"""
+        from app.views import admin
+
+        collect_log.record(
+            "news", status=collect_log.STATUS_OK, diff={"added": 1}, sweep="見出し",
+        )
+        collect_log.record(
+            "news", status=collect_log.STATUS_OK, diff={"added": 9}, sweep="整理",
+        )
+
+        html = admin._collect_changes_html(name="news", sweep="居ない回")
+
+        assert "その回はまだ走っていません" in html
+        assert "どの回を見るか" in html, "戻る道を残す"
