@@ -521,6 +521,61 @@ CHAT_STYLE = """
   }
 """
 
+# 相手・モデル・考える量を並べて選ばせるフォームの印。
+# **セレクトを入れ替える台本(下)と、それを差し込む条件の両方がこの名前を見る** ——
+# 別々に書くと、片方だけ直したときに静かに効かなくなる。
+BACKEND_FORM_CLASS = "collect-form"
+
+# 相手を選び直したら、モデルと考える量の候補を入れ替える台本。
+#
+# **外枠が差し込む**(`page_shell`)。画面ごとに書いていた頃は、**フォームだけが
+# 別の画面へ移って台本が取り残された** —— 巡回の設定を収集の面へ移したとき、
+# 相手を変えてもモデルが古い相手のままになり、設定できない欄が残った。
+# 印の付いたフォームがある画面には必ず付いてくる形にして、置き忘れを無くす。
+BACKEND_PICKER_SCRIPT = """<script>
+document.addEventListener('change', function (ev) {
+  var sel = ev.target;
+  var field = sel.name;
+  if (!sel.matches || !sel.matches('.BACKEND_FORM_CLASS select[name$="backend"]')) { return; }
+  // **書き換えるのはその 1 本のぶんだけ。** 巡回も段も何本でも並ぶので、form の中を
+  // まとめて探すと、どれを選び直しても先頭のモデルが入れ替わる
+  var box = sel.closest('.sweep-row') || sel.closest('form');
+  // **前置きは欄の名前から取る**(`backend` / `sweep_backend` / `step_backend`)。
+  // 場合分けを書いていた頃は、欄を増やした画面が黙って何もしない側へ落ちた
+  var prefix = field.slice(0, field.length - 'backend'.length);
+  var model = box.querySelector('select[name="' + prefix + 'model"]');
+  var effort = box.querySelector('select[name="' + prefix + 'effort"]');
+  if (!model && !effort) { return; }
+  // 入れ替わるまで触らせない(古い候補のまま保存されるのを防ぐ)
+  [model, effort].forEach(function (el) { if (el) { el.disabled = true; } });
+  fetch('/ai/models?backend=' + encodeURIComponent(sel.value))
+    .then(function (r) { return r.ok ? r.json() : { models: [], efforts: [] }; })
+    .then(function (d) {
+      fill(model, d.models || []);
+      fill(effort, d.efforts || []);
+    })
+    .finally(function () {
+      [model, effort].forEach(function (el) { if (el) { el.disabled = false; } });
+    });
+  function fill(el, names) {
+    if (!el) { return; }
+    // 選んでいた値は候補に無くても残す(サーバー側の組み立てと同じ約束)
+    var keep = el.value;
+    el.innerHTML = '';
+    var head = document.createElement('option');
+    head.value = ''; head.textContent = '相手の既定';
+    el.appendChild(head);
+    if (keep && names.indexOf(keep) < 0) { names = names.concat([keep]); }
+    names.forEach(function (id) {
+      var o = document.createElement('option');
+      o.value = id; o.textContent = id;
+      if (id === keep) { o.selected = true; }
+      el.appendChild(o);
+    });
+  }
+});
+</script>""".replace("BACKEND_FORM_CLASS", BACKEND_FORM_CLASS)
+
 
 def page_shell(title: str, body: str, style: str = "") -> str:
     """共通の外枠。`style` は画面ごとの上乗せ(会話画面だけが使う)。
@@ -534,6 +589,9 @@ def page_shell(title: str, body: str, style: str = "") -> str:
     進み具合は、見たい人が自分で読み直す。
     """
     tab_title = f"Chiezo — {title or 'AI知識ベース'}"
+    # **印の付いたフォームがある画面にだけ差し込む。** 会話の画面にも相手のセレクトが
+    # あり、あちらは自前の台本で動く —— どの画面にも配ると二重に掴むことになる
+    picker = BACKEND_PICKER_SCRIPT if f'class="{BACKEND_FORM_CLASS}"' in body else ""
     return f"""<!doctype html>
 <html lang="ja">
 <head>
@@ -546,6 +604,7 @@ def page_shell(title: str, body: str, style: str = "") -> str:
 </head>
 <body>
 {body}
+{picker}
 <footer class="page-footer">{_build_stamp()}</footer>
 </body>
 </html>"""

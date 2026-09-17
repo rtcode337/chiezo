@@ -3998,6 +3998,18 @@ class TestTheCollectionPage:
         with TestClient(app) as c:
             yield c
 
+    def test_the_model_picker_works_on_this_page(self, client, sample):
+        """**巡回の設定はこの面にある。** 台本が一覧の側に残っていたころは、
+        相手を変えてもモデルと考える量が古い相手のまま出て、設定できなかった。
+        """
+        from app import pages
+
+        collect.update("news", sweeps=[{"name": "ざっと"}])
+        html = client.get("/admin/collect/news").text
+
+        assert '<select name="sweep_backend">' in html
+        assert pages.BACKEND_PICKER_SCRIPT in html
+
     def test_it_opens_with_everything_unfolded(self, client, sample):
         collect.update("news", sweeps=[{"name": "ざっと"}, {"name": "じっくり"}])
         html = client.get("/admin/collect/news").text
@@ -4482,11 +4494,33 @@ class TestPickingTheModelAndTheEffort:
 
     def test_the_script_finds_forms_by_class_not_by_id(self, sample):
         """フォームは 1 ページに何枚もあるので、id で捕まえると 1 枚しか動かない。"""
-        from app.views import admin
+        from app import pages
 
-        assert 'select[name$="backend"]' in admin.COLLECT_BACKEND_SCRIPT
-        assert "getElementById" not in admin.COLLECT_BACKEND_SCRIPT
-        assert admin.COLLECT_BACKEND_SCRIPT in self._html(sample)
+        assert 'select[name$="backend"]' in pages.BACKEND_PICKER_SCRIPT
+        assert "getElementById" not in pages.BACKEND_PICKER_SCRIPT
+
+    def test_the_script_travels_with_the_form(self, sample):
+        """**フォームだけが別の画面へ移って台本が取り残された**のがこの作りの理由。
+
+        巡回の設定を収集の面へ移したとき、台本は一覧の側に残り、相手を変えても
+        モデルが古い相手のまま出ていた(設定できない欄が残った)。
+        """
+        from app import pages
+
+        with_form = pages.page_shell("t", '<form class="collect-form"></form>')
+        without = pages.page_shell("t", "<p>なにも無い</p>")
+
+        assert pages.BACKEND_PICKER_SCRIPT in with_form
+        assert pages.BACKEND_PICKER_SCRIPT not in without
+
+    def test_the_prefix_comes_from_the_field_name(self, sample):
+        """`backend` / `sweep_backend` / `step_backend` を場合分けで書くと、
+        欄を増やした画面が黙って何もしない側へ落ちる。
+        """
+        from app import pages
+
+        assert "field.slice(0, field.length - 'backend'.length)" in \
+            pages.BACKEND_PICKER_SCRIPT
 
 
 class TestTellingWhetherAnIngestIsRunning:

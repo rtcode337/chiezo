@@ -259,3 +259,38 @@ class TestSavingOne:
                              (workers.Step("codex"),))
 
         assert [w.name for w in out] == ["ざっと", "じっくり"]
+
+
+class TestTheEditorOnTheScreen:
+    """段ごとに相手・モデル・考える量を選ぶ欄(`app/views/ai_workers.py`)。"""
+
+    def _selects(self):
+        from app.views import admin
+
+        return (admin._backend_select, admin._model_select, admin._effort_select)
+
+    def test_each_step_is_its_own_row(self, enabled):
+        """**段は何本でも並ぶ。** 行で囲わないと、どの段を選び直しても
+        先頭の段のモデルが入れ替わる。
+        """
+        from app.views import ai_workers
+
+        html = ai_workers._worker_form(_worker(workers.Step("codex")), self._selects())
+
+        assert html.count('<div class="sweep-row">') >= 2
+        assert '<select name="step_model">' in html
+        assert '<select name="step_effort">' in html
+
+    def test_the_picker_reaches_this_form_too(self, enabled):
+        """欄の名前が `step_backend` なので、前置きを場合分けで書くと
+        ここだけ黙って何もしない側へ落ちる。
+        """
+        from app import pages
+        from app.views import ai_workers
+
+        page = pages.page_shell(
+            "AI と鍵", ai_workers._worker_form(None, self._selects())
+        )
+
+        assert pages.BACKEND_PICKER_SCRIPT in page
+        assert "'backend'.length" in pages.BACKEND_PICKER_SCRIPT

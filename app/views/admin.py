@@ -460,7 +460,7 @@ def _model_select(backend: str | None, current: str | None, field: str = "model"
 
     ここで相手に問い合わせない —— 管理画面の描画で外へ出ると、相手が落ちている
     ときにページ全体が待たされる(`_backend_select` と同じ約束)。選び直すときだけ
-    `GET /ai/models` を引いて入れ替える(下の `COLLECT_BACKEND_SCRIPT`)。
+    `GET /ai/models` を引いて入れ替える(`pages.BACKEND_PICKER_SCRIPT`)。
     """
     spec = providers.get(answer.normalize_backend(backend))
     return _candidate_select(field, current, spec.models if spec else (), "相手の既定")
@@ -531,49 +531,6 @@ def _backend_label(item) -> str:
 # 候補を控えではなく `GET /ai/models` から取るのは、**選び直すのは人が待っている
 # 場面だから** —— そこでだけ相手に聞きに行けば、控えが古くても実物に追いつける
 # (描画のときに聞かない理由は `_model_select` にある)。
-COLLECT_BACKEND_SCRIPT = """<script>
-document.addEventListener('change', function (ev) {
-  var sel = ev.target;
-  var field = sel.name;
-  if (!sel.matches || !sel.matches('.collect-form select[name$="backend"]')) { return; }
-  // **書き換えるのはその 1 本のぶんだけ。** 巡回は何本でも並ぶので、form の中を
-  // まとめて探すと、どれを選び直しても先頭の巡回のモデルが入れ替わる
-  var box = sel.closest('.sweep-row') || sel.closest('form');
-  var prefix = field === 'backend' ? '' : 'sweep_';
-  var model = box.querySelector('select[name="' + prefix + 'model"]');
-  var effort = box.querySelector('select[name="' + prefix + 'effort"]');
-  if (!model && !effort) { return; }
-  // 入れ替わるまで触らせない(古い候補のまま保存されるのを防ぐ)
-  [model, effort].forEach(function (el) { if (el) { el.disabled = true; } });
-  fetch('/ai/models?backend=' + encodeURIComponent(sel.value))
-    .then(function (r) { return r.ok ? r.json() : { models: [], efforts: [] }; })
-    .then(function (d) {
-      fill(model, d.models || []);
-      fill(effort, d.efforts || []);
-    })
-    .finally(function () {
-      [model, effort].forEach(function (el) { if (el) { el.disabled = false; } });
-    });
-  function fill(el, names) {
-    if (!el) { return; }
-    // 選んでいた値は候補に無くても残す(サーバー側の組み立てと同じ約束)
-    var keep = el.value;
-    el.innerHTML = '';
-    var head = document.createElement('option');
-    head.value = ''; head.textContent = '相手の既定';
-    el.appendChild(head);
-    if (keep && names.indexOf(keep) < 0) { names = names.concat([keep]); }
-    names.forEach(function (id) {
-      var o = document.createElement('option');
-      o.value = id; o.textContent = id;
-      if (id === keep) { o.selected = true; }
-      el.appendChild(o);
-    });
-  }
-});
-</script>"""
-
-
 PARTITION_EXAMPLE = json.dumps(
     {
         "by": "geo",
@@ -1520,7 +1477,6 @@ AI に集めさせて溜めていく層。<strong>溜め先は収集ごとに別
 <strong>追加したものは止めた状態で作る</strong> —— プロンプトを見直してから
 「有効にする」で動き出す(いきなり AI の枠を使わない)。
 </p>
-{COLLECT_BACKEND_SCRIPT}
 """
 
 
