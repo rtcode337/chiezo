@@ -119,7 +119,7 @@ def _parse_catalog(base: str, payload: dict) -> list[RemoteSource]:
     entries = payload.get("sources")
     if not isinstance(entries, list):
         raise PluginError(f"{base}/sources must return a 'sources' list")
-    # 空は正常。配るソースが実行時に決まるプラグイン(記憶の固化 =
+    # 空は正常。配るソースが実行時に決まるプラグイン(
     # `app/memory.py` はテーマを足すまで 1 つも配らない)では、まだ何も無い状態が
     # 起動直後の普通の姿になる。ここで落とすと、テーマを 1 つも作っていないだけで
     # 取り込み側のカタログ取得が丸ごと 500 になっていた。
@@ -221,7 +221,7 @@ class RemotePluginAdapter:
         日付は 8 桁(`YYYYMMDD`)のほか、**秒まで入れた 14 桁も許す**。世代ファイル名は
         `<source>-<日付>.db` で、切り替えは「1 つ前の世代」を残す作りなので、同じ値で
         焼き直すと同じファイルを上書きして戻り先が消える。ダンプ由来のソースは日付が
-        変わるので 8 桁で足りるが、**1 日に何度も焼くもの**(記憶の固化 =
+        変わるので 8 桁で足りるが、**1 日に何度も焼くもの**(
         `app/memory.py`)では日付だけでは足りない。区切りを入れられないのは、
         `-` が世代ファイル名の区切りそのものだから。
         """

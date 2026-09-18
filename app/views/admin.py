@@ -34,7 +34,6 @@ from app import (
     jst,
     machine_store,
     media,
-    memory,
     notes,
     providers,
     registry,
@@ -171,7 +170,7 @@ def run_buttons_disabled(job: dict | None) -> str:
 
     起こせるのは chiezo-trigger が居るときだけ。**未設定でも到達不能でも押せなくする**
     —— 押せると 502 が返るだけで、なぜ動かないのかが画面から読めない。長期記憶へ
-    書き込むとき(初期化・再構築・固化)しか要らない相手なので、立てない使い方が普通にある。
+    書き込むとき(初期化・再構築・削除)しか要らない相手なので、立てない使い方が普通にある。
     実行中に押せないのは、同時に 1 ジョブしか受け付けないため。
     """
     if not TRIGGER_URL:
@@ -186,7 +185,7 @@ def _job_status_html(job: dict | None) -> str:
         return (
             '<div class="job-status" id="job">'
             "取り込みトリガー(chiezo-trigger)は設定されていません"
-            " (CHIEZO_TRIGGER_URL 未設定)。長期記憶への書き込み(初期化・再構築・固化)は"
+            " (CHIEZO_TRIGGER_URL 未設定)。長期記憶への書き込み(初期化・再構築・削除)は"
             "できませんが、読むだけならこのままで動きます。"
             "</div>"
         )
@@ -194,7 +193,7 @@ def _job_status_html(job: dict | None) -> str:
         return (
             '<div class="job-status error" id="job">'
             f"<p>{esc(job.get('error') or 'chiezo-trigger に到達できません')}</p>"
-            "<p>長期記憶への書き込み(初期化・再構築・固化)はできません。"
+            "<p>長期記憶への書き込み(初期化・再構築・削除)はできません。"
             "読むだけならこのままで動きます。</p>"
             "</div>"
         )
@@ -235,73 +234,6 @@ def _job_status_html(job: dict | None) -> str:
         )
     lines.append("</div>")
     return "\n".join(lines)
-
-
-def _memory_html(sources: dict[str, Source], disabled: str) -> str:
-    """固化(短期記憶 → 長期記憶)の節。
-
-    焼くこと自体は普通の取り込みなので、ボタンの行き先は初期化・再構築と同じ
-    (`chiezo-app` が素材を配り、ingest が焼く)。ここが持つのは**待ち行列の数**と、
-    移し終えたメモを短期側から消す「片付ける」だけ。
-
-    **印の付け替えはボタンではない** —— 固化が済んだ時点で自分から動く
-    (`memory.catch_up`)。人が押して回る手順にしていた頃は、焼けているのに印が
-    「まだ移していない」のまま残り、次の固化で同じものをもう一度焼いていた。
-
-    **`_chiezo_consolidate` を付ける口は置かない** —— ただのタグなので、短期記憶の画面や MCP の
-    `update` で付く。ここに足すと同じことをする経路が 2 つになる。
-    """
-    if not memory.is_enabled():
-        return (
-            '<p class="muted">固化は無効です。短期記憶'
-            "(<code>CHIEZO_NOTES_DIR</code>)を設定すると使えます。</p>"
-        )
-    state = memory.status(sources)
-    name = memory.SOURCE_NAME
-    burn = f"/admin/rebuild/{name}" if state["consolidated"] else f"/admin/init/{name}"
-    # 待ちが 1 件も無いときは押せなくする。素材が空だと配る側(`/v1/memory/fetch`)が
-    # 409 で断るので、押せると取り込みが始まってすぐ失敗し、画面には HTTP の
-    # ステータスしか残らない。焼くものが無いことは押す前から分かっている。
-    empty = not state["pending"]
-    burn_disabled = disabled or (" disabled" if empty else "")
-    # 移し終えたものが 1 件も無ければ、片付けるものも無い
-    sweep_disabled = "" if state["swept"] else " disabled"
-    waiting = f'<strong>{state["pending"]:,} 件</strong>' if not empty else (
-        '<strong>0 件</strong> <span class="muted">(焼くものが無いので「固化する」は'
-        "押せません)</span>"
-    )
-    if state["consolidated"]:
-        long_term = (
-            f'<a href="{esc(browse_url(name))}">{state["docs"]:,} 件</a>'
-            f' <span class="muted">(最後に焼いたのは {esc(state["built_at"] or "")})</span>'
-        )
-    else:
-        long_term = '<span class="muted">まだ 1 度も焼いていない</span>'
-    return f"""
-<p>
-長期記憶(<code>{esc(name)}</code>): {long_term}<br>
-固化を待っているメモ: {waiting}
-</p>
-<form class="init-form" method="post" action="{esc(burn)}">
-<button type="submit"{burn_disabled}>固化する</button></form>
-<form class="init-form" method="post" action="/admin/memory/sweep"
- onsubmit="return confirm('長期記憶へ移し終えたメモ {state["swept"]:,} 件を、
-短期記憶から消します。長期側には同じ見出しの文書が残りますが、
-短期側のものは戻せません。よろしいですか?')">
-<button type="submit"{sweep_disabled}>片付ける({state["swept"]:,} 件)</button></form>
-<p class="muted">
-短期記憶のメモに <code>{esc(notes.CONSOLIDATE_TAG)}</code> を付けると、次の固化で
-長期記憶へ移る(見出しが同じものは上書き、<code>{esc(notes.TOMBSTONE_TAG)}</code> も
-付いていれば長期側から落とす)。<strong>焼き上がった時点で印が
-<code>{esc(notes.CONSOLIDATED_TAG)}</code> に変わり</strong>、<code>recall</code> の
-既定から外れる(長期側に反映されたことを確かめてから付くので、移っていないのに
-印だけ付くことは無い)。<br>
-「片付ける」は、その印が付いたメモを<strong>短期記憶から消す</strong> ——
-思い出す先が長期側へ移った控えなので、残すと同じ内容が 2 か所に積み上がる。<br>
-付けるのは人でも AI でもよい —— MCP の <code>update</code> でタグを足すだけなので、
-「短期記憶を順に見て、残す価値があるものに印を付けて」と頼めば回る。
-</p>
-"""
 
 
 def _history_args(request: Request) -> tuple[int, bool]:
@@ -1515,141 +1447,97 @@ AI に集めさせて溜めていく層。<strong>溜め先は収集ごとに別
 
 
 def _short_term_section_html(sources: dict[str, Source]) -> str:
-    """短期記憶(notes)の節。**長期側と同じ体裁の表で出す**。
+    """書き込める置き場の節。**長期側と同じ体裁の表で出す**。
 
     表にするのは、見に来る人が知りたいことが長期側と同じだから —— 何件あって、
-    最後に動いたのはいつで、いまの形(スキーマ)で引けるのか。かつては件数を 1 行の
-    文で出し、その下に検索への入口を別に置いていたが、隣の節と見比べるときに
-    目の動かし方が変わるだけだった。
+    最後に動いたのはいつで、いまの形(スキーマ)で引けるのか。
 
     **列は長期側の写しにしない。** ダンプも取り込みも無いので `dump_date` と
     `built_at` は書きようがなく、空欄が並ぶ。**代わりに「最後に書かれた時刻」を出す**
-    —— 短期記憶で「動いているか」を言えるのはそこ。`lang` も notes は持たない。
+    —— 書き込める置き場で「動いているか」を言えるのはそこ。`lang` も持たない。
 
-    **操作の列は持たない**。長期側の右端は再構築ボタンだが、短期記憶は取り込みで
-    焼くソースではないので押すものが無い。検索への入口は名前がそのままリンクなので、
-    「検索する」を別の列に置くと**同じ行き先が 1 行に 2 つ**並んで幅を食うだけになる。
+    **操作の列は持たない**。長期側の右端は再構築と削除だが、こちらは取り込みで焼く
+    ソースではないので押すものが無い(消せもしない —— `registry.SYSTEM_SOURCES`)。
+    検索への入口は名前がそのままリンクなので、「検索する」を別の列に置くと
+    **同じ行き先が 1 行に 2 つ**並んで幅を食うだけになる。
 
-    **表に混ぜないのは今までどおり**。再構築ボタンが出ていた頃は、押すと trigger が
-    unknown source を返すだけなのに、確認ダイアログだけが「ダンプの取得からやり直します」
-    と言っていた(唯一書き込めるソースで、消えたと読める文言がいちばん危ない行に出ていた)。
-    件数の出どころも違う(走査ではなく描画時に数える。`notes.count()` 参照)。
-
-    中身そのものは出さず、件数とタグの分布までに留める。1 件ずつ読むのはブラウズ画面の
-    仕事で、そちらは見に行った人だけが見る。
+    **設定の置き場も同じ表に並べる。** 節を分けていた頃は、同じ「書き込める置き場」を
+    2 か所で同じ体裁で出していた —— 置き場が別なのはファイルの話で、
+    **人が消せないのは保存先が違うから**であって、表に並んでいるか
+    どうかとは関係がない。分ける理由が無いのに分けると、どちらを見ればよいのかを
+    読む人が覚えることになる。
     """
     if not notes.is_enabled():
         return (
             '<p class="muted">短期記憶は無効です。書き込み可能なディレクトリを'
             " <code>CHIEZO_NOTES_DIR</code> に設定すると有効になります。</p>"
         )
-    # 入口は帯のメニューが持つ（`PAGES`）。ここに重ねると、同じ行き先が
-    # 画面の中と帯の両方に出て、どちらが本筋なのか読めなくなる
-    tasks_link = ""
-    total = notes.count()
-    if not total:
-        return (
-            '<p class="muted">まだ何も覚えていません。MCP の <code>remember</code> か'
-            " <code>POST /v1/notes</code> で書き込めます。</p>" + tasks_link
-        )
-    browse = esc(browse_url(notes.SOURCE_NAME))
-    src = sources.get(notes.SOURCE_NAME)
-    # スキーマは長期側と同じ意味(古いと filter / tag が効かない)ので同じ出し方にする
     latest = latest_schema_version()
-    version = src.schema_version if src is not None else None
-    if version is None:
-        schema_cell = '<span class="muted">不明</span>'
-    elif version >= latest:
-        schema_cell = str(version)
-    else:
-        schema_cell = f'{version} <span class="stale">(最新: {latest})</span>'
-    written = jst.parse(notes.last_updated() or "")
-    table = f"""
-<table>
-<thead>
-<tr><th>name</th><th>kind</th><th>docs</th><th>最後に書かれた</th><th>schema_version</th></tr>
-</thead>
-<tbody>
-<tr>
-<td><a href="{browse}">{esc(notes.SOURCE_NAME)}</a></td>
-<td>{esc(notes.SOURCE_KIND)}</td>
-<td>{total:,}</td>
-<td>{esc(jst.format(written)) if written else '<span class="muted">—</span>'}</td>
-<td>{schema_cell}</td>
-</tr>
-</tbody>
-</table>
-"""
+
+    def schema_cell(src: Source | None) -> str:
+        if src is None:
+            return '<span class="muted">不明</span>'
+        if src.schema_version >= latest:
+            return str(src.schema_version)
+        return f'{src.schema_version} <span class="stale">(最新: {latest})</span>'
+
+    # **まだ 1 件も無くても行は出す**(件数 0 として)—— 表ごと消えると、
+    # 置き場が無いのか空なのかが読めない。書き方は下の断りで伝える
+    rows = [
+        (notes.SOURCE_NAME, notes.SOURCE_KIND, notes.count() or 0, notes.last_updated(),
+         "覚えたこと。人と AI が読み書きする"),
+    ]
+    if machine_store.is_enabled():
+        kept = machine_store.records()
+        rows.append((
+            machine_store.SOURCE_NAME, machine_store.SOURCE_KIND, len(kept),
+            max((r["updated_at"] for r in kept if r["updated_at"]), default=""),
+            "機械が書き換える設定(収集の定義・ワーカー)。人は書かない",
+        ))
+    cells = []
+    for name, kind, total, written in ((r[0], r[1], r[2], r[3]) for r in rows):
+        at = jst.parse(written or "")
+        cells.append(
+            f'<tr><td><a href="{esc(browse_url(name))}">{esc(name)}</a></td>'
+            f"<td>{esc(kind)}</td><td>{total:,}</td>"
+            f'<td>{esc(jst.format(at)) if at else "<span class=\"muted\">—</span>"}</td>'
+            f"<td>{schema_cell(sources.get(name))}</td></tr>"
+        )
+    what = "".join(
+        f'<br><strong>{esc(name)}</strong>: {esc(note)}' for name, _k, _t, _w, note in rows
+    )
+    empty = (
+        '<p class="muted">まだ何も覚えていません。MCP の <code>remember</code> か'
+        " <code>POST /v1/notes</code> で書き込めます。</p>"
+        if not rows[0][2] else ""
+    )
     tags = notes.tag_summary()
     tag_html = (
-        '<p class="muted">タグ: '
+        f'<p class="muted">{esc(notes.SOURCE_NAME)} のタグ: '
         + " / ".join(f"{esc(tag)} {docs:,}" for tag, docs in tags)
         + "</p>"
         if tags
         else ""
     )
     return f"""
-{table}
-{tag_html}
-{tasks_link}
-<p class="muted">
-長期記憶と同じ口で引ける(<code>/v1/notes/search|doc|filter|tags</code>)。
-書き込みは MCP の <code>remember</code> か <code>POST /v1/notes</code>、
-新しい順に思い出すのは <code>/v1/notes/recall</code>。
-取り込みで焼くソースではないので、ダンプの日付も焼いた時刻も持たない
-(再構築もできない。書き込みが直接届く唯一の場所)。
-</p>
-"""
-
-
-def _machine_html(sources: dict[str, Source]) -> str:
-    """設定の置き場(`app/machine_store.py`)の節。**短期記憶と同じ体裁の表で出す**。
-
-    **短期記憶の表には混ぜない。** 中身は設定(いまは収集の定義)で、覚えたことでは
-    ない —— 人が消せる場所に置くと収集がまるごと消え、固化の対象に紛れると長期記憶に
-    設定が焼かれる。だから置き場を分けてあるのだが、**分けた結果まったく見えなく
-    なっていた**。収集が消えた・戻ってきたのような話を追うとき、まず確かめたいのは
-    「設定がどこに、いつの姿で残っているか」。
-
-    **専用の読み口は作らない。** コアスキーマで持っているので、検索も中身の閲覧も
-    普通のソースと同じ口でできる(`/v1/machine/search` / `/search/machine/`)——
-    ここに出すのは、そこへの入口と「何がいつ書かれたか」まで。
-    """
-    if not machine_store.is_enabled():
-        return (
-            '<p class="muted">設定の置き場は無効です。書き込み可能なディレクトリを'
-            " <code>CHIEZO_STATE_DIR</code> に設定すると有効になります。</p>"
-        )
-    rows = machine_store.records()
-    if not rows:
-        return '<p class="muted">まだ何も置かれていません。</p>'
-    browse = esc(browse_url(machine_store.SOURCE_NAME))
-    src = sources.get(machine_store.SOURCE_NAME)
-    cells = "".join(
-        f'<tr><td><a href="/search/{esc(quote(machine_store.SOURCE_NAME))}'
-        f'/doc/{r["doc_id"]}">{esc(r["title"])}</a></td>'
-        f'<td>{r["bytes"]:,}</td>'
-        f'<td>{esc(jst.format(jst.parse(r["updated_at"])) if r["updated_at"] else "")}</td></tr>'
-        for r in rows
-    )
-    return f"""
-<p class="muted">
-<a href="{browse}">{esc(machine_store.SOURCE_NAME)}</a> として登録してあります
-(kind: {esc(machine_store.SOURCE_KIND)} / schema_version:
-{src.schema_version if src is not None else '<span class="muted">不明</span>'})。
-検索も中身の閲覧も普通のソースと同じ口でできます
-(<code>/v1/{esc(machine_store.SOURCE_NAME)}/search</code>)。
-</p>
 <table>
-<thead><tr><th>名前</th><th>大きさ(バイト)</th><th>最後に書かれた</th></tr></thead>
-<tbody>{cells}</tbody>
+<thead>
+<tr><th>name</th><th>kind</th><th>docs</th><th>最後に書かれた</th><th>schema_version</th></tr>
+</thead>
+<tbody>
+{"".join(cells)}
+</tbody>
 </table>
+{empty}
+{tag_html}
 <p class="muted">
-ここは<strong>機械が書き換える置き場</strong>で、人が覚えたことは入らない
-(そちらは短期記憶)。分けてあるのは、人が消すと収集がまるごと消えること、
-固化に紛れると長期記憶に設定が焼かれること、1 件のメモに収める都合で中身に
-上限が要ることの 3 つを避けるため。<strong>直す口は持たない</strong> ——
-ここを手で書き換えても、次に機械が書いた拍子に消える(直すのはそれぞれの画面から)。
+長期記憶と同じ口で引ける(<code>/v1/&lt;name&gt;/search|doc|filter|tags</code>)。
+取り込みで焼くソースではないので、ダンプの日付も焼いた時刻も持たない
+(再構築も削除もできない。書き込みが直接届く場所){what}
+</p>
+<p class="muted">
+設定の置き場に<strong>直す口は持たない</strong> —— ここを手で書き換えても、
+次に機械が書いた拍子に消える(直すのはそれぞれの画面から)。
 </p>
 """
 
@@ -1681,7 +1569,7 @@ def _answer_status_html() -> str:
 # 縦に並べると、いま見たい節に着くまで無関係な表を何度もスクロールすることになる。
 # 玄関に要約を置き、深いところは選んで入る。
 PAGES = (
-    ("/admin/memory", "記憶", "溜めて引く。短期記憶・長期記憶・固化・初期化"),
+    ("/admin/memory", "記憶", "溜めて引く。短期記憶・長期記憶・初期化"),
     # **記憶から切り出した面。** 記憶の中に畳んでいた頃は、収集を 1 本見るのに
     # 長期記憶の一覧と初期化の表をまたいでいた —— 無人で回る層は毎日見に来る側で、
     # 一度入れたら開かない表と同じ高さに置く理由が無い。ワーカーも一緒に置く
@@ -1887,12 +1775,11 @@ def admin_memory(request: Request):
         return f'{version} <span class="stale">(最新: {latest_schema})</span>'
 
     # 知識は 2 層あり、扱いが違う(下の _short_term_section_html):
-    # 長期(大脳)= 取り込みで焼く読み取り専用のソース(素材はダンプか、固めた短期記憶)、
-    # 短期(海馬)= 唯一書き込める notes。
-    # **設定の置き場(machine)も書き込める側に居る**が、あれは覚えたことではないので
-    # 自分の節に出す(下の _machine_html)。ここの表は notes だけを見る。
+    # 長期(大脳)= 取り込みで焼く読み取り専用のソース、
+    # 短期(海馬)= 書き込める置き場(覚えたことも、機械が書く設定も、こちら側)。
+    # **表を分けない** —— 置き場が別なのはファイルの話で、人が消せないのは
+    # 保存先が違うからであって、同じ表に並んでいるかどうかとは関係が無い
     long_term = {n: s for n, s in sources.items() if not s.mutable}
-    short_term = {n: s for n, s in sources.items() if s.mutable}
 
     rows = "\n".join(
         f"<tr>"
@@ -1928,10 +1815,7 @@ def admin_memory(request: Request):
     }
     rows_source = {
         n: m for n, m in uninitialized.items()
-        # 固化のテーマ(kind=memory)はここに出さない。長期記憶に足すという意味では
-        # 同じだが、素材は外のダンプではなく短期記憶なので、操作は下の固化の節に集める
-        # (両方に出すと、どちらを押せばいいのか読めない)
-        if m.get("group") not in ("osm", "wikipedia") and m.get("kind") != "memory"
+        if m.get("group") not in ("osm", "wikipedia")
     }
     init_rows = "\n".join(
         f"<tr>"
@@ -1971,16 +1855,13 @@ def admin_memory(request: Request):
 {nav_html("/admin/memory")}
 <h1>記憶(溜めて引く)</h1>
 <p class="muted">
-知識は 2 層。<strong>短期記憶</strong>は Chiezo で唯一書き込める置き場で、覚えたことが
-その場で積まれる。<strong>長期記憶</strong>は読み取り専用のソースで、ダンプから焼いたものと、
-短期記憶から移した(固化した)ものが並ぶ。引くときの口はどちらも同じ。
+知識は 2 層。<strong>短期記憶</strong>は Chiezo で書き込める置き場で、覚えたことも、
+機械が書く設定もこちら側。<strong>長期記憶</strong>は読み取り専用のソースで、ダンプから焼いたものと、
+引くときの口はどちらも同じ。
 </p>
 
-<h2 id="short-term">短期記憶(覚えたこと)</h2>
-{_short_term_section_html(short_term)}
-
-<h2 id="chiezo-settings">設定の置き場(機械が書くもの)</h2>
-{_machine_html(sources)}
+<h2 id="short-term">短期記憶(書き込める置き場)</h2>
+{_short_term_section_html(sources)}
 
 <h2 id="long-term">長期記憶(ためた知識)</h2>
 <p>登録ソース数: {len(long_term)} / 最新のスキーマバージョン: {latest_schema}</p>
@@ -2014,8 +1895,6 @@ def admin_memory(request: Request):
 </table>
 </details>
 
-<h2 id="consolidation">短期記憶から移す(固化)</h2>
-{_memory_html(sources, disabled)}
 """
     return HTMLResponse(content=page_shell("記憶", body))
 
@@ -2318,7 +2197,7 @@ def trigger_run(source: str) -> None:
             502,
             {
                 "error": "chiezo-trigger unreachable (details in app logs)",
-                "hint": "長期記憶へ書き込むときだけ要るサービス。立てるまで初期化・再構築・固化はできない",
+                "hint": "長期記憶へ書き込むときだけ要るサービス。立てるまで初期化・再構築・削除はできない",
             },
         ) from e
     if res.status_code >= 400:
@@ -3351,13 +3230,6 @@ def _colour_diff(text: str) -> str:
         else:
             out.append(line)
     return "\n".join(out)
-
-
-@router.post("/admin/memory/sweep")
-def admin_sweep_memory(request: Request):
-    """長期記憶へ移し終えたメモを、短期記憶から消す。"""
-    memory.sweep(request.app.state.sources)
-    return RedirectResponse(url="/admin/memory#consolidation", status_code=303)
 
 
 def request_origin(request: Request) -> str:

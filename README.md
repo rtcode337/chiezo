@@ -167,37 +167,6 @@ compose では既定で有効(`data/notes/` に SQLite が 1 つできる)。`CH
 - API の詳細 → [API リファレンス](docs/api-reference.md#notes唯一書き込めるソースの-rest)
 - なぜこの形か → [設計メモ](docs/design-notes.md#覚えるnotesはなぜ-chiezo-に置くのか)
 
-## 固める(短期記憶 → 長期記憶)
-
-覚えたことのうち**残す価値があると判断したもの**を、読み取り専用のソース 1 つ
-(`memory`)へ焼ける。焼いた先は普通のソースなので `/v1/memory/search` で引けるし、
-短期記憶を空けても中身は残る。
-
-```bash
-# 残すものに印を付ける(人でも AI でもよい。ただのタグなので専用の口は無い)
-curl -s -X PATCH "$BASE/v1/notes/3" -H 'Content-Type: application/json' \
-  -d '{"tags":"環境,_chiezo_consolidate"}'
-# 焼く(普通の取り込み。管理画面の「固化する」でも、CLI でも)
-docker compose --profile ingest run --rm -e SOURCE=memory chiezo-ingest
-# 移し終えたメモを短期記憶から片付ける(長期側には残る)
-curl -s -X POST "$BASE/v1/memory/sweep"
-```
-
-**焼き上がった時点で印が `_chiezo_consolidated` に変わる**(長期側に反映されたことを
-確かめてから付く)。そこから先は思い出す先が長期側なので、「片付ける」で短期記憶からは
-消してよい。
-
-素材は**前世代の長期記憶 + 印の付いたメモ**なので、追加も更新も削除も短期記憶に
-印を付けるだけで反映される(削除は `_chiezo_tombstone` も付ける)。焼き直しは毎回の
-作り直しなので、失敗しても前の世代へ戻せる。
-
-**判定を AI に任せられる**。「短期記憶を順に見て、残す価値があるものに印を付けて」と
-頼めば、MCP の `update` でそのまま回る —— 眠っている間に海馬の内容を大脳へ移すのと
-同じことを、1 件ずつ吟味しながらやらせる形。
-
-- API の詳細 → [API リファレンス](docs/api-reference.md#固化短期記憶--長期記憶)
-- なぜこの形か → [設計メモ](docs/design-notes.md#長期記憶と短期記憶を分ける)
-
 ## やること(タスク・ルール)
 
 Claude Code に頼みたいことのメモと、守らせたい共通ルールを 1 か所で持つ画面

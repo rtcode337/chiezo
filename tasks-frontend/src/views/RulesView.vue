@@ -117,7 +117,7 @@ const sorter = useDragSort<Rule>(async (_key, ordered) => {
   try {
     // 長期記憶へ移したものは並び順を持てない(順番は短期側の extra に書く)ので送らない。
     // あちらは一覧の末尾に固まって出る
-    await rules.reorder(ordered.filter((r) => !r.frozen).map((r) => r.id))
+    await rules.reorder(ordered.map((r) => r.id))
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   }
@@ -158,38 +158,19 @@ const sorter = useDragSort<Rule>(async (_key, ordered) => {
         v-for="(rule, i) in sorter.view('rules', rules.all)"
         :key="rule.id"
         class="item"
-        :class="{
-          'item--dragging': sorter.isDragging('rules', i),
-          'item--frozen': rule.frozen,
-        }"
-        @pointerdown="rule.frozen || sorter.start('rules', rules.all, i, '.list', $event)"
+        :class="{ 'item--dragging': sorter.isDragging('rules', i) }"
+        @pointerdown="sorter.start('rules', rules.all, i, '.list', $event)"
         @click.capture="sorter.clickGuard"
       >
         <div class="row">
-          <!-- 長期記憶へ移したものは押しても直せないので、押せる見た目にしない -->
-          <div v-if="rule.frozen" class="row__open row__open--frozen">
-            <span class="row__title" :class="{ 'row__title--off': !rule.enabled }">
-              {{ rule.title }}
-            </span>
-            <span class="row__body">{{ rule.body }}</span>
-          </div>
-          <button v-else type="button" class="row__open" @click="openEdit(rule)">
+          <button type="button" class="row__open" @click="openEdit(rule)">
             <span class="row__title" :class="{ 'row__title--off': !rule.enabled }">
               {{ rule.title }}
             </span>
             <span class="row__body">{{ rule.body }}</span>
           </button>
-          <!-- **移したものは切り替えられない。** 効いていることは連結で分かるので、
-               なぜ触れないのかだけを札で言う -->
-          <span
-            v-if="rule.frozen"
-            class="frozen-note"
-            title="長期記憶へ移したもの(効いていますが直せません)"
-          >
-            長期記憶
-          </span>
           <!-- data-no-drag: トグルの長押しはドラッグにしない -->
-          <label v-else class="toggle" data-no-drag :title="rule.enabled ? '有効' : '無効'">
+          <label class="toggle" data-no-drag :title="rule.enabled ? '有効' : '無効'">
             <input
               type="checkbox"
               :checked="rule.enabled"
@@ -380,25 +361,9 @@ const sorter = useDragSort<Rule>(async (_key, ordered) => {
 }
 
 /* 長期記憶へ移したもの。**押せない**ので、押せる見た目にしない */
-.item--frozen {
-  opacity: 0.75;
-}
 
-.row__open--frozen {
-  cursor: default;
-}
 
 /* 切り替えの代わりに出す札。なぜ触れないのかを言う */
-.frozen-note {
-  align-self: center;
-  flex: none;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 0.125rem 0.5rem;
-  color: var(--muted);
-  font-size: 0.75rem;
-  white-space: nowrap;
-}
 
 .row__title {
   font-weight: 600;

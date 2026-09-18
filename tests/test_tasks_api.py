@@ -46,8 +46,6 @@ class TestShape:
         task = _task(api)
         assert set(task) == {
             "id", "title", "body", "status", "flagged", "sortOrder", "createdAt", "updatedAt",
-            # 長期記憶へ移し終えたもの(画面は編集の口を出さない)
-            "frozen",
         }
 
     def test_project_id_is_absent_when_unassigned(self, api):

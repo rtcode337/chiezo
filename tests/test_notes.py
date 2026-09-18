@@ -587,7 +587,7 @@ class TestShortTermIsNotARebuildableSource:
         assert "最後に書かれた" in html
         assert "決定 1" in html
         # 長期側にしか意味の無い列は持ち込まない
-        section = html[html.index("短期記憶(覚えたこと)"):html.index("長期記憶(ためた知識)")]
+        section = html[html.index("短期記憶(書き込める置き場)"):html.index("長期記憶(ためた知識)")]
         assert "dump_date" not in section
         assert "built_at" not in section
         # 件数とスキーマは長期側と同じ意味なので同じ出し方にする

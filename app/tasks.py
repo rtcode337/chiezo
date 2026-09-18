@@ -10,7 +10,7 @@
 |--------------------------|------|
 | タスク                   | tag `todo` の文書 |
 | 状態 未着手              | 状態のタグが無い(既定。既存のメモに手を入れずに済む) |
-| 状態 着手中 / 完了       | tag `着手中` / `完了`(完了にすると `_chiezo_consolidate` も付く) |
+| 状態 着手中 / 完了       | tag `着手中` / `完了` |
 | 「直すのが大変そう」の印 | tag `難所`(状態とは別軸) |
 | タスクの所属             | プロジェクト名のタグ(リポジトリ名をそのまま使う既存の慣習に乗る) |
 | プロジェクト             | tag `project` の文書。見出しが名前、本文が説明 |
@@ -30,13 +30,12 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from fastapi import HTTPException
 
-from app import db, memory, notes, settings_store
+from app import db, notes, settings_store
 
 log = logging.getLogger("chiezo.app")
 
@@ -109,67 +108,17 @@ _TAGGED_SQL = (
 
 
 def _rows_tagged(tag: str) -> list[dict]:
-    """そのタグが付いた行。**長期記憶へ移したぶんも混ぜる**。
-
-    固化は「もう触らないものを短期から下ろす」操作なので、下ろした瞬間に画面から
-    消えてしまうと、片付いたタスクも、寝かせたルールも見えなくなる ——
-    **移した先に残っているのに読めないのでは、移す気にならない**。
-    連結するルール(`combined`)も同じで、長期へ逃がした途端に効かなくなっては困る。
-    """
+    """そのタグが付いた行。"""
     path = notes.require_path()
     notes.ensure_db()
-    rows = [dict(r) for r in db.query(path, _TAGGED_SQL, (tag,))]
-    return rows + _frozen_rows(tag)
-
-
-def _frozen_rows(tag: str) -> list[dict]:
-    """長期記憶の側にある、そのタグが付いた行。**読むだけ**。
-
-    **`doc_id` は符号を反転させて持つ。** 短期と長期は別の DB で採番しているので
-    そのままでは重なる —— 画面が鍵として使えなくなるし、書き換えの口に渡ったときに
-    別のものを直してしまう。負の数にしておけば、短期側(必ず正)と混ざらない。
-    """
-    path = memory.long_term_path()
-    if path is None:
-        return []
-    try:
-        rows = db.query(path, _TAGGED_SQL, (tag,))
-    except sqlite3.Error:
-        # まだ焼けていない・古いスキーマ(`doc_tags` を持たない)。読めないだけで、
-        # 短期側は今までどおり出す
-        log.warning("long-term tasks lookup failed", exc_info=True)
-        return []
-    return [{**dict(r), "doc_id": -r["doc_id"], "frozen": True} for r in rows]
+    return [dict(r) for r in db.query(path, _TAGGED_SQL, (tag,))]
 
 
 def _row(doc_id: int) -> dict | None:
-    """1 件ぶんの行。**負の doc_id は長期記憶の側**(`_frozen_rows`)。"""
-    if doc_id < 0:
-        return next((r for r in _frozen_rows(TAG_TASK) + _frozen_rows(TAG_RULE)
-                     if r["doc_id"] == doc_id), None)
     path = notes.require_path()
     notes.ensure_db()
     rows = db.query(path, f"SELECT {_ROW_COLUMNS} FROM docs WHERE doc_id = ?", (doc_id,))
     return dict(rows[0]) if rows else None
-
-
-def _frozen(row) -> bool:
-    """長期記憶へ移し終えたもの(直せない)。"""
-    return bool(row.get("frozen")) if isinstance(row, dict) else False
-
-
-def refuse_if_frozen(item) -> None:
-    """固化したものへの書き換えを断る。
-
-    **消すのではなく断る。** 中身は長期記憶にあり、短期側にはもう無い ——
-    直すには先に短期へ引き出す必要があるが、その口はまだ無い。
-    黙って何も起きないより、理由を言って断るほうがよい。
-    """
-    if getattr(item, "frozen", False):
-        raise _conflict(
-            "長期記憶へ移したものは直せません"
-            "(直すには短期記憶へ引き出す必要があります)"
-        )
 
 
 def _tags_of(row) -> list[str]:
@@ -205,7 +154,6 @@ class Task:
     tags: list[str]
     # 長期記憶へ移し終えたもの。**読めるが直せない**(中身は長期側にあり、
     # 短期へ引き出す口はまだ無い)
-    frozen: bool = False
 
 
 def _task_of(row, project_names: set[str]) -> Task:
@@ -230,7 +178,6 @@ def _task_of(row, project_names: set[str]) -> Task:
         created_at=_created_at(row),
         updated_at=row["updated_at"],
         tags=tags,
-        frozen=_frozen(row),
     )
 
 
@@ -290,16 +237,6 @@ def _task_tags(status: str, flagged: bool, project: str | None, keep: list[str])
     """タスクのタグを組み立てる。`keep` に渡した「構造でもプロジェクトでもないタグ」は残す。
 
     メモとして付けた `環境` や `トラブルシュート` を、タスクの操作で落とさないため。
-
-    **完了にしたら固化の対象にする**(`notes.CONSOLIDATE_TAG` を足す)。片付いたタスクは
-    「やった記録」として残す価値があり、しかも**待ち行列からは外れてほしい**もので、
-    固化はまさにその 2 つを同時にやる(長期記憶へ移し、`recall` の既定から外す)。
-    完了のたびに人が印を付けて回るなら、結局そこが抜ける。
-
-    **戻したら外す**。完了でなくなったものは「やった記録」ではないので、
-    次の固化の素材から下ろす。ただし**すでに焼き終えたもの(`_chiezo_consolidated`)には触らない** ——
-    長期側に入っているという事実は、こちらの都合で書き換えるものではない
-    (焼き直しが要るかは notes 側が本文の変更で判断する)。
     """
     tags = [TAG_TASK]
     if status in STATUS_TAGS:
@@ -308,10 +245,7 @@ def _task_tags(status: str, flagged: bool, project: str | None, keep: list[str])
         tags.append(TAG_FLAGGED)
     if project:
         tags.append(project)
-    rest = [t for t in keep if t != notes.CONSOLIDATE_TAG]
-    if status == STATUS_DONE and notes.CONSOLIDATED_TAG not in rest:
-        rest.append(notes.CONSOLIDATE_TAG)
-    tags.extend(t for t in rest if t not in tags)
+    tags.extend(t for t in keep if t not in tags)
     return ",".join(tags)
 
 
@@ -369,7 +303,6 @@ def update_task(
     外すときは `unlink_project=True` を渡す。
     """
     current = require_task(doc_id)
-    refuse_if_frozen(current)
     row = _row(doc_id)
     names = _project_names()
 
@@ -440,7 +373,6 @@ def reorder_tasks(project: str | None, doc_ids: list[int]) -> list[Task]:
         raise _bad_request("doc_ids に重複があります")
     for index, doc_id in enumerate(doc_ids, start=1):
         task = require_task(doc_id)
-        refuse_if_frozen(task)
         if task.project != project:
             raise _bad_request(f"別のプロジェクトのタスクは同時に並び替えできません: doc_id={doc_id}")
         row = _row(doc_id)
@@ -452,7 +384,6 @@ def reorder_tasks(project: str | None, doc_ids: list[int]) -> list[Task]:
 
 
 def delete_task(doc_id: int) -> None:
-    refuse_if_frozen(require_task(doc_id))
     notes.delete(doc_id)
 
 
@@ -770,7 +701,6 @@ class Rule:
     updated_at: str
     # 長期記憶へ移し終えたもの。**効いているが直せない** —— 連結(`combined`)には
     # 今までどおり載る(逃がした途端に効かなくなっては、逃がす気にならない)
-    frozen: bool = False
 
 
 def _rule_of(row) -> Rule:
@@ -782,18 +712,15 @@ def _rule_of(row) -> Rule:
         sort_order=int(_extra_of(row).get("sort_order") or 0),
         created_at=_created_at(row),
         updated_at=row["updated_at"],
-        frozen=_frozen(row),
     )
 
 
 def list_rules() -> list[Rule]:
     """ルール一覧。**長期記憶へ移したものは末尾へ固める**。
 
-    並び順(`sort_order`)は短期側でしか振り直せないので、移したものを間に混ぜると、
-    並び替えるたびに位置が動いたように見える。末尾なら「寝かせたもの」として読める。
     """
     rules = [_rule_of(row) for row in _rows_tagged(TAG_RULE)]
-    rules.sort(key=lambda r: (r.frozen, r.sort_order, abs(r.doc_id)))
+    rules.sort(key=lambda r: (r.sort_order, r.doc_id))
     return rules
 
 
@@ -832,7 +759,6 @@ def update_rule(
     enabled: bool | None = None,
 ) -> Rule:
     current = require_rule(doc_id)
-    refuse_if_frozen(current)
     if title is not None and not title.strip():
         raise _bad_request("title を空にはできません")
     if body is not None and not body.strip():
@@ -846,37 +772,13 @@ def update_rule(
     return require_rule(doc_id)
 
 
-def mark_rule_for_long_term(doc_id: int) -> Rule:
-    """そのルールを**長期記憶へ逃がす**印を付ける(`notes.CONSOLIDATE_TAG`)。
-
-    **すぐには移らない。** 焼くのは取り込みで、移し終えてから短期側を片付ける ——
-    ここの仕事は印を付けるところまでで、あとは固化の流れに乗る(完了したタスクと同じ)。
-
-    **無効にするのとは違う。** 無効(`TAG_RULE_DISABLED`)は連結から外す = もう
-    効かせない、の意味。こちらは**効かせたまま、直す対象から下ろす** ——
-    もう触るつもりは無いが守らせたいルールのための道。
-    """
-    rule = require_rule(doc_id)
-    refuse_if_frozen(rule)
-    tags = _tags_of(_row(doc_id))
-    if notes.CONSOLIDATE_TAG not in tags:
-        tags.append(notes.CONSOLIDATE_TAG)
-        notes.update(doc_id, tags=",".join(tags))
-    return require_rule(doc_id)
-
-
 def delete_rule(doc_id: int) -> None:
-    refuse_if_frozen(require_rule(doc_id))
     notes.delete(doc_id)
 
 
 def reorder_rules(doc_ids: list[int]) -> list[Rule]:
-    """並び替え。`doc_ids` は全ルールを望む順で過不足なく(プロジェクトと同じ方式)。
-
-    **長期記憶へ移したものは数えない** —— 順番は `extra` に書くので、直せない
-    ものを混ぜると渡す側が必ず失敗する。あちらは並びの末尾に固まって出る。
-    """
-    existing = {r.doc_id for r in list_rules() if not r.frozen}
+    """並び替え。`doc_ids` は全ルールを望む順で過不足なく(プロジェクトと同じ方式)。"""
+    existing = {r.doc_id for r in list_rules()}
     if not doc_ids or set(doc_ids) != existing or len(set(doc_ids)) != len(doc_ids):
         raise _bad_request("doc_ids には全ルールの doc_id を過不足なく指定してください")
     for index, doc_id in enumerate(doc_ids, start=1):

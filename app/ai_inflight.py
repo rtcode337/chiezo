@@ -79,7 +79,6 @@ CALLER_LABELS = {
     "agent": "agent",
     "admin": "管理画面",
     "media": "生成の依頼",
-    "memory": "記憶の固化",
 }
 
 

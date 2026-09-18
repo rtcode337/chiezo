@@ -162,17 +162,8 @@ SCHEMA_VERSION = 4
 # **値は英語にする。** 機械しか読まない印なので、日本語だと人が付けたタグに見える。
 TAG_PREFIX = "_chiezo_"
 
-# 「これは長期記憶へ移す」の印。人でも AI でも付けられる —— 専用の口は持たず、
-# `update` でタグを足すだけ(判定を回すのは MCP の道具でできる)。
-CONSOLIDATE_TAG = f"{TAG_PREFIX}consolidate"
-
-# 長期記憶へ焼き終えた印。`recall` の既定から外れる(思い出す先は長期側になるため)。
-# 付けるのは固化そのものではなく、焼き上がりを確かめた「片付け」の操作
-# (`app/memory.py` の sweep)。焼けていないものに印だけ付くことがない。
-CONSOLIDATED_TAG = f"{TAG_PREFIX}consolidated"
-
 # 長期記憶から同じ見出しの文書を落とすための墓標。本文ではなく「消す」という**指示**を
-# 運ぶメモなので、焼くときに対象ごと落とし、墓標自体も長期側へは焼かない。
+# 運ぶメモなので、焼くときに対象ごと落とす。集める層が使う(`app/collect.py`)。
 TOMBSTONE_TAG = f"{TAG_PREFIX}tombstone"
 
 # **消えたもの**の印。上の墓標が「消してくれ」という指示なのに対し、こちらは
@@ -217,8 +208,6 @@ CANONICAL_TAGS: dict[str, str] = {
     "本番": "本番運用の事実(URL・構成)",
     "設計メモ": "設計判断・検討の記録",
     "トラブルシュート": "ハマった症状と原因・回避策",
-    CONSOLIDATE_TAG: "長期記憶へ移すもの。次の固化で焼かれる",
-    CONSOLIDATED_TAG: "長期記憶へ移し終えたもの。recall の既定からは外れる",
     TOMBSTONE_TAG: "長期記憶から同じ見出しの文書を落とす(本文ではなく指示)",
     REMOVED_TAG: "消えたもの。既定では検索に出ない(include_removed で含められる)",
     UNREVIEWED_TAG: "まだ AI が目を通していないもの。既定では検索に出ない"
@@ -424,9 +413,6 @@ def update(
     - `extra` も同じく丸ごと置き換え。空の dict を渡すと外れる
     - `updated_at` は現在時刻になる。recall は新しい順なので、**書き換えたメモは
       先頭に浮く**(「最新の判断が上に来る」は想起の用途では望ましい側)
-    - 本文か見出しを直すと `CONSOLIDATED_TAG` が外れる(`tags` を明示したときは
-      渡した値がそのまま結果になる)。中身が変わったなら「長期記憶へ移し終えた」は
-      もう本当ではないので、次の固化の対象に戻す
     - タイトルの衝突は `add` と同じ規則で doc_id を足して逃がす
     - 見つからなければ None(HTTP 層が 404 にする)
     """
@@ -459,11 +445,6 @@ def update(
 
             old_tags = json.loads(row["tags"] or "[]")
             new_tags = split_tags(tags) if tags is not None else old_tags
-            if (text is not None or title is not None) and tags is None:
-                # 中身が変わったなら「長期記憶へ移し終えた」はもう本当ではない。
-                # 印を残すと、直したはずの内容が固化の対象から外れたまま埋もれる
-                # (次に焼くときの素材は未固化のものだけなので、黙って反映されない)。
-                new_tags = [t for t in new_tags if t != CONSOLIDATED_TAG]
             new_extra = extra if extra is not None else load_extra(row["extra"])
 
             now = _now()
@@ -662,7 +643,6 @@ def recall(
     offset: int = 0,
     fields: str | None = None,
     max_chars: int = RECALL_MAX_CHARS_DEFAULT,
-    consolidated: bool = False,
 ) -> dict:
     """メモを思い出す。新しい順に返す。
 
@@ -674,11 +654,6 @@ def recall(
     本文は既定で `RECALL_MAX_CHARS_DEFAULT` 文字に切り、切ったものには
     `truncated: true` を立てる(黙って切ると「これで全部」と読まれる)。
     全文は `/v1/notes/doc/{doc_id}` で取り直す。`max_chars=0` で切らない。
-
-    長期記憶へ移し終えたもの(`CONSOLIDATED_TAG`)は既定で返さない。思い出す先が
-    長期側に移っているのに短期側にも出ると、同じ知識が二重に並ぶため。まだ消して
-    いないだけの控えを読みたいときは `consolidated=True`(検索・タグ絞り込みなど
-    ほかの経路は今までどおり全部を見せる —— 隠すのは時系列の想起だけ)。
 
     上限はここで担保する。REST の `Query(ge=1, le=…)` は HTTP の口にしか効かず、
     MCP(`app/mcp_server.py`)は app の関数を Python から直接呼ぶので通らない。
@@ -703,10 +678,6 @@ def recall(
     for name in split_tags(tag):
         where.append("d.doc_id IN (SELECT dt.doc_id FROM doc_tags dt WHERE dt.tag = ?)")
         params.append(name)
-    if not consolidated:
-        where.append("d.doc_id NOT IN (SELECT dt.doc_id FROM doc_tags dt WHERE dt.tag = ?)")
-        params.append(CONSOLIDATED_TAG)
-
     match = build_match_query(q) if q else None
     if q and match is None:
         # trigram で扱えない短い語。本文の部分一致に落とす(件数が小さいので走査で足りる)

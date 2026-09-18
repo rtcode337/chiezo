@@ -118,11 +118,11 @@ class TestAdapter:
         何をすれば直るのかが読めない(素材が空で断られたときに実際にそうなった)。
         """
         _Handler.refuse = (409, json.dumps(
-            {"error": "nothing to consolidate", "hint": "印を付けたメモがない"},
+            {"error": "nothing to serve", "hint": "配るものがない"},
             ensure_ascii=False,
         ).encode())
         adapter = remote.load_remote_adapters(plugin)["private_docs"]()
-        with pytest.raises(remote.PluginError, match="nothing to consolidate"):
+        with pytest.raises(remote.PluginError, match="nothing to serve"):
             adapter.fetch(tmp_path)
 
     def test_a_refusal_without_json_still_names_the_status(self, plugin, tmp_path):

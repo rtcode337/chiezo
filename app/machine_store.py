@@ -5,7 +5,6 @@
 読み書きする場所なので、混ぜると 3 つ困る:
 
 - 人が消せてしまう(消すと収集がまるごと消える)
-- 固化(`app/memory.py`)の対象に紛れる。長期記憶に設定が焼かれても意味が無い
 - **1 件のメモに収める都合で、中身に上限が要る**。実際、消したものの控え(墓場)は
   2,000 件で頭打ちにしてあり、溢れると古いものから静かに戻ってくる
 
@@ -37,7 +36,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import sqlite3
 from datetime import UTC, datetime
@@ -47,17 +45,12 @@ from fastapi import HTTPException
 
 from app import notes
 
-log = logging.getLogger("chiezo.app")
-
 # ソース名は **jawiki や収集と同じ平たい名前空間**に並ぶ。`settings` のような
 # 一般の語にすると、外のアプリが同じ名前で収集を頼んだときにぶつかる ——
 # ぶつかった側は「知らないソース」として静かに置き換わる形になるので、
 # **このサーバーのものだと分かる名前**にしてある。
 SOURCE_NAME = "chiezo_settings"
 SOURCE_KIND = "chiezo_settings"
-
-# 改名する前の名前。**置き場を作るときに 1 度だけ見る**(`_renamed_from_old`)。
-OLD_SOURCE_NAME = "machine"
 
 # 見出しの組み立て方。`collect/definitions` のような形になる
 KEY_SEP = "/"
@@ -75,27 +68,6 @@ def is_enabled() -> bool:
 def db_path() -> Path | None:
     d = state_dir()
     return d / f"{SOURCE_NAME}.db" if d else None
-
-
-def _renamed_from_old() -> None:
-    """前の名前(`machine.db`)で置かれていたら、いまの名前へ移す。
-
-    **入れ替えた瞬間に効かせる**ので、手で動かす手順は要らない。**新しいほうが
-    既にあれば触らない** —— 両方あるのは作り直した後なので、古いほうを被せると
-    その間に書かれたものが消える。
-
-    **巻き戻すと見えなくなる。** 古いイメージは `machine.db` を探すので、収集の
-    定義が空に見える(ファイルは残っているので消えてはいない)。戻すなら、
-    ファイル名も手で戻すことになる。
-    """
-    d = state_dir()
-    if d is None:
-        return
-    old, new = d / f"{OLD_SOURCE_NAME}.db", d / f"{SOURCE_NAME}.db"
-    if not old.is_file() or new.exists():
-        return
-    old.rename(new)
-    log.info("renamed the settings store: %s -> %s", old.name, new.name)
 
 
 def require_path() -> Path:
@@ -132,18 +104,10 @@ def ensure_db() -> Path | None:
     path = db_path()
     if path is None:
         return None
-    _renamed_from_old()
     conn = _connect()
     try:
         with conn:
             if _has_table(conn, "docs"):
-                # **中の名乗りも直す。** 表を作り直さずに移してきた置き場は、
-                # meta に前の名前が残ったまま —— ソース名はそちらから読むので、
-                # ファイルだけ改名しても一覧には古い名前で出る
-                conn.execute(
-                    "UPDATE meta SET source = ?, source_kind = ? WHERE source = ?",
-                    (SOURCE_NAME, SOURCE_KIND, OLD_SOURCE_NAME),
-                )
                 return path
             conn.executescript(notes.SCHEMA_DDL)
             conn.executescript(notes.INDEX_DDL)
@@ -218,7 +182,7 @@ def put(kind: str, key: str, body: str) -> None:
     """その 1 件を置く(あれば置き換える)。
 
     **`doc_id` は引き継ぐ** —— 文書の URL が書き換えのたびに変わらないようにする
-    (固化や収集の焼き直しと同じ約束)。
+    (収集の焼き直しと同じ約束)。
     """
     ensure_db()
     title = _title(kind, key)

@@ -2860,7 +2860,7 @@ class TestThePromptExample:
 
 
 class TestBaking:
-    """長期記憶へ焼く(固化と同じ形)。
+    """長期記憶へ焼く。
 
     **毎回焼き直すのに積み上がる**のがこの層の芯なので、素材に前世代が入ることと、
     doc_id が動かないことを押さえる。
@@ -2881,7 +2881,7 @@ class TestBaking:
         assert titles == ["焼いてある", "新しく集めた"]
 
     def test_it_keeps_doc_ids_so_urls_do_not_move(self, sample, baked):
-        """焼き直しても文書の URL が変わらないようにする(固化と同じ)。"""
+        """焼き直しても文書の URL が変わらないようにする。"""
         sources = baked([("焼いてある", "前世代の本文")])
         docs, _diff = collect.material(
             collect.get("news"),
@@ -3360,7 +3360,7 @@ class TestRefineMode:
     **返さなかったものはそのまま残る**のがこの層の芯。かつては「返ったものが新しい
     全体」にしていたが、それだと返し忘れが黙って消えた —— 無人で毎日回る層でいちばん
     起きやすい壊れ方で、1 件ずつ削れていくのは歯止めをすり抜ける。
-    消すのは墓標で明示したときだけ(固化と同じ契約)。
+    消すのは墓標で明示したときだけ。
     """
 
     @pytest.fixture
@@ -4238,21 +4238,37 @@ class TestSeeingTheMachineStore:
         assert after["doc_id"] == before["doc_id"]
         assert after["bytes"] > before["bytes"]
 
-    def test_the_screen_points_at_the_source(self, sample):
+    def test_it_stands_next_to_the_short_term_memory(self, sample):
+        """**表を分けない。** 置き場が別なのはファイルの話で、人が消せないのは
+        保存先が違うからであって、同じ表に並んでいるかどうかとは関係が無い。
+        """
         from app import machine_store
         from app.views import admin
 
-        html = admin._machine_html({})
+        html = admin._short_term_section_html({})
 
-        assert f"{collect.DEFS_KIND}/{collect.DEFS_KEY}" in html
-        assert f"/search/{machine_store.SOURCE_NAME}/doc/" in html
+        assert machine_store.SOURCE_NAME in html
+        assert "notes" in html
+        assert "<h2" not in html, "節を分けない(見出しは呼ぶ側が 1 つだけ持つ)"
 
-    def test_it_says_so_when_there_is_no_place(self, monkeypatch):
+    def test_each_row_says_what_it_holds(self, sample):
+        """同じ表に並ぶので、何が入っているかは行の側に書く。"""
+        from app.views import admin
+
+        html = admin._short_term_section_html({})
+
+        assert "覚えたこと" in html
+        assert "収集の定義" in html
+
+    def test_without_a_place_only_the_notes_row_is_there(self, sample, monkeypatch):
+        from app import machine_store
         from app.views import admin
 
         monkeypatch.delenv("CHIEZO_STATE_DIR", raising=False)
+        html = admin._short_term_section_html({})
 
-        assert "設定の置き場は無効です" in admin._machine_html({})
+        assert machine_store.SOURCE_NAME not in html
+        assert "notes" in html
 
 
 class TestOpeningAPartition:
@@ -4942,106 +4958,3 @@ class TestTheUnreviewedMark:
 
         assert len(seen) == shown < len(previous), "切られたぶんは入らない"
         assert all(t in text for t in seen)
-
-
-class TestRenamingTheSettingsStore:
-    """設定の置き場の改名(`machine` → `chiezo_settings`)。
-
-    ソース名は jawiki や収集と**同じ平たい名前空間**に並ぶ。`settings` のような
-    一般の語にすると、外のアプリが同じ名前で収集を頼んだときにぶつかる ——
-    このサーバーのものだと分かる名前にしてある。
-    """
-
-    def _old_store(self, state, docs: int = 1):
-        import sqlite3
-
-        from app import notes
-
-        state.mkdir(parents=True, exist_ok=True)
-        path = state / "machine.db"
-        conn = sqlite3.connect(path)
-        conn.executescript(notes.SCHEMA_DDL)
-        conn.executescript(notes.INDEX_DDL)
-        conn.execute(
-            "INSERT INTO meta (source, source_kind, lang, dump_date, schema_version,"
-            " built_at) VALUES ('machine','machine',NULL,NULL,?,?)",
-            (notes.SCHEMA_VERSION, "2026-01-01T00:00:00+00:00"),
-        )
-        for i in range(docs):
-            conn.execute(
-                "INSERT INTO docs (doc_id,title,opening,body,tags,updated_at,rank_score)"
-                " VALUES (?,?,'','[]','[]','2026-01-01T00:00:00+00:00',0.0)",
-                (i + 1, f"collect/definitions{i}"),
-            )
-        conn.commit()
-        conn.close()
-        return path
-
-    def test_the_old_file_is_moved_over(self, tmp_path, monkeypatch):
-        """**入れ替えた瞬間に効かせる** —— 手で動かす手順を要らなくする。"""
-        from app import machine_store
-
-        state = tmp_path / "state"
-        monkeypatch.setenv("CHIEZO_STATE_DIR", str(state))
-        old = self._old_store(state)
-
-        machine_store.ensure_db()
-
-        assert not old.exists()
-        assert (state / "chiezo_settings.db").is_file()
-
-    def test_what_was_in_it_survives(self, tmp_path, monkeypatch):
-        from app import machine_store
-
-        state = tmp_path / "state"
-        monkeypatch.setenv("CHIEZO_STATE_DIR", str(state))
-        self._old_store(state, docs=3)
-
-        machine_store.ensure_db()
-
-        assert len(machine_store.records()) == 3
-
-    def test_the_name_inside_is_fixed_too(self, tmp_path, monkeypatch):
-        """ソース名は meta から読むので、ファイルだけ改名しても古い名前で出る。"""
-        import sqlite3
-
-        from app import machine_store
-
-        state = tmp_path / "state"
-        monkeypatch.setenv("CHIEZO_STATE_DIR", str(state))
-        self._old_store(state)
-
-        machine_store.ensure_db()
-
-        conn = sqlite3.connect(state / "chiezo_settings.db")
-        try:
-            assert conn.execute("SELECT source, source_kind FROM meta").fetchone() == (
-                machine_store.SOURCE_NAME, machine_store.SOURCE_KIND,
-            )
-        finally:
-            conn.close()
-
-    def test_an_existing_new_store_is_left_alone(self, tmp_path, monkeypatch):
-        """**両方あるのは作り直した後。** 古いほうを被せると、その間に書かれたものが消える。"""
-        from app import machine_store
-
-        state = tmp_path / "state"
-        monkeypatch.setenv("CHIEZO_STATE_DIR", str(state))
-        self._old_store(state, docs=3)
-        machine_store.ensure_db()          # ここで移行が済む
-        self._old_store(state, docs=1)     # そのあと古い名前がもう一度現れた
-
-        machine_store.ensure_db()
-
-        assert len(machine_store.records()) == 3, "新しいほうを残す"
-        assert (state / "machine.db").is_file(), "古いほうは触らない"
-
-    def test_a_fresh_install_just_uses_the_new_name(self, tmp_path, monkeypatch):
-        from app import machine_store
-
-        state = tmp_path / "state"
-        monkeypatch.setenv("CHIEZO_STATE_DIR", str(state))
-
-        path = machine_store.ensure_db()
-
-        assert path is not None and path.name == "chiezo_settings.db"

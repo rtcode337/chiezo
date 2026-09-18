@@ -109,7 +109,6 @@ def _task_json(task: tasks.Task, project_ids: dict[str, int]) -> dict:
         "createdAt": task.created_at,
         "updatedAt": task.updated_at,
         # 長期記憶へ移し終えたもの。**読めるが直せない**(画面は編集の口を出さない)
-        "frozen": task.frozen,
     }
     # 未分類なら projectId ごと落とす(画面の型が「欠落する」前提)
     if task.project and task.project in project_ids:
@@ -140,7 +139,6 @@ def _rule_json(rule: tasks.Rule) -> dict:
         "createdAt": rule.created_at,
         "updatedAt": rule.updated_at,
         # 長期記憶へ移し終えたもの。**効いているが直せない**(連結には今までどおり載る)
-        "frozen": rule.frozen,
     }
 
 
@@ -351,12 +349,6 @@ def create_rule(body: RuleInput) -> dict:
 @router.patch("/rules/{rule_id}")
 def update_rule(rule_id: int, body: RuleInput) -> dict:
     return _rule_json(tasks.update_rule(rule_id, body.title, body.body, body.enabled))
-
-
-@router.post("/rules/{rule_id}/consolidate")
-def consolidate_rule(rule_id: int) -> dict:
-    """そのルールを長期記憶へ逃がす印を付ける。**すぐには移らない**(固化で焼く)。"""
-    return _rule_json(tasks.mark_rule_for_long_term(rule_id))
 
 
 @router.delete("/rules/{rule_id}", status_code=204)

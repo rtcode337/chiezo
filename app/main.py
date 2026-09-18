@@ -47,7 +47,6 @@ from app import (
     media,
     media_backends,
     media_providers,
-    memory,
     notes,
     providers,
     tasks_api,
@@ -163,18 +162,12 @@ def refresh_sources(app: FastAPI) -> bool:
     から走査するので、走査中にさらに変化があっても次回の呼び出しで拾い直せる。
     接続の開き直しはここではなく db.get_connection が実体の inode を見て行う。
 
-    **固化の印もここで追いつかせる**(`memory.catch_up`)。長期側が変わったという
-    合図をいちばん早く受け取るのがここで、固化が終わったかどうかは他に知る手立てが
-    無い(焼くのは別のプロセス)。人が押して回る手順にしていた頃は、焼けているのに
-    印が「まだ移していない」のまま残り、次の固化で同じものをもう一度焼いていた。
     """
     fp = data_dir_fingerprint(app.state.data_dir)
     if fp == app.state.data_fingerprint:
         return False
     app.state.data_fingerprint = fp
     app.state.sources = scan_all(app.state.data_dir)
-    if moved := memory.catch_up(app.state.sources):
-        log.info("memory: marked %d note(s) as consolidated", moved)
     return True
 
 
@@ -1789,17 +1782,10 @@ def recall_notes(
         ge=0,
         description="本文の頭から返す文字数。切ったら truncated が立つ。0 で切らない",
     ),
-    consolidated: bool = Query(
-        False,
-        description=(
-            f"長期記憶へ移し終えたもの({notes.CONSOLIDATED_TAG})も含める。"
-            "既定は含めない(思い出す先が長期側に移っているため)"
-        ),
-    ),
 ):
     return notes.recall(
         q=q, since=since, until=until, tag=tag, limit=limit, offset=offset,
-        fields=fields, max_chars=max_chars, consolidated=consolidated,
+        fields=fields, max_chars=max_chars,
     )
 
 
@@ -1827,50 +1813,6 @@ def forget(request: Request, doc_id: int):
     if not notes.delete(doc_id):
         raise HTTPException(404, {"error": f"note not found: doc_id={doc_id}"})
     return {"deleted": doc_id}
-
-
-# ---- 固化(短期記憶 → 長期記憶) ---------------------------------------------
-#
-# 実体は app/memory.py。ここは HTTP の口だけを持つ。口は 2 つで、性格が違う:
-#
-#   /v1/memory/status|sweep … 人と画面が使う(いま何件待っているか、焼いた後の片付け)
-#   /v1/memory/fetch        … 取り込み側が使う(素材の NDJSON)
-#
-# **焼く口はここに無い**。固化は普通の取り込みなので、起こすのは chiezo-trigger
-# (管理画面のボタン)か CLI(`SOURCE=memory`)。ソースの定義は ingest 側が持っている
-# (`ingest/sources/memory.py`)ので、設定を足さなくても一覧に出る。
-#
-# **`_chiezo_consolidate` を付ける口も無い**。ただのタグなので `PATCH /v1/notes/{id}` か MCP の
-# `update` で付く —— 専用の口を足すと、同じことをする経路が 2 つになる。
-
-
-@app.get("/v1/memory/status")
-def memory_status(request: Request):
-    """いま何件が固化を待っていて、長期側に何件あるか。"""
-    return memory.status(request.app.state.sources)
-
-
-@app.post("/v1/memory/sweep")
-def memory_sweep(request: Request):
-    """**長期記憶へ移し終えたメモを、短期記憶から消す。**
-
-    印の付け替えはここではない —— 固化が済んだ時点で自分から動く
-    (`memory.catch_up`)。ここがするのは、その印が付いたものを消すところまで。
-    **取り消せない**(長期側には同じ見出しの文書が残る)。
-    """
-    return memory.sweep(request.app.state.sources)
-
-
-@app.get("/v1/memory/fetch")
-def memory_fetch(
-    request: Request,
-    source: str = Query(memory.SOURCE_NAME, description="取り込み側が渡す名前(1 つだけ)"),
-):
-    """焼く素材(NDJSON)。返す形は `ingest/sources/remote.py` が読む形。"""
-    if source != memory.SOURCE_NAME:
-        raise HTTPException(404, {"error": f"unknown source: {source}"})
-    body = memory.ndjson(request.app.state.sources)
-    return Response(content=body, media_type="application/x-ndjson")
 
 
 # ---- 集める(AI に集めさせて溜めていく。既定では無効)-------------------------
@@ -2085,7 +2027,7 @@ def collect_create(request: Request, body: CollectionCreate):
 def collect_sources_catalog():
     """焼ける収集の一覧(ingest が引くカタログ)。
 
-    固化と同じ契約(`ingest/sources/remote.py`)。**無効なら空で返す** ——
+    取り込み側のプラグイン契約(`ingest/sources/remote.py`)。**無効なら空で返す** ——
     404 にすると、収集を使っていない構成で ingest 側が毎回エラーを踏む。
     """
     return {"sources": collect.catalog()}
@@ -2097,7 +2039,7 @@ async def collect_fetch(request: Request, source: str = Query(..., description="
 
     取り込みの中から呼ばれるので、集めた瞬間に焼かれる —— 途中に置き場が要らない。
     返すのは**前世代 + いま集めたぶん**で、前世代を混ぜるのが「毎回焼き直すのに
-    積み上がる」の要(固化と同じ)。返す形は `ingest/sources/remote.py` が読む形。
+    積み上がる」の要。返す形は `ingest/sources/remote.py` が読む形。
 
     **AI の応答ぶん待たせる**(十数秒〜数分)。取り込み側は待つ前提で作られている
     (ダンプのダウンロードも同じくらいかかる)。

@@ -75,12 +75,6 @@ export const useRuleStore = defineStore('rules', () => {
   }
 
   /** 並び替え。全ルールの id を望む順で渡す。 */
-  /** 長期記憶へ逃がす印を付ける。移るのは次の固化のとき */
-  async function consolidate(id: number) {
-    const saved = await api.consolidateRule(id)
-    all.value = sort(all.value.map((r) => (r.id === id ? saved : r)))
-  }
-
   async function reorder(ids: number[]) {
     all.value = sort(await api.reorderRules(ids))
   }
@@ -116,7 +110,6 @@ export const useRuleStore = defineStore('rules', () => {
     create,
     update,
     remove,
-    consolidate,
     reorder,
     combined,
     importMarkdown,

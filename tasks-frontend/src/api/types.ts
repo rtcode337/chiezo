@@ -34,7 +34,6 @@ export interface Task {
    * 長期記憶へ移し終えたもの。**読めるが直せない**(中身は長期側にあり、
    * 短期へ引き出す口はまだ無い)。id は短期側と重ならないよう負の数で来る。
    */
-  frozen: boolean
 }
 
 export interface TaskDetail extends Task {
@@ -57,7 +56,6 @@ export interface Rule {
    * 長期記憶へ移し終えたもの。**効いているが直せない** ——
    * 連結には今までどおり載る(逃がした途端に効かなくなっては、逃がす気にならない)。
    */
-  frozen: boolean
 }
 
 export interface RuleInput {

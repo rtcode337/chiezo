@@ -241,13 +241,7 @@ export const api = {
     request<Rule>(`/api/rules/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
 
   deleteRule: (id: number) => request<void>(`/api/rules/${id}`, { method: 'DELETE' }),
-  /**
-   * そのルールを長期記憶へ逃がす印を付ける。**すぐには移らない**（固化で焼く）ので、
-   * 返ってくるものはまだ frozen ではない。
-   */
-  consolidateRule: (id: number) =>
-    request<Rule>(`/api/rules/${id}/consolidate`, { method: 'POST' }),
-
+  
   /** 並び替え。全ルールの id を望む順で送ると、並び替え後の全件を返す。 */
   reorderRules: (ids: number[]) =>
     request<Rule[]>('/api/rules/order', { method: 'PUT', body: JSON.stringify({ ids }) }),
