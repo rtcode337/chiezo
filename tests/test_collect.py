@@ -4759,8 +4759,20 @@ class TestBakingWithoutHoldingItAll:
         assert not isinstance(lines, list)
         out = list(lines)
         # 1 行目は meta、以降が 1 行 1 文書
-        assert json.loads(out[0])["meta"]["min_docs"] == 1
+        assert json.loads(out[0])["meta"]["min_docs"] == 3
         assert [json.loads(line)["title"] for line in out[1:]] == ["店1", "店2", "店3"]
+
+    def test_the_meta_says_how_many_lines_follow(self):
+        """**途中で切れた素材を、短いだけの正しい素材として焼かせない。**
+
+        流し始めたあとに落ちてもステータスは変えられない(1 度しか送れない)ので、
+        受け取る側から見ると区別が付かない —— 焼けてしまうと前の世代は捨てられ、
+        届かなかったぶんは消える。本番でこれが起きた(68 万件のうち 1.7 万件で
+        焼き上がり、残りが消えた)。数だけが手掛かりになる。
+        """
+        out = list(collect.bake_lines(self.item(), {}, self.rows(9), []))
+
+        assert json.loads(out[0])["meta"]["min_docs"] == len(out) - 1
 
     def test_the_same_shape_as_the_whole_string(self):
         # 丸ごと組む道(`ndjson`)と、流す道が同じものを返すこと

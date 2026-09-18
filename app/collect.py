@@ -3314,7 +3314,17 @@ def bake_survey(item, sources: dict, previous, collected, only_new=False, edits=
         src = sources.get(rule["source"])
         if src is not None and wanted[n]:
             alive[n] = _existing_titles(src.path, wanted[n])
-    plan = {"diff": diff, "rules": rules, "alive": alive, "first_title": first_title}
+    plan = {
+        "diff": diff, "rules": rules, "alive": alive, "first_title": first_title,
+        # **2 周目に流す行数**。取り込み側の検証の下限になる(`bake_lines` の meta)——
+        # 流し始めたらステータスは変えられないので、途中で切れた素材と最後まで届いた
+        # 素材は、受け取った側からは見分けが付かない。数だけが手掛かりになる。
+        # 数えるのは期限で落としたあと(流すのもそのあと)
+        "rows": total,
+        # **期限の境目は 1 周目のものを使い回す。** 2 周目で測り直すと、境目の
+        # 1 件が回を跨いだだけで数が食い違い、正しく焼けたものが弾かれる
+        "limit": limit,
+    }
     # **落としたタグの数も、流し始める前に数える。** 控えに残すのはここで record する
     # ためで、流しながら数えると「控えを書いたあとに分かる」ことになる。
     # **指定を持つ収集だけ**もう 1 周する(持たない収集では 1 件も落ちない)
@@ -3353,12 +3363,18 @@ def bake_lines(item, sources: dict, previous, collected, only_new=False, edits=F
     """
     plan = survey or bake_survey(item, sources, previous, collected, only_new, edits)
     rows = _rows_of(previous)
-    limit = _expiry_limit(item)
+    limit = plan.get("limit", _expiry_limit(item))
 
     yield json.dumps({
         "meta": {
             "dump_date": _dump_date(item.name, sources),
-            "min_docs": 1,
+            # **これから流す行数をそのまま下限にする。** 流し始めたあとに落ちても
+            # ステータスは変えられない(1 度しか送れない)ので、**途中で切れた素材は
+            # 受け取る側から見ると「短いだけの正しい素材」**になる —— 焼けてしまうと
+            # 前の世代は捨てられ、届かなかったぶんは消える。
+            # 本番でこれが起きた(68 万件のうち 1.7 万件で焼き上がり、残りが消えた)。
+            # 数が足りなければ取り込み側が検証で落とし、前の世代がそのまま残る
+            "min_docs": max(1, int(plan.get("rows") or 1)),
             "sample_titles": [plan["first_title"]],
         }
     }, ensure_ascii=False)
