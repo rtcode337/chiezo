@@ -603,7 +603,7 @@ def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
     )
 
 
-# 巡回の表の列数(巡回・相手・間隔・次にいつ・一周のうち・前回・実行)。
+# 巡回の表の列数(巡回・相手・間隔・前回・一周のうち・次にいつ・実行)。
 # 設定の行はこれを全部つないで 1 つのセルにする
 SWEEP_COLUMNS = 7
 
@@ -691,7 +691,7 @@ def _sweep_table_body(item, disabled: str = "") -> str:
 
 
 def _sweep_cells(item, disabled: str = "", dry: bool = True) -> list[str]:
-    """巡回 1 本ぶんのセル(巡回・相手・間隔・次にいつ・一周のうち・前回)。
+    """巡回 1 本ぶんのセル(巡回・相手・間隔・前回・一周のうち・次にいつ)。
 
     **「集める」の表にそのまま並べる。** 折り畳みの中へ入れていた頃は、動いているかを
     見るのにいちいち開くことになった —— この表はそれを読むための表なのに。
@@ -766,11 +766,14 @@ def _sweep_cells(item, disabled: str = "", dry: bool = True) -> list[str]:
             + (f'<br><span class="muted">{sweep.cover_days:g} 日で一周</span>'
                if sweep.cover_days else "")
         )
+        # **前回を先、次にいつを後**。読む順が「いつ動いたか → 次はいつか」なので、
+        # 逆に並べていると目が戻る(動いているかを確かめに来る表なので、
+        # まず見たいのは実際に動いた側)
         cells.append(
             f"<td>{name}</td><td>{who}</td>"
             f"<td>{every}"
-            + f"</td><td>{when}</td>"
-            f"<td>{where}</td><td>{result}</td><td>{run}</td>"
+            + f"</td><td>{result}</td>"
+            f"<td>{where}</td><td>{when}</td><td>{run}</td>"
         )
     return cells
 
@@ -1398,7 +1401,7 @@ def _collect_html(
 <table>
 <thead>
 <tr><th>名前</th><th>件数</th><th>巡回</th><th>頼む相手</th><th>間隔</th>
-<th>次にいつ</th><th>一周のうち</th><th>前回</th><th>実行</th><th></th></tr>
+<th>前回</th><th>一周のうち</th><th>次にいつ</th><th>実行</th><th></th></tr>
 </thead>
 <tbody>
 {"".join(rows)}
@@ -1926,7 +1929,7 @@ async def admin_collect(
 {nav_html("/admin/collect")}
 <h1>収集(AI に集めさせて溜める)</h1>
 <p class="muted">
-無人で回る層。**頼んだ文で AI が集め、そのまま長期記憶へ焼かれる**。
+無人で回る層。<strong>頼んだ文で AI が集め、そのまま長期記憶へ焼かれる</strong>。
 巡回ごとに時計と相手を分けられる。
 </p>
 
@@ -2997,7 +3000,7 @@ def admin_collect_detail(
 <table>
 <thead>
 <tr><th>巡回</th><th>頼む相手</th><th>間隔</th>
-<th>次にいつ</th><th>一周のうち</th><th>前回</th><th>実行</th></tr>
+<th>前回</th><th>一周のうち</th><th>次にいつ</th><th>実行</th></tr>
 </thead>
 <tbody>
 {_sweep_table_body(item, disabled)}
