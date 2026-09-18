@@ -31,6 +31,8 @@ Wikipedia や OSM のような**まとまったダンプが無い**ことは知�
   画面から変えられるようにするため。**時計が叩くのは ingest**(chiezo-trigger)で、
   「集めて焼く」が 1 つの操作になっている。
 - **同じ見出しは前世代を置き換える**。**見出しが重複の鍵**。
+  **同じ url の 1 件も足さない**(`url_key`)—— 見出しは書き換わるので、鍵が
+  見出しだけだと同じ記事が二度入る。
 
 ## 収集の 1 回
 
@@ -60,6 +62,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from fastapi import HTTPException
 
@@ -1317,6 +1320,7 @@ SYSTEM_PROMPT = (
     "\"tags\":[\"タグ\"],\"url\":\"出典URL\"}],\"next_cursor\":\"次に進む印\"}"
     " title は重複の鍵になるので、同じものを指す見出しは同じ文字列にする。"
     " 出典が分かるものは url を必ず入れる。分からない項目は null。"
+    " **同じ url の 1 件は既にあるものとみなし、足されない**(見出しが違っても同じ)。"
 )
 
 
@@ -1336,6 +1340,8 @@ REFINE_SYSTEM_PROMPT = (
     " **返すのは、直すものと新しく足すものだけでよい。**"
     " 触れなかったものはそのまま残るので、変えないものを返す必要はない。"
     " title は同一性の鍵。**同じ見出しで返すと、その 1 件が置き換わる**。"
+    " **見出しの付け替えはできない** —— 既にあるものを別の見出しで返しても、"
+    "同じ url の 1 件として弾かれる(元の見出しのまま残る)。"
     " **消したいものは、その見出しで tags に「" + notes.TOMBSTONE_TAG + "」を入れて返す**"
     "(墓標)。**そのとき本文に、なぜ消すのかを 1 行で書く** ——"
     "消したものは後から一覧でしか見えないので、理由が無いと消し間違いに気づけない。"
@@ -1520,6 +1526,76 @@ def render_recent(
     head = f"前回から新しく入ったもの(全 {len(fresh)} 件"
     head += f"。うち {len(lines)} 件だけ載せています)" if len(lines) < len(fresh) else ")"
     return head + ":\n" + "\n".join(lines)
+
+
+# 追跡用の飾り。**同じ記事でも配信元ごとに違うものが付く**ので、鍵にすると
+# 同じ URL が別物に見える(実測で、同じ Qiita の記事が人気フィード経由だけ
+# `utm_campaign=popular_items` を連れてきていた)。
+#
+# **落とすのはここに挙げたものと `utm_` で始まるものだけ。** 「? の後ろを丸ごと捨てる」
+# にすると、`?id=123` のように**クエリが記事を指している**サイトで別々の記事が
+# 1 つに潰れる —— 潰れたほうは足されないので、黙って入らなくなる。
+_TRACKING_PARAMS = frozenset({
+    "fbclid", "gclid", "dclid", "msclkid", "yclid", "ttclid", "twclid",
+    "igshid", "mc_cid", "mc_eid",
+})
+
+
+def url_key(url) -> str:
+    """同じ記事を指す URL を、同じ鍵にする。URL でなければ空。
+
+    **`https` と `http`・`www.` の有無・末尾の `/`・並び順の違うクエリ**は同じ記事。
+    追跡用の飾り(`utm_*` など)も落とす —— 配信元ごとに違うものが付くので、
+    残すと同じ記事が別物に見える。
+
+    **人に見せる URL は元のまま**(ここで作るのは突き合わせ専用の鍵)。
+    """
+    raw = str(url or "").strip()
+    if not raw.lower().startswith(("http://", "https://")):
+        return ""
+    parts = urlsplit(raw)
+    host = parts.netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    path = parts.path.rstrip("/") or "/"
+    if not parts.query:
+        return host + path
+    kept = sorted(
+        (k, v)
+        for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        if not k.lower().startswith("utm_") and k.lower() not in _TRACKING_PARAMS
+    )
+    return host + path + ("?" + urlencode(kept) if kept else "")
+
+
+def _raw_url(raw: dict) -> str:
+    """集めた 1 件が名乗っている出典(`_to_doc` と同じ読み方)。"""
+    if isinstance(raw, dict):
+        url = (raw.get("url") or "").strip()
+        if url:
+            return url
+        extra = raw.get("extra")
+        if isinstance(extra, dict):
+            return str(extra.get("url") or "").strip()
+    return ""
+
+
+def _incoming_urls(collected) -> set[str]:
+    """その回に入ってくるぶんの URL の鍵。
+
+    **持つのは入ってくるぶんだけ**。前世代ぜんたいの URL を持つと、数十万件の
+    収集で名簿を丸ごとメモリに載せることになり、1 行ずつ流すようにした意味が消える
+    (`stream_docs`)。突き合わせに要るのは「今から入るものと同じ URL」だけなので、
+    前世代を流しながら、ここに載っている鍵だけを控える。
+
+    **見出しで引ける形(抽出の名簿)では何もしない** —— あちらは数十万件が一時の
+    SQLite に載っていて、全件を読み直すのは流している意味を打ち消す。
+    """
+    if hasattr(collected, "take"):
+        return set()
+    keys = {url_key(_raw_url(raw)) for raw in collected}
+    keys.discard("")
+    return keys
 
 
 def _source_url(extra: dict) -> str:
@@ -2607,6 +2683,10 @@ def stream_docs(
     その印を外す —— 差し込まれた時点で目は通っている。
     **返ってこなかったものも外す** —— 整理は触ったものしか返さないので、
     返りだけを見ていると「読んだうえで直す必要が無かった」が未精査のまま残る。
+
+    **同じ URL の 1 件は足さない**(`url_key`)。見出しが重複の鍵だが、見出しは
+    書き換わる —— 書き換えた側は新しい 1 件として通るので、同じ記事が 2 件並ぶ。
+    弾いたぶんは `duplicates` に数えて見出しも残す(黙って落とさない)。
     """
     counts = diff if diff is not None else {}
     now = _iso(_now())
@@ -2615,6 +2695,14 @@ def stream_docs(
     # 逃がした意味が消える
     edits_of = collected if hasattr(collected, "take") else Edits(collected)
     edits_of.reset()
+    # **同じ記事を二度入れない。** 1 件を指す鍵は見出しだが、見出しは書き換わる ——
+    # AI は外から見つけた 1 件に自分の言葉で見出しを付けるし、配信元が違えば同じ
+    # 記事が別の見出しで流れてくる(「記事名 - サイト名」と「記事名」)。
+    # 鍵が見出しだけだと、そのどちらも新しい 1 件として通る(本番で、生きている
+    # 記事 364 件のうち 22 件が同じ URL の複製だった)。
+    incoming_urls = _incoming_urls(collected)
+    known_urls: set[str] = set()
+    duplicate_titles: list[str] = []
     added = updated = skipped = seen = 0
     next_id = 0
     added_titles: list[str] = []
@@ -2625,6 +2713,13 @@ def stream_docs(
         seen += 1
         next_id = max(next_id, before["doc_id"])
         title = before["title"]
+        # **消えた 1 件の URL も控える**(`_chiezo_removed`)—— 調べたうえで外した
+        # ものが、書き換えた見出しで戻ってくるのを止める
+        if incoming_urls:
+            prev_extra = before.get("extra")
+            key = url_key(prev_extra.get("url") if isinstance(prev_extra, dict) else "")
+            if key in incoming_urls:
+                known_urls.add(key)
         raw = edits_of.take(title)
         if raw is None:
             yield _reviewed(before) if reviewed and title in reviewed else before
@@ -2675,6 +2770,17 @@ def stream_docs(
             skipped += 1
             continue
         doc["extra"] = _merge_extra({}, doc["extra"])
+        key = url_key(doc["extra"].get("url"))
+        if key and key in known_urls:
+            # **同じ URL の 1 件が既にある。** 見出しが違っても同じ記事なので足さない
+            # —— 足すと、読む人には同じ記事が 2 件並ぶ。
+            # **書き換えた見出しは通らない**(その 1 件は先に入った見出しのまま残る)
+            skipped += 1
+            duplicate_titles.append(doc["title"])
+            continue
+        if key:
+            # **同じ回の中の重複も止める**(配信元が 2 つ、同じ記事を別の見出しで配る)
+            known_urls.add(key)
         added += 1
         added_titles.append(doc["title"])
         fresh = _unreviewed(doc) if unreviewed else doc
@@ -2689,6 +2795,10 @@ def stream_docs(
         "kept": seen,
         "removed": len(removed_titles),
         "skipped": skipped,
+        # **黙って落とさない。** 弾いた件数と見出しを残す —— 数えないと、
+        # 入るはずのものが入らないときに気づく手掛かりが無い
+        "duplicates": len(duplicate_titles),
+        "duplicate_titles": duplicate_titles[:MAX_TITLE_SAMPLE],
         "added_titles": added_titles[:MAX_TITLE_SAMPLE],
         "updated_titles": updated_titles[:MAX_TITLE_SAMPLE],
         "removed_titles": removed_titles[:MAX_TITLE_SAMPLE],

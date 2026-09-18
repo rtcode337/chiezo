@@ -642,9 +642,12 @@ async def _collect_material(name: str, sources: dict) -> str:
         ms=int((time.monotonic() - started) * 1000), **who,
     )
     log.info(
-        "collect %s (%s/%s%s): added=%d updated=%d kept=%d removed=%d skipped=%d",
+        # **同じ URL で弾いたぶんも出す**(`collect.url_key`)。skipped に混ぜたままだと、
+        # 入るはずのものが入らないときに、既にあったのか弾かれたのかが読めない
+        "collect %s (%s/%s%s): added=%d updated=%d kept=%d removed=%d skipped=%d dup=%d",
         name, "直す" if edits else "足す", label, f" {len(keys)} 区画" if keys else "",
         diff["added"], diff["updated"], diff["kept"], diff["removed"], diff["skipped"],
+        diff.get("duplicates") or 0,
     )
     # **控えを書いてから流す。** 読み手が途中で切っても、何をしたかは残る。
     # **流し終えたら置き場を片づける** —— 抽出は一時の SQLite に名簿を載せるので、

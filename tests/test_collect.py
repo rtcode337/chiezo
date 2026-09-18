@@ -24,6 +24,25 @@ from app import collect, notes
 from app import partition as partitioning
 
 
+def _previous(title: str, url: str) -> dict[str, dict]:
+    """前世代に 1 件だけある状態(`collect.previous_docs` が返す形)。
+
+    焼き上がりの代わり(`baked`)は脇書きを持たないので、出典の URL を見る話では
+    こちらで組む。
+    """
+    return {
+        title: {
+            "doc_id": 1,
+            "title": title,
+            "opening": "本文",
+            "body": "本文",
+            "tags": [],
+            "updated_at": "2026-01-01T00:00:00+00:00",
+            "extra": {"url": url},
+        }
+    }
+
+
 @pytest.fixture
 def enabled(tmp_path, monkeypatch):
     """置き場を用意して、**追記される DB を mutable に登録する**。
@@ -226,6 +245,81 @@ class TestMaterial:
         assert (diff["added"], diff["skipped"]) == (0, 1)
         # 数は増えないが、中身は新しく集めたほうで置き換える
         assert docs[0]["body"] == "新しい本文"
+
+    def test_the_same_url_is_not_added_twice(self, sample):
+        """見出しが違っても、同じ URL なら同じ記事。
+
+        見出しは書き換わる —— AI は外から見つけた 1 件に自分の言葉で見出しを付ける。
+        鍵が見出しだけだと、書き換えた側が新しい 1 件として通り、読む人には同じ記事が
+        2 件並ぶ(本番で、生きている記事の 6% が同じ URL の複製だった)。
+        """
+        docs, diff = collect.material(
+            collect.get("news"),
+            _previous("先に入った見出し", "https://example.com/a"),
+            [{"title": "言い換えた見出し", "body": "本文", "url": "https://example.com/a"}],
+        )
+        assert [d["title"] for d in docs] == ["先に入った見出し"]
+        assert (diff["added"], diff["duplicates"]) == (0, 1)
+        assert diff["duplicate_titles"] == ["言い換えた見出し"]
+
+    def test_tracking_parameters_do_not_make_it_a_different_article(self, sample):
+        """追跡用の飾りは配信元ごとに違う(同じ記事が別物に見える)。"""
+        docs, _diff = collect.material(
+            collect.get("news"),
+            _previous("先に入った見出し", "https://example.com/a"),
+            [{
+                "title": "別の配信元から",
+                "body": "本文",
+                "url": "http://www.example.com/a/?utm_source=feed",
+            }],
+        )
+        assert [d["title"] for d in docs] == ["先に入った見出し"]
+
+    def test_a_query_that_points_at_the_article_still_separates_them(self, sample):
+        """クエリが記事を指しているサイトでは、別の記事として足す。
+
+        「? の後ろを丸ごと捨てる」にすると、ここが 1 つに潰れて黙って入らなくなる。
+        """
+        docs, _diff = collect.material(
+            collect.get("news"),
+            _previous("先に入った見出し", "https://example.com/read?id=1"),
+            [{"title": "別の記事", "body": "本文", "url": "https://example.com/read?id=2"}],
+        )
+        assert [d["title"] for d in docs] == ["先に入った見出し", "別の記事"]
+
+    def test_the_same_url_twice_in_one_run_lands_once(self, sample):
+        """配信元が 2 つ、同じ記事を別の見出しで配ることがある。"""
+        docs, diff = collect.material(
+            collect.get("news"),
+            {},
+            [
+                {"title": "記事名", "body": "本文", "url": "https://example.com/a"},
+                {"title": "記事名 - サイト名", "body": "本文", "url": "https://example.com/a"},
+            ],
+        )
+        assert [d["title"] for d in docs] == ["記事名"]
+        assert diff["duplicates"] == 1
+
+    def test_items_without_a_url_are_not_treated_as_duplicates(self, sample):
+        """出典を名乗らないものは突き合わせようがない(弾くと全部 1 件になる)。"""
+        docs, _diff = collect.material(
+            collect.get("news"),
+            {},
+            [{"title": "あ", "body": "本文"}, {"title": "い", "body": "本文"}],
+        )
+        assert [d["title"] for d in docs] == ["あ", "い"]
+
+    def test_a_removed_article_does_not_come_back_under_a_new_headline(self, sample):
+        """調べたうえで外した 1 件が、書き換えた見出しで戻ってこない。"""
+        previous = _previous("外した見出し", "https://example.com/a")
+        previous["外した見出し"]["tags"] = [notes.REMOVED_TAG]
+        docs, diff = collect.material(
+            collect.get("news"),
+            previous,
+            [{"title": "書き換えた見出し", "body": "本文", "url": "https://example.com/a"}],
+        )
+        assert [d["title"] for d in docs] == ["外した見出し"]
+        assert diff["duplicates"] == 1
 
     def test_items_without_a_title_or_body_are_skipped(self, sample):
         docs, diff = collect.material(
