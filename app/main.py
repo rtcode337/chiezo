@@ -2706,6 +2706,13 @@ async def ai_backends() -> dict:
 
     呼ぶ側が画面を作れるだけの材料を返す。 一覧は管理画面で on にしたものだけで、
     モデルは相手に聞けた場合はその答え(聞けなければコードの控え)。
+
+    **ワーカーも同じ一覧に混ぜる**(`kind`)。収集を外から頼むアプリは、この口から
+    作った選択肢を巡回の `backend` に入れて送ってくる —— **一覧に無いものは
+    選ばせようがない**ので、混ぜないと「ワーカーに頼む巡回」を外から作れない
+    (Chiezo の画面からしか作れない機能になる)。
+    **`kind` で見分けられるようにする** —— ワーカーはモデルも考える量も持たず、
+    `/v1/ai/complete` の相手にもならない(渡す先はそのときの枠で決まる)。
     """
     names = answer.backend_names()
     # **どちらも `answer` 側を通す**(控えを返すだけなので速い)。
@@ -2722,6 +2729,9 @@ async def ai_backends() -> dict:
             {
                 "id": name,
                 "label": answer.backend_label(name),
+                # 相手か、ワーカーか。**足したのは後から**なので、書いていない読み手が
+                # 今までどおり動くように、相手のほうを既定の値にしてある
+                "kind": "backend",
                 "models": list(available),
                 "efforts": list(levels),
                 # モデルを必ず指定しないといけない相手か(false なら「既定」を選べる)
@@ -2734,8 +2744,40 @@ async def ai_backends() -> dict:
             }
             for name, available, levels in zip(names, models, efforts, strict=True)
             for spec in (providers.get(name),)
-        ]
+        ] + _worker_choices()
     }
+
+
+def _worker_choices() -> list[dict]:
+    """相手の一覧へ混ぜるワーカーのぶん(`app/workers.py`)。
+
+    **巡回の `backend` にそのまま入れられる値を返す**(`workers.option_for`)——
+    呼ぶ側に「ワーカーは別の欄へ」を覚えさせない。
+    **定義が読めなければ何も出さない** —— 相手の一覧まで落とさない。
+    """
+    try:
+        found = workers.load()
+    except (ValueError, RuntimeError):
+        return []
+    return [
+        {
+            "id": workers.option_for(w.name),
+            "label": w.name,
+            "kind": "worker",
+            # **どちらも持たない。** 渡す先はそのときの枠で決まるので、ここで 1 つ
+            # 選んでもどの相手に対する指定なのかが決まらない(段ごとの指定は
+            # ワーカーの側が持っている)
+            "models": [],
+            "efforts": [],
+            "model_required": False,
+            # 段のどれかが web を開けるなら開ける
+            "web": any(
+                bool((spec := providers.get(step.backend)) and spec.bridge)
+                for step in w.steps
+            ) or websearch.is_enabled(),
+        }
+        for w in found
+    ]
 
 
 @app.get("/v1/ai/bridges")

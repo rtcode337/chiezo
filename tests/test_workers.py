@@ -388,3 +388,95 @@ class TestPickingAWorkerAsTheBackend:
 
         assert "精査" in admin._backend_label(picked)
         assert "枠を見て振り替える" in admin._backend_label(picked)
+
+
+class TestAskingForOneFromOutside:
+    """外のアプリ(tazuna など)が、収集を頼むときにワーカーを名指しできること。
+
+    **一覧に無いものは選ばせようがない。** 相手の一覧に混ぜないと、ワーカーに頼む
+    巡回は Chiezo の画面からしか作れない機能になる。
+    """
+
+    @pytest.fixture()
+    def client(self, enabled, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("CHIEZO_NOTES_DIR", str(enabled / "notes"))
+        from app.main import app
+
+        with TestClient(app) as c:
+            yield c
+
+    def test_the_backends_api_lists_them(self, client, enabled):
+        workers.save([_worker(workers.Step("codex"))])
+
+        found = client.get("/v1/ai/backends").json()["backends"]
+        mine = [b for b in found if b["kind"] == "worker"]
+
+        assert [b["id"] for b in mine] == [workers.option_for("精査")]
+        assert mine[0]["label"] == "精査"
+
+    def test_a_worker_offers_no_model_or_effort(self, client, enabled):
+        """渡す先はそのときの枠で決まるので、ここで 1 つ選んでも
+        どの相手に対する指定なのかが決まらない。
+        """
+        workers.save([_worker(workers.Step("codex"))])
+
+        [mine] = [b for b in client.get("/v1/ai/backends").json()["backends"]
+                  if b["kind"] == "worker"]
+
+        assert mine["models"] == [] and mine["efforts"] == []
+        assert mine["model_required"] is False
+
+    def test_the_backends_keep_their_kind(self, client, enabled):
+        """足したのは後からなので、書いていない読み手が今までどおり動くこと。"""
+        from app import settings_store
+
+        settings_store.set_credential("gemini", "k")
+        settings_store.set_verified("gemini", True)
+        settings_store.set_enabled("gemini", True)
+        workers.save([_worker(workers.Step("codex"))])
+
+        found = client.get("/v1/ai/backends").json()["backends"]
+
+        assert [b["kind"] for b in found if b["id"] == "gemini"] == ["backend"]
+        assert all(b["kind"] in ("backend", "worker") for b in found)
+
+    def test_no_workers_means_only_backends(self, client, enabled):
+        found = client.get("/v1/ai/backends").json()["backends"]
+
+        assert [b for b in found if b["kind"] == "worker"] == []
+
+    def test_the_value_goes_straight_into_a_sweep(self, enabled):
+        """**呼ぶ側に「ワーカーは別の欄へ」を覚えさせない。**
+
+        一覧から選んだ値をそのまま `backend` に入れて送れば、Chiezo が振り分ける。
+        """
+        from app import collect
+
+        [sweep] = collect.normalize_sweeps([
+            {"name": "精査の回", "backend": workers.option_for("精査"),
+             "model": "sonnet", "effort": "high"},
+        ])
+
+        assert sweep["worker"] == "精査"
+        assert sweep["backend"] is None
+        assert sweep["model"] is None and sweep["effort"] is None
+
+    def test_writing_the_worker_field_still_works(self, enabled):
+        """前からの書き方を壊さない。"""
+        from app import collect
+
+        [sweep] = collect.normalize_sweeps([{"name": "精査の回", "worker": "精査"}])
+
+        assert sweep["worker"] == "精査"
+
+    def test_a_plain_backend_is_left_alone(self, enabled):
+        from app import collect
+
+        [sweep] = collect.normalize_sweeps([
+            {"name": "整理", "backend": "codex", "model": "gpt-5.6-terra"},
+        ])
+
+        assert sweep.get("worker") is None
+        assert sweep["backend"] == "codex" and sweep["model"] == "gpt-5.6-terra"

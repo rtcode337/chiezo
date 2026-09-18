@@ -63,7 +63,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from app import collect_log, db, feeds, jst, machine_store, notes
+from app import collect_log, db, feeds, jst, machine_store, notes, workers
 from app import extract as extraction
 from app import partition as partitioning
 from app.jst import to_jst
@@ -764,6 +764,12 @@ def normalize_sweeps(raw) -> list[dict]:
 
     区画の記録が名前で引かれる(`partitions[].visits`)ため、同じ名前が 2 本あると
     片方の進み具合がもう片方に化ける。
+
+    **相手の欄に書かれたワーカーを取り出す**(`workers.OPTION_PREFIX`)。
+    外のアプリは `/v1/ai/backends` の一覧から 1 つ選んで送ってくるので、
+    **ワーカーがその一覧に混ざる以上、届く先も同じ欄**になる —— 欄を分けると、
+    一覧から選んだ値を呼ぶ側が振り分けることになり、**どこに入れるかを知っている
+    のが Chiezo だけ**という状態が残る。`worker` に直に書く形も今までどおり通る。
     """
     if not isinstance(raw, list):
         return []
@@ -776,8 +782,20 @@ def normalize_sweeps(raw) -> list[dict]:
         if not name or name in seen:
             continue
         seen.add(name)
-        out.append({**item, "name": name})
+        out.append({**item, "name": name, **_worker_picked(item)})
     return out
+
+
+def _worker_picked(raw: dict) -> dict:
+    """相手の欄がワーカーを指していれば、その巡回に上書きする項目。
+
+    **モデルと考える量も落とす。** どの相手に渡るかはそのときの枠で決まるので、
+    ここに 1 つ書いても**どの相手に対する指定なのかが決まらない**
+    (モデルの名前は相手ごとに違う)。段ごとの指定はワーカーの側が持つ。
+    """
+    if not (picked := workers.named_in(str(raw.get("backend") or ""))):
+        return {}
+    return {"worker": picked, "backend": None, "model": None, "effort": None}
 
 
 # 巡回が自分で持っている進み具合。**設定を送り直しても引き継ぐ** ——
