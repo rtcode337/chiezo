@@ -13,8 +13,8 @@
 | 状態 着手中 / 完了       | tag `着手中` / `完了` |
 | 「直すのが大変そう」の印 | tag `難所`(状態とは別軸) |
 | タスクの所属             | プロジェクト名のタグ(リポジトリ名をそのまま使う既存の慣習に乗る) |
-| プロジェクト             | tag `project` の文書。見出しが名前、本文が説明 |
-| プロジェクトのアーカイブ | tag `アーカイブ` |
+| プロジェクト             | 設定の置き場(`chiezo_settings`)の 1 件に、全部を JSON で |
+| プロジェクトのアーカイブ | その JSON の `archived` |
 | ルール                   | tag `rule` の文書。本文が Markdown |
 | ルールの無効             | tag `無効` |
 
@@ -35,7 +35,7 @@ from datetime import UTC, datetime
 
 from fastapi import HTTPException
 
-from app import db, notes, settings_store
+from app import db, machine_store, notes, settings_store
 
 log = logging.getLogger("chiezo.app")
 
@@ -400,8 +400,16 @@ def delete_task(doc_id: int) -> None:
 # JSON は `extra` ではなく**本文**に置く。目に見えるところに無いと直せないし、
 # `recall` の既定は `extra` を返さないので、中身が読めなくなるため。
 
-# 集約したメモの見出し。`project` タグと合わせて 1 件だけ存在する。
+# 集約したメモの見出し。**移行元としてだけ見る**(下の `_load_payload`)。
 PROJECTS_TITLE = "プロジェクト"
+
+# 設定の置き場での置きどころ(`app/machine_store.py`)。
+#
+# **プロジェクトは覚えたことではなく設定**。タスクの入れ物の定義でしかないのに
+# 短期記憶に置いていたので、**人が消せてしまう**(消すと全タスクの所属が消える)し、
+# 目的の違うものが `recall` や検索に混ざっていた。収集の定義やワーカーと同じ扱いにする。
+PROJECTS_KIND = "project"
+PROJECTS_KEY = "definitions"
 
 # 本文が壊れていた(手で編集して JSON でなくなった等)ときに備える。**黙って
 # 作り直さない** —— 中身ごと消えるので、読めないことを見せて人に直させる。
@@ -421,16 +429,36 @@ class Project:
     updated_at: str
 
 
-def _projects_row():
-    """プロジェクトを集約したメモ。まだ 1 件も作っていなければ None。"""
+def _projects_body() -> str | None:
+    """プロジェクトの定義(JSON の文字列)。まだ 1 件も作っていなければ None。
+
+    **置き場は設定の側**(`app/machine_store.py`)。短期記憶に置いていた頃は、
+    人が消せてしまう・目的の違うものが `recall` や検索に混ざる、の 2 つがあった。
+
+    **短期記憶に残っているものは 1 度だけ移す。** 移さないと、入れ替えた瞬間に
+    プロジェクトが空になり、**全タスクの所属が画面から消える**(タグは残っているので
+    データは失われないが、何が起きたのかは読めない)。**移した後も元のメモは
+    消さない** —— 消すのは取り消せないので、確かめてから人が消す。
+    """
+    if not machine_store.is_enabled():
+        return _old_projects_body()
+    if (body := machine_store.get(PROJECTS_KIND, PROJECTS_KEY)) is not None:
+        return body
+    if (old := _old_projects_body()) is not None:
+        machine_store.put(PROJECTS_KIND, PROJECTS_KEY, old)
+        log.info("moved the project definitions into the settings store")
+    return old
+
+
+def _old_projects_body() -> str | None:
+    """短期記憶に残っている古い置き場(移行元)。"""
     rows = _rows_tagged(TAG_PROJECT)
     if not rows:
         return None
-    # 移行前のメモが残っていても落ちないよう、見出しの一致を優先して選ぶ
     for row in rows:
         if row["title"] == PROJECTS_TITLE:
-            return row
-    return rows[0]
+            return row["body"]
+    return rows[0]["body"]
 
 
 def _project_from_json(item: dict, index: int) -> Project:
@@ -453,11 +481,11 @@ def _load_payload() -> tuple[list[Project], int]:
     最後の 1 件を消した後に 1 から配り直してしまい、画面が持っている古い参照が
     黙って別のプロジェクトを指す。
     """
-    row = _projects_row()
-    if row is None:
+    body = _projects_body()
+    if body is None:
         return [], 1
     try:
-        payload = json.loads(row["body"] or "{}")
+        payload = json.loads(body or "{}")
         items = payload["projects"]
         if not isinstance(items, list):
             raise ValueError("projects must be a list")
@@ -503,11 +531,11 @@ def _save_projects(projects: list[Project], next_id: int | None = None) -> None:
     if next_id is None:
         next_id = max((p.id for p in projects), default=0) + 1
     body = _to_json(projects, next_id)
-    row = _projects_row()
-    if row is None:
-        notes.add(text=body, title=PROJECTS_TITLE, tags=TAG_PROJECT)
-        return
-    notes.update(row["doc_id"], text=body, title=PROJECTS_TITLE, tags=TAG_PROJECT)
+    if not machine_store.is_enabled():
+        raise _conflict(
+            "設定の置き場がありません(CHIEZO_STATE_DIR を設定してください)"
+        )
+    machine_store.put(PROJECTS_KIND, PROJECTS_KEY, body)
 
 
 def _project_names() -> set[str]:

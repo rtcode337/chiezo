@@ -12,6 +12,9 @@ from app import tasks
 def notes_dir(tmp_path, monkeypatch):
     directory = tmp_path / "notes"
     monkeypatch.setenv("CHIEZO_NOTES_DIR", str(directory))
+    # プロジェクトの定義は設定の置き場に入る（覚えたことではなく設定なので）。
+    # 本番の chiezo-tasks も両方を持っている
+    monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
     return directory
 
 
@@ -231,8 +234,9 @@ class TestProjects:
         tasks.delete_project(project.id)
         assert tasks.list_projects() == []
         assert tasks.list_tasks() == []
-        # プロジェクトを集約したメモ自体は残る(中身が空になるだけ)
-        assert client.get("/v1/notes/recall").json()["total"] == 1
+        # **短期記憶には何も残らない** —— 定義は設定の置き場にあり、
+        # そこの 1 件は中身が空になるだけで残る
+        assert client.get("/v1/notes/recall").json()["total"] == 0
 
     def test_reorder_requires_every_id(self, client):
         a = tasks.create_project("a")
@@ -449,27 +453,33 @@ class TestTodoMigration:
         assert "todo" not in counts
 
 
-class TestProjectsAreOneNote:
-    """プロジェクトは 1 件のメモに JSON でまとまっている。
+class TestProjectsAreOneRecord:
+    """プロジェクトは設定の置き場の 1 件に JSON でまとまっている。
 
-    1 プロジェクト 1 メモにしていた頃は、タスクの入れ物の定義でしかないものが
-    短期記憶に 1 件ずつ並び、並び替えのたびにメモを書き換えていた。
+    **覚えたことではなく設定**。タスクの入れ物の定義でしかないのに短期記憶に
+    置いていたので、人が消せてしまう(消すと全タスクの所属が消える)し、目的の
+    違うものが `recall` や検索に混ざっていた。
     """
 
-    def test_they_live_in_a_single_note(self, client):
+    def test_they_live_in_the_settings_store(self, client):
+        from app import machine_store
+
         tasks.create_project("arrow-puzzle")
         tasks.create_project("travel-log")
-        listed = client.get("/v1/notes/recall", params={"tag": "project"}).json()
-        assert listed["total"] == 1
-        assert listed["notes"][0]["title"] == tasks.PROJECTS_TITLE
+
+        assert machine_store.get(tasks.PROJECTS_KIND, tasks.PROJECTS_KEY) is not None
+        # **短期記憶には置かない** —— 人が消せる場所に置くと、全タスクの所属が消える
+        assert client.get("/v1/notes/recall", params={"tag": "project"}).json()["total"] == 0
 
     def test_the_body_is_readable_json(self, client):
-        """本文に置くのは、目に見えないと直せないから(extra は recall に出ない)。"""
+        """本文に置くのは、目に見えないと直せないから(画面から中身を開ける)。"""
         import json
 
+        from app import machine_store
+
         tasks.create_project("arrow-puzzle", description="矢印パズル")
-        row = client.get("/v1/notes/recall", params={"tag": "project", "max_chars": 0}).json()
-        payload = json.loads(row["notes"][0]["text"])
+        payload = json.loads(machine_store.get(tasks.PROJECTS_KIND, tasks.PROJECTS_KEY))
+
         assert [p["name"] for p in payload["projects"]] == ["arrow-puzzle"]
         assert payload["projects"][0]["description"] == "矢印パズル"
 
@@ -502,9 +512,11 @@ class TestProjectsAreOneNote:
 
     def test_a_broken_body_is_reported_not_swallowed(self, client):
         """手で壊したときに黙って作り直さない(中身ごと消えるため)。"""
+        from app import machine_store
+
         tasks.create_project("arrow-puzzle")
-        row = client.get("/v1/notes/recall", params={"tag": "project"}).json()["notes"][0]
-        client.patch(f"/v1/notes/{row['doc_id']}", json={"text": "これは JSON ではない"})
+        machine_store.put(tasks.PROJECTS_KIND, tasks.PROJECTS_KEY, "これは JSON ではない")
+
         with pytest.raises(Exception) as e:
             tasks.list_projects()
         assert e.value.status_code == 400
@@ -600,3 +612,48 @@ class TestProjectMigration:
         self._run(notes_dir)
         assert self._run(notes_dir) == []
         assert [p.name for p in tasks.list_projects()] == ["arrow-puzzle"]
+
+
+class TestMovingTheProjectsIntoTheSettingsStore:
+    """短期記憶に残っている定義を 1 度だけ移す。
+
+    移さないと、入れ替えた瞬間にプロジェクトが空になり、**全タスクの所属が画面から
+    消える**(タグは残っているのでデータは失われないが、何が起きたのかは読めない)。
+    """
+
+    def _old_note(self, body: str) -> None:
+        from app import notes
+
+        notes.add(text=body, title=tasks.PROJECTS_TITLE, tags=tasks.TAG_PROJECT)
+
+    def test_what_was_in_the_note_is_picked_up(self, client):
+        self._old_note('{"next_id": 9, "projects": [{"id": 8, "name": "むかしの"}]}')
+
+        listed = tasks.list_projects()
+
+        assert [p.name for p in listed] == ["むかしの"]
+        # 番号も引き継ぐ（配り直すと、画面が持つ古い参照が別のものを指す）
+        assert tasks.create_project("あたらしい").id == 9
+
+    def test_it_lands_in_the_settings_store(self, client):
+        from app import machine_store
+
+        self._old_note('{"next_id": 2, "projects": [{"id": 1, "name": "むかしの"}]}')
+        tasks.list_projects()
+
+        assert machine_store.get(tasks.PROJECTS_KIND, tasks.PROJECTS_KEY) is not None
+
+    def test_the_old_note_is_left_alone(self, client):
+        """**消すのは取り消せない。** 確かめてから人が消す。"""
+        self._old_note('{"next_id": 2, "projects": [{"id": 1, "name": "むかしの"}]}')
+        tasks.list_projects()
+
+        assert client.get("/v1/notes/recall", params={"tag": "project"}).json()["total"] == 1
+
+    def test_the_settings_store_wins_once_it_has_one(self, client):
+        """移った後は古いメモを見ない —— 見ると、消した後に生き返る。"""
+        self._old_note('{"next_id": 2, "projects": [{"id": 1, "name": "むかしの"}]}')
+        tasks.list_projects()
+        tasks.create_project("あたらしい")
+
+        assert [p.name for p in tasks.list_projects()] == ["むかしの", "あたらしい"]
