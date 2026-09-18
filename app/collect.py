@@ -574,8 +574,10 @@ class Sweep:
         どちらで走ったのか読めないほうが困る。
         """
         if step is not None:
-            return replace(item, backend=step.backend,
-                           model=step.model or None, effort=step.effort or None)
+            # **段は考える量を持たない**(モデルの名前に畳んである)。
+            # 巡回側の指定も引き継がない —— 相手が変わっているので、
+            # そちら向けに書かれた考える量は意味を持たない
+            return replace(item, backend=step.backend, model=step.model or None, effort=None)
         return replace(item, backend=self.backend, model=self.model, effort=self.effort)
 
     def to_json(self) -> dict:
@@ -1310,6 +1312,9 @@ def remove(name: str) -> None:
         raise HTTPException(404, {"error": f"収集「{name}」がありません"})
     save([c for c in items if c.name != name])
     collect_log.forget(name)
+    # **待ち行列からも外す** —— 消えた収集を抱えたままだと、そのワーカーは
+    # 起こそうとして 404 を踏み続ける
+    workers.forget(name)
 
 
 # ---- 溜め先(コアスキーマの DB。notes と同じ形)---------------------------------

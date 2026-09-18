@@ -16,7 +16,7 @@ import time
 from collections import deque
 from contextlib import asynccontextmanager, suppress
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
@@ -203,19 +203,6 @@ QUOTA_SAMPLE_MINUTES = answer._env_num("CHIEZO_QUOTA_SAMPLE_MINUTES", 15.0, floa
 QUOTA_TICK_SECONDS = float(os.environ.get("CHIEZO_QUOTA_TICK_SECONDS", "60"))
 
 
-def _first_with_room(due: list) -> tuple | None:
-    """予定の来ている(収集, 巡回)のうち、**いま走らせてよい最初の組**。
-
-    ワーカーを名指ししていない回はいつでも走らせてよい —— 枠を見て振り替える
-    仕組みは、名指しした回だけの話。
-    """
-    for pair in due:
-        step, decided = _worker_step(pair[1])
-        if not decided or step is not None:
-            return pair
-    return None
-
-
 def _worker_of(sweep) -> workers.Worker | None:
     """その巡回が使うワーカー。名指ししていなければ None。
 
@@ -302,19 +289,123 @@ async def _run_collections(app: FastAPI) -> None:
     while True:
         await asyncio.sleep(COLLECT_TICK_SECONDS)
         try:
+            await asyncio.to_thread(_fill_worker_queues)
+            # **ワーカーの順番が先。** 拾った塊を流し切るまでそのワーカーに優先権を
+            # 持たせる —— 途中で他の回に割り込まれると「1 度の起動で N 本」が
+            # 意味を失う。塊が無ければ、いつもの予定の回へ落ちる
+            if await asyncio.to_thread(_run_one_from_a_worker):
+                continue
             due = await asyncio.to_thread(collect.due_sweeps)
+            # **ワーカーに任せた回はここでは走らせない**(行列から流す)
+            due = [pair for pair in due if not getattr(pair[1], "worker", "")]
             if not due:
                 continue
-            # **枠の詰まっている回は飛ばして、後ろの回を先に走らせる。**
-            # 予定は進めないので、窓が明ければその回も次の周で走る
-            # (混んでいる trigger に断られたときと同じ扱い)。
-            picked = await asyncio.to_thread(_first_with_room, due)
-            if picked is None:
-                continue
-            item, sweep = picked
+            item, sweep = due[0]
             await asyncio.to_thread(start_collection_bake, item.name, sweep.name)
         except Exception:
             log.exception("collection tick failed")
+
+
+def _fill_worker_queues() -> None:
+    """ワーカーに任せた巡回を、待ち行列へ積む。
+
+    **積む条件は「まだ居ないこと」と「前回の完了から間隔が空いたこと」の 2 つ。**
+    予定(`next_run_at`)では見ない —— あれは起こした時点で進むので、行列で待って
+    いるあいだに何度も予定が来る。完了の時刻(`last_run_at`)を起点にすれば、
+    **待たされたぶんだけ次が後ろへずれる**(積み上がらない)。
+
+    **失敗した回も完了として数える。** 落ち続ける回がすぐ積み直されると、
+    その 1 本が行列を占め続ける —— 間隔を空けてから見直すほうがよい。
+    """
+    if not collect.is_enabled():
+        return
+    now = datetime.now(UTC)
+    for item in collect.load():
+        if not item.enabled:
+            continue
+        for sweep in collect.sweeps_of(item):
+            name = getattr(sweep, "worker", "")
+            if not name or not sweep.enabled or sweep.on_demand:
+                continue
+            if collect.blocked_reason(item, sweep):
+                continue
+            if not _due_for_queue(sweep, now):
+                continue
+            if workers.enqueue(name, item.name, sweep.name, _iso(now)):
+                log.info("queued %s/%s for worker %r", item.name, sweep.name, name)
+
+
+def _due_for_queue(sweep, now: datetime) -> bool:
+    """その巡回を積んでよいか。**一度も走っていなければ積む**。"""
+    last = _parse_iso(getattr(sweep, "last_run_at", None))
+    if last is None:
+        return True
+    return now - last >= timedelta(minutes=max(sweep.interval_minutes, 1))
+
+
+def _run_one_from_a_worker() -> bool:
+    """行列から 1 本流す。流したら True。
+
+    **流すのは 1 本ずつ。** 取り込みは同時に 1 ジョブしか受けないので、拾った塊は
+    周回をまたいで順に消える —— 前の 1 本が終わるまで次は起こらない
+    (`trigger_run` が混んでいれば例外になり、次の周でやり直す)。
+
+    **塊が空になったワーカーだけが、次の起動で拾い直す。**
+    """
+    now = datetime.now(UTC)
+    try:
+        defined = workers.load()
+    except ValueError:
+        return False
+    for worker in defined:
+        batch = workers.queued(worker.name)
+        if not batch:
+            continue
+        # **いま流している塊が先。** 無ければ、起動の時刻が来ていれば拾う
+        if not workers.claim_ready(worker.name):
+            if not _worker_due(worker, now):
+                continue
+            batch = workers.claim(worker.name, worker.per_run, _iso(now))
+            if not batch:
+                continue
+        entry = batch[0]
+        step = workers.pick(worker)
+        if step is None:
+            # **どれも詰まっていたら流さない。** 塊はそのまま残るので、
+            # 窓が明けた周で続きから流れる
+            continue
+        try:
+            start_collection_bake(entry["collection"], entry["sweep"])
+        except HTTPException as e:
+            # 取り込みが混んでいる・巡回が消えた。**塊からは外す** ——
+            # 消えた巡回を抱えたままだと、そのワーカーが二度と進まない
+            if e.status_code == 404:
+                workers.done(worker.name, entry["collection"], entry["sweep"])
+            return False
+        workers.done(worker.name, entry["collection"], entry["sweep"])
+        return True
+    return False
+
+
+def _worker_due(worker, now: datetime) -> bool:
+    last = _parse_iso(workers.next_at(worker.name))
+    if last is None:
+        return True
+    return now - last >= timedelta(minutes=max(worker.interval_minutes, 1))
+
+
+def _parse_iso(raw) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        value = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def _iso(value: datetime) -> str:
+    return value.isoformat(timespec="seconds")
 
 
 def start_collection_bake(name: str, sweep: str | None = None) -> dict:

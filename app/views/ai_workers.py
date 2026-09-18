@@ -75,13 +75,57 @@ def _worker_form(worker: workers.Worker | None, selects) -> str:
     ]
     hint = ("名前を消すと、このワーカーは無くなります" if worker
             else "名前を書くと増えます")
+    every = worker.interval_minutes if worker else workers.DEFAULT_INTERVAL_MINUTES
+    take = worker.per_run if worker else workers.DEFAULT_PER_RUN
     return (
         f'<form method="post" action="/admin/ai/workers" class="collect-form">'
         f'<input type="hidden" name="worker_key" value="{esc(name)}">'
         f'<p><label>名前<br><input name="worker_name" value="{esc(name)}"'
         f' placeholder="精査"></label> <span class="muted">{esc(hint)}</span></p>'
+        f'<p><label>起きる間隔(分。{workers.MIN_INTERVAL_MINUTES} 以上)<br>'
+        f'<input name="worker_interval" type="number"'
+        f' min="{workers.MIN_INTERVAL_MINUTES}" value="{every}"></label></p>'
+        f'<p><label>1 度に拾う数(1〜{workers.MAX_PER_RUN})<br>'
+        f'<input name="worker_per_run" type="number" min="1"'
+        f' max="{workers.MAX_PER_RUN}" value="{take}"></label></p>'
+        '<p class="muted">拾ったぶんは<strong>1 本ずつ順に流します</strong>'
+        "(取り込みは同時に 1 本しか動かないため)。流し切るまで、そのワーカーは"
+        "次の起動をしません。</p>"
         f"{''.join(rows)}"
         '<p><button type="submit">このワーカーを保存</button></p></form>'
+        + (_queue_html(name) if worker else "")
+    )
+
+
+def _number(raw, fallback: int) -> int:
+    """フォームの数。**読めない値は既定に落とす**(画面は JS を持たないので、
+    人が URL を手で書き換えることがある)。"""
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _queue_html(name: str) -> str:
+    """そのワーカーの待ち行列。**先頭がいま流している最中のぶん**。
+
+    **出すのは「なぜ動いていないか」を読むため。** 積まれているのに動かないなら
+    枠が詰まっているか起動の間隔待ちで、積まれていないなら巡回の間隔待ち ——
+    どちらなのかは、行列を見ないと外から判らない。
+    """
+    waiting = workers.queued(name)
+    if not waiting:
+        return '<p class="muted">待っているものはありません。</p>'
+    running = workers.claim_ready(name)
+    rows = []
+    for i, entry in enumerate(waiting):
+        where = f'{esc(str(entry.get("collection") or ""))} / {esc(str(entry.get("sweep") or ""))}'
+        mark = ('<span class="muted">いま流している</span>' if running and i == 0
+                else '<span class="muted">待ち</span>')
+        rows.append(f"<tr><td>{where}</td><td>{mark}</td></tr>")
+    return (
+        f'<details><summary>待ち行列({len(waiting)} 件)</summary>'
+        f'<table><tbody>{"".join(rows)}</tbody></table></details>'
     )
 
 
@@ -141,6 +185,8 @@ async def save_worker(request: Request):
     name = str(form.get("worker_name") or "").strip()
     backends = form.getlist("step_backend")
     models = form.getlist("step_model")
+    every = _number(form.get("worker_interval"), workers.DEFAULT_INTERVAL_MINUTES)
+    take = _number(form.get("worker_per_run"), workers.DEFAULT_PER_RUN)
     # **考える量は受け取らない。** モデルの名前に畳んであるので、別に持つと
     # 食い違う組み合わせを作れてしまう(`providers.drops_effort`)
     steps = tuple(
@@ -155,5 +201,5 @@ async def save_worker(request: Request):
         # なってはいけない
         return RedirectResponse(url=BACK_TO_SECTION, status_code=303)
 
-    workers.save(workers.merged(current, key, name, steps))
+    workers.save(workers.merged(current, key, name, steps, every, take))
     return RedirectResponse(url=BACK_TO_SECTION, status_code=303)

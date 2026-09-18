@@ -54,13 +54,32 @@ NAME_RE = re.compile(r"^\S(?:.{0,30}\S)?$")
 QUOTA_LIMIT = float(os.environ.get("CHIEZO_WORKER_QUOTA_LIMIT", "80") or 80)
 
 
+# ワーカーが起きる間隔と、1 度の起動で拾う数の既定。
+#
+# **間隔はワーカーが持ち、巡回は「積まれてよい間隔」を持つ。** 2 つは別の話 ——
+# 巡回は「自分を何分おきに見てほしいか」、ワーカーは「自分が何分おきに動くか」で、
+# 後者が枠の使い方を決める(積まれた数に関係なく、回るのはこの間隔)。
+DEFAULT_INTERVAL_MINUTES = 60
+DEFAULT_PER_RUN = 1
+
+# 間隔の下限。収集と同じ値にしてある(あちらより短く回しても取り込みが追いつかない)。
+MIN_INTERVAL_MINUTES = 5
+
+# 1 度に拾える上限。**天井を置くのは、取り込みが 1 本ずつしか動かないから** ——
+# 大きくすると、そのワーカーが長時間ぶん取り込みを占める(他のワーカーは待つ)。
+MAX_PER_RUN = 20
+
+
 @dataclass(frozen=True)
 class Step:
-    """頼む相手 1 つぶん。モデルと考える量は省ける(相手の既定に任せる)。"""
+    """頼む相手 1 つぶん。モデルは省ける(相手の既定に任せる)。
+
+    **考える量は持たない** —— モデルの名前に畳んであるので(`providers.folds_effort`)、
+    別に持つと食い違う組み合わせを作れてしまう。
+    """
 
     backend: str
     model: str = ""
-    effort: str = ""
 
     def to_json(self) -> dict:
         return {k: v for k, v in asdict(self).items() if v}
@@ -68,13 +87,22 @@ class Step:
 
 @dataclass(frozen=True)
 class Worker:
-    """優先度順の相手の並び。**先頭ほど先に頼む。**"""
+    """優先度順の相手の並びと、自分の回り方。**先頭ほど先に頼む。**"""
 
     name: str
     steps: tuple[Step, ...] = field(default_factory=tuple)
+    # 自分が起きる間隔(分)
+    interval_minutes: int = DEFAULT_INTERVAL_MINUTES
+    # 1 度の起動で待ち行列から拾う数。拾ったぶんは**1 本ずつ順に流す**
+    per_run: int = DEFAULT_PER_RUN
 
     def to_json(self) -> dict:
-        return {"name": self.name, "steps": [s.to_json() for s in self.steps]}
+        return {
+            "name": self.name,
+            "steps": [s.to_json() for s in self.steps],
+            "interval_minutes": self.interval_minutes,
+            "per_run": self.per_run,
+        }
 
 
 def _step_from(raw) -> Step | None:
@@ -83,8 +111,7 @@ def _step_from(raw) -> Step | None:
     backend = str(raw.get("backend") or "").strip()
     if not backend:
         return None
-    return Step(backend, str(raw.get("model") or "").strip(),
-                str(raw.get("effort") or "").strip())
+    return Step(backend, str(raw.get("model") or "").strip())
 
 
 def _worker_from(raw) -> Worker | None:
@@ -94,7 +121,22 @@ def _worker_from(raw) -> Worker | None:
     if not NAME_RE.match(name):
         return None
     steps = tuple(s for s in (_step_from(r) for r in raw.get("steps") or []) if s)
-    return Worker(name, steps)
+    return Worker(
+        name, steps,
+        interval_minutes=_positive(raw.get("interval_minutes"), DEFAULT_INTERVAL_MINUTES,
+                                   MIN_INTERVAL_MINUTES),
+        per_run=_positive(raw.get("per_run"), DEFAULT_PER_RUN, 1, MAX_PER_RUN),
+    )
+
+
+def _positive(raw, fallback: int, low: int, high: int | None = None) -> int:
+    """**読めない値は既定に落とす**(外から来る JSON なので、壊れていても止めない)。"""
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return fallback
+    value = max(value, low)
+    return min(value, high) if high is not None else value
 
 
 def load() -> list[Worker]:
@@ -132,7 +174,14 @@ def get(name: str) -> Worker | None:
     return next((w for w in load() if w.name == name), None)
 
 
-def merged(current: list[Worker], key: str, name: str, steps: tuple[Step, ...]) -> list[Worker]:
+def merged(
+    current: list[Worker],
+    key: str,
+    name: str,
+    steps: tuple[Step, ...],
+    interval_minutes: int = DEFAULT_INTERVAL_MINUTES,
+    per_run: int = DEFAULT_PER_RUN,
+) -> list[Worker]:
     """1 つぶんの保存を、いまの一覧へ畳み込む。**その 1 つだけ**を書き換える。
 
     **名前を消すと消える**(足す口も消す口も名前 1 つ)。名前を書き換えれば改名 ——
@@ -141,9 +190,11 @@ def merged(current: list[Worker], key: str, name: str, steps: tuple[Step, ...]) 
     """
     if not name:
         return [w for w in current if w.name != key]
+    made = Worker(name, steps, max(interval_minutes, MIN_INTERVAL_MINUTES),
+                  min(max(per_run, 1), MAX_PER_RUN))
     if key and any(w.name == key for w in current):
-        return [Worker(name, steps) if w.name == key else w for w in current]
-    return [*current, Worker(name, steps)]
+        return [made if w.name == key else w for w in current]
+    return [*current, made]
 
 
 def named_in(choice: str) -> str:
@@ -155,6 +206,120 @@ def named_in(choice: str) -> str:
 def option_for(name: str) -> str:
     """その名前を相手のセレクトへ載せるときの値。"""
     return f"{OPTION_PREFIX}{name}"
+
+
+# ---- 待ち行列 ---------------------------------------------------------------
+#
+# **定義とは別の置き場に持つ。** 定義は人が画面のフォームから丸ごと送り直すので、
+# 同じ控えに入れておくと**編集のたびに行列が消える**(押した人には何も起きていない
+# ように見えて、積んであったものだけが失われる)。
+#
+# 形は `{"<ワーカー名>": {"queue": [...], "batch": [...], "next_run_at": "..."}}`。
+# `queue` が待っているもの、`batch` が**いま流している最中のぶん**(起動で拾った塊)。
+# 塊を分けて持つのは、**流し切るまでそのワーカーに優先権を持たせる**ため ——
+# 途中で他のワーカーに割り込まれると、「1 度の起動で N 本」が意味を失う。
+
+QUEUE_KEY = "queue"
+
+
+def _queue_all() -> dict:
+    if not machine_store.is_enabled():
+        return {}
+    body = machine_store.get(DEFS_KIND, QUEUE_KEY)
+    if not body:
+        return {}
+    try:
+        found = json.loads(body)
+    except ValueError:
+        # **読めなければ空から始める。** 行列は作り直せる(次の周で積み直る)ので、
+        # 定義と違って人に直させる価値が無い
+        log.warning("worker queue is unreadable; starting over")
+        return {}
+    return found if isinstance(found, dict) else {}
+
+
+def _queue_save(state: dict) -> None:
+    if machine_store.is_enabled():
+        machine_store.put(DEFS_KIND, QUEUE_KEY,
+                          json.dumps(state, ensure_ascii=False, indent=2))
+
+
+def _slot(state: dict, name: str) -> dict:
+    slot = state.setdefault(name, {})
+    slot.setdefault("queue", [])
+    slot.setdefault("batch", [])
+    return slot
+
+
+def _entry(collection: str, sweep: str) -> dict:
+    return {"collection": collection, "sweep": sweep}
+
+
+def _same(a: dict, b: dict) -> bool:
+    return a.get("collection") == b.get("collection") and a.get("sweep") == b.get("sweep")
+
+
+def queued(name: str) -> list[dict]:
+    """そのワーカーが待っているもの(流している最中のぶんを先頭に)。"""
+    slot = _slot(_queue_all(), name)
+    return [*slot["batch"], *slot["queue"]]
+
+
+def enqueue(name: str, collection: str, sweep: str, at: str) -> bool:
+    """待ち行列へ積む。**既に居れば積まない**(二重に走らせないため)。積んだら True。"""
+    state = _queue_all()
+    slot = _slot(state, name)
+    made = _entry(collection, sweep)
+    if any(_same(made, e) for e in (*slot["queue"], *slot["batch"])):
+        return False
+    slot["queue"].append({**made, "at": at})
+    _queue_save(state)
+    return True
+
+
+def claim(name: str, per_run: int, at: str) -> list[dict]:
+    """起動 1 回ぶんを行列から塊へ移す。**既に流している最中なら何もしない**。
+
+    拾うのは先頭から `per_run` 件。**空振りでも起動したことにする**(次の起動まで
+    間隔を空ける)—— 積まれていないワーカーが毎周見に来ても、することは無い。
+    """
+    state = _queue_all()
+    slot = _slot(state, name)
+    if slot["batch"]:
+        return list(slot["batch"])
+    slot["batch"] = slot["queue"][:max(1, per_run)]
+    slot["queue"] = slot["queue"][len(slot["batch"]):]
+    slot["next_run_at"] = at
+    _queue_save(state)
+    return list(slot["batch"])
+
+
+def claim_ready(name: str) -> bool:
+    """いま流している最中の塊があるか(あれば拾い直さない)。"""
+    return bool(_slot(_queue_all(), name)["batch"])
+
+
+def next_at(name: str) -> str:
+    """そのワーカーが最後に起動した時刻(まだなら空)。"""
+    return str(_slot(_queue_all(), name).get("next_run_at") or "")
+
+
+def done(name: str, collection: str, sweep: str) -> None:
+    """流し終えた 1 件を塊から外す。"""
+    state = _queue_all()
+    slot = _slot(state, name)
+    made = _entry(collection, sweep)
+    slot["batch"] = [e for e in slot["batch"] if not _same(made, e)]
+    _queue_save(state)
+
+
+def forget(collection: str) -> None:
+    """その収集のぶんを全部のワーカーから外す(収集を消したとき)。"""
+    state = _queue_all()
+    for slot in state.values():
+        for key in ("queue", "batch"):
+            slot[key] = [e for e in slot.get(key) or [] if e.get("collection") != collection]
+    _queue_save(state)
 
 
 def room_left(step: Step, limit: float | None = None) -> bool:

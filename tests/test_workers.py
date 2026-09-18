@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
+from datetime import UTC, datetime
 
 import pytest
 
@@ -89,12 +91,12 @@ class TestDefinitions:
 
     def test_it_comes_back_as_it_went_in(self, enabled):
         workers.save([workers.Worker("精査", (
-            workers.Step("codex", "gpt-5.5", "high"), workers.Step("claude"),
+            workers.Step("codex", "gpt-5.5"), workers.Step("claude"),
         ))])
         [found] = workers.load()
 
         assert found.name == "精査"
-        assert found.steps[0] == workers.Step("codex", "gpt-5.5", "high")
+        assert found.steps[0] == workers.Step("codex", "gpt-5.5")
         assert found.steps[1] == workers.Step("claude")
 
     def test_nothing_stored_is_an_empty_list(self, enabled):
@@ -140,35 +142,123 @@ def _sweep(worker: str = "", name: str = "精査"):
                          backend=None, model=None, effort=None, worker=worker)
 
 
-class TestWhatTheClockDoesWithThem:
-    """時計は、**枠の詰まっている回を飛ばして後ろの回を先に走らせる**。
+class TestTheQueue:
+    """ワーカーは**自分の待ち行列**を持ち、自分の間隔で起きて、1 度に拾った塊を
+    1 本ずつ流す。
 
-    予定は進めないので、窓が明ければその回も次の周で走る(混んでいる trigger に
-    断られたときと同じ扱い)。
+    巡回の側は「自分がまだ行列に居ない」かつ「前回の完了から間隔が空いた」ときに
+    自分を積む —— **予定では見ない**。あれは起こした時点で進むので、行列で待って
+    いるあいだに何度も予定が来る。
     """
 
-    def test_a_crowded_sweep_is_passed_over(self, enabled):
-        from app import main
+    def _entry(self, collection="tazuna_painters", sweep="精査"):
+        return {"collection": collection, "sweep": sweep}
+
+    def test_nothing_queued_is_nothing_queued(self, enabled):
+        assert workers.queued("精査") == []
+
+    def test_it_goes_in_once(self, enabled):
+        """**二重に積まない** —— 同じ回が 2 本走ることになる。"""
+        assert workers.enqueue("精査", "tazuna_painters", "精査", "2026-01-01T00:00:00+00:00")
+        assert not workers.enqueue("精査", "tazuna_painters", "精査", "2026-01-01T01:00:00+00:00")
+
+        assert [
+            (e["collection"], e["sweep"]) for e in workers.queued("精査")
+        ] == [("tazuna_painters", "精査")]
+
+    def test_a_claim_takes_at_most_its_share(self, enabled):
+        for i in range(5):
+            workers.enqueue("精査", f"c{i}", "精査", "2026-01-01T00:00:00+00:00")
+
+        batch = workers.claim("精査", 2, "2026-01-01T00:00:00+00:00")
+
+        assert [e["collection"] for e in batch] == ["c0", "c1"]
+        # 拾ったぶんは行列から外れるが、**塊として残る**(流し切るまで優先権を持つ)
+        assert [e["collection"] for e in workers.queued("精査")] == ["c0", "c1", "c2", "c3", "c4"]
+
+    def test_it_does_not_claim_again_while_one_is_running(self, enabled):
+        """**流し切るまで拾い直さない** —— 途中で拾うと「1 度に N 本」が意味を失う。"""
+        for i in range(4):
+            workers.enqueue("精査", f"c{i}", "精査", "2026-01-01T00:00:00+00:00")
+        workers.claim("精査", 2, "2026-01-01T00:00:00+00:00")
+
+        again = workers.claim("精査", 2, "2026-01-01T01:00:00+00:00")
+
+        assert [e["collection"] for e in again] == ["c0", "c1"]
+        assert workers.claim_ready("精査")
+
+    def test_finishing_the_batch_frees_the_next_claim(self, enabled):
+        for i in range(3):
+            workers.enqueue("精査", f"c{i}", "精査", "2026-01-01T00:00:00+00:00")
+        workers.claim("精査", 2, "2026-01-01T00:00:00+00:00")
+        workers.done("精査", "c0", "精査")
+        workers.done("精査", "c1", "精査")
+
+        assert not workers.claim_ready("精査")
+        assert [e["collection"] for e in workers.claim("精査", 2, "x")] == ["c2"]
+
+    def test_a_collection_that_went_away_is_dropped(self, enabled):
+        workers.enqueue("精査", "きえた", "精査", "2026-01-01T00:00:00+00:00")
+        workers.enqueue("精査", "のこる", "精査", "2026-01-01T00:00:00+00:00")
+
+        workers.forget("きえた")
+
+        assert [e["collection"] for e in workers.queued("精査")] == ["のこる"]
+
+    def test_the_settings_form_does_not_wipe_the_queue(self, enabled):
+        """**行列は定義と別の置き場**。同じ控えに入れると、編集のたびに消える。"""
+        workers.enqueue("精査", "tazuna_painters", "精査", "2026-01-01T00:00:00+00:00")
 
         workers.save([workers.Worker("精査", (workers.Step("codex"),))])
-        _quota("codex", 95.0)
-        crowded, plain = _sweep(worker="精査"), _sweep(name="ざっと")
 
-        assert main._first_with_room([(None, crowded), (None, plain)]) == (None, plain)
+        assert len(workers.queued("精査")) == 1
 
-    def test_nothing_runnable_means_nothing_runs(self, enabled):
+
+class TestWhenASweepGoesIntoTheQueue:
+    """積む条件は「まだ居ない」と「前回の完了から間隔が空いた」の 2 つ。"""
+
+    def test_one_that_never_ran_goes_in(self, enabled):
         from app import main
 
-        workers.save([workers.Worker("精査", (workers.Step("codex"),))])
-        _quota("codex", 95.0)
+        assert main._due_for_queue(_sweep(), datetime(2026, 1, 1, tzinfo=UTC))
 
-        assert main._first_with_room([(None, _sweep(worker="精査"))]) is None
-
-    def test_a_sweep_without_a_worker_always_runs(self, enabled):
-        """枠を見て振り替えるのは、名指しした回だけの話。"""
+    def test_it_waits_for_the_interval_after_the_last_finish(self, enabled):
         from app import main
 
-        assert main._first_with_room([(None, _sweep())]) is not None
+        sweep = _sweep()
+        sweep = replace(sweep, last_run_at="2026-01-01T00:00:00+00:00")
+
+        assert not main._due_for_queue(sweep, datetime(2026, 1, 1, 0, 30, tzinfo=UTC))
+        assert main._due_for_queue(sweep, datetime(2026, 1, 1, 1, 0, tzinfo=UTC))
+
+    def test_a_failed_run_is_spaced_out_too(self, enabled):
+        """**落ち続ける回がすぐ積み直されると、その 1 本が行列を占める。**
+
+        失敗しても完了の時刻は入るので、同じ規則で間隔が空く。
+        """
+        from app import main
+
+        sweep = replace(_sweep(), last_run_at="2026-01-01T00:00:00+00:00",
+                        last_status="error")
+
+        assert not main._due_for_queue(sweep, datetime(2026, 1, 1, 0, 30, tzinfo=UTC))
+
+
+class TestWhenAWorkerWakesUp:
+    def test_the_first_time_is_now(self, enabled):
+        from app import main
+
+        assert main._worker_due(workers.Worker("精査"), datetime(2026, 1, 1, tzinfo=UTC))
+
+    def test_then_it_waits_for_its_own_interval(self, enabled):
+        from app import main
+
+        workers.enqueue("精査", "c", "精査", "2026-01-01T00:00:00+00:00")
+        workers.claim("精査", 1, "2026-01-01T00:00:00+00:00")
+        worker = workers.Worker("精査", (), interval_minutes=30)
+
+        assert not main._worker_due(worker, datetime(2026, 1, 1, 0, 10, tzinfo=UTC))
+        assert main._worker_due(worker, datetime(2026, 1, 1, 0, 30, tzinfo=UTC))
 
 
 class TestDecidingWhoToAsk:
@@ -213,9 +303,11 @@ class TestTheChosenBackendIsUsed:
         sweep = collect.Sweep(name="精査", prompt="育てて", interval_minutes=60, enabled=True,
                               backend="antigravity", model="gemini", effort="low",
                               worker="精査")
-        asked = sweep.applied_to(item, workers.Step("codex", "gpt-5.5", "high"))
+        asked = sweep.applied_to(item, workers.Step("codex", "gpt-5.5"))
 
-        assert (asked.backend, asked.model, asked.effort) == ("codex", "gpt-5.5", "high")
+        # **考える量はモデルの名前に畳んである**ので、段は持たない。巡回側に
+        # 書いてあった考える量も引き継がない —— 相手が変わっているので意味を持たない
+        assert (asked.backend, asked.model, asked.effort) == ("codex", "gpt-5.5", None)
 
     def test_without_a_step_the_sweep_decides(self, enabled):
         from app import collect
