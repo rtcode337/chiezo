@@ -1851,3 +1851,37 @@ class TestFoldingTheEffortIntoTheName:
             })
 
         assert ran == [("sonnet", "max")]
+
+
+class TestWhichLimitAWindowBelongsTo:
+    """`limitName` は窓ではなく**束のほう**に書いてある。
+
+    codex は 7 日の窓を 2 つ返し、どちらも `primary` / `secondary` としか名乗らない
+    —— 束の名前まで持って降りないと、どちらの枠のものか読み分けられない。
+    """
+
+    def test_the_bridge_carries_it_down_from_the_parent(self, bridge):
+        """`limitName` は窓ではなく**束のほう**に書いてある。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        found = server._windows_in({
+            "rateLimitsByLimitId": {
+                "base_model_inference": {
+                    "limitName": "gpt-reserve",
+                    "primary": {"usedPercent": 0, "windowDurationMins": 10080},
+                },
+            },
+        })
+
+        assert [w["group"] for w in found] == ["gpt-reserve"]
+
+    def test_an_id_is_not_used_as_a_name(self, bridge):
+        """`limitId` は機械の鍵で、読む人に意味が伝わらない。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        found = server._windows_in({
+            "rateLimits": {
+                "limitId": "codex",
+                "primary": {"usedPercent": 3, "windowDurationMins": 300},
+            },
+        })
+
+        assert [w["group"] for w in found] == [""]

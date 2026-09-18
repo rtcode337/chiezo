@@ -1494,7 +1494,7 @@ def _first(entry: dict, *keys):
     return None
 
 
-def _window_from(name: str, entry: dict) -> dict | None:
+def _window_from(name: str, entry: dict, group: str = "") -> dict | None:
     """CLI の返事から窓を 1 つ組む。読めた形だけ拾う。
 
     相手ごとに名前が違う(`used_percent` で言う相手と、残量そのもので言う相手がいる)ので、
@@ -1504,6 +1504,10 @@ def _window_from(name: str, entry: dict) -> dict | None:
     鍵は snake_case と camelCase の両方を見る。codex は
     `windowDurationMins` / `resetsAt` の形で返すので、片方しか見ないと
     窓の長さと明ける時刻を落とし、名前が `primary` のまま出てしまう。
+
+    `group` は**その窓が属する枠の呼び名**(`_collect` が親から持ってくる)。
+    codex は枠を `rateLimitsByLimitId` の下へ束ねて、束のほうに `limitName` を
+    書く —— 窓だけ見ていると、どの枠の `primary` なのかが分からない。
     """
     percent = _as_number(_first(entry, "used_percent", "usedPercent"))
     used = _as_number(_first(entry, "used"))
@@ -1533,6 +1537,8 @@ def _window_from(name: str, entry: dict) -> dict | None:
             _first(entry, "window_minutes", "windowMinutes", "window_duration_mins", "windowDurationMins")
         ),
         "resets_at": resets,
+        # **どの枠のものか**(親が名乗っていれば)。Chiezo が見出しへ添える
+        "group": group,
     }
 
 
@@ -1649,18 +1655,35 @@ def _windows_in(payload, name: str = "") -> list[dict]:
     return _unique_ids(_dedupe(_collect(payload, name)))
 
 
-def _collect(payload, name: str = "") -> list[dict]:
-    """窓を探して回る本体(まとめる前)。"""
+def _collect(payload, name: str = "", group: str = "") -> list[dict]:
+    """窓を探して回る本体(まとめる前)。
+
+    **枠の呼び名を親から持って降りる**(`group`)。codex は枠を
+    `rateLimitsByLimitId` の下へ束ね、束のほうに `limitName` を書く ——
+    窓だけ見ていると、どの枠の `primary` なのかが分からない
+    (実測で、同じ `primary` が 2 つ出てくる)。
+    """
     found: list[dict] = []
     if isinstance(payload, dict):
-        if (window := _window_from(name or "window", payload)) is not None:
+        if (window := _window_from(name or "window", payload, group)) is not None:
             return [window]
+        here = _group_name(payload) or group
         for key, value in payload.items():
-            found += _collect(value, str(key))
+            found += _collect(value, str(key), here)
     elif isinstance(payload, list):
         for i, value in enumerate(payload):
-            found += _collect(value, f"{name}{i}" if name else str(i))
+            found += _collect(value, f"{name}{i}" if name else str(i), group)
     return found
+
+
+def _group_name(payload: dict) -> str:
+    """その塊が名乗っている枠の呼び名。**名前があるものだけ拾う** ——
+    id(`limitId`)は機械の鍵で、読む人に意味が伝わらない。"""
+    for key in ("limitName", "limit_name", "name"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _dedupe(windows: list[dict]) -> list[dict]:

@@ -1153,3 +1153,42 @@ class TestWhatTheBackendActuallySaid:
             body = client.get("/v1/ai/usage", params={"refresh": 1, "backend": "codex"}).json()
 
         assert backend_of(body, "codex")["quota"]["raw"] == ""
+
+
+class TestNamingTheWindowsApart:
+    """枠が複数あると、窓の長さもぶつかる。
+
+    実測で、codex は 7 日の窓を 2 つ返し、どちらも `primary` / `secondary` としか
+    名乗らなかった。枠のほうには名前が付いている(`limitName`)ので、そこまで
+    出せば読み分けられる。
+    """
+
+    def _bridge(self, env, payload: dict):
+        from app import usage
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=payload)
+
+        env.setattr(usage, "_client", lambda *a, **k: httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)))
+
+    def test_the_group_name_is_added_to_the_label(self, env):
+        with make_client(env, ReplyLLM()) as client:
+            self._bridge(env, {"windows": [
+                {"id": "primary", "used_percent": 0, "window_minutes": 10080,
+                 "group": "gpt-reserve"},
+            ]})
+            body = client.get("/v1/ai/usage", params={"refresh": 1, "backend": "codex"}).json()
+
+        [window] = backend_of(body, "codex")["quota"]["windows"]
+        assert window["label"] == "直近 7 日(gpt-reserve)"
+
+    def test_a_window_without_one_is_named_by_its_length(self, env):
+        with make_client(env, ReplyLLM()) as client:
+            self._bridge(env, {"windows": [
+                {"id": "primary", "used_percent": 12, "window_minutes": 300},
+            ]})
+            body = client.get("/v1/ai/usage", params={"refresh": 1, "backend": "codex"}).json()
+
+        [window] = backend_of(body, "codex")["quota"]["windows"]
+        assert window["label"] == "直近 5 時間"

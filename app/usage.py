@@ -151,6 +151,20 @@ def _iso(value) -> str:
     return str(value)
 
 
+def _named_window(minutes: float | None, entry: dict) -> str:
+    """窓の見出し。**枠の呼び名があれば添える**(`直近 7 日(gpt-reserve)`)。
+
+    相手は窓を `primary` としか呼ばないので、長さで呼ぶのが基本
+    (`_window_label`)。ただし**枠が複数あると長さもぶつかる** —— 実測で、codex は
+    7 日の窓を 2 つ返し、どちらも `primary` / `secondary` としか名乗らなかった。
+    枠のほうには名前が付いている(`limitName`)ので、そこまで出せば読み分けられる
+    (`base_model_inference` = `gpt-reserve` = luna 用の予備枠、と判った)。
+    """
+    base = _window_label(minutes, str(entry.get("id") or "枠"))
+    group = str(entry.get("group") or "").strip()
+    return f"{base}({group})" if group else base
+
+
 def _window_label(minutes: float | None, fallback: str) -> str:
     """窓の長さから名前を作る。相手は名前を持たない(primary / secondary としか
     言わない)ので、長さで呼ぶ —— どちらが 5 時間でどちらが週かは、そこにしか無い。"""
@@ -282,7 +296,7 @@ async def _bridge(spec: providers.Provider) -> tuple[list[Window], str]:
             Window(
                 id=str(entry.get("id") or "window"),
                 label=str(entry.get("label") or "")
-                or _window_label(minutes, str(entry.get("id") or "枠")),
+                or _named_window(minutes, entry),
                 used_percent=_percent(entry.get("used_percent")),
                 resets_at=_iso(entry.get("resets_at")),
                 used=entry.get("used") if isinstance(entry.get("used"), int | float) else None,

@@ -201,21 +201,6 @@ runbook・トラブルシュート…)。短期記憶に溜まる量はこちら
   「作られたものを読む」と「印を付ける」だけです
 - 生成物のファイル(`/media/...`)はこの面からも配ります —— 画面が読むために要ります
 
-## 1 プロジェクト 1 メモからの移行
-
-プロジェクトを 1 件の JSON メモにまとめたときの移行です。**id は元のメモの doc_id を
-引き継ぐ**ので、画面が持っている `projectId` と `/api/projects/{id}` はそのまま通ります。
-並びも移行前の順を写します。
-
-```bash
-python scripts/migrate_projects_to_one_note.py --notes-dir data/notes          # 下見
-python scripts/migrate_projects_to_one_note.py --notes-dir data/notes --apply  # 実行
-```
-
-まとめた後は元のメモを消すので、**流す前に置き場をコピーしておくと安心**です
-(タスクの所属はタグなので影響を受けませんが、説明とリポジトリ URL は元のメモにしか
-ありません)。何度流しても増えません。
-
 ## `todo` から `task` への移行
 
 タスクを表すタグは `task` です。以前は `todo` でしたが、あれは「あとでやる」くらいの

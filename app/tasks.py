@@ -181,10 +181,6 @@ def _task_of(row, project_names: set[str]) -> Task:
     )
 
 
-def _project_names() -> set[str]:
-    return {row["title"] for row in _rows_tagged(TAG_PROJECT)}
-
-
 def list_tasks(project: str | None = None, status: str | None = None) -> list[Task]:
     """タスク一覧。`project` / `status` は省略すると絞り込まない。
 
@@ -400,9 +396,6 @@ def delete_task(doc_id: int) -> None:
 # JSON は `extra` ではなく**本文**に置く。目に見えるところに無いと直せないし、
 # `recall` の既定は `extra` を返さないので、中身が読めなくなるため。
 
-# 集約したメモの見出し。**移行元としてだけ見る**(下の `_load_payload`)。
-PROJECTS_TITLE = "プロジェクト"
-
 # 設定の置き場での置きどころ(`app/machine_store.py`)。
 #
 # **プロジェクトは覚えたことではなく設定**。タスクの入れ物の定義でしかないのに
@@ -433,32 +426,10 @@ def _projects_body() -> str | None:
     """プロジェクトの定義(JSON の文字列)。まだ 1 件も作っていなければ None。
 
     **置き場は設定の側**(`app/machine_store.py`)。短期記憶に置いていた頃は、
-    人が消せてしまう・目的の違うものが `recall` や検索に混ざる、の 2 つがあった。
-
-    **短期記憶に残っているものは 1 度だけ移す。** 移さないと、入れ替えた瞬間に
-    プロジェクトが空になり、**全タスクの所属が画面から消える**(タグは残っているので
-    データは失われないが、何が起きたのかは読めない)。**移した後も元のメモは
-    消さない** —— 消すのは取り消せないので、確かめてから人が消す。
+    人が消せてしまう(消すと全タスクの所属が消える)し、目的の違うものが
+    `recall` や検索に混ざっていた。
     """
-    if not machine_store.is_enabled():
-        return _old_projects_body()
-    if (body := machine_store.get(PROJECTS_KIND, PROJECTS_KEY)) is not None:
-        return body
-    if (old := _old_projects_body()) is not None:
-        machine_store.put(PROJECTS_KIND, PROJECTS_KEY, old)
-        log.info("moved the project definitions into the settings store")
-    return old
-
-
-def _old_projects_body() -> str | None:
-    """短期記憶に残っている古い置き場(移行元)。"""
-    rows = _rows_tagged(TAG_PROJECT)
-    if not rows:
-        return None
-    for row in rows:
-        if row["title"] == PROJECTS_TITLE:
-            return row["body"]
-    return rows[0]["body"]
+    return machine_store.get(PROJECTS_KIND, PROJECTS_KEY) if machine_store.is_enabled() else None
 
 
 def _project_from_json(item: dict, index: int) -> Project:
