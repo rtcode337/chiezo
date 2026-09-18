@@ -20,7 +20,7 @@ from app.pages import esc
 router = APIRouter()
 
 SECTION_ANCHOR = "ai-workers"
-BACK_TO_SECTION = f"/admin/ai#{SECTION_ANCHOR}"
+BACK_TO_SECTION = f"/admin/collect#{SECTION_ANCHOR}"
 
 # 1 つのワーカーに出す段の数(いま入っているぶん + 足すための空き 1 つ)。
 # **上限を持つのは画面の都合だけ** —— 並びは配列なので、定義側に制限は無い。

@@ -21,7 +21,15 @@ import httpx
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from app import answer, capabilities, media, media_providers, providers, settings_store
+from app import (
+    answer,
+    capabilities,
+    media,
+    media_providers,
+    providers,
+    settings_store,
+    workers,
+)
 from app.pages import CHAT_PATH, esc, markup
 
 router = APIRouter()
@@ -668,6 +676,12 @@ async def list_models(request: Request, backend: str = ""):
     モデルも考える量も、**相手に聞けたらその一覧、聞けなければ `app/providers.py` の控え**。
     CLI ブリッジは起動時に CLI 自身へ聞いたものを名乗る（`agy models` と `--help`）。
     """
+    # **ワーカーは候補を持たない。** 相手のセレクトには相手と同じ欄で並ぶので、
+    # 選び直した拍子にここへ聞きに来る —— 404 で返すと、画面には何も起きないのに
+    # 読み込みの失敗だけが残る。**空で答えるのが正しい**(渡る相手はそのときの枠で
+    # 決まるので、モデルも考える量もここでは決められない)
+    if workers.named_in(backend):
+        return {"backend": backend, "models": [], "efforts": [], "bridge": False}
     name = answer.normalize_backend(backend)
     if name not in answer.backend_names():
         raise HTTPException(404, {"error": f"unknown backend: {name}"})

@@ -4798,3 +4798,58 @@ class TestReadingWhatOneSweepMoved:
         html = admin._changed_here_html("news", baked, "居ない回")
 
         assert "ありません" in html
+
+
+class TestTheCollectPage:
+    """収集の面(`/admin/collect`)。**記憶から切り出してある**。
+
+    記憶の中の 1 節だった頃は、収集を 1 本見るのに長期記憶の一覧と初期化の表を
+    またいでいた —— あちらは一度入れたら開かない表で、こちらは毎日動いているものを
+    読みに来る場所。
+    """
+
+    @pytest.fixture()
+    def client(self, enabled, built_data_dir, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        from app.main import app
+
+        with TestClient(app) as c:
+            yield c
+
+    def test_it_has_its_own_page(self, client, sample):
+        html = client.get("/admin/collect").text
+
+        assert "news" in html
+        assert "収集を追加する" in html
+
+    def test_the_workers_live_here_too(self, client, sample):
+        """何を回すかと、誰に回すかは 1 つの話 —— 離すと「なぜこの相手に回ったのか」を
+        別の面と突き合わせて読むことになる。
+        """
+        html = client.get("/admin/collect").text
+
+        assert '<h3 id="ai-workers">' in html
+
+    def test_the_memory_page_no_longer_carries_them(self, client, sample):
+        html = client.get("/admin/memory").text
+
+        assert "収集を追加する" not in html
+        assert '<h3 id="ai-workers">' not in html
+
+    def test_the_ai_page_no_longer_carries_the_workers(self, client, sample):
+        html = client.get("/admin/ai").text
+
+        assert '<h3 id="ai-workers">' not in html
+
+    def test_the_band_links_to_it(self, client, sample):
+        """面が増えたら帯に出す —— 出さないと、開いた人しか存在に気づけない。"""
+        html = client.get("/admin").text
+
+        assert 'href="/admin/collect"' in html
+
+    def test_one_collection_still_has_its_own_page(self, client, sample):
+        """`/admin/collect` と `/admin/collect/{name}` がぶつからないこと。"""
+        assert client.get("/admin/collect/news").status_code == 200
+        assert client.get("/admin/collect/nosuch").status_code == 404

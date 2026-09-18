@@ -35,6 +35,12 @@ from app import machine_store, usage
 
 log = logging.getLogger("chiezo.workers")
 
+# 相手のセレクトで、ワーカーを名指しするときの頭。**相手 1 つと同じ欄で選ばせる**
+# —— 欄を分けていた頃は、相手とワーカーの両方が選べて、どちらが効くのかが
+# 画面から読めなかった(効くのはワーカーのほう)。
+# **相手の id には `:` が入らない**ので、頭を見るだけで見分けられる。
+OPTION_PREFIX = "worker:"
+
 DEFS_KIND = "worker"
 DEFS_KEY = "definitions"
 DEFS_BROKEN = "ワーカーの定義が JSON として読めません"
@@ -138,6 +144,17 @@ def merged(current: list[Worker], key: str, name: str, steps: tuple[Step, ...]) 
     if key and any(w.name == key for w in current):
         return [Worker(name, steps) if w.name == key else w for w in current]
     return [*current, Worker(name, steps)]
+
+
+def named_in(choice: str) -> str:
+    """相手のセレクトの値から、名指しされたワーカーの名前(そうでなければ空)。"""
+    value = str(choice or "")
+    return value[len(OPTION_PREFIX):].strip() if value.startswith(OPTION_PREFIX) else ""
+
+
+def option_for(name: str) -> str:
+    """その名前を相手のセレクトへ載せるときの値。"""
+    return f"{OPTION_PREFIX}{name}"
 
 
 def room_left(step: Step, limit: float | None = None) -> bool:

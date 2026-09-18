@@ -396,7 +396,7 @@ def _consult_page_html(name: str | None, want: str, draft: str, error: str) -> s
 <p class="muted">集めたいもの: {esc(want) or "(指定なし)"}</p>
 {save}
 {again}
-<p class="muted"><a href="/admin/memory#collect">管理画面へ戻る</a>(保存しなければ何も変わりません)</p>
+<p class="muted"><a href="/admin/collect">管理画面へ戻る</a>(保存しなければ何も変わりません)</p>
 """
     return page_shell("プロンプトの相談", body)
 
@@ -412,7 +412,9 @@ KIND_LABELS = {
 }
 
 
-def _backend_select(current: str | None, field: str = "backend") -> str:
+def _backend_select(
+    current: str | None, field: str = "backend", with_workers: bool = False,
+) -> str:
     """相手を選ぶセレクト。**空が「Chiezo の既定にまかせる」**。
 
     候補は**有効にしてある相手だけ**(`answer.backend_names()`)—— 無効な相手を選べても
@@ -421,10 +423,15 @@ def _backend_select(current: str | None, field: str = "backend") -> str:
 
     **いま選ばれている相手が無効になっていても選択肢に残す** —— 落とすと、保存し直した
     瞬間に既定へ倒れて、誰に頼んでいたのかが画面から消える。
+
+    **ワーカーも同じ欄に並べる**(`with_workers`)。欄を分けていた頃は、相手と
+    ワーカーの両方を選べて、**どちらが効くのかが画面から読めなかった**(効くのは
+    ワーカー)。1 つの欄にすれば、選べるのは片方だけになる。
+    **ワーカーの段に出す欄では並べない** —— ワーカーがワーカーを指せてしまう。
     """
     enabled = answer.backend_names()
     names = list(enabled)
-    if current and current not in names:
+    if current and current not in names and not workers.named_in(current or ""):
         names.append(current)
     options = ['<option value="">Chiezo の既定にまかせる</option>']
     for name in names:
@@ -434,7 +441,32 @@ def _backend_select(current: str | None, field: str = "backend") -> str:
             label += "(いまは無効)"
         selected = " selected" if name == current else ""
         options.append(f'<option value="{esc(name)}"{selected}>{esc(label)}</option>')
+    if with_workers:
+        options.append(_worker_options(current or ""))
     return f'<select name="{field}">{"".join(options)}</select>'
+
+
+def _worker_options(current: str) -> str:
+    """相手のセレクトに並べるワーカーのぶん。**1 本も無ければ何も出さない**
+    (空の見出しだけが並ぶと、設定し忘れているように見える)。
+
+    **いま名指しされている名前が定義に無くても残す**(相手と同じ理由)——
+    落とすと、保存し直した瞬間に既定へ倒れて、何を指していたのかが画面から消える。
+    """
+    try:
+        names = [w.name for w in workers.load()]
+    except ValueError:
+        names = []
+    if (picked := workers.named_in(current)) and picked not in names:
+        names.append(picked)
+    if not names:
+        return ""
+    out = []
+    for name in names:
+        value = workers.option_for(name)
+        selected = " selected" if value == current else ""
+        out.append(f'<option value="{esc(value)}"{selected}>{esc(name)}</option>')
+    return f'<optgroup label="ワーカー(枠を見て振り替える)">{"".join(out)}</optgroup>'
 
 
 def _candidate_select(field: str, current: str | None, candidates, empty_label: str) -> str:
@@ -507,6 +539,12 @@ def _backend_label(item) -> str:
     """
     if getattr(item, "use_extract", False) or getattr(item, "use_feed", False):
         return '<span class="muted">AI 利用無し</span>'
+    # **ワーカーに頼む回は、そう出す。** 相手の名前を出すと、その 1 つに
+    # 固定で頼んでいるように読める —— 実際に渡る先は毎回その場の枠で決まる
+    if worker := getattr(item, "worker", ""):
+        return (
+            f'{esc(worker)}<br><span class="muted">ワーカー(枠を見て振り替える)</span>'
+        )
     spec = providers.get(item.backend) if item.backend else None
     label = (
         esc(spec.label if spec else item.backend)
@@ -639,45 +677,40 @@ def _sweep_backend_fields(sweep, backend, mechanical: bool) -> str:
 
     出していた頃は、選んでも何も起きなかった —— 機械の回は AI を呼ばずに返すので、
     相手もモデルも読まれない。**選べるのに効かない欄は、設定したつもりを作る**。
+
+    **ワーカーは相手と同じ欄で選ぶ。** 別の欄にしていた頃は両方を選べて、
+    どちらが効くのかが画面から読めなかった(効くのはワーカー)。
+
+    **ワーカーを選んだ回には、モデルも考える量も出さない。** どちらに頼むかは
+    そのときの枠で決まるので、ここで 1 つ選んでも**どの相手に渡る値なのか決まらない**
+    —— モデルの名前は相手ごとに違う(`sonnet` は codex には無い)。
+    段ごとの指定はワーカーの側が持っている。
     """
     if mechanical:
         return (
             '<p class="muted">この引き方では AI を呼ばないので、相手は選べません'
             "(「AI に頼む」にして保存すると出ます)。</p>"
         )
-    chosen = (sweep.worker if sweep else "") or ""
-    return (
-        f'<p><label>ワーカー<br>{_worker_select(chosen)}</label></p>'
-        '<p class="muted">ワーカーを選ぶと、<strong>下の相手ではなくその並びから'
-        "選びます</strong>(枠に余裕のある先頭に頼み、どれも詰まっていればその回は"
-        "走らせません)。並びは「AI と鍵」の面で決めます。</p>"
-        f'<p><label>頼む相手<br>{_backend_select(backend, "sweep_backend")}</label></p>'
+    worker = (sweep.worker if sweep else "") or ""
+    chosen = workers.option_for(worker) if worker else (backend or "")
+    head = (
+        f'<p><label>頼む相手<br>'
+        f'{_backend_select(chosen, "sweep_backend", with_workers=True)}</label></p>'
+    )
+    if worker:
+        return head + (
+            '<p class="muted"><strong>ワーカーに頼む回です。</strong>'
+            "枠に余裕のある先頭の相手に渡し、どれも詰まっていればその回は走らせません。"
+            "<br>モデルと考える量は<strong>ワーカーの段が持ちます</strong> —— "
+            "渡る相手がそのときまで決まらないので、ここでは選べません"
+            f'(<a href="/admin/collect#{ai_workers.SECTION_ANCHOR}">段を直す</a>)。</p>'
+        )
+    return head + (
         f'<p><label>モデル<br>'
         f'{_model_select(backend, sweep.model if sweep else None, "sweep_model")}</label></p>'
         f'<p><label>考える量<br>'
         f'{_effort_select(backend, sweep.effort if sweep else None, "sweep_effort")}</label></p>'
     )
-
-
-def _worker_select(current: str) -> str:
-    """ワーカーを選ぶセレクト。**空が「使わない」**(下の相手で走る)。
-
-    **いま選ばれている名前が定義に無くても選択肢に残す** —— 落とすと、保存し直した
-    瞬間に「使わない」へ倒れて、何を指していたのかが画面から消える(相手のセレクトと
-    同じ理由)。定義が読めないときも同じ扱いにする。
-    """
-    try:
-        names = [w.name for w in workers.load()]
-    except ValueError:
-        names = []
-    if current and current not in names:
-        names.append(current)
-    options = ['<option value="">使わない(下の相手に頼む)</option>']
-    options += [
-        f'<option value="{esc(n)}"{" selected" if n == current else ""}>{esc(n)}</option>'
-        for n in names
-    ]
-    return f'<select name="sweep_worker">{"".join(options)}</select>'
 
 
 def _sweep_edit_row(item, sweep, columns: int, removable: bool = True) -> str:
@@ -1647,7 +1680,12 @@ def _answer_status_html() -> str:
 # 縦に並べると、いま見たい節に着くまで無関係な表を何度もスクロールすることになる。
 # 玄関に要約を置き、深いところは選んで入る。
 PAGES = (
-    ("/admin/memory", "記憶", "溜めて引く。短期記憶・長期記憶・集める・固化・初期化"),
+    ("/admin/memory", "記憶", "溜めて引く。短期記憶・長期記憶・固化・初期化"),
+    # **記憶から切り出した面。** 記憶の中に畳んでいた頃は、収集を 1 本見るのに
+    # 長期記憶の一覧と初期化の表をまたいでいた —— 無人で回る層は毎日見に来る側で、
+    # 一度入れたら開かない表と同じ高さに置く理由が無い。ワーカーも一緒に置く
+    # (何を回すかと、誰に回すかは 1 つの話)
+    ("/admin/collect", "収集", "無人で回る層。巡回・区画・変更履歴と、回す相手の並び"),
     ("/admin/ai", "AI と鍵", "貸し出すもの。話せる相手、使用量、依頼の履歴"),
     ("/admin/media", "見比べ", "作らせたものを並べて選ぶ。手元のものも持ち込める"),
     # **外に開く面。** 認証なしで開くので、帯からも行けるようにしておく ——
@@ -1836,10 +1874,7 @@ def _running_html(running: list[dict]) -> str:
 
 
 @router.get("/admin/memory", response_class=HTMLResponse)
-def admin_memory(
-    request: Request,
-    sweep: str | None = Query(None, description="直近の変更を、この回のぶんだけに絞る"),
-):
+def admin_memory(request: Request):
     sources: dict[str, Source] = request.app.state.sources
     job = _fetch_trigger_status()
     disabled = run_buttons_disabled(job)
@@ -1977,13 +2012,39 @@ def admin_memory(
 </table>
 </details>
 
-<h2 id="collect">集める(AI に集めさせて溜める)</h2>
-{_collect_html(sources, disabled, sweep)}
-
 <h2 id="consolidation">短期記憶から移す(固化)</h2>
 {_memory_html(sources, disabled)}
 """
     return HTMLResponse(content=page_shell("記憶", body))
+
+
+@router.get("/admin/collect", response_class=HTMLResponse)
+async def admin_collect(
+    request: Request,
+    sweep: str | None = Query(None, description="直近の変更を、この回のぶんだけに絞る"),
+):
+    """無人で回る層の面。**記憶から切り出してある**。
+
+    記憶の中の 1 節だった頃は、収集を 1 本見るのに長期記憶の一覧と初期化の表を
+    またいでいた —— あちらは一度入れたら開かない表で、こちらは毎日動いているものを
+    読みに来る場所。同じ高さに並べる理由が無い。
+
+    **ワーカーも同じ面に置く。** 何を回すかと、それを誰に回すかは 1 つの話で、
+    離すと「なぜこの相手に回ったのか」を別の面と突き合わせて読むことになる。
+    """
+    body = f"""
+{nav_html("/admin/collect")}
+<h1>収集(AI に集めさせて溜める)</h1>
+<p class="muted">
+無人で回る層。**頼んだ文で AI が集め、そのまま長期記憶へ焼かれる**。
+巡回ごとに時計と相手を分けられる。
+</p>
+
+{_collect_html(request.app.state.sources, run_buttons_disabled(_fetch_trigger_status()), sweep)}
+
+{ai_workers.section_html((_backend_select, _model_select, _effort_select))}
+"""
+    return HTMLResponse(content=page_shell("収集", body))
 
 
 def _int_arg(request: Request, name: str, fallback: int) -> int:
@@ -2021,8 +2082,6 @@ async def admin_ai(request: Request):
 {await ai_settings.section_html(request)}
 
 {ai_usage.section_html(request)}
-
-{ai_workers.section_html((_backend_select, _model_select, _effort_select))}
 
 {ai_history.section_html(*_history_args(request))}
 """
@@ -2351,7 +2410,7 @@ async def admin_collect_create(request: Request):
     from app.main import scan_all
 
     request.app.state.sources = scan_all(request.app.state.data_dir)
-    return RedirectResponse(url="/admin/memory#collect", status_code=303)
+    return RedirectResponse(url="/admin/collect", status_code=303)
 
 
 @router.post("/admin/collect/{name}/edit")
@@ -2381,7 +2440,7 @@ async def admin_collect_edit(name: str, request: Request):
         # 0 も意味のある値(守りを外す)なので、空のときだけ触らない
         keep_ratio=_ratio(form.get("keep_ratio")),
     )
-    return RedirectResponse(url="/admin/memory#collect", status_code=303)
+    return RedirectResponse(url="/admin/collect", status_code=303)
 
 
 @router.post("/admin/collect/{name}/sweep")
@@ -2544,7 +2603,7 @@ def _draft_extract_page_html(name: str | None, want: str, drafted: dict | None, 
 <p class="muted">頼んだこと: {esc(want) or "(指定なし)"}</p>
 {result}
 {save}
-<p class="muted"><a href="/admin/memory#collect">管理画面へ戻る</a>(保存しなければ何も変わりません)</p>
+<p class="muted"><a href="/admin/collect">管理画面へ戻る</a>(保存しなければ何も変わりません)</p>
 """
     return page_shell("抽出の指定", body)
 
@@ -2554,7 +2613,7 @@ def admin_collect_toggle(name: str):
     """有効・無効を切り替える(見本を動かし始める入口でもある)。"""
     current = collect.get(name)
     collect.update(name, enabled=not current.enabled)
-    return RedirectResponse(url="/admin/memory#collect", status_code=303)
+    return RedirectResponse(url="/admin/collect", status_code=303)
 
 
 @router.post("/admin/collect/{name}/delete")
@@ -2585,7 +2644,7 @@ def admin_collect_delete(request: Request, name: str):
     from app.main import scan_all
 
     request.app.state.sources = scan_all(request.app.state.data_dir)
-    return RedirectResponse(url=f"/admin/memory#collect{'' if dropped else '&kept'}", status_code=303)
+    return RedirectResponse(url=f"/admin/collect{'' if dropped else '&kept'}", status_code=303)
 
 
 def _drop_collect_source(name: str) -> bool:
@@ -2664,7 +2723,7 @@ async def admin_collect_focus(name: str, request: Request):
         "partition": str(form.get("partition") or ""),
         "requested_by": "管理画面",
     })
-    return RedirectResponse(url="/admin/memory#collect", status_code=303)
+    return RedirectResponse(url="/admin/collect", status_code=303)
 
 
 def _blank_to_none(raw) -> str | None:
@@ -2750,9 +2809,14 @@ def _parse_sweeps_form(form) -> list[dict]:
             values = fields[key]
             return str(values[i]).strip() if i < len(values) else ""
 
-        # **ワーカーは空でも書く。** 「使わない」に戻せないと、一度名指ししたら
-        # 外せなくなる(このフォームだけが持つ欄なので、他から消される心配は無い)
-        sweep = {"name": name, "enabled": bool(at("enabled")), "worker": at("worker")}
+        # **ワーカーは相手の欄から取り出す**(`workers.OPTION_PREFIX`)。
+        # **空でも書く** —— 「使わない」に戻せないと、一度名指ししたら外せなくなる
+        # (このフォームだけが持つ欄なので、他から消される心配は無い)
+        sweep = {
+            "name": name,
+            "enabled": bool(at("enabled")),
+            "worker": workers.named_in(at("backend")),
+        }
         # **時計を持たない巡回**(割り込み用)。定時には走らず、頼まれたときだけ動く。
         # 名指しされたときだけにする —— 欄を持たないフォームから保存されたときに、
         # 全部の巡回が黙って時計を失うのを避ける
@@ -2776,9 +2840,12 @@ def _parse_sweeps_form(form) -> list[dict]:
                 with suppress(ValueError):
                     sweep[key] = float(value) if key == "cover_days" else int(value)
         # **機械で引く回に相手は要らない。** 残すと、効かない設定が控えに残り、
-        # 後から読む人には「この回は AI で走っている」と見える
+        # 後から読む人には「この回は AI で走っている」と見える。
+        # **ワーカーに頼む回も同じ** —— どの相手に渡るかはそのときの枠で決まるので、
+        # ここに 1 つ書いても、どの相手に対する指定なのかが決まらない
+        # (モデルの名前は相手ごとに違う)。段ごとの指定はワーカーの側が持つ
         for key in ("backend", "model", "effort"):
-            if sweep.get("use_extract") or sweep.get("use_feed"):
+            if sweep.get("use_extract") or sweep.get("use_feed") or sweep["worker"]:
                 break
             if value := at(key):
                 sweep[key] = value
@@ -2942,7 +3009,7 @@ def admin_collect_detail(
 {_collect_running_html(name)}
 {_collect_changes_html(name=name, sweep=sweep)}
 {_changed_here_html(name, request.app.state.sources, sweep)}
-<p class="muted"><a href="/admin/memory#collect">集める の一覧へ戻る</a></p>
+<p class="muted"><a href="/admin/collect">集める の一覧へ戻る</a></p>
 """
     return HTMLResponse(content=page_shell(name, body))
 
@@ -3069,7 +3136,7 @@ def _doc_diff_page_html(name: str, title: str, versions: dict) -> str:
 <h3>{esc(title)}</h3>
 <p class="muted">収集「{esc(name)}」 / {_generations_html(versions)}</p>
 {body}
-<p class="muted">{_doc_now_link(name, now)}<a href="/admin/memory#collect">管理画面へ戻る</a></p>
+<p class="muted">{_doc_now_link(name, now)}<a href="/admin/collect">管理画面へ戻る</a></p>
 """,
     )
 

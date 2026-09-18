@@ -294,3 +294,97 @@ class TestTheEditorOnTheScreen:
 
         assert pages.BACKEND_PICKER_SCRIPT in page
         assert "'backend'.length" in pages.BACKEND_PICKER_SCRIPT
+
+
+class TestPickingAWorkerAsTheBackend:
+    """ワーカーは**相手と同じ欄**で選ぶ。
+
+    欄を分けていた頃は相手とワーカーの両方を選べて、**どちらが効くのかが画面から
+    読めなかった**(効くのはワーカー)。1 つの欄にすれば、選べるのは片方だけになる。
+    """
+
+    def test_the_value_round_trips(self):
+        assert workers.named_in(workers.option_for("精査")) == "精査"
+        assert workers.named_in("codex") == ""
+        assert workers.named_in("") == ""
+
+    def test_the_select_lists_them_apart_from_the_backends(self, enabled):
+        from app.views import admin
+
+        workers.save([_worker(workers.Step("codex"))])
+        html = admin._backend_select(None, "sweep_backend", with_workers=True)
+
+        assert "<optgroup" in html
+        assert f'value="{workers.option_for("精査")}"' in html
+
+    def test_a_worker_step_cannot_point_at_a_worker(self, enabled):
+        """並べると、ワーカーがワーカーを指せてしまう。"""
+        from app.views import admin
+
+        workers.save([_worker(workers.Step("codex"))])
+
+        assert "<optgroup" not in admin._backend_select(None, "step_backend")
+
+    def test_no_workers_means_no_group(self, enabled):
+        """空の見出しだけが並ぶと、設定し忘れているように見える。"""
+        from app.views import admin
+
+        assert "<optgroup" not in admin._backend_select(None, "sweep_backend", True)
+
+    def test_saving_splits_the_worker_out_of_the_backend_field(self, enabled):
+        from starlette.datastructures import FormData
+
+        from app.views import admin
+
+        form = FormData([
+            ("sweep_name", "精査の回"),
+            ("sweep_backend", workers.option_for("精査")),
+            ("sweep_model", "sonnet"),
+            ("sweep_effort", "high"),
+        ])
+        [sweep] = admin._parse_sweeps_form(form)
+
+        assert sweep["worker"] == "精査"
+        # **どの相手に渡るかはそのときの枠で決まる。** ここに 1 つ書いても、
+        # どの相手に対する指定なのかが決まらない(モデルの名前は相手ごとに違う)
+        assert "backend" not in sweep
+        assert "model" not in sweep and "effort" not in sweep
+
+    def test_a_plain_backend_keeps_its_model_and_effort(self, enabled):
+        from starlette.datastructures import FormData
+
+        from app.views import admin
+
+        form = FormData([
+            ("sweep_name", "整理"),
+            ("sweep_backend", "codex"),
+            ("sweep_model", "gpt-5.6-terra"),
+            ("sweep_effort", "medium"),
+        ])
+        [sweep] = admin._parse_sweeps_form(form)
+
+        assert sweep["worker"] == ""
+        assert (sweep["backend"], sweep["model"], sweep["effort"]) == \
+            ("codex", "gpt-5.6-terra", "medium")
+
+    def test_the_form_hides_the_fields_that_cannot_apply(self, enabled):
+        """**選べるのに効かない欄は「設定したつもり」を作る。**"""
+        from app import collect
+        from app.views import admin
+
+        picked = collect.Sweep("精査の回", "", 60, True, None, None, None, worker="精査")
+        html = admin._sweep_backend_fields(picked, None, mechanical=False)
+
+        assert 'name="sweep_model"' not in html
+        assert 'name="sweep_effort"' not in html
+        assert "ワーカーの段が持ちます" in html
+
+    def test_the_row_says_it_is_a_worker_not_one_backend(self, enabled):
+        """相手の名前を出すと、その 1 つに固定で頼んでいるように読める。"""
+        from app import collect
+        from app.views import admin
+
+        picked = collect.Sweep("精査の回", "", 60, True, "codex", "x", "high", worker="精査")
+
+        assert "精査" in admin._backend_label(picked)
+        assert "枠を見て振り替える" in admin._backend_label(picked)
