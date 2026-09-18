@@ -11,10 +11,12 @@
 """
 from __future__ import annotations
 
+from datetime import timedelta
+
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 
-from app import usage, workers
+from app import jst, usage, workers
 from app.pages import esc
 
 router = APIRouter()
@@ -93,7 +95,7 @@ def _worker_form(worker: workers.Worker | None, selects) -> str:
         "次の起動をしません。</p>"
         f"{''.join(rows)}"
         '<p><button type="submit">このワーカーを保存</button></p></form>'
-        + (_queue_html(name) if worker else "")
+        + (_queue_html(worker) if worker else "")
     )
 
 
@@ -106,27 +108,49 @@ def _number(raw, fallback: int) -> int:
         return fallback
 
 
-def _queue_html(name: str) -> str:
-    """そのワーカーの待ち行列。**先頭がいま流している最中のぶん**。
+def _queue_html(worker: workers.Worker) -> str:
+    """そのワーカーの回り方と、待っているもの。
 
     **出すのは「なぜ動いていないか」を読むため。** 積まれているのに動かないなら
     枠が詰まっているか起動の間隔待ちで、積まれていないなら巡回の間隔待ち ——
-    どちらなのかは、行列を見ないと外から判らない。
+    どちらなのかは、時刻と行列を並べないと外から判らない。
+
+    **畳まない。** 巡回の表と同じで、動いているかを確かめに来る場所なので、
+    開かないと読めないのでは表の値打ちが消える。
     """
-    waiting = workers.queued(name)
+    last = jst.parse(workers.last_at(worker.name))
+    when_last = esc(jst.format(last)) if last else '<span class="muted">まだ</span>'
+    if last is None:
+        when_next = '<span class="muted">いますぐ</span>'
+    else:
+        when_next = esc(jst.format(last + timedelta(minutes=worker.interval_minutes)))
+    waiting = workers.queued(worker.name)
+    running = workers.claim_ready(worker.name)
     if not waiting:
-        return '<p class="muted">待っているものはありません。</p>'
-    running = workers.claim_ready(name)
-    rows = []
-    for i, entry in enumerate(waiting):
-        where = f'{esc(str(entry.get("collection") or ""))} / {esc(str(entry.get("sweep") or ""))}'
-        mark = ('<span class="muted">いま流している</span>' if running and i == 0
-                else '<span class="muted">待ち</span>')
-        rows.append(f"<tr><td>{where}</td><td>{mark}</td></tr>")
-    return (
-        f'<details><summary>待ち行列({len(waiting)} 件)</summary>'
-        f'<table><tbody>{"".join(rows)}</tbody></table></details>'
-    )
+        rows = '<tr><td colspan="2" class="muted">待っているものはありません</td></tr>'
+    else:
+        rows = "".join(
+            f"<tr><td>{esc(str(e.get('collection') or ''))}"
+            f" / {esc(str(e.get('sweep') or ''))}</td>"
+            + (f'<td>{"いま流している" if running and i == 0 else ""}</td></tr>')
+            for i, e in enumerate(waiting)
+        )
+    return f"""
+<table>
+<thead><tr><th>前回起きた</th><th>次に起きる</th><th>待っている数</th></tr></thead>
+<tbody><tr><td>{when_last}</td><td>{when_next}</td><td>{len(waiting):,}</td></tr></tbody>
+</table>
+<table>
+<thead><tr><th>待ち行列(先に積まれた順)</th><th></th></tr></thead>
+<tbody>{rows}</tbody>
+</table>
+<p class="muted">
+<strong>次に起きる時刻は、前回「起きた」時刻から数えます</strong>(流し終えた時刻では
+ない)—— 塊を流し切るのに何周かかっても、次の起動は最初の起動から間隔ぶん後になる。<br>
+積まれているのに動かないなら、枠が詰まっているか起動待ち。積まれていないなら、
+巡回の側がまだ積んでいない(前回の完了から間隔が空いていない)。
+</p>
+"""
 
 
 def section_html(selects) -> str:

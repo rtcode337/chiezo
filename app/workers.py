@@ -289,7 +289,7 @@ def claim(name: str, per_run: int, at: str) -> list[dict]:
         return list(slot["batch"])
     slot["batch"] = slot["queue"][:max(1, per_run)]
     slot["queue"] = slot["queue"][len(slot["batch"]):]
-    slot["next_run_at"] = at
+    slot["last_run_at"] = at
     _queue_save(state)
     return list(slot["batch"])
 
@@ -299,9 +299,15 @@ def claim_ready(name: str) -> bool:
     return bool(_slot(_queue_all(), name)["batch"])
 
 
-def next_at(name: str) -> str:
-    """そのワーカーが最後に起動した時刻(まだなら空)。"""
-    return str(_slot(_queue_all(), name).get("next_run_at") or "")
+def last_at(name: str) -> str:
+    """そのワーカーが最後に起動した時刻(まだなら空)。
+
+    **起動であって、流し終えた時刻ではない。** 次にいつ起きるかはここから数えるので、
+    塊を流し切るのに何周かかっても、次の起動は最初の起動から間隔ぶん後になる。
+    """
+    slot = _slot(_queue_all(), name)
+    # 前の版は同じ値を `next_run_at` に入れていた(名前が逆だった)
+    return str(slot.get("last_run_at") or slot.get("next_run_at") or "")
 
 
 def done(name: str, collection: str, sweep: str) -> None:

@@ -388,7 +388,7 @@ def _run_one_from_a_worker() -> bool:
 
 
 def _worker_due(worker, now: datetime) -> bool:
-    last = _parse_iso(workers.next_at(worker.name))
+    last = _parse_iso(workers.last_at(worker.name))
     if last is None:
         return True
     return now - last >= timedelta(minutes=max(worker.interval_minutes, 1))

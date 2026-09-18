@@ -574,3 +574,66 @@ class TestAskingForOneFromOutside:
 
         assert sweep.get("worker") is None
         assert sweep["backend"] == "codex" and sweep["model"] == "gpt-5.6-terra"
+
+
+class TestReadingWhyItIsNotMoving:
+    """ワーカーの節に、回り方と待ち行列を出す。
+
+    **積まれているのに動かないなら**枠が詰まっているか起動待ち、**積まれていない
+    なら**巡回の側がまだ積んでいない —— どちらなのかは、時刻と行列を並べないと
+    外から判らない。
+    """
+
+    def _form(self, worker):
+        from app.views import admin, ai_workers
+
+        return ai_workers._worker_form(
+            worker, (admin._backend_select, admin._model_select)
+        )
+
+    def test_it_says_when_it_last_woke_and_when_it_will(self, enabled):
+        workers.enqueue("精査", "c", "整理", "2026-09-19T00:00:00+00:00")
+        workers.claim("精査", 1, "2026-09-19T08:00:00+00:00")
+        worker = workers.Worker("精査", (workers.Step("codex"),), interval_minutes=30)
+
+        html = self._form(worker)
+
+        assert "2026-09-19 17:00 JST" in html, "前回起きた"
+        assert "2026-09-19 17:30 JST" in html, "次に起きる(前回 + 間隔)"
+
+    def test_one_that_never_woke_says_so(self, enabled):
+        html = self._form(workers.Worker("精査", (workers.Step("codex"),)))
+
+        assert "まだ" in html
+        assert "いますぐ" in html
+
+    def test_the_queue_is_listed_in_order(self, enabled):
+        for name in ("aa", "bb", "cc"):
+            workers.enqueue("精査", name, "整理", "2026-09-19T00:00:00+00:00")
+
+        html = self._form(workers.Worker("精査", (workers.Step("codex"),)))
+
+        assert html.index("aa") < html.index("bb") < html.index("cc")
+
+    def test_the_one_being_run_is_marked(self, enabled):
+        for name in ("aa", "bb"):
+            workers.enqueue("精査", name, "整理", "2026-09-19T00:00:00+00:00")
+        workers.claim("精査", 1, "2026-09-19T08:00:00+00:00")
+
+        html = self._form(workers.Worker("精査", (workers.Step("codex"),)))
+
+        assert "いま流している" in html
+
+    def test_an_empty_queue_says_so(self, enabled):
+        """**空の表を出さない** —— 「まだ動いていない」と読めてしまう。"""
+        html = self._form(workers.Worker("精査", (workers.Step("codex"),)))
+
+        assert "待っているものはありません" in html
+
+    def test_it_is_not_folded_away(self, enabled):
+        """動いているかを確かめに来る場所なので、開かないと読めないのでは値打ちが消える。"""
+        workers.enqueue("精査", "aa", "整理", "2026-09-19T00:00:00+00:00")
+
+        html = self._form(workers.Worker("精査", (workers.Step("codex"),)))
+
+        assert "<details><summary>待ち行列" not in html
