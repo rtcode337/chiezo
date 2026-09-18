@@ -346,9 +346,16 @@ KIND_LABELS = {
 
 
 def _backend_select(
-    current: str | None, field: str = "backend", with_workers: bool = False,
+    current: str | None,
+    field: str = "backend",
+    with_workers: bool = False,
+    empty_label: str = "Chiezo の既定にまかせる",
 ) -> str:
     """相手を選ぶセレクト。**空が「Chiezo の既定にまかせる」**。
+
+    `empty_label` は空欄の見せ方。**「既定にまかせる」が意味を持たない場所がある**
+    —— ワーカーの段は書いた順に試す並びなので、空欄は「ここで終わり」であって
+    「Chiezo が選ぶ」ではない(そう出ていると、生きているのか未設定なのかが読めない)。
 
     候補は**有効にしてある相手だけ**(`answer.backend_names()`)—— 無効な相手を選べても
     走らせた瞬間に断られる。**描画のときに相手へ問い合わせない**ので、モデルの一覧は
@@ -366,7 +373,7 @@ def _backend_select(
     names = list(enabled)
     if current and current not in names and not workers.named_in(current or ""):
         names.append(current)
-    options = ['<option value="">Chiezo の既定にまかせる</option>']
+    options = [f'<option value="">{esc(empty_label)}</option>']
     for name in names:
         spec = providers.get(name)
         label = spec.label if spec else name
@@ -1401,7 +1408,6 @@ def _collect_html(
     return f"""
 {table}
 {_collect_running_html()}
-{_collect_changes_html(sweep=sweep)}
 <details><summary>収集を追加する</summary>
 <form method="post" action="/admin/collect/create" class="collect-form">
 <p><label>name(ソース名になる。英小文字・数字・_)<br>
@@ -1443,6 +1449,9 @@ AI に集めさせて溜めていく層。<strong>溜め先は収集ごとに別
 <strong>追加したものは止めた状態で作る</strong> —— プロンプトを見直してから
 「有効にする」で動き出す(いきなり AI の枠を使わない)。
 </p>
+
+<h2 id="collect-history">実行履歴</h2>
+{_collect_changes_html(sweep=sweep)}
 """
 
 
@@ -1921,9 +1930,10 @@ async def admin_collect(
 巡回ごとに時計と相手を分けられる。
 </p>
 
-{_collect_html(request.app.state.sources, run_buttons_disabled(_fetch_trigger_status()), sweep)}
+{ai_workers.section_html((_backend_select, _model_select))}
 
-{ai_workers.section_html((_backend_select, _model_select, _effort_select))}
+<h2 id="collect-settings">収集の設定</h2>
+{_collect_html(request.app.state.sources, run_buttons_disabled(_fetch_trigger_status()), sweep)}
 """
     return HTMLResponse(content=page_shell("収集", body))
 

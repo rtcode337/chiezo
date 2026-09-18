@@ -26,6 +26,10 @@ BACK_TO_SECTION = f"/admin/collect#{SECTION_ANCHOR}"
 # **上限を持つのは画面の都合だけ** —— 並びは配列なので、定義側に制限は無い。
 MAX_STEPS = 6
 
+# 段の相手が空のときの出し方。**「Chiezo の既定にまかせる」とは書かない** ——
+# 足していない段にそれが出ていると、生きているのか未設定なのかが読めない。
+_EMPTY_STEP = "(使わない)"
+
 
 def _percent(provider: str) -> str:
     """いまの詰まり具合。**避ける相手が一目で分かるように、しきい値と並べて出す。**"""
@@ -36,29 +40,37 @@ def _percent(provider: str) -> str:
     return f'<span class="muted">{busiest:.0f}% 使用{mark}</span>'
 
 
-def _step_row(index: int, step: workers.Step | None, backend_select, model_select,
-              effort_select) -> str:
+def _step_row(index: int, step: workers.Step | None, backend_select, model_select) -> str:
+    """段 1 つぶんの欄。
+
+    **考える量の欄は持たない。** 考える量はモデルの名前に畳んである
+    (`sonnet-high` / `gpt-6-astra-max`)ので、別の欄を残すと**選べるのに効かない欄**
+    になる(`providers.drops_effort`)。
+
+    **空の段は「使わない」を選んだ状態で出す。** 相手の欄の既定は「Chiezo の既定に
+    まかせる」だが、**足していない段にそれが出ていると、生きているのか未設定なのかが
+    読めない** —— 段は書いた順に試す並びなので、空欄は「ここで終わり」を意味する。
+    """
     current = step.backend if step else ""
+    picked = _percent(current) if current else '<span class="muted">(使わない)</span>'
     return (
         '<div class="sweep-row">'
-        f'<p><label>{index + 1} 番目<br>{backend_select(current, "step_backend")}</label>'
-        f" {_percent(current) if current else ''}</p>"
+        f'<p><label>{index + 1} 番目<br>'
+        f'{backend_select(current, "step_backend", empty_label=_EMPTY_STEP)}</label>'
+        f" {picked}</p>"
         f'<p><label>モデル<br>{model_select(current, step.model if step else "", "step_model")}'
         "</label></p>"
-        f'<p><label>考える量<br>'
-        f'{effort_select(current, step.effort if step else "", "step_effort")}</label></p>'
         "</div>"
     )
 
 
 def _worker_form(worker: workers.Worker | None, selects) -> str:
-    backend_select, model_select, effort_select = selects
+    backend_select, model_select = selects
     name = worker.name if worker else ""
     steps = list(worker.steps) if worker else []
     # **空の段を 1 つ足して出す。** 足すのに押す手数を要らなくするため
     rows = [
-        _step_row(i, steps[i] if i < len(steps) else None,
-                  backend_select, model_select, effort_select)
+        _step_row(i, steps[i] if i < len(steps) else None, backend_select, model_select)
         for i in range(min(len(steps) + 1, MAX_STEPS))
     ]
     hint = ("名前を消すと、このワーカーは無くなります" if worker
@@ -94,7 +106,7 @@ def section_html(selects) -> str:
     if not items and not broken:
         note = ('<p class="muted">まだありません。'
                 "巡回から名指しすると、その並びで相手を選ぶようになります。</p>")
-    return f"""<h3 id="{SECTION_ANCHOR}">ワーカー</h3>
+    return f"""<h2 id="{SECTION_ANCHOR}">ワーカー(巡回を回す相手)</h2>
 <details>
 <summary>この節について</summary>
 <p><strong>巡回を回す相手の順番。</strong>網羅の収集は端から端まで精査し続けるもので、
@@ -129,10 +141,10 @@ async def save_worker(request: Request):
     name = str(form.get("worker_name") or "").strip()
     backends = form.getlist("step_backend")
     models = form.getlist("step_model")
-    efforts = form.getlist("step_effort")
+    # **考える量は受け取らない。** モデルの名前に畳んであるので、別に持つと
+    # 食い違う組み合わせを作れてしまう(`providers.drops_effort`)
     steps = tuple(
-        workers.Step(str(b).strip(), str(models[i] if i < len(models) else "").strip(),
-                     str(efforts[i] if i < len(efforts) else "").strip())
+        workers.Step(str(b).strip(), str(models[i] if i < len(models) else "").strip())
         for i, b in enumerate(backends) if str(b).strip()
     )
 

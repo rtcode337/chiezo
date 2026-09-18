@@ -4944,18 +4944,18 @@ class TestTheCollectPage:
         """
         html = client.get("/admin/collect").text
 
-        assert '<h3 id="ai-workers">' in html
+        assert 'id="ai-workers"' in html
 
     def test_the_memory_page_no_longer_carries_them(self, client, sample):
         html = client.get("/admin/memory").text
 
         assert "収集を追加する" not in html
-        assert '<h3 id="ai-workers">' not in html
+        assert 'id="ai-workers"' not in html
 
     def test_the_ai_page_no_longer_carries_the_workers(self, client, sample):
         html = client.get("/admin/ai").text
 
-        assert '<h3 id="ai-workers">' not in html
+        assert 'id="ai-workers"' not in html
 
     def test_the_band_links_to_it(self, client, sample):
         """面が増えたら帯に出す —— 出さないと、開いた人しか存在に気づけない。"""

@@ -267,7 +267,7 @@ class TestTheEditorOnTheScreen:
     def _selects(self):
         from app.views import admin
 
-        return (admin._backend_select, admin._model_select, admin._effort_select)
+        return (admin._backend_select, admin._model_select)
 
     def test_each_step_is_its_own_row(self, enabled):
         """**段は何本でも並ぶ。** 行で囲わないと、どの段を選び直しても
@@ -279,7 +279,9 @@ class TestTheEditorOnTheScreen:
 
         assert html.count('<div class="sweep-row">') >= 2
         assert '<select name="step_model">' in html
-        assert '<select name="step_effort">' in html
+        # **考える量の欄は持たない** —— モデルの名前に畳んであるので、
+        # 残すと選べるのに効かない欄になる
+        assert "step_effort" not in html
 
     def test_the_picker_reaches_this_form_too(self, enabled):
         """欄の名前が `step_backend` なので、前置きを場合分けで書くと
