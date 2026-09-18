@@ -459,6 +459,25 @@ async def _remembered(kind: str, name: str, fetch, fallback: list[str]) -> list[
     return fallback
 
 
+def remembered_models(backend: str) -> list[str]:
+    """**控えてある**選べるモデル(聞きに行かない)。まだ控えが無ければコードの控え。
+
+    画面を描くときに使う。`available_models` と同じ答えを返すが、**起動時に
+    控えたもの**(`warm_choices`)を読むだけなので待たされない。
+
+    **`app/providers.py` の決め打ちを直に読んではいけない。** あれは相手に聞けない
+    ときの落ち先でしかなく、**ブリッジ越しの相手では実物と食い違う** ——
+    codex は決め打ちを持たない(空のセレクトになる)し、claude は考える量を畳んだ
+    名前(`sonnet-high`)を持たない。画面と `GET /ai/models` で並ぶ候補が違うと、
+    開いた直後だけ選べないモデルがある、という状態になる。
+    """
+    name = normalize_backend(backend)
+    if (cached := _MODELS_CACHE.get(name)) is not None:
+        return list(cached)
+    spec = providers.get(name)
+    return list(spec.models) if spec is not None else []
+
+
 def forget_choices() -> None:
     """控えを捨てる。**立て直したときと同じ状態に戻す**。
 

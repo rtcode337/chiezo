@@ -1538,3 +1538,55 @@ class TestAnEffortFoldedIntoTheModelName:
         from app import providers
 
         assert providers.drops_effort("claude", "") is False
+
+
+class TestTheCandidatesTheScreenDraws:
+    """画面が描く候補は、**起動時に控えたもの**(`answer.remembered_models`)。
+
+    `app/providers.py` の決め打ちを直に読んでいた頃は、**開いた直後だけ候補が違った**
+    —— codex は決め打ちを持たないので空のセレクトになり、claude は考える量を畳んだ
+    名前(`sonnet-high`)を持たなかった。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        from app import answer
+
+        answer.forget_choices()
+        yield
+        answer.forget_choices()
+
+    def test_it_uses_what_was_remembered(self):
+        from app import answer
+
+        answer._MODELS_CACHE["claude"] = ["sonnet", "sonnet-high", "opus-max"]
+
+        assert answer.remembered_models("claude") == ["sonnet", "sonnet-high", "opus-max"]
+
+    def test_the_screen_draws_the_same_ones(self):
+        from app import answer
+        from app.views import admin
+
+        answer._MODELS_CACHE["claude"] = ["sonnet-high"]
+        html = admin._model_select("claude", None)
+
+        assert '<option value="sonnet-high">' in html
+
+    def test_without_a_cache_it_falls_back_to_the_code(self):
+        """相手が立ち上がる前に開いたときは、決め打ちが出る(空よりまし)。"""
+        from app import answer, providers
+
+        assert answer.remembered_models("claude") == list(providers.get("claude").models)
+
+    def test_it_never_asks_the_backend(self):
+        """描画で外へ出ると、相手が落ちているときにページ全体が待たされる。"""
+        import inspect
+
+        from app import answer
+
+        assert not inspect.iscoroutinefunction(answer.remembered_models)
+
+    def test_an_unknown_backend_is_empty_not_a_crash(self):
+        from app import answer
+
+        assert answer.remembered_models("そんな相手はいない") == []

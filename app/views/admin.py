@@ -428,14 +428,18 @@ def _candidate_select(field: str, current: str | None, candidates, empty_label: 
 
 
 def _model_select(backend: str | None, current: str | None, field: str = "model") -> str:
-    """モデルのセレクト。**候補は控え**(`app/providers.py`)から取る。
+    """モデルのセレクト。**候補は起動時に控えたもの**(`answer.remembered_models`)。
 
     ここで相手に問い合わせない —— 管理画面の描画で外へ出ると、相手が落ちている
     ときにページ全体が待たされる(`_backend_select` と同じ約束)。選び直すときだけ
     `GET /ai/models` を引いて入れ替える(`pages.BACKEND_PICKER_SCRIPT`)。
+
+    **`app/providers.py` の決め打ちを直に読まない。** あれは聞けないときの落ち先で、
+    ブリッジ越しの相手では実物と食い違う —— codex は決め打ちを持たず(空のセレクトに
+    なる)、claude は考える量を畳んだ名前を持たない。**開いた直後だけ候補が違う**、
+    という状態になっていた。
     """
-    spec = providers.get(answer.normalize_backend(backend))
-    return _candidate_select(field, current, spec.models if spec else (), "相手の既定")
+    return _candidate_select(field, current, answer.remembered_models(backend), "相手の既定")
 
 
 def _effort_select(backend: str | None, current: str | None, field: str = "effort") -> str:
