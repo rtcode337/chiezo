@@ -275,10 +275,13 @@ def load_settings(
     return Settings(
         name=name,
         model_is_fallback=from_fallback,
-        # **モデルの名前に考える量が埋まっている相手では、選んだときに送らない**
-        # (Antigravity の `gemini-3.8-flash-high` など)。両方渡すと食い違う
-        # 組み合わせを作れてしまい、どちらが勝つかは相手次第で読めない
-        effort="" if chosen and spec.model_carries_effort else normalize_effort(name, effort),
+        # **モデルの名前に考える量が埋まっているときは、別に送らない**
+        # (`gemini-3.8-flash-high` / `sonnet-high` など)。両方渡すと食い違う
+        # 組み合わせを作れてしまい、どちらが勝つかは相手次第で読めない。
+        # **素の名前を選んだ回には今までどおり送る**(`providers.drops_effort`)——
+        # 畳んだ名前と素の名前が同じ一覧に並ぶ相手がいるので、真偽値で決めると
+        # 前から保存されている 2 つ組が黙って効かなくなる
+        effort="" if providers.drops_effort(name, chosen) else normalize_effort(name, effort),
         url=_normalize_base_url(providers.url_of(spec)),
         # 空でも通る相手（1 プロセス 1 モデルの推論サーバ・CLI ブリッジ）がいるので、
         # 決まらないときは無難な既定を置く。

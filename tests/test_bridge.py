@@ -396,7 +396,13 @@ class TestModelSelection:
 
     def test_it_advertises_the_models_it_accepts(self, bridge):
         server = bridge(CHIEZO_BRIDGE_CLI="claude")
-        assert server.models_now() == ("sonnet", "fable", "opus", "haiku")
+        names = server.models_now()
+
+        # **素の名前も残す。** 畳んだ名前しか出さないと「考える量は CLI の既定で
+        # よい」を選べなくなる —— どれか 1 つを選ばされるのは、任せるのとは別のこと
+        assert [n for n in names if "-" not in n] == ["sonnet", "fable", "opus", "haiku"]
+        # 考える量を名前に畳む(Antigravity が元からそう)
+        assert "sonnet-high" in names and "opus-max" in names
 
     def test_the_first_model_is_the_cli_default(self, bridge):
         """見出しは一覧の先頭を名乗るので、CLI の既定(claude-sonnet-5)に揃える。"""
@@ -1746,3 +1752,102 @@ class TestClaudeCanUseItsOwnSignIn:
         raw = json.dumps({"result": "Current session: 20% used"})
 
         assert server._usage_reason(raw) == "Current session: 20% used"
+
+
+class TestFoldingTheEffortIntoTheName:
+    """考える量をモデルの名前に畳む(`_folded` / `split_model`)。
+
+    Antigravity の slug は元からそうで、こちらだけ 2 つの欄に分かれていた。
+    """
+
+    def test_the_plain_name_survives_alongside_the_folded_ones(self, bridge):
+        """畳んだ名前しか出さないと「考える量は CLI の既定でよい」を選べなくなる。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        names = server.models_now()
+
+        assert "sonnet" in names
+        assert "sonnet-low" in names and "sonnet-max" in names
+
+    def test_codex_only_offers_the_levels_each_model_takes(self, bridge, tmp_path, monkeypatch):
+        """**モデルごとに受ける段が違う**(最上位だけが max を受ける)。
+        畳めば、そのモデルが受けない段を選べなくなる。
+        """
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        (tmp_path / "models_cache.json").write_text(json.dumps({"models": [
+            {"slug": "big", "visibility": "list", "priority": 1,
+             "supported_reasoning_levels": [{"effort": "low"}, {"effort": "max"}]},
+            {"slug": "small", "visibility": "list", "priority": 2,
+             "supported_reasoning_levels": [{"effort": "low"}]},
+        ]}), encoding="utf-8")
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        server._FOUND_MODELS = ("big", "small")
+        server._FOUND_EFFORTS = ("low",)
+
+        names = server.models_now()
+
+        assert "big-max" in names
+        assert "small-max" not in names, "受けない段を並べない"
+
+    def test_a_folded_name_is_split_back_apart(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+
+        assert server.split_model("sonnet-high") == ("sonnet", "high")
+        assert server.split_model("sonnet") == ("sonnet", "")
+
+    def test_a_slug_that_ends_in_a_level_is_left_alone(self, bridge):
+        """Antigravity の slug は元から段で終わる —— 解くと存在しないモデルになる。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+        server._FOUND_MODELS = ("gemini-3.8-flash-high",)
+
+        assert server.split_model("gemini-3.8-flash-high") == ("gemini-3.8-flash-high", "")
+        assert server.models_now() == ("gemini-3.8-flash-high",), "畳み直さない"
+
+    def test_a_known_model_that_ends_in_a_level_is_not_split(self, bridge):
+        """一覧に在る名前はそのまま渡す(畳んだ名前と見分けが付く)。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="codex", CHIEZO_BRIDGE_MODELS="gpt-low")
+
+        assert server.split_model("gpt-low") == ("gpt-low", "")
+
+    def test_both_shapes_reach_the_cli(self, bridge, monkeypatch):
+        """**畳んだ名前も、2 つ組も受ける。** 片方しか受けないと、前から保存されて
+        いる設定が指定なしで走り出す(画面には何も出ない)。
+        """
+        from fastapi.testclient import TestClient
+
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        ran = []
+
+        async def fake(prompt, model, effort, *args, **kwargs):
+            ran.append((model, effort))
+            return "ok", "", None, model
+
+        monkeypatch.setattr(server, "run_cli", fake)
+        with TestClient(server.app) as client:
+            for body in (
+                {"model": "sonnet-high", "messages": [{"role": "user", "content": "x"}]},
+                {"model": "sonnet", "reasoning_effort": "high",
+                 "messages": [{"role": "user", "content": "x"}]},
+            ):
+                client.post("/v1/chat/completions", json=body)
+
+        assert ran == [("sonnet", "high"), ("sonnet", "high")]
+
+    def test_the_name_wins_over_the_separate_field(self, bridge, monkeypatch):
+        """名前に埋まっているほうが具体的で、選び直した結果である。"""
+        from fastapi.testclient import TestClient
+
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        ran = []
+
+        async def fake(prompt, model, effort, *args, **kwargs):
+            ran.append((model, effort))
+            return "ok", "", None, model
+
+        monkeypatch.setattr(server, "run_cli", fake)
+        with TestClient(server.app) as client:
+            client.post("/v1/chat/completions", json={
+                "model": "sonnet-max", "reasoning_effort": "low",
+                "messages": [{"role": "user", "content": "x"}],
+            })
+
+        assert ran == [("sonnet", "max")]

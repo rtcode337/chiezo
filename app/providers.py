@@ -61,7 +61,16 @@ class Provider:
     # 考える量を送らない** —— 両方渡すと食い違う組み合わせを作れてしまい、
     # どちらが勝つかは相手次第でこちらからは読めない。
     # モデルを選ばなかったときは今までどおり送る（相手の既定モデルに効く）。
+    # **モデルの名前に考える量が埋まる相手**。埋まっている名前を選んだときは
+    # 考える量を別に送らない —— 両方渡すと食い違う組み合わせを作れてしまう。
+    # **欄そのものも出さない**(`selectable_efforts`)—— 名前の側で選ぶので、
+    # 別の欄が残っていると「設定したつもり」を作る。
     model_carries_effort: bool = False
+    # **一覧に畳んだ名前が混ざる相手**(`sonnet-high` と `sonnet` が並ぶ)。
+    # 欄は出さないが、**素の名前を選んだ回には今までどおり考える量を送る** ——
+    # 前から保存されている「モデル + 考える量」の 2 つ組を黙って効かなくしないため。
+    # ブリッジがどちらの形も受ける(`bridge/cli_bridge.py` の `split_model`)
+    folds_effort: bool = False
     # その相手に MCP（Chiezo の道具）を引かせられるか。 引けない相手では agent モードに
     # 意味が無い（道具を渡す先が無く、モデルの知識だけで答える）ので、rag に倒す。
     can_use_mcp: bool = True
@@ -185,6 +194,10 @@ PROVIDERS: tuple[Provider, ...] = (
         models=("sonnet", "fable", "opus", "haiku"),
         # `claude --help` の --effort（実測で 5 つとも通る）。
         efforts=("low", "medium", "high", "xhigh", "max"),
+        # **ブリッジが考える量を名前に畳んで名乗る**(`sonnet-high`)。
+        # 欄を 2 つに分けていた頃は、相手ごとに欄の数が変わっていた
+        # (Antigravity の slug は元から段で終わる)
+        folds_effort=True,
         # 枠はブリッジの `/usage` から聞く（`claude -p "/usage" --output-format json`）。
         # 実測の `result`:
         #   You are currently using your subscription to power your Claude Code usage
@@ -274,8 +287,12 @@ PROVIDERS: tuple[Provider, ...] = (
         "手元で `codex login --device-auth` して作られる ~/.codex/auth.json の中身を"
         "そのままここに登録してください（API キー経路は従量課金になるので使いません）。",
         models=(),  # CLI の既定に任せる（/v1/models が返すものを使う）
-        # `codex exec --help` に --effort は無い（設定キーはあるが確かめていないので出さない）。
+        # `codex exec --help` に --effort は無い（設定キーで渡す）。段は控えから読むので
+        # ここには持たない —— **モデルごとに受ける段が違う**(最上位だけが max を受ける)。
         efforts=(),
+        # **ブリッジが考える量を名前に畳んで名乗る**。codex ではこれが効く ——
+        # 畳めば、そのモデルが受けない段を選べなくなる
+        folds_effort=True,
         # codex exec では MCP の呼び出しが必ずキャンセルされる（非対話では答えられない
         # 確認の経路に入る。`user cancelled MCP tool call`。openai/codex#16685、
         # 2026-08 時点で未修正）。こちらの設定では回避できないので agent を選ばせず rag に倒す
@@ -321,6 +338,26 @@ def label_of(provider_id: str) -> str:
     return p.label if p else provider_id
 
 
+def drops_effort(provider_id: str, model: str) -> bool:
+    """そのモデルを選んだ回に、考える量を別に送らないか。
+
+    **相手の印だけでは足りない。** slug に元から段が埋まっている相手
+    (Antigravity)は常に送らないが、**畳んだ名前と素の名前が同じ一覧に並ぶ相手**
+    (`folds_effort`)では名前を見ないと決まらない —— 真偽値で決めると、
+    素のほうを選んだ回まで落としてしまい、**前から保存されている 2 つ組が
+    黙って効かなくなる**(画面には何も出ない)。
+    """
+    p = get(provider_id)
+    if p is None or not model:
+        return False
+    if p.model_carries_effort:
+        return True
+    if not p.folds_effort:
+        return False
+    head, sep, tail = model.rpartition("-")
+    return bool(sep and head and tail in p.efforts)
+
+
 def efforts_of(provider_id: str) -> tuple[str, ...]:
     """その相手が**受け取れる**エフォート。
 
@@ -340,7 +377,7 @@ def selectable_efforts(provider_id: str) -> tuple[str, ...]:
     選んだつもりが効いていないのは、欄が無いより悪い。
     """
     p = get(provider_id)
-    if p is None or p.model_carries_effort:
+    if p is None or p.model_carries_effort or p.folds_effort:
         return ()
     return p.efforts
 

@@ -968,10 +968,23 @@ class TestSelectableEfforts:
         assert answer.normalize_effort("antigravity", "high") == "high"
         assert answer.normalize_effort("antigravity", "xhigh") == ""  # 元から無い段階
 
-    def test_other_backends_keep_their_levels(self):
+    def test_a_backend_that_folds_it_into_the_name_does_not_offer_a_separate_field(self):
+        """**選べるのに効かない欄は「設定したつもり」を作る。**
+
+        畳んだ名前(`sonnet-high`)で選ぶので、別の欄は要らない。
+        ただし**受け取るほうは残す** —— 前から保存されている 2 つ組がある。
+        """
+        from app import answer, providers
+
+        assert providers.get("claude").folds_effort
+        assert providers.selectable_efforts("claude") == ()
+        assert providers.efforts_of("claude"), "検証には使う"
+        assert answer.normalize_effort("claude", "high") == "high"
+
+    def test_a_backend_that_does_not_fold_keeps_its_field(self):
         from app import providers
 
-        assert providers.selectable_efforts("claude") == providers.efforts_of("claude")
+        assert providers.selectable_efforts("gemini") == providers.efforts_of("gemini")
 
 
 class TestAnswerLayerSwitch:
@@ -1481,3 +1494,47 @@ class TestTheDefaultModelPerBackend:
 
         assert "候補を出していません" in html
         assert "<select" not in html
+
+
+class TestAnEffortFoldedIntoTheModelName:
+    """考える量をモデルの名前に畳む(`folds_effort`)。
+
+    Antigravity の slug は元から段で終わる(`gemini-3.8-flash-high`)のに、
+    claude と codex だけ欄が 2 つに分かれていた —— 頼む側は**相手ごとに欄の数が
+    変わる**ことになり、通らない組み合わせも作れた(codex は最上位のモデルしか
+    `max` を受けない)。
+    """
+
+    def test_a_folded_name_does_not_send_a_separate_effort(self):
+        from app import providers
+
+        assert providers.drops_effort("claude", "sonnet-high") is True
+
+    def test_a_plain_name_still_sends_one(self):
+        """**前から保存されている 2 つ組を黙って効かなくしない。**
+
+        真偽値で決めていた頃の作りだと、素のほうを選んだ回まで落ちる ——
+        指定した覚えのあるものが指定なしで走り出し、画面には何も出ない。
+        """
+        from app import providers
+
+        assert providers.drops_effort("claude", "sonnet") is False
+        assert providers.drops_effort("codex", "gpt-5.6-terra") is False
+
+    def test_a_slug_that_always_carries_one_is_dropped_whatever_it_looks_like(self):
+        """Antigravity は段が埋まっていない slug も持つ(`claude-sonnet-4-6`)。
+        あちらは常に落とす —— 両方渡すと食い違う組み合わせを作れてしまう。
+        """
+        from app import providers
+
+        assert providers.drops_effort("antigravity", "claude-sonnet-4-6") is True
+
+    def test_a_backend_that_does_not_fold_is_untouched(self):
+        from app import providers
+
+        assert providers.drops_effort("gemini", "gemini-3.7-flash") is False
+
+    def test_nothing_chosen_means_nothing_to_read(self):
+        from app import providers
+
+        assert providers.drops_effort("claude", "") is False

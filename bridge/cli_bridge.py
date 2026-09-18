@@ -145,6 +145,15 @@ GIVEN_MODELS = tuple(
 # 見たいのはまさに何かを走らせている最中なので、答えは先に持っておく。
 _FOUND_MODELS: tuple[str, ...] = ()
 
+# 畳んだ名前の区切り。**Antigravity の slug と同じ形**にしてある
+# (`gemini-3.8-flash-high`)—— 相手ごとに書き方が違うと、頼む側が読み替えることになる。
+FOLD_SEP = "-"
+
+# **もともと slug に段が埋まっている CLI。** ここは畳まないし、解きもしない ——
+# 畳むと `gemini-3.8-flash-high-high` になり、解くと存在しないモデル
+# (`gemini-3.8-flash`)を CLI へ渡すことになる。
+SLUG_CARRIES_EFFORT = {"antigravity"}
+
 # 選べるエフォート(考える量)。 CLI ごとに受け付ける段階が違う。
 #
 # CLI は値を検証しない —— claude は `--effort bogus` をエラーにも警告にもせず、
@@ -168,8 +177,67 @@ _PROBED = False
 
 
 def models_now() -> tuple[str, ...]:
-    """いま名乗るモデルの一覧。手渡し > CLI の答え > コードの控え。"""
-    return GIVEN_MODELS or _FOUND_MODELS or DEFAULT_MODELS.get(CLI, ())
+    """いま名乗るモデルの一覧。手渡し > CLI の答え > コードの控え。
+
+    **考える量を名前に畳んで名乗る**(`_folded`)。Antigravity が元からそうで
+    (`gemini-3.8-flash-high`)、こちらだけ 2 つの欄に分かれていた —— 頼む側は
+    **相手ごとに欄の数が変わる**ことになり、通らない組み合わせも作れた
+    (codex は最上位のモデルしか `max` を受けない)。
+    """
+    return _folded(GIVEN_MODELS or _FOUND_MODELS or DEFAULT_MODELS.get(CLI, ()))
+
+
+def _folded(models: tuple[str, ...]) -> tuple[str, ...]:
+    """モデル × 考える量。**段を持たない CLI ではそのまま**。
+
+    **素の名前も残す。** 畳んだ名前しか出さないと、「考える量は CLI の既定でよい」を
+    選べなくなる —— どれか 1 つを選ばされるのは、既定に任せるのとは別のこと。
+
+    **codex はモデルごとに受ける段が違う**(最上位だけが `max` を受ける)ので、
+    控えから 1 件ずつ引く。引けなければ全部に同じ段を並べる。
+    """
+    levels = efforts_now()
+    if not models or not levels or CLI in SLUG_CARRIES_EFFORT:
+        return models
+    per_model = _efforts_per_model()
+    out: list[str] = []
+    for model in models:
+        out.append(model)
+        out += [f"{model}{FOLD_SEP}{e}" for e in per_model.get(model, levels)]
+    return tuple(out)
+
+
+def _efforts_per_model() -> dict[str, tuple[str, ...]]:
+    """モデルごとに受ける段(分からなければ空の辞書)。いまは codex だけが持つ。"""
+    if CLI != "codex":
+        return {}
+    out = {}
+    for entry in _codex_catalog():
+        slug = str(entry.get("slug") or "")
+        levels = tuple(
+            str(e["effort"]) for e in (entry.get("supported_reasoning_levels") or [])
+            if e.get("effort")
+        )
+        if slug and levels:
+            out[slug] = levels
+    return out
+
+
+def split_model(name: str) -> tuple[str, str]:
+    """畳んだ名前を、モデルと考える量に解く。畳んでいなければ考える量は空。
+
+    **末尾が段の名前でも、それが実在するモデルならそちらを優先する** ——
+    Antigravity の slug は元から段で終わる(`gemini-3.8-flash-high`)ので、
+    解いてしまうと存在しないモデル(`gemini-3.8-flash`)を CLI へ渡すことになる。
+    """
+    if CLI in SLUG_CARRIES_EFFORT:
+        return name, ""
+    if name in set(GIVEN_MODELS or _FOUND_MODELS or DEFAULT_MODELS.get(CLI, ())):
+        return name, ""
+    head, sep, tail = name.rpartition(FOLD_SEP)
+    if sep and head and tail in efforts_now():
+        return head, tail
+    return name, ""
 
 
 def efforts_now() -> tuple[str, ...]:
@@ -2267,8 +2335,12 @@ async def _generate_images(body: ImageRequest) -> dict:
 async def chat_completions(body: ChatRequest):
     if not body.messages:
         raise HTTPException(400, {"error": "messages must not be empty"})
-    model = resolve_model(body.model)
-    effort = resolve_effort(body.reasoning_effort)
+    # **畳んだ名前も、モデル + 考える量の 2 つ組も受ける。** 画面は畳んだほうへ
+    # 移ったが、**前から保存されている設定は 2 つ組のまま** —— 片方しか受けないと、
+    # 指定した覚えのあるものが指定なしで走り出す(画面には何も出ない)。
+    # **名前に埋まっているほうが勝つ** —— そちらのほうが具体的で、選び直した結果である
+    model, folded = split_model(resolve_model(body.model))
+    effort = folded or resolve_effort(body.reasoning_effort)
     text, trace, usage, ran_as = await run_cli(
         build_prompt(body.messages), model, effort, body.chiezo_web,
         body.chiezo_max_turns, body.chiezo_timeout,
