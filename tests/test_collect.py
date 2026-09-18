@@ -3605,13 +3605,15 @@ class TestDeletingWithTheSource:
             def __exit__(self, *_args):
                 return False
 
-            def delete(self, url):
-                called.append(url)
+            def delete(self, url, params=None):
+                called.append((url, params))
                 return FakeResponse()
 
         monkeypatch.setattr(admin.httpx, "Client", FakeClient)
         assert admin._drop_collect_source("news") is True
-        assert called == ["http://trigger.invalid/source/news"]
+        # **種別は名乗らない** —— 名乗らない呼び出しでは集めたものしか消えないので、
+        # 収集の名前が他の種別のソースとぶつかっていても、そちらは消えない
+        assert called == [("http://trigger.invalid/source/news", None)]
 
     def test_it_does_not_blow_up_without_a_trigger(self, sample, monkeypatch):
         """trigger が居ない構成は普通にある。そこで操作ごと止めない。"""

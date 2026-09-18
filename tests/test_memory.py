@@ -367,3 +367,117 @@ class TestAdminScreen:
         res = client.post("/admin/memory/sweep", follow_redirects=False)
         assert res.status_code == 303
         assert client.get(f"/v1/notes/doc/{note['doc_id']}").status_code == 404
+
+
+class TestDeletingASourceFromTheScreen:
+    """焼いたソースを画面から消せること(`POST /admin/source/{name}/delete`)。
+
+    収集の削除でソースを消し損ねると(取り込みが立っていない・走っている最中だった)
+    **定義だけ消えて DB が残る** —— そこを画面から片付けられないと、手で消しに
+    行くことになる(実際にそうなった)。
+    """
+
+    def test_a_writable_store_cannot_be_deleted(self):
+        """取り込みで焼き直せないので、消した時点で中身がどこにも無くなる。"""
+        from app import registry
+
+        assert registry.blocked_from_deleting("notes")
+        assert registry.blocked_from_deleting("machine")
+
+    def test_a_source_a_collection_bakes_into_cannot_be_deleted(self):
+        """DB だけ消しても次の巡回でまた焼かれる —— 戻ってくるほうが分かりにくい。"""
+        from app import registry
+
+        reason = registry.blocked_from_deleting("tazuna_tech", used_by="tazuna_tech")
+
+        assert "収集ごと" in reason
+
+    def test_an_orphan_can_be_deleted(self):
+        """**定義が無くなれば消せる。** ここが塞がっていたのが元の困りごと。"""
+        from app import registry
+
+        assert registry.blocked_from_deleting("むかしの収集", used_by="") == ""
+
+    def test_the_app_never_touches_the_files_itself(self):
+        """`chiezo-app` は `corpus/` を読み取り専用でマウントしている ——
+        ここで `unlink` を呼ぶと、本番でだけ落ちる(テストは tmp なので通る)。
+        """
+        from app import registry
+
+        assert not hasattr(registry, "delete_source")
+
+    def test_it_names_the_kind_when_it_asks_the_trigger(self, monkeypatch):
+        """名乗らない呼び出しでは集めたものしか消えない(収集の削除のついで用)。
+        それ以外を消すには、呼ぶ側が種別を名乗る必要がある。
+        """
+        from app.views import admin
+
+        called = []
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://trigger.invalid")
+
+        class FakeResponse:
+            status_code = 200
+            text = "{}"
+
+        class FakeClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def delete(self, url, params=None):
+                called.append((url, params))
+                return FakeResponse()
+
+        monkeypatch.setattr(admin.httpx, "Client", FakeClient)
+        admin._drop_source("むかしの収集", "memory")
+
+        assert called == [("http://trigger.invalid/source/むかしの収集",
+                           {"expect": "memory"})]
+
+    def test_it_says_why_it_could_not(self, monkeypatch):
+        """消すことが目的の操作なので、黙って先へ進まない。"""
+        from fastapi import HTTPException
+
+        from app.views import admin
+
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://trigger.invalid")
+
+        class FakeResponse:
+            status_code = 409
+            text = "ingest is running"
+
+        class FakeClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def delete(self, url, params=None):
+                return FakeResponse()
+
+        monkeypatch.setattr(admin.httpx, "Client", FakeClient)
+        with pytest.raises(HTTPException) as caught:
+            admin._drop_source("むかしの収集", "memory")
+
+        assert caught.value.status_code == 409
+        assert "ingest is running" in caught.value.detail["reason"]
+
+    def test_without_a_trigger_it_refuses(self, monkeypatch):
+        from fastapi import HTTPException
+
+        from app.views import admin
+
+        monkeypatch.setattr(admin, "TRIGGER_URL", None)
+        with pytest.raises(HTTPException) as caught:
+            admin._drop_source("むかしの収集", "memory")
+
+        assert caught.value.status_code == 503

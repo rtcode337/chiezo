@@ -854,7 +854,7 @@ docker compose --profile ingest run --rm -e SOURCE=memory chiezo-ingest
 
 | 面 | 何があるか |
 |---|---|
-| `/admin/memory` | 記憶。短期記憶・長期記憶・固化・未初期化の初期化 |
+| `/admin/memory` | 記憶。短期記憶・長期記憶（再構築と削除）・固化・未初期化の初期化 |
 | `/admin/collect` | 収集。無人で回る層の巡回・区画・変更履歴と、回す相手の並び（ワーカー） |
 | `/admin/ai` | AI と鍵。話せる相手、使用量、AI への依頼 |
 | `/admin/media` | 見比べ。作らせたものを並べて選ぶ。手元のものも持ち込める |

@@ -118,6 +118,36 @@ def data_dir_fingerprint(data_dir: Path) -> dict[str, tuple[int, int, int, int]]
     return fp
 
 
+# 消せない置き場。**外に素材が無いもの**は、消したら取り戻せない ——
+# 短期記憶は書き込みが直接届く唯一のソースで、設定の置き場には収集の定義が入っている
+# (どちらも取り込みで焼き直せない)。**名前で持つ**のは、この判断を画面と口の
+# 両方から同じものとして引くため。
+SYSTEM_SOURCES = ("notes", "machine")
+
+
+def blocked_from_deleting(name: str, used_by: str = "") -> str:
+    """そのソースを消せない理由(消せるなら空)。**判断は 1 か所に持つ**。
+
+    **書き込める置き場は消せない**(`SYSTEM_SOURCES`)—— 取り込みで焼き直せないので、
+    消した時点で中身がどこにも無くなる。
+
+    **収集が使っているソースも消せない**(`used_by`)。焼いた DB だけ消しても、
+    次の巡回でまた焼かれる —— 消えたように見えて戻ってくるほうが分かりにくい。
+    消すなら収集ごと(`POST /admin/collect/{name}/delete` が両方まとめて消す)。
+    **定義が無くなれば消せる** —— 定義だけ先に消えて DB が残った状態を、
+    画面から片付けられなくなるため(実際にそうなって、手で消すことになった)。
+
+    **ここで判ずるのは「消してよいか」だけ。** 実際に消すのは取り込み側で、
+    `chiezo-app` は `corpus/` を読み取り専用でマウントしている(長期記憶へ書けるのは
+    ingest だけ、という線の裏返し)。
+    """
+    if name in SYSTEM_SOURCES:
+        return "書き込める置き場なので消せません(取り込みで焼き直せないため)"
+    if used_by:
+        return f"収集「{used_by}」が使っています(消すなら収集ごと消してください)"
+    return ""
+
+
 def scan_source(db_path: Path, mutable: bool = False) -> Source | None:
     """1 つのファイルだけを見る。**置き場を名指しで足すときに使う**。
 

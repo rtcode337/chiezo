@@ -126,9 +126,10 @@ class TestStagedMaterial:
 class TestDeletingASource:
     """焼いたソースを消す口(`DELETE /source/{name}`)。
 
-    **消せるのは集めたものだけ**。ダンプ由来のソースは作り直すのに数時間かかるうえ、
-    この口は収集の設定を消すついでに呼ばれる —— 名前の取り違えで jawiki が飛ぶ
-    経路を作らない。
+    **呼ぶ側が種別を名乗る。** 名乗らなければ集めたものだけが対象 ——
+    この口は収集の設定を消すついでにも呼ばれるので、名前の取り違えで jawiki が
+    飛ぶ経路を作らない。名乗れば他の種別も消せる(画面から名前を打って消しに
+    来た人は、何を消すか分かっている)。
     """
 
     @pytest.fixture
@@ -174,6 +175,33 @@ class TestDeletingASource:
 
         with pytest.raises(fastapi.HTTPException) as got:
             server.delete_source("jawiki")
+
+        assert got.value.status_code == 409
+        assert (tmp_path / "jawiki.db").is_symlink()
+
+    def test_naming_the_kind_lets_another_one_go(self, trigger, tmp_path):
+        """使わなくなったソースを片付ける手段がどこにも無いと、手でファイルを
+        消しに行くことになる(実際にそうなった)。
+        """
+        server, make = trigger
+        make("memory", "memory")
+
+        result = server.delete_source("memory", expect="memory")
+
+        assert result["ok"] is True
+        assert not (tmp_path / "memory.db").is_symlink()
+
+    def test_naming_the_wrong_kind_is_refused(self, trigger, tmp_path):
+        """名乗りが焼いてあるものと食い違えば断る —— 名乗れば何でも消える、
+        にすると取り違えの歯止めが無くなる。
+        """
+        import fastapi
+
+        server, make = trigger
+        make("jawiki", "wikipedia")
+
+        with pytest.raises(fastapi.HTTPException) as got:
+            server.delete_source("jawiki", expect="collect")
 
         assert got.value.status_code == 409
         assert (tmp_path / "jawiki.db").is_symlink()

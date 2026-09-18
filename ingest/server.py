@@ -176,16 +176,19 @@ def sources():
 
 
 @app.delete("/source/{name}")
-def delete_source(name: str):
-    """焼いたソースを消す。**集めたものだけ**が対象。
+def delete_source(name: str, expect: str = COLLECT_KIND):
+    """焼いたソースを消す。**呼ぶ側が種別を名乗る**。
 
     **消せるのはここだけ**。`chiezo-app` は `corpus/` を読み取り専用でマウントして
     いるので、あちらからはファイルに触れない(長期記憶へ書けるのは ingest だけ、
     という線の裏返し)。
 
-    **種別を確かめてから消す**(`meta.source_kind` が `collect`)。ダンプ由来の
-    ソースは作り直すのに数時間かかるうえ、この口は収集の設定を消すついでに
-    呼ばれる —— 名前の取り違えで jawiki が飛ぶ経路を作らない。
+    **名乗った種別と焼いてあるものが食い違えば断る**(`meta.source_kind`)。
+    既定は `collect` —— この口は**収集の設定を消すついでにも呼ばれる**ので、
+    名乗らない呼び出しでは集めたものしか消えない(名前の取り違えで jawiki が
+    飛ぶ経路を作らない)。**名乗れば他の種別も消せる** —— 画面から名前を打って
+    消しに来た人は、何を消すか分かっている。使わなくなったソースを片付ける手段が
+    どこにも無いと、手でファイルを消しに行くことになる(実際にそうなった)。
 
     消すのは、いまの世代・1 つ前の世代・シンボリックリンク・焼く前に残った素材。
     **走っている最中は断る**(切り替えの途中を壊さないため)。
@@ -202,14 +205,14 @@ def delete_source(name: str):
         raise HTTPException(404, {"error": f"unknown source: {name}"})
 
     kind = _source_kind(link)
-    if kind != COLLECT_KIND:
+    if kind != expect:
         raise HTTPException(
             409,
             {
                 "error": f"source {name} is not deletable here",
-                "reason": f"source_kind={kind!r}(消せるのは集めたものだけ)",
-                "hint": "ダンプ由来のソースは作り直しに時間がかかるので、"
-                        "この口からは消せないようにしてある",
+                "reason": f"source_kind={kind!r} だが {expect!r} として消そうとした",
+                "hint": "呼ぶ側が種別を名乗る(`?expect=<種別>`)。名乗らなければ"
+                        "集めたものだけが対象で、名前の取り違えでは消えない",
             },
         )
 

@@ -37,6 +37,7 @@ from app import (
     memory,
     notes,
     providers,
+    registry,
     settings_store,
     usage,
     usage_store,
@@ -1908,6 +1909,7 @@ def admin_memory(request: Request):
         f"時間がかかります(構築中も現行 DB での配信は続きます)。よろしいですか?')\">"
         f'<button type="submit"{disabled}>再構築</button>'
         f"</form>"
+        f"{_delete_source_cell(s, _collection_using(s.name), disabled)}"
         f"</td>"
         f"</tr>"
         for s in sorted(long_term.values(), key=lambda s: s.name)
@@ -1980,7 +1982,7 @@ def admin_memory(request: Request):
 <h2 id="machine">設定の置き場(機械が書くもの)</h2>
 {_machine_html(sources)}
 
-<h2>長期記憶(ためた知識)</h2>
+<h2 id="long-term">長期記憶(ためた知識)</h2>
 <p>登録ソース数: {len(long_term)} / 最新のスキーマバージョン: {latest_schema}</p>
 <table>
 <thead>
@@ -2355,6 +2357,89 @@ def admin_media_cancel(job_id: str):
     return RedirectResponse("/admin/ai#ai-history", status_code=303)
 
 
+def _delete_source_cell(src: Source, used_by: str, disabled: str) -> str:
+    """長期記憶の行に出す削除の口。**消せないものは理由を出す**。
+
+    **押せないボタンを出さない。** 押せてから断られるより、なぜ押せないのかが
+    先に読めるほうがよい(収集なら、消す場所がどこかも書く)。
+
+    **名前を打たせる。** 世代ごと消して取り消せないので、収集の削除と同じ重さにする
+    —— 確認ダイアログだけだと、隣の行のつもりで押せてしまう。
+    **焼き直しにかかる時間も書く** —— ダンプ由来のソースは数時間かかるので、
+    「消してもまた入れればよい」で押せる相手ではない。
+    """
+    if reason := registry.blocked_from_deleting(src.name, used_by):
+        where = (
+            f' <a href="/admin/collect/{esc(quote(used_by))}">収集の面へ</a>'
+            if used_by else ""
+        )
+        return f'<br><span class="muted">{esc(reason)}</span>{where}'
+    if not TRIGGER_URL:
+        return '<br><span class="muted">取り込みが設定されていないので消せません</span>'
+    ask = (
+        f"{src.name} を消します。世代も素材も消え、取り消せません"
+        f"(入れ直すには取り込みからやり直しになります)。続けるなら名前を入力"
+    )
+    return (
+        f'<form class="init-form" method="post" action="/admin/source/{esc(quote(src.name))}/delete"'
+        f" onsubmit=\"return prompt('{esc(ask)}') === '{esc(src.name)}'\">"
+        f'<button type="submit"{disabled}>削除</button></form>'
+    )
+
+
+@router.post("/admin/source/{source}/delete")
+def admin_source_delete(source: str, request: Request):
+    """焼いたソースを消す(世代ごと)。**消すのは取り込み側**。
+
+    `chiezo-app` は `corpus/` を読み取り専用でマウントしているので、ここからは
+    ファイルに触れない —— 収集の削除と同じ道(`DELETE /source/{name}`)を通す。
+    **種別を名乗って呼ぶ**(`expect`)。名乗らない呼び出しでは集めたものしか
+    消えないので、それ以外を消すにはここが名乗る必要がある。
+
+    **書き込める置き場と、収集が使っているソースは断る**
+    (`registry.blocked_from_deleting`)。前者は消すと中身がどこにも無くなり、
+    後者は消しても次の巡回でまた焼かれる。
+
+    **定義の無いソースは消せる。** 収集の削除でソースを消し損ねると
+    (取り込みが立っていない・走っている最中だった)、**定義だけ消えて DB が残る**
+    —— そこを画面から片付けられないと、手で消しに行くことになる(実際にそうなった)。
+
+    **消せなかったら理由を出す。** ここは消すことが目的の操作なので、
+    収集の削除のように「消せなくても先へ進む」にはしない。
+    """
+    sources: dict[str, Source] = request.app.state.sources
+    src = sources.get(source)
+    if src is None:
+        raise HTTPException(404, {"error": f"そのソースはありません: {source}"})
+    if reason := registry.blocked_from_deleting(source, _collection_using(source)):
+        raise HTTPException(400, {"error": reason})
+    if not TRIGGER_URL:
+        raise HTTPException(
+            503, {"error": "取り込み(chiezo-trigger)が設定されていないので消せません"}
+        )
+    _drop_source(source, src.kind)
+    # **消したらすぐ一覧から外す。** 5 秒ごとの再走査を待つと、消したはずの行が
+    # 残ったまま戻ってきて、押せていないように見える
+    from app.main import scan_all
+
+    request.app.state.sources = scan_all(request.app.state.data_dir)
+    return RedirectResponse(url="/admin/memory#long-term", status_code=303)
+
+
+def _collection_using(name: str) -> str:
+    """そのソースへ焼いている収集の名前(無ければ空)。
+
+    **収集の名前がそのままソース名**なので引き当ては 1 対 1。定義が読めないときは
+    「使われていない」とは言えないので、名前をそのまま返して消させない。
+    """
+    if not collect.is_enabled():
+        return ""
+    try:
+        return name if any(c.name == name for c in collect.load()) else ""
+    except (ValueError, HTTPException):
+        return name
+
+
 @router.post("/admin/rebuild/{source}")
 def admin_rebuild(source: str, request: Request):
     """登録済みソースの再構築(管理画面の「再構築」ボタン)。
@@ -2648,22 +2733,46 @@ def admin_collect_delete(request: Request, name: str):
 
 
 def _drop_collect_source(name: str) -> bool:
-    """焼いたソースを trigger に消させる。消せたかどうかを返す。
+    """焼いたソースを trigger に消させる(収集を消すついで)。消せたかを返す。
 
     **失敗しても例外にしない。** ここは設定を消すついでの片付けで、
     trigger が居ない・まだ 1 度も焼いていない、はどちらも普通の状態。
+    **消し損ねても、あとから長期記憶の側の削除で片付けられる**
+    (定義が消えていればそちらが受け付ける)。
+
+    **種別は名乗らない** —— 名乗らない呼び出しでは集めたものしか消えないので、
+    収集の名前が他の種別のソースとぶつかっていても、そちらは消えない。
+    """
+    try:
+        _drop_source(name)
+    except HTTPException as e:
+        log.warning("could not drop source %s: %s", name, e.detail)
+        return False
+    return True
+
+
+def _drop_source(name: str, expect: str = "") -> None:
+    """取り込みにソースを消させる。**消せなければ理由を上げる**。
+
+    `chiezo-app` は `corpus/` を読み取り専用でマウントしているので、消せるのは
+    取り込み側だけ(長期記憶へ書けるのは ingest だけ、という線の裏返し)。
+
+    `expect` を渡すと、その種別として消す。渡さなければ集めたものだけが対象
+    (`ingest/server.py` の `delete_source`)。
     """
     if not TRIGGER_URL:
-        return False
+        raise HTTPException(503, {"error": "取り込み(chiezo-trigger)が設定されていません"})
+    params = {"expect": expect} if expect else None
     try:
         with httpx.Client(timeout=30.0) as client:
-            res = client.delete(f"{TRIGGER_URL}/source/{name}")
-        if res.status_code == 200:
-            return True
-        log.warning("could not drop source %s: %s %s", name, res.status_code, res.text[:200])
+            res = client.delete(f"{TRIGGER_URL}/source/{name}", params=params)
     except httpx.HTTPError as e:
-        log.warning("could not reach the trigger to drop %s: %s", name, e)
-    return False
+        raise HTTPException(502, {"error": f"取り込みにつながりません: {e}"}) from None
+    if res.status_code != 200:
+        raise HTTPException(res.status_code if res.status_code < 500 else 502, {
+            "error": f"ソース「{name}」を消せませんでした",
+            "reason": res.text[:300],
+        })
 
 
 @router.post("/admin/collect/{name}/run")
