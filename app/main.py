@@ -420,7 +420,8 @@ async def _harvest(item, sweep=None) -> dict | None:
 
 
 async def _collect_items(
-    item, previous: dict, sources: dict, keys: list[str], sweep=None, focus=None, feed=None
+    item, previous: dict, sources: dict, keys: list[str], sweep=None, focus=None, feed=None,
+    seen: set[str] | None = None,
 ) -> tuple[list[dict], str | None, str]:
     """1 回ぶん集める。**最初の 1 回だけ機械的に埋められる**。
 
@@ -464,11 +465,15 @@ async def _collect_items(
         })
     asked = item if sweep is None else sweep.applied_to(item, step)
     collected: list[dict] = []
+    # **AI が目を通したのは、差し込まれたものだけ**(`notes.UNREVIEWED_TAG`)。
+    # 返りだけを見ていると、読んだうえで直す必要が無かった 1 件が未精査のまま残る
+    shown: set[str] = seen if seen is not None else set()
     cursor = None
     notes: list[str] = []
     for key in keys or [None]:
         content = await _ask_for_collection(
-            asked, collect.build_messages(item, previous, key, sources, sweep, focus, feed)
+            asked,
+            collect.build_messages(item, previous, key, sources, sweep, focus, feed, shown),
         )
         items, next_cursor, note = collect.parse_response(content or "")
         collected += items
@@ -565,6 +570,9 @@ async def _collect_material(name: str, sources: dict) -> str:
     # (相手の一覧は設定しだいで変わる)。
     # **AI を呼ばない回には誰も書かない**(`collect.asks_ai`)—— 既定の相手を
     # 書いておくと、機械で引いた回が「その相手に頼んだ回」として履歴に並ぶ
+    # **AI が目を通した見出し**。差し込まれたものだけが入り、焼くときに未精査の印を
+    # 外す(`notes.UNREVIEWED_TAG`)。**機械で引く回では空のまま** —— 誰も読んでいない
+    shown: set[str] = set()
     who = {
         "backend": sweep.backend or _default_backend_name(),
         "model": sweep.model or "",
@@ -578,7 +586,7 @@ async def _collect_material(name: str, sources: dict) -> str:
             collect.prompt_docs, item, previous, keys, focus
         )
         items, next_cursor, note = await _collect_items(
-            item, for_prompt, sources, keys, sweep, focus, feed
+            item, for_prompt, sources, keys, sweep, focus, feed, shown
         )
         # **数えるのは流し始める前。** 流している途中でステータスは変えられないので、
         # 断るならここで断る(`bake_survey`)。素材そのものは 1 行ずつ返すので、
@@ -653,6 +661,9 @@ async def _collect_material(name: str, sources: dict) -> str:
             yield from collect.bake_lines(
                 baked_as, sources, previous, items,
                 focus is None and sweep.only_new, edits, plan, label,
+                # **AI を呼ばない回で入るものは未精査**(`collect.asks_ai`)——
+                # フィードも機械抽出も、宣伝や的外れをそのまま引き受ける
+                not collect.asks_ai(item, sweep), shown,
             )
         finally:
             if hasattr(items, "close"):
@@ -1185,20 +1196,26 @@ def get_doc_by_id(
 def removed_clause(
     src: Source, include_removed: bool = False, column_prefix: str = ""
 ) -> tuple[str, list]:
-    """**消えたものを外す**断片(`notes.REMOVED_TAG`)。
+    """**読者に出さないものを外す**断片(`notes.HIDDEN_TAGS`)。
 
-    既定で外す —— 読む側が全員「この印を除く」を覚えていなくても、消したものが
-    出てこないようにするため。新しい読み手を書くたびに同じ約束を思い出す必要が
-    あるのは、いつか必ず抜ける。含めたいときだけ `include_removed` を渡す。
+    既定で外す —— 読む側が全員「この印を除く」を覚えていなくても、出てこない
+    ようにするため。新しい読み手を書くたびに同じ約束を思い出す必要があるのは、
+    いつか必ず抜ける。含めたいときだけ `include_removed` を渡す。
+
+    **外すのは 1 つではない。** 消えたもの(`REMOVED_TAG`)に加えて、**まだ AI が
+    目を通していないもの**(`UNREVIEWED_TAG`)も外す —— 機械で入るものには宣伝も
+    的外れも混ざるので、整理が回るまでのあいだ読者の画面に並んでいた。
+    **引数は増やさない** —— 印ごとに分けると、新しい読み手が片方だけ思い出す。
 
     **タグの索引を持たない古いソースでは何もしない**(絞りようが無い)。
     """
     if include_removed or src.schema_version < TAG_MIN_SCHEMA_VERSION:
         return "", []
+    marks = ", ".join("?" * len(notes.HIDDEN_TAGS))
     return (
         f" AND {column_prefix or 'docs.'}doc_id NOT IN"
-        " (SELECT dt.doc_id FROM doc_tags dt WHERE dt.tag = ?)",
-        [notes.REMOVED_TAG],
+        f" (SELECT dt.doc_id FROM doc_tags dt WHERE dt.tag IN ({marks}))",
+        list(notes.HIDDEN_TAGS),
     )
 
 

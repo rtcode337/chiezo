@@ -752,3 +752,56 @@ class TestHidingWhatWasRemoved:
         ]
 
         assert sorted(titles) == ["消えた話", "生きている話"]
+
+
+class TestHidingWhatNoAiHasSeen:
+    """**まだ AI が目を通していないものも既定で返さない**(`notes.UNREVIEWED_TAG`)。
+
+    機械で入るものには宣伝も的外れも混ざる —— 整理が回るまでのあいだ、それが
+    読者の画面に並んでいた。**印ごとに引数を増やさない** —— 新しい読み手が
+    片方だけ思い出す(いつか必ず抜ける、を 2 倍にするだけ)。
+    """
+
+    @pytest.fixture()
+    def two_notes(self, client):
+        from app import notes
+
+        client.post("/v1/notes", json={"title": "見た話", "text": "こちらは出る"})
+        client.post(
+            "/v1/notes",
+            json={"title": "まだの話", "text": "こちらは出ない",
+                  "tags": notes.UNREVIEWED_TAG},
+        )
+        return client
+
+    def test_search_leaves_it_out(self, two_notes):
+        titles = [r["title"] for r in two_notes.get(
+            "/v1/notes/search", params={"q": "こちら"}
+        ).json()["results"]]
+
+        assert titles == ["見た話"]
+
+    def test_the_same_switch_brings_it_back(self, two_notes):
+        """引数を増やしていないので、同じ 1 つで両方が出る。"""
+        titles = [r["title"] for r in two_notes.get(
+            "/v1/notes/search", params={"q": "こちら", "include_removed": "true"}
+        ).json()["results"]]
+
+        assert sorted(titles) == ["まだの話", "見た話"]
+
+    def test_the_document_itself_is_not_handed_out(self, two_notes):
+        assert two_notes.get("/v1/notes/doc", params={"title": "まだの話"}).status_code == 404
+
+    def test_a_removed_one_is_still_hidden_too(self, two_notes):
+        """片方を足したせいで、もう片方が漏れないこと。"""
+        from app import notes
+
+        two_notes.post(
+            "/v1/notes",
+            json={"title": "消えた話", "text": "こちらも出ない", "tags": notes.REMOVED_TAG},
+        )
+        titles = [r["title"] for r in two_notes.get(
+            "/v1/notes/search", params={"q": "こちら"}
+        ).json()["results"]]
+
+        assert titles == ["見た話"]

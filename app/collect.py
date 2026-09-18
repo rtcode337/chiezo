@@ -1378,8 +1378,14 @@ def living(docs: dict[str, dict]) -> dict[str, dict]:
     return {title: doc for title, doc in docs.items() if not is_removed(doc)}
 
 
-def render_material(previous: dict[str, dict], scoped: bool = False) -> tuple[str, int]:
+def render_material(
+    previous: dict[str, dict], scoped: bool = False, seen: set[str] | None = None,
+) -> tuple[str, int]:
     """前世代を、プロンプトへ差し込める形にする。差し込んだ件数も返す。
+
+    `seen` を渡すと、**実際に差し込んだ見出し**をそこへ書く(戻り値にできないため)。
+    精査済みの印を付け替えるのに要る —— **切られたぶんまで「読んだ」ことにすると、
+    AI が見ていないものが読者の画面へ出る**。
 
     **入り切らなければ切って、切ったことを本文に書く** —— 黙って切ると、AI は
     見えなかったぶんを「無かったもの」として落とし、歯止めが無ければそのまま消える。
@@ -1412,6 +1418,9 @@ def render_material(previous: dict[str, dict], scoped: bool = False) -> tuple[st
             break
         lines.append(line)
         used += len(line)
+        # **入ったぶんだけ控える**(天井で切れた行は「見せていない」)
+        if seen is not None:
+            seen.add(doc["title"])
     shown = len(lines)
     if alive:
         head = ("今回の対象にいま入っているもの(全 " if scoped else "いまの内容(全 ")
@@ -1462,7 +1471,9 @@ def _render_removed(docs: list[dict]) -> str:
     return head + ":\n" + "\n".join(lines)
 
 
-def render_recent(previous: dict[str, dict], since: str | None) -> str:
+def render_recent(
+    previous: dict[str, dict], since: str | None, seen: set[str] | None = None,
+) -> str:
     """前回から後に入ったものを、プロンプトへ差し込める形にする。
 
     **溜まっていく一方の収集のための差し込み**。全部を渡すと入り切らないうえ、
@@ -1503,6 +1514,9 @@ def render_recent(previous: dict[str, dict], since: str | None) -> str:
             break
         lines.append(line)
         used += len(line)
+        # **入ったぶんだけ控える**(天井で切れた行は「見せていない」)
+        if seen is not None:
+            seen.add(doc["title"])
     head = f"前回から新しく入ったもの(全 {len(fresh)} 件"
     head += f"。うち {len(lines)} 件だけ載せています)" if len(lines) < len(fresh) else ")"
     return head + ":\n" + "\n".join(lines)
@@ -1605,8 +1619,12 @@ def build_messages(
     sweep: Sweep | None = None,
     focus: Focus | None = None,
     feed: dict | None = None,
+    seen: set[str] | None = None,
 ) -> list[dict]:
     """AI へ渡す本文。`{cursor}` を今のカーソルで、`{current}` を今ある内容で置き換える。
+
+    `seen` を渡すと、**差し込んだ既存の見出し**をそこへ書く。**AI が目を通したのは
+    ここに入ったものだけ** —— 精査済みの印を付け替えるのに要る(`notes.UNREVIEWED_TAG`)。
 
     **カーソルが空でも壊さない**(初回は空文字が入るだけ)。テンプレートに `{cursor}` が
     無い収集は、毎回同じことを聞く形になる。
@@ -1652,7 +1670,7 @@ def build_messages(
         )
     if MATERIAL_PLACEHOLDER in user:
         docs, scoped = scoped_docs(item, previous or {}, partition_key, focus)
-        material_text, _shown = render_material(docs, scoped)
+        material_text, _shown = render_material(docs, scoped, seen)
         user = user.replace(MATERIAL_PLACEHOLDER, material_text)
     if NOW_PLACEHOLDER in user:
         # **人が読むものは日本時間**(この文はそのまま見出しや本文へ写される)
@@ -1664,7 +1682,7 @@ def build_messages(
         # そろって 0 件で終わった(本番の履歴。見出しが 60 件足した 3 分後だった)。
         # **走ったことが無ければ区切らない** —— 1 回目は「いまあるもの全部」が差分
         since = sweep.last_run_at if sweep else None
-        user = user.replace(RECENT_PLACEHOLDER, render_recent(previous or {}, since))
+        user = user.replace(RECENT_PLACEHOLDER, render_recent(previous or {}, since, seen))
     if focus is not None:
         user += "\n\n" + render_focus(focus, item, previous or {}, partition_key)
     # **割り込みは必ず「直す」側で頼む。** 足すだけの収集でも、名指しで渡された 1 件を
@@ -2567,6 +2585,8 @@ def stream_docs(
     edits: bool = False,
     diff: dict | None = None,
     sweep: str = "",
+    unreviewed: bool = False,
+    reviewed: set[str] | None = None,
 ):
     """焼く素材を 1 件ずつ返す。`material` の中身で、**丸ごとは持たない**。
 
@@ -2581,6 +2601,12 @@ def stream_docs(
     `diff` を渡すと、数えた結果をそこへ書く(戻り値にできないため)。
 
     **動かした 1 件には、どの回が動かしたかを脇書きに残す**(`_stamped`)。
+
+    `unreviewed` は「この回で入るものに、まだ AI が目を通していない印を付ける」
+    (機械で引く回・外の道具で引く回)。`reviewed` は**この回で AI に差し込んだ見出し**で、
+    その印を外す —— 差し込まれた時点で目は通っている。
+    **返ってこなかったものも外す** —— 整理は触ったものしか返さないので、
+    返りだけを見ていると「読んだうえで直す必要が無かった」が未精査のまま残る。
     """
     counts = diff if diff is not None else {}
     now = _iso(_now())
@@ -2601,7 +2627,7 @@ def stream_docs(
         title = before["title"]
         raw = edits_of.take(title)
         if raw is None:
-            yield before
+            yield _reviewed(before) if reviewed and title in reviewed else before
             continue
         if only_new:
             # **足すだけの回。** 既にあるものには触らない(数えるだけ)。
@@ -2613,7 +2639,7 @@ def stream_docs(
             # 墓標。**消さずに印を付けて残す**
             removed_titles.append(title)
             updated += 1
-            yield _stamped(_buried(before, raw, now), sweep, "removed")
+            yield _stamped(_reviewed(_buried(before, raw, now)), sweep, "removed")
             continue
         doc = _to_doc(raw, now, item.web)
         if doc is None:
@@ -2632,7 +2658,7 @@ def stream_docs(
             skipped += 1
             yield {**doc, "doc_id": before["doc_id"]}
             continue
-        yield _stamped({**doc, "doc_id": before["doc_id"]}, sweep, "updated")
+        yield _stamped(_reviewed({**doc, "doc_id": before["doc_id"]}), sweep, "updated")
 
     next_id += 1
     for raw in edits_of.rest():
@@ -2651,7 +2677,8 @@ def stream_docs(
         doc["extra"] = _merge_extra({}, doc["extra"])
         added += 1
         added_titles.append(doc["title"])
-        yield _stamped({**doc, "doc_id": next_id}, sweep, "added")
+        fresh = _unreviewed(doc) if unreviewed else doc
+        yield _stamped({**fresh, "doc_id": next_id}, sweep, "added")
         next_id += 1
 
     counts.update({
@@ -2676,6 +2703,8 @@ def material(
     only_new: bool = False,
     edits: bool = False,
     sweep: str = "",
+    unreviewed: bool = False,
+    reviewed: set[str] | None = None,
 ) -> tuple[list[dict], dict]:
     """焼く素材と、前世代との差分を組み立てる。
 
@@ -2711,7 +2740,9 @@ def material(
     """
     counts: dict = {}
     rows = sorted(previous.values(), key=lambda d: d["doc_id"])
-    docs = list(stream_docs(item, rows, collected, only_new, edits, counts, sweep))
+    docs = list(stream_docs(
+        item, rows, collected, only_new, edits, counts, sweep, unreviewed, reviewed,
+    ))
     return docs, counts
 
 
@@ -2857,6 +2888,29 @@ def changed_by(doc: dict) -> str:
     """その 1 件を最後に動かした回。持っていなければ空。"""
     extra = doc.get("extra")
     return str((extra or {}).get(CHANGED_BY_KEY) or "") if isinstance(extra, dict) else ""
+
+
+def _unreviewed(doc: dict) -> dict:
+    """まだ AI が目を通していない印を付ける(`notes.UNREVIEWED_TAG`)。"""
+    tags = [t for t in (doc.get("tags") or []) if t != notes.UNREVIEWED_TAG]
+    return {**doc, "tags": [*tags, notes.UNREVIEWED_TAG]}
+
+
+def _reviewed(doc: dict) -> dict:
+    """印を外す。**持っていなければ何もしない**(同じ辞書を返す)。
+
+    毎回新しい辞書を作らないのは、触っていない 1 件がそのまま流れる道だから ——
+    数十万件を積み直すと、前世代を 1 行ずつ読んでいる意味が消える。
+    """
+    tags = doc.get("tags") or []
+    if notes.UNREVIEWED_TAG not in tags:
+        return doc
+    return {**doc, "tags": [t for t in tags if t != notes.UNREVIEWED_TAG]}
+
+
+def is_unreviewed(doc: dict) -> bool:
+    """まだ AI が目を通していないか。"""
+    return notes.UNREVIEWED_TAG in (doc.get("tags") or [])
 
 
 def removed_reason(doc: dict) -> str:
@@ -3153,7 +3207,8 @@ def _count_dropped(item, plan, previous, collected, only_new, edits) -> int:
 
 
 def bake_lines(item, sources: dict, previous, collected, only_new=False, edits=False,
-               survey: dict | None = None, sweep: str = ""):
+               survey: dict | None = None, sweep: str = "",
+               unreviewed: bool = False, reviewed: set[str] | None = None):
     """焼く素材を 1 行ずつ返す。**2 周目**(数えるのは `bake_survey`)。
 
     **どの回が焼いたかはここで渡す。** 押すのは実際に焼かれる素材のほうで、
@@ -3171,7 +3226,9 @@ def bake_lines(item, sources: dict, previous, collected, only_new=False, edits=F
         }
     }, ensure_ascii=False)
 
-    for doc in stream_docs(item, rows(), collected, only_new, edits, None, sweep):
+    for doc in stream_docs(
+        item, rows(), collected, only_new, edits, None, sweep, unreviewed, reviewed,
+    ):
         if limit is not None and _doc_time(doc) < limit:
             continue
         for n, rule in enumerate(plan["rules"]):

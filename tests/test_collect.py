@@ -4855,3 +4855,90 @@ class TestTheCollectPage:
         """`/admin/collect` と `/admin/collect/{name}` がぶつからないこと。"""
         assert client.get("/admin/collect/news").status_code == 200
         assert client.get("/admin/collect/nosuch").status_code == 404
+
+
+class TestTheUnreviewedMark:
+    """まだ AI が目を通していない印(`notes.UNREVIEWED_TAG`)。
+
+    機械で入るものには**宣伝も的外れも混ざる**。整理が回るまでのあいだ、それが
+    読者の画面に並んでいた —— かといって入れないわけにはいかない(入れなければ、
+    整理が何を読めばよいのか分からない)。
+    """
+
+    def test_a_mechanical_add_is_marked(self, sample):
+        docs, _diff = collect.material(
+            collect.get("news"), {}, [{"title": "見出し", "body": "要約"}],
+            sweep="見出し", unreviewed=True,
+        )
+
+        assert collect.is_unreviewed(docs[0])
+
+    def test_what_the_ai_collected_is_not(self, sample):
+        """AI が書いたものは、書いた時点で目が通っている。"""
+        docs, _diff = collect.material(
+            collect.get("news"), {}, [{"title": "見出し", "body": "要約"}], sweep="整理",
+        )
+
+        assert not collect.is_unreviewed(docs[0])
+
+    def test_being_shown_to_the_ai_clears_it(self, sample):
+        """**返ってこなかったものも外す。** 整理は触ったものしか返さないので、
+        返りだけを見ていると「読んだうえで直す必要が無かった」が未精査のまま残る。
+        """
+        collect.update("news", prompt="いまの内容:\n{current}\n直して")
+        previous = {"モネ": {
+            "doc_id": 1, "title": "モネ", "body": "本文",
+            "tags": ["画家", notes.UNREVIEWED_TAG],
+        }}
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous, [], edits=True, reviewed={"モネ"},
+        )
+
+        assert not collect.is_unreviewed(docs[0])
+        assert docs[0]["tags"] == ["画家"], "他のタグは落とさない"
+
+    def test_what_was_not_shown_keeps_the_mark(self, sample):
+        """**天井で切られたぶんまで「読んだ」ことにすると、AI が見ていないものが
+        読者の画面へ出る。**
+        """
+        collect.update("news", prompt="いまの内容:\n{current}\n直して")
+        previous = {
+            "見せた": {"doc_id": 1, "title": "見せた", "body": "本文",
+                     "tags": [notes.UNREVIEWED_TAG]},
+            "切れた": {"doc_id": 2, "title": "切れた", "body": "本文",
+                     "tags": [notes.UNREVIEWED_TAG]},
+        }
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous, [], edits=True, reviewed={"見せた"},
+        )
+
+        marks = {d["title"]: collect.is_unreviewed(d) for d in docs}
+        assert marks == {"見せた": False, "切れた": True}
+
+    def test_touching_one_clears_it(self, sample):
+        collect.update("news", prompt="いまの内容:\n{current}\n直して")
+        previous = {"モネ": {
+            "doc_id": 1, "title": "モネ", "body": "古い", "tags": [notes.UNREVIEWED_TAG],
+        }}
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous, [{"title": "モネ", "body": "新しい"}], edits=True,
+        )
+
+        assert not collect.is_unreviewed(docs[0])
+
+    def test_the_material_only_reports_what_fitted(self, sample):
+        """差し込んだ見出しだけを控える(天井で切れた行は「見せていない」)。"""
+        # 件数の天井(`MAX_MATERIAL_DOCS`)を超える数を渡す
+        previous = {
+            f"見出し{i}": {"doc_id": i, "title": f"見出し{i}", "body": "本文"}
+            for i in range(1, collect.MAX_MATERIAL_DOCS + 100)
+        }
+        seen: set[str] = set()
+
+        text, shown = collect.render_material(previous, seen=seen)
+
+        assert len(seen) == shown < len(previous), "切られたぶんは入らない"
+        assert all(t in text for t in seen)
