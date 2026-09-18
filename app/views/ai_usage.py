@@ -84,7 +84,26 @@ def _quota_cell(row: dict) -> str:
         lines.append(f'<span class="stale">⚠️ 取れませんでした: {esc(quota.error)}</span>')
     elif not quota.windows:
         lines.append('<span class="muted">まだ取っていない(「取り直す」を押す)</span>')
-    return "<br>".join(lines)
+    return "<br>".join(lines) + _raw_html(quota)
+
+
+def _raw_html(quota: usage.Quota) -> str:
+    """相手が言ったそのまま。**畳んで置く**(読みに来た人だけが開く)。
+
+    **正規化した後の画面だけでは答えられないことがある。** 出ているのは Chiezo が
+    付けた名前と割合で、窓の名前すら相手のものではない —— 相手が同じ名前の窓を
+    2 つ返したときは、長さを添えて呼び分けている。「この行は何なのか」を確かめるには
+    元を当たるしかないので、捨てずにここへ置く。
+
+    **整形も翻訳もしない。** そのまま検索できることに値打ちがある
+    (相手の資料や issue に当たるとき、こちらで直した文字列では引けない)。
+    """
+    if not quota.raw:
+        return ""
+    return (
+        '<details class="raw-quota"><summary class="muted">相手が言ったそのまま</summary>'
+        f"<pre>{esc(quota.raw)}</pre></details>"
+    )
 
 
 def _spent_cell(row: dict) -> str:
@@ -478,6 +497,9 @@ Gemini は残量が Google Cloud の Quotas API 側にあり、OpenAI は Admin 
 <p><strong>開いたときには聞きに行かない。</strong>控えてある値と「いつ取ったか」を出し、
 取り直しはボタンで —— 落ちている相手がいると、その数だけ画面が遅れるため。
 まとめて取り直すボタンは<strong>並行に聞く</strong>ので、待つのは一番遅い相手のぶんだけ。
+<strong>枠の欄の「相手が言ったそのまま」</strong>には、正規化する前の返事が入っている ——
+画面に出ている名前は Chiezo が付けたもの(相手が同じ名前の窓を 2 つ返したときは、
+窓の長さを添えて呼び分ける)なので、<strong>その行が何なのかは元を当たらないと読めない</strong>。
 API からは <code>GET /v1/ai/usage</code>(取り直すなら <code>?refresh=1</code>)。</p>
 </details>
 {since_note}

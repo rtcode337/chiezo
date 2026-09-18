@@ -1694,7 +1694,7 @@ async def _codex_usage() -> tuple[list[dict], str]:
             if error := message.get("error"):
                 return [], str(error.get("message") or error)[:300]
             result = message.get("result") or {}
-            return _windows_in(result), json.dumps(result, ensure_ascii=False)[:500]
+            return _windows_in(result), json.dumps(result, ensure_ascii=False)[:RAW_MAX]
         return [], "codex app-server が応答を返しませんでした"
 
     try:
@@ -1724,6 +1724,12 @@ _LAST_USAGE: dict | None = None
 # 「なぜ読めなかったか」が枠の外へ落ちる(実際にそうなった)。
 # 外部の相手のエラー(`app/media_backends.py` の `remote_error`)と同じ長さにしてある。
 REASON_MAX = 600
+
+# 生の返事をそのまま返す長さの上限。**読めたときにも返す** —— 窓に直せたあとでも
+# 「この行は何なのか」を確かめる手が要る(実測: codex が同じ名前の窓を 2 つ返し、
+# 片方が何の制限なのか、正規化した後の画面からは分からなかった)。
+# **理由より長く取る** —— あちらは読めなかったときの言い訳で、こちらは元の資料
+RAW_MAX = 4000
 
 
 # 会話を始めずに終わった print モードの締め。**枠のパネルではない。**
@@ -1782,6 +1788,10 @@ async def _read_usage() -> dict:
         "windows": windows,
         # 窓を組めなかったときだけ意味を持つ(Chiezo がそのまま画面に出す)。
         "reason": "" if windows else _usage_reason(raw),
+        # **相手が言ったそのまま。** 窓に直せたときも返す —— 正規化した後の画面には
+        # こちらが付けた名前しか出ないので、元を当たれないと「この行は何か」に
+        # 答えられない。整形も翻訳もしない(そのまま検索できることに値打ちがある)
+        "raw": str(raw or "")[:RAW_MAX],
         "taken_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "stale": False,
     }

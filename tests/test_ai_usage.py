@@ -1080,3 +1080,76 @@ class TestAWindowThatStoppedComing:
             html = client.get("/admin/ai").text
 
         assert "いまは返ってこない窓" in html
+
+
+class TestWhatTheBackendActuallySaid:
+    """相手が言ったそのまま(`Quota.raw`)。
+
+    **正規化した後の画面だけでは答えられないことがある。** 出ているのは Chiezo が
+    付けた名前と割合で、窓の名前すら相手のものではない —— 相手が同じ名前の窓を
+    2 つ返したときは、長さを添えて呼び分けている。
+    """
+
+    def _bridge(self, env, payload: dict, status: int = 200):
+        from app import usage
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(status, json=payload)
+
+        env.setattr(usage, "_client", lambda *a, **k: httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)))
+
+    def test_it_is_kept_even_when_the_windows_were_read_fine(self, env):
+        with make_client(env, ReplyLLM()) as client:
+            self._bridge(env, {
+                "windows": [{"id": "primary", "used_percent": 12, "window_minutes": 300}],
+                "raw": '{"rateLimits":{"primary":{"usedPercent":12}}}',
+            })
+            body = client.get("/v1/ai/usage", params={"refresh": 1, "backend": "codex"}).json()
+
+        assert backend_of(body, "codex")["quota"]["raw"] == \
+            '{"rateLimits":{"primary":{"usedPercent":12}}}'
+
+    def test_the_screen_folds_it_away(self, env):
+        """読みに来た人だけが開く —— 常に開いていると、他の相手の行が画面外へ出る。"""
+        from app import usage
+        from app.views import ai_usage
+
+        with make_client(env, ReplyLLM()) as client:
+            self._bridge(env, {
+                "windows": [{"id": "primary", "used_percent": 12, "window_minutes": 300}],
+                "raw": '{"limitId":"weekly-pool"}',
+            })
+            client.get("/v1/ai/usage", params={"refresh": 1, "backend": "codex"})
+            html = client.get("/admin/ai").text
+
+        assert "相手が言ったそのまま" in html
+        assert "weekly-pool" in html
+        assert '<details class="raw-quota">' in html
+        assert "<details class=\"raw-quota\" open>" not in html
+        assert ai_usage._raw_html(usage.Quota(supported=True)) == "", "無ければ何も出さない"
+
+    def test_it_survives_a_failure(self, env):
+        """一時的に繋がらないだけのことがある。直前まで見えていたものを消さない。"""
+        with make_client(env, ReplyLLM()) as client:
+            self._bridge(env, {
+                "windows": [{"id": "primary", "used_percent": 12, "window_minutes": 300}],
+                "raw": "前に取れたもの",
+            })
+            client.get("/v1/ai/usage", params={"refresh": 1, "backend": "codex"})
+
+            self._bridge(env, {"detail": {"error": "つながりません"}}, status=502)
+            body = client.get("/v1/ai/usage", params={"refresh": 1, "backend": "codex"}).json()
+
+        quota = backend_of(body, "codex")["quota"]
+        assert quota["error"] == "つながりません"
+        assert quota["raw"] == "前に取れたもの"
+
+    def test_a_backend_that_says_nothing_raw_is_quiet(self, env):
+        with make_client(env, ReplyLLM()) as client:
+            self._bridge(env, {
+                "windows": [{"id": "primary", "used_percent": 12, "window_minutes": 300}],
+            })
+            body = client.get("/v1/ai/usage", params={"refresh": 1, "backend": "codex"}).json()
+
+        assert backend_of(body, "codex")["quota"]["raw"] == ""

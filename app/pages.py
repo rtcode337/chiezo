@@ -331,6 +331,12 @@ PAGE_STYLE = """
   /* 使用量の表。枠の欄は折り返す —— 1 行が「帯 + 使用率 + 戻る時刻」で長く、
      nowrap のままだと狭い画面でこの列だけが伸びて他を押し潰す。 */
   table.ai-usage td { white-space: normal; }
+  /* 相手が言ったそのまま。**長いので高さを切って中で送る** —— 枠の欄に
+     そのまま流すと、開いた瞬間に他の相手の行が画面の外へ出る。 */
+  details.raw-quota pre { white-space: pre-wrap; word-break: break-all; margin: 0.3rem 0;
+                          max-height: 14rem; overflow: auto; background: #f7f7fa;
+                          border-left: 3px solid #d5d7e8; padding: 0.5rem 0.6rem;
+                          font-size: 0.75rem; line-height: 1.5; }
   /* 使用率の帯。数字と併せて出す(色の見え方だけで読ませない)。
      70% / 90% で色を変えるのは、押す前に「もう頼めないか」を見分けるため。 */
   .meter { display: inline-block; width: 6rem; height: 0.55rem; vertical-align: middle;

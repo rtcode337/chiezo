@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS quota (
     payload    TEXT NOT NULL DEFAULT '[]',
     error      TEXT NOT NULL DEFAULT ''
 );
+-- 後から足した列は `_ADDED_QUOTA_COLUMNS` が接続時に足す(`calls` と同じ流儀)。
 -- 枠の推移。**上の `quota` は「いまどうか」しか持たない**(聞くたびに上書きする)ので、
 -- 「いつ跳ねたか」も「1 ポイントぶんが何回ぶんか」も読めなかった。2 点無いと差が
 -- 取れないので、聞いた値をここに積む。
@@ -115,6 +116,14 @@ _ADDED_COLUMNS = {
     "transcript_id": "TEXT",
 }
 
+# `quota` に後から足した列。**相手が言ったそのまま** —— 画面に出るのは Chiezo が
+# 正規化した名前と割合だけで、元の資料に当たる道が無いと「この行は何か」に
+# 答えられない(実測: codex が同じ名前の窓を 2 つ返し、片方が何の制限なのか
+# 画面からは分からなかった)。
+_ADDED_QUOTA_COLUMNS = {
+    "raw": "TEXT NOT NULL DEFAULT ''",
+}
+
 
 @dataclass(frozen=True)
 class Spent:
@@ -157,10 +166,11 @@ def _connect() -> sqlite3.Connection:
     # マウントしていることが多く、共有ファイルシステムでは WAL が使えないことがある。
     conn.execute("PRAGMA journal_mode=DELETE")
     conn.executescript(_SCHEMA)
-    have = {row["name"] for row in conn.execute("PRAGMA table_info(calls)")}
-    for name, kind in _ADDED_COLUMNS.items():
-        if name not in have:
-            conn.execute(f"ALTER TABLE calls ADD COLUMN {name} {kind}")
+    for table, added in (("calls", _ADDED_COLUMNS), ("quota", _ADDED_QUOTA_COLUMNS)):
+        have = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for name, kind in added.items():
+            if name not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
     return conn
 
 
@@ -360,7 +370,7 @@ def first_recorded_at() -> str | None:
     return row[0] if row and row[0] else None
 
 
-def save_quota(provider: str, windows: list[dict], error: str = "") -> None:
+def save_quota(provider: str, windows: list[dict], error: str = "", raw: str = "") -> None:
     """相手から聞いた枠を控える(取れなかったときは理由を控える)。
 
     取れなかったときに前の値を消さない —— 一時的に繋がらないだけのことがあり、
@@ -382,10 +392,12 @@ def save_quota(provider: str, windows: list[dict], error: str = "") -> None:
                 return
             at = _now().isoformat(timespec="seconds")
             conn.execute(
-                "INSERT INTO quota (provider, fetched_at, payload, error) VALUES (?, ?, ?, ?)"
+                "INSERT INTO quota (provider, fetched_at, payload, error, raw)"
+                " VALUES (?, ?, ?, ?, ?)"
                 " ON CONFLICT(provider) DO UPDATE SET"
-                "   fetched_at=excluded.fetched_at, payload=excluded.payload, error=excluded.error",
-                (provider, at, json.dumps(windows, ensure_ascii=False), error),
+                "   fetched_at=excluded.fetched_at, payload=excluded.payload,"
+                "   error=excluded.error, raw=excluded.raw",
+                (provider, at, json.dumps(windows, ensure_ascii=False), error, raw),
             )
             # **聞けた値はここにも積む**(`quota` は上書きなので推移が残らない)。
             # 使用率を言わない窓は積まない —— 差を取る相手が無い。
@@ -410,7 +422,9 @@ def load_quota() -> dict[str, dict]:
         return {}
     try:
         with _connect() as conn:
-            rows = conn.execute("SELECT provider, fetched_at, payload, error FROM quota").fetchall()
+            rows = conn.execute(
+                "SELECT provider, fetched_at, payload, error, raw FROM quota"
+            ).fetchall()
     except (sqlite3.Error, OSError) as e:
         log.warning("usage quota read failed: %s", e)
         return {}
@@ -424,6 +438,7 @@ def load_quota() -> dict[str, dict]:
             "fetched_at": r["fetched_at"],
             "windows": windows if isinstance(windows, list) else [],
             "error": r["error"] or "",
+            "raw": r["raw"] or "",
         }
     return out
 

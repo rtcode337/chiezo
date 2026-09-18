@@ -97,6 +97,9 @@ class Quota:
     fetched_at: str = ""
     error: str = ""
     windows: list[Window] = field(default_factory=list)
+    # 相手が言ったそのまま。**窓に直せたときも持つ** —— 画面に出るのは Chiezo が
+    # 付けた名前と割合だけなので、元を当たれないと「この行は何か」に答えられない
+    raw: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -104,6 +107,7 @@ class Quota:
             "fetched_at": self.fetched_at,
             "error": self.error,
             "windows": [w.as_dict() for w in self.windows],
+            "raw": self.raw,
         }
 
 
@@ -162,7 +166,7 @@ def _window_label(minutes: float | None, fallback: str) -> str:
 # ---- 相手ごとの聞き方 -------------------------------------------------------
 
 
-async def _elevenlabs(spec, credential: str) -> list[Window]:
+async def _elevenlabs(spec, credential: str) -> tuple[list[Window], str]:
     """ElevenLabs の枠。声・効果音・曲・絵・動画が同じ 1 つの残量を食う。
 
     `GET /v1/user/subscription` は鍵だけで引ける —— 生成も会話もしないので、
@@ -198,7 +202,7 @@ async def _elevenlabs(spec, credential: str) -> list[Window]:
         used=used,
         limit=limit,
         unit="クレジット",
-    )]
+    )], res.text[:RAW_MAX]
 
 
 def _amount(value) -> float | None:
@@ -206,7 +210,7 @@ def _amount(value) -> float | None:
     return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
 
 
-async def _openrouter(spec: providers.Provider, credential: str) -> list[Window]:
+async def _openrouter(spec: providers.Provider, credential: str) -> tuple[list[Window], str]:
     """OpenRouter のクレジット。使った額と、上限があれば残高。
 
     上限が無い鍵もある(従量課金)ので、`limit` が null のときは使用額だけ出す ——
@@ -243,10 +247,10 @@ async def _openrouter(spec: providers.Provider, credential: str) -> list[Window]
             limit=limit_f,
             unit="USD",
         )
-    ]
+    ], res.text[:RAW_MAX]
 
 
-async def _bridge(spec: providers.Provider) -> list[Window]:
+async def _bridge(spec: providers.Provider) -> tuple[list[Window], str]:
     """CLI ブリッジに聞く(ブリッジが CLI に聞く)。
 
     ブリッジが立っていなければ取れない。 枠は CLI の中にしか無いので、
@@ -291,13 +295,20 @@ async def _bridge(spec: providers.Provider) -> list[Window]:
         raise UsageError(
             str(body.get("reason") or "CLI が使用量を返しませんでした")[:REASON_MAX]
         )
-    return windows
+    return windows, str(body.get("raw") or "")[:RAW_MAX]
 
 
 # 失敗の理由として持ち帰る長さ。**300 では足りなかった** —— 相手は人向けの報告を
 # 返してくるので、頭で切ると「なぜ駄目だったか」が枠の外へ落ちる(実際にそうなった)。
 # 絵と音の相手のエラー(`app/media_backends.py` の `remote_error`)と同じ長さにしてある。
 REASON_MAX = 600
+
+# 相手が言ったそのままを控える長さの上限。**読めたときにも控える** ——
+# 正規化した後の画面には Chiezo が付けた名前しか出ないので、元を当たれないと
+# 「この行は何なのか」に答えられない(実測: codex が同じ名前の窓を 2 つ返し、
+# 片方が何の制限なのか画面からは分からなかった)。
+# **整形も翻訳もしない** —— そのまま検索できることに値打ちがある。
+RAW_MAX = 4000
 
 
 def _bridge_error(body: dict, status: int) -> str:
@@ -313,8 +324,13 @@ def _bridge_error(body: dict, status: int) -> str:
     return (str(reason) if reason else f"HTTP {status}")[:REASON_MAX]
 
 
-async def fetch(spec: providers.Provider) -> list[Window]:
-    """その相手の枠を取りに行く。取れなければ `UsageError`。"""
+async def fetch(spec: providers.Provider) -> tuple[list[Window], str]:
+    """その相手の枠と、**相手が言ったそのまま**を取りに行く。取れなければ `UsageError`。
+
+    生のほうを一緒に持ち帰るのは、正規化で落ちるものがあるから —— 画面に出るのは
+    Chiezo が付けた名前と割合だけで、**元の資料に当たる道が無い**と「この行は何か」に
+    答えられない(古い版は捨てていて、実際に答えられなかった)。
+    """
     if not spec.usage:
         raise UsageError("この相手は使用量を出しません")
     credential = settings_store.load(spec.id).credential
@@ -343,7 +359,7 @@ async def refresh(provider_id: str) -> Quota:
     if spec is None or not spec.usage:
         return Quota(supported=False)
     try:
-        windows = await fetch(spec)
+        windows, raw = await fetch(spec)
     except UsageError as e:
         usage_store.save_quota(spec.id, [], str(e))
         stored = usage_store.load_quota().get(spec.id, {})
@@ -352,10 +368,13 @@ async def refresh(provider_id: str) -> Quota:
             fetched_at=stored.get("fetched_at", ""),
             error=str(e),
             windows=_windows_from(stored.get("windows", [])),
+            # **失敗しても前の生の返事は残す**(窓と同じ扱い)—— 一時的に繋がらない
+            # だけのことがあり、直前まで見えていたものが消えるほうが分かりにくい
+            raw=str(stored.get("raw") or ""),
         )
     windows = arranged(windows)
-    usage_store.save_quota(spec.id, [asdict(w) for w in windows])
-    return Quota(supported=True, fetched_at=_now_iso(), windows=windows)
+    usage_store.save_quota(spec.id, [asdict(w) for w in windows], raw=raw)
+    return Quota(supported=True, fetched_at=_now_iso(), windows=windows, raw=raw)
 
 
 def arranged(windows: list[Window]) -> list[Window]:
@@ -409,6 +428,7 @@ def _stored_quota(provider_id: str, spec_usage: str, stored: dict) -> Quota:
         fetched_at=row.get("fetched_at", ""),
         error=row.get("error", ""),
         windows=_windows_from(row.get("windows", [])),
+        raw=str(row.get("raw") or ""),
     )
 
 
