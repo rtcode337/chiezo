@@ -113,6 +113,10 @@ MAX_EXTRA_KEYS = 20
 # 墓標に添える理由の長さ。**1 行で足りる** —— なぜ外したかが読めればよく、
 # 本文はそのまま残る(理由で上書きしない)ので、長く書かせる先はこちらではない
 MAX_REMOVED_REASON_CHARS = 400
+# 直す前の本文を控えておく長さ(`_before_of`)。この層の本文は数百字で、
+# 実測でも 100〜200 字に収まる —— 天井は「切られずに全文が残る」側に置く。
+# 1 件につき 1 回分しか持たないので、これだけあっても増え続けはしない
+MAX_BEFORE_BODY_CHARS = 4000
 
 # 1 回で見る区画の上限。**区画ごとに AI を 1 回呼ぶ**(素材をその区画のぶんに
 # 絞るのが区画の意味なので、まとめて聞くと絞った意味が消える)ため、
@@ -2423,23 +2427,30 @@ def changed_here(name: str, sources: dict, sweep: str, limit: int = 100) -> list
 
 
 def doc_versions(name: str, sources: dict, title: str) -> dict:
-    """1 件の見出しについて、**いまの世代と 1 つ前の世代**の中身を返す。
+    """1 件の見出しについて、**いまの中身と、直す前の中身**を返す。
 
     「直近の変更」に並ぶのは動いた見出しの名前までで、**何がどう変わったのかは
     そこからは読めない** —— 件数と名前が分かっても、プロンプトを直す判断には
     「どう書き換わったか」が要る。
 
-    **比べられるのは 1 つ前まで**(ブルーグリーンが残す世代がそこまで)。
-    それより古い回の行から来ても、出せるのは最新の焼き直しのぶん —— 読む人が
-    取り違えないよう、**どの世代どうしを比べたかを一緒に返す**。
+    **直す前の中身は 1 件の側が持っている**(`_before_of`)。持っていれば
+    `kept` に入れて返す —— こちらは**その 1 件を最後に直した回の直前**なので、
+    後から別の回が何度焼き直そうと残る。
+
+    世代どうしの比較も一緒に返すが、**あちらは 1 つ前の焼き直しまで**
+    (ブルーグリーンが残す世代がそこまで)。間隔の短い回が 1 度走れば比べる相手は
+    入れ替わるので、控えを持たない 1 件のための補助として使う。読む人が取り違え
+    ないよう、**どの世代どうしを比べたかも一緒に返す**。
     """
     src = sources.get(name)
     if src is None:
-        return {"now": None, "before": None, "now_stamp": "", "before_stamp": ""}
+        return {"now": None, "before": None, "kept": {}, "now_stamp": "", "before_stamp": ""}
     before_path = _previous_generation(src.path)
+    now = _doc_at(src.path, title)
     return {
-        "now": _doc_at(src.path, title),
+        "now": now,
         "before": _doc_at(before_path, title) if before_path else None,
+        "kept": before_of(now) if now else {},
         "now_stamp": src.dump_date or "",
         "before_stamp": _stamp_of(before_path) if before_path else "",
     }
@@ -2473,7 +2484,8 @@ def _doc_at(path: Path, title: str) -> dict | None:
     with suppress(Exception):
         rows = db.query(
             path,
-            "SELECT doc_id, title, body, tags, updated_at FROM docs WHERE title = ? LIMIT 1",
+            "SELECT doc_id, title, body, tags, updated_at, extra FROM docs"
+            " WHERE title = ? LIMIT 1",
             (title,),
         )
         if rows:
@@ -2490,6 +2502,7 @@ def _doc_at(path: Path, title: str) -> dict | None:
                 "body": row["body"] or "",
                 "tags": [str(t) for t in tags] if isinstance(tags, list) else [],
                 "updated_at": row["updated_at"] or "",
+                "extra": load_json(row["extra"]),
             }
     return None
 
@@ -2704,6 +2717,7 @@ def stream_docs(
     `diff` を渡すと、数えた結果をそこへ書く(戻り値にできないため)。
 
     **動かした 1 件には、どの回が動かしたかを脇書きに残す**(`_stamped`)。
+    直した 1 件には、**直す前の中身も 1 回分だけ**控える(`_before_of`)。
 
     `unreviewed` は「この回で入るものに、まだ AI が目を通していない印を付ける」
     (機械で引く回・外の道具で引く回)。`reviewed` は**この回で AI に差し込んだ見出し**で、
@@ -2780,7 +2794,9 @@ def stream_docs(
             skipped += 1
             yield {**doc, "doc_id": before["doc_id"]}
             continue
-        yield _stamped(_reviewed({**doc, "doc_id": before["doc_id"]}), sweep, "updated")
+        yield _stamped(
+            _reviewed({**doc, "doc_id": before["doc_id"]}), sweep, "updated", before,
+        )
 
     next_id += 1
     for raw in edits_of.rest():
@@ -2933,7 +2949,7 @@ def _to_doc(raw: dict, now: str, web: bool) -> dict | None:
     # **運ばれてきた事実を先に置く。** 集める側が元の記事から写した値(知名度など)が
     # ここに入る —— 下で入れるものが鍵を持っていたら、そちらを優先する。
     # **この時点では「消して」の印(null)も混じる**(重ねるときに解く)
-    extra = {**_carried(raw.get("extra")), "collected_at": now, "web": bool(web)}
+    extra = {**_carried(raw.get("extra")), COLLECTED_AT_KEY: now, "web": bool(web)}
     if url := (raw.get("url") or "").strip():
         extra["url"] = url
     # **配信日は、集めた日と別に持つ**。フィードから機械的に溜めるときに入る ——
@@ -2990,9 +3006,17 @@ CHANGE_REMOVED = "removed"
 # 脇書きに残す「最後に動かした回」の鍵。
 CHANGED_BY_KEY = "changed_by"
 CHANGE_KEY = "change"
+# 直す前の中身を控えておく鍵(`_before_of`)。
+BEFORE_KEY = "before"
+# その 1 件を最後に集めた時刻(`_to_doc`)。AI が触った回には必ず入り直す
+COLLECTED_AT_KEY = "collected_at"
+# 前と比べない脇書き。**こちらが回ごとに押す印なので、混ぜると毎回「変わった」に
+# なる** —— 本当に動いた事実が埋もれる。控えに入れると、さらに控えの中に控えが入り、
+# 焼き直すたびに入れ子が 1 段深くなる(1 件が際限なく伸びる)
+MARGIN_KEYS = (CHANGE_KEY, CHANGED_BY_KEY, BEFORE_KEY, COLLECTED_AT_KEY)
 
 
-def _stamped(doc: dict, sweep: str, change: str) -> dict:
+def _stamped(doc: dict, sweep: str, change: str, before: dict | None = None) -> dict:
     """動かした 1 件に、**どの回が・どう動かしたか**を脇書きとして押す。
 
     **変更履歴を別に持つだけでは、読みたいほうが読めない。** 控え
@@ -3013,18 +3037,82 @@ def _stamped(doc: dict, sweep: str, change: str) -> dict:
     **鍵の数の天井(`MAX_EXTRA_KEYS`)より後に押す。** あの天井は AI が運んでくる
     事実が際限なく増えないためのもので、こちらが押す印まで落とすと、
     脇書きの多い 1 件だけ印が付かないことになる(いちばん読みたい 1 件がそれになる)。
+
+    `before` を渡すと、**直す前の中身も 1 回分だけ一緒に控える**(`_before_of`)。
     """
     extra = doc.get("extra") if isinstance(doc.get("extra"), dict) else {}
     stamp = {CHANGE_KEY: change}
     if sweep:
         stamp[CHANGED_BY_KEY] = sweep
-    return {**doc, "extra": {**extra, **stamp}}
+    merged = {**extra, **stamp}
+    # **印と控えは必ず揃える。** 前の回の控えを残したまま印だけ新しくすると、
+    # 画面には「この回が直す前」として前の回の中身が出る
+    if kept := _before_of(doc, before):
+        merged[BEFORE_KEY] = kept
+    else:
+        merged.pop(BEFORE_KEY, None)
+    return {**doc, "extra": merged}
+
+
+def _before_of(doc: dict, before: dict | None) -> dict:
+    """直す前の中身のうち、**この回で変わったところだけ**。
+
+    世代の比較(`doc_versions` の `_previous_generation`)では、
+    **その回が直したものを見に行った頃にはもう流れている** —— 残る世代は 1 つ前
+    までで、巡回は回るたびに焼き直すので、間隔の短い回が 1 度走っただけで
+    比べる相手が入れ替わる。1 件の側に控えておけば、次に同じ 1 件が動くまで残る。
+
+    **本文だけではない。** この層の直しは、本文の書き換えと同じくらいタグの
+    付け替え(分類そのもの)と脇書きの差し替え(出典・配信日・座標)で起きる ——
+    本文しか控えないと、「何も変わっていないのに動いた 1 件」が並ぶ。
+
+    **変わっていないものは入れない。** 丸ごと控えると 1 件の大きさが倍になり、
+    焼き直すたびに全件がそのぶん重くなる。
+
+    **見出しは控えない。** この層で 1 件を指す鍵は見出しで、直す回は見出しで
+    引き当てている(`stream_docs`)—— 書き換えた見出しは別の 1 件として通るので、
+    ここへ来る時点で見出しは必ず同じ。
+    """
+    if not isinstance(before, dict):
+        return {}
+    kept: dict = {}
+    was = (before.get("body") or "").strip()
+    if was != (doc.get("body") or "").strip():
+        kept["body"] = was[:MAX_BEFORE_BODY_CHARS]
+    if sorted(before.get("tags") or []) != sorted(doc.get("tags") or []):
+        kept["tags"] = [str(t) for t in (before.get("tags") or [])]
+    if (facts := facts_of(before)) != facts_of(doc):
+        kept["extra"] = facts
+    return kept
+
+
+def facts_of(doc: dict) -> dict:
+    """脇書きのうち、**その 1 件についての事実だけ**(こちらが押す印を外す)。
+
+    印(`MARGIN_KEYS`)は回ごとに必ず書き換わるので、混ぜたまま前と比べると
+    **毎回「脇書きが変わった」になる** —— 本当に変わった事実が埋もれる。
+    """
+    extra = doc.get("extra")
+    if not isinstance(extra, dict):
+        return {}
+    return {k: v for k, v in extra.items() if k not in MARGIN_KEYS}
 
 
 def changed_by(doc: dict) -> str:
     """その 1 件を最後に動かした回。持っていなければ空。"""
     extra = doc.get("extra")
     return str((extra or {}).get(CHANGED_BY_KEY) or "") if isinstance(extra, dict) else ""
+
+
+def before_of(doc: dict) -> dict:
+    """その 1 件を最後に動かした回が、**直す前の中身**(変わったところだけ)。
+
+    持っていなければ空。入っているのは `body` / `tags` / `extra` のうち、
+    その回で実際に動いたものだけ。
+    """
+    extra = doc.get("extra")
+    kept = extra.get(BEFORE_KEY) if isinstance(extra, dict) else None
+    return kept if isinstance(kept, dict) else {}
 
 
 def _unreviewed(doc: dict) -> dict:

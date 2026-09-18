@@ -1250,6 +1250,166 @@ class TestTheMarkOnTheDocument:
         assert collect.CHANGED_BY_KEY not in text
 
 
+class TestTheContentBeforeItWasRewritten:
+    """直す前の中身を、1 件の脇書きに 1 回分だけ控える(`collect._before_of`)。
+
+    **世代どうしの比較では間に合わない。** 残る世代は 1 つ前までで、巡回は回るたびに
+    焼き直す —— 間隔の短い回が 1 度走れば、比べる相手はもう入れ替わっている。
+    1 件の側に控えれば、次に同じ 1 件が動くまで残る。
+
+    **本文だけでは足りない。** この層の直しは、タグの付け替え(分類そのもの)と
+    脇書きの差し替え(出典・配信日・座標)でも起きる。
+    """
+
+    def test_a_rewritten_one_keeps_what_it_said_before(self, sample):
+        collect.update("news", prompt="いまの内容:\n{current}\n直して")
+        previous = {"モネ": {"doc_id": 1, "title": "モネ", "body": "旧住所です", "extra": {}}}
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous, [{"title": "モネ", "body": "新住所です"}],
+            edits=True, sweep="整理",
+        )
+
+        assert collect.before_of(docs[0])["body"] == "旧住所です"
+        assert docs[0]["body"] == "新住所です"
+
+    def test_a_new_one_has_nothing_to_keep(self, sample):
+        docs, _diff = collect.material(
+            collect.get("news"), {}, [{"title": "モネ", "body": "画家です"}], sweep="見出し",
+        )
+
+        assert collect.before_of(docs[0]) == {}
+        assert collect.BEFORE_KEY not in docs[0]["extra"]
+
+    def test_a_retagged_one_keeps_the_tags_it_had(self, sample):
+        """**タグだけ動いた回も控える。** この層のタグは分類そのもので、
+        本文が同じまま付け替えられることが普通に起きる。
+        """
+        collect.update("news", prompt="いまの内容:\n{current}\n直して")
+        previous = {"モネ": {
+            "doc_id": 1, "title": "モネ", "body": "画家です", "tags": ["画家"], "extra": {},
+        }}
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous,
+            [{"title": "モネ", "body": "画家です", "tags": ["印象派"]}],
+            edits=True, sweep="整理",
+        )
+
+        kept = collect.before_of(docs[0])
+        assert kept["tags"] == ["画家"]
+        # 動いていないものは控えに入れない(丸ごと控えると 1 件の大きさが倍になる)
+        assert "body" not in kept
+        assert "印象派" in docs[0]["tags"]
+
+    def test_a_changed_fact_keeps_what_it_was(self, sample):
+        """脇書き(出典・配信日・座標)の差し替えも、本文と同じく動いた変化。"""
+        collect.update("news", prompt="いまの内容:\n{current}\n直して")
+        previous = {"モネ": {
+            "doc_id": 1, "title": "モネ", "body": "画家です", "tags": [],
+            "extra": {"url": "https://example.com/old"},
+        }}
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous,
+            [{"title": "モネ", "body": "画家です", "url": "https://example.com/new"}],
+            edits=True, sweep="整理",
+        )
+
+        assert collect.before_of(docs[0])["extra"]["url"] == "https://example.com/old"
+        assert docs[0]["extra"]["url"] == "https://example.com/new"
+
+    def test_nothing_moved_keeps_nothing(self, sample):
+        """何も動いていない 1 件に控えを付けると、焼き直しが重くなるだけ。"""
+        collect.update("news", prompt="いまの内容:\n{current}\n直して")
+        previous = {"モネ": {
+            "doc_id": 1, "title": "モネ", "body": "画家です", "tags": ["画家"],
+            "extra": {"url": "https://example.com/a", "web": True},
+        }}
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous,
+            [{
+                "title": "モネ", "body": "画家です", "tags": ["画家"],
+                "url": "https://example.com/a",
+            }],
+            edits=True, sweep="整理",
+        )
+
+        assert collect.before_of(docs[0]) == {}
+
+    def test_the_marks_are_left_out_of_the_record(self, sample):
+        """**こちらが押す印まで控えると、控えの中に控えが入る** ——
+        焼き直すたびに入れ子が 1 段深くなり、1 件が際限なく伸びる。
+        """
+        collect.update("news", prompt="いまの内容:\n{current}\n直して")
+        previous = {"モネ": {
+            "doc_id": 1, "title": "モネ", "body": "古い", "tags": [],
+            "extra": {
+                "web": True,
+                collect.CHANGED_BY_KEY: "見出し",
+                collect.CHANGE_KEY: "added",
+                collect.COLLECTED_AT_KEY: "2026-01-01T00:00:00+00:00",
+                collect.BEFORE_KEY: {"body": "もっと古い"},
+            },
+        }}
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous, [{"title": "モネ", "body": "新しい"}],
+            edits=True, sweep="整理",
+        )
+
+        kept = collect.before_of(docs[0])
+        assert kept == {"body": "古い"}
+
+    def test_the_record_and_the_mark_move_together(self, sample):
+        """**印だけ新しくして控えを残すと、前の回の中身が「この回が直す前」として出る。**"""
+        collect.update("news", prompt="いまの内容:\n{current}\n直して")
+        previous = {"モネ": {
+            "doc_id": 1, "title": "モネ", "body": "画家です", "tags": ["画家"],
+            "extra": {
+                "web": True,
+                collect.CHANGED_BY_KEY: "整理",
+                collect.BEFORE_KEY: {"body": "ずっと前の本文"},
+            },
+        }}
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous,
+            [{"title": "モネ", "body": "画家です", "tags": ["画家"]}],
+            edits=True, sweep="見出し",
+        )
+
+        assert docs[0]["extra"][collect.CHANGED_BY_KEY] == "見出し"
+        assert collect.before_of(docs[0]) == {}
+
+    def test_a_long_body_is_cut(self, sample):
+        collect.update("news", prompt="いまの内容:\n{current}\n直して")
+        previous = {"モネ": {
+            "doc_id": 1, "title": "モネ", "body": "あ" * (collect.MAX_BEFORE_BODY_CHARS + 500),
+            "extra": {},
+        }}
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous, [{"title": "モネ", "body": "短く"}],
+            edits=True, sweep="整理",
+        )
+
+        assert len(collect.before_of(docs[0])["body"]) == collect.MAX_BEFORE_BODY_CHARS
+
+    def test_the_record_does_not_reach_the_prompt(self, sample):
+        """**本文精査の邪魔をしない。** 差し込む一覧に載るのは配信日と出典だけ。"""
+        previous = {"モネ": {
+            "doc_id": 1, "title": "モネ", "body": "画家です",
+            "updated_at": "2026-09-10T00:00:00+00:00",
+            "extra": {collect.BEFORE_KEY: {"body": "旧住所です"}},
+        }}
+
+        text = collect.render_recent(previous, "2026-09-09T00:00:00+00:00")
+
+        assert "旧住所です" not in text
+
+
 class TestTellingTheAiTheTime:
     """`{now}` —— いまの日時(日本時間)。
 
@@ -2080,7 +2240,7 @@ class TestCarryingFactsIntoTheDoc:
 
         facts = {
             k: v for k, v in docs[0]["extra"].items()
-            if k not in (collect.CHANGED_BY_KEY, collect.CHANGE_KEY)
+            if k not in collect.MARGIN_KEYS
         }
         assert len(facts) <= collect.MAX_EXTRA_KEYS
         assert docs[0]["extra"][collect.CHANGE_KEY] == collect.CHANGE_UPDATED
@@ -4259,6 +4419,91 @@ class TestWhatChangedInOneDoc:
             "news", "消える店", collect.doc_versions("news", generations, "消える店")
         )
         assert "いまの中身を見る" not in html
+
+    def _mark(self, generations, title, extra):
+        live = (generations["news"].path).resolve()
+        conn = sqlite3.connect(live)
+        conn.execute(
+            "UPDATE docs SET extra = ? WHERE title = ?",
+            (json.dumps(extra, ensure_ascii=False), title),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_the_diff_comes_from_what_the_doc_kept(self, generations):
+        """**世代どうしが同じでも、直した回の差分は読める。**
+
+        残る世代は 1 つ前までで、巡回は回るたびに焼き直す —— 直した回を見に来た
+        頃には、比べる相手はもう入れ替わっている。控えは 1 件の側にある。
+        """
+        from app.views import admin
+
+        self._mark(generations, "増える店", {
+            collect.CHANGED_BY_KEY: "整理",
+            collect.BEFORE_KEY: {"body": "前はこう書いてありました。"},
+        })
+
+        versions = collect.doc_versions("news", generations, "増える店")
+        assert versions["kept"] == {"body": "前はこう書いてありました。"}
+
+        html = admin._doc_diff_page_html("news", "増える店", versions)
+        # 世代の比較では「足されたもの」にしか見えないが、控えがあれば中身が読める
+        assert "整理が書き換えたもの" in html
+        assert "前はこう書いてありました。" in html and "新しく入りました。" in html
+        # 何と比べたものかを書く（世代の比較と取り違えられないように）
+        assert "「整理」が直す前の中身との比較" in html
+        assert "1 つ前(" not in html
+
+    def test_the_kept_tags_and_facts_are_shown(self, generations):
+        """本文が動いていなくても、タグと脇書きの変化は読める。"""
+        from app.views import admin
+
+        self._mark(generations, "残る店", {
+            "url": "https://example.com/new",
+            collect.CHANGED_BY_KEY: "整理",
+            collect.BEFORE_KEY: {
+                "tags": ["飲食店"], "extra": {"url": "https://example.com/old"},
+            },
+        })
+
+        html = admin._doc_diff_page_html(
+            "news", "残る店", collect.doc_versions("news", generations, "残る店")
+        )
+
+        assert "足したタグ" in html and "移転" in html
+        assert "脇書きの変化" in html
+        assert "https://example.com/old" in html and "https://example.com/new" in html
+        # 本文は控えに入っていないので、差分にも出ない
+        assert "旧住所にあります。" not in html
+
+    def test_the_marks_are_left_out_of_the_facts(self, generations):
+        """印は回ごとに必ず書き換わる。混ぜると毎回「脇書きが変わった」になる。"""
+        from app.views import admin
+
+        self._mark(generations, "残る店", {
+            collect.CHANGED_BY_KEY: "整理",
+            collect.CHANGE_KEY: "updated",
+            collect.BEFORE_KEY: {"body": "旧住所にあります。"},
+        })
+
+        html = admin._doc_diff_page_html(
+            "news", "残る店", collect.doc_versions("news", generations, "残る店")
+        )
+
+        assert "脇書きの変化" not in html
+        assert collect.CHANGED_BY_KEY not in html
+
+    def test_it_says_when_the_doc_kept_nothing(self, generations):
+        """控えを持たない 1 件を、世代の比較として読めるようにする。"""
+        from app.views import admin
+
+        self._mark(generations, "残る店", {collect.CHANGED_BY_KEY: "整理"})
+
+        versions = collect.doc_versions("news", generations, "残る店")
+        assert versions["kept"] == {}
+
+        html = admin._doc_diff_page_html("news", "残る店", versions)
+        assert "直す前の中身を控えていません" in html
 
     def test_the_page_says_when_there_is_nothing_to_compare(self, generations):
         from app.views import admin

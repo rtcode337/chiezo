@@ -615,6 +615,10 @@ SWEEP_COLUMNS = 7
 # あるので、天井を置かないと画面が開かなくなる。読みたいのは新しいほうから。
 CHANGED_HERE_LIMIT = 200
 
+# 脇書きの変化に出す 1 つぶんの長さ。**ここは変化を読む欄**で、全文はいまの中身の
+# 側にある —— 長い値をそのまま並べると、何が動いたのか目で探すことになる
+EXTRA_VALUE_CHARS = 120
+
 
 def _sweep_backend_fields(sweep, backend, mechanical: bool) -> str:
     """頼む相手の欄。**機械で引く巡回には出さない**。
@@ -3122,7 +3126,12 @@ def admin_collect_doc(request: Request, name: str, title: str = Query(..., descr
 
 
 def _doc_diff_page_html(name: str, title: str, versions: dict) -> str:
-    now, before = versions["now"], versions["before"]
+    now, before, kept = versions["now"], versions["before"], versions.get("kept") or {}
+    if kept and now is not None:
+        # **1 件が持っている控えと比べる。** 世代の比較は焼き直すたびに相手が
+        # 入れ替わるので、直した回を見に来た頃には空になる。
+        # 控えに入っているのは動いたところだけなので、残りはいまの中身で埋める
+        before = {**now, **kept}
     if now is None and before is None:
         body = (
             '<p class="muted">この見出しは、いまの世代にも 1 つ前の世代にもありません。'
@@ -3131,9 +3140,11 @@ def _doc_diff_page_html(name: str, title: str, versions: dict) -> str:
         )
     else:
         body = (
-            f"<p>{_what_happened(now, before)}</p>"
+            f"<p>{_what_happened(now, before, kept)}</p>"
             f"{_tag_diff_html(now, before)}"
+            f"{_extra_diff_html(now, before)}"
             f"{_body_diff_html(now, before)}"
+            f"{_no_record_html(kept, now)}"
         )
     return page_shell(
         f"{title} の変更",
@@ -3161,9 +3172,17 @@ def _doc_now_link(name: str, now: dict | None) -> str:
 
 
 def _generations_html(versions: dict) -> str:
-    """どの世代どうしを比べたか。**必ず出す** —— 古い回の行から来た人が、
-    最新の焼き直しの差分をその回の変更として読まないように。
+    """**何と何を比べたかを必ず出す。** 出所が 2 つある —— 1 件が持っている控えと、
+    世代どうし。書かないと、古い回の行から来た人が最新の焼き直しの差分を
+    その回の変更として読む。
     """
+    if versions.get("kept"):
+        who = collect.changed_by(versions.get("now") or {})
+        return (
+            "この 1 件が控えている" + (f"「{esc(who)}」が" if who else "")
+            + "直す前の中身との比較(控えるのは 1 回分だけなので、"
+            "次に同じ 1 件が動くと入れ替わります)"
+        )
     now = _generation_label(versions["now_stamp"])
     before = _generation_label(versions["before_stamp"])
     if not before:
@@ -3181,7 +3200,11 @@ def _generation_label(stamp: str) -> str:
     return esc(raw)
 
 
-def _what_happened(now: dict | None, before: dict | None) -> str:
+def _what_happened(now: dict | None, before: dict | None, kept: dict | None = None) -> str:
+    if kept:
+        # **世代どうしが同じでも、直した事実は 1 件の側に残っている**
+        who = collect.changed_by(now or {})
+        return f"<strong>{esc(who) if who else '直近の回'}が書き換えたもの</strong>"
     if before is None:
         return "<strong>足されたもの</strong>(1 つ前の世代にはありませんでした)"
     if now is None:
@@ -3230,6 +3253,58 @@ def _body_diff_html(now: dict | None, before: dict | None) -> str:
     if not body.strip():
         return ""
     return f'<pre class="doc-diff">{_colour_diff(body)}</pre>'
+
+
+def _extra_diff_html(now: dict | None, before: dict | None) -> str:
+    """脇書きの出入り。**本文ともタグとも分けて出す** —— ここに入るのは出典・
+    配信日・座標といった、本文を読んでも分からない事実。
+
+    **こちらが押す印は外す**(`collect.facts_of`)。回ごとに必ず書き換わるので、
+    混ぜると毎回「脇書きが変わった」になり、本当に動いた事実が埋もれる。
+    """
+    after = collect.facts_of(now or {})
+    prior = collect.facts_of(before or {})
+    rows = []
+    for key in sorted(set(after) | set(prior)):
+        was, is_now = prior.get(key), after.get(key)
+        if was == is_now:
+            continue
+        if key not in prior:
+            rows.append(f"<strong>{esc(key)}</strong>: " + esc(_short(is_now)))
+        elif key not in after:
+            rows.append(
+                f'<span class="stale"><strong>{esc(key)}</strong>: '
+                + esc(_short(was)) + " (落ちた)</span>"
+            )
+        else:
+            rows.append(
+                f"<strong>{esc(key)}</strong>: "
+                + esc(_short(was)) + " → " + esc(_short(is_now))
+            )
+    if not rows:
+        return ""
+    return "<p>脇書きの変化<br>" + "<br>".join(rows) + "</p>"
+
+
+def _short(value) -> str:
+    """脇書きの値を 1 行に。**長いものは切る**(ここは変化を読む欄で、全文は
+    いまの中身の側にある)。"""
+    text = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
+    text = text.replace("\n", " ")
+    return text if len(text) <= EXTRA_VALUE_CHARS else text[:EXTRA_VALUE_CHARS] + "…"
+
+
+def _no_record_html(kept: dict, now: dict | None) -> str:
+    """控えを持たない 1 件に、**いま出ているのが世代どうしの比較だ**と書く。
+
+    持っている 1 件には書かない —— 何と比べたかは見出しの下に出ている。
+    """
+    if kept or now is None or not collect.changed_by(now):
+        return ""
+    return (
+        '<p class="muted">この 1 件は直す前の中身を控えていません'
+        "(控えを持つ前に焼かれたもの)。上に出ているのは世代どうしの比較です。</p>"
+    )
 
 
 def _colour_diff(text: str) -> str:
