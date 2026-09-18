@@ -70,6 +70,7 @@ from app import collect_log, db, feeds, jst, machine_store, notes, workers
 from app import extract as extraction
 from app import partition as partitioning
 from app.jst import to_jst
+from app.registry import TAG_MIN_SCHEMA_VERSION
 
 log = logging.getLogger("chiezo.app")
 
@@ -2332,20 +2333,41 @@ def catalog() -> list[dict]:
     ]
 
 
-def recent(name: str, sources: dict, limit: int = 5) -> list[dict]:
+def recent(
+    name: str, sources: dict, limit: int = 5, include_hidden: bool = False,
+) -> list[dict]:
     """焼いてあるもののうち新しい順に何件か(何が集まっているかの手掛かり)。
 
     **見に行く先は長期記憶** —— 途中の置き場を持たないので、集めたものはここにしかない。
     まだ 1 度も焼いていなければ空(ソースそのものが無い)。
+
+    **読者に出さない印の付いたものは既定で外す**(`notes.HIDDEN_TAGS`。消えたもの・
+    まだ AI が目を通していないもの)。ここだけ外していなかったせいで、**読む側が
+    自分で落とすことになっていた** —— 実際、外のアプリがその受け止めを持っていた。
+    印が増えるたびに読み手を全部直して回ることになり、しかも**漏れるのは外側
+    (読者の画面)だけ**なので気づくのが遅い。
+
+    **絞るのは SQL の側**。読んでから落とすと、落としたぶんだけ件数が減る
+    (5 件頼んだのに 2 件しか返らない)。
+
+    **タグの索引を持たない古いソースでは何もしない**(絞りようが無い)。
     """
     src = sources.get(name)
     if src is None or limit <= 0:
         return []
+    where, params = "", []
+    if not include_hidden and src.schema_version >= TAG_MIN_SCHEMA_VERSION:
+        marks = ", ".join("?" * len(notes.HIDDEN_TAGS))
+        where = (
+            " WHERE doc_id NOT IN"
+            f" (SELECT dt.doc_id FROM doc_tags dt WHERE dt.tag IN ({marks}))"
+        )
+        params = list(notes.HIDDEN_TAGS)
     rows = db.query(
         src.path,
         "SELECT title, opening, tags, updated_at, extra FROM docs"
-        " ORDER BY updated_at DESC LIMIT ?",
-        (limit,),
+        f"{where} ORDER BY updated_at DESC LIMIT ?",
+        (*params, limit),
     )
     return [
         {

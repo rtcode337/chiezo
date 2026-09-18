@@ -2161,17 +2161,34 @@ def collect_partition(
 
 
 @app.get("/v1/collect/{name}")
-def collect_get(request: Request, name: str, samples: int = Query(5, ge=0, le=50)):
+def collect_get(
+    request: Request,
+    name: str,
+    samples: int = Query(5, ge=0, le=50),
+    include_removed: bool = Query(
+        False,
+        description=(
+            "消えたもの・まだ AI が目を通していないものも見本に含める。"
+            "既定は含めない(読む側が自分で落とさなくて済むように)"
+        ),
+    ),
+):
     """1 つぶんの設定と、**焼いてあるもののうち新しい数件**。
 
     見本を添えるのは、プロンプトを直すかどうかの判断に「実際に何が集まったか」が
     要るため。途中の置き場を持たないので、見に行く先は長期記憶になる。
+
+    **見本も既定で印の付いたものを外す**(`collect.recent`)。ここだけ外していな
+    かったせいで、**読む側が自分で落とすことになっていた** —— 名前は他の読み口と
+    そろえて `include_removed`(語彙を 2 つにしない)。
     """
     collect.require_enabled()
     item = collect.get(name)
     return {
         **collect.to_public(item),
-        "recent": collect.recent(name, request.app.state.sources, samples),
+        "recent": collect.recent(
+            name, request.app.state.sources, samples, include_removed
+        ),
     }
 
 

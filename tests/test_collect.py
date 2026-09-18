@@ -94,6 +94,8 @@ def baked(tmp_path):
             def __init__(self, path):
                 self.path = path
                 self.dump_date = "20260101000000"
+                # 読み口はタグの索引の有無で振る舞いを変えるので、そこも本物に合わせる
+                self.schema_version = notes.SCHEMA_VERSION
 
         return {name: Src(path)}
 
@@ -5052,3 +5054,68 @@ class TestTheUnreviewedMark:
 
         assert len(seen) == shown < len(previous), "切られたぶんは入らない"
         assert all(t in text for t in seen)
+
+
+class TestTheSamplesHideWhatReadersShouldNotSee:
+    """見本(`/v1/collect/{name}` の `recent`)も既定で印の付いたものを外す。
+
+    ここだけ外していなかったせいで、**読む側が自分で落とすことになっていた** ——
+    実際、外のアプリがその受け止めを持っていた。印が増えるたびに読み手を全部直して
+    回ることになり、しかも**漏れるのは外側(読者の画面)だけ**なので気づくのが遅い。
+    """
+
+    @pytest.fixture()
+    def baked(self, tmp_path):
+        import sqlite3
+
+        corpus = tmp_path / "corpus"
+        corpus.mkdir(exist_ok=True)
+        path = corpus / "news.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(notes.SCHEMA_DDL)
+        conn.executescript(notes.INDEX_DDL)
+        rows = [
+            ("ふつうの記事", [], "2026-01-04T00:00:00+00:00"),
+            ("消えた記事", [notes.REMOVED_TAG], "2026-01-03T00:00:00+00:00"),
+            ("まだ読まれていない記事", [notes.UNREVIEWED_TAG], "2026-01-02T00:00:00+00:00"),
+            ("もう一つ", [], "2026-01-01T00:00:00+00:00"),
+        ]
+        for i, (title, tags, at) in enumerate(rows, start=1):
+            conn.execute(
+                "INSERT INTO docs (doc_id,title,opening,body,tags,updated_at,rank_score)"
+                " VALUES (?,?,'冒頭','本文',?,?,0.0)",
+                (i, title, json.dumps(tags, ensure_ascii=False), at),
+            )
+            for tag in tags:
+                conn.execute("INSERT INTO doc_tags (tag, doc_id) VALUES (?, ?)", (tag, i))
+        conn.commit()
+        conn.close()
+
+        class Src:
+            pass
+
+        Src.path = path
+        Src.schema_version = notes.SCHEMA_VERSION
+        return {"news": Src}
+
+    def test_both_marks_are_left_out(self, baked):
+        got = [d["title"] for d in collect.recent("news", baked, limit=10)]
+
+        assert got == ["ふつうの記事", "もう一つ"]
+
+    def test_they_can_be_asked_for(self, baked):
+        got = [d["title"] for d in collect.recent("news", baked, 10, include_hidden=True)]
+
+        assert len(got) == 4
+
+    def test_the_count_is_not_eaten_by_what_was_dropped(self, baked):
+        """**絞るのは SQL の側。** 読んでから落とすと、5 件頼んだのに 2 件しか返らない。"""
+        got = collect.recent("news", baked, limit=2)
+
+        assert [d["title"] for d in got] == ["ふつうの記事", "もう一つ"]
+
+    def test_an_old_source_without_the_tag_index_is_left_alone(self, baked):
+        """絞りようが無いので何もしない(落とすより、出すほうがまだ読める)。"""
+        baked["news"].schema_version = 2
+
+        assert len(collect.recent("news", baked, limit=10)) == 4
