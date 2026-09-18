@@ -18,7 +18,7 @@ from app import machine_store, usage_store, workers
 
 @pytest.fixture
 def enabled(tmp_path, monkeypatch):
-    """機械の置き場(`state/machine.db`)と使用量の控えを同じところに用意する。"""
+    """機械の置き場(`state/chiezo_settings.db`)と使用量の控えを同じところに用意する。"""
     monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
     return tmp_path
 

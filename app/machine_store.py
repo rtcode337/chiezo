@@ -1,4 +1,4 @@
-"""機械が書き換えるものの置き場(`state/machine.db`)。
+"""機械が書き換えるものの置き場(`state/chiezo_settings.db`)。
 
 **人が書くものと混ぜない。** 収集の定義のような「機械が毎回書き換えるもの」は、
 これまで短期記憶(`app/notes.py`)に 1 件のメモとして入れていた。あそこは人と AI が
@@ -37,6 +37,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 from datetime import UTC, datetime
@@ -46,8 +47,17 @@ from fastapi import HTTPException
 
 from app import notes
 
-SOURCE_NAME = "machine"
-SOURCE_KIND = "machine"
+log = logging.getLogger("chiezo.app")
+
+# ソース名は **jawiki や収集と同じ平たい名前空間**に並ぶ。`settings` のような
+# 一般の語にすると、外のアプリが同じ名前で収集を頼んだときにぶつかる ——
+# ぶつかった側は「知らないソース」として静かに置き換わる形になるので、
+# **このサーバーのものだと分かる名前**にしてある。
+SOURCE_NAME = "chiezo_settings"
+SOURCE_KIND = "chiezo_settings"
+
+# 改名する前の名前。**置き場を作るときに 1 度だけ見る**(`_renamed_from_old`)。
+OLD_SOURCE_NAME = "machine"
 
 # 見出しの組み立て方。`collect/definitions` のような形になる
 KEY_SEP = "/"
@@ -64,7 +74,28 @@ def is_enabled() -> bool:
 
 def db_path() -> Path | None:
     d = state_dir()
-    return d / "machine.db" if d else None
+    return d / f"{SOURCE_NAME}.db" if d else None
+
+
+def _renamed_from_old() -> None:
+    """前の名前(`machine.db`)で置かれていたら、いまの名前へ移す。
+
+    **入れ替えた瞬間に効かせる**ので、手で動かす手順は要らない。**新しいほうが
+    既にあれば触らない** —— 両方あるのは作り直した後なので、古いほうを被せると
+    その間に書かれたものが消える。
+
+    **巻き戻すと見えなくなる。** 古いイメージは `machine.db` を探すので、収集の
+    定義が空に見える(ファイルは残っているので消えてはいない)。戻すなら、
+    ファイル名も手で戻すことになる。
+    """
+    d = state_dir()
+    if d is None:
+        return
+    old, new = d / f"{OLD_SOURCE_NAME}.db", d / f"{SOURCE_NAME}.db"
+    if not old.is_file() or new.exists():
+        return
+    old.rename(new)
+    log.info("renamed the settings store: %s -> %s", old.name, new.name)
 
 
 def require_path() -> Path:
@@ -101,10 +132,18 @@ def ensure_db() -> Path | None:
     path = db_path()
     if path is None:
         return None
+    _renamed_from_old()
     conn = _connect()
     try:
         with conn:
             if _has_table(conn, "docs"):
+                # **中の名乗りも直す。** 表を作り直さずに移してきた置き場は、
+                # meta に前の名前が残ったまま —— ソース名はそちらから読むので、
+                # ファイルだけ改名しても一覧には古い名前で出る
+                conn.execute(
+                    "UPDATE meta SET source = ?, source_kind = ? WHERE source = ?",
+                    (SOURCE_NAME, SOURCE_KIND, OLD_SOURCE_NAME),
+                )
                 return path
             conn.executescript(notes.SCHEMA_DDL)
             conn.executescript(notes.INDEX_DDL)

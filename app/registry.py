@@ -12,6 +12,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from app import machine_store
+
 log = logging.getLogger("chiezo.app")
 
 
@@ -122,7 +124,7 @@ def data_dir_fingerprint(data_dir: Path) -> dict[str, tuple[int, int, int, int]]
 # 短期記憶は書き込みが直接届く唯一のソースで、設定の置き場には収集の定義が入っている
 # (どちらも取り込みで焼き直せない)。**名前で持つ**のは、この判断を画面と口の
 # 両方から同じものとして引くため。
-SYSTEM_SOURCES = ("notes", "machine")
+SYSTEM_SOURCES = ("notes", machine_store.SOURCE_NAME)
 
 
 def blocked_from_deleting(name: str, used_by: str = "") -> str:

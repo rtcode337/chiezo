@@ -1979,7 +1979,7 @@ def admin_memory(request: Request):
 <h2 id="short-term">短期記憶(覚えたこと)</h2>
 {_short_term_section_html(short_term)}
 
-<h2 id="machine">設定の置き場(機械が書くもの)</h2>
+<h2 id="chiezo-settings">設定の置き場(機械が書くもの)</h2>
 {_machine_html(sources)}
 
 <h2 id="long-term">長期記憶(ためた知識)</h2>

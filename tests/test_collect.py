@@ -36,7 +36,7 @@ def enabled(tmp_path, monkeypatch):
 
     notes_dir = tmp_path / "notes"
     monkeypatch.setenv("CHIEZO_NOTES_DIR", str(notes_dir))
-    # **定義の置き場**(`state/machine.db`)。人が読む短期記憶とは別のファイル
+    # **定義の置き場**(`state/chiezo_settings.db`)。人が読む短期記憶とは別のファイル
     monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
     # 取り込みを起こせない面では収集そのものが成り立たないので、これも要る
     monkeypatch.setenv("CHIEZO_TRIGGER_URL", "http://chiezo-trigger:7011")
@@ -90,7 +90,7 @@ class TestDefinitions:
         assert collect.is_enabled()
 
     def test_without_a_place_for_the_definition_it_is_disabled(self, enabled, monkeypatch):
-        """定義の置き場（`state/machine.db`）が無ければ、収集も成り立たない。
+        """定義の置き場（`state/chiezo_settings.db`）が無ければ、収集も成り立たない。
 
         **短期記憶とは別のファイル**。あちらは人と AI が読み書きする場所で、
         機械が毎回書き換える設定を混ぜると、人が消せてしまう。
@@ -4942,3 +4942,106 @@ class TestTheUnreviewedMark:
 
         assert len(seen) == shown < len(previous), "切られたぶんは入らない"
         assert all(t in text for t in seen)
+
+
+class TestRenamingTheSettingsStore:
+    """設定の置き場の改名(`machine` → `chiezo_settings`)。
+
+    ソース名は jawiki や収集と**同じ平たい名前空間**に並ぶ。`settings` のような
+    一般の語にすると、外のアプリが同じ名前で収集を頼んだときにぶつかる ——
+    このサーバーのものだと分かる名前にしてある。
+    """
+
+    def _old_store(self, state, docs: int = 1):
+        import sqlite3
+
+        from app import notes
+
+        state.mkdir(parents=True, exist_ok=True)
+        path = state / "machine.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(notes.SCHEMA_DDL)
+        conn.executescript(notes.INDEX_DDL)
+        conn.execute(
+            "INSERT INTO meta (source, source_kind, lang, dump_date, schema_version,"
+            " built_at) VALUES ('machine','machine',NULL,NULL,?,?)",
+            (notes.SCHEMA_VERSION, "2026-01-01T00:00:00+00:00"),
+        )
+        for i in range(docs):
+            conn.execute(
+                "INSERT INTO docs (doc_id,title,opening,body,tags,updated_at,rank_score)"
+                " VALUES (?,?,'','[]','[]','2026-01-01T00:00:00+00:00',0.0)",
+                (i + 1, f"collect/definitions{i}"),
+            )
+        conn.commit()
+        conn.close()
+        return path
+
+    def test_the_old_file_is_moved_over(self, tmp_path, monkeypatch):
+        """**入れ替えた瞬間に効かせる** —— 手で動かす手順を要らなくする。"""
+        from app import machine_store
+
+        state = tmp_path / "state"
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(state))
+        old = self._old_store(state)
+
+        machine_store.ensure_db()
+
+        assert not old.exists()
+        assert (state / "chiezo_settings.db").is_file()
+
+    def test_what_was_in_it_survives(self, tmp_path, monkeypatch):
+        from app import machine_store
+
+        state = tmp_path / "state"
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(state))
+        self._old_store(state, docs=3)
+
+        machine_store.ensure_db()
+
+        assert len(machine_store.records()) == 3
+
+    def test_the_name_inside_is_fixed_too(self, tmp_path, monkeypatch):
+        """ソース名は meta から読むので、ファイルだけ改名しても古い名前で出る。"""
+        import sqlite3
+
+        from app import machine_store
+
+        state = tmp_path / "state"
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(state))
+        self._old_store(state)
+
+        machine_store.ensure_db()
+
+        conn = sqlite3.connect(state / "chiezo_settings.db")
+        try:
+            assert conn.execute("SELECT source, source_kind FROM meta").fetchone() == (
+                machine_store.SOURCE_NAME, machine_store.SOURCE_KIND,
+            )
+        finally:
+            conn.close()
+
+    def test_an_existing_new_store_is_left_alone(self, tmp_path, monkeypatch):
+        """**両方あるのは作り直した後。** 古いほうを被せると、その間に書かれたものが消える。"""
+        from app import machine_store
+
+        state = tmp_path / "state"
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(state))
+        self._old_store(state, docs=3)
+        machine_store.ensure_db()          # ここで移行が済む
+        self._old_store(state, docs=1)     # そのあと古い名前がもう一度現れた
+
+        machine_store.ensure_db()
+
+        assert len(machine_store.records()) == 3, "新しいほうを残す"
+        assert (state / "machine.db").is_file(), "古いほうは触らない"
+
+    def test_a_fresh_install_just_uses_the_new_name(self, tmp_path, monkeypatch):
+        from app import machine_store
+
+        state = tmp_path / "state"
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(state))
+
+        path = machine_store.ensure_db()
+
+        assert path is not None and path.name == "chiezo_settings.db"

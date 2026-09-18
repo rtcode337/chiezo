@@ -379,10 +379,10 @@ class TestDeletingASourceFromTheScreen:
 
     def test_a_writable_store_cannot_be_deleted(self):
         """取り込みで焼き直せないので、消した時点で中身がどこにも無くなる。"""
-        from app import registry
+        from app import machine_store, registry
 
         assert registry.blocked_from_deleting("notes")
-        assert registry.blocked_from_deleting("machine")
+        assert registry.blocked_from_deleting(machine_store.SOURCE_NAME)
 
     def test_a_source_a_collection_bakes_into_cannot_be_deleted(self):
         """DB だけ消しても次の巡回でまた焼かれる —— 戻ってくるほうが分かりにくい。"""

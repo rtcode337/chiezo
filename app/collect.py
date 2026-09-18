@@ -301,7 +301,7 @@ def require_enabled() -> None:
 
 
 def is_enabled() -> bool:
-    """定義の置き場(`state/machine.db`)と、取り込みを起こす相手(chiezo-trigger)が
+    """定義の置き場(`state/chiezo_settings.db`)と、取り込みを起こす相手(chiezo-trigger)が
     揃っていること。
 
     **集めたものの置き場は持たない** —— 焼くときに作って ingest へ渡すだけ。
