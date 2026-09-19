@@ -496,6 +496,39 @@ class TestRelayingPartWayThrough:
         assert not workers.full_until("antigravity")
 
 
+class TestRunningItByHandInstead:
+    """画面の「今すぐ実行」は**行列を通さず、その場で走らせる**。
+
+    行列に居たぶんは、その場で外す —— 外さないと、あとでワーカーが起きたときに
+    もう一度同じ回が流れて、枠を 1 回ぶん余計に食う。
+    """
+
+    def test_a_hand_run_takes_it_out_of_the_queue(self, enabled, monkeypatch):
+        from app import collect, main
+
+        monkeypatch.setenv("CHIEZO_NOTES_DIR", str(enabled / "corpus"))
+        monkeypatch.setattr("app.views.admin.TRIGGER_URL", "http://trigger")
+        monkeypatch.setattr("app.views.admin.trigger_run", lambda _name: None)
+        workers.save([workers.Worker("精査", (workers.Step("codex"),))])
+        collect.create("news", prompt="p", interval_minutes=60,
+                       sweeps=[{"name": "ざっと", "worker": "精査"}])
+        workers.enqueue("精査", "news", "ざっと", "2026-01-01T00:00:00+00:00")
+        assert workers.queued("精査")
+
+        main.start_collection_bake("news", "ざっと")
+
+        assert workers.queued("精査") == []
+
+    def test_the_queue_is_cleared_from_either_list(self, enabled):
+        """流している最中の塊に居ても外す(押されたのはその回そのもの)。"""
+        workers.enqueue("精査", "news", "ざっと", "2026-01-01T00:00:00+00:00")
+        workers.claim("精査", 1, "2026-01-01T00:00:00+00:00")
+
+        workers.done("精査", "news", "ざっと")
+
+        assert workers.queued("精査") == []
+
+
 class TestWakingItByHand:
     """時計を待たずに 1 本流す(`main.wake_worker` / 画面の「今すぐ起こす」)。
 

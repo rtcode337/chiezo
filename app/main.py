@@ -440,6 +440,10 @@ def start_collection_bake(name: str, sweep: str | None = None) -> dict:
 
     **どの巡回を起こしたかは定義側に控える**(`pending_sweep`)。取り込みは収集の
     名前しか運べないので、素材を作る側はそこを読む。
+
+    **起こせたら、ワーカーの待ち行列からも外す**(`workers.done`)。画面の
+    「今すぐ実行」は行列を通さずその場で走らせるので、外さないと**待っていた
+    ぶんがあとでもう一度流れる**(枠を 1 回ぶん余計に食う)。
     """
     from app.views.admin import TRIGGER_URL, trigger_run
 
@@ -457,6 +461,10 @@ def start_collection_bake(name: str, sweep: str | None = None) -> dict:
     # (押した巡回ではないものが走る)
     collect.mark_pending(name, this.name)
     trigger_run(name)
+    # **行列に居たなら外す。** どの道で走ったかに関わらず、その回はもう走っている
+    if worker := getattr(this, "worker", ""):
+        with suppress(Exception):
+            workers.done(worker, name, this.name)
     # **起こせたときだけ予定を進める** —— 混んでいて断られたのに次回へ送ると、
     # その回は黙って飛ばされる(trigger_run が例外にするのでここへは来ない)
     return collect.to_public(collect.mark_started(name, this.name))

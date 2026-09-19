@@ -312,11 +312,17 @@ def last_at(name: str) -> str:
 
 
 def done(name: str, collection: str, sweep: str) -> None:
-    """流し終えた 1 件を塊から外す。"""
+    """流し終えた 1 件を外す。**塊からも行列からも**。
+
+    **行列のほうも外すのは、待っているあいだに手で走らされることがあるから**
+    (画面の「今すぐ実行」)。残しておくと、そのワーカーが起きたときにもう一度
+    同じ回が流れる —— 枠を 1 回ぶん余計に食う。
+    """
     state = _queue_all()
     slot = _slot(state, name)
     made = _entry(collection, sweep)
-    slot["batch"] = [e for e in slot["batch"] if not _same(made, e)]
+    for key in ("queue", "batch"):
+        slot[key] = [e for e in slot[key] if not _same(made, e)]
     _queue_save(state)
 
 
