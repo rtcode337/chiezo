@@ -71,13 +71,19 @@ DEFAULT_TARGET = 200
 MIN_TARGET = 10
 MAX_TARGET = 5_000
 
-# 区画の数の歯止め。台帳は定義のメモに入るので、際限なく増やせない。
-# **当たったときは区画を減らすのではなく、1 区画を大きくする**(`_fits`)——
-# 減らすと、そのぶんの母集団がどの区画にも入らず、どの巡回にも回ってこない。
-# 本番でこれが起きた: 68 万件を目安 150 で割ろうとして天井に当たり、
-# 2,000 区画(1 区画 200 未満)で打ち切られて、**残る 40 万件ぶんの範囲が
-# 台帳から丸ごと消えた**。
-MAX_PARTITIONS = 2_000
+# 区画の数の歯止め。台帳は収集 1 件ぶんの JSON に入るので、際限なく増やせない
+# (実測: 9,156 区画で 1.4 MB。巡回のたびに読み書きする)。
+#
+# **当たったら断る。黙って減らさない。** 減らすと、そのぶんの母集団がどの区画にも
+# 入らず、どの巡回にも回ってこない —— 本番でこれが起きた: 68 万件を目安 150 で
+# 割ろうとして天井(当時 2,000)に当たり、1 区画 200 未満で打ち切られて、
+# **残る 40 万件ぶんの範囲が台帳から丸ごと消えた**。
+# 目安を勝手に上げるのも同じ筋で駄目で、頼んだ細かさと違うもので回り続ける。
+#
+# **20,000 は「普通の使い方では当たらない」ところ。** 目安 150 なら 300 万件、
+# 目安 1,000 なら 2,000 万件まで割れる。当たったら、目安を上げるか
+# `feature` / `tag` / `bbox` で母集団を絞る —— どちらも人が決めること。
+MAX_PARTITIONS = 20_000
 
 # 端数を前の帯へ入れてよい上限(`target` の何倍まで)。**ちょうどで切らない**ための遊び。
 # 切りのいいところで閉じると、その次の 1 人が 1 人だけの帯になる(「アイルランド
@@ -299,37 +305,41 @@ def _geo(spec: dict, points: list[tuple[float, float]]) -> list[dict]:
     点の無いところも必ずどれかの区画に入る —— そこへ「足すべきものが無いか」を
     調べさせるのが、この層の眼目。
 
-    **母集団が大きすぎるときは、目安のほうを上げる**(`_fits`)。区画の数で
-    打ち切ると、**打ち切った先の範囲がどの区画にも入らなくなる** —— そこは
-    どの巡回にも回ってこないので、入っているものは誰にも見られない。
+    **母集団が大きすぎるときは断る**(`_must_fit`)。黙って減らすと、減らした先の
+    範囲がどの区画にも入らなくなる —— そこはどの巡回にも回ってこないので、
+    入っているものは誰にも見られない。
     """
     box = spec["bbox"] or _extent(points)
     if box is None:
         return []
+    _must_fit(spec["target"], len(points))
     out: list[dict] = []
-    _split(tuple(box), points, _fits(spec["target"], len(points)), out, 0)
+    _split(tuple(box), points, spec["target"], out, 0)
     return out
 
 
-def _fits(target: int, count: int) -> int:
-    """区画の数が天井に収まるように、**1 区画の目安を上げる**。
+def _must_fit(target: int, count: int) -> None:
+    """区画の数が天井に収まるか。**収まらなければ断る**。
 
-    **入り切らないときに削るのは「細かさ」であって「範囲」ではない。**
-    範囲を削ると、そこに入っているものが台帳から消える —— 消えたぶんは
-    どの巡回にも回ってこないので、**誰にも見られないまま溜まり続ける**。
-    細かさを削れば、1 回に見る量が増えるだけで済む(そちらは読めば分かる)。
+    **黙って減らさない。** 数で打ち切ると、打ち切った先の母集団が台帳から消え、
+    どの巡回にも回ってこない —— 誰にも見られないまま溜まり続ける。
+    **目安を勝手に上げるのも駄目**で、頼んだ細かさと違うもので回り続ける。
+    どちらを選ぶかは人が決めること(目安を上げる / 母集団を絞る)。
+
+    **二分は割り切れない。** できる区画は目安の半分から等倍のあいだに散らばるので、
+    「ちょうど収まる目安」では倍近くまで増えうる —— 余裕を見て 2 倍で数える。
     """
-    # **二分は割り切れない。** できる区画は目安の半分から等倍のあいだに散らばるので、
-    # 「ちょうど収まる目安」では倍近くまで増えうる —— 余裕を見て 2 倍で数える
     room = MAX_PARTITIONS // 2
     if count <= target * room:
-        return target
-    raised = math.ceil(count / room)
-    log.info(
-        "partition target raised from %d to %d (%d points would not fit in %d partitions)",
-        target, raised, count, MAX_PARTITIONS,
-    )
-    return raised
+        return
+    raise HTTPException(409, {
+        "error": f"区画を割れません: 母集団 {count:,} 件を目安 {target:,} で割ると"
+                 f"、区画の天井({MAX_PARTITIONS:,})を超えます",
+        "hint": f"1 区画の目安(target)を {math.ceil(count / room):,} 以上にするか、"
+                "feature / tag / bbox で母集団を絞ってください。"
+                "**黙って粗く割ることはしません** —— 割り切れなかったぶんは"
+                "どの区画にも入らず、どの巡回にも回ってこないため",
+    })
 
 
 def _extent(points) -> list[float] | None:
@@ -400,6 +410,10 @@ def _tags(spec: dict, sources: dict, own: dict[str, dict]) -> list[dict]:
 
     **束ねない。** タグはもともと対象が付けた区切りなので、こちらで混ぜると
     「このタグを見て」が言えなくなる(`target` はここでは効かない)。
+
+    **多すぎたら断る。** 数で切り落としていた頃は、こぼれたタグがどの巡回にも
+    回ってこなかった —— しかも多い順に採るので、**消えるのはいつも細かい分類のほう**
+    (そこにこそ漏れが溜まる)。
     """
     from app import db
 
@@ -409,16 +423,30 @@ def _tags(spec: dict, sources: dict, own: dict[str, dict]) -> list[dict]:
         rows = db.query(
             src.path,
             "SELECT tag, docs FROM tag_counts WHERE tag LIKE ? ORDER BY docs DESC, tag LIMIT ?",
-            (prefix.replace("%", "").replace("_", "") + "%", MAX_PARTITIONS),
+            (prefix.replace("%", "").replace("_", "") + "%", MAX_PARTITIONS + 1),
         )
+        _tags_must_fit(prefix, len(rows))
         return [{"key": r["tag"], "count": int(r["docs"])} for r in rows]
     counts: dict[str, int] = {}
     for doc in own.values():
         for tag in doc.get("tags") or []:
             if str(tag).startswith(prefix):
                 counts[str(tag)] = counts.get(str(tag), 0) + 1
+    _tags_must_fit(prefix, len(counts))
     ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-    return [{"key": k, "count": n} for k, n in ordered[:MAX_PARTITIONS]]
+    return [{"key": k, "count": n} for k, n in ordered]
+
+
+def _tags_must_fit(prefix: str, found: int) -> None:
+    if found <= MAX_PARTITIONS:
+        return
+    raise HTTPException(409, {
+        "error": f"区画を割れません: 「{prefix}」で始まるタグが"
+                 f" {MAX_PARTITIONS:,} を超えています",
+        "hint": "接頭辞をもっと狭く取ってください。**黙って多い順に切ることはしません**"
+                " —— こぼれたタグはどの巡回にも回ってこないうえ、消えるのはいつも"
+                "細かい分類のほう(そこにこそ漏れが溜まる)",
+    })
 
 
 def _titles(spec: dict, sources: dict, own: dict[str, dict]) -> list[dict]:
@@ -442,12 +470,12 @@ def _titles(spec: dict, sources: dict, own: dict[str, dict]) -> list[dict]:
         ]
     else:
         titles = sorted(own)
+    # **入り切らないなら断る**(`_must_fit`)。件数で打ち切ると、後ろの見出しが
+    # どの区画にも入らず、どの巡回にも回ってこない
+    _must_fit(spec["target"], len(titles))
     out = []
-    # **入り切らないときは 1 区画を大きくする**(`_fits`)。件数で打ち切ると、
-    # 後ろの見出しがどの区画にも入らず、どの巡回にも回ってこない
-    step = _fits(spec["target"], len(titles))
-    for i in range(0, len(titles), step):
-        chunk = titles[i : i + step]
+    for i in range(0, len(titles), spec["target"]):
+        chunk = titles[i : i + spec["target"]]
         out.append({"key": title_key(chunk[0], chunk[-1]), "count": len(chunk)})
     return out
 

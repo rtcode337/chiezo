@@ -4626,18 +4626,63 @@ class TestSeeingTheMachineStore:
             ('"news"',),
         )
 
-        assert [r["title"] for r in rows] == [f"{collect.DEFS_KIND}/{collect.DEFS_KEY}"]
+        assert [r["title"] for r in rows] == [f"{collect.DEFS_KIND}/news"]
+
+    def test_each_collection_is_its_own_record(self, sample):
+        """**まとめて 1 件に入れない。** 区画の台帳は収集 1 つで MB 単位になりうるので、
+        全部を 1 つに入れると、どれか 1 つを直すだけで全部を読み書きすることになる
+        —— 1 つが壊れれば全部が読めなくなり、1 つが太れば全部が重くなる。
+        """
+        from app import machine_store
+
+        collect.create("another", prompt="p", interval_minutes=60)
+
+        assert sorted(machine_store.keys(collect.DEFS_KIND)) == ["another", "news"]
 
     def test_rewriting_keeps_the_same_doc_id(self, sample):
         """書き換えのたびに文書の URL が変わらないようにする。"""
         from app import machine_store
 
         [before] = machine_store.records()
-        collect.create("another", prompt="p", interval_minutes=60)
+        collect.update("news", description="書き換えた")
         [after] = machine_store.records()
 
         assert after["doc_id"] == before["doc_id"]
         assert after["bytes"] > before["bytes"]
+
+    def test_the_old_single_record_is_split_on_read(self, sample):
+        """まとめて 1 件に入れていた頃のものを、読むときに分ける。**1 度だけ**。"""
+        import json
+
+        from app import machine_store
+
+        # 旧い形に戻す（1 件に 2 つ入れて、新しい形の行は消す）
+        for key in machine_store.keys(collect.DEFS_KIND):
+            machine_store.drop(collect.DEFS_KIND, key)
+        machine_store.put(collect.DEFS_KIND, collect.DEFS_KEY, json.dumps({
+            "collections": [
+                {"name": "news", "prompt": "p", "created_at": "2026-01-01T00:00:00+00:00"},
+                {"name": "spots", "prompt": "q", "created_at": "2026-01-02T00:00:00+00:00"},
+            ]
+        }, ensure_ascii=False))
+
+        assert [c.name for c in collect.load()] == ["news", "spots"]
+        # 分け終えたら古い行は消える（次からは 1 件ずつ読む）
+        assert machine_store.get(collect.DEFS_KIND, collect.DEFS_KEY) is None
+        assert sorted(machine_store.keys(collect.DEFS_KIND)) == ["news", "spots"]
+
+    def test_a_broken_one_names_itself(self, sample):
+        """**壊れているのはその 1 件だけ**だと分かるように、名前を添えて上げる。"""
+        from app import machine_store
+
+        machine_store.put(collect.DEFS_KIND, "spots", "{ 壊れている")
+
+        with pytest.raises(HTTPException) as got:
+            collect.load()
+
+        assert "spots" in got.value.detail["error"]
+        # 壊れていないほうは、名指しなら読める
+        assert collect.get("news").name == "news"
 
     def test_it_stands_next_to_the_short_term_memory(self, sample):
         """**表を分けない。** 置き場が別なのはファイルの話で、人が消せないのは

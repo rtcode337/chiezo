@@ -214,6 +214,24 @@ def drop(kind: str, key: str) -> bool:
     return True
 
 
+def keys(kind: str) -> list[str]:
+    """その種類に置いてあるものの名前(見出しの `<種類>/` の後ろ)。
+
+    **1 件ずつ置くものを数え上げるのに要る。** まとめて 1 件に入れていたものを
+    種類の下へ分けると、一覧は「何が置いてあるか」を先に引いてから中身を取る形になる
+    —— `records()` は全部の種類を並べるので、種類で絞れるほうが読む側も安い。
+    """
+    if not is_enabled():
+        return []
+    ensure_db()
+    head = kind + KEY_SEP
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT title FROM docs WHERE title LIKE ? ORDER BY title", (head + "%",)
+        ).fetchall()
+    return [r["title"][len(head):] for r in rows if r["title"].startswith(head)]
+
+
 def records() -> list[dict]:
     """置いてあるもの全部の**目録**(中身は運ばない)。
 

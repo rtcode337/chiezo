@@ -941,7 +941,10 @@ def normalize_focus(raw) -> Focus | None:
 
 
 def _stored() -> str | None:
-    """いまの定義(JSON の文字列)。まだ 1 度も置いていなければ None。"""
+    """**まとめて 1 件に入れていた頃**の定義(JSON の文字列)。無ければ None。
+
+    いまは 1 収集 = 1 件(`collect/<名前>`)。ここを読むのは移行のためだけ。
+    """
     return machine_store.get(DEFS_KIND, DEFS_KEY)
 
 
@@ -1115,47 +1118,101 @@ def edits_what_is_there(prompt: str, only_new: bool = False) -> bool:
     return any(p in (prompt or "") for p in (MATERIAL_PLACEHOLDER, RECENT_PLACEHOLDER))
 
 
-def _to_json(items: list[Collection]) -> str:
-    return json.dumps(
-        {"collections": [c.__dict__ for c in items]},
-        ensure_ascii=False,
-        indent=2,
-    )
-
-
 def load() -> list[Collection]:
-    """定義の一覧(並びは配列の順)。
+    """定義の一覧(並びは作った順)。**1 収集 = 1 件**(`collect/<名前>`)。
+
+    **まとめて 1 件に入れない。** 区画の台帳は収集 1 つで MB 単位になりうるので、
+    全部を 1 つの JSON に入れると、**どれか 1 つを直すだけで全部を読み書きする**
+    ことになる —— 1 つが壊れれば全部が読めなくなり、1 つが太れば全部が重くなる。
+    (**上限を置いて逃げない**ための前提でもある。台帳の天井は、この形にして
+    初めて「1 つの収集の都合」に閉じられる。)
 
     **本文が壊れていたら黙って作り直さない** —— 中身ごと消えるので、読めないことを
-    見せて人に直させる(プロジェクトと同じ判断)。
+    見せて人に直させる(プロジェクトと同じ判断)。**壊れているのはその 1 件だけ**
+    だと分かるように、名前を添えて上げる。
+    """
+    _split_out_the_old_row()
+    out = []
+    for key in machine_store.keys(DEFS_KIND):
+        if key == DEFS_KEY:
+            continue
+        body = machine_store.get(DEFS_KIND, key)
+        if body is None:
+            continue
+        try:
+            raw = json.loads(body)
+            if not isinstance(raw, dict):
+                raise TypeError("object を入れてください")
+        except (ValueError, TypeError) as e:
+            raise HTTPException(400, {"error": f"{DEFS_BROKEN}(「{key}」): {e}"}) from None
+        out.append(_from_json(raw))
+    # **並びは作った順**。1 件ずつ置くと配列の順を持てないので、作った時刻で並べ直す
+    return sorted(out, key=lambda c: (c.created_at, c.name))
+
+
+def _split_out_the_old_row() -> None:
+    """まとめて 1 件に入れていた頃のものを、1 収集 1 件へ分ける。**1 度だけ**。
+
+    **古い行が残っているあいだは、そちらが正**(分け終えてから消す)——
+    途中で落ちても、次に読むときにもう一度分け直せる。
     """
     body = _stored()
     if body is None:
-        return []
+        return
     try:
-        payload = json.loads(body or "{}")
-        raw = payload["collections"]
+        raw = json.loads(body or "{}")["collections"]
         if not isinstance(raw, list):
-            raise ValueError("collections must be a list")
+            raise TypeError("collections must be a list")
     except (ValueError, KeyError, TypeError) as e:
         raise HTTPException(400, {"error": f"{DEFS_BROKEN}: {e}"}) from None
-    return [_from_json(i) for i in raw if isinstance(i, dict)]
+    for item in raw:
+        if isinstance(item, dict) and (name := str(item.get("name") or "")):
+            machine_store.put(DEFS_KIND, name, json.dumps(item, ensure_ascii=False, indent=2))
+    machine_store.drop(DEFS_KIND, DEFS_KEY)
+    log.info("split %d collection definitions into one record each", len(raw))
 
 
 def save(items: list[Collection]) -> None:
-    machine_store.put(DEFS_KIND, DEFS_KEY, _to_json(items))
+    """一覧をそのまま書き込む。**消えたものはこの場で落とす**。
+
+    1 件だけ直すなら `_replace_one` のほうが安い(そちらは 1 件しか書かない)。
+    """
+    _split_out_the_old_row()
+    keep = {c.name for c in items}
+    for item in items:
+        _put_one(item)
+    for key in machine_store.keys(DEFS_KIND):
+        if key != DEFS_KEY and key not in keep:
+            machine_store.drop(DEFS_KIND, key)
+
+
+def _put_one(item: Collection) -> None:
+    machine_store.put(
+        DEFS_KIND, item.name, json.dumps(item.__dict__, ensure_ascii=False, indent=2),
+    )
 
 
 def get(name: str) -> Collection:
-    for item in load():
-        if item.name == name:
-            return item
-    raise HTTPException(404, {"error": f"収集「{name}」がありません"})
+    """名前で 1 つ。**一覧を読まない** —— 台帳を抱えた他の収集まで読む理由が無い。"""
+    _split_out_the_old_row()
+    body = machine_store.get(DEFS_KIND, name) if name and name != DEFS_KEY else None
+    if body is None:
+        raise HTTPException(404, {"error": f"収集「{name}」がありません"})
+    try:
+        raw = json.loads(body)
+        if not isinstance(raw, dict):
+            raise TypeError("object を入れてください")
+    except (ValueError, TypeError) as e:
+        raise HTTPException(400, {"error": f"{DEFS_BROKEN}(「{name}」): {e}"}) from None
+    return _from_json(raw)
 
 
 def _replace_one(name: str, updated: Collection) -> None:
-    items = load()
-    save([updated if c.name == name else c for c in items])
+    """その 1 件だけを書き換える。**他の収集は読みも書きもしない**。"""
+    get(name)
+    if updated.name != name:
+        machine_store.drop(DEFS_KIND, name)
+    _put_one(updated)
 
 
 def create(
@@ -1317,10 +1374,8 @@ def remove(name: str) -> None:
     同じ名前で作り直すのは普通に起きる —— 残しておくと、前の収集が足した・消した
     ものが新しい収集の履歴に混ざって見える。
     """
-    items = load()
-    if not any(c.name == name for c in items):
-        raise HTTPException(404, {"error": f"収集「{name}」がありません"})
-    save([c for c in items if c.name != name])
+    get(name)
+    machine_store.drop(DEFS_KIND, name)
     collect_log.forget(name)
     # **待ち行列からも外す** —— 消えた収集を抱えたままだと、そのワーカーは
     # 起こそうとして 404 を踏み続ける

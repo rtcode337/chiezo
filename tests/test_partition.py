@@ -591,22 +591,29 @@ class TestNotLosingGroundToTheCeiling:
     1 区画 200 未満 × 2,000 しか台帳に残らなかった(40 万件ぶんの範囲が消えた)。
     """
 
-    def test_the_target_goes_up_instead_of_the_range_going_away(self):
-        """**削るのは細かさであって、範囲ではない。**"""
+    def test_it_refuses_instead_of_quietly_going_coarse(self):
+        """**黙って減らさない。** 数で打ち切ると打ち切った先が台帳から消え、
+        目安を勝手に上げると頼んだ細かさと違うもので回り続ける ——
+        どちらを選ぶかは人が決めること。
+        """
+        import fastapi
+
         # **二分は割り切れない**ので、余裕を見て天井の半分で数える
         room = partition.MAX_PARTITIONS // 2
-        assert partition._fits(10, room * 40) == 40
-        # 収まるなら目安はそのまま
-        assert partition._fits(200, 1_000) == 200
+        partition._must_fit(10, room * 10)  # ちょうど収まる
+        with pytest.raises(fastapi.HTTPException) as got:
+            partition._must_fit(10, room * 10 + 1)
+
+        assert got.value.status_code == 409
+        assert "target" in got.value.detail["hint"]
 
     def test_every_point_lands_in_some_partition(self):
         import random
 
         random.seed(7)
-        # 天井(2,000 区画)に目安 10 では収まらない数
         points = [
             (35.0 + random.random(), 139.0 + random.random())
-            for _ in range(60_000)
+            for _ in range(20_000)
         ]
         spec = partition.normalize({"by": "geo", "target": 10})
 
@@ -618,12 +625,12 @@ class TestNotLosingGroundToTheCeiling:
 
     def test_the_titles_are_all_covered_too(self):
         spec = partition.normalize({"by": "title", "target": 10})
-        own = {f"見出し{i:05d}": {"doc_id": i} for i in range(60_000)}
+        own = {f"見出し{i:05d}": {"doc_id": i} for i in range(20_000)}
 
         out = partition._titles(spec, {}, own)
 
         assert len(out) <= partition.MAX_PARTITIONS
-        assert sum(p["count"] for p in out) == 60_000
+        assert sum(p["count"] for p in out) == 20_000
 
 
 class TestStartingTheLapOver:
