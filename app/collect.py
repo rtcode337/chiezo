@@ -2114,6 +2114,17 @@ def mark_pending(name: str, sweep: str | None = None) -> Collection:
     return updated
 
 
+def restore_pending(name: str, sweep: str) -> None:
+    """控えた「次に起こす巡回」を元へ戻す(起こせなかったとき)。
+
+    **書いてから起こす**作りなので、起こすのに失敗したぶんが残る ——
+    残ると、**いま走っている取り込みがその巡回のつもりで素材を取りに来る**
+    (押した覚えのない回が、押した覚えのない設定で走る)。
+    """
+    with suppress(HTTPException):
+        _replace_one(name, replace(get(name), pending_sweep=sweep))
+
+
 def mark_started(name: str, sweep: str | None = None) -> Collection:
     """取り込みを起こしたので、次回の予定だけ進める。
 

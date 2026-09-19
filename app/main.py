@@ -403,12 +403,30 @@ def wake_worker(name: str) -> dict:
         })
     if workers.pick(worker) is None:
         raise HTTPException(429, _all_full(name))
+    if busy := ingest_busy():
+        raise HTTPException(409, {
+            "error": f"いま取り込みが走っています({busy})",
+            "hint": "取り込みは同時に 1 本だけ。終わってからもう一度押してください"
+                    " —— 行列はそのまま残っているので、順番は飛びません",
+        })
     if not _flush_one(worker, datetime.now(UTC), wake=True):
         raise HTTPException(409, {
             "error": f"ワーカー「{name}」から流せませんでした",
             "hint": "取り込みが走っている最中かもしれません(少し置いてからもう一度)",
         })
     return {"ok": True, "worker": name}
+
+
+def ingest_busy() -> str:
+    """いま取り込みが走っているなら、その相手の名前。走っていなければ空。
+
+    **正は trigger の側**(同時に 1 ジョブしか受けない)。こちらで数えても、
+    アプリが 2 本立っている構成では食い違う。
+    """
+    from app.views.admin import _fetch_trigger_status
+
+    job = _fetch_trigger_status() or {}
+    return str(job.get("source") or "?") if job.get("state") == "running" else ""
 
 
 def _worker_due(worker, now: datetime) -> bool:
@@ -444,6 +462,12 @@ def start_collection_bake(name: str, sweep: str | None = None) -> dict:
     **起こせたら、ワーカーの待ち行列からも外す**(`workers.done`)。画面の
     「今すぐ実行」は行列を通さずその場で走らせるので、外さないと**待っていた
     ぶんがあとでもう一度流れる**(枠を 1 回ぶん余計に食う)。
+
+    **走っている最中は起こさない。** 取り込みは同時に 1 本しか受けないので
+    どのみち断られるが、**断られる前に控え(`pending_sweep`)を書いてしまう** ——
+    残ると、いま走っている取り込みがその巡回のつもりで素材を取りに来る
+    (押した覚えのない回が、押した覚えのない設定で走る)。
+    先に確かめ、それでも擦れ違ったら控えを戻す。
     """
     from app.views.admin import TRIGGER_URL, trigger_run
 
@@ -455,12 +479,24 @@ def start_collection_bake(name: str, sweep: str | None = None) -> dict:
     # **時計を持たない巡回は単独では走らせない**(割り込みで頼まれたときだけ動く)。
     # 起こす前に断る —— 起こしてから断ると、1 本ぶんの取り込みが空振りする
     this = collect.require_runnable(collect.get(name), sweep)
+    if busy := ingest_busy():
+        raise HTTPException(409, {
+            "error": f"いま取り込みが走っています({busy})",
+            "hint": "取り込みは同時に 1 本だけ。終わってからもう一度押してください",
+        })
     # **どの巡回のぶんかは、起こす前に控える。** 取り込みは収集の名前しか運べないので、
     # 素材を作る側は控えを読む —— 起こしてから書くと、取り込みのほうが先に素材を
     # 取りに来たときに控えがまだ空で、「次に走るはずの巡回」へ倒れる
     # (押した巡回ではないものが走る)
+    was = collect.get(name).pending_sweep
     collect.mark_pending(name, this.name)
-    trigger_run(name)
+    try:
+        trigger_run(name)
+    except Exception:
+        # **起こせなかったぶんの控えは戻す。** 残すと、いま走っている取り込みが
+        # この巡回のつもりで素材を取りに来る
+        collect.restore_pending(name, was)
+        raise
     # **行列に居たなら外す。** どの道で走ったかに関わらず、その回はもう走っている
     if worker := getattr(this, "worker", ""):
         with suppress(Exception):

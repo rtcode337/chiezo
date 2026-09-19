@@ -1977,6 +1977,10 @@ async def admin_collect(
     **ワーカーも同じ面に置く。** 何を回すかと、それを誰に回すかは 1 つの話で、
     離すと「なぜこの相手に回ったのか」を別の面と突き合わせて読むことになる。
     """
+    # **取り込みの状態は 1 度だけ引く。** ワーカーの節も収集の表も同じことを
+    # 知りたがるので、別々に聞くと 1 回の描画で trigger を 2 度叩く
+    job = _fetch_trigger_status()
+    running = str((job or {}).get("source") or "?") if (job or {}).get("state") == "running" else ""
     body = f"""
 {nav_html("/admin/collect")}
 <h1>収集(AI に集めさせて溜める)</h1>
@@ -1985,10 +1989,10 @@ async def admin_collect(
 巡回ごとに時計と相手を分けられる。
 </p>
 
-{ai_workers.section_html((_backend_select, _model_select))}
+{ai_workers.section_html((_backend_select, _model_select), running)}
 
 <h2 id="collect-settings">収集の設定</h2>
-{_collect_html(request.app.state.sources, run_buttons_disabled(_fetch_trigger_status()), sweep)}
+{_collect_html(request.app.state.sources, run_buttons_disabled(job), sweep)}
 """
     return HTMLResponse(content=page_shell("収集", body))
 

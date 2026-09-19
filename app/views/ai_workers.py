@@ -66,7 +66,7 @@ def _step_row(index: int, step: workers.Step | None, backend_select, model_selec
     )
 
 
-def _worker_form(worker: workers.Worker | None, selects) -> str:
+def _worker_form(worker: workers.Worker | None, selects, running: str = "") -> str:
     backend_select, model_select = selects
     name = worker.name if worker else ""
     steps = list(worker.steps) if worker else []
@@ -95,7 +95,7 @@ def _worker_form(worker: workers.Worker | None, selects) -> str:
         "次の起動をしません。</p>"
         f"{''.join(rows)}"
         '<p><button type="submit">このワーカーを保存</button></p></form>'
-        + (_queue_html(worker) if worker else "")
+        + (_queue_html(worker, running) if worker else "")
     )
 
 
@@ -108,7 +108,7 @@ def _number(raw, fallback: int) -> int:
         return fallback
 
 
-def _queue_html(worker: workers.Worker) -> str:
+def _queue_html(worker: workers.Worker, running: str = "") -> str:
     """そのワーカーの回り方と、待っているもの。
 
     **出すのは「なぜ動いていないか」を読むため。** 積まれているのに動かないなら
@@ -144,7 +144,7 @@ def _queue_html(worker: workers.Worker) -> str:
 <thead><tr><th>待ち行列(先に積まれた順)</th><th></th></tr></thead>
 <tbody>{rows}</tbody>
 </table>
-{_wake_form(worker, bool(waiting))}
+{_wake_form(worker, bool(waiting), running)}
 <p class="muted">
 <strong>次に起きる時刻は、前回「起きた」時刻から数えます</strong>(流し終えた時刻では
 ない)—— 塊を流し切るのに何周かかっても、次の起動は最初の起動から間隔ぶん後になる。<br>
@@ -154,17 +154,26 @@ def _queue_html(worker: workers.Worker) -> str:
 """
 
 
-def _wake_form(worker: workers.Worker, waiting: bool) -> str:
+def _wake_form(worker: workers.Worker, waiting: bool, running: str = "") -> str:
     """時計を待たずに 1 本流す口。**待っているものが無ければ出さない**。
 
     **枠が明いているうちに回しておきたい、が普通に起きる** —— 次の起動まで待つと、
     待っているあいだに他の依頼が枠を食う(実測で、外からの 1 回が 5 時間枠を
     48 ポイント持っていった)。押せば行列の先頭が 1 本流れ、**そこから間隔を
     数え直す**(起こしたことになるので、次の起動は押した時刻からずれる)。
+
+    **取り込みが走っている最中は押せない。** 同時に 1 本しか動かないので、
+    押しても断られる —— 押せる形で出しておくと、断られて初めて分かる。
     """
     if not waiting:
         return ('<p class="muted">待っているものが無いので、起こしても流すものが'
                 "ありません。</p>")
+    if running:
+        return (
+            f'<p class="muted">いま取り込みが走っています({esc(running)})。'
+            "同時に 1 本しか動かないので、終わってから起こせます"
+            "(行列はそのまま残るので、順番は飛びません)。</p>"
+        )
     return (
         f'<form class="init-form" method="post" action="/admin/ai/workers/wake">'
         f'<input type="hidden" name="worker_name" value="{esc(worker.name)}">'
@@ -174,8 +183,12 @@ def _wake_form(worker: workers.Worker, waiting: bool) -> str:
     )
 
 
-def section_html(selects) -> str:
+def section_html(selects, running: str = "") -> str:
     """節ぜんたい。`selects` は相手・モデル・考える量のセレクトを作る 3 つ。
+
+    `running` は**いま取り込みが走っている相手**(空なら走っていない)。
+    呼ぶ側が持っているものを渡す —— ここで聞き直すと、1 回の描画で trigger を
+    何度も叩くことになる。
 
     **管理画面の部品を借りる**(`views/admin.py`)—— 同じ選び方を 2 か所に書くと、
     有効な相手の数え方や「既定にまかせる」の扱いが画面ごとにずれる。
@@ -187,7 +200,7 @@ def section_html(selects) -> str:
         items, broken = [], str(e)
     forms = "".join(
         f'<details><summary>{esc(w.name)}({len(w.steps)} 段)</summary>'
-        f"{_worker_form(w, selects)}</details>"
+        f"{_worker_form(w, selects, running)}</details>"
         for w in items
     )
     add = f'<details><summary>ワーカーを足す</summary>{_worker_form(None, selects)}</details>'

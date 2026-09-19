@@ -529,6 +529,98 @@ class TestRunningItByHandInstead:
         assert workers.queued("精査") == []
 
 
+class TestNotStartingOnTopOfARunningOne:
+    """取り込みは同時に 1 本。**走っている最中は起こさない**。
+
+    どのみち trigger に断られるが、**断られる前に控え(`pending_sweep`)を
+    書いてしまう** —— 残ると、いま走っている取り込みがその巡回のつもりで
+    素材を取りに来る(押した覚えのない回が、押した覚えのない設定で走る)。
+    """
+
+    @pytest.fixture
+    def collection(self, enabled, monkeypatch):
+        from app import collect
+
+        monkeypatch.setenv("CHIEZO_NOTES_DIR", str(enabled / "corpus"))
+        monkeypatch.setattr("app.views.admin.TRIGGER_URL", "http://trigger")
+        collect.create("news", prompt="p", interval_minutes=60,
+                       sweeps=[{"name": "ざっと"}, {"name": "整理"}])
+        return collect
+
+    def _busy(self, monkeypatch, source):
+        monkeypatch.setattr(
+            "app.views.admin._fetch_trigger_status",
+            lambda: {"state": "running", "source": source},
+        )
+
+    def test_it_refuses_while_one_is_running(self, collection, monkeypatch):
+        import fastapi
+
+        from app import main
+
+        self._busy(monkeypatch, "tazuna_meals")
+
+        with pytest.raises(fastapi.HTTPException) as got:
+            main.start_collection_bake("news", "整理")
+
+        assert got.value.status_code == 409
+        assert "tazuna_meals" in got.value.detail["error"]
+
+    def test_the_pending_mark_is_left_alone(self, collection, monkeypatch):
+        """**断られた回の控えを残さない。** 残すと、走っている取り込みが
+        その巡回のつもりで素材を取りに来る。
+        """
+        import fastapi
+
+        from app import main
+
+        collection.mark_pending("news", "ざっと")
+        self._busy(monkeypatch, "tazuna_meals")
+
+        with pytest.raises(fastapi.HTTPException):
+            main.start_collection_bake("news", "整理")
+
+        assert collection.get("news").pending_sweep == "ざっと"
+
+    def test_it_is_put_back_when_the_trigger_refuses(self, collection, monkeypatch):
+        """**擦れ違ったときも戻す。** 空いて見えた直後に他が入ることはある。"""
+        import fastapi
+
+        from app import main
+
+        collection.mark_pending("news", "ざっと")
+        monkeypatch.setattr("app.views.admin._fetch_trigger_status", lambda: {"state": "idle"})
+
+        def refused(_name):
+            raise fastapi.HTTPException(409, {"error": "a job is already running"})
+
+        monkeypatch.setattr("app.views.admin.trigger_run", refused)
+
+        with pytest.raises(fastapi.HTTPException):
+            main.start_collection_bake("news", "整理")
+
+        assert collection.get("news").pending_sweep == "ざっと"
+
+    def test_waking_a_worker_says_why_it_cannot(self, enabled, monkeypatch):
+        import fastapi
+
+        from app import main
+
+        monkeypatch.setattr("app.views.admin.TRIGGER_URL", "http://trigger")
+        self._busy(monkeypatch, "tazuna_meals")
+        workers.save([workers.Worker("精査", (workers.Step("codex"),))])
+        _quota("codex", 10.0)
+        workers.enqueue("精査", "news", "ざっと", "2026-01-01T00:00:00+00:00")
+
+        with pytest.raises(fastapi.HTTPException) as got:
+            main.wake_worker("精査")
+
+        assert got.value.status_code == 409
+        # **行列は残す**（順番が飛ばないことを、断り文でも言う）
+        assert "順番は飛びません" in got.value.detail["hint"]
+        assert workers.queued("精査")
+
+
 class TestWakingItByHand:
     """時計を待たずに 1 本流す(`main.wake_worker` / 画面の「今すぐ起こす」)。
 
