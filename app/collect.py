@@ -2813,6 +2813,13 @@ def stream_docs(
     # 記事 364 件のうち 22 件が同じ URL の複製だった)。
     incoming_urls = _incoming_urls(collected)
     known_urls: set[str] = set()
+    # **足したぶんの見出し**。長期記憶は見出しに一意の索引を張るので、同じ見出しを
+    # 2 度流すと**焼く段で索引が張れず、取り込みがまるごと落ちる**(世代は
+    # 切り替わらないので、集めたぶんが静かに消えたように見える。本番で起きた)。
+    # 候補の側は既に切り詰めた見出しで重複を畳んである(`Edits` / `extract.Roster`)
+    # ので、ここは最後の歯止め —— 持つのは足したぶんだけで、前世代は数えない
+    # (数十万件の見出しを抱えると、1 行ずつ流すようにした意味が消える)
+    fresh_titles: set[str] = set()
     duplicate_titles: list[str] = []
     added = updated = skipped = seen = 0
     next_id = 0
@@ -2894,6 +2901,11 @@ def stream_docs(
         if key:
             # **同じ回の中の重複も止める**(配信元が 2 つ、同じ記事を別の見出しで配る)
             known_urls.add(key)
+        if doc["title"] in fresh_titles:
+            skipped += 1
+            duplicate_titles.append(doc["title"])
+            continue
+        fresh_titles.add(doc["title"])
         added += 1
         added_titles.append(doc["title"])
         fresh = _unreviewed(doc) if unreviewed else doc

@@ -1088,6 +1088,52 @@ class TestASlowReaderIsNotTheQuerysFault:
             ))
 
 
+class TestTheRosterKeepsTitlesBakeable:
+    """名簿の鍵は**切り詰めた見出し**(`notes.TITLE_MAX_CHARS`)。
+
+    焼く側は見出しを切ってから書き、長期記憶は見出しに一意の索引を張る ——
+    生のまま鍵にすると、**先頭 60 字が同じ 2 件が別物として通り、焼く段で索引が
+    張れずに取り込みがまるごと落ちる**(世代は切り替わらないので、集めたぶんが
+    静かに消えたように見える。本番で 68 万件がこれで焼けなかった)。
+    AI が返したぶんを持つ側(`collect.Edits`)は初めから切ってある。
+    """
+
+    def test_two_long_titles_that_share_the_head_become_one(self):
+        from app import notes
+        from app.extract import Roster
+
+        head = "あ" * notes.TITLE_MAX_CHARS
+        roster = Roster()
+        try:
+            roster.merge({"title": head + "その1", "body": "先に入ったほう"}, claims={"body"})
+            roster.merge({"title": head + "その2", "body": "あとから来たほう"}, claims={"body"})
+
+            assert roster.count == 1
+            [only] = list(roster)
+            assert only["title"] == head
+            # **既に入っている値は上書きしない**（畳む向きは今までどおり）
+            assert only["body"] == "先に入ったほう"
+        finally:
+            roster.close()
+
+    def test_a_truncated_title_still_matches_what_is_already_baked(self):
+        """前世代の見出しは既に切り詰まっている。**鍵が揃っていないと引き当てられず**、
+        同じ 1 件が「足すもの」として通って見出しがぶつかる。
+        """
+        from app import notes
+        from app.extract import Roster
+
+        head = "い" * notes.TITLE_MAX_CHARS
+        roster = Roster()
+        try:
+            roster.merge({"title": head + "ながい続き", "body": "本文"}, claims={"body"})
+
+            assert roster.take(head) is not None
+            assert list(roster.rest()) == []
+        finally:
+            roster.close()
+
+
 class TestKeepingTheRosterOffMemory:
     """引いた名簿は一時の SQLite に置く。**丸ごとは持たない**。
 

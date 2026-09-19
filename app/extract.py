@@ -68,6 +68,8 @@ from contextlib import suppress
 
 from fastapi import HTTPException
 
+from app.notes import TITLE_MAX_CHARS
+
 log = logging.getLogger("chiezo.app")
 
 # **件数は既定では絞らない。** 引くのは手元の索引を 1 本引くだけで、AI の枠も時間も
@@ -618,9 +620,19 @@ class Roster:
         self._seq = 0
 
     def merge(self, item: dict, claims) -> None:
-        """1 件を名簿へ入れる。**既に入っている値は上書きしない**。"""
+        """1 件を名簿へ入れる。**既に入っている値は上書きしない**。
+
+        **鍵にするのは切り詰めた見出し**(`notes.TITLE_MAX_CHARS`)。焼く側は
+        見出しを切ってから書き、長期記憶は見出しに一意の索引を張る —— ここで
+        生のまま鍵にすると、**先頭 60 字が同じ 2 件が別物として通り、焼く段で
+        索引が張れずに取り込みがまるごと落ちる**(世代は切り替わらないので、
+        集めたぶんが静かに消えたように見える)。
+        AI が返したぶんを持つ側(`collect.Edits`)は初めから切ってある ——
+        こちらだけ生だったのが食い違いの元だった。
+        """
+        title = item["title"] = (item.get("title") or "").strip()[:TITLE_MAX_CHARS]
         row = self.conn.execute(
-            "SELECT seq, body, url, tags, extra FROM items WHERE title = ?", (item["title"],)
+            "SELECT seq, body, url, tags, extra FROM items WHERE title = ?", (title,)
         ).fetchone()
         if row is None:
             self._seq += 1
@@ -628,7 +640,7 @@ class Roster:
                 "INSERT INTO items (title, seq, body, url, tags, extra)"
                 " VALUES (?, ?, ?, ?, ?, ?)",
                 (
-                    item["title"], self._seq,
+                    title, self._seq,
                     item.get("body") if "body" in claims else None,
                     item.get("url") if "url" in claims else None,
                     json.dumps(item.get("tags") or [], ensure_ascii=False),
