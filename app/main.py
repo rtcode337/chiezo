@@ -224,19 +224,6 @@ def _worker_of(sweep) -> workers.Worker | None:
     return found
 
 
-def _worker_step(sweep) -> tuple[object | None, bool]:
-    """(頼む相手, ワーカーが決めているか)。
-
-    **2 つ目が要る。** 相手が None なのは 2 通りあり、次にすることが逆になる ——
-    ワーカーを使わない回(巡回の指定で走る)と、**どれも枠が詰まっている回**
-    (走らせずに見送る)。
-    """
-    worker = _worker_of(sweep)
-    if worker is None:
-        return None, False
-    return workers.pick(worker), True
-
-
 async def _sample_quotas() -> None:
     """枠の推移を控える常駐タスク(`app/usage_store.py` の `quota_samples`)。
 
@@ -505,7 +492,7 @@ async def _harvest(item, sweep=None) -> dict | None:
 
 async def _collect_items(
     item, previous: dict, sources: dict, keys: list[str], sweep=None, focus=None, feed=None,
-    seen: set[str] | None = None,
+    seen: set[str] | None = None, used: list | None = None,
 ) -> tuple[list[dict], str | None, str]:
     """1 回ぶん集める。**最初の 1 回だけ機械的に埋められる**。
 
@@ -520,6 +507,10 @@ async def _collect_items(
 
     **途中でこけたら、そこまでのぶんも捨てる。** 半端に焼くと、見終わっていない区画に
     印が付くか、印の付いていない区画の中身だけが入れ替わる —— どちらも後から読めない。
+
+    `used` を渡すと、**実際に頼んだ相手**をそこへ書く(戻り値にできないため)。
+    ワーカーを使う回は区画ごとに振り替わるので、控えに残すのは「決めた相手」では
+    足りない —— 残さないと、履歴の相手の欄が既定の名前のままになる。
     """
     # **機械で引く回か**(`collect.uses_extract`)。条件はあちらが持つ ——
     # 書き写すと、片方だけ直したときに食い違う
@@ -538,15 +529,13 @@ async def _collect_items(
             # 黙って減らさない —— 少ないのが世の中の都合か、道具の不調かで意味が違う
             note = f"{feed.get('tried')} 件の出典のうち {failed} 件は取れませんでした"
         return feeds.to_items(feed), None, note
-    step, decided = _worker_step(sweep) if sweep is not None else (None, False)
-    if decided and step is None:
+    worker = _worker_of(sweep) if sweep is not None else None
+    step = workers.pick(worker) if worker is not None else None
+    if worker is not None and step is None:
         # **どれも詰まっているなら、無理に頼まない。** ここまで来ているのは時計が
         # 起こした後なので、明けた窓が塞がったということ —— 断れば控えに理由が残り、
         # 予定は進まないので次の周で走り直せる
-        raise HTTPException(429, {
-            "error": f"ワーカー「{sweep.worker}」のどの相手も枠に余裕がありません",
-            "hint": f"使用率が {workers.QUOTA_LIMIT:.0f}% を超えている相手は避けます",
-        })
+        raise HTTPException(429, _all_full(sweep.worker))
     asked = item if sweep is None else sweep.applied_to(item, step)
     collected: list[dict] = []
     # **AI が目を通したのは、差し込まれたものだけ**(`notes.UNREVIEWED_TAG`)。
@@ -555,11 +544,46 @@ async def _collect_items(
     cursor = None
     notes: list[str] = []
     for key in keys or [None]:
-        content = await _ask_for_collection(
-            asked,
-            collect.build_messages(item, previous, key, sources, sweep, focus, feed, shown),
-        )
-        items, next_cursor, note = collect.parse_response(content or "")
+        content = None
+        # **区画ごとに相手を見直す。** 1 回で何区画も回るので、決めるのが回の頭
+        # 1 度きりだと、**途中で窓が閉まっても同じ相手に投げ続ける** —— 本番で、
+        # 41% で通した相手が 2 区画目で 89% に跳ね、残り 4 区画ぶんを投げ切って
+        # から断られ、29 分ぶんの収穫がまるごと消えた。
+        # 断られたときは**同じ区画を次の段で**引き受ける(区画を飛ばさない)
+        while True:
+            if worker is not None:
+                step = workers.pick(worker)
+                if step is None:
+                    break
+                asked = sweep.applied_to(item, step)
+            if used is not None and step is not None:
+                used.append(step)
+            try:
+                content = await _ask_for_collection(
+                    asked,
+                    collect.build_messages(
+                        item, previous, key, sources, sweep, focus, feed, shown,
+                    ),
+                )
+            except HTTPException as e:
+                # **相手が「使い切った」と言ったら、その言い分を控える**
+                # (`workers.avoid_for_now`)。控えてある使用率は定時にしか採らないので、
+                # 長い 1 回の途中で窓が閉まっても次の採取まで気づけない ——
+                # 断られた事実のほうが新しい。**枠と関係ない失敗では締め出さない**
+                if worker is None or step is None or not workers.looks_full(_reason_of(e)):
+                    raise
+                workers.avoid_for_now(step.backend, _reason_of(e))
+                notes.append(f"{step.backend} が枠切れを返したので、次の段へ回しました")
+                continue
+            break
+        if content is None:
+            # どの段も詰まった。**集めたぶんは捨てない** —— 残りの区画は印を
+            # 付けずに見送るので、次の回がそこから続ける
+            if not collected:
+                raise HTTPException(429, _all_full(sweep.worker))
+            notes.append(_gave_up(sweep.worker, key))
+            break
+        items, next_cursor, note = collect.parse_response(content)
         collected += items
         cursor = next_cursor or cursor
         # **どの区画で切れたかまで残す。** 何区画かまとめて回るので、
@@ -567,6 +591,28 @@ async def _collect_items(
         if note:
             notes.append(f"{key}: {note}" if key else note)
     return collected, cursor, " / ".join(notes)
+
+
+def _all_full(worker_name: str) -> dict:
+    return {
+        "error": f"ワーカー「{worker_name}」のどの相手も枠に余裕がありません",
+        "hint": f"使用率が {workers.QUOTA_LIMIT:.0f}% を超えている相手と、"
+                "相手自身が枠切れを返した相手は避けます",
+    }
+
+
+def _gave_up(worker_name: str, key) -> str:
+    """途中で窓が閉まったときの一言。**どこまで見たかが読めるように区画も書く**。"""
+    where = f"({key} の手前)" if key else ""
+    return f"ワーカー「{worker_name}」のどの相手も枠に余裕がなくなったので、残りは見送りました{where}"
+
+
+def _reason_of(e: HTTPException) -> str:
+    """相手が言ってきた理由。**中身の形は 1 つではない**ので、文字にして渡す。"""
+    detail = e.detail
+    if isinstance(detail, dict):
+        return " / ".join(str(v) for v in detail.values())
+    return str(detail)
 
 
 async def collect_material(name: str, sources: dict) -> str:
@@ -584,6 +630,25 @@ async def collect_material(name: str, sources: dict) -> str:
     # 「これは自分が頼んだものではない」と分かる必要がある
     with ai_inflight.called_by(f"collect:{name}"):
         return await _collect_material(name, sources)
+
+
+def _who_ran(used: list) -> dict:
+    """実際に頼んだ相手。**振り替わった回は並べて残す**。
+
+    **1 つに丸めない。** 途中で窓が閉まって次の段へ回った回は、どちらの相手も
+    その回を走らせている —— 片方だけ残すと、枠の動きと履歴が食い違う。
+    **並びは頼んだ順**(先に頼んだほうが先)。
+    """
+    if not used:
+        return {}
+    backends: list[str] = []
+    models: list[str] = []
+    for step in used:
+        if step.backend and step.backend not in backends:
+            backends.append(step.backend)
+        if step.model and step.model not in models:
+            models.append(step.model)
+    return {"backend": " → ".join(backends), "model": " → ".join(models), "effort": ""}
 
 
 def _default_backend_name() -> str:
@@ -662,6 +727,9 @@ async def _collect_material(name: str, sources: dict) -> str:
         "model": sweep.model or "",
         "effort": sweep.effort or "",
     } if collect.asks_ai(item, sweep) else {"backend": "", "model": "", "effort": ""}
+    # **実際に頼んだ相手**。ワーカーを使う回は区画ごとに振り替わるので、
+    # 走り終えてからでないと分からない(`_collect_items` が書く)
+    used: list = []
     try:
         feed = await _harvest(item, sweep)
         # **差し込むぶんだけ取り出す。** 区画で切ってあれば、その区画のぶんだけ ——
@@ -670,8 +738,11 @@ async def _collect_material(name: str, sources: dict) -> str:
             collect.prompt_docs, item, previous, keys, focus
         )
         items, next_cursor, note = await _collect_items(
-            item, for_prompt, sources, keys, sweep, focus, feed, shown
+            item, for_prompt, sources, keys, sweep, focus, feed, shown, used
         )
+        # **控えに残すのは、決めた相手ではなく頼んだ相手。** ワーカーを使う回は
+        # 巡回に相手が書いていないので、書き換えないと履歴が既定の名前で埋まる
+        who.update(_who_ran(used) or {})
         # **数えるのは流し始める前。** 流している途中でステータスは変えられないので、
         # 断るならここで断る(`bake_survey`)。素材そのものは 1 行ずつ返すので、
         # ここでは組み立てない —— 50 万件の名簿では 1 本の文字列が 460 MB になる

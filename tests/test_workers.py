@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -261,13 +262,56 @@ class TestWhenAWorkerWakesUp:
         assert main._worker_due(worker, datetime(2026, 1, 1, 0, 30, tzinfo=UTC))
 
 
+class TestBelievingTheProviderOverTheSample:
+    """相手が「枠を使い切った」と言ったら、明けるまで避ける(`workers.avoid_for_now`)。
+
+    **控えてある使用率は定時にしか採らない。** 1 回が長い回の途中で窓が閉まっても、
+    次の採取まで気づけない —— 本番で、41% と控えたまま同じ相手へ 4 回続けて投げ、
+    最後に断られて 29 分ぶんの収穫が消えた。断られた事実のほうが新しい。
+    """
+
+    def test_a_refused_backend_is_skipped(self, enabled):
+        _quota("antigravity", 41.0)
+        _quota("codex", 10.0)
+        step = workers.Step("antigravity")
+
+        assert workers.room_left(step)
+        workers.avoid_for_now("antigravity", "Individual quota reached. Resets in 1h15m20s.")
+
+        assert not workers.room_left(step)
+        assert workers.pick(_worker(step, workers.Step("codex"))) == workers.Step("codex")
+
+    def test_it_comes_back_once_the_window_opens(self, enabled):
+        _quota("antigravity", 41.0)
+        workers.avoid_for_now("antigravity", "quota reached. Resets in 1h0m0s.")
+
+        # 明けたあとの時刻で見れば、また頼める
+        assert workers.room_left(workers.Step("antigravity"), now="2099-01-01T00:00:00+00:00")
+
+    def test_it_reads_when_the_window_opens(self):
+        assert workers.cooldown_minutes("Resets in 1h15m20s.") == 76
+        assert workers.cooldown_minutes("resets in 45m") == 45
+        # **読めなければ既定**（短くしすぎると、明ける前に頼み直して 1 回ぶん損をする）
+        assert workers.cooldown_minutes("quota reached") == workers.DEFAULT_COOLDOWN_MINUTES
+
+    def test_it_knows_a_quota_message_from_any_other_failure(self):
+        assert workers.looks_full("Individual quota reached. Please upgrade")
+        assert workers.looks_full("RESOURCE_EXHAUSTED")
+        # **枠と関係ない失敗で相手を締め出さない**（つながらないだけの回もある）
+        assert not workers.looks_full("llm unreachable / ConnectError")
+        assert not workers.looks_full("")
+
+
 class TestDecidingWhoToAsk:
-    """相手が None なのは 2 通りあり、次にすることが逆になる。"""
+    """相手が None なのは 2 通りあり、次にすることが逆になる ——
+    ワーカーを使わない回(巡回の指定で走る)と、どれも枠が詰まっている回
+    (走らせずに見送る)。**前者はワーカーが None、後者は相手が None**。
+    """
 
     def test_no_worker_means_the_sweep_decides(self, enabled):
         from app import main
 
-        assert main._worker_step(_sweep()) == (None, False)
+        assert main._worker_of(_sweep()) is None
 
     def test_the_worker_names_the_backend(self, enabled):
         from app import main
@@ -275,7 +319,8 @@ class TestDecidingWhoToAsk:
         workers.save([workers.Worker("精査", (workers.Step("codex", "gpt-5.5"),))])
         _quota("codex", 10.0)
 
-        assert main._worker_step(_sweep(worker="精査")) == (workers.Step("codex", "gpt-5.5"), True)
+        found = main._worker_of(_sweep(worker="精査"))
+        assert workers.pick(found) == workers.Step("codex", "gpt-5.5")
 
     def test_all_crowded_is_wait_not_fall_back(self, enabled):
         """**巡回の指定へ落ちない。** 落ちると、避けたかった相手に頼むことがある。"""
@@ -284,13 +329,15 @@ class TestDecidingWhoToAsk:
         workers.save([workers.Worker("精査", (workers.Step("codex"),))])
         _quota("codex", 95.0)
 
-        assert main._worker_step(_sweep(worker="精査")) == (None, True)
+        found = main._worker_of(_sweep(worker="精査"))
+        assert found is not None
+        assert workers.pick(found) is None
 
     def test_a_name_that_is_not_there_falls_back(self, enabled):
         """綴りを間違えただけで無人の層が止まるより、走って控えに相手が残るほうがよい。"""
         from app import main
 
-        assert main._worker_step(_sweep(worker="いない")) == (None, False)
+        assert main._worker_of(_sweep(worker="いない")) is None
 
 
 class TestTheChosenBackendIsUsed:
@@ -318,6 +365,167 @@ class TestTheChosenBackendIsUsed:
         asked = sweep.applied_to(item)
 
         assert (asked.backend, asked.model, asked.effort) == ("antigravity", "gemini", "low")
+
+
+class TestRelayingPartWayThrough:
+    """**相手を決めるのは区画ごと。** 1 回で何区画も回るので、決めるのが回の頭
+    1 度きりだと、途中で窓が閉まっても同じ相手に投げ続ける ——
+    本番で、41% で通した相手が 2 区画目で 89% に跳ね、残り 4 区画ぶんを投げ切って
+    から断られ、29 分ぶんの収穫がまるごと消えた。
+    """
+
+    @pytest.fixture
+    def asking(self, enabled, monkeypatch):
+        """AI を呼ぶところを差し替えて、**何回目にどの相手へ行ったか**を控える。"""
+        from app import main
+
+        seen: list[str] = []
+
+        async def fake(asked, _messages):
+            seen.append(asked.backend)
+            return '{"items": [{"title": "1 件", "body": "本文"}]}'
+
+        monkeypatch.setattr(main, "_ask_for_collection", fake)
+        return main, seen
+
+    def _run(self, main, keys):
+        return asyncio.run(main._collect_items(
+            _collection(), {}, {}, keys, _sweep(worker="精査"), None, None, None, [],
+        ))
+
+    def _closes_after(self, monkeypatch, seen, calls, percent):
+        """**呼んだ回数がある数に達したら窓が閉まる**、を仕込む。"""
+        real = workers.pick
+
+        def closing(worker, limit=None, now=""):
+            if len(seen) >= calls:
+                _quota("antigravity", percent)
+            return real(worker, limit, now)
+
+        monkeypatch.setattr(workers, "pick", closing)
+
+    def test_it_moves_on_when_the_window_closes_mid_run(self, asking, monkeypatch):
+        main, seen = asking
+        workers.save([workers.Worker(
+            "精査", (workers.Step("antigravity"), workers.Step("codex")),
+        )])
+        _quota("antigravity", 41.0)
+        _quota("codex", 10.0)
+
+        self._closes_after(monkeypatch, seen, 1, 89.0)
+
+        collected, _cursor, _note = self._run(main, ["a", "b", "c"])
+
+        assert seen == ["antigravity", "codex", "codex"]
+        assert len(collected) == 3
+
+    def test_what_was_collected_is_not_thrown_away(self, asking, monkeypatch):
+        """**残りの区画は見送るが、集めたぶんは焼く。** 捨てると、窓が閉まった
+        時点までの仕事がまるごと消える(実際にそうなった)。
+        """
+        main, seen = asking
+        workers.save([workers.Worker("精査", (workers.Step("antigravity"),))])
+        _quota("antigravity", 41.0)
+
+        self._closes_after(monkeypatch, seen, 2, 95.0)
+
+        collected, _cursor, note = self._run(main, ["a", "b", "c"])
+
+        assert len(collected) == 2
+        assert "見送りました" in note
+
+    def test_nothing_collected_at_all_is_refused(self, asking):
+        """1 件も集まっていないなら、控えに理由を残して断る(予定は進めない)。"""
+        import fastapi
+
+        main, _seen = asking
+        workers.save([workers.Worker("精査", (workers.Step("antigravity"),))])
+        _quota("antigravity", 95.0)
+
+        with pytest.raises(fastapi.HTTPException) as got:
+            self._run(main, ["a", "b"])
+
+        assert got.value.status_code == 429
+
+    def test_a_quota_refusal_moves_to_the_next_step(self, asking, monkeypatch):
+        """相手自身が枠切れを返したら、その場で次の段へ回す。"""
+        import fastapi
+
+        main, seen = asking
+        workers.save([workers.Worker(
+            "精査", (workers.Step("antigravity"), workers.Step("codex")),
+        )])
+        _quota("antigravity", 41.0)
+        _quota("codex", 10.0)
+
+        async def refusing(asked, _messages):
+            seen.append(asked.backend)
+            if asked.backend == "antigravity":
+                raise fastapi.HTTPException(502, {
+                    "error": "llm error 502",
+                    "reason": "antigravity failed / error: Individual quota reached."
+                              " Resets in 1h15m20s.",
+                })
+            return '{"items": [{"title": "1 件", "body": "本文"}]}'
+
+        monkeypatch.setattr(main, "_ask_for_collection", refusing)
+
+        collected, _cursor, _note = self._run(main, ["a"])
+
+        assert seen == ["antigravity", "codex"]
+        assert len(collected) == 1
+        # 断られた事実は控える（次の回は待たずに次の段から始まる）
+        assert workers.full_until("antigravity")
+
+    def test_a_plain_failure_is_not_swallowed(self, asking, monkeypatch):
+        """**枠と関係ない失敗で相手を締め出さない。** つながらないだけの回もある。"""
+        import fastapi
+
+        main, _seen = asking
+        workers.save([workers.Worker("精査", (workers.Step("antigravity"),))])
+        _quota("antigravity", 10.0)
+
+        async def broken(_asked, _messages):
+            raise fastapi.HTTPException(502, {"error": "llm unreachable"})
+
+        monkeypatch.setattr(main, "_ask_for_collection", broken)
+
+        with pytest.raises(fastapi.HTTPException):
+            self._run(main, ["a"])
+
+        assert not workers.full_until("antigravity")
+
+
+class TestWhoActuallyRan:
+    """控えに残すのは、決めた相手ではなく**頼んだ相手**。
+
+    ワーカーを使う巡回は自分の欄に相手を書いていないので、書き換えないと
+    履歴の相手の欄が既定の名前で埋まる(実際にそうなっていた)。
+    """
+
+    def test_it_names_the_backend_the_worker_chose(self):
+        from app import main
+
+        out = main._who_ran([workers.Step("codex", "gpt-5.5")] * 3)
+
+        assert out == {"backend": "codex", "model": "gpt-5.5", "effort": ""}
+
+    def test_a_relayed_run_names_both(self):
+        """**1 つに丸めない** —— どちらの相手もその回を走らせている。"""
+        from app import main
+
+        out = main._who_ran([
+            workers.Step("antigravity", "gemini"), workers.Step("codex", "gpt-5.5"),
+        ])
+
+        assert out["backend"] == "antigravity → codex"
+        assert out["model"] == "gemini → gpt-5.5"
+
+    def test_nothing_ran_leaves_the_record_alone(self):
+        """AI を呼ばない回では書き換えない(既定の相手が並ぶのを防ぐ)。"""
+        from app import main
+
+        assert main._who_ran([]) == {}
 
 
 class TestSavingOne:

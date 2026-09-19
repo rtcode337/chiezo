@@ -30,6 +30,7 @@ import logging
 import os
 import re
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime, timedelta
 
 from app import machine_store, usage
 
@@ -328,23 +329,103 @@ def forget(collection: str) -> None:
     _queue_save(state)
 
 
-def room_left(step: Step, limit: float | None = None) -> bool:
+FULL_KEY = "full"
+
+# 相手が「枠を使い切った」と言ったのに、いつ明けるかを言わなかったときの待ち時間。
+# **短くしすぎない** —— 明ける前に頼み直すと、そのたびに 1 回ぶん無駄に叩く。
+DEFAULT_COOLDOWN_MINUTES = 60
+
+# 相手の言い分から「枠切れ」を読み取る手掛かり。**控えの使用率より新しい報せ** ——
+# 使用率は定時にしか採らないので、長い 1 回の途中で窓が閉まると次の採取まで
+# 気づけない(本番で 41% のまま 89% まで走り続けた)。
+_FULL_PHRASES = ("quota", "rate limit", "usage limit", "out of credit", "resource_exhausted")
+
+# 「あと 1h15m20s で明ける」の読み取り。相手の文面は英語で来る
+_RESETS_RE = re.compile(
+    r"resets?\s+in\s+(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?", re.I
+)
+
+
+def looks_full(reason: str) -> bool:
+    """相手の言い分が「枠を使い切った」か。"""
+    low = str(reason or "").lower()
+    return any(word in low for word in _FULL_PHRASES)
+
+
+def cooldown_minutes(reason: str) -> int:
+    """その言い分から、何分のあいだ避ければよいか。**読めなければ既定**。"""
+    found = _RESETS_RE.search(str(reason or ""))
+    if not found or not any(found.groups()):
+        return DEFAULT_COOLDOWN_MINUTES
+    hours, minutes, seconds = (int(g or 0) for g in found.groups())
+    # 端数は切り上げる。**明ける直前に頼み直すと、また断られて 1 回ぶん損をする**
+    return max(1, hours * 60 + minutes + (1 if seconds else 0))
+
+
+def avoid_for_now(backend: str, reason: str) -> str:
+    """相手が「使い切った」と言ったので、明けるまで避ける。避ける期限を返す。
+
+    **言い分に明ける時刻が入っていればそれを使う**(「Resets in 1h15m20s」)。
+    無ければ既定の待ち時間 —— どちらにしても、次の 1 回は待たずに次の段へ回る。
+    """
+    until = (
+        datetime.now(UTC) + timedelta(minutes=cooldown_minutes(reason))
+    ).isoformat(timespec="seconds")
+    mark_full(backend, until)
+    return until
+
+
+def mark_full(backend: str, until: str) -> None:
+    """その相手を、**いつまで避けるか**を控える。
+
+    **相手が言ったことのほうが新しい。** 控えてある使用率は定時にしか採らないので、
+    1 回が長い回の途中で窓が閉まっても次の採取まで気づけない —— 実際に、41% と
+    控えたまま同じ相手へ 4 回続けて投げ、最後に断られた。
+    断られた事実をここへ書けば、次の 1 回は待たずに次の段へ回る。
+    """
+    if not backend or not machine_store.is_enabled():
+        return
+    state = _queue_all()
+    state.setdefault(FULL_KEY, {})[backend] = until
+    _queue_save(state)
+    log.info("avoiding %s until %s (the provider said it is full)", backend, until)
+
+
+def full_until(backend: str) -> str:
+    """その相手を避ける期限(空なら避けていない)。"""
+    found = _queue_all().get(FULL_KEY)
+    return str(found.get(backend) or "") if isinstance(found, dict) else ""
+
+
+def room_left(step: Step, limit: float | None = None, now: str = "") -> bool:
     """その相手に頼んでよいか。**控えてある使用率で見る**(聞きに行かない)。
 
     **分からない相手は通す。** 枠を出さない相手も、まだ一度も取れていない相手も
     ここに落ちる —— 取れないことを理由に頼まないのでは、振り替えの仕組みが
     「枠を出せる相手しか使えない」ものになってしまう。
+
+    **相手が「使い切った」と言ったぶんは、期限まで避ける**(`mark_full`)。
+    使用率より新しい報せなので、こちらを先に見る。
     """
+    if (until := full_until(step.backend)) and (now or _now_iso()) < until:
+        return False
     busiest = usage.busiest(step.backend)
     return busiest is None or busiest < (QUOTA_LIMIT if limit is None else limit)
 
 
-def pick(worker: Worker | None, limit: float | None = None) -> Step | None:
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def pick(worker: Worker | None, limit: float | None = None, now: str = "") -> Step | None:
     """いま頼む相手。**枠に余裕のある先頭**を返す。どれも詰まっていれば None。
 
     **None は「待て」の意味**で、「相手がいない」ではない —— 呼ぶ側はその回を
     走らせずに見送る(予定も進めない)。窓が明ければ次の周で通る。
+
+    **区画ごとに呼び直される。** 1 回で何区画も回る収集があるので、回の頭で
+    1 度だけ決めると、途中で窓が閉まっても同じ相手に投げ続けることになる。
     """
     if worker is None:
         return None
-    return next((s for s in worker.steps if room_left(s, limit)), None)
+    return next((s for s in worker.steps if room_left(s, limit, now)), None)
