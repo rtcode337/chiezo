@@ -2110,6 +2110,27 @@ def rewind(name: str) -> Sweep:
     return this
 
 
+def restart_cycle(name: str, sweep_name: str) -> Sweep:
+    """その巡回の**一周をやり直す**(区画の印を台帳ぜんたいから外す)。戻した巡回を返す。
+
+    **最後の 1 回を戻す口(`rewind`)とは別に要る。** あちらは直前の回のぶんだけで、
+    母集団が入れ替わったあとには追いつかない —— 名簿を作り直すと区画は割り直され、
+    割られた子は親の「見た」を写す(`partition._inherited`)ので、
+    **中身が何倍になっても一周は終わったまま**になる。
+
+    **中身も進み具合も動かさない。** 動かすのは「どこまで見たか」だけ ——
+    やり直したいのは見る仕事であって、集めたものではない。
+    """
+    current = get(name)
+    this = require_runnable(current, sweep_name)
+    _replace_one(name, replace(
+        current,
+        partitions=partitioning.forget_all_visits(current.partitions, this.name),
+        updated_at=_iso(_now()),
+    ))
+    return this
+
+
 def require_runnable(item: Collection, name: str | None) -> Sweep:
     """名指しされた巡回を、**単独で走らせてよいか確かめてから**返す。
 

@@ -763,6 +763,11 @@ async def _collect_material(name: str, sources: dict) -> str:
                 collect.plan_partitions_next, item, sources, previous, items,
                 focus is None and sweep.only_new, edits,
             )
+            # **中身が動いた区画は、どの巡回の「見た」も外す。** 名簿を作り直すと
+            # 区画の母集団が入れ替わるのに、印はそのまま残る —— 割られた区画の子は
+            # 親の記録を写すので(`partition._inherited`)、膨らんだ区画ほど
+            # 「見終わったこと」になって一周が終わるまで誰にも見られない
+            ledger = partitioning.cleared_where_changed(item.partitions, ledger)
             diff["partition_counts"] = {}
     except Exception as e:
         if hasattr(items := locals().get("items"), "close"):

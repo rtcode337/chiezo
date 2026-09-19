@@ -765,7 +765,9 @@ def _sweep_cells(item, disabled: str = "", dry: bool = True) -> list[str]:
         run = (
             '<span class="muted">—</span>'
             if sweep.on_demand
-            else _sweep_run_forms(item.name, sweep.name, disabled, dry)
+            else _sweep_run_forms(
+                item.name, sweep.name, disabled, dry, bool(item.partitions),
+            )
         )
         every = (
             '<span class="muted">時計なし</span>'
@@ -798,14 +800,20 @@ def _doc_link(name: str, title: str) -> str:
     )
 
 
-def _sweep_run_forms(name: str, sweep: str, disabled: str, dry: bool = True) -> str:
-    """その巡回を 1 回だけ動かす口。
+def _sweep_run_forms(
+    name: str, sweep: str, disabled: str, dry: bool = True, partitioned: bool = False,
+) -> str:
+    """その巡回を 1 回だけ動かす口と、**一周をやり直す**口。
 
     **ドライランは焼かない**(差分を見るだけ)ので、取り込みが走っていても押せる。
     **今すぐ実行は焼く**ので、trigger が居ないときと取り込み中は押せない。
 
-    **一覧にはドライランを出さない**(`dry=False`)。あれは押した先で結果を読む口で、
-    読みに来る場所は収集の面 —— 一覧に並べると、収集の数だけ場所を食う。
+    **一覧にはドライランも一周のやり直しも出さない**(`dry=False`)。どちらも
+    押した先で結果を読む口で、読みに来る場所は収集の面 —— 一覧に並べると、
+    収集の数だけ場所を食う。
+
+    **一周のやり直しは区画を持つ収集にだけ出す**(`partitioned`)。持たない収集は
+    毎回ぜんたいを見るので、戻す「どこまで」が無い。
     """
     field = f'<input type="hidden" name="sweep" value="{esc(sweep)}">'
     preview = (
@@ -814,12 +822,25 @@ def _sweep_run_forms(name: str, sweep: str, disabled: str, dry: bool = True) -> 
         f' title="この巡回で 1 回集めさせて、焼かずに差分だけ見ます">ドライラン</button></form>'
         if dry else ""
     )
+    confirm = (
+        f"「{sweep}」の一周をやり直します。区画の印を全部外すので、"
+        "次の回は先頭から回り直します(集めた中身は動きません)。よろしいですか?"
+    )
+    restart = (
+        f'<form class="init-form" method="post"'
+        f' action="/admin/collect/{esc(name)}/restart"'
+        f" onsubmit=\"return confirm('{esc(confirm)}')\">"
+        f'{field}<button type="submit"'
+        f' title="区画の印を全部外して、次の回を先頭から回し直します">'
+        "一周をやり直す</button></form>"
+        if dry and partitioned else ""
+    )
     return (
         f'<div class="sweep-run">'
         f'<form class="init-form" method="post" action="/admin/collect/{esc(name)}/run"{disabled}>'
         f'{field}<button type="submit"{disabled}'
         f' title="この巡回で 1 回、集めて焼きます">今すぐ実行</button></form>'
-        f"{preview}</div>"
+        f"{preview}{restart}</div>"
     )
 
 
@@ -2782,6 +2803,23 @@ async def admin_collect_redo(name: str, request: Request):
 
     sweep = collect.rewind(name)
     start_collection_bake(name, sweep.name)
+    return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
+
+
+@router.post("/admin/collect/{name}/restart")
+async def admin_collect_restart(name: str, request: Request):
+    """その巡回の**一周をやり直す**(区画の印を全部外す)。
+
+    **最後の 1 回を戻す口とは別に要る。** 母集団が入れ替わったあとは、どの区画の
+    「見た」も当てにならない —— 名簿を作り直した回は中身が動いた区画の印を自分で
+    外すが(`partition.cleared_where_changed`)、**それ以外の理由で外したいとき**
+    (依頼文を大きく直した・分類の付け方を変えた)に押す口がどこにも無かった。
+
+    **走らせない。** 印を外すだけなので、次の予定でそのまま先頭から回り直す ——
+    ここで走らせると、直したい設定を入れる前に 1 回消費してしまう。
+    """
+    form = await request.form()
+    collect.restart_cycle(name, str(form.get("sweep") or ""))
     return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
 
 

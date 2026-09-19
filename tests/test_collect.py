@@ -1738,6 +1738,59 @@ class TestOrderingTheSweeps:
         assert collect.require_runnable(collect.get("news"), "名簿").name == "名簿"
 
 
+class TestStartingTheLapOver:
+    """一周をやり直す(`collect.restart_cycle`)。
+
+    **最後の 1 回を戻す口とは別に要る。** あちらは直前の回のぶんだけで、母集団が
+    入れ替わったあとには追いつかない —— 割られた区画は親の「見た」を写すので、
+    名簿を作り直して中身が何十倍になっても一周は終わったままになる。
+    """
+
+    def test_every_mark_of_that_sweep_goes(self, sample):
+        collect.update(
+            "news",
+            sweeps=[{"name": "ざっと"}, {"name": "整理"}],
+            partitions=[{"key": "あ", "count": 1}, {"key": "い", "count": 1}],
+        )
+        collect.record_result("news", status="ok", sweep="ざっと", visited=["あ", "い"])
+        assert partitioning.progress(collect.get("news").partitions, "ざっと") == (2, 2)
+
+        collect.restart_cycle("news", "ざっと")
+
+        assert partitioning.progress(collect.get("news").partitions, "ざっと") == (0, 2)
+
+    def test_the_other_sweeps_keep_walking(self, sample):
+        """**外すのはその巡回のぶんだけ** —— 巡回ごとに一周は別に進む。"""
+        collect.update(
+            "news",
+            sweeps=[{"name": "ざっと"}, {"name": "整理"}],
+            partitions=[{"key": "あ", "count": 1}],
+        )
+        collect.record_result("news", status="ok", sweep="ざっと", visited=["あ"])
+        collect.record_result("news", status="ok", sweep="整理", visited=["あ"])
+
+        collect.restart_cycle("news", "ざっと")
+
+        assert partitioning.progress(collect.get("news").partitions, "整理") == (1, 1)
+
+    def test_the_cursor_is_left_alone(self, sample):
+        """**動かすのは「どこまで見たか」だけ。** やり直したいのは見る仕事であって、
+        集めたものでも進み具合でもない。
+        """
+        collect.update("news", cursor="2026-09-01", sweeps=[{"name": "ざっと"}],
+                       partitions=[{"key": "あ", "count": 1}])
+
+        collect.restart_cycle("news", "ざっと")
+
+        assert collect.get("news").cursor == "2026-09-01"
+
+    def test_an_unknown_sweep_is_refused(self, sample):
+        collect.update("news", sweeps=[{"name": "ざっと"}])
+
+        with pytest.raises(HTTPException):
+            collect.restart_cycle("news", "いない")
+
+
 class TestRedoingTheLastRun:
     """最後の 1 回をやり直す。
 

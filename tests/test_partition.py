@@ -582,6 +582,57 @@ class TestTheSecondLap:
         assert partition.oldest_visit(partitions, "じっくり") is None
 
 
+class TestStartingTheLapOver:
+    """母集団が入れ替わったら、「見た」は当てにならない。
+
+    **割られた区画の子は親の記録を写す**(`_inherited`)。区画が少し育つたびに
+    一周が巻き戻るのを防ぐための作りだが、名簿を作り直して母集団が何十倍にも
+    なると逆に効く —— 中身が 40 倍になった区画が「見終えたまま」になる。
+    """
+
+    def test_a_changed_partition_loses_every_mark(self):
+        before = [{"key": "あ", "count": 130, "visits": {"ざっと見る": "2026-09-19T00:00:00+00:00"}}]
+        after = [{"key": "あ", "count": 5200, "visits": {"ざっと見る": "2026-09-19T00:00:00+00:00"}}]
+
+        out = partition.cleared_where_changed(before, after)
+
+        assert out[0]["visits"] == {}
+
+    def test_an_untouched_partition_keeps_its_marks(self):
+        """**動いていない区画まで戻さない** —— 戻すと一周が永遠に終わらない。"""
+        marks = {"ざっと見る": "2026-09-19T00:00:00+00:00"}
+        before = [{"key": "あ", "count": 130, "visits": marks}]
+        after = [{"key": "あ", "count": 130, "visits": dict(marks)}]
+
+        assert partition.cleared_where_changed(before, after)[0]["visits"] == marks
+
+    def test_a_new_key_starts_clean(self):
+        """割り直しで生まれた区画は、親から写した記録を持ったまま来る。"""
+        before = [{"key": "あ", "count": 130, "visits": {"ざっと見る": "2026-09-19T00:00:00+00:00"}}]
+        after = [{"key": "あ-1", "count": 60, "visits": {"ざっと見る": "2026-09-19T00:00:00+00:00"}}]
+
+        assert partition.cleared_where_changed(before, after)[0]["visits"] == {}
+
+    def test_every_sweep_loses_its_mark_not_just_one(self):
+        """**どの巡回のぶんも外す** —— 中身が入れ替わったのは 1 つの巡回の都合ではない。"""
+        before = [{"key": "あ", "count": 1, "visits": {}}]
+        after = [{"key": "あ", "count": 9, "visits": {"ざっと見る": "x", "整理": "y"}}]
+
+        assert partition.cleared_where_changed(before, after)[0]["visits"] == {}
+
+    def test_the_whole_lap_can_be_forgotten_for_one_sweep(self):
+        """一周をやり直す口。**その巡回のぶんだけ**外す。"""
+        partitions = [
+            {"key": "あ", "count": 1, "visits": {"ざっと見る": "x", "整理": "y"}},
+            {"key": "い", "count": 1, "visits": {"ざっと見る": "z"}},
+        ]
+
+        out = partition.forget_all_visits(partitions, "ざっと見る")
+
+        assert out[0]["visits"] == {"整理": "y"}
+        assert out[1]["visits"] == {}
+
+
 class TestBands:
     """分類 × 数で割る(`by=band`)。
 

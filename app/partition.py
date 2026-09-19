@@ -890,6 +890,35 @@ def forget_visits(partitions: list[dict], keys: list[str], sweep_name: str) -> l
     ]
 
 
+def forget_all_visits(partitions: list[dict], sweep_name: str) -> list[dict]:
+    """その巡回の印を、**台帳ぜんたいから**外す(一周をやり直す)。
+
+    **最後の 1 回だけ戻す口とは別に要る。** 母集団が入れ替わったあとは、
+    どの区画の「見た」も当てにならない —— 1 区画ずつ戻していては追いつかない。
+    """
+    return forget_visits(partitions, [p["key"] for p in partitions], sweep_name)
+
+
+def cleared_where_changed(before: list[dict], after: list[dict]) -> list[dict]:
+    """**中身が動いた区画の印を、どの巡回のぶんも外す**。
+
+    機械で名簿を作り直すと、区画の母集団が入れ替わる —— **入れ替わったのに
+    「見た」が残ると、その区画は一周が終わるまで誰にも見られない**。
+    割られた区画の子は親の記録を写す作り(`_inherited`)なので、なおさら残る:
+    1.7 万件の上で見終えた 1 区画が 68 万件に膨らんで割れても、子の全部が
+    「見た」を引き継ぐ。
+
+    **見るのは件数**(前の台帳に同じ鍵があって、数も同じなら触らない)。
+    中身が丸ごと入れ替わって数だけ同じ、は起こりうるが、機械で引く回は
+    足すだけなので数が動かないなら顔ぶれも動いていない。
+    """
+    was = {p["key"]: int(p.get("count") or 0) for p in before}
+    return [
+        p if was.get(p["key"]) == int(p.get("count") or 0) else {**p, "visits": {}}
+        for p in after
+    ]
+
+
 def progress(partitions: list[dict], sweep_name: str) -> tuple[int, int]:
     """(その巡回が一度でも見た区画, 全区画)。「一周したか」を出すのに使う。"""
     seen = sum(1 for p in partitions if (p.get("visits") or {}).get(sweep_name))
