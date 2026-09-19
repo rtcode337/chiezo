@@ -2030,6 +2030,53 @@ class TestTheFrontDoorReadsTopToBottom:
         # **コードの中の言葉は画面に出さない**
         assert "ingest" not in html
 
+    def test_a_collect_run_says_which_sweep_it_is(self, client, monkeypatch, tmp_path):
+        """取り込みは収集の名前しか運べないので、**どの巡回のぶんかは控えから引く**。
+
+        相手も 1 回に見る量も巡回ごとに違うので、待たされているときに知りたいのは
+        たいてい「ざっと見るなのか整理なのか」のほう。
+        """
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv("CHIEZO_NOTES_DIR", str(tmp_path / "corpus"))
+        from app import collect
+        from app.views import admin
+
+        collect.create("news", prompt="p", interval_minutes=60,
+                       sweeps=[{"name": "ざっと見る"}, {"name": "整理"}])
+        collect.mark_pending("news", "整理")
+
+        html = admin._job_status_html(
+            {"state": "running", "source": "news", "started_at": "2026-09-19T01:00:00+00:00"}
+        )
+
+        assert "巡回: 整理" in html
+        # **日時は日本時間**（実行ログと揃わないと 9 時間ずれたまま突き合わせる）
+        assert "2026-09-19 10:00 JST" in html
+
+    def test_a_finished_run_does_not_claim_a_sweep(self, client, monkeypatch, tmp_path):
+        """終わったあとの控えは前の回のもの。走っていないときに出すと、
+        いつのものか読めない札になる。
+        """
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv("CHIEZO_NOTES_DIR", str(tmp_path / "corpus"))
+        from app import collect
+        from app.views import admin
+
+        collect.create("news", prompt="p", interval_minutes=60, sweeps=[{"name": "整理"}])
+        collect.mark_pending("news", "整理")
+
+        html = admin._job_status_html({"state": "done", "source": "news"})
+
+        assert "巡回:" not in html
+
+    def test_a_source_that_is_not_a_collection_breaks_nothing(self, client):
+        from app.views import admin
+
+        html = admin._job_status_html({"state": "running", "source": "jawiki"})
+
+        assert "ソース: jawiki" in html
+        assert "巡回:" not in html
+
     def test_what_is_running_comes_before_how_much_was_used(self, client, monkeypatch):
         """動いているものが先で、溜まった数は後 —— 見に来るのはたいてい前者。
 

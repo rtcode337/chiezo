@@ -186,6 +186,21 @@ def run_buttons_disabled(job: dict | None) -> str:
 JOB_HEADING = '<h2 id="job-head">取り込み(素材を長期記憶へ焼く)</h2>'
 
 
+def _running_sweep(source: str) -> str:
+    """いま走っている取り込みが、どの巡回のぶんか。収集でなければ空。
+
+    **控えを読むだけ**(`pending_sweep`)。起こす側が起こす前に書いているもので、
+    素材を作る側もここを読む —— 画面だけ別の引き方をすると、食い違ったときに
+    どちらが本当か分からなくなる。
+
+    **読めなくても画面を落とさない。** 巡回の名前は添え物で、本体(取り込みが
+    走っていること)はそれ無しでも出せる。
+    """
+    with suppress(Exception):
+        return collect.get(source).pending_sweep
+    return ""
+
+
 def _job_status_html(job: dict | None, heading: bool = False) -> str:
     """取り込みの塊。`heading` は**玄関にだけ付ける**。
 
@@ -215,8 +230,14 @@ def _job_body_html(job: dict | None) -> str:
     state = job.get("state", "idle")
     css = f"job-status {state}" if state in ("running", "error") else "job-status"
     lines = [f'<div class="{css}" id="job">', f"<p>状態: {esc(state)}"]
-    if job.get("source"):
-        lines.append(f" / ソース: {esc(job['source'])}")
+    if source := str(job.get("source") or ""):
+        lines.append(f" / ソース: {esc(source)}")
+        # **収集なら、どの巡回のぶんかも出す。** 取り込みは収集の名前しか運べない
+        # ので、ここだけ見ても「ざっと見るなのか整理なのか」が読めない ——
+        # 待たされているときに知りたいのは、たいていそちら(相手も 1 回に見る量も
+        # 巡回ごとに違う)。**走っている間だけ**(終わったあとの控えは前の回のもの)
+        if sweep := _running_sweep(source) if state == "running" else "":
+            lines.append(f" / 巡回: {esc(sweep)}")
     # **日時は日本時間で出す。** 取り込みは UTC で名乗ってくるが、読むのは
     # 画面の前の人 —— 実行ログの時刻と揃わないと、9 時間ずれたまま突き合わせることになる
     for label, key in (("開始", "started_at"), ("終了", "finished_at")):
