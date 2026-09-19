@@ -894,7 +894,7 @@ def _verify_tags_json(item) -> str:
     return json.dumps(item.verify_tags, ensure_ascii=False, indent=2) if item.verify_tags else ""
 
 
-def _partition_html(item) -> str:
+def _partition_html(item, src=None) -> str:
     """区画の進み具合。持っていない収集には何も出さない。
 
     **出すのは「どう割れたか」だけ。** どこまで回ったかは巡回ごとに違うので
@@ -927,9 +927,31 @@ def _partition_html(item) -> str:
         if rest else ""
     )
     return (
-        f'<p class="muted">区画: {total:,}</p>'
+        f'<p class="muted">区画: {total:,}{_uncovered_html(item, src)}</p>'
         "<table><thead><tr><th>区画</th><th>母集団</th><th>見終えた巡回</th></tr></thead>"
         f"<tbody>{head}</tbody></table>{more}"
+    )
+
+
+def _uncovered_html(item, src) -> str:
+    """**どの区画にも入っていない数**。合わないときだけ出す。
+
+    区画の母集団を足しても長期記憶の数に届かない、が普通に起きる ——
+    消えたものは数えないし、**座標を持たない 1 件はどの区画にも入らない**
+    (地図で割る収集)。どちらも仕様だが、**画面に出ていないと「区画分けが
+    壊れている」としか読めない**(実際にそう読まれた)。
+    """
+    if src is None:
+        return ""
+    counted = sum(int(p.get("count") or 0) for p in item.partitions)
+    left = src.doc_count - counted
+    if left <= 0:
+        return ""
+    return (
+        f" / 長期記憶 {src.doc_count:,} 件との差 {left:,} 件"
+        '<br><span class="muted">差は「消えたもの」と「区画に入れない 1 件」'
+        "(地図で割る収集なら、座標を持たないもの)。"
+        "区画に入っていないものは、どの巡回にも回ってきません。</span>"
     )
 
 
@@ -1222,7 +1244,7 @@ def _collect_detail_html(item, disabled: str, sources: dict | None = None) -> st
         f'<p class="muted">進み具合(次の実行で {{cursor}} に入る値): '
         f'<code>{esc(item.cursor) or "(まだ無し)"}</code></p>'
         f"{_redo_form(item, disabled)}"
-        f"{_partition_html(item)}"
+        f"{_partition_html(item, (sources or {}).get(item.name))}"
         f"{_removed_html(item, sources or {})}"
         f"<details><summary>編集する</summary>"
         f'<form method="post" action="/admin/collect/{esc(item.name)}/edit" class="collect-form">'

@@ -71,8 +71,12 @@ DEFAULT_TARGET = 200
 MIN_TARGET = 10
 MAX_TARGET = 5_000
 
-# 区画の数の歯止め。台帳は定義のメモ(notes の 1 件)に入るので、際限なく増やせない。
-# 2,000 区画 = 1 日 300 区画見ても 1 週間で一周できない数なので、普通の使い方では当たらない。
+# 区画の数の歯止め。台帳は定義のメモに入るので、際限なく増やせない。
+# **当たったときは区画を減らすのではなく、1 区画を大きくする**(`_fits`)——
+# 減らすと、そのぶんの母集団がどの区画にも入らず、どの巡回にも回ってこない。
+# 本番でこれが起きた: 68 万件を目安 150 で割ろうとして天井に当たり、
+# 2,000 区画(1 区画 200 未満)で打ち切られて、**残る 40 万件ぶんの範囲が
+# 台帳から丸ごと消えた**。
 MAX_PARTITIONS = 2_000
 
 # 端数を前の帯へ入れてよい上限(`target` の何倍まで)。**ちょうどで切らない**ための遊び。
@@ -294,13 +298,38 @@ def _geo(spec: dict, points: list[tuple[float, float]]) -> list[dict]:
     **空の区画も leaf として残る。** 親の矩形をきっかり 2 つに割るので、
     点の無いところも必ずどれかの区画に入る —— そこへ「足すべきものが無いか」を
     調べさせるのが、この層の眼目。
+
+    **母集団が大きすぎるときは、目安のほうを上げる**(`_fits`)。区画の数で
+    打ち切ると、**打ち切った先の範囲がどの区画にも入らなくなる** —— そこは
+    どの巡回にも回ってこないので、入っているものは誰にも見られない。
     """
     box = spec["bbox"] or _extent(points)
     if box is None:
         return []
     out: list[dict] = []
-    _split(tuple(box), points, spec["target"], out, 0)
+    _split(tuple(box), points, _fits(spec["target"], len(points)), out, 0)
     return out
+
+
+def _fits(target: int, count: int) -> int:
+    """区画の数が天井に収まるように、**1 区画の目安を上げる**。
+
+    **入り切らないときに削るのは「細かさ」であって「範囲」ではない。**
+    範囲を削ると、そこに入っているものが台帳から消える —— 消えたぶんは
+    どの巡回にも回ってこないので、**誰にも見られないまま溜まり続ける**。
+    細かさを削れば、1 回に見る量が増えるだけで済む(そちらは読めば分かる)。
+    """
+    # **二分は割り切れない。** できる区画は目安の半分から等倍のあいだに散らばるので、
+    # 「ちょうど収まる目安」では倍近くまで増えうる —— 余裕を見て 2 倍で数える
+    room = MAX_PARTITIONS // 2
+    if count <= target * room:
+        return target
+    raised = math.ceil(count / room)
+    log.info(
+        "partition target raised from %d to %d (%d points would not fit in %d partitions)",
+        target, raised, count, MAX_PARTITIONS,
+    )
+    return raised
 
 
 def _extent(points) -> list[float] | None:
@@ -314,9 +343,11 @@ def _extent(points) -> list[float] | None:
 
 
 def _split(box, points, target: int, out: list[dict], depth: int) -> None:
-    if len(out) >= MAX_PARTITIONS:
-        return
-    if len(points) <= target or depth >= MAX_DEPTH:
+    # **天井に当たっても、その矩形は leaf として残す。** 黙って帰ると、この中に
+    # いる点がどの区画にも入らない —— 台帳から消えた範囲は、どの巡回にも
+    # 回ってこないので、入っているものは誰にも見られないまま溜まり続ける。
+    # 大きい区画が 1 つできるほうが、範囲が欠けるよりましで、しかも画面で読める
+    if len(out) >= MAX_PARTITIONS or len(points) <= target or depth >= MAX_DEPTH:
         out.append({"key": geo_key(box), "count": len(points)})
         return
     lat0, lon0, lat1, lon1 = box
@@ -412,11 +443,12 @@ def _titles(spec: dict, sources: dict, own: dict[str, dict]) -> list[dict]:
     else:
         titles = sorted(own)
     out = []
-    for i in range(0, len(titles), spec["target"]):
-        chunk = titles[i : i + spec["target"]]
+    # **入り切らないときは 1 区画を大きくする**(`_fits`)。件数で打ち切ると、
+    # 後ろの見出しがどの区画にも入らず、どの巡回にも回ってこない
+    step = _fits(spec["target"], len(titles))
+    for i in range(0, len(titles), step):
+        chunk = titles[i : i + step]
         out.append({"key": title_key(chunk[0], chunk[-1]), "count": len(chunk)})
-        if len(out) >= MAX_PARTITIONS:
-            break
     return out
 
 

@@ -582,6 +582,50 @@ class TestTheSecondLap:
         assert partition.oldest_visit(partitions, "じっくり") is None
 
 
+class TestNotLosingGroundToTheCeiling:
+    """区画の数が天井に当たっても、**範囲を欠かさない**。
+
+    打ち切ると、打ち切った先の母集団がどの区画にも入らない —— そこはどの巡回にも
+    回ってこないので、入っているものは誰にも見られないまま溜まり続ける。
+    本番でこれが起きた: 68 万件を目安 150 で割ろうとして 2,000 区画で打ち切られ、
+    1 区画 200 未満 × 2,000 しか台帳に残らなかった(40 万件ぶんの範囲が消えた)。
+    """
+
+    def test_the_target_goes_up_instead_of_the_range_going_away(self):
+        """**削るのは細かさであって、範囲ではない。**"""
+        # **二分は割り切れない**ので、余裕を見て天井の半分で数える
+        room = partition.MAX_PARTITIONS // 2
+        assert partition._fits(10, room * 40) == 40
+        # 収まるなら目安はそのまま
+        assert partition._fits(200, 1_000) == 200
+
+    def test_every_point_lands_in_some_partition(self):
+        import random
+
+        random.seed(7)
+        # 天井(2,000 区画)に目安 10 では収まらない数
+        points = [
+            (35.0 + random.random(), 139.0 + random.random())
+            for _ in range(60_000)
+        ]
+        spec = partition.normalize({"by": "geo", "target": 10})
+
+        out = partition._geo(spec, points)
+
+        # **数えた合計が母集団と一致する**（どこにも入らない点がない）
+        assert sum(p["count"] for p in out) == len(points)
+        assert len(out) <= partition.MAX_PARTITIONS
+
+    def test_the_titles_are_all_covered_too(self):
+        spec = partition.normalize({"by": "title", "target": 10})
+        own = {f"見出し{i:05d}": {"doc_id": i} for i in range(60_000)}
+
+        out = partition._titles(spec, {}, own)
+
+        assert len(out) <= partition.MAX_PARTITIONS
+        assert sum(p["count"] for p in out) == 60_000
+
+
 class TestStartingTheLapOver:
     """母集団が入れ替わったら、「見た」は当てにならない。
 
