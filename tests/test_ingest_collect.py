@@ -123,6 +123,102 @@ class TestStagedMaterial:
         assert [d.title for d in adapter.iter_docs(path)] == ["見出し"]
 
 
+class TestRollingBackToTheEarlierGeneration:
+    """1 つ前の世代へ戻す口(`POST /source/{name}/rollback`)。
+
+    **焼き直しが中身を壊したときの逃げ道。** ブルーグリーンは世代を 2 つ残すのに、
+    画面からは新しいほうしか見えなかった —— 壊れたと分かっても、取り込みを
+    やり直す以外に戻す手が無い(集めたものは、やり直しても同じものが返らない)。
+    """
+
+    @pytest.fixture
+    def trigger(self, tmp_path, monkeypatch):
+        import server
+
+        monkeypatch.setattr(server, "DATA_DIR", tmp_path)
+
+        def make(name, stamps):
+            for stamp in stamps:
+                (tmp_path / f"{name}-{stamp}.db").write_text(stamp)
+            link = tmp_path / f"{name}.db"
+            link.symlink_to(f"{name}-{stamps[-1]}.db")
+            return link
+
+        return server, make
+
+    def test_it_points_at_the_one_before(self, trigger, tmp_path):
+        server, make = trigger
+        link = make("spots", ["20260101", "20260102"])
+
+        result = server.rollback_source("spots")
+
+        assert result["now"] == "spots-20260101.db"
+        assert link.resolve().name == "spots-20260101.db"
+
+    def test_nothing_is_deleted(self, trigger, tmp_path):
+        """**張り替えるだけ。** 消してしまうと、戻したのが間違いだったときに
+        行き来して確かめられない。
+        """
+        server, make = trigger
+        make("spots", ["20260101", "20260102"])
+
+        server.rollback_source("spots")
+
+        assert (tmp_path / "spots-20260101.db").exists()
+        assert (tmp_path / "spots-20260102.db").exists()
+
+    def test_pressing_it_again_comes_back(self, trigger, tmp_path):
+        server, make = trigger
+        link = make("spots", ["20260101", "20260102"])
+
+        server.rollback_source("spots")
+        server.rollback_source("spots")
+
+        assert link.resolve().name == "spots-20260102.db"
+
+    def test_one_generation_has_nowhere_to_go(self, trigger):
+        import fastapi
+
+        server, make = trigger
+        make("spots", ["20260101"])
+
+        with pytest.raises(fastapi.HTTPException) as got:
+            server.rollback_source("spots")
+
+        assert got.value.status_code == 409
+
+    def test_an_unknown_source_is_404(self, trigger):
+        import fastapi
+
+        server, _make = trigger
+        with pytest.raises(fastapi.HTTPException) as got:
+            server.rollback_source("nosuch")
+        assert got.value.status_code == 404
+
+    def test_a_bad_name_is_refused(self, trigger):
+        import fastapi
+
+        server, _make = trigger
+        with pytest.raises(fastapi.HTTPException) as got:
+            server.rollback_source("../etc/passwd")
+        assert got.value.status_code == 400
+
+    def test_it_refuses_while_the_ingest_is_running(self, trigger):
+        """切り替えの途中を壊さない。"""
+        import fastapi
+
+        server, make = trigger
+        make("spots", ["20260101", "20260102"])
+        server._status["state"] = "running"
+        try:
+            with pytest.raises(fastapi.HTTPException) as got:
+                server.rollback_source("spots")
+        finally:
+            server._status["state"] = "idle"
+
+        assert got.value.status_code == 409
+
+
 class TestDeletingASource:
     """焼いたソースを消す口(`DELETE /source/{name}`)。
 

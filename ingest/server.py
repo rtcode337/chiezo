@@ -221,6 +221,65 @@ def delete_source(name: str, expect: str = COLLECT_KIND):
     return {"ok": True, "source": name, "removed": removed}
 
 
+@app.post("/source/{name}/rollback")
+def rollback_source(name: str):
+    """いま配信しているものを、**1 つ前の世代へ戻す**。
+
+    **戻せるのもここだけ**。`chiezo-app` は `corpus/` を読み取り専用でマウントして
+    いるので、あちらからはリンクに触れない(消すのと同じ線)。
+
+    **消さずにリンクを張り替えるだけ。** ブルーグリーンは世代を 2 つ残すので、
+    戻したあとに押し直せば元へ戻る —— 焼き直しが中身を壊したときに、
+    確かめながら行き来できる。
+
+    **走っている最中は断る**(切り替えの途中を壊さないため)。
+    """
+    with _lock:
+        if _status["state"] == "running":
+            raise HTTPException(409, {"error": "ingest is running"})
+
+    if not SOURCE_NAME_RE.match(name):
+        raise HTTPException(400, {"error": f"invalid source name: {name}"})
+
+    link = _find_link(name)
+    if link is None:
+        raise HTTPException(404, {"error": f"unknown source: {name}"})
+
+    live = link.resolve()
+    others = [p for p in _generations(name) if p != live]
+    if not others:
+        raise HTTPException(409, {
+            "error": f"source {name} has no earlier generation",
+            "hint": "残るのは 1 つ前までで、焼き直すたびに入れ替わります",
+        })
+    # **いちばん新しい「いま以外」へ戻す。** 戻したあとに押し直すと、
+    # いま外したほうがまた「いま以外でいちばん新しい」になるので元へ戻る
+    target = max(others, key=lambda p: p.name)
+    _point_link_at(link, target)
+    log.info("rolled back %s: %s -> %s", name, live.name, target.name)
+    return {"ok": True, "source": name, "now": target.name, "was": live.name}
+
+
+def _generations(name: str) -> list[Path]:
+    """その名前の世代ファイル。**リンクそのものは外す**(指す先と二重に数えない)。"""
+    head = f"{name}-"
+    return [
+        p for p in _entries(DATA_DIR)
+        if p.name.startswith(head) and p.name.endswith(".db") and not p.is_symlink()
+    ]
+
+
+def _point_link_at(link: Path, target: Path) -> None:
+    """リンクを張り替える。**別名で作ってから置き換える**(`ingest/main.py` と同じ)——
+    消してから作ると、その一瞬だけソースが消えて見える。
+    """
+    tmp = link.with_name(link.name + ".tmp")
+    if tmp.exists() or tmp.is_symlink():
+        tmp.unlink()
+    tmp.symlink_to(target.name)
+    tmp.replace(link)
+
+
 def _source_kind(link: Path) -> str | None:
     """焼いてある DB の meta から種別を読む。読めなければ None。"""
     import sqlite3

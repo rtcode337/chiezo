@@ -17,6 +17,29 @@ from app import machine_store
 log = logging.getLogger("chiezo.app")
 
 
+def previous_generation(current: Path) -> Path | None:
+    """1 つ前の世代のファイル。**シンボリックリンクの指す先は外す**。
+
+    世代は `<ソース名>-<日付>.db` で、切り替えのときに 1 つ前だけ残る
+    (`ingest/main.py` の `switch_db`)。名前に入っている日付が並び順そのものなので、
+    新しい順に並べて 2 番目を採ればよい。
+    """
+    try:
+        live = current.resolve()
+        peers = sorted(
+            (p for p in live.parent.glob(f"{live.name.split('-')[0]}-*.db") if p != live),
+            reverse=True,
+        )
+    except OSError:
+        return None
+    return peers[0] if peers else None
+
+
+def generation_stamp(path: Path) -> str:
+    """世代ファイルの名前に入っている日付(`<名前>-<日付>.db` の日付)。"""
+    return path.stem.partition("-")[2]
+
+
 @dataclass
 class Source:
     name: str

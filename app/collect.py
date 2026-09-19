@@ -70,7 +70,7 @@ from app import collect_log, db, feeds, jst, machine_store, notes, workers
 from app import extract as extraction
 from app import partition as partitioning
 from app.jst import to_jst
-from app.registry import TAG_MIN_SCHEMA_VERSION
+from app.registry import TAG_MIN_SCHEMA_VERSION, generation_stamp, previous_generation
 
 log = logging.getLogger("chiezo.app")
 
@@ -2445,38 +2445,15 @@ def doc_versions(name: str, sources: dict, title: str) -> dict:
     src = sources.get(name)
     if src is None:
         return {"now": None, "before": None, "kept": {}, "now_stamp": "", "before_stamp": ""}
-    before_path = _previous_generation(src.path)
+    before_path = previous_generation(src.path)
     now = _doc_at(src.path, title)
     return {
         "now": now,
         "before": _doc_at(before_path, title) if before_path else None,
         "kept": before_of(now) if now else {},
         "now_stamp": src.dump_date or "",
-        "before_stamp": _stamp_of(before_path) if before_path else "",
+        "before_stamp": generation_stamp(before_path) if before_path else "",
     }
-
-
-def _previous_generation(current: Path) -> Path | None:
-    """1 つ前の世代のファイル。**シンボリックリンクの指す先は外す**。
-
-    世代は `<ソース名>-<日付>.db` で、切り替えのときに 1 つ前だけ残る
-    (`ingest/main.py`)。名前に入っている日付が並び順そのものなので、
-    新しい順に並べて 2 番目を採ればよい。
-    """
-    with suppress(OSError):
-        live = current.resolve()
-        peers = sorted(
-            (p for p in live.parent.glob(f"{live.name.split('-')[0]}-*.db") if p != live),
-            reverse=True,
-        )
-        return peers[0] if peers else None
-    return None
-
-
-def _stamp_of(path: Path) -> str:
-    """世代ファイルの名前に入っている日付(`<名前>-<日付>.db` の日付)。"""
-    stem = path.stem
-    return stem.partition("-")[2]
 
 
 def _doc_at(path: Path, title: str) -> dict | None:

@@ -16,7 +16,7 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -1816,6 +1816,7 @@ def admin_memory(request: Request):
         f"時間がかかります(構築中も現行 DB での配信は続きます)。よろしいですか?')\">"
         f'<button type="submit"{disabled}>再構築</button>'
         f"</form>"
+        f"{_rollback_cell(s, '/admin/memory#long-term')}"
         f"{_delete_source_cell(s, _collection_using(s.name), disabled)}"
         f"</td>"
         f"</tr>"
@@ -2285,6 +2286,75 @@ def _delete_source_cell(src: Source, used_by: str, disabled: str) -> str:
         f" onsubmit=\"return prompt('{esc(ask)}') === '{esc(src.name)}'\">"
         f'<button type="submit"{disabled}>削除</button></form>'
     )
+
+
+def _rollback_cell(src: Source, back: str) -> str:
+    """1 つ前の世代へ戻す口。**戻せる世代が無ければ、その旨を出す**。
+
+    **押せないボタンを出さない** —— 削除の口と同じ考え方で、押してから断られるより
+    「戻せる相手が無い」が先に読めるほうがよい。
+
+    **名前は打たせない。** 消す操作ではなく張り替えるだけで、押し直せば元へ戻る
+    (世代は 2 つとも残る)—— 取り消せない操作と同じ重さにすると、焼き直しが
+    中身を壊したときに行き来して確かめられない。
+    """
+    before = registry.previous_generation(src.path)
+    if before is None:
+        return '<br><span class="muted">戻せる世代はありません</span>'
+    if not TRIGGER_URL:
+        return '<br><span class="muted">取り込みが設定されていないので戻せません</span>'
+    label = _generation_label(registry.generation_stamp(before))
+    ask = (
+        f"{src.name} を 1 つ前の世代({label})へ戻します。"
+        "いまの世代は消さないので、押し直せば戻ります。"
+    )
+    return (
+        f'<form class="init-form" method="post"'
+        f' action="/admin/source/{esc(quote(src.name))}/rollback"'
+        f" onsubmit=\"return confirm('{esc(ask)}')\">"
+        f'<input type="hidden" name="back" value="{esc(back)}">'
+        f'<button type="submit">1 つ前へ戻す</button></form>'
+        f'<br><span class="muted">1 つ前: {label}</span>'
+    )
+
+
+@router.post("/admin/source/{source}/rollback")
+def admin_source_rollback(source: str, request: Request, back: str = Form("")):
+    """焼いたソースを **1 つ前の世代へ戻す**。**張り替えるのは取り込み側**。
+
+    `chiezo-app` は `corpus/` を読み取り専用でマウントしているので、ここからは
+    リンクに触れない —— 削除と同じ道(`POST /source/{name}/rollback`)を通す。
+
+    **焼き直しが中身を壊したときの逃げ道**。ブルーグリーンは世代を 2 つ残すのに、
+    画面からは新しいほうしか見えなかった —— 壊れたと分かっても、取り込みを
+    やり直す以外に戻す手が無い(集めたものは、やり直しても同じものが返らない)。
+
+    **消さないので押し直せば元へ戻る。** 外したほうも残るので、行き来して
+    どちらが正しいかを確かめられる。
+    """
+    sources: dict[str, Source] = request.app.state.sources
+    if sources.get(source) is None:
+        raise HTTPException(404, {"error": f"そのソースはありません: {source}"})
+    if not TRIGGER_URL:
+        raise HTTPException(
+            503, {"error": "取り込み(chiezo-trigger)が設定されていないので戻せません"}
+        )
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            res = client.post(f"{TRIGGER_URL}/source/{source}/rollback")
+    except httpx.HTTPError as e:
+        raise HTTPException(502, {"error": f"取り込みにつながりません: {e}"}) from None
+    if res.status_code != 200:
+        raise HTTPException(res.status_code if res.status_code < 500 else 502, {
+            "error": f"ソース「{source}」を戻せませんでした",
+            "reason": res.text[:300],
+        })
+    # **戻したらすぐ読み直す。** 5 秒ごとの再走査を待つと、戻したはずの件数が
+    # 前のまま出て、押せていないように見える
+    from app.main import scan_all
+
+    request.app.state.sources = scan_all(request.app.state.data_dir)
+    return RedirectResponse(url=back or "/admin/memory#long-term", status_code=303)
 
 
 @router.post("/admin/source/{source}/delete")
@@ -3004,7 +3074,8 @@ def admin_collect_detail(
 <p>種類: {esc(KIND_LABELS.get(item.kind, item.kind))}
 {'／ ' + str(item.keep_days) + ' 日ぶんを持つ' if item.keep_days else ''}
 <br>長期記憶: {baked}
-/ 状態: {'有効' if item.enabled else '<span class="stale">止まっている</span>'}</p>
+/ 状態: {'有効' if item.enabled else '<span class="stale">止まっている</span>'}
+{_rollback_cell(src, f'/admin/collect/{quote(name)}') if src is not None else ''}</p>
 <table>
 <thead>
 <tr><th>巡回</th><th>頼む相手</th><th>間隔</th>
