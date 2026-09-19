@@ -33,16 +33,16 @@ def disabled_client(built_data_dir, monkeypatch):
 
 class TestDisabled:
     def test_remember_returns_503(self, disabled_client):
-        res = disabled_client.post("/v1/notes", json={"text": "覚えて"})
+        res = disabled_client.post("/v1/chiezo_memory", json={"text": "覚えて"})
         assert res.status_code == 503
         assert res.json()["error"] == "notes are disabled"
         assert "CHIEZO_NOTES_DIR" in res.json()["hint"]
 
     def test_recall_returns_503(self, disabled_client):
-        assert disabled_client.get("/v1/notes/recall").status_code == 503
+        assert disabled_client.get("/v1/chiezo_memory/recall").status_code == 503
 
     def test_update_returns_503(self, disabled_client):
-        assert disabled_client.patch("/v1/notes/1", json={"text": "直す"}).status_code == 503
+        assert disabled_client.patch("/v1/chiezo_memory/1", json={"text": "直す"}).status_code == 503
 
     def test_notes_is_not_registered_as_a_source(self, disabled_client):
         names = [s["name"] for s in disabled_client.get("/v1/sources").json()["sources"]]
@@ -61,7 +61,7 @@ class TestRemember:
 
     def test_remembers_and_recalls(self, client):
         res = client.post(
-            "/v1/notes",
+            "/v1/chiezo_memory",
             json={"text": "devcontainer をやめて WSL2 へ移行する", "tags": "環境,決定"},
         )
         assert res.status_code == 200
@@ -70,30 +70,30 @@ class TestRemember:
         assert created["tags"] == ["環境", "決定"]
         assert created["url"] == f"/search/chiezo_memory/doc/{created['doc_id']}"
 
-        got = client.get("/v1/notes/recall").json()
+        got = client.get("/v1/chiezo_memory/recall").json()
         assert got["total"] == 1
         assert got["notes"][0]["text"] == "devcontainer をやめて WSL2 へ移行する"
 
     def test_title_is_taken_from_the_first_line(self, client):
         created = client.post(
-            "/v1/notes", json={"text": "一行目が見出し\n\n二行目以降は本文"}
+            "/v1/chiezo_memory", json={"text": "一行目が見出し\n\n二行目以降は本文"}
         ).json()
         assert created["title"] == "一行目が見出し"
 
     def test_duplicate_titles_are_disambiguated(self, client):
         """docs.title は UNIQUE。同じ書き出しのメモを何度も取れないと困る。"""
-        first = client.post("/v1/notes", json={"text": "TODO"}).json()
-        second = client.post("/v1/notes", json={"text": "TODO"}).json()
+        first = client.post("/v1/chiezo_memory", json={"text": "TODO"}).json()
+        second = client.post("/v1/chiezo_memory", json={"text": "TODO"}).json()
         assert first["title"] == "TODO"
         assert second["title"] == f"TODO ({second['doc_id']})"
 
     def test_empty_text_is_rejected(self, client):
-        assert client.post("/v1/notes", json={"text": "   "}).status_code == 400
+        assert client.post("/v1/chiezo_memory", json={"text": "   "}).status_code == 400
 
     def test_doc_count_follows_writes(self, client):
         """走査は /data の変化でしか走らないので、書いた側で件数を直している。"""
         for i in range(3):
-            client.post("/v1/notes", json={"text": f"メモ {i}"})
+            client.post("/v1/chiezo_memory", json={"text": f"メモ {i}"})
         listed = {s["name"]: s for s in client.get("/v1/sources").json()["sources"]}
         assert listed["chiezo_memory"]["docs"] == 3
 
@@ -101,44 +101,44 @@ class TestRemember:
 class TestRecall:
     @pytest.fixture()
     def filled(self, client):
-        client.post("/v1/notes", json={"text": "浅草寺に行った話", "tags": "旅行"})
-        client.post("/v1/notes", json={"text": "Chiezo のスキーマを 4 に上げた", "tags": "開発"})
-        client.post("/v1/notes", json={"text": "WSL2 へ移行すると決めた", "tags": "開発,環境"})
+        client.post("/v1/chiezo_memory", json={"text": "浅草寺に行った話", "tags": "旅行"})
+        client.post("/v1/chiezo_memory", json={"text": "Chiezo のスキーマを 4 に上げた", "tags": "開発"})
+        client.post("/v1/chiezo_memory", json={"text": "WSL2 へ移行すると決めた", "tags": "開発,環境"})
         return client
 
     def test_newest_first(self, filled):
-        titles = [n["title"] for n in filled.get("/v1/notes/recall").json()["notes"]]
+        titles = [n["title"] for n in filled.get("/v1/chiezo_memory/recall").json()["notes"]]
         assert titles[0] == "WSL2 へ移行すると決めた"
 
     def test_full_text_search(self, filled):
-        got = filled.get("/v1/notes/recall", params={"q": "スキーマ"}).json()
+        got = filled.get("/v1/chiezo_memory/recall", params={"q": "スキーマ"}).json()
         assert [n["title"] for n in got["notes"]] == ["Chiezo のスキーマを 4 に上げた"]
 
     def test_short_query_falls_back_to_substring(self, filled):
         """trigram は 3 文字未満を引けないので、件数の小さい notes では走査に落とす。"""
-        got = filled.get("/v1/notes/recall", params={"q": "旅"}).json()
+        got = filled.get("/v1/chiezo_memory/recall", params={"q": "旅"}).json()
         assert got["total"] == 0  # 本文に「旅」は無い(タグにはある)
-        got = filled.get("/v1/notes/recall", params={"q": "went"}).json()
+        got = filled.get("/v1/chiezo_memory/recall", params={"q": "went"}).json()
         assert got["total"] == 0
 
     def test_tag_filter(self, filled):
-        got = filled.get("/v1/notes/recall", params={"tag": "開発"}).json()
+        got = filled.get("/v1/chiezo_memory/recall", params={"tag": "開発"}).json()
         assert got["total"] == 2
 
     def test_multiple_tags_are_and(self, filled):
-        got = filled.get("/v1/notes/recall", params={"tag": "開発,環境"}).json()
+        got = filled.get("/v1/chiezo_memory/recall", params={"tag": "開発,環境"}).json()
         assert [n["title"] for n in got["notes"]] == ["WSL2 へ移行すると決めた"]
 
     def test_time_range(self, filled):
-        got = filled.get("/v1/notes/recall", params={"since": "2999-01-01"}).json()
+        got = filled.get("/v1/chiezo_memory/recall", params={"since": "2999-01-01"}).json()
         assert got["total"] == 0
-        got = filled.get("/v1/notes/recall", params={"since": "2000-01-01"}).json()
+        got = filled.get("/v1/chiezo_memory/recall", params={"since": "2000-01-01"}).json()
         assert got["total"] == 3
 
     def test_paging(self, filled):
-        page = filled.get("/v1/notes/recall", params={"limit": 2}).json()
+        page = filled.get("/v1/chiezo_memory/recall", params={"limit": 2}).json()
         assert page["total"] == 3 and len(page["notes"]) == 2
-        rest = filled.get("/v1/notes/recall", params={"limit": 2, "offset": 2}).json()
+        rest = filled.get("/v1/chiezo_memory/recall", params={"limit": 2, "offset": 2}).json()
         assert len(rest["notes"]) == 1
 
     def test_limit_is_clamped_for_direct_callers(self, filled, monkeypatch):
@@ -153,8 +153,8 @@ class TestRecall:
         from app import notes
 
         long_text = "あ" * (notes.RECALL_MAX_CHARS_DEFAULT + 50)
-        client.post("/v1/notes", json={"text": long_text})
-        note = client.get("/v1/notes/recall").json()["notes"][0]
+        client.post("/v1/chiezo_memory", json={"text": long_text})
+        note = client.get("/v1/chiezo_memory/recall").json()["notes"][0]
         assert len(note["text"]) == notes.RECALL_MAX_CHARS_DEFAULT
         assert note["truncated"] is True
 
@@ -163,32 +163,32 @@ class TestRecall:
         from app import notes
 
         long_text = "い" * (notes.RECALL_MAX_CHARS_DEFAULT + 50)
-        client.post("/v1/notes", json={"text": long_text})
-        note = client.get("/v1/notes/recall").json()["notes"][0]
-        full = client.get(f"/v1/notes/doc/{note['doc_id']}").json()
+        client.post("/v1/chiezo_memory", json={"text": long_text})
+        note = client.get("/v1/chiezo_memory/recall").json()["notes"][0]
+        full = client.get(f"/v1/chiezo_memory/doc/{note['doc_id']}").json()
         assert full["body"] == long_text
 
     def test_short_notes_are_not_marked_truncated(self, filled):
         assert all(
-            "truncated" not in n for n in filled.get("/v1/notes/recall").json()["notes"]
+            "truncated" not in n for n in filled.get("/v1/chiezo_memory/recall").json()["notes"]
         )
 
     def test_max_chars_zero_returns_everything(self, client):
         from app import notes
 
         long_text = "う" * (notes.RECALL_MAX_CHARS_DEFAULT + 50)
-        client.post("/v1/notes", json={"text": long_text})
-        note = client.get("/v1/notes/recall", params={"max_chars": 0}).json()["notes"][0]
+        client.post("/v1/chiezo_memory", json={"text": long_text})
+        note = client.get("/v1/chiezo_memory/recall", params={"max_chars": 0}).json()["notes"][0]
         assert note["text"] == long_text and "truncated" not in note
 
     def test_fields_selects_and_orders_the_response(self, filled):
         got = filled.get(
-            "/v1/notes/recall", params={"fields": "title,updated_at"}
+            "/v1/chiezo_memory/recall", params={"fields": "title,updated_at"}
         ).json()
         assert list(got["notes"][0]) == ["title", "updated_at"]
 
     def test_unknown_field_is_rejected(self, filled):
-        res = filled.get("/v1/notes/recall", params={"fields": "title,body"})
+        res = filled.get("/v1/chiezo_memory/recall", params={"fields": "title,body"})
         assert res.status_code == 400
         body = res.json()
         assert "body" in body["error"] and "text" in body["allowed_fields"]
@@ -213,13 +213,13 @@ class TestUpdate:
     @pytest.fixture()
     def created(self, client):
         return client.post(
-            "/v1/notes", json={"text": "浅草寺に行った話", "tags": "旅行,寺"}
+            "/v1/chiezo_memory", json={"text": "浅草寺に行った話", "tags": "旅行,寺"}
         ).json()
 
     def test_replaces_only_what_was_passed(self, client, created):
-        res = client.patch(f"/v1/notes/{created['doc_id']}", json={"text": "泉岳寺に行った話"})
+        res = client.patch(f"/v1/chiezo_memory/{created['doc_id']}", json={"text": "泉岳寺に行った話"})
         assert res.status_code == 200
-        got = client.get("/v1/notes/doc", params={"title": created["title"]}).json()
+        got = client.get("/v1/chiezo_memory/doc", params={"title": created["title"]}).json()
         assert got["body"] == "泉岳寺に行った話"
         # 渡していない項目は今のまま(タイトルもタグも変わらない)
         assert got["tags"] == ["旅行", "寺"]
@@ -228,49 +228,49 @@ class TestUpdate:
         # タイトルは本文と別に持つ(1 行目由来のタイトルは text を変えても残る)ので、
         # 本文だけに入る語で確かめる
         created = client.post(
-            "/v1/notes", json={"text": "参拝の記録\n\n浅草寺に行った", "tags": "旅行"}
+            "/v1/chiezo_memory", json={"text": "参拝の記録\n\n浅草寺に行った", "tags": "旅行"}
         ).json()
-        client.patch(f"/v1/notes/{created['doc_id']}", json={"text": "参拝の記録\n\n泉岳寺に行った"})
+        client.patch(f"/v1/chiezo_memory/{created['doc_id']}", json={"text": "参拝の記録\n\n泉岳寺に行った"})
         # external content の FTS を手で入れ替えないと、古い本文で当たり続ける
-        assert client.get("/v1/notes/recall", params={"q": "泉岳寺"}).json()["total"] == 1
-        assert client.get("/v1/notes/recall", params={"q": "浅草寺"}).json()["total"] == 0
+        assert client.get("/v1/chiezo_memory/recall", params={"q": "泉岳寺"}).json()["total"] == 1
+        assert client.get("/v1/chiezo_memory/recall", params={"q": "浅草寺"}).json()["total"] == 0
 
     def test_tags_are_replaced_wholesale_and_counts_follow(self, client, created):
-        client.patch(f"/v1/notes/{created['doc_id']}", json={"tags": "旅行,御朱印"})
-        assert client.get("/v1/notes/tags").json()["tags"] == [
+        client.patch(f"/v1/chiezo_memory/{created['doc_id']}", json={"tags": "旅行,御朱印"})
+        assert client.get("/v1/chiezo_memory/tags").json()["tags"] == [
             {"tag": "御朱印", "docs": 1},
             {"tag": "旅行", "docs": 1},
         ]
 
     def test_empty_tags_clears_them(self, client, created):
-        client.patch(f"/v1/notes/{created['doc_id']}", json={"tags": ""})
-        assert client.get("/v1/notes/tags").json()["tags"] == []
+        client.patch(f"/v1/chiezo_memory/{created['doc_id']}", json={"tags": ""})
+        assert client.get("/v1/chiezo_memory/tags").json()["tags"] == []
 
     def test_update_bumps_updated_at_to_the_front_of_recall(self, client, created, monkeypatch):
-        client.post("/v1/notes", json={"text": "あとから書いた別のメモ"})
+        client.post("/v1/chiezo_memory", json={"text": "あとから書いた別のメモ"})
         # updated_at は秒精度なので、同じ秒に書くと doc_id の若い側が後ろに沈む。
         # 「書き換えで浮く」を確かめたいテストなので、時刻を進めて書き換える
         from app import notes
 
         monkeypatch.setattr(notes, "_now", lambda: "2999-01-01T00:00:00+00:00")
-        client.patch(f"/v1/notes/{created['doc_id']}", json={"text": "書き換えた本文"})
-        got = client.get("/v1/notes/recall").json()
+        client.patch(f"/v1/chiezo_memory/{created['doc_id']}", json={"text": "書き換えた本文"})
+        got = client.get("/v1/chiezo_memory/recall").json()
         assert got["notes"][0]["text"] == "書き換えた本文"
 
     def test_title_collision_is_disambiguated(self, client, created):
-        other = client.post("/v1/notes", json={"text": "別のメモ"}).json()
-        res = client.patch(f"/v1/notes/{other['doc_id']}", json={"title": created["title"]}).json()
+        other = client.post("/v1/chiezo_memory", json={"text": "別のメモ"}).json()
+        res = client.patch(f"/v1/chiezo_memory/{other['doc_id']}", json={"title": created["title"]}).json()
         assert res["title"] == f"{created['title']} ({other['doc_id']})"
 
     def test_unknown_id_is_404(self, client):
-        assert client.patch("/v1/notes/999", json={"text": "無い"}).status_code == 404
+        assert client.patch("/v1/chiezo_memory/999", json={"text": "無い"}).status_code == 404
 
     def test_nothing_to_update_is_400(self, client, created):
-        assert client.patch(f"/v1/notes/{created['doc_id']}", json={}).status_code == 400
+        assert client.patch(f"/v1/chiezo_memory/{created['doc_id']}", json={}).status_code == 400
 
     def test_empty_text_is_rejected(self, client, created):
         assert client.patch(
-            f"/v1/notes/{created['doc_id']}", json={"text": "   "}
+            f"/v1/chiezo_memory/{created['doc_id']}", json={"text": "   "}
         ).status_code == 400
 
 
@@ -280,59 +280,59 @@ class TestExtra:
     @pytest.fixture()
     def created(self, client):
         return client.post(
-            "/v1/notes",
+            "/v1/chiezo_memory",
             json={"text": "浅草寺に行く", "tags": "todo", "extra": {"sort_order": 30}},
         ).json()
 
     def test_stored_and_returned_when_named(self, client, created):
         assert created["extra"] == {"sort_order": 30}
         got = client.get(
-            "/v1/notes/recall", params={"fields": "doc_id,extra"}
+            "/v1/chiezo_memory/recall", params={"fields": "doc_id,extra"}
         ).json()["notes"][0]
         assert got == {"doc_id": created["doc_id"], "extra": {"sort_order": 30}}
 
     def test_absent_from_the_default_recall(self, client, created):
         """既定に入れると、持たないメモにも "extra": null が並んでコンテキストを食う。"""
-        note = client.get("/v1/notes/recall").json()["notes"][0]
+        note = client.get("/v1/chiezo_memory/recall").json()["notes"][0]
         assert "extra" not in note
 
     def test_notes_without_extra_report_none_when_named(self, client):
-        client.post("/v1/notes", json={"text": "ただのメモ"})
+        client.post("/v1/chiezo_memory", json={"text": "ただのメモ"})
         note = client.get(
-            "/v1/notes/recall", params={"fields": "extra"}
+            "/v1/chiezo_memory/recall", params={"fields": "extra"}
         ).json()["notes"][0]
         assert note == {"extra": None}
 
     def test_extra_is_listed_as_an_allowed_field(self, client, created):
-        res = client.get("/v1/notes/recall", params={"fields": "nope"})
+        res = client.get("/v1/chiezo_memory/recall", params={"fields": "nope"})
         assert res.status_code == 400
         assert "extra" in res.json()["allowed_fields"]
 
     def test_replaced_wholesale(self, client, created):
         res = client.patch(
-            f"/v1/notes/{created['doc_id']}", json={"extra": {"sort_order": 10}}
+            f"/v1/chiezo_memory/{created['doc_id']}", json={"extra": {"sort_order": 10}}
         )
         assert res.json()["extra"] == {"sort_order": 10}
 
     def test_empty_dict_clears_it(self, client, created):
-        res = client.patch(f"/v1/notes/{created['doc_id']}", json={"extra": {}})
+        res = client.patch(f"/v1/chiezo_memory/{created['doc_id']}", json={"extra": {}})
         assert "extra" not in res.json()
         note = client.get(
-            "/v1/notes/recall", params={"fields": "extra"}
+            "/v1/chiezo_memory/recall", params={"fields": "extra"}
         ).json()["notes"][0]
         assert note == {"extra": None}
 
     def test_survives_an_update_that_does_not_mention_it(self, client, created):
-        client.patch(f"/v1/notes/{created['doc_id']}", json={"text": "泉岳寺に行く"})
+        client.patch(f"/v1/chiezo_memory/{created['doc_id']}", json={"text": "泉岳寺に行く"})
         note = client.get(
-            "/v1/notes/recall", params={"fields": "extra"}
+            "/v1/chiezo_memory/recall", params={"fields": "extra"}
         ).json()["notes"][0]
         assert note == {"extra": {"sort_order": 30}}
 
     def test_extra_alone_is_enough_to_update(self, client, created):
         """並び替えは本文もタグも変えないので、extra だけの更新が通らないと使えない。"""
         res = client.patch(
-            f"/v1/notes/{created['doc_id']}", json={"extra": {"sort_order": 1}}
+            f"/v1/chiezo_memory/{created['doc_id']}", json={"extra": {"sort_order": 1}}
         )
         assert res.status_code == 200
 
@@ -367,16 +367,16 @@ class TestTagGuide:
 
 class TestForget:
     def test_deletes_from_docs_and_fts(self, client):
-        created = client.post("/v1/notes", json={"text": "消す予定のメモ", "tags": "一時"}).json()
-        assert client.delete(f"/v1/notes/{created['doc_id']}").status_code == 200
-        assert client.get("/v1/notes/recall").json()["total"] == 0
+        created = client.post("/v1/chiezo_memory", json={"text": "消す予定のメモ", "tags": "一時"}).json()
+        assert client.delete(f"/v1/chiezo_memory/{created['doc_id']}").status_code == 200
+        assert client.get("/v1/chiezo_memory/recall").json()["total"] == 0
         # FTS からも消えていること(external content は手で消さないと残る)
-        assert client.get("/v1/notes/recall", params={"q": "予定"}).json()["total"] == 0
+        assert client.get("/v1/chiezo_memory/recall", params={"q": "予定"}).json()["total"] == 0
         # タグの集計も戻っていること
-        assert client.get("/v1/notes/tags").json()["tags"] == []
+        assert client.get("/v1/chiezo_memory/tags").json()["tags"] == []
 
     def test_unknown_id_is_404(self, client):
-        assert client.delete("/v1/notes/999").status_code == 404
+        assert client.delete("/v1/chiezo_memory/999").status_code == 404
 
 
 class TestWorksWithTheGenericEndpoints:
@@ -384,31 +384,31 @@ class TestWorksWithTheGenericEndpoints:
 
     @pytest.fixture()
     def filled(self, client):
-        client.post("/v1/notes", json={"text": "浅草寺の最寄り駅を調べた", "tags": "調査"})
+        client.post("/v1/chiezo_memory", json={"text": "浅草寺の最寄り駅を調べた", "tags": "調査"})
         return client
 
     def test_search(self, filled):
-        got = filled.get("/v1/notes/search", params={"q": "最寄り駅"}).json()
+        got = filled.get("/v1/chiezo_memory/search", params={"q": "最寄り駅"}).json()
         assert [r["title"] for r in got["results"]] == ["浅草寺の最寄り駅を調べた"]
 
     def test_doc(self, filled):
-        got = filled.get("/v1/notes/doc", params={"title": "浅草寺の最寄り駅を調べた"}).json()
+        got = filled.get("/v1/chiezo_memory/doc", params={"title": "浅草寺の最寄り駅を調べた"}).json()
         assert got["tags"] == ["調査"]
 
     def test_filter_by_tag(self, filled):
-        got = filled.get("/v1/notes/filter", params={"tag": "調査"}).json()
+        got = filled.get("/v1/chiezo_memory/filter", params={"tag": "調査"}).json()
         assert got["total"] == 1
 
     def test_tags_listing(self, filled):
-        assert filled.get("/v1/notes/tags").json()["tags"] == [{"tag": "調査", "docs": 1}]
+        assert filled.get("/v1/chiezo_memory/tags").json()["tags"] == [{"tag": "調査", "docs": 1}]
 
     def test_browse_page(self, filled):
-        assert filled.get("/search/notes/").status_code == 200
-        assert "調べた" in filled.get("/search/notes/", params={"q": "調べた"}).text
+        assert filled.get("/search/chiezo_memory/").status_code == 200
+        assert "調べた" in filled.get("/search/chiezo_memory/", params={"q": "調べた"}).text
 
 
-class TestTheRenameFromNotes:
-    """ソース名を `notes` から `chiezo_memory` へ移す。
+class TestTheSourceIsNamedForThisServer:
+    """ソース名は `chiezo_memory`。
 
     **ソース名は jawiki や収集と同じ平たい名前空間**に並ぶので、`notes` や
     `memory` のような一般の語だと外のアプリが同じ名前で収集を頼んだときにぶつかる。
@@ -416,66 +416,27 @@ class TestTheRenameFromNotes:
     古い控えやログと history 上で混ざるため。
     """
 
-    def test_the_old_file_is_moved_and_renames_itself_inside(self, notes_dir, monkeypatch):
-        """**ファイル名と `meta` の名乗りの両方**を直す ——
-        ソース名は meta から読むので、ファイルだけ改名すると一覧に古い名前で出る。
-        """
+    def test_the_file_and_the_meta_agree(self, notes_dir, monkeypatch):
+        """ソース名は `meta` から読むので、**ファイル名と名乗りが揃っていること**。"""
         from app import notes
 
-        notes_dir.mkdir(parents=True)
-        old = notes_dir / "notes.db"
-        monkeypatch.setattr(notes, "SOURCE_NAME", "notes")
-        monkeypatch.setattr(notes, "SOURCE_KIND", "notes")
-        notes.ensure_db()
-        monkeypatch.undo()
-        monkeypatch.setenv("CHIEZO_NOTES_DIR", str(notes_dir))
-        assert old.is_file()
-
         notes.ensure_db()
 
-        assert not old.exists()
-        new = notes_dir / "chiezo_memory.db"
-        assert new.is_file()
-        conn = sqlite3.connect(new)
+        path = notes_dir / "chiezo_memory.db"
+        assert path.is_file()
+        conn = sqlite3.connect(path)
         assert conn.execute("SELECT source, source_kind FROM meta").fetchone() == (
             "chiezo_memory", "chiezo_memory",
         )
         conn.close()
 
-    def test_the_new_one_is_never_overwritten(self, notes_dir, monkeypatch):
-        """**両方あるのは作り直した後**。古いほうを被せると、その間に書かれたものが消える。"""
-        from app import notes
-
-        notes_dir.mkdir(parents=True)
-        notes.ensure_db()
-        notes.add(text="新しいほうに書いたもの")
-        (notes_dir / "notes.db").write_text("古い置き土産")
-
-        notes.ensure_db()
-
-        assert (notes_dir / "notes.db").read_text() == "古い置き土産"
-        assert notes.count() == 1
-
-    def test_the_old_name_still_reads(self, client):
-        """**各マシンの CLAUDE.md が配り直されるまでの橋渡し。**
-
-        あのブロックには `/v1/notes/...` の curl 例が焼き込まれている ——
-        改名した瞬間に古い名前で叩きに来るものがある。
-        """
-        client.post("/v1/notes", json={"text": "覚えて", "tags": "決定"})
-
-        assert client.get("/v1/notes/recent").json()["docs"]
-        assert client.get("/v1/chiezo_memory/recent").json()["docs"]
-
-    def test_the_old_name_cannot_be_taken_by_a_collection(self, client):
-        """橋渡しのあいだは古い名前でも短期記憶へ通るので、同じ名前の収集を
-        作らせると、どちらが応えるのかが読めなくなる。
-        """
+    def test_a_collection_cannot_take_the_name(self, client):
+        """同じ名前の収集を作らせると、どちらが応えるのかが読めなくなる。"""
         import fastapi
 
         from app import collect
 
-        for name in ("notes", "chiezo_memory", "memory"):
+        for name in ("chiezo_memory", "memory"):
             with pytest.raises(fastapi.HTTPException):
                 collect.create(name, prompt="p", interval_minutes=60)
 
@@ -499,9 +460,9 @@ class TestReaderIsNotImmutable:
 
     def test_writes_are_visible_to_readers_without_restart(self, client):
         """書いた直後に、読み取り側の接続からそのまま見えること。"""
-        client.get("/v1/notes/recall")  # 先に読み取り接続を張らせる
-        client.post("/v1/notes", json={"text": "あとから書いたメモ"})
-        got = client.get("/v1/notes/recall").json()
+        client.get("/v1/chiezo_memory/recall")  # 先に読み取り接続を張らせる
+        client.post("/v1/chiezo_memory", json={"text": "あとから書いたメモ"})
+        got = client.get("/v1/chiezo_memory/recall").json()
         assert [n["title"] for n in got["notes"]] == ["あとから書いたメモ"]
 
 
@@ -697,7 +658,7 @@ class TestRecent:
         notes.add(text="古いほう", tags="決定")
         notes.add(text="新しいほう", tags="決定")
 
-        docs = client.get("/v1/notes/recent").json()["docs"]
+        docs = client.get("/v1/chiezo_memory/recent").json()["docs"]
         assert [d["title"] for d in docs][:2] == ["新しいほう", "古いほう"]
 
     def test_since_does_not_drop_what_shares_the_second(self, client):
@@ -710,10 +671,10 @@ class TestRecent:
         from app import notes
 
         notes.add(text="1件目")
-        first = client.get("/v1/notes/recent").json()["docs"][0]
+        first = client.get("/v1/chiezo_memory/recent").json()["docs"][0]
 
         notes.add(text="2件目")
-        docs = client.get("/v1/notes/recent", params={"since": first["updated_at"]}).json()["docs"]
+        docs = client.get("/v1/chiezo_memory/recent", params={"since": first["updated_at"]}).json()["docs"]
         titles = [d["title"] for d in docs]
 
         assert "2件目" in titles
@@ -725,7 +686,7 @@ class TestRecent:
         from app import notes
 
         notes.add(text="見出し\n本文はそれなりに長い")
-        doc = client.get("/v1/notes/recent").json()["docs"][0]
+        doc = client.get("/v1/chiezo_memory/recent").json()["docs"][0]
         assert "opening" in doc
         assert "body" not in doc
 
@@ -760,16 +721,16 @@ class TestHidingWhatWasRemoved:
     def two_notes(self, client):
         from app import notes
 
-        client.post("/v1/notes", json={"title": "生きている話", "text": "こちらは残る"})
+        client.post("/v1/chiezo_memory", json={"title": "生きている話", "text": "こちらは残る"})
         client.post(
-            "/v1/notes",
+            "/v1/chiezo_memory",
             json={"title": "消えた話", "text": "こちらは消えた", "tags": notes.REMOVED_TAG},
         )
         return client
 
     def test_search_leaves_it_out(self, two_notes):
         titles = [r["title"] for r in two_notes.get(
-            "/v1/notes/search", params={"q": "こちら"}
+            "/v1/chiezo_memory/search", params={"q": "こちら"}
         ).json()["results"]]
 
         assert titles == ["生きている話"]
@@ -777,19 +738,19 @@ class TestHidingWhatWasRemoved:
     def test_search_can_ask_for_it(self, two_notes):
         """**逆に、消したものも含めて探せる。**"""
         titles = [r["title"] for r in two_notes.get(
-            "/v1/notes/search", params={"q": "こちら", "include_removed": "true"}
+            "/v1/chiezo_memory/search", params={"q": "こちら", "include_removed": "true"}
         ).json()["results"]]
 
         assert sorted(titles) == ["消えた話", "生きている話"]
 
     def test_the_document_itself_is_not_handed_out(self, two_notes):
-        assert two_notes.get("/v1/notes/doc", params={"title": "消えた話"}).status_code == 404
+        assert two_notes.get("/v1/chiezo_memory/doc", params={"title": "消えた話"}).status_code == 404
         assert two_notes.get(
-            "/v1/notes/doc", params={"title": "消えた話", "include_removed": "true"}
+            "/v1/chiezo_memory/doc", params={"title": "消えた話", "include_removed": "true"}
         ).status_code == 200
 
     def test_titles_leave_it_out(self, two_notes):
-        got = two_notes.get("/v1/notes/titles", params={"prefix": "消えた"}).json()["titles"]
+        got = two_notes.get("/v1/chiezo_memory/titles", params={"prefix": "消えた"}).json()["titles"]
 
         assert got == []
 
@@ -797,7 +758,7 @@ class TestHidingWhatWasRemoved:
         from app import notes
 
         body = two_notes.get(
-            "/v1/notes/filter", params={"tag": notes.REMOVED_TAG}
+            "/v1/chiezo_memory/filter", params={"tag": notes.REMOVED_TAG}
         ).json()
 
         assert body["total"] == 0
@@ -806,21 +767,21 @@ class TestHidingWhatWasRemoved:
         from app import notes
 
         body = two_notes.get(
-            "/v1/notes/filter",
+            "/v1/chiezo_memory/filter",
             params={"tag": notes.REMOVED_TAG, "include_removed": "true"},
         ).json()
 
         assert [r["title"] for r in body["results"]] == ["消えた話"]
 
     def test_recent_leaves_it_out(self, two_notes):
-        titles = [r["title"] for r in two_notes.get("/v1/notes/recent").json()["docs"]]
+        titles = [r["title"] for r in two_notes.get("/v1/chiezo_memory/recent").json()["docs"]]
 
         assert titles == ["生きている話"]
 
     def test_recent_can_ask_for_it(self, two_notes):
         titles = [
             r["title"] for r in two_notes.get(
-                "/v1/notes/recent", params={"include_removed": "true"}
+                "/v1/chiezo_memory/recent", params={"include_removed": "true"}
             ).json()["docs"]
         ]
 
@@ -839,9 +800,9 @@ class TestHidingWhatNoAiHasSeen:
     def two_notes(self, client):
         from app import notes
 
-        client.post("/v1/notes", json={"title": "見た話", "text": "こちらは出る"})
+        client.post("/v1/chiezo_memory", json={"title": "見た話", "text": "こちらは出る"})
         client.post(
-            "/v1/notes",
+            "/v1/chiezo_memory",
             json={"title": "まだの話", "text": "こちらは出ない",
                   "tags": notes.UNREVIEWED_TAG},
         )
@@ -849,7 +810,7 @@ class TestHidingWhatNoAiHasSeen:
 
     def test_search_leaves_it_out(self, two_notes):
         titles = [r["title"] for r in two_notes.get(
-            "/v1/notes/search", params={"q": "こちら"}
+            "/v1/chiezo_memory/search", params={"q": "こちら"}
         ).json()["results"]]
 
         assert titles == ["見た話"]
@@ -857,24 +818,24 @@ class TestHidingWhatNoAiHasSeen:
     def test_the_same_switch_brings_it_back(self, two_notes):
         """引数を増やしていないので、同じ 1 つで両方が出る。"""
         titles = [r["title"] for r in two_notes.get(
-            "/v1/notes/search", params={"q": "こちら", "include_removed": "true"}
+            "/v1/chiezo_memory/search", params={"q": "こちら", "include_removed": "true"}
         ).json()["results"]]
 
         assert sorted(titles) == ["まだの話", "見た話"]
 
     def test_the_document_itself_is_not_handed_out(self, two_notes):
-        assert two_notes.get("/v1/notes/doc", params={"title": "まだの話"}).status_code == 404
+        assert two_notes.get("/v1/chiezo_memory/doc", params={"title": "まだの話"}).status_code == 404
 
     def test_a_removed_one_is_still_hidden_too(self, two_notes):
         """片方を足したせいで、もう片方が漏れないこと。"""
         from app import notes
 
         two_notes.post(
-            "/v1/notes",
+            "/v1/chiezo_memory",
             json={"title": "消えた話", "text": "こちらも出ない", "tags": notes.REMOVED_TAG},
         )
         titles = [r["title"] for r in two_notes.get(
-            "/v1/notes/search", params={"q": "こちら"}
+            "/v1/chiezo_memory/search", params={"q": "こちら"}
         ).json()["results"]]
 
         assert titles == ["見た話"]

@@ -144,7 +144,7 @@ class TestDefinitions:
         import fastapi
 
         with pytest.raises(fastapi.HTTPException):
-            collect.create("notes", prompt="p", interval_minutes=60)
+            collect.create("chiezo_memory", prompt="p", interval_minutes=60)
 
     def test_a_new_collection_starts_stopped(self, sample):
         """**作るのは「依頼」まで**。動かすかは Chiezo 側が決める。
@@ -4688,13 +4688,13 @@ class TestSeeingTheMachineStore:
         """**表を分けない。** 置き場が別なのはファイルの話で、人が消せないのは
         保存先が違うからであって、同じ表に並んでいるかどうかとは関係が無い。
         """
-        from app import machine_store
+        from app import machine_store, notes
         from app.views import admin
 
         html = admin._short_term_section_html({})
 
         assert machine_store.SOURCE_NAME in html
-        assert "notes" in html
+        assert notes.SOURCE_NAME in html
         assert "<h2" not in html, "節を分けない(見出しは呼ぶ側が 1 つだけ持つ)"
 
     def test_each_row_says_what_it_holds(self, sample):
@@ -4707,14 +4707,14 @@ class TestSeeingTheMachineStore:
         assert "収集の定義" in html
 
     def test_without_a_place_only_the_notes_row_is_there(self, sample, monkeypatch):
-        from app import machine_store
+        from app import machine_store, notes
         from app.views import admin
 
         monkeypatch.delenv("CHIEZO_STATE_DIR", raising=False)
         html = admin._short_term_section_html({})
 
         assert machine_store.SOURCE_NAME not in html
-        assert "notes" in html
+        assert notes.SOURCE_NAME in html
 
 
 class TestOpeningAPartition:

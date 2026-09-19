@@ -1245,9 +1245,7 @@ def create(
     existing = load()
     if any(c.name == name for c in existing):
         raise HTTPException(409, {"error": f"収集「{name}」はすでにあります"})
-    # **前の名前も塞ぐ**(`notes`)。橋渡しのあいだは古い名前でも短期記憶へ通るので、
-    # 同じ名前の収集を作らせると、どちらが応えるのかが読めなくなる
-    if name in {notes.SOURCE_NAME, notes.OLD_SOURCE_NAME, "memory"}:
+    if name in {notes.SOURCE_NAME, "memory"}:
         raise HTTPException(400, {"error": f"「{name}」は既存のソース名なので使えません"})
     now = _iso(_now())
     item = Collection(

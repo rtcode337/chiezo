@@ -429,7 +429,7 @@ class TestNotesTools:
             ).json()
             assert body["steps"][0]["ok"] is True
             # REST から見ても入っている
-            stored = client.get("/v1/notes/recall").json()["notes"]
+            stored = client.get("/v1/chiezo_memory/recall").json()["notes"]
             assert any("8B 級" in n["text"] for n in stored)
 
         read = ToolLLM([("recall", {"q": "agent"})], "8B 級が前提、でした")

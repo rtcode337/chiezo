@@ -1587,7 +1587,7 @@ def _short_term_section_html(sources: dict[str, Source]) -> str:
     )
     empty = (
         '<p class="muted">まだ何も覚えていません。MCP の <code>remember</code> か'
-        " <code>POST /v1/notes</code> で書き込めます。</p>"
+        " <code>POST /v1/chiezo_memory</code> で書き込めます。</p>"
         if not rows[0][2] else ""
     )
     tags = notes.tag_summary()

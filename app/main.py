@@ -1990,16 +1990,13 @@ def random_docs(
 # ---- notes(短期記憶。唯一書き込めるソース) ----------------------------------
 #
 # 実体は app/notes.py。ここは HTTP の口だけを持つ。`CHIEZO_NOTES_DIR` 未設定なら 503。
-# 読み出しは専用の recall のほかに、コアスキーマなので /v1/notes/search・doc・filter・
+# 読み出しは専用の recall のほかに、コアスキーマなので /v1/chiezo_memory/search・doc・filter・
 # tags・/notes/ のブラウズ画面もそのまま効く(ソース種別を意識しない設計のおかげ)。
 
 
-# **書き込む口も新しい名前で出す。** 読む口(`/v1/{source}/…`)はソース名で
-# 決まるので、ここだけ古い名前に残すと 1 つの置き場が 2 つの名前で並ぶ。
-# **古い名前も当面は受ける** —— 各マシンの CLAUDE.md を配り直すまでの橋渡し
-# (`registry.RENAMED_SOURCES` と同じ理由。配り終わったら消してよい)。
+# **書き込む口もソース名で出す。** 読む口(`/v1/{source}/…`)はソース名で決まるので、
+# ここだけ別の名前にすると、1 つの置き場が 2 つの名前で並ぶ。
 @app.post("/v1/chiezo_memory")
-@app.post("/v1/notes")
 def remember(
     request: Request,
     text: str = Body(..., embed=True, min_length=1, description="覚えておく内容"),
@@ -2018,7 +2015,6 @@ def remember(
 
 
 @app.get("/v1/chiezo_memory/recall")
-@app.get("/v1/notes/recall")
 def recall_notes(
     request: Request,
     q: str | None = Query(None, description="全文検索。省略すると時系列だけで引く"),
@@ -2047,7 +2043,6 @@ def recall_notes(
 
 
 @app.patch("/v1/chiezo_memory/{doc_id}")
-@app.patch("/v1/notes/{doc_id}")
 def update_note(
     request: Request,
     doc_id: int,
@@ -2067,7 +2062,6 @@ def update_note(
 
 
 @app.delete("/v1/chiezo_memory/{doc_id}")
-@app.delete("/v1/notes/{doc_id}")
 def forget(request: Request, doc_id: int):
     if not notes.delete(doc_id):
         raise HTTPException(404, {"error": f"note not found: doc_id={doc_id}"})

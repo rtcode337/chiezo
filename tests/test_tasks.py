@@ -56,13 +56,13 @@ class TestTasks:
 
         専用のテーブルを持たない作りの要。メモに task を付ければタスクになる。
         """
-        client.post("/v1/notes", json={"text": "前から書いてあったメモ", "tags": "task,環境"})
+        client.post("/v1/chiezo_memory", json={"text": "前から書いてあったメモ", "tags": "task,環境"})
         listed = tasks.list_tasks()
         assert [t.title for t in listed] == ["前から書いてあったメモ"]
         assert listed[0].status == tasks.STATUS_TODO
 
     def test_created_at_falls_back_to_updated_at_for_old_memos(self, client):
-        created = client.post("/v1/notes", json={"text": "古いメモ", "tags": "task"}).json()
+        created = client.post("/v1/chiezo_memory", json={"text": "古いメモ", "tags": "task"}).json()
         task = tasks.require_task(created["doc_id"])
         assert task.created_at == created["updated_at"]
 
@@ -74,7 +74,7 @@ class TestTasks:
     def test_free_tags_survive_an_update(self, client):
         """メモとして付けたタグを、タスクの操作で落とさないこと。"""
         created = client.post(
-            "/v1/notes", json={"text": "調べ物", "tags": "task,トラブルシュート"}
+            "/v1/chiezo_memory", json={"text": "調べ物", "tags": "task,トラブルシュート"}
         ).json()
         updated = tasks.update_task(created["doc_id"], status=tasks.STATUS_DONE)
         assert "トラブルシュート" in updated.tags and tasks.TAG_DONE in updated.tags
@@ -104,7 +104,7 @@ class TestTasks:
         assert e.value.status_code == 404
 
     def test_a_plain_memo_is_not_a_task(self, client):
-        created = client.post("/v1/notes", json={"text": "ただのメモ"}).json()
+        created = client.post("/v1/chiezo_memory", json={"text": "ただのメモ"}).json()
         with pytest.raises(Exception) as e:
             tasks.require_task(created["doc_id"])
         assert e.value.status_code == 404
@@ -112,7 +112,7 @@ class TestTasks:
     def test_delete_removes_it_from_notes_too(self, client):
         task = tasks.create_task("消す")
         tasks.delete_task(task.doc_id)
-        assert client.get("/v1/notes/recall").json()["total"] == 0
+        assert client.get("/v1/chiezo_memory/recall").json()["total"] == 0
 
 
 class TestTaskOrdering:
@@ -189,7 +189,7 @@ class TestProjects:
     def test_a_task_links_once_the_project_appears(self, client):
         """先に書いたメモのタグが、同名のプロジェクトを作った瞬間に紐づくこと。"""
         created = client.post(
-            "/v1/notes", json={"text": "前から書いてあった", "tags": "task,pihole-monitor"}
+            "/v1/chiezo_memory", json={"text": "前から書いてあった", "tags": "task,pihole-monitor"}
         ).json()
         assert tasks.require_task(created["doc_id"]).project is None
         tasks.create_project("pihole-monitor")
@@ -236,7 +236,7 @@ class TestProjects:
         assert tasks.list_tasks() == []
         # **短期記憶には何も残らない** —— 定義は設定の置き場にあり、
         # そこの 1 件は中身が空になるだけで残る
-        assert client.get("/v1/notes/recall").json()["total"] == 0
+        assert client.get("/v1/chiezo_memory/recall").json()["total"] == 0
 
     def test_reorder_requires_every_id(self, client):
         a = tasks.create_project("a")
@@ -255,7 +255,7 @@ class TestTagCountsStayConsistent:
     def test_counts_follow_task_edits(self, client):
         task = tasks.create_task("あ")
         tasks.update_task(task.doc_id, status=tasks.STATUS_DONE)
-        counts = {t["tag"]: t["docs"] for t in client.get("/v1/notes/tags").json()["tags"]}
+        counts = {t["tag"]: t["docs"] for t in client.get("/v1/chiezo_memory/tags").json()["tags"]}
         assert counts == {tasks.TAG_TASK: 1, tasks.TAG_DONE: 1}
 
 
@@ -429,7 +429,7 @@ class TestTodoMigration:
         return targets
 
     def test_old_todo_memos_become_tasks(self, client, notes_dir):
-        client.post("/v1/notes", json={"text": "前からのタスク", "tags": "todo,環境"})
+        client.post("/v1/chiezo_memory", json={"text": "前からのタスク", "tags": "todo,環境"})
         assert tasks.list_tasks() == []
 
         assert len(self._run(notes_dir)) == 1
@@ -439,16 +439,16 @@ class TestTodoMigration:
         assert "環境" in listed[0].tags and "todo" not in listed[0].tags
 
     def test_it_can_be_run_twice(self, client, notes_dir):
-        client.post("/v1/notes", json={"text": "前からのタスク", "tags": "todo"})
+        client.post("/v1/chiezo_memory", json={"text": "前からのタスク", "tags": "todo"})
         self._run(notes_dir)
         assert self._run(notes_dir) == []
         assert len(tasks.list_tasks()) == 1
 
     def test_tag_counts_stay_in_step(self, client, notes_dir):
         """3 つの表がずれると絞り込みが静かに壊れる。"""
-        client.post("/v1/notes", json={"text": "前からのタスク", "tags": "todo"})
+        client.post("/v1/chiezo_memory", json={"text": "前からのタスク", "tags": "todo"})
         self._run(notes_dir)
-        counts = {t["tag"]: t["docs"] for t in client.get("/v1/notes/tags").json()["tags"]}
+        counts = {t["tag"]: t["docs"] for t in client.get("/v1/chiezo_memory/tags").json()["tags"]}
         assert counts.get("task") == 1
         assert "todo" not in counts
 
@@ -469,7 +469,7 @@ class TestProjectsAreOneRecord:
 
         assert machine_store.get(tasks.PROJECTS_KIND, tasks.PROJECTS_KEY) is not None
         # **短期記憶には置かない** —— 人が消せる場所に置くと、全タスクの所属が消える
-        assert client.get("/v1/notes/recall", params={"tag": "project"}).json()["total"] == 0
+        assert client.get("/v1/chiezo_memory/recall", params={"tag": "project"}).json()["total"] == 0
 
     def test_the_body_is_readable_json(self, client):
         """本文に置くのは、目に見えないと直せないから(画面から中身を開ける)。"""

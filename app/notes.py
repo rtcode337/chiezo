@@ -54,16 +54,13 @@ log = logging.getLogger("chiezo.app")
 SOURCE_NAME = "chiezo_memory"
 SOURCE_KIND = "chiezo_memory"
 
-# 改名する前の名前。**置き場を作るときに 1 度だけ見る**(`_renamed_from_old`)。
-OLD_SOURCE_NAME = "notes"
-
 RECALL_LIMIT_DEFAULT = 20
 RECALL_LIMIT_MAX = 100
 
 # recall は当たったメモの本文をまるごと返すので、20 件返れば 20 件分の全文が
 # 会話のコンテキストに載る。他ソースが `search`(冒頭だけ)→ `doc`(全文)の二段に
 # なっているのに合わせ、既定では先頭 400 文字に切って `truncated` を立てる
-# (全文は `url` / `doc_id` から `/v1/notes/doc/{doc_id}` で取り直せる)。
+# (全文は `url` / `doc_id` から `/v1/chiezo_memory/doc/{doc_id}` で取り直せる)。
 # 0 を渡すと切らない —— `doc` / `filter` の `max_chars` と同じ流儀。
 RECALL_MAX_CHARS_DEFAULT = 400
 
@@ -280,46 +277,12 @@ def _connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _renamed_from_old() -> None:
-    """前の名前(`notes.db`)で置かれていたら、いまの名前へ移す。
-
-    **入れ替えた瞬間に効かせる**ので、手で動かす手順は要らない。**新しいほうが
-    既にあれば触らない** —— 両方あるのは作り直した後なので、古いほうを被せると
-    その間に書かれたものが消える。
-
-    **中の名乗りも直す。** ソース名は `meta` から読むので、ファイルだけ改名しても
-    一覧には古い名前で出る。
-
-    **巻き戻すと見えなくなる。** 古いイメージは `notes.db` を探すので、短期記憶が
-    空に見える(ファイルは残っているので消えてはいない)。戻すなら、ファイル名も
-    手で戻すことになる。
-    """
-    d = notes_dir()
-    if d is None:
-        return
-    old, new = d / f"{OLD_SOURCE_NAME}.db", d / f"{SOURCE_NAME}.db"
-    if not old.is_file() or new.exists():
-        return
-    old.rename(new)
-    log.info("renamed the memory store: %s -> %s", old.name, new.name)
-    conn = _connect(new)
-    try:
-        with conn:
-            conn.execute(
-                "UPDATE meta SET source = ?, source_kind = ? WHERE source = ?",
-                (SOURCE_NAME, SOURCE_KIND, OLD_SOURCE_NAME),
-            )
-    finally:
-        conn.close()
-
-
 def ensure_db() -> Path | None:
     """短期記憶の DB が無ければ作る。無効なら None。
 
     ingest を回さずに使い始められるようにするため、起動時にここで作る
     (メモを取るのに数時間の取り込みを待たせる理由がない)。
     """
-    _renamed_from_old()
     path = notes_path()
     if path is None:
         return None
@@ -694,7 +657,7 @@ def recall(
 
     本文は既定で `RECALL_MAX_CHARS_DEFAULT` 文字に切り、切ったものには
     `truncated: true` を立てる(黙って切ると「これで全部」と読まれる)。
-    全文は `/v1/notes/doc/{doc_id}` で取り直す。`max_chars=0` で切らない。
+    全文は `/v1/chiezo_memory/doc/{doc_id}` で取り直す。`max_chars=0` で切らない。
 
     上限はここで担保する。REST の `Query(ge=1, le=…)` は HTTP の口にしか効かず、
     MCP(`app/mcp_server.py`)は app の関数を Python から直接呼ぶので通らない。

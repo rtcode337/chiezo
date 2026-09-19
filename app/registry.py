@@ -149,12 +149,6 @@ def data_dir_fingerprint(data_dir: Path) -> dict[str, tuple[int, int, int, int]]
 # 両方から同じものとして引くため。
 SYSTEM_SOURCES = (notes.SOURCE_NAME, machine_store.SOURCE_NAME)
 
-# 改名する前の名前で来たものを、いまの名前へ通す(`app/deps.py` の `get_source`)。
-# **各マシンの CLAUDE.md が配り直されるまでの橋渡し** —— あのブロックには
-# `/v1/notes/...` の curl 例が焼き込まれていて、生成し直すまで古い名前で叩きに来る。
-# 配り終わったら消してよい(設定の置き場の改名でも、移行は後で外した)。
-RENAMED_SOURCES = {notes.OLD_SOURCE_NAME: notes.SOURCE_NAME}
-
 
 def blocked_from_deleting(name: str, used_by: str = "") -> str:
     """そのソースを消せない理由(消せるなら空)。**判断は 1 か所に持つ**。
