@@ -180,7 +180,22 @@ def run_buttons_disabled(job: dict | None) -> str:
     return ""
 
 
-def _job_status_html(job: dict | None) -> str:
+# 取り込みの塊に添える見出し(玄関だけ)。**「取り込み」とだけ書かない** ——
+# 何をどこへ書く処理なのかが読めないと、初期化・再構築・削除のどれと繋がる表示なのかが
+# 分からない。**「ingest」とも書かない** —— コードの中の言葉で、画面の言葉ではない。
+JOB_HEADING = '<h2 id="job-head">取り込み(素材を長期記憶へ焼く)</h2>'
+
+
+def _job_status_html(job: dict | None, heading: bool = False) -> str:
+    """取り込みの塊。`heading` は**玄関にだけ付ける**。
+
+    他の面は上に文脈があるので要らないが(記憶の面・初期化の面)、玄関は
+    いくつもの塊が縦に並ぶだけなので、**何の表示なのかが読めない**。
+    """
+    return (JOB_HEADING if heading else "") + _job_body_html(job)
+
+
+def _job_body_html(job: dict | None) -> str:
     if job is None:
         return (
             '<div class="job-status" id="job">'
@@ -202,10 +217,11 @@ def _job_status_html(job: dict | None) -> str:
     lines = [f'<div class="{css}" id="job">', f"<p>状態: {esc(state)}"]
     if job.get("source"):
         lines.append(f" / ソース: {esc(job['source'])}")
-    if job.get("started_at"):
-        lines.append(f" / 開始: {esc(job['started_at'])}")
-    if job.get("finished_at"):
-        lines.append(f" / 終了: {esc(job['finished_at'])}")
+    # **日時は日本時間で出す。** 取り込みは UTC で名乗ってくるが、読むのは
+    # 画面の前の人 —— 実行ログの時刻と揃わないと、9 時間ずれたまま突き合わせることになる
+    for label, key in (("開始", "started_at"), ("終了", "finished_at")):
+        if when := jst.parse(str(job.get(key) or "")):
+            lines.append(f" / {label}: {esc(jst.format(when))}")
     lines.append("</p>")
     if job.get("error"):
         lines.append(f"<p>エラー: {esc(job['error'])}</p>")
@@ -1776,9 +1792,9 @@ def admin(request: Request):
     body = f"""
 {nav_html("/admin")}
 <p>{_disk_html(request.app.state.data_dir)}</p>
-{_job_status_html(job)}
-{_usage_html(request)}
+{_job_status_html(job, heading=True)}
 {_running_html(running)}
+{_usage_html(request)}
 <div class="admin-cards">
 {cards}
 </div>

@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import threading
+import time
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
@@ -51,8 +52,24 @@ class _TailHandler(logging.Handler):
         _log_tail.append(self.format(record))
 
 
+class _JstFormatter(logging.Formatter):
+    """時刻を**日本時間**で書く。
+
+    **この控えは画面に出る** —— 取り込みの進み具合を読みに来た人が見るものなので、
+    コンテナのタイムゾーンに決めさせない(`TZ` を渡していなければ UTC で書かれ、
+    画面の他の時刻と 9 時間ずれたまま並ぶ)。
+
+    **固定の +09:00 でよい。** 日本時間は夏時間を持たないので、タイムゾーン DB を
+    引かずに済む —— tzdata の入っていないイメージでも壊れない。
+    """
+
+    converter = staticmethod(lambda secs: time.gmtime((secs or 0) + JST_OFFSET_SECONDS))
+
+
+JST_OFFSET_SECONDS = 9 * 3600
+
 _tail_handler = _TailHandler()
-_tail_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+_tail_handler.setFormatter(_JstFormatter("%(asctime)s JST %(levelname)s %(message)s"))
 logging.getLogger("chiezo.ingest").addHandler(_tail_handler)
 logging.getLogger("chiezo.ingest").setLevel(logging.INFO)
 

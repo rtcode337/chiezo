@@ -2016,6 +2016,40 @@ class TestAdminPages:
         assert "いま動いているビルド" in server and "いま動いているビルド" not in memory
 
 
+class TestTheFrontDoorReadsTopToBottom:
+    """玄関は塊が縦に並ぶだけなので、**何の表示なのかを見出しで言う**。
+
+    並びは「取り込み → いま走っている AI → 使用量」。動いているものが先で、
+    溜まった数は後 —— 見に来るのはたいてい「いま何が動いているか」のほう。
+    """
+
+    def test_the_ingest_block_says_what_it_is(self, client):
+        html = client.get("/admin").text
+
+        assert "取り込み(素材を長期記憶へ焼く)" in html
+        # **コードの中の言葉は画面に出さない**
+        assert "ingest" not in html
+
+    def test_what_is_running_comes_before_how_much_was_used(self, client, monkeypatch):
+        """動いているものが先で、溜まった数は後 —— 見に来るのはたいてい前者。
+
+        **使用量の表が出る形にしてから見る** —— 相手が 1 つも有効でないと
+        あの節ごと出ないので、並びを確かめようがない。
+        """
+        from app.views import admin, ai_usage
+
+        monkeypatch.setattr(admin, "_usage_html", lambda request=None: "<h2 id='ai-usage'>使用量</h2>")
+        monkeypatch.setattr(
+            admin, "_running_html", lambda running: "<h2 id='running-now'>いま走っている</h2>",
+        )
+        html = client.get("/admin").text
+
+        usage = html.index("id='ai-usage'")
+        assert html.index('id="job-head"') < usage
+        assert html.index("id='running-now'") < usage
+        assert ai_usage.SECTION_ANCHOR == "ai-usage"
+
+
 class TestNotTakingOrdersFromTheCliItDrives:
     """**Chiezo が動かしている CLI から、AI を使う口への依頼を断る。**
 
