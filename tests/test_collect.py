@@ -499,7 +499,7 @@ class TestSweeps:
         rough = collect.sweeps_of(collect.get("news"))[0]
         # 一周が 7 日で終わらない数でも、天井は崩さない
         assert rough.per_run(100_000) == collect.MAX_PARTITIONS_PER_RUN
-        assert collect.MAX_PARTITIONS_PER_RUN == 6
+        assert collect.MAX_PARTITIONS_PER_RUN == 5
 
     def test_each_sweep_keeps_its_own_progress(self, sample):
         """ざっとが一周した区画を、じっくりはまだ見ていない、が普通に起きる。"""
