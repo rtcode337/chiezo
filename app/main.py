@@ -853,6 +853,9 @@ async def _collect_material(name: str, sources: dict) -> str:
     except Exception as e:
         if hasattr(items := locals().get("items"), "close"):
             items.close()
+        # **落ちた回にも、頼んだ相手を残す。** 既定の名前のままだと、控えを見た人は
+        # 「claude が壊れた答えを返した」と読む —— 実際に返したのは別の相手だった
+        who.update(_who_ran(used) or {})
         reason = f"{type(e).__name__}: {e}"
         log.warning("collect %s failed: %s", name, reason)
         await asyncio.to_thread(

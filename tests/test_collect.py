@@ -1745,6 +1745,37 @@ class TestOrderingTheSweeps:
         assert collect.require_runnable(collect.get("news"), "名簿").name == "名簿"
 
 
+class TestWhenTheAnswerIsNotJson:
+    """**何が返ってきたかを控えに添える。**
+
+    「JSON オブジェクトが見つかりません」だけだと、控えを見た人は AI の履歴まで
+    掘らないと理由が分からない —— 本番でそうなった(相手の agent が背景タスクを
+    抱えたまま「待っています」と答えて終わり、JSON を返さなかった)。
+    """
+
+    def test_the_reason_carries_what_came_back(self):
+        with pytest.raises(ValueError) as got:
+            collect.parse_response(
+                "The background task to retrieve painter information is currently running."
+            )
+
+        assert "background task" in str(got.value)
+
+    def test_a_long_answer_is_cut(self):
+        with pytest.raises(ValueError) as got:
+            collect.parse_response("あ" * 500)
+
+        # **全文は AI の履歴にある**。控えに要るのは一目で分かるぶんだけ
+        assert len(str(got.value)) < 200
+
+    def test_an_empty_answer_says_so(self):
+        """空文字は読めない —— 「何も返さなかった」と書く。"""
+        with pytest.raises(ValueError) as got:
+            collect.parse_response("   ")
+
+        assert "何も返ってきませんでした" in str(got.value)
+
+
 class TestStartingTheLapOver:
     """一周をやり直す(`collect.restart_cycle`)。
 

@@ -720,6 +720,34 @@ class TestWhoActuallyRan:
         assert out["backend"] == "antigravity → codex"
         assert out["model"] == "gemini → gpt-5.5"
 
+    def test_a_failed_run_still_names_who_answered(self, enabled, monkeypatch):
+        """**落ちた回にも頼んだ相手を残す。** 既定の名前のままだと、控えを見た人は
+        「claude が壊れた答えを返した」と読む —— 実際に返したのは別の相手だった。
+        """
+        import fastapi
+
+        from app import collect, main
+
+        monkeypatch.setenv("CHIEZO_NOTES_DIR", str(enabled / "corpus"))
+        workers.save([workers.Worker("精査", (workers.Step("antigravity", "gemini"),))])
+        _quota("antigravity", 10.0)
+
+        async def garbage(_asked, _messages):
+            return "背景の仕事を待っています"
+
+        monkeypatch.setattr(main, "_ask_for_collection", garbage)
+        collect.create("news", prompt="p", interval_minutes=60,
+                       sweeps=[{"name": "ざっと", "worker": "精査"}])
+
+        used: list = []
+        with pytest.raises((ValueError, fastapi.HTTPException)):
+            asyncio.run(main._collect_items(
+                collect.get("news"), {}, {}, [], collect.sweeps_of(collect.get("news"))[0],
+                None, None, None, used,
+            ))
+
+        assert main._who_ran(used)["backend"] == "antigravity"
+
     def test_nothing_ran_leaves_the_record_alone(self):
         """AI を呼ばない回では書き換えない(既定の相手が並ぶのを防ぐ)。"""
         from app import main

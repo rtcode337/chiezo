@@ -276,6 +276,10 @@ MATERIAL_BODY_CHARS = 200
 # 読むのは「何が動いたか」の手がかりであって、全件の一覧ではない
 MAX_TITLE_SAMPLE = 20
 
+# 読めなかった答えを、控えに添える長さ。**全文は AI の履歴にある** ——
+# ここに要るのは「何が返ってきたか」が一目で分かるぶんだけ
+MAX_SAID_CHARS = 120
+
 # タグの確かめ方をいくつまで書けるか。**指定であって分類ではない**ので、少なくてよい
 MAX_VERIFY_TAGS = 8
 # 実在を確かめる問い合わせ 1 回ぶんの見出しの数(SQLite の上限に余裕を持たせる)
@@ -1651,6 +1655,12 @@ def _raw_url(raw: dict) -> str:
     return ""
 
 
+def _said(text: str) -> str:
+    """相手が言ったことの先頭。**空なら「何も返さなかった」と書く**(空文字は読めない)。"""
+    head = " ".join((text or "").split())[:MAX_SAID_CHARS]
+    return head or "(何も返ってきませんでした)"
+
+
 def _incoming_urls(collected) -> set[str]:
     """その回に入ってくるぶんの URL の鍵。
 
@@ -1915,7 +1925,11 @@ def parse_response(content: str) -> tuple[list[dict], str | None, str]:
     start = stripped.find("{")
     end = stripped.rfind("}")
     if start < 0:
-        raise ValueError("JSON オブジェクトが見つかりません")
+        # **何が返ってきたかを添える。** 「見つかりません」だけだと、控えを見た人は
+        # AI の履歴まで掘らないと理由が分からない —— 実際にそうなった(相手の agent が
+        # 背景タスクを抱えたまま「待っています」と答えて終わり、JSON を返さなかった)。
+        # **先頭だけ**にするのは、控えに答えを丸ごと写す場所ではないから
+        raise ValueError(f"JSON オブジェクトが見つかりません: {_said(stripped)}")
     try:
         payload = json.loads(stripped[start : end + 1]) if end > start else None
     except ValueError:
