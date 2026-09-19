@@ -344,34 +344,71 @@ def _run_one_from_a_worker() -> bool:
         defined = workers.load()
     except ValueError:
         return False
-    for worker in defined:
-        batch = workers.queued(worker.name)
-        if not batch:
-            continue
-        # **いま流している塊が先。** 無ければ、起動の時刻が来ていれば拾う
-        if not workers.claim_ready(worker.name):
-            if not _worker_due(worker, now):
-                continue
-            batch = workers.claim(worker.name, worker.per_run, _iso(now))
-            if not batch:
-                continue
-        entry = batch[0]
-        step = workers.pick(worker)
-        if step is None:
-            # **どれも詰まっていたら流さない。** 塊はそのまま残るので、
-            # 窓が明けた周で続きから流れる
-            continue
-        try:
-            start_collection_bake(entry["collection"], entry["sweep"])
-        except HTTPException as e:
-            # 取り込みが混んでいる・巡回が消えた。**塊からは外す** ——
-            # 消えた巡回を抱えたままだと、そのワーカーが二度と進まない
-            if e.status_code == 404:
-                workers.done(worker.name, entry["collection"], entry["sweep"])
+    # **1 周で流すのは 1 本。** 取り込みは同時に 1 ジョブしか受けないので、
+    # 先に流せたワーカーで打ち切る(残りは次の周)
+    return any(_flush_one(worker, now) for worker in defined)
+
+
+def _flush_one(worker, now: datetime, wake: bool = False) -> bool:
+    """そのワーカーから 1 本流す。流したら True。
+
+    `wake` は**時計を待たずに起こす**(画面の「今すぐ起こす」)。枠が明いている
+    うちに回しておきたい、が普通に起きる —— 次の起動まで待つと、待っているあいだに
+    誰かが枠を食う。**起こした時刻は普通に控える**ので、そこから間隔を数え直す。
+    """
+    batch = workers.queued(worker.name)
+    if not batch:
+        return False
+    # **いま流している塊が先。** 無ければ、起動の時刻が来ていれば拾う
+    if not workers.claim_ready(worker.name):
+        if not wake and not _worker_due(worker, now):
             return False
-        workers.done(worker.name, entry["collection"], entry["sweep"])
-        return True
-    return False
+        batch = workers.claim(worker.name, worker.per_run, _iso(now))
+        if not batch:
+            return False
+    entry = batch[0]
+    if workers.pick(worker) is None:
+        # **どれも詰まっていたら流さない。** 塊はそのまま残るので、
+        # 窓が明けた周で続きから流れる
+        return False
+    try:
+        start_collection_bake(entry["collection"], entry["sweep"])
+    except HTTPException as e:
+        # 取り込みが混んでいる・巡回が消えた。**塊からは外す** ——
+        # 消えた巡回を抱えたままだと、そのワーカーが二度と進まない
+        if e.status_code == 404:
+            workers.done(worker.name, entry["collection"], entry["sweep"])
+        return False
+    workers.done(worker.name, entry["collection"], entry["sweep"])
+    return True
+
+
+def wake_worker(name: str) -> dict:
+    """ワーカーを**時計を待たずに起こす**(画面の「今すぐ起こす」)。
+
+    **断る理由は書き分ける。** 押しても何も起きないときに「起きませんでした」
+    だけだと、行列が空なのか枠が詰まっているのかが押した人に読めない ——
+    どちらなのかで次にすることが逆になる(積むのを待つ / 窓が明くのを待つ)。
+    """
+    try:
+        worker = workers.get(name)
+    except ValueError as e:
+        raise HTTPException(409, {"error": str(e)}) from None
+    if worker is None:
+        raise HTTPException(404, {"error": f"ワーカー「{name}」がありません"})
+    if not workers.queued(name):
+        raise HTTPException(409, {
+            "error": f"ワーカー「{name}」の待ち行列は空です",
+            "hint": "巡回の側が自分を積むまで、起こしても流すものがありません",
+        })
+    if workers.pick(worker) is None:
+        raise HTTPException(429, _all_full(name))
+    if not _flush_one(worker, datetime.now(UTC), wake=True):
+        raise HTTPException(409, {
+            "error": f"ワーカー「{name}」から流せませんでした",
+            "hint": "取り込みが走っている最中かもしれません(少し置いてからもう一度)",
+        })
+    return {"ok": True, "worker": name}
 
 
 def _worker_due(worker, now: datetime) -> bool:

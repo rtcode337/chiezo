@@ -496,6 +496,80 @@ class TestRelayingPartWayThrough:
         assert not workers.full_until("antigravity")
 
 
+class TestWakingItByHand:
+    """時計を待たずに 1 本流す(`main.wake_worker` / 画面の「今すぐ起こす」)。
+
+    **枠が明いているうちに回しておきたい、が普通に起きる** —— 次の起動まで待つと、
+    待っているあいだに他の依頼が枠を食う(実測で、外からの 1 回が 5 時間枠を
+    48 ポイント持っていった)。
+    """
+
+    @pytest.fixture
+    def baking(self, enabled, monkeypatch):
+        from app import main
+
+        started: list[tuple] = []
+        monkeypatch.setattr(
+            main, "start_collection_bake",
+            lambda name, sweep=None: started.append((name, sweep)),
+        )
+        return main, started
+
+    def test_it_runs_without_waiting_for_the_clock(self, baking):
+        """**間隔が来ていなくても流す。** それが押した意味。"""
+        main, started = baking
+        workers.save([workers.Worker("精査", (workers.Step("codex"),), interval_minutes=600)])
+        _quota("codex", 10.0)
+        workers.enqueue("精査", "news", "ざっと", "2026-01-01T00:00:00+00:00")
+        workers.claim("精査", 1, "2099-01-01T00:00:00+00:00")
+        workers.done("精査", "news", "ざっと")
+        workers.enqueue("精査", "news", "整理", "2026-01-01T00:00:00+00:00")
+
+        # 時計では起きない（前回起きたのが未来の時刻になっている）
+        assert not main._run_one_from_a_worker()
+
+        main.wake_worker("精査")
+
+        assert started == [("news", "整理")]
+
+    def test_an_empty_queue_says_so(self, baking):
+        """**理由を書き分ける。** 行列が空なのか枠が詰まっているのかで、
+        次にすることが逆になる(積むのを待つ / 窓が明くのを待つ)。
+        """
+        import fastapi
+
+        main, _started = baking
+        workers.save([workers.Worker("精査", (workers.Step("codex"),))])
+        _quota("codex", 10.0)
+
+        with pytest.raises(fastapi.HTTPException) as got:
+            main.wake_worker("精査")
+
+        assert got.value.status_code == 409
+        assert "待ち行列は空" in got.value.detail["error"]
+
+    def test_all_crowded_says_so(self, baking):
+        import fastapi
+
+        main, _started = baking
+        workers.save([workers.Worker("精査", (workers.Step("codex"),))])
+        _quota("codex", 95.0)
+        workers.enqueue("精査", "news", "ざっと", "2026-01-01T00:00:00+00:00")
+
+        with pytest.raises(fastapi.HTTPException) as got:
+            main.wake_worker("精査")
+
+        assert got.value.status_code == 429
+
+    def test_an_unknown_worker_is_404(self, baking):
+        import fastapi
+
+        main, _started = baking
+        with pytest.raises(fastapi.HTTPException) as got:
+            main.wake_worker("いない")
+        assert got.value.status_code == 404
+
+
 class TestWhoActuallyRan:
     """控えに残すのは、決めた相手ではなく**頼んだ相手**。
 

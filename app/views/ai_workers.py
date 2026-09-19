@@ -144,6 +144,7 @@ def _queue_html(worker: workers.Worker) -> str:
 <thead><tr><th>待ち行列(先に積まれた順)</th><th></th></tr></thead>
 <tbody>{rows}</tbody>
 </table>
+{_wake_form(worker, bool(waiting))}
 <p class="muted">
 <strong>次に起きる時刻は、前回「起きた」時刻から数えます</strong>(流し終えた時刻では
 ない)—— 塊を流し切るのに何周かかっても、次の起動は最初の起動から間隔ぶん後になる。<br>
@@ -151,6 +152,26 @@ def _queue_html(worker: workers.Worker) -> str:
 巡回の側がまだ積んでいない(前回の完了から間隔が空いていない)。
 </p>
 """
+
+
+def _wake_form(worker: workers.Worker, waiting: bool) -> str:
+    """時計を待たずに 1 本流す口。**待っているものが無ければ出さない**。
+
+    **枠が明いているうちに回しておきたい、が普通に起きる** —— 次の起動まで待つと、
+    待っているあいだに他の依頼が枠を食う(実測で、外からの 1 回が 5 時間枠を
+    48 ポイント持っていった)。押せば行列の先頭が 1 本流れ、**そこから間隔を
+    数え直す**(起こしたことになるので、次の起動は押した時刻からずれる)。
+    """
+    if not waiting:
+        return ('<p class="muted">待っているものが無いので、起こしても流すものが'
+                "ありません。</p>")
+    return (
+        f'<form class="init-form" method="post" action="/admin/ai/workers/wake">'
+        f'<input type="hidden" name="worker_name" value="{esc(worker.name)}">'
+        f'<button type="submit"'
+        f' title="間隔を待たずに、待ち行列の先頭を 1 本流します">今すぐ起こす</button>'
+        "</form>"
+    )
 
 
 def section_html(selects) -> str:
@@ -194,6 +215,23 @@ def section_html(selects) -> str:
 {forms}
 {add}
 """
+
+
+@router.post("/admin/ai/workers/wake")
+async def wake_worker(request: Request):
+    """ワーカーを**時計を待たずに起こす**(行列の先頭を 1 本流す)。
+
+    枠が明いているうちに回しておきたい、が普通に起きる —— 次の起動まで待つと、
+    待っているあいだに他の依頼が枠を食う。
+
+    **断る理由は書き分ける**(`main.wake_worker`)。行列が空なのか枠が詰まって
+    いるのかで、次にすることが逆になる(積むのを待つ / 窓が明くのを待つ)。
+    """
+    from app.main import wake_worker as wake
+
+    form = await request.form()
+    wake(str(form.get("worker_name") or "").strip())
+    return RedirectResponse(BACK_TO_SECTION, status_code=303)
 
 
 @router.post("/admin/ai/workers")
