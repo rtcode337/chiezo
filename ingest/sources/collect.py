@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import suppress
 from pathlib import Path
 
 from core import CHANGED_BY_INDEX_DDL, RECENCY_INDEX_DDL, SourceAdapter
@@ -35,6 +36,10 @@ DEFAULT_APP_URL = "http://chiezo-app:7010"
 
 # カタログを引くときの上限(秒)。配信側はローカルの SQLite を読むだけなので短くてよい
 CATALOG_TIMEOUT = 10.0
+
+# 焼けなかった素材に付ける尻尾。**glob から外れる名前**にして、次の回が拾わないようにする
+# (`.ndjson` で終わらなくなる)。捨てないのは、中身を見て原因を確かめられるようにするため
+BROKEN_SUFFIX = ".broken"
 
 
 def app_base_url() -> str:
@@ -76,9 +81,35 @@ class CollectAdapter(RemotePluginAdapter):
         return path, date
 
     def _leftover(self, workdir: Path) -> Path | None:
-        """前回の取り込みが焼き切れずに残した素材。新しいものを採る。"""
+        """前回の取り込みが焼き切れずに残した素材。新しいものを採る。
+
+        **一度焼けなかったものは拾わない**(`BROKEN_SUFFIX`)—— 拾うと、
+        同じところで永久に落ち続ける。
+        """
         found = sorted(workdir.glob(f"{self.source}-*.ndjson"))
         return found[-1] if found else None
+
+    def on_broken(self) -> None:
+        """焼けなかった素材を脇へ除ける。**捨てずに改名する**。
+
+        **拾い直す作りの裏返し。** 落ちた回の素材を次の回が読み直すのは、AI の
+        1 回ぶんを無駄にしないため —— だが**素材そのものが焼けないもの**だと、
+        同じところで永久に落ち続ける。直しを入れても、作り直さない限り効かない
+        (本番で、見出しの重複を含む素材を 2 度読み直して 2 度とも落ちた)。
+
+        **消さないのは中身を見るため。** なぜ焼けなかったかは素材にしか書いていない
+        (どの見出しがぶつかったか、など)。次の回は拾わないので、詰まりは解ける。
+        """
+        if not self._staged or not self._staged.exists():
+            return
+        spoiled = self._staged.with_suffix(self._staged.suffix + BROKEN_SUFFIX)
+        with suppress(OSError):
+            self._staged.replace(spoiled)
+            log.warning(
+                "set aside material that could not be baked: %s"
+                " (the next run collects again)", spoiled.name,
+            )
+        self._staged = None
 
     def on_success(self, _final_path: Path) -> None:
         """焼けたので素材を捨てる。

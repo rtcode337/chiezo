@@ -346,8 +346,17 @@ def run(source: str, data_dir: Path) -> Path:
     building_path = data_dir / f"{source}-{dump_date}.db.building"
     n_files = len(dump_path) if isinstance(dump_path, list) else 1
     log.info("building %s from %d dump file(s)", building_path.name, n_files)
-    build_db(adapter, dump_path, dump_date, building_path)
-    validate_db(adapter, building_path)
+    try:
+        build_db(adapter, dump_path, dump_date, building_path)
+        validate_db(adapter, building_path)
+    except Exception:
+        # **焼けなかった素材は脇へ除ける**(`on_broken`)。取っておいた素材を次の回が
+        # 拾い直す作りなので、**素材そのものが焼けないものだと永久に同じところで
+        # 落ち続ける** —— 直しを入れても、作り直さない限り効かない(本番でそうなった)。
+        # 捨てずに改名するのは、中身を見て原因を確かめられるようにするため
+        if on_broken := getattr(adapter, "on_broken", None):
+            on_broken()
+        raise
     final_path = switch_db(data_dir, source, dump_date, building_path)
     # 焼き上がりを見届けてから後片付けをするアダプタ向け(集めたソースは素材を捨てる)。
     # 未対応のアダプタでは単にスキップされる
