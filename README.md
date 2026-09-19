@@ -22,7 +22,7 @@ AI を使うのに要るものを 1 か所で持ち、貸し出す。持つの�
 |---|---|
 | ためる | ソースごとに独立した 1 つの SQLite ファイル(`data/corpus/<source>.db`)にする。取得元は公開ダンプ(Wikipedia / OpenStreetMap / GeoNames / Overture)のほか、公開リポジトリに置けないプライベートな情報も、別リポジトリのアダプタとして差し込める。更新はブルーグリーン(別ファイルに構築 → 切り替え) |
 | 取り出す | 引き口は 2 経路。MCP(`/mcp`、Streamable HTTP)と REST(`search` / `doc` / `filter` / `tags` …)。Claude Code 向けには「どんなときに Chiezo を使うか」を書いた CLAUDE.md ブロックも生成できる |
-| 覚える | `/v1/notes` に書いたものは `notes` ソースとして溜まり、`recall` で引ける。書き手は人でも AI でもよい |
+| 覚える | `/v1/chiezo_memory` に書いたものは `chiezo_memory` ソースとして溜まり、`recall` で引ける。書き手は人でも AI でもよい |
 | 集める / 整理する | まとまったダンプの無いもの(直近のニュース、入れ替わりの速い店、人物の関係)を AI に集めさせ、長期記憶へ積んでいく。**既にある内容を実行のたびに育てることもできる**(分類の語彙を整える・重複をまとめる。触れなかったものは残り、消すのは明示したときだけ)。時計は Chiezo が持つので、間隔は画面から変えられる |
 | 固める | 覚えたことのうち残す価値があると判断したものを、読み取り専用のソース 1 つへ焼く(短期記憶 → 長期記憶)。焼いた先はほかのソースと同じ口で引ける。判定は AI に任せられる |
 
@@ -72,7 +72,7 @@ AI に知識を持たせる方法はほかに 3 つある。モデルの中(学�
 | OpenStreetMap | `osm_<国>` | 国別抽出(Geofabrik 由来の地名辞典 + POI 辞典)。地名・行政区・自然地物に加え、病院・学校・店舗・観光地等の主要 POI と駅・空港・港・IC/SA 等の交通インフラ、およびそれらの座標。Geofabrik にある 195 の国・地域が定義済みで(`osm_japan` / `osm_france` …)、使いたい国だけを取り込む(`/admin` → `osm` → 国選択から) |
 | Overture Maps | `overture_japan` | 店舗・施設の POI。OSM は店舗レベルでは穴が多く、実測で新宿 1km 四方の飲食店は OSM 884 件に対し 4,466 件。ライセンスは CDLA Permissive 2.0 / Apache 2.0 で、OSM のデータは含まない |
 | GeoNames | `geonames` | 全世界地名辞典(約 400MB のダンプで約 1,200 万件)。多言語別名を持つので「パリ」「ニューヨーク」のような日本語表記から引ける。wikidata の Q 番号も拾うので jawiki と突合できる。店舗・営業時間は持たない(そこは osm 系の担当) |
-| AI 自身が書いたメモ | `notes` | 取り込みは要らず、書いた端から引ける(後述) |
+| AI 自身が書いたメモ | `chiezo_memory` | 取り込みは要らず、書いた端から引ける(後述) |
 | AI が集めたもの | 収集ごと | まとまったダンプの無いものを AI に集めさせる(後述) |
 
 ## セットアップ
@@ -142,16 +142,16 @@ scripts/gen_claude_config.sh -u http://<サーバーIP>:7010              # 一�
 
 ## 覚える(notes)
 
-`notes` は Chiezo で唯一書き込めるソース。「これ覚えておいて」と言われたこと、調べた結果、
+`chiezo_memory` は Chiezo で唯一書き込めるソース。「これ覚えておいて」と言われたこと、調べた結果、
 決めたことを溜め、`recall` で新しい順に引く。書き手は人でも AI でもよく、MCP
 クライアントからは `remember` / `recall` / `update` / `forget` の 4 つの道具として見える
 (書き換えは渡した項目だけの差し替え。削除は取り消せない)。
 
 ```bash
-curl -s "$BASE/v1/notes" -H 'Content-Type: application/json' \
+curl -s "$BASE/v1/chiezo_memory" -H 'Content-Type: application/json' \
   -d '{"text":"開発環境を WSL2 へ移行する","tags":"環境,決定"}'
-curl -s "$BASE/v1/notes/recall"                                  # 新しい順に 20 件
-curl -sG "$BASE/v1/notes/recall" -d since=2026-07-01 --data-urlencode "q=移行"
+curl -s "$BASE/v1/chiezo_memory/recall"                                  # 新しい順に 20 件
+curl -sG "$BASE/v1/chiezo_memory/recall" -d since=2026-07-01 --data-urlencode "q=移行"
 ```
 
 引くときは期間(`since`/`until`)・キーワード(`q`)・タグで絞れる。本文は既定で先頭
@@ -162,7 +162,7 @@ CLAUDE.md や記憶ファイルとの違いは、常時コンテキストに載�
 ツール定義(数百字)だけで、中身は引いたときにしか載らない。
 
 compose では既定で有効(`data/notes/` に SQLite が 1 つできる)。`CHIEZO_NOTES_DIR` を
-空にすると機能ごと無効になる。認証は無いので、`/v1/notes` に到達できる相手は誰でも書ける。
+空にすると機能ごと無効になる。認証は無いので、`/v1/chiezo_memory` に到達できる相手は誰でも書ける。
 
 - API の詳細 → [API リファレンス](docs/api-reference.md#notes唯一書き込めるソースの-rest)
 - なぜこの形か → [設計メモ](docs/design-notes.md#覚えるnotesはなぜ-chiezo-に置くのか)

@@ -139,22 +139,22 @@ API 側はソース種別を意識しません。
 `opening` / `body` には「名前(行政区, 国)— コード / 分類、人口 N」の 1 行を組み立てて
 入れています(FTS を効かせるため)。
 
-### notes(唯一書き込めるソース)の REST
+### chiezo_memory(唯一書き込めるソース)の REST
 
 ```bash
-curl -s "$BASE/v1/notes" -H 'Content-Type: application/json' \
+curl -s "$BASE/v1/chiezo_memory" -H 'Content-Type: application/json' \
   -d '{"text":"開発環境を WSL2 へ移行する","tags":"環境,決定"}'
 
-curl -s "$BASE/v1/notes/recall"                                  # 新しい順に 20 件
-curl -sG "$BASE/v1/notes/recall" --data-urlencode "q=移行"        # 全文検索
-curl -sG "$BASE/v1/notes/recall" -d since=2026-07-01             # 期間で絞る
-curl -sG "$BASE/v1/notes/recall" --data-urlencode "tag=決定"      # タグで絞る
-curl -sG "$BASE/v1/notes/recall" -d fields=title,updated_at      # 当たりを付ける(本文を載せない)
-curl -sG "$BASE/v1/notes/recall" -d max_chars=0                  # 本文を切らずに返す
-curl -sG "$BASE/v1/notes/recall" -d fields=doc_id,extra           # 構造だけ取る(既定では返らない)
-curl -s -X PATCH "$BASE/v1/notes/3" -H 'Content-Type: application/json' \
+curl -s "$BASE/v1/chiezo_memory/recall"                                  # 新しい順に 20 件
+curl -sG "$BASE/v1/chiezo_memory/recall" --data-urlencode "q=移行"        # 全文検索
+curl -sG "$BASE/v1/chiezo_memory/recall" -d since=2026-07-01             # 期間で絞る
+curl -sG "$BASE/v1/chiezo_memory/recall" --data-urlencode "tag=決定"      # タグで絞る
+curl -sG "$BASE/v1/chiezo_memory/recall" -d fields=title,updated_at      # 当たりを付ける(本文を載せない)
+curl -sG "$BASE/v1/chiezo_memory/recall" -d max_chars=0                  # 本文を切らずに返す
+curl -sG "$BASE/v1/chiezo_memory/recall" -d fields=doc_id,extra           # 構造だけ取る(既定では返らない)
+curl -s -X PATCH "$BASE/v1/chiezo_memory/3" -H 'Content-Type: application/json' \
   -d '{"tags":"環境,決定,完了"}'                                  # 書き換え(渡した項目だけ)
-curl -s -X DELETE "$BASE/v1/notes/3"                             # 取り消し
+curl -s -X DELETE "$BASE/v1/chiezo_memory/3"                             # 取り消し
 ```
 
 書き換え(PATCH)は**渡した項目だけ**を差し替えます(`text` / `title` / `tags` / `extra`)。
@@ -179,17 +179,17 @@ curl -s -X DELETE "$BASE/v1/notes/3"                             # 取り消し
 ここに無いタグも自由に付けられます。curl で書くときもこの表記に合わせてください。
 
 **本文は既定で先頭 400 文字までしか返りません**(`max_chars`)。切れたメモには
-`truncated: true` が付くので、全文が要るものだけ `/v1/notes/doc/{doc_id}` で取り直します。
+`truncated: true` が付くので、全文が要るものだけ `/v1/chiezo_memory/doc/{doc_id}` で取り直します。
 当たった件数ぶんの全文が会話のコンテキストに載るのを避けるためで、他ソースの
 `search`(冒頭だけ)→ `doc`(全文)と同じ二段構えです。`fields` で項目を選べば
 本文そのものを外せます(`doc_id` / `title` / `text` / `tags` / `updated_at` / `url`)。
 
 専用の口は追記・書き換え・削除・時系列の想起だけです。読み出しはコアスキーマなので
-`/v1/notes/search`・`doc`・`filter`・`tags` と `/search/notes/`(ブラウズ画面)もそのまま効きます。
+`/v1/chiezo_memory/search`・`doc`・`filter`・`tags` と `/search/chiezo_memory/`(ブラウズ画面)もそのまま効きます。
 
 | 変数 | 既定 | 説明 |
 |---|---|---|
-| `CHIEZO_NOTES_DIR` | `/notes`(compose) | 書き込み可能なディレクトリ。**空にすると機能ごと無効**(`/v1/notes` は 503、MCP の道具も出ない) |
+| `CHIEZO_NOTES_DIR` | `/notes`(compose) | 書き込み可能なディレクトリ。**空にすると機能ごと無効**(`/v1/chiezo_memory` は 503、MCP の道具も出ない) |
 
 compose では既定で有効で、`./notes` に SQLite が 1 つできます(初回アクセス時に自動生成
 されるので、取り込みを回す必要はありません)。`/data` は読み取り専用マウントのままです。
@@ -197,7 +197,7 @@ notes を別ディレクトリに置いているのは、`/data` の変化を監
 仕組みと干渉させないためで、その理由となぜ Chiezo に置くのかは
 [設計メモ](design-notes.md#覚えるnotesはなぜ-chiezo-に置くのか)にあります。
 
-**認証はありません。** `/v1/notes` に到達できる相手は誰でも書けます(LAN 内前提という
+**認証はありません。** `/v1/chiezo_memory` に到達できる相手は誰でも書けます(LAN 内前提という
 このサービス全体の方針と同じですが、書き込みができる唯一の口である点は留意してください)。
 
 ### 集める(AI に集めさせて溜めていく)
@@ -823,7 +823,7 @@ AI に返させる形は `{"items":[{"title","body","tags","url"}],"next_cursor"
 覚えている件数とタグの分布、検索画面への入口、[やること画面](tasks.md)(`/tasks`)への
 リンクが並びます。取り込みで焼くソースではないので
 再構築はできません(この節に再構築ボタンはなく、`POST /admin/rebuild/notes` も 409 で断ります)。
-中身そのものは出しません —— 1 件ずつ読むのはブラウズ画面(`/search/notes/`)の仕事です。
+中身そのものは出しません —— 1 件ずつ読むのはブラウズ画面(`/search/chiezo_memory/`)の仕事です。
 件数は画面を開いたときに数え直すので、`chiezo-tasks` など別プロセスから書き込まれたぶんも
 そのまま反映されます。
 

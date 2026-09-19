@@ -1994,6 +1994,11 @@ def random_docs(
 # tags・/notes/ のブラウズ画面もそのまま効く(ソース種別を意識しない設計のおかげ)。
 
 
+# **書き込む口も新しい名前で出す。** 読む口(`/v1/{source}/…`)はソース名で
+# 決まるので、ここだけ古い名前に残すと 1 つの置き場が 2 つの名前で並ぶ。
+# **古い名前も当面は受ける** —— 各マシンの CLAUDE.md を配り直すまでの橋渡し
+# (`registry.RENAMED_SOURCES` と同じ理由。配り終わったら消してよい)。
+@app.post("/v1/chiezo_memory")
 @app.post("/v1/notes")
 def remember(
     request: Request,
@@ -2012,6 +2017,7 @@ def remember(
     return created
 
 
+@app.get("/v1/chiezo_memory/recall")
 @app.get("/v1/notes/recall")
 def recall_notes(
     request: Request,
@@ -2040,6 +2046,7 @@ def recall_notes(
     )
 
 
+@app.patch("/v1/chiezo_memory/{doc_id}")
 @app.patch("/v1/notes/{doc_id}")
 def update_note(
     request: Request,
@@ -2059,6 +2066,7 @@ def update_note(
     return updated
 
 
+@app.delete("/v1/chiezo_memory/{doc_id}")
 @app.delete("/v1/notes/{doc_id}")
 def forget(request: Request, doc_id: int):
     if not notes.delete(doc_id):

@@ -13,7 +13,12 @@ from __future__ import annotations
 from fastapi import HTTPException, Request
 
 from app import db
-from app.registry import FILTER_MIN_SCHEMA_VERSION, TAG_MIN_SCHEMA_VERSION, Source
+from app.registry import (
+    FILTER_MIN_SCHEMA_VERSION,
+    RENAMED_SOURCES,
+    TAG_MIN_SCHEMA_VERSION,
+    Source,
+)
 
 # 関連度(bm25)に人気度(rank_score)を混ぜる重み。0 にすると従来どおり bm25 のみ。
 # 実測(scripts/fts_lab.py で本番 jawiki 3 万件・重みを 0〜2 で振った)から 0.4 を採った。
@@ -23,8 +28,13 @@ POPULARITY_WEIGHT = 0.4
 
 
 def get_source(request: Request, source: str) -> Source:
+    """名前でソースを引く。**改名する前の名前でも通す**(`RENAMED_SOURCES`)。
+
+    ソース名は各マシンの CLAUDE.md に curl の例として焼き込まれているので、
+    改名した瞬間に古い名前で叩きに来るものがある —— ブロックを配り直すまでの橋渡し。
+    """
     sources: dict[str, Source] = request.app.state.sources
-    src = sources.get(source)
+    src = sources.get(source) or sources.get(RENAMED_SOURCES.get(source, ""))
     if src is None:
         raise HTTPException(
             404,

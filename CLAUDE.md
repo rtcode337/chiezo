@@ -36,7 +36,7 @@ Chiezo はそれが持てないものを預かる側にいる。
   更新はブルーグリーン
 - **取り出す** — `app/` が **MCP**(`/mcp`)と **REST**(`/v1/...`)の 2 経路で出す。
   Claude Code 向けには「いつ Chiezo を使うか」を書いた CLAUDE.md ブロックも生成する
-- **覚える** — `app/notes.py` が **Chiezo で唯一書き込めるソース** `notes` を持つ。
+- **覚える** — `app/notes.py` が **Chiezo で唯一書き込めるソース** `chiezo_memory` を持つ。
   **書き手は AI でもよい**(MCP の `remember`)。「覚えておいて」と言われたことを溜め、
   `recall` で新しい順に引く。CLAUDE.md や記憶ファイルと違い**常駐するのはツール定義だけ**
   なので、件数が増えてもコンテキストを食わない
@@ -67,7 +67,7 @@ Chiezo はそれが持てないものを預かる側にいる。
 ためた知識(公開ダンプ)と集めた知識はどちらも `corpus/` の読み取り専用
 ソースで、**引く口はまったく同じ**。違うのは素材が外にあるか手元にあるかだけ。
 **画面では「長期記憶」「短期記憶」と呼ぶ**(`/admin/memory` の 2 節。
-短期記憶の表には、覚えたことの置き場(`notes`)と設定の置き場
+短期記憶の表には、覚えたことの置き場(`chiezo_memory`)と設定の置き場
 (`chiezo_settings`)が並ぶ —— どちらも書き込める側なので分けない)。
 
 ### 鍵と、話せる AI
@@ -110,7 +110,7 @@ Chiezo はそれが持てないものを預かる側にいる。
 - **生成物の置き場**(`/media/...`)と、**何案か作って人に選ばせる場**(`media_picks`)——
   音は AI 自身が聴けないので、聴き比べる手段がここにしかない
 - **やること**(`app/tasks.py` / `tasks-frontend/`)—— タスク・プロジェクト・ルールを
-  `notes` の上にタグで載せたもの。専用のテーブルも列も持たない
+  `chiezo_memory` の上にタグで載せたもの。専用のテーブルも列も持たない
 
 現在の収録ソースは日本語 Wikipedia = `jawiki`、OpenStreetMap 日本抽出 = `osm_japan`、
 GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か国から選んで増やせる)。
@@ -226,8 +226,24 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     **ステートレス・待ち受けパス・Host 検証は `build_mcp_app()`(= `streamable_http_app()`)
     側の設定**で、mcp 2.x でサーバー本体の引数から移った(1.x の `FastMCP(...)` に
     まとめて渡していた頃の書き方は通らない)
-  - `app/notes.py` — **「覚える」層(`/v1/notes`)の本体。Chiezo で唯一書き込む場所**。
-    使い方は `docs/api-reference.md`「notes(唯一書き込めるソース)の REST」節、
+  - `app/notes.py` — **「覚える」層(`/v1/chiezo_memory`)の本体。Chiezo で唯一書き込む場所**。
+    **ソース名は `chiezo_memory`**(モジュール名は `notes.py` のまま。改名したのは
+    名前空間に並ぶほうで、`machine_store.py` が `chiezo_settings` を持つのと同じ形)。
+    **`notes` や `memory` のような一般の語にしない** —— ソース名は jawiki や収集と
+    同じ平たい名前空間に並び、外のアプリが `POST /v1/collect` で同じ名前を要求できる。
+    `memory` を選ばなかったのは、固化の層が焼いていたソース名がそれで、古い控えや
+    ログと history 上で混ざるため。
+    **移行は置き場を作るときに 1 度だけ**(`_renamed_from_old`)。ファイル名と
+    `meta` の名乗りの両方を直す —— ソース名は meta から読むので、ファイルだけ
+    改名すると一覧に古い名前で出る。新しいほうが既にあれば触らない。
+    **巻き戻すと見えなくなる**(古いイメージは `notes.db` を探す。ファイルは残る)。
+    **古い名前でも当面は読める**(`registry.RENAMED_SOURCES` / `deps.get_source`、
+    書き込む口も両方の道で受ける)—— 各マシンの CLAUDE.md には `/v1/notes/...` の
+    curl 例が焼き込まれているので、配り直すまでの橋渡し。**配り終わったら外してよい**。
+    橋渡しのあいだは**収集の名前として `notes` も塞ぐ**(どちらが応えるか読めなくなる)。
+    環境変数 `CHIEZO_NOTES_DIR` はそのまま —— あれは「書き込めるソースの置き場」で、
+    ソース名とは別の軸(設定の置き場の改名でも `CHIEZO_STATE_DIR` は触っていない)。
+    使い方は `docs/api-reference.md`「chiezo_memory(唯一書き込めるソース)の REST」節、
     なぜこの形かは `docs/design-notes.md`
     「「覚える」(notes)はなぜ Chiezo に置くのか」が正。実装側の要点:
     - **`CHIEZO_NOTES_DIR` が機能フラグを兼ねる**(未設定 = 503、MCP の道具も出さない)。
@@ -286,7 +302,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       `max_chars=0` で切らない。`fields` で項目も選べる(`RECALL_FIELDS`)
     - **切ったものには `truncated: true` を立てる**。黙って切ると「これで全部」と
       読まれる —— 504 を 0 件と読むのと同じ取りこぼし方をするため、全文が要ると
-      分かる印を必ず返す(取り直し先は `/v1/notes/doc/{doc_id}`)
+      分かる印を必ず返す(取り直し先は `/v1/chiezo_memory/doc/{doc_id}`)
   - `app/collect.py` — **「集める」層(AI に集めさせて溜めていく)**。
     使い方は `docs/api-reference.md`「集める」節が正。実装側の要点:
     - **要るのは `CHIEZO_NOTES_DIR`(定義の置き場)と `CHIEZO_TRIGGER_URL`
@@ -1363,7 +1379,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   - `app/tasks_app.py` — **やること層のアプリ(`chiezo-tasks`)。外に出す面**。
     知識ベース本体(`app/main.py` / 7010)は LAN 内・認証なしのまま変えない ——
     あちらを公開すると、サーバー側の鍵で AI を叩く `/v1/ai/complete`、課金の走る
-    `/v1/media/*`、取り込みを起動できる `/admin`、メモを消せる `DELETE /v1/notes/{doc_id}`
+    `/v1/media/*`、取り込みを起動できる `/admin`、メモを消せる `DELETE /v1/chiezo_memory/{doc_id}`
     まで一緒に外へ出る。**面をプロセスごと分ける**ほうが、認証を 1 枚かぶせるより確実に安い。
     - **notes を `db.set_mutable_paths()` に登録すること**。登録しないと
       `immutable=1` で開かれ、書き込み途中のページを掴みうる(本体は `/data` の走査で
@@ -2108,9 +2124,9 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `?q=` 指定時は結果一覧を表示し、`/v1/{source}/search` と同じロジック
     (FTS または短語のタイトル前方一致フォールバック)
   - `/search/{source}/doc/{doc_id}`(GET) — 文書詳細(title/tags/opening/body/links/extra)の HTML 表示
-  - `/v1/notes`(POST)・`/v1/notes/recall`(GET)・`/v1/notes/{doc_id}`(PATCH / DELETE) —
-    「覚える」層の REST。読み出しはコアスキーマなので `/v1/notes/search|doc|filter|tags` と
-    `/search/notes/` のブラウズ画面もそのまま効く(専用の口は追記・書き換え・削除・
+  - `/v1/chiezo_memory`(POST)・`/v1/chiezo_memory/recall`(GET)・`/v1/chiezo_memory/{doc_id}`(PATCH / DELETE) —
+    「覚える」層の REST。読み出しはコアスキーマなので `/v1/chiezo_memory/search|doc|filter|tags` と
+    `/search/chiezo_memory/` のブラウズ画面もそのまま効く(専用の口は追記・書き換え・削除・
     時系列の想起だけ)。PATCH は渡した項目だけを差し替える(`tags` は丸ごと置き換え、
     空文字で全部外す。updated_at が現在時刻になり recall の先頭に浮く)
   - `/v1/ask`(GET) — 「使う」層の REST。`stream=0`(既定)は JSON 一括、`stream=1` は
@@ -2964,7 +2980,7 @@ SQLite ファイルで、配信側 chiezo-app は read-only immutable で開く�
     (おまけに現行 SQLite ではロード自体が失敗する。上流のバグ 2 つを直して測った)
   再挑戦の条件は評価ドキュメントの「採用できる条件」に 3 つ整理してある。
 - 運用 DB は読み取り専用(`immutable=1`)。更新はブルーグリーン(別ファイル構築 → シンボリックリンク差し替え)のみ。
-  **例外は `notes` の 1 ソースだけ**(`app/notes.py`)。書き込みは `CHIEZO_NOTES_DIR` 配下に
+  **例外は `chiezo_memory` の 1 ソースだけ**(`app/notes.py`)。書き込みは `CHIEZO_NOTES_DIR` 配下に
   閉じ、`/data` は read-only マウントのまま保つこと。そのソースだけ読み手も `mode=ro` に落とす。
   差し替えは app が自動検知する: lifespan の常駐タスクが `CHIEZO_RESCAN_INTERVAL` 秒(既定 5)ごとに
   `/data` の指紋(`registry.data_dir_fingerprint`)を見て、変わっていれば再走査(`main.refresh_sources`)。

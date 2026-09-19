@@ -415,7 +415,7 @@ class TestTodoMigration:
         import sqlite3
 
         module = self._script()
-        conn = sqlite3.connect(notes_dir / "notes.db")
+        conn = sqlite3.connect(notes_dir / "chiezo_memory.db")
         try:
             targets = module._targets(conn)
             if apply:

@@ -440,7 +440,7 @@ class TestNotesTools:
         assert body["steps"][0]["ok"] is True
         # 思い出したメモは出典としても並ぶ(リンク先は notes のブラウズ画面)
         assert body["references"], "recall の結果が出典に出ていない"
-        assert body["references"][0]["url"].startswith("/search/notes/doc/")
+        assert body["references"][0]["url"].startswith("/search/chiezo_memory/doc/")
 
     def test_page_shows_the_toggle_only_when_enabled(self, monkeypatch_env, tmp_path):
         with make_client(monkeypatch_env, ToolLLM()) as client:

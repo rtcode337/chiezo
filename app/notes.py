@@ -45,8 +45,17 @@ from app.pages import doc_url
 
 log = logging.getLogger("chiezo.app")
 
-SOURCE_NAME = "notes"
-SOURCE_KIND = "notes"
+# ソース名は **jawiki や収集と同じ平たい名前空間**に並ぶ。`notes` や `memory` の
+# ような一般の語にすると、外のアプリが同じ名前で収集を頼んだときにぶつかる ——
+# 名前の規則(`collect.NAME_RE`)は普通の英小文字を通すので、外から要求できてしまう。
+# **このサーバーのものだと分かる名前**にしてある(設定の置き場と同じ流儀)。
+# `memory` を選ばなかったのは、固化の層が焼いていたソース名がそれで、
+# 古い控えやログと history 上で混ざるため。
+SOURCE_NAME = "chiezo_memory"
+SOURCE_KIND = "chiezo_memory"
+
+# 改名する前の名前。**置き場を作るときに 1 度だけ見る**(`_renamed_from_old`)。
+OLD_SOURCE_NAME = "notes"
 
 RECALL_LIMIT_DEFAULT = 20
 RECALL_LIMIT_MAX = 100
@@ -271,12 +280,46 @@ def _connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _renamed_from_old() -> None:
+    """前の名前(`notes.db`)で置かれていたら、いまの名前へ移す。
+
+    **入れ替えた瞬間に効かせる**ので、手で動かす手順は要らない。**新しいほうが
+    既にあれば触らない** —— 両方あるのは作り直した後なので、古いほうを被せると
+    その間に書かれたものが消える。
+
+    **中の名乗りも直す。** ソース名は `meta` から読むので、ファイルだけ改名しても
+    一覧には古い名前で出る。
+
+    **巻き戻すと見えなくなる。** 古いイメージは `notes.db` を探すので、短期記憶が
+    空に見える(ファイルは残っているので消えてはいない)。戻すなら、ファイル名も
+    手で戻すことになる。
+    """
+    d = notes_dir()
+    if d is None:
+        return
+    old, new = d / f"{OLD_SOURCE_NAME}.db", d / f"{SOURCE_NAME}.db"
+    if not old.is_file() or new.exists():
+        return
+    old.rename(new)
+    log.info("renamed the memory store: %s -> %s", old.name, new.name)
+    conn = _connect(new)
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE meta SET source = ?, source_kind = ? WHERE source = ?",
+                (SOURCE_NAME, SOURCE_KIND, OLD_SOURCE_NAME),
+            )
+    finally:
+        conn.close()
+
+
 def ensure_db() -> Path | None:
-    """notes の DB が無ければ作る。無効なら None。
+    """短期記憶の DB が無ければ作る。無効なら None。
 
     ingest を回さずに使い始められるようにするため、起動時にここで作る
     (メモを取るのに数時間の取り込みを待たせる理由がない)。
     """
+    _renamed_from_old()
     path = notes_path()
     if path is None:
         return None
@@ -296,7 +339,7 @@ def ensure_db() -> Path | None:
             )
     finally:
         conn.close()
-    log.info("created notes db at %s", path)
+    log.info("created the memory db at %s", path)
     return path
 
 

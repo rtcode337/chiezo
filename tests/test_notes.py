@@ -46,18 +46,18 @@ class TestDisabled:
 
     def test_notes_is_not_registered_as_a_source(self, disabled_client):
         names = [s["name"] for s in disabled_client.get("/v1/sources").json()["sources"]]
-        assert "notes" not in names
+        assert "chiezo_memory" not in names
 
 
 class TestRemember:
     def test_creates_the_db_on_startup(self, client, notes_dir):
         """ingest を回さずに使い始められること。"""
-        assert (notes_dir / "notes.db").exists()
+        assert (notes_dir / "chiezo_memory.db").exists()
 
     def test_registers_itself_as_a_source(self, client):
         listed = {s["name"]: s for s in client.get("/v1/sources").json()["sources"]}
-        assert listed["notes"]["kind"] == "notes"
-        assert listed["notes"]["schema_version"] == 4
+        assert listed["chiezo_memory"]["kind"] == "chiezo_memory"
+        assert listed["chiezo_memory"]["schema_version"] == 4
 
     def test_remembers_and_recalls(self, client):
         res = client.post(
@@ -68,7 +68,7 @@ class TestRemember:
         created = res.json()
         assert created["title"] == "devcontainer をやめて WSL2 へ移行する"
         assert created["tags"] == ["環境", "決定"]
-        assert created["url"] == f"/search/notes/doc/{created['doc_id']}"
+        assert created["url"] == f"/search/chiezo_memory/doc/{created['doc_id']}"
 
         got = client.get("/v1/notes/recall").json()
         assert got["total"] == 1
@@ -95,7 +95,7 @@ class TestRemember:
         for i in range(3):
             client.post("/v1/notes", json={"text": f"メモ {i}"})
         listed = {s["name"]: s for s in client.get("/v1/sources").json()["sources"]}
-        assert listed["notes"]["docs"] == 3
+        assert listed["chiezo_memory"]["docs"] == 3
 
 
 class TestRecall:
@@ -407,13 +407,86 @@ class TestWorksWithTheGenericEndpoints:
         assert "調べた" in filled.get("/search/notes/", params={"q": "調べた"}).text
 
 
+class TestTheRenameFromNotes:
+    """ソース名を `notes` から `chiezo_memory` へ移す。
+
+    **ソース名は jawiki や収集と同じ平たい名前空間**に並ぶので、`notes` や
+    `memory` のような一般の語だと外のアプリが同じ名前で収集を頼んだときにぶつかる。
+    `memory` を選ばなかったのは、固化の層が焼いていたソース名がそれで、
+    古い控えやログと history 上で混ざるため。
+    """
+
+    def test_the_old_file_is_moved_and_renames_itself_inside(self, notes_dir, monkeypatch):
+        """**ファイル名と `meta` の名乗りの両方**を直す ——
+        ソース名は meta から読むので、ファイルだけ改名すると一覧に古い名前で出る。
+        """
+        from app import notes
+
+        notes_dir.mkdir(parents=True)
+        old = notes_dir / "notes.db"
+        monkeypatch.setattr(notes, "SOURCE_NAME", "notes")
+        monkeypatch.setattr(notes, "SOURCE_KIND", "notes")
+        notes.ensure_db()
+        monkeypatch.undo()
+        monkeypatch.setenv("CHIEZO_NOTES_DIR", str(notes_dir))
+        assert old.is_file()
+
+        notes.ensure_db()
+
+        assert not old.exists()
+        new = notes_dir / "chiezo_memory.db"
+        assert new.is_file()
+        conn = sqlite3.connect(new)
+        assert conn.execute("SELECT source, source_kind FROM meta").fetchone() == (
+            "chiezo_memory", "chiezo_memory",
+        )
+        conn.close()
+
+    def test_the_new_one_is_never_overwritten(self, notes_dir, monkeypatch):
+        """**両方あるのは作り直した後**。古いほうを被せると、その間に書かれたものが消える。"""
+        from app import notes
+
+        notes_dir.mkdir(parents=True)
+        notes.ensure_db()
+        notes.add(text="新しいほうに書いたもの")
+        (notes_dir / "notes.db").write_text("古い置き土産")
+
+        notes.ensure_db()
+
+        assert (notes_dir / "notes.db").read_text() == "古い置き土産"
+        assert notes.count() == 1
+
+    def test_the_old_name_still_reads(self, client):
+        """**各マシンの CLAUDE.md が配り直されるまでの橋渡し。**
+
+        あのブロックには `/v1/notes/...` の curl 例が焼き込まれている ——
+        改名した瞬間に古い名前で叩きに来るものがある。
+        """
+        client.post("/v1/notes", json={"text": "覚えて", "tags": "決定"})
+
+        assert client.get("/v1/notes/recent").json()["docs"]
+        assert client.get("/v1/chiezo_memory/recent").json()["docs"]
+
+    def test_the_old_name_cannot_be_taken_by_a_collection(self, client):
+        """橋渡しのあいだは古い名前でも短期記憶へ通るので、同じ名前の収集を
+        作らせると、どちらが応えるのかが読めなくなる。
+        """
+        import fastapi
+
+        from app import collect
+
+        for name in ("notes", "chiezo_memory", "memory"):
+            with pytest.raises(fastapi.HTTPException):
+                collect.create(name, prompt="p", interval_minutes=60)
+
+
 class TestReaderIsNotImmutable:
     """追記される DB を immutable で開くと壊れたページを掴む。開き方が分かれていること。"""
 
     def test_notes_source_is_marked_mutable(self, client):
         from app import db
 
-        src = client.app.state.sources["notes"]
+        src = client.app.state.sources["chiezo_memory"]
         assert src.mutable is True
         assert db.is_mutable(src.path) is True
 
@@ -535,7 +608,7 @@ class TestClaudeConfig:
     def test_a_writable_source_never_quotes_its_own_contents(self, client):
         from app import claude_config
 
-        notes = client.app.state.sources.get("notes")
+        notes = client.app.state.sources.get("chiezo_memory")
         assert notes is not None
         got = claude_config.describe(notes)
         assert got["sample"] == {"title": "", "tag": ""}, "手元のメモを引き写さないこと"
@@ -562,16 +635,16 @@ class TestShortTermIsNotARebuildableSource:
         —— 唯一書き込めるソースで、消えたと読める文言が出ていた。
         """
         html = client.get("/admin/memory").text
-        assert 'action="/admin/rebuild/notes"' not in html
+        assert 'action="/admin/rebuild/chiezo_memory"' not in html
         # 長期側にはボタンが出たままであること(消しすぎていない)
         assert 'action="/admin/rebuild/jawiki"' in html
 
     def test_rebuild_is_refused(self, client, monkeypatch):
         """URL を直に叩かれても trigger まで行かせない。"""
         monkeypatch.setattr("app.views.admin.TRIGGER_URL", "http://example.invalid")
-        res = client.post("/admin/rebuild/notes")
+        res = client.post("/admin/rebuild/chiezo_memory")
         assert res.status_code == 409
-        assert res.json()["error"] == "source is not rebuildable: notes"
+        assert res.json()["error"] == "source is not rebuildable: chiezo_memory"
 
     def test_admin_shows_the_short_term_section(self, client):
         """長期側と同じ体裁の表で出る。**列は写しにしない**。
@@ -603,7 +676,7 @@ class TestShortTermIsNotARebuildableSource:
 
         def listed() -> int:
             sources = {s["name"]: s for s in client.get("/v1/sources").json()["sources"]}
-            return sources["notes"]["docs"]
+            return sources["chiezo_memory"]["docs"]
 
         before = listed()
         notes.add(text="別プロセスからの書き込み")

@@ -12,7 +12,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from app import machine_store
+from app import machine_store, notes
 
 log = logging.getLogger("chiezo.app")
 
@@ -147,7 +147,13 @@ def data_dir_fingerprint(data_dir: Path) -> dict[str, tuple[int, int, int, int]]
 # 短期記憶は書き込みが直接届く唯一のソースで、設定の置き場には収集の定義が入っている
 # (どちらも取り込みで焼き直せない)。**名前で持つ**のは、この判断を画面と口の
 # 両方から同じものとして引くため。
-SYSTEM_SOURCES = ("notes", machine_store.SOURCE_NAME)
+SYSTEM_SOURCES = (notes.SOURCE_NAME, machine_store.SOURCE_NAME)
+
+# 改名する前の名前で来たものを、いまの名前へ通す(`app/deps.py` の `get_source`)。
+# **各マシンの CLAUDE.md が配り直されるまでの橋渡し** —— あのブロックには
+# `/v1/notes/...` の curl 例が焼き込まれていて、生成し直すまで古い名前で叩きに来る。
+# 配り終わったら消してよい(設定の置き場の改名でも、移行は後で外した)。
+RENAMED_SOURCES = {notes.OLD_SOURCE_NAME: notes.SOURCE_NAME}
 
 
 def blocked_from_deleting(name: str, used_by: str = "") -> str:

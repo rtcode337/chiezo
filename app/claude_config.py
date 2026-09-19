@@ -19,7 +19,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from app import capabilities, db, jst
+from app import capabilities, db, jst, notes
 from app.registry import (
     FILTER_MIN_SCHEMA_VERSION,
     TAG_COUNTS_MIN_SCHEMA_VERSION,
@@ -774,7 +774,7 @@ _SOURCE_NOTES = {
                 "**OSM 辞典より件数が多く、店の URL と電話番号が入っていることが多い**"
                 "（代わりに住所は自由記述）",
     "geonames": "全世界の地名と座標",
-    "notes": "手元で書いた短期記憶。**中身は例示に引き写さない**",
+    notes.SOURCE_KIND: "手元で書いた短期記憶。**中身は例示に引き写さない**",
     "collect": "AI が定期的に集めて焼いたもの。何が入っているかは中身を見る",
 }
 
@@ -784,7 +784,7 @@ _SOURCE_HINTS = {
             "言語プレフィックスは外してあるので、Wikipedia 側の `doc?title=` に"
             "そのまま渡せる（タグの無い地物は空配列）"],
     "overture": ["カテゴリ名は独自なので、**推測で書かずに `tags?contains=` で確かめる**"],
-    "notes": ["手元で書いたもの。**中身を例示に引き写さない**（`sample` は空で返る）"],
+    notes.SOURCE_KIND: ["手元で書いたもの。**中身を例示に引き写さない**（`sample` は空で返る）"],
 }
 
 
