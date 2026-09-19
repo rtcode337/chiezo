@@ -484,15 +484,22 @@ class TestSweeps:
         # 6 時間ごと・7 日で一周 = 28 回。4 区画なら 1 回 1 区画で足りる
         assert rough.per_run(4) == 1
         # 区画が増えれば 1 回あたりも増える(手で追いかけなくてよい)
-        assert rough.per_run(280) == 10
+        assert rough.per_run(112) == 4
         # 直に書いてあればそちらが勝つ
         assert deep.per_run(280) == 1
 
     def test_one_run_never_eats_everything(self, sample):
-        """区画ごとに AI を 1 回呼ぶので、1 回の取り込みが何十分にもならないように。"""
+        """区画ごとに AI を 1 回呼ぶので、ここがそのまま「1 回で AI を何回叩くか」。
+
+        **一周の目安より天井を優先する。** 1 回が長いほど、途中で起きたこと
+        (相手の枠が閉まる、取り込みが詰まる)を取り返せない —— 目安の日数を
+        超えても回り続けるほうが、1 回に賭けるより確実に進む。
+        """
         self._two_sweeps()
         rough = collect.sweeps_of(collect.get("news"))[0]
+        # 一周が 7 日で終わらない数でも、天井は崩さない
         assert rough.per_run(100_000) == collect.MAX_PARTITIONS_PER_RUN
+        assert collect.MAX_PARTITIONS_PER_RUN == 6
 
     def test_each_sweep_keeps_its_own_progress(self, sample):
         """ざっとが一周した区画を、じっくりはまだ見ていない、が普通に起きる。"""
