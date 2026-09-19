@@ -74,7 +74,11 @@ def plugin():
     _Handler.docs = DOCS
     _Handler.refuse = None
     server = HTTPServer(("127.0.0.1", 0), _Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    # **見に来る間隔を詰める。** `shutdown()` は次の見回りまで戻らないので、
+    # 既定(0.5 秒)のままだと**テスト 1 本ごとに 0.5 秒**を後片付けに払う
+    thread = threading.Thread(
+        target=lambda: server.serve_forever(poll_interval=0.02), daemon=True,
+    )
     thread.start()
     try:
         yield f"http://127.0.0.1:{server.server_port}"
@@ -94,8 +98,12 @@ class TestCatalog:
         assert remote.catalog("") == []
         assert remote.catalog("  ,  ") == []
 
-    def test_unreachable_plugin_is_skipped(self, caplog):
+    def test_unreachable_plugin_is_skipped(self, caplog, monkeypatch):
         """落ちていても本体は動く(警告のみ)。別コンテナなので一時的な不通は正常。"""
+        # **待つ時間は縮める。** 確かめたいのは「繋がらなければ飛ばす」ことで、
+        # 何秒待つかではない —— 既定のまま待つと、この 1 本で 5 秒かかる
+        monkeypatch.setattr(remote, "CATALOG_TIMEOUT", 0.2)
+
         assert remote.catalog("http://127.0.0.1:9") == []
         assert "catalog unavailable" in caplog.text
 

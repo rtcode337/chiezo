@@ -1065,8 +1065,11 @@ class TestASlowReaderIsNotTheQuerysFault:
 
         seen = 0
         for _row in db.stream(path, "SELECT n FROM t ORDER BY n", timeout=0.05):
-            # 1 行の手間は小さいが、行数を掛けると締め切りをはるかに超える
-            time.sleep(0.0001)
+            # **合計で締め切りを超えれば足りる。** 1 行ずつ眠らせると 2 秒かかるので、
+            # まとめて休む —— 確かめたいのは「読み手の手間を締め切りに数えない」ことで、
+            # どれだけ細かく休むかではない
+            if seen % 100 == 0:
+                time.sleep(0.002)
             seen += 1
 
         assert seen == self.ROWS

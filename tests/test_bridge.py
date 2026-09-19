@@ -898,7 +898,8 @@ class TestImageProgressIsVisible:
         monkeypatch.setattr(server, "IMAGE_TIMEOUT", 0.5)
         monkeypatch.setattr(
             server, "image_command",
-            lambda out_dir, model="": ["sh", "-c", "echo 権限の確認を待っています; sleep 2"],
+            # 締め切り(0.5 秒)より長ければよい。長くするほどこの 1 本が待つ
+            lambda out_dir, model="": ["sh", "-c", "echo 権限の確認を待っています; sleep 1"],
         )
 
         with pytest.raises(fastapi.HTTPException) as got:
