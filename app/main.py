@@ -987,18 +987,49 @@ async def _collect_material(name: str, sources: dict) -> str:
     # 残すとファイルが溜まる(`app/extract.py` の `Roster`)
     def flow():
         try:
-            yield from collect.bake_lines(
-                baked_as, sources, previous, items,
-                focus is None and sweep.only_new, edits, plan, label,
-                # **AI を呼ばない回で入るものは未精査**(`collect.asks_ai`)——
-                # フィードも機械抽出も、宣伝や的外れをそのまま引き受ける
-                not collect.asks_ai(item, sweep), shown,
+            yield from _logged_stream(
+                collect.bake_lines(
+                    baked_as, sources, previous, items,
+                    focus is None and sweep.only_new, edits, plan, label,
+                    # **AI を呼ばない回で入るものは未精査**(`collect.asks_ai`)——
+                    # フィードも機械抽出も、宣伝や的外れをそのまま引き受ける
+                    not collect.asks_ai(item, sweep), shown,
+                ),
+                name, plan.get("rows"),
             )
         finally:
             if hasattr(items, "close"):
                 items.close()
 
     return flow()
+
+
+def _logged_stream(lines, name: str, expected):
+    """素材を流しながら、**途中で落ちたら何行目までだったかを残す**。
+
+    **流し始めたら断れない**(ステータスは 1 度しか送れない)ので、途中で落ちると
+    **短いだけの正しい素材**として相手に届く。受け取る側は行数で気づくが
+    (`meta.min_docs`)、気づけるのは「足りない」ことだけ —— **なぜ切れたかは
+    こちら側にしか無い**。素通しすると、収集の名前も件数も付かない形で
+    uvicorn の控えに残り、どの回のどこで切れたのかを後から結べない。
+
+    **投げ直す。** ここで握りつぶすと、短い素材がそのまま焼き上がって
+    前の世代が捨てられる(受け取る側の検証が最後の歯止め)。
+    """
+    sent = 0
+    try:
+        for line in lines:
+            sent += 1
+            yield line
+    except Exception:
+        # 1 行目は meta なので、届いた文書は `sent - 1` 件 ——
+        # 取り込み側の「only N docs」とそのまま突き合わせられる
+        log.exception(
+            "collect %s: 素材を流している途中で落ちた(%d 行目 / 文書 %d 件を送信済み。"
+            "焼く予定は %s 件)",
+            name, sent, max(sent - 1, 0), expected,
+        )
+        raise
 
 
 async def collect_preview(name: str, sources: dict, sweep_name: str | None = None) -> dict:

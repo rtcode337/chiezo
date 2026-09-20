@@ -3446,7 +3446,6 @@ def bake_survey(item, sources: dict, previous, collected, only_new=False, edits=
     判断としては安全側に倒れる。
     """
     rows = _rows_of(previous)
-    edits_of = collected if hasattr(collected, "take") else Edits(collected)
     diff: dict = {}
     limit = _expiry_limit(item)
     rules = normalize_verify_tags(item.verify_tags)
@@ -3460,7 +3459,13 @@ def bake_survey(item, sources: dict, previous, collected, only_new=False, edits=
     expired = 0
     first_title = None
 
-    for doc in stream_docs(item, rows(), edits_of, only_new, edits, diff):
+    # **2 周目とまったく同じものを渡す。** ここだけ `Edits` に包んで渡していたが、
+    # `_incoming_urls` は「見出しで引ける形」を抽出の名簿とみなして空を返すので、
+    # **数える周だけ URL の重複判定が効かなかった** —— 同じ記事が別の見出しで
+    # 流れてくるフィードでは、数える周が 1 件多く数え、その数が取り込み側の
+    # 下限になる(`bake_lines` の meta)。**焼き上がった世代が「1 件足りない」で
+    # 捨てられる**(本番で `validation failed: only 105 docs (< 106)`)
+    for doc in stream_docs(item, rows(), collected, only_new, edits, diff):
         if limit is not None and _doc_time(doc) < limit:
             expired += 1
             continue

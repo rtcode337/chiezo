@@ -2182,6 +2182,65 @@ class TestTheLedgerCountFollowsTheContents:
             {"title": "むかしの人", "tags": ["地域:日本", "年代:1800"]},
         ) is not None
 
+    def test_counting_and_streaming_agree(self, sample):
+        """**数える周と流す周は、同じ件数でなければならない。**
+
+        数えた数がそのまま取り込み側の下限になる(`bake_lines` の meta の
+        `min_docs`)ので、1 件でも食い違うと**焼き上がった世代が「足りない」で
+        捨てられる** —— 本番で `validation failed: only 105 docs (< 106)`。
+
+        食い違っていたのは**同じ URL の 1 件**。数える周だけ `Edits` に包んで
+        渡していて、`_incoming_urls` がそれを抽出の名簿とみなして空を返すので、
+        URL の重複判定が効かなかった(同じ記事が別の見出しで流れてくる
+        フィードでは普通に起きる)。
+        """
+        collect.update("news", kind="stock", keep_days=0)
+        item = collect.get("news")
+        previous = [{
+            "doc_id": 1, "title": "先に入ったほう", "opening": "o", "body": "b",
+            "tags": [], "updated_at": "2026-09-01T00:00:00+00:00",
+            "extra": {"url": "https://example.com/kiji"},
+        }]
+        collected = [
+            # **同じ記事、別の見出し**(配信元が違うと普通に起きる)
+            {"title": "記事名 - サイト名", "body": "x", "url": "https://example.com/kiji"},
+            {"title": "別の記事", "body": "x", "url": "https://example.com/hoka"},
+        ]
+
+        def rows():
+            return iter(previous)
+
+        plan = collect.bake_survey(item, {}, rows, collected, False, False)
+        streamed = list(collect.bake_lines(
+            item, {}, rows, collected, False, False, plan, "機械収集", True, set()
+        ))
+
+        assert plan["rows"] == len(streamed) - 1, "1 行目は meta"
+        assert plan["rows"] == 2, "同じ URL の 1 件は足さない(前世代 1 + 新しい 1)"
+
+    def test_a_stream_that_breaks_says_where_it_broke(self, sample, monkeypatch, caplog):
+        """**流し始めたら断れない**ので、途中で落ちると「短いだけの正しい素材」に
+        なる。受け取る側は行数で気づくが(`meta.min_docs`)、気づけるのは
+        「足りない」ことだけ —— **なぜ切れたかはこちらにしか無い**。
+        """
+        import logging
+
+        import app.main as m
+
+        def _breaks():
+            yield '{"meta": {}}'
+            yield '{"title": "1 件目"}'
+            raise RuntimeError("途中で落ちた")
+
+        with caplog.at_level(logging.ERROR, logger="chiezo.app"), \
+                pytest.raises(RuntimeError):
+            list(m._logged_stream(_breaks(), "news", 9))
+
+        [record] = [r for r in caplog.records if "素材を流している途中" in r.message]
+        assert "news" in record.getMessage()
+        assert "2 行目" in record.getMessage()
+        assert "文書 1 件" in record.getMessage()
+
     def test_merging_never_makes_a_range_that_holds_nothing(self, sample):
         """**順が逆のまま帯を組むと、その範囲の文書がどこにも入らなくなる。**
 
