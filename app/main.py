@@ -43,6 +43,7 @@ from app import (
     db,
     extract,
     feeds,
+    logs,
     machine_store,
     media,
     media_backends,
@@ -87,6 +88,10 @@ from app.views import chat as views_chat
 from app.views import media_ask as views_media_ask
 from app.views import media_compare as views_media_compare
 from app.views import todo as views_todo
+
+# **控えを出せるようにしてから他を読む。** uvicorn は自分のロガーしか設定しないので、
+# ここで手を入れないと `chiezo.*` の INFO は 1 行も出ない(`app/logs.py`)
+logs.setup()
 
 log = logging.getLogger("chiezo.app")
 

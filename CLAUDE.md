@@ -2027,6 +2027,16 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       わけではない —— マニフェストだけ置く
     - **外の部品は読まない**(LAN 内・オフラインで動く前提)。JS が動かなければ
       何も起きないだけで、画面はそのまま使える
+  - `app/logs.py` — **chiezo-app の控えの出し方**。**既定では 1 行も出ていなかった** ——
+    uvicorn は自分の 3 つのロガーしか設定せず、`chiezo.*` の実効レベルは WARNING の
+    まま(`log.info` は全部捨てられていた)。しかも WARNING 以上は Python の最後の
+    受け皿が拾うので、**時刻もロガー名も付かない裸の行**になり、`docker logs` を
+    時刻で絞っても 1 件も当たらない(実際にそうなった)。
+    **時刻は日本時間**(取り込み側の控えと揃える。固定の +09:00)、
+    **`chiezo` にだけ handler を付ける**(root だと uvicorn の行まで二重に出る)、
+    **`propagate` は切らない**(切るとテストの `caplog` が拾えない。root に
+    handler が無いので二重にはならない)。`CHIEZO_LOG_LEVEL` で変えられ、
+    読めない値は既定へ倒す —— 綴りを間違えて控えが丸ごと消えるのがいちばん困る
   - `app/deps.py` — **REST と画面が共有する下ごしらえ**(`get_source`、ORDER BY 断片の
     `exact_title_first` / `relevance_order`、古い DB を断る `require_*`)。
     **ここは app の他モジュールを import しない** —— views が main を import すると
