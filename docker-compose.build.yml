@@ -9,22 +9,9 @@
 # タグを :local にしてあるのは、pull した本番イメージと取り違えないため。
 # 「答える」層(推論・検索エンジン)は公開イメージをそのまま使うのでここには出てこない。
 #
-# app だけコンテキストがリポジトリのルート。やること画面(tasks-frontend/)を同じ
-# イメージへ焼くので、app/ の中だけでは足りない(CI も同じ組み合わせでビルドしている)。
-# 手元では data/ が数十 GB あるが、ルートの .dockerignore が除くので daemon へは送られない。
 services:
   chiezo-app:
-    build:
-      context: .
-      dockerfile: app/Dockerfile
-    image: ghcr.io/rtcode337/chiezo-app:local
-
-  # やること画面も同じイメージ。ここに書いておかないと、手元ビルドのつもりで
-  # GHCR の公開イメージを pull することになる(画面側の変更が反映されない)。
-  chiezo-tasks:
-    build:
-      context: .
-      dockerfile: app/Dockerfile
+    build: ./app
     image: ghcr.io/rtcode337/chiezo-app:local
 
   chiezo-trigger:

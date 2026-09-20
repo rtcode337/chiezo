@@ -8,7 +8,7 @@
 
 | 概念                     | 表現 |
 |--------------------------|------|
-| タスク                   | tag `todo` の文書 |
+| タスク                   | tag `task` の文書 |
 | 状態 未着手              | 状態のタグが無い(既定。既存のメモに手を入れずに済む) |
 | 状態 着手中 / 完了       | tag `着手中` / `完了` |
 | 「直すのが大変そう」の印 | tag `難所`(状態とは別軸) |
@@ -1033,84 +1033,3 @@ def _import_into(
                 flagged=bool(item.get("flagged")),
             )
 
-
-# ---- そのほかのメモ(どの画面にも載らないもの)-------------------------------
-#
-# タスク・プロジェクト・ルールは構造タグで表しているので、**そのどれも持たないメモ**が
-# ここに落ちる(決定・環境・runbook・トラブルシュート…)。短期記憶に溜まる大半は
-# こちらで、画面から見る手段がここまで無かった。
-
-# 画面が持つ 3 つの入れ物。これを持つものは専用の画面にいるので、そのほかからは外す。
-CONTAINER_TAGS = (TAG_TASK, TAG_PROJECT, TAG_RULE)
-
-# 1 ページの上限。短期記憶は数十〜数千件なので、深追いせず頭から見る作り。
-NOTE_PAGE_SIZE_MAX = 200
-
-
-@dataclass(frozen=True)
-class Note:
-    doc_id: int
-    title: str
-    body: str
-    tags: list[str]
-    created_at: str
-    updated_at: str
-
-
-def _note_of(row) -> Note:
-    return Note(
-        doc_id=row["doc_id"],
-        title=row["title"],
-        body=row["body"] or "",
-        tags=_tags_of(row),
-        created_at=_created_at(row),
-        updated_at=row["updated_at"],
-    )
-
-
-def list_notes(tag: str | None = None, limit: int = 50, offset: int = 0) -> tuple[list[Note], int]:
-    """どの画面にも載らないメモを新しい順に。件数も返す。
-
-    上限をここで担保するのは `notes.recall()` と同じ理由で、REST の `Query` は
-    HTTP の口にしか効かないため(SQLite は `LIMIT -1` を無制限と解釈する)。
-    """
-    path = notes.require_path()
-    notes.ensure_db()
-    limit = max(1, min(int(limit), NOTE_PAGE_SIZE_MAX))
-    offset = max(0, int(offset))
-    where = [
-        "d.doc_id NOT IN (SELECT doc_id FROM doc_tags WHERE tag IN"
-        f" ({','.join('?' * len(CONTAINER_TAGS))}))"
-    ]
-    params: list = list(CONTAINER_TAGS)
-    for name in notes.split_tags(tag):
-        where.append("d.doc_id IN (SELECT doc_id FROM doc_tags WHERE tag = ?)")
-        params.append(name)
-    clause = " WHERE " + " AND ".join(where)
-    (total,) = db.query(path, f"SELECT COUNT(*) FROM docs d{clause}", tuple(params))[0]
-    rows = db.query(
-        path,
-        f"SELECT {_ROW_COLUMNS} FROM docs d{clause}"
-        " ORDER BY d.updated_at DESC, d.doc_id DESC LIMIT ? OFFSET ?",
-        (*params, limit, offset),
-    )
-    return [_note_of(row) for row in rows], total
-
-
-def note_tags() -> list[tuple[str, int]]:
-    """そのほかのメモに付いているタグと件数(多い順)。絞り込みの候補に使う。
-
-    `tag_counts` は短期記憶ぜんぶを数えているので、ここでは使えない ——
-    タスクやルールに付いたぶんまで混ざる。
-    """
-    path = notes.require_path()
-    notes.ensure_db()
-    rows = db.query(
-        path,
-        "SELECT dt.tag AS tag, COUNT(*) AS docs FROM doc_tags dt"
-        " WHERE dt.doc_id NOT IN (SELECT doc_id FROM doc_tags WHERE tag IN"
-        f" ({','.join('?' * len(CONTAINER_TAGS))}))"
-        " GROUP BY dt.tag ORDER BY docs DESC, tag",
-        tuple(CONTAINER_TAGS),
-    )
-    return [(row["tag"], row["docs"]) for row in rows]

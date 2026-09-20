@@ -1907,61 +1907,6 @@ class TestCompareAndPick:
         assert err.value.status_code == 404
 
 
-class TestCompareApi:
-    """やること層（外に出す面）から見比べと採用ができること。
-
-    **生成の口はここに無い。** 課金が走るものは載せない、という切り分けを
-    崩していないかも一緒に見る。
-    """
-
-    @pytest.fixture()
-    def client(self, state, tmp_path, monkeypatch):
-        """ログイン済みのやること層。認証を素通しさせない(画面が踏む経路をそのまま試す)。"""
-        from fastapi.testclient import TestClient
-
-        monkeypatch.setenv("CHIEZO_NOTES_DIR", str(tmp_path / "notes"))
-        monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client")
-        monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "test-secret")
-        monkeypatch.setenv("ALLOWED_EMAIL", "someone@example.com")
-        from app import tasks_auth
-        from app.tasks_app import create_app
-
-        session_id = tasks_auth._store(
-            "user", tasks_auth.SESSION_TTL, email="someone@example.com", name="Someone"
-        )
-        csrf = "test-csrf-token"
-        with TestClient(create_app(), headers={tasks_auth.CSRF_HEADER: csrf}) as c:
-            c.cookies.set(tasks_auth.SESSION_COOKIE, session_id)
-            c.cookies.set(tasks_auth.CSRF_COOKIE, csrf)
-            yield c
-
-    def test_組と採用が画面から扱える(self, client):
-        a = media.create_job("案A", backend="comfyui", group="ホームランの音")
-        media.create_job("案B", backend="comfyui", group="ホームランの音")
-
-        got = client.get("/api/media/groups").json()
-        named = [g for g in got["groups"] if g["group"] == "ホームランの音"]
-        assert len(named) == 1 and named[0]["count"] == 2
-
-        # 一覧から開くと、そこで初めて案の中身が来る
-        detail = client.get("/api/media/groups/ホームランの音").json()
-        assert [j["id"] for j in detail["jobs"]] == [a["id"], detail["jobs"][1]["id"]]
-        assert client.get("/api/media/groups/無い組").status_code == 404
-
-        client.post(f"/api/media/jobs/{a['id']}/pick", json={"note": "短いほう"})
-        picks = client.get("/api/media/picks").json()["picks"]
-        assert [p["id"] for p in picks] == [a["id"]]
-        assert picks[0]["picked_note"] == "短いほう"
-
-        client.delete(f"/api/media/jobs/{a['id']}/pick")
-        assert client.get("/api/media/picks").json()["picks"] == []
-
-    def test_生成の口は外に出していない(self, client):
-        # 総取りの SPA は GET/HEAD しか受けないので、POST は 405 になる(いずれにせよ届かない)
-        for path in ("/v1/media/image", "/v1/media/audio", "/v1/media/video"):
-            assert client.post(path, json={"prompt": "x"}).status_code in (404, 405)
-
-
 class TestFailuresAreRecorded:
     """生成の失敗も、会話と同じ控え(`app/ai_log.py`)に残ること。
 

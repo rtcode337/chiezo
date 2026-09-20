@@ -27,6 +27,3 @@ models/
 # docs/build-on-another-machine.md にあるので、このフォルダは丸ごと管理外)
 handoff/
 
-# やること画面(Vue)のビルド成果物と依存。イメージの中でビルドするのでコミットしない
-tasks-frontend/node_modules/
-tasks-frontend/dist/

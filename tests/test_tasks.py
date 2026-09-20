@@ -12,8 +12,8 @@ from app import tasks
 def notes_dir(tmp_path, monkeypatch):
     directory = tmp_path / "notes"
     monkeypatch.setenv("CHIEZO_NOTES_DIR", str(directory))
-    # プロジェクトの定義は設定の置き場に入る（覚えたことではなく設定なので）。
-    # 本番の chiezo-tasks も両方を持っている
+    # プロジェクトの定義は設定の置き場に入る（覚えたことではなく設定なので）ので、
+    # メモの置き場と両方が要る
     monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
     return directory
 
@@ -521,9 +521,3 @@ class TestProjectsAreOneRecord:
             tasks.list_projects()
         assert e.value.status_code == 400
         assert tasks.PROJECTS_BROKEN in str(e.value.detail)
-
-    def test_it_does_not_show_up_in_other_notes(self, client):
-        """`project` タグを持つので「そのほかのメモ」には出ない。"""
-        tasks.create_project("arrow-puzzle")
-        items, total = tasks.list_notes()
-        assert total == 0 and items == []

@@ -1,0 +1,9 @@
+# ビルドの文脈は app/ の中(ingest・bridge と同じ)。以前はリポジトリのルートを
+# 文脈にしていて、やること画面(Vue)を同じイメージへ焼くために data/ や models/ を
+# 除く指定がここに要った —— その画面は管理画面に畳んだので、除くのは手元の残骸だけ。
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+Dockerfile
+.dockerignore

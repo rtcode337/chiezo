@@ -73,48 +73,17 @@ def test_standalone_covers_base_env():
     )
 
 
-def test_standalone_keeps_the_tasks_service_commented_out():
-    """やること層は単体定義では既定で立てないこと。
+def test_nothing_is_meant_to_be_published():
+    """**外に出す面を持たないこと。** Chiezo は安全なネットワークの中からしか触らせない。
 
-    画面は本体(`chiezo-app` の `/tasks`)からも認証なしで使える。このサービスが
-    要るのは**外へ公開する**ときだけで、そのときは認証の設定を 3 つとも埋める必要が
-    ある —— 既定で立ててしまうと、埋まっていないまま 401 を返し続ける口が開く。
+    かつては、やること層だけを Google のログイン付きで外へ出す `chiezo-tasks` が
+    いた。あの面を畳んだので、認証を持つサービスも、それ専用のポートも残っていない
+    —— 残しておくと「外に出してもよい口がある」と読めてしまう。
     """
-    doc = yaml.safe_load(STANDALONE.read_text(encoding="utf-8"))
-    assert "chiezo-tasks" not in doc["services"], (
-        "単体定義の chiezo-tasks は既定でコメントアウトしておくこと"
-        "(外へ公開する人だけがコメントを外す)"
-    )
-
-
-def test_standalone_still_documents_the_tasks_service():
-    """コメントアウトしても、外に出すときに要る設定は書き残しておくこと。
-
-    ここが取り残されると、単体定義で立てた環境だけ「画面が無い」か、
-    もっと悪くて「設定を書く場所が分からないまま 401 が返り続ける」になる。
-    """
-    text = STANDALONE.read_text(encoding="utf-8")
-    assert "#chiezo-tasks:" in text
-    base = _service_env_keys(BASE, "chiezo-tasks")
-    # 認証まわりは CHIEZO_ で始まらないので、名前を直に並べて見張る
-    base |= {"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "ALLOWED_EMAIL", "PUBLIC_BASE_URL"}
-    missing = sorted(k for k in base if k not in text)
-    assert not missing, f"やること層の設定が単体定義に無い: {missing}"
-
-
-def test_the_tasks_service_shares_the_api_image():
-    """同じイメージから起動していること(コマンドだけで面を分ける作りの担保)。"""
-    doc = yaml.safe_load(BASE.read_text(encoding="utf-8"))
-    services = doc["services"]
-    assert services["chiezo-tasks"]["image"] == services["chiezo-app"]["image"]
-    assert services["chiezo-tasks"]["command"][1] == "app.tasks_app:app"
-
-
-def test_only_the_tasks_service_is_meant_to_be_public():
-    """本体は 7010、やること層は 7015。ポートが混ざっていないこと。"""
-    doc = yaml.safe_load(BASE.read_text(encoding="utf-8"))
-    assert doc["services"]["chiezo-app"]["ports"] == ["7010:7010"]
-    assert doc["services"]["chiezo-tasks"]["ports"] == ["7015:7015"]
+    for path in (BASE, STANDALONE):
+        text = path.read_text(encoding="utf-8")
+        for token in ("chiezo-tasks", "GOOGLE_CLIENT_ID", "ALLOWED_EMAIL", "7015"):
+            assert token not in text, f"{path.name} に外へ出す面の名残がある: {token}"
 
 
 def test_standalone_has_no_answer_containers():

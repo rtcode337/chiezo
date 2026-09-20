@@ -293,7 +293,6 @@ docker build ./api \
 | `chiezo-trigger` | 長期記憶への書き込みを起こす(初期化・再構築・削除) | 常駐(軽い) |
 | `chiezo-ingest` | 管理画面を使わず CLI から取り込むとき | 起動しない(profile `ingest`) |
 | `searxng` | web 検索の道具が引く検索エンジン。`CHIEZO_WEB_SEARCH_URL` が空なら使わない | 常駐 |
-| `chiezo-tasks` | [やること画面](tasks.md)。`chiezo-app` と同じイメージで command 違い | 常駐 |
 
 取り込みを一切しない構成にするなら、`chiezo-trigger` のサービスごと消して構いません
 (`chiezo-app` はこれに依存していません)。その状態では管理画面の初期化・再構築・削除の

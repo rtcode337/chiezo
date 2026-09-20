@@ -49,7 +49,6 @@ from app import (
     media_providers,
     notes,
     providers,
-    tasks_api,
     usage,
     usage_store,
     websearch,
@@ -87,7 +86,7 @@ from app.views import browse as views_browse
 from app.views import chat as views_chat
 from app.views import media_ask as views_media_ask
 from app.views import media_compare as views_media_compare
-from app.views import tasks as views_tasks
+from app.views import todo as views_todo
 
 log = logging.getLogger("chiezo.app")
 
@@ -2277,8 +2276,7 @@ def collect_create(request: Request, body: CollectionCreate):
 
 
 # **固定のパスは `/{name}` より先に宣言する。** 後ろに置くと `sources` や `fetch` が
-# 名前として解釈され、「収集「sources」がありません」で 404 になる
-# (`app/tasks_api.py` で同じ罠を踏んでいる)。
+# 名前として解釈され、「収集「sources」がありません」で 404 になる。
 @app.get("/v1/collect/sources")
 def collect_sources_catalog():
     """焼ける収集の一覧(ingest が引くカタログ)。
@@ -3640,31 +3638,10 @@ app.include_router(views_browse.router)
 app.include_router(views_media_ask.router)
 app.include_router(views_media_compare.router)
 app.include_router(views_chat.router)
-app.include_router(views_tasks.router)
-
-# ---- やること層(タスク・ルール)------------------------------------------------
-#
-# 外に出す面(`app/tasks_app.py` = chiezo-tasks)と**同じ REST をそのまま**、
-# 認証なしで載せる。本体は LAN 内・認証なしの前提で、ここには既にメモを消せる口も
-# 取り込みを起こせる管理画面もある —— やること層だけ守っても増えるものが無い。
-# 画面は上の `views_tasks`(`/tasks`)。
-app.include_router(tasks_api.router)
-# エラーの形は面ごとに違う(本体は `{"error": "..."}`、やること層は
-# `{"error": {"code", "message"}}`)。例外ハンドラはアプリ単位でしか差せないので、
-# 効かせる範囲を `/api` の下に限る。
-tasks_api.install_error_handlers(app, only_under="/api/")
-
-
-@app.get("/api/me")
-def tasks_me():
-    """画面が最初に引く「いま誰か」。
-
-    本体側は認証を持たないので、**誰でもない代わりに埋め込みであることを伝える**。
-    画面はこれを見てログイン画面へ飛ばすのをやめ、ログアウトの代わりに管理画面への
-    戻り口を出す(`tasks-frontend/src/components/AppHeader.vue`)。
-    外に出す面では `app/tasks_auth.py` の同じパスが本物の利用者を返す。
-    """
-    return {"email": "", "name": None, "pictureUrl": None, "embedded": True}
+# やること層(タスク・ルール)は管理画面の 1 面(`/admin/todo`)。**専用の REST も
+# 別プロセスも持たない** —— Chiezo は安全なネットワークの中からしか触らせない、と
+# 決めたので、外に出すための認証つきの面(旧 chiezo-tasks)ごと畳んである。
+app.include_router(views_todo.router)
 
 
 # ---- MCP(Streamable HTTP) ---------------------------------------------------

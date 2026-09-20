@@ -38,6 +38,7 @@ from app import (
     providers,
     registry,
     settings_store,
+    tasks,
     usage,
     usage_store,
     workers,
@@ -1670,6 +1671,10 @@ def _answer_status_html() -> str:
 # 玄関に要約を置き、深いところは選んで入る。
 PAGES = (
     ("/admin/memory", "記憶", "溜めて引く。短期記憶・長期記憶・初期化"),
+    # **記憶の隣に置く。** タスクもルールも短期記憶のメモにタグで載っているだけで、
+    # 別の置き場を持たない —— 記憶を見に来た流れでそのまま開ける位置にする
+    # (かつては別プロセスの SPA で、帯からは外部リンクのように見えていた)
+    ("/admin/todo", "ToDo", "タスクとルール。短期記憶の上にタグで載る層"),
     # **記憶から切り出した面。** 記憶の中に畳んでいた頃は、収集を 1 本見るのに
     # 長期記憶の一覧と初期化の表をまたいでいた —— 無人で回る層は毎日見に来る側で、
     # 一度入れたら開かない表と同じ高さに置く理由が無い。ワーカーも一緒に置く
@@ -1677,9 +1682,6 @@ PAGES = (
     ("/admin/collect", "収集", "無人で回る層。巡回・区画・変更履歴と、回す相手の並び"),
     ("/admin/ai", "AI と鍵", "貸し出すもの。話せる相手、使用量、依頼の履歴"),
     ("/admin/media", "見比べ", "作らせたものを並べて選ぶ。手元のものも持ち込める"),
-    # **外に開く面。** 認証なしで開くので、帯からも行けるようにしておく ——
-    # 記憶の画面の中に埋めていた頃は、そこを開いた人しか存在に気づけなかった
-    ("/tasks/", "やること", "タスクとルール。短期記憶の上にタグで載る層"),
     ("/admin/server", "その他", "このサーバー。Claude Code 連携といま動いているビルド"),
 )
 
@@ -1798,6 +1800,7 @@ def admin(request: Request):
             f"話せる相手 {len(answer.backend_names())} 件。"
             + (f"<strong>いま {len(running)} 件走っている</strong>" if running else "いま走っているものは無い")
         ),
+        "/admin/todo": _todo_summary(),
         "/admin/server": esc(build_info.describe().splitlines()[0] if build_info.describe() else ""),
     }
 
@@ -1821,6 +1824,20 @@ def admin(request: Request):
 </div>
 """
     return HTMLResponse(content=page_shell("管理画面", body))
+
+
+def _todo_summary() -> str:
+    """玄関に出す ToDo の概況。**短期記憶が無効なら数えない**(置き場が無い)。"""
+    if not notes.is_enabled():
+        return '<span class="muted">短期記憶が無効なので置けません</span>'
+    active = tasks.list_active_tasks()
+    doing = sum(1 for t in active if t.status == tasks.STATUS_IN_PROGRESS)
+    rules = tasks.list_rules()
+    enabled = sum(1 for r in rules if r.enabled)
+    return (
+        f"未完了 {len(active)} 件(着手中 {doing} 件)。"
+        f"ルール {len(rules)} 本(有効 {enabled} 本)"
+    )
 
 
 def _running_html(running: list[dict]) -> str:
