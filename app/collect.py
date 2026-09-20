@@ -2742,6 +2742,40 @@ class Edits:
         self._used = set()
 
 
+def repartition(name: str, sources: dict) -> list[dict]:
+    """**台帳の割り直しだけを走らせる**(AI も焼きも動かさない)。組んだ台帳を返す。
+
+    **焼くのと同じ回に乗っていたのが重かった。** 割り直しは母集団を丸ごと 1 周
+    舐めて全点をメモリに載せるので、素材を流すのと同時に走ると、そこだけ
+    山が二つ重なる —— 本番で、台帳が空の状態から 686,602 件を割り直す回が、
+    素材を 280,270 件まで流したところで切れた。ふだんは台帳を使い回すので
+    起きないが、**台帳が消えると次の 1 回に必ず乗る**(いちばん重い回が、
+    いちばん条件の悪いときに来る)。
+
+    切り離せると、**直す前に台帳だけ整えておける**。押しても:
+
+    - **AI を呼ばない**(枠を使わない)
+    - **焼かない**(長期記憶も世代も動かない)
+    - **進み具合も次回の予定も動かさない** —— 動かすのは台帳だけ
+
+    **巡回の記録は引き継ぐ**(`partitioning.refresh`)ので、一周は巻き戻らない。
+    **割り直しが要らなければ数え直すだけ**(`plan_partitions` の判断そのまま)——
+    ここだけ別の規則にすると、ボタンで組んだ台帳と巡回が組む台帳が食い違う。
+    """
+    item = get(name)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"収集 {name} がありません")
+    if not item.partition:
+        raise HTTPException(
+            status_code=400,
+            detail="この収集は区画で回っていません(割り直すものがありません)",
+        )
+    ledger = plan_partitions(item, sources, lambda: stream_previous(name, sources))
+    _replace_one(name, replace(get(name), partitions=ledger, updated_at=_iso(_now())))
+    log.info("repartition %s: %d 区画", name, len(ledger))
+    return ledger
+
+
 def plan_partitions_next(
     item: Collection, sources: dict, previous, collected,
     only_new: bool = False, edits: bool = False,

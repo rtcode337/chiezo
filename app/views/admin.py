@@ -166,6 +166,16 @@ def _memory_hint(meta: dict) -> str:
     return f"{memory_gb:.0f} GiB" if memory_gb else ""
 
 
+def _baking_now(job: dict | None, name: str) -> bool:
+    """いま**その収集を**焼いている最中か。
+
+    **相手が誰かまで見る。** 取り込みは同時に 1 本しか受けないが、別のソースを
+    焼いている最中に台帳を組み直すのは構わない —— ぶつかるのは同じ収集の
+    ときだけ(あちらも終わりに台帳を書き戻す)。
+    """
+    return bool(job and job.get("state") == "running" and job.get("source") == name)
+
+
 def run_buttons_disabled(job: dict | None) -> str:
     """取り込みを起こすボタンの `disabled` 属性。
 
@@ -1002,7 +1012,34 @@ def _verify_tags_json(item) -> str:
     return json.dumps(item.verify_tags, ensure_ascii=False, indent=2) if item.verify_tags else ""
 
 
-def _partition_html(item, src=None) -> str:
+def _repartition_form(item, busy: bool) -> str:
+    """**台帳の割り直しだけを走らせる口。**
+
+    割り直しは母集団を丸ごと 1 周舐めるので、**焼くのと同じ回に乗ると山が二つ
+    重なる** —— 本番で、台帳が空の状態から 686,602 件を割り直す回が、素材を
+    280,270 件まで流したところで切れた。先に台帳だけ整えておければ、次の回は
+    ふだんどおり「使い回すだけ」で済む。
+
+    **押しても AI は動かないし、焼きもしない**ので、確認は出さない ——
+    巡回の記録も引き継ぐ(一周は巻き戻らない)。取り消せない操作ではない。
+
+    **焼いている最中は押せない。** あちらも終わりに台帳を書き戻すので、
+    どちらが残るかが順番次第になる。
+    """
+    if not item.partition:
+        return ""
+    off = " disabled" if busy else ""
+    note = "この収集を焼いている最中は押せません" if busy else (
+        "母集団を数え直して区画を割り直します(AI は動かず、焼きもしません)"
+    )
+    return (
+        f'<form class="init-form" method="post"'
+        f' action="/admin/collect/{esc(quote(item.name))}/repartition"{off}>'
+        f'<button type="submit"{off} title="{esc(note)}">区画を割り直す</button></form>'
+    )
+
+
+def _partition_html(item, src=None, busy: bool = False) -> str:
     """区画の進み具合。持っていない収集には何も出さない。
 
     **出すのは「どう割れたか」だけ。** どこまで回ったかは巡回ごとに違うので
@@ -1018,6 +1055,7 @@ def _partition_html(item, src=None) -> str:
         return (
             '<p class="muted">区画: まだ割っていません'
             f"(次の実行で対象の空間を割ってから回り始めます){_spread_from_html(item)}。</p>"
+            f"{_repartition_form(item, busy)}"
         )
     # **頭の 10 件だけ出して、残りは畳む。** 全部を出すと 325 行が面を埋めて、
     # その下にある変更履歴まで押し出される。**捨てはしない** —— ここを読みに来るのは
@@ -1040,6 +1078,7 @@ def _partition_html(item, src=None) -> str:
     return (
         f'<p class="muted">区画: {total:,}{_spread_from_html(item)}'
         f'{_uncovered_html(item, src)}</p>'
+        f"{_repartition_form(item, busy)}"
         "<table><thead><tr><th>区画</th><th>母集団</th><th>見終えた巡回(日本時間)</th></tr></thead>"
         f"<tbody>{head}</tbody></table>{more}"
     )
@@ -1378,7 +1417,9 @@ def _redo_form(item, disabled: str) -> str:
     )
 
 
-def _collect_detail_html(item, disabled: str, sources: dict | None = None) -> str:
+def _collect_detail_html(
+    item, disabled: str, sources: dict | None = None, busy: bool = False,
+) -> str:
     """1 つの収集の中身(プロンプト・進み具合・区画・直す口)。
 
     **畳まない。** 一覧の中で開いていた頃は、開くたびに表が縦へ伸びて、
@@ -1390,7 +1431,7 @@ def _collect_detail_html(item, disabled: str, sources: dict | None = None) -> st
         f'<p class="muted">進み具合(次の実行で {{cursor}} に入る値): '
         f'<code>{esc(item.cursor) or "(まだ無し)"}</code></p>'
         f"{_redo_form(item, disabled)}"
-        f"{_partition_html(item, (sources or {}).get(item.name))}"
+        f"{_partition_html(item, (sources or {}).get(item.name), busy)}"
         f"{_removed_html(item, sources or {})}"
         f"<details><summary>編集する</summary>"
         f'<form method="post" action="/admin/collect/{esc(item.name)}/edit" class="collect-form">'
@@ -3019,6 +3060,30 @@ async def admin_collect_redo(name: str, request: Request):
     return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
 
 
+@router.post("/admin/collect/{name}/repartition")
+def admin_collect_repartition(name: str, request: Request):
+    """**区画の割り直しだけを走らせる**(AI も焼きも動かさない)。
+
+    **焼くのと同じ回に乗っていたのが重かった。** 割り直しは母集団を 1 周舐めて
+    全点をメモリに載せるので、素材を流すのと重なると山が二つになる —— 本番で、
+    台帳が空の状態から 686,602 件を割り直す回が、素材を 280,270 件まで流した
+    ところで切れた。**台帳が消えると、いちばん重い回がいちばん条件の悪いときに
+    来る**ので、先に台帳だけ整えておける口を分けてある。
+
+    **焼いている最中は断る**(409)。あちらも終わりに台帳を書き戻すので、
+    どちらが残るかが順番次第になる。**画面でボタンを消すだけにしない** ——
+    口が受け付けるなら、いつか誰かが叩く。
+    """
+    collect.require_enabled()
+    if _baking_now(_fetch_trigger_status(), name):
+        raise HTTPException(
+            status_code=409,
+            detail="この収集を焼いている最中です(焼き終わってから押してください)",
+        )
+    collect.repartition(name, request.app.state.sources)
+    return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
+
+
 @router.post("/admin/collect/{name}/restart")
 async def admin_collect_restart(name: str, request: Request):
     """その巡回の**一周をやり直す**(区画の印を全部外す)。
@@ -3336,7 +3401,7 @@ def admin_collect_detail(
 {_sweep_table_body(item, disabled)}
 </tbody>
 </table>
-{_collect_detail_html(item, disabled, request.app.state.sources)}
+{_collect_detail_html(item, disabled, request.app.state.sources, _baking_now(job, name))}
 {_collect_running_html(name)}
 {_collect_changes_html(name=name, sweep=sweep)}
 {_changed_here_html(name, request.app.state.sources, sweep)}

@@ -16,6 +16,7 @@ import re
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -2063,6 +2064,64 @@ class TestTheLedgerCountFollowsTheContents:
         assert [p["key"] for p in ledger] == [p["key"] for p in item.partitions]
         assert [p["count"] for p in ledger] == [4, 5]
 
+
+    def test_the_ledger_can_be_rebuilt_on_its_own(self, sample, baked):
+        """**割り直しだけを走らせる口**(`collect.repartition`)。
+
+        焼くのと同じ回に乗っていると、母集団を 1 周舐めるぶんと素材を流すぶんで
+        山が二つ重なる —— 本番で、台帳が空の状態から 686,602 件を割り直す回が、
+        素材を 280,270 件まで流したところで切れた。先に台帳だけ整えておければ、
+        次の回は「使い回すだけ」で済む。
+        """
+        sources = baked([(f"見出し{i:03}", "本文") for i in range(40)])
+        collect.update("news", partition={"by": "title", "target": 10}, partitions=[])
+
+        ledger = collect.repartition("news", sources)
+
+        assert len(ledger) > 1
+        assert sum(p["count"] for p in ledger) == 40
+        # **控えに残る**(次の巡回はこれを使い回す)
+        assert collect.get("news").partitions == ledger
+
+    def test_rebuilding_the_ledger_keeps_the_lap(self, sample, baked):
+        """**一周は巻き戻さない**(`partitioning.refresh`)—— 押すたびに進み具合が
+        消えるのでは、重い回を先に済ませるための口として使えない。"""
+        sources = baked([(f"見出し{i:03}", "本文") for i in range(40)])
+        collect.update("news", partition={"by": "title", "target": 10}, partitions=[])
+        first = collect.repartition("news", sources)
+        collect.update("news", partitions=[
+            {**p, "visits": {"ざっと見る": "2026-09-20T04:00:00+00:00"}} for p in first
+        ])
+
+        again = collect.repartition("news", sources)
+
+        assert [p.get("visits") for p in again] == [
+            {"ざっと見る": "2026-09-20T04:00:00+00:00"} for _ in again
+        ]
+
+    def test_rebuilding_the_ledger_moves_nothing_else(self, sample, baked):
+        """**動かすのは台帳だけ** —— 進み具合も次回の予定も触らない
+        (触ると、台帳を整えるつもりで 1 回ぶん消費したように見える)。"""
+        sources = baked([(f"見出し{i:03}", "本文") for i in range(40)])
+        collect.update("news", partition={"by": "title", "target": 10},
+                       partitions=[], cursor="2026-09-01")
+        before = collect.get("news")
+
+        collect.repartition("news", sources)
+        after = collect.get("news")
+
+        assert after.cursor == before.cursor
+        assert after.next_run_at == before.next_run_at
+
+    def test_a_collection_without_partitions_is_refused(self, sample):
+        """割り直すものが無い。**黙って何もしない**にすると、押した人には
+        効いたのか効いていないのか読めない。"""
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as caught:
+            collect.repartition("news", {})
+
+        assert caught.value.status_code == 400
 
     def test_the_population_leaves_out_what_was_removed(self, sample):
         """**消したものは区画の母集団に入れない。**
@@ -4997,6 +5056,58 @@ class TestOpeningAPartition:
 
         assert "まだ割っていません" in html
         assert "35.681" in html and "139.767" in html and "近い順" in html
+
+    def test_the_ledger_can_be_rebuilt_from_the_screen(self, partitioned):
+        """**割り直しだけを押せる口を画面に出す。** 焼くのと同じ回に乗ると
+        山が二つ重なるので、先に台帳だけ整えておけるようにするため。"""
+        from app.views import admin
+
+        html = admin._partition_html(partitioned)
+
+        assert "区画を割り直す" in html
+        assert "/repartition" in html
+
+    def test_it_can_be_rebuilt_before_anything_is_cut(self, partitioned):
+        """**台帳が空のときこそ押したい**(次の回に重い割り直しが乗るのがそこ)。"""
+        from app.views import admin
+
+        collect.update("news", partitions=[])
+
+        assert "区画を割り直す" in admin._partition_html(collect.get("news"))
+
+    def test_it_cannot_be_pressed_while_that_collection_bakes(self, partitioned):
+        """あちらも終わりに台帳を書き戻すので、どちらが残るかが順番次第になる。"""
+        from app.views import admin
+
+        assert "disabled" in admin._partition_html(partitioned, busy=True)
+
+    def test_the_guard_is_at_the_door_too(self, partitioned, monkeypatch):
+        """**ボタンを消すだけにしない** —— 口が受け付けるなら、いつか誰かが叩く。"""
+        from app.views import admin
+
+        monkeypatch.setattr(
+            admin, "_fetch_trigger_status",
+            lambda: {"state": "running", "source": "news"},
+        )
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(sources={})))
+
+        with pytest.raises(HTTPException) as caught:
+            admin.admin_collect_repartition("news", request)
+
+        assert caught.value.status_code == 409
+
+    def test_another_source_baking_does_not_block_it(self, partitioned, monkeypatch):
+        """ぶつかるのは同じ収集のときだけ(取り込みは 1 本しか受けないが、
+        別のソースを焼いている最中に台帳を組み直すのは構わない)。"""
+        from app.views import admin
+
+        assert not admin._baking_now({"state": "running", "source": "ほか"}, "news")
+        assert admin._baking_now({"state": "running", "source": "news"}, "news")
+
+    def test_a_collection_without_partitions_has_no_button(self, sample):
+        from app.views import admin
+
+        assert "区画を割り直す" not in admin._partition_html(collect.get("news"))
 
     def test_it_says_nothing_when_the_lap_starts_at_the_corner(self, partitioned):
         from app.views import admin
