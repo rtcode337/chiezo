@@ -401,6 +401,13 @@ class Collection:
     # 起こしてある割り込みの依頼(`Focus`)。**同じ理由でここに置く** ——
     # 取り込みは収集の名前しか運べないので、頼んだ側が書いて渡す
     pending_focus: dict | None = None
+    # **次の 1 回だけの上書き**(区画の名指しと、頼む相手)。画面の「この区画で
+    # 1 回走らせる」が書き、素材を組むところで読んで消える。**保存ではない** ——
+    # 巡回の設定を書き換えずに 1 回だけ違う条件で走らせるためのもの。
+    # **割り込み(`pending_focus`)とは別物**: あちらは進み具合も区画の印も
+    # 動かさないが、こちらは**ふつうの回として走る**(印が付き、予定が進む)。
+    # 枠が細いときに「直したコードを 1 区画だけ本番の形で試す」がこれ
+    pending_run: dict | None = None
     # 作り直しで、前世代の何割を下回ったら断るか。0 なら守りを外す。
     # 足すほうでは使わない(そもそも減らないので)
     keep_ratio: float = DEFAULT_KEEP_RATIO
@@ -944,6 +951,63 @@ def normalize_focus(raw) -> Focus | None:
     )
 
 
+def normalize_run_once(raw) -> dict | None:
+    """**次の 1 回だけの上書き**を均す。中身が無ければ None。
+
+    枠が細いときに「直したコードを、1 区画だけ、空いている相手で、**本番の形で**
+    試したい」が普通に起きる。今までの道はどれも足りなかった:
+
+    - **今すぐ実行** …… 区画も相手も選べず、1 回で `per_run` 区画ぶんの枠が消える
+      (食事処なら 5 回の呼び出し)
+    - **ドライラン** …… 焼かないので、**焼く側で落ちる回を再現しない**
+    - **割り込み** …… 区画は選べるが、**進み具合も区画の印も動かない**
+      (試したいのは「ふつうの回」なので、動いてくれないと確かめたことにならない)
+    - **巡回の設定を直す** …… 直したまま定時の回が走り出す
+
+    だからここは**ふつうの回として走る**(印が付き、予定も進み具合も進む)。
+    上書きするのは「どこを見るか」と「誰に頼むか」の 2 つだけ。
+
+    **相手を替えたらモデルと考える量は引き継がない**(`_asked_of`)——
+    相手が変われば通る名前も違う(`sonnet` は codex には無い)。
+    **ワーカーも指定できる** —— 空いている相手へ回したいときに、いちばん効くのが
+    そこだから(枠を見て選ぶのはワーカーの仕事)。
+    """
+    if not isinstance(raw, dict):
+        return None
+    out = {
+        "partition": str(raw.get("partition") or "").strip(),
+        "backend": str(raw.get("backend") or "").strip()[:60],
+        "model": str(raw.get("model") or "").strip()[:80],
+        "effort": str(raw.get("effort") or "").strip()[:20],
+        "worker": str(raw.get("worker") or "").strip()[:40],
+    }
+    kept = {k: v for k, v in out.items() if v}
+    return kept or None
+
+
+def asked_for_run(sweep: Sweep, override: dict | None) -> Sweep:
+    """その 1 回だけ、頼む相手を差し替えた巡回。**定義は書き換えない**。
+
+    書き換えると、試し撃ちのつもりが次の定時の回にも効く —— 枠が細いときに
+    いちばん避けたい壊れ方(気づくのは枠が尽きてから)。
+    """
+    if not override:
+        return sweep
+    if worker := override.get("worker"):
+        # **ワーカーに渡す回は、モデルも考える量も持たせない** —— どの相手に
+        # 渡るかはそのときの枠で決まるので、ここで 1 つ書いても意味が決まらない
+        return replace(sweep, worker=worker, backend=None, model=None, effort=None)
+    if not override.get("backend"):
+        return sweep
+    return replace(
+        sweep,
+        worker="",
+        backend=override["backend"],
+        model=override.get("model") or None,
+        effort=override.get("effort") or None,
+    )
+
+
 def _stored() -> str | None:
     """**まとめて 1 件に入れていた頃**の定義(JSON の文字列)。無ければ None。
 
@@ -973,6 +1037,7 @@ def _from_json(item: dict) -> Collection:
         pending_focus=(
             focus.to_json() if (focus := normalize_focus(item.get("pending_focus"))) else None
         ),
+        pending_run=normalize_run_once(item.get("pending_run")),
         keep_ratio=normalize_keep_ratio(item.get("keep_ratio")),
         extract=extraction.to_json(extraction.normalize(item.get("extract"))),
         material=normalize_material(item.get("material")),
@@ -2072,6 +2137,9 @@ def record_result(
         # **走り終えたので、どの巡回を起こしてあるかは忘れる**
         pending_sweep="",
         pending_focus=None if focus else current.pending_focus,
+        # **1 回だけの上書きも忘れる**(次の定時の回まで残ると、頼んだ覚えのない
+        # 相手で、頼んだ覚えのない区画だけを見る回が走る)
+        pending_run=current.pending_run if focus else None,
         last_run_at=_iso(now),
         last_status=status,
         last_error=(error or "")[:500] or None,
@@ -2123,7 +2191,9 @@ def _advance(
     ]}
 
 
-def mark_pending(name: str, sweep: str | None = None) -> Collection:
+def mark_pending(
+    name: str, sweep: str | None = None, run_once: dict | None = None,
+) -> Collection:
     """どの巡回のぶんを起こすかだけを控える。**予定は進めない**。
 
     **起こす前に書く。** 取り込みは収集の名前しか運べない
@@ -2133,20 +2203,32 @@ def mark_pending(name: str, sweep: str | None = None) -> Collection:
     """
     current = get(name)
     this = sweep_named(current, sweep)
-    updated = replace(current, pending_sweep=this.name, updated_at=_iso(_now()))
+    # **1 回だけの上書きもここで書く。** `mark_started` は起こした後なので間に合わない
+    # —— 取り込みのほうが先に素材を取りに来ると、上書きがまだ無いまま
+    # ふつうの回として走る(名指しした区画ではないところを、別の相手が見る)
+    updated = replace(
+        current,
+        pending_sweep=this.name,
+        pending_run=normalize_run_once(run_once),
+        updated_at=_iso(_now()),
+    )
     _replace_one(name, updated)
     return updated
 
 
-def restore_pending(name: str, sweep: str) -> None:
+def restore_pending(name: str, sweep: str, run_once: dict | None = None) -> None:
     """控えた「次に起こす巡回」を元へ戻す(起こせなかったとき)。
 
     **書いてから起こす**作りなので、起こすのに失敗したぶんが残る ——
     残ると、**いま走っている取り込みがその巡回のつもりで素材を取りに来る**
     (押した覚えのない回が、押した覚えのない設定で走る)。
+
+    **1 回だけの上書きも一緒に戻す** —— 片方だけ戻すと、次に走る回が
+    名指しされた 1 区画だけを見て終わる(押した覚えのない回が、押した覚えの
+    ない狭さで走る)。
     """
     with suppress(HTTPException):
-        _replace_one(name, replace(get(name), pending_sweep=sweep))
+        _replace_one(name, replace(get(name), pending_sweep=sweep, pending_run=run_once))
 
 
 def mark_started(name: str, sweep: str | None = None) -> Collection:

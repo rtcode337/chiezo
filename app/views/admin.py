@@ -3084,6 +3084,52 @@ def admin_collect_repartition(name: str, request: Request):
     return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
 
 
+@router.post("/admin/collect/{name}/partition/run")
+async def admin_collect_partition_run(name: str, request: Request):
+    """**この区画だけを、ふつうの回として 1 回走らせる**(相手も選べる)。
+
+    枠が細いときに「直したコードを、1 区画だけ、空いている相手で試したい」が
+    普通に起きる。**ふつうの回として走る**ので、区画に印が付き、進み具合も
+    次回の予定も進む —— 割り込み(`/focus`)と分かれるのはここ 1 点で、
+    あちらは定時の巡回に影響を出さないのが約束。
+
+    **上書きは 1 回きりで保存しない。** 巡回の設定を直して試すと、直したまま
+    定時の回が走り出す(枠が細いときにいちばん避けたい壊れ方で、気づくのは
+    枠が尽きてから)。
+
+    **止めてある収集でも走らせる**(「今すぐ実行」と同じ理由。自動実行を止めた
+    うえで直したものを試す、がまさにこの口の用途)。
+    """
+    from app.main import start_collection_bake
+
+    collect.require_enabled()
+    form = await request.form()
+    key = str(form.get("partition") or "").strip()
+    if not key:
+        raise HTTPException(400, {"error": "区画が指定されていません"})
+    # **入口でも確かめる。** 開きっぱなしの画面から押されると、割り直しで消えた
+    # 鍵を名指しすることがある —— 取り込みを起こしてから気づくより、ここで断る
+    # ほうが 1 本ぶん安い(素材を作る側にも同じ確かめがある)
+    if not any(p["key"] == key for p in collect.get(name).partitions):
+        raise HTTPException(409, {
+            "error": f"区画「{key}」は台帳にありません",
+            "hint": "割り直しで鍵が変わったかもしれません(区画の面から選び直してください)",
+        })
+    chosen = str(form.get("backend") or "")
+    start_collection_bake(name, str(form.get("sweep") or "") or None, {
+        "partition": key,
+        # **相手とワーカーは同じ欄で選ぶ**(画面の流儀。両方選べると、
+        # どちらが効くのか読めなくなる)
+        "worker": workers.named_in(chosen),
+        "backend": "" if workers.named_in(chosen) else chosen,
+        "model": str(form.get("model") or ""),
+        "effort": str(form.get("effort") or ""),
+    })
+    return RedirectResponse(
+        url=f"/admin/collect/{quote(name)}/partition?key={quote(key)}", status_code=303,
+    )
+
+
 @router.post("/admin/collect/{name}/restart")
 async def admin_collect_restart(name: str, request: Request):
     """その巡回の**一周をやり直す**(区画の印を全部外す)。
@@ -3434,8 +3480,10 @@ def admin_collect_partition(
         body = '<p class="muted">この収集は区画を持っていません。</p>'
     else:
         members = collect.partition_docs(item, sources, key)
-        body = _seen_when_html(item, key) + _partition_members_html(
-            name, item, key, members, sources
+        body = (
+            _seen_when_html(item, key)
+            + _try_here_html(item, key, run_buttons_disabled(_fetch_trigger_status()))
+            + _partition_members_html(name, item, key, members, sources)
         )
     return HTMLResponse(content=page_shell(
         f"{key} / {name}",
@@ -3447,6 +3495,56 @@ def admin_collect_partition(
 <p class="muted"><a href="/admin/collect/{esc(quote(name))}">{esc(name)} へ戻る</a></p>
 """,
     ))
+
+
+def _try_here_html(item, key: str, disabled: str) -> str:
+    """**この区画だけを、ふつうの回として 1 回走らせる**(相手も選べる)。
+
+    枠が細いときに「直したコードを、1 区画だけ、空いている相手で試したい」が
+    普通に起きる。今までの道はどれも足りなかった:
+
+    - **今すぐ実行** …… 区画も相手も選べず、1 回で `per_run` 区画ぶんの枠が消える
+      (食事処なら 5 回の呼び出し)
+    - **ドライラン** …… 焼かないので、**焼く側で落ちる回を再現しない**
+    - **割り込み** …… 区画は選べるが、**進み具合も区画の印も動かない**
+      (試したいのは「ふつうの回」なので、動かないと確かめたことにならない)
+    - **巡回の設定を直す** …… 直したまま定時の回が走り出す
+
+    **ここはふつうの回として走る** —— 区画に印が付き、進み具合も次回の予定も進む。
+    上書きするのは「どこを見るか」と「誰に頼むか」の 2 つだけで、**保存しない**。
+
+    **置き場が区画の面なのは、そこなら「この区画」が曖昧にならないから**
+    (8,000 を超える台帳からセレクトで選ばせずに済む)。
+    """
+    if not item.partition:
+        return ""
+    choices = "".join(
+        f'<option value="{esc(s.name)}">{esc(s.name)}</option>'
+        for s in collect.sweeps_of(item) if not s.on_demand
+    )
+    return (
+        f"<details><summary>この区画だけ 1 回走らせる</summary>"
+        f'<form method="post" action="/admin/collect/{esc(quote(item.name))}/partition/run"'
+        f' class="collect-form"{disabled}>'
+        f'<input type="hidden" name="partition" value="{esc(key)}">'
+        f'<p><label>どの巡回として<br><select name="sweep">{choices}'
+        f"</select></label></p>"
+        f'<p><label>頼む相手(空なら巡回の設定のまま)<br>'
+        f'{_backend_select("", "backend", with_workers=True, empty_label="巡回の設定のまま")}'
+        f"</label></p>"
+        f'<p><label>モデル<br>{_model_select(None, None, "model")}</label></p>'
+        f'<p><label>考える量<br>{_effort_select(None, None, "effort")}</label></p>'
+        f'<p class="muted"><strong>ふつうの回として走ります</strong> ——'
+        f"この区画に「見た」印が付き、進み具合も次回の予定も進みます。"
+        f"<br>見るのはこの区画だけなので、<strong>AI の呼び出しは 1 回</strong>です"
+        f"(定時の回はもっと多くの区画を見ます)。"
+        f"<br><strong>焼きます</strong>(ドライランではありません)。"
+        f"<br><strong>相手の指定は保存しません</strong> —— "
+        f"巡回の設定は書き換わらないので、次の定時の回は今までどおりの相手で走ります。"
+        f"ワーカーを選べば、空いている相手はそちらが選びます。</p>"
+        f'<button type="submit"{disabled}>この区画で 1 回走らせる</button>'
+        f"</form></details>"
+    )
 
 
 def _seen_when_html(item, key: str) -> str:

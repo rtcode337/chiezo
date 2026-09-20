@@ -103,6 +103,13 @@ def baked(tmp_path):
     return make
 
 
+def _form(values: dict):
+    """`await request.form()` の代わり(画面のハンドラを直に呼ぶため)。"""
+    async def form():
+        return values
+    return form
+
+
 class TestDefinitions:
     def test_it_needs_no_place_of_its_own(self, enabled):
         """要る置き場は定義のぶんだけ。
@@ -2106,6 +2113,141 @@ class TestTheLedgerCountFollowsTheContents:
         assert "き" in collect.partition_docs(item, sources, partitioning.title_key("あ", "か"))
         # 「ん」は「さ〜な」の鍵の外だが、末尾の区画のもの
         assert "ん" in collect.partition_docs(item, sources, partitioning.title_key("さ", "な"))
+
+    def test_one_partition_can_be_run_as_a_normal_round(self, sample):
+        """**1 区画だけを、ふつうの回として走らせる**(`pending_run`)。
+
+        枠が細いときに「直したコードを 1 区画だけ本番の形で試したい」が普通に
+        起きる。今までの道はどれも足りなかった —— 今すぐ実行は区画も相手も
+        選べず 1 回で `per_run` 区画ぶん使い、ドライランは焼かず、**割り込みは
+        進み具合も区画の印も動かさない**(試したいのは「ふつうの回」なので、
+        動かないと確かめたことにならない)。
+        """
+        collect.update("news", sweeps=[{
+            "name": "ざっと見る", "interval_minutes": 60,
+            "backend": "claude", "model": "fable-medium", "effort": "",
+        }])
+        [sweep] = collect.sweeps_of(collect.get("news"))
+        once = collect.normalize_run_once({
+            "partition": "あ〜か", "backend": "codex", "model": "gpt-5.6-sol-medium",
+        })
+
+        asked = collect.asked_for_run(sweep, once)
+
+        assert once["partition"] == "あ〜か"
+        assert (asked.backend, asked.model) == ("codex", "gpt-5.6-sol-medium")
+
+    def test_the_sweep_itself_is_not_rewritten(self, sample):
+        """**保存しない。** 書き換えると、試し撃ちのつもりが次の定時の回にも効く
+        —— 枠が細いときにいちばん避けたい壊れ方(気づくのは枠が尽きてから)。"""
+        collect.update("news", sweeps=[{
+            "name": "ざっと見る", "interval_minutes": 60, "backend": "claude",
+        }])
+        [sweep] = collect.sweeps_of(collect.get("news"))
+
+        collect.asked_for_run(sweep, collect.normalize_run_once({"backend": "codex"}))
+
+        [stored] = collect.sweeps_of(collect.get("news"))
+        assert stored.backend == "claude"
+
+    def test_changing_the_backend_drops_the_old_model(self, sample):
+        """相手が変われば通る名前も違う(`sonnet` は codex には無い)。"""
+        collect.update("news", sweeps=[{
+            "name": "ざっと見る", "interval_minutes": 60,
+            "backend": "claude", "model": "fable-medium", "effort": "high",
+        }])
+        [sweep] = collect.sweeps_of(collect.get("news"))
+
+        asked = collect.asked_for_run(sweep, collect.normalize_run_once({"backend": "codex"}))
+
+        assert asked.backend == "codex"
+        assert not asked.model and not asked.effort
+
+    def test_a_worker_can_be_named_instead(self, sample):
+        """**空いている相手を選ばせたいときに、いちばん効くのがワーカー**
+        (枠を見て選ぶのはあちらの仕事)。渡す相手がそのときまで決まらないので、
+        モデルも考える量も持たせない。"""
+        collect.update("news", sweeps=[{
+            "name": "ざっと見る", "interval_minutes": 60,
+            "backend": "claude", "model": "fable-medium",
+        }])
+        [sweep] = collect.sweeps_of(collect.get("news"))
+
+        asked = collect.asked_for_run(
+            sweep, collect.normalize_run_once({"worker": "精査用ワーカー"}),
+        )
+
+        assert asked.worker == "精査用ワーカー"
+        assert not asked.backend and not asked.model
+
+    def test_nothing_named_leaves_the_sweep_alone(self, sample):
+        collect.update("news", sweeps=[{
+            "name": "ざっと見る", "interval_minutes": 60,
+            "backend": "claude", "model": "fable-medium",
+        }])
+        [sweep] = collect.sweeps_of(collect.get("news"))
+
+        assert collect.asked_for_run(sweep, None) is sweep
+        assert collect.normalize_run_once({"partition": "", "backend": ""}) is None
+
+    def test_the_override_is_written_before_the_run_is_triggered(self, sample):
+        """**起こす前に控える。** `mark_started` は起こした後なので間に合わない ——
+        取り込みのほうが先に素材を取りに来ると、名指しした区画ではないところを
+        別の相手が見る(`pending_sweep` と同じ理由)。"""
+        collect.mark_pending("news", None, {"partition": "あ〜か", "backend": "codex"})
+
+        assert collect.get("news").pending_run == {
+            "partition": "あ〜か", "backend": "codex",
+        }
+
+    def test_a_run_that_could_not_start_takes_the_override_back(self, sample):
+        """片方だけ戻すと、次に走る回が名指しされた 1 区画だけを見て終わる。"""
+        collect.mark_pending("news", None, {"partition": "あ〜か"})
+
+        collect.restore_pending("news", "", None)
+
+        assert collect.get("news").pending_run is None
+
+    def test_a_key_the_ledger_does_not_have_is_refused(self, sample):
+        """**台帳に無い鍵では走らせない。** どの文書も一致しないので AI は
+        「誰も居ない」と読んで何も返さず、**空振りに 1 回ぶんの枠を使う** ——
+        枠を節約するために押す口なので、いちばん起きてほしくない壊れ方。
+
+        開きっぱなしの画面から押されると普通に起きる(割り直しで鍵が変わる)。
+        """
+        import asyncio
+
+        from app.views import admin
+
+        collect.update("news", partition={"by": "title", "target": 10}, partitions=[
+            {"key": partitioning.title_key("あ", "か"), "count": 3},
+        ])
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(sources={})),
+            form=_form({"partition": "知らない〜鍵", "sweep": "ざっと見る"}),
+        )
+
+        with pytest.raises(HTTPException) as caught:
+            asyncio.run(admin.admin_collect_partition_run("news", request))
+
+        assert caught.value.status_code == 409
+
+    def test_the_trial_form_is_on_the_partition_page(self, sample):
+        """**区画の面に置く** —— そこなら「この区画」が曖昧にならない
+        (8,000 を超える台帳からセレクトで選ばせずに済む)。"""
+        from app.views import admin
+
+        collect.update("news", partition={
+            "by": "band", "prefix": "地域", "value": "年代", "target": 10,
+        })
+        html = admin._try_here_html(collect.get("news"), "日本|1800-1900", "")
+
+        assert "この区画で 1 回走らせる" in html
+        assert 'name="backend"' in html and 'name="model"' in html
+        assert 'value="日本|1800-1900"' in html
+        # ふつうの回として走る(割り込みと取り違えさせない)
+        assert "ふつうの回として走ります" in html
+        assert "焼きます" in html
 
     def test_the_ledger_can_be_rebuilt_on_its_own(self, sample, baked):
         """**割り直しだけを走らせる口**(`collect.repartition`)。

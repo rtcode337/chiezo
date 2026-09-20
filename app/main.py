@@ -516,7 +516,9 @@ def _iso(value: datetime) -> str:
     return value.isoformat(timespec="seconds")
 
 
-def start_collection_bake(name: str, sweep: str | None = None) -> dict:
+def start_collection_bake(
+    name: str, sweep: str | None = None, run_once: dict | None = None,
+) -> dict:
     """収集の取り込みを 1 本起こす(集めるのも焼くのも向こうで起きる)。
 
     **予定は起こせたときだけ進める** —— trigger が混んでいて断られたのに次回へ送ると、
@@ -554,17 +556,20 @@ def start_collection_bake(name: str, sweep: str | None = None) -> dict:
     # 素材を作る側は控えを読む —— 起こしてから書くと、取り込みのほうが先に素材を
     # 取りに来たときに控えがまだ空で、「次に走るはずの巡回」へ倒れる
     # (押した巡回ではないものが走る)
-    was = collect.get(name).pending_sweep
-    collect.mark_pending(name, this.name)
+    before = collect.get(name)
+    was, was_run = before.pending_sweep, before.pending_run
+    # **1 回だけの上書きも起こす前に書く**(区画の名指しと頼む相手)——
+    # `mark_started` は起こした後なので間に合わない
+    collect.mark_pending(name, this.name, run_once)
     try:
         trigger_run(name)
     except Exception:
         # **起こせなかったぶんの控えは戻す。** 残すと、いま走っている取り込みが
         # この巡回のつもりで素材を取りに来る
-        collect.restore_pending(name, was)
+        collect.restore_pending(name, was, was_run)
         raise
     # **行列に居たなら外す。** どの道で走ったかに関わらず、その回はもう走っている
-    if worker := getattr(this, "worker", ""):
+    if worker := (collect.asked_for_run(this, collect.normalize_run_once(run_once)).worker or ""):
         with suppress(Exception):
             workers.done(worker, name, this.name)
     # **起こせたときだけ予定を進める** —— 混んでいて断られたのに次回へ送ると、
@@ -847,10 +852,21 @@ async def _collect_material(name: str, sources: dict) -> str:
     # 50 万件の地図の名簿で 1.8 GB になった(実測)。2 周するので、読み直せるように
     # 「呼ぶと流れてくるもの」で渡す
     previous = lambda: collect.stream_previous(name, sources)  # noqa: E731
+    # **区画を名指しされた回は割り直さない**(`pending_run`)。理由は 2 つ:
+    # ①割り直しは母集団を丸ごと 1 周舐めるので、**1 区画だけ試すための回で
+    # いちばん重い処理を走らせることになる**(枠と時間を節約したくて押す口なのに)。
+    # ②**割り直すと名指しした鍵が台帳から消えることがある** —— そうなると
+    # どの文書も一致せず、AI は「誰も居ない」と読んで何も返さない(空振りに
+    # 1 回ぶんの枠を使う)。**台帳をいまのまま使う**のが名指しの意味でもある。
+    # 割り直したいときは区画の面の「区画を割り直す」を先に押す
+    once = item.pending_run or {}
+    named = str(once.get("partition") or "")
     # **区画は集める前に決める。** 何を見るかが決まっていないと、渡す素材も
     # 差し込む文も作れない(台帳が無ければ空で返り、今までどおり全体を見る)
     phase = time.monotonic()
-    ledger = await asyncio.to_thread(collect.plan_partitions, item, sources, previous)
+    ledger = item.partitions if named else await asyncio.to_thread(
+        collect.plan_partitions, item, sources, previous
+    )
     phase = _phase_done("台帳を決める", name, phase, len(ledger))
     # **割り直した台帳で素材を組む。** 定義に入っているのは走る前の台帳なので、
     # この回で割り直したときに食い違う —— 区画を選ぶのは新しい台帳から、
@@ -879,10 +895,26 @@ async def _collect_material(name: str, sources: dict) -> str:
         keys = []
         baked_as = item
     else:
-        keys = partitioning.pick(
-            ledger, sweep.name, sweep.per_run(len(ledger)),
-            partitioning.normalize(item.partition),
-        )
+        # **1 回だけの上書き**(画面の「この区画だけ 1 回走らせる」)。区画を名指し
+        # されていればそこだけ見る —— 枠が細いときに、直したコードを本番の形で
+        # 1 区画ぶんだけ試すための道。**ふつうの回として走る**(印も予定も進む)
+        sweep = collect.asked_for_run(sweep, once)
+        if named:
+            # **台帳に無い鍵では走らせない。** どの文書も一致しないので AI は
+            # 「誰も居ない」と読んで何も返さず、**空振りに 1 回ぶんの枠を使う**
+            # (節約のために押した口で、いちばん起きてほしくない)
+            if not any(p["key"] == named for p in ledger):
+                raise HTTPException(409, {
+                    "error": f"区画「{named}」は台帳にありません",
+                    "hint": "割り直しで鍵が変わったかもしれません"
+                            "(区画の面から選び直してください)",
+                })
+            keys = [named]
+        else:
+            keys = partitioning.pick(
+                ledger, sweep.name, sweep.per_run(len(ledger)),
+                partitioning.normalize(item.partition),
+            )
         baked_as = item
     # **直す回かどうかは、その回の依頼文が語っている。** 収集ぜんたいの設定として
     # 持っていた頃(`mode`)は巡回ごとに決められなかった —— いまは巡回ごとに決まる
