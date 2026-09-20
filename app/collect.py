@@ -2613,12 +2613,42 @@ def previous_docs(name: str, sources: dict) -> dict[str, dict]:
     残ったものの `doc_id` を引き継ぐ元でもある。取り込みの経路では 1 度だけ読んで
     使い回す(同じものを 3 回読みに行かない)。
     """
-    src = sources.get(name)
+    return _docs_where(sources.get(name), "", ())
+
+
+def partition_docs(item: Collection, sources: dict, key: str) -> dict[str, dict]:
+    """その区画に入っているものだけ。**SQL で先に絞ってから判じる**。
+
+    **区画を 1 つ開くのに全文書を読んでいた。** 本番の食事処(686,602 件)で、
+    いちばん小さい区画を開くのに 48.9 秒かかった —— 中身の件数は関係なく、
+    全部が「全表を本文ごと dict に読む」ぶんである(実測 1.8 GB 級の山が、
+    区画を開くたびに立つ)。
+
+    **絞りは速さのためだけで、正しさは `scoped_docs` が持つ。** 最後の判定は
+    今までどおり `partitioning.locator` を通るので、**画面と AI が同じものを
+    見る**という約束は動かない —— 絞りが広すぎても結果は変わらない
+    (`partitioning.narrowing` が迷うところで絞らない側へ倒しているのはこのため)。
+    """
+    src = sources.get(item.name)
+    if src is None:
+        return {}
+    where, args = partitioning.narrowing(
+        partitioning.normalize(item.partition) if item.partition else None,
+        item.partitions, key, getattr(src, "schema_version", 0) or 0,
+    )
+    members, _scoped = scoped_docs(item, _docs_where(src, where, args), key)
+    return members
+
+
+def _docs_where(src, where: str, args: tuple) -> dict[str, dict]:
+    """`docs` から見出し → 文書の dict。**条件は呼ぶ側が持ってくる**。"""
     if src is None:
         return {}
     rows = db.query(
         src.path,
-        "SELECT doc_id, title, opening, body, tags, updated_at, extra FROM docs",
+        "SELECT doc_id, title, opening, body, tags, updated_at, extra FROM docs"
+        f" WHERE 1=1{where}",
+        args,
     )
     out: dict[str, dict] = {}
     for row in rows:

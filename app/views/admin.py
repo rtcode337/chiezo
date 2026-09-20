@@ -3433,7 +3433,7 @@ def admin_collect_partition(
     if not item.partition:
         body = '<p class="muted">この収集は区画を持っていません。</p>'
     else:
-        members, _scoped = collect.scoped_docs(item, collect.previous_docs(name, sources), key)
+        members = collect.partition_docs(item, sources, key)
         body = _seen_when_html(item, key) + _partition_members_html(
             name, item, key, members, sources
         )

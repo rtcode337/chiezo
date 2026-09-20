@@ -2065,6 +2065,48 @@ class TestTheLedgerCountFollowsTheContents:
         assert [p["count"] for p in ledger] == [4, 5]
 
 
+    def test_opening_a_partition_reads_only_its_own_rows(self, sample, baked):
+        """**区画を 1 つ開くのに全文書を読んでいた**(`partition_docs`)。
+
+        本番の食事処(686,602 件)で、いちばん小さい区画を開くのに 48.9 秒 ——
+        中身の件数は関係なく、全部が「全表を本文ごと dict に読む」ぶんだった。
+        **絞ったあとも、絞らなかったときと同じ顔ぶれが返ること**を押さえる。
+        """
+        titles = [f"見出し{i:03}" for i in range(40)]
+        sources = baked([(t, "本文") for t in titles])
+        collect.update("news", partition={"by": "title", "target": 10}, partitions=[])
+        ledger = collect.repartition("news", sources)
+        item = collect.get("news")
+
+        for p in ledger:
+            narrowed = collect.partition_docs(item, sources, p["key"])
+            whole, _ = collect.scoped_docs(
+                item, collect.previous_docs("news", sources), p["key"]
+            )
+            assert set(narrowed) == set(whole), p["key"]
+
+        # 取りこぼしが無い = 全部の区画を足すと元に戻る
+        every = set().union(*(
+            collect.partition_docs(item, sources, p["key"]) for p in ledger
+        ))
+        assert every == set(titles)
+
+    def test_a_title_in_the_gap_is_not_lost(self, sample, baked):
+        """**鍵の終わりで切ると取りこぼす。** 判定は「始まりが自分以下のうち
+        いちばん後ろ」なので、鍵の範囲の外にいる見出しがその区画のものになる。
+        """
+        sources = baked([(t, "本文") for t in ["あ", "か", "き", "さ", "な", "ん"]])
+        collect.update("news", partition={"by": "title", "target": 10}, partitions=[
+            {"key": partitioning.title_key("あ", "か"), "count": 2},
+            {"key": partitioning.title_key("さ", "な"), "count": 2},
+        ])
+        item = collect.get("news")
+
+        # 「き」は「あ〜か」の鍵の外だが、手前の区画のもの
+        assert "き" in collect.partition_docs(item, sources, partitioning.title_key("あ", "か"))
+        # 「ん」は「さ〜な」の鍵の外だが、末尾の区画のもの
+        assert "ん" in collect.partition_docs(item, sources, partitioning.title_key("さ", "な"))
+
     def test_the_ledger_can_be_rebuilt_on_its_own(self, sample, baked):
         """**割り直しだけを走らせる口**(`collect.repartition`)。
 

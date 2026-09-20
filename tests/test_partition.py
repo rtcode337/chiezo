@@ -1356,3 +1356,106 @@ class TestPoolingTheSmallCategories:
         ledger = [self.row("地域:アルメニア", 1), self.row("地域:エストニア", 1)]
 
         assert len(partition.merged(spec, ledger)) == 2
+
+
+class TestNarrowingTheRowsToRead:
+    """**区画を 1 つ開くのに全文書を読んでいた**(`partition.narrowing`)。
+
+    本番の食事処(686,602 件)で、いちばん小さい区画を開くのに 48.9 秒 ——
+    中身の件数は関係なく、全部が「全表を本文ごと dict に読む」ぶんだった。
+
+    **狭すぎるのだけが危ない。** 最後の判定は `locator` が行うので、広すぎる
+    ぶんには結果が変わらない —— 迷うところは絞らない側へ倒す。
+    """
+
+    def test_a_box_is_exact(self):
+        """矩形は判定が「鍵の矩形の中にあるか」そのものなので厳密に絞れる。"""
+        key = partition.geo_key((35.0, 139.0, 36.0, 140.0))
+        where, args = partition.narrowing(
+            {"by": "geo"}, [{"key": key}], key, schema_version=4,
+        )
+
+        assert "doc_coords" in where
+        assert args == (35.0, 36.0, 139.0, 140.0)
+
+    def test_an_old_database_is_not_narrowed(self):
+        """`doc_coords` は schema_version 4 から。無い DB に書くと落ちる。"""
+        key = partition.geo_key((35.0, 139.0, 36.0, 140.0))
+
+        assert partition.narrowing(
+            {"by": "geo"}, [{"key": key}], key, schema_version=3,
+        ) == ("", ())
+
+    def test_a_tag_is_exact(self):
+        where, args = partition.narrowing(
+            {"by": "tag", "tag": "ラーメン"}, [{"key": "ラーメン"}], "ラーメン",
+            schema_version=3,
+        )
+
+        assert "doc_tags" in where and args == ("ラーメン",)
+
+    def test_titles_are_cut_at_the_next_start_not_at_their_own_end(self):
+        """**鍵の終わりで切ってはいけない。** 判定は「始まりが自分以下のうち
+        いちばん後ろ」なので、区画は次の始まりの手前までを引き受ける ——
+        鍵の終わりで切ると、隙間に落ちた見出しを取りこぼす。
+        """
+        led = [{"key": partition.title_key("あ", "か")},
+               {"key": partition.title_key("さ", "な")}]
+
+        where, args = partition.narrowing({"by": "title"}, led, led[0]["key"])
+
+        # 先頭なので下限なし。上限は「か」ではなく次の始まりの「さ」
+        assert where == " AND title < ?"
+        assert args == ("さ",)
+
+    def test_the_last_title_partition_has_no_ceiling(self):
+        led = [{"key": partition.title_key("あ", "か")},
+               {"key": partition.title_key("さ", "な")}]
+
+        where, args = partition.narrowing({"by": "title"}, led, led[1]["key"])
+
+        assert where == " AND title >= ?"
+        assert args == ("さ",)
+
+    def test_a_band_is_left_alone(self):
+        """分類の値は鍵に入るときに区切りの字を落としてある(`tag_value` が
+        `|` を `/` にする)ので、**鍵からもとのタグを組み直せない** ——
+        組み直したつもりで絞ると、その分類の一部が黙って消える。
+        """
+        key = partition.band_key("日本", 1800, 1900)
+
+        assert partition.narrowing(
+            {"by": "band", "prefix": "地域", "value": "年代"}, [{"key": key}], key,
+            schema_version=4,
+        ) == ("", ())
+
+    def test_a_key_the_ledger_does_not_have_is_left_alone(self):
+        """範囲を決める手がかりが無い。絞らないほうへ倒す。"""
+        led = [{"key": partition.title_key("あ", "か")}]
+
+        assert partition.narrowing({"by": "title"}, led, "知らない〜鍵") == ("", ())
+
+    def test_nothing_is_narrowed_without_a_spec(self):
+        assert partition.narrowing(None, [], "鍵") == ("", ())
+
+    def test_it_never_drops_a_member(self):
+        """**これが要。** 絞ったあとに `locator` を通した結果が、絞らずに通した
+        結果と一致すること —— 狭すぎる絞りは、その区画の一部を黙って消す。
+        """
+        led = [{"key": partition.title_key("あ", "か")},
+               {"key": partition.title_key("さ", "な")},
+               {"key": partition.title_key("ま", "ん")}]
+        find = partition.locator({"by": "title"}, led)
+        docs = [{"title": t} for t in
+                ["A", "あ", "え", "き", "さ", "た", "ぬ", "ま", "も", "ん", "ゑ"]]
+
+        for p in led:
+            here = {d["title"] for d in docs if find(d) == p["key"]}
+            where, args = partition.narrowing({"by": "title"}, led, p["key"])
+            lo = args[0] if " AND title >= ?" in where else None
+            hi = args[-1] if " AND title < ?" in where else None
+            kept = {
+                d["title"] for d in docs
+                if (lo is None or d["title"] >= lo) and (hi is None or d["title"] < hi)
+            }
+            assert here <= kept, f"{p['key']} で {here - kept} を取りこぼす"

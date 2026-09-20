@@ -2537,8 +2537,9 @@ def collect_partition(
             "error": f"収集「{name}」は区画を持っていません",
             "hint": "区画の割り方は PATCH の partition で設定します",
         })
-    previous = collect.previous_docs(name, request.app.state.sources)
-    members, _scoped = collect.scoped_docs(item, previous, key)
+    # **全文書は読まない**(`partition_docs` が鍵から範囲を作って SQL で絞る)——
+    # 読んでいた頃は、区画を 1 つ引くのに本番で 48.9 秒かかっていた
+    members = collect.partition_docs(item, request.app.state.sources, key)
     ordered = sorted(members.values(), key=lambda d: d["title"])
     return {
         "name": name,

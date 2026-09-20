@@ -42,6 +42,8 @@ import re
 
 from fastapi import HTTPException
 
+from app.registry import COORDS_MIN_SCHEMA_VERSION, TAG_MIN_SCHEMA_VERSION
+
 log = logging.getLogger("chiezo.app")
 
 # 割り方。**対象の並び方で選ぶ** —— 地理的に散らばっているなら矩形、
@@ -751,6 +753,81 @@ def parse_title_key(key: str) -> tuple[str, str] | None:
 
 
 # ---- 台帳(定義のメモに入る)---------------------------------------------------
+
+
+def narrowing(
+    spec: dict | None, partitions: list[dict], key: str, schema_version: int = 0,
+) -> tuple[str, tuple]:
+    """**その区画を必ず含む範囲**を SQL の断片にする(`docs` に足す形)。
+
+    区画を 1 つ開くのに**その収集の全文書を読んでいた** —— 本番の食事処
+    (686,602 件)で、いちばん小さい区画を開くのに 48.9 秒かかった。中身の件数は
+    関係なく、全部が「全表を dict に読む」ぶんである。ここで行を減らす。
+
+    **狭すぎるのだけが危ない。** 最後の判定は今までどおり `locator` が行う
+    (画面と AI が同じものを見る、という約束はそこで担保される)ので、
+    **広すぎるぶんには何も壊れない** —— 迷うところは絞らない側へ倒す。
+    絞れなければ `("", ())` を返す(= 今までどおり全件)。
+
+    **割り方によって、鍵と受け持ちが一致するかが違う:**
+
+    - **矩形は一致する。** 判定が「鍵の矩形の中にあるか」そのものなので厳密。
+      辺を共有する 2 つに当たる点は台帳の順で決まるが、絞りが両方を通しても
+      `locator` が 1 つに決める
+    - **タグも一致する。** 「そのタグを持つものだけ」が初めからの約束
+    - **見出しは一致しない。** 鍵は「最初の見出し〜最後の見出し」だが、判定は
+      **「始まりが自分以下のうち、いちばん後ろ」** —— 鍵の終わりは見ていない。
+      区画と区画のあいだに隙間を作らないための規則で、隙間に落ちた見出しは
+      手前の区画のものになる。だから**隣の区画の始まり**で切る
+      (先頭は下限なし —— いちばん手前より前も先頭の区画のもの。末尾は上限なし)
+    - **帯は絞らない。** 分類の値は鍵に入るときに区切りの字を落としてある
+      (`tag_value` が `|` を `/` にする)ので、**鍵からもとのタグを組み直せない**
+      —— 組み直せたつもりで絞ると、その分類の一部が黙って消える。
+      値を持たない文書が落ちる置き場(`other`)にいたってはタグそのものが無い。
+      帯で割る収集は母集団が小さい(実測 9,484 件で 0.33 秒)ので、
+      **危ない絞りを入れてまで取りに行く速さではない**
+    """
+    if not spec or not key:
+        return "", ()
+    by = spec.get("by")
+    if (
+        by == BY_GEO
+        and schema_version >= COORDS_MIN_SCHEMA_VERSION
+        and (box := parse_geo_key(key)) is not None
+    ):
+        return (
+            " AND doc_id IN (SELECT doc_id FROM doc_coords"
+            " WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?)",
+            (box[0], box[2], box[1], box[3]),
+        )
+    if by == BY_TAG and schema_version >= TAG_MIN_SCHEMA_VERSION and spec.get("tag"):
+        return (
+            " AND doc_id IN (SELECT doc_id FROM doc_tags WHERE tag = ?)",
+            (spec["tag"],),
+        )
+    if by == BY_TITLE:
+        return _title_narrowing(partitions, key)
+    return "", ()
+
+
+def _title_narrowing(partitions: list[dict], key: str) -> tuple[str, tuple]:
+    """見出しの区画の受け持ち。**隣の区画の始まりで切る**(鍵の終わりでは切らない)。"""
+    starts = sorted(
+        (bounds[0], p["key"]) for p in partitions if (bounds := parse_title_key(p["key"]))
+    )
+    at = next((i for i, (_head, k) in enumerate(starts) if k == key), None)
+    if at is None:
+        # 台帳に無い鍵。**絞らない** —— 範囲を決める手がかりが無い
+        return "", ()
+    where, args = "", []
+    # 先頭の区画は下限を持たない(いちばん手前の始まりより前も、そこのもの)
+    if at > 0:
+        where += " AND title >= ?"
+        args.append(starts[at][0])
+    if at + 1 < len(starts):
+        where += " AND title < ?"
+        args.append(starts[at + 1][0])
+    return where, tuple(args)
 
 
 def refresh(built: list[dict], current: list[dict], spec: dict | None = None) -> list[dict]:
