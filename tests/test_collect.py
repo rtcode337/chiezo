@@ -4981,6 +4981,23 @@ class TestOpeningAPartition:
         assert "35.681" in html and "139.767" in html
         assert "近い順" in html
 
+    def test_it_says_where_the_lap_starts_before_anything_is_cut(self, partitioned):
+        """**設定は台帳が空でも出す。** どこから広げるかは収集に書いてある指定で、
+        区画が割れているかとは別の話 —— 割る前こそ「効く設定になっているか」を
+        確かめたい(台帳が消えた後や、入れたばかりのときがまさにそれ)。
+        """
+        from app.views import admin
+
+        collect.update("news", partition={
+            "by": "geo", "target": 150, "bbox": [20.2, 122.5, 45.8, 154.0],
+            "origin": [35.681, 139.767],
+        }, partitions=[])
+
+        html = admin._partition_html(collect.get("news"))
+
+        assert "まだ割っていません" in html
+        assert "35.681" in html and "139.767" in html and "近い順" in html
+
     def test_it_says_nothing_when_the_lap_starts_at_the_corner(self, partitioned):
         from app.views import admin
 

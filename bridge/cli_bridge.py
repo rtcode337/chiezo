@@ -1592,6 +1592,11 @@ def _usage_windows(data: dict) -> list[dict]:
                 "unit": "",
                 "window_minutes": _WINDOW_MINUTES.get(str(bucket.get("window") or "")),
                 "resets_at": bucket.get("reset_time") or None,
+                # **枠の呼び名は値としても渡す。** 見出しへ畳むだけでは、Chiezo 側で
+                # 「この窓はどのモデルの話か」を判じられない —— agy は Gemini と
+                # Claude/GPT で別勘定なので、そこが分かれないと片方の枠切れで
+                # 相手ごと避けることになる
+                "group": group_name,
             })
     return windows
 
@@ -1612,6 +1617,7 @@ def _usage_windows_from_text(text: str) -> list[dict]:
             "unit": "",
             "window_minutes": None,
             "resets_at": found["resets"],
+            "group": found["group"],
         })
     return windows
 

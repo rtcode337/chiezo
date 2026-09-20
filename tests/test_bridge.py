@@ -1167,6 +1167,26 @@ class TestAntigravityUsage:
         assert labels[1] == "Gemini Models(直近 5 時間)"
         assert labels[2] == "Claude and GPT models(直近 7 日)"
 
+    def test_the_group_is_also_a_value(self, bridge):
+        """**見出しに畳むだけでは足りない。** Chiezo 側は「この窓はどのモデルの
+        話か」で枠を分ける(Gemini と Claude/GPT は別勘定)ので、呼び名を値として
+        受け取れないと、片方の枠切れで相手ごと避けることになる。
+        """
+        server = bridge()
+
+        groups = [w["group"] for w in server._antigravity_windows(self.RAW)]
+
+        assert groups == ["Gemini Models", "Gemini Models", "Claude and GPT models"]
+
+    def test_the_fallback_lines_carry_the_group_too(self, bridge):
+        """受け皿の経路だけ呼び名が落ちると、**構造が変わった日に枠が 1 本に潰れる**。"""
+        server = bridge()
+        text_only = json.dumps({"status": "SUCCESS", "response": json.loads(self.RAW)["response"]})
+
+        assert [w["group"] for w in server._antigravity_windows(text_only)] == [
+            "Gemini Models", "Gemini Models",
+        ]
+
     def test_remaining_is_turned_into_used(self, bridge):
         """相手が言うのは「残り」。画面は使用率でそろえているので裏返す。"""
         server = bridge()
