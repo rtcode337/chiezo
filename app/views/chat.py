@@ -269,7 +269,6 @@ CHAT_JS = """
     return {
       backend: (document.getElementById('backend') || {}).value || null,
       model: (document.getElementById('model') || {}).value || null,
-      effort: (document.getElementById('effort') || {}).value || null,
       source: document.getElementById('source').value || null,
       grounded: document.getElementById('grounded').value === '1',
       mode: document.getElementById('mode').value,
@@ -478,18 +477,10 @@ async def chat_page(
                 f"{model_options}</select>"
             )
 
-    # エフォート（考える量）。持っている相手のときだけ出す —— 持たない相手に
-    # 出しても送るだけ無駄で、選べたのに効かない、という分かりにくさが残る。
-    effort_select = ""
-    effort_names = providers.selectable_efforts(current_backend)
-    if effort_names:
-        effort_options = '<option value="">考える量（既定）</option>' + "".join(
-            f'<option value="{esc(e)}"{" selected" if e == effort else ""}>{esc(e)}</option>'
-            for e in effort_names
-        )
-        effort_select = (
-            f'<select id="effort" name="effort" title="考える量">{effort_options}</select>'
-        )
+    # **考える量の欄は無い。** いまはどの相手もモデルの名前に畳んで持っている
+    # (`providers.selectable_efforts` がどの相手でも空を返す)—— 欄を出しても
+    # 選択肢が 1 つも無く、「設定したつもり」だけが残る。
+    # 受け取るのは今までどおり(`effort` のクエリ。保存済みの設定から飛んでくる)
 
     backend_select = ""
     if len(names) > 1:
@@ -537,7 +528,6 @@ async def chat_page(
 <div class="composer-settings">
 {backend_select}
 {model_select}
-{effort_select}
 <select id="source" name="source" title="引くソース">{options}</select>
 <select id="mode" name="mode" title="引き方">{mode_options}</select>
 {mode_note}
@@ -649,10 +639,10 @@ async def chat_page(
     window.chiezoSyncToggles = function (bridge) {{ isBridge = bridge; sync(); }};
   }})();
 
-  // 相手を変えたらモデルとエフォートの候補も入れ替える(相手ごとに違う)。
+  // 相手を変えたらモデルの候補も入れ替える(相手ごとに違う)。
   (function () {{
     var b = document.getElementById('backend'), m = document.getElementById('model');
-    var ef = document.getElementById('effort'), lastBridge = false;
+    var lastBridge = false;
     if (!b || !m) {{ return; }}
     b.addEventListener('change', function () {{
       m.disabled = true;
@@ -664,15 +654,6 @@ async def chat_page(
           (d.models || []).forEach(function (id) {{
             var o = document.createElement('option');
             o.value = id; o.textContent = id; m.appendChild(o);
-          }});
-          if (!ef) {{ return; }}
-          // **持っていない相手では隠す**(選べても効かない選択肢を残さない)。
-          var efforts = d.efforts || [];
-          ef.hidden = efforts.length === 0;
-          ef.innerHTML = '<option value="">考える量（既定）</option>';
-          efforts.forEach(function (id) {{
-            var o = document.createElement('option');
-            o.value = id; o.textContent = id; ef.appendChild(o);
           }});
         }})
         .then(function () {{
@@ -696,7 +677,6 @@ async def chat_page(
 <input type="text" name="q" value="{esc(q or '')}" placeholder="質問を書く(自然文でよい)">
 {backend_select.replace('id="backend"', 'id="backend-nojs"')}
 {model_select.replace('id="model"', 'id="model-nojs"')}
-{effort_select.replace('id="effort"', 'id="effort-nojs"')}
 <select name="source">{options}</select>
 <select name="grounded">{grounded_options}</select>
 <select name="mode">{mode_options}</select>

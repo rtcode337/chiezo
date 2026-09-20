@@ -553,19 +553,13 @@ document.addEventListener('change', function (ev) {
   // 場合分けを書いていた頃は、欄を増やした画面が黙って何もしない側へ落ちた
   var prefix = field.slice(0, field.length - 'backend'.length);
   var model = box.querySelector('select[name="' + prefix + 'model"]');
-  var effort = box.querySelector('select[name="' + prefix + 'effort"]');
-  if (!model && !effort) { return; }
+  if (!model) { return; }
   // 入れ替わるまで触らせない(古い候補のまま保存されるのを防ぐ)
-  [model, effort].forEach(function (el) { if (el) { el.disabled = true; } });
+  model.disabled = true;
   fetch('/ai/models?backend=' + encodeURIComponent(sel.value))
-    .then(function (r) { return r.ok ? r.json() : { models: [], efforts: [] }; })
-    .then(function (d) {
-      fill(model, d.models || []);
-      fill(effort, d.efforts || []);
-    })
-    .finally(function () {
-      [model, effort].forEach(function (el) { if (el) { el.disabled = false; } });
-    });
+    .then(function (r) { return r.ok ? r.json() : { models: [] }; })
+    .then(function (d) { fill(model, d.models || []); })
+    .finally(function () { model.disabled = false; });
   function fill(el, names) {
     if (!el) { return; }
     // 選んでいた値は候補に無くても残す(サーバー側の組み立てと同じ約束)

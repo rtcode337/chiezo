@@ -528,7 +528,7 @@ def _worker_options(current: str) -> str:
 
 
 def _candidate_select(field: str, current: str | None, candidates, empty_label: str) -> str:
-    """候補から選ぶセレクト(モデル・考える量)。
+    """候補から選ぶセレクト(いまはモデルだけ)。
 
     **いま入っている値が候補に無くても選択肢に残す**(`_backend_select` と同じ理由)
     —— 落とすと保存し直した瞬間に既定へ倒れて、何を指定していたのかが画面から消える。
@@ -560,14 +560,6 @@ def _model_select(backend: str | None, current: str | None, field: str = "model"
     return _candidate_select(field, current, answer.remembered_models(backend), "相手の既定")
 
 
-def _effort_select(backend: str | None, current: str | None, field: str = "effort") -> str:
-    """考える量のセレクト。持たない相手では候補が空(「相手の既定」だけ)になる。"""
-    return _candidate_select(
-        field, current, providers.selectable_efforts(answer.normalize_backend(backend)),
-        "相手の既定",
-    )
-
-
 def _backend_hint() -> str:
     """相手ごとに渡せるモデルと深さ。**選ぶ前に読めるところに置く**。
 
@@ -582,10 +574,6 @@ def _backend_hint() -> str:
         parts = []
         if spec.models:
             parts.append("モデル: " + " / ".join(spec.models))
-        # **選べるぶんだけを書く**(セレクトと食い違わせない)。モデルの名前に
-        # 考える量が埋まっている相手では、深さの欄そのものが出ない
-        if levels := providers.selectable_efforts(name):
-            parts.append("深さ: " + " / ".join(levels))
         lines.append(f"{esc(spec.label)} — " + ("、".join(parts) if parts else "指定なしでよい"))
     if not lines:
         return ""
@@ -612,13 +600,14 @@ def _backend_label(item) -> str:
         esc(spec.label if spec else item.backend)
         if item.backend else '<span class="muted">既定にまかせる</span>'
     )
-    # **相手を選んでいなくても、モデルと考える量は出す。** 相手は既定でよいが
-    # 考える量だけ上げている、が普通にある —— 出さないと、そこが空欄に見える
+    # **相手を選んでいなくても、モデルは出す**(相手は既定でよいがモデルだけ
+    # 決めている、が普通にある)。**考える量は画面から設定できない**が、外の
+    # アプリや古い設定から入っていることがあるので、入っていれば出す
     detail = " / ".join(x for x in (item.model, item.effort) if x)
     return label + (f'<br><span class="muted">{esc(detail)}</span>' if detail else "")
 
 
-# 相手を選び直したときに、モデルと考える量の候補を入れ替える。
+# 相手を選び直したときに、モデルの候補を入れ替える。
 #
 # **フォームは 1 ページに何枚もある**(収集ごとに 1 枚 + 追加用)ので、id では捕まえない
 # —— 同じ id が並ぶと最初の 1 枚しか動かない。`change` を document で受けて、
@@ -747,7 +736,7 @@ def _sweep_backend_fields(sweep, backend, mechanical: bool) -> str:
     **ワーカーは相手と同じ欄で選ぶ。** 別の欄にしていた頃は両方を選べて、
     どちらが効くのかが画面から読めなかった(効くのはワーカー)。
 
-    **ワーカーを選んだ回には、モデルも考える量も出さない。** どちらに頼むかは
+    **ワーカーを選んだ回にはモデルを出さない。** どちらに頼むかは
     そのときの枠で決まるので、ここで 1 つ選んでも**どの相手に渡る値なのか決まらない**
     —— モデルの名前は相手ごとに違う(`sonnet` は codex には無い)。
     段ごとの指定はワーカーの側が持っている。
@@ -767,15 +756,13 @@ def _sweep_backend_fields(sweep, backend, mechanical: bool) -> str:
         return head + (
             '<p class="muted"><strong>ワーカーに頼む回です。</strong>'
             "枠に余裕のある先頭の相手に渡し、どれも詰まっていればその回は走らせません。"
-            "<br>モデルと考える量は<strong>ワーカーの段が持ちます</strong> —— "
+            "<br>モデルは<strong>ワーカーの段が持ちます</strong> —— "
             "渡る相手がそのときまで決まらないので、ここでは選べません"
             f'(<a href="/admin/collect#{ai_workers.SECTION_ANCHOR}">段を直す</a>)。</p>'
         )
     return head + (
         f'<p><label>モデル<br>'
         f'{_model_select(backend, sweep.model if sweep else None, "sweep_model")}</label></p>'
-        f'<p><label>考える量<br>'
-        f'{_effort_select(backend, sweep.effort if sweep else None, "sweep_effort")}</label></p>'
     )
 
 
@@ -832,7 +819,7 @@ def _sweep_cells(item, disabled: str = "", dry: bool = True) -> list[str]:
     for sweep in collect.sweeps_of(item):
         visited, _ = partitioning.progress(item.partitions, sweep.name)
         # **相手は巡回ごとに変えられる。** ざっとは安い相手で数をこなし、じっくりは
-        # 考える量を上げる、という分け方をするためのもの
+        # よく考えるモデルに回す、という分け方をするためのもの
         who = _backend_label(sweep)
         due = jst.parse(sweep.next_run_at or "")
         # **一周したあとは「いちばん古い区画」を出す。** 「見終えた / 全区画」は
@@ -3135,7 +3122,6 @@ async def admin_collect_partition_run(name: str, request: Request):
         "worker": workers.named_in(chosen),
         "backend": "" if workers.named_in(chosen) else chosen,
         "model": str(form.get("model") or ""),
-        "effort": str(form.get("effort") or ""),
     })
     return RedirectResponse(
         url=f"/admin/collect/{quote(name)}/partition?key={quote(key)}", status_code=303,
@@ -3559,7 +3545,6 @@ def _try_here_html(item, key: str, disabled: str) -> str:
         f'{_backend_select("", "backend", with_workers=True, empty_label="巡回の設定のまま")}'
         f"</label></p>"
         f'<p><label>モデル<br>{_model_select(None, None, "model")}</label></p>'
-        f'<p><label>考える量<br>{_effort_select(None, None, "effort")}</label></p>'
         f'<p class="muted"><strong>ふつうの回として走ります</strong> ——'
         f"この区画に「見た」印が付き、進み具合も次回の予定も進みます。"
         f"<br>見るのはこの区画だけなので、<strong>AI の呼び出しは 1 回</strong>です"

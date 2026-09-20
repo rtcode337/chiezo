@@ -219,7 +219,7 @@ def _wake_form(worker: workers.Worker, waiting: bool, running: str = "") -> str:
 
 
 def section_html(selects, running: str = "") -> str:
-    """節ぜんたい。`selects` は相手・モデル・考える量のセレクトを作る 3 つ。
+    """節ぜんたい。`selects` は相手とモデルのセレクトを作る 2 つ。
 
     `running` は**いま取り込みが走っている相手**(空なら走っていない)。
     呼ぶ側が持っているものを渡す —— ここで聞き直すと、1 回の描画で trigger を

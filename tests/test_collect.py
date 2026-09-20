@@ -5598,11 +5598,33 @@ class TestPickingTheModelAndTheEffort:
         from app.views import admin
 
         html = admin._sweep_table_body(collect.get("news"), "")
-        # 巡回ごとに 1 組ずつ出る（相手も巡回ごとに変えられるので）
+        # 巡回ごとに 1 つずつ出る（相手も巡回ごとに変えられるので）
         assert '<select name="sweep_model">' in html
-        assert '<select name="sweep_effort">' in html
         assert '<input name="sweep_model"' not in html
-        assert '<input name="sweep_effort"' not in html
+
+    def test_there_is_no_effort_field_any_more(self, sample):
+        """**どの相手もモデルの名前に畳んで持っている**ので、欄を出しても
+        選択肢が 1 つも無く、「設定したつもり」だけが残る
+        (`providers.selectable_efforts` がどの相手でも空を返す)。
+
+        **受け取るのは今までどおり** —— 保存済みの設定や外のアプリからは飛んでくる
+        (`answer.normalize_effort`)。出さないことと受け取らないことは別。
+        """
+        from app.views import admin
+
+        html = admin._sweep_table_body(collect.get("news"), "")
+
+        assert "考える量" not in html
+        assert "sweep_effort" not in html
+
+    def test_no_provider_offers_one_to_choose(self, sample):
+        """欄を消した根拠。**ここが空でなくなったら、欄を戻すこと。**"""
+        from app import answer, providers
+
+        assert not any(
+            providers.selectable_efforts(name) for name in answer.backend_names()
+        )
+        assert not any(providers.selectable_efforts(p.id) for p in providers.all_providers())
 
     def test_leaving_it_to_the_backend_is_the_first_choice(self, sample):
         """空が「相手の既定」。**先頭に置く** —— 指定しないのが普通の使い方。"""
