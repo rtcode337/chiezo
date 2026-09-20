@@ -66,7 +66,7 @@ from app.deps import (
 )
 from app.fts import build_match_query, escape_like
 from app.mcp_server import build_mcp, build_mcp_app
-from app.pages import APPLE_TOUCH_ICON_PNG
+from app.pages import APP_ICON_SVG, APP_MANIFEST, APPLE_TOUCH_ICON_PNG
 from app.registry import (
     COORDS_MIN_SCHEMA_VERSION,
     FILTER_MIN_SCHEMA_VERSION,
@@ -1182,6 +1182,24 @@ def root():
 @app.get("/apple-touch-icon.png", include_in_schema=False)
 def apple_touch_icon():
     return Response(content=APPLE_TOUCH_ICON_PNG, media_type="image/png")
+
+
+@app.get("/icon.svg", include_in_schema=False)
+def app_icon_svg():
+    """ホーム画面のアイコン(大きさを問わない形)。中身は `assets/icon.svg`。"""
+    return Response(content=APP_ICON_SVG, media_type="image/svg+xml")
+
+
+@app.get("/manifest.webmanifest", include_in_schema=False)
+def app_manifest():
+    """ホーム画面から**帯を消して**開くための宣言(`app/pages.py` の `APP_MANIFEST`)。
+
+    **Service Worker は持たない** —— 欲しいのは開き方だけで、オフラインで
+    動かしたいわけではない(抱え込むと、更新しても古い版が出続ける)。
+    帯が消えるぶんの戻る・進む・読み直しは、画面の下に自前で出す
+    (`pages.TOUCH_SCRIPT`)。
+    """
+    return JSONResponse(content=APP_MANIFEST, media_type="application/manifest+json")
 
 
 # ---- ヘルスチェック・ソース一覧 -------------------------------------------

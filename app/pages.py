@@ -586,6 +586,146 @@ document.addEventListener('change', function (ev) {
 </script>""".replace("BACKEND_FORM_CLASS", BACKEND_FORM_CLASS)
 
 
+# 手元(スマホ)で足りないものを補う分だけの台本。**管理画面は JS を持たない**が、
+# ここは見た目の話ではなく**戻る手段が無い**という話 —— ホーム画面から開くと
+# ブラウザの帯ごと消えるので、戻るも進むも読み直しもできなくなる。
+#
+# **外の部品は読まない**(LAN 内・オフラインで動く前提)。触れる端末でだけ効き、
+# JS が動かなければ何も起きない(画面はそのまま使える)。
+TOUCH_STYLE = """
+  /* 引っ張って読み直すときの印。**指について降りてくる** —— 動かないと、
+     引っ張れていないのか反応が無いのかが分からない */
+  .pull-mark { position: fixed; top: 0; left: 50%; z-index: 60;
+               transform: translate(-50%, -3rem);
+               padding: .3rem .9rem; border-radius: 0 0 .6rem .6rem;
+               background: #5560E0; color: #fff; font-size: .8rem;
+               box-shadow: 0 2px 8px rgba(0,0,0,.2); pointer-events: none; }
+  /* ホーム画面から開いたときだけ出す帯。**下に置く** —— 親指が届くのは下。
+     ブラウザの帯が消えているぶんをここで補う */
+  .app-nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 55;
+             display: none; justify-content: space-around; align-items: center;
+             padding: .4rem 0 calc(.4rem + env(safe-area-inset-bottom));
+             background: #fff; border-top: 1px solid #e2e2ea; }
+  .app-nav button { font-size: 1.15rem; line-height: 1; min-width: 4.5rem;
+                    padding: .45rem 0; background: none; border: 0; color: #333; }
+  .app-nav button:disabled { color: #bbb; }
+  /* 帯のぶん、下端が隠れないように空ける(ビルドの印が帯の下に潜る) */
+  body.has-app-nav { padding-bottom: 4rem; }
+"""
+
+TOUCH_SCRIPT = """<script>
+(function () {
+  // ---- ホーム画面から開いたときだけ、戻る・進む・読み直すを出す -------------
+  //
+  // **ブラウザの帯が消えている**ので、そのままだと 1 つ前の画面へ戻る手段が無い
+  // (管理画面はリンクで面を行き来する作り)。
+  var standalone = (window.matchMedia
+      && window.matchMedia('(display-mode: standalone)').matches)
+    || window.navigator.standalone === true;
+  if (standalone) {
+    var bar = document.createElement('nav');
+    bar.className = 'app-nav';
+    bar.style.display = 'flex';
+    [['←', '戻る', function () { history.back(); }],
+     ['⟳', '読み直す', function () { location.reload(); }],
+     ['→', '進む', function () { history.forward(); }]].forEach(function (item) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = item[0];
+      b.setAttribute('aria-label', item[1]);
+      b.addEventListener('click', item[2]);
+      bar.appendChild(b);
+    });
+    document.body.appendChild(bar);
+    document.body.classList.add('has-app-nav');
+  }
+
+  // ---- 引っ張って読み直す ---------------------------------------------------
+  //
+  // **いちばん上にいるときだけ**掴む。途中で掴むと、下へスクロールしたいだけの
+  // 指が読み直しになる。**閾値まで引かないと何も起きない**(触れただけで
+  // 読み直すと、書きかけの入力が消える)。
+  if (!('ontouchstart' in window)) { return; }
+  var PULL = 70;          // ここまで引いたら読み直す
+  var start = -1, mark = null;
+
+  function distance(ev) {
+    return ev.touches && ev.touches.length === 1
+      ? ev.touches[0].clientY - start : 0;
+  }
+  function show(dy) {
+    if (!mark) {
+      mark = document.createElement('div');
+      mark.className = 'pull-mark';
+      document.body.appendChild(mark);
+    }
+    mark.textContent = dy >= PULL ? '離すと読み直します' : '引っ張って読み直す';
+    // 引いたぶんだけ降ろす(指の動きより鈍く。引き切ったところで止める)
+    var y = Math.min(dy * 0.5, PULL * 0.7) - 48;
+    mark.style.transform = 'translate(-50%, ' + y + 'px)';
+  }
+  function clear() {
+    if (mark) { mark.remove(); mark = null; }
+    start = -1;
+  }
+
+  document.addEventListener('touchstart', function (ev) {
+    // **入力の中では掴まない**(選択やカーソル移動を邪魔する)
+    var tag = ev.target && ev.target.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') { return; }
+    start = window.scrollY <= 0 && ev.touches.length === 1
+      ? ev.touches[0].clientY : -1;
+  }, { passive: true });
+
+  // **passive にしない。** 下へ引く動きを押さえないと、端末の側の引っ張り直しと
+  // 二重になる(片方だけ動いて、指の動きと印がずれる)
+  document.addEventListener('touchmove', function (ev) {
+    if (start < 0) { return; }
+    var dy = distance(ev);
+    // 上へ動いた / 途中でスクロールが始まった → 掴むのをやめる
+    if (dy <= 0 || window.scrollY > 0) { clear(); return; }
+    show(dy);
+    if (ev.cancelable) { ev.preventDefault(); }
+  }, { passive: false });
+
+  document.addEventListener('touchend', function () {
+    var pulled = mark && mark.textContent.indexOf('離すと') === 0;
+    clear();
+    if (pulled) { location.reload(); }
+  }, { passive: true });
+  document.addEventListener('touchcancel', clear, { passive: true });
+}());
+</script>"""
+
+
+# ホーム画面から開けるようにするための最小限。**Service Worker は持たない** ——
+# あれはスコープがルート直下を掴み、殻を抱え込んで**更新しても古い版が出続ける**
+# (やること画面を畳んだときに外したもの)。ここで欲しいのは「帯を消して開く」
+# ことだけで、オフラインで動かしたいわけではない。
+#
+# **`start_url` は玄関にする。** 入り口はいつも同じところがよく、そこから各面へ
+# 行ける(帯がどの面にも出る)。
+APP_MANIFEST = {
+    "name": "Chiezo — AI知識ベース",
+    "short_name": "Chiezo",
+    "start_url": "/admin",
+    "scope": "/",
+    "display": "standalone",
+    "background_color": "#ffffff",
+    "theme_color": "#5560E0",
+    "lang": "ja",
+    "icons": [
+        # SVG は大きさを問わない(どの画面の細かさでも崩れない)。
+        # PNG も並べるのは、SVG を読まない端末のため
+        {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml"},
+        {"src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png"},
+    ],
+}
+
+# `FAVICON_DATA_URI` の中身(data URI の前置きを外したもの)。`/icon.svg` で配る
+APP_ICON_SVG = base64.b64decode(FAVICON_DATA_URI.split(",", 1)[1])
+
+
 def page_shell(title: str, body: str, style: str = "") -> str:
     """共通の外枠。`style` は画面ごとの上乗せ(会話画面だけが使う)。
 
@@ -608,13 +748,19 @@ def page_shell(title: str, body: str, style: str = "") -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="{FAVICON_DATA_URI}">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#5560E0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Chiezo">
 <title>{html.escape(tab_title)}</title>
-<style>{PAGE_STYLE}{style}</style>
+<style>{PAGE_STYLE}{TOUCH_STYLE}{style}</style>
 </head>
 <body>
 {body}
 {picker}
 <footer class="page-footer">{_build_stamp()}</footer>
+{TOUCH_SCRIPT}
 </body>
 </html>"""
 

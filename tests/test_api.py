@@ -1555,10 +1555,10 @@ class TestUrlLayout:
         html = client.get("/admin/memory").text
         stale = [
             href for href in re.findall(r'href="(/[^"]*)"', html)
-            # `/tasks/` は外に開く面（認証なしで開く層）。帯から行けるようにしてある
+            # 殻が出す添え物(アイコン・ホーム画面の宣言)は面ではない
             if not href.startswith(
-                ("/admin", "/search/", "/ai/", "/v1/", "/tasks/",
-                 "/healthz", "/apple-touch-icon")
+                ("/admin", "/search/", "/ai/", "/v1/",
+                 "/healthz", "/apple-touch-icon", "/icon.svg", "/manifest.webmanifest")
             )
         ]
         assert not stale, f"古い URL が残っている: {stale}"
