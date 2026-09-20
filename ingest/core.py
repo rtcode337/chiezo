@@ -7,12 +7,56 @@ from __future__ import annotations
 
 import math
 import os
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
 SCHEMA_VERSION = 4
+
+
+# ---- 途中で止める -------------------------------------------------------------
+#
+# **取り込みは数分〜数時間かかる。** 設定を直したい・押し間違えた・いま動かしたく
+# ない、はどれも普通に起きるのに、止める手段がコンテナの再起動しか無かった。
+#
+# **殺すのではなく、安全なところで降りる。** 走っているのは daemon スレッドで、
+# 外から殺す手段はそもそも無い(Python のスレッドは止められない)。印を立てて、
+# 区切りのいいところで見に行く形にしてある —— 止まるのは**焼いている途中まで**で、
+# 切り替えより前なので、**いま配信している世代はそのまま残る**。
+#
+# **印はここに置く**(`main` でも `server` でもなく)。取り込みの本体もアダプタも
+# `core` を読むので、ここなら循環参照にならない。
+_stop = threading.Event()
+
+
+class Stopped(Exception):
+    """人が「止める」を押した。**失敗ではない**ので、控えでも書き分ける。"""
+
+
+def request_stop() -> None:
+    """止める印を立てる。**効くのは次の区切りまで待ってから**。"""
+    _stop.set()
+
+
+def clear_stop() -> None:
+    """印を下ろす(次の取り込みを始める前に必ず呼ぶ)。"""
+    _stop.clear()
+
+
+def stopping() -> bool:
+    return _stop.is_set()
+
+
+def check_stop() -> None:
+    """止める印が立っていたら降りる。**区切りのいいところで呼ぶこと。**
+
+    呼ぶ先を増やすほど反応は速くなるが、**外から来るものを待っている最中は
+    効かない**(相手が応えるまでこちらは動いていない)。素材を読み始めれば効く。
+    """
+    if _stop.is_set():
+        raise Stopped("取り込みを止めました")
 
 CORE_SCHEMA_DDL = """
 -- ソース自身のメタ情報(1行)

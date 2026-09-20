@@ -184,6 +184,15 @@ def run_buttons_disabled(job: dict | None) -> str:
 # 取り込みの塊に添える見出し(玄関だけ)。**「取り込み」とだけ書かない** ——
 # 何をどこへ書く処理なのかが読めないと、初期化・再構築・削除のどれと繋がる表示なのかが
 # 分からない。**「ingest」とも書かない** —— コードの中の言葉で、画面の言葉ではない。
+# 取り込みの塊を出している面。**戻り先はここから選ぶ** —— フォームで運ばれてきた
+# 文字列をそのまま行き先にすると、検査を通しても「外から来た値」のまま残る
+# (`views/ai_usage.py` の `_back_to` と同じ考え方)
+JOB_BACK_HOME = "/admin"
+JOB_BACK_MEMORY = "/admin/memory"
+JOB_BACK_OSM = "/admin/osm"
+JOB_BACK_WIKIPEDIA = "/admin/wikipedia"
+JOB_BACK_PAGES = (JOB_BACK_HOME, JOB_BACK_MEMORY, JOB_BACK_OSM, JOB_BACK_WIKIPEDIA)
+
 JOB_HEADING = '<h2 id="job-head">取り込み(素材を長期記憶へ焼く)</h2>'
 
 
@@ -202,16 +211,16 @@ def _running_sweep(source: str) -> str:
     return ""
 
 
-def _job_status_html(job: dict | None, heading: bool = False) -> str:
+def _job_status_html(job: dict | None, heading: bool = False, back: str = "/admin") -> str:
     """取り込みの塊。`heading` は**玄関にだけ付ける**。
 
     他の面は上に文脈があるので要らないが(記憶の面・初期化の面)、玄関は
     いくつもの塊が縦に並ぶだけなので、**何の表示なのかが読めない**。
     """
-    return (JOB_HEADING if heading else "") + _job_body_html(job)
+    return (JOB_HEADING if heading else "") + _job_body_html(job, back)
 
 
-def _job_body_html(job: dict | None) -> str:
+def _job_body_html(job: dict | None, back: str = "/admin") -> str:
     if job is None:
         return (
             '<div class="job-status" id="job">'
@@ -270,8 +279,42 @@ def _job_body_html(job: dict | None) -> str:
             '<p><a href="?#job">進み具合を読み直す</a>'
             ' <span class="muted">(自動では読み直しません)</span></p>'
         )
+    if state == "running":
+        lines.append(_stop_job_html(job, back))
     lines.append("</div>")
     return "\n".join(lines)
+
+
+def _stop_job_html(job: dict, back: str) -> str:
+    """走っている取り込みを降ろす口。**押してから降りるまでに間がある**。
+
+    **止める手段が再起動しかなかった。** 取り込みは数分〜数時間かかるので、
+    設定を直したい・押し間違えた・いま動かしたくない、はどれも普通に起きる。
+
+    **殺すのではなく、安全なところで降りる**(`core.check_stop`)—— 降りるのは
+    切り替えより前なので、**いま配信している世代はそのまま**。集めた素材も
+    捨てないので、押し直せば AI を呼び直さずに続きから焼ける。
+
+    **すぐ止まるとは書かない。** 外から素材が届くのを待っている最中は、動いて
+    いるのは向こうでこちらは待っているだけなので、印を見る手がない ——
+    「押しても何も起きない」と読まれるより、待ちがあると先に書くほうがよい。
+    """
+    if job.get("stopping"):
+        return (
+            '<p class="stale">⚠️ 止める印を立てました。'
+            "区切りのいいところまで来たら降ります"
+            "(外から素材が届くのを待っている最中は、届き始めてからになります)。</p>"
+        )
+    ask = (
+        "取り込みを止めます。切り替えの前で降りるので、いま配信している世代は"
+        "そのまま残ります。集めた素材も捨てないので、押し直せば続きから焼けます。"
+    )
+    return (
+        '<form class="init-form" method="post" action="/admin/ingest/stop"'
+        f" onsubmit=\"return confirm('{esc(ask)}')\">"
+        '<button type="submit">止める</button></form>'
+        ' <span class="muted">区切りのいいところで降ります(すぐには止まりません)</span>'
+    )
 
 
 def _history_args(request: Request) -> tuple[int, bool]:
@@ -1997,7 +2040,7 @@ def admin_memory(request: Request):
 構築中も現行 DB での配信は続く。完了後は数秒以内に自動で新しい DB へ切り替わる(再起動不要)。
 </p>
 
-{_job_status_html(job)}
+{_job_status_html(job, back=JOB_BACK_MEMORY)}
 
 <!-- **長期記憶の中に畳んでおく。** ここを開くのは新しいソースを入れるときだけで、
      日々見に来るのは上の一覧と下の「集める」のほう —— 同じ高さで並べると、
@@ -2198,7 +2241,7 @@ Geofabrik の国別抽出 {total} 件{f"(絞り込み: {len(catalog)} 件)" if n
 <button type="submit">絞り込み</button>
 </form>
 
-{_job_status_html(job)}
+{_job_status_html(job, back=JOB_BACK_OSM)}
 
 {''.join(blocks)}
 """
@@ -2295,7 +2338,7 @@ enwiki はその数倍)。ページビュー突合のため全プロジェクト
 <button type="submit">絞り込み</button>
 </form>
 
-{_job_status_html(job)}
+{_job_status_html(job, back=JOB_BACK_WIKIPEDIA)}
 
 {''.join(blocks)}
 """
@@ -2325,6 +2368,31 @@ def trigger_run(source: str) -> None:
         ) from e
     if res.status_code >= 400:
         raise HTTPException(res.status_code, res.json())
+
+
+@router.post("/admin/ingest/stop")
+def admin_ingest_stop(back: str = Form(JOB_BACK_HOME)):
+    """走っている取り込みを降ろす(`chiezo-trigger` の `POST /stop` へ取り次ぐ)。
+
+    **押した画面へ戻す。** この塊は玄関にも記憶の面にも出るので、行き先を
+    書き切ると見ていた画面から連れ出される(「進み具合を読み直す」と同じ)。
+    """
+    if not TRIGGER_URL:
+        raise HTTPException(
+            503, {"error": "取り込み(chiezo-trigger)が設定されていないので止められません"}
+        )
+    try:
+        res = httpx.post(f"{TRIGGER_URL}/stop", timeout=TRIGGER_TIMEOUT)
+    except httpx.HTTPError as e:
+        log.warning("chiezo-trigger stop request failed: %s", e)
+        raise HTTPException(
+            502, {"error": "chiezo-trigger unreachable (details in app logs)"}
+        ) from e
+    if res.status_code >= 400:
+        raise HTTPException(res.status_code, res.json())
+    # **こちらが持っている行き先を返す**(照合して通すのではなく)
+    here = next((page for page in JOB_BACK_PAGES if page == back), JOB_BACK_HOME)
+    return RedirectResponse(url=f"{here}#job", status_code=303)
 
 
 def _proxy_trigger_run(source: str) -> RedirectResponse:

@@ -27,10 +27,16 @@ from core import (
     SCHEMA_VERSION,
     TAG_COUNTS_POPULATE_SQL,
     SourceAdapter,
+    Stopped,
     build_profile,
+    check_stop,
 )
 
 log = logging.getLogger("chiezo.ingest")
+
+# 止める印を見に行く間隔(文書の数)。**毎件見ない** —— 1 件ごとに Event を
+# 引くと、数十万件の取り込みでそれ自体が費用になる
+STOP_CHECK_EVERY = 1_000
 
 BATCH_SIZE = 2000
 PROGRESS_EVERY = 100_000
@@ -174,6 +180,11 @@ def build_db(adapter: SourceAdapter, dump_path: Path, dump_date: str, building_p
             conn.commit()
 
         for doc in adapter.iter_docs(dump_path):
+            # **区切りのいいところで、止める印を見る**(`core.check_stop`)。
+            # ここで降りても書いているのは `.building` だけなので、
+            # いま配信している世代には触れていない
+            if total % STOP_CHECK_EVERY == 0:
+                check_stop()
             doc_rows.append(
                 (
                     doc.doc_id,
@@ -346,9 +357,17 @@ def run(source: str, data_dir: Path) -> Path:
     building_path = data_dir / f"{source}-{dump_date}.db.building"
     n_files = len(dump_path) if isinstance(dump_path, list) else 1
     log.info("building %s from %d dump file(s)", building_path.name, n_files)
+    check_stop()
     try:
         build_db(adapter, dump_path, dump_date, building_path)
         validate_db(adapter, building_path)
+    except Stopped:
+        # **止めたときは素材を脇へ除けない。** `on_broken` は「焼けない素材」を
+        # 次の回に拾わせないための仕掛けで、ここで呼ぶと**焼けたはずの素材が
+        # 捨てられる**(集めた 1 回ぶんが無駄になる)。書きかけの DB だけ片付ける
+        building_path.unlink(missing_ok=True)
+        log.info("stopped before switching: %s は前の世代のままです", source)
+        raise
     except Exception:
         # **焼けなかった素材は脇へ除ける**(`on_broken`)。取っておいた素材を次の回が
         # 拾い直す作りなので、**素材そのものが焼けないものだと永久に同じところで

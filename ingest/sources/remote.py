@@ -35,7 +35,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -44,7 +43,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from core import Doc, SourceAdapter
+from core import Doc, SourceAdapter, check_stop
+
+# 落としながら読む 1 回ぶん。止める印を見る間隔でもある
+DOWNLOAD_CHUNK = 1 << 20
 
 log = logging.getLogger("chiezo.ingest")
 
@@ -204,7 +206,12 @@ class RemotePluginAdapter:
         staging = workdir / f"{self.source}.ndjson.part"
         try:
             with urllib.request.urlopen(url, timeout=None) as res, staging.open("wb") as f:
-                shutil.copyfileobj(res, f)
+                # **読みながら、止める印を見る**(`shutil.copyfileobj` だと
+                # 落とし切るまで降りられない)。**相手が応え始めるまでは効かない**
+                # —— そのあいだ動いているのは向こうで、こちらは待っているだけ
+                while chunk := res.read(DOWNLOAD_CHUNK):
+                    check_stop()
+                    f.write(chunk)
         except urllib.error.HTTPError as e:
             raise PluginError(f"{self.source}: {_http_error_detail(e)}") from None
         dump_date = self._apply_meta(staging)

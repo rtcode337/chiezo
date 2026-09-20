@@ -38,11 +38,16 @@ SOURCE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,30}$")
 
 _lock = threading.Lock()
 _status: dict = {
-    "state": "idle",  # idle | running | done | error
+    # idle | running | done | error | stopped
+    # **stopped は error と分ける** —— 人が降ろしたのと、落ちたのとでは
+    # 次にすることが逆になる(押し直すだけ / 原因を調べる)
+    "state": "idle",
     "source": None,
     "started_at": None,
     "finished_at": None,
     "error": None,
+    # 「止める」を押してから、実際に降りるまでのあいだ
+    "stopping": False,
 }
 _log_tail: deque[str] = deque(maxlen=LOG_TAIL_LINES)
 
@@ -77,10 +82,22 @@ logging.getLogger("chiezo.ingest").setLevel(logging.INFO)
 def _run_job(source: str) -> None:
     from main import run as ingest_run
 
+    from core import Stopped
+
     try:
         ingest_run(source, DATA_DIR)
         with _lock:
             _status["state"] = "done"
+            _status["stopping"] = False
+            _status["finished_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+    # **止めたのは失敗ではない。** 切り替えより前で降りるので、いま配信している
+    # 世代はそのまま —— 押し直せば続きから始まる(集めた素材は残してある)
+    except Stopped as e:
+        log.info("ingest job stopped: source=%s", source)
+        with _lock:
+            _status["state"] = "stopped"
+            _status["stopping"] = False
+            _status["error"] = str(e)
             _status["finished_at"] = datetime.now(UTC).isoformat(timespec="seconds")
     # SystemExit も捕まえる。取り込み側は「設定が違う」類の行き止まり
     # (リリースが見つからない・依存が入っていない)を raise SystemExit で表すが、
@@ -93,6 +110,7 @@ def _run_job(source: str) -> None:
         log.exception("ingest job failed: source=%s", source)
         with _lock:
             _status["state"] = "error"
+            _status["stopping"] = False
             _status["error"] = str(e)
             _status["finished_at"] = datetime.now(UTC).isoformat(timespec="seconds")
 
@@ -360,6 +378,34 @@ def status():
         return {**_status, "log_tail": list(_log_tail)}
 
 
+@app.post("/stop")
+def stop_run():
+    """走っている取り込みを**安全なところで降ろす**。
+
+    **殺さない。** 走っているのは daemon スレッドで、外から止める手段はそもそも
+    無い —— 印を立てて、取り込みの側が区切りのいいところで見に行く
+    (`core.check_stop`)。降りるのは**切り替えより前**なので、
+    **いま配信している世代はそのまま残る**。
+
+    **すぐには止まらないことがある。** 外から素材が届くのを待っている最中は、
+    動いているのは向こうでこちらは待っているだけなので、印を見る手が無い ——
+    素材が届き始めるか、焼き始めるかしたところで降りる。
+
+    集めた素材は捨てない(`Stopped` では `on_broken` を呼ばない)ので、
+    押し直せば**AI を呼び直さずに**続きから焼ける。
+    """
+    from core import request_stop
+
+    with _lock:
+        if _status["state"] != "running":
+            raise HTTPException(409, {"error": "no job is running"})
+        _status["stopping"] = True
+        source = _status["source"]
+    request_stop()
+    log.info("stop requested: source=%s", source)
+    return {"ok": True, "source": source, "stopping": True}
+
+
 @app.post("/run/{source}")
 def start_run(source: str):
     from sources import ADAPTERS, remote
@@ -388,7 +434,12 @@ def start_run(source: str):
             started_at=datetime.now(UTC).isoformat(timespec="seconds"),
             finished_at=None,
             error=None,
+            stopping=False,
         )
+    # **前の回の印を必ず下ろす**(下ろし忘れると、始めた瞬間に降りる)
+    from core import clear_stop
+
+    clear_stop()
     thread = threading.Thread(target=_run_job, args=(source,), daemon=True)
     thread.start()
     return JSONResponse(status_code=202, content={"status": "started", "source": source})
