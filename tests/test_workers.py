@@ -35,6 +35,19 @@ def _worker(*steps: workers.Step) -> workers.Worker:
     return workers.Worker("精査", tuple(steps))
 
 
+def _define(monkeypatch, tmp_path, name: str, *sweeps: str) -> None:
+    """ワーカーに任せた巡回を持つ収集を 1 つ置く(行列に積むものの実体)。"""
+    from app import collect
+
+    monkeypatch.setenv("CHIEZO_NOTES_DIR", str(tmp_path / "notes"))
+    monkeypatch.setenv("CHIEZO_TRIGGER_URL", "http://trigger.invalid/")
+    collect.create(name=name, description=name, prompt="{partition}", interval_minutes=60)
+    collect.update(name, enabled=True, sweeps=[
+        {"name": s, "worker": "精査", "interval_minutes": 60, "prompt": "{partition}"}
+        for s in sweeps
+    ])
+
+
 class TestChoosing:
     """優先度順に見て、枠に余裕のある最初の相手に頼む。"""
 
@@ -630,7 +643,7 @@ class TestWakingItByHand:
     """
 
     @pytest.fixture
-    def baking(self, enabled, monkeypatch):
+    def baking(self, enabled, monkeypatch, tmp_path):
         from app import main
 
         started: list[tuple] = []
@@ -638,6 +651,9 @@ class TestWakingItByHand:
             main, "start_collection_bake",
             lambda name, sweep=None: started.append((name, sweep)),
         )
+        # **行列の中身は実在する収集にする。** 流す段は流す前に「まだ走らせて
+        # よいか」を確かめる(`_no_longer_due`)ので、定義の無い名前は外される
+        _define(monkeypatch, tmp_path, "news", "ざっと", "整理")
         return main, started
 
     def test_it_runs_without_waiting_for_the_clock(self, baking):
@@ -1143,3 +1159,124 @@ class TestReorderingTheSteps:
         assert 'value="up:1"' in html and 'value="up:0"' not in html
         assert 'value="down:0"' in html and 'value="down:1"' not in html
         assert 'value="down:2"' not in html and 'value="up:2"' not in html
+
+
+class TestAStoppedCollectionDoesNotRun:
+    """**止めたことは、行列にも効かないといけない。**
+
+    積む段は止まっている収集を飛ばすが、**積んだあとに止めたぶんは行列に残って
+    いて、そのまま流れていた** —— 押した「止める」が効かず、1 回ぶんの取り込みと
+    AI の枠を食う。
+    """
+
+    @pytest.fixture()
+    def ready(self, enabled, monkeypatch, tmp_path):
+        import app.main as m
+        import app.views.admin as admin
+        from app import collect
+
+        started: list[str] = []
+        # `TRIGGER_URL` は import のときに読む定数なので、環境変数では動かない
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://trigger.invalid/")
+        monkeypatch.setattr(admin, "trigger_run", lambda name: started.append(name))
+        monkeypatch.setattr(m, "ingest_busy", lambda: None)
+
+        def make(name: str) -> None:
+            _define(monkeypatch, tmp_path, name, "ざっと見る")
+
+        workers.save([_worker(workers.Step("codex"))])
+        return m, collect, make, started
+
+    def _flush(self, m):
+        from datetime import UTC, datetime
+
+        return m._flush_one(workers.get("精査"), datetime.now(UTC), wake=True)
+
+    def test_it_runs_while_the_collection_is_on(self, ready):
+        m, _collect, make, started = ready
+        make("meals")
+        m._fill_worker_queues()
+
+        assert self._flush(m) is True
+        assert started == ["meals"]
+
+    def test_stopping_it_takes_it_off_the_queue(self, ready):
+        m, collect, make, started = ready
+        make("meals")
+        m._fill_worker_queues()
+        assert workers.queued("精査")
+
+        collect.update("meals", enabled=False)
+        m._fill_worker_queues()
+
+        assert workers.queued("精査") == []
+        assert self._flush(m) is False
+        assert started == []
+
+    def test_stopping_the_sweep_alone_also_counts(self, ready):
+        m, collect, make, started = ready
+        make("meals")
+        m._fill_worker_queues()
+
+        collect.update("meals", sweeps=[
+            {"name": "ざっと見る", "worker": "精査", "interval_minutes": 60,
+             "prompt": "{partition}", "enabled": False},
+        ])
+        m._fill_worker_queues()
+
+        assert workers.queued("精査") == []
+        assert started == []
+
+    def test_a_stopped_one_in_the_batch_is_skipped_not_waited_on(self, ready):
+        """**外さずに見送ると、先頭に居座ってそのワーカーが 1 本も進まない。**
+
+        積んでから流すまでのあいだに止められた回は、行列を片付ける段を通らずに
+        塊の中に残る。
+        """
+        m, collect, make, started = ready
+        make("meals")
+        make("painters")
+        workers.save([workers.Worker("精査", (workers.Step("codex"),), per_run=2)])
+        m._fill_worker_queues()
+        assert len(workers.queued("精査")) == 2
+
+        collect.update("meals", enabled=False)
+
+        assert self._flush(m) is True
+        assert started == ["painters"], "止まっている先頭は飛ばして次を流す"
+
+    def test_a_stopped_head_does_not_block_the_next_round(self, ready):
+        """1 度に 1 本しか拾わないワーカーでも、次の周で先へ進むこと。"""
+        m, collect, make, started = ready
+        make("meals")
+        make("painters")
+        m._fill_worker_queues()
+        collect.update("meals", enabled=False)
+
+        assert self._flush(m) is False, "止まっているぶんしか拾っていない周"
+        m._fill_worker_queues()
+
+        assert self._flush(m) is True
+        assert started == ["painters"]
+
+    def test_a_collection_that_is_gone_is_dropped_too(self, ready):
+        m, collect, make, started = ready
+        make("meals")
+        m._fill_worker_queues()
+
+        collect.remove("meals")
+        m._fill_worker_queues()
+
+        assert workers.queued("精査") == []
+        assert started == []
+
+    def test_the_by_hand_button_can_still_run_a_stopped_one(self, ready):
+        """画面の「今すぐ実行」は試し撃ちなので、止めてあっても走らせる ——
+        有効にする前に試せる道を塞がない。"""
+        m, collect, make, started = ready
+        make("meals")
+        collect.update("meals", enabled=False)
+
+        m.start_collection_bake("meals", "ざっと見る")
+
+        assert started == ["meals"]

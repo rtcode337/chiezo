@@ -319,6 +319,57 @@ def _fill_worker_queues() -> None:
                 continue
             if workers.enqueue(name, item.name, sweep.name, _iso(now)):
                 log.info("queued %s/%s for worker %r", item.name, sweep.name, name)
+    _drop_stale_from_queues()
+
+
+def _drop_stale_from_queues() -> None:
+    """**もう走らせてはいけないものを行列から外す。**
+
+    積む段は止まっている収集を飛ばすが(`_fill_worker_queues`)、**積んだあとに
+    止めたぶんは行列に残ったまま流れていた** —— 押した「止める」が効かず、
+    1 回ぶんの取り込みと AI の枠を食う。止めたことは行列にも効かないといけない。
+
+    **外すのは流す段ではなく、ここ。** 流す段まで残すと、先頭が止まっている回の
+    あいだ**そのワーカーが 1 本も進まない**(先頭しか見ないため)。ここで外して
+    おけば、画面の待ち行列も 1 周期のうちに正しくなる。
+    """
+    try:
+        defined = workers.load()
+    except ValueError:
+        return
+    for worker in defined:
+        for entry in workers.queued(worker.name):
+            if why := _no_longer_due(entry):
+                log.info(
+                    "dropped %s/%s from worker %r: %s",
+                    entry.get("collection"), entry.get("sweep"), worker.name, why,
+                )
+                workers.done(worker.name, entry["collection"], entry["sweep"])
+
+
+def _no_longer_due(entry: dict) -> str:
+    """行列に残っているが、もう流してはいけない理由。流してよければ空。
+
+    **画面の「今すぐ実行」とは判断が違う。** あちらは人が押す試し撃ちなので、
+    止めてある収集でも走らせる(有効にする前に試せる道)—— こちらは無人で回る側で、
+    押した覚えのない回が動かないことのほうが大事。
+    """
+    try:
+        item = collect.get(str(entry.get("collection") or ""))
+    except HTTPException:
+        return "収集がありません"
+    if not item.enabled:
+        return "収集が止まっています"
+    sweep = next(
+        (s for s in collect.sweeps_of(item) if s.name == entry.get("sweep")), None
+    )
+    if sweep is None:
+        return "巡回がありません"
+    if not sweep.enabled:
+        return "巡回が止まっています"
+    if not getattr(sweep, "worker", ""):
+        return "この巡回はワーカーに任せていません"
+    return collect.blocked_reason(item, sweep)
 
 
 def _due_for_queue(sweep, now: datetime) -> bool:
@@ -365,21 +416,32 @@ def _flush_one(worker, now: datetime, wake: bool = False) -> bool:
         batch = workers.claim(worker.name, worker.per_run, _iso(now))
         if not batch:
             return False
-    entry = batch[0]
-    if workers.pick(worker) is None:
-        # **どれも詰まっていたら流さない。** 塊はそのまま残るので、
-        # 窓が明けた周で続きから流れる
-        return False
-    try:
-        start_collection_bake(entry["collection"], entry["sweep"])
-    except HTTPException as e:
-        # 取り込みが混んでいる・巡回が消えた。**塊からは外す** ——
-        # 消えた巡回を抱えたままだと、そのワーカーが二度と進まない
-        if e.status_code == 404:
+    for entry in batch:
+        # **止まったぶんはここでも外す。** ふだんは `_drop_stale_from_queues` が
+        # 先に片付けるが、積んでから流すまでのあいだに止められることもある ——
+        # **外さずに見送ると、先頭に居座ってそのワーカーが 1 本も進まない**
+        if why := _no_longer_due(entry):
+            log.info(
+                "skipped %s/%s on worker %r: %s",
+                entry["collection"], entry["sweep"], worker.name, why,
+            )
             workers.done(worker.name, entry["collection"], entry["sweep"])
-        return False
-    workers.done(worker.name, entry["collection"], entry["sweep"])
-    return True
+            continue
+        if workers.pick(worker) is None:
+            # **どれも詰まっていたら流さない。** 塊はそのまま残るので、
+            # 窓が明けた周で続きから流れる
+            return False
+        try:
+            start_collection_bake(entry["collection"], entry["sweep"])
+        except HTTPException as e:
+            # 取り込みが混んでいる・巡回が消えた。**塊からは外す** ——
+            # 消えた巡回を抱えたままだと、そのワーカーが二度と進まない
+            if e.status_code == 404:
+                workers.done(worker.name, entry["collection"], entry["sweep"])
+            return False
+        workers.done(worker.name, entry["collection"], entry["sweep"])
+        return True
+    return False
 
 
 def wake_worker(name: str) -> dict:
