@@ -219,6 +219,9 @@ PAGE_STYLE = """
      (table.ai-settings に掛けているのと同じ調整) */
   details.prompt-open { margin-top: 0.2rem; }
   details.prompt-open > summary { font-weight: normal; padding: 0.1rem 0; }
+  /* ワーカーの段を 1 つ上下へ動かす印(`views/ai_workers.py`)。**行から浮かせない**
+     —— 段の並びは「詰まったら次へ」の順そのもので、相手の名前の隣が読む場所 */
+  .step-move { font-size: .8rem; padding: .05rem .35rem; margin-left: .2rem; }
   .muted { color: #666; font-size: 0.85rem; }
   .pager { display: flex; gap: 1rem; align-items: baseline; margin-top: 1rem; }
   /* 玄関の使用量の表に添える 1 行（取り直す口と、全部の相手への入口）。

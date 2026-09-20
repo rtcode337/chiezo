@@ -1072,3 +1072,74 @@ class TestReadingWhyItIsNotMoving:
         html = self._form(workers.Worker("精査", (workers.Step("codex"),)))
 
         assert "<details><summary>待ち行列" not in html
+
+
+class TestReorderingTheSteps:
+    """段の並びは「詰まったら次へ」の順そのもの。**入れ替えるのに打ち直させない。**
+
+    並びを変えるには相手を選び直すしかなく、3 段あれば 3 つとも選び直すことに
+    なっていた —— そのあいだに 1 つ間違えると、無人で回る層が別の相手に回り続ける。
+    """
+
+    def _post(self, **extra):
+        from starlette.datastructures import FormData
+
+        rows = extra.pop("rows", [("codex", ""), ("antigravity", ""), ("claude", "")])
+        items = [("worker_key", "精査"), ("worker_name", "精査")]
+        for backend, model in rows:
+            items += [("step_backend", backend), ("step_model", model)]
+        items += list(extra.items())
+        return FormData(items)
+
+    async def _save(self, form):
+        from app.views import ai_workers
+
+        class _Request:
+            async def form(self):
+                return form
+
+        await ai_workers.save_worker(_Request())
+        return [s.backend for s in workers.load()[0].steps]
+
+    def test_up_swaps_with_the_one_before(self, enabled):
+        got = asyncio.run(self._save(self._post(step_move="up:1")))
+        assert got == ["antigravity", "codex", "claude"]
+
+    def test_down_swaps_with_the_one_after(self, enabled):
+        got = asyncio.run(self._save(self._post(step_move="down:0")))
+        assert got == ["antigravity", "codex", "claude"]
+
+    def test_the_typed_rows_are_kept(self, enabled):
+        """**書きかけの欄も一緒に保存してから動く**(別のフォームにはできない)。"""
+        rows = [("codex", "gpt-6"), ("antigravity", "gemini-3.8-flash")]
+        got = asyncio.run(self._save(self._post(rows=rows, step_move="up:1")))
+        assert got == ["antigravity", "codex"]
+        assert [s.model for s in workers.load()[0].steps] == ["gemini-3.8-flash", "gpt-6"]
+
+    def test_the_ends_do_not_move(self, enabled):
+        """画面は端にボタンを出さないが、押された形は入ってくる。"""
+        assert asyncio.run(self._save(self._post(step_move="up:0"))) == [
+            "codex", "antigravity", "claude"
+        ]
+        assert asyncio.run(self._save(self._post(step_move="down:2"))) == [
+            "codex", "antigravity", "claude"
+        ]
+
+    def test_a_move_we_cannot_read_changes_nothing(self, enabled):
+        for raw in ("", "sideways:1", "up:", "up:x", "up:99"):
+            assert asyncio.run(self._save(self._post(step_move=raw))) == [
+                "codex", "antigravity", "claude"
+            ], raw
+
+    def test_the_screen_shows_the_arrows_only_where_they_work(self, enabled):
+        from app.views import admin, ai_workers
+
+        workers.save([_worker(workers.Step("codex"), workers.Step("antigravity"))])
+        html = ai_workers.section_html(
+            (admin._backend_select, admin._model_select)
+        )
+
+        # 2 段あるので ↑ は 2 番目だけ、↓ は 1 番目だけ。空の 3 行目には出ない
+        assert 'value="up:1"' in html and 'value="up:0"' not in html
+        assert 'value="down:0"' in html and 'value="down:1"' not in html
+        assert 'value="down:2"' not in html and 'value="up:2"' not in html

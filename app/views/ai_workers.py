@@ -42,7 +42,9 @@ def _percent(provider: str) -> str:
     return f'<span class="muted">{busiest:.0f}% 使用{mark}</span>'
 
 
-def _step_row(index: int, step: workers.Step | None, backend_select, model_select) -> str:
+def _step_row(
+    index: int, step: workers.Step | None, backend_select, model_select, last: int = -1
+) -> str:
     """段 1 つぶんの欄。
 
     **考える量の欄は持たない。** 考える量はモデルの名前に畳んである
@@ -59,11 +61,41 @@ def _step_row(index: int, step: workers.Step | None, backend_select, model_selec
         '<div class="sweep-row">'
         f'<p><label>{index + 1} 番目<br>'
         f'{backend_select(current, "step_backend", empty_label=_EMPTY_STEP)}</label>'
-        f" {picked}</p>"
+        f" {picked} {_move_step_html(index, step, last)}</p>"
         f'<p><label>モデル<br>{model_select(current, step.model if step else "", "step_model")}'
         "</label></p>"
         "</div>"
     )
+
+
+def _move_step_html(index: int, step: workers.Step | None, last: int) -> str:
+    """段を 1 つ上/下へ動かす印。**段の並びは「詰まったら次へ」の順そのもの**。
+
+    **入れ替えるのに打ち直させない。** 並びを変えるには相手を選び直すしかなく、
+    3 段あれば 3 つとも選び直すことになっていた —— そのあいだに 1 つ間違えると、
+    無人で回る層が別の相手に回り続ける。
+
+    **このフォームの submit として出す**(別のフォームにしない)。`<form>` は
+    入れ子にできないので、中にもう 1 枚置くと**内側が丸ごと無視される**
+    (押しても何も起きないボタンになる)。同じフォームなら、**書きかけの欄も
+    一緒に保存してから動く** —— 動かすために保存し直す手間も要らない。
+
+    **端では出さない**(押せないボタンを置かない、の流儀)。空の段(まだ相手を
+    選んでいない末尾の 1 行)にも出さない —— 動かす中身が無い。
+    """
+    if step is None:
+        return ""
+    up = (
+        "" if index == 0 else
+        '<button type="submit" name="step_move" class="step-move"'
+        f' value="up:{index}" title="上へ">↑</button>'
+    )
+    down = (
+        "" if index >= last else
+        '<button type="submit" name="step_move" class="step-move"'
+        f' value="down:{index}" title="下へ">↓</button>'
+    )
+    return up + down
 
 
 def _worker_form(worker: workers.Worker | None, selects, running: str = "") -> str:
@@ -72,7 +104,10 @@ def _worker_form(worker: workers.Worker | None, selects, running: str = "") -> s
     steps = list(worker.steps) if worker else []
     # **空の段を 1 つ足して出す。** 足すのに押す手数を要らなくするため
     rows = [
-        _step_row(i, steps[i] if i < len(steps) else None, backend_select, model_select)
+        _step_row(
+            i, steps[i] if i < len(steps) else None, backend_select, model_select,
+            last=len(steps) - 1,
+        )
         for i in range(min(len(steps) + 1, MAX_STEPS))
     ]
     hint = ("名前を消すと、このワーカーは無くなります" if worker
@@ -247,6 +282,23 @@ async def wake_worker(request: Request):
     return RedirectResponse(BACK_TO_SECTION, status_code=303)
 
 
+def _moved_steps(steps: tuple, raw: str) -> tuple:
+    """`up:1` / `down:0` で段を 1 つ動かした並び。読めない指示は無視する。
+
+    **端は動かさない**(画面は端にボタンを出さないが、押された形は入ってくる)。
+    """
+    kind, _, index = raw.partition(":")
+    if kind not in ("up", "down") or not index.isdigit():
+        return steps
+    at = int(index)
+    to = at - 1 if kind == "up" else at + 1
+    if not (0 <= at < len(steps) and 0 <= to < len(steps)):
+        return steps
+    out = list(steps)
+    out[at], out[to] = out[to], out[at]
+    return tuple(out)
+
+
 @router.post("/admin/ai/workers")
 async def save_worker(request: Request):
     """ワーカー 1 つぶんを保存する。**その 1 つだけ**を書き換える。
@@ -268,6 +320,9 @@ async def save_worker(request: Request):
         workers.Step(str(b).strip(), str(models[i] if i < len(models) else "").strip())
         for i, b in enumerate(backends) if str(b).strip()
     )
+    # **↑↓ はこのフォームの submit。** 書きかけの欄も一緒に保存してから動かす
+    # (`_move_step_html`。`<form>` は入れ子にできないので、別フォームにはできない)
+    steps = _moved_steps(steps, str(form.get("step_move") or ""))
 
     try:
         current = workers.load()
