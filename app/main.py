@@ -804,6 +804,19 @@ def _default_backend_name() -> str:
     return ""
 
 
+def _phase_done(label: str, name: str, since: float, count: int) -> float:
+    """1 回の中の段ごとに、かかった時間を残す。**次の段の起点を返す**。
+
+    **控え(`app/collect_log.py`)は 1 回ぶんの合計しか持たない。** 遅いのが
+    区画の突き合わせなのか AI なのか焼くところなのかは、合計からは読めない ——
+    本番で 1 回 8.7 時間の回を追ったとき、**どこに消えているのかを外から
+    確かめる手がどこにも無かった**(取り込みのログも「fetch を始めた」で止まる)。
+    """
+    now = time.monotonic()
+    log.info("collect %s: %s に %.1f 秒(%d)", name, label, now - since, count)
+    return now
+
+
 async def _collect_material(name: str, sources: dict) -> str:
     # **かかった時間を測る。** 回ごとに桁が違い(相手も区画の大きさも回ごとに変わる)、
     # **遅くなったことは件数からは読めない** —— 同じ件数を返していても、5 分が
@@ -819,7 +832,9 @@ async def _collect_material(name: str, sources: dict) -> str:
     previous = lambda: collect.stream_previous(name, sources)  # noqa: E731
     # **区画は集める前に決める。** 何を見るかが決まっていないと、渡す素材も
     # 差し込む文も作れない(台帳が無ければ空で返り、今までどおり全体を見る)
+    phase = time.monotonic()
     ledger = await asyncio.to_thread(collect.plan_partitions, item, sources, previous)
+    phase = _phase_done("台帳を決める", name, phase, len(ledger))
     # **割り直した台帳で素材を組む。** 定義に入っているのは走る前の台帳なので、
     # この回で割り直したときに食い違う —— 区画を選ぶのは新しい台帳から、
     # どの文書がその区画かを判ずるのは古い台帳から、になり、**差し込みが丸ごと空になる**
@@ -882,6 +897,7 @@ async def _collect_material(name: str, sources: dict) -> str:
         for_prompt = await asyncio.to_thread(
             collect.prompt_docs, item, previous, keys, focus
         )
+        phase = _phase_done("差し込むぶんを選ぶ", name, phase, len(for_prompt))
         items, next_cursor, note = await _collect_items(
             item, for_prompt, sources, keys, sweep, focus, feed, shown, used
         )
@@ -891,12 +907,14 @@ async def _collect_material(name: str, sources: dict) -> str:
         # **数えるのは流し始める前。** 流している途中でステータスは変えられないので、
         # 断るならここで断る(`bake_survey`)。素材そのものは 1 行ずつ返すので、
         # ここでは組み立てない —— 50 万件の名簿では 1 本の文字列が 460 MB になる
+        phase = _phase_done("AI に聞く", name, phase, len(keys))
         plan = await asyncio.to_thread(
             # **足すだけの回は、既にある見出しに触らない。** 割り込みは別 ——
             # あれは名指しで「ここを直して」なので、必ず直す側で走る
             collect.bake_survey, baked_as, sources, previous, items,
             focus is None and sweep.only_new, edits,
         )
+        phase = _phase_done("焼く前に数える", name, phase, plan.get("total") or 0)
         diff = plan["diff"]
         # **機械で名簿を作り直した回は、その場で区画を割り直す。**
         # 台帳は次に走るまで古いままで、**1 回に何区画を見るかはそこから決まる** ——

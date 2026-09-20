@@ -802,6 +802,25 @@ class TestBands:
         for title, doc in own.items():
             assert partition.partition_of(spec, built, doc) in keys, title
 
+    def test_an_unvisited_one_does_not_borrow_a_parent_mark(self):
+        """**「鍵が同じ」と「記録が空」を取り違えない。**
+
+        前は「記録が空なら親を探す」と書いていたので、**まだ 1 度も見ていない
+        区画が、それを覆う区画の記録をもらっていた** —— 見ていない区画に印が付き、
+        一周が嘘になる。ついでに、親探しは台帳を端から舐めるので割り直すたびに
+        区画の数の 2 乗だけ鍵を数へ直していた(8,192 区画で 33.8 秒)。
+        """
+        spec = self.spec()
+        current = [
+            {"key": "フランス|-", "count": 9, "visits": {"ざっと": "2026-09-01"}},
+            {"key": "フランス|1850-1899", "count": 3, "visits": {}},
+        ]
+        built = [{"key": "フランス|1850-1899", "count": 3}]
+
+        [got] = partition.refresh(built, current, spec)
+
+        assert got["visits"] == {}, "見ていない区画に印が付いている"
+
     def test_the_split_keeps_the_visits(self):
         """**割られた区画の子は、親の記録を写す** —— 写さないと、区画が育つたびに
         そこだけ一周が巻き戻る。"""

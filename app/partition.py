@@ -742,13 +742,21 @@ def refresh(built: list[dict], current: list[dict], spec: dict | None = None) ->
     一周が巻き戻る。親は「その子を含んでいた区画」として探す。
 
     **新しい台帳が覆っていない区画は、落とさずに残す**(`_uncovered`)。
+
+    **「鍵が同じ」と「記録が空」を取り違えない。** 前は `seen.get(key) or 親を探す`
+    と書いていたので、**まだ 1 度も見ていない区画は毎回「親探し」に落ちていた** ——
+    親探しは台帳を端から舐めるので、割り直すたびに区画の数の 2 乗だけ鍵を数へ
+    直すことになる(実測: 8,192 区画・記録が全部空で 33.8 秒。本番は 10,457 区画で、
+    配信機はこの倍)。**鍵があるかどうかで分ける**と、割り直しても鍵が変わらない
+    区画(ふつうは大半)はそこで終わる。
     """
     seen = {p["key"]: dict(p.get("visits") or {}) for p in current}
     out = [
         {
             "key": p["key"],
             "count": int(p.get("count") or 0),
-            "visits": seen.get(p["key"]) or _inherited(spec, p["key"], current),
+            "visits": seen[p["key"]] if p["key"] in seen
+            else _inherited(spec, p["key"], current),
         }
         for p in built
     ]
