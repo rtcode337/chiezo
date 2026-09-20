@@ -2817,7 +2817,11 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     osm の `node_index` はカタログの既定を実行時設定〔`OSM_NODE_INDEX` >
     `BUILD_PROFILE=low_memory`〕で解決してから返す — 管理画面の必要メモリ表示を
     実際の実行条件と一致させるため)。
-    `GET /status` で state(idle/running/done/error)・
+    **落ちた回は別に控える**(`/status` の `last_failure`)—— 状態もログも
+    「いまの 1 本」ぶんしか持たないので、**次の取り込みが始まった瞬間に理由が
+    読めなくなっていた**(本番で、落ちた 56 秒後に次が始まって何も残らなかった)。
+    無人で回る層は、その場に居合わせない人が後から原因を追う。
+        `GET /status` で state(idle/running/done/error)・
     source・started_at/finished_at・error・ログ tail(`chiezo.ingest` logger に登録した
     `_TailHandler` 経由)を返す。状態はプロセス内メモリのみ(永続化なし)。
     ホストへポート公開せず、`chiezo-app` からのみ docker 内部ネットワーク経由で到達可能

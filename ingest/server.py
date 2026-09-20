@@ -51,6 +51,14 @@ _status: dict = {
 }
 _log_tail: deque[str] = deque(maxlen=LOG_TAIL_LINES)
 
+# **最後に落ちた回の控え。** 状態もログも「いまの 1 本」ぶんしか持たないので、
+# **次の取り込みが始まった瞬間に、落ちた回の理由とログが消えていた** ——
+# 収集は 1 時間おきに回るし、別の収集が続けて走ることもある(実際、落ちた 56 秒後に
+# 次が始まって何も読めなくなった)。無人で回る層は、その場に居合わせない人が
+# 後から原因を追う —— 読む手が残っていないと、同じことがもう一度起きるまで
+# 分からない。**上書きするのは次に落ちたときだけ**。
+_last_failure: dict | None = None
+
 
 class _TailHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
@@ -107,12 +115,21 @@ def _run_job(source: str) -> None:
     # 新しい取り込みを断り続ける(コンテナを再起動するまで直らない)。
     # KeyboardInterrupt は含めない(こちらは止めに来た合図なので通す)。
     except (Exception, SystemExit) as e:
+        global _last_failure
         log.exception("ingest job failed: source=%s", source)
         with _lock:
             _status["state"] = "error"
             _status["stopping"] = False
             _status["error"] = str(e)
             _status["finished_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+            # **落ちた回は別に控える**(次の取り込みが始まっても消えないように)
+            _last_failure = {
+                "source": source,
+                "started_at": _status["started_at"],
+                "finished_at": _status["finished_at"],
+                "error": str(e),
+                "log_tail": list(_log_tail),
+            }
 
 
 app = FastAPI(title="chiezo-trigger", version="0.1")
@@ -374,8 +391,13 @@ def _remove_source_files(name: str) -> list[str]:
 
 @app.get("/status")
 def status():
+    """いまの 1 本と、**最後に落ちた回**。
+
+    落ちた回を別に返すのは、**次の取り込みが始まると状態もログも上書きされる**
+    から —— 読みに来たときには既に消えている、が普通に起きる。
+    """
     with _lock:
-        return {**_status, "log_tail": list(_log_tail)}
+        return {**_status, "log_tail": list(_log_tail), "last_failure": _last_failure}
 
 
 @app.post("/stop")

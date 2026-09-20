@@ -282,7 +282,34 @@ def _job_body_html(job: dict | None, back: str = "/admin") -> str:
     if state == "running":
         lines.append(_stop_job_html(job, back))
     lines.append("</div>")
-    return "\n".join(lines)
+    return "\n".join(lines) + _last_failure_html(job, state)
+
+
+def _last_failure_html(job: dict, state: str) -> str:
+    """**最後に落ちた回**。いまの 1 本がそれ自身なら出さない(同じものが二度並ぶ)。
+
+    状態もログも「いまの 1 本」ぶんしか無いので、**次の取り込みが始まった瞬間に
+    落ちた回の理由が読めなくなっていた** —— 収集は 1 時間おきに回るうえ、別の
+    収集が続けて走ることもある(実際、落ちた 56 秒後に次が始まって何も残らなかった)。
+    無人で回る層は、その場に居合わせない人が後から原因を追う。
+
+    **畳んでおく。** ふだん見たいのはいまの 1 本で、これは追いに来た人のためのもの。
+    """
+    last = job.get("last_failure")
+    if not last or state == "error":
+        return ""
+    when = jst.parse(str(last.get("finished_at") or ""))
+    head = f"前に落ちた回: {esc(last.get('source') or '')}"
+    if when:
+        head += f"({esc(jst.format(when))})"
+    tail = last.get("log_tail") or []
+    log_html = (
+        '<div class="log-tail">' + esc("\n".join(tail)) + "</div>" if tail else ""
+    )
+    return (
+        f'<details class="job-log"><summary>{head}</summary>'
+        f'<p class="stale">{esc(last.get("error") or "")}</p>{log_html}</details>'
+    )
 
 
 def _stop_job_html(job: dict, back: str) -> str:

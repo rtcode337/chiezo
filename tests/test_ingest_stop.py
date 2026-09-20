@@ -143,6 +143,74 @@ class TestTheStopEndpoint:
         assert server._status["stopping"] is False
 
 
+class TestKeepingTheLastFailure:
+    """**次の取り込みが始まっても、落ちた回の理由は残す。**
+
+    状態もログも「いまの 1 本」ぶんしか無いので、読みに来たときには消えている、が
+    普通に起きる(本番で、落ちた 56 秒後に次が始まって何も残らなかった)。
+    """
+
+    @pytest.fixture()
+    def client(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(tmp_path))
+        import server
+
+        server._status.update(state="idle", source=None, stopping=False, error=None)
+        server._last_failure = None
+        server._log_tail.clear()
+        return TestClient(server.app)
+
+    def _fail(self, monkeypatch, source="tazuna_meals"):
+        import server
+
+        def _boom(_source, _dir):
+            raise RuntimeError("UNIQUE constraint failed: docs.title")
+
+        monkeypatch.setitem(__import__("sys").modules["main"].__dict__, "run", _boom)
+        server._status.update(state="running", source=source)
+        server._log_tail.append("2026-09-20 13:02:24 JST INFO building …")
+        server._run_job(source)
+
+    def test_it_is_kept_after_the_next_run_starts(self, client, monkeypatch):
+        import server
+
+        self._fail(monkeypatch)
+        monkeypatch.setattr(server.threading, "Thread", lambda **kw: _NoThread())
+        client.post("/run/jawiki")
+
+        got = client.get("/status").json()
+
+        assert got["state"] == "running" and got["source"] == "jawiki"
+        assert got["log_tail"] == [], "いまの 1 本のログは新しくなる"
+        assert got["last_failure"]["source"] == "tazuna_meals"
+        assert "UNIQUE constraint" in got["last_failure"]["error"]
+        assert got["last_failure"]["log_tail"], "落ちた回のログも残す"
+
+    def test_nothing_is_kept_when_nothing_failed(self, client):
+        assert client.get("/status").json()["last_failure"] is None
+
+    def test_the_screen_shows_it_while_another_job_runs(self, client, monkeypatch):
+        from app.views import admin
+
+        self._fail(monkeypatch)
+        job = {**client.get("/status").json(), "state": "running", "source": "jawiki"}
+
+        html = admin._job_status_html(job)
+
+        assert "前に落ちた回: tazuna_meals" in html
+        assert "UNIQUE constraint" in html
+
+    def test_it_is_not_shown_twice(self, client, monkeypatch):
+        """いまの 1 本がその失敗そのものなら、同じものが二度並ぶ。"""
+        from app.views import admin
+
+        self._fail(monkeypatch)
+        job = client.get("/status").json()
+
+        assert job["state"] == "error"
+        assert "前に落ちた回" not in admin._job_status_html(job)
+
+
 class _NoThread:
     def start(self) -> None:
         return None
