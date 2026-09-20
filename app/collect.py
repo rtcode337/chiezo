@@ -2878,7 +2878,9 @@ def stream_docs(
             # 墓標。**消さずに印を付けて残す**
             removed_titles.append(title)
             updated += 1
-            yield _stamped(_reviewed(_buried(before, raw, now)), sweep, "removed")
+            yield _stamped(
+                _reviewed(_buried(before, raw, now)), sweep, "removed", by=signed_by(raw),
+            )
             continue
         doc = _to_doc(raw, now, item.web)
         if doc is None:
@@ -2899,6 +2901,7 @@ def stream_docs(
             continue
         yield _stamped(
             _reviewed({**doc, "doc_id": before["doc_id"]}), sweep, "updated", before,
+            by=signed_by(raw),
         )
 
     next_id += 1
@@ -2935,7 +2938,7 @@ def stream_docs(
         added += 1
         added_titles.append(doc["title"])
         fresh = _unreviewed(doc) if unreviewed else doc
-        yield _stamped({**fresh, "doc_id": next_id}, sweep, "added")
+        yield _stamped({**fresh, "doc_id": next_id}, sweep, "added", by=signed_by(raw))
         next_id += 1
 
     counts.update({
@@ -3118,13 +3121,44 @@ CHANGE_KEY = "change"
 BEFORE_KEY = "before"
 # その 1 件を最後に集めた時刻(`_to_doc`)。AI が触った回には必ず入り直す
 COLLECTED_AT_KEY = "collected_at"
+# **その 1 件を最後に動かした AI とモデル**(`antigravity / gemini-3.8-flash-medium`)。
+# 回ごとの控え(`app/collect_log.py`)にも相手は残るが、あれは 1 回 1 行で流れていく
+# うえ、**1 回の中で相手が振り替わる**(ワーカーは区画ごとに枠の空いた段を選ぶ)——
+# 「この 1 件を書いたのは誰か」は、その 1 件に押しておくしか読む手が無い。
+# **AI を呼ばない回には付かない**(機械で引く回・外の道具で引く回)。
+CHANGED_AI_KEY = "changed_ai"
+# 集めたものに載せて運ぶための鍵。**脇書きではなく素の側に置く** ——
+# `_carried` は `extra` の中だけを見るので、ここに置けば AI の返した事実と混ざらない
+SIGNED_BY_KEY = "_chiezo_by"
 # 前と比べない脇書き。**こちらが回ごとに押す印なので、混ぜると毎回「変わった」に
 # なる** —— 本当に動いた事実が埋もれる。控えに入れると、さらに控えの中に控えが入り、
 # 焼き直すたびに入れ子が 1 段深くなる(1 件が際限なく伸びる)
-MARGIN_KEYS = (CHANGE_KEY, CHANGED_BY_KEY, BEFORE_KEY, COLLECTED_AT_KEY)
+MARGIN_KEYS = (CHANGE_KEY, CHANGED_BY_KEY, CHANGED_AI_KEY, BEFORE_KEY, COLLECTED_AT_KEY)
 
 
-def _stamped(doc: dict, sweep: str, change: str, before: dict | None = None) -> dict:
+def signed(items: list[dict], backend: str, model: str) -> list[dict]:
+    """集めた 1 件ずつに、**どの AI が書いたか**を載せる。
+
+    **回ごとではなく 1 件ごとに載せる。** ワーカーを使う回は区画ごとに相手が
+    振り替わる(枠の空いた段を選ぶ)ので、回の単位で 1 つに丸めると**半分の
+    文書に嘘の署名が付く**。
+
+    **機械で引く回には呼ばれない** —— あちらは AI を通さないので署名のしようがない。
+    """
+    if not backend:
+        return items
+    mark = f"{backend} / {model}" if model else backend
+    return [{**raw, SIGNED_BY_KEY: mark} for raw in items]
+
+
+def signed_by(raw) -> str:
+    """その 1 件に載っている署名。無ければ空。"""
+    return str((raw or {}).get(SIGNED_BY_KEY) or "")[:MAX_CARRIED_CHARS]
+
+
+def _stamped(
+    doc: dict, sweep: str, change: str, before: dict | None = None, by: str = "",
+) -> dict:
     """動かした 1 件に、**どの回が・どう動かしたか**を脇書きとして押す。
 
     **変更履歴を別に持つだけでは、読みたいほうが読めない。** 控え
@@ -3152,6 +3186,12 @@ def _stamped(doc: dict, sweep: str, change: str, before: dict | None = None) -> 
     stamp = {CHANGE_KEY: change}
     if sweep:
         stamp[CHANGED_BY_KEY] = sweep
+    # **AI を呼ばない回では消す。** 前に AI が触った 1 件を機械の回が動かしたとき、
+    # 古い署名が残っていると「この内容を書いたのはこの AI」と読めてしまう
+    if by:
+        stamp[CHANGED_AI_KEY] = by
+    else:
+        extra = {k: v for k, v in extra.items() if k != CHANGED_AI_KEY}
     merged = {**extra, **stamp}
     # **印と控えは必ず揃える。** 前の回の控えを残したまま印だけ新しくすると、
     # 画面には「この回が直す前」として前の回の中身が出る

@@ -15,6 +15,12 @@ from fastapi import HTTPException
 from app import extract
 
 
+def _said(content: str) -> tuple[str, str, str]:
+    """`_ask_for_collection` が返す形(本文・実際に走った相手・モデル)。"""
+    return content, "codex", "gpt-6"
+
+
+
 def run(spec, sources):
     """`extract.run` を読み切って返す。
 
@@ -485,7 +491,9 @@ class TestWhenItIsUsedInsteadOfTheAI:
         from app import collect, main
 
         async def answer(*_args, **_kwargs):
-            return '{"items": [{"title": "肉付け", "body": "AI が書いた"}], "next_cursor": "次"}'
+            # 返すのは (本文, 実際に走った相手, モデル)
+            return ('{"items": [{"title": "肉付け", "body": "AI が書いた"}], "next_cursor": "次"}',
+                    "codex", "gpt-6")
 
         monkeypatch.setattr(main, "_ask_for_collection", answer)
         item = collect.Collection(
@@ -526,7 +534,7 @@ class TestWritingTheSpecFromARequest:
         from app import main
 
         async def reply(*_args, **_kwargs):
-            return content
+            return content, "codex", "gpt-6"
 
         monkeypatch.setattr(main, "_ask_for_collection", reply)
 
@@ -590,9 +598,9 @@ class TestWritingTheSpecFromARequest:
         async def reply(_settings, messages):
             asked.append(messages)
             # 1 回目は当てずっぽう、2 回目は見せられた中から選ぶ
-            return json.dumps(
+            return _said(json.dumps(
                 {"source": "jawiki", "tag": "都道府県" if len(asked) == 1 else "日本の都道府県"}
-            )
+            ))
 
         monkeypatch.setattr(main, "_ask_for_collection", reply)
 
@@ -615,7 +623,7 @@ class TestWritingTheSpecFromARequest:
 
         async def reply(_settings, messages):
             asked.append(messages)
-            return json.dumps({"source": "jawiki", "tag": "日本の都道府県", "limit": 3})
+            return _said(json.dumps({"source": "jawiki", "tag": "日本の都道府県", "limit": 3}))
 
         monkeypatch.setattr(main, "_ask_for_collection", reply)
 
@@ -633,9 +641,9 @@ class TestWritingTheSpecFromARequest:
 
         async def reply(_settings, messages):
             asked.append(messages)
-            return json.dumps(
+            return _said(json.dumps(
                 {"source": "jawiki", "tag": "日本の都道府県" if len(asked) == 1 else "存在しない"}
-            )
+            ))
 
         monkeypatch.setattr(main, "_ask_for_collection", reply)
 
@@ -656,7 +664,7 @@ class TestWritingTheSpecFromARequest:
         async def reply(settings, _messages):
             seen["backend"] = settings.backend
             seen["model"] = settings.model
-            return json.dumps({"source": "jawiki", "tag": "日本の都道府県"})
+            return _said(json.dumps({"source": "jawiki", "tag": "日本の都道府県"}))
 
         monkeypatch.setattr(main, "_ask_for_collection", reply)
 

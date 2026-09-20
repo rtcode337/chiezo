@@ -572,11 +572,15 @@ def start_collection_bake(name: str, sweep: str | None = None) -> dict:
     return collect.to_public(collect.mark_started(name, this.name))
 
 
-async def _ask_for_collection(item, messages: list[dict]) -> str:
+async def _ask_for_collection(item, messages: list[dict]) -> tuple[str, str, str]:
     """収集の設定(相手・モデル・深さ・web)で AI に 1 往復投げる。
 
     収集の実行と、プロンプトの相談の**両方から使う** —— 同じ相手で試せないと、
     相談で作った指示文が本番で通るか分からない。
+
+    返すのは `(本文, 相手, モデル)`。**実際に走ったほうを返す** —— 設定が
+    「Chiezo の既定にまかせる」なら、頼む前の `item` には相手もモデルも入って
+    いない。1 件ごとの署名(`collect.signed`)がそれでは空になる。
     """
     cfg = await answer.ensure_model(
         answer.require_settings(item.backend, item.model, item.effort)
@@ -584,9 +588,12 @@ async def _ask_for_collection(item, messages: list[dict]) -> str:
     spec = providers.get(cfg.name)
     via_bridge = bool(spec and spec.bridge)
     if item.web and not via_bridge and websearch.is_enabled():
-        return await agent.complete_with_web(cfg, messages)
+        return await agent.complete_with_web(cfg, messages), cfg.name, cfg.model
     extra = {"chiezo_web": True} if item.web and via_bridge else {}
-    return answer.content_of(await answer.complete_message(cfg, messages, **extra))
+    body = await answer.complete_message(cfg, messages, **extra)
+    # **走ってから名乗るモデルを優先する**(`ran_model`)。送るのは別名のことが
+    # あり、どの世代に解決されるかは相手が決める
+    return answer.content_of(body), cfg.name, cfg.ran_model or cfg.model
 
 
 async def draft_collection_prompt(
@@ -609,7 +616,7 @@ async def draft_collection_prompt(
     )
     # 相談のときだけ web を閉じる(指示文を書くのに外は要らない)
     settings = replace(settings, web=False)
-    content = await _ask_for_collection(
+    content, _who, _model = await _ask_for_collection(
         settings, collect.build_draft_messages(want, current, feedback)
     )
     draft = collect.clean_draft(content or "")
@@ -690,6 +697,7 @@ async def _collect_items(
     shown: set[str] = seen if seen is not None else set()
     cursor = None
     notes: list[str] = []
+    ran_by = ran_model = ""
     for key in keys or [None]:
         content = None
         # **区画ごとに相手を見直す。** 1 回で何区画も回るので、決めるのが回の頭
@@ -706,7 +714,7 @@ async def _collect_items(
             if used is not None and step is not None:
                 used.append(step)
             try:
-                content = await _ask_for_collection(
+                content, ran_by, ran_model = await _ask_for_collection(
                     asked,
                     collect.build_messages(
                         item, previous, key, sources, sweep, focus, feed, shown,
@@ -731,7 +739,9 @@ async def _collect_items(
             notes.append(_gave_up(sweep.worker, key))
             break
         items, next_cursor, note = collect.parse_response(content)
-        collected += items
+        # **1 件ずつに署名を載せる。** ワーカーを使う回は区画ごとに相手が振り替わる
+        # ので、回の単位で 1 つに丸めると半分の文書に嘘の署名が付く
+        collected += collect.signed(items, ran_by, ran_model)
         cursor = next_cursor or cursor
         # **どの区画で切れたかまで残す。** 何区画かまとめて回るので、
         # 「切れました」だけでは次にどこを狭めればよいか分からない
@@ -2641,7 +2651,7 @@ async def collect_draft_extract(request: Request, body: ExtractDraft):
     }
     # 指定を書くのに外は要らない(引く先は手元の長期記憶)
     settings = replace(base_settings, **named, web=False)
-    content = await _ask_for_collection(
+    content, _who, _model = await _ask_for_collection(
         settings, extract.build_draft_messages(body.want, sources, current)
     )
     drafted = extract.parse_draft(content or "")
@@ -2661,7 +2671,7 @@ async def collect_draft_extract(request: Request, body: ExtractDraft):
     # 数件しか付いておらず、欲しいものは「19世紀フランスの画家」の側にある。
     # 選び直しても増えなければ、最初の指定のほうを返す(悪くしない)
     if probed["candidates"]:
-        content = await _ask_for_collection(
+        content, _who, _model = await _ask_for_collection(
             settings,
             extract.build_retry_messages(body.want, spec, probed["total"], probed["candidates"]),
         )

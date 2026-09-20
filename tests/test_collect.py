@@ -2182,6 +2182,89 @@ class TestTheLedgerCountFollowsTheContents:
             {"title": "むかしの人", "tags": ["地域:日本", "年代:1800"]},
         ) is not None
 
+    def test_the_ai_that_wrote_it_signs_it(self, sample):
+        """**どの AI とモデルが直したかを、その 1 件に残す。**
+
+        回ごとの控えにも相手は残るが、あれは 1 回 1 行で流れていくうえ、
+        **1 回の中で相手が振り替わる**(ワーカーは区画ごとに枠の空いた段を選ぶ)
+        —— 「この 1 件を書いたのは誰か」は、その 1 件に押しておくしか読む手が無い。
+        """
+        item = collect.get("news")
+        previous = [{"doc_id": 1, "title": "直される", "opening": "o", "body": "b",
+                     "tags": [], "updated_at": "2026-09-01T00:00:00+00:00", "extra": {}}]
+        collected = collect.signed(
+            [{"title": "直される", "body": "直した中身"},
+             {"title": "足される", "body": "新しい"}],
+            "antigravity", "gemini-3.8-flash-medium",
+        )
+
+        docs = list(collect.stream_docs(item, iter(previous), collected, False, True,
+                                        sweep="整理"))
+
+        assert {d["title"]: d["extra"][collect.CHANGED_AI_KEY] for d in docs} == {
+            "直される": "antigravity / gemini-3.8-flash-medium",
+            "足される": "antigravity / gemini-3.8-flash-medium",
+        }
+
+    def test_each_partition_signs_with_who_actually_ran_it(self, sample):
+        """**1 回の中で相手が振り替わる。** 回の単位で 1 つに丸めると、
+        半分の文書に嘘の署名が付く。"""
+        item = collect.get("news")
+        collected = (
+            collect.signed([{"title": "前半", "body": "x"}], "claude", "fable-medium")
+            + collect.signed([{"title": "後半", "body": "y"}], "codex", "gpt-6")
+        )
+
+        docs = list(collect.stream_docs(item, iter([]), collected, False, True,
+                                        sweep="整理"))
+
+        assert {d["title"]: d["extra"][collect.CHANGED_AI_KEY] for d in docs} == {
+            "前半": "claude / fable-medium",
+            "後半": "codex / gpt-6",
+        }
+
+    def test_a_machine_round_signs_nothing(self, sample):
+        """機械で引く回・外の道具で引く回は AI を通さない —— 署名のしようがない。"""
+        item = collect.get("news")
+
+        docs = list(collect.stream_docs(
+            item, iter([]), [{"title": "フィードから", "body": "x"}], True, False,
+            sweep="機械収集",
+        ))
+
+        assert collect.CHANGED_AI_KEY not in docs[0]["extra"]
+
+    def test_a_machine_round_wipes_an_older_signature(self, sample):
+        """古い署名が残っていると、「この内容を書いたのはこの AI」と読めてしまう。"""
+        item = collect.get("news")
+        previous = [{
+            "doc_id": 1, "title": "前に AI が触った", "opening": "o", "body": "b",
+            "tags": [], "updated_at": "2026-09-01T00:00:00+00:00",
+            "extra": {collect.CHANGED_AI_KEY: "claude / fable-medium"},
+        }]
+
+        docs = list(collect.stream_docs(
+            item, iter(previous), [{"title": "前に AI が触った", "body": "機械が直した"}],
+            False, True, sweep="機械収集",
+        ))
+
+        assert collect.CHANGED_AI_KEY not in docs[0]["extra"]
+
+    def test_the_carrying_key_does_not_end_up_in_the_document(self, sample):
+        """署名を運ぶ鍵は**集めたものに載せるだけ**で、焼く先には出さない ——
+        出ると、AI が返した事実に混ざって読む人と AI の両方に見える。"""
+        item = collect.get("news")
+        collected = collect.signed([{"title": "新入り", "body": "x"}], "claude", "fable")
+
+        docs = list(collect.stream_docs(item, iter([]), collected, False, True, sweep="整理"))
+
+        assert collect.SIGNED_BY_KEY not in docs[0]
+        assert collect.SIGNED_BY_KEY not in docs[0]["extra"]
+
+    def test_the_signature_is_not_compared_against_the_previous_content(self, sample):
+        """こちらが回ごとに押す印なので、前と比べると毎回「脇書きが変わった」になる。"""
+        assert collect.CHANGED_AI_KEY in collect.MARGIN_KEYS
+
     def test_counting_and_streaming_agree(self, sample):
         """**数える周と流す周は、同じ件数でなければならない。**
 

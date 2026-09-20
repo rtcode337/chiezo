@@ -396,7 +396,9 @@ class TestRelayingPartWayThrough:
 
         async def fake(asked, _messages):
             seen.append(asked.backend)
-            return '{"items": [{"title": "1 件", "body": "本文"}]}'
+            # 返すのは (本文, 実際に走った相手, モデル)
+            return ('{"items": [{"title": "1 件", "body": "本文"}]}',
+                    asked.backend, asked.model or "")
 
         monkeypatch.setattr(main, "_ask_for_collection", fake)
         return main, seen
@@ -479,7 +481,8 @@ class TestRelayingPartWayThrough:
                     "reason": "antigravity failed / error: Individual quota reached."
                               " Resets in 1h15m20s.",
                 })
-            return '{"items": [{"title": "1 件", "body": "本文"}]}'
+            return ('{"items": [{"title": "1 件", "body": "本文"}]}',
+                    asked.backend, asked.model or "")
 
         monkeypatch.setattr(main, "_ask_for_collection", refusing)
 
@@ -748,8 +751,8 @@ class TestWhoActuallyRan:
         workers.save([workers.Worker("精査", (workers.Step("antigravity", "gemini"),))])
         _quota("antigravity", 10.0)
 
-        async def garbage(_asked, _messages):
-            return "背景の仕事を待っています"
+        async def garbage(asked, _messages):
+            return "背景の仕事を待っています", asked.backend, asked.model or ""
 
         monkeypatch.setattr(main, "_ask_for_collection", garbage)
         collect.create("news", prompt="p", interval_minutes=60,
