@@ -785,7 +785,10 @@ async def _collect_material(name: str, sources: dict) -> str:
         keys = []
         baked_as = item
     else:
-        keys = partitioning.pick(ledger, sweep.name, sweep.per_run(len(ledger)))
+        keys = partitioning.pick(
+            ledger, sweep.name, sweep.per_run(len(ledger)),
+            partitioning.normalize(item.partition),
+        )
         baked_as = item
     # **直す回かどうかは、その回の依頼文が語っている。** 収集ぜんたいの設定として
     # 持っていた頃(`mode`)は巡回ごとに決められなかった —— いまは巡回ごとに決まる
@@ -942,7 +945,7 @@ async def collect_preview(name: str, sources: dict, sweep_name: str | None = Non
     item = replace(item, partitions=ledger)
     # **下見は 1 区画だけ。** 何区画でも見られるが、下見は「この指示文でどうなるか」を
     # 見るためのもので、1 区画あれば分かる(そのぶん安く、待たされない)
-    keys = partitioning.pick(ledger, sweep.name, 1)
+    keys = partitioning.pick(ledger, sweep.name, 1, partitioning.normalize(item.partition))
     feed = await _harvest(item, sweep)
     for_prompt = await asyncio.to_thread(collect.prompt_docs, item, previous, keys, None)
     items, next_cursor, note = await _collect_items(

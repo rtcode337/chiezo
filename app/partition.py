@@ -34,6 +34,7 @@
 """
 from __future__ import annotations
 
+import bisect
 import itertools
 import logging
 import math
@@ -171,7 +172,11 @@ def normalize(raw) -> dict | None:
         # 帯で割るときの数の軸(タグの頭)と、分類を持たないものの置き場の名前
         "value": str(raw.get("value") or "").strip() or None,
         "other": str(raw.get("other") or "").strip() or DEFAULT_OTHER,
+        # 巡回をどこから広げるか(矩形のときだけ)。書かなければ台帳の並び順
+        "origin": _origin(raw.get("origin")),
     }
+    if spec["origin"] and by != BY_GEO:
+        raise _bad("origin は by=geo のときだけ使えます(距離で並べるので座標が要ります)")
     if by == BY_TAG and not spec["prefix"]:
         raise _bad("by=tag には prefix が要ります(例: 「地域:」)")
     if by == BY_BAND and not (spec["prefix"] and spec["value"]):
@@ -199,6 +204,27 @@ def _bbox(raw) -> list[float] | None:
     if not (lat0 < lat1 and lon0 < lon1):
         raise _bad("bbox は [南緯, 西経, 北緯, 東経] の順(南 < 北・西 < 東)")
     return [lat0, lon0, lat1, lon1]
+
+
+def _origin(raw) -> list[float] | None:
+    """巡回を広げ始める 1 点。**書かなければ台帳の並び順のまま**。
+
+    書く意味があるのは「端から順ではなく、主要なところから見てほしい」とき ——
+    区画は鍵の文字列順に配られるので、日本の地図なら南西の隅(八重山)から
+    北上する。**一周に何十日もかかる台帳では、どこから始めるかが効く**
+    (本番の食事処は 10,457 区画・1 回 5 区画・1 時間おきで、一周に 87 日)。
+    """
+    if raw in (None, "", []):
+        return None
+    if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+        raise _bad("origin は [緯度, 経度] の 2 つ(例: 東京駅なら [35.681, 139.767])")
+    try:
+        lat, lon = (float(v) for v in raw)
+    except (TypeError, ValueError):
+        raise _bad("origin は数で書いてください") from None
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        raise _bad(f"origin が地球の外にあります(いまは {lat}, {lon})")
+    return [lat, lon]
 
 
 def to_json(spec: dict | None) -> dict | None:
@@ -849,8 +875,11 @@ def counts_of(spec: dict, partitions: list[dict], docs: dict[str, dict]) -> dict
         return {}
     counts = dict.fromkeys((p["key"] for p in partitions), 0)
     counts[HOMELESS] = 0
+    # **索引は 1 回だけ組む**(`locator`)。1 件ごとに台帳を舐めていた頃は、
+    # 文書 686,602 件 × 区画 10,457 個でここだけ 1 時間を超えていた
+    find = locator(spec, partitions)
     for doc in docs.values():
-        key = partition_of(spec, partitions, doc)
+        key = find(doc)
         counts[key if key in counts else HOMELESS] += 1
     return counts
 
@@ -1102,20 +1131,59 @@ def counted(partitions: list[dict], counts: dict[str, int]) -> list[dict]:
     return [{**p, "count": counts.get(p["key"], 0)} for p in partitions]
 
 
-def pick(partitions: list[dict], sweep_name: str, count: int = 1) -> list[str]:
+def pick(
+    partitions: list[dict], sweep_name: str, count: int = 1, spec: dict | None = None
+) -> list[str]:
     """次に見る区画を、古い順に `count` 件。**まだ見ていないものが先**。
 
     一周の速さは巡回の側が決める(ここは順番だけを持つ)。
+
+    **`origin` があれば、そこから近い順に広げる**(矩形のときだけ)。既定は鍵の
+    文字列順で、矩形の鍵は南西の角から始まるので**日本の地図なら八重山から北上する** ——
+    一周に何十日もかかる台帳では、主要なところに着くのが何か月も先になる
+    (本番の食事処は 10,457 区画・1 回 5 区画・1 時間おきで、一周に 87 日)。
+
+    **2 周目からは何もしなくてよい。** 1 周目を近い順に回れば印の時刻も近い順に
+    付くので、「古い順」がそのまま同じ広がり方をなぞる。
     """
+    near = _distance_from(spec, partitions)
     ordered = sorted(
-        partitions, key=lambda p: ((p.get("visits") or {}).get(sweep_name) or "", p["key"])
+        partitions,
+        key=lambda p: ((p.get("visits") or {}).get(sweep_name) or "", near(p), p["key"]),
     )
     return [p["key"] for p in ordered[: max(0, count)]]
 
 
-def due(partitions: list[dict], sweep_name: str) -> str | None:
+def _distance_from(spec: dict | None, partitions: list[dict]):
+    """区画を `origin` からの遠さで測る道具。指定が無ければどれも同じ(並びは鍵の順)。
+
+    **測り方は粗くてよい** —— 要るのは順番だけで、距離そのものは誰にも見せない。
+    経度は緯度によって詰まるので、緯度の余弦を掛けて縦横の縮尺だけ合わせる
+    (地球を平らだと思って測る近似。国 1 つぶんの範囲では順番が狂わない)。
+
+    **測るのは区画の真ん中まで。** 角までにすると、原点を含む大きな区画が
+    「遠い」ことになって後回しになる。
+    """
+    if not spec or spec.get("by") != BY_GEO or not spec.get("origin"):
+        return lambda p: 0.0
+    lat0, lon0 = spec["origin"]
+    scale = math.cos(math.radians(lat0))
+    far: dict[str, float] = {}
+    for p in partitions:
+        box = parse_geo_key(p["key"])
+        if box is None:
+            # 読めない鍵は末尾へ(並べるためだけの値なので、落とさず後ろに置く)
+            far[p["key"]] = math.inf
+            continue
+        dy = (box[0] + box[2]) / 2 - lat0
+        dx = ((box[1] + box[3]) / 2 - lon0) * scale
+        far[p["key"]] = dy * dy + dx * dx
+    return lambda p: far.get(p["key"], math.inf)
+
+
+def due(partitions: list[dict], sweep_name: str, spec: dict | None = None) -> str | None:
     """次に見る区画を 1 つ。無ければ None。"""
-    picked = pick(partitions, sweep_name, 1)
+    picked = pick(partitions, sweep_name, 1, spec)
     return picked[0] if picked else None
 
 
@@ -1212,6 +1280,168 @@ def belongs(spec: dict, key: str, doc: dict) -> bool:
     return bool(bounds) and bounds[0] <= title <= bounds[1]
 
 
+# 矩形を引くための格子の細かさ(片側の升目の数の上限)。区画の数の平方根を使うので
+# 普通はここに当たらない —— 桁外れの台帳でも索引そのものが太らないための頭打ち。
+GRID_SIDE_MAX = 256
+
+# 1 つの矩形が占めてよい升目の数。これを超える矩形(割り直しで残った広い範囲など)は
+# 格子に撒かずに脇へ寄せ、升目が外れたときだけ見る —— 撒くと索引が升目の数だけ太る。
+GRID_SPREAD_MAX = 64
+
+
+def locator(spec: dict, partitions: list[dict]):
+    """**区画を引く道具を、1 回だけ組んでから渡す。**
+
+    `partition_of` は 1 件ごとに台帳を頭から舐め、そのたびに鍵の文字列を数へ
+    直していた。**区画が増えるほど 1 件が重くなる** —— 本番の食事処は文書
+    686,602 件・区画 10,457 個で、1 件あたり平均 5,000 回の突き合わせになる。
+    しかも 1 回の巡回で 6 周する(件数を数えるのに 1 周、区画ごとの `{current}` を
+    切り出すのに 5 周)ので、**1 回が 8.7 時間**かかっていた。そのうち AI は
+    十数分で、残りは全部ここだった(実測。手元で 1 周 0.7 時間、配信機はその倍)。
+
+    引く前に索引を組めば、1 件の費用が区画の数に依らなくなる。**組むのは呼ぶ側**
+    —— 全件を舐める側(`counts_of` / `scoped_docs`)が 1 回組んで使い回す。
+
+    索引の形は割り方ごとに違う:
+
+    - **矩形** …… 鍵を先に全部数へ直し、外接矩形を格子で切って升目ごとに候補を持つ。
+      引くときは自分の升目に入っている矩形だけを見る
+    - **見出し** …… 始まりを並べて二分探索(`partition_of` は 1 件ごとに
+      並べ替えていた)
+    - **タグ** …… 鍵から台帳の位置を引く辞書。先に並んでいるほうが勝つ、は変えない
+    - **帯** …… 分類ごとに帯と置き場を分けて並べておく
+    """
+    if spec["by"] == BY_GEO:
+        return _geo_locator(partitions)
+    if spec["by"] == BY_TAG:
+        return _tag_locator(partitions)
+    if spec["by"] == BY_BAND:
+        return _band_locator(spec, partitions)
+    return _title_locator(partitions)
+
+
+def _geo_locator(partitions: list[dict]):
+    """矩形。**格子で候補を絞る**(升目に入っていない矩形は見ない)。"""
+    boxes = [
+        (box, p["key"]) for p in partitions if (box := parse_geo_key(p["key"])) is not None
+    ]
+    if not boxes:
+        return lambda doc: None
+    south = min(b[0] for b, _ in boxes)
+    west = min(b[1] for b, _ in boxes)
+    north = max(b[2] for b, _ in boxes)
+    east = max(b[3] for b, _ in boxes)
+    side = max(1, min(GRID_SIDE_MAX, math.isqrt(len(boxes)) or 1))
+    # 幅が 0 の軸(1 列しか無い台帳)でも 0 除算にしない
+    height = (north - south) / side or 1.0
+    width = (east - west) / side or 1.0
+
+    def cell(lat: float, lon: float) -> tuple[int, int]:
+        row = min(side - 1, max(0, int((lat - south) / height)))
+        col = min(side - 1, max(0, int((lon - west) / width)))
+        return row, col
+
+    cells: dict[tuple[int, int], list[int]] = {}
+    wide: list[int] = []
+    for index, (box, _key) in enumerate(boxes):
+        lo, hi = cell(box[0], box[1]), cell(box[2], box[3])
+        spread = (hi[0] - lo[0] + 1) * (hi[1] - lo[1] + 1)
+        if spread > GRID_SPREAD_MAX:
+            wide.append(index)
+            continue
+        for row in range(lo[0], hi[0] + 1):
+            for col in range(lo[1], hi[1] + 1):
+                cells.setdefault((row, col), []).append(index)
+
+    def find(doc: dict) -> str | None:
+        lat, lon = coords_of(doc)
+        if lat is None or lon is None:
+            return None
+        # **台帳の並び順で先に当たったほうを返す**(`partition_of` と同じ)
+        for index in sorted({*cells.get(cell(lat, lon), ()), *wide}):
+            box, key = boxes[index]
+            if box[0] <= lat <= box[2] and box[1] <= lon <= box[3]:
+                return key
+        return None
+
+    return find
+
+
+def _tag_locator(partitions: list[dict]):
+    """タグ。**先に並んでいる区画が勝つ**のは変えない(鍵 → 台帳の位置)。"""
+    at: dict[str, int] = {}
+    for index, p in enumerate(partitions):
+        at.setdefault(p["key"], index)
+
+    def find(doc: dict) -> str | None:
+        best = None
+        for tag in doc.get("tags") or []:
+            index = at.get(str(tag))
+            if index is not None and (best is None or index < best):
+                best = index
+        return partitions[best]["key"] if best is not None else None
+
+    return find
+
+
+def _title_locator(partitions: list[dict]):
+    """見出し。**区切りは「どこから始まるか」で読む**(`partition_of` の規則のまま)。"""
+    starts = sorted(
+        (bounds[0], p["key"]) for p in partitions if (bounds := parse_title_key(p["key"]))
+    )
+    heads = [head for head, _key in starts]
+    keys = [key for _head, key in starts]
+
+    def find(doc: dict) -> str | None:
+        if not keys:
+            return None
+        title = str(doc.get("title") or "")
+        # 始まりが自分以下のうち、いちばん後ろ。手前が無ければ先頭の区画
+        return keys[max(bisect.bisect_right(heads, title) - 1, 0)]
+
+    return find
+
+
+def _band_locator(spec: dict, partitions: list[dict]):
+    """帯。**分類ごとに、数の帯と「不明」の置き場を分けて並べておく。**"""
+    bands: dict[str, list[tuple[float, str]]] = {}
+    unknown: dict[str, list[tuple[str, str]]] = {}
+    for p in partitions:
+        parsed = parse_band_key(p["key"])
+        if parsed is None:
+            continue
+        for name in parsed[0]:
+            if parsed[3] is not None:
+                unknown.setdefault(name, []).append((parsed[3], p["key"]))
+            else:
+                bands.setdefault(name, []).append((band_span(parsed)[0], p["key"]))
+    for rows in bands.values():
+        rows.sort()
+    for rows in unknown.values():
+        rows.sort()
+
+    def find(doc: dict) -> str | None:
+        tags = doc.get("tags") or []
+        name = tag_value(tags, spec["prefix"]) or spec["other"]
+        number = _number_in(tag_value(tags, spec["value"]))
+        here = bands.get(name) or []
+        if number is not None:
+            if not here:
+                # 値はあるが、その分類にまだ帯が無い(割り直しの前に入った)
+                return None
+            # 始まりが自分以下のうち、いちばん大きい帯。手前が無ければいちばん下の帯
+            at = bisect.bisect_right([start for start, _ in here], float(number))
+            return here[max(at - 1, 0)][1]
+        piles = unknown.get(name) or []
+        if not piles:
+            return None
+        title = str(doc.get("title") or "")
+        at = bisect.bisect_right([bounds for bounds, _ in piles], title)
+        return piles[max(at - 1, 0)][1]
+
+    return find
+
+
 def partition_of(spec: dict, partitions: list[dict], doc: dict) -> str | None:
     """その文書がどの区画のものか。**入るところが無ければ None**。
 
@@ -1226,79 +1456,13 @@ def partition_of(spec: dict, partitions: list[dict], doc: dict) -> str | None:
 
     矩形とタグはそのまま —— 矩形は親を割って作るので隙間が無く、タグは
     「そのタグを持つものだけ」が初めから約束。
+
+    **1 件だけ引くための口。** 呼ぶたびに索引を組むので、**全件を舐めるところでは
+    `locator()` を 1 回呼んで使い回すこと**(速さの本体はそちら)。
     """
     if not partitions:
         return None
-    if spec["by"] == BY_BAND:
-        return _band_of(spec, partitions, doc)
-    if spec["by"] != BY_TITLE:
-        for p in partitions:
-            if belongs(spec, p["key"], doc):
-                return p["key"]
-        return None
-    title = str(doc.get("title") or "")
-    starts = sorted(
-        (bounds[0], p["key"])
-        for p in partitions
-        if (bounds := parse_title_key(p["key"]))
-    )
-    if not starts:
-        return None
-    picked = starts[0][1]
-    for start, key in starts:
-        if start > title:
-            break
-        picked = key
-    return picked
-
-
-def _band_of(spec: dict, partitions: list[dict], doc: dict) -> str | None:
-    """その文書がどの帯か。**タグからそのつど導く**(文書の側には何も書かない)。
-
-    **帯の内側だけを見ない。** 帯は値の詰まっているところで切るので、割ったときの
-    値の外(いちばん古いより古い・いちばん新しいより新しい)が出てくる ——
-    範囲の内側だけで判ずると、そこに入ったものは**どの区画にも入らず、以後どの回にも
-    出てこない**(見出しで割った区画と同じ罠)。**始まりが自分以下のうち、いちばん
-    大きい帯**に入れれば、値の線の上に隙間が無くなる(いちばん古い帯より前も、
-    その帯のもの)。端を開いて書くようにした今も読み方は同じ ——
-    **端の開いた古い鍵も新しい鍵も、同じ規則で同じところへ落ちる**。
-
-    **鍵は分類を 1 つとは限らない**(`_pooled`)。小さい分類を寄せ集めた区画は
-    値を並べて持つので、自分の分類が並びに入っていればそこ。
-    """
-    tags = doc.get("tags") or []
-    name = tag_value(tags, spec["prefix"]) or spec["other"]
-    number = _number_in(tag_value(tags, spec["value"]))
-    title = str(doc.get("title") or "")
-    unknown = []
-    bands = []
-    for p in partitions:
-        parsed = parse_band_key(p["key"])
-        if parsed is None or name not in parsed[0]:
-            continue
-        if parsed[3] is not None:
-            unknown.append((p["key"], parsed[3]))
-        else:
-            bands.append((band_span(parsed)[0], p["key"]))
-    if number is not None:
-        if not bands:
-            # 値はあるが、その分類にまだ帯が無い(割り直しの前に入った)
-            return None
-        bands.sort()
-        picked = bands[0][1]
-        for start, key in bands:
-            if start > number:
-                break
-            picked = key
-        return picked
-    # 値を持たないものは置き場へ。**見出しの範囲で判ずる**(始まりが自分以下の
-    # うち、いちばん大きいもの)—— 範囲の内側だけを見ると、境目が誰のものでもなくなる
-    best = None
-    for key, bounds in sorted(unknown, key=lambda x: x[1]):
-        parsed = parse_title_key(bounds)
-        if parsed and parsed[0] <= title:
-            best = key
-    return best or (unknown[0][0] if unknown else None)
+    return locator(spec, partitions)(doc)
 
 
 def describe(spec: dict, key: str, sources: dict, partitions: list[dict] | None = None) -> str:

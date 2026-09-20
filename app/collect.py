@@ -1726,11 +1726,14 @@ def scoped_docs(
     spec = partitioning.normalize(item.partition)
     # **鍵の範囲だけで判じない**(`partition_of`)。見出しで割った区画は、鍵が
     # 「最初の見出し〜最後の見出し」なので**区画と区画のあいだが誰のものでもなく**、
-    # あとから足した見出しがそこへ落ちると、以後どの回にも出てこなくなる
+    # あとから足した見出しがそこへ落ちると、以後どの回にも出てこなくなる。
+    # **索引は 1 回だけ組む**(`locator`)—— ここは全件を舐めるうえ、1 回の巡回で
+    # 区画の数だけ呼ばれる
+    find = partitioning.locator(spec, item.partitions)
     return {
         title: doc
         for title, doc in previous.items()
-        if partitioning.partition_of(spec, item.partitions, doc) == partition_key
+        if find(doc) == partition_key
     }, True
 
 
@@ -2402,7 +2405,9 @@ def to_public(item: Collection, *, with_partitions: bool = True) -> dict:
         {
             **sweep.to_json(),
             "partitions_visited": partitioning.progress(item.partitions, sweep.name)[0],
-            "next_partition": partitioning.due(item.partitions, sweep.name),
+            "next_partition": partitioning.due(
+                item.partitions, sweep.name, partitioning.normalize(item.partition)
+            ),
             "partitions_per_run": sweep.per_run(len(item.partitions)),
             # **なぜ定時に走らないか**(走るなら空)。読む側が場合分けを
             # 書き写さずに済むよう、理由はこちらが言う
@@ -3357,12 +3362,13 @@ def prompt_docs(item: Collection, previous, keys: list[str], focus=None) -> dict
         return {doc["title"]: doc for doc in previous()}
     spec = partitioning.normalize(item.partition)
     wanted = set(keys)
+    find = partitioning.locator(spec, item.partitions)
     out: dict[str, dict] = {}
     for doc in previous():
         if doc["title"] in named:
             out[doc["title"]] = doc
             continue
-        if partitioning.partition_of(spec, item.partitions, doc) in wanted:
+        if find(doc) in wanted:
             out[doc["title"]] = doc
     return out
 
@@ -3446,6 +3452,8 @@ def bake_survey(item, sources: dict, previous, collected, only_new=False, edits=
     rules = normalize_verify_tags(item.verify_tags)
     wanted: dict[int, set[str]] = {n: set() for n, _ in enumerate(rules)}
     spec = partitioning.normalize(item.partition) if item.partition else None
+    # **索引は 1 回だけ組む**(`locator`)。ここも全件を舐めるところ
+    find = partitioning.locator(spec, item.partitions) if spec and item.partitions else None
     counts: dict[str, int] = {}
     used = 0
     total = 0
@@ -3474,10 +3482,7 @@ def bake_survey(item, sources: dict, previous, collected, only_new=False, edits=
             for tag in doc.get("tags") or []:
                 if str(tag).startswith(head) and (found := _tag_head(tag, head)):
                     wanted[n].add(found)
-        if (
-            spec is not None and item.partitions and not is_removed(doc)
-            and (key := partitioning.partition_of(spec, item.partitions, doc))
-        ):
+        if find is not None and not is_removed(doc) and (key := find(doc)):
             counts[key] = counts.get(key, 0) + 1
 
     if not total:

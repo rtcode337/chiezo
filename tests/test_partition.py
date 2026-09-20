@@ -907,6 +907,184 @@ class TestTheOpenEndsOfABand:
         assert "以下" in partition.describe(spec, "日本|1901-1910", {}, old)
 
 
+class TestLookingUpWithoutWalkingTheLedger:
+    """**区画が増えるほど 1 件が重くなる**、をやめる(`locator`)。
+
+    1 件ごとに台帳を頭から舐め、そのたびに鍵の文字列を数へ直していた ——
+    本番の食事処は文書 686,602 件・区画 10,457 個で、1 回の巡回が 8.7 時間
+    (うち AI は十数分)。索引を 1 回組めば、1 件の費用が区画の数に依らなくなる。
+    """
+
+    def grid(self, side=40):
+        """格子に切った矩形の台帳(実物と同じで、隙間なく敷き詰まっている)。"""
+        out = []
+        for i in range(side):
+            for j in range(side):
+                s = 20.0 + 20.0 * i / side
+                w = 120.0 + 30.0 * j / side
+                out.append({"key": partition.geo_key(
+                    (s, w, s + 20.0 / side, w + 30.0 / side)), "count": 1})
+        return out
+
+    def test_it_finds_the_same_one_as_walking_the_ledger(self):
+        import random
+
+        spec = partition.normalize({"by": "geo", "target": 150})
+        ledger = self.grid()
+        find = partition.locator(spec, ledger)
+        random.seed(3)
+        for _ in range(200):
+            doc = {"title": "x", "extra": {"lat": random.uniform(19, 41),
+                                           "lon": random.uniform(119, 151)}}
+            walked = next(
+                (p["key"] for p in ledger if partition.belongs(spec, p["key"], doc)), None
+            )
+            assert find(doc) == walked
+
+    def test_it_does_not_get_slower_as_the_ledger_grows(self):
+        """区画を 16 倍にしても、1 件の費用は変わらないこと。"""
+        import time
+
+        spec = partition.normalize({"by": "geo", "target": 150})
+        doc = {"title": "x", "extra": {"lat": 35.0, "lon": 135.0}}
+
+        def per_doc(side):
+            find = partition.locator(spec, self.grid(side))
+            start = time.perf_counter()
+            for _ in range(2000):
+                find(doc)
+            return time.perf_counter() - start
+
+        small, big = per_doc(10), per_doc(40)
+        assert big < small * 4, f"小さい台帳 {small:.4f}s / 大きい台帳 {big:.4f}s"
+
+    def test_a_doc_outside_every_rectangle_is_in_none(self):
+        spec = partition.normalize({"by": "geo", "target": 150})
+        find = partition.locator(spec, self.grid())
+
+        assert find({"title": "x", "extra": {"lat": 60.0, "lon": 135.0}}) is None
+        assert find({"title": "座標なし"}) is None
+
+    def test_a_wide_rectangle_is_still_found(self):
+        """割り直しで残った広い範囲は格子に撒かない(索引が太る)ので、別に見る。"""
+        spec = partition.normalize({"by": "geo", "target": 150})
+        wide = {"key": partition.geo_key((0.0, 0.0, 80.0, 179.0)), "count": 1}
+        find = partition.locator(spec, [*self.grid(), wide])
+
+        # 格子の外だが、広い範囲が覆っている
+        assert find({"title": "x", "extra": {"lat": 5.0, "lon": 100.0}}) == wide["key"]
+        # 格子の中は、台帳で先に並んでいる細かいほうが勝つ
+        assert find({"title": "y", "extra": {"lat": 25.0, "lon": 125.0}}) != wide["key"]
+
+    def test_the_other_ways_of_splitting_agree_too(self):
+        """見出し・タグ・帯も、索引を通しても同じところへ落ちること。"""
+        cases = [
+            (
+                {"by": "title", "target": 10},
+                [{"key": partition.title_key(a, b)} for a, b in
+                 (("あ", "お"), ("か", "こ"), ("さ", "そ"))],
+                [{"title": t} for t in ("あい", "きく", "そう", "ん", "*")],
+            ),
+            (
+                {"by": "tag", "prefix": "地域:", "target": 10},
+                [{"key": "地域:日本"}, {"key": "地域:韓国"}],
+                [{"title": "x", "tags": ["地域:日本"]}, {"title": "y", "tags": ["地域:タイ"]}],
+            ),
+            (
+                {"by": "band", "prefix": "地域:", "value": "年代:", "target": 10},
+                [{"key": "日本|-1849"}, {"key": "日本|1850-"},
+                 {"key": "日本|不明|あ〜い"}, {"key": "韓国|-"}],
+                [{"title": "あ", "tags": ["地域:日本", "年代:1700"]},
+                 {"title": "い", "tags": ["地域:日本", "年代:1900"]},
+                 {"title": "う", "tags": ["地域:日本"]},
+                 {"title": "え", "tags": ["地域:韓国", "年代:1900"]},
+                 {"title": "お", "tags": ["地域:タイ"]}],
+            ),
+        ]
+        for raw, ledger, docs in cases:
+            spec = partition.normalize(raw)
+            find = partition.locator(spec, ledger)
+            for doc in docs:
+                assert find(doc) == partition.partition_of(spec, ledger, doc), (raw, doc)
+
+
+class TestWhereTheLapStarts:
+    """**端から順ではなく、決めた 1 点から広げる**(`origin`)。
+
+    区画は鍵の文字列順に配られるので、日本の地図なら南西の隅(八重山)から北上する
+    —— 一周に何十日もかかる台帳では、主要なところに着くのが何か月も先になる
+    (本番の食事処は 10,457 区画・1 回 5 区画・1 時間おきで、一周に 87 日)。
+    """
+
+    def ledger(self):
+        # 那覇・大阪・東京・札幌のあたりを 1 区画ずつ
+        return [
+            {"key": partition.geo_key((26.0, 127.0, 26.5, 127.5)), "visits": {}},  # 那覇
+            {"key": partition.geo_key((34.5, 135.3, 35.0, 135.8)), "visits": {}},  # 大阪
+            {"key": partition.geo_key((35.5, 139.5, 36.0, 140.0)), "visits": {}},  # 東京
+            {"key": partition.geo_key((43.0, 141.2, 43.5, 141.7)), "visits": {}},  # 札幌
+        ]
+
+    def spec(self, origin=None):
+        raw = {"by": "geo", "target": 150}
+        if origin:
+            raw["origin"] = origin
+        return partition.normalize(raw)
+
+    def test_without_an_origin_it_starts_at_the_south_west_corner(self):
+        got = partition.pick(self.ledger(), "ざっと", 4, self.spec())
+        assert got[0] == self.ledger()[0]["key"], "鍵の文字列順なので那覇から"
+
+    def test_it_spreads_out_from_the_point(self):
+        got = partition.pick(self.ledger(), "ざっと", 4, self.spec([35.681, 139.767]))
+        keys = [p["key"] for p in self.ledger()]
+        # 東京 → 大阪 → 札幌 → 那覇
+        assert got == [keys[2], keys[1], keys[3], keys[0]]
+
+    def test_the_unseen_ones_still_come_first(self):
+        """近さは**同じ周回の中の**並べ替え。見ていないものより先には出ない。"""
+        ledger = self.ledger()
+        ledger[2]["visits"] = {"ざっと": "2026-09-01"}  # 東京はもう見た
+        got = partition.pick(ledger, "ざっと", 1, self.spec([35.681, 139.767]))
+        assert got == [ledger[1]["key"]], "次に近い大阪"
+
+    def test_the_second_lap_follows_the_same_spread(self):
+        """1 周目を近い順に回れば印も近い順に付くので、「古い順」がそれをなぞる。"""
+        ledger = self.ledger()
+        spec = self.spec([35.681, 139.767])
+        for n, key in enumerate(partition.pick(ledger, "ざっと", 4, spec)):
+            for p in ledger:
+                if p["key"] == key:
+                    p["visits"] = {"ざっと": f"2026-09-0{n + 1}"}
+        again = partition.pick(ledger, "ざっと", 4, spec)
+        assert again == [p["key"] for p in sorted(
+            ledger, key=lambda p: p["visits"]["ざっと"]
+        )]
+
+    def test_a_key_we_cannot_read_goes_last(self):
+        ledger = [{"key": "こわれた", "visits": {}}, *self.ledger()]
+        got = partition.pick(ledger, "ざっと", 5, self.spec([35.681, 139.767]))
+        assert got[-1] == "こわれた"
+
+    def test_it_is_refused_outside_the_map(self):
+        with pytest.raises(HTTPException):
+            partition.normalize({"by": "geo", "origin": [95.0, 139.0]})
+        with pytest.raises(HTTPException):
+            partition.normalize({"by": "geo", "origin": [35.6]})
+        with pytest.raises(HTTPException):
+            partition.normalize({"by": "geo", "origin": ["東京", "駅"]})
+
+    def test_it_only_makes_sense_for_rectangles(self):
+        """距離で並べるので座標が要る。他の割り方では**黙って効かない**ほうが困る。"""
+        with pytest.raises(HTTPException):
+            partition.normalize({"by": "title", "origin": [35.681, 139.767]})
+
+    def test_it_survives_the_round_trip(self):
+        spec = partition.normalize({"by": "geo", "origin": [35.681, 139.767]})
+        assert partition.to_json(spec)["origin"] == [35.681, 139.767]
+        assert "origin" not in partition.to_json(partition.normalize({"by": "geo"}))
+
+
 class TestNobodyIsLeftWithoutAPartition:
     """**どの区画にも入らない文書は、どの回にも出てこない。**
 
