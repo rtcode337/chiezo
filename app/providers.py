@@ -19,6 +19,7 @@ URL だけは `url_env` を持つ相手に限り環境変数で上書きでき�
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -356,6 +357,31 @@ def drops_effort(provider_id: str, model: str) -> bool:
         return False
     head, sep, tail = model.rpartition("-")
     return bool(sep and head and tail in p.efforts)
+
+
+def effort_in_model(provider_id: str, model: str, known: Sequence[str] = ()) -> str:
+    """モデルの名前に畳んである考える量。畳んでいなければ空。
+
+    **控えに残すのはこちら。** 送るのは畳んだ名前(`sonnet-high`)でも、
+    返ってくるのは相手が解決した素の名前(`claude-fable-5-1`)なので、
+    **終わった行では考える量が消えていた** —— slug に元から段が入っている相手
+    (Antigravity)だけ見えていたのは、あちらの名前がそのまま返るから。
+
+    畳んだ回は `cfg.effort` が空になる(`drops_effort`。2 つ組で送らないため)ので、
+    名前のほうから取り出さないと、どこにも残らない。
+
+    **段の一覧をここが持っているとは限らない**(`known`)。codex の段は CLI 側の
+    控えにしかなく、こちらの定義は空のまま —— 定義だけを見ていると、いちばん段を
+    使い分ける相手の行が空欄で残る。読めた一覧を呼ぶ側から渡せるようにしてあるが、
+    **渡せなくても、こちらが持っているぶんは今までどおり効く**。
+    """
+    p = get(provider_id)
+    if p is None or not model or not p.folds_effort:
+        return ""
+    head, sep, tail = model.rpartition("-")
+    if not sep or not head:
+        return ""
+    return tail if tail in p.efforts or tail in known else ""
 
 
 def efforts_of(provider_id: str) -> tuple[str, ...]:

@@ -1540,6 +1540,76 @@ class TestAnEffortFoldedIntoTheModelName:
         assert providers.drops_effort("claude", "") is False
 
 
+class TestTheEffortStillShowsAfterTheRunEnds:
+    """**終わった行にも考える量を残す**(`answer._effort_of`)。
+
+    畳んだ回は 2 つ組で送らない(`drops_effort`)ので `cfg.effort` が空になり、
+    返ってくるのは相手が解決した素の名前(`claude-fable-5-1`)—— 控えるものが
+    どこにも無く、**走っている間だけ見えて、終わると消えていた**。
+    Antigravity だけ残っていたのは、あちらの slug に元から段が入っているから。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        from app import answer
+
+        answer.forget_choices()
+        yield
+        answer.forget_choices()
+
+    @staticmethod
+    def _cfg(name: str, model: str, effort: str = ""):
+        from app import answer
+
+        return answer.Settings(
+            url="http://x/v1", model=model, api_key=None, timeout=1.0, docs=1,
+            max_chars=1, agent_max_steps=1, agent_tool_chars=200, agent_timeout=1.0,
+            name=name, effort=effort,
+        )
+
+    def test_a_folded_name_gives_up_its_effort(self):
+        from app import answer
+
+        assert answer._effort_of(self._cfg("claude", "sonnet-high")) == "high"
+
+    def test_a_plain_name_has_none_to_give(self):
+        from app import answer
+
+        assert answer._effort_of(self._cfg("claude", "sonnet")) == ""
+
+    def test_what_was_chosen_wins(self):
+        """2 つ組で送った回は、そちらがそのまま控えになる。"""
+        from app import answer
+
+        assert answer._effort_of(self._cfg("gemini", "gemini-3.7-flash", "high")) == "high"
+
+    def test_a_backend_whose_steps_only_the_cli_knows_is_read_from_what_was_remembered(self):
+        """codex の段は CLI 側の控えにしか無い(`providers.get("codex").efforts` は空)。
+
+        定義だけで読み解こうとすると、**いちばん段を選び分ける相手**の行が
+        空欄のまま残る。
+        """
+        from app import answer, providers
+
+        assert providers.efforts_of("codex") == ()
+        assert answer._effort_of(self._cfg("codex", "gpt-6-astra-max")) == ""
+
+        answer._EFFORTS_CACHE["codex"] = ["low", "medium", "high", "max"]
+        assert answer._effort_of(self._cfg("codex", "gpt-6-astra-max")) == "max"
+
+    def test_the_remembered_list_does_not_turn_a_plain_name_into_a_step(self):
+        from app import answer
+
+        answer._EFFORTS_CACHE["codex"] = ["low", "medium", "high", "max"]
+        assert answer._effort_of(self._cfg("codex", "gpt-6-astra")) == ""
+
+    def test_a_slug_that_carries_its_own_step_is_left_alone(self):
+        """Antigravity は畳まない(`folds_effort` が偽)。段は `ran_model` に残る。"""
+        from app import answer
+
+        assert answer._effort_of(self._cfg("antigravity", "gemini-3.8-flash-medium")) == ""
+
+
 class TestTheCandidatesTheScreenDraws:
     """画面が描く候補は、**起動時に控えたもの**(`answer.remembered_models`)。
 

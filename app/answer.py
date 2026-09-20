@@ -749,7 +749,7 @@ def _note_failure(cfg: Settings, messages: list[dict], status: int, reason: str)
     ai_log.record(
         backend=cfg.name,
         model=cfg.model,
-        effort=cfg.effort,
+        effort=_effort_of(cfg),
         status=status,
         reason=reason,
         prompt_bytes=_prompt_bytes(messages),
@@ -868,6 +868,17 @@ async def _post_with_retry(client: httpx.AsyncClient, cfg: Settings, payload: di
     return res  # 到達しない(ループの最後で必ず返す)
 
 
+def _effort_of(cfg: Settings) -> str:
+    """控えに残す考える量。**畳んだ回は送ったモデル名から取り出す**。
+
+    **控えの一覧も渡す**(`_EFFORTS_CACHE`)—— codex の段は CLI 側の控えにしか
+    無く、`app/providers.py` の定義は空。定義だけで読み解こうとすると、
+    段を選び分けている相手の行がそのまま空欄で残る。控えが取れていなければ
+    今までどおり定義だけで読む(段が消えるのは、そこまで含めて元と同じ)。
+    """
+    return cfg.effort or providers.effort_in_model(cfg.name, cfg.model, _EFFORTS_CACHE.get(cfg.name, ()))
+
+
 def _record_usage(
     cfg: Settings,
     usage: dict | None,
@@ -911,8 +922,11 @@ def _record_usage(
         cfg.name,
         model=model,
         # **考える量も残す。** モデルと同じくらい結果と時間を左右するのに、
-        # 成功した行にだけ入っていなかった
-        effort=cfg.effort or "",
+        # 成功した行にだけ入っていなかった。
+        # **畳んだ回は名前のほうから取り出す**(`providers.effort_in_model`)——
+        # 送るのは `sonnet-high` でも返るのは相手が解決した素の名前なので、
+        # 控える `model` からは段が消える(`cfg.effort` も畳んだ回は空)
+        effort=_effort_of(cfg),
         kind="chat",
         # **誰が頼んだか**（`app/ai_inflight.py` が入口で巻いた印）。
         # 走っている表と同じ値を残すので、終わった後も見分けが付く
