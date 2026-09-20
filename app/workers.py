@@ -32,7 +32,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from app import machine_store, usage
+from app import machine_store, providers, usage
 
 log = logging.getLogger("chiezo.workers")
 
@@ -368,21 +368,34 @@ def cooldown_minutes(reason: str) -> int:
     return max(1, hours * 60 + minutes + (1 if seconds else 0))
 
 
-def avoid_for_now(backend: str, reason: str) -> str:
+def avoid_for_now(backend: str, reason: str, model: str = "") -> str:
     """相手が「使い切った」と言ったので、明けるまで避ける。避ける期限を返す。
 
     **言い分に明ける時刻が入っていればそれを使う**(「Resets in 1h15m20s」)。
     無ければ既定の待ち時間 —— どちらにしても、次の 1 回は待たずに次の段へ回る。
+
+    **避けるのは、そのモデルが食う枠だけ**(`model`)。1 人の相手が独立した枠を
+    何本も持つことがあるので、相手ごと避けると別の枠に置いた段まで巻き添えになる。
     """
     until = (
         datetime.now(UTC) + timedelta(minutes=cooldown_minutes(reason))
     ).isoformat(timespec="seconds")
-    mark_full(backend, until)
+    mark_full(backend, until, model)
     return until
 
 
-def mark_full(backend: str, until: str) -> None:
-    """その相手を、**いつまで避けるか**を控える。
+def _full_key(backend: str, model: str = "") -> str:
+    """締め出しの印を置く鍵。**枠を分けられる相手では枠ごと**。
+
+    分けられないとき(枠が 1 本の相手・モデルを書いていない段)は相手の名前そのまま
+    —— それは「この相手ぜんぶ」の意味になる。
+    """
+    group = providers.quota_group(backend, model)
+    return f"{backend}|{group}" if group else backend
+
+
+def mark_full(backend: str, until: str, model: str = "") -> None:
+    """その相手(の枠)を、**いつまで避けるか**を控える。
 
     **相手が言ったことのほうが新しい。** 控えてある使用率は定時にしか採らないので、
     1 回が長い回の途中で窓が閉まっても次の採取まで気づけない —— 実際に、41% と
@@ -391,16 +404,25 @@ def mark_full(backend: str, until: str) -> None:
     """
     if not backend or not machine_store.is_enabled():
         return
+    key = _full_key(backend, model)
     state = _queue_all()
-    state.setdefault(FULL_KEY, {})[backend] = until
+    state.setdefault(FULL_KEY, {})[key] = until
     _queue_save(state)
-    log.info("avoiding %s until %s (the provider said it is full)", backend, until)
+    log.info("avoiding %s until %s (the provider said it is full)", key, until)
 
 
-def full_until(backend: str) -> str:
-    """その相手を避ける期限(空なら避けていない)。"""
+def full_until(backend: str, model: str = "") -> str:
+    """その段を避ける期限(空なら避けていない)。
+
+    **相手の名前だけの印も必ず見る。** あれは「どの枠か分からないまま断られた」
+    ぶんで、**その相手ぜんぶに効く** —— 枠ごとの印しか見ないと、素通りしてしまう
+    (枠を分ける前に置かれた古い印もここに入る)。**遅いほうを採る**(慎重な側)。
+    """
     found = _queue_all().get(FULL_KEY)
-    return str(found.get(backend) or "") if isinstance(found, dict) else ""
+    if not isinstance(found, dict):
+        return ""
+    keys = {backend, _full_key(backend, model)}
+    return max((str(found.get(k) or "") for k in keys), default="")
 
 
 def room_left(step: Step, limit: float | None = None, now: str = "") -> bool:
@@ -412,10 +434,15 @@ def room_left(step: Step, limit: float | None = None, now: str = "") -> bool:
 
     **相手が「使い切った」と言ったぶんは、期限まで避ける**(`mark_full`)。
     使用率より新しい報せなので、こちらを先に見る。
+
+    **見るのは、その段のモデルが食う枠だけ**(`usage.busiest` にモデルを渡す)。
+    1 人の相手が独立した枠を何本も持つことがあり、まとめて見ると**片方が
+    詰まっただけで、同じ相手の別の枠に置いた段まで飛ばされる** —— 逃げ先の
+    ために並べた段が、いちばん要るときに働かない。
     """
-    if (until := full_until(step.backend)) and (now or _now_iso()) < until:
+    if (until := full_until(step.backend, step.model)) and (now or _now_iso()) < until:
         return False
-    busiest = usage.busiest(step.backend)
+    busiest = usage.busiest(step.backend, step.model)
     return busiest is None or busiest < (QUOTA_LIMIT if limit is None else limit)
 
 

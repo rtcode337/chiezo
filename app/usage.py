@@ -78,6 +78,11 @@ class Window:
     # 週が先に来る相手と 5 時間が先に来る相手が混ざっていた。長さが分からない
     # 相手もいる(claude は文面から読むので持たない)ので None を許す。
     window_minutes: float | None = None
+    # この窓が属する枠の呼び名(相手が名乗るそのまま。`Gemini Models` など)。
+    # **見出しに畳むだけでなく、値としても持つ** —— 1 人の相手が独立した枠を
+    # 何本も持つとき、**どの窓がどのモデルの話なのか**はここでしか判らない
+    # (`providers.quota_group` と突き合わせる)。持たない相手では空。
+    group: str = ""
 
     @property
     def remaining_percent(self) -> float | None:
@@ -303,6 +308,7 @@ async def _bridge(spec: providers.Provider) -> tuple[list[Window], str]:
                 limit=entry.get("limit") if isinstance(entry.get("limit"), int | float) else None,
                 unit=str(entry.get("unit") or ""),
                 window_minutes=minutes if isinstance(minutes, int | float) else None,
+                group=str(entry.get("group") or "").strip(),
             )
         )
     if not windows:
@@ -537,7 +543,7 @@ def label_of(provider_id: str) -> str:
     return getattr(spec, "label", "") or provider_id
 
 
-def busiest(provider_id: str) -> float | None:
+def busiest(provider_id: str, model: str = "") -> float | None:
     """その相手の枠のうち、**いちばん詰まっている窓**の使用率。控えを読むだけ。
 
     **聞きに行かない。** ここは「いま頼んでよい相手か」を決めるために何度も呼ばれる
@@ -546,12 +552,23 @@ def busiest(provider_id: str) -> float | None:
 
     **分からないときは None。** 枠を出さない相手と、まだ一度も取れていない相手が
     これに当たる。**0 と書き分ける** —— 0 は「まだ使っていない」で、頼んでよい相手。
+
+    **モデルを渡すと、そのモデルが食う枠の窓だけを見る**
+    (`providers.quota_group`)。1 人の相手が独立した枠を何本も持つことがあり、
+    まとめて最大を取ると**片方が詰まっただけで相手ごと避けることになる** ——
+    実測で、Antigravity の Claude 枠が 100% になった回に、5 時間 78% 空いていた
+    Gemini の段が使われずに次の相手へ落ちた(逃げ先として置いた段が、いちばん
+    要るときに働かない)。
+
+    **突き合わなければ全部の窓で見る**(いままでどおり)。枠を 1 本しか持たない
+    相手、モデルを書いていない段、相手が呼び名を変えた日がこれに当たる ——
+    どれも慎重な側で、避けすぎることはあっても使いすぎることはない。
     """
     row = usage_store.load_quota().get(provider_id)
     if not row:
         return None
-    percents = [
-        w.used_percent for w in _windows_from(row.get("windows", []))
-        if w.used_percent is not None
-    ]
+    windows = _windows_from(row.get("windows", []))
+    if group := providers.quota_group(provider_id, model):
+        windows = [w for w in windows if w.group == group] or windows
+    percents = [w.used_percent for w in windows if w.used_percent is not None]
     return max(percents) if percents else None

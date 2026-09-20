@@ -82,6 +82,15 @@ class Provider:
     # 枠の聞き方（`USAGE_*`。空なら聞く口が無い）。課金の形とは別物 ——
     # サブスクの相手でも枠を出す口があるとは限らない（Antigravity は CLI にしか無い）。
     usage: str = USAGE_NONE
+    # **1 人の相手が、独立した枠を何本も持つことがある**(モデルの系統ごと)。
+    # `(モデルの頭, 枠の呼び名)` を書いた順に見て、最初に当たったものがその枠。
+    # 頭が空のものは受け皿(どれにも当たらなかったモデル)。
+    #
+    # **呼び名は相手が名乗るそのまま**(ブリッジが窓ごとに運んでくる `group`)——
+    # こちらで訳したり短くしたりすると、窓と突き合わなくなって効かない。
+    # **突き合わなければ今までどおり全部の窓で見る**ので、相手が呼び名を
+    # 変えた日に安全でなくなることはない(慎重な側へ倒れるだけ)。
+    quota_groups: tuple[tuple[str, str], ...] = ()
     # URL を上書きできる環境変数。コンテナ名で辿り着けない相手のための逃げ道で、
     # 設定として増やすものではない（いまは local だけが持つ）。
     url_env: str = ""
@@ -274,6 +283,15 @@ PROVIDERS: tuple[Provider, ...] = (
         # 枠は CLI に聞くしかない。 残クレジットを取る RPC は持っているが、
         # 外から叩ける口としては公開されていない（画面の中で使われるだけ）。
         usage=USAGE_BRIDGE,
+        # **Gemini と Claude/GPT は独立した枠**(週と 5 時間がそれぞれに立つ)。
+        # どちらを食うかは選んだモデルで決まるので、片方が詰まってももう片方は
+        # 頼める —— まとめて「詰まっている」にすると、逃げ先に置いた段まで
+        # 巻き添えで飛ばされる(実測: Claude 枠が 100% になった回に、
+        # 5 時間 78% 空いていた Gemini の段が使われずに次の相手へ落ちた)。
+        quota_groups=(
+            ("gemini-", "Gemini Models"),
+            ("", "Claude and GPT models"),
+        ),
         bridge=True,
         order=36,
     ),
@@ -382,6 +400,24 @@ def effort_in_model(provider_id: str, model: str, known: Sequence[str] = ()) -> 
     if not sep or not head:
         return ""
     return tail if tail in p.efforts or tail in known else ""
+
+
+def quota_group(provider_id: str, model: str) -> str:
+    """そのモデルが食う枠の呼び名。**分からなければ空**(= 枠を分けない)。
+
+    **1 人の相手が独立した枠を何本も持つことがある。** Antigravity は Gemini と
+    Claude/GPT で週も 5 時間も別勘定で、どちらを食うかは選んだモデルで決まる ——
+    まとめて「いちばん詰まっている窓」で見ると、**片方が詰まっただけで相手ごと
+    避けることになり、逃げ先に置いた段まで巻き添えで飛ばされる**。
+
+    **空を返す場合が 2 つあり、どちらも「分けない」に倒す**(慎重な側)——
+    枠を 1 本しか持たない相手と、モデルを書いていない段(どの枠を食うか決まらない)。
+    """
+    p = get(provider_id)
+    if p is None or not model:
+        return ""
+    name = model.strip().lower()
+    return next((group for head, group in p.quota_groups if name.startswith(head)), "")
 
 
 def efforts_of(provider_id: str) -> tuple[str, ...]:

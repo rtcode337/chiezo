@@ -727,7 +727,9 @@ async def _collect_items(
                 # 断られた事実のほうが新しい。**枠と関係ない失敗では締め出さない**
                 if worker is None or step is None or not workers.looks_full(_reason_of(e)):
                     raise
-                workers.avoid_for_now(step.backend, _reason_of(e))
+                # **避けるのはその段のモデルが食う枠だけ** —— 相手ごと避けると、
+                # 同じ相手の別の枠に置いた段まで巻き添えで飛ばされる
+                workers.avoid_for_now(step.backend, _reason_of(e), step.model)
                 notes.append(f"{step.backend} が枠切れを返したので、次の段へ回しました")
                 continue
             break

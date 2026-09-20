@@ -100,6 +100,104 @@ class TestChoosing:
         assert workers.pick(_worker(workers.Step("codex")), limit=80.0) is None
 
 
+class TestABackendWithMoreThanOneQuota:
+    """**1 人の相手が、独立した枠を何本も持つことがある。**
+
+    Antigravity は Gemini と Claude/GPT で週も 5 時間も別勘定で、どちらを食うかは
+    選んだモデルで決まる —— まとめて「いちばん詰まっている窓」で見ると、片方が
+    詰まっただけで相手ごと避けることになり、**逃げ先として置いた段まで巻き添えで
+    飛ばされる**(実測: Claude 枠が 100% の回に、5 時間 78% 空いていた Gemini の
+    段が使われず次の相手へ落ちた)。
+    """
+
+    @staticmethod
+    def _split_quota():
+        usage_store.save_quota("antigravity", [
+            {"id": "gemini-5h", "label": "Gemini Models(直近 5 時間)",
+             "group": "Gemini Models", "used_percent": 22.0},
+            {"id": "3p-5h", "label": "Claude and GPT models(直近 5 時間)",
+             "group": "Claude and GPT models", "used_percent": 100.0},
+            {"id": "gemini-weekly", "label": "Gemini Models(直近 7 日)",
+             "group": "Gemini Models", "used_percent": 54.0},
+            {"id": "3p-weekly", "label": "Claude and GPT models(直近 7 日)",
+             "group": "Claude and GPT models", "used_percent": 69.0},
+        ])
+
+    def test_the_crowded_group_is_avoided(self, enabled):
+        self._split_quota()
+
+        assert not workers.room_left(workers.Step("antigravity", "claude-opus-4-6-thinking"))
+
+    def test_the_other_group_is_still_open(self, enabled):
+        """ここが眼目。**同じ相手でも、空いている枠の段は使える。**"""
+        self._split_quota()
+
+        assert workers.room_left(workers.Step("antigravity", "gemini-3.8-flash-medium"))
+
+    def test_the_fallback_step_on_the_same_backend_is_reached(self, enabled):
+        """本番の並びそのまま —— Claude 枠が詰まったら、次の段(同じ相手の
+        Gemini)へ落ちる。Codex まで飛ばさない。"""
+        self._split_quota()
+        picked = workers.pick(_worker(
+            workers.Step("antigravity", "claude-opus-4-6-thinking"),
+            workers.Step("antigravity", "gemini-3.8-flash-medium"),
+            workers.Step("codex", "gpt-5.6-sol-medium"),
+        ))
+
+        assert picked == workers.Step("antigravity", "gemini-3.8-flash-medium")
+
+    def test_a_step_without_a_model_still_sees_every_window(self, enabled):
+        """どの枠を食うか決まらないので、**慎重な側に倒す**。"""
+        self._split_quota()
+
+        assert not workers.room_left(workers.Step("antigravity"))
+
+    def test_an_unknown_group_name_falls_back_to_every_window(self, enabled):
+        """相手が呼び名を変えた日に、避けるのをやめてしまわない。"""
+        usage_store.save_quota("antigravity", [
+            {"id": "a", "label": "何か", "group": "Renamed Models", "used_percent": 100.0},
+        ])
+
+        assert not workers.room_left(workers.Step("antigravity", "gemini-3.8-flash-medium"))
+
+    def test_a_stored_row_from_before_the_split_still_works(self, enabled):
+        """**入れ替えた日の控えには枠の呼び名が入っていない。** 突き合わないので
+        全部の窓で見る = 入れ替え前とまったく同じ挙動。次の採取で呼び名が入る。
+        """
+        usage_store.save_quota("antigravity", [
+            {"id": "gemini-5h", "label": "Gemini Models(直近 5 時間)", "used_percent": 22.0},
+            {"id": "3p-5h", "label": "Claude and GPT models(直近 5 時間)",
+             "used_percent": 100.0},
+        ])
+
+        assert not workers.room_left(workers.Step("antigravity", "gemini-3.8-flash-medium"))
+
+    def test_a_backend_with_one_quota_is_unchanged(self, enabled):
+        usage_store.save_quota("codex", [
+            {"id": "primary", "label": "直近 5 時間", "used_percent": 95.0},
+        ])
+
+        assert not workers.room_left(workers.Step("codex", "gpt-5.6-sol-medium"))
+
+    def test_being_refused_only_shuts_out_that_group(self, enabled):
+        """枠切れの言い分も枠ごとに控える —— 相手ごと避けると、別の枠に置いた
+        段まで巻き添えになる(使用率で見るときと同じ話)。"""
+        workers.avoid_for_now(
+            "antigravity", "quota exceeded. Resets in 1h0m0s", "claude-opus-4-6-thinking",
+        )
+
+        assert not workers.room_left(workers.Step("antigravity", "claude-opus-4-6-thinking"))
+        assert workers.room_left(workers.Step("antigravity", "gemini-3.8-flash-medium"))
+
+    def test_a_mark_without_a_group_shuts_the_whole_backend_out(self, enabled):
+        """相手の名前だけの印は「どの枠か分からないまま断られた」ぶん ——
+        **その相手ぜんぶに効く**(枠を分ける前に置かれた古い印もここに入る)。"""
+        workers.mark_full("antigravity", "2099-01-01T00:00:00+00:00")
+
+        assert not workers.room_left(workers.Step("antigravity", "gemini-3.8-flash-medium"))
+        assert not workers.room_left(workers.Step("antigravity", "claude-opus-4-6-thinking"))
+
+
 class TestDefinitions:
     """定義の読み書き。**壊れていたら黙って作り直さない。**"""
 
