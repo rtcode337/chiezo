@@ -124,8 +124,17 @@ def test_the_websearch_settings_ride_on_configs(path: Path):
     targets = [c["target"] for c in searxng["configs"]]
     assert "/etc/searxng/settings.yml" in targets
     content = doc["configs"]["chiezo-searxng-settings"]["content"]
+    settings = yaml.safe_load(content)
     # 既定を土台にすること。継承を切ると default_doi_resolver 等が消えて起動に失敗する
-    assert "use_default_settings: true" in content
+    # (`true` でも、engines を間引く書き方でも継承は効く)
+    inherit = settings.get("use_default_settings")
+    assert inherit, "既定の継承を切らないこと"
+    # **使えない相手は外しておく。** 残すと起動のたびに登録に失敗して ERROR が並び、
+    # 本当に見たい行がそこに埋もれる —— wikidata は公開の SPARQL に 403 で断られ
+    # (こちらは Wikipedia も Wikidata も手元に持っている)、ahmia / torch は
+    # Tor を立てていないので必ず失敗する
+    removed = (inherit if isinstance(inherit, dict) else {}).get("engines") or {}
+    assert set(removed.get("remove") or []) >= {"wikidata", "ahmia", "torch"}
     # Chiezo は format=json で引く。既定は html だけなので、この行が無いと検索が壊れる
     assert "formats: [html, json]" in content
 

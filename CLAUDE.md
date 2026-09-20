@@ -3165,6 +3165,13 @@ SQLite ファイルで、配信側 chiezo-app は read-only immutable で開く�
   立っているだけでは外へ検索を投げない。
   **使うのは chiezo が agent ループを回す相手だけ** —— CLI ブリッジ(claude / codex /
   antigravity)は CLI 自身の web 検索を引くので、ここは通らない(`agent.bridge_web_allowed`)。
+  **使えない相手は設定から外す**(`use_default_settings.engines.remove`)——
+  残すと起動のたびに登録に失敗して ERROR が並び、本当に見たい行がそこに埋もれる。
+  `wikidata` は公開の SPARQL に 403 で断られる(**こちらは Wikipedia も Wikidata も
+  手元に持っている**ので、外の口に頼る理由が無い)、`ahmia` / `torch` は Tor 越しなので
+  必ず失敗する。**`X-Forwarded-For nor X-Real-IP header is set!` は消せない** ——
+  `limiter: false` でも 1 リクエストにつき 1 行出るが、SearXNG はソケットの相手先に
+  倒して処理を続けるので実害は無い(偽の `X-Forwarded-For` を送るほうが筋が悪い)。
   **設定は compose の `configs` で流し込む**(素の `searxng/searxng` を使い、
   独自イメージもマウントも作らない)。**焼き込みでもマウントでもいけない**:
   上流のイメージは `/etc/searxng` を **VOLUME 宣言している**ので、焼き込んだ設定は

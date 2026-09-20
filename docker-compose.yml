@@ -321,7 +321,18 @@ services:
 configs:
   chiezo-searxng-settings:
     content: |
-      use_default_settings: true
+      # **使えない相手は外す。** 消さないと、起動のたびに登録に失敗して
+      # ERROR が並び、本当に見たい行がそこに埋もれる。
+      # - wikidata … 公開の SPARQL に取りに行って 403(Wikimedia は名乗りの
+      #   無い相手を断る)。**こちらは Wikipedia も Wikidata も手元に持っている**
+      #   ので、外の口に頼る理由がそもそも無い
+      # - ahmia / torch … Tor 越しの相手。Tor を立てていないので必ず失敗する
+      use_default_settings:
+        engines:
+          remove:
+            - wikidata
+            - ahmia
+            - torch
       server:
         # 秘密の値ではない(LAN 内前提の既定)。プリファレンスの Cookie と画像プロキシの
         # 署名に使う値で、Chiezo は JSON の検索しか叩かないため既定のままで動く。
