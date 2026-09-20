@@ -4854,6 +4854,55 @@ class TestOpeningAPartition:
         )
         return collect.get("news")
 
+    def test_changing_only_where_it_starts_keeps_the_lap(self, sample):
+        """**順番だけの違いでは台帳を捨てない。** `origin` は配る順を決めるだけで、
+        どの文書がどの区画に入るかは動かない —— 捨てていた頃は、どこから広げるかを
+        決め直すたびに一周の記録が巻き戻った(本番で 10,457 区画ぶんが消えた)。
+        """
+        spec = {"by": "geo", "target": 150, "bbox": [20.2, 122.5, 45.8, 154.0]}
+        ledger = [{"key": partitioning.geo_key((35.0, 139.0, 36.0, 140.0)),
+                   "count": 3, "visits": {"ざっと見る": "2026-09-20T04:22:23+00:00"}}]
+        collect.update("news", partition=spec, partitions=ledger)
+
+        kept = collect.update("news", partition={**spec, "origin": [35.681, 139.767]})
+
+        assert len(kept.partitions) == 1
+        assert kept.partitions[0]["visits"] == {"ざっと見る": "2026-09-20T04:22:23+00:00"}
+
+    def test_changing_how_it_is_cut_still_drops_the_lap(self, sample):
+        """割り方が変われば鍵の意味が変わる —— 引き継ぐと、前の割り方で見た記録が
+        新しい区画に付く。"""
+        spec = {"by": "geo", "target": 150, "bbox": [20.2, 122.5, 45.8, 154.0]}
+        collect.update("news", partition=spec, partitions=[
+            {"key": partitioning.geo_key((35.0, 139.0, 36.0, 140.0)), "count": 3},
+        ])
+
+        redone = collect.update("news", partition={**spec, "target": 300})
+
+        assert redone.partitions == []
+
+    def test_the_ledger_says_where_the_lap_starts(self, partitioned):
+        """**指定は編集のフォームの JSON にしか無かった。** 「東京から回るように
+        したはずだが効いているのか」を確かめに来る人が見るのは、台帳のほうの行。
+        """
+        from app.views import admin
+
+        collect.update("news", partition={
+            "by": "geo", "target": 150, "bbox": [20.2, 122.5, 45.8, 154.0],
+            "origin": [35.681, 139.767],
+        }, partitions=[{"key": partitioning.geo_key((35.0, 139.0, 36.0, 140.0)),
+                        "count": 3}])
+
+        html = admin._partition_html(collect.get("news"))
+
+        assert "35.681" in html and "139.767" in html
+        assert "近い順" in html
+
+    def test_it_says_nothing_when_the_lap_starts_at_the_corner(self, partitioned):
+        from app.views import admin
+
+        assert "近い順" not in admin._partition_html(partitioned)
+
     def test_the_ledger_says_when_each_sweep_saw_it(self, partitioned):
         """**記録は前から日時で入っていたのに、画面は名前しか出していなかった。**
 

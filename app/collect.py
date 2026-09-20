@@ -1305,11 +1305,18 @@ def update(name: str, **fields) -> Collection:
     if "partition" in patch:
         # 空のオブジェクトを渡したら区画を持たない収集に戻す(消す手段がここしかない)。
         # **割り方を変えたら台帳は捨てる** —— 鍵の意味が変わるので、引き継ぐと
-        # 前の割り方で見た記録が新しい区画に付く
+        # 前の割り方で見た記録が新しい区画に付く。
+        # **順番だけの違いでは捨てない**(`partitioning.same_cut`)—— `origin` は
+        # 配る順を決めるだけで、どの文書がどの区画に入るかは動かない。捨てていた
+        # 頃は、どこから広げるかを決め直すたびに一周の記録が巻き戻った
+        # (本番で 10,457 区画ぶんが消えた)
         patch["partition"] = partitioning.to_json(partitioning.normalize(patch["partition"] or None))
         # **台帳を明示的に渡されていなければ捨てる。** 両方渡されたときは渡したほうが
         # 勝つ(割り出した結果を持ち込みたいのに、こちらが消してしまうため)
-        if patch["partition"] != current.partition and "partitions" not in patch:
+        if (
+            not partitioning.same_cut(patch["partition"], current.partition)
+            and "partitions" not in patch
+        ):
             patch["partitions"] = []
     if "sweeps" in patch:
         patch["sweeps"] = _keep_schedule(normalize_sweeps(patch["sweeps"]), current.sweeps)

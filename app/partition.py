@@ -227,6 +227,28 @@ def _origin(raw) -> list[float] | None:
     return [lat, lon]
 
 
+# **鍵の意味に関わらない指定。** 変わっても台帳は捨てない —— 動くのは配る順だけで、
+# どの文書がどの区画に入るかは変わらない。
+ORDER_ONLY = ("origin",)
+
+
+def same_cut(a: dict | None, b: dict | None) -> bool:
+    """2 つの指定が**同じ割り方**か(配る順だけの違いは見ない)。
+
+    **割り方が変われば台帳は捨てるしかない**(鍵の意味が変わるので、引き継ぐと
+    前の割り方で見た記録が新しい区画に付く)。**順番はそうではない** ——
+    `origin` を足しただけで一周の記録を捨てると、**どこから広げるかを決め直す
+    たびに進み具合が巻き戻る**(本番で 10,457 区画ぶんの記録が消えた)。
+    """
+    return _cut_of(a) == _cut_of(b)
+
+
+def _cut_of(spec: dict | None) -> dict | None:
+    if not spec:
+        return None
+    return {k: v for k, v in spec.items() if k not in ORDER_ONLY}
+
+
 def to_json(spec: dict | None) -> dict | None:
     """定義のメモへ書ける形。**空の鍵は落とす**(読むときに邪魔なだけ)。
 

@@ -1035,7 +1035,8 @@ def _partition_html(item, src=None) -> str:
         if rest else ""
     )
     return (
-        f'<p class="muted">区画: {total:,}{_uncovered_html(item, src)}</p>'
+        f'<p class="muted">区画: {total:,}{_spread_from_html(item)}'
+        f'{_uncovered_html(item, src)}</p>'
         "<table><thead><tr><th>区画</th><th>母集団</th><th>見終えた巡回(日本時間)</th></tr></thead>"
         f"<tbody>{head}</tbody></table>{more}"
     )
@@ -1072,6 +1073,19 @@ def collect_page(item) -> str:
     見える。保存できた側の名前を使えば、通った字しか入らない。
     """
     return f"/admin/collect/{quote(item.name, safe='')}"
+
+
+def _spread_from_html(item) -> str:
+    """どこから広げるか(`origin`)。書いていなければ何も出さない。
+
+    **JSON の中にしか無かった。** 指定は編集のフォームの textarea に入っているが、
+    開いて読まないと分からない —— 「東京から回るようにしたはずだが効いているのか」を
+    確かめに来る人が見るのは、台帳のほうの行。
+    """
+    origin = (item.partition or {}).get("origin")
+    if not origin:
+        return ""
+    return f"(緯度 {origin[0]}・経度 {origin[1]} から近い順に広げます)"
 
 
 def _visits_html(p: dict) -> str:
