@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import itertools
 import json
 import sqlite3
 from pathlib import Path
@@ -409,13 +410,16 @@ class TestMergingSmallPartitions:
         assert not partition.belongs(spec, key, {"title": "お"})
 
     def test_it_does_not_cross_a_group(self):
-        """**分類はまたがない。** またぐと、その区画がどの範囲なのかを言えなくなる ——
-        範囲が言えなければ、漏れを問うこと自体が成り立たない。
+        """**隣とつなぐ道は分類をまたがない。** またぐと、出来た区画が 1 つの範囲で
+        表せなくなる —— 範囲が言えなければ、漏れを問うこと自体が成り立たない。
+
+        小さすぎるものを分類をまたいで寄せ集める道は別にある(`_pooled`)。
+        あちらは 1 つの範囲にせず、値を並べた鍵を作る。
         """
         spec = partition.normalize({"by": "band", "prefix": "地域", "value": "年代", "target": 10})
         ledger = [
-            {"key": partition.band_key("日本", 1800, 1850), "count": 1, "visits": {}},
-            {"key": partition.band_key("朝鮮", 1288, 1900), "count": 1, "visits": {}},
+            {"key": partition.band_key("日本", 1800, 1850), "count": 6, "visits": {}},
+            {"key": partition.band_key("朝鮮", 1288, 1900), "count": 6, "visits": {}},
         ]
 
         assert len(partition.merged(spec, ledger)) == 2
@@ -705,25 +709,32 @@ class TestBands:
 
     def test_it_groups_by_the_category_then_the_number(self):
         own = self.docs(
-            *[(f"ふ{i}", ["地域:フランス", f"年代:{1840 + i}-1926"]) for i in range(10)],
+            *[(f"ふ{i}", ["地域:フランス", f"年代:{1840 + i}-1926"]) for i in range(20)],
             ("に", ["地域:日本", "年代:1840-1900"]),
         )
         built = partition.build(self.spec(), {}, own)
         keys = [p["key"] for p in built]
 
-        assert "フランス|1840-1849" in keys
-        assert "日本|1840-1840" in keys
+        # **端は開いて書く**(下は `-1849`、上は `1850-`)—— 端の帯は割ったときの
+        # 値より外も引き受けるので、閉じて書くと鍵と受け持ちがずれる
+        assert "フランス|-1849" in keys
+        assert "フランス|1850-" in keys
+        # 1 人しかいない分類は 1 帯。上も下も端なので `-` だけ
+        assert "日本|-" in keys
 
     def test_a_sparse_category_gets_a_wide_band(self):
-        """人の少ないところは、年の幅が自然に広がる。"""
+        """人の少ないところは、年の幅が自然に広がる。
+
+        1 帯しか無ければ**値では絞らない** —— その分類の全員がここなので、
+        年を書くと書いた範囲の外を誰も探しに行かなくなる。
+        """
         own = self.docs(
             ("あ", ["地域:カナダ", "年代:1810-1880"]),
             ("い", ["地域:カナダ", "年代:1866-1950"]),
         )
         built = partition.build(self.spec(), {}, own)
 
-        # 2 人しかいないので、1 区画が 56 年ぶんを覆う
-        assert [p["key"] for p in built] == ["カナダ|1810-1866"]
+        assert [p["key"] for p in built] == ["カナダ|-"]
 
     def test_one_number_is_never_split(self):
         """**「フランスの 1660 年生まれ」を 2 つに分けない。** 分けると
@@ -731,7 +742,7 @@ class TestBands:
         own = self.docs(*[(f"ひと{i}", ["地域:日本", "年代:1907-1990"]) for i in range(25)])
         built = partition.build(self.spec(), {}, own)
 
-        assert [p["key"] for p in built] == ["日本|1907-1907"]
+        assert [p["key"] for p in built] == ["日本|-"]
         assert built[0]["count"] == 25
 
     def test_the_leftover_joins_the_band_before_it(self):
@@ -746,7 +757,7 @@ class TestBands:
         )
         built = partition.build(self.spec(), {}, own)
 
-        assert [p["key"] for p in built] == ["アイルランド|1700-1928"]
+        assert [p["key"] for p in built] == ["アイルランド|-"]
         assert built[0]["count"] == 11
 
     def test_the_leftover_stays_apart_when_it_does_not_fit(self):
@@ -806,3 +817,345 @@ class TestBands:
         spec = self.spec()
         assert "フランス" in partition.describe(spec, "フランス|1840-1869", {})
         assert "1840〜1869" in partition.describe(spec, "フランス|1840-1869", {})
+
+
+class TestTheOpenEndsOfABand:
+    """端の帯は、割ったときの値より外も引き受ける —— **鍵もそう書く**。
+
+    値の軸には上限も下限も無いので、いちばん古い帯はそれより古い年を、いちばん
+    新しい帯はその先を取る(`_band_of`)。そこを `1600-1641` と閉じて書くと、
+    **引き受けているのに誰も探しに行かない範囲**ができる —— 鍵を読んだ人にも、
+    `{partition}` を渡された AI にも、その外は別の区画のものだと映る。
+    """
+
+    def spec(self, target=10):
+        return partition.normalize(
+            {"by": "band", "prefix": "地域:", "value": "年代:", "target": target}
+        )
+
+    def built(self, years, target=10):
+        own = {
+            f"ひと{i}": {"title": f"ひと{i}", "tags": ["地域:日本", f"年代:{y}"]}
+            for i, y in enumerate(years)
+        }
+        return partition.build(self.spec(target), {}, own)
+
+    def test_the_bottom_one_is_written_open(self):
+        keys = [p["key"] for p in self.built([1840 + i for i in range(30)])]
+
+        assert keys[0].startswith("日本|-"), keys
+        assert keys[0] != "日本|-", "真ん中があるので、上まで開いてはいない"
+
+    def test_the_top_one_is_written_open(self):
+        keys = [p["key"] for p in self.built([1840 + i for i in range(30)])]
+
+        assert keys[-1].endswith("-"), keys
+        assert keys[-1] != "日本|-"
+
+    def test_the_middle_ones_stay_closed(self):
+        keys = [p["key"] for p in self.built([1840 + i for i in range(30)])]
+
+        assert len(keys) == 3, keys
+        assert partition.parse_band_key(keys[1])[1:3] == (1850, 1859)
+
+    def test_one_band_is_open_at_both_ends(self):
+        """上も下も端なら `-` だけ(その分類ぜんぶがここなので、値では絞らない)。"""
+        assert [p["key"] for p in self.built([1840, 1841])] == ["日本|-"]
+
+    def test_the_bands_are_still_gapless(self):
+        built = self.built([1840 + i for i in range(30)])
+        spans = [partition.parse_band_key(p["key"]) for p in built]
+
+        for left, right in itertools.pairwise(spans):
+            assert left[2] + 1 == right[1]
+
+    def test_a_year_outside_the_split_lands_on_the_end_band(self):
+        spec = self.spec()
+        built = self.built([1840 + i for i in range(30)])
+
+        older = {"title": "むかし", "tags": ["地域:日本", "年代:1500"]}
+        newer = {"title": "これから", "tags": ["地域:日本", "年代:2200"]}
+        assert partition.partition_of(spec, built, older) == built[0]["key"]
+        assert partition.partition_of(spec, built, newer) == built[-1]["key"]
+
+    def test_the_key_can_be_read_back(self):
+        assert partition.parse_band_key("日本|-1849") == (["日本"], None, 1849, None)
+        assert partition.parse_band_key("日本|1850-") == (["日本"], 1850, None, None)
+        assert partition.parse_band_key("日本|-") == (["日本"], None, None, None)
+        assert partition.parse_band_key("日本|1850-1859") == (["日本"], 1850, 1859, None)
+
+    def test_the_unknown_pile_is_still_read_as_a_title_range(self):
+        """分類が「不明」でも取り違えない(範囲は必ず `数字-数字` の形)。"""
+        assert partition.parse_band_key("不明|-") == (["不明"], None, None, None)
+        assert partition.parse_band_key("日本|不明|あ〜い") == (["日本"], None, None, "あ〜い")
+
+    def test_the_description_says_where_it_stops(self):
+        spec = self.spec()
+        built = self.built([1840 + i for i in range(30)])
+
+        assert "以下" in partition.describe(spec, built[0]["key"], {}, built)
+        assert "以上" in partition.describe(spec, built[-1]["key"], {}, built)
+        assert "問いません" in partition.describe(spec, "日本|-", {}, [{"key": "日本|-"}])
+
+    def test_an_old_closed_ledger_still_says_where_it_stops(self):
+        """**割り直すまで、台帳は端も閉じた鍵のまま。** 鍵だけを見て
+        「1901〜1910 のもの」と伝えると、そこより古い年を誰も探しに行かない。
+        """
+        spec = self.spec()
+        old = [{"key": "日本|1901-1910"}, {"key": "日本|1911-1920"}]
+
+        assert "以下" in partition.describe(spec, "日本|1901-1910", {}, old)
+
+
+class TestNobodyIsLeftWithoutAPartition:
+    """**どの区画にも入らない文書は、どの回にも出てこない。**
+
+    例外にはならないので気づけない —— `{current}` にも件数にも現れないまま、
+    巡回を何周しても AI の目に触れずに残る。
+    """
+
+    def spec(self, by="band", target=10):
+        return partition.normalize(
+            {"by": by, "prefix": "地域:", "value": "生年:", "target": target}
+        )
+
+    def test_a_value_that_shows_up_later_has_no_home_at_first(self):
+        """割った時点で全員が値を持っていると、「不明」の置き場は作られない。"""
+        spec = self.spec()
+        own = {f"ふ{i}": {"title": f"ふ{i}", "tags": ["地域:フランス", f"生年:{1840 + i}"]}
+               for i in range(25)}
+        built = partition.build(spec, {}, own)
+
+        newcomer = {"title": "生年不明のふ", "tags": ["地域:フランス"]}
+        assert partition.partition_of(spec, built, newcomer) is None
+
+    def test_it_is_counted_so_the_resplit_can_notice(self):
+        spec = self.spec()
+        own = {f"ふ{i}": {"title": f"ふ{i}", "tags": ["地域:フランス", f"生年:{1840 + i}"]}
+               for i in range(25)}
+        built = partition.build(spec, {}, own)
+        own["生年不明のふ"] = {"title": "生年不明のふ", "tags": ["地域:フランス"]}
+
+        counts = partition.counts_of(spec, built, own)
+
+        assert counts[partition.HOMELESS] == 1
+        assert partition.outgrown(spec, counts), "行き場が無いなら割り直す"
+
+    def test_the_resplit_gives_it_a_home(self):
+        """割り直せばその分類に置き場ができて収まる(空回りしない)。"""
+        spec = self.spec()
+        own = {f"ふ{i}": {"title": f"ふ{i}", "tags": ["地域:フランス", f"生年:{1840 + i}"]}
+               for i in range(25)}
+        own["生年不明のふ"] = {"title": "生年不明のふ", "tags": ["地域:フランス"]}
+
+        again = partition.build(spec, {}, own)
+
+        assert partition.partition_of(spec, again, own["生年不明のふ"]) is not None
+        assert partition.counts_of(spec, again, own)[partition.HOMELESS] == 0
+        assert not partition.outgrown(spec, partition.counts_of(spec, again, own))
+
+    def test_a_rectangle_without_coordinates_does_not_trigger_a_resplit(self):
+        """**矩形は割り直しても行き場ができない**(座標が無いのは仕様)——
+        真にすると、直りようのない 1 件のために毎回全件を割り直すことになる。
+        """
+        spec = self.spec(by="geo")
+        ledger = [{"key": partition.geo_key((30.0, 130.0, 40.0, 140.0)), "count": 1}]
+        docs = {
+            "ある": {"title": "ある", "extra": {"lat": 35.0, "lon": 135.0}},
+            "ない": {"title": "ない"},
+        }
+
+        counts = partition.counts_of(spec, ledger, docs)
+
+        assert counts[partition.HOMELESS] == 1
+        assert not partition.outgrown(spec, counts)
+
+
+class TestPoolingTheSmallCategories:
+    """**範囲で区切っていない小さい分類**を、値を並べた 1 区画に寄せ集める。
+
+    隣とつなぐ道(`_joined`)は分類をまたげないので、1 人しかいない国はその 1 人で
+    1 区画のまま残っていた —— その 1 人のために巡回の 1 回ぶんの枠を使うことになる。
+    """
+
+    def spec(self, target=10):
+        return partition.normalize(
+            {"by": "band", "prefix": "地域:", "value": "年代:", "target": target}
+        )
+
+    def row(self, key, count, visits=None):
+        return {"key": key, "count": count, "visits": dict(visits or {})}
+
+    def test_they_become_one_partition_that_lists_the_values(self):
+        ledger = [
+            self.row("アゼルバイジャン|-", 1),
+            self.row("アルメニア|-", 2),
+            self.row("エストニア|-", 1),
+        ]
+
+        got = partition.merged(self.spec(), ledger)
+
+        assert [p["key"] for p in got] == ["アゼルバイジャン|アルメニア|エストニア|-"]
+        assert got[0]["count"] == 4
+
+    def test_an_old_closed_key_is_pooled_too(self):
+        """割り直す前の台帳(端も閉じた鍵)にも効く —— そこが 1 帯なら受け持ちは同じ。"""
+        ledger = [
+            self.row("アゼルバイジャン|1958-1958", 1),
+            self.row("アルメニア|1880-1902", 2),
+        ]
+
+        got = partition.merged(self.spec(), ledger)
+
+        assert [p["key"] for p in got] == ["アゼルバイジャン|アルメニア|-"]
+
+    def test_a_category_split_by_range_is_never_pooled(self):
+        """**範囲で区切っている分類は混ぜない。** 混ぜると「この範囲の全員」が
+        並ばなくなり、別の帯にいる人を漏れとして挙げることになる。
+
+        帯 1 本ずつは小さくても、2 本あるかぎり触らない(隣とつないで 1 本に
+        なったなら、そのときは「区切っていない分類」として寄せてよい)。
+        """
+        ledger = [
+            self.row("フランス|-1849", 5),
+            self.row("フランス|1850-", 5),
+            self.row("アルメニア|-", 1),
+        ]
+
+        got = partition.merged(self.spec(), ledger)
+
+        assert "アルメニア|-" in [p["key"] for p in got]
+        assert not any("フランス" in p["key"] and "アルメニア" in p["key"] for p in got)
+
+    def test_a_big_category_is_left_alone(self):
+        """1 つで 1 区画ぶんの仕事があるものは、そのまま。"""
+        ledger = [self.row("日本|-", 40), self.row("アルメニア|-", 1)]
+
+        got = partition.merged(self.spec(), ledger)
+
+        assert sorted(p["key"] for p in got) == ["アルメニア|-", "日本|-"]
+
+    def test_it_does_not_mix_laps(self):
+        """見ていないぶんが「見終えた」に混ざらないこと(隣とつなぐのと同じ理由)。"""
+        ledger = [
+            self.row("アゼルバイジャン|-", 1, {"ざっと": "2026-09-01"}),
+            self.row("アルメニア|-", 1),
+        ]
+
+        got = partition.merged(self.spec(), ledger)
+
+        assert len(got) == 2
+        assert [p["visits"] for p in got] == [{"ざっと": "2026-09-01"}, {}]
+
+    def test_it_pools_within_each_lap_even_when_they_alternate(self):
+        """**記録ごとに分けてから寄せる。** 並び順のまま見ると、見た分類と
+        見ていない分類が交互に並んだ一周の途中では 1 つも寄せられない。"""
+        seen = {"ざっと": "2026-09-01"}
+        ledger = [
+            self.row("あ|-", 1, seen),
+            self.row("い|-", 1),
+            self.row("う|-", 1, seen),
+            self.row("え|-", 1),
+        ]
+
+        got = partition.merged(self.spec(), ledger)
+
+        assert sorted(p["key"] for p in got) == ["あ|う|-", "い|え|-"]
+        assert {tuple(sorted(p["visits"].items())) for p in got} == {
+            tuple(sorted(seen.items())), (),
+        }
+
+    def test_it_stops_before_the_partition_gets_big(self):
+        ledger = [self.row(f"くに{i:02d}|-", 5) for i in range(10)]
+
+        got = partition.merged(self.spec(target=10), ledger)
+
+        # target 10 の 8 割に満たないあいだだけ足すので、1 区画は 5 人まで
+        assert all(p["count"] < 10 * partition.MERGE_RATIO for p in got)
+        assert sum(p["count"] for p in got) == 50
+
+    def test_it_stops_before_the_key_gets_unreadable(self):
+        """数では届いていなくても、**並べてよい値の数**で頭打ちにする。"""
+        ledger = [self.row(f"くに{i:02d}|-", 1) for i in range(partition.MAX_BAND_VALUES + 5)]
+
+        got = partition.merged(self.spec(target=1000), ledger)
+
+        assert len(got) == 2
+        assert len(partition.parse_band_key(got[0]["key"])[0]) == partition.MAX_BAND_VALUES
+
+    def test_a_lonely_one_keeps_its_key(self):
+        """寄せる相手がいなければ書き換えない(次の割り直しでどのみち揃う)。"""
+        ledger = [self.row("アルメニア|1880-1902", 1)]
+
+        assert [p["key"] for p in partition.merged(self.spec(), ledger)] == ["アルメニア|1880-1902"]
+
+    def test_a_doc_lands_in_the_pooled_partition(self):
+        spec = self.spec()
+        got = partition.merged(spec, [self.row("アルメニア|-", 1), self.row("エストニア|-", 1)])
+
+        for name in ("アルメニア", "エストニア"):
+            doc = {"title": "ひと", "tags": [f"地域:{name}", "年代:1900"]}
+            assert partition.partition_of(spec, got, doc) == got[0]["key"]
+
+    def test_a_doc_from_outside_the_pool_stays_outside(self):
+        spec = self.spec()
+        got = partition.merged(spec, [self.row("アルメニア|-", 1), self.row("エストニア|-", 1)])
+        doc = {"title": "ひと", "tags": ["地域:ラトビア", "年代:1900"]}
+
+        assert partition.partition_of(spec, got, doc) is None
+
+    def test_the_description_names_every_value_it_holds(self):
+        """**どこまでがこの区画かが分からないと、漏れを問えない。**"""
+        spec = self.spec()
+        where = partition.describe(spec, "アルメニア|エストニア|-", {})
+
+        assert "アルメニア・エストニア" in where
+        assert "問いません" in where
+
+    def test_growing_out_of_the_pool_keeps_the_lap(self):
+        """寄せ集めから独り立ちしたら、寄せ集めの記録を引き継ぐ ——
+        引き継がないと、育つたびにそこだけ一周が巻き戻る。"""
+        spec = self.spec()
+        current = [{"key": "アルメニア|エストニア|-", "count": 4,
+                    "visits": {"ざっと": "2026-09-01"}}]
+        built = [{"key": "アルメニア|-", "count": 30}, {"key": "エストニア|-", "count": 1}]
+
+        got = partition.refresh(built, current, spec)
+
+        assert [p["visits"] for p in got] == [
+            {"ざっと": "2026-09-01"}, {"ざっと": "2026-09-01"}
+        ]
+        assert "アルメニア|エストニア|-" not in [p["key"] for p in got], "吸収先があるので残さない"
+
+    def test_it_settles_instead_of_churning(self):
+        """同じ台帳を何度通しても同じ形に落ち着くこと(鍵が動くたび記録が消える)。"""
+        spec = self.spec()
+        ledger = [self.row("アルメニア|-", 1), self.row("エストニア|-", 1),
+                  self.row("日本|-", 40)]
+
+        once = partition.merged(spec, ledger)
+        twice = partition.merged(spec, once)
+
+        assert [p["key"] for p in once] == [p["key"] for p in twice]
+
+    def test_a_separator_inside_a_value_cannot_split_a_category_in_two(self):
+        """**鍵は「分類を並べて、最後に範囲」**なので、値に区切りが混ざると
+        分類が 2 つに割れて読まれる —— `地域:A|B` の人が入るはずの区画へ
+        `地域:A` の人が落ちる。値のほうを潰しておく。
+        """
+        spec = self.spec()
+        own = {
+            "むこう": {"title": "むこう", "tags": ["地域:A|B", "年代:1900"]},
+            "こっち": {"title": "こっち", "tags": ["地域:A", "年代:1950"]},
+        }
+        built = partition.build(spec, {}, own)
+
+        assert sorted(p["key"] for p in built) == ["A/B|-", "A|-"]
+        assert partition.partition_of(spec, built, own["むこう"]) == "A/B|-"
+        assert partition.partition_of(spec, built, own["こっち"]) == "A|-"
+
+    def test_a_tag_split_is_left_alone(self):
+        spec = partition.normalize({"by": "tag", "prefix": "地域:", "target": 10})
+        ledger = [self.row("地域:アルメニア", 1), self.row("地域:エストニア", 1)]
+
+        assert len(partition.merged(spec, ledger)) == 2

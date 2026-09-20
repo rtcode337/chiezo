@@ -2111,21 +2111,21 @@ class TestTheLedgerCountFollowsTheContents:
 
         counts = partitioning.counts_of(spec, item.partitions, collect.living(previous))
 
-        assert list(counts.values()) == [0, 2]
+        assert [n for key, n in counts.items() if key != partitioning.HOMELESS] == [0, 2]
         # 空の区画があれば割り直す(その区画は組み立てられないので消える)
         assert partitioning.outgrown(spec, counts)
 
 
-    def test_a_range_left_with_only_graves_stays_on_the_round(self, sample):
+    def test_a_category_left_with_only_graves_stays_on_the_round(self, sample):
         """**行き場の無くなった区画は落とさない。**
 
-        区画は生きているものだけで割るので、中身が消えたものだけになった帯は
+        区画は生きているものだけで割るので、中身が消えたものだけになった分類は
         組み立てられない —— 落とすと、そこは以後どの回にも回ってこない。
         「この範囲に足すべきものが無いか」を問う回はそこにしか無いので、
         漏れを探す仕事ごと消えることになる。
         """
         spec = {"by": "band", "prefix": "地域", "value": "年代", "target": 10}
-        gone = partitioning.band_key("日本", 1800, 1850)
+        gone = partitioning.band_key("朝鮮", 1800, 1850)
         collect.update(
             "news", partition=spec,
             partitions=[
@@ -2135,7 +2135,7 @@ class TestTheLedgerCountFollowsTheContents:
         )
         previous = {
             f"むかしの人{i}": {"doc_id": i, "title": f"むかしの人{i}",
-                          "tags": ["地域:日本", "年代:1800-1850", notes.REMOVED_TAG]}
+                          "tags": ["地域:朝鮮", "年代:1800-1850", notes.REMOVED_TAG]}
             for i in range(1, 11)
         } | {
             f"いまの人{i}": {"doc_id": 10 + i, "title": f"いまの人{i}",
@@ -2146,10 +2146,41 @@ class TestTheLedgerCountFollowsTheContents:
         ledger = collect.plan_partitions(collect.get("news"), {}, previous)
 
         kept = [p for p in ledger if p["key"] == gone]
-        assert kept, "中身が墓標だけになった帯も、回る先としては残る"
+        assert kept, "中身が墓標だけになった分類も、回る先としては残る"
         # 巡回の記録は持ったまま(残したぶんだけ一周が巻き戻らない)
         assert kept[0]["visits"] == {"ざっと": "1"}
         assert kept[0]["count"] == 0
+
+    def test_an_emptied_range_is_taken_over_by_the_band_beside_it(self, sample):
+        """**同じ分類の中で空いた範囲は、残さない。**
+
+        帯は隙間なく並び、端は開いている(`-1910` / `1840-`)ので、空いた範囲は
+        必ずどれかの帯の受け持ちに入る —— 残すと、同じ範囲を 2 つの区画が抱えて、
+        どちらに入るかが並び順で決まってしまう。
+        """
+        spec = {"by": "band", "prefix": "地域", "value": "年代", "target": 10}
+        emptied = partitioning.band_key("日本", 1800, 1850)
+        collect.update(
+            "news", partition=spec,
+            partitions=[
+                {"key": emptied, "count": 10, "visits": {"ざっと": "1"}},
+                {"key": partitioning.band_key("日本", 1900, 1950), "count": 10},
+            ],
+        )
+        previous = {
+            f"いまの人{i}": {"doc_id": i, "title": f"いまの人{i}",
+                         "tags": ["地域:日本", f"年代:19{i:02d}"]}
+            for i in range(1, 51)
+        }
+
+        ledger = collect.plan_partitions(collect.get("news"), {}, previous)
+
+        assert emptied not in [p["key"] for p in ledger]
+        # それでも 1800 年生まれは回ってくる(いちばん下の帯が引き受ける)
+        assert partitioning.partition_of(
+            partitioning.normalize(spec), ledger,
+            {"title": "むかしの人", "tags": ["地域:日本", "年代:1800"]},
+        ) is not None
 
     def test_merging_never_makes_a_range_that_holds_nothing(self, sample):
         """**順が逆のまま帯を組むと、その範囲の文書がどこにも入らなくなる。**

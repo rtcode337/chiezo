@@ -114,6 +114,25 @@ MAX_TITLE_KEY_CHARS = 40
 # まとめた先が `target` を大きく超えて、割り直しと押し合いになる。
 MERGE_RATIO = 0.8
 
+# **範囲で区切っていない分類**(数の軸で 1 つも割れていない = その分類ぜんぶで
+# 1 帯)のうち、これ以下のものは**他の分類と寄せ集めて 1 区画にする**。
+# 隣とまとめる道(`_joined`)は分類をまたげない —— 1 人しかいない国はその 1 人で
+# 1 区画のまま残り、**その 1 人のために 1 回ぶんの枠を使う**(本番の台帳では
+# 407 区画のうち 18 が 1 人だった)。寄せ集めた区画は**値を並べて持つ**ので、
+# どの分類を引き受けているかは鍵から読める(「漏れを問う」には、どこまでが
+# その区画の受け持ちなのかが分かっている必要がある)。
+TINY_BAND_DOCS = 5
+
+# 1 つの鍵に並べてよい分類の数。**鍵は台帳にも依頼文にも出る** —— 際限なく
+# 並べると台帳が太り、「この範囲の全員を見て漏れを挙げる」も答えられる問いでは
+# なくなる。数の上限(`target` × `MERGE_RATIO`)より先にこちらが当たることがある。
+MAX_BAND_VALUES = 20
+
+# 端の開いた帯を数として扱うときの代わり。**値の軸には上限も下限も無い** ——
+# 端の帯は割ったときの値より外も引き受ける(`_band_of`)ので、比較では ±∞ になる。
+BAND_LOW = float("-inf")
+BAND_HIGH = float("inf")
+
 
 def _bad(message: str) -> HTTPException:
     return HTTPException(400, {"error": f"区画の指定が読めません: {message}"})
@@ -528,6 +547,9 @@ def _bands_of(spec: dict, name: str, by_number: dict[int, list[str]]) -> list[di
     **その年に入るものは、どの区画にも入らない**うえ、**「この範囲に足すべきものが
     無いか」を問う回にも入らない**(隙間の年は誰にも聞かれない)。漏れを探すのが
     区画の眼目なので、境目は必ずどちらかのものにする。
+
+    **端は開いたまま書く**(`-1869` / `1840-`。1 本しか無ければ `-`)。端の帯は
+    割ったときの値より外も引き受けるので、閉じて書くと鍵と受け持ちがずれる。
     """
     spans: list[list] = []
     start: int | None = None
@@ -545,6 +567,11 @@ def _bands_of(spec: dict, name: str, by_number: dict[int, list[str]]) -> list[di
         else:
             spans.append([start, end, count])
     _close_gaps(spans)
+    if spans:
+        # **隙間を埋めてから開く**(順番を逆にすると、開いた端を次の帯の手前まで
+        # 縮めることになる)
+        spans[0][0] = None
+        spans[-1][1] = None
     return [{"key": band_key(name, a, b), "count": n} for a, b, n in spans]
 
 
@@ -580,24 +607,63 @@ def _unknown_bands(spec: dict, name: str, titles: list[str]) -> list[dict]:
     ]
 
 
-def band_key(name: str, start, end) -> str:
-    """`フランス|1840-1869` / `フランス|不明|あ〜す`。"""
+def band_key(name, start, end) -> str:
+    """区画の鍵。
+
+    - `フランス|1840-1869` …… 上下とも閉じた帯
+    - `フランス|-1869` / `フランス|1840-` …… **端の帯は開いて書く**
+    - `フランス|-` …… その分類ぜんぶで 1 帯(範囲では区切っていない)
+    - `アルメニア|エストニア|-` …… 小さい分類を寄せ集めた区画(`_pooled`)
+    - `フランス|不明|あ〜す` …… 値の分からないものの置き場
+
+    **端を開いて書くのは、鍵と受け持ちを一致させるため。** 端の帯は割ったときの
+    値より外も引き受ける(`_band_of`)—— 値の軸には上限も下限も無いので、
+    いちばん古い帯はそれより古い年も、いちばん新しい帯はその先も取る。
+    そこを `1600-1641` と閉じて書くと、**引き受けているのに誰も探しに行かない
+    範囲**ができる(鍵を読んだ人も AI も、その外は別の区画のものだと思う)。
+
+    `name` は文字列でも、分類の並びでもよい。
+    """
+    head = name if isinstance(name, str) else BAND_SEP.join(name)
     if start == BAND_UNKNOWN:
-        return f"{name}{BAND_SEP}{BAND_UNKNOWN}{BAND_SEP}{end}"
-    return f"{name}{BAND_SEP}{start}-{end}"
+        return f"{head}{BAND_SEP}{BAND_UNKNOWN}{BAND_SEP}{end}"
+    lo = "" if start is None else start
+    hi = "" if end is None else end
+    return f"{head}{BAND_SEP}{lo}-{hi}"
 
 
-def parse_band_key(key: str) -> tuple[str, int | None, int | None, str | None] | None:
-    """`(分類, 始まり, 終わり, 見出しの範囲)`。読めなければ None。"""
+# 帯の範囲を表す末尾。端は空(`-1869` / `1840-` / `-`)。
+_BAND_SPAN = re.compile(r"^(\d*)-(\d*)$")
+
+
+def parse_band_key(key: str) -> tuple[list[str], int | None, int | None, str | None] | None:
+    """`(分類の並び, 始まり, 終わり, 見出しの範囲)`。読めなければ None。
+
+    **始まり / 終わりの None は「開いている」**(その先も引き受ける)。
+    値の分からないものの置き場だけは両方 None で、見出しの範囲のほうが入る。
+
+    **最後の一片が範囲かどうかで読み分ける。** 分類の値に `不明` が使われていても
+    取り違えないため —— 範囲は必ず `数字-数字`(端は空)の形で、見出しの範囲は
+    `title_key` が `〜` を挟むので、この形にはならない。
+    """
     parts = key.split(BAND_SEP)
-    if len(parts) == 3 and parts[1] == BAND_UNKNOWN:
-        return parts[0], None, None, parts[2]
-    if len(parts) != 2:
+    if len(parts) < 2:
         return None
-    first, _, last = parts[1].partition("-")
-    if not first.isdigit() or not last.isdigit():
-        return None
-    return parts[0], int(first), int(last), None
+    if span := _BAND_SPAN.match(parts[-1]):
+        names = parts[:-1]
+        lo, hi = span.group(1), span.group(2)
+        if not all(names):
+            return None
+        return names, int(lo) if lo else None, int(hi) if hi else None, None
+    if len(parts) >= 3 and parts[-2] == BAND_UNKNOWN and all(parts[:-2]):
+        return parts[:-2], None, None, parts[-1]
+    return None
+
+
+def band_span(parsed) -> tuple[float, float]:
+    """帯の受け持ちを数の範囲で。**開いている端は ±∞**。"""
+    lo, hi = parsed[1], parsed[2]
+    return (BAND_LOW if lo is None else lo, BAND_HIGH if hi is None else hi)
 
 
 def _number_in(value: str | None) -> int | None:
@@ -608,12 +674,22 @@ def _number_in(value: str | None) -> int | None:
 
 def tag_value(tags, prefix: str) -> str | None:
     """`地域:フランス` → `フランス`。**最初の 1 つだけ** ——
-    1 文書は必ず 1 区画に入れる(またがると「一周した」が数えられない)。"""
+    1 文書は必ず 1 区画に入れる(またがると「一周した」が数えられない)。
+
+    **区切りの字は値から落とす**(`BAND_SEP`)。鍵は「分類を並べて、最後に範囲」
+    という形なので、値の中に区切りが混ざると**分類が 2 つに割れて読まれる** ——
+    `地域:A|B` の 3 人が入るはずの区画へ、`地域:A` の人が落ちる(実際にそうなった)。
+    区切りは「値に出てこない字」を選んであるが、タグを書くのは Chiezo ではないので、
+    出てきたときに黙って別のものになるより、ここで潰しておくほうがよい。
+
+    **割るときも判ずるときもここを通る**ので、落とし方が同じなら食い違わない。
+    """
     head = prefix if prefix.endswith(":") else prefix + ":"
     for tag in tags:
         text = str(tag)
         if text.startswith(head):
-            return text[len(head):].strip() or None
+            value = text[len(head):].strip().replace(BAND_SEP, "/")
+            return value or None
     return None
 
 
@@ -707,12 +783,16 @@ def _covers(spec: dict, parent: str, child: str) -> bool:
         return a[0] <= b[0] and a[1] <= b[1] and b[2] <= a[2] and b[3] <= a[3]
     if spec["by"] == BY_BAND:
         a, b = parse_band_key(parent), parse_band_key(child)
-        if a is None or b is None or a[0] != b[0]:
+        # **分類は「同じ」ではなく「含む」で見る。** 小さい分類を寄せ集めた区画
+        # (`_pooled`)は複数の値を持つので、そこから 1 つが独り立ちしたとき、
+        # 等しさで見ると親が見つからず一周が巻き戻る
+        if a is None or b is None or not set(b[0]) <= set(a[0]):
             return False
         if a[3] is not None or b[3] is not None:
             # 値の分からない置き場どうしは、見出しの範囲で見る
             return bool(a[3] and b[3]) and _within(parse_title_key(a[3]), parse_title_key(b[3]))
-        return a[1] <= b[1] and b[2] <= a[2]
+        (lo_a, hi_a), (lo_b, hi_b) = band_span(a), band_span(b)
+        return lo_a <= lo_b and hi_b <= hi_a
     if spec["by"] == BY_TITLE:
         return _within(parse_title_key(parent), parse_title_key(child))
     return False
@@ -747,6 +827,11 @@ def normalize_ledger(raw) -> list[dict]:
     return out
 
 
+# **どの区画にも入らなかったぶんの置き場**(`counts_of` の中だけの鍵)。
+# 台帳の鍵は必ず 1 文字以上あるので(`normalize_ledger`)、実在の鍵とぶつからない。
+HOMELESS = ""
+
+
 def counts_of(spec: dict, partitions: list[dict], docs: dict[str, dict]) -> dict[str, int]:
     """区画ごとの、いまの件数。**数える意味の無いときは空を返す**。
 
@@ -755,14 +840,18 @@ def counts_of(spec: dict, partitions: list[dict], docs: dict[str, dict]) -> dict
     - **母集団が読めていない回も数えない。** まだ 1 度も焼けていない回と、焼いた
       ものが読めなかった回はここでは区別が付かない —— 0 を答えにすると、
       読めなかっただけの回に「全区画が空」と映る
+
+    **入らなかったぶんも数える**(`HOMELESS`)。**どの区画にも入らない文書は、
+    どの回にも出てこない** —— `{current}` にも件数にも現れないので、巡回を何周
+    しても AI の目に触れないまま残る。数えておけば `outgrown` が気づける。
     """
     if spec["source"] or not partitions or not docs:
         return {}
     counts = dict.fromkeys((p["key"] for p in partitions), 0)
+    counts[HOMELESS] = 0
     for doc in docs.values():
         key = partition_of(spec, partitions, doc)
-        if key in counts:
-            counts[key] += 1
+        counts[key if key in counts else HOMELESS] += 1
     return counts
 
 
@@ -779,9 +868,29 @@ def outgrown(spec: dict, counts: dict[str, int]) -> bool:
 
     **吸収先が無ければ消えない**(`_uncovered`)。新しい台帳がどこも覆っていない
     範囲は残す —— 消すと、そこへ「足すべきものが無いか」を問う回ごと無くなる。
+
+    **どの区画にも入らない文書が出たときも割り直す**(`HOMELESS`。帯で割るときだけ)。
+    割った時点でその分類の全員が値を持っていると「不明」の置き場は作られないので、
+    **あとから値の無い 1 件が入ると行き場が無くなる** —— 例外にはならず、
+    `{current}` にも件数にも出ないまま残るので、誰も気づけない。
+    割り直せばその分類に置き場ができて収まる。
+
+    **帯のときだけ**にしてあるのは、他の割り方では割り直しても行き場が
+    できないから —— 座標を持たない文書は矩形に入らないし、指定したタグを持たない
+    文書はタグの区画に入らない(どちらも仕様)。そこで真にすると、
+    直りようのない 1 件のために毎回全件を割り直すことになる。
+
+    **区画が天井に当たっているときも割り直さない。** 帯は天井で打ち切られる
+    (`_bands`)ので、そこで溢れたぶんは何度割り直しても行き場ができない。
     """
     limit = spec["target"] * 2
-    return any(n > limit or n == 0 for n in counts.values())
+    if (
+        spec["by"] == BY_BAND
+        and counts.get(HOMELESS)
+        and len(counts) - 1 < MAX_PARTITIONS  # HOMELESS のぶんを引く
+    ):
+        return True
+    return any(n > limit or n == 0 for key, n in counts.items() if key != HOMELESS)
 
 
 def merged(spec: dict, partitions: list[dict]) -> list[dict]:
@@ -804,6 +913,9 @@ def merged(spec: dict, partitions: list[dict]) -> list[dict]:
     年代の帯をまとめると**あいだの空きも埋まる**。帯は「値が詰まっているところ」で
     切るので `1689-1816` と `1818-1864` のように 1 年空くことがあり、そこに入る
     値を持った文書はどの区画にも入らない(`_band_of` が None を返す)。
+
+    **分類をまたぐぶんは、そのあと `_pooled` が引き受ける。** 隣とつなぐ道では
+    1 人しかいない分類が最後まで残るので、そこだけ別の鍵の形(値を並べて持つ)を作る。
     """
     if spec["by"] == BY_TAG:
         return partitions
@@ -817,7 +929,103 @@ def merged(spec: dict, partitions: list[dict]) -> list[dict]:
             out.append(one)
         else:
             out[-1] = joined
-    return out
+    # **隣とつないでから寄せ集める。** 2 本の帯が 1 本になって初めて
+    # 「範囲で区切っていない分類」になるものがある
+    return _pooled(spec, out, limit)
+
+
+def _pooled(spec: dict, partitions: list[dict], limit: float) -> list[dict]:
+    """**範囲で区切っていない小さい分類**を、値を並べた 1 区画に寄せ集める。
+
+    隣とつなぐ道(`_joined`)は分類をまたげない —— 2 つの名前を 1 つの名前では
+    表せないからで、まとめるにはそこだけ別の鍵の形が要る。それが
+    `アルメニア|エストニア|-` で、**引き受けている分類を全部並べて持つ**。
+    並べて持たないと `{partition}` に「どこまでがこの区画か」を書けず、
+    **漏れを問う**という区画の眼目が成り立たない。
+
+    寄せ集める相手は 3 つとも満たすものだけ:
+
+    - **数の軸で 1 つも割れていない**(その分類ぜんぶで 1 帯)。割れている分類を
+      混ぜると、「この範囲の全員」が並ばなくなる —— 別の帯にいる人を漏れとして挙げる
+    - **`TINY_BAND_DOCS` 以下**。大きい分類は 1 つで 1 区画ぶんの仕事がある
+    - **周回の記録が同じ**(`_joined` と同じ理由。見ていないぶんが
+      「見終えた」に混ざる)。**記録ごとに分けてから寄せる** —— 隣とつなぐ道の
+      ように並び順のまま見ると、見た分類と見ていない分類が交互に並んだ一周の
+      途中では 1 つも寄せられない
+
+    **数と値の数の両方で頭打ちにする。** 1 人の分類が 100 並ぶと、数では
+    `target` に届かないのに鍵が読めない長さになる。
+
+    **鍵を書き換えるのは、実際に 2 つ以上を寄せたときだけ。** 寄せる相手が
+    いなかったものまで `-` に直すと、割り直していない台帳で端の書き方だけが
+    まだらになる(次の割り直しでどのみち揃う)。
+
+    **出来たものは後ろへ置く。** `_band_of` は分類の名前で引くので並びは効かないが、
+    残りの区画の並びを動かさないほうが、画面で見たときに追いやすい。
+    """
+    if spec["by"] != BY_BAND:
+        return partitions
+
+    # 分類ごとの帯の数。2 本以上あるものは「範囲で区切っている」ので触らない
+    bands: dict[str, int] = {}
+    for p in partitions:
+        parsed = parse_band_key(p["key"])
+        if parsed is None or parsed[3] is not None:
+            continue
+        for name in parsed[0]:
+            bands[name] = bands.get(name, 0) + 1
+
+    def values_of(p: dict) -> list[str] | None:
+        parsed = parse_band_key(p["key"])
+        if parsed is None or parsed[3] is not None:
+            return None
+        if int(p.get("count") or 0) > TINY_BAND_DOCS:
+            return None
+        if any(bands.get(name) != 1 for name in parsed[0]):
+            return None
+        return parsed[0]
+
+    rest: list[dict] = []
+    buckets: dict[tuple, list[tuple[list[str], dict]]] = {}
+    for p in partitions:
+        names = values_of(p)
+        if names is None:
+            rest.append(p)
+            continue
+        visits = dict(p.get("visits") or {})
+        buckets.setdefault(tuple(sorted(visits.items())), []).append((names, p))
+
+    made: list[dict] = []
+    for bucket in buckets.values():
+        group: dict | None = None
+        for names, p in bucket:
+            count = int(p.get("count") or 0)
+            if (
+                group is not None
+                and group["count"] + count < limit
+                and len(group["names"]) + len(names) <= MAX_BAND_VALUES
+            ):
+                group["names"] += names
+                group["count"] += count
+                continue
+            if group is not None:
+                made.append(_pooled_row(group))
+            group = {"names": list(names), "count": count,
+                     "visits": dict(p.get("visits") or {}), "was": p}
+        if group is not None:
+            made.append(_pooled_row(group))
+    return rest + made
+
+
+def _pooled_row(group: dict) -> dict:
+    """寄せ集めた 1 区画。**1 つしか集まらなかったら、鍵はそのまま**。"""
+    if len(group["names"]) == 1:
+        return group["was"]
+    return {
+        "key": band_key(group["names"], None, None),
+        "count": group["count"],
+        "visits": group["visits"],
+    }
 
 
 def _joined(spec: dict, left: dict, right: dict, limit: float) -> dict | None:
@@ -850,7 +1058,8 @@ def _joined_key(spec: dict, left: str, right: str) -> str | None:
         return title_key(a[0], b[1]) if a and b else None
     a, b = parse_band_key(left), parse_band_key(right)
     if a is None or b is None or a[0] != b[0]:
-        # 分類が違うものはまたがない(まとめると、その分類の範囲を言えなくなる)
+        # 分類が違うものはここではまたがない(1 つの範囲では言えなくなる)。
+        # またぐ道は `_pooled` が持っていて、あちらは値を並べた別の鍵の形を作る
         return None
     if a[3] is None and b[3] is None:
         return band_key(a[0], a[1], b[2])
@@ -1051,7 +1260,11 @@ def _band_of(spec: dict, partitions: list[dict], doc: dict) -> str | None:
     範囲の内側だけで判ずると、そこに入ったものは**どの区画にも入らず、以後どの回にも
     出てこない**(見出しで割った区画と同じ罠)。**始まりが自分以下のうち、いちばん
     大きい帯**に入れれば、値の線の上に隙間が無くなる(いちばん古い帯より前も、
-    その帯のもの)。
+    その帯のもの)。端を開いて書くようにした今も読み方は同じ ——
+    **端の開いた古い鍵も新しい鍵も、同じ規則で同じところへ落ちる**。
+
+    **鍵は分類を 1 つとは限らない**(`_pooled`)。小さい分類を寄せ集めた区画は
+    値を並べて持つので、自分の分類が並びに入っていればそこ。
     """
     tags = doc.get("tags") or []
     name = tag_value(tags, spec["prefix"]) or spec["other"]
@@ -1061,12 +1274,12 @@ def _band_of(spec: dict, partitions: list[dict], doc: dict) -> str | None:
     bands = []
     for p in partitions:
         parsed = parse_band_key(p["key"])
-        if parsed is None or parsed[0] != name:
+        if parsed is None or name not in parsed[0]:
             continue
         if parsed[3] is not None:
             unknown.append((p["key"], parsed[3]))
         else:
-            bands.append((parsed[1], p["key"]))
+            bands.append((band_span(parsed)[0], p["key"]))
     if number is not None:
         if not bands:
             # 値はあるが、その分類にまだ帯が無い(割り直しの前に入った)
@@ -1115,21 +1328,26 @@ def describe(spec: dict, key: str, sources: dict, partitions: list[dict] | None 
         parsed = parse_band_key(key)
         if parsed is None:
             return key
-        name, first, last, bounds = parsed
-        where = f"「{spec['prefix'].rstrip(':')}」が{name}のもの"
+        names, first, last, bounds = parsed
+        where = f"「{spec['prefix'].rstrip(':')}」が{'・'.join(names)}のもの"
         if bounds is not None:
             return (
                 f"{where}のうち、「{spec['value'].rstrip(':')}」が分かっていないもの"
                 f"(見出しが「{parse_title_key(bounds)[0]}」から"
                 f"「{parse_title_key(bounds)[1]}」まで)"
             )
-        return _band_where(where, spec["value"].rstrip(":"), name, first, last, partitions)
+        return _band_where(where, spec["value"].rstrip(":"), names, first, last, partitions)
     bounds = parse_title_key(key)
     return _title_where(bounds, partitions) if bounds else key
 
 
 def _band_where(
-    where: str, value: str, name: str, first: int, last: int, partitions: list[dict] | None
+    where: str,
+    value: str,
+    names: list[str],
+    first: int | None,
+    last: int | None,
+    partitions: list[dict] | None,
 ) -> str:
     """帯の受け持ちを言葉にする。
 
@@ -1137,16 +1355,25 @@ def _band_where(
     端の帯は割ったときの値より外も引き受ける(`_band_of`)—— そこを鍵のまま
     「1600〜1641」と伝えると、**引き受けているのに誰も探しに行かない範囲**ができる。
     端は開いたまま「以上」「以下」で言い、**帯が 1 つしか無いなら値では絞らない**。
+
+    **端かどうかは鍵から読む**(`-1869` / `1840-`)。**台帳からも見るのは、
+    割り直す前の台帳が端も閉じた鍵で書かれているから** —— 鍵だけを見ると、
+    書き換わるまでのあいだ端の帯が外側を引き受けていることを言えない。
     """
-    starts = sorted(
-        parsed[1]
-        for p in partitions or ()
-        if (parsed := parse_band_key(p["key"])) and parsed[0] == name and parsed[3] is None
-    )
-    lowest = bool(starts) and first <= starts[0]
-    highest = bool(starts) and first >= starts[-1]
+    lowest, highest = first is None, last is None
+    if not (lowest and highest):
+        starts = sorted(
+            band_span(parsed)[0]
+            for p in partitions or ()
+            if (parsed := parse_band_key(p["key"]))
+            and set(parsed[0]) == set(names)
+            and parsed[3] is None
+        )
+        here = band_span((names, first, last, None))[0]
+        lowest = lowest or (bool(starts) and here <= starts[0])
+        highest = highest or (bool(starts) and here >= starts[-1])
     if lowest and highest:
-        return f"{where}すべて(「{value}」は問いません —— この分類はこの 1 区画だけです)"
+        return f"{where}すべて(「{value}」は問いません)"
     if lowest:
         return f"{where}で、「{value}」が {last} 以下のもの"
     if highest:
