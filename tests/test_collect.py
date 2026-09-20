@@ -4854,6 +4854,65 @@ class TestOpeningAPartition:
         )
         return collect.get("news")
 
+    def test_the_ledger_says_when_each_sweep_saw_it(self, partitioned):
+        """**記録は前から日時で入っていたのに、画面は名前しか出していなかった。**
+
+        一周に何十日もかかる台帳では、「見た」より「いつ見た」のほうが知りたい
+        —— 古い順に配られるので、次にどこが回ってくるかもそこから読める。
+        """
+        from app.views import admin
+
+        collect.update("news", partitions=[{
+            "key": partitioning.band_key("日本", 1800, 1900), "count": 2,
+            "visits": {"ざっと見る": "2026-09-20T04:22:23+00:00",
+                       "整理": "2026-09-18T19:05:00+00:00"},
+        }])
+
+        html = admin._partition_html(collect.get("news"))
+
+        # **日本時間で出す**(04:22 UTC は 13:22 JST)
+        assert "ざっと見る" in html and "2026-09-20 13:22" in html
+        assert "整理" in html and "2026-09-19 04:05" in html
+        assert "見終えた巡回(日本時間)" in html
+
+    def test_one_that_was_never_seen_says_so(self, partitioned):
+        """空欄だと、見ていないのか記録が落ちたのかが読めない。"""
+        from app.views import admin
+
+        html = admin._partition_html(partitioned)
+
+        assert "まだ" in html
+
+    def test_a_date_we_cannot_read_is_shown_as_it_is(self, partitioned):
+        """読めない値でも画面は落とさない(日時は添え物で、本体は区画のほう)。"""
+        from app.views import admin
+
+        collect.update("news", partitions=[{
+            "key": partitioning.band_key("日本", 1800, 1900), "count": 2,
+            "visits": {"ざっと見る": "こわれた値"},
+        }])
+
+        assert "こわれた値" in admin._partition_html(collect.get("news"))
+
+    def test_the_partition_page_says_it_too(self, partitioned):
+        """1 つの区画を確かめに来る面なので、中身の上に置く。"""
+        from app.views import admin
+
+        collect.update("news", partitions=[{
+            "key": partitioning.band_key("日本", 1800, 1900), "count": 2,
+            "visits": {"ざっと見る": "2026-09-20T04:22:23+00:00"},
+        }])
+        item = collect.get("news")
+
+        html = admin._seen_when_html(item, partitioning.band_key("日本", 1800, 1900))
+
+        assert "ざっと見る 2026-09-20 13:22" in html
+
+    def test_a_key_that_left_the_ledger_says_so(self, partitioned):
+        from app.views import admin
+
+        assert "いまの台帳にありません" in admin._seen_when_html(partitioned, "知らない鍵")
+
     def test_the_name_links_to_what_is_inside(self, partitioned):
         from app.views import admin
 

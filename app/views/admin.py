@@ -1022,7 +1022,7 @@ def _partition_html(item, src=None) -> str:
     def row(p):
         return (
             f"<tr><td>{_partition_link(item.name, p['key'])}</td><td>{p['count']:,}</td>"
-            f"<td>{esc('、'.join(sorted((p.get('visits') or {}).keys())))}</td></tr>"
+            f"<td>{_visits_html(p)}</td></tr>"
         )
 
     head = "".join(row(p) for p in item.partitions[:PARTITION_HEAD])
@@ -1030,13 +1030,13 @@ def _partition_html(item, src=None) -> str:
     more = (
         "<details><summary>"
         f"残りの {len(rest):,} 区画を見る</summary>"
-        "<table><thead><tr><th>区画</th><th>母集団</th><th>見終えた巡回</th></tr></thead>"
+        "<table><thead><tr><th>区画</th><th>母集団</th><th>見終えた巡回(日本時間)</th></tr></thead>"
         f"<tbody>{''.join(row(p) for p in rest)}</tbody></table></details>"
         if rest else ""
     )
     return (
         f'<p class="muted">区画: {total:,}{_uncovered_html(item, src)}</p>'
-        "<table><thead><tr><th>区画</th><th>母集団</th><th>見終えた巡回</th></tr></thead>"
+        "<table><thead><tr><th>区画</th><th>母集団</th><th>見終えた巡回(日本時間)</th></tr></thead>"
         f"<tbody>{head}</tbody></table>{more}"
     )
 
@@ -1072,6 +1072,27 @@ def collect_page(item) -> str:
     見える。保存できた側の名前を使えば、通った字しか入らない。
     """
     return f"/admin/collect/{quote(item.name, safe='')}"
+
+
+def _visits_html(p: dict) -> str:
+    """その区画を、どの巡回がいつ見終えたか。
+
+    **日付まで出す。** 記録は前から `visits[巡回名]` に日時で入っていたのに、
+    画面は名前しか出していなかった —— 一周に何十日もかかる台帳では、
+    **「見た」より「いつ見た」のほうが知りたい**(古い順に配られるので、
+    次にどこが回ってくるかもそこから読める)。
+
+    **まだのものは空欄にしない。** 空だと、見ていないのか記録が落ちたのかが
+    読めない(`_delete_source_cell` と同じ考え方)。
+    """
+    visits = p.get("visits") or {}
+    if not visits:
+        return '<span class="muted">まだ</span>'
+    return "<br>".join(
+        f"{esc(sweep)} <span class=\"muted\">"
+        f"{esc(jst.compact(at) if (at := jst.parse(str(raw))) else str(raw))}</span>"
+        for sweep, raw in sorted(visits.items())
+    )
 
 
 def _partition_link(name: str, key: str) -> str:
@@ -3331,7 +3352,9 @@ def admin_collect_partition(
         body = '<p class="muted">この収集は区画を持っていません。</p>'
     else:
         members, _scoped = collect.scoped_docs(item, collect.previous_docs(name, sources), key)
-        body = _partition_members_html(name, item, key, members, sources)
+        body = _seen_when_html(item, key) + _partition_members_html(
+            name, item, key, members, sources
+        )
     return HTMLResponse(content=page_shell(
         f"{key} / {name}",
         f"""
@@ -3342,6 +3365,25 @@ def admin_collect_partition(
 <p class="muted"><a href="/admin/collect/{esc(quote(name))}">{esc(name)} へ戻る</a></p>
 """,
     ))
+
+
+def _seen_when_html(item, key: str) -> str:
+    """この区画を、どの巡回がいつ見終えたか。**開いた人がまず知りたいのはここ**。
+
+    台帳の表にも出ているが、あちらは何千行の中の 1 行 —— この面は 1 つの区画を
+    確かめに来る場所なので、中身の上に置く。
+    """
+    found = next((p for p in item.partitions if p["key"] == key), None)
+    if found is None:
+        return '<p class="muted">この区画は、いまの台帳にありません(割り直しで消えた)。</p>'
+    visits = found.get("visits") or {}
+    if not visits:
+        return '<p class="muted">まだどの巡回も見ていません。</p>'
+    seen = "、".join(
+        f"{esc(sweep)} {esc(jst.compact(at) if (at := jst.parse(str(raw))) else str(raw))}"
+        for sweep, raw in sorted(visits.items())
+    )
+    return f'<p class="muted">見終えた巡回(日本時間): {seen}</p>'
 
 
 def _partition_members_html(

@@ -30,6 +30,16 @@ def format(when: datetime) -> str:
     return f"{to_jst(when):%Y-%m-%d %H:%M} JST"
 
 
+def compact(when: datetime) -> str:
+    """`2026-08-15 09:12`。**表に何行も並べるとき用**。
+
+    `format` との違いは末尾の `JST` を落とすところだけ。**単位は見出しの側に
+    書く** —— 区画の台帳のように 1 行に日時がいくつも並ぶところでは、
+    行ごとに「JST」を繰り返すと読みたい数字が埋もれる。
+    """
+    return f"{to_jst(when):%Y-%m-%d %H:%M}"
+
+
 def parse(raw: str) -> datetime | None:
     """DB や相手の応答から来た ISO 文字列を読む。読めなければ None。
 
