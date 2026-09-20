@@ -2232,6 +2232,53 @@ class TestTheLedgerCountFollowsTheContents:
 
         assert caught.value.status_code == 409
 
+    def test_a_mechanical_sweep_is_not_offered(self, sample):
+        """**機械で引く回は区画を見ない**(指定を 1 本引いて全部を返す)。
+
+        並べると、区画を名指ししたのに全件の回が走る —— **しかも先頭が既定で
+        選ばれる**ので、何も選ばずに押しただけでそれが起きる(本番で、名簿を
+        作り直す回が丸ごと走った)。
+        """
+        from app.views import admin
+
+        collect.update(
+            "news",
+            partition={"by": "title", "target": 10},
+            sweeps=[
+                {"name": "機械収集", "interval_minutes": 60, "use_extract": True},
+                {"name": "ざっと見る", "interval_minutes": 60},
+            ],
+        )
+
+        html = admin._try_here_html(collect.get("news"), "あ〜か", "")
+
+        assert "ざっと見る" in html
+        assert "機械収集" not in html
+
+    def test_a_mechanical_sweep_is_refused_at_the_door_too(self, sample):
+        """**画面から外すだけにしない** —— 口が受け付けるなら、いつか誰かが叩く。"""
+        import asyncio
+
+        from app.views import admin
+
+        collect.update(
+            "news",
+            partition={"by": "title", "target": 10},
+            partitions=[{"key": partitioning.title_key("あ", "か"), "count": 3}],
+            sweeps=[{"name": "機械収集", "interval_minutes": 60, "use_extract": True}],
+        )
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(sources={})),
+            form=_form({
+                "partition": partitioning.title_key("あ", "か"), "sweep": "機械収集",
+            }),
+        )
+
+        with pytest.raises(HTTPException) as caught:
+            asyncio.run(admin.admin_collect_partition_run("news", request))
+
+        assert caught.value.status_code == 400
+
     def test_the_trial_form_is_on_the_partition_page(self, sample):
         """**区画の面に置く** —— そこなら「この区画」が曖昧にならない
         (8,000 を超える台帳からセレクトで選ばせずに済む)。"""

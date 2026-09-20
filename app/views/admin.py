@@ -3110,13 +3110,25 @@ async def admin_collect_partition_run(name: str, request: Request):
     # **入口でも確かめる。** 開きっぱなしの画面から押されると、割り直しで消えた
     # 鍵を名指しすることがある —— 取り込みを起こしてから気づくより、ここで断る
     # ほうが 1 本ぶん安い(素材を作る側にも同じ確かめがある)
-    if not any(p["key"] == key for p in collect.get(name).partitions):
+    item = collect.get(name)
+    if not any(p["key"] == key for p in item.partitions):
         raise HTTPException(409, {
             "error": f"区画「{key}」は台帳にありません",
             "hint": "割り直しで鍵が変わったかもしれません(区画の面から選び直してください)",
         })
+    # **機械で引く回・外の道具で引く回では走らせない。** あれは区画を見ないので、
+    # 名指ししても全件の回が走る —— 押した人からは「1 区画だけ」のつもりなのに、
+    # 名簿を丸ごと作り直す回が動く(本番でそうなった)。画面から外すだけにしない
+    named_sweep = str(form.get("sweep") or "")
+    this = collect.sweep_named(item, named_sweep or None)
+    if this.use_extract or this.use_feed:
+        raise HTTPException(400, {
+            "error": f"巡回「{this.name}」は区画を見ません(機械で引く回・"
+                     f"外の道具で引く回)",
+            "hint": "区画を見る巡回を選んでください",
+        })
     chosen = str(form.get("backend") or "")
-    start_collection_bake(name, str(form.get("sweep") or "") or None, {
+    start_collection_bake(name, named_sweep or None, {
         "partition": key,
         # **相手とワーカーは同じ欄で選ぶ**(画面の流儀。両方選べると、
         # どちらが効くのか読めなくなる)
@@ -3518,9 +3530,23 @@ def _try_here_html(item, key: str, disabled: str) -> str:
     """
     if not item.partition:
         return ""
+    # **機械で引く回・外の道具で引く回は出さない。** あれは指定を 1 本引いて全部を
+    # 返す回で、**区画を見ない**(`_collect_material`)—— 並べると、区画を名指し
+    # したのに全件の回が走る。**しかも先頭が既定で選ばれる**ので、何も選ばずに
+    # 押しただけでそれが起きた(本番で、名簿を作り直す回が丸ごと走った)。
+    # 「選べるのに効かない欄は、設定したつもりを作る」の類い
+    usable = [
+        s for s in collect.sweeps_of(item)
+        if not s.on_demand and not s.use_extract and not s.use_feed
+    ]
+    if not usable:
+        return (
+            '<p class="muted">この収集には、区画を見る巡回がありません'
+            "(機械で引く回・外の道具で引く回は区画を見ないので、1 区画だけ"
+            "走らせることができません)。</p>"
+        )
     choices = "".join(
-        f'<option value="{esc(s.name)}">{esc(s.name)}</option>'
-        for s in collect.sweeps_of(item) if not s.on_demand
+        f'<option value="{esc(s.name)}">{esc(s.name)}</option>' for s in usable
     )
     return (
         f"<details><summary>この区画だけ 1 回走らせる</summary>"
