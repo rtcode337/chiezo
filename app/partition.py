@@ -886,11 +886,7 @@ def _uncovered(spec: dict | None, built: list[dict], current: list[dict]) -> lis
     return [
         {"key": old["key"], "count": 0, "visits": dict(old.get("visits") or {})}
         for old in current
-        if old["key"] not in keys
-        and not any(
-            _covers(spec, new["key"], old["key"]) or _covers(spec, old["key"], new["key"])
-            for new in built
-        )
+        if old["key"] not in keys and not _served(spec, built, old["key"])
     ]
 
 
@@ -902,6 +898,46 @@ def _inherited(spec: dict | None, key: str, current: list[dict]) -> dict:
         if _covers(spec, parent["key"], key):
             return dict(parent.get("visits") or {})
     return {}
+
+
+def _served(spec: dict, built: list[dict], old: str) -> bool:
+    """新しい台帳が、その範囲を**引き受けているか**(`_uncovered` 専用)。
+
+    **「含む」では足りない。** 割り直すと境目が動くので、古い帯が新しい帯 2 本に
+    またがることがある —— `1903-1916` が `1895-1913` と `1914-1927` に割れる形。
+    どちらの向きにも含まれないので「行き場が無い」と判ぜられ、古い帯が台帳に
+    残っていた。**残ると重なる**: 所属は「始まりが自分以下のうちいちばん後ろ」で
+    決まるので、1922 生まれは新しい `1914-1927` ではなく古い `1922-1932` に落ちる。
+    件数は新しい側で数えているから、**古い側は「母集団 0」と出るのに中身がある**
+    (本番で、0 と表示された帯に 16 人いた)。しかも空の区画は割り直しの引き金
+    (`outgrown`)なので、**押すたびに重なりが増える**。
+
+    **帯と見出しは「1 本でもあれば引き受けている」。** 所属の規則がそうなっている
+    —— いちばん下の区画が自分より手前を全部引き受け、いちばん上が自分より後ろを
+    全部引き受けるので、軸に隙間ができない(`_band_locator` / `_title_locator`)。
+    **分類は 1 つずつ見る** —— 寄せ集めの区画(`_pooled`)が持つ分類のうち 1 つでも
+    新しい台帳に無ければ、その分類の文書は行き場を失う。
+    **値の分かる帯と「不明」の置き場は別に数える**(落ちる先が別なので)。
+
+    **矩形はいままでどおり「含む」で見る。** あちらは鍵の矩形の中にある点だけを
+    引き受けるので(`_geo_locator`)、はみ出したぶんは本当にどこにも入らない。
+    """
+    if spec["by"] == BY_BAND:
+        parsed = parse_band_key(old)
+        if parsed is None:
+            return False
+        names, pile = set(parsed[0]), parsed[3] is not None
+        served: set[str] = set()
+        for new in built:
+            other = parse_band_key(new["key"])
+            if other is not None and (other[3] is not None) == pile:
+                served |= set(other[0])
+        return names <= served
+    if spec["by"] == BY_TITLE:
+        return any(parse_title_key(p["key"]) is not None for p in built)
+    return any(
+        _covers(spec, new["key"], old) or _covers(spec, old, new["key"]) for new in built
+    )
 
 
 def _covers(spec: dict, parent: str, child: str) -> bool:

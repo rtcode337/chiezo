@@ -1459,3 +1459,69 @@ class TestNarrowingTheRowsToRead:
                 if (lo is None or d["title"] >= lo) and (hi is None or d["title"] < hi)
             }
             assert here <= kept, f"{p['key']} で {here - kept} を取りこぼす"
+
+
+class TestAnOldPartitionThatStraddlesTheNewOnes:
+    """**割り直しで境目が動くと、古い帯が新しい帯 2 本にまたがる。**
+
+    どちらの向きにも含まれないので「行き場が無い」と判ぜられ、台帳に残っていた。
+    **残ると重なる**: 所属は「始まりが自分以下のうちいちばん後ろ」で決まるので、
+    1922 生まれは新しい `1914-1927` ではなく古い `1922-1932` に落ちる。件数は
+    新しい側で数えるから、**古い側は「母集団 0」と出るのに中身がある**
+    (本番で、0 と表示された帯に 16 人いた)。しかも空の区画は割り直しの引き金
+    なので、押すたびに重なりが増えていた。
+    """
+
+    @staticmethod
+    def _spec():
+        return partition.normalize(
+            {"by": "band", "prefix": "地域", "value": "年代", "target": 25}
+        )
+
+    def test_a_straddling_band_is_dropped(self):
+        built = [{"key": partition.band_key("アメリカ合衆国", 1895, 1913)},
+                 {"key": partition.band_key("アメリカ合衆国", 1914, 1927)}]
+        current = [{"key": partition.band_key("アメリカ合衆国", 1903, 1916)}]
+
+        kept = partition._uncovered(self._spec(), built, current)
+
+        assert kept == []
+
+    def test_a_category_the_new_ledger_lost_is_kept(self):
+        """**引き受け先が本当に無いぶんは残す** —— 消すと、そこへ「足すべきものが
+        無いか」を問う回ごと無くなる(漏れを探す仕事はそこにしか無い)。"""
+        built = [{"key": partition.band_key("アメリカ合衆国", 1895, 1913)}]
+        current = [{"key": partition.band_key("フランドル", 1556, 1615)}]
+
+        kept = partition._uncovered(self._spec(), built, current)
+
+        assert [p["key"] for p in kept] == [partition.band_key("フランドル", 1556, 1615)]
+
+    def test_a_pooled_key_needs_every_category_served(self):
+        """寄せ集めの区画が持つ分類のうち 1 つでも新しい台帳に無ければ、
+        その分類の文書は行き場を失う。"""
+        built = [{"key": partition.band_key("アルメニア", 1900, 1950)}]
+        current = [{"key": partition.band_key(["アルメニア", "エストニア"], None, None)}]
+
+        kept = partition._uncovered(self._spec(), built, current)
+
+        assert len(kept) == 1
+
+    def test_the_unknown_pile_is_counted_apart_from_the_bands(self):
+        """値の分かる帯と「不明」の置き場は落ちる先が別なので、別に数える。"""
+        built = [{"key": partition.band_key("アメリカ合衆国", 1900, 1950)}]
+        current = [{"key": "アメリカ合衆国|不明|あ〜ん"}]
+
+        kept = partition._uncovered(self._spec(), built, current)
+
+        assert len(kept) == 1
+
+    def test_a_straddling_box_is_still_kept(self):
+        """**矩形はいままでどおり。** 鍵の矩形の中にある点だけを引き受けるので、
+        はみ出したぶんは本当にどこにも入らない。"""
+        spec = partition.normalize({"by": "geo", "target": 150,
+                                    "bbox": [20.0, 120.0, 46.0, 154.0]})
+        built = [{"key": partition.geo_key((35.0, 139.0, 36.0, 140.0))}]
+        current = [{"key": partition.geo_key((35.5, 139.5, 36.5, 140.5))}]
+
+        assert len(partition._uncovered(spec, built, current)) == 1
