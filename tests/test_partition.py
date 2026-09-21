@@ -1508,13 +1508,11 @@ class TestAnOldPartitionThatStraddlesTheNewOnes:
         assert len(kept) == 1
 
     def test_the_unknown_pile_is_counted_apart_from_the_bands(self):
-        """値の分かる帯と「不明」の置き場は落ちる先が別なので、別に数える。"""
+        """値の分かる帯と「不明」の置き場は落ちる先が別なので、別に数える
+        (`_served` の判定。残すかどうかは `_only_a_landing_place` が別に決める)。"""
         built = [{"key": partition.band_key("アメリカ合衆国", 1900, 1950)}]
-        current = [{"key": "アメリカ合衆国|不明|あ〜ん"}]
 
-        kept = partition._uncovered(self._spec(), built, current)
-
-        assert len(kept) == 1
+        assert not partition._served(self._spec(), built, "アメリカ合衆国|不明|あ〜ん")
 
     def test_a_straddling_box_is_still_kept(self):
         """**矩形はいままでどおり。** 鍵の矩形の中にある点だけを引き受けるので、
@@ -1525,3 +1523,59 @@ class TestAnOldPartitionThatStraddlesTheNewOnes:
         current = [{"key": partition.geo_key((35.5, 139.5, 36.5, 140.5))}]
 
         assert len(partition._uncovered(spec, built, current)) == 1
+
+
+class TestAnEmptyLandingPlaceIsNotKept:
+    """**値を持たないものの置き場は、空なら残す意味が無い。**
+
+    残すのは「この範囲に足すべきものが無いか」を問う回を失わないためだが、
+    置き場にはその問いが立たない —— 「生年の分からない画家で、漏れている人は
+    いますか」も「地域の分からない画家で〜」も問いとして成立しない
+    (漏れている画家は生年か地域のどちらかで探すもので、分からない側からは
+    探しに行けない)。本番の名簿で、中身が全部墓標の置き場が 4 つ残っていた。
+    """
+
+    @staticmethod
+    def _spec():
+        return partition.normalize(
+            {"by": "band", "prefix": "地域", "value": "年代", "target": 25}
+        )
+
+    def test_an_empty_unknown_pile_is_dropped(self):
+        built = [{"key": partition.band_key("イギリス", 1900, 1950)}]
+        current = [{"key": "イギリス|不明|あ〜ん"}]
+
+        assert partition._uncovered(self._spec(), built, current) == []
+
+    def test_an_empty_catch_all_category_is_dropped(self):
+        """`other` は分類のタグを持たない文書が落ちる先。そこも探す場所ではない。"""
+        spec = self._spec()
+        built = [{"key": partition.band_key("イギリス", 1900, 1950)}]
+        current = [{"key": partition.band_key(spec["other"], 326, 1963)}]
+
+        assert partition._uncovered(spec, built, current) == []
+
+    def test_a_real_category_is_still_kept(self):
+        """**本物の分類には問いが立つ** —— 「フランドルの 1556-1615 生まれで
+        漏れている画家はいますか」は答えのある問い。"""
+        built = [{"key": partition.band_key("イギリス", 1900, 1950)}]
+        current = [{"key": partition.band_key("フランドル", 1556, 1615)}]
+
+        assert len(partition._uncovered(self._spec(), built, current)) == 1
+
+    def test_a_pool_with_a_real_category_is_kept(self):
+        """寄せ集めに本物の分類が 1 つでも混じっていれば、そちらには問いが立つ。"""
+        spec = self._spec()
+        built = [{"key": partition.band_key("イギリス", 1900, 1950)}]
+        current = [{"key": partition.band_key([spec["other"], "マルタ"], None, None)}]
+
+        assert len(partition._uncovered(spec, built, current)) == 1
+
+    def test_a_pile_with_living_docs_is_built_by_the_ledger_anyway(self):
+        """**中身のある置き場は消えない** —— ここが効くのは新しい台帳が作らなかった
+        区画だけで、生きている文書がいれば台帳の側が作る(回る値打ちもある ——
+        そこにいる人の生年を埋めてもらう回になる)。"""
+        built = [{"key": "イギリス|不明|あ〜ん"}]
+        current = [{"key": "イギリス|不明|あ〜ん"}]
+
+        assert partition._uncovered(self._spec(), built, current) == []

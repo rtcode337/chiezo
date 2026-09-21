@@ -886,7 +886,9 @@ def _uncovered(spec: dict | None, built: list[dict], current: list[dict]) -> lis
     return [
         {"key": old["key"], "count": 0, "visits": dict(old.get("visits") or {})}
         for old in current
-        if old["key"] not in keys and not _served(spec, built, old["key"])
+        if old["key"] not in keys
+        and not _served(spec, built, old["key"])
+        and not _only_a_landing_place(spec, old["key"])
     ]
 
 
@@ -898,6 +900,38 @@ def _inherited(spec: dict | None, key: str, current: list[dict]) -> dict:
         if _covers(spec, parent["key"], key):
             return dict(parent.get("visits") or {})
     return {}
+
+
+def _only_a_landing_place(spec: dict, key: str) -> bool:
+    """**値を持たないものの置き場でしかない区画か。** 空なら残す意味が無い。
+
+    残すのは「この範囲に足すべきものが無いか」を問う回を失わないためだが、
+    **置き場にはその問いが立たない** —— 「生年の分からない画家で、漏れている人は
+    いますか」も「地域の分からない画家で〜」も、問いとして成立しない。
+    漏れている画家は生年か地域のどちらかで探すもので、**分からない側から
+    探しには行けない**。
+
+    当たるのは 2 つ: **「不明」の置き場**(値を持たない文書の受け皿)と、
+    **受け皿の分類そのもの**(`spec["other"]`。分類のタグを持たない文書が落ちる先)。
+    寄せ集めの区画(`_pooled`)に本物の分類が 1 つでも混じっていれば残す ——
+    そちらには問いが立つ。
+
+    **中身のある置き場は消えない。** ここが効くのは `_uncovered`(新しい台帳が
+    作らなかった区画)だけで、**生きている文書がいれば台帳の側が作る**。
+    中身のある「不明」の置き場は回る値打ちがある —— そこにいる人の生年を
+    埋めてもらう回になる。
+
+    **落としても行き場は失わない。** あとから値を持たない文書が入ると、その回は
+    どの区画にも入らないが(`HOMELESS`)、それが割り直しの引き金になって
+    (`outgrown`)次の回で置き場ができる。
+    """
+    if spec["by"] != BY_BAND:
+        return False
+    parsed = parse_band_key(key)
+    if parsed is None:
+        return False
+    names, pile = parsed[0], parsed[3] is not None
+    return pile or set(names) <= {spec["other"]}
 
 
 def _served(spec: dict, built: list[dict], old: str) -> bool:
