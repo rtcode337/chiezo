@@ -160,6 +160,29 @@ class TestABackendWithMoreThanOneQuota:
 
         assert not workers.room_left(workers.Step("antigravity", "gemini-3.8-flash-medium"))
 
+    def test_the_screen_shows_the_group_the_step_actually_uses(self, enabled):
+        """**画面の数字も枠ごとに出す。** 渡さないと全窓の最大が出るので、
+        Gemini の段に Claude 枠の数字が並んでいた —— 判断する側
+        (`room_left`)は枠ごとに見ているのに、画面だけが混ぜたままだった。
+        数字と振る舞いが食い違うと、避けられていない段が「詰まっている」に見える。
+        """
+        from app.views import ai_workers
+
+        self._split_quota()
+
+        assert "100% 使用" in ai_workers._percent("antigravity", "claude-opus-4-6-thinking")
+        assert "54% 使用" in ai_workers._percent("antigravity", "gemini-3.8-flash-medium")
+
+    def test_the_screen_and_the_decision_agree(self, enabled):
+        """**⚠️ が付く段と、実際に避ける段が一致すること。**"""
+        from app.views import ai_workers
+
+        self._split_quota()
+        for model in ("claude-opus-4-6-thinking", "gemini-3.8-flash-medium"):
+            step = workers.Step("antigravity", model)
+            marked = "⚠️" in ai_workers._percent(step.backend, step.model)
+            assert marked is not workers.room_left(step), model
+
     def test_a_stored_row_from_before_the_split_still_works(self, enabled):
         """**入れ替えた日の控えには枠の呼び名が入っていない。** 突き合わないので
         全部の窓で見る = 入れ替え前とまったく同じ挙動。次の採取で呼び名が入る。

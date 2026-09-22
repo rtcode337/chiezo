@@ -33,9 +33,17 @@ MAX_STEPS = 6
 _EMPTY_STEP = "(使わない)"
 
 
-def _percent(provider: str) -> str:
-    """いまの詰まり具合。**避ける相手が一目で分かるように、しきい値と並べて出す。**"""
-    busiest = usage.busiest(provider)
+def _percent(provider: str, model: str = "") -> str:
+    """いまの詰まり具合。**避ける相手が一目で分かるように、しきい値と並べて出す。**
+
+    **その段のモデルが食う枠で見る**(`usage.busiest` にモデルを渡す)——
+    1 人の相手が独立した枠を何本も持つことがあり、渡さないと全窓の最大が出る。
+    Antigravity は Gemini と Claude/GPT が別勘定なので、**Gemini の段に
+    Claude 枠の数字が出ていた** —— 判断する側(`workers.room_left`)は枠ごとに
+    見ているのに、**画面だけが混ぜたまま**だった。数字と振る舞いが食い違うと、
+    避けられていない段が「詰まっている」に見える(逆も起きる)。
+    """
+    busiest = usage.busiest(provider, model)
     if busiest is None:
         return '<span class="muted">枠は出せない</span>'
     mark = " ⚠️" if busiest >= workers.QUOTA_LIMIT else ""
@@ -56,7 +64,12 @@ def _step_row(
     読めない** —— 段は書いた順に試す並びなので、空欄は「ここで終わり」を意味する。
     """
     current = step.backend if step else ""
-    picked = _percent(current) if current else '<span class="muted">(使わない)</span>'
+    # **その段のモデルまで渡す。** 相手だけで引くと、枠を何本も持つ相手で
+    # 別の枠の数字が出る(判断する側は枠ごとに見ているので食い違う)
+    picked = (
+        _percent(current, step.model if step else "")
+        if current else '<span class="muted">(使わない)</span>'
+    )
     return (
         '<div class="sweep-row">'
         f'<p><label>{index + 1} 番目<br>'
