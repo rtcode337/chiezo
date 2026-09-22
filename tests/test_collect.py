@@ -6275,3 +6275,16 @@ class TestTheSamplesHideWhatReadersShouldNotSee:
         baked["news"].schema_version = 2
 
         assert len(collect.recent("news", baked, limit=10)) == 4
+
+    def test_the_material_of_another_collection_is_filtered_too(self, baked):
+        """材料に読む別のソースでも外す。
+
+        **材料に収集を選ぶのは「そちらの AI が選り分けた後のもの」を読みたいから**で、
+        配信元から引き直さない理由もそこにある。消したものやまだ読まれていないものを
+        混ぜると、整理が落とした宣伝や重複から次の収集が育つ。
+        """
+        spec = {"source": "news", "limit": 10}
+
+        got = [d["title"] for d in collect.material_docs(spec, baked, since=None)]
+
+        assert got == ["ふつうの記事", "もう一つ"]

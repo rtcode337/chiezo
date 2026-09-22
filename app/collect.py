@@ -1109,11 +1109,35 @@ def normalize_material(raw) -> dict | None:
     }
 
 
+def hidden_clause(src, include_hidden: bool = False) -> tuple[str, list]:
+    """**読者に出さない印の付いたものを外す**条件(`notes.HIDDEN_TAGS`)。
+
+    返すのは `AND` も `WHERE` も付かない条件だけ —— 呼ぶ側の組み立てに合わせる。
+
+    **1 か所に持つ。** 印は増える(消えたもの・まだ AI が目を通していないもの)ので、
+    読む場所ごとに書き写すと、次に足したときに片方だけ直すことになる。
+
+    **タグの索引を持たない古いソースでは何もしない**(絞りようが無い)。
+    """
+    if include_hidden or src.schema_version < TAG_MIN_SCHEMA_VERSION:
+        return "", []
+    marks = ", ".join("?" * len(notes.HIDDEN_TAGS))
+    return (
+        f" doc_id NOT IN (SELECT dt.doc_id FROM doc_tags dt WHERE dt.tag IN ({marks}))",
+        list(notes.HIDDEN_TAGS),
+    )
+
+
 def material_docs(spec: dict | None, sources: dict, since: str | None) -> list[dict]:
     """材料に読むソースから、**前回から入ったもの**を新しい順に。
 
     **まだ焼かれていないソースは空**(失敗ではない) —— 材料の側の収集がまだ 1 度も
     走っていないだけのことがある。
+
+    **読者に出さない印の付いたものは渡さない**(`notes.HIDDEN_TAGS`)。材料に別の
+    収集を選ぶのは「**そちらの AI が選り分けた後のもの**を読みたい」からで、
+    配信元から引き直さない理由もそこにある —— 消したものやまだ読まれていないものを
+    混ぜると、**整理が落とした宣伝や重複から次の収集が育つ**ことになる。
     """
     if not spec:
         return []
@@ -1129,6 +1153,10 @@ def material_docs(spec: dict | None, sources: dict, since: str | None) -> list[d
             f" ({','.join('?' * len(tags))}))"
         )
         args.extend(tags)
+    hidden, marks = hidden_clause(src)
+    if hidden:
+        where += " AND" + hidden
+        args.extend(marks)
     args.append(int(spec.get("limit") or DEFAULT_MATERIAL_LIMIT))
     rows = db.query(
         src.path,
@@ -2581,14 +2609,8 @@ def recent(
     src = sources.get(name)
     if src is None or limit <= 0:
         return []
-    where, params = "", []
-    if not include_hidden and src.schema_version >= TAG_MIN_SCHEMA_VERSION:
-        marks = ", ".join("?" * len(notes.HIDDEN_TAGS))
-        where = (
-            " WHERE doc_id NOT IN"
-            f" (SELECT dt.doc_id FROM doc_tags dt WHERE dt.tag IN ({marks}))"
-        )
-        params = list(notes.HIDDEN_TAGS)
+    hidden, params = hidden_clause(src, include_hidden)
+    where = " WHERE" + hidden if hidden else ""
     rows = db.query(
         src.path,
         "SELECT title, opening, tags, updated_at, extra FROM docs"
