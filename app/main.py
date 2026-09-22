@@ -860,7 +860,7 @@ async def _collect_material(name: str, sources: dict) -> str:
     # 1 回ぶんの枠を使う)。**台帳をいまのまま使う**のが名指しの意味でもある。
     # 割り直したいときは区画の面の「区画を割り直す」を先に押す
     once = item.pending_run or {}
-    named = str(once.get("partition") or "")
+    named = list(once.get("partitions") or [])
     # **区画は集める前に決める。** 何を見るかが決まっていないと、渡す素材も
     # 差し込む文も作れない(台帳が無ければ空で返り、今までどおり全体を見る)
     phase = time.monotonic()
@@ -902,14 +902,18 @@ async def _collect_material(name: str, sources: dict) -> str:
         if named:
             # **台帳に無い鍵では走らせない。** どの文書も一致しないので AI は
             # 「誰も居ない」と読んで何も返さず、**空振りに 1 回ぶんの枠を使う**
-            # (節約のために押した口で、いちばん起きてほしくない)
-            if not any(p["key"] == named for p in ledger):
+            # (節約のために押した口で、いちばん起きてほしくない)。
+            # **1 つでも欠けたら走らせない** —— 通した鍵だけで走ると、押した人には
+            # 全部を見たように見えて、抜けた区画だけが黙って飛ばされる
+            here = {p["key"] for p in ledger}
+            if missing := [k for k in named if k not in here]:
                 raise HTTPException(409, {
-                    "error": f"区画「{named}」は台帳にありません",
+                    "error": f"区画「{missing[0]}」は台帳にありません"
+                             + (f"(ほか {len(missing) - 1} 件)" if len(missing) > 1 else ""),
                     "hint": "割り直しで鍵が変わったかもしれません"
                             "(区画の面から選び直してください)",
                 })
-            keys = [named]
+            keys = named
         else:
             keys = partitioning.pick(
                 ledger, sweep.name, sweep.per_run(len(ledger)),

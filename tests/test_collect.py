@@ -104,9 +104,22 @@ def baked(tmp_path):
 
 
 def _form(values: dict):
-    """`await request.form()` の代わり(画面のハンドラを直に呼ぶため)。"""
+    """`await request.form()` の代わり(画面のハンドラを直に呼ぶため)。
+
+    **同じ名前を何度も持てる形にする**(`getlist`)—— 区画のチェックは同じ名前で
+    何個も飛んでくるので、素の dict だと 1 つしか渡せない。値に list を書けば展開する。
+    """
+    from starlette.datastructures import FormData
+
+    pairs = [
+        (key, one)
+        for key, value in values.items()
+        for one in (value if isinstance(value, list) else [value])
+    ]
+    data = FormData(pairs)
+
     async def form():
-        return values
+        return data
     return form
 
 
@@ -2134,7 +2147,7 @@ class TestTheLedgerCountFollowsTheContents:
 
         asked = collect.asked_for_run(sweep, once)
 
-        assert once["partition"] == "あ〜か"
+        assert once["partitions"] == ["あ〜か"]
         assert (asked.backend, asked.model) == ("codex", "gpt-5.6-sol-medium")
 
     def test_the_sweep_itself_is_not_rewritten(self, sample):
@@ -2197,7 +2210,7 @@ class TestTheLedgerCountFollowsTheContents:
         collect.mark_pending("news", None, {"partition": "あ〜か", "backend": "codex"})
 
         assert collect.get("news").pending_run == {
-            "partition": "あ〜か", "backend": "codex",
+            "partitions": ["あ〜か"], "backend": "codex",
         }
 
     def test_a_run_that_could_not_start_takes_the_override_back(self, sample):
@@ -2231,6 +2244,94 @@ class TestTheLedgerCountFollowsTheContents:
             asyncio.run(admin.admin_collect_partition_run("news", request))
 
         assert caught.value.status_code == 409
+
+    def test_several_partitions_can_be_picked(self, sample):
+        """**1 件ずつしか走らせられなかった。** 直したところを何区画かまとめて
+        確かめたいときに、区画の面を開き直して 1 回ずつ押すことになっていた。"""
+        once = collect.normalize_run_once({"partitions": ["あ〜か", "さ〜な"]})
+
+        assert once["partitions"] == ["あ〜か", "さ〜な"]
+
+    def test_the_same_key_twice_counts_once(self, sample):
+        once = collect.normalize_run_once({"partitions": ["あ〜か", "あ〜か"]})
+
+        assert once["partitions"] == ["あ〜か"]
+
+    def test_picking_too_many_is_refused(self, sample):
+        """**枠は区画の数だけ減る**(1 区画 = AI 1 回)。枠が細いときに使う口なので、
+        押してから気づいても、そのぶんはもう戻らない。"""
+        import asyncio
+
+        from app.views import admin
+
+        ledger = [{"key": partitioning.title_key(f"あ{i:02}", f"い{i:02}"), "count": 1}
+                  for i in range(collect.MAX_TRIAL_PARTITIONS + 1)]
+        collect.update("news", partition={"by": "title", "target": 10}, partitions=ledger,
+                       sweeps=[{"name": "ざっと見る", "interval_minutes": 60}])
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(sources={})),
+            form=_form({"partition": [p["key"] for p in ledger], "sweep": "ざっと見る"}),
+        )
+
+        with pytest.raises(HTTPException) as caught:
+            asyncio.run(admin.admin_collect_partition_run("news", request))
+
+        assert caught.value.status_code == 400
+
+    def test_one_missing_key_stops_the_whole_run(self, sample):
+        """**通ったぶんだけ走らせない** —— 押した人には全部を見たように見えて、
+        抜けた区画だけが黙って飛ばされる。"""
+        import asyncio
+
+        from app.views import admin
+
+        collect.update(
+            "news", partition={"by": "title", "target": 10},
+            partitions=[{"key": partitioning.title_key("あ", "か"), "count": 3}],
+            sweeps=[{"name": "ざっと見る", "interval_minutes": 60}],
+        )
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(sources={})),
+            form=_form({
+                "partition": [partitioning.title_key("あ", "か"), "知らない〜鍵"],
+                "sweep": "ざっと見る",
+            }),
+        )
+
+        with pytest.raises(HTTPException) as caught:
+            asyncio.run(admin.admin_collect_partition_run("news", request))
+
+        assert caught.value.status_code == 409
+
+    def test_the_ledger_table_can_be_picked_from(self, sample):
+        """**表をフォームの中に入れる**ので、行の頭のチェックがそのまま送られる。"""
+        from app.views import admin
+
+        collect.update(
+            "news", partition={"by": "title", "target": 10},
+            partitions=[{"key": partitioning.title_key("あ", "か"), "count": 3}],
+            sweeps=[{"name": "ざっと見る", "interval_minutes": 60}],
+        )
+
+        html = admin._partition_html(collect.get("news"))
+
+        assert 'type="checkbox" name="partition"' in html
+        assert "選んだ区画で 1 回走らせる" in html
+
+    def test_no_checkbox_when_no_sweep_looks_at_partitions(self, sample):
+        """選んでも走らせる先が無いなら、選ばせない。"""
+        from app.views import admin
+
+        collect.update(
+            "news", partition={"by": "title", "target": 10},
+            partitions=[{"key": partitioning.title_key("あ", "か"), "count": 3}],
+            sweeps=[{"name": "機械収集", "interval_minutes": 60, "use_extract": True}],
+        )
+
+        html = admin._partition_html(collect.get("news"))
+
+        assert "checkbox" not in html
+        assert "選んだ区画で 1 回走らせる" not in html
 
     def test_a_mechanical_sweep_is_not_offered(self, sample):
         """**機械で引く回は区画を見ない**(指定を 1 本引いて全部を返す)。

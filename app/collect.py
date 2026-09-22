@@ -951,6 +951,13 @@ def normalize_focus(raw) -> Focus | None:
     )
 
 
+# **1 回の試し撃ちで選べる区画の数。** 区画 1 つにつき AI を 1 回呼ぶので、
+# 選びすぎると枠が一息に消える —— 枠が細いときに使う口なので、ここで止める。
+# 定時の巡回の天井(`MAX_PARTITIONS_PER_RUN`)とは別に持つ: あちらは無人で
+# 回るぶんの目安で、こちらは人が選んで押すぶん(そのぶん少し広くてよい)。
+MAX_TRIAL_PARTITIONS = int(os.environ.get("CHIEZO_MAX_TRIAL_PARTITIONS", "20") or 20)
+
+
 def normalize_run_once(raw) -> dict | None:
     """**次の 1 回だけの上書き**を均す。中身が無ければ None。
 
@@ -974,8 +981,17 @@ def normalize_run_once(raw) -> dict | None:
     """
     if not isinstance(raw, dict):
         return None
+    # **複数の区画を選べる。** 1 件ずつしか走らせられなかった頃は、直したところを
+    # 何区画かまとめて確かめたいときに、区画の面を開き直して 1 回ずつ押すことに
+    # なった。**1 つだけ書いた形も受ける**(区画の面からはそちらで飛んでくる)
+    keys, seen = [], set()
+    for value in [*(raw.get("partitions") or []), raw.get("partition")]:
+        key = str(value or "").strip()
+        if key and key not in seen:
+            seen.add(key)
+            keys.append(key)
     out = {
-        "partition": str(raw.get("partition") or "").strip(),
+        "partitions": keys[:MAX_TRIAL_PARTITIONS],
         "backend": str(raw.get("backend") or "").strip()[:60],
         "model": str(raw.get("model") or "").strip()[:80],
         "effort": str(raw.get("effort") or "").strip()[:20],

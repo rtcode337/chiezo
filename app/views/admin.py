@@ -1047,10 +1047,22 @@ def _partition_html(item, src=None, busy: bool = False) -> str:
     # **頭の 10 件だけ出して、残りは畳む。** 全部を出すと 325 行が面を埋めて、
     # その下にある変更履歴まで押し出される。**捨てはしない** —— ここを読みに来るのは
     # 「どこを見ていて、どこがまだか」を知りたいときなので、開けば全部ある
+    # **選んで走らせられる**ので、行の頭にチェックを置く(`_run_here_html` の
+    # フォームの中に表を入れてある)。**選べるのは区画を見る巡回があるときだけ**
+    pickable = bool(_sweeps_for_trial(item))
+    heads = (
+        f'{"<th></th>" if pickable else ""}<th>区画</th><th>母集団</th>'
+        "<th>見終えた巡回(日本時間)</th>"
+    )
+
     def row(p):
+        box = (
+            f'<td><input type="checkbox" name="partition" value="{esc(p["key"])}"></td>'
+            if pickable else ""
+        )
         return (
-            f"<tr><td>{_partition_link(item.name, p['key'])}</td><td>{p['count']:,}</td>"
-            f"<td>{_visits_html(p)}</td></tr>"
+            f"<tr>{box}<td>{_partition_link(item.name, p['key'])}</td>"
+            f"<td>{p['count']:,}</td><td>{_visits_html(p)}</td></tr>"
         )
 
     head = "".join(row(p) for p in item.partitions[:PARTITION_HEAD])
@@ -1058,16 +1070,19 @@ def _partition_html(item, src=None, busy: bool = False) -> str:
     more = (
         "<details><summary>"
         f"残りの {len(rest):,} 区画を見る</summary>"
-        "<table><thead><tr><th>区画</th><th>母集団</th><th>見終えた巡回(日本時間)</th></tr></thead>"
+        f"<table><thead><tr>{heads}</tr></thead>"
         f"<tbody>{''.join(row(p) for p in rest)}</tbody></table></details>"
         if rest else ""
+    )
+    table = (
+        f"<table><thead><tr>{heads}</tr></thead>"
+        f"<tbody>{head}</tbody></table>{more}"
     )
     return (
         f'<p class="muted">区画: {total:,}{_spread_from_html(item)}'
         f'{_uncovered_html(item, src)}</p>'
         f"{_repartition_form(item, busy)}"
-        "<table><thead><tr><th>区画</th><th>母集団</th><th>見終えた巡回(日本時間)</th></tr></thead>"
-        f"<tbody>{head}</tbody></table>{more}"
+        f"{_run_here_html(item, table, busy)}"
     )
 
 
@@ -3091,16 +3106,27 @@ async def admin_collect_partition_run(name: str, request: Request):
 
     collect.require_enabled()
     form = await request.form()
-    key = str(form.get("partition") or "").strip()
-    if not key:
-        raise HTTPException(400, {"error": "区画が指定されていません"})
+    keys = [str(k).strip() for k in form.getlist("partition") if str(k).strip()]
+    if not keys:
+        raise HTTPException(400, {"error": "区画が選ばれていません"})
+    # **枠は区画の数だけ減る**(1 区画 = AI 1 回)。枠が細いときに使う口なので、
+    # 選びすぎはここで止める —— 押してから気づいても、そのぶんはもう戻らない
+    if len(keys) > collect.MAX_TRIAL_PARTITIONS:
+        raise HTTPException(400, {
+            "error": f"一度に選べるのは {collect.MAX_TRIAL_PARTITIONS} 区画までです"
+                     f"(選ばれたのは {len(keys)} 区画)",
+            "hint": "区画 1 つにつき AI を 1 回呼びます",
+        })
     # **入口でも確かめる。** 開きっぱなしの画面から押されると、割り直しで消えた
     # 鍵を名指しすることがある —— 取り込みを起こしてから気づくより、ここで断る
-    # ほうが 1 本ぶん安い(素材を作る側にも同じ確かめがある)
+    # ほうが 1 本ぶん安い(素材を作る側にも同じ確かめがある)。
+    # **1 つでも欠けたら走らせない** —— 通ったぶんだけ走ると、押した人には
+    # 全部を見たように見えて、抜けた区画だけが黙って飛ばされる
     item = collect.get(name)
-    if not any(p["key"] == key for p in item.partitions):
+    here = {p["key"] for p in item.partitions}
+    if missing := [k for k in keys if k not in here]:
         raise HTTPException(409, {
-            "error": f"区画「{key}」は台帳にありません",
+            "error": f"区画「{missing[0]}」は台帳にありません",
             "hint": "割り直しで鍵が変わったかもしれません(区画の面から選び直してください)",
         })
     # **機械で引く回・外の道具で引く回では走らせない。** あれは区画を見ないので、
@@ -3116,16 +3142,21 @@ async def admin_collect_partition_run(name: str, request: Request):
         })
     chosen = str(form.get("backend") or "")
     start_collection_bake(name, named_sweep or None, {
-        "partition": key,
+        "partitions": keys,
         # **相手とワーカーは同じ欄で選ぶ**(画面の流儀。両方選べると、
         # どちらが効くのか読めなくなる)
         "worker": workers.named_in(chosen),
         "backend": "" if workers.named_in(chosen) else chosen,
         "model": str(form.get("model") or ""),
     })
-    return RedirectResponse(
-        url=f"/admin/collect/{quote(name)}/partition?key={quote(key)}", status_code=303,
-    )
+    # **1 つだけなら、その区画の面へ戻す**(中身を見に来ているので)。
+    # 何区画も選んだときは一覧へ —— どれか 1 つを選んで戻る理由が無い
+    if len(keys) == 1:
+        return RedirectResponse(
+            url=f"/admin/collect/{quote(name)}/partition?key={quote(keys[0])}",
+            status_code=303,
+        )
+    return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
 
 
 @router.post("/admin/collect/{name}/restart")
@@ -3495,50 +3526,28 @@ def admin_collect_partition(
     ))
 
 
-def _try_here_html(item, key: str, disabled: str) -> str:
-    """**この区画だけを、ふつうの回として 1 回走らせる**(相手も選べる)。
+def _sweeps_for_trial(item):
+    """1 区画だけ走らせるのに選べる巡回。
 
-    枠が細いときに「直したコードを、1 区画だけ、空いている相手で試したい」が
-    普通に起きる。今までの道はどれも足りなかった:
-
-    - **今すぐ実行** …… 区画も相手も選べず、1 回で `per_run` 区画ぶんの枠が消える
-      (食事処なら 5 回の呼び出し)
-    - **ドライラン** …… 焼かないので、**焼く側で落ちる回を再現しない**
-    - **割り込み** …… 区画は選べるが、**進み具合も区画の印も動かない**
-      (試したいのは「ふつうの回」なので、動かないと確かめたことにならない)
-    - **巡回の設定を直す** …… 直したまま定時の回が走り出す
-
-    **ここはふつうの回として走る** —— 区画に印が付き、進み具合も次回の予定も進む。
-    上書きするのは「どこを見るか」と「誰に頼むか」の 2 つだけで、**保存しない**。
-
-    **置き場が区画の面なのは、そこなら「この区画」が曖昧にならないから**
-    (8,000 を超える台帳からセレクトで選ばせずに済む)。
+    **機械で引く回・外の道具で引く回は出さない。** あれは指定を 1 本引いて全部を
+    返す回で、**区画を見ない**(`_collect_material`)—— 並べると、区画を名指し
+    したのに全件の回が走る。**しかも先頭が既定で選ばれる**ので、何も選ばずに
+    押しただけでそれが起きた(本番で、名簿を作り直す回が丸ごと走った)。
+    「選べるのに効かない欄は、設定したつもりを作る」の類い。
     """
-    if not item.partition:
-        return ""
-    # **機械で引く回・外の道具で引く回は出さない。** あれは指定を 1 本引いて全部を
-    # 返す回で、**区画を見ない**(`_collect_material`)—— 並べると、区画を名指し
-    # したのに全件の回が走る。**しかも先頭が既定で選ばれる**ので、何も選ばずに
-    # 押しただけでそれが起きた(本番で、名簿を作り直す回が丸ごと走った)。
-    # 「選べるのに効かない欄は、設定したつもりを作る」の類い
-    usable = [
+    return [
         s for s in collect.sweeps_of(item)
         if not s.on_demand and not s.use_extract and not s.use_feed
     ]
-    if not usable:
-        return (
-            '<p class="muted">この収集には、区画を見る巡回がありません'
-            "(機械で引く回・外の道具で引く回は区画を見ないので、1 区画だけ"
-            "走らせることができません)。</p>"
-        )
+
+
+def _trial_fields(item, disabled: str, button: str) -> str:
+    """試し撃ちの欄(巡回と相手)とボタン。**表と 1 件ずつの面で同じものを使う。**"""
     choices = "".join(
-        f'<option value="{esc(s.name)}">{esc(s.name)}</option>' for s in usable
+        f'<option value="{esc(s.name)}">{esc(s.name)}</option>'
+        for s in _sweeps_for_trial(item)
     )
     return (
-        f"<details><summary>この区画だけ 1 回走らせる</summary>"
-        f'<form method="post" action="/admin/collect/{esc(quote(item.name))}/partition/run"'
-        f' class="collect-form"{disabled}>'
-        f'<input type="hidden" name="partition" value="{esc(key)}">'
         f'<p><label>どの巡回として<br><select name="sweep">{choices}'
         f"</select></label></p>"
         f'<p><label>頼む相手(空なら巡回の設定のまま)<br>'
@@ -3546,14 +3555,58 @@ def _try_here_html(item, key: str, disabled: str) -> str:
         f"</label></p>"
         f'<p><label>モデル<br>{_model_select(None, None, "model")}</label></p>'
         f'<p class="muted"><strong>ふつうの回として走ります</strong> ——'
-        f"この区画に「見た」印が付き、進み具合も次回の予定も進みます。"
-        f"<br>見るのはこの区画だけなので、<strong>AI の呼び出しは 1 回</strong>です"
-        f"(定時の回はもっと多くの区画を見ます)。"
+        f"選んだ区画に「見た」印が付き、進み具合も次回の予定も進みます。"
+        f"<br><strong>AI の呼び出しは選んだ区画の数だけ</strong>です"
+        f"(一度に選べるのは {collect.MAX_TRIAL_PARTITIONS} 区画まで)。"
         f"<br><strong>焼きます</strong>(ドライランではありません)。"
         f"<br><strong>相手の指定は保存しません</strong> —— "
         f"巡回の設定は書き換わらないので、次の定時の回は今までどおりの相手で走ります。"
         f"ワーカーを選べば、空いている相手はそちらが選びます。</p>"
-        f'<button type="submit"{disabled}>この区画で 1 回走らせる</button>'
+        f'<button type="submit"{disabled}>{button}</button>'
+    )
+
+
+def _run_here_html(item, table: str, busy: bool) -> str:
+    """**選んだ区画を、ふつうの回として 1 回走らせる**(台帳の表ごとフォームに包む)。
+
+    **複数選べる。** 1 件ずつしか走らせられなかった頃は、直したところを何区画か
+    まとめて確かめたいときに、区画の面を開き直して 1 回ずつ押すことになった。
+
+    **表をフォームの中に入れる**ので、行の頭のチェックがそのまま送られる ——
+    畳んである残りの区画(`<details>`)も同じフォームの中なので、開いて選べる。
+
+    **区画を見る巡回が 1 つも無ければ出さない**(選んでも走らせる先が無い)。
+    """
+    if not _sweeps_for_trial(item):
+        return table
+    off = " disabled" if busy else ""
+    return (
+        f'<form method="post" action="/admin/collect/{esc(quote(item.name))}/partition/run"'
+        f' class="collect-form"{off}>{table}'
+        f"<details><summary>選んだ区画を 1 回走らせる</summary>"
+        f'{_trial_fields(item, off, "選んだ区画で 1 回走らせる")}'
+        f"</details></form>"
+    )
+
+
+def _try_here_html(item, key: str, disabled: str) -> str:
+    """区画の面から、**その 1 区画だけ**を走らせる口。中身は台帳の表のものと同じ。
+
+    **ここにも置く。** 中身を見て「この区画で試そう」と決める場所がここなので、
+    台帳へ戻って選び直させない。
+    """
+    if not _sweeps_for_trial(item):
+        return (
+            '<p class="muted">この収集には、区画を見る巡回がありません'
+            "(機械で引く回・外の道具で引く回は区画を見ないので、1 区画だけ"
+            "走らせることができません)。</p>"
+        )
+    return (
+        f"<details><summary>この区画だけ 1 回走らせる</summary>"
+        f'<form method="post" action="/admin/collect/{esc(quote(item.name))}/partition/run"'
+        f' class="collect-form"{disabled}>'
+        f'<input type="hidden" name="partition" value="{esc(key)}">'
+        f'{_trial_fields(item, disabled, "この区画で 1 回走らせる")}'
         f"</form></details>"
     )
 
