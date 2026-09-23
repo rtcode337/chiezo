@@ -1654,3 +1654,118 @@ class TestWhereABoxRoughlyIs:
 
         assert "東京都" in admin._where_html({"key": "x", "area": "東京都"})
         assert admin._where_html({"key": "x"}) == ""
+
+
+def _only(ledger, key):
+    """組み直した台帳から、その鍵の行だけ取る。
+
+    `refresh` は**覆われていない古い区画も後ろに足す**(`_uncovered`)ので、
+    返る行は 1 つとは限らない —— 見たいのは新しく組んだほう。
+    """
+    return next(p for p in ledger if p["key"] == key)
+
+
+class TestTheMarksSurviveARecut:
+    """**割り直すと境目が動くので、新しい区画が古い区画 2 本にまたがる。**
+
+    どちらにも含まれないので親が見つからず、**両方とも見終えていたのに印が
+    落ちていた** —— 落ちた区画は「まだ」に戻るので、一周がそのぶん巻き戻り、
+    AI をもう一度呼ぶ。`_uncovered` で直したのと同じ取り違えが、印を継ぐ側に
+    残っていた。
+    """
+
+    OLD = "2026-09-18T04:00:00+00:00"
+    NEW = "2026-09-20T04:00:00+00:00"
+
+    @staticmethod
+    def _spec():
+        return partition.normalize(
+            {"by": "band", "prefix": "地域", "value": "年代", "target": 25}
+        )
+
+    def _seen(self, when: str) -> dict:
+        return {"ざっと見る": when}
+
+    def test_a_key_that_did_not_change_keeps_its_mark(self):
+        key = partition.band_key("日本", 1900, 1950)
+        kept = partition.refresh(
+            [{"key": key}], [{"key": key, "visits": self._seen(self.NEW)}], self._spec(),
+        )
+
+        assert kept[0]["visits"] == self._seen(self.NEW)
+
+    def test_a_child_still_inherits_from_its_parent(self):
+        """**含む区画は重なる区画の一種**なので、今までの形はそのまま残る。"""
+        parent = [{"key": partition.band_key("日本", 1900, 1950),
+                   "visits": self._seen(self.NEW)}]
+        built = [{"key": partition.band_key("日本", 1900, 1924)},
+                 {"key": partition.band_key("日本", 1925, 1950)}]
+
+        kept = partition.refresh(built, parent, self._spec())
+
+        assert [p["visits"] for p in kept] == [self._seen(self.NEW)] * 2
+
+    def test_straddling_two_seen_bands_keeps_the_mark(self):
+        """**これが落ちていた。** 元は 2 本とも見終えているのに空になっていた。"""
+        current = [{"key": partition.band_key("日本", 1895, 1913),
+                    "visits": self._seen(self.OLD)},
+                   {"key": partition.band_key("日本", 1914, 1927),
+                    "visits": self._seen(self.NEW)}]
+        built = [{"key": partition.band_key("日本", 1903, 1916)}]
+
+        [kept] = partition.refresh(built, current, self._spec())
+
+        # **いちばん古い時刻を採る** —— 次に見るのは古い順なので、新しいほうを
+        # 採ると「まだ見ていないに等しい範囲」が後回しになる
+        assert kept["visits"] == self._seen(self.OLD)
+
+    def test_one_unseen_band_in_the_way_stops_it(self):
+        """**見ていないぶんが「見終えた」に混ざる**のがいちばん困る(一周が嘘になる)。"""
+        current = [{"key": partition.band_key("日本", 1895, 1913),
+                    "visits": self._seen(self.NEW)},
+                   {"key": partition.band_key("日本", 1914, 1927), "visits": {}}]
+        built = [{"key": partition.band_key("日本", 1903, 1916)}]
+
+        kept = _only(partition.refresh(built, current, self._spec()), built[0]["key"])
+
+        assert kept["visits"] == {}
+
+    def test_another_category_does_not_lend_its_mark(self):
+        current = [{"key": partition.band_key("フランス", 1900, 1950),
+                    "visits": self._seen(self.NEW)}]
+        built = [{"key": partition.band_key("日本", 1900, 1950)}]
+
+        kept = _only(partition.refresh(built, current, self._spec()), built[0]["key"])
+
+        assert kept["visits"] == {}
+
+    def test_the_unknown_pile_does_not_lend_to_a_band(self):
+        """値の分かる帯と「不明」の置き場は落ちる先が別。"""
+        current = [{"key": "日本|不明|あ〜ん", "visits": self._seen(self.NEW)}]
+        built = [{"key": partition.band_key("日本", 1900, 1950)}]
+
+        kept = _only(partition.refresh(built, current, self._spec()), built[0]["key"])
+
+        assert kept["visits"] == {}
+
+    def test_boxes_that_overlap_lend_their_mark(self):
+        spec = partition.normalize({"by": "geo", "target": 150,
+                                    "bbox": [20.0, 120.0, 46.0, 154.0]})
+        current = [{"key": partition.geo_key((35.0, 139.0, 36.0, 140.0)),
+                    "visits": self._seen(self.NEW)}]
+        built = [{"key": partition.geo_key((35.5, 139.5, 36.5, 140.5))}]
+
+        kept = _only(partition.refresh(built, current, spec), built[0]["key"])
+
+        assert kept["visits"] == self._seen(self.NEW)
+
+    def test_a_box_that_does_not_touch_lends_nothing(self):
+        spec = partition.normalize({"by": "geo", "target": 150,
+                                    "bbox": [20.0, 120.0, 46.0, 154.0]})
+        current = [{"key": partition.geo_key((35.0, 139.0, 36.0, 140.0)),
+                    "visits": self._seen(self.NEW)}]
+        built = [{"key": partition.geo_key((40.0, 141.0, 41.0, 142.0))}]
+
+        kept = _only(partition.refresh(built, current, spec), built[0]["key"])
+
+        assert kept["visits"] == {}

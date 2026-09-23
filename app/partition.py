@@ -940,13 +940,71 @@ def _uncovered(spec: dict | None, built: list[dict], current: list[dict]) -> lis
 
 
 def _inherited(spec: dict | None, key: str, current: list[dict]) -> dict:
-    """その区画を含んでいた区画の記録。無ければ空(新しく始まる)。"""
+    """その範囲を前に受け持っていた区画から継ぐ記録。無ければ空(新しく始まる)。
+
+    **「含む」だけでは足りなかった。** 割り直すと境目が動くので、新しい区画が
+    **古い区画 2 本にまたがる**ことがある(`1895-1913` と `1914-1927` が
+    `1903-1916` と `1917-1930` に切り直される形)。どちらにも含まれないので
+    親が見つからず、**両方とも見終えていたのに印が落ちていた** ——
+    落ちた区画は「まだ」に戻るので、一周がそのぶん巻き戻る(そして AI を
+    もう一度呼ぶ)。`_uncovered` で直したのと同じ取り違えが、こちら側に残っていた。
+
+    **重なった古い区画を全部見て、どれにも印がある巡回だけを継ぐ。**
+    1 つでも見ていない区画が混ざっていれば継がない —— **見ていないぶんが
+    「見終えた」に混ざる**のがいちばん困る(一周が嘘になる。`_joined` が
+    記録の同じ区画どうししかつながないのと同じ判断)。
+
+    **時刻はいちばん古いものを採る。** 次に見るのは古い順なので(`pick`)、
+    新しいほうを採ると**まだ見ていないに等しい範囲が後回しになる**。
+
+    **含む区画は重なる区画の一種**なので、割られた子が親から継ぐ今までの形は
+    そのまま残る(重なるのがその 1 本だけになる)。
+    """
     if spec is None or not current:
         return {}
-    for parent in current:
-        if _covers(spec, parent["key"], key):
-            return dict(parent.get("visits") or {})
-    return {}
+    over = [p for p in current if _overlaps(spec, p["key"], key)]
+    if not over:
+        return {}
+    shared = set(over[0].get("visits") or {})
+    for p in over[1:]:
+        shared &= set(p.get("visits") or {})
+    return {
+        name: min(str((p.get("visits") or {})[name]) for p in over)
+        for name in shared
+    }
+
+
+def _overlaps(spec: dict, one: str, other: str) -> bool:
+    """2 つの区画の範囲が重なるか。**幅で表した区画だけ**(`_covers` と同じ線)。
+
+    分類の名前とタグは幅ではないので、重なるかどうかを言えない(鍵が同じかだけ)。
+    """
+    if _covers(spec, one, other) or _covers(spec, other, one):
+        return True
+    if spec["by"] == BY_GEO:
+        a, b = parse_geo_key(one), parse_geo_key(other)
+        if a is None or b is None:
+            return False
+        return a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]
+    if spec["by"] == BY_BAND:
+        a, b = parse_band_key(one), parse_band_key(other)
+        # **分類が重なっていなければ、範囲を比べる意味が無い**(別の分類の帯)
+        if a is None or b is None or not (set(a[0]) & set(b[0])):
+            return False
+        if (a[3] is not None) != (b[3] is not None):
+            # 値の分かる帯と「不明」の置き場は落ちる先が別
+            return False
+        if a[3] is not None:
+            return _crosses(parse_title_key(a[3]), parse_title_key(b[3]))
+        (lo_a, hi_a), (lo_b, hi_b) = band_span(a), band_span(b)
+        return lo_a <= hi_b and lo_b <= hi_a
+    if spec["by"] == BY_TITLE:
+        return _crosses(parse_title_key(one), parse_title_key(other))
+    return False
+
+
+def _crosses(one, other) -> bool:
+    return bool(one and other and one[0] <= other[1] and other[0] <= one[1])
 
 
 def _only_a_landing_place(spec: dict, key: str) -> bool:
