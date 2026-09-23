@@ -1675,12 +1675,21 @@ def doc_response(row, fields: list[str], max_chars: int) -> dict:
     return out
 
 
-def title_candidates(src: Source, title: str, limit: int = 5) -> list[str]:
+def title_candidates(
+    src: Source, title: str, where: str = "", params: tuple = (), limit: int = 5
+) -> list[str]:
+    """近い名前(前方一致)。**引いたときと同じ条件で探す**。
+
+    条件を外して探すと、**出せないものを勧めることになる** —— 消えたもの
+    (`notes.HIDDEN_TAGS`)は `doc` が 404 にするのに、候補には同じ名前が並び、
+    「見つかりません: arXiv / 候補: arXiv」という答えになる。読む側(とくに AI)は
+    同じ名前を投げ直すしかなくなり、本番のログで実際にそれが繰り返されていた。
+    """
     rows = db.query(
         src.path,
-        "SELECT title FROM docs WHERE title LIKE ? ESCAPE '\\'"
-        " ORDER BY rank_score DESC, title LIMIT ?",
-        (escape_like(title) + "%", limit),
+        "SELECT title FROM docs WHERE title LIKE ? ESCAPE '\\'" + where
+        + " ORDER BY rank_score DESC, title LIMIT ?",
+        (escape_like(title) + "%", *params, limit),
     )
     return [r["title"] for r in rows]
 
@@ -1729,10 +1738,23 @@ def describe_candidate(src: Source, row) -> dict:
     return out
 
 
-def not_found_with_candidates(src: Source, title: str) -> HTTPException:
+def not_found_with_candidates(
+    src: Source, title: str, where: str | None = None, params: tuple = ()
+) -> HTTPException:
+    """見つからなかったときの 404。**候補は引けるものだけ**。
+
+    条件を渡さない呼び出しでも、消えたものだけは外す(`removed_clause`)——
+    読み手ごとに思い出す約束にすると、いつか必ず抜ける。
+    """
+    if where is None:
+        where, hidden = removed_clause(src)
+        params = tuple(hidden)
     return HTTPException(
         404,
-        {"error": f"document not found: {title}", "candidates": title_candidates(src, title)},
+        {
+            "error": f"document not found: {title}",
+            "candidates": title_candidates(src, title, where, params),
+        },
     )
 
 
@@ -1760,7 +1782,7 @@ def get_doc_by_title(
     )
     rows = fetch_doc_candidates(src, title, where, tuple(params), where_d)
     if not rows:
-        raise not_found_with_candidates(src, title)
+        raise not_found_with_candidates(src, title, where, tuple(params))
     body = doc_response(rows[0], field_list, max_chars)
     if len(rows) > 1:
         # 同名の別地物がある。黙って 1 件目を返すと取り違えに気づけないので併記する。

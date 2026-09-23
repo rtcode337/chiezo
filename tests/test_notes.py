@@ -749,6 +749,24 @@ class TestHidingWhatWasRemoved:
             "/v1/chiezo_memory/doc", params={"title": "消えた話", "include_removed": "true"}
         ).status_code == 200
 
+    def test_it_is_not_offered_as_a_candidate(self, two_notes):
+        """**出せないものを勧めない。**
+
+        候補を条件なしで探していた頃は「見つかりません: 消えた話 / 候補: 消えた話」
+        という答えになり、読む側(とくに AI)は同じ名前を投げ直すしかなかった。
+        """
+        body = two_notes.get("/v1/chiezo_memory/doc", params={"title": "消えた話"}).json()
+
+        assert body["candidates"] == []
+
+    def test_asking_for_it_brings_it_back_as_a_candidate(self, two_notes):
+        # 含めて引くなら候補にも出る(条件は引きと候補で同じ)
+        body = two_notes.get(
+            "/v1/chiezo_memory/doc", params={"title": "消えた", "include_removed": "true"}
+        ).json()
+
+        assert body["candidates"] == ["消えた話"]
+
     def test_titles_leave_it_out(self, two_notes):
         got = two_notes.get("/v1/chiezo_memory/titles", params={"prefix": "消えた"}).json()["titles"]
 
