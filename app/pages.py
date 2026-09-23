@@ -320,6 +320,9 @@ PAGE_STYLE = """
      ただしボタンは薄くしない。 一度 `color: inherit` を掛けたら、td の灰色を
      継いで「押せないボタン」に見え、**まさに押してほしい行（無効な行）で
      押せないと思われた**（実際に報告を受けた）。文字色を明示して継がせない。 */
+  /* 別の収集から作られた収集。**字下げだけで親子を示す** ——
+     行を分けたり色を変えたりすると、止めてある行(tr.off)の見分けと喧嘩する */
+  td.child { padding-left: 1.1rem; }
   table.ai-settings tr.off { background: #f7f7f7; }
   table.ai-settings tr.off td { color: #999; }
   table.ai-settings tr.off button:not([disabled]) { color: #111; }

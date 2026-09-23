@@ -43,6 +43,7 @@ from app import (
     usage_store,
     workers,
 )
+from app import extract as extraction
 from app import partition as partitioning
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
 from app.pages import CHAT_PATH, browse_url, esc, page_shell
@@ -1555,6 +1556,58 @@ f"{_backend_hint()}"
     )
 
 
+# 親の下に寄せる深さの上限。**輪になっていても止まる**ための数で、
+# 実際に要るのは 1 段(溜めたものから 1 つ作る)。読める字下げの限界でもある
+MAX_NEST = 3
+
+
+def _nested(items) -> list[tuple]:
+    """**親の下に子を寄せた並び**。`(収集, 深さ)` を返す。
+
+    **溜めたものから作る収集は、元になるソース 1 つにつき 1 つ増えていく**
+    (記事のタグから話題の索引、集めた店から系列、名簿から派閥)——
+    一覧が平らなままだと、何と何が組なのかが名前の見当だけになる。
+
+    **親子は `collect.derives_from` が決める**(新しい欄は持たない。どこから
+    作られたかは指定に書いてあり、別に持つと 2 つがずれる)。
+
+    **たどれなかったぶんは落とさずに後ろへ置く。** 指定が輪になっていると
+    (A が B を読み、B が A を読む)どちらも根から届かない —— 落とすと、
+    画面から消えた収集が裏で回り続けることになる。
+    """
+    known = {one.name for one in items}
+    children: dict[str, list] = {}
+    for one in items:
+        children.setdefault(collect.derives_from(one, known), []).append(one)
+    out: list[tuple] = []
+
+    def walk(name: str, depth: int) -> None:
+        for one in children.get(name, []):
+            out.append((one, depth))
+            if depth + 1 < MAX_NEST:
+                walk(one.name, depth + 1)
+
+    walk("", 0)
+    seen = {one.name for one, _depth in out}
+    return out + [(one, 0) for one in items if one.name not in seen]
+
+
+def _derived_note(item, parent: str) -> str:
+    """親を指す一言。**何から作っているのかまで書く** ——
+    字下げだけだと「近い名前が並んでいる」ようにしか見えない。
+
+    **タグから作る回はそう書く**(`of: "tags"`)。あれは溜めたものの索引を作る
+    口で、文書を 1 件ずつ引く名簿とは読む人の期待が違う。
+    """
+    if not parent:
+        return ""
+    of_tags = any(
+        str(one.get("of") or "") == "tags" for one in extraction.specs(item.extract)
+    )
+    what = "のタグから作る索引" if of_tags else "から作る"
+    return f'<br><span class="muted">└ {esc(parent)}{what}</span>'
+
+
 def _collect_html(
     sources: dict[str, Source], disabled: str, sweep: str | None = None,
 ) -> str:
@@ -1578,8 +1631,10 @@ def _collect_html(
             "<br>集めるのも焼くのも取り込みの中で起きるので、途中の置き場は要りません。</p>"
         )
     items = collect.load()
+    known = {one.name for one in items}
     rows = []
-    for item in items:
+    for item, depth in _nested(items):
+        parent = collect.derives_from(item, known)
         # 止めている収集は行ごと薄くする(「AI の相手」の表と同じ扱い)
         cls = "" if item.enabled else ' class="off"'
         toggle_label = "止める" if item.enabled else "有効化"
@@ -1639,10 +1694,12 @@ def _collect_html(
         span = f' rowspan="{len(sweep_cells)}"' if len(sweep_cells) > 1 else ""
         rows.append(
             f"<tr{cls}>"
-            f'<td{span}><a href="/admin/collect/{esc(quote(item.name))}">{esc(item.name)}</a>'
+            f'<td{span}{" class=\"child\"" if depth else ""}>'
+            f'{"└ " * depth}'
+            f'<a href="/admin/collect/{esc(quote(item.name))}">{esc(item.name)}</a>'
             f"{kind_mark}"
             f'<br><span class="muted">{esc(item.description)}</span>{requester}'
-            f"</td>"
+            f"{_derived_note(item, parent)}</td>"
             + f"<td{span}>{baked_docs}</td>"
             + sweep_cells[0]
             + f"<td{span}>"

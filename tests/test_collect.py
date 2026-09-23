@@ -6420,3 +6420,67 @@ class TestATitleCutAtTheBoundary:
 
         titles = [d["title"] for d in docs]
         assert titles == [self.BAKED], f"同じ見出しが 2 度流れている: {titles}"
+
+
+class TestDerivedCollectionsSitUnderTheirParent:
+    """**溜めたものから作る収集は、元になるソース 1 つにつき 1 つ増えていく**
+    (記事のタグから話題の索引、集めた店から系列、名簿から派閥)。一覧が平らな
+    ままだと、何と何が組なのかが名前の見当だけになる。
+    """
+
+    @staticmethod
+    def _make(name: str, **patch):
+        collect.create(name, prompt="{cursor}", interval_minutes=60)
+        if patch:
+            collect.update(name, **patch)
+
+    def test_a_child_follows_its_parent(self, enabled):
+        from app.views import admin
+
+        self._make("tech")
+        self._make("meals")
+        self._make("topics", extract=[{"source": "tech", "of": "tags"}])
+
+        order = [(one.name, depth) for one, depth in admin._nested(collect.load())]
+
+        # 根どうしの並びは作った順のままなので、**親子が隣り合うこと**だけを見る
+        assert dict(order) == {"tech": 0, "meals": 0, "topics": 1}
+        names = [name for name, _d in order]
+        assert names.index("topics") == names.index("tech") + 1
+
+    def test_a_dump_source_is_not_a_parent(self, enabled):
+        """jawiki から引く名簿は「jawiki の子」ではない —— 親子にして読めるのは、
+        どちらもこの層が回している収集どうしのときだけ。"""
+        from app.views import admin
+
+        self._make("painters", extract=[{"source": "jawiki", "tag": "画家"}])
+
+        assert [d for _one, d in admin._nested(collect.load())] == [0]
+
+    def test_a_loop_is_not_dropped(self, enabled):
+        """指定が輪になっていると、どちらも根から届かない ——
+        **落とすと、画面から消えた収集が裏で回り続ける**。"""
+        from app.views import admin
+
+        self._make("one")
+        self._make("two", extract=[{"source": "one", "tag": "x"}])
+        collect.update("one", extract=[{"source": "two", "tag": "x"}])
+
+        names = {one.name for one, _d in admin._nested(collect.load())}
+
+        assert names == {"one", "two"}
+
+    def test_the_note_says_what_it_is_made_from(self, enabled):
+        """**字下げだけだと「近い名前が並んでいる」ようにしか見えない。**"""
+        from app.views import admin
+
+        self._make("tech")
+        self._make("topics", extract=[{"source": "tech", "of": "tags"}])
+        self._make("chains", extract=[{"source": "tech", "tag": "食事処"}])
+
+        [topics] = [one for one in collect.load() if one.name == "topics"]
+        [chains] = [one for one in collect.load() if one.name == "chains"]
+
+        assert "のタグから作る索引" in admin._derived_note(topics, "tech")
+        assert "から作る" in admin._derived_note(chains, "tech")
+        assert admin._derived_note(topics, "") == ""
