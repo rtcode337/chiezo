@@ -97,6 +97,7 @@ services:
       CHIEZO_STATE_DIR: /data/state
       # 本体の調整はどれも既定があるため、変えたいときだけ足す(素のままなら書かない)。
       #CHIEZO_MCP_ALLOWED_HOSTS: "chiezo.example.com:7010,localhost:*"  # /mcp の Host 検証
+      #CHIEZO_CORS_ORIGINS: "https://travel.example.com"  # ブラウザから読ませるオリジン
       #CHIEZO_RESCAN_INTERVAL: "5"    # data/ の変化を拾う間隔(秒)。低速なディスクでは伸ばす
       #CHIEZO_CATALOG_TTL: "300"      # ソース一覧(GET /sources)のキャッシュ(秒)
       #

@@ -85,6 +85,9 @@ services:
       - CHIEZO_RESCAN_INTERVAL=${CHIEZO_RESCAN_INTERVAL-}
       - CHIEZO_CATALOG_TTL=${CHIEZO_CATALOG_TTL-}
       - CHIEZO_MCP_ALLOWED_HOSTS=${CHIEZO_MCP_ALLOWED_HOSTS-}
+      # ブラウザのページから直接読ませるオリジン(カンマ区切り)。空なら誰にも開けない。
+      # 印(Access-Control-Allow-Origin)が無いと、ブラウザは届いた応答を JS へ渡さない
+      - CHIEZO_CORS_ORIGINS=${CHIEZO_CORS_ORIGINS-}
       # 「答える」層(/v1/ask・/ai/chat)。話す相手は管理画面(/admin)から on/off する ——
       # 同居の推論サーバも Gemini も OpenRouter も CLI ブリッジも同じ扱いで、URL は
       # app/providers.py に決め打ち。ユーザーが入れるのは API キーと on/off と
