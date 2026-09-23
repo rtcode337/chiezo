@@ -22,6 +22,8 @@ RSS = """<?xml version="1.0" encoding="UTF-8"?>
       <title>新しいほう</title>
       <link>https://example.com/2</link>
       <description>要約のようなもの。</description>
+      <category>Codex</category>
+      <category>OCI</category>
       <pubDate>Wed, 10 Sep 2026 12:00:00 +0900</pubDate>
     </item>
     <item>
@@ -47,6 +49,7 @@ RSS1 = """<?xml version="1.0" encoding="UTF-8"?>
     <link>https://example.net/1</link>
     <description>みんなが読んでいる。</description>
     <dc:date>2026-09-12T10:00:00+09:00</dc:date>
+    <dc:subject>セキュリティ</dc:subject>
     <hatena:imageurl>https://example.net/thumb.png</hatena:imageurl>
   </item>
 </rdf:RDF>
@@ -59,6 +62,7 @@ ATOM = """<?xml version="1.0" encoding="utf-8"?>
     <title>記事のタイトル</title>
     <link href="https://example.org/a"/>
     <summary>まとめ。</summary>
+    <category term="Rust"/>
     <updated>2026-09-09T03:00:00Z</updated>
   </entry>
 </feed>
@@ -207,6 +211,59 @@ class TestGoingOutside:
         started = time.monotonic()
         run({"urls": ["https://example.com/feed", "https://example.org/atom"]})
         assert time.monotonic() - started >= 0.05
+
+
+class TestTheWordsTheWriterPut:
+    """**書き手が付けた語は、AI が推し量った分野より確か。**
+
+    読まずに捨てていた頃は、製品名がタグに一度も現れず、そこから作るトピックの
+    網も「AI」「セキュリティ」のような広い語ばかりになっていた。
+    """
+
+    def test_rss_categories_come_along(self, serve):
+        serve({"https://example.com/feed": RSS})
+        got = run({"urls": ["https://example.com/feed"]})
+
+        assert got["items"][0]["subjects"] == ["Codex", "OCI"]
+
+    def test_rss1_subjects_come_along(self, serve):
+        """RSS 1.0 は `<dc:subject>` で持つ。"""
+        serve({"https://example.net/hot": RSS1})
+        got = run({"urls": ["https://example.net/hot"]})
+
+        assert got["items"][0]["subjects"] == ["セキュリティ"]
+
+    def test_atom_keeps_them_in_an_attribute(self, serve):
+        """Atom は `<category term="...">`(本文ではなく属性)。"""
+        serve({"https://example.org/atom": ATOM})
+        got = run({"urls": ["https://example.org/atom"]})
+
+        assert got["items"][0]["subjects"] == ["Rust"]
+
+    def test_the_ai_sees_them(self, serve):
+        serve({"https://example.com/feed": RSS})
+
+        text = feeds.render(run({"urls": ["https://example.com/feed"]}))
+
+        assert "[語: Codex、OCI]" in text
+
+    def test_too_many_are_cut(self, serve):
+        """1 件に 10 個並べる配信元がある(そのまま出すと見出しより長くなる)。"""
+        many = "".join(f"<category>語{i}</category>" for i in range(10))
+        serve({"https://example.com/feed": RSS.replace("<category>Codex</category>", many)})
+        got = run({"urls": ["https://example.com/feed"]})
+
+        assert len(got["items"][0]["subjects"]) == feeds.MAX_SUBJECTS
+
+    def test_they_do_not_become_document_tags(self, serve):
+        """**文書のタグには混ぜない** —— 束の名前と出典は「後から出典ごとに外す」
+        ための印で、そこに記事ごとの語が混ざると外す鍵として使えなくなる。
+        """
+        serve({"https://example.com/feed": RSS})
+        items = feeds.to_items(run({"urls": [{"url": "https://example.com/feed", "tags": ["束"]}]}))
+
+        assert items[0]["tags"] == ["束", "ためし新聞"]
+        assert items[0]["subjects"] == ["Codex", "OCI"]
 
 
 class TestWhatTheAiSees:

@@ -73,6 +73,10 @@ MAX_SUMMARY_CHARS = 300
 # 分類をここで済ませるためのものではない(それは AI の巡回の仕事)
 MAX_TAGS = 5
 
+# 1 件から拾う「配信元が付けた語」の上限。10 個並べる配信元があり、
+# そのまま出すと見出しより長い行になる
+MAX_SUBJECTS = 5
+
 # 前回の実行より後のものだけを渡す、の印
 SINCE_LAST_RUN = "last_run"
 
@@ -247,6 +251,27 @@ def _looks_unsafe(body: bytes) -> bool:
     return b"<!DOCTYPE" in body[:4096] or b"<!ENTITY" in body[:4096]
 
 
+def _subjects(item, *paths: str) -> list[str]:
+    """配信元が 1 件ごとに付けている語(`<category>` / `<dc:subject>`)。
+
+    **書き手が付けた語は、AI が推し量った分野より確か**です —— Qiita の記事に
+    「Codex」と書いてあるなら、それはその記事の主役の名前。読まずに捨てていた頃は、
+    **製品名がタグに一度も現れず**、そこから作るトピックの網も大きな分野ばかりに
+    なっていた(実測で、上位の語は AI / セキュリティ / LLM のような広い語ばかり)。
+
+    **数は絞る**(`MAX_SUBJECTS`)。1 件に 10 個並べる配信元があり、そのまま出すと
+    見出しより長い行になる。**並びは配信元のまま** —— 先に書いてあるものほど
+    主題に近い(Qiita も Zenn も、そう並べている)。
+    """
+    out: list[str] = []
+    for path in paths:
+        for found in item.findall(path):
+            word = " ".join((found.text or found.get("term") or "").split())
+            if word and word not in out:
+                out.append(word)
+    return out[:MAX_SUBJECTS]
+
+
 def _text(node, *paths: str) -> str:
     for path in paths:
         found = node.find(path)
@@ -300,6 +325,9 @@ def _rss(root) -> list[dict]:
             )[:MAX_SUMMARY_CHARS],
             "at": _when(_text(item, "pubDate", "{http://purl.org/dc/elements/1.1/}date")),
             "image": _image(item),
+            "subjects": _subjects(
+                item, "category", "{http://purl.org/dc/elements/1.1/}subject"
+            ),
         }
         for item in items
     ]
@@ -315,6 +343,8 @@ def _atom(root) -> list[dict]:
             "summary": _text(entry, f"{_ATOM}summary", f"{_ATOM}content")[:MAX_SUMMARY_CHARS],
             "at": _when(_text(entry, f"{_ATOM}updated", f"{_ATOM}published")),
             "image": _image(entry),
+            # Atom は語を属性で持つ(`<category term="Codex"/>`)
+            "subjects": _subjects(entry, f"{_ATOM}category"),
         })
     return out
 
@@ -385,6 +415,10 @@ def to_items(result: dict) -> list[dict]:
             "at": entry.get("at") or "",
             # **フィードが配っている絵**(ページを取りに行くわけではない)
             "image": entry.get("image") or "",
+            # **配信元が 1 件ごとに付けている語。** 文書のタグには混ぜない ——
+            # 束の名前と出典は「後から出典ごとに外す」ための印で、そこに記事ごとの
+            # 語が混ざると、外す鍵として使えなくなる。読む側(AI)には `{feed}` で渡す
+            "subjects": entry.get("subjects") or [],
         })
     return out
 
@@ -427,6 +461,10 @@ def render(result: dict) -> str:
     lines = "\n".join(
         f"- [{e['from']}] {e['title']}"
         + (f" — {e['summary']}" if e["summary"] else "")
+        # **書き手が付けた語はそのまま渡す。** 製品名や技術名はここにしか出て
+        # こないことがあり(見出しが「これ本当に APEX?」のような書き方のとき)、
+        # 捨てると AI は推し量った分野しか書けない
+        + (f" [語: {'、'.join(e['subjects'])}]" if e.get("subjects") else "")
         + (f" ({e['url']})" if e["url"] else "")
         for e in items if e["title"]
     )
