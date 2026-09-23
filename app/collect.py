@@ -235,6 +235,19 @@ RECENT_PLACEHOLDER = "{recent}"
 # 全部を渡すと入り切らず、毎回同じものを読み直すことになる。
 SOURCE_PLACEHOLDER = "{material}"
 
+# **いま持っているものの見出しだけ**を差し込む場所。
+# **`{current}` と役割が違う** —— あちらは本文まで見せるので、育ったものほど
+# 1 件が重くなり、数百件で天井に当たる(そして**当たると新しいものから切れる**。
+# 並びは古い順なので、いちばん見てほしい入ったばかりのものが落ちる)。
+# こちらは見出しとタグだけなので、1 件がおよそ 1/6 になり、数千件でも入る。
+#
+# 使いどころは「**何を持っているか**」だけが要る回 —— 重なりを畳む、親子を決める、
+# 同じものを二度足さない。本文の良し悪しを見る回(`{current}`)とは分けて持つ。
+NAMES_PLACEHOLDER = "{names}"
+
+# 見出しだけを差し込むときの上限。本文を持たないぶん、件数の天井は高くてよい
+MAX_NAME_DOCS = 3_000
+
 # 材料として 1 回に渡す上限。**多すぎると読み切れない**(そのぶん枠も食う)
 DEFAULT_MATERIAL_LIMIT = 60
 MAX_MATERIAL_LIMIT = 300
@@ -1222,7 +1235,7 @@ def edits_what_is_there(prompt: str, only_new: bool = False) -> bool:
 
     収集ぜんたいの設定として持っていた頃(`mode`)は、巡回ごとに決められなかった。
     いまは巡回ごとに決まるので、収集の側に置く意味が無い —— **依頼文がそれを
-    語っている**。今あるものを差し込んでいる(`{current}` / `{recent}`)なら、
+    語っている**。今あるものを差し込んでいる(`{current}` / `{recent}` / `{names}`)なら、
     AI は「直すものと足すものだけ返す」仕事をしていて、墓標で消すこともできる。
     差し込んでいないなら、AI は今あるものを知らないので、消す力を持たせられない。
 
@@ -1231,7 +1244,10 @@ def edits_what_is_there(prompt: str, only_new: bool = False) -> bool:
     """
     if only_new:
         return False
-    return any(p in (prompt or "") for p in (MATERIAL_PLACEHOLDER, RECENT_PLACEHOLDER))
+    return any(
+        p in (prompt or "")
+        for p in (MATERIAL_PLACEHOLDER, RECENT_PLACEHOLDER, NAMES_PLACEHOLDER)
+    )
 
 
 def load() -> list[Collection]:
@@ -1671,6 +1687,35 @@ def _render_removed(docs: list[dict]) -> str:
     return head + ":\n" + "\n".join(lines)
 
 
+def render_names(previous: dict[str, dict], scoped: bool = False) -> str:
+    """いま持っているものを、**見出しとタグだけ**の一覧にする。
+
+    **本文を見せない代わりに、全部が入る。** `render_material` は 1 件に本文を
+    200 字まで載せるので、育った収集では数百件で天井に当たり、しかも**切れるのは
+    新しいほう**(並びは古い順)—— 重なりを畳む・親子を決めるといった仕事では、
+    いちばん見てほしい入ったばかりのものが落ちることになる。
+
+    **消えたものは出さない。** ここは「いま何を持っているか」を見せる場所で、
+    何を外したかは別の話(`_render_removed` は `{current}` の側が出す)。
+    """
+    alive = [doc for doc in previous.values() if not is_removed(doc)]
+    if not alive:
+        return "(まだ何も入っていません)"
+    lines = []
+    used = 0
+    for doc in alive[:MAX_NAME_DOCS]:
+        tags = doc.get("tags") or []
+        line = f"- {doc['title']}" + (f" 【{'/'.join(str(t) for t in tags)}】" if tags else "")
+        if used + len(line) > MAX_MATERIAL_CHARS:
+            break
+        lines.append(line)
+        used += len(line)
+    head = ("今回の対象にいま入っているものの見出し(全 " if scoped else "いま持っているものの見出し(全 ")
+    head += f"{len(alive)} 件"
+    head += f"。うち {len(lines)} 件だけ載せています)" if len(lines) < len(alive) else ")"
+    return head + ":\n" + "\n".join(lines)
+
+
 def render_recent(
     previous: dict[str, dict], since: str | None, seen: set[str] | None = None,
 ) -> str:
@@ -1912,6 +1957,9 @@ def build_messages(
     重複をまとめる・言い回しを揃える、といった育て方をするときに使う。
     **区画を持つ収集では、その区画のぶんだけが入る**。
 
+    `{names}` は**見出しとタグだけ**。本文を見せないぶん、育った収集でも全部が入る ——
+    重なりを畳む・親子を決めるような、「何を持っているか」だけが要る回のための口。
+
     `{partition}` は**今回見る範囲**。Chiezo が台帳から選んで渡す(`app/partition.py`)。
     矩形だけでは AI にどこか分からないので、近くのものを数件添えた文になる。
     """
@@ -1951,6 +1999,12 @@ def build_messages(
         docs, scoped = scoped_docs(item, previous or {}, partition_key, focus)
         material_text, _shown = render_material(docs, scoped, seen)
         user = user.replace(MATERIAL_PLACEHOLDER, material_text)
+    if NAMES_PLACEHOLDER in user:
+        # **見出しとタグだけ。** 本文を見せないぶん全部が入る ——
+        # 何を持っているかだけが要る回(畳む・親子を決める)のための差し込み口。
+        # **目を通した印は付けない** —— 見出しだけでは読んだことにならない
+        docs, scoped = scoped_docs(item, previous or {}, partition_key, focus)
+        user = user.replace(NAMES_PLACEHOLDER, render_names(docs, scoped))
     if NOW_PLACEHOLDER in user:
         # **人が読むものは日本時間**(この文はそのまま見出しや本文へ写される)
         user = user.replace(NOW_PLACEHOLDER, jst.format(_now()))

@@ -277,6 +277,45 @@ class TestTellingWhichCollectionItIsMadeFrom:
         assert collect.to_public(collect.get("news"))["derives_from"] == ""
 
 
+class TestShowingOnlyTheNames:
+    """**見出しとタグだけ**を差し込む口(`{names}`)。
+
+    本文まで見せる `{current}` は、育った収集ほど 1 件が重くなり、数百件で天井に
+    当たる —— しかも**切れるのは新しいほう**（並びは古い順）なので、重なりを畳む・
+    親子を決めるような回では、いちばん見てほしい入ったばかりのものが落ちる。
+    """
+
+    def test_the_names_go_in_without_the_bodies(self, sample):
+        previous = {
+            "AI": {"doc_id": 1, "title": "AI", "body": "とても長い説明" * 50,
+                   "tags": ["トピック", "分野:AI"], "extra": {}},
+        }
+        collect.update("news", prompt="{names}\n畳んでください")
+
+        user = collect.build_messages(collect.get("news"), previous)[1]["content"]
+
+        assert "- AI 【トピック/分野:AI】" in user
+        assert "とても長い説明" not in user
+
+    def test_a_round_that_sees_the_names_may_remove(self, sample):
+        """見出しが見えていれば、墓標で消す力を持たせてよい（消す相手を指せる）。"""
+        assert collect.edits_what_is_there("{names}\n畳んでください")
+
+    def test_what_is_gone_is_not_listed(self, sample):
+        """ここは「いま何を持っているか」を見せる場所。"""
+        previous = {
+            "AI": {"doc_id": 1, "title": "AI", "body": "説明", "tags": [], "extra": {}},
+            "消えた": {"doc_id": 2, "title": "消えた", "body": "説明",
+                    "tags": [notes.REMOVED_TAG], "extra": {}},
+        }
+        collect.update("news", prompt="{names}")
+
+        user = collect.build_messages(collect.get("news"), previous)[1]["content"]
+
+        assert "- AI" in user
+        assert "消えた" not in user
+
+
 class TestMaterial:
     """焼く素材の組み立て(`material`)。**集めたものはここにしか現れない**。
 
