@@ -234,6 +234,49 @@ class TestRequestingFromOutside:
         assert [c.name for c in collect.due_collections()] == []
 
 
+class TestTellingWhichCollectionItIsMadeFrom:
+    """**溜めたものから作る収集**は、どれから作られたかを名乗る。
+
+    記事のタグから索引を作る・集めた店から系列を起こす、のような収集は 1 つの
+    ソースにつき 1 つ増えていく —— 一覧が平らなままでは、何と何が組なのかが
+    読めなくなる（画面は親の下に並べる）。
+    """
+
+    def test_a_collection_made_from_another_one_says_so(self, enabled):
+        collect.create("news", prompt="p", interval_minutes=60)
+        topics = collect.create(
+            "news_topics", prompt="p", interval_minutes=60,
+            extract_spec={"source": "news", "of": "tags"},
+        )
+
+        assert collect.to_public(topics)["derives_from"] == "news"
+
+    def test_reading_a_dump_does_not_make_it_a_child(self, enabled):
+        """jawiki から引く名簿は「jawiki の子」ではない。
+
+        親子にして読めるのは、どちらもこの層が回している収集どうしのときだけ。
+        """
+        item = collect.create(
+            "painters", prompt="p", interval_minutes=60,
+            extract_spec={"source": "jawiki", "tag": "日本の画家"},
+        )
+
+        assert collect.to_public(item)["derives_from"] == ""
+
+    def test_the_material_counts_too(self, enabled):
+        """材料に読むのも、抽出で引くのも、同じ「そこから作られた」。"""
+        collect.create("news", prompt="p", interval_minutes=60)
+        item = collect.create(
+            "news_map", prompt="{material}", interval_minutes=60,
+            material_spec={"source": "news", "limit": 10},
+        )
+
+        assert collect.to_public(item)["derives_from"] == "news"
+
+    def test_a_plain_collection_has_no_parent(self, sample):
+        assert collect.to_public(collect.get("news"))["derives_from"] == ""
+
+
 class TestMaterial:
     """焼く素材の組み立て(`material`)。**集めたものはここにしか現れない**。
 

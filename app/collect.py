@@ -2519,6 +2519,39 @@ def due_collections(at: datetime | None = None) -> list[Collection]:
     return out
 
 
+def derives_from(item: Collection, known: set[str] | None = None) -> str:
+    """この収集が読んでいる**別の収集**の名前。読んでいなければ空。
+
+    **溜めたものから作る収集**——記事のタグから話題の索引を作る、集めた店から系列を
+    起こす——は、材料か抽出の指定で必ず別のソースを名指しする。その名前が収集で
+    あれば、それが親になる。**新しい欄は持たない** —— どこから作られたかは既に
+    指定に書いてあり、別に持つと 2 つがずれる。
+
+    **見るのは先頭の 1 本だけ。** 指定は何本でも書けるが、親は 1 つに決まっていないと
+    並べようがない(ソースをまたぐ名簿では、先頭が主たる材料)。
+
+    **ダンプのソースは親にしない**(jawiki から引く名簿は「jawiki の子」ではない)。
+    親子にして読めるのは、どちらもこの層が回している収集どうしのときだけ。
+    """
+    names = known if known is not None else {one.name for one in load()}
+    for source in _material_sources(item):
+        if source != item.name and source in names:
+            return source
+    return ""
+
+
+def _material_sources(item: Collection) -> list[str]:
+    """その収集が材料に読むソース(書いてある順)。"""
+    out = []
+    if isinstance(item.material, dict) and (source := item.material.get("source")):
+        out.append(str(source))
+    written = item.extract if isinstance(item.extract, list) else [item.extract]
+    for one in written:
+        if isinstance(one, dict) and (source := one.get("source")):
+            out.append(str(source))
+    return out
+
+
 def to_public(item: Collection, *, with_partitions: bool = True) -> dict:
     """画面と REST に返す形。**次回の予定を必ず入れる**
 
@@ -2530,6 +2563,9 @@ def to_public(item: Collection, *, with_partitions: bool = True) -> dict:
     中身は 1 件ぶんの口(`GET /v1/collect/{name}`)で取ってもらう。
     """
     data = {**item.__dict__, "url": f"/search/{item.name}/"}
+    # **どの収集から作られたか**。画面は親の下に並べるのに使う —— 溜めたものから
+    # 作る収集が増えるほど、一覧が平らなままでは何と何が組なのか読めない
+    data["derives_from"] = derives_from(item)
     sweeps = sweeps_of(item)
     # **一覧に出す予定は、巡回のうちいちばん早いもの。** 巡回を書いている収集では
     # 定義側の `next_run_at` が進まないので、そのまま出すと止まって見える
