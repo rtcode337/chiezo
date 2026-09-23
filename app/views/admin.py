@@ -1983,7 +1983,9 @@ def _usage_html(request: Request | None = None) -> str:
     頼んでよいかを決められない。表なら窓が何本あっても段が増えるだけで済む。
 
     **使わない相手は出さない**(玄関は概況で、設定を見に来る場所ではない)。
-    全部の相手と説明が要るときは「AI と鍵」の面（`views/ai_usage.py`）。
+    全部の相手と説明が要るときは「AI と鍵」の面（`views/ai_usage.py`）——
+    **そこへのリンクはここには置かない**。玄関から辿れる面はメニューに並んでいて、
+    節ごとに「詳しくはあちら」を足すと、同じ行き先が画面の中に何本も増える。
 
     **描くときに相手へ問い合わせない**（`usage.rows()` は控えを読むだけ）。
     玄関は何度も開く画面なので、開くたびに外へ出ると相手のレート制限に当たる。
@@ -2007,8 +2009,7 @@ def _usage_html(request: Request | None = None) -> str:
     return (
         f'<h2 id="{ai_usage.SECTION_ANCHOR}">使用量</h2>\n'
         f'{ai_usage.banner_html(request)}'
-        f'<p class="usage-strip">{button}'
-        '<a href="/admin/ai#ai-usage">→ 使わない相手も含めて見る</a></p>\n'
+        f'<p class="usage-strip">{button}</p>\n'
         f'{ai_usage.table_html(rows, back="/admin")}'
     )
 

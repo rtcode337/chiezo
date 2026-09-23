@@ -1946,6 +1946,26 @@ class TestAdminPages:
         # AI の面へ連れて行かれる(行ごとのボタンも同じ)
         assert html.count('name="back" value="/admin"') == 2
 
+    def test_the_entrance_does_not_link_to_the_ai_page(self, monkeypatch):
+        """玄関から辿れる面はメニューに並んでいる。
+
+        節ごとに「詳しくはあちら」を足すと、同じ行き先が画面の中に何本も増える。
+        """
+        from app import usage, usage_store
+        from app.views import admin as views_admin
+
+        monkeypatch.setattr(usage_store, "is_enabled", lambda: True)
+        monkeypatch.setattr(usage, "refreshable", lambda: ["codex"])
+        monkeypatch.setattr(usage, "rows", lambda: [
+            {"id": "codex", "label": "Codex CLI", "enabled": True, "billing": "",
+             "quota": usage.Quota(supported=True), "spent": {}},
+        ])
+
+        html = views_admin._usage_html()
+
+        assert "使わない相手も含めて見る" not in html
+        assert '<a href="/admin/ai#ai-usage">' not in html
+
     def test_the_entrance_does_not_offer_what_cannot_be_asked(self, monkeypatch):
         """聞ける相手がいなければボタンも出さない(押しても何も起きない口を置かない)。"""
         from app import usage, usage_store

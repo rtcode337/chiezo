@@ -38,7 +38,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 
-from app import media_providers, providers, settings_store, usage_store
+from app import ai_inflight, media_providers, providers, settings_store, usage_store
 
 log = logging.getLogger("chiezo.usage")
 
@@ -523,18 +523,48 @@ def refreshable() -> list[str]:
     return out
 
 
-async def refresh_all() -> dict[str, Quota]:
+def busy_now() -> set[str]:
+    """いま CLI が動いていて、**枠を聞けない相手**。
+
+    枠を聞くのは、その相手の **CLI をもう 1 本起こす**動作
+    (`USAGE_BRIDGE`)。ブリッジは 1 本ずつしか動かさない
+    (`bridge/cli_bridge.py` の `cli_slot`。認証情報が回る相手では、2 本同時に
+    走ると権限ごと失効しうる)ので、走っている最中に聞くと**空くまで待たされて
+    時間切れになる** —— 待たされたぶん画面は固まり、結果は「取れませんでした」に
+    なる。**押せなくするほうが早い。**
+
+    **見るのは走っている往復の控え**(`app/ai_inflight.py`)。無人で回る層
+    (収集の時計)が動かしているぶんもここに立つので、押す人が知らない実行も拾える。
+
+    **直に叩く相手は入らない**(`USAGE_OPENROUTER` など)。あちらは CLI を
+    起こさないので、会話中でも枠は聞ける。
+    """
+    running = {str(row.get("backend") or "") for row in ai_inflight.running()}
+    return {
+        spec.id
+        for spec in providers.all_providers()
+        if spec.usage == providers.USAGE_BRIDGE and spec.id in running
+    }
+
+
+async def refresh_all() -> tuple[dict[str, Quota], list[str]]:
     """枠を聞ける相手を並行に取り直す。直列だと落ちている相手の数だけ待つ。
 
-    返すのは相手ごとの結果。 落ちている相手がいても残りは取り直す
-    —— 1 つの失敗で全部を捨てない(結果は控えにも残る)。
+    返すのは相手ごとの結果と、**飛ばした相手**(`busy_now`)。 落ちている相手が
+    いても残りは取り直す —— 1 つの失敗で全部を捨てない(結果は控えにも残る)。
+
+    **CLI が動いている相手は飛ばす。** 混ぜて聞くと、その 1 件が時間切れになるまで
+    全体が返らない(並行に聞くので、待つのはいちばん遅い相手のぶん)。
+    **失敗として数えない** —— 相手が落ちているわけではないので、次に押せば取れる。
     """
-    targets = refreshable()
+    busy = busy_now()
+    targets = [pid for pid in refreshable() if pid not in busy]
+    skipped = [pid for pid in refreshable() if pid in busy]
     done = await asyncio.gather(*(refresh(pid) for pid in targets), return_exceptions=True)
     return {
         pid: quota for pid, quota in zip(targets, done, strict=True)
         if isinstance(quota, Quota)
-    }
+    }, skipped
 
 
 def label_of(provider_id: str) -> str:

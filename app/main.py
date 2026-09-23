@@ -3476,11 +3476,20 @@ async def ai_usage(
     if name and usage.spec_of(name) is None:
         raise HTTPException(404, {"error": f"unknown backend: {name}",
                                   "backends": [r["id"] for r in usage.rows()]})
+    skipped: list[str] = []
     if refresh:
-        await (usage.refresh(name) if name else usage.refresh_all())
+        if name:
+            await usage.refresh(name)
+        else:
+            # **CLI が動いている相手は飛ばす**(`usage.busy_now`)。混ぜて聞くと、
+            # その 1 件が時間切れになるまで全体が返らない
+            _done, skipped = await usage.refresh_all()
 
     rows = [r for r in usage.rows() if not name or r["id"] == name]
     return {
+        # **飛ばした相手は名乗る。** 黙って古い数を返すと、読む側は取り直せた
+        # つもりで判断する
+        **({"skipped": skipped} if skipped else {}),
         # いつからの数かを添える。書かないと、入れたばかりの環境の「0 回」が
         # 「使っていない」と読めてしまう。
         "recorded_since": usage_store.first_recorded_at(),

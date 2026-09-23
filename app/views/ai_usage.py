@@ -367,14 +367,29 @@ def trail_html(request: Request | None = None) -> str:
 同じ窓の依頼は上の内訳で見る。</p>"""
 
 
-def _refresh_button(row: dict, back: str) -> str:
+def _refresh_button(row: dict, back: str, busy: bool = False) -> str:
+    """行ごとの「取り直す」。
+
+    **CLI が動いている相手は押せなくする**(`usage.busy_now`)。枠を聞くのは
+    その相手の CLI をもう 1 本起こす動作で、走っている最中は空くまで待たされた
+    うえで時間切れになる —— 押せるままだと、待たされてから失敗するだけになる。
+
+    **押したら「取り直しています…」に変わる**(`data-busy`)。相手によっては
+    往復に数十秒かかるので、何も変わらないと押せたのかどうかが分からない。
+    """
     if not row["quota"].supported:
         return '<span class="muted">—</span>'
+    if busy:
+        return (
+            '<button type="button" disabled title="この相手の CLI がいま動いています">'
+            "取り直す</button>"
+            '<span class="muted"> CLI 実行中</span>'
+        )
     return (
         f'<form method="post" action="/admin/ai/usage" class="init-form">'
         f'<input type="hidden" name="provider" value="{esc(row["id"])}">'
         f'<input type="hidden" name="back" value="{esc(back)}">'
-        f'<button type="submit">取り直す</button></form>'
+        f'<button type="submit" data-busy="取り直しています…">取り直す</button></form>'
     )
 
 
@@ -406,12 +421,25 @@ def _back_to(raw: str | None) -> str:
 
 def _refresh_all_button() -> str:
     """まとめて取り直すボタン。 相手が 1 つも無いときは出さない
-    —— 押しても何も起きないボタンは、壊れているのか設定が足りないのか読めない。"""
+    —— 押しても何も起きないボタンは、壊れているのか設定が足りないのか読めない。
+
+    **CLI が動いている相手は数に入れない**(押しても飛ばすので)。飛ばすことは
+    ボタンの横に書く —— 黙って減らすと、押したあとの「N 件」が合わない。
+    """
     targets = usage.refreshable()
     if not targets:
         return ('<p class="muted">まとめて取り直せる相手がいません'
                 "(枠を聞ける相手を「使う」にすると出ます)。</p>")
-    return refresh_all_form(f"使う相手の枠を全部取り直す({len(targets)} 件)")
+    # **引くのは 1 回だけ**(相手ごとに引くと、相手の数だけ控えを読む)
+    running = usage.busy_now()
+    busy = [pid for pid in targets if pid in running]
+    note = (
+        f'<span class="muted">(CLI 実行中の {len(busy)} 件は飛ばします)</span>'
+        if busy else ""
+    )
+    return refresh_all_form(
+        f"使う相手の枠を全部取り直す({len(targets) - len(busy)} 件)"
+    ) + note
 
 
 def refresh_all_form(label: str, back: str = DEFAULT_BACK, klass: str = "init-form") -> str:
@@ -422,7 +450,7 @@ def refresh_all_form(label: str, back: str = DEFAULT_BACK, klass: str = "init-fo
     return (
         f'<form method="post" action="/admin/ai/usage/all" class="{esc(klass)}">'
         f'<input type="hidden" name="back" value="{esc(back)}">'
-        f'<button type="submit">{esc(label)}</button></form>'
+        f'<button type="submit" data-busy="取り直しています…">{esc(label)}</button></form>'
     )
 
 
@@ -439,6 +467,15 @@ def banner_html(request: Request | None = None) -> str:
         return (
             f'<p class="stale">⚠️ {label} の使用量を取れません: {esc(why)}</p>' if why
             else f'<p class="note">✅ {label} の使用量を取り直しました。</p>'
+        )
+    if skipped := q.get("usage_skipped"):
+        # **飛ばしたのは失敗ではない。** 相手が落ちているわけではなく、
+        # CLI が空けば押せる —— 次にどうすればよいかまで書く
+        done = q.get("usage_refreshed_all")
+        got = f"{esc(done)} 件を取り直しました。" if done is not None else ""
+        return (
+            f'<p class="note">{got}{esc(skipped)} は CLI が動いていたので'
+            "飛ばしました(終わってからもう一度押してください)。</p>"
         )
     if (done := q.get("usage_refreshed_all")) is not None:
         # 一気に取り直したとき。 取れた数と、取れなかった相手を並べる ——
@@ -460,13 +497,17 @@ def table_html(rows: list[dict], back: str = DEFAULT_BACK) -> str:
     **その仕事が収まる窓**(長い依頼なら週のほう)で決まるため。
 
     `back` は行ごとの「取り直す」を押した人の戻り先。
+
+    **走っている相手は 1 回だけ引く**(`usage.busy_now`)—— 行ごとに引くと、
+    表を 1 枚描くあいだに控えを相手の数だけ読むことになる。
     """
+    busy = usage.busy_now()
     body = "\n".join(
         f'<tr{"" if row["enabled"] else ' class="off"'}>'
         f'<td>{esc(row["label"])}</td>'
         f"<td>{_quota_cell(row)}</td>"
         f"<td>{_spent_cell(row)}</td>"
-        f"<td>{_refresh_button(row, back)}</td></tr>"
+        f'<td>{_refresh_button(row, back, row["id"] in busy)}</td></tr>'
         for row in rows
     )
     return f"""<table class="ai-settings ai-usage">
@@ -533,11 +574,15 @@ async def refresh_all_usage(back: str = Form(DEFAULT_BACK)):
     **押した画面へ戻す**(`back`)。玄関にも同じボタンがあるので、行き先を
     書き切ると、どこから押しても AI の面へ連れて行かれる。
     """
-    done = await usage.refresh_all()
+    done, skipped = await usage.refresh_all()
     failed = [usage.label_of(pid) for pid, quota in done.items() if quota.error]
-    params = {"usage_refreshed_all": len(done) - len(failed)}
+    params: dict[str, object] = {"usage_refreshed_all": len(done) - len(failed)}
     if failed:
         params["usage_error"] = "、".join(failed)[:300]
+    if skipped:
+        # **飛ばしたことは書く。** 黙って減らすと、数が合わないのか
+        # 取れなかったのかが読めない
+        params["usage_skipped"] = "、".join(usage.label_of(pid) for pid in skipped)[:300]
     return RedirectResponse(
         f"{_back_to(back)}?{urlencode(params)}#{SECTION_ANCHOR}", status_code=303
     )
@@ -555,6 +600,13 @@ async def refresh_usage(provider: str = Form(...), back: str = Form(DEFAULT_BACK
         raise HTTPException(404, {"error": f"unknown provider: {provider}"})
     if not spec.usage:
         raise HTTPException(400, {"error": f"「{spec.label}」は使用量を出しません"})
+    if spec.id in usage.busy_now():
+        # ボタンは disabled にしてあるが、**描いたあとに走り出すことがある**
+        # (無人で回る層が動かす)。断るほうが、待たされて時間切れになるより早い
+        return RedirectResponse(
+            f"{_back_to(back)}?{urlencode({'usage_skipped': spec.label})}#{SECTION_ANCHOR}",
+            status_code=303,
+        )
     quota = await usage.refresh(spec.id)
     params = {"usage_refreshed": spec.id}
     if quota.error:

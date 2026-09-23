@@ -232,6 +232,9 @@ PAGE_STYLE = """
      控えめな見た目にする */
   form.usage-refresh { display: inline; }
   form.usage-refresh button { font-size: 0.85rem; padding: 0.1rem 0.5rem; }
+  /* 送ったあとのボタン。**押せたことが分かる見た目**にする(往復に数十秒かかる) */
+  form.is-busy button, button[disabled] { opacity: 0.6; cursor: progress; }
+  button[disabled] { cursor: not-allowed; }
   /* 取り込みの実行ログ。**走っている間だけ開く**（`views/admin.py`）ので、
      畳んだときに場所を取らない体裁にする */
   details.job-log { margin-top: 0.5rem; }
@@ -548,6 +551,32 @@ BACKEND_FORM_CLASS = "collect-form"
 # 別の画面へ移って台本が取り残された** —— 巡回の設定を収集の面へ移したとき、
 # 相手を変えてもモデルが古い相手のままになり、設定できない欄が残った。
 # 印の付いたフォームがある画面には必ず付いてくる形にして、置き忘れを無くす。
+# 押したあと「…しています」に変える印。**ボタンに書く**ので、置きたい画面が
+# 自分で付ける(`data-busy="取り直しています…"`)
+BUSY_ATTR = "data-busy"
+
+BUSY_FORM_SCRIPT = """<script>
+// 送ったボタンを「…しています」に変えて、二度押しを止める。
+//
+// **この画面は往復に数十秒かかることがある**(CLI に聞く相手)。押しても何も
+// 変わらないと、押せたのか壊れているのかが分からず、もう一度押される ——
+// 2 本目は枠を食うだけで、相手によっては失敗する。
+//
+// **無効にするのは送ったあと**(`setTimeout`)。押した瞬間に無効にすると、
+// ブラウザはそのボタンの name/value を送らない。
+document.addEventListener('submit', function (ev) {
+  var form = ev.target;
+  if (!form || !form.querySelector) { return; }
+  var btn = form.querySelector('button[data-busy]');
+  if (!btn) { return; }
+  setTimeout(function () {
+    btn.textContent = btn.getAttribute('data-busy');
+    btn.disabled = true;
+    form.classList.add('is-busy');
+  }, 0);
+});
+</script>"""
+
 BACKEND_PICKER_SCRIPT = """<script>
 document.addEventListener('change', function (ev) {
   var sel = ev.target;
@@ -742,6 +771,8 @@ def page_shell(title: str, body: str, style: str = "") -> str:
     # **印の付いたフォームがある画面にだけ差し込む。** 会話の画面にも相手のセレクトが
     # あり、あちらは自前の台本で動く —— どの画面にも配ると二重に掴むことになる
     picker = BACKEND_PICKER_SCRIPT if f'class="{BACKEND_FORM_CLASS}"' in body else ""
+    # **印の付いたボタンがある画面にだけ差し込む**(セレクトの台本と同じ判断)
+    busy = BUSY_FORM_SCRIPT if BUSY_ATTR in body else ""
     return f"""<!doctype html>
 <html lang="ja">
 <head>
@@ -759,7 +790,7 @@ def page_shell(title: str, body: str, style: str = "") -> str:
 </head>
 <body>
 {body}
-{picker}
+{picker}{busy}
 <footer class="page-footer">{_build_stamp()}</footer>
 {TOUCH_SCRIPT}
 </body>

@@ -1192,3 +1192,110 @@ class TestNamingTheWindowsApart:
 
         [window] = backend_of(body, "codex")["quota"]["windows"]
         assert window["label"] == "直近 5 時間"
+
+
+class TestWhileTheCliIsRunning:
+    """**CLI が動いている相手の枠は聞けない。**
+
+    枠を聞くのはその相手の CLI を**もう 1 本起こす**動作で、ブリッジは 1 本ずつしか
+    動かさない。走っている最中に聞くと空くまで待たされて時間切れになるので、
+    押せなくして、まとめて取り直すときも飛ばす。
+    """
+
+    def _running(self, backend: str) -> None:
+        from app import ai_inflight
+
+        assert ai_inflight.begin(
+            backend=backend, model="m", effort="", prompt_bytes=10, timeout=900
+        ) is not None
+
+    def test_the_backend_is_named_as_busy(self, env):
+        from app import usage
+
+        with make_client(env, ReplyLLM()):
+            self._running("codex")
+
+            assert usage.busy_now() == {"codex"}
+
+    def test_a_backend_asked_over_http_is_not_busy(self, env):
+        """直に叩く相手は CLI を起こさないので、会話中でも枠は聞ける。"""
+        from app import usage
+
+        with make_client(env, ReplyLLM()):
+            self._running("openrouter")
+
+            assert usage.busy_now() == set()
+
+    def test_the_row_button_is_disabled(self, env):
+        from app import settings_store
+        from app.views import ai_usage
+
+        with make_client(env, ReplyLLM()):
+            settings_store.set_enabled("codex", True)
+            self._running("codex")
+            html = ai_usage.section_html()
+
+        assert "CLI 実行中" in html
+        assert "disabled" in html
+
+    def test_asking_for_all_skips_it(self, env):
+        """飛ばしたことは画面に出す —— 黙って減らすと数が合わない。"""
+        from app import settings_store
+
+        with make_client(env, ReplyLLM()) as client:
+            settings_store.set_enabled("codex", True)
+            self._running("codex")
+            res = client.post("/admin/ai/usage/all", follow_redirects=False)
+
+        assert "usage_skipped" in res.headers["location"]
+
+    def test_asking_for_it_alone_is_refused(self, env):
+        """描いたあとに走り出すことがあるので、口の側でも断る。"""
+        from app import settings_store
+
+        with make_client(env, ReplyLLM()) as client:
+            settings_store.set_enabled("codex", True)
+            self._running("codex")
+            res = client.post(
+                "/admin/ai/usage", data={"provider": "codex"}, follow_redirects=False
+            )
+
+        assert res.status_code == 303
+        assert "usage_skipped" in res.headers["location"]
+        assert "usage_refreshed=" not in res.headers["location"]
+
+
+class TestTheButtonSaysItIsWorking:
+    """**押したら「取り直しています…」に変わる。**
+
+    CLI に聞く相手は往復に数十秒かかることがあり、何も変わらないと押せたのか
+    壊れているのか分からず、もう一度押される —— 2 本目は枠を食うだけで、
+    相手によっては失敗する。
+    """
+
+    def test_the_button_carries_the_label_it_will_show(self, env):
+        from app import settings_store
+        from app.views import ai_usage
+
+        with make_client(env, ReplyLLM()):
+            settings_store.set_enabled("codex", True)
+            html = ai_usage.section_html()
+
+        assert 'data-busy="取り直しています…"' in html
+
+    def test_the_script_travels_with_the_button(self):
+        """印の付いたボタンがある画面にだけ差し込む(セレクトの台本と同じ)。"""
+        from app import pages
+
+        with_button = pages.page_shell("t", '<button data-busy="…">押す</button>')
+        without = pages.page_shell("t", "<p>なにも無い</p>")
+
+        assert pages.BUSY_FORM_SCRIPT in with_button
+        assert pages.BUSY_FORM_SCRIPT not in without
+
+    def test_it_disables_after_the_form_was_sent(self):
+        """押した瞬間に無効にすると、そのボタンの name/value が送られない。"""
+        from app import pages
+
+        assert "setTimeout" in pages.BUSY_FORM_SCRIPT
+        assert "addEventListener('submit'" in pages.BUSY_FORM_SCRIPT
