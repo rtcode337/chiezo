@@ -168,3 +168,52 @@ class TestReuse:
         assert again == first
         # 2 度目は S3 へ抜きに行かない(最後の文はリリース探しのまま)
         assert "COPY" not in conn.sql[-1]
+
+
+class TestTellingTheSameNameApart:
+    """**見分けの札は、その行だけで決まる形にする。**
+
+    流しながら通し番号を振っていた頃は、取り込み直すたびに番号がずれた ——
+    韓国ぶんを外した回では、名前が変わっただけの店が「新しい店」として
+    85,818 件も収集へ足された(見出しが同一性の鍵なので、番号が変われば別物に見える)。
+    """
+
+    def test_a_name_that_appears_once_is_left_alone(self):
+        row = {"same_name": 1, "same_place": 1, "id": "08f2a1b3c4"}
+
+        assert overture._titled("黒船亭", row, "台東区") == "黒船亭"
+
+    def test_a_repeated_name_carries_the_town(self):
+        # 人が読んで意味が分かる札を先に使う
+        row = {"same_name": 12, "same_place": 1, "id": "08f2a1b3c4"}
+
+        assert overture._titled("黒船亭", row, "熊本市北区") == "黒船亭 (熊本市北区)"
+
+    def test_the_same_town_falls_back_to_the_id(self):
+        # GERS の id は版をまたいで変わらないことを売りにしている
+        row = {"same_name": 12, "same_place": 3, "id": "08f2a1b3c4d5"}
+
+        assert overture._titled("セブン-イレブン", row, "新宿区") == "セブン-イレブン (新宿区 08f2a1b3)"
+
+    def test_a_row_without_a_town_uses_the_id(self):
+        row = {"same_name": 2, "same_place": 2, "id": "08f2a1b3c4"}
+
+        assert overture._titled("五平太", row, None) == "五平太 (08f2a1b3)"
+
+    def test_the_label_does_not_move_when_the_dataset_shrinks(self):
+        """**同じ行なら同じ札。** 前後にどれだけ行があっても変わらない。"""
+        row = {"same_name": 5, "same_place": 1, "id": "08f2a1b3c4"}
+
+        first = overture._titled("うどん大吉", row, "神埼市")
+        again = overture._titled("うどん大吉", dict(row), "神埼市")
+
+        assert first == again == "うどん大吉 (神埼市)"
+
+    def test_the_query_counts_the_names(self, adapter, tmp_path):
+        """数えるのは抜くとき(窓関数)。流しながらでは、並びが変わると札が入れ替わる。"""
+        conn = _FakeConn(_files(RELEASES))
+        adapter._connect = lambda: conn
+
+        adapter.fetch(tmp_path)
+
+        assert "count(*) OVER (PARTITION BY names.primary)" in conn.sql[-1]

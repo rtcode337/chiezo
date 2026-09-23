@@ -65,6 +65,31 @@ def _country_code(value: str | None) -> str | None:
     return code
 
 
+def _titled(name: str, row: dict, locality: str | None) -> str:
+    """見出し。**同じ名前が複数あるときだけ、見分けの札を足す**。
+
+    **札はその行だけで決まる形にする。** 流しながら通し番号を振っていた頃は、
+    **取り込み直すたびに番号がずれた** —— 韓国ぶんを外した回では、名前が変わった
+    だけの店が「新しい店」として 85,818 件も収集へ足された(見出しが同一性の鍵なので、
+    番号が変われば別物に見える)。
+
+    札に使うのは、まず**町の名前**(`locality`)—— 人が読んで意味が分かる。
+    同じ町に同じ名前が複数あるときだけ、**Overture の id の頭 8 桁**を足す。
+    この id(GERS)は版をまたいで変わらないことを売りにしているので、
+    そこまで揃えば札は動かない。
+
+    町の名前を持たない行では id だけを使う(日本では住所の自由記述しか無い行がある)。
+    """
+    if int(row.get("same_name") or 1) <= 1:
+        return name
+    ident = str(row.get("id") or "")[:8]
+    if locality and int(row.get("same_place") or 1) <= 1:
+        return f"{name} ({locality})"
+    if locality:
+        return f"{name} ({locality} {ident})" if ident else f"{name} ({locality})"
+    return f"{name} ({ident})" if ident else name
+
+
 def _min_confidence() -> float:
     raw = os.environ.get("OVERTURE_MIN_CONFIDENCE", "").strip()
     try:
@@ -192,6 +217,14 @@ class OvertureAdapter:
                   SELECT
                     id,
                     names.primary AS name,
+                    -- **同じ名前が何件あるかを、抜くときに数えておく**(窓関数)。
+                    -- 見分けの札を「その行だけで決まる形」にするために要る ——
+                    -- 流しながら数えると、先に来た行が素の名前を取るので、
+                    -- 並びが変わるだけで札が入れ替わる
+                    count(*) OVER (PARTITION BY names.primary) AS same_name,
+                    count(*) OVER (
+                      PARTITION BY names.primary, addresses[1].locality
+                    ) AS same_place,
                     categories.primary AS category,
                     categories.alternate AS alt_categories,
                     confidence,
@@ -250,17 +283,20 @@ class OvertureAdapter:
                     if lat is None or lon is None:
                         continue
                     doc_id += 1
-                    title = name
-                    aliases: list[str] = []
-                    if title in seen:
-                        title = f"{name} ({doc_id})"
-                        aliases.append(name)
-                    seen.add(title)
-
                     category = (row.get("category") or "").strip() or None
                     address = (row.get("address") or "").strip() or None
                     region = (row.get("region") or "").strip() or None
                     locality = (row.get("locality") or "").strip() or None
+
+                    title = _titled(name, row, locality)
+                    aliases: list[str] = []
+                    if title != name:
+                        aliases.append(name)
+                    if title in seen:
+                        # 同じ名前・同じ町・同じ id 先頭 8 桁まで揃うことは無いはずだが、
+                        # 揃ってしまったら素性の分かる形で伸ばす(黙って上書きしない)
+                        title = f"{title[:-1]} {doc_id})" if title.endswith(")") else f"{title} ({doc_id})"
+                    seen.add(title)
                     # 本文は「引ける 1 行」。Overture は説明文を持たないので、
                     # 検索で当たるように種別・所在・住所を並べた文を組む(geonames と同じ考え方)
                     where = "、".join(p for p in (region, locality) if p) or None
