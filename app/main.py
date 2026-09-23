@@ -293,6 +293,15 @@ async def _run_collections(app: FastAPI) -> None:
                 continue
             item, sweep = due[0]
             await asyncio.to_thread(start_collection_bake, item.name, sweep.name)
+        except HTTPException as e:
+            # **混んでいるのは失敗ではない。** 取り込みは同時に 1 本しか受けず、
+            # 時計はプロセスごとに立っている(`--workers 2`)ので、同じ周に 2 本が
+            # 同じ組を起こしにいって片方が必ず断られる —— 控えも予定も進めていない
+            # ので、空いた周でそのまま走る。**痕跡ごと出すと、追える失敗が埋まる**
+            if e.status_code in (409, 429):
+                log.info("collection tick: 取り込みが混んでいるので次の周期へ回します")
+            else:
+                log.exception("collection tick failed")
         except Exception:
             log.exception("collection tick failed")
 
@@ -567,8 +576,17 @@ def start_collection_bake(
         trigger_run(name)
     except Exception:
         # **起こせなかったぶんの控えは戻す。** 残すと、いま走っている取り込みが
-        # この巡回のつもりで素材を取りに来る
-        collect.restore_pending(name, was, was_run)
+        # この巡回のつもりで素材を取りに来る。
+        # **ただし、走っているのがこの収集そのものなら戻さない。** 時計はプロセス
+        # ごとに立っている(`--workers 2`)ので、同じ周に 2 本が同じ組を起こしに
+        # いく —— 負けたほうが控えを戻すと、**勝ったほうが起こした取り込みが読む
+        # 控えを消す**ことになり、素材は「次に走るはずの巡回」で組まれる
+        # (押した巡回ではないものが走る)。聞きに行けなければ戻す側へ倒す
+        running = ""
+        with suppress(Exception):
+            running = ingest_busy()
+        if running != name:
+            collect.restore_pending(name, was, was_run)
         raise
     # **行列に居たなら外す。** どの道で走ったかに関わらず、その回はもう走っている
     # —— 画面の「今すぐ実行」も、外のアプリからの依頼(`POST /v1/collect/{name}/run`)も

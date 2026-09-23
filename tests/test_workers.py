@@ -757,6 +757,32 @@ class TestNotStartingOnTopOfARunningOne:
 
         assert collection.get("news").pending_sweep == "ざっと"
 
+    def test_it_is_kept_when_the_running_job_is_this_collection(
+        self, collection, monkeypatch,
+    ):
+        """**負けたほうは控えを消さない。** 時計はプロセスごとに立っているので
+        (`--workers 2`)、同じ組を同時に起こしにいく —— 戻すと、勝ったほうが
+        起こした取り込みが読む控えが消え、別の巡回として素材が組まれる。
+        """
+        import fastapi
+
+        from app import main
+
+        status = {"state": "idle"}
+        monkeypatch.setattr("app.views.admin._fetch_trigger_status", lambda: status)
+
+        def refused(_name):
+            # もう 1 本の時計が先に起こした後(この収集が走っている)
+            status.update({"state": "running", "source": "news"})
+            raise fastapi.HTTPException(409, {"error": "a job is already running: news"})
+
+        monkeypatch.setattr("app.views.admin.trigger_run", refused)
+
+        with pytest.raises(fastapi.HTTPException):
+            main.start_collection_bake("news", "整理")
+
+        assert collection.get("news").pending_sweep == "整理"
+
     def test_waking_a_worker_says_why_it_cannot(self, enabled, monkeypatch):
         import fastapi
 
