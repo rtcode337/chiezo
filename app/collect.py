@@ -2935,13 +2935,9 @@ def plan_partitions(item: Collection, sources: dict, previous: dict[str, dict]) 
     # 混ぜると**精査を頼むほど区画が太り**、見るものが無い区画にも巡回の 1 回が
     # 割り当てられる。消えたものは差し込みには別の一覧として渡る
     alive = _light_docs(previous) if callable(previous) else living(previous)
-    # **件数と「どのあたりか」は同じ 1 周で数える**(`tally`)。母集団は数十万件に
-    # なるので、札のためにもう 1 周舐めるのは高い
-    counts, areas = partitioning.tally(spec, item.partitions, alive)
+    counts = partitioning.counts_of(spec, item.partitions, alive)
     if item.partitions and not partitioning.outgrown(spec, counts):
-        return partitioning.merged(
-            spec, partitioning.counted(item.partitions, counts, areas)
-        )
+        return partitioning.merged(spec, partitioning.counted(item.partitions, counts))
     built = partitioning.build(spec, sources, alive)
     ledger = partitioning.merged(spec, partitioning.refresh(built, item.partitions, spec))
     log.info("partition %s: %d 区画(まとめる前 %d)", item.name, len(ledger), len(built))
