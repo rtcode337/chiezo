@@ -33,6 +33,7 @@ Overture 自身が「重複・ゴミ・属性欠損がある」と明言して�
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 from collections.abc import Iterator
@@ -127,6 +128,11 @@ class OvertureAdapter:
         conn.execute(f"SET s3_region='{S3_REGION}'")
         return conn
 
+    def _terms(self) -> str:
+        """抜き方の指紋。**変われば別のファイル**になり、前の回のものを拾わない。"""
+        terms = f"{self.bbox}|{self.country}|{_min_confidence()}"
+        return hashlib.sha1(terms.encode()).hexdigest()[:8]
+
     def _latest_release(self, conn) -> str:
         """いちばん新しいリリース(`2026-08-19.0` の形)。
 
@@ -164,7 +170,12 @@ class OvertureAdapter:
             release = self._latest_release(conn)
             self._release = release
             date = release.split(".")[0].replace("-", "")
-            out = workdir / f"{self.source}-{date}.parquet"
+            # **抜き方も名前に入れる。** リリースの日付だけで名付けていた頃は、
+            # 条件(国・矩形・confidence)を直しても**前の回のファイルがそのまま
+            # 使い回され**、取り込みは何事もなく終わるのに中身が変わらなかった
+            # (国で絞る条件を足した直後に踏んだ —— 件数が 1 件も減らず、
+            #  効いていないのか書き間違えたのかを外から区別できない)
+            out = workdir / f"{self.source}-{date}-{self._terms()}.parquet"
             if out.exists():
                 log.info("overture: reusing %s", out.name)
                 return out, date

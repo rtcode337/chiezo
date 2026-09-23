@@ -130,3 +130,41 @@ class TestCountry:
             overture.OvertureAdapter(
                 "overture_test", lang=None, bbox=(0.0, 0.0, 1.0, 1.0), country=bad, min_docs=1
             )
+
+
+class TestReuse:
+    """**抜き方が変わったら、前の回のファイルは拾わない。**"""
+
+    def test_the_name_carries_the_terms(self, adapter, tmp_path):
+        conn = _FakeConn(_files(RELEASES))
+        adapter._connect = lambda: conn
+
+        path, date = adapter.fetch(tmp_path)
+
+        assert date == "20260819"
+        assert path.name.startswith("overture_japan-20260819-")
+
+    def test_a_file_from_other_terms_is_not_reused(self, adapter, tmp_path):
+        # 取り込みは何事もなく終わるのに中身が変わらない、がいちばん気づきにくい
+        # (件数が 1 件も減らず、効いていないのか書き間違えたのかが外から分からない)
+        stale = tmp_path / "overture_japan-20260819.parquet"
+        stale.write_bytes(b"old")
+        conn = _FakeConn(_files(RELEASES))
+        adapter._connect = lambda: conn
+
+        path, _date = adapter.fetch(tmp_path)
+
+        assert path != stale
+        assert "COPY" in conn.sql[-1]
+
+    def test_the_same_terms_are_reused(self, adapter, tmp_path):
+        conn = _FakeConn(_files(RELEASES))
+        adapter._connect = lambda: conn
+        first, _ = adapter.fetch(tmp_path)
+        first.write_bytes(b"done")
+
+        again, _ = adapter.fetch(tmp_path)
+
+        assert again == first
+        # 2 度目は S3 へ抜きに行かない(最後の文はリリース探しのまま)
+        assert "COPY" not in conn.sql[-1]
