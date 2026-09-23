@@ -329,9 +329,13 @@ PAGE_STYLE = """
   /* 押せないボタン（条件を満たしていない）は、見た目でもそう分かるようにする */
   table.ai-settings button[disabled] { color: #999; cursor: not-allowed; }
   /* 巡回の設定は、その巡回の行の続きとして出す。**上の余白と枠線を取る** ——
-     離して置くと、折り畳みの見出しが「下の巡回の見出し」に見える(実際にそう読まれた)。 */
+     離して置くと、折り畳みの見出しが「下の巡回の見出し」に見える(実際にそう読まれた)。
+     **空けるのは下だけ** —— 次の巡回との境目はここで、上に空けると所属が逆に見える。
+     **見出しは太字のまま**(他の折り畳みと同じ)—— 押して開く場所だと分かることが先で、
+     どの巡回のものかは上に詰めて示す。 */
   tr.sweep-edit td { border-top: 0; padding-top: 0; }
-  tr.sweep-edit > td > details > summary { font-weight: normal; padding: 0.1rem 0; color: #555; }
+  tr.sweep-edit > td > details { margin-top: 0; margin-bottom: 0.35rem; }
+  tr.sweep-edit > td > details > summary { padding: 0.1rem 0; }
   tr.sweep-edit .sweep-row { margin-top: 0.4rem; }
 
   /* 使用量の表。枠の欄は折り返す —— 1 行が「帯 + 使用率 + 戻る時刻」で長く、

@@ -1459,8 +1459,10 @@ def _collect_detail_html(
     他の収集の行が画面外へ押し出されていた —— 読みに来た人はその収集だけを
     見に来ているので、専用の面に置けば畳む理由が無い。
     """
+    # **プロンプトは編集の中だけに置く。** 面の頭にも同じ長文を出していた頃は、
+    # 2 回並ぶうえ、進み具合も区画も**そのぶん下へ押し出されていた** ——
+    # この面を開く人が先に読みたいのは、どこまで進んだかのほう
     return (
-        f'<pre class="prompt-view">{esc(item.prompt)}</pre>'
         f'<p class="muted">進み具合(次の実行で {{cursor}} に入る値): '
         f'<code>{esc(item.cursor) or "(まだ無し)"}</code></p>'
         f"{_redo_form(item, disabled)}"

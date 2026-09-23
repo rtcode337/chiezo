@@ -4970,10 +4970,13 @@ class TestTheCollectSectionMarkup:
         # **名前は繰り返さない**（すぐ上の行に出ているし、名前入りだと
         # 下の巡回の見出しに見える）
         assert "<summary>設定</summary>" in self._table()
-        # 面のほうには畳まずに出る
+        # **プロンプトは編集の中だけ。** 面の頭にも同じ長文を出していた頃は、
+        # 2 回並ぶうえ、進み具合も区画もそのぶん下へ押し出されていた
         detail = self._detail()
-        assert '<pre class="prompt-view">' in detail
+        prompt = collect.get("news").prompt
+        assert f'<pre class="prompt-view">{prompt}</pre>' not in detail
         assert "<summary>プロンプト</summary>" not in detail
+        assert '<textarea name="prompt"' in detail
 
     def test_sweeps_are_fields_not_json(self, sample):
         """JSON を直に書かせると、間隔ひとつ変えるのに配列の構文を相手にすることになる。
@@ -5118,7 +5121,6 @@ class TestTheCollectionPage:
         collect.update("news", sweeps=[{"name": "ざっと"}, {"name": "じっくり"}])
         html = client.get("/admin/collect/news").text
 
-        assert '<pre class="prompt-view">' in html
         assert "<summary>プロンプト</summary>" not in html
         # 巡回の表も、直す口も同じ面にある
         assert "ざっと" in html and "じっくり" in html
