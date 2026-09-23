@@ -975,7 +975,10 @@ def _run_tags(spec: dict, sources: dict) -> tuple[Iterator[dict], str]:
                 "last_seen": row["last_seen"] or "",
             }
             if partners := linked.get(row["tag"]):
-                extra["links"] = partners
+                # **脇書きに入れ子は置かない**(`collect._carried` の決まり)ので、
+                # 「語:回数」の並びにする。読む側は右端の `:` で割る ——
+                # 語そのものに `:` が入ることがある(「CodeZine:新着一覧」)
+                extra["links"] = [f"{one['tag']}:{one['n']}" for one in partners]
             yield {
                 "title": row["tag"],
                 "body": (

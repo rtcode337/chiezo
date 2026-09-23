@@ -107,6 +107,9 @@ MAX_SWEEPS = 8
 MAX_CARRIED_KEYS = 10
 MAX_CARRIED_KEY_CHARS = 40
 MAX_CARRIED_CHARS = 200
+# 脇書きに置ける並びの長さ。**入れ子は通さないが、短い語の並びは通す** ——
+# 「一緒に出てくる語」のように、1 件の脇に添える事実が並びになることがある
+MAX_CARRIED_ITEMS = 20
 # 1 件が持てる脇書きの数。**重ねる作りなので、天井はこちらに要る** ——
 # 言われていないものを消さない以上、放っておくと回を重ねるだけ増える
 MAX_EXTRA_KEYS = 20
@@ -2983,6 +2986,7 @@ def stream_docs(
     sweep: str = "",
     unreviewed: bool = False,
     reviewed: set[str] | None = None,
+    facts: bool = False,
 ):
     """焼く素材を 1 件ずつ返す。`material` の中身で、**丸ごとは持たない**。
 
@@ -3008,6 +3012,10 @@ def stream_docs(
     **同じ URL の 1 件は足さない**(`url_key`)。見出しが重複の鍵だが、見出しは
     書き換わる —— 書き換えた側は新しい 1 件として通るので、同じ記事が 2 件並ぶ。
     弾いたぶんは `duplicates` に数えて見出しも残す(黙って落とさない)。
+
+    `facts` は「機械が運んできた脇書きで入れ替える」(機械で引く回)。数えた値は
+    回るたびに変わるので、足すだけの回でもそこだけは新しくする —— 本文とタグは
+    AI のものなので触らない。
     """
     counts = diff if diff is not None else {}
     now = _iso(_now())
@@ -3054,9 +3062,11 @@ def stream_docs(
             continue
         if only_new:
             # **足すだけの回。** 既にあるものには触らない(数えるだけ)。
-            # ただし、まだ持っていない脇書きは受け取る
+            # ただし、まだ持っていない脇書きは受け取る。
+            # **機械で引く回は、運んできた鍵を入れ替える**(`facts`)—— 数えた値は
+            # 回るたびに変わるので、足さないと最初に拾った日の数が残り続ける
             skipped += 1
-            yield _with_new_facts(before, raw)
+            yield _with_facts(before, raw) if facts else _with_new_facts(before, raw)
             continue
         if edits and _is_tombstone(raw):
             # 墓標。**消さずに印を付けて残す**
@@ -3153,6 +3163,7 @@ def material(
     sweep: str = "",
     unreviewed: bool = False,
     reviewed: set[str] | None = None,
+    facts: bool = False,
 ) -> tuple[list[dict], dict]:
     """焼く素材と、前世代との差分を組み立てる。
 
@@ -3189,7 +3200,7 @@ def material(
     counts: dict = {}
     rows = sorted(previous.values(), key=lambda d: d["doc_id"])
     docs = list(stream_docs(
-        item, rows, collected, only_new, edits, counts, sweep, unreviewed, reviewed,
+        item, rows, collected, only_new, edits, counts, sweep, unreviewed, reviewed, facts,
     ))
     return docs, counts
 
@@ -3492,12 +3503,31 @@ def _with_new_facts(doc: dict, raw: dict) -> dict:
     return {**doc, "extra": _merge_extra(extra, fresh)} if fresh else doc
 
 
+def _with_facts(doc: dict, raw: dict) -> dict:
+    """既にある 1 件の脇書きを、**機械が運んできた値で入れ替える**。
+
+    数えた値(件数・直近の件数・最後に付いた日)は回るたびに変わるので、
+    **足すだけの回でもそこだけは新しくする** —— 入れ替えないと、最初に拾った日の
+    数がそのまま残り、「いま動いているか」が永久に古いままになる。
+
+    **触るのは運ばれてきた鍵だけ。** 本文もタグも、運ばれていない鍵も動かさない ——
+    あちらは AI が育てるもので、機械が持ち主ではない。
+    """
+    extra = doc.get("extra") if isinstance(doc.get("extra"), dict) else {}
+    fresh = {k: v for k, v in _carried(raw.get("extra")).items() if v is not None}
+    return {**doc, "extra": _merge_extra(extra, fresh)} if fresh else doc
+
+
 def _carried(raw) -> dict:
     """運ばれてきた事実。**そのまま載る値だけを通す**。
 
     載せるのは「元の長期記憶に書いてある事実」で、読む側が 1 件ずつ引き直さなくて
     済むようにするためのもの(知名度・座標など)。**入れ子は通さない** ——
     ここは 1 件の脇に添える札で、記事を丸ごと写す場所ではない。
+
+    **短い語の並びは通す** —— 「一緒に出てくる語」のように、1 件の脇に添える事実が
+    並びになることがある。通すのは**そのまま載る値の並び**だけで、入れ子の入れ子は
+    やはり通さない(`MAX_CARRIED_ITEMS` で長さも切る)。
 
     **null はそのまま通す**(「この鍵を消して」の印。解くのは `_merge_extra`)。
     """
@@ -3506,9 +3536,25 @@ def _carried(raw) -> dict:
     out = {}
     for key, value in list(raw.items())[:MAX_CARRIED_KEYS]:
         name = str(key).strip()[:MAX_CARRIED_KEY_CHARS]
-        if not name or not (value is None or isinstance(value, (str, int, float, bool))):
+        if not name:
             continue
-        out[name] = value[:MAX_CARRIED_CHARS] if isinstance(value, str) else value
+        if isinstance(value, list):
+            if kept := _carried_list(value):
+                out[name] = kept
+            continue
+        if value is None or isinstance(value, (str, int, float, bool)):
+            out[name] = value[:MAX_CARRIED_CHARS] if isinstance(value, str) else value
+    return out
+
+
+def _carried_list(raw: list) -> list:
+    """並びの脇書き。**そのまま載る値だけ**を、長さを切って通す。"""
+    out = []
+    for value in raw[:MAX_CARRIED_ITEMS]:
+        if isinstance(value, str):
+            out.append(value[:MAX_CARRIED_CHARS])
+        elif isinstance(value, (int, float, bool)):
+            out.append(value)
     return out
 
 
@@ -3780,7 +3826,8 @@ def _count_dropped(item, plan, previous, collected, only_new, edits) -> int:
 
 def bake_lines(item, sources: dict, previous, collected, only_new=False, edits=False,
                survey: dict | None = None, sweep: str = "",
-               unreviewed: bool = False, reviewed: set[str] | None = None):
+               unreviewed: bool = False, reviewed: set[str] | None = None,
+               facts: bool = False):
     """焼く素材を 1 行ずつ返す。**2 周目**(数えるのは `bake_survey`)。
 
     **どの回が焼いたかはここで渡す。** 押すのは実際に焼かれる素材のほうで、
@@ -3805,7 +3852,7 @@ def bake_lines(item, sources: dict, previous, collected, only_new=False, edits=F
     }, ensure_ascii=False)
 
     for doc in stream_docs(
-        item, rows(), collected, only_new, edits, None, sweep, unreviewed, reviewed,
+        item, rows(), collected, only_new, edits, None, sweep, unreviewed, reviewed, facts,
     ):
         if limit is not None and _doc_time(doc) < limit:
             continue

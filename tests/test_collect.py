@@ -2767,17 +2767,50 @@ class TestCarryingFactsIntoTheDoc:
         assert docs[0]["extra"]["collected_at"]
 
     def test_nested_values_do_not_ride_along(self, sample):
-        """1 件の脇に添える札であって、記事を丸ごと写す場所ではない。"""
+        """1 件の脇に添える札であって、記事を丸ごと写す場所ではない。
+
+        **そのまま載る値の並びは通す** —— 「一緒に出てくる語」のように、添える事実が
+        並びになることがある。通らないのは入れ子のほうで、並びの中の入れ子も落ちる。
+        """
         docs, _diff = collect.material(
             collect.get("news"), {},
             [{"title": "モネ", "body": "画家です", "extra": {
-                "pageviews_month": 8869, "本文": {"節": "長い入れ子"}, "並び": [1, 2, 3],
+                "pageviews_month": 8869,
+                "本文": {"節": "長い入れ子"},
+                "並び": [1, 2, 3],
+                "入れ子の並び": [{"節": "長い"}],
             }}],
         )
 
         assert docs[0]["extra"]["pageviews_month"] == 8869
         assert "本文" not in docs[0]["extra"]
-        assert "並び" not in docs[0]["extra"]
+        assert docs[0]["extra"]["並び"] == [1, 2, 3]
+        assert "入れ子の並び" not in docs[0]["extra"]
+
+    def test_a_machine_round_refreshes_what_it_counted(self, sample):
+        """**数えた値は回るたびに変わる。**
+
+        足すだけの回で「持っている値は上書きしない」ままだと、最初に拾った日の数が
+        残り続け、いま動いているかが永久に古いままになる。**触るのは運ばれてきた鍵
+        だけ** —— 本文もタグも AI が育てるもので、機械が持ち主ではない。
+        """
+        previous = {"AI": {
+            "doc_id": 1, "title": "AI", "opening": "冒頭", "body": "AI の説明（AI が書いた）",
+            "tags": ["トピック"], "updated_at": "2026-01-01T00:00:00+00:00",
+            "extra": {"docs": 3, "docs_recent": 3},
+        }}
+        collected = [{"title": "AI", "body": "この語が付いているのは 9 件。",
+                      "extra": {"docs": 9, "docs_recent": 1}}]
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous, collected, only_new=True, facts=True
+        )
+
+        assert docs[0]["extra"]["docs"] == 9
+        assert docs[0]["extra"]["docs_recent"] == 1
+        # 本文とタグは動かさない
+        assert docs[0]["body"] == "AI の説明（AI が書いた）"
+        assert docs[0]["tags"] == ["トピック"]
 
     def test_an_edit_does_not_drop_the_facts(self, sample):
         """**AI が手を入れる回には、運んだ事実は返ってこない。**

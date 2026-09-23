@@ -1047,6 +1047,9 @@ async def _collect_material(name: str, sources: dict) -> str:
                     # **AI を呼ばない回で入るものは未精査**(`collect.asks_ai`)——
                     # フィードも機械抽出も、宣伝や的外れをそのまま引き受ける
                     not collect.asks_ai(item, sweep), shown,
+                    # **機械で引く回は、運んできた脇書きを入れ替える**
+                    # (`collect.uses_extract`)—— 数えた値は回るたびに変わる
+                    collect.uses_extract(item, sweep),
                 ),
                 name, plan.get("rows"),
             )

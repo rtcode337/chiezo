@@ -1237,8 +1237,9 @@ class TestMakingARosterOutOfTags:
         items, _cursor = run(extract.normalize(self._spec()), articles)
         got = {item["title"]: item["extra"] for item in items}
 
-        assert {one["tag"] for one in got["AI"]["links"]} >= {"セキュリティ", "Rust"}
-        assert next(one["n"] for one in got["AI"]["links"]) == 2
+        # 「語:回数」の並び。語そのものに `:` が入りうるので、読む側は右端で割る
+        assert got["AI"]["links"][0] == "セキュリティ:2"
+        assert "Rust:1" in got["AI"]["links"]
 
     def test_the_caller_says_which_words_are_not_topics(self, articles):
         """**外す語を書くのは頼む側。** Chiezo には、どれが媒体名かを知る手立てが無い。"""
