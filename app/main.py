@@ -280,6 +280,9 @@ async def _run_collections(app: FastAPI) -> None:
     while True:
         await asyncio.sleep(COLLECT_TICK_SECONDS)
         try:
+            # **焼くところで落ちた回を、いちばん先に戻す。** 戻す前に次を起こすと、
+            # 進んだままの印で次の区画が選ばれる
+            await asyncio.to_thread(_rewind_failed_bakes)
             await asyncio.to_thread(_fill_worker_queues)
             # **ワーカーの順番が先。** 拾った塊を流し切るまでそのワーカーに優先権を
             # 持たせる —— 途中で他の回に割り込まれると「1 度の起動で N 本」が
@@ -304,6 +307,67 @@ async def _run_collections(app: FastAPI) -> None:
                 log.exception("collection tick failed")
         except Exception:
             log.exception("collection tick failed")
+
+
+def _rewind_failed_bakes() -> None:
+    """焼くところで落ちた回を、走る前まで戻す(`collect.rewind_failed_bake`)。
+
+    **集める層は「素材を組んだ」までしか知らない。** 控えを書いてから流し始める
+    作りなので(流し始めたらステータスは変えられない)、焼くところで落ちても
+    画面には成功しか出ない —— 区画の印もカーソルも進んだままで、その区画は
+    一周するまで誰も見に来ない。**枠を 1 回ぶん使って、成果だけが無い。**
+    本番で、素材が途中で切れた回がそのまま「見終わった」になった。
+
+    **焼いた側の結果は取り込みの状態にある**ので、こちらから拾いに行く ——
+    取り込みは収集の名前しか運べず、終わったことを教えに来る道も無い。
+
+    **落ちた回は 2 つの形で出てくる。** いまの 1 本がそれなら `state` が error、
+    次の取り込みが始まっていれば `last_failure` に退く。どちらも見る ——
+    片方だけだと、1 分の周期の合間に次が始まった回を取りこぼす。
+
+    **収集でないソースは素通りする**(地図辞典などの取り込み)。
+    **ここで落ちても時計は止めない** —— 戻せないことと、次を起こせないことは別。
+    """
+    from app.views.admin import _fetch_trigger_status
+
+    try:
+        job = _fetch_trigger_status() or {}
+    except Exception:
+        log.exception("取り込みの状態を読めなかった(巻き戻しは次の周期へ)")
+        return
+    failures = [job] if job.get("state") == "error" else []
+    if isinstance(last := job.get("last_failure"), dict):
+        failures.append(last)
+    for failed in failures:
+        source = str(failed.get("source") or "")
+        started = str(failed.get("started_at") or "")
+        finished = str(failed.get("finished_at") or "")
+        if not source or not started or not finished:
+            continue
+        try:
+            undone = collect.rewind_failed_bake(
+                source, str(failed.get("error") or ""), started, finished,
+            )
+        except HTTPException:
+            continue  # 収集ではないソース(あるいは消された収集)
+        except Exception:
+            log.exception("collect %s: 落ちた回を戻せなかった", source)
+            continue
+        if not undone:
+            continue
+        log.warning(
+            "collect %s: 焼くところで落ちたので「%s」の 1 回を戻した"
+            "(区画 %d、進み具合も戻した)",
+            source, undone["sweep"], len(undone["visited"]),
+        )
+        with suppress(Exception):
+            collect_log.record(
+                source,
+                status=collect_log.STATUS_ERROR,
+                error=f"焼くところで落ちました: {failed.get('error') or ''}",
+                sweep=undone["sweep"],
+                scope=undone["visited"],
+            )
 
 
 def _fill_worker_queues() -> None:

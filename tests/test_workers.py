@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 import pytest
 
 from app import machine_store, usage_store, workers
+from app import partition as partitioning
 
 
 @pytest.fixture
@@ -683,6 +684,104 @@ class TestRunningItByHandInstead:
         workers.done("精査", "news", "ざっと")
 
         assert workers.queued("精査") == []
+
+
+class TestPuttingBackARoundThatFailedToBake:
+    """**焼くところで落ちた回を、時計が拾って戻す**(`main._rewind_failed_bakes`)。
+
+    取り込みは収集の名前しか運べず、終わったことを教えに来る道も無い ——
+    落ちたことが分かるのは取り込みの状態だけなので、こちらから拾いに行く。
+    """
+
+    @pytest.fixture
+    def ran(self, enabled, monkeypatch):
+        from app import collect
+
+        monkeypatch.setenv("CHIEZO_NOTES_DIR", str(enabled / "corpus"))
+        monkeypatch.setattr("app.views.admin.TRIGGER_URL", "http://trigger")
+        collect.create("news", prompt="p", interval_minutes=60,
+                       sweeps=[{"name": "ざっと"}])
+        collect.update("news", cursor="a", partitions=[{"key": "あ", "count": 1}])
+        collect.record_result(
+            "news", status="ok", sweep="ざっと", visited=["あ"], next_cursor="b",
+        )
+        return collect
+
+    def _status(self, monkeypatch, job):
+        monkeypatch.setattr("app.views.admin._fetch_trigger_status", lambda: job)
+
+    def _window(self, collection):
+        at = collection.get("news").last_undo["at"]
+        return {"started_at": at, "finished_at": at}
+
+    def test_the_failure_showing_now_is_put_back(self, ran, monkeypatch):
+        from app import main
+
+        self._status(monkeypatch, {
+            "state": "error", "source": "news",
+            "error": "validation failed: only 5 docs (< 9)", **self._window(ran),
+        })
+
+        main._rewind_failed_bakes()
+
+        item = ran.get("news")
+        assert item.cursor == "a"
+        assert item.last_status == "error"
+        assert partitioning.progress(item.partitions, "ざっと") == (0, 1)
+
+    def test_a_failure_that_has_already_been_pushed_aside_is_put_back(self, ran, monkeypatch):
+        """**次の取り込みが始まっていれば `last_failure` に退く。** 1 分の周期の
+        合間に次が始まった回を取りこぼさない。
+        """
+        from app import main
+
+        self._status(monkeypatch, {
+            "state": "running", "source": "painters",
+            "last_failure": {"source": "news", "error": "boom", **self._window(ran)},
+        })
+
+        main._rewind_failed_bakes()
+
+        assert ran.get("news").cursor == "a"
+
+    def test_a_source_that_is_not_a_collection_is_passed_over(self, ran, monkeypatch):
+        """地図辞典などの取り込みが落ちても、ここは何もしない。"""
+        from app import main
+
+        self._status(monkeypatch, {
+            "state": "error", "source": "jawiki", "error": "boom", **self._window(ran),
+        })
+
+        main._rewind_failed_bakes()
+
+        assert ran.get("news").cursor == "b"
+
+    def test_a_round_that_baked_is_left_alone(self, ran, monkeypatch):
+        """**戻すのは、その取り込みが運んだ回だけ。**"""
+        from app import main
+
+        self._status(monkeypatch, {
+            "state": "error", "source": "news", "error": "boom",
+            "started_at": "2020-01-01T00:00:00+00:00",
+            "finished_at": "2020-01-02T00:00:00+00:00",
+        })
+
+        main._rewind_failed_bakes()
+
+        assert ran.get("news").cursor == "b"
+        assert partitioning.progress(ran.get("news").partitions, "ざっと") == (1, 1)
+
+    def test_an_unreachable_trigger_does_not_stop_the_clock(self, ran, monkeypatch):
+        from app import main
+
+        def boom():
+            raise RuntimeError("no route to host")
+
+        monkeypatch.setattr("app.views.admin._fetch_trigger_status", boom)
+
+        main._rewind_failed_bakes()  # 落ちない
+
+        assert ran.get("news").cursor == "b"
 
 
 class TestNotStartingOnTopOfARunningOne:

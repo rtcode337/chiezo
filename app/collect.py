@@ -2389,6 +2389,53 @@ def rewind(name: str) -> Sweep:
     return this
 
 
+def rewind_failed_bake(name: str, error: str, since: str, until: str) -> dict | None:
+    """**焼くところで落ちた回**を、走る前まで戻す。戻したら控えを返す(でなければ None)。
+
+    集める層は「素材を組んだ」までしか知らない。**控えを書いてから流し始める**
+    作りなので(流し始めたらステータスは変えられない)、焼くところで落ちても
+    定義の側には成功しか残らない —— 区画の印もカーソルも進んだままで、その区画は
+    一周するまで誰も見に来ない。**枠を 1 回ぶん使って、成果だけが無い。**
+
+    **戻してよいのは、その取り込みが運んだ回だけ。** 控えの時刻が取り込みの
+    始まりと終わりのあいだに無ければ何もしない —— 別の回のものを戻すと、
+    ちゃんと焼けている回の印まで落ちる。
+
+    **時計は戻さない**(`next_run_at` / `last_run_at`)。すぐ焼き直させると、
+    同じ理由で落ち続ける回が枠を食い続ける —— 次の予定で普通に走ればよい。
+
+    **1 回ぶんしか持たない控え**(`last_undo`)を使うので、二度は戻らない
+    (`--workers 2` で時計が 2 本立っていても、2 度目は None が返る)。
+    """
+    current = get(name)
+    undo = current.last_undo or {}
+    sweep_name = str(undo.get("sweep") or "")
+    at, start, end = _parse(str(undo.get("at") or "")), _parse(since), _parse(until)
+    if not sweep_name or at is None or start is None or end is None:
+        return None
+    if not start <= at <= end:
+        return None
+    visited = [str(key) for key in (undo.get("visited") or [])]
+    reason = f"焼くところで落ちました: {error}".strip()[:500]
+    _replace_one(name, replace(
+        current,
+        cursor=str(undo.get("cursor") or ""),
+        partitions=partitioning.forget_visits(current.partitions, visited, sweep_name),
+        last_undo=None,
+        last_status="error",
+        last_error=reason,
+        # **巡回の側にも書く。** 画面の「前回」は巡回ごとに出るので、
+        # 収集ぜんたいの欄だけ直しても成功したように見えたままになる
+        sweeps=[
+            {**raw, "last_status": "error", "last_error": reason}
+            if raw.get("name") == sweep_name else raw
+            for raw in current.sweeps
+        ],
+        updated_at=_iso(_now()),
+    ))
+    return {"sweep": sweep_name, "visited": visited, "at": str(undo.get("at") or "")}
+
+
 def restart_cycle(name: str, sweep_name: str) -> Sweep:
     """その巡回の**一周をやり直す**(区画の印を台帳ぜんたいから外す)。戻した巡回を返す。
 

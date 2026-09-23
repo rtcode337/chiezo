@@ -2016,6 +2016,82 @@ class TestRedoingTheLastRun:
         assert "集めた中身は戻りません" in html
 
 
+class TestARoundThatFailedToBakeIsPutBack:
+    """**焼くところで落ちた回は、走る前まで戻す**(`collect.rewind_failed_bake`)。
+
+    集める層は「素材を組んだ」までしか知らない —— 控えを書いてから流し始める
+    作りなので(流し始めたらステータスは変えられない)、焼くところで落ちても
+    定義の側には成功しか残らない。区画の印もカーソルも進んだままで、その区画は
+    一周するまで誰も見に来ない。**枠を 1 回ぶん使って、成果だけが無い。**
+    """
+
+    def _ran(self, cursor="a", next_cursor="b"):
+        """1 回走らせて、その回を運んだ取り込みの時間帯を返す。"""
+        collect.update(
+            "news", cursor=cursor, sweeps=[{"name": "ざっと"}],
+            partitions=[{"key": "あ", "count": 1}, {"key": "い", "count": 1}],
+        )
+        collect.record_result(
+            "news", status="ok", sweep="ざっと", visited=["あ"], next_cursor=next_cursor,
+        )
+        at = collect.get("news").last_undo["at"]
+        return at, at
+
+    def test_the_marks_and_the_cursor_go_back(self, sample):
+        since, until = self._ran()
+        assert partitioning.progress(collect.get("news").partitions, "ざっと") == (1, 2)
+
+        undone = collect.rewind_failed_bake("news", "only 5 docs (< 9)", since, until)
+
+        assert undone["sweep"] == "ざっと"
+        assert undone["visited"] == ["あ"]
+        item = collect.get("news")
+        assert partitioning.progress(item.partitions, "ざっと") == (0, 2)
+        assert item.cursor == "a"
+
+    def test_the_screen_stops_calling_it_a_success(self, sample):
+        """**巡回の側にも書く。** 画面の「前回」は巡回ごとに出るので、
+        収集ぜんたいの欄だけ直しても成功したように見えたままになる。
+        """
+        since, until = self._ran()
+
+        collect.rewind_failed_bake("news", "only 5 docs (< 9)", since, until)
+
+        item = collect.get("news")
+        assert item.last_status == "error"
+        assert "only 5 docs" in item.last_error
+        sweep = collect.sweep_named(item, "ざっと")
+        assert sweep.last_status == "error"
+        assert "焼くところで落ちました" in sweep.last_error
+
+    def test_a_round_from_another_bake_is_left_alone(self, sample):
+        """**戻してよいのは、その取り込みが運んだ回だけ。** 別の回のものを戻すと、
+        ちゃんと焼けている回の印まで落ちる。
+        """
+        self._ran()
+
+        assert collect.rewind_failed_bake(
+            "news", "boom", "2020-01-01T00:00:00+00:00", "2020-01-02T00:00:00+00:00",
+        ) is None
+        assert partitioning.progress(collect.get("news").partitions, "ざっと") == (1, 2)
+
+    def test_it_only_happens_once(self, sample):
+        """時計は 2 本立っている(`--workers 2`)ので、2 度目は何もしない。"""
+        since, until = self._ran()
+
+        assert collect.rewind_failed_bake("news", "boom", since, until)
+        assert collect.rewind_failed_bake("news", "boom", since, until) is None
+
+    def test_the_clock_is_not_wound_back(self, sample):
+        """**すぐ焼き直させない。** 同じ理由で落ち続ける回が枠を食い続ける。"""
+        since, until = self._ran()
+        before = collect.sweep_named(collect.get("news"), "ざっと").next_run_at
+
+        collect.rewind_failed_bake("news", "boom", since, until)
+
+        assert collect.sweep_named(collect.get("news"), "ざっと").next_run_at == before
+
+
 class TestVerifyingTags:
     """タグの値が実在するかを、**焼く前に**確かめる。
 
