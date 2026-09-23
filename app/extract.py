@@ -135,6 +135,29 @@ BODY_FIELDS = ("opening", "body")
 DEFAULT_BODY_FIELD = "opening"
 # 抽出し終えた印。次の実行は「進み具合が入っている」ほうへ進む(= AI が肉付けする)
 DEFAULT_CURSOR = "抽出済み"
+
+# 何を名簿にするか。**文書か、タグか。**
+#
+# `docs` は「そのタグが付いた文書を 1 件ずつ」、`tags` は「そのソースのタグを 1 語ずつ」。
+# 後者は**溜めたものの索引を作る**ための口で、集めた記事から話題の語を起こすような
+# 収集がこれに当たる —— 語を AI に思いつかせると、記事に出てこない語が混ざるうえ、
+# 同じ語が回ごとに違う表記で増える。**語そのものは機械で拾えるのだから拾う**。
+ROSTER_KINDS = ("docs", "tags")
+DEFAULT_ROSTER_KIND = "docs"
+
+# タグの名簿で「いま動いているか」を見る窓(日)。**時間軸はここに入る** ——
+# 件数だけだと、昔よく出てきた語がいつまでも大きいままになる
+DEFAULT_RECENT_DAYS = 7
+MAX_RECENT_DAYS = 365
+
+# 1 語につき運ぶ「一緒に出てくる語」の数。**多いと図が毛玉になる**(人物の名簿で
+# 実測した相互リンクと同じ話で、上位だけ残すと実際に関係のある相手が残る)
+DEFAULT_LINK_COUNT = 6
+MAX_LINK_COUNT = 20
+
+# 外す語を書ける数。**書くのは頼む側** —— 配信元の名前も種別の語も、決めているのは
+# 頼む側のアプリで、Chiezo には「どれが分野で、どれが媒体名か」を知る手立てが無い
+MAX_SKIP_RULES = 30
 # 頼んだ件数のこれを下回ったときだけ、実在するタグを見せて選び直させる。
 # **少し足りないだけで投げ直さない** —— 件数を満たそうとして条件のほうが広がる
 # (「西洋近代絵画」と頼んだのに 14 世紀からの欧州全体になった)
@@ -216,9 +239,14 @@ def normalize_one(raw) -> dict | None:
     tag = str(raw.get("tag") or "").strip()
     tag_suffix = str(raw.get("tag_suffix") or "").strip()
     not_tag = str(raw.get("not_tag") or "").strip()
+    of = str(raw.get("of") or DEFAULT_ROSTER_KIND).strip()
     if not source:
         raise _bad("source(引くソース名)を入れてください")
-    if not tag and not tag_suffix:
+    if of not in ROSTER_KINDS:
+        raise _bad(f"of は {' / '.join(ROSTER_KINDS)} のどちらかにしてください")
+    # **タグの名簿には「どのタグを拾うか」を書かない。** 拾うのはそのソースのタグ
+    # 全部で、絞るのは「外す語」と「何件以上付いているか」のほう
+    if of == DEFAULT_ROSTER_KIND and not tag and not tag_suffix:
         raise _bad("tag(絞り込むタグ)か tag_suffix(タグの末尾)を入れてください")
     # **末尾は書き並べられる**(`tag` と同じくカンマ区切り)。同じものを指す
     # カテゴリの呼び方が 1 つとは限らない —— 画家の名簿では「〜の画家」だけを
@@ -270,6 +298,8 @@ def normalize_one(raw) -> dict | None:
 
     spec = {
         "source": source,
+        "of": of,
+        **(_tags_mode(raw) if of == "tags" else {}),
         "tag": tag,
         # **カテゴリの「族」をそのまま指せるようにする。** 1 つずつ書き並べる形だと、
         # 書く側が名前を思い出しで補うことになり、抜けても気づけない —— 実際、
@@ -291,6 +321,42 @@ def normalize_one(raw) -> dict | None:
         "cursor": str(raw.get("cursor") or DEFAULT_CURSOR).strip() or DEFAULT_CURSOR,
     }
     return spec
+
+
+def _tags_mode(raw) -> dict:
+    """タグの名簿だけが持つ指定を整える。
+
+    **外す語は頼む側が書く。** 配信元の名前も種別の語も、決めているのは頼む側の
+    アプリで、Chiezo には「どれが分野で、どれが媒体名か」を知る手立てが無い ——
+    推測させると、増えた配信元が黙って話題として並ぶ。
+    """
+    skip = raw.get("skip") or []
+    if not isinstance(skip, list):
+        raise _bad("skip は外す語の並び(正規表現)で書いてください")
+    if len(skip) > MAX_SKIP_RULES:
+        raise _bad(f"skip に書けるのは {MAX_SKIP_RULES} 個までです")
+    return {
+        "skip": [_compile(str(one)).pattern for one in skip if str(one).strip()],
+        # **何件以上付いている語を拾うか。** 1 件しか付いていない語は、まだ話題か
+        # どうかも分からない(次の回に増えていれば入る)
+        "min_docs": _counted(raw.get("min_docs"), 1, 1),
+        "recent_days": _counted(raw.get("recent_days"), DEFAULT_RECENT_DAYS, 1,
+                                MAX_RECENT_DAYS),
+        "links": _counted(raw.get("links"), DEFAULT_LINK_COUNT, 0, MAX_LINK_COUNT),
+    }
+
+
+def _counted(raw, fallback: int, low: int, high: int | None = None) -> int:
+    """数の指定。**読めない値は断る** —— 指定は書いて残すものなので、黙って既定に
+    落とすと、書いたつもりの値が効かないまま回り続ける。"""
+    if raw in (None, ""):
+        return fallback
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise _bad(f"数で書いてください: {raw!r}") from None
+    value = max(value, low)
+    return min(value, high) if high is not None else value
 
 
 def _normalize_rule(raw) -> dict:
@@ -437,6 +503,14 @@ def to_json(spec) -> dict | list[dict] | None:
     # (`app/partition.py` の `other` と同じ判断)
     if spec["provides"] != PROVIDED_FIELDS:
         written["provides"] = list(spec["provides"])
+    # **タグの名簿だけが持つものは、そのときだけ書く。** 文書の名簿に `min_docs` が
+    # 並んでいると、効かない指定を読ませることになる
+    if spec["of"] != DEFAULT_ROSTER_KIND:
+        written["of"] = spec["of"]
+        written["skip"] = list(spec["skip"])
+        written["min_docs"] = spec["min_docs"]
+        written["recent_days"] = spec["recent_days"]
+        written["links"] = spec["links"]
     return written
 
 
@@ -489,6 +563,9 @@ def count(spec, sources: dict) -> int:
 
     total = 0
     for one in specs(spec):
+        if one["of"] == "tags":
+            total += len(_tag_rows(one, sources))
+            continue
         src, set_sql, params = _doc_ids(one, sources)
         (matched,) = db.query(
             src.path,
@@ -751,6 +828,9 @@ def _run_one(spec: dict, sources: dict) -> tuple[Iterator[dict], str]:
     """
     from app import db
 
+    if spec["of"] == "tags":
+        return _run_tags(spec, sources)
+
     src, set_sql, params = _doc_ids(spec, sources)
     limit = spec["limit"]
     if limit is None:
@@ -785,6 +865,130 @@ def _run_one(spec: dict, sources: dict) -> tuple[Iterator[dict], str]:
             if item := _to_item(dict(row), spec, context):
                 yield item
         log.info("extract %s tag=%r: %d docs", spec["source"], spec["tag"], seen)
+
+    return items(), spec["cursor"]
+
+
+def _tag_rows(spec: dict, sources: dict) -> list[dict]:
+    """そのソースのタグを、**件数・直近の件数・最後に付いた日**つきで数える。
+
+    **読者に出さない印の付いた文書は数えない**(`notes.HIDDEN_TAGS`)。消したものや
+    まだ精査していないものから語を起こすと、外したはずの宣伝が話題として並ぶ。
+
+    **日付は配信日があればそちら。** 集めた日で数えると、古い記事をまとめて取り込んだ
+    日に、その語が急に動き出したように見える。
+
+    **切るのは外す語を落としてから。** 先に切ると、外す語が上位を埋めているぶんだけ
+    拾える語が減る(配信元の名前はたいてい上位に来る)。
+    """
+    from app import db
+
+    src = sources.get(spec["source"])
+    if src is None:
+        raise HTTPException(404, {
+            "error": f"抽出できません: ソース「{spec['source']}」がありません",
+            "hint": "まだ焼いていないか、名前が違う(/v1/sources で確かめられる)",
+        })
+    hidden = ", ".join("?" * len(notes.HIDDEN_TAGS))
+    rows = db.query(
+        src.path,
+        "WITH live AS ("
+        " SELECT d.doc_id,"
+        " substr(COALESCE(json_extract(d.extra, '$.published_at'), d.updated_at), 1, 10) AS day"
+        " FROM docs d"
+        f" WHERE d.doc_id NOT IN (SELECT doc_id FROM doc_tags WHERE tag IN ({hidden}))"
+        ")"
+        " SELECT t.tag AS tag, COUNT(*) AS docs,"
+        " SUM(CASE WHEN l.day >= ? THEN 1 ELSE 0 END) AS docs_recent,"
+        " MAX(l.day) AS last_seen"
+        " FROM doc_tags t JOIN live l ON l.doc_id = t.doc_id"
+        " GROUP BY t.tag HAVING docs >= ?"
+        " ORDER BY docs_recent DESC, docs DESC, t.tag",
+        (*notes.HIDDEN_TAGS, _days_ago(spec["recent_days"]), spec["min_docs"]),
+        timeout=EXTRACT_TIMEOUT_SECONDS,
+    )
+    skip = [re.compile(one) for one in spec["skip"]]
+    kept = [
+        dict(row) for row in rows
+        if not any(pattern.search(row["tag"]) for pattern in skip)
+    ]
+    return kept[: spec["limit"]] if spec["limit"] else kept
+
+
+def _days_ago(days: int) -> str:
+    """直近の窓の始まり(日付)。**日付で比べる** —— 突き合わせる相手が日付までの
+    文字列なので、時刻まで持つと境目の 1 日が落ちる。"""
+    from datetime import UTC, datetime, timedelta
+
+    return (datetime.now(UTC) - timedelta(days=days)).date().isoformat()
+
+
+def _tag_links(spec: dict, sources: dict, tags: list[str]) -> dict[str, list[dict]]:
+    """同じ文書に一緒に付いた回数。**名簿に入っている語どうしだけ**を数える。
+
+    **つながりはここから引く。** AI に「関連するもの」を書かせると思いついた相手が
+    並ぶので、一度も一緒に出ていない組が線になる —— 一緒に出た回数は手元で数えられる
+    のだから数える。
+    """
+    from app import db
+
+    if not tags or spec["links"] <= 0:
+        return {}
+    src = sources[spec["source"]]
+    marks = ", ".join("?" * len(tags))
+    hidden = ", ".join("?" * len(notes.HIDDEN_TAGS))
+    rows = db.query(
+        src.path,
+        "SELECT a.tag AS one, b.tag AS other, COUNT(*) AS n"
+        " FROM doc_tags a JOIN doc_tags b ON a.doc_id = b.doc_id AND a.tag < b.tag"
+        f" WHERE a.tag IN ({marks}) AND b.tag IN ({marks})"
+        f" AND a.doc_id NOT IN (SELECT doc_id FROM doc_tags WHERE tag IN ({hidden}))"
+        " GROUP BY a.tag, b.tag ORDER BY n DESC, a.tag, b.tag",
+        (*tags, *tags, *notes.HIDDEN_TAGS),
+        timeout=EXTRACT_TIMEOUT_SECONDS,
+    )
+    linked: dict[str, list[dict]] = {}
+    for row in rows:
+        for tag, other in ((row["one"], row["other"]), (row["other"], row["one"])):
+            partners = linked.setdefault(tag, [])
+            if len(partners) < spec["links"]:
+                partners.append({"tag": other, "n": row["n"]})
+    return linked
+
+
+def _run_tags(spec: dict, sources: dict) -> tuple[Iterator[dict], str]:
+    """タグの名簿を、集める層が読む形にする。
+
+    **本文には数えたことだけを書く。** その語が何を指すのかは AI の仕事で、精査の回が
+    書き直したら次の機械の回はそれを残す(足すだけの回なので本文には触らない)。
+    **数のほうは毎回入れ替わる**(`collect.stream_docs` の `facts`)。
+    """
+    rows = _tag_rows(spec, sources)
+    linked = _tag_links(spec, sources, [row["tag"] for row in rows])
+    context = {"src": sources[spec["source"]], "links": {}}
+
+    def items():
+        for row in rows:
+            extra = {
+                "docs": row["docs"],
+                "docs_recent": row["docs_recent"],
+                "last_seen": row["last_seen"] or "",
+            }
+            if partners := linked.get(row["tag"]):
+                extra["links"] = partners
+            yield {
+                "title": row["tag"],
+                "body": (
+                    f"この語が付いているのは {row['docs']} 件"
+                    f"(直近 {spec['recent_days']} 日で {row['docs_recent']} 件)。"
+                    + (f"最後に付いたのは {row['last_seen']}。" if row["last_seen"] else "")
+                ),
+                # **読み替えの規則はそのまま効く**({"const": "トピック"} で目印を
+                # 付ける、など)。元のタグは無い —— この 1 件そのものがタグなので
+                "tags": _apply_rules(spec["tags"], [], row["tag"], context),
+                "extra": extra,
+            }
+        log.info("extract %s of=tags: %d tags", spec["source"], len(rows))
 
     return items(), spec["cursor"]
 

@@ -1184,3 +1184,120 @@ class TestKeepingTheRosterOffMemory:
         roster.close()
 
         assert not path.exists()
+
+
+class TestMakingARosterOutOfTags:
+    """**溜めたものの索引を作る回。**
+
+    語そのものは機械で拾えるのだから拾う —— AI に思いつかせると、記事に出てこない語が
+    混ざるうえ、同じ語が回ごとに違う表記で増える。AI に残るのは精査(言い換えを畳む・
+    親子を決める・外す)のほうだけになる。
+    """
+
+    @pytest.fixture
+    def articles(self, source):
+        from datetime import date, timedelta
+
+        today = date.today().isoformat()
+        old = (date.today() - timedelta(days=60)).isoformat()
+        return source(
+            [
+                {"title": "記事1", "tags": ["AI", "セキュリティ", "はてな"],
+                 "extra": {"published_at": today}},
+                {"title": "記事2", "tags": ["AI", "セキュリティ"],
+                 "extra": {"published_at": today}},
+                {"title": "記事3", "tags": ["AI", "Rust"], "extra": {"published_at": old}},
+                {"title": "記事4", "tags": ["Rust"], "extra": {"published_at": old}},
+            ],
+            name="news",
+        )
+
+    def _spec(self, **over):
+        return {"source": "news", "of": "tags", **over}
+
+    def test_each_tag_becomes_one_item(self, articles):
+        items, _cursor = run(extract.normalize(self._spec()), articles)
+
+        assert {item["title"] for item in items} == {"AI", "セキュリティ", "Rust", "はてな"}
+
+    def test_the_numbers_ride_along(self, articles):
+        """**時間軸はここに入る。** 件数だけだと、昔よく出てきた語がいつまでも
+        大きいままになる。"""
+        items, _cursor = run(extract.normalize(self._spec()), articles)
+        got = {item["title"]: item["extra"] for item in items}
+
+        assert got["AI"]["docs"] == 3
+        # 直近の窓に入るのは 2 件（残りは 60 日前）
+        assert got["AI"]["docs_recent"] == 2
+        assert got["Rust"]["docs_recent"] == 0
+        assert got["AI"]["last_seen"]
+
+    def test_the_words_that_appear_together_become_links(self, articles):
+        """線は共起から引く。AI に書かせると、一度も一緒に出ていない組が線になる。"""
+        items, _cursor = run(extract.normalize(self._spec()), articles)
+        got = {item["title"]: item["extra"] for item in items}
+
+        assert {one["tag"] for one in got["AI"]["links"]} >= {"セキュリティ", "Rust"}
+        assert next(one["n"] for one in got["AI"]["links"]) == 2
+
+    def test_the_caller_says_which_words_are_not_topics(self, articles):
+        """**外す語を書くのは頼む側。** Chiezo には、どれが媒体名かを知る手立てが無い。"""
+        items, _cursor = run(extract.normalize(self._spec(skip=["^はてな"])), articles)
+
+        assert "はてな" not in {item["title"] for item in items}
+
+    def test_a_word_seen_once_waits_for_the_next_round(self, articles):
+        """1 件しか付いていない語は、まだ話題かどうかも分からない。"""
+        items, _cursor = run(extract.normalize(self._spec(min_docs=2)), articles)
+
+        # 1 件しか付いていない「はてな」だけが落ちる
+        assert {item["title"] for item in items} == {"AI", "セキュリティ", "Rust"}
+
+    def test_what_readers_do_not_see_is_not_counted(self, source):
+        """消したものや、まだ精査していないものから語を起こさない。"""
+        from datetime import date
+
+        from app import notes
+
+        today = date.today().isoformat()
+        sources = source(
+            [
+                {"title": "残った", "tags": ["AI"], "extra": {"published_at": today}},
+                {"title": "消えた", "tags": ["AI", notes.REMOVED_TAG],
+                 "extra": {"published_at": today}},
+                {"title": "未精査", "tags": ["AI", notes.UNREVIEWED_TAG],
+                 "extra": {"published_at": today}},
+            ],
+            name="news",
+        )
+
+        items, _cursor = run(extract.normalize(self._spec()), sources)
+        got = {item["title"]: item["extra"] for item in items}
+
+        assert got["AI"]["docs"] == 1
+        # 印そのものも語として並ばない
+        assert notes.REMOVED_TAG not in got
+
+    def test_the_rules_still_stamp_the_mark(self, articles):
+        """「これは何の一覧か」の目印は、文書の名簿と同じ書き方で付く。"""
+        spec = self._spec(tags=[{"const": "トピック"}])
+
+        items, _cursor = run(extract.normalize(spec), articles)
+
+        assert all(item["tags"] == ["トピック"] for item in items)
+
+    def test_the_spec_survives_being_written_down(self, articles):
+        """定義に残して読み直しても、同じ指定として効く。"""
+        spec = self._spec(skip=["^はてな"], min_docs=2, recent_days=30, links=3)
+
+        written = extract.to_json(extract.normalize(spec))
+        again = extract.normalize(written)
+
+        assert again["of"] == "tags"
+        assert again["skip"] == ["^はてな"]
+        assert (again["min_docs"], again["recent_days"], again["links"]) == (2, 30, 3)
+
+    def test_a_document_roster_still_needs_a_tag(self):
+        """文書の名簿は、どのタグを引くかを書かないと成り立たない。"""
+        with pytest.raises(HTTPException):
+            extract.normalize({"source": "news"})
