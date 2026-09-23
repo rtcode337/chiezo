@@ -173,6 +173,25 @@ class TestABackendWithMoreThanOneQuota:
         assert "100% 使用" in ai_workers._percent("antigravity", "claude-opus-4-6-thinking")
         assert "54% 使用" in ai_workers._percent("antigravity", "gemini-3.8-flash-medium")
 
+    def test_a_fraction_is_not_rounded_away(self, enabled):
+        """**79.7% が「80% 使用」と出ていた。**
+
+        ワーカーは 80 未満ならその相手を使うので(`QUOTA_LIMIT`)、丸めると
+        「上限を超えているのに使われた」に見える —— 判定は生の値で見ている。
+        """
+        from app.views import ai_workers
+
+        usage_store.save_quota("antigravity", [
+            {"id": "gemini-weekly", "label": "Gemini Models(直近 7 日)",
+             "group": "Gemini Models", "used_percent": 79.7},
+        ])
+
+        shown = ai_workers._percent("antigravity", "gemini-3.8-flash-medium")
+
+        assert "79.7% 使用" in shown
+        # 上限を超えていないので、避ける印も付かない
+        assert workers.room_left(workers.Step("antigravity", "gemini-3.8-flash-medium"))
+
     def test_the_screen_and_the_decision_agree(self, enabled):
         """**⚠️ が付く段と、実際に避ける段が一致すること。**"""
         from app.views import ai_workers

@@ -18,6 +18,7 @@ from fastapi.responses import RedirectResponse
 
 from app import jst, usage, workers
 from app.pages import esc
+from app.views.ai_usage import percent_text
 
 router = APIRouter()
 
@@ -47,7 +48,7 @@ def _percent(provider: str, model: str = "") -> str:
     if busiest is None:
         return '<span class="muted">枠は出せない</span>'
     mark = " ⚠️" if busiest >= workers.QUOTA_LIMIT else ""
-    return f'<span class="muted">{busiest:.0f}% 使用{mark}</span>'
+    return f'<span class="muted">{percent_text(busiest)}% 使用{mark}</span>'
 
 
 def _step_row(

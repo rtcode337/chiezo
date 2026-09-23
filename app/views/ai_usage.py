@@ -50,13 +50,26 @@ def _amount(value: float) -> str:
     return f"{value:,.2f}" if value % 1 else f"{value:,.0f}"
 
 
+def percent_text(value: float) -> str:
+    """使用率の書き方。**端数は捨てない。**
+
+    丸めていた頃は、**79.7% が「80% 使用」と出ていた** —— ワーカーは 80 未満なら
+    その相手を使うので(`workers.QUOTA_LIMIT`)、画面を見た人には「上限を超えている
+    のに使われた」に見える。判定は生の値で見ているので、**表示もそこへ合わせる**。
+
+    **整数のときは小数を出さない**(`_amount` と同じ流儀)。端数の無い枠まで
+    「100.0%」と書くと、読む数字が増えるだけになる。
+    """
+    return f"{value:.1f}" if value % 1 else f"{value:.0f}"
+
+
 def _window_html(window: usage.Window) -> str:
     """枠 1 つぶん。使用率で言う相手と、金額で言う相手の両方を同じ形に収める。"""
     parts = [f"<strong>{esc(window.label)}</strong>"]
     if window.used_percent is not None:
         parts.append(
-            f"{_meter(window.used_percent)} {window.used_percent:.0f}% 使用"
-            f"(残り {window.remaining_percent:.0f}%)"
+            f"{_meter(window.used_percent)} {percent_text(window.used_percent)}% 使用"
+            f"(残り {percent_text(window.remaining_percent)}%)"
         )
     if window.used is not None:
         unit = f" {esc(window.unit)}" if window.unit else ""
