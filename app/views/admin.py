@@ -3100,22 +3100,38 @@ def admin_collect_delete(request: Request, name: str):
             "error": f"収集「{name}」は動いています",
             "hint": "先に「止める」を押してから消してください",
         })
-    dropped = _drop_collect_source(name)
+    # **焼いたものを消せないなら、設定も消さない。** 「削除」は 1 つの操作として
+    # 「設定と焼いたものが消える」ことを約束している —— 片方だけ消えると、
+    # **次に集めたときに前の世代として戻ってくる**(消したはずの中身が件数にも
+    # 区画にも入り続ける)。本番で 2 度踏んだ。
+    #
+    # **断っても行き止まりにならない。** 長期記憶の側の削除も同じ取り込みを使うので、
+    # 取り込みが応えない状態では**どちらの道でも消せない** —— 片方だけ進めても、
+    # 残ったものを片付ける手段は増えない。
+    if (why := _drop_collect_source(name)) and name in request.app.state.sources:
+        raise HTTPException(409, {
+            "error": f"収集「{name}」の焼いたものを消せませんでした: {why}",
+            "hint": "設定だけ消すと、次に集めたときに前の世代として戻ってきます。"
+                    "取り込み(chiezo-trigger)が応える状態にしてから、もう一度押してください",
+        })
     collect.remove(name)
     # 消した後のソース表を作り直す(消えたものが一覧に残らないように)
     from app.main import scan_all
 
     request.app.state.sources = scan_all(request.app.state.data_dir)
-    return RedirectResponse(url=f"/admin/collect{'' if dropped else '&kept'}", status_code=303)
+    return RedirectResponse(url="/admin/collect", status_code=303)
 
 
-def _drop_collect_source(name: str) -> bool:
-    """焼いたソースを trigger に消させる(収集を消すついで)。消せたかを返す。
+def _drop_collect_source(name: str) -> str:
+    """焼いたソースを trigger に消させる(収集を消すついで)。**消せなかった理由**を返す
+    (消せたなら空)。
 
-    **失敗しても例外にしない。** ここは設定を消すついでの片付けで、
-    trigger が居ない・まだ 1 度も焼いていない、はどちらも普通の状態。
-    **消し損ねても、あとから長期記憶の側の削除で片付けられる**
-    (定義が消えていればそちらが受け付ける)。
+    **ここでは例外にしない。** まだ 1 度も焼いていない収集では消す先が無く、
+    それは普通の状態 —— 呼び出し側が「焼いたものがあるのに消せなかったのか」を
+    見て断る(`admin_collect_delete`)。
+
+    **理由は呼び出し側まで返す。** ログにしか出していなかった頃は、押した人に
+    「消えたのか残ったのか」が分からなかった。
 
     **種別は名乗らない** —— 名乗らない呼び出しでは集めたものしか消えないので、
     収集の名前が他の種別のソースとぶつかっていても、そちらは消えない。
@@ -3124,8 +3140,10 @@ def _drop_collect_source(name: str) -> bool:
         _drop_source(name)
     except HTTPException as e:
         log.warning("could not drop source %s: %s", name, e.detail)
-        return False
-    return True
+        detail = e.detail
+        why = detail.get("error") if isinstance(detail, dict) else str(detail)
+        return str(why or "取り込みが応えませんでした")
+    return ""
 
 
 def _drop_source(name: str, expect: str = "") -> None:

@@ -4246,6 +4246,40 @@ class TestRest:
         # 断ったのだから残っている
         assert collect.get("news").name == "news"
 
+    def test_it_refuses_when_the_baked_source_cannot_go(self, client, baked, sample, monkeypatch):
+        """**片方だけ消さない。**
+
+        「削除」は 1 つの操作として「設定と焼いたものが消える」ことを約束している。
+        設定だけ消えると、次に集めたときに**前の世代として戻ってくる** ——
+        消したはずの中身が件数にも区画にも入り続ける(本番で 2 度踏んだ)。
+        """
+        from app.views import admin
+
+        # 焼いたものがある状態にする(画面はアプリの持つソース表を見る)
+        client.app.state.sources = baked([("見出し", "本文")])
+        monkeypatch.setattr(admin, "TRIGGER_URL", "")  # 取り込みが応えない
+
+        res = client.post("/admin/collect/news/delete", follow_redirects=False)
+
+        assert res.status_code == 409
+        assert "消せませんでした" in res.text
+        # **設定は残す** —— 消えたつもりで中身が生き続けるほうが困る
+        assert collect.get("news").name == "news"
+
+    def test_a_collection_never_baked_can_still_go(self, client, sample, monkeypatch):
+        """まだ 1 度も焼いていない収集は、消す先が無いのだから消せる。
+
+        取り込みが立っていない構成は普通にあるので、そこで操作ごと止めない。
+        """
+        from app.views import admin
+
+        monkeypatch.setattr(admin, "TRIGGER_URL", "")
+
+        res = client.post("/admin/collect/news/delete", follow_redirects=False)
+
+        assert res.status_code == 303
+        assert [c.name for c in collect.load() if c.name == "news"] == []
+
     def test_running_it_lands_on_that_collection(self, client, sample, monkeypatch):
         """走らせた本人が結果を見に行くのに、もう一度その収集を探すことになっていた。"""
         from app.views import admin
@@ -4789,7 +4823,7 @@ class TestDeletingWithTheSource:
                 return FakeResponse()
 
         monkeypatch.setattr(admin.httpx, "Client", FakeClient)
-        assert admin._drop_collect_source("news") is True
+        assert admin._drop_collect_source("news") == ""
         # **種別は名乗らない** —— 名乗らない呼び出しでは集めたものしか消えないので、
         # 収集の名前が他の種別のソースとぶつかっていても、そちらは消えない
         assert called == [("http://trigger.invalid/source/news", None)]
@@ -4799,14 +4833,15 @@ class TestDeletingWithTheSource:
         from app.views import admin
 
         monkeypatch.setattr(admin, "TRIGGER_URL", None)
-        assert admin._drop_collect_source("news") is False
+        # **理由を返す** —— 押した人に「消えたのか残ったのか」を伝えるため
+        assert "取り込み" in admin._drop_collect_source("news")
 
     def test_the_definition_goes_even_if_the_source_stays(self, sample, monkeypatch):
         """ソースを消せなくても設定は消す(片付けは「ついで」なので)。"""
         from app.views import admin
 
         monkeypatch.setattr(admin, "TRIGGER_URL", None)
-        assert admin._drop_collect_source("news") is False
+        assert admin._drop_collect_source("news") != ""
         collect.remove("news")
         assert [c.name for c in collect.load()] == []
 class TestTheCollectSectionMarkup:
