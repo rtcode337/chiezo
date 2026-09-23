@@ -1626,6 +1626,57 @@ class TestWhereABoxRoughlyIs:
 
         assert "area" not in box
 
+    def test_it_is_filled_in_without_a_re_cut(self):
+        """**割り直さない回にも要る。** 台帳を組み直すのは「育った」「空になった」が
+        起きたときだけなので、**健全な台帳では `build` が走らない** —— そちらでしか
+        札を付けていなかった頃は、「区画を割り直す」を押しても県名が出なかった
+        (本番で 8,185 区画すべて空欄のまま)。
+        """
+        spec = partition.normalize(self.SPEC)
+        led = [{"key": partition.geo_key((35.0, 139.0, 36.0, 140.0)), "count": 0}]
+        own = {**self._docs("東京都", 35.5, 139.5, 5),
+               **self._docs("神奈川県", 35.6, 139.6, 3)}
+
+        counts, areas = partition.tally(spec, led, own)
+        [kept] = partition.counted(led, counts, areas)
+
+        assert kept["area"] == "東京都・神奈川県"
+
+    def test_a_third_area_is_not_hidden(self):
+        """**黙って 2 つに丸めると「この区画は 2 県ぶん」と読まれる。**"""
+        spec = partition.normalize(self.SPEC)
+        led = [{"key": partition.geo_key((35.0, 139.0, 36.0, 140.0)), "count": 0}]
+        own = {**self._docs("東京都", 35.5, 139.5, 5),
+               **self._docs("神奈川県", 35.6, 139.6, 3),
+               **self._docs("埼玉県", 35.7, 139.7, 2)}
+
+        _counts, areas = partition.tally(spec, led, own)
+
+        assert areas[led[0]["key"]] == "東京都・神奈川県 ほか1"
+
+    def test_a_band_ledger_is_not_labelled(self):
+        """帯や見出しの区画に県名は要らない(場所で割っていない)。"""
+        spec = partition.normalize(
+            {"by": "band", "prefix": "地域", "value": "年代", "target": 25}
+        )
+        led = [{"key": partition.band_key("日本", 1900, 1950), "count": 0}]
+        own = {"x": {"title": "x", "tags": ["地域:日本", "年代:1920"],
+                     "extra": {"area": "東京都"}}}
+
+        _counts, areas = partition.tally(spec, led, own)
+
+        assert areas == {}
+
+    def test_a_partition_nobody_lives_in_keeps_its_old_label(self):
+        """**数えられなかったぶんは前の札を残す** —— 消すと、母集団が一時的に
+        読めなかっただけで札が飛ぶ。"""
+        led = [{"key": partition.geo_key((35.0, 139.0, 36.0, 140.0)),
+                "count": 3, "area": "東京都"}]
+
+        [kept] = partition.counted(led, {led[0]["key"]: 0}, {})
+
+        assert kept["area"] == "東京都"
+
     def test_it_survives_a_re_cut(self):
         """割り直しても運ぶ(`refresh`)—— 入れ直すために引き直さない。"""
         built = [{"key": partition.geo_key((35.0, 139.0, 36.0, 140.0)),

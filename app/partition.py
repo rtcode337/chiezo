@@ -419,16 +419,25 @@ def _leaf(box, points) -> dict:
     (県境をまたぐ矩形があるので 1 つだと嘘になり、全部だと鍵より長くなる)。
     **点が持っていなければ空**(添え物なので、無くても区画は成り立つ)。
     """
-    areas = Counter(p[2] for p in points if len(p) > 2 and p[2])
+    named = area_label(Counter(p[2] for p in points if len(p) > 2 and p[2]))
+    leaf = {"key": geo_key(box), "count": len(points)}
+    return {**leaf, "area": named} if named else leaf
+
+
+def area_label(areas: Counter) -> str:
+    """数えた行政区を、区画に添える 1 つの札にする。
+
+    **多いほうから 2 つまで**(`AREA_NAMES`)—— 1 つだと県境をまたぐ矩形で嘘に
+    なり、全部だと鍵より長くなる。**切ったことは書く** —— 矩形は県をまたぐので
+    3 つ以上にまたがる区画は普通にあり、黙って 2 つに丸めると「この区画は 2 県ぶん」
+    と読まれる(`recall` が `truncated` を立てるのと同じ筋)。
+    """
+    if not areas:
+        return ""
     named = "・".join(name for name, _n in areas.most_common(AREA_NAMES))
-    # **切ったことは書く。** 矩形は県をまたぐので、3 つ以上にまたがる区画は普通に
-    # ある —— 黙って 2 つに丸めると「この区画は 2 県ぶん」と読まれる。
-    # **どこまで書くかは長さの都合**(鍵より長い札にはしない)だが、**切ったことを
-    # 隠すのは別の話**(`recall` が `truncated` を立てるのと同じ筋)
     if len(areas) > AREA_NAMES:
         named += f" ほか{len(areas) - AREA_NAMES}"
-    leaf = {"key": geo_key(box), "count": len(points)}
-    return {**leaf, "area": named[:AREA_MAX_CHARS * AREA_NAMES]} if named else leaf
+    return named[:AREA_MAX_CHARS * AREA_NAMES]
 
 
 def _must_fit(target: int, count: int) -> None:
@@ -1140,6 +1149,32 @@ def normalize_ledger(raw) -> list[dict]:
 HOMELESS = ""
 
 
+def tally(
+    spec: dict, partitions: list[dict], docs: dict[str, dict],
+) -> tuple[dict[str, int], dict[str, str]]:
+    """区画ごとの件数と、**どのあたりか**(矩形のときだけ)。
+
+    **同じ 1 周で数える。** 母集団は数十万件になるので、行政区のためにもう 1 周
+    舐めるのは高い —— どのみち 1 件ずつ区画を引いているのだから、そこで一緒に数える。
+
+    **割り直さない回にも要る。** 台帳を組み直すのは「育った」「空になった」が
+    起きたときだけ(`outgrown`)なので、**健全な台帳では `build` が走らない** ——
+    そちらでしか札を付けていなかった頃は、「区画を割り直す」を押しても県名が
+    出なかった(実測: 8,185 区画すべて空欄のまま)。
+    """
+    counts = counts_of(spec, partitions, docs)
+    if not counts or spec["by"] != BY_GEO:
+        return counts, {}
+    find = locator(spec, partitions)
+    seen: dict[str, Counter] = {}
+    for doc in docs.values():
+        key = find(doc)
+        if key in counts and (name := area_of(doc)):
+            seen.setdefault(key, Counter())[name] += 1
+    return counts, {key: label for key, tally in seen.items()
+                    if (label := area_label(tally))}
+
+
 def counts_of(spec: dict, partitions: list[dict], docs: dict[str, dict]) -> dict[str, int]:
     """区画ごとの、いまの件数。**数える意味の無いときは空を返す**。
 
@@ -1409,7 +1444,9 @@ def _joined_box(a, b) -> str | None:
     return None
 
 
-def counted(partitions: list[dict], counts: dict[str, int]) -> list[dict]:
+def counted(
+    partitions: list[dict], counts: dict[str, int], areas: dict[str, str] | None = None,
+) -> list[dict]:
     """いまの件数を台帳へ書き戻す。**割り直しはしない**。
 
     台帳の数は割ったときの写しで、以後は更新されない —— 中身が別の区画へ移っても
@@ -1419,7 +1456,14 @@ def counted(partitions: list[dict], counts: dict[str, int]) -> list[dict]:
     """
     if not counts:
         return partitions
-    return [{**p, "count": counts.get(p["key"], 0)} for p in partitions]
+    return [
+        {**p, "count": counts.get(p["key"], 0),
+         # **札も書き戻す。** 割り直さない回で `build` が走らないので、ここで
+         # 付けないと健全な台帳には永遠に付かない。**数えられなかったぶんは
+         # 前の札を残す**(消すと、母集団が一時的に読めなかっただけで札が飛ぶ)
+         **({"area": areas[p["key"]]} if areas and p["key"] in areas else {})}
+        for p in partitions
+    ]
 
 
 def pick(
