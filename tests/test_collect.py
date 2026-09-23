@@ -1011,7 +1011,7 @@ class TestTheMechanicalSweep:
             sweeps=[{"name": "名簿", "use_extract": True, "only_new": True}],
         )
         monkeypatch.setattr(
-            extract, "run", lambda spec, sources: ([{"title": "草間彌生", "body": "本文"}], "")
+            extract, "run", lambda spec, sources, retired=None: ([{"title": "草間彌生", "body": "本文"}], "")
         )
         async def no_feed(_item, _sweep=None):
             return None
@@ -1055,7 +1055,7 @@ class TestTheMechanicalSweep:
             sweeps=[{"name": "名簿", "use_extract": True, "only_new": True}],
         )
         roster = [{"title": f"ひと{i:03d}", "body": "本文"} for i in range(1, 61)]
-        monkeypatch.setattr(extract, "run", lambda spec, sources: (roster, ""))
+        monkeypatch.setattr(extract, "run", lambda spec, sources, retired=None: (roster, ""))
 
         async def no_feed(_item, _sweep=None):
             return None
@@ -1117,7 +1117,7 @@ class TestTheMechanicalSweep:
             sweeps=[{"name": "名簿", "use_extract": True, "only_new": True}],
         )
         monkeypatch.setattr(
-            extract, "run", lambda spec, sources: ([{"title": "草間彌生", "body": "本文"}], "")
+            extract, "run", lambda spec, sources, retired=None: ([{"title": "草間彌生", "body": "本文"}], "")
         )
         item = collect.get("news")
         items, _cursor, _note = asyncio.run(

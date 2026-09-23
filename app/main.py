@@ -681,7 +681,11 @@ async def _collect_items(
     # 書き写すと、片方だけ直したときに食い違う
     if collect.uses_extract(item, sweep):
         spec = extract.normalize(item.extract)
-        items, next_cursor = await asyncio.to_thread(extract.run, spec, sources)
+        # **一度外された見出しは拾い直させない。** 墓標は「これは違う」という判断で、
+        # 拾う側が知らないと毎回同じものを並べ直す(足す側で弾かれるので中身は
+        # 増えないが、タグの名簿では一緒に出てくる語の枠まで食う)
+        retired = {title for title, doc in (previous or {}).items() if collect.is_removed(doc)}
+        items, next_cursor = await asyncio.to_thread(extract.run, spec, sources, retired)
         return items, next_cursor, ""
     # **外の道具で引く回**(`Sweep.use_feed`)。フィードが配っている見出しを
     # そのまま溜める。**進み具合には触らない** —— 次にどこから読むかは

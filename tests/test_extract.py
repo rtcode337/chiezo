@@ -21,13 +21,13 @@ def _said(content: str) -> tuple[str, str, str]:
 
 
 
-def run(spec, sources):
+def run(spec, sources, retired=None):
     """`extract.run` を読み切って返す。
 
     本番は 1 行ずつ流す(名簿が数十万件になるので丸ごとは持てない)が、テストは
     丸ごと見たい —— 置き場は読み切ってから片づける。
     """
-    roster, cursor = extract.run(spec, sources)
+    roster, cursor = extract.run(spec, sources, retired)
     try:
         return list(roster), cursor
     finally:
@@ -1297,6 +1297,19 @@ class TestMakingARosterOutOfTags:
         assert again["of"] == "tags"
         assert again["skip"] == ["^はてな"]
         assert (again["min_docs"], again["recent_days"], again["links"]) == (2, 30, 3)
+
+    def test_a_word_that_was_retired_is_not_picked_again(self, articles):
+        """**墓標は「これは話題ではない」という判断。**
+
+        拾う側が知らないと毎回同じ語を並べ直す。足す側で弾かれるので中身は増えないが、
+        **一緒に出てくる語の枠を食う**（実測で、上位 6 のうち 2 つが外した媒体名だった）。
+        """
+        items, _cursor = run(extract.normalize(self._spec()), articles, {"はてな"})
+        got = {item["title"]: item["extra"] for item in items}
+
+        assert "はてな" not in got
+        # つながりの相手にも出てこない
+        assert all("はてな" not in "".join(extra.get("links") or []) for extra in got.values())
 
     def test_a_document_roster_still_needs_a_tag(self):
         """文書の名簿は、どのタグを引くかを書かないと成り立たない。"""

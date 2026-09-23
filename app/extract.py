@@ -550,7 +550,7 @@ def _doc_ids(spec: dict, sources: dict):
     return src, set_sql, list(params)
 
 
-def count(spec, sources: dict) -> int:
+def count(spec, sources: dict, retired: set[str] | None = None) -> int:
     """指定が当たる件数。**取れた数ではなく、当たっている数**。
 
     取った数だけを見せると、絞られていることに気づけない。
@@ -564,7 +564,7 @@ def count(spec, sources: dict) -> int:
     total = 0
     for one in specs(spec):
         if one["of"] == "tags":
-            total += len(_tag_rows(one, sources))
+            total += len(_tag_rows(one, sources, retired))
             continue
         src, set_sql, params = _doc_ids(one, sources)
         (matched,) = db.query(
@@ -577,8 +577,12 @@ def count(spec, sources: dict) -> int:
     return total
 
 
-def run(spec, sources: dict) -> tuple[list[dict], str]:
+def run(spec, sources: dict, retired: set[str] | None = None) -> tuple[list[dict], str]:
     """指定どおりに引いて、集める層が読む形(items)にして返す。
+
+    `retired` は**その収集で既に外された見出し**(墓標の付いたもの)。渡すと、
+    タグの名簿はその語を拾い直さない —— 墓標は「これは話題ではない」という判断なので、
+    拾う側が知らないと毎回同じ語を並べ直すことになる。
 
     返す形は AI に書かせたときとまったく同じ(`title` / `body` / `tags` / `url`)。
     後ろの工程から見れば、誰が作ったものかは区別が付かない。
@@ -608,14 +612,14 @@ def run(spec, sources: dict) -> tuple[list[dict], str]:
     try:
         # 1 周目。**その項目を勝ちにいくと書いた本だけ**が、先に書いた順で入る
         for index, one in enumerate(written):
-            items, cursor_of = _timed_run(one, sources)
+            items, cursor_of = _timed_run(one, sources, retired)
             if index == 0:
                 cursor = cursor_of
             for item in items:
                 roster.merge(item, one["provides"])
         # 2 周目。**譲った本の値でも、空いているところは埋める**
         for one in written:
-            items, _cursor = _timed_run(one, sources)
+            items, _cursor = _timed_run(one, sources, retired)
             for item in items:
                 roster.merge(item, PROVIDED_FIELDS)
     except BaseException:
@@ -624,7 +628,7 @@ def run(spec, sources: dict) -> tuple[list[dict], str]:
     return roster, cursor
 
 
-def _timed_run(spec: dict, sources: dict) -> tuple[list[dict], str]:
+def _timed_run(spec: dict, sources: dict, retired: set[str] | None = None) -> tuple[list[dict], str]:
     """1 本ぶんを引いて、かかった時間を控える。
 
     **どの本で詰まったかを言える形にする。** 打ち切りがそのまま上がると控えに
@@ -644,7 +648,7 @@ def _timed_run(spec: dict, sources: dict) -> tuple[list[dict], str]:
         })
 
     try:
-        items, cursor = _run_one(spec, sources)
+        items, cursor = _run_one(spec, sources, retired)
     except db.QueryTimeout:
         raise refused() from None
 
@@ -819,7 +823,7 @@ def _merge_item(merged: dict[str, dict], item: dict, claims) -> None:
             into.setdefault(key, value)
 
 
-def _run_one(spec: dict, sources: dict) -> tuple[Iterator[dict], str]:
+def _run_one(spec: dict, sources: dict, retired: set[str] | None = None) -> tuple[Iterator[dict], str]:
     """1 本ぶんを引く。
 
     **件数を書いていなければ全部取る。** 当たりすぎているときは黙って切らずに断る ——
@@ -829,7 +833,7 @@ def _run_one(spec: dict, sources: dict) -> tuple[Iterator[dict], str]:
     from app import db
 
     if spec["of"] == "tags":
-        return _run_tags(spec, sources)
+        return _run_tags(spec, sources, retired)
 
     src, set_sql, params = _doc_ids(spec, sources)
     limit = spec["limit"]
@@ -869,7 +873,7 @@ def _run_one(spec: dict, sources: dict) -> tuple[Iterator[dict], str]:
     return items(), spec["cursor"]
 
 
-def _tag_rows(spec: dict, sources: dict) -> list[dict]:
+def _tag_rows(spec: dict, sources: dict, retired: set[str] | None = None) -> list[dict]:
     """そのソースのタグを、**件数・直近の件数・最後に付いた日**つきで数える。
 
     **読者に出さない印の付いた文書は数えない**(`notes.HIDDEN_TAGS`)。消したものや
@@ -880,6 +884,11 @@ def _tag_rows(spec: dict, sources: dict) -> list[dict]:
 
     **切るのは外す語を落としてから。** 先に切ると、外す語が上位を埋めているぶんだけ
     拾える語が減る(配信元の名前はたいてい上位に来る)。
+
+    **一度外された語は拾い直さない**(`retired`)。墓標は「これは話題ではない」という
+    判断で、拾う側が知らないと毎回同じ語を並べ直す —— 足す側で弾かれるので中身は
+    増えないが、**一緒に出てくる語の枠を食う**(実測で、上位 6 のうち 2 つが外した
+    媒体名だった)。
     """
     from app import db
 
@@ -908,9 +917,11 @@ def _tag_rows(spec: dict, sources: dict) -> list[dict]:
         timeout=EXTRACT_TIMEOUT_SECONDS,
     )
     skip = [re.compile(one) for one in spec["skip"]]
+    gone = retired or set()
     kept = [
         dict(row) for row in rows
-        if not any(pattern.search(row["tag"]) for pattern in skip)
+        if row["tag"] not in gone
+        and not any(pattern.search(row["tag"]) for pattern in skip)
     ]
     return kept[: spec["limit"]] if spec["limit"] else kept
 
@@ -956,14 +967,16 @@ def _tag_links(spec: dict, sources: dict, tags: list[str]) -> dict[str, list[dic
     return linked
 
 
-def _run_tags(spec: dict, sources: dict) -> tuple[Iterator[dict], str]:
+def _run_tags(
+    spec: dict, sources: dict, retired: set[str] | None = None
+) -> tuple[Iterator[dict], str]:
     """タグの名簿を、集める層が読む形にする。
 
     **本文には数えたことだけを書く。** その語が何を指すのかは AI の仕事で、精査の回が
     書き直したら次の機械の回はそれを残す(足すだけの回なので本文には触らない)。
     **数のほうは毎回入れ替わる**(`collect.stream_docs` の `facts`)。
     """
-    rows = _tag_rows(spec, sources)
+    rows = _tag_rows(spec, sources, retired)
     linked = _tag_links(spec, sources, [row["tag"] for row in rows])
     context = {"src": sources[spec["source"]], "links": {}}
 
