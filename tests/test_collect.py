@@ -4205,6 +4205,19 @@ class TestRest:
         # 名前を渡さない /fetch は 422(名前として 404 にならない)
         assert client.get("/v1/collect/fetch").status_code == 422
 
+    def test_the_list_says_what_each_one_can_do(self, client, sample):
+        """**焼けた中身も添える**(`docs`・`can`)。
+
+        読む側は「地図に置ける収集はどれか」を知りたいことがあり、それは
+        座標を持つか(`can` に `bbox` があるか)で決まる。呼び名(`label`)は
+        こちらにしか無いので、2 本引いて突き合わせる手間を押し付けないため。
+        まだ焼いていない収集は 0 件・空("定義はあるが中身が無い")。
+        """
+        listed = {s["name"]: s for s in client.get("/v1/collect/sources").json()["sources"]}
+
+        assert listed["news"]["docs"] == 0
+        assert listed["news"]["can"] == []
+
     def test_one_collection_comes_with_what_was_baked(self, client, sample):
         """設定だけでは、プロンプトを直すかの判断ができない。"""
         body = client.get("/v1/collect/news").json()

@@ -172,6 +172,10 @@ DB の構築(FTS・タグ転置表・世代切り替え・検証)は Chiezo 本�
 
 ```
 GET /sources            → {"sources": [{"name","kind","lang","label","min_docs","memory_gb"}]}
+                          (収集の一覧 `/v1/collect/sources` は、焼けているものに
+                           `docs`(件数)と `can`(何ができるか)も添えます。取り込みは
+                           見ませんが、読む側が「地図に置ける収集はどれか」を
+                           `can` に `bbox` があるかで選べるようにするため)
 GET /fetch?source=NAME  → NDJSON(1 行目に meta、以降は 1 行 1 文書)
 ```
 

@@ -2630,13 +2630,26 @@ def collect_create(request: Request, body: CollectionCreate):
 # **固定のパスは `/{name}` より先に宣言する。** 後ろに置くと `sources` や `fetch` が
 # 名前として解釈され、「収集「sources」がありません」で 404 になる。
 @app.get("/v1/collect/sources")
-def collect_sources_catalog():
+def collect_sources_catalog(request: Request):
     """焼ける収集の一覧(ingest が引くカタログ)。
 
     取り込み側のプラグイン契約(`ingest/sources/remote.py`)。**無効なら空で返す** ——
     404 にすると、収集を使っていない構成で ingest 側が毎回エラーを踏む。
+
+    焼けているものには **`docs`(件数)と `can`(何ができるか)も添える**。
+    読む側は「地図に置ける収集はどれか」を知りたいことがあり、それは
+    `can` に `bbox` があるか(= 座標を持つか)で決まる。`/v1/sources` にも同じものが
+    出ているが、**収集の呼び名(`label`)はこちらにしか無い**ので、
+    2 本引いて名前で突き合わせる手間を読む側に押し付けないため。
+    **まだ 1 件も焼けていない収集は `docs` が 0 で `can` は空**(定義はあるが中身が無い)。
     """
-    return {"sources": collect.catalog()}
+    sources: dict[str, Source] = request.app.state.sources
+    items = []
+    for item in collect.catalog():
+        src = sources.get(item["name"])
+        items.append({**item, "docs": src.doc_count if src else 0,
+                      "can": claude_config.describe(src)["can"] if src else []})
+    return {"sources": items}
 
 
 @app.get("/v1/collect/fetch")
