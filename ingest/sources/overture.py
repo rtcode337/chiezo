@@ -52,6 +52,18 @@ DEFAULT_MIN_CONFIDENCE = 0.5
 FETCH_BATCH = 50_000
 
 
+def _country_code(value: str | None) -> str | None:
+    """国コードの形を確かめる。**SQL に直に埋めるので、形だけは見る**
+    (値はこちらのコードから来るが、書き間違いを黙って通すと、条件が効かないまま
+    全部入ってくる)。"""
+    if value is None:
+        return None
+    code = value.strip().upper()
+    if len(code) != 2 or not code.isalpha():
+        raise SystemExit(f"国コードは ISO の 2 文字で書いてください: {value!r}")
+    return code
+
+
 def _min_confidence() -> float:
     raw = os.environ.get("OVERTURE_MIN_CONFIDENCE", "").strip()
     try:
@@ -63,9 +75,20 @@ def _min_confidence() -> float:
 class OvertureAdapter:
     """1 国ぶんの Overture Places を取り込む。
 
-    `bbox` は (min_lon, min_lat, max_lon, max_lat)。国境ぴったりではなく矩形なので、
-    隣国の縁が少し混ざる。**そこは許容している** —— 地名辞典ではなく「その辺りの店」を
-    引くための索引で、隣の県の店が数件混ざっても用途を壊さない。
+    `bbox` は (min_lon, min_lat, max_lon, max_lat)。**矩形は国境に沿わない** ——
+    日本の枠(122-154E / 20-46N)には韓国が丸ごと入る。「縁が少し混ざる」程度だと
+    見ていたが、実測(2026-08-19.0)では枠の中身がこうなっていた:
+
+        JP 2,678,886 ／ KR 327,344 ／ RU 6,595 ／ CN 4,133 ／ KP 413 ／ ほか 47
+
+    **日本でないものが 11%。** この索引を母集団にした収集では、巡回の 13% が
+    日本ではない店に使われていた。
+
+    そこで **`country` で絞る**(Overture の `addresses[].country`。ISO の 2 文字)。
+    矩形は S3 から読む量を抑えるための粗い枠で、**何を入れるかは国が決める**。
+
+    **国が空のものは落とす。** 枠の中で 302 万件のうち空は 3 件しかなく、
+    残す側に回すと隣国のぶんまで一緒に残る。
     """
 
     source_kind = "overture"
@@ -78,12 +101,14 @@ class OvertureAdapter:
         *,
         lang: str | None,
         bbox: tuple[float, float, float, float],
+        country: str | None = None,
         min_docs: int,
         sample_titles: list[str] | None = None,
     ) -> None:
         self.source = source
         self.lang = lang
         self.bbox = bbox
+        self.country = _country_code(country)
         self.min_docs = min_docs
         self.sample_titles = sample_titles or []
         self._release: str | None = None
@@ -144,6 +169,11 @@ class OvertureAdapter:
                 log.info("overture: reusing %s", out.name)
                 return out, date
             min_lon, min_lat, max_lon, max_lat = self.bbox
+            # **国で絞るのは S3 の側。** 落としてから捨てると、要らない国のぶんまで
+            # 転送することになる(日本の枠では 1 割を超える)
+            in_country = (
+                f"AND addresses[1].country = '{self.country}'" if self.country else ""
+            )
             log.info("overture: extracting %s from release %s", self.source, release)
             conn.execute(
                 f"""
@@ -167,6 +197,7 @@ class OvertureAdapter:
                   )
                   WHERE bbox.xmin BETWEEN {min_lon} AND {max_lon}
                     AND bbox.ymin BETWEEN {min_lat} AND {max_lat}
+                    {in_country}
                     AND names.primary IS NOT NULL
                     AND confidence >= {_min_confidence()}
                 ) TO '{out}' (FORMAT PARQUET)
@@ -265,7 +296,8 @@ class OvertureAdapter:
         return f"OvertureAdapter({self.source}, release={self._release})"
 
 
-# 日本の矩形。北方領土・南鳥島まで含む広めの枠(端が少し余っても害はない)
+# 日本の矩形。北方領土・南鳥島まで含む広めの枠。**端が余るのは害ではないが、
+# 入ってくるものを決めるのは国のほう**(この枠には韓国が丸ごと入る)
 JAPAN_BBOX = (122.0, 20.0, 154.0, 46.0)
 
 
@@ -274,6 +306,7 @@ def overture_japan() -> OvertureAdapter:
         "overture_japan",
         lang="ja",
         bbox=JAPAN_BBOX,
+        country="JP",
         # 実測で新宿 1km 四方に 4,466 件の飲食店があった規模。全国で数百万件は入る想定で、
         # 「明らかに取りこぼした」を捕まえる下限として 50 万件に置く
         min_docs=500_000,

@@ -70,7 +70,7 @@ AI に知識を持たせる方法はほかに 3 つある。モデルの中(学�
 |---|---|---|
 | Wikipedia | `<lang>wiki` | 一般知識・人物・作品・出来事など。348 の言語版が定義済みで(`jawiki` / `enwiki` / `zh_yuewiki` …)、使いたい言語だけを取り込む(管理画面の `/admin` → `wikipedia` → 言語選択から) |
 | OpenStreetMap | `osm_<国>` | 国別抽出(Geofabrik 由来の地名辞典 + POI 辞典)。地名・行政区・自然地物に加え、病院・学校・店舗・観光地等の主要 POI と駅・空港・港・IC/SA 等の交通インフラ、およびそれらの座標。Geofabrik にある 195 の国・地域が定義済みで(`osm_japan` / `osm_france` …)、使いたい国だけを取り込む(`/admin` → `osm` → 国選択から) |
-| Overture Maps | `overture_japan` | 店舗・施設の POI。OSM は店舗レベルでは穴が多く、実測で新宿 1km 四方の飲食店は OSM 884 件に対し 4,466 件。ライセンスは CDLA Permissive 2.0 / Apache 2.0 で、OSM のデータは含まない |
+| Overture Maps | `overture_japan` | 店舗・施設の POI。OSM は店舗レベルでは穴が多く、実測で新宿 1km 四方の飲食店は OSM 884 件に対し 4,466 件。**入れる範囲は国で決める**(矩形は読む量を抑える枠で、日本の枠には韓国が丸ごと入る)。ライセンスは CDLA Permissive 2.0 / Apache 2.0 で、OSM のデータは含まない |
 | GeoNames | `geonames` | 全世界地名辞典(約 400MB のダンプで約 1,200 万件)。多言語別名を持つので「パリ」「ニューヨーク」のような日本語表記から引ける。wikidata の Q 番号も拾うので jawiki と突合できる。店舗・営業時間は持たない(そこは osm 系の担当) |
 | AI 自身が書いたメモ | `chiezo_memory` | 取り込みは要らず、書いた端から引ける(後述) |
 | AI が集めたもの | 収集ごと | まとまったダンプの無いものを AI に集めさせる(後述) |

@@ -1,8 +1,14 @@
 """Overture Places の取り込み(`ingest/sources/overture.py`)のうち、S3 を叩かない部分。
 
-**リリース探しだけを見る**。ここが 0 件を返すと `SystemExit` になり、取り込みは
-1 行もログを残さずに終わる —— しかも本文の抽出まで進まないので、外からは
+見るのは 2 つ。
+
+**リリース探し**。ここが 0 件を返すと `SystemExit` になり、取り込みは 1 行も
+ログを残さずに終わる —— しかも本文の抽出まで進まないので、外からは
 「preflight で止まっている」ようにしか見えない。実際にそうなった。
+
+**国の絞り込み**。矩形は国境に沿わないので、日本の枠には韓国が丸ごと入る。
+条件が落ちたことは取り込みの成否からは分からない(件数が増えるだけ)ので、
+S3 へ投げる文そのものを見る。
 """
 from __future__ import annotations
 
@@ -37,6 +43,9 @@ class _FakeConn:
 
     def fetchall(self) -> list[tuple]:
         return self.rows
+
+    def close(self) -> None:
+        pass
 
 
 def _files(releases: list[str]) -> list[str]:
@@ -78,3 +87,46 @@ class TestLatestRelease:
         """将来 release/ の下に別のものが並んでも拾わない。"""
         conn = _FakeConn([*_files(RELEASES), f"{overture.S3_BASE}/index/README.md"])
         assert adapter._latest_release(conn) == "2026-08-19.0"
+
+
+class TestCountry:
+    """**入れる範囲は国で決める。** 矩形は S3 から読む量を抑えるための枠でしかない。"""
+
+    def test_the_sql_asks_for_one_country(self, adapter, tmp_path):
+        conn = _FakeConn(_files(RELEASES))
+        adapter._connect = lambda: conn
+
+        adapter.fetch(tmp_path)
+
+        assert "addresses[1].country = 'JP'" in conn.sql[-1]
+
+    def test_the_country_goes_to_s3_with_the_box(self, adapter, tmp_path):
+        # **落としてから捨てない。** 要らない国のぶんを転送すると、
+        # 日本の枠では 1 割を超える量が無駄になる
+        conn = _FakeConn(_files(RELEASES))
+        adapter._connect = lambda: conn
+        adapter.fetch(tmp_path)
+        sql = conn.sql[-1]
+
+        assert sql.index("bbox.xmin") < sql.index("addresses[1].country")
+        assert "COPY" in sql
+
+    def test_without_a_country_nothing_is_filtered(self, tmp_path):
+        # 国を書かないアダプタ(将来の別の国や、国の付かない母集団)では条件を足さない
+        plain = overture.OvertureAdapter(
+            "overture_test", lang=None, bbox=(0.0, 0.0, 1.0, 1.0), min_docs=1
+        )
+        conn = _FakeConn(_files(RELEASES))
+        plain._connect = lambda: conn
+
+        plain.fetch(tmp_path)
+
+        assert "addresses[1].country" not in conn.sql[-1]
+
+    @pytest.mark.parametrize("bad", ["Japan", "J", "", "12"])
+    def test_a_code_that_is_not_two_letters_is_refused(self, bad):
+        # SQL に直に埋めるので、書き間違いを黙って通すと条件が効かないまま全部入る
+        with pytest.raises(SystemExit):
+            overture.OvertureAdapter(
+                "overture_test", lang=None, bbox=(0.0, 0.0, 1.0, 1.0), country=bad, min_docs=1
+            )
