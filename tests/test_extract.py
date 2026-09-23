@@ -1099,6 +1099,54 @@ class TestASlowReaderIsNotTheQuerysFault:
             ))
 
 
+class TestTheStreamSurvivesMovingBetweenThreads:
+    """**読み手のスレッドは途中で変わる**(`db.stream`)。
+
+    素材を HTTP で流す道は Starlette が `iterate_in_threadpool` で回すので、
+    **1 行ごとに別のワーカースレッドへ移りうる** —— スレッドごとに使い回す接続を
+    借りていた頃は、移った瞬間に `SQLite objects created in a thread can only be
+    used in that same thread` で落ちた。**流し始めたあとなのでステータスは
+    変えられず**、受け取る側には「短いだけの正しい素材」として届く
+    (本番で 68.6 万件のうち 24.3 万件で切れ、取り込み側の `min_docs` で止まった)。
+    """
+
+    ROWS = 50
+
+    def _db(self, tmp_path):
+        import sqlite3
+
+        path = tmp_path / "hop.db"
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE t (n INTEGER)")
+        conn.executemany("INSERT INTO t VALUES (?)", [(n,) for n in range(self.ROWS)])
+        conn.commit()
+        conn.close()
+        return path
+
+    def test_rows_keep_coming_after_the_reader_moves(self, tmp_path):
+        """1 行ごとに別のスレッドから次を取りに行っても、最後まで流れる。"""
+        from concurrent.futures import ThreadPoolExecutor
+
+        from app import db
+
+        path = self._db(tmp_path)
+        rows = db.stream(path, "SELECT n FROM t ORDER BY n")
+
+        seen = []
+        # **2 本を同時に立てておいて、交互に取りに行く。** 1 本ずつ立てては畳むと
+        # スレッドの識別子が使い回されることがあり、**確かめたい場面を踏まないまま
+        # 通る**(SQLite はその識別子で同じスレッドかを見ている)
+        with ThreadPoolExecutor(max_workers=1) as a, ThreadPoolExecutor(max_workers=1) as b:
+            pools = (a, b)
+            while True:
+                got = pools[len(seen) % 2].submit(next, rows, None).result()
+                if got is None:
+                    break
+                seen.append(got["n"])
+
+        assert seen == list(range(self.ROWS))
+
+
 class TestTheRosterKeepsTitlesBakeable:
     """名簿の鍵は**切り詰めた見出し**(`notes.TITLE_MAX_CHARS`)。
 

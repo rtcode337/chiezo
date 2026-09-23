@@ -76,18 +76,26 @@ def get_connection(db_path: Path) -> sqlite3.Connection:
         del conns[key]
         cached = None
     if cached is None:
-        # 追記される DB は immutable にできない(上の set_mutable_paths 参照)
-        uri = f"file:{db_path}?mode=ro" if mutable else f"file:{db_path}?immutable=1"
-        conn = sqlite3.connect(uri, uri=True)
-        conn.row_factory = sqlite3.Row
-        # title の前方一致 (LIKE 'prefix%') を idx_docs_title の範囲検索へ最適化するため。
-        # SQLite は case_sensitive_like=OFF(既定)+ BINARY インデックスだと LIKE 前方一致を
-        # 範囲検索に落とせず全走査になる(百万件規模でタイムアウト)。ON にすると BINARY
-        # インデックスで範囲検索が効く。副作用として LIKE の ASCII 大小同一視は無効になるが、
-        # 用途は titles / search フォールバック等の前方一致のみで実害はない。
-        conn.execute("PRAGMA case_sensitive_like=ON")
-        conns[key] = (conn, ident, mutable)
+        conns[key] = (_open(db_path), ident, mutable)
     return conns[key][0]
+
+
+def _open(db_path: Path, same_thread: bool = True) -> sqlite3.Connection:
+    """読み取り専用で 1 本開く。**開き方はここだけ**(キャッシュ側と流し込み側で共有)。
+
+    `same_thread=False` は**呼ぶスレッドが変わりうる読み手のため**(`stream`)。
+    """
+    # 追記される DB は immutable にできない(上の set_mutable_paths 参照)
+    uri = f"file:{db_path}?mode=ro" if is_mutable(db_path) else f"file:{db_path}?immutable=1"
+    conn = sqlite3.connect(uri, uri=True, check_same_thread=same_thread)
+    conn.row_factory = sqlite3.Row
+    # title の前方一致 (LIKE 'prefix%') を idx_docs_title の範囲検索へ最適化するため。
+    # SQLite は case_sensitive_like=OFF(既定)+ BINARY インデックスだと LIKE 前方一致を
+    # 範囲検索に落とせず全走査になる(百万件規模でタイムアウト)。ON にすると BINARY
+    # インデックスで範囲検索が効く。副作用として LIKE の ASCII 大小同一視は無効になるが、
+    # 用途は titles / search フォールバック等の前方一致のみで実害はない。
+    conn.execute("PRAGMA case_sensitive_like=ON")
+    return conn
 
 
 def close_thread_connections() -> None:
@@ -121,10 +129,22 @@ def stream(
     焼く素材を組んで HTTP で流していただけで、どの問い合わせも詰まっていない)。
     ここで止めたいのは**行が出てこない問い合わせ**なので、1 行返るたびに測り直す。
 
-    **接続はスレッドごと**(`get_connection`)。回している最中に同じスレッドから
-    同じ DB へ別の問い合わせを投げると、カーソルが絡む。
+    **接続はこの 1 本のために開く**(スレッドごとの使い回しを借りない)。理由が 2 つ:
+
+    1. **読み手のスレッドは途中で変わる。** 素材を HTTP で流す道は Starlette が
+       `iterate_in_threadpool` で回し、**1 行ごとに別のワーカースレッドへ移りうる**
+       —— 借りた接続はそれを作ったスレッドでしか使えないので、移った瞬間に
+       `SQLite objects created in a thread can only be used in that same thread` で
+       落ちる。**流し始めたあとなのでステータスは変えられず**、受け取る側には
+       「短いだけの正しい素材」として届く(本番で 68.6 万件のうち 24.3 万件で
+       切れた。取り込み側の `min_docs` が最後の歯止めになった)。
+    2. **締め切りを他の問い合わせに漏らさない。** `set_progress_handler` は接続に
+       掛かるので、使い回しの 1 本に掛けると同じスレッドの他の問い合わせまで
+       この締め切りで切られる。
+
+    使い終えたら閉じる(流し切らずに捨てられても、生成器の後始末で閉じる)。
     """
-    conn = get_connection(db_path)
+    conn = _open(db_path, same_thread=False)
     deadline = time.monotonic() + timeout
 
     def _check() -> int:
@@ -141,7 +161,7 @@ def stream(
             raise QueryTimeout() from e
         raise
     finally:
-        conn.set_progress_handler(None, 0)
+        conn.close()
 
 
 # 読むだけの SQL に通す操作。**これ以外は authorizer が落とす** ——
