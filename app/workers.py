@@ -326,6 +326,30 @@ def done(name: str, collection: str, sweep: str) -> None:
     _queue_save(state)
 
 
+def drop(collection: str, sweep: str) -> None:
+    """その回を、**全部のワーカーの行列と塊から**外す。
+
+    **走らせたのだから、もうどこにも積まれていてはいけない。** 外さないと、
+    そのワーカーが起きたときに同じ回がもう一度流れる —— 枠を 1 回ぶん余計に食う。
+
+    **1 つのワーカーだけを見ては足りない**(`done` との違いがここ)。積んだ後に
+    巡回のワーカーを付け替えれば、積まれているのは**前のワーカー**の行列だし、
+    試し撃ちで相手を上書きした回は、上書きした先のワーカーを見ても居ない ——
+    どちらも「外したつもり」で残る。**誰の行列に居るかを当てに行かない**。
+
+    `done` のほうは流し終えた 1 本を、そのワーカーの塊から外すためのもので
+    残す(あちらは「誰が流したか」が分かっている)。
+    """
+    if not collection or not sweep:
+        return
+    made = _entry(collection, sweep)
+    state = _queue_all()
+    for slot in state.values():
+        for key in ("queue", "batch"):
+            slot[key] = [e for e in slot.get(key) or [] if not _same(made, e)]
+    _queue_save(state)
+
+
 def forget(collection: str) -> None:
     """その収集のぶんを全部のワーカーから外す(収集を消したとき)。"""
     state = _queue_all()

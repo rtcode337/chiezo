@@ -1423,3 +1423,58 @@ class TestAStoppedCollectionDoesNotRun:
         m.start_collection_bake("meals", "ざっと見る")
 
         assert started == ["meals"]
+
+
+class TestRunningItByHandClearsTheQueue:
+    """**走らせたのだから、もうどこにも積まれていてはいけない。**
+
+    画面の「今すぐ実行」も、外のアプリからの依頼(`POST /v1/collect/{name}/run`)も
+    行列を通さずその場で走らせる —— 残すと、そのワーカーが起きたときに同じ回が
+    もう一度流れて、枠を 1 回ぶん余計に食う。
+    """
+
+    def test_it_leaves_the_queue_of_the_worker_that_holds_it(self, enabled):
+        workers.enqueue("精査", "news", "ざっと見る", "2026-09-23T00:00:00+00:00")
+
+        workers.drop("news", "ざっと見る")
+
+        assert workers.queued("精査") == []
+
+    def test_it_looks_in_every_worker(self, enabled):
+        """**積んだ後に巡回のワーカーを付け替えれば、積まれているのは前のほう**
+        —— いま書いてあるワーカーだけ見ても居ない(試し撃ちで相手を上書きした
+        回も同じ)。誰の行列に居るかを当てに行かない。
+        """
+        workers.enqueue("前のワーカー", "news", "ざっと見る", "2026-09-23T00:00:00+00:00")
+
+        workers.drop("news", "ざっと見る")
+
+        assert workers.queued("前のワーカー") == []
+
+    def test_other_sweeps_are_left_alone(self, enabled):
+        workers.enqueue("精査", "news", "ざっと見る", "2026-09-23T00:00:00+00:00")
+        workers.enqueue("精査", "news", "整理", "2026-09-23T00:00:00+00:00")
+        workers.enqueue("精査", "ほか", "ざっと見る", "2026-09-23T00:00:00+00:00")
+
+        workers.drop("news", "ざっと見る")
+
+        left = {(e["collection"], e["sweep"]) for e in workers.queued("精査")}
+        assert left == {("news", "整理"), ("ほか", "ざっと見る")}
+
+    def test_it_takes_it_out_of_the_claimed_batch_too(self, enabled):
+        """**拾われた後でも外す** —— 塊に移っているだけで、流れるのはこれから。"""
+        workers.enqueue("精査", "news", "ざっと見る", "2026-09-23T00:00:00+00:00")
+        workers.claim("精査", 5, "2026-09-23T00:01:00+00:00")
+
+        workers.drop("news", "ざっと見る")
+
+        assert workers.queued("精査") == []
+        assert not workers.claim_ready("精査")
+
+    def test_nothing_named_does_nothing(self, enabled):
+        workers.enqueue("精査", "news", "ざっと見る", "2026-09-23T00:00:00+00:00")
+
+        workers.drop("", "ざっと見る")
+        workers.drop("news", "")
+
+        assert len(workers.queued("精査")) == 1

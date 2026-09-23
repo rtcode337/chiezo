@@ -527,9 +527,11 @@ def start_collection_bake(
     **どの巡回を起こしたかは定義側に控える**(`pending_sweep`)。取り込みは収集の
     名前しか運べないので、素材を作る側はそこを読む。
 
-    **起こせたら、ワーカーの待ち行列からも外す**(`workers.done`)。画面の
-    「今すぐ実行」は行列を通さずその場で走らせるので、外さないと**待っていた
-    ぶんがあとでもう一度流れる**(枠を 1 回ぶん余計に食う)。
+    **起こせたら、ワーカーの待ち行列からも外す**(`workers.drop`)。画面の
+    「今すぐ実行」も外のアプリからの依頼も行列を通さずその場で走らせるので、
+    外さないと**待っていたぶんがあとでもう一度流れる**(枠を 1 回ぶん余計に食う)。
+    **見るのは全部のワーカー** —— 巡回にいま書いてあるワーカーだけを見ていた頃は、
+    積んだ後に付け替えていれば前のワーカーの行列に残った。
 
     **走っている最中は起こさない。** 取り込みは同時に 1 本しか受けないので
     どのみち断られるが、**断られる前に控え(`pending_sweep`)を書いてしまう** ——
@@ -569,9 +571,13 @@ def start_collection_bake(
         collect.restore_pending(name, was, was_run)
         raise
     # **行列に居たなら外す。** どの道で走ったかに関わらず、その回はもう走っている
-    if worker := (collect.asked_for_run(this, collect.normalize_run_once(run_once)).worker or ""):
-        with suppress(Exception):
-            workers.done(worker, name, this.name)
+    # —— 画面の「今すぐ実行」も、外のアプリからの依頼(`POST /v1/collect/{name}/run`)も
+    # 行列を通さずその場で走らせるので、残すと**あとでもう一度流れる**(枠を 1 回ぶん
+    # 余計に食う)。**全部のワーカーを見る**(`drop`)—— 積んだ後に巡回のワーカーを
+    # 付け替えていれば、積まれているのは前のワーカーの行列で、いま書いてある
+    # ワーカーだけ見ても居ない(試し撃ちで相手を上書きした回も同じ)
+    with suppress(Exception):
+        workers.drop(name, this.name)
     # **起こせたときだけ予定を進める** —— 混んでいて断られたのに次回へ送ると、
     # その回は黙って飛ばされる(trigger_run が例外にするのでここへは来ない)
     return collect.to_public(collect.mark_started(name, this.name))
