@@ -2087,7 +2087,8 @@ class TestTheFrontDoorReadsTopToBottom:
 
         monkeypatch.setattr(admin, "_usage_html", lambda request=None: "<h2 id='ai-usage'>使用量</h2>")
         monkeypatch.setattr(
-            admin, "_running_html", lambda running: "<h2 id='running-now'>いま走っている</h2>",
+            admin, "_running_html",
+            lambda running, done=None: "<h2 id='running-now'>いま走っている</h2>",
         )
         html = client.get("/admin").text
 
@@ -2095,6 +2096,95 @@ class TestTheFrontDoorReadsTopToBottom:
         assert html.index('id="job-head"') < usage
         assert html.index("id='running-now'") < usage
         assert ai_usage.SECTION_ANCHOR == "ai-usage"
+
+
+class TestTheRoundShowsWhatAlreadyFinished:
+    """**1 回の取り込みで何本も走る。** 巡回は区画ごとに AI を呼ぶので、玄関に
+    出るのは**いま飛んでいる 1 本だけ**だった —— 終わったぶんは控えへ移るので、
+    「この回で何本目か」「さっきのは通ったのか」が玄関からは読めない。
+    """
+
+    @staticmethod
+    def _job(source: str, at: str = "2026-09-23T00:00:00+00:00") -> dict:
+        return {"state": "running", "source": source, "started_at": at}
+
+    def test_a_collection_round_shows_what_it_already_did(self, monkeypatch):
+        from app.views import admin
+
+        monkeypatch.setattr(admin, "_is_collection", lambda name: True)
+        monkeypatch.setattr(
+            admin.usage_store, "calls_by",
+            lambda caller, since, limit=100: [
+                {"at": "2026-09-23T00:05:00+00:00", "backend": "codex", "model": "gpt",
+                 "effort": "", "kind": "chat", "prompt_bytes": 100, "ms": 9000,
+                 "caller": caller},
+            ],
+        )
+
+        [row] = admin._round_done(self._job("tazuna_meals"))
+
+        assert row["state"] == "終わった"
+        assert row["caller"] == "collect:tazuna_meals"
+
+    def test_it_asks_from_when_the_round_started(self, monkeypatch):
+        """**前の回のぶんまで引っ張ってきては意味が変わる。**"""
+        from app.views import admin
+
+        asked = {}
+        monkeypatch.setattr(admin, "_is_collection", lambda name: True)
+        monkeypatch.setattr(
+            admin.usage_store, "calls_by",
+            lambda caller, since, limit=100: asked.update(since=since) or [],
+        )
+
+        admin._round_done(self._job("tazuna_meals", "2026-09-23T01:23:00+00:00"))
+
+        assert asked["since"] == "2026-09-23T01:23:00+00:00"
+
+    def test_a_dump_source_has_no_round(self, monkeypatch):
+        """ダンプのソースを焼いている回には、回という括りが無い。"""
+        from app.views import admin
+
+        monkeypatch.setattr(admin, "_is_collection", lambda name: False)
+
+        assert admin._round_done(self._job("jawiki")) == []
+
+    def test_nothing_running_means_nothing_to_gather(self):
+        from app.views import admin
+
+        assert admin._round_done(None) == []
+        assert admin._round_done({"state": "done", "source": "tazuna_meals"}) == []
+
+    def test_the_running_one_comes_first(self):
+        """走っているものが先頭に来ていないと、いちばん知りたい
+        「いま何が詰まっているか」が下へ流れる。"""
+        from app.views import admin
+
+        now = {"at": "2026-09-23T00:10:00+00:00", "kind": "chat", "backend": "codex",
+               "model": "", "effort": "", "state": "走っている", "prompt_bytes": 1,
+               "prompt": "", "caller": "collect:x"}
+        done = {**now, "state": "終わった", "ms": 9000}
+
+        html = admin._running_html([now], [done])
+
+        assert html.index("走っている") < html.index("終わった")
+
+    def test_a_finished_row_shows_how_long_it_took(self):
+        """**経過(いまとの差)だと、終わっているのに時計が進み続けて見える。**"""
+        from app.views import admin
+
+        done = {"at": "2026-09-23T00:10:00+00:00", "kind": "chat", "backend": "codex",
+                "model": "", "effort": "", "state": "終わった", "prompt_bytes": 1,
+                "prompt": "", "caller": "collect:x", "ms": 9000}
+
+        html = admin._running_html([], [done])
+
+        assert "9.0 秒" in html
+
+    def test_an_empty_round_still_shows_nothing(self):
+        from app.views import admin
+
+        assert admin._running_html([], []) == ""
 
 
 class TestNotTakingOrdersFromTheCliItDrives:

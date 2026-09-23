@@ -2041,7 +2041,7 @@ def admin(request: Request):
 {nav_html("/admin")}
 <p>{_disk_html(request.app.state.data_dir)}</p>
 {_job_status_html(job, heading=True)}
-{_running_html(running)}
+{_running_html(running, _round_done(job))}
 {_usage_html(request)}
 <div class="admin-cards">
 {cards}
@@ -2064,7 +2064,40 @@ def _todo_summary() -> str:
     )
 
 
-def _running_html(running: list[dict]) -> str:
+def _is_collection(name: str) -> bool:
+    """その名前が収集か。**読めなければ「違う」に倒す**(玄関を落とさない)。"""
+    with suppress(Exception):
+        return collect.get(name) is not None
+    return False
+
+
+def _round_done(job: dict | None) -> list[dict]:
+    """いま走っている取り込みが収集なら、**その回でもう終わった依頼**。
+
+    **1 回の取り込みで何本も走る。** 巡回は区画ごとに AI を呼ぶので、玄関に出るのは
+    そのうち**いま飛んでいる 1 本だけ**だった —— 終わったぶんは控えへ移るので、
+    「この回で何本目か」「さっきのは通ったのか」が玄関からは読めない。
+    **回の始まりは取り込みの開始時刻**(依頼元が同じでも、前の回のぶんまで
+    引っ張ってきては意味が変わる)。
+
+    **走っているのが収集でなければ空**(回という括りが無い)。
+    **落ちたぶんは出ない** —— 失敗の控えは依頼元を持たないので、回に結び付かない。
+    """
+    if not (job and job.get("state") == "running"):
+        return []
+    name = str(job.get("source") or "")
+    # **収集かどうかは定義を引いて確かめる**(`_running_sweep` と同じ流儀)——
+    # ダンプのソースを焼いている回には、回という括りが無い。
+    # **読めなくても画面は落とさない**(玄関の本体はここではない)
+    if not name or not _is_collection(name):
+        return []
+    return [
+        {**r, "state": "終わった", "prompt": ""}
+        for r in usage_store.calls_by(f"collect:{name}", str(job.get("started_at") or ""))
+    ]
+
+
+def _running_html(running: list[dict], done: list[dict] | None = None) -> str:
     """いま走っている AI への依頼。
 
     ここが表なのは、**待たされているときに見に来る画面がここだから** ——
@@ -2077,7 +2110,10 @@ def _running_html(running: list[dict]) -> str:
     **走っていないときは何も出さない。** 空の表を置くと、いつも何かが動いていない
     ことのほうが目立つ。
     """
-    if not running:
+    # **終わったぶんは後ろに付ける**(新しい順のまま)。走っているものが先頭に
+    # 来ていないと、いちばん知りたい「いま何が詰まっているか」が下へ流れる
+    rows_in = list(running) + list(done or [])
+    if not rows_in:
         return ""
 
     rows = "".join(
@@ -2086,10 +2122,14 @@ def _running_html(running: list[dict]) -> str:
         # 同じ依頼が玄関と表で違って見える(経過の `elapsed` と同じ理由)
         f"<td>{ai_history.who_html(r['backend'], r.get('model') or '', r.get('effort') or '')}</td>"
         f"<td>{esc(r['state'])}</td>"
-        f'<td class="muted">{esc(ai_history.elapsed(r["at"]))}</td>'
+        # **終わったぶんは「かかった時間」を出す** —— 経過(いまとの差)だと、
+        # 終わっているのに時計が進み続けているように見える
+        f'<td class="muted">'
+        f'{esc(ai_history.took(r["ms"]) if r.get("ms") is not None else ai_history.elapsed(r["at"]))}'
+        f"</td>"
         f'<td>{ai_history.caller_html(r.get("caller") or "")}</td>'
         f'<td>{ai_history.prompt_html(r.get("prompt") or "", r.get("prompt_bytes"))}</td></tr>'
-        for r in running
+        for r in rows_in
     )
 
     return f"""

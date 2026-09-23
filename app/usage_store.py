@@ -300,6 +300,40 @@ def recent_calls(limit: int = 100) -> list[dict]:
     ]
 
 
+def calls_by(caller: str, since: str, limit: int = 100) -> list[dict]:
+    """その依頼元が、ある時刻より後に**終えた**呼び出し(新しい順)。
+
+    **1 回の取り込みで何本も走る。** 収集の巡回は区画ごとに AI を呼ぶので、
+    玄関の「いま走っている」に出るのはそのうち**いま飛んでいる 1 本だけ**
+    —— 終わったぶんは控えへ移ってしまい、同じ回のものだと分からなくなる。
+    回の始まり(取り込みの開始時刻)から拾えば、その回ぜんたいが 1 か所で読める。
+
+    **拾えるのは成功したぶんだけ。** 落ちた回は別の控え(`app/ai_log.py`)に入り、
+    あちらは依頼元を持たない —— 回に結び付けようがないので、ここには出ない。
+    """
+    if not is_enabled() or not caller:
+        return []
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                "SELECT provider, model, effort, kind, at, prompt_bytes, ms, caller"
+                "  FROM calls WHERE caller = ? AND at >= ?"
+                " ORDER BY at DESC, id DESC LIMIT ?",
+                (caller, since or "", max(1, limit)),
+            ).fetchall()
+    except (sqlite3.Error, OSError) as e:
+        log.warning("usage calls_by failed: %s", e)
+        return []
+    return [
+        {
+            "at": r["at"], "backend": r["provider"], "model": r["model"] or "",
+            "effort": r["effort"] or "", "kind": r["kind"] or "chat",
+            "prompt_bytes": r["prompt_bytes"], "ms": r["ms"], "caller": r["caller"] or "",
+        }
+        for r in rows
+    ]
+
+
 def breakdown(since: datetime) -> list[dict]:
     """`since` 以降を、相手 × モデル × 考える量 × 依頼元で束ねて返す(多い順)。
 
