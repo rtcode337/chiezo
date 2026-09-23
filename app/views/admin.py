@@ -1061,7 +1061,8 @@ def _partition_html(item, src=None, busy: bool = False) -> str:
             if pickable else ""
         )
         return (
-            f"<tr>{box}<td>{_partition_link(item.name, p['key'])}</td>"
+            f"<tr>{box}<td>{_partition_link(item.name, p['key'])}"
+            f"{_where_html(p)}</td>"
             f"<td>{p['count']:,}</td><td>{_visits_html(p)}</td></tr>"
         )
 
@@ -1084,6 +1085,21 @@ def _partition_html(item, src=None, busy: bool = False) -> str:
         f"{_repartition_form(item, busy)}"
         f"{_run_here_html(item, table, busy)}"
     )
+
+
+def _where_html(p: dict) -> str:
+    """その区画が**どのあたりか**(矩形のときだけ)。持っていなければ何も出さない。
+
+    **矩形の鍵は数字が並ぶだけで、人には場所が読めない** —— 一覧で「これはどこか」を
+    確かめるのに、いちいち開くことになっていた。**割るときに拾ってある**ので
+    (`partition._leaf` の `area`)、ここで引き直さない —— 区画は数千あるので、
+    1 行ずつ問い合わせると区画の面がそれだけで重くなる。
+
+    **割り直すまで入らない。** 前に割った台帳は持っていないので空欄になる
+    (「区画を割り直す」を押せば入る)。
+    """
+    area = str(p.get("area") or "")
+    return f'<br><span class="muted">{esc(area)}</span>' if area else ""
 
 
 def _uncovered_html(item, src) -> str:

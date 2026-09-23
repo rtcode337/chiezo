@@ -39,12 +39,20 @@ import itertools
 import logging
 import math
 import re
+from collections import Counter
 
 from fastapi import HTTPException
 
 from app.registry import COORDS_MIN_SCHEMA_VERSION, TAG_MIN_SCHEMA_VERSION
 
 log = logging.getLogger("chiezo.app")
+
+# 矩形の区画に添える所属行政区の長さ。**添え物なので短く切る** ——
+# 台帳は収集 1 つで MB 単位になるので、1 区画ごとに伸びるものは持たせない。
+AREA_MAX_CHARS = 20
+
+# 1 区画に添える行政区の数。**1 つだと県境をまたぐ矩形で嘘になる**。
+AREA_NAMES = 2
 
 # 割り方。**対象の並び方で選ぶ** —— 地理的に散らばっているなら矩形、
 # 既にカテゴリで分かれているならタグ、どちらでもなければ見出しの順。
@@ -322,7 +330,8 @@ def _points(spec: dict, sources: dict, own: dict[str, dict]) -> list[tuple[float
         return _own_points(own)
     where, args = _population_filter(spec)
     sql = (
-        "SELECT c.lat, c.lon FROM doc_coords c JOIN docs d ON d.doc_id = c.doc_id"
+        "SELECT c.lat, c.lon, json_extract(d.extra, '$.area') AS area"
+        " FROM doc_coords c JOIN docs d ON d.doc_id = c.doc_id"
         f" WHERE 1=1{where}"
     )
     if box := spec["bbox"]:
@@ -336,17 +345,32 @@ def _points(spec: dict, sources: dict, own: dict[str, dict]) -> list[tuple[float
             "error": f"母集団が {MAX_POINTS:,} 件を超えています",
             "hint": "feature や tag で絞るか、bbox で範囲を区切ってください",
         })
-    return [(float(r["lat"]), float(r["lon"])) for r in rows]
+    return [
+        (float(r["lat"]), float(r["lon"]), str(r["area"] or "")[:AREA_MAX_CHARS])
+        for r in rows
+    ]
 
 
-def _own_points(own: dict[str, dict]) -> list[tuple[float, float]]:
-    """収集が既に持っている文書の座標。**座標を持たないものは数えない**。"""
+def _own_points(own: dict[str, dict]) -> list[tuple]:
+    """収集が既に持っている文書の座標。**座標を持たないものは数えない**。
+
+    **所属行政区も一緒に持つ**(`extra.area`。3 つ目の要素)—— 矩形の鍵は数字が
+    並ぶだけで、**どのあたりなのかが人には読めない**。割るときに拾っておけば、
+    一覧を描くたびに引き直さずに済む(区画は数千あるので、1 行ずつ引くのは高い)。
+    **添え物なので、無ければ空**(座標と違って、無くても割れる)。
+    """
     points = []
     for doc in own.values():
         lat, lon = coords_of(doc)
         if lat is not None:
-            points.append((lat, lon))
+            points.append((lat, lon, area_of(doc)))
     return points
+
+
+def area_of(doc: dict) -> str:
+    """文書の所属行政区(`extra.area`)。無ければ空。"""
+    extra = doc.get("extra")
+    return str(extra.get("area") or "")[:AREA_MAX_CHARS] if isinstance(extra, dict) else ""
 
 
 def coords_of(doc: dict) -> tuple[float | None, float | None]:
@@ -385,6 +409,26 @@ def _geo(spec: dict, points: list[tuple[float, float]]) -> list[dict]:
     out: list[dict] = []
     _split(tuple(box), points, spec["target"], out, 0)
     return out
+
+
+def _leaf(box, points) -> dict:
+    """割り終えた矩形 1 つぶん。**どのあたりかを添える**(`area`)。
+
+    矩形の鍵は数字が並ぶだけで、**人には場所が読めない** —— 一覧で「これはどこか」を
+    確かめるのに、いちいち開くことになっていた。**多いほうから 2 つまで**出す
+    (県境をまたぐ矩形があるので 1 つだと嘘になり、全部だと鍵より長くなる)。
+    **点が持っていなければ空**(添え物なので、無くても区画は成り立つ)。
+    """
+    areas = Counter(p[2] for p in points if len(p) > 2 and p[2])
+    named = "・".join(name for name, _n in areas.most_common(AREA_NAMES))
+    # **切ったことは書く。** 矩形は県をまたぐので、3 つ以上にまたがる区画は普通に
+    # ある —— 黙って 2 つに丸めると「この区画は 2 県ぶん」と読まれる。
+    # **どこまで書くかは長さの都合**(鍵より長い札にはしない)だが、**切ったことを
+    # 隠すのは別の話**(`recall` が `truncated` を立てるのと同じ筋)
+    if len(areas) > AREA_NAMES:
+        named += f" ほか{len(areas) - AREA_NAMES}"
+    leaf = {"key": geo_key(box), "count": len(points)}
+    return {**leaf, "area": named[:AREA_MAX_CHARS * AREA_NAMES]} if named else leaf
 
 
 def _must_fit(target: int, count: int) -> None:
@@ -427,7 +471,7 @@ def _split(box, points, target: int, out: list[dict], depth: int) -> None:
     # 回ってこないので、入っているものは誰にも見られないまま溜まり続ける。
     # 大きい区画が 1 つできるほうが、範囲が欠けるよりましで、しかも画面で読める
     if len(out) >= MAX_PARTITIONS or len(points) <= target or depth >= MAX_DEPTH:
-        out.append({"key": geo_key(box), "count": len(points)})
+        out.append(_leaf(box, points))
         return
     lat0, lon0, lat1, lon1 = box
     # **度のまま長辺を選ばない。** 経度 1 度は緯度が上がるほど短いので、
@@ -448,7 +492,7 @@ def _split(box, points, target: int, out: list[dict], depth: int) -> None:
         _split(box_r, right, target, out, depth + 1)
         return
     # どちらの軸でも割れない(同じ座標に固まっている)。数が多くても leaf にする
-    out.append({"key": geo_key(box), "count": len(points)})
+    out.append(_leaf(box, points))
 
 
 def _cut(points, axis: int, lo: float, hi: float) -> float | None:
@@ -854,6 +898,9 @@ def refresh(built: list[dict], current: list[dict], spec: dict | None = None) ->
         {
             "key": p["key"],
             "count": int(p.get("count") or 0),
+            # **どのあたりかは割ったときの値をそのまま運ぶ**(添え物なので、
+            # 無ければ入れない —— 空の鍵が全区画に並ぶと台帳が太る)
+            **({"area": p["area"]} if p.get("area") else {}),
             "visits": seen[p["key"]] if p["key"] in seen
             else _inherited(spec, p["key"], current),
         }
@@ -1129,6 +1176,7 @@ def merged(spec: dict, partitions: list[dict]) -> list[dict]:
     out: list[dict] = []
     for p in partitions:
         one = {"key": p["key"], "count": int(p.get("count") or 0),
+               **({"area": p["area"]} if p.get("area") else {}),
                "visits": dict(p.get("visits") or {})}
         joined = _joined(spec, out[-1], one, limit) if out else None
         if joined is None:
@@ -1252,7 +1300,15 @@ def _joined(spec: dict, left: dict, right: dict, limit: float) -> dict | None:
         _covers(spec, key, left["key"]) and _covers(spec, key, right["key"])
     ):
         return None
-    return {"key": key, "count": count, "visits": right["visits"]}
+    # **どのあたりかは、つないだ両方から拾う**(片方が空のこともある)。
+    # 多いほうから順に並べたものどうしなので、そのまま繋いで先頭 2 つを採る
+    names = [n for side in (left, right) for n in str(side.get("area") or "").split("・") if n]
+    area = "・".join(dict.fromkeys(names))[:AREA_MAX_CHARS * AREA_NAMES]
+    return {
+        "key": key, "count": count,
+        **({"area": area} if area else {}),
+        "visits": right["visits"],
+    }
 
 
 def _joined_key(spec: dict, left: str, right: str) -> str | None:

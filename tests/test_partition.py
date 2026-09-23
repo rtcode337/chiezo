@@ -10,6 +10,7 @@ import itertools
 import json
 import sqlite3
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from fastapi import HTTPException
@@ -1579,3 +1580,77 @@ class TestAnEmptyLandingPlaceIsNotKept:
         current = [{"key": "イギリス|不明|あ〜ん"}]
 
         assert partition._uncovered(self._spec(), built, current) == []
+
+
+class TestWhereABoxRoughlyIs:
+    """**矩形の鍵は数字が並ぶだけで、人には場所が読めない。**
+
+    一覧で「これはどこか」を確かめるのに、いちいち開くことになっていた。
+    **割るときに所属行政区(`extra.area`)を拾っておく** —— 区画は数千あるので、
+    描くたびに 1 行ずつ問い合わせると、それだけで面が重くなる。
+    """
+
+    SPEC: ClassVar[dict] = {"by": "geo", "target": 40, "bbox": [20.2, 122.5, 45.8, 154.0]}
+
+    @staticmethod
+    def _docs(area: str, lat: float, lon: float, n: int) -> dict:
+        return {
+            f"{area}{i}": {"extra": {"lat": lat + i * 0.001, "lon": lon, "area": area}}
+            for i in range(n)
+        }
+
+    def test_the_box_says_roughly_where_it_is(self):
+        own = {**self._docs("沖縄県", 26.2, 127.68, 60),
+               **self._docs("東京都", 35.68, 139.76, 60)}
+
+        built = partition.build(partition.normalize(self.SPEC), {}, own)
+
+        assert {p.get("area") for p in built} == {"沖縄県", "東京都"}
+
+    def test_a_box_across_a_border_names_both(self):
+        """**1 つだと県境をまたぐ矩形で嘘になる**ので、多いほうから 2 つまで。"""
+        own = {**self._docs("東京都", 35.68, 139.76, 30),
+               **self._docs("神奈川県", 35.44, 139.63, 20)}
+
+        # 割れずに 1 区画で収まる目安にして、1 つの矩形が両県を抱える形を作る
+        spec = partition.normalize({**self.SPEC, "target": 100})
+        [box] = partition.build(spec, {}, own)
+
+        assert box["area"] == "東京都・神奈川県"
+
+    def test_a_population_without_areas_is_fine(self):
+        """**添え物なので、無くても区画は成り立つ**(座標と違う)。"""
+        own = {f"x{i}": {"extra": {"lat": 35.0 + i * 0.001, "lon": 139.0}} for i in range(10)}
+
+        [box] = partition.build(partition.normalize({**self.SPEC, "target": 100}), {}, own)
+
+        assert "area" not in box
+
+    def test_it_survives_a_re_cut(self):
+        """割り直しても運ぶ(`refresh`)—— 入れ直すために引き直さない。"""
+        built = [{"key": partition.geo_key((35.0, 139.0, 36.0, 140.0)),
+                  "count": 3, "area": "東京都"}]
+
+        [kept] = partition.refresh(built, [], partition.normalize(self.SPEC))
+
+        assert kept["area"] == "東京都"
+
+    def test_joining_two_boxes_keeps_both_names(self):
+        """つないだ先は両方を引き受けるので、両方の名前を残す。"""
+        spec = partition.normalize({**self.SPEC, "target": 100})
+        pair = [
+            {"key": partition.geo_key((35.0, 139.0, 35.5, 140.0)), "count": 1,
+             "area": "東京都", "visits": {}},
+            {"key": partition.geo_key((35.5, 139.0, 36.0, 140.0)), "count": 1,
+             "area": "埼玉県", "visits": {}},
+        ]
+
+        [one] = partition.merged(spec, pair)
+
+        assert one["area"] == "東京都・埼玉県"
+
+    def test_the_ledger_shows_it(self):
+        from app.views import admin
+
+        assert "東京都" in admin._where_html({"key": "x", "area": "東京都"})
+        assert admin._where_html({"key": "x"}) == ""
