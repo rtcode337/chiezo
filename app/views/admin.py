@@ -16,7 +16,7 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 
 import httpx
-from fastapi import APIRouter, Form, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -37,6 +37,7 @@ from app import (
     notes,
     providers,
     registry,
+    repartition_job,
     settings_store,
     tasks,
     usage,
@@ -1016,14 +1017,43 @@ def _repartition_form(item, busy: bool) -> str:
     """
     if not item.partition:
         return ""
-    off = " disabled" if busy else ""
-    note = "この収集を焼いている最中は押せません" if busy else (
-        "母集団を数え直して区画を割り直します(AI は動かず、焼きもしません)"
+    doing = repartition_job.running(item.name)
+    off = " disabled" if busy or doing else ""
+    note = (
+        "この収集を焼いている最中は押せません" if busy
+        else "いま割り直しています" if doing
+        else "母集団を数え直して区画を割り直します(AI は動かず、焼きもしません)"
     )
     return (
         f'<form class="init-form" method="post"'
         f' action="/admin/collect/{esc(quote(item.name))}/repartition"{off}>'
         f'<button type="submit"{off} title="{esc(note)}">区画を割り直す</button></form>'
+        f"{_repartition_state_html(item.name)}"
+    )
+
+
+def _repartition_state_html(name: str) -> str:
+    """割り直しの様子。**押したあと、何が起きたかを画面に残す**。
+
+    **数分かかる仕事なので、押した人はその場に居ないことがある**(本番の食事処は
+    686,602 件)。押した瞬間に画面が戻るだけだと、終わったのか落ちたのか、
+    そもそも走ったのかが読めない —— 実際、ブラウザが先に切れて「死んだ」ように
+    見えていた(処理は裏で最後まで走っていた)。
+
+    **区画の数も出す** —— 「押したら何区画になったか」を台帳を開かずに読めるように。
+    **時間切れは落ちたものとして出る**(`repartition_job.state`)。
+    """
+    found = repartition_job.state(name)
+    if not found:
+        return ""
+    when = jst.parse(str(found.get("finished_at") or found.get("started_at") or ""))
+    at = f"({jst.compact(when)})" if when else ""
+    if found.get("state") == "running":
+        return f'<p class="muted">割り直しています{at}。終わると区画の数が変わります。</p>'
+    if found.get("state") == "error":
+        return f'<p class="stale">割り直せませんでした{at}: {esc(str(found.get("error") or ""))}</p>'
+    return (
+        f'<p class="muted">{int(found.get("partitions") or 0):,} 区画に割り直しました{at}。</p>'
     )
 
 
@@ -3176,7 +3206,7 @@ async def admin_collect_redo(name: str, request: Request):
 
 
 @router.post("/admin/collect/{name}/repartition")
-def admin_collect_repartition(name: str, request: Request):
+def admin_collect_repartition(name: str, request: Request, tasks: BackgroundTasks):
     """**区画の割り直しだけを走らせる**(AI も焼きも動かさない)。
 
     **焼くのと同じ回に乗っていたのが重かった。** 割り直しは母集団を 1 周舐めて
@@ -3195,7 +3225,18 @@ def admin_collect_repartition(name: str, request: Request):
             status_code=409,
             detail="この収集を焼いている最中です(焼き終わってから押してください)",
         )
-    collect.repartition(name, request.app.state.sources)
+    # **二度押しを止める。** 2 本が同時に同じ母集団を読むので、メモリも時間も倍に
+    # なる(本番の食事処は 686,602 件)—— しかも後に終わったほうが勝つだけで、
+    # 早く終わるわけでもない
+    if repartition_job.running(name):
+        raise HTTPException(
+            status_code=409,
+            detail="いま割り直しています(終わるまで待ってください)",
+        )
+    # **走り始めた印は返す前に書く。** 書く前に走らせると、戻った画面が
+    # 「押していない」ように見える(押した人はもう一度押す)
+    repartition_job.start(name)
+    tasks.add_task(repartition_job.run, name, request.app.state.sources)
     return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
 
 

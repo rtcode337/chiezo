@@ -5538,8 +5538,10 @@ class TestOpeningAPartition:
         )
         request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(sources={})))
 
+        from fastapi import BackgroundTasks
+
         with pytest.raises(HTTPException) as caught:
-            admin.admin_collect_repartition("news", request)
+            admin.admin_collect_repartition("news", request, BackgroundTasks())
 
         assert caught.value.status_code == 409
 
