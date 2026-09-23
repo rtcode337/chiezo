@@ -2237,3 +2237,66 @@ class TestNotTakingOrdersFromTheCliItDrives:
 
         monkeypatch.setattr(media, "bridge_addresses", dict)
         assert client.post("/v1/media/image", json={}).status_code != 403
+
+
+class TestLettingTheBrowserRead:
+    """**許可したオリジンにだけ、応答の中身を読ませる**(`CHIEZO_CORS_ORIGINS`)。
+
+    印が無いと、ブラウザは届いた応答を JS へ渡さない —— サーバー側には 200 が
+    並ぶので、開けたつもりで読めていないことに気づきにくい。
+    """
+
+    ALLOWED = "https://travel.example.test"
+
+    @pytest.fixture()
+    def allowing(self, client, monkeypatch):
+        monkeypatch.setenv("CHIEZO_CORS_ORIGINS", f"{self.ALLOWED}, http://localhost:7040")
+        return client
+
+    def test_nobody_by_default(self, client, monkeypatch):
+        """既定は誰にも開けない(認証の無い読み取り口なので)。"""
+        monkeypatch.delenv("CHIEZO_CORS_ORIGINS", raising=False)
+        res = client.get("/v1/sources", headers={"Origin": self.ALLOWED})
+
+        assert "access-control-allow-origin" not in res.headers
+
+    def test_the_allowed_one_can_read(self, allowing):
+        res = allowing.get("/v1/sources", headers={"Origin": self.ALLOWED})
+
+        assert res.headers["access-control-allow-origin"] == self.ALLOWED
+        assert "Origin" in res.headers["vary"]
+
+    def test_another_origin_cannot(self, allowing):
+        res = allowing.get("/v1/sources", headers={"Origin": "https://other.example.test"})
+
+        assert "access-control-allow-origin" not in res.headers
+
+    def test_a_longer_name_is_not_a_match(self, allowing):
+        """前方一致にすると `https://travel.example.test.attacker.example` まで通る。"""
+        res = allowing.get("/v1/sources", headers={"Origin": f"{self.ALLOWED}.attacker.example"})
+
+        assert "access-control-allow-origin" not in res.headers
+
+    def test_credentials_are_never_allowed(self, allowing):
+        res = allowing.get("/v1/sources", headers={"Origin": self.ALLOWED})
+
+        assert "access-control-allow-credentials" not in res.headers
+
+    def test_the_preflight_is_answered_without_reaching_the_route(self, allowing):
+        """GET しか持たない口は OPTIONS に 405 を返すので、手前で答える。"""
+        res = allowing.request(
+            "OPTIONS", "/v1/sources",
+            headers={"Origin": self.ALLOWED, "Access-Control-Request-Method": "GET"},
+        )
+
+        assert res.status_code == 204
+        assert res.headers["access-control-allow-methods"] == "GET, OPTIONS"
+
+    def test_the_preflight_of_an_unknown_origin_is_refused(self, allowing):
+        res = allowing.request(
+            "OPTIONS", "/v1/sources",
+            headers={"Origin": "https://other.example.test", "Access-Control-Request-Method": "GET"},
+        )
+
+        assert res.status_code == 403
+        assert "access-control-allow-origin" not in res.headers

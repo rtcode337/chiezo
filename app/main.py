@@ -1335,6 +1335,67 @@ def _asks_an_ai(path: str) -> bool:
     return path.startswith("/v1/collect/") and path.rstrip("/").endswith("/run")
 
 
+def _cors_origins() -> list[str]:
+    """ブラウザから直接読ませるオリジン。`CHIEZO_CORS_ORIGINS` にカンマ区切りで書く。
+
+    **既定は空(誰にも開けない)。** ここは LAN 内前提で認証を持たない読み取り口なので、
+    `*` で開けると「その端末で開いている任意のページ」が中身を読めることになる。
+    読ませたい相手(travel-log の画面など)のオリジンだけを書く。
+
+    **オリジンはスキームとポートまで含めて一致する** —— `https://例.test` と
+    `http://例.test:7040` は別物なので、開く経路のぶんだけ並べる。
+    """
+    raw = os.environ.get("CHIEZO_CORS_ORIGINS", "")
+    return [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
+
+
+def _cors_headers(origin: str, *, preflight: bool = False) -> dict[str, str]:
+    """許したオリジンへ返す印。**資格情報は許さない** ——
+    Cookie を送らせる必要が無く、許すと許可オリジンの取り違えがそのまま
+    他人の資格での読み取りになる(`Access-Control-Allow-Credentials` を出さない)。
+    """
+    if not preflight:
+        return {"access-control-allow-origin": origin}
+    return {
+        "access-control-allow-origin": origin,
+        # 読む口だけを開ける。書き込み(POST)はブラウザから使わせない
+        "access-control-allow-methods": "GET, OPTIONS",
+        "access-control-allow-headers": "*",
+        "access-control-max-age": "600",
+    }
+
+
+@app.middleware("http")
+async def allow_the_browser_to_read(request: Request, call_next):
+    """許可したオリジンのページに、応答の中身を読ませる。
+
+    **ブラウザは `Access-Control-Allow-Origin` の無い応答を JS へ渡さない。**
+    付けないと、外のページからは「届いているのに読めない」という形で失敗する
+    (サーバー側のログには 200 が並ぶので、原因が分かりにくい)。
+
+    **自前で書いているのは、許すかどうかを毎回環境変数から読むため。**
+    `CORSMiddleware` は組み立て時の設定で固まるので、テストでも運用でも
+    入れ替えにプロセスの作り直しが要る。やることは「一致したら印を返す」だけで、
+    許すのは GET と事前確認(preflight)に限る。
+
+    **一致は完全一致**(前方一致にしない) —— `https://例.test` を許したつもりで
+    `https://例.test.attacker.example` まで通ることになるため。
+    """
+    origin = (request.headers.get("origin") or "").rstrip("/")
+    allowed = bool(origin) and origin in _cors_origins()
+    if request.method == "OPTIONS" and request.headers.get("access-control-request-method"):
+        # 事前確認は本体へ流さない(GET しか持たない口は 405 を返すため)。
+        # 許していないオリジンには印を付けずに返し、ブラウザ側で止めてもらう
+        return Response(status_code=204 if allowed else 403,
+                        headers=_cors_headers(origin, preflight=True) if allowed else None)
+    response = await call_next(request)
+    if allowed:
+        response.headers.update(_cors_headers(origin))
+        # 同じ URL の応答をオリジンごとに別物として扱わせる(中間のキャッシュ対策)
+        response.headers.append("vary", "Origin")
+    return response
+
+
 @app.middleware("http")
 async def refuse_orders_from_the_cli(request: Request, call_next):
     """Chiezo が動かしている CLI からの、AI を使う口への依頼を断る。"""

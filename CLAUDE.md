@@ -128,6 +128,14 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     **人間向けの HTML はここに置かない**(`app/views/`)。以前は 2,473 行の 1 ファイルに
     REST と管理画面 HTML が同居していて、変更の理由(API の契約 / 画面の見た目)が
     まったく別のものが混ざっていた
+    - **ブラウザから読ませる口は `CHIEZO_CORS_ORIGINS` で開ける**(カンマ区切り。既定は空)。
+      印(`Access-Control-Allow-Origin`)が無いと、ブラウザは届いた応答を JS へ渡さない ——
+      サーバー側には 200 が並ぶので、開けたつもりで読めていないことに気づきにくい。
+      **`CORSMiddleware` は使わず自前で書いている**(`allow_the_browser_to_read`)——
+      あちらは組み立て時の設定で固まるので、許可の入れ替えにプロセスの作り直しが要る。
+      やることは「Origin が完全一致したら印を返す」だけで、開けるのは GET と
+      事前確認(preflight)、資格情報は許さない。**https のページから読ませるなら
+      chiezo 側も https で出すこと**(mixed content はこの印では通らない)
     - `/v1/{source}/filter` — 全文検索ではなく属性(`feature` / `area` / `bbox` / `wikidata` /
       `tag`)の AND での一括抽出(Overpass 相当)。**消えたもの・まだ AI が目を通していない
       ものは `search` / `doc` と同じく既定で外す**(`notes.HIDDEN_TAGS`。`include_removed`
