@@ -2016,6 +2016,41 @@ class TestRedoingTheLastRun:
         assert "集めた中身は戻りません" in html
 
 
+class TestWritingOnlyIfNothingChanged:
+    """**読んだときのままなら置く**(`machine_store.put_if`)。
+
+    chiezo-app は `--workers 2` なので、同じものを見て同じ判断をする道が 2 本ある。
+    読みと書きが離れていると、**両方が「まだ誰もやっていない」と読んで二度やる**。
+    """
+
+    def test_it_writes_when_nothing_moved(self, enabled):
+        from app import machine_store
+
+        machine_store.put("t", "k", "1")
+
+        assert machine_store.put_if("t", "k", "2", "1") is True
+        assert machine_store.get("t", "k") == "2"
+
+    def test_it_refuses_when_someone_else_got_there_first(self, enabled):
+        """**負けたほうは書かない。** 先に書いたほうの結果がそのまま残る。"""
+        from app import machine_store
+
+        machine_store.put("t", "k", "1")
+        expect = machine_store.get("t", "k")
+
+        assert machine_store.put_if("t", "k", "2", expect) is True
+        # 同じ「読んだ値」で来たもう 1 本。もう書き換わっているので通さない
+        assert machine_store.put_if("t", "k", "3", expect) is False
+        assert machine_store.get("t", "k") == "2"
+
+    def test_a_key_that_is_not_there_yet_expects_nothing(self, enabled):
+        from app import machine_store
+
+        assert machine_store.put_if("t", "k", "1", None) is True
+        assert machine_store.put_if("t", "k", "2", None) is False
+        assert machine_store.get("t", "k") == "1"
+
+
 class TestARoundThatFailedToBakeIsPutBack:
     """**焼くところで落ちた回は、走る前まで戻す**(`collect.rewind_failed_bake`)。
 
@@ -2099,6 +2134,17 @@ class TestARoundThatFailedToBakeIsPutBack:
 
         assert collect.rewind_failed_bake("news", "HTTP 502", at, at) is None
         assert collect.get("news").last_error == "llm error 502"
+
+    def test_losing_the_race_changes_nothing(self, sample, monkeypatch):
+        """**同時に来ても 1 回。** 負けたほうが控えを残すと、履歴に同じ行が 2 つ並ぶ。"""
+        from app import machine_store
+
+        since, until = self._ran()
+        monkeypatch.setattr(machine_store, "put_if", lambda *a, **k: False)
+
+        assert collect.rewind_failed_bake("news", "boom", since, until) is None
+        # 先に書いたほうの結果がそのまま(こちらは何も足していない)
+        assert partitioning.progress(collect.get("news").partitions, "ざっと") == (1, 2)
 
     def test_the_clock_is_not_wound_back(self, sample):
         """**すぐ焼き直させない。** 同じ理由で落ち続ける回が枠を食い続ける。"""

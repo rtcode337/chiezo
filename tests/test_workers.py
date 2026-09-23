@@ -744,6 +744,28 @@ class TestPuttingBackARoundThatFailedToBake:
 
         assert ran.get("news").cursor == "a"
 
+    def test_the_same_failure_is_only_looked_at_once(self, ran, monkeypatch):
+        """**落ちた直後は `state` と `last_failure` が同じ回を指す。**
+        (次の取り込みが始まって初めて片方だけになる)。畳まないと、1 周のあいだに
+        同じものを 2 度たどり、時計が 2 本ある分の取り合いの窓も自分で広げる。
+        """
+        from app import collect, main
+
+        window = self._window(ran)
+        self._status(monkeypatch, {
+            "state": "error", "source": "news", "error": "boom", **window,
+            "last_failure": {"source": "news", "error": "boom", **window},
+        })
+        looked: list = []
+        monkeypatch.setattr(
+            collect, "rewind_failed_bake",
+            lambda *args, **kw: looked.append(args) or None,
+        )
+
+        main._rewind_failed_bakes()
+
+        assert len(looked) == 1
+
     def test_a_source_that_is_not_a_collection_is_passed_over(self, ran, monkeypatch):
         """地図辞典などの取り込みが落ちても、ここは何もしない。"""
         from app import main

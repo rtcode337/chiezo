@@ -338,12 +338,19 @@ def _rewind_failed_bakes() -> None:
     failures = [job] if job.get("state") == "error" else []
     if isinstance(last := job.get("last_failure"), dict):
         failures.append(last)
+    # **同じ回は 1 度だけ見る。** 落ちた直後は `state` と `last_failure` が
+    # **同じ回**を指す(次の取り込みが始まって初めて片方だけになる)—— 畳まないと、
+    # 1 周のあいだに同じものを 2 度たどることになる
+    seen_failures: set[tuple[str, str]] = set()
     for failed in failures:
         source = str(failed.get("source") or "")
         started = str(failed.get("started_at") or "")
         finished = str(failed.get("finished_at") or "")
         if not source or not started or not finished:
             continue
+        if (source, finished) in seen_failures:
+            continue
+        seen_failures.add((source, finished))
         try:
             undone = collect.rewind_failed_bake(
                 source, str(failed.get("error") or ""), started, finished,

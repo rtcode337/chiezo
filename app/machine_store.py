@@ -200,6 +200,47 @@ def put(kind: str, key: str, body: str) -> None:
         _write(conn, doc_id, title, kind, body, _now())
 
 
+def put_if(kind: str, key: str, body: str, expect: str | None) -> bool:
+    """**いまの中身が `expect` のときだけ**置く。置けたら True。
+
+    読んで・決めて・書く、を 1 つの書き込みにまとめるための口。
+    chiezo-app は `--workers 2` なので、同じものを見て同じ判断をする道が
+    2 本ある —— 読みと書きが離れていると、**両方が「まだ誰もやっていない」と
+    読んで二度やる**(本番で、焼きの失敗を戻す回が履歴に 2 行並んだ)。
+
+    **`BEGIN IMMEDIATE` で始める。** 既定の遅延トランザクションは最初の書き込みで
+    初めて鍵を取るので、読みが鍵の外に出る —— それでは 2 つが同じ値を読んでから
+    順に書くだけになり、条件を付けた意味が消える。
+
+    **負けたほうは False**(例外にしない)。取り合いに負けるのは正常な結果で、
+    やることが無いだけ。
+    """
+    ensure_db()
+    title = _title(kind, key)
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT doc_id, title, body, tags FROM docs WHERE title = ?", (title,)
+            ).fetchone()
+            if (row["body"] if row else None) != expect:
+                conn.rollback()
+                return False
+            if row is None:
+                (doc_id,) = conn.execute(
+                    "SELECT COALESCE(MAX(doc_id), 0) + 1 FROM docs"
+                ).fetchone()
+            else:
+                doc_id = row["doc_id"]
+                _erase(conn, row)
+            _write(conn, doc_id, title, kind, body, _now())
+        except BaseException:
+            conn.rollback()
+            raise
+        conn.commit()
+    return True
+
+
 def drop(kind: str, key: str) -> bool:
     """その 1 件を消す。消したら True。"""
     ensure_db()

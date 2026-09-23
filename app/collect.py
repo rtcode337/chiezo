@@ -1339,6 +1339,30 @@ def get(name: str) -> Collection:
     return _from_json(raw)
 
 
+def _read_one(name: str) -> tuple[Collection, str]:
+    """1 件と、**そのとき置き場にあった文字列**。CAS の `expect` に要る。
+
+    `get` と別に置いてあるのは、組み立て直した JSON では突き合わせにならないため ——
+    並びも空白も同じである保証が無い(比べるのは読んだそのもの)。
+    """
+    _split_out_the_old_row()
+    body = machine_store.get(DEFS_KIND, name) if name and name != DEFS_KEY else None
+    if body is None:
+        raise HTTPException(404, {"error": f"収集「{name}」がありません"})
+    return get(name), body
+
+
+def _replace_one_if(name: str, updated: Collection, expect: str) -> bool:
+    """**読んだときのままなら**書き換える。書けたら True。
+
+    取り合いに負けたほうを黙って通さないための口(`machine_store.put_if`)。
+    """
+    return machine_store.put_if(
+        DEFS_KIND, name,
+        json.dumps(updated.__dict__, ensure_ascii=False, indent=2), expect,
+    )
+
+
 def _replace_one(name: str, updated: Collection) -> None:
     """その 1 件だけを書き換える。**他の収集は読みも書きもしない**。"""
     get(name)
@@ -2404,10 +2428,16 @@ def rewind_failed_bake(name: str, error: str, since: str, until: str) -> dict | 
     **時計は戻さない**(`next_run_at` / `last_run_at`)。すぐ焼き直させると、
     同じ理由で落ち続ける回が枠を食い続ける —— 次の予定で普通に走ればよい。
 
-    **1 回ぶんしか持たない控え**(`last_undo`)を使うので、二度は戻らない
-    (`--workers 2` で時計が 2 本立っていても、2 度目は None が返る)。
+    **二度は戻らない。** 控えは 1 回ぶん(`last_undo`)で、戻したら消える ——
+    後から来たほうは読む値が無い。**同時に来ても 1 回**(`_replace_one_if`)——
+    読んだときのままなら書く形にしてあるので、取り合いに負けたほうは何もせず
+    None を返す。
     """
-    current = get(name)
+    # **読んだそのものを控えておく**(`expect`)。時計はプロセスごとに立っている
+    # (`--workers 2`)ので、同じ失敗を見て同じ判断をする道が 2 本ある ——
+    # 読みと書きが離れていると**両方が「まだ誰も戻していない」と読んで二度戻す**
+    # (本番で、履歴に同じ行が 2 つ並んだ)
+    current, expect = _read_one(name)
     # **集める側が既に落ちていれば、戻すものは無い。** 素材を流す前に落ちた回
     # (AI が断った・相手が 502 を返した)は `record_result` が失敗として控えて
     # あり、印もカーソルも動いていない —— ここで重ねて触ると、**本当の理由が
@@ -2424,7 +2454,7 @@ def rewind_failed_bake(name: str, error: str, since: str, until: str) -> dict | 
         return None
     visited = [str(key) for key in (undo.get("visited") or [])]
     reason = f"焼くところで落ちました: {error}".strip()[:500]
-    _replace_one(name, replace(
+    wrote = _replace_one_if(name, replace(
         current,
         cursor=str(undo.get("cursor") or ""),
         partitions=partitioning.forget_visits(current.partitions, visited, sweep_name),
@@ -2439,7 +2469,11 @@ def rewind_failed_bake(name: str, error: str, since: str, until: str) -> dict | 
             for raw in current.sweeps
         ],
         updated_at=_iso(_now()),
-    ))
+    ), expect)
+    if not wrote:
+        # 取り合いに負けた。**もう片方が同じことを済ませている**ので、
+        # ここで控えを残すと履歴に同じ行が 2 つ並ぶ
+        return None
     return {"sweep": sweep_name, "visited": visited, "at": str(undo.get("at") or "")}
 
 
