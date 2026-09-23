@@ -1903,10 +1903,14 @@ def build_doc_id_set(
         params.append(wikidata)
     joined = " INTERSECT ".join(parts)
     if not include_removed and src.schema_version >= TAG_MIN_SCHEMA_VERSION:
-        # **消えたものを外す**(`notes.REMOVED_TAG`)。EXCEPT なら doc_tags の索引の
-        # 中だけで終わるので、INTERSECT の並びに足しても行本体は読まない
-        joined = f"{joined} EXCEPT SELECT doc_id FROM doc_tags WHERE tag = ?"
-        params.append(notes.REMOVED_TAG)
+        # **読者に出さない印の付いたものを外す**(`notes.HIDDEN_TAGS`)。消えたものと、
+        # まだ AI が目を通していないもの。EXCEPT なら doc_tags の索引の中だけで
+        # 終わるので、INTERSECT の並びに足しても行本体は読まない。
+        # **外す印は search / doc と同じ並びを使う** —— ここだけ消えたものしか
+        # 外していなかったため、他の口では出ないものが一括抽出にだけ並んでいた
+        marks = ",".join("?" * len(notes.HIDDEN_TAGS))
+        joined = f"{joined} EXCEPT SELECT doc_id FROM doc_tags WHERE tag IN ({marks})"
+        params.extend(notes.HIDDEN_TAGS)
     return joined, params
 
 

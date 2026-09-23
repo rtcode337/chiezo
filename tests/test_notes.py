@@ -826,6 +826,32 @@ class TestHidingWhatNoAiHasSeen:
     def test_the_document_itself_is_not_handed_out(self, two_notes):
         assert two_notes.get("/v1/chiezo_memory/doc", params={"title": "まだの話"}).status_code == 404
 
+    @pytest.fixture()
+    def two_tagged_notes(self, client):
+        """同じタグを持つ 2 件。一括抽出はタグ等の条件が要るため、印以外の軸を揃える。"""
+        from app import notes
+
+        client.post("/v1/chiezo_memory", json={"title": "見た話", "text": "こちらは出る",
+                                               "tags": "task"})
+        client.post("/v1/chiezo_memory", json={"title": "まだの話", "text": "こちらは出ない",
+                                               "tags": f"task,{notes.UNREVIEWED_TAG}"})
+        return client
+
+    def test_filter_leaves_it_out(self, two_tagged_notes):
+        """一括抽出(`/filter`)も同じ印で外す。**ここだけ漏れていた** ——
+        消えたものしか外していなかったので、search には出ないものが並んでいた。
+        """
+        body = two_tagged_notes.get("/v1/chiezo_memory/filter", params={"tag": "task"}).json()
+
+        assert [r["title"] for r in body["results"]] == ["見た話"]
+
+    def test_filter_can_ask_for_it(self, two_tagged_notes):
+        body = two_tagged_notes.get(
+            "/v1/chiezo_memory/filter", params={"tag": "task", "include_removed": "true"}
+        ).json()
+
+        assert sorted(r["title"] for r in body["results"]) == ["まだの話", "見た話"]
+
     def test_a_removed_one_is_still_hidden_too(self, two_notes):
         """片方を足したせいで、もう片方が漏れないこと。"""
         from app import notes

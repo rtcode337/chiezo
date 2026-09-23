@@ -129,7 +129,10 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     REST と管理画面 HTML が同居していて、変更の理由(API の契約 / 画面の見た目)が
     まったく別のものが混ざっていた
     - `/v1/{source}/filter` — 全文検索ではなく属性(`feature` / `area` / `bbox` / `wikidata` /
-      `tag`)の AND での一括抽出(Overpass 相当)。`docs` の生成列への索引付き検索なので
+      `tag`)の AND での一括抽出(Overpass 相当)。**消えたもの・まだ AI が目を通していない
+      ものは `search` / `doc` と同じく既定で外す**(`notes.HIDDEN_TAGS`。`include_removed`
+      で含められる)。ここだけ消えたものしか外しておらず、他の口では出ないものが
+      一括抽出にだけ並んでいた。`docs` の生成列への索引付き検索なので
       `schema_version` 2 以上が必要(1 の DB には 409)。条件は `build_attribute_filters()` が
       SQL 断片に変換し、`search` / `doc` からも同じ関数で併用できる
     - `tag`(= Wikipedia のカテゴリ等)だけは生成列ではなく転置表 `doc_tags` を引くので

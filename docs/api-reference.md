@@ -59,6 +59,9 @@ curl -s "$BASE/v1/jawiki/filter?wikidata=Q17221&fields=title,extra" # Q 番号 �
   `tag`(タグ = Wikipedia のカテゴリ等。カンマ区切りで複数可、その中は OR)を
   AND で組み合わせます。1 つ以上の条件が必須(無指定は 400)。`limit` 既定 50・最大 500、応答の
   `total` と `offset` でページングできます。並びは `rank_score` の降順です。
+  **消えたもの・まだ AI が目を通していないものは、`search` / `doc` と同じく既定で外します**
+  (`include_removed=true` で含められます)。ここだけ消えたものしか外していなかったため、
+  他の口では出ないものが一括抽出にだけ並んでいました。
   `schema_version` 2 以降が必要で(1 の DB には 409)、`tag` は 3 以降、`bbox` と
   大きな該当件数の並べ替えは 4 以降が実用的な速さになります。古い DB は
   [その場で移行できます](operations.md#既存-db-にタグ索引を足すschema_version-2--3--4)
