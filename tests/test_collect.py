@@ -2082,6 +2082,24 @@ class TestARoundThatFailedToBakeIsPutBack:
         assert collect.rewind_failed_bake("news", "boom", since, until)
         assert collect.rewind_failed_bake("news", "boom", since, until) is None
 
+    def test_a_round_that_never_got_to_the_oven_is_left_alone(self, sample):
+        """**集める側が既に落ちていれば、戻すものは無い。** 素材を流す前に落ちた回は
+        `record_result` が本当の理由を控えてあり、重ねて触るとそれが
+        「焼くところで落ちました」に上書きされる(本番で、相手がモデルを断った回が
+        焼きの失敗として並んだ)。
+        """
+        collect.update(
+            "news", cursor="a", sweeps=[{"name": "ざっと"}],
+            partitions=[{"key": "あ", "count": 1}],
+        )
+        collect.record_result(
+            "news", status="error", sweep="ざっと", error="llm error 502", visited=["あ"],
+        )
+        at = collect.get("news").last_undo["at"]
+
+        assert collect.rewind_failed_bake("news", "HTTP 502", at, at) is None
+        assert collect.get("news").last_error == "llm error 502"
+
     def test_the_clock_is_not_wound_back(self, sample):
         """**すぐ焼き直させない。** 同じ理由で落ち続ける回が枠を食い続ける。"""
         since, until = self._ran()

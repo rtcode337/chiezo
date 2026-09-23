@@ -2408,6 +2408,13 @@ def rewind_failed_bake(name: str, error: str, since: str, until: str) -> dict | 
     (`--workers 2` で時計が 2 本立っていても、2 度目は None が返る)。
     """
     current = get(name)
+    # **集める側が既に落ちていれば、戻すものは無い。** 素材を流す前に落ちた回
+    # (AI が断った・相手が 502 を返した)は `record_result` が失敗として控えて
+    # あり、印もカーソルも動いていない —— ここで重ねて触ると、**本当の理由が
+    # 「焼くところで落ちました」に上書きされる**(本番で、相手がモデルを断った回が
+    # 焼きの失敗として並んだ)。
+    if current.last_status != "ok":
+        return None
     undo = current.last_undo or {}
     sweep_name = str(undo.get("sweep") or "")
     at, start, end = _parse(str(undo.get("at") or "")), _parse(since), _parse(until)
