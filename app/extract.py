@@ -68,7 +68,7 @@ from contextlib import suppress
 
 from fastapi import HTTPException
 
-from app.notes import TITLE_MAX_CHARS
+from app import notes
 
 log = logging.getLogger("chiezo.app")
 
@@ -630,7 +630,7 @@ class Roster:
         AI が返したぶんを持つ側(`collect.Edits`)は初めから切ってある ——
         こちらだけ生だったのが食い違いの元だった。
         """
-        title = item["title"] = (item.get("title") or "").strip()[:TITLE_MAX_CHARS]
+        title = item["title"] = notes.title_key(item.get("title"))
         row = self.conn.execute(
             "SELECT seq, body, url, tags, extra FROM items WHERE title = ?", (title,)
         ).fetchone()

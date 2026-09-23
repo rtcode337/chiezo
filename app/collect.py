@@ -937,7 +937,7 @@ def normalize_focus(raw) -> Focus | None:
     if not note:
         return None
     titles = [
-        str(t).strip()[:notes.TITLE_MAX_CHARS]
+        notes.title_key(t)
         for t in (raw.get("titles") or []) if str(t).strip()
     ]
     return Focus(
@@ -2868,7 +2868,7 @@ class Edits:
         self.count = 0
         for raw in collected:
             self.count += 1
-            title = (raw.get("title") or "").strip()[:notes.TITLE_MAX_CHARS]
+            title = notes.title_key(raw.get("title"))
             if title not in self._by_title:
                 self._order.append(title)
             self._by_title[title] = raw
@@ -3090,7 +3090,7 @@ def stream_docs(
 
     next_id += 1
     for raw in edits_of.rest():
-        title = (raw.get("title") or "").strip()[:notes.TITLE_MAX_CHARS]
+        title = notes.title_key(raw.get("title"))
         if only_new and edits and _is_tombstone(raw):
             skipped += 1
             continue
@@ -3236,7 +3236,7 @@ def _to_doc(raw: dict, now: str, web: bool) -> dict | None:
     公開リポジトリへ出すかどうかは別の判断になる。後から「これは外から取ったものか」を
     辿れないと、その判断ができない(出典 `url` と合わせて手掛かりにする)。
     """
-    title = (raw.get("title") or "").strip()[:notes.TITLE_MAX_CHARS]
+    title = notes.title_key(raw.get("title"))
     body = (raw.get("body") or "").strip()[:MAX_BODY_CHARS]
     if not title or not body:
         return None

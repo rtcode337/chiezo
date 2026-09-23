@@ -6288,3 +6288,59 @@ class TestTheSamplesHideWhatReadersShouldNotSee:
         got = [d["title"] for d in collect.material_docs(spec, baked, since=None)]
 
         assert got == ["ふつうの記事", "もう一つ"]
+
+
+class TestATitleCutAtTheBoundary:
+    """**60 字目が空白の見出しで、鍵の末尾に空白が残っていた。**
+
+    候補を持つ側(`extract.Roster`)は切る前だけ strip していたので 60 文字のまま
+    鍵にし、焼く側(`collect._to_doc`)は受け取ってからもう一度 strip して 59 文字に
+    した。1 文字ずれるので**前世代に同じ見出しが居るのに引き当たらず**、新しい
+    1 件として足され、焼く段の UNIQUE で取り込みがまるごと落ちた
+    (本番で 686,622 件のうち 20 件が重複。どれもぴったり 59 文字だった)。
+    """
+
+    # 60 字目が空白になる見出し(59 文字 + 空白 + 続き)
+    LONG = "A" * 59 + " tail"
+    # **焼かれたあとの形**。切って、もう一度 strip した 59 文字 ——
+    # 前世代にはこれが入っている(期待値は共通の関数から作らない。
+    # 作ると、関数が壊れたときに期待値も一緒に壊れて気づけない)
+    BAKED = "A" * 59
+
+    def test_the_key_is_stripped_after_the_cut(self):
+        assert notes.title_key(self.LONG) == self.BAKED
+
+    def test_the_roster_key_matches_what_gets_baked(self):
+        """**候補の鍵と、焼かれる見出しが同じであること。** 切る前だけ strip して
+        いた頃は、候補が 60 文字・焼く側が 59 文字で 1 文字ずれていた。"""
+        from app import extract
+
+        roster = extract.Roster()
+        try:
+            roster.merge({"title": self.LONG, "body": "本文"}, {"body"})
+            [item] = list(roster.rest())
+        finally:
+            roster.close()
+
+        assert item["title"] == self.BAKED
+
+    def test_the_same_title_does_not_come_back_as_a_new_doc(self, sample):
+        """**これが本番で起きたこと。** 前世代に居るのに引き当たらず、同じ見出しが
+        2 度流れて、焼く段の UNIQUE で取り込みごと落ちた。"""
+        from app import extract
+
+        previous = [{
+            "doc_id": 1, "title": self.BAKED, "opening": "o", "body": "b",
+            "tags": [], "updated_at": "2026-01-01T00:00:00+00:00", "extra": {},
+        }]
+        roster = extract.Roster()
+        try:
+            roster.merge({"title": self.LONG, "body": "本文"}, {"body"})
+            docs = list(collect.stream_docs(
+                collect.get("news"), iter(previous), roster, True, False,
+            ))
+        finally:
+            roster.close()
+
+        titles = [d["title"] for d in docs]
+        assert titles == [self.BAKED], f"同じ見出しが 2 度流れている: {titles}"

@@ -306,12 +306,30 @@ def ensure_db() -> Path | None:
     return path
 
 
+def title_key(raw) -> str:
+    """見出しを、**焼く側と同じ形**に均す(これが重複の鍵になる)。
+
+    **切ってから、もう一度 strip する。** 切る前だけ strip していた頃は、
+    **60 字目が空白の見出しで鍵の末尾に空白が残った** —— 候補を持つ側
+    (`extract.Roster`)は 60 文字のまま鍵にし、焼く側(`collect._to_doc`)は
+    受け取ってからもう一度 strip して 59 文字にする。1 文字ずれるので
+    **前世代に同じ見出しが居るのに引き当たらず**、新しい 1 件として足され、
+    焼く段の UNIQUE で取り込みがまるごと落ちた(実測: 686,622 件のうち
+    20 件が重複。どれもぴったり 59 文字だった)。
+
+    **均し方を 1 か所に集める**のが要 —— 同じ式を書き写していたから、
+    片方だけ空白が残るという食い違いに気づけなかった(`partition.tag_value` が
+    区切りの字を落とすのと同じ話で、**落とし方が同じなら食い違わない**)。
+    """
+    return str(raw or "").strip()[:TITLE_MAX_CHARS].strip()
+
+
 def _make_title(text: str) -> str:
     """本文の 1 行目からタイトルを作る。"""
     for line in text.splitlines():
         line = line.strip()
         if line:
-            return line[:TITLE_MAX_CHARS]
+            return title_key(line)
     return "メモ"
 
 
