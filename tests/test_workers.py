@@ -678,6 +678,80 @@ class TestWhenAPartitionFails:
         assert got.value.status_code == 502
 
 
+class TestWhenTheAnswerIsCutOff:
+    """**途中で切れた区画に、見終わった印を付けない。**
+
+    拾えたぶんは焼くが(`collect._salvage`)、その先は誰も見ていない ——
+    印を付けると一周が嘘になる。本番で、15 件の区画から 11 件だけ返った回が
+    「見終わった」として記録されていた。
+
+    **ただし続けて切れたら諦める**(`partition.MAX_CUTS`)。古い順に配るので、
+    毎回同じところで切れる区画は先頭に居座り、**一周を永久に止める**。
+    """
+
+    @pytest.fixture
+    def cut_off(self, enabled, monkeypatch):
+        """1 件目の区画だけ、答えが途中で切れる相手。"""
+        from app import main
+
+        seen: list[str] = []
+
+        async def fake(asked, _messages):
+            seen.append(asked.backend or "")
+            body = '{"items": [{"title": "1 件", "body": "本文"}'
+            if len(seen) > 1:
+                body += "]}"
+            return body, asked.backend or "", ""
+
+        monkeypatch.setattr(main, "_ask_for_collection", fake)
+        return main
+
+    def test_the_cut_partition_is_kept_apart(self, cut_off):
+        done: list[str] = []
+        cut: list[str] = []
+
+        items, _cursor, note = asyncio.run(cut_off._collect_items(
+            _collection(), {}, {}, ["a", "b"], _sweep(), None, None, None, [], done, cut,
+        ))
+
+        # 拾えたぶんは焼く(1 回ぶんの枠を無駄にしない)
+        assert len(items) == 2
+        assert "途中で切れて" in note
+        assert cut == ["a"]
+        assert done == ["b"]
+
+    def test_it_is_not_marked_as_seen(self, enabled):
+        from app import partition
+
+        ledger = [{"key": "a", "count": 3, "visits": {}}]
+        found, give_up = partition.note_cut(ledger, ["a"], "ざっと")
+
+        assert give_up == []
+        assert found[0]["visits"] == {}
+        assert found[0]["cut"] == {"ざっと": 1}
+
+    def test_two_cuts_in_a_row_give_up(self, enabled):
+        """粘り続けると、その 1 区画が一周を永久に止める。"""
+        from app import partition
+
+        ledger = [{"key": "a", "count": 3, "visits": {}}]
+        for _ in range(partition.MAX_CUTS):
+            ledger, give_up = partition.note_cut(ledger, ["a"], "ざっと")
+
+        assert give_up == ["a"]
+        # 諦めたら数え直す(次の一周でまた 2 回ぶん粘れる)
+        assert "cut" not in ledger[0]
+
+    def test_a_clean_answer_resets_the_count(self, enabled):
+        """**続けて切れたときだけ諦める** —— 間に 1 回でも通れば数え直す。"""
+        from app import partition
+
+        ledger, _ = partition.note_cut([{"key": "a", "count": 3, "visits": {}}], ["a"], "ざっと")
+        ledger = partition.clear_cuts(ledger, ["a"], "ざっと")
+
+        assert "cut" not in ledger[0]
+
+
 class TestRelayingPartWayThrough:
     """**相手を決めるのは区画ごと。** 1 回で何区画も回るので、決めるのが回の頭
     1 度きりだと、途中で窓が閉まっても同じ相手に投げ続ける ——

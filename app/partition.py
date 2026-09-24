@@ -1437,6 +1437,58 @@ def mark_visited(
     ]
 
 
+# 答えが途中で切れた区画を、印を付けずに何回まで粘るか。
+#
+# **切れた回に印を付けると、一周が嘘になる** —— その区画の残りは誰も見ないまま
+# 「見終わった」に混ざる。かといって印を付けないままだと、**同じところで毎回切れる
+# 区画が一周を止める**(古い順に配るので、その 1 区画が先頭に居座り、1 回ぶんの枠を
+# 毎周食う。一周を待っている巡回はいつまでも始まらない)。
+#
+# 2 回にしてあるのは、**1 回目の続きは短くなるのが普通**だから —— 返ってきたぶんは
+# もう直っているので、次の回は残りだけを返せばよい(依頼文もそう頼んでいる)。
+# それでも切れるなら、区画が大きすぎるか相手の上限が低い —— 人が手を入れる話になる。
+MAX_CUTS = 2
+
+
+def note_cut(
+    partitions: list[dict], keys: list[str], sweep_name: str
+) -> tuple[list[dict], list[str]]:
+    """答えが途中で切れた区画を控える。**(新しい台帳, もう印を付けてよい鍵)**。
+
+    `MAX_CUTS` 回続けて切れた区画は、そこで諦めて印を付ける側へ回す ——
+    粘り続けると、その 1 区画が一周を永久に止める。
+    """
+    cut = set(keys)
+    give_up: list[str] = []
+    out = []
+    for p in partitions:
+        if p["key"] not in cut:
+            out.append(p)
+            continue
+        counts = {**(p.get("cut") or {})}
+        counts[sweep_name] = int(counts.get(sweep_name) or 0) + 1
+        if counts[sweep_name] >= MAX_CUTS:
+            give_up.append(p["key"])
+            counts.pop(sweep_name, None)
+        out.append({**p, "cut": counts} if counts else {k: v for k, v in p.items() if k != "cut"})
+    return out, give_up
+
+
+def clear_cuts(partitions: list[dict], keys: list[str], sweep_name: str) -> list[dict]:
+    """最後まで返ってきた区画の控えを消す(**続けて切れたときだけ諦める**ので、
+    間に 1 回でも通れば数え直す)。"""
+    done = set(keys)
+    out = []
+    for p in partitions:
+        counts = p.get("cut") or {}
+        if p["key"] not in done or sweep_name not in counts:
+            out.append(p)
+            continue
+        rest = {k: v for k, v in counts.items() if k != sweep_name}
+        out.append({**p, "cut": rest} if rest else {k: v for k, v in p.items() if k != "cut"})
+    return out
+
+
 def oldest_visit(partitions: list[dict], sweep_name: str) -> str | None:
     """その巡回がいちばん長く見ていない区画の、前回の時刻。まだ一周していなければ None。
 

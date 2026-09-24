@@ -2246,6 +2246,8 @@ def record_result(
     next_cursor: str | None = None,
     sweep: str | None = None,
     visited: list[str] | None = None,
+    # 答えが途中で切れた区画。**印は付けない**(その区画の残りは誰も見ていない)
+    cut: list[str] | None = None,
     partitions: list[dict] | None = None,
     focus: bool = False,
 ) -> Collection:
@@ -2278,7 +2280,15 @@ def record_result(
     # **名指しが画家だけの割り込みは付けない** —— 1 人見ただけで区画を見終えたことに
     # すると、その区画の残りが誰にも見られなくなる(渡す `visited` が空になる)
     if visited and status == "ok":
+        ledger = partitioning.clear_cuts(ledger, visited, this.name)
         ledger = partitioning.mark_visited(ledger, visited, this.name, _iso(now))
+    # **切れた区画には印を付けない。** 返ってきたのは途中までで、その先は誰も
+    # 見ていない —— 付けると一周が嘘になる。ただし**続けて切れたら諦める**
+    # (`MAX_CUTS`)。粘り続けると、その 1 区画が一周を永久に止める
+    if cut and status == "ok":
+        ledger, give_up = partitioning.note_cut(ledger, cut, this.name)
+        if give_up:
+            ledger = partitioning.mark_visited(ledger, give_up, this.name, _iso(now))
     # **巻き戻せるだけの控えを残す。** 設定を直してからやり直したい、が普通に起きる。
     # 割り込みは何も動かさないので控えない(戻すものが無い)
     undo = current.last_undo if focus else {
