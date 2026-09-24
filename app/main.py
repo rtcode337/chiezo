@@ -3129,13 +3129,31 @@ def collect_focus_now(name: str, body: CollectionFocus):
     return start_focus_bake(name, body.model_dump())
 
 
+class RunOnce(BaseModel):
+    """その 1 回だけの上書き。**書かなければ、ふつうの回がふつうの設定で走る**。"""
+
+    partitions: list[str] = PydField(
+        default_factory=list,
+        description="見る区画の鍵。**書けばそこだけ見る**(書かなければ順番どおり)",
+    )
+    backend: str | None = PydField(None, description="この回だけ頼む相手")
+    model: str | None = PydField(None, description="この回だけのモデル(相手を書いたときだけ効く)")
+    worker: str | None = PydField(None, description="空いている相手に選ばせる(相手より優先)")
+
+
 @app.post("/v1/collect/{name}/run")
 def collect_run_now(
     request: Request,
     name: str,
     sweep: str | None = Query(None, description="走らせる巡回の名前(省くと次に走るはずのもの)"),
+    once: RunOnce | None = None,
 ):
     """予定を待たずに 1 回、集めて焼く。**止めている収集は断る**。
+
+    **区画と相手を、その 1 回だけ名指しできる**(`once`)。区画の地図から
+    「ここを 1 回見て」と頼む道で、**ふつうの回として走ります** —— 印が付き、
+    進み具合も次回の予定も進みます(割り込みとはそこが違う。あちらは進み具合を
+    動かさないので、押しても画面が変わらず「何も起きない」と見える)。
 
     有効にしていないものをここから走らせられると、`enabled` を REST から
     触れなくした意味が無くなる(呼ぶたびに 1 回ぶんの AI が動く)。
@@ -3155,7 +3173,9 @@ def collect_run_now(
             "error": f"収集「{name}」は止まっています",
             "hint": "動かすかどうかは Chiezo 側で決めます(管理画面の「有効にする」)",
         })
-    return start_collection_bake(name, sweep)
+    return start_collection_bake(
+        name, sweep, collect.normalize_run_once(once.model_dump() if once else None)
+    )
 
 
 # ---- 使う(ローカル LLM。既定では無効) ---------------------------------------

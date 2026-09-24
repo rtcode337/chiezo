@@ -850,6 +850,13 @@ curl -s "$BASE/v1/collect" | jq .
 curl -s -X POST "$BASE/v1/collect/tech_news/run" | jq .
 # 巡回を名指しして走らせる(?sweep=)。時計を持たない巡回は 400 で断る
 
+# 区画と相手を、その 1 回だけ名指しする(区画の地図から「ここを 1 回見て」と頼む道)。
+# **ふつうの回として走る** —— 印が付き、進み具合も次回の予定も進む
+curl -s -X POST "$BASE/v1/collect/tl_lunch/run?sweep=整理" \
+  -H 'Content-Type: application/json' \
+  -d '{"partitions": ["35.6,139.7/35.7,139.8"], "backend": "codex", "model": "gpt-6-sol"}'
+# worker を書けば、空いている相手にそのとき選ばせる(backend より優先)
+
 # 間隔や相手を変える(渡した項目だけ差し替わる)
 curl -s -X PATCH "$BASE/v1/collect/tech_news" -H 'Content-Type: application/json' \
   -d '{"interval_minutes": 240, "backend": "antigravity"}'

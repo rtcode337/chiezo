@@ -2381,3 +2381,44 @@ class TestNotBakingOverWhatCannotBeRead:
         item = self._Item([{"key": "a", "count": 300}])
 
         assert _previous_unreadable(item, {"meals": self._Src(597_068)}) == ""
+
+
+class TestRunningOnePartitionFromOutside:
+    """**区画を名指しして 1 回走らせる。**
+
+    外のアプリ（tazuna）の区画の地図から「ここを 1 回見て」と頼む道。
+    割り込みとは別物で、**ふつうの回として走る** —— 印が付き、進み具合も進む。
+    あちらは進み具合を動かさないので、押しても画面が変わらず「何も起きない」と見えた。
+    """
+
+    def test_the_named_partition_is_carried_into_the_run(self, monkeypatch):
+        from app import collect
+
+        once = collect.normalize_run_once(
+            {"partitions": ["35.6,139.7/35.7,139.8"], "backend": "codex", "model": "gpt-6-sol"}
+        )
+
+        assert once["partitions"] == ["35.6,139.7/35.7,139.8"]
+        assert once["backend"] == "codex"
+
+    def test_a_worker_beats_a_named_backend(self):
+        """空いている相手に選ばせる道も渡せる（枠を見て選ぶのはワーカーの仕事）。"""
+        from app import collect
+
+        once = collect.normalize_run_once({"partitions": ["a"], "worker": "夜の枠"})
+        sweep = collect.asked_for_run(
+            collect.Sweep(
+                name="整理", prompt="", interval_minutes=60, enabled=True,
+                backend="antigravity", model="gemini-3.8-flash-low", effort="",
+            ),
+            once,
+        )
+
+        assert sweep.worker == "夜の枠"
+        assert sweep.backend is None
+
+    def test_nothing_written_means_an_ordinary_run(self):
+        from app import collect
+
+        assert collect.normalize_run_once({}) is None
+        assert collect.normalize_run_once(None) is None
