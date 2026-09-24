@@ -366,6 +366,43 @@ class TestAdminSection:
         assert "この相手は枠を出さない" in html
         assert 'action="/admin/ai/usage"' in html
 
+    def test_the_quota_cell_holds_together_on_a_phone(self):
+        """枠の欄は 1 つの塊で返し、スマホで割る場所に印を付けること。
+
+        スマホでは欄が「見出し | 値」の 2 列の格子になり、中の部品が 1 つずつ升に
+        入る —— 包まないと「相手が言ったそのまま」が見出しの側の列へ落ちる。
+        """
+        from app import usage
+        from app.views import ai_usage
+
+        quota = usage.Quota(
+            supported=True, fetched_at="2026-09-24T13:00:00+00:00", raw="{}",
+            windows=[usage.Window(id="5h", label="5 時間", used_percent=41.5,
+                                  resets_at="2026-09-24T16:00:00+00:00")],
+        )
+        html = ai_usage._quota_cell({"quota": quota})
+
+        assert html.startswith("<div>") and html.endswith("</div>")
+        assert "相手が言ったそのまま" in html
+        assert 'class="quota-name"' in html and "quota-reset" in html
+        # 残りの括弧は途中で割らない
+        assert '<span class="nowrap">(残り 58.5%)</span>' in html
+
+    def test_the_spent_cell_marks_where_a_phone_breaks(self):
+        """使ったぶんは「/」のあとに印を付け、窓ごとに 1 つの塊にすること。
+
+        スマホではそこで行を割って一段下げる。`<br>` でつなぐと、割ったあとに空行ができる。
+        """
+        from types import SimpleNamespace
+
+        from app.views import ai_usage
+
+        spent = {"5h": SimpleNamespace(requests=3, input_tokens=12, output_tokens=5, unknown=0)}
+        html = ai_usage._spent_cell({"spent": spent})
+
+        assert '3 回 /<span class="spent-detail"> 12 in・5 out</span>' in html
+        assert "<br>" not in html
+
     def test_refreshing_a_backend_that_has_no_quota_is_refused(self, env):
         with make_client(env, ReplyLLM()) as client:
             res = client.post("/admin/ai/usage", data={"provider": "gemini"},

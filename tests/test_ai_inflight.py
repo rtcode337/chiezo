@@ -326,6 +326,23 @@ class TestTheModelThatRan:
         assert ai_history.DEFAULT_MODEL_LABEL in ai_history.who_html("codex", "")
         assert "gpt-5-codex" in ai_history.who_html("codex", "gpt-5-codex")
 
+    def test_the_model_stays_on_the_value_side_on_a_phone(self):
+        """相手の欄は 1 つの塊で返すこと。
+
+        スマホでは欄が「見出し | 値」の 2 列の格子になり、中の部品が 1 つずつ升に
+        入る —— 包まないと、モデルが見出しの側の列へ落ちる。
+        """
+        from app.views import ai_history
+
+        html = ai_history.who_html("antigravity", "gemini-3.8-flash-medium", "high")
+        assert html.startswith("<span>") and html.endswith("</span>")
+        # 外側の塊がちょうど最後で閉じる(途中で閉じて部品が外へ漏れていない)
+        depth = 0
+        for i, part in enumerate(html.split("<")[1:]):
+            depth += -1 if part.startswith("/span") else 1 if part.startswith("span") else 0
+            if depth == 0:
+                assert i == html.count("<") - 1
+
 
 class TestAroundTheCall:
     def test_the_row_is_gone_once_the_answer_comes_back(self, state_env):

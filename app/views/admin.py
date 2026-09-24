@@ -280,18 +280,11 @@ def _job_body_html(job: dict | None, back: str = "/admin") -> str:
             f'<details class="job-log"{opened}><summary>実行ログ</summary>'
             '<div class="log-tail">' + esc("\n".join(log_tail)) + "</div></details>"
         )
-    if state == "running":
-        # **自動では読み直さない。** 走っている間 5 秒ごとに読み直していた頃は、
-        # 開いた `<details>` は閉じ、書きかけの入力は消え、押そうとしたボタンは
-        # 読み直しに攫われた —— 取り込みは数時間かかるので、その間ずっと画面が
-        # 使えないことになる。進み具合を見たい人がここから読み直す
-        # **いま開いている画面を読み直す。** この塊は玄関にも、記憶にも、
-        # 初期化の面にも出る —— 行き先を書き切っていたせいで、どこから押しても
-        # 記憶の画面へ飛んでいた(見ていた画面から連れ出される)
-        lines.append(
-            '<p><a href="?#job">進み具合を読み直す</a>'
-            ' <span class="muted">(自動では読み直しません)</span></p>'
-        )
+    # **自動では読み直さない。** 走っている間 5 秒ごとに読み直していた頃は、
+    # 開いた `<details>` は閉じ、書きかけの入力は消え、押そうとしたボタンは
+    # 読み直しに攫われた —— 取り込みは数時間かかるので、その間ずっと画面が
+    # 使えないことになる。**読み直す入口も置かない** —— ブラウザの再読み込みと
+    # 同じことしかできず、状態欄の 1 行を食うだけだった
     if state == "running":
         lines.append(_stop_job_html(job, back))
     lines.append("</div>")
@@ -353,7 +346,9 @@ def _stop_job_html(job: dict, back: str) -> str:
         '<form class="init-form" method="post" action="/admin/ingest/stop"'
         f" onsubmit=\"return confirm('{esc(ask)}')\">"
         '<button type="submit">止める</button></form>'
-        ' <span class="muted">区切りのいいところで降ります(すぐには止まりません)</span>'
+        # **短く言い切る。** 括弧で「すぐには止まりません」を添えていた頃は、
+        # スマホで 2 行に割れていた —— 「区切りのいいところで」で同じことが伝わる
+        ' <span class="muted">区切りのいいところで止まります</span>'
     )
 
 
@@ -2107,7 +2102,7 @@ def _usage_html(request: Request | None = None) -> str:
     # 画面なので、数字が古いと判断できない —— 取り直すために AI の面まで開くのは、
     # 見に来た目的から遠い。**押した画面へ戻る**(`back`)
     button = (
-        ai_usage.refresh_all_form("取り直す", back="/admin", klass="usage-refresh")
+        ai_usage.refresh_all_form("すべて取り直す", back="/admin", klass="usage-refresh")
         if usage.refreshable() else ""
     )
     if not rows:
@@ -2266,7 +2261,6 @@ def _running_html(running: list[dict], done: list[dict] | None = None) -> str:
 <th>依頼元</th><th>中身</th></tr></thead>
 <tbody>{rows}</tbody>
 </table>
-<p class="muted">詳しくは <a href="/admin/ai#ai-history">AI と鍵</a>。</p>
 """
 
 
@@ -2792,7 +2786,7 @@ def admin_ingest_stop(back: str = Form(JOB_BACK_HOME)):
     """走っている取り込みを降ろす(`chiezo-trigger` の `POST /stop` へ取り次ぐ)。
 
     **押した画面へ戻す。** この塊は玄関にも記憶の面にも出るので、行き先を
-    書き切ると見ていた画面から連れ出される(「進み具合を読み直す」と同じ)。
+    書き切ると見ていた画面から連れ出される。
     """
     if not TRIGGER_URL:
         raise HTTPException(

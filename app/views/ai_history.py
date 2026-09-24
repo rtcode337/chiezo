@@ -120,7 +120,10 @@ def who_html(backend: str, model: str, effort: str = "") -> str:
     # 言えている —— 空欄を 2 つ並べても読み取れるものが増えない)
     depth = (effort or "").strip()
     detail = f"{name} / {depth}" if depth else name
-    return f'{esc(backend)}<br><span class="muted">{esc(detail)}</span>'
+    # **1 つの塊に包む。** スマホでは欄が「見出し | 値」の 2 列の格子になり
+    # (`pages.as_cards`)、中の部品が 1 つずつ升に入る —— 包まないと、相手の名前の
+    # 次の行でモデルが見出しの側の列へ落ちる
+    return f'<span>{esc(backend)}<br><span class="muted">{esc(detail)}</span></span>'
 
 
 def _tokens(row: dict) -> str:

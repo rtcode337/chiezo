@@ -4966,18 +4966,22 @@ class TestTheCollectSectionMarkup:
 
         return admin._sweep_table_body(collect.get(name), "")
 
-    def test_the_progress_link_stays_on_the_page(self, sample):
-        """取り込みの様子は玄関にも初期化の面にも出る。
+    def test_a_running_job_has_no_reload_link(self, sample):
+        """走っている取り込みの欄に、読み直しの入口を置かない。
 
-        行き先を書き切っていたせいで、**どこから押しても記憶の画面へ飛んでいた** ——
-        見ていた画面から連れ出される。
+        ブラウザの再読み込みと同じことしかできず、状態欄の 1 行を食うだけだった。
+        **止める口は残す**(こちらは画面からしかできない)。
         """
         from app.views import admin
 
         html = admin._job_status_html({"state": "running", "source": "jawiki"})
 
-        assert 'href="?#job"' in html
-        assert "/admin/memory#job" not in html
+        assert "進み具合を読み直す" not in html
+        assert 'href="?#job"' not in html
+        assert "/admin/ingest/stop" in html
+        # スマホで 2 行に割れないよう、添え書きは短く言い切る
+        assert "区切りのいいところで止まります" in html
+        assert "すぐには止まりません" not in html
 
     def test_the_kind_is_the_first_mark_on_the_row(self, sample):
         """一覧でまず見えるのは種類。

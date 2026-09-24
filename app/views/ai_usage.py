@@ -65,11 +65,17 @@ def percent_text(value: float) -> str:
 
 def _window_html(window: usage.Window) -> str:
     """枠 1 つぶん。使用率で言う相手と、金額で言う相手の両方を同じ形に収める。"""
-    parts = [f"<strong>{esc(window.label)}</strong>"]
+    # **名前と戻る時刻には印を付ける** —— スマホではそこで行を割る(`pages.py` の
+    # `quota-name` / `quota-reset`)。札の値の側は幅が狭く、1 行に流すと帯と数字の
+    # 途中で折り返して読みにくい。広い画面では今までどおり 1 行に並べる
+    parts = [f'<strong class="quota-name">{esc(window.label)}</strong>']
     if window.used_percent is not None:
         parts.append(
-            f"{_meter(window.used_percent)} {percent_text(window.used_percent)}% 使用"
-            f"(残り {percent_text(window.remaining_percent)}%)"
+            # **数字と括弧はそれぞれ割らない**(`nowrap`)—— 狭い画面で「(残り」と
+            # 「58.5%)」が別の行に泣き別れる。折り返すなら括弧の前で割る
+            f"{_meter(window.used_percent)} "
+            f'<span class="nowrap">{percent_text(window.used_percent)}% 使用</span>'
+            f'<span class="nowrap">(残り {percent_text(window.remaining_percent)}%)</span>'
         )
     if window.used is not None:
         unit = f" {esc(window.unit)}" if window.unit else ""
@@ -78,7 +84,7 @@ def _window_html(window: usage.Window) -> str:
             amount += f" / 上限 {_amount(window.limit)}{unit}"
         parts.append(amount)
     if when := _when(window.resets_at):
-        parts.append(f'<span class="muted">{esc(when)} に戻る</span>')
+        parts.append(f'<span class="muted quota-reset">{esc(when)} に戻る</span>')
     return " ".join(parts)
 
 
@@ -97,7 +103,10 @@ def _quota_cell(row: dict) -> str:
         lines.append(f'<span class="stale">⚠️ 取れませんでした: {esc(quota.error)}</span>')
     elif not quota.windows:
         lines.append('<span class="muted">まだ取っていない(「取り直す」を押す)</span>')
-    return "<br>".join(lines) + _raw_html(quota)
+    # **1 つの塊に包む。** スマホでは欄が「見出し | 値」の 2 列の格子になり
+    # (`pages.as_cards`)、中の部品が 1 つずつ升に入る —— 包まないと、
+    # 「相手が言ったそのまま」などが見出しの側の列へ落ちる
+    return "<div>" + "<br>".join(lines) + _raw_html(quota) + "</div>"
 
 
 def _raw_html(quota: usage.Quota) -> str:
@@ -132,13 +141,19 @@ def _spent_cell(row: dict) -> str:
         # 0 と「言われていない」を分ける。 CLI ブリッジの相手はトークン数を返さないので、
         # 0 と書くと「0 トークンで動く相手」に見える。全部が未取得なら、そう言い切る。
         if value.input_tokens or value.output_tokens:
-            text += f" / {value.input_tokens:,} in・{value.output_tokens:,} out"
+            # **トークン数には印を付ける** —— スマホでは「/」のあとで行を割り、
+            # 一段下げて続ける(`pages.py` の `spent-detail`)。1 行に流すと数字の
+            # 途中で折り返し、どの窓の数なのかが読みにくい
+            detail = f"{value.input_tokens:,} in・{value.output_tokens:,} out"
             if value.unknown:
-                text += f' <span class="muted">(うち {value.unknown} 回は数なし)</span>'
+                detail += f' <span class="muted nowrap">(うち {value.unknown} 回は数なし)</span>'
+            text += f' /<span class="spent-detail"> {detail}</span>'
         else:
             text += ' <span class="muted">(トークン数なし)</span>'
         lines.append(text)
-    return "<br>".join(lines)
+    # 1 つの塊に包む(`_quota_cell` と同じ理由)。**窓ごとに <div> にする** ——
+    # `<br>` でつなぐと、スマホで行を割った `spent-detail` のあとに空行ができる
+    return "<div>" + "".join(f"<div>{line}</div>" for line in lines) + "</div>"
 
 
 BREAKDOWN_ANCHOR = "ai-breakdown"

@@ -2023,8 +2023,8 @@ class TestAdminPages:
 
         assert "いま走っている AI への依頼" in html
         assert "claude" in html
-        # 詳しくは AI の面へ送る（玄関は概況まで）
-        assert 'href="/admin/ai#ai-history"' in html
+        # **「詳しくは」の入口は置かない** —— AI の面はメニューから辿れる
+        assert 'href="/admin/ai#ai-history"' not in html
 
     def test_each_page_holds_only_its_own_section(self, client):
         memory = client.get("/admin/memory").text

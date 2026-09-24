@@ -364,6 +364,8 @@ PAGE_STYLE = """
   .meter-fill { display: block; height: 100%; background: #5560E0; }
   .meter-fill.mid { background: #d9a400; }
   .meter-fill.high { background: #c0392b; }
+  /* 途中で折り返させない語のまとまり(使用率と「(残り …)」) */
+  .nowrap { white-space: nowrap; }
   /* 収集のプロンプトは、まず**読む形**で見せる(入力欄が並ぶと中身を確かめにくい)。
      直すのは中の details を開いてから。 */
   pre.prompt-view { white-space: pre-wrap; word-break: break-word; margin: 0.4rem 0;
@@ -451,6 +453,15 @@ PAGE_STYLE = """
     table.as-cards tr.sweep-edit { margin-top: -0.7rem; border-top: 0;
                                    border-radius: 0 0 6px 6px; }
     table.as-cards tr.sweep-edit > td:first-child { background: none; }
+    /* **枠は名前のあとと、戻る時刻の前で行を割る**(`views/ai_usage._window_html`)。
+       値の側は幅が狭いので、1 行に流すと帯や数字の途中で折り返す */
+    table.ai-usage .quota-name, table.ai-usage .quota-reset { display: block; }
+    /* 使ったぶんは「/」のあとで割り、一段下げる(どの窓の数かを行頭で読ませる) */
+    table.ai-usage .spent-detail { display: block; padding-left: 1em; }
+    /* **見出しの無い欄(「取り直す」)も値の側の列に置く。** 見出しが無いので
+       左の列が空き、ボタンだけが札の左端に寄っていた。左の列の幅(6.5rem)と
+       間(0.7rem)のぶんだけ字下げして、上の値と縦をそろえる */
+    table.ai-usage td:not([data-label]) { padding-left: calc(0.7rem + 6.5rem + 0.7rem); }
   }
   /* 会話画面の 1 問 1 答(JS なし)版だけが使う。会話そのものの見た目は CHAT_STYLE 側 */
   form.chat { display: flex; gap: 0.5rem; margin-top: 1rem; }
