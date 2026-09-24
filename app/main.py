@@ -1090,8 +1090,15 @@ async def build_handoff(name: str, sources: dict, sweep_name: str = "") -> dict:
     ) if item.partition else []
     for_prompt = await asyncio.to_thread(collect.prompt_docs, item, previous, keys, None)
     shown: set[str] = set()
-    messages = collect.build_messages(item, for_prompt, None, sources, sweep, None, None, shown)
-    body = collect.handoff_body(item, sweep, messages, keys)
+    # **区画ごとに 1 節ずつ組む。** まとめて 1 つの依頼文にすると、範囲が
+    # 「(全体)」になり、差し込みも天井で切られる —— 本番の 1 束目は 5 区画
+    # 497 件のうち 300 件しか載らず、**主な仕事(この範囲に足りない店を足す)が
+    # 1 件も返ってこなかった**。区画ごとなら、どの節も「その範囲の全部」になる
+    sections = [
+        collect.build_messages(item, for_prompt, key, sources, sweep, None, None, shown)
+        for key in (keys or [None])
+    ]
+    body = collect.handoff_body(item, sweep, sections, keys)
     meta = await asyncio.to_thread(
         handoff.put, name,
         sweep=sweep.name, keys=keys, shown=sorted(shown), body=body,

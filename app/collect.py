@@ -3198,8 +3198,13 @@ HANDOFF_HEAD = """<!--
 
 答えは**説明を付けず、下の「返す形」のとおりの JSON だけ**を
 `answer.json` というファイルにして返してください。
+**範囲が複数あっても、答えは 1 つの `items` にまとめて**構いません
+（どの範囲のものかは座標とタグから分かります）。
 Chiezo はそのファイルをそのまま読み込みます（前置きや ```json の囲みが
 混ざっていても拾いますが、**JSON 以外の中身は捨てます**）。
+
+**触ったものと、新しく足すものだけを返してください。** 直すところが無かった
+1 件は返さなくて構いません（返さなかったものはそのまま残ります）。
 
 ---
 
@@ -3211,9 +3216,7 @@ Chiezo はそのファイルをそのまま読み込みます（前置きや ```
 
 ---
 
-## 頼みごと
-
-"""
+{body}"""
 
 HANDOFF_SHAPE = (
     '{"items": [{"title": "見出し", "body": "本文", "url": "出典の URL",'
@@ -3221,7 +3224,7 @@ HANDOFF_SHAPE = (
 )
 
 
-def handoff_body(item: Collection, sweep, messages: list[dict], keys: list[str]) -> str:
+def handoff_body(item: Collection, sweep, sections: list[list[dict]], keys: list[str]) -> str:
     """束の本文。**AI へ投げるのと同じ文**に、人とファイルのための前置きを足す。
 
     **前置きが要る。** 材料だけを渡すと、web の画面は要約や感想を返してくる ——
@@ -3230,16 +3233,27 @@ def handoff_body(item: Collection, sweep, messages: list[dict], keys: list[str])
     **中身は書き換えない。** 依頼文そのものは `build_messages` が組んだものを
     そのまま載せる —— ここで言い換えると、AI に頼んだ回と手で回した回で
     違うことを頼むことになり、結果を比べられなくなる。
+
+    **区画ごとに節を分ける**(`sections` は区画 1 つぶんの messages の並び)。
+    まとめて 1 つの節にしていた頃は、**範囲が「(全体)」になり、しかも差し込みが
+    天井(`MAX_MATERIAL_DOCS`)で切られた** —— 本番の 1 束目は 5 区画・497 件の
+    うち 300 件しか載らず、範囲も書かれていないので、**主な仕事である
+    「この範囲に足りない店を足す」が 1 件も返ってこなかった**(タグの手入れだけ)。
+    節に分ければ、どの節も「その範囲の全部が並んでいる」ことを保てる。
     """
     scope = (
-        f"今回の範囲は **{len(keys)} 区画**です（鍵は依頼文の中にあります）。"
-        if keys else "今回の範囲は依頼文の中に書いてあります。"
+        f"今回の範囲は **{len(keys)} 区画**です。"
+        "**節ごとに範囲が違います** —— それぞれの節で、その範囲の仕事をしてください。"
+        if len(keys) > 1 else "今回の範囲は下に書いてあります。"
     )
-    head = HANDOFF_HEAD.format(
+    parts = []
+    for index, messages in enumerate(sections, 1):
+        head = (f"## 範囲 {index} / {len(sections)}\n\n" if len(sections) > 1 else "## 頼みごと\n\n")
+        parts.append(head + "\n\n".join((m.get("content") or "") for m in messages))
+    return HANDOFF_HEAD.format(
         name=item.name, sweep=sweep.name if sweep else DEFAULT_SWEEP_NAME,
-        scope=scope, shape=HANDOFF_SHAPE,
-    )
-    return head + "\n\n".join((m.get("content") or "") for m in messages) + "\n"
+        scope=scope, shape=HANDOFF_SHAPE, body="\n\n---\n\n".join(parts),
+    ) + "\n"
 
 
 def asks_ai(item: Collection, sweep=None) -> bool:

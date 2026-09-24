@@ -120,7 +120,7 @@ class TestMakingTheBundle:
         item = _collection()
         [sweep] = collect.sweeps_of(item)
         messages = collect.build_messages(item, {}, None, {}, sweep, None, None, set())
-        body = collect.handoff_body(item, sweep, messages, [])
+        body = collect.handoff_body(item, sweep, [messages], [])
 
         for message in messages:
             assert message["content"] in body
@@ -133,11 +133,52 @@ class TestMakingTheBundle:
 
         item = _collection()
         [sweep] = collect.sweeps_of(item)
-        body = collect.handoff_body(item, sweep, [{"content": "本文"}], ["a"])
+        body = collect.handoff_body(item, sweep, [[{"content": "本文"}]], ["a"])
 
         assert "answer.json" in body
         assert '"items"' in body
-        assert "1 区画" in body
+        assert "触ったものと、新しく足すものだけ" in body
+
+    def test_each_partition_gets_its_own_section(self, state_env):
+        """**まとめて 1 つの節にしない。** 範囲が「(全体)」になり、差し込みも
+        天井で切られる —— 本番の 1 束目は 5 区画 497 件のうち 300 件しか載らず、
+        主な仕事(この範囲に足りない店を足す)が 1 件も返ってこなかった。"""
+        from app import collect
+
+        item = _with_partitions()
+        [sweep] = collect.sweeps_of(item)
+        keys = ["35.0,135.0/35.5,135.5", "36.0,136.0/36.5,136.5"]
+        sections = [[{"content": f"{key} を見て"}] for key in keys]
+
+        body = collect.handoff_body(item, sweep, sections, keys)
+
+        assert "範囲 1 / 2" in body
+        assert "範囲 2 / 2" in body
+        for key in keys:
+            assert key in body
+
+    def test_a_section_holds_its_own_range_only(self, state_env):
+        """節ごとに「その範囲の全部」。よその区画の店が混ざると、
+        **その範囲に無いものを「ある」として読ませる**ことになる。"""
+        import asyncio
+
+        from app import collect, handoff, main
+
+        item = _with_partitions()
+        docs = [
+            {"title": "北の店", "extra": {"lat": 36.2, "lon": 136.2}},
+            {"title": "南の店", "extra": {"lat": 35.2, "lon": 135.2}},
+        ]
+        state_env.setattr(collect, "stream_previous", lambda *a, **k: list(docs))
+        asyncio.run(main.build_handoff(item.name, {}, "手で調べる"))
+        body = handoff.body_of(item.name)
+        held = handoff.get(item.name)
+
+        # 1 回に見る区画は巡回の設定で決まる(ここでは 1 つ)
+        assert len(held["keys"]) == 1
+        assert "35.0000〜35.5000" in body
+        assert "南の店" in body
+        assert "北の店" not in body
 
     def test_only_one_bundle_is_held(self, state_env):
         """作る → 渡す → 読み込む が一巡するまで次を作らない
