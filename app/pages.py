@@ -245,6 +245,9 @@ PAGE_STYLE = """
   /* 取り込みの実行ログ。**走っている間だけ開く**（`views/admin.py`）ので、
      畳んだときに場所を取らない体裁にする */
   details.job-log { margin-top: 0.5rem; }
+  /* 止めるボタンは実行ログの下。**間を空ける** —— 詰めると、ボタンがログの
+     見出しに貼り付いて、押す場所と開く場所の境目が読みにくい */
+  .job-stop { margin-top: 0.8rem; }
   details.job-log > summary { font-weight: normal; padding: 0.1rem 0; font-size: 0.85rem; }
   /* どの画面にも出すビルドの印。**本文の邪魔をしない薄さ**で、下端に置く */
   .page-footer { margin-top: 2.5rem; padding-top: .9rem; border-top: 1px solid #e2e2ea;

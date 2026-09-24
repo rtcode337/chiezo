@@ -342,13 +342,17 @@ def _stop_job_html(job: dict, back: str) -> str:
         "取り込みを止めます。切り替えの前で降りるので、いま配信している世代は"
         "そのまま残ります。集めた素材も捨てないので、押し直せば続きから焼けます。"
     )
+    # **1 つの塊に包んで上を空ける**(`div.job-stop`)。form は行内に流れる作りで
+    # 自分では余白を持てず、真上の実行ログの見出しにボタンが貼り付いていた
     return (
+        '<div class="job-stop">'
         '<form class="init-form" method="post" action="/admin/ingest/stop"'
         f" onsubmit=\"return confirm('{esc(ask)}')\">"
         '<button type="submit">止める</button></form>'
         # **短く言い切る。** 括弧で「すぐには止まりません」を添えていた頃は、
         # スマホで 2 行に割れていた —— 「区切りのいいところで」で同じことが伝わる
         ' <span class="muted">区切りのいいところで止まります</span>'
+        "</div>"
     )
 
 
