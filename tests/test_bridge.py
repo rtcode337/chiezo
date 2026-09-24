@@ -739,13 +739,67 @@ class TestPerRequestLimits:
         assert server.resolve_timeout(120) == 120.0
 
     def test_default_timeout_stays_under_the_callers_wait(self, bridge):
-        """既定は chiezo-app が待つ 900 秒より短い。
+        """既定は chiezo-app が待つ秒数より短い。**数字は突き合わせて確かめる** ——
+        書き写すと、片方だけ伸ばした日に待つ側が先に切れる。
 
         待つ側が先に切れると、向こうの判断(504 の理由)が一切見えなくなる。
         300 秒だった頃は web 検索を伴う調査が日常的に切れていた。
         """
+        from app import answer
+
         server = bridge(CHIEZO_BRIDGE_CLI="claude")
-        assert 600 <= server.TIMEOUT < 900
+
+        assert server.TIMEOUT < answer.BRIDGE_TIMEOUT_SECONDS
+
+    def test_the_default_is_long_enough_to_finish(self, bridge):
+        """**打ち切っても枠は返らない。** 外を当たって漏れを探す回は 1 区画
+        6〜14 分かかり、840 秒では途中で切れて何も残らなかった(本番)。
+        """
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+
+        assert server.TIMEOUT >= 1800
+
+    def test_a_dropped_caller_kills_the_cli(self, bridge):
+        """**待つのをやめた相手のために走り続けさせない。**
+
+        繋ぎが切れると Starlette はこの処理ごと畳むが、子プロセスはそのまま
+        生き残る —— 答えを読む者のいない CLI が、枠と待ち枠を食い続けることに
+        なる(chiezo の「止める」はここまで効いて初めて意味を持つ)。
+        """
+        import asyncio
+
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        killed = asyncio.Event()
+
+        class NeverEnds:
+            returncode = None
+
+            async def communicate(self, _payload=None):
+                await asyncio.sleep(60)
+
+            def kill(self):
+                killed.set()
+
+            async def wait(self):
+                return 0
+
+        async def spawn(*_args, **_kwargs):
+            return NeverEnds()
+
+        async def go():
+            task = asyncio.ensure_future(
+                server._spawn(["claude"], b"{}", "/tmp/out.txt", 60)
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(asyncio, "create_subprocess_exec", spawn)
+            asyncio.run(go())
+
+        assert killed.is_set()
 
     def test_a_meaningless_timeout_is_refused(self, bridge):
         import fastapi

@@ -31,7 +31,7 @@ import os
 import re
 import time
 from collections.abc import AsyncIterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
@@ -290,12 +290,12 @@ def load_settings(
         # DB の 5 秒とは別枠。CPU 推論は数十秒級になる。
         #
         # CLI ブリッジの相手だけ桁を変える。 あちらは道具を何度も引くので分単位に
-        # なりうるうえ、ブリッジ自身が上限(`CHIEZO_BRIDGE_TIMEOUT`。既定 840 秒)を
+        # なりうるうえ、ブリッジ自身が上限(`CHIEZO_BRIDGE_TIMEOUT`。既定 3600 秒)を
         # 持っている。待つ側が先に切れてはいけない ——
         # 切れると画面には ReadTimeout しか出ず、「向こうが何秒で諦めたか」も
         # 「そもそも何が起きたか」も分からなくなる(実測: claude を effort=high で
         # 呼んだら 120 秒で切れ、504 llm timeout しか残らなかった)。
-        # ブリッジ側の上限を 900 秒より伸ばすときは、こちらも一緒に伸ばすこと。
+        # ブリッジ側の上限を伸ばすときは、こちらも一緒に伸ばすこと(常に向こうより長く)。
         timeout=_env_num("CHIEZO_ANSWER_TIMEOUT", _default_timeout(spec), float),
         docs=max(1, _env_num("CHIEZO_ANSWER_DOCS", 4, int)),
         max_chars=max(1, _env_num("CHIEZO_ANSWER_MAX_CHARS", 6000, int)),
@@ -306,9 +306,14 @@ def load_settings(
     )
 
 
-# CLI ブリッジ経由の相手を待つ秒数の既定。ブリッジ自身の上限(既定 840)より
+# CLI ブリッジ経由の相手を待つ秒数の既定。ブリッジ自身の上限(既定 3600)より
 # 長く取る —— 待つ側が先に切れると、向こうの判断が一切見えなくなるため。
-BRIDGE_TIMEOUT_SECONDS = 900.0
+#
+# **打ち切っても枠は返らない。** 途中で切ると、そこまでに使ったぶんを払ったうえで
+# 何も残らない(本番で、5 区画のうち 4 区画ぶんが返ったあとの 1 本が 840 秒で
+# 切れた)。**走っているなら待つ** —— 長く粘るぶんの歯止めは、時間ではなく
+# 「人が止める」ほうに置く(`ai_inflight.ask_to_stop`)。
+BRIDGE_TIMEOUT_SECONDS = 3660.0
 # API で直に叩く相手・推論サーバの既定。1 往復なのでこの桁で足りる。
 DIRECT_TIMEOUT_SECONDS = 120.0
 
@@ -814,7 +819,9 @@ def _inflight(cfg: Settings, messages: list[dict]):
         prompt="\n\n".join((m.get("content") or "") for m in messages),
     )
     try:
-        yield
+        # **札を渡す。** 待っている側はこれで「自分を止めてくれと言われていないか」を
+        # 見に行ける(`_watching_for_stop`)
+        yield token
     finally:
         ai_inflight.end(token)
 
@@ -855,6 +862,41 @@ def _llm_error(status: int, body: str, model: str = "") -> dict:
 # 画面の前の人を待たせるだけ。
 RETRY_STATUSES = (429, 503)
 RETRY_WAITS = (1.0, 3.0)
+
+# 「止めてくれ」を見に行く間隔(秒)。**短くしすぎない** —— 待っているあいだ
+# ずっと回る検査で、押されるのは稀。数秒遅れて止まっても困らない。
+STOP_POLL_SECONDS = 3.0
+
+# 人が止めた回の状態。**相手の失敗と混ぜない** —— 控えを読む人にとって
+# 「落ちた」と「止めた」はまるで別の話で、次にすることも違う。
+STOPPED_STATUS = 499
+
+
+async def _watching_for_stop(token: int | None, work):
+    """相手の返事を待ちながら、**「止めてくれ」が立ったら待つのをやめる**。
+
+    **待つのをやめると相手も終わる** —— 繋ぎを切ればブリッジ側はそれに気づいて
+    CLI を殺す(`bridge/cli_bridge.py` の `_spawn`)。掴んだまま放っておくと、
+    答えを読む者のいない CLI が枠を食い続ける。
+
+    控えを持たない構成(`CHIEZO_STATE_DIR` 無し)では、見張らずにそのまま待つ。
+    """
+    task = asyncio.ensure_future(work)
+    if token is None:
+        return await task
+    while True:
+        done, _pending = await asyncio.wait({task}, timeout=STOP_POLL_SECONDS)
+        if done:
+            return task.result()
+        if await asyncio.to_thread(ai_inflight.stop_wanted, token):
+            task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await task
+            log.info("ai call %s was stopped by hand", token)
+            raise HTTPException(STOPPED_STATUS, {
+                "error": "止められました",
+                "reason": "画面か REST から、この依頼を止めるよう言われました",
+            })
 
 
 async def _post_with_retry(client: httpx.AsyncClient, cfg: Settings, payload: dict):
@@ -952,12 +994,12 @@ async def complete_message(cfg: Settings, messages: list[dict], **extra) -> dict
     メッセージをそのまま返す(agent モードは次のターンにこれを丸ごと積み直す必要がある)。
     """
     started = time.monotonic()
-    with _inflight(cfg, messages):
+    with _inflight(cfg, messages) as token:
         try:
             async with _llm_client(cfg) as client:
-                res = await _post_with_retry(
+                res = await _watching_for_stop(token, _post_with_retry(
                     client, cfg, _payload(cfg, messages, stream=False, **extra)
-                )
+                ))
         except httpx.HTTPError as e:
             err = _upstream_error(e)
             _note_failure(cfg, messages, err.status_code, str(err.detail.get("reason", "")))

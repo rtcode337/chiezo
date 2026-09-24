@@ -435,6 +435,124 @@ class TestEndpoint:
         assert got["calls"][0]["prompt_bytes"] == 42
 
 
+class TestStoppingOne:
+    """**走っているものを、人が止められる。**
+
+    1 回の上限を伸ばした(既定 60 分)ので、時間切れを待つ形では歯止めにならない
+    —— 打ち切っても枠は返らないので「走っているなら待つ」に倒した代わりに、
+    暴走したものを落とす手段をここに置く。
+
+    **止めるのは押した人のワーカーではない**(`--workers 2`)。控えに印を書き、
+    往復を掴んでいるワーカーが数秒おきに見に来て自分で降りる。
+    """
+
+    def _running(self, state_env) -> int:
+        from app import ai_inflight
+
+        return ai_inflight.begin(
+            backend="claude", model="fable", effort="", prompt_bytes=42, timeout=3660.0,
+        )
+
+    def test_the_mark_is_written_and_read(self, state_env):
+        from app import ai_inflight
+
+        token = self._running(state_env)
+
+        assert not ai_inflight.stop_wanted(token)
+        assert ai_inflight.ask_to_stop(token)
+        assert ai_inflight.stop_wanted(token)
+
+    def test_pressing_twice_is_still_accepted(self, state_env):
+        """表は数秒古い。二度押した人に「そんな依頼は無い」と返すのは嘘になる。"""
+        from app import ai_inflight
+
+        token = self._running(state_env)
+        ai_inflight.ask_to_stop(token)
+
+        assert ai_inflight.ask_to_stop(token)
+
+    def test_a_call_that_is_not_there_is_refused(self, state_env):
+        from app import ai_inflight
+
+        assert not ai_inflight.ask_to_stop(999_999)
+        assert not ai_inflight.stop_wanted(999_999)
+
+    def test_the_rest_endpoint_names_one_by_id(self, state_env):
+        from app import ai_inflight
+
+        token = self._running(state_env)
+        with make_client(state_env, None) as client:
+            assert client.get("/v1/ai/inflight").json()["calls"][0]["id"] == token
+            assert client.post(f"/v1/ai/inflight/{token}/stop").status_code == 200
+            assert client.post("/v1/ai/inflight/999999/stop").status_code == 404
+
+        assert ai_inflight.stop_wanted(token)
+
+    def test_the_waiting_side_lets_go(self, state_env):
+        """**印が立ったら、待つのをやめる。** 手を離せば繋ぎが切れ、
+        ブリッジ側は CLI を殺す。"""
+        import asyncio
+
+        import fastapi
+
+        from app import ai_inflight, answer
+
+        token = self._running(state_env)
+        ai_inflight.ask_to_stop(token)
+        letting_go = asyncio.Event()
+
+        async def never_ends():
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                letting_go.set()
+                raise
+
+        async def go():
+            return await answer._watching_for_stop(token, never_ends())
+
+        with pytest.raises(fastapi.HTTPException) as got:
+            asyncio.run(go())
+
+        assert got.value.status_code == answer.STOPPED_STATUS
+        assert letting_go.is_set()
+
+    def test_it_waits_as_long_as_nobody_says_stop(self, state_env):
+        """**押されるのは稀。** 見張っているだけで答えを取りこぼさない。"""
+        import asyncio
+
+        from app import answer
+
+        token = self._running(state_env)
+
+        async def done_soon():
+            await asyncio.sleep(0)
+            return "はい"
+
+        assert asyncio.run(answer._watching_for_stop(token, done_soon())) == "はい"
+
+    def test_the_screen_offers_the_button(self, state_env):
+        from app.views import ai_history
+
+        token = self._running(state_env)
+        html = ai_history.section_html()
+
+        assert f"/admin/ai/inflight/{token}/stop" in html
+
+    def test_the_screen_says_it_is_on_its_way_out(self, state_env):
+        """押してすぐ消えるとは限らない(手を離すのは別のワーカー)——
+        「押したのに何も起きない」に見せない。"""
+        from app import ai_inflight
+        from app.views import ai_history
+
+        token = self._running(state_env)
+        ai_inflight.ask_to_stop(token)
+        html = ai_history.section_html()
+
+        assert "止めています" in html
+        assert f"/admin/ai/inflight/{token}/stop" not in html
+
+
 class TestWhereTheMarkIsPut:
     """**入口で巻けているか。** 印の仕組みがあることと、実際に付くことは別物
     （表情の差し替えと同じで、仕組みだけ入れて素材が 0 枚、が起きる）。"""

@@ -95,12 +95,18 @@ BUILD_SHA = os.environ.get("CHIEZO_BRIDGE_BUILD_SHA", "").strip()
 # CLI に渡すモデル。空なら CLI の既定(サブスクの枠を無駄に食わないよう明示するのが望ましい)。
 MODEL = os.environ.get("CHIEZO_BRIDGE_MODEL", "").strip()
 # 1 回の呼び出しの上限秒数。CLI は道具を何度も引くので推論サーバより長くなる。
-# 既定は 840 秒 —— 呼ぶ側(chiezo-app の CHIEZO_ANSWER_TIMEOUT、既定 900)より 1 分短くして、
-# 切れたときに向こうの ReadTimeout ではなくこちらの 504(理由つき)が画面に届くようにする。
+# 既定は 3600 秒 —— 呼ぶ側(chiezo-app の CHIEZO_ANSWER_TIMEOUT、既定 3660)より
+# 1 分短くして、切れたときに向こうの ReadTimeout ではなくこちらの 504(理由つき)が
+# 画面に届くようにする。
 # 300 秒だった頃は web 検索を伴う調査が「timed out after 300s」で日常的に落ちていた。
+# **840 秒でも足りなかった。** 外を当たって漏れを探す回は 1 区画 6〜14 分かかり、
+# 本番で 5 区画のうち 4 区画ぶんが返ったあとに 5 区画目が時間切れになった ——
+# **打ち切っても枠は食っており、残るものが何も無い**。走っているなら待つほうが得。
+# **そのぶん、暴走したときに止める手段が要る**(chiezo 側の「止める」。
+# 繋ぎが切れたらこちらも CLI を殺す。`_spawn`)。
 # agy は自前の待ち時間(--print-timeout、既定 5 分)も持つので、build_command が
 # ここで決めた上限を渡して二重の締め切りにならないようにする。
-TIMEOUT = float(os.environ.get("CHIEZO_BRIDGE_TIMEOUT", "840") or 840)
+TIMEOUT = float(os.environ.get("CHIEZO_BRIDGE_TIMEOUT", "3600") or 3600)
 # 名乗るモデル名(`/v1/models` と応答の model に載る。Chiezo の見出しがこれを出す)。
 MODEL_LABEL = os.environ.get("CHIEZO_BRIDGE_MODEL_LABEL", "").strip() or (
     MODEL
@@ -1186,6 +1192,16 @@ async def _spawn(
         proc.kill()
         await proc.wait()
         raise HTTPException(504, {"error": f"{CLI} timed out after {limit:.0f}s"}) from None
+    except asyncio.CancelledError:
+        # **待つのをやめた相手のために走り続けさせない。** 繋ぎが切れると
+        # Starlette はこの処理ごと畳むが、子プロセスはそのまま生き残る ——
+        # 答えを読む者のいない CLI が、枠と待ち枠を食い続けることになる
+        # (chiezo の「止める」はここまで効いて初めて意味を持つ)。
+        log.warning("%s was dropped by the caller; killing it", CLI)
+        proc.kill()
+        with suppress(Exception):
+            await proc.wait()
+        raise
 
     if proc.returncode != 0:
         # 中身(プロンプト・応答)はログに出さない。出すのは終了コードと CLI が書いた理由だけ。

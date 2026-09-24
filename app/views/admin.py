@@ -2681,6 +2681,25 @@ def admin_init(source: str, request: Request):
     return _proxy_trigger_run(source)
 
 
+@router.post("/admin/ai/inflight/{call_id}/stop")
+def admin_ai_stop(call_id: int):
+    """走っている 1 往復を止めるよう頼む(「AI への依頼」の表の「止める」)。
+
+    **1 回の上限を 60 分まで伸ばしたので、ここが歯止めになる。** 打ち切っても
+    枠は返らないので「走っているなら待つ」に倒したが、そのままでは暴走した
+    1 本が取り込みを 1 時間占める。
+
+    **手を離すのは押した人のワーカーではない**(`--workers 2`)—— 控えに印を
+    書くだけで、往復を掴んでいるワーカーが数秒のうちに見つけて降りる。
+    **無い依頼を押されても咎めない** —— 表は数秒古いので、終わった直後に
+    押されるのは普通に起きる(押した人にできることは何も無い)。
+    """
+    from app import ai_inflight
+
+    ai_inflight.ask_to_stop(call_id)
+    return RedirectResponse("/admin/ai#ai-history", status_code=303)
+
+
 @router.post("/admin/media/{job_id}/cancel")
 def admin_media_cancel(job_id: str):
     """走っている生成を止める(「AI への依頼」の表の「止める」)。

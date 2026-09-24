@@ -260,10 +260,17 @@ def running_rows() -> list[dict]:
             "backend": r["backend"],
             "model": r.get("model") or "",
             "effort": r.get("effort") or "",
-            "state": "走っている",
+            # **止めると言われたぶんは、そう出す。** 手を離すのは往復を掴んで
+            # いるワーカーなので、押してすぐ消えるとは限らない ——
+            # 「押したのに何も起きない」に見えないよう、状態の側で言う
+            "state": "止めています" if (r.get("stop_at") or "") else "走っている",
             "prompt_bytes": r.get("prompt_bytes"),
             "prompt": r.get("prompt") or "",
             "caller": r.get("caller") or "",
+            # **会話も止められる**(`ai_inflight.ask_to_stop`)。上限を伸ばしたぶん、
+            # ここが暴走したときの歯止めになる
+            "call_id": r.get("id"),
+            "stopping": bool(r.get("stop_at") or ""),
         }
         for r in ai_inflight.running()
         if (r.get("job_id") or "") not in job_ids
@@ -285,8 +292,6 @@ def running_rows() -> list[dict]:
             # **名乗りがあればそれを出す** —— 「media」とだけ出しても、
             # どのアプリが枠を食っているのかは読めない
             "caller": (j.get("requested_by") or "").strip() or "media",
-            # **止められるのは生成だけ。** 会話(`ai_inflight`)は相手との 1 往復で、
-            # 掴んでいるのは呼んだ側のタスクなので、この画面からは手が届かない
             "job_id": j.get("id") or "",
         }
         for j in jobs
@@ -354,12 +359,25 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
         detail = prompt_html(row.get("prompt") or "", row.get("prompt_bytes"))
         origin = caller_html(row.get("caller") or "")
         # **暴走したものを止める口。** 押すと待ち枠がすぐ空くので、後ろで並んでいる
-        # ぶんが先へ進める(向こう側の CLI は自分の時間切れまで走り続ける)
+        # ぶんが先へ進める
         if row.get("job_id"):
             detail += (
                 f'<form method="post" action="/admin/media/{esc(row["job_id"])}/cancel"'
                 ' onsubmit="return confirm(\'この生成を止めますか。'
                 '向こう側の処理はすぐには止まりません\')">'
+                '<button type="submit" class="danger">止める</button></form>'
+            )
+        elif row.get("stopping"):
+            detail += '<p class="muted">止めるよう伝えました(数秒で手を離します)。</p>'
+        elif row.get("call_id"):
+            # **会話も止められる。** 1 回の上限を 60 分まで伸ばしたので、
+            # 時間切れを待つ形では歯止めにならない —— 押せば、その往復を掴んで
+            # いるワーカーが数秒のうちに手を離し、繋ぎの切れた CLI も殺される
+            detail += (
+                f'<form method="post"'
+                f' action="/admin/ai/inflight/{int(row["call_id"])}/stop"'
+                ' onsubmit="return confirm(\'この依頼を止めますか。'
+                'ここまでに集めたものは残りません\')">'
                 '<button type="submit" class="danger">止める</button></form>'
             )
         body.append(

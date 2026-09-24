@@ -3581,6 +3581,31 @@ async def ai_inflight_now(limit: int = Query(50, ge=1, le=200)) -> dict:
     }
 
 
+@app.post("/v1/ai/inflight/{call_id}/stop")
+async def ai_inflight_stop(call_id: int) -> dict:
+    """走っている 1 往復を**止めるよう頼む**(`calls` の `id` で名指しする)。
+
+    **待つのをやめさせる口であって、相手を撃ち落とす口ではない。** 頼みごとは
+    控えに書くだけで、実際に手を離すのは**その往復を掴んでいるワーカー**
+    (`answer._watching_for_stop` が数秒おきに見に来る)—— chiezo-app は
+    `--workers 2` なので、押した人のいるプロセスから直に手は届かない。
+    手を離せば繋ぎが切れ、CLI ブリッジはそれに気づいて CLI を殺す。
+
+    **上限を伸ばしたぶん、ここが歯止めになる。** 走っているなら待つ、という
+    形にしたので(既定 60 分)、暴走したものを止める手段が無いと、無人で回る層は
+    1 本の呼び出しに 1 時間ぶんの取り込みを取られたままになる。
+
+    生成(絵・音・動画・文章)を止めるのは `POST /v1/media/jobs/{job_id}/cancel`。
+    """
+    if not ai_inflight.ask_to_stop(call_id):
+        raise HTTPException(404, {
+            "error": f"走っている依頼 {call_id} がありません",
+            "hint": "終わったか、まだ始まっていないかもしれません"
+                    "(一覧は GET /v1/ai/inflight)",
+        })
+    return {"ok": True, "id": call_id, "stopping": True}
+
+
 @app.get("/v1/ai/usage")
 async def ai_usage(
     backend: str = Query("", description="1 相手だけ見るとき(既定は全部)"),

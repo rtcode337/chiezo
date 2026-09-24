@@ -21,6 +21,10 @@
   実際に走っているのは 1 本なので、紐を持たせて画面と数を 1 本に戻す。
 - 終わったら消す。 ここは「いま走っているもの」だけの表で、済んだ依頼は
   `usage_store` と `ai_log` が引き受ける。残すと同じ往復が 2 か所に並ぶ。
+- 止める合図もここに置く（`ask_to_stop` / `stop_wanted`）。 待っているのは
+  相手の返事を掴んでいるワーカーで、**押す人のいるワーカーとは別のことがある**
+  （`--workers 2`）—— プロセスの中の変数では手が届かないので、控えを待ち合わせ
+  場所にする。待っている側が定期的に見に来て、自分で待つのをやめる。
 - 期限は始めた側が書く。 待つ秒数は相手で桁が違う（CLI ブリッジは 900 秒、直に叩く
   相手は 120 秒）ので、掃除する側が 1 つの数字で切ると、粘っている相手を消すか、
   止まったものを何十分も残すかのどちらかになる（`media._reap_stale` が kind ごとに
@@ -159,7 +163,10 @@ CREATE TABLE IF NOT EXISTS ai_inflight (
     -- この往復を抱えている生成ジョブ。直に呼ばれたものは空。
     job_id       TEXT    NOT NULL DEFAULT '',
     -- 誰が頼んだか（`collect:<名前>` / `api` / `ask` / …）。分からなければ空。
-    caller       TEXT    NOT NULL DEFAULT ''
+    caller       TEXT    NOT NULL DEFAULT '',
+    -- 「止めてくれ」と言われた時刻（空なら言われていない）。**待っている側が
+    -- 見に来る**ので、ここが押す側と待つ側の待ち合わせ場所になる。
+    stop_at      TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_ai_inflight_at ON ai_inflight(at DESC);
 """
@@ -189,7 +196,7 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
     入れ替わる**ので、消すのではなく足すほうが静かに済む。
     """
     have = {r["name"] for r in conn.execute("PRAGMA table_info(ai_inflight)")}
-    for name in ("prompt", "job_id", "caller"):
+    for name in ("prompt", "job_id", "caller", "stop_at"):
         if name not in have:
             with suppress(sqlite3.Error):
                 conn.execute(
@@ -270,6 +277,58 @@ def end(token: int | None) -> None:
         log.warning("ai inflight delete failed: %r", e)
 
 
+def ask_to_stop(token: int) -> bool:
+    """「この往復はもう止めてくれ」と控えに書く。書けたら True（無ければ False）。
+
+    **止めるのは押した側ではない。** chiezo-app は `--workers 2` で走るので、
+    押した人のいるワーカーと、相手の返事を待っているワーカーが別のことがある ——
+    プロセスの中の変数では手が届かない。待っている側が定期的にここを見に来て、
+    自分で待つのをやめる(取り込みのジョブを `request_stop` で降ろすのと同じ形)。
+    """
+    path = db_path()
+    if path is None:
+        return False
+    try:
+        with _connect(path) as conn:
+            cur = conn.execute(
+                "UPDATE ai_inflight SET stop_at = ? WHERE id = ? AND stop_at = ''",
+                (datetime.now(UTC).isoformat(timespec="seconds"), token),
+            )
+            # **既に頼んであるぶんも「受け付けた」とする** —— 二度押した人に
+            # 「そんな依頼は無い」と返すのは嘘になる
+            if cur.rowcount:
+                return True
+            found = conn.execute(
+                "SELECT stop_at FROM ai_inflight WHERE id = ?", (token,)
+            ).fetchone()
+            return bool(found)
+    except sqlite3.Error as e:
+        log.warning("ai inflight stop failed: %r", e)
+        return False
+
+
+def stop_wanted(token: int | None) -> bool:
+    """その往復に「止めてくれ」が立っているか。**読めなければ False**
+    (控えが読めないことを理由に、走っている仕事を落とさない)。"""
+    if token is None:
+        return False
+    path = db_path()
+    if path is None or not path.exists():
+        return False
+    try:
+        conn = _connect(path)
+        try:
+            found = conn.execute(
+                "SELECT stop_at FROM ai_inflight WHERE id = ?", (token,)
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        log.warning("ai inflight read failed: %r", e)
+        return False
+    return bool(found and (found["stop_at"] or ""))
+
+
 def running(limit: int = 50) -> list[dict]:
     """いま走っている依頼を新しい順に返す。何も走っていなければ空。"""
     path = db_path()
@@ -284,8 +343,10 @@ def running(limit: int = 50) -> list[dict]:
             rows = [
                 dict(r)
                 for r in conn.execute(
-                    "SELECT at, expires_at, backend, model, effort, kind, prompt_bytes,"
-                    " prompt, job_id, caller FROM ai_inflight ORDER BY id DESC LIMIT ?",
+                    # **id も返す。** 止める口はこれで 1 本を名指しする
+                    "SELECT id, at, expires_at, backend, model, effort, kind, prompt_bytes,"
+                    " prompt, job_id, caller, stop_at FROM ai_inflight"
+                    " ORDER BY id DESC LIMIT ?",
                     (max(1, limit),),
                 )
             ]
