@@ -595,7 +595,8 @@ def _backend_label(item) -> str:
     Chiezo が決める」の意味で、頼むこと自体は起きるように読める。機械で引く回は
     そもそも AI を呼ばない。
     """
-    if getattr(item, "use_extract", False) or getattr(item, "use_feed", False):
+    if (getattr(item, "use_extract", False) or getattr(item, "use_feed", False)
+            or getattr(item, "by_hand", False)):
         return '<span class="muted">AI 利用無し</span>'
     # **ワーカーに頼む回は、そう出す。** 相手の名前を出すと、その 1 つに
     # 固定で頼んでいるように読める —— 実際に渡る先は毎回その場の枠で決まる
@@ -662,6 +663,7 @@ def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
     only_new = bool(sweep and sweep.only_new)
     use_extract = bool(sweep and sweep.use_extract)
     use_feed = bool(sweep and sweep.use_feed)
+    by_hand = bool(sweep and sweep.by_hand)
     # **巡回ごとの依頼文。** 空なら収集のものを使う ——
     # 頼むことが巡回ごとに違う(埋める / 見直して消す / 漏れを足す)のに、
     # 1 つの文で全部を頼むと、どの回も同じ薄さの仕事になる
@@ -700,7 +702,7 @@ def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
         '<p><label>1 回に見る区画(空なら上の日数から計算する)<br>'
         f'<input name="sweep_per_run" type="number" min="1"'
         f' max="{collect.MAX_PARTITIONS_PER_RUN}" value="{esc(str(per_run))}"></label></p>'
-        f"{_sweep_backend_fields(sweep, backend, use_extract or use_feed)}"
+        f"{_sweep_backend_fields(sweep, backend, use_extract or use_feed or by_hand)}"
         # **足すだけの回は、既にある見出しに触らない。** 「漏れているものを足して」と
         # 頼む回に要る印で、AI の判断に頼らずにここで保証する —— 見せられるのはその
         # 区画のぶんだけなので、AI には「もう居るかどうか」が分からない
@@ -711,12 +713,17 @@ def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
         # **引き方**(AI に頼むか、抽出の指定で機械に引かせるか)。機械の回は
         # 名簿を最新に保つためのもので、AI を呼ばない ——「足すだけ」と組にして使う
         '<p><label>引き方<br><select name="sweep_source">'
-        f'<option value="ai"{"" if use_extract or use_feed else " selected"}>'
+        f'<option value="ai"'
+        f'{"" if use_extract or use_feed or by_hand else " selected"}>'
         "AI に頼む</option>"
         f'<option value="extract"{" selected" if use_extract else ""}>'
         "機械で引く(抽出の指定をもう一度走らせる)</option>"
         f'<option value="feed"{" selected" if use_feed else ""}>'
         "外の道具で引く(フィードの見出しをそのまま溜める)</option>"
+        # **手で回す回。** web の画面から使う AI に頼むための道で、
+        # Chiezo は依頼文をファイルにして渡し、答えのファイルを読み込む
+        f'<option value="hand"{" selected" if by_hand else ""}>'
+        "手で回す(依頼文を書き出して、答えを読み込む)</option>"
         "</select></label></p>"
         '<p><label>集め方<br><select name="sweep_merge">'
         f'<option value="all"{"" if only_new else " selected"}>'
@@ -891,6 +898,8 @@ def _sweep_cells(item, disabled: str = "", dry: bool = True) -> list[str]:
             name += '<br><span class="muted">機械で引く</span>'
         if sweep.use_feed:
             name += '<br><span class="muted">外の道具で引く</span>'
+        if sweep.by_hand:
+            name += '<br><span class="muted">手で回す</span>'
         # **押す口は巡回ごとに 1 つずつ。** 相手も 1 回に見る量も巡回ごとに違うので、
         # 収集に 1 つだけ置くと「どの設定で走ったのか」が押した本人にも分からない。
         # **時計を持たない巡回には出さない** —— あれは割り込みで頼まれたときだけ
@@ -1480,6 +1489,75 @@ def _redo_form(item, disabled: str) -> str:
     )
 
 
+def _handoff_html(item, disabled: str = "") -> str:
+    """手で回す回の受け渡し(`app/handoff.py`)。**巡回が無ければ何も出さない。**
+
+    出すのは 3 つ —— 束(ファイル)・**貼り付ける一言**・答えを読み込む口。
+    **一言が要る。** ファイルだけ渡すと、web の画面は要約や感想を返してくる
+    (何をするかは本文で言わないと伝わらない)。
+
+    **束を作る口は、区画を回らない収集にも出す。** あちらは押したときだけ作る
+    (区画を回る収集は、答えが焼けたら次を自動で組む)。
+    """
+    from app import handoff
+
+    sweep = collect.by_hand_sweep(item)
+    if sweep is None:
+        return ""
+    if not handoff.is_enabled():
+        return ('<h3>手で回す</h3><p class="muted">'
+                "束の置き場がありません(<code>CHIEZO_STATE_DIR</code> が未設定)。</p>")
+    held = handoff.get(item.name)
+    make = (
+        f'<form method="post" action="/admin/collect/{esc(item.name)}/handoff"'
+        f' class="init-form"><button type="submit"{disabled}>束を作る</button></form>'
+    )
+    if held is None:
+        return (
+            f'<h3>手で回す(巡回「{esc(sweep.name)}」)</h3>'
+            '<p class="muted">依頼文をファイルに書き出して、web の画面から使う AI に'
+            "渡します。答えのファイルを読み込ませると、AI に頼んだ回と同じ道で焼かれます。</p>"
+            f"{make}"
+        )
+    made = esc(jst.format(jst.parse(held.get("created_at") or "")) or "")
+    body = [
+        f'<h3>手で回す(巡回「{esc(str(held.get("sweep") or sweep.name))}」)</h3>',
+        '<table><tbody>'
+        f'<tr><th>作った時刻</th><td>{made}</td></tr>'
+        f'<tr><th>渡す範囲</th><td>{len(held.get("keys") or []):,} 区画 / '
+        f'{int(held.get("docs") or 0):,} 件</td></tr>'
+        f'<tr><th>大きさ</th><td>{int(held.get("bytes") or 0):,} バイト</td></tr>'
+        "</tbody></table>",
+        f'<p><a href="/v1/collect/{esc(item.name)}/handoff/file">→ 束のファイルを取る</a>'
+        "(これを相手に添付します)</p>",
+        # **貼り付ける一言。** ファイルを添えるだけでは、読んで作業してもらえない
+        f'<p class="muted">添えて送る一言:</p><pre>{esc(handoff.PASTE_NOTE)}</pre>',
+    ]
+    if held.get("answered_at"):
+        body.append(
+            '<p class="stale">答えを読み込みました('
+            f'{int(held.get("answer_items") or 0):,} 件)。取り込みが焼くのを待っています。</p>'
+        )
+    else:
+        body.append(
+            f'<form method="post" action="/admin/collect/{esc(item.name)}/handoff/answer"'
+            ' enctype="multipart/form-data" class="collect-form">'
+            "<p><label>答えのファイル(JSON)<br>"
+            '<input type="file" name="answer" accept=".json,.txt,.md,application/json">'
+            "</label></p>"
+            '<p><label>貼り付けで読み込む(ファイルが無いとき)<br>'
+            '<textarea name="text" rows="4" spellcheck="false"></textarea></label></p>'
+            f'<p><button type="submit"{disabled}>答えを読み込んで焼く</button></p></form>'
+        )
+    body.append(
+        f'<form method="post" action="/admin/collect/{esc(item.name)}/handoff/drop"'
+        ' class="init-form" onsubmit="return confirm(\'この束を捨てますか。'
+        '答えを読み込んでいないぶんは失われます\')">'
+        '<button type="submit" class="danger">この束を捨てる</button></form>'
+    )
+    return "".join(body)
+
+
 def _collect_detail_html(
     item, disabled: str, sources: dict | None = None, busy: bool = False,
 ) -> str:
@@ -1496,6 +1574,7 @@ def _collect_detail_html(
         f'<p class="muted">進み具合(次の実行で {{cursor}} に入る値): '
         f'<code>{esc(item.cursor) or "(まだ無し)"}</code></p>'
         f"{_redo_form(item, disabled)}"
+        f"{_handoff_html(item, disabled)}"
         f"{_partition_html(item, (sources or {}).get(item.name), busy)}"
         f"{_removed_html(item, sources or {})}"
         f"<details><summary>編集する</summary>"
@@ -3240,6 +3319,62 @@ async def admin_collect_run(name: str, request: Request):
     return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
 
 
+@router.post("/admin/collect/{name}/handoff")
+async def admin_handoff_make(name: str, request: Request):
+    """手で回す回の束を 1 つ作る(`app/handoff.py`)。AI も取り込みも動かさない。"""
+    from app.main import build_handoff
+
+    await build_handoff(name, request.app.state.sources)
+    return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
+
+
+@router.post("/admin/collect/{name}/handoff/answer")
+async def admin_handoff_answer(name: str, request: Request):
+    """持ち帰った答えを読み込んで、焼く取り込みを 1 本起こす。
+
+    **ファイルでも貼り付けでも受ける。** 相手がファイルで返すとは限らず
+    (画面に JSON を出して終わることがある)、そのために一度ファイルへ
+    保存させるのは手数が 1 つ増えるだけ。
+    """
+    from app import handoff
+    from app.main import start_collection_bake
+
+    form = await request.form()
+    body = ""
+    if (sent := form.get("answer")) is not None and hasattr(sent, "read"):
+        body = (await sent.read()).decode("utf-8", "replace")
+    if not body.strip():
+        body = str(form.get("text") or "")
+    held = handoff.get(name)
+    if held is None:
+        raise HTTPException(404, {"error": f"収集「{name}」に預かっている束がありません"})
+    try:
+        items, _cursor, note = collect.parse_response(body)
+    except ValueError as e:
+        raise HTTPException(400, {
+            "error": "答えを読み取れませんでした",
+            "reason": str(e)[:200],
+            "hint": "束に書いてある形の JSON(items の配列)を、そのまま貼るか読み込ませてください",
+        }) from None
+    if not items:
+        raise HTTPException(400, {
+            "error": "答えから 1 件も読み取れませんでした",
+            "hint": "束に書いてある形の JSON(items の配列)を、そのまま貼るか読み込ませてください",
+        })
+    handoff.answered(name, items, note)
+    start_collection_bake(name, held.get("sweep") or None)
+    return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
+
+
+@router.post("/admin/collect/{name}/handoff/drop")
+async def admin_handoff_drop(name: str):
+    """預かっている束を捨てる(答えごと)。次の束を作れるようになる。"""
+    from app import handoff
+
+    handoff.drop(name)
+    return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
+
+
 @router.post("/admin/collect/{name}/redo")
 async def admin_collect_redo(name: str, request: Request):
     """最後の 1 回を、やり直せる状態まで巻き戻してもう一度走らせる。
@@ -3347,6 +3482,13 @@ async def admin_collect_partition_run(name: str, request: Request):
             "error": f"巡回「{this.name}」は区画を見ません(機械で引く回・"
                      f"外の道具で引く回)",
             "hint": "区画を見る巡回を選んでください",
+        })
+    if this.by_hand:
+        # **手で回す回は、ここからは走らせない。** 走らせる中身(人が持ち帰った
+        # 答え)がまだ無いので、押しても空振りする —— 束を作る口のほうへ案内する
+        raise HTTPException(400, {
+            "error": f"巡回「{this.name}」は手で回す回です",
+            "hint": "「束を作る」で依頼文を書き出し、答えのファイルを読み込ませてください",
         })
     chosen = str(form.get("backend") or "")
     start_collection_bake(name, named_sweep or None, {
@@ -3511,6 +3653,8 @@ def _parse_sweeps_form(form) -> list[dict]:
             sweep["use_extract"] = True
         if at("source") == "feed":
             sweep["use_feed"] = True
+        if at("source") == "hand":
+            sweep["by_hand"] = True
         if at("interval").isdigit():
             sweep["interval_minutes"] = int(at("interval"))
         for key, field in (("cover_days", "cover_days"), ("partitions_per_run", "per_run")):
@@ -3523,7 +3667,8 @@ def _parse_sweeps_form(form) -> list[dict]:
         # ここに 1 つ書いても、どの相手に対する指定なのかが決まらない
         # (モデルの名前は相手ごとに違う)。段ごとの指定はワーカーの側が持つ
         for key in ("backend", "model", "effort"):
-            if sweep.get("use_extract") or sweep.get("use_feed") or sweep["worker"]:
+            if (sweep.get("use_extract") or sweep.get("use_feed")
+                    or sweep.get("by_hand") or sweep["worker"]):
                 break
             if value := at(key):
                 sweep[key] = value
@@ -3745,7 +3890,7 @@ def _sweeps_for_trial(item):
     """
     return [
         s for s in collect.sweeps_of(item)
-        if not s.on_demand and not s.use_extract and not s.use_feed
+        if not s.on_demand and not s.use_extract and not s.use_feed and not s.by_hand
     ]
 
 

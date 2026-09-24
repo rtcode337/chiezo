@@ -543,6 +543,13 @@ class Sweep:
     # (別の括りに入っていることも、タグが間違っていることもある)。触らせると、
     # 既にいる有名なものが薄い内容で上書きされ、持っていたタグごと落ちる。
     only_new: bool = False
+    # **手で回す巡回**(`app/handoff.py`)。AI を呼ばずに、いつもどおり組んだ依頼文を
+    # **ファイルとして人に渡す** —— web の画面から使う AI(Gemini など)は、
+    # 鍵も API も無い代わりに調べものが速い。答えのファイルを読み込ませれば、
+    # そこから先は AI に頼んだ回とまったく同じ道を通る(`collect.parse_response`)。
+    # **時計では走らない** —— 人の手が入るので、次の束を作るのは「答えが入ったとき」
+    # (区画を回る収集)か「押したとき」。予定で起こすと、答えの無い束が溜まる
+    by_hand: bool = False
     # **時計を持たない巡回**(割り込み用)。定時には走らず、頼まれたときだけ動く。
     # 相手・モデル・考える量を**定時のものとは別に決めておく**ためにある ——
     # 割り込みは人が待っている場面なので、速い相手に頼みたい / 逆に 1 件を
@@ -559,7 +566,7 @@ class Sweep:
         **時計を持たない巡回は「来ない」**(`NEVER`)—— 予定が空なのを「いますぐ」と
         読む規則をそのまま当てると、割り込み用の巡回が毎周走ってしまう。
         """
-        if self.on_demand or (self.once and self.last_run_at):
+        if self.on_demand or self.by_hand or (self.once and self.last_run_at):
             return NEVER
         return _parse(self.next_run_at) or _now()
 
@@ -569,11 +576,15 @@ class Sweep:
 
         **時計を持たない巡回は、定時には走らない**(頼まれたときだけ)。
 
+        **手で回す巡回も走らない**(`by_hand`)—— 走らせる中身(人が持ち帰った
+        答え)が揃うのは読み込んだときなので、予定で起こすと空振りする。
+        次の束を組むのは「答えが焼けたとき」か「押したとき」。
+
         **一度きりの巡回は、走ったらもう走らない**(`once`)—— 元のデータが変わらない
         限り何度やっても同じなので、その 1 回ぶんの取り込みが無駄になる。
         押せばいつでも走る(口のほうでは断らない)。
         """
-        if self.on_demand or (self.once and self.last_run_at):
+        if self.on_demand or self.by_hand or (self.once and self.last_run_at):
             return False
         at = at or _now()
         return self.enabled and (_parse(self.next_run_at) or at) <= at
@@ -682,6 +693,7 @@ def _sweep_from_json(raw: dict, item: Collection) -> Sweep:
         only_new=bool(raw.get("only_new")),
         use_extract=bool(raw.get("use_extract")),
         use_feed=bool(raw.get("use_feed")),
+        by_hand=bool(raw.get("by_hand")),
         once=bool(raw.get("once")),
         one_lap=bool(raw.get("one_lap")),
         after=str(raw.get("after") or "").strip()[:40],
@@ -3159,6 +3171,71 @@ def uses_extract(item: Collection, sweep=None) -> bool:
     return bool((sweep is not None and sweep.use_extract) or not item.cursor)
 
 
+def by_hand_sweep(item: Collection):
+    """手で回す巡回(いちばん先に書いてあるもの)。無ければ None。
+
+    **名指しされなければこれを使う** —— 手で回す回を 2 本持つ収集は、
+    いまのところ考えなくてよい(束は 1 つしか預かれない)。
+    """
+    return next((s for s in sweeps_of(item) if s.by_hand and s.enabled), None)
+
+
+HANDOFF_HEAD = """<!--
+この束は Chiezo が組んだものです（収集「{name}」/ 巡回「{sweep}」）。
+渡す相手は web の画面から使う AI（Gemini など）で、答えはファイルで受け取ります。
+-->
+
+# {name} —— {sweep}
+
+**このファイルを最後まで読んでから作業してください。**
+{scope}
+
+答えは**説明を付けず、下の「返す形」のとおりの JSON だけ**を
+`answer.json` というファイルにして返してください。
+Chiezo はそのファイルをそのまま読み込みます（前置きや ```json の囲みが
+混ざっていても拾いますが、**JSON 以外の中身は捨てます**）。
+
+---
+
+## 返す形
+
+```json
+{shape}
+```
+
+---
+
+## 頼みごと
+
+"""
+
+HANDOFF_SHAPE = (
+    '{"items": [{"title": "見出し", "body": "本文", "url": "出典の URL",'
+    ' "tags": ["タグ"], "lat": 35.0, "lon": 139.0}], "next_cursor": "次に続きを見る印"}'
+)
+
+
+def handoff_body(item: Collection, sweep, messages: list[dict], keys: list[str]) -> str:
+    """束の本文。**AI へ投げるのと同じ文**に、人とファイルのための前置きを足す。
+
+    **前置きが要る。** 材料だけを渡すと、web の画面は要約や感想を返してくる ——
+    「読んで、この形の JSON をファイルで返す」までを、材料より先に言い切る。
+
+    **中身は書き換えない。** 依頼文そのものは `build_messages` が組んだものを
+    そのまま載せる —— ここで言い換えると、AI に頼んだ回と手で回した回で
+    違うことを頼むことになり、結果を比べられなくなる。
+    """
+    scope = (
+        f"今回の範囲は **{len(keys)} 区画**です（鍵は依頼文の中にあります）。"
+        if keys else "今回の範囲は依頼文の中に書いてあります。"
+    )
+    head = HANDOFF_HEAD.format(
+        name=item.name, sweep=sweep.name if sweep else DEFAULT_SWEEP_NAME,
+        scope=scope, shape=HANDOFF_SHAPE,
+    )
+    return head + "\n\n".join((m.get("content") or "") for m in messages) + "\n"
+
+
 def asks_ai(item: Collection, sweep=None) -> bool:
     """この回は AI に頼むか。**判断は 1 か所に持つ**(`uses_extract` と同じ理由)。
 
@@ -3168,7 +3245,9 @@ def asks_ai(item: Collection, sweep=None) -> bool:
     """
     if uses_extract(item, sweep):
         return False
-    return not (sweep is not None and sweep.use_feed)
+    # 手で回す回も AI を呼ばない —— 答えを書いたのは Chiezo が知らない相手で、
+    # 既定の相手を控えに残すと「その相手に頼んだ回」として履歴に並ぶ
+    return not (sweep is not None and (sweep.use_feed or sweep.by_hand))
 
 
 def stream_docs(

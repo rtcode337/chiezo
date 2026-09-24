@@ -23,6 +23,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, Up
 from fastapi.responses import (
     FileResponse,
     JSONResponse,
+    PlainTextResponse,
     RedirectResponse,
     Response,
     StreamingResponse,
@@ -43,6 +44,7 @@ from app import (
     db,
     extract,
     feeds,
+    handoff,
     logs,
     machine_store,
     media,
@@ -264,6 +266,36 @@ async def _sample_quotas() -> None:
             log.exception("quota sampling tick failed")
 
 
+async def _refill_handoffs(app: FastAPI) -> None:
+    """**答えの入った束の次を、続けて用意する**(`app/handoff.py`)。
+
+    手で回す回は時計を持たない —— 人の手が入るので、予定で起こすと**答えの無い束が
+    溜まる**。代わりに「前の答えが焼けたら、すぐ次を組む」にしてある。
+    区画を回る収集(網羅)だけが対象で、そうでない収集は押したときだけ ——
+    あちらは「いまの外の様子」を聞く回なので、聞きたい時に作るのが自然。
+
+    **預かっている束があるあいだは作らない。** 焼くのを待っている答えも同じ
+    (取り込みが読み終えて初めて次の範囲が決まる)。
+    **落ちても時計は止めない**(次の周でやり直す)。
+    """
+    if not (collect.is_enabled() and handoff.is_enabled()):
+        return
+    for item in await asyncio.to_thread(collect.load):
+        if not item.enabled or not item.partition:
+            continue
+        sweep = collect.by_hand_sweep(item)
+        if sweep is None or handoff.get(item.name) is not None:
+            continue
+        if collect.blocked_reason(item, sweep):
+            continue
+        try:
+            await build_handoff(item.name, app.state.sources, sweep.name)
+        except HTTPException as e:
+            log.info("handoff for %s was not made: %s", item.name, _reason_of(e))
+        except Exception:
+            log.exception("handoff for %s failed", item.name)
+
+
 async def _run_collections(app: FastAPI) -> None:
     """予定の来た収集を ingest に起こさせる常駐タスク(`app/collect.py`)。
 
@@ -284,6 +316,7 @@ async def _run_collections(app: FastAPI) -> None:
             # 進んだままの印で次の区画が選ばれる
             await asyncio.to_thread(_rewind_failed_bakes)
             await asyncio.to_thread(_fill_worker_queues)
+            await _refill_handoffs(app)
             # **ワーカーの順番が先。** 拾った塊を流し切るまでそのワーカーに優先権を
             # 持たせる —— 途中で他の回に割り込まれると「1 度の起動で N 本」が
             # 意味を失う。塊が無ければ、いつもの予定の回へ落ちる
@@ -785,6 +818,23 @@ async def _collect_items(
         retired = {title for title, doc in (previous or {}).items() if collect.is_removed(doc)}
         items, next_cursor = await asyncio.to_thread(extract.run, spec, sources, retired)
         return items, next_cursor, ""
+    # **手で回した回**(`Sweep.by_hand`)。AI は呼ばず、**人が持ち帰った答え**を使う。
+    # 読むのは `collect.parse_response` なので、ここから先は AI に頼んだ回と同じ道
+    if sweep is not None and sweep.by_hand:
+        items, meta = await asyncio.to_thread(handoff.take, item.name)
+        if not items:
+            # **空で焼かない。** 預かりが消えている(取り違え・二重起動)ので、
+            # そのまま進むと「何も返らなかった回」として印と予定だけが進む
+            raise HTTPException(409, {
+                "error": f"収集「{item.name}」に、読み込んだ答えがありません",
+                "hint": "束を作って答えのファイルを読み込むと、その中身で走ります",
+            })
+        if done is not None:
+            # **印を付けるのは、束に入れて渡した区画**(いま台帳から選び直さない)
+            done.extend(meta.get("keys") or [] if meta else [])
+        if seen is not None:
+            seen.update(meta.get("shown") or [] if meta else [])
+        return items, None, (meta or {}).get("answer_note") or ""
     # **外の道具で引く回**(`Sweep.use_feed`)。フィードが配っている見出しを
     # そのまま溜める。**進み具合には触らない** —— 次にどこから読むかは
     # 道具の側が「前回の実行より後」で決める(`feeds.SINCE_LAST_RUN`)
@@ -1005,6 +1055,63 @@ def _previous_unreadable(item, sources: dict, data_dir: Path | None = None) -> s
     )
 
 
+async def build_handoff(name: str, sources: dict, sweep_name: str = "") -> dict:
+    """手で回す回の**束を 1 つ作る**(`app/handoff.py`)。AI は呼ばない。
+
+    組み立てはいつもと同じ道を通る —— 区画を選び(`partitioning.pick`)、その区画の
+    ぶんだけ差し込み(`collect.prompt_docs`)、依頼文を組む
+    (`collect.build_messages`)。違うのは**投げずにファイルへ落とす**ことだけ。
+
+    **取り込みは起こさない。** 長期記憶は読むだけなので、ここは app の中で完結する。
+    """
+    item = await asyncio.to_thread(collect.get, name)
+    # **名指しが無ければ手で回す巡回**(`by_hand_sweep`)。名指しされたものが
+    # 手で回す回でなければ断る —— AI に頼む回の束を作っても、渡す先が無い
+    sweep = collect.sweep_named(item, sweep_name) if sweep_name else collect.by_hand_sweep(item)
+    if sweep is not None and not sweep.by_hand:
+        sweep = None
+    if sweep is None:
+        raise HTTPException(404, {
+            "error": f"収集「{name}」に手で回す巡回がありません",
+            "hint": "巡回の設定で、引き方を「手で回す」にしてください",
+        })
+    if why := collect.blocked_reason(item, sweep):
+        raise HTTPException(409, {"error": f"「{sweep.name}」はいま走らせられません: {why}"})
+    if handoff.waiting(name):
+        raise HTTPException(409, {
+            "error": f"収集「{name}」には、まだ答えの返っていない束があります",
+            "hint": "答えのファイルを読み込むか、その束を捨ててから作り直してください",
+        })
+    previous = lambda: collect.stream_previous(name, sources)  # noqa: E731
+    ledger = await asyncio.to_thread(collect.plan_partitions, item, sources, previous)
+    keys = partitioning.pick(
+        ledger, sweep.name, sweep.per_run(len(ledger)),
+        partitioning.normalize(item.partition),
+    ) if item.partition else []
+    for_prompt = await asyncio.to_thread(collect.prompt_docs, item, previous, keys, None)
+    shown: set[str] = set()
+    messages = collect.build_messages(item, for_prompt, None, sources, sweep, None, None, shown)
+    body = collect.handoff_body(item, sweep, messages, keys)
+    meta = await asyncio.to_thread(
+        handoff.put, name,
+        sweep=sweep.name, keys=keys, shown=sorted(shown), body=body,
+        docs=len(for_prompt), generation=_generation_of(name, sources),
+    )
+    log.info("handoff for %s/%s: %d partitions, %d docs, %d bytes",
+             name, sweep.name, len(keys), len(for_prompt), meta["bytes"])
+    return meta
+
+
+def _generation_of(name: str, sources: dict) -> str:
+    """いま配っている世代の印(束を作った時点の姿)。
+
+    **答えが返るまでに何時間も空く**ので、読み込むときに「そのあいだに焼き直された
+    か」を言えるようにしておく。断る材料ではなく、添える一言のためのもの。
+    """
+    src = sources.get(name)
+    return str(getattr(src, "dump_date", "") or "")
+
+
 async def _collect_material(name: str, sources: dict, data_dir: Path | None = None) -> str:
     # **かかった時間を測る。** 回ごとに桁が違い(相手も区画の大きさも回ごとに変わる)、
     # **遅くなったことは件数からは読めない** —— 同じ件数を返していても、5 分が
@@ -1099,6 +1206,10 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
                             "(区画の面から選び直してください)",
                 })
             keys = named
+        elif sweep.by_hand and (held := handoff.get(name)):
+            # **手で回す回は、束に入れて渡した区画をそのまま使う。** ここで選び直すと、
+            # 渡した範囲と印を付ける範囲がずれる(答えが返るまでに台帳は動きうる)
+            keys = [k for k in held.get("keys") or [] if k]
         else:
             keys = partitioning.pick(
                 ledger, sweep.name, sweep.per_run(len(ledger)),
@@ -3215,6 +3326,103 @@ def collect_run_now(
     return start_collection_bake(
         name, sweep, collect.normalize_run_once(once.model_dump() if once else None)
     )
+
+
+# ---- 手で回す(web の画面から使う AI に頼む) ---------------------------------
+#
+# 実体は `app/handoff.py`。ここは HTTP の口だけを持つ。
+# 流れは「束を作る(`POST …/handoff`)→ 人が渡す → 答えを読み込む
+# (`POST …/handoff/answer`)→ 取り込みが焼く」。
+
+
+@app.get("/v1/collect/{name}/handoff")
+async def collect_handoff_now(request: Request, name: str) -> dict:
+    """いま預かっている束(無ければ 404)。本文は別の口(`…/handoff/file`)。"""
+    collect.require_enabled()
+    collect.get(name)
+    if (meta := handoff.get(name)) is None:
+        raise HTTPException(404, {"error": f"収集「{name}」に預かっている束はありません"})
+    return {"name": name, **meta, "note": handoff.PASTE_NOTE}
+
+
+@app.get("/v1/collect/{name}/handoff/file")
+async def collect_handoff_file(name: str):
+    """束の本文(そのまま渡すファイル)。"""
+    collect.require_enabled()
+    collect.get(name)
+    body = handoff.body_of(name)
+    if not body:
+        raise HTTPException(404, {"error": f"収集「{name}」に預かっている束はありません"})
+    return PlainTextResponse(body, media_type="text/markdown; charset=utf-8", headers={
+        "Content-Disposition": f'attachment; filename="{name}-handoff.md"',
+    })
+
+
+@app.post("/v1/collect/{name}/handoff")
+async def collect_handoff_make(
+    request: Request,
+    name: str,
+    sweep: str | None = Query(None, description="束を作る巡回(省くと手で回す巡回)"),
+) -> dict:
+    """束を 1 つ作る。**AI は呼ばない**(取り込みも起こさない)。
+
+    既に答え待ちの束があれば 409 —— 「作る → 渡す → 読み込む」が一巡するまで
+    次を作らない(溜まると、どの束の答えなのかが分からなくなる)。
+    """
+    collect.require_enabled()
+    meta = await build_handoff(name, request.app.state.sources, (sweep or "").strip())
+    return {"name": name, **meta, "note": handoff.PASTE_NOTE}
+
+
+@app.post("/v1/collect/{name}/handoff/answer")
+async def collect_handoff_answer(request: Request, name: str) -> dict:
+    """持ち帰った答えを読み込み、**焼く取り込みを 1 本起こす**。
+
+    本文は JSON でもテキストでもよい(`collect.parse_response` が前置きや
+    ```json の囲みごと拾う)。**読めた件数が 0 なら断る** —— 形が違う答えを
+    受け取って焼くと、その回は「何も返らなかった」として印と予定だけが進む。
+    """
+    collect.require_enabled()
+    collect.get(name)
+    if (meta := handoff.get(name)) is None:
+        raise HTTPException(404, {
+            "error": f"収集「{name}」に預かっている束がありません",
+            "hint": "先に束を作ってから、その答えを読み込んでください",
+        })
+    body = await request.body()
+    if len(body) > handoff.MAX_ANSWER_BYTES:
+        raise HTTPException(413, {
+            "error": f"答えが大きすぎます({len(body):,} バイト)",
+            "hint": f"上限は {handoff.MAX_ANSWER_BYTES:,} バイトです",
+        })
+    # **読めない答えは 400 で返す。** `parse_response` は AI の答えを読む口なので
+    # 形が違えば例外を上げる —— そのまま通すと 500 になり、押した人には
+    # 「Chiezo が壊れた」と見える(悪いのは持ち帰ったファイルの形)
+    try:
+        items, _cursor, note = collect.parse_response(body.decode("utf-8", "replace"))
+    except ValueError as e:
+        raise HTTPException(400, {
+            "error": "答えを読み取れませんでした",
+            "reason": str(e)[:200],
+            "hint": "束に書いてある形の JSON(items の配列)を、そのまま返させてください",
+        }) from None
+    if not items:
+        raise HTTPException(400, {
+            "error": "答えから 1 件も読み取れませんでした",
+            "hint": "束に書いてある形の JSON(items の配列)を、そのまま返させてください",
+        })
+    await asyncio.to_thread(handoff.answered, name, items, note)
+    started = start_collection_bake(name, meta.get("sweep") or None)
+    return {"ok": True, "items": len(items), "note": note, "started": started}
+
+
+@app.delete("/v1/collect/{name}/handoff")
+async def collect_handoff_drop(name: str) -> dict:
+    """預かっている束を捨てる(答えごと)。次の束を作れるようになる。"""
+    collect.require_enabled()
+    collect.get(name)
+    await asyncio.to_thread(handoff.drop, name)
+    return {"ok": True}
 
 
 # ---- 使う(ローカル LLM。既定では無効) ---------------------------------------
