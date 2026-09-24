@@ -429,7 +429,10 @@ def _fill_worker_queues() -> None:
             continue
         for sweep in collect.sweeps_of(item):
             ref = getattr(sweep, "worker", "")
-            if not ref or not sweep.enabled or sweep.on_demand:
+            # **手で回す回は積まない。** 走らせる中身(人が持ち帰った答え)は
+            # 読み込んだときにしか無いので、積むと空振りの取り込みが毎周走る
+            # (本番で、ワーカーの付いたまま手で回す回にした収集がそうなった)
+            if not ref or not sweep.enabled or sweep.on_demand or sweep.by_hand:
                 continue
             if collect.blocked_reason(item, sweep):
                 continue
@@ -487,6 +490,10 @@ def _no_longer_due(entry: dict) -> str:
         return "巡回が止まっています"
     if not getattr(sweep, "worker", ""):
         return "この巡回はワーカーに任せていません"
+    if sweep.by_hand:
+        # **積んだあとに手で回す回へ変えられることがある。** 残したまま流すと、
+        # 答えの無い取り込みが毎周走って 409 で落ちる
+        return "この巡回は手で回します"
     return collect.blocked_reason(item, sweep)
 
 

@@ -82,6 +82,53 @@ class TestItIsNeverAskedToRunByItself:
     揃うのは読み込んだときだけなので、他の道から呼ばれると空振りする。
     """
 
+    def test_a_worker_is_dropped_from_it(self, state_env):
+        """**手で回す回にワーカーは持たせない。** 持たせると待ち行列に積まれ、
+        答えの無い取り込みが毎周走って 409 で落ちる(本番でそうなった)。"""
+        from app import collect
+
+        collect.create(name="tazuna_meals", description="", prompt="集めて",
+                       interval_minutes=60)
+        collect.update("tazuna_meals", enabled=True, sweeps=[
+            {"name": "手で調べる", "by_hand": True, "worker": "整理用ワーカー"},
+        ])
+        [sweep] = collect.sweeps_of(collect.get("tazuna_meals"))
+
+        assert sweep.by_hand
+        assert sweep.worker == ""
+
+    def test_the_backend_select_cannot_give_it_one_either(self, state_env):
+        """外のアプリは相手の欄でワーカーを名指しする(`/v1/ai/backends`)。"""
+        from app import collect, workers
+
+        collect.create(name="tazuna_meals", description="", prompt="集めて",
+                       interval_minutes=60)
+        collect.update("tazuna_meals", enabled=True, sweeps=[
+            {"name": "手で調べる", "by_hand": True,
+             "backend": workers.option_for("w-1a2b3c4d")},
+        ])
+        [sweep] = collect.sweeps_of(collect.get("tazuna_meals"))
+
+        assert sweep.worker == ""
+
+    def test_it_is_never_queued_for_a_worker(self, state_env, monkeypatch):
+        """積む段でも弾く —— 定義を直す前に積まれたぶんが残っていても流さない。"""
+        from app import collect, main, workers
+
+        collect.create(name="tazuna_meals", description="", prompt="集めて",
+                       interval_minutes=60)
+        collect.update("tazuna_meals", enabled=True, sweeps=[
+            {"name": "手で調べる", "by_hand": True},
+        ])
+        # 手で回す回へ変える前に積まれた 1 本(定義からはワーカーが消えている)
+        workers.save([workers.Worker("整理用", (workers.Step("codex"),), id="w-1a2b3c4d")])
+        workers.enqueue("w-1a2b3c4d", "tazuna_meals", "手で調べる",
+                        "2026-09-24T00:00:00+00:00")
+        main._fill_worker_queues()
+        main._drop_stale_from_queues()
+
+        assert workers.queued("w-1a2b3c4d") == []
+
     def test_a_focus_does_not_land_on_it(self, state_env):
         """割り込みは人が待っている場面 —— その場で AI に聞ける回へ倒す。"""
         from app import collect

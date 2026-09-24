@@ -854,7 +854,15 @@ def normalize_sweeps(raw) -> list[dict]:
         if not name or name in seen:
             continue
         seen.add(name)
-        out.append({**item, "name": name, **_worker_picked(item)})
+        made = {**item, "name": name, **_worker_picked(item)}
+        if made.get("by_hand"):
+            # **手で回す回にワーカーは持たせない。** 渡す先はそのときの枠で決まる
+            # 仕組みなのに、この回は AI へ投げない —— 持たせると**ワーカーの
+            # 待ち行列に積まれ、答えの無い取り込みが毎周走る**(本番で、
+            # ワーカーを選んだままの巡回を手で回す回へ変えてそうなった)。
+            # **相手とモデルも落とす**(機械で引く回と同じ理由で、読まれない)
+            made.update(worker="", backend=None, model=None, effort=None)
+        out.append(made)
     return out
 
 
