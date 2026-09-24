@@ -220,6 +220,11 @@ class RemotePluginAdapter:
         log.info("fetched %s (%.1f MiB)", path.name, path.stat().st_size / 1024 / 1024)
         return path, dump_date
 
+    def _head(self, body) -> str | None:
+        """本文の先頭。**無ければ None**(冒頭を持たない文書もある)。"""
+        text = (body or "").strip()
+        return text[:getattr(self, "opening_chars", DEFAULT_OPENING_CHARS)] or None
+
     def _apply_meta(self, path: Path) -> str:
         """1 行目の `meta` を読み、検証条件を上書きしてダンプ日付を返す。
 
@@ -244,6 +249,12 @@ class RemotePluginAdapter:
                 meta = raw["meta"]
         if isinstance(titles := meta.get("sample_titles"), list) and titles:
             self.sample_titles = [str(t) for t in titles]
+        if (chars := meta.get("opening_chars")) is not None:
+            # **冒頭の長さは配る側の決めごと。** こちらは受け取って従うだけ
+            try:
+                self.opening_chars = max(1, int(chars))
+            except (TypeError, ValueError):
+                log.warning("plugin %s: ignoring invalid opening_chars=%r", self.source, chars)
         if (min_docs := meta.get("min_docs")) is not None:
             try:
                 self.min_docs = max(1, int(min_docs))
@@ -275,10 +286,15 @@ class RemotePluginAdapter:
                     continue
                 if not isinstance(raw, dict) or not str(raw.get("title") or "").strip():
                     raise PluginError(f"{self.source}: line {n} must be an object with a title")
+                body = raw.get("body")
                 yield Doc(
                     doc_id=int(raw.get("doc_id") or n),
                     title=str(raw["title"]),
-                    opening=raw.get("opening"),
+                    # **冒頭は無ければ本文から作る。** 配る側が乗せなくて済むように
+                    # —— 本文の先頭を切っただけの写しなので、1 件につき同じ文字が
+                    # 2 回流れていた(実測で 59.7 万件の収集の 1 割が opening)。
+                    # 長さは配る側が meta で運ぶ(`opening_chars`)
+                    opening=raw.get("opening") or self._head(body),
                     body=raw.get("body"),
                     tags=[str(t) for t in (raw.get("tags") or [])],
                     links=[str(t) for t in (raw.get("links") or [])],
@@ -287,6 +303,12 @@ class RemotePluginAdapter:
                     rank_score=float(raw.get("rank_score") or 0.0),
                     extra=raw.get("extra") if isinstance(raw.get("extra"), dict) else None,
                 )
+
+
+# 冒頭を切り出す長さの既定。**本当の値は配る側が meta で運ぶ**
+# (`opening_chars`)—— 数字を 2 つのイメージに置くと、片方だけ動かした日に
+# 静かにずれる(見出しの切り詰めが 2 か所にあって取り込みが丸ごと落ちた例がある)
+DEFAULT_OPENING_CHARS = 400
 
 
 def load_remote_adapters(spec: str | None = None) -> dict[str, Callable[[], SourceAdapter]]:

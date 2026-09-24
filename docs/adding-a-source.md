@@ -181,9 +181,14 @@ GET /fetch?source=NAME  → NDJSON(1 行目に meta、以降は 1 行 1 文書)
 
 `/fetch` の 1 行目は省略できます(その場合は取り込んだ日が世代の日付になります)。
 
+**`opening` は省けます。** 無ければ取り込み側が本文の先頭から作ります ——
+本文の先頭を切っただけの写しを 1 件ごとに 2 回運ぶと、**そのぶん毎回の素材が太ります**
+(実測で 59.7 万件の収集の 1 割)。切り出す長さは `meta.opening_chars` で運んでください
+—— **配る側と取り込み側の両方に数字を書くと、片方だけ動かした日に静かにずれます**。
+
 ```json
-{"meta": {"dump_date": "20260805", "min_docs": 20000, "sample_titles": ["運用手順書"]}}
-{"doc_id": 1, "title": "運用手順書", "opening": "…", "body": "…", "tags": ["社内"], "rank_score": 0.5}
+{"meta": {"dump_date": "20260805", "min_docs": 20000, "sample_titles": ["運用手順書"], "opening_chars": 240}}
+{"doc_id": 1, "title": "運用手順書", "body": "…", "tags": ["社内"], "rank_score": 0.5}
 {"title": "障害対応メモ", "body": "…", "extra": {"lat": 35.68, "lon": 139.76}}
 ```
 

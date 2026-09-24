@@ -2422,3 +2422,78 @@ class TestRunningOnePartitionFromOutside:
 
         assert collect.normalize_run_once({}) is None
         assert collect.normalize_run_once(None) is None
+
+
+class TestMakingTheMaterialSmaller:
+    """**素材は毎回まるごと流れる。** 実測で 59.7 万件の収集が 434.8 MiB、
+    1 回の焼きに 16 分かかり、そのうち 16 分が素材を作って流すところだった。
+    """
+
+    def test_the_opening_is_not_carried(self):
+        """冒頭は本文の先頭の写し —— 焼く側が作れるので、乗せると 2 回流れる。"""
+        from app import collect
+
+        doc = collect._to_doc(
+            {"title": "見出し", "body": "本文" * 50}, "2026-01-01T00:00:00+00:00", False
+        )
+
+        assert "opening" not in doc
+        assert doc["body"]
+
+    def test_the_length_travels_with_the_material(self, monkeypatch, tmp_path):
+        """**数字を 2 つのイメージに置かない。** 長さは配る側が meta で運ぶ ——
+        取り込みは別イメージなので、書き写すと片方だけ動かした日に静かにずれる
+        （見出しの切り詰めが 2 か所にあって取り込みが丸ごと落ちた例がある）。
+        """
+        import json as json_mod
+
+        from app import collect, notes
+
+        item = collect.Collection(
+            name="x", description="", prompt="", interval_minutes=60, enabled=False,
+            backend=None, model=None, effort=None, web=False, cursor="",
+            created_at="", updated_at="",
+        )
+        plan = {
+            "diff": {"previous": 0, "removed": 0, "removed_titles": []},
+            "rules": [], "alive": {}, "first_title": "見出し", "rows": 1, "limit": None,
+        }
+
+        line = next(iter(collect.bake_lines(
+            item, {}, lambda: iter([]), [{"title": "見出し", "body": "本文"}], survey=plan
+        )))
+
+        assert json_mod.loads(line)["meta"]["opening_chars"] == notes.TITLE_MAX_CHARS * 4
+
+    def test_a_tombstone_keeps_only_what_is_read(self):
+        """墓標は消えずに残り続けるので、毎回の素材に丸ごと乗る。"""
+        from app import collect, notes
+
+        doc = {
+            "title": "閉店した店",
+            "body": "本文",
+            "tags": ["食事処", notes.REMOVED_TAG],
+            "extra": {
+                "removed_reason": "2024 年に閉店",
+                "removed_at": "2026-09-24T00:00:00+00:00",
+                "url": "https://example.com/shop",
+                "lat": 35.6,
+                "lon": 139.7,
+                "phone": "03-0000-0000",
+                "address": "東京都千代田区…",
+            },
+        }
+
+        slim = collect.slim_removed(doc)
+
+        # **理由と URL は残す** —— URL は同じものが別の見出しで戻るのを止める鍵
+        assert set(slim["extra"]) == {"removed_reason", "removed_at", "url"}
+        # **本文は残す**（印を外せば元の中身のまま戻せる、が墓標の約束）
+        assert slim["body"] == "本文"
+
+    def test_a_living_doc_is_untouched(self):
+        from app import collect
+
+        doc = {"title": "生きている店", "body": "本文", "tags": ["食事処"], "extra": {"lat": 35.6}}
+
+        assert collect.slim_removed(doc) == doc

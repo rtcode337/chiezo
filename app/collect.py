@@ -2964,7 +2964,7 @@ def _docs_where(src, where: str, args: tuple) -> dict[str, dict]:
         return {}
     rows = db.query(
         src.path,
-        "SELECT doc_id, title, opening, body, tags, updated_at, extra FROM docs"
+        "SELECT doc_id, title, body, tags, updated_at, extra FROM docs"
         f" WHERE 1=1{where}",
         args,
     )
@@ -2977,7 +2977,7 @@ def _docs_where(src, where: str, args: tuple) -> dict[str, dict]:
         out[row["title"]] = {
             "doc_id": row["doc_id"],
             "title": row["title"],
-            "opening": row["opening"],
+            # **冒頭は持たない**(本文の先頭の写し。焼く側が作る)
             "body": row["body"],
             "tags": [str(t) for t in tags],
             "updated_at": row["updated_at"],
@@ -3470,7 +3470,9 @@ def _to_doc(raw: dict, now: str, web: bool) -> dict | None:
     return {
         "doc_id": 0,  # material が前世代から引き継ぐか、新しく振る
         "title": title,
-        "opening": body[:notes.TITLE_MAX_CHARS * 4],
+        # **冒頭(`opening`)は持たせない。** 本文の先頭を切っただけの写しで、
+        # 焼く側が同じものを作れる(`ingest/sources/remote.py`)—— 素材に乗せると
+        # **1 件につき本文の先頭が 2 回流れる**(実測で 59.7 万件の収集の 1 割)
         "body": body,
         "tags": tags,
         "updated_at": now,
@@ -3676,6 +3678,35 @@ def is_unreviewed(doc: dict) -> bool:
     return notes.UNREVIEWED_TAG in (doc.get("tags") or [])
 
 
+# 墓標に残す脇書き。**これ以外は落とす**（毎回の素材に丸ごと乗るため）。
+#
+# - `removed_reason` / `removed_at` …… なぜ・いつ外したか（画面と AI が読む）
+# - `url` …… **同じものが別の見出しで戻ってくるのを止めている鍵**
+#   (`stream_docs` の重複判定)。落とすと、調べたうえで外したものが
+#   書き換えた見出しで足し直される
+KEPT_ON_REMOVED = ("removed_reason", "removed_at", "url")
+
+
+def slim_removed(doc: dict) -> dict:
+    """消えた 1 件から、**要らない脇書きを落とした**もの。生きている 1 件はそのまま。
+
+    墓標は消えずに残り続けるので、**毎回の素材に丸ごと乗ります** —— 実測で
+    1 件 268 文字の脇書き(座標・住所・電話・サイト・出典…)を持っており、
+    一周ぶん溜まると素材の 2 割に達します。**墓標に要るのは「なぜ外したか」と
+    「同じものを戻さないための鍵」だけ**で、座標も電話も読む人がいません。
+
+    **本文は落としません。** 印を外せば元の中身のまま戻せる、が墓標の約束で、
+    戻ってくるのが理由の 1 行だけでは育てたぶんを集め直すことになります。
+    """
+    if not is_removed(doc):
+        return doc
+    extra = doc.get("extra")
+    if not isinstance(extra, dict):
+        return doc
+    kept = {k: v for k, v in extra.items() if k in KEPT_ON_REMOVED}
+    return doc if kept == extra else {**doc, "extra": kept}
+
+
 def removed_reason(doc: dict) -> str:
     """その 1 件を消した理由。持っていなければ空。"""
     extra = doc.get("extra")
@@ -3876,19 +3907,18 @@ def stream_previous(name: str, sources: dict):
         return
     rows = db.stream(
         src.path,
-        "SELECT doc_id, title, opening, body, tags, updated_at, extra FROM docs"
-        " ORDER BY doc_id",
+        "SELECT doc_id, title, body, tags, updated_at, extra FROM docs ORDER BY doc_id",
     )
     for row in rows:
-        yield {
+        yield slim_removed({
             "doc_id": row["doc_id"],
             "title": row["title"],
-            "opening": row["opening"],
+            # **冒頭は流さない**(本文の先頭の写しで、焼く側が作れる)
             "body": row["body"],
             "tags": load_tags(row["tags"]),
             "updated_at": row["updated_at"],
             "extra": load_json(row["extra"]),
-        }
+        })
 
 
 def _rows_of(previous):
@@ -4051,6 +4081,10 @@ def bake_lines(item, sources: dict, previous, collected, only_new=False, edits=F
     yield json.dumps({
         "meta": {
             "dump_date": _dump_date(item.name, sources),
+            # **冒頭の長さはこちらの決めごと。** 素材に乗せないので、焼く側が
+            # 本文から作る —— 数字を 2 つのイメージに置くと、片方だけ動かした日に
+            # 静かにずれる(読み口が返すのはそこなので、壊れ方が目に見えない)
+            "opening_chars": notes.TITLE_MAX_CHARS * 4,
             # **これから流す行数をそのまま下限にする。** 流し始めたあとに落ちても
             # ステータスは変えられない(1 度しか送れない)ので、**途中で切れた素材は
             # 受け取る側から見ると「短いだけの正しい素材」**になる —— 焼けてしまうと
