@@ -2345,14 +2345,21 @@ def admin_memory(request: Request):
         f"<td>{esc(s.dump_date or '')}</td>"
         f"<td>{esc(s.built_at or '')}</td>"
         f"<td>{schema_cell(s.schema_version)}</td>"
+        # **2 段に組む。** 上の段は世代を作り直す・消す口(再構築 → 削除)、
+        # 下の段は世代を張り替える口と、張り替える先。1 列に縦積みしていた頃は、
+        # 「1 つ前: 日時」がボタンの間に挟まって途中で折り返し、どれがどの口か読めなかった
         f"<td>"
+        f'<div class="source-actions">'
         f'<form class="init-form" method="post" action="/admin/rebuild/{esc(s.name)}" '
         f"onsubmit=\"return confirm('{esc(s.name)} を再構築します。ダンプの取得からやり直すため"
         f"時間がかかります(構築中も現行 DB での配信は続きます)。よろしいですか?')\">"
         f'<button type="submit"{disabled}>再構築</button>'
-        f"</form>"
-        f"{_rollback_cell(s, '/admin/memory#long-term')}"
+        f"</form> "
         f"{_delete_source_cell(s, _collection_using(s.name), disabled)}"
+        f"</div>"
+        # **下の段は折り返させない。** 列が狭いと「1 つ前: 日時」がボタンの下へ落ち、
+        # 横に並べた意味が消える(列のほうを広げる)
+        f'<div class="source-actions nowrap">{_rollback_cell(s, "/admin/memory#long-term")}</div>'
         f"</td>"
         f"</tr>"
         for s in sorted(long_term.values(), key=lambda s: s.name)
@@ -2927,9 +2934,9 @@ def _delete_source_cell(src: Source, used_by: str, disabled: str) -> str:
             f' <a href="/admin/collect/{esc(quote(used_by))}">収集の面へ</a>'
             if used_by else ""
         )
-        return f'<br><span class="muted">{esc(reason)}</span>{where}'
+        return f'<span class="muted">{esc(reason)}</span>{where}'
     if not TRIGGER_URL:
-        return '<br><span class="muted">取り込みが設定されていないので消せません</span>'
+        return '<span class="muted">取り込みが設定されていないので消せません</span>'
     ask = (
         f"{src.name} を消します。世代も素材も消え、取り消せません"
         f"(入れ直すには取り込みからやり直しになります)。続けるなら名前を入力"
@@ -2953,9 +2960,9 @@ def _rollback_cell(src: Source, back: str) -> str:
     """
     before = registry.previous_generation(src.path)
     if before is None:
-        return '<br><span class="muted">戻せる世代はありません</span>'
+        return '<span class="muted">戻せる世代はありません</span>'
     if not TRIGGER_URL:
-        return '<br><span class="muted">取り込みが設定されていないので戻せません</span>'
+        return '<span class="muted">取り込みが設定されていないので戻せません</span>'
     label = _generation_label(registry.generation_stamp(before))
     ask = (
         f"{src.name} を 1 つ前の世代({label})へ戻します。"
@@ -2967,7 +2974,9 @@ def _rollback_cell(src: Source, back: str) -> str:
         f" onsubmit=\"return confirm('{esc(ask)}')\">"
         f'<input type="hidden" name="back" value="{esc(back)}">'
         f'<button type="submit">1 つ前へ戻す</button></form>'
-        f'<br><span class="muted">1 つ前: {label}</span>'
+        # **ボタンの横に置き、日時は途中で割らない**(`nowrap`)—— 下に回すと
+        # どのボタンの話なのかが離れ、日付が「2026-07-」と「24」に泣き別れた
+        f' <span class="muted nowrap">1 つ前: {label}</span>'
     )
 
 
@@ -3932,7 +3941,7 @@ def admin_collect_detail(
 {'／ ' + str(item.keep_days) + ' 日ぶんを持つ' if item.keep_days else ''}
 <br>長期記憶: {baked}
 / 状態: {'有効' if item.enabled else '<span class="stale">止まっている</span>'}
-{_rollback_cell(src, f'/admin/collect/{quote(name)}') if src is not None else ''}</p>
+{'<br>' + _rollback_cell(src, f'/admin/collect/{quote(name)}') if src is not None else ''}</p>
 <table>
 <thead>
 <tr><th>巡回</th><th>頼む相手</th><th>間隔</th>

@@ -370,6 +370,8 @@ PAGE_STYLE = """
   .meter-fill { display: block; height: 100%; background: #5560E0; }
   .meter-fill.mid { background: #d9a400; }
   .meter-fill.high { background: #c0392b; }
+  /* ソースの行の操作。上の段(再構築・削除)と下の段(1 つ前へ戻す)の間を少し空ける */
+  .source-actions + .source-actions { margin-top: 0.3rem; }
   /* 途中で折り返させない語のまとまり(使用率と「(残り …)」) */
   .nowrap { white-space: nowrap; }
   /* 収集のプロンプトは、まず**読む形**で見せる(入力欄が並ぶと中身を確かめにくい)。
