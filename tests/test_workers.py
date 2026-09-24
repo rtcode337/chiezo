@@ -1208,6 +1208,51 @@ class TestTheEditorOnTheScreen:
         assert "'backend'.length" in pages.BACKEND_PICKER_SCRIPT
 
 
+class TestPressingEnterInAField:
+    """**エンターで起きるのは保存**(段の入れ替えではない)。
+
+    ブラウザは欄で改行キーを押されたとき、**並びの中でいちばん先にある submit**
+    を送る。段を動かす ↑↓ が同じフォームに居るので、何もしないとそちらが選ばれた
+    —— 名前を直してエンターを押しただけで、保存と一緒に AI の並びが 1 つ
+    入れ替わる(押した人には名前を変えただけに見えるので、後から気づけない)。
+    """
+
+    def _form(self, *steps: workers.Step) -> str:
+        from app.views import admin, ai_workers
+
+        return ai_workers._worker_form(
+            workers.Worker("精査", tuple(steps)),
+            (admin._backend_select, admin._model_select),
+        )
+
+    def test_the_first_submit_is_the_save(self, enabled):
+        html = self._form(workers.Step("codex"), workers.Step("claude"))
+
+        # ↑↓ は出ている(出ていなければこの検査は何も守らない)
+        assert 'name="step_move"' in html
+        assert html.index('type="submit"') < html.index('name="step_move"')
+
+    def test_the_default_one_is_not_shown(self, enabled):
+        """**目に出すボタンは今までどおり 1 つ。** 同じものが 2 つ並ぶと、
+        どちらを押せばよいのか読めない。"""
+        from app.views import ai_workers
+
+        html = self._form(workers.Step("codex"))
+
+        assert html.count("default-submit") == 1
+        assert 'tabindex="-1"' in html
+        assert html.count(f">{ai_workers.SAVE_LABEL}<") == 2
+
+    def test_the_style_hides_it_without_display_none(self, enabled):
+        """`display: none` にすると、送り先として扱わないブラウザがある。"""
+        from app import pages
+
+        style = pages.PAGE_STYLE[pages.PAGE_STYLE.index(".default-submit"):][:300]
+
+        assert "clip-path" in style
+        assert "display: none" not in style
+
+
 class TestPickingAWorkerAsTheBackend:
     """ワーカーは**相手と同じ欄**で選ぶ。
 

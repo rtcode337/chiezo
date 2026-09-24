@@ -25,6 +25,11 @@ router = APIRouter()
 SECTION_ANCHOR = "ai-workers"
 BACK_TO_SECTION = f"/admin/collect#{SECTION_ANCHOR}"
 
+# 保存のボタンの文言。**2 か所で使う** —— 目に見えるほうと、エンターの送り先に
+# する見えないほう(`_default_submit`)。書き分けると、片方だけ直したときに
+# 「押したボタン」と「エンターで起きること」が食い違って見える。
+SAVE_LABEL = "このワーカーを保存"
+
 # 1 つのワーカーに出す段の数(いま入っているぶん + 足すための空き 1 つ)。
 # **上限を持つのは画面の都合だけ** —— 並びは配列なので、定義側に制限は無い。
 MAX_STEPS = 6
@@ -94,6 +99,11 @@ def _move_step_html(index: int, step: workers.Step | None, last: int) -> str:
     (押しても何も起きないボタンになる)。同じフォームなら、**書きかけの欄も
     一緒に保存してから動く** —— 動かすために保存し直す手間も要らない。
 
+    **そのぶん、エンターの送り先を奪わないようにする**(`_default_submit`)。
+    欄で改行キーを押したときに送られるのは**並びの中でいちばん先にある submit**
+    なので、何もしないとここが選ばれる —— 名前を直してエンターを押しただけで、
+    保存と一緒に段が 1 つ入れ替わっていた(押した人には名前を変えただけに見える)。
+
     **端では出さない**(押せないボタンを置かない、の流儀)。空の段(まだ相手を
     選んでいない末尾の 1 行)にも出さない —— 動かす中身が無い。
     """
@@ -110,6 +120,22 @@ def _move_step_html(index: int, step: workers.Step | None, last: int) -> str:
         f' value="down:{index}" title="下へ">↓</button>'
     )
     return up + down
+
+
+def _default_submit(label: str) -> str:
+    """欄でエンターを押したときに送られるボタン。**目には出さないが、先頭に置く。**
+
+    ブラウザは**並びの中でいちばん先にある submit** を送る。このフォームには
+    段を動かす ↑↓ が混ざっていて、置かないとそちらが選ばれる ——
+    **名前を直してエンターを押しただけで、AI の並びが 1 つ入れ替わる**
+    (押した人には名前を変えただけに見えるので、後から気づけない)。
+
+    **`display: none` にはしない**(送り先として扱わないブラウザがある)。
+    タブでは止まらないようにして、読み上げにも出さない —— 下にある
+    「保存」と同じ働きのものが 2 つ読み上げられても混乱するだけなので。
+    """
+    return (f'<button type="submit" class="default-submit" tabindex="-1"'
+            f' aria-hidden="true">{esc(label)}</button>')
 
 
 def _worker_form(worker: workers.Worker | None, selects, running: str = "") -> str:
@@ -133,6 +159,8 @@ def _worker_form(worker: workers.Worker | None, selects, running: str = "") -> s
     take = worker.per_run if worker else workers.DEFAULT_PER_RUN
     return (
         f'<form method="post" action="/admin/ai/workers" class="collect-form">'
+        # **エンターでは保存する**(段の ↑↓ に送り先を奪わせない)
+        f'{_default_submit(SAVE_LABEL)}'
         f'<input type="hidden" name="worker_key" value="{esc(key)}">'
         f'<p><label>名前<br><input name="worker_name" value="{esc(name)}"'
         f' placeholder="精査"></label> <span class="muted">{esc(hint)}</span></p>'
@@ -146,7 +174,7 @@ def _worker_form(worker: workers.Worker | None, selects, running: str = "") -> s
         "(取り込みは同時に 1 本しか動かないため)。流し切るまで、そのワーカーは"
         "次の起動をしません。</p>"
         f"{''.join(rows)}"
-        '<p><button type="submit">このワーカーを保存</button></p></form>'
+        f'<p><button type="submit">{esc(SAVE_LABEL)}</button></p></form>'
         + (_queue_html(worker, running) if worker else "")
     )
 

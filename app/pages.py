@@ -222,6 +222,13 @@ PAGE_STYLE = """
   /* ワーカーの段を 1 つ上下へ動かす印(`views/ai_workers.py`)。**行から浮かせない**
      —— 段の並びは「詰まったら次へ」の順そのもので、相手の名前の隣が読む場所 */
   .step-move { font-size: .8rem; padding: .05rem .35rem; margin-left: .2rem; }
+  /* 欄でエンターを押したときの送り先にするだけのボタン。**目には出さない。**
+     ブラウザは並びの中でいちばん先にある submit を送るので、置かないと
+     段を動かす ↑↓ がそれになる（名前を直しただけのつもりで並びが入れ替わる）。
+     display:none にはしない —— 送り先として扱わないブラウザがある */
+  .default-submit { position: absolute; width: 1px; height: 1px; padding: 0;
+                    border: 0; margin: -1px; overflow: hidden; clip-path: inset(50%);
+                    white-space: nowrap; }
   .muted { color: #666; font-size: 0.85rem; }
   .pager { display: flex; gap: 1rem; align-items: baseline; margin-top: 1rem; }
   /* 玄関の使用量の表に添える 1 行（取り直す口と、全部の相手への入口）。
