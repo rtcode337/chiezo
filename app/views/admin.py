@@ -491,7 +491,7 @@ def _backend_select(
     """
     enabled = answer.backend_names()
     names = list(enabled)
-    if current and current not in names and not workers.named_in(current or ""):
+    if current and current not in names and not workers.ref_in(current or ""):
         names.append(current)
     options = [f'<option value="">{esc(empty_label)}</option>']
     for name in names:
@@ -510,20 +510,26 @@ def _worker_options(current: str) -> str:
     """相手のセレクトに並べるワーカーのぶん。**1 本も無ければ何も出さない**
     (空の見出しだけが並ぶと、設定し忘れているように見える)。
 
-    **いま名指しされている名前が定義に無くても残す**(相手と同じ理由)——
+    **いま名指しされているものが定義に無くても残す**(相手と同じ理由)——
     落とすと、保存し直した瞬間に既定へ倒れて、何を指していたのかが画面から消える。
+
+    **値は id、札は名前。** 名前を値にしていた頃は、ワーカーを改名した瞬間に
+    保存済みの巡回が指し先を失っていた(落ちるのではなく、巡回自身に書いてある
+    相手で黙って走り出す)。
     """
     try:
-        names = [w.name for w in workers.load()]
+        found = [(w.key, w.name) for w in workers.load()]
     except ValueError:
-        names = []
-    if (picked := workers.named_in(current)) and picked not in names:
-        names.append(picked)
-    if not names:
+        found = []
+    if (picked := workers.ref_in(current)) and not any(key == picked for key, _ in found):
+        # **消えたワーカーは鍵のまま出す** —— 名前は引けないが、
+        # 何かを指していたことは読める
+        found.append((picked, picked))
+    if not found:
         return ""
     out = []
-    for name in names:
-        value = workers.option_for(name)
+    for key, name in found:
+        value = workers.option_for(key)
         selected = " selected" if value == current else ""
         out.append(f'<option value="{esc(value)}"{selected}>{esc(name)}</option>')
     return f'<optgroup label="ワーカー(枠を見て振り替える)">{"".join(out)}</optgroup>'
@@ -594,8 +600,10 @@ def _backend_label(item) -> str:
     # **ワーカーに頼む回は、そう出す。** 相手の名前を出すと、その 1 つに
     # 固定で頼んでいるように読める —— 実際に渡る先は毎回その場の枠で決まる
     if worker := getattr(item, "worker", ""):
+        # **出すのは名前**(巡回が持っているのは id なので、そのままだと読めない)
         return (
-            f'{esc(worker)}<br><span class="muted">ワーカー(枠を見て振り替える)</span>'
+            f'{esc(workers.label_for(worker))}<br>'
+            '<span class="muted">ワーカー(枠を見て振り替える)</span>'
         )
     spec = providers.get(item.backend) if item.backend else None
     label = (
@@ -3326,8 +3334,8 @@ async def admin_collect_partition_run(name: str, request: Request):
         "partitions": keys,
         # **相手とワーカーは同じ欄で選ぶ**(画面の流儀。両方選べると、
         # どちらが効くのか読めなくなる)
-        "worker": workers.named_in(chosen),
-        "backend": "" if workers.named_in(chosen) else chosen,
+        "worker": workers.ref_in(chosen),
+        "backend": "" if workers.ref_in(chosen) else chosen,
         "model": str(form.get("model") or ""),
     })
     # **1 つだけなら、その区画の面へ戻す**(中身を見に来ているので)。
@@ -3466,7 +3474,7 @@ def _parse_sweeps_form(form) -> list[dict]:
         sweep = {
             "name": name,
             "enabled": bool(at("enabled")),
-            "worker": workers.named_in(at("backend")),
+            "worker": workers.ref_in(at("backend")),
         }
         # **時計を持たない巡回**(割り込み用)。定時には走らず、頼まれたときだけ動く。
         # 名指しされたときだけにする —— 欄を持たないフォームから保存されたときに、

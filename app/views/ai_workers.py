@@ -115,6 +115,9 @@ def _move_step_html(index: int, step: workers.Step | None, last: int) -> str:
 def _worker_form(worker: workers.Worker | None, selects, running: str = "") -> str:
     backend_select, model_select = selects
     name = worker.name if worker else ""
+    # **直す相手は id で指す。** 名前で指していた頃は、名前を書き換えた保存が
+    # 「別のワーカーを足す」になりかねず、指し先も巡回から外れた
+    key = worker.key if worker else ""
     steps = list(worker.steps) if worker else []
     # **空の段を 1 つ足して出す。** 足すのに押す手数を要らなくするため
     rows = [
@@ -130,7 +133,7 @@ def _worker_form(worker: workers.Worker | None, selects, running: str = "") -> s
     take = worker.per_run if worker else workers.DEFAULT_PER_RUN
     return (
         f'<form method="post" action="/admin/ai/workers" class="collect-form">'
-        f'<input type="hidden" name="worker_key" value="{esc(name)}">'
+        f'<input type="hidden" name="worker_key" value="{esc(key)}">'
         f'<p><label>名前<br><input name="worker_name" value="{esc(name)}"'
         f' placeholder="精査"></label> <span class="muted">{esc(hint)}</span></p>'
         f'<p><label>起きる間隔(分。{workers.MIN_INTERVAL_MINUTES} 以上)<br>'
@@ -167,14 +170,14 @@ def _queue_html(worker: workers.Worker, running: str = "") -> str:
     **畳まない。** 巡回の表と同じで、動いているかを確かめに来る場所なので、
     開かないと読めないのでは表の値打ちが消える。
     """
-    last = jst.parse(workers.last_at(worker.name))
+    last = jst.parse(workers.last_at(worker.key))
     when_last = esc(jst.format(last)) if last else '<span class="muted">まだ</span>'
     if last is None:
         when_next = '<span class="muted">いますぐ</span>'
     else:
         when_next = esc(jst.format(last + timedelta(minutes=worker.interval_minutes)))
-    waiting = workers.queued(worker.name)
-    running = workers.claim_ready(worker.name)
+    waiting = workers.queued(worker.key)
+    running = workers.claim_ready(worker.key)
     if not waiting:
         rows = '<tr><td colspan="2" class="muted">待っているものはありません</td></tr>'
     else:
@@ -225,7 +228,7 @@ def _wake_form(worker: workers.Worker, waiting: bool, running: str = "") -> str:
         )
     return (
         f'<form class="init-form" method="post" action="/admin/ai/workers/wake">'
-        f'<input type="hidden" name="worker_name" value="{esc(worker.name)}">'
+        f'<input type="hidden" name="worker_id" value="{esc(worker.key)}">'
         f'<button type="submit"'
         f' title="間隔を待たずに、待ち行列の先頭を 1 本流します">今すぐ起こす</button>'
         "</form>"
@@ -292,7 +295,7 @@ async def wake_worker(request: Request):
     from app.main import wake_worker as wake
 
     form = await request.form()
-    wake(str(form.get("worker_name") or "").strip())
+    wake(str(form.get("worker_id") or "").strip())
     return RedirectResponse(BACK_TO_SECTION, status_code=303)
 
 
@@ -317,9 +320,9 @@ def _moved_steps(steps: tuple, raw: str) -> tuple:
 async def save_worker(request: Request):
     """ワーカー 1 つぶんを保存する。**その 1 つだけ**を書き換える。
 
-    **名前を消すと、そのワーカーが消える**(足す口も消す口も名前 1 つ)。
-    名前を書き換えれば改名になる —— 巡回側の名指しは追いかけない(名前で結んで
-    いるので、改名したら巡回の指定も直すことになる)。
+    **どれを直すかは id で決まる**(`worker_key`。空なら新しく足す)。
+    **名前を消すと、そのワーカーが消える。** 名前を書き換えれば改名で、
+    **巡回の名指しも待ち行列もそのまま**動く —— 結んでいるのは id のほう。
     """
     form = await request.form()
     key = str(form.get("worker_key") or "").strip()

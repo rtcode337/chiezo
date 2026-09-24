@@ -853,7 +853,7 @@ def _worker_picked(raw: dict) -> dict:
     ここに 1 つ書いても**どの相手に対する指定なのかが決まらない**
     (モデルの名前は相手ごとに違う)。段ごとの指定はワーカーの側が持つ。
     """
-    if not (picked := workers.named_in(str(raw.get("backend") or ""))):
+    if not (picked := workers.ref_in(str(raw.get("backend") or ""))):
         return {}
     return {"worker": picked, "backend": None, "model": None, "effort": None}
 

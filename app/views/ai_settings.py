@@ -680,7 +680,7 @@ async def list_models(request: Request, backend: str = ""):
     # 選び直した拍子にここへ聞きに来る —— 404 で返すと、画面には何も起きないのに
     # 読み込みの失敗だけが残る。**空で答えるのが正しい**(渡る相手はそのときの枠で
     # 決まるので、モデルも考える量もここでは決められない)
-    if workers.named_in(backend):
+    if workers.ref_in(backend):
         return {"backend": backend, "models": [], "efforts": [], "bridge": False}
     name = answer.normalize_backend(backend)
     if name not in answer.backend_names():

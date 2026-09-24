@@ -214,16 +214,16 @@ def _worker_of(sweep) -> workers.Worker | None:
     綴りを間違えただけで無人の層が止まるより、走って控えに相手が残るほうがよい ——
     どちらで走ったかは変更履歴の相手の欄に出る。**理由はログに残す**。
     """
-    name = getattr(sweep, "worker", "")
-    if not name:
+    ref = getattr(sweep, "worker", "")
+    if not ref:
         return None
     try:
-        found = workers.get(name)
+        found = workers.get(ref)
     except ValueError:
         log.warning("worker definitions unreadable; falling back to the sweep's own backend")
         return None
     if found is None or not found.steps:
-        log.warning("worker %r not found (or empty); falling back to the sweep's own backend", name)
+        log.warning("worker %r not found (or empty); falling back to the sweep's own backend", ref)
         return None
     return found
 
@@ -395,15 +395,15 @@ def _fill_worker_queues() -> None:
         if not item.enabled:
             continue
         for sweep in collect.sweeps_of(item):
-            name = getattr(sweep, "worker", "")
-            if not name or not sweep.enabled or sweep.on_demand:
+            ref = getattr(sweep, "worker", "")
+            if not ref or not sweep.enabled or sweep.on_demand:
                 continue
             if collect.blocked_reason(item, sweep):
                 continue
             if not _due_for_queue(sweep, now):
                 continue
-            if workers.enqueue(name, item.name, sweep.name, _iso(now)):
-                log.info("queued %s/%s for worker %r", item.name, sweep.name, name)
+            if workers.enqueue(ref, item.name, sweep.name, _iso(now)):
+                log.info("queued %s/%s for worker %r", item.name, sweep.name, ref)
     _drop_stale_from_queues()
 
 
@@ -423,13 +423,13 @@ def _drop_stale_from_queues() -> None:
     except ValueError:
         return
     for worker in defined:
-        for entry in workers.queued(worker.name):
+        for entry in workers.queued(worker.key):
             if why := _no_longer_due(entry):
                 log.info(
                     "dropped %s/%s from worker %r: %s",
                     entry.get("collection"), entry.get("sweep"), worker.name, why,
                 )
-                workers.done(worker.name, entry["collection"], entry["sweep"])
+                workers.done(worker.key, entry["collection"], entry["sweep"])
 
 
 def _no_longer_due(entry: dict) -> str:
@@ -491,14 +491,14 @@ def _flush_one(worker, now: datetime, wake: bool = False) -> bool:
     うちに回しておきたい、が普通に起きる —— 次の起動まで待つと、待っているあいだに
     誰かが枠を食う。**起こした時刻は普通に控える**ので、そこから間隔を数え直す。
     """
-    batch = workers.queued(worker.name)
+    batch = workers.queued(worker.key)
     if not batch:
         return False
     # **いま流している塊が先。** 無ければ、起動の時刻が来ていれば拾う
-    if not workers.claim_ready(worker.name):
+    if not workers.claim_ready(worker.key):
         if not wake and not _worker_due(worker, now):
             return False
-        batch = workers.claim(worker.name, worker.per_run, _iso(now))
+        batch = workers.claim(worker.key, worker.per_run, _iso(now))
         if not batch:
             return False
     for entry in batch:
@@ -510,7 +510,7 @@ def _flush_one(worker, now: datetime, wake: bool = False) -> bool:
                 "skipped %s/%s on worker %r: %s",
                 entry["collection"], entry["sweep"], worker.name, why,
             )
-            workers.done(worker.name, entry["collection"], entry["sweep"])
+            workers.done(worker.key, entry["collection"], entry["sweep"])
             continue
         if workers.pick(worker) is None:
             # **どれも詰まっていたら流さない。** 塊はそのまま残るので、
@@ -522,14 +522,14 @@ def _flush_one(worker, now: datetime, wake: bool = False) -> bool:
             # 取り込みが混んでいる・巡回が消えた。**塊からは外す** ——
             # 消えた巡回を抱えたままだと、そのワーカーが二度と進まない
             if e.status_code == 404:
-                workers.done(worker.name, entry["collection"], entry["sweep"])
+                workers.done(worker.key, entry["collection"], entry["sweep"])
             return False
-        workers.done(worker.name, entry["collection"], entry["sweep"])
+        workers.done(worker.key, entry["collection"], entry["sweep"])
         return True
     return False
 
 
-def wake_worker(name: str) -> dict:
+def wake_worker(ref: str) -> dict:
     """ワーカーを**時計を待たずに起こす**(画面の「今すぐ起こす」)。
 
     **断る理由は書き分ける。** 押しても何も起きないときに「起きませんでした」
@@ -537,12 +537,14 @@ def wake_worker(name: str) -> dict:
     どちらなのかで次にすることが逆になる(積むのを待つ / 窓が明くのを待つ)。
     """
     try:
-        worker = workers.get(name)
+        worker = workers.get(ref)
     except ValueError as e:
         raise HTTPException(409, {"error": str(e)}) from None
     if worker is None:
-        raise HTTPException(404, {"error": f"ワーカー「{name}」がありません"})
-    if not workers.queued(name):
+        raise HTTPException(404, {"error": f"ワーカー「{ref}」がありません"})
+    # **人に見せるのは名前のほう**(鍵は機械が持ち回る値で、読む人に意味が無い)
+    name = worker.name
+    if not workers.queued(worker.key):
         raise HTTPException(409, {
             "error": f"ワーカー「{name}」の待ち行列は空です",
             "hint": "巡回の側が自分を積むまで、起こしても流すものがありません",
@@ -576,7 +578,7 @@ def ingest_busy() -> str:
 
 
 def _worker_due(worker, now: datetime) -> bool:
-    last = _parse_iso(workers.last_at(worker.name))
+    last = _parse_iso(workers.last_at(worker.key))
     if last is None:
         return True
     return now - last >= timedelta(minutes=max(worker.interval_minutes, 1))
@@ -856,18 +858,21 @@ async def _collect_items(
     return collected, cursor, " / ".join(notes)
 
 
-def _all_full(worker_name: str) -> dict:
+def _all_full(worker: str) -> dict:
+    """**人に見せる文には名前を出す**(巡回が持っているのは id なので、
+    そのまま書くと「ワーカー「w-1a2b3c4d」の…」になって誰のことか読めない)。"""
     return {
-        "error": f"ワーカー「{worker_name}」のどの相手も枠に余裕がありません",
+        "error": f"ワーカー「{workers.label_for(worker)}」のどの相手も枠に余裕がありません",
         "hint": f"使用率が {workers.QUOTA_LIMIT:.0f}% を超えている相手と、"
                 "相手自身が枠切れを返した相手は避けます",
     }
 
 
-def _gave_up(worker_name: str, key) -> str:
+def _gave_up(worker: str, key) -> str:
     """途中で窓が閉まったときの一言。**どこまで見たかが読めるように区画も書く**。"""
     where = f"({key} の手前)" if key else ""
-    return f"ワーカー「{worker_name}」のどの相手も枠に余裕がなくなったので、残りは見送りました{where}"
+    return (f"ワーカー「{workers.label_for(worker)}」のどの相手も枠に余裕がなくなったので、"
+            f"残りは見送りました{where}")
 
 
 def _reason_of(e: HTTPException) -> str:
@@ -3465,7 +3470,8 @@ def _worker_choices() -> list[dict]:
         return []
     return [
         {
-            "id": workers.option_for(w.name),
+            # **名指しの値は id**(名前は画面に出す札で、いつでも変わる)
+            "id": workers.option_for(w.key),
             "label": w.name,
             "kind": "worker",
             # **どちらも持たない。** 渡す先はそのときの枠で決まるので、ここで 1 つ

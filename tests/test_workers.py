@@ -280,6 +280,83 @@ class TestDefinitions:
         assert workers.get("いない") is None
 
 
+class TestRenamingAWorker:
+    """**名指しは名前ではなく id で結ぶ。**
+
+    名前を鍵にしていた頃は、改名した瞬間にそのワーカーを指していた巡回が行き場を
+    失った —— 落ちるのではなく巡回自身に書いてある相手(たいてい空 = 既定)で
+    黙って走り続け、待ち行列に積んであったぶんも古い名前の下に取り残される。
+    """
+
+    def _saved(self, name: str = "精査") -> workers.Worker:
+        workers.save(workers.merged(workers.load(), "", name, (workers.Step("codex"),)))
+        return workers.load()[-1]
+
+    def test_a_new_one_gets_an_id(self, enabled):
+        made = self._saved()
+
+        assert made.key.startswith(workers.ID_PREFIX)
+        assert made.key != made.name
+
+    def test_two_with_the_same_name_are_still_two(self, enabled):
+        """id で結ぶので、同じ札を付けても別のワーカーのまま。"""
+        first, second = self._saved(), self._saved()
+
+        assert first.key != second.key
+
+    def test_the_id_survives_a_rename(self, enabled):
+        made = self._saved()
+        workers.save(workers.merged(workers.load(), made.key, "じっくり", made.steps))
+        [after] = workers.load()
+
+        assert after.name == "じっくり"
+        assert after.key == made.key
+
+    def test_a_sweep_still_finds_it_after_the_rename(self, enabled):
+        """巡回が持っているのは id なので、札が変わっても指し先は動かない。"""
+        made = self._saved()
+        workers.save(workers.merged(workers.load(), made.key, "じっくり", made.steps))
+
+        assert workers.get(made.key).name == "じっくり"
+
+    def test_the_queue_survives_the_rename(self, enabled):
+        """行列の鍵も id。名前で分けていた頃は、積んであったぶんが古い名前の下に
+        取り残されて誰も流さなかった。"""
+        made = self._saved()
+        workers.enqueue(made.key, "tazuna_meals", "整理", "2026-09-24T00:00:00+00:00")
+        workers.save(workers.merged(workers.load(), made.key, "じっくり", made.steps))
+
+        assert [e["sweep"] for e in workers.queued(made.key)] == ["整理"]
+
+    def test_an_old_definition_is_keyed_by_its_name(self, enabled):
+        """id を足す前の定義。**そこを新しい id にすると、いま名指ししている巡回が
+        全部行き場を失う**ので、名前をそのまま鍵にする。"""
+        machine_store.put(workers.DEFS_KIND, workers.DEFS_KEY, json.dumps(
+            {"workers": [{"name": "精査", "steps": [{"backend": "codex"}]}]}))
+        [found] = workers.load()
+
+        assert found.key == "精査"
+        assert workers.get("精査") is not None
+
+    def test_saving_an_old_one_freezes_its_name_as_the_id(self, enabled):
+        """一度保存すれば、そのあとの改名では指し先が動かない。"""
+        machine_store.put(workers.DEFS_KIND, workers.DEFS_KEY, json.dumps(
+            {"workers": [{"name": "精査", "steps": [{"backend": "codex"}]}]}))
+        old = workers.load()[0]
+        workers.save(workers.merged(workers.load(), old.key, "じっくり", old.steps))
+        [after] = workers.load()
+
+        assert after.key == "精査"
+        assert workers.get("精査").name == "じっくり"
+
+    def test_the_name_is_what_people_see(self, enabled):
+        made = self._saved()
+
+        assert workers.label_for(made.key) == "精査"
+        # **消えたワーカーは鍵のまま出す**(何かを指していたことは読める)
+        assert workers.label_for("w-99999999") == "w-99999999"
+
+
 def _collection():
     from app import collect
 
@@ -1139,9 +1216,22 @@ class TestPickingAWorkerAsTheBackend:
     """
 
     def test_the_value_round_trips(self):
-        assert workers.named_in(workers.option_for("精査")) == "精査"
-        assert workers.named_in("codex") == ""
-        assert workers.named_in("") == ""
+        assert workers.ref_in(workers.option_for("w-1a2b3c4d")) == "w-1a2b3c4d"
+        assert workers.ref_in("codex") == ""
+        assert workers.ref_in("") == ""
+
+    def test_the_value_is_the_id_not_the_name(self, enabled):
+        """**セレクトに載せるのは id。** 名前を載せていた頃は、改名した瞬間に
+        保存済みの巡回が指し先を失った。"""
+        from app.views import admin
+
+        workers.save(workers.merged([], "", "精査", (workers.Step("codex"),)))
+        [saved] = workers.load()
+        html = admin._backend_select(None, "sweep_backend", with_workers=True)
+
+        assert f'value="{workers.option_for(saved.key)}"' in html
+        # 札は名前のまま(id は読む人に意味が無い)
+        assert ">精査</option>" in html
 
     def test_the_select_lists_them_apart_from_the_backends(self, enabled):
         from app.views import admin

@@ -1,6 +1,6 @@
 """巡回を回す相手の順番(ワーカー)。
 
-**「誰に頼むか」を巡回から切り離して名前で持つ。** 網羅の収集は端から端まで精査し
+**「誰に頼むか」を巡回から切り離して持つ。** 網羅の収集は端から端まで精査し
 続けるもので、止まると困る一方、**1 つの相手の枠で回し切れるとは限らない** ——
 詰まったところで止まるのではなく、次の相手へ振り替えて回り続けてほしい。
 
@@ -20,6 +20,12 @@
   「同じ材料で誰が当てるか」を測る場で、書いた相手が変わると成績の意味が変わる)。
   こちらが欲しいのは回り続けることなので、判断が逆になる
 
+- **名指しは名前ではなく id で結ぶ**(`Worker.id`)。名前を鍵にしていた頃は、
+  **改名した瞬間にそのワーカーを指していた巡回が行き場を失った** —— 落ちるのでは
+  なく巡回自身に書いてある相手(たいてい空 = Chiezo の既定)で黙って走り続け、
+  待ち行列に積んであったぶんも古い名前の下に取り残される。名前は画面に出す札で、
+  人はそれを気軽に直す。**id は作ったときに決まり、二度と変わらない**
+
 置き場は機械の側(`app/machine_store.py`)。収集の定義と同じところに並べる ——
 どちらも収集の層の設定で、人が管理画面から直し、短期記憶には混ぜない。
 """
@@ -29,6 +35,7 @@ import json
 import logging
 import os
 import re
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 
@@ -40,15 +47,26 @@ log = logging.getLogger("chiezo.workers")
 # —— 欄を分けていた頃は、相手とワーカーの両方が選べて、どちらが効くのかが
 # 画面から読めなかった(効くのはワーカーのほう)。
 # **相手の id には `:` が入らない**ので、頭を見るだけで見分けられる。
+# **続くのはワーカーの id**(名前ではない。名前は変わる)。
 OPTION_PREFIX = "worker:"
 
 DEFS_KIND = "worker"
 DEFS_KEY = "definitions"
 DEFS_BROKEN = "ワーカーの定義が JSON として読めません"
 
-# 名前に使える文字。巡回の設定から名指しするだけなので、収集の名前ほど狭くなくてよい
+# 名前に使える文字。**名前は画面に出す札**でしかないので、収集の名前ほど狭くなくてよい
 # (ファイル名にも URL にもならない)が、前後の空白で見分けが付かない名前は作らせない。
 NAME_RE = re.compile(r"^\S(?:.{0,30}\S)?$")
+
+# 名指しの鍵。**作ったときに決まり、改名しても変わらない。**
+# 巡回の `worker`・待ち行列の鍵・セレクトの値は、どれもこれを持つ。
+ID_PREFIX = "w-"
+
+
+def new_id() -> str:
+    """新しいワーカーの id。**中身に意味を持たせない** —— 名前から作ると、
+    改名したときに「元の名前」が鍵として残り続けて読む人を惑わせる。"""
+    return f"{ID_PREFIX}{uuid.uuid4().hex[:8]}"
 
 # ここを超えている相手は避ける(使用率、%)。**80 は「詰まる前に譲る」ための値** ——
 # 使い切ってから振り替えると、いちばん頼りたい相手の窓が明けるまで何も頼めない。
@@ -88,7 +106,11 @@ class Step:
 
 @dataclass(frozen=True)
 class Worker:
-    """優先度順の相手の並びと、自分の回り方。**先頭ほど先に頼む。**"""
+    """優先度順の相手の並びと、自分の回り方。**先頭ほど先に頼む。**
+
+    **名前と id は役割が違う。** 名前は画面に出す札で、人はいつでも直す。
+    id は名指しの鍵で、作ったときに決まってからは変わらない。
+    """
 
     name: str
     steps: tuple[Step, ...] = field(default_factory=tuple)
@@ -96,9 +118,22 @@ class Worker:
     interval_minutes: int = DEFAULT_INTERVAL_MINUTES
     # 1 度の起動で待ち行列から拾う数。拾ったぶんは**1 本ずつ順に流す**
     per_run: int = DEFAULT_PER_RUN
+    # 名指しの鍵。**空なら名前が鍵**(id を持たせる前に作られたもの。`key` 参照)
+    id: str = ""
+
+    @property
+    def key(self) -> str:
+        """名指しに使う鍵。**id を持たないものは名前で結ぶ。**
+
+        id を足す前からある定義がそこに落ちる —— そのまま名前で結んでおけば、
+        既にある巡回の名指しも待ち行列も指し先を失わない。次に保存した時点で
+        その名前が id として焼き付き、以後は改名しても動かない。
+        """
+        return self.id or self.name
 
     def to_json(self) -> dict:
         return {
+            "id": self.key,
             "name": self.name,
             "steps": [s.to_json() for s in self.steps],
             "interval_minutes": self.interval_minutes,
@@ -127,6 +162,9 @@ def _worker_from(raw) -> Worker | None:
         interval_minutes=_positive(raw.get("interval_minutes"), DEFAULT_INTERVAL_MINUTES,
                                    MIN_INTERVAL_MINUTES),
         per_run=_positive(raw.get("per_run"), DEFAULT_PER_RUN, 1, MAX_PER_RUN),
+        # **書かれていなければ名前を鍵にする**(`Worker.key`)。id を足す前の定義で、
+        # そこを新しい id にすると、いま名指ししている巡回が全部行き場を失う
+        id=str(raw.get("id") or "").strip(),
     )
 
 
@@ -169,10 +207,32 @@ def save(items: list[Worker]) -> None:
                                  ensure_ascii=False, indent=2))
 
 
-def get(name: str) -> Worker | None:
-    """名前で 1 つ。無ければ None(**読めないときも None にしない** —— 定義が
-    壊れているのと、その名前が無いのは別の話なので、壊れていれば例外のまま上げる)。"""
-    return next((w for w in load() if w.name == name), None)
+def get(ref: str) -> Worker | None:
+    """名指しの鍵で 1 つ。無ければ None(**読めないときも None にしない** ——
+    定義が壊れているのと、その鍵が無いのは別の話なので、壊れていれば例外のまま上げる)。
+
+    **鍵で引いて、見つからなければ名前でも引く。** 拾いたいのは 2 つ ——
+    id を足す前に外のアプリが控えた名指しと、人が手で書いた名前。
+    **先に見るのは必ず id のほう**(同じ名前のワーカーを後から作ったときに、
+    id で結んである巡回の指し先が入れ替わらないように)。
+    """
+    found = load()
+    return (next((w for w in found if w.key == ref), None)
+            or next((w for w in found if w.name == ref), None))
+
+
+def label_for(ref: str) -> str:
+    """その鍵のワーカーを人に見せるときの名前。**無ければ鍵をそのまま**
+    (消えたワーカーを指している、が読み取れる形で出す)。
+
+    **定義が読めなくても画面は落とさない** —— 名前は添え物で、本体は
+    「ワーカーに頼む回だ」ということのほう。
+    """
+    try:
+        found = get(ref)
+    except ValueError:
+        return ref
+    return found.name if found else ref
 
 
 def merged(
@@ -185,28 +245,33 @@ def merged(
 ) -> list[Worker]:
     """1 つぶんの保存を、いまの一覧へ畳み込む。**その 1 つだけ**を書き換える。
 
-    **名前を消すと消える**(足す口も消す口も名前 1 つ)。名前を書き換えれば改名 ——
-    **巡回側の名指しは追いかけない**。名前で結んでいるので、改名したら巡回の指定も
-    直すことになる(追いかけると、同じ名前の別のワーカーを作ったときに取り違える)。
+    `key` は**直す相手の id**(空なら新しく足す)。**名前を消すと消える**。
+
+    **名前を書き換えても、指し先は動かない。** 巡回の名指しも待ち行列も id で
+    結んであるので、改名は画面に出る札が変わるだけ —— 名前を鍵にしていた頃は、
+    直した瞬間にそのワーカーを使う巡回が黙って既定の相手で走り出していた。
     """
     if not name:
-        return [w for w in current if w.name != key]
+        return [w for w in current if w.key != key]
+    kept = next((w for w in current if w.key == key), None) if key else None
     made = Worker(name, steps, max(interval_minutes, MIN_INTERVAL_MINUTES),
-                  min(max(per_run, 1), MAX_PER_RUN))
-    if key and any(w.name == key for w in current):
-        return [made if w.name == key else w for w in current]
+                  min(max(per_run, 1), MAX_PER_RUN),
+                  id=kept.key if kept else new_id())
+    if kept is not None:
+        return [made if w.key == key else w for w in current]
     return [*current, made]
 
 
-def named_in(choice: str) -> str:
-    """相手のセレクトの値から、名指しされたワーカーの名前(そうでなければ空)。"""
+def ref_in(choice: str) -> str:
+    """相手のセレクトの値から、名指しされたワーカーの鍵(そうでなければ空)。"""
     value = str(choice or "")
     return value[len(OPTION_PREFIX):].strip() if value.startswith(OPTION_PREFIX) else ""
 
 
-def option_for(name: str) -> str:
-    """その名前を相手のセレクトへ載せるときの値。"""
-    return f"{OPTION_PREFIX}{name}"
+def option_for(ref: str) -> str:
+    """その鍵を相手のセレクトへ載せるときの値。**載せるのは id で、名前ではない**
+    —— 名前を載せると、改名したときに保存済みの巡回が指し先を失う。"""
+    return f"{OPTION_PREFIX}{ref}"
 
 
 # ---- 待ち行列 ---------------------------------------------------------------
@@ -215,7 +280,9 @@ def option_for(name: str) -> str:
 # 同じ控えに入れておくと**編集のたびに行列が消える**(押した人には何も起きていない
 # ように見えて、積んであったものだけが失われる)。
 #
-# 形は `{"<ワーカー名>": {"queue": [...], "batch": [...], "next_run_at": "..."}}`。
+# 形は `{"<ワーカーの id>": {"queue": [...], "batch": [...], "next_run_at": "..."}}`。
+# **鍵は id。** 名前で分けていた頃は、改名した拍子に積んであったぶんが古い名前の
+# 下へ取り残され、誰も流さないまま残った。
 # `queue` が待っているもの、`batch` が**いま流している最中のぶん**(起動で拾った塊)。
 # 塊を分けて持つのは、**流し切るまでそのワーカーに優先権を持たせる**ため ——
 # 途中で他のワーカーに割り込まれると、「1 度の起動で N 本」が意味を失う。
@@ -245,8 +312,8 @@ def _queue_save(state: dict) -> None:
                           json.dumps(state, ensure_ascii=False, indent=2))
 
 
-def _slot(state: dict, name: str) -> dict:
-    slot = state.setdefault(name, {})
+def _slot(state: dict, ref: str) -> dict:
+    slot = state.setdefault(ref, {})
     slot.setdefault("queue", [])
     slot.setdefault("batch", [])
     return slot
@@ -260,16 +327,16 @@ def _same(a: dict, b: dict) -> bool:
     return a.get("collection") == b.get("collection") and a.get("sweep") == b.get("sweep")
 
 
-def queued(name: str) -> list[dict]:
+def queued(ref: str) -> list[dict]:
     """そのワーカーが待っているもの(流している最中のぶんを先頭に)。"""
-    slot = _slot(_queue_all(), name)
+    slot = _slot(_queue_all(), ref)
     return [*slot["batch"], *slot["queue"]]
 
 
-def enqueue(name: str, collection: str, sweep: str, at: str) -> bool:
+def enqueue(ref: str, collection: str, sweep: str, at: str) -> bool:
     """待ち行列へ積む。**既に居れば積まない**(二重に走らせないため)。積んだら True。"""
     state = _queue_all()
-    slot = _slot(state, name)
+    slot = _slot(state, ref)
     made = _entry(collection, sweep)
     if any(_same(made, e) for e in (*slot["queue"], *slot["batch"])):
         return False
@@ -278,14 +345,14 @@ def enqueue(name: str, collection: str, sweep: str, at: str) -> bool:
     return True
 
 
-def claim(name: str, per_run: int, at: str) -> list[dict]:
+def claim(ref: str, per_run: int, at: str) -> list[dict]:
     """起動 1 回ぶんを行列から塊へ移す。**既に流している最中なら何もしない**。
 
     拾うのは先頭から `per_run` 件。**空振りでも起動したことにする**(次の起動まで
     間隔を空ける)—— 積まれていないワーカーが毎周見に来ても、することは無い。
     """
     state = _queue_all()
-    slot = _slot(state, name)
+    slot = _slot(state, ref)
     if slot["batch"]:
         return list(slot["batch"])
     slot["batch"] = slot["queue"][:max(1, per_run)]
@@ -295,23 +362,23 @@ def claim(name: str, per_run: int, at: str) -> list[dict]:
     return list(slot["batch"])
 
 
-def claim_ready(name: str) -> bool:
+def claim_ready(ref: str) -> bool:
     """いま流している最中の塊があるか(あれば拾い直さない)。"""
-    return bool(_slot(_queue_all(), name)["batch"])
+    return bool(_slot(_queue_all(), ref)["batch"])
 
 
-def last_at(name: str) -> str:
+def last_at(ref: str) -> str:
     """そのワーカーが最後に起動した時刻(まだなら空)。
 
     **起動であって、流し終えた時刻ではない。** 次にいつ起きるかはここから数えるので、
     塊を流し切るのに何周かかっても、次の起動は最初の起動から間隔ぶん後になる。
     """
-    slot = _slot(_queue_all(), name)
+    slot = _slot(_queue_all(), ref)
     # 前の版は同じ値を `next_run_at` に入れていた(名前が逆だった)
     return str(slot.get("last_run_at") or slot.get("next_run_at") or "")
 
 
-def done(name: str, collection: str, sweep: str) -> None:
+def done(ref: str, collection: str, sweep: str) -> None:
     """流し終えた 1 件を外す。**塊からも行列からも**。
 
     **行列のほうも外すのは、待っているあいだに手で走らされることがあるから**
@@ -319,7 +386,7 @@ def done(name: str, collection: str, sweep: str) -> None:
     同じ回が流れる —— 枠を 1 回ぶん余計に食う。
     """
     state = _queue_all()
-    slot = _slot(state, name)
+    slot = _slot(state, ref)
     made = _entry(collection, sweep)
     for key in ("queue", "batch"):
         slot[key] = [e for e in slot[key] if not _same(made, e)]
