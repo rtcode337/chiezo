@@ -32,14 +32,19 @@ FROM node:22-bookworm-slim AS cli
 # codex の下限だけを持っていた頃、claude は層が作り直されるまで動かず、
 # `opus` の別名が 1 世代前のモデルに解決されていた(実測)。
 #
-# codex 0.154.0 … これより古い CLI では、新しいモデルを名指ししても
+# codex 0.156.1 … これより古い CLI では、新しいモデルを名指ししても
 # 「The '…' model requires a newer version of Codex.」で 400 になる(実測)。
-# claude 2.1.267 … 別名(`opus` など)が指す先は CLI が決めるので、古いと
-# 新しい世代を選べない。print モードの `/usage` が枠を返すのもこの系列から。
-# **`stable` のタグに合わせてある** —— npm が入れるのは `latest` だが、あちらは
+# 下限はその時点の `latest`(正式版)に合わせる。alpha の版は選ばない。
+# claude 2.1.280 … 別名(`opus` など)が指す先は CLI が決めるので、古いと
+# 新しい世代を選べない。`opus` が Opus 5.5 を指すのはこの版から(CHANGELOG)。
+# print モードの `/usage` が枠を返すのは 2.1.267 から。
+# 下限は原則 `stable` のタグに合わせる —— npm が入れるのは `latest` だが、あちらは
 # `next` と同じ版を指していることがあり、巻き戻されるとビルドが止まる。
-ARG CODEX_MIN_VERSION=0.154.0
-ARG CLAUDE_MIN_VERSION=2.1.267
+# **新しいモデルが `stable` に降りてくる前に要るときだけ、`latest` まで上げる。**
+# いまがそれで、`stable` は 2.1.273 のまま Opus 5.5 を知らない。
+# `latest` が巻き戻されてビルドが落ちたら、`stable` が追いつくまで下限を戻す。
+ARG CODEX_MIN_VERSION=0.156.1
+ARG CLAUDE_MIN_VERSION=2.1.280
 RUN set -eux; \
     npm install -g @anthropic-ai/claude-code @openai/codex; \
     installed="$(codex --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"; \
@@ -64,7 +69,7 @@ RUN set -eux; \
 # 「invalid arguments: - missing properties 'toolSummary', 'toolAction'」は 1.1.13 でも
 # 1.1.27 でも出た。あれは版ではなく権限の確認の問題で、cli_bridge.py の
 # build_command が `--dangerously-skip-permissions` を常に付けることで避けている。
-ARG AGY_MIN_VERSION=1.1.27
+ARG AGY_MIN_VERSION=1.2.10
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl; \
