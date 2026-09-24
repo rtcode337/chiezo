@@ -5,6 +5,7 @@ DB を触らない。Claude Code 連携の設定を配る口(`/admin/claude-conf
 """
 from __future__ import annotations
 
+import asyncio
 import difflib
 import json
 import logging
@@ -2483,7 +2484,7 @@ async def admin_ai(request: Request):
 
 
 @router.get("/admin/server", response_class=HTMLResponse)
-def admin_server(_request: Request):
+async def admin_server(_request: Request):
     """このサーバー自身のこと。どちらも**読むだけ**で、押して変わるものは無い。"""
     body = f"""
 {nav_html("/admin/server")}
@@ -2498,13 +2499,82 @@ def admin_server(_request: Request):
 
 <h2>いま動いているビルド</h2>
 <p class="muted">
-{esc(build_info.describe())}<br>
 ビルド日時(JST)とビルド元のコミット。手元の <code>git log -1</code> と見比べれば、
 変更が反映済みかが分かる。<code>docker compose pull &amp;&amp; docker compose up -d</code>
-のあと、ここが新しくなっていなければ古いイメージのままになっている。
+のあと、ここが新しくなっていなければ古いイメージのままになっている。<br>
+<strong>イメージは別々に焼かれる</strong>ので、<strong>片方だけ古いまま</strong>が
+普通に起きる —— 直したはずの不具合を追いかけ続けないために、立っているものは
+並べて出す(立っていないものは出ない)。
 </p>
+{await _builds_html()}
 """
     return HTMLResponse(content=page_shell("このサーバー", body))
+
+
+# 相手に版を聞きに行くときの待ち時間。**短くする** —— 立っていない相手を
+# 待つあいだ画面が出ないほうが困る(版は添え物で、面の本体ではない)。
+BUILD_PROBE_TIMEOUT = 3.0
+
+
+async def _builds_html() -> str:
+    """立っているものの版を並べた表。**聞きに行くのはこの面だけ**。
+
+    管理画面は描くときに相手へ問い合わせない流儀だが、ここは**版を確かめに来る
+    ためだけの面**で、開く頻度も低い。並行に聞いて、答えない相手は出さない
+    (「起動していたら出す」)。
+    """
+    rows = [("chiezo-app(この面)", build_info.describe())]
+    found = await asyncio.gather(_trigger_build(), _bridge_builds())
+    rows += found[0] + found[1]
+    body = "".join(
+        f"<tr><th>{esc(name)}</th><td>{esc(text)}</td></tr>" for name, text in rows
+    )
+    return f"<table><tbody>{body}</tbody></table>"
+
+
+async def _trigger_build() -> list[tuple[str, str]]:
+    """取り込み(chiezo-trigger)の版。立っていなければ空。"""
+    if not TRIGGER_URL:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=BUILD_PROBE_TIMEOUT) as client:
+            res = await client.get(f"{TRIGGER_URL}/status")
+        found = res.json().get("build") or {}
+    except (httpx.HTTPError, ValueError) as e:
+        log.info("trigger build unknown: %s", e)
+        return []
+    return [("chiezo-ingest(取り込み)",
+             build_info.describe_of(found.get("sha") or "", found.get("built_at") or ""))]
+
+
+async def _bridge_builds() -> list[tuple[str, str]]:
+    """立っている CLI ブリッジの版。**有効にしてある相手だけ**聞く。
+
+    ブリッジは LAN に口を開けないので、**版を外から確かめる手段がここしかない**。
+    """
+    specs = [
+        spec for name in answer.backend_names()
+        if (spec := providers.get(name)) is not None and spec.bridge
+    ]
+    if not specs:
+        return []
+
+    async def ask(spec) -> tuple[str, str] | None:
+        url = providers.url_of(spec).rstrip("/")
+        base = url[: -len("/v1")] if url.endswith("/v1") else url
+        try:
+            async with httpx.AsyncClient(timeout=BUILD_PROBE_TIMEOUT) as client:
+                res = await client.get(f"{base}/health")
+            body = res.json()
+        except (httpx.HTTPError, ValueError) as e:
+            log.info("bridge build unknown (%s): %s", spec.id, e)
+            return None
+        return (
+            f"chiezo-bridge({spec.label})",
+            build_info.describe_of(str(body.get("build") or ""), str(body.get("built_at") or "")),
+        )
+
+    return [row for row in await asyncio.gather(*(ask(spec) for spec in specs)) if row]
 
 
 @router.get("/admin/osm", response_class=HTMLResponse)

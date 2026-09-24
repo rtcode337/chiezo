@@ -92,6 +92,9 @@ if MCP_URL and not MCP_URL.endswith("/"):
 # **ブリッジは LAN に口を開けない**ので、動いている版を確かめる手段は
 # 立ち上がりのログと `/health` しかない。空なら手元で焼いたもの。
 BUILD_SHA = os.environ.get("CHIEZO_BRIDGE_BUILD_SHA", "").strip()
+# 焼いた日時(ISO 8601)。**並べたときに新旧が読めるのはこちら** ——
+# ハッシュは「手元のどのコミットか」を照合するための補助でしかない。
+BUILD_TIME = os.environ.get("CHIEZO_BRIDGE_BUILD_TIME", "").strip()
 # CLI に渡すモデル。空なら CLI の既定(サブスクの枠を無駄に食わないよう明示するのが望ましい)。
 MODEL = os.environ.get("CHIEZO_BRIDGE_MODEL", "").strip()
 # 1 回の呼び出しの上限秒数。CLI は道具を何度も引くので推論サーバより長くなる。
@@ -1331,7 +1334,12 @@ async def health(check: bool = False) -> dict:
     """
     # `build` は動いているイメージのコミット。**版の食い違いを切り分けるため**に出す
     # (ブリッジは LAN に口を開けないので、外から版を確かめる手段がここしかない)。
-    body = {"status": "ok", "cli": CLI, "model": MODEL_LABEL, "build": BUILD_SHA}
+    body = {
+        "status": "ok", "cli": CLI, "model": MODEL_LABEL,
+        # **`build` は昔からの形(コミットだけ)を残す** —— 読む側を止めない。
+        # 日時は別の鍵で足す(画面はこちらを先に出す)
+        "build": BUILD_SHA, "built_at": BUILD_TIME,
+    }
     if check:
         ok, reason = await check_auth()
         body["authenticated"] = ok

@@ -25,6 +25,17 @@ RUN useradd --uid 10001 --user-group --home-dir /home/app --create-home chiezo \
     && chmod 1777 /home/app \
     && mkdir -p /data && chown 10001:10001 /data
 ENV HOME=/home/app
+
+# どのコミットのイメージが動いているか。**タグでは分からない**(`latest` は
+# 上書きされるし、デプロイ先が pull し忘れていても外からは見えない)——
+# 取り込みは app とは別のイメージなので、**片方だけ古いまま**が普通に起きる。
+# chiezo-app の管理画面が `GET /status` から読んで並べる。
+# CI がすべてのイメージへ同じ build-arg を渡している(手元ビルドでは空)。
+ARG BUILD_SHA=""
+ARG BUILD_TIME=""
+ENV CHIEZO_BUILD_SHA=$BUILD_SHA \
+    CHIEZO_BUILD_TIME=$BUILD_TIME
+
 USER 10001:10001
 
 EXPOSE 8080

@@ -123,7 +123,9 @@ ENV CHIEZO_BRIDGE_PORT=7013
 # 直したはずの不具合を追いかけ続けることになる(実際に 1 往復無駄にした)。
 # CI がすべてのイメージへ同じ build-arg を渡している。
 ARG BUILD_SHA=""
-ENV CHIEZO_BRIDGE_BUILD_SHA=$BUILD_SHA
+ARG BUILD_TIME=""
+ENV CHIEZO_BRIDGE_BUILD_SHA=$BUILD_SHA \
+    CHIEZO_BRIDGE_BUILD_TIME=$BUILD_TIME
 
 # 非 root で動かす。 claude は権限確認を飛ばす指定(--permission-mode
 # bypassPermissions)を root では拒む ——

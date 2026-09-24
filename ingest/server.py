@@ -389,15 +389,36 @@ def _remove_source_files(name: str) -> list[str]:
     return removed
 
 
+def _build() -> dict:
+    """このイメージの素性(ビルド元のコミットと、焼いた日時)。
+
+    **取り込みは app とは別のイメージ**なので、片方だけ古いままが普通に起きる ——
+    タグ(`latest`)では見分けが付かず、デプロイ先が pull し忘れていても外からは
+    分からない。chiezo-app の管理画面がここを読んで並べる。
+
+    渡されていなければ空(手元ビルド)。**そのときも鍵は返す** —— 「まだ出して
+    いない」と「不明」は読む側で区別できたほうがよい。
+    """
+    import os
+
+    return {
+        "sha": (os.environ.get("CHIEZO_BUILD_SHA") or "").strip(),
+        "built_at": (os.environ.get("CHIEZO_BUILD_TIME") or "").strip(),
+    }
+
+
 @app.get("/status")
 def status():
-    """いまの 1 本と、**最後に落ちた回**。
+    """いまの 1 本と、**最後に落ちた回**、それに動いているイメージの素性。
 
     落ちた回を別に返すのは、**次の取り込みが始まると状態もログも上書きされる**
     から —— 読みに来たときには既に消えている、が普通に起きる。
     """
     with _lock:
-        return {**_status, "log_tail": list(_log_tail), "last_failure": _last_failure}
+        return {
+            **_status, "log_tail": list(_log_tail), "last_failure": _last_failure,
+            "build": _build(),
+        }
 
 
 @app.post("/stop")
