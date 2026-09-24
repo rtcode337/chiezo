@@ -77,6 +77,40 @@ class TestTheSweepItself:
         assert sweep.walks_partitions()
 
 
+class TestItIsNeverAskedToRunByItself:
+    """**手で回す回は、自分から走らない。** 走らせる中身(人が持ち帰った答え)が
+    揃うのは読み込んだときだけなので、他の道から呼ばれると空振りする。
+    """
+
+    def test_a_focus_does_not_land_on_it(self, state_env):
+        """割り込みは人が待っている場面 —— その場で AI に聞ける回へ倒す。"""
+        from app import collect
+
+        collect.create(name="tazuna_meals", description="", prompt="直して",
+                       interval_minutes=60)
+        collect.update("tazuna_meals", enabled=True, sweeps=[
+            {"name": "ざっと見る", "prompt": "{current} を直して"},
+            {"name": "手で調べる", "by_hand": True},
+        ])
+        item = collect.get("tazuna_meals")
+        asked = collect.Focus(note="ここが違う", sweep="手で調べる")
+
+        assert collect.sweep_for_focus(item, asked).name == "ざっと見る"
+
+    def test_an_unknown_name_does_not_land_on_it_either(self, state_env):
+        """巡回を消したあとの取り込みが素材を取りに来ることがある。"""
+        from app import collect
+
+        collect.create(name="tazuna_meals", description="", prompt="直して",
+                       interval_minutes=60)
+        collect.update("tazuna_meals", enabled=True, sweeps=[
+            {"name": "ざっと見る", "prompt": "{current} を直して"},
+            {"name": "手で調べる", "by_hand": True},
+        ])
+
+        assert collect.sweep_named(collect.get("tazuna_meals"), "消えた回").name == "ざっと見る"
+
+
 class TestMakingTheBundle:
     def test_the_body_is_the_same_request_as_the_ai_gets(self, state_env):
         """**言い換えない。** 手で回した回と AI に頼んだ回で違うことを頼むと、

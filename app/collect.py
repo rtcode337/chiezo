@@ -909,7 +909,10 @@ def sweep_named(item: Collection, name: str | None) -> Sweep:
     for sweep in sweeps:
         if sweep.name == name:
             return sweep
-    due = [s for s in sweeps if s.enabled and not s.on_demand]
+    # **倒す先は、走れる回だけ。** 時計を持たない回(割り込み)と手で回す回は
+    # 自分から走らない —— そこへ倒すと、名前を取り違えた取り込みが
+    # 「人が持ち帰った答え」を待つ回として走り、何も無いまま断られる
+    due = [s for s in sweeps if s.enabled and not s.on_demand and not s.by_hand]
     return min(due or sweeps, key=lambda s: s.due_at())
 
 
@@ -929,10 +932,13 @@ def sweep_for_focus(item: Collection, focus: Focus | None = None) -> Sweep:
     named = (focus.sweep if focus else None) or None
     if named:
         for sweep in sweeps:
-            if sweep.name == named:
+            # **手で回す回は割り込みに使えない。** あれは人が持ち帰った答えを
+            # 焼く回で、その場で AI に聞く道を持たない —— 名指しされても、
+            # 走れる回へ倒すほうがよい(割り込みは人が待っている場面)
+            if sweep.name == named and not sweep.by_hand:
                 return sweep
     for sweep in sweeps:
-        if sweep.on_demand:
+        if sweep.on_demand and not sweep.by_hand:
             return sweep
     return sweep_named(item, None)
 
