@@ -97,6 +97,10 @@ def baked(tmp_path):
                 self.dump_date = "20260101000000"
                 # 読み口はタグの索引の有無で振る舞いを変えるので、そこも本物に合わせる
                 self.schema_version = notes.SCHEMA_VERSION
+                # **件数も持つ。** 本物のソース表は焼いたあとの COUNT を控えていて、
+                # 「溜めたものが読めているか」の突き合わせにそれを使う
+                # (`main._previous_unreadable` / `collect.bake_survey`)
+                self.doc_count = len(docs)
 
         return {name: Src(path)}
 
@@ -2049,6 +2053,57 @@ class TestWritingOnlyIfNothingChanged:
         assert machine_store.put_if("t", "k", "1", None) is True
         assert machine_store.put_if("t", "k", "2", None) is False
         assert machine_store.get("t", "k") == "1"
+
+
+class TestARoundThatCannotSeeWhatWasStored:
+    """**前世代が読めないまま焼かない**(`bake_survey`)。
+
+    `stream_previous` はソース表に名前が無ければ**黙って 0 行**を返す —— 読めない
+    ことと、空であることが区別できない。そのまま焼くと**その回の成果だけ**の世代が
+    でき、溜めたものが丸ごと入れ替わる(本番で 597,068 件の収集が 3 件になった)。
+
+    **歯止めが 2 つとも効かない組み合わせ**だった: 取り込み側の `min_docs` は
+    「これから流す行数」なので 3 行なら下限も 3 になり、`keep_ratio` のほうは
+    前世代の件数を分母にするので 0 件では外れる。
+    """
+
+    def _src(self, docs: int):
+        class Src:
+            doc_count = docs
+        return {"news": Src()}
+
+    def test_it_refuses_when_nothing_came_through(self, sample):
+        """長期記憶に中身があるのに 0 行なら、読めていない。"""
+        collect.update("news", sweeps=[{"name": "ざっと"}])
+
+        with pytest.raises(HTTPException) as got:
+            collect.bake_survey(
+                collect.get("news"), self._src(597_068), lambda: iter([]),
+                [{"title": "あ", "body": "本文"}],
+            )
+
+        assert "前世代を読めませんでした" in got.value.detail["error"]
+        assert "597,068" in got.value.detail["error"]
+
+    def test_a_collection_with_nothing_baked_yet_goes_through(self, sample):
+        """**1 回目は通す。** 長期記憶がまだ無いなら、0 行は正しい。"""
+        collect.update("news", sweeps=[{"name": "ざっと"}])
+
+        plan = collect.bake_survey(
+            collect.get("news"), self._src(0), lambda: iter([]),
+            [{"title": "あ", "body": "本文"}],
+        )
+
+        assert plan["rows"] == 1
+
+    def test_the_shrink_guard_cannot_catch_this(self, sample):
+        """**`keep_ratio` は分母を前世代に取る**ので、0 件では外れる ——
+        だからここで別に見る(本番でこの組み合わせをすり抜けた)。
+        """
+        item = collect.get("news")
+        diff = {"previous": 0, "removed": 0, "removed_titles": []}
+
+        assert collect.shrink_blocked(item, diff, edits=True) is None
 
 
 class TestHowLongOneLapReallyTakes:

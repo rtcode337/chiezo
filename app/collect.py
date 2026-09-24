@@ -3969,6 +3969,22 @@ def bake_survey(item, sources: dict, previous, collected, only_new=False, edits=
         })
     diff["expired"] = expired
     diff["partition_counts"] = counts
+    # **前世代が読めなかったのか、本当に空なのかを分ける。** 読めないまま通すと、
+    # その回の成果だけで新しい世代ができて**長期記憶が丸ごと入れ替わる** ——
+    # 本番で 597,068 件の収集が 3 件の世代に差し替わった(`stream_previous` は
+    # ソースを引けないと黙って 0 行を返す)。
+    # **歯止めが 2 つとも効かない組み合わせ**だった: 取り込み側の `min_docs` は
+    # 「これから流す行数」なので 3 行なら下限も 3 になり、`keep_ratio` のほうは
+    # 前世代の件数を分母にするので 0 件では外れる。
+    # **突き合わせる相手は長期記憶の件数**(`registry` が控えている `doc_count`)——
+    # 台帳や控えの値と違って、いま配っているものそのものを数えた値。
+    if not diff["previous"] and (baked := getattr(sources.get(item.name), "doc_count", 0)):
+        raise HTTPException(409, {
+            "error": f"収集「{item.name}」の前世代を読めませんでした"
+                     f"(長期記憶には {baked:,} 件あるのに 0 件しか流れてきていません)",
+            "hint": "世代の切り替え直後に起きます。焼いていないので、いまの内容は"
+                    "そのままです —— 少し置いてからもう一度走らせてください",
+        })
     if reason := shrink_blocked(item, diff, edits):
         raise HTTPException(409, {
             "error": f"収集「{item.name}」の整理を止めました: {reason}",
