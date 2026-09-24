@@ -603,6 +603,23 @@ class Sweep:
                 return max(1, min(math.ceil(total_partitions / runs), MAX_PARTITIONS_PER_RUN))
         return 1
 
+    def cycle_days(self, total_partitions: int) -> float:
+        """一周に**実際にかかる**日数。数えられないときは 0。
+
+        **`cover_days` は希望であって結果ではない。** 1 回に見る区画には天井が
+        あり(`MAX_PARTITIONS_PER_RUN`)、区画が多いとそこで頭打ちになる ——
+        本番で「15 日で一周」と書いた巡回が、8,185 区画・60 分ごと・1 回 5 区画で
+        実際には 68 日かかっていた。**画面に書いた日数をそのまま出していたので、
+        4 倍のずれがどこにも出ていなかった。**
+
+        **区画数はそのつど渡す。** 母集団が動けば区画も動くので、控えた値を
+        持つと古くなる(減ったのに長いまま出る、が起きる)。
+        """
+        if self.on_demand or total_partitions <= 0 or self.interval_minutes <= 0:
+            return 0.0
+        runs_per_day = 24 * 60 / self.interval_minutes
+        return total_partitions / (self.per_run(total_partitions) * runs_per_day)
+
     def applied_to(self, item: Collection, step=None) -> Collection:
         """この巡回の相手・モデル・深さを載せた定義(AI へ投げるときに使う)。
 

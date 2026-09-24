@@ -2051,6 +2051,47 @@ class TestWritingOnlyIfNothingChanged:
         assert machine_store.get("t", "k") == "1"
 
 
+class TestHowLongOneLapReallyTakes:
+    """**一周は書いた日数ではなく、実際にかかる日数**(`Sweep.cycle_days`)。
+
+    `cover_days` は希望であって結果ではない —— 1 回に見る区画には天井があり
+    (`MAX_PARTITIONS_PER_RUN`)、区画が多いとそこで頭打ちになる。本番で
+    「15 日で一周」と書いた巡回が、8,185 区画・60 分ごとで実際には 68 日かかっていた。
+    """
+
+    def _sweep(self, **kw):
+        return collect.Sweep(
+            name="ざっと", prompt="", interval_minutes=60, enabled=True,
+            backend=None, model=None, effort=None, **kw,
+        )
+
+    def test_the_ceiling_makes_it_longer_than_asked(self):
+        """8,185 区画を 15 日で回るには 1 回 23 区画が要るが、天井は 5。"""
+        sweep = self._sweep(cover_days=15)
+
+        assert sweep.per_run(8_185) == collect.MAX_PARTITIONS_PER_RUN
+        assert round(sweep.cycle_days(8_185)) == 68
+
+    def test_a_small_ledger_comes_round_sooner_than_asked(self):
+        """**逆にも外れる。** 1 回に見る区画は 1 より下がらないので、区画が少なければ
+        書いた日数より早く回り切る。
+        """
+        sweep = self._sweep(cover_days=7)
+
+        assert sweep.per_run(2) == 1
+        assert sweep.cycle_days(2) == pytest.approx(2 / 24)
+
+    def test_it_follows_the_ledger_it_is_given(self):
+        """**区画数はそのつど渡す。** 母集団が減れば一周も短くなる。"""
+        sweep = self._sweep(cover_days=15)
+
+        assert round(sweep.cycle_days(8_185)) > round(sweep.cycle_days(4_105))
+
+    def test_there_is_no_lap_without_a_clock_or_a_ledger(self):
+        assert self._sweep(cover_days=15).cycle_days(0) == 0.0
+        assert self._sweep(cover_days=15, on_demand=True).cycle_days(100) == 0.0
+
+
 class TestARoundThatFailedToBakeIsPutBack:
     """**焼くところで落ちた回は、走る前まで戻す**(`collect.rewind_failed_bake`)。
 
@@ -5041,7 +5082,11 @@ class TestTheCollectSectionMarkup:
         html = self._html(sample)
         # 進み具合は巡回ごとに出る
         assert "2 のうち 1" in html
-        assert "7 日で一周" in html
+        # **出るのは書いた日数ではなく、実際にかかる日数。** 区画が 2 つしかないので
+        # 1 回に 1 つ・60 分ごとで 2 時間で回り切る —— 「7 日で一周」と書いてあっても
+        # そうはならない(天井が効けば逆に長くなる)
+        assert "一周 2 時間" in html
+        assert "7 日で一周" not in html
         # 区画の一覧は収集の面へ。**途中で切らない**（どこがまだかを読みに来る面なので）
         assert "く〜そ" in self._detail()
 

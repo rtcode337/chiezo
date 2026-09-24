@@ -681,7 +681,14 @@ def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
         f' min="{collect.MIN_INTERVAL_MINUTES}" value="{interval}"></label></p>'
         '<p><label>一周の日数(区画を全部見終わるまで。空なら下の区画数を使う)<br>'
         f'<input name="sweep_cover_days" type="number" step="0.5" min="0.5"'
-        f' value="{esc(str(cover))}"></label></p>'
+        f' value="{esc(str(cover))}"></label>'
+        # **希望であって結果ではない、と書いておく。** 1 回に見る区画には天井が
+        # あるので、区画が多いとここに書いた日数では回り切らない —— 書けることと
+        # 起きることが違うのに、画面はどちらも同じ顔で出していた
+        f' <span class="muted">1 回に見る区画は'
+        f'{collect.MAX_PARTITIONS_PER_RUN} が上限なので、'
+        '区画が多いとここに書いた日数より長くかかります'
+        '(実際にかかる日数は上の表に出ます)</span></p>'
         '<p><label>1 回に見る区画(空なら上の日数から計算する)<br>'
         f'<input name="sweep_per_run" type="number" min="1"'
         f' max="{collect.MAX_PARTITIONS_PER_RUN}" value="{esc(str(per_run))}"></label></p>'
@@ -805,6 +812,17 @@ def _sweep_table_body(item, disabled: str = "") -> str:
     return "".join(rows)
 
 
+def _cycle_label(days: float) -> str:
+    """一周にかかる日数の書き方。**丸めるのは読む側の粒度まで**。
+
+    小数を出さない —— 区画も相手の速さも回るたびに動くので、`68.2 日` の
+    `.2` は精度のふりをするだけ。1 日に満たないものは時間で出す。
+    """
+    if days < 1:
+        return f"{max(round(days * 24), 1)} 時間"
+    return f"{round(days):,} 日"
+
+
 def _sweep_cells(item, disabled: str = "", dry: bool = True) -> list[str]:
     """巡回 1 本ぶんのセル(巡回・相手・間隔・前回・一周のうち・次にいつ)。
 
@@ -876,12 +894,16 @@ def _sweep_cells(item, disabled: str = "", dry: bool = True) -> list[str]:
                 item.name, sweep.name, disabled, dry, bool(item.partitions),
             )
         )
+        # **一周は書いた日数ではなく、実際にかかる日数を出す。** 1 回に見る区画には
+        # 天井があるので(`collect.MAX_PARTITIONS_PER_RUN`)、区画が多いと指定から
+        # 離れる —— 本番で「15 日で一周」と出ていた巡回が実際には 68 日だった。
+        # **4 倍のずれがどこにも出ていなかった**ので、一周の見込みで枠を考えられない
         every = (
             '<span class="muted">時計なし</span>'
             if sweep.on_demand
             else f"{sweep.interval_minutes} 分ごと"
-            + (f'<br><span class="muted">{sweep.cover_days:g} 日で一周</span>'
-               if sweep.cover_days else "")
+            + (f'<br><span class="muted">一周 {_cycle_label(cycle)}</span>'
+               if (cycle := sweep.cycle_days(total)) else "")
         )
         # **前回を先、次にいつを後**。読む順が「いつ動いたか → 次はいつか」なので、
         # 逆に並べていると目が戻る(動いているかを確かめに来る表なので、
