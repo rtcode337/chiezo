@@ -4378,8 +4378,11 @@ class TestRest:
         assert res.status_code == 303
         assert [c.name for c in collect.load() if c.name == "news"] == []
 
-    def test_running_it_lands_on_that_collection(self, client, sample, monkeypatch):
-        """走らせた本人が結果を見に行くのに、もう一度その収集を探すことになっていた。"""
+    def test_running_it_lands_on_the_status_page(self, client, sample, monkeypatch):
+        """走らせた本人が次に見たいのは、いま押した 1 回の進み具合。
+
+        それが出るのは取り込みの塊で、塊は状況の面にしか無い。
+        """
         from app.views import admin
 
         monkeypatch.setattr(admin, "TRIGGER_URL", "http://trigger.test")
@@ -4387,7 +4390,7 @@ class TestRest:
         res = client.post("/admin/collect/news/run", data={}, follow_redirects=False)
 
         assert res.status_code == 303
-        assert res.headers["location"] == "/admin/collect/news"
+        assert res.headers["location"] == "/admin/status#job"
 
     def test_the_pressed_sweep_is_recorded_before_the_trigger_wakes(
         self, client, sample, monkeypatch

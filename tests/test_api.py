@@ -736,7 +736,8 @@ class TestAdminAndBrowse:
         monkeypatch.setattr("app.views.admin.httpx.post", fake_post)
         res = client.post("/admin/rebuild/jawiki", follow_redirects=False)
         assert res.status_code == 303
-        assert res.headers["location"] == "/admin/memory"
+        # **進み具合を見る状況の面へ連れていく**(取り込みの塊はそこにしか無い)
+        assert res.headers["location"] == "/admin/status#job"
         assert calls == ["http://trigger.internal/run/jawiki"]
 
 
@@ -751,13 +752,17 @@ class TestWithoutTheTrigger:
         monkeypatch.setattr("app.views.admin.TRIGGER_URL", None)
         html = client.get("/admin/memory").text
         assert '<button type="submit" disabled>再構築</button>' in html
-        assert "読むだけならこのままで動きます" in html
+        # 押せない理由は表の上の 1 行で言う(大きな断りの枠は出さない)
+        assert "chiezo-trigger が立ち上がっていない場合、再構築と削除はできません。" in html
+        assert "読むだけならこのままで動きます" not in html
 
     def test_buttons_are_disabled_when_it_is_unreachable(self, client, monkeypatch):
         monkeypatch.setattr("app.views.admin.TRIGGER_URL", "http://example.invalid")
         html = client.get("/admin/memory").text
         assert '<button type="submit" disabled>再構築</button>' in html
-        assert "読むだけならこのままで動きます" in html
+        # 押せない理由は表の上の 1 行で言う(大きな断りの枠は出さない)
+        assert "chiezo-trigger が立ち上がっていない場合、再構築と削除はできません。" in html
+        assert "読むだけならこのままで動きます" not in html
 
     def test_reading_still_works(self, client, monkeypatch):
         """検索も文書取得も trigger とは無関係に動くこと。"""
@@ -1844,10 +1849,10 @@ class TestAdminPages:
 
         if not usage_store.is_enabled():
             return
-        text = client.get("/admin").text
+        text = client.get("/admin/status").text
         # 使う相手がいない素の状態では出さない（列だけの表を置かない）
         has_enabled = any(r["enabled"] for r in usage.rows())
-        assert ("使用量" in text) is bool(has_enabled)
+        assert ("AI 使用量</h2>" in text) is bool(has_enabled)
 
     def test_the_entrance_shows_every_window_not_just_the_tightest(self, client, monkeypatch):
         """**窓は相手が返したぶんを全部出す。**
@@ -1942,9 +1947,9 @@ class TestAdminPages:
         html = views_admin._usage_html()
 
         assert 'action="/admin/ai/usage/all"' in html
-        # **押した画面へ戻す** —— 行き先を書き切ると、玄関から押した人が
+        # **押した画面へ戻す** —— 行き先を書き切ると、状況の面から押した人が
         # AI の面へ連れて行かれる(行ごとのボタンも同じ)
-        assert html.count('name="back" value="/admin"') == 2
+        assert html.count('name="back" value="/admin/status"') == 2
 
     def test_the_entrance_does_not_link_to_the_ai_page(self, monkeypatch):
         """玄関から辿れる面はメニューに並んでいる。
@@ -1984,7 +1989,9 @@ class TestAdminPages:
         """外の URL へは戻さない(押した先が別のサイトになる)。"""
         from app.views import ai_usage
 
-        assert ai_usage._back_to("/admin") == "/admin"
+        assert ai_usage._back_to("/admin/status") == "/admin/status"
+        # トップはもう使用量を出さないので、戻り先にもならない
+        assert ai_usage._back_to("/admin") == ai_usage.DEFAULT_BACK
         assert ai_usage._back_to("https://example.com") == ai_usage.DEFAULT_BACK
         assert ai_usage._back_to("//example.com") == ai_usage.DEFAULT_BACK
         assert ai_usage._back_to(None) == ai_usage.DEFAULT_BACK
@@ -1992,11 +1999,11 @@ class TestAdminPages:
     def test_the_entrance_shows_the_disk(self, client):
         """**この画面から始まる操作がディスクを一番食う**（取り込み 1 回で数十 GB）。
         押す前に見えるところに置く。"""
-        assert "ディスクの空き" in client.get("/admin").text
+        assert "ディスクの空き" in client.get("/admin/status").text
 
     def test_nothing_running_shows_no_table(self, client):
         """空の表を置くと、いつも何かが動いていないことのほうが目立つ。"""
-        assert "いま走っている AI への依頼" not in client.get("/admin").text
+        assert "いま走っている AI への依頼" not in client.get("/admin/status").text
 
     def test_every_page_can_reach_the_others(self, client):
         """**どの面にも同じ帯を出す** —— 玄関へ戻ってから選び直す、を毎回させない。"""
@@ -2019,12 +2026,40 @@ class TestAdminPages:
             ai_inflight.begin(
                 backend="claude", model="fable", effort="", prompt_bytes=42, timeout=900.0
             )
-            html = c.get("/admin").text
+            html = c.get("/admin/status").text
 
         assert "いま走っている AI への依頼" in html
         assert "claude" in html
         # **「詳しくは」の入口は置かない** —— AI の面はメニューから辿れる
         assert 'href="/admin/ai#ai-history"' not in html
+
+    def test_the_top_is_only_the_way_in(self, client):
+        """トップは各面への入口だけ。いま動いているものは状況の面に出す。"""
+        top = client.get("/admin").text
+
+        assert 'href="/admin/status"' in top
+        # 札の説明には名前が出るので、**中身の塊**が無いことを見る
+        assert 'id="job-head"' not in top
+        assert 'class="job-status' not in top
+        assert 'id="ai-usage"' not in top
+
+    def test_the_name_in_the_head_leads_to_the_top(self, client):
+        """見出しの名前がトップへのリンクを兼ねる(並びに「トップ」は置かない)。"""
+        html = client.get("/admin/memory").text
+
+        assert '<a class="admin-brand" href="/admin">Chiezo 管理画面</a>' in html
+        assert ">トップ<" not in html
+
+    def test_the_memory_page_does_not_show_the_ingest(self, client, monkeypatch):
+        """取り込みの進み具合は状況の面で見る(同じ塊をいくつもの面に散らさない)。"""
+        from app.views import admin
+
+        monkeypatch.setattr(admin, "_fetch_trigger_status",
+                            lambda: {"state": "running", "source": "jawiki"})
+        html = client.get("/admin/memory").text
+
+        assert 'id="job"' not in html
+        assert 'id="job"' in client.get("/admin/status").text
 
     def test_each_page_holds_only_its_own_section(self, client):
         memory = client.get("/admin/memory").text
@@ -2044,7 +2079,7 @@ class TestTheFrontDoorReadsTopToBottom:
     """
 
     def test_the_ingest_block_says_what_it_is(self, client):
-        html = client.get("/admin").text
+        html = client.get("/admin/status").text
 
         assert "取り込み(素材を長期記憶へ焼く)" in html
         # **コードの中の言葉は画面に出さない**
@@ -2110,7 +2145,7 @@ class TestTheFrontDoorReadsTopToBottom:
             admin, "_running_html",
             lambda running, done=None: "<h2 id='running-now'>いま走っている</h2>",
         )
-        html = client.get("/admin").text
+        html = client.get("/admin/status").text
 
         usage = html.index("id='ai-usage'")
         assert html.index('id="job-head"') < usage

@@ -502,10 +502,10 @@ class TestWhereTheButtonSendsYou:
 
     def test_it_goes_back_to_the_page_that_showed_the_button(self, env):
         with make_client(env, ReplyLLM()) as client:
-            res = client.post("/admin/ai/usage/all", data={"back": "/admin"},
+            res = client.post("/admin/ai/usage/all", data={"back": "/admin/status"},
                               follow_redirects=False)
 
-        assert res.headers["location"].startswith("/admin?")
+        assert res.headers["location"].startswith("/admin/status?")
 
     def test_anywhere_else_falls_back_to_the_ai_page(self, env):
         from app.views import ai_usage

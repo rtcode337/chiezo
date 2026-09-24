@@ -60,7 +60,7 @@ def caller_html(caller: str) -> str:
     """誰が頼んだか。**分からないときは空欄にする** ——
     「不明」と書くより、書いていないほうが読み違えない。
 
-    玄関（`/admin`）からも呼ぶので公開している（`who_html` と同じ理由）。
+    状況の面（`/admin/status`）からも呼ぶので公開している（`who_html` と同じ理由）。
     """
     label = ai_inflight.caller_label(caller)
     return f'<span class="muted">{esc(label)}</span>' if label else ""
@@ -69,7 +69,7 @@ def caller_html(caller: str) -> str:
 def prompt_html(text: str, nbytes: int | None) -> str:
     """走っている依頼の「何を頼んでいるか」。頭を出し、全文は畳んでおく。
 
-    玄関（`/admin`）からも同じ書き方で出すので公開している —— 別々に書くと、
+    状況の面（`/admin/status`）からも同じ書き方で出すので公開している —— 別々に書くと、
     同じ依頼が 2 つの画面で違って見える（`who_html` / `elapsed` と同じ理由）。
 
     **大きさだけでは足りない。** 同じ相手に同じくらいの依頼を 2 本投げていると、
@@ -105,7 +105,7 @@ DEFAULT_MODEL_LABEL = "既定"
 def who_html(backend: str, model: str, effort: str = "") -> str:
     """相手の欄。相手の名前の下にモデルと考える量を添える。
 
-    玄関（`/admin`）からも同じ書き方で出すので公開している —— 別々に書くと、
+    状況の面（`/admin/status`）からも同じ書き方で出すので公開している —— 別々に書くと、
     同じ依頼が 2 つの画面で違って見える（`elapsed` と同じ理由）。
 
     **モデルが無いのは 2 通りある**が、どちらも「相手の既定に任せた」で説明が付く ——
@@ -232,7 +232,7 @@ def elapsed(started: str) -> str:
     """始まってからの経過。**走っている行はこれが要**で、日時だけでは
     「遅い」のか「止まっている」のかが読めない。
 
-    玄関（`/admin`）からも同じ書き方で出すので公開している —— 別々に書くと、
+    状況の面（`/admin/status`）からも同じ書き方で出すので公開している —— 別々に書くと、
     同じ依頼が 2 つの画面で違う経過に見える。
     """
     at = parse_jst(started)

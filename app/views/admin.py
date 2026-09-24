@@ -194,17 +194,15 @@ def run_buttons_disabled(job: dict | None) -> str:
     return ""
 
 
-# 取り込みの塊に添える見出し(玄関だけ)。**「取り込み」とだけ書かない** ——
+# 取り込みの塊に添える見出し(状況の面で付ける)。**「取り込み」とだけ書かない** ——
 # 何をどこへ書く処理なのかが読めないと、初期化・再構築・削除のどれと繋がる表示なのかが
 # 分からない。**「ingest」とも書かない** —— コードの中の言葉で、画面の言葉ではない。
-# 取り込みの塊を出している面。**戻り先はここから選ぶ** —— フォームで運ばれてきた
-# 文字列をそのまま行き先にすると、検査を通しても「外から来た値」のまま残る
-# (`views/ai_usage.py` の `_back_to` と同じ考え方)
-JOB_BACK_HOME = "/admin"
-JOB_BACK_MEMORY = "/admin/memory"
-JOB_BACK_OSM = "/admin/osm"
-JOB_BACK_WIKIPEDIA = "/admin/wikipedia"
-JOB_BACK_PAGES = (JOB_BACK_HOME, JOB_BACK_MEMORY, JOB_BACK_OSM, JOB_BACK_WIKIPEDIA)
+# **いま動いているものを見る面**(取り込み・AI への依頼・使用量・ディスクの空き)。
+# 取り込みの塊はここにしか出さない —— 記憶や初期化の面にも出していた頃は、
+# 同じ塊がいくつもの面に散らばり、どこで見ればよいのかが決まらなかった。
+# **走らせるボタンを押したら、ここへ連れてくる**(押した人が次に見たいのは進み具合)
+STATUS_PAGE = "/admin/status"
+STATUS_JOB = f"{STATUS_PAGE}#job"
 
 JOB_HEADING = '<h2 id="job-head">取り込み(素材を長期記憶へ焼く)</h2>'
 
@@ -224,16 +222,28 @@ def _running_sweep(source: str) -> str:
     return ""
 
 
-def _job_status_html(job: dict | None, heading: bool = False, back: str = "/admin") -> str:
-    """取り込みの塊。`heading` は**玄関にだけ付ける**。
+def _job_status_html(job: dict | None, heading: bool = False, back: str = STATUS_PAGE) -> str:
+    """取り込みの塊。`heading` は**状況の面で付ける**。
 
-    他の面は上に文脈があるので要らないが(記憶の面・初期化の面)、玄関は
-    いくつもの塊が縦に並ぶだけなので、**何の表示なのかが読めない**。
+    状況の面はいくつもの塊が縦に並ぶだけなので、見出しが無いと
+    **何の表示なのかが読めない**。
     """
     return (JOB_HEADING if heading else "") + _job_body_html(job, back)
 
 
-def _job_body_html(job: dict | None, back: str = "/admin") -> str:
+def _trigger_missing_html(job: dict | None) -> str:
+    """取り込み側に繋がらないときだけ出す断り書き。**進み具合は出さない**(状況の面の役目)。
+
+    記憶や初期化の面から取り込みの塊を外すと、**押せないボタンの理由まで消える** ——
+    初期化・再構築・削除が灰色のまま並ぶだけで、壊れているのか設定が足りないのかが
+    読めない。理由の文は塊と同じものを使う(書き分けると食い違う)。
+    """
+    if job is None or job.get("state") == "unreachable":
+        return _job_body_html(job)
+    return ""
+
+
+def _job_body_html(job: dict | None, back: str = STATUS_PAGE) -> str:
     if job is None:
         return (
             '<div class="job-status" id="job">'
@@ -272,8 +282,7 @@ def _job_body_html(job: dict | None, back: str = "/admin") -> str:
     log_tail = job.get("log_tail")
     if log_tail:
         # **走っている間だけ開いておく。** 終わったログは「見に行けば読める」で足り、
-        # 出しっぱなしにすると、何も起きていない画面の大半をログが占める
-        # （玄関にも同じものが出るので、なおさら邪魔になる）。
+        # 出しっぱなしにすると、何も起きていない画面の大半をログが占める。
         # `open` を状態で決めるので、走り始めれば読み直したときに自然と開く
         opened = " open" if state == "running" else ""
         lines.append(
@@ -2017,8 +2026,11 @@ def _answer_status_html() -> str:
 
 # 管理画面の面。**1 枚に積み上げない** —— 知識・AI・サーバーは見に来る目的が違い、
 # 縦に並べると、いま見たい節に着くまで無関係な表を何度もスクロールすることになる。
-# 玄関に要約を置き、深いところは選んで入る。
+# トップに要約を置き、深いところは選んで入る。
 PAGES = (
+    # **先頭に置く。** 毎回まず見に来るのは「いま何が動いているか」で、
+    # 走らせるボタンを押したあとに連れてこられるのもここ
+    (STATUS_PAGE, "状況", "いま動いているもの。取り込み・AI への依頼・使用量・ディスクの空き"),
     ("/admin/memory", "記憶", "溜めて引く。短期記憶・長期記憶・初期化"),
     # **記憶の隣に置く。** タスクもルールも短期記憶のメモにタグで載っているだけで、
     # 別の置き場を持たない —— 記憶を見に来た流れでそのまま開ける位置にする
@@ -2038,7 +2050,7 @@ PAGES = (
 def nav_html(current: str) -> str:
     """どの面にも出す見出しの帯。**左に名前、右に面へのリンク**。
 
-    **玄関へ戻ってから選び直す、を毎回させない。** 別のモジュールの面
+    **トップへ戻ってから選び直す、を毎回させない。** 別のモジュールの面
     （`views/media_compare.py`）からも呼ぶので公開している —— 写しを持つと、
     面が増えたときに片方の帯にだけ出ないことになる。
 
@@ -2051,9 +2063,9 @@ def nav_html(current: str) -> str:
     並びの素は `PAGES` の 1 か所なので、二度書いてもずれない。
     """
     def items():
-        # **玄関も並びの 1 つにする。** 見出しをリンクにすると、名前を押したら
-        # 移動することに気づけない —— 行き先は行き先として並べる
-        yield "/admin", "トップ", current == "/admin"
+        # **トップは並べない。** 見出しの名前(「Chiezo 管理画面」)がトップへの
+        # リンクを兼ねる —— トップは各面への入口だけの面なので、毎回選ぶ行き先
+        # として並べるほどの中身が無い
         for path, label, _note in PAGES:
             yield path, label, path == current
 
@@ -2074,7 +2086,7 @@ def nav_html(current: str) -> str:
     here_label = next((label for _p, label, h in items() if h), "メニュー")
     return f"""
 <header class="admin-head">
-  <span class="admin-brand">Chiezo 管理画面</span>
+  <a class="admin-brand" href="/admin">Chiezo 管理画面</a>
   <nav class="admin-nav">{wide}</nav>
   <details class="admin-menu">
     <summary>{esc(here_label)}</summary>
@@ -2084,51 +2096,55 @@ def nav_html(current: str) -> str:
 
 
 def _usage_html(request: Request | None = None) -> str:
-    """玄関に出す「使用量」。**有効にしてある相手だけ**を、AI の面と同じ表で。
+    """状況の面に出す「使用量」。**有効にしてある相手だけ**を、AI の面と同じ表で。
 
     かつては 1 行の帯に畳み、相手ごとに**いちばん詰まっている窓**を 1 つだけ
     出していた。あれでは**短い窓しか見えない相手が出る** —— 5 時間の窓が
     詰まっていても週の窓が空いていれば重い仕事は頼めるので、片方だけでは
     頼んでよいかを決められない。表なら窓が何本あっても段が増えるだけで済む。
 
-    **使わない相手は出さない**(玄関は概況で、設定を見に来る場所ではない)。
+    **使わない相手は出さない**(状況の面は概況で、設定を見に来る場所ではない)。
     全部の相手と説明が要るときは「AI と鍵」の面（`views/ai_usage.py`）——
-    **そこへのリンクはここには置かない**。玄関から辿れる面はメニューに並んでいて、
+    **そこへのリンクはここには置かない**。状況の面から辿れる面はメニューに並んでいて、
     節ごとに「詳しくはあちら」を足すと、同じ行き先が画面の中に何本も増える。
 
     **描くときに相手へ問い合わせない**（`usage.rows()` は控えを読むだけ）。
-    玄関は何度も開く画面なので、開くたびに外へ出ると相手のレート制限に当たる。
+    状況の面は何度も開く画面なので、開くたびに外へ出ると相手のレート制限に当たる。
     """
     if not usage_store.is_enabled():
         return ""
     rows = [row for row in usage.rows() if row["enabled"]]
-    # **取り直す口を玄関にも置く。** ここは「重い仕事を頼んでよいか」を見に来る
+    # **取り直す口を状況の面にも置く。** ここは「重い仕事を頼んでよいか」を見に来る
     # 画面なので、数字が古いと判断できない —— 取り直すために AI の面まで開くのは、
     # 見に来た目的から遠い。**押した画面へ戻る**(`back`)
     button = (
-        ai_usage.refresh_all_form("すべて取り直す", back="/admin", klass="usage-refresh")
+        ai_usage.refresh_all_form("すべて取り直す", back=STATUS_PAGE, klass="usage-refresh")
         if usage.refreshable() else ""
     )
     if not rows:
         # 使う相手が 1 つも無いときは何も出さない（列だけの表は、枠が取れて
         # いないのか相手がいないのかが読めない）。枠がまだ取れていないだけなら
         # 行は出る —— その行に「まだ取っていない」と書くので、最初の 1 回も
-        # 玄関から始められる
+        # 状況の面から始められる
         return ""
     return (
-        f'<h2 id="{ai_usage.SECTION_ANCHOR}">使用量</h2>\n'
+        # **「AI 使用量」と書く。** 状況の面はディスクや取り込みと並ぶので、
+        # 「使用量」だけではディスクの使用量と区別が付かない
+        f'<h2 id="{ai_usage.SECTION_ANCHOR}">AI 使用量</h2>\n'
         f'{ai_usage.banner_html(request)}'
         f'<p class="usage-strip">{button}</p>\n'
-        f'{ai_usage.table_html(rows, back="/admin")}'
+        f'{ai_usage.table_html(rows, back=STATUS_PAGE)}'
     )
 
 
 @router.get("/admin", response_class=HTMLResponse)
 def admin(request: Request):
-    """玄関。**いま何が起きているかが 1 画面で読めること**だけを受け持つ。
+    """トップ。**各面への入口だけ**を受け持つ。
 
-    設定は持たない —— 状態と数、それに「いま頼めるか」を読むための表だけを出して、
-    直しに行くのは各面。
+    いま動いているもの(取り込み・AI への依頼・使用量・ディスクの空き)は
+    状況の面(`admin_status`)へ移した —— トップに並べていた頃は、面を選びに
+    来ただけでも入口が画面の下へ押し出されていた。
+    入口の札には概況を 1 行ずつ添える(どの面を開けばよいかを札で決められるように)。
     """
     sources: dict[str, Source] = request.app.state.sources
     job = _fetch_trigger_status()
@@ -2142,14 +2158,12 @@ def admin(request: Request):
     enabled_collections = [c for c in collections if c.enabled]
 
     summary = {
+        STATUS_PAGE: _status_summary(job, running),
         "/admin/memory": (
             f"長期 {len(long_term)} ソース / {docs:,} 文書、短期 {notes_docs:,} 件。"
             f"収集 {len(collections)} 件(有効 {len(enabled_collections)} 件)"
         ),
-        "/admin/ai": (
-            f"話せる相手 {len(answer.backend_names())} 件。"
-            + (f"<strong>いま {len(running)} 件走っている</strong>" if running else "いま走っているものは無い")
-        ),
+        "/admin/ai": f"話せる相手 {len(answer.backend_names())} 件",
         "/admin/todo": _todo_summary(),
         "/admin/server": esc(build_info.describe().splitlines()[0] if build_info.describe() else ""),
     }
@@ -2161,14 +2175,10 @@ def admin(request: Request):
         for path, label, note in PAGES
     )
 
-    # **玄関にも同じ帯を出す。** ここだけ帯が無いと、面から戻ってきたときに
+    # **トップにも同じ帯を出す。** ここだけ帯が無いと、面から戻ってきたときに
     # リンクの位置が変わる（見出しは帯が持つので `<h1>` は置かない）
     body = f"""
 {nav_html("/admin")}
-<p>{_disk_html(request.app.state.data_dir)}</p>
-{_job_status_html(job, heading=True)}
-{_running_html(running, _round_done(job))}
-{_usage_html(request)}
 <div class="admin-cards">
 {cards}
 </div>
@@ -2176,8 +2186,47 @@ def admin(request: Request):
     return HTMLResponse(content=page_shell("管理画面", body))
 
 
+def _status_summary(job: dict | None, running: list[dict]) -> str:
+    """トップの「状況」の札に添える 1 行。取り込みと AI への依頼が動いているか。
+
+    **走っているときだけ強く書く** —— 札を見て開くかどうかを決めるための行なので、
+    静かなときに目立たせても判断の足しにならない。
+    """
+    if job is None:
+        ingest = "取り込み: 未設定"
+    elif job.get("state") == "running":
+        ingest = f"<strong>取り込み中({esc(str(job.get('source') or ''))})</strong>"
+    elif job.get("state") == "unreachable":
+        ingest = "取り込み: 繋がらない"
+    else:
+        ingest = "取り込み: 待機中"
+    ai = (f"<strong>AI への依頼 {len(running)} 件走っている</strong>" if running
+          else "AI への依頼は無い")
+    return f"{ingest}。{ai}"
+
+
+@router.get(STATUS_PAGE, response_class=HTMLResponse)
+def admin_status(request: Request):
+    """状況。**いま何が起きているかが 1 画面で読めること**だけを受け持つ。
+
+    設定は持たない —— 状態と数、それに「いま頼めるか」を読むための表だけを出して、
+    直しに行くのは各面。**走らせるボタンを押した人もここへ連れてくる**
+    (`STATUS_JOB`)—— 押した直後に見たいのは進み具合で、それが出るのはここだけ。
+    """
+    job = _fetch_trigger_status()
+    running = ai_history.running_rows()
+    body = f"""
+{nav_html(STATUS_PAGE)}
+<p>{_disk_html(request.app.state.data_dir)}</p>
+{_job_status_html(job, heading=True)}
+{_running_html(running, _round_done(job))}
+{_usage_html(request)}
+"""
+    return HTMLResponse(content=page_shell("状況", body))
+
+
 def _todo_summary() -> str:
-    """玄関に出す ToDo の概況。**短期記憶が無効なら数えない**(置き場が無い)。"""
+    """トップに出す ToDo の概況。**短期記憶が無効なら数えない**(置き場が無い)。"""
     if not notes.is_enabled():
         return '<span class="muted">短期記憶が無効なので置けません</span>'
     active = tasks.list_active_tasks()
@@ -2191,7 +2240,7 @@ def _todo_summary() -> str:
 
 
 def _is_collection(name: str) -> bool:
-    """その名前が収集か。**読めなければ「違う」に倒す**(玄関を落とさない)。"""
+    """その名前が収集か。**読めなければ「違う」に倒す**(状況の面を落とさない)。"""
     with suppress(Exception):
         return collect.get(name) is not None
     return False
@@ -2200,9 +2249,9 @@ def _is_collection(name: str) -> bool:
 def _round_done(job: dict | None) -> list[dict]:
     """いま走っている取り込みが収集なら、**その回でもう終わった依頼**。
 
-    **1 回の取り込みで何本も走る。** 巡回は区画ごとに AI を呼ぶので、玄関に出るのは
+    **1 回の取り込みで何本も走る。** 巡回は区画ごとに AI を呼ぶので、状況の面に出るのは
     そのうち**いま飛んでいる 1 本だけ**だった —— 終わったぶんは控えへ移るので、
-    「この回で何本目か」「さっきのは通ったのか」が玄関からは読めない。
+    「この回で何本目か」「さっきのは通ったのか」が状況の面からは読めない。
     **回の始まりは取り込みの開始時刻**(依頼元が同じでも、前の回のぶんまで
     引っ張ってきては意味が変わる)。
 
@@ -2214,7 +2263,7 @@ def _round_done(job: dict | None) -> list[dict]:
     name = str(job.get("source") or "")
     # **収集かどうかは定義を引いて確かめる**(`_running_sweep` と同じ流儀)——
     # ダンプのソースを焼いている回には、回という括りが無い。
-    # **読めなくても画面は落とさない**(玄関の本体はここではない)
+    # **読めなくても画面は落とさない**(状況の面の本体はここではない)
     if not name or not _is_collection(name):
         return []
     return [
@@ -2245,7 +2294,7 @@ def _running_html(running: list[dict], done: list[dict] | None = None) -> str:
     rows = "".join(
         f"<tr><td>{esc(ai_log.kind_label(r['kind']))}</td>"
         # 相手とモデルの書き方は `ai_history` と共有する —— 別々に書くと、
-        # 同じ依頼が玄関と表で違って見える(経過の `elapsed` と同じ理由)
+        # 同じ依頼が状況の面と表で違って見える(経過の `elapsed` と同じ理由)
         f"<td>{ai_history.who_html(r['backend'], r.get('model') or '', r.get('effort') or '')}</td>"
         f"<td>{esc(r['state'])}</td>"
         # **終わったぶんは「かかった時間」を出す** —— 経過(いまとの差)だと、
@@ -2372,6 +2421,12 @@ def admin_memory(request: Request):
 
 <h2 id="long-term">長期記憶(ためた知識)</h2>
 <p>登録ソース数: {len(long_term)} / 最新のスキーマバージョン: {latest_schema}</p>
+<!-- **いつも出す。** 繋がらないときだけ大きな枠で断っていた頃は、表より先に
+     警告が目に入り、読むだけの人にも「壊れている」ように見えた。押せない理由は
+     この 1 行で足りる(ボタンは繋がらなければ灰色になる) -->
+<p class="muted">
+chiezo-trigger が立ち上がっていない場合、再構築と削除はできません。
+</p>
 <table>
 <thead>
 <tr><th>name</th><th>kind</th><th>lang</th><th>docs</th><th>dump_date</th><th>built_at</th><th>schema_version</th><th></th></tr>
@@ -2385,8 +2440,6 @@ def admin_memory(request: Request):
 <code>scripts/add_tag_index.py</code> でのその場移行でも可)。再構築はブルーグリーンで、
 構築中も現行 DB での配信は続く。完了後は数秒以内に自動で新しい DB へ切り替わる(再起動不要)。
 </p>
-
-{_job_status_html(job, back=JOB_BACK_MEMORY)}
 
 <!-- **長期記憶の中に畳んでおく。** ここを開くのは新しいソースを入れるときだけで、
      日々見に来るのは上の一覧と下の「集める」のほう —— 同じ高さで並べると、
@@ -2656,7 +2709,7 @@ Geofabrik の国別抽出 {total} 件{f"(絞り込み: {len(catalog)} 件)" if n
 <button type="submit">絞り込み</button>
 </form>
 
-{_job_status_html(job, back=JOB_BACK_OSM)}
+{_trigger_missing_html(job)}
 
 {''.join(blocks)}
 """
@@ -2753,7 +2806,7 @@ enwiki はその数倍)。ページビュー突合のため全プロジェクト
 <button type="submit">絞り込み</button>
 </form>
 
-{_job_status_html(job, back=JOB_BACK_WIKIPEDIA)}
+{_trigger_missing_html(job)}
 
 {''.join(blocks)}
 """
@@ -2786,11 +2839,10 @@ def trigger_run(source: str) -> None:
 
 
 @router.post("/admin/ingest/stop")
-def admin_ingest_stop(back: str = Form(JOB_BACK_HOME)):
+def admin_ingest_stop():
     """走っている取り込みを降ろす(`chiezo-trigger` の `POST /stop` へ取り次ぐ)。
 
-    **押した画面へ戻す。** この塊は玄関にも記憶の面にも出るので、行き先を
-    書き切ると見ていた画面から連れ出される。
+    **状況の面へ戻す。** 取り込みの塊を出しているのはそこだけ。
     """
     if not TRIGGER_URL:
         raise HTTPException(
@@ -2805,15 +2857,13 @@ def admin_ingest_stop(back: str = Form(JOB_BACK_HOME)):
         ) from e
     if res.status_code >= 400:
         raise HTTPException(res.status_code, res.json())
-    # **こちらが持っている行き先を返す**(照合して通すのではなく)
-    here = next((page for page in JOB_BACK_PAGES if page == back), JOB_BACK_HOME)
-    return RedirectResponse(url=f"{here}#job", status_code=303)
+    return RedirectResponse(url=STATUS_JOB, status_code=303)
 
 
 def _proxy_trigger_run(source: str) -> RedirectResponse:
-    """上を叩いて管理画面へ戻す(init / rebuild 共通)。"""
+    """上を叩いて状況の面へ連れていく(init / rebuild 共通)。進み具合はそこで見る。"""
     trigger_run(source)
-    return RedirectResponse(url="/admin/memory", status_code=303)
+    return RedirectResponse(url=STATUS_JOB, status_code=303)
 
 
 @router.post("/admin/init/{source}")
@@ -3382,9 +3432,9 @@ async def admin_collect_run(name: str, request: Request):
 
     form = await request.form()
     start_collection_bake(name, str(form.get("sweep") or "") or None)
-    # **押したところへ戻す。** 一覧へ返していた頃は、走らせた本人が結果を見に行くのに
-    # もう一度その収集を探すことになった(見たいのは、いま押した 1 つの進み具合)
-    return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
+    # **状況の面へ連れていく。** 走らせた本人が次に見たいのは、いま押した 1 回の
+    # 進み具合 —— それが出るのは取り込みの塊で、塊は状況の面にしか無い
+    return RedirectResponse(url=STATUS_JOB, status_code=303)
 
 
 @router.post("/admin/collect/{name}/handoff")
@@ -3459,7 +3509,7 @@ async def admin_collect_redo(name: str, request: Request):
 
     sweep = collect.rewind(name)
     start_collection_bake(name, sweep.name)
-    return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
+    return RedirectResponse(url=STATUS_JOB, status_code=303)
 
 
 @router.post("/admin/collect/{name}/repartition")
@@ -3567,14 +3617,9 @@ async def admin_collect_partition_run(name: str, request: Request):
         "backend": "" if workers.ref_in(chosen) else chosen,
         "model": str(form.get("model") or ""),
     })
-    # **1 つだけなら、その区画の面へ戻す**(中身を見に来ているので)。
-    # 何区画も選んだときは一覧へ —— どれか 1 つを選んで戻る理由が無い
-    if len(keys) == 1:
-        return RedirectResponse(
-            url=f"/admin/collect/{quote(name)}/partition?key={quote(keys[0])}",
-            status_code=303,
-        )
-    return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
+    # **状況の面へ連れていく**(「今すぐ実行」と同じ)。押した人が次に見たいのは
+    # この回の進み具合で、区画の中身が動くのは焼き上がってから
+    return RedirectResponse(url=STATUS_JOB, status_code=303)
 
 
 @router.post("/admin/collect/{name}/restart")
@@ -3611,7 +3656,7 @@ async def admin_collect_focus(name: str, request: Request):
         "partition": str(form.get("partition") or ""),
         "requested_by": "管理画面",
     })
-    return RedirectResponse(url="/admin/collect", status_code=303)
+    return RedirectResponse(url=STATUS_JOB, status_code=303)
 
 
 def _blank_to_none(raw) -> str | None:

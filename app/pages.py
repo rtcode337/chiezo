@@ -231,7 +231,7 @@ PAGE_STYLE = """
                     white-space: nowrap; }
   .muted { color: #666; font-size: 0.85rem; }
   .pager { display: flex; gap: 1rem; align-items: baseline; margin-top: 1rem; }
-  /* 玄関の使用量の表に添える 1 行（取り直す口と、全部の相手への入口）。
+  /* 状況の面の使用量の表に添える 1 行（取り直す口と、全部の相手への入口）。
      **表の上に 1 行で収める** —— 表より先に目を引く見た目にしない */
   .usage-strip { display: flex; flex-wrap: wrap; gap: 0.4rem 0.9rem;
                  align-items: baseline; font-size: 0.85rem; margin: 0.6rem 0; }
@@ -259,9 +259,12 @@ PAGE_STYLE = """
   .admin-head { display: flex; align-items: baseline; gap: 1rem;
                 padding-bottom: .6rem; margin-bottom: 1.2rem;
                 border-bottom: 1px solid #e5e5ec; }
-  /* **名前はリンクにしない。** 押したら移動することに気づけないので、
-     行き先は行き先として並べる（並びの先頭が「トップ」） */
-  .admin-brand { font-weight: 700; font-size: 1rem; color: #111; white-space: nowrap; }
+  /* **名前がトップへのリンクを兼ねる。** トップは各面への入口だけの面なので、
+     並びに「トップ」を置くほどの中身が無い。**リンクの色で出す** —— 黒い太字の
+     ままだと、押したら移動することに気づけない */
+  .admin-brand { font-weight: 700; font-size: 1rem; white-space: nowrap;
+                 text-decoration: none; }
+  .admin-brand:hover { text-decoration: underline; }
   /* **右へ寄せる。** 名前とリンクのあいだを伸ばす（gap では寄らない） */
   .admin-nav { margin-left: auto; display: flex; gap: 1rem; font-size: .9rem;
                flex-wrap: nowrap; }
@@ -306,7 +309,7 @@ PAGE_STYLE = """
     .admin-nav { display: none; }
     .admin-menu { display: block; }
   }
-  /* 玄関の入口。**表は置かない** —— 数と状態だけ出して、直しに行くのは各面 */
+  /* トップの入口。**表は置かない** —— 数と状態だけ出して、直しに行くのは各面 */
   .admin-cards { display: grid; gap: 1rem; margin-top: 1.5rem; }
   @media (min-width: 46rem) { .admin-cards { grid-template-columns: repeat(3, 1fr); } }
   .admin-card { border: 1px solid #e2e2ea; border-radius: .8rem; padding: 1rem 1.1rem; background: #fff; }
@@ -787,7 +790,7 @@ TOUCH_SCRIPT = """<script>
 # (やること画面を畳んだときに外したもの)。ここで欲しいのは「帯を消して開く」
 # ことだけで、オフラインで動かしたいわけではない。
 #
-# **`start_url` は玄関にする。** 入り口はいつも同じところがよく、そこから各面へ
+# **`start_url` はトップにする。** 入り口はいつも同じところがよく、そこから各面へ
 # 行ける(帯がどの面にも出る)。
 APP_MANIFEST = {
     "name": "Chiezo — AI知識ベース",

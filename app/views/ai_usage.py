@@ -408,7 +408,7 @@ def _refresh_button(row: dict, back: str, busy: bool = False) -> str:
     )
 
 
-# 押した人を連れ出さないための行き先。**玄関にも同じボタンがある**ので、
+# 押した人を連れ出さないための行き先。**状況の面にも同じボタンがある**ので、
 # 書き切ると、どこから押しても AI の面へ飛ばされる(見ていた画面から追い出される)。
 DEFAULT_BACK = "/admin/ai"
 
@@ -417,7 +417,7 @@ DEFAULT_BACK = "/admin/ai"
 # 「`/admin` で始まるもの」で通していた頃は、**外から来た文字列をそのまま行き先に
 # 繋いでいた** —— 同じ生い立ちのままなので、読む側(と検査する側)には任意の URL を
 # 作れるように見える。行き先が数えられる以上、数え上げるほうが確か。
-BACK_PAGES = ("/admin", DEFAULT_BACK)
+BACK_PAGES = ("/admin/status", DEFAULT_BACK)
 
 
 def _back_to(raw: str | None) -> str:
@@ -458,7 +458,7 @@ def _refresh_all_button() -> str:
 
 
 def refresh_all_form(label: str, back: str = DEFAULT_BACK, klass: str = "init-form") -> str:
-    """まとめて取り直すボタン 1 つぶん。**玄関からも使う**ので、ここが正。
+    """まとめて取り直すボタン 1 つぶん。**状況の面からも使う**ので、ここが正。
 
     `back` に押した画面を渡すと、そこへ戻る(書き切ると連れ出される)。
     """
@@ -470,7 +470,7 @@ def refresh_all_form(label: str, back: str = DEFAULT_BACK, klass: str = "init-fo
 
 
 def banner_html(request: Request | None = None) -> str:
-    """取り直した結果の 1 行。**表を出す画面はどれも出す**(玄関を含む)。
+    """取り直した結果の 1 行。**表を出す画面はどれも出す**(状況の面を含む)。
 
     押した画面へ戻ってくるので、戻った先に結果が出ないと、押したことが
     伝わらない(取れなかった相手がいても気づけない)。
@@ -505,7 +505,7 @@ def banner_html(request: Request | None = None) -> str:
 
 
 def table_html(rows: list[dict], back: str = DEFAULT_BACK) -> str:
-    """使用量の表 1 つぶん。**玄関と AI の面で同じものを出す**ので、ここが正。
+    """使用量の表 1 つぶん。**状況の面と AI の面で同じものを出す**ので、ここが正。
 
     窓は相手が返したぶんを全部並べる —— いちばん詰まっている 1 つだけに
     畳むと、5 時間の窓しか見えない相手が出る。重い仕事を頼んでよいかは、
@@ -586,7 +586,7 @@ async def refresh_all_usage(back: str = Form(DEFAULT_BACK)):
     行ごとに押すと相手の数だけ往復することになる。取れなかった相手がいても
     残りは取り直し、誰が取れなかったかを画面に出す。
 
-    **押した画面へ戻す**(`back`)。玄関にも同じボタンがあるので、行き先を
+    **押した画面へ戻す**(`back`)。状況の面にも同じボタンがあるので、行き先を
     書き切ると、どこから押しても AI の面へ連れて行かれる。
     """
     done, skipped = await usage.refresh_all()
@@ -607,7 +607,7 @@ async def refresh_all_usage(back: str = Form(DEFAULT_BACK)):
 async def refresh_usage(provider: str = Form(...), back: str = Form(DEFAULT_BACK)):
     """1 相手ぶん取り直す(結果はクエリで画面へ返す)。
 
-    **押した画面へ戻す**(`back`)。玄関にも同じ表があるので、行き先を書き切ると
+    **押した画面へ戻す**(`back`)。状況の面にも同じ表があるので、行き先を書き切ると
     どこから押しても AI の面へ連れて行かれる(まとめて取り直すボタンと同じ理由)。
     """
     spec = usage.spec_of(provider)
