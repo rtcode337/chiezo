@@ -878,7 +878,7 @@ def _reason_of(e: HTTPException) -> str:
     return str(detail)
 
 
-async def collect_material(name: str, sources: dict) -> str:
+async def collect_material(name: str, sources: dict, data_dir: Path | None = None) -> str:
     """いま AI に集めさせて、焼く素材(NDJSON)を組み立てる。
 
     **取り込みの中で呼ばれる**(`/v1/collect/fetch`)。集めた瞬間に焼かれるので、
@@ -892,7 +892,7 @@ async def collect_material(name: str, sources: dict) -> str:
     # 無人で回る層なので、走っているものを見に来た人が
     # 「これは自分が頼んだものではない」と分かる必要がある
     with ai_inflight.called_by(f"collect:{name}"):
-        return await _collect_material(name, sources)
+        return await _collect_material(name, sources, data_dir)
 
 
 def _who_ran(used: list) -> dict:
@@ -938,7 +938,38 @@ def _phase_done(label: str, name: str, since: float, count: int) -> float:
     return now
 
 
-async def _collect_material(name: str, sources: dict) -> str:
+def _previous_unreadable(item, sources: dict, data_dir: Path | None = None) -> str:
+    """溜めたものが読めない状態か。読めるなら空文字。
+
+    見るのは 2 つだけで、どちらも数え直さずに読める ——
+    **台帳の件数**(区画ごとの写し)と、**ソース表の件数**(`scan_all` が控えた COUNT)。
+
+    **「まだ焼いていない」と「焼いたのに見えていない」を分ける。** 台帳は焼く前に
+    作られるので(`plan_partitions`)、**1 回目の焼きが落ちた収集は、台帳だけ持った
+    まま残ります** —— そこで断ると、その収集は二度と走れなくなる。
+    分ける手掛かりは**世代のファイルがあるか**で、あるのに表に無ければ、
+    表のほうが古い(差し替えの最中に掴んだ)。
+
+    表に載っているのに 0 件、も同じ扱い(差し替えの途中を掴んだ形)。
+    """
+    known = sum(int(p.get("count") or 0) for p in item.partitions or [])
+    if known <= 0:
+        return ""
+    src = sources.get(item.name)
+    if src is not None:
+        if getattr(src, "doc_count", 0):
+            return ""
+        return f"台帳は {known:,} 件と言っていますが、いまの世代は 0 件です"
+    # **世代が無いなら、まだ焼いていない収集**(あるいは消したあと)。そこは通す
+    if data_dir is None or not (data_dir / f"{item.name}.db").exists():
+        return ""
+    return (
+        f"台帳は {known:,} 件と言っていますが、焼き上がった世代が読めていません"
+        "(差し替えの最中かもしれません)"
+    )
+
+
+async def _collect_material(name: str, sources: dict, data_dir: Path | None = None) -> str:
     # **かかった時間を測る。** 回ごとに桁が違い(相手も区画の大きさも回ごとに変わる)、
     # **遅くなったことは件数からは読めない** —— 同じ件数を返していても、5 分が
     # 20 分になっていれば一周の見込みが 4 倍ずれる。測るのは集めるところまでで、
@@ -951,6 +982,25 @@ async def _collect_material(name: str, sources: dict) -> str:
     # 50 万件の地図の名簿で 1.8 GB になった(実測)。2 周するので、読み直せるように
     # 「呼ぶと流れてくるもの」で渡す
     previous = lambda: collect.stream_previous(name, sources)  # noqa: E731
+    # **溜めたものが読めないなら、AI を呼ぶ前に断る。**
+    #
+    # `stream_previous` はソース表に名前が無ければ**黙って 0 行**を返す ——
+    # 読めないことと、空であることが区別できない。そのまま焼くと**その回の成果だけ**
+    # の世代ができて、溜めたものが丸ごと入れ替わる(本番で 597,068 件の収集が
+    # 3 件になった。1 つ前の世代へ戻して復旧)。
+    #
+    # **断るのは頼む前。** 流す直前に気づいても、そこまでに AI の往復(実測で
+    # 7 分)を済ませてしまっている —— 枠を使ってから断ることになる。
+    #
+    # 突き合わせる相手は**台帳の件数**(区画ごとの写し)と**ソース表の件数**
+    # (`scan_all` が控えた COUNT)。どちらも数え直さずに読める。
+    if reason := _previous_unreadable(item, sources, data_dir):
+        raise HTTPException(409, {
+            "error": f"収集「{name}」を走らせませんでした: {reason}",
+            "hint": "取り込みが世代を差し替えている最中かもしれません。少し待ってから"
+                    "もう一度走らせてください。空から作り直すつもりなら、"
+                    "区画を割り直してから走らせてください(台帳の件数が 0 になります)",
+        })
     # **区画を名指しされた回は割り直さない**(`pending_run`)。理由は 2 つ:
     # ①割り直しは母集団を丸ごと 1 周舐めるので、**1 区画だけ試すための回で
     # いちばん重い処理を走らせることになる**(枠と時間を節約したくて押す口なのに)。
@@ -1187,7 +1237,9 @@ def _logged_stream(lines, name: str, expected):
         raise
 
 
-async def collect_preview(name: str, sources: dict, sweep_name: str | None = None) -> dict:
+async def collect_preview(
+    name: str, sources: dict, sweep_name: str | None = None, data_dir: Path | None = None
+) -> dict:
     """いま AI に集めさせて、**焼かずに**前世代との差分だけ返す。
 
     プロンプトを育てるための道具。作り直し(整理)は前世代を置き換えるので、
@@ -1203,6 +1255,16 @@ async def collect_preview(name: str, sources: dict, sweep_name: str | None = Non
     sweep = collect.require_runnable(item, sweep_name)
     # 焼く経路と同じく 1 行ずつ読む(丸ごと持つと、数十万件の収集で GB 単位になる)
     previous = lambda: collect.stream_previous(name, sources)  # noqa: E731
+    # **溜めたものが読めないなら、ここでも断る**(焼く経路と同じ理由)。
+    # 試し撃ちは前の世代と比べて差分を出す口なので、前世代が読めないと
+    # **全部が新しく見える** —— プロンプトの良し悪しを判断できない
+    if reason := _previous_unreadable(item, sources, data_dir):
+        raise HTTPException(409, {
+            "error": f"収集「{name}」を走らせませんでした: {reason}",
+            "hint": "取り込みが世代を差し替えている最中かもしれません。少し待ってから"
+                    "もう一度走らせてください。空から作り直すつもりなら、"
+                    "区画を割り直してから走らせてください(台帳の件数が 0 になります)",
+        })
     ledger = await asyncio.to_thread(collect.plan_partitions, item, sources, previous)
     # **割り直した台帳で素材を組む。** 定義に入っているのは走る前の台帳なので、
     # この回で割り直したときに食い違う —— 区画を選ぶのは新しい台帳から、
@@ -2686,7 +2748,9 @@ async def collect_fetch(request: Request, source: str = Query(..., description="
     (ダンプのダウンロードも同じくらいかかる)。
     """
     collect.require_enabled()
-    lines = await collect_material(source, request.app.state.sources)
+    lines = await collect_material(
+        source, request.app.state.sources, request.app.state.data_dir
+    )
 
     def flow():
         for line in lines:
@@ -2720,7 +2784,9 @@ async def collect_preview_now(
             "error": f"収集「{name}」は止まっています",
             "hint": "動かすかどうかは Chiezo 側で決めます(管理画面の「有効にする」)",
         })
-    return await collect_preview(name, request.app.state.sources, sweep)
+    return await collect_preview(
+        name, request.app.state.sources, sweep, request.app.state.data_dir
+    )
 
 
 # **`/{name}` より先に置く。** 後ろに置くと `changes` が収集の名前として解釈される

@@ -258,13 +258,60 @@ def build_db(adapter: SourceAdapter, dump_path: Path, dump_date: str, building_p
         conn.close()
 
 
-def validate_db(adapter: SourceAdapter, db_path: Path) -> None:
-    """最低件数とサンプルタイトルの検索が通ることを確認する(設計書 §6.1-4)。"""
+# 焼き上がった世代が、いまの世代のこれを切ったら差し替えない。
+#
+# **溜めていく層では、前世代が読めないまま焼くと中身が丸ごと入れ替わる** ——
+# 本番で 597,068 件の収集が 3 件の世代に置き換わった(素材の下限は「これから流す
+# 行数」なので、3 行流すなら下限も 3 になり、検証は通ってしまう)。
+#
+# 半分にしてあるのは、**意図して減らす取り込みを止めないため** ——
+# Overture から日本以外を外した回は 11% 減だった。
+SHRINK_FLOOR = 0.5
+
+
+def _shrink_allowed() -> bool:
+    """意図して大きく減らすときの逃げ道(`ALLOW_SHRINK=1`)。"""
+    return os.environ.get("ALLOW_SHRINK", "").strip().lower() in ("1", "true", "yes")
+
+
+def docs_now(data_dir: Path, source: str) -> int:
+    """いま配られている世代の件数。**無ければ 0**(最初の取り込み)。"""
+    path = data_dir / f"{source}.db"
+    if not path.exists():
+        return 0
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return 0
+    try:
+        (count,) = conn.execute("SELECT COUNT(*) FROM docs").fetchone()
+        return int(count)
+    except sqlite3.Error:
+        # 読めない世代は「無い」と同じ扱い(ここで取り込みを止める理由が無い)
+        return 0
+    finally:
+        conn.close()
+
+
+def validate_db(adapter: SourceAdapter, db_path: Path, now_docs: int = 0) -> None:
+    """最低件数とサンプルタイトルの検索が通ることを確認する(設計書 §6.1-4)。
+
+    **いまの世代より極端に小さいものも通さない**(`SHRINK_FLOOR`)。下限
+    (`min_docs`)は素材の側が名乗る数なので、**素材そのものが欠けていると
+    下限も一緒に小さくなる** —— 前世代が読めないまま焼いた回がまさにそれで、
+    検証を素通りして溜めたものを消した。
+    """
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
         (count,) = conn.execute("SELECT COUNT(*) FROM docs").fetchone()
         if count < adapter.min_docs:
             raise RuntimeError(f"validation failed: only {count} docs (< {adapter.min_docs})")
+        if now_docs and count < now_docs * SHRINK_FLOOR and not _shrink_allowed():
+            raise RuntimeError(
+                f"validation failed: {count} docs は、いまの世代({now_docs} docs)より"
+                f"大きく減っています(下限 {now_docs * SHRINK_FLOOR:.0f})。"
+                "意図して減らすなら ALLOW_SHRINK=1 を付けてください"
+            )
         for title in adapter.sample_titles:
             row = conn.execute(
                 "SELECT doc_id FROM docs WHERE title = ?"
@@ -360,7 +407,8 @@ def run(source: str, data_dir: Path) -> Path:
     check_stop()
     try:
         build_db(adapter, dump_path, dump_date, building_path)
-        validate_db(adapter, building_path)
+        # **いまの世代と比べる。** 差し替える前にしか比べられない
+        validate_db(adapter, building_path, docs_now(data_dir, source))
     except Stopped:
         # **止めたときは素材を脇へ除けない。** `on_broken` は「焼けない素材」を
         # 次の回に拾わせないための仕掛けで、ここで呼ぶと**焼けたはずの素材が

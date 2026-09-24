@@ -428,6 +428,75 @@ class TestBuild:
         with pytest.raises(RuntimeError, match="sample title not found"):
             ingest_main.validate_db(adapter, building)
 
+    def test_a_generation_that_shrank_is_refused(self, tmp_path, built_data_dir, fixture_dump):
+        """**溜めたものが丸ごと入れ替わるのを止める。**
+
+        素材の下限（`min_docs`）は「これから流す行数」なので、素材そのものが
+        欠けていると下限も一緒に小さくなる —— 本番で 597,068 件の収集が 3 件の
+        世代に置き換わった。いまの世代と比べる床を、別の軸として置く。
+        """
+        import shutil
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        shutil.copy(built_data_dir / "jawiki-20260701.db", data_dir / "jawiki-20260701.db")
+        (data_dir / "jawiki.db").symlink_to("jawiki-20260701.db")
+        now = ingest_main.docs_now(data_dir, "jawiki")
+        assert now > 0
+
+        # 1 件だけの世代を焼いたことにする
+        small = tmp_path / "jawiki-20260702.db.building"
+        conn = sqlite3.connect(small)
+        conn.executescript(ingest_core.CORE_SCHEMA_DDL)
+        conn.execute(
+            "INSERT INTO docs (doc_id, title, opening, body, tags, updated_at, rank_score)"
+            " VALUES (1, '1 件だけ', '本文', '本文', NULL, '2026-01-01T00:00:00+00:00', 0.0)"
+        )
+        conn.commit()
+        conn.close()
+
+        adapter = make_test_adapter()
+        adapter.min_docs = 1
+        adapter.sample_titles = []
+
+        with pytest.raises(RuntimeError, match="大きく減って"):
+            ingest_main.validate_db(adapter, small, now)
+
+    def test_a_first_generation_is_not_compared(self, tmp_path, fixture_dump):
+        """**消して作り直す道は塞がない。** いまの世代が無ければ比べる相手も無い。"""
+        adapter = make_test_adapter()
+        adapter.min_docs = 1
+        building = tmp_path / "jawiki-20260701.db.building"
+        ingest_main.build_db(adapter, fixture_dump, "20260701", building)
+
+        ingest_main.validate_db(adapter, building, ingest_main.docs_now(tmp_path, "jawiki"))
+
+    def test_the_floor_can_be_lifted_on_purpose(self, tmp_path, built_data_dir, monkeypatch):
+        """意図して大きく減らす回もある（別の国を外す、対象を絞り直す）。"""
+        import shutil
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        shutil.copy(built_data_dir / "jawiki-20260701.db", data_dir / "jawiki-20260701.db")
+        (data_dir / "jawiki.db").symlink_to("jawiki-20260701.db")
+
+        small = tmp_path / "small.db"
+        conn = sqlite3.connect(small)
+        conn.executescript(ingest_core.CORE_SCHEMA_DDL)
+        conn.execute(
+            "INSERT INTO docs (doc_id, title, opening, body, tags, updated_at, rank_score)"
+            " VALUES (1, '1 件だけ', '本文', '本文', NULL, '2026-01-01T00:00:00+00:00', 0.0)"
+        )
+        conn.commit()
+        conn.close()
+
+        adapter = make_test_adapter()
+        adapter.min_docs = 1
+        adapter.sample_titles = []
+        monkeypatch.setenv("ALLOW_SHRINK", "1")
+
+        ingest_main.validate_db(adapter, small, ingest_main.docs_now(data_dir, "jawiki"))
+
     def test_validation_fails_on_min_docs(self, tmp_path, fixture_dump):
         from sources.wikipedia import WikipediaAdapter
 

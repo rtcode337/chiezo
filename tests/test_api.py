@@ -2320,3 +2320,64 @@ class TestLettingTheBrowserRead:
 
         assert res.status_code == 403
         assert "access-control-allow-origin" not in res.headers
+
+
+class TestNotBakingOverWhatCannotBeRead:
+    """**溜めたものが読めないまま焼かない。**
+
+    `stream_previous` はソース表に名前が無ければ黙って 0 行を返す —— 読めないことと
+    空であることが区別できない。そのまま焼くと、その回の成果だけの世代ができて
+    溜めたものが丸ごと入れ替わる（本番で 597,068 件の収集が 3 件になった）。
+    """
+
+    class _Src:
+        def __init__(self, doc_count: int):
+            self.doc_count = doc_count
+
+    class _Item:
+        name = "meals"
+
+        def __init__(self, partitions):
+            self.partitions = partitions
+
+    def test_a_collection_never_baked_is_let_through(self):
+        """消して作り直す道は塞がない（台帳が空なら比べる相手も無い）。"""
+        from app.main import _previous_unreadable
+
+        assert _previous_unreadable(self._Item([]), {}) == ""
+
+    def test_a_generation_on_disk_that_is_not_in_the_table_is_refused(self, tmp_path):
+        """**焼いた世代はあるのに、表に載っていない** —— 差し替えの最中を掴んだ形。"""
+        from app.main import _previous_unreadable
+
+        item = self._Item([{"key": "a", "count": 300}, {"key": "b", "count": 297}])
+        (tmp_path / "meals.db").write_bytes(b"")
+
+        assert "読めていません" in _previous_unreadable(item, {}, tmp_path)
+
+    def test_a_ledger_without_a_generation_is_let_through(self, tmp_path):
+        """**1 回目の焼きが落ちた収集を、二度と走れなくしない。**
+
+        台帳は焼く前に作られる（`plan_partitions`）ので、台帳だけ持った収集は
+        ありうる。そこで断ると、その収集は永遠に止まる。
+        """
+        from app.main import _previous_unreadable
+
+        item = self._Item([{"key": "a", "count": 300}])
+
+        assert _previous_unreadable(item, {}, tmp_path) == ""
+
+    def test_an_empty_generation_is_refused(self):
+        """差し替えの途中で 0 件の世代を掴むことがある。"""
+        from app.main import _previous_unreadable
+
+        item = self._Item([{"key": "a", "count": 300}])
+
+        assert "0 件です" in _previous_unreadable(item, {"meals": self._Src(0)})
+
+    def test_a_readable_generation_is_let_through(self):
+        from app.main import _previous_unreadable
+
+        item = self._Item([{"key": "a", "count": 300}])
+
+        assert _previous_unreadable(item, {"meals": self._Src(597_068)}) == ""
