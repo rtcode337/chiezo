@@ -1232,6 +1232,17 @@ class TestPoolingTheSmallCategories:
 
         assert sorted(p["key"] for p in got) == ["アルメニア|-", "日本|-"]
 
+    def test_a_middling_category_is_pooled_too(self):
+        """**大きさでは絞らない。** 年が全部で 1 帯なら受け持ちは「その国の全員」で、
+        何人いても寄せて構わない —— 「5 人以下だけ」にしていた頃は、入る大きさなのに
+        1 帯のままの国がいくつも独りで残っていた。"""
+        ledger = [self.row("アルメニア|-", 8), self.row("エストニア|-", 9)]
+
+        got = partition.merged(self.spec(target=40), ledger)
+
+        assert [p["key"] for p in got] == ["アルメニア|エストニア|-"]
+        assert got[0]["count"] == 17
+
     def test_it_does_not_mix_laps(self):
         """見ていないぶんが「見終えた」に混ざらないこと(隣とつなぐのと同じ理由)。"""
         ledger = [
