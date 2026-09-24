@@ -411,6 +411,39 @@ PAGE_STYLE = """
     body { margin: 1rem 0.9rem; }
     button { padding: 0.5rem 0.9rem; }
     input[type=text] { width: 100%; }
+    /* **表は 1 行 1 枚の札にする。** 管理画面の表は 7 列あるものもあり、
+       スマホでは横に延々とスクロールすることになっていた —— 横スクロールは
+       「どの列を見ているか」を覚えていないと読めないので、列の多い表ほど破綻する。
+       見出しは各値の脇へ回す(`data-label`。付けるのは `pages.as_cards`)。
+       **掛けるのは見出しのある表だけ**(`table.as-cards`)—— 見出しが無い表で
+       thead を隠すと、名前の付かない値が並ぶだけになる。 */
+    table.as-cards { border: 0; margin-top: 0.8rem; }
+    table.as-cards thead { display: none; }
+    table.as-cards tbody, table.as-cards tr, table.as-cards td { display: block; width: auto; }
+    table.as-cards tr { border: 1px solid #d7d7de; border-radius: 6px;
+                        margin-bottom: 0.7rem; background: #fff; overflow: hidden; }
+    table.as-cards td { border: 0; border-top: 1px solid #f0f0f4;
+                        padding: 0.45rem 0.7rem; white-space: normal; }
+    table.as-cards tr > td:first-child { border-top: 0; background: #fafafc; }
+    /* **見出しは値の左に置く。** 上に積むと 1 行が 2 行になり、札が縦に伸びて
+       結局スクロールが増える。幅は日本語 5〜6 文字ぶん */
+    table.as-cards td[data-label]::before {
+      content: attr(data-label); color: #666; font-size: 0.75rem;
+      line-height: 1.5; padding-top: 0.15rem;
+    }
+    table.as-cards td[data-label] { display: grid; gap: 0.1rem 0.7rem;
+                                    grid-template-columns: 6.5rem minmax(0, 1fr);
+                                    align-items: start; }
+    /* 空の欄(ボタンだけの列の見出しなど)は札に起こさない */
+    table.as-cards td:empty { display: none; }
+    /* 札の中では、1 行に伸ばす指定を解く(横スクロールを戻してしまうため) */
+    table.as-cards td.snippet, table.as-cards td.tags { min-width: 0; }
+    /* **巡回の設定は、その巡回の札に続けて出す。** 別の札に起こすと、どの巡回の
+       設定なのかが読めなくなる(広い画面で上の余白を詰めてあるのと同じ理由)。
+       上の札の下余白ぶん引き上げて、1 枚に見せる */
+    table.as-cards tr.sweep-edit { margin-top: -0.7rem; border-top: 0;
+                                   border-radius: 0 0 6px 6px; }
+    table.as-cards tr.sweep-edit > td:first-child { background: none; }
   }
   /* 会話画面の 1 問 1 答(JS なし)版だけが使う。会話そのものの見た目は CHAT_STYLE 側 */
   form.chat { display: flex; gap: 0.5rem; margin-top: 1rem; }
@@ -756,6 +789,102 @@ APP_MANIFEST = {
 APP_ICON_SVG = base64.b64decode(FAVICON_DATA_URI.split(",", 1)[1])
 
 
+# 1 行を 1 枚の札に起こすための下ごしらえ(スマホ幅の見た目は `PAGE_STYLE` 側)。
+# **表は画面ごとに手で組んである**(31 か所)ので、1 つずつ見出しを書き写すと
+# 書き漏らしと食い違いが必ず出る。**出来上がった HTML に 1 回だけ掛ける**。
+_SCRIPT_BLOCK = re.compile(r"<script\b.*?</script>", re.S | re.I)
+_TABLE_BLOCK = re.compile(r"<table\b[^>]*>.*?</table>", re.S | re.I)
+_TABLE_OPEN = re.compile(r"<table\b([^>]*)>", re.I)
+_THEAD_BLOCK = re.compile(r"<thead\b[^>]*>(.*?)</thead>", re.S | re.I)
+_HEAD_CELL = re.compile(r"<th\b[^>]*>(.*?)</th>", re.S | re.I)
+_BODY_ROW = re.compile(r"<tr\b[^>]*>.*?</tr>", re.S | re.I)
+_BODY_CELL = re.compile(r"<td(\b[^>]*)?>", re.I)
+_ANY_TAG = re.compile(r"<[^>]+>")
+_COLSPAN = re.compile(r'colspan\s*=\s*"?(\d+)', re.I)
+
+
+def _column_names(table: str) -> list[str]:
+    """見出しの行から列の名前。名前として使えなければ空(その表は札にしない)。
+
+    **またがる見出しを持つ表は見送る。** あれは列の名前ではなく表そのものの札で
+    (`<th colspan="6">chiezo 経由で AI に頼めること`)、そのまま配ると 1 列目だけに
+    見当違いの名前が付く。名前が無い表は今までどおり横に伸ばす —— **間違った
+    名前を付けるほうが、名前が無いより読めない**。
+    """
+    head = _THEAD_BLOCK.search(table)
+    if head is None:
+        return []
+    cells = re.findall(r"<th\b([^>]*)>", head.group(1), re.I)
+    if any(_COLSPAN.search(attrs or "") for attrs in cells):
+        return []
+    return [
+        html.escape(_ANY_TAG.sub("", cell).strip(), quote=True)
+        for cell in _HEAD_CELL.findall(head.group(1))
+    ]
+
+
+def _named_cells(row: str, names: list[str]) -> str:
+    """その行の欄に列の名前を添える。**数えるのは `colspan` ぶんも含めて**。"""
+    at = 0
+
+    def one(m: re.Match) -> str:
+        nonlocal at
+        attrs = m.group(1) or ""
+        span = _COLSPAN.search(attrs)
+        name = names[at] if at < len(names) else ""
+        at += int(span.group(1)) if span else 1
+        # **またがる欄には添えない** —— 名前が 1 つに決まらない
+        return f'<td data-label="{name}"{attrs}>' if name and not span else m.group(0)
+
+    return _BODY_CELL.sub(one, row)
+
+
+def _as_cards_table(m: re.Match) -> str:
+    table = m.group(0)
+    names = _column_names(table)
+    if not names:
+        return table
+    head = _THEAD_BLOCK.search(table)
+    body = table[head.end():] if head else table
+    body = _BODY_ROW.sub(lambda r: _named_cells(r.group(0), names), body)
+    table = (table[: head.end()] if head else "") + body
+    return _TABLE_OPEN.sub(_opened_as_cards, table, count=1)
+
+
+def _opened_as_cards(m: re.Match) -> str:
+    attrs = m.group(1) or ""
+    if 'class="' in attrs:
+        return "<table" + attrs.replace('class="', 'class="as-cards ', 1) + ">"
+    return f'<table class="as-cards"{attrs}>'
+
+
+def as_cards(body: str) -> str:
+    """表の欄に列の名前を添える(`data-label`)。**狭い画面で札に起こすため**。
+
+    スマホでは 7 列の表が横に延々と伸びていた。**横スクロールは「どの列を見て
+    いるか」を覚えていないと読めない**ので、列が多い表ほど破綻する。
+
+    **見出しのある表だけ**を対象にする(`table.as-cards` が付く)—— 見出しが
+    無い表で `thead` を隠すと、名前の付かない値が並ぶだけになる。
+
+    **台本の中は触らない。** 会話の画面は表を JavaScript の文字列として持って
+    いて(`app/views/chat.py`)、そこを書き換えると台本そのものが壊れる。
+
+    **足すのは属性だけ**で、中身は 1 文字も動かさない —— 表の切れ目を読み違えても、
+    最悪「名前が付かない欄がある」で済む(壊れた HTML にはならない)。
+    """
+    if "<table" not in body:
+        return body
+    out: list[str] = []
+    at = 0
+    for script in _SCRIPT_BLOCK.finditer(body):
+        out.append(_TABLE_BLOCK.sub(_as_cards_table, body[at : script.start()]))
+        out.append(script.group(0))
+        at = script.end()
+    out.append(_TABLE_BLOCK.sub(_as_cards_table, body[at:]))
+    return "".join(out)
+
+
 def page_shell(title: str, body: str, style: str = "") -> str:
     """共通の外枠。`style` は画面ごとの上乗せ(会話画面だけが使う)。
 
@@ -770,6 +899,9 @@ def page_shell(title: str, body: str, style: str = "") -> str:
     tab_title = f"Chiezo — {title or 'AI知識ベース'}"
     # **印の付いたフォームがある画面にだけ差し込む。** 会話の画面にも相手のセレクトが
     # あり、あちらは自前の台本で動く —— どの画面にも配ると二重に掴むことになる
+    # **表は出来上がってから札の下ごしらえをする。** 画面ごとに手で組んであるので、
+    # 1 つずつ見出しを書き写すと書き漏らしと食い違いが出る(`as_cards`)
+    body = as_cards(body)
     picker = BACKEND_PICKER_SCRIPT if f'class="{BACKEND_FORM_CLASS}"' in body else ""
     # **印の付いたボタンがある画面にだけ差し込む**(セレクトの台本と同じ判断)
     busy = BUSY_FORM_SCRIPT if BUSY_ATTR in body else ""
