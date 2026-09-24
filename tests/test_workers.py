@@ -598,6 +598,86 @@ class TestTheChosenBackendIsUsed:
         assert (asked.backend, asked.model, asked.effort) == ("antigravity", "gemini", "low")
 
 
+class TestWhenAPartitionFails:
+    """**枠と関係のない失敗で、集めたぶんを道連れにしない。**
+
+    本番で、5 区画のうち 4 区画ぶんが返ったあと 5 区画目が 840 秒で時間切れに
+    なり、**27 分ぶんの仕事と枠がまるごと消えた**(控えに残ったのは「0 件」だけ)。
+    落ちた区画から先は見送り、**印はその区画に付けない** —— 次の回がそこから続ける。
+    """
+
+    @pytest.fixture
+    def timing_out(self, enabled, monkeypatch):
+        """3 回目の呼び出しで時間切れになる相手。"""
+        import fastapi
+
+        from app import main
+
+        seen: list[str] = []
+
+        async def fake(asked, _messages):
+            seen.append(asked.backend or "")
+            if len(seen) == 3:
+                raise fastapi.HTTPException(502, {
+                    "error": "llm error 504",
+                    "reason": "antigravity timed out after 840s",
+                })
+            return ('{"items": [{"title": "1 件", "body": "本文"}]}', asked.backend or "", "")
+
+        monkeypatch.setattr(main, "_ask_for_collection", fake)
+        return main, seen
+
+    def _run(self, main, keys, done=None):
+        return asyncio.run(main._collect_items(
+            _collection(), {}, {}, keys, _sweep(), None, None, None, [], done,
+        ))
+
+    def test_what_was_collected_is_kept(self, timing_out):
+        main, _seen = timing_out
+
+        collected, _cursor, note = self._run(main, ["a", "b", "c", "d"])
+
+        assert len(collected) == 2
+        # **理由をそのまま添える** —— 「見送りました」だけだと、時間切れなのか
+        # 相手の不調なのかが控えから読めない
+        assert "840s" in note
+
+    def test_only_the_answered_partitions_are_marked(self, timing_out):
+        """見に行く前に決めた一覧で印を付けると、見送った区画まで見終わりになる。"""
+        main, _seen = timing_out
+        done: list[str] = []
+
+        self._run(main, ["a", "b", "c", "d"], done)
+
+        assert done == ["a", "b"]
+
+    def test_the_rest_is_not_asked_for(self, timing_out):
+        """落ちたところで降りる(次の区画へ投げ直さない)。"""
+        main, seen = timing_out
+
+        self._run(main, ["a", "b", "c", "d"])
+
+        assert len(seen) == 3
+
+    def test_nothing_collected_at_all_is_still_refused(self, enabled, monkeypatch):
+        """1 件も集まっていないなら今までどおり断る —— 失うものが無く、
+        控えに理由が残って予定も進まない。"""
+        import fastapi
+
+        from app import main
+
+        async def failing(_asked, _messages):
+            raise fastapi.HTTPException(502, {"error": "llm error 504",
+                                              "reason": "timed out after 840s"})
+
+        monkeypatch.setattr(main, "_ask_for_collection", failing)
+
+        with pytest.raises(fastapi.HTTPException) as got:
+            self._run(main, ["a", "b"])
+
+        assert got.value.status_code == 502
+
+
 class TestRelayingPartWayThrough:
     """**相手を決めるのは区画ごと。** 1 回で何区画も回るので、決めるのが回の頭
     1 度きりだと、途中で窓が閉まっても同じ相手に投げ続ける ——
@@ -666,6 +746,22 @@ class TestRelayingPartWayThrough:
 
         assert len(collected) == 2
         assert "見送りました" in note
+
+    def test_the_skipped_partitions_are_not_marked(self, asking, monkeypatch):
+        """**見送った区画に印を付けない。** 付けると一周が嘘になる
+        (次に回ってくるのは一周したあと)。"""
+        main, seen = asking
+        workers.save([workers.Worker("精査", (workers.Step("antigravity"),))])
+        _quota("antigravity", 41.0)
+
+        self._closes_after(monkeypatch, seen, 2, 95.0)
+        done: list[str] = []
+        asyncio.run(main._collect_items(
+            _collection(), {}, {}, ["a", "b", "c"], _sweep(worker="精査"),
+            None, None, None, [], done,
+        ))
+
+        assert done == ["a", "b"]
 
     def test_nothing_collected_at_all_is_refused(self, asking):
         """1 件も集まっていないなら、控えに理由を残して断る(予定は進めない)。"""

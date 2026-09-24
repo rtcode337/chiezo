@@ -748,7 +748,7 @@ async def _harvest(item, sweep=None) -> dict | None:
 
 async def _collect_items(
     item, previous: dict, sources: dict, keys: list[str], sweep=None, focus=None, feed=None,
-    seen: set[str] | None = None, used: list | None = None,
+    seen: set[str] | None = None, used: list | None = None, done: list | None = None,
 ) -> tuple[list[dict], str | None, str]:
     """1 回ぶん集める。**最初の 1 回だけ機械的に埋められる**。
 
@@ -761,12 +761,19 @@ async def _collect_items(
     `{current}` がその区画のぶんだけになる意味が消える(区画を切った理由そのもの)。
     1 回に何区画まで見るかは巡回が決める(`Sweep.per_run`)。
 
-    **途中でこけたら、そこまでのぶんも捨てる。** 半端に焼くと、見終わっていない区画に
-    印が付くか、印の付いていない区画の中身だけが入れ替わる —— どちらも後から読めない。
+    **途中でこけても、そこまでに集めたぶんは捨てない。** 捨てていた頃は、
+    5 区画のうち 4 区画ぶんが返ったあとに 5 区画目が時間切れになっただけで、
+    **27 分ぶんの仕事と枠がまるごと消えていた**(本番で実際に起きた)。
+    落ちた区画から先は見送り、**印はその区画に付けない** —— 次の回がそこから続ける。
+    1 件も集まっていなければ今までどおり断る(進み具合も予定も動かない)。
 
     `used` を渡すと、**実際に頼んだ相手**をそこへ書く(戻り値にできないため)。
     ワーカーを使う回は区画ごとに振り替わるので、控えに残すのは「決めた相手」では
     足りない —— 残さないと、履歴の相手の欄が既定の名前のままになる。
+
+    `done` を渡すと、**返ってきた区画の鍵**をそこへ書く。**印を付けてよいのは
+    そこだけ** —— 見に行く前に決めた一覧(`keys`)で印を付けると、落ちて見送った
+    区画まで「見終わった」ことになり、一周が嘘になる。
     """
     # **機械で引く回か**(`collect.uses_extract`)。条件はあちらが持つ ——
     # 書き写すと、片方だけ直したときに食い違う
@@ -804,6 +811,8 @@ async def _collect_items(
     cursor = None
     notes: list[str] = []
     ran_by = ran_model = ""
+    # 枠とは関係のない失敗で降りた理由(空なら最後まで回った)
+    stopped = ""
     for key in keys or [None]:
         content = None
         # **区画ごとに相手を見直す。** 1 回で何区画も回るので、決めるのが回の頭
@@ -832,12 +841,21 @@ async def _collect_items(
                 # 長い 1 回の途中で窓が閉まっても次の採取まで気づけない ——
                 # 断られた事実のほうが新しい。**枠と関係ない失敗では締め出さない**
                 if worker is None or step is None or not workers.looks_full(_reason_of(e)):
-                    raise
+                    # **枠と関係ない失敗**(時間切れ・相手の不調・読めない答え)。
+                    # **集めたぶんがあるなら、道連れにしない** —— ここまでを焼いて
+                    # 降りる。1 件も無いなら今までどおり断る(何も失わない)
+                    if not collected:
+                        raise
+                    stopped = _reason_of(e)
+                    break
                 # **避けるのはその段のモデルが食う枠だけ** —— 相手ごと避けると、
                 # 同じ相手の別の枠に置いた段まで巻き添えで飛ばされる
                 workers.avoid_for_now(step.backend, _reason_of(e), step.model)
                 notes.append(f"{step.backend} が枠切れを返したので、次の段へ回しました")
                 continue
+            break
+        if stopped:
+            notes.append(_stopped_here(stopped, key))
             break
         if content is None:
             # どの段も詰まった。**集めたぶんは捨てない** —— 残りの区画は印を
@@ -850,6 +868,9 @@ async def _collect_items(
         # **1 件ずつに署名を載せる。** ワーカーを使う回は区画ごとに相手が振り替わる
         # ので、回の単位で 1 つに丸めると半分の文書に嘘の署名が付く
         collected += collect.signed(items, ran_by, ran_model)
+        # **返ってきた区画だけに印を付ける**(見送ったぶんは次の回へ)
+        if done is not None and key is not None:
+            done.append(key)
         cursor = next_cursor or cursor
         # **どの区画で切れたかまで残す。** 何区画かまとめて回るので、
         # 「切れました」だけでは次にどこを狭めればよいか分からない
@@ -866,6 +887,16 @@ def _all_full(worker: str) -> dict:
         "hint": f"使用率が {workers.QUOTA_LIMIT:.0f}% を超えている相手と、"
                 "相手自身が枠切れを返した相手は避けます",
     }
+
+
+def _stopped_here(reason: str, key) -> str:
+    """途中で落ちたときの一言。**集めたぶんは焼いて降りる**ので、どこで降りたかを書く。
+
+    **理由をそのまま添える** —— 「見送りました」だけだと、時間切れなのか相手の
+    不調なのかが控えから読めず、次にどこを直せばよいか決められない。
+    """
+    where = f"({key} で)" if key else ""
+    return f"{where}落ちたので、集めたぶんまでを焼いて残りの区画は見送りました: {reason[:200]}"
 
 
 def _gave_up(worker: str, key) -> str:
@@ -1097,6 +1128,9 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
     # **実際に頼んだ相手**。ワーカーを使う回は区画ごとに振り替わるので、
     # 走り終えてからでないと分からない(`_collect_items` が書く)
     used: list = []
+    # **実際に返ってきた区画。** 印を付けてよいのはここだけ —— 見に行く前に
+    # 決めた一覧で付けると、落ちて見送った区画まで「見終わった」ことになる
+    done: list = []
     try:
         feed = await _harvest(item, sweep)
         # **差し込むぶんだけ取り出す。** 区画で切ってあれば、その区画のぶんだけ ——
@@ -1106,7 +1140,7 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
         )
         phase = _phase_done("差し込むぶんを選ぶ", name, phase, len(for_prompt))
         items, next_cursor, note = await _collect_items(
-            item, for_prompt, sources, keys, sweep, focus, feed, shown, used
+            item, for_prompt, sources, keys, sweep, focus, feed, shown, used, done
         )
         # **控えに残すのは、決めた相手ではなく頼んだ相手。** ワーカーを使う回は
         # 巡回に相手が書いていないので、書き換えないと履歴が既定の名前で埋まる
@@ -1169,7 +1203,7 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
         removed_titles=diff["removed_titles"],
         next_cursor=next_cursor,
         sweep=sweep.name,
-        visited=keys,
+        visited=done,
         # **焼いたあとの人数で台帳を書き直す。** 回の頭で数えた値のままにすると、
         # 見終わったばかりの区画が見る前の人数で出る(`collect.partition_counts`)。
         # 割り直した回は数えた値を渡さない —— そちらは割ったときの数を持っている
