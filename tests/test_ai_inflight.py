@@ -553,6 +553,92 @@ class TestStoppingOne:
         assert f"/admin/ai/inflight/{token}/stop" not in html
 
 
+class TestWhenTheWorkerDisappears:
+    """**面倒を見ている側が消えたら、行も消える。**
+
+    ワーカーごと落ちる(再起動・入れ替え)と `end()` を通らないので、行だけが残る。
+    **1 回の上限を 60 分へ伸ばしてから、ここが効くようになった** —— 期限だけに
+    頼っていると、落ちた行が 1 時間「走っている」として並び続け、しかも
+    「止める」を押しても手を離す相手がもう居ない。
+    """
+
+    def _running(self, timeout: float = 3660.0) -> int:
+        from app import ai_inflight
+
+        return ai_inflight.begin(
+            backend="antigravity", model="gemini-3.8-flash-low", effort="",
+            prompt_bytes=42, timeout=timeout,
+        )
+
+    def _age(self, token: int, seconds: int, column: str = "beat_at") -> None:
+        """その行の時刻だけを過去へ動かす(待たずに確かめるため)。"""
+        import sqlite3
+        from datetime import UTC, datetime, timedelta
+
+        from app import ai_inflight
+
+        when = (datetime.now(UTC) - timedelta(seconds=seconds)).isoformat(timespec="seconds")
+        conn = sqlite3.connect(ai_inflight.db_path())
+        try:
+            with conn:
+                conn.execute(f"UPDATE ai_inflight SET {column} = ? WHERE id = ?", (when, token))
+        finally:
+            conn.close()
+
+    def test_a_beating_row_stays(self, state_env):
+        from app import ai_inflight
+
+        token = self._running()
+        ai_inflight.ping(token)
+
+        assert len(ai_inflight.running()) == 1
+
+    def test_a_row_whose_beat_stopped_is_reaped(self, state_env):
+        """**期限より先に気づける。** 60 分待たずに、数十秒で消える。"""
+        from app import ai_inflight
+
+        token = self._running()
+        ai_inflight.ping(token)
+        self._age(token, ai_inflight.BEAT_GRACE_SECONDS + 10)
+
+        assert ai_inflight.running() == []
+
+    def test_a_row_that_never_beat_waits_for_its_deadline(self, state_env):
+        """**脈を打たない経路もある**(流し読みの会話)—— そちらは今までどおり期限で。"""
+        from app import ai_inflight
+
+        self._running()
+
+        assert len(ai_inflight.running()) == 1
+
+    def test_pressing_stop_clears_a_stranded_row(self, state_env):
+        """**押しても何も起きない、を終わらせる。** 生きているワーカーなら数秒で
+        行ごと消えるので、残っているなら待っている相手はもう居ない。"""
+        from app import ai_inflight
+
+        token = self._running()
+        ai_inflight.ask_to_stop(token)
+        self._age(token, ai_inflight.STOP_GRACE_SECONDS + 10, column="stop_at")
+
+        assert ai_inflight.running() == []
+
+    def test_the_waiting_side_keeps_it_alive(self, state_env):
+        """待っている側は「止めてくれ」を見に来るついでに脈を打つ。"""
+        import asyncio
+
+        from app import ai_inflight, answer
+
+        token = self._running()
+        self._age(token, ai_inflight.BEAT_GRACE_SECONDS + 10)
+
+        async def quick():
+            return "はい"
+
+        assert asyncio.run(answer._watching_for_stop(token, quick())) == "はい"
+        ai_inflight.ping(token)
+        assert len(ai_inflight.running()) == 1
+
+
 class TestWhereTheMarkIsPut:
     """**入口で巻けているか。** 印の仕組みがあることと、実際に付くことは別物
     （表情の差し替えと同じで、仕組みだけ入れて素材が 0 枚、が起きる）。"""

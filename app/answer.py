@@ -888,7 +888,10 @@ async def _watching_for_stop(token: int | None, work):
         done, _pending = await asyncio.wait({task}, timeout=STOP_POLL_SECONDS)
         if done:
             return task.result()
-        if await asyncio.to_thread(ai_inflight.stop_wanted, token):
+        # **見に来るついでに脈を打つ**(`ai_inflight.ping`)。面倒を見ているこちらが
+        # 消えれば脈も止まるので、落ちた行は数十秒で掃除される —— 期限だけに
+        # 頼っていた頃は、1 回の上限を伸ばしたぶん落ちた行が 1 時間居座った
+        if await asyncio.to_thread(ai_inflight.ping, token):
             task.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await task

@@ -30,8 +30,12 @@
   止まったものを何十分も残すかのどちらかになる（`media._reap_stale` が kind ごとに
   猶予を分けているのと同じ問題）。始めた側は自分の上限を知っているので、
   そのとき期限まで書いておけば掃除は 1 本の DELETE で済む。
-- 走らせたまま落ちたぶんは期限で消える。 `--workers 2` で動くので、片方が再起動
-  すれば走っていた往復は消え、行だけが残る。
+- 走らせたまま落ちたぶんは、**脈が止まったことで消える**(`ping` / `beat_at`)。
+  待っている側は「止めてくれ」を見に来るついでに脈を打つので、**面倒を見ている
+  ワーカーが消えれば数十秒で行も消える**。期限(`expires_at`)だけに頼っていた頃は、
+  **1 回の上限を 60 分へ伸ばしたぶん、落ちた行が 1 時間居座った** ——
+  しかも「止める」を押しても、手を離す相手がもう居ないので何も起きなかった。
+  **脈を打たない経路もある**(流し読みの会話)ので、期限の側も残してある。
 - プロセスの中の変数に持たない。 ワーカーが 2 つあるので、管理画面を出したほうと
   実際に走らせているほうが別だと何も見えない。
 - `CHIEZO_STATE_DIR` が機能フラグを兼ね、記録に失敗しても呼び出しは壊さない
@@ -166,7 +170,9 @@ CREATE TABLE IF NOT EXISTS ai_inflight (
     caller       TEXT    NOT NULL DEFAULT '',
     -- 「止めてくれ」と言われた時刻（空なら言われていない）。**待っている側が
     -- 見に来る**ので、ここが押す側と待つ側の待ち合わせ場所になる。
-    stop_at      TEXT    NOT NULL DEFAULT ''
+    stop_at      TEXT    NOT NULL DEFAULT '',
+    -- 最後に脈を打った時刻（空なら打たない経路）。待っている側が数秒おきに更新する。
+    beat_at      TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_ai_inflight_at ON ai_inflight(at DESC);
 """
@@ -196,11 +202,21 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
     入れ替わる**ので、消すのではなく足すほうが静かに済む。
     """
     have = {r["name"] for r in conn.execute("PRAGMA table_info(ai_inflight)")}
-    for name in ("prompt", "job_id", "caller", "stop_at"):
+    for name in ("prompt", "job_id", "caller", "stop_at", "beat_at"):
         if name not in have:
             with suppress(sqlite3.Error):
                 conn.execute(
                     f"ALTER TABLE ai_inflight ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+
+
+# 脈が止まったとみなすまでの猶予(秒)。**待っている側は数秒おきに打つ**ので、
+# 数回ぶん空ければ十分 —— 短くしすぎると、詰まった SQLite の 1 回で生きた行が消える。
+BEAT_GRACE_SECONDS = 30
+
+# 「止めてくれ」と言われてから、**誰も手を離さなかった**とみなすまでの猶予(秒)。
+# 面倒を見ているワーカーが生きていれば数秒で行ごと消える —— 消えないなら、
+# 待っている相手はもう居ない(再起動でワーカーごと入れ替わった)。
+STOP_GRACE_SECONDS = 30
 
 
 def _reap_stale(conn: sqlite3.Connection) -> None:
@@ -209,10 +225,28 @@ def _reap_stale(conn: sqlite3.Connection) -> None:
     往復が終われば `end()` が消すが、ワーカーごと落ちた場合はそこを通らない。
     残ったままだと画面に「ずっと走っている依頼」が並び、本当に走っているものが
     埋もれる。
+
+    **消す理由は 3 つある**:
+
+    - **脈が止まった**(`beat_at`)。いちばん速く気づける —— 待っている側が数秒おきに
+      打つので、ワーカーが消えれば数十秒で分かる。
+      **1 回の上限を 60 分へ伸ばしてから、ここが無いと困るようになった**
+      (期限だけだと、落ちた行が 1 時間居座る)
+    - **止めてくれと言われたのに、誰も手を離さなかった**(`stop_at`)。
+      生きているワーカーなら数秒で行ごと消すので、残っているなら相手はもう居ない
+      —— 押した人から見て「押しても何も起きない」をここで終わらせる
+    - **期限が過ぎた**(`expires_at`)。脈を打たない経路(流し読みの会話)の受け皿
     """
+    now = datetime.now(UTC)
     conn.execute(
-        "DELETE FROM ai_inflight WHERE expires_at < ?",
-        (datetime.now(UTC).isoformat(timespec="seconds"),),
+        "DELETE FROM ai_inflight WHERE expires_at < ?"
+        " OR (beat_at != '' AND beat_at < ?)"
+        " OR (stop_at != '' AND stop_at < ?)",
+        (
+            now.isoformat(timespec="seconds"),
+            (now - timedelta(seconds=BEAT_GRACE_SECONDS)).isoformat(timespec="seconds"),
+            (now - timedelta(seconds=STOP_GRACE_SECONDS)).isoformat(timespec="seconds"),
+        ),
     )
 
 
@@ -307,6 +341,35 @@ def ask_to_stop(token: int) -> bool:
         return False
 
 
+def ping(token: int | None) -> bool:
+    """**脈を打ちながら、「止めてくれ」を確かめる。** 待っている側が数秒おきに呼ぶ。
+
+    2 つを 1 回の書き込みにまとめてあるのは、どちらも同じ 1 行の話だから ——
+    分けると、待っている往復の数だけ SQLite への往復が倍になる。
+
+    **打てなくても走っている仕事は止めない**(控えが読めないことと、AI が
+    答えられないことは別の話)。
+    """
+    if token is None:
+        return False
+    path = db_path()
+    if path is None:
+        return False
+    try:
+        with _connect(path) as conn:
+            conn.execute(
+                "UPDATE ai_inflight SET beat_at = ? WHERE id = ?",
+                (datetime.now(UTC).isoformat(timespec="seconds"), token),
+            )
+            found = conn.execute(
+                "SELECT stop_at FROM ai_inflight WHERE id = ?", (token,)
+            ).fetchone()
+    except sqlite3.Error as e:
+        log.warning("ai inflight ping failed: %r", e)
+        return False
+    return bool(found and (found["stop_at"] or ""))
+
+
 def stop_wanted(token: int | None) -> bool:
     """その往復に「止めてくれ」が立っているか。**読めなければ False**
     (控えが読めないことを理由に、走っている仕事を落とさない)。"""
@@ -345,7 +408,7 @@ def running(limit: int = 50) -> list[dict]:
                 for r in conn.execute(
                     # **id も返す。** 止める口はこれで 1 本を名指しする
                     "SELECT id, at, expires_at, backend, model, effort, kind, prompt_bytes,"
-                    " prompt, job_id, caller, stop_at FROM ai_inflight"
+                    " prompt, job_id, caller, stop_at, beat_at FROM ai_inflight"
                     " ORDER BY id DESC LIMIT ?",
                     (max(1, limit),),
                 )
