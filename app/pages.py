@@ -727,6 +727,42 @@ TOUCH_SCRIPT = """<script>
     });
     document.body.appendChild(bar);
     document.body.classList.add('has-app-nav');
+    stickToVisibleBottom(bar);
+  }
+
+  // ---- 帯を、いま見えている範囲の下端に置く ---------------------------------
+  //
+  // **`bottom: 0` だけでは足りない。** iPhone は見えている範囲(visual viewport)と
+  // fixed の基準の枠(layout viewport)を別々に持ち、ホーム画面から開いた状態では、
+  // **キーボードを閉じたあと枠の位置と高さが古いまましばらく残る**(WebKit の不具合)。
+  // その間、帯は枠の下に付いたまま取り残され、下へスクロールするとキーボードの
+  // 高さぶんまで画面の途中へ浮き、上へ戻すと下へ戻る(実際に起きた)。
+  // 見えている範囲が枠のどこにあるか(`visualViewport.offsetTop` / `height`)は
+  // ずれている間も正しいので、**枠の上端から測って見えている範囲の下端へ置く**。
+  // **入力している間は帯を隠す** —— 見えている範囲はキーボードのぶん縮むので、
+  // 置き直すと帯がキーボードの上に乗って書く場所を狭める(入力中に戻る・進むは要らない)
+  function stickToVisibleBottom(el) {
+    var vv = window.visualViewport;
+    if (!vv) { return; }
+    el.style.top = '0';
+    el.style.bottom = 'auto';
+    function typing() {
+      var a = document.activeElement;
+      var tag = a && a.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+        || (a && a.isContentEditable);
+    }
+    function place() {
+      el.style.visibility = typing() ? 'hidden' : '';
+      var y = vv.offsetTop + vv.height - el.offsetHeight;
+      el.style.transform = 'translateY(' + Math.round(y) + 'px)';
+    }
+    vv.addEventListener('resize', place);
+    vv.addEventListener('scroll', place);
+    window.addEventListener('scroll', place, { passive: true });
+    document.addEventListener('focusin', place);
+    document.addEventListener('focusout', function () { setTimeout(place, 0); });
+    place();
   }
 
   // ---- 引っ張って読み直す ---------------------------------------------------
