@@ -789,7 +789,7 @@ async def _harvest(item, sweep=None) -> dict | None:
 async def _collect_items(
     item, previous: dict, sources: dict, keys: list[str], sweep=None, focus=None, feed=None,
     seen: set[str] | None = None, used: list | None = None, done: list | None = None,
-    cut: list | None = None,
+    cut: list | None = None, partition_notes: dict[str, str] | None = None,
 ) -> tuple[list[dict], str | None, str]:
     """1 回ぶん集める。**最初の 1 回だけ機械的に埋められる**。
 
@@ -893,7 +893,11 @@ async def _collect_items(
                 content, ran_by, ran_model = await _ask_for_collection(
                     asked,
                     collect.build_messages(
-                        item, previous, key, sources, sweep, focus, feed, shown,
+                        item, previous, key, sources,
+                        # **区画ごとの補足は、その区画を聞く回にだけ足す**(`notes`)
+                        collect.with_run_note(sweep, item.prompt, (partition_notes or {}).get(key))
+                        if sweep is not None else sweep,
+                        focus, feed, shown,
                     ),
                 )
             except HTTPException as e:
@@ -1278,7 +1282,9 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
         )
         phase = _phase_done("差し込むぶんを選ぶ", name, phase, len(for_prompt))
         items, next_cursor, note = await _collect_items(
-            item, for_prompt, sources, keys, sweep, focus, feed, shown, used, done, cut
+            item, for_prompt, sources, keys, sweep, focus, feed, shown, used, done, cut,
+            # 区画ごとの補足は、割り込みには載せない(割り込みは自分の指示文を持つ)
+            partition_notes=None if focus is not None else once.get("notes"),
         )
         # **控えに残すのは、決めた相手ではなく頼んだ相手。** ワーカーを使う回は
         # 巡回に相手が書いていないので、書き換えないと履歴が既定の名前で埋まる
@@ -3320,7 +3326,13 @@ class RunOnce(BaseModel):
     note: str | None = PydField(
         None,
         description="この回だけ依頼文の後ろに足す補足(外から届いた依頼など)。"
-        "**保存しない**(定時の回は元の依頼文のまま)",
+        "**保存しない**(定時の回は元の依頼文のまま)。全部の区画に同じものが載る",
+    )
+    notes: dict[str, str] | None = PydField(
+        None,
+        description="区画ごとの補足(区画の鍵 → 補足)。**その区画を聞く回にだけ載る** —— "
+        "範囲の外の依頼を、その区画を見ていない AI に渡さないため。"
+        "書いた区画は名指ししたことになる",
     )
 
 

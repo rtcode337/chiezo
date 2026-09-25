@@ -512,6 +512,42 @@ class TestPartitionLedger:
         user = collect.build_messages(collect.get("news"), {}, "く〜そ")[1]["content"]
         assert "く" in user and "{partition}" not in user
 
+    def test_each_partition_hears_only_its_own_note(self, sample, monkeypatch):
+        """**区画ごとの補足は、その区画を聞く回にだけ載る**(`notes`)。
+
+        全部の区画に同じものを渡すと、その区画を見ていない AI まで範囲の外の
+        依頼に答え、見せていない 1 件を中身を知らないまま書き換える。"""
+        import asyncio
+
+        from app import main
+
+        collect.update("news", prompt="この範囲を調べて: {partition}")
+        self._with_ledger(["あ〜き", "く〜そ"])
+        item = collect.get("news")
+        heard = []
+
+        async def reply(_item, messages):
+            heard.append(messages[-1]["content"])
+            return '{"items": []}', "codex", "gpt-6"
+
+        monkeypatch.setattr(main, "_ask_for_collection", reply)
+        asyncio.run(main._collect_items(
+            item, {}, {}, ["あ〜き", "く〜そ"], collect.sweeps_of(item)[0],
+            partition_notes={"あ〜き": "あの店が閉まった"},
+        ))
+
+        assert "あの店が閉まった" in heard[0] and "この回の範囲の外" in heard[0]
+        assert "あの店が閉まった" not in heard[1] and "この回の補足" not in heard[1]
+
+    def test_a_note_for_a_partition_names_it(self, sample):
+        """補足を書いた区画は名指ししたことになる(書き漏らしても黙って落とさない)。"""
+        once = collect.normalize_run_once({
+            "partitions": ["あ〜き"], "notes": {"く〜そ": "依頼", "た〜と": "  "},
+        })
+
+        assert once["partitions"] == ["あ〜き", "く〜そ"]
+        assert once["notes"] == {"く〜そ": "依頼"}
+
     def test_the_only_partition_covers_everything(self, sample):
         """区画が 1 つしか無いなら、その 1 つが全部を引き受ける
         —— 鍵の範囲で伝えると、その外に漏れているものを誰も探しに行かない。"""

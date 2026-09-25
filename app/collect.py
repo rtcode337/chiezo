@@ -1045,14 +1045,29 @@ def normalize_run_once(raw) -> dict | None:
     # **複数の区画を選べる。** 1 件ずつしか走らせられなかった頃は、直したところを
     # 何区画かまとめて確かめたいときに、区画の面を開き直して 1 回ずつ押すことに
     # なった。**1 つだけ書いた形も受ける**(区画の面からはそちらで飛んでくる)
+    # **区画ごとの補足**(`notes`。区画の鍵 → その区画のぶんの補足)。1 回で何区画も
+    # 見るとき、全部の区画に同じ補足を渡すと、**その区画を見ていない AI まで
+    # 範囲の外の依頼に手を出す** —— 見出しで引き当てて直すので、見せていない 1 件の
+    # 本文とタグを、中身を知らないまま書き換えられる。区画ごとに、その区画に入る
+    # ぶんだけを渡す
+    notes = {}
+    raw_notes = raw.get("notes")
+    if isinstance(raw_notes, dict):
+        for key, text in raw_notes.items():
+            key, text = str(key or "").strip(), str(text or "").strip()
+            if key and text:
+                notes[key] = text[:MAX_RUN_NOTE_CHARS]
     keys, seen = [], set()
-    for value in [*(raw.get("partitions") or []), raw.get("partition")]:
+    # **補足を書いた区画は、名指ししたことにする**(書き漏らしても黙って落とさない)
+    for value in [*(raw.get("partitions") or []), raw.get("partition"), *notes]:
         key = str(value or "").strip()
         if key and key not in seen:
             seen.add(key)
             keys.append(key)
+    keys = keys[:MAX_TRIAL_PARTITIONS]
+    notes = {k: v for k, v in notes.items() if k in keys}
     out = {
-        "partitions": keys[:MAX_TRIAL_PARTITIONS],
+        "partitions": keys,
         "backend": str(raw.get("backend") or "").strip()[:60],
         "model": str(raw.get("model") or "").strip()[:80],
         "effort": str(raw.get("effort") or "").strip()[:20],
@@ -1060,6 +1075,7 @@ def normalize_run_once(raw) -> dict | None:
         # **その回だけの補足**(外から届いた依頼など)。依頼文の後ろに足す
         # (`with_run_note`)。**保存しない** —— 定時の回が知らない話で走らないように
         "note": str(raw.get("note") or "").strip()[:MAX_RUN_NOTE_CHARS],
+        "notes": notes,
     }
     kept = {k: v for k, v in out.items() if v}
     return kept or None
@@ -1072,6 +1088,12 @@ def with_run_note(sweep: Sweep, base_prompt: str, note: str | None) -> Sweep:
     ものは触らない」に絞るが、こちらはふつうの回 —— 区画をいつもどおり見たうえで、
     補足に書かれたことも確かめてもらう。**書かれていることを鵜呑みにしない**よう
     頼む(外から届いた依頼で、間違っていることもある)。
+
+    **範囲の外には手を出させない。** 1 回で何区画も見るとき、AI は区画ごとに
+    呼ばれ、見せるのはその区画の中身だけ —— 範囲の外の依頼に答えると、見ていない
+    1 件を中身を知らないまま書き換えることになる(別の区画の回がそれを見ている)。
+    区画ごとの補足(`notes`)ならそもそも範囲の外は渡らないが、全部に同じものを
+    渡す補足(`note`)ではここが歯止めになる。
     """
     note = (note or "").strip()
     if not note:
@@ -1083,7 +1105,9 @@ def with_run_note(sweep: Sweep, base_prompt: str, note: str | None) -> Sweep:
         + "\n\n【この回の補足】\n"
         + "この回では、いつもの仕事に加えて、次の依頼にも答えてください。"
         + "外から届いた依頼で、間違っていることもあります。**書かれていることを"
-        + "確かめてから**反映し、確かめられなかったものは触らないでください。\n\n"
+        + "確かめてから**反映し、確かめられなかったものは触らないでください。"
+        + "**この回の範囲の外にあるものには答えず、触らないでください**"
+        + "(別の回が見ます)。\n\n"
         + note,
     )
 
