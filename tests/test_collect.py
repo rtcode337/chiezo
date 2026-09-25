@@ -2468,6 +2468,40 @@ class TestTheLedgerCountFollowsTheContents:
         assert once["partitions"] == ["あ〜か"]
         assert (asked.backend, asked.model) == ("codex", "gpt-5.6-sol-medium")
 
+    def test_a_note_is_added_to_the_prompt_only_for_that_run(self, sample):
+        """**外から届いた依頼を、その回の依頼文に補足として載せる。** 定義は書き換えない
+        —— 定時の回が知らない話で走らないように。"""
+        collect.update("news", sweeps=[{
+            "name": "情報収集", "interval_minutes": 60, "prompt": "この区画の店を見直して",
+        }])
+        [sweep] = collect.sweeps_of(collect.get("news"))
+        once = collect.normalize_run_once({"partitions": ["a"], "note": "- 〇〇食堂: 閉店した"})
+
+        noted = collect.with_run_note(sweep, "収集の依頼文", once["note"])
+
+        assert noted.prompt.startswith("この区画の店を見直して")
+        assert "【この回の補足】" in noted.prompt
+        assert "- 〇〇食堂: 閉店した" in noted.prompt
+        # 鵜呑みにしないよう頼む(外から届いた依頼は間違っていることもある)
+        assert "確かめてから" in noted.prompt
+        [stored] = collect.sweeps_of(collect.get("news"))
+        assert stored.prompt == "この区画の店を見直して"
+
+    def test_a_note_falls_back_to_the_collection_prompt(self, sample):
+        """巡回が依頼文を持たなければ、収集の依頼文に足す(ふつうの回と同じ文で走る)。"""
+        collect.update("news", sweeps=[{"name": "ざっと見る", "interval_minutes": 60}])
+        [sweep] = collect.sweeps_of(collect.get("news"))
+        sweep = replace(sweep, prompt="")
+
+        noted = collect.with_run_note(sweep, "収集の依頼文", "補足")
+
+        assert noted.prompt.startswith("収集の依頼文")
+        assert collect.with_run_note(sweep, "収集の依頼文", "  ") is sweep
+
+    def test_a_long_note_is_cut(self, sample):
+        once = collect.normalize_run_once({"note": "あ" * 10_000})
+        assert len(once["note"]) == collect.MAX_RUN_NOTE_CHARS
+
     def test_the_sweep_itself_is_not_rewritten(self, sample):
         """**保存しない。** 書き換えると、試し撃ちのつもりが次の定時の回にも効く
         —— 枠が細いときにいちばん避けたい壊れ方(気づくのは枠が尽きてから)。"""
@@ -2530,6 +2564,12 @@ class TestTheLedgerCountFollowsTheContents:
         assert collect.get("news").pending_run == {
             "partitions": ["あ〜か"], "backend": "codex",
         }
+
+    def test_a_note_is_kept_with_the_override(self, sample):
+        """補足は起こす前の控えに一緒に載る(素材を作る側がそこから読む)。"""
+        collect.mark_pending("news", None, {"note": "店が閉まっている"})
+
+        assert collect.get("news").pending_run == {"note": "店が閉まっている"}
 
     def test_a_run_that_could_not_start_takes_the_override_back(self, sample):
         """片方だけ戻すと、次に走る回が名指しされた 1 区画だけを見て終わる。"""

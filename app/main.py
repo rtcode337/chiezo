@@ -1214,6 +1214,8 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
         # されていればそこだけ見る —— 枠が細いときに、直したコードを本番の形で
         # 1 区画ぶんだけ試すための道。**ふつうの回として走る**(印も予定も進む)
         sweep = collect.asked_for_run(sweep, once)
+        # **その回だけの補足**(外から届いた依頼)を依頼文の後ろに足す。定義は書き換えない
+        sweep = collect.with_run_note(sweep, item.prompt, once.get("note"))
         if named:
             # **台帳に無い鍵では走らせない。** どの文書も一致しないので AI は
             # 「誰も居ない」と読んで何も返さず、**空振りに 1 回ぶんの枠を使う**
@@ -3315,6 +3317,11 @@ class RunOnce(BaseModel):
     backend: str | None = PydField(None, description="この回だけ頼む相手")
     model: str | None = PydField(None, description="この回だけのモデル(相手を書いたときだけ効く)")
     worker: str | None = PydField(None, description="空いている相手に選ばせる(相手より優先)")
+    note: str | None = PydField(
+        None,
+        description="この回だけ依頼文の後ろに足す補足(外から届いた依頼など)。"
+        "**保存しない**(定時の回は元の依頼文のまま)",
+    )
 
 
 @app.post("/v1/collect/{name}/run")

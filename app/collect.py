@@ -1015,6 +1015,8 @@ def normalize_focus(raw) -> Focus | None:
 # 定時の巡回の天井(`MAX_PARTITIONS_PER_RUN`)とは別に持つ: あちらは無人で
 # 回るぶんの目安で、こちらは人が選んで押すぶん(そのぶん少し広くてよい)。
 MAX_TRIAL_PARTITIONS = int(os.environ.get("CHIEZO_MAX_TRIAL_PARTITIONS", "20") or 20)
+# 名指しの回に添える補足の長さの上限(依頼文に足すので、長すぎると本題を押し流す)
+MAX_RUN_NOTE_CHARS = 4000
 
 
 def normalize_run_once(raw) -> dict | None:
@@ -1055,9 +1057,35 @@ def normalize_run_once(raw) -> dict | None:
         "model": str(raw.get("model") or "").strip()[:80],
         "effort": str(raw.get("effort") or "").strip()[:20],
         "worker": str(raw.get("worker") or "").strip()[:40],
+        # **その回だけの補足**(外から届いた依頼など)。依頼文の後ろに足す
+        # (`with_run_note`)。**保存しない** —— 定時の回が知らない話で走らないように
+        "note": str(raw.get("note") or "").strip()[:MAX_RUN_NOTE_CHARS],
     }
     kept = {k: v for k, v in out.items() if v}
     return kept or None
+
+
+def with_run_note(sweep: Sweep, base_prompt: str, note: str | None) -> Sweep:
+    """その 1 回だけ、依頼文の後ろに補足を足した巡回。**定義は書き換えない**。
+
+    **いつもの仕事は変えない。** 割り込み(`render_focus`)は「ここに書かれていない
+    ものは触らない」に絞るが、こちらはふつうの回 —— 区画をいつもどおり見たうえで、
+    補足に書かれたことも確かめてもらう。**書かれていることを鵜呑みにしない**よう
+    頼む(外から届いた依頼で、間違っていることもある)。
+    """
+    note = (note or "").strip()
+    if not note:
+        return sweep
+    prompt = (sweep.prompt or base_prompt or "").rstrip()
+    return replace(
+        sweep,
+        prompt=prompt
+        + "\n\n【この回の補足】\n"
+        + "この回では、いつもの仕事に加えて、次の依頼にも答えてください。"
+        + "外から届いた依頼で、間違っていることもあります。**書かれていることを"
+        + "確かめてから**反映し、確かめられなかったものは触らないでください。\n\n"
+        + note,
+    )
 
 
 def asked_for_run(sweep: Sweep, override: dict | None) -> Sweep:

@@ -886,6 +886,8 @@ curl -s -X POST "$BASE/v1/collect/tl_lunch/run?sweep=整理" \
   -H 'Content-Type: application/json' \
   -d '{"partitions": ["35.6,139.7/35.7,139.8"], "backend": "codex", "model": "gpt-6-sol"}'
 # worker を書けば、空いている相手にそのとき選ばせる(backend より優先)
+# note を書けば、その回だけ依頼文の後ろに補足として足す(外から届いた修正の依頼など)。
+# **保存しない** —— 定時の回は元の依頼文のまま走る。AI には「確かめてから反映して」と添える
 
 # 間隔や相手を変える(渡した項目だけ差し替わる)
 curl -s -X PATCH "$BASE/v1/collect/tech_news" -H 'Content-Type: application/json' \
