@@ -375,6 +375,23 @@ def _history_args(request: Request) -> tuple[int, bool]:
     return page, request.query_params.get("ai_failed") == "1"
 
 
+def db_size_text(path: Path) -> str:
+    """いま配っている世代の DB の大きさ。**読めなければ空**(表を落とさない)。
+
+    **リンクの先を測る**(`stat` はたどる)—— `<ソース名>.db` は世代への
+    シンボリックリンクで、リンクそのものは数十バイトしかない。
+    単位は GiB 系(`_disk_html` と同じ数え方。ディスクの空きと並べて読むため)。
+    """
+    try:
+        nbytes = path.stat().st_size
+    except OSError:
+        return ""
+    for unit, scale in (("GiB", 1024**3), ("MiB", 1024**2), ("KiB", 1024)):
+        if nbytes >= scale:
+            return f"{nbytes / scale:,.1f} {unit}"
+    return f"{nbytes} B"
+
+
 def _disk_html(data_dir: Path) -> str:
     """データの置き場があるディスクの空き。
 
@@ -2342,6 +2359,9 @@ def admin_memory(request: Request):
         f"<td>{esc(s.kind)}</td>"
         f"<td>{esc(s.lang or '')}</td>"
         f"<td>{s.doc_count:,}</td>"
+        # **DB の大きさも出す。** ディスクを食っているのがどのソースかは、
+        # 文書数からは読めない(1 件の重さがソースごとに桁で違う)
+        f'<td class="nowrap">{esc(db_size_text(s.path))}</td>'
         f"<td>{esc(s.dump_date or '')}</td>"
         f"<td>{esc(s.built_at or '')}</td>"
         f"<td>{schema_cell(s.schema_version)}</td>"
@@ -2365,7 +2385,7 @@ def admin_memory(request: Request):
         for s in sorted(long_term.values(), key=lambda s: s.name)
     )
     if not rows:
-        rows = '<tr><td colspan="8">登録済みのソースはありません</td></tr>'
+        rows = '<tr><td colspan="9">登録済みのソースはありません</td></tr>'
 
     uninitialized = {
         name: meta for name, meta in initializable_sources().items() if name not in sources
@@ -2436,7 +2456,7 @@ chiezo-trigger が立ち上がっていない場合、再構築と削除はで�
 </p>
 <table>
 <thead>
-<tr><th>name</th><th>kind</th><th>lang</th><th>docs</th><th>dump_date</th><th>built_at</th><th>schema_version</th><th></th></tr>
+<tr><th>name</th><th>kind</th><th>lang</th><th>docs</th><th>size</th><th>dump_date</th><th>built_at</th><th>schema_version</th><th></th></tr>
 </thead>
 <tbody>
 {rows}

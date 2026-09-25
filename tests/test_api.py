@@ -2061,6 +2061,26 @@ class TestAdminPages:
         assert 'id="job"' not in html
         assert 'id="job"' in client.get("/admin/status").text
 
+    def test_the_long_term_table_shows_the_db_size(self, client):
+        """どのソースがディスクを食っているかは、文書数からは読めない。"""
+        html = client.get("/admin/memory").text
+
+        assert "<th>size</th>" in html
+        # 大きさは世代のファイルを測る(リンクそのものは数十バイトしかない)
+        assert "B</td>" in html
+
+    def test_the_db_size_follows_the_link(self, tmp_path):
+        from app.views import admin
+
+        real = tmp_path / "src-20260101.db"
+        real.write_bytes(b"x" * (3 * 1024 * 1024))
+        link = tmp_path / "src.db"
+        link.symlink_to(real.name)
+
+        assert admin.db_size_text(link) == "3.0 MiB"
+        # 読めなくても表は落とさない
+        assert admin.db_size_text(tmp_path / "missing.db") == ""
+
     def test_each_page_holds_only_its_own_section(self, client):
         memory = client.get("/admin/memory").text
         ai = client.get("/admin/ai").text
