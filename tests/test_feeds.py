@@ -114,7 +114,12 @@ class TestTheSpec:
     def test_too_many_urls_are_refused(self):
         """増やすほど 1 回の実行が遅くなる(順に取るため)。"""
         with pytest.raises(HTTPException):
-            feeds.normalize({"urls": [f"https://example.com/{i}" for i in range(20)]})
+            feeds.normalize({"urls": [f"https://example.com/{i}" for i in range(feeds.MAX_URLS + 1)]})
+
+    def test_search_feeds_by_word_and_page_fit(self):
+        """検索の RSS を語 × ページで並べる収集がある(4 語 × 3 ページ + 新着 4 本)。"""
+        spec = feeds.normalize({"urls": [f"https://example.com/{i}" for i in range(16)]})
+        assert len(spec["urls"]) == 16
 
     def test_nothing_means_no_tool(self):
         assert feeds.normalize(None) is None
