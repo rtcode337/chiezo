@@ -1764,8 +1764,8 @@ class TestReorderingTheSteps:
         from app.views import admin, ai_workers
 
         workers.save([_worker(workers.Step("codex"), workers.Step("antigravity"))])
-        html = ai_workers.section_html(
-            (admin._backend_select, admin._model_select)
+        html = ai_workers._worker_form(
+            workers.load()[0], (admin._backend_select, admin._model_select)
         )
 
         # 2 段あるので ↑ は 2 番目だけ、↓ は 1 番目だけ。空の 3 行目には出ない

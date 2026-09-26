@@ -286,6 +286,7 @@ PAGE_STYLE = """
   }
   /* いま見ている面は押せない（押しても同じ場所なので、リンクに見せない） */
   .admin-nav .admin-here { font-weight: 700; color: #111; cursor: default; }
+  .admin-nav a.admin-here { cursor: pointer; }
   .admin-menu .admin-here { font-weight: 700; color: #111; }
 
   /* 畳んだ版。**広い画面では出さない**（横に並ぶ版があるので） */

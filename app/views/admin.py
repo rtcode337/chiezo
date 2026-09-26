@@ -922,7 +922,7 @@ def _sweep_backend_fields(sweep, backend, mechanical: bool) -> str:
             "枠に余裕のある先頭の相手に渡し、どれも詰まっていればその回は走らせません。"
             "<br>モデルは<strong>ワーカーの段が持ちます</strong> —— "
             "渡る相手がそのときまで決まらないので、ここでは選べません"
-            f'(<a href="/admin/collect#{ai_workers.SECTION_ANCHOR}">段を直す</a>)。</p>'
+            f'(<a href="{esc(_worker_link(worker))}">段を直す</a>)。</p>'
         )
     return head + (
         f'<p><label>モデル<br>'
@@ -954,6 +954,12 @@ def _sweep_edit_row(item, sweep, columns: int, removable: bool = True) -> str:
         '<p><button type="submit">この巡回を保存</button></p>'
         "</form></details></td></tr>"
     )
+
+
+def _worker_link(ref: str) -> str:
+    """巡回が名指ししているワーカーの面。**見つからなければワーカーの節**。"""
+    found = workers.get(ref)
+    return ai_workers.worker_page(found) if found else ai_workers.BACK_TO_SECTION
 
 
 def _sweep_table_body(item, disabled: str = "") -> str:
@@ -1958,7 +1964,7 @@ def _derived_note(item, parent: str) -> str:
     return f'<br><span class="muted">└ {esc(parent)}{what}</span>'
 
 
-def _collect_html(sources: dict[str, Source], disabled: str) -> str:
+def _collect_html(sources: dict[str, Source]) -> str:
     """収集(AI に集めさせて溜めていく)の節。
 
     **出すのは「間隔・次にいつ走るか・いま何件」の 3 つ**。無人で回る層なので、
@@ -2032,37 +2038,28 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
             if not item.enabled
             else '<span class="muted">止めると消せます</span>'
         )
-        # **巡回ごとに 1 行。** 間隔も次の予定も前回も相手も巡回ごとに違うので、
-        # 収集に 1 行だけ与えると、そこに出る値はどちらか片方のものにしかならない。
-        # 名前と溜まった件数と操作は収集のものなので、行をまたがせる
-        # **一覧には巡回の設定を出さない。** 直しに来る場所は収集の面で、
-        # 一覧は「動いているか」を読むための表 —— 畳んであっても、収集の数だけ
-        # 行が増えて、見たいものが画面の外へ押し出される
-        sweep_cells = _sweep_cells(item, disabled, dry=False)
-        span = f' rowspan="{len(sweep_cells)}"' if len(sweep_cells) > 1 else ""
+        # **一覧には巡回を出さない。** 巡回ごとに 1 行ずつ並べていた頃は、収集の数より
+        # ずっと行が増え、列も 10 本になって、どれがどの収集の行なのかを追うことになった。
+        # 巡回の様子と走らせる口は収集の面にある(名前を押せば行ける)
         rows.append(
             f"<tr{cls}>"
-            f'<td{span}{" class=\"child\"" if depth else ""}>'
+            f'<td{" class=\"child\"" if depth else ""}>'
             f'{"└ " * depth}'
             f'<a href="/admin/collect/{esc(quote(item.name))}">{esc(item.name)}</a>'
             f"{kind_mark}"
             f'<br><span class="muted">{esc(item.description)}</span>{requester}'
             f"{_derived_note(item, parent)}</td>"
-            + f"<td{span}>{baked_docs}</td>"
-            + sweep_cells[0]
-            + f"<td{span}>"
+            f"<td>{baked_docs}</td>"
+            "<td>"
             f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/toggle">'
             f'<button type="submit">{toggle_label}</button></form>'
             f"{delete_form}"
             f"</td></tr>"
         )
-        # 2 本目からは巡回のぶんだけ。左右のセルは 1 行目から伸びている
-        rows += [f"<tr{cls}>{cells}</tr>" for cells in sweep_cells[1:]]
     table = f"""
 <table>
 <thead>
-<tr><th>名前</th><th>件数</th><th>巡回</th><th>頼む相手</th><th>間隔</th>
-<th>前回</th><th>一周のうち</th><th>次にいつ</th><th>実行</th><th></th></tr>
+<tr><th>名前</th><th>件数</th><th></th></tr>
 </thead>
 <tbody>
 {"".join(rows)}
@@ -2257,7 +2254,7 @@ PAGES = (
 )
 
 
-def nav_html(current: str) -> str:
+def nav_html(current: str, below: bool = False) -> str:
     """どの面にも出す見出しの帯。**左に名前、右に面へのリンク**。
 
     **トップへ戻ってから選び直す、を毎回させない。** 別のモジュールの面
@@ -2271,6 +2268,9 @@ def nav_html(current: str) -> str:
     横に並べる版と畳んだ版の**両方を出し、CSS がどちらかを消す** ——
     片方だけを出し分けるには画面の幅を知る必要があり、それは描く側には分からない。
     並びの素は `PAGES` の 1 か所なので、二度書いてもずれない。
+
+    `below` は**その面の下にある面**(収集 1 つぶんの面や区画の面)。どの面の中に
+    居るのかは太字で示しつつ、**押せば一覧へ戻れるようにリンクのまま残す**。
     """
     def items():
         # **トップは並べない。** 見出しの名前(「Chiezo 管理画面」)がトップへの
@@ -2283,8 +2283,10 @@ def nav_html(current: str) -> str:
     # 移るたびに帯の中身が左右へずれる。CSS がこの文字列で「太字にしたときの幅」を
     # 先に取っておくので、太くしても動かない（下の `.admin-nav a::after`）
     wide = "".join(
-        f'<span class="admin-here" data-label="{esc(label)}">{esc(label)}</span>' if here
-        else f'<a href="{path}" data-label="{esc(label)}">{esc(label)}</a>'
+        f'<span class="admin-here" data-label="{esc(label)}">{esc(label)}</span>'
+        if here and not below
+        else f'<a href="{path}"{" class=\"admin-here\"" if here else ""}'
+        f' data-label="{esc(label)}">{esc(label)}</a>'
         for path, label, here in items()
     )
     folded = "".join(
@@ -2841,8 +2843,7 @@ async def admin_collect(request: Request):
     **ワーカーも同じ面に置く。** 何を回すかと、それを誰に回すかは 1 つの話で、
     離すと「なぜこの相手に回ったのか」を別の面と突き合わせて読むことになる。
     """
-    # **取り込みの状態は 1 度だけ引く。** ワーカーの節も収集の表も同じことを
-    # 知りたがるので、別々に聞くと 1 回の描画で trigger を 2 度叩く
+    # 取り込みの状態は、ワーカーの節が「いま走っているもの」を添えるのに使う
     job = _fetch_trigger_status()
     running = ", ".join(ingest_queue.running_names(job))
     body = f"""
@@ -2856,7 +2857,7 @@ async def admin_collect(request: Request):
 {ai_workers.section_html((_backend_select, _model_select), running)}
 
 <h2 id="collect-settings">収集の設定</h2>
-{_collect_html(request.app.state.sources, run_buttons_disabled(job))}
+{_collect_html(request.app.state.sources)}
 """
     return HTMLResponse(content=page_shell("収集", body))
 
@@ -4333,7 +4334,7 @@ def admin_collect_detail(
         if src is not None else '<span class="muted">まだ焼いていない</span>'
     )
     body = f"""
-{nav_html("/admin/memory")}
+{nav_html("/admin/collect", below=True)}
 <h1>{esc(name)}</h1>
 <p class="muted">{esc(item.description)}
 {'<br>依頼元: ' + esc(item.requested_by) if item.requested_by else ''}</p>
@@ -4392,7 +4393,7 @@ def admin_collect_partition(
     return HTMLResponse(content=page_shell(
         f"{key} / {name}",
         f"""
-{nav_html("/admin/memory")}
+{nav_html("/admin/collect", below=True)}
 <h1>{esc(name)} の区画</h1>
 <p class="muted">{esc(key)}</p>
 {body}

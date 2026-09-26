@@ -120,3 +120,47 @@ class TestTheScreen:
         res = client.post("/admin/ai/workers/pause",
                           data={"worker_id": "no-such", "paused": "1"}, follow_redirects=False)
         assert res.status_code == 303
+
+
+class TestTheTable:
+    """1 つずつ畳んでいた頃は、並びも次に起きる時刻も開かないと読めなかった。"""
+
+    def test_each_worker_is_one_row(self, client, state):  # noqa: F811
+        worker = _made()
+        workers.enqueue(worker.key, "news", "整理", "2026-09-26T00:00:00+00:00")
+
+        page = client.get("/admin/collect").text
+        row = page.split('<a href="/admin/workers/')[1].split("</tr>")[0]
+
+        assert "<summary>精査" not in page, "畳まない"
+        assert "1. codex" in row and "2. claude" in row
+        assert ">止める</button>" in row and ">今すぐ起こす</button>" in row
+
+    def test_the_name_opens_its_page(self, client, state):  # noqa: F811
+        worker = _made()
+
+        page = client.get(f"/admin/workers/{worker.key}").text
+
+        assert "<h1>精査</h1>" in page
+        assert ">このワーカーを保存</button>" in page
+        assert "待ち行列(先に積まれた順)" in page
+        # メニューは「収集」の中に居ることを示す(押せば一覧へ戻れる)
+        assert 'class="admin-here" data-label="収集"' in page
+
+    def test_an_unknown_worker_page_goes_back_to_the_list(self, client, state):  # noqa: F811
+        res = client.get("/admin/workers/no-such", follow_redirects=False)
+        assert res.status_code == 303
+        assert res.headers["location"] == "/admin/collect#ai-workers"
+
+    def test_buttons_return_to_where_they_were_pressed(self, client, state):  # noqa: F811
+        worker = _made()
+        own = f"/admin/workers/{worker.key}"
+
+        res = client.post("/admin/ai/workers/pause", follow_redirects=False,
+                          data={"worker_id": worker.key, "paused": "1", "back": own})
+        assert res.headers["location"] == own
+
+        for outside in ("https://example.test/", "/admin/workers/no-such", ""):
+            res = client.post("/admin/ai/workers/pause", follow_redirects=False,
+                              data={"worker_id": worker.key, "paused": "0", "back": outside})
+            assert res.headers["location"] == "/admin/collect#ai-workers", outside

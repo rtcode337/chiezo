@@ -4341,7 +4341,7 @@ class TestThePromptExample:
     def test_it_appears_in_the_form(self, enabled):
         from app.views import admin
 
-        assert "押さえておくべき" in admin._collect_html({}, "")
+        assert "押さえておくべき" in admin._collect_html({})
 
 
 class TestBaking:
@@ -5176,7 +5176,7 @@ class TestTheCollectSectionMarkup:
     def _html(self, sample):
         from app.views import admin
 
-        return admin._collect_html({}, "")
+        return admin._collect_html({})
 
     def _detail(self, name="news"):
         """収集 1 つぶんの面。**一覧には出さないもの**(プロンプト・区画・直す口)。"""
@@ -5308,14 +5308,12 @@ class TestTheCollectSectionMarkup:
             {"name": "ざっと", "interval_minutes": 360},
             {"name": "じっくり", "interval_minutes": 1440},
         ])
-        html = self._html(sample)
+        html = self._table()
         assert html.count(">今すぐ実行</button>") == 2
-        assert html.count('name="sweep" value="じっくり"') == 1
-
-        # **ドライランは面のほうだけ。** 押した先で結果を読む口なので、
-        # 読みに来る場所に置く —— 一覧に並べると収集の数だけ場所を食う
-        assert ">ドライラン</button>" not in html
-        assert self._table().count(">ドライラン</button>") == 2
+        assert html.count(">ドライラン</button>") == 2
+        assert html.count('name="sweep" value="じっくり"') == 2
+        # 一覧には巡回を出さないので、走らせる口も収集の面だけ
+        assert ">今すぐ実行</button>" not in self._html(sample)
 
     def test_a_mechanical_sweep_says_it_uses_no_ai(self, sample):
         """「既定にまかせる」は『誰に頼むかは Chiezo が決める』の意味で、
@@ -5325,7 +5323,7 @@ class TestTheCollectSectionMarkup:
             {"name": "名簿", "use_extract": True},
             {"name": "肉付け", "interval_minutes": 360},
         ])
-        html = self._html(sample)
+        html = self._table()
 
         assert "AI 利用無し" in html
         # AI に頼む回のほうは、これまでどおり既定だと分かるように書く
@@ -5337,7 +5335,7 @@ class TestTheCollectSectionMarkup:
             {"name": "ざっと", "interval_minutes": 360},
             {"name": "割り込み", "on_demand": True},
         ])
-        html = self._html(sample)
+        html = self._table()
         assert html.count(">今すぐ実行</button>") == 1
         assert 'name="sweep" value="割り込み"' not in html
         assert "時計なし" in html
@@ -5368,7 +5366,7 @@ class TestTheCollectSectionMarkup:
             ],
             sweeps=[{"name": "ざっと", "cover_days": 7}],
         )
-        html = self._html(sample)
+        html = self._table()
         # 進み具合は巡回ごとに出る
         assert "2 のうち 1" in html
         # **出るのは書いた日数ではなく、実際にかかる日数。** 区画が 2 つしかないので
@@ -5391,7 +5389,7 @@ class TestTheCollectSectionMarkup:
                 {"name": "じっくり", "interval_minutes": 1440, "model": "opus", "effort": "high"},
             ],
         )
-        html = self._html(sample)
+        html = self._table()
         assert "opus" in html and "high" in html
 
     def test_the_name_opens_the_collection_page(self, sample):
@@ -5457,8 +5455,8 @@ class TestTheCollectSectionMarkup:
     def test_each_sweep_gets_its_own_row(self, sample):
         """間隔も次の予定も前回も巡回ごとに違うので、収集に 1 行だけ与えると嘘になる。
 
-        **折り畳みの中ではなく表に出す** —— この表は「動いているか」を読むためのもの
-        なので、いちいち開かせるなら出していないのと同じ。
+        **巡回の表は収集の面にだけ出す。** 一覧に巡回ごとの行を並べると、収集の数より
+        ずっと行が増えて、どれがどの収集の行なのかを追うことになる。
         """
         collect.update(
             "news",
@@ -5467,14 +5465,13 @@ class TestTheCollectSectionMarkup:
                 {"name": "じっくり", "interval_minutes": 1440},
             ],
         )
-        html = self._html(sample)
-        body = html.split("<tbody>")[1].split("</tbody>")[0]
+        body = self._html(sample).split("<tbody>")[1].split("</tbody>")[0]
+        assert "rowspan" not in body
+        assert "じっくり" not in body and "1440 分ごと" not in body
 
-        # 名前と操作は行をまたがせる（収集のものなので）
-        assert 'rowspan="2"' in body
-        # 巡回は表にそのまま並ぶ
-        assert "ざっと" in body and "じっくり" in body
-        assert "1440 分ごと" in body
+        table = self._table()
+        assert "ざっと" in table and "じっくり" in table
+        assert "1440 分ごと" in table
 
     def test_a_collection_without_sweeps_still_shows_one(self, sample):
         """定義そのものが 1 本の巡回として動くので、行が消えると止まって見える。"""
@@ -5633,7 +5630,7 @@ class TestTheCollectSectionMarkup:
             doc_count=1234,
             path=Path("/data/news.db"),
         )
-        html = admin._collect_html({"news": baked}, "")
+        html = admin._collect_html({"news": baked})
         assert "1,234 件" in html
         assert html.count("<form") == html.count("</form>")
 
@@ -6439,7 +6436,7 @@ class TestPickingTheModelAndTheEffort:
     def _html(self, sample):
         from app.views import admin
 
-        return admin._collect_html({}, "")
+        return admin._collect_html({})
 
     def test_they_are_selects_not_free_text(self, sample):
         from app.views import admin

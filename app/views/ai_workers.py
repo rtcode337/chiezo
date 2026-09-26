@@ -14,9 +14,10 @@ from __future__ import annotations
 import logging
 from contextlib import suppress
 from datetime import timedelta
+from urllib.parse import quote
 
 from fastapi import APIRouter, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app import jst, usage, workers
 from app.pages import esc
@@ -28,6 +29,25 @@ router = APIRouter()
 
 SECTION_ANCHOR = "ai-workers"
 BACK_TO_SECTION = f"/admin/collect#{SECTION_ANCHOR}"
+
+
+def worker_page(worker: workers.Worker) -> str:
+    """ワーカー 1 つぶんの面。**保存されている id から組む**(`collect_page` と同じ流儀)。"""
+    return f"/admin/workers/{quote(worker.key, safe='')}"
+
+
+def _back(raw) -> str:
+    """押した後の戻り先。**節か、いまあるワーカーの面のどれか**から選ぶ。
+
+    フォームの値をそのまま行き先にしない —— 外のサイトへ飛ばす口になる。
+    知らない値は節へ戻す(消したワーカーの面へは戻れない)。
+    """
+    wanted = str(raw or "")
+    with suppress(ValueError):
+        for worker in workers.load():
+            if (page := worker_page(worker)) == wanted:
+                return page
+    return BACK_TO_SECTION
 
 # 保存のボタンの文言。**2 か所で使う** —— 目に見えるほうと、エンターの送り先に
 # する見えないほう(`_default_submit`)。書き分けると、片方だけ直したときに
@@ -143,6 +163,7 @@ def _default_submit(label: str) -> str:
 
 
 def _worker_form(worker: workers.Worker | None, selects, running: str = "") -> str:
+    """ワーカー 1 つぶんの設定のフォーム。**直すのはワーカーの面、足すのは節**。"""
     backend_select, model_select = selects
     name = worker.name if worker else ""
     # **直す相手は id で指す。** 名前で指していた頃は、名前を書き換えた保存が
@@ -166,6 +187,7 @@ def _worker_form(worker: workers.Worker | None, selects, running: str = "") -> s
         # **エンターでは保存する**(段の ↑↓ に送り先を奪わせない)
         f'{_default_submit(SAVE_LABEL)}'
         f'<input type="hidden" name="worker_key" value="{esc(key)}">'
+        f'<input type="hidden" name="back" value="{esc(worker_page(worker) if worker else BACK_TO_SECTION)}">'
         f'<p><label>名前<br><input name="worker_name" value="{esc(name)}"'
         f' placeholder="精査"></label> <span class="muted">{esc(hint)}</span></p>'
         f'<p><label>流し終えてから次に起きるまでの間(分。{workers.MIN_INTERVAL_MINUTES} 以上)<br>'
@@ -193,15 +215,10 @@ def _number(raw, fallback: int) -> int:
         return fallback
 
 
-def _queue_html(worker: workers.Worker, running: str = "") -> str:
-    """そのワーカーの回り方と、待っているもの。
+def _timing(worker: workers.Worker) -> tuple[str, str, str, bool]:
+    """前回起きた・前回流し終えた・次に起きる(どれも描いた HTML)と、流している最中か。
 
-    **出すのは「なぜ動いていないか」を読むため。** 積まれているのに動かないなら
-    枠が詰まっているか起動の間隔待ちで、積まれていないなら巡回の間隔待ち ——
-    どちらなのかは、時刻と行列を並べないと外から判らない。
-
-    **畳まない。** 巡回の表と同じで、動いているかを確かめに来る場所なので、
-    開かないと読めないのでは表の値打ちが消える。
+    **節の表とワーカーの面で同じものを出す**(書き分けると、片方だけ古くなる)。
     """
     woke = jst.parse(workers.last_at(worker.key))
     ended = jst.parse(workers.finished_at(worker.key))
@@ -218,6 +235,20 @@ def _queue_html(worker: workers.Worker, running: str = "") -> str:
         last = ended or woke
         when_ended = esc(jst.format(last))
         when_next = esc(jst.format(last + timedelta(minutes=worker.interval_minutes)))
+    return when_woke, when_ended, when_next, flowing
+
+
+def _queue_html(worker: workers.Worker, running: str = "") -> str:
+    """そのワーカーの回り方と、待っているもの。
+
+    **出すのは「なぜ動いていないか」を読むため。** 積まれているのに動かないなら
+    枠が詰まっているか起動の間隔待ちで、積まれていないなら巡回の間隔待ち ——
+    どちらなのかは、時刻と行列を並べないと外から判らない。
+
+    **畳まない。** 巡回の表と同じで、動いているかを確かめに来る場所なので、
+    開かないと読めないのでは表の値打ちが消える。
+    """
+    when_woke, when_ended, when_next, flowing = _timing(worker)
     waiting = workers.queued(worker.key)
     if not waiting:
         rows = '<tr><td colspan="2" class="muted">待っているものはありません</td></tr>'
@@ -237,7 +268,7 @@ def _queue_html(worker: workers.Worker, running: str = "") -> str:
 <thead><tr><th>待ち行列(先に積まれた順)</th><th></th></tr></thead>
 <tbody>{rows}</tbody>
 </table>
-{_wake_form(worker, bool(waiting), running)}
+{_wake_form(worker, bool(waiting), running, worker_page(worker))}
 <p class="muted">
 <strong>次に起きる時刻は、前回「流し終えた」時刻から数えます</strong>(起きた時刻では
 ない)—— 塊を流すのに間隔より長くかかっても、流し終えたあと必ず間隔ぶん休む。<br>
@@ -247,7 +278,9 @@ def _queue_html(worker: workers.Worker, running: str = "") -> str:
 """
 
 
-def _wake_form(worker: workers.Worker, waiting: bool, running: str = "") -> str:
+def _wake_form(
+    worker: workers.Worker, waiting: bool, running: str = "", back: str = BACK_TO_SECTION,
+) -> str:
     """時計を待たずに 1 本流す口。**待っているものが無ければ出さない**。
 
     **枠が明いているうちに回しておきたい、が普通に起きる** —— 次の起動まで待つと、
@@ -269,6 +302,7 @@ def _wake_form(worker: workers.Worker, waiting: bool, running: str = "") -> str:
     return note + (
         f'<form class="init-form" method="post" action="/admin/ai/workers/wake">'
         f'<input type="hidden" name="worker_id" value="{esc(worker.key)}">'
+        f'<input type="hidden" name="back" value="{esc(back)}">'
         f'<button type="submit"'
         f' title="間隔を待たずに、待ち行列の先頭を 1 本流します">今すぐ起こす</button>'
         "</form>"
@@ -293,11 +327,7 @@ def section_html(selects, running: str = "") -> str:
         # 例外の連鎖にあり、そちらはログへ回す
         log.exception("worker definitions are unreadable")
         items, broken = [], workers.DEFS_BROKEN
-    forms = "".join(
-        f'<details><summary>{esc(w.name)}({len(w.steps)} 段){_paused_mark(w)}</summary>'
-        f"{_pause_form(w)}{_worker_form(w, selects, running)}</details>"
-        for w in items
-    )
+    forms = _table_html(items) if items else ""
     add = f'<details><summary>ワーカーを足す</summary>{_worker_form(None, selects)}</details>'
     note = (f'<p class="stale">⚠️ {esc(broken)}</p>' if broken else "")
     if not items and not broken:
@@ -325,8 +355,74 @@ def section_html(selects, running: str = "") -> str:
 """
 
 
+def _steps_html(worker: workers.Worker) -> str:
+    """段の並び。**1 段 1 行、詰まり具合と並べて**(避けている相手が一目で分かるように)。"""
+    if not worker.steps:
+        return '<span class="muted">段がありません</span>'
+    lines = "".join(
+        f"<div>{i}. {esc(step.backend)}"
+        + (f' <span class="muted">{esc(step.model)}</span>' if step.model else "")
+        + f" {_percent(step.backend, step.model)}</div>"
+        for i, step in enumerate(worker.steps, start=1)
+    )
+    # **1 つの塊に包む**(スマホの札では、部品が 1 つずつ格子に入る)
+    return f"<div>{lines}</div>"
+
+
+def _table_html(items: list[workers.Worker]) -> str:
+    """ワーカーの一覧の表。**畳まずに、1 ワーカー 1 行で並べる**。
+
+    1 つずつ畳んでいた頃は、並びも次に起きる時刻も開かないと読めず、
+    どれが詰まっているのかを比べるのに全部を開くことになった。
+    **直すのはワーカーの面**(名前を押す)—— 段の欄は 1 行に収まらない。
+    """
+    rows = []
+    for w in items:
+        _woke, _ended, when_next, _flowing = _timing(w)
+        waiting = len(workers.queued(w.key))
+        cls = ' class="off"' if w.paused else ""
+        wake = (
+            _wake_button(w) if waiting and not w.paused else ""
+        )
+        rows.append(
+            # **1 つの塊に包む**(スマホの札では、部品が 1 つずつ格子に入る)
+            f"<tr{cls}><td><span><a href=\"{esc(worker_page(w))}\">{esc(w.name)}</a>"
+            f"{_paused_mark(w)}</span></td>"
+            f"<td>{_steps_html(w)}</td>"
+            f"<td>{w.interval_minutes} 分</td><td>{w.per_run} 本</td>"
+            f"<td>{when_next}</td><td>{waiting:,}</td>"
+            f"<td><div>{_pause_button(w)}{wake}</div></td></tr>"
+        )
+    return (
+        "<table><thead><tr><th>名前</th><th>並び(上から頼む)</th><th>休む間</th>"
+        "<th>1 度に拾う</th><th>次に起きる</th><th>待っている</th><th></th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
+def _pause_button(worker: workers.Worker) -> str:
+    """表の行に置く止める / 動かす。**説明は面のほう**(行に長い文を置くと表が読めない)。"""
+    label, value = ("動かす", "0") if worker.paused else ("止める", "1")
+    return (
+        '<form class="init-form" method="post" action="/admin/ai/workers/pause">'
+        f'<input type="hidden" name="worker_id" value="{esc(worker.key)}">'
+        f'<input type="hidden" name="paused" value="{value}">'
+        f'<button type="submit">{label}</button></form>'
+    )
+
+
+def _wake_button(worker: workers.Worker) -> str:
+    """表の行に置く「今すぐ起こす」。**待っているものがあるときだけ**呼ぶ。"""
+    return (
+        '<form class="init-form" method="post" action="/admin/ai/workers/wake">'
+        f'<input type="hidden" name="worker_id" value="{esc(worker.key)}">'
+        '<button type="submit" title="間隔を待たずに、待ち行列の先頭を 1 本流します">'
+        "今すぐ起こす</button></form>"
+    )
+
+
 def _paused_mark(worker: workers.Worker) -> str:
-    """見出しに添える「止めている」。**畳んだままでも読めるように**見出しに出す。"""
+    """名前に添える「止めている」。**表の上でも一目で分かるように**名前に並べる。"""
     return ' <span class="stale">⏸ 止めている</span>' if worker.paused else ""
 
 
@@ -350,6 +446,7 @@ def _pause_form(worker: workers.Worker) -> str:
     return (
         '<form method="post" action="/admin/ai/workers/pause" class="collect-form">'
         f'<input type="hidden" name="worker_id" value="{esc(worker.key)}">'
+        f'<input type="hidden" name="back" value="{esc(worker_page(worker))}">'
         f'<input type="hidden" name="paused" value="{value}">'
         f"<p>{state} <button type=\"submit\">{label}</button></p></form>"
     )
@@ -362,7 +459,7 @@ async def pause_worker(request: Request):
     ref = str(form.get("worker_id") or "").strip()
     with suppress(KeyError, ValueError):
         workers.set_paused(ref, str(form.get("paused") or "") == "1")
-    return RedirectResponse(BACK_TO_SECTION, status_code=303)
+    return RedirectResponse(_back(form.get("back")), status_code=303)
 
 
 @router.post("/admin/ai/workers/wake")
@@ -379,7 +476,7 @@ async def wake_worker(request: Request):
 
     form = await request.form()
     wake(str(form.get("worker_id") or "").strip())
-    return RedirectResponse(BACK_TO_SECTION, status_code=303)
+    return RedirectResponse(_back(form.get("back")), status_code=303)
 
 
 def _moved_steps(steps: tuple, raw: str) -> tuple:
@@ -432,4 +529,40 @@ async def save_worker(request: Request):
         return RedirectResponse(url=BACK_TO_SECTION, status_code=303)
 
     workers.save(workers.merged(current, key, name, steps, every, take))
-    return RedirectResponse(url=BACK_TO_SECTION, status_code=303)
+    # **直した面へ戻す**(消したワーカーの面はもう無いので、`_back` が節へ落とす)
+    return RedirectResponse(url=_back(form.get("back")), status_code=303)
+
+
+@router.get("/admin/workers/{ref}", response_class=HTMLResponse)
+def worker_detail(ref: str):
+    """ワーカー 1 つぶんの面。**節の表から名前を押すとここへ来る**。
+
+    段の並び・休む間・拾う数を直す口と、待ち行列を置く。節の中で 1 つずつ
+    畳んでいた頃は、表として並べられなかった(段の欄が 1 行に収まらない)。
+    **知らない id は節へ戻す**(表は数秒古いことがある)。
+    """
+    from app.pages import page_shell
+    from app.views.admin import _backend_select, _model_select, nav_html
+
+    worker = workers.get(ref)
+    if worker is None:
+        return RedirectResponse(BACK_TO_SECTION, status_code=303)
+    body = f"""
+{nav_html("/admin/collect", below=True)}
+<h1>{esc(worker.name)}{_paused_mark(worker)}</h1>
+<p class="muted">ワーカー(巡回を回す相手の順番)。先頭から見て、枠に余裕のある最初の相手に頼みます。</p>
+{_pause_form(worker)}
+{_worker_form(worker, (_backend_select, _model_select), _running_now())}
+<p class="muted"><a href="{BACK_TO_SECTION}">ワーカーの一覧へ戻る</a></p>
+"""
+    return HTMLResponse(content=page_shell(worker.name, body))
+
+
+def _running_now() -> str:
+    """いま走っている取り込み(起こす口の断り書きに使う)。**読めなければ空**。"""
+    from app import ingest_queue
+    from app.views.admin import _fetch_trigger_status
+
+    with suppress(Exception):
+        return ", ".join(ingest_queue.running_names(_fetch_trigger_status()))
+    return ""
