@@ -395,6 +395,8 @@ PAGE_STYLE = """
   td.collect-detail > details { margin: 0; }
   /* 入れ子の details は一段内側へ寄せる(どちらを開いているか分かるように) */
   details details { margin-left: 0.8rem; border-left: 2px solid #eee; padding-left: 0.8rem; }
+  /* 表の升目の中では字下げの線を引かない(畳んだ節の中の表でも、升目が既に区切っている) */
+  td details { margin: 0; border-left: none; padding-left: 0; }
   form.collect-form textarea { width: 100%; max-width: 46rem; box-sizing: border-box;
                                font-family: inherit; font-size: 0.85rem; padding: 0.4rem 0.5rem; }
   form.collect-form input[type=text], form.collect-form input:not([type]) { width: 28rem; max-width: 100%; }

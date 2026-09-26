@@ -1590,17 +1590,17 @@ def _collect_changes_html(
         # 答えにならない —— ざっとの回なのか割り込みなのかも、どの範囲かも読めない。
         # **区画は 1 つずつ改行して並べる**(読点でつなぐと、鍵の中の「、」や「|」と
         # 見分けが付かない)
-        scope = "".join(
+        # **1 つの塊に包む**(スマホの札では、部品が 1 つずつ格子に入る)
+        scope = "<div>" + "".join(
             f'<div class="muted">{esc(key)}</div>' for key in row["scope"] or []
-        )
+        ) + "</div>"
         if row["status"] != collect_log.STATUS_OK:
-            # **失敗の理由も、見た区画と同じ列に置く**(どの区画で落ちたのかを並べて読む)
+            # **失敗の理由は「動いたもの」の列に置く**(何も動かなかった理由がそこに入る)
             rows.append(
                 f"<tr><td>{when}</td>{_changes_name_cell(row, name)}<td>{esc(row['sweep'])}</td>"
                 f"<td>{who}</td><td>{spent}</td>"
                 '<td><span class="stale">失敗</span></td><td></td>'
-                # **1 つの塊に包む**(スマホの札では、部品が 1 つずつ格子に入る)
-                f'<td><div>{scope}<div class="stale">{esc(row["error"])}</div></div></td></tr>'
+                f'<td>{scope}</td><td><div class="stale">{esc(row["error"])}</div></td></tr>'
             )
             continue
         # 動かなかった回も 1 行として出す。**空白にしない** —— 走ったが何も
@@ -1627,22 +1627,22 @@ def _collect_changes_html(
             if moved else ""
         )
         # 成功した回にも断り書きが付くことがある(答えが途中で切れた等)。
-        # **見た区画と同じ列に置く** —— 断り書きはたいてい「どの区画で」の話なので、
-        # 区画の並びと離すと突き合わせることになる
+        # **「動いたもの」の列に置く** —— 件数の横にあると列が膨らみ、件数が読みにくい。
+        # 断り書きは「何が動いた(動かなかった)か」の但し書きなので、そちらと並べる
         note = f'<div class="stale">{esc(row["error"])}</div>' if row["error"] else ""
         rows.append(
             f"<tr><td>{when}</td>{_changes_name_cell(row, name)}"
             f"<td>{esc(row['sweep'])}</td><td>{who}</td><td>{spent}</td>"
             f'<td>{summary}</td><td>{row["total"]:,} 件</td>'
             # **1 つの塊に包む**(スマホの札では、部品が 1 つずつ格子に入る)
-            f"<td><div>{scope}{note}{detail}</div></td></tr>"
+            f"<td>{scope}</td><td><div>{note}{detail}</div></td></tr>"
         )
     return wrapped(f"""
 {picker}
 {pager}
 <table>
 <thead><tr><th>いつ</th>{"" if name else "<th>収集</th>"}<th>どの回</th><th>頼んだ相手</th>
-<th>かかった</th><th>変化</th><th>焼いた後</th><th>見た区画と動いたもの</th></tr></thead>
+<th>かかった</th><th>変化</th><th>焼いた後</th><th>見た区画</th><th>動いたもの</th></tr></thead>
 <tbody>
 {"".join(rows)}
 </tbody>
