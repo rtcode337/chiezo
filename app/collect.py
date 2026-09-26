@@ -3669,14 +3669,30 @@ def _buried(doc: dict, raw: dict, now: str) -> dict:
     置き換えない** —— 置き換えていた頃は、消し間違いを戻すときに元の中身が
     もう無かった。印を外せば戻せる作りなのに、戻ってくるのが「なぜ消したか」の
     1 行だけでは、育てたぶんを集め直すことになる。理由は脇書きへ置く。
+
+    **消す前に AI が目を通していたかも残す**(`REMOVED_AFTER_REVIEW_KEY`)。
+    目を通したものは既に読み手へ出ている(未レビューは読み口が外す)ので、
+    読み手の手元に写しがあるかもしれない —— 写しを消させるには、そちらだけを
+    選び出せる必要がある。最初の目通しで弾かれたものは一度も出ていないので、
+    消させる必要が無い。**消えた印を付けたあとでは見分けられない**(未レビューの印は
+    消すのと同じ回で外れる)ので、印を付ける前のここで読む。
+    既に消えていたものを消し直すときは、最初に消したときの値を引き継ぐ。
     """
     tags = [t for t in (doc.get("tags") or []) if t != notes.REMOVED_TAG]
     why = (raw.get("body") or "").strip()[:MAX_REMOVED_REASON_CHARS]
     extra = doc.get("extra") if isinstance(doc.get("extra"), dict) else {}
+    after_review = (
+        bool(extra.get(REMOVED_AFTER_REVIEW_KEY)) if is_removed(doc) else not is_unreviewed(doc)
+    )
     return {
         **doc,
         "tags": [*tags, notes.REMOVED_TAG],
-        "extra": {**extra, "removed_reason": why, "removed_at": now},
+        "extra": {
+            **extra,
+            "removed_reason": why,
+            "removed_at": now,
+            REMOVED_AFTER_REVIEW_KEY: after_review,
+        },
         "updated_at": now,
     }
 
@@ -3857,13 +3873,18 @@ def is_unreviewed(doc: dict) -> bool:
     return notes.UNREVIEWED_TAG in (doc.get("tags") or [])
 
 
+# 消す前に AI が目を通していたか(`_buried`)。**目を通したものは読み手へ出ている**ので、
+# 読み手が写しを消すべきかはこれで決まる。入れる前に消えたものには付いていない
+REMOVED_AFTER_REVIEW_KEY = "removed_after_review"
+
 # 墓標に残す脇書き。**これ以外は落とす**（毎回の素材に丸ごと乗るため）。
 #
 # - `removed_reason` / `removed_at` …… なぜ・いつ外したか（画面と AI が読む）
+# - `removed_after_review` …… 消す前に目を通していたか(読み手が写しを消すかを決める)
 # - `url` …… **同じものが別の見出しで戻ってくるのを止めている鍵**
 #   (`stream_docs` の重複判定)。落とすと、調べたうえで外したものが
 #   書き換えた見出しで足し直される
-KEPT_ON_REMOVED = ("removed_reason", "removed_at", "url")
+KEPT_ON_REMOVED = ("removed_reason", "removed_at", REMOVED_AFTER_REVIEW_KEY, "url")
 
 
 def slim_removed(doc: dict) -> dict:

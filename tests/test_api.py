@@ -2531,6 +2531,7 @@ class TestMakingTheMaterialSmaller:
             "extra": {
                 "removed_reason": "2024 年に閉店",
                 "removed_at": "2026-09-24T00:00:00+00:00",
+                "removed_after_review": True,
                 "url": "https://example.com/shop",
                 "lat": 35.6,
                 "lon": 139.7,
@@ -2541,8 +2542,11 @@ class TestMakingTheMaterialSmaller:
 
         slim = collect.slim_removed(doc)
 
-        # **理由と URL は残す** —— URL は同じものが別の見出しで戻るのを止める鍵
-        assert set(slim["extra"]) == {"removed_reason", "removed_at", "url"}
+        # **理由と URL は残す** —— URL は同じものが別の見出しで戻るのを止める鍵。
+        # 目を通したあとで消えたかは、読み手が写しを消すかを決めるので残す
+        assert set(slim["extra"]) == {
+            "removed_reason", "removed_at", "removed_after_review", "url",
+        }
         # **本文は残す**（印を外せば元の中身のまま戻せる、が墓標の約束）
         assert slim["body"] == "本文"
 

@@ -3793,6 +3793,47 @@ class TestWhatWasRemoved:
         assert collect.removed_reason(doc) == "絵ではなく演技で知られる人"
         assert diff["removed_titles"] == ["俳優さん"]
 
+    def test_a_tombstone_records_whether_it_had_been_reviewed(self, refine):
+        """目を通したものは読み口に出ていたので、読み手の手元に写しがあり得る。
+
+        **最初の目通しで弾かれたものは一度も出ていない**ので、読み手に消させる
+        必要が無い。未レビューの印は同じ回で外れるので、消えたあとの 1 件からは
+        見分けられない —— 消す瞬間に残すしかない。
+        """
+        previous = {
+            "出ていた": {"doc_id": 1, "title": "出ていた", "body": "本文", "tags": ["食事処"]},
+            "出ていない": {"doc_id": 2, "title": "出ていない", "body": "本文",
+                        "tags": ["食事処", notes.UNREVIEWED_TAG]},
+        }
+
+        docs, _diff = self._edit(
+            refine, previous,
+            [{"title": t, "body": "閉店", "tags": [notes.TOMBSTONE_TAG]} for t in previous],
+        )
+
+        after = {d["title"]: d["extra"]["removed_after_review"] for d in docs}
+        assert after == {"出ていた": True, "出ていない": False}
+        # 未レビューの印は外れる(消した回で目は通っている)
+        assert not any(collect.is_unreviewed(d) for d in docs)
+
+    def test_burying_again_keeps_the_first_answer(self, refine):
+        """消えたものを消し直しても、最初に消したときの答えを引き継ぐ。
+
+        消えたものには未レビューの印が無いので、読み直すと「目を通していた」に化ける。
+        """
+        previous = {"出ていない": {
+            "doc_id": 2, "title": "出ていない", "body": "本文",
+            "tags": ["食事処", notes.REMOVED_TAG],
+            "extra": {"removed_reason": "閉店", "removed_after_review": False},
+        }}
+
+        docs, _diff = self._edit(
+            refine, previous,
+            [{"title": "出ていない", "body": "閉店", "tags": [notes.TOMBSTONE_TAG]}],
+        )
+
+        assert docs[0]["extra"]["removed_after_review"] is False
+
     def test_a_tombstone_without_a_reason_keeps_the_body(self, refine):
         previous = {"俳優さん": {"doc_id": 1, "title": "俳優さん", "body": "もとの本文"}}
 
