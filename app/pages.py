@@ -854,7 +854,9 @@ APP_ICON_SVG = base64.b64decode(FAVICON_DATA_URI.split(",", 1)[1])
 # 1 行を 1 枚の札に起こすための下ごしらえ(スマホ幅の見た目は `PAGE_STYLE` 側)。
 # **表は画面ごとに手で組んである**(31 か所)ので、1 つずつ見出しを書き写すと
 # 書き漏らしと食い違いが必ず出る。**出来上がった HTML に 1 回だけ掛ける**。
-_SCRIPT_BLOCK = re.compile(r"<script\b.*?</script>", re.S | re.I)
+# 閉じは `</script >` や `</script foo>` も拾う(ブラウザはどれも閉じとして読む)。
+# 取りこぼすと、台本の中の表まで書き換えてしまう
+_SCRIPT_BLOCK = re.compile(r"<script\b.*?</script\b[^>]*>", re.S | re.I)
 _TABLE_BLOCK = re.compile(r"<table\b[^>]*>.*?</table>", re.S | re.I)
 _TABLE_OPEN = re.compile(r"<table\b([^>]*)>", re.I)
 _THEAD_BLOCK = re.compile(r"<thead\b[^>]*>(.*?)</thead>", re.S | re.I)

@@ -3244,7 +3244,10 @@ def admin_source_rollback(source: str, request: Request, back: str = Form("")):
     from app.main import scan_all
 
     request.app.state.sources = scan_all(request.app.state.data_dir)
-    return RedirectResponse(url=back or "/admin/memory#long-term", status_code=303)
+    # **戻り先は、このボタンを出している面から選ぶ**(記憶の面と、その収集の面)。
+    # 届いた文字列をそのまま行き先にすると、外のサイトへ飛ばす URL を作れてしまう
+    here = ("/admin/memory#long-term", f"/admin/collect/{quote(source)}")
+    return RedirectResponse(url=next((p for p in here if p == back), here[0]), status_code=303)
 
 
 @router.post("/admin/source/{source}/delete")

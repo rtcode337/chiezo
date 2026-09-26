@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -79,14 +80,27 @@ def _safe(name: str) -> str:
     return re.sub(r"[^0-9A-Za-z_.-]", "_", name)[:60] or "collection"
 
 
+def _inside(d: Path, filename: str) -> Path:
+    """置き場の中のファイル。**外へ出る名前は断る**。
+
+    `_safe` で英数字と `_.-` に絞ってあるので普通は出ないが、パスを組むのはここ ——
+    絞り方を変えたときに黙って置き場の外へ書かないよう、組んだ結果でも確かめる。
+    """
+    base = os.path.realpath(d)
+    full = os.path.realpath(os.path.join(base, filename))
+    if not full.startswith(base + os.sep):
+        raise ValueError(f"置き場の外を指しています: {filename!r}")
+    return Path(full)
+
+
 def _body_path(name: str) -> Path | None:
     d = dir_path()
-    return d / f"{_safe(name)}.md" if d else None
+    return _inside(d, f"{_safe(name)}.md") if d else None
 
 
 def _answer_path(name: str) -> Path | None:
     d = dir_path()
-    return d / f"{_safe(name)}.answer.json" if d else None
+    return _inside(d, f"{_safe(name)}.answer.json") if d else None
 
 
 def get(name: str) -> dict | None:

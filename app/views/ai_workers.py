@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 
 from fastapi import APIRouter, Request
@@ -19,6 +20,8 @@ from fastapi.responses import RedirectResponse
 from app import jst, usage, workers
 from app.pages import esc
 from app.views.ai_usage import percent_text
+
+log = logging.getLogger("chiezo.app")
 
 router = APIRouter()
 
@@ -284,8 +287,11 @@ def section_html(selects, running: str = "") -> str:
     try:
         items = workers.load()
         broken = ""
-    except ValueError as e:
-        items, broken = [], str(e)
+    except ValueError:
+        # **例外の文は画面に出さない**(決まった一文を出す)。読めない理由の詳細は
+        # 例外の連鎖にあり、そちらはログへ回す
+        log.exception("worker definitions are unreadable")
+        items, broken = [], workers.DEFS_BROKEN
     forms = "".join(
         f'<details><summary>{esc(w.name)}({len(w.steps)} 段)</summary>'
         f"{_worker_form(w, selects, running)}</details>"
