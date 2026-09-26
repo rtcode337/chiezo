@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import suppress
 from datetime import timedelta
 
 from fastapi import APIRouter, Request
@@ -293,8 +294,8 @@ def section_html(selects, running: str = "") -> str:
         log.exception("worker definitions are unreadable")
         items, broken = [], workers.DEFS_BROKEN
     forms = "".join(
-        f'<details><summary>{esc(w.name)}({len(w.steps)} 段)</summary>'
-        f"{_worker_form(w, selects, running)}</details>"
+        f'<details><summary>{esc(w.name)}({len(w.steps)} 段){_paused_mark(w)}</summary>'
+        f"{_pause_form(w)}{_worker_form(w, selects, running)}</details>"
         for w in items
     )
     add = f'<details><summary>ワーカーを足す</summary>{_worker_form(None, selects)}</details>'
@@ -322,6 +323,46 @@ def section_html(selects, running: str = "") -> str:
 {forms}
 {add}
 """
+
+
+def _paused_mark(worker: workers.Worker) -> str:
+    """見出しに添える「止めている」。**畳んだままでも読めるように**見出しに出す。"""
+    return ' <span class="stale">⏸ 止めている</span>' if worker.paused else ""
+
+
+def _pause_form(worker: workers.Worker) -> str:
+    """止める / 動かすのボタン。**枠が細いときに、そのワーカーだけ回復まで止める**ためのもの。
+
+    止めているあいだは相手を 1 つも選ばないので、定時の回も手で起こす回も流れない。
+    **待ち行列は残す** —— 動かせば続きから流れる(捨てると、止めていたあいだに
+    積まれたぶんが黙って消える)。
+    """
+    if worker.paused:
+        when = jst.parse(worker.paused_at)
+        since = f"{jst.format(when)} から" if when else ""
+        state = (f'<span class="stale">{esc(since)}止めています。</span>'
+                 "待ち行列はそのまま残っていて、動かすと続きから流れます。")
+        label, value = "動かす", "0"
+    else:
+        state = ('<span class="muted">止めると、枠が回復するまでこのワーカーからは'
+                 "流しません(待ち行列は残ります)。</span>")
+        label, value = "止める", "1"
+    return (
+        '<form method="post" action="/admin/ai/workers/pause" class="collect-form">'
+        f'<input type="hidden" name="worker_id" value="{esc(worker.key)}">'
+        f'<input type="hidden" name="paused" value="{value}">'
+        f"<p>{state} <button type=\"submit\">{label}</button></p></form>"
+    )
+
+
+@router.post("/admin/ai/workers/pause")
+async def pause_worker(request: Request):
+    """ワーカーを止める / 動かす。**知らない id は黙って戻す**(表は数秒古いことがある)。"""
+    form = await request.form()
+    ref = str(form.get("worker_id") or "").strip()
+    with suppress(KeyError, ValueError):
+        workers.set_paused(ref, str(form.get("paused") or "") == "1")
+    return RedirectResponse(BACK_TO_SECTION, status_code=303)
 
 
 @router.post("/admin/ai/workers/wake")

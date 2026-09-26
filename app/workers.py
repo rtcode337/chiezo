@@ -36,7 +36,7 @@ import logging
 import os
 import re
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
 from app import machine_store, providers, usage
@@ -121,6 +121,14 @@ class Worker:
     per_run: int = DEFAULT_PER_RUN
     # 名指しの鍵。**空なら名前が鍵**(id を持たせる前に作られたもの。`key` 参照)
     id: str = ""
+    # **人が止めた時刻**(空なら動いている)。枠が細いときに、そのワーカーだけ
+    # 回復まで止めておくためのもの。止めているあいだは相手を 1 つも選ばない
+    # (`pick`)ので、どの道からも流れない。待ち行列はそのまま残り、再開すれば続きから
+    paused_at: str = ""
+
+    @property
+    def paused(self) -> bool:
+        return bool(self.paused_at)
 
     @property
     def key(self) -> str:
@@ -139,6 +147,7 @@ class Worker:
             "steps": [s.to_json() for s in self.steps],
             "interval_minutes": self.interval_minutes,
             "per_run": self.per_run,
+            **({"paused_at": self.paused_at} if self.paused_at else {}),
         }
 
 
@@ -166,6 +175,7 @@ def _worker_from(raw) -> Worker | None:
         # **書かれていなければ名前を鍵にする**(`Worker.key`)。id を足す前の定義で、
         # そこを新しい id にすると、いま名指ししている巡回が全部行き場を失う
         id=str(raw.get("id") or "").strip(),
+        paused_at=str(raw.get("paused_at") or "").strip(),
     )
 
 
@@ -257,10 +267,28 @@ def merged(
     kept = next((w for w in current if w.key == key), None) if key else None
     made = Worker(name, steps, max(interval_minutes, MIN_INTERVAL_MINUTES),
                   min(max(per_run, 1), MAX_PER_RUN),
-                  id=kept.key if kept else new_id())
+                  id=kept.key if kept else new_id(),
+                  # **止めたまま直せる**(保存で勝手に動き出さない)
+                  paused_at=kept.paused_at if kept else "")
     if kept is not None:
         return [made if w.key == key else w for w in current]
     return [*current, made]
+
+
+def set_paused(ref: str, paused: bool, now: str = "") -> Worker:
+    """ワーカーを止める / 動かす。直したものを返す。無ければ KeyError。
+
+    **止めた時刻を残す**(画面に「いつから止めているか」を出す)。止め直しても
+    時刻は動かさない —— 最初に止めた時刻のほうが、枠の回復を待っている長さを表す。
+    """
+    current = load()
+    found = next((w for w in current if w.key == ref), None)
+    if found is None:
+        raise KeyError(ref)
+    at = (found.paused_at or now or _now_iso()) if paused else ""
+    made = replace(found, paused_at=at)
+    save([made if w.key == ref else w for w in current])
+    return made
 
 
 def ref_in(choice: str) -> str:
@@ -580,7 +608,8 @@ def pick(worker: Worker | None, limit: float | None = None, now: str = "") -> St
     **区画ごとに呼び直される。** 1 回で何区画も回る収集があるので、回の頭で
     1 度だけ決めると、途中で窓が閉まっても同じ相手に投げ続けることになる。
     """
-    if worker is None:
+    if worker is None or worker.paused:
+        # **止めているワーカーは誰も選ばない**(`Worker.paused_at`)
         return None
     off = _switched_off()
     return next(

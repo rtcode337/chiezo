@@ -2349,6 +2349,26 @@ def _stopped_providers_html() -> str:
     return "\n".join(lines)
 
 
+def _paused_workers_html() -> str:
+    """止めているワーカーの 1 行(状況の面)。**止めたまま忘れない**ように出す。
+
+    止めたワーカーは黙って何も流さなくなるので、枠が回復したあとも止めたままだと
+    その巡回だけが進まない。警告ではなく覚え書きなので、目立たせすぎない。
+    """
+    try:
+        paused = [w for w in workers.load() if w.paused]
+    except ValueError:
+        return ""
+    if not paused:
+        return ""
+    parts = []
+    for w in paused:
+        when = jst.parse(w.paused_at)
+        parts.append(f"{esc(w.name)}({esc(jst.format(when)) if when else '?'} から)")
+    return (f'<p class="note">⏸ 止めているワーカー: {"、".join(parts)} —— '
+            f'<a href="/admin/collect#ai-workers">収集の面のワーカーの節</a>で動かせます</p>')
+
+
 def _status_summary(job: dict | None, running: list[dict]) -> str:
     """トップの「状況」の札に添える 1 行。取り込みと AI への依頼が動いているか。
 
@@ -2410,6 +2430,7 @@ def admin_status(
     body = f"""
 {nav_html(STATUS_PAGE)}
 {_stopped_providers_html()}
+{_paused_workers_html()}
 <p>{_disk_html(request.app.state.data_dir)}</p>
 {_job_status_html(job, heading=True)}
 {_collect_history_html(sweep)}

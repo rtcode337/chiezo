@@ -1110,7 +1110,18 @@ async def _collect_items(
 
 def _all_full(worker: str) -> dict:
     """**人に見せる文には名前を出す**(巡回が持っているのは id なので、
-    そのまま書くと「ワーカー「w-1a2b3c4d」の…」になって誰のことか読めない)。"""
+    そのまま書くと「ワーカー「w-1a2b3c4d」の…」になって誰のことか読めない)。
+
+    **止めているワーカーは、止めていると言う**(`Worker.paused_at`)。
+    どちらも相手を選べないのは同じだが、「枠に余裕がありません」と出すと、
+    自分で止めたことを忘れた人が枠の表を見に行って答えが見つからない。
+    """
+    with suppress(ValueError):
+        if (found := workers.get(worker)) is not None and found.paused:
+            return {
+                "error": f"ワーカー「{found.name}」は止めています",
+                "hint": "収集の面のワーカーの節で「動かす」を押すと、待ち行列の続きから流れます",
+            }
     return {
         "error": f"ワーカー「{workers.label_for(worker)}」のどの相手も枠に余裕がありません",
         "hint": f"使用率が {workers.QUOTA_LIMIT:.0f}% を超えている相手と、"
