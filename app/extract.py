@@ -398,7 +398,8 @@ def _normalize_rule(raw) -> dict:
         single = str(raw.get("pattern") or "").strip()
         if not single:
             raise _bad("読み替えには pattern か patterns が要ります")
-        return {"kind": "each", "patterns": [_compile(single)], "format": fmt}
+        return {"kind": "each", "patterns": [_compile(single)], "format": fmt,
+                "fallback": _fallback_of(raw)}
 
     if not isinstance(patterns, list) or not patterns:
         raise _bad("patterns は 1 つ以上の配列で書いてください")
@@ -408,7 +409,30 @@ def _normalize_rule(raw) -> dict:
         "kind": "all",
         "patterns": [_compile(str(p or "")) for p in patterns],
         "format": fmt,
+        "fallback": _fallback_of(raw),
     }
+
+
+def _fallback_of(raw: dict) -> bool:
+    """`fallback` の読み方。**前の規則が同じ接頭辞のタグを作っていれば、この規則は作らない**。
+
+    同じ軸を何通りかの手掛かりから作るときに要る —— 生年と没年の両方 → 生年だけ →
+    世紀だけ、のように手掛かりの確かな順に並べると、並べただけでは**当たった全部が
+    足される**(両方を持つ人に年代のタグが 3 本付く)。読む側は最初の 1 本しか見ないので、
+    残りは食い違いの種になるだけ。**確かな手掛かりが当たったら、そこで止める**。
+    """
+    value = raw.get("fallback")
+    if value is None or value is False:
+        return False
+    if value is True:
+        return True
+    raise _bad("fallback は true か false で書いてください")
+
+
+def _prefix_of(fmt: str) -> str:
+    """作るタグの接頭辞(`年代:{1}-{2}` → `年代:`)。**`:` が無ければ全体**を比べる。"""
+    head, sep, _rest = fmt.partition(":")
+    return head + sep if sep else fmt
 
 
 def _compile(pattern: str) -> re.Pattern:
@@ -480,11 +504,13 @@ def to_json(spec) -> dict | list[dict] | None:
         elif rule["kind"] == "linked":
             rules.append({"linked": rule["how"], "format": rule["format"]})
         elif rule["kind"] == "each":
-            rules.append({"pattern": rule["patterns"][0].pattern, "format": rule["format"]})
+            rules.append({"pattern": rule["patterns"][0].pattern, "format": rule["format"],
+                          **({"fallback": True} if rule.get("fallback") else {})})
         else:
             rules.append({
                 "patterns": [p.pattern for p in rule["patterns"]],
                 "format": rule["format"],
+                **({"fallback": True} if rule.get("fallback") else {}),
             })
     written = {
         "source": spec["source"],
@@ -1073,6 +1099,11 @@ def _apply_rules(rules: list[dict], tags: list[str], title: str, context: dict) 
     """
     out: list[str] = []
     for rule in rules:
+        # **前の規則が同じ接頭辞のタグを作っていれば飛ばす**(`_fallback_of`)
+        if rule.get("fallback") and any(
+            t.startswith(_prefix_of(rule["format"])) for t in out
+        ):
+            continue
         if rule["kind"] == "const":
             out.append(rule["value"])
         elif rule["kind"] == "each":
@@ -1080,6 +1111,9 @@ def _apply_rules(rules: list[dict], tags: list[str], title: str, context: dict) 
             for tag in tags:
                 if found := pattern.match(tag):
                     out.append(_fill_groups(rule["format"], [found]))
+                    # 手掛かりの代わりに使う規則は 1 本で足りる(2 つ当たっても 2 本作らない)
+                    if rule.get("fallback"):
+                        break
         elif rule["kind"] == "from_tag":
             out.extend(_from_tag(rule, title, context))
         elif rule["kind"] == "linked":
@@ -1207,6 +1241,7 @@ SPEC_GUIDE = """依頼を読んで、**まず「手元の索引から機械的�
     {"const": "そのまま付ける固定のタグ"},
     {"pattern": "^(.+)出身の人物$", "format": "出身:{1}"},
     {"patterns": ["^(\\d{3,4})年生$", "^(\\d{3,4})年没$"], "format": "年代:{1}-{2}"},
+    {"pattern": "^(\\d{3,4})年生$", "format": "年代:{1}-", "fallback": true},
     {"from_tag": "{title}の楽曲", "format": "代表曲:{1}", "take": 1},
     {"linked": "mutual", "format": "関連:{1}"}
   ],
@@ -1225,6 +1260,11 @@ SPEC_GUIDE = """依頼を読んで、**まず「手元の索引から機械的�
   `mutual`(相互にリンクしているものだけ)と `out`(こちらから張っているもの)。
   片側だと有名なものどうしが軒並み繋がって毛玉になるので、**まず mutual を使う**
 `{1}` `{2}` は、当たった順に括弧で捕まえた中身が入ります。
+
+pattern と patterns には `"fallback": true` を書けます。**前の規則が同じ接頭辞の
+タグ(`年代:` など)を作っていれば、その規則は作りません**。同じ軸を確かな手掛かりの
+順に並べるときに使います(生年と没年の両方 → 生年だけ、のように。書かないと、
+当たった全部が足されて同じ軸のタグが何本も付きます)。
 
 **書いていないことは引けませんが、書いてあることは全部引けます。** 関係や代表作も、
 カテゴリやリンクの形で書いてあれば取れます。AI に書かせるのは、そのどれでも

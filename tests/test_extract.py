@@ -165,6 +165,47 @@ class TestPullingFromWhatIsAlreadyThere:
 
         assert not [t for t in items[0]["tags"] if t.startswith("年代:")]
 
+    def test_a_fallback_fills_in_only_when_the_axis_is_empty(self, source):
+        """**確かな手掛かりが当たったら、そこで止める**(`fallback`)。
+
+        生年と没年の両方 → 生年だけ → 世紀だけ、のように並べると、並べただけでは
+        当たった全部が足される(両方を持つ人に年代のタグが何本も付く)。
+        """
+        docs = [
+            {"title": "両方ある", "tags": ["印象派の画家", "1840年生", "1926年没"], "rank": 0.9},
+            {"title": "生年だけ", "tags": ["印象派の画家", "1940年生"], "rank": 0.8},
+            {"title": "世紀だけ", "tags": ["印象派の画家", "18世紀日本の画家", "19世紀日本の画家"],
+             "rank": 0.7},
+        ]
+        rules = [
+            {"patterns": [r"^(\d{3,4})年生$", r"^(\d{3,4})年没$"], "format": "年代:{1}-{2}"},
+            {"pattern": r"^(\d{3,4})年生$", "format": "年代:{1}-", "fallback": True},
+            {"pattern": r"^18世紀.+の画家$", "format": "年代:1700頃-1800頃", "fallback": True},
+            {"pattern": r"^19世紀.+の画家$", "format": "年代:1800頃-1900頃", "fallback": True},
+        ]
+
+        items, _cursor = run(spec(tags=rules), source(docs))
+        years = {i["title"]: [t for t in i["tags"] if t.startswith("年代:")] for i in items}
+
+        assert years == {
+            "両方ある": ["年代:1840-1926"],
+            "生年だけ": ["年代:1940-"],
+            # 世紀が 2 つ当たっても、先に並べたほう 1 本だけ
+            "世紀だけ": ["年代:1700頃-1800頃"],
+        }
+
+    def test_a_fallback_is_written_back_as_it_was_given(self):
+        """書いた指定を読み直して保存しても、fallback が落ちない。"""
+        given = spec(tags=[{"pattern": "^(.+)年生$", "format": "年代:{1}-", "fallback": True}])
+
+        assert extract.to_json(given)["tags"] == [
+            {"pattern": "^(.+)年生$", "format": "年代:{1}-", "fallback": True}
+        ]
+
+    def test_a_fallback_must_be_true_or_false(self):
+        with pytest.raises(HTTPException):
+            spec(tags=[{"pattern": "^(.+)年生$", "format": "年代:{1}-", "fallback": "yes"}])
+
     def test_a_rule_can_hit_more_than_once(self, source):
         docs = [
             {
