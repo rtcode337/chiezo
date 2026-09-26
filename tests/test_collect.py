@@ -539,6 +539,21 @@ class TestPartitionLedger:
         assert "あの店が閉まった" in heard[0] and "この回の範囲の外" in heard[0]
         assert "あの店が閉まった" not in heard[1] and "この回の補足" not in heard[1]
 
+    def test_a_note_asks_the_ai_to_look_up_the_right_value(self, sample):
+        """届く依頼は「ずれている」までで、正しい値を書いてこない。
+
+        「確かめてから反映」だけだと、AI は材料が無いと読んで手元の値をそのまま返す
+        (座標のずれを頼まれた 1 件が、同じ緯度経度のまま「直した」に数えられた)。
+        """
+        sweep = collect.with_run_note(
+            collect.sweeps_of(collect.get("news"))[0], "いつもの依頼",
+            "[修正] ある店 (35.0,136.0): 座標がずれている",
+        )
+
+        assert "正しい値を自分で調べてください" in sweep.prompt
+        assert "lat / lon" in sweep.prompt
+        assert "[修正] ある店" in sweep.prompt
+
     def test_a_note_for_a_partition_names_it(self, sample):
         """補足を書いた区画は名指ししたことになる(書き漏らしても黙って落とさない)。"""
         once = collect.normalize_run_once({
