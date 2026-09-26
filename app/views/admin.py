@@ -1542,11 +1542,21 @@ def _collect_changes_html(
             f'<span class="muted">{esc(ai_history.took(row["ms"]))}</span>'
             if row.get("ms") is not None else ""
         )
+        # **どこを見た回かを出す。** 「直近どこに修正が入ったか」は、件数だけでは
+        # 答えにならない —— ざっとの回なのか割り込みなのかも、どの範囲かも読めない。
+        # **区画は 1 つずつ改行して並べる**(読点でつなぐと、鍵の中の「、」や「|」と
+        # 見分けが付かない)
+        scope = "".join(
+            f'<div class="muted">{esc(key)}</div>' for key in row["scope"] or []
+        )
         if row["status"] != collect_log.STATUS_OK:
+            # **失敗の理由も、見た区画と同じ列に置く**(どの区画で落ちたのかを並べて読む)
             rows.append(
                 f"<tr><td>{when}</td>{_changes_name_cell(row, name)}<td>{esc(row['sweep'])}</td>"
                 f"<td>{who}</td><td>{spent}</td>"
-                f'<td colspan="2"><span class="stale">失敗: {esc(row["error"])}</span></td></tr>'
+                '<td><span class="stale">失敗</span></td><td></td>'
+                # **1 つの塊に包む**(スマホの札では、部品が 1 つずつ格子に入る)
+                f'<td><div>{scope}<div class="stale">{esc(row["error"])}</div></div></td></tr>'
             )
             continue
         # 動かなかった回も 1 行として出す。**空白にしない** —— 走ったが何も
@@ -1572,27 +1582,22 @@ def _collect_changes_html(
             f'<div class="muted">{"<br>".join(moved)}</div></details>'
             if moved else ""
         )
-        # **どこを見た回かを出す。** 「直近どこに修正が入ったか」は、件数だけでは
-        # 答えにならない —— ざっとの回なのか割り込みなのかも、どの範囲かも読めない
-        scope = (
-            f'<br><span class="muted">{esc("、".join(row["scope"]))}</span>'
-            if row["scope"] else ""
-        )
         # 成功した回にも断り書きが付くことがある(答えが途中で切れた等)。
-        # **件数だけ見て「少ない」と読まれないように**、そこへ並べて出す
-        note = (
-            f'<br><span class="stale">{esc(row["error"])}</span>' if row["error"] else ""
-        )
+        # **見た区画と同じ列に置く** —— 断り書きはたいてい「どの区画で」の話なので、
+        # 区画の並びと離すと突き合わせることになる
+        note = f'<div class="stale">{esc(row["error"])}</div>' if row["error"] else ""
         rows.append(
             f"<tr><td>{when}</td>{_changes_name_cell(row, name)}"
-            f"<td>{esc(row['sweep'])}{scope}</td><td>{who}</td><td>{spent}</td>"
-            f'<td>{summary}{note}</td><td>{row["total"]:,} 件{detail}</td></tr>'
+            f"<td>{esc(row['sweep'])}</td><td>{who}</td><td>{spent}</td>"
+            f'<td>{summary}</td><td>{row["total"]:,} 件</td>'
+            # **1 つの塊に包む**(スマホの札では、部品が 1 つずつ格子に入る)
+            f"<td><div>{scope}{note}{detail}</div></td></tr>"
         )
     return wrapped(f"""
 {picker}
 <table>
 <thead><tr><th>いつ</th>{"" if name else "<th>収集</th>"}<th>どの回</th><th>頼んだ相手</th>
-<th>かかった</th><th>変化</th><th>焼いた後</th></tr></thead>
+<th>かかった</th><th>変化</th><th>焼いた後</th><th>見た区画と動いたもの</th></tr></thead>
 <tbody>
 {"".join(rows)}
 </tbody>

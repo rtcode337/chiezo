@@ -5501,6 +5501,44 @@ class TestTheCollectSectionMarkup:
         assert html.count("<table") == html.count("</table>")
         assert "古い見出し" not in self._html(sample)
 
+    def test_the_partitions_and_what_moved_share_one_column(self, sample, monkeypatch, tmp_path):
+        """見た区画・断り書き・動いたものは 1 つの列に並べる。区画は 1 つずつ改行する。
+
+        断り書きはたいてい「どの区画で」の話なので、区画の並びと離すと突き合わせる
+        ことになる。区画を読点でつなぐと、鍵の中の「、」や「|」と見分けが付かない。
+        """
+        from app import collect_log
+        from app.views import admin
+
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        collect_log.record(
+            "news", status=collect_log.STATUS_OK,
+            diff={"total": 3, "updated": 1, "updated_titles": ["A"]},
+            sweep="ざっと", scope=["日本|-1700", "日本|1701-1750"],
+            error="日本|1701-1750: 答えが途中で切れていたので、読めた 2 件だけ拾いました",
+        )
+        collect_log.record(
+            "news", status=collect_log.STATUS_ERROR, error="落ちた", sweep="ざっと",
+            scope=["日本|1751-"],
+        )
+
+        html = admin._collect_history_html(None)
+
+        assert "<th>見た区画と動いたもの</th>" in html
+        rows = [r for r in html.split("<tr>") if "ざっと" in r]
+        ok = next(r for r in rows if "直し 1" in r)
+        # 区画・断り書き・動いたものが同じ最後の列に、区画は 1 行ずつ
+        last = ok.rsplit("<td>", 1)[1]
+        # スマホの札で崩れないよう、列の中身は 1 つの塊
+        assert last.startswith('<div><div class="muted">日本|-1700</div>')
+        assert '<div class="muted">日本|-1700</div><div class="muted">日本|1701-1750</div>' in last
+        assert "答えが途中で切れていた" in last and "動いたもの" in last
+        # 変化の列には件数だけ(断り書きを混ぜない)
+        assert "答えが途中で切れていた" not in ok.split("<td>")[-3]
+        failed = next(r for r in rows if "落ちた" in r)
+        assert '<span class="stale">失敗</span>' in failed
+        assert "日本|1751-" in failed.rsplit("<td>", 1)[1]
+
     def test_the_history_is_folded_until_it_is_filtered(self, sample, monkeypatch, tmp_path):
         """毎回見るものではないので既定では閉じる。**回で絞ったときだけ開く** ——
         絞るリンクは面を読み直すので、閉じたまま戻すと何も変わらないように見える。"""
