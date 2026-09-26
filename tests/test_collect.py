@@ -5263,7 +5263,9 @@ class TestTheCollectSectionMarkup:
 
         html = admin._collect_running_html("news")
         assert "いま 1 件走っています" in html
-        assert "収集(news)" in html
+        # 収集の欄なので「収集(…)」とは書かず、その収集の面へのリンクにする
+        assert '<td><a href="/admin/collect/news">news</a></td>' in html
+        assert "収集(news)" not in html
         assert "codex" not in html
 
     def test_nothing_running_shows_nothing(self, sample, monkeypatch):
@@ -5538,6 +5540,19 @@ class TestTheCollectSectionMarkup:
         assert "日本|1751-" in failed[-2]
         assert "落ちた" in failed[-1] and "落ちた" not in failed[-2]
 
+    def test_the_name_links_to_its_collection(self, sample):
+        """設定を見に行けるように。消した収集の行は字のまま(押すと無い面へ飛ぶ)。"""
+        from app import collect_log
+        from app.views import admin
+
+        for name in ("news", "gone"):
+            collect_log.record(name, status=collect_log.STATUS_OK, diff={"total": 1})
+
+        html = admin._collect_history_html(None)
+
+        assert '<td><a href="/admin/collect/news">news</a></td>' in html
+        assert "<td>gone</td>" in html
+
     def test_the_history_is_folded_until_it_is_filtered(self, sample, monkeypatch, tmp_path):
         """毎回見るものではないので既定では閉じる。**回で絞ったときだけ開く** ——
         絞るリンクは面を読み直すので、閉じたまま戻すと何も変わらないように見える。"""
@@ -5576,6 +5591,8 @@ class TestTheCollectSectionMarkup:
         )
 
         html = admin._collect_history_html(None)
+        # 取り込みと同じ段の見出しの下に、走っている収集 → 実行履歴
+        assert html.startswith(admin.COLLECT_HEADING)
         assert html.index("いま走っている収集") < html.index("収集の実行履歴")
         assert "「収集の実行履歴」に 1 行増えます" in html
         assert "いま 1 件走っています" not in self._html(sample)

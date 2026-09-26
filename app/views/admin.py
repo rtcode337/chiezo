@@ -221,6 +221,9 @@ STATUS_PAGE = "/admin/status"
 STATUS_JOB = f"{STATUS_PAGE}#job"
 
 JOB_HEADING = '<h2 id="job-head">取り込み(素材を長期記憶へ焼く)</h2>'
+# 状況の面の収集の節の見出し。取り込みの節と同じ段にする(収集の回は取り込みの
+# 中で走るが、走っている収集と実行履歴が取り込みの表の続きに見えないように)
+COLLECT_HEADING = '<h2 id="collect-head">収集</h2>'
 
 
 def _running_sweep(source: str) -> str:
@@ -1387,9 +1390,11 @@ def _collect_running_html(name: str | None = None) -> str:
     ]
     if not rows:
         return ""
+    known = _known_collections()
+    # 依頼元は `collect:<名前>`。**「収集(…)」とは書かない**(収集の欄なので冗長)
     cells = "".join(
         f"<tr><td>{esc(jst.format(jst.parse(row.get('at') or '')) or '')}</td>"
-        f"<td>{esc(ai_inflight.caller_label(str(row.get('caller') or '')))}</td>"
+        f"<td>{_collect_name_link(str(row.get('caller') or '').removeprefix('collect:'), known)}</td>"
         # **1 つの塊に包む**(スマホの札では、部品が 1 つずつ格子に入る)
         f"<td><span>{esc(str(row.get('backend') or ''))}"
         + (f' <span class="muted">{esc(str(row.get("model") or ""))}</span>'
@@ -1562,6 +1567,7 @@ def _collect_changes_html(
         name, limit=CHANGES_PAGE_SIZE, sweep=sweep, offset=(page - 1) * CHANGES_PAGE_SIZE,
     )
     pager = _changes_pager_html(name, sweep, anchor, page, total)
+    known = set() if name else _known_collections()
     if not changes:
         return wrapped(
             picker + '<p class="muted">'
@@ -1597,7 +1603,7 @@ def _collect_changes_html(
         if row["status"] != collect_log.STATUS_OK:
             # **失敗の理由は「動いたもの」の列に置く**(何も動かなかった理由がそこに入る)
             rows.append(
-                f"<tr><td>{when}</td>{_changes_name_cell(row, name)}<td>{esc(row['sweep'])}</td>"
+                f"<tr><td>{when}</td>{_changes_name_cell(row, name, known)}<td>{esc(row['sweep'])}</td>"
                 f"<td>{who}</td><td>{spent}</td>"
                 '<td><span class="stale">失敗</span></td><td></td>'
                 f'<td>{scope}</td><td><div class="stale">{esc(row["error"])}</div></td></tr>'
@@ -1631,7 +1637,7 @@ def _collect_changes_html(
         # 断り書きは「何が動いた(動かなかった)か」の但し書きなので、そちらと並べる
         note = f'<div class="stale">{esc(row["error"])}</div>' if row["error"] else ""
         rows.append(
-            f"<tr><td>{when}</td>{_changes_name_cell(row, name)}"
+            f"<tr><td>{when}</td>{_changes_name_cell(row, name, known)}"
             f"<td>{esc(row['sweep'])}</td><td>{who}</td><td>{spent}</td>"
             f'<td>{summary}</td><td>{row["total"]:,} 件</td>'
             # **1 つの塊に包む**(スマホの札では、部品が 1 つずつ格子に入る)
@@ -1655,9 +1661,28 @@ def _collect_changes_html(
 """, True)
 
 
-def _changes_name_cell(row: dict, name: str | None) -> str:
+def _changes_name_cell(row: dict, name: str | None, known: set[str]) -> str:
     """収集の名前の欄。**1 つの収集の面では出さない**(全部同じ名前が並ぶだけ)。"""
-    return "" if name else f"<td>{esc(row['name'])}</td>"
+    return "" if name else f"<td>{_collect_name_link(row['name'], known)}</td>"
+
+
+def _known_collections() -> set[str]:
+    """いま定義のある収集の名前。**読めなければ空**(名前を字のまま出すだけで済む)。"""
+    with suppress(Exception):
+        return {item.name for item in collect.load()}
+    return set()
+
+
+def _collect_name_link(name: str, known: set[str]) -> str:
+    """収集の名前を、**その収集の面へのリンク**にする。
+
+    実行履歴や走っている収集を見て「この収集の設定は」と思ったら、そのまま行ける
+    ように。**定義の無い名前は字のまま**(消した収集の行は控えに残るので、押すと
+    無い面へ飛ぶ)。行き先は `collect_page` と同じく保存されている名前から組む。
+    """
+    if name not in known:
+        return esc(name)
+    return f'<a href="/admin/collect/{quote(name, safe="")}">{esc(name)}</a>'
 
 
 def _redo_form(item, disabled: str) -> str:
@@ -2507,9 +2532,11 @@ def _ingest_history_html(job: dict | None) -> str:
 
 
 def _collect_history_html(sweep: str | None, page: int = 1) -> str:
-    """状況の面の「収集の実行履歴」。**取り込みの節の中に、畳んで置く**。
+    """状況の面の「収集」の節。**取り込みの節のすぐ下に、見出しを立てて置く**。
 
-    収集の回は取り込みの中で走るので、取り込みの様子と並べて読む。ただ表が長く、
+    収集の回は取り込みの中で走るので、取り込みの様子と並べて読む。
+    **見出しは取り込みと同じ段**(`COLLECT_HEADING`)—— 見出しが無いと、走っている
+    収集と実行履歴が取り込みの節の続きに読める。実行履歴は表が長く、
     毎回見るものではないので**既定では閉じる**。**回で絞ったときとページを送ったときは
     開く** —— どちらも面を読み直すので、閉じたまま戻すと押しても何も変わらないように見える。
 
@@ -2521,7 +2548,8 @@ def _collect_history_html(sweep: str | None, page: int = 1) -> str:
     opened = " open" if sweep or page > 1 else ""
     running = _collect_running_html()
     return (
-        (f"<h3>いま走っている収集</h3>{running}" if running else "")
+        COLLECT_HEADING
+        + (f"<h3>いま走っている収集</h3>{running}" if running else "")
         + f'<details id="collect-history"{opened}><summary><h3>収集の実行履歴</h3></summary>'
         + _collect_changes_html(sweep=sweep, wrap=False, anchor="collect-history", page=page)
         + "</details>"
