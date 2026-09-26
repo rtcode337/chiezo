@@ -1376,6 +1376,9 @@ def _collect_running_html(name: str | None = None) -> str:
 
     控え(`app/collect_log.py`)は終わってから 1 行になるので、押した直後は何も出ない
     —— 走っているのかどうかを確かめるのに、別の画面まで見に行くことになっていた。
+
+    **全部の収集のぶん(`name` 無し)は状況の面に置く**(実行履歴の真上)。
+    走っているかを確かめに来るのは状況の面で、終われば同じ面の履歴に 1 行増える。
     """
     rows = [
         row for row in ai_inflight.running()
@@ -1387,16 +1390,18 @@ def _collect_running_html(name: str | None = None) -> str:
     cells = "".join(
         f"<tr><td>{esc(jst.format(jst.parse(row.get('at') or '')) or '')}</td>"
         f"<td>{esc(ai_inflight.caller_label(str(row.get('caller') or '')))}</td>"
-        f"<td>{esc(str(row.get('backend') or ''))}"
+        # **1 つの塊に包む**(スマホの札では、部品が 1 つずつ格子に入る)
+        f"<td><span>{esc(str(row.get('backend') or ''))}"
         + (f' <span class="muted">{esc(str(row.get("model") or ""))}</span>'
            if row.get("model") else "")
-        + "</td>"
+        + "</span></td>"
         + '<td><span class="job-status running">走っています</span></td></tr>'
         for row in rows
     )
+    below = "直近の変更" if name else "収集の実行履歴"
     return (
         f'<p class="muted">いま {len(rows)} 件走っています'
-        "(終わると下の「直近の変更」に 1 行増えます)。</p>"
+        f"(終わると下の「{below}」に 1 行増えます)。</p>"
         "<table><thead><tr><th>始めた時刻</th><th>収集</th><th>相手</th><th>状態</th>"
         f"</tr></thead><tbody>{cells}</tbody></table>"
     )
@@ -1459,6 +1464,35 @@ def _changed_here_html(name: str, sources: dict, sweep: str | None) -> str:
 """
 
 
+# 実行履歴の 1 ページの件数
+CHANGES_PAGE_SIZE = 30
+
+
+def _changes_pager_html(
+    name: str | None, sweep: str | None, anchor: str, page: int, total: int,
+) -> str:
+    """実行履歴の前後のページ。**回の絞り込みは持ったまま送る**。
+
+    **1 ページに収まれば出さない**(送る先が無い)。
+    """
+    last = max(1, (total + CHANGES_PAGE_SIZE - 1) // CHANGES_PAGE_SIZE)
+    if last == 1:
+        return ""
+    base = f"/admin/collect/{quote(name)}" if name else STATUS_PAGE
+
+    def link(target: int, label: str) -> str:
+        if target < 1 or target > last:
+            return f'<span class="muted">{label}</span>'
+        query = urlencode({k: v for k, v in (("sweep", sweep), ("page", target)) if v})
+        return f'<a href="{esc(f"{base}?{query}#{anchor}")}">{label}</a>'
+
+    return (
+        f'<div class="pager">{link(page - 1, "← 新しい")}'
+        f'<span class="muted">{page} / {last} ページ({total:,} 件)</span>'
+        f'{link(page + 1, "古い →")}</div>'
+    )
+
+
 def _changes_filter_html(
     name: str | None, sweep: str | None, anchor: str = "changes",
 ) -> str:
@@ -1486,8 +1520,8 @@ def _changes_filter_html(
 
 
 def _collect_changes_html(
-    limit: int = 30, name: str | None = None, sweep: str | None = None,
-    wrap: bool = True, anchor: str = "changes",
+    name: str | None = None, sweep: str | None = None,
+    wrap: bool = True, anchor: str = "changes", page: int = 1,
 ) -> str:
     """直近どこに修正が入ったか(`app/collect_log.py`)。
 
@@ -1504,6 +1538,10 @@ def _collect_changes_html(
 
     `wrap=False` は**包みを呼ぶ側が持つ**とき(状況の面の「収集の実行履歴」)。
     二重に畳むと、開いてもまだ閉じた見出しが出てくる。
+
+    **ページで古いほうへ送れる**(`page`)。控えは `collect_log.MAX_ROWS` まで
+    残っているのに、頭の 30 件しか読めないと、数日前に荒れた回を追えない。
+    **範囲の外は最後のページに寄せる**(空の表と「5 / 3 ページ」を見せない)。
     """
     def wrapped(inner: str, opened: bool) -> str:
         if not wrap:
@@ -1517,7 +1555,13 @@ def _collect_changes_html(
             "<code>CHIEZO_STATE_DIR</code> を設定すると残ります。</p>", False,
         )
     picker = _changes_filter_html(name, sweep, anchor)
-    changes = collect_log.recent(name, limit=limit, sweep=sweep)
+    total = collect_log.count(name, sweep=sweep)
+    last = max(1, (total + CHANGES_PAGE_SIZE - 1) // CHANGES_PAGE_SIZE)
+    page = min(max(1, page), last)
+    changes = collect_log.recent(
+        name, limit=CHANGES_PAGE_SIZE, sweep=sweep, offset=(page - 1) * CHANGES_PAGE_SIZE,
+    )
+    pager = _changes_pager_html(name, sweep, anchor, page, total)
     if not changes:
         return wrapped(
             picker + '<p class="muted">'
@@ -1595,6 +1639,7 @@ def _collect_changes_html(
         )
     return wrapped(f"""
 {picker}
+{pager}
 <table>
 <thead><tr><th>いつ</th>{"" if name else "<th>収集</th>"}<th>どの回</th><th>頼んだ相手</th>
 <th>かかった</th><th>変化</th><th>焼いた後</th><th>見た区画と動いたもの</th></tr></thead>
@@ -1602,9 +1647,11 @@ def _collect_changes_html(
 {"".join(rows)}
 </tbody>
 </table>
-<p class="muted">新しい順に最大 {limit} 件。「かかった」は<strong>集めるのにかかった時間</strong>で、
+{pager}
+<p class="muted">新しい順に 1 ページ {CHANGES_PAGE_SIZE} 件。「かかった」は<strong>集めるのにかかった時間</strong>で、
 焼くぶんは入らない(控えを書いてから流すため)。
-記録は <code>state/collect_runs.db</code> に残り、古いものから捨てられる。</p>
+記録は <code>state/collect_runs.db</code> に最大 {collect_log.MAX_ROWS:,} 件残り、\
+古いものから捨てられる。</p>
 """, True)
 
 
@@ -1999,7 +2046,6 @@ def _collect_html(sources: dict[str, Source], disabled: str) -> str:
 """ if rows else '<p class="muted">まだ収集がありません。下のフォームから作れます。</p>'
     return f"""
 {table}
-{_collect_running_html()}
 <details><summary>収集を追加する</summary>
 <form method="post" action="/admin/collect/create" class="collect-form">
 <p><label>name(ソース名になる。英小文字・数字・_)<br>
@@ -2402,20 +2448,83 @@ def _status_summary(job: dict | None, running: list[dict]) -> str:
     return f"{ingest}。{ai}{alert}"
 
 
-def _collect_history_html(sweep: str | None) -> str:
+# 取り込み側が覚えている終わった回の数(`ingest/server.py` の `RECENT_JOBS`)
+INGEST_RECENT_JOBS = 20
+
+
+def _ingest_history_html(job: dict | None) -> str:
+    """状況の面の「取り込みの実行履歴」。**終わった回を新しい順に、畳んで置く**。
+
+    いまの 1 本の塊は、次が始まると前の回を押し出す —— 夜のうちに何が焼かれ、
+    どれが落ちたのかは、並べないと読めない。
+
+    **控えは取り込み側(chiezo-trigger)のメモリーにしか無い**(`RECENT_JOBS` 本まで)。
+    コンテナを作り直せば消えるので、そのことを表の下に書いておく(空の表を
+    「何も走っていない」と読ませない)。
+    """
+    done = ingest_queue.finished(job)
+    if not done:
+        return ""
+    labels = {"done": "終わった", "error": "落ちた", "stopped": "止めた"}
+    rows = []
+    for one in done:
+        state = str(one.get("state") or "")
+        mark = esc(labels.get(state, state))
+        if state == "error":
+            mark = f'<span class="stale">{mark}</span>'
+        started = jst.parse(str(one.get("started_at") or ""))
+        finished = jst.parse(str(one.get("finished_at") or ""))
+        took = (
+            ai_history.took(int((finished - started).total_seconds() * 1000))
+            if started and finished else ""
+        )
+        # **赤くするのは落ちた回だけ**(止めた回の一言は、人が降ろした印でしかない)
+        tone = "stale" if state == "error" else "muted"
+        error = (f'<div class="{tone}">{esc(one["error"])}</div>'
+                 if one.get("error") else "")
+        tail = one.get("log_tail") or []
+        log_html = (
+            '<details class="job-log"><summary class="muted">実行ログ</summary>'
+            f'<div class="log-tail">{esc(chr(10).join(tail))}</div></details>'
+            if tail else ""
+        )
+        rows.append(
+            f"<tr><td>{esc(jst.format(started)) if started else ''}</td>"
+            f"<td>{esc(str(one.get('source') or ''))}</td><td>{mark}</td>"
+            f'<td class="muted">{esc(took)}</td>'
+            # **1 つの塊に包む**(スマホの札では、部品が 1 つずつ格子に入る)
+            f"<td><div>{error}{log_html}</div></td></tr>"
+        )
+    return (
+        f'<details id="ingest-history"><summary><h3>取り込みの実行履歴</h3></summary>'
+        "<table><thead><tr><th>始めた時刻</th><th>ソース</th><th>結果</th>"
+        f"<th>かかった</th><th>エラーとログ</th></tr></thead><tbody>{''.join(rows)}</tbody></table>"
+        f'<p class="muted">新しい順に最大 {INGEST_RECENT_JOBS} 本。'
+        "控えは chiezo-trigger のメモリーにだけあり、コンテナを作り直すと消える。</p>"
+        "</details>"
+    )
+
+
+
+def _collect_history_html(sweep: str | None, page: int = 1) -> str:
     """状況の面の「収集の実行履歴」。**取り込みの節の中に、畳んで置く**。
 
     収集の回は取り込みの中で走るので、取り込みの様子と並べて読む。ただ表が長く、
-    毎回見るものではないので**既定では閉じる**。**回で絞ったときだけ開く** ——
-    絞るリンクは面を読み直すので、閉じたまま戻すと押しても何も変わらないように見える。
+    毎回見るものではないので**既定では閉じる**。**回で絞ったときとページを送ったときは
+    開く** —— どちらも面を読み直すので、閉じたまま戻すと押しても何も変わらないように見える。
+
+    **いま走っている収集はその真上に、畳まずに出す**(走っていなければ何も出ない)。
+    押した直後に見たいのはこちらで、終われば下の履歴に 1 行増える。
     """
     if not collect.is_enabled():
         return ""
-    opened = " open" if sweep else ""
+    opened = " open" if sweep or page > 1 else ""
+    running = _collect_running_html()
     return (
-        f'<details id="collect-history"{opened}><summary><h3>収集の実行履歴</h3></summary>'
-        f'{_collect_changes_html(sweep=sweep, wrap=False, anchor="collect-history")}'
-        "</details>"
+        (f"<h3>いま走っている収集</h3>{running}" if running else "")
+        + f'<details id="collect-history"{opened}><summary><h3>収集の実行履歴</h3></summary>'
+        + _collect_changes_html(sweep=sweep, wrap=False, anchor="collect-history", page=page)
+        + "</details>"
     )
 
 
@@ -2423,6 +2532,7 @@ def _collect_history_html(sweep: str | None) -> str:
 def admin_status(
     request: Request,
     sweep: str | None = Query(None, description="収集の実行履歴を、この回のぶんだけに絞る"),
+    page: int = Query(1, description="収集の実行履歴の何ページ目か(新しいほうから)"),
 ):
     """状況。**いま何が起きているかが 1 画面で読めること**だけを受け持つ。
 
@@ -2438,7 +2548,8 @@ def admin_status(
 {_paused_workers_html()}
 <p>{_disk_html(request.app.state.data_dir)}</p>
 {_job_status_html(job, heading=True)}
-{_collect_history_html(sweep)}
+{_ingest_history_html(job)}
+{_collect_history_html(sweep, page)}
 {_running_html(running, _round_done(job))}
 {_usage_html(request)}
 """
@@ -4171,6 +4282,7 @@ def admin_collect_detail(
     request: Request,
     name: str,
     sweep: str | None = Query(None, description="直近の変更を、この回のぶんだけに絞る"),
+    page: int = Query(1, description="直近の変更の何ページ目か(新しいほうから)"),
 ):
     """収集 1 つぶんの面。**一覧から名前を押すとここへ来る**。
 
@@ -4213,7 +4325,7 @@ def admin_collect_detail(
 </table>
 {_collect_detail_html(item, disabled, request.app.state.sources, _baking_now(job, name))}
 {_collect_running_html(name)}
-{_collect_changes_html(name=name, sweep=sweep)}
+{_collect_changes_html(name=name, sweep=sweep, page=page)}
 {_changed_here_html(name, request.app.state.sources, sweep)}
 <p class="muted"><a href="/admin/collect">集める の一覧へ戻る</a></p>
 """

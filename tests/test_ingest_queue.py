@@ -368,3 +368,36 @@ class TestTheStatusPage:
 
         assert admin.queue_buttons_disabled(status) == ""
         assert admin.run_buttons_disabled(status) == " disabled"
+
+
+class TestTheIngestHistory:
+    """夜のうちに何が焼かれ、どれが落ちたのかは、並べないと読めない。"""
+
+    def test_finished_runs_are_listed_newest_first(self):
+        from app.views import admin
+
+        html = admin._ingest_history_html({
+            "state": "idle",
+            "recent": [
+                {"source": "news", "state": "error", "error": "boom",
+                 "started_at": "2026-09-26T18:00:00+00:00",
+                 "finished_at": "2026-09-26T18:01:30+00:00", "log_tail": ["落ちた行"]},
+                {"source": "jawiki", "state": "done",
+                 "started_at": "2026-09-26T15:00:00+00:00",
+                 "finished_at": "2026-09-26T16:00:00+00:00", "log_tail": []},
+            ],
+        })
+
+        assert '<details id="ingest-history">' in html
+        assert html.index("news") < html.index("jawiki")
+        assert "2026-09-27 03:00" in html, "日本時間で出す"
+        assert '<span class="stale">落ちた</span>' in html
+        assert '<div class="stale">boom</div>' in html
+        assert "落ちた行" in html
+        assert "コンテナを作り直すと消える" in html
+
+    def test_nothing_finished_shows_nothing(self):
+        from app.views import admin
+
+        assert admin._ingest_history_html({"state": "idle", "recent": []}) == ""
+        assert admin._ingest_history_html(None) == ""

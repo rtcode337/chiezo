@@ -5565,6 +5565,36 @@ class TestTheCollectSectionMarkup:
 
         assert "変更履歴は記録していません" in admin._collect_history_html(None)
 
+    def test_what_is_running_moved_to_the_status_page(self, sample, monkeypatch):
+        """走っているかを確かめに来るのは状況の面。終われば同じ面の履歴に 1 行増える。"""
+        from app import ai_inflight
+        from app.views import admin
+
+        monkeypatch.setattr(
+            ai_inflight, "running",
+            lambda limit=50: [{"at": "2026-09-13T00:00:00+00:00", "caller": "collect:news",
+                               "backend": "claude"}],
+        )
+
+        html = admin._collect_history_html(None)
+        assert html.index("いま走っている収集") < html.index("収集の実行履歴")
+        assert "「収集の実行履歴」に 1 行増えます" in html
+        assert "いま 1 件走っています" not in self._html(sample)
+
+    def test_turning_the_page_opens_the_history(self, sample, monkeypatch, tmp_path):
+        """ページを送るリンクは面を読み直す。閉じたまま戻すと何も変わらないように見える。"""
+        from app import collect_log
+        from app.views import admin
+
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        for _ in range(admin.CHANGES_PAGE_SIZE + 1):
+            collect_log.record("news", status=collect_log.STATUS_OK, diff={"total": 1})
+
+        first = admin._collect_history_html(None)
+        assert '<details id="collect-history">' in first
+        assert 'href="/admin/status?page=2#collect-history"' in first
+        assert '<details id="collect-history" open>' in admin._collect_history_html(None, 2)
+
     def test_an_empty_collection_can_still_be_deleted(self, sample):
         """まだ何も溜まっていない収集の行にも削除の導線が要る。"""
         html = self._html(sample)

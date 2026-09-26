@@ -193,10 +193,24 @@ def record(
         log.warning("collect run log write failed: %r", e)
 
 
+def _where(name: str | None, sweep: str | None) -> tuple[str, list]:
+    where, args = [], []
+    if name:
+        where.append("name = ?")
+        args.append(name)
+    if sweep:
+        where.append("sweep = ?")
+        args.append(sweep)
+    return (" WHERE " + " AND ".join(where) if where else ""), args
+
+
 def recent(
     name: str | None = None, limit: int = 50, sweep: str | None = None,
+    offset: int = 0,
 ) -> list[dict]:
     """直近の実行を新しい順に。`name` を渡すとその収集だけ。記録が無ければ空。
+
+    `offset` で古いほうへ送る(画面のページング)。
 
     **`sweep` で回を絞れる。** 同じ収集の中でも回ごとに間隔が桁違いなので、
     絞れないと**短い回の行が長い回の行を押し流す** —— 1 時間ごとに見出しを溜める回と
@@ -210,18 +224,9 @@ def recent(
         " added_titles, updated_titles, removed_titles, error, sweep, scope,"
         " backend, model, effort, ms FROM collect_runs"
     )
-    args: list = []
-    where = []
-    if name:
-        where.append("name = ?")
-        args.append(name)
-    if sweep:
-        where.append("sweep = ?")
-        args.append(sweep)
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY id DESC LIMIT ?"
-    args.append(max(1, min(limit, MAX_ROWS)))
+    where, args = _where(name, sweep)
+    sql += where + " ORDER BY id DESC LIMIT ? OFFSET ?"
+    args += [max(1, min(limit, MAX_ROWS)), max(0, offset)]
     rows: list[dict] = []
     with suppress(sqlite3.Error):
         conn = _connect(path)
@@ -234,6 +239,22 @@ def recent(
         finally:
             conn.close()
     return rows
+
+
+def count(name: str | None = None, sweep: str | None = None) -> int:
+    """`recent` と同じ絞り方で、残っている行の数。記録が無ければ 0。"""
+    path = db_path()
+    if path is None or not path.exists():
+        return 0
+    where, args = _where(name, sweep)
+    with suppress(sqlite3.Error):
+        conn = _connect(path)
+        try:
+            row = conn.execute(f"SELECT COUNT(*) FROM collect_runs{where}", tuple(args)).fetchone()
+            return int(row[0])
+        finally:
+            conn.close()
+    return 0
 
 
 def sweeps(name: str | None = None) -> list[str]:

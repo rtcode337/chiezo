@@ -240,3 +240,61 @@ class TestThePickerOnTheScreen:
 
         assert "その回はまだ走っていません" in html
         assert "どの回を見るか" in html, "戻る道を残す"
+
+
+class TestPaging:
+    """控えは `MAX_ROWS` まで残っているのに、頭の 1 ページしか読めなかった。"""
+
+    def _record(self, n: int, sweep: str = "") -> None:
+        for i in range(n):
+            collect_log.record(
+                "news", status=collect_log.STATUS_OK, diff={"total": i}, sweep=sweep,
+            )
+
+    def test_offset_goes_back_in_time(self, state_env):
+        self._record(5)
+
+        assert [r["total"] for r in collect_log.recent("news", limit=2, offset=2)] == [2, 1]
+        assert collect_log.count("news") == 5
+        assert collect_log.count("other") == 0
+
+    def test_the_count_follows_the_sweep(self, state_env):
+        self._record(3, sweep="ざっと")
+        self._record(2, sweep="整理")
+
+        assert collect_log.count("news", sweep="整理") == 2
+
+    def test_the_pager_keeps_the_sweep(self, state_env):
+        from app.views import admin
+
+        self._record(admin.CHANGES_PAGE_SIZE + 1, sweep="整理")
+
+        html = admin._collect_changes_html(name="news", sweep="整理")
+
+        assert "1 / 2 ページ(31 件)" in html
+        assert "/admin/collect/news?sweep=%E6%95%B4%E7%90%86&amp;page=2#changes" in html
+
+    def test_the_last_page_holds_the_oldest(self, state_env):
+        from app.views import admin
+
+        self._record(admin.CHANGES_PAGE_SIZE + 1)
+
+        html = admin._collect_changes_html(name="news", page=2)
+
+        assert "2 / 2 ページ" in html
+        assert html.count("<tr><td>") == 1
+
+    def test_a_page_past_the_end_shows_the_last(self, state_env):
+        """空の表と「5 / 2 ページ」を見せても、辿る役に立たない。"""
+        from app.views import admin
+
+        self._record(admin.CHANGES_PAGE_SIZE + 1)
+
+        assert "2 / 2 ページ" in admin._collect_changes_html(name="news", page=5)
+
+    def test_one_page_gets_no_pager(self, state_env):
+        from app.views import admin
+
+        self._record(3)
+
+        assert "ページ(" not in admin._collect_changes_html(name="news")
