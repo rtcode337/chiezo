@@ -356,9 +356,13 @@ class TestBridgeQuota:
 
 class TestAdminSection:
     def test_the_screen_shows_both_numbers_and_a_refresh_button(self, env):
+        from app import settings_store
+
         with make_client(env, ReplyLLM()) as client:
             complete(client, messages=[{"role": "user", "content": "やあ"}])
-            html = client.get("/admin/ai").text
+            # 状況の面の表は使う相手だけ。枠を聞ける相手を 1 つ入れて、取り直す口も見る
+            settings_store.set_enabled("codex", True)
+            html = client.get("/admin/status").text
 
         assert 'id="ai-usage"' in html
         assert "相手が言う枠" in html and "Chiezo が使ったぶん" in html
@@ -458,25 +462,24 @@ class TestAdminSection:
     def test_the_button_counts_the_same_backends_it_will_ask(self, env):
         """ボタンに出す数と、実際に聞く相手を同じところから数える。"""
         from app import settings_store, usage
-        from app.views import ai_usage
+        from app.views import admin
 
         with make_client(env, ReplyLLM()):
             # 絵と音だけの相手も対象に入る(枠を聞ける口があるため)
             settings_store.set_enabled("elevenlabs", True)
-            html = ai_usage.section_html()
+            html = admin._usage_html()
 
         assert usage.refreshable() == ["elevenlabs"]
-        assert f"全部取り直す({len(usage.refreshable())} 件)" in html
+        assert 'action="/admin/ai/usage/all"' in html
 
     def test_the_button_is_hidden_when_there_is_nothing_to_ask(self, env):
         """押しても何も起きないボタンは出さない(壊れているのか設定不足か読めない)。"""
-        from app.views import ai_usage
+        from app.views import admin
 
         with make_client(env, ReplyLLM()):
-            html = ai_usage.section_html()
+            html = admin._usage_html()
 
         assert "/admin/ai/usage/all" not in html
-        assert "まとめて取り直せる相手がいません" in html
 
     def test_the_reason_comes_back_to_the_screen(self, env):
         from app import settings_store, usage
@@ -765,7 +768,7 @@ class TestBreakdown:
                                    caller="collect:painters", prompt_bytes=18_000)
             usage_store.record("codex", model="gpt-5.5", effort="low",
                                caller="api:pta", prompt_bytes=288_000)
-            table = breakdown_of(client.get("/admin/ai").text)
+            table = breakdown_of(client.get("/admin/status").text)
 
         # 依頼元は開いて出す(素の印では読めない)
         assert "収集(painters)" in table and "外のアプリ(pta)" in table
@@ -780,7 +783,7 @@ class TestBreakdown:
         with make_client(env, ReplyLLM()) as client:
             usage_store.record("codex", caller="api:pta",
                                prompt_bytes=288_000, reply_bytes=1_024)
-            table = breakdown_of(client.get("/admin/ai").text)
+            table = breakdown_of(client.get("/admin/status").text)
 
         assert "依頼 281 KB → 応答 1 KB" in table
 
@@ -790,7 +793,7 @@ class TestBreakdown:
 
         with make_client(env, ReplyLLM()) as client:
             usage_store.record("codex", caller="api:pta")
-            table = breakdown_of(client.get("/admin/ai").text)
+            table = breakdown_of(client.get("/admin/status").text)
 
         assert "トークン数なし" in table
 
@@ -809,8 +812,8 @@ class TestBreakdown:
             with sqlite3.connect(usage_store.db_path()) as conn:
                 conn.execute("UPDATE calls SET at = ? WHERE provider = 'antigravity'", (stale,))
 
-            day = breakdown_of(client.get("/admin/ai?spent_window=24h").text)
-            week = breakdown_of(client.get("/admin/ai?spent_window=7d").text)
+            day = breakdown_of(client.get("/admin/status?spent_window=24h").text)
+            week = breakdown_of(client.get("/admin/status?spent_window=7d").text)
 
         assert "収集(tech)" not in day
         assert "収集(tech)" in week
@@ -818,7 +821,7 @@ class TestBreakdown:
     def test_an_unknown_window_falls_back_to_the_default(self, env):
         """窓が違うだけで読めないものは無いので、断らずに既定へ倒す。"""
         with make_client(env, ReplyLLM()) as client:
-            html = client.get("/admin/ai?spent_window=../secret").text
+            html = client.get("/admin/status?spent_window=../secret").text
 
         assert "../secret" not in html
         assert 'id="ai-breakdown"' in html
@@ -875,7 +878,7 @@ class TestQuotaTrail:
         with make_client(env, ReplyLLM()) as client:
             usage_store.save_quota("codex", self._window(10.0))
             usage_store.save_quota("codex", self._window(51.0))
-            html = client.get("/admin/ai").text
+            html = client.get("/admin/status").text
 
         assert 'id="ai-quota-trail"' in html
         assert "+41 ポイント" in html
@@ -938,7 +941,7 @@ class TestTokensFromTheBridge:
         with make_client(env, ReplyLLM()) as client:
             usage_store.record("codex", model="gpt-5.5", caller="api:pta",
                                input_tokens=14610, output_tokens=7, cached_tokens=11520)
-            table = breakdown_of(client.get("/admin/ai").text)
+            table = breakdown_of(client.get("/admin/status").text)
 
         assert "14,610 in・7 out" in table
         assert "うち 11,520 はキャッシュ" in table
@@ -974,7 +977,7 @@ class TestWhatMovedTheQuota:
             with sqlite3.connect(usage_store.db_path()) as conn:
                 conn.execute("UPDATE quota_samples SET at = ?", (older,))
             usage_store.save_quota("codex", [dict(window, used_percent=51.0)])
-            html = client.get("/admin/ai").text
+            html = client.get("/admin/status").text
 
         assert "収集(painters) gpt-5.5 ×1" in html
 
@@ -1114,7 +1117,7 @@ class TestAWindowThatStoppedComing:
                 conn.execute("UPDATE quota_samples SET at = ?", (old,))
             usage_store.save_quota("codex", [{"id": "primary-300m", "label": "直近 5 時間",
                                               "used_percent": 3.0}])
-            html = client.get("/admin/ai").text
+            html = client.get("/admin/status").text
 
         assert "いまは返ってこない窓" in html
 
@@ -1149,16 +1152,18 @@ class TestWhatTheBackendActuallySaid:
 
     def test_the_screen_folds_it_away(self, env):
         """読みに来た人だけが開く —— 常に開いていると、他の相手の行が画面外へ出る。"""
-        from app import usage
+        from app import settings_store, usage
         from app.views import ai_usage
 
         with make_client(env, ReplyLLM()) as client:
+            # 状況の面の表は使う相手だけ
+            settings_store.set_enabled("codex", True)
             self._bridge(env, {
                 "windows": [{"id": "primary", "used_percent": 12, "window_minutes": 300}],
                 "raw": '{"limitId":"weekly-pool"}',
             })
             client.get("/v1/ai/usage", params={"refresh": 1, "backend": "codex"})
-            html = client.get("/admin/ai").text
+            html = client.get("/admin/status").text
 
         assert "相手が言ったそのまま" in html
         assert "weekly-pool" in html
@@ -1265,12 +1270,12 @@ class TestWhileTheCliIsRunning:
 
     def test_the_row_button_is_disabled(self, env):
         from app import settings_store
-        from app.views import ai_usage
+        from app.views import admin
 
         with make_client(env, ReplyLLM()):
             settings_store.set_enabled("codex", True)
             self._running("codex")
-            html = ai_usage.section_html()
+            html = admin._usage_html()
 
         assert "CLI 実行中" in html
         assert "disabled" in html
@@ -1312,11 +1317,11 @@ class TestTheButtonSaysItIsWorking:
 
     def test_the_button_carries_the_label_it_will_show(self, env):
         from app import settings_store
-        from app.views import ai_usage
+        from app.views import admin
 
         with make_client(env, ReplyLLM()):
             settings_store.set_enabled("codex", True)
-            html = ai_usage.section_html()
+            html = admin._usage_html()
 
         assert 'data-busy="取り直しています…"' in html
 

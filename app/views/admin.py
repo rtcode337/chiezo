@@ -224,6 +224,8 @@ JOB_HEADING = '<h2 id="job-head">取り込み(素材を長期記憶へ焼く)</h
 # 状況の面の収集の節の見出し。取り込みの節と同じ段にする(収集の回は取り込みの
 # 中で走るが、走っている収集と実行履歴が取り込みの表の続きに見えないように)
 COLLECT_HEADING = '<h2 id="collect-head">収集</h2>'
+# 状況の面の AI の節の見出し(走っている依頼・使用量・依頼の履歴)
+AI_HEADING = '<h2 id="ai-head">AI</h2>'
 
 
 def _running_sweep(source: str) -> str:
@@ -2237,7 +2239,7 @@ def _answer_status_html() -> str:
 PAGES = (
     # **先頭に置く。** 毎回まず見に来るのは「いま何が動いているか」で、
     # 走らせるボタンを押したあとに連れてこられるのもここ
-    (STATUS_PAGE, "状況", "いま動いているもの。取り込み・AI への依頼・使用量・ディスクの空き"),
+    (STATUS_PAGE, "状況", "いま動いているもの。取り込み・収集・AI(依頼・使用量)・ディスクの空き"),
     ("/admin/memory", "記憶", "溜めて引く。短期記憶・長期記憶・初期化"),
     # **記憶の隣に置く。** タスクもルールも短期記憶のメモにタグで載っているだけで、
     # 別の置き場を持たない —— 記憶を見に来た流れでそのまま開ける位置にする
@@ -2248,7 +2250,7 @@ PAGES = (
     # 一度入れたら開かない表と同じ高さに置く理由が無い。ワーカーも一緒に置く
     # (何を回すかと、誰に回すかは 1 つの話)
     ("/admin/collect", "収集", "無人で回る層。巡回・区画・変更履歴と、回す相手の並び"),
-    ("/admin/ai", "AI と鍵", "貸し出すもの。話せる相手、使用量、依頼の履歴"),
+    ("/admin/ai", "AI と鍵", "貸し出すもの。話せる相手と鍵"),
     ("/admin/media", "見比べ", "作らせたものを並べて選ぶ。手元のものも持ち込める"),
     ("/admin/server", "その他", "このサーバー。Claude Code 連携といま動いているビルド"),
 )
@@ -2339,13 +2341,20 @@ def _usage_html(request: Request | None = None) -> str:
         # 行は出る —— その行に「まだ取っていない」と書くので、最初の 1 回も
         # 状況の面から始められる
         return ""
+    # **内訳と枠の推移は畳んで添える**(AI の面から移したもの。毎回は読まないが、
+    # 枠が詰まったときに「何が食ったのか」を読むのはここしかない)。
+    # **窓を切り替えたときは開く**(面を読み直すので、閉じたまま戻すと何も
+    # 変わらないように見える)
+    opened = " open" if request is not None and request.query_params.get("spent_window") else ""
     return (
-        # **「AI 使用量」と書く。** 状況の面はディスクや取り込みと並ぶので、
-        # 「使用量」だけではディスクの使用量と区別が付かない
-        f'<h2 id="{ai_usage.SECTION_ANCHOR}">AI 使用量</h2>\n'
+        # 「AI」の節の中なので、見出しは「使用量」だけでよい
+        f'<h3 id="{ai_usage.SECTION_ANCHOR}">使用量</h3>\n'
         f'{ai_usage.banner_html(request)}'
         f'<p class="usage-strip">{button}</p>\n'
         f'{ai_usage.table_html(rows, back=STATUS_PAGE)}'
+        f'<details id="usage-detail"{opened}><summary>内訳と枠の推移</summary>'
+        f'{ai_usage.about_html()}'
+        f'{ai_usage.breakdown_html(request)}{ai_usage.trail_html(request)}</details>'
     )
 
 
@@ -2580,10 +2589,31 @@ def admin_status(
 {_job_status_html(job, heading=True)}
 {_ingest_history_html(job)}
 {_collect_history_html(sweep, page)}
-{_running_html(running, _round_done(job))}
-{_usage_html(request)}
+{_ai_section_html(request, running, job)}
 """
     return HTMLResponse(content=page_shell("状況", body))
+
+
+def _ai_section_html(request: Request, running: list[dict], job: dict | None) -> str:
+    """状況の面の「AI」の節。**いま走っている依頼 → 使用量 → 依頼の履歴**。
+
+    **見出しは取り込み・収集と同じ段**(`AI_HEADING`)で、中の見出しからは「AI」を
+    落とす(節の見出しが言っているので繰り返さない)。
+    **依頼の履歴は畳んで置く**(収集の実行履歴と同じ)。表が長く毎回は読まないので、
+    ページを送ったときと失敗だけに絞ったときだけ開く。
+    """
+    page, failed_only = _history_args(request)
+    opened = " open" if (
+        "ai_page" in request.query_params or "ai_failed" in request.query_params
+    ) else ""
+    return (
+        AI_HEADING
+        + _running_html(running, _round_done(job))
+        + _usage_html(request)
+        + f'<details id="{ai_history.SECTION_ANCHOR}"{opened}><summary><h3>依頼の履歴</h3></summary>'
+        + ai_history.section_html(page, failed_only)
+        + "</details>"
+    )
 
 
 def _todo_summary() -> str:
@@ -2671,7 +2701,7 @@ def _running_html(running: list[dict], done: list[dict] | None = None) -> str:
     )
 
     return f"""
-<h2>いま走っている AI への依頼</h2>
+<h3>いま走っている依頼</h3>
 <table>
 <thead><tr><th>依頼</th><th>相手</th><th>状態</th><th>経過</th>
 <th>依頼元</th><th>中身</th></tr></thead>
@@ -2882,7 +2912,12 @@ def admin_ai_transcript(ident: str):
 
 @router.get("/admin/ai", response_class=HTMLResponse)
 async def admin_ai(request: Request):
-    """AI と鍵の面。**呼ぶ側に認証情報を持たせないための面**をここにまとめる。"""
+    """AI と鍵の面。**呼ぶ側に認証情報を持たせないための面**をここにまとめる。
+
+    **使用量と依頼の履歴は置かない**(状況の面の「AI」の節にある)。どちらも
+    「いま何が起きているか」を読むもので、鍵を預ける面で読むものではない ——
+    両方に置いていた頃は、同じ表が 2 つの面に並んでいた。
+    """
     body = f"""
 {nav_html("/admin/ai")}
 <h1>AI と鍵(貸し出すもの)</h1>
@@ -2895,10 +2930,6 @@ async def admin_ai(request: Request):
 {_answer_status_html()}
 
 {await ai_settings.section_html(request)}
-
-{ai_usage.section_html(request)}
-
-{ai_history.section_html(*_history_args(request))}
 """
     return HTMLResponse(content=page_shell("AI と鍵", body))
 
@@ -3290,7 +3321,7 @@ def admin_ai_stop(call_id: int):
     from app import ai_inflight
 
     ai_inflight.ask_to_stop(call_id)
-    return RedirectResponse("/admin/ai#ai-history", status_code=303)
+    return RedirectResponse(f"{STATUS_PAGE}#{ai_history.SECTION_ANCHOR}", status_code=303)
 
 
 @router.post("/admin/media/{job_id}/cancel")
@@ -3304,7 +3335,7 @@ def admin_media_cancel(job_id: str):
     from app import media
 
     media.cancel_job(job_id)
-    return RedirectResponse("/admin/ai#ai-history", status_code=303)
+    return RedirectResponse(f"{STATUS_PAGE}#{ai_history.SECTION_ANCHOR}", status_code=303)
 
 
 def _delete_source_cell(src: Source, used_by: str, disabled: str) -> str:

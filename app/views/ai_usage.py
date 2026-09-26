@@ -22,7 +22,6 @@ from app.views import ai_history
 router = APIRouter()
 
 SECTION_ANCHOR = "ai-usage"
-BACK_TO_SECTION = f"/admin/ai#{SECTION_ANCHOR}"
 
 # Chiezo が使ったぶんを出す窓の見出し(`usage.SPENT_WINDOWS` と同じ並び)。
 _SPENT_LABELS = {"5h": "直近 5 時間", "24h": "直近 24 時間", "7d": "直近 7 日"}
@@ -185,7 +184,7 @@ def _window_links(current: str) -> str:
         if name == current:
             parts.append(f"<strong>{label}</strong>")
         else:
-            parts.append(f'<a href="/admin/ai?spent_window={esc(name)}#{BREAKDOWN_ANCHOR}">{label}</a>')
+            parts.append(f'<a href="{DEFAULT_BACK}?spent_window={esc(name)}#{BREAKDOWN_ANCHOR}">{label}</a>')
     return " / ".join(parts)
 
 
@@ -410,14 +409,16 @@ def _refresh_button(row: dict, back: str, busy: bool = False) -> str:
 
 # 押した人を連れ出さないための行き先。**状況の面にも同じボタンがある**ので、
 # 書き切ると、どこから押しても AI の面へ飛ばされる(見ていた画面から追い出される)。
-DEFAULT_BACK = "/admin/ai"
+# 押した後に戻る面。**使用量の表を出しているのは状況の面だけ**(AI の面からは外した。
+# 同じ表が 2 つの面に並んでいた)
+DEFAULT_BACK = "/admin/status"
 
 # 戻ってよい面。**このボタンを出している画面を名指しで並べる**。
 #
 # 「`/admin` で始まるもの」で通していた頃は、**外から来た文字列をそのまま行き先に
 # 繋いでいた** —— 同じ生い立ちのままなので、読む側(と検査する側)には任意の URL を
 # 作れるように見える。行き先が数えられる以上、数え上げるほうが確か。
-BACK_PAGES = ("/admin/status", DEFAULT_BACK)
+BACK_PAGES = (DEFAULT_BACK,)
 
 
 def _back_to(raw: str | None) -> str:
@@ -432,29 +433,6 @@ def _back_to(raw: str | None) -> str:
     """
     path = (raw or "").strip()
     return next((page for page in BACK_PAGES if page == path), DEFAULT_BACK)
-
-
-def _refresh_all_button() -> str:
-    """まとめて取り直すボタン。 相手が 1 つも無いときは出さない
-    —— 押しても何も起きないボタンは、壊れているのか設定が足りないのか読めない。
-
-    **CLI が動いている相手は数に入れない**(押しても飛ばすので)。飛ばすことは
-    ボタンの横に書く —— 黙って減らすと、押したあとの「N 件」が合わない。
-    """
-    targets = usage.refreshable()
-    if not targets:
-        return ('<p class="muted">まとめて取り直せる相手がいません'
-                "(枠を聞ける相手を「使う」にすると出ます)。</p>")
-    # **引くのは 1 回だけ**(相手ごとに引くと、相手の数だけ控えを読む)
-    running = usage.busy_now()
-    busy = [pid for pid in targets if pid in running]
-    note = (
-        f'<span class="muted">(CLI 実行中の {len(busy)} 件は飛ばします)</span>'
-        if busy else ""
-    )
-    return refresh_all_form(
-        f"使う相手の枠を全部取り直す({len(targets) - len(busy)} 件)"
-    ) + note
 
 
 def refresh_all_form(label: str, back: str = DEFAULT_BACK, klass: str = "init-form") -> str:
@@ -533,15 +511,12 @@ def table_html(rows: list[dict], back: str = DEFAULT_BACK) -> str:
 </table>"""
 
 
-def section_html(request: Request | None = None) -> str:
-    """管理画面に差し込む「使用量」節。"""
-    if not usage_store.is_enabled():
-        return (
-            f'<h3 id="{SECTION_ANCHOR}">使用量</h3>\n'
-            '<p class="muted">記録の置き場がありません。書き込み可能なディレクトリを'
-            " <code>CHIEZO_STATE_DIR</code> に設定すると、使用量を出せるようになります。</p>"
-        )
+def about_html() -> str:
+    """「使用量」の読み方と、「Chiezo が使ったぶん」をいつから数えているか。
 
+    状況の面の「内訳と枠の推移」の頭に置く(表のすぐ下に長い説明を置くと、
+    毎回見に来る表の値が画面の下へ押し出される)。
+    """
     since = _when(usage_store.first_recorded_at() or "")
     since_note = (
         f'<p class="muted">「Chiezo が使ったぶん」は {esc(since)} からの記録です。</p>'
@@ -549,11 +524,8 @@ def section_html(request: Request | None = None) -> str:
         '<p class="muted">「Chiezo が使ったぶん」の記録はまだありません'
         "(相手を呼ぶと溜まりはじめます)。</p>"
     )
-
-    return f"""<h3 id="{SECTION_ANCHOR}">使用量</h3>
-{banner_html(request)}
-<details>
-<summary>この節について</summary>
+    return f"""<details>
+<summary>数字の読み方</summary>
 <p><strong>数が 2 つあるのは、測っているものが違うから。</strong>
 「相手が言う枠」は相手の勘定なので<strong>残りが分かる</strong>が、
 <strong>聞ける相手が限られる</strong>。「Chiezo が使ったぶん」は Chiezo の勘定なので
@@ -572,10 +544,6 @@ Gemini は残量が Google Cloud の Quotas API 側にあり、OpenAI は Admin 
 API からは <code>GET /v1/ai/usage</code>(取り直すなら <code>?refresh=1</code>)。</p>
 </details>
 {since_note}
-{_refresh_all_button()}
-{table_html(usage.rows())}
-{breakdown_html(request)}
-{trail_html(request)}
 """
 
 

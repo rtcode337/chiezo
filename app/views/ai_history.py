@@ -327,9 +327,10 @@ def _pager(page: int, total: int, failed_only: bool) -> str:
 
 
 def section_html(page: int = 1, failed_only: bool = False) -> str:
+    """依頼の履歴の中身。**見出しは呼ぶ側が持つ**(状況の面の「AI」の節で畳んで置く。
+    `SECTION_ANCHOR` もその包みに付く)。"""
     if not settings_store.state_dir():
         return (
-            f'<h3 id="{SECTION_ANCHOR}">AI への依頼</h3>\n'
             '<p class="muted">記録の置き場がありません。書き込み可能なディレクトリを'
             " <code>CHIEZO_STATE_DIR</code> に設定すると、依頼の控えが残るようになります。</p>"
         )
@@ -352,7 +353,6 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
     if not rows and not running:
         empty = "まだ落ちていません。" if failed_only else "まだ何も頼んでいません。"
         return (
-            f'<h3 id="{SECTION_ANCHOR}">AI への依頼</h3>\n'
             f'<p class="muted">{empty} {toggle}</p>'
         )
 
@@ -423,8 +423,7 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
         f'<a href="?#{SECTION_ANCHOR}">進み具合を読み直す</a>'
         if running else ""
     )
-    return f"""<h3 id="{SECTION_ANCHOR}">AI への依頼</h3>
-<p class="muted">
+    return f"""<p class="muted">
 会話・絵・音・動画・声のどれでも、頼んだものは新しい順にここへ残る。
 <strong>走っている最中のものは表の先頭</strong>に出て、終わると結果の行に変わる ——
 控えが書かれるのは往復が終わってからなので、これが無いと、無人で回っているぶんは

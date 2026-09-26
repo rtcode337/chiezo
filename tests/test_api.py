@@ -1708,8 +1708,8 @@ class TestAdminHistory:
         ai_log.record(backend="comfyui", model="", effort="", status=502,
                       reason="GPU が落ちています", prompt_bytes=42, kind="image")
 
-        html = admin.get("/admin/ai").text
-        assert "AI への依頼" in html
+        html = admin.get("/admin/status").text
+        assert "依頼の履歴" in html
         assert "claude exited 1" in html and "GPU が落ちています" in html
         # 種類の列で見分ける
         assert "会話" in html and "画像" in html
@@ -1721,7 +1721,7 @@ class TestAdminHistory:
         from app import usage_store
 
         usage_store.record("claude", model="opus", input_tokens=120, output_tokens=34)
-        html = admin.get("/admin/ai").text
+        html = admin.get("/admin/status").text
         assert "成功" in html
         # トークンは相手が言ったときだけ出す
         assert "入 120" in html and "出 34" in html
@@ -1736,7 +1736,7 @@ class TestAdminHistory:
 
         usage_store.record("antigravity", kind="image",
                            prompt_bytes=495, reply_bytes=1_400_000, ms=371_000)
-        html = admin.get("/admin/ai").text
+        html = admin.get("/admin/status").text
         assert "依頼 495 B" in html and "応答 1.3 MB" in html
         assert "6 分 11 秒" in html
         # 目方が読めるなら、トークンを言わなかったことをわざわざ書かない
@@ -1747,7 +1747,7 @@ class TestAdminHistory:
         from app import usage_store
 
         usage_store.record("claude", model="opus")
-        html = admin.get("/admin/ai").text
+        html = admin.get("/admin/status").text
         assert "控えは回数だけ" in html
 
     def test_失敗だけに絞れる(self, admin):
@@ -1756,7 +1756,7 @@ class TestAdminHistory:
         usage_store.record("claude", model="opus")
         ai_log.record(backend="comfyui", model="", effort="", status=502,
                       reason="GPU が落ちています", prompt_bytes=42, kind="image")
-        only = admin.get("/admin/ai?ai_failed=1").text
+        only = admin.get("/admin/status?ai_failed=1").text
         assert "GPU が落ちています" in only
         # 絞り込み中は成功の行を出さない
         assert "すべて見る" in only
@@ -1769,11 +1769,11 @@ class TestAdminHistory:
         for i in range(ai_history.PAGE_SIZE + 3):
             ai_log.record(backend="claude", model="", effort="", status=502,
                           reason=f"失敗 {i}", prompt_bytes=1)
-        first = admin.get("/admin/ai").text
+        first = admin.get("/admin/status").text
         # 新しい順なので、いちばん古いものは 1 ページ目に出ない
         assert "失敗 0" not in first
         assert "失敗 12" in first
-        second = admin.get("/admin/ai?ai_page=2").text
+        second = admin.get("/admin/status?ai_page=2").text
         assert "失敗 0" in second
 
     def test_おかしなページ番号は範囲に寄せる(self, admin):
@@ -1787,12 +1787,12 @@ class TestAdminHistory:
         ai_log.record(backend="claude", model="", effort="", status=502,
                       reason="ただ 1 件", prompt_bytes=1)
         for q in ("abc", "-5", "99999"):
-            html = admin.get(f"/admin/ai?ai_page={q}").text
+            html = admin.get(f"/admin/status?ai_page={q}").text
             assert "1 / 1 ページ" in html
             assert "ただ 1 件" in html
 
     def test_記録が無ければそう書く(self, admin):
-        assert "まだ何も頼んでいません" in admin.get("/admin/ai").text
+        assert "まだ何も頼んでいません" in admin.get("/admin/status").text
 
     def test_置き場が無ければ設定を案内する(self, client):
         # module 版の client は CHIEZO_STATE_DIR を持たない
@@ -1854,17 +1854,18 @@ class TestAdminPages:
         has_enabled = any(r["enabled"] for r in usage.rows())
         assert ("AI 使用量</h2>" in text) is bool(has_enabled)
 
-    def test_the_entrance_shows_every_window_not_just_the_tightest(self, client, monkeypatch):
+    def test_the_entrance_shows_every_window_not_just_the_tightest(self, client, monkeypatch, tmp_path):
         """**窓は相手が返したぶんを全部出す。**
 
         いちばん詰まっている 1 つに畳んでいた頃は、5 時間の窓しか見えない相手が
         いた —— 短い窓が詰まっていても週の窓が空いていれば重い仕事は頼めるので、
         片方だけでは頼んでよいかを決められない。
         """
-        from app import usage, usage_store
+        from app import usage
         from app.views import admin as views_admin
 
-        monkeypatch.setattr(usage_store, "is_enabled", lambda: True)
+        # 内訳と枠の推移も同じ節に畳んで出るので、控えの置き場ごと用意する
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
         monkeypatch.setattr(usage, "rows", lambda: [{
             "id": "codex", "label": "Codex CLI", "enabled": True, "billing": "",
             "quota": usage.Quota(supported=True, windows=[
@@ -1879,12 +1880,13 @@ class TestAdminPages:
         assert "直近 7 日" in html
         assert client.get("/admin").status_code == 200
 
-    def test_the_entrance_only_shows_the_backends_in_use(self, monkeypatch):
+    def test_the_entrance_only_shows_the_backends_in_use(self, monkeypatch, tmp_path):
         """使わない相手は出さない（玄関は概況で、設定を見に来る場所ではない）。"""
-        from app import usage, usage_store
+        from app import usage
         from app.views import admin as views_admin
 
-        monkeypatch.setattr(usage_store, "is_enabled", lambda: True)
+        # 内訳と枠の推移も同じ節に畳んで出るので、控えの置き場ごと用意する
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
         monkeypatch.setattr(usage, "rows", lambda: [
             {"id": "gemini", "label": "Gemini", "enabled": False, "billing": "",
              "quota": usage.Quota(supported=True, windows=[
@@ -1897,26 +1899,29 @@ class TestAdminPages:
         ])
         html = views_admin._usage_html()
         assert "Codex CLI" in html
-        assert "Gemini" not in html
+        # 表の行に出ないこと(畳んだ読み方の説明には相手の名前として出てくる)
+        assert "Gemini" not in html.split('<details id="usage-detail"')[0]
 
-    def test_the_entrance_says_nothing_when_nothing_is_in_use(self, monkeypatch):
+    def test_the_entrance_says_nothing_when_nothing_is_in_use(self, monkeypatch, tmp_path):
         """使う相手が 1 つも無ければ何も出さない（列だけの表を置かない）。"""
-        from app import usage, usage_store
+        from app import usage
         from app.views import admin as views_admin
 
-        monkeypatch.setattr(usage_store, "is_enabled", lambda: True)
+        # 内訳と枠の推移も同じ節に畳んで出るので、控えの置き場ごと用意する
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
         monkeypatch.setattr(usage, "rows", lambda: [
             {"id": "gemini", "label": "Gemini", "enabled": False, "billing": "",
              "quota": usage.Quota(), "spent": {}},
         ])
         assert views_admin._usage_html() == ""
 
-    def test_the_entrance_says_when_a_quota_was_never_fetched(self, monkeypatch):
+    def test_the_entrance_says_when_a_quota_was_never_fetched(self, monkeypatch, tmp_path):
         """枠がまだ無い相手も行は出す（最初の 1 回を玄関から始められる）。"""
-        from app import usage, usage_store
+        from app import usage
         from app.views import admin as views_admin
 
-        monkeypatch.setattr(usage_store, "is_enabled", lambda: True)
+        # 内訳と枠の推移も同じ節に畳んで出るので、控えの置き場ごと用意する
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
         monkeypatch.setattr(usage, "refreshable", lambda: ["codex"])
         monkeypatch.setattr(usage, "rows", lambda: [
             {"id": "codex", "label": "Codex CLI", "enabled": True, "billing": "",
@@ -1926,16 +1931,17 @@ class TestAdminPages:
         assert "まだ取っていない" in html
         assert 'action="/admin/ai/usage/all"' in html
 
-    def test_the_entrance_can_refresh_the_quota(self, monkeypatch):
+    def test_the_entrance_can_refresh_the_quota(self, monkeypatch, tmp_path):
         """**取り直す口を玄関にも置く。**
 
         ここは「重い仕事を頼んでよいか」を見に来る画面なので、数字が古いと
         判断できない —— そのために AI の面まで開くのは、見に来た目的から遠い。
         """
-        from app import usage, usage_store
+        from app import usage
         from app.views import admin as views_admin
 
-        monkeypatch.setattr(usage_store, "is_enabled", lambda: True)
+        # 内訳と枠の推移も同じ節に畳んで出るので、控えの置き場ごと用意する
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
         monkeypatch.setattr(usage, "refreshable", lambda: ["claude"])
         monkeypatch.setattr(usage, "rows", lambda: [
             {"id": "claude", "label": "Claude Code CLI", "enabled": True, "billing": "",
@@ -1951,15 +1957,16 @@ class TestAdminPages:
         # AI の面へ連れて行かれる(行ごとのボタンも同じ)
         assert html.count('name="back" value="/admin/status"') == 2
 
-    def test_the_entrance_does_not_link_to_the_ai_page(self, monkeypatch):
+    def test_the_entrance_does_not_link_to_the_ai_page(self, monkeypatch, tmp_path):
         """玄関から辿れる面はメニューに並んでいる。
 
         節ごとに「詳しくはあちら」を足すと、同じ行き先が画面の中に何本も増える。
         """
-        from app import usage, usage_store
+        from app import usage
         from app.views import admin as views_admin
 
-        monkeypatch.setattr(usage_store, "is_enabled", lambda: True)
+        # 内訳と枠の推移も同じ節に畳んで出るので、控えの置き場ごと用意する
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
         monkeypatch.setattr(usage, "refreshable", lambda: ["codex"])
         monkeypatch.setattr(usage, "rows", lambda: [
             {"id": "codex", "label": "Codex CLI", "enabled": True, "billing": "",
@@ -1971,12 +1978,13 @@ class TestAdminPages:
         assert "使わない相手も含めて見る" not in html
         assert '<a href="/admin/ai#ai-usage">' not in html
 
-    def test_the_entrance_does_not_offer_what_cannot_be_asked(self, monkeypatch):
+    def test_the_entrance_does_not_offer_what_cannot_be_asked(self, monkeypatch, tmp_path):
         """聞ける相手がいなければボタンも出さない(押しても何も起きない口を置かない)。"""
-        from app import usage, usage_store
+        from app import usage
         from app.views import admin as views_admin
 
-        monkeypatch.setattr(usage_store, "is_enabled", lambda: True)
+        # 内訳と枠の推移も同じ節に畳んで出るので、控えの置き場ごと用意する
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
         monkeypatch.setattr(usage, "refreshable", lambda: [])
         monkeypatch.setattr(usage, "rows", lambda: [
             {"id": "claude", "label": "Claude Code CLI", "enabled": True, "billing": "",
@@ -2028,7 +2036,7 @@ class TestAdminPages:
             )
             html = c.get("/admin/status").text
 
-        assert "いま走っている AI への依頼" in html
+        assert "いま走っている依頼" in html
         assert "claude" in html
         # **「詳しくは」の入口は置かない** —— AI の面はメニューから辿れる
         assert 'href="/admin/ai#ai-history"' not in html
@@ -2097,8 +2105,11 @@ class TestAdminPages:
         ai = client.get("/admin/ai").text
         server = client.get("/admin/server").text
 
+        status = client.get("/admin/status").text
         assert "長期記憶" in memory and "長期記憶" not in ai
-        assert "AI への依頼" in ai and "AI への依頼" not in memory
+        # 依頼の履歴と使用量は状況の面だけ(同じ表を 2 つの面に並べない)
+        assert "依頼の履歴" in status and "依頼の履歴" not in ai
+        assert 'id="ai-usage"' not in ai
         assert "いま動いているビルド" in server and "いま動いているビルド" not in memory
 
 
