@@ -1685,6 +1685,8 @@ REFINE_SYSTEM_PROMPT = (
     "(墓標)。**そのとき本文に、なぜ消すのかを 1 行で書く** ——"
     "消したものは後から一覧でしか見えないので、理由が無いと消し間違いに気づけない。"
     "重複をまとめるときは、まとめた先を返し、元のものに墓標を付ける。"
+    " **消したものは、tags に「" + notes.RESTORE_TAG + "」を入れて返したときだけ戻る**"
+    "(消したのが間違いだと分かったとき)。入れずに返しても消えたまま変わらない。"
     " **脇書き(extra)は書いたものだけが変わる。** 触れなかった鍵はそのまま残るので、"
     "変えないものを書く必要は無い。**落としたい鍵だけ null を書く**。"
     " 分からない項目は null。"
@@ -1794,8 +1796,10 @@ def _render_removed(docs: list[dict]) -> str:
     (本文は戻すときのために残してあるが、ここで読ませたいのは、なぜもう一度
     足してはいけないか)。
 
-    **印(`notes.REMOVED_TAG`)は 1 件ずつにも残す。** 外して見せると、AI が行を
-    そのまま写して返したときに黙って戻る —— 戻すのは明示的な操作にする。
+    **印(`notes.REMOVED_TAG`)は 1 件ずつにも残す。** どれが消えたものかを
+    行ごとに読めるようにするため。**戻すのは戻す印(`notes.RESTORE_TAG`)を
+    付けたときだけ**(`material`)—— 消えた印を外して返すのを戻す操作にしていた頃は、
+    タグを書き直した返りが印を写し忘れただけで戻っていた。
     """
     lines: list[str] = []
     used = 0
@@ -1810,8 +1814,8 @@ def _render_removed(docs: list[dict]) -> str:
     head += f"。うち {len(lines)} 件だけ載せています)" if len(lines) < len(docs) else ")"
     head += (
         "。**もう一度足さないでください。**"
-        f"消したのが間違いだと分かったときだけ、タグから「{notes.REMOVED_TAG}」を"
-        "外して同じ見出しで返せば戻ります"
+        f"消したのが間違いだと分かったときだけ、tags に「{notes.RESTORE_TAG}」を"
+        "入れて同じ見出しで返せば戻ります(入れずに返しても消えたままです)"
     )
     return head + ":\n" + "\n".join(lines)
 
@@ -3450,11 +3454,21 @@ def stream_docs(
                 _reviewed(_buried(before, raw, now)), sweep, "removed", by=signed_by(raw),
             )
             continue
+        if is_removed(before) and not _is_restore(raw):
+            # **消えたものは、戻す印を付けて返したときだけ戻す。** 印の無い返りは
+            # 戻すつもりの無いもの(タグを書き直して、消えた印を写し忘れただけ)として
+            # 触らない —— 閉店で消した店が、別の依頼の回に説明を書き直されて戻った
+            skipped += 1
+            yield before
+            continue
         doc = _to_doc(raw, now, item.web)
         if doc is None:
             skipped += 1
             yield before
             continue
+        if is_removed(before):
+            # 戻す。消えた印を行ごと写して返してきても、戻す印のほうを優先する
+            doc["tags"] = [t for t in doc["tags"] if t != notes.REMOVED_TAG]
         before_extra = before.get("extra")
         doc["extra"] = _merge_extra(
             before_extra if isinstance(before_extra, dict) else {}, doc["extra"]
@@ -3585,6 +3599,12 @@ def _is_tombstone(raw: dict) -> bool:
     return any(str(t).strip() == notes.TOMBSTONE_TAG for t in tags)
 
 
+def _is_restore(raw: dict) -> bool:
+    """消えたものを戻す指示か(`notes.RESTORE_TAG`)。"""
+    tags = raw.get("tags") or []
+    return any(str(t).strip() == notes.RESTORE_TAG for t in tags)
+
+
 def shrink_blocked(item: Collection, diff: dict, edits: bool = False) -> str | None:
     """墓標で消しすぎていたら、その理由の文。問題なければ None。
 
@@ -3625,7 +3645,11 @@ def _to_doc(raw: dict, now: str, web: bool) -> dict | None:
     body = (raw.get("body") or "").strip()[:MAX_BODY_CHARS]
     if not title or not body:
         return None
-    tags = [str(t).strip() for t in (raw.get("tags") or []) if str(t).strip()]
+    # 戻す印は指示なので文書には残さない(墓標と同じ)
+    tags = [
+        str(t).strip() for t in (raw.get("tags") or [])
+        if str(t).strip() and str(t).strip() != notes.RESTORE_TAG
+    ]
     # **運ばれてきた事実を先に置く。** 集める側が元の記事から写した値(知名度など)が
     # ここに入る —— 下で入れるものが鍵を持っていたら、そちらを優先する。
     # **この時点では「消して」の印(null)も混じる**(重ねるときに解く)

@@ -3959,10 +3959,7 @@ class TestWhatWasRemoved:
         assert "生涯と代表作" not in text
 
     def test_the_mark_stays_in_the_tags_too(self, refine):
-        """**外して見せると、AI がタグごと写して返したときに黙って戻る。**
-
-        戻すのは明示的な操作にする。
-        """
+        """どれが消えたものかを、行ごとに読めるようにする。"""
         previous = {"俳優さん": {
             "doc_id": 1, "title": "俳優さん", "body": "演技の人",
             "tags": ["画家", notes.REMOVED_TAG],
@@ -3972,18 +3969,55 @@ class TestWhatWasRemoved:
 
         assert notes.REMOVED_TAG in text
 
-    def test_dropping_the_mark_brings_it_back(self, refine):
-        """消したのが間違いだったときの戻し方。"""
+    def test_returning_it_without_the_restore_mark_keeps_it_removed(self, refine):
+        """**消えた印を写し忘れただけでは戻さない。**
+
+        AI は返す 1 件のタグを書き直す。「消えた印を外して返す」を戻す操作にしていた
+        頃は、閉店で消した店を、同じ区画の別の依頼の回が説明を書き直して返し、
+        生き返らせていた(本番で起きた)。
+        """
+        previous = {"閉店した店": {
+            "doc_id": 1, "title": "閉店した店", "body": "もとの本文",
+            "tags": ["食事処", notes.REMOVED_TAG],
+            "extra": {"removed_reason": "閉店のため"},
+        }}
+
+        docs, diff = self._edit(
+            refine, previous,
+            [{"title": "閉店した店", "body": "町の中華料理店", "tags": ["食事処"]}],
+        )
+
+        assert collect.is_removed(docs[0])
+        assert docs[0]["body"] == "もとの本文", "書き直しも受け取らない"
+        assert diff["updated_titles"] == []
+
+    def test_the_restore_mark_brings_it_back(self, refine):
+        """消したのが間違いだったときの戻し方。戻す印は文書に残さない(指示なので)。"""
         previous = {"モネ": {
             "doc_id": 1, "title": "モネ", "body": "消した理由",
             "tags": ["画家", notes.REMOVED_TAG],
         }}
 
         docs, _diff = self._edit(
-            refine, previous, [{"title": "モネ", "body": "画家です", "tags": ["画家"]}]
+            refine, previous,
+            # 消えた印を行ごと写してきても、戻す印のほうを優先する
+            [{"title": "モネ", "body": "画家です",
+              "tags": ["画家", notes.REMOVED_TAG, notes.RESTORE_TAG]}],
         )
 
-        assert notes.REMOVED_TAG not in docs[0]["tags"]
+        assert docs[0]["tags"] == ["画家"]
+        assert docs[0]["body"] == "画家です"
+
+    def test_the_prompt_says_how_to_restore(self, refine):
+        """戻し方を知らないと、AI は間違いに気づいても戻せない。"""
+        previous = {"俳優さん": {
+            "doc_id": 1, "title": "俳優さん", "body": "演技の人",
+            "tags": ["画家", notes.REMOVED_TAG],
+        }}
+
+        text, _shown = collect.render_material(previous, scoped=True)
+
+        assert notes.RESTORE_TAG in text
 
     def test_the_screen_shows_what_was_removed(self, refine, tmp_path):
         """消し間違いに気づく手立ては、ここを読むことしか無い。"""
@@ -5260,7 +5294,9 @@ class TestTheCollectSectionMarkup:
             "news", status=collect_log.STATUS_OK, diff={"total": 3, "added": 3},
             sweep="じっくり", backend="claude", model="opus", effort="high",
         )
-        html = self._html(sample)
+        from app.views import admin
+
+        html = admin._collect_history_html(None)
         assert "claude" in html
         assert "opus / high" in html
 
@@ -5401,17 +5437,40 @@ class TestTheCollectSectionMarkup:
             status=collect_log.STATUS_OK,
             diff={"total": 12, "added": 2, "removed": 1, "removed_titles": ["古い見出し"]},
         )
-        html = self._html(sample)
-        assert "直近の変更" in html
+        from app.views import admin
+
+        # **状況の面の取り込みの節に置く**(収集の一覧には出さない)
+        html = admin._collect_history_html(None)
+        assert "収集の実行履歴" in html
         assert "古い見出し" in html
         assert html.count("<table") == html.count("</table>")
+        assert "古い見出し" not in self._html(sample)
+
+    def test_the_history_is_folded_until_it_is_filtered(self, sample, monkeypatch, tmp_path):
+        """毎回見るものではないので既定では閉じる。**回で絞ったときだけ開く** ——
+        絞るリンクは面を読み直すので、閉じたまま戻すと何も変わらないように見える。"""
+        from app import collect_log
+        from app.views import admin
+
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        for sweep in ("ざっと", "整理"):
+            collect_log.record("news", status=collect_log.STATUS_OK, diff={"total": 1},
+                               sweep=sweep)
+
+        assert '<details id="collect-history">' in admin._collect_history_html(None)
+        filtered = admin._collect_history_html("整理")
+        assert '<details id="collect-history" open>' in filtered
+        # 絞るリンクは状況の面のこの節へ戻す(記憶の面へ飛ばさない)
+        assert 'href="/admin/status?sweep=%E3%81%96%E3%81%A3%E3%81%A8#collect-history"' in filtered
 
     def test_without_a_place_to_record_it_says_so(self, sample, monkeypatch):
         """空の表を出すと「まだ動いていない」に読める(実際は記録していないだけ)。"""
         from app import collect_log
 
         monkeypatch.setattr(collect_log, "db_path", lambda: None)
-        assert "変更履歴は記録していません" in self._html(sample)
+        from app.views import admin
+
+        assert "変更履歴は記録していません" in admin._collect_history_html(None)
 
     def test_an_empty_collection_can_still_be_deleted(self, sample):
         """まだ何も溜まっていない収集の行にも削除の導線が要る。"""
@@ -5724,7 +5783,7 @@ class TestWhatChangedInOneDoc:
             "news", status=collect_log.STATUS_OK,
             diff={"total": 1, "updated": 1, "updated_titles": ["A & B"]},
         )
-        html = admin._collect_html({}, "")
+        html = admin._collect_history_html(None)
         assert "/admin/collect/news/doc?title=A%20%26%20B" in html
         # 見出しそのものは HTML としてエスケープして出す
         assert ">A &amp; B</a>" in html
