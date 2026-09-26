@@ -248,6 +248,14 @@ NAMES_PLACEHOLDER = "{names}"
 # 見出しだけを差し込むときの上限。本文を持たないぶん、件数の天井は高くてよい
 MAX_NAME_DOCS = 3_000
 
+# **まだ AI が目を通していないものだけ**を差し込む場所(`notes.UNREVIEWED_TAG`)。
+# **`{recent}` と役割が違う** —— あちらは「前回この巡回が走った時刻より後に動いたもの」で、
+# 時刻で区切る。そのため **落ちた回・入り切らずに切れたぶんは次の窓から外れ**、
+# 機械が数を書き換えるたびに `updated_at` が動いて**同じものが何度も差分に入る**。
+# こちらは 1 件ごとの印で見るので、**渡したものだけが印を外され**(`seen`)、
+# 渡せなかったものは次の回に回る。**調べ終えたものを何度も調べ直さない**ための口。
+UNREVIEWED_PLACEHOLDER = "{unreviewed}"
+
 # 材料として 1 回に渡す上限。**多すぎると読み切れない**(そのぶん枠も食う)
 DEFAULT_MATERIAL_LIMIT = 60
 MAX_MATERIAL_LIMIT = 300
@@ -1340,7 +1348,8 @@ def edits_what_is_there(prompt: str, only_new: bool = False) -> bool:
 
     収集ぜんたいの設定として持っていた頃(`mode`)は、巡回ごとに決められなかった。
     いまは巡回ごとに決まるので、収集の側に置く意味が無い —— **依頼文がそれを
-    語っている**。今あるものを差し込んでいる(`{current}` / `{recent}` / `{names}`)なら、
+    語っている**。今あるものを差し込んでいる(`{current}` / `{recent}` / `{names}` /
+    `{unreviewed}`)なら、
     AI は「直すものと足すものだけ返す」仕事をしていて、墓標で消すこともできる。
     差し込んでいないなら、AI は今あるものを知らないので、消す力を持たせられない。
 
@@ -1351,7 +1360,9 @@ def edits_what_is_there(prompt: str, only_new: bool = False) -> bool:
         return False
     return any(
         p in (prompt or "")
-        for p in (MATERIAL_PLACEHOLDER, RECENT_PLACEHOLDER, NAMES_PLACEHOLDER)
+        for p in (
+            MATERIAL_PLACEHOLDER, RECENT_PLACEHOLDER, NAMES_PLACEHOLDER, UNREVIEWED_PLACEHOLDER,
+        )
     )
 
 
@@ -1820,6 +1831,55 @@ def _render_removed(docs: list[dict]) -> str:
     return head + ":\n" + "\n".join(lines)
 
 
+def render_unreviewed(
+    previous: dict[str, dict], scoped: bool = False, seen: set[str] | None = None,
+) -> str:
+    """**まだ AI が目を通していないもの**を、`{current}` と同じ形で差し込む。
+
+    **古い順に並べる** —— 入り切らないときに残るのは新しいほうで、古いほうから
+    片付いていく(新しい順にすると、毎回新しいものが入ってくる収集では古いものが
+    永遠に回ってこない)。**渡したぶんだけ `seen` に書く**(印が外れるのはそこだけ)。
+    **渡せなかったぶんは印が残り、次の回に回る** —— そう本文にも書く
+    (黙って切ると、見えなかったものを「無かった」と読む)。
+
+    **消えたものは出さない**(目を通す相手ではない)。
+    """
+    fresh = [doc for doc in previous.values() if is_unreviewed(doc) and not is_removed(doc)]
+    if not fresh:
+        return (
+            "(今回の対象に、まだ目を通していないものはありません)" if scoped
+            else "(まだ目を通していないものはありません)"
+        )
+    fresh.sort(key=lambda d: (d.get("extra") or {}).get("collected_at") or d.get("updated_at") or "")
+    lines: list[str] = []
+    used = 0
+    for doc in fresh[:MAX_MATERIAL_DOCS]:
+        tags = [t for t in (doc.get("tags") or []) if t != notes.UNREVIEWED_TAG]
+        body = (doc.get("body") or "")[:MATERIAL_BODY_CHARS].replace("\n", " ")
+        extra = doc.get("extra") or {}
+        line = (
+            f"- {doc['title']}"
+            + (f" 【{'/'.join(str(t) for t in tags)}】" if tags else "")
+            + (f" — {body}" if body else "")
+            + (f" 〈{url}〉" if (url := _source_url(extra)) else "")
+        )
+        if used + len(line) > MAX_MATERIAL_CHARS:
+            break
+        lines.append(line)
+        used += len(line)
+        if seen is not None:
+            seen.add(doc["title"])
+    head = f"まだ目を通していないもの(全 {len(fresh)} 件"
+    if len(lines) < len(fresh):
+        head += (
+            f"。うち古いほうから {len(lines)} 件だけ載せています。"
+            "載っていないものは次の回に回ります)"
+        )
+    else:
+        head += ")"
+    return head + ":\n" + "\n".join(lines)
+
+
 def render_names(previous: dict[str, dict], scoped: bool = False) -> str:
     """いま持っているものを、**見出しとタグだけ**の一覧にする。
 
@@ -2093,6 +2153,9 @@ def build_messages(
     `{names}` は**見出しとタグだけ**。本文を見せないぶん、育った収集でも全部が入る ——
     重なりを畳む・親子を決めるような、「何を持っているか」だけが要る回のための口。
 
+    `{unreviewed}` は**まだ AI が目を通していないものだけ**。渡したぶんの印が外れるので、
+    調べ終えたものを次の回が読み直さない。
+
     `{partition}` は**今回見る範囲**。Chiezo が台帳から選んで渡す(`app/partition.py`)。
     矩形だけでは AI にどこか分からないので、近くのものを数件添えた文になる。
     """
@@ -2138,6 +2201,11 @@ def build_messages(
         # **目を通した印は付けない** —— 見出しだけでは読んだことにならない
         docs, scoped = scoped_docs(item, previous or {}, partition_key, focus)
         user = user.replace(NAMES_PLACEHOLDER, render_names(docs, scoped))
+    if UNREVIEWED_PLACEHOLDER in user:
+        # **1 件ごとの印で見る**(時刻では区切らない)。区画を持つ収集では、
+        # その区画のぶんだけ(`{current}` と同じ読み方)
+        docs, scoped = scoped_docs(item, previous or {}, partition_key, focus)
+        user = user.replace(UNREVIEWED_PLACEHOLDER, render_unreviewed(docs, scoped, seen))
     if NOW_PLACEHOLDER in user:
         # **人が読むものは日本時間**(この文はそのまま見出しや本文へ写される)
         user = user.replace(NOW_PLACEHOLDER, jst.format(_now()))

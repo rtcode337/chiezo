@@ -320,6 +320,61 @@ class TestShowingOnlyTheNames:
         assert "消えた" not in user
 
 
+class TestShowingOnlyWhatIsUnreviewed:
+    """**まだ AI が目を通していないものだけ**を差し込む口(`{unreviewed}`)。
+
+    `{current}` は毎回全部を渡し、`{recent}` は時刻で区切る —— どちらでも、
+    調べ終えたものを何度も調べ直すか、落ちた回のぶんを取りこぼす。
+    """
+
+    def _doc(self, title, *tags, at="2026-09-01T00:00:00+00:00"):
+        return {"doc_id": hash(title) % 1000, "title": title, "body": "説明",
+                "tags": list(tags), "extra": {"collected_at": at}}
+
+    def test_only_the_unreviewed_go_in(self, sample):
+        previous = {
+            "読んだ": self._doc("読んだ", "記事"),
+            "まだ": self._doc("まだ", "記事", notes.UNREVIEWED_TAG),
+        }
+        collect.update("news", prompt="{unreviewed}")
+        seen: set[str] = set()
+
+        user = collect.build_messages(collect.get("news"), previous, seen=seen)[1]["content"]
+
+        assert "- まだ 【記事】" in user, "印そのものは見せない"
+        assert "読んだ" not in user
+        # **渡したものだけ**印が外れる
+        assert seen == {"まだ"}
+
+    def test_what_did_not_fit_waits_for_the_next_round(self, sample, monkeypatch):
+        """**古い順**に載せ、入り切らなかったぶんは印が残る(次の回に回る)。"""
+        monkeypatch.setattr(collect, "MAX_MATERIAL_DOCS", 1)
+        previous = {
+            "新しい": self._doc("新しい", notes.UNREVIEWED_TAG, at="2026-09-02T00:00:00+00:00"),
+            "古い": self._doc("古い", notes.UNREVIEWED_TAG, at="2026-09-01T00:00:00+00:00"),
+        }
+        collect.update("news", prompt="{unreviewed}")
+        seen: set[str] = set()
+
+        user = collect.build_messages(collect.get("news"), previous, seen=seen)[1]["content"]
+
+        assert "- 古い" in user and "- 新しい" not in user
+        assert "次の回に回ります" in user
+        assert seen == {"古い"}
+
+    def test_nothing_left_says_so(self, sample):
+        collect.update("news", prompt="{unreviewed}")
+
+        user = collect.build_messages(
+            collect.get("news"), {"読んだ": self._doc("読んだ")}
+        )[1]["content"]
+
+        assert "まだ目を通していないものはありません" in user
+
+    def test_a_round_that_sees_them_may_edit(self, sample):
+        assert collect.edits_what_is_there("{unreviewed}\n読んでください")
+
+
 class TestMaterial:
     """焼く素材の組み立て(`material`)。**集めたものはここにしか現れない**。
 
