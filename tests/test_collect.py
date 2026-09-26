@@ -1123,7 +1123,7 @@ class TestTheMechanicalSweep:
         monkeypatch.setattr(
             extract, "run", lambda spec, sources, retired=None: ([{"title": "草間彌生", "body": "本文"}], "")
         )
-        async def no_feed(_item, _sweep=None):
+        async def no_feed(_item, _sweep=None, *_args, **_kwargs):
             return None
 
         monkeypatch.setattr(main, "_harvest", no_feed)
@@ -1167,7 +1167,7 @@ class TestTheMechanicalSweep:
         roster = [{"title": f"ひと{i:03d}", "body": "本文"} for i in range(1, 61)]
         monkeypatch.setattr(extract, "run", lambda spec, sources, retired=None: (roster, ""))
 
-        async def no_feed(_item, _sweep=None):
+        async def no_feed(_item, _sweep=None, *_args, **_kwargs):
             return None
 
         monkeypatch.setattr(main, "_harvest", no_feed)
@@ -1204,7 +1204,7 @@ class TestTheMechanicalSweep:
         async def answered(*_a, **_k):
             return ([{"title": "ひと", "body": "本文"}], None, "")
 
-        async def no_feed(_item, _sweep=None):
+        async def no_feed(_item, _sweep=None, *_args, **_kwargs):
             return None
 
         monkeypatch.setattr(main, "_harvest", no_feed)
@@ -3459,7 +3459,7 @@ class TestTheCountAfterTheRun:
             sweeps=[{"name": "ざっと"}],
         )
 
-        async def no_feed(_item, _sweep=None):
+        async def no_feed(_item, _sweep=None, *_args, **_kwargs):
             return None
 
         monkeypatch.setattr(main, "_harvest", no_feed)

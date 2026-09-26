@@ -43,7 +43,7 @@ import time
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from itertools import zip_longest
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from xml.etree import ElementTree
 
 import httpx
@@ -81,6 +81,15 @@ MAX_SUBJECTS = 5
 
 # 前回の実行より後のものだけを渡す、の印
 SINCE_LAST_RUN = "last_run"
+
+# URL の中の検索文の差し込み口(`app/search_queries.py`)。**書いた URL は、
+# 回ごとの検索文の数だけ展開される** —— 同じ検索文で引き直しても同じ記事が返るだけなので
+QUERY_SLOT = "{query}"
+# 検索文で入った文書に付ける印の既定(`<印>:<検索文>`)。次の回にどれが当たったかを数える
+DEFAULT_QUERY_TAG = "検索"
+# 使った検索文を、また使えるようになるまでの日数の既定。**二度と使えない形にはしない** ——
+# 記事は日々増えるので、しばらく経てば同じ検索文でも新しい記事が当たる
+DEFAULT_REUSE_DAYS = 60
 
 _ATOM = "{http://www.w3.org/2005/Atom}"
 # RSS 1.0(RDF)。**`<item>` が `<channel>` の外に並ぶ** —— RSS 2.0 のつもりで
@@ -141,13 +150,72 @@ def normalize(raw) -> dict | None:
         limit = int(raw.get("limit") or DEFAULT_LIMIT)
     except (TypeError, ValueError):
         raise _bad("limit は数で書いてください") from None
-    return {
+    out = {
         "urls": urls,
         "limit": max(1, min(limit, MAX_ITEMS)),
         # 前回より後のものだけにするか。**既定は絞らない** —— 日付を持たない
         # フィードが普通にあり、絞ると静かに 0 件になる
         "since": SINCE_LAST_RUN if raw.get("since") == SINCE_LAST_RUN else None,
     }
+    return {**out, **_query_part(raw, urls)}
+
+
+def _query_part(raw: dict, urls: list[dict]) -> dict:
+    """検索文の差し込み口まわり(`{query}` を書いた URL があるときだけ)。
+
+    **展開したあとの本数も `MAX_URLS` に収める** —— 1 回に使える検索文の数は
+    「差し込み口の無い URL を除いた残り ÷ 差し込み口のある URL の数」まで。
+    """
+    templates = sum(1 for one in urls if QUERY_SLOT in one["url"])
+    if not templates:
+        return {}
+    room = (MAX_URLS - (len(urls) - templates)) // templates
+    if room < 1:
+        raise _bad(f"{QUERY_SLOT} を書いた URL が多すぎます(展開すると {MAX_URLS} 本を超える)")
+    seed = [" ".join(str(q).split()) for q in (raw.get("queries") or []) if str(q).strip()]
+    if not seed:
+        raise _bad(f"{QUERY_SLOT} を使うなら、最初の組の検索文を queries に書いてください")
+    try:
+        per_run = int(raw.get("per_run") or room)
+    except (TypeError, ValueError):
+        raise _bad("per_run は数で書いてください") from None
+    tag = str(raw.get("query_tag") or DEFAULT_QUERY_TAG).strip() or DEFAULT_QUERY_TAG
+    try:
+        reuse_days = int(raw.get("reuse_days") if raw.get("reuse_days") is not None else DEFAULT_REUSE_DAYS)
+    except (TypeError, ValueError):
+        raise _bad("reuse_days は数で書いてください") from None
+    return {
+        "queries": seed,
+        "query_tag": tag,
+        "per_run": max(1, min(per_run, room)),
+        # 0 は「すぐにまた使ってよい」(毎回同じ検索文でもよい収集のため)
+        "reuse_days": max(0, reuse_days),
+    }
+
+
+def has_templates(spec: dict | None) -> bool:
+    """検索文の差し込み口を持つ指定か。"""
+    return bool(spec and spec.get("queries"))
+
+
+def expand(spec: dict, queries: list[str]) -> dict:
+    """差し込み口に検索文を入れて、**検索文の数だけ URL を並べた**指定にする。
+
+    展開した 1 本には `<印>:<検索文>` のタグを足す —— 次の回に、どの検索文が
+    何件連れてきたかを数える(`search_queries.count`)。**URL の中へは符号化して入れる**
+    (空白や日本語をそのまま入れると、相手に届く前に壊れる)。
+    """
+    urls: list[dict] = []
+    for one in spec["urls"]:
+        if QUERY_SLOT not in one["url"]:
+            urls.append(one)
+            continue
+        for q in queries:
+            urls.append({
+                "url": one["url"].replace(QUERY_SLOT, quote(q, safe="")),
+                "tags": [*one["tags"], f"{spec['query_tag']}:{q}"][: MAX_TAGS + 1],
+            })
+    return {**spec, "urls": urls}
 
 
 def to_json(spec: dict | None) -> dict | None:

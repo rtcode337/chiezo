@@ -66,7 +66,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from fastapi import HTTPException
 
-from app import collect_log, db, feeds, jst, machine_store, notes, workers
+from app import collect_log, db, feeds, jst, machine_store, notes, search_queries, workers
 from app import extract as extraction
 from app import partition as partitioning
 from app.jst import to_jst
@@ -1552,6 +1552,7 @@ def create(
         # 有効にした時点で 1 回目が走るよう、予定は「いま」にしておく
         next_run_at=now,
     )
+    _require_query_slot(item.sweeps, item.feed)
     save([*existing, item])
     return item
 
@@ -1630,6 +1631,7 @@ def update(name: str, **fields) -> Collection:
         if key in patch and not str(patch[key]).strip():
             patch[key] = None
     updated = replace(current, **patch, updated_at=_iso(_now()))
+    _require_query_slot(updated.sweeps, updated.feed)
     if ("interval_minutes" in patch or "enabled" in patch) and current.last_run_at:
         # 間隔を縮めたのに次回が遠いままだと、変えた実感が出ない。前回から測り直す。
         # **一度も走っていないものは動かさない** —— 作った直後は「すぐ 1 回目」が
@@ -1641,6 +1643,26 @@ def update(name: str, **fields) -> Collection:
         )
     _replace_one(name, updated)
     return updated
+
+
+def _require_query_slot(sweeps: list[dict], feed: dict | None) -> None:
+    """検索文を考えさせる巡回(`search_queries.PLACEHOLDER` を書いた機械で引く回)が
+    あるのに、道具の URL に差し込み口が無ければ断る。
+
+    **保存してから気づくのでは遅い** —— 走るまで分からず、考えさせた検索文が
+    どこにも使われないまま控えにだけ積まれる(無人で回る層なので誰も見ていない)。
+    """
+    wants = [
+        raw.get("name") for raw in sweeps or []
+        if isinstance(raw, dict) and raw.get("use_feed")
+        and search_queries.PLACEHOLDER in str(raw.get("prompt") or "")
+    ]
+    if wants and not feeds.has_templates(feeds.normalize(feed)):
+        raise HTTPException(400, {
+            "error": f"巡回「{wants[0]}」は検索文を考えさせる回ですが、道具の URL に"
+                     f" {feeds.QUERY_SLOT} がありません",
+            "hint": f"feed の urls に {feeds.QUERY_SLOT} を書き、最初の組を queries に書いてください",
+        })
 
 
 def remove(name: str) -> None:
@@ -1656,6 +1678,9 @@ def remove(name: str) -> None:
     get(name)
     machine_store.drop(DEFS_KIND, name)
     collect_log.forget(name)
+    # **検索文の控えも落とす**(`app/search_queries.py`)—— 同じ名前で作り直した収集が
+    # 前の収集の検索文を「使ったことがある」として弾き、最初の組が走らなくなる
+    search_queries.forget(name)
     # **待ち行列からも外す** —— 消えた収集を抱えたままだと、そのワーカーは
     # 起こそうとして 404 を踏み続ける
     workers.forget(name)

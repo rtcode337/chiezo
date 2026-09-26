@@ -53,6 +53,7 @@ from app import (
     media_providers,
     notes,
     providers,
+    search_queries,
     usage,
     usage_store,
     websearch,
@@ -926,7 +927,9 @@ async def draft_collection_prompt(
     return draft
 
 
-async def _harvest(item, sweep=None) -> dict | None:
+async def _harvest(
+    item, sweep=None, sources: dict | None = None, used: list | None = None, think: bool = True
+) -> dict | None:
     """外向きの道具(`app/feeds.py`)を回して、素材を取る。
 
     **落ちても収集は止めない。** これは参考であって情報源ではなく、AI は自分でも
@@ -941,8 +944,52 @@ async def _harvest(item, sweep=None) -> dict | None:
     spec = feeds.normalize(item.feed)
     if spec is None:
         return None
+    queries: list[str] = []
+    if feeds.has_templates(spec):
+        # **下見(`think=False`)では考えさせない** —— 焼かない回で AI を呼び、
+        # 検索文を控えに積むと、本番の回が「使ったことがある」として弾く
+        queries = await _search_queries(item, sweep if think else None, spec, sources or {}, used)
+        spec = feeds.expand(spec, queries)
     since = (sweep.last_run_at if sweep is not None else None) or item.last_run_at
-    return await feeds.fetch(spec, since)
+    result = await feeds.fetch(spec, since)
+    return {**result, "queries": queries} if queries else result
+
+
+async def _search_queries(item, sweep, spec: dict, sources: dict, used: list | None) -> list[str]:
+    """この回に使う検索文(`app/search_queries.py`)。
+
+    **考えさせるのは、依頼文に `{queries}` を書いた機械で引く巡回だけ**
+    (`search_queries.thinks`)。ほかの回(`{feed}` を参考に読む AI の回など)は、
+    いちばん新しい組をそのまま使う —— 考えるたびに枠を使い、検索文も控えに溜まる。
+
+    **1 回目は最初の組を使う**(AI は呼ばない。控えが空のとき)。**最近使った検索文は
+    使わない**(`reuse_days` が過ぎればまた使える)。**使える検索文が出なければ断る** ——
+    最近の検索文のまま引いても同じ記事が返るだけ。
+    **相手はその巡回のもの**(ワーカーを選んでいればワーカーが選ぶ)。実際に頼んだ
+    相手は `used` へ書く(控えの相手の欄に出す)。
+    """
+    per_run, reuse = spec["per_run"], spec["reuse_days"]
+    if not search_queries.thinks(sweep):
+        return search_queries.current(item.name) or spec["queries"][:per_run]
+    await asyncio.to_thread(search_queries.count, item.name, sources, spec["query_tag"])
+    if not search_queries.history(item.name):
+        chosen = search_queries.fresh(item.name, spec["queries"], per_run, reuse)
+        by = ""
+    else:
+        worker = _worker_of(sweep)
+        step = workers.pick(worker) if worker is not None else None
+        if worker is not None and step is None:
+            raise HTTPException(429, _all_full(sweep.worker))
+        if used is not None and step is not None:
+            used.append(step)
+        content, by, _model = await _ask_for_collection(
+            sweep.applied_to(item, step), search_queries.messages(sweep.prompt, item.name, reuse)
+        )
+        chosen = search_queries.fresh(item.name, search_queries.parse(content), per_run, reuse)
+    if not chosen:
+        raise search_queries.nothing_new()
+    search_queries.record(item.name, chosen, by)
+    return chosen
 
 
 async def _collect_items(
@@ -1015,6 +1062,11 @@ async def _collect_items(
         if failed := feed.get("failed"):
             # 黙って減らさない —— 少ないのが世の中の都合か、道具の不調かで意味が違う
             note = f"{feed.get('tried')} 件の出典のうち {failed} 件は取れませんでした"
+        if queries := feed.get("queries"):
+            # **どの検索文で引いた回かを控えに残す** —— 件数だけでは、当たった検索文も
+            # 外れた検索文も読めない
+            used_queries = "検索文: " + "、".join(queries)
+            note = f"{used_queries} / {note}" if note else used_queries
         return feeds.to_items(feed), None, note
     worker = _worker_of(sweep) if sweep is not None else None
     step = workers.pick(worker) if worker is not None else None
@@ -1434,7 +1486,9 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
         "backend": sweep.backend or _default_backend_name(),
         "model": sweep.model or "",
         "effort": sweep.effort or "",
-    } if collect.asks_ai(item, sweep) else {"backend": "", "model": "", "effort": ""}
+    } if collect.asks_ai(item, sweep) or search_queries.thinks(sweep) else {
+        "backend": "", "model": "", "effort": "",
+    }
     # **実際に頼んだ相手**。ワーカーを使う回は区画ごとに振り替わるので、
     # 走り終えてからでないと分からない(`_collect_items` が書く)
     used: list = []
@@ -1452,7 +1506,7 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
                 "error": f"割り込みが名指しした区画「{gone}」は台帳にありません",
                 "hint": "割り直しで鍵が変わったかもしれません(区画を選び直して頼み直してください)",
             })
-        feed = await _harvest(item, sweep)
+        feed = await _harvest(item, sweep, sources, used)
         # **差し込むぶんだけ取り出す。** 区画で切ってあれば、その区画のぶんだけ ——
         # 全部を持つと、区画で切った意味がメモリの側から消える
         for_prompt = await asyncio.to_thread(
@@ -1655,7 +1709,7 @@ async def collect_preview(
     # **下見は 1 区画だけ。** 何区画でも見られるが、下見は「この指示文でどうなるか」を
     # 見るためのもので、1 区画あれば分かる(そのぶん安く、待たされない)
     keys = partitioning.pick(ledger, sweep.name, 1, partitioning.normalize(item.partition))
-    feed = await _harvest(item, sweep)
+    feed = await _harvest(item, sweep, sources, think=False)
     for_prompt = await asyncio.to_thread(collect.prompt_docs, item, previous, keys, None)
     items, next_cursor, note = await _collect_items(
         item, for_prompt, sources, keys, sweep, None, feed

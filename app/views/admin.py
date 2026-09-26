@@ -32,6 +32,7 @@ from app import (
     collect,
     collect_log,
     db,
+    feeds,
     ingest_queue,
     jst,
     machine_store,
@@ -40,6 +41,7 @@ from app import (
     providers,
     registry,
     repartition_job,
+    search_queries,
     settings_store,
     tasks,
     usage,
@@ -1174,6 +1176,67 @@ def _removed_html(item, sources: dict) -> str:
 
 
 
+# 検索文の控えを面に出す数(新しい順)。**残りは畳む** —— 回を重ねるほど伸びる
+QUERIES_HEAD = 30
+
+
+def _queries_html(item, disabled: str = "") -> str:
+    """検索文の控え(`app/search_queries.py`)。**見られて、消せる**。
+
+    控えは「どれを試してどれだけ入ったか」の事実で、次の回に AI へ見せる材料 ——
+    ここに見えないと、なぜその検索文が選ばれたのか(外れたのか)が読めない。
+    **消す口も置く**。消した検索文は AI に見せなくなり、全部消すと次の回は最初の組から
+    始まる。**消すのは控えだけ**で、入った文書には触らない。
+    """
+    rows = search_queries.history(item.name)
+    if not feeds.has_templates(feeds.normalize(item.feed)) and not rows:
+        return ""
+    action = f"/admin/collect/{esc(quote(item.name))}/queries/forget"
+    if not rows:
+        return (
+            '<h3 id="search-queries">検索文</h3>'
+            '<p class="muted">まだ 1 回も引いていません(次の回は最初の組から始まります)。</p>'
+        )
+
+    def line(row: dict) -> str:
+        at = jst.parse(str(row.get("used_at") or ""))
+        got = (
+            "まだ数えていない" if row.get("found") is None
+            else f"{row['found']} 件・残った {row.get('kept') or 0} 件"
+        )
+        who = f"・{esc(row['by'])}" if row.get("by") else ""
+        return (
+            f"<tr><td>{esc(row['query'])}</td><td>{got}</td>"
+            f'<td class="muted">{esc(jst.compact(at)) if at else ""}{who}</td>'
+            f'<td><form method="post" action="{action}" class="init-form">'
+            f'<input type="hidden" name="query" value="{esc(row["query"])}">'
+            f'<button type="submit"{disabled}>消す</button></form></td></tr>'
+        )
+
+    head = "".join(line(row) for row in rows[:QUERIES_HEAD])
+    rest = "".join(line(row) for row in rows[QUERIES_HEAD:])
+    table = (
+        "<table><thead><tr><th>検索文</th><th>入った数</th><th>使った日時(JST)・考えた相手</th>"
+        f"<th></th></tr></thead><tbody>{head}</tbody></table>"
+    )
+    if rest:
+        table += (
+            f"<details><summary>古い {len(rows) - QUERIES_HEAD:,} 件</summary>"
+            f"<table><tbody>{rest}</tbody></table></details>"
+        )
+    return (
+        f'<h3 id="search-queries">検索文(新しい順・{len(rows):,} 件)</h3>'
+        '<p class="muted">回ごとに AI が考えた検索文と、それぞれで入った数'
+        "(残った = 消されずに残った数)。次の回はこの一覧を見せて、まだ試していない"
+        "検索文を考えさせます。消した検索文は見せなくなり、全部消すと次の回は最初の組から始まります"
+        "(入った文書には触りません)。</p>"
+        f"{table}"
+        f'<form method="post" action="{action}" class="init-form"'
+        " onsubmit=\"return confirm('検索文の控えを全部消します。次の回は最初の組から始まります。')\">"
+        f"<button type=\"submit\"{disabled}>全部消す</button></form>"
+    )
+
+
 # 区画の表に出す件数。**残りは畳む** —— 全部出すと、その下にある変更履歴まで
 # 面の外へ押し出される
 PARTITION_HEAD = 10
@@ -1810,6 +1873,7 @@ def _collect_detail_html(
         f"{_handoff_html(item, disabled)}"
         f"{_partition_html(item, (sources or {}).get(item.name), busy)}"
         f"{_removed_html(item, sources or {})}"
+        f"{_queries_html(item, disabled)}"
         f"<details><summary>編集する</summary>"
         f'<form method="post" action="/admin/collect/{esc(item.name)}/edit" class="collect-form">'
         f'<p><label>説明<br><input name="description" value="{esc(item.description)}"></label></p>'
@@ -3930,6 +3994,14 @@ async def admin_handoff_drop(name: str):
 
     handoff.drop(name)
     return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
+
+
+@router.post("/admin/collect/{name}/queries/forget")
+def admin_collect_queries_forget(name: str, query: str = Form("")):
+    """検索文の控えを消す(`query` があればその 1 つ、空なら全部)。押した場所へ戻す。"""
+    collect.get(name)
+    search_queries.forget(name, query.strip() or None)
+    return RedirectResponse(url=f"/admin/collect/{quote(name)}#search-queries", status_code=303)
 
 
 @router.post("/admin/collect/{name}/redo")
