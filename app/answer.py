@@ -437,6 +437,11 @@ _EFFORTS_CACHE: dict[str, list[str]] = {}
 # 相手が落ちている間ずっと画面が重くなるので、しばらく置いてから試し直す。
 _RETRY_AT: dict[tuple[str, str], float] = {}
 RETRY_WAIT = 60.0
+# **答えてくれたが空だった**ときに、次に聞くまで空ける時間。空は「持たない」
+# (Antigravity の考える量)のことが多いが、ブリッジが CLI に聞く前に答えた
+# 空のこともあるので覚え切りはしない。ただ 60 秒おきに聞き直すと、そのたびに
+# 画面を開いた誰かがブリッジの往復(実測で 3 秒近く)を払う
+EMPTY_RETRY_WAIT = 3600.0
 
 
 async def _remembered(kind: str, name: str, fetch, fallback: list[str]) -> list[str]:
@@ -449,6 +454,7 @@ async def _remembered(kind: str, name: str, fetch, fallback: list[str]) -> list[
 
     `fetch` は**聞けなかったとき None を返す**。そこでコードの控えを覚えてしまうと、
     相手が立ち上がるより先に聞いただけで決め打ちが居座るので、覚えずに返す。
+    **空の答えも覚えないが、聞き直すのは長めに空けてから**(`EMPTY_RETRY_WAIT`)。
     """
     cache = _MODELS_CACHE if kind == "models" else _EFFORTS_CACHE
     if (cached := cache.get(name)) is not None:
@@ -460,7 +466,8 @@ async def _remembered(kind: str, name: str, fetch, fallback: list[str]) -> list[
     if found:
         cache[name] = found
         return found
-    _RETRY_AT[key] = time.monotonic() + RETRY_WAIT
+    wait = EMPTY_RETRY_WAIT if found is not None else RETRY_WAIT
+    _RETRY_AT[key] = time.monotonic() + wait
     return fallback
 
 

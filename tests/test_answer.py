@@ -936,6 +936,32 @@ class TestModelCandidates:
         assert later == ["m1"]  # 立ち上がったら、そちらが正
 
 
+    def test_an_empty_answer_is_not_asked_again_right_away(self, monkeypatch):
+        """空は「持たない」ことが多い。60 秒おきに聞き直すと、画面を開くたびに
+        誰かがブリッジの往復(数秒)を払う。覚え切らず、長めに空けてから聞き直す。
+        """
+        import asyncio
+        import time
+
+        from app import answer, settings_store
+
+        settings_store.set_credential("openrouter", "k")
+        settings_store.set_verified("openrouter", True)
+        settings_store.set_enabled("openrouter", True)
+
+        def handler(request):
+            return httpx.Response(200, json={"data": []})
+
+        monkeypatch.setattr(
+            answer, "_llm_client",
+            lambda cfg: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        asyncio.run(answer.available_models("openrouter"))
+
+        wait = answer._RETRY_AT[("models", "openrouter")] - time.monotonic()
+        assert wait > answer.RETRY_WAIT
+        assert "openrouter" not in answer._MODELS_CACHE, "覚え切らない"
+
 class TestSelectableEfforts:
     """**選んでも効かない欄は出さない。** ただし、既に保存されている設定から
     飛んでくるので、飛んできたものは今までどおり受け取る。
