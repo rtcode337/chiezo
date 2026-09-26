@@ -241,17 +241,47 @@ def split_model(name: str) -> tuple[str, str]:
     """
     if CLI in SLUG_CARRIES_EFFORT:
         return name, ""
+    # **分ける前に控えを埋める**(`_fill_from_codex_catalog`)。立ち上げ直後で
+    # 空のままだと、畳んだ名前がそのままモデル名として CLI へ渡る
+    _fill_from_codex_catalog()
     if name in set(GIVEN_MODELS or _FOUND_MODELS or DEFAULT_MODELS.get(CLI, ())):
         return name, ""
     head, sep, tail = name.rpartition(FOLD_SEP)
-    if sep and head and tail in efforts_now():
+    # **そのモデルが受ける段でも解く**(`_efforts_per_model`)。`efforts_now` は
+    # どのモデルでも通る段だけなので、上位のモデルだけが受ける段(`max` など)は
+    # そちらに無い —— 畳んで名乗っておきながら、選ばれると解けずに丸ごと渡していた
+    if sep and head and (tail in efforts_now() or tail in _efforts_per_model().get(head, ())):
         return head, tail
     return name, ""
 
 
 def efforts_now() -> tuple[str, ...]:
     """いま名乗る考える量。手渡し > CLI の答え > コードの控え。"""
+    if not GIVEN_EFFORTS:
+        _fill_from_codex_catalog()
     return GIVEN_EFFORTS or _FOUND_EFFORTS or DEFAULT_EFFORTS.get(CLI, ())
+
+
+def _fill_from_codex_catalog() -> None:
+    """codex の控え(`models_cache.json`)から、**空いている一覧だけ**をその場で埋める。
+
+    **立ち上げの聞き取り(`_probe_cli`)を待たない。** あちらは CLI が空いている
+    ときしか聞かないので、立ち上がった直後に会話が来ると飛ばされ、そのあいだ
+    一覧は空のまま —— 考える量が 1 つも無いと畳んだ名前を解けず、
+    `gpt-5.6-sol-medium` がそのままモデル名として渡って 400 で断られた(本番で起きた)。
+    **ファイルを読むだけ**なので CLI は起こさず、枠も使わない。
+    控えがまだ無ければ何もしない(聞き取りのほうが取り直させる)。
+    """
+    global _FOUND_MODELS, _FOUND_EFFORTS
+    if CLI != "codex" or (_FOUND_MODELS and _FOUND_EFFORTS):
+        return
+    catalog = _codex_catalog()
+    if not catalog:
+        return
+    if not _FOUND_MODELS:
+        _FOUND_MODELS = tuple(str(m["slug"]) for m in catalog)
+    if not _FOUND_EFFORTS:
+        _FOUND_EFFORTS = _catalog_efforts(catalog)
 
 # CLI に許す道具。既定は Chiezo の MCP だけ。書き込み(remember)まで止めたいときは
 # ここを `mcp__chiezo__search mcp__chiezo__doc …` のように絞る。

@@ -1869,6 +1869,41 @@ class TestFoldingTheEffortIntoTheName:
         assert server.split_model("sonnet-high") == ("sonnet", "high")
         assert server.split_model("sonnet") == ("sonnet", "")
 
+    @staticmethod
+    def _codex_catalog(tmp_path, monkeypatch):
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        (tmp_path / "models_cache.json").write_text(json.dumps({"models": [
+            {"slug": "gpt-big", "visibility": "list", "priority": 1,
+             "supported_reasoning_levels": [{"effort": "low"}, {"effort": "medium"},
+                                            {"effort": "max"}]},
+            {"slug": "gpt-small", "visibility": "list", "priority": 2,
+             "supported_reasoning_levels": [{"effort": "low"}, {"effort": "medium"}]},
+        ]}), encoding="utf-8")
+
+    def test_codex_splits_before_the_probe_has_run(self, bridge, tmp_path, monkeypatch):
+        """**立ち上げ直後でも解く。** 聞き取りは CLI が空いているときしか走らないので、
+        すぐ会話が来ると一覧が空のまま —— 畳んだ名前がそのまま渡って 400 になった。
+        控えのファイルはその場で読める(CLI は起こさない)。
+        """
+        self._codex_catalog(tmp_path, monkeypatch)
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        assert server._FOUND_EFFORTS == () and server._FOUND_MODELS == ()
+
+        assert server.split_model("gpt-small-medium") == ("gpt-small", "medium")
+
+    def test_codex_splits_a_level_only_the_top_model_takes(self, bridge, tmp_path, monkeypatch):
+        """上位のモデルだけが受ける段(`max`)も解く。
+
+        どのモデルでも通る段だけで照らしていたので、畳んで名乗っておきながら
+        選ばれると解けずに丸ごと渡していた。
+        """
+        self._codex_catalog(tmp_path, monkeypatch)
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+
+        assert server.split_model("gpt-big-max") == ("gpt-big", "max")
+        # 受けないモデルでは解かない(存在しない組み合わせを作らない)
+        assert server.split_model("gpt-small-max") == ("gpt-small-max", "")
+
     def test_a_slug_that_ends_in_a_level_is_left_alone(self, bridge):
         """Antigravity の slug は元から段で終わる —— 解くと存在しないモデルになる。"""
         server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
