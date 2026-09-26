@@ -383,6 +383,22 @@ class TestMergingSmallPartitions:
 
         assert one["visits"] == {"ざっと": when}
 
+    def test_seen_at_different_times_still_joins(self):
+        """**時刻までは比べない。** どちらも同じ巡回で見終えていれば 1 つにする。
+
+        時刻まで比べていた頃は、別々の回で見た区画が二度とまとまらなかった
+        (見終えた時刻は回ごとにずれる)。**古いほうの時刻を採る** —— 次に見るのは
+        古い順なので、新しいほうを採ると見ていないに等しい範囲が後回しになる。
+        """
+        ledger = [
+            {"key": "あ〜い", "count": 1, "visits": {"ざっと": "2026-09-25T02:44:00+00:00"}},
+            {"key": "う〜え", "count": 1, "visits": {"ざっと": "2026-09-25T00:44:00+00:00"}},
+        ]
+
+        [one] = partition.merged(self.spec(), ledger)
+
+        assert one["visits"] == {"ざっと": "2026-09-25T00:44:00+00:00"}
+
     def test_it_can_chain_until_it_is_big_enough(self):
         """1 人の区画が並ぶところでは、届くまで続けて 1 つにする。"""
         ledger = [{"key": f"{c}〜{c}", "count": 1, "visits": {}} for c in "あいうえおかきくけこ"]
@@ -1182,6 +1198,33 @@ class TestPoolingTheSmallCategories:
 
     def row(self, key, count, visits=None):
         return {"key": key, "count": count, "visits": dict(visits or {})}
+
+    def test_seen_at_different_times_still_pools(self):
+        """**同じ巡回で見終えていれば、時刻が違っても寄せ集める**(`same_sweeps`)。
+
+        時刻まで比べていた頃は、ペルー(9 人)とボリビア(1 人)がどちらも
+        「ざっと見る」で見終えていたのに、2 時間ずれていただけで別々に残っていた。
+        まとめた区画の時刻は古いほうを採る。
+        """
+        ledger = [
+            self.row("ペルー|-", 9, {"ざっと見る": "2026-09-25T00:44:00+00:00"}),
+            self.row("ボリビア|-", 1, {"ざっと見る": "2026-09-25T02:44:00+00:00"}),
+        ]
+
+        [one] = partition.merged(self.spec(target=25), ledger)
+
+        assert one["key"] == "ペルー|ボリビア|-"
+        assert one["count"] == 10
+        assert one["visits"] == {"ざっと見る": "2026-09-25T00:44:00+00:00"}
+
+    def test_seen_and_unseen_still_stay_apart(self):
+        """見終えた区画と見ていない区画は、今までどおり混ぜない。"""
+        ledger = [
+            self.row("ペルー|-", 9, {"ざっと見る": "2026-09-25T00:44:00+00:00"}),
+            self.row("ボリビア|-", 1),
+        ]
+
+        assert len(partition.merged(self.spec(target=25), ledger)) == 2
 
     def test_they_become_one_partition_that_lists_the_values(self):
         ledger = [

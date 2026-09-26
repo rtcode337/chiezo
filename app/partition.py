@@ -1168,7 +1168,8 @@ def merged(spec: dict, partitions: list[dict]) -> list[dict]:
 
     - **周回の記録が同じ** —— 片方だけ見終えている区画をくっつけると、見ていない
       ぶんが「見終えた」に混ざる(逆に、見終えたぶんをもう一度回すことになる)。
-      割り直した直後はどれも空なので、そこでは大きさだけで決まる
+      割り直した直後はどれも空なので、そこでは大きさだけで決まる。
+      **比べるのは見終えた巡回だけで、時刻は比べない**(`same_sweeps`)
     - **合わせても `target` の `MERGE_RATIO` に満たない** —— くっつけた先が
       `target` を超えては、割り直しと押し合いになる
 
@@ -1259,8 +1260,8 @@ def _pooled(spec: dict, partitions: list[dict], limit: float) -> list[dict]:
         if names is None:
             rest.append(p)
             continue
-        visits = dict(p.get("visits") or {})
-        buckets.setdefault(tuple(sorted(visits.items())), []).append((names, p))
+        # **見終えた巡回ごとに組を分ける**(時刻は見ない。`same_sweeps`)
+        buckets.setdefault(tuple(sorted(p.get("visits") or {})), []).append((names, p))
 
     made: list[dict] = []
     for bucket in buckets.values():
@@ -1274,6 +1275,8 @@ def _pooled(spec: dict, partitions: list[dict], limit: float) -> list[dict]:
             ):
                 group["names"] += names
                 group["count"] += count
+                # 組に足した区画の時刻も合わせる(巡回ごとに古いほう)
+                group["visits"] = oldest_visits([group, p])
                 continue
             if group is not None:
                 made.append(_pooled_row(group))
@@ -1303,7 +1306,7 @@ def _joined(spec: dict, left: dict, right: dict, limit: float) -> dict | None:
     そこだけ順が崩れる)。順が逆のまま帯を組むと `1900-1850` のような**中身を 1 つも
     拾えない鍵**になり、その範囲の文書はどの区画にも入らなくなる。
     """
-    if left["visits"] != right["visits"]:
+    if not same_sweeps(left["visits"], right["visits"]):
         return None
     count = left["count"] + right["count"]
     if count >= limit:
@@ -1313,7 +1316,31 @@ def _joined(spec: dict, left: dict, right: dict, limit: float) -> dict | None:
         _covers(spec, key, left["key"]) and _covers(spec, key, right["key"])
     ):
         return None
-    return {"key": key, "count": count, "visits": right["visits"]}
+    return {"key": key, "count": count, "visits": oldest_visits([left, right])}
+
+
+def same_sweeps(one: dict, other: dict) -> bool:
+    """**見終えた巡回が同じか**(時刻は比べない)。つなぐ・寄せ集めるの条件。
+
+    守りたいのは「見ていないぶんが『見終えた』に混ざらない」ことで、そのためには
+    どの巡回で見たかが揃っていれば足りる。**時刻まで比べていた頃は、別々の回で
+    見た区画が二度とまとまらなかった** —— 見終えた時刻は回ごとにずれるので、
+    どちらも見終えていても 2 時間違うだけで別の組になる(1 人の区画が残り続けた)。
+    """
+    return set(one or {}) == set(other or {})
+
+
+def oldest_visits(parts: list[dict]) -> dict:
+    """まとめた区画の見終えた記録。**巡回ごとに、いちばん古い時刻を採る**。
+
+    次に見るのは古い順(`pick`)なので、新しいほうを採ると**まだ見ていないに
+    等しい範囲が後回しになる**(割り直しで印を継ぐ `_inherited` と同じ判断)。
+    """
+    out: dict[str, str] = {}
+    for p in parts:
+        for name, at in (p.get("visits") or {}).items():
+            out[name] = min(out.get(name) or str(at), str(at))
+    return out
 
 
 def _joined_key(spec: dict, left: str, right: str) -> str | None:
