@@ -552,4 +552,25 @@ def pick(worker: Worker | None, limit: float | None = None, now: str = "") -> St
     """
     if worker is None:
         return None
-    return next((s for s in worker.steps if room_left(s, limit, now)), None)
+    off = _switched_off()
+    return next(
+        (s for s in worker.steps if s.backend not in off and room_left(s, limit, now)), None,
+    )
+
+
+def _switched_off() -> set[str]:
+    """いま**止まっている**相手。段に並んでいても振らない。
+
+    枠に余裕があるかしか見ていなかったので、止めた相手(人が止めた・認証の失敗で
+    Chiezo が止めた)にも振っていた —— 頼めば必ず断られるので、その段が
+    空いて見えるぶんだけ落ちる回が増える。
+
+    **除くのは「止めた」と記録のある相手だけ**(設定の行があって off のもの)。
+    一度も設定していない相手まで除くと、設定の置き場が無い構成や、段だけ先に
+    並べた構成でワーカーが 1 つも振れなくなる。
+    """
+    from app import settings_store
+
+    if settings_store.db_path() is None:
+        return set()
+    return {name for name, stored in settings_store.load_all().items() if not stored.enabled}

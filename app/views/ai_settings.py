@@ -24,6 +24,7 @@ from fastapi.responses import RedirectResponse
 from app import (
     answer,
     capabilities,
+    jst,
     media,
     media_providers,
     providers,
@@ -70,9 +71,24 @@ def _rows() -> list[dict]:
                 "can_enable": not blocked,
                 "blocked": blocked,
                 "runnable": st.enabled and not blocked,
+                # Chiezo が失敗を受けて自分で止めた理由(人が on に戻すまで残る)
+                "disabled_reason": "" if st.enabled else st.disabled_reason,
+                "disabled_at": st.disabled_at,
             }
         )
     return rows
+
+
+def _stopped_note(row: dict) -> str:
+    """Chiezo が自分で止めた相手の添え書き。**直す場所はこの行**なので、ここにも出す。"""
+    if not row.get("disabled_reason"):
+        return ""
+    when = jst.parse(row.get("disabled_at") or "")
+    at = f"{jst.format(when)} に" if when else ""
+    return (
+        f'<br><span class="stale">⚠️ {esc(at)}認証の失敗(401)で止めました。'
+        "認証情報を登録し直し、「接続を試す」→「有効にする」で戻ります</span>"
+    )
 
 
 SECTION_ANCHOR = "ai-providers"
@@ -382,7 +398,8 @@ async def section_html(request: Request | None = None) -> str:
         if r["runnable"]:
             usable.setdefault(spec.id, set()).add(capabilities.CHAT)
         rows.append(
-            f'<tr{"" if r["enabled"] else ' class="off"'}><td>{esc(spec.label)}</td>'
+            f'<tr{"" if r["enabled"] else ' class="off"'}>'
+            f"<td>{esc(spec.label)}{_stopped_note(r)}</td>"
             f'<td>{_capabilities_cell(r, by_id.get(spec.id, {}))}</td>'
             f"<td>{cred}</td><td>{use}</td>"
             f'<td class="muted">{esc(spec.billing)}</td></tr>'

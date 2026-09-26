@@ -2203,6 +2203,35 @@ def admin(request: Request):
     return HTMLResponse(content=page_shell("管理画面", body))
 
 
+def _stopped_providers_html() -> str:
+    """失敗を受けて Chiezo が自分で止めた相手の知らせ(状況の面の先頭)。
+
+    **止めたことに気づけないと、相手が 1 つ減ったまま誰も直さない。** ワーカーは
+    止まった相手を黙って飛ばすので(`workers._switched_off`)、回は別の相手で
+    走り続け、止まったこと自体は表に出てこない。人が on に戻すまで出し続ける。
+    **相手が言った理由も添える**(そのまま検索できるように、畳んで置く)。
+    """
+    try:
+        stopped = settings_store.auto_disabled()
+    except Exception:
+        log.exception("could not read the providers Chiezo stopped")
+        return ""
+    lines = []
+    for st in stopped:
+        when = jst.parse(st.disabled_at)
+        at = f"{jst.format(when)} に" if when else ""
+        lines.append(
+            '<div class="job-status error">'
+            f"<p>⚠️ {esc(providers.label_of(st.provider))} は、{esc(at)}"
+            "認証の失敗(401)が返ったので無効にしました。ワーカーの振り先からも外れています。"
+            "「AI と鍵」の面で認証情報を登録し直し、「接続を試す」→「有効にする」を"
+            "押すと戻ります。</p>"
+            f'<details><summary class="muted">相手が言ったこと</summary>'
+            f"<pre>{esc(st.disabled_reason)}</pre></details></div>"
+        )
+    return "\n".join(lines)
+
+
 def _status_summary(job: dict | None, running: list[dict]) -> str:
     """トップの「状況」の札に添える 1 行。取り込みと AI への依頼が動いているか。
 
@@ -2219,7 +2248,13 @@ def _status_summary(job: dict | None, running: list[dict]) -> str:
         ingest = "取り込み: 待機中"
     ai = (f"<strong>AI への依頼 {len(running)} 件走っている</strong>" if running
           else "AI への依頼は無い")
-    return f"{ingest}。{ai}"
+    # **止めた相手があれば札にも出す**(開かなくても気づけるように)
+    try:
+        stopped = len(settings_store.auto_disabled())
+    except Exception:
+        stopped = 0
+    alert = f'。<span class="stale">⚠️ 認証の失敗で止めた相手 {stopped} つ</span>' if stopped else ""
+    return f"{ingest}。{ai}{alert}"
 
 
 @router.get(STATUS_PAGE, response_class=HTMLResponse)
@@ -2234,6 +2269,7 @@ def admin_status(request: Request):
     running = ai_history.running_rows()
     body = f"""
 {nav_html(STATUS_PAGE)}
+{_stopped_providers_html()}
 <p>{_disk_html(request.app.state.data_dir)}</p>
 {_job_status_html(job, heading=True)}
 {_running_html(running, _round_done(job))}

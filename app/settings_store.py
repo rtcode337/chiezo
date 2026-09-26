@@ -44,6 +44,10 @@ CREATE TABLE IF NOT EXISTS provider_settings (
     -- 「接続を試す」が最後に通った日時。ここが空の相手は on にできない。
     -- 認証情報を入れ替えたら消す（新しい情報はまだ確かめていないため）。
     verified_at TEXT,
+    -- 失敗を受けて Chiezo が自分で止めたときの理由と日時（`disable_for_failure`）。
+    -- 人が on に戻したら消す。空なら「人が止めた」か「一度も on にしていない」。
+    disabled_reason TEXT,
+    disabled_at TEXT,
     updated_at TEXT NOT NULL
 );
 """
@@ -57,6 +61,9 @@ class ProviderSetting:
     model: str = ""
     verified_at: str = ""
     updated_at: str = ""
+    # Chiezo が失敗を受けて自分で止めたときの理由と日時(`disable_for_failure`)
+    disabled_reason: str = ""
+    disabled_at: str = ""
 
     @property
     def has_credential(self) -> bool:
@@ -110,6 +117,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         cols.add("credential")
     if "verified_at" not in cols:
         conn.execute("ALTER TABLE provider_settings ADD COLUMN verified_at TEXT")
+    for col in ("disabled_reason", "disabled_at"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE provider_settings ADD COLUMN {col} TEXT")
 
 
 def _connect() -> sqlite3.Connection:
@@ -249,13 +259,14 @@ def load_all() -> dict[str, ProviderSetting]:
     with _connect() as conn:
         rows = conn.execute(
             "SELECT provider, enabled, COALESCE(credential, ''), COALESCE(model, ''),"
-            "       COALESCE(verified_at, ''), updated_at"
+            "       COALESCE(verified_at, ''), updated_at,"
+            "       COALESCE(disabled_reason, ''), COALESCE(disabled_at, '')"
             "  FROM provider_settings"
         ).fetchall()
     return {
         r[0]: ProviderSetting(
             provider=r[0], enabled=bool(r[1]), credential=r[2], model=r[3],
-            verified_at=r[4], updated_at=r[5],
+            verified_at=r[4], updated_at=r[5], disabled_reason=r[6], disabled_at=r[7],
         )
         for r in rows
     }
@@ -279,7 +290,41 @@ def _upsert(provider: str, **fields) -> None:
 
 
 def set_enabled(provider: str, enabled: bool) -> None:
-    _upsert(provider, enabled=1 if enabled else 0)
+    """人が on / off を切り替える。**on に戻したら、自分で止めた印を消す**
+    (`disable_for_failure`)—— 直したから戻したので、知らせを出し続ける理由が無い。"""
+    if enabled:
+        _upsert(provider, enabled=1, disabled_reason=None, disabled_at=None)
+    else:
+        _upsert(provider, enabled=0)
+
+
+def disable_for_failure(provider: str, reason: str) -> bool:
+    """**失敗を受けて自分で止める。** 止めたら True(もう止まっていれば何もしない)。
+
+    認証の失敗(401)は、人が認証情報を登録し直すまで直らない。on のまま残すと、
+    ワーカーは枠の空いた相手としてそこへ振り続け、頼むたびに同じ失敗を積む ——
+    本番で、codex が 401 を返し始めてから人が気づくまで、依頼が落ち続けた。
+
+    **確認済みの印も消す**(`verified_at`)。登録し直したあとに「接続を試す」を
+    通してからでないと on に戻せないようにする(直ったことを確かめてから戻す)。
+    理由と日時は残し、画面が知らせに使う(`auto_disabled`)。
+    """
+    if db_path() is None:
+        return False
+    if not load(provider).enabled:
+        return False
+    _upsert(
+        provider, enabled=0, verified_at=None,
+        disabled_reason=reason[:300], disabled_at=_now(),
+    )
+    return True
+
+
+def auto_disabled() -> list[ProviderSetting]:
+    """失敗を受けて自分で止め、まだ人が戻していない相手。"""
+    if db_path() is None:
+        return []
+    return [s for s in load_all().values() if s.disabled_reason and not s.enabled]
 
 
 def set_credential(provider: str, credential: str) -> None:

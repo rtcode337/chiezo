@@ -743,12 +743,48 @@ def _upstream_reason(body: str) -> str:
     return " / ".join(p.strip() for p in parts)[:REASON_MAX]
 
 
+# 認証の失敗(401)の見分け方。**CLI ブリッジは相手の 401 を 502 に包んで返す**ので、
+# 状態コードだけでは見分けられない —— 理由の文に残る相手の言い方を読む
+# (実測: codex は `unexpected status 401 Unauthorized: Incorrect API key provided`)。
+_AUTH_FAILURE = re.compile(r"\b401\b\s*unauthori[sz]ed|status[\"':\s]*401\b", re.IGNORECASE)
+
+
+def is_auth_failure(status: int, reason: str) -> bool:
+    """認証の失敗か。**人が認証情報を直すまで直らない**失敗だけを拾う。"""
+    return status == 401 or bool(_AUTH_FAILURE.search(reason or ""))
+
+
+def _stop_on_auth_failure(cfg: Settings, status: int, reason: str) -> None:
+    """認証の失敗なら、その相手を止める(`settings_store.disable_for_failure`)。
+
+    **止めないと落ち続ける。** 401 は登録し直すまで直らないのに、on のままだと
+    ワーカーは空いた相手としてそこへ振り、頼むたびに同じ失敗を積む。
+    **止めたことは状況の面に知らせとして出す**(止まったことに気づけないと、
+    相手が 1 つ減ったまま誰も直さない)。**画面を落とさない** —— 控えが書けなくても、
+    落ちた依頼そのものの応答は返す。
+    """
+    if not is_auth_failure(status, reason):
+        return
+    try:
+        # **理由は相手の言い方のまま残す**(そのまま検索できるように)
+        stopped = settings_store.disable_for_failure(cfg.name, reason or f"HTTP {status}")
+    except Exception:
+        log.exception("could not disable %s after an auth failure", cfg.name)
+        return
+    if stopped:
+        log.warning("disabled %s after an auth failure: %s", cfg.name, reason[:200])
+
+
 def _note_failure(cfg: Settings, messages: list[dict], status: int, reason: str) -> None:
     """失敗を控えに残す(`app/ai_log.py`)。
 
     残す場所を呼び出しの側にしているのは、相手とプロンプトの大きさがここにしかないため。
     `_llm_error` / `_upstream_error` は応答を組むだけで、どの相手にどれだけ送ったかを知らない。
+
+    **認証の失敗なら、その相手を止める**(`_stop_on_auth_failure`)。失敗はどれも
+    ここを通るので、見分けるのもここ 1 か所にする。
     """
+    _stop_on_auth_failure(cfg, status, reason)
     # **控えを先に書く。** 目方の行に紐を持たせるので、順が逆だと id が無い
     ident = _note_transcript(cfg, messages, reply=reason, ok=False)
     ai_log.record(
