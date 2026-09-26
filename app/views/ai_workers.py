@@ -164,15 +164,16 @@ def _worker_form(worker: workers.Worker | None, selects, running: str = "") -> s
         f'<input type="hidden" name="worker_key" value="{esc(key)}">'
         f'<p><label>名前<br><input name="worker_name" value="{esc(name)}"'
         f' placeholder="精査"></label> <span class="muted">{esc(hint)}</span></p>'
-        f'<p><label>起きる間隔(分。{workers.MIN_INTERVAL_MINUTES} 以上)<br>'
+        f'<p><label>流し終えてから次に起きるまでの間(分。{workers.MIN_INTERVAL_MINUTES} 以上)<br>'
         f'<input name="worker_interval" type="number"'
         f' min="{workers.MIN_INTERVAL_MINUTES}" value="{every}"></label></p>'
         f'<p><label>1 度に拾う数(1〜{workers.MAX_PER_RUN})<br>'
         f'<input name="worker_per_run" type="number" min="1"'
         f' max="{workers.MAX_PER_RUN}" value="{take}"></label></p>'
         '<p class="muted">拾ったぶんは<strong>1 本ずつ順に流します</strong>'
-        "(取り込みは同時に 1 本しか動かないため)。流し切るまで、そのワーカーは"
-        "次の起動をしません。</p>"
+        "(同じ相手へ同時に 2 本投げないため。取り込みを並べられる設定でも、"
+        "1 つのワーカーから出るのは 1 本ずつ)。流し切ったら、上の間だけ休んでから"
+        "次を拾います。</p>"
         f"{''.join(rows)}"
         f'<p><button type="submit">{esc(SAVE_LABEL)}</button></p></form>'
         + (_queue_html(worker, running) if worker else "")
@@ -198,27 +199,35 @@ def _queue_html(worker: workers.Worker, running: str = "") -> str:
     **畳まない。** 巡回の表と同じで、動いているかを確かめに来る場所なので、
     開かないと読めないのでは表の値打ちが消える。
     """
-    last = jst.parse(workers.last_at(worker.key))
-    when_last = esc(jst.format(last)) if last else '<span class="muted">まだ</span>'
-    if last is None:
+    woke = jst.parse(workers.last_at(worker.key))
+    ended = jst.parse(workers.finished_at(worker.key))
+    flowing = workers.claim_ready(worker.key)
+    when_woke = esc(jst.format(woke)) if woke else '<span class="muted">まだ</span>'
+    # **流している最中は「終わった」を出さない**(前の塊の時刻が今の回のものに見える)
+    if flowing or (woke and (not ended or ended < woke)):
+        when_ended = '<span class="muted">流している最中</span>'
+        when_next = '<span class="muted">流し終えてから</span>'
+    elif ended is None and woke is None:
+        when_ended = '<span class="muted">まだ</span>'
         when_next = '<span class="muted">いますぐ</span>'
     else:
+        last = ended or woke
+        when_ended = esc(jst.format(last))
         when_next = esc(jst.format(last + timedelta(minutes=worker.interval_minutes)))
     waiting = workers.queued(worker.key)
-    running = workers.claim_ready(worker.key)
     if not waiting:
         rows = '<tr><td colspan="2" class="muted">待っているものはありません</td></tr>'
     else:
         rows = "".join(
             f"<tr><td>{esc(str(e.get('collection') or ''))}"
             f" / {esc(str(e.get('sweep') or ''))}</td>"
-            + (f'<td>{"いま流している" if running and i == 0 else ""}</td></tr>')
+            + (f'<td>{"いま流している" if flowing and i == 0 else ""}</td></tr>')
             for i, e in enumerate(waiting)
         )
     return f"""
 <table>
-<thead><tr><th>前回起きた</th><th>次に起きる</th><th>待っている数</th></tr></thead>
-<tbody><tr><td>{when_last}</td><td>{when_next}</td><td>{len(waiting):,}</td></tr></tbody>
+<thead><tr><th>前回起きた</th><th>前回流し終えた</th><th>次に起きる</th><th>待っている数</th></tr></thead>
+<tbody><tr><td>{when_woke}</td><td>{when_ended}</td><td>{when_next}</td><td>{len(waiting):,}</td></tr></tbody>
 </table>
 <table>
 <thead><tr><th>待ち行列(先に積まれた順)</th><th></th></tr></thead>
@@ -226,8 +235,8 @@ def _queue_html(worker: workers.Worker, running: str = "") -> str:
 </table>
 {_wake_form(worker, bool(waiting), running)}
 <p class="muted">
-<strong>次に起きる時刻は、前回「起きた」時刻から数えます</strong>(流し終えた時刻では
-ない)—— 塊を流し切るのに何周かかっても、次の起動は最初の起動から間隔ぶん後になる。<br>
+<strong>次に起きる時刻は、前回「流し終えた」時刻から数えます</strong>(起きた時刻では
+ない)—— 塊を流すのに間隔より長くかかっても、流し終えたあと必ず間隔ぶん休む。<br>
 積まれているのに動かないなら、枠が詰まっているか起動待ち。積まれていないなら、
 巡回の側がまだ積んでいない(前回の完了から間隔が空いていない)。
 </p>
@@ -242,19 +251,18 @@ def _wake_form(worker: workers.Worker, waiting: bool, running: str = "") -> str:
     48 ポイント持っていった)。押せば行列の先頭が 1 本流れ、**そこから間隔を
     数え直す**(起こしたことになるので、次の起動は押した時刻からずれる)。
 
-    **取り込みが走っている最中は押せない。** 同時に 1 本しか動かないので、
-    押しても断られる —— 押せる形で出しておくと、断られて初めて分かる。
+    **取り込みが埋まっていても押せる。** 取り込みの待ち行列に並び、空いた周で
+    流れる(`running` は、そのとき走っているものを添えるためだけに使う)。
     """
     if not waiting:
         return ('<p class="muted">待っているものが無いので、起こしても流すものが'
                 "ありません。</p>")
-    if running:
-        return (
-            f'<p class="muted">いま取り込みが走っています({esc(running)})。'
-            "同時に 1 本しか動かないので、終わってから起こせます"
-            "(行列はそのまま残るので、順番は飛びません)。</p>"
-        )
-    return (
+    note = (
+        f'<span class="muted">いま取り込みが走っています({esc(running)})。'
+        "押すと取り込みの待ち行列に並び、空いたら流れます。</span>"
+        if running else ""
+    )
+    return note + (
         f'<form class="init-form" method="post" action="/admin/ai/workers/wake">'
         f'<input type="hidden" name="worker_id" value="{esc(worker.key)}">'
         f'<button type="submit"'

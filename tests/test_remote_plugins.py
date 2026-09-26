@@ -259,8 +259,8 @@ class TestJobFailures:
 
         import server
 
-        server._status.update(state="idle", source=None, started_at=None,
-                              finished_at=None, error=None)
+        server._jobs.clear()
+        server._recent.clear()
         return TestClient(server.app)
 
     def _run(self, monkeypatch, boom):
@@ -268,8 +268,9 @@ class TestJobFailures:
 
         monkeypatch.setattr("server.DATA_DIR", "/tmp")
         monkeypatch.setitem(__import__("sys").modules, "main", _FakeMain(boom))
+        server._jobs["geonames"] = server._new_job("geonames")
         server._run_job("geonames")
-        return server._status
+        return server._recent[-1]
 
     def test_a_dead_end_is_recorded_as_an_error(self, trigger, monkeypatch):
         """取り込み側は「設定が違う」を SystemExit で表す。

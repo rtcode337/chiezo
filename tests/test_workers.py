@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app import machine_store, usage_store, workers
+from app import ingest_queue, machine_store, usage_store, workers
 from app import partition as partitioning
 
 
@@ -1151,24 +1151,26 @@ class TestNotStartingOnTopOfARunningOne:
 
         assert collection.get("news").pending_sweep == "整理"
 
-    def test_waking_a_worker_says_why_it_cannot(self, enabled, monkeypatch):
-        import fastapi
+    def test_waking_a_worker_while_full_puts_it_in_line(self, enabled, monkeypatch, tmp_path):
+        """**埋まっていても断らない。** 取り込みの行列に並び、空いた周で流れる ——
+        断っていた頃は「終わってから押し直して」と言うしかなかった。
+        """
+        from app import ingest_queue, main
 
-        from app import main
-
+        _define(monkeypatch, tmp_path, "news", "ざっと")
         monkeypatch.setattr("app.views.admin.TRIGGER_URL", "http://trigger")
         self._busy(monkeypatch, "tazuna_meals")
         workers.save([workers.Worker("精査", (workers.Step("codex"),))])
         _quota("codex", 10.0)
         workers.enqueue("精査", "news", "ざっと", "2026-01-01T00:00:00+00:00")
 
-        with pytest.raises(fastapi.HTTPException) as got:
-            main.wake_worker("精査")
+        got = main.wake_worker("精査")
 
-        assert got.value.status_code == 409
-        # **行列は残す**（順番が飛ばないことを、断り文でも言う）
-        assert "順番は飛びません" in got.value.detail["hint"]
-        assert workers.queued("精査")
+        assert got["queued"] == 1
+        [entry] = ingest_queue.waiting()
+        assert (entry["collection"], entry["sweep"], entry["worker"]) == ("news", "ざっと", "精査")
+        # **塊には残す** —— 外すのは起こせたとき
+        assert workers.batch("精査")
 
 
 class TestWakingItByHand:
@@ -1186,8 +1188,9 @@ class TestWakingItByHand:
         started: list[tuple] = []
         monkeypatch.setattr(
             main, "start_collection_bake",
-            lambda name, sweep=None: started.append((name, sweep)),
+            lambda name, sweep=None, run_once=None: started.append((name, sweep)),
         )
+        monkeypatch.setattr("app.views.admin._fetch_trigger_status", lambda: {"state": "idle"})
         # **行列の中身は実在する収集にする。** 流す段は流す前に「まだ走らせて
         # よいか」を確かめる(`_no_longer_due`)ので、定義の無い名前は外される
         _define(monkeypatch, tmp_path, "news", "ざっと", "整理")
@@ -1204,7 +1207,8 @@ class TestWakingItByHand:
         workers.enqueue("精査", "news", "整理", "2026-01-01T00:00:00+00:00")
 
         # 時計では起きない（前回起きたのが未来の時刻になっている）
-        assert not main._run_one_from_a_worker()
+        main._advance_workers(datetime.now(UTC))
+        assert not ingest_queue.waiting()
 
         main.wake_worker("精査")
 
@@ -1637,15 +1641,29 @@ class TestReadingWhyItIsNotMoving:
             worker, (admin._backend_select, admin._model_select)
         )
 
-    def test_it_says_when_it_last_woke_and_when_it_will(self, enabled):
+    def test_it_counts_from_when_it_finished(self, enabled):
+        """**次に起きるのは、流し終えてから間隔ぶん後**(起きた時刻からではない)。"""
+        workers.enqueue("精査", "c", "整理", "2026-09-19T00:00:00+00:00")
+        workers.claim("精査", 1, "2026-09-19T08:00:00+00:00")
+        workers.done("精査", "c", "整理")
+        workers.note_finished("精査", "2026-09-19T09:10:00+00:00")
+        worker = workers.Worker("精査", (workers.Step("codex"),), interval_minutes=30)
+
+        html = self._form(worker)
+
+        assert "2026-09-19 17:00 JST" in html, "前回起きた"
+        assert "2026-09-19 18:10 JST" in html, "前回流し終えた"
+        assert "2026-09-19 18:40 JST" in html, "次に起きる(流し終えた + 間隔)"
+
+    def test_while_it_is_running_the_next_time_is_not_promised(self, enabled):
         workers.enqueue("精査", "c", "整理", "2026-09-19T00:00:00+00:00")
         workers.claim("精査", 1, "2026-09-19T08:00:00+00:00")
         worker = workers.Worker("精査", (workers.Step("codex"),), interval_minutes=30)
 
         html = self._form(worker)
 
-        assert "2026-09-19 17:00 JST" in html, "前回起きた"
-        assert "2026-09-19 17:30 JST" in html, "次に起きる(前回 + 間隔)"
+        assert "流している最中" in html
+        assert "2026-09-19 17:30 JST" not in html
 
     def test_one_that_never_woke_says_so(self, enabled):
         html = self._form(workers.Worker("精査", (workers.Step("codex"),)))
@@ -1774,7 +1792,7 @@ class TestAStoppedCollectionDoesNotRun:
         # `TRIGGER_URL` は import のときに読む定数なので、環境変数では動かない
         monkeypatch.setattr(admin, "TRIGGER_URL", "http://trigger.invalid/")
         monkeypatch.setattr(admin, "trigger_run", lambda name: started.append(name))
-        monkeypatch.setattr(m, "ingest_busy", lambda: None)
+        monkeypatch.setattr(admin, "_fetch_trigger_status", lambda: {"state": "idle"})
 
         def make(name: str) -> None:
             _define(monkeypatch, tmp_path, name, "ざっと見る")
@@ -1783,9 +1801,14 @@ class TestAStoppedCollectionDoesNotRun:
         return m, collect, make, started
 
     def _flush(self, m):
-        from datetime import UTC, datetime
+        """「今すぐ起こす」で 1 本流す。流れたら True。"""
+        import fastapi
 
-        return m._flush_one(workers.get("精査"), datetime.now(UTC), wake=True)
+        try:
+            got = m.wake_worker("精査")
+        except fastapi.HTTPException:
+            return False
+        return got["queued"] is None
 
     def test_it_runs_while_the_collection_is_on(self, ready):
         m, _collect, make, started = ready

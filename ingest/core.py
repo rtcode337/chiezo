@@ -28,25 +28,68 @@ SCHEMA_VERSION = 4
 #
 # **印はここに置く**(`main` でも `server` でもなく)。取り込みの本体もアダプタも
 # `core` を読むので、ここなら循環参照にならない。
+#
+# **印は取り込み 1 本ごとに持つ**(`_stops`)。取り込みは何本か並んで走るので
+# (`chiezo-trigger` の `CHIEZO_INGEST_SLOTS`)、印が 1 つだと 1 本を止めたつもりで
+# 全部が降りる。**どの 1 本かは、走っているスレッドが名乗る**(`bind`)——
+# `check_stop` は区切りのいいところで呼ばれるだけで、ソースの名前を運んでいない。
+# 名乗っていないスレッド(手で流す one-shot の取り込み・テスト)は、
+# 名前を書かずに立てた印(`request_stop()`)だけを見る。
 _stop = threading.Event()
+_stops: dict[str, threading.Event] = {}
+_stops_lock = threading.Lock()
+_bound = threading.local()
 
 
 class Stopped(Exception):
     """人が「止める」を押した。**失敗ではない**ので、控えでも書き分ける。"""
 
 
-def request_stop() -> None:
-    """止める印を立てる。**効くのは次の区切りまで待ってから**。"""
-    _stop.set()
+def bind(source: str | None) -> None:
+    """このスレッドが焼いているソースを名乗る(`None` で名乗りを外す)。"""
+    _bound.source = source
 
 
-def clear_stop() -> None:
-    """印を下ろす(次の取り込みを始める前に必ず呼ぶ)。"""
-    _stop.clear()
+def _flag(source: str) -> threading.Event:
+    with _stops_lock:
+        return _stops.setdefault(source, threading.Event())
 
 
-def stopping() -> bool:
-    return _stop.is_set()
+def request_stop(source: str | None = None) -> None:
+    """止める印を立てる。**効くのは次の区切りまで待ってから**。
+
+    `source` を書けばその 1 本だけ、書かなければ名乗っていない取り込みが降りる。
+    """
+    if source is None:
+        _stop.set()
+    else:
+        _flag(source).set()
+
+
+def clear_stop(source: str | None = None) -> None:
+    """印を下ろす(次の取り込みを始める前に必ず呼ぶ)。
+
+    `source` を書けばその 1 本の印だけ —— 並んで走っている別の 1 本に
+    立っている印まで下ろすと、押した「止める」が黙って効かなくなる。
+    """
+    if source is None:
+        _stop.clear()
+        with _stops_lock:
+            _stops.clear()
+    else:
+        with _stops_lock:
+            _stops.pop(source, None)
+
+
+def stopping(source: str | None = None) -> bool:
+    source = source if source is not None else getattr(_bound, "source", None)
+    if _stop.is_set():
+        return True
+    if source is None:
+        return False
+    with _stops_lock:
+        flag = _stops.get(source)
+    return bool(flag and flag.is_set())
 
 
 def check_stop() -> None:
@@ -55,7 +98,7 @@ def check_stop() -> None:
     呼ぶ先を増やすほど反応は速くなるが、**外から来るものを待っている最中は
     効かない**(相手が応えるまでこちらは動いていない)。素材を読み始めれば効く。
     """
-    if _stop.is_set():
+    if stopping():
         raise Stopped("取り込みを止めました")
 
 CORE_SCHEMA_DDL = """

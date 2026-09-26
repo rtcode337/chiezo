@@ -45,6 +45,7 @@ from app import (
     extract,
     feeds,
     handoff,
+    ingest_queue,
     logs,
     machine_store,
     media,
@@ -300,13 +301,14 @@ async def _run_collections(app: FastAPI) -> None:
     """予定の来た収集を ingest に起こさせる常駐タスク(`app/collect.py`)。
 
     **叩くのは chiezo-trigger**。集めるのも焼くのも取り込みの中で起きる(素材を配るとき
-    に AI へ聞く)ので、時計がすることは「取り込みを 1 本始める」だけになる。
+    に AI へ聞く)ので、時計がすることは「取り込みを起こす」だけになる。
+    **起こすのは(収集, 巡回)の組** —— 同じ収集に「ざっと」と「じっくり」が
+    別の時計で載っているため。
 
-    **1 周に 1 件ずつ**にしてある。trigger は同時に 1 ジョブしか受けないうえ、
-    CLI ブリッジ越しの相手も同時に 1 本しか動かない。**起こすのは(収集, 巡回)の組**
-    —— 同じ収集に「ざっと」と「じっくり」が別の時計で載っているため。
-
-    **混んでいれば次の周期へ回す**(429/409)。予定は進めないので、空いたときに走る。
+    **起こすのは取り込みの待ち行列から**(`app/ingest_queue.py`)。予定の来た回も、
+    ワーカーが拾った回も、まず行列に並び、**走らせられる本数に空きが出た周で
+    先頭から流れる**(`_dispatch`)。かつては空きが無いと断られて「次の周期へ回す」
+    だけだったので、待っているものがどこにも見えなかった。
     **失敗しても止めない** —— 止めると、一度こけた収集が二度と走らなくなる。
     """
     while True:
@@ -317,29 +319,133 @@ async def _run_collections(app: FastAPI) -> None:
             await asyncio.to_thread(_rewind_failed_bakes)
             await asyncio.to_thread(_fill_worker_queues)
             await _refill_handoffs(app)
-            # **ワーカーの順番が先。** 拾った塊を流し切るまでそのワーカーに優先権を
-            # 持たせる —— 途中で他の回に割り込まれると「1 度の起動で N 本」が
-            # 意味を失う。塊が無ければ、いつもの予定の回へ落ちる
-            if await asyncio.to_thread(_run_one_from_a_worker):
-                continue
-            due = await asyncio.to_thread(collect.due_sweeps)
-            # **ワーカーに任せた回はここでは走らせない**(行列から流す)
-            due = [pair for pair in due if not getattr(pair[1], "worker", "")]
-            if not due:
-                continue
-            item, sweep = due[0]
-            await asyncio.to_thread(start_collection_bake, item.name, sweep.name)
-        except HTTPException as e:
-            # **混んでいるのは失敗ではない。** 取り込みは同時に 1 本しか受けず、
-            # 時計はプロセスごとに立っている(`--workers 2`)ので、同じ周に 2 本が
-            # 同じ組を起こしにいって片方が必ず断られる —— 控えも予定も進めていない
-            # ので、空いた周でそのまま走る。**痕跡ごと出すと、追える失敗が埋まる**
-            if e.status_code in (409, 429):
-                log.info("collection tick: 取り込みが混んでいるので次の周期へ回します")
-            else:
-                log.exception("collection tick failed")
+            await asyncio.to_thread(_tick_ingest)
         except Exception:
             log.exception("collection tick failed")
+
+
+def _tick_ingest() -> None:
+    """取り込みの待ち行列を 1 周ぶん進める。
+
+    順番は ①終わったものを片付ける → ②ワーカーを進める → ③予定の来た回を積む →
+    ④空いたぶんだけ流す。**片付けが先** —— 終わったと分かるまでワーカーは
+    次を出さず、空きも数えられない。
+    """
+    from app.views.admin import TRIGGER_URL, _fetch_trigger_status
+
+    if not TRIGGER_URL:
+        return
+    if not ingest_queue.is_enabled():
+        # **置き場が無い構成では行列を持てない**ので、前のやり方で 1 本だけ起こす
+        # (空いていなければ次の周。予定は進めないので、空いた周で走る)
+        _start_one_due_directly()
+        return
+    status = _fetch_trigger_status()
+    if not status or status.get("state") == "unreachable":
+        return
+    now = datetime.now(UTC)
+    for entry in ingest_queue.settle(status, now):
+        log.info("ingest finished: %s/%s", entry.get("collection"), entry.get("sweep"))
+    _advance_workers(now)
+    _queue_due_sweeps()
+    _dispatch(status, now)
+
+
+def _start_one_due_directly() -> None:
+    due = [pair for pair in collect.due_sweeps() if not getattr(pair[1], "worker", "")]
+    if not due:
+        return
+    item, sweep = due[0]
+    try:
+        start_collection_bake(item.name, sweep.name)
+    except HTTPException as e:
+        if e.status_code not in (409, 429):
+            raise
+        log.info("collection tick: 取り込みが埋まっているので次の周期へ回します")
+
+
+def _queue_due_sweeps() -> None:
+    """予定の来た回を行列へ積む(**ワーカーに任せた回は積まない** —— あちらは
+    ワーカーの行列から来る)。同じ組は 2 度積まない(`ingest_queue.add`)。
+    """
+    for item, sweep in collect.due_sweeps():
+        if getattr(sweep, "worker", ""):
+            continue
+        _entry, _pos, added = ingest_queue.add(item.name, sweep.name, origin="schedule")
+        if added:
+            log.info("queued %s/%s for ingest", item.name, sweep.name)
+
+
+def _dispatch(status: dict, now: datetime | None = None) -> int:
+    """空いているぶんだけ、行列の先頭から流す。流した数を返す。
+
+    **飛ばして後ろを先に流すことがある** —— 同じ収集がいま走っているもの
+    (同じソースは 1 本ずつ)、同じワーカーのぶんが走っているもの(同じ相手へ
+    同時に 2 本投げない)、ワーカーの相手がどれも詰まっているもの。
+    どれも待てば流れるので、行列には残す。
+
+    **もう流してはいけないものは外す**(止めた収集・止めた巡回)。
+    押した人の依頼(`manual`)だけは、止めてある収集でも流す。
+    """
+    now = now or datetime.now(UTC)
+    names = set(ingest_queue.running_names(status))
+    free = ingest_queue.slots(status) - len(ingest_queue.jobs(status))
+    busy_workers = {
+        str(e.get("worker")) for e in ingest_queue.running() if e.get("worker")
+    }
+    started = 0
+    for entry in ingest_queue.waiting():
+        if free <= 0:
+            break
+        name = entry["collection"]
+        sweep = entry.get("sweep") or ""
+        ref = entry.get("worker") or ""
+        if name in names or (ref and ref in busy_workers):
+            continue
+        if entry.get("origin") != "manual" and (why := _no_longer_due(entry)):
+            log.info("dropped %s/%s from the ingest queue: %s", name, sweep, why)
+            ingest_queue.remove(entry["id"])
+            if ref:
+                workers.drop(name, sweep)
+            continue
+        if ref and (worker := _worker_or_none(ref)) is not None and workers.pick(worker) is None:
+            # **どれも詰まっていたら流さない。** 行列に残るので、窓が明けた周で流れる
+            continue
+        taken = ingest_queue.take(entry["id"])
+        if taken is None:
+            continue  # もう 1 本の時計が先に持っていった
+        try:
+            start_collection_bake(name, sweep or None, taken.get("run_once"))
+        except HTTPException as e:
+            if e.status_code in (409, 429):
+                # **擦れ違い。** 空いて見えた直後に他が入った —— 先頭へ戻して次の周
+                ingest_queue.put_back(taken)
+                if e.status_code == 429:
+                    break
+                continue
+            # 収集が消えた・走らせられない巡回になった。**残すと先頭に居座る**
+            log.warning("ingest queue: %s/%s を流せませんでした: %s", name, sweep, _reason_of(e))
+            if ref:
+                workers.drop(name, sweep)
+            continue
+        except Exception:
+            log.exception("ingest queue: %s/%s を起こせませんでした", name, sweep)
+            ingest_queue.put_back(taken)
+            break
+        ingest_queue.started(taken, _iso(now))
+        names.add(name)
+        free -= 1
+        started += 1
+        if ref:
+            busy_workers.add(ref)
+    return started
+
+
+def _worker_or_none(ref: str):
+    try:
+        return workers.get(ref)
+    except ValueError:
+        return None
 
 
 def _rewind_failed_bakes() -> None:
@@ -368,7 +474,9 @@ def _rewind_failed_bakes() -> None:
     except Exception:
         log.exception("取り込みの状態を読めなかった(巻き戻しは次の周期へ)")
         return
-    failures = [job] if job.get("state") == "error" else []
+    # **並んで走ると、落ちた回は終わった回の並びに入る**(`recent`)。古い trigger は
+    # いまの 1 本ぶんしか返さないので、そちらは `state` を見る(`ingest_queue.finished`)
+    failures = [j for j in ingest_queue.finished(job) if j.get("state") == "error"]
     if isinstance(last := job.get("last_failure"), dict):
         failures.append(last)
     # **同じ回は 1 度だけ見る。** 落ちた直後は `state` と `last_failure` が
@@ -474,7 +582,12 @@ def _no_longer_due(entry: dict) -> str:
     **画面の「今すぐ実行」とは判断が違う。** あちらは人が押す試し撃ちなので、
     止めてある収集でも走らせる(有効にする前に試せる道)—— こちらは無人で回る側で、
     押した覚えのない回が動かないことのほうが大事。
+
+    **予定の来た回(`origin` が `schedule`)は、まだ予定が来ているかも見る** ——
+    待っているあいだに手で走らされれば予定は先へ進んでいて、流すと 2 回走る。
     """
+    if entry.get("origin") == "schedule":
+        return _no_longer_scheduled(entry)
     try:
         item = collect.get(str(entry.get("collection") or ""))
     except HTTPException:
@@ -497,6 +610,22 @@ def _no_longer_due(entry: dict) -> str:
     return collect.blocked_reason(item, sweep)
 
 
+def _no_longer_scheduled(entry: dict) -> str:
+    name, sweep = entry.get("collection"), entry.get("sweep")
+    try:
+        item = collect.get(str(name or ""))
+    except HTTPException:
+        return "収集がありません"
+    if not item.enabled:
+        return "収集が止まっています"
+    for due_item, due_sweep in collect.due_sweeps():
+        if due_item.name == name and due_sweep.name == sweep:
+            if getattr(due_sweep, "worker", ""):
+                return "この巡回はワーカーに任せました"
+            return collect.blocked_reason(due_item, due_sweep)
+    return "予定がもう来ていません(ほかの道で走ったか、止められました)"
+
+
 def _due_for_queue(sweep, now: datetime) -> bool:
     """その巡回を積んでよいか。**一度も走っていなければ積む**。"""
     last = _parse_iso(getattr(sweep, "last_run_at", None))
@@ -505,68 +634,56 @@ def _due_for_queue(sweep, now: datetime) -> bool:
     return now - last >= timedelta(minutes=max(sweep.interval_minutes, 1))
 
 
-def _run_one_from_a_worker() -> bool:
-    """行列から 1 本流す。流したら True。
+def _advance_workers(now: datetime) -> None:
+    """ワーカーを 1 周ぶん進める。
 
-    **流すのは 1 本ずつ。** 取り込みは同時に 1 ジョブしか受けないので、拾った塊は
-    周回をまたいで順に消える —— 前の 1 本が終わるまで次は起こらない
-    (`trigger_run` が混んでいれば例外になり、次の周でやり直す)。
+    **ワーカーは 1 度に 1 本しか取り込みの行列へ出さない**(`_hand_next`)。
+    取り込みが何本も並べられても、同じワーカーの相手へ同時に 2 本投げると、
+    ブリッジの側で待たされて時間切れに算入される。
 
-    **塊が空になったワーカーだけが、次の起動で拾い直す。**
+    **流し終えたら、そこから間隔を数える**(`workers.note_finished` /
+    `_worker_due`)。起きた時刻から数えていた頃は、塊を流すのに間隔より長く
+    かかると流し終えた瞬間に次が始まり、**いつも何かしらのワーカーが走っていた**。
     """
-    now = datetime.now(UTC)
     try:
         defined = workers.load()
     except ValueError:
-        return False
-    # **1 周で流すのは 1 本。** 取り込みは同時に 1 ジョブしか受けないので、
-    # 先に流せたワーカーで打ち切る(残りは次の周)
-    return any(_flush_one(worker, now) for worker in defined)
+        return
+    for worker in defined:
+        key = worker.key
+        if ingest_queue.for_worker(key):
+            continue  # 1 本出している最中
+        if not workers.batch(key):
+            workers.note_finished(key, _iso(now))
+            if not workers.queued(key) or not _worker_due(worker, now):
+                continue
+            workers.claim(key, worker.per_run, _iso(now))
+        _hand_next(worker)
 
 
-def _flush_one(worker, now: datetime, wake: bool = False) -> bool:
-    """そのワーカーから 1 本流す。流したら True。
+def _hand_next(worker) -> dict | None:
+    """塊の先頭を 1 本、取り込みの行列へ出す。出したものを返す。
 
-    `wake` は**時計を待たずに起こす**(画面の「今すぐ起こす」)。枠が明いている
-    うちに回しておきたい、が普通に起きる —— 次の起動まで待つと、待っているあいだに
-    誰かが枠を食う。**起こした時刻は普通に控える**ので、そこから間隔を数え直す。
+    **塊からは外さない** —— 外すのは起こせたとき(`start_collection_bake` が
+    `workers.drop` する)。先に外すと、流す前に落ちたぶんが黙って消える。
     """
-    batch = workers.queued(worker.key)
-    if not batch:
-        return False
-    # **いま流している塊が先。** 無ければ、起動の時刻が来ていれば拾う
-    if not workers.claim_ready(worker.key):
-        if not wake and not _worker_due(worker, now):
-            return False
-        batch = workers.claim(worker.key, worker.per_run, _iso(now))
-        if not batch:
-            return False
-    for entry in batch:
-        # **止まったぶんはここでも外す。** ふだんは `_drop_stale_from_queues` が
-        # 先に片付けるが、積んでから流すまでのあいだに止められることもある ——
-        # **外さずに見送ると、先頭に居座ってそのワーカーが 1 本も進まない**
+    for entry in workers.batch(worker.key):
+        name, sweep = entry["collection"], entry["sweep"]
+        # **止まったぶんはここでも外す。** 積んでから流すまでのあいだに止められる
+        # ことがある —— **外さずに見送ると、先頭に居座ってそのワーカーが進まない**
         if why := _no_longer_due(entry):
-            log.info(
-                "skipped %s/%s on worker %r: %s",
-                entry["collection"], entry["sweep"], worker.name, why,
-            )
-            workers.done(worker.key, entry["collection"], entry["sweep"])
+            log.info("skipped %s/%s on worker %r: %s", name, sweep, worker.name, why)
+            workers.done(worker.key, name, sweep)
             continue
         if workers.pick(worker) is None:
-            # **どれも詰まっていたら流さない。** 塊はそのまま残るので、
-            # 窓が明けた周で続きから流れる
-            return False
-        try:
-            start_collection_bake(entry["collection"], entry["sweep"])
-        except HTTPException as e:
-            # 取り込みが混んでいる・巡回が消えた。**塊からは外す** ——
-            # 消えた巡回を抱えたままだと、そのワーカーが二度と進まない
-            if e.status_code == 404:
-                workers.done(worker.key, entry["collection"], entry["sweep"])
-            return False
-        workers.done(worker.key, entry["collection"], entry["sweep"])
-        return True
-    return False
+            # **どれも詰まっていたら出さない。** 塊はそのまま残るので、
+            # 窓が明けた周で続きから出る
+            return None
+        made, _pos, _added = ingest_queue.add(
+            name, sweep, origin="worker", worker=worker.key,
+        )
+        return made
+    return None
 
 
 def wake_worker(ref: str) -> dict:
@@ -575,7 +692,12 @@ def wake_worker(ref: str) -> dict:
     **断る理由は書き分ける。** 押しても何も起きないときに「起きませんでした」
     だけだと、行列が空なのか枠が詰まっているのかが押した人に読めない ——
     どちらなのかで次にすることが逆になる(積むのを待つ / 窓が明くのを待つ)。
+
+    **取り込みが埋まっていても断らない。** 取り込みの行列へ出すところまでで、
+    空いた周で流れる(順番は飛ばない)。
     """
+    from app.views.admin import _fetch_trigger_status
+
     try:
         worker = workers.get(ref)
     except ValueError as e:
@@ -591,34 +713,29 @@ def wake_worker(ref: str) -> dict:
         })
     if workers.pick(worker) is None:
         raise HTTPException(429, _all_full(name))
-    if busy := ingest_busy():
-        raise HTTPException(409, {
-            "error": f"いま取り込みが走っています({busy})",
-            "hint": "取り込みは同時に 1 本だけ。終わってからもう一度押してください"
-                    " —— 行列はそのまま残っているので、順番は飛びません",
-        })
-    if not _flush_one(worker, datetime.now(UTC), wake=True):
-        raise HTTPException(409, {
-            "error": f"ワーカー「{name}」から流せませんでした",
-            "hint": "取り込みが走っている最中かもしれません(少し置いてからもう一度)",
-        })
-    return {"ok": True, "worker": name}
-
-
-def ingest_busy() -> str:
-    """いま取り込みが走っているなら、その相手の名前。走っていなければ空。
-
-    **正は trigger の側**(同時に 1 ジョブしか受けない)。こちらで数えても、
-    アプリが 2 本立っている構成では食い違う。
-    """
-    from app.views.admin import _fetch_trigger_status
-
-    job = _fetch_trigger_status() or {}
-    return str(job.get("source") or "?") if job.get("state") == "running" else ""
+    now = datetime.now(UTC)
+    if not ingest_queue.for_worker(worker.key):
+        if not workers.batch(worker.key):
+            workers.claim(worker.key, worker.per_run, _iso(now))
+        if _hand_next(worker) is None:
+            raise HTTPException(409, {
+                "error": f"ワーカー「{name}」から流せませんでした",
+                "hint": "待っていたものが止められていたかもしれません",
+            })
+    status = _fetch_trigger_status()
+    if status and status.get("state") != "unreachable":
+        _dispatch(status, now)
+    mine = next(
+        (e for e in ingest_queue.waiting() if e.get("worker") == worker.key), None
+    )
+    if mine is None:
+        return {"ok": True, "worker": name, "queued": None}
+    return {"ok": True, "worker": name, "queued": ingest_queue.position(mine["id"])}
 
 
 def _worker_due(worker, now: datetime) -> bool:
-    last = _parse_iso(workers.last_at(worker.key))
+    """次に起きてよいか。**流し終えた時刻から数える**(無ければ起きた時刻)。"""
+    last = _parse_iso(workers.finished_at(worker.key)) or _parse_iso(workers.last_at(worker.key))
     if last is None:
         return True
     return now - last >= timedelta(minutes=max(worker.interval_minutes, 1))
@@ -655,13 +772,13 @@ def start_collection_bake(
     **見るのは全部のワーカー** —— 巡回にいま書いてあるワーカーだけを見ていた頃は、
     積んだ後に付け替えていれば前のワーカーの行列に残った。
 
-    **走っている最中は起こさない。** 取り込みは同時に 1 本しか受けないので
-    どのみち断られるが、**断られる前に控え(`pending_sweep`)を書いてしまう** ——
-    残ると、いま走っている取り込みがその巡回のつもりで素材を取りに来る
-    (押した覚えのない回が、押した覚えのない設定で走る)。
-    先に確かめ、それでも擦れ違ったら控えを戻す。
+    **埋まっている最中・その収集が走っている最中は起こさない。** どのみち断られるが、
+    **断られる前に控え(`pending_sweep`)を書いてしまう** —— 残ると、いま走っている
+    取り込みがその巡回のつもりで素材を取りに来る(押した覚えのない回が、
+    押した覚えのない設定で走る)。先に確かめ、それでも擦れ違ったら控えを戻す。
+    **待たせたいなら `run_or_queue`**(こちらは起こせなければ断るだけ)。
     """
-    from app.views.admin import TRIGGER_URL, trigger_run
+    from app.views.admin import TRIGGER_URL, _fetch_trigger_status, trigger_run
 
     if not TRIGGER_URL:
         raise HTTPException(503, {
@@ -671,10 +788,17 @@ def start_collection_bake(
     # **時計を持たない巡回は単独では走らせない**(割り込みで頼まれたときだけ動く)。
     # 起こす前に断る —— 起こしてから断ると、1 本ぶんの取り込みが空振りする
     this = collect.require_runnable(collect.get(name), sweep)
-    if busy := ingest_busy():
+    status = _fetch_trigger_status()
+    if ingest_queue.is_running(status, name):
         raise HTTPException(409, {
-            "error": f"いま取り込みが走っています({busy})",
-            "hint": "取り込みは同時に 1 本だけ。終わってからもう一度押してください",
+            "error": f"収集「{name}」はいま焼いています",
+            "hint": "同じ収集は 1 本ずつ。焼き終わってから走ります",
+        })
+    if ingest_queue.is_full(status):
+        raise HTTPException(409, {
+            "error": f"いま取り込みが走っています({', '.join(ingest_queue.running_names(status))})",
+            "hint": f"同時に走らせられるのは {ingest_queue.slots(status)} 本まで"
+                    "(chiezo-trigger の CHIEZO_INGEST_SLOTS)",
         })
     # **どの巡回のぶんかは、起こす前に控える。** 取り込みは収集の名前しか運べないので、
     # 素材を作る側は控えを読む —— 起こしてから書くと、取り込みのほうが先に素材を
@@ -695,10 +819,10 @@ def start_collection_bake(
         # いく —— 負けたほうが控えを戻すと、**勝ったほうが起こした取り込みが読む
         # 控えを消す**ことになり、素材は「次に走るはずの巡回」で組まれる
         # (押した巡回ではないものが走る)。聞きに行けなければ戻す側へ倒す
-        running = ""
+        running = False
         with suppress(Exception):
-            running = ingest_busy()
-        if running != name:
+            running = ingest_queue.is_running(_fetch_trigger_status(), name)
+        if not running:
             collect.restore_pending(name, was, was_run)
         raise
     # **行列に居たなら外す。** どの道で走ったかに関わらず、その回はもう走っている
@@ -709,9 +833,44 @@ def start_collection_bake(
     # ワーカーだけ見ても居ない(試し撃ちで相手を上書きした回も同じ)
     with suppress(Exception):
         workers.drop(name, this.name)
+    # **取り込みの行列に同じ回が待っていれば外す**(ほかの道で走ったので、もう要らない)
+    with suppress(Exception):
+        ingest_queue.drop(name, this.name)
     # **起こせたときだけ予定を進める** —— 混んでいて断られたのに次回へ送ると、
     # その回は黙って飛ばされる(trigger_run が例外にするのでここへは来ない)
     return collect.to_public(collect.mark_started(name, this.name))
+
+
+def run_or_queue(
+    name: str, sweep: str | None = None, run_once: dict | None = None, by: str = "",
+) -> dict:
+    """1 回走らせる。**埋まっていれば取り込みの行列に並べる**(画面の「今すぐ実行」
+    と外のアプリからの依頼)。
+
+    返すのは、起こせたなら収集の中身(`start_collection_bake` と同じ)に
+    `"queued": False`、並べたなら `{"queued": True, "position": 何番目, …}`。
+    **並べたことを押した人に伝える** —— 断っていた頃は「終わってからもう一度」と
+    言うしかなく、押し直しを人に任せていた(外のアプリは 1 時間待って押し直していた)。
+
+    **置き場が無い構成では並べられない**ので、今までどおり断る。
+    """
+    from app.views.admin import TRIGGER_URL
+
+    if not TRIGGER_URL:
+        return start_collection_bake(name, sweep, run_once)
+    this = collect.require_runnable(collect.get(name), sweep)
+    try:
+        return {**start_collection_bake(name, this.name, run_once), "queued": False}
+    except HTTPException as e:
+        if e.status_code not in (409, 429) or not ingest_queue.is_enabled():
+            raise
+    entry, position, _added = ingest_queue.add(
+        name, this.name, origin="manual", run_once=run_once, by=by,
+    )
+    return {
+        "queued": True, "position": position, "id": entry["id"],
+        "name": name, "sweep": this.name,
+    }
 
 
 async def _ask_for_collection(item, messages: list[dict]) -> tuple[str, str, str]:
@@ -2821,9 +2980,9 @@ class CollectionPatch(BaseModel):
 def ingest_status():
     """いま取り込みが走っているか。**外のアプリが押す前に判断できるように**。
 
-    集めるのも焼くのも取り込みの中で起きるので、走っている間に「いま集めて」と
-    頼んでも 409 で断られる。押してから断られるのと、押せないことが見えているのとでは
-    別物なので、状態のほうを配る。
+    集めるのも焼くのも取り込みの中で起きる。**埋まっている間の「いま集めて」は
+    待ち行列に並ぶ**(202)ので断られはしないが、いつ走るかは空き次第 ——
+    押す前に読めるよう、状態のほうを配る(`full` / `waiting`)。
 
     **返すのは状態と対象だけ**(ログの中身は返さない。管理画面から読めれば足りるうえ、
     取り込みのログには置き場のパスのような内部の事情が混ざる)。
@@ -2836,12 +2995,21 @@ def ingest_status():
         })
     status = _fetch_trigger_status() or {}
     state = status.get("state") or "unknown"
+    jobs = ingest_queue.jobs(status)
     return {
         "state": state,
-        "running": state == "running",
+        # **`running` は「何か走っているか」**(前からの意味)。空きがあるかは `full`
+        "running": bool(jobs),
+        "full": ingest_queue.is_full(status),
+        "slots": ingest_queue.slots(status),
         "source": status.get("source"),
         "started_at": status.get("started_at"),
         "finished_at": status.get("finished_at"),
+        "jobs": [
+            {"source": j.get("source"), "started_at": j.get("started_at")} for j in jobs
+        ],
+        # **待っているものの数だけ**(中身は画面で読む)
+        "waiting": len(ingest_queue.waiting()) if ingest_queue.is_enabled() else 0,
     }
 
 
@@ -3269,7 +3437,7 @@ def start_focus_bake(name: str, raw: dict) -> dict:
 
     **起こせなかったら取り下げる。** 残すと、次に走る定時の回が割り込みとして走る。
     """
-    from app.views.admin import TRIGGER_URL, trigger_run
+    from app.views.admin import TRIGGER_URL, _fetch_trigger_status, trigger_run
 
     # **依頼が読めるかを最初に見る。** 起こしてから断ると、指示文の無い依頼のために
     # 1 本ぶんの取り込みが走る(そして何も直らない)。サーバーの設定より先に見るのは、
@@ -3279,6 +3447,14 @@ def start_focus_bake(name: str, raw: dict) -> dict:
         raise HTTPException(503, {
             "error": "chiezo-trigger が設定されていません(CHIEZO_TRIGGER_URL 未設定)",
             "hint": "集めるのも焼くのも取り込みの中で起きるので、trigger が要る",
+        })
+    # **割り込みは並べない**(人が待っている場面の口)。埋まっているなら、
+    # 依頼を控える前に断る —— 控えてから断られると、次に走る回が割り込みになる
+    status = _fetch_trigger_status()
+    if ingest_queue.is_running(status, name) or ingest_queue.is_full(status):
+        raise HTTPException(409, {
+            "error": f"いま取り込みが走っています({', '.join(ingest_queue.running_names(status))})",
+            "hint": "割り込みは待ち行列に並べません。空いてからもう一度押してください",
         })
     collect.request_focus(name, focus)
 
@@ -3357,6 +3533,7 @@ def collect_run_now(
 
     **返るのは「起こした」まで**。取り込みは向こうで走るので、進み具合は
     管理画面(または chiezo-trigger の `/status`)で見る。
+    **取り込みが埋まっていれば行列に並べて 202 を返す**(`queued` と `position`)。
 
     **巡回を名指しできる。** 相手も 1 回に見る量も巡回ごとに違うので、
     「じっくりのほうを今すぐ 1 回」が頼めないと、名指しした意味が半分になる。
@@ -3368,9 +3545,15 @@ def collect_run_now(
             "error": f"収集「{name}」は止まっています",
             "hint": "動かすかどうかは Chiezo 側で決めます(管理画面の「有効にする」)",
         })
-    return start_collection_bake(
-        name, sweep, collect.normalize_run_once(once.model_dump() if once else None)
+    # **埋まっていれば並べる**(202)。断っていた頃は、外のアプリが空くまで
+    # 待って押し直すしかなかった
+    result = run_or_queue(
+        name, sweep, collect.normalize_run_once(once.model_dump() if once else None),
+        by="api",
     )
+    if result.get("queued"):
+        return JSONResponse(status_code=202, content=result)
+    return result
 
 
 # ---- 手で回す(web の画面から使う AI に頼む) ---------------------------------
@@ -3457,7 +3640,7 @@ async def collect_handoff_answer(request: Request, name: str) -> dict:
             "hint": "束に書いてある形の JSON(items の配列)を、そのまま返させてください",
         })
     await asyncio.to_thread(handoff.answered, name, items, note)
-    started = start_collection_bake(name, meta.get("sweep") or None)
+    started = run_or_queue(name, meta.get("sweep") or None, by="api")
     return {"ok": True, "items": len(items), "note": note, "started": started}
 
 

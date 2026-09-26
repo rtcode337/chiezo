@@ -77,7 +77,7 @@ QUOTA_LIMIT = float(os.environ.get("CHIEZO_WORKER_QUOTA_LIMIT", "80") or 80)
 #
 # **間隔はワーカーが持ち、巡回は「積まれてよい間隔」を持つ。** 2 つは別の話 ——
 # 巡回は「自分を何分おきに見てほしいか」、ワーカーは「自分が何分おきに動くか」で、
-# 後者が枠の使い方を決める(積まれた数に関係なく、回るのはこの間隔)。
+# 後者が枠の使い方を決める(積まれた数に関係なく、流し終えてからこの間隔は休む)。
 DEFAULT_INTERVAL_MINUTES = 60
 DEFAULT_PER_RUN = 1
 
@@ -114,7 +114,8 @@ class Worker:
 
     name: str
     steps: tuple[Step, ...] = field(default_factory=tuple)
-    # 自分が起きる間隔(分)
+    # **流し終えてから**次に起きるまで空ける時間(分)。起きた時刻から数えると、
+    # 塊が間隔より長くかかったときに休みが無くなる(`finished_at`)
     interval_minutes: int = DEFAULT_INTERVAL_MINUTES
     # 1 度の起動で待ち行列から拾う数。拾ったぶんは**1 本ずつ順に流す**
     per_run: int = DEFAULT_PER_RUN
@@ -367,15 +368,44 @@ def claim_ready(ref: str) -> bool:
     return bool(_slot(_queue_all(), ref)["batch"])
 
 
-def last_at(ref: str) -> str:
-    """そのワーカーが最後に起動した時刻(まだなら空)。
+def batch(ref: str) -> list[dict]:
+    """いま流している最中の塊(先頭が次に流すもの)。"""
+    return list(_slot(_queue_all(), ref)["batch"])
 
-    **起動であって、流し終えた時刻ではない。** 次にいつ起きるかはここから数えるので、
-    塊を流し切るのに何周かかっても、次の起動は最初の起動から間隔ぶん後になる。
-    """
+
+def last_at(ref: str) -> str:
+    """そのワーカーが最後に起動した時刻(まだなら空)。"""
     slot = _slot(_queue_all(), ref)
     # 前の版は同じ値を `next_run_at` に入れていた(名前が逆だった)
     return str(slot.get("last_run_at") or slot.get("next_run_at") or "")
+
+
+def finished_at(ref: str) -> str:
+    """そのワーカーが最後に塊を**流し終えた**時刻(まだなら空)。
+
+    **次にいつ起きるかはここから数える**(`main._worker_due`)。起きた時刻から
+    数えていた頃は、塊を流し切るのに間隔より長くかかると、流し終えた瞬間に
+    次が始まっていた —— 間隔を空けたつもりでも、**いつも何かしらのワーカーが
+    走っている**ことになる(枠が明く暇が無い)。
+    """
+    return str(_slot(_queue_all(), ref).get("finished_at") or "")
+
+
+def note_finished(ref: str, at: str) -> bool:
+    """流し終えたことを控える。**起きたあとにまだ控えていなければ**。控えたら True。
+
+    流し終えたかどうかを知っているのは呼ぶ側(塊が空で、取り込みの待ち行列にも
+    走っている中にも居ない)。ここは時刻を 1 度だけ書く —— 毎周書き直すと、
+    「流し終えた時刻」が「最後に見に来た時刻」になり、次の起動が永遠に来ない。
+    """
+    state = _queue_all()
+    slot = _slot(state, ref)
+    woke = str(slot.get("last_run_at") or slot.get("next_run_at") or "")
+    if not woke or str(slot.get("finished_at") or "") >= woke:
+        return False
+    slot["finished_at"] = at
+    _queue_save(state)
+    return True
 
 
 def done(ref: str, collection: str, sweep: str) -> None:

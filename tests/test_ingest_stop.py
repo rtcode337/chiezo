@@ -98,7 +98,8 @@ class TestTheStopEndpoint:
         monkeypatch.setenv("CHIEZO_DATA_DIR", str(tmp_path))
         import server
 
-        server._status.update(state="idle", source=None, stopping=False)
+        server._jobs.clear()
+        server._recent.clear()
         return TestClient(server.app)
 
     def test_it_refuses_when_nothing_is_running(self, client):
@@ -108,24 +109,49 @@ class TestTheStopEndpoint:
         import core
         import server
 
-        server._status.update(state="running", source="tazuna_meals")
+        server._jobs["tazuna_meals"] = server._new_job("tazuna_meals")
 
         res = client.post("/stop")
 
         assert res.status_code == 200 and res.json()["stopping"] is True
-        assert core.stopping() is True
+        assert core.stopping("tazuna_meals") is True
         assert client.get("/status").json()["stopping"] is True
+
+    def test_only_the_named_one_gets_off(self, client):
+        """**並んで走っている別の 1 本は降ろさない。** 印が 1 つだと、
+        1 本を止めたつもりで全部が降りる。
+        """
+        import core
+        import server
+
+        for name in ("tazuna_meals", "tazuna_news"):
+            server._jobs[name] = server._new_job(name)
+
+        res = client.post("/stop", params={"source": "tazuna_news"})
+
+        assert res.status_code == 200
+        assert core.stopping("tazuna_news") is True
+        assert core.stopping("tazuna_meals") is False
+        jobs = {j["source"]: j for j in client.get("/status").json()["jobs"]}
+        assert jobs["tazuna_news"]["stopping"] and not jobs["tazuna_meals"]["stopping"]
+
+    def test_a_named_one_that_is_not_running_is_refused(self, client):
+        import server
+
+        server._jobs["tazuna_meals"] = server._new_job("tazuna_meals")
+
+        assert client.post("/stop", params={"source": "jawiki"}).status_code == 409
 
     def test_starting_again_lowers_the_flag(self, client, monkeypatch):
         """**印を下ろし忘れると、始めた瞬間に降りる。**"""
         import core
         import server
 
-        core.request_stop()
+        core.request_stop("jawiki")
         monkeypatch.setattr(server.threading, "Thread", lambda **kw: _NoThread())
         client.post("/run/jawiki")
 
-        assert core.stopping() is False
+        assert core.stopping("jawiki") is False
 
     def test_a_stopped_job_is_not_an_error(self, client, monkeypatch):
         """人が降ろしたのと落ちたのとでは、次にすることが逆になる。"""
@@ -136,11 +162,13 @@ class TestTheStopEndpoint:
             raise core.Stopped("取り込みを止めました")
 
         monkeypatch.setitem(__import__("sys").modules["main"].__dict__, "run", _stopped)
-        server._status.update(state="running", source="jawiki")
+        server._jobs["jawiki"] = server._new_job("jawiki")
         server._run_job("jawiki")
 
-        assert server._status["state"] == "stopped"
-        assert server._status["stopping"] is False
+        done = server._recent[-1]
+        assert done["state"] == "stopped"
+        assert done["stopping"] is False
+        assert "jawiki" not in server._jobs
 
 
 class TestKeepingTheLastFailure:
@@ -155,9 +183,9 @@ class TestKeepingTheLastFailure:
         monkeypatch.setenv("CHIEZO_DATA_DIR", str(tmp_path))
         import server
 
-        server._status.update(state="idle", source=None, stopping=False, error=None)
+        server._jobs.clear()
+        server._recent.clear()
         server._last_failure = None
-        server._log_tail.clear()
         return TestClient(server.app)
 
     def _fail(self, monkeypatch, source="tazuna_meals"):
@@ -167,8 +195,8 @@ class TestKeepingTheLastFailure:
             raise RuntimeError("UNIQUE constraint failed: docs.title")
 
         monkeypatch.setitem(__import__("sys").modules["main"].__dict__, "run", _boom)
-        server._status.update(state="running", source=source)
-        server._log_tail.append("2026-09-20 13:02:24 JST INFO building …")
+        server._jobs[source] = server._new_job(source)
+        server._jobs[source]["log_tail"].append("2026-09-20 13:02:24 JST INFO building …")
         server._run_job(source)
 
     def test_it_is_kept_after_the_next_run_starts(self, client, monkeypatch):
@@ -190,10 +218,12 @@ class TestKeepingTheLastFailure:
         assert client.get("/status").json()["last_failure"] is None
 
     def test_the_screen_shows_it_while_another_job_runs(self, client, monkeypatch):
+        import server
         from app.views import admin
 
         self._fail(monkeypatch)
-        job = {**client.get("/status").json(), "state": "running", "source": "jawiki"}
+        server._jobs["jawiki"] = server._new_job("jawiki")
+        job = client.get("/status").json()
 
         html = admin._job_status_html(job)
 

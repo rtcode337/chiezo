@@ -32,6 +32,7 @@ from app import (
     collect,
     collect_log,
     db,
+    ingest_queue,
     jst,
     machine_store,
     media,
@@ -172,11 +173,10 @@ def _memory_hint(meta: dict) -> str:
 def _baking_now(job: dict | None, name: str) -> bool:
     """いま**その収集を**焼いている最中か。
 
-    **相手が誰かまで見る。** 取り込みは同時に 1 本しか受けないが、別のソースを
-    焼いている最中に台帳を組み直すのは構わない —— ぶつかるのは同じ収集の
-    ときだけ(あちらも終わりに台帳を書き戻す)。
+    **相手が誰かまで見る。** 別のソースを焼いている最中に台帳を組み直すのは
+    構わない —— ぶつかるのは同じ収集のときだけ(あちらも終わりに台帳を書き戻す)。
     """
-    return bool(job and job.get("state") == "running" and job.get("source") == name)
+    return ingest_queue.is_running(job, name)
 
 
 def run_buttons_disabled(job: dict | None) -> str:
@@ -185,11 +185,27 @@ def run_buttons_disabled(job: dict | None) -> str:
     起こせるのは chiezo-trigger が居るときだけ。**未設定でも到達不能でも押せなくする**
     —— 押せると 502 が返るだけで、なぜ動かないのかが画面から読めない。長期記憶へ
     書き込むとき(初期化・再構築・削除)しか要らない相手なので、立てない使い方が普通にある。
-    実行中に押せないのは、同時に 1 ジョブしか受け付けないため。
+    **走らせられる本数が埋まっているあいだも押せない**(ダンプの取り込みは並べない)。
+    収集の回は並べられるので、そちらは `queue_buttons_disabled` を使う。
     """
     if not TRIGGER_URL:
         return " disabled"
-    if job is None or job.get("state") in ("unreachable", "running"):
+    if job is None or job.get("state") == "unreachable" or ingest_queue.is_full(job):
+        return " disabled"
+    return ""
+
+
+def queue_buttons_disabled(job: dict | None) -> str:
+    """収集の回を走らせるボタンの `disabled` 属性。
+
+    **埋まっていても押せる** —— 押せば取り込みの待ち行列に並び、空いた周で走る
+    (`main.run_or_queue`)。押せないのは取り込み側が居ないときだけ。
+    **待ち行列の置き場が無い構成では並べられない**ので、そのときは今までどおり
+    埋まっていれば押せない。
+    """
+    if not TRIGGER_URL or job is None or job.get("state") == "unreachable":
+        return " disabled"
+    if not ingest_queue.is_enabled() and ingest_queue.is_full(job):
         return " disabled"
     return ""
 
@@ -260,9 +276,32 @@ def _job_body_html(job: dict | None, back: str = STATUS_PAGE) -> str:
             "読むだけならこのままで動きます。</p>"
             "</div>"
         )
+    running = ingest_queue.jobs(job)
+    # **走っていなければ、最後に終わった 1 本を出す**(終わったのか、そもそも
+    # 走っていないのかが読めるように)
+    shown = running or ingest_queue.finished(job)[:1]
+    slots = ingest_queue.slots(job)
+    head = (
+        f'<p class="muted">同時に走らせられるのは {slots} 本まで'
+        f"(いま {len(running)} 本。chiezo-trigger の <code>CHIEZO_INGEST_SLOTS</code>)。</p>"
+    )
+    blocks = [_one_job_html(j, back) for j in shown] or [
+        '<div class="job-status"><p>状態: idle</p></div>'
+    ]
+    # **最後に落ちた回は、いま出している 1 本がそれ自身なら出さない**(同じものが二度並ぶ)
+    shown_failed = any(j.get("state") == "error" for j in shown)
+    return (
+        f'<div id="job">{head}{"".join(blocks)}</div>'
+        + _ingest_queue_html(job)
+        + _last_failure_html(job, "error" if shown_failed else "")
+    )
+
+
+def _one_job_html(job: dict, back: str) -> str:
+    """取り込み 1 本ぶん(状態・ソース・巡回・時刻・ログ・止める口)。"""
     state = job.get("state", "idle")
     css = f"job-status {state}" if state in ("running", "error") else "job-status"
-    lines = [f'<div class="{css}" id="job">', f"<p>状態: {esc(state)}"]
+    lines = [f'<div class="{css}">', f"<p>状態: {esc(state)}"]
     if source := str(job.get("source") or ""):
         lines.append(f" / ソース: {esc(source)}")
         # **収集なら、どの巡回のぶんかも出す。** 取り込みは収集の名前しか運べない
@@ -297,7 +336,76 @@ def _job_body_html(job: dict | None, back: str = STATUS_PAGE) -> str:
     if state == "running":
         lines.append(_stop_job_html(job, back))
     lines.append("</div>")
-    return "\n".join(lines) + _last_failure_html(job, state)
+    return "\n".join(lines)
+
+
+# 待ち行列の「どこから来たか」の言い方
+_ORIGIN_LABEL = {"schedule": "予定", "worker": "ワーカー", "manual": "手で"}
+
+
+def _ingest_queue_html(job: dict) -> str:
+    """取り込みの待ち行列(`app/ingest_queue.py`)。**空なら 1 行だけ**。
+
+    **待っている理由を行ごとに書く。** 先頭が流れないのは、空きが無いのか、
+    同じ収集が焼いている最中なのか、同じワーカーの 1 本が走っているのかで、
+    待つものが違う —— 並べただけでは「詰まっている」としか読めない。
+
+    **外せるのは、手で頼んだものとワーカーのぶんだけ。** 予定の来た回は外しても
+    次の周でまた積まれる(予定が来たままなので)—— 止めたいなら巡回を止める。
+    """
+    if not ingest_queue.is_enabled():
+        return ""
+    line = ingest_queue.waiting()
+    if not line:
+        return '<p class="muted">取り込みの待ち行列: 待っているものはありません。</p>'
+    names = set(ingest_queue.running_names(job))
+    full = ingest_queue.is_full(job)
+    busy_workers = {e.get("worker") for e in ingest_queue.running() if e.get("worker")}
+    rows = []
+    for i, entry in enumerate(line):
+        name = str(entry.get("collection") or "")
+        ref = str(entry.get("worker") or "")
+        if name in names:
+            why = "同じ収集が焼いている最中"
+        elif ref and ref in busy_workers:
+            why = "同じワーカーの 1 本が走っている"
+        elif full:
+            why = "空き待ち"
+        else:
+            why = "次の周で流れます"
+        origin = _ORIGIN_LABEL.get(str(entry.get("origin") or ""), "")
+        if ref:
+            origin += f"({workers.label_for(ref)})"
+        elif entry.get("by"):
+            origin += f"({entry['by']})"
+        once = entry.get("run_once") or {}
+        if parts := once.get("partitions"):
+            origin += f" / 区画 {len(parts)}"
+        at = jst.parse(str(entry.get("at") or ""))
+        remove = ""
+        if entry.get("origin") != "schedule":
+            remove = (
+                f'<form class="init-form" method="post" action="/admin/ingest/queue/remove">'
+                f'<input type="hidden" name="id" value="{esc(str(entry.get("id") or ""))}">'
+                '<button type="submit">外す</button></form>'
+            )
+        rows.append(
+            f"<tr><td>{i + 1}</td>"
+            f"<td>{esc(name)} / {esc(str(entry.get('sweep') or ''))}</td>"
+            f"<td>{esc(origin)}</td>"
+            f'<td class="muted">{esc(jst.compact(at)) if at else ""}</td>'
+            f"<td>{esc(why)}</td><td>{remove}</td></tr>"
+        )
+    return f"""
+<h3 id="ingest-queue">取り込みの待ち行列({len(line)} 本)</h3>
+<table>
+<thead><tr><th>順</th><th>収集 / 巡回</th><th>どこから</th><th>積んだ時刻(JST)</th>
+<th>待っている理由</th><th></th></tr></thead>
+<tbody>{"".join(rows)}</tbody>
+</table>
+<p class="muted">空きが出た周(1 分ごと)に、先頭から流れます。予定の来た回は外せません
+(外しても次の周でまた積まれます)—— 止めたいときは巡回を止めてください。</p>
+"""
 
 
 def _last_failure_html(job: dict, state: str) -> str:
@@ -348,8 +456,9 @@ def _stop_job_html(job: dict, back: str) -> str:
             "(外から素材が届くのを待っている最中は、届き始めてからになります)。</p>"
         )
     ask = (
-        "取り込みを止めます。切り替えの前で降りるので、いま配信している世代は"
-        "そのまま残ります。集めた素材も捨てないので、押し直せば続きから焼けます。"
+        f"取り込み({job.get('source') or ''})を止めます。切り替えの前で降りるので、"
+        "いま配信している世代はそのまま残ります。集めた素材も捨てないので、"
+        "押し直せば続きから焼けます。"
     )
     # **1 つの塊に包んで上を空ける**(`div.job-stop`)。form は行内に流れる作りで
     # 自分では余白を持てず、真上の実行ログの見出しにボタンが貼り付いていた
@@ -357,6 +466,8 @@ def _stop_job_html(job: dict, back: str) -> str:
         '<div class="job-stop">'
         '<form class="init-form" method="post" action="/admin/ingest/stop"'
         f" onsubmit=\"return confirm('{esc(ask)}')\">"
+        # **どの 1 本を止めるかを名指しする**(並んで走っている別の 1 本を降ろさない)
+        f'<input type="hidden" name="source" value="{esc(str(job.get("source") or ""))}">'
         '<button type="submit">止める</button></form>'
         # **短く言い切る。** 括弧で「すぐには止まりません」を添えていた頃は、
         # スマホで 2 行に割れていた —— 「区切りのいいところで」で同じことが伝わる
@@ -2238,14 +2349,17 @@ def _status_summary(job: dict | None, running: list[dict]) -> str:
     **走っているときだけ強く書く** —— 札を見て開くかどうかを決めるための行なので、
     静かなときに目立たせても判断の足しにならない。
     """
+    waiting = len(ingest_queue.waiting()) if ingest_queue.is_enabled() else 0
     if job is None:
         ingest = "取り込み: 未設定"
-    elif job.get("state") == "running":
-        ingest = f"<strong>取り込み中({esc(str(job.get('source') or ''))})</strong>"
+    elif names := ingest_queue.running_names(job):
+        ingest = f"<strong>取り込み中({esc(', '.join(names))})</strong>"
     elif job.get("state") == "unreachable":
         ingest = "取り込み: 繋がらない"
     else:
         ingest = "取り込み: 待機中"
+    if waiting and job is not None:
+        ingest += f"・<strong>待ち {waiting} 本</strong>"
     ai = (f"<strong>AI への依頼 {len(running)} 件走っている</strong>" if running
           else "AI への依頼は無い")
     # **止めた相手があれば札にも出す**(開かなくても気づけるように)
@@ -2311,18 +2425,20 @@ def _round_done(job: dict | None) -> list[dict]:
     **走っているのが収集でなければ空**(回という括りが無い)。
     **落ちたぶんは出ない** —— 失敗の控えは依頼元を持たないので、回に結び付かない。
     """
-    if not (job and job.get("state") == "running"):
-        return []
-    name = str(job.get("source") or "")
-    # **収集かどうかは定義を引いて確かめる**(`_running_sweep` と同じ流儀)——
-    # ダンプのソースを焼いている回には、回という括りが無い。
-    # **読めなくても画面は落とさない**(状況の面の本体はここではない)
-    if not name or not _is_collection(name):
-        return []
-    return [
-        {**r, "state": "終わった", "prompt": ""}
-        for r in usage_store.calls_by(f"collect:{name}", str(job.get("started_at") or ""))
-    ]
+    done: list[dict] = []
+    # **並んで走っていれば、1 本ずつ**(回の始まりはそれぞれの開始時刻)
+    for one in ingest_queue.jobs(job):
+        name = str(one.get("source") or "")
+        # **収集かどうかは定義を引いて確かめる**(`_running_sweep` と同じ流儀)——
+        # ダンプのソースを焼いている回には、回という括りが無い。
+        # **読めなくても画面は落とさない**(状況の面の本体はここではない)
+        if not name or not _is_collection(name):
+            continue
+        done += [
+            {**r, "state": "終わった", "prompt": ""}
+            for r in usage_store.calls_by(f"collect:{name}", str(one.get("started_at") or ""))
+        ]
+    return done
 
 
 def _running_html(running: list[dict], done: list[dict] | None = None) -> str:
@@ -2539,7 +2655,7 @@ async def admin_collect(
     # **取り込みの状態は 1 度だけ引く。** ワーカーの節も収集の表も同じことを
     # 知りたがるので、別々に聞くと 1 回の描画で trigger を 2 度叩く
     job = _fetch_trigger_status()
-    running = str((job or {}).get("source") or "?") if (job or {}).get("state") == "running" else ""
+    running = ", ".join(ingest_queue.running_names(job))
     body = f"""
 {nav_html("/admin/collect")}
 <h1>収集(AI に集めさせて溜める)</h1>
@@ -2902,8 +3018,11 @@ def trigger_run(source: str) -> None:
 
 
 @router.post("/admin/ingest/stop")
-def admin_ingest_stop():
+async def admin_ingest_stop(request: Request):
     """走っている取り込みを降ろす(`chiezo-trigger` の `POST /stop` へ取り次ぐ)。
+
+    **1 本を名指しする**(`source`)。並んで走っているときに名指しが無いと、
+    押した 1 本以外まで降りる。
 
     **状況の面へ戻す。** 取り込みの塊を出しているのはそこだけ。
     """
@@ -2911,8 +3030,13 @@ def admin_ingest_stop():
         raise HTTPException(
             503, {"error": "取り込み(chiezo-trigger)が設定されていないので止められません"}
         )
+    form = await request.form()
+    source = str(form.get("source") or "").strip()
     try:
-        res = httpx.post(f"{TRIGGER_URL}/stop", timeout=TRIGGER_TIMEOUT)
+        res = httpx.post(
+            f"{TRIGGER_URL}/stop", params={"source": source} if source else None,
+            timeout=TRIGGER_TIMEOUT,
+        )
     except httpx.HTTPError as e:
         log.warning("chiezo-trigger stop request failed: %s", e)
         raise HTTPException(
@@ -2921,6 +3045,25 @@ def admin_ingest_stop():
     if res.status_code >= 400:
         raise HTTPException(res.status_code, res.json())
     return RedirectResponse(url=STATUS_JOB, status_code=303)
+
+
+@router.post("/admin/ingest/queue/remove")
+async def admin_ingest_queue_remove(request: Request):
+    """取り込みの待ち行列から 1 本外す。
+
+    **ワーカーのぶんは、ワーカーの塊からも外す** —— 残すと、次の周でワーカーが
+    同じものをもう一度出す(外したつもりが戻ってくる)。
+    **予定の来た回は外さない**(次の周でまた積まれるだけ。止めるなら巡回を止める)。
+    """
+    form = await request.form()
+    entry_id = str(form.get("id") or "")
+    found = next((e for e in ingest_queue.waiting() if e.get("id") == entry_id), None)
+    if found is not None and found.get("origin") != "schedule":
+        ingest_queue.remove(entry_id)
+        if found.get("worker"):
+            workers.drop(str(found.get("collection") or ""), str(found.get("sweep") or ""))
+    # **待ち行列を出しているのは状況の面だけ**(戻り先を外から受け取らない)
+    return RedirectResponse(url=f"{STATUS_PAGE}#ingest-queue", status_code=303)
 
 
 def _proxy_trigger_run(source: str) -> RedirectResponse:
@@ -3493,10 +3636,11 @@ async def admin_collect_run(name: str, request: Request):
     **巡回ごとに押せる。** 相手も 1 回に見る量も巡回ごとに違うので、
     「じっくりのほうを今すぐ 1 回」が押せないと、分けて持った意味が半分になる。
     """
-    from app.main import start_collection_bake
+    from app.main import run_or_queue
 
     form = await request.form()
-    start_collection_bake(name, str(form.get("sweep") or "") or None)
+    # **埋まっていれば並べる**(状況の面の待ち行列に出る)
+    run_or_queue(name, str(form.get("sweep") or "") or None, by="admin")
     # **状況の面へ連れていく。** 走らせた本人が次に見たいのは、いま押した 1 回の
     # 進み具合 —— それが出るのは取り込みの塊で、塊は状況の面にしか無い
     return RedirectResponse(url=STATUS_JOB, status_code=303)
@@ -3520,7 +3664,7 @@ async def admin_handoff_answer(name: str, request: Request):
     保存させるのは手数が 1 つ増えるだけ。
     """
     from app import handoff
-    from app.main import start_collection_bake
+    from app.main import run_or_queue
 
     form = await request.form()
     body = ""
@@ -3545,7 +3689,7 @@ async def admin_handoff_answer(name: str, request: Request):
             "hint": "束に書いてある形の JSON(items の配列)を、そのまま貼るか読み込ませてください",
         })
     handoff.answered(name, items, note)
-    start_collection_bake(name, held.get("sweep") or None)
+    run_or_queue(name, held.get("sweep") or None, by="admin")
     return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
 
 
@@ -3570,10 +3714,10 @@ async def admin_collect_redo(name: str, request: Request):
     巡回が最後でなければ中身は戻せない。進み具合と区画の印を戻したうえで、
     もう一度集めさせて上書きする。
     """
-    from app.main import start_collection_bake
+    from app.main import run_or_queue
 
     sweep = collect.rewind(name)
-    start_collection_bake(name, sweep.name)
+    run_or_queue(name, sweep.name, by="admin")
     return RedirectResponse(url=STATUS_JOB, status_code=303)
 
 
@@ -3628,7 +3772,7 @@ async def admin_collect_partition_run(name: str, request: Request):
     **止めてある収集でも走らせる**(「今すぐ実行」と同じ理由。自動実行を止めた
     うえで直したものを試す、がまさにこの口の用途)。
     """
-    from app.main import start_collection_bake
+    from app.main import run_or_queue
 
     collect.require_enabled()
     form = await request.form()
@@ -3674,7 +3818,7 @@ async def admin_collect_partition_run(name: str, request: Request):
             "hint": "「束を作る」で依頼文を書き出し、答えのファイルを読み込ませてください",
         })
     chosen = str(form.get("backend") or "")
-    start_collection_bake(name, named_sweep or None, {
+    run_or_queue(name, named_sweep or None, by="admin", run_once={
         "partitions": keys,
         # **相手とワーカーは同じ欄で選ぶ**(画面の流儀。両方選べると、
         # どちらが効くのか読めなくなる)
@@ -3983,7 +4127,8 @@ def admin_collect_detail(
     item = collect.get(name)
     src = request.app.state.sources.get(name)
     job = _fetch_trigger_status()
-    disabled = run_buttons_disabled(job)
+    # **収集の回は埋まっていても押せる**(行列に並ぶ)
+    disabled = queue_buttons_disabled(job)
     baked = (
         f'<a href="{esc(browse_url(name))}">{src.doc_count:,} 件</a>'
         if src is not None else '<span class="muted">まだ焼いていない</span>'
@@ -4042,7 +4187,7 @@ def admin_collect_partition(
         members = collect.partition_docs(item, sources, key)
         body = (
             _seen_when_html(item, key)
-            + _try_here_html(item, key, run_buttons_disabled(_fetch_trigger_status()))
+            + _try_here_html(item, key, queue_buttons_disabled(_fetch_trigger_status()))
             + _partition_members_html(name, item, key, members, sources)
         )
     return HTMLResponse(content=page_shell(

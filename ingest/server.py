@@ -6,7 +6,9 @@ chiezo-app とは別コンテナ(ingest イメージを流用し、CMD だけ本
 Docker の内部ネットワークのみで到達可能にし、ホストへポート公開しない
 (docker-compose.yml 参照)。
 
-同時に実行できるジョブは 1 つまで。状態はプロセス内メモリのみで保持する
+同時に走らせられるのは `CHIEZO_INGEST_SLOTS` 本まで(既定 1)。**同じソースは
+1 本ずつ**(ブルーグリーンの切り替えが同じリンクを取り合う)、**ダンプの取り込みも
+1 本ずつ**(ダウンロードの置き場を共有する)。状態はプロセス内メモリのみで保持する
 (このプロセスが再起動すれば消える。長時間の一括取り込みバッチという用途上、
 永続化は不要と判断)。
 """
@@ -36,33 +38,80 @@ COLLECT_KIND = "collect"
 # `/` も `..` も通さないので、名前から組み立てたパスは DATA_DIR の中に留まる
 SOURCE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,30}$")
 
-_lock = threading.Lock()
-_status: dict = {
-    # idle | running | done | error | stopped
-    # **stopped は error と分ける** —— 人が降ろしたのと、落ちたのとでは
-    # 次にすることが逆になる(押し直すだけ / 原因を調べる)
-    "state": "idle",
-    "source": None,
-    "started_at": None,
-    "finished_at": None,
-    "error": None,
-    # 「止める」を押してから、実際に降りるまでのあいだ
-    "stopping": False,
-}
-_log_tail: deque[str] = deque(maxlen=LOG_TAIL_LINES)
+def _slots_from_env() -> int:
+    """同時に走らせる本数。**読めない値は 1 へ倒す**(綴りの間違いで並べすぎない)。
 
-# **最後に落ちた回の控え。** 状態もログも「いまの 1 本」ぶんしか持たないので、
-# **次の取り込みが始まった瞬間に、落ちた回の理由とログが消えていた** ——
-# 収集は 1 時間おきに回るし、別の収集が続けて走ることもある(実際、落ちた 56 秒後に
+    **既定は 1。** 1 本ごとにメモリを食う —— 大きな収集を焼く回は 1 本で
+    GB 単位になり、配信機は 2 GiB 級のことがある。足りない機械で並べると
+    OOM killer が 2 本とも落とす。並べたい機械でだけ上げる。
+    """
+    raw = (os.environ.get("CHIEZO_INGEST_SLOTS") or "").strip()
+    try:
+        return max(1, int(raw)) if raw else 1
+    except ValueError:
+        log.warning("CHIEZO_INGEST_SLOTS=%r is not a number; using 1", raw)
+        return 1
+
+
+SLOTS = _slots_from_env()
+# 終わった回をいくつ覚えておくか。**落ちた回を時計が拾いに来る**
+# (`app/main.py` の `_rewind_failed_bakes`)ので、1 分の周期のあいだに
+# 並んで終わった回を取りこぼさない数にする
+RECENT_JOBS = 20
+
+_lock = threading.RLock()
+# いま走っているもの(ソース名 → 1 本)。1 本の形は
+# `{"source", "state", "started_at", "finished_at", "error", "stopping", "log_tail"}`。
+# state は running | done | error | stopped。
+# **stopped は error と分ける** —— 人が降ろしたのと、落ちたのとでは
+# 次にすることが逆になる(押し直すだけ / 原因を調べる)。
+_jobs: dict[str, dict] = {}
+# 終わったもの(新しいものが後ろ)
+_recent: deque[dict] = deque(maxlen=RECENT_JOBS)
+
+# **最後に落ちた回の控え。** 終わった回の並びは新しいもので押し出されるので、
+# 何本も続けて走ると、落ちた回の理由とログがすぐ読めなくなる —— 収集は
+# 1 時間おきに回るし、別の収集が続けて走ることもある(実際、落ちた 56 秒後に
 # 次が始まって何も読めなくなった)。無人で回る層は、その場に居合わせない人が
 # 後から原因を追う —— 読む手が残っていないと、同じことがもう一度起きるまで
 # 分からない。**上書きするのは次に落ちたときだけ**。
 _last_failure: dict | None = None
+# ログをどの 1 本に付けるか。取り込みのスレッドが名乗る
+_bound = threading.local()
+
+
+def _new_job(source: str) -> dict:
+    return {
+        "source": source,
+        "state": "running",
+        "started_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "finished_at": None,
+        "error": None,
+        # 「止める」を押してから、実際に降りるまでのあいだ
+        "stopping": False,
+        "log_tail": deque(maxlen=LOG_TAIL_LINES),
+    }
+
+
+def _public(job: dict) -> dict:
+    return {**job, "log_tail": list(job["log_tail"])}
 
 
 class _TailHandler(logging.Handler):
+    """実行ログを**その行を書いた 1 本**に付ける。
+
+    **名乗っていないスレッドの行は、走っている全部に付ける。** アダプタが自前で
+    立てるスレッド(osm の読み取りなど)は名乗りを持たない —— 落とすより、
+    どれかの 1 本のログに紛れるほうが後から読める。1 本しか走っていなければ、
+    今までどおりその 1 本のログになる。
+    """
+
     def emit(self, record: logging.LogRecord) -> None:
-        _log_tail.append(self.format(record))
+        line = self.format(record)
+        with _lock:
+            mine = _jobs.get(getattr(_bound, "source", None) or "")
+            for job in [mine] if mine else list(_jobs.values()):
+                job["log_tail"].append(line)
 
 
 class _JstFormatter(logging.Formatter):
@@ -87,49 +136,68 @@ logging.getLogger("chiezo.ingest").addHandler(_tail_handler)
 logging.getLogger("chiezo.ingest").setLevel(logging.INFO)
 
 
+def _finish(source: str, state: str, error: str | None = None) -> dict | None:
+    """走っている 1 本を終わったほうへ移す。移したものを返す。"""
+    with _lock:
+        job = _jobs.pop(source, None)
+        if job is None:
+            return None
+        job.update(
+            state=state, stopping=False, error=error,
+            finished_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        )
+        _recent.append(job)
+        return job
+
+
 def _run_job(source: str) -> None:
     from main import run as ingest_run
 
+    import core
     from core import Stopped
 
+    # **このスレッドが焼いているソースを名乗る。** 止める印もログも 1 本ごとに
+    # 持つので、名乗らないと、並んで走る別の 1 本の印で降りたり、ログが混ざる
+    core.bind(source)
+    _bound.source = source
     try:
         ingest_run(source, DATA_DIR)
-        with _lock:
-            _status["state"] = "done"
-            _status["stopping"] = False
-            _status["finished_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+        _finish(source, "done")
     # **止めたのは失敗ではない。** 切り替えより前で降りるので、いま配信している
     # 世代はそのまま —— 押し直せば続きから始まる(集めた素材は残してある)
     except Stopped as e:
         log.info("ingest job stopped: source=%s", source)
-        with _lock:
-            _status["state"] = "stopped"
-            _status["stopping"] = False
-            _status["error"] = str(e)
-            _status["finished_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+        _finish(source, "stopped", str(e))
     # SystemExit も捕まえる。取り込み側は「設定が違う」類の行き止まり
     # (リリースが見つからない・依存が入っていない)を raise SystemExit で表すが、
     # これは Exception ではないので素通りする —— ジョブは daemon スレッドなので、
     # 抜けた瞬間にスレッドだけ黙って死に、state が "running" のまま残る。
     # そうなると画面は「走っている」を映し続け、さらに start_run が 409 で
-    # 新しい取り込みを断り続ける(コンテナを再起動するまで直らない)。
+    # そのソースの取り込みを断り続ける(コンテナを再起動するまで直らない)。
     # KeyboardInterrupt は含めない(こちらは止めに来た合図なので通す)。
     except (Exception, SystemExit) as e:
         global _last_failure
         log.exception("ingest job failed: source=%s", source)
-        with _lock:
-            _status["state"] = "error"
-            _status["stopping"] = False
-            _status["error"] = str(e)
-            _status["finished_at"] = datetime.now(UTC).isoformat(timespec="seconds")
-            # **落ちた回は別に控える**(次の取り込みが始まっても消えないように)
-            _last_failure = {
-                "source": source,
-                "started_at": _status["started_at"],
-                "finished_at": _status["finished_at"],
-                "error": str(e),
-                "log_tail": list(_log_tail),
-            }
+        job = _finish(source, "error", str(e))
+        if job is not None:
+            with _lock:
+                # **落ちた回は別に控える**(次の取り込みが始まっても消えないように)
+                _last_failure = {
+                    "source": source,
+                    "started_at": job["started_at"],
+                    "finished_at": job["finished_at"],
+                    "error": str(e),
+                    "log_tail": list(job["log_tail"]),
+                }
+    finally:
+        core.bind(None)
+        core.clear_stop(source)
+        _bound.source = None
+
+
+def _running_now(name: str) -> bool:
+    with _lock:
+        return name in _jobs
 
 
 app = FastAPI(title="chiezo-trigger", version="0.1")
@@ -243,11 +311,11 @@ def delete_source(name: str, expect: str = COLLECT_KIND):
     どこにも無いと、手でファイルを消しに行くことになる(実際にそうなった)。
 
     消すのは、いまの世代・1 つ前の世代・シンボリックリンク・焼く前に残った素材。
-    **走っている最中は断る**(切り替えの途中を壊さないため)。
+    **そのソースを焼いている最中は断る**(切り替えの途中を壊さないため)。
+    別のソースを焼いている最中は構わない(触るファイルが重ならない)。
     """
-    with _lock:
-        if _status["state"] == "running":
-            raise HTTPException(409, {"error": "ingest is running"})
+    if _running_now(name):
+        raise HTTPException(409, {"error": f"ingest is running: {name}"})
 
     if not SOURCE_NAME_RE.match(name):
         raise HTTPException(400, {"error": f"invalid source name: {name}"})
@@ -284,11 +352,10 @@ def rollback_source(name: str):
     戻したあとに押し直せば元へ戻る —— 焼き直しが中身を壊したときに、
     確かめながら行き来できる。
 
-    **走っている最中は断る**(切り替えの途中を壊さないため)。
+    **そのソースを焼いている最中は断る**(切り替えの途中を壊さないため)。
     """
-    with _lock:
-        if _status["state"] == "running":
-            raise HTTPException(409, {"error": "ingest is running"})
+    if _running_now(name):
+        raise HTTPException(409, {"error": f"ingest is running: {name}"})
 
     if not SOURCE_NAME_RE.match(name):
         raise HTTPException(400, {"error": f"invalid source name: {name}"})
@@ -409,21 +476,39 @@ def _build() -> dict:
 
 @app.get("/status")
 def status():
-    """いまの 1 本と、**最後に落ちた回**、それに動いているイメージの素性。
+    """走っている取り込み(`jobs`)・終わった回(`recent`)・**最後に落ちた回**、
+    それに動いているイメージの素性。
 
-    落ちた回を別に返すのは、**次の取り込みが始まると状態もログも上書きされる**
-    から —— 読みに来たときには既に消えている、が普通に起きる。
+    落ちた回を別に返すのは、**終わった回の並びは新しいもので押し出される**から ——
+    読みに来たときには既に消えている、が普通に起きる。
+
+    **頭には 1 本ぶんの形も残す**(`state` / `source` / `log_tail` …)。
+    app と取り込みは別々に焼かれるので、**片方だけ古いまま**が普通に起きる ——
+    古い app はこの形しか読めない。走っていればいちばん古い 1 本、
+    走っていなければ最後に終わった 1 本を載せる。
     """
     with _lock:
+        running = sorted(_jobs.values(), key=lambda j: j["started_at"] or "")
+        recent = list(reversed(_recent))
+        head = running[0] if running else (recent[0] if recent else None)
+        single = _public(head) if head else {
+            "state": "idle", "source": None, "started_at": None, "finished_at": None,
+            "error": None, "stopping": False, "log_tail": [],
+        }
         return {
-            **_status, "log_tail": list(_log_tail), "last_failure": _last_failure,
+            **single,
+            "slots": SLOTS,
+            "jobs": [_public(j) for j in running],
+            "recent": [_public(j) for j in recent],
+            "last_failure": _last_failure,
             "build": _build(),
         }
 
 
 @app.post("/stop")
-def stop_run():
-    """走っている取り込みを**安全なところで降ろす**。
+def stop_run(source: str | None = None):
+    """走っている取り込みを**安全なところで降ろす**。`source` で 1 本を名指しする
+    (書かなければ走っている全部)。
 
     **殺さない。** 走っているのは daemon スレッドで、外から止める手段はそもそも
     無い —— 印を立てて、取り込みの側が区切りのいいところで見に行く
@@ -440,17 +525,28 @@ def stop_run():
     from core import request_stop
 
     with _lock:
-        if _status["state"] != "running":
-            raise HTTPException(409, {"error": "no job is running"})
-        _status["stopping"] = True
-        source = _status["source"]
-    request_stop()
-    log.info("stop requested: source=%s", source)
-    return {"ok": True, "source": source, "stopping": True}
+        targets = [source] if source else list(_jobs)
+        if not targets or any(t not in _jobs for t in targets):
+            raise HTTPException(409, {"error": f"no job is running: {source or ''}".strip()})
+        for name in targets:
+            _jobs[name]["stopping"] = True
+    for name in targets:
+        request_stop(name)
+        log.info("stop requested: source=%s", name)
+    return {"ok": True, "source": source or (targets[0] if len(targets) == 1 else None),
+            "sources": targets, "stopping": True}
 
 
 @app.post("/run/{source}")
 def start_run(source: str):
+    """取り込みを 1 本始める。**断るのは 3 通り**(どれも走らせる側で待ち直せばよい):
+
+    - 同じソースが走っている(409)—— ブルーグリーンの切り替えが同じリンクを取り合う
+    - 走らせられる本数(`CHIEZO_INGEST_SLOTS`)が埋まっている(429)
+    - ダンプの取り込みがもう 1 本走っている(429)—— ダウンロードの置き場
+      (`dumps/`)を共有していて、同じ付属データ(ページビューなど)を 2 本が
+      同時に落としに行く。何時間もかかる取り込みで、並べる値打ちも薄い
+    """
     from sources import ADAPTERS, remote
 
     # プラグインのソースもここで通す。 `/sources` に出したものは実行できなければ
@@ -462,27 +558,30 @@ def start_run(source: str):
     if source not in ADAPTERS and source not in known:
         raise HTTPException(404, {"error": f"unknown source: {source}"})
     with _lock:
-        if _status["state"] == "running":
-            raise HTTPException(
-                409,
-                {
-                    "error": f"a job is already running: {_status['source']}",
-                    "status": {**_status, "log_tail": list(_log_tail)},
-                },
-            )
-        _log_tail.clear()
-        _status.update(
-            state="running",
-            source=source,
-            started_at=datetime.now(UTC).isoformat(timespec="seconds"),
-            finished_at=None,
-            error=None,
-            stopping=False,
-        )
-    # **前の回の印を必ず下ろす**(下ろし忘れると、始めた瞬間に降りる)
+        running = sorted(_jobs)
+        if source in _jobs:
+            raise HTTPException(409, {
+                "error": f"a job is already running: {source}",
+                "running": running,
+            })
+        if len(_jobs) >= SLOTS:
+            raise HTTPException(429, {
+                "error": f"all {SLOTS} slot(s) are busy: {', '.join(running)}",
+                "running": running,
+                "slots": SLOTS,
+            })
+        if source in ADAPTERS and (dump := next((n for n in _jobs if n in ADAPTERS), None)):
+            raise HTTPException(429, {
+                "error": f"another dump is being ingested: {dump}",
+                "running": running,
+                "slots": SLOTS,
+            })
+        _jobs[source] = _new_job(source)
+    # **前の回の印を必ず下ろす**(下ろし忘れると、始めた瞬間に降りる)。
+    # **下ろすのはこの 1 本の印だけ** —— 並んで走っている別の 1 本の「止める」を消さない
     from core import clear_stop
 
-    clear_stop()
+    clear_stop(source)
     thread = threading.Thread(target=_run_job, args=(source,), daemon=True)
     thread.start()
     return JSONResponse(status_code=202, content={"status": "started", "source": source})

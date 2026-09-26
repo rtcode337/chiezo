@@ -209,12 +209,12 @@ class TestRollingBackToTheEarlierGeneration:
 
         server, make = trigger
         make("spots", ["20260101", "20260102"])
-        server._status["state"] = "running"
+        server._jobs["spots"] = server._new_job("spots")
         try:
             with pytest.raises(fastapi.HTTPException) as got:
                 server.rollback_source("spots")
         finally:
-            server._status["state"] = "idle"
+            server._jobs.clear()
 
         assert got.value.status_code == 409
 
