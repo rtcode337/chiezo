@@ -1444,6 +1444,14 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
     # 答えが途中で切れた区画(印を付けない。`partition.note_cut`)
     cut: list = []
     try:
+        # **名指しの区画が台帳に無ければ、AI を呼ぶ前に降りる**(`missing_focus_partition`)。
+        # 受け付けたあとに割り直されて消えることがあるので、走る時点でも見る。
+        # ここで断れば失敗として控えられ、割り込みも片付く(残すと次の回を乗っ取る)
+        if gone := collect.missing_focus_partition(focus, ledger):
+            raise HTTPException(409, {
+                "error": f"割り込みが名指しした区画「{gone}」は台帳にありません",
+                "hint": "割り直しで鍵が変わったかもしれません(区画を選び直して頼み直してください)",
+            })
         feed = await _harvest(item, sweep)
         # **差し込むぶんだけ取り出す。** 区画で切ってあれば、その区画のぶんだけ ——
         # 全部を持つと、区画で切った意味がメモリの側から消える
@@ -1456,6 +1464,25 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
             # 区画ごとの補足は、割り込みには載せない(割り込みは自分の指示文を持つ)
             partition_notes=None if focus is not None else once.get("notes"),
         )
+        # **見せていない既存の 1 件は置き換えない**(`collect.drop_unseen_edits`)。
+        # 範囲で絞った直す回だけ —— 絞らない回は差し込みが全体なので、範囲の外が無い
+        if edits and (keys or focus is not None) and isinstance(items, list):
+            allowed = set(for_prompt) | set(focus.titles if focus is not None else ())
+            returned = [notes.title_key(d.get("title")) for d in items if isinstance(d, dict)]
+            existing = await asyncio.to_thread(
+                collect.existing_titles, name, sources, [t for t in returned if t not in allowed]
+            )
+            items, dropped = collect.drop_unseen_edits(items, allowed, existing)
+            if dropped:
+                log.warning(
+                    "collect %s: 見せていない既存の %d 件を置き換えませんでした: %s",
+                    name, len(dropped), "、".join(dropped[:20]),
+                )
+                why = (
+                    f"見せていない既存の {len(dropped)} 件は置き換えませんでした"
+                    f"({'、'.join(dropped[:10])}{' ほか' if len(dropped) > 10 else ''})"
+                )
+                note = f"{note} / {why}" if note else why
         # **控えに残すのは、決めた相手ではなく頼んだ相手。** ワーカーを使う回は
         # 巡回に相手が書いていないので、書き換えないと履歴が既定の名前で埋まる
         who.update(_who_ran(used) or {})
@@ -3454,6 +3481,13 @@ def start_focus_bake(name: str, raw: dict) -> dict:
     # 1 本ぶんの取り込みが走る(そして何も直らない)。サーバーの設定より先に見るのは、
     # 読めない依頼は設定がどうであれ読めないから —— 理由を取り違えさせない
     focus = collect.require_focus(raw)
+    # **台帳に無い区画は受け付けない**(`collect.missing_focus_partition`)。走らせると
+    # 差し込みが空のまま AI を呼び、返りが材料を見ないまま既存の中身を置き換える
+    if gone := collect.missing_focus_partition(focus, collect.get(name).partitions):
+        raise HTTPException(409, {
+            "error": f"区画「{gone}」は台帳にありません",
+            "hint": "割り直しで鍵が変わったかもしれません(区画の一覧を読み直して選び直してください)",
+        })
     if not TRIGGER_URL:
         raise HTTPException(503, {
             "error": "chiezo-trigger が設定されていません(CHIEZO_TRIGGER_URL 未設定)",

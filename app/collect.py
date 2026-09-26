@@ -4168,6 +4168,69 @@ def prompt_docs(item: Collection, previous, keys: list[str], focus=None) -> dict
     return out
 
 
+
+def missing_focus_partition(focus, ledger: list[dict]) -> str | None:
+    """割り込みが名指しした区画が**台帳に無ければ**、その鍵を返す(あれば None)。
+
+    **無い鍵で走らせると、差し込みが空になる。** どの文書もその区画に入らないので
+    AI には「今回の対象には、まだ何も入っていません」とだけ渡り、それでも AI は
+    その範囲の人を自分の知識で書いて返す —— 返った見出しが既にいれば、材料を
+    見ないまま丸ごと置き換わる(本番で、割り直しで消えた帯を名指しした割り込みが
+    15 件を書き換え、機械で引いた関連のタグが消えた)。
+
+    **区画を割り直すと鍵は消える**ので、押した時点の台帳で作った鍵でも起きる。
+    受け付けるときと走らせるときの両方で見る。
+    """
+    if focus is None or not focus.partition:
+        return None
+    return None if any(p.get("key") == focus.partition for p in ledger or ()) else focus.partition
+
+
+def existing_titles(name: str, sources: dict, titles) -> set[str]:
+    """渡した見出しのうち、**いま収集に居るもの**(消えたものも含む)。
+
+    全件は読まない —— 知りたいのは返ってきた数十件が既にいるかだけで、
+    数十万件の収集で前世代を流し直すのは高い。
+    """
+    src = sources.get(name)
+    wanted = sorted({t for t in titles if t})
+    if src is None or not wanted:
+        return set()
+    found: set[str] = set()
+    # SQLite の変数の上限に当たらない大きさで分けて聞く
+    for at in range(0, len(wanted), 500):
+        chunk = wanted[at:at + 500]
+        rows = db.query(
+            src.path,
+            f"SELECT title FROM docs WHERE title IN ({','.join('?' * len(chunk))})",
+            tuple(chunk),
+        )
+        found.update(row["title"] for row in rows)
+    return found
+
+
+def drop_unseen_edits(items: list[dict], allowed: set[str], existing: set[str]):
+    """返りのうち、**AI に見せていない既存の 1 件を置き換える**ものを落とす。
+
+    直す回は、返した内容で 1 件が丸ごと置き換わる。見せていない 1 件は、AI が
+    いま付いているタグも本文も知らないまま書いたものなので、置き換えると
+    機械で引いたタグや他の回が育てた中身が黙って消える。範囲で絞った回で、
+    **漏れを足すつもりで別の区画に居る人を挙げた**ときにも同じことが起きる。
+
+    **落とすのは既に居る見出しだけ。** 居ない見出しは新しく足すものなので通す。
+    `allowed` は差し込んだ範囲(区画に入る文書と、割り込みで名指しされた見出し)。
+    返すのは (残す返り, 落とした見出し)。
+    """
+    kept: list[dict] = []
+    dropped: list[str] = []
+    for doc in items:
+        title = notes.title_key(doc.get("title") if isinstance(doc, dict) else "")
+        if title and title in existing and title not in allowed:
+            dropped.append(title)
+            continue
+        kept.append(doc)
+    return kept, dropped
+
 def _light_docs(previous) -> dict[str, dict]:
     """区画を割るためだけの、軽い写し(見出し・タグ・脇書き)。
 
