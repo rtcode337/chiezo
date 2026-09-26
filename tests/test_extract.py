@@ -194,6 +194,36 @@ class TestPullingFromWhatIsAlreadyThere:
             "世紀だけ": ["年代:1700頃-1800頃"],
         }
 
+    def test_a_map_reads_the_value_through_a_table(self, source):
+        """**捕まえた値を表で読み替える**(`map`)。値ごとに規則を並べずに済む。
+
+        規則を世紀の数だけ並べると上限(20)を超え、1 件ごとの照合もその数だけ増える。
+        """
+        docs = [
+            {"title": "世紀だけ", "tags": ["印象派の画家", "18世紀日本の画家", "19世紀日本の画家"],
+             "rank": 0.9},
+            {"title": "表に無い", "tags": ["印象派の画家", "99世紀日本の画家"], "rank": 0.8},
+        ]
+        rules = [{
+            "pattern": r"^(\d{1,2})世紀.+の画家$", "format": "年代:{1}", "fallback": True,
+            "map": {"18": "1700頃-1800頃", "19": "1800頃-1900頃"},
+        }]
+
+        items, _cursor = run(spec(tags=rules), source(docs))
+        years = {i["title"]: [t for t in i["tags"] if t.startswith("年代:")] for i in items}
+
+        # 先に当たった 1 本だけ(fallback)。表に無い値は作らない
+        assert years == {"世紀だけ": ["年代:1700頃-1800頃"], "表に無い": []}
+
+    def test_a_map_is_written_back_and_checked(self):
+        given = spec(tags=[{"pattern": "^(.+)世紀$", "format": "年代:{1}", "map": {"18": "1700頃"}}])
+
+        assert extract.to_json(given)["tags"][0]["map"] == {"18": "1700頃"}
+        with pytest.raises(HTTPException):
+            spec(tags=[{"pattern": "^(.+)世紀$", "format": "年代:{1}", "map": ["18"]}])
+        with pytest.raises(HTTPException):
+            spec(tags=[{"pattern": "^(.+)世紀$", "format": "年代:{1}", "map": {"18": ""}}])
+
     def test_a_fallback_is_written_back_as_it_was_given(self):
         """書いた指定を読み直して保存しても、fallback が落ちない。"""
         given = spec(tags=[{"pattern": "^(.+)年生$", "format": "年代:{1}-", "fallback": True}])

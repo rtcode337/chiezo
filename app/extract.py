@@ -116,6 +116,10 @@ MAX_SUFFIX_TAGS = 900
 MIN_SUFFIX_CHARS = 3
 # タグの読み替えの上限。指定が肥大すると、1 件あたりの正規表現の回数がそのまま伸びる
 MAX_RULES = 20
+# 値の表(`map`)の行数と、1 つの値の長さの上限。表は 1 つの規則の中で引くだけなので
+# 正規表現の回数は増えない(規則を値の数だけ並べずに済ませるためのもの)
+MAX_MAP_ENTRIES = 200
+MAX_MAP_VALUE_CHARS = 100
 # 元の記事の `extra` から写せる鍵の数。**写すのは事実だけ** —— 知名度や座標のような、
 # 既に長期記憶に載っていて AI に書かせる意味の無い値を運ぶための口。
 # 際限なく写せるようにすると、集めた 1 件が元の記事の丸写しになる
@@ -399,7 +403,7 @@ def _normalize_rule(raw) -> dict:
         if not single:
             raise _bad("読み替えには pattern か patterns が要ります")
         return {"kind": "each", "patterns": [_compile(single)], "format": fmt,
-                "fallback": _fallback_of(raw)}
+                "fallback": _fallback_of(raw), "map": _map_of(raw)}
 
     if not isinstance(patterns, list) or not patterns:
         raise _bad("patterns は 1 つ以上の配列で書いてください")
@@ -427,6 +431,31 @@ def _fallback_of(raw: dict) -> bool:
     if value is True:
         return True
     raise _bad("fallback は true か false で書いてください")
+
+
+def _map_of(raw: dict) -> dict[str, str] | None:
+    """`map` の読み方。**捕まえた最初の値(`{1}`)を、表で引いた値に置き換える**。
+
+    「18世紀日本の画家」の `18` を `1700頃-1800頃` にするように、捕まえた値を
+    別の書き方へ読み替えたいときに使う。**表に無い値に当たったら作らない**
+    (読み替えられないものを、そのまま書き写さない)。
+    規則を値の数だけ並べると、1 件ごとの正規表現の回数がその数だけ増える ——
+    表なら当てる正規表現は 1 つで済む。
+    """
+    table = raw.get("map")
+    if table is None:
+        return None
+    if not isinstance(table, dict) or not table:
+        raise _bad("map は「捕まえた値 → 置き換える値」のオブジェクトで書いてください")
+    if len(table) > MAX_MAP_ENTRIES:
+        raise _bad(f"map は {MAX_MAP_ENTRIES} 行までです")
+    out: dict[str, str] = {}
+    for key, value in table.items():
+        text = str(value if value is not None else "").strip()
+        if not text or len(text) > MAX_MAP_VALUE_CHARS:
+            raise _bad(f"map の値は 1〜{MAX_MAP_VALUE_CHARS} 文字の文字列で書いてください")
+        out[str(key)] = text
+    return out
 
 
 def _prefix_of(fmt: str) -> str:
@@ -505,7 +534,8 @@ def to_json(spec) -> dict | list[dict] | None:
             rules.append({"linked": rule["how"], "format": rule["format"]})
         elif rule["kind"] == "each":
             rules.append({"pattern": rule["patterns"][0].pattern, "format": rule["format"],
-                          **({"fallback": True} if rule.get("fallback") else {})})
+                          **({"fallback": True} if rule.get("fallback") else {}),
+                          **({"map": dict(rule["map"])} if rule.get("map") else {})})
         else:
             rules.append({
                 "patterns": [p.pattern for p in rule["patterns"]],
@@ -1109,11 +1139,20 @@ def _apply_rules(rules: list[dict], tags: list[str], title: str, context: dict) 
         elif rule["kind"] == "each":
             pattern = rule["patterns"][0]
             for tag in tags:
-                if found := pattern.match(tag):
-                    out.append(_fill_groups(rule["format"], [found]))
-                    # 手掛かりの代わりに使う規則は 1 本で足りる(2 つ当たっても 2 本作らない)
-                    if rule.get("fallback"):
-                        break
+                if not (found := pattern.match(tag)):
+                    continue
+                if (table := rule.get("map")) is not None:
+                    # **表で読み替える**(`_map_of`)。表に無い値は作らない
+                    first = (found.groups() or (found.group(0),))[0] or ""
+                    if first not in table:
+                        continue
+                    made = _fill(rule["format"], {"1": table[first]})
+                else:
+                    made = _fill_groups(rule["format"], [found])
+                out.append(made)
+                # 手掛かりの代わりに使う規則は 1 本で足りる(2 つ当たっても 2 本作らない)
+                if rule.get("fallback"):
+                    break
         elif rule["kind"] == "from_tag":
             out.extend(_from_tag(rule, title, context))
         elif rule["kind"] == "linked":
@@ -1260,6 +1299,11 @@ SPEC_GUIDE = """依頼を読んで、**まず「手元の索引から機械的�
   `mutual`(相互にリンクしているものだけ)と `out`(こちらから張っているもの)。
   片側だと有名なものどうしが軒並み繋がって毛玉になるので、**まず mutual を使う**
 `{1}` `{2}` は、当たった順に括弧で捕まえた中身が入ります。
+
+pattern には `"map": {"捕まえた値": "置き換える値"}` を書けます。**`{1}` に
+捕まえた値の代わりに、表で引いた値が入ります**(表に無い値に当たったら作りません)。
+「18世紀〜」の 18 を「1700頃-1800頃」にするように、値ごとに規則を並べずに済みます
+(規則は 20 個までです)。
 
 pattern と patterns には `"fallback": true` を書けます。**前の規則が同じ接頭辞の
 タグ(`年代:` など)を作っていれば、その規則は作りません**。同じ軸を確かな手掛かりの
