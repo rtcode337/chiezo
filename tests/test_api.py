@@ -2069,6 +2069,17 @@ class TestAdminPages:
         # 大きさは世代のファイルを測る(リンクそのものは数十バイトしかない)
         assert "B</td>" in html
 
+    def test_a_source_a_collection_uses_links_to_it_by_name(self):
+        """消せない理由の中の収集の名前をリンクにする(「収集の面へ」を別に添えない)。"""
+        from types import SimpleNamespace
+
+        from app.views import admin
+
+        html = admin._delete_source_cell(SimpleNamespace(name="tech & more"), "tech & more", "")
+
+        assert '収集「<a href="/admin/collect/tech%20%26%20more">tech &amp; more</a>」' in html
+        assert "収集の面へ" not in html
+
     def test_the_db_size_follows_the_link(self, tmp_path):
         from app.views import admin
 

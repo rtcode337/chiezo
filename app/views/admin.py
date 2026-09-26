@@ -1459,20 +1459,25 @@ def _changed_here_html(name: str, sources: dict, sweep: str | None) -> str:
 """
 
 
-def _changes_filter_html(name: str | None, sweep: str | None) -> str:
+def _changes_filter_html(
+    name: str | None, sweep: str | None, anchor: str = "changes",
+) -> str:
     """「どの回を見るか」の切り替え。**回が 1 本しかなければ出さない**(選ぶ先が無い)。
 
-    押した先はこの節へ戻す(`#changes`)—— 長い面の途中にある表なので、
+    押した先はこの節へ戻す(`anchor`)—— 長い面の途中にある表なので、
     絞り込んだ結果が画面の外に出ていると、押しても何も起きていないように見える。
+
+    **全部の収集のぶんは状況の面にある**(1 つの収集のぶんはその収集の面)。
+    以前は記憶の面を指したままで、押すと別の面へ飛んでいた。
     """
     names = collect_log.sweeps(name)
     if len(names) < 2:
         return ""
-    base = f"/admin/collect/{quote(name)}" if name else "/admin/memory"
+    base = f"/admin/collect/{quote(name)}" if name else STATUS_PAGE
     links = [("すべて", None), *((one, one) for one in names)]
     out = []
     for label, value in links:
-        href = f"{base}?sweep={quote(value)}#changes" if value else f"{base}#changes"
+        href = f"{base}?sweep={quote(value)}#{anchor}" if value else f"{base}#{anchor}"
         out.append(
             f"<strong>{esc(label)}</strong>" if value == sweep
             else f'<a href="{esc(href)}">{esc(label)}</a>'
@@ -1482,6 +1487,7 @@ def _changes_filter_html(name: str | None, sweep: str | None) -> str:
 
 def _collect_changes_html(
     limit: int = 30, name: str | None = None, sweep: str | None = None,
+    wrap: bool = True, anchor: str = "changes",
 ) -> str:
     """直近どこに修正が入ったか(`app/collect_log.py`)。
 
@@ -1495,21 +1501,28 @@ def _collect_changes_html(
 
     **控えの置き場が無ければ、何も出さずに理由だけ出す** —— 空の表を出すと
     「まだ動いていない」と読めてしまう(実際は記録していないだけ)。
+
+    `wrap=False` は**包みを呼ぶ側が持つ**とき(状況の面の「収集の実行履歴」)。
+    二重に畳むと、開いてもまだ閉じた見出しが出てくる。
     """
+    def wrapped(inner: str, opened: bool) -> str:
+        if not wrap:
+            return inner
+        return (f'<details id="changes"{" open" if opened else ""}>'
+                f"<summary>直近の変更</summary>{inner}</details>")
+
     if collect_log.db_path() is None:
-        return (
-            '<details id="changes"><summary>直近の変更</summary>'
+        return wrapped(
             '<p class="muted">変更履歴は記録していません。'
-            "<code>CHIEZO_STATE_DIR</code> を設定すると残ります。</p></details>"
+            "<code>CHIEZO_STATE_DIR</code> を設定すると残ります。</p>", False,
         )
-    picker = _changes_filter_html(name, sweep)
+    picker = _changes_filter_html(name, sweep, anchor)
     changes = collect_log.recent(name, limit=limit, sweep=sweep)
     if not changes:
-        return (
-            f'<details id="changes" open><summary>直近の変更</summary>{picker}'
-            '<p class="muted">'
+        return wrapped(
+            picker + '<p class="muted">'
             + ("その回はまだ走っていません。" if sweep else "まだ 1 回も走っていません。")
-            + "</p></details>"
+            + "</p>", True,
         )
     rows = []
     for row in changes:
@@ -1575,8 +1588,7 @@ def _collect_changes_html(
             f"<td>{esc(row['sweep'])}{scope}</td><td>{who}</td><td>{spent}</td>"
             f'<td>{summary}{note}</td><td>{row["total"]:,} 件{detail}</td></tr>'
         )
-    return f"""
-<details id="changes" open><summary>直近の変更</summary>
+    return wrapped(f"""
 {picker}
 <table>
 <thead><tr><th>いつ</th>{"" if name else "<th>収集</th>"}<th>どの回</th><th>頼んだ相手</th>
@@ -1588,8 +1600,7 @@ def _collect_changes_html(
 <p class="muted">新しい順に最大 {limit} 件。「かかった」は<strong>集めるのにかかった時間</strong>で、
 焼くぶんは入らない(控えを書いてから流すため)。
 記録は <code>state/collect_runs.db</code> に残り、古いものから捨てられる。</p>
-</details>
-"""
+""", True)
 
 
 def _changes_name_cell(row: dict, name: str | None) -> str:
@@ -1870,9 +1881,7 @@ def _derived_note(item, parent: str) -> str:
     return f'<br><span class="muted">└ {esc(parent)}{what}</span>'
 
 
-def _collect_html(
-    sources: dict[str, Source], disabled: str, sweep: str | None = None,
-) -> str:
+def _collect_html(sources: dict[str, Source], disabled: str) -> str:
     """収集(AI に集めさせて溜めていく)の節。
 
     **出すのは「間隔・次にいつ走るか・いま何件」の 3 つ**。無人で回る層なので、
@@ -2027,9 +2036,6 @@ AI に集めさせて溜めていく層。<strong>溜め先は収集ごとに別
 <strong>追加したものは止めた状態で作る</strong> —— プロンプトを見直してから
 「有効にする」で動き出す(いきなり AI の枠を使わない)。
 </p>
-
-<h2 id="collect-history">実行履歴</h2>
-{_collect_changes_html(sweep=sweep)}
 """
 
 
@@ -2371,8 +2377,28 @@ def _status_summary(job: dict | None, running: list[dict]) -> str:
     return f"{ingest}。{ai}{alert}"
 
 
+def _collect_history_html(sweep: str | None) -> str:
+    """状況の面の「収集の実行履歴」。**取り込みの節の中に、畳んで置く**。
+
+    収集の回は取り込みの中で走るので、取り込みの様子と並べて読む。ただ表が長く、
+    毎回見るものではないので**既定では閉じる**。**回で絞ったときだけ開く** ——
+    絞るリンクは面を読み直すので、閉じたまま戻すと押しても何も変わらないように見える。
+    """
+    if not collect.is_enabled():
+        return ""
+    opened = " open" if sweep else ""
+    return (
+        f'<details id="collect-history"{opened}><summary><h3>収集の実行履歴</h3></summary>'
+        f'{_collect_changes_html(sweep=sweep, wrap=False, anchor="collect-history")}'
+        "</details>"
+    )
+
+
 @router.get(STATUS_PAGE, response_class=HTMLResponse)
-def admin_status(request: Request):
+def admin_status(
+    request: Request,
+    sweep: str | None = Query(None, description="収集の実行履歴を、この回のぶんだけに絞る"),
+):
     """状況。**いま何が起きているかが 1 画面で読めること**だけを受け持つ。
 
     設定は持たない —— 状態と数、それに「いま頼めるか」を読むための表だけを出して、
@@ -2386,6 +2412,7 @@ def admin_status(request: Request):
 {_stopped_providers_html()}
 <p>{_disk_html(request.app.state.data_dir)}</p>
 {_job_status_html(job, heading=True)}
+{_collect_history_html(sweep)}
 {_running_html(running, _round_done(job))}
 {_usage_html(request)}
 """
@@ -2639,10 +2666,7 @@ chiezo-trigger が立ち上がっていない場合、再構築と削除はで�
 
 
 @router.get("/admin/collect", response_class=HTMLResponse)
-async def admin_collect(
-    request: Request,
-    sweep: str | None = Query(None, description="直近の変更を、この回のぶんだけに絞る"),
-):
+async def admin_collect(request: Request):
     """無人で回る層の面。**記憶から切り出してある**。
 
     記憶の中の 1 節だった頃は、収集を 1 本見るのに長期記憶の一覧と初期化の表を
@@ -2667,7 +2691,7 @@ async def admin_collect(
 {ai_workers.section_html((_backend_select, _model_select), running)}
 
 <h2 id="collect-settings">収集の設定</h2>
-{_collect_html(request.app.state.sources, run_buttons_disabled(job), sweep)}
+{_collect_html(request.app.state.sources, run_buttons_disabled(job))}
 """
     return HTMLResponse(content=page_shell("収集", body))
 
@@ -3129,11 +3153,16 @@ def _delete_source_cell(src: Source, used_by: str, disabled: str) -> str:
     「消してもまた入れればよい」で押せる相手ではない。
     """
     if reason := registry.blocked_from_deleting(src.name, used_by):
-        where = (
-            f' <a href="/admin/collect/{esc(quote(used_by))}">収集の面へ</a>'
-            if used_by else ""
-        )
-        return f'<span class="muted">{esc(reason)}</span>{where}'
+        text = esc(reason)
+        if used_by:
+            # **収集の名前そのものをリンクにする**(「収集の面へ」を別に添えない)——
+            # 行き先は名前が言っているので、同じ行き先を 2 度書くことになる
+            text = text.replace(
+                esc(f"収集「{used_by}」"),
+                f'収集「<a href="/admin/collect/{esc(quote(used_by))}">{esc(used_by)}</a>」',
+                1,
+            )
+        return f'<span class="muted">{text}</span>'
     if not TRIGGER_URL:
         return '<span class="muted">取り込みが設定されていないので消せません</span>'
     ask = (
