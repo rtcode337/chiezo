@@ -3223,7 +3223,7 @@ def admin_source_rollback(source: str, request: Request, back: str = Form("")):
     どちらが正しいかを確かめられる。
     """
     sources: dict[str, Source] = request.app.state.sources
-    if sources.get(source) is None:
+    if (known := sources.get(source)) is None:
         raise HTTPException(404, {"error": f"そのソースはありません: {source}"})
     if not TRIGGER_URL:
         raise HTTPException(
@@ -3246,7 +3246,8 @@ def admin_source_rollback(source: str, request: Request, back: str = Form("")):
     request.app.state.sources = scan_all(request.app.state.data_dir)
     # **戻り先は、このボタンを出している面から選ぶ**(記憶の面と、その収集の面)。
     # 届いた文字列をそのまま行き先にすると、外のサイトへ飛ばす URL を作れてしまう
-    here = ("/admin/memory#long-term", f"/admin/collect/{quote(source)}")
+    # **収集の面の行き先も、URL から来た名前ではなく登録済みのソースの名前で組む**
+    here = ("/admin/memory#long-term", f"/admin/collect/{quote(known.name)}")
     return RedirectResponse(url=next((p for p in here if p == back), here[0]), status_code=303)
 
 
