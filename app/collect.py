@@ -432,6 +432,12 @@ class Collection:
     # 動かさないが、こちらは**ふつうの回として走る**(印が付き、予定が進む)。
     # 枠が細いときに「直したコードを 1 区画だけ本番の形で試す」がこれ
     pending_run: dict | None = None
+    # **「全部を未確認に戻す」を頼まれた時刻**(`request_requeue`)。空なら頼まれていない。
+    # 印を付け直すのは次に焼く回で、それまでの `{unreviewed}` は全部を未確認として読む。
+    # 焼いた回で消える(焼くところで落ちたら、巻き戻しで戻る)。
+    # 目を通した印を付けたあとで依頼文を直したとき、今あるものを初めから
+    # 回し直すための口 —— 印の付いたものは `{unreviewed}` に二度と載らない
+    requeue_at: str = ""
     # 作り直しで、前世代の何割を下回ったら断るか。0 なら守りを外す。
     # 足すほうでは使わない(そもそも減らないので)
     keep_ratio: float = DEFAULT_KEEP_RATIO
@@ -515,6 +521,11 @@ class Sweep:
     cover_days: float | None = None
     # 1 回に見る区画数を直に決める。`cover_days` より優先
     partitions_per_run: int | None = None
+    # **`{unreviewed}` に 1 回で載せる数**(古い順)。空なら字数の天井まで載せる。
+    # 1 件ごとに調べものをさせる回は、載せたぶんを 1 回で調べ切れる数にしないと、
+    # AI が途中で手を止める —— 160 件あまりを一度に渡した回は 18 件で終わった。
+    # 数を決めるのは Chiezo で、AI には「載せたものを全部」と頼めば済む
+    unreviewed_per_run: int | None = None
     # **機械で引く巡回**(`extract` の指定を、AI を呼ばずにもう一度走らせる)。
     # **名簿を最新に保つための回**で、外のカテゴリは増えていくのに、機械で埋めるのは
     # 「進み具合が空の 1 回目だけ」だった —— そのあと増えたぶんは永遠に入らない。
@@ -696,6 +707,9 @@ def _sweep_from_json(raw: dict, item: Collection) -> Sweep:
         cover_days=float(raw["cover_days"]) if raw.get("cover_days") else None,
         partitions_per_run=(
             int(raw["partitions_per_run"]) if raw.get("partitions_per_run") else None
+        ),
+        unreviewed_per_run=(
+            max(1, int(raw["unreviewed_per_run"])) if raw.get("unreviewed_per_run") else None
         ),
         on_demand=bool(raw.get("on_demand")),
         only_new=bool(raw.get("only_new")),
@@ -1183,6 +1197,7 @@ def _from_json(item: dict) -> Collection:
             focus.to_json() if (focus := normalize_focus(item.get("pending_focus"))) else None
         ),
         pending_run=normalize_run_once(item.get("pending_run")),
+        requeue_at=str(item.get("requeue_at") or ""),
         keep_ratio=normalize_keep_ratio(item.get("keep_ratio")),
         extract=extraction.to_json(extraction.normalize(item.get("extract"))),
         material=normalize_material(item.get("material")),
@@ -1862,6 +1877,7 @@ def _render_removed(docs: list[dict]) -> str:
 
 def render_unreviewed(
     previous: dict[str, dict], scoped: bool = False, seen: set[str] | None = None,
+    limit: int | None = None, everything: bool = False,
 ) -> str:
     """**まだ AI が目を通していないもの**を、`{current}` と同じ形で差し込む。
 
@@ -1872,8 +1888,15 @@ def render_unreviewed(
     (黙って切ると、見えなかったものを「無かった」と読む)。
 
     **消えたものは出さない**(目を通す相手ではない)。
+
+    `limit` は 1 回に載せる数(`Sweep.unreviewed_per_run`)。`everything` は
+    「全部を未確認に戻す」を頼まれていて、まだ焼いていない回(`Collection.requeue_at`)
+    —— 印はまだ付いていないが、全部を未確認として読む。
     """
-    fresh = [doc for doc in previous.values() if is_unreviewed(doc) and not is_removed(doc)]
+    fresh = [
+        doc for doc in previous.values()
+        if (everything or is_unreviewed(doc)) and not is_removed(doc)
+    ]
     if not fresh:
         return (
             "(今回の対象に、まだ目を通していないものはありません)" if scoped
@@ -1882,7 +1905,7 @@ def render_unreviewed(
     fresh.sort(key=lambda d: (d.get("extra") or {}).get("collected_at") or d.get("updated_at") or "")
     lines: list[str] = []
     used = 0
-    for doc in fresh[:MAX_MATERIAL_DOCS]:
+    for doc in fresh[:min(limit or MAX_MATERIAL_DOCS, MAX_MATERIAL_DOCS)]:
         tags = [t for t in (doc.get("tags") or []) if t != notes.UNREVIEWED_TAG]
         body = (doc.get("body") or "")[:MATERIAL_BODY_CHARS].replace("\n", " ")
         extra = doc.get("extra") or {}
@@ -2234,7 +2257,10 @@ def build_messages(
         # **1 件ごとの印で見る**(時刻では区切らない)。区画を持つ収集では、
         # その区画のぶんだけ(`{current}` と同じ読み方)
         docs, scoped = scoped_docs(item, previous or {}, partition_key, focus)
-        user = user.replace(UNREVIEWED_PLACEHOLDER, render_unreviewed(docs, scoped, seen))
+        user = user.replace(UNREVIEWED_PLACEHOLDER, render_unreviewed(
+            docs, scoped, seen, sweep.unreviewed_per_run if sweep else None,
+            bool(item.requeue_at),
+        ))
     if NOW_PLACEHOLDER in user:
         # **人が読むものは日本時間**(この文はそのまま見出しや本文へ写される)
         user = user.replace(NOW_PLACEHOLDER, jst.format(_now()))
@@ -2490,6 +2516,8 @@ def record_result(
         "cursor": current.cursor,
         "visited": list(visited or []),
         "at": _iso(now),
+        # 焼くところで落ちたら、全部を未確認に戻す頼みも戻す(`rewind_failed_bake`)
+        **({"requeue_at": current.requeue_at} if current.requeue_at else {}),
     }
     updated = replace(
         current,
@@ -2504,6 +2532,9 @@ def record_result(
         # **1 回だけの上書きも忘れる**(次の定時の回まで残ると、頼んだ覚えのない
         # 相手で、頼んだ覚えのない区画だけを見る回が走る)
         pending_run=current.pending_run if focus else None,
+        # **全部を未確認に戻す頼みは、焼いた回で片付く**(`bake_lines` が印を付ける)。
+        # 割り込みでは片付けない —— 控えを残さないので、焼くところで落ちても戻せない
+        requeue_at="" if status == "ok" and not focus else current.requeue_at,
         last_run_at=_iso(now),
         last_status=status,
         last_error=(error or "")[:500] or None,
@@ -2718,6 +2749,7 @@ def rewind_failed_bake(name: str, error: str, since: str, until: str) -> dict | 
         current,
         cursor=str(undo.get("cursor") or ""),
         partitions=partitioning.forget_visits(current.partitions, visited, sweep_name),
+        requeue_at=str(undo.get("requeue_at") or current.requeue_at),
         last_undo=None,
         last_status="error",
         last_error=reason,
@@ -2813,6 +2845,18 @@ def request_focus(name: str, focus: Focus) -> Focus:
     return focus
 
 
+def request_requeue(name: str) -> Collection:
+    """今あるものを全部、まだ目を通していないものに戻すよう頼む。
+
+    **印を付けるのは次に焼く回**(`bake_lines` の `requeue`)。ここで焼き直すと
+    取り込みを 1 本余計に流すことになるので、次の回に載せる。それまでに走る
+    `{unreviewed}` の回は、全部を未確認として読む(`render_unreviewed`)。
+    """
+    updated = replace(get(name), requeue_at=_iso(_now()), updated_at=_iso(_now()))
+    _replace_one(name, updated)
+    return updated
+
+
 def clear_focus(name: str) -> None:
     """控えた割り込みを取り下げる。**起こせなかったときに呼ぶ** ——
     残すと、次に走る定時の回が割り込みとして走ってしまう。
@@ -2887,6 +2931,9 @@ def nothing_to_pass(item: Collection, sweep: Sweep, sources: dict) -> str:
     確かめられないまま飛ばすと、渡すものがあるのに走らない回ができる。
     """
     if sweep.use_extract or sweep.use_feed or sweep.by_hand:
+        return ""
+    # **全部を未確認に戻すよう頼まれていれば、渡すものはある**(印はまだ付いていない)
+    if item.requeue_at:
         return ""
     prompt = sweep.prompt or item.prompt or ""
     deltas = [p for p in DELTA_PLACEHOLDERS if p in prompt]
@@ -4588,11 +4635,14 @@ def _count_dropped(item, plan, previous, collected, only_new, edits) -> int:
 def bake_lines(item, sources: dict, previous, collected, only_new=False, edits=False,
                survey: dict | None = None, sweep: str = "",
                unreviewed: bool = False, reviewed: set[str] | None = None,
-               facts: bool = False):
+               facts: bool = False, requeue: bool = False):
     """焼く素材を 1 行ずつ返す。**2 周目**(数えるのは `bake_survey`)。
 
     **どの回が焼いたかはここで渡す。** 押すのは実際に焼かれる素材のほうで、
     数える 1 周目ではない(あちらは件数しか使わない)。
+
+    `requeue` は「全部を未確認に戻す」(`Collection.requeue_at`)。この回で AI に
+    差し込んだもの(`reviewed`)と消えたもの以外に、未確認の印を付ける。
     """
     plan = survey or bake_survey(item, sources, previous, collected, only_new, edits)
     rows = _rows_of(previous)
@@ -4621,6 +4671,8 @@ def bake_lines(item, sources: dict, previous, collected, only_new=False, edits=F
     ):
         if limit is not None and _doc_time(doc) < limit:
             continue
+        if requeue and not is_removed(doc) and doc["title"] not in (reviewed or ()):
+            doc = _unreviewed(doc)
         for n, rule in enumerate(plan["rules"]):
             if (known := plan["alive"].get(n)) is None:
                 continue

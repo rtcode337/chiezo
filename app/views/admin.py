@@ -801,6 +801,7 @@ def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
     interval = sweep.interval_minutes if sweep else collect.MIN_INTERVAL_MINUTES * 12
     cover = f"{sweep.cover_days:g}" if sweep and sweep.cover_days else ""
     per_run = sweep.partitions_per_run if sweep and sweep.partitions_per_run else ""
+    unreviewed_per_run = sweep.unreviewed_per_run if sweep and sweep.unreviewed_per_run else ""
     backend = sweep.backend if sweep else None
     enabled = sweep.enabled if sweep else True
     on_demand = bool(sweep and sweep.on_demand)
@@ -846,6 +847,13 @@ def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
         '<p><label>1 回に見る区画(空なら上の日数から計算する)<br>'
         f'<input name="sweep_per_run" type="number" min="1"'
         f' max="{collect.MAX_PARTITIONS_PER_RUN}" value="{esc(str(per_run))}"></label></p>'
+        # **1 件ずつ調べさせる回は、載せる数で 1 回の仕事の量を決める。** 載せすぎると
+        # AI は途中で手を止める(載っていないものは印が残り、次の回に回る)
+        '<p><label>1 回に渡す未確認の数({unreviewed} に古い順で載せる数。'
+        '空なら入るだけ)<br>'
+        f'<input name="sweep_unreviewed_per_run" type="number" min="1"'
+        f' max="{collect.MAX_MATERIAL_DOCS}" value="{esc(str(unreviewed_per_run))}">'
+        "</label></p>"
         f"{_sweep_backend_fields(sweep, backend, use_extract or use_feed or by_hand)}"
         # **足すだけの回は、既にある見出しに触らない。** 「漏れているものを足して」と
         # 頼む回に要る印で、AI の判断に頼らずにここで保証する —— 見せられるのはその
@@ -1785,6 +1793,39 @@ def _redo_form(item, disabled: str) -> str:
     )
 
 
+def _requeue_form(item, disabled: str) -> str:
+    """今あるものを全部、まだ目を通していないものに戻す口(`collect.request_requeue`)。
+
+    **`{unreviewed}` を使う巡回が無ければ出さない**(戻しても読む回が無い)。
+    頼んだあと、次に焼く回が印を付けるまでは「頼んである」と出す。
+    """
+    uses = any(
+        collect.UNREVIEWED_PLACEHOLDER in (s.prompt or "") for s in collect.sweeps_of(item)
+    )
+    if not uses:
+        return ""
+    if item.requeue_at:
+        when = jst.format(jst.parse(item.requeue_at)) if jst.parse(item.requeue_at) else ""
+        return (
+            '<p class="muted">全部を未確認に戻すよう頼んであります'
+            + (f"({esc(when)})" if when else "")
+            + "。次に走る回が印を付け直し、{unreviewed} の回が古いほうから読み直します。</p>"
+        )
+    confirm = (
+        "今あるものを全部、まだ目を通していないものに戻します。"
+        "{unreviewed} を使う巡回が、古いほうからすべて読み直します"
+        "(そのぶん AI の枠を使います)。よろしいですか?"
+    )
+    return (
+        f'<form class="init-form" method="post"'
+        f' action="/admin/collect/{esc(quote(item.name))}/requeue"{disabled}'
+        f" onsubmit=\"return confirm('{esc(confirm)}')\">"
+        f'<button type="submit"{disabled}'
+        ' title="目を通した印を全部外します。依頼文を直したあと、今あるものを初めから回し直すときに"'
+        ">全部を未確認に戻す</button></form>"
+    )
+
+
 def _handoff_html(item, disabled: str = "") -> str:
     """手で回す回の受け渡し(`app/handoff.py`)。**巡回が無ければ何も出さない。**
 
@@ -1870,6 +1911,7 @@ def _collect_detail_html(
         f'<p class="muted">進み具合(次の実行で {{cursor}} に入る値): '
         f'<code>{esc(item.cursor) or "(まだ無し)"}</code></p>'
         f"{_redo_form(item, disabled)}"
+        f"{_requeue_form(item, disabled)}"
         f"{_handoff_html(item, disabled)}"
         f"{_partition_html(item, (sources or {}).get(item.name), busy)}"
         f"{_removed_html(item, sources or {})}"
@@ -4059,6 +4101,17 @@ def admin_collect_queries_forget(name: str, query: str = Form("")):
     return RedirectResponse(url=f"/admin/collect/{quote(name)}#search-queries", status_code=303)
 
 
+@router.post("/admin/collect/{name}/requeue")
+def admin_collect_requeue(name: str):
+    """今あるものを全部、まだ目を通していないものに戻すよう頼む(`collect.request_requeue`)。
+
+    **目を通した印は、付いたら二度と `{unreviewed}` に載らない。** 依頼文を直して
+    調べる中身を増やしたとき、印の付いたものは直す前の依頼文で調べたまま残る。
+    """
+    item = collect.request_requeue(name)
+    return RedirectResponse(url=collect_page(item), status_code=303)
+
+
 @router.post("/admin/collect/{name}/redo")
 async def admin_collect_redo(name: str, request: Request):
     """最後の 1 回を、やり直せる状態まで巻き戻してもう一度走らせる。
@@ -4294,8 +4347,8 @@ def _parse_sweeps_form(form) -> list[dict]:
     fields = {
         key: form.getlist(f"sweep_{key}")
         for key in (
-            "interval", "cover_days", "per_run", "backend", "model", "effort",
-            "enabled", "clock", "merge", "prompt", "source", "worker",
+            "interval", "cover_days", "per_run", "unreviewed_per_run",
+            "backend", "model", "effort", "enabled", "clock", "merge", "prompt", "source", "worker",
         )
     }
     out = []
@@ -4336,7 +4389,10 @@ def _parse_sweeps_form(form) -> list[dict]:
             sweep["by_hand"] = True
         if at("interval").isdigit():
             sweep["interval_minutes"] = int(at("interval"))
-        for key, field in (("cover_days", "cover_days"), ("partitions_per_run", "per_run")):
+        for key, field in (
+            ("cover_days", "cover_days"), ("partitions_per_run", "per_run"),
+            ("unreviewed_per_run", "unreviewed_per_run"),
+        ):
             if value := at(field):
                 with suppress(ValueError):
                     sweep[key] = float(value) if key == "cover_days" else int(value)

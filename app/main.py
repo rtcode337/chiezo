@@ -1693,6 +1693,8 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
                     # **機械で引く回は、運んできた脇書きを入れ替える**
                     # (`collect.uses_extract`)—— 数えた値は回るたびに変わる
                     collect.uses_extract(item, sweep),
+                    # **全部を未確認に戻す頼みは、焼くこの回で印にする**
+                    requeue=bool(item.requeue_at),
                 ),
                 name, plan.get("rows"),
             )
