@@ -226,7 +226,7 @@ JOB_HEADING = '<h2 id="job-head">取り込み(素材を長期記憶へ焼く)</h
 # 状況の面の収集の節の見出し。取り込みの節と同じ段にする(収集の回は取り込みの
 # 中で走るが、走っている収集と実行履歴が取り込みの表の続きに見えないように)
 COLLECT_HEADING = '<h2 id="collect-head">収集</h2>'
-# 状況の面の AI の節の見出し(走っている依頼・使用量・依頼の履歴)
+# 状況の面の AI の節の見出し(依頼の履歴・走っている依頼・使用量)
 AI_HEADING = '<h2 id="ai-head">AI</h2>'
 
 
@@ -2659,7 +2659,10 @@ def admin_status(
 
 
 def _ai_section_html(request: Request, running: list[dict], job: dict | None) -> str:
-    """状況の面の「AI」の節。**いま走っている依頼 → 使用量 → 依頼の履歴**。
+    """状況の面の「AI」の節。**依頼の履歴(畳む) → いま走っている依頼 → 使用量**。
+
+    **依頼の履歴は見出しのすぐ下**。閉じていれば 1 行なので上に置いても邪魔に
+    ならず、使用量の表(と内訳の畳み)の下に置くと、長い表の後ろに埋もれて探すことになる。
 
     **見出しは取り込み・収集と同じ段**(`AI_HEADING`)で、中の見出しからは「AI」を
     落とす(節の見出しが言っているので繰り返さない)。
@@ -2672,11 +2675,11 @@ def _ai_section_html(request: Request, running: list[dict], job: dict | None) ->
     ) else ""
     return (
         AI_HEADING
-        + _running_html(running, _round_done(job))
-        + _usage_html(request)
         + f'<details id="{ai_history.SECTION_ANCHOR}"{opened}><summary><h3>依頼の履歴</h3></summary>'
         + ai_history.section_html(page, failed_only)
         + "</details>"
+        + _running_html(running, _round_done(job))
+        + _usage_html(request)
     )
 
 

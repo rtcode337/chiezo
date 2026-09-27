@@ -2100,6 +2100,14 @@ class TestAdminPages:
         # 読めなくても表は落とさない
         assert admin.db_size_text(tmp_path / "missing.db") == ""
 
+    def test_the_ai_history_sits_right_under_the_ai_heading(self, client):
+        """閉じていれば 1 行なので上に置く(使用量の表の下だと、長い表の後ろに埋もれる)。"""
+        from app.views import admin
+
+        html = client.get("/admin/status").text
+        after = html.split(admin.AI_HEADING, 1)[1]
+        assert after.lstrip().startswith('<details id="ai-history"')
+
     def test_each_page_holds_only_its_own_section(self, client):
         memory = client.get("/admin/memory").text
         ai = client.get("/admin/ai").text
