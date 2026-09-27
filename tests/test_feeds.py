@@ -375,3 +375,66 @@ class TestKeepingItRaw:
 
         assert items[0]["title"] == "新しいほう"
         assert "配信されていません" in items[0]["body"]
+
+
+PAPERS = """[
+  {"paper": {"id": "2609.28603", "title": "Learning to Discover", "summary": "An abstract.",
+             "ai_keywords": ["math", "discovery"], "upvotes": 42},
+   "publishedAt": "2026-09-23T00:00:00.000Z"},
+  {"paper": {"id": "", "title": "No id"}, "publishedAt": "2026-09-23T00:00:00.000Z"},
+  {"paper": {"id": "2609.1", "title": ""}}
+]"""
+
+MAPPING = {
+    "title": "paper.title",
+    "url": "https://arxiv.org/abs/{paper.id}",
+    "summary": "paper.summary",
+    "at": "publishedAt",
+    "subjects": "paper.ai_keywords",
+    "from": "Hugging Face Daily Papers",
+}
+
+
+class TestJsonSources:
+    """RSS を配っていない相手(JSON の API だけ)も、読み方を書けば同じ道具で引ける。"""
+
+    def test_it_maps_json_like_an_rss_entry(self, serve):
+        url = "https://example.com/api/daily"
+        serve({url: PAPERS})
+        got = run({"urls": [{"url": url, "tags": ["論文"], "json": MAPPING}]})
+
+        [paper] = got["items"]
+        assert paper["title"] == "Learning to Discover"
+        assert paper["url"] == "https://arxiv.org/abs/2609.28603"
+        assert paper["summary"] == "An abstract."
+        assert paper["at"].startswith("2026-09-23")
+        assert paper["subjects"] == ["math", "discovery"]
+        assert paper["from"] == "Hugging Face Daily Papers"
+        # 取り込む形も RSS のものと同じ(束の名前と配信元がタグになる)
+        [item] = feeds.to_items(got)
+        assert item["tags"] == ["論文", "Hugging Face Daily Papers"]
+
+    def test_items_can_sit_below_the_top(self, serve):
+        url = "https://example.com/api/wrapped"
+        serve({url: '{"data": {"list": [{"t": "A", "u": "https://example.com/a"}]}}'})
+        got = run({"urls": [{"url": url, "json": {"items": "data.list", "title": "t", "url": "u"}}]})
+        assert [i["title"] for i in got["items"]] == ["A"]
+        # 配信元の名前を書かなければ、相手のホスト名
+        assert got["items"][0]["from"] == "example.com"
+
+    def test_a_broken_answer_does_not_stop_the_collection(self, serve):
+        url = "https://example.com/api/broken"
+        serve({url: "<html>not json</html>"})
+        got = run({"urls": [{"url": url, "json": MAPPING}]})
+        assert got["items"] == [] and got["failed"] == 1
+
+    def test_the_mapping_needs_title_and_url_and_known_keys(self):
+        with pytest.raises(HTTPException):
+            feeds.normalize({"urls": [{"url": "https://example.com/a", "json": {"title": "t"}}]})
+        with pytest.raises(HTTPException):
+            feeds.normalize({"urls": [{"url": "https://example.com/a",
+                                       "json": {"title": "t", "url": "u", "votes": "x"}}]})
+
+    def test_the_mapping_is_kept_in_the_definition(self):
+        spec = feeds.normalize({"urls": [{"url": "https://example.com/a", "json": MAPPING}]})
+        assert feeds.to_json(spec)["urls"][0]["json"] == MAPPING

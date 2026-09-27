@@ -38,7 +38,9 @@ Chiezo の管理画面で有効にしたときだけなので、そこが唯一�
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 import time
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -111,6 +113,11 @@ _last_call = 0.0
 _lock = asyncio.Lock()
 
 
+# JSON の配信元で、どの項目を読むかを書ける鍵(`json`)。**RSS / Atom の 1 件と同じ形**
+# に写す —— 後ろの工程から見れば、どちらから来たのかは区別が付かない
+JSON_FIELDS = ("items", "title", "url", "summary", "at", "image", "subjects", "from")
+
+
 def _bad(message: str) -> HTTPException:
     return HTTPException(400, {"error": f"フィードの指定が読めません: {message}"})
 
@@ -134,7 +141,34 @@ def _one_url(raw) -> dict:
     tags = [str(t).strip() for t in (raw.get("tags") or []) if str(t).strip()]
     if len(tags) > MAX_TAGS:
         raise _bad(f"1 本に付けられるタグは {MAX_TAGS} 個まで")
-    return {"url": url, "tags": tags[:MAX_TAGS]}
+    out = {"url": url, "tags": tags[:MAX_TAGS]}
+    if (mapping := raw.get("json")) not in (None, {}):
+        out["json"] = _json_mapping(mapping)
+    return out
+
+
+def _json_mapping(raw) -> dict:
+    """JSON の配信元の読み方(`json`)。**RSS を配っていない相手のため**の口。
+
+    たとえば話題の論文(Hugging Face の Daily Papers)は JSON の API しか配っておらず、
+    RSS / Atom だけを読む道具では入れようがなかった。値は 2 通りに書ける ——
+
+    - `"paper.title"` …… 1 件の中の項目を、ドットでたどって読む
+    - `"https://arxiv.org/abs/{paper.id}"` …… `{…}` の中を同じようにたどって埋める
+
+    `items` は 1 件の並びがある場所(空なら応答そのものが並び)。`from` は配信元の
+    名前をそのまま書く(JSON には RSS のようなフィードの題名が無い)。
+    **title と url は必須** —— どちらかが無いと、重複の鍵も出典も作れない。
+    """
+    if not isinstance(raw, dict):
+        raise _bad("json には、どの項目を読むかをオブジェクトで書いてください")
+    unknown = [k for k in raw if k not in JSON_FIELDS]
+    if unknown:
+        raise _bad(f"json に書けるのは {', '.join(JSON_FIELDS)} だけです(読めない鍵: {', '.join(unknown)})")
+    mapping = {k: str(v).strip() for k, v in raw.items() if isinstance(v, str)}
+    if not mapping.get("title") or not mapping.get("url"):
+        raise _bad("json には title と url を書いてください")
+    return mapping
 
 
 def normalize(raw) -> dict | None:
@@ -220,6 +254,7 @@ def expand(spec: dict, queries: list[str]) -> dict:
             urls.append({
                 "url": one["url"].replace(QUERY_SLOT, quote(q, safe="")),
                 "tags": [*one["tags"], f"{spec['query_tag']}:{q}"][: MAX_TAGS + 1],
+                **({"json": one["json"]} if one.get("json") else {}),
             })
     return {**spec, "urls": urls}
 
@@ -233,7 +268,9 @@ def to_json(spec: dict | None) -> dict | None:
     if not spec:
         return None
     out = {k: v for k, v in spec.items() if v not in (None, "")}
-    out["urls"] = [one["url"] if not one["tags"] else one for one in spec["urls"]]
+    out["urls"] = [
+        one["url"] if not one["tags"] and not one.get("json") else one for one in spec["urls"]
+    ]
     return out
 
 
@@ -269,7 +306,7 @@ async def fetch(spec: dict, since: str | None = None) -> dict:
     for one in spec["urls"]:
         await _throttle()
         try:
-            entries = await _fetch_one(one["url"])
+            entries = await _fetch_one(one["url"], one.get("json"))
         except (httpx.HTTPError, ElementTree.ParseError, ValueError) as e:
             # 例外の文言(接続先のホスト名等が入る)はログにだけ残す
             log.info("feed fetch failed %s: %r", one["url"], e)
@@ -305,17 +342,87 @@ def _fair_share(per_source: list[list[dict]], limit: int) -> list[dict]:
     return taken
 
 
-async def _fetch_one(url: str) -> list[dict]:
+async def _fetch_one(url: str, mapping: dict | None = None) -> list[dict]:
     async with _client() as client:
         res = await client.get(url)
     res.raise_for_status()
     body = res.content[:MAX_BYTES]
+    if mapping:
+        return _json_entries(json.loads(body), mapping, url)
     if _looks_unsafe(body):
         raise ValueError("DTD のある XML は読まない")
     root = ElementTree.fromstring(body)
     source = _source_name(root, url)
     entries = _rss(root) or _atom(root)
     return [{**e, "from": source} for e in entries]
+
+
+def _json_entries(data, mapping: dict, url: str) -> list[dict]:
+    """JSON の応答を、RSS / Atom の 1 件と同じ形に写す(`_json_mapping`)。
+
+    **読めない 1 件は飛ばす**(見出しか URL が取れないもの)。読めない値は空にする ——
+    日付が読めなければ「日付なし」として残す(RSS と同じ扱い)。
+    """
+    items = _dig(data, mapping.get("items", "")) if mapping.get("items") else data
+    if not isinstance(items, list):
+        raise ValueError("json の items が並びではありません")
+    source = mapping.get("from") or urlparse(url).netloc
+    out = []
+    for item in items:
+        title = _pick(item, mapping.get("title", ""))
+        link = _pick(item, mapping.get("url", ""))
+        if not title or not link.startswith(("http://", "https://")):
+            continue
+        subjects = _dig(item, mapping["subjects"]) if mapping.get("subjects") else []
+        out.append({
+            "title": title,
+            "url": link,
+            "summary": _pick(item, mapping.get("summary", ""))[:MAX_SUMMARY_CHARS],
+            "at": _when(_pick(item, mapping.get("at", ""))),
+            "image": _pick(item, mapping.get("image", "")),
+            "subjects": [
+                str(s).strip() for s in (subjects if isinstance(subjects, list) else [])
+                if isinstance(s, str | int) and str(s).strip()
+            ][:MAX_SUBJECTS],
+            "from": source,
+        })
+    return out
+
+
+def _dig(data, path: str):
+    """ドットでたどる(`paper.title`)。たどれなければ None。"""
+    for key in [p for p in path.split(".") if p]:
+        if isinstance(data, dict):
+            data = data.get(key)
+        elif isinstance(data, list) and key.isdigit() and int(key) < len(data):
+            data = data[int(key)]
+        else:
+            return None
+    return data
+
+
+def _pick(item, spec: str) -> str:
+    """1 件から文字を 1 つ読む。`{…}` があれば埋め込み、無ければ項目そのもの。
+
+    **埋める値が 1 つでも無ければ空**(半端な URL を作らない)。
+    """
+    if not spec:
+        return ""
+    if "{" in spec:
+        missing = False
+
+        def fill(match):
+            nonlocal missing
+            value = _dig(item, match.group(1))
+            if value in (None, ""):
+                missing = True
+                return ""
+            return str(value)
+
+        text = re.sub(r"\{([^{}]+)\}", fill, spec)
+        return "" if missing else text.strip()
+    value = _dig(item, spec)
+    return str(value).strip() if isinstance(value, str | int | float) else ""
 
 
 def _looks_unsafe(body: bytes) -> bool:

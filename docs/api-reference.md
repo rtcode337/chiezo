@@ -484,6 +484,23 @@ curl -s "$BASE/v1/collect" -H 'Content-Type: application/json' -d '{
   **取れなかった数は素材の中で伝える** —— 少ないのが世の中の都合か道具の不調かで
   意味が違う
 
+**RSS / Atom を配っていない相手は、JSON の読み方を書けば同じ道具で引ける**(`json`)。
+1 本ごとに、どの項目が見出し・URL・要約・日付かを書く。値は `"paper.title"` のように
+ドットでたどるか、`"https://arxiv.org/abs/{paper.id}"` のように `{…}` へ埋め込む。
+`items` は 1 件の並びがある場所(空なら応答そのもの)、`from` は配信元の名前
+(JSON にはフィードの題名が無いので、書かなければ相手のホスト名)。**`title` と `url` は必須**。
+書ける鍵は `items` / `title` / `url` / `summary` / `at` / `image` / `subjects` / `from`。
+
+```json
+{"url": "https://huggingface.co/api/daily_papers?limit=50", "tags": ["論文"],
+ "json": {"title": "paper.title", "url": "https://arxiv.org/abs/{paper.id}",
+          "summary": "paper.summary", "at": "publishedAt",
+          "subjects": "paper.ai_keywords", "from": "Hugging Face Daily Papers"}}
+```
+
+見出しか URL が取れない 1 件は飛ばし、JSON として読めない応答は「取れなかった 1 本」に数える
+(RSS のときと同じ)。
+
 **`since: "last_run"` を書くと、前回の実行より後のものだけを渡す。**
 **日付を持たないものは落とさない**(そういうフィードは普通にあり、絞ると静かに 0 件になる)。
 
