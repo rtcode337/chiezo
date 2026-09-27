@@ -1121,6 +1121,8 @@ async def _collect_items(
     stopped = ""
     for key in keys or [None]:
         content = None
+        # **この区画で差し込むものを見分けるための控え**(`build_messages` が `shown` へ書く)
+        shown_before = set(shown)
         # **区画ごとに相手を見直す。** 1 回で何区画も回るので、決めるのが回の頭
         # 1 度きりだと、**途中で窓が閉まっても同じ相手に投げ続ける** —— 本番で、
         # 41% で通した相手が 2 区画目で 89% に跳ね、残り 4 区画ぶんを投げ切って
@@ -1175,6 +1177,21 @@ async def _collect_items(
             notes.append(_gave_up(sweep.worker, key))
             break
         items, next_cursor, note = collect.parse_response(content)
+        # **手を付けなかったものには、目を通した印を付けない**(`collect.not_reviewed`)。
+        # 申告されたものと、答えが途中で切れたときに返ってこなかったもの。
+        # 印が残るので、次の回にもう一度渡る
+        section = shown - shown_before
+        if note:
+            returned = {_title_of(i) for i in items}
+            leftover = section - returned
+        else:
+            leftover = section & collect.not_reviewed(content)
+        if leftover:
+            shown -= leftover
+            notes.append(
+                (f"{key}: " if key else "")
+                + f"見られなかった {len(leftover)} 件は、目を通した印を付けずに次の回へ回します"
+            )
         # **1 件ずつに署名を載せる。** ワーカーを使う回は区画ごとに相手が振り替わる
         # ので、回の単位で 1 つに丸めると半分の文書に嘘の署名が付く
         collected += collect.signed(items, ran_by, ran_model)
@@ -1192,6 +1209,14 @@ async def _collect_items(
         if note:
             notes.append(f"{key}: {note}" if key else note)
     return collected, cursor, " / ".join(notes)
+
+
+def _title_of(item) -> str:
+    """返りの 1 件の見出しを、差し込みと同じ形に均す(`notes.title_key`)。
+
+    `_collect_items` の中では `notes` が断り書きの並びとして使われているので、外に置く。
+    """
+    return notes.title_key(item.get("title")) if isinstance(item, dict) else ""
 
 
 def _all_full(worker: str) -> dict:

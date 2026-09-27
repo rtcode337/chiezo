@@ -1711,7 +1711,7 @@ REFINE_SYSTEM_PROMPT = (
     "既にある内容を育てる。JSON だけで返し、前置き・説明・コードブロックの記号は付けない。"
     " 形式: {\"items\":[{\"title\":\"見出し\",\"body\":\"本文\","
     "\"tags\":[\"タグ\"],\"url\":\"出典URL\",\"extra\":{\"鍵\":\"値\"}}],"
-    "\"next_cursor\":\"次に進む印\"}"
+    "\"next_cursor\":\"次に進む印\",\"not_reviewed\":[\"見出し\"]}"
     " **返すのは、直すものと新しく足すものだけでよい。**"
     " 触れなかったものはそのまま残るので、変えないものを返す必要はない。"
     " title は同一性の鍵。**同じ見出しで返すと、その 1 件が置き換わる**。"
@@ -1726,6 +1726,10 @@ REFINE_SYSTEM_PROMPT = (
     " **脇書き(extra)は書いたものだけが変わる。** 触れなかった鍵はそのまま残るので、"
     "変えないものを書く必要は無い。**落としたい鍵だけ null を書く**。"
     " 分からない項目は null。"
+    " **渡されたものを全部は見られなかったら、見られなかったものの見出しを not_reviewed に"
+    "並べる**(量が多くて途中で区切ったとき)。そこに並べたものは次の回にもう一度渡る ——"
+    "並べずに黙って返すと、見たうえで直す必要が無かったものと区別できず、二度と渡らない。"
+    "全部見たなら not_reviewed は書かなくてよい。"
 )
 
 
@@ -2306,6 +2310,29 @@ def clean_draft(content: str) -> str:
     """
     text = re.sub(r"^\s*```(?:\w+)?\s*|\s*```\s*$", "", content.strip())
     return text.strip()
+
+
+def not_reviewed(content: str) -> set[str]:
+    """答えが「見られなかった」と申告した見出し(`not_reviewed`)。無ければ空。
+
+    **目を通した印を外さないためのもの**(`notes.UNREVIEWED_TAG`)。整理は触ったものしか
+    返さないので、返ってこなかった 1 件が「見たうえで直す必要が無かった」のか
+    「量が多くて手を付けなかった」のかは、返りからは分からない —— 本番で、164 冊を
+    渡した回に相手が「今回は先頭のまとまりを返します」と 18 冊だけ返し、残り 146 冊が
+    目を通した扱いのまま二度と渡らなかった。**読めなければ空**(申告が無いのと同じ)。
+    """
+    stripped = re.sub(r"```(?:json)?", "", content or "").strip()
+    start, end = stripped.find("{"), stripped.rfind("}")
+    if start < 0 or end <= start:
+        return set()
+    try:
+        payload = json.loads(stripped[start : end + 1])
+    except ValueError:
+        return set()
+    listed = payload.get("not_reviewed") if isinstance(payload, dict) else None
+    if not isinstance(listed, list):
+        return set()
+    return {key for t in listed if isinstance(t, str) and (key := notes.title_key(t))}
 
 
 def parse_response(content: str) -> tuple[list[dict], str | None, str]:
