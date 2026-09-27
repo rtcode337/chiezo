@@ -5276,8 +5276,12 @@ class TestTheCollectSectionMarkup:
         monkeypatch.setattr(ai_inflight, "running", lambda limit=50: [])
         assert admin._collect_running_html("news") == ""
 
-    def test_only_the_first_partitions_are_listed(self, sample):
-        """全部を出すと、その下にある変更履歴まで面の外へ押し出される。"""
+    def test_every_partition_is_folded_away(self, sample):
+        """全部を出すと、その下にある変更履歴まで面の外へ押し出される。
+
+        頭の数件だけ出していた頃もあったが、どこが出るかは台帳の並び次第で、
+        読みたい区画とは限らない。全部を 1 つの畳みに入れる。
+        """
         from app.views import admin
 
         collect.update(
@@ -5287,12 +5291,11 @@ class TestTheCollectSectionMarkup:
         )
         html = admin._partition_html(collect.get("news"))
 
-        assert "区画0" in html
-        assert "区画9" in html
         # **捨てはしない** —— 開けば全部ある
-        assert "残りの 15 区画を見る" in html
+        assert "<details><summary>25 区画を見る</summary>" in html
+        assert html.index("25 区画を見る") < html.index("区画0")
         assert "区画24" in html
-        assert html.index("残りの 15 区画を見る") < html.index("区画24")
+        assert html.count("<table") == 1
 
     def test_every_form_is_opened_and_closed(self, sample):
         html = self._html(sample)

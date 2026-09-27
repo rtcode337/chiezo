@@ -1249,10 +1249,6 @@ def _queries_html(item, disabled: str = "") -> str:
     )
 
 
-# 区画の表に出す件数。**残りは畳む** —— 全部出すと、その下にある変更履歴まで
-# 面の外へ押し出される
-PARTITION_HEAD = 10
-
 # 消えたものの一覧に出す件数。**残りは畳む** —— 溜まり続けるので、全部出すと
 # その下にある変更履歴まで面の外へ押し出される
 REMOVED_HEAD = 20
@@ -1337,9 +1333,9 @@ def _partition_html(item, src=None, busy: bool = False) -> str:
             f"(次の実行で対象の空間を割ってから回り始めます){_spread_from_html(item)}。</p>"
             f"{_repartition_form(item, busy)}"
         )
-    # **頭の 10 件だけ出して、残りは畳む。** 全部を出すと 325 行が面を埋めて、
-    # その下にある変更履歴まで押し出される。**捨てはしない** —— ここを読みに来るのは
-    # 「どこを見ていて、どこがまだか」を知りたいときなので、開けば全部ある
+    # **全部を畳んでおく。** 全部を出すと 325 行が面を埋めて、その下にある変更履歴まで
+    # 押し出される。頭の数件だけ出していた頃もあったが、どこが出るかは台帳の並び
+    # 次第で、読みたい区画とは限らない —— 開けば全部あるほうが探しやすい
     # **選んで走らせられる**ので、行の頭にチェックを置く(`_run_here_html` の
     # フォームの中に表を入れてある)。**選べるのは区画を見る巡回があるときだけ**
     pickable = bool(_sweeps_for_trial(item))
@@ -1358,18 +1354,10 @@ def _partition_html(item, src=None, busy: bool = False) -> str:
             f"<td>{p['count']:,}</td><td>{_visits_html(p)}</td></tr>"
         )
 
-    head = "".join(row(p) for p in item.partitions[:PARTITION_HEAD])
-    rest = item.partitions[PARTITION_HEAD:]
-    more = (
-        "<details><summary>"
-        f"残りの {len(rest):,} 区画を見る</summary>"
-        f"<table><thead><tr>{heads}</tr></thead>"
-        f"<tbody>{''.join(row(p) for p in rest)}</tbody></table></details>"
-        if rest else ""
-    )
     table = (
+        f"<details><summary>{total:,} 区画を見る</summary>"
         f"<table><thead><tr>{heads}</tr></thead>"
-        f"<tbody>{head}</tbody></table>{more}"
+        f"<tbody>{''.join(row(p) for p in item.partitions)}</tbody></table></details>"
     )
     return (
         f'<p class="muted">区画: {total:,}{_spread_from_html(item)}'
