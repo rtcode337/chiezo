@@ -3661,6 +3661,12 @@ def stream_docs(
             skipped += 1
             yield before
             continue
+        if edits and not str(raw.get("body") or "").strip() and before.get("body"):
+            # **本文を返さなかった直しは、本文を今のまま残す**(脇書きが「書いた鍵だけ
+            # 変わる」のと同じ扱い)。見出しとタグしか見せない回(`{names}`)では、AI は
+            # 今の本文を知らない —— タグだけ直して返すのは筋の通った答えなのに、
+            # 本文が無いとして捨てていた(本棚で ISBN のタグを付けた 20 冊が全部捨てられた)
+            raw = {**raw, "body": before["body"]}
         doc = _to_doc(raw, now, item.web)
         if doc is None:
             skipped += 1
