@@ -93,3 +93,26 @@ class TestBrokenWorkerDefinitions:
 
         assert workers.DEFS_BROKEN in html
         assert "secret detail" not in html
+
+
+class TestThumbnailsStayInTheirPlace:
+    def test_a_link_pointing_outside_is_not_served(self, tmp_path, monkeypatch):
+        """名前の形は通っても、置き場の外を指す 1 件は配らない(組んだ結果で確かめる)。"""
+        from fastapi import HTTPException
+
+        from app import thumbs
+
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        root = tmp_path / "state" / "thumbs"
+        root.mkdir(parents=True)
+        outside = tmp_path / "secret.webp"
+        outside.write_bytes(b"x")
+        name = "0" * 40 + ".webp"
+        (root / name).symlink_to(outside)
+
+        with pytest.raises(HTTPException):
+            thumbs.resolve(name)
+
+        real = "1" * 40 + ".webp"
+        (root / real).write_bytes(b"y")
+        assert thumbs.resolve(real).read_bytes() == b"y"

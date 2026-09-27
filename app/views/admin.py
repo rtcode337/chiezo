@@ -3966,9 +3966,10 @@ async def admin_handoff_drop(name: str):
 @router.post("/admin/collect/{name}/queries/forget")
 def admin_collect_queries_forget(name: str, query: str = Form("")):
     """検索文の控えを消す(`query` があればその 1 つ、空なら全部)。押した場所へ戻す。"""
-    collect.get(name)
-    search_queries.forget(name, query.strip() or None)
-    return RedirectResponse(url=f"/admin/collect/{quote(name)}#search-queries", status_code=303)
+    item = collect.get(name)
+    search_queries.forget(item.name, query.strip() or None)
+    # **行き先は保存されている名前から組む**(`collect_page`)。要求の文字列を繋がない
+    return RedirectResponse(url=f"{collect_page(item)}#search-queries", status_code=303)
 
 
 @router.post("/admin/collect/{name}/requeue")

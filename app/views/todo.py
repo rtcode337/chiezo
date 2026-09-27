@@ -539,11 +539,13 @@ def _done_section(page: int) -> str:
         )
         pages = (total + DONE_PAGE_SIZE - 1) // DONE_PAGE_SIZE
         pager = []
+        # **ページの番号も逃がしてから書く**。数でしか来ないが、URL から来た値を
+        # そのまま HTML に書く形を残さない(読む側・検査する側に安全が読めるように)
         if page > 0:
-            pager.append(f'<a href="{PAGE}?done_page={page - 1}#done">← 新しい</a>')
-        pager.append(f'<span class="muted">{page + 1} / {pages} 頁({total} 件)</span>')
+            pager.append(f'<a href="{PAGE}?done_page={esc(page - 1)}#done">← 新しい</a>')
+        pager.append(f'<span class="muted">{esc(page + 1)} / {pages} 頁({total} 件)</span>')
         if page + 1 < pages:
-            pager.append(f'<a href="{PAGE}?done_page={page + 1}#done">古い →</a>')
+            pager.append(f'<a href="{PAGE}?done_page={esc(page + 1)}#done">古い →</a>')
         inner = (
             "<table><thead><tr><th>タスク</th><th>プロジェクト</th><th>完了</th><th></th>"
             f"</tr></thead><tbody>{cells}</tbody></table>"

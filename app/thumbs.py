@@ -45,6 +45,7 @@ import html
 import io
 import ipaddress
 import logging
+import os
 import re
 import socket
 import time
@@ -108,10 +109,13 @@ def resolve(name: str) -> Path:
     root = thumbs_dir()
     if root is None or not _NAME.fullmatch(name or ""):
         raise HTTPException(404, {"error": "not found"})
-    path = root / name
-    if not path.is_file():
+    # **組んだ結果でも置き場の中かを確かめる**(`handoff._inside` と同じ形)。名前の形で
+    # 外へは出ないが、形の決まりを変えたときに黙って外を配らないように
+    base = os.path.realpath(root)
+    full = os.path.realpath(os.path.join(base, name))
+    if not full.startswith(base + os.sep) or not os.path.isfile(full):
         raise HTTPException(404, {"error": "not found"})
-    return path
+    return Path(full)
 
 
 def normalize(raw) -> dict | None:
