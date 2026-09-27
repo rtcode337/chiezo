@@ -61,6 +61,29 @@ class TestPerRun:
         assert "全 3 件。うち古いほうから 2 件だけ" in text
         assert "本:c" not in text
 
+    def test_an_extra_key_puts_the_larger_ones_first(self, shelf):
+        """よく勧められているものから片付ける。値の無いものは後ろ、同じ値なら古い順。"""
+        collect.update("shelf", sweeps=[
+            {"name": "整理", "unreviewed_per_run": 2, "unreviewed_by": "docs"},
+        ])
+        item = collect.get("shelf")
+        docs = [
+            _doc(1, "本:a", notes.UNREVIEWED_TAG),
+            _doc(2, "本:b", notes.UNREVIEWED_TAG),
+            _doc(3, "本:c", notes.UNREVIEWED_TAG),
+            _doc(4, "本:d", notes.UNREVIEWED_TAG),
+        ]
+        docs[1]["extra"]["docs"] = 5
+        docs[2]["extra"]["docs"] = "9"
+        docs[3]["extra"]["docs"] = 9
+        seen: set[str] = set()
+        messages = collect.build_messages(
+            item, {d["title"]: d for d in docs}, sweep=collect.sweep_named(item, "整理"), seen=seen,
+        )
+
+        assert seen == {"本:c", "本:d"}
+        assert "うち「docs」の大きいほうから 2 件だけ" in _user(messages)
+
     def test_the_number_is_kept_in_the_definition(self, shelf):
         assert collect.sweep_named(shelf, "整理").unreviewed_per_run == 2
         assert collect.sweep_named(shelf, "整理").to_json()["unreviewed_per_run"] == 2
@@ -142,3 +165,4 @@ class TestAdmin:
         html = client.get("/admin/collect/shelf").text
         assert 'name="sweep_unreviewed_per_run"' in html
         assert 'value="2"' in html
+        assert 'name="sweep_unreviewed_by"' in html

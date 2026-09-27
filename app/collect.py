@@ -526,6 +526,11 @@ class Sweep:
     # AI が途中で手を止める —— 160 件あまりを一度に渡した回は 18 件で終わった。
     # 数を決めるのは Chiezo で、AI には「載せたものを全部」と頼めば済む
     unreviewed_per_run: int | None = None
+    # **`{unreviewed}` に載せる順を決める脇書きの鍵**。書けばその値の大きいものから
+    # 載せる(値の無いもの・数でないものは 0。同じ値なら古い順)。空なら古い順。
+    # 1 回に載せる数を絞ると、どれから渡すかで先に仕上がるものが決まる ——
+    # 機械が数えた値(勧めている記事の数など)を鍵にすれば、よく読まれるものから片付く
+    unreviewed_by: str = ""
     # **機械で引く巡回**(`extract` の指定を、AI を呼ばずにもう一度走らせる)。
     # **名簿を最新に保つための回**で、外のカテゴリは増えていくのに、機械で埋めるのは
     # 「進み具合が空の 1 回目だけ」だった —— そのあと増えたぶんは永遠に入らない。
@@ -711,6 +716,7 @@ def _sweep_from_json(raw: dict, item: Collection) -> Sweep:
         unreviewed_per_run=(
             max(1, int(raw["unreviewed_per_run"])) if raw.get("unreviewed_per_run") else None
         ),
+        unreviewed_by=str(raw.get("unreviewed_by") or "").strip()[:60],
         on_demand=bool(raw.get("on_demand")),
         only_new=bool(raw.get("only_new")),
         use_extract=bool(raw.get("use_extract")),
@@ -1875,9 +1881,19 @@ def _render_removed(docs: list[dict]) -> str:
     return head + ":\n" + "\n".join(lines)
 
 
+def _number(value) -> float:
+    """並べ替えに使う数。**読めなければ 0**(値の無いものは後ろへ回る)。"""
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def render_unreviewed(
     previous: dict[str, dict], scoped: bool = False, seen: set[str] | None = None,
-    limit: int | None = None, everything: bool = False,
+    limit: int | None = None, everything: bool = False, order_by: str = "",
 ) -> str:
     """**まだ AI が目を通していないもの**を、`{current}` と同じ形で差し込む。
 
@@ -1892,6 +1908,7 @@ def render_unreviewed(
     `limit` は 1 回に載せる数(`Sweep.unreviewed_per_run`)。`everything` は
     「全部を未確認に戻す」を頼まれていて、まだ焼いていない回(`Collection.requeue_at`)
     —— 印はまだ付いていないが、全部を未確認として読む。
+    `order_by` は並べる順の脇書きの鍵(`Sweep.unreviewed_by`)。値の大きいものから。
     """
     fresh = [
         doc for doc in previous.values()
@@ -1903,6 +1920,9 @@ def render_unreviewed(
             else "(まだ目を通していないものはありません)"
         )
     fresh.sort(key=lambda d: (d.get("extra") or {}).get("collected_at") or d.get("updated_at") or "")
+    if order_by:
+        # **並べ替えは安定なので、同じ値なら古い順のまま**
+        fresh.sort(key=lambda d: -_number((d.get("extra") or {}).get(order_by)))
     lines: list[str] = []
     used = 0
     for doc in fresh[:min(limit or MAX_MATERIAL_DOCS, MAX_MATERIAL_DOCS)]:
@@ -1923,8 +1943,9 @@ def render_unreviewed(
             seen.add(doc["title"])
     head = f"まだ目を通していないもの(全 {len(fresh)} 件"
     if len(lines) < len(fresh):
+        which = f"「{order_by}」の大きいほう" if order_by else "古いほう"
         head += (
-            f"。うち古いほうから {len(lines)} 件だけ載せています。"
+            f"。うち{which}から {len(lines)} 件だけ載せています。"
             "載っていないものは次の回に回ります)"
         )
     else:
@@ -2259,7 +2280,7 @@ def build_messages(
         docs, scoped = scoped_docs(item, previous or {}, partition_key, focus)
         user = user.replace(UNREVIEWED_PLACEHOLDER, render_unreviewed(
             docs, scoped, seen, sweep.unreviewed_per_run if sweep else None,
-            bool(item.requeue_at),
+            bool(item.requeue_at), sweep.unreviewed_by if sweep else "",
         ))
     if NOW_PLACEHOLDER in user:
         # **人が読むものは日本時間**(この文はそのまま見出しや本文へ写される)

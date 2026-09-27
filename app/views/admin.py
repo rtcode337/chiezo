@@ -802,6 +802,7 @@ def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
     cover = f"{sweep.cover_days:g}" if sweep and sweep.cover_days else ""
     per_run = sweep.partitions_per_run if sweep and sweep.partitions_per_run else ""
     unreviewed_per_run = sweep.unreviewed_per_run if sweep and sweep.unreviewed_per_run else ""
+    unreviewed_by = sweep.unreviewed_by if sweep else ""
     backend = sweep.backend if sweep else None
     enabled = sweep.enabled if sweep else True
     on_demand = bool(sweep and sweep.on_demand)
@@ -854,6 +855,9 @@ def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
         f'<input name="sweep_unreviewed_per_run" type="number" min="1"'
         f' max="{collect.MAX_MATERIAL_DOCS}" value="{esc(str(unreviewed_per_run))}">'
         "</label></p>"
+        '<p><label>未確認を載せる順(脇書きの鍵。その値の大きいものから。空なら古い順)<br>'
+        f'<input name="sweep_unreviewed_by" value="{esc(unreviewed_by)}"'
+        ' placeholder="docs"></label></p>'
         f"{_sweep_backend_fields(sweep, backend, use_extract or use_feed or by_hand)}"
         # **足すだけの回は、既にある見出しに触らない。** 「漏れているものを足して」と
         # 頼む回に要る印で、AI の判断に頼らずにここで保証する —— 見せられるのはその
@@ -4347,7 +4351,7 @@ def _parse_sweeps_form(form) -> list[dict]:
     fields = {
         key: form.getlist(f"sweep_{key}")
         for key in (
-            "interval", "cover_days", "per_run", "unreviewed_per_run",
+            "interval", "cover_days", "per_run", "unreviewed_per_run", "unreviewed_by",
             "backend", "model", "effort", "enabled", "clock", "merge", "prompt", "source", "worker",
         )
     }
@@ -4389,6 +4393,8 @@ def _parse_sweeps_form(form) -> list[dict]:
             sweep["by_hand"] = True
         if at("interval").isdigit():
             sweep["interval_minutes"] = int(at("interval"))
+        if unreviewed_by := at("unreviewed_by"):
+            sweep["unreviewed_by"] = unreviewed_by
         for key, field in (
             ("cover_days", "cover_days"), ("partitions_per_run", "per_run"),
             ("unreviewed_per_run", "unreviewed_per_run"),
