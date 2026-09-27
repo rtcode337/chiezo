@@ -103,11 +103,13 @@ class TestDisabled:
         assert 'name="q"' in res.text
 
     def test_admin_shows_the_feature_as_disabled(self, disabled_client):
-        res = disabled_client.get("/admin/ai")
+        # 会話の入口は「AIへの依頼」の面。話せないときは、増やす面(AI)へ案内する
+        res = disabled_client.get("/admin/media")
         assert res.status_code == 200
         assert "まだ話せる相手がいません" in res.text
-        # 相手を増やす入口(「話す相手」節)も同じページに出ていること
-        assert "話す相手" in res.text
+        assert '<a href="/admin/ai">AI</a> の面で有効に' in res.text
+        # 相手を増やす入口(「話す相手」節)は AI の面にある
+        assert "話す相手" in disabled_client.get("/admin/ai").text
 
 
 class TestAskJson:

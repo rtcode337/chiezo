@@ -2108,6 +2108,39 @@ class TestAdminPages:
         after = html.split(admin.AI_HEADING, 1)[1]
         assert after.lstrip().startswith('<details id="ai-history"')
 
+    def test_the_ai_page_holds_the_keys_and_the_request_page_holds_the_talking(
+        self, client, monkeypatch, tmp_path,
+    ):
+        """鍵を預ける面(AI)と、頼む面(AIへの依頼)を分ける。
+
+        会話の入口が鍵の面にあると、毎日来る人が一度入れたら開かない表をまたぐ。
+        依頼文の言語は生成される設定に載る 1 行なので、その設定の下に置く。
+        """
+        from app.views.admin import PAGES
+
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        labels = {path: label for path, label, _note in PAGES}
+        assert labels["/admin/ai"] == "AI"
+        assert labels["/admin/media"] == "AIへの依頼"
+
+        ai = client.get("/admin/ai").text
+        for gone in ("ためた知識を使う AI", ">AI の相手<", "依頼文の言語", "AI と話す(Chiezo"):
+            assert gone not in ai, gone
+        assert "AI依頼: " in ai and "「答える」層" not in ai
+
+        asking = client.get("/admin/media").text
+        # 会話の入口は、作ってもらう口の 1 つ前
+        talk = asking.index("<h2>AIと会話する</h2>")
+        assert asking.index("<h2>見比べ</h2>") < talk
+        if "<h2>作ってもらう</h2>" in asking:
+            assert talk < asking.index("<h2>作ってもらう</h2>")
+
+        server = client.get("/admin/server").text
+        assert server.index('id="claude-config"') < server.index("依頼文の言語")
+        res = client.post("/admin/ai/prompt-language", data={"language": "ja"},
+                          follow_redirects=False)
+        assert res.headers["location"] == "/admin/server#claude-config"
+
     def test_each_page_holds_only_its_own_section(self, client):
         memory = client.get("/admin/memory").text
         ai = client.get("/admin/ai").text

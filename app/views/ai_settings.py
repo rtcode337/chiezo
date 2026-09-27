@@ -92,6 +92,8 @@ def _stopped_note(row: dict) -> str:
 
 
 SECTION_ANCHOR = "ai-providers"
+# 依頼文の言語を置く場所(その他の面の「Claude Code 連携設定」)
+CLAUDE_CONFIG_ANCHOR = "claude-config"
 
 # 「接続を試す」の結果は節の中に出るので、戻り先にこの印を付ける。
 # 付けないとページの先頭へ戻され、結果が画面外のままになる（実際に読めなかった）。
@@ -344,8 +346,7 @@ async def section_html(request: Request | None = None) -> str:
     """
     if not settings_store.is_enabled():
         return (
-            f'<h3 id="{SECTION_ANCHOR}">AI の相手</h3>\n'
-            '<p class="muted">設定の保存先がありません。書き込み可能なディレクトリを'
+            f'<p class="muted" id="{SECTION_ANCHOR}">設定の保存先がありません。書き込み可能なディレクトリを'
             " <code>CHIEZO_STATE_DIR</code> に設定すると、ここから相手を追加できます"
             "(compose では <code>./state:/state</code> をマウント済み)。</p>"
         )
@@ -370,7 +371,7 @@ async def section_html(request: Request | None = None) -> str:
     on = settings_store.answer_enabled()
     master = (
         '<div class="job-status">'
-        f'<strong>「答える」層: {"有効" if on else "停止中"}</strong> '
+        f'<strong>AI依頼: {"有効" if on else "停止中"}</strong> '
         '<form method="post" action="/admin/ai/layer" class="init-form">'
         f'<input type="hidden" name="enabled" value="{"0" if on else "1"}">'
         f'<button type="submit">{"停止する" if on else "有効にする"}</button></form>'
@@ -438,7 +439,7 @@ async def section_html(request: Request | None = None) -> str:
         "(既定は <code>CHIEZO_STATE_DIR</code> の下)に設定してください。</p>"
     )
 
-    return f"""<h3 id="{SECTION_ANCHOR}">AI の相手</h3>
+    return f"""<div id="{SECTION_ANCHOR}"></div>
 {banner}
 {master}
 {media_note}
@@ -473,12 +474,10 @@ async def section_html(request: Request | None = None) -> str:
 {chr(10).join(rows)}
 </tbody>
 </table>
-
-{_prompt_language_html()}
 """
 
 
-def _prompt_language_html() -> str:
+def prompt_language_html() -> str:
     """依頼文の言語を選ぶところ。
 
     **Chiezo はプロンプトを書かない。** 書くのはこのサーバーを使う AI なので、
@@ -494,7 +493,7 @@ def _prompt_language_html() -> str:
             ("", "指定しない"),
         )
     )
-    return f"""<h4>依頼文の言語</h4>
+    return f"""<h3>依頼文の言語</h3>
 <p class="muted">
 絵・音・動画・声を頼むときの<strong>依頼文をどの言語で書いてもらうか</strong>。
 Chiezo 自身は依頼文を書かないので、これは
@@ -637,7 +636,7 @@ async def set_prompt_language(language: str = Form("")):
     """依頼文の言語を保存する。知らないコードは「指定しない」として受ける。"""
     settings_store.require_path()
     settings_store.set_prompt_language(language.strip())
-    return RedirectResponse(url=BACK_TO_SECTION, status_code=303)
+    return RedirectResponse(url=f"/admin/server#{CLAUDE_CONFIG_ANCHOR}", status_code=303)
 
 
 @router.post("/admin/ai/layer")

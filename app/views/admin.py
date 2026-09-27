@@ -2308,16 +2308,15 @@ def _short_term_section_html(sources: dict[str, Source]) -> str:
 """
 
 
-def _answer_status_html() -> str:
-    """管理画面に出す「使う」層の状態(既定では無効なので、その旨を出す)。
+def answer_status_html() -> str:
+    """「AIへの依頼」の面の「AIと会話する」。いま話せるかと、会話画面への入口だけ。
 
-    相手の増やし方そのものは下の「話す相手」節(app/views/ai_settings.py)が持つ。
-    ここは「いま話せるか」と会話画面への入口だけ。
+    相手の増やし方そのものは「AI」の面(`app/views/ai_settings.py`)が持つ。
     """
     names = answer.backend_names()
     if not names:
         return (
-            '<p class="muted">まだ話せる相手がいません。下の「話す相手」で有効にしてください'
+            '<p class="muted">まだ話せる相手がいません。<a href="/admin/ai">AI</a> の面で有効にしてください'
             "(LAN の別マシンで動かしている推論サーバを指すなら、"
             " <code>CHIEZO_LLM_URL</code> に URL を設定します)。</p>"
         )
@@ -2347,8 +2346,10 @@ PAGES = (
     # 一度入れたら開かない表と同じ高さに置く理由が無い。ワーカーも一緒に置く
     # (何を回すかと、誰に回すかは 1 つの話)
     ("/admin/collect", "収集", "無人で回る層。巡回・区画・変更履歴と、回す相手の並び"),
-    ("/admin/ai", "AI と鍵", "貸し出すもの。話せる相手と鍵"),
-    ("/admin/media", "見比べ", "作らせたものを並べて選ぶ。手元のものも持ち込める"),
+    ("/admin/ai", "AI", "貸し出すもの。話せる相手・絵や音を作る相手と、その鍵"),
+    # **頼む面**(会話・作らせる・作らせたものを並べて選ぶ)。鍵を預ける面とは分ける ——
+    # こちらは毎日触り、あちらは一度入れたら開かない
+    ("/admin/media", "AIへの依頼", "AI と会話する・作らせる・作らせたものを並べて選ぶ"),
     ("/admin/server", "その他", "このサーバー。Claude Code 連携といま動いているビルド"),
 )
 
@@ -2415,7 +2416,7 @@ def _usage_html(request: Request | None = None) -> str:
     頼んでよいかを決められない。表なら窓が何本あっても段が増えるだけで済む。
 
     **使わない相手は出さない**(状況の面は概況で、設定を見に来る場所ではない)。
-    全部の相手と説明が要るときは「AI と鍵」の面（`views/ai_usage.py`）——
+    全部の相手と説明が要るときは「AI」の面(`views/ai_settings.py`)——
     **そこへのリンクはここには置かない**。状況の面から辿れる面はメニューに並んでいて、
     節ごとに「詳しくはあちら」を足すと、同じ行き先が画面の中に何本も増える。
 
@@ -2525,7 +2526,7 @@ def _stopped_providers_html() -> str:
             '<div class="job-status error">'
             f"<p>⚠️ {esc(providers.label_of(st.provider))} は、{esc(at)}"
             "認証の失敗(401)が返ったので無効にしました。ワーカーの振り先からも外れています。"
-            "「AI と鍵」の面で認証情報を登録し直し、「接続を試す」→「有効にする」を"
+            "「AI」の面で認証情報を登録し直し、「接続を試す」→「有効にする」を"
             "押すと戻ります。</p>"
             f'<details><summary class="muted">相手が言ったこと</summary>'
             f"<pre>{esc(st.disabled_reason)}</pre></details></div>"
@@ -3105,7 +3106,10 @@ def admin_ai_transcript(ident: str):
 
 @router.get("/admin/ai", response_class=HTMLResponse)
 async def admin_ai(request: Request):
-    """AI と鍵の面。**呼ぶ側に認証情報を持たせないための面**をここにまとめる。
+    """AI の面。**呼ぶ側に認証情報を持たせないための面**をここにまとめる。
+
+    **会話の入口は置かない**(「AIへの依頼」の面の「AIと会話する」)。頼む話と
+    鍵を預ける話を同じ面に置くと、毎日来る人が一度入れたら開かない表をまたぐ。
 
     **使用量と依頼の履歴は置かない**(状況の面の「AI」の節にある)。どちらも
     「いま何が起きているか」を読むもので、鍵を預ける面で読むものではない ——
@@ -3113,33 +3117,36 @@ async def admin_ai(request: Request):
     """
     body = f"""
 {nav_html("/admin/ai")}
-<h1>AI と鍵(貸し出すもの)</h1>
+<h1>AI(貸し出すもの)</h1>
 <p class="muted">
 呼ぶ側に認証情報を持たせないための面。鍵はここで預かり、話せる相手と、
 絵・音・動画・声を作る相手を同じ表で扱う。
 </p>
 
-<h2>ためた知識を使う AI</h2>
-{_answer_status_html()}
-
 {await ai_settings.section_html(request)}
 """
-    return HTMLResponse(content=page_shell("AI と鍵", body))
+    return HTMLResponse(content=page_shell("AI", body))
 
 
 @router.get("/admin/server", response_class=HTMLResponse)
 async def admin_server(_request: Request):
-    """このサーバー自身のこと。どちらも**読むだけ**で、押して変わるものは無い。"""
+    """このサーバー自身のこと。
+
+    **依頼文の言語もここ**(`ai_settings.prompt_language_html`)。生成される設定に
+    載る 1 行なので、その設定のすぐ下で決める(AI の面に置いていた頃は、
+    何に効くのかを別の面と突き合わせて読むことになった)。
+    """
     body = f"""
 {nav_html("/admin/server")}
 <h1>このサーバー</h1>
 
-<h2>Claude Code 連携設定</h2>
+<h2 id="{ai_settings.CLAUDE_CONFIG_ANCHOR}">Claude Code 連携設定</h2>
 <p class="muted">
 いま設定を吐き出したら(<code>scripts/gen_claude_config.sh</code>)どういう内容になるかのプレビュー。
 現在の登録ソースから生成した CLAUDE.md ブロックを表示する(実ファイルは書き換えない)。
 </p>
 <p><a href="/admin/claude-config">→ 生成される設定を見る</a></p>
+{ai_settings.prompt_language_html()}
 
 <h2>いま動いているビルド</h2>
 <p class="muted">

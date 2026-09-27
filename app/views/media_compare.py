@@ -1,4 +1,4 @@
-"""管理画面の「見比べ」の面(`/admin/media`)。
+"""管理画面の「AIへの依頼」の面(`/admin/media`)。会話の入口・見比べ・作ってもらう口。
 
 何案か作らせたものを、依頼文つきで並べて選ぶところ。**音は AI 自身が聴けない**ので、
 聴き比べる手段がここにしかない。
@@ -272,17 +272,20 @@ async def admin_media(
     まだ残っているのに手が届かず、掃除で消えたものと区別が付かなかった
     (置き場の掃除は `media.KEEP_DAYS` で、そちらとは別の話)。
     """
-    from app.views.admin import nav_html
+    from app.views.admin import answer_status_html, nav_html
 
     if not media.is_enabled():
         body = f"""
 {nav_html("/admin/media")}
-<h1>見比べ</h1>
+<h1>AIへの依頼</h1>
+<h2>見比べ</h2>
 <p class="muted">生成物の置き場が無いので、見比べるものがありません。
 書き込み可能なディレクトリを <code>CHIEZO_MEDIA_DIR</code>
 (または <code>CHIEZO_STATE_DIR</code>)に設定すると使えるようになります。</p>
+<h2>AIと会話する</h2>
+{answer_status_html()}
 """
-        return HTMLResponse(content=page_shell("見比べ", body))
+        return HTMLResponse(content=page_shell("AIへの依頼", body))
 
     # **1 組ぶん多く引いて、次があるかを見る。** 総数を数えるには全件を束ね直す
     # ことになるので、「次の頁があるか」だけ分かれば足りる形にする
@@ -314,7 +317,8 @@ async def admin_media(
     ask_html = await ask_section()
     body = f"""
 {nav_html("/admin/media")}
-<h1>見比べ</h1>
+<h1>AIへの依頼</h1>
+<h2>見比べ</h2>
 <p class="muted">
 何案か作らせたものを、依頼文つきで並べて選ぶところ。
 <strong>音は AI 自身が聴けない</strong>ので、聴き比べる手段はここにしかありません。
@@ -324,6 +328,10 @@ async def admin_media(
 </p>
 {rows}
 {_pager(page, has_next, limit)}
+<!-- **会話の入口もここ**(AI の面から移した)。頼む話はこの面にまとめ、
+     作ってもらう口の 1 つ前に置く -->
+<h2>AIと会話する</h2>
+{answer_status_html()}
 {ask_html}
 <h2>手元で作ったものを並べる</h2>
 <p class="muted">
@@ -334,7 +342,7 @@ async def admin_media(
 <pre class="media-body">curl -s "{esc("<このサーバー>")}/v1/media/upload" \\
   -F "file=@案1.png" -F "prompt=案1" -F "group=タイトルの一枚絵"</pre>
 """
-    return HTMLResponse(content=page_shell("見比べ", body))
+    return HTMLResponse(content=page_shell("AIへの依頼", body))
 
 
 @router.get("/admin/media/{key:path}", response_class=HTMLResponse)
