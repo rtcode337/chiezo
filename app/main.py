@@ -54,6 +54,7 @@ from app import (
     notes,
     providers,
     search_queries,
+    thumbs,
     usage,
     usage_store,
     websearch,
@@ -1596,6 +1597,15 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
                     f"({'、'.join(dropped[:10])}{' ほか' if len(dropped) > 10 else ''})"
                 )
                 note = f"{note} / {why}" if note else why
+        # **サムネイルを付ける**(有効にした収集だけ。`app/thumbs.py`)。焼く前に
+        # 脇書きとして載せるので、1 件につき 1 回で済む(印は焼き直しても残る)
+        if item.thumbs is not None and isinstance(items, list):
+            existing = await asyncio.to_thread(
+                collect.existing_extras, name, sources,
+                [notes.title_key(d.get("title")) for d in items if isinstance(d, dict)],
+            )
+            made = await thumbs.attach(item.thumbs, items, existing, from_feed=sweep.use_feed)
+            phase = _phase_done("サムネイルを作る", name, phase, made)
         # **控えに残すのは、決めた相手ではなく頼んだ相手。** ワーカーを使う回は
         # 巡回に相手が書いていないので、書き換えないと履歴が既定の名前で埋まる
         who.update(_who_ran(used) or {})
@@ -3042,6 +3052,12 @@ class CollectionCreate(BaseModel):
         description="流れの収集が持つ日数(既定 30)。0 なら期限では落とさない。"
         "網羅では使わない",
     )
+    thumbs: dict | bool | None = PydField(
+        None,
+        description="サムネイルを持つか。true なら AI が返した絵(image)を 1 回だけ取って"
+        '縮めて持つ(extra.thumb)。{"pages_from": ["connpass.com"]} と書くと、'
+        "そのホストのページの og:image も拾う",
+    )
     verify_tags: list[dict] | None = PydField(
         None,
         description="タグの値が実在するかを確かめる指定。"
@@ -3102,6 +3118,9 @@ class CollectionPatch(BaseModel):
     )
     kind: str | None = PydField(None, description="収集の種類(flow / stock)")
     keep_days: int | None = PydField(None, description="流れの収集が持つ日数。0 で落とさない")
+    thumbs: dict | bool | None = PydField(
+        None, description="サムネイルを持つか(true / {\"pages_from\": [ホスト]})。false で外れる"
+    )
     feed: dict | None = PydField(
         None, description="外向きの道具。空のオブジェクトを渡すと外れる"
     )
@@ -3203,6 +3222,7 @@ def collect_create(request: Request, body: CollectionCreate):
         extract_spec=body.extract,
         kind=collect.normalize_kind(body.kind),
         keep_days=body.keep_days,
+        thumbs_spec=body.thumbs,
         verify_tags=body.verify_tags,
         partition_spec=body.partition,
         feed_spec=body.feed,
@@ -4757,6 +4777,13 @@ async def media_picks(
 ) -> dict:
     """採用された案。**依頼した AI はここを見に来る。**"""
     return {"picks": media.picked_jobs(limit, group.strip())}
+
+
+@app.get("/v1/thumbs/{name}", include_in_schema=False)
+async def thumb_file(name: str):
+    """収集の 1 件のサムネイルを配る(`app/thumbs.py`)。置いた形の名前しか通さない。"""
+    # **中身は名前で決まる**(元の絵の URL の sha1)ので、長く持たせてよい
+    return FileResponse(thumbs.resolve(name), headers={"Cache-Control": "public, max-age=604800"})
 
 
 @app.get("/media/{path:path}", include_in_schema=False)

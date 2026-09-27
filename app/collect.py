@@ -69,6 +69,7 @@ from fastapi import HTTPException
 from app import collect_log, db, feeds, jst, machine_store, notes, search_queries, workers
 from app import extract as extraction
 from app import partition as partitioning
+from app import thumbs as thumbnails
 from app.jst import to_jst
 from app.registry import TAG_MIN_SCHEMA_VERSION, generation_stamp, previous_generation
 
@@ -450,6 +451,9 @@ class Collection:
     # 流れの収集が持つ日数。0 なら期限では落とさない。**網羅では使わない**
     # (あちらは古いものが要らなくなることがない)
     keep_days: int = 0
+    # **サムネイルを持つか**(`app/thumbs.py`)。None なら作らない。
+    # `{"pages_from": ["connpass.com"]}` と書くと、そのホストのページの og:image も拾う
+    thumbs: dict | None = None
     extract: dict | list[dict] | None = None
     # **材料に使う別のソース**(`{material}` で差し込む)。
     # `{"source": "tazuna_tech", "tag": "ニュース,記事", "limit": 60}` と書くと、
@@ -1209,6 +1213,7 @@ def _from_json(item: dict) -> Collection:
         material=normalize_material(item.get("material")),
         kind=normalize_kind(item.get("kind")),
         keep_days=normalize_keep_days(item.get("keep_days"), normalize_kind(item.get("kind"))),
+        thumbs=thumbnails.normalize(item.get("thumbs")),
         verify_tags=normalize_verify_tags(item.get("verify_tags")),
         requested_by=str(item.get("requested_by") or ""),
         created_at=str(item.get("created_at") or ""),
@@ -1522,6 +1527,7 @@ def create(
     extract_spec=None,
     kind: str = KIND_STOCK,
     keep_days=None,
+    thumbs_spec=None,
     verify_tags=None,
     partition_spec=None,
     feed_spec=None,
@@ -1563,6 +1569,7 @@ def create(
         material=normalize_material(material_spec),
         kind=normalize_kind(kind),
         keep_days=normalize_keep_days(keep_days, normalize_kind(kind)),
+        thumbs=thumbnails.normalize(thumbs_spec),
         verify_tags=normalize_verify_tags(verify_tags),
         partition=partitioning.to_json(partitioning.normalize(partition_spec)),
         feed=feeds.to_json(feeds.normalize(feed_spec)),
@@ -1585,7 +1592,7 @@ def update(name: str, **fields) -> Collection:
         "description", "prompt", "interval_minutes", "enabled",
         "backend", "model", "effort", "web", "cursor", "keep_ratio", "extract",
         "partition", "partitions", "sweeps", "feed", "verify_tags",
-        "kind", "keep_days", "material",
+        "kind", "keep_days", "material", "thumbs",
     }
     patch = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if "interval_minutes" in patch:
@@ -1636,6 +1643,9 @@ def update(name: str, **fields) -> Collection:
         patch["verify_tags"] = normalize_verify_tags(patch["verify_tags"] or None)
     if "kind" in patch:
         patch["kind"] = normalize_kind(patch["kind"])
+    if "thumbs" in patch:
+        # false を渡したら作らない側へ戻す
+        patch["thumbs"] = thumbnails.normalize(patch["thumbs"])
     # **種類を変えたら日数も引き直す**(網羅へ移したのに日数が残ると、
     # 次に流れへ戻したときに古い設定で消え始める)
     kind = patch.get("kind", current.kind)
@@ -4440,6 +4450,24 @@ def existing_titles(name: str, sources: dict, titles) -> set[str]:
         )
         found.update(row["title"] for row in rows)
     return found
+
+
+def existing_extras(name: str, sources: dict, titles) -> dict[str, dict]:
+    """渡した見出しのうち、いま収集に居るものの脇書き(見出し → extra)。
+
+    サムネイルを作る前に、**既にあるか・作れなかった印が付いているか**を見るのに使う。
+    全件は読まない(`existing_titles` と同じ理由)。
+    """
+    src = sources.get(name)
+    wanted = sorted({t for t in titles if t})
+    if src is None or not wanted:
+        return {}
+    out: dict[str, dict] = {}
+    for at in range(0, len(wanted), 500):
+        chunk = wanted[at:at + 500]
+        found = _docs_where(src, f" AND title IN ({','.join('?' * len(chunk))})", tuple(chunk))
+        out.update({title: doc.get("extra") or {} for title, doc in found.items()})
+    return out
 
 
 def drop_unseen_edits(items: list[dict], allowed: set[str], existing: set[str]):
