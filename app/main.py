@@ -372,6 +372,8 @@ def _queue_due_sweeps() -> None:
     for item, sweep in collect.due_sweeps():
         if getattr(sweep, "worker", ""):
             continue
+        if _skipped_for_nothing(item, sweep):
+            continue
         _entry, _pos, added = ingest_queue.add(item.name, sweep.name, origin="schedule")
         if added:
             log.info("queued %s/%s for ingest", item.name, sweep.name)
@@ -547,9 +549,35 @@ def _fill_worker_queues() -> None:
                 continue
             if not _due_for_queue(sweep, now):
                 continue
+            if _skipped_for_nothing(item, sweep):
+                continue
             if workers.enqueue(ref, item.name, sweep.name, _iso(now)):
                 log.info("queued %s/%s for worker %r", item.name, sweep.name, ref)
     _drop_stale_from_queues()
+
+
+def _live_sources() -> dict:
+    """いま配っているソース。**読めなければ空**(時計は落とさない)。"""
+    return getattr(app.state, "sources", None) or {}
+
+
+def _skipped_for_nothing(item, sweep) -> bool:
+    """渡すものが無い回なら、**積まずに走ったことにする**(`collect.nothing_to_pass`)。
+
+    積んでから断ると、取り込みを 1 本流し、ワーカーの順番も 1 つ使う ——
+    後ろに並んだ回がそのぶん待たされる。積む前に確かめる。
+    """
+    sources = _live_sources()
+    reason = collect.nothing_to_pass(item, sweep, sources)
+    if not reason:
+        return False
+    try:
+        collect.mark_skipped(item.name, sweep.name, reason, sources)
+    except Exception:
+        log.exception("collect %s/%s: 飛ばした回を控えられなかった", item.name, sweep.name)
+        return False
+    log.info("skipped %s/%s: %s", item.name, sweep.name, reason)
+    return True
 
 
 def _drop_stale_from_queues() -> None:
@@ -608,7 +636,11 @@ def _no_longer_due(entry: dict) -> str:
         # **積んだあとに手で回す回へ変えられることがある。** 残したまま流すと、
         # 答えの無い取り込みが毎周走って 409 で落ちる
         return "この巡回は手で回します"
-    return collect.blocked_reason(item, sweep)
+    # **積んだあとに渡すものが無くなることがある**(別の回が未読を読み終えた)。
+    # 外すだけで、走ったことにするのは次に積もうとした周(`_skipped_for_nothing`)
+    return collect.blocked_reason(item, sweep) or collect.nothing_to_pass(
+        item, sweep, _live_sources(),
+    )
 
 
 def _no_longer_scheduled(entry: dict) -> str:
@@ -623,7 +655,9 @@ def _no_longer_scheduled(entry: dict) -> str:
         if due_item.name == name and due_sweep.name == sweep:
             if getattr(due_sweep, "worker", ""):
                 return "この巡回はワーカーに任せました"
-            return collect.blocked_reason(due_item, due_sweep)
+            return collect.blocked_reason(due_item, due_sweep) or collect.nothing_to_pass(
+                due_item, due_sweep, _live_sources(),
+            )
     return "予定がもう来ていません(ほかの道で走ったか、止められました)"
 
 
@@ -721,7 +755,7 @@ def wake_worker(ref: str) -> dict:
         if _hand_next(worker) is None:
             raise HTTPException(409, {
                 "error": f"ワーカー「{name}」から流せませんでした",
-                "hint": "待っていたものが止められていたかもしれません",
+                "hint": "待っていたものが止められたか、渡すもの(未読や新着)が無くなったのかもしれません",
             })
     status = _fetch_trigger_status()
     if status and status.get("state") != "unreachable":

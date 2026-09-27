@@ -2568,6 +2568,27 @@ def restore_pending(name: str, sweep: str, run_once: dict | None = None) -> None
         _replace_one(name, replace(get(name), pending_sweep=sweep, pending_run=run_once))
 
 
+def mark_skipped(name: str, sweep: str, reason: str, sources: dict) -> None:
+    """渡すものが無かった回を**走ったことにして**予定を進め、実行履歴に 1 行残す。
+
+    **予定を進めないと毎周積み直す**(時計は「前回から間隔が空いたか」で見る)。
+    **黙って飛ばさない** —— 履歴に何も無いと、走っていないのか渡すものが
+    無かったのかが読めない。**結果は成功**(失敗の印を付けると、落ちたように見える)。
+    """
+    current = get(name)
+    this = sweep_named(current, sweep)
+    now = _now()
+    _replace_one(name, replace(
+        current, updated_at=_iso(now), **_advance(current, this, now, status="ok"),
+    ))
+    src = sources.get(name)
+    collect_log.record(
+        name, status=collect_log.STATUS_OK,
+        diff={"total": src.doc_count if src is not None else 0},
+        error=reason, sweep=this.name,
+    )
+
+
 def mark_started(name: str, sweep: str | None = None) -> Collection:
     """取り込みを起こしたので、次回の予定だけ進める。
 
@@ -2808,6 +2829,92 @@ def lapped(item: Collection, sweep: Sweep) -> bool:
         return bool(sweep.last_run_at)
     visited, total = partitioning.progress(item.partitions, sweep.name)
     return bool(total) and visited >= total
+
+
+# 「前回から増えたもの」を渡す差し込み口。**空なら AI に頼むことが無い**(`nothing_to_pass`)
+DELTA_PLACEHOLDERS = (UNREVIEWED_PLACEHOLDER, RECENT_PLACEHOLDER, SOURCE_PLACEHOLDER)
+# 増えたかどうかに依らず仕事がある差し込み口。**これがあれば飛ばさない**
+# (今あるもの全部を読み直す・範囲を探す・道具の見出しを読む・続きから集める)
+OPEN_PLACEHOLDERS = (
+    MATERIAL_PLACEHOLDER, NAMES_PLACEHOLDER, PARTITION_PLACEHOLDER, FEED_PLACEHOLDER, "{cursor}",
+)
+
+
+def nothing_to_pass(item: Collection, sweep: Sweep, sources: dict) -> str:
+    """その回に**渡すものが何も無い**なら理由を返す。渡すものがあれば空。
+
+    **未読を読ませる回・新着をまとめる回は、増えたものが無ければ仕事が無い** ——
+    それでも頼んでいた頃は、「(まだ目を通していないものはありません)」と書いた
+    依頼文で AI を 1 回呼び、取り込みを 1 本流し、ワーカーの待ち行列の順番も
+    1 つ使っていた。
+
+    **飛ばすのは、依頼文が増えたものしか渡していない回だけ**
+    (`DELTA_PLACEHOLDERS` を持ち、`OPEN_PLACEHOLDERS` を持たない)。今あるものを
+    読み直す回や、範囲の中を探す回は、増えたものが無くても仕事がある。
+    **AI を呼ばない回(機械・外の道具・手で回す)は見ない**(呼ばないので省くものが無い)。
+
+    **区画を持つ収集でも収集ぜんたいで数える** —— ぜんたいで 0 件なら、
+    どの区画でも 0 件なので、区画を選ぶ前に分かる。
+
+    **読めないときは飛ばさない**(タグの索引を持たない古いソース・読み出しの失敗)。
+    確かめられないまま飛ばすと、渡すものがあるのに走らない回ができる。
+    """
+    if sweep.use_extract or sweep.use_feed or sweep.by_hand:
+        return ""
+    prompt = sweep.prompt or item.prompt or ""
+    deltas = [p for p in DELTA_PLACEHOLDERS if p in prompt]
+    if not deltas or any(p in prompt for p in OPEN_PLACEHOLDERS):
+        return ""
+    empty: list[str] = []
+    try:
+        for placeholder in deltas:
+            if placeholder == UNREVIEWED_PLACEHOLDER:
+                if _unreviewed_count(sources.get(item.name)) != 0:
+                    return ""
+                empty.append("まだ目を通していないもの")
+            elif placeholder == RECENT_PLACEHOLDER:
+                if _changed_since(sources.get(item.name), sweep.last_run_at):
+                    return ""
+                empty.append("前回から新しく入ったもの")
+            else:
+                if material_docs(item.material, sources, sweep.last_run_at):
+                    return ""
+                empty.append(f"材料の「{(item.material or {}).get('source', '')}」に新しく入ったもの")
+    except Exception:
+        log.exception("collect %s/%s: 渡すものがあるか確かめられなかった", item.name, sweep.name)
+        return ""
+    return "渡すものが無いので AI を呼びませんでした(" + "・".join(empty) + "が 0 件)"
+
+
+def _unreviewed_count(src) -> int | None:
+    """まだ目を通していないもの(消えたものを除く)の数。**数えられなければ None**。"""
+    if src is None:
+        return 0
+    if src.schema_version < TAG_MIN_SCHEMA_VERSION:
+        return None
+    rows = db.query(
+        src.path,
+        "SELECT COUNT(*) AS n FROM doc_tags WHERE tag = ?"
+        " AND doc_id NOT IN (SELECT doc_id FROM doc_tags WHERE tag = ?)",
+        (notes.UNREVIEWED_TAG, notes.REMOVED_TAG),
+    )
+    return int(rows[0]["n"]) if rows else 0
+
+
+def _changed_since(src, since: str | None) -> bool:
+    """前回から後に入った(直された)ものがあるか。`render_recent` と同じ読み方。
+
+    **基準が無ければ、何かあれば「ある」**(その巡回の 1 回目は全部が差分)。
+    **時刻が読めないものは「ある」に数える**(`render_recent` はそれを入れる)。
+    """
+    if src is None:
+        return False
+    cutoff = _at(since)
+    for row in db.query(src.path, "SELECT updated_at FROM docs", ()):
+        when = _at(row["updated_at"])
+        if cutoff is None or when is None or when > cutoff:
+            return True
+    return False
 
 
 def blocked_reason(item: Collection, sweep: Sweep) -> str:
