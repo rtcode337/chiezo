@@ -541,63 +541,6 @@ def _disk_html(data_dir: Path) -> str:
     return text
 
 
-def _consult_page_html(name: str | None, want: str, draft: str, error: str) -> str:
-    """AI が書いた指示文の案を見せて、直して保存できる 1 枚。
-
-    **案は保存しない**。押されるまで何も変わらない —— 相談は何度でもやり直すもので、
-    途中の案が勝手に入れ替わると、気に入っていた前の案に戻れない。
-
-    **もう一度相談する側にも案を持ち回る**ので、「ここをこう直して」を重ねられる
-    (Chiezo が状態を持たない作りに合わせて、毎回まるごと渡す)。
-    """
-    heading = f"「{esc(name)}」のプロンプトを相談する" if name else "新しい収集のプロンプトを相談する"
-    # 既存を直すなら保存先はその収集、新規ならフォームごと作る
-    if name:
-        save = (
-            f'<form method="post" action="/admin/collect/{esc(name)}/edit" class="collect-form">'
-            f'<input type="hidden" name="description" value="{esc(collect.get(name).description)}">'
-            f'<input type="hidden" name="interval_minutes" value="{collect.get(name).interval_minutes}">'
-            f'<input type="hidden" name="cursor" value="{esc(collect.get(name).cursor)}">'
-            # 載せないと既定へ戻る（集め方は「足す」に、抽出の指定は空に）。
-            # 相談で直したいのはプロンプトだけなので、他はそのまま持ち回る
-            f'<textarea name="extract" hidden>{esc(_extract_json(collect.get(name)))}</textarea>'
-            f'<p><label>この案(直してから保存できる)<br>'
-            f'<textarea name="prompt" rows="12">{esc(draft)}</textarea></label></p>'
-            f'<button type="submit">この内容で保存する</button></form>'
-        )
-    else:
-        save = (
-            '<form method="post" action="/admin/collect/create" class="collect-form">'
-            '<p><label>name(ソース名になる)<br>'
-            '<input name="name" required pattern="[a-z][a-z0-9_]{1,30}"></label></p>'
-            f'<p><label>説明<br><input name="description" value="{esc(want)}"></label></p>'
-            f'<p><label>間隔(分)<br><input name="interval_minutes" type="number"'
-            f' min="{collect.MIN_INTERVAL_MINUTES}" value="360"></label></p>'
-            f'<p><label>この案(直してから保存できる)<br>'
-            f'<textarea name="prompt" rows="12">{esc(draft)}</textarea></label></p>'
-            '<p><label><input type="checkbox" name="web" value="1" checked> web 検索を開ける</label></p>'
-            '<button type="submit">この内容で追加する(止めた状態で作る)</button></form>'
-        )
-    again = (
-        '<form method="post" action="/admin/collect/consult" class="collect-form">'
-        f'<input type="hidden" name="name" value="{esc(name or "")}">'
-        f'<input type="hidden" name="want" value="{esc(want)}">'
-        f'<textarea name="current" hidden>{esc(draft)}</textarea>'
-        '<p><label>もう一度相談する(どう直したいか)<br>'
-        '<input name="feedback" placeholder="例: 件数を減らして、出典を必ず付けさせて"></label></p>'
-        "<button type=\"submit\">この案を直してもらう</button></form>"
-    )
-    body = f"""
-<h1>{heading}</h1>
-{error}
-<p class="muted">集めたいもの: {esc(want) or "(指定なし)"}</p>
-{save}
-{again}
-<p class="muted"><a href="/admin/collect">管理画面へ戻る</a>(保存しなければ何も変わりません)</p>
-"""
-    return page_shell("プロンプトの相談", body)
-
-
 # 収集の**種類**の言い方。その収集が何を集めているのか
 # (返ってきた 1 件で何ができるかは、巡回ごとに決まる)
 # 一覧の行に出す短い印。**説明はここでは書かない**(面のほうに出る)
@@ -1152,7 +1095,7 @@ def _sweep_run_forms(
     )
 
 
-def _removed_html(item, sources: dict) -> str:
+def _removed_html(item, sources: dict, page: int = 1) -> str:
     """消えたもの(消えた印の付いた文書)。**読めるところに出す**。
 
     消す回と足す回が別々に走るので、これが無いと「なぜこの人が入ってこないのか」が
@@ -1161,31 +1104,55 @@ def _removed_html(item, sources: dict) -> str:
     **中身は収集そのものにある**(`notes.REMOVED_TAG` の付いた文書)。定義に控えを
     持っていた頃は 1 件のメモに収める都合で 2,000 件の上限が要り、溢れると古いものから
     静かに戻っていた。文書に印を付けて残せば、その上限が要らない。
+
+    **畳んで、全件をページで送る**(`REMOVED_PAGE_SIZE`)。新しい 20 件だけを出して
+    いた頃は、記録は全部あるのに画面からは頭しか読めなかった。
+    **ページを送ったときは開いておく**(面を読み直すので、閉じたまま戻すと
+    押しても何も変わらないように見える)。
     """
     src = sources.get(item.name)
     if src is None or src.schema_version < TAG_MIN_SCHEMA_VERSION:
         return ""
+    counted = db.query(
+        src.path, "SELECT COUNT(*) AS n FROM doc_tags WHERE tag = ?", (notes.REMOVED_TAG,),
+    )
+    total = int(counted[0]["n"]) if counted else 0
+    if not total:
+        return ""
+    last = max(1, (total + REMOVED_PAGE_SIZE - 1) // REMOVED_PAGE_SIZE)
+    page = min(max(1, page), last)
     # **出すのは消した理由**(本文ではない)。本文は戻すときのために残してあるが、
     # ここを見に来る人が確かめたいのは「なぜ消えたのか」のほう
     rows = db.query(
         src.path,
         "SELECT title, json_extract(extra, '$.removed_reason') AS why FROM docs WHERE doc_id IN"
-        " (SELECT doc_id FROM doc_tags WHERE tag = ?) ORDER BY updated_at DESC LIMIT ?",
-        (notes.REMOVED_TAG, REMOVED_HEAD + 1),
+        " (SELECT doc_id FROM doc_tags WHERE tag = ?) ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+        (notes.REMOVED_TAG, REMOVED_PAGE_SIZE, (page - 1) * REMOVED_PAGE_SIZE),
     )
-    if not rows:
-        return ""
-    shown = rows[:REMOVED_HEAD]
-    lines = [r["title"] + (f' —— {r["why"]}' if r["why"] else "") for r in shown]
-    more = "、ほかにもあります" if len(rows) > REMOVED_HEAD else ""
+    lines = [r["title"] + (f' —— {r["why"]}' if r["why"] else "") for r in rows]
+    base = f"/admin/collect/{quote(item.name)}"
+
+    def link(target: int, label: str) -> str:
+        if target < 1 or target > last:
+            return f'<span class="muted">{label}</span>'
+        return f'<a href="{esc(base)}?removed_page={target}#removed">{label}</a>'
+
+    pager = (
+        f'<div class="pager">{link(page - 1, "← 新しい")}'
+        f'<span class="muted">{page} / {last} ページ({total:,} 件)</span>'
+        f'{link(page + 1, "古い →")}</div>'
+        if last > 1 else ""
+    )
+    opened = " open" if page > 1 else ""
     return (
-        f'<p class="muted">消えたもの: 新しい {len(shown):,} 件{more}'
+        f'<details id="removed"{opened}><summary>消えたもの({total:,} 件)</summary>'
+        '<p class="muted">AI が墓標を付けて消したもの。新しい順に、消した理由と並べます'
         "(<strong>読み口からは返りません</strong>。足す回も連れ戻しません。"
         "<strong>本文はそのまま残しています</strong>ので、"
         "その文書から印を外せば元の中身のまま戻ります)</p>"
-        f'<pre class="prompt-view">{esc(chr(10).join(lines))}</pre>'
+        f'{pager}<pre class="prompt-view">{esc(chr(10).join(lines))}</pre>{pager}'
+        "</details>"
     )
-
 
 
 # 検索文の控えを面に出す数(新しい順)。**残りは畳む** —— 回を重ねるほど伸びる
@@ -1249,9 +1216,9 @@ def _queries_html(item, disabled: str = "") -> str:
     )
 
 
-# 消えたものの一覧に出す件数。**残りは畳む** —— 溜まり続けるので、全部出すと
-# その下にある変更履歴まで面の外へ押し出される
-REMOVED_HEAD = 20
+# 消えたものの一覧の 1 ページの件数。**ページで送る** —— 溜まり続けるので、1 枚に
+# 全部出すと、開いたときに面が延々と伸びる
+REMOVED_PAGE_SIZE = 50
 
 
 def _verify_tags_json(item) -> str:
@@ -1355,15 +1322,16 @@ def _partition_html(item, src=None, busy: bool = False) -> str:
         )
 
     table = (
-        f"<details><summary>{total:,} 区画を見る</summary>"
         f"<table><thead><tr>{heads}</tr></thead>"
-        f"<tbody>{''.join(row(p) for p in item.partitions)}</tbody></table></details>"
+        f"<tbody>{''.join(row(p) for p in item.partitions)}</tbody></table>"
     )
     return (
         f'<p class="muted">区画: {total:,}{_spread_from_html(item)}'
         f'{_uncovered_html(item, src)}</p>'
         f"{_repartition_form(item, busy)}"
-        f"{_run_here_html(item, table, busy)}"
+        # **走らせる口も同じ畳みの中**(選ぶ表のすぐ下。別に畳むと 2 回開くことになる)
+        f"<details><summary>{total:,} 区画を見る</summary>"
+        f"{_run_here_html(item, table, busy)}</details>"
     )
 
 
@@ -1761,6 +1729,8 @@ def _redo_form(item, disabled: str) -> str:
 
     押すと進み具合と区画の印を戻してから走らせる。**中身は戻さない**ので、
     そのことを押す前に書いておく(焼いた世代は 1 つ前までしか残らない)。
+    **説明は地の文に書く**(`title` はスマホでは読めない)。DB を戻すのは
+    「DBを1つ前へ戻す」のほうで、並べて読めるようにする。
     """
     undo = item.last_undo or {}
     if not undo.get("sweep"):
@@ -1775,12 +1745,15 @@ def _redo_form(item, disabled: str) -> str:
         '<p class="muted">最後に走ったのは '
         f"<strong>{esc(str(undo['sweep']))}</strong>"
         + (f"({esc(when)})" if when else "")
-        + "。設定を直したなら、同じところからやり直せる。</p>"
+        + "。設定を直したなら、同じところからやり直せる。"
+        "「最後の 1 回をやり直す」は、<strong>進み具合と区画の印をその回の前に戻してから、"
+        "同じ巡回をもう一度走らせます</strong>。<strong>DB の中身(集めたもの)は戻しません</strong>"
+        " —— もう一度集めた結果で上書きされます。中身も戻したいときは、先に"
+        "「DBを1つ前へ戻す」を押してください。</p>"
         f'<form class="init-form" method="post"'
         f' action="/admin/collect/{esc(quote(item.name))}/redo"{disabled}'
         f" onsubmit=\"return confirm('{esc(confirm)}')\">"
-        f'<button type="submit"{disabled}'
-        ' title="進み具合と区画の印を戻してから、もう一度走らせます">'
+        f'<button type="submit"{disabled}>'
         "最後の 1 回をやり直す</button></form>"
     )
 
@@ -1889,6 +1862,7 @@ def _handoff_html(item, disabled: str = "") -> str:
 
 def _collect_detail_html(
     item, disabled: str, sources: dict | None = None, busy: bool = False,
+    removed_page: int = 1,
 ) -> str:
     """1 つの収集の中身(プロンプト・進み具合・区画・直す口)。
 
@@ -1906,7 +1880,7 @@ def _collect_detail_html(
         f"{_requeue_form(item, disabled)}"
         f"{_handoff_html(item, disabled)}"
         f"{_partition_html(item, (sources or {}).get(item.name), busy)}"
-        f"{_removed_html(item, sources or {})}"
+        f"{_removed_html(item, sources or {}, removed_page)}"
         f"{_queries_html(item, disabled)}"
         f"<details><summary>編集する</summary>"
         f'<form method="post" action="/admin/collect/{esc(item.name)}/edit" class="collect-form">'
@@ -1975,40 +1949,6 @@ f"{_backend_hint()}"
         f" プロンプトに <code>{{current}}</code> を入れてください"
         f"(そこへ今ある内容が差し込まれます)。消すのは AI が墓標を付けたときだけです。</p>"
         f'<button type="submit">保存する</button></form></details>'
-        f"<details><summary>AI に抽出の指定を書かせる</summary>"
-        f'<form method="post" action="/admin/collect/draft-extract" class="collect-form">'
-        f'<input type="hidden" name="name" value="{esc(item.name)}">'
-        f'<p><label>どういう条件で抽出してほしいか<br>'
-        f'<textarea name="want" rows="3"'
-        f' placeholder="例: 印象派の画家を有名な順に30人。年代と様式が分かるように"'
-        f"></textarea></label></p>"
-        f'<p class="muted">書かせるのは指定だけで、保存はしません。'
-        f" 書けたらその場で引いてみて、何件あるか・最初の数件がどうなるかを出します。</p>"
-        f'<button type="submit">指定を書かせる</button></form></details>'
-        f"<details><summary>この部分を集中的に直させる</summary>"
-        f'<form method="post" action="/admin/collect/{esc(item.name)}/focus"'
-        f' class="collect-form"{disabled}>'
-        f'<p><label>どう直してほしいか<br>'
-        f'<textarea name="note" rows="3" required'
-        f' placeholder="例: この店は移転しているはず。住所を確かめて直して"'
-        f"></textarea></label></p>"
-        f'<p><label>直す見出し(1 行に 1 つ。空でもよい)<br>'
-        f'<textarea name="titles" rows="3"></textarea></label></p>'
-        f'<p><label>見てほしい区画(空なら上の見出しだけを見る)<br>'
-        f'<input name="partition" value=""></label></p>'
-        f'<p class="muted">定時の巡回には影響しません —— 進み具合も、次にいつ走るかも、'
-        f"区画の巡回記録も動きません。<strong>必ず「直す」側で走ります</strong>"
-        f"(集めるだけの収集でも、名指ししたものを直せます)。</p>"
-        f'<button type="submit"{disabled}>いま直させる</button></form></details>'
-        f"<details><summary>AI に相談して直す</summary>"
-        f'<form method="post" action="/admin/collect/consult" class="collect-form">'
-        f'<input type="hidden" name="name" value="{esc(item.name)}">'
-        f'<p><label>どう直したいか<br>'
-        f'<textarea name="feedback" rows="4"'
-        f' placeholder="例: 件数を5件に減らし、海外のニュースも入れて。'
-        f'出典は必ず付けさせて。"></textarea></label></p>'
-        f'<p class="muted">AI に聞くので十数秒〜1分ほどかかります。案は保存されないので、見てから決められます。</p>'
-        f'<button type="submit">相談する</button></form></details>'
     )
 
 
@@ -2064,6 +2004,40 @@ def _derived_note(item, parent: str) -> str:
     return f'<br><span class="muted">└ {esc(parent)}{what}</span>'
 
 
+def _collect_switches_html(item, src, back: str = "") -> str:
+    """収集を止める / 有効化 と、削除の口。**一覧と収集の面で同じものを出す**。
+
+    `back` は押した後に戻る面(収集の面から押したらそこへ戻す。空なら一覧)。
+    """
+    toggle_label = "止める" if item.enabled else "有効化"
+    back_field = f'<input type="hidden" name="back" value="{esc(back)}">' if back else ""
+    # 消す前の確認。**行の組み立てとは別に作る** —— 隣り合った文字列は
+    # 三項演算子より先につながるので、行の途中で分岐を書くと後ろの断片まで
+    # else 側へ吸い込まれ、開始タグの無い <form> ができる(実際にそうなった)
+    delete_confirm = (
+        f"収集「{item.name}」の設定と、溜めたもの({src.doc_count:,} 件)を"
+        "まとめて消します。元に戻せません。よろしいですか?"
+        if src is not None
+        else f"収集「{item.name}」の設定を消します(まだ何も溜まっていません)。よろしいですか?"
+    )
+    # **消す口は、止めてある収集にだけ出す。** 動いている収集を消すと、
+    # 走っている最中の 1 回が行き先を失う(焼く先の定義がもう無い)。
+    # 止めるほうが先、という順番を画面の側で示す
+    delete_form = (
+        f'<form class="init-form" method="post"'
+        f' action="/admin/collect/{esc(item.name)}/delete"'
+        f" onsubmit=\"return confirm('{esc(delete_confirm)}')\">"
+        f'<button type="submit">削除</button></form>'
+        if not item.enabled
+        else '<span class="muted">止めると消せます</span>'
+    )
+    return (
+        f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/toggle">'
+        f'{back_field}<button type="submit">{toggle_label}</button></form>'
+        f"{delete_form}"
+    )
+
+
 def _collect_html(sources: dict[str, Source]) -> str:
     """収集(AI に集めさせて溜めていく)の節。
 
@@ -2091,7 +2065,6 @@ def _collect_html(sources: dict[str, Source]) -> str:
         parent = collect.derives_from(item, known)
         # 止めている収集は行ごと薄くする(「AI の相手」の表と同じ扱い)
         cls = "" if item.enabled else ' class="off"'
-        toggle_label = "止める" if item.enabled else "有効化"
         # 焼き先(長期記憶)の様子。まだ 1 度も焼いていなければそう出す
         src = sources.get(item.name)
         baked_docs = (
@@ -2118,26 +2091,6 @@ def _collect_html(sources: dict[str, Source]) -> str:
                 if item.cursor
                 else ' <span class="stale">次は抽出</span>'
             )
-        # 消す前の確認。**行の組み立てとは別に作る** —— 隣り合った文字列は
-        # 三項演算子より先につながるので、行の途中で分岐を書くと後ろの断片まで
-        # else 側へ吸い込まれ、開始タグの無い <form> ができる(実際にそうなった)
-        delete_confirm = (
-            f"収集「{item.name}」の設定と、溜めたもの({src.doc_count:,} 件)を"
-            "まとめて消します。元に戻せません。よろしいですか?"
-            if src is not None
-            else f"収集「{item.name}」の設定を消します(まだ何も溜まっていません)。よろしいですか?"
-        )
-        # **消す口は、止めてある収集にだけ出す。** 動いている収集を消すと、
-        # 走っている最中の 1 回が行き先を失う(焼く先の定義がもう無い)。
-        # 止めるほうが先、という順番を画面の側で示す
-        delete_form = (
-            f'<form class="init-form" method="post"'
-            f' action="/admin/collect/{esc(item.name)}/delete"'
-            f" onsubmit=\"return confirm('{esc(delete_confirm)}')\">"
-            f'<button type="submit">削除</button></form>'
-            if not item.enabled
-            else '<span class="muted">止めると消せます</span>'
-        )
         # **一覧には巡回を出さない。** 巡回ごとに 1 行ずつ並べていた頃は、収集の数より
         # ずっと行が増え、列も 10 本になって、どれがどの収集の行なのかを追うことになった。
         # 巡回の様子と走らせる口は収集の面にある(名前を押せば行ける)
@@ -2150,11 +2103,7 @@ def _collect_html(sources: dict[str, Source]) -> str:
             f'<br><span class="muted">{esc(item.description)}</span>{requester}'
             f"{_derived_note(item, parent)}</td>"
             f"<td>{baked_docs}</td>"
-            "<td>"
-            f'<form class="init-form" method="post" action="/admin/collect/{esc(item.name)}/toggle">'
-            f'<button type="submit">{toggle_label}</button></form>'
-            f"{delete_form}"
-            f"</td></tr>"
+            f"<td>{_collect_switches_html(item, src)}</td></tr>"
         )
     table = f"""
 <table>
@@ -2186,12 +2135,6 @@ def _collect_html(sources: dict[str, Source]) -> str:
  placeholder="{esc(collect.PROMPT_EXAMPLE)}"></textarea></label></p>
 <p><label><input type="checkbox" name="web" value="1" checked> web 検索を開ける</label></p>
 <button type="submit">追加する(止めた状態で作る)</button>
-</form>
-<form method="post" action="/admin/collect/consult" class="collect-form">
-<p class="muted">プロンプトの書き方が決まらないときは、AI に書いてもらってから直せる。</p>
-<p><label>集めたいもの(ふつうの言葉で)<br>
-<input name="want" required placeholder="近所の飲食店を、地域を変えながら少しずつ"></label></p>
-<button type="submit">AI に相談する</button>
 </form>
 </details>
 <p class="muted">
@@ -3598,7 +3541,9 @@ def _rollback_cell(src: Source, back: str) -> str:
         f' action="/admin/source/{esc(quote(src.name))}/rollback"'
         f" onsubmit=\"return confirm('{esc(ask)}')\">"
         f'<input type="hidden" name="back" value="{esc(back)}">'
-        f'<button type="submit">1 つ前へ戻す</button></form>'
+        # **何を戻すのかを名前に書く**(DB)。収集の面には「最後の 1 回をやり直す」も
+        # あり、どちらが中身を戻すのかがボタンの名前から読めなかった
+        f'<button type="submit">DBを1つ前へ戻す</button></form>'
         # **ボタンの横に置き、日時は途中で割らない**(`nowrap`)—— 下に回すと
         # どのボタンの話なのかが離れ、日付が「2026-07-」と「24」に泣き別れた
         f' <span class="muted nowrap">1 つ前: {label}</span>'
@@ -3834,132 +3779,18 @@ async def admin_collect_sweep(name: str, request: Request):
     return RedirectResponse(url=collect_page(item), status_code=303)
 
 
-@router.post("/admin/collect/consult")
-async def admin_collect_consult(request: Request):
-    """AI にプロンプトの案を書いてもらい、そのまま直して保存できる画面を返す。
-
-    **リダイレクトせずにその場で返す**。案は数百字あってクエリに載らないし、
-    保存する前に手で直したいから —— 案を出す・直す・保存するを 1 枚に置く。
-
-    **この画面だけ待たせる**(AI の応答ぶん、十数秒〜1 分)。管理画面は JS を持たない
-    ので、待っている間の見せ方は作れない。押す前に、時間がかかることをボタンの
-    近くに書いてある。
-    """
-    from app.main import draft_collection_prompt
-
-    form = await request.form()
-    name = str(form.get("name") or "").strip() or None
-    want = str(form.get("want") or "").strip()
-    feedback = str(form.get("feedback") or "").strip()
-    current = str(form.get("current") or "").strip()
-    if name and not current:
-        current = collect.get(name).prompt
-    if not want and name:
-        want = collect.get(name).description or name
-    try:
-        # **人が押して始めた依頼**。収集の時計が動かしているぶんと見分ける
-        with ai_inflight.called_by("admin"):
-            draft = await draft_collection_prompt(want, current, feedback, name)
-        error = ""
-    except HTTPException as e:
-        detail = e.detail if isinstance(e.detail, dict) else {"error": str(e.detail)}
-        draft = current
-        error = f'<p class="stale">⚠️ 相談できませんでした: {esc(str(detail))}</p>'
-    return HTMLResponse(_consult_page_html(name, want, draft, error))
-
-
-@router.post("/admin/collect/draft-extract")
-async def admin_collect_draft_extract(request: Request):
-    """依頼文から抽出の指定を書かせて、**引いた結果と一緒に**見せる。
-
-    **保存はしない**。指定は保存すると次の実行の中身が変わるので、
-    何件取れて何が出るかを見てから決められるようにする。
-
-    **この画面も待たせる**(AI の応答ぶん)。管理画面は JS を持たない。
-    """
-    from app.main import ExtractDraft, collect_draft_extract
-
-    form = await request.form()
-    name = str(form.get("name") or "").strip() or None
-    want = str(form.get("want") or "").strip()
-    try:
-        with ai_inflight.called_by("admin"):
-            drafted = await collect_draft_extract(
-                request, ExtractDraft(want=want, name=name)
-            )
-        error = ""
-    except HTTPException as e:
-        log.warning("draft extract refused: name=%s status=%s detail=%r", name, e.status_code, e.detail)
-        drafted = None
-        error = f'<p class="stale">⚠️ 書けませんでした({_refusal_text(e.status_code)})</p>'
-    except Exception as e:
-        log.exception("draft extract failed: name=%s", name)
-        drafted = None
-        error = f'<p class="stale">⚠️ 書けませんでした({esc(type(e).__name__)})</p>'
-    return HTMLResponse(_draft_extract_page_html(name, want, drafted, error))
-
-
-def _draft_extract_page_html(name: str | None, want: str, drafted: dict | None, error: str) -> str:
-    """書けた指定と、それで実際に引けたものを 1 枚に置く。
-
-    **引いた結果を必ず添える** —— タグは完全一致でしか引けないので、それらしい
-    名前を書かれると静かな 0 件になる。保存してから気づくと、次の実行まで分からない。
-    """
-    if drafted is None:
-        result = ""
-        save = ""
-    else:
-        spec_json = json.dumps(drafted["extract"], ensure_ascii=False, indent=2)
-        samples = "".join(
-            f"<li><strong>{esc(item['title'])}</strong>"
-            f'<br><span class="muted">{esc(" / ".join(item["tags"])) or "(タグなし)"}</span>'
-            f'<br><span class="muted">{esc(item.get("url", ""))}</span></li>'
-            for item in drafted["sample"]
-        )
-        candidates = drafted.get("candidates") or []
-        # 0 件だけが失敗ではない。それらしい一般名は「実在はするが数件しか
-        # 付いていないタグ」に当たり、静かに痩せた結果になる
-        listed = " / ".join(f"{c['tag']}({c['docs']} 件)" for c in candidates)
-        hint = (
-            '<p class="stale">頼んだ件数に届きませんでした。タグは完全一致でしか'
-            f"引けません。実在するタグ: {esc(listed)}</p>"
-            if candidates
-            else ""
-        )
-        result = (
-            f"<p>この指定で <strong>{drafted['total']} 件</strong>取れます。</p>"
-            f"{hint}<ul>{samples}</ul>"
-        )
-        current = collect.get(name) if name else None
-        save = (
-            f'<form method="post" action="/admin/collect/{esc(name)}/edit" class="collect-form">'
-            f'<input type="hidden" name="description" value="{esc(current.description)}">'
-            f'<input type="hidden" name="interval_minutes" value="{current.interval_minutes}">'
-            f'<input type="hidden" name="cursor" value="{esc(current.cursor)}">'
-            f'<textarea name="prompt" hidden>{esc(current.prompt)}</textarea>'
-            f'<p><label>この指定(直してから保存できる)<br>'
-            f'<textarea name="extract" rows="16" spellcheck="false">{esc(spec_json)}</textarea>'
-            f"</label></p>"
-            f'<button type="submit">この指定で保存する</button></form>'
-        ) if current else ""
-
-    body = f"""
-<h1>{esc(name or "")}の抽出の指定を書かせる</h1>
-{error}
-<p class="muted">頼んだこと: {esc(want) or "(指定なし)"}</p>
-{result}
-{save}
-<p class="muted"><a href="/admin/collect">管理画面へ戻る</a>(保存しなければ何も変わりません)</p>
-"""
-    return page_shell("抽出の指定", body)
-
-
 @router.post("/admin/collect/{name}/toggle")
-def admin_collect_toggle(name: str):
-    """有効・無効を切り替える(見本を動かし始める入口でもある)。"""
+def admin_collect_toggle(name: str, back: str = Form("")):
+    """有効・無効を切り替える(見本を動かし始める入口でもある)。
+
+    **押した面へ戻す**(`back`)。収集の面から押したのに一覧へ連れ出すと、
+    止まったかどうかを確かめに面を開き直すことになる。戻れるのは一覧と
+    その収集の面だけ(保存されている名前から組む。外から来た値は行き先にしない)。
+    """
     current = collect.get(name)
     collect.update(name, enabled=not current.enabled)
-    return RedirectResponse(url="/admin/collect", status_code=303)
+    own = collect_page(current)
+    return RedirectResponse(url=own if back == own else "/admin/collect", status_code=303)
 
 
 @router.post("/admin/collect/{name}/delete")
@@ -4297,26 +4128,6 @@ async def admin_collect_restart(name: str, request: Request):
     return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
 
 
-@router.post("/admin/collect/{name}/focus")
-async def admin_collect_focus(name: str, request: Request):
-    """この部分を集中的に直させる(管理画面の「いま直させる」)。
-
-    **定時の巡回には影響しない** —— 進み具合も、どの巡回の予定も、区画の巡回記録も
-    動かさない。**止めている収集もここからは走らせる**(`run` と同じ理由)。
-    """
-    from app.main import start_focus_bake
-
-    form = await request.form()
-    titles = [t.strip() for t in str(form.get("titles") or "").splitlines() if t.strip()]
-    start_focus_bake(name, {
-        "note": str(form.get("note") or ""),
-        "titles": titles,
-        "partition": str(form.get("partition") or ""),
-        "requested_by": "管理画面",
-    })
-    return RedirectResponse(url=STATUS_JOB, status_code=303)
-
-
 def _blank_to_none(raw) -> str | None:
     """空欄は「指定しない」。作るときは None を渡す(既定にまかせる)。"""
     return str(raw or "").strip() or None
@@ -4567,6 +4378,7 @@ def admin_collect_detail(
     name: str,
     sweep: str | None = Query(None, description="直近の変更を、この回のぶんだけに絞る"),
     page: int = Query(1, description="直近の変更の何ページ目か(新しいほうから)"),
+    removed_page: int = Query(1, description="消えたものの何ページ目か(新しいほうから)"),
 ):
     """収集 1 つぶんの面。**一覧から名前を押すとここへ来る**。
 
@@ -4591,6 +4403,10 @@ def admin_collect_detail(
     body = f"""
 {nav_html("/admin/collect", below=True)}
 <h1>{esc(name)}</h1>
+<!-- **戻る口と止める / 消す口は見出しのすぐ下に**(下の端にしか無いと、巡回や区画の
+     長い表をまたいで探すことになる)。ボタンは右へ寄せる -->
+<div class="page-topbar"><a href="/admin/collect">集める の一覧へ戻る</a>
+<div>{_collect_switches_html(item, src, collect_page(item))}</div></div>
 <p class="muted">{esc(item.description)}
 {'<br>依頼元: ' + esc(item.requested_by) if item.requested_by else ''}</p>
 <p>種類: {esc(KIND_LABELS.get(item.kind, item.kind))}
@@ -4607,7 +4423,9 @@ def admin_collect_detail(
 {_sweep_table_body(item, disabled)}
 </tbody>
 </table>
-{_collect_detail_html(item, disabled, request.app.state.sources, _baking_now(job, name))}
+{_collect_detail_html(
+    item, disabled, request.app.state.sources, _baking_now(job, name), removed_page,
+)}
 {_collect_running_html(name)}
 {_collect_changes_html(name=name, sweep=sweep, page=page)}
 {_changed_here_html(name, request.app.state.sources, sweep)}
@@ -4703,8 +4521,8 @@ def _run_here_html(item, table: str, busy: bool) -> str:
     **複数選べる。** 1 件ずつしか走らせられなかった頃は、直したところを何区画か
     まとめて確かめたいときに、区画の面を開き直して 1 回ずつ押すことになった。
 
-    **表をフォームの中に入れる**ので、行の頭のチェックがそのまま送られる ——
-    畳んである残りの区画(`<details>`)も同じフォームの中なので、開いて選べる。
+    **表をフォームの中に入れる**ので、行の頭のチェックがそのまま送られる。
+    **走らせる口は表のすぐ下に畳まずに置く**(表ごと区画の畳みの中にある)。
 
     **区画を見る巡回が 1 つも無ければ出さない**(選んでも走らせる先が無い)。
     """
@@ -4714,9 +4532,9 @@ def _run_here_html(item, table: str, busy: bool) -> str:
     return (
         f'<form method="post" action="/admin/collect/{esc(quote(item.name))}/partition/run"'
         f' class="collect-form"{off}>{table}'
-        f"<details><summary>選んだ区画を 1 回走らせる</summary>"
+        f'<h4>選んだ区画を 1 回走らせる</h4>'
         f'{_trial_fields(item, off, "選んだ区画で 1 回走らせる")}'
-        f"</details></form>"
+        f"</form>"
     )
 
 

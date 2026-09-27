@@ -131,6 +131,10 @@ PAGE_STYLE = """
   th { background: #f0f0f0; }
   nav a { margin-right: 1rem; }
   form.init-form { display: inline; }
+  /* 面の頭の 1 行。**左に戻る口、右に操作**(収集の面) */
+  .page-topbar { display: flex; flex-wrap: wrap; justify-content: space-between;
+                 align-items: center; gap: 0.4rem 1rem; margin: 0.4rem 0 0.8rem; }
+  .page-topbar > div { display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; }
   /* 巡回ごとの「今すぐ実行 / ドライラン」。名前の下に小さく並べる —— 巡回の欄に
      置くのは、どの設定で走るのかが押す場所から読めるようにするため */
   .sweep-run { margin-top: 0.3rem; display: flex; gap: 0.3rem; flex-wrap: wrap; }

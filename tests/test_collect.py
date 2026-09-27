@@ -2124,6 +2124,9 @@ class TestRedoingTheLastRun:
         assert "最後の 1 回をやり直す" in html
         # 中身は戻らないことを、押す前に書く
         assert "集めた中身は戻りません" in html
+        # **地の文にも書く**(ボタンの title はスマホでは読めない)。DB を戻す口と並べて読ませる
+        assert "DB の中身(集めたもの)は戻しません" in html
+        assert "「DBを1つ前へ戻す」" in html
 
 
 class TestWritingOnlyIfNothingChanged:
@@ -4112,6 +4115,43 @@ class TestWhatWasRemoved:
         assert "俳優さん —— 絵ではなく演技で知られる人" in html
         assert "生涯と代表作" not in html
         assert "モネ" not in html
+        # 畳んでおく(開けば全部ある)
+        assert '<details id="removed"><summary>消えたもの(1 件)</summary>' in html
+
+    def test_every_removed_one_can_be_paged_through(self, sample, tmp_path, monkeypatch):
+        """新しい 20 件だけを出していた頃は、記録は全部あるのに頭しか読めなかった。"""
+        from app.views import admin
+
+        monkeypatch.setattr(admin, "REMOVED_PAGE_SIZE", 2)
+        path = tmp_path / "news.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(notes.SCHEMA_DDL)
+        for doc_id in range(1, 6):
+            conn.execute(
+                "INSERT INTO docs (doc_id, title, opening, body, tags, extra, updated_at,"
+                " rank_score) VALUES (?, ?, '', '', ?, '{}', ?, 0.0)",
+                (doc_id, f"消えた{doc_id}", json.dumps([notes.REMOVED_TAG]),
+                 f"2026-01-0{doc_id}T00:00:00+00:00"),
+            )
+            conn.execute("INSERT INTO doc_tags (tag, doc_id) VALUES (?, ?)",
+                         (notes.REMOVED_TAG, doc_id))
+        conn.commit()
+        conn.close()
+
+        class Src:
+            def __init__(self):
+                self.path = path
+                self.schema_version = 4
+
+        first = admin._removed_html(collect.get("news"), {"news": Src()})
+        assert "1 / 3 ページ(5 件)" in first
+        assert "消えた5" in first and "消えた3" not in first
+        assert 'href="/admin/collect/news?removed_page=2#removed"' in first
+
+        last = admin._removed_html(collect.get("news"), {"news": Src()}, page=9)
+        assert "3 / 3 ページ" in last and "消えた1" in last
+        # ページを送ったら開いたまま戻す
+        assert '<details id="removed" open>' in last
 
 
 class TestKeepingTheClockAcrossAPatch:
@@ -5276,6 +5316,30 @@ class TestTheCollectSectionMarkup:
         monkeypatch.setattr(ai_inflight, "running", lambda limit=50: [])
         assert admin._collect_running_html("news") == ""
 
+    def test_the_page_starts_with_the_way_back_and_the_switches(self, sample):
+        """下の端にしか無いと、巡回や区画の長い表をまたいで探すことになる。"""
+        from fastapi.testclient import TestClient
+
+        from app.main import app
+
+        with TestClient(app) as client:
+            page = client.get("/admin/collect/news").text
+            top = page.split("<h1>news</h1>")[1].split("</div></div>")[0]
+            assert '<div class="page-topbar"><a href="/admin/collect">集める の一覧へ戻る</a>' in top
+            assert 'action="/admin/collect/news/toggle"' in top
+            assert '<input type="hidden" name="back" value="/admin/collect/news">' in top
+            # 下の端の戻る口も残す
+            assert page.count("集める の一覧へ戻る") == 2
+
+            # 収集の面から押したら、収集の面へ戻る
+            res = client.post("/admin/collect/news/toggle",
+                              data={"back": "/admin/collect/news"}, follow_redirects=False)
+            assert res.headers["location"] == "/admin/collect/news"
+            # 知らない行き先には連れ出さない
+            res = client.post("/admin/collect/news/toggle",
+                              data={"back": "https://example.test/"}, follow_redirects=False)
+            assert res.headers["location"] == "/admin/collect"
+
     def test_every_partition_is_folded_away(self, sample):
         """全部を出すと、その下にある変更履歴まで面の外へ押し出される。
 
@@ -5296,6 +5360,11 @@ class TestTheCollectSectionMarkup:
         assert html.index("25 区画を見る") < html.index("区画0")
         assert "区画24" in html
         assert html.count("<table") == 1
+        # 選んで走らせる口も同じ畳みの中(別に畳まない)
+        folded = html.split("<details><summary>25 区画を見る</summary>")[1]
+        if "選んだ区画で 1 回走らせる" in html:
+            assert "選んだ区画で 1 回走らせる" in folded
+            assert "<summary>選んだ区画を 1 回走らせる</summary>" not in html
 
     def test_every_form_is_opened_and_closed(self, sample):
         html = self._html(sample)
@@ -5676,7 +5745,11 @@ class TestTheCollectionPage:
         # 巡回の表も、直す口も同じ面にある
         assert "ざっと" in html and "じっくり" in html
         assert "/admin/collect/news/edit" in html
-        assert "/admin/collect/news/focus" in html
+        # **どの巡回・どの AI で走るのかが画面から読めない口は置かない**
+        # (集中的に直させる・抽出の指定を書かせる・相談して直す)
+        for gone in ("/admin/collect/news/focus", "/admin/collect/draft-extract",
+                     "/admin/collect/consult"):
+            assert gone not in html, gone
         # まだ焼いていない収集には、溜まったものへの入口を出さない(404 になるだけ)
         assert "まだ焼いていない" in html
 

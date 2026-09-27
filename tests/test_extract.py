@@ -789,60 +789,6 @@ class TestWritingTheSpecFromARequest:
         assert extract.parse_draft('```json\n{"source": "jawiki"}\n```') == {"source": "jawiki"}
 
 
-class TestTheAdminScreen:
-    @pytest.fixture()
-    def stored(self, tmp_path, monkeypatch):
-        """指定を持った収集を 1 つ置く。"""
-        from app import collect, db
-
-        notes_dir = tmp_path / "notes"
-        monkeypatch.setenv("CHIEZO_NOTES_DIR", str(notes_dir))
-        # 定義の置き場（`state/chiezo_settings.db`）。人が読む短期記憶とは別のファイル
-        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
-        monkeypatch.setenv("CHIEZO_TRIGGER_URL", "http://chiezo-trigger:7011")
-        db.set_mutable_paths([notes_dir / "notes.db"])
-        collect.create("painters", prompt="{cursor} と {current}", interval_minutes=60)
-        return collect.update("painters", extract=extract.to_json(spec()))
-
-    def test_consulting_about_the_prompt_keeps_the_rest(self, stored):
-        """相談から保存したときに、フォームに載っていない項目が既定へ戻らないこと。
-
-        載せていないと、抽出の指定が消える。
-        """
-        from app.views import admin
-
-        html = admin._consult_page_html("painters", "画家", "新しい指示文", "")
-
-        assert "印象派の画家" in html
-
-    def test_the_drafted_spec_comes_with_what_it_pulls(self, stored):
-        from app.views import admin
-
-        drafted = {
-            "extract": extract.to_json(spec()),
-            "total": 2,
-            "sample": [{"title": "クロード・モネ", "tags": ["画家"], "url": "https://example.com/1"}],
-        }
-
-        html = admin._draft_extract_page_html("painters", "画家を30人", drafted, "")
-
-        assert "2 件" in html
-        assert "クロード・モネ" in html
-        assert html.count("<form") == html.count("</form>")
-
-    def test_a_thin_result_says_which_tags_are_real(self, stored):
-        from app.views import admin
-
-        drafted = {"extract": extract.to_json(spec()), "total": 0, "sample": [],
-                   "candidates": [{"tag": "印象派の画家", "docs": 39}]}
-
-        html = admin._draft_extract_page_html("painters", "画家", drafted, "")
-
-        assert "頼んだ件数に届きませんでした" in html
-        # 数まで出す。「実在はするが数件しか付いていない」タグを選ばないため
-        assert "印象派の画家(39 件)" in html
-
-
 class TestCarryingFactsFromTheArticle:
     """元の記事に載っている事実を、そのまま運ぶ(`extra`)。
 
