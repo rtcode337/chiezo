@@ -1,4 +1,4 @@
-"""管理画面の「ToDo」の面(`/admin/todo`)。
+"""管理画面の「ToDo」の節(記憶の面 `/admin/memory` のいちばん下。書き込みの口は `/admin/todo/...`)。
 
 タスクとルールを**1 画面に**出す。もとは Vue の SPA(`tasks-frontend/`)を別に持ち、
 外へ公開する面(`chiezo-tasks`)だけが Google のログインで守る作りだった。やめた理由は 2 つ:
@@ -15,8 +15,8 @@
 
 この面の決めごと:
 
-- **1 画面に全部出す。** タスク・完了・プロジェクト・ルール・書き出しを縦に並べ、
-  行き来を頭の目次(`.todo-index`)だけで済ませる。タスクとルールは同じ日に触るもので、
+- **1 か所に全部出す。** プロジェクトとタスク・完了・書き出し・ルールを縦に並べる。
+  **目次は置かない**(節は 4 つで、スクロールで届く)。タスクとルールは同じ日に触るもので、
   画面を分けると「ルールを直してからタスクを流す」のたびに読み込み直しになる
 - **JS はインラインの `confirm` まで**(管理画面の流儀)。開閉は `<details>`、
   並び替えはドラッグではなく ↑↓ のフォーム。取り消せない操作にだけ確認を出す
@@ -31,19 +31,25 @@ import re
 from datetime import datetime
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Form, HTTPException, Query, Request
+from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app import notes, tasks
 from app.jst import JST
 from app.jst import format as format_jst
 from app.jst import parse as parse_jst
-from app.pages import doc_url, esc, page_shell
+from app.pages import doc_url, esc
 
 router = APIRouter()
 
-# 面の居場所。**`/tasks` から移した**(もとは SPA の置き場)。
+# 書き込みの口の置き場。**`/tasks` から移した**(もとは SPA の置き場)。
 PATH = "/admin/todo"
+# 画面の居場所。**記憶の面のいちばん下に節として置く**(`section_html`)。
+# タスクもルールも短期記憶のメモにタグで載っているだけなので、記憶の面の中にあれば
+# 帯の面を 1 つ減らせる。書いたらここへ戻す
+PAGE = "/admin/memory"
+# 節の頭の居場所(「プロジェクトとタスク」の見出し)
+SECTION_ANCHOR = "tasks"
 
 # 完了タスクの 1 ページ。溜まる一方のものなので頭打ちにする(遡るのは頁送りで)。
 DONE_PAGE_SIZE = 20
@@ -119,20 +125,51 @@ def _message(exc: HTTPException) -> str:
     return str(detail)
 
 
-def _redirect(anchor: str = "", *, error: str = "", notice: str = "") -> RedirectResponse:
-    """押した場所へ戻す。**断られた理由も一緒に持って帰る**。"""
-    query = {k: v for k, v in (("error", error), ("notice", notice)) if v}
-    url = PATH + (f"?{urlencode(query)}" if query else "") + (f"#{anchor}" if anchor else "")
+def _redirect(
+    anchor: str = "", *, error: str = "", notice: str = "", opened: str = "",
+) -> RedirectResponse:
+    """押した場所へ戻す。**断られた理由も一緒に持って帰る**。
+
+    `opened` は**開いておくプロジェクトの行**(`project_anchor`)。タスクは畳んで
+    あるので、閉じたまま戻すと押した結果が見えない。
+    """
+    query = {
+        k: v for k, v in (("error", error), ("notice", notice), ("open", opened)) if v
+    }
+    url = PAGE + (f"?{urlencode(query)}" if query else "") + (f"#{anchor}" if anchor else "")
     return RedirectResponse(url, status_code=303)
 
 
-def _run(anchor: str, action) -> RedirectResponse:
+def _run(anchor: str, action, opened: str = "") -> RedirectResponse:
     """書き込みを 1 つ実行して戻す。断られたら帯に出す(JSON を返さない)。"""
     try:
         notice = action()
     except HTTPException as e:
-        return _redirect(anchor, error=_message(e))
-    return _redirect(anchor, notice=notice or "")
+        return _redirect(anchor, error=_message(e), opened=opened)
+    return _redirect(anchor, notice=notice or "", opened=opened)
+
+
+def _row_of(project: str | None) -> str:
+    """タスクの戻り先 —— そのタスクが入っているプロジェクトの行。**知らない名前は未分類**。"""
+    if project:
+        for one in tasks.list_projects():
+            if one.name == project:
+                return project_anchor(one.id)
+    return project_anchor(None)
+
+
+def _task_run(project: str | None, action) -> RedirectResponse:
+    """タスクへの操作。**そのタスクのプロジェクトの行へ、開いたまま戻す**。"""
+    row = _row_of(project)
+    return _run(row, action, opened=row)
+
+
+def _task_project(doc_id: int) -> str | None:
+    """そのタスクのプロジェクト。**読めなければ None**(戻り先が未分類になるだけ)。"""
+    try:
+        return tasks.require_task(doc_id).project
+    except HTTPException:
+        return None
 
 
 def _moved(ids: list[int], target: int, direction: str) -> list[int]:
@@ -257,7 +294,12 @@ def _task_row(
     first: bool,
     last: bool,
 ) -> str:
-    """タスク 1 行。**開くと編集できる** —— 読むだけの行と編集の画面を分けない。"""
+    """タスク 1 つ。**開くと編集できる** —— 読むだけの行と編集の画面を分けない。
+
+    **表にしない**(`div` を並べる)。プロジェクトの表の 2 段目に入るので、表の中に
+    表を置くと、スマホで札に起こす下ごしらえ(`pages.as_cards`)が表の切れ目を
+    読み違える。
+    """
     handoff = (
         f'<a class="todo-handoff" href="{esc(claude_code_url(task, repo_urls, rules_repo))}"'
         ' target="_blank" rel="noopener noreferrer"'
@@ -280,34 +322,26 @@ def _task_row(
 <p class="muted">作成 {esc(_when(task.created_at))} / 更新 {esc(_when(task.updated_at))}
  / <a href="{esc(doc_url(notes.SOURCE_NAME, task.doc_id))}">元のメモ</a></p>
 """
-    return f"""<tr>
-<td><details><summary>{flag}{esc(task.title)}</summary>{edit}</details></td>
-<td>{_status_cell(task)}</td>
-<td>{_move_cell(f"{PATH}/tasks/{task.doc_id}/move", first, last)}</td>
-<td>{handoff}</td>
-</tr>"""
+    return f"""<div class="todo-task">
+<div class="todo-task-title"><details><summary>{flag}{esc(task.title)}</summary>{edit}</details></div>
+{_status_cell(task)}
+{_move_cell(f"{PATH}/tasks/{task.doc_id}/move", first, last)}
+{handoff}
+</div>"""
 
 
-def _group_html(
-    heading: str,
-    note: str,
+def _task_list(
     items: list[tasks.Task],
     projects: list[tasks.Project],
     repo_urls: list[str],
     rules_repo: str | None,
 ) -> str:
     if not items:
-        rows = '<p class="muted">このプロジェクトに未完了のタスクはありません。</p>'
-    else:
-        cells = "".join(
-            _task_row(t, projects, repo_urls, rules_repo, i == 0, i == len(items) - 1)
-            for i, t in enumerate(items)
-        )
-        rows = (
-            "<table><thead><tr><th>タスク</th><th>状態</th><th>並び</th><th>渡す</th>"
-            f"</tr></thead><tbody>{cells}</tbody></table>"
-        )
-    return f"<h3>{heading}</h3>{note}{rows}"
+        return '<p class="muted">未完了のタスクはありません。</p>'
+    return "".join(
+        _task_row(t, projects, repo_urls, rules_repo, i == 0, i == len(items) - 1)
+        for i, t in enumerate(items)
+    )
 
 
 def _sorted_in_group(items: list[tasks.Task]) -> list[tasks.Task]:
@@ -322,113 +356,43 @@ def _sorted_in_group(items: list[tasks.Task]) -> list[tasks.Task]:
     return ordered
 
 
-def _tasks_section(
+# プロジェクトを作る口の居場所(畳んだ `<details>`)
+CREATE_PROJECT_ANCHOR = "projects"
+
+
+def project_anchor(project_id: int | None) -> str:
+    """プロジェクトの行の居場所。**未分類は `project-none`**。"""
+    return f"project-{project_id if project_id is not None else 'none'}"
+
+
+def _board_section(
     projects: list[tasks.Project],
-    archived: list[tasks.Project],
     rules_repo: str | None,
+    opened: str = "",
 ) -> str:
+    """プロジェクトとタスク。**1 つの表に、プロジェクトを 1 段目、タスクを 2 段目に**。
+
+    タスクの節とプロジェクトの節に分けていた頃は、同じプロジェクトの話が画面の
+    上と下に離れていた —— 説明やリポジトリは下の表、そこに紐づくタスクは上、で、
+    「このプロジェクトに何が残っているか」を読むのに行き来した。
+
+    **タスクは畳む**(`<details>`)。プロジェクトの一覧として読めるように、
+    開くのは見たいものだけ。**押した操作の戻り先では、そのプロジェクトを開いておく**
+    (`opened`。閉じたまま戻すと、押した結果が見えない)。
+
+    **並びは保存されているとおり**(アーカイブを後ろへ寄せない)。
+    ↑↓ は `reorder_projects` に全件を渡すので、画面の並びが台帳の並びと
+    違うと、押した行が思ったところへ行かない。**未分類は末尾に、0 件でも出す** ——
+    放り込み先であり、プロジェクトを作る前のタスクが消えたように見えないようにする。
+    """
     active = tasks.list_active_tasks()
-    by_project: dict[str | None, list[tasks.Task]] = {None: []}
-    for project in projects:
-        by_project[project.name] = []
+    by_project: dict[str | None, list[tasks.Task]] = {}
     for task in active:
         by_project.setdefault(task.project, []).append(task)
-
-    def group(project: tasks.Project) -> str:
-        note = ""
-        if project.archived:
-            # **アーカイブは未完了 0 件が条件**なので、ここに来るのは後から
-            # 紐づけ直したタスクだけ。出さないと、どの一覧にも並ばずに消える
-            note = '<p class="muted">アーカイブ済みですが、未完了のタスクが残っています。</p>'
-        if project.description:
-            note += f'<p class="muted">{esc(project.description)}</p>'
-        if project.repo_urls:
-            links = " / ".join(
-                f'<a href="{esc(u)}" target="_blank" rel="noopener noreferrer">{esc(u)}</a>'
-                for u in project.repo_urls
-            )
-            note += f'<p class="muted">{links}</p>'
-        return _group_html(
-            esc(project.name),
-            note,
-            _sorted_in_group(by_project.get(project.name, [])),
-            projects,
-            project.repo_urls,
-            rules_repo,
-        )
-
-    groups = [group(p) for p in projects]
-    groups += [group(p) for p in archived if by_project.get(p.name)]
-    # 未分類は**末尾に、0 件でも出す** —— 放り込み先であり、プロジェクトを
-    # 作る前のタスクが消えたように見えないようにするため
-    groups.append(
-        _group_html(
-            "(未分類)",
-            '<p class="muted">プロジェクトに紐づいていないタスク。</p>',
-            _sorted_in_group(by_project.get(None, [])),
-            projects,
-            [],
-            rules_repo,
-        )
-    )
-
-    add = f"""
-<form class="todo-entry" method="post" action="{PATH}/tasks">
-  <label>タイトル<input type="text" name="title" required placeholder="やること"></label>
-  <label>プロジェクト<select name="project">{_project_options(projects, None)}</select></label>
-  <label>本文(任意)<textarea name="body" rows="3"></textarea></label>
-  <div><button type="submit">足す</button></div>
-</form>"""
-    return f'<h2 id="tasks">タスク</h2>{add}{"".join(groups)}'
-
-
-def _done_section(page: int) -> str:
-    """完了したもの。**畳んでおく** —— 見に来るのは「あれは片付いたか」を確かめるときだけ。"""
-    paged = tasks.list_done_tasks(page=page, size=DONE_PAGE_SIZE)
-    total, items = paged["total"], paged["items"]
-    if not total:
-        inner = '<p class="muted">まだありません。</p>'
-    else:
-        cells = "".join(
-            f"<tr><td>{esc(t.title)}</td>"
-            f'<td class="muted">{esc(t.project or "(未分類)")}</td>'
-            f'<td class="muted">{esc(_when(t.updated_at))}</td>'
-            f'<td><form class="todo-inline" method="post"'
-            f' action="{PATH}/tasks/{t.doc_id}/status">'
-            f'<input type="hidden" name="status" value="{tasks.STATUS_TODO}">'
-            "<button type=\"submit\">戻す</button></form>"
-            f'{_confirm(f"{PATH}/tasks/{t.doc_id}/delete", "削除", f"「{t.title}」を消します。取り消せません。")}'
-            "</td></tr>"
-            for t in items
-        )
-        pages = (total + DONE_PAGE_SIZE - 1) // DONE_PAGE_SIZE
-        pager = []
-        if page > 0:
-            pager.append(f'<a href="{PATH}?done_page={page - 1}#done">← 新しい</a>')
-        pager.append(f'<span class="muted">{page + 1} / {pages} 頁({total} 件)</span>')
-        if page + 1 < pages:
-            pager.append(f'<a href="{PATH}?done_page={page + 1}#done">古い →</a>')
-        inner = (
-            "<table><thead><tr><th>タスク</th><th>プロジェクト</th><th>完了</th><th></th>"
-            f"</tr></thead><tbody>{cells}</tbody></table>"
-            f'<div class="pager">{"".join(pager)}</div>'
-        )
-    open_attr = " open" if page > 0 else ""
-    return (
-        f'<h2 id="done">完了</h2><details{open_attr}>'
-        f"<summary>片付いたもの({total} 件)</summary>{inner}</details>"
-    )
-
-
-def _projects_section() -> str:
-    """プロジェクト(タスクの入れ物)。名前がそのままタスクのタグになる。"""
-    rows = []
-    # **並びは保存されているとおり**(アーカイブを後ろへ寄せない)。
-    # ↑↓ は `reorder_projects` に全件を渡すので、画面の並びが台帳の並びと
-    # 違うと、押した行が思ったところへ行かない
     every = tasks.list_projects()
+    rows = []
     for index, project in enumerate(every):
-        count = len(tasks.list_active_tasks(project.name))
+        mine = _sorted_in_group(by_project.get(project.name, []))
         repos = esc("\n".join(project.repo_urls))
         edit = f"""
 <form class="todo-edit" method="post" action="{PATH}/projects/{project.id}">
@@ -457,32 +421,139 @@ def _projects_section() -> str:
                 '<input type="hidden" name="archived" value="1">'
                 "<button type=\"submit\">アーカイブ</button></form>"
             )
+        about = esc(project.description)
+        if project.repo_urls:
+            about += "<br>" + " / ".join(
+                f'<a href="{esc(u)}" target="_blank" rel="noopener noreferrer">{esc(u)}</a>'
+                for u in project.repo_urls
+            )
+        anchor = project_anchor(project.id)
         rows.append(
-            f"<tr><td><details><summary>{esc(project.name)}</summary>{edit}</details></td>"
-            f'<td class="muted">{esc(project.description)}</td>'
-            f"<td>{count} 件</td>"
+            f'<tr id="{anchor}"><td><details><summary>{esc(project.name)}</summary>{edit}</details></td>'
+            f'<td class="muted"><div>{about}</div></td>'
+            f"<td>{len(mine)} 件</td>"
             f'<td>{"アーカイブ済み" if project.archived else "使用中"}</td>'
             f'<td>{_move_cell(f"{PATH}/projects/{project.id}/move", index == 0, index == len(every) - 1)}</td>'
-            f'<td><div class="todo-actions">{toggle}</div></td></tr>'
+            # **足す口はアーカイブの右に**(アーカイブ済みのものには足させない)
+            f'<td><div class="todo-actions">{toggle}'
+            f'{"" if project.archived else _add_task_button(anchor, project.name)}</div></td></tr>'
         )
-    table = (
-        "<table><thead><tr><th>名前</th><th>説明</th><th>未完了</th><th>状態</th>"
-        f'<th>並び</th><th></th></tr></thead><tbody>{"".join(rows)}</tbody></table>'
-        if rows
-        else '<p class="muted">まだありません。</p>'
+        # **アーカイブしたものは、残っているときだけ 2 段目を出す**。アーカイブは
+        # 未完了 0 件が条件なので、ここに来るのは後から紐づけ直したタスクだけ ——
+        # 出さないと、どの一覧にも並ばずに消える
+        if project.archived and not mine:
+            continue
+        note = (
+            '<p class="muted">アーカイブ済みですが、未完了のタスクが残っています。</p>'
+            if project.archived else ""
+        )
+        rows.append(_tasks_row(
+            anchor, mine, note + _task_list(mine, projects, project.repo_urls, rules_repo),
+            opened,
+        ))
+    unsorted = _sorted_in_group(by_project.get(None, []))
+    anchor = project_anchor(None)
+    rows.append(
+        f'<tr id="{anchor}"><td>(未分類)</td>'
+        '<td class="muted">プロジェクトに紐づいていないタスク</td>'
+        f"<td>{len(unsorted)} 件</td><td></td><td></td>"
+        f'<td><div class="todo-actions">{_add_task_button(anchor, None)}</div></td></tr>'
     )
-    add = f"""
+    rows.append(_tasks_row(
+        anchor, unsorted, _task_list(unsorted, projects, [], rules_repo), opened,
+    ))
+
+    # **作る口は畳んでおく**(毎回は使わない。「収集を追加する」と同じ畳み方)。
+    # **断られて戻ったときは開いておく**(書いた中身を直しに来るので)
+    create_open = " open" if opened == CREATE_PROJECT_ANCHOR else ""
+    add_project = f"""
+<details id="{CREATE_PROJECT_ANCHOR}"{create_open}><summary>プロジェクトを作る</summary>
 <form class="todo-entry" method="post" action="{PATH}/projects">
   <label>名前<input type="text" name="name" required placeholder="リポジトリ名"></label>
   <label>説明(任意)<input type="text" name="description"></label>
   <label>リポジトリ(1 行に 1 つ・任意)<textarea name="repo_urls" rows="2"></textarea></label>
   <div><button type="submit">作る</button></div>
-</form>"""
-    return f"""<h2 id="projects">プロジェクト</h2>
-<p class="muted">タスクの入れ物。<strong>名前がそのままタスクのタグ</strong>になるので、
+</form></details>"""
+    return f"""<h2 id="{SECTION_ANCHOR}">プロジェクトとタスク</h2>
+<p class="muted">プロジェクトはタスクの入れ物。<strong>名前がそのままタスクのタグ</strong>になるので、
 名前を変えると紐づくタスクのタグも付け替わります。アーカイブできるのは未完了が 0 件のときだけ、
-削除できるのはアーカイブしたものだけです。</p>
-{table}{add}"""
+削除できるのはアーカイブしたものだけです。タスクは各プロジェクトの下に畳んであり、
+足すときは行の「タスク追加」から。</p>
+<table>
+<thead><tr><th>プロジェクト</th><th>説明</th><th>未完了</th><th>状態</th><th>並び</th><th></th></tr></thead>
+<tbody>{"".join(rows)}</tbody>
+</table>
+{add_project}"""
+
+
+def _add_task_button(anchor: str, project: str | None) -> str:
+    """その行のプロジェクトへタスクを足す口。**押すとモーダルで入力欄が出る**。
+
+    **JS は使わない**(`popover` 属性。開閉はブラウザが持つ)。表の上に 1 つだけ
+    置いていた頃は、プロジェクトを選び直す手間があり、足した先も表の中で探すことになった
+    —— 行から開けば、どこへ足すかは押した行で決まる。
+    **外側を押すか Esc で閉じる**(`popover` の既定)。書きかけは閉じても消えない。
+    """
+    ident = f"add-{anchor}"
+    where = esc(project) if project else "(未分類)"
+    return f"""<button type="button" popovertarget="{ident}">タスク追加</button>
+<div popover id="{ident}" class="todo-modal">
+<form class="todo-entry" method="post" action="{PATH}/tasks">
+  <p class="todo-modal-head">「{where}」にタスクを足す</p>
+  <input type="hidden" name="project" value="{esc(project or "")}">
+  <label>タイトル<input type="text" name="title" required placeholder="やること"></label>
+  <label>本文(任意)<textarea name="body" rows="5"></textarea></label>
+  <div class="todo-actions"><button type="submit">足す</button>
+  <button type="button" popovertarget="{ident}" popovertargetaction="hide">やめる</button></div>
+</form>
+</div>"""
+
+
+def _tasks_row(anchor: str, items: list[tasks.Task], inner: str, opened: str) -> str:
+    """プロジェクトの行の 2 段目(タスクを畳んだもの)。"""
+    is_open = " open" if opened == anchor else ""
+    return (
+        f'<tr class="todo-tasks"><td colspan="6"><details{is_open}>'
+        f"<summary>タスク({len(items)} 件)</summary>{inner}</details></td></tr>"
+    )
+
+
+def _done_section(page: int) -> str:
+    """完了したもの。**畳んでおく** —— 見に来るのは「あれは片付いたか」を確かめるときだけ。"""
+    paged = tasks.list_done_tasks(page=page, size=DONE_PAGE_SIZE)
+    total, items = paged["total"], paged["items"]
+    if not total:
+        inner = '<p class="muted">まだありません。</p>'
+    else:
+        cells = "".join(
+            f"<tr><td>{esc(t.title)}</td>"
+            f'<td class="muted">{esc(t.project or "(未分類)")}</td>'
+            f'<td class="muted">{esc(_when(t.updated_at))}</td>'
+            f'<td><form class="todo-inline" method="post"'
+            f' action="{PATH}/tasks/{t.doc_id}/status">'
+            f'<input type="hidden" name="status" value="{tasks.STATUS_TODO}">'
+            "<button type=\"submit\">戻す</button></form>"
+            f'{_confirm(f"{PATH}/tasks/{t.doc_id}/delete", "削除", f"「{t.title}」を消します。取り消せません。")}'
+            "</td></tr>"
+            for t in items
+        )
+        pages = (total + DONE_PAGE_SIZE - 1) // DONE_PAGE_SIZE
+        pager = []
+        if page > 0:
+            pager.append(f'<a href="{PAGE}?done_page={page - 1}#done">← 新しい</a>')
+        pager.append(f'<span class="muted">{page + 1} / {pages} 頁({total} 件)</span>')
+        if page + 1 < pages:
+            pager.append(f'<a href="{PAGE}?done_page={page + 1}#done">古い →</a>')
+        inner = (
+            "<table><thead><tr><th>タスク</th><th>プロジェクト</th><th>完了</th><th></th>"
+            f"</tr></thead><tbody>{cells}</tbody></table>"
+            f'<div class="pager">{"".join(pager)}</div>'
+        )
+    open_attr = " open" if page > 0 else ""
+    return (
+        f'<h3 id="done">完了</h3><details{open_attr}>'
+        f"<summary>片付いたもの({total} 件)</summary>{inner}</details>"
+    )
 
 
 def _rules_section(rules_repo: str | None, preview: str) -> str:
@@ -562,7 +633,7 @@ def _rules_section(rules_repo: str | None, preview: str) -> str:
 
 def _backup_section(preview: str) -> str:
     """書き出しと取り込み。**書き出したものがそのまま取り込みの入力**になる。"""
-    return f"""<h2 id="backup">書き出しと取り込み</h2>
+    return f"""<h3 id="backup">書き出しと取り込み</h3>
 <p class="muted"><strong>未完了のタスク</strong>と、その入れ物(プロジェクトの名前・説明・
 リポジトリ)を JSON で持ち出します。完了タスク・並び順・アーカイブ状態は入りません ——
 戻したいのは待ち行列であって、画面の状態ではないためです。</p>
@@ -581,8 +652,6 @@ def _backup_section(preview: str) -> str:
 TODO_STYLE = """
   /* ToDo の面(`views/todo.py`)。**行を低く保つ** —— タスクもルールも溜まるもので、
      1 行が本文の高さになると一覧として読めなくなる。中身は `<details>` の中。 */
-  .todo-index { display: flex; flex-wrap: wrap; gap: .3rem 1rem; font-size: .9rem;
-                margin: .6rem 0 1.2rem; }
   /* 表の中に置くフォームは、行の高さを増やさないように並べる */
   form.todo-inline { display: inline; }
   .todo-actions { display: flex; flex-wrap: wrap; gap: .3rem; align-items: baseline; }
@@ -610,71 +679,85 @@ TODO_STYLE = """
   .todo-combined { width: 100%; font-family: monospace; font-size: .8rem;
                    border: 1px solid #e5e2dc; background: #f7f6f3; }
   .note { color: #2f6f3e; }
+  /* プロジェクトの 2 段目(タスクを畳んだもの)。**上の行に続けて 1 つに見せる** */
+  tr.todo-tasks > td { border-top: 0; padding-top: 0; }
+  tr.todo-tasks > td > details { margin-top: 0; }
+  tr.todo-tasks > td > details > summary { font-weight: normal; padding: .1rem 0; }
+  /* タスク 1 つ。表にしない(表の中に表を置くと、札に起こす下ごしらえが崩れる) */
+  .todo-task { display: flex; flex-wrap: wrap; gap: .3rem .8rem; align-items: baseline;
+               padding: .35rem 0 .35rem .8rem; border-top: 1px solid #f0f0f4; }
+  .todo-task-title { flex: 1 1 16rem; min-width: 0; }
+  .todo-task-title > details { margin-top: 0; }
+  .todo-task-title > details > summary { font-weight: normal; padding: 0; }
+  /* タスクを足すモーダル(`popover`)。**画面の真ん中に、後ろを暗くして** */
+  .todo-modal { width: min(40rem, 92vw); padding: .4rem 1.2rem; border: 1px solid #ccc;
+                border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, .18); }
+  .todo-modal::backdrop { background: rgba(0, 0, 0, .35); }
+  .todo-modal { box-sizing: border-box; }
+  .todo-modal .todo-entry { max-width: none; }
+  .todo-modal input[type=text] { width: 100%; box-sizing: border-box; }
+  .todo-modal-head { font-weight: 700; margin: .4rem 0 0; }
+  @media (max-width: 40rem) {
+    /* 札では、上の札の下余白ぶん引き上げて 1 枚に見せる(巡回の設定と同じ) */
+    table.as-cards tr.todo-tasks { margin-top: -0.7rem; border-top: 0;
+                                   border-radius: 0 0 6px 6px; }
+    table.as-cards tr.todo-tasks > td:first-child { background: none; }
+    .todo-task { padding-left: 0; }
+  }
 """
 
 
-def _disabled_page() -> HTMLResponse:
-    from app.views.admin import nav_html
-
-    body = f"""
-{nav_html(PATH)}
-<h1>ToDo</h1>
-<p class="muted">短期記憶が無効なので、タスクもルールも置けません。
-書き込み可能なディレクトリを <code>CHIEZO_NOTES_DIR</code>
-(または <code>CHIEZO_STATE_DIR</code>)に設定すると使えるようになります。</p>
-"""
-    return HTMLResponse(content=page_shell("ToDo", body, style=TODO_STYLE))
-
-
-def _render(
+def section_html(
     request: Request,
     *,
     done_page: int = 0,
     rules_preview: str = "",
     backup_preview: str = "",
-) -> HTMLResponse:
-    from app.views.admin import nav_html
+) -> str:
+    """記憶の面のいちばん下に置く ToDo(「プロジェクトとタスク」と「ルール」の 2 節)。
 
+    **短期記憶が無効なら、置けない理由だけ出す**(空にすると、消えたように見える)。
+    """
     if not notes.is_enabled():
-        return _disabled_page()
-
+        return (
+            f'<h2 id="{SECTION_ANCHOR}">プロジェクトとタスク</h2>'
+            '<p class="muted">短期記憶が無効なので、タスクもルールも置けません。'
+            "書き込み可能なディレクトリを <code>CHIEZO_NOTES_DIR</code>"
+            "(または <code>CHIEZO_STATE_DIR</code>)に設定すると使えるようになります。</p>"
+        )
     projects = tasks.list_projects(archived=False)
-    archived = tasks.list_projects(archived=True)
     rules_repo = tasks.rules_repo_url()
-    body = f"""
-{nav_html(PATH)}
-<h1>ToDo</h1>
-<p class="muted">Claude Code に頼みたいことと、守らせたい共通ルールを 1 か所で持つところ。
-<strong>専用のテーブルは持たず</strong>、短期記憶(<code>{esc(notes.SOURCE_NAME)}</code>)の
-メモにタグで載せてあります。</p>
-<nav class="todo-index">
-  <a href="#tasks">タスク</a><a href="#done">完了</a><a href="#projects">プロジェクト</a>
-  <a href="#rules">ルール</a><a href="#backup">書き出しと取り込み</a>
-</nav>
-{_banner(request)}
-{_tasks_section(projects, archived, rules_repo)}
+    # **見出しは記憶の面の節と同じ段**(プロジェクトとタスク / ルール)。
+    # 完了と書き出しはタスクの話なので、プロジェクトとタスクの下に置く
+    return f"""{_banner(request)}
+{_board_section(projects, rules_repo, request.query_params.get("open", ""))}
 {_done_section(done_page)}
-{_projects_section()}
-{_rules_section(rules_repo, rules_preview)}
 {_backup_section(backup_preview)}
+{_rules_section(rules_repo, rules_preview)}
 """
-    return HTMLResponse(content=page_shell("ToDo", body, style=TODO_STYLE))
+
+
+def _render(request: Request, **previews) -> HTMLResponse:
+    """取り込みの下見を載せた記憶の面(下見は書き込みの口が組むので、ここから描く)。"""
+    from app.views.admin import memory_page
+
+    return memory_page(request, **previews)
 
 
 # ---- 読む --------------------------------------------------------------------
 
 
-@router.get(PATH, response_class=HTMLResponse)
-def todo(request: Request, done_page: int = Query(0, ge=0)):
-    """タスクとルールの 1 画面。"""
-    return _render(request, done_page=done_page)
+@router.get(PATH, include_in_schema=False)
+def todo():
+    """昔の置き場(ToDo の面)。**ブックマークを迷子にしない**ためだけに残す。"""
+    return RedirectResponse(url=f"{PAGE}#{SECTION_ANCHOR}", status_code=308)
 
 
 @router.get("/tasks", include_in_schema=False)
 @router.get("/tasks/{path:path}", include_in_schema=False)
 def tasks_moved(path: str = ""):
     """昔の置き場(SPA の `/tasks`)。**ブックマークを迷子にしない**ためだけに残す。"""
-    return RedirectResponse(url=PATH, status_code=308)
+    return RedirectResponse(url=f"{PAGE}#{SECTION_ANCHOR}", status_code=308)
 
 
 @router.get(f"{PATH}/export")
@@ -700,8 +783,8 @@ def create_task(
     body: str = Form(""),
     project: str = Form(""),
 ):
-    return _run(
-        "tasks",
+    return _task_run(
+        project or None,
         lambda: (
             tasks.create_task(title, body or None, project or None),
             f"タスクを足しました: {title.strip()}",
@@ -726,21 +809,22 @@ def update_task(
         )
         return "保存しました。"
 
-    return _run("tasks", action)
+    # **付け替えたなら、付け替えた先を開く**
+    return _task_run(project or None, action)
 
 
 @router.post(f"{PATH}/tasks/{{doc_id}}/status")
 def set_task_status(doc_id: int, status: str = Form(...)):
-    return _run(
-        "tasks",
+    return _task_run(
+        _task_project(doc_id),
         lambda: (tasks.update_task(doc_id, status=status), "状態を変えました。")[1],
     )
 
 
 @router.post(f"{PATH}/tasks/{{doc_id}}/flag")
 def set_task_flag(doc_id: int, flagged: str = Form("0")):
-    return _run(
-        "tasks",
+    return _task_run(
+        _task_project(doc_id),
         lambda: (tasks.update_task(doc_id, flagged=flagged == "1"), "印を変えました。")[1],
     )
 
@@ -758,12 +842,14 @@ def move_task(doc_id: int, dir: str = Form("up")):
         tasks.reorder_tasks(task.project, ids)
         return "並びを変えました。"
 
-    return _run("tasks", action)
+    return _task_run(_task_project(doc_id), action)
 
 
 @router.post(f"{PATH}/tasks/{{doc_id}}/delete")
 def delete_task(doc_id: int):
-    return _run("tasks", lambda: (tasks.delete_task(doc_id), "消しました。")[1])
+    return _task_run(
+        _task_project(doc_id), lambda: (tasks.delete_task(doc_id), "消しました。")[1],
+    )
 
 
 # ---- プロジェクト ------------------------------------------------------------
@@ -780,12 +866,16 @@ def create_project(
     description: str = Form(""),
     repo_urls: str = Form(""),
 ):
-    return _run(
-        "projects",
-        lambda: (
-            tasks.create_project(name, description, _repo_lines(repo_urls)),
-            f"プロジェクトを作りました: {name.strip()}",
-        )[1],
+    # **作れたら、できた行へ**(作る口は畳んであり、そこへ戻しても結果が見えない)。
+    # **断られたら、作る口を開いたまま戻す**
+    try:
+        made = tasks.create_project(name, description, _repo_lines(repo_urls))
+    except HTTPException as e:
+        return _redirect(
+            CREATE_PROJECT_ANCHOR, error=_message(e), opened=CREATE_PROJECT_ANCHOR,
+        )
+    return _redirect(
+        project_anchor(made.id), notice=f"プロジェクトを作りました: {made.name}",
     )
 
 
@@ -797,7 +887,7 @@ def update_project(
     repo_urls: str = Form(""),
 ):
     return _run(
-        "projects",
+        project_anchor(project_id),
         lambda: (
             tasks.update_project(project_id, name, description, _repo_lines(repo_urls)),
             "保存しました。",
@@ -808,7 +898,7 @@ def update_project(
 @router.post(f"{PATH}/projects/{{project_id}}/archive")
 def archive_project(project_id: int, archived: str = Form("1")):
     return _run(
-        "projects",
+        project_anchor(project_id),
         lambda: (
             tasks.update_project(project_id, archived=archived == "1"),
             "アーカイブしました。" if archived == "1" else "戻しました。",
@@ -823,13 +913,13 @@ def move_project(project_id: int, dir: str = Form("up")):
         tasks.reorder_projects(ids)
         return "並びを変えました。"
 
-    return _run("projects", action)
+    return _run(project_anchor(project_id), action)
 
 
 @router.post(f"{PATH}/projects/{{project_id}}/delete")
 def delete_project(project_id: int):
     return _run(
-        "projects",
+        "tasks",
         lambda: (tasks.delete_project(project_id), "消しました(紐づくタスクも一緒に)。")[1],
     )
 

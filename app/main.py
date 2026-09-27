@@ -4782,7 +4782,7 @@ app.include_router(views_browse.router)
 app.include_router(views_media_ask.router)
 app.include_router(views_media_compare.router)
 app.include_router(views_chat.router)
-# やること層(タスク・ルール)は管理画面の 1 面(`/admin/todo`)。**専用の REST も
+# やること層(タスク・ルール)は管理画面の記憶の面の節(書き込みの口は `/admin/todo/...`)。**専用の REST も
 # 別プロセスも持たない** —— Chiezo は安全なネットワークの中からしか触らせない、と
 # 決めたので、外に出すための認証つきの面(旧 chiezo-tasks)ごと畳んである。
 app.include_router(views_todo.router)

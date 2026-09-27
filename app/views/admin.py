@@ -53,7 +53,7 @@ from app import partition as partitioning
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
 from app.pages import CHAT_PATH, browse_url, esc, page_shell
 from app.registry import SUPPORTED_SCHEMA_VERSIONS, TAG_MIN_SCHEMA_VERSION, Source
-from app.views import ai_history, ai_settings, ai_usage, ai_workers
+from app.views import ai_history, ai_settings, ai_usage, ai_workers, todo
 
 log = logging.getLogger("chiezo.app")
 
@@ -2350,11 +2350,10 @@ PAGES = (
     # **先頭に置く。** 毎回まず見に来るのは「いま何が動いているか」で、
     # 走らせるボタンを押したあとに連れてこられるのもここ
     (STATUS_PAGE, "状況", "いま動いているもの。取り込み・収集・AI(依頼・使用量)・ディスクの空き"),
-    ("/admin/memory", "記憶", "溜めて引く。短期記憶・長期記憶・初期化"),
-    # **記憶の隣に置く。** タスクもルールも短期記憶のメモにタグで載っているだけで、
-    # 別の置き場を持たない —— 記憶を見に来た流れでそのまま開ける位置にする
-    # (かつては別プロセスの SPA で、帯からは外部リンクのように見えていた)
-    ("/admin/todo", "ToDo", "タスクとルール。短期記憶の上にタグで載る層"),
+    # **ToDo は記憶の面のいちばん下の節**(`views/todo.py`)。タスクもルールも短期記憶の
+    # メモにタグで載っているだけで、別の置き場を持たない —— 面を分けていた頃は、
+    # 帯に同じ層の入口が 2 つ並んでいた
+    ("/admin/memory", "記憶", "溜めて引く。短期記憶・長期記憶・初期化・ToDo"),
     # **記憶から切り出した面。** 記憶の中に畳んでいた頃は、収集を 1 本見るのに
     # 長期記憶の一覧と初期化の表をまたいでいた —— 無人で回る層は毎日見に来る側で、
     # 一度入れたら開かない表と同じ高さに置く理由が無い。ワーカーも一緒に置く
@@ -2492,10 +2491,10 @@ def admin(request: Request):
         STATUS_PAGE: _status_summary(job, running),
         "/admin/memory": (
             f"長期 {len(long_term)} ソース / {docs:,} 文書、短期 {notes_docs:,} 件。"
-            f"収集 {len(collections)} 件(有効 {len(enabled_collections)} 件)"
+            f"収集 {len(collections)} 件(有効 {len(enabled_collections)} 件)。"
+            f"ToDo: {_todo_summary()}"
         ),
         "/admin/ai": f"話せる相手 {len(answer.backend_names())} 件",
-        "/admin/todo": _todo_summary(),
         "/admin/server": esc(build_info.describe().splitlines()[0] if build_info.describe() else ""),
     }
 
@@ -2900,7 +2899,21 @@ def _running_html(running: list[dict], done: list[dict] | None = None) -> str:
 
 
 @router.get("/admin/memory", response_class=HTMLResponse)
-def admin_memory(request: Request):
+def admin_memory(
+    request: Request,
+    done_page: int = Query(0, ge=0, description="ToDo の完了の何ページ目か"),
+):
+    return memory_page(request, done_page=done_page)
+
+
+def memory_page(
+    request: Request, *, done_page: int = 0, rules_preview: str = "", backup_preview: str = "",
+) -> HTMLResponse:
+    """記憶の面。**いちばん下に ToDo の節**(`views/todo.section_html`)。
+
+    ToDo の取り込みの下見(`rules_preview` / `backup_preview`)は書き込みの口が
+    組むので、そちらからもここを呼ぶ。
+    """
     sources: dict[str, Source] = request.app.state.sources
     job = _fetch_trigger_status()
     disabled = run_buttons_disabled(job)
@@ -3047,8 +3060,11 @@ chiezo-trigger が立ち上がっていない場合、再構築と削除はで�
 </table>
 </details>
 
+{todo.section_html(
+    request, done_page=done_page, rules_preview=rules_preview, backup_preview=backup_preview,
+)}
 """
-    return HTMLResponse(content=page_shell("記憶", body))
+    return HTMLResponse(content=page_shell("記憶", body, style=todo.TODO_STYLE))
 
 
 @router.get("/admin/collect", response_class=HTMLResponse)

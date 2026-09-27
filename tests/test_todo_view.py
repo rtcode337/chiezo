@@ -61,19 +61,30 @@ class TestOnePage:
         _task(client)
         _post(client, "/rules", title="日本語で書く", body="応答は日本語。")
 
-        html = client.get("/admin/todo").text
+        html = client.get("/admin/memory").text
         assert "盤面の当たり判定を直す" in html
         assert "日本語で書く" in html
         assert 'id="tasks"' in html and 'id="rules"' in html
 
-    def test_the_nav_lists_it_right_after_memory(self, client):
-        """帯の並びは記憶の次。タスクもルールも短期記憶に載っているだけなので。"""
+    def test_it_is_the_last_section_of_the_memory_page(self, client):
+        """タスクもルールも短期記憶に載っているだけなので、記憶の面の中に置く。
+
+        面を分けていた頃は、帯に同じ層の入口が 2 つ並んでいた。
+        """
         from app.views.admin import PAGES
 
-        paths = [path for path, _label, _note in PAGES]
-        labels = {path: label for path, label, _note in PAGES}
-        assert labels["/admin/todo"] == "ToDo"
-        assert paths.index("/admin/todo") == paths.index("/admin/memory") + 1
+        assert "/admin/todo" not in [path for path, _label, _note in PAGES]
+        html = client.get("/admin/memory").text
+        # 見出しは記憶の面の節と同じ段。書き出しはルールの上(タスクの話なので)
+        at = [html.index(h) for h in (
+            'id="init"', '<h2 id="tasks">プロジェクトとタスク</h2>', '<h3 id="done">',
+            '<h3 id="backup">', '<h2 id="rules">ルール</h2>',
+        )]
+        assert at == sorted(at)
+        assert "1 か所で持つところ" not in html
+        # 昔の面を開いても、その節へ着く
+        res = client.get("/admin/todo", follow_redirects=False)
+        assert res.headers["location"] == "/admin/memory#tasks"
 
     def test_the_front_door_shows_how_much_is_left(self, client):
         _project(client)
@@ -88,8 +99,8 @@ class TestOnePage:
         from app import tasks
 
         assert not hasattr(tasks, "list_notes")
-        html = client.get("/admin/todo").text
-        assert "/admin/media" not in html.split('<nav class="todo-index">')[1].split("</nav>")[0]
+        html = client.get("/admin/memory").text
+        assert "/admin/media" not in html.split('<h2 id="tasks">')[1]
 
 
 class TestTasks:
@@ -101,7 +112,7 @@ class TestTasks:
     def test_a_task_without_a_project_falls_into_the_unsorted_group(self, client):
         task = _task(client, title="どこにも属さない")
         assert task.project is None
-        assert "(未分類)" in client.get("/admin/todo").text
+        assert "(未分類)" in client.get("/admin/memory").text
 
     def test_status_moves_without_opening_an_edit_screen(self, client):
         """一覧から直に状態を変えられること(押す場所と見る場所を分けない)。"""
@@ -113,7 +124,7 @@ class TestTasks:
         _post(client, f"/tasks/{task.doc_id}/status", status="done")
         assert tasks.require_task(task.doc_id).status == "done"
         # 完了したものは未完了の一覧から消え、畳んだ「完了」に移る
-        assert "片付いたもの(1 件)" in client.get("/admin/todo").text
+        assert "片付いたもの(1 件)" in client.get("/admin/memory").text
 
     def test_the_hard_one_mark_is_its_own_axis(self, client):
         from app import tasks
@@ -248,8 +259,8 @@ class TestProjects:
         third = _project(client, "pupai")
         _post(client, f"/projects/{second.id}/archive", archived="1")
 
-        html = client.get("/admin/todo").text
-        table = html.split('<h2 id="projects">')[1]
+        html = client.get("/admin/memory").text
+        table = html.split('<h2 id="tasks">')[1].split('<h3 id="done">')[0]
         shown = [n for n in ("arrow-puzzle", "travel-log", "pupai") if n in table]
         assert shown == [p.name for p in tasks.list_projects()]
 
@@ -266,9 +277,76 @@ class TestProjects:
         _post(client, f"/projects/{project.id}/archive", archived="1")
         tasks.create_task("あとから紐づけ直した", project="arrow-puzzle")
 
-        html = client.get("/admin/todo").text
+        html = client.get("/admin/memory").text
         assert "あとから紐づけ直した" in html
         assert "アーカイブ済みですが、未完了のタスクが残っています" in html
+
+    def test_tasks_sit_under_their_project_in_one_table(self, client):
+        """同じプロジェクトの話が、画面の上(タスク)と下(プロジェクト)に離れていた。"""
+        project = _project(client)
+        _task(client, title="矢印を直す", project="arrow-puzzle")
+        _task(client, title="どこにも属さない")
+
+        html = client.get("/admin/memory").text
+        board = html.split('<h2 id="tasks">')[1].split('<h3 id="done">')[0]
+
+        assert board.count("<table") == 1, "表の中に表を置かない(札に起こせなくなる)"
+        row = board.split(f'<tr id="project-{project.id}">')[1]
+        assert row.index("arrow-puzzle") < row.index("タスク(1 件)") < row.index("矢印を直す")
+        assert row.index("矢印を直す") < row.index('id="project-none"')
+        assert "どこにも属さない" in board.split('id="project-none"')[1]
+        # 既定では畳んでおく
+        assert '<tr class="todo-tasks"><td colspan="6"><details>' in board
+
+    def test_a_task_action_comes_back_with_its_project_open(self, client):
+        """閉じたまま戻すと、押した結果が見えない。"""
+        project = _project(client)
+        task = _task(client, project="arrow-puzzle")
+
+        res = _post(client, f"/tasks/{task.doc_id}/status", status="in_progress")
+
+        anchor = f"project-{project.id}"
+        location = res.headers["location"]
+        assert location.startswith("/admin/memory?")
+        assert location.endswith(f"open={anchor}#{anchor}")
+        html = client.get(f"/admin/memory?open={anchor}").text
+        opened = html.split(f'<tr id="{anchor}">')[1]
+        assert '<tr class="todo-tasks"><td colspan="6"><details open>' in opened
+
+    def test_each_project_row_opens_its_own_add_form(self, client):
+        """表の上に 1 つだけ置いていた頃は、プロジェクトを選び直す手間があった。"""
+        project = _project(client)
+        archived = _project(client, "travel-log")
+        _post(client, f"/projects/{archived.id}/archive", archived="1")
+
+        html = client.get("/admin/memory").text
+        row = html.split(f'<tr id="project-{project.id}">')[1].split("</tr>")[0]
+
+        assert f'popovertarget="add-project-{project.id}"' in row
+        assert f'<div popover id="add-project-{project.id}"' in row
+        assert '<input type="hidden" name="project" value="arrow-puzzle">' in row
+        assert row.index(">アーカイブ</button>") < row.index(">タスク追加</button>")
+        # 未分類にも足せる。アーカイブ済みには足させない
+        assert 'popovertarget="add-project-none"' in html
+        assert f'popovertarget="add-project-{archived.id}"' not in html
+        assert '<form class="todo-entry" method="post" action="/admin/todo/tasks">' in row
+
+    def test_the_create_project_form_is_folded(self, client):
+        html = client.get("/admin/memory").text
+        assert '<details id="projects"><summary>プロジェクトを作る</summary>' in html
+
+    def test_a_new_project_lands_on_its_row(self, client):
+        from app import tasks
+
+        res = _post(client, "/projects", name="arrow-puzzle")
+        made = tasks.list_projects()[0]
+        assert res.headers["location"].endswith(f"#project-{made.id}")
+
+    def test_a_refused_project_comes_back_with_the_form_open(self, client):
+        res = _post(client, "/projects", name="")
+        assert res.headers["location"].endswith("open=projects#projects")
+        html = client.get(res.headers["location"]).text
+        assert '<details id="projects" open>' in html
 
     def test_repositories_are_one_per_line(self, client):
         project = _project(
@@ -373,7 +451,7 @@ class TestRefusalsStayOnThePage:
         res = _post(client, "/tasks", title="  ")
         assert res.status_code == 303
         assert "title は必須です" in _notice(res)
-        assert "⚠️" in client.get("/admin/todo?error=title は必須です").text
+        assert "⚠️" in client.get("/admin/memory?error=title は必須です").text
 
     def test_an_unknown_task_is_not_a_500(self, client):
         res = _post(client, "/tasks/999/status", status="done")
@@ -404,4 +482,4 @@ class TestNoPublicFace:
         for path in ("/tasks", "/tasks/", "/tasks/rules"):
             res = client.get(path, follow_redirects=False)
             assert res.status_code == 308, path
-            assert res.headers["location"] == "/admin/todo"
+            assert res.headers["location"] == "/admin/memory#tasks"

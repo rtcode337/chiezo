@@ -175,7 +175,7 @@ curl -s -X DELETE "$BASE/v1/chiezo_memory/3"                             # 取�
 `決定`、`runbook`、`環境`、`本番`、`設計メモ`、`トラブルシュート`、
 `_chiezo_tombstone` = 長期記憶から落とす墓標。
 プロジェクトはリポジトリ名を小文字で)。`task` / `rule` を持つメモは
-[ToDo の画面](tasks.md)(`/admin/todo`)の担当で、どれも持たないメモは
+[ToDo の画面](tasks.md)(記憶の面のいちばん下、`/admin/memory#tasks`)の担当で、どれも持たないメモは
 ブラウズ画面(`/search/chiezo_memory/`)で読みます。
 語彙は `app/notes.py` の `CANONICAL_TAGS` が 1 か所で持ち、MCP の `remember` の
 ツール定義として配られます —— 書き手が変わっても同じ意味に同じ表記が付くようにするためで、
@@ -1173,7 +1173,7 @@ AI に返させる形は `{"items":[{"title","body","tags","url"}],"next_cursor"
 | 面 | 何があるか |
 |---|---|
 | `/admin/status` | 状況。ディスクの空き、取り込み、収集、AI(依頼の履歴・走っている依頼・使用量) |
-| `/admin/memory` | 記憶。短期記憶・長期記憶（再構築と削除）・未初期化の初期化 |
+| `/admin/memory` | 記憶。短期記憶・長期記憶（再構築と削除）・未初期化の初期化・ToDo(タスクとルール) |
 | `/admin/collect` | 収集。無人で回る層の巡回・区画・変更履歴と、回す相手の並び（ワーカー） |
 | `/admin/ai` | AI と鍵。話せる相手と鍵 |
 | `/admin/media` | 見比べ。作らせたものを並べて選ぶ。手元のものも持ち込める |
