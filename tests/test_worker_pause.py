@@ -164,3 +164,44 @@ class TestTheTable:
             res = client.post("/admin/ai/workers/pause", follow_redirects=False,
                               data={"worker_id": worker.key, "paused": "0", "back": outside})
             assert res.headers["location"] == "/admin/collect#ai-workers", outside
+
+
+class TestTheMergedQueueOnTheStatusPage:
+    """「自分の回はいつ流れるのか」を知るのに、どのワーカーかを思い出して開いていた。"""
+
+    def test_every_worker_is_merged_in_the_order_they_were_queued(self, state):
+        from app.views import admin
+
+        first = _made("精査")
+        workers.save(workers.merged(workers.load(), "", "ざっと", (workers.Step("codex"),)))
+        second = next(w for w in workers.load() if w.name == "ざっと")
+        workers.enqueue(first.key, "news", "整理", "2026-09-26T03:00:00+00:00")
+        workers.enqueue(second.key, "books", "ざっと", "2026-09-26T01:00:00+00:00")
+        workers.enqueue(first.key, "posts", "整理", "2026-09-26T02:00:00+00:00")
+
+        html = admin._worker_queue_html()
+
+        assert "ワーカーの待ち行列(3 本)" in html
+        assert html.index("books") < html.index("posts") < html.index("news")
+        # 日本時間で出す
+        assert "2026-09-26 10:00" in html
+
+    def test_the_one_being_flowed_says_so(self, state):
+        from app.views import admin
+
+        worker = _made()
+        workers.enqueue(worker.key, "news", "整理", "2026-09-26T00:00:00+00:00")
+        workers.enqueue(worker.key, "posts", "整理", "2026-09-26T01:00:00+00:00")
+        workers.claim(worker.key, 1, "2026-09-26T02:00:00+00:00")
+
+        rows = admin._worker_queue_html().split("<tr>")[2:]
+
+        assert "news" in rows[0] and "流している" in rows[0]
+        assert "posts" in rows[1] and "待ち" in rows[1]
+
+    def test_an_empty_queue_is_one_line(self, state):
+        from app.views import admin
+
+        _made()
+
+        assert "待っているものはありません" in admin._worker_queue_html()

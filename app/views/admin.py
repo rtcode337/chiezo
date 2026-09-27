@@ -2606,6 +2606,57 @@ def _ingest_history_html(job: dict | None) -> str:
 
 
 
+def _worker_queue_html() -> str:
+    """ワーカーの待ち行列を**全部のワーカーぶん混ぜて、積まれた順に**。
+
+    ワーカーごとの行列はワーカーの面にしか無く、「自分の回はいつ流れるのか」を
+    知るのに、どのワーカーに任せたかを思い出してから開くことになっていた。
+    **並びは積まれた時刻** —— いつ流れるかは、ワーカーが起きる時刻と前の回の
+    長さで決まるので、ここからは読めない(起きる時刻はワーカーの表にある)。
+    **流している最中の塊も出す**(行列から出ても、終わるまでは「待っている」側)。
+    """
+    try:
+        defined = workers.load()
+    except ValueError:
+        return ""
+    if not defined:
+        return ""
+    rows = []
+    for worker in defined:
+        flowing = workers.batch(worker.key)
+        for entry in workers.queued(worker.key):
+            if entry in flowing:
+                state = "流している"
+            elif worker.paused:
+                state = "ワーカーを止めている"
+            else:
+                state = "待ち"
+            rows.append((str(entry.get("at") or ""), entry, worker, state))
+    if not rows:
+        return '<p class="muted">ワーカーの待ち行列: 待っているものはありません。</p>'
+    rows.sort(key=lambda row: row[0])
+    known = _known_collections()
+    cells = []
+    for at_raw, entry, worker, state in rows:
+        at = jst.parse(at_raw)
+        cells.append(
+            f'<tr><td class="muted">{esc(jst.compact(at)) if at else ""}</td>'
+            f"<td><span>{_collect_name_link(str(entry.get('collection') or ''), known)}"
+            f" / {esc(str(entry.get('sweep') or ''))}</span></td>"
+            f'<td><a href="{esc(ai_workers.worker_page(worker))}">{esc(worker.name)}</a></td>'
+            f"<td>{esc(state)}</td></tr>"
+        )
+    return f"""
+<h3 id="worker-queue">ワーカーの待ち行列({len(rows)} 本)</h3>
+<table>
+<thead><tr><th>積んだ時刻(JST)</th><th>収集 / 巡回</th><th>ワーカー</th><th>状態</th></tr></thead>
+<tbody>{"".join(cells)}</tbody>
+</table>
+<p class="muted">積まれた順に並べています。いつ流れるかは、ワーカーが起きる時刻と
+前の回の長さで決まります(起きる時刻は収集の面のワーカーの表に出ています)。</p>
+"""
+
+
 def _collect_history_html(sweep: str | None, page: int = 1) -> str:
     """状況の面の「収集」の節。**取り込みの節のすぐ下に、見出しを立てて置く**。
 
@@ -2625,6 +2676,7 @@ def _collect_history_html(sweep: str | None, page: int = 1) -> str:
     return (
         COLLECT_HEADING
         + (f"<h3>いま走っている収集</h3>{running}" if running else "")
+        + _worker_queue_html()
         + f'<details id="collect-history"{opened}><summary><h3>収集の実行履歴</h3></summary>'
         + _collect_changes_html(sweep=sweep, wrap=False, anchor="collect-history", page=page)
         + "</details>"
