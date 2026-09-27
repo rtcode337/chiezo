@@ -2652,6 +2652,26 @@ def _ingest_history_html(job: dict | None) -> str:
 
 
 
+def _worker_entry_state(worker, entry, in_batch: bool, running, in_line) -> str:
+    """ワーカーの 1 本の状態。**実際にどこに居るか**で言う。"""
+
+    def here(line):
+        return any(
+            e.get("worker") == worker.key and e.get("collection") == entry.get("collection")
+            and e.get("sweep") == entry.get("sweep")
+            for e in line
+        )
+
+    if here(running):
+        return "流している"
+    if here(in_line):
+        return "取り込みの行列で待っている"
+    if worker.paused:
+        # 塊に拾ってから止めたものも、動かすまで流れない
+        return "ワーカーを止めている" + ("(拾った塊の中。動かすと続きから流れる)" if in_batch else "")
+    return "次に流す" if in_batch else "待ち"
+
+
 def _worker_queue_html() -> str:
     """ワーカーの待ち行列を**全部のワーカーぶん混ぜて、積まれた順に**。
 
@@ -2660,6 +2680,11 @@ def _worker_queue_html() -> str:
     **並びは積まれた時刻** —— いつ流れるかは、ワーカーが起きる時刻と前の回の
     長さで決まるので、ここからは読めない(起きる時刻はワーカーの表にある)。
     **流している最中の塊も出す**(行列から出ても、終わるまでは「待っている」側)。
+
+    **「流している」と言うのは、取り込みが実際に走らせているときだけ。** 塊に
+    拾っただけのものまで「流している」と出していた頃は、止めたワーカーの 1 本が、
+    取り込みにも行列にも居ないのに流れているように見えた(止めたワーカーは
+    取り込みへ出さないので、塊に残ったまま動かない)。
     """
     try:
         defined = workers.load()
@@ -2668,16 +2693,15 @@ def _worker_queue_html() -> str:
     if not defined:
         return ""
     rows = []
+    running = ingest_queue.running()
+    in_line = ingest_queue.waiting()
     for worker in defined:
         flowing = workers.batch(worker.key)
         for entry in workers.queued(worker.key):
-            if entry in flowing:
-                state = "流している"
-            elif worker.paused:
-                state = "ワーカーを止めている"
-            else:
-                state = "待ち"
-            rows.append((str(entry.get("at") or ""), entry, worker, state))
+            rows.append((
+                str(entry.get("at") or ""), entry, worker,
+                _worker_entry_state(worker, entry, entry in flowing, running, in_line),
+            ))
     if not rows:
         return '<p class="muted">ワーカーの待ち行列: 待っているものはありません。</p>'
     rows.sort(key=lambda row: row[0])

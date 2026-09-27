@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 from test_api import client, monkeypatch_module  # noqa: F401
 
-from app import usage_store, workers
+from app import ingest_queue, usage_store, workers
 
 
 @pytest.fixture
@@ -196,8 +196,29 @@ class TestTheMergedQueueOnTheStatusPage:
 
         rows = admin._worker_queue_html().split("<tr>")[2:]
 
-        assert "news" in rows[0] and "流している" in rows[0]
+        # 塊に拾っただけで、取り込みにはまだ出していない
+        assert "news" in rows[0] and "次に流す" in rows[0]
         assert "posts" in rows[1] and "待ち" in rows[1]
+
+        # 取り込みの行列に出したら、そう言う。走らせたら「流している」
+        entry, _, _ = ingest_queue.add("news", "整理", origin="worker", worker=worker.key)
+        assert "取り込みの行列で待っている" in admin._worker_queue_html()
+        ingest_queue.started(ingest_queue.take(entry["id"]))
+        assert "流している" in admin._worker_queue_html().split("<tr>")[2]
+
+    def test_a_paused_worker_is_not_said_to_be_flowing(self, state):
+        """止めたワーカーは取り込みへ出さないので、塊に拾ったまま動かない。"""
+        from app.views import admin
+
+        worker = _made()
+        workers.enqueue(worker.key, "meals", "ざっと見る", "2026-09-26T00:00:00+00:00")
+        workers.claim(worker.key, 1, "2026-09-26T02:00:00+00:00")
+        workers.set_paused(worker.key, True)
+
+        row = admin._worker_queue_html().split("<tr>")[2]
+
+        assert "流している" not in row
+        assert "ワーカーを止めている(拾った塊の中。動かすと続きから流れる)" in row
 
     def test_an_empty_queue_is_one_line(self, state):
         from app.views import admin
