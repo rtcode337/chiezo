@@ -914,6 +914,9 @@ curl -s -X POST "$BASE/v1/collect/tl_lunch/focus" -H 'Content-Type: application/
   次の定時の回が知らない文で走ることになる
 
 **変更履歴には割り込みとして残る**(`GET /v1/collect/changes` の `sweep` が `割り込み`)。
+**時計を持たない巡回(`on_demand`)を名指しした割り込みは、その巡回の前回にも残る**
+(`sweeps[].last_run_at` / `last_status`)。そういう巡回は割り込みでしか走らないので、
+残さないといつ走ったのかが読めない。次回の予定は持たないまま。
 どこを見た回かも `scope` に入るので、「直近どこに修正が入ったか」が件数以上に読める。
 
 #### 集める(append)と整理する(refine)

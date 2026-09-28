@@ -2576,9 +2576,35 @@ def record_result(
         last_removed_titles=list(removed_titles or []),
         updated_at=_iso(now),
         **({} if focus else _advance(current, this, now, status=status, error=error)),
+        **(_note_on_demand(current, this, now, status, error) if focus else {}),
     )
     _replace_one(name, updated)
     return updated
+
+
+def _note_on_demand(
+    current: Collection, sweep: Sweep, now: datetime, status: str, error: str | None,
+) -> dict:
+    """**時計を持たない巡回を名指しした割り込み**は、その巡回の前回に結果を残す。
+
+    要約の回のように、時計を持たず頼まれたときだけ動く巡回は、**割り込みでしか
+    走らない**。割り込みが巡回の記録に触らないのは、時計を持つ巡回の一周と予定を
+    動かさないため —— 時計を持たない巡回にはどちらも無いので、残しても何も狂わない。
+    残さないと、**その巡回がいつ走ったのかがどこにも出ない**(画面の「前回」がいつまでも
+    空で、外のアプリが読む `sweeps[].last_run_at` も空のまま)。
+
+    **次回の予定には触らない**(時計を持たない巡回は「持たない」のまま)。
+    """
+    if not current.sweeps or not sweep.on_demand:
+        return {}
+    result = {
+        "last_run_at": _iso(now),
+        "last_status": status,
+        "last_error": (error or "")[:500] or None,
+    }
+    return {"sweeps": [
+        {**raw, **result} if raw.get("name") == sweep.name else raw for raw in current.sweeps
+    ]}
 
 
 def _advance(

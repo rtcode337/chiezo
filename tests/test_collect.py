@@ -2112,6 +2112,32 @@ class TestRedoingTheLastRun:
         # 割り込みの前の回が、そのまま戻し先として残っている
         assert collect.get("news").last_undo["cursor"] == "a"
 
+    def test_an_on_demand_sweep_remembers_when_it_ran(self, sample):
+        """時計を持たない巡回（要約など）は割り込みでしか走らない。
+
+        残さないと、その巡回がいつ走ったのかがどこにも出ない。時計を持たないので、
+        残しても一周も予定も狂わない。**時計を持つ巡回は今までどおり触らない**。
+        """
+        collect.update("news", sweeps=[
+            {"name": "整理", "interval_minutes": 360},
+            {"name": "要約", "on_demand": True},
+        ])
+        before = {s["name"]: s for s in collect.get("news").sweeps}
+
+        collect.record_result("news", status="ok", sweep="要約", focus=True)
+        after = {s["name"]: s for s in collect.get("news").sweeps}
+        assert after["要約"]["last_run_at"]
+        assert after["要約"]["last_status"] == "ok"
+        # 次回の予定は持たないまま
+        assert after["要約"].get("next_run_at") == before["要約"].get("next_run_at")
+
+        collect.record_result("news", status="error", error="落ちた", sweep="要約", focus=True)
+        assert {s["name"]: s for s in collect.get("news").sweeps}["要約"]["last_error"] == "落ちた"
+
+        # 時計を持つ巡回を名指しした割り込みは、記録に触らない
+        collect.record_result("news", status="ok", sweep="整理", focus=True)
+        assert {s["name"]: s for s in collect.get("news").sweeps}["整理"] == after["整理"]
+
     def test_the_screen_offers_it_only_when_there_is_something_to_redo(self, sample):
         from app.views import admin
 
