@@ -71,6 +71,31 @@ class TestRecord:
 
         assert collect_log.recent()[0]["ms"] is None
 
+    def test_it_keeps_which_partitions_were_finished(self, state_env):
+        """**見る予定だった区画と、見終えた区画は別に残す。** 途中で相手に繋がらなく
+        なった回は残りを見送って ok で終わるので、予定の区画だけを読むと、見送った
+        区画まで見たように読める(区画を名指しして頼んだアプリが取り違えた)。"""
+        collect_log.record(
+            "spots", status=collect_log.STATUS_OK, diff=DIFF,
+            scope=["a", "b", "c"], visited=["a"],
+        )
+
+        row = collect_log.recent()[0]
+
+        assert row["scope"] == ["a", "b", "c"]
+        assert row["visited"] == ["a"]
+
+    def test_an_old_row_does_not_claim_nothing_was_finished(self, state_env):
+        """記録していない行は None(空の並びは「1 区画も見終えていない」)。"""
+        collect_log.record("spots", status=collect_log.STATUS_OK, diff=DIFF, scope=["a"])
+        collect_log.record(
+            "spots", status=collect_log.STATUS_ERROR, error="落ちた", scope=["a"], visited=[],
+        )
+
+        rows = collect_log.recent()
+
+        assert [r["visited"] for r in rows] == [[], None]
+
     def test_the_screen_shows_how_long_it_took(self, state_env):
         from app.views import admin
 

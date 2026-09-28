@@ -938,6 +938,11 @@ curl -s -X POST "$BASE/v1/collect/tl_lunch/focus" -H 'Content-Type: application/
 (`sweeps[].last_run_at` / `last_status`)。そういう巡回は割り込みでしか走らないので、
 残さないといつ走ったのかが読めない。次回の予定は持たないまま。
 どこを見た回かも `scope` に入るので、「直近どこに修正が入ったか」が件数以上に読める。
+**`scope` は見る予定だった区画、`visited` は実際に見終えた区画**。途中で相手に繋がらなく
+なった回は残りの区画を見送り、集めたぶんだけ焼いて `ok` で終わる —— 区画を名指しして
+頼んだ側は、`visited` が `scope` を覆っているかで「頼んだ区画を全部見たか」を判ずる。
+焼くところで落ちて戻した回は `visited` が空の失敗の行として続けて残る。
+古い行の `visited` は `null`(記録していない)。
 
 #### 集める(append)と整理する(refine)
 

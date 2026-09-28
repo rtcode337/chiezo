@@ -519,6 +519,8 @@ def _rewind_failed_bakes() -> None:
                 error=f"焼くところで落ちました: {failed.get('error') or ''}",
                 sweep=undone["sweep"],
                 scope=undone["visited"],
+                # 焼けなかったので、見た区画の印も戻してある(どこも見終えていない)
+                visited=[],
             )
 
 
@@ -1653,7 +1655,7 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
         await asyncio.to_thread(
             collect_log.record,
             name, status=collect_log.STATUS_ERROR, error=reason, sweep=label, scope=keys,
-            ms=int((time.monotonic() - started) * 1000), **who,
+            ms=int((time.monotonic() - started) * 1000), visited=[], **who,
         )
         raise
     await asyncio.to_thread(
@@ -1678,7 +1680,9 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
     await asyncio.to_thread(
         collect_log.record,
         name, status=collect_log.STATUS_OK, diff=diff, sweep=label, scope=keys, error=note,
-        ms=int((time.monotonic() - started) * 1000), **who,
+        # **見終えた区画も残す。** 途中で見送った回も状態は ok なので、見る予定だった
+        # 区画(`scope`)だけでは、どこまで見たのかが外から読めない
+        ms=int((time.monotonic() - started) * 1000), visited=done, **who,
     )
     log.info(
         # **同じ URL で弾いたぶんも出す**(`collect.url_key`)。skipped に混ぜたままだと、

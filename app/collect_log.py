@@ -91,6 +91,12 @@ _ADDED_COLUMNS = {
     # 焼くぶんは含まない(控えを書いてから流すので、ここでは終わっていない)。
     # 古い行は NULL のまま(測っていない、と「0 秒」は別)
     "ms": "INTEGER",
+    # **実際に見終えた区画**(`scope` は見る予定だった区画)。区画ごとに AI を呼ぶので、
+    # 途中で相手に繋がらなくなると**残りの区画は見送って、集めたぶんだけ焼く** ——
+    # 状態は ok のままなので、`scope` だけを読むと、見送った区画まで見たように読める
+    # (外から区画を名指しして頼んだアプリが、止まった回を「頼んだ区画を見た回」と
+    # 取り違えた)。**古い行は NULL**(記録していない、と「1 区画も見終えていない」は別)
+    "visited": "TEXT",
 }
 
 # 割り込みの回に入る巡回の名前。**巡回の名前と同じ欄に入れる** ——
@@ -142,6 +148,7 @@ def record(
     model: str = "",
     effort: str = "",
     ms: int | None = None,
+    visited: list[str] | None = None,
 ) -> None:
     """1 回ぶんを残す。**呼び出し側の失敗にはしない**(控えが取れなくても収集は続く)。
 
@@ -160,8 +167,8 @@ def record(
             conn.execute(
                 "INSERT INTO collect_runs (at, name, status, total, added, updated, removed,"
                 " skipped, added_titles, updated_titles, removed_titles, error, sweep, scope,"
-                " backend, model, effort, ms)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " backend, model, effort, ms, visited)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     datetime.now(UTC).isoformat(timespec="seconds"),
                     name,
@@ -181,6 +188,7 @@ def record(
                     model or "",
                     effort or "",
                     ms,
+                    None if visited is None else _titles(visited),
                 ),
             )
             # 古いものから捨てる。件数で切るのは、実行の頻度が収集ごとに違うため
@@ -222,7 +230,7 @@ def recent(
     sql = (
         "SELECT at, name, status, total, added, updated, removed, skipped,"
         " added_titles, updated_titles, removed_titles, error, sweep, scope,"
-        " backend, model, effort, ms FROM collect_runs"
+        " backend, model, effort, ms, visited FROM collect_runs"
     )
     where, args = _where(name, sweep)
     sql += where + " ORDER BY id DESC LIMIT ? OFFSET ?"
@@ -235,6 +243,9 @@ def recent(
                 row = dict(r)
                 for key in ("added_titles", "updated_titles", "removed_titles", "scope"):
                     row[key] = _read_titles(row[key])
+                # 記録していない古い行は None のまま(空の並びは「1 区画も見終えていない」)
+                if row["visited"] is not None:
+                    row["visited"] = _read_titles(row["visited"])
                 rows.append(row)
         finally:
             conn.close()
