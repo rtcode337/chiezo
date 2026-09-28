@@ -1037,7 +1037,14 @@ def failure_detail(stdout: bytes, stderr: bytes) -> str:
     `claude failed` しか届かなかった —— 認証切れなのか、混んでいるのか、
     上限に当たったのかが後から一切たどれない。
 
-    順は stderr → stdout。普通の失敗は stderr に出るので、そちらを先に読ませる。
+    **言い分を先に拾う。** codex の `--json` は 1 行 1 出来事で、失敗は `turn.failed` /
+    `error` の出来事として出る。**web 検索の結果が 1 行で数 KB になる**ので、末尾だけを
+    残すと、言い分が検索結果の切れ端に押し出されて消える(実測: 控えに残ったのは
+    美術館の目録の URL の途中だけで、なぜ落ちたのかが読めなかった)。
+
+    順は stdout → stderr。**stderr を最後に置く** —— 切り詰めるのは頭のほうなので、
+    最後に置いたものが残る。stderr が空の相手(Claude Code は理由を stdout に書く)では
+    stdout の末尾が残るので、今までと変わらない。
 
     **切り詰めるのは頭のほう。** 理由は最後に来る —— CLI の stdout は名乗りと
     受け取ったプロンプトの復唱から始まるので、頭から 500 字取ると
@@ -1045,11 +1052,36 @@ def failure_detail(stdout: bytes, stderr: bytes) -> str:
     まるごと落ちる(実測: 絵を保存しなかった理由を調べたのに、控えに残っていたのは
     名乗りと自分が送った依頼文だけだった)。
     """
-    parts = [
-        s.decode("utf-8", "replace").strip()
-        for s in (stderr, stdout)
-    ]
-    return _tail(" / ".join(p for p in parts if p), DETAIL_MAX)
+    out = (stdout or b"").decode("utf-8", "replace").strip()
+    err = (stderr or b"").decode("utf-8", "replace").strip()
+    said = _failure_events(out)
+    parts = [_tail(out, DETAIL_MAX // 2) if said else out, err]
+    tail = _tail(" / ".join(p for p in parts if p), DETAIL_MAX)
+    # **言い分は切らずに頭に置く**(残りの枠で末尾を添える)
+    return f"{said} / {tail}"[: DETAIL_MAX * 2] if said else tail
+
+
+def _failure_events(stdout: str) -> str:
+    """JSONL の出力から、失敗を名乗る出来事の言い分を拾う(無ければ空)。"""
+    found = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{") or ('"error"' not in line and "failed" not in line):
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        kind = str(event.get("type") or "")
+        if kind not in ("turn.failed", "error") and "error" not in event:
+            continue
+        error = event.get("error")
+        message = error.get("message") if isinstance(error, dict) else (error or event.get("message"))
+        if message:
+            found.append(f"{kind or 'error'}: {str(message)[:300]}")
+    return " / ".join(found[-2:])
 
 
 def _tail(text: str, limit: int) -> str:

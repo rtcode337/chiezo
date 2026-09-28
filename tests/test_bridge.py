@@ -1351,6 +1351,26 @@ class TestFailureDetail:
         server = bridge(CHIEZO_BRIDGE_CLI="codex")
         assert server.failure_detail(b"", b"exit 1") == "exit 1"
 
+    def test_失敗の出来事の言い分は検索結果に押し出されない(self, bridge):
+        """codex の JSONL は web 検索の結果が 1 行で数 KB になる。
+
+        末尾だけを残すと、言い分が検索結果の切れ端に押し出されて消える
+        (実測: 控えに残ったのは目録の URL の途中だけだった)。
+        """
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        failed = '{"type":"turn.failed","error":{"message":"stream disconnected before completion"}}'
+        search = '{"type":"item.completed","item":{"type":"web_search","results":"' + "x" * 5000 + '"}}'
+        said = server.failure_detail((failed + "\n" + search).encode(), b"")
+
+        assert said.startswith("turn.failed: stream disconnected before completion")
+
+    def test_stderr_は最後に置いて残す(self, bridge):
+        """切り詰めるのは頭のほうなので、最後に置いたものが残る。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        said = server.failure_detail(("検索結果 " * 400).encode(), b"thread panicked")
+
+        assert said.endswith("thread panicked")
+
 
 class TestImageEditing:
     """元の絵を渡されたら「一から描く」ではなく「これを直す」。
