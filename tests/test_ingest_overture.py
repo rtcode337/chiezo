@@ -22,8 +22,9 @@ RELEASES = ["2026-07-22.0", "2026-08-19.0"]
 class _FakeConn:
     """`glob(...)` の応答だけを差し替える DuckDB の代わり。"""
 
-    def __init__(self, files: list[str]):
+    def __init__(self, files: list[str], columns: tuple[str, ...] = ("id", "taxonomy")):
         self.files = files
+        self.columns = columns
         self.sql: list[str] = []
 
     def execute(self, sql: str):
@@ -34,6 +35,9 @@ class _FakeConn:
     def _rows(self, sql: str) -> list[tuple]:
         import re
 
+        # 列の定義(DESCRIBE)は列の名前を先頭に並べて返す
+        if "DESCRIBE" in sql:
+            return [(c, "VARCHAR") for c in self.columns]
         # 本物と同じ形で答える(DISTINCT + 降順のリリース名)
         if "regexp_extract" in sql:
             found = {m for f in self.files
@@ -217,3 +221,58 @@ class TestTellingTheSameNameApart:
         adapter.fetch(tmp_path)
 
         assert "count(*) OVER (PARTITION BY names.primary)" in conn.sql[-1]
+
+
+class TestCategories:
+    """**分類の列は版によって違う。** 無い列を名指しすると、取り込みはそこで落ちる。"""
+
+    def test_a_new_release_reads_the_taxonomy(self, adapter, tmp_path):
+        # 2026-09 の版から categories が無くなり、taxonomy に置き換わった
+        conn = _FakeConn(_files(RELEASES), columns=("id", "taxonomy"))
+        adapter._connect = lambda: conn
+
+        adapter.fetch(tmp_path)
+
+        sql = conn.sql[-1]
+        assert "taxonomy.primary AS category" in sql
+        assert "taxonomy.hierarchy" in sql
+        assert "categories." not in sql
+
+    def test_an_old_release_still_reads_the_categories(self, adapter, tmp_path):
+        conn = _FakeConn(_files(RELEASES), columns=("id", "categories"))
+        adapter._connect = lambda: conn
+
+        adapter.fetch(tmp_path)
+
+        sql = conn.sql[-1]
+        assert "categories.primary AS category" in sql
+        assert "taxonomy" not in sql
+
+    def test_the_tags_do_not_repeat_the_primary(self, tmp_path):
+        # 新しい版では主分類が上位の並びの末尾にも居る。畳まないと同じタグが 2 つ並ぶ
+        row = {
+            "id": "id1", "name": "忍者", "same_name": 1, "same_place": 1,
+            "category": "japanese_restaurant",
+            "alt_categories": ["food_and_drink", "restaurant", "japanese_restaurant"],
+            "confidence": 0.9, "lat": 35.0, "lon": 139.0,
+        }
+
+        class _Rows:
+            def __init__(self):
+                self.description = [(k,) for k in row]
+                self.batches = [[tuple(row.values())]]
+
+            def execute(self, sql):
+                return self
+
+            def fetchmany(self, n):
+                return self.batches.pop(0) if self.batches else []
+
+            def close(self):
+                pass
+
+        adapter = overture.overture_japan()
+        adapter._connect = _Rows
+        [doc] = list(adapter.iter_docs(tmp_path / "rows.parquet"))
+
+        assert doc.tags == ["japanese_restaurant", "food_and_drink", "restaurant"]

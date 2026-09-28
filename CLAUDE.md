@@ -3570,7 +3570,16 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     「No files found」で落ちるのを実際に踏んだ)。Overture 自身が「重複・ゴミ・属性欠損が
     ある」と明言していて `confidence` での足切りが前提なので、**既定で 0.5 未満を落とす**
     (`OVERTURE_MIN_CONFIDENCE`)。その confidence をそのまま `rank_score` に入れる ——
-    もともと 0.0〜1.0 で、「確からしい地物を上に出す」がコアスキーマの約束と合う
+    もともと 0.0〜1.0 で、「確からしい地物を上に出す」がコアスキーマの約束と合う。
+    **分類の列は版で違う**(`_category_columns`)—— 2026-09 の版から `categories` が
+    無くなり `taxonomy`(`primary` / `hierarchy` / `alternates`)に替わった。古い列を
+    名指ししたままだと取り込みが列が無いと言って落ちるので、**列の定義を先に読んで
+    あるほうを使う**。新しい版では**上位の分類(`hierarchy`)もタグにする** ——
+    古い版では和食の店にも `restaurant` が別名として付いていて、呼ぶ側はそれで
+    飲食店を引いている。語彙も動いている(`noodles_restaurant` が消えて
+    `ramen_restaurant` などに分かれた)。**営業状態(`operating_status`)は読まない** ——
+    列はあるが、日本の飲食店 49 万件で値が入っているのは 3 件(2026-09-23.1 で実測)。
+    閉店の見分けには使えない
   - `sources/geonames.py` — GeoNames アダプタ(全世界の地名辞典)。
     `allCountries.zip`(約400MB・約1,200万件のタブ区切り19列)を zip のままストリーム読みする
     (イメージに unzip を入れないため `zipfile` + `io.TextIOWrapper`)。あわせて

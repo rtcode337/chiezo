@@ -90,6 +90,34 @@ def _titled(name: str, row: dict, locality: str | None) -> str:
     return f"{name} ({ident})" if ident else name
 
 
+def _category_columns(columns: set[str]) -> str:
+    """分類を読む SELECT の断片。**版によって列が違う**ので、あるほうを読む。
+
+    2026-09 の版から `categories`(`primary` + `alternate`)が無くなり、
+    `taxonomy`(`primary` + `hierarchy` + `alternates`)に置き換わった。
+    古い列を名指ししたままだと、取り込みは列が無いと言って落ちる。
+
+    **新しい版では上位の分類もタグにする**(`hierarchy`。`food_and_drink` →
+    `restaurant` → `asian_restaurant` → `japanese_restaurant` のような並び)。
+    古い版では「和食」の店にも `restaurant` が別名として付いていたので、
+    主分類と別名だけにすると `restaurant` で引ける店が大きく減る ——
+    上位の分類を足せば、呼ぶ側の指定(`tag: restaurant`)がそのまま効く。
+    **重なり(主分類が `hierarchy` の末尾にも居る)は変換のときに畳む**。
+    """
+    if "taxonomy" in columns:
+        return (
+            "taxonomy.primary AS category,\n"
+            "                    list_concat(\n"
+            "                      coalesce(taxonomy.hierarchy, []),\n"
+            "                      coalesce(taxonomy.alternates, [])\n"
+            "                    ) AS alt_categories,"
+        )
+    return (
+        "categories.primary AS category,\n"
+        "                    categories.alternate AS alt_categories,"
+    )
+
+
 def _min_confidence() -> float:
     raw = os.environ.get("OVERTURE_MIN_CONFIDENCE", "").strip()
     try:
@@ -183,6 +211,18 @@ class OvertureAdapter:
             raise SystemExit("overture のリリースが見つかりません(S3 の場所が変わった可能性)")
         return valid[0]
 
+    def _columns(self, conn, release: str) -> set[str]:
+        """その版の場所のデータが持つ列の名前。**読むのは列の定義だけ**(中身は落とさない)。"""
+        rows = conn.execute(
+            f"""
+            DESCRIBE SELECT * FROM read_parquet(
+              '{S3_BASE}/{release}/theme=places/type=place/*',
+              filename=false, hive_partitioning=1
+            ) LIMIT 0
+            """
+        ).fetchall()
+        return {str(row[0]) for row in rows}
+
     def fetch(self, workdir: Path) -> tuple[Path, str]:
         """S3 から bbox ぶんを抜いて手元の parquet にする。
 
@@ -225,8 +265,7 @@ class OvertureAdapter:
                     count(*) OVER (
                       PARTITION BY names.primary, addresses[1].locality
                     ) AS same_place,
-                    categories.primary AS category,
-                    categories.alternate AS alt_categories,
+                    {_category_columns(self._columns(conn, release))}
                     confidence,
                     bbox.ymin AS lat,
                     bbox.xmin AS lon,
@@ -311,7 +350,8 @@ class OvertureAdapter:
                     text = "\n".join(parts)
 
                     alt = row.get("alt_categories") or []
-                    tags = [t for t in [category, *list(alt)] if t]
+                    # **重なりは畳む**(新しい版では主分類が上位の並びの末尾にも居る)
+                    tags = list(dict.fromkeys(t for t in [category, *list(alt)] if t))
                     extra = {
                         "overture_id": row.get("id"),
                         # OSM と同じ書き方に揃える(呼ぶ側が feature で分岐できる)
