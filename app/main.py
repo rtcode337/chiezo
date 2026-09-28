@@ -3238,6 +3238,54 @@ def collect_create(request: Request, body: CollectionCreate):
 
 # **固定のパスは `/{name}` より先に宣言する。** 後ろに置くと `sources` や `fetch` が
 # 名前として解釈され、「収集「sources」がありません」で 404 になる。
+@app.get("/v1/collect/queue")
+def collect_queue():
+    """**ワーカーと取り込みの待ち行列**。読むだけの口。
+
+    外のアプリ(tazuna)が、自分の頼んだ収集が詰まっていないかを一覧で見るためのもの ——
+    巡回の間隔だけ見ても、**ワーカーが何分おきに起きて 1 回に何本流すのか**、
+    **いま何本が待っているのか**は読めない(溜まってきたときに知りたいのはそちら)。
+    **次に起きる時刻は流し終えた時刻から数える**(`_worker_due` と同じ読み方)。
+    流している最中は空(流し終えてからでないと決まらない)。
+    """
+    rows = []
+    for worker in workers.load():
+        batch = workers.batch(worker.key)
+        finished = workers.finished_at(worker.key)
+        base = _parse_iso(finished) or _parse_iso(workers.last_at(worker.key))
+        rows.append({
+            "id": worker.key,
+            "name": worker.name,
+            "interval_minutes": worker.interval_minutes,
+            "per_run": worker.per_run,
+            "paused": worker.paused,
+            "last_at": workers.last_at(worker.key),
+            "finished_at": finished,
+            "next_at": (
+                "" if batch or base is None
+                else _iso(base + timedelta(minutes=max(worker.interval_minutes, 1)))
+            ),
+            # 先頭が流している最中の塊、その後ろが待ち行列(積まれた順)
+            "flowing": [{"collection": e.get("collection"), "sweep": e.get("sweep")} for e in batch],
+            "queued": [
+                {"collection": e.get("collection"), "sweep": e.get("sweep"), "at": e.get("at")}
+                for e in workers.queued(worker.key)[len(batch):]
+            ],
+        })
+    waiting = ingest_queue.waiting() if ingest_queue.is_enabled() else []
+    return {
+        "workers": rows,
+        # **取り込みの待ち行列**(ワーカーから出たものも、予定や手で頼まれたものも並ぶ)
+        "ingest_waiting": [
+            {
+                "collection": e.get("collection"), "sweep": e.get("sweep"),
+                "origin": e.get("origin"), "worker": e.get("worker") or "", "at": e.get("at"),
+            }
+            for e in waiting
+        ],
+    }
+
+
 @app.get("/v1/collect/sources")
 def collect_sources_catalog(request: Request):
     """焼ける収集の一覧(ingest が引くカタログ)。

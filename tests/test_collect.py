@@ -4556,6 +4556,32 @@ class TestRest:
         with TestClient(app) as c:
             yield c
 
+    def test_the_queue_is_readable_from_outside(self, client, sample):
+        """ワーカーが何分おきに起きて何本流すのか、いま何本待っているのか。
+
+        巡回の間隔だけでは、溜まってきたときに詰まり具合が読めない。
+        """
+        from app import workers
+
+        workers.save([workers.Worker("精査", (workers.Step("codex"),), interval_minutes=30, per_run=2)])
+        # 1 度起きて流し終え、そのあとにまた 1 本積まれた
+        workers.enqueue("精査", "news", "整理", "2025-12-31T23:50:00+00:00")
+        workers.claim("精査", 2, "2025-12-31T23:55:00+00:00")
+        workers.done("精査", "news", "整理")
+        workers.note_finished("精査", "2026-01-01T00:00:00+00:00")
+        workers.enqueue("精査", "news", "整理", "2026-01-01T00:00:00+00:00")
+
+        got = client.get("/v1/collect/queue").json()
+
+        [row] = got["workers"]
+        assert row["name"] == "精査"
+        assert row["interval_minutes"] == 30 and row["per_run"] == 2
+        assert row["queued"] == [{"collection": "news", "sweep": "整理", "at": "2026-01-01T00:00:00+00:00"}]
+        assert row["flowing"] == []
+        # 次に起きるのは流し終えた時刻から数える
+        assert row["next_at"].startswith("2026-01-01T00:30:00")
+        assert "ingest_waiting" in got
+
     def test_the_fixed_paths_are_not_read_as_names(self, client, sample):
         """`/sources` と `/fetch` は収集の名前ではない。"""
         listed = client.get("/v1/collect/sources").json()["sources"]
