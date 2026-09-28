@@ -1380,3 +1380,105 @@ class TestMakingARosterOutOfTags:
         """文書の名簿は、どのタグを引くかを書かないと成り立たない。"""
         with pytest.raises(HTTPException):
             extract.normalize({"source": "news"})
+
+
+class TestRecordKeys:
+    """**元の記録を名指す鍵**(`identity` → 脇書きの `record_keys`)。
+
+    見出しは元のソースの付け方で決まり、取り込み直すと変わることがある ——
+    同じ名前の地物に付ける見分けの札は、取り込みの版や並びで動く。見出しだけで
+    同じ 1 件を見分けていると、**消したものが新しい 1 件として戻り、
+    生きているものは 2 件に増える**。
+    """
+
+    @staticmethod
+    def mapped():
+        return [
+            {
+                "title": "近所の定食屋",
+                "opening": "近所の定食屋\n種別: 食堂",
+                "tags": ["amenity=restaurant"],
+                "extra": {"lat": 35.70, "lon": 139.70, "osm_type": "node", "osm_id": 42},
+                "rank": 0.5,
+            },
+            {
+                "title": "番号の無い店",
+                "opening": "番号の無い店\n種別: 食堂",
+                "tags": ["amenity=restaurant"],
+                "extra": {"lat": 35.71, "lon": 139.71, "osm_type": "node"},
+                "rank": 0.4,
+            },
+        ]
+
+    @staticmethod
+    def osm(**overrides):
+        return {
+            "source": "osm_japan",
+            "tag": "amenity=restaurant",
+            "extra": ["lat", "lon"],
+            "identity": ["osm_type", "osm_id"],
+            **overrides,
+        }
+
+    def test_the_key_names_the_source_and_the_record(self, source):
+        items, _cursor = run(extract.normalize(self.osm()), source(self.mapped(), name="osm_japan"))
+        shop = next(i for i in items if i["title"] == "近所の定食屋")
+
+        assert shop["extra"][extract.RECORD_KEYS] == ["osm_japan:osm_type=node;osm_id=42"]
+
+    def test_a_half_key_is_not_made(self, source):
+        # **欠けていたら作らない** —— 種類だけ・番号だけの鍵は別の記録と重なりうる
+        items, _cursor = run(extract.normalize(self.osm()), source(self.mapped(), name="osm_japan"))
+        shop = next(i for i in items if i["title"] == "番号の無い店")
+
+        assert extract.RECORD_KEYS not in shop.get("extra", {})
+
+    def test_the_key_is_carried_even_when_the_source_does_not_claim_extra(self, source):
+        # 1 周目に脇書きを取らない本(`provides` に extra が無い)でも、鍵は入る。
+        # **競い合う値ではない**(どの本から来たかの事実)
+        wiki = {
+            "source": "jawiki", "tag": "東京都の飲食店", "extra": ["lat", "lon"],
+            "provides": ["body", "url"],
+        }
+        famous = [{
+            "title": "近所の定食屋", "opening": "由緒ある定食屋。",
+            "tags": ["東京都の飲食店"], "extra": {"lat": 1.0, "lon": 2.0}, "rank": 0.9,
+        }]
+        sources = {
+            **source(famous, name="jawiki"),
+            **source(self.mapped(), name="osm_japan"),
+        }
+        items, _cursor = run(
+            extract.normalize([wiki, self.osm(provides=["body"])]), sources
+        )
+        shop = next(i for i in items if i["title"] == "近所の定食屋")
+
+        assert shop["extra"][extract.RECORD_KEYS] == ["osm_japan:osm_type=node;osm_id=42"]
+
+    def test_the_roster_can_be_pulled_by_the_key(self, source):
+        roster, _cursor = extract.run(
+            extract.normalize(self.osm()), source(self.mapped(), name="osm_japan")
+        )
+        try:
+            found = roster.find(["osm_japan:osm_type=node;osm_id=42"])
+            assert found["title"] == "近所の定食屋"
+            # 引いたものは「残り」から外れる(新しい 1 件として足されない)
+            assert [i["title"] for i in roster.rest()] == ["番号の無い店"]
+            assert roster.find(["osm_japan:osm_type=node;osm_id=999"]) is None
+        finally:
+            roster.close()
+
+    def test_the_identity_is_written_back(self):
+        written = extract.to_json(extract.normalize(self.osm()))
+
+        assert written["identity"] == ["osm_type", "osm_id"]
+
+    def test_most_specs_do_not_carry_an_identity(self):
+        # 書いていなければ書かない(ほとんどの指定は見出しで足りる)
+        written = extract.to_json(spec())
+
+        assert "identity" not in written
+
+    def test_too_many_keys_are_refused(self):
+        with pytest.raises(HTTPException):
+            extract.normalize(self.osm(identity=["a", "b", "c", "d"]))

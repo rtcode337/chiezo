@@ -7279,3 +7279,77 @@ class TestDerivedCollectionsSitUnderTheirParent:
         assert "のタグから作る索引" in admin._derived_note(topics, "tech")
         assert "から作る" in admin._derived_note(chains, "tech")
         assert admin._derived_note(topics, "") == ""
+
+
+class TestTheSameRecordUnderANewTitle:
+    """**見出しが変わっただけの同じ 1 件**を、元の記録の鍵で見分ける。
+
+    元のソースを取り込み直すと、同じ名前の見分けの札が付け直されることがある
+    (Overture の通し番号が町の名前に変わる、など)。見出しでしか突き合わせて
+    いないと、**調べたうえで消した店が新しい見出しで丸ごと戻り、生きている店は
+    2 件に増える**(地図の名簿では数千件になる)。
+    """
+
+    KEY = "overture_japan:overture_id=fb8c"
+
+    def _previous(self, removed: bool):
+        tags = ["食事処"] + ([notes.REMOVED_TAG] if removed else [])
+        extra = {"url": None, collect.extraction.RECORD_KEYS: [self.KEY], "lat": 35.0, "lon": 139.0}
+        if removed:
+            extra["removed_reason"] = "2024年に閉店したため"
+        return [{
+            "doc_id": 1, "title": "忍者 (1772404)", "body": "育てた本文",
+            "tags": tags, "updated_at": "2026-01-01T00:00:00+00:00", "extra": extra,
+        }]
+
+    def _bake(self, previous, **kwargs):
+        from app import extract
+
+        roster = extract.Roster()
+        try:
+            roster.merge({
+                "title": "忍者 (千代田区)", "body": "辞典の本文", "tags": ["食事処"],
+                "extra": {"lat": 35.1, "lon": 139.1, collect.extraction.RECORD_KEYS: [self.KEY]},
+            }, {"body", "url", "extra"})
+            diff: dict = {}
+            docs = list(collect.stream_docs(
+                collect.get("news"), iter(previous), roster, True, False, diff, **kwargs,
+            ))
+        finally:
+            roster.close()
+        return docs, diff
+
+    def test_a_removed_shop_does_not_come_back(self, sample):
+        docs, diff = self._bake(self._previous(removed=True))
+
+        assert [d["title"] for d in docs] == ["忍者 (1772404)"]
+        assert notes.REMOVED_TAG in docs[0]["tags"]
+        assert diff["added"] == 0
+
+    def test_a_living_shop_is_not_doubled(self, sample):
+        docs, diff = self._bake(self._previous(removed=False), facts=True)
+
+        assert [d["title"] for d in docs] == ["忍者 (1772404)"]
+        # 中身は前世代のまま。機械が運んだ事実だけ受け取る
+        assert docs[0]["body"] == "育てた本文"
+        assert docs[0]["extra"]["lat"] == 35.1
+        assert diff["added"] == 0
+
+    def test_both_passes_count_the_same(self, sample):
+        # 数える周(facts なし)と流す周(facts あり)で件数が食い違うと、
+        # 焼き上がった世代が「足りない」で捨てられる
+        survey, _ = self._bake(self._previous(removed=False))
+        stream, _ = self._bake(self._previous(removed=False), facts=True)
+
+        assert len(survey) == len(stream)
+
+    def test_a_removed_shop_keeps_its_key_and_place(self):
+        # 墓標は脇書きを削るが、**同じものを戻さないための鍵**と場所は残す
+        doc = self._previous(removed=True)[0]
+        doc["extra"]["phone"] = "03-0000-0000"
+
+        slim = collect.slim_removed(doc)
+
+        assert slim["extra"][collect.extraction.RECORD_KEYS] == [self.KEY]
+        assert (slim["extra"]["lat"], slim["extra"]["lon"]) == (35.0, 139.0)
+        assert "phone" not in slim["extra"]

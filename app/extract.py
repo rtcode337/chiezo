@@ -38,6 +38,16 @@
       {"source": "overture_japan", "tag": "restaurant", "extra": ["lat", "lon", "website"]}
     ]
 
+**元の記録を名指す鍵を書ける**(`identity`)。見出しは元のソースの付け方で決まり、
+**取り込み直すと変わることがある** —— 同じ名前の地物に付ける見分けの札は、
+取り込みの版や並びで動く(Overture の通し番号、OSM の「先に来たほうが素の名前」)。
+見出しだけで同じ 1 件を見分けていると、変わった瞬間に**消したものが新しい 1 件として
+戻り、生きているものは 2 件に増える**。`identity` に書いた鍵の値は 1 件の脇書きの
+`record_keys` に入り、焼く側はそれで突き合わせる:
+
+    {"source": "overture_japan", "tag": "restaurant", "identity": ["overture_id"]}
+    {"source": "osm_japan", "tag": "amenity=restaurant", "identity": ["osm_type", "osm_id"]}
+
 **項目ごとの優先は `extra` の書き分けで表す。** 上の例なら、説明は先頭の Wikipedia が
 勝ち、座標は「Wikipedia が持ち込まない」ので次の OSM が勝つ。項目ごとの順位を別に
 書けるようにはしない —— 同じことを 2 通りで書けるだけになり、どちらが効くのかを
@@ -124,6 +134,13 @@ MAX_MAP_VALUE_CHARS = 100
 # 既に長期記憶に載っていて AI に書かせる意味の無い値を運ぶための口。
 # 際限なく写せるようにすると、集めた 1 件が元の記事の丸写しになる
 MAX_CARRIED_KEYS = 10
+# 元の記録を名指す鍵(`identity`)の数。**見分けに要るのは 1〜2 個**(Overture の id、
+# OSM の種類と番号)なので、それ以上書けるのは指定の書き違い
+MAX_IDENTITY_KEYS = 3
+
+# 1 件が**どの元の記録から来たか**を持つ脇書きの鍵(`identity` から作る)。
+# 焼く側(`app/collect.py`)は、見出しが変わってもこれで同じ 1 件を見分ける
+RECORD_KEYS = "record_keys"
 MAX_PATTERNS_PER_RULE = 4
 MAX_PATTERN_CHARS = 200
 # 1 件から作るタグの上限(読み替えが総当たりで当たったときの歯止め)
@@ -300,6 +317,13 @@ def normalize_one(raw) -> dict | None:
         raise _bad(f"extra に書ける鍵は {MAX_CARRIED_KEYS} 個までです")
     carried = [str(k).strip() for k in carried if str(k).strip()]
 
+    identity = raw.get("identity") or []
+    if not isinstance(identity, list):
+        raise _bad("identity は元の記録を名指す鍵の配列で書いてください")
+    identity = [str(k).strip() for k in identity if str(k).strip()]
+    if len(identity) > MAX_IDENTITY_KEYS:
+        raise _bad(f"identity に書ける鍵は {MAX_IDENTITY_KEYS} 個までです")
+
     spec = {
         "source": source,
         "of": of,
@@ -322,6 +346,9 @@ def normalize_one(raw) -> dict | None:
         # **元の記事に載っている事実を、そのまま運ぶ。** 知名度(月次ページビュー)の
         # ような値は既に長期記憶にあるので、読む側が 1 件ずつ引き直す理由が無い
         "extra": carried,
+        # **元の記録を名指す鍵。** 見出しが取り込み直しで変わっても、同じ 1 件だと
+        # 分かるようにする(`RECORD_KEYS`)
+        "identity": identity,
         "cursor": str(raw.get("cursor") or DEFAULT_CURSOR).strip() or DEFAULT_CURSOR,
     }
     return spec
@@ -559,6 +586,9 @@ def to_json(spec) -> dict | list[dict] | None:
     # (`app/partition.py` の `other` と同じ判断)
     if spec["provides"] != PROVIDED_FIELDS:
         written["provides"] = list(spec["provides"])
+    # 書いていなければ書かない(ほとんどの指定は見出しで足りる)
+    if spec.get("identity"):
+        written["identity"] = list(spec["identity"])
     # **タグの名簿だけが持つものは、そのときだけ書く。** 文書の名簿に `min_docs` が
     # 並んでいると、効かない指定を読ませることになる
     if spec["of"] != DEFAULT_ROSTER_KIND:
@@ -753,6 +783,9 @@ class Roster:
             "  title TEXT PRIMARY KEY, seq INTEGER, body TEXT, url TEXT,"
             "  tags TEXT, extra TEXT, used INTEGER NOT NULL DEFAULT 0);"
             " CREATE INDEX idx_items_rest ON items (used, seq);"
+            # **元の記録の鍵から見出しを引く。** 焼く側は、見出しで当たらなかった
+            # 前世代の 1 件をここで引き直す(`find`)
+            " CREATE TABLE record_keys (key TEXT PRIMARY KEY, title TEXT NOT NULL);"
         )
         self._seq = 0
 
@@ -768,6 +801,13 @@ class Roster:
         こちらだけ生だったのが食い違いの元だった。
         """
         title = item["title"] = notes.title_key(item.get("title"))
+        # **元の記録の鍵は、どの周でも足す**(競い合う値ではない)。1 周目に脇書きを
+        # 取らない本(`provides` に extra が無い)でも、鍵だけは入れておく
+        keys = merged_keys([], (item.get("extra") or {}).get(RECORD_KEYS))
+        for key in keys:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO record_keys (key, title) VALUES (?, ?)", (key, title)
+            )
         row = self.conn.execute(
             "SELECT seq, body, url, tags, extra FROM items WHERE title = ?", (title,)
         ).fetchone()
@@ -782,7 +822,8 @@ class Roster:
                     item.get("url") if "url" in claims else None,
                     json.dumps(item.get("tags") or [], ensure_ascii=False),
                     json.dumps(item.get("extra") or {}, ensure_ascii=False)
-                    if "extra" in claims else "{}",
+                    if "extra" in claims
+                    else json.dumps({RECORD_KEYS: keys} if keys else {}, ensure_ascii=False),
                 ),
             )
             return
@@ -797,6 +838,8 @@ class Roster:
         if "extra" in claims:
             for key, value in (item.get("extra") or {}).items():
                 extra.setdefault(key, value)
+        if keys:
+            extra[RECORD_KEYS] = merged_keys(extra.get(RECORD_KEYS), keys)
         self.conn.execute(
             "UPDATE items SET body = ?, url = ?, tags = ?, extra = ? WHERE title = ?",
             (body, url, json.dumps(tags, ensure_ascii=False),
@@ -825,6 +868,23 @@ class Roster:
             return None
         self.conn.execute("UPDATE items SET used = 1 WHERE title = ?", (title,))
         return self._to_item(row)
+
+    def find(self, keys) -> dict | None:
+        """元の記録の鍵で引く。**見出しで当たらなかった前世代の 1 件のため**のもの。
+
+        見出しが取り込み直しで変わると、前世代の 1 件と名簿の 1 件は見出しでは
+        突き合わない —— 鍵で引き直して、同じ 1 件として扱う。引いたら印を付ける
+        (`take` と同じく、あとで新しい 1 件として足されないように)。
+        """
+        for key in keys or []:
+            if not isinstance(key, str) or not key:
+                continue
+            found = self.conn.execute(
+                "SELECT title FROM record_keys WHERE key = ?", (key,)
+            ).fetchone()
+            if found is not None:
+                return self.take(found["title"])
+        return None
 
     def rest(self) -> Iterator[dict]:
         rows = self.conn.execute(
@@ -877,6 +937,10 @@ def _merge_item(merged: dict[str, dict], item: dict, claims) -> None:
         into = existing.setdefault("extra", {})
         for key, value in carried.items():
             into.setdefault(key, value)
+    # **元の記録の鍵は周に関係なく足す**(`Roster.merge` と同じ)
+    if keys := (item.get("extra") or {}).get(RECORD_KEYS):
+        into = existing.setdefault("extra", {})
+        into[RECORD_KEYS] = merged_keys(into.get(RECORD_KEYS), keys)
 
 
 def _run_one(spec: dict, sources: dict, retired: set[str] | None = None) -> tuple[Iterator[dict], str]:
@@ -1095,9 +1159,33 @@ def _to_item(row: dict, spec: dict, context: dict) -> dict | None:
         }})
     # **元の記事の事実をそのまま運ぶ。** 無い鍵は黙って飛ばす —— 記事によって
     # 持っている値が違う(ページビューを持たない記事もある)
-    if carried := {k: extra[k] for k in spec["extra"] if k in extra}:
+    carried = {k: extra[k] for k in spec["extra"] if k in extra}
+    if key := record_key(spec, extra):
+        carried[RECORD_KEYS] = [key]
+    if carried:
         item["extra"] = carried
     return item
+
+
+def record_key(spec: dict, extra: dict) -> str:
+    """元の記録を名指す 1 つの鍵(`ソース名:鍵=値;鍵=値`)。書いていないか欠けていれば空。
+
+    **欠けていたら作らない** —— 半端な鍵は別の記録と重なりうる(種類を落とした
+    OSM の番号は、node と way で同じ数が別の地物を指す)。
+    **ソース名を頭に付ける** —— 別のソースの id がたまたま同じ値でも、別の記録なので
+    """
+    names = spec.get("identity") or []
+    if not names or any(extra.get(k) in (None, "") for k in names):
+        return ""
+    return f"{spec['source']}:" + ";".join(f"{k}={extra[k]}" for k in names)
+
+
+def merged_keys(old, new) -> list[str]:
+    """元の記録の鍵を足し合わせる。**競い合う値ではない**(どの本から来たかの事実)ので、
+    `provides` に関係なく全部残す。並びは先に入ったものが先。"""
+    out = [k for k in (old or []) if isinstance(k, str) and k]
+    out += [k for k in (new or []) if isinstance(k, str) and k and k not in out]
+    return out
 
 
 def _json_list(raw) -> list:

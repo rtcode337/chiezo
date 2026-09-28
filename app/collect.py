@@ -3685,6 +3685,20 @@ def asks_ai(item: Collection, sweep=None) -> bool:
     return not (sweep is not None and (sweep.use_feed or sweep.by_hand))
 
 
+def _found_by_record(edits_of, before: dict) -> dict | None:
+    """前世代の 1 件と**同じ元の記録から来た**、名簿の 1 件。無ければ None。
+
+    引けるのは機械で引いた名簿だけ(`extract.Roster.find`)。AI が返したぶんは
+    元の記録の鍵を持たないので、見出しでしか突き合わせない。
+    """
+    find = getattr(edits_of, "find", None)
+    extra = before.get("extra")
+    keys = extra.get(extraction.RECORD_KEYS) if isinstance(extra, dict) else None
+    if find is None or not keys:
+        return None
+    return find(keys)
+
+
 def stream_docs(
     item: Collection,
     previous,
@@ -3766,6 +3780,16 @@ def stream_docs(
             if key in incoming_urls:
                 known_urls.add(key)
         raw = edits_of.take(title)
+        if raw is None and (found := _found_by_record(edits_of, before)) is not None:
+            # **見出しが変わっただけの同じ 1 件。** 元のソースを取り込み直すと、
+            # 同じ名前の見分けの札(「名前 (番号)」)が付け直されることがある ——
+            # 見出しでしか突き合わせていないと、名簿の 1 件が新しいものとして足され、
+            # **消したものは戻り、生きているものは 2 件に増える**。
+            # 中身も見出しも前世代のまま残し、機械が運んだ事実だけ受け取る
+            # (消えたものは消えたまま。脇書きは読むときに削られる)
+            skipped += 1
+            yield _with_facts(before, found) if facts else _with_new_facts(before, found)
+            continue
         if raw is None:
             yield _reviewed(before) if reviewed and title in reviewed else before
             continue
@@ -4245,7 +4269,16 @@ REMOVED_AFTER_REVIEW_KEY = "removed_after_review"
 # - `url` …… **同じものが別の見出しで戻ってくるのを止めている鍵**
 #   (`stream_docs` の重複判定)。落とすと、調べたうえで外したものが
 #   書き換えた見出しで足し直される
-KEPT_ON_REMOVED = ("removed_reason", "removed_at", REMOVED_AFTER_REVIEW_KEY, "url")
+# - `record_keys` …… **元の記録の鍵**(`extract.RECORD_KEYS`)。URL と同じ役目を、
+#   機械で引く名簿に対して果たす —— 元のソースを取り込み直すと見出しの付け方が
+#   変わることがあり、見出しでしか突き合わせていないと、消したものが新しい見出しで
+#   丸ごと戻ってくる(地図の名簿で数千件になる)
+# - `lat` / `lon` …… **消したものの場所**。閉店で消した店の近くに、同じ店の別の
+#   1 件(辞典違い・表記違い)が残っていないかを、読む側が探すのに要る
+KEPT_ON_REMOVED = (
+    "removed_reason", "removed_at", REMOVED_AFTER_REVIEW_KEY, "url",
+    extraction.RECORD_KEYS, "lat", "lon",
+)
 
 
 def slim_removed(doc: dict) -> dict:

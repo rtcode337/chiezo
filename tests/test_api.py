@@ -2606,9 +2606,11 @@ class TestMakingTheMaterialSmaller:
         slim = collect.slim_removed(doc)
 
         # **理由と URL は残す** —— URL は同じものが別の見出しで戻るのを止める鍵。
-        # 目を通したあとで消えたかは、読み手が写しを消すかを決めるので残す
+        # 目を通したあとで消えたかは、読み手が写しを消すかを決めるので残す。
+        # **場所も残す** —— 閉店で消した店の近くに、同じ店の別の 1 件が残って
+        # いないかを読む側が探すのに要る。電話や住所は誰も読まないので落とす
         assert set(slim["extra"]) == {
-            "removed_reason", "removed_at", "removed_after_review", "url",
+            "removed_reason", "removed_at", "removed_after_review", "url", "lat", "lon",
         }
         # **本文は残す**（印を外せば元の中身のまま戻せる、が墓標の約束）
         assert slim["body"] == "本文"
