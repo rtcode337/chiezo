@@ -7353,3 +7353,114 @@ class TestTheSameRecordUnderANewTitle:
         assert slim["extra"][collect.extraction.RECORD_KEYS] == [self.KEY]
         assert (slim["extra"]["lat"], slim["extra"]["lon"]) == (35.0, 139.0)
         assert "phone" not in slim["extra"]
+
+
+class TestSettingOneSweepsClock:
+    """**巡回 1 本の間隔だけを変える**(`collect.set_sweep_clock` /
+    `PATCH /v1/collect/{name}/sweeps/{sweep}`)。
+
+    巡回を並びごと送り直す口では、呼ぶ側が相手やモデルまで持ち直すことになる ——
+    速さだけを直したい呼び出しが、画面で選び直した相手を既定へ戻してしまう。
+    """
+
+    @staticmethod
+    def _make():
+        collect.create("spots", prompt="{cursor}", interval_minutes=60)
+        collect.update("spots", sweeps=[
+            {"name": "ざっと見る", "interval_minutes": 60, "cover_days": 3,
+             "backend": "codex", "prompt": "{current} を直す"},
+            {"name": "整理", "interval_minutes": 360, "backend": "claude",
+             "prompt": "{current} を整理"},
+            {"name": "要約", "on_demand": True, "prompt": "{recent} をまとめる"},
+        ])
+        # 前回走った時刻を持たせる(次の予定の置き直しを見るため)
+        item = collect.get("spots")
+        sweeps = [dict(s) for s in item.sweeps]
+        sweeps[0]["last_run_at"] = "2026-09-29T00:00:00+00:00"
+        sweeps[0]["next_run_at"] = "2026-09-29T01:00:00+00:00"
+        collect.update("spots", sweeps=sweeps)
+
+    @staticmethod
+    def _sweep(name):
+        return next(s for s in collect.get("spots").sweeps if s["name"] == name)
+
+    def test_only_the_clock_moves(self, enabled):
+        self._make()
+
+        collect.set_sweep_clock("spots", "整理", 720)
+
+        tidy = self._sweep("整理")
+        assert tidy["interval_minutes"] == 720
+        # 相手も依頼文も触らない
+        assert tidy["backend"] == "claude"
+        assert tidy["prompt"] == "{current} を整理"
+        # ほかの巡回も触らない
+        assert self._sweep("ざっと見る")["interval_minutes"] == 60
+
+    def test_keeping_the_amount_per_run_stretches_the_lap(self, enabled):
+        # **間隔だけ倍にすると、1 回の区画が倍になり、呼ぶ回数は変わらない**
+        self._make()
+
+        collect.set_sweep_clock("spots", "ざっと見る", 120, keep_per_run=True)
+
+        rough = self._sweep("ざっと見る")
+        assert rough["interval_minutes"] == 120
+        assert rough["cover_days"] == 6
+
+    def test_without_keeping_the_lap_stays(self, enabled):
+        self._make()
+
+        collect.set_sweep_clock("spots", "ざっと見る", 120)
+
+        assert self._sweep("ざっと見る")["cover_days"] == 3
+
+    def test_the_next_run_follows_the_new_clock(self, enabled):
+        # 置き直さないと、延ばした直後の 1 回だけ古い間隔で走る
+        self._make()
+
+        collect.set_sweep_clock("spots", "ざっと見る", 120)
+
+        assert self._sweep("ざっと見る")["next_run_at"] == "2026-09-29T02:00:00+00:00"
+
+    def test_a_sweep_without_a_clock_is_refused(self, enabled):
+        # 頼まれたときだけ走る巡回に間隔を書いても効かない
+        self._make()
+
+        with pytest.raises(HTTPException) as e:
+            collect.set_sweep_clock("spots", "要約", 120)
+        assert e.value.status_code == 409
+
+    def test_an_unknown_sweep_is_refused(self, enabled):
+        self._make()
+
+        with pytest.raises(HTTPException) as e:
+            collect.set_sweep_clock("spots", "無い巡回", 120)
+        assert e.value.status_code == 404
+
+    def test_too_short_is_refused(self, enabled):
+        self._make()
+
+        with pytest.raises(HTTPException) as e:
+            collect.set_sweep_clock("spots", "整理", 1)
+        assert e.value.status_code == 400
+
+    @pytest.fixture()
+    def client(self, enabled, built_data_dir, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        from app.main import app
+
+        with TestClient(app) as c:
+            yield c
+
+    def test_it_is_reachable_from_outside(self, client):
+        self._make()
+
+        res = client.patch(
+            "/v1/collect/spots/sweeps/%E6%95%B4%E7%90%86", json={"interval_minutes": 720},
+        )
+
+        assert res.status_code == 200, res.text
+        tidy = next(s for s in res.json()["sweeps"] if s["name"] == "整理")
+        assert tidy["interval_minutes"] == 720

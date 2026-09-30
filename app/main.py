@@ -3480,6 +3480,29 @@ def collect_patch(name: str, body: CollectionPatch):
     return collect.to_public(collect.update(name, **body.model_dump(exclude_none=True)))
 
 
+class SweepClock(BaseModel):
+    """巡回 1 本の間隔だけを変える(`collect.set_sweep_clock`)。"""
+
+    interval_minutes: int = PydField(..., description="新しい間隔(分)")
+    keep_per_run: bool = PydField(
+        False, description="一周の日数も同じ比で伸ばし、1 回に見る区画の数を変えない",
+    )
+
+
+@app.patch("/v1/collect/{name}/sweeps/{sweep}")
+def collect_sweep_clock(name: str, sweep: str, body: SweepClock):
+    """巡回 1 本の**間隔だけ**を変える。依頼文・相手・区画の記録は触らない。
+
+    巡回を並びごと送り直す口(`PATCH /v1/collect/{name}` の `sweeps`)では、呼ぶ側が
+    相手やモデルまで持ち直すことになる —— 速さだけを直したい呼び出しのための口。
+    """
+    collect.require_enabled()
+    return collect.to_public(
+        collect.set_sweep_clock(name, sweep, body.interval_minutes, body.keep_per_run),
+        with_partitions=False,
+    )
+
+
 @app.delete("/v1/collect/{name}")
 def collect_delete(name: str):
     """定義を消す。**溜めたものは残る**。

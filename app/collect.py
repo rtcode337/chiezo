@@ -941,6 +941,50 @@ def _keep_schedule(incoming: list[dict], current: list[dict]) -> list[dict]:
     return out
 
 
+def set_sweep_clock(
+    name: str, sweep: str, interval_minutes: int, keep_per_run: bool = False,
+) -> Collection:
+    """巡回 1 本の**間隔だけ**を変える。依頼文も相手も区画の記録も触らない。
+
+    **外のアプリが「回る速さ」だけを直すための口。** 巡回を丸ごと送り直す口
+    (`update` の `sweeps`)は並びごと置き換えるので、呼ぶ側が相手やモデルまで
+    持ち直すことになる —— 画面で選び直した相手を、速さを変えただけで既定へ戻して
+    しまう。
+
+    `keep_per_run` を付けると、**一周の日数(`cover_days`)も同じ比で伸ばす**。
+    1 回に見る区画の数は一周の日数から逆算されるので(`Sweep.per_run`)、間隔だけを
+    倍にすると 1 回の区画が倍になり、**呼ぶ回数も使う枠も変わらない** —— 枠の減りを
+    落としたくて間隔を延ばす呼び出しでは、それでは意味が無い。
+
+    **次の予定は「前回 + 新しい間隔」に置き直す。** 名前で予定を引き継ぐので
+    (`_keep_schedule`)、置き直さないと延ばした直後の 1 回だけ古い間隔で走る。
+    """
+    item = get(name)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"収集 {name} がありません")
+    minutes = int(interval_minutes)
+    if minutes < MIN_INTERVAL_MINUTES:
+        raise HTTPException(
+            status_code=400, detail=f"間隔は {MIN_INTERVAL_MINUTES} 分以上にしてください",
+        )
+    current = [dict(raw) for raw in item.sweeps if isinstance(raw, dict)]
+    target = next((raw for raw in current if str(raw.get("name") or "") == sweep), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"収集 {name} に巡回「{sweep}」がありません")
+    if target.get("on_demand"):
+        # 時計を持たない巡回に間隔を書いても効かない(書けるのに効かない欄を作らない)
+        raise HTTPException(
+            status_code=409, detail=f"巡回「{sweep}」は時計を持ちません(頼まれたときだけ走ります)",
+        )
+    before = int(target.get("interval_minutes") or item.interval_minutes or minutes)
+    target["interval_minutes"] = minutes
+    if keep_per_run and target.get("cover_days") and before > 0:
+        target["cover_days"] = round(float(target["cover_days"]) * minutes / before, 2)
+    if last := _at(target.get("last_run_at")):
+        target["next_run_at"] = _iso(last + timedelta(minutes=minutes))
+    return update(name, sweeps=current)
+
+
 def sweep_named(item: Collection, name: str | None) -> Sweep:
     """名前で引く。**知らない名前なら、次に走るはずの巡回へ倒す** ——
     巡回を消したあとに走りかけの取り込みが素材を取りに来ることがある。
