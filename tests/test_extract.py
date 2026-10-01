@@ -64,6 +64,13 @@ def source(tmp_path):
                     doc.get("rank", 0.0),
                 ),
             )
+            # 座標を持つ文書は座標の表にも入る(焼き上がりと同じ。範囲で引くのはここ)
+            extra = doc.get("extra") or {}
+            if isinstance(extra.get("lat"), (int, float)) and isinstance(extra.get("lon"), (int, float)):
+                conn.execute(
+                    "INSERT INTO doc_coords (lat, lon, doc_id) VALUES (?, ?, ?)",
+                    (extra["lat"], extra["lon"], doc_id),
+                )
             for tag in doc.get("tags", []):
                 conn.execute(
                     "INSERT INTO doc_tags (tag, doc_id) VALUES (?, ?)", (tag, doc_id)
@@ -1482,3 +1489,47 @@ class TestRecordKeys:
     def test_too_many_keys_are_refused(self):
         with pytest.raises(HTTPException):
             extract.normalize(self.osm(identity=["a", "b", "c", "d"]))
+
+
+class TestPullingOnlyWithinAnArea:
+    """**座標の範囲で名簿を絞る**(`bbox`)。地図の名簿は 1 国ぶんで数十万件になり、
+    全部を AI に回すと費用も見落としも手に負えない。"""
+
+    @staticmethod
+    def shops():
+        return [
+            {"title": "鶴見の店", "tags": ["amenity=restaurant"],
+             "extra": {"lat": 35.508, "lon": 139.676}},
+            {"title": "新宿の店", "tags": ["amenity=restaurant"],
+             "extra": {"lat": 35.690, "lon": 139.700}},
+            # 座標を持たないものは範囲に入らない
+            {"title": "場所の無い店", "tags": ["amenity=restaurant"]},
+        ]
+
+    @staticmethod
+    def area(**overrides):
+        return extract.normalize({
+            "source": "osm_japan", "tag": "amenity=restaurant",
+            "bbox": [35.49, 139.62, 35.53, 139.70], **overrides,
+        })
+
+    def test_only_what_is_inside_is_pulled(self, source):
+        items, _cursor = run(self.area(), source(self.shops(), name="osm_japan"))
+
+        assert [i["title"] for i in items] == ["鶴見の店"]
+
+    def test_it_is_counted_the_same_way(self, source):
+        # 当たる件数も範囲の中だけ(画面で見込みを出すのに使う)
+        assert extract.count(self.area(), source(self.shops(), name="osm_japan")) == 1
+
+    def test_the_area_is_written_back(self):
+        assert extract.to_json(self.area())["bbox"] == [35.49, 139.62, 35.53, 139.70]
+
+    def test_without_an_area_nothing_is_cut(self, source):
+        items, _cursor = run(self.area(bbox=None), source(self.shops(), name="osm_japan"))
+
+        assert len(items) == 3
+
+    def test_a_reversed_box_is_refused(self):
+        with pytest.raises(HTTPException):
+            self.area(bbox=[35.53, 139.62, 35.49, 139.70])
