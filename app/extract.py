@@ -48,6 +48,11 @@
     {"source": "overture_japan", "tag": "restaurant", "identity": ["overture_id"]}
     {"source": "osm_japan", "tag": "amenity=restaurant", "identity": ["osm_type", "osm_id"]}
 
+**座標の範囲で絞れる**(`bbox`。`[南, 西, 北, 東]`)。地図の名簿は 1 国ぶんで数十万件に
+なり、全部を AI に回すと費用も見落としも手に負えない。座標を持たない文書は範囲に入らない。
+
+    {"source": "overture_japan", "tag": "restaurant", "bbox": [35.67, 139.75, 35.69, 139.78]}
+
 **項目ごとの優先は `extra` の書き分けで表す。** 上の例なら、説明は先頭の Wikipedia が
 勝ち、座標は「Wikipedia が持ち込まない」ので次の OSM が勝つ。項目ごとの順位を別に
 書けるようにはしない —— 同じことを 2 通りで書けるだけになり、どちらが効くのかを
@@ -317,6 +322,8 @@ def normalize_one(raw) -> dict | None:
         raise _bad(f"extra に書ける鍵は {MAX_CARRIED_KEYS} 個までです")
     carried = [str(k).strip() for k in carried if str(k).strip()]
 
+    box = _bbox(raw.get("bbox"))
+
     identity = raw.get("identity") or []
     if not isinstance(identity, list):
         raise _bad("identity は元の記録を名指す鍵の配列で書いてください")
@@ -349,6 +356,10 @@ def normalize_one(raw) -> dict | None:
         # **元の記録を名指す鍵。** 見出しが取り込み直しで変わっても、同じ 1 件だと
         # 分かるようにする(`RECORD_KEYS`)
         "identity": identity,
+        # **座標の範囲で絞る**(`[南, 西, 北, 東]`)。地図の名簿は 1 国ぶんで数十万件に
+        # なり、全部を AI に回すと費用も見落としも手に負えない —— 見たい範囲だけを
+        # 名簿にする。座標を持たない文書は範囲に入らない
+        "bbox": box,
         "cursor": str(raw.get("cursor") or DEFAULT_CURSOR).strip() or DEFAULT_CURSOR,
     }
     return spec
@@ -589,6 +600,8 @@ def to_json(spec) -> dict | list[dict] | None:
     # 書いていなければ書かない(ほとんどの指定は見出しで足りる)
     if spec.get("identity"):
         written["identity"] = list(spec["identity"])
+    if spec.get("bbox"):
+        written["bbox"] = list(spec["bbox"])
     # **タグの名簿だけが持つものは、そのときだけ書く。** 文書の名簿に `min_docs` が
     # 並んでいると、効かない指定を読ませることになる
     if spec["of"] != DEFAULT_ROSTER_KIND:
@@ -618,7 +631,10 @@ def _doc_ids(spec: dict, sources: dict):
             "hint": f"tag_suffix「{spec['tag_suffix']}」で終わるタグが"
                     f"ソース「{spec['source']}」にない。/v1/<source>/tags で確かめられる",
         })
-    id_set = build_doc_id_set(src, tags=tags)
+    box = spec.get("bbox")
+    id_set = build_doc_id_set(
+        src, tags=tags, bbox=",".join(str(v) for v in box) if box else None,
+    )
     if id_set is None:
         raise HTTPException(409, {
             "error": f"ソース「{spec['source']}」はタグで絞り込めません",
@@ -1178,6 +1194,21 @@ def record_key(spec: dict, extra: dict) -> str:
     if not names or any(extra.get(k) in (None, "") for k in names):
         return ""
     return f"{spec['source']}:" + ";".join(f"{k}={extra[k]}" for k in names)
+
+
+def _bbox(raw) -> list[float] | None:
+    """座標の範囲(`[南, 西, 北, 東]`)。書かなければ None(範囲で絞らない)。"""
+    if raw in (None, "", []):
+        return None
+    if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+        raise _bad("bbox は [南緯, 西経, 北緯, 東経] の 4 つで書いてください")
+    try:
+        lat0, lon0, lat1, lon1 = (float(v) for v in raw)
+    except (TypeError, ValueError):
+        raise _bad("bbox は数で書いてください") from None
+    if not (lat0 < lat1 and lon0 < lon1):
+        raise _bad("bbox は [南緯, 西経, 北緯, 東経] の順(南 < 北・西 < 東)にしてください")
+    return [lat0, lon0, lat1, lon1]
 
 
 def merged_keys(old, new) -> list[str]:
