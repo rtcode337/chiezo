@@ -587,6 +587,9 @@ class Sweep:
     last_run_at: str | None = None
     last_status: str | None = None
     last_error: str | None = None
+    # **取り込み(焼く)まで終わった時刻**(`note_finished`)。`last_run_at` は AI が
+    # 答え終わった時刻で、その後に焼くぶんが続く —— ワーカーの回の間隔はここから数える
+    last_finished_at: str | None = None
 
     def due_at(self) -> datetime:
         """次に走る時刻。持っていなければ「いますぐ」。
@@ -734,6 +737,7 @@ def _sweep_from_json(raw: dict, item: Collection) -> Sweep:
         last_run_at=raw.get("last_run_at") or None,
         last_status=raw.get("last_status") or None,
         last_error=raw.get("last_error") or None,
+        last_finished_at=raw.get("last_finished_at") or None,
     )
 
 
@@ -913,7 +917,9 @@ def _worker_picked(raw: dict) -> dict:
 # 巡回が自分で持っている進み具合。**設定を送り直しても引き継ぐ** ——
 # 設定を書く側(外のアプリや画面のフォーム)はこれらを持っていないので、
 # 素直に置き換えると押すたびに時計が巻き戻る。
-SWEEP_PROGRESS_FIELDS = ("next_run_at", "last_run_at", "last_status", "last_error")
+SWEEP_PROGRESS_FIELDS = (
+    "next_run_at", "last_run_at", "last_status", "last_error", "last_finished_at",
+)
 
 
 def _keep_schedule(incoming: list[dict], current: list[dict]) -> list[dict]:
@@ -2746,6 +2752,23 @@ def mark_skipped(name: str, sweep: str, reason: str, sources: dict) -> None:
         diff={"total": src.doc_count if src is not None else 0},
         error=reason, sweep=this.name,
     )
+
+
+def note_finished(name: str, sweep: str, at: str) -> None:
+    """その巡回の取り込みが**焼くところまで終わった**時刻を控える(`Sweep.last_finished_at`)。
+
+    **ワーカーの回の間隔はここから数える**(`main._due_for_queue`)。AI が答え終わった
+    時刻(`last_run_at`)から数えると、焼くのに間隔より長くかかった回は、終わった
+    瞬間に次が積まれる。**巡回を書いていない収集・消えた巡回は何もしない**。
+    """
+    with suppress(HTTPException):
+        current = get(name)
+        if not any(raw.get("name") == sweep for raw in current.sweeps):
+            return
+        _replace_one(name, replace(current, sweeps=[
+            {**raw, "last_finished_at": at} if raw.get("name") == sweep else raw
+            for raw in current.sweeps
+        ]))
 
 
 def mark_started(name: str, sweep: str | None = None) -> Collection:

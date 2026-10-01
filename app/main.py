@@ -348,6 +348,9 @@ def _tick_ingest() -> None:
     now = datetime.now(UTC)
     for entry in ingest_queue.settle(status, now):
         log.info("ingest finished: %s/%s", entry.get("collection"), entry.get("sweep"))
+        # **焼き終わった時刻を巡回に控える**(ワーカーの回の間隔はここから数える)
+        if entry.get("collection") and entry.get("sweep"):
+            collect.note_finished(str(entry["collection"]), str(entry["sweep"]), _iso(now))
     _advance_workers(now)
     _queue_due_sweeps()
     _dispatch(status, now)
@@ -529,8 +532,12 @@ def _fill_worker_queues() -> None:
 
     **積む条件は「まだ居ないこと」と「前回の完了から間隔が空いたこと」の 2 つ。**
     予定(`next_run_at`)では見ない —— あれは起こした時点で進むので、行列で待って
-    いるあいだに何度も予定が来る。完了の時刻(`last_run_at`)を起点にすれば、
+    いるあいだに何度も予定が来る。完了の時刻を起点にすれば、
     **待たされたぶんだけ次が後ろへずれる**(積み上がらない)。
+    **「まだ居ない」には、取り込みの行列で待っている・走っている回も含める** ——
+    流すときにワーカーの行列から外すので、そこだけ見ていると走っている最中の回を
+    もう一度積み、終わった直後に次が流れていた。**完了は焼き終わった時刻**
+    (`Sweep.last_finished_at`。`_due_for_queue`)。
 
     **失敗した回も完了として数える。** 落ち続ける回がすぐ積み直されると、
     その 1 本が行列を占め続ける —— 間隔を空けてから見直すほうがよい。
@@ -538,6 +545,10 @@ def _fill_worker_queues() -> None:
     if not collect.is_enabled():
         return
     now = datetime.now(UTC)
+    in_flight = {
+        (str(e.get("collection") or ""), str(e.get("sweep") or ""))
+        for e in (*ingest_queue.waiting(), *ingest_queue.running())
+    }
     for item in collect.load():
         if not item.enabled:
             continue
@@ -549,6 +560,11 @@ def _fill_worker_queues() -> None:
             if not ref or not sweep.enabled or sweep.on_demand or sweep.by_hand:
                 continue
             if collect.blocked_reason(item, sweep):
+                continue
+            # **走っている・流れるのを待っている回は積まない。** 流すときにワーカーの
+            # 行列から外すので、行列だけ見ていると、走っている最中の回をもう一度積む
+            # (前回の時刻は AI が答え終わるまで古いままなので、間隔も空いて見える)
+            if (item.name, sweep.name) in in_flight:
                 continue
             if not _due_for_queue(sweep, now):
                 continue
@@ -665,8 +681,19 @@ def _no_longer_scheduled(entry: dict) -> str:
 
 
 def _due_for_queue(sweep, now: datetime) -> bool:
-    """その巡回を積んでよいか。**一度も走っていなければ積む**。"""
-    last = _parse_iso(getattr(sweep, "last_run_at", None))
+    """その巡回を積んでよいか。**一度も走っていなければ積む**。
+
+    **間隔は、焼くところまで終わった時刻から数える**(`last_finished_at`)。
+    AI が答え終わった時刻(`last_run_at`)から数えると、焼くのが長い回は
+    終わった瞬間に次が積まれる。**遅いほうを採る**(古い控えは終わった時刻を持たない)。
+    """
+    stamps = [
+        at for at in (
+            _parse_iso(getattr(sweep, "last_run_at", None)),
+            _parse_iso(getattr(sweep, "last_finished_at", None)),
+        ) if at is not None
+    ]
+    last = max(stamps) if stamps else None
     if last is None:
         return True
     return now - last >= timedelta(minutes=max(sweep.interval_minutes, 1))

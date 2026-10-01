@@ -1953,3 +1953,61 @@ class TestRunningItByHandClearsTheQueue:
         workers.drop("news", "")
 
         assert len(workers.queued("精査")) == 1
+
+
+class TestTheIntervalCountsFromTheEnd:
+    """巡回がワーカーに積まれる間隔は、**前の回が焼き終わってから**数える。
+
+    流すときにワーカーの行列から外すので、行列だけ見ていると走っている最中の回を
+    もう一度積んでいた(前回の時刻は AI が答え終わるまで古いままで、間隔も空いて
+    見える)。終わった直後に次が流れ、間隔が空かなかった。
+    """
+
+    def test_a_running_sweep_is_not_queued_again(self, enabled, monkeypatch, tmp_path):
+        import app.main as m
+        from app import ingest_queue
+
+        _define(monkeypatch, tmp_path, "meals", "ざっと見る")
+        workers.save([_worker(workers.Step("codex"))])
+        made, _pos, _added = ingest_queue.add(
+            "meals", "ざっと見る", origin="worker", worker="精査",
+        )
+        taken = ingest_queue.take(made["id"])
+        ingest_queue.started(taken, "2026-10-01T00:00:00+00:00")
+
+        m._fill_worker_queues()
+
+        assert workers.queued("精査") == []
+
+    def test_the_interval_starts_when_the_bake_is_done(self, enabled, monkeypatch, tmp_path):
+        from datetime import UTC, datetime, timedelta
+
+        import app.main as m
+        from app import collect
+
+        _define(monkeypatch, tmp_path, "meals", "ざっと見る")
+        now = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+        # AI が答え終わったのは 70 分前、焼き終わったのは 10 分前(間隔は 60 分)
+        collect.update("meals", sweeps=[{
+            "name": "ざっと見る", "worker": "精査", "interval_minutes": 60,
+            "prompt": "{partition}",
+            "last_run_at": (now - timedelta(minutes=70)).isoformat(),
+        }])
+        collect.note_finished("meals", "ざっと見る", (now - timedelta(minutes=10)).isoformat())
+        sweep = collect.sweeps_of(collect.get("meals"))[0]
+
+        assert not m._due_for_queue(sweep, now)
+        assert m._due_for_queue(sweep, now + timedelta(minutes=51))
+
+    def test_the_finish_time_survives_resending_the_settings(self, enabled, monkeypatch, tmp_path):
+        """設定を送り直しても、終わった時刻は引き継ぐ(進み具合と同じ扱い)。"""
+        from app import collect
+
+        _define(monkeypatch, tmp_path, "meals", "ざっと見る")
+        collect.note_finished("meals", "ざっと見る", "2026-10-01T11:50:00+00:00")
+        collect.update("meals", sweeps=[
+            {"name": "ざっと見る", "worker": "精査", "interval_minutes": 90},
+        ])
+
+        sweep = collect.sweeps_of(collect.get("meals"))[0]
+        assert sweep.last_finished_at == "2026-10-01T11:50:00+00:00"
