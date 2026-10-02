@@ -776,6 +776,49 @@ class TestBands:
         assert [p["key"] for p in built] == ["アイルランド|-"]
         assert built[0]["count"] == 11
 
+    def test_a_crowded_number_gets_a_band_of_its_own(self):
+        """**値ひとつで上限を超える年は、その年だけの帯にする**(「1800年頃」の固まり)。
+        手前の数年ぶんまで巻き込むと、割れるはずの人が割れない区画に埋もれる。"""
+        own = self.docs(
+            *[(f"あ{i}", ["地域:日本", f"年代:{1700 + i}-1800"]) for i in range(10)],
+            *[(f"い{i}", ["地域:日本", f"年代:{1720 + i}-1800"]) for i in range(4)],
+            *[(f"頃{i}", ["地域:日本", "年代:1750頃-"]) for i in range(30)],
+            *[(f"う{i}", ["地域:日本", f"年代:{1760 + i}-1830"]) for i in range(10)],
+        )
+        built = partition.build(self.spec(), {}, own)
+
+        assert [(p["key"], p["count"]) for p in built] == [
+            ("日本|-1719", 10),
+            ("日本|1720-1749", 4),
+            ("日本|1750-1750", 30),
+            ("日本|1751-", 10),
+        ]
+
+    def test_what_is_held_before_a_crowded_number_joins_the_band_before_it(self):
+        """手前に溜めたぶんは、前の帯に収まるなら寄せる(1 人だけの帯を作らない)。"""
+        own = self.docs(
+            *[(f"あ{i}", ["地域:日本", f"年代:{1700 + i}-1800"]) for i in range(10)],
+            ("はぐれ", ["地域:日本", "年代:1720-1800"]),
+            *[(f"頃{i}", ["地域:日本", "年代:1750頃-"]) for i in range(30)],
+        )
+        built = partition.build(self.spec(), {}, own)
+
+        assert [(p["key"], p["count"]) for p in built] == [
+            ("日本|-1749", 11),
+            ("日本|1750-", 30),
+        ]
+
+    def test_a_crowded_single_number_does_not_keep_asking_for_a_resplit(self):
+        """値ひとつの帯は割れないので、育っても割り直しの引き金にしない
+        (割り直しても同じ台帳になり、回ってくるたびに全件を割り直すだけ)。"""
+        spec = self.spec()
+
+        assert not partition.outgrown(spec, {"日本|1750-1750": 75, "日本|-1749": 10})
+        # 割れる帯が育ったら、今までどおり割り直す
+        assert partition.outgrown(spec, {"日本|1750-1760": 75, "日本|-1749": 10})
+        # 空になった帯も今までどおり
+        assert partition.outgrown(spec, {"日本|1750-1750": 0, "日本|-1749": 10})
+
     def test_the_leftover_stays_apart_when_it_does_not_fit(self):
         """遊びを超えるなら寄せない(寄せると 1 回に渡す量が膨らむ)。"""
         own = self.docs(

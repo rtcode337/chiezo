@@ -604,13 +604,26 @@ def _bands_of(spec: dict, name: str, by_number: dict[int, list[str]]) -> list[di
 
     **端は開いたまま書く**(`-1869` / `1840-`。1 本しか無ければ `-`)。端の帯は
     割ったときの値より外も引き受けるので、閉じて書くと鍵と受け持ちがずれる。
+
+    **値ひとつで上限を超えるところは、その値だけの帯にする**(`1800-1800`)。
+    生年のはっきりしない人は「1800年頃」と書かれ、きりのいい年に何十人も固まる
+    (実測: 日本の 1800 年に 75 人)。足していく途中で出会うと、手前の数年ぶんまで
+    巻き込んで閉じる —— `1796-1800` に 98 人が入り、手前の 23 人は割れるのに
+    割れない区画に埋もれていた。手前で一度閉じておけば、割れるぶんは割れたまま残る。
     """
     spans: list[list] = []
     start: int | None = None
+    previous: int | None = None
     count = 0
+    cap = _band_cap(spec)
     for number in sorted(by_number):
+        here = len(by_number[number])
+        if count and here > cap:
+            _close_before(spans, start, previous, count, cap)
+            start, count = None, 0
         start = number if start is None else start
-        count += len(by_number[number])
+        count += here
+        previous = number
         if count >= spec["target"]:
             spans.append([start, number, count])
             start, count = None, 0
@@ -629,14 +642,30 @@ def _bands_of(spec: dict, name: str, by_number: dict[int, list[str]]) -> list[di
     return [{"key": band_key(name, a, b), "count": n} for a, b, n in spans]
 
 
+def _close_before(spans: list[list], start: int, end: int, count: int, cap: int) -> None:
+    """値ひとつの帯の手前で、溜めていたぶんを閉じる。**前の帯に収まるなら寄せる**
+    (`_bands_of` の端数と同じ理由。1 人だけの帯を作らない)。"""
+    if spans and spans[-1][2] + count <= cap:
+        spans[-1][1], spans[-1][2] = end, spans[-1][2] + count
+    else:
+        spans.append([start, end, count])
+
+
 def _close_gaps(spans: list[list]) -> None:
     """帯の終わりを、次の帯の始まりの手前まで伸ばす(隙間を残さない)。
 
     伸ばすのは終わりだけ。**始まりを動かすと、既に入っているものが隣へ移る** ——
     どちらへ寄せるかを決められるのは境目の側だけで、そこには誰も居ない。
+
+    **値ひとつの帯だけは、次の帯の始まりを手前へ伸ばす**(`1800-1800` のまま残す)。
+    鍵が値ひとつを指していることが「これ以上割れない」の目印になる(`outgrown`)。
+    隙間には誰も居ないので、どちらが引き受けても移る人は居ない。
     """
     for left, right in itertools.pairwise(spans):
-        left[1] = right[0] - 1
+        if left[0] == left[1] and right[0] > left[1] + 1:
+            right[0] = left[1] + 1
+        else:
+            left[1] = right[0] - 1
 
 
 def _unknown_bands(spec: dict, name: str, titles: list[str]) -> list[dict]:
@@ -1148,6 +1177,9 @@ def outgrown(spec: dict, counts: dict[str, int]) -> bool:
     文書はタグの区画に入らない(どちらも仕様)。そこで真にすると、
     直りようのない 1 件のために毎回全件を割り直すことになる。
 
+    **値ひとつだけの帯は、育っても割り直さない**(`_single_value`)。1 年より細かくは
+    割らない約束なので、割り直しても同じ台帳になる。
+
     **区画が天井に当たっているときも割り直さない。** 帯は天井で打ち切られる
     (`_bands`)ので、そこで溢れたぶんは何度割り直しても行き場ができない。
     """
@@ -1158,7 +1190,21 @@ def outgrown(spec: dict, counts: dict[str, int]) -> bool:
         and len(counts) - 1 < MAX_PARTITIONS  # HOMELESS のぶんを引く
     ):
         return True
-    return any(n > limit or n == 0 for key, n in counts.items() if key != HOMELESS)
+    return any(
+        n == 0 or (n > limit and not _single_value(spec, key))
+        for key, n in counts.items()
+        if key != HOMELESS
+    )
+
+
+def _single_value(spec: dict, key: str) -> bool:
+    """値ひとつだけの帯か(`日本|1800-1800`)。**これ以上は割れない**ので、
+    育っても割り直しの引き金にしない —— 割り直しても同じ台帳になり、回ってくる
+    たびに全件を割り直すだけになる。"""
+    if spec["by"] != BY_BAND:
+        return False
+    parsed = parse_band_key(key)
+    return bool(parsed) and parsed[1] is not None and parsed[1] == parsed[2]
 
 
 def merged(spec: dict, partitions: list[dict]) -> list[dict]:
