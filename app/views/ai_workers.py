@@ -238,6 +238,18 @@ def _timing(worker: workers.Worker) -> tuple[str, str, str, bool]:
     return when_woke, when_ended, when_next, flowing
 
 
+def next_wake_html(worker: workers.Worker) -> str:
+    """そのワーカーが次に起きる時刻(描いた HTML)。**ワーカーの表と同じ値**を、
+    状況の面のワーカーの待ち行列にも出す(`views.admin._worker_queue_html`)。
+
+    **止めているワーカーは起きない**ので、時刻ではなくそう言う(時刻を出すと、
+    その時刻に流れるように読める)。
+    """
+    if worker.paused:
+        return '<span class="muted">止めている(動かすまで起きない)</span>'
+    return _timing(worker)[2]
+
+
 def _queue_html(worker: workers.Worker, running: str = "") -> str:
     """そのワーカーの回り方と、待っているもの。
 

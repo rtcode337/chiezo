@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from test_api import client, monkeypatch_module  # noqa: F401
 
@@ -185,6 +187,38 @@ class TestTheMergedQueueOnTheStatusPage:
         assert html.index("books") < html.index("posts") < html.index("news")
         # 日本時間で出す
         assert "2026-09-26 10:00" in html
+
+    def test_each_row_says_when_its_worker_wakes_next(self, state):
+        """**いつ動き出すかをこの面だけで読めるように**、ワーカーが次に起きる時刻を出す。
+
+        起きる時刻は前回流し終えた時刻 + 休む間(ワーカーの表と同じ値)。
+        """
+        from app.views import admin
+
+        worker = _made()
+        workers.enqueue(worker.key, "news", "整理", "2026-09-26T00:00:00+00:00")
+        workers.claim(worker.key, 1, "2026-09-26T01:00:00+00:00")
+        workers.done(worker.key, "news", "整理")
+        workers.note_finished(worker.key, "2026-09-26T02:00:00+00:00")
+        workers.enqueue(worker.key, "posts", "整理", "2026-09-26T03:00:00+00:00")
+        wake = admin.jst.format(
+            admin.jst.parse("2026-09-26T02:00:00+00:00")
+            + timedelta(minutes=worker.interval_minutes)
+        )
+
+        html = admin._worker_queue_html()
+
+        assert "ワーカーが次に起きる" in html
+        assert wake in html.split("<tr>")[2]
+
+    def test_a_paused_worker_is_said_not_to_wake(self, state):
+        from app.views import admin
+
+        worker = _made()
+        workers.enqueue(worker.key, "news", "整理", "2026-09-26T00:00:00+00:00")
+        workers.set_paused(worker.key, True)
+
+        assert "動かすまで起きない" in admin._worker_queue_html()
 
     def test_the_one_being_flowed_says_so(self, state):
         from app.views import admin

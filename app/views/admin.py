@@ -2698,8 +2698,10 @@ def _worker_queue_html() -> str:
 
     ワーカーごとの行列はワーカーの面にしか無く、「自分の回はいつ流れるのか」を
     知るのに、どのワーカーに任せたかを思い出してから開くことになっていた。
-    **並びは積まれた時刻** —— いつ流れるかは、ワーカーが起きる時刻と前の回の
-    長さで決まるので、ここからは読めない(起きる時刻はワーカーの表にある)。
+    **並びは積まれた時刻**。いつ流れるかは、ワーカーが起きる時刻と前の回の
+    長さで決まる —— **起きる時刻は行ごとに出す**(ワーカーの表と同じ値。
+    `ai_workers.next_wake_html`)。ワーカーの表まで見に行かないと読めなかった頃は、
+    待っている回がいつ動き出すのかを、この面だけでは判断できなかった。
     **流している最中の塊も出す**(行列から出ても、終わるまでは「待っている」側)。
 
     **「流している」と言うのは、取り込みが実際に走らせているときだけ。** 塊に
@@ -2727,6 +2729,8 @@ def _worker_queue_html() -> str:
         return '<p class="muted">ワーカーの待ち行列: 待っているものはありません。</p>'
     rows.sort(key=lambda row: row[0])
     known = _known_collections()
+    # 同じワーカーの行は同じ時刻なので、ワーカーごとに 1 度だけ描く
+    wakes: dict[str, str] = {}
     cells = []
     for at_raw, entry, worker, state in rows:
         at = jst.parse(at_raw)
@@ -2735,16 +2739,19 @@ def _worker_queue_html() -> str:
             f"<td><span>{_collect_name_link(str(entry.get('collection') or ''), known)}"
             f" / {esc(str(entry.get('sweep') or ''))}</span></td>"
             f'<td><a href="{esc(ai_workers.worker_page(worker))}">{esc(worker.name)}</a></td>'
+            f"<td>{wakes.setdefault(worker.key, ai_workers.next_wake_html(worker))}</td>"
             f"<td>{esc(state)}</td></tr>"
         )
     return f"""
 <h3 id="worker-queue">ワーカーの待ち行列({len(rows)} 本)</h3>
 <table>
-<thead><tr><th>積んだ時刻(JST)</th><th>収集 / 巡回</th><th>ワーカー</th><th>状態</th></tr></thead>
+<thead><tr><th>積んだ時刻(JST)</th><th>収集 / 巡回</th><th>ワーカー</th>
+<th>ワーカーが次に起きる(JST)</th><th>状態</th></tr></thead>
 <tbody>{"".join(cells)}</tbody>
 </table>
 <p class="muted">積まれた順に並べています。いつ流れるかは、ワーカーが起きる時刻と
-前の回の長さで決まります(起きる時刻は収集の面のワーカーの表に出ています)。</p>
+前の回の長さで決まります。ワーカーは前回流し終えた時刻から休む間をおいて起き、
+1 度に拾う数だけ先頭から流します。</p>
 """
 
 
