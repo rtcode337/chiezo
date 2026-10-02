@@ -2473,21 +2473,72 @@ def not_reviewed(content: str) -> set[str]:
     start, end = stripped.find("{"), stripped.rfind("}")
     if start < 0 or end <= start:
         return set()
-    try:
-        payload = json.loads(stripped[start : end + 1])
-    except ValueError:
-        return set()
+    payload, _repaired = _loads_object(stripped[start : end + 1])
     listed = payload.get("not_reviewed") if isinstance(payload, dict) else None
     if not isinstance(listed, list):
         return set()
     return {key for t in listed if isinstance(t, str) and (key := notes.title_key(t))}
 
 
+# 項目のあいだに余計な引用符が挟まる崩れ(`},"{"title":…`)。相手のモデルが
+# 2 件目以降の頭に付けてくることがある(本番の 1 回で 19 か所すべて)。
+# **そのままだと 1 件おきにしか拾えない** —— `_salvage` は余計な引用符を文字列の
+# 始まりと読むので、次の 1 件を丸ごと文字列の中だと思って飛ばす。
+_STRAY_QUOTE = re.compile(r'\}(\s*),(\s*)"(?=\{)')
+
+
+def _loads_object(text: str):
+    """JSON として読む。読めなければ、**項目のあいだの余計な引用符だけ**を直して
+    読み直す。`(値, 直したか)`。それでも読めなければ `(None, False)`。
+
+    直すのは `},"{` の並びだけ。本文にこの並びが出てくることはまず無いので、
+    読めるはずの答えを読み違える心配はほとんど無い。
+    """
+    try:
+        return json.loads(text), False
+    except ValueError:
+        pass
+    repaired = _STRAY_QUOTE.sub(r"}\1,\2", text)
+    if repaired != text:
+        try:
+            return json.loads(repaired), True
+        except ValueError:
+            pass
+    return None, False
+
+
+@dataclass(frozen=True)
+class Reply:
+    """AI の答えを読んだもの(`read_response`)。
+
+    `salvaged` は**読めたところまでしか拾えなかった**こと(途中で切れていた・
+    形が崩れていて直せなかった)。そのときは返ってこなかったものを見終わった扱いに
+    しない。`note` は控えと画面に出す断り書き(拾ったときも、形を直して読んだときも)。
+    """
+
+    items: list[dict]
+    next_cursor: str | None
+    note: str = ""
+    salvaged: bool = False
+
+
 def parse_response(content: str) -> tuple[list[dict], str | None, str]:
     """AI の答えから items と next_cursor を取り出す。3 つめは断り書き(無ければ空)。
+    中身は `read_response`(拾っただけかどうかも要るときはそちらを使う)。
+    """
+    reply = read_response(content)
+    return reply.items, reply.next_cursor, reply.note
+
+
+def read_response(content: str) -> Reply:
+    """AI の答えを読む。
 
     前置きやコードブロックが混ざっても拾えるように、`{` 〜 `}` を切り出してから読む
     (小型モデルでなくても、この手の付け足しは普通に起きる)。
+
+    **項目のあいだに余計な引用符が挟まっていたら、直して読む**(`_loads_object`)。
+    直して読めた答えは全部を取り込む —— 拾える分だけ拾う形に落とすと、1 件おきに
+    しか読めず、半分の仕事を捨てていた(本番: 20 件中 10 件)。
 
     **途中で切れていたら、読めたところまでを拾う**(`_salvage`)。答えが長くなると
     相手の上限に当たって末尾が欠けることがあり、実際に本番で起きた
@@ -2497,6 +2548,8 @@ def parse_response(content: str) -> tuple[list[dict], str | None, str]:
 
     **拾ったことは黙っていない。** 断り書きを返して、控えと画面に出す ——
     「集まりが少ない」のが世の中の都合なのか答えが切れたせいなのかで、次にすることが違う。
+    **切れていたのか、閉じているのに読めなかったのかも書き分ける**(`_closed`)。
+    閉じている答えを「切れていた」と書くと、原因を相手の上限だと見誤る。
     """
     stripped = re.sub(r"```(?:json)?", "", content).strip()
     start = stripped.find("{")
@@ -2507,28 +2560,58 @@ def parse_response(content: str) -> tuple[list[dict], str | None, str]:
         # 背景タスクを抱えたまま「待っています」と答えて終わり、JSON を返さなかった)。
         # **先頭だけ**にするのは、控えに答えを丸ごと写す場所ではないから
         raise ValueError(f"JSON オブジェクトが見つかりません: {_said(stripped)}")
-    try:
-        payload = json.loads(stripped[start : end + 1]) if end > start else None
-    except ValueError:
-        payload = None
+    payload, repaired = (
+        _loads_object(stripped[start : end + 1]) if end > start else (None, False)
+    )
     if payload is None:
         items = _salvage(stripped[start:])
         if not items:
             raise ValueError("JSON として読めず、拾えるものもありませんでした")
-        # 切れているので次の印は読めない(半端な値を進めると、そこから先が飛ぶ)
-        log.warning("collect response was cut off; salvaged %d items", len(items))
-        return items, None, f"答えが途中で切れていたので、読めた {len(items)} 件だけ拾いました"
+        # 読めていないので次の印は読めない(半端な値を進めると、そこから先が飛ぶ)
+        log.warning("collect response was unreadable; salvaged %d items", len(items))
+        why = (
+            "答えの形が崩れていて読めなかった"
+            if _closed(stripped[start:])
+            else "答えが途中で切れていた"
+        )
+        return Reply(items, None, f"{why}ので、読めた {len(items)} 件だけ拾いました", True)
     if not isinstance(payload, dict):
         raise ValueError("トップレベルがオブジェクトではありません")
     items = payload.get("items")
     if not isinstance(items, list):
         raise ValueError("items が配列ではありません")
     next_cursor = payload.get("next_cursor")
-    return (
+    if repaired:
+        log.warning("collect response had stray quotes between items; repaired")
+    return Reply(
         [i for i in items if isinstance(i, dict)],
         str(next_cursor) if isinstance(next_cursor, (str, int, float)) and next_cursor else None,
-        "",
+        "答えの形が崩れていた(項目の頭に余計な引用符)ので、直して読みました" if repaired else "",
     )
+
+
+def _closed(text: str) -> bool:
+    """いちばん外側の `{` が閉じているか(文字列の中の括弧は数えない)。"""
+    depth = 0
+    in_string = escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return True
+    return False
 
 
 def _salvage(text: str) -> list[dict]:

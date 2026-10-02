@@ -1206,12 +1206,14 @@ async def _collect_items(
                 raise HTTPException(429, _all_full(sweep.worker))
             notes.append(_gave_up(sweep.worker, key))
             break
-        items, next_cursor, note = collect.parse_response(content)
+        reply = collect.read_response(content)
+        items, next_cursor, note = reply.items, reply.next_cursor, reply.note
         # **手を付けなかったものには、目を通した印を付けない**(`collect.not_reviewed`)。
-        # 申告されたものと、答えが途中で切れたときに返ってこなかったもの。
-        # 印が残るので、次の回にもう一度渡る
+        # 申告されたものと、答えが読めたところまでしか拾えなかったときに返ってこなかった
+        # もの。印が残るので、次の回にもう一度渡る。**形を直して読めた答えは全部読めて
+        # いる**ので、拾えなかったときと同じ扱いにしない(断り書きだけ残す)
         section = shown - shown_before
-        if note:
+        if reply.salvaged:
             returned = {_title_of(i) for i in items}
             leftover = section - returned
         else:
@@ -1229,7 +1231,7 @@ async def _collect_items(
         # **途中で切れた区画は別の籠へ** —— 拾えたぶんは焼くが、その先は
         # 誰も見ていないので、見終わった扱いにはしない
         if key is not None:
-            if note and cut is not None:
+            if reply.salvaged and cut is not None:
                 cut.append(key)
             elif done is not None:
                 done.append(key)

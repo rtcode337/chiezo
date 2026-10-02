@@ -4572,6 +4572,41 @@ class TestParsing:
         # **拾ったことは黙っていない**
         assert "2 件" in note
 
+    def test_stray_quotes_between_items_are_repaired(self):
+        """項目の頭に余計な引用符が付く崩れ(`},"{"title"`)は直して全部読む。
+        拾える分だけ拾う形に落とすと、1 件おきにしか読めない(本番で 20 件中 10 件)。"""
+        content = (
+            '{"items":[{"title":"A","body":"あ"},"{"title":"B","body":"い"},'
+            '"{"title":"C","body":"う"}],"next_cursor":"Z","not_reviewed":["D"]}'
+        )
+
+        reply = collect.read_response(content)
+
+        assert [i["title"] for i in reply.items] == ["A", "B", "C"]
+        assert reply.next_cursor == "Z"
+        assert reply.salvaged is False
+        # 直したことは黙っていない
+        assert "直して読みました" in reply.note
+        # 見られなかったものの申告も、同じように直して読む
+        assert collect.not_reviewed(content) == {"D"}
+
+    def test_a_closed_but_unreadable_answer_is_not_called_cut_off(self):
+        """閉じているのに読めなかった答えを「切れていた」と書かない(原因を見誤る)。"""
+        reply = collect.read_response(
+            '{"items":[{"title":"A","body":"あ"}, {"title":"B" "body":"い"}],"next_cursor":null}'
+        )
+
+        assert [i["title"] for i in reply.items] == ["A"]
+        assert reply.salvaged is True
+        assert "崩れていて読めなかった" in reply.note
+        assert "途中で切れていた" not in reply.note
+
+    def test_a_cut_off_answer_is_called_so(self):
+        reply = collect.read_response('{"items": [{"title": "A", "body": "あ"}, {"title": "B"')
+
+        assert reply.salvaged is True
+        assert "途中で切れていた" in reply.note
+
     def test_a_cut_off_answer_with_nothing_readable_is_still_an_error(self):
         with pytest.raises(ValueError):
             collect.parse_response('{"items": [{"title": "A"')
