@@ -1611,6 +1611,18 @@ class TestAnOldPartitionThatStraddlesTheNewOnes:
 
         assert not partition._served(self._spec(), built, "アメリカ合衆国|不明|あ〜ん")
 
+    def test_a_box_covered_by_several_new_ones_is_dropped(self):
+        """**1 つに含まれなくても、合わせて覆われていれば引き受けている。** 範囲を
+        広げて割り直すと境目が全体にずれ、古い区画のほとんどが新しい区画 2 つ以上に
+        またがる。残すと新しい区画と重なる(本番で 28 区画のうち 12 が重なった)。"""
+        spec = partition.normalize({"by": "geo", "target": 20,
+                                    "bbox": [35.68, 139.76, 35.70, 139.80]})
+        built = [{"key": partition.geo_key((35.68, 139.76, 35.69, 139.80))},
+                 {"key": partition.geo_key((35.69, 139.76, 35.70, 139.80))}]
+        current = [{"key": partition.geo_key((35.685, 139.77, 35.695, 139.78))}]
+
+        assert partition._uncovered(spec, built, current) == []
+
     def test_a_straddling_box_is_still_kept(self):
         """**矩形はいままでどおり。** 鍵の矩形の中にある点だけを引き受けるので、
         はみ出したぶんは本当にどこにも入らない。"""
@@ -1851,6 +1863,28 @@ class TestWideningTheBox:
         assert all(p["visits"] == {} for p in outside)
         # 古い区画を二重に残さない(新しい台帳が範囲の全部を覆う)
         assert len(ledger) == len(built)
+
+    def test_rebuilding_again_after_widening_keeps_the_marks(self):
+        """広げたあと、店が増えてもう一度割り直しても、重ならず印も消えない
+        (古い区画が残って重なると、印を継ぐ条件を満たす区画が無くなる)。"""
+        before = self.grid(139.76, 139.78)
+        old = partition.build(self.spec(self.OLD), {}, self.own(before))
+        old = partition.mark_visited(old, [p["key"] for p in old], "ざっと見る", "t1")
+
+        widened = before + self.grid(139.78, 139.80)
+        first = partition.build(self.spec(self.NEW), {}, self.own(widened))
+        first = partition.refresh(first, old, self.spec(self.NEW), partition.extent_of(old))
+
+        grown = widened + self.grid(139.76, 139.78, n=4)
+        second = partition.build(self.spec(self.NEW), {}, self.own(grown))
+        ledger = partition.refresh(second, first, self.spec(self.NEW))
+
+        assert len(ledger) == len(second)
+        inside = [p for p in ledger if self.east(p) <= 139.78 + 1e-4]
+        assert inside
+        assert all(p["visits"] == {"ざっと見る": "t1"} for p in inside
+                   if all(q["visits"] for q in first
+                          if partition._overlaps(self.spec(self.NEW), q["key"], p["key"])))
 
     def test_narrowing_drops_what_falls_outside(self):
         before = self.grid(139.76, 139.78) + self.grid(139.78, 139.80)
