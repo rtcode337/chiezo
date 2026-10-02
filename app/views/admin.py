@@ -994,7 +994,7 @@ def _sweep_cells(item, disabled: str = "", dry: bool = True) -> list[str]:
             when = esc(jst.format(due))
         else:
             when = '<span class="muted">いますぐ</span>'
-        name = esc(sweep.name) + ("" if sweep.enabled else ' <span class="muted">(止)</span>')
+        name = esc(sweep.name) + ("" if sweep.enabled or sweep.by_caller else ' <span class="muted">(止)</span>')
         # **足すだけの回はそう出す。** 同じ収集の中で、消す力を持つ回と持たない回が
         # 並ぶので、名前だけでは読み分けられない
         if sweep.only_new:
@@ -1023,6 +1023,8 @@ def _sweep_cells(item, disabled: str = "", dry: bool = True) -> list[str]:
         every = (
             '<span class="muted">時計なし</span>'
             if sweep.on_demand
+            else '<span class="muted">時計なし<br>依頼元が起こす</span>'
+            if sweep.by_caller
             else f"{sweep.interval_minutes} 分ごと"
             + (f'<br><span class="muted">一周 {_cycle_label(cycle)}</span>'
                if (cycle := sweep.cycle_days(total)) else "")

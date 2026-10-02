@@ -583,6 +583,11 @@ class Sweep:
     # 割り込みは人が待っている場面なので、速い相手に頼みたい / 逆に 1 件を
     # じっくり調べさせたい、のどちらもあり、定時の巡回の設定を流用できない
     on_demand: bool = False
+    # **依頼元が起こす巡回**(外のアプリが時刻を決め、名前で走らせる)。Chiezo の
+    # 時計では走らないが、`on_demand` と違って**名指しの 1 回はふつうの回として走る**
+    # (印も進み具合も進む)。止めた巡回で代用していた頃は、画面に収集の間隔が
+    # 「◯分ごと」と出て、時計で回っているように読めた
+    by_caller: bool = False
     next_run_at: str | None = None
     last_run_at: str | None = None
     last_status: str | None = None
@@ -597,7 +602,7 @@ class Sweep:
         **時計を持たない巡回は「来ない」**(`NEVER`)—— 予定が空なのを「いますぐ」と
         読む規則をそのまま当てると、割り込み用の巡回が毎周走ってしまう。
         """
-        if self.on_demand or self.by_hand or (self.once and self.last_run_at):
+        if self.on_demand or self.by_hand or self.by_caller or (self.once and self.last_run_at):
             return NEVER
         return _parse(self.next_run_at) or _now()
 
@@ -615,7 +620,7 @@ class Sweep:
         限り何度やっても同じなので、その 1 回ぶんの取り込みが無駄になる。
         押せばいつでも走る(口のほうでは断らない)。
         """
-        if self.on_demand or self.by_hand or (self.once and self.last_run_at):
+        if self.on_demand or self.by_hand or self.by_caller or (self.once and self.last_run_at):
             return False
         at = at or _now()
         return self.enabled and (_parse(self.next_run_at) or at) <= at
@@ -657,7 +662,7 @@ class Sweep:
         **区画数はそのつど渡す。** 母集団が動けば区画も動くので、控えた値を
         持つと古くなる(減ったのに長いまま出る、が起きる)。
         """
-        if self.on_demand or total_partitions <= 0 or self.interval_minutes <= 0:
+        if self.on_demand or self.by_caller or total_partitions <= 0 or self.interval_minutes <= 0:
             return 0.0
         runs_per_day = 24 * 60 / self.interval_minutes
         return total_partitions / (self.per_run(total_partitions) * runs_per_day)
@@ -725,6 +730,7 @@ def _sweep_from_json(raw: dict, item: Collection) -> Sweep:
         ),
         unreviewed_by=str(raw.get("unreviewed_by") or "").strip()[:60],
         on_demand=bool(raw.get("on_demand")),
+        by_caller=bool(raw.get("by_caller")),
         only_new=bool(raw.get("only_new")),
         use_extract=bool(raw.get("use_extract")),
         use_feed=bool(raw.get("use_feed")),
@@ -977,7 +983,7 @@ def set_sweep_clock(
     target = next((raw for raw in current if str(raw.get("name") or "") == sweep), None)
     if target is None:
         raise HTTPException(status_code=404, detail=f"収集 {name} に巡回「{sweep}」がありません")
-    if target.get("on_demand"):
+    if target.get("on_demand") or target.get("by_caller"):
         # 時計を持たない巡回に間隔を書いても効かない(書けるのに効かない欄を作らない)
         raise HTTPException(
             status_code=409, detail=f"巡回「{sweep}」は時計を持ちません(頼まれたときだけ走ります)",
@@ -1002,7 +1008,9 @@ def sweep_named(item: Collection, name: str | None) -> Sweep:
     # **倒す先は、走れる回だけ。** 時計を持たない回(割り込み)と手で回す回は
     # 自分から走らない —— そこへ倒すと、名前を取り違えた取り込みが
     # 「人が持ち帰った答え」を待つ回として走り、何も無いまま断られる
-    due = [s for s in sweeps if s.enabled and not s.on_demand and not s.by_hand]
+    due = [
+        s for s in sweeps if s.enabled and not s.on_demand and not s.by_hand and not s.by_caller
+    ]
     return min(due or sweeps, key=lambda s: s.due_at())
 
 
@@ -3127,6 +3135,10 @@ def blocked_reason(item: Collection, sweep: Sweep) -> str:
     **走らない理由を言うのはここだけにする。** 読む側(画面・別のアプリ)が同じ
     場合分けを書き写すと、片方だけが古くなる。
     """
+    # **依頼元が起こす巡回は、止めてあっても「止めている」とは言わない** ——
+    # 時計を持たないことを古い Chiezo にも伝わる形で送るため、止めて送られてくる
+    if sweep.by_caller:
+        return "依頼元が起こす"
     if not sweep.enabled:
         return "止めている"
     if sweep.on_demand:

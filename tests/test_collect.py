@@ -1940,6 +1940,14 @@ class TestOrderingTheSweeps:
 
         assert collect.blocked_reason(*self._sweep("名簿")) == "一度きり(済み)"
 
+    def test_a_sweep_its_caller_wakes_says_so(self, staged):
+        """止めて送られてきても「止めている」とは言わない(時計は依頼元が持つ)。"""
+        collect.update(
+            "news", sweeps=[{"name": "情報収集", "by_caller": True, "enabled": False}],
+        )
+
+        assert collect.blocked_reason(*self._sweep("情報収集")) == "依頼元が起こす"
+
     def test_an_unknown_name_does_not_block(self, staged):
         """待つ相手が居ないのに永久に止まる方が悪い。"""
         collect.update("news", sweeps=[{"name": "調査", "after": "居ない巡回"}])
@@ -4275,6 +4283,30 @@ class TestTheOnDemandSweep:
         assert sweep.on_demand is True
         assert sweep.is_due() is False
         assert sweep.due_at() == collect.NEVER
+
+    def test_a_sweep_its_caller_wakes_never_comes_due(self, sample):
+        """依頼元が起こす巡回も、Chiezo の時計では走らない。"""
+        collect.update(
+            "news",
+            enabled=True,
+            interval_minutes=720,
+            sweeps=[{"name": "ざっと"}, {"name": "情報収集", "by_caller": True}],
+        )
+        item = collect.get("news")
+        sweep = collect.sweep_named(item, "情報収集")
+
+        assert sweep.by_caller is True
+        assert sweep.is_due() is False
+        assert sweep.due_at() == collect.NEVER
+        assert "情報収集" not in {s.name for _c, s in collect.due_sweeps()}
+        # 一周の見込みも出さない(時計が無いので数えられない)
+        assert sweep.cycle_days(10) == 0.0
+
+    def test_a_sweep_its_caller_wakes_can_be_run_by_name(self, sample):
+        """割り込み用(`on_demand`)と違い、名指しの 1 回はふつうの回として走る。"""
+        collect.update("news", enabled=True, sweeps=[{"name": "情報収集", "by_caller": True}])
+
+        assert collect.require_runnable(collect.get("news"), "情報収集").name == "情報収集"
 
     def test_a_focus_runs_with_its_own_backend(self, ready):
         """割り込みは割り込み用の巡回で走る。"""
@@ -7428,6 +7460,18 @@ class TestSettingOneSweepsClock:
 
         with pytest.raises(HTTPException) as e:
             collect.set_sweep_clock("spots", "要約", 120)
+        assert e.value.status_code == 409
+
+    def test_a_sweep_its_caller_wakes_is_refused(self, enabled):
+        # 時刻は依頼元が決めるので、間隔を書いても効かない
+        self._make()
+        collect.update(
+            "spots",
+            sweeps=[*collect.get("spots").sweeps, {"name": "情報収集", "by_caller": True}],
+        )
+
+        with pytest.raises(HTTPException) as e:
+            collect.set_sweep_clock("spots", "情報収集", 120)
         assert e.value.status_code == 409
 
     def test_an_unknown_sweep_is_refused(self, enabled):
