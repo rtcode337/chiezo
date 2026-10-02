@@ -6291,6 +6291,20 @@ class TestOpeningAPartition:
 
         assert redone.partitions == []
 
+    def test_widening_the_box_keeps_the_lap(self, sample):
+        """**範囲を広げた・狭めただけでは台帳を捨てない。** 捨てると見終わっていた
+        区画の印まで消え、一周したら止まる巡回が範囲の全部を見直す。"""
+        spec = {"by": "geo", "target": 20, "bbox": [35.68, 139.76, 35.70, 139.78]}
+        ledger = [{"key": partitioning.geo_key((35.68, 139.76, 35.70, 139.78)),
+                   "count": 3, "visits": {"ざっと見る": "2026-10-02T07:00:00+00:00"}}]
+        collect.update("news", partition=spec, partitions=ledger)
+
+        kept = collect.update("news", partition={**spec, "bbox": [35.67, 139.75, 35.70, 139.78]})
+
+        assert kept.partitions[0]["visits"] == {"ざっと見る": "2026-10-02T07:00:00+00:00"}
+        # 次の回で割り直す(台帳が新しい範囲を覆っていない)
+        assert partitioning.reach_changed(partitioning.normalize(kept.partition), kept.partitions)
+
     def test_the_ledger_says_where_the_lap_starts(self, partitioned):
         """**指定は編集のフォームの JSON にしか無かった。** 「東京から回るように
         したはずだが効いているのか」を確かめに来る人が見るのは、台帳のほうの行。
