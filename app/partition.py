@@ -1116,8 +1116,13 @@ def _served(spec: dict, built: list[dict], old: str) -> bool:
     新しい台帳に無ければ、その分類の文書は行き場を失う。
     **値の分かる帯と「不明」の置き場は別に数える**(落ちる先が別なので)。
 
-    **矩形はいままでどおり「含む」で見る。** あちらは鍵の矩形の中にある点だけを
-    引き受けるので(`_geo_locator`)、はみ出したぶんは本当にどこにも入らない。
+    **矩形は「新しい区画を合わせて覆っているか」で見る**(`_geo_served`)。
+    鍵の矩形の中にある点だけを引き受けるので(`_geo_locator`)、はみ出したぶんは
+    本当にどこにも入らない —— ただ、**1 つの区画に含まれる必要は無い**。範囲を
+    広げて割り直すと境目が全体にずれ、古い区画のほとんどが新しい区画 2 つ以上に
+    またがる。1 つに含まれるかで見ていた頃は、それが全部「行き場が無い」として
+    残り、**新しい区画と重なった**(本番で 28 区画のうち 12 が重なり、重なった
+    古い区画の印が足を引っ張って、割り直した区画の印までほぼ消えた)。
     """
     if spec["by"] == BY_BAND:
         parsed = parse_band_key(old)
@@ -1132,9 +1137,54 @@ def _served(spec: dict, built: list[dict], old: str) -> bool:
         return names <= served
     if spec["by"] == BY_TITLE:
         return any(parse_title_key(p["key"]) is not None for p in built)
+    if spec["by"] == BY_GEO:
+        return _geo_served(built, old, spec.get("bbox"))
     return any(
         _covers(spec, new["key"], old) or _covers(spec, old, new["key"]) for new in built
     )
+
+
+def _geo_served(built: list[dict], old: str, bbox=None) -> bool:
+    """古い矩形が、新しい矩形を**合わせて**覆われているか。
+
+    新しい台帳の矩形どうしは重ならない(1 つの矩形を二分していったもの)ので、
+    重なりの面積を足して古い矩形の面積に届けば覆われている。
+
+    **鍵は小数 4 桁で丸めてある**(`geo_key`)ので、古い矩形を丸めの幅だけ内側へ
+    縮めてから測る —— 縮めないと、別々に丸めた境目のわずかな食い違いで「覆って
+    いない」になる。
+
+    **範囲(`bbox`)の外へはみ出したところは覆わなくてよい**(範囲を狭めたあと)。
+    範囲の外の点はもともとどの回にも渡さないので、そこに引き受け先は要らない。
+    """
+    box = parse_geo_key(old)
+    if box is None:
+        return False
+    s, w, n, e = box
+    if bbox:
+        s, w, n, e = max(s, bbox[0]), max(w, bbox[1]), min(n, bbox[2]), min(e, bbox[3])
+        if s >= n or w >= e:
+            return True
+    ds = min(_KEY_SLACK, (n - s) / 4)
+    dw = min(_KEY_SLACK, (e - w) / 4)
+    s, n, w, e = s + ds, n - ds, w + dw, e - dw
+    area = (n - s) * (e - w)
+    if area <= 0:
+        return any(
+            (b := parse_geo_key(p["key"])) is not None
+            and b[0] <= s <= b[2] and b[1] <= w <= b[3]
+            for p in built
+        )
+    covered = 0.0
+    for p in built:
+        b = parse_geo_key(p["key"])
+        if b is None:
+            continue
+        dy = min(n, b[2]) - max(s, b[0])
+        dx = min(e, b[3]) - max(w, b[1])
+        if dy > 0 and dx > 0:
+            covered += dy * dx
+    return covered >= area * (1 - 1e-9)
 
 
 def _covers(spec: dict, parent: str, child: str) -> bool:
