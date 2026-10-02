@@ -693,5 +693,26 @@ def busiest(provider_id: str, model: str = "") -> float | None:
     windows = _windows_from(row.get("windows", []))
     if group := providers.quota_group(provider_id, model):
         windows = [w for w in windows if w.group == group] or windows
-    percents = [w.used_percent for w in windows if w.used_percent is not None]
+    now = datetime.now(UTC)
+    # **戻る時刻を過ぎた窓は 0 として読む。** 控えは取ったときの値で、窓が明ければ
+    # 使用率は戻っている —— 古い値のまま読むと、一度 80% を超えた相手はワーカーに
+    # 避けられて呼ばれず、呼ばれないので取り直されず、ずっと避けられ続ける
+    percents = [
+        0.0 if has_reset(w, now) else w.used_percent
+        for w in windows if w.used_percent is not None
+    ]
     return max(percents) if percents else None
+
+
+def has_reset(window: Window, now: datetime | None = None) -> bool:
+    """控えを取ったあとに、**その窓の戻る時刻を過ぎたか**(手元の値はもう前の窓のもの)。"""
+    reset = _parse(window.resets_at)
+    return reset is not None and reset <= (now or datetime.now(UTC))
+
+
+def needs_resample(provider_id: str, now: datetime | None = None) -> bool:
+    """控えのどれかの窓が、**取ったあとに戻っている**か(呼んでいなくても取り直す理由)。"""
+    row = usage_store.load_quota().get(provider_id)
+    if not row:
+        return False
+    return any(has_reset(w, now) for w in _windows_from(row.get("windows", [])))

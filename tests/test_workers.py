@@ -2046,3 +2046,42 @@ class TestTheIntervalCountsFromTheEnd:
 
         sweep = collect.sweeps_of(collect.get("meals"))[0]
         assert sweep.last_finished_at == "2026-10-01T11:50:00+00:00"
+
+
+class TestARecoveredWindowIsUsableAgain:
+    """**一度 80% を超えた相手も、窓が戻れば頼める。**
+
+    控えは取ったときの値で、詰まった相手はワーカーに避けられて呼ばれず、呼ばれない
+    ので取り直されなかった —— 窓が明けても、古い値のまま避けられ続けた。
+    """
+
+    def test_a_window_past_its_reset_reads_as_empty(self, enabled):
+        from datetime import UTC, datetime, timedelta
+
+        from app import usage
+
+        past = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+        future = (datetime.now(UTC) + timedelta(hours=3)).isoformat()
+        usage_store.save_quota("codex", [
+            {"id": "5h", "label": "直近 5 時間", "used_percent": 95.0, "resets_at": past},
+            {"id": "7d", "label": "直近 7 日", "used_percent": 40.0, "resets_at": future},
+        ])
+
+        assert usage.busiest("codex") == 40.0
+        assert workers.room_left(workers.Step("codex"))
+        # 取り直す理由がある(呼ばれていなくても採る)
+        assert usage.needs_resample("codex")
+
+    def test_a_full_window_before_its_reset_is_still_avoided(self, enabled):
+        from datetime import UTC, datetime, timedelta
+
+        from app import usage
+
+        future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        usage_store.save_quota("codex", [
+            {"id": "5h", "label": "直近 5 時間", "used_percent": 95.0, "resets_at": future},
+        ])
+
+        assert usage.busiest("codex") == 95.0
+        assert not workers.room_left(workers.Step("codex"))
+        assert not usage.needs_resample("codex")

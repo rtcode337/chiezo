@@ -242,7 +242,9 @@ async def _sample_quotas() -> None:
 
     **呼んでいない相手には聞きに行かない**(`calls_since`)。前と同じ値が返るだけで、
     CLI を 1 本起こすぶんだけ損をする。**ただし 1 点目だけは呼ばれていなくても採る**
-    —— 起点が無いと、次に呼んだぶんの差が取れない。
+    —— 起点が無いと、次に呼んだぶんの差が取れない。**窓が戻った相手も採る**
+    (`usage.needs_resample`)—— 詰まってワーカーに避けられた相手は呼ばれないので、
+    呼ばれたかで決めると、回復した値がいつまでも控えに入らない。
 
     **番は取り合う**(`claim_quota_poll`)。`--workers 2` なので同じ周期で両方が
     起きる —— 取れたほうだけが聞きに行く。
@@ -258,7 +260,7 @@ async def _sample_quotas() -> None:
                 last = await asyncio.to_thread(usage_store.last_quota_sample_at, provider_id)
                 if last and not await asyncio.to_thread(
                     usage_store.calls_since, provider_id, last
-                ):
+                ) and not await asyncio.to_thread(usage.needs_resample, provider_id):
                     continue
                 if not await asyncio.to_thread(
                     usage_store.claim_quota_poll, provider_id, interval
