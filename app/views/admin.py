@@ -181,7 +181,19 @@ def _baking_now(job: dict | None, name: str) -> bool:
     return ingest_queue.is_running(job, name)
 
 
-def run_buttons_disabled(job: dict | None) -> str:
+def is_dump_source(name: str) -> bool:
+    """ダンプの取り込み(ダンプ用の枠を使う)ソースか。trigger のカタログの `dump` で決める。
+
+    **カタログに載っていない・名乗らないものはダンプ扱い** —— 古い trigger は
+    `dump` を返さないが、そのときは枠が 1 つなので、どちらに倒しても判定は同じになる。
+    """
+    meta = initializable_sources().get(name)
+    if meta is None:
+        return True
+    return bool(meta.get("dump", "plugin" not in meta and meta.get("kind") != "collect"))
+
+
+def run_buttons_disabled(job: dict | None, *, dump: bool = True) -> str:
     """取り込みを起こすボタンの `disabled` 属性。
 
     起こせるのは chiezo-trigger が居るときだけ。**未設定でも到達不能でも押せなくする**
@@ -189,12 +201,16 @@ def run_buttons_disabled(job: dict | None) -> str:
     書き込むとき(初期化・再構築・削除)しか要らない相手なので、立てない使い方が普通にある。
     **走らせられる本数が埋まっているあいだも押せない**(ダンプの取り込みは並べない)。
     収集の回は並べられるので、そちらは `queue_buttons_disabled` を使う。
+
+    **どちらの枠を見るかは `dump` で決める。** ダンプが別の枠で走る trigger では、
+    再構築が走っていても収集のソースの再構築は押せ、逆も同じ。
     """
     if not TRIGGER_URL:
         return " disabled"
-    if job is None or job.get("state") == "unreachable" or ingest_queue.is_full(job):
+    if job is None or job.get("state") == "unreachable":
         return " disabled"
-    return ""
+    busy = ingest_queue.dump_busy(job) if dump else ingest_queue.is_full(job)
+    return " disabled" if busy else ""
 
 
 def queue_buttons_disabled(job: dict | None) -> str:
@@ -288,10 +304,21 @@ def _job_body_html(job: dict | None, back: str = STATUS_PAGE) -> str:
     # 走っていないのかが読めるように)
     shown = running or ingest_queue.finished(job)[:1]
     slots = ingest_queue.slots(job)
-    head = (
-        f'<p class="muted">同時に走らせられるのは {slots} 本まで'
-        f"(いま {len(running)} 本。chiezo-trigger の <code>CHIEZO_INGEST_SLOTS</code>)。</p>"
-    )
+    if ingest_queue.has_dump_lane(job):
+        # **ダンプは別の枠**なので、本数は分けて書く(合わせて数えると、再構築が
+        # 走っているだけで「埋まっている」と読める)
+        general = len(ingest_queue.general_jobs(job))
+        dumps = len(running) - general
+        head = (
+            f'<p class="muted">収集・固化は同時に {slots} 本まで'
+            f"(いま {general} 本。chiezo-trigger の <code>CHIEZO_INGEST_SLOTS</code>)。"
+            f"ダンプの取り込み(初期化・再構築)は別の枠で 1 本ずつ(いま {dumps} 本)。</p>"
+        )
+    else:
+        head = (
+            f'<p class="muted">同時に走らせられるのは {slots} 本まで'
+            f"(いま {len(running)} 本。chiezo-trigger の <code>CHIEZO_INGEST_SLOTS</code>)。</p>"
+        )
     blocks = [_one_job_html(j, back) for j in shown] or [
         '<div class="job-status"><p>状態: idle</p></div>'
     ]
@@ -2852,7 +2879,10 @@ def memory_page(
     """
     sources: dict[str, Source] = request.app.state.sources
     job = _fetch_trigger_status()
-    disabled = run_buttons_disabled(job)
+    # **ボタンは行ごとに、そのソースが使う枠で決める**(ダンプが別の枠の trigger では、
+    # 再構築が走っていても収集のソースは触れる)
+    def row_disabled(name: str) -> str:
+        return run_buttons_disabled(job, dump=is_dump_source(name))
     latest_schema = latest_schema_version()
 
     def schema_cell(version: int) -> str:
@@ -2887,9 +2917,9 @@ def memory_page(
         f'<form class="init-form" method="post" action="/admin/rebuild/{esc(s.name)}" '
         f"onsubmit=\"return confirm('{esc(s.name)} を再構築します。ダンプの取得からやり直すため"
         f"時間がかかります(構築中も現行 DB での配信は続きます)。よろしいですか?')\">"
-        f'<button type="submit"{disabled}>再構築</button>'
+        f'<button type="submit"{row_disabled(s.name)}>再構築</button>'
         f"</form> "
-        f"{_delete_source_cell(s, _collection_using(s.name), disabled)}"
+        f"{_delete_source_cell(s, _collection_using(s.name), row_disabled(s.name))}"
         f"</div>"
         # **下の段は折り返させない。** 列が狭いと「1 つ前: 日時」がボタンの下へ落ち、
         # 横に並べた意味が消える(列のほうを広げる)
@@ -2921,7 +2951,7 @@ def memory_page(
         f"<td>{esc(meta.get('lang', ''))}</td>"
         f"<td>"
         f'<form class="init-form" method="post" action="/admin/init/{esc(name)}">'
-        f'<button type="submit"{disabled}>初期化</button>'
+        f'<button type="submit"{row_disabled(name)}>初期化</button>'
         f"</form>"
         f"</td>"
         f"</tr>"

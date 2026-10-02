@@ -8,7 +8,13 @@ Docker の内部ネットワークのみで到達可能にし、ホストへポ�
 
 同時に走らせられるのは `CHIEZO_INGEST_SLOTS` 本まで(既定 1)。**同じソースは
 1 本ずつ**(ブルーグリーンの切り替えが同じリンクを取り合う)、**ダンプの取り込みも
-1 本ずつ**(ダウンロードの置き場を共有する)。状態はプロセス内メモリのみで保持する
+1 本ずつ**(ダウンロードの置き場を共有する)。
+
+**ダンプの取り込みは別の枠で走る**(`CHIEZO_INGEST_DUMP_LANE`、既定で有効)。
+再構築は何時間もかかり、同じ枠を取り合うと、そのあいだ収集も固化も一切流れなかった。
+ダンプは専用の 1 枠を使い、`CHIEZO_INGEST_SLOTS` は収集・固化・プラグインのぶんに
+まるごと残す。メモリの小さい機械で 2 本を並べたくなければ `0` にすると、
+今までどおり 1 つの枠を取り合う。状態はプロセス内メモリのみで保持する
 (このプロセスが再起動すれば消える。長時間の一括取り込みバッチという用途上、
 永続化は不要と判断)。
 """
@@ -54,6 +60,21 @@ def _slots_from_env() -> int:
 
 
 SLOTS = _slots_from_env()
+
+
+def _dump_lane_from_env() -> bool:
+    """ダンプを別の枠で走らせるか。**読めない値は有効へ倒す**(既定と同じ)。
+
+    無効にするのは `0` / `false` / `no` / `off` だけ。
+    """
+    raw = (os.environ.get("CHIEZO_INGEST_DUMP_LANE") or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+DUMP_LANE = _dump_lane_from_env()
+# 走っている 1 本がどちらの枠か。`/status` の各 1 本に載せ、app が空きを数えるのに使う
+LANE_DUMP = "dump"
+LANE_GENERAL = "general"
 # 終わった回をいくつ覚えておくか。**落ちた回を時計が拾いに来る**
 # (`app/main.py` の `_rewind_failed_bakes`)ので、1 分の周期のあいだに
 # 並んで終わった回を取りこぼさない数にする
@@ -80,9 +101,10 @@ _last_failure: dict | None = None
 _bound = threading.local()
 
 
-def _new_job(source: str) -> dict:
+def _new_job(source: str, lane: str = LANE_GENERAL) -> dict:
     return {
         "source": source,
+        "lane": lane,
         "state": "running",
         "started_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "finished_at": None,
@@ -243,10 +265,11 @@ def sources():
         if name.startswith("osm_") or name in WIKIPEDIA_EDITIONS:
             continue
         adapter = ADAPTERS[name]()
-        catalog[name] = {"kind": adapter.source_kind, "lang": adapter.lang}
+        catalog[name] = {"kind": adapter.source_kind, "lang": adapter.lang, "dump": True}
     for edition in WIKIPEDIA_EDITIONS.values():
         catalog[edition.wiki_id] = {
             "kind": "wikipedia",
+            "dump": True,
             "lang": edition.lang,
             "group": "wikipedia",
             "label": edition.label,
@@ -257,6 +280,7 @@ def sources():
     for region in OSM_REGIONS.values():
         catalog[region.source] = {
             "kind": "osm",
+            "dump": True,
             "lang": region.lang,
             "group": "osm",
             "slug": region.slug,
@@ -498,6 +522,9 @@ def status():
         return {
             **single,
             "slots": SLOTS,
+            # **ダンプが別の枠か。** 真なら `lane` が `dump` の 1 本は `slots` に数えない
+            # (app はこれを見て空きを数える。名乗らない古い trigger は全部を数える)
+            "dump_lane": DUMP_LANE,
             "jobs": [_public(j) for j in running],
             "recent": [_public(j) for j in recent],
             "last_failure": _last_failure,
@@ -546,6 +573,10 @@ def start_run(source: str):
     - ダンプの取り込みがもう 1 本走っている(429)—— ダウンロードの置き場
       (`dumps/`)を共有していて、同じ付属データ(ページビューなど)を 2 本が
       同時に落としに行く。何時間もかかる取り込みで、並べる値打ちも薄い
+
+    **ダンプが別の枠なら(`DUMP_LANE`)、ダンプと他は互いの空きを食わない** ——
+    ダンプは「ダンプが走っていないか」だけを見て、他は「ダンプ以外が
+    `SLOTS` 本に届いていないか」だけを見る。
     """
     from sources import ADAPTERS, remote
 
@@ -557,6 +588,8 @@ def start_run(source: str):
     known = {s.name for s in remote.catalog()} | {s.name for s in collect_sources.catalog()}
     if source not in ADAPTERS and source not in known:
         raise HTTPException(404, {"error": f"unknown source: {source}"})
+    is_dump = source in ADAPTERS
+    lane = LANE_DUMP if is_dump and DUMP_LANE else LANE_GENERAL
     with _lock:
         running = sorted(_jobs)
         if source in _jobs:
@@ -564,19 +597,20 @@ def start_run(source: str):
                 "error": f"a job is already running: {source}",
                 "running": running,
             })
-        if len(_jobs) >= SLOTS:
-            raise HTTPException(429, {
-                "error": f"all {SLOTS} slot(s) are busy: {', '.join(running)}",
-                "running": running,
-                "slots": SLOTS,
-            })
-        if source in ADAPTERS and (dump := next((n for n in _jobs if n in ADAPTERS), None)):
+        if is_dump and (dump := next((n for n in _jobs if n in ADAPTERS), None)):
             raise HTTPException(429, {
                 "error": f"another dump is being ingested: {dump}",
                 "running": running,
                 "slots": SLOTS,
             })
-        _jobs[source] = _new_job(source)
+        general = [n for n, j in _jobs.items() if j.get("lane") != LANE_DUMP]
+        if lane == LANE_GENERAL and len(general) >= SLOTS:
+            raise HTTPException(429, {
+                "error": f"all {SLOTS} slot(s) are busy: {', '.join(sorted(general))}",
+                "running": running,
+                "slots": SLOTS,
+            })
+        _jobs[source] = _new_job(source, lane)
     # **前の回の印を必ず下ろす**(下ろし忘れると、始めた瞬間に降りる)。
     # **下ろすのはこの 1 本の印だけ** —— 並んで走っている別の 1 本の「止める」を消さない
     from core import clear_stop

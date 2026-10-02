@@ -163,6 +163,9 @@ services:
       # 同時に走らせる取り込みの本数(既定 1)。1 本ごとにメモリを食うので、
       # 並べたい機械でだけ上げる(下の *_LIMITS も一緒に見直す)。
       - CHIEZO_INGEST_SLOTS=${CHIEZO_INGEST_SLOTS-}
+      # ダンプの取り込み(初期化・再構築)を別の枠で走らせるか(既定で有効)。
+      # 再構築と収集を並べられないほどメモリの小さい機械でだけ 0 にする
+      - CHIEZO_INGEST_DUMP_LANE=${CHIEZO_INGEST_DUMP_LANE-}
     restart: unless-stopped
     # トリガー経由の取り込みが暴走しても、OOM killer がホスト全体(同居する
     # 他のコンテナ)を巻き込まないよう上限を設ける。取り込み本体と同じ *_LIMITS。

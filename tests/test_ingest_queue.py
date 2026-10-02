@@ -30,7 +30,8 @@ def trigger(state, monkeypatch):
     def run(name: str) -> None:
         import fastapi
 
-        if len(status["jobs"]) >= status["slots"]:
+        # 本物と同じく、ダンプが別の枠ならダンプの 1 本は数えない
+        if len(ingest_queue.general_jobs(status)) >= status["slots"]:
             raise fastapi.HTTPException(429, {"error": "all slots are busy"})
         status["jobs"].append({"source": name, "state": "running",
                                "started_at": datetime.now(UTC).isoformat()})
@@ -133,6 +134,70 @@ class TestTheLine:
         assert ingest_queue.slots(old) == 1
         assert ingest_queue.is_full(old)
         assert ingest_queue.finished({"state": "error", "source": "x"})[0]["source"] == "x"
+
+
+class TestTheDumpLane:
+    """**ダンプが別の枠の trigger では、走っている再構築は収集の空きを食わない。**
+
+    1 つの枠を取り合っていた頃は、何時間もかかる再構築のあいだ、
+    収集も固化も一切流れなかった。
+    """
+
+    def _status(self, *jobs):
+        return {
+            "state": "running", "slots": 1, "dump_lane": True,
+            "jobs": [{"source": n, "state": "running", "lane": lane} for n, lane in jobs],
+        }
+
+    def test_a_rebuild_leaves_the_collect_slot_free(self):
+        status = self._status(("jawiki", "dump"))
+
+        assert not ingest_queue.is_full(status)
+        assert ingest_queue.dump_busy(status)
+
+    def test_a_collect_fills_only_its_own_slot(self):
+        status = self._status(("news", "general"))
+
+        assert ingest_queue.is_full(status)
+        assert not ingest_queue.dump_busy(status)
+
+    def test_a_trigger_without_lanes_shares_one_slot(self):
+        """名乗らない(古い・無効にした)trigger は、今までどおり全部を数える。"""
+        status = {"state": "running", "slots": 1,
+                  "jobs": [{"source": "jawiki", "state": "running"}]}
+
+        assert ingest_queue.is_full(status)
+        assert ingest_queue.dump_busy(status)
+
+    def test_a_queued_collect_flows_during_a_rebuild(self, trigger):
+        from app import main
+
+        status, started = trigger
+        status["dump_lane"] = True
+        status["jobs"] = [{"source": "jawiki", "state": "running", "lane": "dump"}]
+        _collection("news")
+        ingest_queue.add("news", "ざっと", origin="manual")
+
+        main._dispatch(status)
+
+        assert started == ["news"]
+
+    def test_the_buttons_follow_the_lane_of_each_source(self, trigger, monkeypatch):
+        """再構築が走っていても、収集のソースの再構築は押せる(逆も同じ)。"""
+        from app.views import admin
+
+        status, _started = trigger
+        status["dump_lane"] = True
+        status["jobs"] = [{"source": "jawiki", "state": "running", "lane": "dump"}]
+        monkeypatch.setattr(admin, "initializable_sources", lambda: {
+            "geonames": {"kind": "geonames", "dump": True},
+            "news": {"kind": "collect"},
+        })
+
+        assert admin.is_dump_source("geonames")
+        assert not admin.is_dump_source("news")
+        assert admin.run_buttons_disabled(status, dump=True) == " disabled"
+        assert admin.run_buttons_disabled(status, dump=False) == ""
 
 
 class TestFlowing:
