@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -64,6 +65,11 @@ SCALE_RANK = {
     "TOPIX Small 2": 0.4,
 }
 DEFAULT_RANK = 0.1
+
+# **全部の銘柄に付けるタグ。** chiezo の `filter` は絞り込みの条件を 1 つ要求するので、
+# 銘柄マスタとして全件を読みたい側(pta のユニバースなど)はこれで引く
+# (`filter?tag=東証上場`、500 件ずつ `offset` で送る)
+LISTED_TAG = "東証上場"
 
 
 def short_code(code: str) -> str:
@@ -207,20 +213,28 @@ class JquantsMasterAdapter:
             parts.append(f"規模区分は{scale}")
         opening = "。".join(parts) + "。"
 
-        aliases = [a for a in dict.fromkeys([code, code5, name, name_en]) if a and a != title]
+        # **全角の英数字は半角にそろえた名前も別名に持つ。** J-Quants は「ＮＯＫ」
+        # 「ＳＢＩホールディングス」のように全角で返すので、半角で打つと引けなかった
+        folded = unicodedata.normalize("NFKC", name)
+        aliases = [
+            a for a in dict.fromkeys([code, code5, name, folded, name_en]) if a and a != title
+        ]
         return Doc(
             # 英字の入るコード(例: 130A0)もあるので 36 進で読む。コードは一意なので ID も一意
             doc_id=int(code5, 36),
             title=title,
             opening=opening,
             body=opening,
-            tags=[t for t in dict.fromkeys([market, s33, s17, scale, product]) if t],
+            tags=[t for t in dict.fromkeys([LISTED_TAG, market, s33, s17, scale, product]) if t],
             aliases=aliases,
             updated_at=_blank(row.get("Date")) or None,
             rank_score=SCALE_RANK.get(scale, DEFAULT_RANK),
             extra={
                 "code": code,
                 "local_code": code5,
+                # 見出しは重なるとコードを添えるので、**素の会社名は別に持つ**
+                # (銘柄マスタとして読む側が名前を取るのはこちら)
+                "name": name,
                 "name_en": name_en or None,
                 "market_code": _blank(row.get("Mkt")) or None,
                 "market": market or None,
