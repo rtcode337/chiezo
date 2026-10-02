@@ -477,6 +477,19 @@ class TestModelSelection:
             "                      (low, medium, high, xhigh, max)\n"
         ) == ("low", "medium", "high", "xhigh", "max")
 
+    def test_agy_lists_its_efforts_with_bars(self, bridge):
+        """agy は `<level>` を書かず、縦棒で並べる(1.2.10 / 1.2.14 の実測)。
+
+        読めずにいた頃は agy の段がいつも空で、モデルの一覧も取れない環境では
+        聞かれるたびに CLI を走らせ直していた。
+        """
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+
+        assert server._parse_efforts(
+            "  --effort                        Reasoning effort for the current CLI session"
+            " (low|medium|high|max)\n"
+        ) == ("low", "medium", "high", "max")
+
     def test_an_unreadable_help_leaves_the_fallback(self, bridge):
         """**書き方が変われば静かに空になる**。控えへ落ちるほうが、実在しない段階を
         並べるより害が小さい（CLI は値を検証せず、黙って既定で動く）。"""

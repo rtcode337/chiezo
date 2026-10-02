@@ -43,8 +43,8 @@ FROM node:22-bookworm-slim AS cli
 # **新しいモデルが `stable` に降りてくる前に要るときだけ、`latest` まで上げる。**
 # いまがそれで、`stable` は 2.1.273 のまま Opus 5.5 を知らない。
 # `latest` が巻き戻されてビルドが落ちたら、`stable` が追いつくまで下限を戻す。
-ARG CODEX_MIN_VERSION=0.156.1
-ARG CLAUDE_MIN_VERSION=2.1.280
+ARG CODEX_MIN_VERSION=0.160.0
+ARG CLAUDE_MIN_VERSION=2.1.287
 RUN set -eux; \
     npm install -g @anthropic-ai/claude-code @openai/codex; \
     installed="$(codex --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"; \
@@ -69,7 +69,7 @@ RUN set -eux; \
 # 「invalid arguments: - missing properties 'toolSummary', 'toolAction'」は 1.1.13 でも
 # 1.1.27 でも出た。あれは版ではなく権限の確認の問題で、cli_bridge.py の
 # build_command が `--dangerously-skip-permissions` を常に付けることで避けている。
-ARG AGY_MIN_VERSION=1.2.10
+ARG AGY_MIN_VERSION=1.2.14
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl; \

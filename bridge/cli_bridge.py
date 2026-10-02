@@ -647,9 +647,12 @@ def _parse_models(out: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(found))
 
 
-# ヘルプに書かれた段階(`--effort <level>` の説明の括弧)。claude は
-# `(low, medium, high, xhigh, max)`、agy も同じ形で並べる(どちらも実測)。
-_EFFORT_HELP_RE = re.compile(r"--effort[^\n]*\n?[^(]{0,200}\(([a-z,\s]+)\)")
+# ヘルプに書かれた段階(`--effort` の説明の括弧)。claude は
+# `(low, medium, high, xhigh, max)` とカンマで、agy は `(low|medium|high|max)` と
+# 縦棒で並べる(どちらも実測。agy 1.2.10 / 1.2.14)。**縦棒の形を読めずにいた頃は
+# agy の段がいつも空**で、モデルの一覧も取れない環境では「まだ聞けていない」扱いの
+# まま、聞かれるたびに CLI を 2 回走らせていた(1 回 3 秒近く)
+_EFFORT_HELP_RE = re.compile(r"--effort[^\n]*\n?[^(]{0,200}\(([a-z,|\s]+)\)")
 
 
 async def _ask_efforts() -> tuple[str, ...]:
@@ -671,7 +674,7 @@ def _parse_efforts(out: str) -> tuple[str, ...]:
     if not found:
         return ()
     return tuple(
-        part.strip() for part in found.group(1).split(",")
+        part.strip() for part in re.split(r"[,|]", found.group(1))
         if re.fullmatch(r"[a-z]+", part.strip())
     )
 
