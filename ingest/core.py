@@ -375,6 +375,16 @@ class SourceAdapter(Protocol):
     # ダンプ由来のソースが名乗ると、意味の無い並びに索引ぶんの容量を払うことになる
     extra_index_ddl: str | None = None
 
+    # 取得に認証情報(API キー)が要るソースだけが名乗る。管理画面はこれを見て
+    # キーの入力欄を出し、初期化・再構築のときに trigger へ渡す(`credential` に入る)。
+    # 値そのものはここに書かない —— 入るのは実行時だけ
+    credential_label: str | None = None
+    # キーをどこで手に入れるか(画面に案内として出す URL)
+    credential_help_url: str | None = None
+    # 画面から渡された認証情報。**この 1 本のアダプタにだけ入れる** —— 環境変数に
+    # 書くと、同じ trigger で並んで走る別の 1 本にも見えてしまう
+    credential: str | None = None
+
     def fetch(self, workdir: Path) -> tuple[Path, str]:
         """元データを取得し (ローカルパス, ダンプ日付YYYYMMDD) を返す(再開可能に)。"""
         ...

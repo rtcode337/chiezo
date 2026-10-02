@@ -29,7 +29,7 @@ from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
 log = logging.getLogger("chiezo.trigger")
@@ -172,7 +172,7 @@ def _finish(source: str, state: str, error: str | None = None) -> dict | None:
         return job
 
 
-def _run_job(source: str) -> None:
+def _run_job(source: str, credential: str | None = None) -> None:
     from main import run as ingest_run
 
     import core
@@ -183,7 +183,12 @@ def _run_job(source: str) -> None:
     core.bind(source)
     _bound.source = source
     try:
-        ingest_run(source, DATA_DIR)
+        # **認証情報は状態にもログにも残さない**(`/status` は画面にそのまま出る)。
+        # 渡すのはこの 1 本の取り込みだけ
+        if credential:
+            ingest_run(source, DATA_DIR, credential=credential)
+        else:
+            ingest_run(source, DATA_DIR)
         _finish(source, "done")
     # **止めたのは失敗ではない。** 切り替えより前で降りるので、いま配信している
     # 世代はそのまま —— 押し直せば続きから始まる(集めた素材は残してある)
@@ -266,6 +271,11 @@ def sources():
             continue
         adapter = ADAPTERS[name]()
         catalog[name] = {"kind": adapter.source_kind, "lang": adapter.lang, "dump": True}
+        # **キーが要るソースは名乗る**(管理画面が入力欄を出す)。値は載せない
+        if label := getattr(adapter, "credential_label", None):
+            catalog[name]["credential"] = {
+                "label": label, "help_url": getattr(adapter, "credential_help_url", None),
+            }
     for edition in WIKIPEDIA_EDITIONS.values():
         catalog[edition.wiki_id] = {
             "kind": "wikipedia",
@@ -565,7 +575,7 @@ def stop_run(source: str | None = None):
 
 
 @app.post("/run/{source}")
-def start_run(source: str):
+def start_run(source: str, body: dict | None = Body(None)):
     """取り込みを 1 本始める。**断るのは 3 通り**(どれも走らせる側で待ち直せばよい):
 
     - 同じソースが走っている(409)—— ブルーグリーンの切り替えが同じリンクを取り合う
@@ -577,6 +587,10 @@ def start_run(source: str):
     **ダンプが別の枠なら(`DUMP_LANE`)、ダンプと他は互いの空きを食わない** ——
     ダンプは「ダンプが走っていないか」だけを見て、他は「ダンプ以外が
     `SLOTS` 本に届いていないか」だけを見る。
+
+    **本文に `{"credential": "…"}` を載せられる** —— 取得に API キーが要るソース
+    (`credential_label` を名乗るもの)へ、管理画面で登録したキーを渡す口。
+    受け取ったキーはその 1 本のスレッドに渡すだけで、状態にもログにも残さない。
     """
     from sources import ADAPTERS, remote
 
@@ -611,11 +625,18 @@ def start_run(source: str):
                 "slots": SLOTS,
             })
         _jobs[source] = _new_job(source, lane)
+    raw = (body or {}).get("credential")
+    credential = raw.strip() if isinstance(raw, str) and raw.strip() else None
     # **前の回の印を必ず下ろす**(下ろし忘れると、始めた瞬間に降りる)。
     # **下ろすのはこの 1 本の印だけ** —— 並んで走っている別の 1 本の「止める」を消さない
     from core import clear_stop
 
     clear_stop(source)
-    thread = threading.Thread(target=_run_job, args=(source,), daemon=True)
+    thread = threading.Thread(
+        target=_run_job, args=(source,),
+        # 渡すものが無いときは引数ごと省く(古い形の受け手も呼べるように)
+        kwargs={"credential": credential} if credential else {},
+        daemon=True,
+    )
     thread.start()
     return JSONResponse(status_code=202, content={"status": "started", "source": source})

@@ -23,6 +23,7 @@ from collections.abc import Callable
 from core import SourceAdapter
 from sources import collect as collect_sources
 from sources.geonames import GeonamesAdapter
+from sources.jquants import JquantsMasterAdapter
 from sources.osm import DEFAULT_VALIDATION, OsmAdapter
 from sources.osm_regions import OSM_REGIONS, OsmRegion
 from sources.overture import overture_japan
@@ -48,6 +49,9 @@ ADAPTERS: dict[str, Callable[[], SourceAdapter]] = {
     # ライセンスは CDLA Permissive 2.0 / Apache 2.0 で ODbL の継承が付かず、
     # OSM のデータも含まないので osm_japan と混ぜても伝播しない(sources/overture.py)。
     "overture_japan": overture_japan,
+    # 東証の上場銘柄一覧(J-Quants)。**API キーが要り、私的利用に限る**
+    # (CHIEZO_JQUANTS_API_KEY。条件は sources/jquants.py の冒頭)
+    "jquants_master": lambda: JquantsMasterAdapter(),
 }
 
 

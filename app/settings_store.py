@@ -50,6 +50,14 @@ CREATE TABLE IF NOT EXISTS provider_settings (
     disabled_at TEXT,
     updated_at TEXT NOT NULL
 );
+-- 取り込みに認証情報(API キー)が要るソースのぶん。話す相手(provider_settings)とは
+-- 混ぜない —— あちらは on/off と接続確認を持つ「相手」の表で、こちらは取り込みのたびに
+-- trigger へ渡すだけの値。
+CREATE TABLE IF NOT EXISTS source_credentials (
+    source     TEXT PRIMARY KEY,
+    credential TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -360,3 +368,50 @@ def set_verified(provider: str, ok: bool) -> None:
 def set_model(provider: str, model: str) -> None:
     """既定のモデルを保存する（会話のたびに選び直せるので、これはその初期値）。"""
     _upsert(provider, model=model)
+
+
+# ---- 取り込みの認証情報 --------------------------------------------------------
+#
+# 取得に API キーが要るソース(trigger のカタログで `credential` を名乗るもの)のぶん。
+# 管理画面で登録し、初期化・再構築のときに trigger へ渡す(`views.admin.trigger_run`)。
+# **画面には二度と出さない**(登録の有無と日時だけ)のは話す相手と同じ。
+
+
+def source_credential(source: str) -> str | None:
+    """登録してあるキー。保存先が無い環境・未登録なら None。"""
+    if db_path() is None:
+        return None
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT credential FROM source_credentials WHERE source = ?", (source,)
+        ).fetchone()
+    return row[0] if row else None
+
+
+def source_credential_updated_at(source: str) -> str | None:
+    """登録した日時(画面に出すのはこれだけ)。未登録なら None。"""
+    if db_path() is None:
+        return None
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT updated_at FROM source_credentials WHERE source = ?", (source,)
+        ).fetchone()
+    return row[0] if row else None
+
+
+def set_source_credential(source: str, credential: str) -> None:
+    value = credential.strip()
+    if not value:
+        raise HTTPException(400, {"error": "認証情報が空です"})
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO source_credentials (source, credential, updated_at) VALUES (?, ?, ?)"
+            " ON CONFLICT(source) DO UPDATE SET credential=excluded.credential,"
+            " updated_at=excluded.updated_at",
+            (source, value, _now()),
+        )
+
+
+def clear_source_credential(source: str) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM source_credentials WHERE source = ?", (source,))

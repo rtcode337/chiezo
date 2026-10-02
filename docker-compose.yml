@@ -190,6 +190,10 @@ services:
       # 固化の素材を取りに行く先(組み込みソースなので通常は既定のまま)
       - CHIEZO_APP_URL=${CHIEZO_APP_URL:-http://chiezo-app:7010}
       - CHIEZO_PLUGIN_SOURCES=${CHIEZO_PLUGIN_SOURCES-}
+      # J-Quants の API キー(上場銘柄一覧 jquants_master を、管理画面を通さず
+      # この単発実行で取り込むときだけ要る。画面から回すなら、長期記憶の面で登録した
+      # キーが取り込みのたびに渡るので、ここは空でよい)
+      - CHIEZO_JQUANTS_API_KEY=${CHIEZO_JQUANTS_API_KEY-}
     # 取り込みのメモリ上限。以前 jawiki 取り込みが対応表(リダイレクト/ページビュー/
     # wikidata)を dict で数 GB 抱えてホストごと OOM で落ちたため、(1) それらを
     # ディスク上の一時 SQLite に逃がした上で(ingest/lookup.py)、(2) 念のため
