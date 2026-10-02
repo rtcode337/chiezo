@@ -2100,13 +2100,16 @@ class TestAdminPages:
         # 読めなくても表は落とさない
         assert admin.db_size_text(tmp_path / "missing.db") == ""
 
-    def test_the_ai_history_sits_right_under_the_ai_heading(self, client):
-        """閉じていれば 1 行なので上に置く(使用量の表の下だと、長い表の後ろに埋もれる)。"""
+    def test_the_ai_section_reads_like_the_collect_section(self, client, monkeypatch):
+        """走っているもの → 履歴(収集の節と同じ並び)。履歴は使用量の表より上。"""
         from app.views import admin
 
+        monkeypatch.setattr(admin, "_running_html", lambda *a, **k: "<h3>いま走っている依頼</h3>")
+        monkeypatch.setattr(admin, "_usage_html", lambda *a, **k: '<h3 id="ai-usage">使用量</h3>')
         html = client.get("/admin/status").text
         after = html.split(admin.AI_HEADING, 1)[1]
-        assert after.lstrip().startswith('<details id="ai-history"')
+        assert after.lstrip().startswith("<h3>いま走っている依頼</h3>")
+        assert after.index('<details id="ai-history"') < after.index('id="ai-usage"')
 
     def test_the_ai_page_holds_the_keys_and_the_request_page_holds_the_talking(
         self, client, monkeypatch, tmp_path,
