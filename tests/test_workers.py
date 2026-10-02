@@ -742,6 +742,41 @@ class TestWhenTheAnswerIsCutOff:
         # 諦めたら数え直す(次の一周でまた 2 回ぶん粘れる)
         assert "cut" not in ledger[0]
 
+    def test_the_count_survives_reloading_the_collection(self, enabled):
+        """**数を持ち越す。** 読み直すたびに 0 に戻っていた頃は、一度も諦めなかった。"""
+        from app import collect, partition
+
+        collect.create("spots", prompt="{current}", interval_minutes=60)
+        ledger, _ = partition.note_cut([{"key": "a", "count": 3, "visits": {}}], ["a"], "ざっと")
+        collect.update("spots", partitions=ledger)
+
+        assert collect.get("spots").partitions[0]["cut"] == {"ざっと": 1}
+
+    def test_a_partition_with_leftovers_comes_back(self, enabled, monkeypatch):
+        """**見られなかったものが残った区画も、印を付けずに次の回へ回す。**
+        印を付けると、残ったものはその区画の順番がまた来るまで誰にも見られない。"""
+        from app import collect, main, notes
+
+        async def fake(asked, _messages):
+            return '{"items": [{"title": "1 件", "body": "本文"}], "not_reviewed": ["残り"]}', "", ""
+
+        def shown_both(*args):
+            # この区画で「1 件」と「残り」の 2 件を差し込んだことにする
+            args[-1].update({notes.title_key("1 件"), notes.title_key("残り")})
+            return []
+
+        monkeypatch.setattr(main, "_ask_for_collection", fake)
+        monkeypatch.setattr(collect, "build_messages", shown_both)
+        done: list[str] = []
+        cut: list[str] = []
+
+        asyncio.run(main._collect_items(
+            _collection(), {}, {}, ["a"], _sweep(), None, None, None, [], done, cut,
+        ))
+
+        assert cut == ["a"]
+        assert done == []
+
     def test_a_clean_answer_resets_the_count(self, enabled):
         """**続けて切れたときだけ諦める** —— 間に 1 回でも通れば数え直す。"""
         from app import partition

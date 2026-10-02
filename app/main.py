@@ -1229,9 +1229,13 @@ async def _collect_items(
         collected += collect.signed(items, ran_by, ran_model)
         # **返ってきた区画だけに印を付ける**(見送ったぶんは次の回へ)。
         # **途中で切れた区画は別の籠へ** —— 拾えたぶんは焼くが、その先は
-        # 誰も見ていないので、見終わった扱いにはしない
+        # 誰も見ていないので、見終わった扱いにはしない。
+        # **見られなかったものが残った区画も同じ籠へ** —— 印を付けると、残ったものは
+        # その区画の順番がまた回ってくるまで(一周したら止まる巡回なら、次の巡回が
+        # 来るまで)誰にも見られない。籠に入れれば次の回の先頭に戻る。続けて残ったら
+        # 諦める(`partition.MAX_CUTS`)ので、毎回残る区画が一周を止めることはない
         if key is not None:
-            if reply.salvaged and cut is not None:
+            if (reply.salvaged or leftover) and cut is not None:
                 cut.append(key)
             elif done is not None:
                 done.append(key)

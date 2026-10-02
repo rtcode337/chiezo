@@ -1117,7 +1117,16 @@ def normalize_ledger(raw) -> list[dict]:
             {str(k): str(v) for k, v in raw_visits.items() if v}
             if isinstance(raw_visits, dict) else {}
         )
-        out.append({"key": key, "count": int(item.get("count") or 0), "visits": visits})
+        row = {"key": key, "count": int(item.get("count") or 0), "visits": visits}
+        # **続けて残った回数も持ち越す**(`note_cut`)。落としていた頃は、読み直すたびに
+        # 数が 0 に戻り、`MAX_CUTS` で諦めることが一度も無かった —— 同じ区画が先頭に
+        # 居座り、一周が止まり続ける
+        raw_cut = item.get("cut")
+        if isinstance(raw_cut, dict):
+            cut = {str(k): int(v) for k, v in raw_cut.items() if isinstance(v, int) and v > 0}
+            if cut:
+                row["cut"] = cut
+        out.append(row)
     return out
 
 
@@ -1526,7 +1535,8 @@ MAX_CUTS = 2
 def note_cut(
     partitions: list[dict], keys: list[str], sweep_name: str
 ) -> tuple[list[dict], list[str]]:
-    """答えが途中で切れた区画を控える。**(新しい台帳, もう印を付けてよい鍵)**。
+    """答えが途中で切れた区画・見られなかったものが残った区画を控える。
+    **(新しい台帳, もう印を付けてよい鍵)**。
 
     `MAX_CUTS` 回続けて切れた区画は、そこで諦めて印を付ける側へ回す ——
     粘り続けると、その 1 区画が一周を永久に止める。
