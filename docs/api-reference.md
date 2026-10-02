@@ -749,7 +749,10 @@ curl -s -X PATCH "$BASE/v1/collect/tl_lunch" -H 'Content-Type: application/json'
   ことになる。こちらは間隔しか触らず、次の予定を「前回 + 新しい間隔」に置き直す。
   **`keep_per_run: true` で一周の日数も同じ比で伸ばす** —— 1 回に見る区画の数は
   一周の日数から逆算されるので、間隔だけ延ばしても呼ぶ回数(使う枠)は変わらない。
-  時計を持たない巡回(`on_demand` / `by_caller`)は 409 で断る
+  時計を持たない巡回(`on_demand` / `by_caller`)は 409 で断る。
+  **同じ口で時計を外せる**(`{"by_caller": true}`。`false` で戻す)—— AI の枠を
+  節約したくて自動では回したくない巡回を、消さずに止める。名指しの `…/run` や
+  割り込みの行き先としては今までどおり使える。時計に戻すと次の予定は「前回 + 間隔」
 
 ```bash
 curl -s -X PATCH "$BASE/v1/collect/tl_lunch/sweeps/%E3%81%96%E3%81%A3%E3%81%A8" \

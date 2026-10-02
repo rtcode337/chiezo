@@ -997,6 +997,39 @@ def set_sweep_clock(
     return update(name, sweeps=current)
 
 
+def set_sweep_by_caller(name: str, sweep: str, on: bool) -> Collection:
+    """巡回 1 本を**依頼元が起こす回にする / 時計に戻す**(`Sweep.by_caller`)。
+    依頼文も相手も区画の記録も触らない。
+
+    **外のアプリが「この収集はこの回を自動で回さない」を決めるための口。** AI の枠を
+    節約したいとき、巡回を消すと割り込みや名指しの 1 回の行き先まで無くなる ——
+    時計だけを外せば、名指しすれば今までどおり走る。
+
+    **時計に戻したら、次の予定は「前回 + 間隔」に置く**(前回が無ければ「いま」)。
+    外していたあいだの分をまとめて取り返そうとはしない。
+    """
+    item = get(name)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"収集 {name} がありません")
+    current = [dict(raw) for raw in item.sweeps if isinstance(raw, dict)]
+    target = next((raw for raw in current if str(raw.get("name") or "") == sweep), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"収集 {name} に巡回「{sweep}」がありません")
+    if target.get("on_demand"):
+        # 割り込み用の巡回は、もともと時計を持たない(名指しの 1 回も断る)
+        raise HTTPException(
+            status_code=409, detail=f"巡回「{sweep}」は割り込み用です(時計を持ちません)",
+        )
+    if on:
+        target["by_caller"] = True
+    else:
+        target.pop("by_caller", None)
+        minutes = int(target.get("interval_minutes") or item.interval_minutes)
+        last = _at(target.get("last_run_at"))
+        target["next_run_at"] = _iso(last + timedelta(minutes=minutes)) if last else None
+    return update(name, sweeps=current)
+
+
 def sweep_named(item: Collection, name: str | None) -> Sweep:
     """名前で引く。**知らない名前なら、次に走るはずの巡回へ倒す** ——
     巡回を消したあとに走りかけの取り込みが素材を取りに来ることがある。

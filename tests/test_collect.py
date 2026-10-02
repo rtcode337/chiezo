@@ -7474,6 +7474,27 @@ class TestSettingOneSweepsClock:
             collect.set_sweep_clock("spots", "情報収集", 120)
         assert e.value.status_code == 409
 
+    def test_a_sweep_can_lose_and_regain_its_clock(self, enabled):
+        # 自動で回さない(節約)。名指しすれば走るよう、巡回は消さずに時計だけ外す
+        self._make()
+        collect.set_sweep_by_caller("spots", "整理", True)
+
+        sweep = collect.sweep_named(collect.get("spots"), "整理")
+        assert sweep.by_caller is True
+        assert sweep.is_due() is False
+        assert collect.require_runnable(collect.get("spots"), "整理").name == "整理"
+
+        collect.set_sweep_by_caller("spots", "整理", False)
+        assert collect.sweep_named(collect.get("spots"), "整理").by_caller is False
+        assert "by_caller" not in self._sweep("整理")
+
+    def test_an_on_demand_sweep_cannot_lose_a_clock_it_never_had(self, enabled):
+        self._make()
+
+        with pytest.raises(HTTPException) as e:
+            collect.set_sweep_by_caller("spots", "要約", True)
+        assert e.value.status_code == 409
+
     def test_an_unknown_sweep_is_refused(self, enabled):
         self._make()
 
@@ -7508,3 +7529,19 @@ class TestSettingOneSweepsClock:
         assert res.status_code == 200, res.text
         tidy = next(s for s in res.json()["sweeps"] if s["name"] == "整理")
         assert tidy["interval_minutes"] == 720
+
+    def test_the_clock_can_be_taken_off_from_outside(self, client):
+        self._make()
+
+        res = client.patch("/v1/collect/spots/sweeps/%E6%95%B4%E7%90%86", json={"by_caller": True})
+
+        assert res.status_code == 200, res.text
+        tidy = next(s for s in res.json()["sweeps"] if s["name"] == "整理")
+        assert tidy["by_caller"] is True
+
+    def test_something_must_be_asked(self, client):
+        self._make()
+
+        res = client.patch("/v1/collect/spots/sweeps/%E6%95%B4%E7%90%86", json={})
+
+        assert res.status_code == 400

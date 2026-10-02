@@ -3508,26 +3508,36 @@ def collect_patch(name: str, body: CollectionPatch):
 
 
 class SweepClock(BaseModel):
-    """巡回 1 本の間隔だけを変える(`collect.set_sweep_clock`)。"""
+    """巡回 1 本の時計だけを変える(`collect.set_sweep_clock` / `set_sweep_by_caller`)。"""
 
-    interval_minutes: int = PydField(..., description="新しい間隔(分)")
+    interval_minutes: int | None = PydField(None, description="新しい間隔(分)")
     keep_per_run: bool = PydField(
         False, description="一周の日数も同じ比で伸ばし、1 回に見る区画の数を変えない",
+    )
+    by_caller: bool | None = PydField(
+        None,
+        description="true で時計を外す(依頼元が名指しで起こしたときだけ走る)。false で時計に戻す",
     )
 
 
 @app.patch("/v1/collect/{name}/sweeps/{sweep}")
 def collect_sweep_clock(name: str, sweep: str, body: SweepClock):
-    """巡回 1 本の**間隔だけ**を変える。依頼文・相手・区画の記録は触らない。
+    """巡回 1 本の**時計だけ**を変える(間隔 / 時計を外す・戻す)。依頼文・相手・
+    区画の記録は触らない。
 
     巡回を並びごと送り直す口(`PATCH /v1/collect/{name}` の `sweeps`)では、呼ぶ側が
-    相手やモデルまで持ち直すことになる —— 速さだけを直したい呼び出しのための口。
+    相手やモデルまで持ち直すことになる —— 速さや自動で回すかだけを直したい
+    呼び出しのための口。**両方渡したら、時計を外す・戻すほうを先に当てる**。
     """
     collect.require_enabled()
-    return collect.to_public(
-        collect.set_sweep_clock(name, sweep, body.interval_minutes, body.keep_per_run),
-        with_partitions=False,
-    )
+    if body.interval_minutes is None and body.by_caller is None:
+        raise HTTPException(400, {"error": "interval_minutes か by_caller のどちらかを渡してください"})
+    item = None
+    if body.by_caller is not None:
+        item = collect.set_sweep_by_caller(name, sweep, body.by_caller)
+    if body.interval_minutes is not None:
+        item = collect.set_sweep_clock(name, sweep, body.interval_minutes, body.keep_per_run)
+    return collect.to_public(item, with_partitions=False)
 
 
 @app.delete("/v1/collect/{name}")
