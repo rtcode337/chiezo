@@ -122,6 +122,23 @@ class TestDocs:
         ])
 
         assert [d.title for d in docs] == ["伊藤園", "伊藤園(25935)"]
+        # 素の会社名は extra に持つ(銘柄マスタとして読む側はこちらを使う)
+        assert [d.extra["name"] for d in docs] == ["伊藤園", "伊藤園"]
+
+    def test_a_full_width_name_is_found_in_half_width(self, api, tmp_path):
+        """J-Quants は英数字を全角で返す。半角で打っても引けるようにする。"""
+        (doc,) = self._docs(api, tmp_path, [_row("72400", "ＮＯＫ")])
+
+        assert doc.title == "ＮＯＫ"
+        assert "NOK" in doc.aliases
+
+    def test_every_stock_carries_the_listed_tag(self, api, tmp_path):
+        """filter は条件を 1 つ要求するので、全件はこのタグで引く。"""
+        docs = self._docs(api, tmp_path, [
+            _row("72030", "トヨタ自動車"), _row("13060", "TOPIX連動ETF", prod="014"),
+        ])
+
+        assert all("東証上場" in d.tags for d in docs)
 
     def test_letters_in_the_code_are_fine(self, api, tmp_path):
         """2024 年以降の新しいコードは英字が入る(例: 130A)。"""
