@@ -87,9 +87,38 @@ def is_running(status: dict | None, name: str) -> bool:
     return name in running_names(status)
 
 
+def has_dump_lane(status: dict | None) -> bool:
+    """ダンプの取り込みが別の枠で走るか(trigger の `CHIEZO_INGEST_DUMP_LANE`)。
+    名乗らない古い trigger は 1 つの枠を取り合う。"""
+    return bool((status or {}).get("dump_lane"))
+
+
+def general_jobs(status: dict | None) -> list[dict]:
+    """`slots` に数える 1 本(ダンプが別の枠なら、ダンプを除いたもの)。"""
+    found = jobs(status)
+    if not has_dump_lane(status):
+        return found
+    return [j for j in found if j.get("lane") != "dump"]
+
+
 def is_full(status: dict | None) -> bool:
-    """もう 1 本も起こせないか。"""
-    return len(jobs(status)) >= slots(status)
+    """収集・固化をもう 1 本も起こせないか。
+
+    **ダンプが別の枠なら、走っている再構築は数えない** —— 何時間もかかる
+    再構築のあいだ、収集が待ち続けないようにするため。
+    """
+    return len(general_jobs(status)) >= slots(status)
+
+
+def dump_busy(status: dict | None) -> bool:
+    """ダンプの取り込み(初期化・再構築)をいま起こせないか。
+
+    別の枠なら、ダンプがもう 1 本走っているかだけを見る(ダンプは 1 本ずつ)。
+    1 つの枠を取り合う trigger では、今までどおり埋まっているかを見る。
+    """
+    if not has_dump_lane(status):
+        return is_full(status)
+    return any(j.get("lane") == "dump" for j in jobs(status))
 
 
 def finished(status: dict | None) -> list[dict]:

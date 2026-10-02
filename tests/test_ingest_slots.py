@@ -93,6 +93,74 @@ class TestHowManyAtOnce:
         assert server._slots_from_env() == want
 
 
+class TestTheDumpLane:
+    """**ダンプは別の枠で走る**(`CHIEZO_INGEST_DUMP_LANE`、既定で有効)。
+
+    再構築は何時間もかかり、1 つの枠を取り合うと、そのあいだ収集も固化も
+    一切流れなかった。
+    """
+
+    def test_a_rebuild_does_not_take_the_collect_slot(self, trigger, monkeypatch):
+        server, client = trigger
+        monkeypatch.setattr(server, "SLOTS", 1)
+        monkeypatch.setattr(server, "DUMP_LANE", True)
+
+        assert client.post("/run/jawiki").status_code == 202
+        assert client.post("/run/meals").status_code == 202
+        # 収集の枠は 1 本なので、2 本目の収集は断る
+        assert client.post("/run/news").status_code == 429
+
+    def test_a_dump_starts_even_when_the_collect_slots_are_full(self, trigger, monkeypatch):
+        server, client = trigger
+        monkeypatch.setattr(server, "SLOTS", 1)
+        monkeypatch.setattr(server, "DUMP_LANE", True)
+
+        assert client.post("/run/meals").status_code == 202
+        assert client.post("/run/jawiki").status_code == 202
+
+    def test_dumps_still_run_one_at_a_time(self, trigger, monkeypatch):
+        server, client = trigger
+        monkeypatch.setattr(server, "DUMP_LANE", True)
+
+        assert client.post("/run/jawiki").status_code == 202
+        assert client.post("/run/geonames").status_code == 429
+
+    def test_turning_it_off_shares_one_slot_again(self, trigger, monkeypatch):
+        """メモリの小さい機械で 2 本を並べたくないときの逃げ道。"""
+        server, client = trigger
+        monkeypatch.setattr(server, "SLOTS", 1)
+        monkeypatch.setattr(server, "DUMP_LANE", False)
+
+        assert client.post("/run/jawiki").status_code == 202
+        assert client.post("/run/meals").status_code == 429
+
+    def test_the_status_names_the_lane(self, trigger, monkeypatch):
+        """app は `dump_lane` と各 1 本の `lane` を見て空きを数える。"""
+        server, client = trigger
+        monkeypatch.setattr(server, "SLOTS", 1)
+        monkeypatch.setattr(server, "DUMP_LANE", True)
+        client.post("/run/jawiki")
+        client.post("/run/meals")
+
+        got = client.get("/status").json()
+
+        assert got["dump_lane"] is True
+        assert {j["source"]: j["lane"] for j in got["jobs"]} == {
+            "jawiki": "dump", "meals": "general",
+        }
+
+    @pytest.mark.parametrize(
+        ("raw", "want"),
+        [("", True), ("1", True), ("0", False), ("false", False), ("OFF", False), ("なし", True)],
+    )
+    def test_only_an_explicit_no_turns_it_off(self, monkeypatch, raw, want):
+        import server
+
+        monkeypatch.setenv("CHIEZO_INGEST_DUMP_LANE", raw)
+
+        assert server._dump_lane_from_env() == want
+
+
 class TestTheStatus:
     def test_an_old_reader_still_sees_one_job(self, trigger, monkeypatch):
         """**頭には 1 本ぶんの形も残す** —— app と取り込みは別々に焼かれるので、

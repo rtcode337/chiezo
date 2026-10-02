@@ -772,7 +772,9 @@ class TestTriggerCatalogEndpoint:
     def test_lists_plain_and_osm_sources(self, trigger_client):
         body = trigger_client.get("/sources").json()
         catalog = body["sources"]
-        assert catalog["geonames"] == {"kind": "geonames", "lang": None}
+        # `dump` は管理画面がボタンの枠を決めるのに読む(ダンプは別の枠で走る)
+        assert catalog["geonames"] == {"kind": "geonames", "lang": None, "dump": True}
+        assert catalog["osm_japan"]["dump"] is True
         assert catalog["osm_japan"]["group"] == "osm"
         assert catalog["osm_japan"]["region"] == "asia/japan"
         assert catalog["osm_japan"]["label"] == "日本"

@@ -398,7 +398,7 @@ def _dispatch(status: dict, now: datetime | None = None) -> int:
     """
     now = now or datetime.now(UTC)
     names = set(ingest_queue.running_names(status))
-    free = ingest_queue.slots(status) - len(ingest_queue.jobs(status))
+    free = ingest_queue.slots(status) - len(ingest_queue.general_jobs(status))
     busy_workers = {
         str(e.get("worker")) for e in ingest_queue.running() if e.get("worker")
     }
