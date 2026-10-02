@@ -31,7 +31,14 @@ Chiezo はそれが持てないものを預かる側にいる。
 ### 知識(溜めて引く)
 
 - **ためる** — `ingest/` がソースごとに独立した SQLite ファイル(`/data/<source>.db`)を作る。
-  取得元は公開ダンプ(Wikipedia / OpenStreetMap / GeoNames / Overture)に限らず、このリポジトリに
+  取得元は公開ダンプ(Wikipedia / OpenStreetMap / GeoNames / Overture)と、
+  キーの要る API(J-Quants の上場銘柄一覧 `jquants_master`。**個人の私的利用に限る** ——
+  本人以外が見られる環境では取り込まない、解約したら消す。`ingest/sources/jquants.py` の冒頭)に限らず、
+  **キーが要るソースは `credential_label` を名乗る**。trigger のカタログに `credential` が載り、
+  管理画面の長期記憶の面にキーの登録欄が出る。登録したキーは `settings.db` の
+  `source_credentials` に置き、初期化・再構築のたびに `POST /run/{source}` の本文で
+  trigger へ渡す(`views.admin.trigger_run`)。**trigger は環境変数に書かず、その 1 本の
+  アダプタにだけ入れる**(`main.run(credential=)`)。状態にもログにも残さない。このリポジトリに
   入れられないものは**別コンテナのプラグイン**(`CHIEZO_PLUGIN_SOURCES`)から足せる。
   更新はブルーグリーン
 - **取り出す** — `app/` が **MCP**(`/mcp`)と **REST**(`/v1/...`)の 2 経路で出す。

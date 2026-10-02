@@ -193,6 +193,67 @@ def is_dump_source(name: str) -> bool:
     return bool(meta.get("dump", "plugin" not in meta and meta.get("kind") != "collect"))
 
 
+SOURCE_KEYS_BACK = "/admin/memory#source-keys"
+
+
+def _source_credentials_section_html() -> str:
+    """取り込みに API キーが要るソースの、キーの登録欄(長期記憶の面)。
+
+    **キーが要るかはソースが名乗る**(trigger のカタログの `credential`)。登録した
+    キーは初期化・再構築のときに trigger へ渡る(`trigger_run`)。値は二度と出さず、
+    登録の有無と日時だけを見せる(話す相手の鍵と同じ)。
+    """
+    needs = {
+        name: meta["credential"] for name, meta in initializable_sources().items()
+        if isinstance(meta.get("credential"), dict)
+    }
+    if not needs:
+        return ""
+    if not settings_store.is_enabled():
+        return (
+            '<h3 id="source-keys">取り込みに要るキー</h3>'
+            '<p class="muted">設定の置き場(<code>CHIEZO_STATE_DIR</code>)が無いので、'
+            "画面からは登録できません。chiezo-ingest で単発に回すなら環境変数で渡せます"
+            f"({esc(', '.join(sorted(needs)))})。</p>"
+        )
+    rows = []
+    for name, spec in sorted(needs.items()):
+        at = jst.parse(settings_store.source_credential_updated_at(name) or "")
+        status = f"登録済み({esc(jst.format(at))})" if at else "未登録"
+        help_url = spec.get("help_url")
+        guide = (
+            f' <a href="{esc(help_url)}" target="_blank" rel="noopener">入手と利用条件</a>'
+            if help_url else ""
+        )
+        drop = (
+            '<form method="post" action="/admin/source-key" class="init-form">'
+            f'<input type="hidden" name="source" value="{esc(name)}">'
+            '<input type="hidden" name="action" value="delete">'
+            "<button type=\"submit\">削除</button></form>"
+        ) if at else ""
+        rows.append(
+            "<tr>"
+            f"<td>{esc(name)}</td>"
+            f"<td>{esc(spec.get('label') or 'API キー')}{guide}</td>"
+            f"<td>{status}</td>"
+            "<td>"
+            '<form method="post" action="/admin/source-key" class="init-form">'
+            f'<input type="hidden" name="source" value="{esc(name)}">'
+            '<input type="password" name="credential" placeholder="API キー" required '
+            'autocomplete="off">'
+            f"<button type=\"submit\">{'更新' if at else '登録'}</button></form> {drop}"
+            "</td>"
+            "</tr>"
+        )
+    return (
+        '<h3 id="source-keys">取り込みに要るキー</h3>'
+        '<p class="muted">初期化・再構築のときに取り込み側へ渡します。'
+        "値は画面に二度と表示しません。</p>"
+        "<table><thead><tr><th>name</th><th>キー</th><th>状態</th><th></th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
 def run_buttons_disabled(job: dict | None, *, dump: bool = True) -> str:
     """取り込みを起こすボタンの `disabled` 属性。
 
@@ -3012,6 +3073,8 @@ chiezo-trigger が立ち上がっていない場合、再構築と削除はで�
 構築中も現行 DB での配信は続く。完了後は数秒以内に自動で新しい DB へ切り替わる(再起動不要)。
 </p>
 
+{_source_credentials_section_html()}
+
 <!-- **長期記憶の中に畳んでおく。** ここを開くのは新しいソースを入れるときだけで、
      日々見に来るのは上の一覧と下の「集める」のほう —— 同じ高さで並べると、
      見たい節に着くまで使わない表を何度もまたぐことになる -->
@@ -3398,8 +3461,17 @@ def trigger_run(source: str) -> None:
     **画面へ戻さない形も要る** —— 収集の時計(`app/main.py`)がここから取り込みを
     起こすので、リダイレクトを返されると使えない。
     """
+    # **取得にキーが要るソースには、登録してあるキーを本文で渡す。** trigger の
+    # 環境変数に置かずに済むので、画面から入れ替えられる。収集の回には載らない
+    # (登録できるのはカタログで `credential` を名乗るソースだけ)
+    credential = settings_store.source_credential(source)
     try:
-        res = httpx.post(f"{TRIGGER_URL}/run/{source}", timeout=TRIGGER_TIMEOUT)
+        res = httpx.post(
+            f"{TRIGGER_URL}/run/{source}",
+            # 渡すものが無いときは本文ごと省く(今までと同じ呼び方)
+            **({"json": {"credential": credential}} if credential else {}),
+            timeout=TRIGGER_TIMEOUT,
+        )
     except httpx.HTTPError as e:
         # 例外の文字列は内部 URL 等を含みうるのでレスポンスに載せない(上の
         # _fetch_trigger_status と同じ理由。詳細はログへ)。
@@ -3468,6 +3540,22 @@ def _proxy_trigger_run(source: str) -> RedirectResponse:
     """上を叩いて状況の面へ連れていく(init / rebuild 共通)。進み具合はそこで見る。"""
     trigger_run(source)
     return RedirectResponse(url=STATUS_JOB, status_code=303)
+
+
+@router.post("/admin/source-key")
+def admin_source_key(
+    source: str = Form(...), credential: str = Form(""), action: str = Form("")
+):
+    """取り込みに要るキーの登録・削除。**キーが要ると名乗るソースだけ**受け付ける。"""
+    meta = initializable_sources().get(source) or {}
+    if not isinstance(meta.get("credential"), dict):
+        raise HTTPException(404, {"error": f"キーを受け取らないソースです: {source}"})
+    settings_store.require_path()
+    if action == "delete":
+        settings_store.clear_source_credential(source)
+    else:
+        settings_store.set_source_credential(source, credential)
+    return RedirectResponse(url=SOURCE_KEYS_BACK, status_code=303)
 
 
 @router.post("/admin/init/{source}")

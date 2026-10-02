@@ -36,9 +36,38 @@ docker compose --profile ingest run --rm chiezo-ingest
 | `OSM_NODE_INDEX` | osm のノード座標索引の置き場(`sparse_mmap_array`〈RAM・速い〉/ `sparse_file_array`〈ディスク・省メモリ・遅い〉)。明示指定は `BUILD_PROFILE` より優先。未指定なら low_memory はディスク、fast はソースごとの既定(RAM 索引が 12GiB を超える国のみディスク) |
 | `GEONAMES_ALT_LANGS` | geonames で取り込む別名の言語(カンマ区切り。既定 `ja,en`、`*` で全 400 言語超) |
 | `GEONAMES_FEATURE_CLASSES` | geonames で取り込む feature class(既定 `AHLPSTUV` = 道路 `R` 以外すべて) |
+| `CHIEZO_JQUANTS_API_KEY` | J-Quants の API キー。`jquants_master` を画面を通さずに単発で取り込むときだけ要る(画面から回すなら登録したキーが渡る。[J-Quants](#j-quants)) |
 | `BUILD_MEMORY_GB` / `SKIP_MEMORY_CHECK` | 構築前メモリ検査の必要量を上書き / 検査を無効化([メモリについて](#メモリについて)) |
 
 ### ソースごとの取り込みの注意
+
+#### J-Quants
+
+`jquants_master` は J-Quants API の `/v2/equities/master` から、東証の全上場銘柄
+(約 4,400 件)を 1 銘柄 1 文書で取り込みます。見出しは会社名で、証券コード(4 桁と
+5 桁のローカルコード)と英語名を別名に持つので、コードからも引けます。市場区分・
+17/33 業種・規模区分・商品区分はタグにもなるので、`filter?tag=輸送用機器` や
+`filter?tag=TOPIX Core30` で列挙できます。優先株のように普通株と同じ会社名の銘柄は、
+見出しにコードを添えて分けます。株価は持ちません。
+
+**API キーは管理画面で登録します**(記憶 → 長期記憶の「取り込みに要るキー」)。
+登録したキーは画面に二度と出ず、初期化・再構築のたびに chiezo-trigger へ渡ります
+(`POST /run/{source}` の本文。trigger は環境変数に置かず、その 1 本の取り込みにだけ渡し、
+状態にもログにも残しません)。キーの置き場は設定の置き場(`CHIEZO_STATE_DIR`)の
+`settings.db` です。画面を通さず chiezo-ingest で単発に回すときだけ、
+`CHIEZO_JQUANTS_API_KEY` で渡してください。
+
+J-Quants は個人の私的利用に限るサービスで、次の条件があります
+([原文](https://jpx-jquants.com/ja/help/usage))。
+
+- 取り込んだデータを本人以外が見られる状態にしない(Chiezo は認証なしで LAN に出るので、
+  同じ LAN を他の人が使う環境では取り込まない)
+- 生成 AI に渡すときは、自分の分析目的であり、学習に使われない設定であり、
+  結果を配信・公開しないこと
+- 解約やプランを下げたときは、取り込んだ DB も消す(管理画面のソース削除)
+
+無料プランはデータが 12 週間遅れることがあり、新規上場はすぐには載りません。
+世代の日付は応答の情報適用日(`Date`)の最新です。
 
 **Wikipedia 系**は標準 XML ダンプ(`<wiki_id>-<date>-pages-articles.xml.bz2`、jawiki で
 確認時点 4.4GB)を取得し、wikitext をプレーンテキスト化して取り込みます
@@ -314,7 +343,8 @@ docker build ./api \
 ## chiezo-trigger(管理画面からの初期化・再構築)
 
 `chiezo-ingest` と同じイメージを使い回し、CMD だけ `server.py`(FastAPI)の起動に差し替えた
-常駐コンテナです。`/data` に書き込み権限を持ち、`POST /run/{source}` で ingest の `run()` を
+常駐コンテナです。`/data` に書き込み権限を持ち、`POST /run/{source}`(取得に API キーが要る
+ソースには本文 `{"credential": "…"}` を付けられる)で ingest の `run()` を
 バックグラウンドスレッドで実行、`GET /status` で走っているもの(`jobs`)・終わった回
 (`recent`)・最後に落ちた回(`last_failure`)をログ tail つきで返します。
 
