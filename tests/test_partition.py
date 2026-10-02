@@ -1791,3 +1791,73 @@ class TestTheMarksSurviveARecut:
         kept = _only(partition.refresh(built, current, spec), built[0]["key"])
 
         assert kept["visits"] == {}
+
+
+class TestWideningTheBox:
+    """**範囲(`bbox`)を広げたら、きれいに割り直し、見終わった印は継ぐ。**
+
+    広げたところにかかる区画だけが「まだ」になる —— 一周したら止まる巡回は
+    そこだけを見に動き出し、見終わっていたところを見直さない。
+    """
+
+    OLD = (35.50, 139.67, 35.52, 139.69)
+    NEW = (35.50, 139.67, 35.52, 139.71)
+
+    def spec(self, box):
+        return partition.normalize({"by": "geo", "target": 10, "bbox": list(box)})
+
+    @staticmethod
+    def grid(lon0, lon1, n=6):
+        """矩形の中に n × n 個の店を並べる(緯度 35.50〜35.52)。"""
+        return [
+            (35.50 + 0.02 * (i + 0.5) / n, lon0 + (lon1 - lon0) * (j + 0.5) / n)
+            for i in range(n) for j in range(n)
+        ]
+
+    def own(self, points):
+        return {f"店{i}": {"title": f"店{i}", "extra": {"lat": lat, "lon": lon}}
+                for i, (lat, lon) in enumerate(points)}
+
+    @staticmethod
+    def east(p):
+        return partition.parse_geo_key(p["key"])[3]
+
+    def test_only_the_box_changed(self):
+        old, new = self.spec(self.OLD), self.spec(self.NEW)
+
+        assert partition.reach_only(new, old)
+        assert not partition.reach_only({**new, "target": 50}, old)
+        assert not partition.reach_only(old, old)
+
+    def test_the_ledger_no_longer_covers_the_box(self):
+        old = partition.build(self.spec(self.OLD), {}, self.own(self.grid(139.67, 139.69)))
+
+        assert not partition.reach_changed(self.spec(self.OLD), old)
+        assert partition.reach_changed(self.spec(self.NEW), old)
+
+    def test_the_old_part_keeps_its_marks_and_the_new_part_starts_fresh(self):
+        before = self.grid(139.67, 139.69)
+        old = partition.build(self.spec(self.OLD), {}, self.own(before))
+        old = partition.mark_visited(old, [p["key"] for p in old], "ざっと見る", "t1")
+
+        after = before + self.grid(139.69, 139.71)
+        built = partition.build(self.spec(self.NEW), {}, self.own(after))
+        ledger = partition.refresh(built, old, self.spec(self.NEW), partition.extent_of(old))
+
+        inside = [p for p in ledger if self.east(p) <= 139.69 + 1e-4]
+        outside = [p for p in ledger if self.east(p) > 139.69 + 1e-4]
+        assert inside and outside
+        assert all(p["visits"] == {"ざっと見る": "t1"} for p in inside)
+        assert all(p["visits"] == {} for p in outside)
+        # 古い区画を二重に残さない(新しい台帳が範囲の全部を覆う)
+        assert len(ledger) == len(built)
+
+    def test_narrowing_drops_what_falls_outside(self):
+        before = self.grid(139.67, 139.69) + self.grid(139.69, 139.71)
+        old = partition.build(self.spec(self.NEW), {}, self.own(before))
+
+        narrowed = self.spec(self.OLD)
+        built = partition.build(narrowed, {}, self.own(self.grid(139.67, 139.69)))
+        ledger = partition.refresh(built, old, narrowed)
+
+        assert all(self.east(p) <= 139.69 + 1e-4 for p in ledger)

@@ -1701,8 +1701,11 @@ def update(name: str, **fields) -> Collection:
         patch["partition"] = partitioning.to_json(partitioning.normalize(patch["partition"] or None))
         # **台帳を明示的に渡されていなければ捨てる。** 両方渡されたときは渡したほうが
         # 勝つ(割り出した結果を持ち込みたいのに、こちらが消してしまうため)
+        # **範囲(`bbox`)を広げた・狭めただけなら捨てない**(`partitioning.reach_only`)
+        # —— 次の回に割り直して、見終わっていた区画の印を引き継ぐ
         if (
             not partitioning.same_cut(patch["partition"], current.partition)
+            and not partitioning.reach_only(patch["partition"], current.partition)
             and "partitions" not in patch
         ):
             patch["partitions"] = []
@@ -3652,6 +3655,11 @@ def plan_partitions(item: Collection, sources: dict, previous: dict[str, dict]) 
 
     **割り直しても巡回の記録は引き継ぐ**(`partitioning.refresh`)。
 
+    **矩形の範囲を広げた・狭めたあとも割り直す**(`partitioning.reach_changed`)。
+    範囲が変わっても台帳は捨てずに残してあるので(`update`)、ここで新しい範囲を
+    きれいに割り直し、前の範囲に収まる区画は印を継ぐ。広げたところにかかる区画は
+    「まだ」になるので、一周したら止まる巡回もそこだけを見に動き出す。
+
     **小さすぎる区画は、割り直さない回でも隣とまとめる**(`partitioning.merged`)。
     割り直しの引き金は「育った」と「空になった」しかないので、中身が別の区画へ
     移って痩せた帯は、痩せたまま回り続ける —— 1 人のために 1 回ぶんの枠を使う
@@ -3669,10 +3677,17 @@ def plan_partitions(item: Collection, sources: dict, previous: dict[str, dict]) 
     # 割り当てられる。消えたものは差し込みには別の一覧として渡る
     alive = _light_docs(previous) if callable(previous) else living(previous)
     counts = partitioning.counts_of(spec, item.partitions, alive)
-    if item.partitions and not partitioning.outgrown(spec, counts):
+    # **範囲を広げた・狭めたあとも割り直す**(`reach_changed`)。台帳は残してあるので、
+    # 見終わっていた区画の印は引き継がれ、広げたところだけが「まだ」になる
+    reach = partitioning.reach_changed(spec, item.partitions)
+    if item.partitions and not partitioning.outgrown(spec, counts) and not reach:
         return partitioning.merged(spec, partitioning.counted(item.partitions, counts))
     built = partitioning.build(spec, sources, alive)
-    ledger = partitioning.merged(spec, partitioning.refresh(built, item.partitions, spec))
+    # 前の範囲(前の台帳が覆っていた矩形)からはみ出す区画には印を継がない
+    within = partitioning.extent_of(item.partitions) if reach else None
+    ledger = partitioning.merged(
+        spec, partitioning.refresh(built, item.partitions, spec, within)
+    )
     log.info("partition %s: %d 区画(まとめる前 %d)", item.name, len(ledger), len(built))
     return ledger
 

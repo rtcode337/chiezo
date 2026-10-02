@@ -249,6 +249,57 @@ def same_cut(a: dict | None, b: dict | None) -> bool:
     return _cut_of(a) == _cut_of(b)
 
 
+def reach_only(a: dict | None, b: dict | None) -> bool:
+    """2 つの指定の違いが**矩形の範囲(`bbox`)だけ**か(座標で割るときだけ)。
+
+    **範囲を広げた・狭めただけなら、台帳は捨てない。** 捨てると、見終わっていた
+    区画の印まで消え、一周したら止まる巡回が範囲の全部をもう一度見直す ——
+    広げたのは端の一部なのに、AI を全区画ぶん呼ぶことになる。台帳は残しておき、
+    次の回に割り直して印を引き継ぐ(`reach_changed` / `refresh`)。
+    """
+    if not a or not b or a.get("by") != BY_GEO or b.get("by") != BY_GEO:
+        return False
+    strip = lambda spec: {k: v for k, v in (_cut_of(spec) or {}).items() if k != "bbox"}  # noqa: E731
+    return strip(a) == strip(b) and a.get("bbox") != b.get("bbox")
+
+
+# 矩形の鍵は小数 4 桁で丸めてある(`geo_key`)ので、範囲と比べるときはその幅を見込む
+_KEY_SLACK = 1e-4
+
+
+def extent_of(partitions: list[dict]) -> tuple[float, float, float, float] | None:
+    """矩形の区画がまとめて覆っている範囲(外接矩形)。読めない鍵があれば None。"""
+    boxes = [parse_geo_key(p["key"]) for p in partitions]
+    if not boxes or any(b is None for b in boxes):
+        return None
+    return (
+        min(b[0] for b in boxes), min(b[1] for b in boxes),
+        max(b[2] for b in boxes), max(b[3] for b in boxes),
+    )
+
+
+def _within_box(inner, outer) -> bool:
+    return (
+        inner[0] >= outer[0] - _KEY_SLACK and inner[1] >= outer[1] - _KEY_SLACK
+        and inner[2] <= outer[2] + _KEY_SLACK and inner[3] <= outer[3] + _KEY_SLACK
+    )
+
+
+def reach_changed(spec: dict | None, partitions: list[dict]) -> bool:
+    """台帳が覆っている範囲が、いまの指定の矩形と違うか(範囲を広げた・狭めたあと)。
+
+    **違えば割り直す**(`plan_partitions`)。区画は矩形をきっかり分けたものなので、
+    台帳の外接矩形がそのまま割ったときの範囲になる。
+    """
+    if not spec or spec.get("by") != BY_GEO or not spec.get("bbox") or not partitions:
+        return False
+    extent = extent_of(partitions)
+    if extent is None:
+        return False
+    box = tuple(spec["bbox"])
+    return not (_within_box(extent, box) and _within_box(box, extent))
+
+
 def _cut_of(spec: dict | None) -> dict | None:
     if not spec:
         return None
@@ -863,7 +914,9 @@ def _title_narrowing(partitions: list[dict], key: str) -> tuple[str, tuple]:
     return where, tuple(args)
 
 
-def refresh(built: list[dict], current: list[dict], spec: dict | None = None) -> list[dict]:
+def refresh(
+    built: list[dict], current: list[dict], spec: dict | None = None, within=None
+) -> list[dict]:
     """割り直した区画に、**前の巡回の記録を引き継ぐ**。
 
     引き継がないと、割り直すたびに全区画が「まだ見ていない」に戻り、一周が
@@ -874,6 +927,10 @@ def refresh(built: list[dict], current: list[dict], spec: dict | None = None) ->
     一周が巻き戻る。親は「その子を含んでいた区画」として探す。
 
     **新しい台帳が覆っていない区画は、落とさずに残す**(`_uncovered`)。
+
+    **範囲を広げたあとは、前の範囲(`within`。前の台帳が覆っていた矩形)から
+    はみ出す区画に印を継がない**(`reach_changed` のとき `plan_partitions` が渡す)。
+    重なる古い区画がみな見終わっていても、はみ出したところは誰も見ていない。
 
     **「鍵が同じ」と「記録が空」を取り違えない。** 前は `seen.get(key) or 親を探す`
     と書いていたので、**まだ 1 度も見ていない区画は毎回「親探し」に落ちていた** ——
@@ -888,7 +945,7 @@ def refresh(built: list[dict], current: list[dict], spec: dict | None = None) ->
             "key": p["key"],
             "count": int(p.get("count") or 0),
             "visits": seen[p["key"]] if p["key"] in seen
-            else _inherited(spec, p["key"], current),
+            else _inherited(spec, p["key"], current, within),
         }
         for p in built
     ]
@@ -915,6 +972,15 @@ def _uncovered(spec: dict | None, built: list[dict], current: list[dict]) -> lis
     """
     if spec is None or not current:
         return []
+    # **範囲の外へ出た古い区画は残さない**(範囲を狭めたあと)。残すと、外した場所へ
+    # 巡回が回り続ける
+    if spec.get("by") == BY_GEO and spec.get("bbox"):
+        s, w, n, e = spec["bbox"]
+        current = [
+            old for old in current
+            if (box := parse_geo_key(old["key"])) is not None
+            and box[0] < n and s < box[2] and box[1] < e and w < box[3]
+        ]
     keys = {p["key"] for p in built}
     return [
         {"key": old["key"], "count": 0, "visits": dict(old.get("visits") or {})}
@@ -925,7 +991,7 @@ def _uncovered(spec: dict | None, built: list[dict], current: list[dict]) -> lis
     ]
 
 
-def _inherited(spec: dict | None, key: str, current: list[dict]) -> dict:
+def _inherited(spec: dict | None, key: str, current: list[dict], within=None) -> dict:
     """その範囲を前に受け持っていた区画から継ぐ記録。無ければ空(新しく始まる)。
 
     **「含む」だけでは足りなかった。** 割り直すと境目が動くので、新しい区画が
@@ -948,6 +1014,12 @@ def _inherited(spec: dict | None, key: str, current: list[dict]) -> dict:
     """
     if spec is None or not current:
         return {}
+    # **前の範囲からはみ出す区画は継がない**(範囲を広げたあと)。重なる古い区画が
+    # みな見終わっていても、はみ出したところは誰も見ていない
+    if within is not None and spec.get("by") == BY_GEO:
+        box = parse_geo_key(key)
+        if box is None or not _within_box(box, within):
+            return {}
     over = [p for p in current if _overlaps(spec, p["key"], key)]
     if not over:
         return {}
