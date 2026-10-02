@@ -1341,3 +1341,70 @@ class TestTheButtonSaysItIsWorking:
 
         assert "setTimeout" in pages.BUSY_FORM_SCRIPT
         assert "addEventListener('submit'" in pages.BUSY_FORM_SCRIPT
+
+
+class TestThePace:
+    """**いまの使い方で、戻るまで足りるか**(`usage.pace_of`)。
+
+    使った割合だけでは、窓の始めの 40% と終わり際の 40% の区別が付かない ——
+    前者はすぐ尽き、後者は余る。
+    """
+
+    NOW = "2026-10-01T12:00:00+00:00"
+
+    def _window(self, used: float, resets_in_minutes: float, label="直近 5 時間", minutes=300):
+        from datetime import datetime, timedelta
+
+        from app import usage
+
+        reset = datetime.fromisoformat(self.NOW) + timedelta(minutes=resets_in_minutes)
+        return usage.Window(id="w", label=label, used_percent=used,
+                            resets_at=reset.isoformat(), window_minutes=minutes)
+
+    def _pace(self, window):
+        from datetime import datetime
+
+        from app import usage
+
+        return usage.pace_of(window, self.NOW, now=datetime.fromisoformat(self.NOW))
+
+    def test_using_fast_early_runs_out_before_the_reset(self):
+        # 5 時間のうち 1 時間で 40% → 戻るまでに 200%。残り 60% は 1.5 時間で尽きる
+        pace = self._pace(self._window(40, resets_in_minutes=240))
+        assert pace.state == "short"
+        assert pace.projected == 200.0
+        assert pace.runs_out_at == "2026-10-01T13:30:00+00:00"
+
+    def test_the_same_share_late_is_enough(self):
+        # 4 時間で 40% → 戻るまでに 50%
+        pace = self._pace(self._window(40, resets_in_minutes=60))
+        assert pace.state == "enough" and pace.projected == 50.0
+
+    def test_too_early_to_tell(self):
+        pace = self._pace(self._window(5, resets_in_minutes=295))
+        assert pace.state == "early"
+
+    def test_a_window_that_already_reset_says_so(self):
+        """取ったあとに窓が明けていれば、手元の値はもう前の窓のもの。"""
+        pace = self._pace(self._window(90, resets_in_minutes=-5))
+        assert pace.state == "stale"
+
+    def test_the_length_is_read_from_the_name_when_missing(self):
+        """claude は長さを返さず、`Current session` / `Current week` と名乗るだけ。"""
+        from app import usage
+
+        assert usage.window_length(usage.Window(id="a", label="Current session")) == 300
+        assert usage.window_length(usage.Window(id="b", label="Current week (all models)")) == 10080
+        assert usage.window_length(usage.Window(id="c", label="クレジット")) is None
+        # 長さが読めなければ見積もらない(当て推量の判定を出さない)
+        assert self._pace(self._window(40, 60, label="クレジット", minutes=None)) is None
+
+    def test_the_screen_says_it(self):
+        from datetime import datetime
+
+        from app.views import ai_usage
+
+        html = ai_usage._pace_html(
+            self._window(40, resets_in_minutes=240), self.NOW, datetime.fromisoformat(self.NOW),
+        )
+        assert "⚠️ このペースだと" in html and "尽きる" in html

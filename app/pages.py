@@ -362,6 +362,9 @@ PAGE_STYLE = """
   /* 使用量の表。枠の欄は折り返す —— 1 行が「帯 + 使用率 + 戻る時刻」で長く、
      nowrap のままだと狭い画面でこの列だけが伸びて他を押し潰す。 */
   table.ai-usage td { white-space: normal; }
+  /* 消費ペースの見積もりは**その窓の下に 1 行で**(行末に続けると、広い画面でも
+     途中で折り返して読みにくい) */
+  table.ai-usage .quota-pace { display: block; }
   /* 相手が言ったそのまま。**長いので高さを切って中で送る** —— 枠の欄に
      そのまま流すと、開いた瞬間に他の相手の行が画面の外へ出る。 */
   details.raw-quota pre { white-space: pre-wrap; word-break: break-all; margin: 0.3rem 0;

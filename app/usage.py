@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
@@ -180,6 +181,98 @@ def _window_label(minutes: float | None, fallback: str) -> str:
     if minutes % 60 == 0:
         return f"直近 {int(minutes // 60)} 時間"
     return f"直近 {int(minutes)} 分"
+
+
+# ---- 消費ペース ---------------------------------------------------------------
+#
+# 「いまの使い方で、戻るまで足りるか」を窓ごとに見積もる(画面に出す)。使った割合だけ
+# では、5 時間の窓の 40% が「始まって 30 分で 40%」なのか「4 時間半で 40%」なのかが
+# 読めない —— 前者は 1 時間足らずで尽き、後者は余る。
+
+# 窓の頭のうちは見積もらない(窓の何割が経ったか)。始まってすぐの数分で使った
+# ぶんを伸ばすと、どの窓も「すぐ尽きる」になる
+PACE_MIN_ELAPSED = 0.1
+
+# 名前から窓の長さを読む。**長さを返さない相手がいる**(claude は文面から読むので
+# `Current session` / `Current week` としか言わない)
+_WINDOW_WORDS = (("session", 300), ("week", 7 * 24 * 60), ("週", 7 * 24 * 60))
+
+
+def window_length(window: Window) -> float | None:
+    """窓の長さ(分)。**持っていなければ名前から読む**。読めなければ None(見積もらない)。"""
+    if window.window_minutes:
+        return float(window.window_minutes)
+    label = window.label.lower()
+    for word, minutes in _WINDOW_WORDS:
+        if word in label:
+            return float(minutes)
+    if found := re.search(r"(\d+)\s*時間", label):
+        return float(found.group(1)) * 60
+    if found := re.search(r"(\d+)\s*日", label):
+        return float(found.group(1)) * 24 * 60
+    return None
+
+
+@dataclass
+class Pace:
+    """1 つの窓の見積もり。`state` は 4 つ:
+
+    - `short` …… このペースだと戻る前に尽きる(`runs_out_at` に尽きる見込み)
+    - `enough` …… 戻るまで足りる(`projected` は戻る時点の見込みの使用率)
+    - `early` …… 窓が始まったばかりで、まだ見積もれない
+    - `stale` …… 取ったときから後に窓が明けている(いまの値を持っていない)
+    """
+
+    state: str
+    projected: float | None = None
+    runs_out_at: str = ""
+
+
+def pace_of(window: Window, fetched_at: str, now: datetime | None = None) -> Pace | None:
+    """**いまの使い方が続いたら、戻るまで足りるか**。見積もれない窓は None。
+
+    使った割合を、窓のうち経った割合で割れば、戻る時点の見込みになる
+    (「経った 3 割で 6 割使った」なら、戻るまでに 200%)。**取った時点で数える**
+    —— 割合は取ったときの値なので、いまの時刻で割ると時間だけが進んで甘く出る。
+    """
+    if window.used_percent is None:
+        return None
+    length = window_length(window)
+    reset = _parse(window.resets_at)
+    taken = _parse(fetched_at)
+    if not length or reset is None or taken is None:
+        return None
+    now = now or datetime.now(UTC)
+    if reset <= now:
+        return Pace("stale")
+    total = timedelta(minutes=length)
+    elapsed = total - (reset - taken)
+    if elapsed <= timedelta(0) or elapsed > total:
+        return None
+    share = elapsed / total
+    if share < PACE_MIN_ELAPSED:
+        return Pace("early")
+    used = window.used_percent
+    projected = used / share
+    if projected < 100:
+        return Pace("enough", projected=round(projected, 1))
+    # 尽きる時刻: 取ったときから、残りを同じ速さで使い切るまで
+    rate = used / elapsed.total_seconds()
+    out = taken + timedelta(seconds=(100 - used) / rate) if rate > 0 else reset
+    return Pace(
+        "short", projected=round(projected, 1),
+        runs_out_at=min(out, reset).isoformat(timespec="seconds"),
+    )
+
+
+def _parse(raw: str) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        value = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 # ---- 相手ごとの聞き方 -------------------------------------------------------

@@ -62,7 +62,29 @@ def percent_text(value: float) -> str:
     return f"{value:.1f}" if value % 1 else f"{value:.0f}"
 
 
-def _window_html(window: usage.Window) -> str:
+def _pace_html(window: usage.Window, fetched_at: str, now=None) -> str:
+    """**いまの使い方で、戻るまで足りるか**(`usage.pace_of`)。見積もれなければ空。
+
+    使った割合だけでは、窓の始めの 40% と終わり際の 40% の区別が付かない ——
+    前者はすぐ尽き、後者は余る。重い仕事を頼むかどうかは、こちらで決まる。
+    """
+    pace = usage.pace_of(window, fetched_at, now)
+    if pace is None:
+        return ""
+    if pace.state == "short":
+        out = jst.parse(pace.runs_out_at)
+        when = f" {jst.compact(out)} 頃に" if out else "戻る前に"
+        return (f'<span class="stale quota-pace">⚠️ このペースだと{esc(when)}尽きる'
+                f"(戻るまでに約 {percent_text(pace.projected)}%)</span>")
+    if pace.state == "enough":
+        return (f'<span class="muted quota-pace">このペースなら足りる'
+                f"(戻るまでに約 {percent_text(pace.projected)}%)</span>")
+    if pace.state == "early":
+        return '<span class="muted quota-pace">窓が始まったばかりで、まだ見積もれない</span>'
+    return '<span class="muted quota-pace">窓が明けた後の値はまだ取っていない</span>'
+
+
+def _window_html(window: usage.Window, fetched_at: str = "") -> str:
     """枠 1 つぶん。使用率で言う相手と、金額で言う相手の両方を同じ形に収める。"""
     # **名前と戻る時刻には印を付ける** —— スマホではそこで行を割る(`pages.py` の
     # `quota-name` / `quota-reset`)。札の値の側は幅が狭く、1 行に流すと帯と数字の
@@ -84,6 +106,8 @@ def _window_html(window: usage.Window) -> str:
         parts.append(amount)
     if when := _when(window.resets_at):
         parts.append(f'<span class="muted quota-reset">{esc(when)} に戻る</span>')
+    if pace := _pace_html(window, fetched_at):
+        parts.append(pace)
     return " ".join(parts)
 
 
@@ -92,7 +116,7 @@ def _quota_cell(row: dict) -> str:
     if not quota.supported:
         # 「出せない」と書く。 空欄にすると「使っていない」と読めてしまう。
         return '<span class="muted">この相手は枠を出さない</span>'
-    lines = [f"<div>{_window_html(w)}</div>" for w in quota.windows]
+    lines = [f"<div>{_window_html(w, quota.fetched_at)}</div>" for w in quota.windows]
     # 数字が無いときに「◯時 時点」だけ出さない —— 何かが取れているように読める。
     if quota.windows and (fetched := _when(quota.fetched_at)):
         lines.append(f'<span class="muted">{esc(fetched)} 時点</span>')
