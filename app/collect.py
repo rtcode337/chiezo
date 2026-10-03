@@ -4315,7 +4315,13 @@ SIGNED_BY_KEY = "_chiezo_by"
 # 前と比べない脇書き。**こちらが回ごとに押す印なので、混ぜると毎回「変わった」に
 # なる** —— 本当に動いた事実が埋もれる。控えに入れると、さらに控えの中に控えが入り、
 # 焼き直すたびに入れ子が 1 段深くなる(1 件が際限なく伸びる)
-MARGIN_KEYS = (CHANGE_KEY, CHANGED_BY_KEY, CHANGED_AI_KEY, BEFORE_KEY, COLLECTED_AT_KEY)
+# **AI の回が直した脇書きの鍵**(座標など)。機械で引く回は、ここにある鍵を
+# 運んできた値で上書きしない(`_with_facts`)—— 上書きしていた頃は、整理が直した
+# 店の座標が、名簿を引き直した回に元の辞典の値へ戻っていた
+AI_KEYS_KEY = "ai_keys"
+MARGIN_KEYS = (
+    CHANGE_KEY, CHANGED_BY_KEY, CHANGED_AI_KEY, BEFORE_KEY, COLLECTED_AT_KEY, AI_KEYS_KEY,
+)
 
 
 def signed(items: list[dict], backend: str, model: str) -> list[dict]:
@@ -4372,6 +4378,10 @@ def _stamped(
     # 古い署名が残っていると「この内容を書いたのはこの AI」と読めてしまう
     if by:
         stamp[CHANGED_AI_KEY] = by
+        # **AI が変えた鍵を覚える**(前から覚えていたものに足す)。機械で引く回が
+        # その鍵を上書きしないため(`_with_facts`)
+        if touched := _ai_touched(doc, before) | set(extra.get(AI_KEYS_KEY) or []):
+            stamp[AI_KEYS_KEY] = sorted(touched)
     else:
         extra = {k: v for k, v in extra.items() if k != CHANGED_AI_KEY}
     merged = {**extra, **stamp}
@@ -4382,6 +4392,14 @@ def _stamped(
     else:
         merged.pop(BEFORE_KEY, None)
     return {**doc, "extra": merged}
+
+
+def _ai_touched(doc: dict, before: dict | None) -> set[str]:
+    """AI の回が変えた脇書きの鍵(前と値が違うもの・新しく入ったもの)。"""
+    if not isinstance(before, dict):
+        return set()
+    was, now = facts_of(before), facts_of(doc)
+    return {k for k in now if was.get(k) != now[k]}
 
 
 def _before_of(doc: dict, before: dict | None) -> dict:
@@ -4542,9 +4560,15 @@ def _with_facts(doc: dict, raw: dict) -> dict:
 
     **触るのは運ばれてきた鍵だけ。** 本文もタグも、運ばれていない鍵も動かさない ——
     あちらは AI が育てるもので、機械が持ち主ではない。
+
+    **AI の回が直した鍵も動かさない**(`AI_KEYS_KEY`)。辞典の座標がずれていて
+    整理が直した店は、名簿を引き直すたびに元のずれた座標へ戻っていた。
     """
     extra = doc.get("extra") if isinstance(doc.get("extra"), dict) else {}
-    fresh = {k: v for k, v in _carried(raw.get("extra")).items() if v is not None}
+    kept = set(extra.get(AI_KEYS_KEY) or [])
+    fresh = {
+        k: v for k, v in _carried(raw.get("extra")).items() if v is not None and k not in kept
+    }
     return {**doc, "extra": _merge_extra(extra, fresh)} if fresh else doc
 
 
