@@ -3327,6 +3327,23 @@ class TestCarryingFactsIntoTheDoc:
         assert docs[0]["body"] == "AI の説明（AI が書いた）"
         assert docs[0]["tags"] == ["トピック"]
 
+    def test_a_held_location_is_put_back_and_marked(self):
+        """**人が確かめた座標は、AI が動かしても戻す**(正しい位置に直した店が、
+        別の回に動かされていた)。印のタグも付け、AI から見えるようにする。"""
+        locks = collect.normalize_locks({"店 (123)": {"lat": 35.5, "lon": 139.7}})
+        moved = {"title": "店 (123)", "tags": ["食事処"], "extra": {"lat": 35.6, "lon": 139.8, "x": 1}}
+
+        out = collect.held(moved, locks)
+
+        assert (out["extra"]["lat"], out["extra"]["lon"]) == (35.5, 139.7)
+        assert out["extra"]["x"] == 1
+        assert out["tags"] == ["食事処", collect.LOCKED_TAG]
+        # 消えたもの・固定していないものは触らない
+        gone = {**moved, "tags": [notes.REMOVED_TAG]}
+        assert collect.held(gone, locks) == gone
+        other = {**moved, "title": "別の店"}
+        assert collect.held(other, locks) == other
+
     def test_what_an_ai_fixed_is_not_put_back_by_the_roster(self):
         """**AI の回が直した脇書きは、名簿を引き直しても戻さない。** 整理が直した
         店の座標が、名簿を引き直した回に元の辞典のずれた座標へ戻っていた。
@@ -7678,3 +7695,57 @@ class TestTheLastHours:
         """今あるものを差し込んでいる回なので、直す回になりうる(`{recent}` と同じ扱い)。"""
         assert collect.edits_what_is_there("まとめて {recent:24h}") is True
         assert collect.edits_what_is_there("まとめて {recent:24h}", only_new=True) is False
+
+
+class TestHoldingALocation:
+    """**人が確かめた座標を固定する**(`collect.set_lock` / `POST /v1/collect/{name}/locks`)。"""
+
+    def test_a_lock_is_kept_on_the_collection_and_can_be_removed(self, sample):
+        collect.set_lock("news", "店 (123)", 35.5, 139.7)
+
+        assert collect.get("news").locks == {notes.title_key("店 (123)"): {"lat": 35.5, "lon": 139.7}}
+
+        collect.set_lock("news", "店 (123)", None, None)
+        assert collect.get("news").locks == {}
+
+    def test_the_settings_resend_does_not_drop_the_locks(self, sample):
+        """各画面の「収集の設定を更新」は定義を送り直すが、固定は消さない。"""
+        collect.set_lock("news", "店", 35.5, 139.7)
+        collect.update("news", description="送り直し", prompt="{current}")
+
+        assert collect.get("news").locks
+
+    @pytest.fixture()
+    def client(self, sample, built_data_dir, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        from app.main import app
+
+        with TestClient(app) as c:
+            yield c
+
+    def test_it_is_reachable_from_outside(self, client):
+        res = client.post("/v1/collect/news/locks", json={"title": "店", "lat": 35.5, "lon": 139.7})
+
+        assert res.status_code == 200, res.text
+        assert res.json()["locks"] == 1
+        # 片方だけでは断る
+        assert client.post("/v1/collect/news/locks", json={"title": "店", "lat": 35.5}).status_code == 400
+        # 空にすると外れる
+        assert client.post("/v1/collect/news/locks", json={"title": "店"}).json()["locks"] == 0
+
+    def test_baking_puts_the_location_back(self, sample):
+        collect.set_lock("news", "店", 35.5, 139.7)
+        item = collect.get("news")
+        previous = {"店": {"title": "店", "body": "本文", "tags": ["食事処"], "doc_id": 1,
+                           "extra": {"lat": 35.5, "lon": 139.7}}}
+        collected = [{"title": "店", "body": "直した本文", "tags": ["食事処"],
+                      "extra": {"lat": 35.9, "lon": 139.9}}]
+
+        docs, _counts = collect.material(item, previous, collected, edits=True)
+
+        assert (docs[0]["extra"]["lat"], docs[0]["extra"]["lon"]) == (35.5, 139.7)
+        assert docs[0]["body"] == "直した本文"
+        assert collect.LOCKED_TAG in docs[0]["tags"]
+

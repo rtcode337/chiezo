@@ -492,6 +492,11 @@ class Collection:
     # 混ざると、押しても何も出ないものが並ぶ。**確かめられるのはこちら**(長期記憶を
     # 持っているのはこの層)なので、集める側で落とす
     verify_tags: list[dict] = field(default_factory=list)
+    # **人が確かめた座標**(`見出しの鍵 → {"lat", "lon"}`。`set_lock` / `held`)。
+    # 焼くたびに、その 1 件の座標をここの値へ戻し、`LOCKED_TAG` を付ける ——
+    # AI の回が「ずれている」と思って動かしても、名簿を引き直しても動かない。
+    # **頼むだけでは守れない**: 正しい位置に直した店が、別の回に動かされていた
+    locks: dict = field(default_factory=dict)
     # 誰が置いたか。外のアプリが名乗った文字列で、**印であって認証ではない**
     # (LAN 内・認証なしの前提なので偽れる)。有効にするか決める人の手がかり
     requested_by: str = ""
@@ -1330,6 +1335,7 @@ def _from_json(item: dict) -> Collection:
         keep_days=normalize_keep_days(item.get("keep_days"), normalize_kind(item.get("kind"))),
         thumbs=thumbnails.normalize(item.get("thumbs")),
         verify_tags=normalize_verify_tags(item.get("verify_tags")),
+        locks=normalize_locks(item.get("locks")),
         requested_by=str(item.get("requested_by") or ""),
         created_at=str(item.get("created_at") or ""),
         updated_at=str(item.get("updated_at") or ""),
@@ -3983,7 +3989,90 @@ def _found_by_record(edits_of, before: dict) -> dict | None:
     return find(keys)
 
 
+# 人が確かめた座標を持つ 1 件の印(`held`)。**AI にも見える**(`{current}` のタグ)ので、
+# 依頼文で「この印の店の座標は直さない」と頼める。直されても焼くときに戻す
+LOCKED_TAG = "座標確認済み"
+
+
+def normalize_locks(raw) -> dict:
+    """固定した座標(`見出しの鍵 → {"lat", "lon"}`)を均す。読めない行は落とす。"""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict = {}
+    for title, value in raw.items():
+        key = notes.title_key(str(title))
+        try:
+            lat, lon = float(value["lat"]), float(value["lon"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if key and -90 <= lat <= 90 and -180 <= lon <= 180:
+            out[key] = {"lat": lat, "lon": lon}
+    return out
+
+
+def set_lock(name: str, title: str, lat: float | None, lon: float | None) -> Collection:
+    """1 件の座標を固定する(`lat` と `lon` を渡す)/ 外す(どちらも None)。
+    **次に焼くときから効く**(座標を戻し、`LOCKED_TAG` を付ける)。"""
+    item = get(name)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"収集 {name} がありません")
+    key = notes.title_key(title)
+    if not key:
+        raise HTTPException(status_code=400, detail="見出しを書いてください")
+    locks = dict(item.locks)
+    if lat is None and lon is None:
+        locks.pop(key, None)
+    else:
+        fixed = normalize_locks({key: {"lat": lat, "lon": lon}})
+        if not fixed:
+            raise HTTPException(status_code=400, detail="緯度・経度を数で書いてください")
+        locks.update(fixed)
+    updated = replace(item, locks=locks, updated_at=_iso(_now()))
+    _replace_one(name, updated)
+    return updated
+
+
+def held(doc: dict, locks: dict) -> dict:
+    """固定した座標を持つ 1 件なら、座標をその値へ戻して印を付ける。消えたものは触らない。"""
+    if not locks or is_removed(doc):
+        return doc
+    fixed = locks.get(notes.title_key(doc.get("title")))
+    if fixed is None:
+        return doc
+    extra = doc.get("extra") if isinstance(doc.get("extra"), dict) else {}
+    tags = [t for t in (doc.get("tags") or []) if t != LOCKED_TAG]
+    return {
+        **doc,
+        "extra": {**extra, "lat": fixed["lat"], "lon": fixed["lon"]},
+        "tags": [*tags, LOCKED_TAG],
+    }
+
+
 def stream_docs(
+    item: Collection,
+    previous,
+    collected,
+    only_new: bool = False,
+    edits: bool = False,
+    diff: dict | None = None,
+    sweep: str = "",
+    unreviewed: bool = False,
+    reviewed: set[str] | None = None,
+    facts: bool = False,
+):
+    """焼く素材を 1 件ずつ返す(中身は `_stream_docs`)。**人が確かめた座標は
+    最後に当て直す**(`held`)—— AI の直しでも機械の名簿でも、その 1 件の座標は動かない。"""
+    docs = _stream_docs(
+        item, previous, collected, only_new, edits, diff, sweep, unreviewed, reviewed, facts,
+    )
+    if not item.locks:
+        yield from docs
+        return
+    for doc in docs:
+        yield held(doc, item.locks)
+
+
+def _stream_docs(
     item: Collection,
     previous,
     collected,
