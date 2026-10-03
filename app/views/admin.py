@@ -39,6 +39,7 @@ from app import (
     media,
     notes,
     providers,
+    rebuilds,
     registry,
     repartition_job,
     search_queries,
@@ -2977,6 +2978,7 @@ def memory_page(
         f"<td>{esc(s.dump_date or '')}</td>"
         f"<td>{esc(s.built_at or '')}</td>"
         f"<td>{schema_cell(s.schema_version)}</td>"
+        f"<td>{_rebuild_schedule_cell(s.name)}</td>"
         # **2 段に組む。** 上の段は世代を作り直す・消す口(再構築 → 削除)、
         # 下の段は世代を張り替える口と、張り替える先。1 列に縦積みしていた頃は、
         # 「1 つ前: 日時」がボタンの間に挟まって途中で折り返し、どれがどの口か読めなかった
@@ -3068,7 +3070,7 @@ chiezo-trigger が立ち上がっていない場合、再構築と削除はで�
 </p>
 <table>
 <thead>
-<tr><th>name</th><th>kind</th><th>lang</th><th>docs</th><th>size</th><th>dump_date</th><th>built_at</th><th>schema_version</th><th></th></tr>
+<tr><th>name</th><th>kind</th><th>lang</th><th>docs</th><th>size</th><th>dump_date</th><th>built_at</th><th>schema_version</th><th>定期再構築</th><th></th></tr>
 </thead>
 <tbody>
 {rows}
@@ -3643,6 +3645,61 @@ def _delete_source_cell(src: Source, used_by: str, disabled: str) -> str:
         f" onsubmit=\"return prompt('{esc(ask)}') === '{esc(src.name)}'\">"
         f'<button type="submit"{disabled}>削除</button></form>'
     )
+
+
+REBUILD_SCHEDULE_BACK = "/admin/memory#long-term"
+
+
+def _rebuild_schedule_cell(name: str) -> str:
+    """長期記憶の表の「定期再構築」の欄(`app/rebuilds.py`)。
+
+    **ダンプのソースだけ**に出す。集めたソースは収集の巡回が回すので、ここで決めると
+    2 つの時計が同じソースを焼き直すことになる。予定の置き場が無い構成では決められない。
+    """
+    if not is_dump_source(name):
+        return '<span class="muted">収集の巡回が回す</span>'
+    if not rebuilds.is_enabled():
+        return '<span class="muted">—</span>'
+    s = rebuilds.get(name)
+    interval = s.interval_days if s else 0
+    hour = s.hour if s else rebuilds.DEFAULT_HOUR
+    options = '<option value="">なし</option>' + "".join(
+        f'<option value="{d}"{" selected" if d == interval else ""}>{d} 日おき</option>'
+        for d in rebuilds.INTERVAL_CHOICES
+    )
+    hours = "".join(
+        f'<option value="{h}"{" selected" if h == hour else ""}>{h} 時</option>' for h in range(24)
+    )
+    nxt = (
+        f'<br><span class="muted nowrap">次: {esc(jst.compact(s.next_run_at()))}</span>' if s else ""
+    )
+    return (
+        '<form class="init-form" method="post" action="/admin/rebuild-schedule">'
+        f'<input type="hidden" name="source" value="{esc(name)}">'
+        f'<select name="interval_days">{options}</select> '
+        f'<select name="hour" title="日本時間">{hours}</select> '
+        '<button type="submit">保存</button></form>'
+        f"{nxt}"
+    )
+
+
+@router.post("/admin/rebuild-schedule")
+def admin_rebuild_schedule(
+    request: Request, source: str = Form(...), interval_days: str = Form(""), hour: int = Form(rebuilds.DEFAULT_HOUR)
+):
+    """定期再構築の予定を決める・外す(`interval_days` が空なら外す)。"""
+    sources: dict[str, Source] = request.app.state.sources
+    if source not in sources or not is_dump_source(source):
+        raise HTTPException(404, {"error": f"定期再構築を決められるのは取り込み済みのダンプのソースだけです: {source}"})
+    machine_store.require_path()
+    if not interval_days.strip():
+        rebuilds.clear(source)
+    else:
+        try:
+            rebuilds.set_schedule(source, int(interval_days), hour)
+        except ValueError as e:
+            raise HTTPException(400, {"error": str(e)}) from e
+    return RedirectResponse(url=REBUILD_SCHEDULE_BACK, status_code=303)
 
 
 def _rollback_cell(src: Source, back: str) -> str:
