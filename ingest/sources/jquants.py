@@ -31,7 +31,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
-from core import Doc
+from core import Doc, check_stop
 
 log = logging.getLogger("chiezo.ingest")
 
@@ -45,6 +45,12 @@ USER_AGENT = "chiezo-ingest/0.1 (https://github.com/; contact via repo issues)"
 # ページを続けて取るときの間隔(秒)。相手は個人向けのサービスなので、こちらで間を空ける
 PAGE_INTERVAL_SECONDS = 1.0
 REQUEST_TIMEOUT_SECONDS = 60
+# 429(レート制限)を受けたときに待って問い合わせ直す回数と、1 回目に待つ秒数(回ごとに倍にする)。
+# **待てば通る**ので止めない —— 無料プランは 1 分に 5 回ほどで 429 になり、こちらが間隔を
+# 空けていても、同じキーを別のところ(pta のバッチなど)で同時に使えば当たる。
+# 1 回目で止めていた頃は、決算予定の取り込みが 32 回の問い合わせの途中で丸ごと落ちた
+RATE_LIMIT_RETRIES = 5
+RATE_LIMIT_WAIT_SECONDS = 60
 RAW_NAME = "jquants_master.jsonl"
 
 # 商品区分コード → 名前。2026-07 の実測で全 4,449 件がこの 6 種類のどれかだった
@@ -91,6 +97,22 @@ def _blank(value: object) -> str:
     return "" if text in ("", "-") else text
 
 
+def _retry_after(e: urllib.error.HTTPError) -> int:
+    """相手が名乗った待ち時間(Retry-After の秒数)。無い・読めなければ 0。"""
+    try:
+        return max(0, int(str(e.headers.get("Retry-After") or "0").strip()))
+    except (ValueError, AttributeError):
+        return 0
+
+
+def _sleep_watching_stop(seconds: float) -> None:
+    """待つ。**待っている間も「止める」を見る**(数分待つことがあるので、待ち切るまで降りられないと困る)。"""
+    end = time.monotonic() + seconds
+    while (left := end - time.monotonic()) > 0:
+        check_stop()
+        time.sleep(min(1.0, left))
+
+
 class JquantsMasterAdapter:
     source = "jquants_master"
     source_kind = "jquants"
@@ -129,16 +151,28 @@ class JquantsMasterAdapter:
             f"{self.base_url}{path}{query}",
             headers={"x-api-key": key, "User-Agent": USER_AGENT},
         )
-        try:
-            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
-                return json.load(resp)
-        except urllib.error.HTTPError as e:
-            # **キーや相手の応答本文は載せない**(取り込みのログは画面に出る)
-            if e.code in (401, 403):
-                raise SystemExit(f"J-Quants が API キーを受け付けませんでした(HTTP {e.code})") from e
-            if e.code == 429:
-                raise SystemExit("J-Quants のレート制限に達しました(HTTP 429)。時間を置いて再実行してください") from e
-            raise
+        for attempt in range(RATE_LIMIT_RETRIES + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
+                    return json.load(resp)
+            except urllib.error.HTTPError as e:
+                # **キーや相手の応答本文は載せない**(取り込みのログは画面に出る)
+                if e.code in (401, 403):
+                    raise SystemExit(f"J-Quants が API キーを受け付けませんでした(HTTP {e.code})") from e
+                if e.code != 429:
+                    raise
+                if attempt == RATE_LIMIT_RETRIES:
+                    raise SystemExit(
+                        f"J-Quants のレート制限に達しました(HTTP 429)。{RATE_LIMIT_RETRIES} 回待って"
+                        "問い合わせ直しても通りませんでした。時間を置いて再実行してください"
+                    ) from e
+                wait = _retry_after(e) or RATE_LIMIT_WAIT_SECONDS * (2 ** attempt)
+                log.warning(
+                    "J-Quants のレート制限(HTTP 429)。%d 秒待って問い合わせ直します(%d/%d)",
+                    wait, attempt + 1, RATE_LIMIT_RETRIES,
+                )
+                _sleep_watching_stop(wait)
+        raise AssertionError("unreachable")
 
     def fetch(self, workdir: Path) -> tuple[Path, str]:
         """全ページを取って 1 行 1 銘柄の JSON に書く。日付は応答の `Date` の最新。
