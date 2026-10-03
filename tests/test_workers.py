@@ -101,6 +101,55 @@ class TestChoosing:
         assert workers.pick(_worker(workers.Step("codex")), limit=80.0) is None
 
 
+class TestRoomUntilTheWindowResets:
+    """**80% を超えていても、戻るまでに余力があれば使う**(`PACE_LIMIT`)。
+
+    使用率だけで決めると、7 日の窓の 85% が「戻る半日前」でも避け、余っている枠を
+    捨てて次の相手へ落ちる。いまのペースで戻る時点に 100% へ届かなければ使う。
+    """
+
+    @staticmethod
+    def _weekly(percent: float, resets_in_days: float) -> None:
+        from datetime import timedelta
+
+        resets = datetime.now(UTC) + timedelta(days=resets_in_days)
+        usage_store.save_quota("codex", [
+            {"id": "weekly", "label": "直近 7 日", "used_percent": percent,
+             "window_minutes": 7 * 24 * 60, "resets_at": resets.isoformat(timespec="seconds")},
+        ])
+
+    def test_over_the_limit_with_room_until_reset_is_used(self, enabled):
+        # 6.5 日で 85% → 戻るまでに 92% の見込み
+        self._weekly(85.0, resets_in_days=0.5)
+
+        assert workers.room_left(workers.Step("codex"))
+        assert workers.pick(_worker(workers.Step("codex"))) == workers.Step("codex")
+
+    def test_over_the_limit_without_room_is_skipped(self, enabled):
+        # 4 日で 85% → 戻るまでに 149% の見込み
+        self._weekly(85.0, resets_in_days=3)
+
+        assert not workers.room_left(workers.Step("codex"))
+
+    def test_under_the_limit_is_used_whatever_the_pace(self, enabled):
+        # 80% 未満はペースを見ない(いままでどおり)
+        self._weekly(50.0, resets_in_days=6)
+
+        assert workers.room_left(workers.Step("codex"))
+
+    def test_over_the_limit_without_an_estimate_is_skipped(self, enabled):
+        # 窓の長さも戻る時刻も分からない相手は、超えていればいままでどおり避ける
+        _quota("codex", 85.0)
+
+        assert not workers.room_left(workers.Step("codex"))
+
+    def test_it_can_be_turned_off(self, enabled, monkeypatch):
+        monkeypatch.setattr(workers, "PACE_LIMIT", 0.0)
+        self._weekly(85.0, resets_in_days=0.5)
+
+        assert not workers.room_left(workers.Step("codex"))
+
+
 class TestABackendWithMoreThanOneQuota:
     """**1 人の相手が、独立した枠を何本も持つことがある。**
 

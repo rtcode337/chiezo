@@ -1324,8 +1324,8 @@ def _all_full(worker: str) -> dict:
             }
     return {
         "error": f"ワーカー「{workers.label_for(worker)}」のどの相手も枠に余裕がありません",
-        "hint": f"使用率が {workers.QUOTA_LIMIT:.0f}% を超えている相手と、"
-                "相手自身が枠切れを返した相手は避けます",
+        "hint": f"使用率が {workers.QUOTA_LIMIT:.0f}% を超えていて、いまのペースだと枠が戻る前に"
+                "使い切る相手と、相手自身が枠切れを返した相手は避けます",
     }
 
 

@@ -690,9 +690,7 @@ def busiest(provider_id: str, model: str = "") -> float | None:
     row = usage_store.load_quota().get(provider_id)
     if not row:
         return None
-    windows = _windows_from(row.get("windows", []))
-    if group := providers.quota_group(provider_id, model):
-        windows = [w for w in windows if w.group == group] or windows
+    windows = _windows_for(row, provider_id, model)
     now = datetime.now(UTC)
     # **戻る時刻を過ぎた窓は 0 として読む。** 控えは取ったときの値で、窓が明ければ
     # 使用率は戻っている —— 古い値のまま読むと、一度 80% を超えた相手はワーカーに
@@ -702,6 +700,36 @@ def busiest(provider_id: str, model: str = "") -> float | None:
         for w in windows if w.used_percent is not None
     ]
     return max(percents) if percents else None
+
+
+def _windows_for(row: dict, provider_id: str, model: str) -> list[Window]:
+    """控えの窓のうち、**そのモデルが食う枠のもの**(突き合わなければ全部)。"""
+    windows = _windows_from(row.get("windows", []))
+    if group := providers.quota_group(provider_id, model):
+        windows = [w for w in windows if w.group == group] or windows
+    return windows
+
+
+def projected_peak(provider_id: str, model: str = "", now: datetime | None = None) -> float | None:
+    """**いまのペースが続いたら、窓が戻る時点で何 % になるか**(いちばん高い窓)。控えを読むだけ。
+
+    使用率だけでは、7 日の窓の 70% が「6 日経って 70%」なのか「1 日で 70%」なのかが
+    読めない —— 後者は戻るまでに使い切る。**戻るまでに余力が残るか**を見るための値で、
+    画面の見積もり(`pace_of`)と同じ計算をする。
+
+    見積もれない窓(長さか戻る時刻が分からない・始まったばかり・もう戻った)は数えない。
+    どれも見積もれなければ None(分からない相手は通す、の規則に合わせる)。
+    """
+    row = usage_store.load_quota().get(provider_id)
+    if not row:
+        return None
+    fetched_at = str(row.get("fetched_at") or "")
+    projections = [
+        pace.projected
+        for w in _windows_for(row, provider_id, model)
+        if (pace := pace_of(w, fetched_at, now)) is not None and pace.projected is not None
+    ]
+    return max(projections) if projections else None
 
 
 def has_reset(window: Window, now: datetime | None = None) -> bool:
