@@ -82,12 +82,32 @@ def _duration(seconds: float) -> str:
     return f"{seconds // 3600} 時間 {round(seconds % 3600 / 60)} 分"
 
 
+def _forget_part_from_elsewhere(part: Path, url: str) -> None:
+    """途中まで落としたファイルが**別の URL から**のものなら捨てる。どこから落としたかを控える。
+
+    **続きは同じ URL からしかつなげない。** 配布元(ミラー)を切り替えると、ファイル名は
+    同じ日付で同じになるのに中身は別物なので、curl の `-C -` が前の途中に別のファイルの
+    続きを足し、壊れたファイルが出来上がる(読むまで気づけない)。**控えの無い途中のファイル
+    (これを入れる前の版が作ったもの)も捨てる** —— どこから落としたか分からないものに続きを
+    つなぐより、落とし直すほうが安い(壊れたファイルは焼くところまで進んでから落ちる)。
+    """
+    marker = part.with_suffix(part.suffix + ".url")
+    if part.exists():
+        came_from = marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+        if came_from != url:
+            log.info("discarding %s (it came from %s, not %s)", part.name, came_from or "an unknown url", url)
+            part.unlink()
+    part.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(url, encoding="utf-8")
+
+
 def fetch(url: str, dest: Path, user_agent: str = USER_AGENT) -> Path:
     """`url` を `dest` へ落とす(途中のぶんは `<dest>.part`。既にあれば何もしない)。"""
     part = dest.with_suffix(dest.suffix + ".part")
     if dest.exists() and not part.exists():
         log.info("dump already downloaded: %s", dest)
         return dest
+    _forget_part_from_elsewhere(part, url)
     log.info("downloading %s", url)
     total = _total_size(url, user_agent)
     proc = subprocess.Popen(
@@ -129,6 +149,7 @@ def fetch(url: str, dest: Path, user_agent: str = USER_AGENT) -> Path:
         got / max(elapsed, 0.001) / 1024 / 1024,
     )
     part.rename(dest)
+    part.with_suffix(part.suffix + ".url").unlink(missing_ok=True)
     return dest
 
 

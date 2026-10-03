@@ -72,6 +72,20 @@ from core import (
 log = logging.getLogger(__name__)
 
 GEOFABRIK_URL = "https://download.geofabrik.de/"
+# 配布元を差し替える環境変数(既定は Geofabrik)。**Geofabrik と同じ並び**
+# (`<頭><地域>-latest.osm.pbf`。例 `https://download.openstreetmap.fr/extracts/`)の
+# ミラーを指す。Geofabrik は大きなファイルを何度も落とす IP を絞ることがあり、
+# 絞られると 1 日かかる(実測: IPv4 で 0.02 MiB/s。同じ時刻に IPv6 なら 4 MiB/s、
+# openstreetmap.fr なら 3 MiB/s 出た)。
+# **抽出の切り方は配布元ごとに少し違う** —— openstreetmap.fr の日本は、北方領土
+# (OSM ではロシアのサハリン州)を含み、硫黄島・南鳥島・沖ノ鳥島を含まない。
+# 地域の名前(`self.region`)も配布元ごとに違いうるので、日本以外は確かめてから使う
+OSM_DOWNLOAD_BASE_ENV = "OSM_DOWNLOAD_BASE"
+
+
+def download_base() -> str:
+    """いま使う配布元の頭(末尾は `/`)。"""
+    return (os.environ.get(OSM_DOWNLOAD_BASE_ENV) or GEOFABRIK_URL).rstrip("/") + "/"
 USER_AGENT = "chiezo-ingest/0.1 (https://github.com/; contact via repo issues)"
 
 # doc_id = osm_id * 4 + タイプコード(node/way/relation の ID 空間は独立のため)
@@ -639,7 +653,7 @@ class OsmAdapter:
     # ---- 取得 -------------------------------------------------------------
 
     def _latest_url(self) -> str:
-        return f"{GEOFABRIK_URL}{self.region}-latest.osm.pbf"
+        return f"{download_base()}{self.region}-latest.osm.pbf"
 
     def _remote_date(self, url: str) -> str:
         """Last-Modified ヘッダからダンプ日付 YYYYMMDD を得る(無ければ今日)。"""

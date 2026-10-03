@@ -112,3 +112,37 @@ def test_the_screen_shows_the_progress():
     # 大きさが分からなければ、割合と棒は出さない
     assert "<progress" not in admin._progress_html({"phase": "download", "file": "x", "bytes": 1})
     assert admin._progress_html(None) == ""
+
+
+def test_a_part_from_another_mirror_is_started_over(tmp_path, quick):
+    """配布元を切り替えたら、前の配布元の途中に続きをつながない(壊れたファイルになる)。"""
+    server = _serve()
+    url = f"http://127.0.0.1:{server.server_port}/dump.pbf"
+    part = tmp_path / "dump.pbf.part"
+    part.write_bytes(b"from-another-mirror")
+    (tmp_path / "dump.pbf.part.url").write_text("https://elsewhere.invalid/dump.pbf", encoding="utf-8")
+    try:
+        dest = download.fetch(url, tmp_path / "dump.pbf")
+    finally:
+        server.shutdown()
+    assert dest.read_bytes() == BODY
+    assert not (tmp_path / "dump.pbf.part.url").exists()
+
+
+def test_a_part_from_the_same_url_is_resumed(tmp_path, quick):
+    """同じ URL からの途中は捨てない(続きから落とす)。"""
+    url = "http://127.0.0.1:1/dump.pbf"
+    part = tmp_path / "dump.pbf.part"
+    part.write_bytes(b"x" * 10)
+    (tmp_path / "dump.pbf.part.url").write_text(url, encoding="utf-8")
+    download._forget_part_from_elsewhere(part, url)
+    assert part.exists()
+
+
+def test_a_part_without_a_record_is_started_over(tmp_path, quick):
+    """控えの無い途中(前の版が作ったもの)は、どこから落としたか分からないので捨てる。"""
+    part = tmp_path / "dump.pbf.part"
+    part.write_bytes(b"x" * 10)
+    download._forget_part_from_elsewhere(part, "http://127.0.0.1:1/dump.pbf")
+    assert not part.exists()
+    assert (tmp_path / "dump.pbf.part.url").read_text(encoding="utf-8") == "http://127.0.0.1:1/dump.pbf"

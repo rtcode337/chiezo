@@ -31,6 +31,7 @@ docker compose --profile ingest run --rm chiezo-ingest
 | `DUMP_FILE` | ダウンロードをスキップし既存ファイルを使う(カンマ区切りで複数シャード指定可) |
 | `PAGEVIEW_PERIOD` | ページビュー突合対象の年月 `YYYY-MM` を固定(省略時は最新月を自動検出) |
 | `MIN_DOCS` / `SAMPLE_TITLES` | 検証パラメータの上書き(小規模データでの動作確認用) |
+| `OSM_DOWNLOAD_BASE` | OpenStreetMap の配布元の頭(既定は Geofabrik `https://download.geofabrik.de/`)。Geofabrik と同じ並び(`<頭><地域>-latest.osm.pbf`)のミラーを指す。例 `https://download.openstreetmap.fr/extracts/`。**Geofabrik は大きなファイルを何度も落とす IP を絞ることがある**(実測で IPv4 が 0.02 MiB/s まで落ち、同じ時刻にミラーなら 3 MiB/s 出た)ので、そのときの逃げ道。**抽出の切り方は配布元ごとに少し違う** —— openstreetmap.fr の日本は北方領土(OSM ではロシアのサハリン州)を含み、硫黄島・南鳥島・沖ノ鳥島を含まない。地域の名前も配布元ごとに違いうるので、日本以外は確かめてから使う。配布元を変えたとき、前の配布元から途中まで落としたファイルは捨てて最初から落とす(続きにつなぐと壊れる。どこから落としたかの控えが無い途中のファイルも捨てる) |
 | `OSM_AREA_ADMIN_LEVEL` | `extra.area` に入れる行政区の admin_level(既定 4 = 都道府県。`0` で境界パス省略) |
 | `BUILD_PROFILE` | 構築プロファイル。既定は `low_memory` = **どのソースも 2GiB で構築できる**(構築用 SQLite キャッシュを絞り、osm のノード座標索引をディスクへ。osm は数倍〜10 倍遅い)。メモリの潤沢なビルド機では `fast` を実行時に明示すると速度優先になる([メモリについて](#メモリについて)) |
 | `OSM_NODE_INDEX` | osm のノード座標索引の置き場(`sparse_mmap_array`〈RAM・速い〉/ `sparse_file_array`〈ディスク・省メモリ・遅い〉)。明示指定は `BUILD_PROFILE` より優先。未指定なら low_memory はディスク、fast はソースごとの既定(RAM 索引が 12GiB を超える国のみディスク) |
