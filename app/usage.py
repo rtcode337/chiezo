@@ -710,26 +710,38 @@ def _windows_for(row: dict, provider_id: str, model: str) -> list[Window]:
     return windows
 
 
-def projected_peak(provider_id: str, model: str = "", now: datetime | None = None) -> float | None:
-    """**いまのペースが続いたら、窓が戻る時点で何 % になるか**(いちばん高い窓)。控えを読むだけ。
+def over_limit_without_room(
+    provider_id: str, model: str, limit: float, pace_limit: float, now: datetime | None = None,
+) -> bool:
+    """**上限を超えていて、しかも戻るまでに余力の無い窓**があるか。控えを読むだけ。
 
-    使用率だけでは、7 日の窓の 70% が「6 日経って 70%」なのか「1 日で 70%」なのかが
-    読めない —— 後者は戻るまでに使い切る。**戻るまでに余力が残るか**を見るための値で、
-    画面の見積もり(`pace_of`)と同じ計算をする。
+    **窓ごとに見る。** 上限(`limit`)を下回っている窓は通し、超えている窓だけ、
+    いまのペースが続いても戻る時点で `pace_limit` に届かないなら通す(画面の見積もり
+    `pace_of` と同じ計算)。1 本でも通らなければ True。
 
-    見積もれない窓(長さか戻る時刻が分からない・始まったばかり・もう戻った)は数えない。
-    どれも見積もれなければ None(分からない相手は通す、の規則に合わせる)。
+    窓ごとに見ないと、上限を超えていない窓の見積もりで避けることになる —— 7 日の窓が
+    82%(戻るまでに 85.6% の見込み)で使ってよいのに、5 時間の窓の始まったばかりの 19%
+    (伸ばすと 114%)を見て避けていた。
+
+    超えている窓で見積もれないもの(長さか戻る時刻が分からない・始まったばかり)は
+    通さない(いままでどおり、詰まる前に譲る)。`pace_limit` が 0 なら見積もらない。
     """
     row = usage_store.load_quota().get(provider_id)
     if not row:
-        return None
+        return False
+    now = now or datetime.now(UTC)
     fetched_at = str(row.get("fetched_at") or "")
-    projections = [
-        pace.projected
-        for w in _windows_for(row, provider_id, model)
-        if (pace := pace_of(w, fetched_at, now)) is not None and pace.projected is not None
-    ]
-    return max(projections) if projections else None
+    for window in _windows_for(row, provider_id, model):
+        if window.used_percent is None:
+            continue
+        used = 0.0 if has_reset(window, now) else window.used_percent
+        if used < limit:
+            continue
+        pace = pace_of(window, fetched_at, now) if pace_limit > 0 else None
+        if pace is not None and pace.projected is not None and pace.projected < pace_limit:
+            continue
+        return True
+    return False
 
 
 def has_reset(window: Window, now: datetime | None = None) -> bool:

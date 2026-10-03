@@ -137,6 +137,22 @@ class TestRoomUntilTheWindowResets:
 
         assert workers.room_left(workers.Step("codex"))
 
+    def test_each_window_is_judged_on_its_own(self, enabled):
+        """**窓ごとに見る。** 上限を超えているのが 1 週間の窓だけなら、その窓の見込みで
+        決める —— 5 時間の窓が始まったばかりで 19%(伸ばすと 114%)でも、上限を超えて
+        いない窓の見積もりで避けない(本番で、使ってよい Claude Code が選ばれなかった)。"""
+        from datetime import timedelta
+
+        now = datetime.now(UTC)
+        usage_store.save_quota("claude", [
+            {"id": "session", "label": "Current session", "used_percent": 19.0,
+             "resets_at": (now + timedelta(minutes=250)).isoformat(timespec="seconds")},
+            {"id": "week", "label": "Current week (all models)", "used_percent": 82.0,
+             "resets_at": (now + timedelta(minutes=420)).isoformat(timespec="seconds")},
+        ])
+
+        assert workers.room_left(workers.Step("claude"))
+
     def test_over_the_limit_without_an_estimate_is_skipped(self, enabled):
         # 窓の長さも戻る時刻も分からない相手は、超えていればいままでどおり避ける
         _quota("codex", 85.0)
