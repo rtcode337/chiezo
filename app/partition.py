@@ -1043,7 +1043,14 @@ def _overlaps(spec: dict, one: str, other: str) -> bool:
         a, b = parse_geo_key(one), parse_geo_key(other)
         if a is None or b is None:
             return False
-        return a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]
+        # **境目が接しているだけでは重ならない**(面積を持って重なるときだけ)。
+        # 接しているだけの隣を数えていた頃は、隣に印の無い区画が 1 つあるだけで
+        # 印を継げなかった。鍵の丸めの幅(`_KEY_SLACK`)ぶんの食い違いも重なりにしない
+        slack = _KEY_SLACK / 2
+        return (
+            min(a[2], b[2]) - max(a[0], b[0]) > slack
+            and min(a[3], b[3]) - max(a[1], b[1]) > slack
+        )
     if spec["by"] == BY_BAND:
         a, b = parse_band_key(one), parse_band_key(other)
         # **分類が重なっていなければ、範囲を比べる意味が無い**(別の分類の帯)
@@ -1623,6 +1630,67 @@ def _distance_from(spec: dict | None, partitions: list[dict]):
     return lambda p: far.get(p["key"], math.inf)
 
 
+def seen_in_full(
+    spec: dict, partitions: list[dict], docs: dict[str, dict], sweep_names: list[str],
+    at: str, unseen_tag: str,
+) -> list[dict]:
+    """**中の文書がどれも一度は AI に見られている区画**に、`sweep_names` の印を付ける
+    (割り直したあとに、一周したら止まる巡回の名前を渡す)。
+
+    一周したら止まる巡回(`one_lap`)の役目は、全部に一度ずつ目を通すこと —— それが
+    済んでいる区画を回り直す理由は無い。**区画の形だけで印を継いでいた頃は、範囲を
+    広げるたびに印がほぼ全部消えた**: 割り直すと区画は広げた端まで伸びるので、
+    「前の範囲にすっぽり収まる区画」がほとんど残らない(本番で 16 区画のうち継げたのは
+    2 つ。中身はどれも見終わっていた区画が 6 つあった)。
+
+    **空の区画には付けない** —— そこには見るものが無いのではなく、足すべきものが
+    無いかを誰もまだ問うていない。目を通していない印(`unseen_tag`)の付いた文書が
+    1 件でもあれば付けない。前から付いている印はそのまま。
+    """
+    if not sweep_names or not partitions:
+        return partitions
+    seen = _all_seen(spec, partitions, docs, unseen_tag)
+    out = []
+    for p in partitions:
+        if p["key"] in seen:
+            visits = dict(p.get("visits") or {})
+            for name in sweep_names:
+                visits.setdefault(name, at)
+            p = {**p, "visits": visits}
+        out.append(p)
+    return out
+
+
+def _all_seen(spec: dict, partitions: list[dict], docs: dict[str, dict], unseen_tag: str) -> set:
+    """文書が 1 件以上あって、どれも目を通していない印を持たない区画の鍵。"""
+    find = locator(spec, partitions)
+    total: dict[str, int] = {}
+    unseen: dict[str, int] = {}
+    for doc in docs.values():
+        key = find(doc)
+        if key is None:
+            continue
+        total[key] = total.get(key, 0) + 1
+        if unseen_tag in (doc.get("tags") or []):
+            unseen[key] = unseen.get(key, 0) + 1
+    return {key for key, n in total.items() if n and not unseen.get(key)}
+
+
+# 名簿を作り直したあと、**中身をどれも見終わっている区画**に付ける一時の札
+# (`settled` → `cleared_where_changed`)。台帳を保存するときには残らない
+# (`normalize_ledger` は知らない鍵を落とす)
+SETTLED = "_settled"
+
+
+def settled(
+    spec: dict, partitions: list[dict], docs: dict[str, dict], unseen_tag: str
+) -> list[dict]:
+    """中身をどれも見終わっている区画に札(`SETTLED`)を付ける。
+    `cleared_where_changed` は、札の付いた区画の印を外さない。"""
+    seen = _all_seen(spec, partitions, docs, unseen_tag)
+    return [{**p, SETTLED: True} if p["key"] in seen else p for p in partitions]
+
+
 def due(partitions: list[dict], sweep_name: str, spec: dict | None = None) -> str | None:
     """次に見る区画を 1 つ。無ければ None。"""
     picked = pick(partitions, sweep_name, 1, spec)
@@ -1743,12 +1811,20 @@ def cleared_where_changed(before: list[dict], after: list[dict]) -> list[dict]:
     **見るのは件数**(前の台帳に同じ鍵があって、数も同じなら触らない)。
     中身が丸ごと入れ替わって数だけ同じ、は起こりうるが、機械で引く回は
     足すだけなので数が動かないなら顔ぶれも動いていない。
+
+    **中身をどれも見終わっている区画(`settled` の札)は、鍵や数が動いても外さない。**
+    範囲を広げて割り直すと鍵はすべて新しくなるので、件数だけで見ていた頃は
+    **引き継いだ印がここで全部外れていた**(本番で、範囲を南北に広げた回に 16 区画の
+    印がすべて消えた)。名簿が新しく入れたものには目を通していない印が付くので、
+    それを含む区画には札が付かず、今までどおり外れる。
     """
     was = {p["key"]: int(p.get("count") or 0) for p in before}
-    return [
-        p if was.get(p["key"]) == int(p.get("count") or 0) else {**p, "visits": {}}
-        for p in after
-    ]
+    out = []
+    for p in after:
+        keep = p.get(SETTLED) or was.get(p["key"]) == int(p.get("count") or 0)
+        p = {k: v for k, v in p.items() if k != SETTLED}
+        out.append(p if keep else {**p, "visits": {}})
+    return out
 
 
 def progress(partitions: list[dict], sweep_name: str) -> tuple[int, int]:

@@ -3636,7 +3636,9 @@ def load_json(raw) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
-def plan_partitions(item: Collection, sources: dict, previous: dict[str, dict]) -> list[dict]:
+def plan_partitions(
+    item: Collection, sources: dict, previous: dict[str, dict], after_roster: bool = False,
+) -> list[dict]:
     """この回に使う区画の台帳。必要なら割り直す(`app/partition.py`)。
 
     **母集団に消えたものは入れない**(`living`)。区画の大きさは「この回に見て
@@ -3665,6 +3667,12 @@ def plan_partitions(item: Collection, sources: dict, previous: dict[str, dict]) 
     移って痩せた帯は、痩せたまま回り続ける —— 1 人のために 1 回ぶんの枠を使う
     ことになる。まとめるのは周回の記録が同じ隣どうしだけなので、進み具合は動かない。
 
+    **名簿を作り直したあと(`after_roster`)は、見終わったかを中身で決める。**
+    中身をどれも見終わっている区画は、一周したら止まる巡回の印を付け、
+    鍵や数が動いても印を外させない(`partitioning.settled` →
+    `cleared_where_changed`)。範囲を広げた直後の割り直しは、まだ広げたところの
+    名簿が入っていないので、**決め手になるのはこちら**(名簿が入ったあと)。
+
     **前世代は「呼ぶと流れてくるもの」でも受け取る。** 区画を割るのに要るのは
     見出しとタグと脇書きだけで、本文は要らない —— 数十万件の収集では、本文まで
     読むかどうかで必要なメモリが桁で変わる。
@@ -3680,16 +3688,34 @@ def plan_partitions(item: Collection, sources: dict, previous: dict[str, dict]) 
     # **範囲を広げた・狭めたあとも割り直す**(`reach_changed`)。台帳は残してあるので、
     # 見終わっていた区画の印は引き継がれ、広げたところだけが「まだ」になる
     reach = partitioning.reach_changed(spec, item.partitions)
+    one_lap = [s.name for s in sweeps_of(item) if s.one_lap and s.walks_partitions()]
     if item.partitions and not partitioning.outgrown(spec, counts) and not reach:
-        return partitioning.merged(spec, partitioning.counted(item.partitions, counts))
+        ledger = partitioning.merged(spec, partitioning.counted(item.partitions, counts))
+        return _settle(spec, ledger, alive, one_lap) if after_roster else ledger
     built = partitioning.build(spec, sources, alive)
     # 前の範囲(前の台帳が覆っていた矩形)からはみ出す区画には印を継がない
     within = partitioning.extent_of(item.partitions) if reach else None
     ledger = partitioning.merged(
         spec, partitioning.refresh(built, item.partitions, spec, within)
     )
+    # **中身をどれも見終わっている区画は、一周したら止まる巡回も見終わった扱いに**
+    # (`seen_in_full`)。区画の形だけで印を継ぐと、範囲を広げるたびにほぼ全部消える
+    ledger = partitioning.seen_in_full(
+        spec, ledger, alive, one_lap, _iso(_now()), notes.UNREVIEWED_TAG
+    )
+    if after_roster:
+        ledger = partitioning.settled(spec, ledger, alive, notes.UNREVIEWED_TAG)
     log.info("partition %s: %d 区画(まとめる前 %d)", item.name, len(ledger), len(built))
     return ledger
+
+
+def _settle(spec: dict, ledger: list[dict], alive: dict, one_lap: list[str]) -> list[dict]:
+    """名簿を作り直したあと、割り直さなかった台帳にも中身で印を決める
+    (`plan_partitions` の `after_roster`)。"""
+    ledger = partitioning.seen_in_full(
+        spec, ledger, alive, one_lap, _iso(_now()), notes.UNREVIEWED_TAG
+    )
+    return partitioning.settled(spec, ledger, alive, notes.UNREVIEWED_TAG)
 
 
 class Edits:
@@ -3783,9 +3809,13 @@ def plan_partitions_next(
     舐めるのは高い。入れ替わるのは機械で引く回だけ。
     """
     rows = _rows_of(previous)
+    # **新しく入るものには目を通していない印を付けて数える**(焼くときと同じ)。
+    # 付けずに数えると、名簿が入れたばかりの店の区画まで「中身をどれも見終わって
+    # いる」になり、一周したら止まる巡回がそこを見に行かない(`settled`)
     return plan_partitions(
         item, sources,
-        lambda: stream_docs(item, rows(), collected, only_new, edits),
+        lambda: stream_docs(item, rows(), collected, only_new, edits, unreviewed=True),
+        after_roster=True,
     )
 
 

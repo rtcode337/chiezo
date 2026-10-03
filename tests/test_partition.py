@@ -1895,3 +1895,82 @@ class TestWideningTheBox:
         ledger = partition.refresh(built, old, narrowed)
 
         assert all(self.east(p) <= 139.69 + 1e-4 for p in ledger)
+
+
+class TestSeenInFull:
+    """**中身をどれも見終わっている区画は、一周したら止まる巡回も見終わった扱いに。**
+
+    区画の形だけで印を継ぐと、範囲を広げるたびに印がほぼ全部消える(割り直すと
+    区画は広げた端まで伸び、前の範囲にすっぽり収まる区画がほとんど残らない)。
+    """
+
+    @staticmethod
+    def spec():
+        return partition.normalize({"by": "geo", "target": 10, "bbox": [35.50, 139.67, 35.52, 139.69]})
+
+    def docs(self, *rows):
+        return {f"店{i}": {"title": f"店{i}", "tags": tags, "extra": {"lat": lat, "lon": lon}}
+                for i, (lat, lon, tags) in enumerate(rows)}
+
+    def test_a_partition_whose_docs_were_all_seen_is_marked(self):
+        spec = self.spec()
+        ledger = [{"key": partition.geo_key((35.50, 139.67, 35.51, 139.69)), "visits": {}},
+                  {"key": partition.geo_key((35.51, 139.67, 35.52, 139.69)), "visits": {}}]
+        docs = self.docs((35.505, 139.68, []), (35.506, 139.68, ["整理済み"]),
+                         (35.515, 139.68, ["_chiezo_unreviewed"]))
+
+        out = partition.seen_in_full(spec, ledger, docs, ["ざっと見る"], "t", "_chiezo_unreviewed")
+
+        assert out[0]["visits"] == {"ざっと見る": "t"}
+        # 目を通していない 1 件があれば付けない
+        assert out[1]["visits"] == {}
+
+    def test_an_empty_partition_is_left_for_the_lap(self):
+        """空の区画は、足すべきものが無いかをまだ誰も問うていない。"""
+        spec = self.spec()
+        ledger = [{"key": partition.geo_key((35.50, 139.67, 35.52, 139.69)), "visits": {}}]
+
+        out = partition.seen_in_full(spec, ledger, {}, ["ざっと見る"], "t", "_chiezo_unreviewed")
+
+        assert out[0]["visits"] == {}
+
+    def test_an_existing_mark_is_kept(self):
+        spec = self.spec()
+        ledger = [{"key": partition.geo_key((35.50, 139.67, 35.52, 139.69)),
+                   "visits": {"ざっと見る": "前"}}]
+        docs = self.docs((35.505, 139.68, []))
+
+        out = partition.seen_in_full(spec, ledger, docs, ["ざっと見る"], "t", "_chiezo_unreviewed")
+
+        assert out[0]["visits"] == {"ざっと見る": "前"}
+
+    def test_a_settled_partition_keeps_its_marks_after_the_roster(self):
+        """**名簿を作り直して鍵が全部新しくなっても、中身をどれも見終わっている区画の
+        印は外さない**(件数だけで見ていた頃は、範囲を広げた回に全部外れた)。
+        新しく入った店を含む区画は今までどおり外す。"""
+        spec = self.spec()
+        before = [{"key": partition.geo_key((35.50, 139.67, 35.52, 139.69)), "count": 2}]
+        after = [{"key": partition.geo_key((35.50, 139.67, 35.51, 139.69)), "count": 1,
+                  "visits": {"整理": "t"}},
+                 {"key": partition.geo_key((35.51, 139.67, 35.52, 139.69)), "count": 2,
+                  "visits": {"整理": "t"}}]
+        docs = self.docs((35.505, 139.68, []), (35.515, 139.68, []),
+                         (35.516, 139.68, ["_chiezo_unreviewed"]))
+
+        out = partition.cleared_where_changed(
+            before, partition.settled(spec, after, docs, "_chiezo_unreviewed"))
+
+        assert out[0]["visits"] == {"整理": "t"}
+        assert out[1]["visits"] == {}
+        # 一時の札は残さない
+        assert all(partition.SETTLED not in p for p in out)
+
+    def test_boxes_that_only_touch_do_not_overlap(self):
+        """接しているだけの隣を重なりと数えると、隣に印の無い区画があるだけで継げない。"""
+        spec = self.spec()
+        left = partition.geo_key((35.50, 139.67, 35.51, 139.68))
+        right = partition.geo_key((35.50, 139.68, 35.51, 139.69))
+
+        assert not partition._overlaps(spec, left, right)
+        assert partition._overlaps(spec, left, partition.geo_key((35.505, 139.675, 35.515, 139.685)))
+
