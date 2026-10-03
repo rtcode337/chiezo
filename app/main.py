@@ -53,6 +53,7 @@ from app import (
     media_providers,
     notes,
     providers,
+    rebuilds,
     search_queries,
     thumbs,
     usage,
@@ -326,6 +327,56 @@ async def _run_collections(app: FastAPI) -> None:
             await asyncio.to_thread(_tick_ingest)
         except Exception:
             log.exception("collection tick failed")
+
+
+async def _run_rebuilds(app: FastAPI) -> None:
+    """長期記憶の定期再構築の時計(`app/rebuilds.py`)。**失敗しても止めない**。"""
+    while True:
+        await asyncio.sleep(COLLECT_TICK_SECONDS)
+        try:
+            await asyncio.to_thread(_tick_rebuilds, app)
+        except Exception:
+            log.exception("rebuild tick failed")
+
+
+def _tick_rebuilds(app: FastAPI) -> None:
+    """予定の来た再構築を 1 本だけ起こす。
+
+    **ダンプの枠が空いているときだけ**起こす(ダンプは 1 本ずつ)。空いていなければ
+    何もせず次の周 —— 予定は起こせたときにだけ進めるので、飛ばされることは無い。
+    **キーの要るソースは、登録したキーがそのまま渡る**(`trigger_run`)。
+    """
+    from app.views.admin import TRIGGER_URL, _fetch_trigger_status, is_dump_source, trigger_run
+
+    if not TRIGGER_URL:
+        return
+    due = rebuilds.due()
+    if not due:
+        return
+    status = _fetch_trigger_status()
+    if not status or status.get("state") == "unreachable" or ingest_queue.dump_busy(status):
+        return
+    sources = app.state.sources
+    for s in due:
+        # 消したソース・ダンプでないソースの予定は起こさない(残っていても害は無いが、
+        # 毎分ここで断られ続けるのを避けて、予定ごと外す)
+        if s.source not in sources or not is_dump_source(s.source):
+            log.info("rebuild schedule for %s dropped: not an initialized dump source", s.source)
+            rebuilds.clear(s.source)
+            continue
+        try:
+            trigger_run(s.source)
+        except HTTPException as e:
+            if e.status_code in (409, 429):
+                return  # 擦れ違いで埋まった。次の周
+            # 断られた理由が直らない類(知らないソースなど)は、毎分叩き直さないよう
+            # この回は起こしたことにして、次の予定まで待つ
+            log.warning("scheduled rebuild of %s was refused: %s", s.source, _reason_of(e))
+            rebuilds.mark_started(s.source)
+            continue
+        rebuilds.mark_started(s.source)
+        log.info("scheduled rebuild started: %s", s.source)
+        return
 
 
 def _tick_ingest() -> None:
@@ -1875,6 +1926,12 @@ async def lifespan(app: FastAPI):
         if collect.is_enabled() and COLLECT_TICK_SECONDS > 0
         else None
     )
+    # 長期記憶の定期再構築の時計。予定の置き場が無ければ回さない
+    rebuilder = (
+        asyncio.create_task(_run_rebuilds(app))
+        if rebuilds.is_enabled() and COLLECT_TICK_SECONDS > 0
+        else None
+    )
     # 枠の時計。置き場が無ければ回さない(記録できないので採っても残らない)
     sampler = (
         asyncio.create_task(_sample_quotas())
@@ -1902,7 +1959,7 @@ async def lifespan(app: FastAPI):
         async with mcp.session_manager.run(), knowledge.session_manager.run():
             yield
     finally:
-        for task in (watcher, collector, sampler, choices):
+        for task in (watcher, collector, rebuilder, sampler, choices):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
