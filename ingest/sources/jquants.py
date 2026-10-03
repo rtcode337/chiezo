@@ -103,6 +103,8 @@ class JquantsMasterAdapter:
     credential_label = "J-Quants の API キー"
     # キーはダッシュボードで発行する。利用条件はヘルプの「利用目的・ライセンス」
     credential_help_url = "https://jpx-jquants.com/ja/help/usage"
+    # 上場銘柄一覧と決算発表予定日は同じ J-Quants のキーで取る(画面では 1 つだけ登録する)
+    credential_group = "jquants"
 
     def __init__(self, base_url: str = BASE_URL) -> None:
         self.base_url = base_url.rstrip("/")

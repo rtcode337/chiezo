@@ -275,6 +275,8 @@ def sources():
         if label := getattr(adapter, "credential_label", None):
             catalog[name]["credential"] = {
                 "label": label, "help_url": getattr(adapter, "credential_help_url", None),
+                # 同じキーを使うソースの組(無ければソース名。管理画面はこれごとに 1 つ持つ)
+                "group": getattr(adapter, "credential_group", None) or name,
             }
     for edition in WIKIPEDIA_EDITIONS.values():
         catalog[edition.wiki_id] = {

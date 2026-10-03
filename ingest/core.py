@@ -381,6 +381,11 @@ class SourceAdapter(Protocol):
     credential_label: str | None = None
     # キーをどこで手に入れるか(画面に案内として出す URL)
     credential_help_url: str | None = None
+    # **同じキーを使うソースは同じ名前を名乗る**(例: J-Quants の 2 つのソースは "jquants")。
+    # 管理画面はこの名前ごとにキーを 1 つだけ持ち、名乗ったソース全部に渡す —— ソースごとに
+    # 持つと同じキーを何度も入れることになり、入れ替えたときに片方だけ古いまま残る。
+    # 名乗らなければソース名がそのまま使われる(そのソース専用のキー)
+    credential_group: str | None = None
     # 画面から渡された認証情報。**この 1 本のアダプタにだけ入れる** —— 環境変数に
     # 書くと、同じ trigger で並んで走る別の 1 本にも見えてしまう
     credential: str | None = None

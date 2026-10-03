@@ -52,7 +52,9 @@ docker compose --profile ingest run --rm chiezo-ingest
 銘柄マスタとして全件を読みたいときは `filter?tag=東証上場`(500 件ずつ `offset` で送る)で引けます。優先株のように普通株と同じ会社名の銘柄は、
 見出しにコードを添えて分けます。株価は持ちません。
 
-**API キーは管理画面で登録します**(記憶 → 長期記憶の「取り込みに要るキー」)。
+**API キーは管理画面の「API キー」の面で、名前 `jquants` に登録します**。
+`jquants_master` と `jquants_earnings` は同じキーを使うので、1 回登録すれば両方に渡ります
+(長期記憶の面には、未登録のときだけ案内が出ます)。
 登録したキーは画面に二度と出ず、初期化・再構築のたびに chiezo-trigger へ渡ります
 (`POST /run/{source}` の本文。trigger は環境変数に置かず、その 1 本の取り込みにだけ渡し、
 状態にもログにも残しません)。キーの置き場は設定の置き場(`CHIEZO_STATE_DIR`)の
