@@ -306,7 +306,10 @@ def validate_db(adapter: SourceAdapter, db_path: Path, now_docs: int = 0) -> Non
         (count,) = conn.execute("SELECT COUNT(*) FROM docs").fetchone()
         if count < adapter.min_docs:
             raise RuntimeError(f"validation failed: only {count} docs (< {adapter.min_docs})")
-        if now_docs and count < now_docs * SHRINK_FLOOR and not _shrink_allowed():
+        # 件数が時期で大きく増減するのが本来の姿のソース(決算発表予定のような「いまの予定」の写し)は、
+        # ソース側が `allows_shrink` を名乗って外れる
+        shrink_ok = _shrink_allowed() or getattr(adapter, "allows_shrink", False)
+        if now_docs and count < now_docs * SHRINK_FLOOR and not shrink_ok:
             raise RuntimeError(
                 f"validation failed: {count} docs は、いまの世代({now_docs} docs)より"
                 f"大きく減っています(下限 {now_docs * SHRINK_FLOOR:.0f})。"

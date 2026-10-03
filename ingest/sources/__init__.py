@@ -23,7 +23,7 @@ from collections.abc import Callable
 from core import SourceAdapter
 from sources import collect as collect_sources
 from sources.geonames import GeonamesAdapter
-from sources.jquants import JquantsMasterAdapter
+from sources.jquants import JquantsEarningsAdapter, JquantsMasterAdapter
 from sources.osm import DEFAULT_VALIDATION, OsmAdapter
 from sources.osm_regions import OSM_REGIONS, OsmRegion
 from sources.overture import overture_japan
@@ -52,6 +52,8 @@ ADAPTERS: dict[str, Callable[[], SourceAdapter]] = {
     # 東証の上場銘柄一覧(J-Quants)。**API キーが要り、私的利用に限る**
     # (CHIEZO_JQUANTS_API_KEY。条件は sources/jquants.py の冒頭)
     "jquants_master": lambda: JquantsMasterAdapter(),
+    # 決算発表予定日(J-Quants。3・9 月期決算の会社だけ。無料プランでも遅れない)
+    "jquants_earnings": lambda: JquantsEarningsAdapter(),
 }
 
 
