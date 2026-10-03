@@ -257,50 +257,74 @@ class JquantsMasterAdapter:
         )
 
 
-EARNINGS_PATH = "/equities/earnings-calendar"
+EARNINGS_PATH = "/fins/earnings-date"
 EARNINGS_RAW_NAME = "jquants_earnings.jsonl"
-UNDECIDED_TAG = "発表日未定"
+# 何日先までの予定を入れるか(予定日を 1 日ずつ問い合わせる)。決算の山は 2〜3 週間に集まり、
+# 大手は発表の 2〜5 週間前に予定日を出すので、1 か月先まで見れば足りる
+EARNINGS_WINDOW_DAYS = 31
+# 予定日ごとの問い合わせの間隔(秒)。有料プランのレート制限に収まるように空ける
+EARNINGS_INTERVAL_SECONDS = 1.2
 
 
 class JquantsEarningsAdapter(JquantsMasterAdapter):
-    """J-Quants の決算発表予定日(`/equities/earnings-calendar`)。1 銘柄・1 決算 = 1 文書。
+    """J-Quants の決算発表予定日(`/fins/earnings-date`)。1 銘柄・1 決算 = 1 文書。
 
-    **無料プランでも遅れない**(直近の予定だけを返す)。JPX の決算発表予定一覧のミラーで、
-    **3 月期・9 月期決算の会社だけ**(12 月期などの会社は載らない。REIT も除く)。
-    更新は JPX 側に変更があった営業日の 19 時ごろ。
+    **全上場銘柄**(決算期を問わず、REIT 等も含む)の、今日から `EARNINGS_WINDOW_DAYS` 日先までの
+    予定を入れる。予定日を 1 日ずつ指定して問い合わせ、**その日をいま有効な予定日とする記録**
+    (延期・未定への変更を反映した最新のもの)だけを受け取る。
 
-    **件数は時期で大きく増減する**(決算期の前は数千件、過ぎると減る)ので、前の世代より
+    **有料プラン(Light 以上)が要る。** プランの参照範囲は「予定日が公表された日」で決まり、
+    無料プラン(12 週間前まで)では、発表の 2〜5 週間前に公表される大手の予定がほぼ見えない
+    (実測: 11 月の決算の山の日でも数十社しか見えなかった)。**取り込みの最初に、公表日=今日で
+    1 回問い合わせてプランを判別し**、参照範囲外(400)なら理由を添えて止める —— 一部しか
+    入っていない予定を「全部」として配ると、読む側が「載っていない = 決算は無い」と取り違える。
+
+    件数は時期で大きく増減する(決算の山の前は数千件、過ぎると減る)ので、前の世代より
     減っても焼く(`allows_shrink`)。「いまの予定」の写しで、積み上げるものではない。
-    発表日が未定の行も入れる(タグ「発表日未定」。日付は空)—— 予定に載っていること自体が
-    「近く決算がある」という手掛かりになる。
     """
 
     source = "jquants_earnings"
     min_docs = 1
     allows_shrink = True
 
+    def _check_plan(self, key: str, today: str) -> None:
+        """公表日=今日で 1 回問い合わせ、参照範囲外(無料プラン)なら止める。"""
+        try:
+            self._get(key, {"date": today}, EARNINGS_PATH)
+        except urllib.error.HTTPError as e:
+            if e.code == 400:
+                raise SystemExit(
+                    "J-Quants のプランでは直近に公表された決算発表予定日を参照できません"
+                    "(無料プランは公表日が 12 週間より前のものだけ)。先の予定はほとんど見えないため"
+                    "取り込みません。有料プラン(Light 以上)のキーを API キーの面で登録してください"
+                ) from e
+            raise
+
     def fetch(self, workdir: Path) -> tuple[Path, str]:
         key = self._api_key()
+        today = datetime.now(UTC).astimezone(JST).date()
+        self._check_plan(key, today.isoformat())
         workdir.mkdir(parents=True, exist_ok=True)
         out = workdir / EARNINGS_RAW_NAME
         part = out.with_suffix(".part")
-        params: dict[str, str] = {}
         count = 0
         with part.open("w", encoding="utf-8") as f:
-            while True:
-                body = self._get(key, params, EARNINGS_PATH)
-                for row in body.get("data") or []:
-                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
-                    count += 1
-                page = body.get("pagination_key")
-                if not page:
-                    break
-                params["pagination_key"] = str(page)
-                time.sleep(PAGE_INTERVAL_SECONDS)
+            for offset in range(EARNINGS_WINDOW_DAYS + 1):
+                day = (today + timedelta(days=offset)).isoformat()
+                params: dict[str, str] = {"scheduled_date": day}
+                while True:
+                    time.sleep(EARNINGS_INTERVAL_SECONDS)
+                    body = self._get(key, params, EARNINGS_PATH)
+                    for row in body.get("data") or []:
+                        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                        count += 1
+                    page = body.get("pagination_key")
+                    if not page:
+                        break
+                    params["pagination_key"] = str(page)
         part.replace(out)
-        # 予定の一覧には「いつ時点か」が無いので、取った日を世代の日付にする(日本時間)
-        date = datetime.now(UTC).astimezone(JST).strftime("%Y%m%d")
-        log.info("jquants_earnings: %d rows as of %s", count, date)
+        date = today.strftime("%Y%m%d")
+        log.info("jquants_earnings: %d rows for %s + %d days", count, date, EARNINGS_WINDOW_DAYS)
         return out, date
 
     def iter_docs(self, path: Path) -> Iterator[Doc]:
@@ -309,8 +333,7 @@ class JquantsEarningsAdapter(JquantsMasterAdapter):
             for line in f:
                 if line.strip():
                     rows.append(json.loads(line))
-        # 近い予定から並べる(未定は後ろ)。見出しの重なりはコードと決算種別で避ける
-        rows.sort(key=lambda r: (_blank(r.get("Date")) or "9999", str(r.get("Code") or "")))
+        rows.sort(key=lambda r: (_blank(r.get("SchDate")) or "9999", str(r.get("Code") or "")))
         taken: set[str] = set()
         for i, row in enumerate(rows):
             doc = self._build_earnings_doc(i, row, taken)
@@ -324,38 +347,31 @@ class JquantsEarningsAdapter(JquantsMasterAdapter):
     def _build_earnings_doc(self, i: int, row: dict, taken: set[str]) -> Doc | None:
         code5 = _blank(row.get("Code"))
         name = _blank(row.get("CoName"))
-        if not code5 or not name:
+        date = _blank(row.get("SchDate"))
+        if not code5 or not name or not date:
             return None
         code = short_code(code5)
-        date = _blank(row.get("Date"))
-        fy = _blank(row.get("FY"))
-        fq = _blank(row.get("FQ"))
-        title = f"{name}({code}) {fy}{fq}".strip()
+        fq = _blank(row.get("FQName"))  # 1Q / 2Q / 3Q / FY
+        fye = _blank(row.get("FYE"))  # 決算期末 MMDD
+        title = f"{name}({code}) {fq} 決算発表予定".strip()
         if title in taken:
             title = f"{title} #{i}"
-        when = f"{date} に決算発表の予定" if date else "決算発表の予定日は未定"
-        opening = f"{name}(証券コード {code})は{when}({fy}{fq})。"
+        opening = f"{name}(証券コード {code})は {date} に決算発表の予定({fq}、決算期末 {fye})。"
         folded = unicodedata.normalize("NFKC", name)
-        tags = [t for t in dict.fromkeys([
-            "決算発表予定",
-            date or UNDECIDED_TAG,
-            date[:7] if date else "",  # 月で絞る(例: 2026-10)
-            fq, _blank(row.get("SectorNm")), _blank(row.get("Section")),
-        ]) if t]
         return Doc(
             doc_id=i + 1,
             title=title,
             opening=opening,
             body=opening,
-            tags=tags,
+            tags=[t for t in dict.fromkeys(["決算発表予定", date, date[:7], fq]) if t],
             aliases=[a for a in dict.fromkeys([code, code5, folded]) if a and a != title],
-            updated_at=date or None,
+            updated_at=date,
             rank_score=0.0,
             extra={
                 "code": code, "local_code": code5, "name": name,
-                "announcement_date": date or None,
-                "fiscal_year_end": fy or None, "fiscal_quarter": fq or None,
-                "sector": _blank(row.get("SectorNm")) or None,
-                "section": _blank(row.get("Section")) or None,
+                "name_en": _blank(row.get("CoNameEn")) or None,
+                "announcement_date": date,
+                "fiscal_quarter": fq or None, "fiscal_year_end": fye or None,
+                "published_at": _blank(row.get("PubDate")) or None,
             },
         )

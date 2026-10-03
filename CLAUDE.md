@@ -33,7 +33,9 @@ Chiezo はそれが持てないものを預かる側にいる。
 - **ためる** — `ingest/` がソースごとに独立した SQLite ファイル(`/data/<source>.db`)を作る。
   取得元は公開ダンプ(Wikipedia / OpenStreetMap / GeoNames / Overture)と、
   キーの要る API(J-Quants の上場銘柄一覧 `jquants_master` と決算発表予定日 `jquants_earnings`。
-  後者は件数が時期で増減するので `allows_shrink` を名乗り、前の世代より大きく減っても焼く。**個人の私的利用に限る** ——
+  後者は件数が時期で増減するので `allows_shrink` を名乗り、前の世代より大きく減っても焼く。後者は
+  **有料プランのキーが要る** —— 参照範囲が公表日で決まり、無料プランでは先の予定がほぼ見えないので、
+  取り込みの最初に公表日=今日で 1 回問い合わせ、参照範囲外(400)なら止める。**個人の私的利用に限る** ——
   本人以外が見られる環境では取り込まない、解約したら消す。`ingest/sources/jquants.py` の冒頭)に限らず、
   **キーが要るソースは `credential_label` を名乗る**。trigger のカタログに `credential` が載る。
   **外部 API のキーは管理画面の「API キー」の面(`/admin/keys`)に名前で持つ**(`settings.db` の
