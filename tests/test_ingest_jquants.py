@@ -233,6 +233,7 @@ def earnings(monkeypatch):
     import sources.jquants as jq
 
     monkeypatch.setattr(jq, "EARNINGS_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(jq, "EARNINGS_INTERVAL_FREE_SECONDS", 0)
     monkeypatch.setattr(jq, "EARNINGS_WINDOW_DAYS", 3)
     monkeypatch.setenv(API_KEY_ENV, "test-key")
     _EarningsApi.free, _EarningsApi.by_offset, _EarningsApi.seen_days = False, {}, []
@@ -252,20 +253,50 @@ class TestEarnings:
 
         # 今日から 3 日先まで、予定日を 1 日ずつ聞く
         assert len(_EarningsApi.seen_days) == 4
-        toyota, nok = docs
+        toyota, nok, status = docs
         day = _EarningsApi.seen_days[1]
         assert toyota.extra["announcement_date"] == day
         assert {"決算発表予定", day, day[:7], "2Q"} <= set(toyota.tags)
         assert "7203" in toyota.aliases
         assert "NOK" in nok.aliases
+        # 有料プランで取ったので「全部」
+        assert status.title == "J-Quants 決算発表予定日の取得状況"
+        assert status.tags == ["取得状況"]
+        assert (status.extra["plan"], status.extra["coverage"], status.extra["count"]) == ("paid", "full", 2)
 
-    def test_a_free_plan_is_refused_before_fetching(self, earnings, tmp_path):
-        """無料プランでは先の予定がほぼ見えない。一部だけを「全部」として配らない。"""
+    def test_a_free_plan_takes_what_it_can_see_and_says_so(self, earnings, tmp_path):
+        """無料プランでも止めずに見える分だけ入れ、**一部だけであることを 1 件に残す**。
+        読む側(pta)はそれを見て、売買提案の AI に「一部しか載っていない」と添えて渡す。"""
         _EarningsApi.free = True
+        _EarningsApi.by_offset = {2: [("72030", "トヨタ自動車")]}
 
-        with pytest.raises(SystemExit, match="有料プラン"):
-            earnings.fetch(tmp_path)
-        assert _EarningsApi.seen_days == []
+        path, _date = earnings.fetch(tmp_path)
+        docs = list(earnings.iter_docs(path))
+
+        assert len(_EarningsApi.seen_days) == 4
+        toyota, status = docs
+        assert toyota.extra["code"] == "7203"
+        assert (status.extra["plan"], status.extra["coverage"], status.extra["count"]) == ("free", "partial", 1)
+        assert "決算が無い" in status.body
+
+    def test_a_free_plan_with_nothing_visible_still_bakes(self, earnings, tmp_path):
+        """見える予定が 0 件の日でも、取得状況の 1 件があるので焼ける(空の理由が読める)。"""
+        _EarningsApi.free = True
+        path, date = earnings.fetch(tmp_path / "work")
+        building = tmp_path / f"jquants_earnings-{date}.db.building"
+
+        ingest_main.build_db(earnings, path, date, building)
+        ingest_main.validate_db(earnings, building, 0)
+
+    def test_the_older_material_without_a_status_line_counts_as_paid(self, earnings, tmp_path):
+        """状況の行を持たない前の形の素材は、有料プランでしか焼けなかったもの。"""
+        raw = tmp_path / "old.jsonl"
+        raw.write_text(json.dumps({"SchDate": "2026-11-05", "Code": "72030", "CoName": "トヨタ自動車",
+                                   "FQName": "2Q", "FYE": "0331"}, ensure_ascii=False) + "\n",
+                       encoding="utf-8")
+
+        *_rows, status = list(earnings.iter_docs(raw))
+        assert status.extra["plan"] == "paid"
 
     def test_a_smaller_generation_still_bakes(self, earnings, tmp_path):
         """決算の山を過ぎると件数は大きく減る。それが本来の姿なので、減っても焼く。"""
@@ -278,6 +309,7 @@ class TestEarnings:
 
         conn = sqlite3.connect(building)
         try:
-            assert conn.execute("SELECT COUNT(*) FROM docs").fetchone()[0] == 1
+            # 予定 1 件 + 取得状況 1 件
+            assert conn.execute("SELECT COUNT(*) FROM docs").fetchone()[0] == 2
         finally:
             conn.close()
