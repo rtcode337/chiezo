@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -154,3 +155,29 @@ class TestTheClockSkipsIt:
         main._drop_stale_from_queues()
 
         assert workers.queued(worker.key) == []
+
+
+class TestTheLastHoursWindow:
+    def test_nothing_in_the_window_is_skipped(self, state, monkeypatch):
+        monkeypatch.setattr(collect, "_now", lambda: datetime(2026, 9, 30, 0, 0, tzinfo=UTC))
+        item, sweep = _made("まとめて {recent:24h}")
+        sources = _baked(state, "posts", [{"title": "古い記事", "updated_at": NOW}])
+
+        assert "直近 24 時間に入ったもの" in collect.nothing_to_pass(item, sweep, sources)
+
+    def test_something_in_the_window_is_not_skipped(self, state, monkeypatch):
+        monkeypatch.setattr(collect, "_now", lambda: datetime(2026, 9, 27, 12, 0, tzinfo=UTC))
+        item, sweep = _made("まとめて {recent:24h}")
+        sources = _baked(state, "posts", [{"title": "新しい記事", "updated_at": NOW}])
+
+        assert collect.nothing_to_pass(item, sweep, sources) == ""
+
+    def test_removed_ones_do_not_count(self, state, monkeypatch):
+        """消えたものは差し込まないので、数えると空の依頼文で AI を呼ぶことになる。"""
+        monkeypatch.setattr(collect, "_now", lambda: datetime(2026, 9, 27, 12, 0, tzinfo=UTC))
+        item, sweep = _made("まとめて {recent:24h}")
+        sources = _baked(state, "posts", [
+            {"title": "落とした記事", "updated_at": NOW, "tags": [notes.REMOVED_TAG]},
+        ])
+
+        assert collect.nothing_to_pass(item, sweep, sources) != ""
