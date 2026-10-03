@@ -190,3 +190,53 @@ def test_it_builds_and_validates(api, tmp_path):
         assert hit == ("会社1500",)
     finally:
         conn.close()
+
+
+def _cal(code: str, name: str, date: str, fq: str = "第２四半期") -> dict:
+    return {"Date": date, "Code": code, "CoName": name, "FY": "2027年3月期", "FQ": fq,
+            "SectorNm": "輸送用機器", "Section": "プライム"}
+
+
+@pytest.fixture()
+def earnings(monkeypatch):
+    import sources.jquants as jq
+
+    monkeypatch.setattr(jq, "PAGE_INTERVAL_SECONDS", 0)
+    monkeypatch.setenv(API_KEY_ENV, "test-key")
+    _Api.pages, _Api.status, _Api.seen_keys = [], 200, []
+    httpd = HTTPServer(("127.0.0.1", 0), _Api)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    yield jq.JquantsEarningsAdapter(base_url=f"http://127.0.0.1:{httpd.server_port}/v2")
+    httpd.shutdown()
+
+
+class TestEarnings:
+    def test_one_announcement_is_one_doc_found_by_code_and_month(self, earnings, tmp_path):
+        _Api.pages = [[_cal("72030", "トヨタ自動車", "2026-11-05")],
+                      [_cal("72400", "ＮＯＫ", "")]]
+        path, _date = earnings.fetch(tmp_path)
+        docs = list(earnings.iter_docs(path))
+
+        toyota, nok = docs
+        assert toyota.extra["announcement_date"] == "2026-11-05"
+        assert {"決算発表予定", "2026-11-05", "2026-11", "第２四半期"} <= set(toyota.tags)
+        assert "7203" in toyota.aliases
+        # 発表日が未定の行も入れる(予定に載っていること自体が手掛かり)
+        assert nok.extra["announcement_date"] is None and "発表日未定" in nok.tags
+        assert "NOK" in nok.aliases
+
+    def test_a_smaller_generation_still_bakes(self, earnings, tmp_path):
+        """決算期を過ぎると件数は大きく減る。それが本来の姿なので、減っても焼く。"""
+        _Api.pages = [[_cal("72030", "トヨタ自動車", "2026-11-05")]]
+        path, date = earnings.fetch(tmp_path / "work")
+        building = tmp_path / f"jquants_earnings-{date}.db.building"
+
+        ingest_main.build_db(earnings, path, date, building)
+        ingest_main.validate_db(earnings, building, 3000)  # 前の世代は 3,000 件あった
+
+        conn = sqlite3.connect(building)
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM docs").fetchone()[0] == 1
+        finally:
+            conn.close()

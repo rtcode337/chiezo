@@ -385,6 +385,11 @@ class SourceAdapter(Protocol):
     # 書くと、同じ trigger で並んで走る別の 1 本にも見えてしまう
     credential: str | None = None
 
+    # 前の世代より大きく減ってよいか(`main.validate_db` の SHRINK_FLOOR を外す)。
+    # **件数が時期で増減するのが本来の姿のソースだけ**が名乗る(決算発表予定のような
+    # 「いまの予定」の写し)。積み上がる類のソースが名乗ると、欠けた素材で焼いたときに止まらない
+    allows_shrink: bool = False
+
     def fetch(self, workdir: Path) -> tuple[Path, str]:
         """元データを取得し (ローカルパス, ダンプ日付YYYYMMDD) を返す(再開可能に)。"""
         ...
