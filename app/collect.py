@@ -2514,7 +2514,8 @@ def not_reviewed(content: str) -> set[str]:
     渡した回に相手が「今回は先頭のまとまりを返します」と 18 冊だけ返し、残り 146 冊が
     目を通した扱いのまま二度と渡らなかった。**読めなければ空**(申告が無いのと同じ)。
     """
-    stripped = re.sub(r"```(?:json)?", "", content or "").strip()
+    # **囲みの記号は消さない**(`read_response` と同じ理由)。`{` 〜 `}` を切り出せば外側の囲みは外れる
+    stripped = (content or "").strip()
     start, end = stripped.find("{"), stripped.rfind("}")
     if start < 0 or end <= start:
         return set()
@@ -2596,7 +2597,11 @@ def read_response(content: str) -> Reply:
     **切れていたのか、閉じているのに読めなかったのかも書き分ける**(`_closed`)。
     閉じている答えを「切れていた」と書くと、原因を相手の上限だと見誤る。
     """
-    stripped = re.sub(r"```(?:json)?", "", content).strip()
+    # **囲みの記号(```json)は消さない。** 答えを囲む外側の囲みは、`{` 〜 `}` を切り出すだけで
+    # 外れる(記号は括弧の外にある)。全体から消していた頃は、**1 件の本文の中の囲みまで消えた** ——
+    # 銘柄調査は本文の最後に読む側(pta)向けの JSON を ```json で囲んで置く決まりで、囲みが
+    # 消えると読む側がそれを見つけられず、記事の一覧が空になり、JSON の文字列が要約に混ざった
+    stripped = content.strip()
     start = stripped.find("{")
     end = stripped.rfind("}")
     if start < 0:
