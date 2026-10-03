@@ -377,13 +377,18 @@ def switch_db(data_dir: Path, source: str, dump_date: str, building_path: Path) 
     return final_path
 
 
-def run(source: str, data_dir: Path, credential: str | None = None) -> Path:
-    """1 ソースを取り込む。`credential` は画面から渡された認証情報(要るソースだけ)。"""
+def run(
+    source: str, data_dir: Path, credential: str | None = None, download_base: str | None = None,
+) -> Path:
+    """1 ソースを取り込む。`credential` は画面から渡された認証情報(要るソースだけ)、
+    `download_base` は画面で選んだ配布元(持つアダプタだけ。いまは osm 系)。"""
     from sources import get_adapter
 
     adapter = get_adapter(source)
     if credential:
         adapter.credential = credential
+    if download_base and hasattr(adapter, "download_base"):
+        adapter.download_base = download_base
     # 検証パラメータの上書き(小規模データでの動作確認用)
     if min_docs := os.environ.get("MIN_DOCS"):
         adapter.min_docs = int(min_docs)

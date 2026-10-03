@@ -179,7 +179,7 @@ def _finish(source: str, state: str, error: str | None = None) -> dict | None:
         return job
 
 
-def _run_job(source: str, credential: str | None = None) -> None:
+def _run_job(source: str, credential: str | None = None, download_base: str | None = None) -> None:
     from main import run as ingest_run
 
     import core
@@ -192,10 +192,11 @@ def _run_job(source: str, credential: str | None = None) -> None:
     try:
         # **認証情報は状態にもログにも残さない**(`/status` は画面にそのまま出る)。
         # 渡すのはこの 1 本の取り込みだけ
-        if credential:
-            ingest_run(source, DATA_DIR, credential=credential)
-        else:
-            ingest_run(source, DATA_DIR)
+        extra = {
+            **({"credential": credential} if credential else {}),
+            **({"download_base": download_base} if download_base else {}),
+        }
+        ingest_run(source, DATA_DIR, **extra)
         _finish(source, "done")
     # **止めたのは失敗ではない。** 切り替えより前で降りるので、いま配信している
     # 世代はそのまま —— 押し直せば続きから始まる(集めた素材は残してある)
@@ -636,6 +637,13 @@ def start_run(source: str, body: dict | None = Body(None)):
         _jobs[source] = _new_job(source, lane)
     raw = (body or {}).get("credential")
     credential = raw.strip() if isinstance(raw, str) and raw.strip() else None
+    # **osm 系の配布元**(画面で選んだもの)。https の URL だけを受ける ——
+    # どこへでも取りに行かせる口にしない
+    raw_base = (body or {}).get("osm_download_base")
+    download_base = (
+        raw_base.strip() if isinstance(raw_base, str) and raw_base.strip().startswith("https://")
+        and len(raw_base) < 300 else None
+    )
     # **前の回の印を必ず下ろす**(下ろし忘れると、始めた瞬間に降りる)。
     # **下ろすのはこの 1 本の印だけ** —— 並んで走っている別の 1 本の「止める」を消さない
     from core import clear_stop
@@ -644,7 +652,10 @@ def start_run(source: str, body: dict | None = Body(None)):
     thread = threading.Thread(
         target=_run_job, args=(source,),
         # 渡すものが無いときは引数ごと省く(古い形の受け手も呼べるように)
-        kwargs={"credential": credential} if credential else {},
+        kwargs={
+            **({"credential": credential} if credential else {}),
+            **({"download_base": download_base} if download_base else {}),
+        },
         daemon=True,
     )
     thread.start()

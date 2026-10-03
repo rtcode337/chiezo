@@ -243,6 +243,46 @@ def _move_legacy_credentials(key: str, sources: list[str]) -> None:
 KEYS_PAGE = "/admin/keys"
 
 
+OSM_MIRROR_ANCHOR = "osm-mirror"
+
+
+def _osm_mirror_html(back: str = "/admin/memory") -> str:
+    """OpenStreetMap(osm 系)をどこから落とすかを選ぶところ。
+
+    **Geofabrik が遅いときの逃げ道。** Geofabrik は大きなファイルを何度も落とす IP を絞る
+    ことがあり、実測で 0.02 MiB/s まで落ちた(同じ時刻にミラーなら 3 MiB/s)。
+    **抽出の切り方は配布元ごとに少し違う**ので、それも書いておく。
+    """
+    if not settings_store.is_enabled():
+        return ""
+    current = settings_store.osm_mirror()
+    options = "".join(
+        f'<option value="{esc(key)}"{" selected" if key == current else ""}>{esc(label)}</option>'
+        for key, (label, _base) in (("", ("選ばない(取り込み側の既定)", "")), *settings_store.OSM_MIRRORS.items())
+    )
+    return f"""<h3 id="{OSM_MIRROR_ANCHOR}">OpenStreetMap の配布元</h3>
+<p class="muted">
+osm 系(国別の OpenStreetMap)のダンプをどこから落とすか。<strong>次に初期化・再構築したときから効く</strong>。
+Geofabrik は大きなファイルを何度も落とす IP を絞ることがあり、絞られると 1 日かかる —— そのときはミラーへ逃がす。
+<strong>抽出の切り方は少し違う</strong>:openstreetmap.fr の日本は北方領土(OSM ではロシアのサハリン州)を含み、
+硫黄島・南鳥島・沖ノ鳥島を含まない。配布元を変えると、前の配布元から途中まで落としたものは捨てて落とし直す。
+</p>
+<form method="post" action="/admin/osm-mirror">
+<input type="hidden" name="back" value="{esc(back)}">
+<select name="mirror">{options}</select>
+<button type="submit">保存</button>
+</form>"""
+
+
+@router.post("/admin/osm-mirror")
+def admin_osm_mirror(mirror: str = Form(""), back: str = Form("/admin/memory")):
+    """OpenStreetMap の配布元を保存する。戻り先は記憶の面か OSM の面だけ。"""
+    settings_store.require_path()
+    settings_store.set_osm_mirror(mirror.strip())
+    to = back if back in ("/admin/memory", "/admin/osm") else "/admin/memory"
+    return RedirectResponse(url=f"{to}#{OSM_MIRROR_ANCHOR}", status_code=303)
+
+
 def _source_keys_note_html() -> str:
     """長期記憶の面に出す、取り込みに要るキーの案内(登録は API キーの面)。
 
@@ -3140,6 +3180,8 @@ chiezo-trigger が立ち上がっていない場合、再構築と削除はで�
 構築中も現行 DB での配信は続く。完了後は数秒以内に自動で新しい DB へ切り替わる(再起動不要)。
 </p>
 
+{_osm_mirror_html()}
+
 {_source_keys_note_html()}
 
 <!-- **長期記憶の中に畳んでおく。** ここを開くのは新しいソースを入れるときだけで、
@@ -3416,6 +3458,8 @@ Geofabrik の国別抽出 {total} 件{f"(絞り込み: {len(catalog)} 件)" if n
 <button type="submit">絞り込み</button>
 </form>
 
+{_osm_mirror_html("/admin/osm")}
+
 {_trigger_missing_html(job)}
 
 {''.join(blocks)}
@@ -3532,11 +3576,17 @@ def trigger_run(source: str) -> None:
     # 環境変数に置かずに済むので、画面から入れ替えられる。収集の回には載らない
     # (登録できるのはカタログで `credential` を名乗るソースだけ)
     credential = _credential_for(source)
+    body: dict[str, str] = {"credential": credential} if credential else {}
+    # **osm 系には、画面で選んだ配布元も渡す**(選んでいなければ渡さない = trigger の既定)
+    if source.startswith("osm_") and settings_store.is_enabled() and (
+        base := settings_store.osm_download_base()
+    ):
+        body["osm_download_base"] = base
     try:
         res = httpx.post(
             f"{TRIGGER_URL}/run/{source}",
             # 渡すものが無いときは本文ごと省く(今までと同じ呼び方)
-            **({"json": {"credential": credential}} if credential else {}),
+            **({"json": body} if body else {}),
             timeout=TRIGGER_TIMEOUT,
         )
     except httpx.HTTPError as e:
