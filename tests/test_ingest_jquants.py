@@ -31,9 +31,17 @@ class _Api(BaseHTTPRequestHandler):
     pages: ClassVar[list[list[dict]]] = []
     status: ClassVar[int] = 200
     seen_keys: ClassVar[list[str]] = []
+    # 先頭からこの回数だけ 429 を返す(レート制限)
+    limited: ClassVar[int] = 0
 
     def do_GET(self):
         _Api.seen_keys.append(self.headers.get("x-api-key") or "")
+        if _Api.limited > 0:
+            _Api.limited -= 1
+            self.send_response(429)
+            self.end_headers()
+            self.wfile.write(b'{"message": "Too Many Requests"}')
+            return
         if _Api.status != 200:
             self.send_response(_Api.status)
             self.end_headers()
@@ -59,8 +67,9 @@ def api(monkeypatch):
     import sources.jquants as jq
 
     monkeypatch.setattr(jq, "PAGE_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(jq, "RATE_LIMIT_WAIT_SECONDS", 0)
     monkeypatch.setenv(API_KEY_ENV, "test-key")
-    _Api.pages, _Api.status, _Api.seen_keys = [], 200, []
+    _Api.pages, _Api.status, _Api.seen_keys, _Api.limited = [], 200, [], 0
     httpd = HTTPServer(("127.0.0.1", 0), _Api)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -86,6 +95,40 @@ class TestFetch:
         with pytest.raises(SystemExit, match=API_KEY_ENV):
             api.fetch(tmp_path)
         assert _Api.seen_keys == []
+
+    def test_a_rate_limit_is_waited_out(self, api, tmp_path):
+        """429 は待てば通る。1 回目で止めていた頃は、取り込みが途中で丸ごと落ちた。"""
+        _Api.pages = [[_row("72030", "トヨタ自動車")]]
+        _Api.limited = 2
+
+        path, _date = api.fetch(tmp_path)
+
+        assert [json.loads(line)["Code"] for line in path.read_text().splitlines()] == ["72030"]
+        assert len(_Api.seen_keys) == 3
+
+    def test_a_rate_limit_that_never_lifts_stops_with_a_reason(self, api, tmp_path, monkeypatch):
+        import sources.jquants as jq
+
+        monkeypatch.setattr(jq, "RATE_LIMIT_RETRIES", 2)
+        _Api.limited = 99
+
+        with pytest.raises(SystemExit, match="429"):
+            api.fetch(tmp_path)
+        assert len(_Api.seen_keys) == 3
+
+    def test_waiting_for_the_limit_can_be_stopped(self, api, tmp_path, monkeypatch):
+        """数分待つことがあるので、待っている間も「止める」が効く。"""
+        import core
+        import sources.jquants as jq
+
+        monkeypatch.setattr(jq, "RATE_LIMIT_WAIT_SECONDS", 60)
+        _Api.limited = 99
+        core.request_stop()
+        try:
+            with pytest.raises(core.Stopped):
+                api.fetch(tmp_path)
+        finally:
+            core.clear_stop()
 
     def test_a_refused_key_says_so_without_echoing_it(self, api, tmp_path):
         _Api.status = 401
