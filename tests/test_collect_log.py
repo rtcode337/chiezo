@@ -159,6 +159,32 @@ class TestRecord:
         collect_log.record("spots", status=collect_log.STATUS_OK, diff=DIFF)
 
 
+class TestUpdatedWithoutRemoved:
+    """**「直した」から「消した」を外す。** 焼くところが消したものを「直した」にも
+    数えていたので、控えてある回は 1 度だけ「直した − 消した」に直す。"""
+
+    def test_rows_kept_before_the_fix_are_split_once(self, state_env):
+        import sqlite3
+
+        path = collect_log.db_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # 直す前の控え(印の列が無い表)。直した 17 のうち 4 は消したもの
+        with sqlite3.connect(path) as conn:
+            conn.executescript(collect_log.SCHEMA)
+            conn.execute(
+                "INSERT INTO collect_runs (at, name, status, updated, removed)"
+                " VALUES ('2026-10-03T19:05:00+00:00', 'spots', 'ok', 17, 4)"
+            )
+
+        assert [(r["updated"], r["removed"]) for r in collect_log.recent()] == [(13, 4)]
+
+        # 2 度目に開いても引き直さない。直したあとに控えた回もそのまま
+        collect_log.record(
+            "spots", status=collect_log.STATUS_OK, diff={"updated": 2, "removed": 1},
+        )
+        assert [(r["updated"], r["removed"]) for r in collect_log.recent()] == [(2, 1), (13, 4)]
+
+
 class TestForget:
     def test_deleting_a_collection_drops_its_history(self, state_env):
         """名前がソース名なので、同じ名前で作り直すのは普通に起きる。

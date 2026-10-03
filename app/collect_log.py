@@ -119,7 +119,25 @@ def _connect(path: Path) -> sqlite3.Connection:
     for name, kind in _ADDED_COLUMNS.items():
         if name not in have:
             conn.execute(f"ALTER TABLE collect_runs ADD COLUMN {name} {kind}")
+    if _SPLIT_MARK not in have:
+        _split_removed(conn)
     return conn
+
+
+# **「直した」から「消した」を外し終えた印**(列そのものが印。足した 1 度だけ直す)。
+# 焼くところ(`collect.material`)が、消したものを「直した」にも数えていた ——
+# 直した件数が「直した見出し + 消した件数」になり、見出しは直したぶんしか控えないので、
+# 読む側に毎回「ほか N 件」と消したぶんが余って出ていた。消したものを数えていたのは
+# その 1 か所だけなので、控えてある回は「直した − 消した」で正しい値に戻る
+_SPLIT_MARK = "updated_without_removed"
+
+
+def _split_removed(conn: sqlite3.Connection) -> None:
+    conn.execute(f"ALTER TABLE collect_runs ADD COLUMN {_SPLIT_MARK} INTEGER NOT NULL DEFAULT 1")
+    conn.execute("UPDATE collect_runs SET updated = MAX(updated - removed, 0) WHERE removed > 0")
+    # **ここで確定させる。** 印の列(ALTER)はその場で確定するのに、引き算は読むだけの
+    # 呼び出しだと確定されずに捨てられ、次からは印があるので二度と直らない
+    conn.commit()
 
 
 def _titles(values) -> str:
