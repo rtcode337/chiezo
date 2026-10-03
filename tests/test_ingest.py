@@ -801,3 +801,15 @@ class TestTriggerCatalogEndpoint:
 
         assert trigger_client.get("/sources").json()["schema_version"] == SCHEMA_VERSION
 
+
+
+def test_osm_download_base_can_point_at_a_mirror(monkeypatch):
+    """Geofabrik が絞られているときにミラーから落とせる(並びは Geofabrik と同じ)。"""
+    import sources.osm as osm
+
+    monkeypatch.delenv(osm.OSM_DOWNLOAD_BASE_ENV, raising=False)
+    adapter = osm.OsmAdapter(source="osm_japan", region="asia/japan")
+    assert adapter._latest_url() == "https://download.geofabrik.de/asia/japan-latest.osm.pbf"
+
+    monkeypatch.setenv(osm.OSM_DOWNLOAD_BASE_ENV, "https://download.openstreetmap.fr/extracts")
+    assert adapter._latest_url() == "https://download.openstreetmap.fr/extracts/asia/japan-latest.osm.pbf"

@@ -219,6 +219,9 @@ services:
       # ダンプの取り込み(初期化・再構築)を別の枠で走らせるか(既定で有効)。
       # 再構築と収集を並べられないほどメモリの小さい機械でだけ 0 にする
       #CHIEZO_INGEST_DUMP_LANE: "0"
+      # OpenStreetMap の配布元(既定は Geofabrik)。Geofabrik が遅いときだけミラーを指す。
+      # openstreetmap.fr の日本は北方領土を含み、硫黄島・南鳥島・沖ノ鳥島を含まない
+      #OSM_DOWNLOAD_BASE: "https://download.openstreetmap.fr/extracts/"
     restart: unless-stopped
     # 「良き隣人」のための相対ウェイト(既定 1024 の半分)。CPU が競合したときだけ
     # 他のコンテナへ譲り、空いていれば全力で使える。ハード上限の cpus は使わない ——
