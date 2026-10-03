@@ -272,3 +272,23 @@ class TestOneJobAtATime:
 
         assert core.stopping("meals") is False
         assert core.stopping("news") is True
+
+
+class TestDownloadProgress:
+    def test_status_carries_the_progress_of_that_one(self, trigger):
+        """ダウンロードの進み具合は、名乗った 1 本の `/status` にだけ載る。"""
+        import core
+
+        server, client = trigger
+        client.post("/run/meals")
+        core.bind("meals")
+        try:
+            core.report_progress({"phase": "download", "file": "x.pbf", "bytes": 10, "total": 100})
+            job = next(j for j in client.get("/status").json()["jobs"] if j["source"] == "meals")
+            assert job["progress"]["bytes"] == 10
+            core.report_progress(None)
+            job = next(j for j in client.get("/status").json()["jobs"] if j["source"] == "meals")
+            assert "progress" not in job
+        finally:
+            core.report_progress(None)
+            core.bind(None)

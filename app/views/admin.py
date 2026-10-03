@@ -403,6 +403,49 @@ def _job_body_html(job: dict | None, back: str = STATUS_PAGE) -> str:
     )
 
 
+def _progress_html(progress: object) -> str:
+    """ダウンロードの進み具合(落とした量・割合・速さ・残り時間)。無ければ空。
+
+    **値は取り込み側が数秒おきに置き直す**(`ingest/download.py`)。画面は自動では
+    読み直さないので、読み直すたびにその時点の値が出る。速さは直近 30 秒で測る ——
+    始まりからの平均だと、途中で遅くなっても数字に出てこない。
+    **大きさが分からない相手もある**(Content-Length を返さない)ので、そのときは
+    落とした量と速さだけを出す。
+    """
+    if not isinstance(progress, dict) or progress.get("phase") != "download":
+        return ""
+    mib = 1024 * 1024
+    done = float(progress.get("bytes") or 0)
+    total = progress.get("total")
+    rate = progress.get("rate")
+    eta = progress.get("eta_seconds")
+    parts = [f"{done / mib:,.1f}"]
+    bar = ""
+    if isinstance(total, int | float) and total > 0:
+        pct = min(done / total * 100, 100.0)
+        parts[0] += f" / {total / mib:,.1f} MiB({pct:.1f}%)"
+        bar = f'<progress max="100" value="{pct:.1f}"></progress> '
+    else:
+        parts[0] += " MiB"
+    if isinstance(rate, int | float):
+        parts.append(f"{rate / mib:,.2f} MiB/s")
+    if isinstance(eta, int | float):
+        parts.append(f"残り約 {_rough_duration(eta)}")
+    return (
+        f'<p class="download-progress">ダウンロード中: {esc(str(progress.get("file") or ""))}<br>'
+        f"{bar}{esc(' / '.join(parts))}</p>"
+    )
+
+
+def _rough_duration(seconds: float) -> str:
+    seconds = int(seconds)
+    if seconds < 90:
+        return f"{seconds} 秒"
+    if seconds < 90 * 60:
+        return f"{round(seconds / 60)} 分"
+    return f"{seconds // 3600} 時間 {round(seconds % 3600 / 60)} 分"
+
+
 def _one_job_html(job: dict, back: str) -> str:
     """取り込み 1 本ぶん(状態・ソース・巡回・時刻・ログ・止める口)。"""
     state = job.get("state", "idle")
@@ -424,6 +467,8 @@ def _one_job_html(job: dict, back: str) -> str:
     lines.append("</p>")
     if job.get("error"):
         lines.append(f"<p>エラー: {esc(job['error'])}</p>")
+    if state == "running":
+        lines.append(_progress_html(job.get("progress")))
     log_tail = job.get("log_tail")
     if log_tail:
         # **走っている間だけ開いておく。** 終わったログは「見に行けば読める」で足り、

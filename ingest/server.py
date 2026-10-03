@@ -116,7 +116,14 @@ def _new_job(source: str, lane: str = LANE_GENERAL) -> dict:
 
 
 def _public(job: dict) -> dict:
-    return {**job, "log_tail": list(job["log_tail"])}
+    import core
+
+    out = {**job, "log_tail": list(job["log_tail"])}
+    # **走っている間だけ、ダウンロードの進み具合を添える**(`download.fetch` が置く)。
+    # curl の出力はログに届かないので、無いと数 GB を落としているあいだ何も読めない
+    if job.get("state") == "running" and (progress := core.progress_of(job["source"])):
+        out["progress"] = progress
+    return out
 
 
 class _TailHandler(logging.Handler):

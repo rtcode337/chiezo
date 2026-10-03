@@ -101,6 +101,33 @@ def check_stop() -> None:
     if stopping():
         raise Stopped("取り込みを止めました")
 
+# ---- 進み具合 -----------------------------------------------------------------
+#
+# **ダウンロードの進み具合を画面へ運ぶ置き場。** ダンプの取得は curl を子プロセスで
+# 呼んでいて、その出力はログにも画面にも届かない —— 数 GB を落としているあいだ、
+# 実行ログは「downloading …」の 1 行で止まったままになり、進んでいるのか
+# 詰まっているのか、どのくらい速いのかが外から読めなかった。
+# 置き場は止める印と同じ理由でここ(名乗った 1 本ごと)。書くのは `download.fetch`、
+# 読むのは `server.status`。
+_progress: dict[str, dict] = {}
+
+
+def report_progress(info: dict | None) -> None:
+    """このスレッドが名乗っている 1 本の進み具合を置く(`None` で消す)。"""
+    source = getattr(_bound, "source", None) or ""
+    with _stops_lock:
+        if info is None:
+            _progress.pop(source, None)
+        else:
+            _progress[source] = dict(info)
+
+
+def progress_of(source: str) -> dict | None:
+    with _stops_lock:
+        info = _progress.get(source)
+        return dict(info) if info else None
+
+
 CORE_SCHEMA_DDL = """
 -- ソース自身のメタ情報(1行)
 CREATE TABLE meta (
