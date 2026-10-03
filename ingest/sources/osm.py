@@ -50,7 +50,6 @@ import math
 import os
 import queue
 import re
-import subprocess
 import threading
 import urllib.request
 from array import array
@@ -59,6 +58,7 @@ from datetime import UTC
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
+import download
 import osmium
 
 from core import (
@@ -661,17 +661,7 @@ class OsmAdapter:
         url = self._latest_url()
         date = os.environ.get("DUMP_DATE") or self._remote_date(url)
         dest = workdir / f"{self.source}-{date}.osm.pbf"
-        part = dest.with_suffix(".pbf.part")
-        if dest.exists() and not part.exists():
-            log.info("dump already downloaded: %s", dest)
-            return dest, date
-        log.info("downloading %s", url)
-        subprocess.run(
-            ["curl", "-fSL", "-A", USER_AGENT, "--retry", "5", "-C", "-", "-o", str(part), url],
-            check=True,
-        )
-        part.rename(dest)
-        return dest, date
+        return download.fetch(url, dest, USER_AGENT), date
 
     # ---- 変換 -------------------------------------------------------------
 

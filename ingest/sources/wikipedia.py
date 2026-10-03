@@ -30,7 +30,6 @@ import hashlib
 import logging
 import os
 import re
-import subprocess
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -38,6 +37,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import IO
 
+import download
 import mwparserfromhell as mwp
 from mwparserfromhell.nodes import Heading
 
@@ -235,15 +235,8 @@ class WikipediaAdapter:
         date = self.latest_dump_date()
         filename = self._dump_filename(date)
         dest = workdir / filename
-        part = dest.with_suffix(dest.suffix + ".part")
-        if not (dest.exists() and not part.exists()):
-            url = f"{DUMP_INDEX_URL.format(wiki_id=self.source)}{date}/{filename}"
-            log.info("downloading %s", url)
-            subprocess.run(
-                ["curl", "-fSL", "-A", USER_AGENT, "--retry", "5", "-C", "-", "-o", str(part), url],
-                check=True,
-            )
-            part.rename(dest)
+        url = f"{DUMP_INDEX_URL.format(wiki_id=self.source)}{date}/{filename}"
+        download.fetch(url, dest, USER_AGENT)
         return dest, date
 
     def latest_pageview_period(self) -> str:
@@ -289,15 +282,8 @@ class WikipediaAdapter:
         filename = f"pageviews-{period.replace('-', '')}-user.bz2"
         dir_url = f"{PAGEVIEW_INDEX_URL}{year}/{period}/"
         dest = workdir / filename
-        part = dest.with_suffix(".bz2.part")
-        if not (dest.exists() and not part.exists()):
-            url = dir_url + filename
-            log.info("downloading %s", url)
-            subprocess.run(
-                ["curl", "-fSL", "-A", USER_AGENT, "--retry", "5", "-C", "-", "-o", str(part), url],
-                check=True,
-            )
-            part.rename(dest)
+        url = dir_url + filename
+        download.fetch(url, dest, USER_AGENT)
         self._pageview_path = dest
         self._pageview_period = period
         return dest
@@ -311,15 +297,8 @@ class WikipediaAdapter:
         date = self.latest_dump_date()
         filename = f"{self.source}-{date}-page_props.sql.gz"
         dest = workdir / filename
-        part = dest.with_suffix(dest.suffix + ".part")
-        if not (dest.exists() and not part.exists()):
-            url = f"{DUMP_INDEX_URL.format(wiki_id=self.source)}{date}/{filename}"
-            log.info("downloading %s", url)
-            subprocess.run(
-                ["curl", "-fSL", "-A", USER_AGENT, "--retry", "5", "-C", "-", "-o", str(part), url],
-                check=True,
-            )
-            part.rename(dest)
+        url = f"{DUMP_INDEX_URL.format(wiki_id=self.source)}{date}/{filename}"
+        download.fetch(url, dest, USER_AGENT)
         self._page_props_path = dest
         return dest
 

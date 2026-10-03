@@ -24,7 +24,6 @@ import io
 import logging
 import os
 import sqlite3
-import subprocess
 import sys
 import urllib.request
 import zipfile
@@ -32,6 +31,8 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+
+import download
 
 from core import (
     LOW_MEMORY_BUILD_GB,
@@ -79,17 +80,8 @@ DEFAULT_FEATURE_CLASSES = "AHLPSTUV"
 
 
 def _download(url: str, dest: Path) -> Path:
-    """curl -C - で再開可能にダウンロードする(既にあれば何もしない)。"""
-    part = dest.with_suffix(dest.suffix + ".part")
-    if dest.exists() and not part.exists():
-        return dest
-    log.info("downloading %s", url)
-    subprocess.run(
-        ["curl", "-fSL", "-A", USER_AGENT, "--retry", "5", "-C", "-", "-o", str(part), url],
-        check=True,
-    )
-    part.rename(dest)
-    return dest
+    """curl -C - で再開可能にダウンロードする(既にあれば何もしない。進み具合は `download` が出す)。"""
+    return download.fetch(url, dest, USER_AGENT)
 
 
 def _open_zip_member(zip_path: Path, member: str) -> io.TextIOWrapper:
