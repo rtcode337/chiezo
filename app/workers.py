@@ -8,8 +8,9 @@
 
 - **ワーカーは優先度順の並び。** 先頭から見て、**枠に余裕のある最初の相手**に頼む。
   余裕の有無は使用率で見る(`QUOTA_LIMIT`)。**超えていても、いまのペースが続いて
-  窓が戻るまでに使い切らない相手は使う**(`PACE_LIMIT`。`app/usage.py` の `projected_peak`)。
-  どちらも控えてある値で見る(`app/usage.py` の `busiest`)——
+  窓が戻るまでに使い切らない相手は使う**(`PACE_LIMIT`)。**窓ごとに見る** —— 上限を
+  超えている窓だけを、戻るまでの見込みで見直す(`app/usage.py` の `over_limit_without_room`)。
+  どちらも控えてある値で見る ——
   聞きに行かない。ここは頼むたびに通る道で、そのたびに CLI を起こすわけにいかない
 - **分からない相手は「余裕あり」として扱う。** 枠を出さない相手や、まだ一度も
   取れていない相手がそれで、**取れないことを理由に頼まないのでは本末転倒**になる
@@ -593,31 +594,20 @@ def room_left(step: Step, limit: float | None = None, now: str = "") -> bool:
     **相手が「使い切った」と言ったぶんは、期限まで避ける**(`mark_full`)。
     使用率より新しい報せなので、こちらを先に見る。
 
-    **見るのは、その段のモデルが食う枠だけ**(`usage.busiest` にモデルを渡す)。
+    **上限を超えていても、戻るまでに余力のある窓は通す**(`PACE_LIMIT`)。窓ごとに見て、
+    上限を超えた窓のうち余力の無いものが 1 本でもあれば避ける。
+
+    **見るのは、その段のモデルが食う枠だけ**(`usage.over_limit_without_room` にモデルを渡す)。
     1 人の相手が独立した枠を何本も持つことがあり、まとめて見ると**片方が
     詰まっただけで、同じ相手の別の枠に置いた段まで飛ばされる** —— 逃げ先の
     ために並べた段が、いちばん要るときに働かない。
     """
     if (until := full_until(step.backend, step.model)) and (now or _now_iso()) < until:
         return False
-    busiest = usage.busiest(step.backend, step.model)
-    if busiest is None or busiest < (QUOTA_LIMIT if limit is None else limit):
-        return True
-    return room_until_reset(step, now)
-
-
-def room_until_reset(step: Step, now: str = "") -> bool:
-    """**いまのペースが続いても、窓が戻るまでに使い切らない**相手か(`PACE_LIMIT`)。
-
-    `QUOTA_LIMIT` を超えた相手を、それでも使ってよいかを決める。**見積もれない相手は
-    使わない**(窓の長さや戻る時刻が分からない・窓が始まったばかり)—— 超えているのに
-    余力が読めないなら、いままでどおり詰まる前に譲る。
-    """
-    if PACE_LIMIT <= 0:
-        return False
     at = usage._parse(now) if now else None
-    projected = usage.projected_peak(step.backend, step.model, at)
-    return projected is not None and projected < PACE_LIMIT
+    return not usage.over_limit_without_room(
+        step.backend, step.model, QUOTA_LIMIT if limit is None else limit, PACE_LIMIT, at,
+    )
 
 
 def _now_iso() -> str:

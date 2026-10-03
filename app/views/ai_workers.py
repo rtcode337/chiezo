@@ -76,7 +76,17 @@ def _percent(provider: str, model: str = "") -> str:
     busiest = usage.busiest(provider, model)
     if busiest is None:
         return '<span class="muted">枠は出せない</span>'
-    mark = " ⚠️" if busiest >= workers.QUOTA_LIMIT else ""
+    # **避けるかどうかは判断する側と同じ物差しで出す**(`usage.over_limit_without_room`)。
+    # 上限を超えていても、戻るまでに余力があれば使うので、その旨を添える
+    blocked = usage.over_limit_without_room(
+        provider, model, workers.QUOTA_LIMIT, workers.PACE_LIMIT,
+    )
+    if busiest < workers.QUOTA_LIMIT:
+        mark = ""
+    elif blocked:
+        mark = " ⚠️ 避けている"
+    else:
+        mark = "(戻るまでに余力があるので使う)"
     return f'<span class="muted">{percent_text(busiest)}% 使用{mark}</span>'
 
 
