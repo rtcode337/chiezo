@@ -3313,6 +3313,35 @@ class TestCarryingFactsIntoTheDoc:
         assert docs[0]["body"] == "AI の説明（AI が書いた）"
         assert docs[0]["tags"] == ["トピック"]
 
+    def test_what_an_ai_fixed_is_not_put_back_by_the_roster(self):
+        """**AI の回が直した脇書きは、名簿を引き直しても戻さない。** 整理が直した
+        店の座標が、名簿を引き直した回に元の辞典のずれた座標へ戻っていた。
+        数えた値のように毎回新しくしたいものは、今までどおり入れ替える。"""
+        before = {"title": "店", "body": "本文", "tags": [],
+                  "extra": {"lat": 35.5085, "lon": 139.6811, "count": 1}}
+        fixed = {**before, "extra": {"lat": 35.5084, "lon": 139.6810, "count": 1}}
+
+        stamped = collect._stamped(fixed, "整理", "updated", before, by="gemini")
+
+        assert stamped["extra"][collect.AI_KEYS_KEY] == ["lat", "lon"]
+
+        roster = {"extra": {"lat": 35.5085, "lon": 139.6811, "count": 7}}
+        again = collect._with_facts(stamped, roster)
+
+        assert (again["extra"]["lat"], again["extra"]["lon"]) == (35.5084, 139.6810)
+        assert again["extra"]["count"] == 7
+        # 覚えた鍵は「事実」には混ぜない(比べると毎回変わったことになる)
+        assert collect.AI_KEYS_KEY not in collect.facts_of(again)
+
+    def test_the_fixed_keys_are_remembered_across_edits(self):
+        before = {"title": "店", "extra": {"lat": 1.0, "phone": "1"}}
+        once = collect._stamped({**before, "extra": {"lat": 2.0, "phone": "1"}},
+                                "整理", "updated", before, by="gemini")
+        twice = collect._stamped({**once, "extra": {**once["extra"], "phone": "2"}},
+                                 "整理", "updated", once, by="gemini")
+
+        assert twice["extra"][collect.AI_KEYS_KEY] == ["lat", "phone"]
+
     def test_an_edit_does_not_drop_the_facts(self, sample):
         """**AI が手を入れる回には、運んだ事実は返ってこない。**
 
