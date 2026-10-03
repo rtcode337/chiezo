@@ -9,7 +9,10 @@ WORKDIR /srv/chiezo-ingest
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py core.py server.py lookup.py ./
+# **モジュールは名指しせず *.py で載せる**(app の Dockerfile と同じ)。名指ししていた頃、
+# 足した download.py が載らず、osm・geonames・wikipedia のアダプタが import で落ちて
+# カタログごと引けなくなった(手元のテストはリポジトリを直接読むので通ってしまう)
+COPY *.py ./
 COPY sources ./sources
 
 # 既定は one-shot 取り込み(chiezo-ingest プロファイル)。
