@@ -35,9 +35,14 @@ Chiezo はそれが持てないものを預かる側にいる。
   キーの要る API(J-Quants の上場銘柄一覧 `jquants_master` と決算発表予定日 `jquants_earnings`。
   後者は件数が時期で増減するので `allows_shrink` を名乗り、前の世代より大きく減っても焼く。**個人の私的利用に限る** ——
   本人以外が見られる環境では取り込まない、解約したら消す。`ingest/sources/jquants.py` の冒頭)に限らず、
-  **キーが要るソースは `credential_label` を名乗る**。trigger のカタログに `credential` が載り、
-  管理画面の長期記憶の面にキーの登録欄が出る。登録したキーは `settings.db` の
-  `source_credentials` に置き、初期化・再構築のたびに `POST /run/{source}` の本文で
+  **キーが要るソースは `credential_label` を名乗る**。trigger のカタログに `credential` が載る。
+  **外部 API のキーは管理画面の「API キー」の面(`/admin/keys`)に名前で持つ**(`settings.db` の
+  `api_keys`)。**使う側は名前で引く** —— ソースは `credential_group` でキーの名前を名乗り
+  (J-Quants の 2 つは `jquants`。名乗らなければソース名)、これから足す収集の道具も同じ名前で引く。
+  ソースごとに持つと同じキーを何度も入れ、入れ替えたときに片方だけ古いまま残る。ソースが名乗らない
+  キーも名前を付けて置いておける(道具が後から引く)。前の形〈ソース名・`source_credentials` 表〉で
+  登録したキーは自動で移す〈`settings_store._migrate`・`views.admin._credential_for`〉。
+  登録したキーは初期化・再構築のたびに `POST /run/{source}` の本文で
   trigger へ渡す(`views.admin.trigger_run`)。**trigger は環境変数に書かず、その 1 本の
   アダプタにだけ入れる**(`main.run(credential=)`)。状態にもログにも残さない。このリポジトリに
   入れられないものは**別コンテナのプラグイン**(`CHIEZO_PLUGIN_SOURCES`)から足せる。

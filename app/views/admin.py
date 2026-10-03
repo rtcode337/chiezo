@@ -194,64 +194,74 @@ def is_dump_source(name: str) -> bool:
     return bool(meta.get("dump", "plugin" not in meta and meta.get("kind") != "collect"))
 
 
-SOURCE_KEYS_BACK = "/admin/memory#source-keys"
+def _credential_groups() -> dict[str, dict]:
+    """キーの組 → `{"spec": ラベルなど, "sources": [使うソース名]}`。
 
-
-def _source_credentials_section_html() -> str:
-    """取り込みに API キーが要るソースの、キーの登録欄(長期記憶の面)。
-
-    **キーが要るかはソースが名乗る**(trigger のカタログの `credential`)。登録した
-    キーは初期化・再構築のときに trigger へ渡る(`trigger_run`)。値は二度と出さず、
-    登録の有無と日時だけを見せる(話す相手の鍵と同じ)。
+    **同じキーを使うソースは 1 つの組にまとめる**(trigger のカタログの `credential.group`。
+    名乗らない古い trigger ではソース名がそのまま組になる)。管理画面は組ごとにキーを 1 つ持つ。
     """
-    needs = {
-        name: meta["credential"] for name, meta in initializable_sources().items()
-        if isinstance(meta.get("credential"), dict)
-    }
-    if not needs:
-        return ""
+    groups: dict[str, dict] = {}
+    for name, meta in sorted(initializable_sources().items()):
+        spec = meta.get("credential")
+        if not isinstance(spec, dict):
+            continue
+        key = str(spec.get("group") or name)
+        entry = groups.setdefault(key, {"spec": spec, "sources": []})
+        entry["sources"].append(name)
+    return groups
+
+
+def _credential_for(source: str) -> str | None:
+    """そのソースに渡すキー(API キーの面に、組の名前で登録したもの)。無ければ None。
+
+    **前の形(ソース名ごと)で登録したキーは、ここで組の名前へ移す**。組ごとに持つ形に
+    変える前に登録したキーを、入れ直さずに使い続けられるように。
+    """
     if not settings_store.is_enabled():
+        return None
+    for key, entry in _credential_groups().items():
+        if source not in entry["sources"]:
+            continue
+        _move_legacy_credentials(key, entry["sources"])
+        return settings_store.api_key(key)
+    return settings_store.api_key(source)
+
+
+def _move_legacy_credentials(key: str, sources: list[str]) -> None:
+    """ソース名で登録されていたキーを、組の名前へ移す(組にまだ無ければ)。"""
+    for name in sources:
+        if name == key:
+            continue
+        legacy = settings_store.api_key(name)
+        if legacy is None:
+            continue
+        if settings_store.api_key(key) is None:
+            settings_store.set_api_key(key, legacy)
+        settings_store.clear_api_key(name)
+
+
+KEYS_PAGE = "/admin/keys"
+
+
+def _source_keys_note_html() -> str:
+    """長期記憶の面に出す、取り込みに要るキーの案内(登録は API キーの面)。
+
+    **未登録のキーがあるときだけ目立たせる** —— 登録済みなら 1 行の案内で足りる。
+    """
+    groups = _credential_groups()
+    if not groups:
+        return ""
+    missing = [
+        k for k in groups if not settings_store.is_enabled() or settings_store.api_key(k) is None
+    ]
+    if missing:
         return (
-            '<h3 id="source-keys">取り込みに要るキー</h3>'
-            '<p class="muted">設定の置き場(<code>CHIEZO_STATE_DIR</code>)が無いので、'
-            "画面からは登録できません。chiezo-ingest で単発に回すなら環境変数で渡せます"
-            f"({esc(', '.join(sorted(needs)))})。</p>"
-        )
-    rows = []
-    for name, spec in sorted(needs.items()):
-        at = jst.parse(settings_store.source_credential_updated_at(name) or "")
-        status = f"登録済み({esc(jst.format(at))})" if at else "未登録"
-        help_url = spec.get("help_url")
-        guide = (
-            f' <a href="{esc(help_url)}" target="_blank" rel="noopener">入手と利用条件</a>'
-            if help_url else ""
-        )
-        drop = (
-            '<form method="post" action="/admin/source-key" class="init-form">'
-            f'<input type="hidden" name="source" value="{esc(name)}">'
-            '<input type="hidden" name="action" value="delete">'
-            "<button type=\"submit\">削除</button></form>"
-        ) if at else ""
-        rows.append(
-            "<tr>"
-            f"<td>{esc(name)}</td>"
-            f"<td>{esc(spec.get('label') or 'API キー')}{guide}</td>"
-            f"<td>{status}</td>"
-            "<td>"
-            '<form method="post" action="/admin/source-key" class="init-form">'
-            f'<input type="hidden" name="source" value="{esc(name)}">'
-            '<input type="password" name="credential" placeholder="API キー" required '
-            'autocomplete="off">'
-            f"<button type=\"submit\">{'更新' if at else '登録'}</button></form> {drop}"
-            "</td>"
-            "</tr>"
+            '<p class="note">⚠️ 取り込みに要るキーが未登録です: '
+            f"{esc(', '.join(sorted(missing)))}。"
+            f'<a href="{KEYS_PAGE}">API キー</a>の面で登録してください。</p>'
         )
     return (
-        '<h3 id="source-keys">取り込みに要るキー</h3>'
-        '<p class="muted">初期化・再構築のときに取り込み側へ渡します。'
-        "値は画面に二度と表示しません。</p>"
-        "<table><thead><tr><th>name</th><th>キー</th><th>状態</th><th></th></tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody></table>"
+        f'<p class="muted">取り込みに要るキーは <a href="{KEYS_PAGE}">API キー</a>の面で管理しています。</p>'
     )
 
 
@@ -2381,6 +2391,9 @@ PAGES = (
     # (何を回すかと、誰に回すかは 1 つの話)
     ("/admin/collect", "収集", "無人で回る層。巡回・区画・変更履歴と、回す相手の並び"),
     ("/admin/ai", "AI", "貸し出すもの。話せる相手・絵や音を作る相手と、その鍵"),
+    # **外部 API のキーは AI の鍵と分ける。** あちらは話す相手ごとの on/off と接続確認を持ち、
+    # こちらは取り込み・収集の道具が名前で引くだけの値
+    (KEYS_PAGE, "API キー", "外部 API のキー。取り込みのソースや収集の道具が名前で使う"),
     # **頼む面**(会話・作らせる・作らせたものを並べて選ぶ)。鍵を預ける面とは分ける ——
     # こちらは毎日触り、あちらは一度入れたら開かない
     ("/admin/media", "AIへの依頼", "AI と会話する・作らせる・作らせたものを並べて選ぶ"),
@@ -3082,7 +3095,7 @@ chiezo-trigger が立ち上がっていない場合、再構築と削除はで�
 構築中も現行 DB での配信は続く。完了後は数秒以内に自動で新しい DB へ切り替わる(再起動不要)。
 </p>
 
-{_source_credentials_section_html()}
+{_source_keys_note_html()}
 
 <!-- **長期記憶の中に畳んでおく。** ここを開くのは新しいソースを入れるときだけで、
      日々見に来るのは上の一覧と下の「集める」のほう —— 同じ高さで並べると、
@@ -3473,7 +3486,7 @@ def trigger_run(source: str) -> None:
     # **取得にキーが要るソースには、登録してあるキーを本文で渡す。** trigger の
     # 環境変数に置かずに済むので、画面から入れ替えられる。収集の回には載らない
     # (登録できるのはカタログで `credential` を名乗るソースだけ)
-    credential = settings_store.source_credential(source)
+    credential = _credential_for(source)
     try:
         res = httpx.post(
             f"{TRIGGER_URL}/run/{source}",
@@ -3551,20 +3564,104 @@ def _proxy_trigger_run(source: str) -> RedirectResponse:
     return RedirectResponse(url=STATUS_JOB, status_code=303)
 
 
-@router.post("/admin/source-key")
-def admin_source_key(
-    source: str = Form(...), credential: str = Form(""), action: str = Form("")
-):
-    """取り込みに要るキーの登録・削除。**キーが要ると名乗るソースだけ**受け付ける。"""
-    meta = initializable_sources().get(source) or {}
-    if not isinstance(meta.get("credential"), dict):
-        raise HTTPException(404, {"error": f"キーを受け取らないソースです: {source}"})
-    settings_store.require_path()
-    if action == "delete":
-        settings_store.clear_source_credential(source)
+@router.get("/admin/keys", response_class=HTMLResponse)
+def admin_keys():
+    """API キーの面。chiezo 全体で使う外部 API のキーを、名前で 1 か所にまとめる。
+
+    **使う側は名前で引く** —— 取り込みのソースは `credential_group` を名乗り、これから足す
+    収集の道具も同じ名前で引く。ソースが名乗るキーは自動で並び、どのソースが使うかを添える。
+    それとは別に、名前を付けてキーを足しておける(道具が後から引けるように)。
+    **値は画面に二度と出さない**(登録の有無と日時だけ)。
+    """
+    groups = _credential_groups()
+    if not settings_store.is_enabled():
+        table = (
+            '<p class="note">設定の置き場(<code>CHIEZO_STATE_DIR</code>)が無いので、'
+            "画面からは登録できません。</p>"
+        )
     else:
-        settings_store.set_source_credential(source, credential)
-    return RedirectResponse(url=SOURCE_KEYS_BACK, status_code=303)
+        for key, entry in groups.items():
+            _move_legacy_credentials(key, entry["sources"])
+        stored = {k.name: k for k in settings_store.api_keys()}
+        rows = []
+        for name in sorted(set(groups) | set(stored)):
+            entry = groups.get(name) or {}
+            spec = entry.get("spec") or {}
+            have = stored.get(name)
+            at = jst.parse(have.updated_at) if have else None
+            label = spec.get("label") or (have.label if have else "")
+            help_url = spec.get("help_url")
+            guide = (
+                f' <a href="{esc(help_url)}" target="_blank" rel="noopener">入手と利用条件</a>'
+                if help_url else ""
+            )
+            users = (
+                esc(", ".join(entry["sources"])) if entry.get("sources")
+                else '<span class="muted">(まだ誰も使っていない)</span>'
+            )
+            status = f"登録済み({esc(jst.format(at))})" if at else "未登録"
+            drop = (
+                f'<form method="post" action="{KEYS_PAGE}" class="init-form"'
+                f" onsubmit=\"return confirm('{esc(name)} のキーを削除します。よろしいですか?')\">"
+                f'<input type="hidden" name="name" value="{esc(name)}">'
+                '<input type="hidden" name="action" value="delete">'
+                '<button type="submit">削除</button></form>'
+            ) if have else ""
+            rows.append(
+                "<tr>"
+                f"<td><code>{esc(name)}</code></td>"
+                f"<td>{esc(label)}{guide}</td>"
+                f"<td>{users}</td>"
+                f"<td>{status}</td>"
+                "<td>"
+                f'<form method="post" action="{KEYS_PAGE}" class="init-form">'
+                f'<input type="hidden" name="name" value="{esc(name)}">'
+                '<input type="password" name="credential" placeholder="API キー" required'
+                ' autocomplete="off">'
+                f'<button type="submit">{"更新" if have else "登録"}</button></form> {drop}'
+                "</td>"
+                "</tr>"
+            )
+        body_rows = "".join(rows) or '<tr><td colspan="5" class="muted">まだありません</td></tr>'
+        table = (
+            "<table><thead><tr><th>名前</th><th>説明</th><th>使うソース</th><th>状態</th>"
+            f"<th></th></tr></thead><tbody>{body_rows}</tbody></table>"
+            "<h2>キーを足す</h2>"
+            '<p class="muted">ソースが名乗っていないキーも、名前を付けて置いておけます'
+            "(収集の道具などが、後から同じ名前で引けるように)。"
+            "名前は英小文字で始まる英小文字・数字・_。</p>"
+            f'<form method="post" action="{KEYS_PAGE}" class="init-form">'
+            '<input type="text" name="name" placeholder="名前(例: google_books)" required>'
+            ' <input type="text" name="label" placeholder="説明(任意)">'
+            ' <input type="password" name="credential" placeholder="API キー" required'
+            ' autocomplete="off">'
+            ' <button type="submit">足す</button></form>'
+        )
+    body = f"""
+{nav_html(KEYS_PAGE)}
+<h1>API キー</h1>
+<p class="muted">
+Chiezo 全体で使う外部 API のキー。<strong>使う側は名前で引く</strong> —— 取り込みのソース
+(J-Quants の上場銘柄一覧と決算発表予定日は <code>jquants</code>)も、これから足す収集の道具も、
+ここに登録した同じキーを使う。値は画面に二度と表示しない。
+</p>
+{table}
+"""
+    return HTMLResponse(content=page_shell("API キー", body))
+
+
+@router.post("/admin/keys")
+def admin_keys_save(
+    name: str = Form(...), credential: str = Form(""), label: str = Form(""), action: str = Form("")
+):
+    """キーの登録・更新・削除。"""
+    settings_store.require_path()
+    name = name.strip()
+    if action == "delete":
+        settings_store.clear_api_key(name)
+    else:
+        settings_store.set_api_key(name, credential, label or None)
+    return RedirectResponse(url=KEYS_PAGE, status_code=303)
 
 
 @router.post("/admin/init/{source}")

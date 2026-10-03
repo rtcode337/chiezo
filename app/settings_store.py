@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -50,11 +51,13 @@ CREATE TABLE IF NOT EXISTS provider_settings (
     disabled_at TEXT,
     updated_at TEXT NOT NULL
 );
--- 取り込みに認証情報(API キー)が要るソースのぶん。話す相手(provider_settings)とは
--- 混ぜない —— あちらは on/off と接続確認を持つ「相手」の表で、こちらは取り込みのたびに
--- trigger へ渡すだけの値。
-CREATE TABLE IF NOT EXISTS source_credentials (
-    source     TEXT PRIMARY KEY,
+-- 外部 API のキー(管理画面の「API キー」の面)。**名前で持ち、使う側が名前で引く** ——
+-- 取り込みのソース(`credential_group` を名乗る)も、これから足す収集の道具も同じ表を見る。
+-- 話す相手(provider_settings)とは混ぜない —— あちらは on/off と接続確認を持つ「相手」の表で、
+-- こちらは外部 API を叩くときに載せるだけの値。
+CREATE TABLE IF NOT EXISTS api_keys (
+    name       TEXT PRIMARY KEY,
+    label      TEXT,
     credential TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -128,6 +131,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for col in ("disabled_reason", "disabled_at"):
         if col not in cols:
             conn.execute(f"ALTER TABLE provider_settings ADD COLUMN {col} TEXT")
+    # `source_credentials`(ソース・キーの組ごとに持っていた頃の表)を `api_keys` へ移す。
+    # 名前はそのまま(組の名前かソース名)。ソース名で入っていたものは、画面が組の名前へ寄せる
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'source_credentials'"
+    ).fetchone():
+        conn.execute(
+            "INSERT OR IGNORE INTO api_keys (name, credential, updated_at)"
+            " SELECT source, credential, updated_at FROM source_credentials"
+        )
+        conn.execute("DROP TABLE source_credentials")
 
 
 def _connect() -> sqlite3.Connection:
@@ -370,48 +383,58 @@ def set_model(provider: str, model: str) -> None:
     _upsert(provider, model=model)
 
 
-# ---- 取り込みの認証情報 --------------------------------------------------------
+# ---- 外部 API のキー ------------------------------------------------------------
 #
-# 取得に API キーが要るソース(trigger のカタログで `credential` を名乗るもの)のぶん。
-# 管理画面で登録し、初期化・再構築のときに trigger へ渡す(`views.admin.trigger_run`)。
-# **画面には二度と出さない**(登録の有無と日時だけ)のは話す相手と同じ。
+# 管理画面の「API キー」の面で登録する。**名前で持ち、使う側が名前で引く**(取り込みのソースは
+# `credential_group`、収集の道具はこれから足す)。**画面には二度と出さない**(登録の有無と日時だけ)
+# のは話す相手と同じ。
+
+API_KEY_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,30}$")
 
 
-def source_credential(source: str) -> str | None:
-    """登録してあるキー。保存先が無い環境・未登録なら None。"""
+@dataclass
+class ApiKey:
+    name: str
+    label: str
+    updated_at: str
+
+
+def api_key(name: str) -> str | None:
+    """登録してあるキーの値。保存先が無い環境・未登録なら None。"""
     if db_path() is None:
         return None
     with _connect() as conn:
-        row = conn.execute(
-            "SELECT credential FROM source_credentials WHERE source = ?", (source,)
-        ).fetchone()
+        row = conn.execute("SELECT credential FROM api_keys WHERE name = ?", (name,)).fetchone()
     return row[0] if row else None
 
 
-def source_credential_updated_at(source: str) -> str | None:
-    """登録した日時(画面に出すのはこれだけ)。未登録なら None。"""
+def api_keys() -> list[ApiKey]:
+    """登録してあるキーの一覧(値は返さない)。"""
     if db_path() is None:
-        return None
+        return []
     with _connect() as conn:
-        row = conn.execute(
-            "SELECT updated_at FROM source_credentials WHERE source = ?", (source,)
-        ).fetchone()
-    return row[0] if row else None
+        rows = conn.execute(
+            "SELECT name, COALESCE(label, ''), updated_at FROM api_keys ORDER BY name"
+        ).fetchall()
+    return [ApiKey(name=r[0], label=r[1], updated_at=r[2]) for r in rows]
 
 
-def set_source_credential(source: str, credential: str) -> None:
+def set_api_key(name: str, credential: str, label: str | None = None) -> None:
+    """キーを登録する(あれば値を置き換える)。`label` を渡さなければ前の説明を残す。"""
+    if not API_KEY_NAME_RE.match(name):
+        raise HTTPException(400, {"error": "名前は英小文字で始まる英小文字・数字・_ の 2〜31 文字"})
     value = credential.strip()
     if not value:
         raise HTTPException(400, {"error": "認証情報が空です"})
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO source_credentials (source, credential, updated_at) VALUES (?, ?, ?)"
-            " ON CONFLICT(source) DO UPDATE SET credential=excluded.credential,"
-            " updated_at=excluded.updated_at",
-            (source, value, _now()),
+            "INSERT INTO api_keys (name, label, credential, updated_at) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(name) DO UPDATE SET credential=excluded.credential,"
+            " label=COALESCE(excluded.label, api_keys.label), updated_at=excluded.updated_at",
+            (name, label.strip() if label and label.strip() else None, value, _now()),
         )
 
 
-def clear_source_credential(source: str) -> None:
+def clear_api_key(name: str) -> None:
     with _connect() as conn:
-        conn.execute("DELETE FROM source_credentials WHERE source = ?", (source,))
+        conn.execute("DELETE FROM api_keys WHERE name = ?", (name,))
