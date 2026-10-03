@@ -606,6 +606,8 @@ class OsmAdapter:
     ):
         self.source = source
         self.region = region  # Geofabrik のパス(例: "asia/japan")
+        # 画面で選んだ配布元(`main.run` が入れる)。無ければ環境変数か Geofabrik
+        self.download_base: str | None = None
         self.lang = lang
         self.area_admin_level = area_admin_level
         # RAM 上のノード座標インデックスを使う場合に必要なメモリの目安(抽出範囲で変わる)
@@ -653,7 +655,8 @@ class OsmAdapter:
     # ---- 取得 -------------------------------------------------------------
 
     def _latest_url(self) -> str:
-        return f"{download_base()}{self.region}-latest.osm.pbf"
+        base = (self.download_base or "").rstrip("/") + "/" if self.download_base else download_base()
+        return f"{base}{self.region}-latest.osm.pbf"
 
     def _remote_date(self, url: str) -> str:
         """Last-Modified ヘッダからダンプ日付 YYYYMMDD を得る(無ければ今日)。"""

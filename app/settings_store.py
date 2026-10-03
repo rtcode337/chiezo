@@ -221,6 +221,40 @@ def set_flag(key: str, value: str | None) -> None:
             )
 
 
+# ---- OpenStreetMap の配布元 -----------------------------------------------------
+#
+# osm 系のダンプをどこから落とすか。**画面で選び、取り込みを起こすたびに trigger へ渡す**
+# (API キーと同じ道。trigger の環境変数 `OSM_DOWNLOAD_BASE` は、画面で選んでいないときの
+# 既定として残る)。Geofabrik は大きなファイルを何度も落とす IP を絞ることがあり、絞られると
+# 1 日かかる —— そのときにミラーへ逃がす口。**自由入力にしない**(URL の打ち間違いは、
+# 落とし始めてから 404 で分かる)。
+
+FLAG_OSM_MIRROR = "osm_mirror"
+
+# 鍵 → (画面に出す名前, 配布元の頭)。並びは Geofabrik と同じ(`<頭><地域>-latest.osm.pbf`)
+OSM_MIRRORS = {
+    "geofabrik": ("Geofabrik(既定)", "https://download.geofabrik.de/"),
+    "osmfr": ("openstreetmap.fr(ミラー)", "https://download.openstreetmap.fr/extracts/"),
+}
+
+
+def osm_mirror() -> str:
+    """選んである配布元の鍵。**選んでいなければ空**(trigger の既定に任せる)。"""
+    value = get_flag(FLAG_OSM_MIRROR)
+    return value if value in OSM_MIRRORS else ""
+
+
+def osm_download_base() -> str | None:
+    """trigger へ渡す配布元の頭。選んでいなければ None(渡さない)。"""
+    key = osm_mirror()
+    return OSM_MIRRORS[key][1] if key else None
+
+
+def set_osm_mirror(key: str) -> None:
+    """配布元を保存する。知らない鍵・空は「選ばない」(trigger の既定に任せる)。"""
+    set_flag(FLAG_OSM_MIRROR, key if key in OSM_MIRRORS else None)
+
+
 # ---- 依頼文の言語 ------------------------------------------------------------
 #
 # 絵・音・動画・声を頼むときのプロンプトを、どの言語で書いてもらうか。

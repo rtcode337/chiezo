@@ -3764,7 +3764,11 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     降りるときは curl を終わらせ、`.part` は残す(次の回が続きから落とす)
     **続きは同じ URL からしかつながない**(`.part.url` に控える。控えの無い途中も捨てる)。配布元(ミラー)を
     切り替えると、日付が同じならファイル名も同じなのに中身は別物で、`-C -` が壊れたファイルを
-    作る。osm の配布元は `OSM_DOWNLOAD_BASE` で差し替えられる(既定 Geofabrik。Geofabrik は
+    作る。osm の配布元は**管理画面で選ぶ**(記憶の面・OSM の面の「OpenStreetMap の配布元」。
+    `settings_store.osm_mirror`。自由入力にせず Geofabrik / openstreetmap.fr の 2 択)。
+    選んだものは API キーと同じ道で、取り込みを起こすたびに `POST /run` の本文
+    (`osm_download_base`。trigger は https だけ受ける)で渡り、アダプタの `download_base` に入る。
+    選んでいなければ trigger の `OSM_DOWNLOAD_BASE`、それも無ければ Geofabrik(Geofabrik は
     大きなファイルを何度も落とす IP を絞ることがあり、実測で IPv4 が 0.02 MiB/s まで落ちた)
   - **取り込みは途中で降ろせる**(`core.request_stop` / `check_stop` /
     trigger の `POST /stop` / 画面の「止める」)。**殺すのではなく、安全なところで

@@ -166,8 +166,8 @@ services:
       # ダンプの取り込み(初期化・再構築)を別の枠で走らせるか(既定で有効)。
       # 再構築と収集を並べられないほどメモリの小さい機械でだけ 0 にする
       - CHIEZO_INGEST_DUMP_LANE=${CHIEZO_INGEST_DUMP_LANE-}
-      # OpenStreetMap の配布元(既定は Geofabrik)。Geofabrik が遅いときだけミラーを指す
-      # (例 https://download.openstreetmap.fr/extracts/ 。抽出の切り方は少し違う。運用の文書を参照)
+      # OpenStreetMap の配布元の既定(空なら Geofabrik)。**ふだんは管理画面で選ぶ**
+      # (記憶の面の「OpenStreetMap の配布元」。そちらが優先)。画面を通さないときの既定
       - OSM_DOWNLOAD_BASE=${OSM_DOWNLOAD_BASE-}
     restart: unless-stopped
     # トリガー経由の取り込みが暴走しても、OOM killer がホスト全体(同居する
