@@ -279,7 +279,7 @@ class TestDownloadProgress:
         """ダウンロードの進み具合は、名乗った 1 本の `/status` にだけ載る。"""
         import core
 
-        server, client = trigger
+        _server, client = trigger
         client.post("/run/meals")
         core.bind("meals")
         try:
