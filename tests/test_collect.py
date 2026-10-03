@@ -5190,6 +5190,20 @@ class TestRefineMode:
         assert notes.REMOVED_TAG not in marked["残る"]
         assert diff["removed_titles"] == ["消す"]
 
+    def test_a_tombstone_is_counted_as_removed_not_updated(self, refine, baked):
+        """**消したものは「直した」に数えない。** 数えると直した件数が「直した見出し +
+        消した件数」になり、見出しは直したぶんしか控えないので、読む側に毎回
+        「ほか N 件」と消したぶんが余って出る。"""
+        sources = baked([("直す", "本文"), ("消す", "本文")], "spots")
+        _docs, diff = edited(
+            collect.get("spots"),
+            collect.previous_docs("spots", sources),
+            [{"title": "直す", "body": "直した本文"},
+             {"title": "消す", "body": "", "tags": [notes.TOMBSTONE_TAG]}],
+        )
+        assert (diff["updated"], diff["removed"]) == (1, 1)
+        assert diff["updated_titles"] == ["直す"]
+
     def test_the_diff_names_what_moved(self, refine, baked):
         """件数だけでは、何が起きたのか読めない(変更履歴に残す元になる)。"""
         sources = baked([("残る", "本文")], "spots")

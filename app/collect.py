@@ -4206,9 +4206,10 @@ def _stream_docs(
             yield _with_facts(before, raw) if facts else _with_new_facts(before, raw)
             continue
         if edits and _is_tombstone(raw):
-            # 墓標。**消さずに印を付けて残す**
+            # 墓標。**消さずに印を付けて残す**。**「直した」には数えない** —— 数えると
+            # 直した件数が「直した見出し + 消した件数」になり、見出しは直したぶんしか
+            # 控えないので、読む側に毎回「ほか N 件」と消したぶんが余って出る
             removed_titles.append(title)
-            updated += 1
             yield _stamped(
                 _reviewed(_buried(before, raw, now)), sweep, "removed", by=signed_by(raw),
             )
