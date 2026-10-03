@@ -273,11 +273,26 @@ def remove(entry_id: str) -> dict | None:
 
 
 def put_back(entry: dict) -> None:
-    """起こせなかったものを**先頭へ**戻す(順番を飛ばさない)。"""
+    """起こせなかったものを**先頭へ**戻す(順番を飛ばさない)。
+
+    **取り出していたあいだに積み直された同じ組は畳む。** chiezo-app は 2 つの
+    プロセスで動き、時計もそれぞれにある。片方が取り出して起こしに行っている
+    あいだ、行列からその組が消えて見えるので、もう片方はワーカーや予定のぶんを
+    改めて積む —— 戻すときに重ねると、**同じ巡回が 2 本並ぶ**(実際に並んだ。
+    取り込みが起こせない状態が続くと、毎分の取り出しと戻しのたびに起こりうる)。
+    `add` が同じ組を 2 度積まないのと同じ約束を、ここでも守る。
+    **1 回だけの上書き(`run_once`)が付いたものは畳まない**(`add` と同じ)。
+    """
 
     def change(state: dict):
-        if not any(e.get("id") == entry.get("id") for e in state["waiting"]):
-            state["waiting"].insert(0, entry)
+        if any(e.get("id") == entry.get("id") for e in state["waiting"]):
+            return
+        if not entry.get("run_once"):
+            state["waiting"] = [
+                e for e in state["waiting"]
+                if not (_same(e, entry.get("collection"), entry.get("sweep")) and not e.get("run_once"))
+            ]
+        state["waiting"].insert(0, entry)
 
     _mutate(change)
 

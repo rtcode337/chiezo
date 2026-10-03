@@ -85,6 +85,30 @@ class TestTheLine:
 
         assert [e["collection"] for e in ingest_queue.waiting()] == ["aa", "bb"]
 
+    def test_putting_back_folds_one_queued_again_meanwhile(self, state):
+        """取り出して起こしに行っているあいだ、もう 1 本の時計は同じ組を積み直す
+        (行列から消えて見えるので)。戻すときに重ねると、同じ巡回が 2 本並ぶ。"""
+        a, _, _ = ingest_queue.add("meals", "ざっと", origin="worker", worker="w")
+        ingest_queue.add("news", "s", origin="schedule")
+        taken = ingest_queue.take(a["id"])
+        # もう 1 本の時計がワーカーのぶんを積み直す
+        ingest_queue.add("meals", "ざっと", origin="worker", worker="w")
+
+        ingest_queue.put_back(taken)
+
+        line = ingest_queue.waiting()
+        assert [(e["collection"], e["sweep"]) for e in line] == [("meals", "ざっと"), ("news", "s")]
+        assert line[0]["id"] == a["id"]  # 先に積まれていたほうが先頭に戻る
+
+    def test_putting_back_keeps_named_partitions_apart(self, state):
+        a, _, _ = ingest_queue.add("meals", "情報収集", origin="manual", run_once={"partitions": ["aa"]})
+        taken = ingest_queue.take(a["id"])
+        ingest_queue.add("meals", "情報収集", origin="manual", run_once={"partitions": ["bb"]})
+
+        ingest_queue.put_back(taken)
+
+        assert len(ingest_queue.waiting()) == 2
+
     def test_taking_twice_gives_it_once(self, state):
         """もう 1 本の時計(`--workers 2`)が先に持っていったら None。"""
         a, _, _ = ingest_queue.add("aa", "s", origin="manual")
