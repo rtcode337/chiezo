@@ -7659,6 +7659,51 @@ class TestSettingOneSweepsClock:
         tidy = next(s for s in res.json()["sweeps"] if s["name"] == "整理")
         assert tidy["by_caller"] is True
 
+    def test_only_the_backend_moves(self, enabled):
+        # 相手を一覧の画面で選び直す。依頼文も時計も触らない
+        self._make()
+
+        collect.set_sweep_backend("spots", "整理", "codex", "gpt-5")
+
+        tidy = self._sweep("整理")
+        assert (tidy["backend"], tidy["model"]) == ("codex", "gpt-5")
+        assert tidy["interval_minutes"] == 360
+        assert tidy["prompt"] == "{current} を整理"
+        assert self._sweep("ざっと見る")["backend"] == "codex"
+
+    def test_a_worker_can_be_picked_and_dropped(self, enabled):
+        # ワーカーは相手の欄に書く(並びを均すときに取り出す)。相手に戻せば外れる
+        self._make()
+
+        collect.set_sweep_backend("spots", "整理", "worker:w-1", "gpt-5")
+        tidy = self._sweep("整理")
+        assert tidy["worker"] == "w-1"
+        assert tidy["backend"] is None and tidy["model"] is None
+
+        collect.set_sweep_backend("spots", "整理", "claude", None)
+        tidy = self._sweep("整理")
+        assert tidy["worker"] == ""
+        assert tidy["backend"] == "claude"
+
+    def test_an_empty_backend_falls_back_to_the_collection(self, enabled):
+        self._make()
+
+        collect.set_sweep_backend("spots", "整理", "", None)
+
+        assert self._sweep("整理")["backend"] is None
+
+    def test_the_backend_can_be_picked_from_outside(self, client):
+        self._make()
+
+        res = client.patch(
+            "/v1/collect/spots/sweeps/%E6%95%B4%E7%90%86",
+            json={"backend": "codex", "model": "gpt-5"},
+        )
+
+        assert res.status_code == 200, res.text
+        tidy = next(s for s in res.json()["sweeps"] if s["name"] == "整理")
+        assert (tidy["backend"], tidy["model"]) == ("codex", "gpt-5")
+
     def test_something_must_be_asked(self, client):
         self._make()
 

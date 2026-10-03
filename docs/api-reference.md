@@ -776,6 +776,9 @@ curl -s -X PATCH "$BASE/v1/collect/tl_lunch" -H 'Content-Type: application/json'
   **同じ口で時計を外せる**(`{"by_caller": true}`。`false` で戻す)—— AI の枠を
   節約したくて自動では回したくない巡回を、消さずに止める。名指しの `…/run` や
   割り込みの行き先としては今までどおり使える。時計に戻すと次の予定は「前回 + 間隔」
+  **同じ口で頼む相手も選び直せる**(`{"backend": "<id>", "model": "<モデル>"}`。
+  ワーカーは `worker:<id>`、空文字で収集の既定へ戻す)。依頼文も時計も触らないので、
+  一覧の画面から相手だけを選び直したい呼び出しに使う
 
 ```bash
 curl -s -X PATCH "$BASE/v1/collect/tl_lunch/sweeps/%E3%81%96%E3%81%A3%E3%81%A8" \

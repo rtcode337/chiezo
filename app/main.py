@@ -3596,7 +3596,8 @@ def collect_lock(name: str, body: LocationLock):
 
 
 class SweepClock(BaseModel):
-    """巡回 1 本の時計だけを変える(`collect.set_sweep_clock` / `set_sweep_by_caller`)。"""
+    """巡回 1 本の時計か相手だけを変える(`collect.set_sweep_clock` / `set_sweep_by_caller` /
+    `set_sweep_backend`)。"""
 
     interval_minutes: int | None = PydField(None, description="新しい間隔(分)")
     keep_per_run: bool = PydField(
@@ -3606,21 +3607,31 @@ class SweepClock(BaseModel):
         None,
         description="true で時計を外す(依頼元が名指しで起こしたときだけ走る)。false で時計に戻す",
     )
+    backend: str | None = PydField(
+        None,
+        description="頼む相手(/v1/ai/backends の id。ワーカーは worker:<id>)。空文字で収集の既定へ戻す",
+    )
+    model: str | None = PydField(None, description="モデル(相手を渡したときだけ読む。空なら相手の既定)")
 
 
 @app.patch("/v1/collect/{name}/sweeps/{sweep}")
 def collect_sweep_clock(name: str, sweep: str, body: SweepClock):
-    """巡回 1 本の**時計だけ**を変える(間隔 / 時計を外す・戻す)。依頼文・相手・
-    区画の記録は触らない。
+    """巡回 1 本の**時計か相手だけ**を変える(間隔 / 時計を外す・戻す / 頼む相手)。
+    依頼文・区画の記録は触らない。
 
     巡回を並びごと送り直す口(`PATCH /v1/collect/{name}` の `sweeps`)では、呼ぶ側が
     相手やモデルまで持ち直すことになる —— 速さや自動で回すかだけを直したい
     呼び出しのための口。**両方渡したら、時計を外す・戻すほうを先に当てる**。
     """
     collect.require_enabled()
-    if body.interval_minutes is None and body.by_caller is None:
-        raise HTTPException(400, {"error": "interval_minutes か by_caller のどちらかを渡してください"})
+    asks_backend = "backend" in body.model_fields_set
+    if body.interval_minutes is None and body.by_caller is None and not asks_backend:
+        raise HTTPException(
+            400, {"error": "interval_minutes・by_caller・backend のどれかを渡してください"},
+        )
     item = None
+    if asks_backend:
+        item = collect.set_sweep_backend(name, sweep, body.backend, body.model)
     if body.by_caller is not None:
         item = collect.set_sweep_by_caller(name, sweep, body.by_caller)
     if body.interval_minutes is not None:

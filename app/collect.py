@@ -1026,6 +1026,32 @@ def set_sweep_clock(
     return update(name, sweeps=current)
 
 
+def set_sweep_backend(name: str, sweep: str, backend: str | None, model: str | None) -> Collection:
+    """巡回 1 本の**頼む相手だけ**を変える。依頼文も時計も区画の記録も触らない。
+
+    **外のアプリが、収集ごとの設定を送り直さずに相手だけを選び直すための口。**
+    巡回を並びごと送り直す口では、呼ぶ側が依頼文から何から持ち直すことになる ——
+    相手を一覧の画面で選び直したいだけの呼び出しには重すぎる。
+
+    相手の欄はワーカーも指せる(`workers.OPTION_PREFIX`。並びを均すときに取り出す)。
+    空なら収集の既定へ戻す。**相手を替えたらモデルも渡されたものに置き直す** ——
+    前の相手のモデルを残すと、その相手が受け付けない名前を送ることになる。
+    """
+    item = get(name)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"収集 {name} がありません")
+    current = [dict(raw) for raw in item.sweeps if isinstance(raw, dict)]
+    target = next((raw for raw in current if str(raw.get("name") or "") == sweep), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"収集 {name} に巡回「{sweep}」がありません")
+    target["backend"] = (backend or "").strip() or None
+    target["model"] = (model or "").strip() or None
+    # ワーカーを指していた巡回を相手に戻すときは、ワーカーの指定を外す
+    # (ワーカーを指す値なら、並びを均すときに取り出し直される)
+    target["worker"] = ""
+    return update(name, sweeps=current)
+
+
 def set_sweep_by_caller(name: str, sweep: str, on: bool) -> Collection:
     """巡回 1 本を**依頼元が起こす回にする / 時計に戻す**(`Sweep.by_caller`)。
     依頼文も相手も区画の記録も触らない。
