@@ -4616,6 +4616,17 @@ class TestParsing:
         assert cursor == "Z"
         assert note == ""
 
+    def test_fences_inside_a_body_survive(self):
+        """**本文の中の囲みは消さない。** 銘柄調査は本文の最後に読む側向けの JSON を
+        囲んで置く決まりで、答え全体から囲みを消していた頃は、読む側が見つけられなかった。"""
+        body = "要約です。\n\n```json\n{\"summary\": \"要約です。\"}\n```"
+        content = "```json\n" + json.dumps({"items": [{"title": "7203 トヨタ自動車 2026-10-03", "body": body}]},
+                                             ensure_ascii=False) + "\n```"
+        items, _cursor, _note = collect.parse_response(content)
+
+        assert items[0]["body"] == body
+        assert "```json" in items[0]["body"]
+
     def test_a_cut_off_answer_keeps_what_was_read(self):
         """**丸ごと捨てない。** 答えが長くなると相手の上限に当たって末尾が欠けることが
         あり、実際に本番で起きた。捨てると、その回に払った AI の呼び出しが全部無駄に
