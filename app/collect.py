@@ -223,6 +223,30 @@ FEED_PLACEHOLDER = "{feed}"
 # 全部を差し込むと入り切らないし、入ったとしても毎回同じものを読み直すことになる。
 RECENT_PLACEHOLDER = "{recent}"
 
+# **直近 N 時間に入ったもの**を差し込む場所(`{recent:24h}`。1〜168 時間)。
+# **`{recent}` と区切り方が違う** —— あちらは「その巡回の前回から後」なので、
+# 回す間隔がそのまま窓の幅になる(1 日 2 回なら 12 時間ぶんしか入らない)。
+# こちらは**いつ走っても同じ幅**を見る。読む側が「最新の 1 本」だけを使う要約
+# (別のアプリが売買の材料に読む市況のまとめ)では、回した時刻で中身の幅が
+# 変わると、何時に読んだかで見える範囲が変わってしまう。
+# 窓が重なる回どうしは同じものを読む —— それが目的(毎回、丸ごとの幅をまとめ直す)。
+RECENT_WINDOW_RE = re.compile(r"\{recent:(\d{1,3})h\}")
+MAX_RECENT_WINDOW_HOURS = 168
+
+
+def recent_windows(prompt: str | None) -> list[tuple[str, int]]:
+    """依頼文にある `{recent:<N>h}`(差し込み口そのものと時間)。範囲外の時間は数えない。"""
+    found = []
+    for m in RECENT_WINDOW_RE.finditer(prompt or ""):
+        hours = int(m.group(1))
+        if 1 <= hours <= MAX_RECENT_WINDOW_HOURS:
+            found.append((m.group(0), hours))
+    return found
+
+
+def _window_start(hours: int) -> str:
+    return (_now() - timedelta(hours=hours)).isoformat(timespec="seconds")
+
 # **別のソースに溜まったもの**を差し込む場所(`material`)。
 # **`{current}` とも `{feed}` とも役割が違う** —— あちらは「この収集の中身」と
 # 「外の RSS が配ったもの」で、こちらは**Chiezo に既に溜まっている別の収集**。
@@ -1475,7 +1499,7 @@ def edits_what_is_there(prompt: str, only_new: bool = False) -> bool:
     """
     if only_new:
         return False
-    return any(
+    return bool(recent_windows(prompt)) or any(
         p in (prompt or "")
         for p in (
             MATERIAL_PLACEHOLDER, RECENT_PLACEHOLDER, NAMES_PLACEHOLDER, UNREVIEWED_PLACEHOLDER,
@@ -2088,6 +2112,7 @@ def render_names(previous: dict[str, dict], scoped: bool = False) -> str:
 
 def render_recent(
     previous: dict[str, dict], since: str | None, seen: set[str] | None = None,
+    hours: int | None = None,
 ) -> str:
     """前回から後に入ったものを、プロンプトへ差し込める形にする。
 
@@ -2100,12 +2125,19 @@ def render_recent(
 
     **基準が無ければ区切らない**(その巡回の 1 回目)。いま入っているものが
     まるごと差分になる —— 初めての要約が空で終わるのはおかしい。
+
+    **消えたものは入れない**(`is_removed`)。消えたものも前世代には残っているので、
+    外さないと、整理が宣伝や重複として落とした記事がそのまま要約の材料に並んでいた。
+
+    `hours` を渡すと、見出しを「直近 N 時間」で書く(`{recent:<N>h}`。`since` は
+    呼ぶ側がいまから N 時間前にしてある)。
     """
     cutoff = _at(since)
-    fresh = [d for d in previous.values() if cutoff is None or _at(d.get("updated_at")) is None
-             or _at(d.get("updated_at")) > cutoff]
+    fresh = [d for d in previous.values() if not is_removed(d) and (
+        cutoff is None or _at(d.get("updated_at")) is None or _at(d.get("updated_at")) > cutoff)]
+    span = f"直近 {hours} 時間に入ったもの" if hours else "前回から新しく入ったもの"
     if not fresh:
-        return "(前回から新しく入ったものはありません)"
+        return f"({span}はありません)"
     # **新しい順**。入り切らずに切れるときに、残るのが古いほうでは意味が無い
     fresh.sort(key=lambda d: d.get("updated_at") or "", reverse=True)
     lines: list[str] = []
@@ -2132,7 +2164,7 @@ def render_recent(
         # **入ったぶんだけ控える**(天井で切れた行は「見せていない」)
         if seen is not None:
             seen.add(doc["title"])
-    head = f"前回から新しく入ったもの(全 {len(fresh)} 件"
+    head = f"{span}(全 {len(fresh)} 件"
     head += f"。うち {len(lines)} 件だけ載せています)" if len(lines) < len(fresh) else ")"
     return head + ":\n" + "\n".join(lines)
 
@@ -2397,6 +2429,10 @@ def build_messages(
         # **走ったことが無ければ区切らない** —— 1 回目は「いまあるもの全部」が差分
         since = sweep.last_run_at if sweep else None
         user = user.replace(RECENT_PLACEHOLDER, render_recent(previous or {}, since, seen))
+    for placeholder, hours in recent_windows(user):
+        user = user.replace(
+            placeholder, render_recent(previous or {}, _window_start(hours), seen, hours)
+        )
     if focus is not None:
         user += "\n\n" + render_focus(focus, item, previous or {}, partition_key)
     # **割り込みは必ず「直す」側で頼む。** 足すだけの収集でも、名指しで渡された 1 件を
@@ -3187,7 +3223,7 @@ def nothing_to_pass(item: Collection, sweep: Sweep, sources: dict) -> str:
     if item.requeue_at:
         return ""
     prompt = sweep.prompt or item.prompt or ""
-    deltas = [p for p in DELTA_PLACEHOLDERS if p in prompt]
+    deltas = [p for p in DELTA_PLACEHOLDERS if p in prompt] + [p for p, _ in recent_windows(prompt)]
     if not deltas or any(p in prompt for p in OPEN_PLACEHOLDERS):
         return ""
     empty: list[str] = []
@@ -3201,6 +3237,11 @@ def nothing_to_pass(item: Collection, sweep: Sweep, sources: dict) -> str:
                 if _changed_since(sources.get(item.name), sweep.last_run_at):
                     return ""
                 empty.append("前回から新しく入ったもの")
+            elif m := RECENT_WINDOW_RE.fullmatch(placeholder):
+                hours = int(m.group(1))
+                if _changed_since(sources.get(item.name), _window_start(hours)):
+                    return ""
+                empty.append(f"直近 {hours} 時間に入ったもの")
             else:
                 if material_docs(item.material, sources, sweep.last_run_at):
                     return ""
@@ -3235,7 +3276,10 @@ def _changed_since(src, since: str | None) -> bool:
     if src is None:
         return False
     cutoff = _at(since)
-    for row in db.query(src.path, "SELECT updated_at FROM docs", ()):
+    for row in db.query(src.path, "SELECT updated_at, tags FROM docs", ()):
+        # 消えたものは `render_recent` が入れないので、数えない(数えると空の依頼文で呼ぶ)
+        if notes.REMOVED_TAG in load_tags(row["tags"]):
+            continue
         when = _at(row["updated_at"])
         if cutoff is None or when is None or when > cutoff:
             return True

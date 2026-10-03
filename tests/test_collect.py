@@ -1699,6 +1699,20 @@ class TestWhatCameInSinceLastTime:
 
         assert "さっき入った" in messages[-1]["content"]
 
+    def test_removed_ones_are_left_out(self):
+        """消えたもの(整理が宣伝・重複として落としたもの)は要約の材料に並べない。"""
+        previous = {
+            "残った": {"title": "残った", "body": "", "updated_at": "2026-09-12T00:00:00+00:00"},
+            "落とした宣伝": {
+                "title": "落とした宣伝", "body": "", "updated_at": "2026-09-12T00:00:00+00:00",
+                "tags": [notes.REMOVED_TAG],
+            },
+        }
+        text = collect.render_recent(previous, "2026-09-10T00:00:00+00:00")
+
+        assert "残った" in text
+        assert "落とした宣伝" not in text
+
     def test_the_clock_is_the_sweeps_own(self, sample):
         """収集の前回を基準にすると、集めたばかりのぶんしか入らない(要約が空になる)。"""
         collect.update(
@@ -7623,3 +7637,44 @@ class TestSettingOneSweepsClock:
         res = client.patch("/v1/collect/spots/sweeps/%E6%95%B4%E7%90%86", json={})
 
         assert res.status_code == 400
+
+
+class TestTheLastHours:
+    """`{recent:<N>h}` —— 直近 N 時間に入ったもの。**いつ走っても同じ幅を見る**。
+
+    `{recent}` は「その巡回の前回から後」なので、回す間隔がそのまま窓の幅になる。
+    1 日 2 回まとめると 12 時間ぶんしか入らず、最新の 1 本だけを読む側
+    (市況のまとめを売買の材料に読むアプリ)には半日ぶんしか届かなかった。
+    """
+
+    @pytest.fixture
+    def at_noon(self, monkeypatch):
+        monkeypatch.setattr(collect, "_now", lambda: dt.datetime(2026, 9, 12, 12, 0, tzinfo=dt.UTC))
+
+    def test_it_counts_back_from_now_not_from_the_last_run(self, sample, at_noon):
+        collect.update(
+            "news", prompt="まとめて {recent:24h}",
+            # 前回の要約は 1 時間前。`{recent}` なら 1 時間ぶんしか入らない
+            sweeps=[{"name": "要約", "last_run_at": "2026-09-12T11:00:00+00:00"}],
+        )
+        item = collect.get("news")
+        previous = {
+            "半日前": {"title": "半日前", "body": "", "updated_at": "2026-09-12T00:30:00+00:00"},
+            "二日前": {"title": "二日前", "body": "", "updated_at": "2026-09-10T00:00:00+00:00"},
+        }
+        content = collect.build_messages(
+            item, previous, None, {}, collect.sweep_named(item, "要約")
+        )[-1]["content"]
+
+        assert "半日前" in content
+        assert "二日前" not in content
+        assert "直近 24 時間に入ったもの" in content
+        assert "{recent:24h}" not in content
+
+    def test_out_of_range_hours_are_left_as_written(self):
+        assert collect.recent_windows("{recent:0h} {recent:169h} {recent:12h}") == [("{recent:12h}", 12)]
+
+    def test_it_lets_the_sweep_rewrite_what_is_there(self):
+        """今あるものを差し込んでいる回なので、直す回になりうる(`{recent}` と同じ扱い)。"""
+        assert collect.edits_what_is_there("まとめて {recent:24h}") is True
+        assert collect.edits_what_is_there("まとめて {recent:24h}", only_new=True) is False
