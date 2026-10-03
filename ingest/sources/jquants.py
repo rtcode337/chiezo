@@ -262,8 +262,15 @@ EARNINGS_RAW_NAME = "jquants_earnings.jsonl"
 # 何日先までの予定を入れるか(予定日を 1 日ずつ問い合わせる)。決算の山は 2〜3 週間に集まり、
 # 大手は発表の 2〜5 週間前に予定日を出すので、1 か月先まで見れば足りる
 EARNINGS_WINDOW_DAYS = 31
-# 予定日ごとの問い合わせの間隔(秒)。有料プランのレート制限に収まるように空ける
+# 予定日ごとの問い合わせの間隔(秒)。プランのレート制限に収まるように空ける
+# (無料プランは 1 分に 5 回ほどで 429 になるので、そちらは大きく空ける。32 回で 7 分ほど)
 EARNINGS_INTERVAL_SECONDS = 1.2
+EARNINGS_INTERVAL_FREE_SECONDS = 13.0
+# 取得状況の 1 件(どのプランで取ったか)。読む側はこれで「全部か、一部だけか」を知る
+EARNINGS_STATUS_TITLE = "J-Quants 決算発表予定日の取得状況"
+EARNINGS_STATUS_TAG = "取得状況"
+PLAN_PAID = "paid"
+PLAN_FREE = "free"
 
 
 class JquantsEarningsAdapter(JquantsMasterAdapter):
@@ -273,11 +280,14 @@ class JquantsEarningsAdapter(JquantsMasterAdapter):
     予定を入れる。予定日を 1 日ずつ指定して問い合わせ、**その日をいま有効な予定日とする記録**
     (延期・未定への変更を反映した最新のもの)だけを受け取る。
 
-    **有料プラン(Light 以上)が要る。** プランの参照範囲は「予定日が公表された日」で決まり、
-    無料プラン(12 週間前まで)では、発表の 2〜5 週間前に公表される大手の予定がほぼ見えない
+    **全部が見えるのは有料プラン(Light 以上)だけ。** プランの参照範囲は「予定日が公表された日」で
+    決まり、無料プラン(12 週間前まで)では、発表の 2〜5 週間前に公表される大手の予定がほぼ見えない
     (実測: 11 月の決算の山の日でも数十社しか見えなかった)。**取り込みの最初に、公表日=今日で
-    1 回問い合わせてプランを判別し**、参照範囲外(400)なら理由を添えて止める —— 一部しか
-    入っていない予定を「全部」として配ると、読む側が「載っていない = 決算は無い」と取り違える。
+    1 回問い合わせてプランを判別する**(参照範囲外の 400 なら無料プラン)。
+    **無料プランでも止めずに、見える分だけ取り込む**。そのかわり**どのプランで取ったかを 1 件の
+    文書として残す**(見出し `EARNINGS_STATUS_TITLE`・タグ `取得状況`・脇書きの `plan` / `coverage`)
+    —— 一部しか入っていない予定を黙って「全部」として配ると、読む側が「載っていない = 決算は無い」と
+    取り違える。読む側(pta)はこれを見て、「一部しか載っていない」と添えて売買提案の AI に渡す。
 
     件数は時期で大きく増減する(決算の山の前は数千件、過ぎると減る)ので、前の世代より
     減っても焼く(`allows_shrink`)。「いまの予定」の写しで、積み上げるものではない。
@@ -287,33 +297,39 @@ class JquantsEarningsAdapter(JquantsMasterAdapter):
     min_docs = 1
     allows_shrink = True
 
-    def _check_plan(self, key: str, today: str) -> None:
-        """公表日=今日で 1 回問い合わせ、参照範囲外(無料プラン)なら止める。"""
+    def _check_plan(self, key: str, today: str) -> str:
+        """公表日=今日で 1 回問い合わせてプランを判別する(参照範囲外の 400 なら無料プラン)。"""
         try:
             self._get(key, {"date": today}, EARNINGS_PATH)
         except urllib.error.HTTPError as e:
             if e.code == 400:
-                raise SystemExit(
-                    "J-Quants のプランでは直近に公表された決算発表予定日を参照できません"
-                    "(無料プランは公表日が 12 週間より前のものだけ)。先の予定はほとんど見えないため"
-                    "取り込みません。有料プラン(Light 以上)のキーを API キーの面で登録してください"
-                ) from e
+                log.warning(
+                    "jquants_earnings: 無料プランのキーです。直近に公表された予定は見えないので、"
+                    "見える分だけ取り込み、一部だけであることを取得状況の文書に残します"
+                )
+                return PLAN_FREE
             raise
+        return PLAN_PAID
 
     def fetch(self, workdir: Path) -> tuple[Path, str]:
         key = self._api_key()
         today = datetime.now(UTC).astimezone(JST).date()
-        self._check_plan(key, today.isoformat())
+        plan = self._check_plan(key, today.isoformat())
+        interval = EARNINGS_INTERVAL_FREE_SECONDS if plan == PLAN_FREE else EARNINGS_INTERVAL_SECONDS
         workdir.mkdir(parents=True, exist_ok=True)
         out = workdir / EARNINGS_RAW_NAME
         part = out.with_suffix(".part")
         count = 0
         with part.open("w", encoding="utf-8") as f:
+            # 1 行目は取得状況(どのプランで取ったか)。`iter_docs` が文書にする
+            f.write(json.dumps({"_status": {
+                "plan": plan, "from": today.isoformat(), "window_days": EARNINGS_WINDOW_DAYS,
+            }}) + "\n")
             for offset in range(EARNINGS_WINDOW_DAYS + 1):
                 day = (today + timedelta(days=offset)).isoformat()
                 params: dict[str, str] = {"scheduled_date": day}
                 while True:
-                    time.sleep(EARNINGS_INTERVAL_SECONDS)
+                    time.sleep(interval)
                     body = self._get(key, params, EARNINGS_PATH)
                     for row in body.get("data") or []:
                         f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -324,15 +340,20 @@ class JquantsEarningsAdapter(JquantsMasterAdapter):
                     params["pagination_key"] = str(page)
         part.replace(out)
         date = today.strftime("%Y%m%d")
-        log.info("jquants_earnings: %d rows for %s + %d days", count, date, EARNINGS_WINDOW_DAYS)
+        log.info("jquants_earnings: %d rows for %s + %d days (plan: %s)", count, date, EARNINGS_WINDOW_DAYS, plan)
         return out, date
 
     def iter_docs(self, path: Path) -> Iterator[Doc]:
         rows = []
+        status: dict | None = None
         with path.open(encoding="utf-8") as f:
             for line in f:
                 if line.strip():
-                    rows.append(json.loads(line))
+                    row = json.loads(line)
+                    if "_status" in row:
+                        status = row["_status"]
+                    else:
+                        rows.append(row)
         rows.sort(key=lambda r: (_blank(r.get("SchDate")) or "9999", str(r.get("Code") or "")))
         taken: set[str] = set()
         for i, row in enumerate(rows):
@@ -343,6 +364,44 @@ class JquantsEarningsAdapter(JquantsMasterAdapter):
             if not self.sample_titles:
                 self.sample_titles = [doc.title]
             yield doc
+        # **取得状況はいつも 1 件入れる**(予定が 0 件の無料プランの日でも、なぜ空なのかが読める)。
+        # 前の形(状況の行が無い素材)は有料プランでしか焼けなかったので、全部として扱う
+        status = status or {"plan": PLAN_PAID}
+        yield self._status_doc(len(rows) + 1, status, len(taken))
+        if not self.sample_titles:
+            self.sample_titles = [EARNINGS_STATUS_TITLE]
+
+    def _status_doc(self, doc_id: int, status: dict, count: int) -> Doc:
+        free = status.get("plan") == PLAN_FREE
+        window = status.get("window_days") or EARNINGS_WINDOW_DAYS
+        if free:
+            text = (
+                f"J-Quants の無料プランのキーで取得した。無料プランは公表日が 12 週間より前の予定しか見えず、"
+                f"発表の数週間前に公表される予定の大半は載っていない(今日から {window} 日先までで {count} 件)。"
+                "載っていないことを「決算が無い」と読まないこと。"
+            )
+        else:
+            text = (
+                f"J-Quants の有料プランのキーで取得した。今日から {window} 日先までの、"
+                f"いま公表されている予定がすべて載っている({count} 件)。"
+            )
+        return Doc(
+            doc_id=doc_id,
+            title=EARNINGS_STATUS_TITLE,
+            opening=text,
+            body=text,
+            tags=[EARNINGS_STATUS_TAG],
+            aliases=[],
+            updated_at=str(status.get("from") or ""),
+            rank_score=0.0,
+            extra={
+                "plan": PLAN_FREE if free else PLAN_PAID,
+                "coverage": "partial" if free else "full",
+                "window_days": window,
+                "count": count,
+                "from": status.get("from"),
+            },
+        )
 
     def _build_earnings_doc(self, i: int, row: dict, taken: set[str]) -> Doc | None:
         code5 = _blank(row.get("Code"))
