@@ -192,19 +192,51 @@ def test_it_builds_and_validates(api, tmp_path):
         conn.close()
 
 
-def _cal(code: str, name: str, date: str, fq: str = "第２四半期") -> dict:
-    return {"Date": date, "Code": code, "CoName": name, "FY": "2027年3月期", "FQ": fq,
-            "SectorNm": "輸送用機器", "Section": "プライム"}
+class _EarningsApi(BaseHTTPRequestHandler):
+    """`/fins/earnings-date` の代わり。`date`(公表日)の問い合わせはプランの判別、
+    `scheduled_date` はその日を予定日とする会社を返す(`by_offset[何日目]`)。"""
+
+    free: ClassVar[bool] = False
+    by_offset: ClassVar[dict[int, list[tuple[str, str]]]] = {}
+    seen_days: ClassVar[list[str]] = []
+
+    def do_GET(self):
+        query = parse_qs(urlparse(self.path).query)
+        if "date" in query:
+            if _EarningsApi.free:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b'{"message": "Your subscription covers the following dates: ..."}')
+                return
+            rows: list[dict] = []
+        else:
+            day = query["scheduled_date"][0]
+            _EarningsApi.seen_days.append(day)
+            offset = len(_EarningsApi.seen_days) - 1
+            rows = [
+                {"PubDate": "2026-10-01", "SchDate": day, "FQName": "2Q", "FYE": "0331",
+                 "Code": code, "CoName": name, "CoNameEn": ""}
+                for code, name in _EarningsApi.by_offset.get(offset, [])
+            ]
+        raw = json.dumps({"data": rows}, ensure_ascii=False).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def log_message(self, *_args):
+        pass
 
 
 @pytest.fixture()
 def earnings(monkeypatch):
     import sources.jquants as jq
 
-    monkeypatch.setattr(jq, "PAGE_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(jq, "EARNINGS_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(jq, "EARNINGS_WINDOW_DAYS", 3)
     monkeypatch.setenv(API_KEY_ENV, "test-key")
-    _Api.pages, _Api.status, _Api.seen_keys = [], 200, []
-    httpd = HTTPServer(("127.0.0.1", 0), _Api)
+    _EarningsApi.free, _EarningsApi.by_offset, _EarningsApi.seen_days = False, {}, []
+    httpd = HTTPServer(("127.0.0.1", 0), _EarningsApi)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     yield jq.JquantsEarningsAdapter(base_url=f"http://127.0.0.1:{httpd.server_port}/v2")
@@ -212,23 +244,32 @@ def earnings(monkeypatch):
 
 
 class TestEarnings:
-    def test_one_announcement_is_one_doc_found_by_code_and_month(self, earnings, tmp_path):
-        _Api.pages = [[_cal("72030", "トヨタ自動車", "2026-11-05")],
-                      [_cal("72400", "ＮＯＫ", "")]]
+    def test_it_asks_day_by_day_and_makes_one_doc_per_announcement(self, earnings, tmp_path):
+        _EarningsApi.by_offset = {1: [("72030", "トヨタ自動車")], 3: [("72400", "ＮＯＫ")]}
+
         path, _date = earnings.fetch(tmp_path)
         docs = list(earnings.iter_docs(path))
 
+        # 今日から 3 日先まで、予定日を 1 日ずつ聞く
+        assert len(_EarningsApi.seen_days) == 4
         toyota, nok = docs
-        assert toyota.extra["announcement_date"] == "2026-11-05"
-        assert {"決算発表予定", "2026-11-05", "2026-11", "第２四半期"} <= set(toyota.tags)
+        day = _EarningsApi.seen_days[1]
+        assert toyota.extra["announcement_date"] == day
+        assert {"決算発表予定", day, day[:7], "2Q"} <= set(toyota.tags)
         assert "7203" in toyota.aliases
-        # 発表日が未定の行も入れる(予定に載っていること自体が手掛かり)
-        assert nok.extra["announcement_date"] is None and "発表日未定" in nok.tags
         assert "NOK" in nok.aliases
 
+    def test_a_free_plan_is_refused_before_fetching(self, earnings, tmp_path):
+        """無料プランでは先の予定がほぼ見えない。一部だけを「全部」として配らない。"""
+        _EarningsApi.free = True
+
+        with pytest.raises(SystemExit, match="有料プラン"):
+            earnings.fetch(tmp_path)
+        assert _EarningsApi.seen_days == []
+
     def test_a_smaller_generation_still_bakes(self, earnings, tmp_path):
-        """決算期を過ぎると件数は大きく減る。それが本来の姿なので、減っても焼く。"""
-        _Api.pages = [[_cal("72030", "トヨタ自動車", "2026-11-05")]]
+        """決算の山を過ぎると件数は大きく減る。それが本来の姿なので、減っても焼く。"""
+        _EarningsApi.by_offset = {0: [("72030", "トヨタ自動車")]}
         path, date = earnings.fetch(tmp_path / "work")
         building = tmp_path / f"jquants_earnings-{date}.db.building"
 
