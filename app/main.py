@@ -3572,6 +3572,29 @@ def collect_patch(name: str, body: CollectionPatch):
     return collect.to_public(collect.update(name, **body.model_dump(exclude_none=True)))
 
 
+class LocationLock(BaseModel):
+    """1 件の座標を固定する(`collect.set_lock`)。緯度・経度を空にすると外す。"""
+
+    title: str = PydField(..., description="固定する 1 件の見出し")
+    lat: float | None = PydField(None, description="確かめた緯度(空なら固定を外す)")
+    lon: float | None = PydField(None, description="確かめた経度(空なら固定を外す)")
+
+
+@app.post("/v1/collect/{name}/locks")
+def collect_lock(name: str, body: LocationLock):
+    """**人が確かめた座標を固定する**(緯度・経度を空にすると外す)。
+
+    次に焼くときから、その 1 件の座標はここの値に戻り、`座標確認済み` のタグが付く
+    —— AI の回が動かしても、名簿を引き直しても動かない。正しい位置に直した店が、
+    別の回に動かされていたための口。
+    """
+    collect.require_enabled()
+    if (body.lat is None) != (body.lon is None):
+        raise HTTPException(400, {"error": "緯度と経度はそろえて渡してください"})
+    item = collect.set_lock(name, body.title, body.lat, body.lon)
+    return {"ok": True, "locks": len(item.locks)}
+
+
 class SweepClock(BaseModel):
     """巡回 1 本の時計だけを変える(`collect.set_sweep_clock` / `set_sweep_by_caller`)。"""
 
