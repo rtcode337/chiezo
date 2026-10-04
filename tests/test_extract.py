@@ -1533,3 +1533,52 @@ class TestPullingOnlyWithinAnArea:
     def test_a_reversed_box_is_refused(self):
         with pytest.raises(HTTPException):
             self.area(bbox=[35.69, 139.75, 35.67, 139.78])
+
+
+class TestCuttingByAFactOnTheArticle:
+    """**脇書きの値で下を切る**(`min_extra`)。人の名簿はカテゴリ 1 つで 1 万人に届くので、
+    知名度(月次ページビュー)で切ってから AI に回す。"""
+
+    @staticmethod
+    def people():
+        return [
+            {"title": "よく読まれる人", "tags": ["日本の俳優"], "extra": {"pageviews_month": 50000}},
+            {"title": "ちょうど下限の人", "tags": ["日本の俳優"], "extra": {"pageviews_month": 10000}},
+            {"title": "あまり読まれない人", "tags": ["日本の俳優"], "extra": {"pageviews_month": 900}},
+            # 測れないものは入れない(下限を書いた以上)
+            {"title": "数の無い人", "tags": ["日本の俳優"]},
+        ]
+
+    @staticmethod
+    def roster(**overrides):
+        return extract.normalize({
+            "source": "jawiki", "tag": "日本の俳優",
+            "min_extra": {"pageviews_month": 10000}, **overrides,
+        })
+
+    def test_only_what_reaches_the_floor_is_pulled(self, source):
+        items, _cursor = run(self.roster(), source(self.people()))
+
+        assert sorted(i["title"] for i in items) == ["ちょうど下限の人", "よく読まれる人"]
+
+    def test_it_is_counted_the_same_way(self, source):
+        assert extract.count(self.roster(), source(self.people())) == 2
+
+    def test_the_floor_is_written_back(self):
+        assert extract.to_json(self.roster())["min_extra"] == {"pageviews_month": 10000}
+
+    def test_without_a_floor_nothing_is_cut(self, source):
+        items, _cursor = run(self.roster(min_extra=None), source(self.people()))
+
+        assert len(items) == 4
+        assert "min_extra" not in extract.to_json(self.roster(min_extra=None))
+
+    @pytest.mark.parametrize("bad", [
+        {"pageviews_month": "多い"},
+        {"pageviews month": 1},
+        {"a": 1, "b": 2, "c": 3, "d": 4},
+        [1],
+    ])
+    def test_a_strange_floor_is_refused(self, bad):
+        with pytest.raises(HTTPException):
+            self.roster(min_extra=bad)

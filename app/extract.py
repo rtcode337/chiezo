@@ -139,6 +139,9 @@ MAX_MAP_VALUE_CHARS = 100
 # 既に長期記憶に載っていて AI に書かせる意味の無い値を運ぶための口。
 # 際限なく写せるようにすると、集めた 1 件が元の記事の丸写しになる
 MAX_CARRIED_KEYS = 10
+# 脇書きの値で絞る鍵(`min_extra`)の数。**名簿を知名度で絞るため**のもので、
+# 1〜2 個で足りる
+MAX_MIN_EXTRA_KEYS = 3
 # 元の記録を名指す鍵(`identity`)の数。**見分けに要るのは 1〜2 個**(Overture の id、
 # OSM の種類と番号)なので、それ以上書けるのは指定の書き違い
 MAX_IDENTITY_KEYS = 3
@@ -323,6 +326,7 @@ def normalize_one(raw) -> dict | None:
     carried = [str(k).strip() for k in carried if str(k).strip()]
 
     box = _bbox(raw.get("bbox"))
+    min_extra = _min_extra(raw.get("min_extra"))
 
     identity = raw.get("identity") or []
     if not isinstance(identity, list):
@@ -360,9 +364,45 @@ def normalize_one(raw) -> dict | None:
         # なり、全部を AI に回すと費用も見落としも手に負えない —— 見たい範囲だけを
         # 名簿にする。座標を持たない文書は範囲に入らない
         "bbox": box,
+        # **脇書きの値で下を切る**(`{"pageviews_month": 10000}`)。人の名簿はカテゴリ 1 つで
+        # 1 万人に届き、全部を AI に回すと一周に何週間もかかる —— 知名度で切って、
+        # 落ち着いたら下げて広げる
+        "min_extra": min_extra,
         "cursor": str(raw.get("cursor") or DEFAULT_CURSOR).strip() or DEFAULT_CURSOR,
     }
     return spec
+
+
+def _min_extra(raw) -> dict:
+    """`min_extra`(脇書きの鍵 → 下限の数)を整える。"""
+    if raw in (None, "", {}):
+        return {}
+    if not isinstance(raw, dict):
+        raise _bad("min_extra は {\"鍵\": 下限の数} の形で書いてください")
+    if len(raw) > MAX_MIN_EXTRA_KEYS:
+        raise _bad(f"min_extra に書ける鍵は {MAX_MIN_EXTRA_KEYS} 個までです")
+    out = {}
+    for key, value in raw.items():
+        key = str(key).strip()
+        # 鍵は JSON のパスに埋め込むので、名前に使える字だけを受ける
+        if not re.fullmatch(r"[A-Za-z0-9_]+", key):
+            raise _bad(f"min_extra の鍵は英数字と _ で書いてください: {key}")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise _bad(f"min_extra の値は数で書いてください: {key}")
+        out[key] = value
+    return out
+
+
+def _min_extra_sql(spec: dict) -> tuple[str, list]:
+    """`min_extra` を、行本体の WHERE に足す条件にする(当たった行だけを読む)。
+
+    **値を持たない記事は落ちる**(下限を書いた以上、測れないものは入れない)。
+    """
+    parts, params = [], []
+    for key, value in (spec.get("min_extra") or {}).items():
+        parts.append(f"COALESCE(json_extract(extra, '$.{key}'), -1) >= ?")
+        params.append(value)
+    return "".join(f" AND {part}" for part in parts), params
 
 
 def _tags_mode(raw) -> dict:
@@ -602,6 +642,8 @@ def to_json(spec) -> dict | list[dict] | None:
         written["identity"] = list(spec["identity"])
     if spec.get("bbox"):
         written["bbox"] = list(spec["bbox"])
+    if spec.get("min_extra"):
+        written["min_extra"] = dict(spec["min_extra"])
     # **タグの名簿だけが持つものは、そのときだけ書く。** 文書の名簿に `min_docs` が
     # 並んでいると、効かない指定を読ませることになる
     if spec["of"] != DEFAULT_ROSTER_KIND:
@@ -669,11 +711,14 @@ def count(spec, sources: dict, retired: set[str] | None = None) -> int:
             total += len(_tag_rows(one, sources, retired))
             continue
         src, set_sql, params = _doc_ids(one, sources)
+        if one.get("min_extra"):
+            where, more = _min_extra_sql(one)
+            sql = f"SELECT COUNT(*) FROM docs WHERE doc_id IN ({set_sql}){where}"
+            params = [*params, *more]
+        else:
+            sql = f"SELECT COUNT(*) FROM ({set_sql})"
         (matched,) = db.query(
-            src.path,
-            f"SELECT COUNT(*) FROM ({set_sql})",
-            tuple(params),
-            timeout=EXTRACT_TIMEOUT_SECONDS,
+            src.path, sql, tuple(params), timeout=EXTRACT_TIMEOUT_SECONDS,
         )[0]
         total += matched
     return total
@@ -983,11 +1028,12 @@ def _run_one(spec: dict, sources: dict, retired: set[str] | None = None) -> tupl
             })
         limit = MAX_ROWS
 
+    where, more = _min_extra_sql(spec)
     sql = (
         f"SELECT title, {spec['body']} AS body, tags, extra, links FROM docs"
-        f" WHERE doc_id IN ({set_sql}) ORDER BY rank_score DESC, title LIMIT ?"
+        f" WHERE doc_id IN ({set_sql}){where} ORDER BY rank_score DESC, title LIMIT ?"
     )
-    args = (*params, limit)
+    args = (*params, *more, limit)
 
     # つながりは**この抽出に入っているものだけ**が相手なので、先に全部読んでから作る。
     # **その規則を書いていなければ読まない** —— 数十万件の名簿では、見出しと
@@ -1392,6 +1438,7 @@ SPEC_GUIDE = """依頼を読んで、**まず「手元の索引から機械的�
   "tag_suffix": "タグの末尾(これで終わるタグ全部。カンマ区切りで何個でも書ける。"
                "tag と併用でき、全部の和になる)",
   "not_tag": "外すタグ(カンマ区切り。これを持つものは、tag に当たっていても取らない)",
+  "min_extra": {"pageviews_month": 10000},   ← 脇書きの値で下を切る(知名度で絞る)。要るときだけ
   "limit": 30,   ← 書かなければ全部。AI に読ませる側の都合で絞るときだけ書く
   "body": "opening(冒頭。既定) か body(全文)",
   "url": "出典の作り方。{title} と、そのソースが extra に持っている値を差し込める",
