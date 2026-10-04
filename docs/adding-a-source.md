@@ -119,7 +119,7 @@ class AozoraAdapter:
 > 読めるようにしておくとよいです(例: `ingest/sources/jquants.py`)。
 > **API キーではない形の認証情報**(接続先とパスワードのように、1 つの欄に複数の値を
 > 書いてもらうもの)は、入力欄の見本を `credential_placeholder` で名乗ってください
-> (例: `ingest/sources/pihole.py` の `http://pi.hole パスワード`)。
+> (例: `http://host.example パスワード`)。
 
 > **件数が時期で大きく増減するのが本来の姿のソース**(「いまの予定」の写しなど)は、
 > `allows_shrink = True` を名乗ってください。名乗らないソースは、前の世代の半分を下回る世代を

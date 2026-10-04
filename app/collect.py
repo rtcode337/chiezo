@@ -575,6 +575,10 @@ class Sweep:
     # 代わりに、**枠を使わずに毎時回せる** —— 重要度を付ける・まとめる・漏れを探す、
     # といった判断の要る仕事は別の巡回が AI に頼む(名簿と肉付けを分けるのと同じ形)
     use_feed: bool = False
+    # **Pi-hole から引く巡回**(`app/pihole.py`)。LAN の Pi-hole の問い合わせの記録を
+    # AI を呼ばずに読み、止めたドメインと気になる通信をドメインごとの集計として
+    # 積み上げる(前の回の脇書きに足す)。何のドメインかを調べるのは別の巡回
+    use_pihole: bool = False
     # **一度きりの巡回**。走ったら時計を持たなくなる(押せばまた走る)。
     # 名簿のように、元のデータが変わらない限り何度やっても同じ回のためのもの ——
     # 毎週回しても結果は変わらず、その 1 回ぶんの取り込みが無駄になる
@@ -663,7 +667,7 @@ class Sweep:
         **一周を数える側はここを見る。** 歩かない回の一周は「1 回走ったこと」で、
         区画の印では永遠に数え終わらない。
         """
-        return not (self.use_extract or self.use_feed)
+        return not (self.use_extract or self.use_feed or self.use_pihole)
 
     def per_run(self, total_partitions: int) -> int:
         """1 回に見る区画の数。
@@ -763,6 +767,7 @@ def _sweep_from_json(raw: dict, item: Collection) -> Sweep:
         only_new=bool(raw.get("only_new")),
         use_extract=bool(raw.get("use_extract")),
         use_feed=bool(raw.get("use_feed")),
+        use_pihole=bool(raw.get("use_pihole")),
         by_hand=bool(raw.get("by_hand")),
         once=bool(raw.get("once")),
         one_lap=bool(raw.get("one_lap")),
@@ -926,6 +931,9 @@ def normalize_sweeps(raw) -> list[dict]:
             continue
         seen.add(name)
         made = {**item, "name": name, **_worker_picked(item)}
+        if made.get("use_pihole"):
+            # **Pi-hole から引く回も AI を呼ばない**(相手を持たせても読まれない)
+            made.update(worker="", backend=None, model=None, effort=None)
         if made.get("by_hand"):
             # **手で回す回にワーカーは持たせない。** 渡す先はそのときの枠で決まる
             # 仕組みなのに、この回は AI へ投げない —— 持たせると**ワーカーの
@@ -3272,7 +3280,7 @@ def nothing_to_pass(item: Collection, sweep: Sweep, sources: dict) -> str:
     **読めないときは飛ばさない**(タグの索引を持たない古いソース・読み出しの失敗)。
     確かめられないまま飛ばすと、渡すものがあるのに走らない回ができる。
     """
-    if sweep.use_extract or sweep.use_feed or sweep.by_hand:
+    if sweep.use_extract or sweep.use_feed or sweep.use_pihole or sweep.by_hand:
         return ""
     # **全部を未確認に戻すよう頼まれていれば、渡すものはある**(印はまだ付いていない)
     if item.requeue_at:
@@ -4021,7 +4029,16 @@ def asks_ai(item: Collection, sweep=None) -> bool:
         return False
     # 手で回す回も AI を呼ばない —— 答えを書いたのは Chiezo が知らない相手で、
     # 既定の相手を控えに残すと「その相手に頼んだ回」として履歴に並ぶ
-    return not (sweep is not None and (sweep.use_feed or sweep.by_hand))
+    return not (sweep is not None and (sweep.use_feed or sweep.use_pihole or sweep.by_hand))
+
+
+def carries_facts(item: Collection, sweep=None) -> bool:
+    """焼くときに、**機械が運んできた脇書きで入れ替える回か**(`_with_facts`)。
+
+    機械で引く回(数えた値は回るたびに変わる)と、Pi-hole から引く回(前の回の集計に
+    足した値を運んでくる)。入れ替えないと、最初に拾った日の値が残り続ける。
+    """
+    return uses_extract(item, sweep) or bool(sweep is not None and sweep.use_pihole)
 
 
 def _found_by_record(edits_of, before: dict) -> dict | None:

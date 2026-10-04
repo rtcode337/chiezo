@@ -52,6 +52,7 @@ from app import (
     media_backends,
     media_providers,
     notes,
+    pihole,
     providers,
     rebuilds,
     search_queries,
@@ -1172,6 +1173,11 @@ async def _collect_items(
     # **外の道具で引く回**(`Sweep.use_feed`)。フィードが配っている見出しを
     # そのまま溜める。**進み具合には触らない** —— 次にどこから読むかは
     # 道具の側が「前回の実行より後」で決める(`feeds.SINCE_LAST_RUN`)
+    # **Pi-hole から引く回**(`Sweep.use_pihole`)。前の回の集計(脇書き)に今回の
+    # ぶんを足して返す。どこから読むかは文書の「最後に見た時刻」が覚えている
+    if sweep is not None and sweep.use_pihole:
+        items, note = await asyncio.to_thread(pihole.harvest, previous)
+        return items, None, note
     if sweep is not None and sweep.use_feed:
         if feed is None:
             return [], None, "この収集に外向きの道具が付いていません"
@@ -1590,7 +1596,7 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
         keys = [focus.partition] if focus.partition else []
         # 割り込みは必ず「直す」側で焼く(名指しの 1 件を直せないと割り込みの意味が無い)
         baked_as = item
-    elif sweep.use_extract or sweep.use_feed:
+    elif sweep.use_extract or sweep.use_feed or sweep.use_pihole:
         # **機械で引く回は区画を見ない。** 指定を 1 本引いて全部を返すので、
         # 区画を選ぶと**見てもいない区画に「回った」印が付く**(一周が嘘になる)
         keys = []
@@ -1802,9 +1808,9 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
                     # **AI を呼ばない回で入るものは未精査**(`collect.asks_ai`)——
                     # フィードも機械抽出も、宣伝や的外れをそのまま引き受ける
                     not collect.asks_ai(item, sweep), shown,
-                    # **機械で引く回は、運んできた脇書きを入れ替える**
-                    # (`collect.uses_extract`)—— 数えた値は回るたびに変わる
-                    collect.uses_extract(item, sweep),
+                    # **機械で引く回・Pi-hole から引く回は、運んできた脇書きを入れ替える**
+                    # (`collect.carries_facts`)—— 数えた値は回るたびに変わる
+                    collect.carries_facts(item, sweep),
                     # **全部を未確認に戻す頼みは、焼くこの回で印にする**
                     requeue=bool(item.requeue_at),
                 ),
