@@ -5074,6 +5074,27 @@ class TestRest:
         res = client.post("/v1/collect/news/focus", json={"note": "直して"})
         assert res.status_code == 403
 
+    def test_a_hand_pressed_run_goes_through_a_stopped_collection(
+        self, client, sample, monkeypatch
+    ):
+        """**人が押した 1 回は、止めている収集でも走る**(`manual=true`)。AI の使い過ぎを
+        気にして止めていても、区画を名指しした 1 回や現地からの依頼は頼みたい。
+        定時の頼みは付けないので、止めていれば今までどおり断る。"""
+        from app.views import admin
+
+        monkeypatch.setattr(admin, "trigger_run", lambda _source: None)
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://chiezo-trigger:7011")
+        assert not collect.get("news").enabled
+
+        assert client.post("/v1/collect/news/run").status_code == 403
+        assert client.post("/v1/collect/news/run", params={"manual": "true"}).status_code == 200
+        res = client.post(
+            "/v1/collect/news/focus", params={"manual": "true"}, json={"note": "直して"},
+        )
+        assert res.status_code == 200, res.text
+        # 止めていることは変わらない(時計では走らない)
+        assert not collect.get("news").enabled
+
     def test_a_focus_without_a_note_is_refused(self, client, sample):
         collect.update("news", enabled=True)
         assert client.post("/v1/collect/news/focus", json={"note": " "}).status_code == 400
