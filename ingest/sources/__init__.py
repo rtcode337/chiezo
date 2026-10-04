@@ -27,6 +27,7 @@ from sources.jquants import JquantsEarningsAdapter, JquantsMasterAdapter
 from sources.osm import DEFAULT_VALIDATION, OsmAdapter
 from sources.osm_regions import OSM_REGIONS, OsmRegion
 from sources.overture import overture_japan
+from sources.pihole import PiholeAdapter
 from sources.remote import load_remote_adapters
 from sources.wikipedia import DEFAULT_VALIDATION as WIKIPEDIA_DEFAULT_VALIDATION
 from sources.wikipedia import WikipediaAdapter
@@ -54,6 +55,9 @@ ADAPTERS: dict[str, Callable[[], SourceAdapter]] = {
     "jquants_master": lambda: JquantsMasterAdapter(),
     # 決算発表予定日(J-Quants。3・9 月期決算の会社だけ。無料プランでも遅れない)
     "jquants_earnings": lambda: JquantsEarningsAdapter(),
+    # LAN の Pi-hole が止めたドメインと、いつもと違う振る舞いの通信。**接続先とパスワードが要り、
+    # 記録は家の中の通信そのもの**(CHIEZO_PIHOLE_URL / CHIEZO_PIHOLE_PASSWORD。sources/pihole.py)
+    "pihole": lambda: PiholeAdapter(),
 }
 
 

@@ -283,6 +283,8 @@ def sources():
         if label := getattr(adapter, "credential_label", None):
             catalog[name]["credential"] = {
                 "label": label, "help_url": getattr(adapter, "credential_help_url", None),
+                # 入力欄の見本(API キーではない形のものだけ名乗る。例: Pi-hole の「URL パスワード」)
+                "placeholder": getattr(adapter, "credential_placeholder", None),
                 # 同じキーを使うソースの組(無ければソース名。管理画面はこれごとに 1 つ持つ)
                 "group": getattr(adapter, "credential_group", None) or name,
             }

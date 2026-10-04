@@ -41,7 +41,9 @@ Chiezo はそれが持てないものを預かる側にいる。
   無料プランは 1 分に 5 回ほどで 429 になるので、問い合わせの間隔を 13 秒に広げる。**それでも 429 が
   返ったら止めずに待って問い合わせ直す**(倍々に 5 回まで。同じキーを pta などで同時に使うと当たる)。**個人の私的利用に限る** ——
   本人以外が見られる環境では取り込まない、解約したら消す。`ingest/sources/jquants.py` の冒頭)に限らず、
-  **キーが要るソースは `credential_label` を名乗る**。trigger のカタログに `credential` が載る。
+  **キーが要るソースは `credential_label` を名乗る**。API キーではない形の認証情報
+  (Pi-hole の `pihole` は接続先とパスワードを `<URL> <パスワード>` の 1 つの欄に書く)は、
+  入力欄の見本を `credential_placeholder` で名乗る(カタログの `credential.placeholder`)。trigger のカタログに `credential` が載る。
   **外部 API のキーは管理画面の「API キー」の面(`/admin/keys`)に名前で持つ**(`settings.db` の
   `api_keys`)。**使う側は名前で引く** —— ソースは `credential_group` でキーの名前を名乗り
   (J-Quants の 2 つは `jquants`。名乗らなければソース名)、これから足す収集の道具も同じ名前で引く。

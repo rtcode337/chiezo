@@ -3716,7 +3716,8 @@ def admin_keys():
                 "<td>"
                 f'<form method="post" action="{KEYS_PAGE}" class="init-form">'
                 f'<input type="hidden" name="name" value="{esc(name)}">'
-                '<input type="password" name="credential" placeholder="API キー" required'
+                '<input type="password" name="credential"'
+                f' placeholder="{esc(spec.get("placeholder") or "API キー")}" required'
                 ' autocomplete="off">'
                 f'<button type="submit">{"更新" if have else "登録"}</button></form> {drop}'
                 "</td>"
