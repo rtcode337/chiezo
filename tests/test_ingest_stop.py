@@ -244,3 +244,38 @@ class TestKeepingTheLastFailure:
 class _NoThread:
     def start(self) -> None:
         return None
+
+
+def test_stopping_a_collection_also_stops_its_ai(tmp_path, monkeypatch, built_data_dir):
+    """**収集の取り込みを止めると、AI に集めさせているほうも止まる**。
+
+    取り込みが止める印を見るのは素材が届き始めてからで、それまで本体は区画ごとに
+    AI を呼び続ける —— 押しても止まらないように見えていた。"""
+    from datetime import UTC, datetime
+
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+    monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+    from app import ai_inflight
+    from app.main import app
+    from app.views import admin
+
+    monkeypatch.setattr(admin, "TRIGGER_URL", "http://trigger.internal")
+
+    class Ok:
+        status_code = 200
+
+    monkeypatch.setattr(admin.httpx, "post", lambda url, params=None, timeout=None: Ok())
+    before = datetime.now(UTC).isoformat(timespec="seconds")
+    with ai_inflight.called_by("collect:people"):
+        token = ai_inflight.begin(
+            backend="claude", model="opus", effort="", prompt_bytes=1, timeout=60.0,
+        )
+
+    with TestClient(app) as client:
+        res = client.post("/admin/ingest/stop", data={"source": "people"}, follow_redirects=False)
+
+    assert res.status_code == 303
+    assert ai_inflight.stop_wanted(token)
+    assert ai_inflight.caller_stop_wanted("collect:people", before)

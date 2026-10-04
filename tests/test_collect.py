@@ -594,6 +594,39 @@ class TestPartitionLedger:
         assert "あの店が閉まった" in heard[0] and "この回の範囲の外" in heard[0]
         assert "あの店が閉まった" not in heard[1] and "この回の補足" not in heard[1]
 
+    def test_a_run_asked_to_stop_does_not_call_the_next_partition(
+        self, sample, monkeypatch, tmp_path
+    ):
+        """**止めるよう頼まれたら、次の区画を呼ばない**(`ai_inflight.caller_stop_wanted`)。
+
+        取り込みの「止める」は取り込み側に印を立てるだけで、本体が AI に集めさせて
+        いるあいだは見に行けない —— 区画ごとに呼び続け、押しても止まらなかった。
+        集めたぶんは焼いて降りる。"""
+        import asyncio
+
+        from app import ai_inflight, main
+
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        collect.update("news", prompt="この範囲を調べて: {partition}")
+        self._with_ledger(["あ〜き", "く〜そ"])
+        item = collect.get("news")
+        asked = []
+
+        async def reply(_item, messages):
+            asked.append(messages[-1]["content"])
+            # 1 区画目を答えている最中に「止める」が押された
+            ai_inflight.ask_caller_to_stop("collect:news")
+            return '{"items": [{"title": "見つけた", "body": "本文"}]}', "codex", "gpt-6"
+
+        monkeypatch.setattr(main, "_ask_for_collection", reply)
+        items, _cursor, note = asyncio.run(main._collect_items(
+            item, {}, {}, ["あ〜き", "く〜そ"], collect.sweeps_of(item)[0],
+        ))
+
+        assert len(asked) == 1
+        assert [i["title"] for i in items] == ["見つけた"]
+        assert "止めるよう頼まれました" in note
+
     def test_a_note_asks_the_ai_to_look_up_the_right_value(self, sample):
         """届く依頼は「ずれている」までで、正しい値を書いてこない。
 
