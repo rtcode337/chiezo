@@ -153,11 +153,11 @@ duckdb==1.5.6 \
     --hash=sha256:df5ae02af278e084f54a9730a9f4f211ed736d0bd8f3bc12af925c2effb5b33d \
     --hash=sha256:ebcbd09cd8578ab1093393e9b16289cda0e8f1791ac595bf00eb5bad75c3cf00 \
     --hash=sha256:f14551eef9180fc72869e2d9a2896410a8826169e22495e98a825abaa0eac1a7
-    # via -r ingest/requirements.in
-fastapi==0.141.1 \
-    --hash=sha256:bfb91aa2d334c61cb35ba9a116fc123b3d3df31640b801cf57a7a78ec3f603b3 \
-    --hash=sha256:e8822fc40db1e1858054d7a949a888695bc9bdce70139178e33bd2871a453ca1
-    # via -r ingest/requirements.in
+    # via -r requirements.in
+fastapi==0.142.2 \
+    --hash=sha256:06366626f2e70576367714d9ab2fe8472e6c8456dba69b399f9f797ab5e92570 \
+    --hash=sha256:bd5f4d81f1e93a88bcd77caf4dfe3c2dbffc3805407a0007e9a114c18b3a670b
+    # via -r requirements.in
 h11==0.16.0 \
     --hash=sha256:4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1 \
     --hash=sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
@@ -262,7 +262,11 @@ mwparserfromhell==0.7.2 \
     --hash=sha256:efe6e5255379ff66a08d2102004b26a456692dafbab0cb1e52bed275a43f1c4c \
     --hash=sha256:f4193072e9ea93b9e88f772f60a02125c0602d32890d0bbdcb275ed58c8b3763 \
     --hash=sha256:fef24a97b0b08f02646be2e018284884f8e6cb9740eea60a10404b5369c04ef6
-    # via -r ingest/requirements.in
+    # via -r requirements.in
+opentelemetry-api==1.45.0 \
+    --hash=sha256:711ede81773c8025c2c03dac0450bc89f3d30aea6eabcc815c570d4e35a963f7 \
+    --hash=sha256:80e068aba7cd56c8b58512d6a36f8d25cb1dfaa0c0a4cc1c938ccf9f362d9cb3
+    # via fastapi
 osmium==4.3.1 \
     --hash=sha256:0604b866d4e875fad268b31ecf330ee8dbcf280aac47330b4576f320cffeacb8 \
     --hash=sha256:08ce36ce104dbc7c4ea9601fd3d58fce6de61f4d42c5d6d9fe5149d50f909d60 \
@@ -318,7 +322,7 @@ osmium==4.3.1 \
     --hash=sha256:f79bf7d2ac8bc86f5aa6c1fe77d11d2b4f518d0f3ca4df19e66035e4eea23930 \
     --hash=sha256:f97c4f4b5e9a17934d7f95da161d1aa0cfefc2d5607542e16d5965f029ea7f29 \
     --hash=sha256:fb6e1cc2980cbdf19f8d8723a096b43a1e30bafe7806ad82b174ba007e076fce
-    # via -r ingest/requirements.in
+    # via -r requirements.in
 pydantic==2.13.4 \
     --hash=sha256:45a282cde31d808236fd7ea9d919b128653c8b38b393d1c4ab335c62924d9aba \
     --hash=sha256:c40756b57adaa8b1efeeced5c196f3f3b7c435f90e84ea7f443901bec8099ef6
@@ -537,6 +541,7 @@ typing-extensions==4.16.0 \
     --hash=sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5
     # via
     #   fastapi
+    #   opentelemetry-api
     #   pydantic
     #   pydantic-core
     #   typing-inspection
@@ -553,7 +558,7 @@ urllib3==2.8.0 \
 uvicorn[standard]==0.54.0 \
     --hash=sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf \
     --hash=sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620
-    # via -r ingest/requirements.in
+    # via -r requirements.in
 uvloop==0.22.1 \
     --hash=sha256:017bd46f9e7b78e81606329d07141d3da446f8798c6baeec124260e22c262772 \
     --hash=sha256:0530a5fbad9c9e4ee3f2b33b148c6a64d47bbad8000ea63704fa8260f4cf728e \

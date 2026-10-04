@@ -9,7 +9,7 @@ osmium>=4.0,<5
 mwparserfromhell>=0.6
 # 例外3: chiezo-trigger(server.py)が同じイメージを使い回すための依存。
 # one-shot の chiezo-ingest 実行(main.py)自体は使わない。
-fastapi>=0.141.1
+fastapi>=0.142.2
 uvicorn[standard]>=0.54.0
 
 # Overture Places(sources/overture.py)を S3 の GeoParquet から bbox 指定で抜くのに使う。
