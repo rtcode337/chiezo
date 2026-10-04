@@ -1,4 +1,4 @@
-fastapi>=0.141.1
+fastapi>=0.142.2
 uvicorn[standard]>=0.54.0
 # 管理画面から chiezo-trigger(内部トリガーサービス)を叩くためのクライアント。
 httpx>=0.28.1
