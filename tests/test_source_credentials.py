@@ -58,6 +58,9 @@ class TestTheTrigger:
 
         assert catalog["jquants_master"]["credential"]["label"] == "J-Quants の API キー"
         assert "credential" not in catalog["geonames"]
+        # API キーではない形のものは、入力欄の見本を名乗る(Pi-hole は「URL パスワード」)
+        assert catalog["pihole"]["credential"]["placeholder"] == "http://pi.hole パスワード"
+        assert catalog["jquants_master"]["credential"]["placeholder"] is None
 
 
 def test_run_hands_the_key_to_the_adapter_only(tmp_path, monkeypatch):
@@ -113,6 +116,8 @@ class TestTheKeysPage:
         html = client.get("/admin/keys").text
         assert "<code>jquants</code>" in html and "jquants_earnings, jquants_master" in html
         assert "未登録" in html
+        # 見本を名乗らないキーは「API キー」と出す
+        assert 'placeholder="API キー"' in html
         # 長期記憶の面は、未登録を知らせて API キーの面へ案内する
         assert "取り込みに要るキーが未登録です: jquants" in client.get("/admin/memory").text
 

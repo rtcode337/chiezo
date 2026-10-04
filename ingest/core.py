@@ -408,6 +408,9 @@ class SourceAdapter(Protocol):
     credential_label: str | None = None
     # キーをどこで手に入れるか(画面に案内として出す URL)
     credential_help_url: str | None = None
+    # 入力欄の見本。**API キーではない形の認証情報だけが名乗る**(Pi-hole の
+    # 「URL パスワード」のように、1 つの欄に複数の値を書いてもらうもの)。無ければ「API キー」
+    credential_placeholder: str | None = None
     # **同じキーを使うソースは同じ名前を名乗る**(例: J-Quants の 2 つのソースは "jquants")。
     # 管理画面はこの名前ごとにキーを 1 つだけ持ち、名乗ったソース全部に渡す —— ソースごとに
     # 持つと同じキーを何度も入れることになり、入れ替えたときに片方だけ古いまま残る。
