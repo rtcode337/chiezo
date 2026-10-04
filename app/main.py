@@ -3870,9 +3870,32 @@ def start_focus_bake(name: str, raw: dict) -> dict:
     return {"name": name, "focus": focus.to_json()}
 
 
+def _refuse_stopped(name: str, manual: bool) -> None:
+    """止めている収集を断る。**人が押した 1 回(`manual`)は通す**。
+
+    止めるのは「時計や外のアプリの定時の頼みで AI が動かないように」するため ——
+    AI の使い過ぎを気にして止めていても、人が見て「ここを 1 回」と押す道は残したい
+    (区画を名指しした 1 回・現地からの依頼・割り込み)。**`manual` は頼む側の申告**で、
+    定時の頼み(要約の時計・PTA の定時実行など)は付けない約束。
+    """
+    if manual:
+        return
+    if not collect.get(name).enabled:
+        raise HTTPException(403, {
+            "error": f"収集「{name}」は止まっています",
+            "hint": "動かすかどうかは Chiezo 側で決めます(管理画面の「有効にする」)。"
+                    "人が押した 1 回なら manual=true で頼めます",
+        })
+
+
 @app.post("/v1/collect/{name}/focus")
-def collect_focus_now(name: str, body: CollectionFocus):
-    """**この部分を集中的に直して**、を割り込ませる。**止めている収集は断る**。
+def collect_focus_now(
+    name: str,
+    body: CollectionFocus,
+    manual: bool = Query(False, description="人が押した 1 回か(止めている収集でも走らせる)"),
+):
+    """**この部分を集中的に直して**、を割り込ませる。**止めている収集は断る**
+    (人が押した 1 回 `manual=true` は通す。`_refuse_stopped`)。
 
     **定時の巡回に影響を出さない**のが約束 —— 進み具合(`cursor`)も、どの巡回の
     予定も、区画の巡回記録も動かさない。動くのは中身だけ。動かすと、割り込むたびに
@@ -3884,11 +3907,7 @@ def collect_focus_now(name: str, body: CollectionFocus):
     **返るのは「起こした」まで**(`run` と同じ)。取り込みは向こうで走る。
     """
     collect.require_enabled()
-    if not collect.get(name).enabled:
-        raise HTTPException(403, {
-            "error": f"収集「{name}」は止まっています",
-            "hint": "動かすかどうかは Chiezo 側で決めます(管理画面の「有効にする」)",
-        })
+    _refuse_stopped(name, manual)
     return start_focus_bake(name, body.model_dump())
 
 
@@ -3921,8 +3940,10 @@ def collect_run_now(
     name: str,
     sweep: str | None = Query(None, description="走らせる巡回の名前(省くと次に走るはずのもの)"),
     once: RunOnce | None = None,
+    manual: bool = Query(False, description="人が押した 1 回か(止めている収集でも走らせる)"),
 ):
-    """予定を待たずに 1 回、集めて焼く。**止めている収集は断る**。
+    """予定を待たずに 1 回、集めて焼く。**止めている収集は断る**
+    (人が押した 1 回 `manual=true` は通す。`_refuse_stopped`)。
 
     **区画と相手を、その 1 回だけ名指しできる**(`once`)。区画の地図から
     「ここを 1 回見て」と頼む道で、**ふつうの回として走ります** —— 印が付き、
@@ -3943,11 +3964,7 @@ def collect_run_now(
     **時計を持たない巡回は断る**(割り込みで頼まれたときだけ動くもの)。
     """
     collect.require_enabled()
-    if not collect.get(name).enabled:
-        raise HTTPException(403, {
-            "error": f"収集「{name}」は止まっています",
-            "hint": "動かすかどうかは Chiezo 側で決めます(管理画面の「有効にする」)",
-        })
+    _refuse_stopped(name, manual)
     # **埋まっていれば並べる**(202)。断っていた頃は、外のアプリが空くまで
     # 待って押し直すしかなかった
     result = run_or_queue(
