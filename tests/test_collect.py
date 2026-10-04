@@ -7326,6 +7326,28 @@ class TestTheSamplesHideWhatReadersShouldNotSee:
 
         assert got == ["ふつうの記事", "もう一つ"]
 
+    def test_material_hours_is_kept_and_checked(self):
+        """`material.hours` は 1〜168 だけを受け、書かなければ持たない。"""
+        assert collect.normalize_material({"source": "news", "hours": 24})["hours"] == 24
+        assert "hours" not in collect.normalize_material({"source": "news"})
+        with pytest.raises(HTTPException):
+            collect.normalize_material({"source": "news", "hours": 999})
+        with pytest.raises(HTTPException):
+            collect.normalize_material({"source": "news", "hours": "x"})
+
+    def test_material_hours_reads_the_same_width_whenever_it_runs(self, baked, monkeypatch):
+        """`hours` があれば前回の巡回ではなく、直近その時間を読む(`{recent:<N>h}` の材料版)。"""
+        monkeypatch.setattr(
+            collect, "_now", lambda: dt.datetime(2026, 1, 4, 12, tzinfo=dt.UTC),
+        )
+        spec = {"source": "news", "limit": 10}
+
+        assert collect.material_docs(spec, baked, since="2026-01-05T00:00:00+00:00") == []
+        got = collect.material_docs(
+            {**spec, "hours": 48}, baked, since="2026-01-05T00:00:00+00:00",
+        )
+        assert [d["title"] for d in got] == ["ふつうの記事"]
+
 
 class TestATitleCutAtTheBoundary:
     """**60 字目が空白の見出しで、鍵の末尾に空白が残っていた。**
