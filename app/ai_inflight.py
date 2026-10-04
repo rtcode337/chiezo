@@ -175,6 +175,13 @@ CREATE TABLE IF NOT EXISTS ai_inflight (
     beat_at      TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_ai_inflight_at ON ai_inflight(at DESC);
+-- 「この頼み主の仕事はもう止めてくれ」の控え（`ask_caller_to_stop`）。
+-- **1 往復ではなく頼み主を名指す** —— 収集は区画ごとに何度も呼ぶので、いま走っている
+-- 1 往復を止めても、次の区画でまた呼び始める。走っている側は呼ぶ前にここを見る
+CREATE TABLE IF NOT EXISTS caller_stops (
+    caller TEXT PRIMARY KEY,
+    at     TEXT NOT NULL
+);
 """
 
 
@@ -339,6 +346,60 @@ def ask_to_stop(token: int) -> bool:
     except sqlite3.Error as e:
         log.warning("ai inflight stop failed: %r", e)
         return False
+
+
+def ask_caller_to_stop(caller: str) -> int:
+    """**その頼み主の仕事を止めるよう頼む**（`collect:<名前>` など）。止めるよう頼んだ
+    往復の数を返す。
+
+    2 つのことをする —— いま走っている往復に「止めてくれ」を書き（`ask_to_stop` と同じ）、
+    頼み主ごとの控えを残す。**控えが要るのは、収集が区画ごとに何度も呼ぶから** ——
+    走っている 1 往復だけを止めると、次の区画でまた呼び始め、押した人には
+    「止めても止まらない」としか見えなかった。走っている側は、次を呼ぶ前に
+    `caller_stop_wanted` で控えを見る。
+    """
+    path = db_path()
+    if path is None or not caller:
+        return 0
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    try:
+        with _connect(path) as conn:
+            conn.execute(
+                "INSERT INTO caller_stops (caller, at) VALUES (?, ?)"
+                " ON CONFLICT(caller) DO UPDATE SET at = excluded.at",
+                (caller, now),
+            )
+            cur = conn.execute(
+                "UPDATE ai_inflight SET stop_at = ? WHERE caller = ? AND stop_at = ''",
+                (now, caller),
+            )
+            return cur.rowcount
+    except sqlite3.Error as e:
+        log.warning("ai inflight caller stop failed: %r", e)
+        return 0
+
+
+def caller_stop_wanted(caller: str, since: str) -> bool:
+    """`since`（ISO の時刻）より後に、その頼み主の仕事を止めるよう頼まれたか。
+    **読めなければ False**（控えが読めないことを理由に、走っている仕事を落とさない）。
+
+    **時刻で区切る** —— 前の回で押された控えが残っていても、その後に始めた回は止めない。
+    """
+    path = db_path()
+    if path is None or not path.exists() or not caller:
+        return False
+    try:
+        conn = _connect(path)
+        try:
+            found = conn.execute(
+                "SELECT at FROM caller_stops WHERE caller = ?", (caller,)
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        log.warning("ai inflight caller stop read failed: %r", e)
+        return False
+    return bool(found and found["at"] >= since)
 
 
 def ping(token: int | None) -> bool:

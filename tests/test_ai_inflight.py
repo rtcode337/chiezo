@@ -488,6 +488,27 @@ class TestStoppingOne:
 
         assert ai_inflight.ask_to_stop(token)
 
+    def test_a_caller_can_be_asked_to_stop_as_a_whole(self, state_env):
+        """**頼み主ごと止める**(`ask_caller_to_stop`)。収集は区画ごとに何度も呼ぶので、
+        走っている 1 往復だけを止めても、次の区画でまた呼び始めていた。"""
+        from datetime import UTC, datetime
+
+        from app import ai_inflight
+
+        before = datetime.now(UTC).isoformat(timespec="seconds")
+        with ai_inflight.called_by("collect:people"):
+            mine = self._running(state_env)
+        other = self._running(state_env)
+
+        assert ai_inflight.ask_caller_to_stop("collect:people") == 1
+        assert ai_inflight.stop_wanted(mine)
+        # 別の頼み主の往復は巻き込まない
+        assert not ai_inflight.stop_wanted(other)
+        # 次を呼ぶ前に見る控え。**頼まれた後に始めた回は止めない**
+        assert ai_inflight.caller_stop_wanted("collect:people", before)
+        assert not ai_inflight.caller_stop_wanted("collect:people", "9999-01-01T00:00:00+00:00")
+        assert not ai_inflight.caller_stop_wanted("collect:news", before)
+
     def test_a_call_that_is_not_there_is_refused(self, state_env):
         from app import ai_inflight
 

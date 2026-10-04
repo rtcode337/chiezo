@@ -1202,7 +1202,19 @@ async def _collect_items(
     ran_by = ran_model = ""
     # 枠とは関係のない失敗で降りた理由(空なら最後まで回った)
     stopped = ""
+    # **止めるよう頼まれたら、次の区画を呼ぶ前に降りる**(`ai_inflight.caller_stop_wanted`)。
+    # 取り込みの「止める」は取り込み側に印を立てるだけで、こちらが AI に集めさせて
+    # いるあいだは向こうは返事を待っているだけ —— 見に行かないと区画ごとに呼び続ける
+    started_at = datetime.now(UTC).isoformat(timespec="seconds")
+    caller = f"collect:{item.name}"
     for key in keys or [None]:
+        if ai_inflight.caller_stop_wanted(caller, started_at):
+            if not collected:
+                raise HTTPException(409, {
+                    "error": f"収集「{item.name}」を止めるよう頼まれたので、AI を呼ぶ前に降りました",
+                })
+            notes.append(_stopped_here("止めるよう頼まれました", key))
+            break
         content = None
         # **この区画で差し込むものを見分けるための控え**(`build_messages` が `shown` へ書く)
         shown_before = set(shown)

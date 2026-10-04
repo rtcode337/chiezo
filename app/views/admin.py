@@ -3619,6 +3619,11 @@ async def admin_ingest_stop(request: Request):
         )
     form = await request.form()
     source = str(form.get("source") or "").strip()
+    # **収集なら、AI に集めさせているほうも止める。** 取り込みが印を見るのは素材が
+    # 届き始めてからで、それまで本体は区画ごとに AI を呼び続ける —— 押しても
+    # 止まらないように見えていた(走っている往復を止め、次の区画も呼ばせない)
+    if source:
+        ai_inflight.ask_caller_to_stop(f"collect:{source}")
     try:
         res = httpx.post(
             f"{TRIGGER_URL}/stop", params={"source": source} if source else None,
