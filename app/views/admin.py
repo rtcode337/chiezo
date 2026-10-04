@@ -38,6 +38,7 @@ from app import (
     machine_store,
     media,
     notes,
+    pihole,
     providers,
     rebuilds,
     registry,
@@ -241,6 +242,17 @@ def _move_legacy_credentials(key: str, sources: list[str]) -> None:
 
 
 KEYS_PAGE = "/admin/keys"
+
+# 収集の道具が使うキー(API キーの面に並べるだけ。渡し方は道具の側が持つ)
+_TOOL_KEYS = {
+    pihole.KEY_NAME: {
+        "spec": {
+            "label": pihole.KEY_LABEL, "help_url": pihole.KEY_HELP_URL,
+            "placeholder": pihole.KEY_PLACEHOLDER,
+        },
+        "sources": ["収集の巡回「Pi-hole から引く」"],
+    },
+}
 
 
 OSM_MIRROR_ANCHOR = "osm-mirror"
@@ -867,7 +879,7 @@ def _backend_label(item) -> str:
     そもそも AI を呼ばない。
     """
     if (getattr(item, "use_extract", False) or getattr(item, "use_feed", False)
-            or getattr(item, "by_hand", False)):
+            or getattr(item, "use_pihole", False) or getattr(item, "by_hand", False)):
         return '<span class="muted">AI 利用無し</span>'
     # **ワーカーに頼む回は、そう出す。** 相手の名前を出すと、その 1 つに
     # 固定で頼んでいるように読める —— 実際に渡る先は毎回その場の枠で決まる
@@ -936,6 +948,7 @@ def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
     only_new = bool(sweep and sweep.only_new)
     use_extract = bool(sweep and sweep.use_extract)
     use_feed = bool(sweep and sweep.use_feed)
+    use_pihole = bool(sweep and sweep.use_pihole)
     by_hand = bool(sweep and sweep.by_hand)
     # **巡回ごとの依頼文。** 空なら収集のものを使う ——
     # 頼むことが巡回ごとに違う(埋める / 見直して消す / 漏れを足す)のに、
@@ -985,7 +998,7 @@ def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
         '<p><label>未確認を載せる順(脇書きの鍵。その値の大きいものから。空なら古い順)<br>'
         f'<input name="sweep_unreviewed_by" value="{esc(unreviewed_by)}"'
         ' placeholder="docs"></label></p>'
-        f"{_sweep_backend_fields(sweep, backend, use_extract or use_feed or by_hand)}"
+        f"{_sweep_backend_fields(sweep, backend, use_extract or use_feed or use_pihole or by_hand)}"
         # **足すだけの回は、既にある見出しに触らない。** 「漏れているものを足して」と
         # 頼む回に要る印で、AI の判断に頼らずにここで保証する —— 見せられるのはその
         # 区画のぶんだけなので、AI には「もう居るかどうか」が分からない
@@ -997,12 +1010,14 @@ def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
         # 名簿を最新に保つためのもので、AI を呼ばない ——「足すだけ」と組にして使う
         '<p><label>引き方<br><select name="sweep_source">'
         f'<option value="ai"'
-        f'{"" if use_extract or use_feed or by_hand else " selected"}>'
+        f'{"" if use_extract or use_feed or use_pihole or by_hand else " selected"}>'
         "AI に頼む</option>"
         f'<option value="extract"{" selected" if use_extract else ""}>'
         "機械で引く(抽出の指定をもう一度走らせる)</option>"
         f'<option value="feed"{" selected" if use_feed else ""}>'
         "外の道具で引く(フィードの見出しをそのまま溜める)</option>"
+        f'<option value="pihole"{" selected" if use_pihole else ""}>'
+        "Pi-hole から引く(ドメインごとの集計を積み上げる)</option>"
         # **手で回す回。** web の画面から使う AI に頼むための道で、
         # Chiezo は依頼文をファイルにして渡し、答えのファイルを読み込む
         f'<option value="hand"{" selected" if by_hand else ""}>'
@@ -1187,6 +1202,8 @@ def _sweep_cells(item, disabled: str = "", dry: bool = True) -> list[str]:
             name += '<br><span class="muted">機械で引く</span>'
         if sweep.use_feed:
             name += '<br><span class="muted">外の道具で引く</span>'
+        if sweep.use_pihole:
+            name += '<br><span class="muted">Pi-hole から引く</span>'
         if sweep.by_hand:
             name += '<br><span class="muted">手で回す</span>'
         # **押す口は巡回ごとに 1 つずつ。** 相手も 1 回に見る量も巡回ごとに違うので、
@@ -3682,6 +3699,10 @@ def admin_keys():
     else:
         for key, entry in groups.items():
             _move_legacy_credentials(key, entry["sources"])
+        # **収集の道具が使うキーも並べる**(取り込みのソースではないので、カタログには
+        # 載らない)。名乗らないと「まだ誰も使っていない」と出て、消してよいように読める
+        for key, entry in _TOOL_KEYS.items():
+            groups.setdefault(key, entry)
         stored = {k.name: k for k in settings_store.api_keys()}
         rows = []
         for name in sorted(set(groups) | set(stored)):
@@ -4469,7 +4490,7 @@ async def admin_collect_partition_run(name: str, request: Request):
     # 名簿を丸ごと作り直す回が動く(本番でそうなった)。画面から外すだけにしない
     named_sweep = str(form.get("sweep") or "")
     this = collect.sweep_named(item, named_sweep or None)
-    if this.use_extract or this.use_feed:
+    if this.use_extract or this.use_feed or this.use_pihole:
         raise HTTPException(400, {
             "error": f"巡回「{this.name}」は区画を見ません(機械で引く回・"
                      f"外の道具で引く回)",
@@ -4620,6 +4641,8 @@ def _parse_sweeps_form(form) -> list[dict]:
             sweep["use_extract"] = True
         if at("source") == "feed":
             sweep["use_feed"] = True
+        if at("source") == "pihole":
+            sweep["use_pihole"] = True
         if at("source") == "hand":
             sweep["by_hand"] = True
         if at("interval").isdigit():
@@ -4639,7 +4662,7 @@ def _parse_sweeps_form(form) -> list[dict]:
         # ここに 1 つ書いても、どの相手に対する指定なのかが決まらない
         # (モデルの名前は相手ごとに違う)。段ごとの指定はワーカーの側が持つ
         for key in ("backend", "model", "effort"):
-            if (sweep.get("use_extract") or sweep.get("use_feed")
+            if (sweep.get("use_extract") or sweep.get("use_feed") or sweep.get("use_pihole")
                     or sweep.get("by_hand") or sweep["worker"]):
                 break
             if value := at(key):
@@ -4871,7 +4894,8 @@ def _sweeps_for_trial(item):
     """
     return [
         s for s in collect.sweeps_of(item)
-        if not s.on_demand and not s.use_extract and not s.use_feed and not s.by_hand
+        if not s.on_demand and not s.use_extract and not s.use_feed and not s.use_pihole
+        and not s.by_hand
     ]
 
 
