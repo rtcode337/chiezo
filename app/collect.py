@@ -1402,13 +1402,26 @@ def normalize_material(raw) -> dict | None:
         limit = int(limit) if limit not in (None, "", 0) else DEFAULT_MATERIAL_LIMIT
     except (TypeError, ValueError):
         raise HTTPException(400, {"error": "material.limit は数で書いてください"}) from None
-    return {
+    hours = raw.get("hours")
+    try:
+        hours = int(hours) if hours not in (None, "", 0) else 0
+    except (TypeError, ValueError):
+        raise HTTPException(400, {"error": "material.hours は数で書いてください"}) from None
+    if hours and not 1 <= hours <= MAX_RECENT_WINDOW_HOURS:
+        raise HTTPException(400, {
+            "error": f"material.hours は 1〜{MAX_RECENT_WINDOW_HOURS} で書いてください",
+        })
+    out = {
         "source": source[:80],
         # **タグで絞れる。** 1 つの収集に種類の違うものが混ざる(記事とまとめ、など)
         # ので、絞れないと材料にまとめが混ざる
         "tag": str(raw.get("tag") or "").strip()[:200],
         "limit": min(max(limit, 1), MAX_MATERIAL_LIMIT),
     }
+    # **窓の幅で読む指定**(`{recent:<N>h}` の材料版)。書かなければ前回の巡回から
+    if hours:
+        out["hours"] = hours
+    return out
 
 
 def hidden_clause(src, include_hidden: bool = False) -> tuple[str, list]:
@@ -1431,7 +1444,7 @@ def hidden_clause(src, include_hidden: bool = False) -> tuple[str, list]:
 
 
 def material_docs(spec: dict | None, sources: dict, since: str | None) -> list[dict]:
-    """材料に読むソースから、**前回から入ったもの**を新しい順に。
+    """材料に読むソースから、**前回から入ったもの**(`hours` があれば直近その時間)を新しい順に。
 
     **まだ焼かれていないソースは空**(失敗ではない) —— 材料の側の収集がまだ 1 度も
     走っていないだけのことがある。
@@ -1446,6 +1459,11 @@ def material_docs(spec: dict | None, sources: dict, since: str | None) -> list[d
     src = sources.get(spec["source"])
     if src is None:
         return []
+    # **`hours` があれば、いつ走っても同じ幅を読む**(`{recent:<N>h}` と同じ理由)。
+    # 別のアプリが巡回を自分の都合の時刻に割り込みで起こすと、前回からの差分では
+    # 回した間隔で中身の幅が変わる —— 朝と昼で読める範囲が違う要約になる
+    if spec.get("hours"):
+        since = _window_start(int(spec["hours"]))
     tags = [t.strip() for t in (spec.get("tag") or "").split(",") if t.strip()]
     where = "WHERE updated_at > ?"
     args: list = [since or ""]
