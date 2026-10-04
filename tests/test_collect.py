@@ -7874,3 +7874,26 @@ class TestHoldingALocation:
         assert docs[0]["body"] == "直した本文"
         assert collect.LOCKED_TAG in docs[0]["tags"]
 
+
+    def test_a_lock_that_changes_an_untouched_one_counts_as_updated(self, sample):
+        """**固定を当てて中身が変わった 1 件は「直した」に数える**。AI も名簿も何も
+        返さなかった回でも、焼くときに固定を当てると中身が変わる —— 数えないと、
+        固定した直後の回が「変化なし」と控えられ、反映されたのか読めなかった。"""
+        collect.set_lock("news", "店", 35.5, 139.7)
+        item = collect.get("news")
+        previous = {
+            "店": {"title": "店", "body": "本文", "tags": ["食事処"], "doc_id": 1,
+                  "extra": {"lat": 35.9, "lon": 139.9}},
+            "別の店": {"title": "別の店", "body": "本文", "tags": ["食事処"], "doc_id": 2,
+                    "extra": {"lat": 35.1, "lon": 139.1}},
+        }
+
+        docs, counts = collect.material(item, previous, [], only_new=True)
+
+        assert counts["updated"] == 1
+        assert counts["updated_titles"] == ["店"]
+        assert (docs[0]["extra"]["lat"], docs[0]["extra"]["lon"]) == (35.5, 139.7)
+
+        # 一度当たったあとの回は、もう変わらないので数えない
+        _again, counts = collect.material(item, {d["title"]: d for d in docs}, [], only_new=True)
+        assert counts["updated"] == 0

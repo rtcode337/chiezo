@@ -4097,6 +4097,19 @@ def held(doc: dict, locks: dict) -> dict:
     }
 
 
+def _locked_change(doc: dict, locks: dict) -> dict | None:
+    """固定(`locks`)を当てると中身が変わる 1 件なら、当てたあとの 1 件。変わらなければ None。
+
+    **当てて変わったものは「直した」に数える**(`_stream_docs`)。固定は焼くときに当てる
+    ので、AI も名簿も何も返さなかった 1 件の中身が変わることがある —— 数えないと、
+    固定した直後の回が「変化なし」と控えられ、反映されたのかどうかが読めなかった。
+    """
+    if not locks:
+        return None
+    fixed = held(doc, locks)
+    return fixed if fixed != doc else None
+
+
 def stream_docs(
     item: Collection,
     previous,
@@ -4190,6 +4203,18 @@ def _stream_docs(
     updated_titles: list[str] = []
     removed_titles: list[str] = []
 
+    def kept(doc: dict, title: str, was_skipped: bool = False) -> dict:
+        """前世代のまま残す 1 件。**固定を当てて変わるなら「直した」に数える**
+        (見送りに数えていたぶんは、そちらから外す)。"""
+        nonlocal updated, skipped
+        if (fixed := _locked_change(doc, item.locks)) is None:
+            return doc
+        updated += 1
+        if was_skipped:
+            skipped -= 1
+        updated_titles.append(title)
+        return _stamped(fixed, sweep, "updated", doc)
+
     for before in previous:
         seen += 1
         next_id = max(next_id, before["doc_id"])
@@ -4210,10 +4235,13 @@ def _stream_docs(
             # 中身も見出しも前世代のまま残し、機械が運んだ事実だけ受け取る
             # (消えたものは消えたまま。脇書きは読むときに削られる)
             skipped += 1
-            yield _with_facts(before, found) if facts else _with_new_facts(before, found)
+            yield kept(
+                _with_facts(before, found) if facts else _with_new_facts(before, found), title,
+                was_skipped=True,
+            )
             continue
         if raw is None:
-            yield _reviewed(before) if reviewed and title in reviewed else before
+            yield kept(_reviewed(before) if reviewed and title in reviewed else before, title)
             continue
         if only_new:
             # **足すだけの回。** 既にあるものには触らない(数えるだけ)。
@@ -4221,7 +4249,10 @@ def _stream_docs(
             # **機械で引く回は、運んできた鍵を入れ替える**(`facts`)—— 数えた値は
             # 回るたびに変わるので、足さないと最初に拾った日の数が残り続ける
             skipped += 1
-            yield _with_facts(before, raw) if facts else _with_new_facts(before, raw)
+            yield kept(
+                _with_facts(before, raw) if facts else _with_new_facts(before, raw), title,
+                was_skipped=True,
+            )
             continue
         if edits and _is_tombstone(raw):
             # 墓標。**消さずに印を付けて残す**。**「直した」には数えない** —— 数えると
