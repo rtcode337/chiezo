@@ -244,13 +244,18 @@ def _move_legacy_credentials(key: str, sources: list[str]) -> None:
 KEYS_PAGE = "/admin/keys"
 
 # 収集の道具が使うキー(API キーの面に並べるだけ。渡し方は道具の側が持つ)
+# `secret: False` は値を隠さずに打てる欄にする(URL のように、見ながら直したいもの)
 _TOOL_KEYS = {
-    pihole.KEY_NAME: {
+    pihole.URL_KEY: {
         "spec": {
-            "label": pihole.KEY_LABEL, "help_url": pihole.KEY_HELP_URL,
-            "placeholder": pihole.KEY_PLACEHOLDER,
+            "label": pihole.URL_LABEL, "help_url": pihole.KEY_HELP_URL,
+            "placeholder": pihole.URL_PLACEHOLDER, "secret": False,
         },
-        "sources": ["収集の巡回「Pi-hole から引く」"],
+        "sources": ["収集の巡回「Pi-hole から引く」・いま止めている通信の読み口"],
+    },
+    pihole.PASSWORD_KEY: {
+        "spec": {"label": pihole.PASSWORD_LABEL, "placeholder": "パスワード"},
+        "sources": ["収集の巡回「Pi-hole から引く」・いま止めている通信の読み口"],
     },
 }
 
@@ -3737,7 +3742,7 @@ def admin_keys():
                 "<td>"
                 f'<form method="post" action="{KEYS_PAGE}" class="init-form">'
                 f'<input type="hidden" name="name" value="{esc(name)}">'
-                '<input type="password" name="credential"'
+                f'<input type="{"password" if spec.get("secret", True) else "text"}" name="credential"'
                 f' placeholder="{esc(spec.get("placeholder") or "API キー")}" required'
                 ' autocomplete="off">'
                 f'<button type="submit">{"更新" if have else "登録"}</button></form> {drop}'
