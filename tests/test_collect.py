@@ -7951,3 +7951,59 @@ class TestHoldingALocation:
         # 一度当たったあとの回は、もう変わらないので数えない
         _again, counts = collect.material(item, {d["title"]: d for d in docs}, [], only_new=True)
         assert counts["updated"] == 0
+
+
+class TestShowingTheNeighbours:
+    """**隣の区画にあるものを見せる**(`{nearby}`)。区画の外は `{current}` に入らないので、
+    密集した地区では境目の向こうに既にある店を、AI が「足りない」と読んで足し直していた。"""
+
+    def _source(self, tmp_path, docs):
+        from app import notes
+
+        path = tmp_path / "nearby.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(notes.SCHEMA_DDL)
+        for i, (title, lat, lon, tags) in enumerate(docs, start=1):
+            conn.execute(
+                "INSERT INTO docs (doc_id, title, opening, body, tags, updated_at, rank_score, extra)"
+                " VALUES (?, ?, '', '本文', ?, '2026-01-01T00:00:00+00:00', 0.0, ?)",
+                (i, title, json.dumps(tags), json.dumps({"lat": lat, "lon": lon})),
+            )
+            conn.execute("INSERT INTO doc_coords (doc_id, lat, lon) VALUES (?, ?, ?)", (i, lat, lon))
+        conn.commit()
+        conn.close()
+
+        class Src:
+            schema_version = notes.SCHEMA_VERSION
+
+        src = Src()
+        src.path = path
+        return src
+
+    def test_shops_just_across_the_border_are_listed(self, sample, tmp_path):
+        key = "35.680,139.760/35.690,139.770"
+        collect.update("news", partition={"by": "geo", "target": 10}, partitions=[{"key": key, "count": 1}],
+                       prompt="{partition}\n{current}\n足さないもの:\n{nearby}")
+        item = collect.get("news")
+        sources = {"news": self._source(tmp_path, [
+            ("中の店", 35.685, 139.765, []),
+            # 境目のすぐ外(100m ほど北)
+            ("隣の店", 35.6909, 139.765, []),
+            # 遠く(1km 以上)
+            ("遠くの店", 35.700, 139.765, []),
+            # 消えたものは見せない
+            ("閉店した店", 35.6905, 139.766, [notes.REMOVED_TAG]),
+        ])}
+        previous = {"中の店": {"title": "中の店", "body": "本文", "tags": [],
+                              "extra": {"lat": 35.685, "lon": 139.765}}}
+
+        user = collect.build_messages(item, previous, key, sources)[1]["content"]
+        nearby = user.split("足さないもの:")[1]
+
+        assert "隣の店 (35.69090,139.76500)" in nearby
+        assert "中の店" not in nearby and "遠くの店" not in nearby and "閉店した店" not in nearby
+
+    def test_without_a_geo_partition_it_says_so(self, sample):
+        collect.update("news", prompt="{current}\n{nearby}")
+        user = collect.build_messages(collect.get("news"), {}, None, {})[1]["content"]
+        assert "隣の区画という考え方がありません" in user
