@@ -270,6 +270,17 @@ SOURCE_PLACEHOLDER = "{material}"
 # 同じものを二度足さない。本文の良し悪しを見る回(`{current}`)とは分けて持つ。
 NAMES_PLACEHOLDER = "{names}"
 
+# **隣の区画にあるもの**を差し込む場所(矩形で割る収集だけ)。区画の矩形を少し広げた
+# 範囲にある、ほかの区画の 1 件の見出しと座標。**`{current}` だけでは、区画の外は
+# 見えない** —— 「この範囲に足りないものを足して」と頼むと、密集した地区では
+# 境目の向こうに既にあるものを、AI が「足りない」と読んで足し直す(座標が少し
+# ずれていれば区画の中に入って見える)。見せるのは見出しと座標だけ(本文は要らない)
+NEARBY_PLACEHOLDER = "{nearby}"
+# どこまで広げるか(メートル)。境目のずれ(辞典ごとの座標の違い)を覆える幅
+NEARBY_MARGIN_METERS = 200
+# 差し込む件数の上限(見出しと座標だけなので軽いが、密集地では数百に届く)
+MAX_NEARBY_DOCS = 400
+
 # 見出しだけを差し込むときの上限。本文を持たないぶん、件数の天井は高くてよい
 MAX_NAME_DOCS = 3_000
 
@@ -2150,6 +2161,50 @@ def render_unreviewed(
     return head + ":\n" + "\n".join(lines)
 
 
+def render_nearby(item, sources: dict, partition_key: str | None, here: set[str]) -> str:
+    """`{nearby}` に差し込む文。区画の矩形を `NEARBY_MARGIN_METERS` 広げた範囲にある、
+    **この区画の外の 1 件**(消えたものは除く)を、見出しと座標で並べる。
+
+    **矩形で割る収集だけ**(帯や見出しの区画には「隣」の距離が無い)。読めなければ
+    その旨を書く —— 差し込み口だけ残すと、AI は空だったのか読めなかったのか分からない。
+    """
+    spec = partitioning.normalize(item.partition) if item.partition else None
+    box = partitioning.parse_geo_key(partition_key) if partition_key else None
+    if not spec or spec.get("by") != partitioning.BY_GEO or box is None:
+        return "(この回には、隣の区画という考え方がありません)"
+    src = sources.get(item.name)
+    if src is None or (getattr(src, "schema_version", 0) or 0) < partitioning.COORDS_MIN_SCHEMA_VERSION:
+        return "(隣の区画は読めませんでした)"
+    south, west, north, east = box
+    dlat = NEARBY_MARGIN_METERS / 111_320
+    dlon = NEARBY_MARGIN_METERS / (111_320 * max(math.cos(math.radians((south + north) / 2)), 0.01))
+    try:
+        docs = _docs_where(
+            src,
+            " AND doc_id IN (SELECT doc_id FROM doc_coords"
+            " WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?)",
+            (south - dlat, north + dlat, west - dlon, east + dlon),
+        )
+    # 添え物なので、読めなくても回は止めない
+    except Exception:
+        log.warning("collect %s: 隣の区画を読めませんでした", item.name, exc_info=True)
+        return "(隣の区画は読めませんでした)"
+    lines = []
+    for title, doc in sorted(docs.items()):
+        if title in here or is_removed(doc):
+            continue
+        extra = doc.get("extra") if isinstance(doc.get("extra"), dict) else {}
+        lat, lon = extra.get("lat"), extra.get("lon")
+        where = f" ({lat:.5f},{lon:.5f})" if isinstance(lat, int | float) and isinstance(lon, int | float) else ""
+        lines.append(f"- {title}{where}")
+    if not lines:
+        return "(隣の区画の近くには、まだ何もありません)"
+    head = f"隣の区画にあるもの(境目から {NEARBY_MARGIN_METERS}m 以内。全 {len(lines)} 件"
+    if len(lines) > MAX_NEARBY_DOCS:
+        head += f"。うち {MAX_NEARBY_DOCS} 件だけ載せています"
+    return head + "):\n" + "\n".join(lines[:MAX_NEARBY_DOCS])
+
+
 def render_names(previous: dict[str, dict], scoped: bool = False) -> str:
     """いま持っているものを、**見出しとタグだけ**の一覧にする。
 
@@ -2473,6 +2528,14 @@ def build_messages(
         docs, scoped = scoped_docs(item, previous or {}, partition_key, focus)
         material_text, _shown = render_material(docs, scoped, seen)
         user = user.replace(MATERIAL_PLACEHOLDER, material_text)
+    if NEARBY_PLACEHOLDER in user:
+        # **区画の外の近くにあるもの**(足し直さないように見せる)。区画の中のものは
+        # `{current}` 側にあるので除く
+        here, _scoped = scoped_docs(item, previous or {}, partition_key, focus)
+        user = user.replace(
+            NEARBY_PLACEHOLDER,
+            render_nearby(item, sources or {}, partition_key if spec else None, set(here)),
+        )
     if NAMES_PLACEHOLDER in user:
         # **見出しとタグだけ。** 本文を見せないぶん全部が入る ——
         # 何を持っているかだけが要る回(畳む・親子を決める)のための差し込み口。
