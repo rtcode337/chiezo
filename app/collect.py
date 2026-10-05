@@ -497,6 +497,11 @@ class Collection:
     # AI の回が「ずれている」と思って動かしても、名簿を引き直しても動かない。
     # **頼むだけでは守れない**: 正しい位置に直した店が、別の回に動かされていた
     locks: dict = field(default_factory=dict)
+    # **人が確かめた 1 件は、AI の判断だけでは消さない**(書けば効く)。固定(`locks`)を
+    # 持つ 1 件に墓標が返ってきたら、消す代わりにこのタグを足して残し、理由を脇書きの
+    # `doubt_reason` / `doubt_at` に置く(`_doubted`)。現地で確かめた店を、AI が
+    # 「閉店した」と読んだだけで地図から消すと、確かめた人の手がかりごと無くなる
+    locked_doubt_tag: str = ""
     # 誰が置いたか。外のアプリが名乗った文字列で、**印であって認証ではない**
     # (LAN 内・認証なしの前提なので偽れる)。有効にするか決める人の手がかり
     requested_by: str = ""
@@ -1370,6 +1375,7 @@ def _from_json(item: dict) -> Collection:
         thumbs=thumbnails.normalize(item.get("thumbs")),
         verify_tags=normalize_verify_tags(item.get("verify_tags")),
         locks=normalize_locks(item.get("locks")),
+        locked_doubt_tag=normalize_doubt_tag(item.get("locked_doubt_tag")),
         requested_by=str(item.get("requested_by") or ""),
         created_at=str(item.get("created_at") or ""),
         updated_at=str(item.get("updated_at") or ""),
@@ -1706,6 +1712,7 @@ def create(
     feed_spec=None,
     material_spec=None,
     sweeps=None,
+    locked_doubt_tag: str = "",
 ) -> Collection:
     if not NAME_RE.match(name):
         raise HTTPException(400, {
@@ -1747,6 +1754,7 @@ def create(
         partition=partitioning.to_json(partitioning.normalize(partition_spec)),
         feed=feeds.to_json(feeds.normalize(feed_spec)),
         sweeps=normalize_sweeps(sweeps),
+        locked_doubt_tag=normalize_doubt_tag(locked_doubt_tag),
         requested_by=requested_by.strip()[:80],
         created_at=now,
         updated_at=now,
@@ -1765,7 +1773,7 @@ def update(name: str, **fields) -> Collection:
         "description", "prompt", "interval_minutes", "enabled",
         "backend", "model", "effort", "web", "cursor", "keep_ratio", "extract",
         "partition", "partitions", "sweeps", "feed", "verify_tags",
-        "kind", "keep_days", "material", "thumbs",
+        "kind", "keep_days", "material", "thumbs", "locked_doubt_tag",
     }
     patch = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if "interval_minutes" in patch:
@@ -1817,6 +1825,9 @@ def update(name: str, **fields) -> Collection:
     if "verify_tags" in patch:
         # 空の配列を渡したら「確かめない」に戻す
         patch["verify_tags"] = normalize_verify_tags(patch["verify_tags"] or None)
+    if "locked_doubt_tag" in patch:
+        # 空の文字列を渡したら外れる(固定した 1 件も、墓標で消えるようになる)
+        patch["locked_doubt_tag"] = normalize_doubt_tag(patch["locked_doubt_tag"])
     if "kind" in patch:
         patch["kind"] = normalize_kind(patch["kind"])
     if "thumbs" in patch:
@@ -4058,6 +4069,8 @@ def _found_by_record(edits_of, before: dict) -> dict | None:
 # 人が確かめた座標を持つ 1 件の印(`held`)。**AI にも見える**(`{current}` のタグ)ので、
 # 依頼文で「この印の店の座標は直さない」と頼める。直されても焼くときに戻す
 LOCKED_TAG = "座標確認済み"
+# 固定した 1 件に、消す代わりに付けるタグの長さ
+MAX_DOUBT_TAG_CHARS = 40
 
 
 def normalize_locks(raw) -> dict:
@@ -4074,6 +4087,35 @@ def normalize_locks(raw) -> dict:
         if key and -90 <= lat <= 90 and -180 <= lon <= 180:
             out[key] = {"lat": lat, "lon": lon}
     return out
+
+
+def normalize_doubt_tag(raw) -> str:
+    """固定した 1 件に、消す代わりに付けるタグ(`locked_doubt_tag`)。空なら使わない。"""
+    if raw in (None, ""):
+        return ""
+    if not isinstance(raw, str):
+        raise HTTPException(400, {"error": "locked_doubt_tag は文字列で書いてください"})
+    tag = raw.strip()[:MAX_DOUBT_TAG_CHARS]
+    if tag.startswith("_chiezo_"):
+        raise HTTPException(400, {"error": "locked_doubt_tag に Chiezo の印(_chiezo_)は使えません"})
+    return tag
+
+
+def _doubted(doc: dict, raw: dict, tag: str, now: str) -> dict:
+    """固定した 1 件への墓標を、**消さずに印を付けて残す**形にする。
+
+    中身は前のまま(AI の返した本文で書き換えない —— 墓標の本文は消す理由の 1 行)。
+    理由は脇書きに置き、読む側がそこを見て確かめに行けるようにする。
+    """
+    extra = doc.get("extra") if isinstance(doc.get("extra"), dict) else {}
+    reason = str(raw.get("body") or "").strip()[:MAX_REMOVED_REASON_CHARS]
+    tags = [t for t in (doc.get("tags") or []) if t != tag]
+    return {
+        **doc,
+        "tags": [*tags, tag],
+        "extra": {**extra, "doubt_reason": reason or None, "doubt_at": now},
+        "updated_at": now,
+    }
 
 
 def set_lock(name: str, title: str, lat: float | None, lon: float | None) -> Collection:
@@ -4269,6 +4311,19 @@ def _stream_docs(
             yield kept(
                 _with_facts(before, raw) if facts else _with_new_facts(before, raw), title,
                 was_skipped=True,
+            )
+            continue
+        if (
+            edits and _is_tombstone(raw) and item.locked_doubt_tag
+            and not is_removed(before) and notes.title_key(title) in item.locks
+        ):
+            # **人が確かめた 1 件は消さない**(`locked_doubt_tag`)。印を足して残し、
+            # 「直した」に数える(何が起きたかは控えの見出しで読める)
+            updated += 1
+            updated_titles.append(title)
+            yield _stamped(
+                _reviewed(_doubted(before, raw, item.locked_doubt_tag, now)), sweep, "updated",
+                before, by=signed_by(raw),
             )
             continue
         if edits and _is_tombstone(raw):

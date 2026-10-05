@@ -3172,6 +3172,10 @@ class CollectionCreate(BaseModel):
         '縮めて持つ(extra.thumb)。{"pages_from": ["connpass.com"]} と書くと、'
         "そのホストのページの og:image も拾う",
     )
+    locked_doubt_tag: str | None = PydField(
+        None,
+        description="座標を固定した 1 件に墓標が返ったとき、消す代わりに足すタグ。空なら消す",
+    )
     verify_tags: list[dict] | None = PydField(
         None,
         description="タグの値が実在するかを確かめる指定。"
@@ -3229,6 +3233,9 @@ class CollectionPatch(BaseModel):
     )
     verify_tags: list[dict] | None = PydField(
         None, description="タグの値が実在するかを確かめる指定。空の配列を渡すと外れる"
+    )
+    locked_doubt_tag: str | None = PydField(
+        None, description="座標を固定した 1 件に墓標が返ったとき、消す代わりに足すタグ。空の文字列で外れる"
     )
     kind: str | None = PydField(None, description="収集の種類(flow / stock)")
     keep_days: int | None = PydField(None, description="流れの収集が持つ日数。0 で落とさない")
@@ -3342,6 +3349,7 @@ def collect_create(request: Request, body: CollectionCreate):
         feed_spec=body.feed,
         material_spec=body.material,
         sweeps=body.sweeps,
+        locked_doubt_tag=body.locked_doubt_tag or "",
         requested_by=body.requested_by,
     )
     # 作った時点で空の DB ができる。**ここでソースを取り直さないと、1 回目が走るまで
