@@ -118,7 +118,9 @@ class TestTheKeysPage:
         # 見本を名乗らないキーは「API キー」と出す
         assert 'placeholder="API キー"' in html
         # 収集の道具が使うキーも並ぶ(取り込みのソースではないのでカタログには載らない)
-        assert "<code>pihole</code>" in html and 'placeholder="http://pi.hole パスワード"' in html
+        assert "<code>pihole_url</code>" in html and "<code>pihole_password</code>" in html
+        # URL は見ながら打てる欄、パスワードは隠す欄
+        assert '<input type="text" name="credential" placeholder="http://pi.hole"' in html
         # 長期記憶の面は、未登録を知らせて API キーの面へ案内する
         assert "取り込みに要るキーが未登録です: jquants" in client.get("/admin/memory").text
 

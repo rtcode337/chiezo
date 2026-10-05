@@ -36,6 +36,9 @@ class _Pihole(BaseHTTPRequestHandler):
     queries: ClassVar[list[dict]] = []
     asked: ClassVar[list[dict]] = []
     logged_out: ClassVar[int] = 0
+    logins: ClassVar[int] = 0
+    # 次の GET を 1 回だけ 401 で断る(セッションの期限切れ)
+    expire_once: ClassVar[bool] = False
 
     def _send(self, status: int, body: dict) -> None:
         raw = json.dumps(body).encode()
@@ -49,6 +52,7 @@ class _Pihole(BaseHTTPRequestHandler):
         if body.get("password") != "secret":
             self._send(401, {"session": {"valid": False}})
             return
+        _Pihole.logins += 1
         self._send(200, {"session": {"valid": True, "sid": "sid-1"}})
 
     def do_DELETE(self):
@@ -60,12 +64,16 @@ class _Pihole(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         query = {k: v[0] for k, v in parse_qs(url.query).items()}
         assert self.headers.get("sid") == "sid-1"
+        if _Pihole.expire_once:
+            _Pihole.expire_once = False
+            self._send(401, {"error": {"key": "unauthorized"}})
+            return
         if url.path == "/api/stats/database/top_domains":
             self._send(200, {"domains": [{"domain": d, "count": 1} for d in _Pihole.known]})
             return
         if url.path == "/api/queries":
             _Pihole.asked.append(query)
-            start, length = int(query["start"]), int(query["length"])
+            start, length = int(query.get("start", 0)), int(query["length"])
             self._send(200, {"queries": _Pihole.queries[start:start + length]})
             return
         self._send(404, {})
@@ -75,6 +83,8 @@ class _Pihole(BaseHTTPRequestHandler):
 def server(monkeypatch):
     monkeypatch.setattr(pihole.settings_store, "api_key", lambda _name: None)
     _Pihole.known, _Pihole.queries, _Pihole.asked, _Pihole.logged_out = [], [], [], 0
+    _Pihole.logins, _Pihole.expire_once = 0, False
+    pihole._live.session = None
     httpd = HTTPServer(("127.0.0.1", 0), _Pihole)
     thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     thread.start()
@@ -89,8 +99,15 @@ class TestCredential:
         assert pihole.parse_credential("http://pi.hole:80/ pass word") == ("http://pi.hole:80", "pass word")
         assert pihole.parse_credential("http://pi.hole") == ("http://pi.hole", "")
 
-    def test_the_registered_key_comes_first(self, monkeypatch):
-        monkeypatch.setattr(pihole.settings_store, "api_key", lambda _name: "http://pi.hole secret")
+    def test_the_url_and_the_password_are_registered_apart(self, monkeypatch):
+        keys = {pihole.URL_KEY: "http://pi.hole/", pihole.PASSWORD_KEY: "pass word"}
+        monkeypatch.setattr(pihole.settings_store, "api_key", keys.get)
+        assert pihole.target() == ("http://pi.hole", "pass word")
+
+    def test_the_old_single_field_is_still_read(self, monkeypatch):
+        """前の形(1 つの欄に「URL パスワード」)も、登録し直すまでは読む。"""
+        keys = {pihole.LEGACY_KEY: "http://pi.hole secret"}
+        monkeypatch.setattr(pihole.settings_store, "api_key", keys.get)
         assert pihole.target() == ("http://pi.hole", "secret")
 
     def test_no_target_is_refused_with_a_hint(self, monkeypatch):
@@ -239,6 +256,47 @@ class TestHarvest:
         items, _note = pihole.harvest({})
 
         assert len(items) == 5
+
+
+class TestLive:
+    def test_it_returns_blocked_ones_after_the_cursor_oldest_first(self, server):
+        now = time.time()
+        _Pihole.queries = [
+            _q("ads.example.com", now - 1, status="GRAVITY", name="tablet"),
+            _q("track.example.net", now - 5, status="DENYLIST"),
+            _q("old.example.org", now - 100, status="GRAVITY"),
+        ]
+
+        got = pihole.blocked_since(now - 50)
+
+        assert [r["domain"] for r in got["queries"]] == ["track.example.net", "ads.example.com"]
+        assert got["queries"][1]["client_name"] == "tablet"
+        assert got["cursor"] == pytest.approx(now - 1)
+        # Pi-hole には止めたものだけを頼む
+        assert _Pihole.asked[-1]["upstream"] == "blocklist"
+
+    def test_the_session_is_reused_and_taken_again_when_it_expires(self, server):
+        """5 秒おきに読まれるので、毎回ログインして閉じない。期限が切れたら取り直す。"""
+        pihole.blocked_since(None)
+        pihole.blocked_since(None)
+        assert _Pihole.logins == 1 and _Pihole.logged_out == 0
+
+        _Pihole.expire_once = True
+        pihole.blocked_since(None)
+        assert _Pihole.logins == 2
+
+    def test_it_is_reachable_over_rest(self, server, built_data_dir, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        from app.main import app
+
+        _Pihole.queries = [_q("ads.example.com", time.time() - 1, status="GRAVITY")]
+        with TestClient(app) as client:
+            res = client.get("/v1/pihole/blocked")
+
+        assert res.status_code == 200, res.text
+        assert [r["domain"] for r in res.json()["queries"]] == ["ads.example.com"]
 
 
 class TestSweep:

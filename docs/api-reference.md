@@ -677,12 +677,28 @@ curl -s -X PATCH "$BASE/v1/collect/pihole_watch" -H 'Content-Type: application/j
   Pi-hole 自身の長期の記録と比べる。逆引き(`*.arpa`)は候補にしない
 - **タグは最初の 1 回だけ付く**(`Pi-hole` / `ブロック` / `気になる通信` / `理由:…`)。
   足すだけの回は既にある 1 件のタグに触らないので、**いまの状態は脇書きで読む**
-- **接続先とパスワードは API キーの面に置く**(名前 `pihole`、`<URL> <パスワード>`。
-  パスワードの無い Pi-hole は URL だけ)。置き場の無い構成では
-  `CHIEZO_PIHOLE_URL` / `CHIEZO_PIHOLE_PASSWORD`。**取り込みのたびにセッションを閉じる**
+- **接続先とパスワードは API キーの面に、別々の欄で置く**(`pihole_url` に URL、
+  `pihole_password` にパスワード。パスワードの無い Pi-hole は URL だけ)。前の形
+  (`pihole` に `<URL> <パスワード>`)も登録し直すまでは読む。置き場の無い構成では
+  `CHIEZO_PIHOLE_URL` / `CHIEZO_PIHOLE_PASSWORD`。**巡回のたびにセッションを閉じる**
   (Pi-hole は同時に開けるセッションに上限がある)
 - 1 回に読むのは 40 万件まで。届いたら新しいほうから取れたぶんだけを足し、控えにそう書く
 - **記録は家の中の通信そのもの**なので、溜めた収集を本人以外が見られる場所に置かない
+
+**いま止めている通信は、溜めずにその場で読める**(`GET /v1/pihole/blocked`)。
+流し見る画面のための口で、鍵は Chiezo が持つので読む側は Pi-hole に直接つながらない。
+
+```bash
+curl -s "$BASE/v1/pihole/blocked"                    # 直近 50 件
+curl -s "$BASE/v1/pihole/blocked?since=1759600000"   # その時刻より後に止めたものだけ
+```
+
+- 返りは `{"now", "queries": [{id, time, at, domain, client, client_name, type, status}], "cursor"}`。
+  **古い順に 1 件 1 行**(同じドメインでも来るたびに 1 行)。`cursor` を次の `since` に渡すと
+  続きだけが返る。1 回に 500 件まで(`limit`)
+- **セッションは閉じずに使い回す**(プロセスごとに 1 つ)。5 秒おきに読まれる口なので、
+  毎回ログインして閉じると Pi-hole の控えがログインで埋まる。期限が切れたら(401)取り直す
+- 接続先が無ければ 409、Pi-hole に繋がらなければ 502
 
 #### 端から端まで舐める(`{partition}`)
 

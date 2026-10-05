@@ -2146,6 +2146,19 @@ def healthz(request: Request):
     }
 
 
+@app.get("/v1/pihole/blocked")
+async def pihole_blocked(
+    since: float | None = Query(None, description="この時刻(unix 秒)より後に止めたものだけ。無ければ直近"),
+    limit: int = Query(pihole.LIVE_MAX_ROWS, ge=1, le=pihole.LIVE_MAX_ROWS),
+):
+    """**LAN の Pi-hole がいま止めている通信**(1 件 1 行、古い順)。流し見る画面のための口。
+
+    鍵(URL とパスワード)は Chiezo が持つので、読む側は Pi-hole に直接つながらない。
+    返りの `cursor` を次の `since` に渡すと、続きだけが返る(`app/pihole.py` の `blocked_since`)。
+    """
+    return await asyncio.to_thread(pihole.blocked_since, since, limit)
+
+
 @app.get("/v1/sources")
 def list_sources(request: Request):
     sources: dict[str, Source] = request.app.state.sources

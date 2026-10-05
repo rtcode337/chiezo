@@ -44,6 +44,7 @@ import logging
 import math
 import os
 import statistics
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -58,11 +59,17 @@ from app import settings_store
 
 log = logging.getLogger("chiezo.app")
 
-# API キーの面での名前(`settings_store.api_key`)と、画面に出す案内
-KEY_NAME = "pihole"
-KEY_LABEL = "Pi-hole の接続先とパスワード(URL と空白とパスワード)"
-KEY_PLACEHOLDER = "http://pi.hole パスワード"
+# API キーの面での名前(`settings_store.api_key`)と、画面に出す案内。
+# **URL とパスワードは別の欄に持つ** —— 1 つの欄に「URL パスワード」と書かせていた
+# 頃は、URL を直すだけでもパスワードを打ち直すことになった(値は画面に二度と出ない)
+URL_KEY = "pihole_url"
+URL_LABEL = "Pi-hole の URL"
+URL_PLACEHOLDER = "http://pi.hole"
+PASSWORD_KEY = "pihole_password"
+PASSWORD_LABEL = "Pi-hole のパスワード(アプリパスワードも使える。設定していなければ空)"
 KEY_HELP_URL = "https://docs.pi-hole.net/api/"
+# 前の形(1 つの欄に「URL パスワード」)。**登録し直すまでは読む**
+LEGACY_KEY = "pihole"
 # 画面を通さずに試すとき(キーの置き場が無い構成)
 URL_ENV = "CHIEZO_PIHOLE_URL"
 PASSWORD_ENV = "CHIEZO_PIHOLE_PASSWORD"
@@ -138,17 +145,21 @@ def parse_credential(raw: str | None) -> tuple[str, str]:
 
 
 def target() -> tuple[str, str]:
-    """接続先とパスワード。API キーの面を先に見て、無ければ環境変数。"""
+    """接続先とパスワード。API キーの面(URL とパスワードの 2 つ)を先に見て、
+    無ければ前の形(1 つの欄)、それも無ければ環境変数。"""
     # 置き場の無い構成では None(環境変数へ倒す)
-    if stored := settings_store.api_key(KEY_NAME):
-        url, password = parse_credential(stored)
+    if stored_url := settings_store.api_key(URL_KEY):
+        url = stored_url.strip().rstrip("/")
+        password = (settings_store.api_key(PASSWORD_KEY) or "").strip()
+    elif legacy := settings_store.api_key(LEGACY_KEY):
+        url, password = parse_credential(legacy)
     else:
         url = (os.environ.get(URL_ENV) or "").strip().rstrip("/")
         password = os.environ.get(PASSWORD_ENV) or ""
     if not url.startswith(("http://", "https://")):
         raise HTTPException(409, {
             "error": "Pi-hole の接続先がありません",
-            "hint": f"管理画面の API キーの面で、名前 {KEY_NAME} に「URL パスワード」を登録してください",
+            "hint": f"管理画面の API キーの面で、{URL_KEY} に URL を、{PASSWORD_KEY} にパスワードを登録してください",
         })
     return url, password
 
@@ -495,3 +506,82 @@ def harvest(previous: dict[str, dict]) -> tuple[list[dict], str]:
     if capped:
         note += f"(上限 {MAX_PAGES * PAGE_ROWS} 件で打ち切り。古いほうは数えていません)"
     return items, note
+
+
+# ---- いま止めている通信(読み口) ----------------------------------------------
+
+# 1 回に返す件数の上限。**流し見る画面のためのもの**で、溜めるものではない
+LIVE_MAX_ROWS = 500
+# 最初の 1 回(どこから読むかの印が無い回)に返す件数
+LIVE_FIRST_ROWS = 50
+
+
+class _Live:
+    """流し見のためのセッション。**閉じずに使い回す** —— 画面は 5 秒おきに読みに来るので、
+    毎回ログインして閉じると、Pi-hole の控えに 1 日 1 万件を超えるログインが並ぶ。
+    使い回すぶん、Pi-hole の同時に開けるセッションを 1 つ(プロセスごと)占める。
+    **期限が切れたら取り直す**(401 が返ったら 1 回だけログインし直す)。
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.target: tuple[str, str] | None = None
+        self.session: _Session | None = None
+
+    def get(self, path: str, params: dict[str, str]) -> dict:
+        with self.lock:
+            now_target = target()
+            for attempt in (1, 2):
+                if self.session is None or self.target != now_target:
+                    self.session = _Session(*now_target).__enter__()
+                    self.target = now_target
+                try:
+                    return self.session._request(f"{path}?{urllib.parse.urlencode(params)}")
+                except urllib.error.HTTPError as e:
+                    if e.code == 401 and attempt == 1:
+                        self.session = None
+                        continue
+                    raise HTTPException(502, {"error": f"Pi-hole が {e.code} を返しました({path})"}) from e
+                except (urllib.error.URLError, OSError) as e:
+                    self.session = None
+                    raise HTTPException(502, {
+                        "error": "Pi-hole に繋がりませんでした", "reason": type(e).__name__,
+                    }) from e
+            raise AssertionError("unreachable")
+
+
+_live = _Live()
+
+
+def blocked_since(since: float | None, limit: int = LIVE_MAX_ROWS) -> dict:
+    """**いま止めている通信**(止めた問い合わせを 1 件 1 行、古い順)。
+
+    `since`(unix 秒)より後のものだけを返す。無ければ直近の `LIVE_FIRST_ROWS` 件。
+    同じドメインでも来るたびに 1 行(まとめない)—— 流し見て「いま何が止まったか」を
+    見るためのもので、集計は収集の巡回(`harvest`)が受け持つ。
+    返すのは `{"now", "queries": [...], "cursor"}`。`cursor` を次の `since` に渡す。
+    """
+    limit = max(1, min(int(limit), LIVE_MAX_ROWS))
+    now = time.time()
+    params = {"upstream": "blocklist", "length": str(limit if since is not None else LIVE_FIRST_ROWS)}
+    if since is not None:
+        params.update({"from": str(int(since)), "until": str(int(now) + 1)})
+    body = _live.get("/api/queries", params)
+    rows = []
+    for raw in body.get("queries") or []:
+        one = _record(raw)
+        if one is None or (since is not None and one["time"] <= since):
+            continue
+        rows.append({
+            "id": raw.get("id"),
+            "time": one["time"],
+            "at": _iso(one["time"]),
+            "domain": one["domain"],
+            "client": one["client"],
+            "client_name": one["client_name"],
+            "type": one["type"],
+            "status": str(raw.get("status") or ""),
+        })
+    rows.sort(key=lambda r: (r["time"], r["id"] or 0))
+    cursor = max((r["time"] for r in rows), default=since if since is not None else now)
+    return {"now": now, "queries": rows, "cursor": cursor}
