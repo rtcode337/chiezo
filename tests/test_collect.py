@@ -7896,6 +7896,39 @@ class TestHoldingALocation:
         assert collect.LOCKED_TAG in docs[0]["tags"]
 
 
+    def test_a_tombstone_on_a_locked_one_leaves_a_mark_instead(self, sample):
+        """**人が確かめた 1 件は、AI の判断だけでは消さない**(`locked_doubt_tag`)。
+        消す代わりに印を足して残し、理由は脇書きへ。固定していない 1 件は今までどおり消える。"""
+        collect.set_lock("news", "店", 35.5, 139.7)
+        collect.update("news", locked_doubt_tag="閉店の可能性あり")
+        item = collect.get("news")
+        previous = {
+            "店": {"title": "店", "body": "本文", "tags": ["食事処"], "doc_id": 1,
+                  "extra": {"lat": 35.5, "lon": 139.7}},
+            "別の店": {"title": "別の店", "body": "本文", "tags": ["食事処"], "doc_id": 2,
+                    "extra": {"lat": 35.1, "lon": 139.1}},
+        }
+        collected = [
+            {"title": t, "body": "閉店した(公式の告知)", "tags": [notes.TOMBSTONE_TAG]}
+            for t in ("店", "別の店")
+        ]
+
+        docs, counts = collect.material(item, previous, collected, edits=True)
+        by_title = {d["title"]: d for d in docs}
+
+        kept = by_title["店"]
+        assert not collect.is_removed(kept)
+        assert kept["body"] == "本文"
+        assert "閉店の可能性あり" in kept["tags"] and collect.LOCKED_TAG in kept["tags"]
+        assert kept["extra"]["doubt_reason"] == "閉店した(公式の告知)"
+        assert collect.is_removed(by_title["別の店"])
+        assert counts["updated_titles"] == ["店"]
+
+        # 外せば、固定した 1 件も今までどおり消える
+        collect.update("news", locked_doubt_tag="")
+        docs, _counts = collect.material(collect.get("news"), previous, collected, edits=True)
+        assert collect.is_removed({d["title"]: d for d in docs}["店"])
+
     def test_a_lock_that_changes_an_untouched_one_counts_as_updated(self, sample):
         """**固定を当てて中身が変わった 1 件は「直した」に数える**。AI も名簿も何も
         返さなかった回でも、焼くときに固定を当てると中身が変わる —— 数えないと、
