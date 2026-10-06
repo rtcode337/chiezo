@@ -5142,6 +5142,29 @@ def existing_extras(name: str, sources: dict, titles) -> dict[str, dict]:
     return out
 
 
+def waiting_for_thumbs(name: str, sources: dict, limit: int) -> dict[str, dict]:
+    """まだサムネイルを持たず、作れなかった印も無い 1 件(見出し → extra)。
+
+    `thumbs.backfill` が後から作る相手。**新しい順に `limit` 件まで**(全件は読まない)。
+    取りに行く先(URL か絵)を持つものだけで、消えたものは外す。
+    """
+    src = sources.get(name)
+    if src is None or limit <= 0:
+        return {}
+    found = _docs_where(
+        src,
+        " AND json_extract(extra, '$.thumb') IS NULL"
+        " AND json_extract(extra, '$.thumb_failed') IS NULL"
+        " AND (json_extract(extra, '$.url') IS NOT NULL"
+        " OR json_extract(extra, '$.image') IS NOT NULL)"
+        " ORDER BY doc_id DESC LIMIT ?",
+        (limit,),
+    )
+    return {
+        title: doc.get("extra") or {} for title, doc in found.items() if not is_removed(doc)
+    }
+
+
 def drop_unseen_edits(items: list[dict], allowed: set[str], existing: set[str]):
     """返りのうち、**AI に見せていない既存の 1 件を置き換える**ものを落とす。
 

@@ -1711,6 +1711,15 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
                 [notes.title_key(d.get("title")) for d in items if isinstance(d, dict)],
             )
             made = await thumbs.attach(item.thumbs, items, existing, from_feed=sweep.use_feed)
+            # **足すだけの回は、今回返ってこなかった既にある 1 件にも後から作る**
+            # (`thumbs.backfill`)。足すだけの回なら脇書きしか受け取らないので、中身は動かない
+            if focus is None and sweep.only_new:
+                waiting = await asyncio.to_thread(
+                    collect.waiting_for_thumbs, name, sources, thumbs.BACKFILL_LOOKUP,
+                )
+                made += await thumbs.backfill(
+                    item.thumbs, items, waiting, from_feed=sweep.use_feed,
+                )
             phase = _phase_done("サムネイルを作る", name, phase, made)
         # **控えに残すのは、決めた相手ではなく頼んだ相手。** ワーカーを使う回は
         # 巡回に相手が書いていないので、書き換えないと履歴が既定の名前で埋まる
@@ -3183,7 +3192,7 @@ class CollectionCreate(BaseModel):
         None,
         description="サムネイルを持つか。true なら AI が返した絵(image)を 1 回だけ取って"
         '縮めて持つ(extra.thumb)。{"pages_from": ["connpass.com"]} と書くと、'
-        "そのホストのページの og:image も拾う",
+        'そのホストのページの og:image も拾う({"pages_from": ["*"]} ならどのホストも)',
     )
     locked_doubt_tag: str | None = PydField(
         None,
