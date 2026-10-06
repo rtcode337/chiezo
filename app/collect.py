@@ -489,6 +489,9 @@ class Collection:
     # **サムネイルを持つか**(`app/thumbs.py`)。None なら作らない。
     # `{"pages_from": ["connpass.com"]}` と書くと、そのホストのページの og:image も拾う
     thumbs: dict | None = None
+    # **1 件の URL を確かめるか**(`app/link_checks.py`)。開けるか・どこへ転送されるか・
+    # 頁の題名を、URL ごとに Chiezo の手元に控える(文書には書かない)
+    links: bool = False
     extract: dict | list[dict] | None = None
     # **材料に使う別のソース**(`{material}` で差し込む)。
     # `{"source": "tazuna_tech", "tag": "ニュース,記事", "limit": 60}` と書くと、
@@ -1384,6 +1387,7 @@ def _from_json(item: dict) -> Collection:
         kind=normalize_kind(item.get("kind")),
         keep_days=normalize_keep_days(item.get("keep_days"), normalize_kind(item.get("kind"))),
         thumbs=thumbnails.normalize(item.get("thumbs")),
+        links=bool(item.get("links", False)),
         verify_tags=normalize_verify_tags(item.get("verify_tags")),
         locks=normalize_locks(item.get("locks")),
         locked_doubt_tag=normalize_doubt_tag(item.get("locked_doubt_tag")),
@@ -1718,6 +1722,7 @@ def create(
     kind: str = KIND_STOCK,
     keep_days=None,
     thumbs_spec=None,
+    links: bool = False,
     verify_tags=None,
     partition_spec=None,
     feed_spec=None,
@@ -1761,6 +1766,7 @@ def create(
         kind=normalize_kind(kind),
         keep_days=normalize_keep_days(keep_days, normalize_kind(kind)),
         thumbs=thumbnails.normalize(thumbs_spec),
+        links=bool(links),
         verify_tags=normalize_verify_tags(verify_tags),
         partition=partitioning.to_json(partitioning.normalize(partition_spec)),
         feed=feeds.to_json(feeds.normalize(feed_spec)),
@@ -1784,7 +1790,7 @@ def update(name: str, **fields) -> Collection:
         "description", "prompt", "interval_minutes", "enabled",
         "backend", "model", "effort", "web", "cursor", "keep_ratio", "extract",
         "partition", "partitions", "sweeps", "feed", "verify_tags",
-        "kind", "keep_days", "material", "thumbs", "locked_doubt_tag",
+        "kind", "keep_days", "material", "thumbs", "links", "locked_doubt_tag",
     }
     patch = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if "interval_minutes" in patch:
@@ -1844,6 +1850,8 @@ def update(name: str, **fields) -> Collection:
     if "thumbs" in patch:
         # false を渡したら作らない側へ戻す
         patch["thumbs"] = thumbnails.normalize(patch["thumbs"])
+    if "links" in patch:
+        patch["links"] = bool(patch["links"])
     # **種類を変えたら日数も引き直す**(網羅へ移したのに日数が残ると、
     # 次に流れへ戻したときに古い設定で消え始める)
     kind = patch.get("kind", current.kind)

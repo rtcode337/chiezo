@@ -5154,6 +5154,19 @@ class TestRest:
         assert res.json()["keep_days"] == collect.DEFAULT_KEEP_DAYS
         assert client.get("/v1/collect/tidy").json()["keep_ratio"] == collect.DEFAULT_KEEP_RATIO
 
+    def test_links_can_be_asked_for_and_read_back(self, client, enabled):
+        """URL を確かめるかを依頼のときに名乗れ、結果の口は(まだ何も無くても)読める。"""
+        res = client.post(
+            "/v1/collect",
+            json={"name": "shops", "prompt": "{cursor}", "interval_minutes": 60, "links": True},
+        )
+        assert res.status_code == 200
+        assert res.json()["links"] is True
+        assert client.get("/v1/collect/shops/links").json() == {"links": {}}
+
+        client.patch("/v1/collect/shops", json={"links": False})
+        assert client.get("/v1/collect/shops").json()["links"] is False
+
     def test_the_backend_comes_back_on_the_definition(self, client, enabled):
         """依頼した側が、誰に頼むことになったかを確かめられる。"""
         res = client.post(

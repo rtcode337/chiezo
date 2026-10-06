@@ -46,6 +46,7 @@ from app import (
     feeds,
     handoff,
     ingest_queue,
+    link_checks,
     logs,
     machine_store,
     media,
@@ -328,6 +329,27 @@ async def _run_collections(app: FastAPI) -> None:
             await asyncio.to_thread(_tick_ingest)
         except Exception:
             log.exception("collection tick failed")
+
+
+async def _run_link_checks(app: FastAPI) -> None:
+    """収集の 1 件の URL を確かめる時計(`app/link_checks.py`)。**失敗しても止めない**。
+
+    `links` を有効にした収集の長期記憶から URL を拾い、1 回に `link_checks.MAX_PER_TICK`
+    件まで開く(1 秒に 1 回なので、1 回の時計が 20 秒ほどかかる)。
+    """
+    while True:
+        await asyncio.sleep(COLLECT_TICK_SECONDS)
+        try:
+            sources = app.state.sources
+            paths = [
+                sources[item.name].path
+                for item in collect.load()
+                if item.links and item.name in sources
+            ]
+            if paths:
+                await link_checks.tick(paths)
+        except Exception:
+            log.exception("link check tick failed")
 
 
 async def _run_rebuilds(app: FastAPI) -> None:
@@ -1953,6 +1975,12 @@ async def lifespan(app: FastAPI):
         if collect.is_enabled() and COLLECT_TICK_SECONDS > 0
         else None
     )
+    # 1 件の URL を確かめる時計。収集の置き場と状態の置き場が無ければ回さない
+    link_checker = (
+        asyncio.create_task(_run_link_checks(app))
+        if collect.is_enabled() and link_checks.db_path() is not None and COLLECT_TICK_SECONDS > 0
+        else None
+    )
     # 長期記憶の定期再構築の時計。予定の置き場が無ければ回さない
     rebuilder = (
         asyncio.create_task(_run_rebuilds(app))
@@ -1986,7 +2014,7 @@ async def lifespan(app: FastAPI):
         async with mcp.session_manager.run(), knowledge.session_manager.run():
             yield
     finally:
-        for task in (watcher, collector, rebuilder, sampler, choices):
+        for task in (watcher, collector, link_checker, rebuilder, sampler, choices):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -3194,6 +3222,11 @@ class CollectionCreate(BaseModel):
         '縮めて持つ(extra.thumb)。{"pages_from": ["connpass.com"]} と書くと、'
         'そのホストのページの og:image も拾う({"pages_from": ["*"]} ならどのホストも)',
     )
+    links: bool | None = PydField(
+        None,
+        description="1 件の URL(extra.url / extra.website)を確かめるか。開けるか・転送先・"
+        "頁の題名を URL ごとに控え、GET /v1/collect/{name}/links で返す",
+    )
     locked_doubt_tag: str | None = PydField(
         None,
         description="座標を固定した 1 件に墓標が返ったとき、消す代わりに足すタグ。空なら消す",
@@ -3264,6 +3297,7 @@ class CollectionPatch(BaseModel):
     thumbs: dict | bool | None = PydField(
         None, description="サムネイルを持つか(true / {\"pages_from\": [ホスト]})。false で外れる"
     )
+    links: bool | None = PydField(None, description="1 件の URL を確かめるか。false で外れる")
     feed: dict | None = PydField(
         None, description="外向きの道具。空のオブジェクトを渡すと外れる"
     )
@@ -3366,6 +3400,7 @@ def collect_create(request: Request, body: CollectionCreate):
         kind=collect.normalize_kind(body.kind),
         keep_days=body.keep_days,
         thumbs_spec=body.thumbs,
+        links=bool(body.links),
         verify_tags=body.verify_tags,
         partition_spec=body.partition,
         feed_spec=body.feed,
@@ -3580,6 +3615,23 @@ def collect_partition(
             for d in ordered[offset : offset + limit]
         ],
     }
+
+
+@app.get("/v1/collect/{name}/links")
+def collect_links(request: Request, name: str):
+    """収集の 1 件が持つ URL を確かめた結果(`app/link_checks.py`)。
+
+    `{"links": {URL: {"status", "final_url", "title", "checked_at"}}}`。`status` は
+    `ok`(開けた)・`断られた(…)`(機械の取得を拒まれた。人は開ける)・それ以外は
+    開けなかった理由。**まだ確かめていない URL は入らない**(読む側は「分からない」
+    として扱う)。`final_url` は転送された先(転送されなければ空)、`title` は頁の題名。
+    その URL を使うかは読む側が決める —— 題名が店の名前と合うべきかはサイトによる。
+    """
+    collect.require_enabled()
+    item = collect.get(name)
+    src = request.app.state.sources.get(item.name)
+    urls = link_checks.collection_urls(src.path) if src is not None else []
+    return {"links": link_checks.lookup(urls)}
 
 
 @app.get("/v1/collect/{name}")
