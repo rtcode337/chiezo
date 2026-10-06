@@ -3451,6 +3451,25 @@ class TestCarryingFactsIntoTheDoc:
         assert docs[0]["tags"] == ["画家", "様式:印象派"]
         assert docs[0]["extra"]["collected_at"] == "むかし"
 
+    def test_a_backfilled_thumb_leaves_the_doc_as_it_was(self, sample):
+        """後から作ったサムネイル(`thumbs.backfill`)は、**見出しと脇書きだけ**で届く。
+        足すだけの回なので、本文とタグを持たない返りでも中身は動かない。"""
+        previous = {"作品A": {
+            "doc_id": 1, "title": "作品A", "body": "育てた本文",
+            "tags": ["期:秋"], "extra": {"url": "https://anime.example/"},
+        }}
+
+        docs, _diff = collect.material(
+            collect.get("news"), previous,
+            [{"title": "作品A", "extra": {"thumb": "/v1/thumbs/" + "a" * 40 + ".webp"}}],
+            only_new=True,
+        )
+
+        assert docs[0]["extra"]["thumb"].startswith("/v1/thumbs/")
+        assert docs[0]["extra"]["url"] == "https://anime.example/"
+        assert docs[0]["body"] == "育てた本文"
+        assert docs[0]["tags"] == ["期:秋"]
+
     def test_an_add_only_run_does_not_overwrite_a_fact(self, sample):
         """先に入っている値は動かさない。"""
         previous = {"モネ": {

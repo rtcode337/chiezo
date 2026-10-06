@@ -232,3 +232,107 @@ class TestResolve:
 def test_og_image_from_the_page():
     assert thumbs.page_image_url(PAGE, "https://a.example/event/1/") == "https://a.example/img/event.png"
     assert thumbs.page_image_url("<html></html>", "https://a.example/") == ""
+
+
+class TestAnyHost:
+    def test_star_reads_pages_on_any_host(self, serve):
+        # 1 件が公式サイトを指す収集(作品・イベント)は、ホストを名指しできない
+        calls = serve({
+            "https://anime.example/": httpx.Response(200, content=PAGE.encode()),
+            "https://anime.example/img/event.png": image_response(),
+        })
+        items = [{"title": "作品A", "url": "https://anime.example/"}]
+
+        assert attach({"pages_from": ["*"]}, items) == 1
+        assert items[0]["extra"]["image"] == "https://anime.example/img/event.png"
+        assert calls == ["https://anime.example/", "https://anime.example/img/event.png"]
+
+    def test_star_leaves_feed_items_that_carry_an_image(self, serve):
+        # 配信元が絵を配っているなら、ページまで取りに行かない
+        calls = serve({})
+        items = [{"title": "告知", "url": "https://a.example/1", "image": "https://a.example/1.png"}]
+
+        assert attach({"pages_from": ["*"]}, items, from_feed=True) == 0
+        assert calls == []
+
+    def test_normalize_keeps_the_star(self):
+        assert thumbs.normalize({"pages_from": ["*"]}) == {"pages_from": ["*"]}
+
+
+def backfill(spec, items, waiting, from_feed=False):
+    return asyncio.run(thumbs.backfill(thumbs.normalize(spec), items, waiting, from_feed))
+
+
+class TestBackfill:
+    def test_adds_extra_only_items_for_docs_not_returned(self, serve):
+        serve({
+            "https://anime.example/": httpx.Response(200, content=PAGE.encode()),
+            "https://anime.example/img/event.png": image_response(),
+        })
+        items = [{"title": "今回の作品", "body": "本文"}]
+        waiting = {
+            "前からある作品": {"url": "https://anime.example/"},
+            # 今回返ってきたものは attach の受け持ち
+            "今回の作品": {"url": "https://anime.example/"},
+        }
+
+        assert backfill({"pages_from": ["*"]}, items, waiting) == 1
+
+        added = items[1]
+        assert added["title"] == "前からある作品"
+        # 見出しと脇書きだけ(本文もタグも持たない)
+        assert set(added) == {"title", "extra"}
+        assert added["extra"]["thumb"].startswith("/v1/thumbs/")
+        assert added["extra"]["image"] == "https://anime.example/img/event.png"
+
+    def test_marks_what_it_could_not_make(self, serve):
+        serve({"https://anime.example/": httpx.Response(404)})
+        items: list = []
+
+        assert backfill({"pages_from": ["*"]}, items, {"作品": {"url": "https://anime.example/"}}) == 0
+        assert items[0]["title"] == "作品"
+        assert "thumb_failed" in items[0]["extra"]
+
+    def test_caps_each_run(self, serve, monkeypatch):
+        monkeypatch.setattr(thumbs, "MAX_BACKFILL_PER_RUN", 1)
+        calls = serve({
+            "https://a.example/": httpx.Response(404),
+            "https://b.example/": httpx.Response(404),
+        })
+        waiting = {"A": {"url": "https://a.example/"}, "B": {"url": "https://b.example/"}}
+
+        backfill({"pages_from": ["*"]}, [], waiting)
+        assert len(calls) == 1
+
+
+def test_waiting_for_thumbs_picks_docs_without_a_thumb(tmp_path):
+    """後から作る相手は、絵も作れなかった印も無く、取りに行く先を持つ 1 件だけ。"""
+    import json
+    import sqlite3
+    from types import SimpleNamespace
+
+    from app import collect
+
+    path = tmp_path / "docs.sqlite"
+    con = sqlite3.connect(path)
+    con.execute(
+        "CREATE TABLE docs (doc_id INTEGER, title TEXT, body TEXT, tags TEXT,"
+        " updated_at TEXT, extra TEXT)"
+    )
+    rows = [
+        (1, "待っている", {"url": "https://a.example/"}, []),
+        (2, "もう持っている", {"url": "https://a.example/", "thumb": "/v1/thumbs/x.webp"}, []),
+        (3, "作れなかった", {"url": "https://a.example/", "thumb_failed": "HTTP 404"}, []),
+        (4, "行き先が無い", {}, []),
+        (5, "消えた", {"url": "https://a.example/"}, [notes.REMOVED_TAG]),
+    ]
+    for doc_id, title, extra, tags in rows:
+        con.execute(
+            "INSERT INTO docs VALUES (?, ?, '', ?, '', ?)",
+            (doc_id, title, json.dumps(tags), json.dumps(extra)),
+        )
+    con.commit()
+    con.close()
+
+    sources = {"x": SimpleNamespace(path=path)}
+    assert list(collect.waiting_for_thumbs("x", sources, 10)) == ["待っている"]

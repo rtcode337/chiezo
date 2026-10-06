@@ -65,6 +65,11 @@ TIMEOUT = 15.0
 # 1 回の収集で作る数の上限。**残りは次の回に回る**(配信の回は毎時走るので、
 # 溜まっていたぶんも数回で片付く)。上げると、その回の取り込みが待たされる
 MAX_PER_RUN = 20
+# そのうえで、今回返ってこなかった既にある 1 件に後から作る数の上限(`backfill`)
+MAX_BACKFILL_PER_RUN = 10
+# 後から作る相手を探すとき、新しい順に見る数。ホストの合わない 1 件も混ざるので、
+# 作る上限より多めに見る
+BACKFILL_LOOKUP = 200
 # 受け取る絵の大きさの上限(バイト)。キービジュアルでも数 MB に収まる
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 # ページは頭だけ読む(`og:image` は `<head>` にある)
@@ -122,7 +127,8 @@ def normalize(raw) -> dict | None:
     """収集の設定の形を揃える。**無し(None)なら作らない**。
 
     `true` / `{}` なら AI が返した絵だけ、`{"pages_from": ["connpass.com"]}` なら
-    そのホスト(とその下のサブドメイン)のページの `og:image` も拾う。
+    そのホスト(とその下のサブドメイン)のページの `og:image` も拾う。`["*"]` なら
+    どのホストのページも読む。
     """
     if raw in (None, False, ""):
         return None
@@ -134,6 +140,7 @@ def normalize(raw) -> dict | None:
     if not isinstance(hosts, list) or not all(isinstance(h, str) for h in hosts):
         raise HTTPException(400, {"error": "thumbs.pages_from はホスト名の並びで書いてください"})
     cleaned = sorted({h.strip().lower().lstrip(".") for h in hosts if h.strip()})
+    # `"*"` は「どのホストも」(`ANY_HOST`)。ほかのホストと並べても意味は同じ
     return {"pages_from": cleaned}
 
 
@@ -142,13 +149,25 @@ def _host_matches(url: str, hosts: list[str]) -> bool:
     return any(host == h or host.endswith("." + h) for h in hosts)
 
 
+# `pages_from` に書くと、**どのホストのページも読む**印
+ANY_HOST = "*"
+
+
 def wants(spec: dict | None, extra: dict, image: str, url: str, from_feed: bool) -> str:
-    """その 1 件で、何を元に作るか。`"image"`(絵の URL)/ `"page"`(ページ)/ 空。"""
+    """その 1 件で、何を元に作るか。`"image"`(絵の URL)/ `"page"`(ページ)/ 空。
+
+    `pages_from` が `"*"` なら、ホストを問わずページの `og:image` を読む —— 1 件が
+    公式サイトを指す収集(作品・イベント)のための口。**ただし配信が絵を運んできた
+    1 件は読まない**(配信元が自分で配っている絵があるので、ページまで取りに行かない)。
+    """
     if spec is None or extra.get("thumb") or extra.get("thumb_failed"):
         return ""
     if image and not from_feed:
         return "image"
-    if url and _host_matches(url, spec.get("pages_from") or []):
+    hosts = spec.get("pages_from") or []
+    if url and _host_matches(url, [h for h in hosts if h != ANY_HOST]):
+        return "page"
+    if url and ANY_HOST in hosts and not (from_feed and image):
         return "page"
     return ""
 
@@ -306,5 +325,52 @@ async def attach(spec: dict | None, items: list, existing: dict[str, dict], from
             if kind == "page" and not known.get("image"):
                 fresh["image"] = found
             raw["extra"] = {**extra_in, **fresh}
+            made += 1
+    return made
+
+
+async def backfill(
+    spec: dict | None, items: list, waiting: dict[str, dict], from_feed: bool,
+) -> int:
+    """**今回返ってこなかった既にある 1 件**にも、まだ無ければサムネイルを付ける。
+
+    `attach` が見るのは今回返ってきた 1 件だけなので、絵を持たないまま一度入った
+    1 件は、AI が触り直さない限り絵が付かない(設定を広げても、育て終えた作品には
+    届かない)。足すだけの回に限って、**脇書きだけを持つ 1 件**(見出しと
+    `extra.thumb`)を `items` に足す —— 足すだけの回は既にある 1 件の中身に触らず、
+    まだ持っていない脇書きだけを受け取るので、本文もタグも動かない。
+
+    `waiting` は見出し → いま持っている脇書き(`collect.waiting_for_thumbs`)。
+    1 回に作るのは `MAX_BACKFILL_PER_RUN` 件まで(残りは次の回)。作った数を返す。
+    """
+    if spec is None or thumbs_dir() is None or not waiting:
+        return 0
+    returned = {notes.title_key(raw.get("title")) for raw in items if isinstance(raw, dict)}
+    made = 0
+    tried = 0
+    async with _client() as client:
+        for title, extra in waiting.items():
+            if tried >= MAX_BACKFILL_PER_RUN:
+                break
+            if title in returned:
+                continue
+            image = str(extra.get("image") or "").strip()
+            url = str(extra.get("url") or "").strip()
+            kind = wants(spec, extra, image, url, from_feed)
+            if not kind:
+                continue
+            tried += 1
+            try:
+                thumb, found = await make(client, kind, image if kind == "image" else url)
+            except Skip as e:
+                items.append({"title": title, "extra": {"thumb_failed": str(e)[:200]}})
+                continue
+            except (httpx.HTTPError, OSError) as e:
+                log.info("thumbs: 取れなかった(次の回に取り直す): %s: %s", url or image, e)
+                continue
+            fresh = {"thumb": thumb}
+            if kind == "page" and not image:
+                fresh["image"] = found
+            items.append({"title": title, "extra": fresh})
             made += 1
     return made
