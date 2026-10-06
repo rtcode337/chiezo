@@ -453,14 +453,17 @@ PAGE_STYLE = """
                         padding: 0.45rem 0.7rem; white-space: normal; }
     table.as-cards tr > td:first-child { border-top: 0; background: #fafafc; }
     /* **見出しは値の左に置く。** 上に積むと 1 行が 2 行になり、札が縦に伸びて
-       結局スクロールが増える。幅は日本語 5〜6 文字ぶん */
+       結局スクロールが増える。幅は日本語 5〜6 文字ぶん。
+       **見出しは左へ浮かせ、値はふつうに流す**(グリッドにしない)—— グリッドだと
+       欄の中の子が 1 つずつ升に入るので、「名前のリンク・改行・種類の札・説明」の
+       ように子が 3 つ以上ある欄では、3 つ目から左の見出しの列へ回り込んでいた */
+    table.as-cards td[data-label] { display: flow-root;
+                                    padding-left: calc(0.7rem + 6.5rem + 0.7rem); }
     table.as-cards td[data-label]::before {
       content: attr(data-label); color: #666; font-size: 0.75rem;
       line-height: 1.5; padding-top: 0.15rem;
+      float: left; width: 6.5rem; margin-left: calc(-6.5rem - 0.7rem);
     }
-    table.as-cards td[data-label] { display: grid; gap: 0.1rem 0.7rem;
-                                    grid-template-columns: 6.5rem minmax(0, 1fr);
-                                    align-items: start; }
     /* 空の欄(ボタンだけの列の見出しなど)は札に起こさない */
     table.as-cards td:empty { display: none; }
     /* 札の中では、1 行に伸ばす指定を解く(横スクロールを戻してしまうため) */
