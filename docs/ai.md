@@ -1365,6 +1365,84 @@ curl -s "$BASE/v1/ai/complete" -H 'Content-Type: application/json' -d '{
 **AI に叩かせるときは必ず入れてください** —— 配っている CLAUDE.md ブロックにも
 そう書いてあります。
 
+### キャラクターと話し続ける(会話の口 `/v1/talk`)
+
+`/v1/ai/complete` は 1 回 1 往復で、相手(CLI)を毎回起こし、履歴も呼ぶ側が毎回送り直します。
+キャラクターと話し続ける使い方には 2 つ合いません —— 短い返事にも起動ぶんの数秒〜十数秒が
+かかり、長く話すほど送り直す履歴が重くなります。
+
+会話の口は、**会話の間だけ相手を起動したままにします**。キャラ設定は短期記憶
+(`chiezo_memory`)に置いたものを見出しで指し、会話を始めるときに 1 回だけ渡します。
+あとは新しい発言だけを送れば、相手が前のやり取りを覚えたまま答えます。
+相手は会話の途中で **Chiezo の知識(読む口の MCP)を自分で引けます**。
+
+```bash
+# キャラ設定を短期記憶に置く(見出しで指すので、決まった見出しにしておく)
+curl -s "$BASE/v1/chiezo_memory" -H 'Content-Type: application/json' \
+  -d "$(jq -n --rawfile t character.md '{title: "キャラ設定: さなぎ", text: $t}')"
+
+# 会話を始める(instructions はキャラ設定の後ろに足す補足。場面や相手の人数など)
+curl -s "$BASE/v1/talk/sessions" -H 'Content-Type: application/json' -d '{
+  "character": "キャラ設定: さなぎ",
+  "instructions": "画面越しに 1 対 1 で話している。",
+  "requested_by": "pupai"
+}'
+# → {"session_id": "codex:01a1...", "backend": "codex", "model": "gpt-5.6-sol", ...}
+
+# 1 回ぶん話す(schema を渡すと、返事がその形の JSON 文字列になる)
+curl -s "$BASE/v1/talk/sessions/codex:01a1.../turns" -H 'Content-Type: application/json' -d '{
+  "text": "やっほー",
+  "schema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"],
+             "additionalProperties": false},
+  "requested_by": "pupai"
+}'
+# → {"content": "{\"text\":\"やっほー！...\"}", "tools": [], "ms": 3200, ...}
+
+# 終える(話しかけないまま CHIEZO_TALK_IDLE_SEC が経った会話はブリッジが片付ける)
+curl -s -X DELETE "$BASE/v1/talk/sessions/codex:01a1..."
+```
+
+- **会話の id が 404 になったら始め直してください。** 会話ブリッジが再起動すると、
+  CLI の中の会話は消えます(相手の側で失われたものを、こちらで黙って作り直すと、
+  呼ぶ側は文脈が切れたことに気づけません)
+- **`tools` に、その回に引いた道具が並びます。** 知識を引く回は遅くなります
+  (実測で、道具を引かない回は 3〜5 秒、2〜4 回引く回は 20〜30 秒)。相手には
+  「調べるのは 1 回につき 2 回まで」と頼んであります
+- **web 検索は既定で閉じています**(`"web": true` で開く)。codex は既定で開いていて、
+  道具の一覧に出ないまま外を調べて答えるので、知識ベースで答えたつもりの返事に
+  外の話が混ざります
+- 使ったぶんは他の依頼と同じ使用量の表に残ります(依頼元は `api:<requested_by>`)
+
+**相手はいまのところ codex だけです**(`GET /v1/talk/backends`)。`codex app-server` は
+1 つのプロセスで複数の会話を持て、1 回ごとに返事の形を JSON スキーマで縛れます。
+
+#### 会話ブリッジを立てる
+
+会話ブリッジ(`chiezo-talk-codex`)は CLI ブリッジと同じイメージで、起動のコマンドだけが
+違います。`docker-compose.yml` のコメントを外して立ててください。
+**CLI ブリッジ(`chiezo-bridge-codex`)とは別のサインインにします** —— 同じ auth.json を
+2 つのプロセスが回すと、refresh token の回転がぶつかって権限ごと失効します。
+分けておけば、会話をしている間も CLI ブリッジは他の依頼を受けられます
+(CLI ブリッジは codex を 1 本ずつしか動かさないので、同居させると会話が枠を握り続けます)。
+
+```bash
+docker compose up -d chiezo-talk-codex
+docker compose exec chiezo-talk-codex codex login --device-auth   # 1 回だけ。結果はボリュームに残る
+curl -s "$BASE/v1/talk/backends"                                   # up が true になれば使える
+```
+
+会話ブリッジ側の環境変数:
+
+| 変数 | 既定 | 説明 |
+|---|---|---|
+| `CHIEZO_TALK_CLI` | `codex` | 包む CLI(いまは codex だけ) |
+| `CHIEZO_TALK_MCP_URL` | `http://chiezo-app:7010/mcp/knowledge/` | 会話の途中で引かせる MCP。空なら繋がない |
+| `CHIEZO_TALK_MODEL` | (CLI の既定) | 会話を始めるときにモデルを指定しなかった場合のモデル |
+| `CHIEZO_TALK_EFFORT` | `low` | 考える量の既定。会話は速さが要るので軽くしてある |
+| `CHIEZO_TALK_TURN_TIMEOUT` | `180` | 1 回の上限秒数 |
+| `CHIEZO_TALK_IDLE_SEC` | `3600` | 話しかけられないまま、この秒数が経った会話を片付ける |
+| `CHIEZO_TALK_MAX_THREADS` | `16` | 同時に持つ会話の上限。超えたら長く話していないものから片付ける |
+
 ### ブリッジを直接使う(認証情報の置き場を共有する)
 
 ブリッジは Chiezo 専用の部品ではありません。**認証情報の置き場を読み取り専用で共有**
@@ -1686,6 +1764,8 @@ chiezo-app 側:
 | `CHIEZO_QUOTA_SAMPLE_MINUTES` | `15` | 枠を定時に聞きに行く間隔（分）。`0` で止まる。**呼んでいない相手には行かない**ので、静かな時間帯は CLI を起こさない |
 | `CHIEZO_WORKER_QUOTA_LIMIT` | `80` | ワーカーが相手を避けはじめる使用率（%）。**詰まる前に譲るための値**——使い切ってから振り替えると、いちばん頼りたい相手の窓が明けるまで何も頼めない |
 | `CHIEZO_WORKER_PACE_LIMIT` | `100` | `CHIEZO_WORKER_QUOTA_LIMIT` を超えた相手でも、いまのペースが続いて窓が戻る時点でこの使用率（%）に届かなければワーカーが使う。**戻る直前の余っている枠を捨てない**ため。`0` で使用率だけで決める |
+| `CHIEZO_TALK_CODEX_URL` | `http://chiezo-talk-codex:7016` | 会話の口(`/v1/talk`)が繋ぐ会話ブリッジ。同居なら書かなくてよい |
+| `CHIEZO_TALK_TIMEOUT` | `200` | 会話の 1 往復を待つ秒数。会話ブリッジの上限(`CHIEZO_TALK_TURN_TIMEOUT`)より長くして、向こうの理由つきの 504 が届くようにする |
 | `CHIEZO_QUOTA_TICK_SECONDS` | `60` | 枠の時計が見に来る頻度（秒）。間隔と番の取り合いは別に見るので、ここを細かくしても聞きに行く回数は増えない |
 
 **CPU 推論では `CHIEZO_ANSWER_MAX_CHARS` を下げてください。** 所要時間は抜粋の長さ

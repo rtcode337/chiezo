@@ -101,6 +101,9 @@ services:
       - CHIEZO_ANSWER_TIMEOUT=${CHIEZO_ANSWER_TIMEOUT-}
       - CHIEZO_ANSWER_DOCS=${CHIEZO_ANSWER_DOCS-}
       - CHIEZO_ANSWER_MAX_CHARS=${CHIEZO_ANSWER_MAX_CHARS-}
+      # 会話の口(/v1/talk)が繋ぐ会話ブリッジ。同居(chiezo-talk-codex)なら書かなくてよい
+      - CHIEZO_TALK_CODEX_URL=${CHIEZO_TALK_CODEX_URL-}
+      - CHIEZO_TALK_TIMEOUT=${CHIEZO_TALK_TIMEOUT-}
       # agent モード(mode=agent)の上限。既定のままなら書かなくてよい。
       - CHIEZO_AGENT_MAX_STEPS=${CHIEZO_AGENT_MAX_STEPS-}
       - CHIEZO_AGENT_TOOL_CHARS=${CHIEZO_AGENT_TOOL_CHARS-}
@@ -297,6 +300,29 @@ services:
   #    test: ["CMD", "curl", "-fs", "http://localhost:7013/health"]
   #    interval: 60s
 
+  # ---- キャラクターと話し続ける(/v1/talk)場合だけ、以下のコメントを外す ----
+  #
+  # 会話ブリッジ(bridge/talk_bridge.py)。上のブリッジと同じイメージで、CLI を
+  # 起動したまま持ち、会話ごとにスレッドを持つ(1 往復ごとに CLI を起こさない)。
+  # **上の codex ブリッジとは別のサインインにする。** 同じ auth.json を 2 つの
+  # プロセスが回すと、refresh token の回転がぶつかって権限ごと失効する。
+  # 立ち上げたら 1 回だけ、コンテナの中でサインインする:
+  #   docker compose exec chiezo-talk-codex codex login --device-auth
+  # (表示される URL とコードでサインインする。結果は下のボリュームに残る)
+  #chiezo-talk-codex:
+  #  image: ghcr.io/rtcode337/chiezo-bridge:latest
+  #  command: ["uvicorn", "talk_bridge:app", "--host", "0.0.0.0", "--port", "7016"]
+  #  volumes:
+  #    - chiezo-talk-codex-home:/srv/bridge/.codex
+  #  environment:
+  #    - CHIEZO_TALK_CLI=codex
+  #    - CHIEZO_TALK_MCP_URL=http://chiezo-app:7010/mcp/knowledge/
+  #  restart: unless-stopped
+  #  cpu_shares: 512
+  #  healthcheck:
+  #    test: ["CMD", "curl", "-fs", "http://localhost:7016/health"]
+  #    interval: 60s
+
   # agent モードの道具 `web_search` が引く検索エンジン。推論サーバとは独立して立てる ——
   # ローカルの推論サーバでも Gemini でも、chiezo が agent ループを回す相手なら web 検索は
   # 要るのに、以前は「答える」層の上書きに置いていたせいで「検索を使いたいだけ」で
@@ -370,3 +396,4 @@ volumes:
   chiezo-antigravity-home:
   chiezo-claude-home:
   chiezo-codex-home:
+  chiezo-talk-codex-home:

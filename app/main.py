@@ -64,6 +64,7 @@ from app import (
     workers,
 )
 from app import partition as partitioning
+from app import talk as talk_api
 from app.deps import (
     exact_title_first,
     get_source,
@@ -2046,6 +2047,9 @@ def _asks_an_ai(path: str) -> bool:
     ブリッジの値打ちは「Chiezo の知識を引かせる」ことなので。
     """
     if path.rstrip("/") in _AI_PATHS or path.startswith("/v1/collect/draft"):
+        return True
+    # 会話の口。会話ブリッジの相手が、さらに別の会話を始めないように
+    if path.startswith("/v1/talk/"):
         return True
     # 収集の「今すぐ 1 回」。名前が途中に入るので後ろで見る
     return path.startswith("/v1/collect/") and path.rstrip("/").endswith("/run")
@@ -5138,6 +5142,8 @@ app.include_router(views_chat.router)
 # 別プロセスも持たない** —— Chiezo は安全なネットワークの中からしか触らせない、と
 # 決めたので、外に出すための認証つきの面(旧 chiezo-tasks)ごと畳んである。
 app.include_router(views_todo.router)
+# 会話の口(`/v1/talk/...`)。REST だが量があるので別のモジュールに置く(`app/talk.py`)
+app.include_router(talk_api.router)
 
 
 # ---- MCP(Streamable HTTP) ---------------------------------------------------
