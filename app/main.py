@@ -3648,7 +3648,8 @@ def collect_get(
         ),
     ),
 ):
-    """1 つぶんの設定と、**焼いてあるもののうち新しい数件**。
+    """1 つぶんの設定と、**焼いてあるもののうち新しい数件**。`locks_pending` は、座標を
+    固定したのにまだ焼いていない 1 件の数。
 
     見本を添えるのは、プロンプトを直すかどうかの判断に「実際に何が集まったか」が
     要るため。途中の置き場を持たないので、見に行く先は長期記憶になる。
@@ -3664,6 +3665,9 @@ def collect_get(
         "recent": collect.recent(
             name, request.app.state.sources, samples, include_removed
         ),
+        # **固定したのに、まだ焼いていない数**(`collect.pending_locks`)。固定の記録は
+        # 反映したあとも残るので、記録の数では「いま焼けば変わるか」が読めない
+        "locks_pending": collect.pending_locks(item, request.app.state.sources),
     }
 
 
