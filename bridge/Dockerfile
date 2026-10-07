@@ -112,7 +112,7 @@ COPY requirements.txt .
 # venv を挟まず素の環境へ入れる(--break-system-packages はそのための明示)。
 RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
-COPY cli_bridge.py entrypoint.sh ./
+COPY cli_bridge.py talk_bridge.py entrypoint.sh ./
 RUN chmod +x entrypoint.sh
 
 # Codex の認証ファイルの置き場。中身は entrypoint/server が実行時に書き、コンテナと一緒に捨てる。
@@ -150,5 +150,5 @@ RUN useradd --uid 10001 --home-dir /srv/bridge/home --shell /usr/sbin/nologin br
     && chown -R bridge:bridge /srv/bridge
 USER bridge
 
-EXPOSE 7013
+EXPOSE 7013 7016
 CMD ["./entrypoint.sh"]

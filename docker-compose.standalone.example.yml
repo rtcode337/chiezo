@@ -148,6 +148,9 @@ services:
       #CHIEZO_ANSWER_TIMEOUT: "3660"
       #CHIEZO_ANSWER_DOCS: "4"          # 根拠として本文を取ってくる文書数
       #CHIEZO_ANSWER_MAX_CHARS: "6000"  # 抜粋の合計文字数
+      # 会話の口(/v1/talk)が繋ぐ会話ブリッジ。下の chiezo-talk-codex を立てるなら書かなくてよい
+      #CHIEZO_TALK_CODEX_URL: http://chiezo-talk-codex:7016
+      #CHIEZO_TALK_TIMEOUT: "200"
       #CHIEZO_AGENT_MAX_STEPS: "6"      # 道具を呼べる回数の上限
       #CHIEZO_AGENT_TOOL_CHARS: "3000"  # 1 回の道具の結果をモデルに返す上限文字数
       #CHIEZO_AGENT_TIMEOUT: "180"      # ループ全体の締め切り(秒)
@@ -295,6 +298,23 @@ services:
   #  restart: unless-stopped
   #  #cpu_shares: 512
 
+  # 会話ブリッジ(/v1/talk)。上のブリッジと同じイメージで、CLI を起動したまま持つ。
+  # **上の codex ブリッジとは別のサインインにする**(同じ auth.json を 2 つのプロセスが
+  # 回すと、refresh token の回転がぶつかって失効する)。立ち上げたら 1 回だけ
+  #   docker exec -it chiezo-talk-codex codex login --device-auth
+  #chiezo-talk-codex:
+  #  image: ghcr.io/rtcode337/chiezo-bridge:latest
+  #  container_name: chiezo-talk-codex
+  #  command: ["uvicorn", "talk_bridge:app", "--host", "0.0.0.0", "--port", "7016"]
+  #  volumes:
+  #    - type: volume
+  #      source: chiezo-talk-codex-home
+  #      target: /srv/bridge/.codex
+  #  environment:
+  #    CHIEZO_TALK_CLI: codex
+  #    CHIEZO_TALK_MCP_URL: http://chiezo-app:7010/mcp/knowledge/
+  #  restart: unless-stopped
+
   # ---- ソースプラグインを使う場合だけ、以下のコメントを外す ----
   #
   # プラグインは Chiezo とは別のリポジトリ・別のイメージで、取得した文書を NDJSON で
@@ -326,6 +346,7 @@ services:
 volumes:
   chiezo-antigravity-home:
   chiezo-codex-home:
+  chiezo-talk-codex-home:
 
 # SearXNG の設定。**イメージにもホストのファイルにも置かない** —— 上流のイメージは
 # /etc/searxng を VOLUME 宣言しているので焼き込んでも匿名ボリュームに隠され、
