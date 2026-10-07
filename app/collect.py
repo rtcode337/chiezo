@@ -4224,6 +4224,42 @@ def held(doc: dict, locks: dict) -> dict:
     }
 
 
+def pending_locks(item: Collection, sources: dict) -> int:
+    """**固定したのに、まだ焼いていない**1 件の数(長期記憶の座標が固定と違うもの)。
+
+    固定の記録(`locks`)は反映したあとも残る(AI に座標を動かさせないための記録)ので、
+    記録の数では「いま焼けば何かが変わるか」が読めない —— 読む側が「いま反映する」の
+    口を出すかどうかを決めるのに要る。**比べるのは座標と固定の印だけ**(タグの並びは
+    AI が書き直すと変わるので見ない)。長期記憶に居ない見出しと消えたものは数えない
+    (焼いても当てる先が無い)。全件は読まない(固定した見出しだけを引く)。
+    """
+    if not item.locks:
+        return 0
+    src = sources.get(item.name)
+    if src is None:
+        return 0
+    titles = sorted(item.locks)
+    pending = 0
+    for at in range(0, len(titles), 500):
+        chunk = titles[at:at + 500]
+        found = _docs_where(src, f" AND title IN ({','.join('?' * len(chunk))})", tuple(chunk))
+        for title, doc in found.items():
+            if is_removed(doc):
+                continue
+            fixed = item.locks.get(notes.title_key(title))
+            extra = doc.get("extra") if isinstance(doc.get("extra"), dict) else {}
+            try:
+                same = (
+                    abs(float(extra.get("lat")) - fixed["lat"]) < 1e-7
+                    and abs(float(extra.get("lon")) - fixed["lon"]) < 1e-7
+                )
+            except (TypeError, ValueError):
+                same = False
+            if not same or LOCKED_TAG not in (doc.get("tags") or []):
+                pending += 1
+    return pending
+
+
 def _locked_change(doc: dict, locks: dict) -> dict | None:
     """固定(`locks`)を当てると中身が変わる 1 件なら、当てたあとの 1 件。変わらなければ None。
 

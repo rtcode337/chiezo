@@ -8039,3 +8039,39 @@ class TestShowingTheNeighbours:
         collect.update("news", prompt="{current}\n{nearby}")
         user = collect.build_messages(collect.get("news"), {}, None, {})[1]["content"]
         assert "隣の区画という考え方がありません" in user
+
+
+def test_pending_locks_counts_only_locks_not_yet_baked(tmp_path):
+    """固定の記録は反映したあとも残るので、**まだ焼いていない**ものだけを数える。"""
+    path = tmp_path / "docs.sqlite"
+    con = sqlite3.connect(path)
+    con.execute(
+        "CREATE TABLE docs (doc_id INTEGER, title TEXT, body TEXT, tags TEXT,"
+        " updated_at TEXT, extra TEXT)"
+    )
+    rows = [
+        # 焼き済み(座標も印も固定どおり。タグの並びは問わない)
+        (1, "焼いた店", [collect.LOCKED_TAG, "食事処"], {"lat": 35.68, "lon": 139.76}),
+        # まだ焼いていない(座標が固定と違う)
+        (2, "直した店", ["食事処"], {"lat": 35.60, "lon": 139.70}),
+        # 消えたものは数えない
+        (3, "消えた店", [notes.REMOVED_TAG], {"lat": 35.0, "lon": 139.0}),
+    ]
+    for doc_id, title, tags, extra in rows:
+        con.execute(
+            "INSERT INTO docs VALUES (?, ?, '', ?, '', ?)",
+            (doc_id, title, json.dumps(tags), json.dumps(extra)),
+        )
+    con.commit()
+    con.close()
+
+    item = SimpleNamespace(name="shops", locks={
+        "焼いた店": {"lat": 35.68, "lon": 139.76},
+        "直した店": {"lat": 35.61, "lon": 139.71},
+        "消えた店": {"lat": 35.1, "lon": 139.1},
+        # 長期記憶に居ない見出しは数えない(焼いても当てる先が無い)
+        "居ない店": {"lat": 35.2, "lon": 139.2},
+    })
+
+    assert collect.pending_locks(item, {"shops": SimpleNamespace(path=path)}) == 1
+    assert collect.pending_locks(SimpleNamespace(name="shops", locks={}), {}) == 0
