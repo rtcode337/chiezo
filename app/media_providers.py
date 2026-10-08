@@ -91,7 +91,8 @@ class MediaProvider:
     # 枠の聞き方(`app/usage.py`)。空なら「この相手は枠を出さない」。
     # 「話す相手」の側にも同じ欄があるが、こちらは絵と音だけの相手のためのもの。
     usage: str = ""
-    # 画面・一覧に出す順
+    # 画面・一覧に出す順。 話す相手(`providers.Provider.order`)と同じ物差しで、
+    # 設定の表は両方を混ぜてこの数で並べる(自前の GPU は推論サーバの後ろ)
     order: int = 0
     # 作れるもの。 絵しか作れない相手・音しか作れない相手があるので、
     # 一覧はこれで絞る(頼めない相手を選ばせない)。
@@ -145,7 +146,7 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         edits=True,
         url_env="CHIEZO_IMAGE_URL",
         owns_toggle=True,
-        order=0,
+        order=95,
         kinds=(KIND_IMAGE, KIND_AUDIO, KIND_VIDEO),
         # 音のチェックポイントも `models/checkpoints` に置く(絵と同じ場所)。
         # 何が置いてあるかは相手に聞くので、ここは控えを持たない。
@@ -185,7 +186,7 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         credential_from="codex",
         # エージェントなので、作業ディレクトリに置いた絵を開いて直せる
         edits=True,
-        order=15,
+        order=14,
     ),
     MediaProvider(
         id="antigravity",
@@ -207,7 +208,7 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         # あちらを止めたら絵も止まる
         credential_from="antigravity",
         edits=True,
-        order=17,
+        order=12,
         kinds=(KIND_IMAGE,),
     ),
     MediaProvider(
@@ -223,7 +224,7 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         # ここに並べたものへ、頼まれたサイズから近いものを選ぶ。
         sizes=("1024x1024", "1536x1024", "1024x1536", "2048x2048", "3840x2160", "2160x3840"),
         credential_from="openai",
-        order=20,
+        order=24,
         kinds=(KIND_IMAGE, KIND_VIDEO, KIND_SPEECH, KIND_TRANSCRIBE),
         # 先頭が既定(pro は同じ尺でも数倍かかる)。
         video_models=("sora-2", "sora-2-pro"),
@@ -248,7 +249,7 @@ PROVIDERS: tuple[MediaProvider, ...] = (
         # 速い順。先頭が既定(何も選ばなかったときに使われるので、ずらすと黙って変わる)。
         models=("gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image"),
         credential_from="gemini",
-        order=10,
+        order=22,
         kinds=(KIND_IMAGE, KIND_AUDIO, KIND_VIDEO, KIND_SPEECH, KIND_TRANSCRIBE),
         # 曲は Lyria 3。先頭が既定(clip = 30 秒ほど、pro = 3 分ほど)。
         audio_models=("lyria-3-clip-preview", "lyria-3-pro-preview"),
