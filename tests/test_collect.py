@@ -3927,8 +3927,10 @@ class TestAskingForAPartition:
         assert res.status_code == 200
         assert "あ" in res.text and "い" in res.text
         # **開始タグで切らない** —— 狭い画面向けに札の印が付くので(`pages.as_cards`)、
-        # `<table>` そのものは出てこない
-        assert "う" not in res.text.split("<table")[-1]
+        # `<table>` そのものは出てこない。**表の終わりでも切る** —— 後ろに続く
+        # 画面共通の台本のコメントの文字(「もう」など)まで見てしまう
+        table = res.text.split("<table")[-1].split("</table>")[0]
+        assert "う" not in table
 
     def test_what_was_removed_comes_too(self, client, enabled, baked, monkeypatch):
         """**何を外したのかが分からないと、同じものをもう一度挙げることになる。**
