@@ -754,6 +754,11 @@ TOUCH_SCRIPT = """<script>
   // ずれている間も正しいので、**枠の上端から測って見えている範囲の下端へ置く**。
   // **入力している間は帯を隠す** —— 見えている範囲はキーボードのぶん縮むので、
   // 置き直すと帯がキーボードの上に乗って書く場所を狭める(入力中に戻る・進むは要らない)
+  // **キーボードが外から閉じられたときも置き直す** —— アプリの切り替え・通知・画面の
+  // ロックなどで閉じると、resize もフォーカスの出入りも来ないことがあり、帯が
+  // キーボードの出ていた高さに置かれたまま画面の途中に残る(実際に起きた)。画面に
+  // 戻ったとき(visibilitychange・pageshow・focus)と、指が触れたときにも置き直す。
+  // 閉じる動きの途中の値で置くこともあるので、合図のたびに少し間を置いてもう数回置き直す
   function stickToVisibleBottom(el) {
     var vv = window.visualViewport;
     if (!vv) { return; }
@@ -770,11 +775,24 @@ TOUCH_SCRIPT = """<script>
       var y = vv.offsetTop + vv.height - el.offsetHeight;
       el.style.transform = 'translateY(' + Math.round(y) + 'px)';
     }
-    vv.addEventListener('resize', place);
+    var timers = [];
+    function settle() {
+      place();
+      timers.forEach(clearTimeout);
+      timers = [0, 150, 400, 800].map(function (ms) { return setTimeout(place, ms); });
+    }
+    vv.addEventListener('resize', settle);
     vv.addEventListener('scroll', place);
     window.addEventListener('scroll', place, { passive: true });
-    document.addEventListener('focusin', place);
-    document.addEventListener('focusout', function () { setTimeout(place, 0); });
+    window.addEventListener('resize', settle);
+    window.addEventListener('focus', settle);
+    window.addEventListener('pageshow', settle);
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'visible') { settle(); }
+    });
+    document.addEventListener('touchstart', place, { passive: true });
+    document.addEventListener('focusin', settle);
+    document.addEventListener('focusout', settle);
     place();
   }
 
