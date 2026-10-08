@@ -1740,7 +1740,7 @@ def create(
     existing = load()
     if any(c.name == name for c in existing):
         raise HTTPException(409, {"error": f"収集「{name}」はすでにあります"})
-    if name in {notes.SOURCE_NAME, "memory"}:
+    if name in {notes.SOURCE_NAME, "memory"} or notes.is_store(name):
         raise HTTPException(400, {"error": f"「{name}」は既存のソース名なので使えません"})
     now = _iso(_now())
     item = Collection(
