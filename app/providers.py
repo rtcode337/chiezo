@@ -106,7 +106,12 @@ class Provider:
     order: int = 0
 
 
-# 並び順は「同居のもの」→「鍵を入れれば使えるもの」→「コンテナを立てる必要があるもの」。
+# 並び順は**頼みたい順**:「定額の CLI ブリッジ」→「従量課金・無料枠の API」→「同居の推論サーバ」。
+# **相手を名指ししない依頼は、この並びで最初に有効な相手へ行く**(`answer.normalize_backend`)
+# ので、表の順がそのまま既定を決める。定額の枠を先に使い、使ったぶんだけ払う API はその次。
+# 同じまとまりの中は Claude → GPT → Gemini → その他の順(頼みたい相手の順)。
+# 推論サーバは性能が低いので最後に置く —— 先頭にあると、相手を空欄にした整理の巡回まで
+# そこへ流れて、精度の要る仕事を小さなモデルが引き受けることになる。
 PROVIDERS: tuple[Provider, ...] = (
     Provider(
         id="local",
@@ -125,7 +130,7 @@ PROVIDERS: tuple[Provider, ...] = (
         models=(),
         # 推論サーバはブリッジではない（OpenAI 互換サーバそのもの）。
         url_env="CHIEZO_LLM_URL",
-        order=0,
+        order=90,
     ),
     Provider(
         id="gemini",
@@ -143,7 +148,7 @@ PROVIDERS: tuple[Provider, ...] = (
         models=("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite"),
         # 枠を聞く口は無い。残量は Google Cloud の Quotas API 側にあり、
         # API キー 1 本では引けない（GCP のプロジェクトと別の認証が要る）。
-        order=10,
+        order=24,
     ),
     Provider(
         id="openai",
@@ -156,7 +161,7 @@ PROVIDERS: tuple[Provider, ...] = (
         "画像だけに使うなら、話す相手としては off のままでよいです。",
         # 提供モデルは入れ替わるので控えにとどめる(実際の一覧は /v1/models から取る)。
         models=(),
-        order=15,
+        order=22,
     ),
     Provider(
         id="anthropic",
@@ -178,7 +183,7 @@ PROVIDERS: tuple[Provider, ...] = (
         efforts=("low", "medium", "high", "xhigh", "max"),
         folds_effort=True,
         api=API_ANTHROPIC,
-        order=12,
+        order=20,
     ),
     Provider(
         id="openrouter",
@@ -192,7 +197,7 @@ PROVIDERS: tuple[Provider, ...] = (
         # （実際の一覧は /v1/models から取る）。
         models=("deepseek/deepseek-r1:free", "qwen/qwen3-coder:free", "meta-llama/llama-4-scout:free"),
         usage=USAGE_OPENROUTER,
-        order=20,
+        order=26,
     ),
     Provider(
         id="claude",
@@ -260,7 +265,7 @@ PROVIDERS: tuple[Provider, ...] = (
         # 前者しか置かないので、**画面の「取り直す」で 1 回確かめること**。
         usage=USAGE_BRIDGE,
         bridge=True,
-        order=30,
+        order=10,
     ),
     Provider(
         id="antigravity",
@@ -325,7 +330,7 @@ PROVIDERS: tuple[Provider, ...] = (
             ("", "Claude and GPT models"),
         ),
         bridge=True,
-        order=36,
+        order=14,
     ),
     Provider(
         id="codex",
@@ -355,7 +360,7 @@ PROVIDERS: tuple[Provider, ...] = (
         # —— CLI に聞けば、更新はあちらがやる。
         usage=USAGE_BRIDGE,
         bridge=True,
-        order=40,
+        order=12,
     ),
 )
 
