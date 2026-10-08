@@ -920,7 +920,7 @@ class TestPreferenceTable:
         (頼む順で並べ替えると、いつも同じ場所にあった行が動く)。"""
         from app import media_providers
 
-        assert next(p.id for p in media_providers.all_providers()) == "comfyui"
+        assert next(p.id for p in media_providers.all_providers()) == "antigravity"
         assert next(p.id for p in media_providers.all_providers("image")) == "codex"
 
 

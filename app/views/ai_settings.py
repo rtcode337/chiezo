@@ -398,13 +398,13 @@ async def section_html(request: Request | None = None) -> str:
         cred, use = _talk_cells(r, await answer.available_models(spec.id))
         if r["runnable"]:
             usable.setdefault(spec.id, set()).add(capabilities.CHAT)
-        rows.append(
+        rows.append((spec.order,
             f'<tr{"" if r["enabled"] else ' class="off"'}>'
             f"<td>{esc(spec.label)}{_stopped_note(r)}</td>"
             f'<td>{_capabilities_cell(r, by_id.get(spec.id, {}))}</td>'
             f"<td>{cred}</td><td>{use}</td>"
             f'<td class="muted">{esc(spec.billing)}</td></tr>'
-        )
+        ))
 
     # 絵・音・動画・声は「いま使えるか」を相手ごとに数える（上の一覧に渡す）。
     # 音だけ 1 つの kind が 2 つの分類に割れるので、そこだけ別に数える。
@@ -420,18 +420,20 @@ async def section_html(request: Request | None = None) -> str:
                 if sound in entry.get("sounds", {}):
                     usable.setdefault(pid, set()).add(cap_id)
 
-    # 話せない相手（自前の GPU・ElevenLabs）は「話す相手」に出てこないので、続けて並べる
+    # 話せない相手（自前の GPU・ElevenLabs）は「話す相手」に出てこないので、ここで足し、
+    # 同じ物差しの `order` で間に混ぜる(推論サーバより前に来る相手もある)
     for spec in media_providers.all_providers():
         if spec.id in talk_ids or spec.credential_from:
             continue
         enabled = settings_store.load(spec.id).enabled
         cred, use = _media_only_cells(spec, enabled)
-        rows.append(
+        rows.append((spec.order,
             f'<tr{"" if enabled else ' class="off"'}><td>{esc(spec.label)}</td>'
             f'<td>{_capabilities_cell(None, by_id.get(spec.id, {}))}</td>'
             f"<td>{cred}</td><td>{use}</td>"
             f'<td class="muted">{esc(spec.billing)}</td></tr>'
-        )
+        ))
+    rows = [html for _, html in sorted(rows, key=lambda r: r[0])]
 
     media_note = "" if media.is_enabled() else (
         '<p class="stale">⚠️ 出来たものの置き場がないので、絵と音は作れません。'

@@ -106,10 +106,11 @@ def of_provider(provider_id: str) -> set[str]:
 
 
 def all_provider_ids() -> list[str]:
-    """画面に出す相手の並び。話す相手が先、話せない相手（自前の GPU 等）が後。"""
-    ids = [p.id for p in providers.all_providers()]
-    ids += [p.id for p in media_providers.all_providers() if p.id not in ids]
-    return ids
+    """画面に出す相手の並び。話せない相手（自前の GPU 等）も `order` で間に混ぜる。"""
+    order = {p.id: p.order for p in providers.all_providers()}
+    for p in media_providers.all_providers():
+        order.setdefault(p.id, p.order)
+    return sorted(order, key=order.__getitem__)
 
 
 async def usable_now() -> dict[str, set[str]]:

@@ -680,10 +680,11 @@ docker compose exec searxng wget -qO- "http://localhost:7012/search?q=test&forma
 **相手は管理画面（`/admin` の「AI の相手」）から on/off します。** `.env` に書くことはありません。
 
 **相手を名指ししない依頼は、表を上から見て最初に有効な相手へ行きます。** 表は頼みたい順に
-並べてあります —— 定額の CLI ブリッジ(Claude Code / Codex / Antigravity)→ 従量課金・無料枠の API
-(Claude API / OpenAI / Gemini / OpenRouter)→ 同居の推論サーバ。まとまりの中は
-Claude → GPT → Gemini → その他の順です。推論サーバを最後にしてあるのは、
-相手を空欄にした整理の巡回へ性能の低いモデルが入らないようにするためです。
+並べてあります —— 定額の CLI ブリッジ(Claude Code / Antigravity / Codex)→ 従量課金・無料枠の API
+(Claude API / Gemini / OpenAI / OpenRouter)→ 同居の推論サーバ。絵と音だけの相手は
+同じ表の間に入ります(ElevenLabs・Leonardo.Ai は API の後ろ、自前の GPU(ComfyUI)は最後)。
+推論サーバを話す相手の最後にしてあるのは、相手を空欄にした整理の巡回へ性能の低いモデルが
+入らないようにするためです。
 
 節の先頭に**「答える」層そのものの元栓**があります。止めると、相手をいくつ有効にしてあっても
 `/v1/ask`・`/ai/chat` は 503 になります（相手を 1 つずつ切って回らずに機能ごと止めたいとき用）。

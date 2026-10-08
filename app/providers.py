@@ -102,14 +102,16 @@ class Provider:
     # 話し方(`API_*`)。呼ぶ側(`app/answer.py` の `_llm_client`)が見て、
     # OpenAI 互換でない相手には変換を挟む
     api: str = API_OPENAI
-    # 画面に出す順
+    # 画面に出す順。 絵と音だけの相手(`media_providers.MediaProvider.order`)と同じ物差しで、
+    # 設定の表は両方を混ぜてこの数で並べる
     order: int = 0
 
 
 # 並び順は**頼みたい順**:「定額の CLI ブリッジ」→「従量課金・無料枠の API」→「同居の推論サーバ」。
 # **相手を名指ししない依頼は、この並びで最初に有効な相手へ行く**(`answer.normalize_backend`)
 # ので、表の順がそのまま既定を決める。定額の枠を先に使い、使ったぶんだけ払う API はその次。
-# 同じまとまりの中は Claude → GPT → Gemini → その他の順(頼みたい相手の順)。
+# CLI ブリッジは Claude Code → Antigravity → Codex、API は Claude → Gemini → OpenAI → その他の順
+# (頼みたい相手の順)。話せない相手(ElevenLabs・Leonardo・ComfyUI)も同じ物差しで間に入る。
 # 推論サーバは性能が低いので最後に置く —— 先頭にあると、相手を空欄にした整理の巡回まで
 # そこへ流れて、精度の要る仕事を小さなモデルが引き受けることになる。
 PROVIDERS: tuple[Provider, ...] = (
@@ -148,7 +150,7 @@ PROVIDERS: tuple[Provider, ...] = (
         models=("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite"),
         # 枠を聞く口は無い。残量は Google Cloud の Quotas API 側にあり、
         # API キー 1 本では引けない（GCP のプロジェクトと別の認証が要る）。
-        order=24,
+        order=22,
     ),
     Provider(
         id="openai",
@@ -161,7 +163,7 @@ PROVIDERS: tuple[Provider, ...] = (
         "画像だけに使うなら、話す相手としては off のままでよいです。",
         # 提供モデルは入れ替わるので控えにとどめる(実際の一覧は /v1/models から取る)。
         models=(),
-        order=22,
+        order=24,
     ),
     Provider(
         id="anthropic",
@@ -330,7 +332,7 @@ PROVIDERS: tuple[Provider, ...] = (
             ("", "Claude and GPT models"),
         ),
         bridge=True,
-        order=14,
+        order=12,
     ),
     Provider(
         id="codex",
@@ -360,7 +362,7 @@ PROVIDERS: tuple[Provider, ...] = (
         # —— CLI に聞けば、更新はあちらがやる。
         usage=USAGE_BRIDGE,
         bridge=True,
-        order=12,
+        order=14,
     ),
 )
 
