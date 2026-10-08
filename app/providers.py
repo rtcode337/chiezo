@@ -35,6 +35,11 @@ USAGE_NONE = ""  # 聞く口が無い（Gemini・OpenAI・推論サーバ）
 USAGE_OPENROUTER = "openrouter"  # OpenRouter の /api/v1/key（クレジットの使用額と残高）
 USAGE_BRIDGE = "bridge"  # CLI ブリッジの /usage（CLI 自身に聞かせる）
 
+# 相手との話し方。ほとんどの相手は OpenAI 互換の `/chat/completions` をそのまま叩く。
+# Claude API だけは形が違うので、HTTP の出入口で形を変換する(`app/anthropic_api.py`)。
+API_OPENAI = "openai"
+API_ANTHROPIC = "anthropic"
+
 
 @dataclass(frozen=True)
 class Provider:
@@ -94,6 +99,9 @@ class Provider:
     # URL を上書きできる環境変数。コンテナ名で辿り着けない相手のための逃げ道で、
     # 設定として増やすものではない（いまは local だけが持つ）。
     url_env: str = ""
+    # 話し方(`API_*`)。呼ぶ側(`app/answer.py` の `_llm_client`)が見て、
+    # OpenAI 互換でない相手には変換を挟む
+    api: str = API_OPENAI
     # 画面に出す順
     order: int = 0
 
@@ -149,6 +157,28 @@ PROVIDERS: tuple[Provider, ...] = (
         # 提供モデルは入れ替わるので控えにとどめる(実際の一覧は /v1/models から取る)。
         models=(),
         order=15,
+    ),
+    Provider(
+        id="anthropic",
+        label="Claude API",
+        url="https://api.anthropic.com/v1",
+        credential=CRED_REQUIRED,
+        billing="従量課金(API のクレジット)",
+        setup="Claude Console(platform.claude.com)の API キーの画面でキーを作り、"
+        "貼り付けてください。**期限を付けたキーは、切れたら作り直してここに登録し直す**"
+        "必要があります(期限は作るときにしか決められず、後から延ばせません)。\n"
+        "\n"
+        "サブスクリプションの枠で動く「Claude Code CLI」とは別の相手です。"
+        "こちらは使ったぶんだけ API のクレジットが減ります。",
+        # 先頭が既定。相手の `/v1/models` が引ければそちらが正
+        models=("claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"),
+        # 考える量(`output_config.effort`)。**他の相手と同じくモデルの名前に畳む**
+        # (`claude-opus-5-high`)—— 一覧はモデルごとに受け付ける段だけを並べる
+        # (`app/anthropic_api.py` の `/models`)。Haiku 4.5 は受け付けない
+        efforts=("low", "medium", "high", "xhigh", "max"),
+        folds_effort=True,
+        api=API_ANTHROPIC,
+        order=12,
     ),
     Provider(
         id="openrouter",

@@ -43,6 +43,7 @@ from app import (
     ai_inflight,
     ai_log,
     ai_transcript,
+    anthropic_api,
     machine_store,
     providers,
     settings_store,
@@ -684,6 +685,14 @@ def _llm_client(cfg: Settings) -> httpx.AsyncClient:
     立てずに、クエリ生成 → 取得 → 回答の全経路を通せるようにするため)。
     """
     headers = {"Content-Type": "application/json", **cfg.extra_headers}
+    spec = providers.get(cfg.name)
+    if spec is not None and spec.api == providers.API_ANTHROPIC:
+        # Claude API は OpenAI 互換の形を持たないので、出入口で形を変換する。
+        # 呼ぶ側はほかの相手と同じく `/chat/completions` と `/models` を叩くだけでよい
+        return httpx.AsyncClient(
+            timeout=cfg.timeout, headers=headers,
+            transport=anthropic_api.Transport(cfg.api_key, cfg.timeout),
+        )
     if cfg.api_key:
         headers["Authorization"] = f"Bearer {cfg.api_key}"
     return httpx.AsyncClient(timeout=cfg.timeout, headers=headers)

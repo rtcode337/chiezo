@@ -2345,6 +2345,24 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     **候補が空なら、セレクトではなくその旨を出す** —— セレクトだけ出すと、
     選べないのが Chiezo の都合に見える。例外は `CHIEZO_LLM_URL` で指す相手で、
     LAN の別マシンを指す用途があり URL を決め打ちにできない。
+  - `app/anthropic_api.py` — **Claude API(Messages API)を OpenAI 互換の口に見せる変換**。
+    chiezo の会話の層はどの相手も `/chat/completions` と `/models` で話すので、
+    **形の違う相手だけ HTTP の出入口(httpx のトランスポート)で変換する**
+    (`answer._llm_client` が `Provider.api == API_ANTHROPIC` のときだけ挟む)。
+    呼ぶ側は相手を知らずに済み、引き直し・止め方・使用量の控えも同じ道を通る。
+    **Anthropic の OpenAI 互換の口は使わない**(試すためのもので、考える量も
+    拒否されたときの切り替えも使えない)。公式の SDK(`anthropic`。httpx2 の上に載り、
+    chiezo の httpx とは別物として同居する)で呼ぶ。要点:
+    - **道具を呼んだ回は、Claude が返したブロックを `RAW_KEY` に添えて返す** ——
+      agent は assistant の発言を丸ごと積み直すので、考えた中身(thinking)を署名ごと
+      送り返せる。崩して文字と呼び出しだけにすると考えた中身が落ちる
+    - **拒否されて別のモデルに回った境目(`fallback` ブロック)より前の、考えた中身と
+      道具の呼び出しは送り返さない・実行しない**(断られた側のもの)
+    - **`temperature` / `top_p` は送らない**(Claude Opus 5 以降は 400)
+    - **考える量はモデルの名前に畳む**(`folds_effort`。`claude-opus-5-high`)——
+      `/models` はモデルごとに API が名乗る段(`capabilities.effort`)だけを並べる
+    - **拒否(`refusal`)で本文が無ければ 422 で失敗として返す**(空の答えを保存させない)
+    - **SDK の引き直しは切る**(`max_retries=0`。混雑の引き直しは `_post_with_retry` が持つ)
   - `app/settings_store.py` — 管理画面から入れた設定の置き場。**`CHIEZO_STATE_DIR` が
     機能フラグを兼ねる**。**依頼文の言語(`prompt_language`)もここ** ——
     絵・音・動画・声を頼むときのプロンプトを何語で書くかで、**相手ごとではなく
