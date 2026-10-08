@@ -3177,6 +3177,95 @@ def forget(request: Request, doc_id: int):
     return {"deleted": doc_id}
 
 
+# ---- 名前付きの置き場(外のアプリが自分の記録・設定を預ける) ----------------------
+#
+# 実体は `app/notes.py`(`create_store` ほか)。**中身の形も口の形も短期記憶と同じ**で、
+# 置き場の名前で呼び分ける。読むのは recall のほか、普通のソースとして
+# `/v1/{name}/search`・`doc`・`filter`・`tags` もそのまま効く。消す口は持たない。
+
+
+def _store_taken(request: Request) -> set[str]:
+    """置き場に使えない名前(既にあるソースと収集)。"""
+    taken = set(request.app.state.sources)
+    if collect.is_enabled():
+        taken |= {c.name for c in collect.load()}
+    return taken
+
+
+@app.get("/v1/stores")
+def list_stores(request: Request):
+    """作ってある置き場の一覧(件数つき)。短期記憶そのもの(`chiezo_memory`)は含めない。"""
+    return {"stores": [
+        {"name": name, "docs": notes.count(name) or 0, "updated_at": notes.last_updated(name)}
+        for name in notes.store_names()
+    ]}
+
+
+@app.post("/v1/stores", status_code=201)
+def create_store(
+    request: Request,
+    name: str = Body(..., embed=True, description="置き場の名前。英小文字で始まる 2〜31 文字(英小文字・数字・_)"),
+):
+    created = notes.create_store(name, _store_taken(request))
+    # 作った置き場をその場でソースとして出す(次の再走査を待たせない)
+    request.app.state.sources = scan_all(request.app.state.data_dir)
+    return created
+
+
+@app.post("/v1/stores/{name}")
+def store_remember(
+    request: Request,
+    name: str,
+    text: str = Body(..., embed=True, min_length=1, description="残す内容"),
+    title: str | None = Body(None, embed=True, description="省略時は本文の 1 行目から作る"),
+    tags: str | None = Body(None, embed=True, description="カンマ区切り"),
+    extra: dict | None = Body(None, embed=True, description="タグで表せない構造。省略時は持たない"),
+):
+    return notes.add(text=text, title=title, tags=tags, extra=extra, store=name)
+
+
+@app.get("/v1/stores/{name}/recall")
+def store_recall(
+    request: Request,
+    name: str,
+    q: str | None = Query(None, description="全文検索。省略すると時系列だけで引く"),
+    since: str | None = Query(None, description="この日時以降"),
+    until: str | None = Query(None, description="この日時以前"),
+    tag: str | None = Query(None, description="タグで絞る。カンマ区切りで AND"),
+    limit: int = Query(notes.RECALL_LIMIT_DEFAULT, ge=1, le=notes.RECALL_LIMIT_MAX),
+    offset: int = Query(0, ge=0),
+    fields: str | None = Query(None, description="返す項目。カンマ区切り(extra は名指ししたときだけ)"),
+    max_chars: int = Query(notes.RECALL_MAX_CHARS_DEFAULT, ge=0, description="本文の頭から返す文字数。0 で切らない"),
+):
+    return notes.recall(
+        q=q, since=since, until=until, tag=tag, limit=limit, offset=offset,
+        fields=fields, max_chars=max_chars, store=name,
+    )
+
+
+@app.patch("/v1/stores/{name}/{doc_id}")
+def store_update(
+    request: Request,
+    name: str,
+    doc_id: int,
+    text: str | None = Body(None, embed=True, description="本文を差し替える。省略は今のまま"),
+    title: str | None = Body(None, embed=True, description="見出しを差し替える。省略は今のまま"),
+    tags: str | None = Body(None, embed=True, description="カンマ区切りで丸ごと置き換え。空文字で全部外す"),
+    extra: dict | None = Body(None, embed=True, description="丸ごと置き換え。空の dict で外す"),
+):
+    updated = notes.update(doc_id, text=text, title=title, tags=tags, extra=extra, store=name)
+    if updated is None:
+        raise HTTPException(404, {"error": f"置き場「{name}」に doc_id={doc_id} はありません"})
+    return updated
+
+
+@app.delete("/v1/stores/{name}/{doc_id}")
+def store_forget(request: Request, name: str, doc_id: int):
+    if not notes.delete(doc_id, store=name):
+        raise HTTPException(404, {"error": f"置き場「{name}」に doc_id={doc_id} はありません"})
+    return {"deleted": doc_id}
+
+
 # ---- 集める(AI に集めさせて溜めていく。既定では無効)-------------------------
 #
 # 実体は `app/collect.py`。**溜め先は notes と別のソース**で、収集ごとに 1 つ持つ。

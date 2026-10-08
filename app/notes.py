@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -249,13 +250,13 @@ def is_enabled() -> bool:
     return notes_dir() is not None
 
 
-def notes_path() -> Path | None:
+def notes_path(store: str = SOURCE_NAME) -> Path | None:
     directory = notes_dir()
-    return directory / f"{SOURCE_NAME}.db" if directory else None
+    return directory / f"{store}.db" if directory else None
 
 
-def require_path() -> Path:
-    path = notes_path()
+def require_path(store: str = SOURCE_NAME) -> Path:
+    path = notes_path(store)
     if path is None:
         raise HTTPException(
             503,
@@ -264,6 +265,10 @@ def require_path() -> Path:
                 "hint": "書き込み可能なディレクトリを CHIEZO_NOTES_DIR に設定すると有効になる",
             },
         )
+    if store != SOURCE_NAME and not path.exists():
+        # **名前付きの置き場は作ってから使う**(`create_store`)。書いた拍子に作ると、
+        # 名前を打ち間違えた書き込みが黙って新しい置き場を生む
+        raise HTTPException(404, {"error": f"置き場「{store}」はありません"})
     return path
 
 
@@ -286,13 +291,13 @@ def _connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def ensure_db() -> Path | None:
+def ensure_db(store: str = SOURCE_NAME) -> Path | None:
     """短期記憶の DB が無ければ作る。無効なら None。
 
     ingest を回さずに使い始められるようにするため、起動時にここで作る
     (メモを取るのに数時間の取り込みを待たせる理由がない)。
     """
-    path = notes_path()
+    path = notes_path(store)
     if path is None:
         return None
     if path.exists():
@@ -307,12 +312,64 @@ def ensure_db() -> Path | None:
             conn.execute(
                 "INSERT INTO meta (source, source_kind, lang, dump_date, schema_version, built_at)"
                 " VALUES (?, ?, ?, ?, ?, ?)",
-                (SOURCE_NAME, SOURCE_KIND, None, None, SCHEMA_VERSION, _now()),
+                (store, SOURCE_KIND, None, None, SCHEMA_VERSION, _now()),
             )
     finally:
         conn.close()
     log.info("created the memory db at %s", path)
     return path
+
+
+# ---- 名前付きの置き場 ---------------------------------------------------------
+#
+# **短期記憶と同じ形の置き場を、外のアプリが名前を付けて作れる。** 中身の形も読み書きの
+# 口も `chiezo_memory` と同じで、置き場の名前で呼び分ける(`/v1/stores/{name}/…`)。
+# 外のアプリが自分の記録や設定を Chiezo に預けるためのもの —— 短期記憶に相乗りさせると、
+# AI が「さっきの件」を探したときにアプリの設定の JSON が混ざって出てくる。
+#
+# **置き場は `CHIEZO_NOTES_DIR` に並ぶ**(`<名前>.db`)。起動時の走査はこのディレクトリを
+# 丸ごと見るので、作った時点で普通のソースとして登録され、`search` / `doc` / `filter` /
+# 画面がそのまま効く。**消す口は持たない** —— 取り込みで焼き直せないので、消したら
+# 中身がどこにも無くなる(`registry.blocked_from_deleting`)。
+#
+# 名前の規則は収集と同じ(`collect.NAME_RE`)。ソース名・ファイル名・URL にそのまま使い、
+# 収集やほかのソースと同じ平たい名前空間に並ぶため。
+STORE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,30}$")
+
+
+def store_names() -> list[str]:
+    """作ってある置き場の名前(短期記憶そのものは除く)。"""
+    directory = notes_dir()
+    if directory is None or not directory.is_dir():
+        return []
+    return sorted(p.stem for p in directory.glob("*.db") if p.stem != SOURCE_NAME)
+
+
+def is_store(name: str) -> bool:
+    """書き込める置き場か(短期記憶そのものと、名前付きの置き場)。"""
+    path = notes_path(name)
+    return path is not None and path.is_file()
+
+
+def create_store(name: str, taken: set[str]) -> dict:
+    """名前付きの置き場を作る。`taken` は既にある名前(ソース・収集)。
+
+    **同じ名前がもうあれば 409**。作り直しの口にはしない —— 2 つのアプリが同じ名前を
+    選んだとき、後から来た側が「作れた」と思い込んで前の中身に書き足すのを防ぐ。
+    """
+    if notes_dir() is None:
+        require_path()  # 無効なら 503(短期記憶と同じ断り方)
+    if not STORE_NAME_RE.match(name):
+        raise HTTPException(400, {
+            "error": "name は英小文字で始まる 2〜31 文字(英小文字・数字・_)にしてください",
+            "reason": "ソース名・ファイル名・URL にそのまま使うため",
+        })
+    if name == SOURCE_NAME or is_store(name):
+        raise HTTPException(409, {"error": f"置き場「{name}」はすでにあります"})
+    if name in taken:
+        raise HTTPException(409, {"error": f"「{name}」は既にあるソースか収集の名前なので使えません"})
+    ensure_db(name)
+    return {"name": name, "url": f"/v1/stores/{name}"}
 
 
 def title_key(raw) -> str:
@@ -371,13 +428,14 @@ def add(
     title: str | None = None,
     tags: str | None = None,
     extra: dict | None = None,
+    store: str = SOURCE_NAME,
 ) -> dict:
     """メモを 1 件足して、足したものを返す。
 
     `extra` はタグで表せない構造(並び順など)の置き場。詳しくは `dump_extra`。
     """
-    path = require_path()
-    ensure_db()
+    path = require_path(store)
+    ensure_db(store)
     body = text.strip()
     if not body:
         raise HTTPException(400, {"error": "text must not be empty"})
@@ -421,7 +479,7 @@ def add(
         "title": final_title,
         "tags": tag_list,
         "updated_at": now,
-        "url": doc_url(SOURCE_NAME, doc_id),
+        "url": doc_url(store, doc_id),
     }
     # 持たないメモに "extra": null を並べない(recall の既定項目と同じ考え方)
     if extra:
@@ -435,6 +493,7 @@ def update(
     title: str | None = None,
     tags: str | None = None,
     extra: dict | None = None,
+    store: str = SOURCE_NAME,
 ) -> dict | None:
     """メモを 1 件書き換える。渡した項目だけを差し替え、None の項目は今のまま。
 
@@ -456,7 +515,7 @@ def update(
     if title is not None and not title.strip():
         raise HTTPException(400, {"error": "title must not be empty"})
 
-    path = require_path()
+    path = require_path(store)
     conn = _connect(path)
     try:
         with conn:
@@ -520,14 +579,14 @@ def update(
         "title": new_title,
         "tags": new_tags,
         "updated_at": now,
-        "url": doc_url(SOURCE_NAME, doc_id),
+        "url": doc_url(store, doc_id),
     }
     if new_extra:
         updated["extra"] = new_extra
     return updated
 
 
-def set_extra(doc_id: int, extra: dict | None) -> bool:
+def set_extra(doc_id: int, extra: dict | None, store: str = SOURCE_NAME) -> bool:
     """`extra` だけを書き換える。**`updated_at` を動かさない**。見つからなければ False。
 
     並び替えのための口。`update()` を使うと `updated_at` が現在時刻になり、
@@ -538,7 +597,7 @@ def set_extra(doc_id: int, extra: dict | None) -> bool:
     `extra` は FTS(title / body)にも `doc_tags` にも関わらないので、
     ここだけ直接書いても索引は食い違わない。
     """
-    path = require_path()
+    path = require_path(store)
     conn = _connect(path)
     try:
         with conn:
@@ -550,9 +609,9 @@ def set_extra(doc_id: int, extra: dict | None) -> bool:
         conn.close()
 
 
-def delete(doc_id: int) -> bool:
+def delete(doc_id: int, store: str = SOURCE_NAME) -> bool:
     """メモを 1 件消す。消せたら True、元から無ければ False。"""
-    path = require_path()
+    path = require_path(store)
     conn = _connect(path)
     try:
         with conn:
@@ -578,7 +637,7 @@ def delete(doc_id: int) -> bool:
     return True
 
 
-def count() -> int | None:
+def count(store: str = SOURCE_NAME) -> int | None:
     """いま覚えている件数。無効・未作成・読めないときは None。
 
     ソース表の `doc_count` は `/data` の走査で数えた値だが、notes は別ディレクトリに
@@ -588,7 +647,7 @@ def count() -> int | None:
     そこで読む側が数える。短期記憶は数十〜数千件なので、走査のたびに長期側の
     150 万件を数え直すのとは費用がまるで違う。
     """
-    path = notes_path()
+    path = notes_path(store)
     if path is None or not path.exists():
         return None
     try:
@@ -608,14 +667,14 @@ def refresh_count(sources: dict) -> None:
         src.doc_count = current
 
 
-def last_updated() -> str | None:
+def last_updated(store: str = SOURCE_NAME) -> str | None:
     """最後に書かれた時刻(ISO8601)。まだ 1 件も無ければ None。
 
     長期側の `built_at`(焼いた時刻)に当たるもの。短期記憶にはダンプも取り込みも
     無いので、代わりに**最後に何かが書かれた時刻**が「動いているか」の手掛かりになる。
     `idx_docs_updated` があるので、件数が増えても索引の端を見るだけで済む。
     """
-    path = notes_path()
+    path = notes_path(store)
     if path is None or not path.exists():
         return None
     try:
@@ -674,6 +733,7 @@ def recall(
     offset: int = 0,
     fields: str | None = None,
     max_chars: int = RECALL_MAX_CHARS_DEFAULT,
+    store: str = SOURCE_NAME,
 ) -> dict:
     """メモを思い出す。新しい順に返す。
 
@@ -692,8 +752,8 @@ def recall(
     全件返る(頁を送る意図の呼び出しが静かに全件取得になる)。同じ理由で
     `max_chars` の負値もここで 0 に丸める(負の添字は末尾を削る意味になる)。
     """
-    path = require_path()
-    ensure_db()
+    path = require_path(store)
+    ensure_db(store)
     limit = max(1, min(int(limit), RECALL_LIMIT_MAX))
     offset = max(0, int(offset))
     field_list = parse_recall_fields(fields)
@@ -728,14 +788,14 @@ def recall(
         (*params, limit, offset),
     )
     return {
-        "source": SOURCE_NAME,
+        "source": store,
         "total": total,
         "offset": offset,
-        "notes": [_recall_note(r, field_list, max_chars) for r in rows],
+        "notes": [_recall_note(r, field_list, max_chars, store) for r in rows],
     }
 
 
-def _recall_note(row, fields: list[str], max_chars: int) -> dict:
+def _recall_note(row, fields: list[str], max_chars: int, store: str = SOURCE_NAME) -> dict:
     values = {
         "doc_id": row["doc_id"],
         "title": row["title"],
@@ -743,7 +803,7 @@ def _recall_note(row, fields: list[str], max_chars: int) -> dict:
         "tags": json.loads(row["tags"] or "[]"),
         "extra": load_extra(row["extra"]),
         "updated_at": row["updated_at"],
-        "url": doc_url(SOURCE_NAME, row["doc_id"]),
+        "url": doc_url(store, row["doc_id"]),
     }
     note: dict = {}
     truncated = False

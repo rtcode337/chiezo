@@ -166,7 +166,7 @@ def blocked_from_deleting(name: str, used_by: str = "") -> str:
     `chiezo-app` は `corpus/` を読み取り専用でマウントしている(長期記憶へ書けるのは
     ingest だけ、という線の裏返し)。
     """
-    if name in SYSTEM_SOURCES:
+    if name in SYSTEM_SOURCES or notes.is_store(name):
         return "書き込める置き場なので消せません(取り込みで焼き直せないため)"
     if used_by:
         return f"収集「{used_by}」が使っています(消すなら収集ごと消してください)"
