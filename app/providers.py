@@ -129,8 +129,10 @@ PROVIDERS: tuple[Provider, ...] = (
         setup="Google AI Studio で API キーを発行して貼り付けてください。",
         # 先頭が既定。 実測(2026-08)で 2.5 系は chat/completions が 404 を返すように
         # なっていた —— 相手の一覧には残っているので、一覧に出るかどうかでは判断できない。
-        # 動くことを確かめたものだけ並べる。
-        models=("gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite"),
+        # 動くことを確かめたものだけ並べる。ただし先頭の 3.8 は一般公開(2026-09-02)を
+        # 受けて先に置いたもので、chat/completions で通るかはまだ確かめていない。
+        # 通らなければ 3.7 を先頭に戻す。
+        models=("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite"),
         # 枠を聞く口は無い。残量は Google Cloud の Quotas API 側にあり、
         # API キー 1 本では引けない（GCP のプロジェクトと別の認証が要る）。
         order=10,
