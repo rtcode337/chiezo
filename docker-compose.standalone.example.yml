@@ -251,6 +251,12 @@ services:
   #  volumes:
   #    # 認証情報は Chiezo の設定 DB から読む(管理画面から登録する)。読み取り専用
   #    - *state-volume
+  #    # サインイン結果の置き場。登録を空にしてコンテナの中でサインインすると、
+  #    # 枠(`/usage`)まで取れる —— 登録できる `claude setup-token` の長期トークンは
+  #    # 推論だけに絞られていて、枠のパネルを出せない。ここが無いと、コンテナを
+  #    # 作り直すたびにサインインが消える。名前付きボリュームにする理由は
+  #    # 末尾の volumes に書いてある(非 root で動くため)
+  #    - chiezo-claude-home:/srv/bridge/home
   #  environment:
   #    CHIEZO_BRIDGE_CLI: claude
   #    CHIEZO_BRIDGE_MCP_URL: http://chiezo-app:7010/mcp/knowledge/
@@ -345,6 +351,7 @@ services:
 # 無いときに Docker が root 所有で作ってしまい、非 root のブリッジが書けなくなるため。
 volumes:
   chiezo-antigravity-home:
+  chiezo-claude-home:
   chiezo-codex-home:
   chiezo-talk-codex-home:
 
