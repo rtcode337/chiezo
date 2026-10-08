@@ -635,7 +635,7 @@ web 検索を使うかどうかは、上の `CHIEZO_WEB_SEARCH_URL` を書くか
 `docker compose up -d chiezo-app chiezo-trigger` のようにサービスを選んで起動します。
 
 使うのは **Chiezo が agent ループを回す相手だけ**です(ローカルの推論サーバ・Gemini・
-OpenRouter・OpenAI)。CLI ブリッジ(Claude Code / Codex / Antigravity)は
+Claude API・OpenRouter・OpenAI)。CLI ブリッジ(Claude Code / Codex / Antigravity)は
 **CLI 自身の web 検索**を引くので、SearXNG は通りません。`rag` モードも道具を渡さないので
 使いません。
 
@@ -687,6 +687,7 @@ docker compose exec searxng wget -qO- "http://localhost:7012/search?q=test&forma
 |---|---|
 | 推論サーバ（同梱の llama.cpp） | `--profile llm` で立ち上げる → on |
 | Gemini | API キーを登録 → on |
+| Claude API | API キーを登録 → on(下の「Claude API」節) |
 | OpenRouter | API キーを登録 → on |
 | Claude Code | ブリッジのコメントを外して起動 → 認証情報を登録 → on |
 | Codex CLI | 同上 |
@@ -746,9 +747,31 @@ CLI に聞かせる）ので、サブスクの枠を食いません。
 **認証情報を入れ替えると、確認済みの印は消えます。** 新しい情報はまだ確かめていないためです。
 一度通ったあとに失敗したときも消えるので、壊れた相手が有効なまま残りません。
 
+### Claude API
+
+Claude Console(platform.claude.com)で作った API キーで、Messages API を直接呼ぶ相手です。
+サブスクリプションの枠で動く「Claude Code CLI」とは別で、**使ったぶんだけ API のクレジットが
+減ります**。
+
+- **キーに期限を付けたら、切れたときに作り直して登録し直します。** 期限は作るときにしか
+  決められず、後から延ばせません(期限が近づくと作った人にメールが届きます)
+- **Console が勧める「ID 連携」(Workload Identity Federation)は使いません。** トークンを
+  発行する身元の仕組み(GitHub Actions・クラウド・Kubernetes など)が前提で、LAN のサーバーには
+  それがありません
+- **考える量はモデルの名前に畳んで選びます**(`claude-opus-5-high`)。一覧はモデルごとに
+  受け付ける段だけを並べるので、通らない組み合わせは出ません(Haiku は段を持ちません)
+- **断られたら、サーバー側で別のモデルに回します**(`fallbacks: "default"`。
+  Claude Opus 5 と Claude Fable 5.1 のとき)。それでも断られたら、空の答えではなく失敗として返します
+- **会話を丸ごと送り直すぶんはキャッシュから読ませます。** agent の道具の往復で、2 往復目からの
+  入力はほぼキャッシュの読み出しになります
+
+chiezo の内部はどの相手も OpenAI 互換の形で話すので、HTTP の出入口で形を変換しています
+(`app/anthropic_api.py`)。Anthropic の OpenAI 互換の口を使わないのは、考える量や拒否されたときの
+切り替えが使えないためです。
+
 ### on にできる条件
 
-- **認証情報の要る相手（Gemini / OpenRouter / Claude Code / Codex CLI）** … 未登録なら
+- **認証情報の要る相手（Gemini / Claude API / OpenRouter / Claude Code / Codex CLI）** … 未登録なら
   on にできません。消すと同時に無効になります（認証情報の無い相手を有効のまま残すと、
   会話のたびに失敗するだけなので）
 - **すべての相手** … 「接続を試す」が通っていなければ on にできません

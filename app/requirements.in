@@ -12,3 +12,6 @@ mcp>=2.2.0,<3
 python-multipart>=0.0.20
 # 収集のサムネイルを縮める(`app/thumbs.py`)。WebP で書くのに使う
 pillow>=12.3
+# Claude API(`app/anthropic_api.py`)。Messages API を OpenAI 互換の形に包むのに使う。
+# 1.x は httpx2 の上に載っている(chiezo 本体の httpx とは別物として同居する)
+anthropic>=1.12,<2
