@@ -4474,6 +4474,10 @@ class AiCompleteRequest(BaseModel):
     # CLI ブリッジで包んだ相手だけが持つ道具なので、それ以外に頼まれたら断る
     # —— 黙って道具無しで答えさせると、呼ぶ側は「調べた結果」として受け取ってしまう。
     web: bool | None = None
+    # Chiezo の知識を読む道具(search / doc など)を渡すか(既定は渡さない)。
+    # API で直に叩く相手には Chiezo が道具を貸して往復を回す。CLI ブリッジで包んだ相手は
+    # もともと MCP で Chiezo に繋がっているので、指定してもしなくても同じ
+    knowledge: bool | None = None
     # **誰が頼んだか**(画面の「依頼元」に出る)。**必須にはしない** —— 名乗りが
     # 無いだけで AI を借りられなくなるのは、この口の値打ち(鍵だけ借りる)に合わない。
     # ただし**無名の依頼は後から追えない**: 待たされている人が「これは自分のか」を
@@ -4701,7 +4705,8 @@ async def ai_usage(
 async def ai_complete(body: AiCompleteRequest, request: Request) -> dict:
     """渡されたメッセージをそのまま相手へ投げて、本文を返す(1 往復)。
 
-    道具は既定では渡さない。`web=true` のときだけ相手自身の web 検索を開ける
+    道具は既定では渡さない。`knowledge=true` なら Chiezo の知識を読む道具を、
+    `web=true` なら web 検索を開ける
     —— ニュースの収集のように「いまの外の情報」が要る仕事を、`/v1/chat` の抽出を
     混ぜずに頼めるようにするため。
 
@@ -4738,10 +4743,13 @@ async def ai_complete(body: AiCompleteRequest, request: Request) -> dict:
     # **外のアプリからの依頼**。収集の時計が動かしているぶんと見分けるための印で、
     # 名乗り(`requested_by`)があれば一緒に残す —— 「外のアプリ」とだけ出しても、
     # どのアプリが枠を食っているのかは読めない
+    want_knowledge = body.knowledge is True
     with ai_inflight.called_by(ai_inflight.caller_of("api", body.requested_by or "")):
-        if want_web and not via_bridge:
-            # SearXNG を道具として貸す(往復あり)。知識ベースの道具は渡さない。
-            content = await agent.complete_with_web(cfg, messages)
+        if (want_web or want_knowledge) and not via_bridge:
+            # 道具を貸して往復を回す。知識は頼まれたときだけ、web は SearXNG を道具として
+            content = await agent.complete_with_tools(
+                cfg, messages, request.app, knowledge=want_knowledge, web=want_web,
+            )
         else:
             extra = {"chiezo_web": True} if want_web else {}
             content = answer.content_of(await answer.complete_message(cfg, messages, **extra))
@@ -4757,6 +4765,8 @@ async def ai_complete(body: AiCompleteRequest, request: Request) -> dict:
         # 実際に web を開けたか。 頼まなければ false。呼ぶ側が
         # 「調べさせたつもりで調べていない」を検出できるようにする
         "web": want_web,
+        # Chiezo の知識を引ける状態で頼んだか(CLI ブリッジの相手はいつも引ける)
+        "knowledge": want_knowledge or via_bridge,
         "content": content,
     }
 
