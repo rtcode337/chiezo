@@ -21,7 +21,7 @@ def state_env(monkeypatch, tmp_path):
     return monkeypatch
 
 
-def _collection(name: str = "tazuna_meals", **extra):
+def _collection(name: str = "myapp_meals", **extra):
     from app import collect
 
     collect.create(
@@ -34,7 +34,7 @@ def _collection(name: str = "tazuna_meals", **extra):
     return collect.get(name)
 
 
-def _with_partitions(name: str = "tazuna_meals"):
+def _with_partitions(name: str = "myapp_meals"):
     from app import collect
 
     item = _collection(name, partition={"by": "geo", "target": 10})
@@ -87,12 +87,12 @@ class TestItIsNeverAskedToRunByItself:
         答えの無い取り込みが毎周走って 409 で落ちる(本番でそうなった)。"""
         from app import collect
 
-        collect.create(name="tazuna_meals", description="", prompt="集めて",
+        collect.create(name="myapp_meals", description="", prompt="集めて",
                        interval_minutes=60)
-        collect.update("tazuna_meals", enabled=True, sweeps=[
+        collect.update("myapp_meals", enabled=True, sweeps=[
             {"name": "手で調べる", "by_hand": True, "worker": "整理用ワーカー"},
         ])
-        [sweep] = collect.sweeps_of(collect.get("tazuna_meals"))
+        [sweep] = collect.sweeps_of(collect.get("myapp_meals"))
 
         assert sweep.by_hand
         assert sweep.worker == ""
@@ -101,13 +101,13 @@ class TestItIsNeverAskedToRunByItself:
         """外のアプリは相手の欄でワーカーを名指しする(`/v1/ai/backends`)。"""
         from app import collect, workers
 
-        collect.create(name="tazuna_meals", description="", prompt="集めて",
+        collect.create(name="myapp_meals", description="", prompt="集めて",
                        interval_minutes=60)
-        collect.update("tazuna_meals", enabled=True, sweeps=[
+        collect.update("myapp_meals", enabled=True, sweeps=[
             {"name": "手で調べる", "by_hand": True,
              "backend": workers.option_for("w-1a2b3c4d")},
         ])
-        [sweep] = collect.sweeps_of(collect.get("tazuna_meals"))
+        [sweep] = collect.sweeps_of(collect.get("myapp_meals"))
 
         assert sweep.worker == ""
 
@@ -115,14 +115,14 @@ class TestItIsNeverAskedToRunByItself:
         """積む段でも弾く —— 定義を直す前に積まれたぶんが残っていても流さない。"""
         from app import collect, main, workers
 
-        collect.create(name="tazuna_meals", description="", prompt="集めて",
+        collect.create(name="myapp_meals", description="", prompt="集めて",
                        interval_minutes=60)
-        collect.update("tazuna_meals", enabled=True, sweeps=[
+        collect.update("myapp_meals", enabled=True, sweeps=[
             {"name": "手で調べる", "by_hand": True},
         ])
         # 手で回す回へ変える前に積まれた 1 本(定義からはワーカーが消えている)
         workers.save([workers.Worker("整理用", (workers.Step("codex"),), id="w-1a2b3c4d")])
-        workers.enqueue("w-1a2b3c4d", "tazuna_meals", "手で調べる",
+        workers.enqueue("w-1a2b3c4d", "myapp_meals", "手で調べる",
                         "2026-09-24T00:00:00+00:00")
         main._fill_worker_queues()
         main._drop_stale_from_queues()
@@ -133,13 +133,13 @@ class TestItIsNeverAskedToRunByItself:
         """割り込みは人が待っている場面 —— その場で AI に聞ける回へ倒す。"""
         from app import collect
 
-        collect.create(name="tazuna_meals", description="", prompt="直して",
+        collect.create(name="myapp_meals", description="", prompt="直して",
                        interval_minutes=60)
-        collect.update("tazuna_meals", enabled=True, sweeps=[
+        collect.update("myapp_meals", enabled=True, sweeps=[
             {"name": "ざっと見る", "prompt": "{current} を直して"},
             {"name": "手で調べる", "by_hand": True},
         ])
-        item = collect.get("tazuna_meals")
+        item = collect.get("myapp_meals")
         asked = collect.Focus(note="ここが違う", sweep="手で調べる")
 
         assert collect.sweep_for_focus(item, asked).name == "ざっと見る"
@@ -148,14 +148,14 @@ class TestItIsNeverAskedToRunByItself:
         """巡回を消したあとの取り込みが素材を取りに来ることがある。"""
         from app import collect
 
-        collect.create(name="tazuna_meals", description="", prompt="直して",
+        collect.create(name="myapp_meals", description="", prompt="直して",
                        interval_minutes=60)
-        collect.update("tazuna_meals", enabled=True, sweeps=[
+        collect.update("myapp_meals", enabled=True, sweeps=[
             {"name": "ざっと見る", "prompt": "{current} を直して"},
             {"name": "手で調べる", "by_hand": True},
         ])
 
-        assert collect.sweep_named(collect.get("tazuna_meals"), "消えた回").name == "ざっと見る"
+        assert collect.sweep_named(collect.get("myapp_meals"), "消えた回").name == "ざっと見る"
 
 
 class TestMakingTheBundle:
@@ -233,24 +233,24 @@ class TestMakingTheBundle:
         from app import handoff
 
         _collection()
-        handoff.put("tazuna_meals", sweep="手で調べる", keys=["a"], shown=[], body="1 つめ")
+        handoff.put("myapp_meals", sweep="手で調べる", keys=["a"], shown=[], body="1 つめ")
 
-        assert handoff.waiting("tazuna_meals")
+        assert handoff.waiting("myapp_meals")
 
-        handoff.put("tazuna_meals", sweep="手で調べる", keys=["b"], shown=[], body="2 つめ")
-        assert handoff.body_of("tazuna_meals") == "2 つめ"
+        handoff.put("myapp_meals", sweep="手で調べる", keys=["b"], shown=[], body="2 つめ")
+        assert handoff.body_of("myapp_meals") == "2 つめ"
 
     def test_the_rest_endpoint_refuses_a_second_one(self, state_env):
         _with_partitions()
         with make_client(state_env, None) as client:
-            assert client.post("/v1/collect/tazuna_meals/handoff").status_code == 200
-            assert client.post("/v1/collect/tazuna_meals/handoff").status_code == 409
+            assert client.post("/v1/collect/myapp_meals/handoff").status_code == 200
+            assert client.post("/v1/collect/myapp_meals/handoff").status_code == 409
 
     def test_the_file_comes_back_as_a_file(self, state_env):
         _with_partitions()
         with make_client(state_env, None) as client:
-            client.post("/v1/collect/tazuna_meals/handoff")
-            res = client.get("/v1/collect/tazuna_meals/handoff/file")
+            client.post("/v1/collect/myapp_meals/handoff")
+            res = client.get("/v1/collect/myapp_meals/handoff/file")
 
         assert res.status_code == 200
         assert "attachment" in res.headers["content-disposition"]
@@ -259,9 +259,9 @@ class TestMakingTheBundle:
     def test_a_collection_without_the_sweep_is_refused(self, state_env):
         from app import collect
 
-        collect.create(name="tazuna_tech", description="", prompt="集めて", interval_minutes=60)
+        collect.create(name="myapp_tech", description="", prompt="集めて", interval_minutes=60)
         with make_client(state_env, None) as client:
-            assert client.post("/v1/collect/tazuna_tech/handoff").status_code == 404
+            assert client.post("/v1/collect/myapp_tech/handoff").status_code == 404
 
 
 class TestReadingTheAnswer:
@@ -282,32 +282,32 @@ class TestReadingTheAnswer:
         from app import handoff
 
         _collection()
-        handoff.put("tazuna_meals", sweep="手で調べる", keys=["a"], shown=["店"], body="束")
-        handoff.answered("tazuna_meals", [{"title": "新しい店"}])
+        handoff.put("myapp_meals", sweep="手で調べる", keys=["a"], shown=["店"], body="束")
+        handoff.answered("myapp_meals", [{"title": "新しい店"}])
 
-        assert handoff.ready("tazuna_meals")
-        assert not handoff.waiting("tazuna_meals")
+        assert handoff.ready("myapp_meals")
+        assert not handoff.waiting("myapp_meals")
 
     def test_taking_it_clears_the_bundle(self, state_env):
         """残すと、次の取り込みが同じ答えをもう一度焼く(印と履歴が二重になる)。"""
         from app import handoff
 
         _collection()
-        handoff.put("tazuna_meals", sweep="手で調べる", keys=["a"], shown=["店"], body="束")
-        handoff.answered("tazuna_meals", [{"title": "新しい店"}])
+        handoff.put("myapp_meals", sweep="手で調べる", keys=["a"], shown=["店"], body="束")
+        handoff.answered("myapp_meals", [{"title": "新しい店"}])
 
-        items, meta = handoff.take("tazuna_meals")
+        items, meta = handoff.take("myapp_meals")
 
         assert [i["title"] for i in items] == ["新しい店"]
         assert meta["keys"] == ["a"]
-        assert handoff.get("tazuna_meals") is None
+        assert handoff.get("myapp_meals") is None
 
     def test_an_answer_with_nothing_in_it_is_refused(self, state_env):
         """形の違う答えを焼くと、その回は「何も返らなかった」として印だけが進む。"""
         _with_partitions()
         with make_client(state_env, None) as client:
-            client.post("/v1/collect/tazuna_meals/handoff")
-            res = client.post("/v1/collect/tazuna_meals/handoff/answer",
+            client.post("/v1/collect/myapp_meals/handoff")
+            res = client.post("/v1/collect/myapp_meals/handoff/answer",
                               content="すみません、分かりませんでした".encode())
 
         assert res.status_code == 400
@@ -315,7 +315,7 @@ class TestReadingTheAnswer:
     def test_an_answer_without_a_bundle_is_refused(self, state_env):
         _with_partitions()
         with make_client(state_env, None) as client:
-            res = client.post("/v1/collect/tazuna_meals/handoff/answer",
+            res = client.post("/v1/collect/myapp_meals/handoff/answer",
                               content=self._answer().encode())
 
         assert res.status_code == 404
@@ -376,7 +376,7 @@ class TestTheScreen:
         handoff.put(item.name, sweep="手で調べる", keys=["a"], shown=[], body="束")
         html = admin._handoff_html(item)
 
-        assert "/v1/collect/tazuna_meals/handoff/file" in html
+        assert "/v1/collect/myapp_meals/handoff/file" in html
         assert handoff.PASTE_NOTE[:20] in html
         assert "答えを読み込んで焼く" in html
 
@@ -391,6 +391,6 @@ class TestTheScreen:
         from app import collect
         from app.views import admin
 
-        collect.create(name="tazuna_tech", description="", prompt="集めて", interval_minutes=60)
+        collect.create(name="myapp_tech", description="", prompt="集めて", interval_minutes=60)
 
-        assert admin._handoff_html(collect.get("tazuna_tech")) == ""
+        assert admin._handoff_html(collect.get("myapp_tech")) == ""

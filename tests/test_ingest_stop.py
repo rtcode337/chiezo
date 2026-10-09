@@ -109,12 +109,12 @@ class TestTheStopEndpoint:
         import core
         import server
 
-        server._jobs["tazuna_meals"] = server._new_job("tazuna_meals")
+        server._jobs["myapp_meals"] = server._new_job("myapp_meals")
 
         res = client.post("/stop")
 
         assert res.status_code == 200 and res.json()["stopping"] is True
-        assert core.stopping("tazuna_meals") is True
+        assert core.stopping("myapp_meals") is True
         assert client.get("/status").json()["stopping"] is True
 
     def test_only_the_named_one_gets_off(self, client):
@@ -124,21 +124,21 @@ class TestTheStopEndpoint:
         import core
         import server
 
-        for name in ("tazuna_meals", "tazuna_news"):
+        for name in ("myapp_meals", "myapp_news"):
             server._jobs[name] = server._new_job(name)
 
-        res = client.post("/stop", params={"source": "tazuna_news"})
+        res = client.post("/stop", params={"source": "myapp_news"})
 
         assert res.status_code == 200
-        assert core.stopping("tazuna_news") is True
-        assert core.stopping("tazuna_meals") is False
+        assert core.stopping("myapp_news") is True
+        assert core.stopping("myapp_meals") is False
         jobs = {j["source"]: j for j in client.get("/status").json()["jobs"]}
-        assert jobs["tazuna_news"]["stopping"] and not jobs["tazuna_meals"]["stopping"]
+        assert jobs["myapp_news"]["stopping"] and not jobs["myapp_meals"]["stopping"]
 
     def test_a_named_one_that_is_not_running_is_refused(self, client):
         import server
 
-        server._jobs["tazuna_meals"] = server._new_job("tazuna_meals")
+        server._jobs["myapp_meals"] = server._new_job("myapp_meals")
 
         assert client.post("/stop", params={"source": "jawiki"}).status_code == 409
 
@@ -188,7 +188,7 @@ class TestKeepingTheLastFailure:
         server._last_failure = None
         return TestClient(server.app)
 
-    def _fail(self, monkeypatch, source="tazuna_meals"):
+    def _fail(self, monkeypatch, source="myapp_meals"):
         import server
 
         def _boom(_source, _dir):
@@ -210,7 +210,7 @@ class TestKeepingTheLastFailure:
 
         assert got["state"] == "running" and got["source"] == "jawiki"
         assert got["log_tail"] == [], "いまの 1 本のログは新しくなる"
-        assert got["last_failure"]["source"] == "tazuna_meals"
+        assert got["last_failure"]["source"] == "myapp_meals"
         assert "UNIQUE constraint" in got["last_failure"]["error"]
         assert got["last_failure"]["log_tail"], "落ちた回のログも残す"
 
@@ -227,7 +227,7 @@ class TestKeepingTheLastFailure:
 
         html = admin._job_status_html(job)
 
-        assert "前に落ちた回: tazuna_meals" in html
+        assert "前に落ちた回: myapp_meals" in html
         assert "UNIQUE constraint" in html
 
     def test_it_is_not_shown_twice(self, client, monkeypatch):

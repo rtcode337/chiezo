@@ -110,7 +110,7 @@ class TestTurn:
 
         schema = {"type": "object", "properties": {"text": {"type": "string"}}}
         res = client.post("/v1/talk/sessions/codex:th1/turns", json={
-            "text": "やっほー", "schema": schema, "requested_by": "pupai",
+            "text": "やっほー", "schema": schema, "requested_by": "myapp",
         })
         assert res.status_code == 200
         assert res.json()["content"] == '{"text":"やっほー"}'
@@ -121,7 +121,7 @@ class TestTurn:
         # 他の依頼と同じ表に、誰が頼んだかつきで残る
         calls = usage_store.recent_calls(5)
         assert calls[0]["backend"] == "codex"
-        assert calls[0]["caller"] == "api:pupai"
+        assert calls[0]["caller"] == "api:myapp"
 
     def test_lost_session_is_404_and_not_a_failure(self, client, fake_bridge):
         from app import ai_log

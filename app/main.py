@@ -3340,7 +3340,7 @@ class CollectionCreate(BaseModel):
     material: dict | None = PydField(
         None,
         description="**材料に読む別のソース**。"
-        '{"source": "tazuna_tech", "tag": "ニュース,記事", "limit": 60} と書くと、'
+        '{"source": "myapp_tech", "tag": "ニュース,記事", "limit": 60} と書くと、'
         "プロンプトの {material} へ**前回この巡回が走ってから**そのソースに入ったものが"
         "差し込まれる。**中身は写さない**(読むだけ) —— 集めたものを材料にして、"
         "別の見方を別の収集に育てるためのもの",
@@ -3515,7 +3515,7 @@ def collect_create(request: Request, body: CollectionCreate):
 def collect_queue():
     """**ワーカーと取り込みの待ち行列**。読むだけの口。
 
-    外のアプリ(tazuna)が、自分の頼んだ収集が詰まっていないかを一覧で見るためのもの ——
+    外のアプリが、自分の頼んだ収集が詰まっていないかを一覧で見るためのもの ——
     巡回の間隔だけ見ても、**ワーカーが何分おきに起きて 1 回に何本流すのか**、
     **いま何本が待っているのか**は読めない(溜まってきたときに知りたいのはそちら)。
     **次に起きる時刻は流し終えた時刻から数える**(`_worker_due` と同じ読み方)。

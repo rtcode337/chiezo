@@ -211,7 +211,7 @@ notes を別ディレクトリに置いているのは、`/data` の変化を監
 
 | 口 | 中身 |
 |---|---|
-| `POST /v1/stores` `{"name": "chidori"}` | 置き場を作る(201)。名前は英小文字で始まる 2〜31 文字(英小文字・数字・`_`)。既にある置き場・ソース・収集と同じ名前は 409 |
+| `POST /v1/stores` `{"name": "myapp"}` | 置き場を作る(201)。名前は英小文字で始まる 2〜31 文字(英小文字・数字・`_`)。既にある置き場・ソース・収集と同じ名前は 409 |
 | `GET /v1/stores` | 作ってある置き場の一覧(件数・最終更新つき。`chiezo_memory` は含めない) |
 | `POST /v1/stores/{name}` | 1 件書く(本文・見出し・タグ・`extra`。`POST /v1/chiezo_memory` と同じ) |
 | `GET /v1/stores/{name}/recall` | 新しい順に引く(`q` / `since` / `until` / `tag` / `fields` / `max_chars` も同じ) |

@@ -256,12 +256,12 @@ class TestProjects:
 
         first = _project(client, "arrow-puzzle")
         second = _project(client, "travel-log")
-        third = _project(client, "pupai")
+        third = _project(client, "myapp")
         _post(client, f"/projects/{second.id}/archive", archived="1")
 
         html = client.get("/admin/memory").text
         table = html.split('<h2 id="tasks">')[1].split('<h3 id="done">')[0]
-        shown = [n for n in ("arrow-puzzle", "travel-log", "pupai") if n in table]
+        shown = [n for n in ("arrow-puzzle", "travel-log", "myapp") if n in table]
         assert shown == [p.name for p in tasks.list_projects()]
 
         _post(client, f"/projects/{third.id}/move", dir="up")

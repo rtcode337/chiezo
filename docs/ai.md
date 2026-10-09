@@ -1416,13 +1416,13 @@ Chiezo が知識を読む道具(search・doc など)を渡して往復を回し�
 ```bash
 # キャラ設定を短期記憶に置く(見出しで指すので、決まった見出しにしておく)
 curl -s "$BASE/v1/chiezo_memory" -H 'Content-Type: application/json' \
-  -d "$(jq -n --rawfile t character.md '{title: "キャラ設定: さなぎ", text: $t}')"
+  -d "$(jq -n --rawfile t character.md '{title: "キャラ設定: サンプル", text: $t}')"
 
 # 会話を始める(instructions はキャラ設定の後ろに足す補足。場面や相手の人数など)
 curl -s "$BASE/v1/talk/sessions" -H 'Content-Type: application/json' -d '{
-  "character": "キャラ設定: さなぎ",
+  "character": "キャラ設定: サンプル",
   "instructions": "画面越しに 1 対 1 で話している。",
-  "requested_by": "pupai"
+  "requested_by": "myapp"
 }'
 # → {"session_id": "codex:01a1...", "backend": "codex", "model": "gpt-5.6-sol", ...}
 
@@ -1431,7 +1431,7 @@ curl -s "$BASE/v1/talk/sessions/codex:01a1.../turns" -H 'Content-Type: applicati
   "text": "やっほー",
   "schema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"],
              "additionalProperties": false},
-  "requested_by": "pupai"
+  "requested_by": "myapp"
 }'
 # → {"content": "{\"text\":\"やっほー！...\"}", "tools": [], "ms": 3200, ...}
 
