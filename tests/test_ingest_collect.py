@@ -351,3 +351,187 @@ class TestDeletingASource:
 
         assert "spots-20260101.ndjson" in removed
         assert not (elsewhere / "spots-20260101.ndjson").exists()
+
+
+class TestRenamingASource:
+    """焼いたソースの名前を変える口(`POST /source/{name}/rename`)。
+
+    **世代は写してから元を消す。** 配信側は世代ファイルを `immutable=1` で開いているので、
+    その場で `meta.source` を書き換えず、写したものを書き換える。今の世代も
+    1 つ前の世代も移す(名前を変えたあとも 1 つ前へ戻せるように)。
+    """
+
+    @pytest.fixture
+    def trigger(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        import server
+
+        monkeypatch.setattr(server, "DATA_DIR", tmp_path)
+        (tmp_path / "dumps").mkdir()
+
+        def make(name, kind="collect", stamps=("20260101", "20260102"), live=None):
+            for stamp in stamps:
+                conn = sqlite3.connect(tmp_path / f"{name}-{stamp}.db")
+                conn.execute("CREATE TABLE meta (source TEXT, source_kind TEXT)")
+                conn.execute("INSERT INTO meta VALUES (?, ?)", (name, kind))
+                conn.execute("CREATE TABLE docs (title TEXT)")
+                conn.execute("INSERT INTO docs VALUES (?)", (f"{name} {stamp}",))
+                conn.commit()
+                conn.close()
+            (tmp_path / f"{name}.db").symlink_to(f"{name}-{live or stamps[-1]}.db")
+
+        return server, make
+
+    @staticmethod
+    def _meta_source(path):
+        import sqlite3
+
+        conn = sqlite3.connect(path)
+        try:
+            return conn.execute("SELECT source FROM meta").fetchone()[0]
+        finally:
+            conn.close()
+
+    def test_generations_link_and_meta_move(self, trigger, tmp_path):
+        server, make = trigger
+        # 1 つ前へ戻した状態(リンクが古いほうを指している)も、そのまま持ち越す
+        make("spots", live="20260101")
+
+        result = server.rename_source("spots", to="places")
+
+        assert result["ok"] is True
+        link = tmp_path / "places.db"
+        assert link.is_symlink()
+        assert link.resolve().name == "places-20260101.db"
+        for stamp in ("20260101", "20260102"):
+            moved = tmp_path / f"places-{stamp}.db"
+            assert self._meta_source(moved) == "places"
+            assert not (tmp_path / f"spots-{stamp}.db").exists()
+        assert not (tmp_path / "spots.db").is_symlink()
+        # 途中の姿(写している最中のファイル)は残さない
+        assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".")] == []
+
+    def test_rolling_back_still_works_after_the_rename(self, trigger, tmp_path):
+        server, make = trigger
+        make("spots")
+        server.rename_source("spots", to="places")
+
+        result = server.rollback_source("places")
+
+        assert result["now"] == "places-20260101.db"
+
+    def test_staged_material_moves(self, trigger, tmp_path):
+        """焼く前に残った素材も新しい名前で拾い直せるように移す。"""
+        server, make = trigger
+        make("spots")
+        (tmp_path / "dumps" / "spots-20260103.ndjson").write_text("{}")
+        (tmp_path / "dumps" / "spots-20260102.ndjson.broken").write_text("{}")
+
+        server.rename_source("spots", to="places")
+
+        names = sorted(p.name for p in (tmp_path / "dumps").iterdir())
+        assert names == ["places-20260102.ndjson.broken", "places-20260103.ndjson"]
+
+    def test_nothing_baked_is_nothing_to_move(self, trigger):
+        server, _make = trigger
+        result = server.rename_source("spots", to="places")
+        assert result["ok"] is True
+        assert result["moved"] == []
+
+    def test_a_dump_derived_source_is_refused(self, trigger, tmp_path):
+        import fastapi
+
+        server, make = trigger
+        make("jawiki", kind="wikipedia")
+
+        with pytest.raises(fastapi.HTTPException) as got:
+            server.rename_source("jawiki", to="places")
+
+        assert got.value.status_code == 409
+        assert (tmp_path / "jawiki.db").is_symlink()
+        assert not (tmp_path / "places.db").exists()
+
+    def test_existing_files_under_the_new_name_are_refused(self, trigger, tmp_path):
+        """上書きしない。"""
+        import fastapi
+
+        server, make = trigger
+        make("spots")
+        (tmp_path / "dumps" / "places-20260101.ndjson").write_text("{}")
+
+        with pytest.raises(fastapi.HTTPException) as got:
+            server.rename_source("spots", to="places")
+
+        assert got.value.status_code == 409
+        assert (tmp_path / "spots.db").is_symlink()
+
+    @pytest.mark.parametrize("name,to", [("spots", "../x"), ("../x", "places"), ("spots", "spots")])
+    def test_bad_names_are_refused(self, trigger, name, to):
+        import fastapi
+
+        server, _make = trigger
+        with pytest.raises(fastapi.HTTPException) as got:
+            server.rename_source(name, to=to)
+        assert got.value.status_code == 400
+
+    @pytest.mark.parametrize("running", ["spots", "places"])
+    def test_it_refuses_while_either_name_is_ingesting(self, trigger, running):
+        import fastapi
+
+        server, make = trigger
+        make("spots")
+        server._jobs[running] = server._new_job(running)
+        try:
+            with pytest.raises(fastapi.HTTPException) as got:
+                server.rename_source("spots", to="places")
+        finally:
+            server._jobs.clear()
+
+        assert got.value.status_code == 409
+
+    def test_a_failure_halfway_leaves_the_old_name_intact(self, trigger, tmp_path, monkeypatch):
+        """**新しい名前のものが揃うまで元を消さない。** 途中で落ちたら作りかけを片付ける。"""
+        import fastapi
+
+        server, make = trigger
+        make("spots")
+        real = server._set_meta_source
+        calls = []
+
+        def flaky(path, source):
+            calls.append(path)
+            if len(calls) == 2:
+                raise OSError("disk full")
+            real(path, source)
+
+        monkeypatch.setattr(server, "_set_meta_source", flaky)
+
+        with pytest.raises(fastapi.HTTPException) as got:
+            server.rename_source("spots", to="places")
+
+        assert got.value.status_code == 500
+        assert "disk full" not in str(got.value.detail)
+        assert sorted(p.name for p in tmp_path.iterdir() if p.name != "dumps") == [
+            "spots-20260101.db", "spots-20260102.db", "spots.db",
+        ]
+        # 名前を変えている印は外れている(次の取り込みを断り続けない)
+        assert server._renaming == set()
+
+    def test_ingesting_is_refused_while_renaming(self, trigger, monkeypatch):
+        """写している最中に元の名前の新しい世代が焼き上がると、中身が取り残される。"""
+        from types import SimpleNamespace
+
+        import fastapi
+
+        from sources import collect as collect_sources
+        from sources import remote
+
+        server, _make = trigger
+        monkeypatch.setattr(remote, "catalog", lambda: [])
+        monkeypatch.setattr(collect_sources, "catalog", lambda: [SimpleNamespace(name="spots")])
+        monkeypatch.setattr(server, "_renaming", {"spots"})
+        with pytest.raises(fastapi.HTTPException) as got:
+            server.start_run("spots")
+        assert got.value.status_code == 409
+        assert server._jobs == {}

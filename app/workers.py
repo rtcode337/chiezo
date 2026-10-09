@@ -485,6 +485,16 @@ def drop(collection: str, sweep: str) -> None:
     _queue_save(state)
 
 
+def holds(collection: str) -> bool:
+    """その収集のぶんを、どれかのワーカーが待っている・流しているか(名前を変える前に見る)。"""
+    return any(
+        e.get("collection") == collection
+        for slot in _queue_all().values() if isinstance(slot, dict)
+        for key in ("queue", "batch")
+        for e in slot.get(key) or [] if isinstance(e, dict)
+    )
+
+
 def forget(collection: str) -> None:
     """その収集のぶんを全部のワーカーから外す(収集を消したとき)。"""
     state = _queue_all()

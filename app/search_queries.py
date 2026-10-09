@@ -109,6 +109,18 @@ def forget(name: str, query: str | None = None) -> int:
     return len(rows) - len(kept)
 
 
+def rename(name: str, new_name: str) -> None:
+    """控えを新しい名前へ移す(収集の名前を変えたとき)。**移した控えは使ったことの記録**
+    なので、落とすと同じ検索文をもう一度使い始める。"""
+    if not machine_store.is_enabled():
+        return
+    body = machine_store.get(KIND, name)
+    if body is None:
+        return
+    machine_store.put(KIND, new_name, body)
+    machine_store.drop(KIND, name)
+
+
 def count(name: str, sources: dict, tag: str) -> None:
     """まだ数えていない検索文に、連れてきた文書の数を書き込む。
 

@@ -2246,6 +2246,29 @@ def _collect_switches_html(item, src, back: str = "") -> str:
     )
 
 
+def _rename_form_html(item) -> str:
+    """名前を変える口(収集の面だけ)。**出るのは止めてある収集だけ**(削除と同じ線)。
+
+    名前はソース名でもあるので、**引いているアプリの側も書き換えが要る**ことを
+    確認の文に書く(元の名前は残らない)。
+    """
+    if item.enabled:
+        return '<p class="muted">止めると名前を変えられます</p>'
+    ask = (
+        f"収集「{item.name}」と、溜めたもののソース名を変えます。"
+        f"元の名前({item.name})では引けなくなります。よろしいですか?"
+    )
+    return (
+        f'<form class="init-form" method="post"'
+        f' action="/admin/collect/{esc(quote(item.name, safe=""))}/rename"'
+        f" onsubmit=\"return confirm('{esc(ask)}')\">"
+        '<label>新しい名前 <input type="text" name="to" required'
+        ' pattern="[a-z][a-z0-9_]{1,30}" maxlength="31"'
+        ' placeholder="英小文字で始まる 2〜31 文字"></label> '
+        '<button type="submit">名前を変える</button></form>'
+    )
+
+
 def _collect_html(sources: dict[str, Source]) -> str:
     """収集(AI に集めさせて溜めていく)の節。
 
@@ -4295,6 +4318,56 @@ def _drop_source(name: str, expect: str = "") -> None:
         })
 
 
+def _rename_source(name: str, to: str) -> None:
+    """取り込みに、焼いたソースの名前を変えさせる。**変えられなければ理由を上げる**。
+
+    消すのと同じく、`corpus/` に触れるのは取り込み側だけ。種別は名乗らない
+    (名乗らなければ集めたものだけが対象 —— `ingest/server.py` の `rename_source`)。
+    まだ 1 度も焼いていなければ、向こうは動かすものが無いだけで成功を返す。
+    """
+    if not TRIGGER_URL:
+        raise HTTPException(503, {"error": "取り込み(chiezo-trigger)が設定されていません"})
+    try:
+        # 世代ファイルを写すので、消す・戻すより長く待つ
+        with httpx.Client(timeout=600.0) as client:
+            res = client.post(f"{TRIGGER_URL}/source/{name}/rename", params={"to": to})
+    except httpx.HTTPError as e:
+        log.warning("could not reach the trigger to rename %s: %s", name, e)
+        raise HTTPException(502, {
+            "error": "取り込みにつながりません", "reason": type(e).__name__,
+        }) from None
+    if res.status_code != 200:
+        raise HTTPException(res.status_code if res.status_code < 500 else 502, {
+            "error": f"ソース「{name}」の名前を変えられませんでした(何も変えていません)",
+            "reason": res.text[:300],
+        })
+
+
+def rename_collection(app, name: str, to: str):
+    """収集の名前を変える(画面と REST の両方から)。変えたあとの 1 件を返す。
+
+    **焼いたソースの名前も一緒に変える**(収集の名前 = ソース名)。断る理由を
+    確かめる → 取り込みにファイルを動かさせる → 設定の側を書き換える、の順
+    (`collect.rename`)。**すでに使われている名前**には、焼いてあるソースと
+    取り込みのカタログに載っているソース(ダンプ・プラグイン)も数える。
+    """
+    taken = set(app.state.sources) | set(initializable_sources())
+    item = collect.rename(name, (to or "").strip(), taken=taken - {name}, move=_rename_source)
+    # 動いたファイルをすぐ読み直す(5 秒ごとの再走査を待つと、元の名前が一覧に残って見える)
+    from app.main import scan_all
+
+    app.state.sources = scan_all(app.state.data_dir)
+    return item
+
+
+@router.post("/admin/collect/{name}/rename")
+def admin_collect_rename(request: Request, name: str, to: str = Form("")):
+    """収集の名前を変える(焼いたソースの名前ごと)。**出るのは止めてある収集だけ**。"""
+    collect.require_enabled()
+    item = rename_collection(request.app, name, to)
+    return RedirectResponse(url=collect_page(item), status_code=303)
+
+
 @router.post("/admin/collect/{name}/run")
 async def admin_collect_run(name: str, request: Request):
     """予定を待たずに 1 回、集めて焼く(管理画面の「今すぐ実行」)。
@@ -4827,6 +4900,7 @@ def admin_collect_detail(
 <br>長期記憶: {baked}
 / 状態: {'有効' if item.enabled else '<span class="stale">止まっている</span>'}
 {'<br>' + _rollback_cell(src, f'/admin/collect/{quote(name)}') if src is not None else ''}</p>
+{_rename_form_html(item)}
 <table>
 <thead>
 <tr><th>巡回</th><th>頼む相手</th><th>間隔</th>

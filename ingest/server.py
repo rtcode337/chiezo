@@ -26,6 +26,7 @@ import re
 import threading
 import time
 from collections import deque
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -425,6 +426,158 @@ def rollback_source(name: str):
     return {"ok": True, "source": name, "now": target.name, "was": live.name}
 
 
+# 名前を変えている最中のソース(元の名前と新しい名前の両方)。**その間は焼かせない**
+# (`start_run`)—— 写している途中の世代の隣で、元の名前の新しい世代が焼き上がると、
+# 写し終えたものより新しい中身が元の名前に取り残される
+_renaming: set[str] = set()
+
+# 写している途中のファイルに付ける頭。**`.db` で終わらせず、点で始める** ——
+# 終わりが `.db` だと登録の走査(`*.db`)に途中の姿が拾われ、頭が名前のままだと
+# どこかのソースの世代(`<名前>-*.db`)に数えられる
+RENAMING_PREFIX = ".renaming-"
+
+
+@app.post("/source/{name}/rename")
+def rename_source(name: str, to: str, expect: str = COLLECT_KIND):
+    """焼いたソースの**名前を変える**(収集の名前を変えるついでに呼ばれる)。
+
+    **変えられるのもここだけ**。`chiezo-app` は `corpus/` を読み取り専用でマウントして
+    いるので、あちらからはファイルに触れない(消す・戻すと同じ線)。
+
+    世代ファイルは**名前を変えるのではなく写す**。焼いた DB の中にも名前が入っていて
+    (`meta.source`)、登録はファイル名とそれが揃ったものしか拾わない —— 中身も
+    書き換える必要があるが、配信側は世代ファイルを `immutable=1` で開いているので、
+    開かれているファイルをその場で書き換えると読み手の控えと食い違う。写したものを
+    書き換え、**新しい名前の世代・リンクが全部揃ってから**元のファイルを消す。
+    **今の世代も 1 つ前の世代も写す**(名前を変えたあとも「DBを1つ前へ戻す」が効くように)。
+    焼く前に残った素材(`dumps/<名前>-*`)も新しい名前へ移す(次の回が拾い直せるように)。
+
+    - 種別は名乗ったものと揃っていること(既定は `collect`。消すのと同じ理由で、
+      名前の取り違えでダンプのソースを動かさない)
+    - **元の名前・新しい名前のどちらかを焼いている最中は断る**(409)
+    - **新しい名前のファイルが 1 つでもあれば断る**(409。上書きしない)
+    - まだ 1 度も焼いていなければ、動かすものが無いだけで成功にする
+    - 途中で落ちたら、作りかけの新しいファイルを片付けて元のまま残す
+    """
+    for one in (name, to):
+        if not SOURCE_NAME_RE.match(one):
+            raise HTTPException(400, {"error": f"invalid source name: {one}"})
+    if name == to:
+        raise HTTPException(400, {"error": "the new name is the same as the current one"})
+
+    with _lock:
+        if busy := [n for n in (name, to) if n in _jobs or n in _renaming]:
+            raise HTTPException(409, {"error": f"ingest is running: {busy[0]}"})
+        _renaming.update((name, to))
+    try:
+        return _rename_source_files(name, to, expect)
+    finally:
+        with _lock:
+            _renaming.difference_update((name, to))
+
+
+def _rename_source_files(name: str, to: str, expect: str) -> dict:
+    """`rename_source` の中身(名前の検査と、走っていないことの確認は済んでいる)。"""
+    import shutil
+
+    link = _find_link(name)
+    generations = sorted(_generations(name), key=lambda p: p.name)
+    dumps_dir = DATA_DIR / "dumps"
+    staged = [p for p in _entries(dumps_dir) if p.name.startswith(f"{name}-")]
+    if link is None and not generations and not staged:
+        return {"ok": True, "source": name, "to": to, "moved": [],
+                "note": "nothing to move (never baked)"}
+
+    if link is not None and not link.is_symlink():
+        # 世代を持たない 1 枚の DB(手で置いたもの)。写す世代が無いので扱わない
+        raise HTTPException(409, {"error": f"source {name} is not a generation link"})
+    probe = link if link is not None else (generations[-1] if generations else None)
+    if probe is not None and (kind := _source_kind(probe)) != expect:
+        raise HTTPException(409, {
+            "error": f"source {name} cannot be renamed here",
+            "reason": f"source_kind={kind!r} だが {expect!r} として名前を変えようとした",
+        })
+
+    taken = [
+        p.name for p in _entries(DATA_DIR)
+        if p.name == f"{to}.db" or (p.name.startswith(f"{to}-") and p.name.endswith(".db"))
+    ] + [p.name for p in _entries(dumps_dir) if p.name.startswith(f"{to}-")]
+    if taken:
+        raise HTTPException(409, {
+            "error": f"files for {to} already exist",
+            "existing": sorted(taken),
+            "hint": "上書きはしない。新しい名前のファイルを片付けてから、もう一度呼ぶ",
+        })
+
+    # **リンクの指す先**(`<名前>-<日付>.db`)。新しい名前のリンクも同じ日付の世代を指す
+    live = Path(os.readlink(link)).name if link is not None and link.is_symlink() else None
+
+    def renamed(path: Path) -> str:
+        return f"{to}-{path.name[len(name) + 1:]}"
+
+    made: list[Path] = []
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for gen in generations:
+            dest = DATA_DIR / renamed(gen)
+            work = DATA_DIR / f"{RENAMING_PREFIX}{dest.name}"
+            made.append(work)
+            shutil.copyfile(gen, work)
+            _set_meta_source(work, to)
+            work.replace(dest)
+            made.append(dest)
+        if live is not None and live.startswith(f"{name}-"):
+            new_link = DATA_DIR / f"{to}.db"
+            _point_link_at(new_link, DATA_DIR / f"{to}-{live[len(name) + 1:]}")
+            made.append(new_link)
+        # 素材は写さずに移す(焼く前のもので、配信側は開いていない)
+        for path in staged:
+            dest = dumps_dir / renamed(path)
+            path.rename(dest)
+            moved.append((path, dest))
+    except Exception as e:
+        log.exception("could not rename %s to %s; undoing", name, to)
+        for path in made:
+            with suppress(OSError):
+                path.unlink()
+        for src, dest in moved:
+            with suppress(OSError):
+                dest.rename(src)
+        raise HTTPException(500, {
+            "error": f"could not rename {name} to {to}",
+            "reason": type(e).__name__,
+        }) from None
+
+    # **新しい名前のものが全部揃ってから、元の名前のものを消す**(リンクを先に外す ——
+    # 世代を先に消すと、その一瞬だけリンクが壊れたまま配信される)
+    removed = []
+    for path in [*([link] if link is not None else []), *generations]:
+        try:
+            path.unlink()
+            removed.append(path.name)
+        except OSError as e:
+            log.warning("could not remove %s: %s", path, e)
+    log.info("renamed source %s -> %s (%d generations)", name, to, len(generations))
+    return {
+        "ok": True, "source": name, "to": to,
+        "moved": [p.name for p in made if not p.name.startswith(RENAMING_PREFIX)]
+        + [dest.name for _src, dest in moved],
+        "removed": removed,
+    }
+
+
+def _set_meta_source(path: Path, source: str) -> None:
+    """写した DB の `meta.source` を新しい名前にする(登録はファイル名とこれが揃ったものだけ拾う)。"""
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("UPDATE meta SET source = ?", (source,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _generations(name: str) -> list[Path]:
     """その名前の世代ファイル。**リンクそのものは外す**(指す先と二重に数えない)。"""
     head = f"{name}-"
@@ -623,6 +776,8 @@ def start_run(source: str, body: dict | None = Body(None)):
                 "error": f"a job is already running: {source}",
                 "running": running,
             })
+        if source in _renaming:
+            raise HTTPException(409, {"error": f"the source is being renamed: {source}"})
         if is_dump and (dump := next((n for n in _jobs if n in ADAPTERS), None)):
             raise HTTPException(429, {
                 "error": f"another dump is being ingested: {dump}",
