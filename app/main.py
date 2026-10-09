@@ -2218,6 +2218,10 @@ def list_sources(request: Request):
                 # あれは生成した瞬間の写しで、増えるたびに人が再生成しないと古くなる。
                 # 古い一覧は無いものへ投げさせ、**あるものを使わせない**
                 **claude_config.describe(s),
+                # 収集は、作るときに書いた説明を一言にする。kind の決まり文句
+                # (「何が入っているかは中身を見る」)だけだと、AI はどの収集に何があるか
+                # 分からず、アニメやニュースを聞かれても置き場を探し当てられなかった
+                **({"note": desc} if s.kind == "collect" and (desc := collect.description_of(s.name)) else {}),
             }
             for s in sources.values()
         ]

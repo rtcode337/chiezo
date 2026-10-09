@@ -8077,3 +8077,16 @@ def test_pending_locks_counts_only_locks_not_yet_baked(tmp_path):
 
     assert collect.pending_locks(item, {"shops": SimpleNamespace(path=path)}) == 1
     assert collect.pending_locks(SimpleNamespace(name="shops", locks={}), {}) == 0
+
+
+class TestDescriptionAsSourceNote:
+    """収集の説明が、ソースの一覧の一言になる(AI がどの収集に何があるかを知るため)。"""
+
+    def test_the_description_is_returned_and_follows_edits(self, enabled):
+        collect.create("anime", prompt="{cursor} 以降", interval_minutes=60, description="今期と来期のアニメ")
+        assert collect.description_of("anime") == "今期と来期のアニメ"
+        collect.update("anime", description="今期のアニメ")
+        assert collect.description_of("anime") == "今期のアニメ"
+
+    def test_a_missing_collection_has_no_description(self, enabled):
+        assert collect.description_of("nothing_here") == ""
