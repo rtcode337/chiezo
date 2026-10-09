@@ -1654,10 +1654,34 @@ def save(items: list[Collection]) -> None:
             machine_store.drop(DEFS_KIND, key)
 
 
+# 収集の説明(`description`)の控え。定義の行が変わるまで使い回す —— 定義は区画の台帳を
+# 抱えて MB 単位になることがあり、ソースの一覧を返すたびに全部を読み直すと重い。
+# 書き換えた時刻は秒までしか持たないので、このプロセスで書いたときは控えも捨てる
+_descriptions: dict[str, tuple[str, str]] = {}
+
+
 def _put_one(item: Collection) -> None:
+    _descriptions.pop(item.name, None)
     machine_store.put(
         DEFS_KIND, item.name, json.dumps(item.__dict__, ensure_ascii=False, indent=2),
     )
+
+
+def description_of(name: str) -> str:
+    """収集の説明。無い・読めないときは空(ソースの一覧が、壊れた定義 1 つで返らなくならないように)。"""
+    try:
+        stamp = machine_store.updated_at(DEFS_KIND, name)
+    except Exception:  # noqa: BLE001 - 一覧の一言のためだけに一覧ごと落とさない
+        return ""
+    cached = _descriptions.get(name)
+    if cached and cached[0] == stamp:
+        return cached[1]
+    try:
+        text = get(name).description.strip()
+    except HTTPException:
+        text = ""
+    _descriptions[name] = (stamp, text)
+    return text
 
 
 def get(name: str) -> Collection:
@@ -1693,6 +1717,7 @@ def _replace_one_if(name: str, updated: Collection, expect: str) -> bool:
 
     取り合いに負けたほうを黙って通さないための口(`machine_store.put_if`)。
     """
+    _descriptions.pop(name, None)
     return machine_store.put_if(
         DEFS_KIND, name,
         json.dumps(updated.__dict__, ensure_ascii=False, indent=2), expect,

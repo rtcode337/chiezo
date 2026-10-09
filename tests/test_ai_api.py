@@ -191,7 +191,10 @@ class TestCompleteKnowledge:
         # 書き込み・生成の道具は貸さない
         assert not names & {"remember", "forget", "image_generate"}
         # 呼ぶ側のプロンプトはそのまま渡り、道具の結果が積まれて 2 往復目に届く
-        assert fake.requests[0]["messages"][0]["content"] == "あなたは千鳥です。"
+        system = fake.requests[0]["messages"][0]["content"]
+        assert system.startswith("あなたは千鳥です。")
+        # どこに何があるかを sources で確かめるよう、一言が足される
+        assert "sources" in system
         tool_messages = [m for m in fake.requests[1]["messages"] if m["role"] == "tool"]
         assert tool_messages and tool_messages[0]["name"] == "search"
 

@@ -724,7 +724,7 @@ async def complete_with_tools(
     tools = await tool_specs(app, web=web) if knowledge else []
     if web and not knowledge:
         tools = [websearch.TOOL_SPEC]
-    convo = list(messages)
+    convo = _with_tool_hint(list(messages), knowledge, web)
     called: dict[str, Any] = {}
     deadline = asyncio.get_running_loop().time() + cfg.agent_timeout
 
@@ -772,6 +772,27 @@ async def complete_with_tools(
     # (ここで打ち切ると、調べただけで何も答えないまま終わってしまう)。
     convo.append({"role": "user", "content": FORCED_ANSWER_NOTICE})
     return answer.content_of(await answer.complete_message(cfg, convo))
+
+
+# 道具を貸すときに、呼ぶ側のプロンプトの後ろへ足す一言。 道具の説明だけだと、
+# どのソースに何があるかを知らないまま引き、見当違いの所を探して「取れない」と答えた
+# (アニメやニュースを聞かれたとき)。置き場は sources の note に書いてある。
+KNOWLEDGE_HINT = (
+    "Chiezo の道具で、手元の知識(百科事典・地図・定期的に集めている最新の情報など)を"
+    "調べられます。知らないと答えられないときだけ調べてください。"
+    "どこに何があるかは sources で確かめられます(集めている情報は note に中身が書いてあります)。"
+)
+WEB_HINT = "Chiezo に無い外の最新の情報は、web 検索で調べられます。"
+
+
+def _with_tool_hint(messages: list[dict], knowledge: bool, web: bool) -> list[dict]:
+    """道具の使いどころを system に足す(system が無ければ先頭に置く)。"""
+    hint = " ".join(h for h, on in ((KNOWLEDGE_HINT, knowledge), (WEB_HINT, web)) if on)
+    if not hint:
+        return messages
+    if messages and messages[0].get("role") == "system" and isinstance(messages[0].get("content"), str):
+        return [{**messages[0], "content": f"{messages[0]['content']}\n\n{hint}"}, *messages[1:]]
+    return [{"role": "system", "content": hint}, *messages]
 
 
 def _tool_content(payload: Any, limit: int) -> str:
