@@ -706,14 +706,31 @@ async def complete_with_web(cfg, messages: list[dict]) -> str:
     出典は返さない。呼ぶ側は本文しか受け取らないので、URL が要るなら本文に書かせる
     (道具の説明文にタイトル・要約・URL が返ると書いてある)。
     """
-    tools = [websearch.TOOL_SPEC]
+    return await complete_with_tools(cfg, messages, web=True)
+
+
+async def complete_with_tools(
+    cfg, messages: list[dict], app=None, knowledge: bool = False, web: bool = False,
+) -> str:
+    """道具を渡して往復を回し、答えの本文を返す(`/v1/ai/complete` の `knowledge` / `web` 用)。
+
+    `knowledge` は Chiezo の知識を読む道具(search / doc など。書き込みと生成は渡さない)、
+    `web` は Chiezo の web 検索。どちらも API で直に叩く相手のためのもの —— CLI ブリッジで
+    包んだ相手は MCP で Chiezo に繋がっていて、自前の web 検索も持つので、ここを通さない。
+
+    呼ぶ側のプロンプト(キャラ設定など)はそのまま渡す。 道具を使うかはモデルが決め、
+    要らなければ 1 往復で終わる(知識を引かない会話が遅くならない)。
+    """
+    tools = await tool_specs(app, web=web) if knowledge else []
+    if web and not knowledge:
+        tools = [websearch.TOOL_SPEC]
     convo = list(messages)
     called: dict[str, Any] = {}
     deadline = asyncio.get_running_loop().time() + cfg.agent_timeout
 
     for step in range(cfg.agent_max_steps):
         if asyncio.get_running_loop().time() > deadline:
-            log.info("complete_with_web: out of time after %d step(s)", step)
+            log.info("complete_with_tools: out of time after %d step(s)", step)
             break
         message = await answer.complete_message(cfg, convo, tools=tools)
         calls = message.get("tool_calls") or []
@@ -725,20 +742,23 @@ async def complete_with_web(cfg, messages: list[dict]) -> str:
             fn = call.get("function") or {}
             name = fn.get("name") or ""
             arguments, why = _parse_arguments(fn.get("arguments"))
-            if name != websearch.TOOL_NAME:
-                # 渡していない道具を呼ばれたら、その旨を返して続けさせる(落とさない)
-                payload: Any = {"error": f"unknown tool: {name}"}
-            elif arguments is None:
-                payload = {"error": why}
+            if arguments is None:
+                payload: Any = {"error": why}
             else:
-                q = str(arguments.get("q", "")).strip()
-                # 同じ検索は外へ出さない。 ループはモデルの気分で何度でも呼ぶ
-                # (agent ループが同じ理由で入れている)。
-                if q in called:
-                    payload = called[q]
+                # 同じ引き方は 2 度しない。 ループはモデルの気分で何度でも呼ぶ
+                # (agent ループが同じ理由で入れている)
+                key = f"{name}:{json.dumps(arguments, ensure_ascii=False, sort_keys=True)}"
+                if key in called:
+                    payload = called[key]
+                elif name == websearch.TOOL_NAME and web:
+                    payload = await websearch.search(str(arguments.get("q", "")).strip())
+                    called[key] = payload
+                elif knowledge and name in KNOWLEDGE_TOOLS:
+                    _ok, payload = await execute(app, name, arguments)
+                    called[key] = payload
                 else:
-                    payload = await websearch.search(q)
-                    called[q] = payload
+                    # 渡していない道具を呼ばれたら、その旨を返して続けさせる(落とさない)
+                    payload = {"error": f"unknown tool: {name}"}
             convo.append({
                 "role": "tool",
                 "tool_call_id": call.get("id", ""),
@@ -746,7 +766,7 @@ async def complete_with_web(cfg, messages: list[dict]) -> str:
                 "content": _tool_content(payload, cfg.agent_tool_chars),
             })
     else:
-        log.info("complete_with_web: step budget (%d) exhausted", cfg.agent_max_steps)
+        log.info("complete_with_tools: step budget (%d) exhausted", cfg.agent_max_steps)
 
     # 予算か締め切りを使い切った場合。道具を渡さずにもう 1 回だけ聞く
     # (ここで打ち切ると、調べただけで何も答えないまま終わってしまう)。

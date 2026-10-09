@@ -156,6 +156,55 @@ class TestComplete:
         assert res.status_code == 400
 
 
+class TestCompleteKnowledge:
+    """Chiezo の知識を読む道具を渡す口(`knowledge=true`)。
+
+    キャラクターと話すアプリのように、自分のプロンプトで頼みつつ知識も引かせたい呼び手のため。
+    CLI ブリッジの相手は MCP で繋がっているので、ここで道具を貸すのは API の相手だけ。
+    """
+
+    def test_knowledge_is_off_by_default(self, monkeypatch_env):
+        fake = ToolLLM("はい")
+        with make_client(monkeypatch_env, fake) as client:
+            res = complete(client, messages=[{"role": "user", "content": "やあ"}])
+
+        assert res.json()["knowledge"] is False
+        assert "tools" not in fake.requests[0]
+
+    def test_knowledge_lends_the_read_tools_and_runs_them(self, monkeypatch_env):
+        fake = ToolLLM([("search", {"source": "jawiki", "q": "浅草寺"})], "浅草寺は台東区のお寺だよ。")
+        with make_client(monkeypatch_env, fake) as client:
+            res = complete(
+                client,
+                messages=[
+                    {"role": "system", "content": "あなたは千鳥です。"},
+                    {"role": "user", "content": "浅草寺って?"},
+                ],
+                knowledge=True,
+            )
+
+        assert res.status_code == 200
+        assert res.json()["content"] == "浅草寺は台東区のお寺だよ。"
+        assert res.json()["knowledge"] is True
+        names = {t["function"]["name"] for t in fake.requests[0]["tools"]}
+        assert {"search", "doc"} <= names
+        # 書き込み・生成の道具は貸さない
+        assert not names & {"remember", "forget", "image_generate"}
+        # 呼ぶ側のプロンプトはそのまま渡り、道具の結果が積まれて 2 往復目に届く
+        assert fake.requests[0]["messages"][0]["content"] == "あなたは千鳥です。"
+        tool_messages = [m for m in fake.requests[1]["messages"] if m["role"] == "tool"]
+        assert tool_messages and tool_messages[0]["name"] == "search"
+
+    def test_no_tool_call_means_one_round_trip(self, monkeypatch_env):
+        """知識が要らない会話は 1 往復で終わる(遅くならない)。"""
+        fake = ToolLLM("こんにちは!")
+        with make_client(monkeypatch_env, fake) as client:
+            res = complete(client, messages=[{"role": "user", "content": "やあ"}], knowledge=True)
+
+        assert res.json()["content"] == "こんにちは!"
+        assert len(fake.requests) == 1
+
+
 class TestCompleteWeb:
     """相手自身の web 検索を開ける口(`web=true`)。
 
