@@ -251,8 +251,22 @@ def is_enabled() -> bool:
 
 
 def notes_path(store: str = SOURCE_NAME) -> Path | None:
+    """置き場の DB のパス。無効なら None。
+
+    **置き場の名前は URL から来る**(`/v1/stores/{name}`)ので、名前の規則に合うものだけを
+    通し、組み立てたパスが `CHIEZO_NOTES_DIR` の直下に収まることも確かめる —— 「..」などで
+    外のファイル(取り込んだソースの DB など)を指されないように。
+    """
     directory = notes_dir()
-    return directory / f"{store}.db" if directory else None
+    if directory is None:
+        return None
+    if not STORE_NAME_RE.fullmatch(store):
+        raise HTTPException(404, {"error": f"置き場「{store}」はありません"})
+    base = os.path.normpath(directory)
+    full = os.path.normpath(os.path.join(base, f"{store}.db"))
+    if not full.startswith(base + os.sep):
+        raise HTTPException(404, {"error": f"置き場「{store}」はありません"})
+    return Path(full)
 
 
 def require_path(store: str = SOURCE_NAME) -> Path:
@@ -347,6 +361,8 @@ def store_names() -> list[str]:
 
 def is_store(name: str) -> bool:
     """書き込める置き場か(短期記憶そのものと、名前付きの置き場)。"""
+    if not STORE_NAME_RE.fullmatch(name):
+        return False
     path = notes_path(name)
     return path is not None and path.is_file()
 
