@@ -1948,6 +1948,169 @@ def remove(name: str) -> None:
     workers.forget(name)
 
 
+# ---- 名前を変える ---------------------------------------------------------------
+#
+# 収集の名前は、焼いた先のソース名でもある(`/v1/<名前>/…`・`corpus/<名前>.db`)。
+# 変えるときは**溜めたもの・進み具合・履歴ごと新しい名前へ移し、元の名前は残さない**
+# (別名は持たない —— 2 つの名前で同じものが引けると、どちらが正なのか読む側が迷う)。
+# 焼いたファイルは取り込み側(chiezo-trigger)が動かす。こちらはその前に断る理由を
+# 全部確かめ、動いたあとで定義・指定・控えを書き換える。
+
+
+def require_renamable(name: str, new_name: str, taken=()) -> Collection:
+    """名前を変えてよいか確かめる。**断る理由があれば、何も動かす前に断る**。
+
+    `taken` は収集の外で既に使われている名前(焼いてあるソース・取り込みの
+    カタログに載っているソース)。呼ぶ側が集めて渡す。
+    """
+    item = get(name)
+    if not NAME_RE.match(new_name or ""):
+        raise HTTPException(400, {
+            "error": "新しい名前は英小文字で始まる 2〜31 文字(英小文字・数字・_)にしてください",
+            "reason": "ソース名・ファイル名・URL にそのまま使うため",
+        })
+    if new_name == name:
+        raise HTTPException(400, {"error": "新しい名前がいまの名前と同じです"})
+    if machine_store.get(DEFS_KIND, new_name) is not None:
+        raise HTTPException(409, {"error": f"収集「{new_name}」はすでにあります"})
+    if (
+        new_name in {notes.SOURCE_NAME, machine_store.SOURCE_NAME, "memory", DEFS_KEY}
+        or notes.is_store(new_name)
+        or new_name in set(taken)
+    ):
+        raise HTTPException(409, {"error": f"「{new_name}」は既存のソース名なので使えません"})
+    # **動いている・動く予定のある収集は断る。** 走っている 1 回は元の名前で焼き、
+    # 待ち行列や「次の 1 回」の控えは元の名前を抱えている —— 名前を変えた瞬間に
+    # 行き先を失う(止めて、流れ終わってから変える)
+    if item.enabled:
+        raise HTTPException(409, {
+            "error": f"収集「{name}」は動いています",
+            "hint": "先に「止める」を押し、走っている回が終わってから名前を変えてください",
+        })
+    waiting_on = [
+        label for label, on in (
+            ("起こしてある巡回", item.pending_sweep),
+            ("割り込みの依頼", item.pending_focus),
+            ("次の 1 回の上書き", item.pending_run),
+        ) if on
+    ]
+    from app import ingest_queue, repartition_job
+
+    if workers.holds(name):
+        waiting_on.append("ワーカーの待ち行列")
+    if ingest_queue.holds(name):
+        waiting_on.append("取り込みの待ち行列")
+    if repartition_job.running(name):
+        waiting_on.append("区画の割り直し")
+    if waiting_on:
+        raise HTTPException(409, {
+            "error": f"収集「{name}」には、まだ流れていないものがあります: {'・'.join(waiting_on)}",
+            "hint": "流れ終わってから(または待ち行列から外してから)名前を変えてください",
+        })
+    # **元の記録を名指す鍵(`identity`)で、この収集から引いている収集があれば断る** ——
+    # 鍵は `<ソース名>:鍵=値` の形で焼いた文書の脇書きに入っていて(`extract.record_key`)、
+    # 名前を変えると突き合わせが外れ、同じ 1 件が別の 1 件として増える。
+    # 焼いた文書の書き換えまではしない
+    if keyed := [c.name for c in load() if _keys_by_identity(c, name)]:
+        raise HTTPException(409, {
+            "error": f"収集「{'」「'.join(keyed)}」が「{name}」から元の記録の鍵(identity)で"
+                     "引いているので、名前を変えられません",
+            "hint": "鍵はソース名を頭に付けて焼いた文書に入っています。名前を変えると"
+                    "突き合わせが外れて、同じ 1 件が増えます",
+        })
+    return item
+
+
+def _keys_by_identity(item: Collection, source: str) -> bool:
+    return any(
+        spec.get("source") == source and spec.get("identity")
+        for spec in extraction.specs(item.extract) if isinstance(spec, dict)
+    )
+
+
+def _with_source_renamed(item: Collection, name: str, new_name: str) -> Collection | None:
+    """指定の中で `name` を指しているところを `new_name` に書き換えた 1 件。
+    書き換えるところが無ければ None。
+
+    見るのは、別のソースを名指せる 4 か所 —— 材料(`material`)・抽出(`extract`)・
+    区画の母集団(`partition`)・タグの確かめ(`verify_tags`)。
+    """
+    def swap(spec):
+        if isinstance(spec, dict) and spec.get("source") == name:
+            return {**spec, "source": new_name}
+        return spec
+
+    extract = (
+        [swap(one) for one in item.extract] if isinstance(item.extract, list)
+        else swap(item.extract)
+    )
+    changed = replace(
+        item,
+        material=swap(item.material),
+        extract=extract,
+        partition=swap(item.partition),
+        verify_tags=[swap(one) for one in item.verify_tags],
+    )
+    return changed if changed != item else None
+
+
+def rename(name: str, new_name: str, *, taken=(), move=None) -> Collection:
+    """収集の名前を変える。**溜めたもの・進み具合・履歴を持ち越し、元の名前は残さない**。
+
+    順番:
+
+    1. 断る理由を全部確かめる(`require_renamable`)
+    2. 焼いたファイルを動かす(`move(name, new_name)`。取り込み側にしかできない)。
+       **ここで断られたら、こちらは何も変えない**
+    3. 定義(進み具合ごと)・他の収集からの指定・検索文の控え・手で回す束・
+       割り直しの控え・変更履歴を新しい名前へ移す
+
+    3 で落ちたら、**ファイルはもう新しい名前にある**ことを言って 500 で返す
+    (黙って元の名前の定義を残すと、焼いたものの無い収集が 1 つ残ったように見える)。
+    AI の呼び出しの控え(`collect:<名前>`)は当時の記録なので書き換えない。
+    """
+    require_renamable(name, new_name, taken)
+    if move is not None:
+        move(name, new_name)
+    try:
+        return _move_records(name, new_name)
+    except Exception as e:
+        log.exception("renamed the baked files of %s to %s, but the records did not follow",
+                      name, new_name)
+        raise HTTPException(500, {
+            "error": f"焼いたものは「{new_name}」へ移しましたが、収集の設定を書き換える途中で"
+                     "落ちました",
+            "reason": type(e).__name__,
+            "hint": f"焼いたものはもう「{name}」には戻りません。収集の一覧で「{name}」と"
+                    f"「{new_name}」のどちらに設定が残っているかを確かめてください",
+        }) from None
+
+
+def _move_records(name: str, new_name: str) -> Collection:
+    """設定の側を新しい名前へ移す(焼いたファイルは動いたあと)。"""
+    from app import handoff, repartition_job
+
+    item = get(name)
+    now = _iso(_now())
+    # **新しい名前で置いてから、元の名前を落とす**(逆だと、間で落ちたときに定義ごと消える)
+    renamed = replace(item, name=new_name, updated_at=now)
+    renamed = _with_source_renamed(renamed, name, new_name) or renamed
+    _put_one(renamed)
+    machine_store.drop(DEFS_KIND, name)
+    _descriptions.pop(name, None)
+    # **他の収集からの指定も書き換える** —— 材料や名簿に読んでいた収集が、
+    # 名前を変えた途端に「ソースがありません」で回らなくなる
+    for other in load():
+        if other.name != new_name and (changed := _with_source_renamed(other, name, new_name)):
+            _put_one(replace(changed, updated_at=now))
+    search_queries.rename(name, new_name)
+    handoff.rename(name, new_name)
+    repartition_job.rename(name, new_name)
+    collect_log.rename(name, new_name)
+    log.info("renamed collection %s -> %s", name, new_name)
+    return renamed
+
+
 # ---- 溜め先(コアスキーマの DB。notes と同じ形)---------------------------------
 
 

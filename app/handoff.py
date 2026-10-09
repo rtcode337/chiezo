@@ -210,6 +210,20 @@ def drop(name: str) -> None:
             path.unlink()
 
 
+def rename(name: str, new_name: str) -> None:
+    """束を新しい名前へ移す(収集の名前を変えたとき)。**答え待ちの束も持ち越す** ——
+    手で回している最中に名前を変えても、貼った答えは新しい名前で焼ける。"""
+    body = machine_store.get(KIND, name)
+    if body is None:
+        return
+    for old, new in ((_body_path(name), _body_path(new_name)),
+                     (_answer_path(name), _answer_path(new_name))):
+        if old is not None and new is not None and old.exists():
+            old.replace(new)
+    machine_store.put(KIND, new_name, body)
+    machine_store.drop(KIND, name)
+
+
 def waiting(name: str) -> bool:
     """答え待ちの束があるか(答えが入ったものは、まだ焼いていなくても除く)。"""
     meta = get(name)

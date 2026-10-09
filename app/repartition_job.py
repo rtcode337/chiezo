@@ -120,6 +120,14 @@ def fail(name: str, why: str) -> None:
     _save(found)
 
 
+def rename(name: str, new_name: str) -> None:
+    """控えを新しい名前へ移す(収集の名前を変えたとき)。"""
+    found = _all()
+    if name in found:
+        found[new_name] = found.pop(name)
+        _save(found)
+
+
 def run(name: str, sources: dict) -> None:
     """割り直しを 1 本走らせて、結果を控える。**呼ぶ側は待たない**。
 

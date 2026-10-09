@@ -321,3 +321,20 @@ def forget(name: str) -> None:
         return
     with suppress(sqlite3.Error), _connect(path) as conn:
         conn.execute("DELETE FROM collect_runs WHERE name = ?", (name,))
+
+
+def rename(name: str, new_name: str) -> None:
+    """収集の名前を変えたときに、その履歴も新しい名前へ付け替える。
+
+    **落とさずに移す** —— 消したときと違い同じ収集が続いているので、
+    名前を変える前に足した・消したものも、その収集の履歴として読めたほうがよい。
+    """
+    path = db_path()
+    if path is None or not path.exists():
+        return
+    conn = _connect(path)
+    try:
+        with conn:
+            conn.execute("UPDATE collect_runs SET name = ? WHERE name = ?", (new_name, name))
+    finally:
+        conn.close()

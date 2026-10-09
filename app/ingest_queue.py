@@ -362,6 +362,12 @@ def drop(collection: str, sweep: str) -> None:
     _mutate(change)
 
 
+def holds(collection: str) -> bool:
+    """その収集が待っている・走っている(と控えてある)か(名前を変える前に見る)。"""
+    state = _state()
+    return any(e.get("collection") == collection for key in ("waiting", "running") for e in state[key])
+
+
 def forget(collection: str) -> None:
     """消した収集を、待ちからも控えからも外す。"""
 
