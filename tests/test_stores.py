@@ -88,6 +88,17 @@ class TestReadWrite:
         assert store.post("/v1/stores/chidorii", json={"text": "x"}).status_code == 404
         assert store.get("/v1/stores/chidorii/recall").status_code == 404
 
+    def test_a_name_outside_the_rule_cannot_point_at_other_files(self, store, notes_dir):
+        """置き場の名前は URL から来る。規則に合わない名前でほかのファイルを指させない。"""
+        from app import notes
+
+        # 置き場の並びの外に、それらしい DB を置いておく
+        (notes_dir.parent / "outside.db").write_bytes(b"")
+        for name in ("..", "Chidori", "chidori-x", "%2E%2E"):
+            assert store.get(f"/v1/stores/{name}/recall").status_code == 404, name
+            assert store.post(f"/v1/stores/{name}", json={"text": "x"}).status_code == 404, name
+        assert not notes.is_store("../outside")
+
     def test_a_store_cannot_be_deleted(self, store):
         """取り込みで焼き直せないので、消したら中身がどこにも無くなる。"""
         from app import registry
