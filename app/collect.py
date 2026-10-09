@@ -1671,7 +1671,7 @@ def description_of(name: str) -> str:
     """収集の説明。無い・読めないときは空(ソースの一覧が、壊れた定義 1 つで返らなくならないように)。"""
     try:
         stamp = machine_store.updated_at(DEFS_KIND, name)
-    except Exception:  # noqa: BLE001 - 一覧の一言のためだけに一覧ごと落とさない
+    except Exception:  # 一覧の一言のためだけに一覧ごと落とさない
         return ""
     cached = _descriptions.get(name)
     if cached and cached[0] == stamp:
