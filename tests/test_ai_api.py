@@ -177,7 +177,7 @@ class TestCompleteKnowledge:
             res = complete(
                 client,
                 messages=[
-                    {"role": "system", "content": "あなたは千鳥です。"},
+                    {"role": "system", "content": "あなたはサンプルです。"},
                     {"role": "user", "content": "浅草寺って?"},
                 ],
                 knowledge=True,
@@ -192,7 +192,7 @@ class TestCompleteKnowledge:
         assert not names & {"remember", "forget", "image_generate"}
         # 呼ぶ側のプロンプトはそのまま渡り、道具の結果が積まれて 2 往復目に届く
         system = fake.requests[0]["messages"][0]["content"]
-        assert system.startswith("あなたは千鳥です。")
+        assert system.startswith("あなたはサンプルです。")
         # どこに何があるかを sources で確かめるよう、一言が足される
         assert "sources" in system
         tool_messages = [m for m in fake.requests[1]["messages"] if m["role"] == "tool"]

@@ -302,7 +302,7 @@ class TestLive:
 class TestSweep:
     def _item(self, **sweep):
         return collect.Collection(
-            name="tazuna_pihole", description="", prompt="{unreviewed}", interval_minutes=60,
+            name="myapp_pihole", description="", prompt="{unreviewed}", interval_minutes=60,
             enabled=False, backend=None, model=None, effort=None, web=False, cursor="",
             created_at="", updated_at="",
             sweeps=[{"name": "機械収集", "use_pihole": True, "only_new": True, **sweep}],

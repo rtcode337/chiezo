@@ -2262,10 +2262,10 @@ class TestTheRoundShowsWhatAlreadyFinished:
             ],
         )
 
-        [row] = admin._round_done(self._job("tazuna_meals"))
+        [row] = admin._round_done(self._job("myapp_meals"))
 
         assert row["state"] == "終わった"
-        assert row["caller"] == "collect:tazuna_meals"
+        assert row["caller"] == "collect:myapp_meals"
 
     def test_it_asks_from_when_the_round_started(self, monkeypatch):
         """**前の回のぶんまで引っ張ってきては意味が変わる。**"""
@@ -2278,7 +2278,7 @@ class TestTheRoundShowsWhatAlreadyFinished:
             lambda caller, since, limit=100: asked.update(since=since) or [],
         )
 
-        admin._round_done(self._job("tazuna_meals", "2026-09-23T01:23:00+00:00"))
+        admin._round_done(self._job("myapp_meals", "2026-09-23T01:23:00+00:00"))
 
         assert asked["since"] == "2026-09-23T01:23:00+00:00"
 
@@ -2294,7 +2294,7 @@ class TestTheRoundShowsWhatAlreadyFinished:
         from app.views import admin
 
         assert admin._round_done(None) == []
-        assert admin._round_done({"state": "done", "source": "tazuna_meals"}) == []
+        assert admin._round_done({"state": "done", "source": "myapp_meals"}) == []
 
     def test_the_running_one_comes_first(self):
         """走っているものが先頭に来ていないと、いちばん知りたい
@@ -2507,7 +2507,7 @@ class TestNotBakingOverWhatCannotBeRead:
 class TestRunningOnePartitionFromOutside:
     """**区画を名指しして 1 回走らせる。**
 
-    外のアプリ（tazuna）の区画の地図から「ここを 1 回見て」と頼む道。
+    外のアプリの区画の地図から「ここを 1 回見て」と頼む道。
     割り込みとは別物で、**ふつうの回として走る** —— 印が付き、進み具合も進む。
     あちらは進み具合を動かさないので、押しても画面が変わらず「何も起きない」と見えた。
     """

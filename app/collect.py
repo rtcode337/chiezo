@@ -494,7 +494,7 @@ class Collection:
     links: bool = False
     extract: dict | list[dict] | None = None
     # **材料に使う別のソース**(`{material}` で差し込む)。
-    # `{"source": "tazuna_tech", "tag": "ニュース,記事", "limit": 60}` と書くと、
+    # `{"source": "myapp_tech", "tag": "ニュース,記事", "limit": 60}` と書くと、
     # **前回この巡回が走ってから**そのソースに入ったものが渡る。
     # **中身は写さない** —— 読むだけで、この収集に溜まるのは AI が返したものだけ
     material: dict | None = None
@@ -1424,7 +1424,7 @@ def normalize_material(raw) -> dict | None:
     if not source:
         raise HTTPException(400, {
             "error": "material.source(材料に読むソース名)を入れてください",
-            "hint": "例: {\"source\": \"tazuna_tech\", \"tag\": \"ニュース,記事\"}",
+            "hint": "例: {\"source\": \"myapp_tech\", \"tag\": \"ニュース,記事\"}",
         })
     limit = raw.get("limit")
     try:

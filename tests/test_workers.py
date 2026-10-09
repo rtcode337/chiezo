@@ -388,7 +388,7 @@ class TestRenamingAWorker:
         """行列の鍵も id。名前で分けていた頃は、積んであったぶんが古い名前の下に
         取り残されて誰も流さなかった。"""
         made = self._saved()
-        workers.enqueue(made.key, "tazuna_meals", "整理", "2026-09-24T00:00:00+00:00")
+        workers.enqueue(made.key, "myapp_meals", "整理", "2026-09-24T00:00:00+00:00")
         workers.save(workers.merged(workers.load(), made.key, "じっくり", made.steps))
 
         assert [e["sweep"] for e in workers.queued(made.key)] == ["整理"]
@@ -426,7 +426,7 @@ def _collection():
     from app import collect
 
     return collect.Collection(
-        name="tazuna_painters", description="", prompt="育てて", interval_minutes=60,
+        name="myapp_painters", description="", prompt="育てて", interval_minutes=60,
         enabled=True, backend=None, model=None, effort=None, web=True, cursor="",
         created_at="", updated_at="",
     )
@@ -448,7 +448,7 @@ class TestTheQueue:
     いるあいだに何度も予定が来る。
     """
 
-    def _entry(self, collection="tazuna_painters", sweep="精査"):
+    def _entry(self, collection="myapp_painters", sweep="精査"):
         return {"collection": collection, "sweep": sweep}
 
     def test_nothing_queued_is_nothing_queued(self, enabled):
@@ -456,12 +456,12 @@ class TestTheQueue:
 
     def test_it_goes_in_once(self, enabled):
         """**二重に積まない** —— 同じ回が 2 本走ることになる。"""
-        assert workers.enqueue("精査", "tazuna_painters", "精査", "2026-01-01T00:00:00+00:00")
-        assert not workers.enqueue("精査", "tazuna_painters", "精査", "2026-01-01T01:00:00+00:00")
+        assert workers.enqueue("精査", "myapp_painters", "精査", "2026-01-01T00:00:00+00:00")
+        assert not workers.enqueue("精査", "myapp_painters", "精査", "2026-01-01T01:00:00+00:00")
 
         assert [
             (e["collection"], e["sweep"]) for e in workers.queued("精査")
-        ] == [("tazuna_painters", "精査")]
+        ] == [("myapp_painters", "精査")]
 
     def test_a_claim_takes_at_most_its_share(self, enabled):
         for i in range(5):
@@ -504,7 +504,7 @@ class TestTheQueue:
 
     def test_the_settings_form_does_not_wipe_the_queue(self, enabled):
         """**行列は定義と別の置き場**。同じ控えに入れると、編集のたびに消える。"""
-        workers.enqueue("精査", "tazuna_painters", "精査", "2026-01-01T00:00:00+00:00")
+        workers.enqueue("精査", "myapp_painters", "精査", "2026-01-01T00:00:00+00:00")
 
         workers.save([workers.Worker("精査", (workers.Step("codex"),))])
 
@@ -1182,13 +1182,13 @@ class TestNotStartingOnTopOfARunningOne:
 
         from app import main
 
-        self._busy(monkeypatch, "tazuna_meals")
+        self._busy(monkeypatch, "myapp_meals")
 
         with pytest.raises(fastapi.HTTPException) as got:
             main.start_collection_bake("news", "整理")
 
         assert got.value.status_code == 409
-        assert "tazuna_meals" in got.value.detail["error"]
+        assert "myapp_meals" in got.value.detail["error"]
 
     def test_the_pending_mark_is_left_alone(self, collection, monkeypatch):
         """**断られた回の控えを残さない。** 残すと、走っている取り込みが
@@ -1199,7 +1199,7 @@ class TestNotStartingOnTopOfARunningOne:
         from app import main
 
         collection.mark_pending("news", "ざっと")
-        self._busy(monkeypatch, "tazuna_meals")
+        self._busy(monkeypatch, "myapp_meals")
 
         with pytest.raises(fastapi.HTTPException):
             main.start_collection_bake("news", "整理")
@@ -1259,7 +1259,7 @@ class TestNotStartingOnTopOfARunningOne:
 
         _define(monkeypatch, tmp_path, "news", "ざっと")
         monkeypatch.setattr("app.views.admin.TRIGGER_URL", "http://trigger")
-        self._busy(monkeypatch, "tazuna_meals")
+        self._busy(monkeypatch, "myapp_meals")
         workers.save([workers.Worker("精査", (workers.Step("codex"),))])
         _quota("codex", 10.0)
         workers.enqueue("精査", "news", "ざっと", "2026-01-01T00:00:00+00:00")
@@ -1635,7 +1635,7 @@ class TestPickingAWorkerAsTheBackend:
 
 
 class TestAskingForOneFromOutside:
-    """外のアプリ(tazuna など)が、収集を頼むときにワーカーを名指しできること。
+    """外のアプリが、収集を頼むときにワーカーを名指しできること。
 
     **一覧に無いものは選ばせようがない。** 相手の一覧に混ぜないと、ワーカーに頼む
     巡回は Chiezo の画面からしか作れない機能になる。
