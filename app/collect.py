@@ -1816,8 +1816,16 @@ def update(name: str, **fields) -> Collection:
         "backend", "model", "effort", "web", "cursor", "keep_ratio", "extract",
         "partition", "partitions", "sweeps", "feed", "verify_tags",
         "kind", "keep_days", "material", "thumbs", "links", "locked_doubt_tag",
+        # **依頼元の名乗りも送り直しで変えられる**(アプリが名前を改めたとき。作ったときの
+        # 名乗りのまま残ると、管理画面の依頼元と使用量の行が前の名前のまま並ぶ)
+        "requested_by",
     }
     patch = {k: v for k, v in fields.items() if k in allowed and v is not None}
+    if "requested_by" in patch:
+        # 空の名乗りでは消さない(送り直しで名乗りを書かない相手がいる)
+        named = str(patch.pop("requested_by")).strip()[:80]
+        if named:
+            patch["requested_by"] = named
     if "interval_minutes" in patch:
         patch["interval_minutes"] = max(int(patch["interval_minutes"]), MIN_INTERVAL_MINUTES)
     if "keep_ratio" in patch:
