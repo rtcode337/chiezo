@@ -105,6 +105,10 @@ class Provider:
     # 画面に出す順。 絵と音だけの相手(`media_providers.MediaProvider.order`)と同じ物差しで、
     # 設定の表は両方を混ぜてこの数で並べる
     order: int = 0
+    # 流すとき(stream)に `stream_options: {"include_usage": true}` を送る相手か。
+    # **送らないと、流した回の使ったトークン数が返らない**(OpenAI 互換の決まり)。
+    # 知らない項目を 400 で断る相手がいるので、受け取ると確かめた相手にだけ立てる
+    stream_usage: bool = False
 
 
 # 並び順は**頼みたい順**:「定額の CLI ブリッジ」→「従量課金・無料枠の API」→「同居の推論サーバ」。
@@ -148,6 +152,9 @@ PROVIDERS: tuple[Provider, ...] = (
         # 受けて先に置いたもので、chat/completions で通るかはまだ確かめていない。
         # 通らなければ 3.7 を先頭に戻す。
         models=("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite"),
+        # 流した回のトークン数は頼まないと返らない(使用量が「不明」になっていた)。
+        # 公式の OpenAI 互換の例(ai.google.dev/gemini-api/docs/openai)が送っている
+        stream_usage=True,
         # 枠を聞く口は無い。残量は Google Cloud の Quotas API 側にあり、
         # API キー 1 本では引けない（GCP のプロジェクトと別の認証が要る）。
         order=22,

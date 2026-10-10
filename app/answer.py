@@ -712,6 +712,9 @@ def _payload(cfg: Settings, messages: list[dict], *, stream: bool, **extra) -> d
     # 400 で弾く相手がいるので、使わない機能を毎回載せない。
     if cfg.effort:
         payload["reasoning_effort"] = cfg.effort
+    # 流した回のトークン数を締めのフレームに載せてもらう(受け取る相手だけ。`Provider.stream_usage`)
+    if stream and (spec := providers.get(cfg.name)) is not None and spec.stream_usage:
+        payload["stream_options"] = {"include_usage": True}
     return payload
 
 
@@ -1201,8 +1204,8 @@ async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator
                         if delta:
                             sent += len(delta.encode())
                             yield delta
-                    # 流し切ったら 1 回ぶん残す。 **こちらから `stream_options` は送らない**
-                    # (送ると 400 で断る相手がいる)ので、載っていれば拾い、
+                    # 流し切ったら 1 回ぶん残す。 **`stream_options` は受け取る相手にだけ送る**
+                    # (送ると 400 で断る相手がいる。`Provider.stream_usage`)ので、載っていれば拾い、
                     # 載っていなければ**流したぶんの大きさと時間**で目方を残す ——
                     # CLI ブリッジは締めのフレームに載せてくる。数えるのはこちらを
                     # 通った差分だけなので、どちらでも中身を持たずに済む。

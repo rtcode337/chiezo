@@ -1348,6 +1348,24 @@ class TestEffort:
         )
         assert "reasoning_effort" not in answer._payload(bare, [], stream=False)
 
+    def test_stream_usage_is_asked_only_of_providers_that_accept_it(self):
+        """流した回のトークン数は頼まないと返らない。受け取る相手(Gemini)にだけ頼む。"""
+        from app import answer
+
+        def cfg(name):
+            return answer.Settings(
+                url="http://x/v1", model="m", api_key=None, timeout=1.0, docs=1,
+                max_chars=1, agent_max_steps=1, agent_tool_chars=200, agent_timeout=1.0,
+                name=name,
+            )
+
+        assert answer._payload(cfg("gemini"), [], stream=True)["stream_options"] == {
+            "include_usage": True
+        }
+        # 流さない回と、知らない項目を断りうる相手には送らない
+        assert "stream_options" not in answer._payload(cfg("gemini"), [], stream=False)
+        assert "stream_options" not in answer._payload(cfg("claude"), [], stream=True)
+
     def test_unknown_values_fall_back_to_the_default(self):
         """相手が検証してくれないので、知らない値はここで落とす。"""
         from app import answer
