@@ -3368,6 +3368,9 @@ class CollectionPatch(BaseModel):
     自分で動かせることになり、「依頼」を分けた意味が消える。
     """
 
+    requested_by: str | None = PydField(
+        None, description="依頼元の名乗り(作ったときと同じ。アプリが名前を改めたら送り直す)"
+    )
     description: str | None = None
     prompt: str | None = None
     interval_minutes: int | None = None
