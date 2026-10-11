@@ -174,7 +174,7 @@ def _worker_from(raw) -> Worker | None:
     if not isinstance(raw, dict):
         return None
     name = str(raw.get("name") or "").strip()
-    if not NAME_RE.match(name):
+    if not NAME_RE.fullmatch(name):
         return None
     steps = tuple(s for s in (_step_from(r) for r in raw.get("steps") or []) if s)
     return Worker(

@@ -377,7 +377,7 @@ def create_store(name: str, taken: set[str]) -> dict:
     """
     if notes_dir() is None:
         require_path()  # 無効なら 503(短期記憶と同じ断り方)
-    if not STORE_NAME_RE.match(name):
+    if not STORE_NAME_RE.fullmatch(name):
         raise HTTPException(400, {
             "error": "name は英小文字で始まる 2〜31 文字(英小文字・数字・_)にしてください",
             "reason": "ソース名・ファイル名・URL にそのまま使うため",

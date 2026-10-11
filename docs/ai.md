@@ -281,6 +281,14 @@ docker compose -f docker-compose.yml -f docker-compose.comfyui.yml --profile com
 待ち受けは **7014**(7010 = API・7011 = 推論・7012 = 検索・7013 = CLI ブリッジの並び)。
 ComfyUI の既定は 8188 ですが、番号が食い違うと URL を書くたびに迷うので寄せてあります。
 
+**イメージは日付つきのタグで固定しています**(`yanwk/comfyui-boot:cu126-slim-<日付>`。
+`cu126-slim` は毎週差し替わるので、pull した日で中身が変わる)。上げるときはこのタグを
+書き換えます(`CHIEZO_IMAGE_IMAGE` で上書きも可)。このイメージは `/root` を置き場の前提に
+組んであり非 root に切り替える口が無いので、root のまま動かします。代わりに
+**ComfyUI-Manager の `security_level` を起動のたびに `normal` へ戻します**(compose の
+`command`。`weak` だと画面や API から任意の拡張 = 任意のコードを入れられる。設定は
+置き場の `ComfyUI/user/__manager/config.ini` にあり、手で緩めても次の起動で戻ります)。
+
 **GPU が別のマシンにあるなら、そちらで ComfyUI を動かして URL を渡すだけです**
 (`CHIEZO_IMAGE_URL=http://<GPUマシン>:7014`。素の ComfyUI を自分で動かしているなら
 その待ち受けポート、既定なら 8188)。推論サーバと同じ逃げ道です。
@@ -539,7 +547,8 @@ transcribe(path?, url?, backend?, model?, language?)
   返すことがあり、そのまま保存すると**拡張子も中身も再生できないファイル**になります
   (受け取った側は開くまで気づけません)
 - 文字起こしに渡せるのは **chiezo が作ったもの(`/media/…`)か、サーバーから届く URL** だけ
-  です。**頼んだ人の手元のファイルは渡せません** —— chiezo はコンテナの中で動いていて、
+  です。**URL は外のアドレスを指すものだけ**取りに行きます(手元・LAN のアドレスと、そこへの
+  転送は断る。Chiezo 自身の `/media/…` を URL で渡したときは置き場から読みます)。**頼んだ人の手元のファイルは渡せません** —— chiezo はコンテナの中で動いていて、
   そちらのディスクが見えないためです。自分のファイルは
   `POST /v1/media/transcribe` に multipart で送ります
 
@@ -700,9 +709,12 @@ docker compose exec searxng wget -qO- "http://localhost:7012/search?q=test&forma
 | Codex CLI | 同上 |
 | Antigravity CLI | ブリッジのコメントを外して起動 → **コンテナ内で1回サインイン** → on |
 
-**CLI の認証情報も管理画面から登録します。** ブリッジのコンテナが設定 DB（`/state`）を
-**読み取り専用でマウント**して、要求のたびに読むためです。chiezo-app に「トークンを返す口」を
+**CLI の認証情報も管理画面から登録します。** chiezo-app が登録のたびに、その相手の分だけを
+`data/state/bridge/<相手>/credential` へ書き出し、ブリッジはそのディレクトリを
+**読み取り専用でマウント**して要求のたびに読みます。chiezo-app に「トークンを返す口」を
 開けずに済むのが要点で、認証なしの LAN サービスにそんな口は足したくありません。
+**設定 DB(`data/state` そのもの)はブリッジに渡しません** —— 全部の相手の鍵が平文で
+入っていて、ブリッジの中で動くのは道具を持ったエージェントだからです。
 **登録し直してもブリッジの再起動は要りません。**
 
 **認証の失敗(401)が返った相手は、Chiezo が自分で無効にします。** 401 は認証情報を
@@ -817,11 +829,12 @@ chiezo の内部はどの相手も OpenAI 互換の形で話すので、HTTP の
 どの世代に解決されるかは CLI が決めます——頼んだ名前を控えていると、**古い CLI が
 1 世代前を選んでいても画面からは分かりません**（実際にそうなりました）。
 
-**CLI の版は下限で縛ります**（`bridge/Dockerfile` の `CODEX_MIN_VERSION` /
-`CLAUDE_MIN_VERSION`）。npm はその時点の最新を入れますが、**あの `RUN` は入力が
-変わらないのでビルドキャッシュに当たり、焼き直しても古い CLI のまま出来上がります**。
-下限を上げると層が作り直され、入った版がそれ未満ならビルドが失敗します。
-**片方にしか下限が無いと、もう片方は何度焼き直しても古いまま**です。
+**CLI の版は固定します**（`bridge/Dockerfile` の `CLAUDE_VERSION` / `CODEX_VERSION`。
+`npm install -g …@<版>`）。範囲で入れると焼いた日で中身が変わり、ブリッジが道具を絞るのに
+頼っている権限まわりのフラグの扱いが黙って動きます。上げるときはこの 2 つを書き換えます
+（Dependabot は npm install の版を追わないので、人が上げる）。入った版が固定した版と
+違えばビルドが失敗します。**agy だけはインストーラに版の指定が無い**ので、
+下限（`AGY_MIN_VERSION`）で「古いまま出来上がる」ことだけを防ぎます。
 
 **node の版が CLI の版の天井になります。** npm は `engines` に合う中でいちばん新しい
 版を選ぶので、取り出しのステージが古いと**黙って古い CLI が入ります**——実測で、
@@ -1234,8 +1247,19 @@ CLI によってはその手前のリダイレクトで接続ごと捨てます 
 回すのが本業だからです。Chiezo 側から見ると「1 回聞いたら答えが返る」ので、
 `rag` / `agent` の区別は関係なくなります。
 
-安全のために、**CLI の組み込みの道具（シェル・ファイルの読み書き・web 取得）は塞いで**
-あります（`--disallowed-tools`）。使えるのは Chiezo の MCP だけです。
+安全のために、**CLI の組み込みの道具（シェル・ファイルの読み書き・web 取得）は渡しません**。
+
+- **claude は許す道具を名指しします**（`--tools ToolSearch` + `--permission-mode dontAsk` +
+  `--allowed-tools mcp__chiezo`）。組み込みは ToolSearch だけで、許したもの以外は聞かずに
+  断られます。web 検索を頼まれた回だけ `WebSearch` / `WebFetch` を足します
+- **codex はシェルの道具を外します**（`--disable shell_tool --disable unified_exec`）。
+  `-s read-only` は「書かせない」であって「読ませない」ではないので、シェルが残っていると
+  コンテナ内のファイルを読めます
+- **agy は道具を名指しで許す口を持ちません**（1.2 系のフラグは
+  `--dangerously-skip-permissions` / `--mode` / `--sandbox` だけ）。print モードは確認の
+  対話を持たないので `--dangerously-skip-permissions` は外せず、守りは CLI の外で取ります ——
+  コンテナにはサインイン結果のホームしか渡さず、ネットワークも chiezo-app と外にしか
+  届かないもの（compose の `chiezo-ai`）にしてあります
 
 **Chiezo が動かしている CLI は、Chiezo に「作らせる」依頼を出せません**（403）。
 相手を指名して頼んでいるのに指名された側が別の相手へ回すと、誰が答えたのかも誰の枠を
@@ -1246,14 +1270,14 @@ CLI によってはその手前のリダイレクトで接続ごと捨てます 
 頼むのは通ります**（その相手が生成中のときを除く）。**読む道具（search / doc / filter）
 はそのまま使えます** —— ブリッジの値打ちはそこにあるので塞ぎません。
 
-**`--tools ""`（組み込みを全部切る指定）は使えません** —— これは MCP の道具まで消します。
-つまり「Chiezo の知識を引かせる」というブリッジの目的が黙って働かず、CLI が自分の記憶
-だけで答える状態になります（本番でそうなっていました）。**`ToolSearch` も塞げません**
-——MCP の道具はそこから読み込まれるためです。
+**`--tools ""`（組み込みを全部切る指定）は使えません** —— これは `ToolSearch` まで消し、
+MCP の道具はそこから読み込まれるので、Chiezo の知識も引けなくなります（以前それで、
+CLI が自分の記憶だけで答えていました）。`ToolSearch` だけを名指しすれば MCP は残ります。
 
-**塞ぐ一覧は取りこぼしうる**点に注意してください。組み込みの道具は CLI の版が上がるたび
-増え、**新しいものは既定で使えてしまいます**。`CHIEZO_BRIDGE_DISALLOWED_TOOLS` で
-差し替えられるので、CLI を上げたら見直してください。
+**以前は塞ぐ一覧（`--disallowed-tools`）を `bypassPermissions` と組み合わせていました。**
+一覧に無い道具は全部通るので、Grep・Glob のような読む道具が抜けていて、頼み方ひとつで
+設定 DB や `/proc/self/environ` を読めました。組み込みは CLI の版が上がるたびに増えるので、
+許す側の一覧に切り替えてあります。
 
 ### compose のファイルが無い環境で立てる
 
@@ -1262,12 +1286,16 @@ NAS のコンテナマネージャーのように**リポジトリを置けな�
 
 - **コンテナ名を `chiezo-bridge-<CLI 名>` にする**（`chiezo-bridge-claude` など）。
   Chiezo はこの名前で呼びに行きます（URL は `app/providers.py` に決め打ち）
-- **chiezo-app と同じ Docker ネットワークに繋ぐ**（名前で解決できないと届きません）
+- **chiezo-app と同じ Docker ネットワークに繋ぐ**（名前で解決できないと届きません）。
+  compose で立てた Chiezo なら **`chiezo-ai` のほう**（`<プロジェクト名>_chiezo-ai`）——
+  default のほうに繋ぐと、長期記憶へ書ける chiezo-trigger にも届いてしまいます
 
 ```bash
-# Claude Code CLI / Codex CLI —— 認証情報は設定 DB から読むので、読み取り専用で渡す
+# Claude Code CLI / Codex CLI —— 認証情報は chiezo-app が書き出した写しから読むので、
+# その相手の分のディレクトリだけを読み取り専用で渡す(設定 DB は渡さない)。
+# --group-add は写しを app と同じグループで読むため(app の GID。既定 10001)
 docker run -d --name chiezo-bridge-claude --network <chiezo と同じネットワーク> \
-  -v <state のパス>:/state:ro \
+  -v <state のパス>/bridge/claude:/credential:ro --group-add 10001 \
   -e CHIEZO_BRIDGE_CLI=claude -e CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp/knowledge/ \
   --restart unless-stopped ghcr.io/rtcode337/chiezo-bridge:latest
 ```
@@ -1488,28 +1516,20 @@ curl -s "$BASE/v1/talk/backends"                                   # up が true
 
 ### ブリッジを直接使う(認証情報の置き場を共有する)
 
-ブリッジは Chiezo 専用の部品ではありません。**認証情報の置き場を読み取り専用で共有**
-すれば、他のアプリからも同じ形で使えます。
-
-**表の形はこちらに合わせてもらいます**（`settings.db` の `provider_settings`）。
-問い合わせを相手ごとに変えられるようにすると、繋ぐ先のアプリの数だけ設定が増えるためで、
-ディレクトリを共有する取り込みのトリガー（`chiezo-trigger`）と同じ流儀です。
+ブリッジは Chiezo 専用の部品ではありません。**認証情報のファイルを読み取り専用で共有**
+すれば、他のアプリからも同じ形で使えます。中身は 1 ファイルに認証情報そのもの
+(claude はトークン、codex は auth.json の中身)だけを書きます。
 
 ```yaml
 volumes:
-  - ./state:/state:ro        # アプリ側が settings.db を書くディレクトリ
+  - ./bridge-credential/claude:/credential:ro   # 中に credential という名前のファイルを置く
 environment:
   - CHIEZO_BRIDGE_MCP_URL=   # Chiezo の知識は引かない場合
 ```
 
-```sql
--- アプリ側が用意する表（Chiezo と同じ形）
-CREATE TABLE provider_settings (provider TEXT PRIMARY KEY, credential TEXT, ...);
-INSERT INTO provider_settings (provider, credential) VALUES ('claude', '<トークン>');
-```
-
-**共有する DB を WAL にしないこと** —— WAL の読み手は `-shm` への書き込みを要求するので、
-読み取り専用のマウントでは `unable to open database file` になります。
+**以前の置き方(設定 DB を `/state` に丸ごとマウントする)も読めます**(写しが無いときだけ
+`/state/settings.db` の `provider_settings` を見る)が、新しく立てるなら使わないでください ——
+他の相手の鍵まで渡ることになります。
 
 アプリ側が画面からトークンを入れ替えても、**ブリッジは要求のたびに読み直す**ので
 再起動は要りません。
@@ -1558,8 +1578,8 @@ codex login --device-auth          # → ~/.codex/auth.json の中身
 # 3) 管理画面（/admin）の「AI の相手」でそれを登録し、on にする
 ```
 
-環境変数（`CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_AUTH_JSON`）でも渡せます —— 設定 DB を
-マウントできない環境向けの逃げ道で、DB に無ければそちらへ落ちます。
+環境変数（`CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_AUTH_JSON`）でも渡せます —— 写しを
+マウントできない環境向けの逃げ道で、写しに無ければそちらへ落ちます。
 
 **Codex は `$CODEX_HOME` を書き込み可能なボリュームにしてください**（compose の
 `chiezo-codex-home`。コメントを外せばそのまま付きます）。登録する auth.json は「種」で、
@@ -1604,12 +1624,12 @@ curl -s "$BASE/v1/ai/bridges"
 | `CHIEZO_BRIDGE_CLI` | `claude` | 包む CLI（`claude` / `codex` / `antigravity`） |
 | `CHIEZO_AI_TRANSCRIPT_DAYS` | `14` | AI に渡したものと返ってきたものを控える日数。**`0` で控えない**。相手の生の出力（CLI の stdout/stderr）も残すので、シェルを渡している相手が何をしたかを後から読める。管理画面では状況の面の「依頼の履歴」の表の**同じ行**から開ける（控えが先に消えた行は目方だけになる） |
 | `CHIEZO_BRIDGE_MCP_URL` | `http://chiezo-app:7010/mcp/knowledge/` | CLI に繋ぐ Chiezo の MCP。**生成の道具を出さない口を向ける**(`/mcp` を向けると、絵を頼んだ相手に絵を頼む道具が渡る)。**空にすると繋がない** |
-| `CHIEZO_BRIDGE_STATE_DB` | `/state/settings.db` | 認証情報を読む Chiezo の設定 DB（読み取り専用でマウント） |
+| `CHIEZO_BRIDGE_CREDENTIAL_FILE` | `/credential/credential` | 認証情報の写し（chiezo-app が `data/state/bridge/<相手>/credential` へ書き出したもの。ディレクトリごと読み取り専用でマウント） |
+| `CHIEZO_BRIDGE_STATE_DB` | `/state/settings.db` | 以前の置き方（設定 DB を丸ごとマウント）。写しが無く、このファイルがあるときだけ読む。新しく立てるなら使わない |
 | `CHIEZO_BRIDGE_MODEL` | （CLI の既定） | 何も選ばれなかったときのモデル。会話画面で選んだものが優先される |
 | `CHIEZO_BRIDGE_MODELS` | （下記） | 会話画面に出すモデルの候補（カンマ区切り） |
 | `CHIEZO_BRIDGE_EFFORTS` | （下記） | 名乗る「考える量」の候補（カンマ区切り）。**畳んだモデル名を組むのに使います**（画面に欄はありません） |
-| `CHIEZO_BRIDGE_ALLOWED_TOOLS` | `mcp__chiezo` | CLI に許す道具。書き込み（`remember`）まで止めるならここを絞る |
-| `CHIEZO_BRIDGE_DISALLOWED_TOOLS` | （組み込み一式） | 塞ぐ組み込みの道具。**`ToolSearch` を入れないこと**（MCP が引けなくなる）。`WebSearch` / `WebFetch` は要求ごとに開く |
+| `CHIEZO_BRIDGE_ALLOWED_TOOLS` | `mcp__chiezo` | claude に許す MCP の道具（カンマか空白区切り）。書き込み（`remember`）まで止めるならここを絞る。組み込みの道具は足せない（`ToolSearch` と、頼まれた回の `WebSearch` / `WebFetch` だけ） |
 | `CHIEZO_BRIDGE_TIMEOUT` | `3600` | 1 回の上限（秒）。CLI は道具を何度も引くので推論サーバより長い。chiezo-app が待つ `CHIEZO_ANSWER_TIMEOUT`（既定 3660）より短くしておく（待つ側が先に切れると理由が見えない）。**打ち切っても枠は返らない**ので長めに取ってある —— 暴走したものは時間ではなく「止める」で落とす（`POST /v1/ai/inflight/{id}/stop`）。Antigravity にはこの値を `--print-timeout` としても渡す（agy 自前の待ち時間は既定 5 分で、渡さないとそちらが先に切れる） |
 | `CHIEZO_BRIDGE_USAGE_CMD` | `agy,-p,/credits,--output-format,json` | 使用量を聞くコマンド（Antigravity のみ。カンマ区切り）。**実地で確かめられていない**ので差し替えられるようにしてある |
 | `CHIEZO_BRIDGE_USAGE_TIMEOUT` | `60` | 使用量を聞くときの上限（秒） |

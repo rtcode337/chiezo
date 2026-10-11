@@ -34,7 +34,7 @@ from pydantic import Field
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 
-from app import media, media_providers, notes
+from app import media, media_providers, notes, web_guard
 
 # doc のレスポンスはそのままモデルのコンテキストに載るので、REST(既定 0 = 無制限)より
 # 短く切る。jawiki には 10 万字級の記事があり、既定で全文を返すと 1 回で窓を潰す。
@@ -75,18 +75,28 @@ LAN 内の読み取り専用ナレッジ API「Chiezo」。Wikipedia・OpenStree
 
 
 def _transport_security() -> TransportSecuritySettings:
-    """Host ヘッダ検証の設定。
+    """Host / Origin の検証(DNS リバインディング対策)。**外さない。**
 
-    既定は「localhost 系の Host しか受け付けない」(DNS リバインディング対策)。
-    そのままだと LAN の別マシンから `http://<LAN の IP>:7010/mcp` を叩いた時点で
-    421 になり、この API の使い方(LAN 内から引く)がまるごと成立しない。
-    Chiezo は REST 側も認証なし・LAN 内前提なので、既定では検証を外して足並みを揃える。
-    絞りたい場合は `CHIEZO_MCP_ALLOWED_HOSTS` に許可する Host をカンマ区切りで書く
+    SDK の既定は「localhost 系の Host しか受け付けない」で、そのままだと LAN の
+    別マシンから `http://<LAN の IP>:7010/mcp` を叩いた時点で 421 になる。以前はそれを
+    避けるために未設定なら検証ごと外していたが、外すと名前を向け直す攻撃に無防備になる。
+
+    未設定のときは本体と同じ判定(`app/web_guard.py`)を渡す —— IP アドレス・localhost・
+    ドットの無いサービス名は通し、それ以外の名前は `CHIEZO_ALLOWED_HOSTS` /
+    `CHIEZO_MCP_ALLOWED_HOSTS` に書いたものだけ。SDK の一覧は完全一致と `名前:*` しか
+    書けず「IP なら何でも」を表せないので、一覧のふりをした判定を検証を通さずに入れる
+    (`model_construct`。SDK は `in` で確かめるだけ)。
+
+    `CHIEZO_MCP_ALLOWED_HOSTS` を書いた環境は、これまでどおりその一覧だけで絞る
     (`<LAN の IP>:7010,localhost:*` のように、末尾 `:*` でポート任意を表せる)。
     """
     allowed = [h.strip() for h in os.environ.get("CHIEZO_MCP_ALLOWED_HOSTS", "").split(",") if h.strip()]
     if not allowed:
-        return TransportSecuritySettings(enable_dns_rebinding_protection=False)
+        return TransportSecuritySettings.model_construct(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=web_guard.HostMatcher(),
+            allowed_origins=web_guard.OriginMatcher(),
+        )
     return TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=allowed,

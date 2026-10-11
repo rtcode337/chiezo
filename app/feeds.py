@@ -28,6 +28,10 @@
 - **自分でレート制限をかける**(`MIN_INTERVAL`)。無人で回る層なので、
   こちらが加減しないと相手のログに等間隔の足跡だけが延々と残る
 - **`User-Agent` に個人情報を入れない。** 名乗るのはプロジェクト名だけ
+- **手元のネットワークを指す URL は取りに行かない**(`outbound.fetch`)。定義は
+  誰でも置けるので、LAN の機器を叩かせる踏み台にさせない。転送も 1 段ずつ確かめる。
+  フィードは外の配信元から引くための道具で、LAN の相手(Pi-hole など)は
+  専用の道具(`app/pihole.py`)が受け持つ
 - **DOCTYPE のある XML は読まない**(`_looks_unsafe`)。実体参照の展開で
   メモリを食い尽くす細工に付き合わないため。フィードに DTD が付くことは実際まず無い
 
@@ -50,6 +54,8 @@ from xml.etree import ElementTree
 
 import httpx
 from fastapi import HTTPException
+
+from app import outbound
 
 log = logging.getLogger("chiezo.app")
 
@@ -285,11 +291,15 @@ async def _throttle() -> None:
 
 
 def _client() -> httpx.AsyncClient:
-    """フィード向けの HTTP クライアント(テストはここを差し替える)。"""
+    """フィード向けの HTTP クライアント(テストはここを差し替える)。
+
+    **転送は自分で追う**(`outbound.fetch`)。自動で追わせると、外を指す URL から
+    手元の機器へ転送されたときに、そのまま叩きに行ってしまう。
+    """
     return httpx.AsyncClient(
         timeout=TIMEOUT,
         headers={"User-Agent": USER_AGENT, "Accept": "application/rss+xml, application/xml"},
-        follow_redirects=True,
+        follow_redirects=False,
     )
 
 
@@ -307,7 +317,7 @@ async def fetch(spec: dict, since: str | None = None) -> dict:
         await _throttle()
         try:
             entries = await _fetch_one(one["url"], one.get("json"))
-        except (httpx.HTTPError, ElementTree.ParseError, ValueError) as e:
+        except (httpx.HTTPError, ElementTree.ParseError, ValueError, outbound.Refused) as e:
             # 例外の文言(接続先のホスト名等が入る)はログにだけ残す
             log.info("feed fetch failed %s: %r", one["url"], e)
             failed += 1
@@ -343,10 +353,14 @@ def _fair_share(per_source: list[list[dict]], limit: int) -> list[dict]:
 
 
 async def _fetch_one(url: str, mapping: dict | None = None) -> list[dict]:
+    # 手元のネットワークは指させない。転送も 1 段ずつ確かめ、上限で読むのを止める
     async with _client() as client:
-        res = await client.get(url)
-    res.raise_for_status()
-    body = res.content[:MAX_BYTES]
+        got = await outbound.fetch(client, url, MAX_BYTES)
+    if got.status >= 400:
+        raise httpx.HTTPStatusError(
+            f"{got.status}", request=got.response.request, response=got.response
+        )
+    body = got.body
     if mapping:
         return _json_entries(json.loads(body), mapping, url)
     if _looks_unsafe(body):

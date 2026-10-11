@@ -48,7 +48,9 @@ services:
     entrypoint:
       - sh
       - -c
-      - mkdir -p /data/corpus /data/notes /data/state && chown -R "$$0" /data
+      # state/bridge/<相手> は CLI ブリッジに渡す認証情報の写しの置き場(下のブリッジの節)。
+      # 先に作っておかないと、ブリッジのマウントで Docker が root 所有で作ってしまう
+      - mkdir -p /data/corpus /data/notes /data/state/bridge/claude /data/state/bridge/codex && chown -R "$$0" /data
       - ${CHIEZO_UID:-10001}:${CHIEZO_GID:-10001}
     volumes:
       - ./data:/data
@@ -85,6 +87,11 @@ services:
       - CHIEZO_RESCAN_INTERVAL=${CHIEZO_RESCAN_INTERVAL-}
       - CHIEZO_CATALOG_TTL=${CHIEZO_CATALOG_TTL-}
       - CHIEZO_MCP_ALLOWED_HOSTS=${CHIEZO_MCP_ALLOWED_HOSTS-}
+      # 名前(ドットを含むもの)で開くときの Host の許可(カンマ区切り)。IP・localhost・
+      # サービス名は書かなくても通る。DNS リバインディング対策(app/web_guard.py)
+      - CHIEZO_ALLOWED_HOSTS=${CHIEZO_ALLOWED_HOSTS-}
+      # 自分以外のオリジンの画面から書き込み(POST 等)を受けるときだけ書く。空なら自分だけ
+      - CHIEZO_ALLOWED_ORIGINS=${CHIEZO_ALLOWED_ORIGINS-}
       # ブラウザのページから直接読ませるオリジン(カンマ区切り)。空なら誰にも開けない。
       # 印(Access-Control-Allow-Origin)が無いと、ブラウザは届いた応答を JS へ渡さない
       - CHIEZO_CORS_ORIGINS=${CHIEZO_CORS_ORIGINS-}
@@ -137,6 +144,12 @@ services:
       # 立ち上げることになる。居なければ管理画面がそのぶんのボタンを押せなくする。
       chiezo-init:
         condition: service_completed_successfully
+    # default(取り込みのトリガー・検索エンジンと話す)と chiezo-ai(CLI ブリッジと話す)の
+    # 両方に居る。ブリッジは chiezo-ai にしか居ないので、chiezo-app には届くが
+    # chiezo-trigger(長期記憶へ書ける相手)には届かない
+    networks:
+      - default
+      - chiezo-ai
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:7010/healthz"]
@@ -216,24 +229,37 @@ services:
   # 書き込み層(数 KB)だけ —— なので CLI ごとに分けず 1 枚にまとめてある。
   # サブスクの枠で使うためのもので、API キー経路は従量課金になるため使わない。
   #
-  # ブリッジは Chiezo の MCP(/mcp)を CLI に繋ぐので、道具は CLI 自身が引く。
-  # CLI の組み込みの道具(シェル・ファイルの読み書き)は全部切ってある。
+  # ブリッジは Chiezo の MCP(/mcp/knowledge)を CLI に繋ぐので、道具は CLI 自身が引く。
+  # CLI の組み込みの道具(シェル・ファイルの読み書き)は切ってある(claude は許す道具を
+  # 名指し、codex はシェルの道具を外す。agy は切る口を持たないので下の 2 つで守る)。
   #
   # 有効にするには (1) 下のブロックのコメントを外し、(2) `docker compose up -d` する。
-  # profile も追加の -f も要らない。認証情報は .env ではなく管理画面から登録する
-  # (ブリッジは Chiezo の設定 DB を読み取り専用でマウントして読む)。
+  # profile も追加の -f も要らない。認証情報は .env ではなく管理画面から登録する。
   # 立ち上げるまでは管理画面の on が押せない(到達確認に落ちるため)。
+  #
+  # **中で動くのは道具を持ったエージェントなので、渡すものを絞る。**
+  # - 設定 DB(./data/state)は渡さない。全部の相手の鍵が平文で入っている。
+  #   chiezo-app が登録のたびに相手ごとの写しを ./data/state/bridge/<相手>/ に
+  #   書き出すので、ブリッジにはその 1 つだけを読み取り専用で渡す
+  #   (`group_add` は、その写しを app と同じグループで読むため)
+  # - ネットワークは chiezo-ai だけ。chiezo-app(MCP)と外(提供元の API)には届くが、
+  #   長期記憶へ書ける chiezo-trigger には届かない
   #
   # ホストへポートは公開しない(chiezo-app からのみ到達すればよい)。
   #
   #chiezo-bridge-claude:
   #  image: ghcr.io/rtcode337/chiezo-bridge:latest
+  #  depends_on:
+  #    chiezo-init:
+  #      condition: service_completed_successfully
+  #  networks:
+  #    - chiezo-ai
+  #  group_add:
+  #    - "${CHIEZO_GID:-10001}"
   #  volumes:
-  #    # 認証情報は Chiezo の設定 DB から読む(管理画面から登録できるようにするため)。
-  #    # 読み取り専用。ブリッジは書かない
-  #    # **ブリッジは `/state/settings.db` を決め打ちで読む**(CHIEZO_BRIDGE_STATE_DB の
-  #    # 既定)。app 側の置き場が data/ の下へ移っても、こちらのマウント先は /state のまま
-  #    - ./data/state:/state:ro
+  #    # 管理画面で登録した認証情報の写し(この相手の分だけ)。読み取り専用。
+  #    # **ブリッジは `/credential/credential` を決め打ちで読む**(CHIEZO_BRIDGE_CREDENTIAL_FILE)
+  #    - ./data/state/bridge/claude:/credential:ro
   #    # **サインイン結果の置き場。** 登録を空にしてコンテナの中でサインインすると、
   #    # 枠(`/usage`)まで取れる —— 登録できる `claude setup-token` の長期トークンは
   #    # 推論だけに絞られていて、枠のパネルを出せない。ここが無いと、コンテナを
@@ -253,10 +279,16 @@ services:
   #
   #chiezo-bridge-codex:
   #  image: ghcr.io/rtcode337/chiezo-bridge:latest
+  #  depends_on:
+  #    chiezo-init:
+  #      condition: service_completed_successfully
+  #  networks:
+  #    - chiezo-ai
+  #  group_add:
+  #    - "${CHIEZO_GID:-10001}"
   #  volumes:
-  #    # **ブリッジは `/state/settings.db` を決め打ちで読む**(CHIEZO_BRIDGE_STATE_DB の
-  #    # 既定)。app 側の置き場が data/ の下へ移っても、こちらのマウント先は /state のまま
-  #    - ./data/state:/state:ro
+  #    # 管理画面で登録した認証情報の写し(この相手の分だけ)。読み取り専用
+  #    - ./data/state/bridge/codex:/credential:ro
   #    # Codex は access token が切れると refresh token で更新をかけ、その結果を
   #    # $CODEX_HOME/auth.json へ書く。相手は更新のたびに refresh token を回転させて
   #    # 古いほうを無効にするので、ここを永続化しないとコンテナを作り直すたびに
@@ -288,6 +320,9 @@ services:
   # `sudo chown -R 10001:10001 <ディレクトリ>` してからバインドすること。
   #chiezo-bridge-antigravity:
   #  image: ghcr.io/rtcode337/chiezo-bridge:latest
+  #  # 登録する認証情報を持たないので、設定の置き場は何も渡さない
+  #  networks:
+  #    - chiezo-ai
   #  volumes:
   #    - chiezo-antigravity-home:/srv/bridge/home
   #  environment:
@@ -312,6 +347,8 @@ services:
   #chiezo-talk-codex:
   #  image: ghcr.io/rtcode337/chiezo-bridge:latest
   #  command: ["uvicorn", "talk_bridge:app", "--host", "0.0.0.0", "--port", "7016"]
+  #  networks:
+  #    - chiezo-ai
   #  volumes:
   #    - chiezo-talk-codex-home:/srv/bridge/.codex
   #  environment:
@@ -395,6 +432,12 @@ configs:
         # この行が要。SearXNG の既定は html だけで、Chiezo は format=json で引くため、
         # 足さないと HTML が返り「JSON ではない」というエラーとして扱われる。
         formats: [html, json]
+
+# CLI ブリッジ(と会話ブリッジ)の置き場。chiezo-app だけがこちらにも繋がる ——
+# ブリッジから届くのは chiezo-app と外だけで、chiezo-trigger(default にだけ居る)には届かない。
+# internal にはしない(ブリッジは提供元の API へ出る必要がある)
+networks:
+  chiezo-ai:
 
 # サインイン結果の置き場(Antigravity)。ホストのディレクトリにしないのは、
 # 無いときに Docker が root 所有で作ってしまい、非 root のブリッジが書けなくなるため。

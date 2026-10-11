@@ -38,3 +38,21 @@ def test_every_app_module_is_in_the_image():
     patterns = _copied(ROOT / "app" / "Dockerfile")
     missing = [p.name for p in (ROOT / "app").glob("*.py") if not _is_copied(p.name, patterns)]
     assert missing == [], f"app のイメージに載らないモジュール: {missing}"
+
+
+def test_the_bridge_clis_are_pinned_to_exact_versions():
+    """ブリッジの CLI は `@<版>` で固定する(範囲で入れると、焼いた日で中身が変わる)。
+
+    ブリッジは CLI の権限まわりのフラグに頼って道具を絞っているので、黙って版が
+    動くのがいちばん困る。上げるときは ARG を書き換える(人が上げる)。
+    """
+    text = (ROOT / "bridge" / "Dockerfile").read_text(encoding="utf-8")
+    versions = dict(re.findall(r"^ARG (CLAUDE_VERSION|CODEX_VERSION)=(\S+)$", text, re.M))
+    assert set(versions) == {"CLAUDE_VERSION", "CODEX_VERSION"}
+    for value in versions.values():
+        assert re.fullmatch(r"\d+\.\d+\.\d+", value), f"版は数字 3 つで固定すること: {value}"
+    assert '"@anthropic-ai/claude-code@${CLAUDE_VERSION}"' in text
+    assert '"@openai/codex@${CODEX_VERSION}"' in text
+    # 入ったものが固定した版であることまで確かめる
+    assert 'test "${claude_version}" = "${CLAUDE_VERSION}"' in text
+    assert 'test "${installed}" = "${CODEX_VERSION}"' in text

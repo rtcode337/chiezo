@@ -1707,7 +1707,14 @@ curl -s "http://<サーバーIP>:7010/v1/media/upload" \
 | `requested_by` | 誰が持ち込んだかの名乗り。画面に「依頼元」として出ます |
 
 種類が見分けられないものは断ります(黙って「絵」として置くと、見比べの画面が壊れた絵を
-並べることになるため)。上限は 128 MiB で、`CHIEZO_MEDIA_UPLOAD_MAX_BYTES` で変えられます。
+並べることになるため)。上限は 128 MiB で、`CHIEZO_MEDIA_UPLOAD_MAX_BYTES` で変えられます
+(`POST /v1/media/transcribe` の multipart も同じ上限で、超えると 413)。
+
+**置くときの拡張子は一覧にあるものだけを使います**(png / jpg / webp / gif、mp3 / wav / flac /
+ogg / m4a、mp4 / webm / mov、md / txt / json)。それ以外の名前は種類ごとの既定(`.png` /
+`.mp3` / `.mp4` / `.txt`)に付け替え、**SVG は断ります**(スクリプトを含められるため)。
+`/media/…` は Chiezo と同じオリジンから配るので、`nosniff` と `Content-Security-Policy: sandbox`
+を付けて、文書として開かれても動かない形にしてあります。
 
 ### ブラウズ画面(`/search/{source}/`)
 

@@ -254,7 +254,7 @@ ingest は毎回 `data/corpus/<source>-<date>.db` を新規構築し、検証が
 
 取り込みの環境変数・スキーマ移行・rank_score の入れ直し・メモリ方針・別マシンでのビルドと
 配布・`chiezo-trigger`・セキュリティは[運用ドキュメント](docs/operations.md)にある。
-よく使うものは次の 5 つ。
+よく使うものは次の 6 つ。
 
 | したいこと | 参照 |
 |---|---|
@@ -262,7 +262,7 @@ ingest は毎回 `data/corpus/<source>-<date>.db` を新規構築し、検証が
 | 検索の並びが効かない DB を直す | [rank_score を入れ直す](docs/operations.md#既存-db-の-rank_score-を入れ直す) |
 | メモリの多い別マシンで焼いて配る | [.db を配布する](docs/operations.md#別マシンでビルドして-db-を配布する) |
 | どのコミットが動いているか確かめる | [動いているビルドを確かめる](docs/operations.md#動いているビルドを確かめる) |
-| 外に開けてよいか確かめる | [セキュリティ](docs/operations.md#セキュリティ) |
+| 外に開けてよいか確かめる・名前(`chiezo.example.com`)で開く | [セキュリティ](docs/operations.md#セキュリティ)(IP 以外の名前で開くなら `CHIEZO_ALLOWED_HOSTS` が要る) |
 | `.env` を置けない環境で起動する | [単体定義](docs/operations.md#env-を置けない環境で起動する単体定義) |
 
 ## 開発

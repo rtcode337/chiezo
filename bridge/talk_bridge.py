@@ -123,7 +123,10 @@ class CodexAppServer:
         self.generation = 0
 
     def _command(self) -> list[str]:
-        cmd = ["codex", "app-server"]
+        # シェルの道具は持たせない(cli_bridge の CODEX_NO_SHELL と同じ理由)。
+        # 会話は MCP で知識を引くだけで、`sandbox: read-only` は「読ませない」ではない
+        cmd = ["codex", "app-server",
+               "-c", "features.shell_tool=false", "-c", "features.unified_exec=false"]
         if MCP_URL:
             # 設定ファイルを書き換えず、起動の引数で繋ぐ。道具を引くたびの確認は外す
             # (`approval_policy="never"` は「聞かない」であって「許す」ではないので、

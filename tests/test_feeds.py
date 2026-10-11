@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 
 import httpx
 import pytest
@@ -71,10 +72,20 @@ ATOM = """<?xml version="1.0" encoding="utf-8"?>
 
 @pytest.fixture
 def serve(monkeypatch):
-    """外へ出ずに応答を差し替える。**待たせない**(最小間隔はここでは見ない)。"""
+    """外へ出ずに応答を差し替える。**待たせない**(最小間隔はここでは見ない)。
+
+    名前は外のアドレスとして引ける(`lan.` で始まる名前だけ手元)—— 本物の DNS に
+    頼らない。値は `httpx.Response` をそのまま渡しても良い(転送を返すとき)。
+    """
     monkeypatch.setattr(feeds, "MIN_INTERVAL", 0.0)
 
-    def make(bodies: dict[str, str | Exception]):
+    def fake_getaddrinfo(host, *_args, **_kwargs):
+        address = "10.0.0.5" if host.startswith("lan.") else "93.184.215.14"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    def make(bodies: dict[str, str | Exception | httpx.Response]):
         calls: list[str] = []
 
         async def handler(request: httpx.Request) -> httpx.Response:
@@ -82,12 +93,15 @@ def serve(monkeypatch):
             body = bodies[str(request.url)]
             if isinstance(body, Exception):
                 raise body
+            if isinstance(body, httpx.Response):
+                return body
             return httpx.Response(200, content=body.encode())
 
         def client():
             return httpx.AsyncClient(
                 transport=httpx.MockTransport(handler),
                 headers={"User-Agent": feeds.USER_AGENT},
+                follow_redirects=False,
             )
 
         monkeypatch.setattr(feeds, "_client", client)
@@ -438,3 +452,54 @@ class TestJsonSources:
     def test_the_mapping_is_kept_in_the_definition(self):
         spec = feeds.normalize({"urls": [{"url": "https://example.com/a", "json": MAPPING}]})
         assert feeds.to_json(spec)["urls"][0]["json"] == MAPPING
+
+
+class TestStaysOffTheLan:
+    """**フィードの URL で LAN の機器を叩かせない**(`outbound.fetch`)。
+
+    定義は外のアプリからも置ける。そのまま叩くと、Chiezo を踏み台にして手元の
+    ルーターや取り込みのトリガーへ要求を送れてしまう。転送先も 1 段ずつ確かめる。
+    """
+
+    RSS = (
+        '<?xml version="1.0"?><rss><channel><title>外</title>'
+        "<item><title>記事</title><link>https://example.com/a</link></item>"
+        "</channel></rss>"
+    )
+
+    def test_a_lan_feed_is_not_fetched(self, serve):
+        calls = serve({"https://lan.router/feed": self.RSS})
+        got = run({"urls": ["https://lan.router/feed"]})
+
+        assert calls == []
+        assert got["failed"] == 1
+
+    def test_a_redirect_into_the_lan_is_not_followed(self, serve):
+        calls = serve({
+            "https://example.com/feed": httpx.Response(
+                302, headers={"location": "http://lan.nas/admin"}),
+            "http://lan.nas/admin": self.RSS,
+        })
+        got = run({"urls": ["https://example.com/feed"]})
+
+        assert calls == ["https://example.com/feed"]
+        assert got["failed"] == 1
+
+    def test_a_public_redirect_is_followed(self, serve):
+        serve({
+            "https://example.com/feed": httpx.Response(
+                301, headers={"location": "https://example.org/feed"}),
+            "https://example.org/feed": self.RSS,
+        })
+        got = run({"urls": ["https://example.com/feed"]})
+
+        assert got["failed"] == 0
+        assert [e["title"] for e in got["items"]] == ["記事"]
+
+    def test_an_oversized_feed_stops_at_the_cap(self, serve, monkeypatch):
+        """全部読んでから測らない(上限を超える大きさをいったん抱えない)。"""
+        monkeypatch.setattr(feeds, "MAX_BYTES", 1024)
+        serve({"https://example.com/feed": self.RSS + " " * 10_000})
+        got = run({"urls": ["https://example.com/feed"]})
+
+        assert got["failed"] == 1

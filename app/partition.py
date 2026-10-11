@@ -783,7 +783,7 @@ def parse_band_key(key: str) -> tuple[list[str], int | None, int | None, str | N
     parts = key.split(BAND_SEP)
     if len(parts) < 2:
         return None
-    if span := _BAND_SPAN.match(parts[-1]):
+    if span := _BAND_SPAN.fullmatch(parts[-1]):
         names = parts[:-1]
         lo, hi = span.group(1), span.group(2)
         if not all(names):

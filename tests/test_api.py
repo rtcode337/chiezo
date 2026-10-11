@@ -908,12 +908,14 @@ class TestClaudeConfig:
         assert 'ベース URL: `http://192.168.1.10:9000`' in res.text
         assert "http://192.168.1.10:9000/v1/<source>/search" in res.text
 
-    def test_config_txt_honors_forwarded_headers(self, client):
+    def test_config_txt_honors_forwarded_headers(self, client, monkeypatch):
         """リバースプロキシ越しは X-Forwarded-Proto / X-Forwarded-Host を優先する。
 
         X-Forwarded-Host が無いプロキシでは Host ヘッダにフォールバックする
         (Host はポートを保持しているのでポートが落ちない)。
+        名前(ドットを含む Host)で開くには、その名前を許しておく(DNS リバインディング対策)。
         """
+        monkeypatch.setenv("CHIEZO_ALLOWED_HOSTS", "example.me")
         res = client.get(
             "/admin/claude-config.txt",
             headers={"X-Forwarded-Proto": "https", "Host": "example.me:8443"},
@@ -944,7 +946,8 @@ class TestClaudeConfig:
         assert 'Bash(curl -sG "http://testserver/:*)' in allow
         assert len(allow) == 4
 
-    def test_permissions_json_honors_forwarded_headers(self, client):
+    def test_permissions_json_honors_forwarded_headers(self, client, monkeypatch):
+        monkeypatch.setenv("CHIEZO_ALLOWED_HOSTS", "example.me")
         res = client.get(
             "/admin/claude-config.permissions.json",
             headers={"X-Forwarded-Proto": "https", "Host": "example.me:8443"},

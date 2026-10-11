@@ -88,6 +88,32 @@ class TestBringingYourOwn:
         # 残ってはいけないのは中身のほう
         assert [p for p in media.require_dir().rglob("*") if p.is_file()] == []
 
+    def test_svg_is_refused(self, media_env):
+        """SVG はスクリプトを含められる。`/media/…` は Chiezo と同じオリジンから配るので、
+        開いた人のブラウザで Chiezo の画面としてスクリプトが走る。"""
+        from fastapi import HTTPException
+
+        for name, mime in (("絵.svg", "image/svg+xml"), ("絵.png", "image/svg+xml"), ("絵.svg", "")):
+            with pytest.raises(HTTPException) as e:
+                _upload(name=name, mime=mime, data=b"<svg onload='x()'/>")
+            assert e.value.status_code == 400
+
+    def test_the_suffix_comes_from_an_allow_list(self, media_env):
+        """**名前の拡張子をそのまま使わない。** 一覧に無いものは種類ごとの既定に付け替える
+        (`.html` の文章は `.txt` として置かれ、文字として配られる)。"""
+        def suffix(job):
+            return job["files"][0]["url"].rsplit(".", 1)[-1]
+
+        assert suffix(_upload(name="案.html", mime="text/html", data=b"<script>x</script>")) == "txt"
+        assert suffix(_upload(name="案.js", mime="text/javascript", data=b"x()")) == "txt"
+        assert suffix(_upload(name="絵.php", mime="image/png", data=b"\x89PNG")) == "png"
+        assert suffix(_upload(name="案.md", mime="text/markdown")) == "md"
+        assert suffix(_upload(name="絵.webp", mime="image/webp", data=b"RIFF")) == "webp"
+        # 名前に拡張子が無ければ名乗り(MIME)から
+        assert suffix(_upload(name="音", mime="audio/mpeg", data=b"ID3")) == "mp3"
+        # 拡張子と中身の種類が食い違えば、種類のほうに合わせる
+        assert suffix(_upload(name="音.png", mime="audio/mpeg", data=b"ID3", kind="audio")) == "mp3"
+
     def test_the_heading_falls_back_to_the_file_name(self, media_env):
         """見出しが空だと一覧で区別が付かない(名前の無い依頼は依頼文の 1 行目を借りる作り)。"""
         assert _upload(name="タイトル案.png", mime="image/png")["prompt"] == "タイトル案.png"
@@ -193,3 +219,42 @@ class TestTheCompareScreen:
             assert res.status_code == 200
             assert res.json()["kind"] == "image"
             assert "タイトルの一枚絵" in client.get("/admin/media").text
+
+    def test_media_is_served_so_that_it_cannot_run_as_a_page(self, media_env, tmp_path):
+        """/media の応答には nosniff と CSP の sandbox を必ず付ける。"""
+        with self._client(media_env, tmp_path) as client:
+            job = client.post(
+                "/v1/media/upload",
+                files={"file": ("案.txt", b"<script>alert(1)</script>", "text/plain")},
+            ).json()
+            res = client.get(job["files"][0]["url"])
+            assert res.status_code == 200
+            assert res.headers["x-content-type-options"] == "nosniff"
+            assert res.headers["content-security-policy"] == "sandbox"
+            assert not res.headers["content-type"].startswith("text/html")
+
+    def test_transcription_upload_stops_at_the_same_cap(self, media_env, tmp_path, monkeypatch):
+        """文字起こしの multipart も持ち込みと同じ上限で、読みながら止める(413)。"""
+        from app import media
+
+        called = []
+
+        async def fake_transcribe(**kw):
+            called.append(kw)
+            return {"text": ""}
+
+        monkeypatch.setattr(media, "UPLOAD_MAX_BYTES", 16)
+        monkeypatch.setattr(media, "transcribe", fake_transcribe)
+        with self._client(media_env, tmp_path) as client:
+            res = client.post("/v1/media/transcribe",
+                              files={"file": ("a.mp3", b"0" * 1024, "audio/mpeg")})
+            assert res.status_code == 413
+            # 申告(Content-Length)が上限を大きく超えるものは、読む前に断る
+            monkeypatch.setattr(media, "UPLOAD_MAX_BYTES", 1)
+            big = client.post("/v1/media/transcribe",
+                              files={"file": ("a.mp3", b"0" * (2 * 1024 * 1024), "audio/mpeg")})
+            assert big.status_code == 413
+            ok = client.post("/v1/media/transcribe",
+                             files={"file": ("a.mp3", b"0", "audio/mpeg")})
+            assert ok.status_code == 200
+        assert len(called) == 1

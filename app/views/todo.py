@@ -81,7 +81,7 @@ def repo_slug(value: str) -> str | None:
     """URL でも `owner/repo` でも受けて `owner/repo` に揃える。どちらでもなければ None。"""
     if slug := github_slug(value):
         return slug
-    m = _OWNER_REPO.match((value or "").strip())
+    m = _OWNER_REPO.fullmatch((value or "").strip())
     return f"{m[1]}/{m[2]}" if m else None
 
 

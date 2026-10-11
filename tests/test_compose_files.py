@@ -207,3 +207,106 @@ def test_the_app_does_not_depend_on_the_trigger():
     doc = yaml.safe_load(BASE.read_text(encoding="utf-8"))
     deps = doc["services"]["chiezo-app"].get("depends_on") or {}
     assert "chiezo-trigger" not in deps
+
+
+# ---- CLI ブリッジに渡すもの(既定ではコメントで畳んである) -------------------------
+
+BRIDGES = ("chiezo-bridge-claude", "chiezo-bridge-codex", "chiezo-bridge-antigravity",
+           "chiezo-talk-codex")
+
+
+def _commented_services(path: Path) -> dict[str, dict]:
+    """コメントで畳んであるブリッジの定義を、外したときの形で読む。
+
+    単体定義は YAML のアンカー(`*claude-credential-volume`)を使うので、そこは
+    アンカーの名前の文字列に置き換えて読む(中身は `_anchors` で別に見る)。
+    """
+    import re
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    out: dict[str, dict] = {}
+    i = 0
+    while i < len(lines):
+        head = re.fullmatch(r"  #(chiezo-(?:bridge|talk)-[a-z]+):", lines[i])
+        if not head:
+            i += 1
+            continue
+        body = [f"{head.group(1)}:"]
+        i += 1
+        while i < len(lines) and lines[i].startswith("  #  "):
+            body.append(lines[i][3:])
+            i += 1
+        text = re.sub(r"\*([a-z-]+)", r"'*\1'", "\n".join(body))
+        out.update(yaml.safe_load(text))
+    return out
+
+
+def _anchors(path: Path) -> dict[str, str]:
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return {k: v for k, v in doc.items() if k.startswith("x-") and isinstance(v, str)}
+
+
+@pytest.mark.parametrize("path", [BASE, STANDALONE])
+def test_bridges_are_defined_where_expected(path: Path):
+    assert set(_commented_services(path)) == set(BRIDGES)
+
+
+@pytest.mark.parametrize("path", [BASE, STANDALONE])
+def test_bridges_do_not_get_the_settings_db(path: Path):
+    """**ブリッジに設定 DB(state/ そのもの)を渡さない。** 全部の相手の鍵が平文で入っていて、
+    中で動くのは道具を持ったエージェントなので、頼み方ひとつで読まれうる。
+    渡すのは chiezo-app が書き出した、その相手の分だけの写し(state/bridge/<相手>)。
+    """
+    anchors = _anchors(path)
+    for name, service in _commented_services(path).items():
+        for mount in service.get("volumes") or []:
+            text = str(mount.get("source") if isinstance(mount, dict) else mount)
+            if text.startswith("'*") or text.startswith("*"):
+                text = anchors[f"x-{text.strip('*').strip(chr(39))}"]
+            host = text.split(":", 1)[0]
+            assert not host.rstrip("/").endswith("/state"), f"{name} が設定 DB の置き場をマウントしている"
+            assert "settings.db" not in text
+            if "/state/" in host:
+                assert "/state/bridge/" in host, f"{name} が state/ の中の別のものをマウントしている: {text}"
+                assert text.endswith(":ro"), f"{name} の認証情報の写しは読み取り専用で渡すこと"
+    assert "state-volume" not in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("path", [BASE, STANDALONE])
+def test_bridges_cannot_reach_the_trigger(path: Path):
+    """ブリッジは chiezo-ai にだけ居る。chiezo-app(MCP)には届くが、長期記憶へ書ける
+    chiezo-trigger(default にだけ居る)には届かない。"""
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert "chiezo-ai" in (doc.get("networks") or {})
+    assert set(doc["services"]["chiezo-app"]["networks"]) == {"default", "chiezo-ai"}
+    assert "chiezo-ai" not in (doc["services"]["chiezo-trigger"].get("networks") or ["default"])
+    for name, service in _commented_services(path).items():
+        assert service.get("networks") == ["chiezo-ai"], f"{name} の networks"
+
+
+@pytest.mark.parametrize("path", [BASE, STANDALONE])
+def test_the_credential_copies_are_prepared_by_init(path: Path):
+    """マウント元を先に作っておく(無いと Docker が root 所有で作り、app が書けない)。"""
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    command = " ".join(str(x) for x in doc["services"]["chiezo-init"]["entrypoint"])
+    assert "/data/state/bridge/claude" in command
+    assert "/data/state/bridge/codex" in command
+
+
+COMFYUI = ROOT / "docker-compose.comfyui.yml"
+
+
+def test_comfyui_is_pinned_and_the_manager_stays_strict():
+    """ComfyUI のイメージは日付つきのタグで固定し、Manager の安全度は起動のたびに normal へ戻す。
+
+    動くタグ(`cu126-slim`)は毎週差し替わる。weak のままの Manager は、画面や API から
+    任意の拡張(= 任意のコード)を入れられる。
+    """
+    import re
+
+    service = yaml.safe_load(COMFYUI.read_text(encoding="utf-8"))["services"]["chiezo-image"]
+    tag = service["image"].rsplit(":", 1)[-1].rstrip("}")
+    assert re.search(r"-\d{8}$", tag), f"日付つきのタグで固定すること: {service['image']}"
+    command = " ".join(service["command"])
+    assert "security_level = normal" in command
+    assert "/runner-scripts/entrypoint.sh" in command

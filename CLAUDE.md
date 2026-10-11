@@ -175,6 +175,15 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       やることは「Origin が完全一致したら印を返す」だけで、開けるのは GET と
       事前確認(preflight)、資格情報は許さない。**https のページから読ませるなら
       chiezo 側も https で出すこと**(mixed content はこの印では通らない)
+    - **いちばん外側の中間層が、知らない名前の Host と別のサイトからの書き込みを断る**
+      (`refuse_requests_from_other_sites` / `app/web_guard.py`)。認証が無いので、LAN の端末で
+      開いている任意のページがブラウザを踏み台にして叩ける(CSRF・DNS リバインディング)。
+      **Host の既定は既存の LAN の使い方を壊さない線** —— IP・`localhost`・ドットの無い名前
+      (サービス名)は通し、それ以外の名前は `CHIEZO_ALLOWED_HOSTS`(と `CHIEZO_MCP_ALLOWED_HOSTS`)
+      に書いたものだけ(421)。**書き込み(POST/PUT/PATCH/DELETE)は `Sec-Fetch-Site: cross-site` か、
+      自分でも `CHIEZO_ALLOWED_ORIGINS` でもない `Origin` を 403 で断る**。比べるのは名前とポートで、
+      スキームは見ない(TLS を終端する前段の裏では食い違う)。**どちらのヘッダも付けない相手
+      (curl・サーバー側のクライアント・MCP)は通す** —— 止めたいのはブラウザだけ
     - `/v1/{source}/filter` — 全文検索ではなく属性(`feature` / `area` / `bbox` / `wikidata` /
       `tag`)の AND での一括抽出(Overpass 相当)。**消えたもの・まだ AI が目を通していない
       ものは `search` / `doc` と同じく既定で外す**(`notes.HIDDEN_TAGS`。`include_removed`
@@ -267,8 +276,11 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       関数だけ)。Chiezo のクエリは最大 5 秒ブロックしうるので、必ず `run_in_threadpool`
       に逃がす。でないと重いクエリ 1 本で API 全体が止まる
     - `TransportSecuritySettings` の既定は「localhost 系の Host しか受け付けない」。
-      そのままだと LAN の別マシンから叩いた時点で 421 になるので、既定では検証を外し
-      (REST 側も認証なし・LAN 内前提)、`CHIEZO_MCP_ALLOWED_HOSTS` で絞れるようにしている
+      そのままだと LAN の別マシンから叩いた時点で 421 になる。**検証は外さず、未設定なら
+      本体と同じ判定(`web_guard.HostMatcher`)を渡す** —— SDK の一覧は完全一致と `名前:*` しか
+      書けず「IP なら何でも」を表せないので、`in` に答えるだけの判定を `model_construct` で
+      検証を通さずに入れる(SDK は `in` で確かめるだけ)。`CHIEZO_MCP_ALLOWED_HOSTS` を書けば
+      今までどおりその一覧だけで絞る
     セッションマネージャは lifespan の中で `run()` する必要があり(python-sdk#1367)、かつ
     1 インスタンス 1 回しか呼べないため、**起動ごとに `build_mcp()` で作り直して**
     `app.state.mcp_asgi` に置き、マウント先(`main._mcp_asgi`)がそれを見る形にしている
@@ -1187,7 +1199,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
         指す作品・イベントの収集向け。配信が絵を運んだ 1 件は読まない)。**1 件 1 回**(作れなければ `thumb_failed`。
         一時的な失敗には付けない)で、印は脇書きなので焼き直しても残る。
         **URL は AI や外のページから来る**ので、名前を引いて手元・LAN のアドレスを断り、
-        転送も 1 段ずつ確かめる(`_public_host`)。**置き場は状態ディレクトリ** ——
+        転送も 1 段ずつ確かめる(`app/outbound.py`。フィードと URL で渡された元も同じ関門を通る)。**置き場は状態ディレクトリ** ——
         生成物の置き場(`/media`)は日が経つと掃除されるので使えない。
         1 回に作るのは `MAX_PER_RUN` 件まで(配信の回は毎時走るので、溜まりも数回で片付く)。
         **足すだけの回は、返ってこなかった既にある 1 件にも後から作る**(`thumbs.backfill` /
@@ -1911,6 +1923,9 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
         `{feed}` の行に `[語: …]` として出す。**文書のタグには混ぜない** ——
         束の名前と出典は「後から出典ごとに外す」ための印で、そこに記事ごとの語が
         混ざると外す鍵として使えなくなる
+      - **手元のネットワークを指す URL は取りに行かない**(`app/outbound.py`。サムネイルと共通)。
+        定義は外のアプリからも置けるので、LAN の機器を叩かせる踏み台にしない。転送は自動で
+        追わず 1 段ずつ確かめ、読むのは `MAX_BYTES` まで。LAN の相手(Pi-hole)は専用の道具が持つ
       - **外へ出る作法は `app/websearch.py` と同じ契約**。本文は取りに行かない
         (見出し・要約・URL・日付だけ)、自分でレート制限をかける、`User-Agent` は
         プロジェクト名だけ。**無人で回る層なので、加減しないと相手のログに
@@ -2415,9 +2430,15 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     **on にできる条件を画面側でも守る**: 鍵の要る相手は鍵が要る / 同居のコンテナ
     (推論サーバ・CLI ブリッジ)は**立っていなければ on にできない**(到達確認は並行に
     行う。直列だと立っていない相手の数だけ画面が遅れる)。`app/answer.py` 側でも弾く。
-    **CLI の認証情報も管理画面から入れる** —— ブリッジが設定 DB(`/data/state`)を読み取り専用で
-    マウントして要求のたびに読むため(再起動は要らない)。chiezo-app に「トークンを返す口」を
-    開けずに済むのが要点。**そのため settings.db は WAL にしない** —— WAL の読み手は -shm への
+    **CLI の認証情報も管理画面から入れる** —— 登録のたびに相手ごとの写しを
+    `state/bridge/<相手>/credential` へ書き出し(`settings_store.export_bridge_credential`。
+    起動時にも DB から揃え直す)、ブリッジはそのディレクトリだけを読み取り専用で
+    マウントして要求のたびに読む(再起動は要らない)。chiezo-app に「トークンを返す口」を
+    開けずに済むのが要点。**設定 DB そのものはブリッジに渡さない** —— 全部の相手の鍵が平文で
+    入っていて、ブリッジの中で動くのは道具を持ったエージェントなので、頼み方ひとつで読まれうる。
+    写しは 0640(ディレクトリ 0750)で、ブリッジは compose の `group_add` で app の GID を足して
+    読む。**settings.db は今も WAL にしない**(古い compose のまま `/state` を丸ごと
+    マウントしているブリッジが読めるように)—— WAL の読み手は -shm への
     書き込みを要求し、read-only のマウントでは `unable to open database file` になる。
     **journal_mode はファイルに焼き付く属性**なので `PRAGMA` を書かないだけでは既存の
     ファイルが戻らない。接続のたびに `DELETE` を明示している(本番で 502 の原因になった)。
@@ -2539,8 +2560,8 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       「以下」で通すと同じ秒の 2 つが両方とも番を取る
     - **トークン数の `NULL` は「相手が言わなかった」、`0` は「使わなかった」。**
       混ぜると、数を返さない相手(CLI ブリッジ)が「0 トークンで動く相手」に見える
-    - **`settings.db` に相乗りしない** —— あちらは CLI ブリッジが読み取り専用でマウントする
-      ファイルで、呼ぶたびに書く表を同居させたくない(ジョブ DB と同じ判断)
+    - **`settings.db` に相乗りしない** —— あちらは消してはいけない設定の置き場で、呼ぶたびに
+      書く表を同居させたくない(ジョブ DB と同じ判断)
   - **失敗の控え(`app/ai_log.py`)には生成の失敗も入れる**(`kind` 列)。
     job にも `error` は書いてあるが、あれは頼んだ本人が `image_status` で引くための
     もので置き場の掃除で消える。**後から「何が落ちたか」を見に来る人**は job_id を
@@ -2693,16 +2714,18 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   `softwareAgent` に名前と版がある(実測で name=gpt-image / version=2.0)。
   CBOR は丸ごと解かずその並びだけを読み、読めなければ控えの名前に落とす
   (**モデル名が分からないだけで失敗ではない**ので、絵は返す)。
-  会話の口は `-s read-only` だが、**画像の口は `-s danger-full-access`** ——
-  隔離はコンテナが受け持つ(ブリッジ専用・使い捨て・作業ディレクトリは 1 回ごとに作り直す)。
-  **codex 自前のサンドボックスを使わせると元の絵を読めない**: 許可されたファイルの読み書きを
-  bubblewrap 越しに行うので、非特権のユーザー名前空間を作れないホストでは補助プロセスが
-  起動しない(`bwrap: No permissions to create a new namespace`)。**書き出しは内蔵ツールが
-  直に行うので通り、読みだけが落ちる**ため、一から描くのは成功して**編集だけが
-  「画像を保存しませんでした」に見える** —— そう見えるので、原因を絵の側に探すことになる。
-  **元の絵の渡し方も名指しする**(`referenced_image_paths`)—— 内蔵ツールには入力画像の口が
-  2 つあり、会話に添付された絵を使うほうを選ばれると、ファイルで渡しているこちらでは
-  `requested the last 1 conversation images, but only 0 were available` で終わる。
+  会話の口は `-s read-only`、**画像の口は `-s workspace-write`(作業ディレクトリだけ書ける)**で、
+  **どちらもシェルの道具を外す**(`CODEX_NO_SHELL` = `--disable shell_tool --disable unified_exec`。
+  read-only は「読ませない」ではないので、シェルが残るとコンテナ内のファイルを読める)。
+  **元の絵は添付(`codex exec -i`)で渡す** —— ファイルの口(`referenced_image_paths`)は
+  codex 自前のサンドボックス(bubblewrap)越しに読むので、非特権のユーザー名前空間を作れない
+  ホストでは `bwrap: No permissions to create a new namespace` で落ちる(書き出しは内蔵ツールが
+  直に行うので通り、**編集だけが「画像を保存しませんでした」に見えていた**)。以前はそれを
+  避けるために `danger-full-access` で走らせていたが、添付は CLI 自身が起動時に読むので
+  サンドボックスを緩めなくて済む。**添付のほうを使えと名指しする**(`SOURCE_HINT`)。
+  **シェルが無いので、内蔵ツールは共有の保存先に置いたまま**になる(写そうとして失敗を
+  重ねるので、写さなくてよいと言い添える `SAVE_NOTE`)—— 拾うのは下の共有の保存先の道。
+  実測(codex 0.149.0): `-i` + workspace-write + シェルなしで、編集した絵が共有の保存先に出た。
   拾うのは**その実行で増えた画像だけ**(保存先は使い回されるので、前回のぶんを混ぜない)。
   **作業ディレクトリを先に見て、共有の保存先(`$CODEX_HOME/generated_images`)は
   走らせる前にあったものを除く。さらに直列化する**(`cli_slot`)—— 共有の保存先を
@@ -2778,10 +2801,20 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   - **道具は CLI 自身に引かせる**。Chiezo の MCP(`/mcp`)を CLI に繋ぐので、検索して答える
     段取りをブリッジ側で組まない。Chiezo から見ると「1 回聞いたら答えが返る」ので
     `rag` / `agent` の区別は関係なくなる
-  - **組み込みの道具は全部切る**(`claude --tools ""` / `codex -s read-only`)。知識ベースに
-    答えるのにシェルもファイル操作も要らず、使えると危ない
-  - **認証情報はイメージに焼かない**。管理画面から登録したものを設定 DB から要求のたびに読む
-    (無ければ環境変数へ落ちる)。ファイルが要る Codex だけ `apply_credential()` が
+  - **組み込みの道具は渡さない**。知識ベースに答えるのにシェルもファイル操作も要らず、
+    使えると危ない(コンテナには自分の認証情報がある)。**claude は許す側の一覧で絞る**
+    (`--tools ToolSearch` + `--permission-mode dontAsk` + `--allowed-tools mcp__chiezo`。
+    web を頼まれた回だけ `WebSearch` / `WebFetch` を足す)—— 以前の「`bypassPermissions` +
+    塞ぐ一覧(`--disallowed-tools`)」は一覧に無い Grep・Glob を通していた。`--tools ""` は
+    ToolSearch ごと消えて MCP が引けなくなるので使えない(実測: `--tools ToolSearch` なら
+    起動時の道具は ToolSearch と mcp__chiezo__* だけになり、MCP は引けた)。
+    **codex はシェルの道具を外す**(`CODEX_NO_SHELL`)。**agy は許す道具を名指しする口が無い**
+    ので `--dangerously-skip-permissions` のまま —— 守りはマウント(ホームだけ)と
+    ネットワーク(compose の `chiezo-ai`。chiezo-app と外には届くが chiezo-trigger には
+    届かない)で取る
+  - **認証情報はイメージに焼かない**。管理画面から登録したものを、chiezo-app が書き出した
+    その相手の分だけの写し(`/credential/credential`)から要求のたびに読む(無ければ以前の
+    置き方の設定 DB → 環境変数へ落ちる)。ファイルが要る Codex だけ `apply_credential()` が
     `$CODEX_HOME/auth.json` へ置く
   - **登録された auth.json は「種」で、既にあるものへ書き戻さない**(`_seed_auth_file`)。
     Codex は access token が切れると refresh token で更新をかけ、相手は更新のたびに
@@ -2846,13 +2879,13 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     **起こすのはプロセスにつき 1 回だけ**(取れなかったときに聞かれるたび起こすと、
     画面を開くだけで何本も立ち上がる)。**認証情報を置けないときは起こさない**
     (起こしても取れない。印も立てないので、登録したあとに聞かれればそこで取りに行く)
-  - **CLI ごとに版の下限を持つ**(`bridge/Dockerfile` の `CODEX_MIN_VERSION` /
-    `CLAUDE_MIN_VERSION`)。npm はその時点の最新を入れるが、**あの RUN は入力が
-    変わらないのでビルドキャッシュに当たる** —— 焼き直しても古い CLI のまま出来上がる。
-    下限を上げると層が作り直され、入った版がそれ未満なら失敗する。
-    **片方にしか下限が無いと、もう片方は何度焼き直しても古いまま**になる ——
-    codex の下限だけを持っていた頃、claude は層が作り直されるまで動かず、
-    `opus` の別名が 1 世代前のモデルに解決されていた(実測)。
+  - **CLI の版は固定する**(`bridge/Dockerfile` の `CLAUDE_VERSION` / `CODEX_VERSION`。
+    `npm install -g …@<版>`)。範囲で入れると焼いた日で中身が変わり、道具を絞るのに頼っている
+    権限まわりのフラグの扱いが黙って動く。入った版が違えばビルドを落とす。
+    **Dependabot は npm install の版を追わない**ので人が上げる。**agy は版を指定できない**
+    (インストーラが常に最新を入れる)ので、下限(`AGY_MIN_VERSION`)で「キャッシュに当たって
+    古いまま出来上がる」ことだけを防ぐ。以前は claude / codex も下限だけを持っていて、
+    片方にしか下限が無かった頃は `opus` の別名が 1 世代前のモデルに解決されていた(実測)。
     **node の版が CLI の版の天井になる。** npm は `engines` に合う中でいちばん新しい
     版を選ぶので、取り出しのステージが古いと黙って古い CLI が入る ——
     claude-code は 2.1.198 から `node >= 22` を要求していて、`node:20-slim` では
@@ -2902,6 +2935,8 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `error` / `turn/completed`)で後から届く。CLI が落ちたら世代を進め、前の世代のスレッドは
     404 にする。**MCP の承認は起動の引数で外す**(`default_tools_approval_mode="auto"`。
     `approval_policy="never"` だけでは道具の呼び出しが断られる —— entrypoint.sh の codex の節と同じ)。
+    **シェルの道具も起動の引数で外す**(`features.shell_tool=false` / `features.unified_exec=false`。
+    会話のブリッジと同じ理由)。
     CLI の差は `TalkBackend` に閉じてあり、claude などを足すときはそこを実装する
 
   - `app/agent.py` — **agent モード(`/v1/ask?mode=agent`)の本体**。LLM 自身に道具を
@@ -3264,8 +3299,8 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `state/ai_transcripts.db` + `state/ai-transcripts/<日付>/<id>.txt`)。
     **`app/ai_log.py` の「中身は残さない」は変えない** —— あちらは失敗の観測で、
     こちらは**シェルを渡している相手が何をしたか**を読むための別の控え
-    (`--dangerously-skip-permissions` / `danger-full-access` を渡しているので、
-    同じ権限で何でもできる。実際、頼んでいない生成を curl で立てられた)。
+    (agy には `--dangerously-skip-permissions` を渡している。シェルを外す前は、頼んでいない
+    生成を curl で立てられた)。
     残すのは依頼文・**相手の生の出力(CLI の stdout/stderr)**・応答の 3 つで、
     途中経過がいちばん効く。**一覧は先頭 `HEAD_MAX` 字だけ、全文はファイル**
     (DB に何十 KB も積むと一覧を引くたびに運ぶ)。**先頭しか出していない塊には
@@ -3331,7 +3366,15 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     「面倒を見る側が消えた」を区別できるので、猶予は `HEARTBEAT_SEC` の数回ぶんで足りる。
     **保存する拡張子は中身に合わせる**(Gemini の絵は JPEG のみ、音は mp3 / wav / flac)。
     **配信はパスを解いてから**
-    (`../` を踏ませない)。**置き場が無ければ MCP の道具ごと出さない**(使えない道具を
+    (`../` を踏ませない)。**配るときは `nosniff` と `Content-Security-Policy: sandbox` を付ける**
+    (`main.MEDIA_HEADERS`)—— 置き場には持ち込みも外部の生成結果も入り、Chiezo と同じオリジンから
+    配るので、文書として開かれても動かない形にする。**持ち込みの拡張子は一覧から選ぶ**
+    (`media.upload_suffix`。名前の拡張子をそのまま使わず、一覧に無ければ種類ごとの既定に
+    付け替える。SVG は断る)。**持ち込みも文字起こしの multipart も `UPLOAD_MAX_BYTES` を
+    読みながら数えて 413**(`media.read_upload`。申告の大きさで先に断る中間層もある)。
+    **URL で渡された元(文字起こし・絵の元)は `app/outbound.py` を通す** —— 名前を引いて
+    手元・LAN のアドレスを断り、転送も 1 段ずつ確かめ、上限で読むのを止める。Chiezo 自身の
+    `/media/…` を URL で渡されたときは取りに行かずに置き場から読む(`media._own_media`)。**置き場が無ければ MCP の道具ごと出さない**(使えない道具を
     コンテナに並べない、notes と同じ扱い)。**外部の相手の鍵は「話す相手」のものを流用する**
     (`credential_from`)—— 同じ鍵を 2 か所に入れさせると、片方だけ古くなる。
     そのために `app/providers.py` に `openai` を足してある(OpenAI 互換なので話す相手にも
@@ -4093,7 +4136,10 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   - `build` / `merge` — 定期実行では走らない(`build` の `if` が push / 手動実行だけに
     絞ってある)。`permissions` はトップレベルを読み取りのみとし、`packages: write` は
     build / merge ジョブだけに与える(public 化に伴う絞り込み)
-- `.github/dependabot.yml` — 依存更新の週次 PR(pip×3 / docker×2 / github-actions)。
+- `.github/dependabot.yml` — 依存更新の週次 PR(pip×4 / docker×3 / docker-compose / github-actions)。
+  ブリッジ(`bridge/requirements.txt`・Dockerfile)と、compose が pull するイメージ
+  (searxng・llama.cpp・alpine・ComfyUI)も見る。ブリッジの CLI の版(npm install の `@版`)は
+  追えないので人が上げる。
   拾いたいのは `.in` の範囲で捕まらない「範囲外の新メジャー」と上限ピンの解除、
   Actions・ベースイメージの更新。**ロック(`requirements.txt`)の更新は任せない** ——
   uv がコンパイルした形式は Dependabot が書き戻せないので、範囲が動いたら手元で
@@ -4228,6 +4274,11 @@ SQLite ファイルで、配信側 chiezo-app は read-only immutable で開く�
   = `"chiezo"`)、CLAUDE.md ブロックのマーカー(`<!-- BEGIN chiezo … -->`。変えると既存の
   埋め込みを差し替えられなくなる)、`User-Agent`(`chiezo-ingest/0.1` と揃えた機械可読トークン)、
   `CHIEZO_LLM_MODEL` の既定値。**日本語名は付けない**(表記は `Chiezo` に一本化する)。
+- **名前の検査は全体一致で行う**(`fullmatch`)。`re.match(r"^…$")` の `$` は末尾の改行 1 つの
+  手前でも一致するので、`"news\n"` のような名前が通る(名前はファイル名・ソース名・URL になる)。
+- **CLI ブリッジは `chiezo-ai` ネットワークにだけ置く**(chiezo-app は default と両方)。
+  ブリッジの中で動くのは道具を持ったエージェントなので、届くのは chiezo-app と外だけにし、
+  長期記憶へ書ける chiezo-trigger には届かせない。設定 DB も渡さない(相手ごとの写しだけ)。
 - 認証なし・LAN 内前提。ルーターでポート開放しないこと。chiezo-trigger・chiezo-llm・searxng は
   ホストへポート公開せず、chiezo-app からのみ内部ネットワーク経由で到達可能にすること
   (**GPU の要るもの**= chiezo-llm・chiezo-image だけは、別ホストの chiezo-app から使う
@@ -4305,6 +4356,12 @@ SQLite ファイルで、配信側 chiezo-app は read-only immutable で開く�
   対応しているのは Wan 系だけで、3 つのうち 1 つでも欠けるとグラフごと通らない)。
   **置き場はホストの `./models/comfyui/ComfyUI/models/` の下**(上書きが `./models/comfyui` を
   コンテナの `/root` に繋ぐので、ComfyUI 本体が展開される 1 段下になる)。
+  **イメージは日付つきのタグで固定する**(`cu126-slim-<日付>`。動くタグは毎週差し替わる)。
+  **root のまま動かす** —— このイメージは `/root` を置き場の前提に組んであり、非 root に
+  切り替える口が無い。代わりに **ComfyUI-Manager の `security_level` を起動のたびに `normal` へ
+  戻す**(compose の `command` が `ComfyUI/user/__manager/config.ini` を書き戻してから起動する。
+  `weak` だと画面や API から任意の拡張 = 任意のコードを入れられ、lan で 7014 を開けると
+  LAN の誰でもそれができる)。設定の環境変数がイメージに無いので、この形になっている
 - **GPU の設定は `docker-compose.llm.cuda.yml`(上書きファイル)に閉じる**。`gpus: all` は
   GPU の無い環境では起動そのものが失敗するので、本体の compose には書かない。
   **この上書きは NVIDIA 専用**(イメージが CUDA ビルドで、`gpus: all` も NVIDIA

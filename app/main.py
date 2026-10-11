@@ -57,9 +57,11 @@ from app import (
     providers,
     rebuilds,
     search_queries,
+    settings_store,
     thumbs,
     usage,
     usage_store,
+    web_guard,
     websearch,
     workers,
 )
@@ -1970,6 +1972,12 @@ async def lifespan(app: FastAPI):
     app.state.data_fingerprint = _sources_fingerprint(data_dir)
     # notes(唯一書き込めるソース)は ingest を回さずに使えるよう、無ければここで作る
     notes.ensure_db()
+    # CLI ブリッジ向けの認証情報の写し(相手ごとに 1 ファイル)を揃える。
+    # ブリッジには設定 DB を渡さないので、書き出しの仕組みより前の登録もここで写す
+    try:
+        await asyncio.to_thread(settings_store.export_bridge_credentials)
+    except Exception as e:  # 写しが作れなくても本体は立てる(正は設定 DB)
+        log.warning("ブリッジ向けの認証情報を揃えられませんでした: %s", e)
     app.state.sources = scan_all(data_dir)
     if not app.state.sources:
         log.warning("no sources registered from %s", data_dir)
@@ -2137,6 +2145,48 @@ async def refuse_orders_from_the_cli(request: Request, call_next):
             media.refuse_bridge_caller(request.client.host if request.client else "")
         except HTTPException as exc:
             return JSONResponse(status_code=exc.status_code, content=exc.detail)
+    return await call_next(request)
+
+
+# 持ち込みの口。中身(multipart)は本体に届く前に一時ファイルへ全部読み込まれるので、
+# 申告された大きさで先に断る(`media.read_upload` が読みながら数えるのは、その後ろの守り)
+_UPLOAD_PATHS = ("/v1/media/upload", "/v1/media/transcribe")
+# multipart の区切りや項目名のぶんの余白
+_UPLOAD_OVERHEAD = 1024 * 1024
+
+
+@app.middleware("http")
+async def refuse_oversized_uploads(request: Request, call_next):
+    """申告(`Content-Length`)が持ち込みの上限を超える要求を、読む前に 413 で断る。"""
+    if request.method == "POST" and request.url.path.rstrip("/") in _UPLOAD_PATHS:
+        try:
+            declared = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            declared = 0
+        if declared > media.UPLOAD_MAX_BYTES + _UPLOAD_OVERHEAD:
+            return JSONResponse(status_code=413, content=media._too_large().detail)
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def refuse_requests_from_other_sites(request: Request, call_next):
+    """**いちばん外側の関門。** 知らない名前の Host と、別のサイトからの書き込みを断る。
+
+    Chiezo は認証を持たないので、LAN の端末で開いている任意のページがブラウザを
+    踏み台にして叩けてしまう(CSRF と DNS リバインディング)。判定は `app/web_guard.py`。
+    中間層は後に登録したものが外側になるので、ここに置く(他の中間層より先に効く)。
+    """
+    host = request.headers.get("host", "")
+    if not web_guard.host_allowed(host):
+        return JSONResponse(status_code=421, content={
+            "error": f"この名前(Host)では受け付けません: {host[:80]}",
+            "hint": "名前で開くなら CHIEZO_ALLOWED_HOSTS にその名前を足してください",
+        })
+    if reason := web_guard.refuse_reason(request.method, request.headers, host):
+        return JSONResponse(status_code=403, content={
+            "error": reason,
+            "hint": "別のオリジンの画面から書き込ませるなら CHIEZO_ALLOWED_ORIGINS に足してください",
+        })
     return await call_next(request)
 
 
@@ -5144,7 +5194,9 @@ async def media_transcribe(
     JSON に載せる意味がない(1 割以上大きくなり、両側で詰め替えの手間が増える)。
     """
     return await media.transcribe(
-        data=await file.read(),
+        # 持ち込み(`/v1/media/upload`)と同じ上限で、読みながら止める。
+        # `file.read()` で丸ごと読むと、上限の無い大きさをいったんメモリに抱える
+        data=await run_in_threadpool(media.read_upload, file.file),
         filename=file.filename or "audio",
         mime=file.content_type or "application/octet-stream",
         backend=backend.strip(),
@@ -5248,10 +5300,22 @@ async def thumb_file(name: str):
     return FileResponse(thumbs.resolve(name), headers={"Cache-Control": "public, max-age=604800"})
 
 
+# /media の応答に必ず付ける印。置き場には持ち込み(`POST /v1/media/upload`)や外部の
+# 生成結果も入り、**Chiezo と同じオリジンから配る** —— 中身が HTML として解釈されると、
+# 開いた人のブラウザで Chiezo の画面としてスクリプトが走る。
+# nosniff で「名乗った種類以外として読む」のを止め、CSP の sandbox で、万一文書として
+# 開かれてもスクリプトもフォームも動かない別オリジン扱いにする
+# (<img>・<audio>・<video> での埋め込みには効かないので、画面の表示は変わらない)。
+MEDIA_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "sandbox",
+}
+
+
 @app.get("/media/{path:path}", include_in_schema=False)
 async def media_file(path: str):
     """出来た画像・音を配る。置き場の外は返さない(`../` を踏ませない)。"""
-    return FileResponse(media.resolve(path))
+    return FileResponse(media.resolve(path), headers=MEDIA_HEADERS)
 
 
 # ---- 画面(人間向け HTML)-----------------------------------------------------

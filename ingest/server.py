@@ -364,7 +364,7 @@ def delete_source(name: str, expect: str = COLLECT_KIND):
     if _running_now(name):
         raise HTTPException(409, {"error": f"ingest is running: {name}"})
 
-    if not SOURCE_NAME_RE.match(name):
+    if not SOURCE_NAME_RE.fullmatch(name):
         raise HTTPException(400, {"error": f"invalid source name: {name}"})
 
     link = _find_link(name)
@@ -404,7 +404,7 @@ def rollback_source(name: str):
     if _running_now(name):
         raise HTTPException(409, {"error": f"ingest is running: {name}"})
 
-    if not SOURCE_NAME_RE.match(name):
+    if not SOURCE_NAME_RE.fullmatch(name):
         raise HTTPException(400, {"error": f"invalid source name: {name}"})
 
     link = _find_link(name)
@@ -460,7 +460,7 @@ def rename_source(name: str, to: str, expect: str = COLLECT_KIND):
     - 途中で落ちたら、作りかけの新しいファイルを片付けて元のまま残す
     """
     for one in (name, to):
-        if not SOURCE_NAME_RE.match(one):
+        if not SOURCE_NAME_RE.fullmatch(one):
             raise HTTPException(400, {"error": f"invalid source name: {one}"})
     if name == to:
         raise HTTPException(400, {"error": "the new name is the same as the current one"})

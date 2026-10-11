@@ -1661,6 +1661,77 @@ class TestTranscribe:
         assert "大きすぎます" in e.value.detail["error"]
 
 
+class TestFetchingByUrl:
+    """**URL で渡された元を取りに行くときも、手元のネットワークは指させない**(`outbound`)。
+
+    URL は頼む側(AI を含む)が渡すので、そのまま叩くと LAN の機器や内部のサービスを
+    Chiezo に叩かせることができる。転送先も 1 段ずつ確かめ、上限で読むのを止める。
+    """
+
+    @staticmethod
+    def _serve(state, responses: dict):
+        import socket
+
+        def fake_getaddrinfo(host, *_args, **_kwargs):
+            address = "10.0.0.5" if host.startswith("lan.") else "93.184.215.14"
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 0))]
+
+        state.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(str(request.url))
+            return responses[str(request.url)]
+
+        state.setattr(media, "_url_client", lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), follow_redirects=False))
+        return calls
+
+    def test_a_public_url_is_fetched(self, state):
+        self._serve(state, {"https://example.com/a.mp3": httpx.Response(200, content=MP3)})
+        data, name, _mime = asyncio.run(media.load_audio(url="https://example.com/a.mp3"))
+        assert (data, name) == (MP3, "a.mp3")
+
+    def test_a_lan_url_is_refused_before_any_request(self, state):
+        calls = self._serve(state, {})
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(media.load_audio(url="http://lan.router/admin"))
+        assert e.value.status_code == 400
+        assert calls == []
+
+    def test_a_redirect_into_the_lan_is_not_followed(self, state):
+        calls = self._serve(state, {
+            "https://example.com/a.mp3": httpx.Response(302, headers={"location": "http://lan.nas/x"}),
+        })
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(media.load_image(url="https://example.com/a.mp3"))
+        assert e.value.status_code == 400
+        assert calls == ["https://example.com/a.mp3"]
+
+    def test_reading_stops_at_the_cap(self, state):
+        state.setattr(media, "MAX_TRANSCRIBE_BYTES", 8)
+        self._serve(state, {"https://example.com/a.mp3": httpx.Response(200, content=b"0" * 64)})
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(media.load_audio(url="https://example.com/a.mp3"))
+        assert e.value.status_code == 400
+        assert "大きすぎます" in e.value.detail["error"]
+
+    def test_chiezos_own_media_url_is_read_from_disk(self, state):
+        """`http://<Chiezo>/media/…` は手元のアドレスだが、置き場に実物がある。
+        取りに行かずにそのまま読む(前に作った絵を直しに出す使い方を塞がない)。"""
+        calls = self._serve(state, {})
+        day = datetime.now(UTC).strftime("%Y%m%d")
+        directory = media.require_dir() / day
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "j-0.mp3").write_bytes(MP3)
+
+        data, name, _mime = asyncio.run(
+            media.load_audio(url=f"http://lan.chiezo:7010/media/{day}/j-0.mp3"))
+
+        assert (data, name) == (MP3, "j-0.mp3")
+        assert calls == []
+
+
 class TestNewBackendLists:
     def test_the_video_list_says_which_lengths_are_allowed(self, state):
         """上限ではなく一覧。 呼ぶ側が「4 と 8 の間は無い」と分かる形にする。"""

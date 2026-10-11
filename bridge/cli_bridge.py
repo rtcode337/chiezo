@@ -23,7 +23,8 @@ Codex は HTTP ではなく CLI で、サブスクの枠で使うにはその CL
   (プロンプトを渡して答えを受け取るだけ)では、繋がないほうが速く、余計なことをしない。
 - 組み込みの道具は全部切る。ファイルの読み書きやシェルは、知識ベースに答えるのに
   要らないうえ危ない。CLI に渡すのは Chiezo の MCP だけにする。
-- 認証情報は Chiezo の設定 DB から読む(`/state/settings.db` を読み取り専用でマウント)。
+- 認証情報は Chiezo が書き出した**自分の分の写し**から読む(`/credential/credential` を
+  読み取り専用でマウント。設定 DB は全部の相手の鍵を持つので渡さない)。
   こうすると Chiezo の管理画面から登録できる —— chiezo-app に「トークンを返す口」を
   開けずに済むのが要点で、認証なしの LAN サービスにそんな口を足したくない。
   DB が無い・空のときは環境変数(`CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_AUTH_JSON`)に落ちる。
@@ -287,51 +288,55 @@ def _fill_from_codex_catalog() -> None:
 # ここを `mcp__chiezo__search mcp__chiezo__doc …` のように絞る。
 ALLOWED_TOOLS = os.environ.get("CHIEZO_BRIDGE_ALLOWED_TOOLS", "mcp__chiezo").strip()
 
-# 組み込みの道具は名前を挙げて塞ぐ。
+# 組み込みの道具は**許すものだけを名指しする**(`--tools`)。
 #
-# 以前は `--tools ""`(組み込みを全部切る指定)を渡していたが、**これは MCP の道具まで
-# 消す** —— つまり「Chiezo の知識を引かせる」というブリッジの目的そのものが、
-# 黙って働いていなかった(CLI は自分の知識だけで答えていた)。`--tools` に MCP の名前を
-# 並べても駄目で、あれは組み込みの一覧しか受け付けない。実測で確かめた。
+# 以前は塞ぐ側の一覧(`--disallowed-tools`)を `bypassPermissions` と組み合わせていたが、
+# **一覧に無い道具は全部通っていた** —— Grep・Glob のような読む道具が抜けていて、
+# 頼み方ひとつで、マウントしてある設定 DB(全相手の鍵)や `/proc/self/environ`
+# (CLAUDE_CODE_OAUTH_TOKEN)を読めた。組み込みは CLI の版が上がるたびに増えるので、
+# 塞ぐ側の一覧はいつか必ず取りこぼす。
 #
-# ToolSearch は塞がない。 MCP の道具はここから読み込まれるので、塞ぐと
-# `--mcp-config` を渡していても引けなくなる(これも実測で踏んだ)。
-#
-# この一覧は取りこぼしうる。 組み込みは CLI の版が上がるたびに増えるので、
-# 新しい道具は既定で使えてしまう。増えたら足すこと（`CHIEZO_BRIDGE_DISALLOWED_TOOLS`
-# で環境から差し替えられる）。
-DEFAULT_DISALLOWED = (
-    "Agent", "Bash", "Edit", "Read", "Write", "NotebookEdit",
-    "WebFetch", "WebSearch", "Workflow", "Skill",
-    "ReportFindings", "ScheduleWakeup", "DesignSync", "Monitor",
-    "PushNotification", "RemoteTrigger", "SendMessage",
-    "CronCreate", "CronDelete", "CronList",
-    "EnterWorktree", "ExitWorktree",
-    "TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate",
-)
-DISALLOWED_TOOLS = os.environ.get(
-    "CHIEZO_BRIDGE_DISALLOWED_TOOLS", ",".join(DEFAULT_DISALLOWED)
-).strip()
+# `--tools` は組み込みの一覧しか受け付けず、MCP の道具は別枠で残る。
+# **ToolSearch だけは残す** —— MCP の道具はここから読み込まれるので、`--tools ""` で
+# 組み込みを全部切ると MCP まで引けなくなる(以前それで道具が黙って消えていた)。
+# 実測(claude 2.1.281): `--tools ToolSearch` で起動時の道具は ToolSearch と
+# mcp__chiezo__* だけになり、MCP は引けた。
+BASE_TOOLS = ("ToolSearch",)
 
 # web 検索を頼まれたときだけ開ける道具。
-# 引く先は Chiezo の SearXNG ではなく CLI の提供元の検索なので、既定では塞いだまま
+# 引く先は Chiezo の SearXNG ではなく CLI の提供元の検索なので、既定では閉じたまま
 # にして、要求ごとに開ける（会話画面の 🌐 トグルがこれを送る）。
 WEB_TOOLS = ("WebSearch", "WebFetch")
 
 
-def disallowed_for(web: bool) -> str:
-    """今回塞ぐ道具。web 検索を頼まれたぶんだけ開ける。"""
-    names = [n.strip() for n in DISALLOWED_TOOLS.split(",") if n.strip()]
+def tools_for(web: bool) -> str:
+    """今回使える組み込みの道具(`--tools` に渡す)。web 検索を頼まれたぶんだけ足す。"""
+    names = list(BASE_TOOLS) if MCP_URL else []
     if web:
-        names = [n for n in names if n not in WEB_TOOLS]
+        names += WEB_TOOLS
+    return ",".join(names)
+
+
+def allowed_for(web: bool) -> str:
+    """確認なしで使ってよい道具(`--allowed-tools`)。これ以外は `dontAsk` が断る。"""
+    names = [n for n in re.split(r"[,\s]+", ALLOWED_TOOLS) if n] if MCP_URL else []
+    if web:
+        names += WEB_TOOLS
     return ",".join(names)
 
 
 MCP_CONFIG_PATH = "/tmp/chiezo-mcp.json"
 
-# Chiezo の設定 DB(chiezo-app と共有。読み取り専用でマウントする)。
-# テーブルの形は app/settings_store.py との約束。同じリポジトリの 2 つのイメージが
-# 1 つのファイルを挟んで話すので、片方だけ変えると黙って読めなくなる。
+# 管理画面で登録された認証情報の写し。chiezo-app が登録のたびに
+# `<state>/bridge/<相手>/credential` へ書き出し、compose はそのディレクトリだけを
+# `/credential` に読み取り専用でマウントする(app/settings_store.py の
+# `export_bridge_credential` との約束)。
+#
+# **設定 DB そのものは渡さない。** あそこには全部の相手の鍵が入っていて、このコンテナで
+# 動くのは道具を持ったエージェントなので、頼み方ひとつで読まれうる。
+CREDENTIAL_FILE = os.environ.get("CHIEZO_BRIDGE_CREDENTIAL_FILE", "/credential/credential")
+# 以前の置き方(設定 DB を `/state` に丸ごとマウント)。写しが無いときだけ見る ——
+# compose を更新する前のブリッジを、更新した日に止めないため。新しく立てるなら使わない。
 STATE_DB = os.environ.get("CHIEZO_BRIDGE_STATE_DB", "/state/settings.db")
 
 # Linux の単一引数の長さ上限(MAX_ARG_STRLEN = 32 ページ = 128KiB)。少し余裕を見る。
@@ -352,6 +357,7 @@ def stored_credential() -> str:
     """管理画面から登録された認証情報。無ければ環境変数へ落ちる。
 
     要求のたびに読む(起動時に固めない)ので、管理画面で登録し直しても再起動が要らない。
+    読む順は 写し(CREDENTIAL_FILE)→ 以前の設定 DB(マウントされていれば)→ 環境変数。
     """
     fallback = os.environ.get(
         {
@@ -359,6 +365,10 @@ def stored_credential() -> str:
             "codex": "CODEX_AUTH_JSON",
         }.get(CLI, ""), ""
     ).strip()
+    if value := _read_text(CREDENTIAL_FILE).strip():
+        return value
+    if not os.path.exists(STATE_DB):
+        return fallback
     try:
         # 読み取り専用で開く(マウントも ro だが、WAL の副作用でファイルを作らないため)。
         conn = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True, timeout=5.0)
@@ -830,6 +840,14 @@ def resolve_timeout(requested: float | None) -> float:
     return float(requested)
 
 
+# codex からシェルの道具を外す指定。**`-s read-only` は「書かせない」であって
+# 「読ませない」ではない** —— シェルが残っていると、頼み方ひとつでコンテナ内の
+# ファイル(自分の auth.json や /proc/self/environ)を読んで答えに載せられる。
+# 会話にも絵にもシェルは要らない(知識は MCP で引き、絵は内蔵の画像ツールが描く)。
+# 実測(codex 0.149.0): これを付けると「cat /etc/hostname を実行して」に「できない」と返る。
+CODEX_NO_SHELL = ("--disable", "shell_tool", "--disable", "unified_exec")
+
+
 def build_command(
     out_path: str, prompt: str = "", model: str = "", effort: str = "",
     web: bool = False, max_turns: int | None = None, prompt_path: str = "",
@@ -852,21 +870,23 @@ def build_command(
             # (コンテナは使い捨てなので普通は無いが、意図しない相手に繋がないための保険)。
             # MCP を繋がない設定でも付ける —— 道具を一切渡さないことを保証するため。
             "--strict-mcp-config",
-            # 非対話なので確認を出されると待ち続けて固まる。渡す道具は下の分岐で決まる。
-            "--permission-mode", "bypassPermissions",
+            # **許した道具以外は聞かずに断らせる**(`dontAsk`)。非対話なので確認を
+            # 出されると待ち続けて固まるが、`bypassPermissions` は「全部許す」なので
+            # 道具を絞る仕組みとして働かない。
+            "--permission-mode", "dontAsk",
+            # 組み込みは許すものだけ(BASE_TOOLS の説明のとおり)。MCP の道具は別枠
+            "--tools", tools_for(web),
             # **構造化して受け取る。** 素のテキストは最終的な答えしか運ばないので、
             # 使ったトークン数も「エラーとして終わったか」も捨てていた
             # (`_result_of`)。本文は `result` に入る。
             "--output-format", "json",
         ]
-        # 組み込みの道具(Bash・Read・WebFetch…)を塞ぐ。`--tools ""` は使えない
-        # ——上の DEFAULT_DISALLOWED の説明のとおり、MCP の道具まで消えてしまう。
-        if denied := disallowed_for(web):
-            cmd += ["--disallowed-tools", denied]
+        if allowed := allowed_for(web):
+            cmd += ["--allowed-tools", allowed]
         if max_turns:
             cmd += ["--max-turns", str(max_turns)]
         if MCP_URL:
-            cmd += ["--mcp-config", MCP_CONFIG_PATH, "--allowed-tools", ALLOWED_TOOLS]
+            cmd += ["--mcp-config", MCP_CONFIG_PATH]
         if model:
             cmd += ["--model", model]
         if effort:
@@ -896,7 +916,12 @@ def build_command(
         # `invalid arguments: - missing properties 'toolSummary', 'toolAction'` で落ちる
         # (agy 1.1.13 でも 1.1.27 でも同じ。版を上げても直らなかった)。
         # 絵を描く口(ImageRequest)は最初からこれを付けていて、そちらは通っていた。
-        # 見える範囲は使い捨てのコンテナの中だけなので、許してよい。
+        #
+        # **agy には道具を名指しで許す口が無い**(1.2 系のフラグは
+        # `--dangerously-skip-permissions` / `--mode accept-edits|plan` / `--sandbox` だけ)。
+        # なので守りは CLI の外で取る —— このコンテナにはサインイン結果のホームしか
+        # マウントせず(他の相手の鍵が入った設定 DB は渡さない)、置くネットワークも
+        # 取り込みのトリガーへは届かないものにする(compose の chiezo-ai)。
         cmd.append("--dangerously-skip-permissions")
         # agy は print モードに自前の待ち時間を持つ(--print-timeout、既定 5 分)。
         # 渡さないと、ブリッジの上限を伸ばしても 5 分で agy 側が先に諦める。
@@ -920,6 +945,8 @@ def build_command(
             "--ephemeral",
             # 生成されたシェルコマンドを実行させない
             "-s", "read-only",
+            # シェルの道具そのものを持たせない(CODEX_NO_SHELL)
+            *CODEX_NO_SHELL,
             "-c", 'approval_policy="never"',
             # **知識の道具(chiezo)は確認を挟まずに引かせる。**
             # `approval_policy="never"` は「聞かない」であって「許す」ではないので、
@@ -956,7 +983,7 @@ def build_command(
 
 
 # CLI が本文と一緒に吐く注意書き。答えに混ざると読み手が困るので落としてログへ回す。
-# 塞ぐ道具の名前が版の変化でずれると出る（`--disallowed-tools` の綴りは検証される）。
+# 許す道具の名前(`--allowed-tools`)が版の変化でずれると出る(綴りは検証される)。
 CLI_NOTICE = re.compile(r'^Permission (?:deny|allow) rule ".*?" matches no known tool.*$', re.M)
 
 
@@ -2057,7 +2084,7 @@ async def models() -> dict:
 # 持たない CLI では 404 を返す。どちらも「エージェントにファイルを書かせる」形なので、
 # 段取りは共通で、違うのは起動コマンドだけ。
 #
-# サンドボックスを緩める。 会話の口は読み取り専用で動かしているが、
+# 書き込みは作業ディレクトリだけに許す。 会話の口は読み取り専用で動かしているが、
 # 画像はファイルとして書き出されるので書き込みを許さないと 1 枚も残らない。
 # 許すのはこの 1 回のために作った作業ディレクトリだけで、書けた画像を読んだら消す。
 # 絵 1 枚の上限。**会話より長く取る** —— 相手はエージェントなので、読んで・
@@ -2108,13 +2135,29 @@ MODE_EDIT = "edit"
 MODE_REFERENCE = "reference"
 
 
-# 元の絵の渡し方を名指しする一文(Codex のみ)。 内蔵ツールには入力画像の口が 2 つあり、
-# **会話に添付された絵を使うほう**を選ばれると、こちらはファイルで渡しているので
-# `requested the last 1 conversation images, but only 0 were available` で終わる。
-# 名指しするとファイルパスのほうを使う(実測で口が切り替わった)。
+# 元の絵の渡し方を名指しする一文(Codex のみ)。 内蔵ツールには入力画像の口が 2 つ
+# (会話に添付された絵 / referenced_image_paths のファイル)ある。
+#
+# **添付(`codex exec -i`)のほうを使わせる。** ファイルの口は codex 自前の
+# サンドボックス(bubblewrap)越しに読むので、非特権のユーザー名前空間を作れない
+# ホストでは `fs sandbox helper failed: bwrap: No permissions to create a new namespace`
+# で落ちる。以前はそれを避けるためにサンドボックスごと外していた(danger-full-access)が、
+# 添付なら CLI 自身が起動時に読むので、サンドボックスを緩めなくて済む。
+# 名指ししないと、添付が無いと思ってファイルの口を選ぶことがある。
 SOURCE_HINT = (
-    " Pass the file path above to the image tool's referenced_image_paths; "
-    "do not use conversation images — none are attached."
+    " The same image file(s) are attached to this conversation in the same order: "
+    "pass those attached conversation images to the image tool; "
+    "do not use referenced_image_paths."
+)
+
+
+# 保存のしかたを言い添える一文(Codex のみ)。シェルの道具を外してあるので、内蔵の
+# 画像ツールが置いた先($CODEX_HOME/generated_images)から作業ディレクトリへ写そうとして
+# 失敗を重ねる(実測: `patch rejected: empty patch` を挟んで 1 往復ぶん遠回りした)。
+# 置いた先はこちらが拾う(`_collect_images` の共有の保存先)ので、写させない。
+SAVE_NOTE = (
+    " If the image tool saves the file somewhere else by itself, that is fine:"
+    " do not try to copy, move or rewrite it."
 )
 
 
@@ -2128,6 +2171,7 @@ def _image_prompt(body: ImageRequest, out_dir: str) -> str:
     """
     encoded = body.images or ([body.image] if body.image else [])
     hint = SOURCE_HINT if encoded and CLI == "codex" else ""
+    save = SAVE_NOTE if CLI == "codex" else ""
     if encoded and body.image_mode == MODE_REFERENCE:
         # **渡した順にファイルを名指しする。** 役割(姿勢の見本・絵柄の見本…)は
         # こちらでは決めない —— 依頼文の中で「1 枚目は…」と書けるように、
@@ -2148,7 +2192,7 @@ def _image_prompt(body: ImageRequest, out_dir: str) -> str:
             f"Save the new image as PNG into {out_dir}/ (use names like out-1.png), "
             "leaving the reference file untouched. "
             "Do not create any other files, do not write code, and do not explain. "
-            "When the file is saved, reply with just the file path."
+            "When the file is saved, reply with just the file path." + save
         )
     if encoded:
         return (
@@ -2160,40 +2204,42 @@ def _image_prompt(body: ImageRequest, out_dir: str) -> str:
             f"change. Save the edited image as PNG into {out_dir}/ (use names like "
             "out-1.png), leaving the original file untouched. "
             "Do not create any other files, do not write code, and do not explain. "
-            "When the file is saved, reply with just the file path."
+            "When the file is saved, reply with just the file path." + save
         )
     return (
         f"Generate {body.n} image(s) at {body.size} for this description:\n\n"
         f"{body.prompt}\n\n"
         f"Save the result as PNG into {out_dir}/ (use names like out-1.png). "
         "Do not create any other files, do not write code, and do not explain. "
-        "When the file is saved, reply with just the file path."
+        "When the file is saved, reply with just the file path." + save
     )
 
 
-def image_command(out_dir: str, model: str = "") -> list[str]:
+def image_command(out_dir: str, model: str = "", sources: list[str] | tuple[str, ...] = ()) -> list[str]:
     """Codex に絵を描かせる起動コマンド。プロンプトは標準入力から渡す。
 
-    **codex 自前のサンドボックスは使わない。** 隔離はこのコンテナが受け持つ
-    (ブリッジ専用・使い捨て・作業ディレクトリは 1 回ごとに作り直す)。
+    **書けるのは作業ディレクトリだけ**(`-s workspace-write` + `-C`)で、シェルの道具は
+    持たせない(CODEX_NO_SHELL)。描くのも保存するのも内蔵の画像ツールが直に行う。
 
-    使わせると**元の絵を読めない**。 codex は許可されたファイルの読み書きを
-    bubblewrap 越しに行うが、非特権のユーザー名前空間を作れないホストでは
-    その補助プロセスが起動できない —— `unable to read referenced image at
+    **元の絵は添付で渡す(`-i`)。** 以前は `danger-full-access` でサンドボックスごと
+    外していた —— codex は許可されたファイルの読みを bubblewrap 越しに行い、
+    非特権のユーザー名前空間を作れないホストでは `unable to read referenced image at
     …/source.png: fs sandbox helper failed: bwrap: No permissions to create a new
-    namespace`。**書き出しは内蔵ツールが直に行うので通り、読みだけが落ちる**ため、
-    一から描くのは成功して編集だけが「画像を保存しませんでした」に見えていた
-    (そう見えるので、原因を絵の側に探すことになる)。
-
-    **会話の口は read-only のまま**(`build_command`)—— あちらはファイルに触らない。
+    namespace` で落ちるため(書き出しは通るので、編集だけが「画像を保存しませんでした」
+    に見えていた)。添付は CLI 自身が起動時に読むので、この補助プロセスを通らない。
     """
-    cmd = [
-        "codex", "exec",
+    cmd = ["codex", "exec"]
+    # `-i` は値を複数取るので、直後に別のフラグを置いて区切る(最後の `-` を
+    # 絵のパスとして食われないように、先頭側に並べる)
+    for path in sources:
+        cmd += ["-i", path]
+    cmd += [
         # /srv は git リポジトリではないので、既定の拒否を外す
         "--skip-git-repo-check",
         # セッションをディスクに残さない(コンテナは使い捨て)
         "--ephemeral",
-        "-s", "danger-full-access",
+        "-s", "workspace-write",
+        *CODEX_NO_SHELL,
         "-c", 'approval_policy="never"',
         "-C", out_dir,
     ]
@@ -2227,6 +2273,7 @@ def _write_source(body: ImageRequest, out_dir: str) -> list[str]:
     **エージェントに見せられるのはこの作業ディレクトリだけ**(`-s workspace-write` /
     `--dangerously-skip-permissions` で許してあるのがここ)。頼む側のディスクは
     見えないので、絵そのものを base64 で受け取ってこちらで書く。
+    codex にはここに置いたファイルを添付(`-i`)としても渡す(`image_command`)。
     """
     encoded = body.images or ([body.image] if body.image else [])
     if not encoded:
@@ -2302,6 +2349,9 @@ async def images_generations(body: ImageRequest):
         )
     if not body.prompt.strip():
         raise HTTPException(400, {"error": "prompt must not be empty"})
+    # 会話の口と同じ検査を、枠を待つ前に掛ける。`-` で始まる名前は CLI の引数として
+    # 渡ると、フラグとして読まれる(`--dangerously-…` を外から注ぎ込まれかねない)
+    resolve_model(body.model)
     if reason := apply_credential():
         raise HTTPException(401, {"error": reason})
 
@@ -2363,6 +2413,7 @@ async def _feed(proc: asyncio.subprocess.Process, payload: bytes) -> None:
 async def _generate_images(body: ImageRequest) -> dict:
     started = time.time()
     seen = _existing(_shared_root())
+    model = resolve_model(body.model)
     with tempfile.TemporaryDirectory(prefix="chiezo-image-") as out_dir:
         sources = _write_source(body, out_dir)
         prompt = _image_prompt(body, out_dir)
@@ -2372,17 +2423,17 @@ async def _generate_images(body: ImageRequest) -> dict:
             cmd = ["agy", "-p", prompt, "--dangerously-skip-permissions",
                    # 会話の口と同じく、agy 自前の 5 分の待ち時間をこちらの上限に合わせる。
                    "--print-timeout", agy_print_timeout(IMAGE_TIMEOUT)]
-            if body.model or MODEL:
-                cmd += ["--model", body.model or MODEL]
+            if model:
+                cmd += ["--model", model]
             payload = b""
         else:
-            cmd = image_command(out_dir, body.model or MODEL)
+            cmd = image_command(out_dir, model, sources)
             payload = prompt.encode("utf-8")
 
         # **モデルもログに出す。** 指定しなければ CLI の既定(＝一番重いもの)で走るので、
         # 遅かったときに「何で走っていたのか」が分からないと切り分けられない。
         log.info("running %s image tool (prompt %d bytes, model=%s)", CLI,
-                 len(prompt.encode("utf-8")), body.model or MODEL or "(CLI の既定)")
+                 len(prompt.encode("utf-8")), model or "(CLI の既定)")
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=out_dir,
