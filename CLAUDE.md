@@ -3075,7 +3075,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     `page_shell` が `<link rel="apple-touch-icon">` を出す + `main.py` が
     `/apple-touch-icon.png` で配信する — iOS は SVG や data URI のファビコンをホームアイコンに
     使わないため。角丸マスクは iOS が自前で掛けるので角丸なし・全面塗りで描いてある
-    (再生成手順は README「開発 > アイコンを変えたとき」節が正)。
+    (再生成手順は docs/development.md「アイコンを変えたとき」が正)。
     共通スタイル(`PAGE_STYLE`)は狭い画面向けにメディアクエリを 2 つ持つ。
     `56rem` 以下は**表だけ**を `display: block` + `overflow-x: auto` で横スクロールさせる ——
     列の多い表(登録ソース一覧は約 800px 要る)が画面からあふれると、ページ全体が横スクロール
@@ -4136,7 +4136,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
 
 ## コマンド
 
-セットアップは README、取り込み・運用(ダンプ更新、別マシンでのビルド、既存 DB の移行)の
+起動は README、テスト・依存・CI は `docs/development.md`、取り込み・運用(ダンプ更新、別マシンでのビルド、既存 DB の移行)の
 手順と ingest の環境変数一覧は **`docs/operations.md` が正**。
 ここには開発時にしか使わないものだけ置く。
 
@@ -4375,9 +4375,10 @@ SQLite ファイルで、配信側 chiezo-app は read-only immutable で開く�
   リポジトリに置くのは雛形(`.example`)だけで、置き場の絶対パス・接続先の IP を
   コミットしない(追跡したままだと、手元で書き換えたものが `git add` に巻き込まれる)。
 - コード(app/ ingest/ の挙動・エンドポイント・環境変数など)を変更したら、同じ変更で
-  README.md(入口。概要・セットアップ・各機能の要約とリンク)と、対応する docs/ の詳細
-  (`api-reference.md` = API 仕様と画面 / `ai.md` = 「使う」層 /
-  `operations.md` = 取り込みと運用 / `design-notes.md` = なぜこの形か)、および本ファイル
+  README.md(入口。概要・起動・引き方・運用の要約とリンク)と、対応する docs/ の詳細
+  (`overview.md` = 各機能の説明 / `api-reference.md` = API 仕様と画面 / `ai.md` = 「使う」層 /
+  `operations.md` = 取り込みと運用 / `development.md` = テスト・依存・CI /
+  `design-notes.md` = なぜこの形か)、および本ファイル
   (CLAUDE.md、アーキテクチャ記述)もあわせて更新すること。**README には詳細を書き戻さない**
   (人に読ませる入口として 1 画面で全体像がつかめる長さを保つ)。
   ドキュメントだけを別コミット・別対応に先送りしない。

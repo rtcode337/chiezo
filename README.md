@@ -1,360 +1,82 @@
 # <img src="assets/icon.svg" width="40" alt="Chiezo icon"> Chiezo — AI を使うのに要るものを貸し出すサーバー
 
-AI を使うのに要るものを 1 か所で持ち、貸し出す。持つのは、知識・記憶・話せる AI・鍵・
-計算資源・時計・置き場。持たないのは目的で、それは呼ぶ側が持ってくる。
-
-借りに来るのは 2 種類。
+- AI とアプリが共通で要るもの —— 知識・記憶・話せる AI・鍵・計算資源・時計 —— を 1 か所で持って貸し出す
+- 知識は公開ダンプ(Wikipedia・OpenStreetMap・GeoNames・Overture)を手元の SQLite に取り込み、オフラインで引ける
+- 推論は同居させない。考えるのは呼ぶ側で、Chiezo はそれが持てないものを預かる
 
 | 借りる側 | 口 | 主に借りるもの |
 |---|---|---|
-| **AI**(Claude Code など) | MCP(`/mcp`) | 溜めた知識、覚えたことの置き場、絵や音を作る道具 |
-| **アプリ** | REST(`/v1/...`) | **話せる AI そのもの**(鍵は Chiezo が握る)、知識、生成 |
+| AI(Claude Code など) | MCP(`/mcp`) | 溜めた知識、覚えたことの置き場、絵や音を作る道具 |
+| アプリ | REST(`/v1/...`) | 話せる AI そのもの(鍵は Chiezo が握る)、知識、生成 |
 | 人 | 画面(`/admin`) | 設定と、動いているかの確認 |
 
-推論は同居させない。考えるのは呼ぶ側で、Chiezo はそれが持てないものを預かる側にいる。
-足すかどうかの線引きは「各アプリが自前で持つと重複して重く、かつ目的に依らないもの」。
+できることの一覧と各面の使い方は [全体像](docs/overview.md) にある。
 
-## 持っているもの
-
-### 知識(溜めて引く)
-
-| はたらき | 内容 |
-|---|---|
-| ためる | ソースごとに独立した 1 つの SQLite ファイル(`data/corpus/<source>.db`)にする。取得元は公開ダンプ(Wikipedia / OpenStreetMap / GeoNames / Overture)のほか、公開リポジトリに置けないプライベートな情報も、別リポジトリのアダプタとして差し込める。更新はブルーグリーン(別ファイルに構築 → 切り替え) |
-| 取り出す | 引き口は 2 経路。MCP(`/mcp`、Streamable HTTP)と REST(`search` / `doc` / `filter` / `tags` …)。Claude Code 向けには「どんなときに Chiezo を使うか」を書いた CLAUDE.md ブロックも生成できる |
-| 覚える | `/v1/chiezo_memory` に書いたものは `chiezo_memory` ソースとして溜まり、`recall` で引ける。書き手は人でも AI でもよい |
-| 集める / 整理する | まとまったダンプの無いもの(直近のニュース、入れ替わりの速い店、人物の関係)を AI に集めさせ、長期記憶へ積んでいく。**既にある内容を実行のたびに育てることもできる**(分類の語彙を整える・重複をまとめる。触れなかったものは残り、消すのは明示したときだけ)。時計は Chiezo が持つので、間隔は画面から変えられる |
-
-画面では、ためた知識と集めた知識を**長期記憶**、覚えたことを**短期記憶**と呼んで節を分けている。
-
-### 鍵と、話せる AI
-
-呼ぶ側に認証情報を持たせないのが、この面の値打ち。鍵は管理画面から入れて Chiezo が預かる。
-
-| はたらき | 内容 |
-|---|---|
-| 取り次ぐ | `/v1/ai/complete` に自分のプロンプトと材料を投げれば、登録した相手をそのまま使える。知識ベースは既定では引かないので、材料を持っているアプリ向け(`knowledge` を付ければ、自分のプロンプトのまま知識も引かせられる)。API キーも課金の関係も呼ぶ側は持たなくてよい |
-| 話し続ける | `/v1/talk` で、短期記憶に置いたキャラ設定のまま相手(codex)と会話を続けられる。相手を起動したままにするので 1 往復が速く、会話の途中で Chiezo の知識も引く。会話ブリッジを別に立てる([AI と話す](docs/ai.md#キャラクターと話し続ける会話の口-v1talk)) |
-| 使ってみせる | Chiezo を上手に引ける AI を Chiezo 自身が用意する(`/v1/ask`・`/ai/chat`)。既定では無効 |
-| 控えを残す | 枠の残り(使用量)と、失敗した理由。無人の呼び出しは、その場に居合わせない人が原因を追うことになる |
-
-### 計算資源と外への回線
-
-| はたらき | 内容 |
-|---|---|
-| 作る | 絵・音・動画・声。自前の GPU(ComfyUI)でも外部サービスでも同じ口から頼める。何案か作って人に選んでもらう場もある(音は AI 自身が聴けない) |
-| 聞き取る | 文字起こし |
-| 探す | web 検索(既定では無効)。溜めた知識の外側を補うためのもので、知識ベース本体は外を叩かない |
-
-### 性質(知識の置き場として)
-
-AI に知識を持たせる方法はほかに 3 つある。モデルの中(学習済みの知識)、コンテキストの中
-(CLAUDE.md や記憶ファイル)、外部 API。Chiezo はそのどれとも違う置き場で、性質は次のとおり。
-
-- コンテキストを消費しない。CLAUDE.md や記憶ファイルは毎セッション全部が読み込まれるため
-  量に比例してトークンを払うが、Chiezo で常駐するのは道具の定義(数百字)だけで、
-  中身は引いたときにしか載らない。全世界の地名を入れても常駐コストは変わらない
-- ローカルの SQLite なので数 ms〜数十 ms で返り、オフラインでも動く。外部 API のような
-  レート制限や相手側の障害による停止が無い
-- 問い合わせ内容が外に出ない。外部 API では何を調べたかが相手のログに残る。利用規約が
-  連絡先の明示を求めている場合、AI が git の設定や環境変数から拾った開発者のメール
-  アドレスを `User-Agent` に載せて送ってしまうこともある
-- 公共データの API(地図・辞書・統計)を AI に叩かせると、人手では起こらない頻度になり
-  運営の負担になる。取り込んだコピーを引く限りその問題は生じない
-- 取り込んだ時点のスナップショットを引くので、いま現在の状態を知りたい用途には向かない
-  (そこは「集める」と web 検索の担当)
-
-### ためられるソース
-
-| ためる情報 | ソース名 | 内容 |
-|---|---|---|
-| Wikipedia | `<lang>wiki` | 一般知識・人物・作品・出来事など。348 の言語版が定義済みで(`jawiki` / `enwiki` / `zh_yuewiki` …)、使いたい言語だけを取り込む(管理画面の `/admin` → `wikipedia` → 言語選択から) |
-| OpenStreetMap | `osm_<国>` | 国別抽出(Geofabrik 由来の地名辞典 + POI 辞典)。地名・行政区・自然地物に加え、病院・学校・店舗・観光地等の主要 POI と駅・空港・港・IC/SA 等の交通インフラ、およびそれらの座標。Geofabrik にある 195 の国・地域が定義済みで(`osm_japan` / `osm_france` …)、使いたい国だけを取り込む(`/admin` → `osm` → 国選択から) |
-| Overture Maps | `overture_japan` | 店舗・施設の POI。OSM は店舗レベルでは穴が多く、実測で新宿 1km 四方の飲食店は OSM 884 件に対し 4,466 件。**入れる範囲は国で決める**(矩形は読む量を抑える枠で、日本の枠には韓国が丸ごと入る)。ライセンスは CDLA Permissive 2.0 / Apache 2.0 で、OSM のデータは含まない |
-| 東証の上場銘柄 | `jquants_master` | 全上場銘柄の会社名・市場区分・17/33 業種・規模区分(TOPIX Core30 など)・商品区分(普通株式・ETF・REIT …)。証券コードから引ける。**J-Quants の API キー(管理画面の「API キー」の面で `jquants` に登録)が要り、個人の私的利用に限る**([運用](docs/operations.md#j-quants)) |
-| 決算発表予定 | `jquants_earnings` | 全上場銘柄の、今日から 31 日先までの決算発表予定日(J-Quants)。証券コードや月(`2026-11`)で引ける。**全部が見えるのは J-Quants の有料プラン(Light 以上)のキーだけ**(無料プランでも見える分は取り込み、一部だけであることを `取得状況` の 1 件に残す) |
-| GeoNames | `geonames` | 全世界地名辞典(約 400MB のダンプで約 1,200 万件)。多言語別名を持つので「パリ」「ニューヨーク」のような日本語表記から引ける。wikidata の Q 番号も拾うので jawiki と突合できる。店舗・営業時間は持たない(そこは osm 系の担当) |
-| AI 自身が書いたメモ | `chiezo_memory` | 取り込みは要らず、書いた端から引ける(後述) |
-| AI が集めたもの | 収集ごと | まとまったダンプの無いものを AI に集めさせる(後述) |
-
-## セットアップ
+## 起動する
 
 ```bash
-# 1. API を起動(DB が無い間もソース 0 件で起動する)。
-#    イメージは GHCR から自動で pull される(ビルド不要。更新は docker compose pull)
-docker compose up -d
+docker compose up -d                       # イメージは GHCR から pull される。更新は docker compose pull
 curl -s http://localhost:7010/healthz
-
-# 2. jawiki を取り込む(ダンプ 5〜6GB DL + 構築 2〜6 時間、ディスク空き 80GB 以上推奨)
-docker compose --profile ingest run --rm chiezo-ingest
-
-# 2'. osm_japan を取り込む(ダンプ 2〜3GB DL [.osm.pbf] + 構築 1〜4 時間、
-#     POI を含むため DB は数 GB 規模)。他の国は SOURCE=osm_france のように国名を変えるだけ
-docker compose --profile ingest run --rm -e SOURCE=osm_japan chiezo-ingest
-
-# 2''. geonames を取り込む(全世界の地名。ダンプ約 400MB + 別名 191MB)
-docker compose --profile ingest run --rm -e SOURCE=geonames chiezo-ingest
-
-# 3. 取り込みが終われば chiezo-app が数秒以内に自動で新しい DB を読み込む(再起動は不要)
-curl -s http://localhost:7010/v1/sources
 ```
 
-取り込みは開始前にメモリを検査し、足りなければダウンロードもせず中止する。
-既定(`BUILD_PROFILE=low_memory`)ならどのソースもメモリ 2 GiB で構築できる
-([メモリについて](docs/operations.md#メモリについて))。
+ブラウザで `http://<サーバー>:7010/` を開くと管理画面に入る。知識を取り込むソースは次のように足す
+(取り込みが終われば、再起動なしで数秒以内に読み込まれる)。
+
+```bash
+docker compose --profile ingest run --rm chiezo-ingest                      # jawiki(構築 2〜6 時間)
+docker compose --profile ingest run --rm -e SOURCE=osm_japan chiezo-ingest  # 国別の地名と POI
+docker compose --profile ingest run --rm -e SOURCE=geonames chiezo-ingest   # 全世界の地名
+```
+
+どのソースもメモリ 2 GiB で構築できる。足りなければダウンロードの前に中止する
+([メモリについて](docs/operations.md#メモリについて))。ソースの一覧は [全体像](docs/overview.md#ためられるソース)。
 
 ## 引く
 
 ```bash
-BASE=http://<サーバーIP>:7010
-
-# 日本語・スペース等を含むパラメータは -G --data-urlencode で渡す
+BASE=http://<サーバー>:7010
 curl -s  "$BASE/v1/sources"                                                              # ソース一覧
 curl -sG "$BASE/v1/jawiki/search?limit=5" --data-urlencode "q=浅草寺"                    # 全文検索
 curl -sG "$BASE/v1/jawiki/doc?fields=title,opening,tags" --data-urlencode "title=浅草寺" # 文書
 curl -sG "$BASE/v1/jawiki/filter?limit=200" --data-urlencode "tag=ラーメン店"            # カテゴリ全件
-curl -sG "$BASE/v1/osm_japan/filter?limit=200" \
-  --data-urlencode "feature=amenity=place_of_worship" --data-urlencode "area=京都府"     # Overpass 相当
 ```
 
-ブラウザで `http://<サーバーIP>:7010/` を開くと管理画面(`/admin`)に、
-各ソース名から簡易ブラウズ画面(`/search/{source}/`)に辿れる。
+- 日本語・スペースを含む値は `-G --data-urlencode` で渡す
+- 3 文字未満の語は全文検索できず、タイトルの前方一致になる(応答の `mode` が `title_prefix`)
+- カテゴリの列挙は `filter?tag=` を使う。本文の全文検索で代用すると、ソートキー付きの記事を取りこぼす
 
-パラメータの一覧・`extra` フィールドの中身・MCP・Claude Code 連携・画面の仕様は
-[API リファレンス](docs/api-reference.md)にある。挙動が直感に反する点は 2 つ。
-
-- 3 文字未満の語は全文検索できず、タイトル前方一致にフォールバックする
-  (応答の `mode` が `title_prefix` になる)
-- カテゴリの全記事列挙は `filter?tag=` を使う。本文の全文検索
-  (`search?q=Category:…`)で代用すると、ソートキー付きの記事を静かに取りこぼす
-
-### MCP / Claude Code から使う
-
-chiezo-app 自身が MCP サーバーなので、クライアント側に何もインストールせずに繋がる。
-Claude Code 用の設定(CLAUDE.md ブロック・権限ルール・MCP 登録)は、稼働中の Chiezo に
-問い合わせて生成できる。
+Claude Code からは MCP で繋ぐ。設定一式(CLAUDE.md の節・権限・MCP の登録)は稼働中の Chiezo から作れる。
 
 ```bash
-claude mcp add --transport http chiezo http://<サーバーIP>:7010/mcp   # 手動で登録する場合
-scripts/gen_claude_config.sh -u http://<サーバーIP>:7010              # 一式まとめて生成(MCP 登録も既定で行う)
+scripts/gen_claude_config.sh -u http://<サーバー>:7010
 ```
-
-オプション・自動許可フック・既存 CLAUDE.md とのマージ方法は
-[API リファレンス](docs/api-reference.md#claude-code-から使う設定ファイル自動生成)にある。
-
-## 覚える(notes)
-
-`chiezo_memory` は書き込めるソース(短期記憶)。「これ覚えておいて」と言われたこと、調べた結果、
-決めたことを溜め、`recall` で新しい順に引く。書き手は人でも AI でもよく、MCP
-クライアントからは `remember` / `recall` / `update` / `forget` の 4 つの道具として見える
-(書き換えは渡した項目だけの差し替え。削除は取り消せない)。
-
-```bash
-curl -s "$BASE/v1/chiezo_memory" -H 'Content-Type: application/json' \
-  -d '{"text":"開発環境を WSL2 へ移行する","tags":"環境,決定"}'
-curl -s "$BASE/v1/chiezo_memory/recall"                                  # 新しい順に 20 件
-curl -sG "$BASE/v1/chiezo_memory/recall" -d since=2026-07-01 --data-urlencode "q=移行"
-```
-
-引くときは期間(`since`/`until`)・キーワード(`q`)・タグで絞れる。本文は既定で先頭
-400 文字までで、切れたメモには `truncated` が付く(全文は `doc` で取り直す)。
-
-CLAUDE.md や記憶ファイルとの違いは、常時コンテキストに載るかどうか。それらは毎セッション
-全部が読み込まれるため件数に比例してトークンを払うが、Chiezo で常駐するのは MCP の
-ツール定義(数百字)だけで、中身は引いたときにしか載らない。
-
-compose では既定で有効(`data/notes/` に SQLite が 1 つできる)。`CHIEZO_NOTES_DIR` を
-空にすると機能ごと無効になる。認証は無いので、`/v1/chiezo_memory` に到達できる相手は誰でも書ける。
-外のアプリが自分の記録を預ける**名前付きの置き場**(`/v1/stores`)も同じ形で作れる。
-
-- API の詳細 → [API リファレンス](docs/api-reference.md#chiezo_memory短期記憶の-rest)
-- なぜこの形か → [設計メモ](docs/design-notes.md#覚えるnotesはなぜ-chiezo-に置くのか)
-
-## ToDo(タスク・ルール)
-
-Claude Code に頼みたいことのメモと、守らせたい共通ルールを 1 か所で持つ画面。
-**notes の上にタグで載っているだけ**で、専用のテーブルは持たない ——
-`task` タグで書いたメモがそのままタスクとして並ぶ。
-
-管理画面の記憶の面のいちばん下(**`http://<サーバー>:7010/admin/memory#tasks`**)に、タスクとルールが並ぶ。
-タスクの ✳ を押すと、内容をプリフィルした Claude Code が開く。
-
-- 使い方・タグでの表し方・持ち出しと取り込み → [ToDo](docs/tasks.md)
-
-## 使う(ローカル LLM。既定では無効)
-
-Chiezo を引ける AI とブラウザから話せる(`/ai/chat`)。1 問 1 答の口(`/v1/ask`)と
-会話の口(`/v1/chat`)があり、根拠にした文書は出典として併記する。
-
-これは知識ベース本体の機能ではなく、Chiezo を使う側をこのリポジトリが用意しているもの
-(Claude Code 向けの設定を生成するスクリプトと同じ位置づけ)。どう引けば当たるか
-—— 短い語は前方一致に落ちる、カテゴリの列挙は `filter?tag=` —— を知っているのはここなので、
-道具立てとプロンプトもここで持つ。推論そのものは chiezo-app の中では動かさず、
-OpenAI 互換 API を喋る別プロセスに任せる(配信側が数百 MB で動く前提を崩さないため)。
-有効になるのは、管理画面の AI の面(`/admin/ai`)で話す相手を on にしたときだけ
-(相手は全部既定 off)。同居の推論サーバを使うなら次で立ててから「推論サーバ」を on にする。
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.llm.yml --profile llm up -d
-```
-
-推論サーバのコンテナは `docker-compose.llm.yml` に分けてある
-(LAN の別マシンの LLM を指すだけなら重ねなくてよい)。**検索エンジン(SearXNG)は本体側**で、
-`docker compose up -d` で一緒に立つ(素のイメージに compose の `configs` で設定を流し込むので、
-リポジトリを置けない環境でも立てられる)。使うのは **Chiezo が agent ループを回す相手だけ**で、
-CLI ブリッジ(Claude Code など)は CLI 自身の検索を引く。使うかどうかは
-`CHIEZO_WEB_SEARCH_URL` を書くかで決まる。
-
-**絵・音・動画・声を作らせることもできる**(MCP の `image_generate` / `audio_generate` /
-`video_generate` / `speech_generate` / `transcribe`)。ゲーム素材や図版・効果音・BGM・
-短い動画・読み上げを、自分の GPU(ComfyUI)か外部(Gemini / OpenAI / ElevenLabs)を選んで
-作る —— 知識を引くのとは別の仕事だが、**MCP の登録先を増やさない**ために同じサーバーに
-載せてある。**何案か作って人に選んでもらえる** —— `group` に同じ名前を付けて頼むと、
-「AIへの依頼」の画面の「見比べ」(管理画面の `/admin/media`)に依頼文つきで並び、
-選ばれたものを `media_picks` で引ける
-(音は AI 自身が聴けないので、聴き比べる手段はここだけ)。
-**手元で作ったものも持ち込める**(`POST /v1/media/upload`)—— 別の道具で作ったものや
-手で仕上げたものを、作らせたものと同じ組に並べて比べられる。
-詳しくは [docs/ai.md](docs/ai.md)「絵を描かせる」以降。
-
-**文章も同じ見比べに載せられる**(`text_generate` / `POST /v1/media/text`)。
-シナリオや記事の下書きを何案か書かせて、画面で読み比べて採用する ——
-**長い文章ほど、会話に貼って読ませるより画面で読むほうが早い**うえ、
-選ぶ人と頼んだ AI が別のやり取りにいても渡せる。`/v1/ai/complete` との違いは
-**結果が job として残ること**だけで、書かせる相手も中身も同じ。
-
-**AI への依頼は履歴が管理画面に残る**(状況の面の「依頼の履歴」)。会話も絵も音も、成功も失敗も
-同じ 1 枚に新しい順で並び、失敗には理由が付く —— 無人の呼び出しが落ちたとき、その場に
-居合わせないと理由が消えるため。10 件ずつのページで、失敗だけに絞ることもできる。
-渡した依頼文・相手の生の出力・応答の控えも同じ行から開ける(既定で 14 日。
-`CHIEZO_AI_TRANSCRIPT_DAYS=0` で控えない)。失敗を機械で読むなら `GET /v1/ai/failures`。
-
-**各 AI の使用量も見られる**(管理画面の状況の面の「使用量」と `GET /v1/ai/usage`)。
-相手が言う枠の残り —— Claude Code の 5 時間・週、Codex の窓、OpenRouter のクレジット ——
-と、Chiezo がその相手を呼んだ回数・トークン数を並べて出す。**枠を聞けない相手もいる**
-(Gemini・OpenAI)ので、そこは「出せない」と書いてある。
-
-`mode=agent` を付けると、`search` / `doc` / `filter` / `tags` / `links` をモデル自身に
-引かせる(MCP と同じ道具立て)。「カテゴリ○○の記事は何件?」のように 1 回の検索では
-原理的に答えられない問いに届く。ツール呼び出しが安定するモデル(8B 級以上)と GPU が
-実質の前提なので、既定は `rag` のまま。
-
-使い方・パラメータ・agent モード・web 検索・GPU 設定・環境変数の一覧は
-[AI と話すドキュメント](docs/ai.md)にある。
 
 ## 運用
 
 ```bash
-docker compose --profile ingest run --rm chiezo-ingest   # ダンプ更新(ブルーグリーン)
+docker compose pull && docker compose up -d                 # アプリの更新
+docker compose --profile ingest run --rm chiezo-ingest      # ダンプの更新(別ファイルに作って切り替える)
 ```
-
-ingest は毎回 `data/corpus/<source>-<date>.db` を新規構築し、検証が通ったらシンボリックリンク
-`data/corpus/<source>.db` を差し替える(旧世代は 1 つ保持)。差し替えは chiezo-app が数秒以内に
-自動検知するので、再起動も停止時間も要らない。
-
-取り込みの環境変数・スキーマ移行・rank_score の入れ直し・メモリ方針・別マシンでのビルドと
-配布・`chiezo-trigger`・セキュリティは[運用ドキュメント](docs/operations.md)にある。
-よく使うものは次の 6 つ。
 
 | したいこと | 参照 |
 |---|---|
-| 古い DB にタグ索引・座標表を足す(再取り込みなし) | [schema_version 2 → 3 → 4](docs/operations.md#既存-db-にタグ索引を足すschema_version-2--3--4) |
-| 検索の並びが効かない DB を直す | [rank_score を入れ直す](docs/operations.md#既存-db-の-rank_score-を入れ直す) |
-| メモリの多い別マシンで焼いて配る | [.db を配布する](docs/operations.md#別マシンでビルドして-db-を配布する) |
+| AI と話す相手・鍵・web 検索・GPU を設定する | [AI と話す](docs/ai.md) |
+| `.env` を置けない環境(NAS など)で起動する | [単体定義](docs/operations.md#env-を置けない環境で起動する単体定義) |
+| IP 以外の名前で開く・外に開けてよいか確かめる | [セキュリティ](docs/operations.md#セキュリティ)(名前で開くなら `CHIEZO_ALLOWED_HOSTS` が要る) |
 | どのコミットが動いているか確かめる | [動いているビルドを確かめる](docs/operations.md#動いているビルドを確かめる) |
-| 外に開けてよいか確かめる・名前(`chiezo.example.com`)で開く | [セキュリティ](docs/operations.md#セキュリティ)(IP 以外の名前で開くなら `CHIEZO_ALLOWED_HOSTS` が要る) |
-| `.env` を置けない環境で起動する | [単体定義](docs/operations.md#env-を置けない環境で起動する単体定義) |
-
-## 開発
-
-```bash
-scripts/run_tests.sh                          # 全テスト
-scripts/run_tests.sh tests/test_notes.py -v   # 引数はそのまま pytest へ渡る
-ruff check .                                  # lint(設定は pyproject.toml)
-```
-
-依存が揃っていればそのまま、無ければ CI と同じ Python 3.12 のイメージを組み立てて
-**バインドするホストのディレクトリは `data/` 1 つだけ。** 下の `corpus/`(取り込んだ本体)・
-`notes/`(覚える層)・`state/`(管理画面の設定。**API キーが入る**)は `chiezo-init` が
-起動前に作り、所有者を実行ユーザー(既定 uid 10001。ホストに実在しない番号)に合わせる。
-`data/` をホストから直接編集・書き戻ししたいときだけ `.env` に `CHIEZO_UID` / `CHIEZO_GID` を書く。
-
-**置き場を 1 つにまとめる前から動かしているホストは、更新時に 1 回だけ移すこと**:
-
-```bash
-docker compose down
-mkdir -p data/corpus && mv data/*.db data/*.db-* data/corpus/ 2>/dev/null
-mv notes data/notes; mv state data/state
-docker compose up -d          # chiezo-init が所有者を揃える
-```
-
-Docker で実行する(リポジトリはバインドマウントするだけなので `data/` の大きさは
-関係しない)。手元に環境を作るなら Python 3.12 を使う(`app/` と `ingest/` のイメージ・
-CI と同じ系列。依存に C 拡張が含まれるため、別のバージョンでは import から落ちる)。
-
-```bash
-python3.12 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-```
-
-`.venv` があれば `scripts/run_tests.sh` はそちらを優先する。
-
-依存は `requirements.in`(直接の依存を範囲で指定)から `requirements.txt`(版とハッシュを
-固定したロック)を作る形にしてある。`.in` を編集したら `scripts/lock_requirements.sh` で
-ロックを作り直す。イメージが再現する代わりに上流の新版は自動では入らないので、
-破壊的変更への追従は CI の週次ジョブ(最新の依存でテストを回す)が受け持つ。
-
-テストは同梱の小型フィクスチャ(`tests/fixtures/mini_jawiki.xml.gz` 12 文書、
-`tests/fixtures/mini_osm.osm.pbf` 12 ノード + 2 way + 2 relation、
-`tests/fixtures/mini_geonames.zip` ほか geonames 一式)から実際に
-DB を構築して全エンドポイントを検証する。ネットワーク・実データは要らない。
-
-CI(`.github/workflows/ci.yml`)は push / PR でこのテストを実行し、main への push で
-`ghcr.io/rtcode337/chiezo-app` / `ghcr.io/rtcode337/chiezo-ingest` のマルチアーキ
-(amd64 / arm64)イメージを GHCR へ公開する。`docker-compose.yml` はこのイメージを
-pull して使うので、`app/` や `ingest/` を変更してローカルで動作確認するときは
-ビルド版を使う。
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
-```
-
-compose は「本体 + 上書き」の形にしてある。本体(`docker-compose.yml`)が検索 API・MCP で、
-上書きは足したいものだけを数行ずつ:`build`(手元ビルド)・`llm`(推論サーバ)・
-`llm.cuda`(その推論を GPU で)・`comfyui`(絵と音の生成)・`lan`(GPU の要るものを別ホストへ公開)。
-重ねる順はこの並びどおり。
-
-### アイコンを変えたとき
-
-原本は `assets/icon.svg` で、`app/pages.py` に 2 つの派生物を埋め込んである
-(app イメージのビルドコンテキストは `app/` のみで `assets/` を含まないため)。
-原本を変えたら両方を作り直す。
-
-- `FAVICON_DATA_URI` — SVG を最小化した data URI(ブラウザタブ用)
-- `APPLE_TOUCH_ICON_PNG` — iPhone「ホーム画面に追加」用の 180×180 PNG
-  (`/apple-touch-icon.png` で配信)。iOS は SVG や data URI のファビコンを
-  ホームアイコンに使わないため PNG が別に要る。角丸マスクは iOS が自前で掛ける
-  (透過部分は黒く塗られる)ので、角丸なし・全面塗りでラスタライズする。
-
-```bash
-pip install cairosvg
-python - <<'EOF'
-import base64, cairosvg, pathlib, textwrap
-svg = pathlib.Path("assets/icon.svg").read_text().replace('rx="56"', 'rx="0"', 1)
-png = cairosvg.svg2png(bytestring=svg.encode(), output_width=180, output_height=180)
-print("\n".join(textwrap.wrap(base64.b64encode(png).decode(), 96)))
-EOF
-```
+| メモリの多い別マシンで DB を焼いて配る | [別マシンで DB を焼く](docs/build-on-another-machine.md) |
 
 ## ドキュメント
 
 | | 中身 |
 |---|---|
-| [設計メモ](docs/design-notes.md) | なぜこの形なのか。SQLite + FTS5 を選んだ理由、検索の並び順、索引の形、メモリ方針。実測して方針が変わったものは数字と一緒にここへ残す |
-| [API リファレンス](docs/api-reference.md) | REST の全パラメータ、`extra` の中身、MCP、Claude Code 連携、管理画面・ブラウズ画面 |
-| [ToDo](docs/tasks.md) | タスク・ルールの画面。notes のタグでの表し方、画面の決めごと、持ち出しと取り込み |
-| [AI と話す](docs/ai.md) | 「使う」層の使い方・話す相手の増やし方・CLI ブリッジ・agent モード・web 検索・GPU・環境変数 |
-| [運用](docs/operations.md) | 取り込みの環境変数、スキーマ移行、メモリ、別マシンでのビルドと配布、セキュリティ |
-| [別マシンで DB を焼く](docs/build-on-another-machine.md) | メモリの多いマシンで `.db` を作って配信機へ渡す手順。これ 1 枚で完結する |
+| [全体像](docs/overview.md) | 持っているもの・ためられるソース・覚える・ToDo・AI に話させる/作らせる |
+| [API リファレンス](docs/api-reference.md) | REST の全パラメータ、`extra` の中身、MCP、Claude Code 連携、画面 |
+| [AI と話す](docs/ai.md) | 話す相手の増やし方・CLI ブリッジ・agent モード・web 検索・生成・環境変数 |
+| [運用](docs/operations.md) | 取り込みの環境変数、スキーマ移行、メモリ、配布、セキュリティ |
+| [ToDo](docs/tasks.md) | タスク・ルールの画面と、notes のタグでの表し方 |
+| [設計メモ](docs/design-notes.md) | なぜこの形なのか。実測して方針が変わったものは数字と一緒にここへ残す |
+| [開発](docs/development.md) | テスト・依存の固定・CI とイメージ・compose の重ね方 |
 | [ソースの追加手順](docs/adding-a-source.md) | 新しい種類のデータを足すとき |
 | [FTS トークナイザの評価](docs/fts-tokenizer-evaluation.md) | 形態素解析への差し替えを見送った経緯と実測値 |
 
@@ -362,12 +84,13 @@ EOF
 
 このリポジトリのコードは [MIT License](LICENSE)。
 
-取り込んで構築した DB の中身(データ)は各ソースのライセンスに従う。リポジトリ自体には
-データを含まないが、構築した DB や検索結果を配布・公開する場合は以下の帰属表示・
-ライセンス継承が必要になる。
+リポジトリ自体はデータを含まない。取り込んで構築した DB の中身は各ソースのライセンスに従い、
+DB や検索結果を配布・公開するときは帰属表示やライセンスの継承が要る。
 
 | ソース | データ提供元 | ライセンス |
 |---|---|---|
 | `<lang>wiki` | [Wikimedia ダンプ](https://dumps.wikimedia.org/) | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/deed.ja)(© Wikipedia 各記事の執筆者) |
 | `osm_<国>` | [Geofabrik](https://download.geofabrik.de/)(OpenStreetMap 抽出) | [ODbL 1.0](https://opendatacommons.org/licenses/odbl/)(© OpenStreetMap contributors) |
 | `geonames` | [GeoNames](https://www.geonames.org/) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.ja) |
+| `overture_japan` | [Overture Maps Foundation](https://overturemaps.org/) | CDLA Permissive 2.0 / Apache 2.0(元データによる) |
+| `jquants_*` | [J-Quants](https://jpx-jquants.com/) | 利用規約に従う。個人の私的利用に限り、第三者への配信・公開はできない([運用](docs/operations.md#j-quants)) |

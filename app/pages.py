@@ -29,7 +29,7 @@ FAVICON_DATA_URI = (
 # iPhone の「ホーム画面に追加」用アイコン(apple-touch-icon)。iOS は SVG や data URI の
 # ファビコンをホームアイコンに使わず、PNG の apple-touch-icon だけを見る。原本は同じく
 # assets/icon.svg で、iOS が角丸マスクを自前で掛けるため角丸なし・全面塗りで 180x180 に
-# ラスタライズしてある(原本を変えたら README「開発」節の手順で再生成)
+# ラスタライズしてある(原本を変えたら docs/development.md「アイコンを変えたとき」の手順で再生成)
 APPLE_TOUCH_ICON_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAABmJLR0QA/wD/AP+gvaeTAAATbUlEQVR4nO2deXAUdb7Af31M"
     "d889mZkcJISbAAkJhAABhCAKAoLXCqsr+rx1tZ4+9e2rp9arfbWv6r165bFlyatar12PcqtcKZFdUTQigkDCIRJCJIRAyBCS"

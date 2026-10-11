@@ -38,7 +38,7 @@ find_local_python() {
 run_in_docker() {
     if ! command -v docker >/dev/null 2>&1; then
         echo "テストを実行できません: 手元に依存が揃っておらず docker も見つかりません。" >&2
-        echo "README「開発」節の venv を作るか、docker を入れてください。" >&2
+        echo "docs/development.md「テスト」の venv を作るか、docker を入れてください。" >&2
         exit 1
     fi
 
