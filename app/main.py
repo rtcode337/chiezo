@@ -1970,7 +1970,7 @@ async def lifespan(app: FastAPI):
     app.state.data_dir = data_dir
     # 指紋は走査の前に取る(走査中の変化を取りこぼさない側に倒す)
     app.state.data_fingerprint = _sources_fingerprint(data_dir)
-    # notes(唯一書き込めるソース)は ingest を回さずに使えるよう、無ければここで作る
+    # notes(書き込めるソース)は ingest を回さずに使えるよう、無ければここで作る
     notes.ensure_db()
     # CLI ブリッジ向けの認証情報の写し(相手ごとに 1 ファイル)を揃える。
     # ブリッジには設定 DB を渡さないので、書き出しの仕組みより前の登録もここで写す
@@ -3163,7 +3163,7 @@ def random_docs(
     return {"source": source, "results": [dict(r) for r in rows]}
 
 
-# ---- notes(短期記憶。唯一書き込めるソース) ----------------------------------
+# ---- notes(短期記憶。書き込めるソース) --------------------------------------
 #
 # 実体は app/notes.py。ここは HTTP の口だけを持つ。`CHIEZO_NOTES_DIR` 未設定なら 503。
 # 読み出しは専用の recall のほかに、コアスキーマなので /v1/chiezo_memory/search・doc・filter・
@@ -4328,7 +4328,7 @@ async def collect_handoff_drop(name: str) -> dict:
 # ---- 使う(ローカル LLM。既定では無効) ---------------------------------------
 #
 # パイプラインの実体は app/answer.py。ここは HTTP の口(JSON / SSE / HTML)だけを持つ。
-# `CHIEZO_LLM_URL` が未設定なら丸ごと無効で、503 と有効化の案内を返す。
+# 話せる相手が 1 つも有効でなければ丸ごと無効で、503 と有効化の案内を返す。
 
 
 # 会話画面のパス。画面の中のリンクと JS の両方が参照する。
@@ -4376,8 +4376,8 @@ async def ask(
     ),
     backend: str | None = Query(
         None,
-        description="どの AI に聞くか(CHIEZO_LLM_<名前>_URL で足した相手の名前)。"
-                    "省略すると CHIEZO_LLM_URL の相手",
+        description="どの AI に聞くか(管理画面で有効にした相手の名前)。"
+                    "省略すると有効な相手のうち先頭",
     ),
     model: str | None = Query(None, description="どのモデルを使うか(省略時はその相手の既定)"),
     effort: str | None = Query(None, description="どれだけ考えさせるか(相手が持っていれば)"),

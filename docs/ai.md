@@ -16,31 +16,30 @@ Claude Code の代わりにローカル LLM で立てて同居させたのがこ
 **OpenAI 互換 API を喋る別プロセス**に任せます(配信側 chiezo-app がメモリ数百 MB で
 動く前提を壊さないため)。
 
-有効になるのは `CHIEZO_LLM_URL` を設定したときだけです。設定しなければ `/v1/ask` は 503 を返し、
-管理画面にも無効と表示されます。設計の背景は
+有効になるのは、管理画面の AI の面(`/admin/ai`)で話す相手を on にしたときだけです
+(相手は全部既定 off)。1 つも on でなければ `/v1/ask` は 503 を返し、管理画面にも無効と表示されます。設計の背景は
 [設計メモ](design-notes.md#使う層はなぜ-2-段の-rag-か)が正です。
 
 ## 使いはじめる
 
-推論サーバと検索エンジンの**コンテナは `docker-compose.llm.yml` に外出し**してあります
-(chiezo-app 側の設定は本体の `docker-compose.yml` にあります)。重ねなければコンテナは
+推論サーバの**コンテナは `docker-compose.llm.yml` に外出し**してあります
+(chiezo-app 側の設定と検索エンジンは本体の `docker-compose.yml` にあります)。重ねなければコンテナは
 立たず、Chiezo は検索 API・MCP として動きます。
 
 ```bash
-cp .env.example .env
-# .env の CHIEZO_LLM_URL=http://chiezo-llm:7011/v1 の行のコメントを外す
-
 docker compose -f docker-compose.yml -f docker-compose.llm.yml --profile llm up -d
 docker compose logs -f chiezo-llm     # 初回はモデルのダウンロード(約 2.5GB)
+# 立ち上がったら、管理画面の AI の面で「推論サーバ」を on にする
 ```
 
 毎回 `-f` を並べるのが煩わしければ、`.env` に
 `COMPOSE_FILE=docker-compose.yml:docker-compose.llm.yml` と書けば以後は
 `docker compose --profile llm up -d` で済みます。
 
-起動するのは推論サーバ(`chiezo-llm` = llama.cpp の `llama-server`)と
-検索エンジン(`searxng`)の 2 つです。**推論を LAN の別マシン(Ollama 等)に任せるなら
-このファイルは要りません** —— `CHIEZO_LLM_URL` にその URL を書くだけで、本体だけで動きます。
+起動するのは推論サーバ(`chiezo-llm` = llama.cpp の `llama-server`)だけです
+(検索エンジン `searxng` は本体の `docker-compose.yml` にあります)。**推論を LAN の別マシン
+(Ollama 等)に任せるならこのファイルは要りません** —— `CHIEZO_LLM_URL` にその URL を書けば、
+本体だけで動きます。
 
 モデルは起動時に Hugging Face から取得して `./models` にキャッシュするので、
 2 回目以降のダウンロードはありません。`chiezo-trigger` と同じくホストへポートを公開せず、
@@ -50,7 +49,7 @@ chiezo-app からのみ内部ネットワーク経由で到達します(別ホ�
 ## 話す(ブラウザ)
 
 **`/ai/chat`**(管理画面からも辿れます)。見出しにはいま話しているモデルの名前が出ます
-(`CHIEZO_LLM_MODEL` が未設定なら推論サーバに問い合わせます)。入力欄は数行ぶんの高さがあり
+(モデルを選んでいなければ相手に問い合わせます)。入力欄は数行ぶんの高さがあり
 (Enter で送信・Shift+Enter で改行)、**ソース・引き方・根拠・web 検索の切り替えはその下**に
 並びます。会話として続けられるので、「じゃあ京都のほうは?」
 「さっきの寺の最寄り駅は?」が通じます。**会話の履歴を持つのはブラウザ側**で、送るたびに
@@ -98,7 +97,7 @@ curl -s "$BASE/v1/chat" -H 'Content-Type: application/json' -d '{
   **これはモデルの幻覚への対処であって Chiezo の制約ではない**ので、用途に応じて選んでください
 - `mode` — `rag`(1 回検索して答える)か `agent`(モデルに道具を引かせる。下記)
 - `web` — agent モードで web 検索の道具を渡すか。省略時はサーバー設定どおり。`0` にすると**そのやり取りだけ Chiezo に閉じます**(設定していない環境では `1` にしても使えません)
-- `notes` — agent モードで「覚える・思い出す」の道具を渡すか。同じく省略時はサーバー設定どおりで、`0` で切れます(**Chiezo で唯一の書き込み**なので、切れることが要ります)
+- `notes` — agent モードで「覚える・思い出す」の道具を渡すか。同じく省略時はサーバー設定どおりで、`0` で切れます(**書き込みを含む**ので、切れることが要ります)
 - `stream=1` — `text/event-stream` で返す。`references`(出典。本文より先に確定するので先に届く)
   → `delta`(本文の差分)× n → `done` の順。途中で推論側が落ちたら `error` イベントが挟まります
 
@@ -568,7 +567,8 @@ transcribe(path?, url?, backend?, model?, language?)
 ## agent モード(モデルに道具を引かせる)
 
 既定の `rag` は **`search` を 1 回**引いて終わりなので、Chiezo の強い道具に手が届きません。
-`mode=agent` を付けると、`search` / `doc` / `filter` / `tags` / `titles` / `links` を
+`mode=agent` を付けると、`sources` / `search` / `doc` / `filter` / `tags` / `titles` / `links` /
+`recent` を
 **モデル自身に**引かせます(道具の定義も実行も MCP と同じものを使うので、Claude Code から
 使うときと同じ道具立てです)。notes が有効なら **`remember` / `recall`**(覚える・思い出す)、
 web 検索を設定してあれば **`web_search`** も加わります。
@@ -678,8 +678,8 @@ docker compose exec searxng wget -qO- "http://localhost:7012/search?q=test&forma
 
 `CHIEZO_NOTES_DIR` を設定して notes が有効なら、会話画面の「📝 覚える」で
 **「これ覚えておいて」に応えられる**ようになります(agent モードのときだけ)。
-モデルは `remember` で書き、次の会話では `recall` で思い出します。**Chiezo で唯一の
-書き込み**なので、次の 2 つで見えるようにしてあります。
+モデルは `remember` で書き、次の会話では `recall` で思い出します。**会話から
+Chiezo へ書き込む道**なので、次の 2 つで見えるようにしてあります。
 
 - 何を書いたかは「調べた手順」に `remember {...}` として出る
 - トグルを外す(API なら `notes=0`)と、そのやり取りでは道具ごと渡らない
@@ -1513,6 +1513,7 @@ curl -s "$BASE/v1/talk/backends"                                   # up が true
 | `CHIEZO_TALK_TURN_TIMEOUT` | `180` | 1 回の上限秒数 |
 | `CHIEZO_TALK_IDLE_SEC` | `3600` | 話しかけられないまま、この秒数が経った会話を片付ける |
 | `CHIEZO_TALK_MAX_THREADS` | `16` | 同時に持つ会話の上限。超えたら長く話していないものから片付ける |
+| `CHIEZO_TALK_WORKDIR` | `/tmp` | CLI を動かす作業ディレクトリ(会話にファイルは要らないので空の場所) |
 
 ### ブリッジを直接使う(認証情報の置き場を共有する)
 
@@ -1622,7 +1623,6 @@ curl -s "$BASE/v1/ai/bridges"
 | 環境変数 | 既定 | 説明 |
 |---|---|---|
 | `CHIEZO_BRIDGE_CLI` | `claude` | 包む CLI（`claude` / `codex` / `antigravity`） |
-| `CHIEZO_AI_TRANSCRIPT_DAYS` | `14` | AI に渡したものと返ってきたものを控える日数。**`0` で控えない**。相手の生の出力（CLI の stdout/stderr）も残すので、シェルを渡している相手が何をしたかを後から読める。管理画面では状況の面の「依頼の履歴」の表の**同じ行**から開ける（控えが先に消えた行は目方だけになる） |
 | `CHIEZO_BRIDGE_MCP_URL` | `http://chiezo-app:7010/mcp/knowledge/` | CLI に繋ぐ Chiezo の MCP。**生成の道具を出さない口を向ける**(`/mcp` を向けると、絵を頼んだ相手に絵を頼む道具が渡る)。**空にすると繋がない** |
 | `CHIEZO_BRIDGE_CREDENTIAL_FILE` | `/credential/credential` | 認証情報の写し（chiezo-app が `data/state/bridge/<相手>/credential` へ書き出したもの。ディレクトリごと読み取り専用でマウント） |
 | `CHIEZO_BRIDGE_STATE_DB` | `/state/settings.db` | 以前の置き方（設定 DB を丸ごとマウント）。写しが無く、このファイルがあるときだけ読む。新しく立てるなら使わない |
@@ -1633,6 +1633,9 @@ curl -s "$BASE/v1/ai/bridges"
 | `CHIEZO_BRIDGE_TIMEOUT` | `3600` | 1 回の上限（秒）。CLI は道具を何度も引くので推論サーバより長い。chiezo-app が待つ `CHIEZO_ANSWER_TIMEOUT`（既定 3660）より短くしておく（待つ側が先に切れると理由が見えない）。**打ち切っても枠は返らない**ので長めに取ってある —— 暴走したものは時間ではなく「止める」で落とす（`POST /v1/ai/inflight/{id}/stop`）。Antigravity にはこの値を `--print-timeout` としても渡す（agy 自前の待ち時間は既定 5 分で、渡さないとそちらが先に切れる） |
 | `CHIEZO_BRIDGE_USAGE_CMD` | `agy,-p,/credits,--output-format,json` | 使用量を聞くコマンド（Antigravity のみ。カンマ区切り）。**実地で確かめられていない**ので差し替えられるようにしてある |
 | `CHIEZO_BRIDGE_USAGE_TIMEOUT` | `60` | 使用量を聞くときの上限（秒） |
+| `CHIEZO_BRIDGE_PROBE_TIMEOUT` | `30` | 選べるモデル・考える量を CLI に聞くときの上限（秒） |
+| `CHIEZO_BRIDGE_MODEL_LABEL` | （モデル名か CLI の名前） | `/v1/models` と応答の `model` に名乗る名前 |
+| `CHIEZO_BRIDGE_PORT` | `7013` | 待ち受けるポート |
 
 ### モデルは会話ごとに選べる
 
@@ -1748,11 +1751,11 @@ Chiezo からは OpenAI 互換の `reasoning_effort` として送られます
 
 Chiezo が要求するのは OpenAI 互換の `/v1/chat/completions` だけなので、`CHIEZO_LLM_URL` を
 差し替えれば Ollama・LM Studio・GPU 付きの別マシンなど何にでも向けられます
-(その場合 `--profile llm` は不要です)。
+(その場合 `--profile llm` は不要です)。複数のモデルを持つ相手では、使うモデルを
+AI の面の相手ごとの欄か会話画面のセレクトで選びます。
 
 ```bash
 CHIEZO_LLM_URL=http://<推論サーバのIP>:11434/v1   # Ollama
-CHIEZO_LLM_MODEL=qwen3:8b                          # 複数モデルを持つ相手では実在名が要る
 ```
 
 ## モデルとメモリ
@@ -1813,11 +1816,8 @@ chiezo-app 側:
 
 | 変数 | 既定 | 説明 |
 |---|---|---|
-| `CHIEZO_STATE_DIR` | (未設定 = 管理画面から相手を増やせない) | 相手の設定(on/off・API キー・モデル)の置き場 |
-| `CHIEZO_LLM_URL` | (未設定) | **環境変数でしか指せない相手**の OpenAI 互換ベース URL。パスを持たない URL にだけ `/v1` を補う(Gemini のように既にパスがある相手には足さない) |
-| `CHIEZO_LLM_LABEL` | `推論サーバ` | その相手を選ぶセレクトに出す名前 |
-| `CHIEZO_LLM_MODEL` | `chiezo` | リクエストに載せるモデル名。llama-server は 1 プロセス 1 モデルなので何でもよい |
-| `CHIEZO_LLM_API_KEY` | (なし) | 設定すると `Authorization: Bearer` を送る |
+| `CHIEZO_STATE_DIR` | (未設定 = 管理画面から相手を有効にできない) | 相手の設定(on/off・API キー・モデル)の置き場 |
+| `CHIEZO_LLM_URL` | (未設定) | 推論サーバ(`local`)を同居の `chiezo-llm` 以外に向ける OpenAI 互換ベース URL(機能フラグではない。使うかは管理画面の on/off)。パスを持たない URL にだけ `/v1` を補う(Gemini のように既にパスがある相手には足さない) |
 | `CHIEZO_ANSWER_TIMEOUT` | 相手による | 相手を待つ時間(秒)。DB クエリの 5 秒とは別枠。**CLI ブリッジ経由は 3660、API で直に叩く相手と推論サーバは 120**。ブリッジは道具を何度も引くので桁が違ううえ、ブリッジ自身の上限(`CHIEZO_BRIDGE_TIMEOUT`。既定 3600)より**待つ側が長くないと**、向こうの判断が見えないまま ReadTimeout になる |
 | `CHIEZO_ANSWER_DOCS` | `4` | 根拠として本文を取ってくる文書数 |
 | `CHIEZO_ANSWER_MAX_CHARS` | `6000` | 抜粋の合計文字数の上限 |
@@ -1830,6 +1830,12 @@ chiezo-app 側:
 | `CHIEZO_TALK_CODEX_URL` | `http://chiezo-talk-codex:7016` | 会話の口(`/v1/talk`)が繋ぐ会話ブリッジ。同居なら書かなくてよい |
 | `CHIEZO_TALK_TIMEOUT` | `200` | 会話の 1 往復を待つ秒数。会話ブリッジの上限(`CHIEZO_TALK_TURN_TIMEOUT`)より長くして、向こうの理由つきの 504 が届くようにする |
 | `CHIEZO_QUOTA_TICK_SECONDS` | `60` | 枠の時計が見に来る頻度（秒）。間隔と番の取り合いは別に見るので、ここを細かくしても聞きに行く回数は増えない |
+| `CHIEZO_AI_TRANSCRIPT_DAYS` | `14` | AI に渡したものと返ってきたものを控える日数。**`0` で控えない**。相手の生の出力（CLI の stdout/stderr）も残すので、シェルを渡している相手が何をしたかを後から読める。管理画面では状況の面の「依頼の履歴」の表の**同じ行**から開ける（控えが先に消えた行は目方だけになる） |
+| `CHIEZO_LIST_TIMEOUT` | `1.5` | 絵・音の相手(ComfyUI など)に一覧を聞くときの上限(秒)。落ちている相手 1 つで、無関係な口まで遅くならないように |
+| `CHIEZO_LOG_LEVEL` | `INFO` | chiezo-app の控えの出し方。読めない値は既定へ倒す |
+
+compose が `.env` から chiezo-app へ渡すのは `.env.example` に載せた変数だけです。
+ここにあってそちらに無いものを変えるときは、compose の `environment` に足してください。
 
 **CPU 推論では `CHIEZO_ANSWER_MAX_CHARS` を下げてください。** 所要時間は抜粋の長さ
 (プロンプト処理)がほぼ支配します。実測は
@@ -1840,6 +1846,6 @@ chiezo-app 側:
 `LLAMA_ARG_*` 環境変数を compose に足せば効きます。
 
 推論コンテナのイメージはタグを固定してあります(`server-b10156`)。dependabot は
-`app/` `ingest/` の Dockerfile しか見ていないので、更新するときは compose の
-このタグを手で上げてください(タグ一覧は
+compose のイメージも週次で見ますが、`${変数:-既定}` で書いた行を拾えるかは版次第なので、
+来なければこのタグを手で上げてください(タグ一覧は
 [GHCR](https://github.com/ggml-org/llama.cpp/pkgs/container/llama.cpp))。

@@ -118,7 +118,6 @@ services:
       # 会話画面・API の既定(素の既定は rag + grounded=1。潤沢な環境なら agent + 0 に倒せる)。
       - CHIEZO_ASK_DEFAULT_MODE=${CHIEZO_ASK_DEFAULT_MODE-}
       - CHIEZO_ASK_DEFAULT_GROUNDED=${CHIEZO_ASK_DEFAULT_GROUNDED-}
-      # web 検索(既定では無効。URL を設定したときだけ agent の道具に加わる)。
       # 画像生成(MCP の image_generate)。置き場が無ければ道具ごと出さない。
       # 既定は状態ディレクトリの下(compose が既にマウントしている)なので、
       # 通常は何も書かなくてよい。GPU が別マシンなら CHIEZO_IMAGE_URL でその ComfyUI を指す
@@ -126,6 +125,10 @@ services:
       - CHIEZO_MEDIA_KEEP_DAYS=${CHIEZO_MEDIA_KEEP_DAYS-}
       - CHIEZO_IMAGE_URL=${CHIEZO_IMAGE_URL-}
       - CHIEZO_IMAGE_TIMEOUT=${CHIEZO_IMAGE_TIMEOUT-}
+      # AI に渡したものと返ってきたものを控える日数。0 で控えない。
+      # 空文字は 0 と読まれるので、既定を compose 側で埋める
+      - CHIEZO_AI_TRANSCRIPT_DAYS=${CHIEZO_AI_TRANSCRIPT_DAYS:-14}
+      # web 検索(既定では無効。URL を設定したときだけ agent の道具に加わる)。
       - CHIEZO_WEB_SEARCH_URL=${CHIEZO_WEB_SEARCH_URL-}
       - CHIEZO_WEB_SEARCH_PROVIDER=${CHIEZO_WEB_SEARCH_PROVIDER-}
       - CHIEZO_WEB_SEARCH_API_KEY=${CHIEZO_WEB_SEARCH_API_KEY-}
@@ -139,7 +142,7 @@ services:
       - CHIEZO_COLLECT_MAX_MATERIAL_BYTES=${CHIEZO_COLLECT_MAX_MATERIAL_BYTES-}
     depends_on:
       # 置き場の用意(chiezo-init)が済んでから起動する。
-      # trigger には依存させない —— あれは長期記憶へ書き込むとき(初期化・再構築・固化)
+      # trigger には依存させない —— あれは長期記憶へ書き込むとき(初期化・再構築・収集)
       # だけの相手で、読むだけなら要らない。ここに書くと、取り込みを一切しない使い方でも
       # 立ち上げることになる。居なければ管理画面がそのぶんのボタンを押せなくする。
       chiezo-init:
@@ -169,12 +172,12 @@ services:
     user: "${CHIEZO_UID:-10001}:${CHIEZO_GID:-10001}"
     environment:
       - CHIEZO_DATA_DIR=/data/corpus
-      # 固化(短期記憶 → 長期記憶)の素材を取りに行く先。**組み込みのソースなので
-      # 設定は要らない** —— サービス名で届くこの既定のまま使う。配信側を別ホストで
+      # 収集の素材を取りに行く先(GET /v1/collect/fetch)。組み込みのソースなので
+      # 設定は要らない —— サービス名で届くこの既定のまま使う。配信側を別ホストで
       # 動かしている構成でだけ書き換える。
       - CHIEZO_APP_URL=${CHIEZO_APP_URL:-http://chiezo-app:7010}
       # 別コンテナのソースプラグインを使うときだけ、その URL をカンマ区切りで並べる
-      # (固化はプラグインではなく組み込みなので、ここに書く必要は無い)。
+      # (収集はプラグインではなく組み込みなので、ここに書く必要は無い)。
       - CHIEZO_PLUGIN_SOURCES=${CHIEZO_PLUGIN_SOURCES-}
       # 同時に走らせる取り込みの本数(既定 1)。1 本ごとにメモリを食うので、
       # 並べたい機械でだけ上げる(下の *_LIMITS も一緒に見直す)。
@@ -203,10 +206,10 @@ services:
       - ./data:/data
     user: "${CHIEZO_UID:-10001}:${CHIEZO_GID:-10001}"
     environment:
-      # 取り込むソース。`-e SOURCE=memory` にすると固化(短期記憶 → 長期記憶)が走る
+      # 取り込むソース(`-e SOURCE=osm_japan` のように上書きする)
       - SOURCE=${SOURCE:-jawiki}
       - CHIEZO_DATA_DIR=/data/corpus
-      # 固化の素材を取りに行く先(組み込みソースなので通常は既定のまま)
+      # 収集の素材を取りに行く先(組み込みソースなので通常は既定のまま)
       - CHIEZO_APP_URL=${CHIEZO_APP_URL:-http://chiezo-app:7010}
       - CHIEZO_PLUGIN_SOURCES=${CHIEZO_PLUGIN_SOURCES-}
       # J-Quants の API キー(上場銘柄一覧 jquants_master を、管理画面を通さず

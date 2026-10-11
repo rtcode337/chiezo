@@ -43,10 +43,6 @@ log = logging.getLogger("chiezo.handoff")
 
 KIND = "handoff"
 
-# 束の本文の天井。**区画 5 つで 200 KB 前後**(実測の素材から)なので、
-# その数倍を置く。超えるほどの束は、渡す相手の側で切られて静かに欠ける。
-MAX_BODY_BYTES = 4 * 1024 * 1024
-
 # 読み込む答えの天井。**外から来るファイル**なので、こちらで切る。
 MAX_ANSWER_BYTES = 8 * 1024 * 1024
 

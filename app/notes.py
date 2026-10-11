@@ -1,4 +1,4 @@
-"""notes — Chiezo で唯一書き込めるソース(短期記憶の置き場)。
+"""notes — 書き込めるソース(短期記憶と名前付きの置き場)。
 
 ## なぜ Chiezo に置くのか
 
@@ -13,10 +13,10 @@ Chiezo なら常駐するのは MCP のツール定義(数百字)だけで、中
 ## 設計の要点
 
 - `CHIEZO_NOTES_DIR` が機能フラグを兼ねる(未設定 = 丸ごと無効)。「使う」層と同じ流儀。
-- 置き場は `/data` と分ける。`registry.data_dir_fingerprint()` が `/data/*.db` の
+- 置き場は `/data/corpus` と分ける。`registry.data_dir_fingerprint()` が `CHIEZO_DATA_DIR/*.db` の
   mtime と size を 5 秒ごとに見ていて、変化があれば全ソースを再走査(`COUNT(*)` 込み)
-  する。notes.db を `/data` に置くと、メモを 1 件書くたびに jawiki 150 万件の COUNT が走る。
-  分けておけば干渉しないし、`/data` の read-only マウントも崩さずに済む。
+  する。短期記憶の DB を同じ場所に置くと、メモを 1 件書くたびに jawiki 150 万件の COUNT が走る。
+  分けておけば干渉しないし、`/data/corpus` の read-only マウントも崩さずに済む。
 - スキーマはコアスキーマそのもの。だから `search` / `doc` / `filter` / `tags` /
   ブラウズ画面 / MCP が、ソース種別を意識しない設計のおかげでそのまま効く。
   DDL は ingest の `core.py` にあるが、app は ingest を import しない(コンテナが別)

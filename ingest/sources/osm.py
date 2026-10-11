@@ -129,8 +129,7 @@ NAME_KEYS = (
     "loc_name", "nat_name",
 )
 
-# body / extra へ拾い上げる住所・連絡先タグ
-ADDR_KEYS = ("addr:postcode", "addr:city", "addr:street", "addr:housenumber")
+# body / extra へ拾い上げる連絡先タグ(住所は `addr:*` から組む)
 CONTACT_KEYS = {
     "phone": ("phone", "contact:phone"),
     "website": ("website", "contact:website", "url"),

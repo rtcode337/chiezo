@@ -2130,8 +2130,7 @@ def source_name(index: int) -> str:
 
 # 元の絵の使い道。 **文面が逆になる**ので、渡す側が言い分ける ——
 # 直すのに「参考に」と言うと別の絵を描き、参考にしたいのに「直せ」と言うと
-# 元の絵がそのまま返ってくる。
-MODE_EDIT = "edit"
+# 元の絵がそのまま返ってくる。既定(`image_mode`)は直す側の "edit"。
 MODE_REFERENCE = "reference"
 
 

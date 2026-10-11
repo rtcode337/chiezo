@@ -28,7 +28,7 @@ def client(tmp_path, monkeypatch):
 class TestTheShellCarriesIt:
     def test_every_page_gets_it(self, client):
         """殻に入れてあるので、面を増やしても付け忘れない。"""
-        for path in ("/admin", "/admin/memory", "/admin/todo", "/admin/ai"):
+        for path in ("/admin", "/admin/memory", "/admin/collect", "/admin/ai"):
             html = client.get(path).text
             assert "pull-mark" in html, path
             assert "app-nav" in html, path

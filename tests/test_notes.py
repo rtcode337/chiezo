@@ -1,4 +1,4 @@
-"""notes(唯一書き込めるソース)のテスト。"""
+"""notes(書き込めるソース)のテスト。"""
 import sqlite3
 
 import pytest
@@ -593,7 +593,7 @@ class TestShortTermIsNotARebuildableSource:
 
         出していた頃は、押しても trigger が unknown source を返すだけなのに、
         確認ダイアログだけが「ダンプの取得からやり直します」と言っていた
-        —— 唯一書き込めるソースで、消えたと読める文言が出ていた。
+        —— 書き込めるソースで、消えたと読める文言が出ていた。
         """
         html = client.get("/admin/memory").text
         assert 'action="/admin/rebuild/chiezo_memory"' not in html

@@ -68,8 +68,6 @@ URL_PLACEHOLDER = "http://pi.hole"
 PASSWORD_KEY = "pihole_password"
 PASSWORD_LABEL = "Pi-hole のパスワード(アプリパスワードも使える。設定していなければ空)"
 KEY_HELP_URL = "https://docs.pi-hole.net/api/"
-# 前の形(1 つの欄に「URL パスワード」)。**登録し直すまでは読む**
-LEGACY_KEY = "pihole"
 # 画面を通さずに試すとき(キーの置き場が無い構成)
 URL_ENV = "CHIEZO_PIHOLE_URL"
 PASSWORD_ENV = "CHIEZO_PIHOLE_PASSWORD"
@@ -138,21 +136,13 @@ MAX_CLIENTS = 20
 
 # ---- 接続 -------------------------------------------------------------------
 
-def parse_credential(raw: str | None) -> tuple[str, str]:
-    """`<URL> <パスワード>` を分ける。**最初の空白で 1 回だけ切る**(パスワードに空白があってもよい)。"""
-    url, _, password = (raw or "").strip().partition(" ")
-    return url.strip().rstrip("/"), password.strip()
-
-
 def target() -> tuple[str, str]:
     """接続先とパスワード。API キーの面(URL とパスワードの 2 つ)を先に見て、
-    無ければ前の形(1 つの欄)、それも無ければ環境変数。"""
+    無ければ環境変数。"""
     # 置き場の無い構成では None(環境変数へ倒す)
     if stored_url := settings_store.api_key(URL_KEY):
         url = stored_url.strip().rstrip("/")
         password = (settings_store.api_key(PASSWORD_KEY) or "").strip()
-    elif legacy := settings_store.api_key(LEGACY_KEY):
-        url, password = parse_credential(legacy)
     else:
         url = (os.environ.get(URL_ENV) or "").strip().rstrip("/")
         password = os.environ.get(PASSWORD_ENV) or ""

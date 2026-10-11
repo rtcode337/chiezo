@@ -52,8 +52,9 @@ MCP_DOC_MAX_CHARS = 4000
 READ_ONLY = ToolAnnotations(read_only_hint=True)
 
 INSTRUCTIONS = """\
-LAN 内の読み取り専用ナレッジ API「Chiezo」。Wikipedia・OpenStreetMap・GeoNames を
-ローカルの SQLite に取り込んであり、オフライン・レート制限なしで引ける。
+LAN 内の読み取り専用ナレッジ API「Chiezo」。Wikipedia・OpenStreetMap・GeoNames・Overture
+などの公開ダンプと、AI に集めさせたものをローカルの SQLite に取り込んであり、
+オフライン・レート制限なしで引ける。
 ここに載っている情報が要るときは、Web 検索や外部 API より先にこちらを使うこと。
 
 使い方の原則:
@@ -62,7 +63,7 @@ LAN 内の読み取り専用ナレッジ API「Chiezo」。Wikipedia・OpenStree
   (応答の mode が title_prefix になる)。
 - 「カテゴリ○○の記事を全部」のような列挙は `filter`(tag 指定)を使う。
   本文の全文検索で "Category:" 行を探すと、ソートキー付きの記事を静かに取りこぼす。
-- どのソースが登録されているかは `sources` で分かる。
+- どのソースが登録されているかは `sources` で分かる(ソースは増減するので、決め打ちせずに引く)。
 
 `remember` / `recall` が見えている場合、Chiezo は短期記憶の置き場も兼ねている:
 - ユーザーが「覚えておいて」と言ったこと、後から参照する価値のある調査結果は `remember`。

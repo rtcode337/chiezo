@@ -319,7 +319,7 @@ def option_for(ref: str) -> str:
 # 同じ控えに入れておくと**編集のたびに行列が消える**(押した人には何も起きていない
 # ように見えて、積んであったものだけが失われる)。
 #
-# 形は `{"<ワーカーの id>": {"queue": [...], "batch": [...], "next_run_at": "..."}}`。
+# 形は `{"<ワーカーの id>": {"queue": [...], "batch": [...], "last_run_at": "...", "finished_at": "..."}}`。
 # **鍵は id。** 名前で分けていた頃は、改名した拍子に積んであったぶんが古い名前の
 # 下へ取り残され、誰も流さないまま残った。
 # `queue` が待っているもの、`batch` が**いま流している最中のぶん**(起動で拾った塊)。
@@ -413,9 +413,7 @@ def batch(ref: str) -> list[dict]:
 
 def last_at(ref: str) -> str:
     """そのワーカーが最後に起動した時刻(まだなら空)。"""
-    slot = _slot(_queue_all(), ref)
-    # 前の版は同じ値を `next_run_at` に入れていた(名前が逆だった)
-    return str(slot.get("last_run_at") or slot.get("next_run_at") or "")
+    return str(_slot(_queue_all(), ref).get("last_run_at") or "")
 
 
 def finished_at(ref: str) -> str:
@@ -438,7 +436,7 @@ def note_finished(ref: str, at: str) -> bool:
     """
     state = _queue_all()
     slot = _slot(state, ref)
-    woke = str(slot.get("last_run_at") or slot.get("next_run_at") or "")
+    woke = str(slot.get("last_run_at") or "")
     if not woke or str(slot.get("finished_at") or "") >= woke:
         return False
     slot["finished_at"] = at

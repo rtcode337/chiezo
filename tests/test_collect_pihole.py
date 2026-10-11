@@ -95,20 +95,10 @@ def server(monkeypatch):
 
 
 class TestCredential:
-    def test_the_url_and_the_password_are_split_at_the_first_space(self):
-        assert pihole.parse_credential("http://pi.hole:80/ pass word") == ("http://pi.hole:80", "pass word")
-        assert pihole.parse_credential("http://pi.hole") == ("http://pi.hole", "")
-
     def test_the_url_and_the_password_are_registered_apart(self, monkeypatch):
         keys = {pihole.URL_KEY: "http://pi.hole/", pihole.PASSWORD_KEY: "pass word"}
         monkeypatch.setattr(pihole.settings_store, "api_key", keys.get)
         assert pihole.target() == ("http://pi.hole", "pass word")
-
-    def test_the_old_single_field_is_still_read(self, monkeypatch):
-        """前の形(1 つの欄に「URL パスワード」)も、登録し直すまでは読む。"""
-        keys = {pihole.LEGACY_KEY: "http://pi.hole secret"}
-        monkeypatch.setattr(pihole.settings_store, "api_key", keys.get)
-        assert pihole.target() == ("http://pi.hole", "secret")
 
     def test_no_target_is_refused_with_a_hint(self, monkeypatch):
         monkeypatch.setattr(pihole.settings_store, "api_key", lambda _name: None)

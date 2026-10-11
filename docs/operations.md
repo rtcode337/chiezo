@@ -5,8 +5,8 @@
 
 ## ダンプ更新(ブルーグリーン)
 
-ingest は毎回 `data/<source>-<date>.db` を新規構築し、検証が通ったらシンボリックリンク
-`data/<source>.db` を差し替えます。旧世代は 1 つだけ残します。差し替えは chiezo-app が
+ingest は毎回 `data/corpus/<source>-<date>.db` を新規構築し、検証が通ったらシンボリックリンク
+`data/corpus/<source>.db` を差し替えます。旧世代は 1 つだけ残します。差し替えは chiezo-app が
 数秒以内に自動検知して新しい DB へ切り替わるので、再起動も停止時間もありません。
 
 ```bash
@@ -31,12 +31,15 @@ docker compose --profile ingest run --rm chiezo-ingest
 | `DUMP_FILE` | ダウンロードをスキップし既存ファイルを使う(カンマ区切りで複数シャード指定可) |
 | `PAGEVIEW_PERIOD` | ページビュー突合対象の年月 `YYYY-MM` を固定(省略時は最新月を自動検出) |
 | `MIN_DOCS` / `SAMPLE_TITLES` | 検証パラメータの上書き(小規模データでの動作確認用) |
+| `ALLOW_SHRINK` | `1` で、いまの世代の半分を切る件数でも焼く(既定では断る。意図して大きく減らすときだけ) |
 | `OSM_DOWNLOAD_BASE` | OpenStreetMap の配布元の頭(既定は Geofabrik `https://download.geofabrik.de/`)。**ふだんは管理画面で選ぶ**(記憶の面・OSM の面の「OpenStreetMap の配布元」。選んだものが取り込みを起こすたびに渡り、この環境変数より優先される)。この変数は画面で選んでいないとき・画面を通さない単発の取り込みでの既定。Geofabrik と同じ並び(`<頭><地域>-latest.osm.pbf`)のミラーを指す。例 `https://download.openstreetmap.fr/extracts/`。**Geofabrik は大きなファイルを何度も落とす IP を絞ることがある**(実測で IPv4 が 0.02 MiB/s まで落ち、同じ時刻にミラーなら 3 MiB/s 出た)ので、そのときの逃げ道。**抽出の切り方は配布元ごとに少し違う** —— openstreetmap.fr の日本は北方領土(OSM ではロシアのサハリン州)を含み、硫黄島・南鳥島・沖ノ鳥島を含まない。地域の名前も配布元ごとに違いうるので、日本以外は確かめてから使う。配布元を変えたとき、前の配布元から途中まで落としたファイルは捨てて最初から落とす(続きにつなぐと壊れる。どこから落としたかの控えが無い途中のファイルも捨てる) |
 | `OSM_AREA_ADMIN_LEVEL` | `extra.area` に入れる行政区の admin_level(既定 4 = 都道府県。`0` で境界パス省略) |
 | `BUILD_PROFILE` | 構築プロファイル。既定は `low_memory` = **どのソースも 2GiB で構築できる**(構築用 SQLite キャッシュを絞り、osm のノード座標索引をディスクへ。osm は数倍〜10 倍遅い)。メモリの潤沢なビルド機では `fast` を実行時に明示すると速度優先になる([メモリについて](#メモリについて)) |
 | `OSM_NODE_INDEX` | osm のノード座標索引の置き場(`sparse_mmap_array`〈RAM・速い〉/ `sparse_file_array`〈ディスク・省メモリ・遅い〉)。明示指定は `BUILD_PROFILE` より優先。未指定なら low_memory はディスク、fast はソースごとの既定(RAM 索引が 12GiB を超える国のみディスク) |
 | `GEONAMES_ALT_LANGS` | geonames で取り込む別名の言語(カンマ区切り。既定 `ja,en`、`*` で全 400 言語超) |
 | `GEONAMES_FEATURE_CLASSES` | geonames で取り込む feature class(既定 `AHLPSTUV` = 道路 `R` 以外すべて) |
+| `OVERTURE_MIN_CONFIDENCE` | overture で落とす `confidence` の下限(既定 `0.5`) |
+| `CHIEZO_PLUGIN_TIMEOUT` | プラグイン(`CHIEZO_PLUGIN_SOURCES`)のカタログを取りに行くときの上限秒数(既定 5) |
 | `CHIEZO_JQUANTS_API_KEY` | J-Quants の API キー。`jquants_master` を画面を通さずに単発で取り込むときだけ要る(画面から回すなら登録したキーが渡る。[J-Quants](#j-quants)) |
 | `BUILD_MEMORY_GB` / `SKIP_MEMORY_CHECK` | 構築前メモリ検査の必要量を上書き / 検査を無効化([メモリについて](#メモリについて)) |
 
@@ -395,8 +398,8 @@ docker build ./api \
 同じソースが走っていれば 409 で断ります。
 
 **ダンプの取り込み(初期化・再構築)は別の枠で走ります**(`CHIEZO_INGEST_DUMP_LANE`、既定で有効)。
-再構築は何時間もかかるので、1 つの枠を取り合うと、そのあいだ収集も固化も一切流れませんでした。
-ダンプは専用の 1 枠を使い、`CHIEZO_INGEST_SLOTS` は収集・固化・プラグインのぶんにまるごと残ります。
+再構築は何時間もかかるので、1 つの枠を取り合うと、そのあいだ収集も一切流れませんでした。
+ダンプは専用の 1 枠を使い、`CHIEZO_INGEST_SLOTS` は収集・プラグインのぶんにまるごと残ります。
 ダンプかどうかは取り込み側のアダプタ一覧(`ADAPTERS`)に載っているかで決まり、`GET /status` の
 各 1 本に `lane`(`dump` / `general`)、全体に `dump_lane` が載ります。管理画面のボタンも、
 そのソースが使う枠が空いているかで押せるかを決めます。**再構築と収集の焼き込みが同時に
@@ -462,14 +465,15 @@ cp docker-compose.standalone.example.yml docker-compose.standalone.yml   # コ�
 cat docker-compose.standalone.yml
 ```
 
-編集するのは先頭の 2 行(`x-data-dir` / `x-notes-dir`)だけです。**ホスト側は絶対パスで
-書きます** —— 貼り付けて登録する環境では相対パス(`./data`)の基準が読めないためです。
-どちらのディレクトリも**あらかじめ作っておいてください**(取り込んだ `.db` は data に置く)。
+編集するのは先頭の置き場の行(`x-data-volume` と、同じ親に揃える `x-corpus-volume` ほか)
+だけです。**ホスト側は絶対パスで書きます** —— 貼り付けて登録する環境では相対パス(`./data`)の
+基準が読めないためです。用意するのは親のディレクトリだけで、下の `corpus/`・`notes/`・`state/` は
+`chiezo-init` が起動時に作ります(取り込んだ `.db` は `corpus/` に置く)。
 
-起動するのは `chiezo-app` と `chiezo-trigger` の 2 つで、通常の `docker-compose.yml` と同じく
+起動するのは `chiezo-app`・`chiezo-trigger`・`searxng`(と、置き場を用意する `chiezo-init`)で、通常の `docker-compose.yml` と同じく
 trigger はホストへ公開されず、管理画面の初期化ボタンから内部ネットワーク経由で叩かれます。
-**「答える」層は設定だけを載せてあり、コンテナは含みません** —— 推論サーバと検索エンジンは
-別サーバーで動かしているものを指せば済み(chiezo-app は OpenAI 互換の口を叩くだけ)、
+**推論サーバは設定だけを載せてあり、コンテナは含みません** —— 別サーバーで
+動かしているものを指せば済み(chiezo-app は OpenAI 互換の口を叩くだけ)、
 貼り付けて動かすような実行環境で同居させる前提も無いためです。同じホストに立てるなら、
 上書きを重ねられる環境で `docker-compose.llm.yml` を使ってください。
 
@@ -577,4 +581,4 @@ Host をカンマ区切りで指定してください(例: `<LAN の IP>:7010,lo
 (LAN 内前提のこのサービス全体の認証なし方針と同一線上ですが、ダウンロード・構築という
 比較的重い処理を誰でも起動できる点は留意してください)。
 
-`chiezo_memory`(唯一書き込めるソース)も同じで、`/v1/chiezo_memory` に到達できる相手は誰でも書けます。
+書き込めるソース(`chiezo_memory` と名前付きの置き場 `/v1/stores/…`)も同じで、到達できる相手は誰でも書けます。

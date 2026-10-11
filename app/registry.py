@@ -1,4 +1,4 @@
-"""/data/*.db の走査とソース登録(設計書 §5)。
+"""CHIEZO_DATA_DIR/*.db の走査とソース登録(設計書 §5)。
 
 起動時に CHIEZO_DATA_DIR を走査し、各 DB の meta を読んでソースとして登録する。
 `<source>.db` というファイル名(通常は世代 DB へのシンボリックリンク)のみを
@@ -144,7 +144,7 @@ def data_dir_fingerprint(data_dir: Path) -> dict[str, tuple[int, int, int, int]]
 
 
 # 消せない置き場。**外に素材が無いもの**は、消したら取り戻せない ——
-# 短期記憶は書き込みが直接届く唯一のソースで、設定の置き場には収集の定義が入っている
+# 短期記憶は書き込みが直接届くソースで、設定の置き場には収集の定義が入っている
 # (どちらも取り込みで焼き直せない)。**名前で持つ**のは、この判断を画面と口の
 # 両方から同じものとして引くため。
 SYSTEM_SOURCES = (notes.SOURCE_NAME, machine_store.SOURCE_NAME)

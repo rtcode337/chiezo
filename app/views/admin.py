@@ -213,32 +213,14 @@ def _credential_groups() -> dict[str, dict]:
 
 
 def _credential_for(source: str) -> str | None:
-    """そのソースに渡すキー(API キーの面に、組の名前で登録したもの)。無ければ None。
-
-    **前の形(ソース名ごと)で登録したキーは、ここで組の名前へ移す**。組ごとに持つ形に
-    変える前に登録したキーを、入れ直さずに使い続けられるように。
-    """
+    """そのソースに渡すキー(API キーの面に、組の名前で登録したもの)。無ければ None。"""
     if not settings_store.is_enabled():
         return None
     for key, entry in _credential_groups().items():
         if source not in entry["sources"]:
             continue
-        _move_legacy_credentials(key, entry["sources"])
         return settings_store.api_key(key)
     return settings_store.api_key(source)
-
-
-def _move_legacy_credentials(key: str, sources: list[str]) -> None:
-    """ソース名で登録されていたキーを、組の名前へ移す(組にまだ無ければ)。"""
-    for name in sources:
-        if name == key:
-            continue
-        legacy = settings_store.api_key(name)
-        if legacy is None:
-            continue
-        if settings_store.api_key(key) is None:
-            settings_store.set_api_key(key, legacy)
-        settings_store.clear_api_key(name)
 
 
 KEYS_PAGE = "/admin/keys"
@@ -439,7 +421,7 @@ def _job_body_html(job: dict | None, back: str = STATUS_PAGE) -> str:
         general = len(ingest_queue.general_jobs(job))
         dumps = len(running) - general
         head = (
-            f'<p class="muted">収集・固化は同時に {slots} 本まで'
+            f'<p class="muted">収集は同時に {slots} 本まで'
             f"(いま {general} 本。chiezo-trigger の <code>CHIEZO_INGEST_SLOTS</code>)。"
             f"ダンプの取り込み(初期化・再構築)は別の枠で 1 本ずつ(いま {dumps} 本)。</p>"
         )
@@ -3283,14 +3265,6 @@ async def admin_collect(request: Request):
     return HTMLResponse(content=page_shell("収集", body))
 
 
-def _int_arg(request: Request, name: str, fallback: int) -> int:
-    """クエリの数。**読めない値は既定に落とす** —— 画面は JS を持たないので、
-    人が URL を手で書き換えることがある(そこで 500 にしては困る)。"""
-    with suppress(TypeError, ValueError):
-        return max(1, int(request.query_params.get(name, fallback)))
-    return fallback
-
-
 @router.get("/admin/ai/transcripts/{ident}", response_class=PlainTextResponse)
 def admin_ai_transcript(ident: str):
     """控えの全文。**そのまま出す** —— CLI の出力は整形すると意味が変わる
@@ -3728,8 +3702,6 @@ def admin_keys():
             "画面からは登録できません。</p>"
         )
     else:
-        for key, entry in groups.items():
-            _move_legacy_credentials(key, entry["sources"])
         # **収集の道具が使うキーも並べる**(取り込みのソースではないので、カタログには
         # 載らない)。名乗らないと「まだ誰も使っていない」と出て、消してよいように読める
         for key, entry in _TOOL_KEYS.items():
@@ -4093,7 +4065,7 @@ def admin_rebuild(source: str, request: Request):
 
     ただし短期記憶(`mutable` なソース)だけはここで断る。取り込みで焼くソースでは
     ないので trigger も unknown source を返すが、そこまで行かせると「実行しようとした
-    が失敗した」に見える。書き込める唯一のソースについては、素通しにしない。
+    が失敗した」に見える。書き込めるソースについては、素通しにしない。
     """
     if not TRIGGER_URL:
         raise HTTPException(503, {"error": "chiezo-trigger is not configured (CHIEZO_TRIGGER_URL unset)"})

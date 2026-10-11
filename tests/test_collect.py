@@ -211,7 +211,7 @@ class TestDefinitions:
 
         from app import machine_store
 
-        machine_store.put(collect.DEFS_KIND, collect.DEFS_KEY, "これはJSONではない")
+        machine_store.put(collect.DEFS_KIND, "news", "これはJSONではない")
         with pytest.raises(fastapi.HTTPException):
             collect.load()
 
@@ -1780,6 +1780,13 @@ def _iso_now():
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+def _expire(item, docs):
+    """焼くときの期限切れの判定(`collect.ndjson` の数える周・書く周と同じ形)。"""
+    limit = collect._expiry_limit(item)
+    kept = [d for d in docs if limit is None or collect._doc_time(d) >= limit]
+    return kept, len(docs) - len(kept)
+
+
 class TestTheKindOfCollection:
     """収集の**種類** —— 流れを追うのか、括りの全部を精査するのか。
 
@@ -1816,7 +1823,7 @@ class TestTheKindOfCollection:
             {"title": "むかし", "extra": {"published_at": old}},
         ]
 
-        kept, dropped = collect.expired_docs(collect.get("news"), docs)
+        kept, dropped = _expire(collect.get("news"), docs)
 
         assert [d["title"] for d in kept] == ["きのう"]
         assert dropped == 1
@@ -1830,7 +1837,7 @@ class TestTheKindOfCollection:
             }}
         ]
 
-        _kept, dropped = collect.expired_docs(collect.get("news"), docs)
+        _kept, dropped = _expire(collect.get("news"), docs)
 
         assert dropped == 1
 
@@ -1839,7 +1846,7 @@ class TestTheKindOfCollection:
         collect.update("news", kind="stock")
         docs = [{"title": "むかし", "extra": {"published_at": "2020-01-01T00:00:00+00:00"}}]
 
-        kept, dropped = collect.expired_docs(collect.get("news"), docs)
+        kept, dropped = _expire(collect.get("news"), docs)
 
         assert len(kept) == 1
         assert dropped == 0
@@ -1848,7 +1855,7 @@ class TestTheKindOfCollection:
         """読めなければ落とさない側へ倒す。"""
         collect.update("news", kind="flow", keep_days=1)
 
-        kept, dropped = collect.expired_docs(collect.get("news"), [{"title": "日付なし"}])
+        kept, dropped = _expire(collect.get("news"), [{"title": "日付なし"}])
 
         assert len(kept) == 1
         assert dropped == 0
@@ -6353,27 +6360,6 @@ class TestSeeingTheMachineStore:
 
         assert after["doc_id"] == before["doc_id"]
         assert after["bytes"] > before["bytes"]
-
-    def test_the_old_single_record_is_split_on_read(self, sample):
-        """まとめて 1 件に入れていた頃のものを、読むときに分ける。**1 度だけ**。"""
-        import json
-
-        from app import machine_store
-
-        # 旧い形に戻す（1 件に 2 つ入れて、新しい形の行は消す）
-        for key in machine_store.keys(collect.DEFS_KIND):
-            machine_store.drop(collect.DEFS_KIND, key)
-        machine_store.put(collect.DEFS_KIND, collect.DEFS_KEY, json.dumps({
-            "collections": [
-                {"name": "news", "prompt": "p", "created_at": "2026-01-01T00:00:00+00:00"},
-                {"name": "spots", "prompt": "q", "created_at": "2026-01-02T00:00:00+00:00"},
-            ]
-        }, ensure_ascii=False))
-
-        assert [c.name for c in collect.load()] == ["news", "spots"]
-        # 分け終えたら古い行は消える（次からは 1 件ずつ読む）
-        assert machine_store.get(collect.DEFS_KIND, collect.DEFS_KEY) is None
-        assert sorted(machine_store.keys(collect.DEFS_KIND)) == ["news", "spots"]
 
     def test_a_broken_one_names_itself(self, sample):
         """**壊れているのはその 1 件だけ**だと分かるように、名前を添えて上げる。"""

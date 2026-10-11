@@ -270,19 +270,6 @@ def _client(timeout: float) -> httpx.AsyncClient:
 VIDEO_TIMEOUT = float(os.environ.get("CHIEZO_VIDEO_TIMEOUT", "1200") or 1200)
 
 
-def timeout_for(kind: str) -> float:
-    """その kind を待つ上限。動画だけ桁が違うので、ここで 1 つに寄せる。
-
-    `media._reap_stale` が「もう誰も面倒を見ていない job」を畳む基準にも使うので、
-    生成側と後始末側で別々の数字を持たせない。
-    """
-    if kind == media_providers.KIND_VIDEO:
-        return VIDEO_TIMEOUT
-    # **ブリッジのぶんまで見込む。** 短いほうを基準にすると、まだ描いている job を
-    # 「もう誰も面倒を見ていない」と畳んでしまう
-    return max(GENERATE_TIMEOUT, BRIDGE_IMAGE_TIMEOUT)
-
-
 @dataclass(frozen=True)
 class VideoRequest:
     """動画を 1 本作る頼み。尺は「相手が受け付ける値」しか入らない

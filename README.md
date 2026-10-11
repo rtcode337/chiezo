@@ -24,9 +24,8 @@ AI を使うのに要るものを 1 か所で持ち、貸し出す。持つの�
 | 取り出す | 引き口は 2 経路。MCP(`/mcp`、Streamable HTTP)と REST(`search` / `doc` / `filter` / `tags` …)。Claude Code 向けには「どんなときに Chiezo を使うか」を書いた CLAUDE.md ブロックも生成できる |
 | 覚える | `/v1/chiezo_memory` に書いたものは `chiezo_memory` ソースとして溜まり、`recall` で引ける。書き手は人でも AI でもよい |
 | 集める / 整理する | まとまったダンプの無いもの(直近のニュース、入れ替わりの速い店、人物の関係)を AI に集めさせ、長期記憶へ積んでいく。**既にある内容を実行のたびに育てることもできる**(分類の語彙を整える・重複をまとめる。触れなかったものは残り、消すのは明示したときだけ)。時計は Chiezo が持つので、間隔は画面から変えられる |
-| 固める | 覚えたことのうち残す価値があると判断したものを、読み取り専用のソース 1 つへ焼く(短期記憶 → 長期記憶)。焼いた先はほかのソースと同じ口で引ける。判定は AI に任せられる |
 
-画面では、ためた知識と固めた知識を**長期記憶**、覚えたことを**短期記憶**と呼んで節を分けている。
+画面では、ためた知識と集めた知識を**長期記憶**、覚えたことを**短期記憶**と呼んで節を分けている。
 
 ### 鍵と、話せる AI
 
@@ -145,7 +144,7 @@ scripts/gen_claude_config.sh -u http://<サーバーIP>:7010              # 一�
 
 ## 覚える(notes)
 
-`chiezo_memory` は Chiezo で唯一書き込めるソース。「これ覚えておいて」と言われたこと、調べた結果、
+`chiezo_memory` は書き込めるソース(短期記憶)。「これ覚えておいて」と言われたこと、調べた結果、
 決めたことを溜め、`recall` で新しい順に引く。書き手は人でも AI でもよく、MCP
 クライアントからは `remember` / `recall` / `update` / `forget` の 4 つの道具として見える
 (書き換えは渡した項目だけの差し替え。削除は取り消せない)。
@@ -166,8 +165,9 @@ CLAUDE.md や記憶ファイルとの違いは、常時コンテキストに載�
 
 compose では既定で有効(`data/notes/` に SQLite が 1 つできる)。`CHIEZO_NOTES_DIR` を
 空にすると機能ごと無効になる。認証は無いので、`/v1/chiezo_memory` に到達できる相手は誰でも書ける。
+外のアプリが自分の記録を預ける**名前付きの置き場**(`/v1/stores`)も同じ形で作れる。
 
-- API の詳細 → [API リファレンス](docs/api-reference.md#notes唯一書き込めるソースの-rest)
+- API の詳細 → [API リファレンス](docs/api-reference.md#chiezo_memory短期記憶の-rest)
 - なぜこの形か → [設計メモ](docs/design-notes.md#覚えるnotesはなぜ-chiezo-に置くのか)
 
 ## ToDo(タスク・ルール)
@@ -191,11 +191,10 @@ Chiezo を引ける AI とブラウザから話せる(`/ai/chat`)。1 問 1 答�
 —— 短い語は前方一致に落ちる、カテゴリの列挙は `filter?tag=` —— を知っているのはここなので、
 道具立てとプロンプトもここで持つ。推論そのものは chiezo-app の中では動かさず、
 OpenAI 互換 API を喋る別プロセスに任せる(配信側が数百 MB で動く前提を崩さないため)。
-有効になるのは `CHIEZO_LLM_URL` を設定したときだけ。
+有効になるのは、管理画面の AI の面(`/admin/ai`)で話す相手を on にしたときだけ
+(相手は全部既定 off)。同居の推論サーバを使うなら次で立ててから「推論サーバ」を on にする。
 
 ```bash
-cp .env.example .env
-# .env の CHIEZO_LLM_URL=http://chiezo-llm:7011/v1 の行のコメントを外す
 docker compose -f docker-compose.yml -f docker-compose.llm.yml --profile llm up -d
 ```
 
@@ -227,7 +226,8 @@ CLI ブリッジ(Claude Code など)は CLI 自身の検索を引く。使うか
 **AI への依頼は履歴が管理画面に残る**(状況の面の「依頼の履歴」)。会話も絵も音も、成功も失敗も
 同じ 1 枚に新しい順で並び、失敗には理由が付く —— 無人の呼び出しが落ちたとき、その場に
 居合わせないと理由が消えるため。10 件ずつのページで、失敗だけに絞ることもできる。
-プロンプトと応答は残さない(大きさだけ)。失敗を機械で読むなら `GET /v1/ai/failures`。
+渡した依頼文・相手の生の出力・応答の控えも同じ行から開ける(既定で 14 日。
+`CHIEZO_AI_TRANSCRIPT_DAYS=0` で控えない)。失敗を機械で読むなら `GET /v1/ai/failures`。
 
 **各 AI の使用量も見られる**(管理画面の状況の面の「使用量」と `GET /v1/ai/usage`)。
 相手が言う枠の残り —— Claude Code の 5 時間・週、Codex の窓、OpenRouter のクレジット ——
@@ -319,8 +319,9 @@ docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
 
 compose は「本体 + 上書き」の形にしてある。本体(`docker-compose.yml`)が検索 API・MCP で、
-上書きは足したいものだけを数行ずつ:`build`(手元ビルド)・`answer`(推論と検索エンジン)・
-`cuda`(GPU)・`lan`(「答える」層を別ホストへ公開)。重ねる順はこの並びどおり。
+上書きは足したいものだけを数行ずつ:`build`(手元ビルド)・`llm`(推論サーバ)・
+`llm.cuda`(その推論を GPU で)・`comfyui`(絵と音の生成)・`lan`(GPU の要るものを別ホストへ公開)。
+重ねる順はこの並びどおり。
 
 ### アイコンを変えたとき
 

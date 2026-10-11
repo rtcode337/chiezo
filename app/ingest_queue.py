@@ -102,7 +102,7 @@ def general_jobs(status: dict | None) -> list[dict]:
 
 
 def is_full(status: dict | None) -> bool:
-    """収集・固化をもう 1 本も起こせないか。
+    """収集・プラグインの取り込みをもう 1 本も起こせないか。
 
     **ダンプが別の枠なら、走っている再構築は数えない** —— 何時間もかかる
     再構築のあいだ、収集が待ち続けないようにするため。
@@ -340,10 +340,6 @@ def for_worker(key: str) -> bool:
     """そのワーカーのぶんが、待っているか走っているか。"""
     state = _state()
     return any(e.get("worker") == key for e in (*state["waiting"], *state["running"]))
-
-
-def running_for_worker(key: str) -> bool:
-    return any(e.get("worker") == key for e in running())
 
 
 def drop(collection: str, sweep: str) -> None:

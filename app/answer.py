@@ -5,10 +5,10 @@
 - 推論は同居させない。この層がするのは OpenAI 互換の `/chat/completions` を叩くことだけで、
   モデルは別コンテナ(compose の profile `llm` の `chiezo-llm`)か LAN 上の別マシンにいる。
   配信側 chiezo-app が数百 MB で動く前提を壊さないため、ここにモデルを抱えない。
-- `CHIEZO_LLM_URL` が機能フラグを兼ねる。未設定なら使う層は丸ごと無効
-  (`/v1/ask` は 503、管理画面にも無効と出る)。既定では起動しないことをこの 1 変数で守る。
-- 話す相手は複数持てる(バックエンド)。`CHIEZO_LLM_URL` が名前なしの既定で、
-  `CHIEZO_LLM_<名前>_URL` を足すと選べる相手が増える。要求するのは OpenAI 互換の
+- 話せる相手が 1 つも有効でなければ、使う層は丸ごと無効(`/v1/ask` は 503、
+  管理画面にも無効と出る)。相手は全部既定 off なので、既定では起動しない。
+- 話す相手は複数持てる(バックエンド)。相手の定義は `app/providers.py` に決め打ちで、
+  on/off と認証情報は管理画面から入れる(`app/settings_store.py`)。要求するのは OpenAI 互換の
   `/chat/completions` だけなので、ローカルの推論サーバでも Gemini・OpenRouter でも、
   CLI を OpenAI 互換に見せるブリッジでも、同じ 1 本の口で扱える。
 - 検索は `app/main.py` のエンドポイント関数をそのまま呼ぶ(`app/mcp_server.py` と同じ方針)。

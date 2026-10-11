@@ -82,9 +82,6 @@ class TestOnePage:
         )]
         assert at == sorted(at)
         assert "1 か所で持つところ" not in html
-        # 昔の面を開いても、その節へ着く
-        res = client.get("/admin/todo", follow_redirects=False)
-        assert res.headers["location"] == "/admin/memory#tasks"
 
     def test_the_front_door_shows_how_much_is_left(self, client):
         _project(client)
@@ -476,10 +473,3 @@ class TestNoPublicFace:
         for name in ("app.tasks_app", "app.tasks_auth", "app.tasks_api", "app.tasks_static"):
             with pytest.raises(ModuleNotFoundError):
                 importlib.import_module(name)
-
-    def test_old_bookmarks_land_on_the_new_page(self, client):
-        """`/tasks` は SPA の置き場だった。**迷子にしない**ぶんだけ残す。"""
-        for path in ("/tasks", "/tasks/", "/tasks/rules"):
-            res = client.get(path, follow_redirects=False)
-            assert res.status_code == 308, path
-            assert res.headers["location"] == "/admin/memory#tasks"

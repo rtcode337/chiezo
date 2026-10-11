@@ -749,19 +749,6 @@ def _render(request: Request, **previews) -> HTMLResponse:
 # ---- 読む --------------------------------------------------------------------
 
 
-@router.get(PATH, include_in_schema=False)
-def todo():
-    """昔の置き場(ToDo の面)。**ブックマークを迷子にしない**ためだけに残す。"""
-    return RedirectResponse(url=f"{PAGE}#{SECTION_ANCHOR}", status_code=308)
-
-
-@router.get("/tasks", include_in_schema=False)
-@router.get("/tasks/{path:path}", include_in_schema=False)
-def tasks_moved(path: str = ""):
-    """昔の置き場(SPA の `/tasks`)。**ブックマークを迷子にしない**ためだけに残す。"""
-    return RedirectResponse(url=f"{PAGE}#{SECTION_ANCHOR}", status_code=308)
-
-
 @router.get(f"{PATH}/export")
 def export():
     """未完了のタスクを JSON で書き出す。**そのまま取り込みの入力になる**。"""

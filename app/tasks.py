@@ -42,7 +42,7 @@ log = logging.getLogger("chiezo.app")
 # ---- タグの語彙(正は notes.CANONICAL_TAGS。ここは参照するための名前) ----------
 # タスクを表すタグ。**`todo` とは分けてある** —— あちらは「あとでやる」くらいの
 # 意味で普通のメモにも付くので、タスク画面に並べる基準にすると、メモがタスクに
-# 化けてしまう。移行は `scripts/migrate_todo_to_task.py`。
+# 化けてしまう。
 TAG_TASK = "task"
 TAG_IN_PROGRESS = "着手中"
 TAG_DONE = "完了"
@@ -70,11 +70,6 @@ STRUCTURAL_TAGS = frozenset({
 
 # 完了タスクの 1 ページ。画面で一度に読める程度の上限。
 DONE_PAGE_SIZE_MAX = 100
-
-# 更新で projectId にこれ(0)を送ると紐づけを外す。null は「変更しない」の意味なので、
-# 外す指示をそれと分けるための値。doc_id は 1 から振られるので実在の id とぶつからない。
-UNLINK_PROJECT_ID = 0
-
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
@@ -715,9 +710,7 @@ def _rule_of(row) -> Rule:
 
 
 def list_rules() -> list[Rule]:
-    """ルール一覧。**長期記憶へ移したものは末尾へ固める**。
-
-    """
+    """ルール一覧(手で並べた順。同じ順なら作った順)。"""
     rules = [_rule_of(row) for row in _rows_tagged(TAG_RULE)]
     rules.sort(key=lambda r: (r.sort_order, r.doc_id))
     return rules

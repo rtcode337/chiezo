@@ -370,7 +370,7 @@ class TestChatPageLayout:
 
 @pytest.fixture()
 def notes_on(monkeypatch_env, tmp_path):
-    """notes(唯一書き込めるソース)を有効にした状態。"""
+    """notes(書き込めるソース)を有効にした状態。"""
     monkeypatch_env.setenv("CHIEZO_NOTES_DIR", str(tmp_path / "notes"))
     return monkeypatch_env
 

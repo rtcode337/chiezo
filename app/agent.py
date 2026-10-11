@@ -53,7 +53,7 @@ log = logging.getLogger("chiezo.app")
 # agent に渡す Chiezo の道具(MCP に出しているものから借りる)。ここは読み取り専用。
 KNOWLEDGE_TOOLS = ("sources", "search", "doc", "filter", "tags", "titles", "links", "recent")
 
-# 「覚える」層の道具。`remember` は Chiezo で唯一の書き込みなので分けてある。
+# 「覚える」層の道具。`remember` は書き込みなので分けてある。
 # 当初は「質問の副作用でメモが増えるのは予想外の変化」として渡していなかったが、
 # 会話で「覚えておいて」と明示的に頼まれるなら副作用ではない。代わりに
 # ①やり取りごとに切れる(`notes` 引数・画面のトグル)②何を書いたかは step に出る、
@@ -510,16 +510,6 @@ def bridge_web_allowed(requested: bool | None) -> bool:
     Chiezo が web 検索を設定しているかどうかとは無関係に、頼まれたときだけ開ける。
     """
     return requested is True
-
-
-def bridge_notes_note() -> str:
-    """CLI ブリッジでは「覚える」を止められない、と伝えるための一言。
-
-    こちらは MCP をまるごと（`mcp__chiezo`）渡していて、道具を 1 つずつ外す口が無い。
-    止められないものを止められるように見せないのが大事なので、画面ではトグルを
-    出さず、常に使える前提で説明する。
-    """
-    return "覚える(remember)も使えます。"
 
 
 async def _bridge_stream(

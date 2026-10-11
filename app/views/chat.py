@@ -513,7 +513,7 @@ async def chat_page(
         '<input type="checkbox" id="web" checked>🌐 web 検索</label>'
         if websearch.is_enabled() or any_bridge else ""
     )
-    # 「覚えておいて」に応えられるようにする道具(Chiezo で唯一の書き込み)。
+    # 「覚えておいて」に応えられるようにする道具(書き込みを含む)。
     # 何を書いたかは「調べた手順」に出るので、勝手に増えたときも後から分かる。
     fixed_note = "この相手では止められません（CLI が自分で道具を引くため）"
     notes_toggle = (
@@ -546,8 +546,7 @@ async def chat_page(
 <a href="/admin">管理画面</a></div>
 <div class="log">
 <p class="stale">「使う」層は無効です。</p>
-<p class="muted">推論サーバの OpenAI 互換 URL を <code>CHIEZO_LLM_URL</code> に設定すると
-有効になります(compose なら <code>docker compose --profile llm up -d</code>)。</p>
+<p class="muted"><a href="/admin/ai">AI</a> の面で話す相手を有効にすると使えるようになります。</p>
 </div>
 <div class="composer"><div class="composer-box">
 <textarea name="q" rows="3" placeholder="話しかける(いまは無効です)" disabled></textarea>

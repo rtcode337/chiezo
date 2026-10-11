@@ -98,7 +98,7 @@ class TestDisabled:
     def test_ask_page_explains_how_to_enable(self, disabled_client):
         res = disabled_client.get(CHAT_PATH)
         assert res.status_code == 200
-        assert "CHIEZO_LLM_URL" in res.text
+        assert 'href="/admin/ai"' in res.text
         # 無効でもフォーム自体は出す(何のページか分かるように)
         assert 'name="q"' in res.text
 
@@ -1063,34 +1063,6 @@ class TestAnswerLayerSwitch:
         assert res.json()["error"] == "answering is disabled"
 
 
-class TestSettingsMigration:
-    def test_the_old_api_key_column_is_renamed(self, monkeypatch, tmp_path):
-        """列名を変えたときの移行。置かないと既存 DB を読んだ瞬間に落ちる。"""
-        import sqlite3
-
-        from app import settings_store
-
-        state = tmp_path / "state"
-        state.mkdir()
-        db = state / "settings.db"
-        # この機能を入れた当初のスキーマ（api_key のまま）で作る
-        conn = sqlite3.connect(db)
-        conn.executescript(
-            "CREATE TABLE provider_settings (provider TEXT PRIMARY KEY, enabled INTEGER NOT NULL"
-            " DEFAULT 0, api_key TEXT, model TEXT, updated_at TEXT NOT NULL);"
-            "INSERT INTO provider_settings VALUES ('claude', 1, 'old-token', '', '2026-08-13');"
-        )
-        conn.commit()
-        conn.close()
-
-        monkeypatch.setenv("CHIEZO_STATE_DIR", str(state))
-        got = settings_store.load("claude")
-        assert got.credential == "old-token"  # 中身は失われない
-        assert got.enabled is True
-        # 二度目も落ちない（init は何度でも走る）
-        assert settings_store.load("claude").credential == "old-token"
-
-
 class TestJournalMode:
     def test_an_existing_wal_database_is_converted(self, monkeypatch, tmp_path):
         """WAL のまま残っていたファイルも戻す。
@@ -1109,10 +1081,7 @@ class TestJournalMode:
         db = state / "settings.db"
         conn = sqlite3.connect(db, isolation_level=None)
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute(
-            "CREATE TABLE provider_settings (provider TEXT PRIMARY KEY, enabled INTEGER NOT NULL"
-            " DEFAULT 0, credential TEXT, model TEXT, updated_at TEXT NOT NULL)"
-        )
+        conn.executescript(settings_store.SCHEMA)
         conn.close()
 
         probe = sqlite3.connect(db, isolation_level=None)

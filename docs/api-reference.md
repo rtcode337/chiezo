@@ -142,7 +142,7 @@ API 側はソース種別を意識しません。
 `opening` / `body` には「名前(行政区, 国)— コード / 分類、人口 N」の 1 行を組み立てて
 入れています(FTS を効かせるため)。
 
-### chiezo_memory(唯一書き込めるソース)の REST
+### chiezo_memory(短期記憶)の REST
 
 ```bash
 curl -s "$BASE/v1/chiezo_memory" -H 'Content-Type: application/json' \
@@ -192,16 +192,16 @@ curl -s -X DELETE "$BASE/v1/chiezo_memory/3"                             # 取�
 
 | 変数 | 既定 | 説明 |
 |---|---|---|
-| `CHIEZO_NOTES_DIR` | `/notes`(compose) | 書き込み可能なディレクトリ。**空にすると機能ごと無効**(`/v1/chiezo_memory` は 503、MCP の道具も出ない) |
+| `CHIEZO_NOTES_DIR` | `/data/notes`(compose) | 書き込み可能なディレクトリ。**空にすると機能ごと無効**(`/v1/chiezo_memory` は 503、MCP の道具も出ない) |
 
-compose では既定で有効で、`./notes` に SQLite が 1 つできます(初回アクセス時に自動生成
+compose では既定で有効で、`./data/notes` に SQLite が 1 つできます(初回アクセス時に自動生成
 されるので、取り込みを回す必要はありません)。`/data` は読み取り専用マウントのままです。
 notes を別ディレクトリに置いているのは、`/data` の変化を監視して全ソースを再走査する
 仕組みと干渉させないためで、その理由となぜ Chiezo に置くのかは
 [設計メモ](design-notes.md#覚えるnotesはなぜ-chiezo-に置くのか)にあります。
 
 **認証はありません。** `/v1/chiezo_memory` に到達できる相手は誰でも書けます(LAN 内前提という
-このサービス全体の方針と同じですが、書き込みができる唯一の口である点は留意してください)。
+このサービス全体の方針と同じですが、名前付きの置き場(`/v1/stores`)と並んで書き込みができる口である点は留意してください)。
 
 ### 名前付きの置き場(外のアプリが自分の記録・設定を預ける)
 
@@ -753,8 +753,7 @@ curl -s -X PATCH "$BASE/v1/collect/pihole_watch" -H 'Content-Type: application/j
 - **タグは最初の 1 回だけ付く**(`Pi-hole` / `ブロック` / `気になる通信` / `理由:…`)。
   足すだけの回は既にある 1 件のタグに触らないので、**いまの状態は脇書きで読む**
 - **接続先とパスワードは API キーの面に、別々の欄で置く**(`pihole_url` に URL、
-  `pihole_password` にパスワード。パスワードの無い Pi-hole は URL だけ)。前の形
-  (`pihole` に `<URL> <パスワード>`)も登録し直すまでは読む。置き場の無い構成では
+  `pihole_password` にパスワード。パスワードの無い Pi-hole は URL だけ)。置き場の無い構成では
   `CHIEZO_PIHOLE_URL` / `CHIEZO_PIHOLE_PASSWORD`。**巡回のたびにセッションを閉じる**
   (Pi-hole は同時に開けるセッションに上限がある)
 - 1 回に読むのは 40 万件まで。届いたら新しいほうから取れたぶんだけを足し、控えにそう書く
@@ -1528,7 +1527,7 @@ OSM・Wikipedia の初期化の面は、取り込み側に繋がらないとき�
 重い仕事は頼めます)。表の下の「内訳と枠の推移」に、誰が枠を食ったのか・いつ跳ねたのかと
 数字の読み方を畳んであります。取り直すボタンは、まとめても 1 件ずつでも状況の面へ戻ります。
 
-記憶の面は知識の 2 層をそのまま節に分けてあります。**短期記憶(覚えたこと)** が先に出ます。[notes](#notes唯一書き込めるソースの-rest) の節で、
+記憶の面は知識の 2 層をそのまま節に分けてあります。**短期記憶(覚えたこと)** が先に出ます。[notes](#chiezo_memory短期記憶の-rest) の節で、
 覚えている件数とタグの分布、検索画面への入口が並びます。取り込みで焼くソースではないので
 再構築はできません(この節に再構築ボタンはなく、`POST /admin/rebuild/notes` も 409 で断ります)。
 中身そのものは出しません —— 1 件ずつ読むのはブラウズ画面(`/search/chiezo_memory/`)の仕事です。
@@ -1739,9 +1738,16 @@ claude mcp add --transport http chiezo http://<サーバーIP>:7010/mcp
 scripts/gen_claude_config.sh -u http://<サーバーIP>:7010
 ```
 
-公開しているツールは `sources` / `search` / `doc` / `filter` / `tags` / `titles` / `links` の
-7 つ(notes が有効なら `remember` / `recall` / `update` / `forget` を加えて 11)で、引数は REST のクエリ
-パラメータと同じです。実体も REST のエンドポイント関数そのものなので、
+公開しているツールは次のとおりで、引数は REST のクエリパラメータと同じです。
+
+- 知識を引く(常に出る): `sources` / `search` / `doc` / `filter` / `tags` / `titles` / `links` /
+  `recent` / `query`(SELECT だけ) / `collect_partition`
+- 覚える(notes が有効なとき): `remember` / `recall` / `update` / `forget`
+- 作る(置き場があり「答える」層が有効なとき): `image_*` / `audio_*` / `video_*` / `speech_*`
+  (`_generate` / `_status`。`speech` 以外は `_backends` も) / `text_generate` / `text_status` /
+  `transcribe` / `voice_backends` / `media_picks`
+
+CLI ブリッジ向けの `/mcp/knowledge` は、このうち知識を引く道具と `recall` だけを出します。実体も REST のエンドポイント関数そのものなので、
 挙動が二重管理になることはありません。REST と違うのは `doc` / `filter` の `max_chars` が
 既定で 4000 字に切られる点だけです(MCP の応答はそのままモデルのコンテキストに載るため。
 全文が要るときは `max_chars` を明示的に上げてください)。
@@ -1749,8 +1755,9 @@ scripts/gen_claude_config.sh -u http://<サーバーIP>:7010
 トランスポートは Streamable HTTP(ステートレス)です。Streamable HTTP に未対応の
 クライアントからは `mcp-remote` 経由で繋いでください。
 
-`/mcp` は既定で Host ヘッダの検証(DNS リバインディング対策)を**無効**にしています。
-絞りたい場合の設定は [運用ドキュメントのセキュリティ節](operations.md#セキュリティ)にあります。
+`/mcp` も本体と同じ Host ヘッダの検証(DNS リバインディング対策)の内側にあります。
+名前で開く場合や `/mcp` だけを絞りたい場合の設定は
+[運用ドキュメントのセキュリティ節](operations.md#セキュリティ)にあります。
 
 Claude Code では**従来の curl + CLAUDE.md 方式も引き続き使えます**(次節)。大量取得では
 curl の方がトークン効率が良い場面があるため、どちらかに寄せる必要はありません。
@@ -1759,12 +1766,11 @@ curl の方がトークン効率が良い場面があるため、どちらかに
 
 各アプリの環境で動く Claude に「Chiezo に載っている知識が必要なら Chiezo を使う」よう
 促す CLAUDE.md ブロックを、稼働中の Chiezo の設定生成 API
-(`GET /admin/claude-config.txt`)に問い合わせて自動生成できます。登録済み
-(初期化済み)ソースだけを、実在タイトルを使った具体例つきで列挙します。ただし
-**notes(手元で書くメモ)の中身は引き写しません** —— 機密が混じりうるうえ、ブロックは
-`--project` でリポジトリ側にも生成できるため、プレースホルダーだけで例示します。
-文書数は載せません(取り込みや書き込みのたびに変わるので、正確な値はブロック自身が
-案内している `/v1/sources` で引きます)。
+(`GET /admin/claude-config.txt`)に問い合わせて自動生成できます。**ソースの一覧は
+ブロックに焼き込みません** —— 生成した瞬間の写しになり、ソースが増えるたびに古くなるため。
+ブロックには引き方(`/v1/sources` の `can` ごとの curl の形)だけを書き、どのソースが
+あって何ができるかは `/v1/sources` で毎回引かせます。`/v1/sources` の例示の値(`sample`)も、
+**notes(手元で書くメモ)の中身は引き写しません**(機密が混じりうるため)。
 ブロック内の curl 例のベース URL は、Chiezo 側が「スクリプトがアクセスしてきた URL の
 プロトコル・ホスト名・ポート」から導出するため、`--base-url` に指定した到達可能な URL が
 そのまま生成物に載ります(リバースプロキシ越し・非標準ポートでも可)。
@@ -1798,7 +1804,7 @@ scripts/gen_claude_config.sh --print       # 書き込まず内容だけ確認
 既存 CLAUDE.md との共存:
 
 - 既定(`--merge markers`)は `<!-- BEGIN chiezo -->`〜`<!-- END chiezo -->` で囲んだ
-  ブロックだけを冪等に差し替えます。既存の記述は壊さず、再実行でソース一覧が最新化されます。
+  ブロックだけを冪等に差し替えます。既存の記述は壊さず、再実行で中身が最新化されます。
 - 既存内容との統合に人間的な判断が要る場合は `--merge headless` で Claude Code の
   ヘッドレスモード(`claude -p`)にマージを任せられます(`claude` CLI が必要)。
 

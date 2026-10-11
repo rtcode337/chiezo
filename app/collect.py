@@ -77,10 +77,8 @@ log = logging.getLogger("chiezo.app")
 
 SOURCE_KIND = "collect"
 
-# 定義をまとめて持つメモ(notes 側)。プロジェクトと同じく 1 件に配列で持つ
-# 機械の置き場での置き所(`app/machine_store.py`)
+# 機械の置き場での置き所(`app/machine_store.py`)。1 収集 = 1 件(`collect/<名前>`)
 DEFS_KIND = "collect"
-DEFS_KEY = "definitions"
 DEFS_BROKEN = "収集のメモが JSON として読めません"
 
 # 収集ソースの名前に使える文字。**ファイル名とソース名とURLになる**ので狭く取る
@@ -96,9 +94,6 @@ NEVER = datetime(9999, 12, 31, tzinfo=UTC)
 # 巡回(`Sweep`)の名前。**書いていない収集は、定義そのものが 1 本の巡回**として振る舞う。
 # こうしておくと、区画の記録も時計も「巡回ごと」の 1 本道になる(場合分けが増えない)。
 DEFAULT_SWEEP_NAME = "既定"
-# 割り込み用の巡回の名前(見本として作るときに使う)。**名前で選ばない** ——
-# 選ぶときに見るのは `on_demand` のほうで、名前は画面に出る札でしかない
-FOCUS_SWEEP_NAME = "割り込み"
 # 1 つの収集に持てる巡回の数。**2〜3 本で足りる** —— ざっと全体を拾うものと、
 # 少数をじっくり調べるもの。増やすほど同じ収集に対する AI の呼び出しが重なる
 MAX_SWEEPS = 8
@@ -818,26 +813,12 @@ def normalize_keep_days(raw, kind: str) -> int:
         return DEFAULT_KEEP_DAYS
 
 
-def expired_docs(item: Collection, docs: list[dict]) -> tuple[list[dict], int]:
-    """期限を過ぎた文書を落とす。落とした数も返す。
-
-    **流れの収集だけ**(`KIND_FLOW`)。あちらは時とともに増える流れを追っていて、
-    古いものは順に要らなくなる —— 落とさないと、ニュースの収集は永久に増え続ける。
-    **網羅では何もしない** —— そちらは古いものが要らなくなることがなく、
-    端から端まで精査し続ける対象なので、期限で消すと穴が開く。
-
-    **日付は記事のほう**(`extra.published_at`)を先に見る。集めた日だけで数えると、
-    半年前の記事を今日拾ったものが 30 日生き残る。
-    """
-    if item.kind != KIND_FLOW or item.keep_days <= 0 or not docs:
-        return docs, 0
-    limit = _iso(_now() - timedelta(days=item.keep_days))
-    kept = [d for d in docs if _doc_time(d) >= limit]
-    return kept, len(docs) - len(kept)
-
-
 def _doc_time(doc: dict) -> str:
-    """その 1 件の日付。**読めなければ「いま」として扱う**(落とさない側へ倒す)。"""
+    """その 1 件の日付。読めなければ「いま」として扱う(落とさない側へ倒す)。
+
+    記事の日付(`extra.published_at`)を先に見る。集めた日だけで数えると、
+    半年前の記事を今日拾ったものが期限まで生き残る。
+    """
     extra = doc.get("extra") or {}
     for value in (extra.get("published_at"), extra.get("collected_at"), doc.get("updated_at")):
         if isinstance(value, str) and value.strip():
@@ -1350,14 +1331,6 @@ def asked_for_run(sweep: Sweep, override: dict | None) -> Sweep:
     )
 
 
-def _stored() -> str | None:
-    """**まとめて 1 件に入れていた頃**の定義(JSON の文字列)。無ければ None。
-
-    いまは 1 収集 = 1 件(`collect/<名前>`)。ここを読むのは移行のためだけ。
-    """
-    return machine_store.get(DEFS_KIND, DEFS_KEY)
-
-
 def _from_json(item: dict) -> Collection:
     return Collection(
         name=str(item.get("name") or ""),
@@ -1599,11 +1572,8 @@ def load() -> list[Collection]:
     見せて人に直させる(プロジェクトと同じ判断)。**壊れているのはその 1 件だけ**
     だと分かるように、名前を添えて上げる。
     """
-    _split_out_the_old_row()
     out = []
     for key in machine_store.keys(DEFS_KIND):
-        if key == DEFS_KEY:
-            continue
         body = machine_store.get(DEFS_KIND, key)
         if body is None:
             continue
@@ -1618,39 +1588,16 @@ def load() -> list[Collection]:
     return sorted(out, key=lambda c: (c.created_at, c.name))
 
 
-def _split_out_the_old_row() -> None:
-    """まとめて 1 件に入れていた頃のものを、1 収集 1 件へ分ける。**1 度だけ**。
-
-    **古い行が残っているあいだは、そちらが正**(分け終えてから消す)——
-    途中で落ちても、次に読むときにもう一度分け直せる。
-    """
-    body = _stored()
-    if body is None:
-        return
-    try:
-        raw = json.loads(body or "{}")["collections"]
-        if not isinstance(raw, list):
-            raise TypeError("collections must be a list")
-    except (ValueError, KeyError, TypeError) as e:
-        raise HTTPException(400, {"error": f"{DEFS_BROKEN}: {e}"}) from None
-    for item in raw:
-        if isinstance(item, dict) and (name := str(item.get("name") or "")):
-            machine_store.put(DEFS_KIND, name, json.dumps(item, ensure_ascii=False, indent=2))
-    machine_store.drop(DEFS_KIND, DEFS_KEY)
-    log.info("split %d collection definitions into one record each", len(raw))
-
-
 def save(items: list[Collection]) -> None:
     """一覧をそのまま書き込む。**消えたものはこの場で落とす**。
 
     1 件だけ直すなら `_replace_one` のほうが安い(そちらは 1 件しか書かない)。
     """
-    _split_out_the_old_row()
     keep = {c.name for c in items}
     for item in items:
         _put_one(item)
     for key in machine_store.keys(DEFS_KIND):
-        if key != DEFS_KEY and key not in keep:
+        if key not in keep:
             machine_store.drop(DEFS_KIND, key)
 
 
@@ -1686,8 +1633,7 @@ def description_of(name: str) -> str:
 
 def get(name: str) -> Collection:
     """名前で 1 つ。**一覧を読まない** —— 台帳を抱えた他の収集まで読む理由が無い。"""
-    _split_out_the_old_row()
-    body = machine_store.get(DEFS_KIND, name) if name and name != DEFS_KEY else None
+    body = machine_store.get(DEFS_KIND, name) if name else None
     if body is None:
         raise HTTPException(404, {"error": f"収集「{name}」がありません"})
     try:
@@ -1705,8 +1651,7 @@ def _read_one(name: str) -> tuple[Collection, str]:
     `get` と別に置いてあるのは、組み立て直した JSON では突き合わせにならないため ——
     並びも空白も同じである保証が無い(比べるのは読んだそのもの)。
     """
-    _split_out_the_old_row()
-    body = machine_store.get(DEFS_KIND, name) if name and name != DEFS_KEY else None
+    body = machine_store.get(DEFS_KIND, name) if name else None
     if body is None:
         raise HTTPException(404, {"error": f"収集「{name}」がありません"})
     return get(name), body
@@ -1982,7 +1927,7 @@ def require_renamable(name: str, new_name: str, taken=()) -> Collection:
     if machine_store.get(DEFS_KIND, new_name) is not None:
         raise HTTPException(409, {"error": f"収集「{new_name}」はすでにあります"})
     if (
-        new_name in {notes.SOURCE_NAME, machine_store.SOURCE_NAME, "memory", DEFS_KEY}
+        new_name in {notes.SOURCE_NAME, machine_store.SOURCE_NAME, "memory"}
         or notes.is_store(new_name)
         or new_name in set(taken)
     ):

@@ -96,7 +96,7 @@ class TestHowManyAtOnce:
 class TestTheDumpLane:
     """**ダンプは別の枠で走る**(`CHIEZO_INGEST_DUMP_LANE`、既定で有効)。
 
-    再構築は何時間もかかり、1 つの枠を取り合うと、そのあいだ収集も固化も
+    再構築は何時間もかかり、1 つの枠を取り合うと、そのあいだ収集も
     一切流れなかった。
     """
 

@@ -17,10 +17,11 @@
 # ソースプラグインは下のコメントを外すと使える(この環境ではオーバーレイを重ねられないので
 # ここに直接書いてある)。
 #
-# 「答える」層は、chiezo-app に渡す設定だけを載せてコンテナは載せていない。 推論サーバと
-# 検索エンジンは別サーバーで動かしているものを指せば済み(chiezo-app は OpenAI 互換の口を
-# 叩くだけ)、貼り付けて動かすような小さな実行環境で同居させる前提も無いため。同じホストに
-# 立てるなら、上書きを重ねられる環境で docker-compose.llm.yml を使うこと。
+# 推論サーバは、chiezo-app に渡す設定だけを載せてコンテナは載せていない。 別サーバーで
+# 動かしているものを指せば済み(chiezo-app は OpenAI 互換の口を叩くだけ)、貼り付けて
+# 動かすような小さな実行環境で同居させる前提も無いため。同じホストに立てるなら、
+# 上書きを重ねられる環境で docker-compose.llm.yml を使うこと。検索エンジン(SearXNG)は
+# 本体の docker-compose.yml と同じくこの定義に入っている(下の searxng)。
 #
 # 通常の環境では docker-compose.yml を使う(こちらは値の直書きぶん古くなりやすい)。
 
@@ -90,13 +91,13 @@ services:
     user: *run-as
     environment:
       CHIEZO_DATA_DIR: /data/corpus
-      # 「覚える」層(/v1/notes)。空にすると機能ごと無効になる
+      # 「覚える」層(/v1/chiezo_memory)。空にすると機能ごと無効になる
       CHIEZO_NOTES_DIR: /data/notes
       # 管理画面の初期化ボタンから叩く chiezo-trigger の内部 URL(ホストには公開しない)。
       # サービス名で引くので、下の chiezo-trigger の名前を変えるならここも合わせる
       CHIEZO_TRIGGER_URL: http://chiezo-trigger:8080
       # 管理画面から入れた設定(話す相手の on/off・API キー・モデル)の置き場。
-      # 未設定だと管理画面から相手を増やせない(環境変数で指す相手だけが使える)。
+      # 未設定だと管理画面から相手を有効にできず、話せる相手は 1 つも無い。
       CHIEZO_STATE_DIR: /data/state
       # 本体の調整はどれも既定があるため、変えたいときだけ足す(素のままなら書かない)。
       #CHIEZO_MCP_ALLOWED_HOSTS: "chiezo.example.com:7010,localhost:*"  # /mcp の Host 検証
@@ -144,10 +145,11 @@ services:
       #CHIEZO_MEDIA_DIR: /data/state/media              # 置き場(既定は CHIEZO_STATE_DIR の下)
       #CHIEZO_MEDIA_KEEP_DAYS: "14"                # 出来た画像を残す日数
       #CHIEZO_IMAGE_TIMEOUT: "300"                 # 1 枚あたりの上限(秒)
+      #CHIEZO_AI_TRANSCRIPT_DAYS: "14"             # AI に渡したもの・返ったものを控える日数(0 で控えない)
       #
       # ---- 回答・agent の調整(どれも既定があるので、変えたいときだけ)----
       # agent に要るコンテキスト長の目安 = MAX_STEPS × TOOL_CHARS(+ 質問と道具の定義で 2〜3k)。
-      # 相手を待つ時間(秒)。既定は相手で変わる: CLI ブリッジ経由 900 / それ以外 120。
+      # 相手を待つ時間(秒)。既定は相手で変わる: CLI ブリッジ経由 3660 / それ以外 120。
       # ブリッジ自身の上限(CHIEZO_BRIDGE_TIMEOUT)より長くすること —— 待つ側が先に
       # 切れると、向こうが何秒で諦めたかも分からないまま ReadTimeout だけが残る。
       #CHIEZO_ANSWER_TIMEOUT: "3660"
@@ -227,13 +229,13 @@ services:
     user: *run-as
     environment:
       CHIEZO_DATA_DIR: /data/corpus
-      # 固化(短期記憶 → 長期記憶)の素材を取りに行く先。**組み込みのソースなので
-      # 設定は要らない** —— サービス名で届くこの既定のまま使う。
+      # 収集の素材を取りに行く先(GET /v1/collect/fetch)。組み込みのソースなので
+      # 設定は要らない —— サービス名で届くこの既定のまま使う。
       CHIEZO_APP_URL: http://chiezo-app:7010
       # ---- 別コンテナのソースプラグインを使う場合 ----
       # 下の chiezo-plugin を有効にしたら、その URL をカンマ区切りで並べる。
       # プラグインが提供するソースが管理画面の「未初期化データの初期化」に出る。
-      # (固化はプラグインではなく組み込みなので、ここに書く必要は無い)
+      # (収集はプラグインではなく組み込みなので、ここに書く必要は無い)
       #CHIEZO_PLUGIN_SOURCES: http://chiezo-plugin:8080
       # ダンプの取り込み(初期化・再構築)を別の枠で走らせるか(既定で有効)。
       # 再構築と収集を並べられないほどメモリの小さい機械でだけ 0 にする

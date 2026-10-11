@@ -164,34 +164,6 @@ class TestTheKeysPage:
         _admin, client = admin
         assert client.post("/admin/keys", data={"name": "Bad Name", "credential": KEY}).status_code == 400
 
-    def test_a_key_registered_per_source_moves_to_the_group(self, admin):
-        """組ごとに持つ形に変える前に、ソース名で登録したキーを入れ直さずに使える。"""
-        admin_module, _client = admin
-        from app import settings_store
-
-        settings_store.set_api_key("jquants_master", KEY)
-
-        assert admin_module._credential_for("jquants_earnings") == KEY
-        assert settings_store.api_key("jquants") == KEY
-        assert settings_store.api_key("jquants_master") is None
-
-
-def test_the_old_table_moves_into_api_keys(tmp_path, monkeypatch):
-    """ソースごとに持っていた頃の表(source_credentials)の中身は、そのまま api_keys へ移る。"""
-    import sqlite3
-
-    monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path))
-    conn = sqlite3.connect(tmp_path / "settings.db")
-    conn.execute("CREATE TABLE source_credentials (source TEXT PRIMARY KEY, credential TEXT NOT NULL,"
-                 " updated_at TEXT NOT NULL)")
-    conn.execute("INSERT INTO source_credentials VALUES ('jquants_master', ?, '2026-10-01T00:00:00+00:00')",
-                 (KEY,))
-    conn.commit()
-    conn.close()
-    from app import settings_store
-
-    assert settings_store.api_key("jquants_master") == KEY
-
 
 def test_the_catalog_names_the_group():
     from fastapi.testclient import TestClient

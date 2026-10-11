@@ -5,8 +5,8 @@
 
 設計の要点:
 
-- `CHIEZO_STATE_DIR` が機能フラグを兼ねる（未設定なら管理画面から相手を増やせない。
-  `CHIEZO_LLM_URL` で環境変数から指す従来の経路は、これとは独立に動く）。
+- `CHIEZO_STATE_DIR` が機能フラグを兼ねる（未設定なら管理画面から相手を有効にできず、
+  話せる相手は 1 つも無い）。
   「使う」層・「覚える」層と同じ流儀にしてある。
 - `/data` とは別のディレクトリにする。 `/data` は読み取り専用でマウントする約束
   （取り込み側だけが書く）で、そこへ設定を混ぜると約束が崩れる。`/notes` に相乗りしないのは、
@@ -120,35 +120,6 @@ def require_path() -> Path:
     return path
 
 
-def _migrate(conn: sqlite3.Connection) -> None:
-    """列名を変えたときの移行。何度実行しても同じ結果になるように書くこと。
-
-    `api_key` → `credential`。中身は相手によって OAuth トークンだったり auth.json の
-    中身だったりするので、「API キー」という名前が実態と食い違っていた。
-    移行を置かないと、既存の DB を新しいコードが読んだ瞬間に
-    `no such column: credential` で落ちる（実際に踏んだ）。
-    """
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(provider_settings)")}
-    if "api_key" in cols and "credential" not in cols:
-        conn.execute("ALTER TABLE provider_settings RENAME COLUMN api_key TO credential")
-        cols.add("credential")
-    if "verified_at" not in cols:
-        conn.execute("ALTER TABLE provider_settings ADD COLUMN verified_at TEXT")
-    for col in ("disabled_reason", "disabled_at"):
-        if col not in cols:
-            conn.execute(f"ALTER TABLE provider_settings ADD COLUMN {col} TEXT")
-    # `source_credentials`(ソース・キーの組ごとに持っていた頃の表)を `api_keys` へ移す。
-    # 名前はそのまま(組の名前かソース名)。ソース名で入っていたものは、画面が組の名前へ寄せる
-    if conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'source_credentials'"
-    ).fetchone():
-        conn.execute(
-            "INSERT OR IGNORE INTO api_keys (name, credential, updated_at)"
-            " SELECT source, credential, updated_at FROM source_credentials"
-        )
-        conn.execute("DROP TABLE source_credentials")
-
-
 def _connect() -> sqlite3.Connection:
     path = require_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -164,7 +135,6 @@ def _connect() -> sqlite3.Connection:
     # 書き込みは管理画面を押したときだけなので、ロールバックジャーナルで足りる。
     conn.execute("PRAGMA journal_mode=DELETE")
     conn.executescript(SCHEMA)
-    _migrate(conn)
     return conn
 
 
