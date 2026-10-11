@@ -23,36 +23,32 @@
 # ビルドされた glibc に動的リンクしているので、ディストリビューションを跨ぐと動かない。
 FROM node:22-bookworm-slim AS cli
 
-# npm は毎回その時点の最新を入れるが、**この RUN は入力が変わらないので
-# ビルドキャッシュに当たると古い CLI のまま出来上がる**(agy と同じ罠)。
-# 下限を上げると層が作り直され、入った版がそれ未満なら失敗させる。
+# **版は固定する**(`@<版>`)。範囲で入れると、ビルドした日によって中身が変わり、
+# 「何も変えていないのに道具の扱いが変わった」を追えなくなる —— ブリッジは CLI の
+# 権限まわりのフラグ(`--tools` / `--permission-mode` / `--disable`)に頼って道具を
+# 絞っているので、黙って版が動くのがいちばん困る。上げるときはこの 2 行を書き換える
+# (Dependabot は npm install の版を追わないので、人が上げる)。
+# 以前は「下限だけ持って最新を入れる」形で、ビルドキャッシュに当たると古いまま
+# 出来上がる罠を下限の検査で避けていた。固定すれば ARG が層の鍵になるので要らない。
 #
-# **CLI ごとに下限を持つ。** 同じ層に入っているので新しくなるときは一緒だが、
-# 片方にしか下限が無いと、**もう片方は何度焼き直しても古いまま**になる ——
-# codex の下限だけを持っていた頃、claude は層が作り直されるまで動かず、
-# `opus` の別名が 1 世代前のモデルに解決されていた(実測)。
-#
-# codex 0.156.1 … これより古い CLI では、新しいモデルを名指ししても
-# 「The '…' model requires a newer version of Codex.」で 400 になる(実測)。
-# 下限はその時点の `latest`(正式版)に合わせる。alpha の版は選ばない。
-# claude 2.1.280 … 別名(`opus` など)が指す先は CLI が決めるので、古いと
-# 新しい世代を選べない。`opus` が Opus 5.5 を指すのはこの版から(CHANGELOG)。
-# print モードの `/usage` が枠を返すのは 2.1.267 から。
-# 下限は原則 `stable` のタグに合わせる —— npm が入れるのは `latest` だが、あちらは
-# `next` と同じ版を指していることがあり、巻き戻されるとビルドが止まる。
-# **新しいモデルが `stable` に降りてくる前に要るときだけ、`latest` まで上げる。**
-# いまがそれで、`stable` は 2.1.273 のまま Opus 5.5 を知らない。
-# `latest` が巻き戻されてビルドが落ちたら、`stable` が追いつくまで下限を戻す。
-ARG CODEX_MIN_VERSION=0.160.0
-ARG CLAUDE_MIN_VERSION=2.1.287
+# 選び方の目安(実測の記録):
+# codex … 0.156.1 より古いと、新しいモデルを名指ししても
+# 「The '…' model requires a newer version of Codex.」で 400 になる。alpha は選ばない。
+# claude … 別名(`opus` など)が指す先は CLI が決めるので、古いと新しい世代を選べない。
+# `opus` が Opus 5.5 を指すのは 2.1.280 から(CHANGELOG)。print モードの `/usage` が
+# 枠を返すのは 2.1.267 から。原則 `stable` のタグの版を選ぶ(`latest` は `next` と同じ版を
+# 指していることがあり、巻き戻されることがある)。
+# 固定した日(2026-10)の `stable` / `latest`: claude 2.1.287 / codex 0.162.1。
+ARG CLAUDE_VERSION=2.1.287
+ARG CODEX_VERSION=0.162.1
 RUN set -eux; \
-    npm install -g @anthropic-ai/claude-code @openai/codex; \
+    npm install -g "@anthropic-ai/claude-code@${CLAUDE_VERSION}" "@openai/codex@${CODEX_VERSION}"; \
     installed="$(codex --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"; \
-    echo "codex ${installed} (required >= ${CODEX_MIN_VERSION})"; \
-    test "$(printf '%s\n%s\n' "${CODEX_MIN_VERSION}" "${installed}" | sort -V | head -n1)" = "${CODEX_MIN_VERSION}"; \
+    echo "codex ${installed} (pinned ${CODEX_VERSION})"; \
+    test "${installed}" = "${CODEX_VERSION}"; \
     claude_version="$(node -p "require('/usr/local/lib/node_modules/@anthropic-ai/claude-code/package.json').version")"; \
-    echo "claude ${claude_version} (required >= ${CLAUDE_MIN_VERSION})"; \
-    test "$(printf '%s\n%s\n' "${CLAUDE_MIN_VERSION}" "${claude_version}" | sort -V | head -n1)" = "${CLAUDE_MIN_VERSION}"
+    echo "claude ${claude_version} (pinned ${CLAUDE_VERSION})"; \
+    test "${claude_version}" = "${CLAUDE_VERSION}"
 
 # Antigravity CLI は単一の Go バイナリで、npm では配布されていない。
 # インストーラが受け付けるのは --dir と --help だけ(--skip-aliases 等は無い)。
@@ -66,9 +62,12 @@ RUN set -eux; \
 # ビルドキャッシュに当たると古い agy のまま出来上がる。AGY_MIN_VERSION を上げると
 # 層が作り直され、入った版がそれ未満なら失敗させる —— 「版を上げたつもりで古いまま」を
 # 防ぐための仕掛けで、版そのものが直してくれるわけではない。
+# **agy だけは版を固定できない**(インストーラに版の指定が無い)。下限の検査で
+# 「古いまま出来上がる」だけは防ぎ、上げるときは AGY_MIN_VERSION を書き換える。
 # 「invalid arguments: - missing properties 'toolSummary', 'toolAction'」は 1.1.13 でも
 # 1.1.27 でも出た。あれは版ではなく権限の確認の問題で、cli_bridge.py の
-# build_command が `--dangerously-skip-permissions` を常に付けることで避けている。
+# build_command が `--dangerously-skip-permissions` を常に付けることで避けている
+# (agy には道具を名指しで許す口が無い。守りはマウントとネットワークで取る)。
 ARG AGY_MIN_VERSION=1.2.14
 RUN set -eux; \
     apt-get update; \
@@ -91,7 +90,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-pip curl \
     && rm -rf /var/lib/apt/lists/*
 
-# CLI 4 種。認証情報は入れない(実行時に設定 DB か環境変数から受け取る)。
+# CLI。認証情報は入れない(実行時に、chiezo-app が書き出した写しか環境変数から受け取る)。
 COPY --from=cli /usr/local/lib/node_modules/@anthropic-ai/claude-code \
                 /usr/local/lib/node_modules/@anthropic-ai/claude-code
 COPY --from=cli /usr/local/lib/node_modules/@openai/codex \
@@ -132,12 +131,11 @@ ARG BUILD_TIME=""
 ENV CHIEZO_BRIDGE_BUILD_SHA=$BUILD_SHA \
     CHIEZO_BRIDGE_BUILD_TIME=$BUILD_TIME
 
-# 非 root で動かす。 claude は権限確認を飛ばす指定(--permission-mode
-# bypassPermissions)を root では拒む ——
-#   --dangerously-skip-permissions cannot be used with root/sudo privileges
-# 非対話で動かす以上この指定は外せないので、root のままだと使えない。
-# しかも `claude auth status` は root でも通るため、**管理画面の「接続を試す」は
-# 成功するのに生成だけが 502 で落ちる**という分かりにくい壊れ方をする(実際に踏んだ)。
+# 非 root で動かす。 中で動くのは道具を持ったエージェントなので、抜け出されたときに
+# 触れる範囲を狭くしておく。agy の `--dangerously-skip-permissions` も root では
+# 拒まれうる(claude が以前 `bypassPermissions` を使っていた頃は、root だと
+# `--dangerously-skip-permissions cannot be used with root/sudo privileges` で
+# 生成だけが 502 になった。`claude auth status` は通るので気づきにくい)。
 #
 # uid はホストに実在しない 10001。 1000 はホストの1人目のユーザーの番号なので、
 # それで動かすと万一コンテナから抜け出されたときにその人のファイルを触れる立場になる。

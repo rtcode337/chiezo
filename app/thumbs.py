@@ -43,11 +43,9 @@ import asyncio
 import hashlib
 import html
 import io
-import ipaddress
 import logging
 import os
 import re
-import socket
 import time
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -55,7 +53,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from fastapi import HTTPException
 
-from app import feeds, notes, settings_store
+from app import feeds, notes, outbound, settings_store
 
 log = logging.getLogger("chiezo.app")
 
@@ -182,18 +180,11 @@ async def _throttle() -> None:
 
 
 async def _public_host(url: str) -> None:
-    """**外のホストだけを通す。** 名前を引いて、手元・LAN・予約済みのアドレスなら断る。"""
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        raise Skip("http(s) の URL ではない")
+    """**外のホストだけを通す**(`outbound.ensure_public`。断る理由はそのまま Skip にする)。"""
     try:
-        infos = await asyncio.to_thread(socket.getaddrinfo, parsed.hostname, None)
-    except socket.gaierror as e:
-        raise Skip(f"名前を引けない: {parsed.hostname}") from e
-    for info in infos:
-        address = ipaddress.ip_address(info[4][0])
-        if not address.is_global:
-            raise Skip(f"手元のネットワークを指している: {parsed.hostname}")
+        await outbound.ensure_public(url)
+    except outbound.Refused as e:
+        raise Skip(str(e)) from e
 
 
 def _client() -> httpx.AsyncClient:
@@ -208,29 +199,25 @@ async def _get(client: httpx.AsyncClient, url: str, limit: int) -> tuple[str, by
 
     上限を超えたら断る。**つながらない・5xx は例外のまま投げる**(印を付けない)。
     """
-    for _ in range(MAX_REDIRECTS + 1):
-        await _public_host(url)
-        await _throttle()
-        async with client.stream("GET", url) as response:
-            if response.is_redirect:
-                url = urljoin(url, response.headers.get("location", ""))
-                continue
-            if response.status_code >= 500:
-                raise httpx.HTTPStatusError(
-                    f"{response.status_code}", request=response.request, response=response
-                )
-            if response.status_code != 200:
-                raise Skip(f"HTTP {response.status_code}")
-            body = bytearray()
-            async for chunk in response.aiter_bytes():
-                body.extend(chunk)
-                if len(body) > limit:
-                    if limit == MAX_PAGE_BYTES:
-                        # ページは頭だけあればよい
-                        break
-                    raise Skip("大きすぎる")
-            return url, bytes(body), response.headers.get("content-type", "")
-    raise Skip("転送が多すぎる")
+    try:
+        got = await outbound.fetch(
+            client, url, limit, max_redirects=MAX_REDIRECTS,
+            # ページは頭だけあればよい(`og:image` は `<head>` にある)
+            truncate=limit == MAX_PAGE_BYTES, before_request=_throttle,
+        )
+    except outbound.TooLarge as e:
+        raise Skip("大きすぎる") from e
+    except outbound.TooManyRedirects as e:
+        raise Skip("転送が多すぎる") from e
+    except outbound.Refused as e:
+        raise Skip(str(e)) from e
+    if got.status >= 500:
+        raise httpx.HTTPStatusError(
+            f"{got.status}", request=got.response.request, response=got.response
+        )
+    if got.status != 200:
+        raise Skip(f"HTTP {got.status}")
+    return got.url, got.body, got.content_type
 
 
 def page_image_url(page: str, base: str) -> str:

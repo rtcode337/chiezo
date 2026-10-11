@@ -11,9 +11,14 @@
 - `/data` とは別のディレクトリにする。 `/data` は読み取り専用でマウントする約束
   （取り込み側だけが書く）で、そこへ設定を混ぜると約束が崩れる。`/notes` に相乗りしないのは、
   あちらが「覚える」層の中身で、消してよいものと消してはいけないものが混ざるため。
-- CLI ブリッジのコンテナがこのファイルを読み取り専用でマウントして読む
-  （認証情報をそこから取る）。そのため WAL は使わない —— WAL の読み手は -shm への
-  書き込みを要求し、read-only のマウントでは `unable to open database file` になる。
+- CLI ブリッジには**このファイルを渡さない**。ここには全部の相手の鍵が入っていて、
+  ブリッジの中で動くのはシェルを持ちうるエージェントなので、頼み方ひとつで読まれうる。
+  ブリッジが要るのは自分の認証情報だけなので、登録のたびに
+  `<state>/bridge/<相手>/credential` へ 1 つずつ書き出し、ブリッジにはその
+  ディレクトリだけをマウントする(`export_bridge_credential`)。
+  以前はこのファイルごと読み取り専用で渡していた名残で WAL は使わない —— WAL の
+  読み手は -shm への書き込みを要求し、read-only のマウントでは
+  `unable to open database file` になる(古い compose のままのブリッジが読めるように残す)。
   journal_mode はファイルに焼き付く属性なので、`PRAGMA` を書かないだけでは
   既に WAL のファイルが戻らない。接続のたびに `DELETE` を明示している。
 - 認証情報は平文で持つ。 Chiezo は認証なし・LAN 内前提のサービスなので、
@@ -22,6 +27,7 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sqlite3
@@ -382,6 +388,68 @@ def auto_disabled() -> list[ProviderSetting]:
     return [s for s in load_all().values() if s.disabled_reason and not s.enabled]
 
 
+# 認証情報を書き出す相手(CLI ブリッジで包んでいて、登録した値を自分で使うもの)。
+# antigravity は登録の仕組みを持たない(コンテナ内のサインインだけ)ので入らない。
+BRIDGE_CREDENTIAL_PROVIDERS = ("claude", "codex")
+BRIDGE_DIR = "bridge"
+BRIDGE_CREDENTIAL_FILE = "credential"
+
+
+def bridge_credential_path(provider: str) -> Path | None:
+    """その相手のブリッジに渡す認証情報のファイル。置き場が無ければ None。"""
+    d = state_dir()
+    if d is None or provider not in BRIDGE_CREDENTIAL_PROVIDERS:
+        return None
+    return d / BRIDGE_DIR / provider / BRIDGE_CREDENTIAL_FILE
+
+
+def export_bridge_credential(provider: str, credential: str) -> None:
+    """ブリッジ向けに、その相手の認証情報だけを書き出す(空なら消す)。
+
+    **ディレクトリごとマウントさせる**(ファイル 1 つを bind しない)。ファイルの
+    bind はマウント元が無いと Docker がディレクトリを作ってしまい、置き換え(rename)
+    にも追従しないため。書き込みは一時ファイル → rename で、読み手に半端な中身を見せない。
+
+    権限は 0640(ディレクトリ 0750)。ブリッジは別のユーザーで動くので、グループ
+    (compose の `group_add` で app の GID を足す)で読ませる。失敗しても登録は止めない
+    (書き出しはブリッジのための写しで、正はこの DB)。
+    """
+    path = bridge_credential_path(provider)
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(path.parent, 0o750)
+        if not credential:
+            path.unlink(missing_ok=True)
+            return
+        # 一時ファイルはプロセスごとに分ける(`--workers 2` が起動時に同時に書き出すため)
+        tmp = path.with_name(f".{BRIDGE_CREDENTIAL_FILE}.{os.getpid()}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(credential)
+        os.chmod(tmp, 0o640)
+        os.replace(tmp, path)
+    except OSError as e:
+        # ログに鍵は出さない(どの相手かと理由だけ)
+        logging.getLogger("chiezo.app").warning(
+            "ブリッジ向けの認証情報を書き出せませんでした(%s): %s", provider, e
+        )
+
+
+def export_bridge_credentials() -> None:
+    """起動時に、登録済みの認証情報をブリッジ向けに書き出し直す。
+
+    書き出しの仕組みが入る前に登録された鍵も、これで写しが揃う。
+    """
+    if db_path() is None:
+        return
+    settings = load_all()
+    for provider in BRIDGE_CREDENTIAL_PROVIDERS:
+        setting = settings.get(provider)
+        export_bridge_credential(provider, setting.credential if setting else "")
+
+
 def set_credential(provider: str, credential: str) -> None:
     """認証情報を保存する。入れただけでは有効にならない（on は別操作）。
 
@@ -392,6 +460,7 @@ def set_credential(provider: str, credential: str) -> None:
     # 確認済みの印を消す。 入れ替えた認証情報はまだ確かめていないので、
     # 「接続を試す」を通すまで on にできない状態に戻す。
     _upsert(provider, credential=credential, verified_at=None)
+    export_bridge_credential(provider, credential)
 
 
 def clear_credential(provider: str) -> None:
@@ -400,6 +469,7 @@ def clear_credential(provider: str) -> None:
     鍵の無い相手を有効のまま残すと、会話のたびに失敗するだけになるため。
     """
     _upsert(provider, credential=None, enabled=0, verified_at=None)
+    export_bridge_credential(provider, "")
 
 
 def set_verified(provider: str, ok: bool) -> None:
@@ -455,7 +525,7 @@ def api_keys() -> list[ApiKey]:
 
 def set_api_key(name: str, credential: str, label: str | None = None) -> None:
     """キーを登録する(あれば値を置き換える)。`label` を渡さなければ前の説明を残す。"""
-    if not API_KEY_NAME_RE.match(name):
+    if not API_KEY_NAME_RE.fullmatch(name):
         raise HTTPException(400, {"error": "名前は英小文字で始まる英小文字・数字・_ の 2〜31 文字"})
     value = credential.strip()
     if not value:

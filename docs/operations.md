@@ -441,7 +441,8 @@ wikipedia 言語版の表示名・自称・記事数)と、このイメージが
 大半はイメージに焼かれた静的な表ですが、プラグインはマウントで実行時に足せるので、
 永久に持つと足したソースが管理画面に出ません。取り直しに失敗したときは**古いカタログを
 そのまま使い続けます**(trigger が一時的に落ちただけで一覧が空になるのを避けるため)。
-0 以下にすると取り直しません。この値と `CHIEZO_RESCAN_INTERVAL`・`CHIEZO_MCP_ALLOWED_HOSTS` は
+0 以下にすると取り直しません。この値と `CHIEZO_RESCAN_INTERVAL`・`CHIEZO_MCP_ALLOWED_HOSTS`・
+`CHIEZO_ALLOWED_HOSTS`・`CHIEZO_ALLOWED_ORIGINS` は
 compose が `.env` から受け取ります(`.env.example` の「1. Chiezo 本体」)。
 
 新ソースは `ingest/sources/__init__.py` の `ADAPTERS` に追加するだけで管理画面にも出ます
@@ -519,12 +520,38 @@ COMPOSE_FILE=docker-compose.yml:../my-plugin/docker-compose.plugin.yml
 必要ならホストの LAN インターフェースのみに bind するよう compose の `ports` を
 `"<LAN の IP>:7010:7010"` の形式に変更してください。
 
-`/mcp` は既定で Host ヘッダの検証(DNS リバインディング対策)を**無効**にしています。
-MCP SDK の既定は「localhost 系の Host しか受け付けない」で、そのままだと LAN の別マシンから
-繋いだ時点で 421 になり、このサービスの使い方が成立しないためです(REST 側も認証なし・
-LAN 内前提なので方針は揃っています)。絞りたい場合は `chiezo-app` の環境変数
-`CHIEZO_MCP_ALLOWED_HOSTS` に許可する Host をカンマ区切りで指定してください
-(例: `<LAN の IP>:7010,localhost:*`。末尾 `:*` でポート任意)。
+**ブラウザを踏み台にした悪用は入口で止めます**(`app/web_guard.py`)。認証が無いので、
+LAN の端末で開いている任意のページが Chiezo を叩けてしまうためです。
+
+- **Host の検証(DNS リバインディング対策)** —— IP アドレス(`192.0.2.10:7010`)・`localhost`・
+  ドットの無い名前(`chiezo-app` などコンテナのサービス名)は、何も書かなくても通ります。
+  **それ以外の名前で開くなら、`CHIEZO_ALLOWED_HOSTS` にその名前を書いてください**
+  (カンマ区切り。`名前` / `名前:ポート` / `名前:*` / `*.例` / `*` で検査なし)。
+  書かないと 421 で断ります —— 攻撃に使われるのは、途中から LAN のアドレスへ向け直した
+  外の名前のほうだからです。リバースプロキシの裏に置いて名前で開いている環境、
+  `*.local` のような mDNS の名前で開いている環境はここに足す必要があります
+  (`CHIEZO_MCP_ALLOWED_HOSTS` に書いてある名前も通します)
+- **別のサイトからの書き込みを断る(CSRF 対策)** —— `POST`・`PUT`・`PATCH`・`DELETE` で、
+  `Sec-Fetch-Site: cross-site` が付いたもの、または `Origin` が自分(届いた Host と同じ名前と
+  ポート)でも `CHIEZO_ALLOWED_ORIGINS` に書いたものでもないものは 403 で断ります。
+  **どちらのヘッダも付けない相手(curl・他のアプリのサーバー側の HTTP クライアント・
+  MCP クライアント)はこれまでどおり通ります**
+
+`/mcp` も同じ判定の内側にあり、MCP SDK 側の Host 検証も外していません(未設定なら上と同じ
+判定を渡します)。`/mcp` だけをさらに絞りたい場合は `CHIEZO_MCP_ALLOWED_HOSTS` に許可する
+Host をカンマ区切りで指定してください(例: `<LAN の IP>:7010,localhost:*`。末尾 `:*` でポート任意。
+書けば `/mcp` はこの一覧だけを通します)。
+
+外の URL を取りに行く道(フィード・サムネイル・URL で渡された文字起こしや絵の元)は、
+名前を引いて**手元・LAN・予約済みのアドレスを指すものを断ります**。転送も 1 段ずつ確かめ、
+読むのは上限まで(`app/outbound.py`)。Chiezo 自身の `/media/…` を URL で渡されたときだけは、
+取りに行かずに置き場から読みます。
+
+**生成物の置き場(`/media/…`)は文書として開かれても動かない形で配ります**
+(`X-Content-Type-Options: nosniff` と `Content-Security-Policy: sandbox`)。
+持ち込み(`POST /v1/media/upload`)の拡張子は一覧にあるもの(画像・音・動画・文章)だけを使い、
+それ以外は種類ごとの既定(`.png` / `.mp3` / `.mp4` / `.txt`)に付け替えます。SVG は受けません。
+持ち込みと文字起こしの multipart はどちらも `CHIEZO_MEDIA_UPLOAD_MAX_BYTES` で 413 にします。
 
 **ブラウザのページから直接読ませたいときは `CHIEZO_CORS_ORIGINS` にオリジンを書きます**
 (カンマ区切り。例: `https://travel.example.test,http://localhost:7040`)。

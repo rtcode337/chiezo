@@ -18,7 +18,8 @@ def bridge(monkeypatch):
     def _load(**env):
         for key in ("CHIEZO_BRIDGE_CLI", "CHIEZO_BRIDGE_MODEL", "CHIEZO_BRIDGE_MCP_URL",
                     "CHIEZO_BRIDGE_MODEL_LABEL", "CHIEZO_BRIDGE_ALLOWED_TOOLS",
-                    "CHIEZO_BRIDGE_TIMEOUT"):
+                    "CHIEZO_BRIDGE_TIMEOUT", "CHIEZO_BRIDGE_CREDENTIAL_FILE",
+                    "CHIEZO_BRIDGE_STATE_DB"):
             monkeypatch.delenv(key, raising=False)
         for key, value in env.items():
             monkeypatch.setenv(key, value)
@@ -52,22 +53,37 @@ class TestPrompt:
 
 class TestCommand:
     def test_claude_gets_only_the_chiezo_tools(self, bridge):
+        """**許す道具を名指しする**(塞ぐ道具を並べない)。
+
+        以前は `bypassPermissions` + 塞ぐ一覧で、一覧に無い Grep・Glob が通っていた ——
+        頼み方ひとつで設定 DB や /proc/self/environ を読めた。
+        """
         server = bridge(CHIEZO_BRIDGE_CLI="claude", CHIEZO_BRIDGE_MODEL="sonnet")
         cmd = server.build_command("/tmp/out.txt")
         assert cmd[:2] == ["claude", "-p"]
-        # 組み込みの道具(Bash・Read・WebFetch…)は名前を挙げて塞ぐ。
-        denied = cmd[cmd.index("--disallowed-tools") + 1].split(",")
-        assert {"Bash", "Read", "Write", "WebFetch", "Agent"} <= set(denied)
-        # `--tools ""` は使わない（MCP の道具まで消えてしまう）
-        assert "--tools" not in cmd
-        # ToolSearch は塞がない（MCP の道具はここから読み込まれる）
-        assert "ToolSearch" not in denied
+        # 組み込みは ToolSearch だけ(MCP の道具はここから読み込まれる)
+        assert cmd[cmd.index("--tools") + 1] == "ToolSearch"
+        # 許したもの以外は聞かずに断る。全部許す指定は使わない
+        assert cmd[cmd.index("--permission-mode") + 1] == "dontAsk"
+        assert "bypassPermissions" not in cmd
+        assert "--dangerously-skip-permissions" not in cmd
+        # 塞ぐ一覧はもう持たない(取りこぼす側の仕組みなので)
+        assert "--disallowed-tools" not in cmd
         # 手元の設定にある別の MCP を拾わせない
         assert "--strict-mcp-config" in cmd
         assert cmd[cmd.index("--allowed-tools") + 1] == "mcp__chiezo"
-        # 非対話なので確認を出されると固まる
-        assert cmd[cmd.index("--permission-mode") + 1] == "bypassPermissions"
         assert cmd[cmd.index("--model") + 1] == "sonnet"
+
+    def test_claude_never_gets_file_or_shell_tools(self, bridge):
+        """読む道具も書く道具もシェルも、web 検索を開けた回でも渡らない。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        for web in (False, True):
+            cmd = server.build_command("/tmp/out.txt", "q", web=web)
+            tools = set(cmd[cmd.index("--tools") + 1].split(","))
+            allowed = set(cmd[cmd.index("--allowed-tools") + 1].split(","))
+            for name in ("Bash", "Read", "Grep", "Glob", "Write", "Edit", "Agent", "NotebookEdit"):
+                assert name not in tools
+                assert name not in allowed
 
     def test_codex_runs_read_only_and_writes_the_answer_to_a_file(self, bridge):
         server = bridge(CHIEZO_BRIDGE_CLI="codex")
@@ -75,6 +91,9 @@ class TestCommand:
         assert cmd[:2] == ["codex", "exec"]
         # 生成されたシェルコマンドを実行させない
         assert cmd[cmd.index("-s") + 1] == "read-only"
+        # read-only は「読ませない」ではないので、シェルの道具そのものを外す
+        disabled = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--disable"]
+        assert {"shell_tool", "unified_exec"} <= set(disabled)
         assert 'approval_policy="never"' in cmd
         assert cmd[cmd.index("-o") + 1] == "/tmp/out.txt"
         # プロンプトは標準入力から渡す(引数だと 128KiB の上限に当たる)
@@ -164,8 +183,9 @@ class TestOptionalMcp:
         cmd = server.build_command("/tmp/out.txt")
         assert "--mcp-config" not in cmd
         assert "--allowed-tools" not in cmd
-        # 組み込みの道具を塞ぐ指定と、他所の MCP を拾わない指定は残す
-        assert "--disallowed-tools" in cmd
+        # 組み込みは 1 つも渡さず(ToolSearch も要らない)、他所の MCP も拾わない
+        assert cmd[cmd.index("--tools") + 1] == ""
+        assert cmd[cmd.index("--permission-mode") + 1] == "dontAsk"
         assert "--strict-mcp-config" in cmd
 
     def test_mcp_is_attached_when_configured(self, bridge):
@@ -369,11 +389,10 @@ class TestModelLabel:
 class TestRunsAsNonRoot:
     """イメージが非 root で動くこと。
 
-    claude は権限確認を飛ばす指定を root では拒む
-    (`--dangerously-skip-permissions cannot be used with root/sudo privileges`)。
-    非対話で動かす以上その指定は外せないので、root に戻すと生成が必ず失敗する。
-    しかも `claude auth status` は root でも通るため、管理画面の「接続を試す」は
-    成功したまま生成だけが 502 になる —— 気づきにくいので、ここで見張る。
+    中で動くのは道具を持ったエージェントなので、抜け出されたときに触れる範囲を狭くする。
+    権限確認を飛ばす指定(agy の `--dangerously-skip-permissions`)は root では拒まれうる
+    —— claude が `bypassPermissions` で動いていた頃は、root だと生成だけが 502 になり、
+    `claude auth status` は通るので気づきにくかった。ここで見張る。
     """
 
     def test_dockerfile_switches_to_an_unprivileged_user(self):
@@ -675,31 +694,33 @@ class TestEffortSelection:
 
 
 class TestBuiltinTools:
-    """MCP の道具を残したまま、組み込みの道具だけを塞ぐ。
+    """MCP の道具を残したまま、組み込みの道具は許すものだけにする。
 
-    以前は `--tools ""`（組み込みを全部切る指定）を渡していたが、これは MCP の道具まで
-    消す。つまり「Chiezo の知識を引かせる」というブリッジの目的が黙って働いておらず、
-    CLI は自分の知識だけで答えていた（本番で発覚）。
+    `--tools ""`(組み込みを全部切る指定)は ToolSearch まで消すので MCP の道具が
+    引けなくなる(以前それで、CLI が自分の知識だけで答えていた)。
+    ToolSearch だけを名指しすれば、MCP は残って他の組み込みは消える
+    (実測: claude 2.1.281 で起動時の道具が ToolSearch と mcp__chiezo__* だけになった)。
     """
 
-    def test_it_does_not_use_the_flag_that_kills_mcp(self, bridge):
+    def test_tool_search_is_the_only_builtin(self, bridge):
         cmd = bridge(CHIEZO_BRIDGE_CLI="claude").build_command("/tmp/out.txt")
-        assert "--tools" not in cmd
+        assert cmd[cmd.index("--tools") + 1] == "ToolSearch"
         assert cmd[cmd.index("--mcp-config") + 1]
 
     def test_tool_search_stays_open(self, bridge):
-        """MCP の道具は ToolSearch から読み込まれるので、塞ぐと引けなくなる。"""
+        """MCP の道具は ToolSearch から読み込まれるので、外すと引けなくなる。"""
         server = bridge(CHIEZO_BRIDGE_CLI="claude")
-        assert "ToolSearch" not in server.DEFAULT_DISALLOWED
+        assert "ToolSearch" in server.BASE_TOOLS
 
-    def test_the_list_can_be_given_from_outside(self, bridge):
-        """組み込みは CLI の版が上がるたびに増えるので、外から差し替えられる。"""
-        server = bridge(CHIEZO_BRIDGE_CLI="claude", CHIEZO_BRIDGE_DISALLOWED_TOOLS="Bash,Read")
+    def test_the_mcp_tools_can_be_narrowed_from_outside(self, bridge):
+        """書き込み(remember)まで止めたいときは、許す MCP の道具を名前で絞れる。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="claude",
+                        CHIEZO_BRIDGE_ALLOWED_TOOLS="mcp__chiezo__search mcp__chiezo__doc")
         cmd = server.build_command("/tmp/out.txt")
-        assert cmd[cmd.index("--disallowed-tools") + 1] == "Bash,Read"
+        assert cmd[cmd.index("--allowed-tools") + 1] == "mcp__chiezo__search,mcp__chiezo__doc"
 
     def test_notices_do_not_leak_into_the_answer(self, bridge):
-        """塞ぐ道具の名前がずれると CLI が注意書きを吐く。答えに混ぜない。"""
+        """許す道具の名前がずれると CLI が注意書きを吐く。答えに混ぜない。"""
         server = bridge(CHIEZO_BRIDGE_CLI="claude")
         raw = (
             'Permission deny rule "SlashCommand" matches no known tool — check for typos.\n'
@@ -712,22 +733,25 @@ class TestBuiltinTools:
 class TestWebTools:
     """CLI 自身の web 検索は、頼まれたときだけ開ける。
 
-    引く先は Chiezo の SearXNG ではなく提供元の検索なので、既定では塞いだまま。
+    引く先は Chiezo の SearXNG ではなく提供元の検索なので、既定では閉じたまま。
     """
 
     def test_it_is_closed_by_default(self, bridge):
         cmd = bridge(CHIEZO_BRIDGE_CLI="claude").build_command("/tmp/out.txt")
-        denied = cmd[cmd.index("--disallowed-tools") + 1].split(",")
-        assert "WebSearch" in denied
-        assert "WebFetch" in denied
+        tools = cmd[cmd.index("--tools") + 1].split(",")
+        allowed = cmd[cmd.index("--allowed-tools") + 1].split(",")
+        assert "WebSearch" not in tools and "WebSearch" not in allowed
+        assert "WebFetch" not in tools and "WebFetch" not in allowed
 
     def test_asking_opens_it(self, bridge):
         cmd = bridge(CHIEZO_BRIDGE_CLI="claude").build_command("/tmp/out.txt", "q", web=True)
-        denied = cmd[cmd.index("--disallowed-tools") + 1].split(",")
-        assert "WebSearch" not in denied
-        assert "WebFetch" not in denied
-        # 他は塞いだまま
-        assert "Bash" in denied
+        tools = cmd[cmd.index("--tools") + 1].split(",")
+        allowed = cmd[cmd.index("--allowed-tools") + 1].split(",")
+        # 使えるようにして(--tools)、確認なしで通す(--allowed-tools)の両方が要る
+        assert {"WebSearch", "WebFetch"} <= set(tools)
+        assert {"WebSearch", "WebFetch"} <= set(allowed)
+        # 他の組み込みは増えない
+        assert set(tools) == {"ToolSearch", "WebSearch", "WebFetch"}
 
 
 class TestPerRequestLimits:
@@ -966,7 +990,7 @@ class TestImageProgressIsVisible:
         monkeypatch.setattr(
             server, "image_command",
             # 締め切り(0.5 秒)より長ければよい。長くするほどこの 1 本が待つ
-            lambda out_dir, model="": ["sh", "-c", "echo 権限の確認を待っています; sleep 1"],
+            lambda out_dir, model="", sources=(): ["sh", "-c", "echo 権限の確認を待っています; sleep 1"],
         )
 
         with pytest.raises(fastapi.HTTPException) as got:
@@ -1000,6 +1024,25 @@ class TestCredentialFromAnotherApp:
         path = self._db(tmp_path, "INSERT INTO provider_settings VALUES ('claude', 'tok-shared');")
         server = bridge(CHIEZO_BRIDGE_CLI="claude", CHIEZO_BRIDGE_STATE_DB=path)
         assert server.stored_credential() == "tok-shared"
+
+    def test_the_exported_copy_comes_first(self, bridge, tmp_path):
+        """**設定 DB ではなく、この相手の分だけの写しを読む。** DB には全部の相手の鍵が
+        入っていて、道具を持ったエージェントの隣に置くと頼み方ひとつで読まれうる。"""
+        copy = tmp_path / "credential"
+        copy.write_text("tok-copy\n", encoding="utf-8")
+        path = self._db(tmp_path, "INSERT INTO provider_settings VALUES ('claude', 'tok-db');")
+        server = bridge(CHIEZO_BRIDGE_CLI="claude", CHIEZO_BRIDGE_CREDENTIAL_FILE=str(copy),
+                        CHIEZO_BRIDGE_STATE_DB=path)
+        assert server.stored_credential() == "tok-copy"
+
+    def test_an_empty_copy_falls_back_to_the_environment(self, bridge, tmp_path):
+        server = bridge(
+            CHIEZO_BRIDGE_CLI="claude",
+            CHIEZO_BRIDGE_CREDENTIAL_FILE=str(tmp_path / "missing"),
+            CHIEZO_BRIDGE_STATE_DB=str(tmp_path / "nope.db"),
+            CLAUDE_CODE_OAUTH_TOKEN="tok-from-env",
+        )
+        assert server.stored_credential() == "tok-from-env"
 
     def test_a_missing_db_falls_back_to_the_environment(self, bridge, tmp_path):
         server = bridge(
@@ -1283,24 +1326,40 @@ class TestAntigravityUsage:
 
 
 class TestImageSandbox:
-    """**元の絵を読むのに、codex 自前のサンドボックスが邪魔になる。**
+    """**絵の口にもサンドボックスを外させない。**
 
-    codex は許可されたファイルの読み書きを bubblewrap 越しに行うが、非特権の
-    ユーザー名前空間を作れないホストでは補助プロセスが起動できない。書き出しは
-    内蔵ツールが直に行うので通り、**読みだけが落ちる** —— そのせいで一から描くのは
-    成功し、編集だけが「画像を保存しませんでした」に見えていた。
+    元の絵を読むのに codex 自前のサンドボックスが邪魔になる —— 許可されたファイルの
+    読みを bubblewrap 越しに行うので、非特権のユーザー名前空間を作れないホストでは
+    `bwrap: No permissions to create a new namespace` で読めない。以前はそれを避けて
+    `danger-full-access` で走らせていたが、元の絵は**添付(`-i`)で渡せば CLI 自身が
+    起動時に読む**ので、書けるのを作業ディレクトリだけにしたままで済む。
     """
 
-    def test_画像の口はサンドボックスを使わない(self, bridge):
+    def test_画像の口は作業ディレクトリにだけ書ける(self, bridge):
         server = bridge(CHIEZO_BRIDGE_CLI="codex")
         cmd = server.image_command("/tmp/work")
 
-        assert cmd[cmd.index("-s") + 1] == "danger-full-access"
+        assert cmd[cmd.index("-s") + 1] == "workspace-write"
+        assert "danger-full-access" not in cmd
         assert "-C" in cmd and cmd[cmd.index("-C") + 1] == "/tmp/work"
+        # シェルの道具も持たせない(描くのも保存するのも内蔵の画像ツール)
+        disabled = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--disable"]
+        assert {"shell_tool", "unified_exec"} <= set(disabled)
+        assert cmd[-1] == "-"
+
+    def test_元の絵は添付で渡す(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        cmd = server.image_command("/tmp/work", "", ["/tmp/work/source.png", "/tmp/work/source-2.png"])
+
+        attached = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-i"]
+        assert attached == ["/tmp/work/source.png", "/tmp/work/source-2.png"]
+        # `-i` は値を複数取るので、最後の `-`(標準入力)より前に、フラグで区切って置く
+        assert cmd.index("-i") < cmd.index("--skip-git-repo-check")
+        assert cmd[-1] == "-"
 
     def test_元の絵の渡し方を名指しする(self, bridge):
-        """内蔵ツールには入力画像の口が 2 つあり、会話に添付された絵を使うほうを
-        選ばれると、ファイルで渡しているこちらでは 0 枚になって終わる。"""
+        """内蔵ツールには入力画像の口が 2 つある。ファイルの口は bubblewrap 越しに
+        読むので、添付のほうを使うよう言い切る。"""
         import base64
 
         server = bridge(CHIEZO_BRIDGE_CLI="codex")
@@ -1310,14 +1369,23 @@ class TestImageSandbox:
             "/tmp/work",
         )
 
-        assert "referenced_image_paths" in text
-        assert "conversation images" in text
+        assert "attached conversation images" in text
+        assert "do not use referenced_image_paths" in text
 
     def test_元の絵が無ければ名指ししない(self, bridge):
         server = bridge(CHIEZO_BRIDGE_CLI="codex")
         text = server._image_prompt(server.ImageRequest(prompt="剣"), "/tmp/work")
 
         assert "referenced_image_paths" not in text
+        assert "attached" not in text
+
+    def test_シェルが無いので写させない(self, bridge):
+        """シェルの道具を外したので、内蔵ツールが置いた先から写そうとすると失敗を重ねる。
+        置いた先(共有の保存先)はこちらが拾うので、写さなくてよいと言い添える。"""
+        codex = bridge(CHIEZO_BRIDGE_CLI="codex")
+        assert "do not try to copy" in codex._image_prompt(codex.ImageRequest(prompt="剣"), "/tmp/work")
+        agy = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+        assert "do not try to copy" not in agy._image_prompt(agy.ImageRequest(prompt="剣"), "/tmp/work")
 
     def test_antigravity_には名指ししない(self, bridge):
         """あちらは別のツールなので、codex の引数名を書いても雑音にしかならない。"""
@@ -1333,11 +1401,44 @@ class TestImageSandbox:
         assert "referenced_image_paths" not in text
 
     def test_会話の口は_read_only_のまま(self, bridge):
-        """隔離を外すのは絵を読む必要がある口だけ。会話はファイルに触らない。"""
         server = bridge(CHIEZO_BRIDGE_CLI="codex")
         cmd = server.build_command("/tmp/out.txt", prompt="こんにちは")
 
         assert cmd[cmd.index("-s") + 1] == "read-only"
+
+
+class TestImageModelName:
+    """絵の口のモデル名にも、会話の口と同じ検査を掛ける。
+
+    `-` で始まる名前は CLI の引数として渡るとフラグとして読まれる
+    (`--dangerously-…` を外から注ぎ込まれかねない)。
+    """
+
+    @pytest.mark.parametrize("cli", ["codex", "antigravity"])
+    def test_a_flag_looking_model_is_refused(self, bridge, cli, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        server = bridge(CHIEZO_BRIDGE_CLI=cli)
+        # 認証情報の有無に関わらず、モデル名で先に断ること
+        monkeypatch.setattr(server, "apply_credential", lambda: "")
+        called = []
+        monkeypatch.setattr(server, "_generate_images", lambda body: called.append(body))
+        res = TestClient(server.app).post(
+            "/v1/images/generations", json={"prompt": "剣", "model": "--dangerously-skip-permissions"}
+        )
+
+        assert res.status_code == 400
+        assert called == []
+
+    def test_the_model_reaches_the_command_only_after_the_check(self, bridge, monkeypatch, tmp_path):
+        import asyncio
+
+        import fastapi
+
+        server = bridge(CHIEZO_BRIDGE_CLI="codex")
+        with pytest.raises(fastapi.HTTPException) as got:
+            asyncio.run(server._generate_images(server.ImageRequest(prompt="剣", model="-c x=1")))
+        assert got.value.status_code == 400
 
 
 class TestFailureDetail:

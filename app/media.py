@@ -37,6 +37,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import HTTPException
@@ -47,6 +48,7 @@ from app import (
     ai_transcript,
     media_backends,
     media_providers,
+    outbound,
     providers,
     settings_store,
     usage_store,
@@ -493,7 +495,7 @@ UPLOAD_KINDS = (
 UPLOAD_SUFFIXES = {
     ".png": media_providers.KIND_IMAGE, ".jpg": media_providers.KIND_IMAGE,
     ".jpeg": media_providers.KIND_IMAGE, ".webp": media_providers.KIND_IMAGE,
-    ".gif": media_providers.KIND_IMAGE, ".svg": media_providers.KIND_IMAGE,
+    ".gif": media_providers.KIND_IMAGE,
     ".mp3": media_providers.KIND_AUDIO, ".wav": media_providers.KIND_AUDIO,
     ".flac": media_providers.KIND_AUDIO, ".ogg": media_providers.KIND_AUDIO,
     ".m4a": media_providers.KIND_AUDIO,
@@ -502,6 +504,30 @@ UPLOAD_SUFFIXES = {
     ".md": media_providers.KIND_TEXT, ".txt": media_providers.KIND_TEXT,
     ".json": media_providers.KIND_TEXT,
 }
+
+
+# 持ち込んだものに付けてよい拡張子(UPLOAD_SUFFIXES の鍵)と、種類ごとの既定。
+# **名前の拡張子をそのまま使わない。** `/media/…` は Chiezo と同じオリジンから配るので、
+# `.html` や `.svg` を置かれると、それを開いた人のブラウザで Chiezo の画面として
+# スクリプトが走る(管理画面の操作をそのページから送れる)。一覧に無い拡張子は
+# 種類ごとの既定に付け替える(`.html` の文章は `.txt` として置かれ、文字として配られる)。
+UPLOAD_DEFAULT_SUFFIX = {
+    media_providers.KIND_IMAGE: ".png",
+    media_providers.KIND_AUDIO: ".mp3",
+    media_providers.KIND_VIDEO: ".mp4",
+    media_providers.KIND_TEXT: ".txt",
+}
+
+
+def upload_suffix(kind: str, mime: str, filename: str) -> str:
+    """置くときの拡張子。名前 → 名乗り(MIME)の順に、一覧にあるものだけを使う。"""
+    for candidate in (
+        Path(filename or "").suffix.lower(),
+        "." + _extension(mime) if mime else "",
+    ):
+        if UPLOAD_SUFFIXES.get(candidate) == kind:
+            return candidate
+    return UPLOAD_DEFAULT_SUFFIX.get(kind, ".bin")
 
 
 def upload_kind(mime: str, filename: str) -> str:
@@ -519,6 +545,27 @@ def upload_kind(mime: str, filename: str) -> str:
     if low in ("application/json", "application/markdown", "application/x-markdown"):
         return media_providers.KIND_TEXT
     return UPLOAD_SUFFIXES.get(Path(filename or "").suffix.lower(), "")
+
+
+def _too_large() -> HTTPException:
+    return HTTPException(413, {
+        "error": f"大きすぎます（上限 {UPLOAD_MAX_BYTES:,} バイト）",
+        "hint": "CHIEZO_MEDIA_UPLOAD_MAX_BYTES で変えられます",
+    })
+
+
+def read_upload(stream, limit: int | None = None) -> bytes:
+    """持ち込まれた中身を、上限(既定は `UPLOAD_MAX_BYTES`)を数えながら読む。
+
+    超えたらそこで 413。全部読んでから測ると、上限を超える大きさをいったん抱える。
+    """
+    limit = UPLOAD_MAX_BYTES if limit is None else limit
+    out = bytearray()
+    while chunk := stream.read(1024 * 1024):
+        out.extend(chunk)
+        if len(out) > limit:
+            raise _too_large()
+    return bytes(out)
 
 
 def save_upload(
@@ -547,6 +594,12 @@ def save_upload(
     誰の持ち物でもないファイルが溜まる）。
     """
     directory = require_dir()
+    # SVG は絵の形をしたスクリプトの器なので受けない(拡張子を付け替えても絵として使えない)
+    if "svg" in (mime or "").lower() or Path(filename or "").suffix.lower() == ".svg":
+        raise HTTPException(400, {
+            "error": "SVG は持ち込めません(スクリプトを含められるため)",
+            "hint": "PNG などに書き出してから送ってください",
+        })
     chosen = (kind or "").strip().lower() or upload_kind(mime, filename)
     if chosen not in media_providers.JOB_KINDS:
         raise HTTPException(400, {
@@ -559,10 +612,7 @@ def save_upload(
     day = datetime.now(UTC).strftime("%Y%m%d")
     target_dir = directory / day
     target_dir.mkdir(parents=True, exist_ok=True)
-    suffix = Path(filename or "").suffix.lower()
-    if not (suffix[1:].isalnum() if suffix else False):
-        suffix = "." + _extension(mime)
-    name = f"{job_id}-0{suffix}"
+    name = f"{job_id}-0{upload_suffix(chosen, mime, filename)}"
     path = target_dir / name
 
     size = 0
@@ -571,10 +621,7 @@ def save_upload(
             while chunk := stream.read(1024 * 1024):
                 size += len(chunk)
                 if size > UPLOAD_MAX_BYTES:
-                    raise HTTPException(413, {
-                        "error": f"大きすぎます（上限 {UPLOAD_MAX_BYTES:,} バイト）",
-                        "hint": "CHIEZO_MEDIA_UPLOAD_MAX_BYTES で変えられます",
-                    })
+                    raise _too_large()
                 out.write(chunk)
     except BaseException:
         path.unlink(missing_ok=True)
@@ -1418,11 +1465,12 @@ async def load_audio(path: str = "", url: str = "") -> tuple[bytes, str, str]:
     elif url:
         if not url.startswith(("http://", "https://")):
             raise HTTPException(400, {"error": "url は http(s) にしてください"})
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            got = await client.get(url)
-        if got.status_code >= 400:
-            raise HTTPException(502, {"error": f"音を取れませんでした({got.status_code})"})
-        data, name = got.content, url.rsplit("/", 1)[-1] or "audio"
+        if (local := _own_media(url)) is not None:
+            # chiezo 自身の `/media/…` を URL で渡されたもの。手元のアドレスなので
+            # 下の検査では断ることになるが、置き場に実物があるので取りに行かずに読む
+            data, name = local.read_bytes(), local.name
+        else:
+            data, name = await _fetch_public(url), url.rsplit("/", 1)[-1] or "audio"
     else:
         raise HTTPException(400, {"error": "path か url のどちらかを渡してください"})
 
@@ -1435,6 +1483,54 @@ async def load_audio(path: str = "", url: str = "") -> tuple[bytes, str, str]:
 
     mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
     return data, name, mime
+
+
+def _own_media(url: str) -> Path | None:
+    """URL が置き場の 1 件(`…/media/<日付>/<名前>`)を指していれば、その実物。
+
+    名前は job の id(uuid)を含むので、別のホストの同じ名前と取り違えることは無い。
+    置き場が無い・見つからないときは None(外の URL として扱う)。
+    """
+    route = urlparse(url).path
+    if not route.startswith("/media/"):
+        return None
+    try:
+        found = resolve(route.split("/media/", 1)[-1])
+    except HTTPException:
+        return None
+    return found if found.is_file() else None
+
+
+def _url_client() -> httpx.AsyncClient:
+    """URL で渡された音・絵を取りに行くクライアント(テストはここを差し替える)。
+    **転送は自分で追う**(`outbound.fetch` が 1 段ずつ確かめる)。"""
+    return httpx.AsyncClient(timeout=60.0, follow_redirects=False)
+
+
+async def _fetch_public(url: str) -> bytes:
+    """外の URL から取る。**手元のネットワークは指させない**(`outbound.fetch`)。
+
+    URL は頼む側(AI を含む)が渡すので、そのまま叩くと LAN の機器や
+    内部のサービスを Chiezo に叩かせることができる。転送も 1 段ずつ確かめ、
+    読むのは上限(`MAX_TRANSCRIBE_BYTES`)まで —— 全部読んでから測ると、
+    超える大きさをいったん抱えることになる。
+    """
+    try:
+        async with _url_client() as client:
+            got = await outbound.fetch(client, url, MAX_TRANSCRIBE_BYTES)
+    except outbound.TooLarge as e:
+        raise HTTPException(
+            400,
+            {"error": f"大きすぎます(上限 {MAX_TRANSCRIBE_BYTES // 1024 // 1024}MB)",
+             "hint": "切り分けてから渡してください"},
+        ) from e
+    except outbound.Refused as e:
+        raise HTTPException(400, {"error": f"その URL は取りに行きません: {e}"}) from e
+    except httpx.HTTPError as e:
+        raise HTTPException(502, {"error": f"取れませんでした: {type(e).__name__}"}) from e
+    if got.status >= 400:
+        raise HTTPException(502, {"error": f"取れませんでした({got.status})"})
+    return got.body
 
 
 async def transcribe(

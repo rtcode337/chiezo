@@ -238,12 +238,14 @@ PROVIDERS: tuple[Provider, ...] = (
         "**compose のファイルが無い環境**では docker run で立てます。\n"
         "条件は「コンテナ名」と「chiezo-app と同じネットワークに繋ぐ」の 2 つだけです。\n"
         "`docker run -d --name chiezo-bridge-claude --network <chiezo と同じ> "
-        "-v <state のパス>:/state:ro -e CHIEZO_BRIDGE_CLI=claude "
-        "-e CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp --restart unless-stopped "
+        "-v <state のパス>/bridge/claude:/credential:ro --group-add <app の GID> "
+        "-e CHIEZO_BRIDGE_CLI=claude "
+        "-e CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp/knowledge/ --restart unless-stopped "
         "ghcr.io/rtcode337/chiezo-bridge:latest`\n"
         "\n"
-        "ブリッジは設定 DB を読み取り専用でマウントして読むので、"
-        "登録すればブリッジの再起動なしで効きます。",
+        "Chiezo は登録のたびに、この相手の分だけを `state/bridge/claude/credential` へ"
+        "書き出します(設定 DB そのものはブリッジに渡しません)。ブリッジはそれを"
+        "読み取り専用でマウントして読むので、登録すればブリッジの再起動なしで効きます。",
         # CLI はエイリアスで受ける（正式名はモデルが変わるたびに動く）。
         # 先頭は CLI の既定に揃える（claude の既定は claude-sonnet-5。実測）——
         # 何も選ばなかったときにここが使われるので、ずらすと黙って別のモデルになる。
@@ -297,7 +299,7 @@ PROVIDERS: tuple[Provider, ...] = (
         "root 所有で作るため、サインインの保存が `permission denied` で落ちます。\n"
         "`docker run -d --name chiezo-bridge-antigravity --network <chiezo と同じ> "
         "-v chiezo-antigravity-home:/srv/bridge/home -e CHIEZO_BRIDGE_CLI=antigravity "
-        "-e CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp --restart unless-stopped "
+        "-e CHIEZO_BRIDGE_MCP_URL=http://chiezo-app:7010/mcp/knowledge/ --restart unless-stopped "
         "ghcr.io/rtcode337/chiezo-bridge:latest`\n"
         "どうしてもホストのパスに置くなら、先に作って "
         "`sudo chown -R 1000:1000 <ディレクトリ>` してからバインドします。\n"
@@ -493,9 +495,9 @@ def selectable_efforts(provider_id: str) -> tuple[str, ...]:
 def bridge_hostnames() -> tuple[tuple[str, str], ...]:
     """CLI ブリッジの (相手の id, ホスト名)。**そこから来た依頼を見分けるために使う。**
 
-    ブリッジ越しの相手はシェルを持っている(`--dangerously-skip-permissions` /
-    `danger-full-access`)ので、**MCP の道具を取り上げても行き先は消えない** ——
-    `curl` でも Python でも REST の口を直接叩ける(実際に叩かれた: 依頼元が
+    ブリッジ越しの相手は道具を持っている(agy は `--dangerously-skip-permissions`。以前は
+    codex にもシェルを渡していた)ので、**MCP の道具を取り上げても行き先は消えない** ——
+    シェルがあれば `curl` でも Python でも REST の口を直接叩ける(実際に叩かれた: 依頼元が
     `Python-urllib/3.11` の生成が、こちらの依頼文を英訳した内容で立った)。
     塞ぐなら経路ではなく入口。
     """

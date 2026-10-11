@@ -277,3 +277,9 @@ class TestCodexNotifications:
         assert cmd[:2] == ["codex", "app-server"]
         assert any("mcp_servers.chiezo.url" in c and c.endswith('/mcp/knowledge/"') for c in cmd)
         assert 'mcp_servers.chiezo.default_tools_approval_mode="auto"' in cmd
+
+    def test_no_shell_tool(self, talk):
+        """会話にシェルは要らない。read-only でもシェルがあればコンテナ内を読める。"""
+        cmd = talk.CodexAppServer()._command()
+        assert "features.shell_tool=false" in cmd
+        assert "features.unified_exec=false" in cmd

@@ -1755,7 +1755,7 @@ def create(
     sweeps=None,
     locked_doubt_tag: str = "",
 ) -> Collection:
-    if not NAME_RE.match(name):
+    if not NAME_RE.fullmatch(name):
         raise HTTPException(400, {
             "error": "name は英小文字で始まる 2〜31 文字(英小文字・数字・_)にしてください",
             "reason": "ソース名・ファイル名・URL にそのまま使うため",
@@ -1972,7 +1972,7 @@ def require_renamable(name: str, new_name: str, taken=()) -> Collection:
     カタログに載っているソース)。呼ぶ側が集めて渡す。
     """
     item = get(name)
-    if not NAME_RE.match(new_name or ""):
+    if not NAME_RE.fullmatch(new_name or ""):
         raise HTTPException(400, {
             "error": "新しい名前は英小文字で始まる 2〜31 文字(英小文字・数字・_)にしてください",
             "reason": "ソース名・ファイル名・URL にそのまま使うため",

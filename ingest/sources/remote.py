@@ -130,7 +130,7 @@ def _parse_catalog(base: str, payload: dict) -> list[RemoteSource]:
         if not isinstance(entry, dict):
             raise PluginError(f"{base}/sources: each entry must be an object")
         name = entry.get("name")
-        if not isinstance(name, str) or not _SOURCE_NAME.match(name):
+        if not isinstance(name, str) or not _SOURCE_NAME.fullmatch(name):
             raise PluginError(
                 f"{base}/sources: invalid source name {name!r}"
                 " (use [A-Za-z0-9_] only; '-' collides with the <source>-<date>.db separator)"

@@ -21,6 +21,9 @@
 # 開ける以上は前提を承知しておくこと —— どちらも認証が無い。誰でも VRAM を使える
 # ようになり(空きが尽きるとホストごとページングで固まる)、ComfyUI は画面も
 # 付いてくるので LAN の誰でもワークフローを流せる。ルーターでポート開放しないこと。
+# 拡張を入れる口(ComfyUI-Manager)は docker-compose.comfyui.yml が起動のたびに
+# security_level = normal へ戻している —— weak のまま開けると、LAN の誰でも
+# 任意のコードを入れられる。重ねるときに command を上書きしないこと。
 # 推論に鍵を掛けるなら llama-server の --api-key と相手側の CHIEZO_LLM_API_KEY を揃える。
 services:
   chiezo-llm:

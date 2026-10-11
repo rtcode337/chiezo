@@ -116,3 +116,63 @@ class TestThumbnailsStayInTheirPlace:
         real = "1" * 40 + ".webp"
         (root / real).write_bytes(b"y")
         assert thumbs.resolve(real).read_bytes() == b"y"
+
+
+class TestNamesDoNotEndInANewline:
+    """名前の検査は全体一致で行う(`fullmatch`)。
+
+    `re.match(r"^…$")` の `$` は**末尾の改行 1 つの手前でも一致する**ので、
+    `"news\\n"` が通っていた。名前はファイル名・ソース名・URL にそのまま使われるので、
+    見た目が同じで中身の違う名前を作らせない。
+    """
+
+    def test_collect(self):
+        from fastapi import HTTPException
+
+        from app import collect
+
+        with pytest.raises(HTTPException) as e:
+            collect.create("news\n", "{cursor}", 60)
+        assert e.value.status_code == 400
+
+    def test_store(self, monkeypatch, tmp_path):
+        from fastapi import HTTPException
+
+        from app import notes
+
+        monkeypatch.setenv("CHIEZO_NOTES_DIR", str(tmp_path))
+        with pytest.raises(HTTPException) as e:
+            notes.create_store("mystore\n", set())
+        assert e.value.status_code == 400
+
+    def test_api_key(self, monkeypatch, tmp_path):
+        from fastapi import HTTPException
+
+        from app import settings_store
+
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path))
+        with pytest.raises(HTTPException) as e:
+            settings_store.set_api_key("jquants\n", "secret")
+        assert e.value.status_code == 400
+
+    def test_worker(self):
+        from app import workers
+
+        # 呼ぶ側は前後の空白を落としてから見るが、検査そのものも末尾の改行を通さない
+        assert workers.NAME_RE.fullmatch("夜\n") is None
+        assert workers._worker_from({"name": "夜"}) is not None
+
+    def test_trigger_source(self):
+        from fastapi import HTTPException
+
+        import server
+
+        with pytest.raises(HTTPException) as e:
+            server.delete_source("news\n")
+        assert e.value.status_code == 400
+
+    def test_plugin_catalog(self):
+        from sources import remote
+
+        with pytest.raises(remote.PluginError):
+            remote._parse_catalog("http://plugin.test", {"sources": [{"name": "abc\n", "kind": "x"}]})

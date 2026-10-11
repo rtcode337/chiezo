@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # CLI ブリッジの起動。MCP の設定を入れてから HTTP サーバを上げる。
 #
-# 認証情報はここでは要求しない。 Chiezo の設定 DB(/state/settings.db を読み取り専用で
-# マウント)から要求のたびに読むので、鍵が無くても立ち上げてよい ——
-# むしろ立っていないと管理画面から鍵を登録できない(到達確認に落ちるため)。
-# DB が無い環境向けに、環境変数(CLAUDE_CODE_OAUTH_TOKEN / CODEX_AUTH_JSON)にも落ちる。
+# 認証情報はここでは要求しない。 Chiezo が書き出した、この相手の分だけの写し
+# (/credential/credential を読み取り専用でマウント)から要求のたびに読むので、
+# 鍵が無くても立ち上げてよい —— むしろ立っていないと管理画面から鍵を登録できない
+# (到達確認に落ちるため)。写しが無い環境向けに、環境変数
+# (CLAUDE_CODE_OAUTH_TOKEN / CODEX_AUTH_JSON)にも落ちる。
 set -euo pipefail
 
 CLI="${CHIEZO_BRIDGE_CLI:-claude}"

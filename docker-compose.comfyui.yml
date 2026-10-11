@@ -22,9 +22,29 @@
 # 名前は変えずに置くこと。変えたときは model で名指しする。
 services:
   chiezo-image:
-    # ComfyUI に公式のイメージは無い。保守されているコミュニティのものをタグで固定する
-    # (:latest は 2026 年半ばに廃止された。cu126-slim = NVIDIA 向け)。
-    image: ${CHIEZO_IMAGE_IMAGE:-yanwk/comfyui-boot:cu126-slim}
+    # ComfyUI に公式のイメージは無い。保守されているコミュニティのものを**日付つきの
+    # タグで固定する**(:latest は 2026 年半ばに廃止された。cu126-slim = NVIDIA 向け)。
+    # `cu126-slim` は毎週差し替わる動くタグなので、それを書くと pull した日で中身が変わる。
+    # 上流は同じものに `cu126-slim-<日付>` も付けて残しているので、そちらを書く
+    # (Dependabot の docker-compose の更新もこの行を追う)。
+    #
+    # root のまま動かす。 このイメージは /root をホームと置き場の前提に組んであり
+    # (起動スクリプトが /root/ComfyUI へ展開し、pip も /root/.local へ入れる)、
+    # 非 root に切り替える口を持たない。代わりにホストへポートを出さず
+    # (chiezo-app からだけ届く)、ComfyUI-Manager の安全度を下の command で固定する。
+    image: ${CHIEZO_IMAGE_IMAGE:-yanwk/comfyui-boot:cu126-slim-20260810}
+    # **ComfyUI-Manager の security_level を起動のたびに normal へ戻す。**
+    # weak にすると、画面や API から任意の拡張(=任意のコード)を入れられる。
+    # 設定は置き場(./models/comfyui/ComfyUI/user/__manager/config.ini)にあって
+    # リポジトリの外なので、手で緩めたままになっていても気づけない。イメージに
+    # 設定の環境変数が無いので、起動スクリプトの手前で書き戻してから渡す。
+    command:
+      - bash
+      - -c
+      - >-
+        f=/root/ComfyUI/user/__manager/config.ini;
+        if [ -f "$$f" ]; then sed -i 's/^security_level *=.*/security_level = normal/' "$$f"; fi;
+        exec bash /runner-scripts/entrypoint.sh
     profiles: ["comfyui"]
     # ホストへは公開しない(chiezo-app からのみ到達する)。
     # 手元のブラウザで ComfyUI の画面を触りたいときだけ ports を足す
