@@ -550,7 +550,7 @@ def upload_kind(mime: str, filename: str) -> str:
 def _too_large() -> HTTPException:
     return HTTPException(413, {
         "error": f"大きすぎます（上限 {UPLOAD_MAX_BYTES:,} バイト）",
-        "hint": "CHIEZO_MEDIA_UPLOAD_MAX_BYTES で変えられます",
+        "hint": "小さくするか、分けて送ってください",
     })
 
 

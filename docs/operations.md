@@ -400,7 +400,7 @@ wikipedia 言語版の表示名・自称・記事数)と、このイメージが
 
 **ダンプのソースは、何日おき・何時に取り直すかを決めておけます**(管理画面の長期記憶の表の
 「定期再構築」の列。1・7・14・30 日おきと、時刻〈日本時間〉を選ぶ)。決めておくと、chiezo-app の
-時計(`main._run_rebuilds`、`CHIEZO_COLLECT_TICK_SECONDS` ごとに見る)がその時刻に再構築を起こします
+時計(`main._run_rebuilds`、60 秒ごとに見る)がその時刻に再構築を起こします
 (`POST /admin/rebuild-schedule`。間隔を「なし」にすると外れる)。
 
 - **次に走る時刻は「前に起こした日 + 間隔」の、決めた時刻**です。前の回がダンプの枠の空き待ちで
@@ -528,7 +528,7 @@ Host をカンマ区切りで指定してください(例: `<LAN の IP>:7010,lo
 (`X-Content-Type-Options: nosniff` と `Content-Security-Policy: sandbox`)。
 持ち込み(`POST /v1/media/upload`)の拡張子は一覧にあるもの(画像・音・動画・文章)だけを使い、
 それ以外は種類ごとの既定(`.png` / `.mp3` / `.mp4` / `.txt`)に付け替えます。SVG は受けません。
-持ち込みと文字起こしの multipart はどちらも `CHIEZO_MEDIA_UPLOAD_MAX_BYTES` で 413 にします。
+持ち込みと文字起こしの multipart はどちらも 128 MiB を超えると 413 にします。
 
 **ブラウザのページから直接読ませたいときは `CHIEZO_CORS_ORIGINS` にオリジンを書きます**
 (カンマ区切り。例: `https://travel.example.test,http://localhost:7040`)。
