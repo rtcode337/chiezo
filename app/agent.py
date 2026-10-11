@@ -37,6 +37,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
+from fnmatch import fnmatchcase
 from typing import Any
 from urllib.parse import quote
 
@@ -711,6 +712,7 @@ async def complete_with_web(cfg, messages: list[dict]) -> str:
 
 async def complete_with_tools(
     cfg, messages: list[dict], app=None, knowledge: bool = False, web: bool = False,
+    sources: list[str] | None = None,
 ) -> str:
     """道具を渡して往復を回し、答えの本文を返す(`/v1/ai/complete` の `knowledge` / `web` 用)。
 
@@ -720,11 +722,14 @@ async def complete_with_tools(
 
     呼ぶ側のプロンプト(キャラ設定など)はそのまま渡す。 道具を使うかはモデルが決め、
     要らなければ 1 往復で終わる(知識を引かない会話が遅くならない)。
+
+    `sources` は引いてよいソースの名前のパターン(`source_allowed`)。一覧からも外し、
+    外のソースを引こうとしたら断る(呼ぶ側が「この範囲の知識で答えて」と決められるように)。
     """
     tools = await tool_specs(app, web=web) if knowledge else []
     if web and not knowledge:
         tools = [websearch.TOOL_SPEC]
-    convo = _with_tool_hint(list(messages), knowledge, web)
+    convo = with_sources_hint(_with_tool_hint(list(messages), knowledge, web), sources if knowledge else None)
     called: dict[str, Any] = {}
     deadline = asyncio.get_running_loop().time() + cfg.agent_timeout
 
@@ -754,7 +759,13 @@ async def complete_with_tools(
                     payload = await websearch.search(str(arguments.get("q", "")).strip())
                     called[key] = payload
                 elif knowledge and name in KNOWLEDGE_TOOLS:
-                    _ok, payload = await execute(app, name, arguments)
+                    source = str(arguments.get("source") or "")
+                    if name != "sources" and not source_allowed(source, sources):
+                        payload = {"error": f"{source} はこの依頼では引けません", "allowed": sources}
+                    else:
+                        _ok, payload = await execute(app, name, arguments)
+                        if name == "sources":
+                            payload = _only_allowed_sources(payload, sources)
                     called[key] = payload
                 else:
                     # 渡していない道具を呼ばれたら、その旨を返して続けさせる(落とさない)
@@ -785,11 +796,51 @@ KNOWLEDGE_HINT = (
 WEB_HINT = "Chiezo に無い外の最新の情報は、web 検索で調べられます。"
 
 
+def source_allowed(name: str, patterns: list[str] | None) -> bool:
+    """呼ぶ側が絞った範囲のソースか。
+
+    パターンは fnmatch の形で、先頭が `!` のものは除く。除くほうが勝ち、含めるパターンが
+    1 つも無ければ(除くだけなら)残りは全部引ける。パターンが無ければ絞らない。
+    """
+    if not patterns:
+        return True
+    include = [p for p in patterns if not p.startswith("!")]
+    exclude = [p[1:] for p in patterns if p.startswith("!")]
+    if any(fnmatchcase(name, p) for p in exclude):
+        return False
+    return not include or any(fnmatchcase(name, p) for p in include)
+
+
+def _only_allowed_sources(payload: Any, patterns: list[str] | None) -> Any:
+    """sources の一覧から、引けないソースを外す(見せると引きに行って断られ、往復が無駄になる)。"""
+    if not patterns or not isinstance(payload, dict) or not isinstance(payload.get("sources"), list):
+        return payload
+    kept = [s for s in payload["sources"] if isinstance(s, dict) and source_allowed(str(s.get("name", "")), patterns)]
+    return {**payload, "sources": kept}
+
+
+def with_sources_hint(messages: list[dict], patterns: list[str] | None) -> list[dict]:
+    """引いてよいソースの範囲を system に足す。
+
+    API の相手は道具の側でも断るが、CLI ブリッジで包んだ相手は MCP で Chiezo を直に
+    引くので、ここで伝えるのが唯一の手になる。
+    """
+    if not patterns:
+        return messages
+    hint = f"Chiezo で引いてよいソースは、名前が次の形のものだけです(先頭の ! は除く): {', '.join(patterns)}"
+    return _with_hint(messages, hint)
+
+
 def _with_tool_hint(messages: list[dict], knowledge: bool, web: bool) -> list[dict]:
     """道具の使いどころを system に足す(system が無ければ先頭に置く)。"""
     hint = " ".join(h for h, on in ((KNOWLEDGE_HINT, knowledge), (WEB_HINT, web)) if on)
     if not hint:
         return messages
+    return _with_hint(messages, hint)
+
+
+def _with_hint(messages: list[dict], hint: str) -> list[dict]:
+    """system の後ろに一言足す(system が無ければ先頭に置く)。"""
     if messages and messages[0].get("role") == "system" and isinstance(messages[0].get("content"), str):
         return [{**messages[0], "content": f"{messages[0]['content']}\n\n{hint}"}, *messages[1:]]
     return [{"role": "system", "content": hint}, *messages]

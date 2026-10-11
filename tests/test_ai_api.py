@@ -208,6 +208,46 @@ class TestCompleteKnowledge:
         assert len(fake.requests) == 1
 
 
+class TestCompleteSources:
+    """引いてよいソースを呼ぶ側が絞る口(`sources`)。
+
+    同じ知識ベースでも、呼ぶ側の用途によって「この範囲で答えてほしい」が違う。
+    API の相手には道具の側でも断る(指示だけだと、守られないことがある)。
+    """
+
+    def test_sources_outside_the_patterns_are_refused_and_hidden(self, monkeypatch_env):
+        import json
+
+        fake = ToolLLM(
+            [("sources", {}), ("search", {"source": "jawiki", "q": "浅草寺"})], "分からなかった。"
+        )
+        with make_client(monkeypatch_env, fake) as client:
+            res = complete(
+                client,
+                messages=[{"role": "user", "content": "浅草寺って?"}],
+                knowledge=True,
+                sources=["*", "!jawiki"],
+            )
+
+        assert res.status_code == 200
+        assert res.json()["sources_enforced"] is True
+        # 範囲は system で伝える
+        assert "!jawiki" in fake.requests[0]["messages"][0]["content"]
+        tools = {m["name"]: json.loads(m["content"]) for m in fake.requests[-1]["messages"] if m["role"] == "tool"}
+        assert "jawiki" not in [s["name"] for s in tools["sources"]["sources"]]
+        assert "引けません" in tools["search"]["error"]
+
+    def test_source_patterns(self):
+        from app.agent import source_allowed
+
+        assert source_allowed("jawiki", None)
+        assert source_allowed("news_a", ["news_*"])
+        assert not source_allowed("jawiki", ["news_*"])
+        # 除くだけなら残りは全部
+        assert source_allowed("jawiki", ["!news_*"])
+        assert not source_allowed("news_a", ["*", "!news_*"])
+
+
 class TestCompleteWeb:
     """相手自身の web 検索を開ける口(`web=true`)。
 
