@@ -4485,6 +4485,10 @@ class AiCompleteRequest(BaseModel):
     # API で直に叩く相手には Chiezo が道具を貸して往復を回す。CLI ブリッジで包んだ相手は
     # もともと MCP で Chiezo に繋がっているので、指定してもしなくても同じ
     knowledge: bool | None = None
+    # 知識の道具で引いてよいソース(名前のパターン。fnmatch の形で、先頭の ! は除く)。
+    # 呼ぶ側が「この範囲の知識で答えて」と決めるためのもの。API の相手は道具の側でも断るが、
+    # CLI ブリッジで包んだ相手は MCP で直に引くので、指示として伝えるだけになる
+    sources: list[str] | None = None
     # **誰が頼んだか**(画面の「依頼元」に出る)。**必須にはしない** —— 名乗りが
     # 無いだけで AI を借りられなくなるのは、この口の値打ち(鍵だけ借りる)に合わない。
     # ただし**無名の依頼は後から追えない**: 待たされている人が「これは自分のか」を
@@ -4756,9 +4760,12 @@ async def ai_complete(body: AiCompleteRequest, request: Request) -> dict:
             # 道具を貸して往復を回す。知識は頼まれたときだけ、web は SearXNG を道具として
             content = await agent.complete_with_tools(
                 cfg, messages, request.app, knowledge=want_knowledge, web=want_web,
+                sources=body.sources,
             )
         else:
             extra = {"chiezo_web": True} if want_web else {}
+            if via_bridge:
+                messages = agent.with_sources_hint(messages, body.sources)
             content = answer.content_of(await answer.complete_message(cfg, messages, **extra))
     if not content:
         raise HTTPException(502, {"error": "empty response from llm"})
@@ -4774,6 +4781,9 @@ async def ai_complete(body: AiCompleteRequest, request: Request) -> dict:
         "web": want_web,
         # Chiezo の知識を引ける状態で頼んだか(CLI ブリッジの相手はいつも引ける)
         "knowledge": want_knowledge or via_bridge,
+        # 絞ったソース(道具の側でも断ったか = API の相手か)
+        "sources": body.sources or None,
+        "sources_enforced": bool(body.sources) and not via_bridge,
         "content": content,
     }
 
