@@ -1,9 +1,8 @@
 # ToDo(タスク・ルール)
 
 Claude Code に頼みたいことのメモと、守らせたい共通ルールを 1 か所で持つ層。
-もとは cc-tasks という別のアプリだったが、**メモを溜めて後から引く**という点で
-[notes](api-reference.md#notes唯一書き込めるソースの-rest) と同じことを二重に持って
-いたので、こちらへ寄せた。
+**メモを溜めて後から引く**という点で [notes](api-reference.md#notes唯一書き込めるソースの-rest) と
+同じことなので、別の置き場を持たずに notes の上に載せている。
 
 画面は管理画面の記憶の面のいちばん下の節(**`/admin/memory#tasks`**)。実装は `app/views/todo.py`、
 ドメイン層は `app/tasks.py`。

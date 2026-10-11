@@ -126,8 +126,8 @@ class TestTheRecord:
         """「外のアプリ」とだけ出しても、どれが枠を食っているのかは読めない。"""
         from app import ai_inflight
 
-        assert ai_inflight.caller_of("api", "pta") == "api:pta"
-        assert ai_inflight.caller_label("api:pta") == "外のアプリ(pta)"
+        assert ai_inflight.caller_of("api", "sample-bot") == "api:sample-bot"
+        assert ai_inflight.caller_label("api:sample-bot") == "外のアプリ(sample-bot)"
         # 名乗りが無ければ今までどおり
         assert ai_inflight.caller_of("api", "") == "api"
         assert ai_inflight.caller_of("api", "   ") == "api"
@@ -386,13 +386,13 @@ class TestAroundTheCall:
         with make_client(state_env, None) as client:
             assert client.post("/v1/ai/complete", json={
                 "backend": "local",
-                "requested_by": "pta",
+                "requested_by": "sample-bot",
                 "messages": [{"role": "user", "content": "こんにちは"}],
             }).status_code == 200
 
-        assert seen["caller"] == "api:pta"
+        assert seen["caller"] == "api:sample-bot"
         # 終わった後も見分けが付く(使用量の控えにも同じ値が残る)
-        assert usage_store.recent_calls(1)[0]["caller"] == "api:pta"
+        assert usage_store.recent_calls(1)[0]["caller"] == "api:sample-bot"
 
     def test_it_still_works_without_a_name(self, state_env):
         """**必須にしない。** 名乗りが無いだけで AI を借りられなくなるのは、

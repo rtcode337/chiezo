@@ -767,11 +767,11 @@ class TestBreakdown:
                 usage_store.record("codex", model="gpt-5.5", effort="high",
                                    caller="collect:painters", prompt_bytes=18_000)
             usage_store.record("codex", model="gpt-5.5", effort="low",
-                               caller="api:pta", prompt_bytes=288_000)
+                               caller="api:sample-bot", prompt_bytes=288_000)
             table = breakdown_of(client.get("/admin/status").text)
 
         # 依頼元は開いて出す(素の印では読めない)
-        assert "収集(painters)" in table and "外のアプリ(pta)" in table
+        assert "収集(painters)" in table and "外のアプリ(sample-bot)" in table
         # 多い順。考える量が違えば別の行になる
         assert table.index("7 回") < table.index("1 回")
         assert "gpt-5.5 / high" in table and "gpt-5.5 / low" in table
@@ -781,7 +781,7 @@ class TestBreakdown:
         from app import usage_store
 
         with make_client(env, ReplyLLM()) as client:
-            usage_store.record("codex", caller="api:pta",
+            usage_store.record("codex", caller="api:sample-bot",
                                prompt_bytes=288_000, reply_bytes=1_024)
             table = breakdown_of(client.get("/admin/status").text)
 
@@ -792,7 +792,7 @@ class TestBreakdown:
         from app import usage_store
 
         with make_client(env, ReplyLLM()) as client:
-            usage_store.record("codex", caller="api:pta")
+            usage_store.record("codex", caller="api:sample-bot")
             table = breakdown_of(client.get("/admin/status").text)
 
         assert "トークン数なし" in table
@@ -939,7 +939,7 @@ class TestTokensFromTheBridge:
         from app import usage_store
 
         with make_client(env, ReplyLLM()) as client:
-            usage_store.record("codex", model="gpt-5.5", caller="api:pta",
+            usage_store.record("codex", model="gpt-5.5", caller="api:sample-bot",
                                input_tokens=14610, output_tokens=7, cached_tokens=11520)
             table = breakdown_of(client.get("/admin/status").text)
 
@@ -986,7 +986,7 @@ class TestWhatMovedTheQuota:
         from app import usage_store
 
         with make_client(env, ReplyLLM()):
-            usage_store.record("codex", caller="api:pta")
+            usage_store.record("codex", caller="api:sample-bot")
             at = usage_store.last_quota_sample_at("codex") or ""
             usage_store.save_quota("codex", [{"id": "primary", "used_percent": 1.0}])
             at = usage_store.last_quota_sample_at("codex")

@@ -1076,7 +1076,7 @@ Claude/GPT の枠です。まとめて「いちばん詰まっている窓」で
 **名前が見つからないときは、巡回に書いてある相手で走ります**（ログには残します）。
 綴りを間違えただけで無人の層が止まるより、走って控えに相手が残るほうがよいためです。
 
-**振り替えるのは収集だけです。** pta の売買提案は相手を振り替えません——あちらは
+**振り替えるのは収集だけです。** 外のアプリからの依頼は相手を振り替えません——あちらは
 「同じ材料で誰が当てるか」を測る場で、書いた相手が変わると成績の意味が変わります。
 
 ### 開いたときには聞きに行かない
@@ -1396,7 +1396,7 @@ curl -s "$BASE/v1/ai/backends" | jq .
 curl -s "$BASE/v1/ai/complete" -H 'Content-Type: application/json' -d '{
   "backend": "gemini",
   "model": "gemini-2.5-flash",
-  "requested_by": "tech-antenna",
+  "requested_by": "sample-app",
   "messages": [
     {"role": "system", "content": "あなたは技術情報のダイジェストを書く編集者。"},
     {"role": "user", "content": "材料A / 材料B"}

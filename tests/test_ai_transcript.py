@@ -18,7 +18,7 @@ def store(tmp_path, monkeypatch):
 class TestKeepingWhatTheAiWasToldAndSaid:
     def test_a_call_is_kept_with_all_three_parts(self, store):
         ident = store.record(
-            backend="codex", model="gpt-image-2", kind="image", caller="arrow-puzzle",
+            backend="codex", model="gpt-image-2", kind="image", caller="sample-game",
             prompt="絵を描いて", trace="$ curl …", reply="out-1.png",
         )
         assert ident
@@ -75,7 +75,7 @@ class TestReadingItBack:
             lambda failed_only=False: [{
                 "ok": True, "at": "2026-09-15T00:00:00+00:00", "backend": "codex",
                 "model": "", "effort": "", "kind": record.get("kind", "chat"),
-                "caller": "arrow-puzzle", "prompt_bytes": 10, "reply_bytes": 20,
+                "caller": "sample-game", "prompt_bytes": 10, "reply_bytes": 20,
                 "ms": 1000, "input_tokens": None, "output_tokens": None,
                 "transcript_id": ident,
             }],
@@ -88,7 +88,7 @@ class TestReadingItBack:
         self, store, monkeypatch
     ):
         html = self._shown(
-            store, monkeypatch, kind="image", caller="arrow-puzzle",
+            store, monkeypatch, kind="image", caller="sample-game",
             prompt="絵を描いて", trace="$ curl http://chiezo-app:7010/v1/media/image",
             reply="出来た",
         )

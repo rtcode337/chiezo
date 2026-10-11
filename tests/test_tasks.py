@@ -117,7 +117,7 @@ class TestTasks:
 
 class TestTaskOrdering:
     def test_reorder_numbers_from_one(self, client):
-        project = tasks.create_project("arrow-puzzle")
+        project = tasks.create_project("sample-game")
         a = tasks.create_task("あ", project=project.name)
         b = tasks.create_task("い", project=project.name)
         tasks.reorder_tasks(project.name, [b.doc_id, a.doc_id])
@@ -125,7 +125,7 @@ class TestTaskOrdering:
 
     def test_reorder_does_not_bump_updated_at(self, client):
         """並び替えでメモが recall の先頭に浮くと、時系列が乱れて使い物にならない。"""
-        project = tasks.create_project("arrow-puzzle")
+        project = tasks.create_project("sample-game")
         a = tasks.create_task("あ", project=project.name)
         b = tasks.create_task("い", project=project.name)
         before = tasks.require_task(a.doc_id).updated_at
@@ -133,8 +133,8 @@ class TestTaskOrdering:
         assert tasks.require_task(a.doc_id).updated_at == before
 
     def test_reorder_rejects_a_foreign_task(self, client):
-        one = tasks.create_project("arrow-puzzle")
-        other = tasks.create_project("pihole-monitor")
+        one = tasks.create_project("sample-game")
+        other = tasks.create_project("sample-tool")
         mine = tasks.create_task("あ", project=one.name)
         theirs = tasks.create_task("い", project=other.name)
         with pytest.raises(Exception) as e:
@@ -149,7 +149,7 @@ class TestTaskOrdering:
 
     def test_manual_order_is_ignored_in_the_overall_list(self, client):
         """sort_order はプロジェクト内でしか意味を持たない。"""
-        project = tasks.create_project("arrow-puzzle")
+        project = tasks.create_project("sample-game")
         a = tasks.create_task("あ", project=project.name)
         b = tasks.create_task("い", project=project.name)
         tasks.reorder_tasks(project.name, [a.doc_id, b.doc_id])
@@ -160,10 +160,10 @@ class TestTaskOrdering:
 class TestProjects:
     def test_create_and_list(self, client):
         project = tasks.create_project(
-            "arrow-puzzle", description="広告のあのゲーム", repo_urls=["https://example.com/a"]
+            "sample-game", description="サンプルのゲーム", repo_urls=["https://example.com/a"]
         )
-        assert project.name == "arrow-puzzle"
-        assert project.description == "広告のあのゲーム"
+        assert project.name == "sample-game"
+        assert project.description == "サンプルのゲーム"
         assert project.repo_urls == ["https://example.com/a"]
         assert project.archived is False
 
@@ -174,9 +174,9 @@ class TestProjects:
         assert project.repo_urls == ["https://example.com/x"]
 
     def test_duplicate_name_is_409(self, client):
-        tasks.create_project("arrow-puzzle")
+        tasks.create_project("sample-game")
         with pytest.raises(Exception) as e:
-            tasks.create_project("arrow-puzzle")
+            tasks.create_project("sample-game")
         assert e.value.status_code == 409
 
     @pytest.mark.parametrize("name", ["task", "完了", "project", "決定", "環境"])
@@ -189,14 +189,14 @@ class TestProjects:
     def test_a_task_links_once_the_project_appears(self, client):
         """先に書いたメモのタグが、同名のプロジェクトを作った瞬間に紐づくこと。"""
         created = client.post(
-            "/v1/chiezo_memory", json={"text": "前から書いてあった", "tags": "task,pihole-monitor"}
+            "/v1/chiezo_memory", json={"text": "前から書いてあった", "tags": "task,sample-tool"}
         ).json()
         assert tasks.require_task(created["doc_id"]).project is None
-        tasks.create_project("pihole-monitor")
-        assert tasks.require_task(created["doc_id"]).project == "pihole-monitor"
+        tasks.create_project("sample-tool")
+        assert tasks.require_task(created["doc_id"]).project == "sample-tool"
 
     def test_unlink_removes_the_tag(self, client):
-        project = tasks.create_project("arrow-puzzle")
+        project = tasks.create_project("sample-game")
         task = tasks.create_task("あ", project=project.name)
         unlinked = tasks.update_task(task.doc_id, unlink_project=True)
         assert unlinked.project is None and project.name not in unlinked.tags
@@ -208,26 +208,26 @@ class TestProjects:
         assert tasks.require_task(task.doc_id).project == "new-name"
 
     def test_archive_is_blocked_while_tasks_remain(self, client):
-        project = tasks.create_project("arrow-puzzle")
+        project = tasks.create_project("sample-game")
         tasks.create_task("残っている", project=project.name)
         with pytest.raises(Exception) as e:
             tasks.update_project(project.id, archived=True)
         assert e.value.status_code == 400
 
     def test_archive_passes_once_everything_is_done(self, client):
-        project = tasks.create_project("arrow-puzzle")
+        project = tasks.create_project("sample-game")
         task = tasks.create_task("片付ける", project=project.name)
         tasks.update_task(task.doc_id, status=tasks.STATUS_DONE)
         assert tasks.update_project(project.id, archived=True).archived is True
 
     def test_delete_requires_archive_first(self, client):
-        project = tasks.create_project("arrow-puzzle")
+        project = tasks.create_project("sample-game")
         with pytest.raises(Exception) as e:
             tasks.delete_project(project.id)
         assert e.value.status_code == 400
 
     def test_delete_takes_its_tasks_with_it(self, client):
-        project = tasks.create_project("arrow-puzzle")
+        project = tasks.create_project("sample-game")
         task = tasks.create_task("片付ける", project=project.name)
         tasks.update_task(task.doc_id, status=tasks.STATUS_DONE)
         tasks.update_project(project.id, archived=True)
@@ -464,8 +464,8 @@ class TestProjectsAreOneRecord:
     def test_they_live_in_the_settings_store(self, client):
         from app import machine_store
 
-        tasks.create_project("arrow-puzzle")
-        tasks.create_project("travel-log")
+        tasks.create_project("sample-game")
+        tasks.create_project("sample-app")
 
         assert machine_store.get(tasks.PROJECTS_KIND, tasks.PROJECTS_KEY) is not None
         # **短期記憶には置かない** —— 人が消せる場所に置くと、全タスクの所属が消える
@@ -477,11 +477,11 @@ class TestProjectsAreOneRecord:
 
         from app import machine_store
 
-        tasks.create_project("arrow-puzzle", description="矢印パズル")
+        tasks.create_project("sample-game", description="サンプルのゲーム")
         payload = json.loads(machine_store.get(tasks.PROJECTS_KIND, tasks.PROJECTS_KEY))
 
-        assert [p["name"] for p in payload["projects"]] == ["arrow-puzzle"]
-        assert payload["projects"][0]["description"] == "矢印パズル"
+        assert [p["name"] for p in payload["projects"]] == ["sample-game"]
+        assert payload["projects"][0]["description"] == "サンプルのゲーム"
 
     def test_ids_are_not_note_ids(self, client):
         """id は JSON の中で採番する。メモの doc_id とは無関係。"""
@@ -504,17 +504,17 @@ class TestProjectsAreOneRecord:
 
     def test_tasks_keep_their_link_through_the_name(self, client):
         """紐づけはタグ(名前)のまま。JSON は入れ物の定義しか持たない。"""
-        project = tasks.create_project("arrow-puzzle")
+        project = tasks.create_project("sample-game")
         task = tasks.create_task("直す", project=project.name)
-        assert tasks.require_task(task.doc_id).project == "arrow-puzzle"
-        tasks.update_project(project.id, name="arrow-puzzle-2")
-        assert tasks.require_task(task.doc_id).project == "arrow-puzzle-2"
+        assert tasks.require_task(task.doc_id).project == "sample-game"
+        tasks.update_project(project.id, name="sample-game-2")
+        assert tasks.require_task(task.doc_id).project == "sample-game-2"
 
     def test_a_broken_body_is_reported_not_swallowed(self, client):
         """手で壊したときに黙って作り直さない(中身ごと消えるため)。"""
         from app import machine_store
 
-        tasks.create_project("arrow-puzzle")
+        tasks.create_project("sample-game")
         machine_store.put(tasks.PROJECTS_KIND, tasks.PROJECTS_KEY, "これは JSON ではない")
 
         with pytest.raises(Exception) as e:

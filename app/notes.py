@@ -235,7 +235,7 @@ def tag_guide() -> str:
     return (
         "**同じ意味には同じ表記のタグ**を付けること。定番: "
         + listed
-        + "。プロジェクトはリポジトリ名を小文字でそのまま(例 tech-antenna)。"
+        + "。プロジェクトはリポジトリ名を小文字でそのまま(例 sample-app)。"
         "これ以外のタグを作る前に tags で既存の表記を確かめる"
         "(NAS と nas のような割れは絞り込みを壊す)。"
     )
@@ -610,7 +610,6 @@ def set_extra(doc_id: int, extra: dict | None, store: str = SOURCE_NAME) -> bool
     並び替えのための口。`update()` を使うと `updated_at` が現在時刻になり、
     **カードを 1 枚ドラッグしただけで `recall` の先頭に浮いてしまう** ——
     並び替えはメモの内容が動いたわけではないので、時系列を乱すのは誤り
-    (cc-tasks でも並び替えだけは `updated_at` を触らない実装にしてあった)。
 
     `extra` は FTS(title / body)にも `doc_tags` にも関わらないので、
     ここだけ直接書いても索引は食い違わない。

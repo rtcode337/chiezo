@@ -1101,7 +1101,7 @@ class TestWhereTheLapStarts:
         return [
             {"key": partition.geo_key((26.0, 127.0, 26.5, 127.5)), "visits": {}},  # 那覇
             {"key": partition.geo_key((34.5, 135.3, 35.0, 135.8)), "visits": {}},  # 大阪
-            {"key": partition.geo_key((35.5, 139.5, 36.0, 140.0)), "visits": {}},  # 東京
+            {"key": partition.geo_key((35.7, 139.5, 36.0, 140.0)), "visits": {}},  # 東京
             {"key": partition.geo_key((43.0, 141.2, 43.5, 141.7)), "visits": {}},  # 札幌
         ]
 
@@ -1631,7 +1631,7 @@ class TestAnOldPartitionThatStraddlesTheNewOnes:
         spec = partition.normalize({"by": "geo", "target": 150,
                                     "bbox": [20.0, 120.0, 46.0, 154.0]})
         built = [{"key": partition.geo_key((35.0, 139.0, 36.0, 140.0))}]
-        current = [{"key": partition.geo_key((35.5, 139.5, 36.5, 140.5))}]
+        current = [{"key": partition.geo_key((35.7, 139.5, 36.5, 140.5))}]
 
         assert len(partition._uncovered(spec, built, current)) == 1
 
@@ -1789,7 +1789,7 @@ class TestTheMarksSurviveARecut:
                                     "bbox": [20.0, 120.0, 46.0, 154.0]})
         current = [{"key": partition.geo_key((35.0, 139.0, 36.0, 140.0)),
                     "visits": self._seen(self.NEW)}]
-        built = [{"key": partition.geo_key((35.5, 139.5, 36.5, 140.5))}]
+        built = [{"key": partition.geo_key((35.7, 139.5, 36.5, 140.5))}]
 
         kept = _only(partition.refresh(built, current, spec), built[0]["key"])
 

@@ -820,7 +820,7 @@ curl -s "$BASE/v1/collect" -H 'Content-Type: application/json' -d '{
     "by": "geo", "target": 200, "source": "osm_japan",
     "feature": "amenity=restaurant", "bbox": [20.0, 122.0, 46.0, 154.0]
   },
-  "requested_by": "travel-log"
+  "requested_by": "sample-app"
 }'
 
 # どこまで回ったか(台帳の中身は 1 件ぶんの口にだけ入る)
@@ -1115,7 +1115,7 @@ curl -s -X PATCH "$BASE/v1/collect/tl_lunch/sweeps/%E3%81%96%E3%81%A3%E3%81%A8" 
 curl -s -X POST "$BASE/v1/collect/tl_lunch/focus" -H 'Content-Type: application/json' -d '{
   "note": "この店は移転しているはず。住所を確かめて直して",
   "titles": ["○○食堂"],
-  "requested_by": "travel-log"
+  "requested_by": "sample-app"
 }'
 ```
 
@@ -1226,7 +1226,7 @@ curl -s "$BASE/v1/collect" -H 'Content-Type: application/json' -d '{
   "prompt": "いまの分類:\n{current}\n重複をまとめ、粒度を揃えて全部返して。",
   "interval_minutes": 1440,
   "keep_ratio": 0.8,
-  "requested_by": "travel-log"
+  "requested_by": "sample-app"
 }'
 
 # 焼かずに 1 回試して、前世代との差分だけ見る(止まっている収集は403)
@@ -1268,7 +1268,7 @@ curl -s "$BASE/v1/collect" -H 'Content-Type: application/json' -d '{
   "description": "技術ニュース",
   "prompt": "{cursor} 以降に出た技術ニュースを10件。日本語で。",
   "interval_minutes": 480,
-  "requested_by": "travel-log"
+  "requested_by": "sample-app"
 }'
 
 # 一覧(間隔・次にいつ走るか・前回の結果が入る)

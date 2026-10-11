@@ -32,7 +32,7 @@ def _post(client, path, **data):
     return client.post(f"/admin/todo{path}", data=data, follow_redirects=False)
 
 
-def _project(client, name="arrow-puzzle", **kw):
+def _project(client, name="sample-game", **kw):
     _post(client, "/projects", name=name, **kw)
     from app import tasks
 
@@ -106,8 +106,8 @@ class TestOnePage:
 class TestTasks:
     def test_a_task_lands_in_its_project(self, client):
         _project(client)
-        task = _task(client, project="arrow-puzzle")
-        assert task.project == "arrow-puzzle"
+        task = _task(client, project="sample-game")
+        assert task.project == "sample-game"
 
     def test_a_task_without_a_project_falls_into_the_unsorted_group(self, client):
         task = _task(client, title="どこにも属さない")
@@ -150,14 +150,14 @@ class TestTasks:
         from app import tasks
 
         _project(client)
-        first = _task(client, title="いちばん上", project="arrow-puzzle")
-        second = _task(client, title="その次", project="arrow-puzzle")
+        first = _task(client, title="いちばん上", project="sample-game")
+        second = _task(client, title="その次", project="sample-game")
         # 放り込んだ順ではなく、新しいものが上に積まれる
-        assert [t.doc_id for t in tasks.list_active_tasks("arrow-puzzle")] == [
+        assert [t.doc_id for t in tasks.list_active_tasks("sample-game")] == [
             second.doc_id, first.doc_id
         ]
         _post(client, f"/tasks/{second.doc_id}/move", dir="down")
-        assert [t.doc_id for t in tasks.list_active_tasks("arrow-puzzle")] == [
+        assert [t.doc_id for t in tasks.list_active_tasks("sample-game")] == [
             first.doc_id, second.doc_id
         ]
 
@@ -193,10 +193,10 @@ class TestHandoffToClaudeCode:
 
         task = _task(client)
         url = todo.claude_code_url(
-            task, ["https://github.com/owner/arrow-puzzle", "https://example.com/not-github"], None
+            task, ["https://github.com/owner/sample-game", "https://example.com/not-github"], None
         )
         repos = parse_qs(urlparse(url).query)["repositories"][0]
-        assert repos == "owner/arrow-puzzle"
+        assert repos == "owner/sample-game"
 
     def test_the_rules_repository_is_always_included(self, client):
         """規約リポジトリはセッションに含めるだけでなく、従う対象だと本文で名指す。"""
@@ -226,7 +226,7 @@ class TestProjects:
     def test_archiving_is_refused_while_tasks_are_left(self, client):
         """片付いていないタスクごと一覧から消えると、放り込んだものを取りこぼす。"""
         project = _project(client)
-        _task(client, project="arrow-puzzle")
+        _task(client, project="sample-game")
         res = _post(client, f"/projects/{project.id}/archive", archived="1")
         assert res.status_code == 303
         assert "未完了のタスクが 1 件" in _notice(res)
@@ -236,9 +236,9 @@ class TestProjects:
         from app import tasks
 
         project = _project(client)
-        task = _task(client, project="arrow-puzzle")
-        _post(client, f"/projects/{project.id}", name="arrow-puzzle2", description="", repo_urls="")
-        assert tasks.require_task(task.doc_id).project == "arrow-puzzle2"
+        task = _task(client, project="sample-game")
+        _post(client, f"/projects/{project.id}", name="sample-game2", description="", repo_urls="")
+        assert tasks.require_task(task.doc_id).project == "sample-game2"
 
     def test_only_an_archived_project_can_be_deleted(self, client):
         project = _project(client)
@@ -254,14 +254,14 @@ class TestProjects:
         """↑↓ は台帳の並びの上で動く。**画面がアーカイブを後ろへ寄せると押した行がずれる**。"""
         from app import tasks
 
-        first = _project(client, "arrow-puzzle")
-        second = _project(client, "travel-log")
+        first = _project(client, "sample-game")
+        second = _project(client, "sample-app")
         third = _project(client, "myapp")
         _post(client, f"/projects/{second.id}/archive", archived="1")
 
         html = client.get("/admin/memory").text
         table = html.split('<h2 id="tasks">')[1].split('<h3 id="done">')[0]
-        shown = [n for n in ("arrow-puzzle", "travel-log", "myapp") if n in table]
+        shown = [n for n in ("sample-game", "sample-app", "myapp") if n in table]
         assert shown == [p.name for p in tasks.list_projects()]
 
         _post(client, f"/projects/{third.id}/move", dir="up")
@@ -275,7 +275,7 @@ class TestProjects:
 
         project = _project(client)
         _post(client, f"/projects/{project.id}/archive", archived="1")
-        tasks.create_task("あとから紐づけ直した", project="arrow-puzzle")
+        tasks.create_task("あとから紐づけ直した", project="sample-game")
 
         html = client.get("/admin/memory").text
         assert "あとから紐づけ直した" in html
@@ -284,7 +284,7 @@ class TestProjects:
     def test_tasks_sit_under_their_project_in_one_table(self, client):
         """同じプロジェクトの話が、画面の上(タスク)と下(プロジェクト)に離れていた。"""
         project = _project(client)
-        _task(client, title="矢印を直す", project="arrow-puzzle")
+        _task(client, title="画面を直す", project="sample-game")
         _task(client, title="どこにも属さない")
 
         html = client.get("/admin/memory").text
@@ -292,8 +292,8 @@ class TestProjects:
 
         assert board.count("<table") == 1, "表の中に表を置かない(札に起こせなくなる)"
         row = board.split(f'<tr id="project-{project.id}">')[1]
-        assert row.index("arrow-puzzle") < row.index("タスク(1 件)") < row.index("矢印を直す")
-        assert row.index("矢印を直す") < row.index('id="project-none"')
+        assert row.index("sample-game") < row.index("タスク(1 件)") < row.index("画面を直す")
+        assert row.index("画面を直す") < row.index('id="project-none"')
         assert "どこにも属さない" in board.split('id="project-none"')[1]
         # 既定では畳んでおく
         assert '<tr class="todo-tasks"><td colspan="6"><details>' in board
@@ -301,7 +301,7 @@ class TestProjects:
     def test_a_task_action_comes_back_with_its_project_open(self, client):
         """閉じたまま戻すと、押した結果が見えない。"""
         project = _project(client)
-        task = _task(client, project="arrow-puzzle")
+        task = _task(client, project="sample-game")
 
         res = _post(client, f"/tasks/{task.doc_id}/status", status="in_progress")
 
@@ -316,7 +316,7 @@ class TestProjects:
     def test_each_project_row_opens_its_own_add_form(self, client):
         """表の上に 1 つだけ置いていた頃は、プロジェクトを選び直す手間があった。"""
         project = _project(client)
-        archived = _project(client, "travel-log")
+        archived = _project(client, "sample-app")
         _post(client, f"/projects/{archived.id}/archive", archived="1")
 
         html = client.get("/admin/memory").text
@@ -324,7 +324,7 @@ class TestProjects:
 
         assert f'popovertarget="add-project-{project.id}"' in row
         assert f'<div popover id="add-project-{project.id}"' in row
-        assert '<input type="hidden" name="project" value="arrow-puzzle">' in row
+        assert '<input type="hidden" name="project" value="sample-game">' in row
         assert row.index(">アーカイブ</button>") < row.index(">タスク追加</button>")
         # 未分類にも足せる。アーカイブ済みには足させない
         assert 'popovertarget="add-project-none"' in html
@@ -338,7 +338,7 @@ class TestProjects:
     def test_a_new_project_lands_on_its_row(self, client):
         from app import tasks
 
-        res = _post(client, "/projects", name="arrow-puzzle")
+        res = _post(client, "/projects", name="sample-game")
         made = tasks.list_projects()[0]
         assert res.headers["location"].endswith(f"#project-{made.id}")
 
@@ -409,7 +409,7 @@ class TestBackup:
     def test_what_is_written_out_can_be_read_back(self, client):
         """書き出したものがそのまま取り込みの入力になること(テキストで持てば控えになる)。"""
         _project(client)
-        _task(client, project="arrow-puzzle")
+        _task(client, project="sample-game")
 
         res = client.get("/admin/todo/export")
         assert res.status_code == 200
@@ -442,7 +442,7 @@ class TestBackup:
         _project(client)
         payload = json.loads(client.get("/admin/todo/export").text)
         assert payload["version"] == 1
-        assert [p["name"] for p in payload["projects"]] == ["arrow-puzzle"]
+        assert [p["name"] for p in payload["projects"]] == ["sample-game"]
 
 
 class TestRefusalsStayOnThePage:

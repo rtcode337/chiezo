@@ -68,7 +68,7 @@ STRUCTURAL_TAGS = frozenset({
     TAG_RULE, TAG_RULE_DISABLED, TAG_PROJECT, TAG_ARCHIVED,
 })
 
-# 完了タスクの 1 ページ。cc-tasks の TaskService.listDone と同じ上限。
+# 完了タスクの 1 ページ。画面で一度に読める程度の上限。
 DONE_PAGE_SIZE_MAX = 100
 
 # 更新で projectId にこれ(0)を送ると紐づけを外す。null は「変更しない」の意味なので、

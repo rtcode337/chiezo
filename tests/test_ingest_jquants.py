@@ -309,7 +309,7 @@ class TestEarnings:
 
     def test_a_free_plan_takes_what_it_can_see_and_says_so(self, earnings, tmp_path):
         """無料プランでも止めずに見える分だけ入れ、**一部だけであることを 1 件に残す**。
-        読む側(pta)はそれを見て、売買提案の AI に「一部しか載っていない」と添えて渡す。"""
+        読む側のアプリはそれを見て、売買提案の AI に「一部しか載っていない」と添えて渡す。"""
         _EarningsApi.free = True
         _EarningsApi.by_offset = {2: [("72030", "トヨタ自動車")]}
 

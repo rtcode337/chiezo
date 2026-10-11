@@ -2524,10 +2524,10 @@ class TestRememberingWhoAsked:
     """
 
     def test_the_name_is_kept_with_the_job(self, state):
-        job = media.create_job("絵", backend="comfyui", requested_by="arrow-puzzle")
-        assert job["requested_by"] == "arrow-puzzle"
+        job = media.create_job("絵", backend="comfyui", requested_by="sample-game")
+        assert job["requested_by"] == "sample-game"
         # 読み直しても残る（列として持っているか）
-        assert media.get_job(job["id"])["requested_by"] == "arrow-puzzle"
+        assert media.get_job(job["id"])["requested_by"] == "sample-game"
 
     def test_a_nameless_request_is_still_accepted(self, state):
         """**名乗りは必須にしない。** 鍵だけ借りに来る使い方を塞ぐことになる。"""
@@ -2548,7 +2548,7 @@ class TestRememberingWhoAsked:
         MCP は 1 往復ごとに独立しているので `initialize` の clientInfo は残らない ——
         毎回必ず届くのは HTTP のヘッダのほうで、拾えるのはそこだけ。
         """
-        assert media.caller_name("arrow-puzzle", "python-httpx/0.28") == "arrow-puzzle"
+        assert media.caller_name("sample-game", "python-httpx/0.28") == "sample-game"
         # 推し量ったぶんは括って残す（自分で名乗った値と読み違えないように）
         assert media.caller_name("", "claude-code/1.2.3") == "名乗り無し(claude-code/1.2.3)"
         assert media.caller_name("", "") == ""
@@ -2557,8 +2557,8 @@ class TestRememberingWhoAsked:
         from app.views import media_compare
 
         who = media_compare._who(
-            {"backend": "comfyui", "model": "sdxl", "requested_by": "arrow-puzzle"})
-        assert "依頼元: arrow-puzzle" in who
+            {"backend": "comfyui", "model": "sdxl", "requested_by": "sample-game"})
+        assert "依頼元: sample-game" in who
         # 名乗りが無ければ欄ごと出さない（空の「依頼元:」を並べない）
         assert "依頼元" not in media_compare._who({"backend": "comfyui", "model": "sdxl"})
 

@@ -187,9 +187,9 @@ class TestDefinitions:
     def test_it_remembers_who_asked(self, enabled):
         """誰が置いたかは、有効にするか決める人の手がかり(印であって認証ではない)。"""
         item = collect.create(
-            "asked", prompt="p", interval_minutes=60, requested_by="travel-log"
+            "asked", prompt="p", interval_minutes=60, requested_by="sample-app"
         )
-        assert item.requested_by == "travel-log"
+        assert item.requested_by == "sample-app"
 
     def test_changing_the_interval_does_not_postpone_the_first_run(self, sample):
         """一度も走っていないものの予定は動かさない。
@@ -5196,11 +5196,11 @@ class TestRest:
         res = client.post(
             "/v1/collect",
             json={"name": "asked", "prompt": "{cursor}", "interval_minutes": 60,
-                  "requested_by": "travel-log"},
+                  "requested_by": "sample-app"},
         )
         assert res.status_code == 200
         assert res.json()["enabled"] is False
-        assert res.json()["requested_by"] == "travel-log"
+        assert res.json()["requested_by"] == "sample-app"
 
 
 class TestRefineMode:
@@ -6472,7 +6472,7 @@ class TestOpeningAPartition:
                    "count": 3, "visits": {"ざっと見る": "2026-10-02T07:00:00+00:00"}}]
         collect.update("news", partition=spec, partitions=ledger)
 
-        kept = collect.update("news", partition={**spec, "bbox": [35.67, 139.75, 35.70, 139.78]})
+        kept = collect.update("news", partition={**spec, "bbox": [35.49, 139.75, 35.70, 139.78]})
 
         assert kept.partitions[0]["visits"] == {"ざっと見る": "2026-10-02T07:00:00+00:00"}
         # 次の回で割り直す(台帳が新しい範囲を覆っていない)
