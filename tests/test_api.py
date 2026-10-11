@@ -1844,7 +1844,7 @@ class TestAdminPages:
 
     def test_the_entrance_shows_how_full_the_quotas_are(self, client):
         """**重い仕事を頼む前に、押す画面で枠が見える。**
-        使う相手だけを、AI の面と同じ表で出す。"""
+        使う相手だけを、AI設定の面と同じ表で出す。"""
         from app import usage, usage_store
 
         if not usage_store.is_enabled():
@@ -1935,7 +1935,7 @@ class TestAdminPages:
         """**取り直す口を玄関にも置く。**
 
         ここは「重い仕事を頼んでよいか」を見に来る画面なので、数字が古いと
-        判断できない —— そのために AI の面まで開くのは、見に来た目的から遠い。
+        判断できない —— そのために AI設定の面まで開くのは、見に来た目的から遠い。
         """
         from app import usage
         from app.views import admin as views_admin
@@ -1954,7 +1954,7 @@ class TestAdminPages:
 
         assert 'action="/admin/ai/usage/all"' in html
         # **押した画面へ戻す** —— 行き先を書き切ると、状況の面から押した人が
-        # AI の面へ連れて行かれる(行ごとのボタンも同じ)
+        # AI設定の面へ連れて行かれる(行ごとのボタンも同じ)
         assert html.count('name="back" value="/admin/status"') == 2
 
     def test_the_entrance_does_not_link_to_the_ai_page(self, monkeypatch, tmp_path):
@@ -2024,7 +2024,7 @@ class TestAdminPages:
 
     def test_a_running_request_shows_up_at_the_entrance(self, tmp_path, built_data_dir, monkeypatch):
         """**待たされているときに見に来る画面がここ**なので、数だけでは足りない
-        —— 何が遅いのかが分からず、結局 AI の面まで開くことになる。"""
+        —— 何が遅いのかが分からず、結局 AI設定の面まで開くことになる。"""
         monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
         monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
         from app import ai_inflight
@@ -2038,7 +2038,7 @@ class TestAdminPages:
 
         assert "いま走っている依頼" in html
         assert "claude" in html
-        # **「詳しくは」の入口は置かない** —— AI の面はメニューから辿れる
+        # **「詳しくは」の入口は置かない** —— AI設定の面はメニューから辿れる
         assert 'href="/admin/ai#ai-history"' not in html
 
     def test_the_top_is_only_the_way_in(self, client):
@@ -2123,8 +2123,11 @@ class TestAdminPages:
 
         monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
         labels = {path: label for path, label, _note in PAGES}
-        assert labels["/admin/ai"] == "AI"
+        assert labels["/admin/ai"] == "AI設定"
         assert labels["/admin/media"] == "AIへの依頼"
+        # よく使う依頼の面は、一度済ませたらめったに開かない設定の面より前
+        order = [path for path, _label, _note in PAGES]
+        assert order.index("/admin/media") < order.index("/admin/ai")
 
         ai = client.get("/admin/ai").text
         for gone in ("ためた知識を使う AI", ">AI の相手<", "依頼文の言語", "AI と話す(Chiezo"):

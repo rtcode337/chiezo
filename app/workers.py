@@ -206,7 +206,7 @@ def load() -> list[Worker]:
     見せて人に直させる(収集の定義と同じ判断)。
     """
     # **置き場が無ければ「まだ無い」。** 機械の置き場を持たない面でも画面は開くので、
-    # ここで断ると、ワーカーを使っていない人まで AI の面を開けなくなる
+    # ここで断ると、ワーカーを使っていない人まで AI設定の面を開けなくなる
     if not machine_store.is_enabled():
         return []
     body = machine_store.get(DEFS_KIND, DEFS_KEY)

@@ -109,6 +109,20 @@ def test_websearch_container_is_in_the_base():
 
 
 @pytest.mark.parametrize("path", [BASE, STANDALONE])
+def test_the_websearch_volumes_are_named(path: Path):
+    """イメージが VOLUME 宣言しているパスには名前付きボリュームを当てること。
+
+    名前を付けないと、コンテナを作り直すたびに名前の無いボリュームが作られ、古いものが
+    誰にも使われずに溜まり続ける(実際に作り直しの回数ぶん増えていた)。
+    """
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    mounts = {str(m).split(":")[1]: str(m).split(":")[0] for m in doc["services"]["searxng"].get("volumes") or []}
+    for target in ("/etc/searxng", "/var/cache/searxng"):
+        assert target in mounts, f"{target} に名前付きボリュームが無い"
+        assert mounts[target] in doc["volumes"]
+
+
+@pytest.mark.parametrize("path", [BASE, STANDALONE])
 def test_the_websearch_settings_ride_on_configs(path: Path):
     """設定は configs で流し込むこと(独自イメージもマウントも作らない)。
 
@@ -119,7 +133,9 @@ def test_the_websearch_settings_ride_on_configs(path: Path):
     """
     doc = yaml.safe_load(path.read_text(encoding="utf-8"))
     searxng = doc["services"]["searxng"]
-    assert not searxng.get("volumes"), "設定をマウントで渡さないこと"
+    # ホストのファイルを重ねない(名前付きボリュームは可。下のテスト参照)
+    for mount in searxng.get("volumes") or []:
+        assert not str(mount).startswith((".", "/", "~")), f"設定をホストのマウントで渡さないこと: {mount}"
     assert "chiezo-searxng" not in searxng["image"], "独自イメージを作らないこと"
     targets = [c["target"] for c in searxng["configs"]]
     assert "/etc/searxng/settings.yml" in targets
