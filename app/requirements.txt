@@ -8,9 +8,9 @@ annotated-types==0.8.0 \
     --hash=sha256:13b2beaad985e05e2d6407ee4c4f35590b11f8d693a258a561055cac8f64cab7 \
     --hash=sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0
     # via pydantic
-anthropic==1.12.0 \
-    --hash=sha256:a54f6a63e3a4ad94acca6fc9528da531a523bfc846d304d02d7f190d6b7c9b48 \
-    --hash=sha256:e7781a0c88452e695ff5524b9daa490e9c0d47c1529cd0bc14370973e48b12d4
+anthropic==1.12.1 \
+    --hash=sha256:10f720ab6ddf40ef12e0e5743412c3a6dfac1109c244e633c9a2dbd36778ad30 \
+    --hash=sha256:1c1469bb3f4118291756816b7850cc839f17b2be5cdc99c8fde3890a61a49ca2
     # via -r app/requirements.in
 anyio==4.14.2 \
     --hash=sha256:9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494 \
@@ -647,7 +647,7 @@ pydantic-core==2.46.4 \
     --hash=sha256:fc3e9034a63de20e15e8ade85358bc6efc614008cab72898b4b4952bea0509ff \
     --hash=sha256:fd8b3d9fd264be37976686c7f65cd52a83f5e84f4bfd2adf9c1d469676bbb6ae
     # via pydantic
-pyjwt==2.15.0 \
+pyjwt[crypto]==2.15.0 \
     --hash=sha256:7a3742debf6b879e912dbb9819ceec1594be812452b78c5f2e2dfc56564954f8 \
     --hash=sha256:b11c5f9791d7bf51c2b39a81ed669f6b2dbbd669df2942f6c60167e9e3d1abe4
     # via mcp
@@ -888,16 +888,12 @@ typing-extensions==4.16.0 \
     --hash=sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5
     # via
     #   anthropic
-    #   anyio
     #   fastapi
-    #   httpx2
     #   mcp
     #   mcp-types
     #   opentelemetry-api
     #   pydantic
     #   pydantic-core
-    #   referencing
-    #   starlette
     #   typing-inspection
 typing-inspection==0.4.2 \
     --hash=sha256:4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7 \
@@ -906,7 +902,7 @@ typing-inspection==0.4.2 \
     #   fastapi
     #   mcp
     #   pydantic
-uvicorn==0.54.0 \
+uvicorn[standard]==0.54.0 \
     --hash=sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf \
     --hash=sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620
     # via
