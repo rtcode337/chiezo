@@ -19,11 +19,30 @@ updates:
       interval: weekly
       timezone: Asia/Tokyo
 
-  # Dockerfile のベースイメージ(python:3.12-slim)
+  # CLI ブリッジの Python 依存(bridge/requirements.txt。こちらは版を == で直に固定している)
+  - package-ecosystem: pip
+    directory: /bridge
+    schedule:
+      interval: weekly
+      timezone: Asia/Tokyo
+
+  # Dockerfile のベースイメージ(python:3.12-slim、ブリッジの node / debian)。
+  # ブリッジの CLI(npm install の @版 と agy の下限)は追えないので、人が上げる
   - package-ecosystem: docker
     directories:
       - /app
       - /ingest
+      - /bridge
+    schedule:
+      interval: weekly
+      timezone: Asia/Tokyo
+
+  # compose が pull するイメージ(searxng・llama.cpp・alpine・ComfyUI)。
+  # どれもタグを固定してあるので、上げるきっかけはここから来る。
+  # 自前の chiezo-* は :latest なので対象にならない(CI が焼いて公開する)。
+  # `${変数:-既定}` で書いた行を読めるかは Dependabot の版次第 —— 来なければ人が上げる
+  - package-ecosystem: docker-compose
+    directory: /
     schedule:
       interval: weekly
       timezone: Asia/Tokyo
