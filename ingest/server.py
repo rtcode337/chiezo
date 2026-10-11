@@ -515,24 +515,34 @@ def _rename_source_files(name: str, to: str, expect: str) -> dict:
     def renamed(path: Path) -> str:
         return f"{to}-{path.name[len(name) + 1:]}"
 
+    def inside(base: Path, file_name: str) -> Path:
+        # **作る先は、その置き場の直下に限る**。名前は呼び口で形を確かめてあるが、
+        # ファイルの場所を組むところでも外へ出ないことを確かめる(後から呼び口が
+        # 増えても、ここが最後の砦になる)
+        root = os.path.realpath(base)
+        target = os.path.realpath(os.path.join(root, file_name))
+        if not target.startswith(root + os.sep) or os.path.dirname(target) != root:
+            raise HTTPException(400, {"error": f"invalid file name: {file_name}"})
+        return Path(target)
+
     made: list[Path] = []
     moved: list[tuple[Path, Path]] = []
     try:
         for gen in generations:
-            dest = DATA_DIR / renamed(gen)
-            work = DATA_DIR / f"{RENAMING_PREFIX}{dest.name}"
+            dest = inside(DATA_DIR, renamed(gen))
+            work = inside(DATA_DIR, f"{RENAMING_PREFIX}{dest.name}")
             made.append(work)
             shutil.copyfile(gen, work)
             _set_meta_source(work, to)
             work.replace(dest)
             made.append(dest)
         if live is not None and live.startswith(f"{name}-"):
-            new_link = DATA_DIR / f"{to}.db"
-            _point_link_at(new_link, DATA_DIR / f"{to}-{live[len(name) + 1:]}")
+            new_link = inside(DATA_DIR, f"{to}.db")
+            _point_link_at(new_link, inside(DATA_DIR, f"{to}-{live[len(name) + 1:]}"))
             made.append(new_link)
         # 素材は写さずに移す(焼く前のもので、配信側は開いていない)
         for path in staged:
-            dest = dumps_dir / renamed(path)
+            dest = inside(dumps_dir, renamed(path))
             path.rename(dest)
             moved.append((path, dest))
     except Exception as e:
