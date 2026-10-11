@@ -314,6 +314,8 @@ def ensure_db(store: str = SOURCE_NAME) -> Path | None:
     path = notes_path(store)
     if path is None:
         return None
+    # 再走査の前でも、追記される DB として開かせる(`db.mark_mutable`)
+    db.mark_mutable(path)
     if path.exists():
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
