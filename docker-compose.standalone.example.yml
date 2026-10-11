@@ -183,6 +183,12 @@ services:
     configs:
       - source: chiezo-searxng-settings
         target: /etc/searxng/settings.yml
+    # 上流のイメージは /etc/searxng と /var/cache/searxng を VOLUME 宣言している。名前を付けないと
+    # コンテナを作り直すたびに名前の無いボリュームが 2 つずつ作られ、古いものが誰にも使われずに
+    # 溜まり続ける。名前を付けて、作り直しても同じものを使い回す(中身は捨ててよいキャッシュだけ)
+    volumes:
+      - chiezo-searxng-etc:/etc/searxng
+      - chiezo-searxng-cache:/var/cache/searxng
     environment:
       # 待ち受けを 7012 にする(既定は 8080)。この image は granian で動くので
       # 効くのは GRANIAN_PORT(SearXNG の SEARXNG_PORT は設定ファイル側の値)
@@ -350,6 +356,8 @@ services:
 # サインイン結果の置き場(Antigravity)。ホストのディレクトリにしないのは、
 # 無いときに Docker が root 所有で作ってしまい、非 root のブリッジが書けなくなるため。
 volumes:
+  chiezo-searxng-etc:
+  chiezo-searxng-cache:
   chiezo-antigravity-home:
   chiezo-claude-home:
   chiezo-codex-home:

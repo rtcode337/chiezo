@@ -432,8 +432,8 @@ def _refresh_button(row: dict, back: str, busy: bool = False) -> str:
 
 
 # 押した人を連れ出さないための行き先。**状況の面にも同じボタンがある**ので、
-# 書き切ると、どこから押しても AI の面へ飛ばされる(見ていた画面から追い出される)。
-# 押した後に戻る面。**使用量の表を出しているのは状況の面だけ**(AI の面からは外した。
+# 書き切ると、どこから押しても AI設定の面へ飛ばされる(見ていた画面から追い出される)。
+# 押した後に戻る面。**使用量の表を出しているのは状況の面だけ**(AI設定の面からは外した。
 # 同じ表が 2 つの面に並んでいた)
 DEFAULT_BACK = "/admin/status"
 
@@ -507,7 +507,7 @@ def banner_html(request: Request | None = None) -> str:
 
 
 def table_html(rows: list[dict], back: str = DEFAULT_BACK) -> str:
-    """使用量の表 1 つぶん。**状況の面と AI の面で同じものを出す**ので、ここが正。
+    """使用量の表 1 つぶん。**状況の面と AI設定の面で同じものを出す**ので、ここが正。
 
     窓は相手が返したぶんを全部並べる —— いちばん詰まっている 1 つだけに
     畳むと、5 時間の窓しか見えない相手が出る。重い仕事を頼んでよいかは、
@@ -579,7 +579,7 @@ async def refresh_all_usage(back: str = Form(DEFAULT_BACK)):
     残りは取り直し、誰が取れなかったかを画面に出す。
 
     **押した画面へ戻す**(`back`)。状況の面にも同じボタンがあるので、行き先を
-    書き切ると、どこから押しても AI の面へ連れて行かれる。
+    書き切ると、どこから押しても AI設定の面へ連れて行かれる。
     """
     done, skipped = await usage.refresh_all()
     failed = [usage.label_of(pid) for pid, quota in done.items() if quota.error]
@@ -600,7 +600,7 @@ async def refresh_usage(provider: str = Form(...), back: str = Form(DEFAULT_BACK
     """1 相手ぶん取り直す(結果はクエリで画面へ返す)。
 
     **押した画面へ戻す**(`back`)。状況の面にも同じ表があるので、行き先を書き切ると
-    どこから押しても AI の面へ連れて行かれる(まとめて取り直すボタンと同じ理由)。
+    どこから押しても AI設定の面へ連れて行かれる(まとめて取り直すボタンと同じ理由)。
     """
     spec = usage.spec_of(provider)
     if spec is None:

@@ -108,7 +108,7 @@ class TestDisabled:
         assert res.status_code == 200
         assert "まだ話せる相手がいません" in res.text
         assert '<a href="/admin/ai">AI</a> の面で有効に' in res.text
-        # 相手を増やす入口(「話す相手」節)は AI の面にある
+        # 相手を増やす入口(「話す相手」節)は AI設定の面にある
         assert "話す相手" in disabled_client.get("/admin/ai").text
 
 

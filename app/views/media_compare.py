@@ -328,7 +328,7 @@ async def admin_media(
 </p>
 {rows}
 {_pager(page, has_next, limit)}
-<!-- **会話の入口もここ**(AI の面から移した)。頼む話はこの面にまとめ、
+<!-- **会話の入口もここ**(AI設定の面から移した)。頼む話はこの面にまとめ、
      作ってもらう口の 1 つ前に置く -->
 <h2>AIと会話する</h2>
 {answer_status_html()}

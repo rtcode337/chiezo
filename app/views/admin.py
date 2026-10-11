@@ -2485,7 +2485,7 @@ def _short_term_section_html(sources: dict[str, Source]) -> str:
 def answer_status_html() -> str:
     """「AIへの依頼」の面の「AIと会話する」。いま話せるかと、会話画面への入口だけ。
 
-    相手の増やし方そのものは「AI」の面(`app/views/ai_settings.py`)が持つ。
+    相手の増やし方そのものは「AI設定」の面(`app/views/ai_settings.py`)が持つ。
     """
     names = answer.backend_names()
     if not names:
@@ -2520,13 +2520,16 @@ PAGES = (
     # 一度入れたら開かない表と同じ高さに置く理由が無い。ワーカーも一緒に置く
     # (何を回すかと、誰に回すかは 1 つの話)
     ("/admin/collect", "収集", "無人で回る層。巡回・区画・変更履歴と、回す相手の並び"),
-    ("/admin/ai", "AI", "貸し出すもの。話せる相手・絵や音を作る相手と、その鍵"),
+    # **頼む面**(会話・作らせる・作らせたものを並べて選ぶ)。鍵を預ける面とは分ける ——
+    # こちらは毎日触り、あちらは一度入れたら開かない。**だから設定の面より前に置く**
+    # (よく使う面ほど左。設定は一度済ませたらめったに開かない)
+    ("/admin/media", "AIへの依頼", "AI と会話する・作らせる・作らせたものを並べて選ぶ"),
+    # **設定の面は「AI設定」と名乗る。** 依頼の面と並ぶので、「AI」だけでは
+    # どちらが何をする面かが読めない
+    ("/admin/ai", "AI設定", "貸し出すもの。話せる相手・絵や音を作る相手と、その鍵"),
     # **外部 API のキーは AI の鍵と分ける。** あちらは話す相手ごとの on/off と接続確認を持ち、
     # こちらは取り込み・収集の道具が名前で引くだけの値
     (KEYS_PAGE, "API キー", "外部 API のキー。取り込みのソースや収集の道具が名前で使う"),
-    # **頼む面**(会話・作らせる・作らせたものを並べて選ぶ)。鍵を預ける面とは分ける ——
-    # こちらは毎日触り、あちらは一度入れたら開かない
-    ("/admin/media", "AIへの依頼", "AI と会話する・作らせる・作らせたものを並べて選ぶ"),
     ("/admin/server", "その他", "このサーバー。Claude Code 連携といま動いているビルド"),
 )
 
@@ -2585,7 +2588,7 @@ def nav_html(current: str, below: bool = False) -> str:
 
 
 def _usage_html(request: Request | None = None) -> str:
-    """状況の面に出す「使用量」。**有効にしてある相手だけ**を、AI の面と同じ表で。
+    """状況の面に出す「使用量」。**有効にしてある相手だけ**を、AI設定の面と同じ表で。
 
     かつては 1 行の帯に畳み、相手ごとに**いちばん詰まっている窓**を 1 つだけ
     出していた。あれでは**短い窓しか見えない相手が出る** —— 5 時間の窓が
@@ -2593,7 +2596,7 @@ def _usage_html(request: Request | None = None) -> str:
     頼んでよいかを決められない。表なら窓が何本あっても段が増えるだけで済む。
 
     **使わない相手は出さない**(状況の面は概況で、設定を見に来る場所ではない)。
-    全部の相手と説明が要るときは「AI」の面(`views/ai_settings.py`)——
+    全部の相手と説明が要るときは「AI設定」の面(`views/ai_settings.py`)——
     **そこへのリンクはここには置かない**。状況の面から辿れる面はメニューに並んでいて、
     節ごとに「詳しくはあちら」を足すと、同じ行き先が画面の中に何本も増える。
 
@@ -2604,7 +2607,7 @@ def _usage_html(request: Request | None = None) -> str:
         return ""
     rows = [row for row in usage.rows() if row["enabled"]]
     # **取り直す口を状況の面にも置く。** ここは「重い仕事を頼んでよいか」を見に来る
-    # 画面なので、数字が古いと判断できない —— 取り直すために AI の面まで開くのは、
+    # 画面なので、数字が古いと判断できない —— 取り直すために AI設定の面まで開くのは、
     # 見に来た目的から遠い。**押した画面へ戻る**(`back`)
     button = (
         ai_usage.refresh_all_form("すべて取り直す", back=STATUS_PAGE, klass="usage-refresh")
@@ -2616,7 +2619,7 @@ def _usage_html(request: Request | None = None) -> str:
         # 行は出る —— その行に「まだ取っていない」と書くので、最初の 1 回も
         # 状況の面から始められる
         return ""
-    # **内訳と枠の推移は畳んで添える**(AI の面から移したもの。毎回は読まないが、
+    # **内訳と枠の推移は畳んで添える**(AI設定の面から移したもの。毎回は読まないが、
     # 枠が詰まったときに「何が食ったのか」を読むのはここしかない)。
     # **窓を切り替えたときは開く**(面を読み直すので、閉じたまま戻すと何も
     # 変わらないように見える)
@@ -2703,7 +2706,7 @@ def _stopped_providers_html() -> str:
             '<div class="job-status error">'
             f"<p>⚠️ {esc(providers.label_of(st.provider))} は、{esc(at)}"
             "認証の失敗(401)が返ったので無効にしました。ワーカーの振り先からも外れています。"
-            "「AI」の面で認証情報を登録し直し、「接続を試す」→「有効にする」を"
+            "「AI設定」の面で認証情報を登録し直し、「接続を試す」→「有効にする」を"
             "押すと戻ります。</p>"
             f'<details><summary class="muted">相手が言ったこと</summary>'
             f"<pre>{esc(st.disabled_reason)}</pre></details></div>"
@@ -3032,7 +3035,7 @@ def _running_html(running: list[dict], done: list[dict] | None = None) -> str:
     """いま走っている AI への依頼。
 
     ここが表なのは、**待たされているときに見に来る画面がここだから** ——
-    数だけでは「何が遅いのか」が分からず、結局 AI の面まで開くことになる。
+    数だけでは「何が遅いのか」が分からず、結局 AI設定の面まで開くことになる。
 
     **中身も出す**(`ai_history._prompt`)。同じ相手へ似た大きさの依頼を 2 本
     投げていると、相手と経過だけではどちらが遅いのか分からない ——
@@ -3300,7 +3303,7 @@ def admin_ai_transcript(ident: str):
 
 @router.get("/admin/ai", response_class=HTMLResponse)
 async def admin_ai(request: Request):
-    """AI の面。**呼ぶ側に認証情報を持たせないための面**をここにまとめる。
+    """AI設定の面。**呼ぶ側に認証情報を持たせないための面**をここにまとめる。
 
     **会話の入口は置かない**(「AIへの依頼」の面の「AIと会話する」)。頼む話と
     鍵を預ける話を同じ面に置くと、毎日来る人が一度入れたら開かない表をまたぐ。
@@ -3311,7 +3314,7 @@ async def admin_ai(request: Request):
     """
     body = f"""
 {nav_html("/admin/ai")}
-<h1>AI(貸し出すもの)</h1>
+<h1>AI設定(貸し出すもの)</h1>
 <p class="muted">
 呼ぶ側に認証情報を持たせないための面。鍵はここで預かり、話せる相手と、
 絵・音・動画・声を作る相手を同じ表で扱う。
@@ -3319,7 +3322,7 @@ async def admin_ai(request: Request):
 
 {await ai_settings.section_html(request)}
 """
-    return HTMLResponse(content=page_shell("AI", body))
+    return HTMLResponse(content=page_shell("AI設定", body))
 
 
 @router.get("/admin/server", response_class=HTMLResponse)
@@ -3327,7 +3330,7 @@ async def admin_server(_request: Request):
     """このサーバー自身のこと。
 
     **依頼文の言語もここ**(`ai_settings.prompt_language_html`)。生成される設定に
-    載る 1 行なので、その設定のすぐ下で決める(AI の面に置いていた頃は、
+    載る 1 行なので、その設定のすぐ下で決める(AI設定の面に置いていた頃は、
     何に効くのかを別の面と突き合わせて読むことになった)。
     """
     body = f"""
