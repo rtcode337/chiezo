@@ -44,6 +44,16 @@ def set_mutable_paths(paths) -> None:
     _mutable_paths = changed
 
 
+def mark_mutable(db_path: Path) -> None:
+    """追記される DB を、ソースの再走査を待たずに mutable として扱う。
+
+    本体は複数のプロセス(worker)で動く。置き場を作ったのが別のプロセスだと、こちらの
+    プロセスはまだ再走査しておらず、`immutable=1` で開いて**開いた時点の中身を読み続ける**
+    (書いたはずのメモが 0 件に見える)。読み書きする側(notes)が自分の DB を名指しで登録する。
+    """
+    _mutable_paths.add(str(db_path))
+
+
 def is_mutable(db_path: Path) -> bool:
     return str(db_path) in _mutable_paths
 

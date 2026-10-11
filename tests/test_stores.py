@@ -114,3 +114,32 @@ class TestReadWrite:
         with pytest.raises(HTTPException) as e:
             collect.create("myapp", prompt="p", interval_minutes=60)
         assert e.value.status_code == 400
+
+
+class TestManyWorkers:
+    """本体は複数のプロセスで動く。置き場を作ったのとは別のプロセスからも、最新の中身が読めること。"""
+
+    def test_a_store_made_elsewhere_is_read_fresh(self, client):
+        from app import db, notes
+
+        # 別のプロセスが作って書いた(こちらの登録は再走査の前のまま)
+        notes.ensure_db("myapp")
+        db.set_mutable_paths([])
+        assert client.get("/v1/stores/myapp/recall").json()["total"] == 0
+        notes.add(text="一つ目", store="myapp")
+        db.set_mutable_paths([])
+
+        # 開いた時点の中身を読み続けない
+        assert client.get("/v1/stores/myapp/recall").json()["total"] == 1
+
+    def test_a_new_store_makes_the_other_workers_rescan(self, client):
+        from app import notes
+        from app.main import app, refresh_sources
+
+        refresh_sources(app)
+        notes.ensure_db("myapp")  # 別のプロセスが作った
+        assert refresh_sources(app) is True
+        assert "myapp" in _sources(client)
+        # 書き込みだけでは走査し直さない(メモ 1 件ごとに全ソースを数え直さない)
+        notes.add(text="一つ目", store="myapp")
+        assert refresh_sources(app) is False

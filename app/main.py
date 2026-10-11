@@ -167,6 +167,19 @@ def scan_all(data_dir: Path) -> dict[str, Source]:
     return sources
 
 
+def _sources_fingerprint(data_dir: Path) -> dict:
+    """再走査の要否を決める指紋。`/data` の指紋に、名前付きの置き場の**名前**を足す。
+
+    置き場は外のアプリが作り、作ったプロセスだけがその場でソースに足す。本体は複数の
+    プロセスで動くので、ほかのプロセスにも新しい置き場を気づかせる。名前だけを見るのは、
+    書き込みのたびに変わる大きさや時刻まで見ると、メモ 1 件ごとに全ソースの再走査
+    (jawiki の COUNT を含む)が走るため(notes を `/data` から分けた理由と同じ)。
+    """
+    fp: dict = dict(data_dir_fingerprint(data_dir))
+    fp["stores"] = tuple(notes.store_names())
+    return fp
+
+
 def refresh_sources(app: FastAPI) -> bool:
     """/data の指紋が前回と変わっていればソースを再走査して差し替える(変わったら True)。
 
@@ -176,7 +189,7 @@ def refresh_sources(app: FastAPI) -> bool:
     接続の開き直しはここではなく db.get_connection が実体の inode を見て行う。
 
     """
-    fp = data_dir_fingerprint(app.state.data_dir)
+    fp = _sources_fingerprint(app.state.data_dir)
     if fp == app.state.data_fingerprint:
         return False
     app.state.data_fingerprint = fp
@@ -1954,7 +1967,7 @@ async def lifespan(app: FastAPI):
     data_dir = Path(os.environ.get("CHIEZO_DATA_DIR", "/data"))
     app.state.data_dir = data_dir
     # 指紋は走査の前に取る(走査中の変化を取りこぼさない側に倒す)
-    app.state.data_fingerprint = data_dir_fingerprint(data_dir)
+    app.state.data_fingerprint = _sources_fingerprint(data_dir)
     # notes(唯一書き込めるソース)は ingest を回さずに使えるよう、無ければここで作る
     notes.ensure_db()
     app.state.sources = scan_all(data_dir)
