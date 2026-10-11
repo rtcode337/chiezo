@@ -52,7 +52,7 @@ BUILD_CACHE_KIB = {"fast": 524_288, "low_memory": 65_536}
 
 def build_pragmas() -> list[str]:
     """構築時の PRAGMA(使い捨ての .building 専用。運用 DB には持ち込まない —
-    journal_mode=OFF は kill 一発で DB が壊れるため。scripts/add_tag_index.py 参照)。"""
+    journal_mode=OFF は途中で kill されると DB が壊れるため)。"""
     return [
         "PRAGMA journal_mode=OFF",
         "PRAGMA synchronous=OFF",

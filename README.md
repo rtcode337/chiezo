@@ -73,7 +73,7 @@ docker compose --profile ingest run --rm chiezo-ingest      # ダンプの更新
 | [全体像](docs/overview.md) | 持っているもの・ためられるソース・覚える・ToDo・AI に話させる/作らせる |
 | [API リファレンス](docs/api-reference.md) | REST の全パラメータ、`extra` の中身、MCP、Claude Code 連携、画面 |
 | [AI と話す](docs/ai.md) | 話す相手の増やし方・CLI ブリッジ・agent モード・web 検索・生成・環境変数 |
-| [運用](docs/operations.md) | 取り込みの環境変数、スキーマ移行、メモリ、配布、セキュリティ |
+| [運用](docs/operations.md) | 取り込みの環境変数、古いスキーマの扱い、メモリ、配布、セキュリティ |
 | [ToDo](docs/tasks.md) | タスク・ルールの画面と、notes のタグでの表し方 |
 | [設計メモ](docs/design-notes.md) | なぜこの形なのか。実測して方針が変わったものは数字と一緒にここへ残す |
 | [開発](docs/development.md) | テスト・依存の固定・CI とイメージ・compose の重ね方 |

@@ -677,11 +677,7 @@ def _doc_ids(spec: dict, sources: dict):
     id_set = build_doc_id_set(
         src, tags=tags, bbox=",".join(str(v) for v in box) if box else None,
     )
-    if id_set is None:
-        raise HTTPException(409, {
-            "error": f"ソース「{spec['source']}」はタグで絞り込めません",
-            "hint": "タグの転置表が入る前のスキーマで焼かれている。取り込み直すと使える",
-        })
+    assert id_set is not None  # タグが 1 つはある(上で確かめた)ので必ず組める
     set_sql, params = id_set
     # 外したいタグは EXCEPT で引く。**カテゴリは持ち主の職業を選ばない** ——
     # 仕事で括ったカテゴリにも、それで知られていない人が入っている。人気の順に

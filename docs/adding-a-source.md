@@ -262,11 +262,11 @@ docker compose --profile ingest run --rm -e SOURCE=private_docs chiezo-ingest
 
 ### スキーマバージョンについて
 
-`schema_version` は「app がどの機能を出せるか」の指標です(2 で `filter`、3 で `tag`、
-4 で `bbox` と大きな並べ替え)。DDL は `core.py` にあるので、上のようにイメージを
-継承していれば最新版が自動的に焼かれます。**独自に `.db` を組み立てる場合は、
-`core.CORE_SCHEMA_DDL` 一式をそのまま使ってください** — 索引が欠けると
-`filter` / `tags` が 409 になります。
+`schema_version` はコアスキーマの版です。app が読めるのは最新の版(いまは 4)だけで、
+それより古い DB は登録されません(取り込み直すと読めるようになります)。DDL は `core.py` に
+あるので、上のようにイメージを継承していれば最新版が自動的に焼かれます。
+**独自に `.db` を組み立てる場合は、`core.CORE_SCHEMA_DDL` 一式をそのまま使ってください** —
+表や索引が欠けると `filter` / `tags` が失敗します。
 
 ## 動作確認のコツ
 
@@ -288,5 +288,5 @@ docker compose --profile ingest run --rm \
 2. コアスキーマ(meta / docs / aliases / docs_fts / doc_tags / tag_counts / doc_coords)は
    全ソース共通。
    足りないフィールドは `extra` に逃がし、コアスキーマ変更は最終手段
-   (変更時は `schema_version` を上げ、app 側で複数バージョン対応)。
+   (変更時は `schema_version` を上げ、配信中の DB が焼き直されるまでは app 側で新旧を両方読む)。
 3. `fetch()` は再開可能に、`iter_docs()` はストリーミングで。

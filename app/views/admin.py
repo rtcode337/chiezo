@@ -54,7 +54,7 @@ from app import extract as extraction
 from app import partition as partitioning
 from app.known_sources import CONTINENT_LABELS, KNOWN_SOURCES, WIKIPEDIA_TIERS
 from app.pages import CHAT_PATH, browse_url, esc, page_shell
-from app.registry import SUPPORTED_SCHEMA_VERSIONS, TAG_MIN_SCHEMA_VERSION, Source
+from app.registry import SUPPORTED_SCHEMA_VERSIONS, Source
 from app.views import ai_history, ai_settings, ai_usage, ai_workers, todo
 
 log = logging.getLogger("chiezo.app")
@@ -1301,7 +1301,7 @@ def _removed_html(item, sources: dict, page: int = 1) -> str:
     押しても何も変わらないように見える)。
     """
     src = sources.get(item.name)
-    if src is None or src.schema_version < TAG_MIN_SCHEMA_VERSION:
+    if src is None:
         return ""
     counted = db.query(
         src.path, "SELECT COUNT(*) AS n FROM doc_tags WHERE tag = ?", (notes.REMOVED_TAG,),
@@ -3190,6 +3190,7 @@ def memory_page(
 
 <h2 id="long-term">長期記憶(ためた知識)</h2>
 <p>登録ソース数: {len(long_term)} / 最新のスキーマバージョン: {latest_schema}</p>
+{_unsupported_sources_html(request.app.state.data_dir, sources)}
 <!-- **いつも出す。** 繋がらないときだけ大きな枠で断っていた頃は、表より先に
      警告が目に入り、読むだけの人にも「壊れている」ように見えた。押せない理由は
      この 1 行で足りる(ボタンは繋がらなければ灰色になる) -->
@@ -3205,8 +3206,7 @@ chiezo-trigger が立ち上がっていない場合、再構築と削除はで�
 </tbody>
 </table>
 <p class="muted">
-スキーマバージョンが最新より古いソースは再構築で最新になる(タグ・座標まわりの一部は
-<code>scripts/add_tag_index.py</code> でのその場移行でも可)。再構築はブルーグリーンで、
+スキーマバージョンが最新より古いソースは再構築で最新になる。再構築はブルーグリーンで、
 構築中も現行 DB での配信は続く。完了後は数秒以内に自動で新しい DB へ切り替わる(再起動不要)。
 </p>
 
@@ -3937,9 +3937,19 @@ def _rollback_cell(src: Source, back: str) -> str:
     before = registry.previous_generation(src.path)
     if before is None:
         return '<span class="muted">戻せる世代はありません</span>'
-    if not TRIGGER_URL:
-        return '<span class="muted">取り込みが設定されていないので戻せません</span>'
+    info = registry.generation_info(before)
     label = _generation_label(registry.generation_stamp(before))
+    detail = _generation_detail_html(info)
+    # 読めない版の世代へは戻させない。戻すとリンクの先が登録されなくなり、
+    # ソースごと見えなくなる(古い版は登録しない。`registry.SUPPORTED_SCHEMA_VERSIONS`)
+    if not info.supported:
+        return (
+            f'<span class="stale nowrap">1 つ前: {label}'
+            f"(schema_version {esc(str(info.schema_version or '不明'))} のため戻せません)</span>"
+            f"{detail}"
+        )
+    if not TRIGGER_URL:
+        return '<span class="muted">取り込みが設定されていないので戻せません</span>' + detail
     ask = (
         f"{src.name} を 1 つ前の世代({label})へ戻します。"
         "いまの世代は消さないので、押し直せば戻ります。"
@@ -3955,7 +3965,45 @@ def _rollback_cell(src: Source, back: str) -> str:
         # **ボタンの横に置き、日時は途中で割らない**(`nowrap`)—— 下に回すと
         # どのボタンの話なのかが離れ、日付が「2026-07-」と「24」に泣き別れた
         f' <span class="muted nowrap">1 つ前: {label}</span>'
+        f"{detail}"
     )
+
+
+def _unsupported_sources_html(data_dir: Path, sources: dict[str, Source]) -> str:
+    """版が古くて登録できなかったソース。黙って一覧から消えたように見せない。
+
+    読めない版の DB は登録を飛ばす(`registry.SUPPORTED_SCHEMA_VERSIONS`)ので、
+    ここで拾わないと、ログを見ない限り「ソースが消えた」としか見えない。
+    """
+    found = registry.unsupported_sources(data_dir, sources)
+    if not found:
+        return ""
+    items = "".join(
+        f"<li>{esc(name)}: {esc(registry.unsupported_note(version))}</li>"
+        for name, version in sorted(found.items())
+    )
+    return f'<div class="stale"><p>登録できなかったソースがあります。</p><ul>{items}</ul></div>'
+
+
+def _generation_detail_html(info: registry.GenerationInfo) -> str:
+    """1 つ前の世代の中身(件数・大きさ・版・焼いた時刻)を 1 行で。
+
+    戻す前に「戻したら何になるか」を読めるようにする。日付だけでは、
+    件数が大きく違う(焼き直しで欠けた)のか、同じ中身なのかが分からない。
+    読めなかった項目は出さない。
+    """
+    parts: list[str] = []
+    if info.doc_count is not None:
+        parts.append(f"{info.doc_count:,} 件")
+    if size := db_size_text(info.path):
+        parts.append(size)
+    if info.schema_version is not None:
+        parts.append(f"schema_version {info.schema_version}")
+    if built := jst.parse(info.built_at):
+        parts.append(f"{jst.format(built)} に焼いた")
+    if not parts:
+        return ""
+    return f'<br><span class="muted nowrap">{esc(" / ".join(parts))}</span>'
 
 
 @router.post("/admin/source/{source}/rollback")
@@ -3975,6 +4023,13 @@ def admin_source_rollback(source: str, request: Request, back: str = Form("")):
     sources: dict[str, Source] = request.app.state.sources
     if (known := sources.get(source)) is None:
         raise HTTPException(404, {"error": f"そのソースはありません: {source}"})
+    # 読めない版の世代へは戻さない(戻すとソースごと登録から消える)
+    before = registry.previous_generation(known.path)
+    if before is not None and not (info := registry.generation_info(before)).supported:
+        raise HTTPException(409, {
+            "error": f"ソース「{source}」の 1 つ前の世代は戻せません",
+            "reason": registry.unsupported_note(info.schema_version),
+        })
     if not TRIGGER_URL:
         raise HTTPException(
             503, {"error": "取り込み(chiezo-trigger)が設定されていないので戻せません"}

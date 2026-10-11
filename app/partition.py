@@ -42,8 +42,6 @@ import re
 
 from fastapi import HTTPException
 
-from app.registry import COORDS_MIN_SCHEMA_VERSION, TAG_MIN_SCHEMA_VERSION
-
 log = logging.getLogger("chiezo.app")
 
 # 割り方。**対象の並び方で選ぶ** —— 地理的に散らばっているなら矩形、
@@ -367,8 +365,7 @@ def _population_filter(spec: dict) -> tuple[str, list]:
 def _points(spec: dict, sources: dict, own: dict[str, dict]) -> list[tuple[float, float]]:
     """割る元になる座標。
 
-    **母集団のソースがあるときは `doc_coords` を引く**(schema_version 4 で入った
-    座標の索引。緯度帯の走査も経度の判定も索引の中で完結する)。
+    母集団のソースがあるときは `doc_coords` を引く(座標の索引。緯度帯の走査も経度の判定も索引の中で完結する)。
     """
     from app import db
 
@@ -840,7 +837,7 @@ def parse_title_key(key: str) -> tuple[str, str] | None:
 
 
 def narrowing(
-    spec: dict | None, partitions: list[dict], key: str, schema_version: int = 0,
+    spec: dict | None, partitions: list[dict], key: str,
 ) -> tuple[str, tuple]:
     """**その区画を必ず含む範囲**を SQL の断片にする(`docs` に足す形)。
 
@@ -874,17 +871,13 @@ def narrowing(
     if not spec or not key:
         return "", ()
     by = spec.get("by")
-    if (
-        by == BY_GEO
-        and schema_version >= COORDS_MIN_SCHEMA_VERSION
-        and (box := parse_geo_key(key)) is not None
-    ):
+    if by == BY_GEO and (box := parse_geo_key(key)) is not None:
         return (
             " AND doc_id IN (SELECT doc_id FROM doc_coords"
             " WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?)",
             (box[0], box[2], box[1], box[3]),
         )
-    if by == BY_TAG and schema_version >= TAG_MIN_SCHEMA_VERSION and spec.get("tag"):
+    if by == BY_TAG and spec.get("tag"):
         return (
             " AND doc_id IN (SELECT doc_id FROM doc_tags WHERE tag = ?)",
             (spec["tag"],),

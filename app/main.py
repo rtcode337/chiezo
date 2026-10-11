@@ -72,19 +72,12 @@ from app.deps import (
     get_source,
     relevance_order,
     require_attributes,
-    require_filter_schema,
     require_recency_index,
-    require_tag_schema,
 )
 from app.fts import build_match_query, escape_like
 from app.mcp_server import build_mcp, build_mcp_app
 from app.pages import APP_ICON_SVG, APP_MANIFEST, APPLE_TOUCH_ICON_PNG
 from app.registry import (
-    COORDS_MIN_SCHEMA_VERSION,
-    FILTER_MIN_SCHEMA_VERSION,
-    RANK_INDEX_MIN_SCHEMA_VERSION,
-    TAG_COUNTS_MIN_SCHEMA_VERSION,
-    TAG_MIN_SCHEMA_VERSION,
     Source,
     data_dir_fingerprint,
     scan_source,
@@ -2531,10 +2524,9 @@ def fetch_doc_by_title(src: Source, title: str):
 def describe_candidate(src: Source, row) -> dict:
     """alternatives 用の短い説明(取り違えを見分けられる最小限の情報)。"""
     out = {"doc_id": row["doc_id"], "title": row["title"]}
-    if src.schema_version >= FILTER_MIN_SCHEMA_VERSION:
-        for key in ("feature", "area", "lat", "lon"):
-            if row[key] is not None:
-                out[key] = row[key]
+    for key in ("feature", "area", "lat", "lon"):
+        if row[key] is not None:
+            out[key] = row[key]
     return out
 
 
@@ -2622,10 +2614,8 @@ def removed_clause(
     目を通していないもの**(`UNREVIEWED_TAG`)も外す —— 機械で入るものには宣伝も
     的外れも混ざるので、整理が回るまでのあいだ読者の画面に並んでいた。
     **引数は増やさない** —— 印ごとに分けると、新しい読み手が片方だけ思い出す。
-
-    **タグの索引を持たない古いソースでは何もしない**(絞りようが無い)。
     """
-    if include_removed or src.schema_version < TAG_MIN_SCHEMA_VERSION:
+    if include_removed:
         return "", []
     marks = ", ".join("?" * len(notes.HIDDEN_TAGS))
     return (
@@ -2654,13 +2644,11 @@ def build_attribute_filters(
     hidden, hidden_params = removed_clause(src, include_removed, column_prefix)
     if not any((feature, area, bbox, wikidata, tag)):
         return hidden, hidden_params
-    require_filter_schema(src)
     require_attributes(src, feature=feature, area=area)
     p = column_prefix
     where: list[str] = []
     params: list = []
     if tag:
-        require_tag_schema(src)
         tags = split_tags(tag)
         # doc_tags を先に引いて doc_id で docs を叩く形(LIST SUBQUERY → rowid 検索)。
         # EXISTS(...) で書くと SQLite は docs 側を全走査して 1 行ずつ確認する計画を選び、
@@ -2682,13 +2670,10 @@ def build_attribute_filters(
         params.append(wikidata)
     if bbox:
         min_lat, min_lon, max_lat, max_lon = parse_bbox(bbox)
-        if src.schema_version >= COORDS_MIN_SCHEMA_VERSION:
-            # 実体の値を持つ doc_coords を引く。生成列(VIRTUAL)の索引だと経度の判定に
-            # 行本体が要り、費用が該当件数ではなく緯度帯の文書数に比例する。
-            # タグと同じ「doc_id の集合」の形。
-            where.append(f"{p or 'docs.'}doc_id IN ({BBOX_DOC_IDS_SQL})")
-        else:
-            where.append(f"{p}lat BETWEEN ? AND ? AND {p}lon BETWEEN ? AND ?")
+        # 実体の値を持つ doc_coords を引く。生成列(VIRTUAL)の索引だと経度の判定に
+        # 行本体が要り、費用が該当件数ではなく緯度帯の文書数に比例する。
+        # タグと同じ「doc_id の集合」の形。
+        where.append(f"{p or 'docs.'}doc_id IN ({BBOX_DOC_IDS_SQL})")
         params.extend([min_lat, max_lat, min_lon, max_lon])
     return "".join(f" AND {clause}" for clause in where) + hidden, params + hidden_params
 
@@ -2723,7 +2708,7 @@ def build_doc_id_set(
 
     - `tag` → doc_tags(idx_doc_tags_tag が (tag, doc_id) の被覆索引)
     - `bbox` → doc_coords(実体の lat/lon を持つ表。生成列の索引では経度の判定に
-      行本体が要る。schema_version 4 から)
+      行本体が要る)
     - `feature` / `area` → idx_docs_feature_area / idx_docs_area_feature。
       生成列でも索引には計算済みの値が入っているので、doc_id だけを取り出す
       分にはここも索引の中で完結する(2 つを 1 本の複合索引で捌けるので分けない)
@@ -2735,12 +2720,9 @@ def build_doc_id_set(
     配信機で 5 秒前後 = 504)。INTERSECT なら両側とも索引の中で終わり、行を読むのは
     交差した分だけになる(同じ条件で 0.05 秒)。
 
-    索引だけで引けない組み合わせ(古い schema_version)では None を返す。呼び出し側は
-    従来の WHERE 句(build_attribute_filters)へ落ちる。
+    条件が 1 つも無ければ None を返す。
     """
     if not any((feature, area, bbox, wikidata, tag, tags)):
-        return None
-    if src.schema_version < FILTER_MIN_SCHEMA_VERSION:
         return None
     # 持っていない属性で絞ろうとしていないか(0 件ではなく理由を返す)。
     # ここは /filter の経路で、search / doc は build_attribute_filters 側で同じ検査をする。
@@ -2748,8 +2730,6 @@ def build_doc_id_set(
     parts: list[str] = []
     params: list = []
     if tag or tags:
-        if src.schema_version < TAG_MIN_SCHEMA_VERSION:
-            return None
         # **タグ名を実体の配列で受け取れる**(`tags`)。カンマ区切りの文字列に畳むと、
         # カンマを含むタグ名が 2 つに割れる —— 末尾一致で広げたタグ名は
         # こちらが作った文字列ではないので、区切り文字が入っていないと言い切れない
@@ -2762,8 +2742,6 @@ def build_doc_id_set(
         )
         params.extend(tags)
     if bbox:
-        if src.schema_version < COORDS_MIN_SCHEMA_VERSION:
-            return None
         min_lat, min_lon, max_lat, max_lon = parse_bbox(bbox)
         parts.append(BBOX_DOC_IDS_SQL)
         params.extend([min_lat, max_lat, min_lon, max_lon])
@@ -2785,7 +2763,7 @@ def build_doc_id_set(
         parts.append("SELECT doc_id FROM docs INDEXED BY idx_docs_wikidata WHERE wikidata = ?")
         params.append(wikidata)
     joined = " INTERSECT ".join(parts)
-    if not include_removed and src.schema_version >= TAG_MIN_SCHEMA_VERSION:
+    if not include_removed:
         # **読者に出さない印の付いたものを外す**(`notes.HIDDEN_TAGS`)。消えたものと、
         # まだ AI が目を通していないもの。EXCEPT なら doc_tags の索引の中だけで
         # 終わるので、INTERSECT の並びに足しても行本体は読まない。
@@ -2826,8 +2804,6 @@ def rank_index_hint(src: Source, total: int, need: int) -> str:
     配信機で 504 になっていた(offset=250 までは 0.665 秒で返っていた)。
     総件数だけで切り替えると、この「浅い頁は速いが末尾で破綻する」形を直せない。
     """
-    if src.schema_version < RANK_INDEX_MIN_SCHEMA_VERSION:
-        return ""  # 索引の無い DB に INDEXED BY を書くとエラーになる
     if total <= 0:
         return ""
     # 一様分布での期待走査件数(該当を need 件拾うまでに読む索引の件数)。
@@ -2877,9 +2853,6 @@ def filter_docs(
     offset でページングできる。
     """
     src = get_source(request, source)
-    require_filter_schema(src)
-    if tag:
-        require_tag_schema(src)
     field_list = parse_fields(fields, FILTER_DEFAULT_FIELDS, FILTER_ALLOWED_FIELDS)
     if not any((feature, area, bbox, wikidata, tag)):
         raise HTTPException(
@@ -2891,24 +2864,13 @@ def filter_docs(
         src, feature=feature, area=area, bbox=bbox, wikidata=wikidata, tag=tag,
         include_removed=include_removed,
     )
-    if id_set is not None:
-        # 索引だけで doc_id の集合に落ちた場合。総件数はその集合を数えるだけで済み
-        # (docs を 1 行も読まない)、行を読むのは並べ替えの経路が決めた分だけになる。
-        set_sql, params = id_set
-        (total,) = db.query(src.path, f"SELECT COUNT(*) AS n FROM ({set_sql})", tuple(params))[0]
-        clause = f"doc_id IN ({set_sql})"
-        hint = rank_index_hint(src, total, offset + limit)
-    else:
-        # 古い schema_version の DB 向けの旧経路(索引が足りず docs 側で判定する)。
-        where, params = build_attribute_filters(
-            src, feature=feature, area=area, bbox=bbox, wikidata=wikidata, tag=tag,
-            include_removed=include_removed,
-        )
-        clause = where.removeprefix(" AND ")
-        (total,) = db.query(
-            src.path, f"SELECT COUNT(*) AS n FROM docs WHERE {clause}", tuple(params)
-        )[0]
-        hint = ""
+    assert id_set is not None  # 条件が 1 つはある(上で確かめた)ので必ず組める
+    # 索引だけで doc_id の集合に落ちる。総件数はその集合を数えるだけで済み
+    # (docs を 1 行も読まない)、行を読むのは並べ替えの経路が決めた分だけになる。
+    set_sql, params = id_set
+    (total,) = db.query(src.path, f"SELECT COUNT(*) AS n FROM ({set_sql})", tuple(params))[0]
+    clause = f"doc_id IN ({set_sql})"
+    hint = rank_index_hint(src, total, offset + limit)
     rows = db.query(
         src.path,
         f"SELECT {', '.join(field_list)} FROM docs{hint}"
@@ -3074,7 +3036,6 @@ def list_tags(
     無いのかが分からない。ここで実在するタグ名を先に確かめられるようにしておく。
     """
     src = get_source(request, source)
-    require_tag_schema(src)
     where = ""
     params: list = []
     if prefix:
@@ -3084,18 +3045,10 @@ def list_tags(
     if contains:
         where += (" AND" if where else " WHERE") + " tag LIKE ? ESCAPE '\\'"
         params.append("%" + escape_like(contains) + "%")
-    if src.schema_version >= TAG_COUNTS_MIN_SCHEMA_VERSION:
-        # 集計済みのタグ名だけを読む(jawiki で 29 万行・12MB)。部分一致でも
-        # idx_tag_counts_docs が docs 降順なので、上位 limit 件が埋まった時点で
-        # 走査が止まる。
-        sql = f"SELECT tag, docs FROM tag_counts{where} ORDER BY docs DESC, tag LIMIT ? OFFSET ?"
-    else:
-        # tag_counts が無い schema_version 3 の DB 向けの旧経路。転置表を丸ごと
-        # 読むので、巨大ソースの部分一致はタイムアウトしうる(scripts/add_tag_index.py で移行する)。
-        sql = (
-            f"SELECT tag, COUNT(*) AS docs FROM doc_tags{where}"
-            " GROUP BY tag ORDER BY docs DESC, tag LIMIT ? OFFSET ?"
-        )
+    # 集計済みのタグ名だけを読む(jawiki で 29 万行・12MB)。部分一致でも
+    # idx_tag_counts_docs が docs 降順なので、上位 limit 件が埋まった時点で
+    # 走査が止まる。
+    sql = f"SELECT tag, docs FROM tag_counts{where} ORDER BY docs DESC, tag LIMIT ? OFFSET ?"
     rows = db.query(src.path, sql, (*params, limit, offset))
     return {
         "source": source,

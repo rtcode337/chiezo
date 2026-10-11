@@ -20,11 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app import capabilities, db, jst, notes
-from app.registry import (
-    FILTER_MIN_SCHEMA_VERSION,
-    TAG_MIN_SCHEMA_VERSION,
-    Source,
-)
+from app.registry import Source
 
 BEGIN_MARK = "<!-- BEGIN chiezo (auto-generated) -->"
 END_MARK = "<!-- END chiezo -->"
@@ -577,15 +573,11 @@ def describe(src: Source) -> dict:
     title, extra_keys, sample_tags = _sample(src)
     if not _quotable(src):
         title, sample_tags = "", []
-    can = ["search", "doc"]
-    if src.schema_version >= TAG_MIN_SCHEMA_VERSION:
-        can += ["tags", "titles"]
-    if src.schema_version >= FILTER_MIN_SCHEMA_VERSION:
-        can.append("filter")
-        if _has_value(src, "lat"):
-            can.append("bbox")
-        if "wikidata" in extra_keys:
-            can.append("wikidata")
+    can = ["search", "doc", "tags", "titles", "filter"]
+    if _has_value(src, "lat"):
+        can.append("bbox")
+    if "wikidata" in extra_keys:
+        can.append("wikidata")
     if _has_links(src):
         can.append("links")
     if "pageviews_month" in extra_keys:

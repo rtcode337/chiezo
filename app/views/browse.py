@@ -14,10 +14,9 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 
 from app import db
-from app.deps import exact_title_first, get_source, relevance_order, require_tag_schema
+from app.deps import exact_title_first, get_source, relevance_order
 from app.fts import build_match_query, escape_like
 from app.pages import browse_url, doc_url, esc, page_shell
-from app.registry import TAG_MIN_SCHEMA_VERSION
 
 log = logging.getLogger("chiezo.app")
 
@@ -112,7 +111,6 @@ def browse_source(
     fetch = PAGE_SIZE + 1  # 1 件多く引いて「次ページがあるか」を知る(COUNT を打たない)
     if tag:
         # 文書詳細のタグから飛んでくる導線(= /v1/<source>/filter?tag= の人間向け)
-        require_tag_schema(src)
         rows = db.query(
             src.path,
             "SELECT doc_id, title, tags,"
@@ -207,15 +205,11 @@ def browse_doc(request: Request, source: str, doc_id: int):
     tags = json.loads(row["tags"]) if row["tags"] else []
     links = json.loads(row["links"]) if row["links"] else []
     extra = json.loads(row["extra"]) if row["extra"] else {}
-    if src.schema_version >= TAG_MIN_SCHEMA_VERSION:
-        # 同じタグの文書一覧へ飛べるようにする(タグ絞り込みの導線)
-        tags_html = ", ".join(
-            f'<a href="{esc(browse_url(source) + "?tag=" + quote(t))}">{esc(t)}</a>'
-            for t in tags
-        )
-    else:
-        tags_html = ", ".join(esc(t) for t in tags)
-    tags_html = tags_html or "(なし)"
+    # 同じタグの文書一覧へ飛べるようにする(タグ絞り込みの導線)
+    tags_html = ", ".join(
+        f'<a href="{esc(browse_url(source) + "?tag=" + quote(t))}">{esc(t)}</a>'
+        for t in tags
+    ) or "(なし)"
     links_html = "\n".join(f"<li>{esc(link)}</li>" for link in links) or "<li>(なし)</li>"
     extra_html = json.dumps(extra, ensure_ascii=False, indent=2) if extra else "(なし)"
     body = f"""

@@ -697,13 +697,16 @@ class TestAdminAndBrowse:
         assert f"最新のスキーマバージョン: {max(SUPPORTED_SCHEMA_VERSIONS)}" in res.text
 
     def test_admin_marks_stale_schema_version(self, client, monkeypatch):
-        """最新より古い DB の行には最新版への注意書きが付く(最新なら付かない)。"""
-        from app.registry import SUPPORTED_SCHEMA_VERSIONS
+        """最新より古い DB の行には最新版への注意書きが付く(最新なら付かない)。
 
-        latest = max(SUPPORTED_SCHEMA_VERSIONS)
-        assert f"(最新: {latest})" not in client.get("/admin/memory").text
-        monkeypatch.setattr(client.app.state.sources["jawiki"], "schema_version", 1)
-        assert f"(最新: {latest})" in client.get("/admin/memory").text
+        app が読める版は最新だけなので、古く見えるのは取り込み側が先に版を
+        上げたとき(trigger が返す最新のほうが大きい)。
+        """
+        from app.views import admin
+
+        assert "(最新: 5)" not in client.get("/admin/memory").text
+        monkeypatch.setattr(admin, "latest_schema_version", lambda: 5)
+        assert "(最新: 5)" in client.get("/admin/memory").text
 
     def test_admin_shows_rebuild_button_for_registered_source(self, client):
         res = client.get("/admin/memory")
@@ -1151,187 +1154,181 @@ class TestBrowsePages:
         assert all({"doc_id", "title"} <= set(r) for r in results)
 
 
-class TestFilterSchemaGuard:
-    """schema_version 1 で作られた既存 DB は /filter を持たない(生成列も索引も無い)。"""
+def _corpus_dir(tmp_path, built_data_dir, live_version: int = 4, previous_version: int | None = None):
+    """世代ファイルとシンボリックリンクを並べた置き場(取り込みが作るのと同じ形)。
 
-    def test_old_schema_returns_409(self, tmp_path, built_data_dir):
-        import shutil
-        import sqlite3
+    `previous_version` を渡すと、1 つ前の世代(`jawiki-20260601.db`)も置く。
+    """
+    import shutil
+    import sqlite3
 
-        from fastapi.testclient import TestClient
-
-        data_dir = tmp_path / "legacy"
-        data_dir.mkdir()
-        db_path = data_dir / "jawiki.db"
-        shutil.copy(built_data_dir / "jawiki.db", db_path)
-        conn = sqlite3.connect(db_path)
-        conn.execute("UPDATE meta SET schema_version = 1")
+    data_dir = tmp_path / "corpus"
+    data_dir.mkdir()
+    gens = [("20260701", live_version)]
+    if previous_version is not None:
+        gens.append(("20260601", previous_version))
+    for stamp, version in gens:
+        path = data_dir / f"jawiki-{stamp}.db"
+        shutil.copy(built_data_dir / "jawiki.db", path)
+        conn = sqlite3.connect(path)
+        conn.execute("UPDATE meta SET schema_version = ?", (version,))
         conn.commit()
         conn.close()
+    (data_dir / "jawiki.db").symlink_to("jawiki-20260701.db")
+    return data_dir
 
-        mp = pytest.MonkeyPatch()
+
+@pytest.fixture()
+def corpus_client():
+    """置き場を差し替えて app を立てる。`open(data_dir)` で開く。"""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    mp = pytest.MonkeyPatch()
+    clients = []
+    # 立て直した app の状態は、終わったら元へ戻す。app は 1 つを使い回すので、
+    # 戻さないと後に続くテストが差し替えた置き場を読む
+    saved = dict(app.state._state)
+
+    def open_(data_dir):
         mp.setenv("CHIEZO_DATA_DIR", str(data_dir))
-        try:
-            from app.main import app
+        c = TestClient(app)
+        c.__enter__()
+        clients.append(c)
+        return c
 
-            with TestClient(app) as c:
-                res = c.get("/v1/jawiki/filter", params={"wikidata": "Q1490"})
-                assert res.status_code == 409
-                assert "re-run ingest" in res.json()["error"]
-                # 既存エンドポイントは 1 のままでも従来どおり使える
-                assert c.get("/v1/jawiki/doc", params={"title": "東京都"}).status_code == 200
-        finally:
-            mp.undo()
-
-
-class TestTagSchemaGuard:
-    """schema_version 2 で作られた既存 DB は doc_tags を持たない(tag 絞り込みは 409)。"""
-
-    @pytest.fixture()
-    def legacy_client(self, tmp_path, built_data_dir):
-        import shutil
-        import sqlite3
-
-        from fastapi.testclient import TestClient
-
-        data_dir = tmp_path / "v2"
-        data_dir.mkdir()
-        db_path = data_dir / "jawiki.db"
-        shutil.copy(built_data_dir / "jawiki.db", db_path)
-        conn = sqlite3.connect(db_path)
-        conn.execute("DROP TABLE doc_tags")
-        conn.execute("UPDATE meta SET schema_version = 2")
-        conn.commit()
-        conn.close()
-
-        mp = pytest.MonkeyPatch()
-        mp.setenv("CHIEZO_DATA_DIR", str(data_dir))
-        try:
-            from app.main import app
-
-            with TestClient(app) as c:
-                yield c, db_path
-        finally:
-            mp.undo()
-
-    def test_tag_filter_returns_409_pointing_at_the_migration(self, legacy_client):
-        client, _ = legacy_client
-        for path, params in (
-            ("/v1/jawiki/filter", {"tag": "日本の都道府県"}),
-            ("/v1/jawiki/search", {"q": "日本", "tag": "日本の都道府県"}),
-            ("/v1/jawiki/tags", {}),
-        ):
-            res = client.get(path, params=params)
-            assert res.status_code == 409, path
-            assert "add_tag_index.py" in res.json()["error"]
-
-    def test_other_endpoints_still_work_on_v2(self, legacy_client):
-        client, _ = legacy_client
-        assert client.get("/v1/jawiki/doc", params={"title": "東京都"}).status_code == 200
-        assert client.get("/v1/jawiki/filter", params={"wikidata": "Q1490"}).status_code == 200
-        # tags は取れるが、リンクにはしない(飛んだ先が 409 になるため)
-        assert "?tag=" not in client.get("/search/jawiki/doc/1").text
-
-    def test_add_tag_index_migrates_in_place(self, legacy_client):
-        import sqlite3
-        import subprocess
-        import sys
-        from pathlib import Path
-
-        _, db_path = legacy_client
-        script = Path(__file__).resolve().parents[1] / "scripts" / "add_tag_index.py"
-        # --batch を文書数より小さくして、分割ループが 2 周以上回る経路を通す
-        # (一時領域を小さく保つために件数で刻んでおり、刻み目で取りこぼすと静かに欠ける)
-        run = subprocess.run(
-            [sys.executable, str(script), "--batch", "3", str(db_path)],
-            capture_output=True, text=True,
-        )
-        assert run.returncode == 0, run.stderr
-        assert run.stdout.count("docs ->") >= 4, run.stdout  # 11 文書 / 3 件ずつ
-
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        try:
-            (version,) = conn.execute("SELECT schema_version FROM meta").fetchone()
-            assert version == 4
-            rows = conn.execute(
-                "SELECT doc_id FROM doc_tags WHERE tag = '日本の都道府県'"
-            ).fetchall()
-            assert sorted(r[0] for r in rows) == [1, 10]
-            # 4 の分(tag_counts)も同じ実行で作られ、doc_tags と一致する
-            (docs,) = conn.execute(
-                "SELECT docs FROM tag_counts WHERE tag = '日本の都道府県'"
-            ).fetchone()
-            assert docs == 2
-            mismatch = conn.execute(
-                "SELECT tag FROM tag_counts WHERE docs <>"
-                " (SELECT COUNT(DISTINCT doc_id) FROM doc_tags WHERE doc_tags.tag = tag_counts.tag)"
-            ).fetchall()
-            assert mismatch == []
-        finally:
-            conn.close()
-
-        # 二度目は何もしない(冪等)
-        again = subprocess.run(
-            [sys.executable, str(script), str(db_path)], capture_output=True, text=True
-        )
-        assert again.returncode == 0
-        assert "nothing to do" in again.stdout
+    try:
+        yield open_
+    finally:
+        for c in clients:
+            c.__exit__(None, None, None)
+        mp.undo()
+        app.state._state.clear()
+        app.state._state.update(saved)
 
 
-class TestTagCountsFallback:
-    """schema_version 3 の DB は tag_counts を持たない(遅いが今までどおり動く)。
+class TestOldSchemaIsNotRegistered:
+    """schema_version 4 より前の DB は登録しない(足りない表を前提にした問い合わせが通らない)。
 
-    4 で足したのは doc_tags を畳んだ集計表だけで、答えは変わらない。移行前の DB を
-    断らずに旧経路へ落とすようにしてあるので、両経路が同じ答えを返すことを固定する。
+    黙って消えたように見せない —— ログに「取り込み直す」と出し、管理画面にも並べる。
     """
 
-    @pytest.fixture()
-    def v3_client(self, tmp_path, built_data_dir):
-        import shutil
-        import sqlite3
+    def test_it_is_skipped_with_a_hint_to_reingest(
+        self, tmp_path, built_data_dir, corpus_client, caplog,
+    ):
+        data_dir = _corpus_dir(tmp_path, built_data_dir, live_version=3)
+        with caplog.at_level("WARNING", logger="chiezo.app"):
+            c = corpus_client(data_dir)
 
-        from fastapi.testclient import TestClient
+        assert c.get("/v1/jawiki/doc", params={"title": "東京都"}).status_code == 404
+        assert c.get("/v1/sources").json()["sources"] == []
+        assert any(
+            "unsupported schema_version=3" in r.message and "re-run ingest" in r.message
+            for r in caplog.records
+        )
 
-        data_dir = tmp_path / "v3"
-        data_dir.mkdir()
-        db_path = data_dir / "jawiki.db"
-        shutil.copy(built_data_dir / "jawiki.db", db_path)
-        conn = sqlite3.connect(db_path)
-        conn.execute("DROP TABLE tag_counts")
-        conn.execute("UPDATE meta SET schema_version = 3")
-        conn.commit()
-        conn.close()
+    def test_the_admin_page_says_to_reingest(self, tmp_path, built_data_dir, corpus_client):
+        c = corpus_client(_corpus_dir(tmp_path, built_data_dir, live_version=2))
 
-        mp = pytest.MonkeyPatch()
-        mp.setenv("CHIEZO_DATA_DIR", str(data_dir))
-        try:
-            from app.main import app
+        html = c.get("/admin/memory").text
+        assert "登録できなかったソースがあります" in html
+        assert "jawiki: schema_version=2 は読めません(対応は 4)。取り込み直してください" in html
 
-            with TestClient(app) as c:
-                yield c
-        finally:
-            mp.undo()
+    def test_nothing_is_listed_when_all_are_readable(self, client):
+        assert "登録できなかったソース" not in client.get("/admin/memory").text
 
-    def test_tags_endpoint_matches_the_tag_counts_path(self, v3_client, client):
-        for params in ({"limit": 3}, {"prefix": "日本の"}, {"contains": "地方"}, {"contains": "%"}):
-            old = v3_client.get("/v1/jawiki/tags", params=params)
-            new = client.get("/v1/jawiki/tags", params=params)
-            assert old.status_code == 200, params
-            assert old.json() == new.json(), params
 
-    def test_tag_filter_total_matches(self, v3_client, client):
-        for params in ({"tag": "日本の都道府県"}, {"tag": "日本の山,日本の合戦"}):
-            old = v3_client.get("/v1/jawiki/filter", params=params)
-            assert old.status_code == 200, params
-            assert old.json() == client.get("/v1/jawiki/filter", params=params).json(), params
+class TestPreviousGeneration:
+    """記憶の面に、1 つ前の世代(戻す先)の中身を添える。"""
 
-    def test_rank_index_is_not_named_on_v3(self, v3_client, monkeypatch):
-        """3 の DB には idx_docs_rank が無いので、INDEXED BY を書いてはいけない。"""
+    def test_it_shows_what_the_previous_generation_holds(
+        self, tmp_path, built_data_dir, corpus_client, monkeypatch,
+    ):
+        from app.views import admin
 
-        monkeypatch.setattr(main, "DOC_ROW_VS_INDEX_COST", 10**9)  # 常に使いたがる状態にする
-        res = v3_client.get("/v1/jawiki/filter", params={"tag": "日本の都道府県"})
-        assert res.status_code == 200
-        assert res.json()["total"] == 2
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://trigger.test")
+        c = corpus_client(_corpus_dir(tmp_path, built_data_dir, previous_version=4))
+
+        html = c.get("/admin/memory").text
+        assert "1 つ前: 2026-06-01" in html
+        assert "DBを1つ前へ戻す" in html
+        # 件数・大きさ・版・焼いた時刻(日本時間)
+        assert "11 件 / " in html
+        assert " KiB / schema_version 4 / " in html
+        assert " JST に焼いた" in html
+
+    def test_an_old_schema_generation_cannot_be_rolled_back_to(
+        self, tmp_path, built_data_dir, corpus_client, monkeypatch,
+    ):
+        """戻すとリンクの先が登録されなくなり、ソースごと見えなくなる。"""
+        from app.views import admin
+
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://trigger.test")
+        called = []
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def post(self, url):
+                called.append(url)
+
+        monkeypatch.setattr(admin.httpx, "Client", FakeClient)
+        c = corpus_client(_corpus_dir(tmp_path, built_data_dir, previous_version=3))
+
+        html = c.get("/admin/memory").text
+        assert "1 つ前: 2026-06-01(schema_version 3 のため戻せません)" in html
+        assert "DBを1つ前へ戻す" not in html
+        assert "schema_version 3 / " in html  # 中身は読めるぶんだけ出す
+
+        res = c.post("/admin/source/jawiki/rollback", data={"back": ""}, follow_redirects=False)
+        assert res.status_code == 409
+        assert "取り込み直してください" in res.json()["reason"]
+        assert called == []  # 取り込み側へは頼まない
+
+    def test_no_previous_generation(self, client):
+        assert "戻せる世代はありません" in client.get("/admin/memory").text
+
+
+class TestGenerationInfo:
+    def test_reads_meta_and_count(self, built_data_dir):
+        from app import registry
+
+        info = registry.generation_info((built_data_dir / "jawiki.db").resolve())
+        assert info.schema_version == 4 and info.supported
+        assert info.doc_count == 11
+        assert info.built_at and info.size
+
+    def test_an_unreadable_file_does_not_raise(self, tmp_path):
+        from app import registry
+
+        broken = tmp_path / "jawiki-20260101.db"
+        broken.write_bytes(b"not a database")
+        info = registry.generation_info(broken)
+        assert info.size == len(b"not a database")
+        assert info.schema_version is None and info.doc_count is None
+        assert not info.supported
+
+        gone = registry.generation_info(tmp_path / "jawiki-20250101.db")
+        assert gone.size is None and not gone.supported
+
+    def test_a_slow_count_is_given_up(self, built_data_dir, monkeypatch):
+        """持ち時間を超えたら件数は出さない(画面を待たせない)。"""
+        from app import registry
+
+        monkeypatch.setattr(registry, "GENERATION_COUNT_TIMEOUT", -1.0)
+        monkeypatch.setattr(registry, "GENERATION_PROGRESS_STEP", 1)
+        monkeypatch.setattr(registry, "_generation_cache", {})
+        info = registry.generation_info((built_data_dir / "jawiki.db").resolve())
+        assert info.doc_count is None
+        assert info.schema_version == 4  # 版は読めている(締め切りは COUNT にだけ掛かる)
 
 
 class TestRankIndexPath:

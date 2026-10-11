@@ -263,46 +263,6 @@ class TestOsmFilter:
         assert titles == {"京都市", "京都駅", "京都南インターチェンジ"}
         assert body["total"] == len(titles)
 
-    def test_bbox_matches_the_generated_column_path(self, client, tmp_path, built_osm_data_dir):
-        """doc_coords 経由(4)と生成列を直接引く旧経路(3)が同じ答えを返すこと。
-
-        4 で足したのは docs の lat/lon と同じ値の写しだけで、答えは変わらない。
-        移行前の DB でも動く必要があるので、両方を突き合わせて固定しておく。
-        """
-        import shutil
-
-        data_dir = tmp_path / "v3"
-        data_dir.mkdir()
-        db_path = data_dir / "osm_japan.db"
-        shutil.copy(built_osm_data_dir / "osm_japan.db", db_path)
-        conn = sqlite3.connect(db_path)
-        conn.execute("DROP TABLE doc_coords")
-        conn.execute("UPDATE meta SET schema_version = 3")
-        conn.commit()
-        conn.close()
-
-        mp = pytest.MonkeyPatch()
-        mp.setenv("CHIEZO_DATA_DIR", str(data_dir))
-        try:
-            from app.main import app
-
-            with TestClient(app) as old:
-                for params in (
-                    {"bbox": "34.9,135.6,35.1,135.9", "limit": 50},
-                    {"bbox": "35.0,138.0,36.0,140.0", "feature": "place=city"},
-                    # 3 つ以上の条件(索引の集合を交差させる経路)も突き合わせる
-                    {"bbox": "34.9,135.6,35.1,135.9", "feature": "amenity=restaurant",
-                     "area": "京都府"},
-                    {"bbox": "10.0,10.0,10.1,10.1"},  # 該当なし
-                ):
-                    res = old.get("/v1/osm_japan/filter", params=params)
-                    assert res.status_code == 200, params
-                    assert res.json() == client.get(
-                        "/v1/osm_japan/filter", params=params
-                    ).json(), params
-        finally:
-            mp.undo()
-
     def test_filter_by_wikidata(self, client):
         res = client.get("/v1/osm_japan/filter", params={"wikidata": "Q7473516"})
         assert [r["title"] for r in res.json()["results"]] == ["東京"]

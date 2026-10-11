@@ -71,7 +71,7 @@ from app import extract as extraction
 from app import partition as partitioning
 from app import thumbs as thumbnails
 from app.jst import to_jst
-from app.registry import TAG_MIN_SCHEMA_VERSION, generation_stamp, previous_generation
+from app.registry import generation_stamp, previous_generation
 
 log = logging.getLogger("chiezo.app")
 
@@ -1433,10 +1433,8 @@ def hidden_clause(src, include_hidden: bool = False) -> tuple[str, list]:
 
     **1 か所に持つ。** 印は増える(消えたもの・まだ AI が目を通していないもの)ので、
     読む場所ごとに書き写すと、次に足したときに片方だけ直すことになる。
-
-    **タグの索引を持たない古いソースでは何もしない**(絞りようが無い)。
     """
-    if include_hidden or src.schema_version < TAG_MIN_SCHEMA_VERSION:
+    if include_hidden:
         return "", []
     marks = ", ".join("?" * len(notes.HIDDEN_TAGS))
     return (
@@ -2322,7 +2320,7 @@ def render_nearby(item, sources: dict, partition_key: str | None, here: set[str]
     if not spec or spec.get("by") != partitioning.BY_GEO or box is None:
         return "(この回には、隣の区画という考え方がありません)"
     src = sources.get(item.name)
-    if src is None or (getattr(src, "schema_version", 0) or 0) < partitioning.COORDS_MIN_SCHEMA_VERSION:
+    if src is None:
         return "(隣の区画は読めませんでした)"
     south, west, north, east = box
     dlat = NEARBY_MARGIN_METERS / 111_320
@@ -3538,12 +3536,10 @@ def nothing_to_pass(item: Collection, sweep: Sweep, sources: dict) -> str:
     return "渡すものが無いので AI を呼びませんでした(" + "・".join(empty) + "が 0 件)"
 
 
-def _unreviewed_count(src) -> int | None:
-    """まだ目を通していないもの(消えたものを除く)の数。**数えられなければ None**。"""
+def _unreviewed_count(src) -> int:
+    """まだ目を通していないもの(消えたものを除く)の数。"""
     if src is None:
         return 0
-    if src.schema_version < TAG_MIN_SCHEMA_VERSION:
-        return None
     rows = db.query(
         src.path,
         "SELECT COUNT(*) AS n FROM doc_tags WHERE tag = ?"
@@ -3913,7 +3909,7 @@ def partition_docs(item: Collection, sources: dict, key: str) -> dict[str, dict]
         return {}
     where, args = partitioning.narrowing(
         partitioning.normalize(item.partition) if item.partition else None,
-        item.partitions, key, getattr(src, "schema_version", 0) or 0,
+        item.partitions, key,
     )
     members, _scoped = scoped_docs(item, _docs_where(src, where, args), key)
     return members

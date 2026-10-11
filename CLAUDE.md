@@ -188,11 +188,10 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       `tag`)の AND での一括抽出(Overpass 相当)。**消えたもの・まだ AI が目を通していない
       ものは `search` / `doc` と同じく既定で外す**(`notes.HIDDEN_TAGS`。`include_removed`
       で含められる)。ここだけ消えたものしか外しておらず、他の口では出ないものが
-      一括抽出にだけ並んでいた。`docs` の生成列への索引付き検索なので
-      `schema_version` 2 以上が必要(1 の DB には 409)。条件は `build_attribute_filters()` が
+      一括抽出にだけ並んでいた。`docs` の生成列への索引付き検索。
+      条件は `build_attribute_filters()` が
       SQL 断片に変換し、`search` / `doc` からも同じ関数で併用できる
-    - `tag`(= Wikipedia のカテゴリ等)だけは生成列ではなく転置表 `doc_tags` を引くので
-      `schema_version` 3 以上が必要(2 の DB には 409 + `scripts/add_tag_index.py` を案内)。
+    - `tag`(= Wikipedia のカテゴリ等)だけは生成列ではなく転置表 `doc_tags` を引く。
       SQL は `docs.doc_id IN (SELECT dt.doc_id FROM doc_tags dt WHERE dt.tag IN (…))` の形で
       **書き方が性能に直結する**: `EXISTS (…)` にすると SQLite は docs 側を全走査して 1 行ずつ
       確認する計画を選び、jawiki 規模で数百倍遅くなる(実測 0.3ms → 100ms/30万件)。
@@ -2096,8 +2095,6 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
           文書が落ちる置き場(`other`)にいたってはタグそのものが無い。帯で割る収集は
           母集団が小さい(実測 9,484 件で 0.33 秒)ので、危ない絞りを入れてまで
           取りに行く速さではない
-        - **古い DB では絞らない**(`doc_coords` は schema_version 4 から、
-          `doc_tags` は 3 から)。無い表を名指しすると落ちる
       - **区画の名前から中身を開ける**(`/admin/collect/{name}/partition?key=…`)。
         鍵と数だけでは、割り方が合っているかを人が確かめようがない —— 合っているか
         どうかは並んだ顔ぶれを見て初めて分かる(年代の分からない人がどこへ落ちて
@@ -2200,7 +2197,14 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
       やり直しても同じものが返らない)。**戻せるのも trigger だけ**(削除と同じ線)。
       **消さずにリンクを張り替えるだけ**なので、押し直せば元へ戻る ——
       名前を打たせないのはこのため(取り消せない操作と同じ重さにすると、
-      行き来して確かめられない)。長期記憶の一覧と収集の面の両方に出す
+      行き来して確かめられない)。長期記憶の一覧と収集の面の両方に出す。
+      **ボタンの横に 1 つ前の世代の中身を添える**(件数・大きさ・`schema_version`・
+      焼いた時刻。`registry.generation_info`)—— 日付だけでは、戻した先が欠けた世代か
+      どうかが読めない。世代は書き換わらないので、読んだ結果はファイルの
+      (inode・大きさ・更新時刻)で控え、COUNT は 1 秒で切る(切れたら件数を出さない)。
+      **読めない版(`SUPPORTED_SCHEMA_VERSIONS` の外)の世代へは戻させない** ——
+      戻すとリンクの先が登録されず、ソースごと見えなくなる。ボタンを出さずに理由を書き、
+      口(`POST /admin/source/{name}/rollback`)でも 409 で断る
     - **名前を変えられる**(`collect.rename` / 収集の面の「名前を変える」。**REST には
       開けない** —— ファイルごと動く操作を、LAN の中のどのアプリからでも呼べるのは強すぎる)。**焼いたソースの名前ごと変え、元の名前は残さない**
       (別名を持つと、2 つの名前で同じものが引けてどちらが正か読めなくなる)。
@@ -3052,11 +3056,15 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     handler が無いので二重にはならない)。`CHIEZO_LOG_LEVEL` で変えられ、
     読めない値は既定へ倒す —— 綴りを間違えて控えが丸ごと消えるのがいちばん困る
   - `app/deps.py` — **REST と画面が共有する下ごしらえ**(`get_source`、ORDER BY 断片の
-    `exact_title_first` / `relevance_order`、古い DB を断る `require_*`)。
+    `exact_title_first` / `relevance_order`、持っていないものを断る `require_*`)。
     **ここは app の他モジュールを import しない** —— views が main を import すると
     main → views(router 登録)との間で循環参照になるため、共有物はここへ降ろす
-  - `app/registry.py` — /data 走査・ソース登録、`SUPPORTED_SCHEMA_VERSIONS` /
-    `FILTER_MIN_SCHEMA_VERSION` / `TAG_MIN_SCHEMA_VERSION`
+  - `app/registry.py` — /data 走査・ソース登録、`SUPPORTED_SCHEMA_VERSIONS`(読めるのは 4 だけ)。
+    **3 以前の DB は登録しない** —— 足りない表や索引を前提に組んだ問い合わせが通らないため。
+    警告(`unsupported schema_version=… re-run ingest`)を出して飛ばし、記憶の面にも
+    「登録できなかったソース」として取り込み直しを促す(`unsupported_sources`。
+    登録されなかった名前だけを開くので、ふだんは何も読まない)。
+    1 つ前の世代の素性(`generation_info`)もここで読む
   - `app/db.py` — スレッドローカル immutable 接続、5 秒クエリタイムアウト(超過は 504)
   - `app/fts.py` — FTS5 エスケープ(フレーズクォート + AND 結合)と 3 文字未満の前方一致フォールバック判定
   - `app/known_sources.py` — `chiezo-trigger` が未設定・到達不能なときの控えの既知ソース一覧と、
@@ -3196,7 +3204,8 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     「実行しようとして失敗した」に見える。管理画面は「最新のスキーマバージョン」(`latest_schema_version()` —
     trigger の `GET /sources` が返す `schema_version` = ingest の `core.SCHEMA_VERSION`。
     取れなければ app の `max(SUPPORTED_SCHEMA_VERSIONS)` で代替)を表示し、
-    それより古い DB の行に注意書きを付けて再構築を促す
+    それより古い DB の行に注意書きを付けて再構築を促す(app が読めるのは最新だけなので、
+    これが出るのは取り込み側が先に版を上げたとき)
   - `/admin/claude-config`(GET/HTML)・`/admin/claude-config.txt`(GET/text/plain)・
     `/admin/claude-config.permissions.json`(GET/application/json)・
     `/admin/claude-config.mcp.json`(GET/application/json)・
@@ -3719,8 +3728,7 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
     射影でしかなく、`DOC_TAGS_POPULATE_SQL` が docs 投入後に `json_each` で一括展開する
     (生成列にできないのは 1 文書が複数タグを持ち 1 行に畳めないため)。
     行ごとに append せず docs から作り直すのは、`docs` 側が `INSERT OR REPLACE` を使う
-    (同じ doc_id が二度来たら最後の 1 件が残る)ため。同じ SQL を
-    `scripts/add_tag_index.py`(既存 DB の 2 → 3 移行)も使う。
+    (同じ doc_id が二度来たら最後の 1 件が残る)ため。
     4 で足した `tag_counts`(タグ → 文書数)は `doc_tags` をさらに畳んだ要約で、
     新しい情報は持たない。**分けてある理由は配信側の読み取り量**: 「どんなタグがあるか」
     を探す `/v1/{source}/tags` は転置表側だと jawiki で 764 万行・索引 300MB を読むが、
@@ -4075,18 +4083,6 @@ GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か
   - `fts_lab.py` — trigram と形態素トークナイザの FTS を同じ文書集合の上で作って比べる
     実験台。索引サイズ・構築時間・ヒット数・順位を出す。人気度の重みを振るのにも使った。
     拡張(`sqlite-vaporetto` 等)は同梱していないので別途取ってくる
-  - `add_tag_index.py` — 既存 DB のタグまわりの移行(2 → 3: 転置表 `doc_tags` の追加、
-    3 → 4: 集計表 `tag_counts` の追加)。元の情報は 2 の DB にも `docs.tags` として
-    入っているので、ダンプを取り直さずその場で作れる(jawiki の再取り込み 2〜6 時間に対し
-    数分〜十数分。3 → 4 だけなら jawiki で 1 分弱)。足りないステップだけ流す。
-    `meta` の更新を最後の 1 ステップにしてあるので、中断しても中途半端に新しい版を名乗る
-    DB は残らない(もう一度実行すればやり直す)。書き込むので API は止めてから実行する。
-    **取り込み側の PRAGMA をそのまま持ち込まないこと**: ここが触るのは使い捨ての
-    `.building` ではなく運用 DB 本体なので、`journal_mode=OFF` にすると kill 一発で
-    42GB が壊れる。速度よりロールバックできることを優先する。
-    `docs` の全走査を 20 万件ずつに分けるのは、`DISTINCT` の並べ替えが一時ファイルに
-    落ちるため(メモリは文書数によらず一定で、実測 100 万文書でピーク RSS 24MiB)。
-    doc_id の値で等分割できない(osm は `osm_id*4` で 10 桁超)ので件数で刻んでいる
 - `assets/` — プロジェクトアイコン(`icon.svg`。README ヘッダー・管理画面ファビコン・
   apple-touch-icon の原本)
 - `tests/` — フィクスチャ(`fixtures/mini_jawiki.xml.gz` 12 文書、`fixtures/mini_osm.osm.pbf`、
@@ -4220,7 +4216,9 @@ SQLite ファイルで、配信側 chiezo-app は read-only immutable で開く�
   そのときは `FROM` の行と CI の `python-version` を変えるだけで済む(dependabot が週次で見ている)。
   app 側の依存は 3.14 でも全部 wheel があるので、待っているのは ingest の都合だけ。
 - コアスキーマ(meta / docs / aliases / docs_fts)は全ソース共通。ソース固有情報は `docs.extra`(JSON)へ。
-  変更は最終手段で、`schema_version` を上げ app 側で複数バージョン対応する。
+  変更は最終手段で、`schema_version` を上げる。app が読むのは `SUPPORTED_SCHEMA_VERSIONS` の版だけで、
+  上げるときは配信中の DB が焼き直されるまで新旧を両方読めるようにし、焼き直し終えたら古い版の
+  対応は外す(古い版の分岐を抱え続けない。古い版の DB は登録せず、取り込み直しを促す)。
 - ソース間で JOIN しない。API はソース種別を意識せず docs/aliases/docs_fts のみ参照する。
 - FTS5 は trigram。ユーザー入力は必ずフレーズエスケープしてから MATCH に渡す(`app/fts.py` 経由)。
   **形態素トークナイザへの差し替えは 2026-07 に候補 2 つを実測して見送っている**

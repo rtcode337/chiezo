@@ -7381,12 +7381,6 @@ class TestTheSamplesHideWhatReadersShouldNotSee:
 
         assert [d["title"] for d in got] == ["ふつうの記事", "もう一つ"]
 
-    def test_an_old_source_without_the_tag_index_is_left_alone(self, baked):
-        """絞りようが無いので何もしない(落とすより、出すほうがまだ読める)。"""
-        baked["news"].schema_version = 2
-
-        assert len(collect.recent("news", baked, limit=10)) == 4
-
     def test_the_material_of_another_collection_is_filtered_too(self, baked):
         """材料に読む別のソースでも外す。
 

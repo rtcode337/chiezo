@@ -6,14 +6,14 @@ main に置いたままだと views が main を import することになり、
 
 - ソースの取り出し(`get_source`)
 - 並び順の SQL 断片(`exact_title_first` / `relevance_order`)
-- 古い DB を明示的に断るスキーマ検査(`require_*`)
+- 持っていないものを明示的に断る検査(`require_*`)
 """
 from __future__ import annotations
 
 from fastapi import HTTPException, Request
 
 from app import db
-from app.registry import FILTER_MIN_SCHEMA_VERSION, TAG_MIN_SCHEMA_VERSION, Source
+from app.registry import Source
 
 # 関連度(bm25)に人気度(rank_score)を混ぜる重み。0 にすると従来どおり bm25 のみ。
 # 実測(scripts/fts_lab.py で本番 jawiki 3 万件・重みを 0〜2 で振った)から 0.4 を採った。
@@ -52,30 +52,14 @@ def relevance_order(prefix: str = "") -> str:
     """関連度に人気度を混ぜた ORDER BY 句を返す(FTS 検索用)。
 
     bm25() は「良い一致ほど小さい負値」なので、人気度で係数を大きくするほど上位へ動く。
-    rank_score を 0〜1 に丸めてから使うのは、`schema_version` 3 以前の geonames が
-    rank_score に人口の生値(最大 3000 万)を入れているため。丸めないとその 1 列だけで
-    並びが決まってしまう。丸めれば古い DB は全件 1.0 に張り付き、実質 bm25 のみ
-    (= 従来と同じ並び)に戻るので、取り込み直していない DB でも壊れない。
+    rank_score を 0〜1 に丸めてから使うのは保険で、範囲を外れた値(人口の生値のような
+    桁の大きい数)が入っていても、その 1 列だけで並びが決まらないようにするため。
     """
     score = f"MIN(1.0, MAX(0.0, COALESCE({prefix}rank_score, 0.0)))"
     return (
         f"{exact_title_first(prefix)},"
         f" bm25(docs_fts, 5.0, 1.0) * (1.0 + {POPULARITY_WEIGHT} * {score}) ASC"
     )
-
-
-def require_filter_schema(src: Source) -> None:
-    """生成列(feature/area/lat/lon/wikidata)が無い古い DB を明示的に断る。"""
-    if src.schema_version < FILTER_MIN_SCHEMA_VERSION:
-        raise HTTPException(
-            409,
-            {
-                "error": (
-                    f"source {src.name} was built with schema_version={src.schema_version};"
-                    f" attribute filters require >= {FILTER_MIN_SCHEMA_VERSION} (re-run ingest)"
-                )
-            },
-        )
 
 
 def has_recency_index(src: Source) -> bool:
@@ -116,26 +100,6 @@ def require_recency_index(src: Source) -> None:
         )
 
 
-def require_tag_schema(src: Source) -> None:
-    """タグ転置表(doc_tags)が無い古い DB を明示的に断る。
-
-    再取り込みは jawiki で数時間かかるので、既存 DB を作り直さずに移行できる
-    scripts/add_tag_index.py の方も案内する(docs.tags は 2 以前の DB にも入っている
-    ので、転置表と索引を足すだけで済む)。
-    """
-    if src.schema_version < TAG_MIN_SCHEMA_VERSION:
-        raise HTTPException(
-            409,
-            {
-                "error": (
-                    f"source {src.name} was built with schema_version={src.schema_version};"
-                    f" tag filters require >= {TAG_MIN_SCHEMA_VERSION}"
-                    " (re-run ingest, or migrate in place with scripts/add_tag_index.py)"
-                )
-            },
-        )
-
-
 def has_feature_area(src: Source) -> bool:
     """このソースが `feature` / `area` を持っているか(索引だけで分かる)。
 
@@ -144,8 +108,6 @@ def has_feature_area(src: Source) -> bool:
     (`app/claude_config.py` が索引付きの列を同じ形で探っているのと同じやり方)。
     結果は Source に覚える — 走査のたびに作り直されるので、DB を差し替えれば消える。
     """
-    if src.schema_version < FILTER_MIN_SCHEMA_VERSION:
-        return False
     cached = getattr(src, "_has_feature_area", None)
     if cached is None:
         rows = db.query(

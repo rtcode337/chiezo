@@ -1471,24 +1471,15 @@ class TestNarrowingTheRowsToRead:
         """矩形は判定が「鍵の矩形の中にあるか」そのものなので厳密に絞れる。"""
         key = partition.geo_key((35.0, 139.0, 36.0, 140.0))
         where, args = partition.narrowing(
-            {"by": "geo"}, [{"key": key}], key, schema_version=4,
+            {"by": "geo"}, [{"key": key}], key,
         )
 
         assert "doc_coords" in where
         assert args == (35.0, 36.0, 139.0, 140.0)
 
-    def test_an_old_database_is_not_narrowed(self):
-        """`doc_coords` は schema_version 4 から。無い DB に書くと落ちる。"""
-        key = partition.geo_key((35.0, 139.0, 36.0, 140.0))
-
-        assert partition.narrowing(
-            {"by": "geo"}, [{"key": key}], key, schema_version=3,
-        ) == ("", ())
-
     def test_a_tag_is_exact(self):
         where, args = partition.narrowing(
             {"by": "tag", "tag": "ラーメン"}, [{"key": "ラーメン"}], "ラーメン",
-            schema_version=3,
         )
 
         assert "doc_tags" in where and args == ("ラーメン",)
@@ -1525,7 +1516,6 @@ class TestNarrowingTheRowsToRead:
 
         assert partition.narrowing(
             {"by": "band", "prefix": "地域", "value": "年代"}, [{"key": key}], key,
-            schema_version=4,
         ) == ("", ())
 
     def test_a_key_the_ledger_does_not_have_is_left_alone(self):

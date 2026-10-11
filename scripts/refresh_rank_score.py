@@ -70,7 +70,7 @@ def refresh(db_path: Path) -> int:
         started = time.monotonic()
         (total,) = conn.execute("SELECT COUNT(*) FROM docs").fetchone()
         # 一度に全件読むとメモリに載らないので、doc_id で刻んで進める
-        # (doc_id は等間隔でないため値ではなく件数で刻む。add_tag_index.py と同じ)
+        # (doc_id は等間隔でないため値ではなく件数で刻む)
         last_id, done, changed = -(1 << 62), 0, 0
         while True:
             rows = conn.execute(

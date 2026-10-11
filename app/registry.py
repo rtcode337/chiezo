@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,6 +41,106 @@ def generation_stamp(path: Path) -> str:
     return path.stem.partition("-")[2]
 
 
+@dataclass(frozen=True)
+class GenerationInfo:
+    """世代ファイル 1 つの素性(管理画面の「1 つ前」に添える)。
+
+    読めなかったところは空(`None` / 空文字)のまま返す —— 添え物なので、
+    読めないことで画面を落とさない。
+    """
+    path: Path
+    size: int | None
+    schema_version: int | None
+    built_at: str
+    doc_count: int | None
+
+    @property
+    def supported(self) -> bool:
+        """戻したあとに登録できる世代か。読めなかったものも戻せない側に倒す。"""
+        return self.schema_version in SUPPORTED_SCHEMA_VERSIONS
+
+
+# 世代の件数を数える持ち時間(秒)。画面を開くたびに走るので短く切る。
+# 切れたら件数は出さない(`doc_count=None`)
+GENERATION_COUNT_TIMEOUT = 1.0
+# 締め切りを確かめる間隔(SQLite の命令の数)
+GENERATION_PROGRESS_STEP = 10_000
+
+# 世代ファイルの素性の控え。世代は焼き上がったら書き換わらないので、
+# (場所, inode, 大きさ, 更新時刻) が同じなら読み直さない —— 画面を開くたびに
+# 全ソースの 1 つ前を COUNT すると、大きいソースの数だけ待たされる
+_generation_cache: dict[tuple, GenerationInfo] = {}
+
+
+def generation_info(path: Path) -> GenerationInfo:
+    """世代ファイルの大きさ・schema_version・焼いた時刻・件数を読む。
+
+    読み取り専用で開き、安い問い合わせだけ流す(meta の 1 行と COUNT)。
+    COUNT は持ち時間で切る(`GENERATION_COUNT_TIMEOUT`)。どこかで失敗しても、
+    読めたところまでを返す。
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return GenerationInfo(path, None, None, "", None)
+    key = (str(path), st.st_ino, st.st_size, st.st_mtime_ns)
+    if (cached := _generation_cache.get(key)) is not None:
+        return cached
+    schema_version: int | None = None
+    built_at = ""
+    doc_count: int | None = None
+    try:
+        conn = sqlite3.connect(f"file:{path}?immutable=1", uri=True)
+    except sqlite3.Error:
+        return GenerationInfo(path, st.st_size, None, "", None)
+    try:
+        row = conn.execute("SELECT schema_version, built_at FROM meta").fetchone()
+        if row is not None:
+            schema_version = row[0] if isinstance(row[0], int) else None
+            built_at = row[1] or ""
+        # 締め切りは COUNT にだけ掛ける(meta は 1 行なので切る理由が無い)
+        deadline = time.monotonic() + GENERATION_COUNT_TIMEOUT
+        conn.set_progress_handler(
+            lambda: 1 if time.monotonic() > deadline else 0, GENERATION_PROGRESS_STEP,
+        )
+        (doc_count,) = conn.execute("SELECT COUNT(*) FROM docs").fetchone()
+    except sqlite3.Error as e:
+        log.info("generation %s: %s", path.name, e)
+    finally:
+        conn.close()
+    info = GenerationInfo(path, st.st_size, schema_version, built_at, doc_count)
+    _generation_cache[key] = info
+    return info
+
+
+def unsupported_sources(data_dir: Path, registered: set[str] | dict) -> dict[str, object]:
+    """`<ソース名>.db` なのに登録されなかったもののうち、schema_version が古くて
+    読めないもの(名前 → 版)。管理画面で「取り込み直す」と知らせるため。
+
+    見るのは登録されなかった名前だけなので、ふだんは 1 つも開かない。
+    """
+    found: dict[str, object] = {}
+    if not data_dir.is_dir():
+        return found
+    for db_path in sorted(data_dir.glob("*.db")):
+        # 世代ファイル(`<名前>-<日付>.db`)は見ない。ソースの名前に `-` は入らない
+        if db_path.stem in registered or "-" in db_path.stem:
+            continue
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?immutable=1", uri=True)
+        except sqlite3.Error:
+            continue
+        try:
+            row = conn.execute("SELECT source, schema_version FROM meta").fetchone()
+        except sqlite3.Error:
+            continue
+        finally:
+            conn.close()
+        if row and row[0] == db_path.stem and row[1] not in SUPPORTED_SCHEMA_VERSIONS:
+            found[db_path.stem] = row[1]
+    return found
+
+
 @dataclass
 class Source:
     name: str
@@ -55,31 +156,19 @@ class Source:
     mutable: bool = False
 
 
-SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3, 4}
+# 読める schema_version。4 だけ(ingest の `core.SCHEMA_VERSION` と揃える)。
+# 3 以前の DB は登録しない —— 足りない表(doc_tags・tag_counts・doc_coords)や索引を
+# 前提に組んだ問い合わせが通らないため。古い DB を見つけたら警告を出して飛ばし、
+# 管理画面にも「取り込み直す」と出す(`unsupported_sources`)。
+SUPPORTED_SCHEMA_VERSIONS = {4}
 
-# 生成列 (feature/area/lat/lon/wikidata) と索引が入ったのは schema_version 2 から。
-# 1 のまま残っている DB に対しては /v1/<source>/filter を 409 で断る。
-FILTER_MIN_SCHEMA_VERSION = 2
 
-# タグ転置表 (doc_tags) が入ったのは schema_version 3 から。
-# 2 以下の DB に対しては tag での絞り込みと /v1/<source>/tags を 409 で断る
-# (取り込み直すか scripts/add_tag_index.py で移行する)。
-TAG_MIN_SCHEMA_VERSION = 3
-
-# タグ名の集計表 (tag_counts) が入ったのは schema_version 4 から。
-# 3 の DB でも /v1/<source>/tags は動くが、doc_tags 全体を読む遅い経路になる
-# (jawiki・geonames の部分一致は配信機だと 5 秒のクエリタイムアウトを超える)。
-# 断らずに落とすだけなのは、移行前でも今までどおりには使えるようにするため。
-TAG_COUNTS_MIN_SCHEMA_VERSION = 4
-
-# 並び順(rank_score DESC, title)そのものを持つ索引 idx_docs_rank が入ったのも 4 から。
-# /v1/<source>/filter がタグだけで絞るときに INDEXED BY で名指しするので、
-# 3 以下の DB では名指ししない(索引が無い DB に INDEXED BY を書くとエラーになる)。
-RANK_INDEX_MIN_SCHEMA_VERSION = 4
-
-# 座標表 (doc_coords) が入ったのも 4 から。3 以下では docs の生成列 lat/lon を直接
-# 引く旧経路になる(引けるが、緯度帯にある全文書の行を読むので bbox が遅い)。
-COORDS_MIN_SCHEMA_VERSION = 4
+def unsupported_note(schema_version: object) -> str:
+    """読めない schema_version の DB に添える一言(ログと管理画面で同じものを出す)。"""
+    return (
+        f"schema_version={schema_version} は読めません"
+        f"(対応は {', '.join(map(str, sorted(SUPPORTED_SCHEMA_VERSIONS)))})。取り込み直してください"
+    )
 
 
 def _load_source(db_path: Path, mutable: bool = False) -> Source | None:
@@ -102,7 +191,8 @@ def _load_source(db_path: Path, mutable: bool = False) -> Source | None:
             return None
         if schema_version not in SUPPORTED_SCHEMA_VERSIONS:
             log.warning(
-                "skipping %s: unsupported schema_version=%s", db_path.name, schema_version
+                "skipping %s: unsupported schema_version=%s (supported: %s); re-run ingest",
+                db_path.name, schema_version, sorted(SUPPORTED_SCHEMA_VERSIONS),
             )
             return None
         (doc_count,) = conn.execute("SELECT COUNT(*) FROM docs").fetchone()

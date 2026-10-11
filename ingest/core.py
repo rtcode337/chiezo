@@ -264,7 +264,6 @@ CREATE INDEX idx_docs_changed_by
 # docs 投入後に doc_tags を組み立てる SQL(索引を張る前に流す)。
 # docs から作り直す方式にしているのは、docs 側が INSERT OR REPLACE を使う(同じ doc_id が
 # 二度来ても最後の 1 件が残る)ため。行ごとに append すると置き換えられた古いタグが残る。
-# scripts/add_tag_index.py(既存 DB の schema 2 → 3 移行)も同じ SQL を使う。
 DOC_TAGS_POPULATE_SQL = """
 INSERT INTO doc_tags (tag, doc_id)
 SELECT DISTINCT json_each.value, docs.doc_id
@@ -272,20 +271,8 @@ SELECT DISTINCT json_each.value, docs.doc_id
  WHERE docs.tags IS NOT NULL AND json_each.value <> ''
 """
 
-# 上の分割版(scripts/add_tag_index.py が既存 DB を少しずつ埋めるのに使う)。
-# doc_id の値で等分割できないので(osm の doc_id は osm_id*4 で 10 桁を超える)、
-# 「前回の続きから N 件」という件数での刻みにしている。パラメータは (前回の最大 doc_id, 件数)。
-DOC_TAGS_POPULATE_BATCH_SQL = """
-INSERT INTO doc_tags (tag, doc_id)
-SELECT DISTINCT json_each.value, d.doc_id
-  FROM (SELECT doc_id, tags FROM docs WHERE doc_id > ? ORDER BY doc_id LIMIT ?) AS d,
-       json_each(d.tags)
- WHERE d.tags IS NOT NULL AND json_each.value <> ''
-"""
-
 # doc_tags を畳んで tag_counts を作る SQL(doc_tags の索引を張った後に流す。
 # idx_doc_tags_tag が tag 順なので GROUP BY が並べ替えなしのストリーム集計になる)。
-# scripts/add_tag_index.py(既存 DB の移行)も同じ SQL を使う。
 TAG_COUNTS_POPULATE_SQL = """
 INSERT INTO tag_counts (tag, docs)
 SELECT tag, COUNT(*) FROM doc_tags GROUP BY tag
@@ -294,7 +281,6 @@ SELECT tag, COUNT(*) FROM doc_tags GROUP BY tag
 # docs の生成列から doc_coords を作る SQL(idx_docs_lat_lon を張った後に流す)。
 # INDEXED BY は速度のため。放っておくと SQLite は docs の全走査を選び、座標を持つ
 # 文書が一部でも全行の json_extract を回す(手元の jawiki 41GB で 7.4 秒 → 0.04 秒)。
-# scripts/add_tag_index.py(既存 DB の移行)も同じ SQL を使う。
 DOC_COORDS_POPULATE_SQL = """
 INSERT INTO doc_coords (lat, lon, doc_id)
 SELECT lat, lon, doc_id FROM docs INDEXED BY idx_docs_lat_lon
