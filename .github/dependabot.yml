@@ -36,6 +36,11 @@ updates:
     schedule:
       interval: weekly
       timezone: Asia/Tokyo
+    # node の奇数の版は LTS にならず、半年ほどでサポートが切れる。
+    # 出ている中でいちばん新しい版を出してくるので、偶数(LTS になる系列)だけを受ける
+    ignore:
+      - dependency-name: node
+        versions: [">= 25, < 26", ">= 27, < 28", ">= 29, < 30", ">= 31, < 32"]
 
   # compose が pull するイメージ(searxng・llama.cpp・alpine・ComfyUI)。
   # どれもタグを固定してあるので、上げるきっかけはここから来る。
