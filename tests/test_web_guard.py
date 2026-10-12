@@ -156,14 +156,18 @@ class TestMcpTransportSecurity:
 
         settings = mcp_server._transport_security()
         assert settings.enable_dns_rebinding_protection
+        # 一覧は判定（HostMatcher / OriginMatcher）で、`in` は部分文字列ではなく許可の判定を呼ぶ。
+        # 文字列に `in` を当てているように読めないよう、判定を名指しで呼ぶ
+        host_ok = settings.allowed_hosts.__contains__
+        origin_ok = settings.allowed_origins.__contains__
         # 本体の一覧が空なら、本体と同じく名前も通す
-        assert "vpn-host.example.net:7010" in settings.allowed_hosts
+        assert host_ok("vpn-host.example.net:7010")
         clean_env.setenv("CHIEZO_ALLOWED_HOSTS", "chiezo.example.com")
-        assert "192.0.2.10:7010" in settings.allowed_hosts
-        assert "chiezo-app:7010" in settings.allowed_hosts
-        assert "evil.example.com" not in settings.allowed_hosts
-        assert "http://192.0.2.10:7010" in settings.allowed_origins
-        assert "https://evil.example.com" not in settings.allowed_origins
+        assert host_ok("192.0.2.10:7010")
+        assert host_ok("chiezo-app:7010")
+        assert not host_ok("evil.example.com")
+        assert origin_ok("http://192.0.2.10:7010")
+        assert not origin_ok("https://evil.example.com")
 
     def test_an_explicit_list_still_narrows_it(self, clean_env):
         from app import mcp_server
