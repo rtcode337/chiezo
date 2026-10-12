@@ -10,7 +10,7 @@
 **ここは状態を持たない** —— 会話の id はブリッジのスレッドの id に相手の名前を
 付けただけのもので、どのワーカーが受けても同じブリッジへ流せる。
 
-キャラ設定は短期記憶(`chiezo_memory`)に置いたものを見出しで指す。
+キャラ設定は短期記憶(`chiezo_memory`)か、アプリの名前付きの置き場(`store`)に置いたものを見出しで指す。
 会話を始めるときに 1 回だけ読んで相手に渡し、あとは新しい発言だけを送る。
 相手は会話の途中で Chiezo の知識(MCP の読む口)を自分で引ける。
 
@@ -84,15 +84,24 @@ def _split_session(session_id: str) -> tuple[str, str]:
     return _require_backend(backend), thread_id
 
 
-def character_text(title: str) -> str:
-    """短期記憶からキャラ設定を見出しで引く。無ければ 404。"""
-    path = notes.require_path()
-    notes.ensure_db()
+def character_text(title: str, store: str = "") -> str:
+    """キャラ設定を見出しで引く。置き場(`store`)を名指ししなければ短期記憶から。無ければ 404。
+
+    アプリは自分の名前付きの置き場にキャラ設定を置ける(短期記憶に相乗りさせると、AI が
+    「さっきの件」を探したときにアプリのキャラ設定が混ざって出る)。
+    """
+    store = store or notes.SOURCE_NAME
+    if store != notes.SOURCE_NAME and not notes.is_store(store):
+        raise HTTPException(404, {
+            "error": f"置き場「{store}」はありません", "hint": "POST /v1/stores で作ってから使う",
+        })
+    path = notes.require_path(store)
+    notes.ensure_db(store)
     rows = db.query(path, "SELECT body FROM docs WHERE title = ?", (notes.title_key(title),))
     if not rows:
         raise HTTPException(404, {
             "error": "character not found",
-            "hint": f"短期記憶(chiezo_memory)に見出し「{title}」のメモを置いてください",
+            "hint": f"置き場({store})に見出し「{title}」のメモを置いてください",
         })
     return rows[0]["body"]
 
@@ -130,8 +139,10 @@ async def _call(method: str, url: str, timeout: float, body: dict | None = None)
 
 
 class StartBody(BaseModel):
-    # 短期記憶に置いたキャラ設定の見出し
+    # キャラ設定の見出し(置き場に置いたメモ)
     character: str = Field(min_length=1)
+    # キャラ設定を置いた置き場。空なら短期記憶(chiezo_memory)。アプリは自分の名前付きの置き場を使える
+    store: str = ""
     # 相手(会話ブリッジ)。空なら既定
     backend: str = ""
     model: str = ""
@@ -172,7 +183,7 @@ async def talk_backends() -> dict:
 @router.post("/v1/talk/sessions")
 async def start_session(body: StartBody) -> dict:
     backend = _require_backend(body.backend)
-    character = await run_in_threadpool(character_text, body.character)
+    character = await run_in_threadpool(character_text, body.character, body.store)
     instructions = build_instructions(character, body.instructions)
     started = await _call(
         "POST", f"{bridge_url(backend)}/v1/talk/threads", 60.0,

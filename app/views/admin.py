@@ -2409,6 +2409,10 @@ def _short_term_section_html(sources: dict[str, Source]) -> str:
         (notes.SOURCE_NAME, notes.SOURCE_KIND, notes.count() or 0, notes.last_updated(),
          "覚えたこと。人と AI が読み書きする"),
     ]
+    # アプリが作った名前付きの置き場も並べる(並べないと、アプリが何をどこに預けているか画面から見えない)
+    for store in notes.store_names():
+        rows.append((store, notes.SOURCE_KIND, notes.count(store) or 0, notes.last_updated(store) or "",
+                     "アプリが作って預けている置き場(POST /v1/stores)"))
     if machine_store.is_enabled():
         kept = machine_store.records()
         rows.append((
@@ -2425,9 +2429,16 @@ def _short_term_section_html(sources: dict[str, Source]) -> str:
             f'<td>{esc(jst.format(at)) if at else "<span class=\"muted\">—</span>"}</td>'
             f"<td>{schema_cell(sources.get(name))}</td></tr>"
         )
-    what = "".join(
-        f'<br><strong>{esc(name)}</strong>: {esc(note)}' for name, _k, _t, _w, note in rows
-    )
+    # 説明は種類ごとに 1 行(名前付きの置き場はまとめて 1 行)
+    seen: set[str] = set()
+    what = ""
+    for name, _k, _t, _w, note in rows:
+        if note in seen:
+            continue
+        seen.add(note)
+        label = "名前付きの置き場" if note.startswith("アプリが作って") else name
+        what += f'<br><strong>{esc(label)}</strong>: {esc(note)}'
+
     empty = (
         '<p class="muted">まだ何も覚えていません。MCP の <code>remember</code> か'
         " <code>POST /v1/chiezo_memory</code> で書き込めます。</p>"

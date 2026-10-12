@@ -143,3 +143,13 @@ class TestManyWorkers:
         # 書き込みだけでは走査し直さない(メモ 1 件ごとに全ソースを数え直さない)
         notes.add(text="一つ目", store="myapp")
         assert refresh_sources(app) is False
+
+
+class TestAdmin:
+    def test_named_stores_are_listed_with_the_short_term_memory(self, client):
+        """アプリが作った置き場も記憶の面の表に並べる(並べないと、何をどこに預けているか画面から見えない)。"""
+        client.post("/v1/stores", json={"name": "myapp"})
+        client.post("/v1/stores/myapp", json={"text": "預けたメモ"})
+        page = client.get("/admin/memory").text
+        assert ">myapp</a>" in page
+        assert "アプリが作って預けている置き場" in page

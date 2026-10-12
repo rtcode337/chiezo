@@ -88,6 +88,18 @@ class TestStart:
         assert "居ないキャラ" in res.json()["hint"]
         assert fake_bridge.requests == []
 
+    def test_character_can_come_from_an_apps_own_store(self, client, fake_bridge):
+        """アプリは自分の名前付きの置き場にキャラ設定を置ける(短期記憶に相乗りさせない)。"""
+        client.post("/v1/stores", json={"name": "myapp"})
+        client.post("/v1/stores/myapp", json={"text": "あなたは置き場子です。", "title": "キャラ設定: 置き場子"})
+        res = client.post("/v1/talk/sessions", json={"character": "キャラ設定: 置き場子", "store": "myapp"})
+        assert res.status_code == 200
+        assert "置き場子" in fake_bridge.requests[-1][2]["instructions"]
+        # 短期記憶には無い見出しなので、置き場を名指ししなければ見つからない
+        assert client.post("/v1/talk/sessions", json={"character": "キャラ設定: 置き場子"}).status_code == 404
+        # 無い置き場は 404
+        assert client.post("/v1/talk/sessions", json={"character": "x", "store": "nostore"}).status_code == 404
+
     def test_unknown_backend_is_400(self, client):
         res = client.post("/v1/talk/sessions", json={"character": "キャラ設定: テスト子", "backend": "nope"})
         assert res.status_code == 400
