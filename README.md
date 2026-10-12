@@ -62,7 +62,7 @@ docker compose --profile ingest run --rm chiezo-ingest      # ダンプの更新
 |---|---|
 | AI と話す相手・鍵・web 検索・GPU を設定する | [AI と話す](docs/ai.md) |
 | `.env` を置けない環境(NAS など)で起動する | [単体定義](docs/operations.md#env-を置けない環境で起動する単体定義) |
-| IP 以外の名前で開く・外に開けてよいか確かめる | [セキュリティ](docs/operations.md#セキュリティ)(名前で開くなら `CHIEZO_ALLOWED_HOSTS` が要る) |
+| 外に開けてよいか確かめる・開く名前を絞る | [セキュリティ](docs/operations.md#セキュリティ) |
 | どのコミットが動いているか確かめる | [動いているビルドを確かめる](docs/operations.md#動いているビルドを確かめる) |
 | メモリの多い別マシンで DB を焼いて配る | [別マシンで DB を焼く](docs/build-on-another-machine.md) |
 

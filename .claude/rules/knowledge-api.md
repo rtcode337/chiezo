@@ -40,12 +40,12 @@ chiezo-app の組み立てと、溜めた知識を引く REST(search / doc / fil
       やることは「Origin が完全一致したら印を返す」だけで、開けるのは GET と
       事前確認(preflight)、資格情報は許さない。**https のページから読ませるなら
       chiezo 側も https で出すこと**(mixed content はこの印では通らない)
-    - **いちばん外側の中間層が、知らない名前の Host と別のサイトからの書き込みを断る**
+    - **いちばん外側の中間層が、許していない名前の Host と別のサイトからの書き込みを断る**
       (`refuse_requests_from_other_sites` / `app/web_guard.py`)。認証が無いので、LAN の端末で
       開いている任意のページがブラウザを踏み台にして叩ける(CSRF・DNS リバインディング)。
-      **Host の既定は既存の LAN の使い方を壊さない線** —— IP・`localhost`・ドットの無い名前
-      (サービス名)は通し、それ以外の名前は `CHIEZO_ALLOWED_HOSTS`(と `CHIEZO_MCP_ALLOWED_HOSTS`)
-      に書いたものだけ(421)。**書き込み(POST/PUT/PATCH/DELETE)は `Sec-Fetch-Site: cross-site` か、
+      **Host の検査は `CHIEZO_ALLOWED_HOSTS`(か `CHIEZO_MCP_ALLOWED_HOSTS`)を書いたときだけ** ——
+      既定で絞ると、VPN 越しの名前などで開いたときに気づかないうちに締め出される。書いたら
+      IP・`localhost`・ドットの無い名前(サービス名)と、書いた名前だけを通す(ほかは 421)。**書き込み(POST/PUT/PATCH/DELETE)は `Sec-Fetch-Site: cross-site` か、
       自分でも `CHIEZO_ALLOWED_ORIGINS` でもない `Origin` を 403 で断る**。比べるのは名前とポートで、
       スキームは見ない(TLS を終端する前段の裏では食い違う)。**どちらのヘッダも付けない相手
       (curl・サーバー側のクライアント・MCP)は通す** —— 止めたいのはブラウザだけ

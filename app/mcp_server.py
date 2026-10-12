@@ -76,15 +76,15 @@ LAN 内の読み取り専用ナレッジ API「Chiezo」。Wikipedia・OpenStree
 
 
 def _transport_security() -> TransportSecuritySettings:
-    """Host / Origin の検証(DNS リバインディング対策)。**外さない。**
+    """Host / Origin の検証(DNS リバインディング対策)。
 
     SDK の既定は「localhost 系の Host しか受け付けない」で、そのままだと LAN の
     別マシンから `http://<LAN の IP>:7010/mcp` を叩いた時点で 421 になる。以前はそれを
     避けるために未設定なら検証ごと外していたが、外すと名前を向け直す攻撃に無防備になる。
 
-    未設定のときは本体と同じ判定(`app/web_guard.py`)を渡す —— IP アドレス・localhost・
-    ドットの無いサービス名は通し、それ以外の名前は `CHIEZO_ALLOWED_HOSTS` /
-    `CHIEZO_MCP_ALLOWED_HOSTS` に書いたものだけ。SDK の一覧は完全一致と `名前:*` しか
+    未設定のときは本体と同じ判定(`app/web_guard.py`)を渡す —— `CHIEZO_ALLOWED_HOSTS` を
+    書いていなければ検査せず、書いたら IP アドレス・localhost・ドットの無いサービス名と、
+    書いた名前だけを通す。SDK の一覧は完全一致と `名前:*` しか
     書けず「IP なら何でも」を表せないので、一覧のふりをした判定を検証を通さずに入れる
     (`model_construct`。SDK は `in` で確かめるだけ)。
 

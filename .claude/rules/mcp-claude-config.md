@@ -26,8 +26,8 @@ MCP サーバー(`/mcp`・`/mcp/knowledge`)と、Claude Code 向けの設定(CLA
     関数だけ)。Chiezo のクエリは最大 5 秒ブロックしうるので、必ず `run_in_threadpool`
     に逃がす。でないと重いクエリ 1 本で API 全体が止まる
   - `TransportSecuritySettings` の既定は「localhost 系の Host しか受け付けない」。
-    そのままだと LAN の別マシンから叩いた時点で 421 になる。**検証は外さず、未設定なら
-    本体と同じ判定(`web_guard.HostMatcher`)を渡す** —— SDK の一覧は完全一致と `名前:*` しか
+    そのままだと LAN の別マシンから叩いた時点で 421 になる。**未設定なら本体と同じ判定
+    (`web_guard.HostMatcher`。`CHIEZO_ALLOWED_HOSTS` が空なら何でも通す)を渡す** —— SDK の一覧は完全一致と `名前:*` しか
     書けず「IP なら何でも」を表せないので、`in` に答えるだけの判定を `model_construct` で
     検証を通さずに入れる(SDK は `in` で確かめるだけ)。`CHIEZO_MCP_ALLOWED_HOSTS` を書けば
     今までどおりその一覧だけで絞る

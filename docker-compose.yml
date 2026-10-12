@@ -87,8 +87,8 @@ services:
       - CHIEZO_RESCAN_INTERVAL=${CHIEZO_RESCAN_INTERVAL-}
       - CHIEZO_CATALOG_TTL=${CHIEZO_CATALOG_TTL-}
       - CHIEZO_MCP_ALLOWED_HOSTS=${CHIEZO_MCP_ALLOWED_HOSTS-}
-      # 名前(ドットを含むもの)で開くときの Host の許可(カンマ区切り)。IP・localhost・
-      # サービス名は書かなくても通る。DNS リバインディング対策(app/web_guard.py)
+      # Host の許可(カンマ区切り)。空なら検査しない。書くと IP・localhost・サービス名と、
+      # 書いた名前だけを通す。DNS リバインディング対策(app/web_guard.py)
       - CHIEZO_ALLOWED_HOSTS=${CHIEZO_ALLOWED_HOSTS-}
       # 自分以外のオリジンの画面から書き込み(POST 等)を受けるときだけ書く。空なら自分だけ
       - CHIEZO_ALLOWED_ORIGINS=${CHIEZO_ALLOWED_ORIGINS-}

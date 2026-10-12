@@ -2163,7 +2163,7 @@ async def refuse_oversized_uploads(request: Request, call_next):
 
 @app.middleware("http")
 async def refuse_requests_from_other_sites(request: Request, call_next):
-    """**いちばん外側の関門。** 知らない名前の Host と、別のサイトからの書き込みを断る。
+    """**いちばん外側の関門。** 許していない名前の Host(許可を書いたときだけ)と、別のサイトからの書き込みを断る。
 
     Chiezo は認証を持たないので、LAN の端末で開いている任意のページがブラウザを
     踏み台にして叩けてしまう(CSRF と DNS リバインディング)。判定は `app/web_guard.py`。

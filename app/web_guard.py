@@ -12,14 +12,14 @@ Chiezo は認証を持たない LAN 内のサービスなので、**その LAN �
   向け直し、ブラウザに「同じオリジン」と思わせて読み書きする。名前で来た要求の
   `Host` は `evil.example` のままなので、**知らない名前の Host を断る**。
 
-Host の既定は、既存の LAN の使い方を壊さない線にしてある:
+Host の検査は、`CHIEZO_ALLOWED_HOSTS`(か `CHIEZO_MCP_ALLOWED_HOSTS`)を書いたときだけ効く。
+既定は検査しない —— VPN 越しの名前や、後から付けた名前で開いたときに、気づかないうちに
+締め出される方が困るため。書いたときの判定は次のとおり:
 
 - IP アドレスそのもの(`192.0.2.10:7010`・`[::1]`)と `localhost` は通す
   (リバインディングは名前を使う攻撃なので、IP で来た要求は対象にならない)
 - ドットの無い名前(`chiezo-app` などコンテナのサービス名)も通す
-- それ以外の名前(`chiezo.example.com`)は、`CHIEZO_ALLOWED_HOSTS` に書いたものだけ
-  (`CHIEZO_MCP_ALLOWED_HOSTS` に書いた名前も通す。以前から /mcp の Host 検証に
-  使っていた設定なので、そこに名前を書いてある環境を新しい検査で締め出さない)
+- それ以外の名前(`chiezo.example.com`)は、書いたものだけ
 """
 from __future__ import annotations
 
@@ -79,9 +79,11 @@ def host_allowed(value: str) -> bool:
     name, port = split_host(value)
     if not name:
         return False
-    if _is_ip(name) or name == "localhost" or "." not in name.rstrip("."):
+    entries = allowed_hosts()
+    # 何も書いていなければ検査しない(既定。理由はモジュールの説明)
+    if not entries or _is_ip(name) or name == "localhost" or "." not in name.rstrip("."):
         return True
-    for entry in allowed_hosts():
+    for entry in entries:
         if entry == "*":
             return True
         entry_name, entry_port = split_host(entry)

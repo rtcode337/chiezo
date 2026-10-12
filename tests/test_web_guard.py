@@ -19,7 +19,7 @@ def clean_env(monkeypatch):
 
 
 class TestHost:
-    """既定は既存の LAN の使い方を壊さない線: IP・localhost・ドットの無い名前は通す。"""
+    """既定は検査しない。一覧を書いたら IP・localhost・ドットの無い名前と、書いた名前だけを通す。"""
 
     @pytest.mark.parametrize("host", [
         "192.0.2.10:7010", "192.0.2.10", "127.0.0.1:7010", "[::1]:7010", "[2001:db8::1]",
@@ -28,10 +28,21 @@ class TestHost:
     def test_the_default_lets_lan_style_hosts_in(self, clean_env, host):
         assert web_guard.host_allowed(host)
 
+    @pytest.mark.parametrize("host", ["evil.example.com", "vpn-host.example.net:7010", "chiezo.local"])
+    def test_without_a_list_any_name_is_let_in(self, clean_env, host):
+        """既定は検査しない。VPN 越しの名前などで開いて、気づかないうちに締め出されないように。"""
+        assert web_guard.host_allowed(host)
+
     @pytest.mark.parametrize("host", ["evil.example.com", "evil.example.com:7010", "", "chiezo.local"])
-    def test_other_names_need_to_be_listed(self, clean_env, host):
-        """名前を向け直す攻撃(DNS リバインディング)は名前で来る。知らない名前は断る。"""
+    def test_with_a_list_other_names_are_refused(self, clean_env, host):
+        """名前を向け直す攻撃(DNS リバインディング)は名前で来る。一覧を書いたら知らない名前は断る。"""
+        clean_env.setenv("CHIEZO_ALLOWED_HOSTS", "chiezo.example.com")
         assert not web_guard.host_allowed(host)
+
+    def test_with_a_list_lan_style_hosts_still_pass(self, clean_env):
+        clean_env.setenv("CHIEZO_ALLOWED_HOSTS", "chiezo.example.com")
+        for host in ("192.0.2.10:7010", "localhost:7010", "chiezo-app:7010"):
+            assert web_guard.host_allowed(host)
 
     def test_a_listed_name_is_allowed(self, clean_env):
         clean_env.setenv("CHIEZO_ALLOWED_HOSTS", "chiezo.example.com, *.lan.example:7010")
@@ -98,7 +109,12 @@ class TestTheAppUsesIt:
 
         return app
 
-    def test_an_unknown_host_gets_421_json(self, app_client):
+    def test_without_a_list_a_name_is_served(self, app_client):
+        with TestClient(app_client, base_url="http://chiezo.example.com") as client:
+            assert client.get("/healthz").status_code == 200
+
+    def test_an_unknown_host_gets_421_json(self, app_client, clean_env):
+        clean_env.setenv("CHIEZO_ALLOWED_HOSTS", "chiezo.example.com")
         with TestClient(app_client, base_url="http://evil.example.com") as client:
             res = client.get("/healthz")
         assert res.status_code == 421
@@ -122,7 +138,8 @@ class TestTheAppUsesIt:
             assert same.status_code not in (403, 421)
             assert plain.status_code not in (403, 421)
 
-    def test_mcp_is_behind_the_same_gate(self, app_client):
+    def test_mcp_is_behind_the_same_gate(self, app_client, clean_env):
+        clean_env.setenv("CHIEZO_ALLOWED_HOSTS", "chiezo.example.com")
         headers = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
         body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
         with TestClient(app_client, base_url="http://evil.example.com") as client:
@@ -139,6 +156,9 @@ class TestMcpTransportSecurity:
 
         settings = mcp_server._transport_security()
         assert settings.enable_dns_rebinding_protection
+        # 本体の一覧が空なら、本体と同じく名前も通す
+        assert "vpn-host.example.net:7010" in settings.allowed_hosts
+        clean_env.setenv("CHIEZO_ALLOWED_HOSTS", "chiezo.example.com")
         assert "192.0.2.10:7010" in settings.allowed_hosts
         assert "chiezo-app:7010" in settings.allowed_hosts
         assert "evil.example.com" not in settings.allowed_hosts
