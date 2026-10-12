@@ -99,9 +99,12 @@ services:
       # 管理画面から入れた設定(話す相手の on/off・API キー・モデル)の置き場。
       # 未設定だと管理画面から相手を有効にできず、話せる相手は 1 つも無い。
       CHIEZO_STATE_DIR: /data/state
+      # IP 以外の名前(ドメインや *.local など)で開くなら、その名前を書く。書かないと
+      # 421 で断る(DNS リバインディング対策)。IP・localhost・サービス名は書かなくても通る。
+      # カンマ区切りで `名前` / `名前:ポート` / `名前:*` / `*.例` が書ける
+      #CHIEZO_ALLOWED_HOSTS: "chiezo.example.com"
       # 本体の調整はどれも既定があるため、変えたいときだけ足す(素のままなら書かない)。
       #CHIEZO_MCP_ALLOWED_HOSTS: "chiezo.example.com:7010,localhost:*"  # /mcp の Host 検証
-      #CHIEZO_ALLOWED_HOSTS: "chiezo.example.com"  # 名前で開くときの Host(IP・localhost は書かなくても通る)
       #CHIEZO_ALLOWED_ORIGINS: "https://app.example.com"  # 別のオリジンの画面から書き込ませるとき
       #CHIEZO_CORS_ORIGINS: "https://travel.example.com"  # ブラウザから読ませるオリジン
       #CHIEZO_RESCAN_INTERVAL: "5"    # data/ の変化を拾う間隔(秒)。低速なディスクでは伸ばす
