@@ -2,7 +2,7 @@
 
 README は入口、`overview.md` は各機能の説明、`api-reference.md` / `ai.md` / `operations.md` /
 `development.md` は「使い方と運用・開発の手順」、
-`CLAUDE.md` は「コードのどこに何があるか」を扱います。
+`CLAUDE.md` と `.claude/rules/`(層ごとの詳細)は「コードのどこに何があるか」を扱います。
 このファイルは**なぜその形にしたのか**、特に**実測して方針が変わったもの**を残します。
 同じ検討を将来またゼロからやり直さないための記録です。
 

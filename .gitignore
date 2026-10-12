@@ -4,8 +4,10 @@ __pycache__/
 .venv/
 venv/
 
-# Claude Code のローカル設定(セッションごとの許可設定など。共有しない)
-.claude/
+# Claude Code のローカル設定(セッションごとの許可設定など。共有しない)。
+# ただし層ごとの詳しい記述(.claude/rules/)はリポジトリで管理する
+.claude/*
+!.claude/rules/
 
 # データディレクトリ(DB・ダンプ・短期記憶・管理画面の設定。リポジトリ管理外)。
 # ディレクトリごと無視してよい —— 無ければ compose の chiezo-init が起動時に
