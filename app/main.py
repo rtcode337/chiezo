@@ -3201,7 +3201,8 @@ def forget(request: Request, doc_id: int):
 #
 # 実体は `app/notes.py`(`create_store` ほか)。**中身の形も口の形も短期記憶と同じ**で、
 # 置き場の名前で呼び分ける。読むのは recall のほか、普通のソースとして
-# `/v1/{name}/search`・`doc`・`filter`・`tags` もそのまま効く。消す口は持たない。
+# `/v1/{name}/search`・`doc`・`filter`・`tags` もそのまま効く。置き場を消す口は API に持たない
+# (空の置き場だけ管理画面から消せる。`notes.delete_store`)。
 
 
 def _store_taken(request: Request) -> set[str]:

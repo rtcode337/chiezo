@@ -153,3 +153,28 @@ class TestAdmin:
         page = client.get("/admin/memory").text
         assert ">myapp</a>" in page
         assert "アプリが作って預けている置き場" in page
+
+    def test_an_empty_store_can_be_deleted_from_the_page(self, client, notes_dir):
+        """空の置き場には削除の口が出て、押すと一覧からもファイルからも消える。"""
+        client.post("/v1/stores", json={"name": "oldapp"})
+        page = client.get("/admin/memory").text
+        assert 'action="/admin/stores/oldapp/delete"' in page
+
+        res = client.post("/admin/stores/oldapp/delete", follow_redirects=False)
+        assert res.status_code == 303
+        assert not list(notes_dir.glob("oldapp.db*"))
+        assert "oldapp" not in _sources(client)
+        assert client.get("/v1/stores").json()["stores"] == []
+
+    def test_a_store_with_notes_cannot_be_deleted(self, client, notes_dir):
+        """中身のある置き場は消せない(焼き直せないので、消したら中身がどこにも無くなる)。"""
+        client.post("/v1/stores", json={"name": "myapp"})
+        client.post("/v1/stores/myapp", json={"text": "預けたメモ"})
+        assert 'action="/admin/stores/myapp/delete"' not in client.get("/admin/memory").text
+
+        assert client.post("/admin/stores/myapp/delete").status_code == 409
+        assert (notes_dir / "myapp.db").exists()
+
+    def test_the_short_term_memory_itself_cannot_be_deleted(self, client):
+        assert client.post("/admin/stores/chiezo_memory/delete").status_code == 404
+        assert client.post("/admin/stores/nothere/delete").status_code == 404

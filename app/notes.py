@@ -345,8 +345,9 @@ def ensure_db(store: str = SOURCE_NAME) -> Path | None:
 #
 # **置き場は `CHIEZO_NOTES_DIR` に並ぶ**(`<名前>.db`)。起動時の走査はこのディレクトリを
 # 丸ごと見るので、作った時点で普通のソースとして登録され、`search` / `doc` / `filter` /
-# 画面がそのまま効く。**消す口は持たない** —— 取り込みで焼き直せないので、消したら
-# 中身がどこにも無くなる(`registry.blocked_from_deleting`)。
+# 画面がそのまま効く。**中身のある置き場を消す口は持たない** —— 取り込みで焼き直せないので、
+# 消したら中身がどこにも無くなる(`registry.blocked_from_deleting`)。空の置き場だけは
+# 管理画面から消せる(`delete_store`)。
 #
 # 名前の規則は収集と同じ(`collect.NAME_RE`)。ソース名・ファイル名・URL にそのまま使い、
 # 収集やほかのソースと同じ平たい名前空間に並ぶため。
@@ -388,6 +389,36 @@ def create_store(name: str, taken: set[str]) -> dict:
         raise HTTPException(409, {"error": f"「{name}」は既にあるソースか収集の名前なので使えません"})
     ensure_db(name)
     return {"name": name, "url": f"/v1/stores/{name}"}
+
+
+def delete_store(name: str) -> None:
+    """名前付きの置き場を消す。**空のものだけ**。
+
+    置き場を消す口を持たないのは、取り込みで焼き直せず、消したら中身がどこにも
+    無くなるから。**空なら失うものが無い** —— 使わなくなった置き場がいつまでも一覧に
+    残り、どれが生きているのか読めなくなるほうを片付ける。中身があるものは 409
+    (メモを先に 1 件ずつ消させる。まとめて消す口にはしない)。
+
+    **件数を数えるのと消すのを、書き込みのロックを取ったまま行う** —— 数えてから
+    消すまでの間に書かれたメモを、ファイルごと黙って捨てないように。
+    """
+    if name == SOURCE_NAME or not is_store(name):
+        raise HTTPException(404, {"error": f"置き場「{name}」はありません"})
+    path = require_path(name)
+    conn = _connect(path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        left = conn.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
+        if left:
+            conn.rollback()
+            raise HTTPException(409, {"error": f"置き場「{name}」にはメモが {left} 件あります(空の置き場だけ消せます)"})
+        # WAL と共有メモリのファイルも一緒に消す(本体だけ消すと、同じ名前で作り直したときに古い WAL を拾う)
+        for suffix in ("", "-wal", "-shm"):
+            Path(f"{path}{suffix}").unlink(missing_ok=True)
+        conn.rollback()
+    finally:
+        conn.close()
+    log.info("deleted the empty store %s", name)
 
 
 def title_key(raw) -> str:

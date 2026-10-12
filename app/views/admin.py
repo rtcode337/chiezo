@@ -2378,8 +2378,11 @@ def _short_term_section_html(sources: dict[str, Source]) -> str:
     `built_at` は書きようがなく、空欄が並ぶ。**代わりに「最後に書かれた時刻」を出す**
     —— 書き込める置き場で「動いているか」を言えるのはそこ。`lang` も持たない。
 
-    **操作の列は持たない**。長期側の右端は再構築と削除だが、こちらは取り込みで焼く
-    ソースではないので押すものが無い(消せもしない —— `registry.SYSTEM_SOURCES`)。
+    **操作の列は空の名前付きの置き場の削除だけ**。長期側の右端は再構築と削除だが、
+    こちらは取り込みで焼くソースではないので再構築は無く、中身のある置き場は消せない
+    (焼き直せないため —— `registry.SYSTEM_SOURCES`・`notes.delete_store`)。空の置き場は
+    失うものが無いので消せる —— 使わなくなった置き場が一覧に残り続けると、どれが
+    生きているのか読めなくなる。
     検索への入口は名前がそのままリンクなので、「検索する」を別の列に置くと
     **同じ行き先が 1 行に 2 つ**並んで幅を食うだけになる。
 
@@ -2420,6 +2423,18 @@ def _short_term_section_html(sources: dict[str, Source]) -> str:
             max((r["updated_at"] for r in kept if r["updated_at"]), default=""),
             "機械が書き換える設定(収集の定義・ワーカー)。人は書かない",
         ))
+    named = set(notes.store_names())
+
+    def action_cell(name: str, total: int) -> str:
+        # 消せるのは空の名前付きの置き場だけ。押せないボタンは出さない
+        if name not in named or total:
+            return ""
+        return (
+            f'<form class="init-form" method="post" action="/admin/stores/{esc(quote(name))}/delete"'
+            f" onsubmit=\"return confirm('空の置き場 {esc(name)} を消します。よろしいですか?')\">"
+            f'<button type="submit">削除</button></form>'
+        )
+
     cells = []
     for name, kind, total, written in ((r[0], r[1], r[2], r[3]) for r in rows):
         at = jst.parse(written or "")
@@ -2427,7 +2442,8 @@ def _short_term_section_html(sources: dict[str, Source]) -> str:
             f'<tr><td><a href="{esc(browse_url(name))}">{esc(name)}</a></td>'
             f"<td>{esc(kind)}</td><td>{total:,}</td>"
             f'<td>{esc(jst.format(at)) if at else "<span class=\"muted\">—</span>"}</td>'
-            f"<td>{schema_cell(sources.get(name))}</td></tr>"
+            f"<td>{schema_cell(sources.get(name))}</td>"
+            f"<td>{action_cell(name, total)}</td></tr>"
         )
     # 説明は種類ごとに 1 行(名前付きの置き場はまとめて 1 行)
     seen: set[str] = set()
@@ -2455,7 +2471,7 @@ def _short_term_section_html(sources: dict[str, Source]) -> str:
     return f"""
 <table>
 <thead>
-<tr><th>name</th><th>kind</th><th>docs</th><th>最後に書かれた</th><th>schema_version</th></tr>
+<tr><th>name</th><th>kind</th><th>docs</th><th>最後に書かれた</th><th>schema_version</th><th></th></tr>
 </thead>
 <tbody>
 {"".join(cells)}
@@ -2466,7 +2482,7 @@ def _short_term_section_html(sources: dict[str, Source]) -> str:
 <p class="muted">
 長期記憶と同じ口で引ける(<code>/v1/&lt;name&gt;/search|doc|filter|tags</code>)。
 取り込みで焼くソースではないので、ダンプの日付も焼いた時刻も持たない
-(再構築も削除もできない。書き込みが直接届く場所){what}
+(再構築はできず、消せるのは空の名前付きの置き場だけ。書き込みが直接届く場所){what}
 </p>
 <p class="muted">
 設定の置き場に<strong>直す口は持たない</strong> —— ここを手で書き換えても、
@@ -4104,6 +4120,17 @@ def admin_source_delete(source: str, request: Request):
 
     request.app.state.sources = scan_all(request.app.state.data_dir)
     return RedirectResponse(url="/admin/memory#long-term", status_code=303)
+
+
+@router.post("/admin/stores/{name}/delete")
+def admin_store_delete(name: str, request: Request):
+    """空の名前付きの置き場を消す(`notes.delete_store`)。中身があれば 409。"""
+    notes.delete_store(name)
+    # **消したらすぐ一覧から外す**(ほかのプロセスは置き場の名前の変化で気づく —— `_sources_fingerprint`)
+    from app.main import scan_all
+
+    request.app.state.sources = scan_all(request.app.state.data_dir)
+    return RedirectResponse(url="/admin/memory#short-term", status_code=303)
 
 
 def _collection_using(name: str) -> str:
