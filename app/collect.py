@@ -514,6 +514,16 @@ class Collection:
     # 誰が置いたか。外のアプリが名乗った文字列で、**印であって認証ではない**
     # (LAN 内・認証なしの前提なので偽れる)。有効にするか決める人の手がかり
     requested_by: str = ""
+    # **書き込み先の置き場**(`app/notes.py` の名前付きの置き場)。書けば、集めたものを
+    # 自分のソースへ焼かずに、その置き場へ 1 件ずつ足す(`run_into_store`)。
+    # **自分のソース DB を持たない** —— 取り込みを通さず chiezo-app の中で走り、
+    # 何を覚えたかは置き場の側に溜まる。会話で覚えたこと(アプリが直接書く)と
+    # 調べて覚えたことを 1 か所に置きたいアプリのための形
+    store: str = ""
+    # 置き場へ書く 1 件に必ず付けるタグ。**この収集の範囲もこれで決まる** ——
+    # `{names}` / `{current}` に差し込むのも、同じ見出しを書き直さない判定の相手も、
+    # 置き場のうちこのタグ(と巡回のタグ)を全部持つものだけ
+    store_tags: list[str] = field(default_factory=list)
     # ここから下は実行のたびに書き換わる控え
     last_run_at: str | None = None
     last_status: str | None = None  # "ok" | "error"
@@ -635,6 +645,9 @@ class Sweep:
     # (印も進み具合も進む)。止めた巡回で代用していた頃は、画面に収集の間隔が
     # 「◯分ごと」と出て、時計で回っているように読めた
     by_caller: bool = False
+    # **置き場へ書く収集で、この巡回だけが足すタグ**(`Collection.store_tags` に足す)。
+    # 興味ごとに巡回を 1 本ずつ持つような使い方で、回ごとの範囲を分けるためのもの
+    store_tags: list[str] = field(default_factory=list)
     next_run_at: str | None = None
     last_run_at: str | None = None
     last_status: str | None = None
@@ -787,6 +800,7 @@ def _sweep_from_json(raw: dict, item: Collection) -> Sweep:
         one_lap=bool(raw.get("one_lap")),
         after=str(raw.get("after") or "").strip()[:40],
         worker=str(raw.get("worker") or "").strip()[:40],
+        store_tags=_store_tags_or_empty(raw.get("store_tags")),
         next_run_at=raw.get("next_run_at") or None,
         last_run_at=raw.get("last_run_at") or None,
         last_status=raw.get("last_status") or None,
@@ -931,6 +945,12 @@ def normalize_sweeps(raw) -> list[dict]:
             continue
         seen.add(name)
         made = {**item, "name": name, **_worker_picked(item)}
+        if "store_tags" in made:
+            # **読めないタグは断る**(置き場へ書く 1 件に必ず付くので、黙って落とすと
+            # 範囲がずれたまま回る)。空なら持たない
+            made["store_tags"] = normalize_store_tags(made["store_tags"])
+            if not made["store_tags"]:
+                made.pop("store_tags")
         if made.get("use_pihole"):
             # **Pi-hole から引く回も AI を呼ばない**(相手を持たせても読まれない)
             made.update(worker="", backend=None, model=None, effort=None)
@@ -1365,6 +1385,8 @@ def _from_json(item: dict) -> Collection:
         locks=normalize_locks(item.get("locks")),
         locked_doubt_tag=normalize_doubt_tag(item.get("locked_doubt_tag")),
         requested_by=str(item.get("requested_by") or ""),
+        store=str(item.get("store") or ""),
+        store_tags=_store_tags_or_empty(item.get("store_tags")),
         created_at=str(item.get("created_at") or ""),
         updated_at=str(item.get("updated_at") or ""),
         last_run_at=item.get("last_run_at") or None,
@@ -1697,6 +1719,8 @@ def create(
     material_spec=None,
     sweeps=None,
     locked_doubt_tag: str = "",
+    store: str = "",
+    store_tags=None,
 ) -> Collection:
     if not NAME_RE.fullmatch(name):
         raise HTTPException(400, {
@@ -1741,12 +1765,19 @@ def create(
         sweeps=normalize_sweeps(sweeps),
         locked_doubt_tag=normalize_doubt_tag(locked_doubt_tag),
         requested_by=requested_by.strip()[:80],
+        store=str(store or "").strip(),
+        store_tags=normalize_store_tags(store_tags),
         created_at=now,
         updated_at=now,
         # 有効にした時点で 1 回目が走るよう、予定は「いま」にしておく
         next_run_at=now,
     )
     _require_query_slot(item.sweeps, item.feed)
+    require_store_fit(item, {
+        "partition": partition_spec, "extract": extract_spec, "thumbs": thumbs_spec,
+        "links": links, "verify_tags": verify_tags, "feed": feed_spec,
+        "locked_doubt_tag": locked_doubt_tag, "kind": kind, "keep_days": keep_days,
+    }, check_store=True)
     save([*existing, item])
     return item
 
@@ -1762,8 +1793,23 @@ def update(name: str, **fields) -> Collection:
         # **依頼元の名乗りも送り直しで変えられる**(アプリが名前を改めたとき。作ったときの
         # 名乗りのまま残ると、管理画面の依頼元と使用量の行が前の名前のまま並ぶ)
         "requested_by",
+        # 書き込み先の置き場とタグ(置き場へ書く収集だけ。`require_store_fit`)
+        "store", "store_tags",
     }
     patch = {k: v for k, v in fields.items() if k in allowed and v is not None}
+    # **置き場へ書くかどうかは、作ったあとで切り替えない**(`require_store_fit`)。
+    # 中身を見る前に断る —— 下の均しは置き場へ書く収集では意味を持たない指定を落とさない
+    given = dict(patch)
+    if "store" in patch:
+        patch["store"] = str(patch["store"] or "").strip()
+        if bool(patch["store"]) != bool(current.store):
+            raise HTTPException(400, {
+                "error": "置き場へ書くかどうかは、作ったあとでは変えられません",
+                "hint": "書き込み先を変えたいときは、別の名前で収集を作り直してください"
+                        "(焼いた中身と置き場の中身が、どちらの収集のものか読めなくなるため)",
+            })
+    if "store_tags" in patch:
+        patch["store_tags"] = normalize_store_tags(patch["store_tags"])
     if "requested_by" in patch:
         # 空の名乗りでは消さない(送り直しで名乗りを書かない相手がいる)
         named = str(patch.pop("requested_by")).strip()[:80]
@@ -1845,6 +1891,9 @@ def update(name: str, **fields) -> Collection:
             patch[key] = None
     updated = replace(current, **patch, updated_at=_iso(_now()))
     _require_query_slot(updated.sweeps, updated.feed)
+    # **置き場があるかは、置き場を書き換えたときだけ確かめる** —— 空の置き場は画面から
+    # 消せるので、毎回確かめると、置き場を消したあとに収集を止めることもできなくなる
+    require_store_fit(updated, given, check_store="store" in patch)
     if ("interval_minutes" in patch or "enabled" in patch) and current.last_run_at:
         # 間隔を縮めたのに次回が遠いままだと、変えた実感が出ない。前回から測り直す。
         # **一度も走っていないものは動かさない** —— 作った直後は「すぐ 1 回目」が
@@ -1878,6 +1927,401 @@ def _require_query_slot(sweeps: list[dict], feed: dict | None) -> None:
         })
 
 
+# ---- 置き場へ書く収集(`store`)--------------------------------------------------
+#
+# 集めたものを自分のソースへ焼かず、名前付きの置き場(`app/notes.py`)へ 1 件ずつ足す収集。
+# **取り込みを通さず chiezo-app の中で走る**(`main.start_store_run`)—— 置き場は
+# chiezo-app が書ける場所(`CHIEZO_NOTES_DIR`)にあり、焼く世代も前世代も持たないので、
+# 取り込みを起こす理由が無い。AI の呼び出しは収集の名前で残る(依頼の履歴・使用量)。
+#
+# **書くのは足すぶんだけ。** 置き場には会話で覚えたこと(アプリが直接書く)も並ぶので、
+# 収集の側から書き換えたり消したりはしない —— 同じ見出しがあれば書かず、墓標は無視する。
+
+# 置き場へ書く 1 件に付けるタグの数と長さの天井。範囲を決めるタグなので、
+# 増やしても絞り込みが細かくなるだけで、何十個も書く使い方は無い
+MAX_STORE_TAGS = 10
+MAX_STORE_TAG_CHARS = 60
+# AI が返したタグを足すときの天井(置き場の 1 件のタグが際限なく増えないように)
+MAX_STORE_ITEM_TAGS = 20
+
+# 走っている印の置き場(設定の置き場の 1 件。`--workers 2` なので、プロセスの中の
+# 変数では、もう 1 つのプロセスが起こした回が見えない)。**定義とは別の種類にする** ——
+# 定義に混ぜると、走らせるたびに台帳ごと書き直すことになる
+STORE_RUN_KIND = "collect_store_run"
+# これを過ぎた「走っている」は落ちたものとして読む(面倒を見ているプロセスが消えても
+# 印は残るので、期限が無いと二度と走らせられなくなる)。CLI ブリッジ越しの 1 往復の
+# 上限(60 分)に余裕を見た数
+STORE_RUN_STALE = timedelta(minutes=90)
+
+STORE_SYSTEM_PROMPT = (
+    "調べて覚えたことを JSON だけで返す。前置き・説明・コードブロックの記号は付けない。"
+    " 形式: {\"items\":[{\"title\":\"見出し\",\"body\":\"本文\","
+    "\"tags\":[\"タグ\"],\"url\":\"出典URL\"}],\"next_cursor\":\"次に進む印\"}"
+    " **返すのは新しく覚えることだけでよい。**"
+    " title は重複の鍵で、**既にある見出しで返したものは書かれない**(書き換えも消すこともできない)。"
+    " 同じことを覚え直さないよう、既にある見出しと違う切り口の見出しを付ける。"
+    " 出典が分かるものは url を入れる。分からない項目は null。"
+)
+
+# 置き場へ書く収集では意味を持たない指定(収集の側)。**黙って無視しない** ——
+# 書いた人は効くと思っているので、保存できてしまうと効かないまま回る
+_STORE_REFUSED_FIELDS = (
+    ("partition", "区画(partition)"),
+    ("extract", "抽出(extract)"),
+    ("thumbs", "サムネイル(thumbs)"),
+    ("links", "URL の確かめ(links)"),
+    ("verify_tags", "タグの確かめ(verify_tags)"),
+    ("feed", "外向きの道具(feed)"),
+    ("locked_doubt_tag", "固定した 1 件の印(locked_doubt_tag)"),
+    ("keep_days", "持つ日数(keep_days)"),
+)
+# 同じく巡回の側。どれも「焼く」「区画を回る」「未確認の印を読む」ための指定
+_STORE_REFUSED_SWEEP_KEYS = (
+    ("use_extract", "機械で引く(use_extract)"),
+    ("use_feed", "外の道具で引く(use_feed)"),
+    ("use_pihole", "Pi-hole から引く(use_pihole)"),
+    ("by_hand", "手で回す(by_hand)"),
+    ("on_demand", "割り込み用(on_demand)"),
+    ("partitions_per_run", "1 回に見る区画(partitions_per_run)"),
+    ("cover_days", "一周の日数(cover_days)"),
+    ("unreviewed_per_run", "未確認を載せる数(unreviewed_per_run)"),
+    ("unreviewed_by", "未確認を載せる順(unreviewed_by)"),
+)
+
+
+def normalize_store_tags(raw) -> list[str]:
+    """置き場へ書くタグを均す。**読めないものは断る**(黙って落とすと範囲がずれる)。
+
+    配列でも、カンマ区切りの文字列でも受ける(画面のフォームは文字列で送る)。
+    **カンマは入れられない** —— 置き場はタグをカンマ区切りで受け取るので、
+    1 つのタグが 2 つに割れる。**`_chiezo_` で始まるもの**(墓標などの印)も断る。
+    """
+    if raw in (None, "", []):
+        return []
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    if not isinstance(raw, list):
+        raise HTTPException(400, {"error": "store_tags は文字列の配列で書いてください"})
+    out: list[str] = []
+    for one in raw:
+        tag = str(one if one is not None else "").strip()
+        if not tag:
+            continue
+        if "," in tag or tag.startswith(notes.TAG_PREFIX) or len(tag) > MAX_STORE_TAG_CHARS:
+            raise HTTPException(400, {
+                "error": f"store_tags に使えないタグがあります: {tag[:MAX_STORE_TAG_CHARS]}",
+                "hint": f"カンマを含まない {MAX_STORE_TAG_CHARS} 文字までのタグにしてください"
+                        f"(「{notes.TAG_PREFIX}」で始まるものは Chiezo の印なので使えません)",
+            })
+        if tag not in out:
+            out.append(tag)
+    if len(out) > MAX_STORE_TAGS:
+        raise HTTPException(400, {"error": f"store_tags は {MAX_STORE_TAGS} 個までにしてください"})
+    return out
+
+
+def _store_tags_or_empty(raw) -> list[str]:
+    """保存済みの定義を読むとき用。**読めなければ空**(読み口で例外にしない)。"""
+    try:
+        return normalize_store_tags(raw)
+    except HTTPException:
+        return []
+
+
+def _given(value) -> bool:
+    """指定が書いてあるか(空・0・false は「書いていない」)。画面のフォームは使わない欄も
+    空で送ってくるので、それを「書いた」と読むと保存できなくなる。"""
+    return value not in (None, "", [], {}, False, 0)
+
+
+def store_tags_for(item: Collection, sweep: Sweep | None) -> list[str]:
+    """その回に付けるタグ = 収集のタグ + 巡回のタグ(重複を除く)。
+
+    **範囲もこれで決まる**(`{names}` / `{current}` に差し込むもの・同じ見出しを
+    書き直さない判定の相手)。巡回ごとに足せるのは、興味ごとに巡回を分ける使い方のため。
+    """
+    out = list(item.store_tags)
+    for tag in (sweep.store_tags if sweep is not None else []):
+        if tag not in out:
+            out.append(tag)
+    return out
+
+
+def require_store_fit(item: Collection, given: dict, check_store: bool = False) -> None:
+    """置き場へ書く収集として成り立つか。**成り立たない指定は 400 で断る**。
+
+    `given` は呼ぶ側が書いてきた指定(均す前の値)。均すと消える指定
+    (網羅の `keep_days` など)も、書いた人は効くと思っているので断る。
+
+    **巡回は全部「依頼元が起こす」にする**(`by_caller`)。この収集は取り込みを通さず
+    chiezo-app の中で走るので、時計・ワーカーの待ち行列・取り込みの待ち行列のどれにも
+    乗せない —— 乗せると、焼く先の無い収集の取り込みが起きる。
+    """
+    sweeps = [raw for raw in item.sweeps if isinstance(raw, dict)]
+    if not item.store:
+        if item.store_tags or any(raw.get("store_tags") for raw in sweeps):
+            raise HTTPException(400, {
+                "error": "store_tags は置き場へ書く収集(store)でだけ使えます",
+            })
+        return
+    if check_store:
+        if item.store in {notes.SOURCE_NAME, machine_store.SOURCE_NAME}:
+            raise HTTPException(400, {
+                "error": f"「{item.store}」には書けません",
+                "hint": "短期記憶と設定の置き場は人と Chiezo のものなので、"
+                        "名前付きの置き場(POST /v1/stores)を作って指してください",
+            })
+        if not notes.is_store(item.store):
+            raise HTTPException(400, {
+                "error": f"置き場「{item.store}」はありません",
+                "hint": "先に POST /v1/stores で作ってください(書いた拍子には作りません)",
+            })
+    refused = [label for key, label in _STORE_REFUSED_FIELDS if _given(given.get(key))]
+    if str(given.get("kind") or "").strip() == KIND_FLOW:
+        refused.append("流れの収集(kind=flow)")
+    for raw in sweeps:
+        refused += [
+            f"巡回「{raw['name']}」の{label}"
+            for key, label in _STORE_REFUSED_SWEEP_KEYS if _given(raw.get(key))
+        ]
+    if refused:
+        raise HTTPException(400, {
+            "error": "置き場へ書く収集では使えない指定があります: " + "、".join(refused),
+            "reason": "置き場へ書く収集は自分のソースを持たず、焼きも区画の巡回もしません"
+                      "(覚えたことを 1 件ずつ足すだけ)",
+        })
+    if not sweeps:
+        raise HTTPException(400, {
+            "error": "置き場へ書く収集には、依頼元が起こす巡回(by_caller)を 1 本以上書いてください",
+            "hint": '例: "sweeps": [{"name": "調べもの", "by_caller": true}]'
+                    "。走らせるのは POST /v1/collect/{name}/run?sweep=<巡回名>",
+        })
+    if clocked := [raw["name"] for raw in sweeps if not raw.get("by_caller")]:
+        raise HTTPException(400, {
+            "error": f"巡回「{'」「'.join(clocked)}」が時計で回る形になっています",
+            "reason": "置き場へ書く収集は取り込みを通さずに走るので、時計では回せません。"
+                      "巡回はすべて by_caller: true にしてください",
+        })
+    if untagged := [s.name for s in sweeps_of(item) if not store_tags_for(item, s)]:
+        raise HTTPException(400, {
+            "error": f"巡回「{'」「'.join(untagged)}」には置き場へ書くタグがありません",
+            "reason": "タグが無いと、置き場の全部(会話で覚えたことも)がその回の範囲になります。"
+                      "収集か巡回の store_tags に 1 つ以上書いてください",
+        })
+
+
+def require_store_ready(item: Collection) -> None:
+    """走らせる前に、書き込み先がまだあるかを見る(空の置き場は画面から消せるため)。"""
+    if not item.store:
+        return
+    if not notes.is_enabled() or not notes.is_store(item.store):
+        raise HTTPException(409, {
+            "error": f"収集「{item.name}」の書き込み先「{item.store}」がありません",
+            "hint": "置き場を作り直すか、収集の書き込み先を直してください",
+        })
+
+
+def refuse_for_store(item: Collection, what: str) -> None:
+    """置き場へ書く収集で使えない口を断る(焼く・区画を回る・前世代と比べる口)。
+
+    **画面でボタンを出さないだけにしない** —— 口が受け付けるなら、いつか誰かが叩く。
+    """
+    if item.store:
+        raise HTTPException(400, {
+            "error": f"収集「{item.name}」は置き場へ書く収集なので、{what}は使えません",
+            "hint": "走らせるのは POST /v1/collect/{name}/run?sweep=<巡回名> だけです",
+        })
+
+
+def _store_path(store: str) -> Path | None:
+    """置き場の DB。無ければ None。**追記される DB として開かせる**(`db.mark_mutable`)。"""
+    if not notes.is_enabled() or not notes.is_store(store):
+        return None
+    path = notes.notes_path(store)
+    if path is not None:
+        db.mark_mutable(path)
+    return path
+
+
+def _with_all_tags(tags: list[str]) -> tuple[str, tuple]:
+    """「このタグを全部持つ」条件(タグごとに `doc_tags` の集合を重ねる)。"""
+    if not tags:
+        return "", ()
+    where = " AND ".join("doc_id IN (SELECT doc_id FROM doc_tags WHERE tag = ?)" for _ in tags)
+    return " WHERE " + where, tuple(tags)
+
+
+def store_docs(store: str, tags: list[str]) -> dict[str, dict]:
+    """置き場のうち、`tags` を全部持つもの(古い順。見出し → 1 件)。
+
+    形は前世代(`previous_docs`)と同じなので、差し込みの組み立て(`build_messages`)を
+    そのまま使える。置き場が無ければ空。
+    """
+    path = _store_path(store)
+    if path is None:
+        return {}
+    where, args = _with_all_tags(tags)
+    rows = db.query(
+        path,
+        f"SELECT doc_id, title, body, tags, extra, updated_at FROM docs{where} ORDER BY doc_id",
+        args,
+    )
+    return {
+        row["title"]: {
+            "doc_id": row["doc_id"],
+            "title": row["title"],
+            "body": row["body"],
+            "tags": load_tags(row["tags"]),
+            "extra": load_json(row["extra"]),
+            "updated_at": row["updated_at"],
+        }
+        for row in rows
+    }
+
+
+def store_recent(item: Collection, limit: int = 5) -> list[dict]:
+    """見本(`GET /v1/collect/{name}` の `recent`)。置き場のうち、この収集のタグを
+    全部持つものの新しい順。形は焼いた収集の見本(`recent`)に揃える。"""
+    if limit <= 0:
+        return []
+    docs = sorted(
+        store_docs(item.store, item.store_tags).values(),
+        key=lambda d: (d.get("updated_at") or "", d.get("doc_id") or 0), reverse=True,
+    )
+    return [
+        {
+            "title": d["title"],
+            "opening": (d.get("body") or "")[:MATERIAL_BODY_CHARS],
+            "tags": d.get("tags") or [],
+            "updated_at": d.get("updated_at"),
+            "extra": d.get("extra"),
+        }
+        for d in docs[:limit]
+    ]
+
+
+def store_count(store: str, tags: list[str]) -> int | None:
+    """置き場のうち、`tags` を全部持つものの数。置き場が無い・読めないときは None。"""
+    path = _store_path(store)
+    if path is None:
+        return None
+    where, args = _with_all_tags(tags)
+    try:
+        return int(db.query(path, f"SELECT COUNT(*) FROM docs{where}", args)[0][0])
+    except Exception:  # 画面の 1 行のために一覧ごと落とさない
+        log.debug("could not count %s", store, exc_info=True)
+        return None
+
+
+def build_store_messages(
+    item: Collection, sweep: Sweep, previous: dict[str, dict], sources: dict | None = None,
+) -> list[dict]:
+    """置き場へ書く回の依頼文。**組み立ては巡回の依頼文と同じ**(`build_messages`)。
+
+    差し込み口(`{names}` / `{current}` / `{material}` / `{recent}` / `{now}` /
+    `{cursor}`)はいつもどおり効き、`{names}` と `{current}` に入るのは
+    `previous`(= 置き場のうち、この回のタグを全部持つもの)だけ。
+    **system だけ差し替える** —— 返し方は同じでも、ここでは直すことも消すことも
+    できない(既にある見出しは書かれない)ので、整理の回の約束を渡すと嘘になる。
+    """
+    messages = build_messages(item, previous, None, sources or {}, sweep)
+    return [{"role": "system", "content": STORE_SYSTEM_PROMPT}, *messages[1:]]
+
+
+def _store_item_tags(base: list[str], raw) -> list[str]:
+    """書く 1 件のタグ = 必ず付けるタグ + AI が返したタグ(重複を除く)。
+
+    **AI のタグはこちらで均す** —— カンマは置き場の区切りなので読点に寄せ、
+    Chiezo の印(`_chiezo_…`)は落とす(墓標や戻す印を書き込ませない)。
+    """
+    out = list(base)
+    for one in raw if isinstance(raw, list) else []:
+        tag = str(one or "").strip().replace(",", "、")[:MAX_STORE_TAG_CHARS]
+        if tag and not tag.startswith(notes.TAG_PREFIX) and tag not in out:
+            out.append(tag)
+        if len(out) >= MAX_STORE_ITEM_TAGS:
+            break
+    return out
+
+
+def write_to_store(
+    store: str, tags: list[str], items, previous: dict[str, dict],
+) -> dict:
+    """返ってきたものを置き場へ 1 件ずつ足す。数えた結果を返す。
+
+    **同じ見出しが範囲の中にもうあれば書かない**(覚え直さない)。比べるのは均した
+    見出し(`notes.title_key`)で、同じ回の中で 2 度返ったものも 1 件にする。
+    **墓標・戻す印の付いた 1 件は無視する** —— 置き場の中身は消さない(会話で覚えた
+    ことも並ぶので、収集の判断で消せる場所ではない)。
+    """
+    seen = {notes.title_key(title) for title in previous}
+    added: list[str] = []
+    skipped = ignored = 0
+    for raw in items if isinstance(items, list) else []:
+        if not isinstance(raw, dict):
+            skipped += 1
+            continue
+        if _is_tombstone(raw) or _is_restore(raw):
+            ignored += 1
+            continue
+        title = notes.title_key(raw.get("title"))
+        body = str(raw.get("body") or "").strip()[:MAX_BODY_CHARS]
+        if not title or not body or title in seen:
+            skipped += 1
+            continue
+        url = _http_url(raw.get("url"))
+        notes.add(
+            body, title=title, tags=",".join(_store_item_tags(tags, raw.get("tags"))),
+            extra={"url": url} if url else None, store=store,
+        )
+        seen.add(title)
+        added.append(title)
+    return {
+        "added": len(added), "skipped": skipped, "ignored": ignored,
+        "added_titles": added[:MAX_TITLE_SAMPLE],
+    }
+
+
+def store_running(name: str) -> dict:
+    """その収集が置き場へ書いている最中なら、その印(巡回と始めた時刻)。無ければ空。
+
+    **時間切れの印は走っていないものとして読む**(`STORE_RUN_STALE`)。
+    """
+    if not machine_store.is_enabled():
+        return {}
+    body = machine_store.get(STORE_RUN_KIND, name)
+    try:
+        found = json.loads(body) if body else {}
+    except ValueError:
+        return {}
+    if not isinstance(found, dict):
+        return {}
+    started = _parse(found.get("started_at"))
+    if started is None or _now() - started > STORE_RUN_STALE:
+        return {}
+    return found
+
+
+def begin_store_run(name: str, sweep: str) -> bool:
+    """走り始めた印を置く。**もう走っていれば False**(同じ収集を 2 本走らせない)。
+
+    読んで・決めて・書くを 1 つにまとめる(`machine_store.put_if`)。`--workers 2`
+    なので、2 つのプロセスが同時に「まだ誰も走っていない」と読むことがある。
+    時間切れの印は上書きしてよい(落ちたプロセスが残したもの)。
+    """
+    body = machine_store.get(STORE_RUN_KIND, name)
+    if body is not None and store_running(name):
+        return False
+    mark = json.dumps({"sweep": sweep, "started_at": _iso(_now())}, ensure_ascii=False)
+    return machine_store.put_if(STORE_RUN_KIND, name, mark, body)
+
+
+def end_store_run(name: str) -> None:
+    """走り終えた印を外す(成否にかかわらず)。"""
+    with suppress(Exception):
+        machine_store.drop(STORE_RUN_KIND, name)
+
+
 def remove(name: str) -> None:
     """定義を消す。**焼いたものは残る**(長期記憶のソースとして)。
 
@@ -1890,6 +2334,9 @@ def remove(name: str) -> None:
     """
     get(name)
     machine_store.drop(DEFS_KIND, name)
+    # 置き場へ書いている最中の印も落とす(同じ名前で作り直したときに 409 を踏まないように)。
+    # **置き場の中身には触らない** —— 会話で覚えたことも並ぶ場所なので、収集と一緒には消さない
+    end_store_run(name)
     collect_log.forget(name)
     # **検索文の控えも落とす**(`app/search_queries.py`)—— 同じ名前で作り直した収集が
     # 前の収集の検索文を「使ったことがある」として弾き、最初の組が走らなくなる
@@ -3703,6 +4150,12 @@ def to_public(item: Collection, *, with_partitions: bool = True) -> dict:
         }
         for sweep in sweeps
     ]
+    if item.store:
+        # **件数は置き場のうち、この収集のタグを全部持つものの数**(焼いたソースは無い)。
+        # 走っている最中かも添える —— 起こしたら待たずに返す口なので、
+        # 終わったかどうかはここで読む
+        data["store_docs"] = store_count(item.store, item.store_tags)
+        data["running"] = bool(store_running(item.name))
     if not with_partitions:
         data.pop("partitions", None)
     return data
@@ -3738,7 +4191,9 @@ def catalog() -> list[dict]:
             # 1 行ずつ流し込むだけ。件数に関わらずメモリは増えない
             "memory_gb": 0.5,
         }
-        for c in items
+        # **置き場へ書く収集は出さない**(焼く先を持たない。`store`)—— 出すと
+        # 取り込みが素材を取りに来て、置き場とは別に空のソースが焼かれる
+        for c in items if not c.store
     ]
 
 

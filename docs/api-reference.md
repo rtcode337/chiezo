@@ -347,6 +347,15 @@ AI を呼ばずに手元から組み立てる。
 
 - **値を持たない記事は入らない**(下限を書いた以上、測れないものは入れない)
 - 鍵は英数字と `_` だけ、3 個まで。値は数
+- `min_extra_unless_tag` に書いたタグ(カンマ区切り・完全一致)のどれかを持つ記事は、**下限に届かなくても取る**。
+  名簿の元(`tag` / `tag_suffix`)に当たらないものまで足すわけではない。名作映画の名簿で、古い受賞作は今の閲覧数が
+  少なく、知名度で切ると落ちた(受賞作 359 本のうち月 3,000 未満が 241 本)。同じソースの指定は 2 本に分けられない
+  ので、1 本の中で書き分ける。`min_extra` と一緒にしか書けない
+
+```json
+{"source": "jawiki", "tag_suffix": "の監督映画", "tag": "パルム・ドール受賞作",
+ "min_extra": {"pageviews_month": 3000}, "min_extra_unless_tag": "パルム・ドール受賞作"}
+```
 
 ##### 元の記録を名指す鍵(`identity`)
 
@@ -1066,6 +1075,58 @@ curl -s -X PATCH "$BASE/v1/collect/tl_lunch/sweeps/%E3%81%96%E3%81%A3%E3%81%A8" 
 
 **どの巡回を起こしたかは定義側に控える**(`pending_sweep`)。取り込みは収集の名前しか
 運べない(`GET /v1/collect/fetch?source=…`)ので、素材を作る側はそこを読む。
+
+#### 置き場へ書く(`store`)
+
+**集めたものを自分のソースへ焼かず、名前付きの置き場(`POST /v1/stores`)へ 1 件ずつ足す
+収集も作れる。** キャラごとに置き場を持つアプリが、会話で覚えたこと(アプリが置き場へ直接書く)と
+調べて覚えたこと(この収集が書く)を 1 か所に溜め、**どの AI で調べたかと AI の消費量**を
+Chiezo の収集の面・依頼の履歴・使用量で見えるようにするための形。
+
+```bash
+# 置き場を先に作る(書いた拍子には作らない)
+curl -s http://localhost:7010/v1/stores -H 'Content-Type: application/json' \
+  -d '{"name": "myapp_hina_memory"}'
+
+# キャラ 1 人に収集 1 つ(必ず付けるタグ = 学習)、興味ごとに巡回 1 本(巡回のタグ = 興味:…)
+curl -s http://localhost:7010/v1/collect -H 'Content-Type: application/json' -d '{
+  "name": "hina_learning", "requested_by": "myapp",
+  "store": "myapp_hina_memory", "store_tags": ["学習"],
+  "prompt": "覚えていること:\n{names}\n\nまだ覚えていないことを 3 件調べて返して",
+  "sweeps": [{"name": "天文", "by_caller": true, "store_tags": ["興味:天文"]}]
+}'
+
+# 管理画面で「有効にする」を押したあと、アプリが 1 回ずつ起こす(待たずに返る)
+curl -s -X POST "http://localhost:7010/v1/collect/hina_learning/run?sweep=%E5%A4%A9%E6%96%87"
+# → {"name": "hina_learning", ..., "store_docs": 12, "running": true, "queued": false, "sweep": "天文"}
+```
+
+- **自分のソース DB を持たない。** 取り込みは通らず、chiezo-app の中で走る(起こしたら待たずに返る)。
+  取り込みのカタログにも出ない。終わったかは `GET /v1/collect/{name}` の `running` と
+  前回の結果(`last_status` / `last_added` / `last_error`)、変更履歴の 1 行で読む
+- **範囲は「収集の `store_tags` + 巡回の `store_tags`」を全部持つもの。** その回に書く 1 件には
+  このタグ(と AI が返したタグ)が付き、`{names}` / `{current}` に入るのもこの範囲だけ ——
+  置き場の中の会話の記録や、別の興味の巡回が書いたものは入らない
+- **足すだけ。** 範囲の中に同じ見出し(`notes.title_key` で均したもの)があれば書かない
+  (覚え直さない)。墓標・戻す印の付いた 1 件は無視し、**置き場の中身は消さない**。
+  `url` は脇書き(`extra.url`)に入る
+- **依頼文の組み立ては巡回と同じ。** `{names}` / `{current}` / `{material}` / `{recent}` /
+  `{now}` / `{cursor}` が効く(返させる形も同じで、`next_cursor` を返せば進み具合が進む)。
+  頼む相手は巡回の `backend` / `model`(ワーカーも指せる)、`web` は収集のもの。
+  AI の呼び出しは `collect:<収集名>` で残る(依頼の履歴・使用量・走っている依頼)
+- **走らせ方は `POST …/run?sweep=` と管理画面の「今すぐ実行」だけ。** 止めている収集は 403
+  (人が押した 1 回の `manual=true` は通す)、**同じ収集が走っている最中は 409**、
+  書き込み先の置き場が消えていれば 409。`once` のうち相手と `note` は効き、区画の名指しは 400
+- **作るとき・変えるときに断るもの(400)**: 置き場が無い・`chiezo_memory` を指す、
+  `partition` / `extract` / `thumbs` / `links` / `verify_tags` / `feed` / `locked_doubt_tag` /
+  `kind: "flow"` / `keep_days`、巡回の `use_extract` / `use_feed` / `use_pihole` / `by_hand` /
+  `on_demand` / `partitions_per_run` / `cover_days` / `unreviewed_per_run` / `unreviewed_by`、
+  **`by_caller` でない巡回**(時計で回すと取り込みの待ち行列に乗るため)、巡回が 1 本も無い、
+  タグが 1 つも付かない巡回(範囲が置き場の全部になるため)。`store` を持たない収集の
+  `store_tags` も断る。**作ったあとで置き場へ書くかどうかは切り替えられない**
+  (置き場どうしの付け替えはできる)
+- 割り込み(`focus`)とドライラン(`preview`)は 400 で断る(直すことも、比べる前世代も無いため)
+- 収集を消しても置き場の中身は消えない
 
 #### 選んだ区画だけ 1 回走らせる(試し撃ち)
 

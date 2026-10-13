@@ -19,7 +19,17 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    Body,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import (
     FileResponse,
     JSONResponse,
@@ -930,6 +940,10 @@ def start_collection_bake(
     """
     from app.views.admin import TRIGGER_URL, _fetch_trigger_status, trigger_run
 
+    item = collect.get(name)
+    # **置き場へ書く収集は取り込みを通さない**(`start_store_run`)。待ち行列から
+    # 流れてきても起こさない —— 起こすと、焼く先の無い取り込みが空のソースを焼く
+    collect.refuse_for_store(item, "取り込みで焼く回")
     if not TRIGGER_URL:
         raise HTTPException(503, {
             "error": "chiezo-trigger が設定されていません(CHIEZO_TRIGGER_URL 未設定)",
@@ -937,7 +951,7 @@ def start_collection_bake(
         })
     # **時計を持たない巡回は単独では走らせない**(割り込みで頼まれたときだけ動く)。
     # 起こす前に断る —— 起こしてから断ると、1 本ぶんの取り込みが空振りする
-    this = collect.require_runnable(collect.get(name), sweep)
+    this = collect.require_runnable(item, sweep)
     status = _fetch_trigger_status()
     if ingest_queue.is_running(status, name):
         raise HTTPException(409, {
@@ -1021,6 +1035,146 @@ def run_or_queue(
         "queued": True, "position": position, "id": entry["id"],
         "name": name, "sweep": this.name,
     }
+
+
+def start_store_run(
+    name: str, sweep: str | None, run_once: dict | None, sources: dict, tasks,
+) -> dict:
+    """置き場へ書く収集を 1 回起こす。**待たずに返す**(走るのは `tasks` の裏)。
+
+    **取り込みを通さない** —— 置き場は chiezo-app が書ける場所にあり、焼く世代も
+    前世代も持たないので、取り込みを起こす理由が無い。そのかわり走っている印は
+    自分で持つ(`collect.begin_store_run`)。**同じ収集が走っている最中は 409** ——
+    2 本が同じ範囲を読んで同じ見出しを書くと、置き場に `(番号)` 付きの重複が並ぶ。
+
+    返す形は取り込みを起こしたときと同じ(収集の中身 + `queued: false`)。
+    `running: true` が「走らせ始めた」の印で、終わったかは `GET /v1/collect/{name}` の
+    `running` と前回の結果で読む。
+
+    **その 1 回だけの相手・補足は効く**(`once` の `backend` / `model` / `worker` / `note`)。
+    区画は持たないので、区画の名指しは断る。
+    """
+    item = collect.get(name)
+    this = collect.require_runnable(item, sweep)
+    if run_once and (run_once.get("partitions") or run_once.get("notes")):
+        raise HTTPException(400, {
+            "error": f"収集「{name}」は置き場へ書く収集なので、区画を名指しできません",
+        })
+    collect.require_store_ready(item)
+    if not collect.begin_store_run(name, this.name):
+        raise HTTPException(409, {
+            "error": f"収集「{name}」はいま置き場へ書いています",
+            "hint": "同じ収集は 1 本ずつ。終わってからもう一度起こしてください"
+                    "(GET /v1/collect/{name} の running で読めます)",
+        })
+    try:
+        tasks.add_task(run_into_store, name, this.name, run_once, sources)
+    except Exception:
+        collect.end_store_run(name)
+        raise
+    return {
+        **collect.to_public(collect.get(name), with_partitions=False),
+        "queued": False, "running": True, "sweep": this.name,
+    }
+
+
+async def run_into_store(
+    name: str, sweep_name: str, run_once: dict | None = None, sources: dict | None = None,
+) -> dict | None:
+    """置き場へ書く収集を 1 回走らせる(`start_store_run` が裏で呼ぶ)。
+
+    依頼文の組み立ては巡回と同じ(`collect.build_store_messages`)、相手は巡回の
+    相手かワーカー、AI の呼び出しは収集の名前で残る(`ai_inflight.called_by`)。
+    返りは `collect.read_response` で読み、1 件ずつ置き場へ足す(`write_to_store`)。
+
+    **結果は焼く収集と同じ控えに残す**(定義の前回の欄・巡回の前回・変更履歴の 1 行)。
+    **落ちても例外を上げない** —— 受けた HTTP はもう返っているので誰も読まない。
+    控えに残すのが唯一、外から読める道。**走っている印は必ず外す**。
+    """
+    started = time.monotonic()
+    who = {"backend": "", "model": "", "effort": ""}
+    used: list = []
+    try:
+        with ai_inflight.called_by(f"collect:{name}"):
+            item = await asyncio.to_thread(collect.get, name)
+            sweep = collect.sweep_named(item, sweep_name)
+            # **その 1 回だけの相手と補足**(定義は書き換えない)
+            sweep = collect.with_run_note(
+                collect.asked_for_run(sweep, run_once), item.prompt, (run_once or {}).get("note"),
+            )
+            who = {
+                "backend": sweep.backend or _default_backend_name(),
+                "model": sweep.model or "", "effort": sweep.effort or "",
+            }
+            collect.require_store_ready(item)
+            tags = collect.store_tags_for(item, sweep)
+            previous = await asyncio.to_thread(collect.store_docs, item.store, tags)
+            messages = await asyncio.to_thread(
+                collect.build_store_messages, item, sweep, previous, sources or {},
+            )
+            content = await _ask_store_once(item, sweep, messages, used)
+            reply = collect.read_response(content)
+            result = await asyncio.to_thread(
+                collect.write_to_store, item.store, tags, reply.items, previous,
+            )
+        who.update(_who_ran(used) or {})
+        note = reply.note or ""
+        if result["ignored"]:
+            why = f"墓標・戻す印の付いた {result['ignored']} 件は書きませんでした(置き場の中身は消しません)"
+            note = f"{note} / {why}" if note else why
+        await asyncio.to_thread(
+            collect.record_result, name, status="ok", added=result["added"],
+            skipped=result["skipped"], next_cursor=reply.next_cursor, sweep=sweep.name,
+        )
+        await asyncio.to_thread(
+            collect_log.record, name, status=collect_log.STATUS_OK,
+            diff={**result, "total": len(previous) + result["added"]},
+            sweep=sweep.name, scope=[], error=note,
+            ms=int((time.monotonic() - started) * 1000), visited=[], **who,
+        )
+        log.info("collect %s (置き場 %s/%s): added=%d skipped=%d ignored=%d",
+                 name, item.store, sweep.name, result["added"], result["skipped"], result["ignored"])
+        return result
+    except Exception as e:
+        who.update(_who_ran(used) or {})
+        reason = f"{type(e).__name__}: {_reason_of(e) if isinstance(e, HTTPException) else e}"
+        log.warning("collect %s (置き場) failed: %s", name, reason)
+        with suppress(Exception):
+            await asyncio.to_thread(
+                collect.record_result, name, status="error", error=reason, sweep=sweep_name,
+            )
+        with suppress(Exception):
+            await asyncio.to_thread(
+                collect_log.record, name, status=collect_log.STATUS_ERROR, error=reason,
+                sweep=sweep_name, scope=[], ms=int((time.monotonic() - started) * 1000),
+                visited=[], **who,
+            )
+        return None
+    finally:
+        collect.end_store_run(name)
+
+
+async def _ask_store_once(item, sweep, messages: list[dict], used: list) -> str:
+    """置き場へ書く回の 1 往復。**ワーカーを使う巡回は、枠の空いた段へ回す**。
+
+    相手が「使い切った」と言ったら、その段を避けて次の段で同じ依頼を出し直す
+    (`_collect_items` と同じ振る舞い。1 回に 1 往復しかしないぶん短い)。
+    """
+    worker = _worker_of(sweep)
+    while True:
+        step = workers.pick(worker) if worker is not None else None
+        if worker is not None and step is None:
+            raise HTTPException(429, _all_full(sweep.worker))
+        if step is not None:
+            used.append(step)
+        try:
+            content, _by, _model = await _ask_for_collection(sweep.applied_to(item, step), messages)
+        except HTTPException as e:
+            if step is None or not workers.looks_full(_reason_of(e)):
+                raise
+            workers.avoid_for_now(step.backend, _reason_of(e), step.model)
+            continue
+        return content
 
 
 async def _ask_for_collection(item, messages: list[dict]) -> tuple[str, str, str]:
@@ -1565,6 +1719,8 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
     # 焼くぶんは入らない(控えを書いてから流すので、ここではまだ終わっていない)
     started = time.monotonic()
     item = await asyncio.to_thread(collect.get, name)
+    # 置き場へ書く収集は焼かない(取り込みが素材を取りに来ても渡さない)
+    collect.refuse_for_store(item, "取り込みで焼く回")
     # 前世代は 1 度だけ読んで使い回す。プロンプトへ差し込む素材であり、
     # 消えたものを数える相手であり、doc_id を引き継ぐ元でもある
     # **前世代は 1 行ずつ読む。** 丸ごと dict に読むと行の数だけメモリが要る ——
@@ -1901,6 +2057,8 @@ async def collect_preview(
     動かさないので、試したことが本番の進み具合に混ざらない。
     """
     item = await asyncio.to_thread(collect.get, name)
+    # 置き場へ書く収集には比べる前世代が無い(置き場の中身は収集のものだけではない)
+    collect.refuse_for_store(item, "ドライラン")
     # **どの巡回のつもりで試すかを選べる。** 相手も 1 回に見る量も巡回ごとに違うので、
     # 名指しできないと「じっくりで聞いたらどうなるか」を試せない
     sweep = collect.require_runnable(item, sweep_name)
@@ -3375,6 +3533,17 @@ class CollectionCreate(BaseModel):
         "**割るのは対象としている空間**なので、まだ 1 件も集めていない範囲にも区画ができる。"
         "プロンプトの {partition} に今回見る範囲が差し込まれる",
     )
+    store: str = PydField(
+        "",
+        description="**書き込み先の置き場**(POST /v1/stores で作ったもの)。書けば自分のソースを"
+        "持たず、集めたものをその置き場へ 1 件ずつ足す。巡回はすべて by_caller にし、"
+        "POST /v1/collect/{name}/run?sweep=<巡回名> で起こす",
+    )
+    store_tags: list[str] | None = PydField(
+        None,
+        description="置き場へ書く 1 件に必ず付けるタグ。{names} / {current} に差し込む範囲と、"
+        "同じ見出しを書き直さない判定の相手も、このタグ(と巡回の store_tags)を全部持つものになる",
+    )
 
 
 class CollectionPatch(BaseModel):
@@ -3436,6 +3605,12 @@ class CollectionPatch(BaseModel):
         "ざっと全体を拾うもの(cover_days に一周の日数)と、少数をじっくり調べるもの"
         "(partitions_per_run と強いモデル)を分けて持てる。"
         "空の配列を渡すと、上の interval_minutes で 1 本だけ回る形に戻る",
+    )
+    store: str | None = PydField(
+        None, description="書き込み先の置き場(置き場へ書く収集どうしでだけ付け替えられる)",
+    )
+    store_tags: list[str] | None = PydField(
+        None, description="置き場へ書く 1 件に必ず付けるタグ(丸ごと置き換える)",
     )
 
 
@@ -3522,6 +3697,8 @@ def collect_create(request: Request, body: CollectionCreate):
         sweeps=body.sweeps,
         locked_doubt_tag=body.locked_doubt_tag or "",
         requested_by=body.requested_by,
+        store=body.store,
+        store_tags=body.store_tags,
     )
     # 作った時点で空の DB ができる。**ここでソースを取り直さないと、1 回目が走るまで
     # `/v1/<name>/search` が 404 になる**(まだ登録されていないソースに見える)
@@ -3775,7 +3952,8 @@ def collect_get(
     item = collect.get(name)
     return {
         **collect.to_public(item),
-        "recent": collect.recent(
+        # 置き場へ書く収集の見本は、置き場のうちこの収集のタグを全部持つものから
+        "recent": collect.store_recent(item, samples) if item.store else collect.recent(
             name, request.app.state.sources, samples, include_removed
         ),
         # **固定したのに、まだ焼いていない数**(`collect.pending_locks`)。固定の記録は
@@ -4113,6 +4291,8 @@ def collect_focus_now(
     **返るのは「起こした」まで**(`run` と同じ)。取り込みは向こうで走る。
     """
     collect.require_enabled()
+    # 置き場へ書く収集は直すことができない(足すだけ)ので、割り込みの行き先が無い
+    collect.refuse_for_store(collect.get(name), "割り込み")
     _refuse_stopped(name, manual)
     return start_focus_bake(name, body.model_dump())
 
@@ -4144,6 +4324,7 @@ class RunOnce(BaseModel):
 def collect_run_now(
     request: Request,
     name: str,
+    tasks: BackgroundTasks,
     sweep: str | None = Query(None, description="走らせる巡回の名前(省くと次に走るはずのもの)"),
     once: RunOnce | None = None,
     manual: bool = Query(False, description="人が押した 1 回か(止めている収集でも走らせる)"),
@@ -4171,11 +4352,14 @@ def collect_run_now(
     """
     collect.require_enabled()
     _refuse_stopped(name, manual)
+    run_once = collect.normalize_run_once(once.model_dump() if once else None)
+    # **置き場へ書く収集は取り込みを通さず、ここで起こして待たずに返す**(`start_store_run`)
+    if collect.get(name).store:
+        return start_store_run(name, sweep, run_once, request.app.state.sources, tasks)
     # **埋まっていれば並べる**(202)。断っていた頃は、外のアプリが空くまで
     # 待って押し直すしかなかった
     result = run_or_queue(
-        name, sweep, collect.normalize_run_once(once.model_dump() if once else None),
-        by="api",
+        name, sweep, run_once, by="api",
     )
     if result.get("queued"):
         return JSONResponse(status_code=202, content=result)

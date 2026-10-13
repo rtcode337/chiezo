@@ -921,8 +921,12 @@ FEED_EXAMPLE = json.dumps(
     ensure_ascii=False,
 )
 
-def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
-    """巡回 1 本ぶんの欄。`sweep` が None なら空の枠(足すため)。"""
+def _sweep_fields(sweep, removable: bool, shared_prompt: str = "", store: bool = False) -> str:
+    """巡回 1 本ぶんの欄。`sweep` が None なら空の枠(足すため)。
+
+    **置き場へ書く収集(`store`)には使える欄だけを出す** —— 区画・引き方・未確認の欄は
+    保存すると断られる(`collect.require_store_fit`)ので、並べると押してから怒られる。
+    """
     name = sweep.name if sweep else ""
     interval = sweep.interval_minutes if sweep else collect.MIN_INTERVAL_MINUTES * 12
     cover = f"{sweep.cover_days:g}" if sweep and sweep.cover_days else ""
@@ -949,6 +953,28 @@ def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
         '<span class="muted">名前を消すと、この巡回は無くなります</span>'
         if removable else '<span class="muted">名前を書くと増えます</span>'
     )
+    by_caller = bool(sweep and sweep.by_caller)
+    if store:
+        return (
+            '<div class="sweep-row">'
+            f'<p><label>名前<br><input name="sweep_name" value="{esc(name)}"'
+            f' placeholder="調べもの"></label> {hint}</p>'
+            # **時計は持たない**(置き場へ書く収集は依頼元が起こす回だけ)
+            '<input type="hidden" name="sweep_clock" value="by_caller">'
+            '<p class="muted">時計: 持たない(依頼元が名指しで起こす)</p>'
+            '<p><label>この巡回だけが足すタグ(カンマ区切り。収集のタグに足して書き、範囲もこれで決まる)<br>'
+            f'<input name="sweep_store_tags" value="{esc(", ".join(sweep.store_tags if sweep else []))}"'
+            ' placeholder="興味:天文"></label></p>'
+            f"{_sweep_backend_fields(sweep, backend, False)}"
+            '<p><label>この巡回の依頼文(空なら収集のものを使う)<br>'
+            f'<textarea name="sweep_prompt" rows="6"'
+            f' placeholder="この巡回にだけ頼みたいことがあれば">{esc(own_prompt)}</textarea>'
+            "</label></p>"
+            '<p><label>動かすか<br><select name="sweep_enabled">'
+            f'<option value="1"{" selected" if enabled else ""}>動かす</option>'
+            f'<option value=""{"" if enabled else " selected"}>止める</option>'
+            "</select></label></p></div>"
+        )
     return (
         '<div class="sweep-row">'
         f'<p><label>名前<br><input name="sweep_name" value="{esc(name)}"'
@@ -956,9 +982,13 @@ def _sweep_fields(sweep, removable: bool, shared_prompt: str = "") -> str:
         # **「持たない」は名指しでしか選べない値にする。** 空文字で表すと、この欄を
         # 持たないフォームから保存したときに、全部の巡回が黙って時計を失う
         '<p><label>時計<br><select name="sweep_clock">'
-        f'<option value="interval"{"" if on_demand else " selected"}>間隔で回す</option>'
+        f'<option value="interval"{"" if on_demand or by_caller else " selected"}>間隔で回す</option>'
         f'<option value="on_demand"{" selected" if on_demand else ""}>'
         "持たない(割り込みで頼まれたときだけ)</option>"
+        # **依頼元が起こす巡回も選べる**(`by_caller`)。欄に無かった頃は、そういう巡回を
+        # 画面から保存すると印が落ち、黙って時計で回り始めた
+        f'<option value="by_caller"{" selected" if by_caller else ""}>'
+        "持たない(依頼元が名指しで起こす)</option>"
         "</select></label></p>"
         f'<p><label>間隔(分)<br><input name="sweep_interval" type="number"'
         f' min="{collect.MIN_INTERVAL_MINUTES}" value="{interval}"></label></p>'
@@ -1095,7 +1125,7 @@ def _sweep_edit_row(item, sweep, columns: int, removable: bool = True) -> str:
         f'<form method="post" action="/admin/collect/{esc(quote(item.name))}/sweep"'
         ' class="collect-form">'
         f'<input type="hidden" name="sweep_key" value="{esc(key)}">'
-        f"{_sweep_fields(sweep, sweep is not None and removable, item.prompt)}"
+        f"{_sweep_fields(sweep, sweep is not None and removable, item.prompt, bool(item.store))}"
         '<p><button type="submit">この巡回を保存</button></p>'
         "</form></details></td></tr>"
     )
@@ -1201,7 +1231,8 @@ def _sweep_cells(item, disabled: str = "", dry: bool = True) -> list[str]:
             '<span class="muted">—</span>'
             if sweep.on_demand
             else _sweep_run_forms(
-                item.name, sweep.name, disabled, dry, bool(item.partitions),
+                # 置き場へ書く収集にはドライランが無い(比べる前世代を持たない)
+                item.name, sweep.name, disabled, dry and not item.store, bool(item.partitions),
             )
         )
         # **一周は書いた日数ではなく、実際にかかる日数を出す。** 1 回に見る区画には
@@ -2142,6 +2173,75 @@ f"{_backend_hint()}"
     )
 
 
+def _store_link(item) -> str:
+    return f'置き場 <a href="{esc(browse_url(item.store))}">{esc(item.store)}</a>'
+
+
+def _store_docs_html(item) -> str:
+    """一覧の件数の欄(置き場へ書く収集)。**数えるのは置き場のうち、この収集のタグを
+    全部持つもの** —— 置き場には会話で覚えたことも並ぶので、全体の件数では
+    この収集が何件覚えたのか読めない。"""
+    count = collect.store_count(item.store, item.store_tags)
+    shown = f"{count:,} 件" if count is not None else '<span class="stale">置き場がありません</span>'
+    return f"{_store_link(item)}<br>{shown}"
+
+
+def _store_target_html(item) -> str:
+    """収集の面の「書き込み先」。置き場・必ず付けるタグ・その範囲の件数。"""
+    count = collect.store_count(item.store, item.store_tags)
+    tags = "・".join(item.store_tags) or "なし"
+    shown = (
+        f"{count:,} 件" if count is not None
+        else '<span class="stale">置き場がありません(作り直すか、書き込み先を直してください)</span>'
+    )
+    return f"{_store_link(item)}(タグ {esc(tags)})に {shown}"
+
+
+def _store_detail_html(item) -> str:
+    """置き場へ書く収集の中身(走っているか・巡回ごとの範囲・直す口)。
+
+    **焼く収集の面から、区画・消えたもの・やり直し・未確認に戻す口を外したもの。**
+    どれも焼いたソースか区画の台帳を相手にする口で、ここには相手が居ない
+    (押せても何も起きないか、口のほうで断られる)。
+    """
+    running = collect.store_running(item.name)
+    since = jst.parse(str(running.get("started_at") or "")) if running else None
+    now_line = (
+        f'<p class="stale">いま巡回「{esc(str(running.get("sweep") or ""))}」で置き場へ書いています'
+        f'{"(" + esc(jst.format(since)) + " から)" if since else ""}</p>'
+        if running else ""
+    )
+    scopes = []
+    for sweep in collect.sweeps_of(item):
+        tags = collect.store_tags_for(item, sweep)
+        count = collect.store_count(item.store, tags)
+        scopes.append(
+            f"<li>{esc(sweep.name)}: タグ {esc('・'.join(tags) or 'なし')}"
+            f"{f'(いま {count:,} 件)' if count is not None else ''}</li>"
+        )
+    return (
+        f"{now_line}"
+        '<p class="muted">この収集は自分のソースを持たず、覚えたことを置き場へ 1 件ずつ足します。'
+        "取り込みは通らず、巡回は依頼元が名指しで起こします(時計では回りません)。"
+        "置き場のうち、その回のタグを全部持つものが <code>{names}</code> / <code>{current}</code> に入り、"
+        "同じ見出しがそこにあれば書きません。置き場の中身を消すことはありません。</p>"
+        f'<p>巡回ごとの範囲:</p><ul>{"".join(scopes)}</ul>'
+        f'<p class="muted">進み具合(次の実行で {{cursor}} に入る値): '
+        f'<code>{esc(item.cursor) or "(まだ無し)"}</code></p>'
+        "<details><summary>編集する</summary>"
+        f'<form method="post" action="/admin/collect/{esc(item.name)}/edit" class="collect-form">'
+        f'<p><label>説明<br><input name="description" value="{esc(item.description)}"></label></p>'
+        f'<p><label>プロンプト<br><textarea name="prompt" rows="10">{esc(item.prompt)}</textarea></label></p>'
+        f'<p><label>進み具合(空にすると最初から)<br>'
+        f'<input name="cursor" value="{esc(item.cursor)}"></label></p>'
+        f'<p><label>書き込み先の置き場<br><input name="store" value="{esc(item.store)}" required'
+        ' pattern="[a-z][a-z0-9_]{1,30}"></label></p>'
+        f'<p><label>必ず付けるタグ(カンマ区切り。巡回のタグはそれぞれの巡回の設定で足す)<br>'
+        f'<input name="store_tags" value="{esc(", ".join(item.store_tags))}"></label></p>'
+        '<button type="submit">保存する</button></form></details>'
+    )
+
+
 # 親の下に寄せる深さの上限。**輪になっていても止まる**ための数で、
 # 実際に要るのは 1 段(溜めたものから 1 つ作る)。読める字下げの限界でもある
 MAX_NEST = 3
@@ -2205,7 +2305,10 @@ def _collect_switches_html(item, src, back: str = "") -> str:
     # 三項演算子より先につながるので、行の途中で分岐を書くと後ろの断片まで
     # else 側へ吸い込まれ、開始タグの無い <form> ができる(実際にそうなった)
     delete_confirm = (
-        f"収集「{item.name}」の設定と、溜めたもの({src.doc_count:,} 件)を"
+        f"収集「{item.name}」の設定を消します。置き場「{item.store}」に書いたものは"
+        "消しません。よろしいですか?"
+        if item.store
+        else f"収集「{item.name}」の設定と、溜めたもの({src.doc_count:,} 件)を"
         "まとめて消します。元に戻せません。よろしいですか?"
         if src is not None
         else f"収集「{item.name}」の設定を消します(まだ何も溜まっていません)。よろしいですか?"
@@ -2281,7 +2384,8 @@ def _collect_html(sources: dict[str, Source]) -> str:
         # 焼き先(長期記憶)の様子。まだ 1 度も焼いていなければそう出す
         src = sources.get(item.name)
         baked_docs = (
-            f'<a href="{esc(browse_url(item.name))}">{src.doc_count:,} 件</a>'
+            _store_docs_html(item) if item.store
+            else f'<a href="{esc(browse_url(item.name))}">{src.doc_count:,} 件</a>'
             if src is not None else "まだ焼いていない"
         )
         # 誰が置いたのかは、有効にするか決める手がかり(外のアプリも置けるため)
@@ -4231,6 +4335,9 @@ async def admin_collect_edit(name: str, request: Request):
         keep_days=str(form.get("keep_days") or "").strip() or None,
         # 0 も意味のある値(守りを外す)なので、空のときだけ触らない
         keep_ratio=_ratio(form.get("keep_ratio")),
+        # 置き場へ書く収集のフォームだけが持つ欄(無ければ触らない)
+        store=None if form.get("store") is None else str(form.get("store")),
+        store_tags=None if form.get("store_tags") is None else str(form.get("store_tags")),
     )
     return RedirectResponse(url="/admin/collect", status_code=303)
 
@@ -4324,7 +4431,13 @@ def admin_collect_delete(request: Request, name: str):
     # **断っても行き止まりにならない。** 長期記憶の側の削除も同じ取り込みを使うので、
     # 取り込みが応えない状態では**どちらの道でも消せない** —— 片方だけ進めても、
     # 残ったものを片付ける手段は増えない。
-    if (why := _drop_collect_source(name)) and name in request.app.state.sources:
+    # **置き場へ書く収集は焼いたものを持たない**ので、取り込みには頼まない。
+    # 置き場の中身は消さない(会話で覚えたことも並ぶ場所なので、収集と一緒には消さない)
+    if (
+        not (item is not None and item.store)
+        and (why := _drop_collect_source(name))
+        and name in request.app.state.sources
+    ):
         raise HTTPException(409, {
             "error": f"収集「{name}」の焼いたものを消せませんでした: {why}",
             "hint": "設定だけ消すと、次に集めたときに前の世代として戻ってきます。"
@@ -4437,7 +4550,7 @@ def admin_collect_rename(request: Request, name: str, to: str = Form("")):
 
 
 @router.post("/admin/collect/{name}/run")
-async def admin_collect_run(name: str, request: Request):
+async def admin_collect_run(name: str, request: Request, tasks: BackgroundTasks):
     """予定を待たずに 1 回、集めて焼く(管理画面の「今すぐ実行」)。
 
     **止めている収集もここからは走らせる** —— 有効にする前に一度試せないと、
@@ -4448,11 +4561,18 @@ async def admin_collect_run(name: str, request: Request):
     **巡回ごとに押せる。** 相手も 1 回に見る量も巡回ごとに違うので、
     「じっくりのほうを今すぐ 1 回」が押せないと、分けて持った意味が半分になる。
     """
-    from app.main import run_or_queue
+    from app.main import run_or_queue, start_store_run
 
     form = await request.form()
+    sweep = str(form.get("sweep") or "") or None
+    item = collect.get(name)
+    if item.store:
+        # **置き場へ書く収集は取り込みを通さない**ので、状況の面には何も出ない ——
+        # 走っているかと前回の結果が出る、その収集の面へ戻す
+        start_store_run(name, sweep, None, request.app.state.sources, tasks)
+        return RedirectResponse(url=collect_page(item), status_code=303)
     # **埋まっていれば並べる**(状況の面の待ち行列に出る)
-    run_or_queue(name, str(form.get("sweep") or "") or None, by="admin")
+    run_or_queue(name, sweep, by="admin")
     # **状況の面へ連れていく。** 走らせた本人が次に見たいのは、いま押した 1 回の
     # 進み具合 —— それが出るのは取り込みの塊で、塊は状況の面にしか無い
     return RedirectResponse(url=STATUS_JOB, status_code=303)
@@ -4751,6 +4871,7 @@ def _parse_sweeps_form(form) -> list[dict]:
         for key in (
             "interval", "cover_days", "per_run", "unreviewed_per_run", "unreviewed_by",
             "backend", "model", "effort", "enabled", "clock", "merge", "prompt", "source", "worker",
+            "store_tags",
         )
     }
     out = []
@@ -4776,6 +4897,11 @@ def _parse_sweeps_form(form) -> list[dict]:
         # 全部の巡回が黙って時計を失うのを避ける
         if at("clock") == "on_demand":
             sweep["on_demand"] = True
+        if at("clock") == "by_caller":
+            sweep["by_caller"] = True
+        # 置き場へ書く収集の巡回だけが持つ欄(`collect.normalize_store_tags` が均す)
+        if store_tags := at("store_tags"):
+            sweep["store_tags"] = store_tags
         # **足すだけ**も名指しのときだけ(欄を持たないフォームから集め方が変わらないように)
         if at("merge") == "only_new":
             sweep["only_new"] = True
@@ -4954,6 +5080,9 @@ def admin_collect_detail(
         f'<a href="{esc(browse_url(name))}">{src.doc_count:,} 件</a>'
         if src is not None else '<span class="muted">まだ焼いていない</span>'
     )
+    if item.store:
+        # **置き場へ書く収集は焼いたソースを持たない。** 書き込み先と、その範囲の件数を出す
+        baked = _store_target_html(item)
     body = f"""
 {nav_html("/admin/collect", below=True)}
 <h1>{esc(name)}</h1>
@@ -4965,9 +5094,9 @@ def admin_collect_detail(
 {'<br>依頼元: ' + esc(item.requested_by) if item.requested_by else ''}</p>
 <p>種類: {esc(KIND_LABELS.get(item.kind, item.kind))}
 {'／ ' + str(item.keep_days) + ' 日ぶんを持つ' if item.keep_days else ''}
-<br>長期記憶: {baked}
+<br>{'書き込み先' if item.store else '長期記憶'}: {baked}
 / 状態: {'有効' if item.enabled else '<span class="stale">止まっている</span>'}
-{'<br>' + _rollback_cell(src, f'/admin/collect/{quote(name)}') if src is not None else ''}</p>
+{'<br>' + _rollback_cell(src, f'/admin/collect/{quote(name)}') if src is not None and not item.store else ''}</p>
 {_rename_form_html(item)}
 <table>
 <thead>
@@ -4978,7 +5107,7 @@ def admin_collect_detail(
 {_sweep_table_body(item, disabled)}
 </tbody>
 </table>
-{_collect_detail_html(
+{_store_detail_html(item) if item.store else _collect_detail_html(
     item, disabled, request.app.state.sources, _baking_now(job, name), removed_page,
 )}
 {_collect_running_html(name)}

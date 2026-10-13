@@ -100,6 +100,8 @@ CLAUDE.md や記憶ファイルとの違いは、常時コンテキストに載�
 compose では既定で有効(`data/notes/` に SQLite が 1 つできる)。`CHIEZO_NOTES_DIR` を
 空にすると機能ごと無効になる。認証は無いので、`/v1/chiezo_memory` に到達できる相手は誰でも書ける。
 外のアプリが自分の記録を預ける**名前付きの置き場**(`/v1/stores`)も同じ形で作れる。
+名前付きの置き場は**収集の書き込み先にもできる**(`store`。調べて覚えたことを、焼かずに
+その置き場へ 1 件ずつ足す。[API リファレンス](api-reference.md#置き場へ書くstore))。
 
 - API の詳細 → [API リファレンス](api-reference.md#chiezo_memory短期記憶の-rest)
 - なぜこの形か → [設計メモ](design-notes.md#覚えるnotesはなぜ-chiezo-に置くのか)
