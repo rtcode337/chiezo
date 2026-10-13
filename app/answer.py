@@ -1146,6 +1146,11 @@ async def _complete(cfg: Settings, messages: list[dict], **extra) -> str:
     return content_of(await complete_message(cfg, messages, **extra))
 
 
+def stream_message(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator[str]:
+    """渡したメッセージへの応答を、本文の差分で順に返す(`/v1/ai/complete` の `stream`)。"""
+    return _stream(cfg, messages, **extra)
+
+
 async def _stream(cfg: Settings, messages: list[dict], **extra) -> AsyncIterator[str]:
     """OpenAI 互換の SSE を読んで、本文の差分だけを順に返す。
 

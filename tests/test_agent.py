@@ -43,6 +43,16 @@ class ToolLLM:
         payload = json.loads(request.content)
         self.requests.append(payload)
         turn = self.turns.pop(0) if self.turns else "分かりませんでした"
+        if isinstance(turn, str) and payload.get("stream"):
+            # 流すように頼まれたら、本物と同じく SSE で数文字ずつ返す
+            frames = [
+                "data: " + json.dumps({"choices": [{"delta": {"content": turn[i:i + 4]}}]}, ensure_ascii=False)
+                for i in range(0, len(turn), 4)
+            ]
+            return httpx.Response(
+                200, text="\n\n".join([*frames, "data: [DONE]"]) + "\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
         if isinstance(turn, str):
             message = {"role": "assistant", "content": turn}
         else:

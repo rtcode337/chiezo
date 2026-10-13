@@ -156,6 +156,43 @@ class TestComplete:
         assert res.status_code == 400
 
 
+class TestCompleteStream:
+    """書かれた端から流す口(`stream=true`)。返事を待つ人がいる使い方で、書き終えるのを待たないため。"""
+
+    @staticmethod
+    def _events(res) -> list[tuple[str, dict]]:
+        import json
+
+        out, event = [], ""
+        for line in res.text.splitlines():
+            if line.startswith("event: "):
+                event = line[len("event: "):]
+            elif line.startswith("data: "):
+                out.append((event, json.loads(line[len("data: "):])))
+        return out
+
+    def test_streams_the_text_as_it_is_written(self, monkeypatch_env):
+        fake = ToolLLM("こんにちは、今日もいい天気だね。")
+        with make_client(monkeypatch_env, fake) as client:
+            res = complete(client, messages=[{"role": "user", "content": "やあ"}], stream=True)
+
+        assert res.status_code == 200
+        assert res.headers["content-type"].startswith("text/event-stream")
+        events = self._events(res)
+        assert (events[0][0], events[-1][0]) == ("meta", "done")
+        assert events[0][1]["backend"] == "local"
+        assert "".join(d["text"] for e, d in events if e == "delta") == "こんにちは、今日もいい天気だね。"
+        assert fake.requests[0]["stream"] is True
+
+    def test_tools_cannot_be_streamed(self, monkeypatch_env):
+        """道具を貸して往復を回すときは、途中の発言が答えではないので流せない。"""
+        with make_client(monkeypatch_env, ToolLLM("はい")) as client:
+            res = complete(
+                client, messages=[{"role": "user", "content": "やあ"}], stream=True, knowledge=True,
+            )
+        assert res.status_code == 400
+
+
 class TestCompleteKnowledge:
     """Chiezo の知識を読む道具を渡す口(`knowledge=true`)。
 

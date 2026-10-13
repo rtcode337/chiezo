@@ -4511,6 +4511,10 @@ class AiCompleteRequest(BaseModel):
     # ただし**無名の依頼は後から追えない**: 待たされている人が「これは自分のか」を
     # 判断できず、枠を食っている相手も特定できない。名乗ってほしい。
     requested_by: str | None = None
+    # 本文を書かれた端から SSE で流すか(既定は書き終えてからまとめて返す)。
+    # 返事を待つ人がいる使い方(声で話すアプリなど)で、書き終えるのを待たずに使い始めるため。
+    # 書き終える時間は本文の長さでほぼ決まり、数百字で数秒〜十数秒かかる
+    stream: bool | None = None
 
 
 @app.get("/v1/ai/backends")
@@ -4729,8 +4733,8 @@ async def ai_usage(
     }
 
 
-@app.post("/v1/ai/complete")
-async def ai_complete(body: AiCompleteRequest, request: Request) -> dict:
+@app.post("/v1/ai/complete", response_model=None)
+async def ai_complete(body: AiCompleteRequest, request: Request) -> dict | StreamingResponse:
     """渡されたメッセージをそのまま相手へ投げて、本文を返す(1 往復)。
 
     道具は既定では渡さない。`knowledge=true` なら Chiezo の知識を読む道具を、
@@ -4772,7 +4776,24 @@ async def ai_complete(body: AiCompleteRequest, request: Request) -> dict:
     # 名乗り(`requested_by`)があれば一緒に残す —— 「外のアプリ」とだけ出しても、
     # どのアプリが枠を食っているのかは読めない
     want_knowledge = body.knowledge is True
-    with ai_inflight.called_by(ai_inflight.caller_of("api", body.requested_by or "")):
+    caller = ai_inflight.caller_of("api", body.requested_by or "")
+    if body.stream:
+        # **道具を貸して往復を回すときは流せない**(往復の途中の発言は答えではない)
+        if (want_web or want_knowledge) and not via_bridge:
+            raise HTTPException(400, {
+                "error": "stream is not available with tools",
+                "reason": f"{answer.backend_label(cfg.name)} には Chiezo が道具を貸して往復を回すため、"
+                          "答えを書かれた端から流せません",
+            })
+        extra = {"chiezo_web": True} if want_web else {}
+        if via_bridge:
+            messages = agent.with_sources_hint(messages, body.sources)
+        return _sse_response(_complete_events(cfg, messages, caller, extra, {
+            "backend": cfg.name, "label": answer.backend_label(cfg.name), "model": cfg.model,
+            "effort": cfg.effort, "web": want_web, "knowledge": want_knowledge or via_bridge,
+            "sources": body.sources or None, "sources_enforced": False,
+        }))
+    with ai_inflight.called_by(caller):
         if (want_web or want_knowledge) and not via_bridge:
             # 道具を貸して往復を回す。知識は頼まれたときだけ、web は SearXNG を道具として
             content = await agent.complete_with_tools(
@@ -4803,6 +4824,23 @@ async def ai_complete(body: AiCompleteRequest, request: Request) -> dict:
         "sources_enforced": bool(body.sources) and not via_bridge,
         "content": content,
     }
+
+
+async def _complete_events(cfg, messages: list[dict], caller: str, extra: dict, meta: dict):
+    """`/v1/ai/complete` の `stream` の SSE。meta(誰が書くか)→ delta(本文の差分)… → done。
+
+    失敗は error で知らせて done で閉じる(流し始めたあとは状態コードを変えられない)。
+    **依頼元はここで巻く** —— 流している間に立つ控えも、頼んだアプリの名前で残すため
+    """
+    yield _sse("meta", meta)
+    try:
+        with ai_inflight.called_by(caller):
+            async for delta in answer.stream_message(cfg, messages, **extra):
+                yield _sse("delta", {"text": delta})
+    except HTTPException as e:
+        detail = e.detail if isinstance(e.detail, dict) else {"error": str(e.detail)}
+        yield _sse("error", detail)
+    yield _sse("done", {})
 
 
 # ---- 絵と音の生成(ゲーム素材などを作る)-------------------------------------
