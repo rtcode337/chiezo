@@ -327,6 +327,9 @@ def normalize_one(raw) -> dict | None:
 
     box = _bbox(raw.get("bbox"))
     min_extra = _min_extra(raw.get("min_extra"))
+    exempt = str(raw.get("min_extra_unless_tag") or "").strip()
+    if exempt and not min_extra:
+        raise _bad("min_extra_unless_tag は min_extra(下限)と一緒に書いてください")
 
     identity = raw.get("identity") or []
     if not isinstance(identity, list):
@@ -368,6 +371,12 @@ def normalize_one(raw) -> dict | None:
         # 1 万人に届き、全部を AI に回すと一周に何週間もかかる —— 知名度で切って、
         # 落ち着いたら下げて広げる
         "min_extra": min_extra,
+        # **下限を免除するタグ**(カンマ区切り。完全一致)。このどれかを持つ記事は
+        # `min_extra` に届かなくても取る —— 名作映画の名簿で、古い受賞作は今の閲覧数が
+        # 少なく、知名度で切ると名作の図から名作が抜けた(受賞作 359 本のうち、月 3,000
+        # 未満が 241 本)。同じソースの指定を 2 本に分けて書き分けることはできない
+        # (`_reject_same_source`)ので、1 本の中で書けるようにする
+        "min_extra_unless_tag": exempt,
         "cursor": str(raw.get("cursor") or DEFAULT_CURSOR).strip() or DEFAULT_CURSOR,
     }
     return spec
@@ -397,12 +406,19 @@ def _min_extra_sql(spec: dict) -> tuple[str, list]:
     """`min_extra` を、行本体の WHERE に足す条件にする(当たった行だけを読む)。
 
     **値を持たない記事は落ちる**(下限を書いた以上、測れないものは入れない)。
+    `min_extra_unless_tag` のタグを持つ記事だけは、下限に届かなくても通す。
     """
     parts, params = [], []
     for key, value in (spec.get("min_extra") or {}).items():
         parts.append(f"COALESCE(json_extract(extra, '$.{key}'), -1) >= ?")
         params.append(value)
-    return "".join(f" AND {part}" for part in parts), params
+    if not parts:
+        return "", params
+    exempt = split_tags(spec.get("min_extra_unless_tag") or "")
+    if not exempt:
+        return "".join(f" AND {part}" for part in parts), params
+    held = f"doc_id IN (SELECT doc_id FROM doc_tags WHERE tag IN ({','.join('?' * len(exempt))}))"
+    return f" AND (({' AND '.join(parts)}) OR {held})", [*params, *exempt]
 
 
 def _tags_mode(raw) -> dict:
@@ -644,6 +660,8 @@ def to_json(spec) -> dict | list[dict] | None:
         written["bbox"] = list(spec["bbox"])
     if spec.get("min_extra"):
         written["min_extra"] = dict(spec["min_extra"])
+    if spec.get("min_extra_unless_tag"):
+        written["min_extra_unless_tag"] = spec["min_extra_unless_tag"]
     # **タグの名簿だけが持つものは、そのときだけ書く。** 文書の名簿に `min_docs` が
     # 並んでいると、効かない指定を読ませることになる
     if spec["of"] != DEFAULT_ROSTER_KIND:
@@ -1435,6 +1453,7 @@ SPEC_GUIDE = """依頼を読んで、**まず「手元の索引から機械的�
                "tag と併用でき、全部の和になる)",
   "not_tag": "外すタグ(カンマ区切り。これを持つものは、tag に当たっていても取らない)",
   "min_extra": {"pageviews_month": 10000},   ← 脇書きの値で下を切る(知名度で絞る)。要るときだけ
+  "min_extra_unless_tag": "下限を免除するタグ(カンマ区切り。これを持つものは下限に届かなくても取る)",
   "limit": 30,   ← 書かなければ全部。AI に読ませる側の都合で絞るときだけ書く
   "body": "opening(冒頭。既定) か body(全文)",
   "url": "出典の作り方。{title} と、そのソースが extra に持っている値を差し込める",

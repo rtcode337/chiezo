@@ -1582,3 +1582,43 @@ class TestCuttingByAFactOnTheArticle:
     def test_a_strange_floor_is_refused(self, bad):
         with pytest.raises(HTTPException):
             self.roster(min_extra=bad)
+
+
+class TestExemptingTagsFromTheFloor:
+    """**下限を免除するタグ**(`min_extra_unless_tag`)。古い名作映画は今の閲覧数が少なく、
+    知名度で切ると受賞作が抜ける。同じソースの指定は 2 本に分けられないので、1 本の中で書く。"""
+
+    @staticmethod
+    def films():
+        return [
+            {"title": "よく読まれる作品", "tags": ["甲の監督映画"], "extra": {"pageviews_month": 9000}},
+            {"title": "読まれない作品", "tags": ["甲の監督映画"], "extra": {"pageviews_month": 100}},
+            {"title": "古い受賞作", "tags": ["甲の監督映画", "金獅子賞受賞作"],
+             "extra": {"pageviews_month": 100}},
+            # 免除は下限だけ。名簿の元のタグに当たらないものは入らない
+            {"title": "名簿の外の受賞作", "tags": ["金獅子賞受賞作"], "extra": {"pageviews_month": 100}},
+        ]
+
+    @staticmethod
+    def roster(**overrides):
+        return extract.normalize({
+            "source": "jawiki", "tag_suffix": "の監督映画",
+            "min_extra": {"pageviews_month": 3000},
+            "min_extra_unless_tag": "金獅子賞受賞作,パルム・ドール受賞作", **overrides,
+        })
+
+    def test_exempt_tags_pass_below_the_floor(self, source):
+        items, _cursor = run(self.roster(), source(self.films()))
+
+        assert sorted(i["title"] for i in items) == sorted(["古い受賞作", "よく読まれる作品"])
+
+    def test_it_is_counted_the_same_way(self, source):
+        assert extract.count(self.roster(), source(self.films())) == 2
+
+    def test_it_is_written_back(self):
+        assert extract.to_json(self.roster())["min_extra_unless_tag"] == "金獅子賞受賞作,パルム・ドール受賞作"
+        assert "min_extra_unless_tag" not in extract.to_json(self.roster(min_extra_unless_tag=None))
+
+    def test_it_needs_a_floor(self):
+        with pytest.raises(HTTPException):
+            self.roster(min_extra=None)
