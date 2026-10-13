@@ -648,6 +648,10 @@ class Sweep:
     # **置き場へ書く収集で、この巡回だけが足すタグ**(`Collection.store_tags` に足す)。
     # 興味ごとに巡回を 1 本ずつ持つような使い方で、回ごとの範囲を分けるためのもの
     store_tags: list[str] = field(default_factory=list)
+    # **この巡回だけが読む材料**(`{material}`。形は `Collection.material` と同じ)。
+    # 書いてあれば収集の材料の代わりに読む —— 1 つの収集の中で、巡回ごとに読む先が違う
+    # 使い方(上映中の映画を読む回と、名作映画の名簿を読む回)があり、収集に 1 つでは足りない
+    material: dict | None = None
     next_run_at: str | None = None
     last_run_at: str | None = None
     last_status: str | None = None
@@ -801,6 +805,7 @@ def _sweep_from_json(raw: dict, item: Collection) -> Sweep:
         after=str(raw.get("after") or "").strip()[:40],
         worker=str(raw.get("worker") or "").strip()[:40],
         store_tags=_store_tags_or_empty(raw.get("store_tags")),
+        material=raw.get("material") if isinstance(raw.get("material"), dict) else None,
         next_run_at=raw.get("next_run_at") or None,
         last_run_at=raw.get("last_run_at") or None,
         last_status=raw.get("last_status") or None,
@@ -951,6 +956,12 @@ def normalize_sweeps(raw) -> list[dict]:
             made["store_tags"] = normalize_store_tags(made["store_tags"])
             if not made["store_tags"]:
                 made.pop("store_tags")
+        if "material" in made:
+            # **読めない材料の指定は断る**(収集の material と同じ。黙って無視すると、
+            # 差し込み口だけが残った依頼文で走り続ける)。空なら持たない
+            made["material"] = normalize_material(made["material"])
+            if made["material"] is None:
+                made.pop("material")
         if made.get("use_pihole"):
             # **Pi-hole から引く回も AI を呼ばない**(相手を持たせても読まれない)
             made.update(worker="", backend=None, model=None, effort=None)
@@ -2430,7 +2441,7 @@ def _with_source_renamed(item: Collection, name: str, new_name: str) -> Collecti
     """指定の中で `name` を指しているところを `new_name` に書き換えた 1 件。
     書き換えるところが無ければ None。
 
-    見るのは、別のソースを名指せる 4 か所 —— 材料(`material`)・抽出(`extract`)・
+    見るのは、別のソースを名指せる 5 か所 —— 材料(`material`。巡回ごとの材料も)・抽出(`extract`)・
     区画の母集団(`partition`)・タグの確かめ(`verify_tags`)。
     """
     def swap(spec):
@@ -2445,6 +2456,10 @@ def _with_source_renamed(item: Collection, name: str, new_name: str) -> Collecti
     changed = replace(
         item,
         material=swap(item.material),
+        sweeps=[
+            {**raw, "material": swap(raw["material"])} if isinstance(raw, dict) and "material" in raw else raw
+            for raw in item.sweeps or []
+        ] if item.sweeps else item.sweeps,
         extract=extract,
         partition=swap(item.partition),
         verify_tags=[swap(one) for one in item.verify_tags],
@@ -3114,9 +3129,10 @@ def build_messages(
         # **基準はその巡回の前回**(`{recent}` と同じ読み方)。収集の前回に倒すと、
         # 別の巡回が走った時刻でこの窓が食われる
         since = sweep.last_run_at if sweep else None
+        material = material_of(item, sweep)
         user = user.replace(
             SOURCE_PLACEHOLDER,
-            render_source_material(item.material, material_docs(item.material, sources or {}, since)),
+            render_source_material(material, material_docs(material, sources or {}, since)),
         )
     if MATERIAL_PLACEHOLDER in user:
         docs, scoped = scoped_docs(item, previous or {}, partition_key, focus)
@@ -3974,9 +3990,10 @@ def nothing_to_pass(item: Collection, sweep: Sweep, sources: dict) -> str:
                     return ""
                 empty.append(f"直近 {hours} 時間に入ったもの")
             else:
-                if material_docs(item.material, sources, sweep.last_run_at):
+                material = material_of(item, sweep)
+                if material_docs(material, sources, sweep.last_run_at):
                     return ""
-                empty.append(f"材料の「{(item.material or {}).get('source', '')}」に新しく入ったもの")
+                empty.append(f"材料の「{(material or {}).get('source', '')}」に新しく入ったもの")
     except Exception:
         log.exception("collect %s/%s: 渡すものがあるか確かめられなかった", item.name, sweep.name)
         return ""
@@ -4103,11 +4120,22 @@ def derives_from(item: Collection, known: set[str] | None = None) -> str:
     return ""
 
 
+def material_of(item: Collection, sweep: Sweep | None) -> dict | None:
+    """その回が読む材料。**巡回に書いてあればそちら、無ければ収集のもの**。"""
+    if sweep is not None and isinstance(sweep.material, dict):
+        return sweep.material
+    return item.material
+
+
 def _material_sources(item: Collection) -> list[str]:
-    """その収集が材料に読むソース(書いてある順)。"""
+    """その収集が材料に読むソース(書いてある順。収集のもの、巡回のもの、機械で埋める元)。"""
     out = []
     if isinstance(item.material, dict) and (source := item.material.get("source")):
         out.append(str(source))
+    for raw in item.sweeps or []:
+        material = raw.get("material") if isinstance(raw, dict) else None
+        if isinstance(material, dict) and (source := material.get("source")) and str(source) not in out:
+            out.append(str(source))
     written = item.extract if isinstance(item.extract, list) else [item.extract]
     for one in written:
         if isinstance(one, dict) and (source := one.get("source")):

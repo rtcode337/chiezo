@@ -874,6 +874,33 @@ class TestTheMaterialSource:
         before = replace(sweep, last_run_at="2025-01-01T00:00:00+00:00")
         assert "古い記事" in collect.build_messages(item, {}, None, sources, before)[1]["content"]
 
+    def test_a_sweep_can_read_its_own_material(self, sample, baked):
+        """巡回に材料を書けば、その回は収集の材料の代わりにそちらを読む(巡回ごとに読む先が違う使い方)。"""
+        collect.update(
+            "news",
+            material={"source": "tech"},
+            sweeps=[
+                {"name": "技術", "interval_minutes": 60, "prompt": "{material}"},
+                {"name": "映画", "interval_minutes": 60, "prompt": "{material}",
+                 "material": {"source": "films", "limit": 5}},
+            ],
+        )
+        sources = {
+            **baked([("Java 27 が出た", "本文")], name="tech"),
+            **baked([("ローマの休日", "本文")], name="films"),
+        }
+        item = collect.get("news")
+
+        tech = collect.build_messages(item, {}, None, sources, collect.sweep_named(item, "技術"))[1]["content"]
+        films = collect.build_messages(item, {}, None, sources, collect.sweep_named(item, "映画"))[1]["content"]
+        assert "Java 27 が出た" in tech and "ローマの休日" not in tech
+        assert "ローマの休日" in films and "Java 27 が出た" not in films
+        assert collect.sweep_named(item, "映画").material == {"source": "films", "tag": "", "limit": 5}
+
+    def test_a_broken_sweep_material_is_refused(self, sample):
+        with pytest.raises(HTTPException):
+            collect.update("news", sweeps=[{"name": "映画", "interval_minutes": 60, "material": {"limit": 5}}])
+
     def test_a_source_that_is_not_baked_yet_is_not_an_error(self, sample):
         """材料の側がまだ 1 度も走っていないだけのことがある。"""
         collect.update("news", prompt="{material}", material={"source": "まだ無い"})
