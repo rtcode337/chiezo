@@ -5106,6 +5106,25 @@ class TestRest:
         assert client.post("/v1/collect/news/focus", json={"note": "直して"}).status_code == 409
         assert collect.get("news").pending_focus is None
 
+    def test_a_slot_taken_in_between_still_reads_as_busy(self, client, sample, monkeypatch):
+        """空きを見た直後に時計が 1 本流すと、trigger は 429 で断る。**呼ぶ側には 409 で
+        見せる** —— 待つ側は 409 を「空くまで待つ」、それ以外を「断られた」と読む。"""
+        from app.views import admin
+
+        def taken(_source):
+            raise HTTPException(429, {
+                "error": "all 1 slot(s) are busy: other", "running": ["other"], "slots": 1,
+            })
+
+        monkeypatch.setattr(admin, "trigger_run", taken)
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://chiezo-trigger:7011")
+        collect.update("news", enabled=True)
+
+        res = client.post("/v1/collect/news/focus", json={"note": "直して"})
+        assert res.status_code == 409
+        assert "いま取り込みが走っています(other)" in res.json()["error"]
+        assert collect.get("news").pending_focus is None
+
     def test_the_prompt_rides_along_without_being_saved(self, client, sample, monkeypatch):
         """その回だけの依頼文。**定義のプロンプトは育てたまま**にしておく。"""
         from app.views import admin

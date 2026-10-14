@@ -4247,11 +4247,31 @@ def start_focus_bake(name: str, raw: dict) -> dict:
 
     try:
         trigger_run(name)
+    except HTTPException as e:
+        collect.clear_focus(name)
+        if e.status_code in (409, 429):
+            # **擦れ違いも「走っている」で返す。** 上で見た状態は 1 回の読みで、
+            # 同じ周に時計(`_dispatch`)が行列から 1 本流すと、trigger は枠が
+            # 埋まったと 429 で断る。そのまま中継すると、呼ぶ側には「待てば空く」
+            # (409)と「断られた」(429)の 2 通りに見え、待つ側の実装が後者を
+            # 落とす(外のアプリの定時のまとめが、朝の混む時間にそれで止まった)
+            raise HTTPException(409, {
+                "error": f"いま取り込みが走っています({', '.join(_trigger_running(e))})",
+                "hint": "割り込みは待ち行列に並べません。空いてからもう一度押してください",
+            }) from None
+        raise
     except Exception:
         collect.clear_focus(name)
         raise
 
     return {"name": name, "focus": focus.to_json()}
+
+
+def _trigger_running(e: HTTPException) -> list[str]:
+    """trigger の断りに載っている、走っている 1 本の名前(`running`)。無ければ空。"""
+    detail = e.detail if isinstance(e.detail, dict) else {}
+    running = detail.get("running")
+    return [str(n) for n in running] if isinstance(running, list) else []
 
 
 def _refuse_stopped(name: str, manual: bool) -> None:
