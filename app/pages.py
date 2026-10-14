@@ -793,7 +793,16 @@ TOUCH_SCRIPT = """<script>
     document.addEventListener('touchstart', place, { passive: true });
     document.addEventListener('focusin', settle);
     document.addEventListener('focusout', settle);
-    place();
+    window.addEventListener('load', settle);
+    settle();
+    // **合図を待つだけでは取りこぼす。** 頭の選択肢(面の切り替え)を開くと、選ぶ欄が
+    // キーボードと同じく見えている範囲を縮め、そのまま次の面を開くと、開いた瞬間に
+    // 縮んだ高さで置かれたまま何の合図も来ない(帯が画面の途中に残った。実際に起きた)。
+    // 置き直しは数値を 1 つ読むだけなので、見えている間は 1 秒ごとに置き直して、
+    // どの経路でずれても 1 秒で下端へ戻す
+    setInterval(function () {
+      if (document.visibilityState === 'visible') { place(); }
+    }, 1000);
   }
 
   // ---- 引っ張って読み直す ---------------------------------------------------
