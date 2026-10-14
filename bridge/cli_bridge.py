@@ -170,7 +170,7 @@ SLUG_CARRIES_EFFORT = {"antigravity"}
 # 黙って既定で動く(実測)。打ち間違いに気づけないので、ここに無い値は 400 で返す。
 DEFAULT_EFFORTS = {
     "claude": ("low", "medium", "high", "xhigh", "max"),  # claude --help（5 つとも実測）
-    "antigravity": ("low", "medium", "high"),  # agy --help
+    "antigravity": ("low", "medium", "high", "xhigh", "max"),  # agy --help（1.3.5 で 5 つ）
     "codex": (),  # 置き場のファイルから読む（`_codex_catalog`）。無ければ選ばせない
 }
 GIVEN_EFFORTS = tuple(

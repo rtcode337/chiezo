@@ -324,9 +324,10 @@ PROVIDERS: tuple[Provider, ...] = (
             "claude-sonnet-4-6", "claude-opus-4-6-thinking",
             "gpt-oss-120b-medium",
         ),
-        # `agy --help` の --effort。claude と違い xhigh / max は無い。
+        # `agy --help` の --effort（1.3.5 で xhigh / max が増えた。1.2 系は low〜high と max）。
+        # ブリッジが --help から読めたらそちらが正で、これは読めなかったときの控え。
         # **モデルを選ばなかったときだけ効く**（選んだら slug のほうが持っている）。
-        efforts=("low", "medium", "high"),
+        efforts=("low", "medium", "high", "xhigh", "max"),
         model_carries_effort=True,
         # 枠は CLI に聞くしかない。 残クレジットを取る RPC は持っているが、
         # 外から叩ける口としては公開されていない（画面の中で使われるだけ）。

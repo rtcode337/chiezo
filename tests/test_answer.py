@@ -994,7 +994,7 @@ class TestSelectableEfforts:
         from app import answer
 
         assert answer.normalize_effort("antigravity", "high") == "high"
-        assert answer.normalize_effort("antigravity", "xhigh") == ""  # 元から無い段階
+        assert answer.normalize_effort("antigravity", "ultra") == ""  # 元から無い段階
 
     def test_a_backend_that_folds_it_into_the_name_does_not_offer_a_separate_field(self):
         """**選べるのに効かない欄は「設定したつもり」を作る。**
@@ -1342,8 +1342,9 @@ class TestEffort:
         assert answer.normalize_effort("claude", "xhigh") == "xhigh"
         assert answer.normalize_effort("claude", "XHIGH ") == "xhigh"
         assert answer.normalize_effort("claude", "bogus") == ""
-        # 相手ごとに段階が違う（agy に xhigh は無い）
-        assert answer.normalize_effort("antigravity", "xhigh") == ""
+        # 相手ごとに段階が違う（agy は 1.3.5 で xhigh / max が増えた。知らない値は落とす）
+        assert answer.normalize_effort("antigravity", "xhigh") == "xhigh"
+        assert answer.normalize_effort("antigravity", "ultra") == ""
         # 持たない相手には何も送らない
         assert answer.normalize_effort("codex", "high") == ""
         assert answer.normalize_effort("gemini", "high") == ""

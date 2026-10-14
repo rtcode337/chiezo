@@ -654,8 +654,10 @@ class TestEffortSelection:
         assert bridge(CHIEZO_BRIDGE_CLI="claude").efforts_now() == (
             "low", "medium", "high", "xhigh", "max",
         )
-        # agy に xhigh / max は無い
-        assert bridge(CHIEZO_BRIDGE_CLI="antigravity").efforts_now() == ("low", "medium", "high")
+        # agy も 1.3.5 で xhigh / max が増えた
+        assert bridge(CHIEZO_BRIDGE_CLI="antigravity").efforts_now() == (
+            "low", "medium", "high", "xhigh", "max",
+        )
         assert bridge(CHIEZO_BRIDGE_CLI="codex").efforts_now() == ()
 
     def test_it_reaches_the_cli(self, bridge):
@@ -683,7 +685,7 @@ class TestEffortSelection:
         # 段階の名前が違う CLI では、その CLI に無いものも弾く
         agy = bridge(CHIEZO_BRIDGE_CLI="antigravity")
         with pytest.raises(fastapi.HTTPException):
-            agy.resolve_effort("xhigh")
+            agy.resolve_effort("ultra")
 
     def test_a_cli_without_efforts_refuses_all_of_them(self, bridge):
         import fastapi

@@ -68,7 +68,7 @@ RUN set -eux; \
 # 1.1.27 でも出た。あれは版ではなく権限の確認の問題で、cli_bridge.py の
 # build_command が `--dangerously-skip-permissions` を常に付けることで避けている
 # (agy には道具を名指しで許す口が無い。守りはマウントとネットワークで取る)。
-ARG AGY_MIN_VERSION=1.2.14
+ARG AGY_MIN_VERSION=1.3.5
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl; \
