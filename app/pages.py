@@ -105,8 +105,12 @@ APPLE_TOUCH_ICON_PNG = base64.b64decode(
 )
 
 PAGE_STYLE = """
-  body { font-family: system-ui, sans-serif; margin: 2rem; color: #222;
-         max-width: 76rem; }
+  /* 本文の周りの余白は変数で持つ。ホーム画面から開いたときは body ではなく
+     中のスクロール領域(`.app-scroll`)の内側へ移すので(`TOUCH_STYLE`)、
+     画面ごと・幅ごとの値を 1 か所で読めるようにしておく */
+  :root { --page-my: 2rem; --page-mx: 2rem; }
+  body { font-family: system-ui, sans-serif; margin: var(--page-my) var(--page-mx);
+         color: #222; max-width: 76rem; }
   /* 見出しの深さを**大きさだけで**表さない。h2 と h3 の差は 0.1rem ほどしか取れず
      (画面が縦に伸びるので h2 を大きくしすぎられない)、字の大きさだけでは
      「いまどの節の中にいるか」が読み取れなかった。**帯・罫・字間・字色**を
@@ -435,7 +439,7 @@ PAGE_STYLE = """
   }
   /* スマホ幅。余白を詰めて本文の幅を稼ぎ、押す物を指の大きさに合わせる */
   @media (max-width: 40rem) {
-    body { margin: 1rem 0.9rem; }
+    :root { --page-my: 1rem; --page-mx: 0.9rem; }
     button { padding: 0.5rem 0.9rem; }
     input[type=text] { width: 100%; }
     /* **表は 1 行 1 枚の札にする。** 管理画面の表は 7 列あるものもあり、
@@ -501,9 +505,13 @@ CHAT_PATH = "/ai/chat"
 # 管理画面は素っ気ないままでよく、会話は毎日触る画面なので作りが違う。
 # PAGE_STYLE の後ろに足すので、body の余白など重なる指定はこちらが勝つ。
 CHAT_STYLE = """
-  body { margin: 0; background: #faf9f7; color: #23221f; }
+  :root { --page-my: 0px; --page-mx: 0px; }
+  body { background: #faf9f7; color: #23221f; }
   .chat-page { display: flex; flex-direction: column; height: 100dvh;
                max-width: 46rem; margin: 0 auto; padding: 0 1rem; }
+  /* ホーム画面から開いたときは、画面の高さではなく本文の領域の高さに合わせる
+     (下に帯が並ぶので、100dvh のままだと入力欄が帯の分だけ下へはみ出す) */
+  html.app-standalone .chat-page { height: 100%; }
   .chat-head { display: flex; align-items: baseline; gap: 1rem; padding: 1rem 0 0.5rem; }
   .chat-head h1 { font-size: 1.05rem; margin: 0; }
   .chat-head .spacer { flex: 1; }
@@ -702,107 +710,106 @@ TOUCH_STYLE = """
                padding: .3rem .9rem; border-radius: 0 0 .6rem .6rem;
                background: #5560E0; color: #fff; font-size: .8rem;
                box-shadow: 0 2px 8px rgba(0,0,0,.2); pointer-events: none; }
-  /* ホーム画面から開いたときだけ出す帯。**下に置く** —— 親指が届くのは下。
+
+  /* ---- ホーム画面から開いたときの骨組み(`html.app-standalone`) ----
+     **画面の高さちょうどの縦並びにして、ページ全体はスクロールさせない。**
+     動くのは中のスクロール領域(`.app-scroll`)だけで、帯はその後ろ(縦並びの最後)に
+     置く。帯を fixed にして、見えている範囲の下端へ JS で置き直していた頃は、
+     iPhone が持つ見えている範囲の値(`visualViewport`)そのものが古いまま残る経路
+     (別のアプリでキーボードを出したまま切り替えて来た、など)で帯が画面の途中に
+     取り残され、合図や置き直しを足しても塞ぎきれなかった。並びの最後に置けば、
+     置き直すものがそもそも無い。
+     **ブラウザで開いたときは何も変えない**(印が付かないので、ここは効かない) */
+  html.app-standalone, html.app-standalone body { height: 100%; overflow: hidden; }
+  /* 100dvh を読めない古い端末は、上の 100% のまま */
+  html.app-standalone body { height: 100dvh; margin: 0; max-width: none;
+                             display: flex; flex-direction: column; }
+  /* **body の余白と幅の上限はここへ移す。** body に残すと、余白がスクロールの外に
+     出て(上の余白が動かない)、帯との間にも隙間が空く。右は本文を 76rem に収める
+     ぶんも取る(body の max-width の代わり)。横向きでノッチの下に潜らないよう、
+     左右は safe-area とも比べる */
+  html.app-standalone .app-scroll {
+    flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain;
+    padding: var(--page-my)
+             max(var(--page-mx), calc(100% - 76rem - var(--page-mx)),
+                 env(safe-area-inset-right))
+             var(--page-my)
+             max(var(--page-mx), env(safe-area-inset-left));
+  }
+
+  /* 戻る・読み直す・進むの帯。**下に置く** —— 親指が届くのは下。
      ブラウザの帯が消えているぶんをここで補う */
-  .app-nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 55;
-             display: none; justify-content: space-around; align-items: center;
-             padding: .4rem 0 calc(.4rem + env(safe-area-inset-bottom));
-             background: #fff; border-top: 1px solid #e2e2ea; }
-  .app-nav button { font-size: 1.15rem; line-height: 1; min-width: 4.5rem;
-                    padding: .45rem 0; background: none; border: 0; color: #333; }
+  .app-nav { display: none; }
+  /* **画面の下端(ホームインジケーター)のぶんは帯の下に空ける。** ボタンを
+     そこへ置くと、押したつもりがアプリの切り替えになる。背景だけは下端まで敷く */
+  html.app-standalone .app-nav {
+    display: flex; flex: none;
+    padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom)
+             env(safe-area-inset-left);
+    background: #fff; border-top: 1px solid #e2e2ea; }
+  /* **押せる範囲は帯を 3 等分した全部。** 記号の大きさだけを押せる範囲にすると、
+     指の太さに対して小さすぎて外す。高さは 52px(指で押す目安の 48px 以上)で、
+     記号の下に小さく名前を添える(記号だけだと ⟳ が何か一目で読めない) */
+  .app-nav button { flex: 1; min-height: 3.25rem; padding: .3rem 0;
+                    display: flex; flex-direction: column; align-items: center;
+                    justify-content: center; gap: .2rem;
+                    background: none; border: 0; color: #333;
+                    -webkit-tap-highlight-color: transparent; }
+  .app-nav button:active { background: #eef0fb; }
   .app-nav button:disabled { color: #bbb; }
-  /* 帯のぶん、下端が隠れないように空ける(ビルドの印が帯の下に潜る) */
-  body.has-app-nav { padding-bottom: 4rem; }
+  .app-nav-mark { font-size: 1.6rem; line-height: 1; }
+  .app-nav-label { font-size: .72rem; line-height: 1; color: #666; }
 """
+
+# ホーム画面から開いたかどうかを、**描き始める前に**見て印を付ける(`<head>` に置く)。
+# 骨組みの組み替え(`TOUCH_STYLE` の `html.app-standalone`)はこの印で効かせる ——
+# 本文のあとの台本で付けると、いったんふつうの並びで描いてから組み替わり、画面が跳ねる。
+STANDALONE_HEAD_SCRIPT = """<script>
+(function () {
+  var standalone = (window.matchMedia
+      && window.matchMedia('(display-mode: standalone)').matches)
+    || window.navigator.standalone === true;
+  if (!standalone) { return; }
+  document.documentElement.classList.add('app-standalone');
+  // **画面の下端まで使うと宣言する**(viewport-fit=cover)。これが無いと iPhone は
+  // safe-area-inset-* を 0 と答え、帯をホームインジケーターから離せない。
+  // ブラウザで開いたときは付けない —— 横向きで本文がノッチの下へ潜る
+  var vp = document.querySelector('meta[name="viewport"]');
+  if (vp && vp.content.indexOf('viewport-fit') < 0) {
+    vp.content += ', viewport-fit=cover';
+  }
+})();
+</script>"""
 
 TOUCH_SCRIPT = """<script>
 (function () {
   // ---- ホーム画面から開いたときだけ、戻る・進む・読み直すを出す -------------
   //
   // **ブラウザの帯が消えている**ので、そのままだと 1 つ前の画面へ戻る手段が無い
-  // (管理画面はリンクで面を行き来する作り)。
-  var standalone = (window.matchMedia
-      && window.matchMedia('(display-mode: standalone)').matches)
-    || window.navigator.standalone === true;
-  if (standalone) {
+  // (管理画面はリンクで面を行き来する作り)。ホーム画面から開いたかどうかは
+  // `<head>` の台本が先に見て印を付けてある(`STANDALONE_HEAD_SCRIPT`)。
+  // **帯は body の縦並びの最後に足すだけで、置き直さない**(並べ方は `TOUCH_STYLE`)
+  if (document.documentElement.classList.contains('app-standalone')) {
     var bar = document.createElement('nav');
     bar.className = 'app-nav';
-    bar.style.display = 'flex';
     [['←', '戻る', function () { history.back(); }],
      ['⟳', '読み直す', function () { location.reload(); }],
      ['→', '進む', function () { history.forward(); }]].forEach(function (item) {
       var b = document.createElement('button');
       b.type = 'button';
-      b.textContent = item[0];
-      b.setAttribute('aria-label', item[1]);
+      var glyph = document.createElement('span');
+      glyph.className = 'app-nav-mark';
+      glyph.setAttribute('aria-hidden', 'true');
+      glyph.textContent = item[0];
+      var label = document.createElement('span');
+      label.className = 'app-nav-label';
+      label.textContent = item[1];
+      b.appendChild(glyph);
+      b.appendChild(label);
       b.addEventListener('click', item[2]);
       bar.appendChild(b);
     });
     document.body.appendChild(bar);
-    document.body.classList.add('has-app-nav');
-    stickToVisibleBottom(bar);
-  }
-
-  // ---- 帯を、いま見えている範囲の下端に置く ---------------------------------
-  //
-  // **`bottom: 0` だけでは足りない。** iPhone は見えている範囲(visual viewport)と
-  // fixed の基準の枠(layout viewport)を別々に持ち、ホーム画面から開いた状態では、
-  // **キーボードを閉じたあと枠の位置と高さが古いまましばらく残る**(WebKit の不具合)。
-  // その間、帯は枠の下に付いたまま取り残され、下へスクロールするとキーボードの
-  // 高さぶんまで画面の途中へ浮き、上へ戻すと下へ戻る(実際に起きた)。
-  // 見えている範囲が枠のどこにあるか(`visualViewport.offsetTop` / `height`)は
-  // ずれている間も正しいので、**枠の上端から測って見えている範囲の下端へ置く**。
-  // **入力している間は帯を隠す** —— 見えている範囲はキーボードのぶん縮むので、
-  // 置き直すと帯がキーボードの上に乗って書く場所を狭める(入力中に戻る・進むは要らない)
-  // **キーボードが外から閉じられたときも置き直す** —— アプリの切り替え・通知・画面の
-  // ロックなどで閉じると、resize もフォーカスの出入りも来ないことがあり、帯が
-  // キーボードの出ていた高さに置かれたまま画面の途中に残る(実際に起きた)。画面に
-  // 戻ったとき(visibilitychange・pageshow・focus)と、指が触れたときにも置き直す。
-  // 閉じる動きの途中の値で置くこともあるので、合図のたびに少し間を置いてもう数回置き直す
-  function stickToVisibleBottom(el) {
-    var vv = window.visualViewport;
-    if (!vv) { return; }
-    el.style.top = '0';
-    el.style.bottom = 'auto';
-    function typing() {
-      var a = document.activeElement;
-      var tag = a && a.tagName;
-      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
-        || (a && a.isContentEditable);
-    }
-    function place() {
-      el.style.visibility = typing() ? 'hidden' : '';
-      var y = vv.offsetTop + vv.height - el.offsetHeight;
-      el.style.transform = 'translateY(' + Math.round(y) + 'px)';
-    }
-    var timers = [];
-    function settle() {
-      place();
-      timers.forEach(clearTimeout);
-      timers = [0, 150, 400, 800].map(function (ms) { return setTimeout(place, ms); });
-    }
-    vv.addEventListener('resize', settle);
-    vv.addEventListener('scroll', place);
-    window.addEventListener('scroll', place, { passive: true });
-    window.addEventListener('resize', settle);
-    window.addEventListener('focus', settle);
-    window.addEventListener('pageshow', settle);
-    document.addEventListener('visibilitychange', function () {
-      if (document.visibilityState === 'visible') { settle(); }
-    });
-    document.addEventListener('touchstart', place, { passive: true });
-    document.addEventListener('focusin', settle);
-    document.addEventListener('focusout', settle);
-    window.addEventListener('load', settle);
-    settle();
-    // **合図を待つだけでは取りこぼす。** 頭の選択肢(面の切り替え)を開くと、選ぶ欄が
-    // キーボードと同じく見えている範囲を縮め、そのまま次の面を開くと、開いた瞬間に
-    // 縮んだ高さで置かれたまま何の合図も来ない(帯が画面の途中に残った。実際に起きた)。
-    // 置き直しは数値を 1 つ読むだけなので、見えている間は 1 秒ごとに置き直して、
-    // どの経路でずれても 1 秒で下端へ戻す
-    setInterval(function () {
-      if (document.visibilityState === 'visible') { place(); }
-    }, 1000);
   }
 
   // ---- 引っ張って読み直す ---------------------------------------------------
@@ -812,7 +819,22 @@ TOUCH_SCRIPT = """<script>
   // 読み直すと、書きかけの入力が消える)。
   if (!('ontouchstart' in window)) { return; }
   var PULL = 70;          // ここまで引いたら読み直す
-  var start = -1, mark = null;
+  var start = -1, grip = null, mark = null;
+
+  // 「いちばん上にいるか」は**ページ全体だけで見ない。** ホーム画面から開いたときは
+  // ページは動かず中の領域(`.app-scroll`)が動くので、window.scrollY は 0 のまま。
+  // 会話の履歴のように入れ子で動く領域もあるので、指の下から外へ順にたどり、
+  // 1 つでも途中まで下がっていれば掴まない。帯の上で掴んだときは本文の領域が
+  // 指の外側に無いので、本文の領域は別に見る
+  var scroller = document.querySelector('.app-scroll');
+  function atTop(el) {
+    if (window.scrollY > 0) { return false; }
+    if (scroller && scroller.scrollTop > 0) { return false; }
+    for (; el && el !== document.documentElement; el = el.parentElement) {
+      if (el.scrollTop > 0) { return false; }
+    }
+    return true;
+  }
 
   function distance(ev) {
     return ev.touches && ev.touches.length === 1
@@ -831,14 +853,15 @@ TOUCH_SCRIPT = """<script>
   }
   function clear() {
     if (mark) { mark.remove(); mark = null; }
-    start = -1;
+    start = -1; grip = null;
   }
 
   document.addEventListener('touchstart', function (ev) {
     // **入力の中では掴まない**(選択やカーソル移動を邪魔する)
     var tag = ev.target && ev.target.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') { return; }
-    start = window.scrollY <= 0 && ev.touches.length === 1
+    grip = ev.target;
+    start = ev.touches.length === 1 && atTop(grip)
       ? ev.touches[0].clientY : -1;
   }, { passive: true });
 
@@ -848,7 +871,7 @@ TOUCH_SCRIPT = """<script>
     if (start < 0) { return; }
     var dy = distance(ev);
     // 上へ動いた / 途中でスクロールが始まった → 掴むのをやめる
-    if (dy <= 0 || window.scrollY > 0) { clear(); return; }
+    if (dy <= 0 || !atTop(grip)) { clear(); return; }
     show(dy);
     if (ev.cancelable) { ev.preventDefault(); }
   }, { passive: false });
@@ -999,6 +1022,10 @@ def page_shell(title: str, body: str, style: str = "") -> str:
     使っていたが、開いた `<details>` は閉じ、書きかけの入力は消え、押そうとしたボタンは
     読み直しに攫われる —— 取り込みは数時間かかるので、その間ずっと画面が使えなくなる。
     進み具合は、見たい人が自分で読み直す。
+
+    **本文は `.app-scroll` で包む。** ブラウザで開いたときはただの箱で見た目は変わらず、
+    ホーム画面から開いたときだけ、これが唯一のスクロール領域になって下に帯が並ぶ
+    (`TOUCH_STYLE`)。台本で後から包み直すと、描き終えてから組み替わって画面が跳ねる。
     """
     tab_title = f"Chiezo — {title or 'AI知識ベース'}"
     # **印の付いたフォームがある画面にだけ差し込む。** 会話の画面にも相手のセレクトが
@@ -1023,11 +1050,14 @@ def page_shell(title: str, body: str, style: str = "") -> str:
 <meta name="apple-mobile-web-app-title" content="Chiezo">
 <title>{html.escape(tab_title)}</title>
 <style>{PAGE_STYLE}{TOUCH_STYLE}{style}</style>
+{STANDALONE_HEAD_SCRIPT}
 </head>
 <body>
+<div class="app-scroll">
 {body}
 {picker}{busy}
 <footer class="page-footer">{_build_stamp()}</footer>
+</div>
 {TOUCH_SCRIPT}
 </body>
 </html>"""

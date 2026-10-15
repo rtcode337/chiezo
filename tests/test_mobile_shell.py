@@ -42,9 +42,16 @@ class TestTheShellCarriesIt:
 
 class TestPullingToRefresh:
     def test_it_only_grabs_at_the_very_top(self, client):
-        """途中で掴むと、下へスクロールしたいだけの指が読み直しになる。"""
+        """途中で掴むと、下へスクロールしたいだけの指が読み直しになる。
+
+        **ページ全体だけで見ない。** ホーム画面から開いたときはページが動かず
+        中の領域が動くので、`window.scrollY` は 0 のままになる。
+        """
         html = client.get("/admin").text
-        assert "window.scrollY <= 0" in html
+        assert "function atTop(el)" in html
+        assert "window.scrollY > 0" in html
+        assert "scroller.scrollTop > 0" in html
+        assert "el.scrollTop > 0" in html
 
     def test_it_does_not_grab_inside_an_input(self, client):
         """選択やカーソル移動を邪魔しない。"""
@@ -71,10 +78,38 @@ class TestTheNavigationBar:
         for call in ("history.back()", "location.reload()", "history.forward()"):
             assert call in html, call
 
-    def test_it_makes_room_so_the_footer_is_not_covered(self, client):
+    def test_it_is_the_last_row_not_a_floating_bar(self, client):
+        """**帯は fixed にせず、縦並びの最後に置く。** fixed にして見えている範囲の
+        下端へ JS で置き直していた頃は、その値そのものが古いまま残る経路で帯が
+        画面の途中に取り残された。
+        """
         html = client.get("/admin").text
-        assert "has-app-nav" in html
-        assert "body.has-app-nav { padding-bottom" in html
+        assert "html.app-standalone body { height: 100dvh;" in html
+        assert "html.app-standalone .app-scroll {" in html
+        assert "overflow-y: auto" in html
+        assert "stickToVisibleBottom" not in html
+        assert "has-app-nav" not in html
+        # 置き直しの台本が戻っていないこと(説明の中で名前を挙げるのはよい)
+        script = html.split("<body>", 1)[1]
+        for gone in ("visualViewport", "setInterval"):
+            assert gone not in script, gone
+
+    def test_the_page_is_wrapped_in_one_scroll_area(self, client):
+        """本文と足元の印は 1 つの箱に入り、帯の台本はその外に置く。"""
+        html = client.get("/admin").text
+        inner = html.split('<div class="app-scroll">', 1)[1]
+        assert inner.index('class="page-footer"') < inner.index("</div>\n<script>")
+
+    def test_the_mark_is_set_before_drawing(self, client):
+        """組み替えの印は `<head>` で付ける(本文のあとだと、描いてから跳ねる)。"""
+        head = client.get("/admin").text.split("</head>")[0]
+        assert "classList.add('app-standalone')" in head
+        assert "viewport-fit=cover" in head
+
+    def test_the_buttons_are_big_enough_for_a_finger(self, client):
+        html = client.get("/admin").text
+        assert "min-height: 3.25rem" in html
+        assert "env(safe-area-inset-bottom)" in html
 
 
 class TestBeingAddedToTheHomeScreen:
