@@ -97,6 +97,13 @@ _ADDED_COLUMNS = {
     # (外から区画を名指しして頼んだアプリが、止まった回を「頼んだ区画を見た回」と
     # 取り違えた)。**古い行は NULL**(記録していない、と「1 区画も見終えていない」は別)
     "visited": "TEXT",
+    # **アーカイブした・アーカイブから戻した**件数と見出し(`notes.ARCHIVED_TAG`)。
+    # 直したものとは別に数える —— 戻したのは「AI が外でもう一度見つけた」の意味で、
+    # 直しの中に埋もれると、終わったはずのものがなぜ戻ってきたのか読めない
+    "archived": "INTEGER NOT NULL DEFAULT 0",
+    "unarchived": "INTEGER NOT NULL DEFAULT 0",
+    "archived_titles": "TEXT NOT NULL DEFAULT '[]'",
+    "unarchived_titles": "TEXT NOT NULL DEFAULT '[]'",
 }
 
 # 割り込みの回に入る巡回の名前。**巡回の名前と同じ欄に入れる** ——
@@ -185,8 +192,9 @@ def record(
             conn.execute(
                 "INSERT INTO collect_runs (at, name, status, total, added, updated, removed,"
                 " skipped, added_titles, updated_titles, removed_titles, error, sweep, scope,"
-                " backend, model, effort, ms, visited)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " backend, model, effort, ms, visited,"
+                " archived, unarchived, archived_titles, unarchived_titles)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     datetime.now(UTC).isoformat(timespec="seconds"),
                     name,
@@ -207,6 +215,10 @@ def record(
                     effort or "",
                     ms,
                     None if visited is None else _titles(visited),
+                    int(d.get("archived") or 0),
+                    int(d.get("unarchived") or 0),
+                    _titles(d.get("archived_titles")),
+                    _titles(d.get("unarchived_titles")),
                 ),
             )
             # 古いものから捨てる。件数で切るのは、実行の頻度が収集ごとに違うため
@@ -248,7 +260,8 @@ def recent(
     sql = (
         "SELECT at, name, status, total, added, updated, removed, skipped,"
         " added_titles, updated_titles, removed_titles, error, sweep, scope,"
-        " backend, model, effort, ms, visited FROM collect_runs"
+        " backend, model, effort, ms, visited,"
+        " archived, unarchived, archived_titles, unarchived_titles FROM collect_runs"
     )
     where, args = _where(name, sweep)
     sql += where + " ORDER BY id DESC LIMIT ? OFFSET ?"
@@ -259,7 +272,10 @@ def recent(
         try:
             for r in conn.execute(sql, tuple(args)):
                 row = dict(r)
-                for key in ("added_titles", "updated_titles", "removed_titles", "scope"):
+                for key in (
+                    "added_titles", "updated_titles", "removed_titles", "scope",
+                    "archived_titles", "unarchived_titles",
+                ):
                     row[key] = _read_titles(row[key])
                 # 記録していない古い行は None のまま(空の並びは「1 区画も見終えていない」)
                 if row["visited"] is not None:

@@ -42,6 +42,18 @@ class TestRecord:
         assert rows[0]["updated_titles"] == ["直したもの"]
         assert rows[0]["removed_titles"] == ["消したもの"]
 
+    def test_it_keeps_archiving_apart_from_updates(self, state_env):
+        """**アーカイブから戻したものは直しに埋もれさせない** —— 終わったはずのものが
+        なぜ戻ってきたのかを、後から読めるようにする。"""
+        collect_log.record("works", status=collect_log.STATUS_OK, diff={
+            **DIFF, "archived": 2, "archived_titles": ["終わった", "完結"],
+            "unarchived": 1, "unarchived_titles": ["再上映"],
+        })
+        row = collect_log.recent()[0]
+        assert (row["archived"], row["unarchived"]) == (2, 1)
+        assert row["archived_titles"] == ["終わった", "完結"]
+        assert row["unarchived_titles"] == ["再上映"]
+
     def test_a_failure_is_a_row_too(self, state_env):
         """「走ったが何も入らなかった」と「走っていない」は別物。
 

@@ -2561,6 +2561,10 @@ REFINE_SYSTEM_PROMPT = (
     "重複をまとめるときは、まとめた先を返し、元のものに墓標を付ける。"
     " **消したものは、tags に「" + notes.RESTORE_TAG + "」を入れて返したときだけ戻る**"
     "(消したのが間違いだと分かったとき)。入れずに返しても消えたまま変わらない。"
+    " **もう動かないもの(終わった出来事など)を記録として残すときは、tags に「"
+    + notes.ARCHIVED_TAG + "」を足して返す**(アーカイブ。ほかのタグはそのまま返す)。"
+    "アーカイブしたものは次の回から渡されなくなり、期限でも消えない。"
+    "**消すのとは別物** —— 要らないものには墓標を使う。"
     " **脇書き(extra)は書いたものだけが変わる。** 触れなかった鍵はそのまま残るので、"
     "変えないものを書く必要は無い。**落としたい鍵だけ null を書く**。"
     " 分からない項目は null。"
@@ -2599,8 +2603,23 @@ def living(docs: dict[str, dict]) -> dict[str, dict]:
     区画にも巡回の 1 回が割り当てられ、そのぶん AI の枠を捨てることになる。
     差し込みには別の一覧として渡すので、消えたものが見えなくなるわけではない
     (`render_material`)。
+
+    **アーカイブ済みのものも外す**(`is_archived`)—— AI に見せないものなので、区画の量にも数えない。
     """
-    return {title: doc for title, doc in docs.items() if not is_removed(doc)}
+    return {
+        title: doc for title, doc in docs.items()
+        if not is_removed(doc) and not is_archived(doc)
+    }
+
+
+def is_archived(doc: dict) -> bool:
+    """アーカイブ済みのもの(`notes.ARCHIVED_TAG`)か。AI への差し込みにも期限にもかからない。"""
+    return notes.ARCHIVED_TAG in (doc.get("tags") or [])
+
+
+def unarchived(docs: dict[str, dict]) -> dict[str, dict]:
+    """アーカイブ済みのものを外した文書。**AI へ差し込むのはこちら**(`scoped_docs` / `render_recent`)。"""
+    return {title: doc for title, doc in docs.items() if not is_archived(doc)}
 
 
 def render_material(
@@ -2866,7 +2885,8 @@ def render_recent(
     呼ぶ側がいまから N 時間前にしてある)。
     """
     cutoff = _at(since)
-    fresh = [d for d in previous.values() if not is_removed(d) and (
+    # アーカイブ済みのものも入れない(印を付けた回で新しくなっても、もう材料ではない)
+    fresh = [d for d in previous.values() if not is_removed(d) and not is_archived(d) and (
         cutoff is None or _at(d.get("updated_at")) is None or _at(d.get("updated_at")) > cutoff)]
     span = f"直近 {hours} 時間に入ったもの" if hours else "前回から新しく入ったもの"
     if not fresh:
@@ -3018,8 +3038,12 @@ def scoped_docs(
     """
     if focus is not None and not partition_key:
         # **名指しだけの割り込みでは、名指しされたものが全体。** 区画を渡されていない
-        # のに全件を差し込むと入り切らず、直す相手が切り落とされる
+        # のに全件を差し込むと入り切らず、直す相手が切り落とされる。
+        # **アーカイブ済みでも名指しされたら見せる**(名指しした側は、それと知って頼んでいる)
         return {t: previous[t] for t in focus.titles if t in previous}, True
+    # **アーカイブ済みのものは差し込まない**(`notes.ARCHIVED_TAG`)。終わったものまで
+    # 毎回読ませると、育てる回の入力が際限なく太る
+    previous = unarchived(previous)
     if not (item.partition and partition_key):
         return previous, False
     spec = partitioning.normalize(item.partition)
@@ -4985,6 +5009,10 @@ def _stream_docs(
     added_titles: list[str] = []
     updated_titles: list[str] = []
     removed_titles: list[str] = []
+    # **アーカイブした・アーカイブから戻した**見出し(`notes.ARCHIVED_TAG`)。直したものとは
+    # 別に数える —— 戻したものは「外でもう一度見つけた」の意味で、黙って捨ても埋もれもさせない
+    archived_titles: list[str] = []
+    unarchived_titles: list[str] = []
 
     def kept(doc: dict, title: str, was_skipped: bool = False) -> dict:
         """前世代のまま残す 1 件。**固定を当てて変わるなら「直した」に数える**
@@ -5026,11 +5054,12 @@ def _stream_docs(
         if raw is None:
             yield kept(_reviewed(before) if reviewed and title in reviewed else before, title)
             continue
-        if only_new:
+        if only_new and not _found_again(before, raw):
             # **足すだけの回。** 既にあるものには触らない(数えるだけ)。
             # ただし、まだ持っていない脇書きは受け取る。
             # **機械で引く回は、運んできた鍵を入れ替える**(`facts`)—— 数えた値は
-            # 回るたびに変わるので、足さないと最初に拾った日の数が残り続ける
+            # 回るたびに変わるので、足さないと最初に拾った日の数が残り続ける。
+            # **アーカイブ済みのものを AI が返してきたときは触る**(`_found_again`)
             skipped += 1
             yield kept(
                 _with_facts(before, raw) if facts else _with_new_facts(before, raw), title,
@@ -5084,7 +5113,17 @@ def _stream_docs(
         doc["extra"] = _merge_extra(
             before_extra if isinstance(before_extra, dict) else {}, doc["extra"]
         )
-        if edits:
+        if is_archived(before) and not is_archived(doc) and not _found_again(before, raw):
+            # **機械が運んできたものではアーカイブを外さない**(フィードは同じ見出しを
+            # 何度でも流し、機械で引く回は毎回全件を返す。戻すかどうかを決める立場にない)
+            doc["tags"] = [*doc["tags"], notes.ARCHIVED_TAG]
+        if is_archived(before) and not is_archived(doc):
+            # **アーカイブから戻す。** AI には見せていない 1 件なので、印を写し忘れたのではなく
+            # 外でもう一度見つけたもの(再上映など)。返った中身を受け取り、控えに残す
+            unarchived_titles.append(title)
+        elif is_archived(doc) and not is_archived(before):
+            archived_titles.append(title)
+        elif edits:
             updated += 1
             updated_titles.append(title)
         else:
@@ -5149,6 +5188,10 @@ def _stream_docs(
         "added_titles": added_titles[:MAX_TITLE_SAMPLE],
         "updated_titles": updated_titles[:MAX_TITLE_SAMPLE],
         "removed_titles": removed_titles[:MAX_TITLE_SAMPLE],
+        "archived": len(archived_titles),
+        "archived_titles": archived_titles[:MAX_TITLE_SAMPLE],
+        "unarchived": len(unarchived_titles),
+        "unarchived_titles": unarchived_titles[:MAX_TITLE_SAMPLE],
         "collected": edits_of.count,
     })
 
@@ -5202,6 +5245,16 @@ def material(
         item, rows, collected, only_new, edits, counts, sweep, unreviewed, reviewed, facts,
     ))
     return docs, counts
+
+
+def _found_again(before: dict, raw: dict) -> bool:
+    """アーカイブ済みの 1 件と同じ見出しを、**AI が**返してきたか(墓標を除く)。
+
+    AI にはアーカイブ済みのものを見せていないので、返ってきたのは外でもう一度
+    見つけたということ —— 印を外して受け取る。**AI が返したかは署名で見る**
+    (`signed_by`)。機械で引く回とフィードには署名が無く、同じ見出しを何度でも運ぶ。
+    """
+    return is_archived(before) and bool(signed_by(raw)) and not _is_tombstone(raw)
 
 
 def _is_tombstone(raw: dict) -> bool:
@@ -5865,11 +5918,11 @@ def _light_docs(previous) -> dict[str, dict]:
 
     **本文を持たない。** 区画に要るのは座標か分類だけで、本文は 1 件の大半を
     占める —— 数十万件では、持つかどうかでメモリが桁で変わる。
-    **消えたものは入れない**(`living` と同じ判断)。
+    **消えたものもアーカイブ済みのものも入れない**(`living` と同じ判断)。
     """
     out: dict[str, dict] = {}
     for doc in previous():
-        if is_removed(doc):
+        if is_removed(doc) or is_archived(doc):
             continue
         out[doc["title"]] = {
             "title": doc["title"],
@@ -5952,7 +6005,7 @@ def bake_survey(item, sources: dict, previous, collected, only_new=False, edits=
     # 下限になる(`bake_lines` の meta)。**焼き上がった世代が「1 件足りない」で
     # 捨てられる**(本番で `validation failed: only 105 docs (< 106)`)
     for doc in stream_docs(item, rows(), collected, only_new, edits, diff):
-        if limit is not None and _doc_time(doc) < limit:
+        if _expired(doc, limit):
             expired += 1
             continue
         total += 1
@@ -6035,7 +6088,7 @@ def _count_dropped(item, plan, previous, collected, only_new, edits) -> int:
     limit = _expiry_limit(item)
     dropped = 0
     for doc in stream_docs(item, rows(), collected, only_new, edits):
-        if limit is not None and _doc_time(doc) < limit:
+        if _expired(doc, limit):
             continue
         for n, rule in enumerate(plan["rules"]):
             if (known := plan["alive"].get(n)) is None:
@@ -6086,9 +6139,13 @@ def bake_lines(item, sources: dict, previous, collected, only_new=False, edits=F
     for doc in stream_docs(
         item, rows(), collected, only_new, edits, None, sweep, unreviewed, reviewed, facts,
     ):
-        if limit is not None and _doc_time(doc) < limit:
+        if _expired(doc, limit):
             continue
-        if requeue and not is_removed(doc) and doc["title"] not in (reviewed or ()):
+        # アーカイブ済みのものは未確認に戻さない(AI に渡らないので、印が外れる日が来ない)
+        if (
+            requeue and not is_removed(doc) and not is_archived(doc)
+            and doc["title"] not in (reviewed or ())
+        ):
             doc = _unreviewed(doc)
         for n, rule in enumerate(plan["rules"]):
             if (known := plan["alive"].get(n)) is None:
@@ -6102,6 +6159,11 @@ def bake_lines(item, sources: dict, previous, collected, only_new=False, edits=F
             if len(keep) != len(tags):
                 doc = {**doc, "tags": keep}
         yield json.dumps(doc, ensure_ascii=False)
+
+
+def _expired(doc: dict, limit: str | None) -> bool:
+    """期限で落とす 1 件か。**アーカイブ済みのものは落とさない**(記録として残すために付ける印)。"""
+    return limit is not None and not is_archived(doc) and _doc_time(doc) < limit
 
 
 def _expiry_limit(item: Collection) -> str | None:

@@ -8116,3 +8116,128 @@ class TestDescriptionAsSourceNote:
 
     def test_a_missing_collection_has_no_description(self, enabled):
         assert collect.description_of("nothing_here") == ""
+
+
+class TestArchive:
+    """**アーカイブ**(`notes.ARCHIVED_TAG`)。終わった出来事を記録として残しつつ、
+    育てる対象から外す印。AI への差し込みにも期限にもかからず、読み口からは返る。
+
+    **AI が同じ見出しを返してきたら、印を外して受け取る** —— AI には見せていないので、
+    返ってきたのは外でもう一度見つけたということ。黙って捨てない。
+    """
+
+    @pytest.fixture
+    def refine(self, enabled):
+        return collect.create(
+            "works", prompt="いまの作品:\n{current}\n{names}\n整理して", interval_minutes=60,
+        )
+
+    @staticmethod
+    def _docs(*rows) -> dict[str, dict]:
+        return {
+            title: {
+                "doc_id": i,
+                "title": title,
+                "opening": "本文",
+                "body": "本文",
+                "tags": tags,
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "extra": {},
+            }
+            for i, (title, tags) in enumerate(rows, start=1)
+        }
+
+    @staticmethod
+    def _signed(*items):
+        return collect.signed(list(items), "claude", "sonnet")
+
+    def test_archived_ones_are_not_shown_to_the_ai(self, refine):
+        previous = self._docs(("上映中", ["公開日:2026-10-01"]),
+                              ("上映が終わった", [notes.ARCHIVED_TAG]))
+        user = collect.build_messages(collect.get("works"), previous)[1]["content"]
+        assert "上映中" in user
+        assert "上映が終わった" not in user
+
+    def test_archived_ones_are_not_in_recent(self):
+        previous = self._docs(("新しい", []), ("アーカイブ", [notes.ARCHIVED_TAG]))
+        text = collect.render_recent(previous, None)
+        assert "新しい" in text and "アーカイブ" not in text
+
+    def test_archived_ones_do_not_expire(self):
+        """流れの収集の期限で落とさない(記録として残すために付ける印)。"""
+        old = {"title": "古い", "tags": [], "updated_at": "2020-01-01T00:00:00+00:00"}
+        kept = {**old, "tags": [notes.ARCHIVED_TAG]}
+        limit = "2025-01-01T00:00:00+00:00"
+        assert collect._expired(old, limit) is True
+        assert collect._expired(kept, limit) is False
+        assert collect._expired(old, None) is False
+
+    def test_archiving_is_counted_apart_from_updates(self, refine):
+        previous = self._docs(("終わった", ["公開日:2026-01-01"]), ("直す", []))
+        docs, diff = collect.material(
+            collect.get("works"), previous,
+            self._signed(
+                {"title": "終わった", "body": "本文",
+                 "tags": ["公開日:2026-01-01", notes.ARCHIVED_TAG]},
+                {"title": "直す", "body": "直した本文"},
+            ),
+            False, True,
+        )
+        tags = {d["title"]: d["tags"] for d in docs}
+        assert notes.ARCHIVED_TAG in tags["終わった"]
+        assert (diff["archived"], diff["updated"]) == (1, 1)
+        assert diff["archived_titles"] == ["終わった"]
+
+    def test_the_ai_finding_it_again_brings_it_back(self, refine):
+        """**黙って捨てない。** 返った中身を受け取り、戻したことを控えに残す。"""
+        previous = self._docs(("名作", [notes.ARCHIVED_TAG]))
+        docs, diff = collect.material(
+            collect.get("works"), previous,
+            self._signed({"title": "名作", "body": "リバイバル上映", "tags": ["公開日:2026-11-01"]}),
+            False, True,
+        )
+        (doc,) = docs
+        assert doc["body"] == "リバイバル上映"
+        assert notes.ARCHIVED_TAG not in doc["tags"]
+        assert diff["unarchived_titles"] == ["名作"]
+        assert diff["updated"] == 0
+
+    def test_an_add_only_sweep_also_brings_it_back(self, refine):
+        """足すだけの回でも戻す —— AI には見せていないので「もう居る」とは知らずに返している。"""
+        previous = self._docs(("名作", [notes.ARCHIVED_TAG]))
+        docs, diff = collect.material(
+            collect.get("works"), previous,
+            self._signed({"title": "名作", "body": "リバイバル上映", "tags": []}),
+            True, False,
+        )
+        (doc,) = docs
+        assert doc["body"] == "リバイバル上映"
+        assert diff["unarchived_titles"] == ["名作"]
+
+    def test_a_feed_or_roster_does_not_bring_it_back(self, refine):
+        """**署名の無いもの(フィード・機械で引く回)では外さない** —— 同じ見出しを
+        何度でも運ぶので、戻すかどうかを決める立場にない。"""
+        previous = self._docs(("名作", [notes.ARCHIVED_TAG]))
+        for only_new, edits in ((True, False), (False, False), (False, True)):
+            docs, diff = collect.material(
+                collect.get("works"), previous,
+                [{"title": "名作", "body": "流れてきた本文", "tags": []}],
+                only_new, edits,
+            )
+            (doc,) = docs
+            assert notes.ARCHIVED_TAG in doc["tags"], (only_new, edits)
+            assert diff["unarchived"] == 0
+
+    def test_a_tombstone_still_removes_it(self, refine):
+        previous = self._docs(("名作", [notes.ARCHIVED_TAG]))
+        docs, diff = collect.material(
+            collect.get("works"), previous,
+            self._signed({"title": "名作", "body": "誤り", "tags": [notes.TOMBSTONE_TAG]}),
+            False, True,
+        )
+        assert diff["removed_titles"] == ["名作"]
+        assert notes.REMOVED_TAG in docs[0]["tags"]
+
+    def test_the_system_prompt_explains_it(self, refine):
+        system = collect.build_messages(collect.get("works"), {})[0]["content"]
+        assert notes.ARCHIVED_TAG in system

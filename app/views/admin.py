@@ -1878,13 +1878,18 @@ def _collect_changes_html(
             marks.append(f"直し {row['updated']}")
         if row["removed"]:
             marks.append(f'<span class="stale">-{row["removed"]}</span>')
+        if row.get("archived"):
+            marks.append(f"アーカイブ {row['archived']}")
+        if row.get("unarchived"):
+            marks.append(f"アーカイブから戻した {row['unarchived']}")
         summary = " / ".join(marks) or '<span class="muted">変化なし</span>'
         # **見出しは押せるようにする。** 名前だけ並べても「どう書き換わったか」は
         # 読めず、プロンプトを直す判断には中身の変化のほうが要る
         moved = []
         for label, key in (("足した", "added_titles"), ("直した", "updated_titles"),
-                           ("消した", "removed_titles")):
-            if row[key]:
+                           ("消した", "removed_titles"), ("アーカイブした", "archived_titles"),
+                           ("アーカイブから戻した", "unarchived_titles")):
+            if row.get(key):
                 links = "、".join(_doc_link(row["name"], t) for t in row[key])
                 moved.append(f"{label}: {links}")
         detail = (
