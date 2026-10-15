@@ -5762,6 +5762,18 @@ def missing_focus_partition(focus, ledger: list[dict]) -> str | None:
     return None if any(p.get("key") == focus.partition for p in ledger or ()) else focus.partition
 
 
+def missing_partitions(named, ledger: list[dict]) -> list[str]:
+    """名指しされた区画のうち、**台帳に無い鍵**(書かれた順。全部あれば空)。
+
+    **区画を割り直すと鍵は消える**ので、押した時点の台帳で作った鍵でも起きる。
+    受け付けるとき(`run_or_queue`)と走らせるときの両方で見る —— 走らせるときだけ
+    見ていた頃は、受け付けた時点で 200 が返るので、頼んだ側は通ったと読んで
+    自分の控えを消し、回はその後で台帳に無いと止まっていた(依頼がどこにも残らない)。
+    """
+    here = {p.get("key") for p in ledger or ()}
+    return [k for k in named or () if k not in here]
+
+
 def existing_titles(name: str, sources: dict, titles) -> set[str]:
     """渡した見出しのうち、**いま収集に居るもの**(消えたものも含む)。
 

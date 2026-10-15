@@ -112,3 +112,69 @@ class TestFocusEndpoint:
         res = client.post("/v1/collect/news/focus", json={"note": "直して", "partition": "A"})
         assert res.status_code == 200
         assert collect.get("news").pending_focus["partition"] == "A"
+
+
+class TestRunNamedPartitions:
+    """区画を名指しした 1 回(`POST /v1/collect/{name}/run` の `once.partitions`)。"""
+
+    @pytest.fixture()
+    def client(self, enabled, built_data_dir, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        from app.main import app
+
+        with TestClient(app) as c:
+            yield c
+
+    def test_missing_names_in_written_order(self):
+        ledger = [{"key": "A"}, {"key": "B"}]
+        assert collect.missing_partitions(["C", "A", "D"], ledger) == ["C", "D"]
+        assert collect.missing_partitions(["A"], ledger) == []
+        assert collect.missing_partitions(None, ledger) == []
+
+    def test_a_partition_the_ledger_does_not_have_is_refused_when_taken(
+        self, client, ready, monkeypatch
+    ):
+        """走らせるときに断っても、頼んだ側は受け付けの 200 で通ったと読む。"""
+        from app.views import admin
+
+        called = []
+        monkeypatch.setattr(admin, "trigger_run", called.append)
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://chiezo-trigger:7011")
+        monkeypatch.setattr(admin, "_fetch_trigger_status", lambda: {})
+
+        res = client.post("/v1/collect/news/run?manual=true", json={"partitions": ["C"]})
+        assert res.status_code == 409
+        assert "台帳にありません" in res.json()["error"]
+        assert collect.get("news").pending_run is None
+        assert called == []
+
+    def test_it_is_refused_rather_than_queued_when_ingest_is_busy(
+        self, client, ready, monkeypatch
+    ):
+        """埋まっているときの 409 は並べる合図なので、それより前で断る。"""
+        from app import ingest_queue
+        from app.views import admin
+
+        monkeypatch.setattr(admin, "trigger_run", lambda _name: None)
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://chiezo-trigger:7011")
+        monkeypatch.setattr(admin, "_fetch_trigger_status", lambda: {})
+        monkeypatch.setattr(ingest_queue, "is_full", lambda _status: True)
+
+        res = client.post("/v1/collect/news/run?manual=true", json={"partitions": ["C"]})
+        assert res.status_code == 409
+        assert ingest_queue.waiting() == []
+
+    def test_a_partition_on_the_ledger_is_taken(self, client, ready, monkeypatch):
+        from app.views import admin
+
+        called = []
+        monkeypatch.setattr(admin, "trigger_run", called.append)
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://chiezo-trigger:7011")
+        monkeypatch.setattr(admin, "_fetch_trigger_status", lambda: {})
+
+        res = client.post("/v1/collect/news/run?manual=true", json={"partitions": ["A"]})
+        assert res.status_code == 200
+        assert collect.get("news").pending_run["partitions"] == ["A"]
+        assert called == ["news"]

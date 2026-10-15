@@ -1005,6 +1005,16 @@ def start_collection_bake(
     return collect.to_public(collect.mark_started(name, this.name))
 
 
+def _missing_partitions_error(missing: list[str]) -> HTTPException:
+    """名指しされた区画が台帳に無いときの 409(`collect.missing_partitions`)。"""
+    return HTTPException(409, {
+        "error": f"区画「{missing[0]}」は台帳にありません"
+                 + (f"(ほか {len(missing) - 1} 件)" if len(missing) > 1 else ""),
+        "hint": "割り直しで鍵が変わったかもしれません"
+                "(区画の面から選び直してください)",
+    })
+
+
 def run_or_queue(
     name: str, sweep: str | None = None, run_once: dict | None = None, by: str = "",
 ) -> dict:
@@ -1020,6 +1030,13 @@ def run_or_queue(
     """
     from app.views.admin import TRIGGER_URL
 
+    # **区画の名指しは受け付ける前に台帳と突き合わせる。** 走らせるときにも見るが、
+    # そこで断っても頼んだ側には届かない(受け付けた時点で 200 / 202 を返している)。
+    # 下の 409 は並べる合図として拾うので、それより前で断る
+    if missing := collect.missing_partitions(
+        (run_once or {}).get("partitions"), collect.get(name).partitions,
+    ):
+        raise _missing_partitions_error(missing)
     if not TRIGGER_URL:
         return start_collection_bake(name, sweep, run_once)
     this = collect.require_runnable(collect.get(name), sweep)
@@ -1801,14 +1818,8 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
             # (節約のために押した口で、いちばん起きてほしくない)。
             # **1 つでも欠けたら走らせない** —— 通した鍵だけで走ると、押した人には
             # 全部を見たように見えて、抜けた区画だけが黙って飛ばされる
-            here = {p["key"] for p in ledger}
-            if missing := [k for k in named if k not in here]:
-                raise HTTPException(409, {
-                    "error": f"区画「{missing[0]}」は台帳にありません"
-                             + (f"(ほか {len(missing) - 1} 件)" if len(missing) > 1 else ""),
-                    "hint": "割り直しで鍵が変わったかもしれません"
-                            "(区画の面から選び直してください)",
-                })
+            if missing := collect.missing_partitions(named, ledger):
+                raise _missing_partitions_error(missing)
             keys = named
         elif sweep.by_hand and (held := handoff.get(name)):
             # **手で回す回は、束に入れて渡した区画をそのまま使う。** ここで選び直すと、
