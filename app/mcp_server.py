@@ -23,7 +23,7 @@ import json
 import os
 from collections.abc import Callable
 from types import SimpleNamespace
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from mcp.server.mcpserver import Context, MCPServer
@@ -290,6 +290,7 @@ def build_mcp(app: FastAPI, with_media: bool = True, with_writes: bool = True) -
             "tag の正確な名前は tags で確かめる。feature と tag はカンマ区切りで複数指定できる"
             "(その中は OR)。**件数を数えられるのはこの道具だけ**(total が返る。search は"
             "上位数件を返すだけで総数を持たない)。offset でページングする。"
+            "order=newest で新しい順(溜まっていくソースだけ。「このタグの最新 N 件」)。"
         )
     )
     async def filter(
@@ -304,12 +305,13 @@ def build_mcp(app: FastAPI, with_media: bool = True, with_writes: bool = True) -
         offset: int = 0,
         max_chars: int = MCP_DOC_MAX_CHARS,
         include_removed: bool = False,
+        order: Literal["rank", "newest"] = "rank",
     ) -> dict:
         return await run_in_threadpool(
             _call, api.filter_docs,
             request=_request(app), source=source, feature=feature, area=area, bbox=bbox,
             wikidata=wikidata, tag=tag, fields=fields, limit=limit, offset=offset,
-            max_chars=max_chars, include_removed=include_removed,
+            max_chars=max_chars, include_removed=include_removed, order=order,
         )
 
     @mcp.tool(annotations=READ_ONLY,

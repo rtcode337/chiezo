@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 from fastapi import (
     BackgroundTasks,
@@ -3014,12 +3015,23 @@ def filter_docs(
     offset: int = Query(0, ge=0),
     include_removed: bool = Query(False, description="消えたもの(_chiezo_removed)も含める"),
     max_chars: int = Query(0, ge=0),
+    order: Literal["rank", "newest"] = Query(
+        "rank",
+        description="並び。rank = 人気度の順(既定)、newest = 新しい順"
+                    "(溜まっていくソースだけ。updated_at の降順)",
+    ),
 ):
     """属性で文書を絞り込み一括で列挙する(全文検索ではなく等価・範囲条件)。
 
     用途は「京都府の寺社を全件」「カテゴリ:ラーメン店の記事を全件」のような機械的な
     抽出と、wikidata の Q 番号から記事を引く逆引き。総件数 total を返すので
     offset でページングできる。
+
+    **新しい順にも並べられる**(`order=newest`)。既定の人気度の順では、溜まっていく
+    ソースで「このタグの最新 N 件」が引けない —— 呼ぶ側が全件を持ち帰って並べ直す
+    ことになり、件数が上限(`FILTER_LIMIT_MAX`)を超えた日に新しいほうが黙って落ちる
+    (実際に、要約が 20 件を超えた収集で、数日前の要約が最新として出ていた)。
+    **`recent` と同じく、新しい順の索引を持つソースだけ**(`require_recency_index`)。
     """
     src = get_source(request, source)
     field_list = parse_fields(fields, FILTER_DEFAULT_FIELDS, FILTER_ALLOWED_FIELDS)
@@ -3039,11 +3051,16 @@ def filter_docs(
     set_sql, params = id_set
     (total,) = db.query(src.path, f"SELECT COUNT(*) AS n FROM ({set_sql})", tuple(params))[0]
     clause = f"doc_id IN ({set_sql})"
-    hint = rank_index_hint(src, total, offset + limit)
+    if order == "newest":
+        require_recency_index(src)
+        # 並びは `recent` と同じ(updated_at の降順・同じ時刻なら doc_id の降順)
+        hint, order_by = "", "updated_at DESC, doc_id DESC"
+    else:
+        hint, order_by = rank_index_hint(src, total, offset + limit), "rank_score DESC, title"
     rows = db.query(
         src.path,
         f"SELECT {', '.join(field_list)} FROM docs{hint}"
-        f" WHERE {clause} ORDER BY rank_score DESC, title LIMIT ? OFFSET ?",
+        f" WHERE {clause} ORDER BY {order_by} LIMIT ? OFFSET ?",
         (*params, limit, offset),
     )
     return {

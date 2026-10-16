@@ -1415,10 +1415,14 @@ curl -sG "$BASE/v1/tech_news/search" --data-urlencode "q=<検索語>"
 `search` は語が要り、`filter` はタグや属性なので、「この 1 日で何が入ったか」を引く
 手段がこれまで無かった —— 集めたものを読む側(重要なものを選ばせる、通知の候補にする)が
 まず訊くのはこれ。`since` に前回の `updated_at` を渡すと続きだけを取り直せる。
+**タグで絞って新しい順に引くなら `filter` の `order=newest`**(「要約の最新 N 件」のように)。
+既定の `filter` は人気度の順なので、件数を絞って引くと新しいほうが外に落ちる。
+並びは `recent` と同じで、新しい順の索引を持たないソースは同じく 409 で断る。
 
 ```bash
 curl -sG "$BASE/v1/tech_news/recent?limit=20"
 curl -sG "$BASE/v1/tech_news/recent" --data-urlencode "since=2026-09-07T00:00:00+00:00"
+curl -sG "$BASE/v1/tech_news/filter?order=newest&limit=5" --data-urlencode "tag=まとめ"
 ```
 
 **設定と一緒に見本も引ける**(`GET /v1/collect/{name}?samples=20`)。こちらも

@@ -710,6 +710,38 @@ class TestRecent:
         assert "recent" in names
 
 
+class TestFilterNewestFirst:
+    """タグで絞って**新しい順**に引く(`filter?order=newest`)。
+
+    既定の人気度の順では「このタグの最新 N 件」が引けず、呼ぶ側が全件を持ち帰って
+    並べ直すことになる —— 件数が上限を超えた日に新しいほうが黙って落ちる
+    (要約が 20 件を超えた収集で、数日前の要約が最新として出ていた)。
+    """
+
+    def test_it_lists_the_tag_newest_first(self, client):
+        from app import notes
+
+        notes.add(text="古い要約", tags="まとめ")
+        notes.add(text="関係ないメモ", tags="決定")
+        notes.add(text="新しい要約", tags="まとめ")
+
+        res = client.get(
+            "/v1/chiezo_memory/filter",
+            params={"tag": "まとめ", "order": "newest", "limit": 1},
+        ).json()
+        assert res["total"] == 2
+        assert [d["title"] for d in res["results"]] == ["新しい要約"]
+
+    def test_a_source_without_the_index_is_refused(self, client):
+        """`recent` と同じく、新しさを表さないソースでは断る(黙って全走査させない)。"""
+        res = client.get("/v1/jawiki/filter", params={"tag": "ラーメン店", "order": "newest"})
+        assert res.status_code == 409
+
+    def test_an_unknown_order_is_refused(self, client):
+        res = client.get("/v1/chiezo_memory/filter", params={"tag": "まとめ", "order": "oldest"})
+        assert res.status_code == 422
+
+
 class TestHidingWhatWasRemoved:
     """**消えたものは既定で返さない**(`notes.REMOVED_TAG`)。
 
