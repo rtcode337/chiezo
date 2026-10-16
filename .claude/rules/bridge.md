@@ -198,6 +198,12 @@ Claude Code / Codex / Antigravity の CLI を OpenAI 互換の口に見せる別
     実際に Gemini CLI を足したとき `entrypoint.sh` が取り残されて起動しなくなったので、
     `tests/test_bridge.py` が対応表の欠けを見張っている(その CLI は提供終了で外したが、
     検査は残してある)
+  - **CLI が非ゼロで終わったときは、言い分を理由の頭に置く**(`failure_detail` /
+    `_failure_events`)。理由は末尾 `DETAIL_MAX` 字だけ残すので、言い分のあとに長い出力が
+    続く相手では押し出される —— codex は `turn.failed` / `error` の出来事、
+    **Claude Code は結果の 1 行の `"is_error": true` と `result`** を拾う。Claude の結果は
+    言い分のあとに統計の鍵(`subagent_stats` など)が長く続くので、拾わずにいた頃は
+    `OAuth session expired and could not be refreshed` が控えから消え、統計の切れ端だけが残った
   - **`GET /usage` は CLI にサブスクの枠を聞く**(`USAGE_CLIS` = claude / codex / antigravity)。
     codex は `codex app-server` に JSON-RPC で `account/rateLimits/read` を 1 往復
     (**`codex exec` は使わない** —— あちらは会話を 1 回走らせるので枠を食う。

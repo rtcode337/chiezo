@@ -1092,17 +1092,31 @@ def failure_detail(stdout: bytes, stderr: bytes) -> str:
 
 
 def _failure_events(stdout: str) -> str:
-    """JSONL の出力から、失敗を名乗る出来事の言い分を拾う(無ければ空)。"""
+    """JSONL の出力から、失敗を名乗る出来事の言い分を拾う(無ければ空)。
+
+    **Claude Code の結果(`--output-format json` の 1 行)も拾う。** 失敗は
+    `"is_error": true` と `result` の言い分で出るが、そのあとに統計の鍵
+    (`subagent_stats` など)が長く続くので、末尾だけを残すと言い分が押し出される
+    (本番で `OAuth session expired and could not be refreshed` が控えから消え、
+    残ったのは統計の切れ端だけだった)。
+    """
     found = []
     for line in stdout.splitlines():
         line = line.strip()
-        if not line.startswith("{") or ('"error"' not in line and "failed" not in line):
+        if not line.startswith("{") or (
+            '"error"' not in line and '"is_error"' not in line and "failed" not in line
+        ):
             continue
         try:
             event = json.loads(line)
         except ValueError:
             continue
         if not isinstance(event, dict):
+            continue
+        if event.get("is_error") is True and event.get("result"):
+            status = event.get("api_error_status")
+            head = f"{event.get('type') or 'result'}" + (f" {status}" if status else "")
+            found.append(f"{head}: {str(event['result'])[:300]}")
             continue
         kind = str(event.get("type") or "")
         if kind not in ("turn.failed", "error") and "error" not in event:

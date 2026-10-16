@@ -1480,6 +1480,30 @@ class TestFailureDetail:
 
         assert said.startswith("turn.failed: stream disconnected before completion")
 
+    def test_Claude_の結果の言い分は統計に押し出されない(self, bridge):
+        """Claude Code の失敗は `is_error` と `result` で出て、そのあとに統計の鍵が長く続く。
+
+        末尾だけを残すと、言い分が統計の切れ端に押し出されて消える
+        (本番で認証切れの理由が控えから消え、統計だけが残った)。
+        """
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        stats = '"subagent_stats":{"spawned":0,"by_type":{"x":"' + "y" * 2000 + '"}}'
+        out = (
+            '{"type":"result","is_error":true,"api_error_status":null,'
+            '"result":"Failed to authenticate: OAuth session expired and could not be refreshed",'
+            + stats + ',"subtype":"success"}'
+        )
+        said = server.failure_detail(out.encode(), b"")
+
+        assert said.startswith(
+            "result: Failed to authenticate: OAuth session expired and could not be refreshed"
+        )
+
+    def test_成功した結果は言い分にしない(self, bridge):
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        out = '{"type":"result","is_error":false,"result":"はい"}'
+        assert server.failure_detail(out.encode(), b"exit 1") == out + " / exit 1"
+
     def test_stderr_は最後に置いて残す(self, bridge):
         """切り詰めるのは頭のほうなので、最後に置いたものが残る。"""
         server = bridge(CHIEZO_BRIDGE_CLI="codex")
