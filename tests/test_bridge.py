@@ -4,6 +4,7 @@ CLI そのものは起動しない。確かめるのは「OpenAI 形式の入力
 そこが Chiezo 本体と CLI の間の唯一の接ぎ目だからである。認証が要る実行の側は
 コンテナを立てて確かめる(docs/ai.md)。
 """
+import asyncio
 import importlib
 import json
 from datetime import timedelta
@@ -480,6 +481,42 @@ class TestModelSelection:
             "gemini-3.8-flash-high     Gemini 3.8 Flash (High)\n"
             "claude-sonnet-4-6         Claude Sonnet 4.6 (Thinking)\n"
         ) == ("gemini-3.8-flash-high", "claude-sonnet-4-6")
+
+    def test_it_reads_a_tab_separated_list(self, bridge):
+        """agy 1.4.0 は slug と表示名をタブで区切り、頭に取得中の行を付ける。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+
+        assert server._parse_models(
+            "Fetching available models...\n"
+            "gemini-4-argon-medium\tGemini 4 Argon (Medium)\n"
+            "claude-sonnet-5-5-medium\tClaude Sonnet 5.5 (Medium)\n"
+        ) == ("gemini-4-argon-medium", "claude-sonnet-5-5-medium")
+
+    def test_a_missing_list_is_asked_again(self, bridge, monkeypatch):
+        """段階だけ読めて一覧が取れなかったときも「聞き終えた」にしない ——
+        そうすると一覧は控えのまま二度と取り直されない。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+        server._PROBED = False
+        monkeypatch.setattr(server, "apply_credential", lambda: None)
+
+        async def no_models():
+            return ()
+
+        async def efforts():
+            return ("low", "high")
+
+        monkeypatch.setattr(server, "_ask_models", no_models)
+        monkeypatch.setattr(server, "_ask_efforts", efforts)
+        asyncio.run(server._probe_cli())
+        assert server._PROBED is False
+
+        async def models():
+            return ("gemini-4-argon-medium",)
+
+        monkeypatch.setattr(server, "_ask_models", models)
+        asyncio.run(server._probe_cli())
+        assert server._PROBED is True
+        assert server.models_now() == ("gemini-4-argon-medium",)
 
     def test_noise_in_the_output_is_not_taken_for_a_model(self, bridge):
         """飾りや見出しの行を拾わない（拾うと、選ぶと必ず失敗する候補が並ぶ）。"""

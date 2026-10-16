@@ -150,7 +150,10 @@ Claude Code / Codex / Antigravity の CLI を OpenAI 互換の口に見せる別
     **待つのをやめたら相手も終わらせる**(`_run_text`)—— 置き去りにすると、
     見ている者のいない CLI が 1 本残る
   - **モデルの一覧の取り方は CLI ごとに違う。** `agy models` は一覧を出すコマンドを
-    持つ唯一の相手で、claude は `models` サブコマンドが無く(`error: unknown command
+    持つ唯一の相手で(**slug と表示名の区切りは空白の種類を問わずに読む** —— 1.4.0 から
+    タブ区切りになり、半角空白だけで切っていた頃は 1 件も読めずに控えへ落ちて、
+    Argon が選べなかった。**一覧だけ取れなかったときは「聞き終えた」にしない** ——
+    段階が読めたからと止めると、一覧は控えのまま二度と取り直されない)、claude は `models` サブコマンドが無く(`error: unknown command
     'models'`)コードの控えを使う。**codex はコマンドの代わりにファイルを読む**
     (`_codex_catalog`。`$CODEX_HOME/models_cache.json` に、codex 自身がサーバーから
     取った一覧が落ちている)—— **CLI を起こさずに読める**ので枠も食わず待ち時間も無い。

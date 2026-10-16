@@ -535,6 +535,11 @@ async def _probe_cli() -> None:
     if not _FOUND_MODELS and not _FOUND_EFFORTS:
         # 1 つも取れなかった(CLI が居ない・サインイン前)。次に聞かれたらまた試す
         _PROBED = False
+    elif MODEL_LIST_CMD and not _FOUND_MODELS:
+        # **一覧を出せる CLI で一覧だけ取れなかったときも、次に聞かれたらまた試す。**
+        # 段階が読めたからと「聞き終えた」にすると、一覧は控えのまま二度と取り直されない
+        # (起動直後の 1 回だけ読み損ねて、Argon がずっと選べなかった)
+        _PROBED = False
     log.info(
         "bridge can offer: models=%s efforts=%s",
         ",".join(models_now()) or "(なし)", ",".join(efforts_now()) or "(なし)",
@@ -648,11 +653,16 @@ def _parse_models(out: str) -> tuple[str, ...]:
 
     拾うと、選ぶと必ず失敗する候補が画面に並ぶ。slug は英小文字・数字・
     ハイフン・ドットだけ(実測)。
+
+    **区切りは空白の種類を問わない。** agy 1.4.0 は slug と表示名のあいだをタブで
+    区切る(頭に `Fetching available models...` の行も付く)。半角空白だけで切っていた
+    頃は行がまるごと 1 語になって全部捨てられ、一覧が空のまま控えに落ちていた
+    (Argon が選べなかった)。
     """
     found = [
         slug for line in out.splitlines()
-        if (slug := line.strip().split(" ", 1)[0].strip())
-        and re.fullmatch(r"[a-z0-9][a-z0-9.\-]*", slug)
+        if (words := line.split())
+        and re.fullmatch(r"[a-z0-9][a-z0-9.\-]*", slug := words[0])
     ]
     return tuple(dict.fromkeys(found))
 

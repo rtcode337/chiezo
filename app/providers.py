@@ -316,12 +316,12 @@ PROVIDERS: tuple[Provider, ...] = (
         # **Claude と GPT は Gemini と別の枠**（週/5 時間がそれぞれに立つ）。
         # Gemini 側を使い切ったときの逃げ先になる。ただし同じ Google AI の契約なので、
         # 契約ごと替えたいときは claude や codex の相手のほうが効く。
+        # **Argon は Pro では Gemini とも別の、週だけの枠**(2026-10 から)。
         models=(
+            "gemini-4-argon-medium", "gemini-4-argon-high", "gemini-4-argon-low",
             "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
-            "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low",
-            "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low",
-            "gemini-3.1-pro-high", "gemini-3.1-pro-low",
-            "claude-sonnet-4-6", "claude-opus-4-6-thinking",
+            "claude-opus-5-5-low", "claude-opus-5-5-medium", "claude-opus-5-5-high",
+            "claude-sonnet-5-5-low", "claude-sonnet-5-5-medium", "claude-sonnet-5-5-high",
             "gpt-oss-120b-medium",
         ),
         # `agy --help` の --effort（1.3.5 で xhigh / max が増えた。1.2 系は low〜high と max）。
