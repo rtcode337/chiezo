@@ -8241,3 +8241,11 @@ class TestArchive:
     def test_the_system_prompt_explains_it(self, refine):
         system = collect.build_messages(collect.get("works"), {})[0]["content"]
         assert notes.ARCHIVED_TAG in system
+
+
+def test_collections_are_listed_by_name(enabled):
+    """**一覧は名前順。** 名前は頼んだ側の接頭辞から始まるので、同じアプリの収集がまとまる
+    (作った順では、足すたびに末尾へ付いて組が散らばる)。"""
+    for name in ("zz_news", "aa_spots", "mm_books"):
+        collect.create(name, prompt="{cursor} 以降", interval_minutes=60)
+    assert [c.name for c in collect.load()] == ["aa_spots", "mm_books", "zz_news"]

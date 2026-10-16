@@ -1591,7 +1591,7 @@ def edits_what_is_there(prompt: str, only_new: bool = False) -> bool:
 
 
 def load() -> list[Collection]:
-    """定義の一覧(並びは作った順)。**1 収集 = 1 件**(`collect/<名前>`)。
+    """定義の一覧(並びは名前順)。**1 収集 = 1 件**(`collect/<名前>`)。
 
     **まとめて 1 件に入れない。** 区画の台帳は収集 1 つで MB 単位になりうるので、
     全部を 1 つの JSON に入れると、**どれか 1 つを直すだけで全部を読み書きする**
@@ -1615,8 +1615,10 @@ def load() -> list[Collection]:
         except (ValueError, TypeError) as e:
             raise HTTPException(400, {"error": f"{DEFS_BROKEN}(「{key}」): {e}"}) from None
         out.append(_from_json(raw))
-    # **並びは作った順**。1 件ずつ置くと配列の順を持てないので、作った時刻で並べ直す
-    return sorted(out, key=lambda c: (c.created_at, c.name))
+    # **並びは名前順**。名前は `chidori_*` のように頼んだ側の接頭辞から始まるので、
+    # 名前で並べると同じアプリの収集がまとまり、探す収集の場所も決まる
+    # (作った順では、新しく足すたびに末尾へ付き、組が散らばる)
+    return sorted(out, key=lambda c: c.name)
 
 
 def save(items: list[Collection]) -> None:
