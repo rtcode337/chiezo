@@ -19,7 +19,8 @@ URL だけは `url_env` を持つ相手に限り環境変数で上書きでき�
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
+import re
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -451,13 +452,21 @@ def effort_in_model(provider_id: str, model: str, known: Sequence[str] = ()) -> 
     return tail if tail in p.efforts or tail in known else ""
 
 
-def quota_group(provider_id: str, model: str) -> str:
+def quota_group(provider_id: str, model: str, named: Iterable[str] = ()) -> str:
     """そのモデルが食う枠の呼び名。**分からなければ空**(= 枠を分けない)。
 
     **1 人の相手が独立した枠を何本も持つことがある。** Antigravity は Gemini と
     Claude/GPT で週も 5 時間も別勘定で、どちらを食うかは選んだモデルで決まる ——
     まとめて「いちばん詰まっている窓」で見ると、**片方が詰まっただけで相手ごと
     避けることになり、逃げ先に置いた段まで巻き添えで飛ばされる**。
+
+    **相手が名乗る枠の呼び名(`named`)を先に、モデル名と機械で突き合わせる**
+    (`_group_slug`。「Gemini 4 Argon」→ `gemini-4-argon-medium` など)。モデル専用の
+    枠は後から増える —— Argon が Pro に別枠で来たとき、決め打ちの表(`quota_groups`)
+    では頭の `gemini-` に当たって Gemini Models の枠で見ていた。呼び名がモデル名の頭に
+    なっていれば、表を書き足さなくてもその枠で見る。**長く当たったほうが勝つ**。
+    当たらなければ決め打ちの表へ落ちる(「Gemini Models」のように、呼び名が
+    モデル名の形をしていない枠)。
 
     **空を返す場合が 2 つあり、どちらも「分けない」に倒す**(慎重な側)——
     枠を 1 本しか持たない相手と、モデルを書いていない段(どの枠を食うか決まらない)。
@@ -466,7 +475,18 @@ def quota_group(provider_id: str, model: str) -> str:
     if p is None or not model:
         return ""
     name = model.strip().lower()
+    matched = [
+        group for group in named
+        if (slug := _group_slug(group)) and (name == slug or name.startswith(slug + "-"))
+    ]
+    if matched:
+        return max(matched, key=lambda group: len(_group_slug(group)))
     return next((group for head, group in p.quota_groups if name.startswith(head)), "")
+
+
+def _group_slug(group: str) -> str:
+    """枠の呼び名をモデル名の形に寄せる(英小文字・数字をハイフンでつなぐ)。"""
+    return re.sub(r"[^a-z0-9]+", "-", str(group or "").lower()).strip("-")
 
 
 def efforts_of(provider_id: str) -> tuple[str, ...]:

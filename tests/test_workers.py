@@ -297,6 +297,65 @@ class TestABackendWithMoreThanOneQuota:
         assert not workers.room_left(workers.Step("antigravity", "claude-opus-4-6-thinking"))
         assert workers.room_left(workers.Step("antigravity", "gemini-3.8-flash-medium"))
 
+    @staticmethod
+    def _with_argon(argon: float):
+        usage_store.save_quota("antigravity", [
+            {"id": "gemini-weekly", "label": "Gemini Models(直近 7 日)",
+             "group": "Gemini Models", "used_percent": 95.0},
+            {"id": "argon-weekly", "label": "Gemini 4 Argon(直近 7 日)",
+             "group": "Gemini 4 Argon", "used_percent": argon},
+        ])
+
+    def test_a_model_with_its_own_quota_is_matched_by_name(self, enabled):
+        """**モデル専用の枠は、呼び名とモデル名を機械で突き合わせて見分ける。**
+        Argon は Pro で別枠になったが、決め打ちの表では頭の `gemini-` に当たって
+        Gemini Models の枠で見ていた(Gemini が詰まると、空いている Argon の段まで避けた)。"""
+        self._with_argon(10.0)
+
+        assert workers.room_left(workers.Step("antigravity", "gemini-4-argon-medium"))
+        assert not workers.room_left(workers.Step("antigravity", "gemini-3.8-flash-medium"))
+
+    def test_a_crowded_own_quota_is_avoided(self, enabled):
+        usage_store.save_quota("antigravity", [
+            {"id": "gemini-weekly", "label": "Gemini Models(直近 7 日)",
+             "group": "Gemini Models", "used_percent": 10.0},
+            {"id": "argon-weekly", "label": "Gemini 4 Argon(直近 7 日)",
+             "group": "Gemini 4 Argon", "used_percent": 100.0},
+        ])
+
+        assert not workers.room_left(workers.Step("antigravity", "gemini-4-argon-high"))
+        assert workers.room_left(workers.Step("antigravity", "gemini-3.8-flash-medium"))
+
+    def test_being_refused_on_an_own_quota_shuts_out_only_that_quota(self, enabled):
+        """枠切れの印も、モデル専用の枠ごとに置く。"""
+        usage_store.save_quota("antigravity", [
+            {"id": "gemini-weekly", "label": "Gemini Models(直近 7 日)",
+             "group": "Gemini Models", "used_percent": 10.0},
+            {"id": "argon-weekly", "label": "Gemini 4 Argon(直近 7 日)",
+             "group": "Gemini 4 Argon", "used_percent": 10.0},
+        ])
+        workers.avoid_for_now(
+            "antigravity", "quota exceeded. Resets in 1h0m0s", "gemini-4-argon-medium",
+        )
+
+        assert not workers.room_left(workers.Step("antigravity", "gemini-4-argon-medium"))
+        assert workers.room_left(workers.Step("antigravity", "gemini-3.8-flash-medium"))
+
+    def test_the_name_match_needs_a_whole_word(self, enabled):
+        """呼び名がモデル名の頭の一部に見えるだけでは当てない(`gemini-4` が
+        `gemini-40-…` に当たらない)。呼び名がモデル名の形をしていない枠は決め打ちの表で見る。"""
+        from app import providers
+
+        named = {"Gemini 4", "Gemini Models", "Claude and GPT models"}
+        assert providers.quota_group("antigravity", "gemini-40-pro", named) == "Gemini Models"
+        assert providers.quota_group("antigravity", "gemini-4-argon-low", named) == "Gemini 4"
+        assert providers.quota_group(
+            "antigravity", "gemini-4-argon-low", named | {"Gemini 4 Argon"},
+        ) == "Gemini 4 Argon"
+        assert providers.quota_group("antigravity", "claude-opus-5-5-high", named) == (
+            "Claude and GPT models"
+        )
+
     def test_a_mark_without_a_group_shuts_the_whole_backend_out(self, enabled):
         """相手の名前だけの印は「どの枠か分からないまま断られた」ぶん ——
         **その相手ぜんぶに効く**(枠を分ける前に置かれた古い印もここに入る)。"""

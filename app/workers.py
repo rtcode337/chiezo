@@ -42,7 +42,7 @@ import uuid
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
-from app import machine_store, providers, usage
+from app import machine_store, usage
 
 log = logging.getLogger("chiezo.workers")
 
@@ -557,7 +557,7 @@ def _full_key(backend: str, model: str = "") -> str:
     分けられないとき(枠が 1 本の相手・モデルを書いていない段)は相手の名前そのまま
     —— それは「この相手ぜんぶ」の意味になる。
     """
-    group = providers.quota_group(backend, model)
+    group = usage.quota_group(backend, model)
     return f"{backend}|{group}" if group else backend
 
 

@@ -705,9 +705,18 @@ def busiest(provider_id: str, model: str = "") -> float | None:
 def _windows_for(row: dict, provider_id: str, model: str) -> list[Window]:
     """控えの窓のうち、**そのモデルが食う枠のもの**(突き合わなければ全部)。"""
     windows = _windows_from(row.get("windows", []))
-    if group := providers.quota_group(provider_id, model):
+    named = {w.group for w in windows if w.group}
+    if group := providers.quota_group(provider_id, model, named):
         windows = [w for w in windows if w.group == group] or windows
     return windows
+
+
+def quota_group(provider_id: str, model: str) -> str:
+    """そのモデルが食う枠の呼び名を、**控えにある枠の呼び名も見て**決める
+    (`providers.quota_group`)。控えを読むだけで、聞きに行かない。"""
+    row = usage_store.load_quota().get(provider_id) or {}
+    named = {w.group for w in _windows_from(row.get("windows", [])) if w.group}
+    return providers.quota_group(provider_id, model, named)
 
 
 def over_limit_without_room(
