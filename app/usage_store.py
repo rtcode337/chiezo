@@ -261,8 +261,11 @@ def spent(since: datetime) -> dict[str, Spent]:
     }
 
 
-def recent_calls(limit: int = 100) -> list[dict]:
+def recent_calls(limit: int = 100, *, backend: str = "", caller: str = "") -> list[dict]:
     """成功した呼び出しを新しい順に返す(管理画面の依頼履歴で使う)。
+
+    `backend` / `caller` を渡すとその値に一致する行だけ。**絞るのは SQL の側** ——
+    読んでから捨てると、`limit` の外側にある行が黙って抜ける(30 日ぶんは数千行になる)。
 
     **集計(`spent`)とは別の口**。あちらは「いくら使ったか」を数えるためのもので、
     こちらは「いつ何を頼んだか」を並べるためのもの —— 同じ表を読むが、
@@ -270,13 +273,21 @@ def recent_calls(limit: int = 100) -> list[dict]:
     """
     if not is_enabled():
         return []
+    terms, args = [], []
+    if backend:
+        terms.append("provider = ?")
+        args.append(backend)
+    if caller:
+        terms.append("caller = ?")
+        args.append(caller)
+    where = " WHERE " + " AND ".join(terms) if terms else ""
     try:
         with _connect() as conn:
             rows = conn.execute(
                 "SELECT provider, model, effort, kind, at, input_tokens, output_tokens,"
-                "       prompt_bytes, reply_bytes, ms, caller, transcript_id FROM calls"
+                f"       prompt_bytes, reply_bytes, ms, caller, transcript_id FROM calls{where}"
                 " ORDER BY at DESC, id DESC LIMIT ?",
-                (max(1, limit),),
+                (*args, max(1, limit)),
             ).fetchall()
     except (sqlite3.Error, OSError) as e:
         log.warning("usage recent_calls failed: %s", e)
@@ -298,6 +309,24 @@ def recent_calls(limit: int = 100) -> list[dict]:
         }
         for r in rows
     ]
+
+
+def seen_in_calls() -> tuple[set[str], set[str]]:
+    """控えに出てくる相手と依頼元(依頼の履歴の絞り込みの選択肢)。空の依頼元は数えない。"""
+    if not is_enabled():
+        return set(), set()
+    try:
+        with _connect() as conn:
+            backends = {r[0] for r in conn.execute("SELECT DISTINCT provider FROM calls")}
+            callers = {
+                r[0] for r in conn.execute(
+                    "SELECT DISTINCT caller FROM calls WHERE caller IS NOT NULL AND caller != ''"
+                )
+            }
+    except (sqlite3.Error, OSError) as e:
+        log.warning("usage seen_in_calls failed: %s", e)
+        return set(), set()
+    return backends, callers
 
 
 def calls_by(caller: str, since: str, limit: int = 100) -> list[dict]:

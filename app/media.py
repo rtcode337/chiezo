@@ -941,15 +941,18 @@ async def _run(job_id: str, backend: str, req, count: int, kind: str) -> None:
                 # いるので、手順は CLI の出力にしか出ない(`item.trace`)。
                 # 出来たものは job の files から辿れるので、ここでは持たない。
                 # **目方より先に書く** —— 目方の行に紐を持たせるため
+                caller = (get_job(job_id) or {}).get("requested_by") or "media"
                 ident = ai_transcript.record(
                     backend=backend, model=item.model, kind=kind,
-                    caller=(get_job(job_id) or {}).get("requested_by") or "media",
+                    caller=caller,
                     prompt=getattr(one, "prompt", "") or "",
                     trace=getattr(item, "trace", "") or "",
                     reply=f"{len(item.data or b''):,} バイト / {item.mime}",
                 )
+                # **依頼元は名乗りで残す**(控え・走っている行と同じ)。「media」とだけ
+                # 残すと、依頼の履歴を依頼元で絞ったときに生成が 1 つに潰れる
                 usage_store.record(
-                    backend, model=item.model, kind=kind, caller="media",
+                    backend, model=item.model, kind=kind, caller=caller,
                     prompt_bytes=len((getattr(one, "prompt", "") or "").encode()),
                     reply_bytes=len(item.data or b""),
                     ms=int((time.monotonic() - started) * 1000),
@@ -1006,6 +1009,9 @@ def _note_failure(job_id: str, backend: str, kind: str, status: int, reason: str
         reason=reason,
         prompt_bytes=len((job.get("prompt") or "").encode()),
         kind=kind,
+        # 成功の控えと同じ書き方(`_run` の `usage_store.record`)—— 揃えないと
+        # 依頼の履歴を依頼元で絞ったときに、同じ依頼元の失敗だけが抜ける
+        caller=job.get("requested_by") or "media",
     )
 
 

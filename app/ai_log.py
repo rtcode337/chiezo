@@ -63,6 +63,10 @@ _ADDED_COLUMNS = {
     # （`usage_store` と同じ理由）。ここは中身を持たない表なので、中身が要る人は
     # この紐をたどる —— 失敗した回ほど、渡したものと相手の出力が要る
     "transcript_id": "TEXT",
+    # 誰が頼んだか(`ai_inflight` の印。`collect:<名前>` / `api:<名乗り>` …)。
+    # 成功の控え(`usage_store` の `caller`)と同じ値 —— 依頼の履歴を依頼元で絞ると
+    # 失敗だけ抜け落ちる、を起こさないため。足す前の行は空のまま
+    "caller": "TEXT NOT NULL DEFAULT ''",
 }
 
 # 何の依頼だったか。 会話も生成も同じ表に残す —— 失敗を探す人は「AI に頼んだことが
@@ -111,6 +115,7 @@ def record(
     prompt_bytes: int,
     kind: str = KIND_CHAT,
     transcript_id: str = "",
+    caller: str = "",
 ) -> None:
     """失敗を 1 件残す。呼び出し側の失敗にはしない（控えが取れなくても答えは返す）。"""
     path = db_path()
@@ -120,7 +125,8 @@ def record(
         with _connect(path) as conn:
             conn.execute(
                 "INSERT INTO ai_failures (at, backend, model, effort, status, reason,"
-                " prompt_bytes, kind, transcript_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " prompt_bytes, kind, transcript_id, caller)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     datetime.now(UTC).isoformat(timespec="seconds"),
                     backend,
@@ -131,6 +137,7 @@ def record(
                     prompt_bytes,
                     kind or KIND_CHAT,
                     transcript_id or "",
+                    caller or "",
                 ),
             )
             # 古いものから捨てる。件数で切るのは、失敗の頻度が読めないため
@@ -144,11 +151,16 @@ def record(
         log.warning("ai failure log write failed: %r", e)
 
 
-def recent(limit: int = 50) -> list[dict]:
-    """直近の失敗を新しい順に返す。記録が無ければ空。"""
+def recent(limit: int = 50, *, backend: str = "", caller: str = "") -> list[dict]:
+    """直近の失敗を新しい順に返す。記録が無ければ空。
+
+    `backend` / `caller` を渡すとその値に一致する行だけ(依頼の履歴の絞り込み)。
+    **絞るのは SQL の側** —— 読んでから捨てると、上限で切った外側の行が黙って抜ける。
+    """
     path = db_path()
     if path is None or not path.exists():
         return []
+    where, args = _where(backend, caller)
     rows: list[dict] = []
     with suppress(sqlite3.Error):
         conn = _connect(path)
@@ -157,10 +169,43 @@ def recent(limit: int = 50) -> list[dict]:
                 dict(r)
                 for r in conn.execute(
                     "SELECT at, backend, model, effort, status, reason, prompt_bytes, kind,"
-                    "       transcript_id FROM ai_failures ORDER BY id DESC LIMIT ?",
-                    (max(1, min(limit, MAX_ROWS)),),
+                    f"       transcript_id, caller FROM ai_failures{where}"
+                    " ORDER BY id DESC LIMIT ?",
+                    (*args, max(1, min(limit, MAX_ROWS))),
                 )
             ]
         finally:
             conn.close()
     return rows
+
+
+def _where(backend: str, caller: str) -> tuple[str, tuple]:
+    terms, args = [], []
+    if backend:
+        terms.append("backend = ?")
+        args.append(backend)
+    if caller:
+        terms.append("caller = ?")
+        args.append(caller)
+    return (" WHERE " + " AND ".join(terms) if terms else ""), tuple(args)
+
+
+def seen() -> tuple[set[str], set[str]]:
+    """控えに出てくる相手と依頼元(絞り込みの選択肢)。空の依頼元は数えない。"""
+    path = db_path()
+    if path is None or not path.exists():
+        return set(), set()
+    backends: set[str] = set()
+    callers: set[str] = set()
+    with suppress(sqlite3.Error):
+        conn = _connect(path)
+        try:
+            backends = {r[0] for r in conn.execute("SELECT DISTINCT backend FROM ai_failures")}
+            callers = {
+                r[0] for r in conn.execute(
+                    "SELECT DISTINCT caller FROM ai_failures WHERE caller != ''"
+                )
+            }
+        finally:
+            conn.close()
+    return backends, callers

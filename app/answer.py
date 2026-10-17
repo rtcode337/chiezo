@@ -814,6 +814,7 @@ def _note_failure(cfg: Settings, messages: list[dict], status: int, reason: str)
         reason=reason,
         prompt_bytes=_prompt_bytes(messages),
         transcript_id=ident,
+        caller=ai_inflight.current_caller(),
     )
 
 

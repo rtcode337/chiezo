@@ -72,7 +72,7 @@ class TestReadingItBack:
         ident = store.record(backend="codex", **record)
         monkeypatch.setattr(
             ai_history, "entries",
-            lambda failed_only=False: [{
+            lambda *_a, **_k: [{
                 "ok": True, "at": "2026-09-15T00:00:00+00:00", "backend": "codex",
                 "model": "", "effort": "", "kind": record.get("kind", "chat"),
                 "caller": "sample-game", "prompt_bytes": 10, "reply_bytes": 20,
@@ -118,7 +118,7 @@ class TestReadingItBack:
 
         monkeypatch.setattr(
             ai_history, "entries",
-            lambda failed_only=False: [{
+            lambda *_a, **_k: [{
                 "ok": True, "at": "2026-09-15T00:00:00+00:00", "backend": "codex",
                 "model": "", "effort": "", "kind": "chat", "caller": "", "prompt_bytes": 10,
                 "reply_bytes": 20, "ms": 1000, "input_tokens": None, "output_tokens": None,

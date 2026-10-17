@@ -666,14 +666,18 @@ def _stop_job_html(job: dict, back: str) -> str:
     )
 
 
-def _history_args(request: Request) -> tuple[int, bool]:
-    """「AI への依頼」節のページと絞り込みをクエリから読む。
+def _history_args(request: Request) -> tuple[int, bool, str, str]:
+    """「AI への依頼」節のページと絞り込み(失敗だけ・相手・依頼元)をクエリから読む。
 
     **おかしな値は 1 ページ目に寄せる**(手で URL をいじられても落とさない)。
     """
-    raw = request.query_params.get("ai_page", "1")
+    q = request.query_params
+    raw = q.get("ai_page", "1")
     page = int(raw) if raw.isdigit() and int(raw) > 0 else 1
-    return page, request.query_params.get("ai_failed") == "1"
+    return (
+        page, q.get("ai_failed") == "1",
+        q.get("ai_backend", "").strip(), q.get("ai_caller", "").strip(),
+    )
 
 
 def db_size_text(path: Path) -> str:
@@ -3084,17 +3088,17 @@ def _ai_section_html(request: Request, running: list[dict], job: dict | None) ->
     **見出しは取り込み・収集と同じ段**(`AI_HEADING`)で、中の見出しからは「AI」を
     落とす(節の見出しが言っているので繰り返さない)。
     **依頼の履歴は畳んで置く**(収集の実行履歴と同じ)。表が長く毎回は読まないので、
-    ページを送ったときと失敗だけに絞ったときだけ開く。
+    ページを送ったときと絞り込んだとき(失敗だけ・相手・依頼元)だけ開く。
     """
-    page, failed_only = _history_args(request)
-    opened = " open" if (
-        "ai_page" in request.query_params or "ai_failed" in request.query_params
+    page, failed_only, backend, caller = _history_args(request)
+    opened = " open" if any(
+        k in request.query_params for k in ("ai_page", "ai_failed", "ai_backend", "ai_caller")
     ) else ""
     return (
         AI_HEADING
         + _running_html(running, _round_done(job))
         + f'<details id="{ai_history.SECTION_ANCHOR}"{opened}><summary><h3>依頼の履歴</h3></summary>'
-        + ai_history.section_html(page, failed_only)
+        + ai_history.section_html(page, failed_only, backend, caller)
         + "</details>"
         + _usage_html(request)
     )

@@ -114,3 +114,91 @@ class TestEndpoint:
     def test_it_is_empty_before_anything_fails(self, state_env):
         with make_client(state_env, None) as client:
             assert client.get("/v1/ai/failures").json() == {"failures": []}
+
+    def test_a_failure_keeps_who_asked(self, state_env):
+        """**失敗にも依頼元を残す** —— 成功の控えだけが持っていると、依頼の履歴を
+        依頼元で絞ったときに、その依頼元の失敗だけが抜け落ちる。"""
+        from app import answer
+
+        state_env.setattr(
+            answer, "_llm_client",
+            lambda cfg: httpx.AsyncClient(
+                transport=httpx.MockTransport(lambda r: httpx.Response(500, text="{}"))
+            ),
+        )
+        with make_client(state_env, None) as client:
+            client.post("/v1/ai/complete", json={
+                "backend": "local", "requested_by": "sample-bot",
+                "messages": [{"role": "user", "content": "こんにちは"}],
+            })
+            failures = client.get("/v1/ai/failures").json()["failures"]
+
+        assert failures[0]["caller"] == "api:sample-bot"
+
+
+class TestHistoryFilter:
+    """依頼の履歴を相手と依頼元で絞る(`?ai_backend=` / `?ai_caller=`)。"""
+
+    def _seed(self):
+        from app import ai_log, usage_store
+
+        usage_store.record("claude", caller="collect:sample_news", prompt_bytes=1)
+        usage_store.record("codex", caller="api:sample-bot", prompt_bytes=2)
+        ai_log.record(backend="claude", model="", effort="", status=502,
+                      reason="落ちた", prompt_bytes=3, caller="api:sample-bot")
+
+    def test_both_records_are_narrowed(self, state_env):
+        """成功も失敗も同じ条件で絞る(片方だけだと、絞ったのに別の行が混ざる)。"""
+        from app.views import ai_history
+
+        self._seed()
+        rows = ai_history.entries(caller="api:sample-bot")
+        assert sorted((r["backend"], r["ok"]) for r in rows) == [
+            ("claude", False), ("codex", True),
+        ]
+        rows = ai_history.entries(backend="claude", caller="api:sample-bot")
+        assert [(r["backend"], r["ok"]) for r in rows] == [("claude", False)]
+
+    def test_the_narrowing_is_done_before_the_cut(self, state_env, monkeypatch):
+        """**読む側で絞る** —— 上限まで読んでから捨てると、無人の層が積んだ行に
+        押し出されて、静かな依頼元が 0 件に見える。"""
+        from app import usage_store
+        from app.views import ai_history
+
+        monkeypatch.setattr(ai_history, "MAX_SCAN", 3)
+        usage_store.record("codex", caller="api:sample-bot")
+        for _ in range(5):
+            usage_store.record("claude", caller="collect:sample_news")
+        assert len(ai_history.entries(caller="api:sample-bot")) == 1
+
+    def test_the_screen_offers_what_was_seen_and_keeps_the_choice(self, state_env):
+        """選択肢は控えに出てきた値。ページ送りと切り替えは絞り込みを保つ。"""
+        from app.views import ai_history
+
+        self._seed()
+        html = ai_history.section_html(backend="codex", caller="api:sample-bot")
+        assert '<option value="claude">' in html
+        assert '<option value="codex" selected>' in html
+        assert '<option value="api:sample-bot" selected>' in html
+        assert "collect:sample_news" in html
+        # 失敗だけへの切り替えも、同じ相手と依頼元のまま
+        assert "?ai_failed=1&amp;ai_backend=codex&amp;ai_caller=api%3Asample-bot" in html
+
+    def test_nothing_matches_says_so_and_keeps_the_form(self, state_env):
+        """0 件でもフォームは残す(外す手段が消えると戻れない)。"""
+        from app.views import ai_history
+
+        self._seed()
+        html = ai_history.section_html(backend="codex", caller="collect:sample_news")
+        assert "この条件の依頼はありません" in html
+        assert 'name="ai_backend"' in html
+
+    def test_running_rows_are_narrowed_too(self, state_env):
+        from app import ai_inflight
+        from app.views import ai_history
+
+        with ai_inflight.called_by("collect:sample_news"):
+            ai_inflight.begin(backend="claude", model="", effort="", prompt_bytes=1,
+                              timeout=900.0)
+        assert "走っている" in ai_history.section_html(caller="collect:sample_news")
+        assert "件走っている" not in ai_history.section_html(caller="api:sample-bot")

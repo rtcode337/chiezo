@@ -14,7 +14,9 @@
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from urllib.parse import urlencode
 
 from app import ai_inflight, ai_log, ai_transcript, media, settings_store, usage_store
 from app.jst import format as format_jst
@@ -302,23 +304,61 @@ def running_rows() -> list[dict]:
     return sorted(rows, key=lambda r: r.get("at") or "", reverse=True)
 
 
-def entries(failed_only: bool = False) -> list[dict]:
-    """成功と失敗を新しい順に混ぜた一覧。"""
-    rows = [{**r, "ok": False} for r in ai_log.recent(MAX_SCAN)]
+@dataclass(frozen=True)
+class Filter:
+    """表の絞り込み。**JS を持たないのでクエリで運ぶ**(`?ai_failed=1&ai_backend=…&ai_caller=…`)。
+
+    相手と依頼元は**控えに残った値そのもので一致を取る**(`caller` は `api:<名乗り>` の形)。
+    開いた表記(`caller_label`)で比べると、同じ表記になる別の印を区別できない。
+    """
+    failed_only: bool = False
+    backend: str = ""
+    caller: str = ""
+
+    def query(self, page: int = 1) -> str:
+        """この絞り込みを保ったまま、別のページ・切り替えへ飛ぶクエリ(先頭の `?` 込み)。"""
+        params = {
+            "ai_page": str(page) if page > 1 else "",
+            "ai_failed": "1" if self.failed_only else "",
+            "ai_backend": self.backend,
+            "ai_caller": self.caller,
+        }
+        return "?" + urlencode({k: v for k, v in params.items() if v})
+
+    def keeps(self, row: dict) -> bool:
+        return (not self.backend or row.get("backend") == self.backend) and (
+            not self.caller or (row.get("caller") or "") == self.caller
+        )
+
+
+def entries(failed_only: bool = False, backend: str = "", caller: str = "") -> list[dict]:
+    """成功と失敗を新しい順に混ぜた一覧。
+
+    **絞り込みは読む側(SQL)で掛ける** —— 先に `MAX_SCAN` 件読んでから捨てると、
+    無人の層が数百件積んだあとでは、静かな依頼元の行がその外側に押し出されて
+    「絞ったら 0 件」になる。
+    """
+    rows = [
+        {**r, "ok": False}
+        for r in ai_log.recent(MAX_SCAN, backend=backend, caller=caller)
+    ]
     if not failed_only:
-        rows += [{**r, "ok": True} for r in usage_store.recent_calls(MAX_SCAN)]
+        rows += [
+            {**r, "ok": True}
+            for r in usage_store.recent_calls(MAX_SCAN, backend=backend, caller=caller)
+        ]
     # 同じ秒に並んだものの順は決められないので、時刻だけで並べる(見た目の話)
     return sorted(rows, key=lambda r: r.get("at") or "", reverse=True)
 
 
-def _pager(page: int, total: int, failed_only: bool) -> str:
-    """前後のページへのリンク。**JS を持たないのでクエリで送る**(画面全体と同じ流儀)。"""
+def _pager(page: int, total: int, chosen: Filter) -> str:
+    """前後のページへのリンク。**JS を持たないのでクエリで送る**(画面全体と同じ流儀)。
+    絞り込みは保ったまま送る(外すと 2 ページ目で別の表になる)。"""
     last = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
     def link(target: int, label: str) -> str:
         if target < 1 or target > last or target == page:
             return f'<span class="muted">{label}</span>'
-        q = f"?ai_page={target}" + ("&ai_failed=1" if failed_only else "")
-        return f'<a href="{q}#{SECTION_ANCHOR}">{label}</a>'
+        return f'<a href="{esc(chosen.query(target))}#{SECTION_ANCHOR}">{label}</a>'
     return (
         f'<div class="pager">{link(page - 1, "← 新しい")}'
         f'<span class="muted">{page} / {last} ページ({total:,} 件)</span>'
@@ -326,7 +366,54 @@ def _pager(page: int, total: int, failed_only: bool) -> str:
     )
 
 
-def section_html(page: int = 1, failed_only: bool = False) -> str:
+def _choices() -> tuple[list[str], list[str]]:
+    """絞り込みの選択肢。**控えに出てきた値だけを並べる**(相手の定義から作ると、
+    一度も頼んでいない相手を選んで 0 件、が起きる)。成功・失敗の両方の控えから集める。"""
+    backends, callers = ai_log.seen()
+    more_backends, more_callers = usage_store.seen_in_calls()
+    return sorted(backends | more_backends), sorted(
+        callers | more_callers, key=lambda c: (ai_inflight.caller_label(c), c),
+    )
+
+
+def _filter_form(chosen: Filter) -> str:
+    """相手と依頼元で絞るフォーム(GET)。**今の選択が控えから消えていても選択肢に残す**
+    —— 残さないと、送った値が画面では「すべて」に見え、絞っているのに気づけない。"""
+    backends, callers = _choices()
+    if chosen.backend and chosen.backend not in backends:
+        backends.append(chosen.backend)
+    if chosen.caller and chosen.caller not in callers:
+        callers.append(chosen.caller)
+
+    def select(name: str, values: list[str], current: str, label) -> str:
+        options = ['<option value="">すべて</option>'] + [
+            f'<option value="{esc(v)}"{" selected" if v == current else ""}>{esc(label(v))}</option>'
+            for v in values
+        ]
+        return f'<select name="{name}">{"".join(options)}</select>'
+
+    failed = '<input type="hidden" name="ai_failed" value="1">' if chosen.failed_only else ""
+    clear = (
+        f' <a href="{esc(Filter(failed_only=chosen.failed_only).query())}#{SECTION_ANCHOR}">外す</a>'
+        if chosen.backend or chosen.caller else ""
+    )
+    return (
+        f'<form method="get" action="#{SECTION_ANCHOR}" class="init-form">{failed}'
+        f'<label>相手 {select("ai_backend", backends, chosen.backend, str)}</label> '
+        f'<label>依頼元 {select("ai_caller", callers, chosen.caller, _caller_option)}</label> '
+        f'<button type="submit">絞り込む</button>{clear}</form>'
+    )
+
+
+def _caller_option(caller: str) -> str:
+    # 開いた表記だけでは同じ表記の別の印が見分けられないので、違うときは素の値を添える
+    label = ai_inflight.caller_label(caller)
+    return label if label == caller else f"{label} — {caller}"
+
+
+def section_html(
+    page: int = 1, failed_only: bool = False, backend: str = "", caller: str = "",
+) -> str:
     """依頼の履歴の中身。**見出しは呼ぶ側が持つ**(状況の面の「AI」の節で畳んで置く。
     `SECTION_ANCHOR` もその包みに付く)。"""
     if not settings_store.state_dir():
@@ -338,23 +425,29 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
     # 走っているものは**ページから外して常に先頭に出す**。控えの表は新しい順に
     # 送っていくものだが、走っているぶんは「いまの状態」なので、2 ページ目を見て
     # いるあいだに見えなくなっては用をなさない。件数にも数えない(結果がまだ無い)。
-    running = running_rows()
-    rows = entries(failed_only)
+    chosen = Filter(failed_only, backend, caller)
+    # 走っているものにも同じ絞り込みを掛ける(下の表と食い違うと、絞ったのに
+    # 別の依頼元の行が先頭に残って読み違える)
+    running = [r for r in running_rows() if chosen.keeps(r)]
+    rows = entries(failed_only, backend, caller)
     # **範囲の外は最後のページに寄せる**。空の表と「2 / 1 ページ」を見せても
     # 何が起きたのか読めない(絞り込みを切り替えると件数が減るので普通に起こる)
     last = max(1, (len(rows) + PAGE_SIZE - 1) // PAGE_SIZE)
     page = min(max(1, page), last)
     shown = rows[(page - 1) * PAGE_SIZE : page * PAGE_SIZE]
 
+    flipped = Filter(not failed_only, backend, caller).query()
     toggle = (
-        f'<a href="?#{SECTION_ANCHOR}">すべて見る</a>' if failed_only
-        else f'<a href="?ai_failed=1#{SECTION_ANCHOR}">失敗だけ見る</a>'
+        f'<a href="{esc(flipped)}#{SECTION_ANCHOR}">'
+        f'{"すべて見る" if failed_only else "失敗だけ見る"}</a>'
     )
+    form = _filter_form(chosen)
     if not rows and not running:
-        empty = "まだ落ちていません。" if failed_only else "まだ何も頼んでいません。"
-        return (
-            f'<p class="muted">{empty} {toggle}</p>'
-        )
+        if backend or caller:
+            empty = "この条件の依頼はありません。"
+        else:
+            empty = "まだ落ちていません。" if failed_only else "まだ何も頼んでいません。"
+        return f'{form}<p class="muted">{empty} {toggle}</p>'
 
     body = []
     for row in running:
@@ -420,7 +513,7 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
     # 「更新すれば何か出る」と読める
     now_running = (
         f'<br><strong>いま {len(running)} 件走っている。</strong>'
-        f'<a href="?#{SECTION_ANCHOR}">進み具合を読み直す</a>'
+        f'<a href="{esc(chosen.query(page))}#{SECTION_ANCHOR}">進み具合を読み直す</a>'
         if running else ""
     )
     return f"""<p class="muted">
@@ -441,6 +534,7 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
 機械で読むなら <code>GET /v1/ai/failures</code>、走っているものは
 <code>GET /v1/ai/inflight</code>。
 </p>
+{form}
 <table>
 <thead>
 <tr><th>日時(JST)</th><th>依頼</th><th>依頼元</th><th>相手</th><th>結果</th><th>中身</th></tr>
@@ -449,4 +543,4 @@ def section_html(page: int = 1, failed_only: bool = False) -> str:
 {"".join(body)}
 </tbody>
 </table>
-{_pager(page, len(rows), failed_only)}"""
+{_pager(page, len(rows), chosen)}"""

@@ -220,6 +220,7 @@ async def talk_turn(session_id: str, body: TurnBody) -> dict:
             ai_log.record(
                 backend=backend, model="", effort=body.effort, status=e.status_code,
                 reason=f"会話: {detail.get('error', '')}", prompt_bytes=len(body.text.encode()),
+                caller=caller,
             )
         raise
     content = result.get("content", "")
