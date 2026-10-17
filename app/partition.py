@@ -106,6 +106,12 @@ NEARBY_SAMPLES = 5
 # 見出しで割るときの鍵の長さ。長い見出しをそのまま鍵にすると台帳が太る
 MAX_TITLE_KEY_CHARS = 40
 
+# タグで割るときに並べられる値の数と、1 つの値の長さ(`values`)。値は 1 つが
+# 1 区画になり、台帳にも依頼文にも出る。区画の天井(`MAX_PARTITIONS`)より
+# ずっと手前に置く —— 並べて書く値なので、数百を超えるならタグで割る形が合っていない
+MAX_TAG_VALUES = 500
+MAX_TAG_VALUE_CHARS = 60
+
 # 隣とまとめてよい大きさ。`target` に届かないどころか、この割合にも満たないとき
 # だけ 1 つにする。**割り直しの引き金は「育った」と「空になった」しかない**ので、
 # 中身が別の区画へ移って痩せた帯も、母集団がそもそも小さい分類も、小さいまま
@@ -178,7 +184,12 @@ def normalize(raw) -> dict | None:
         "other": str(raw.get("other") or "").strip() or DEFAULT_OTHER,
         # 巡回をどこから広げるか(矩形のときだけ)。書かなければ台帳の並び順
         "origin": _origin(raw.get("origin")),
+        # タグで割るときの、**区画にする値の並び**(書いた順に配る)。書かなければ
+        # 母集団にあるタグから作る
+        "values": _values(raw.get("values"), by, str(raw.get("prefix") or "").strip()),
     }
+    if not spec["values"]:
+        spec.pop("values")
     if spec["origin"] and by != BY_GEO:
         raise _bad("origin は by=geo のときだけ使えます(距離で並べるので座標が要ります)")
     if by == BY_TAG and not spec["prefix"]:
@@ -208,6 +219,58 @@ def _bbox(raw) -> list[float] | None:
     if not (lat0 < lat1 and lon0 < lon1):
         raise _bad("bbox は [南緯, 西経, 北緯, 東経] の順(南 < 北・西 < 東)")
     return [lat0, lon0, lat1, lon1]
+
+
+def _values(raw, by: str, prefix: str) -> list[str]:
+    """タグで割るときの、**区画にする値の並び**(`values`)。書かなければ空。
+
+    **母集団にタグがあるところにしか区画が生まれない**、がタグで割るときの
+    いちばんの弱み —— 収集自身を母集団にすると、まだ 1 件も無い値(都道府県なら
+    まだ何も集めていない県)は区画にならず、「そこに足すべきものは無いか」を
+    永遠に問えない。値を並べれば、**中身が 0 件でも区画にする**。
+    **並べた順が 1 周目に配る順**になる(鍵の文字列順では、地名の並びが読みの順にも
+    番号の順にもならない)。
+
+    値は接頭辞を付けずに書いても付けて書いてもよい(`東京都` と `地域:東京都` は同じ)。
+    **重なりは前のほうを残す**(並びが配る順なので、後ろの重複は書き違い)。
+    """
+    if raw in (None, "", []):
+        return []
+    if by != BY_TAG:
+        raise _bad("values は by=tag のときだけ使えます(タグの値を並べるので)")
+    if not isinstance(raw, list):
+        raise _bad("values は値の配列で書いてください(例: [\"東京都\", \"神奈川県\"])")
+    if len(raw) > MAX_TAG_VALUES:
+        raise _bad(f"values は {MAX_TAG_VALUES} 個までです(いまは {len(raw)} 個)")
+    out: list[str] = []
+    for value in raw:
+        if not isinstance(value, str) or not value.strip():
+            raise _bad("values の中身は空でない文字列で書いてください")
+        text = value.strip()
+        if prefix and text.startswith(prefix):
+            text = text[len(prefix):].strip()
+        if not text or len(text) > MAX_TAG_VALUE_CHARS:
+            raise _bad(f"values の値は 1〜{MAX_TAG_VALUE_CHARS} 文字で書いてください: {value!r}")
+        if text not in out:
+            out.append(text)
+    return out
+
+
+def value_keys(spec: dict | None) -> list[str]:
+    """並べた値(`values`)から作る区画の鍵(接頭辞 + 値)。並べていなければ空。"""
+    if not spec or spec.get("by") != BY_TAG or not spec.get("values"):
+        return []
+    return [spec["prefix"] + value for value in spec["values"]]
+
+
+def values_changed(spec: dict | None, partitions: list[dict]) -> bool:
+    """台帳が、並べた値(`values`)の並びと食い違っているか(足した・外した・並べ替えた)。
+
+    **違えば台帳を組み直す**(`plan_partitions`)。鍵はタグの文字列そのものなので、
+    組み直しても同じ値の区画は記録をそのまま引き継ぐ(`refresh`)。
+    """
+    keys = value_keys(spec)
+    return bool(keys) and [p["key"] for p in partitions] != keys
 
 
 def _origin(raw) -> list[float] | None:
@@ -299,9 +362,13 @@ def reach_changed(spec: dict | None, partitions: list[dict]) -> bool:
 
 
 def _cut_of(spec: dict | None) -> dict | None:
+    """割り方を比べるための形。**並べた値(`values`)も比べない** —— タグの区画の鍵は
+    タグの文字列そのもので、値を足しても外しても並べ替えても、残る値の鍵の意味は
+    変わらない(台帳は捨てずに組み直し、記録は鍵ごとに継ぐ。`values_changed`)。
+    """
     if not spec:
         return None
-    return {k: v for k, v in spec.items() if k not in ORDER_ONLY}
+    return {k: v for k, v in spec.items() if k not in ORDER_ONLY and k != "values"}
 
 
 def to_json(spec: dict | None) -> dict | None:
@@ -540,6 +607,8 @@ def _tags(spec: dict, sources: dict, own: dict[str, dict]) -> list[dict]:
 
     prefix = spec["prefix"]
     src = _source_of(spec, sources)
+    if keys := value_keys(spec):
+        return [{"key": key, "count": n} for key, n in _value_counts(keys, src, own).items()]
     if src is not None:
         rows = db.query(
             src.path,
@@ -556,6 +625,34 @@ def _tags(spec: dict, sources: dict, own: dict[str, dict]) -> list[dict]:
     _tags_must_fit(prefix, len(counts))
     ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
     return [{"key": k, "count": n} for k, n in ordered]
+
+
+def _value_counts(keys: list[str], src, own: dict[str, dict]) -> dict[str, int]:
+    """並べた値ごとの件数(**並べた順**)。母集団に無い値は 0 のまま区画にする。
+
+    **並べていないタグは区画にしない** —— 並びは「どこを回るか」の閉じた一覧として
+    書かれている。表記の崩れたタグ(`地域:東京`)の 1 件はどの区画にも入らず、
+    件数の判定では行き場の無いもの(`HOMELESS`)に数える。
+    """
+    from app import db
+
+    counts = dict.fromkeys(keys, 0)
+    if src is not None:
+        for at in range(0, len(keys), 400):
+            chunk = keys[at:at + 400]
+            rows = db.query(
+                src.path,
+                f"SELECT tag, docs FROM tag_counts WHERE tag IN ({','.join('?' * len(chunk))})",
+                tuple(chunk),
+            )
+            for r in rows:
+                counts[r["tag"]] = int(r["docs"])
+        return counts
+    for doc in own.values():
+        for tag in {str(t) for t in (doc.get("tags") or [])}:
+            if tag in counts:
+                counts[tag] += 1
+    return counts
 
 
 def _tags_must_fit(prefix: str, found: int) -> None:
@@ -965,6 +1062,10 @@ def _uncovered(spec: dict | None, built: list[dict], current: list[dict]) -> lis
     """
     if spec is None or not current:
         return []
+    # **並べた値で割っているなら、並びが閉じた一覧**(`values`)。外した値の区画は
+    # 残さない —— 残すと、外したはずの値へ巡回が回り続ける
+    if value_keys(spec):
+        return []
     # **範囲の外へ出た古い区画は残さない**(範囲を狭めたあと)。残すと、外した場所へ
     # 巡回が回り続ける
     if spec.get("by") == BY_GEO and spec.get("bbox"):
@@ -1314,6 +1415,12 @@ def outgrown(spec: dict, counts: dict[str, int]) -> bool:
     **区画が天井に当たっているときも割り直さない。** 帯は天井で打ち切られる
     (`_bands`)ので、そこで溢れたぶんは何度割り直しても行き場ができない。
     """
+    # **値を並べて割っているなら、件数では割り直さない**(`values`)。空の区画は
+    # 「まだ何も集めていない値」で、そこへ足すべきものが無いかを問うために並べてある ——
+    # 空を引き金にすると、並べた値が割り直しのたびに台帳から消えようとする。
+    # 並びと台帳の食い違いは `values_changed` が見る
+    if value_keys(spec):
+        return False
     limit = spec["target"] * 2
     if (
         spec["by"] == BY_BAND
@@ -1606,6 +1713,11 @@ def _distance_from(spec: dict | None, partitions: list[dict]):
     **測るのは区画の真ん中まで。** 角までにすると、原点を含む大きな区画が
     「遠い」ことになって後回しになる。
     """
+    if keys := value_keys(spec):
+        # **並べた値の順に配る**(`values`)。鍵の文字列順では、地名の並びが
+        # 読みの順にも番号の順にもならない。並びに無い鍵は後ろへ
+        order = {key: index for index, key in enumerate(keys)}
+        return lambda p: order.get(p["key"], math.inf)
     if not spec or spec.get("by") != BY_GEO or not spec.get("origin"):
         return lambda p: 0.0
     lat0, lon0 = spec["origin"]

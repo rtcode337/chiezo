@@ -42,7 +42,7 @@ Chiezo はそれが持てないものを預かる側にいる。
 | `knowledge-api.md` | アプリの組み立て・知識の REST・登録・接続・FTS・ブラウズ画面 | `app/main.py`・`registry.py`・`db.py`・`fts.py`・`deps.py`・`known_sources.py`・`logs.py`・`web_guard.py`・`views/browse.py` |
 | `mcp-claude-config.md` | MCP(`/mcp`・`/mcp/knowledge`)と Claude Code 用の設定生成 | `app/mcp_server.py`・`claude_config.py`・`hooks/**`・`scripts/gen_claude_config.sh` |
 | `notes-tasks.md` | 短期記憶(`chiezo_memory`・`/v1/stores`)と ToDo | `app/notes.py`・`tasks.py`・`views/todo.py` |
-| `collect.md` | 集める層の本体(素材・直す回・墓標・変更履歴・収集の面・時計・差し込み口) | `app/collect.py`・`collect_log.py`・`machine_store.py`・`ingest_queue.py`・`ingest/sources/collect.py` |
+| `collect.md` | 集める層の本体(素材・直す回・墓標・変更履歴・収集の面・時計・差し込み口・辞典への引き当てと書式) | `app/collect.py`・`collect_log.py`・`machine_store.py`・`ingest_queue.py`・`resolve.py`・`formats.py`・`ingest/sources/collect.py` |
 | `collect-sweeps.md` | 巡回(`Sweep`)・割り込み(`Focus`)・区画 | `app/collect.py`・`partition.py`・`repartition_job.py` |
 | `collect-tools.md` | 収集の道具(フィード・Pi-hole・サムネイル・リンク確認・手で回す巡回・検索文) | `app/feeds.py`・`outbound.py`・`pihole.py`・`thumbs.py`・`link_checks.py`・`handoff.py`・`search_queries.py` |
 | `collect-extract.md` | 機械で名簿を作る `extract` | `app/extract.py` |
@@ -66,7 +66,8 @@ Chiezo はそれが持てないものを預かる側にいる。
   - 知識の引き口 —— `main.py`(口とアプリの組み立て)・`registry.py`・`db.py`・`fts.py`・`deps.py` → `knowledge-api.md`
   - MCP と Claude Code 用の設定生成 —— `mcp_server.py`・`claude_config.py`・`hooks/` → `mcp-claude-config.md`
   - 覚える・ToDo —— `notes.py`・`tasks.py` → `notes-tasks.md`
-  - 集める / 育てる —— `collect.py`・`partition.py`・`extract.py`・`feeds.py`・`workers.py` ほか
+  - 集める / 育てる —— `collect.py`・`partition.py`・`extract.py`・`resolve.py`(辞典への引き当て)・
+    `formats.py`(脇書きの書式)・`feeds.py`・`workers.py` ほか
     → `collect.md`・`collect-sweeps.md`・`collect-tools.md`・`collect-extract.md`・`workers.md`
   - 話せる AI と鍵 —— `providers.py`・`settings_store.py`・`talk.py`・`ai_inflight.py` → `ai-backends.md`
   - 使用量と失敗の控え —— `usage.py`・`ai_log.py` → `ai-usage.md`

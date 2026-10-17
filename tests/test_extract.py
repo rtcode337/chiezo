@@ -1622,3 +1622,119 @@ class TestExemptingTagsFromTheFloor:
     def test_it_needs_a_floor(self):
         with pytest.raises(HTTPException):
             self.roster(min_extra=None)
+
+
+class TestReadingTheAreaFromAPlaceName:
+    """**カテゴリの名前に入った地名から、その地名の所属(県)を読む**(`area_of`)。
+
+    「〇〇市の食文化」から県のタグを作るには市区町村から県への表が要るが、千を超える
+    表は書き切れないうえ、書く側が思い出しで補うことになる。地図辞典は市区町村の
+    名前と、それがどの県にあるかを知っているので、そちらで引く。
+    """
+
+    PLACES = (
+        {"title": "金沢市", "extra": {"feature": "place=city", "area": "石川県"}},
+        {"title": "府中市", "extra": {"feature": "place=city", "area": "東京都"}},
+        {"title": "府中市 (node:2)", "extra": {"feature": "place=city", "area": "広島県"}},
+        {"title": "森町", "extra": {"feature": "place=town", "area": "北海道"}},
+        {"title": "森町 (node:3)", "extra": {"feature": "place=town", "area": "静岡県"}},
+        # 同じ名前の店は種別で外す
+        {"title": "金沢市 (node:4)", "extra": {"feature": "amenity=pub", "area": "東京都"}},
+    )
+
+    def _sources(self, source, dishes):
+        sources = source(dishes)
+        places = source(list(self.PLACES), name="osm_japan")
+        # 見分けの札の付いた見出しは、素の名前を別名に持つ(地図辞典の取り込みと同じ)
+        conn = sqlite3.connect(places["osm_japan"].path)
+        for doc_id, place in enumerate(self.PLACES, start=1):
+            if " (" in place["title"]:
+                conn.execute(
+                    "INSERT INTO aliases (alias, doc_id) VALUES (?, ?)",
+                    (place["title"].split(" (")[0], doc_id),
+                )
+        conn.commit()
+        conn.close()
+        return {**sources, **places}
+
+    def _rules(self):
+        return [
+            {"const": "ご当地"},
+            {"pattern": "^(.+?[都道府県])の", "format": "地域:{1}",
+             "map": {"石川県": "石川県", "北海道": "北海道", "福井県": "福井県"}},
+            {"pattern": r"^(.+?[市町村](?: \(.+\))?)の", "format": "地域:{1}", "fallback": True,
+             "area_of": {"source": "osm_japan", "feature": ["place=city", "place=town"]}},
+        ]
+
+    def test_a_municipality_is_read_as_its_area(self, source):
+        dishes = [
+            {"title": "料理A", "tags": ["日本の郷土料理", "金沢市の食文化"], "rank": 0.9},
+            {"title": "県が書いてある", "tags": ["日本の郷土料理", "福井県の食文化", "金沢市の食文化"],
+             "rank": 0.8},
+            # 同じ名前の市が 2 つの県にある → 作らない
+            {"title": "二つある", "tags": ["日本の郷土料理", "府中市の食文化"], "rank": 0.7},
+            # 括弧の補足が所属なら、それで決める
+            {"title": "料理B", "tags": ["日本の郷土料理", "森町 (北海道)の文化"], "rank": 0.6},
+        ]
+        items, _ = run(
+            spec(tag="日本の郷土料理", tags=self._rules()), self._sources(source, dishes),
+        )
+        areas = {i["title"]: [t for t in i["tags"] if t.startswith("地域:")] for i in items}
+        assert areas == {
+            "料理A": ["地域:石川県"],
+            # 県のカテゴリが先に当たれば、市からは作らない(fallback)
+            "県が書いてある": ["地域:福井県"],
+            "二つある": [],
+            "料理B": ["地域:北海道"],
+        }
+
+    def test_area_of_is_written_back_and_checked(self):
+        rule = {"pattern": "^(.+)の文化$", "format": "地域:{1}",
+                "area_of": {"source": "osm_japan", "feature": "place=city,place=town"}}
+        given = spec(tags=[rule])
+        assert extract.to_json(given)["tags"][0]["area_of"] == {
+            "source": "osm_japan", "feature": ["place=city", "place=town"],
+        }
+        with pytest.raises(HTTPException):
+            spec(tags=[{**rule, "map": {"a": "b"}}])
+        with pytest.raises(HTTPException):
+            spec(tags=[{**rule, "area_of": {"feature": ["place=city"]}}])
+
+
+class TestSplittingAnItemPerValue:
+    """**同じ軸のタグが 2 つ以上付いた 1 件を、値ごとの 1 件にする**(`split`)。
+
+    区画をタグで割る収集では、1 件に 2 つの県のタグが付くと先に並んだ県の区画にしか
+    入らず、読む側にはどちらの県の 1 件なのかが決まらない。
+    """
+
+    def _spec(self, **more):
+        return spec(
+            tag="ご当地丼",
+            tags=[{"pattern": "^(.+県)の食文化$", "format": "地域:{1}"}, {"const": "ご当地"}],
+            split={"prefix": "地域:", "title": "{title}({value})"},
+            **more,
+        )
+
+    def test_one_item_per_value(self, source):
+        docs = [
+            {"title": "名物丼", "tags": ["ご当地丼", "福井県の食文化", "群馬県の食文化"],
+             "rank": 0.9},
+            {"title": "丼B", "tags": ["ご当地丼", "茨城県の食文化"], "rank": 0.8},
+        ]
+        items, _ = run(self._spec(), source(docs))
+        assert [(i["title"], i["tags"]) for i in items] == [
+            ("名物丼(福井県)", ["ご当地", "地域:福井県"]),
+            ("名物丼(群馬県)", ["ご当地", "地域:群馬県"]),
+            # 値が 1 つなら見出しはそのまま
+            ("丼B", ["地域:茨城県", "ご当地"]),
+        ]
+
+    def test_split_is_written_back_and_checked(self):
+        assert extract.to_json(self._spec())["split"] == {
+            "prefix": "地域:", "title": "{title}({value})",
+        }
+        with pytest.raises(HTTPException):
+            spec(split={"prefix": "地域:", "title": "{title}"})
+        with pytest.raises(HTTPException):
+            self._spec(identity=["wikidata"])

@@ -4,6 +4,8 @@ paths:
   - "app/collect_log.py"
   - "app/machine_store.py"
   - "app/ingest_queue.py"
+  - "app/resolve.py"
+  - "app/formats.py"
   - "ingest/sources/collect.py"
   - "tests/test_collect*.py"
   - "tests/test_ingest_collect.py"
@@ -11,11 +13,13 @@ paths:
   - "tests/test_nothing_to_pass.py"
   - "tests/test_unreviewed_batch.py"
   - "tests/test_not_reviewed.py"
+  - "tests/test_resolve.py"
+  - "tests/test_formats.py"
 ---
 
 # 集める層(収集の本体)
 
-`app/collect.py` の収集の本体: 素材の組み方・直す回と足す回・墓標・変更履歴・収集の面・定義の置き場・時計・差し込み口。巡回と区画は `collect-sweeps.md`、機械の道具は `collect-tools.md` / `collect-extract.md`、ワーカーは `workers.md`。
+`app/collect.py` の収集の本体: 素材の組み方・直す回と足す回・墓標・変更履歴・収集の面・定義の置き場・時計・差し込み口・辞典への引き当て(`app/resolve.py`)と脇書きの書式(`app/formats.py`)。巡回と区画は `collect-sweeps.md`、機械の道具は `collect-tools.md` / `collect-extract.md`、ワーカーは `workers.md`。
 
 ## app/collect.py
 
@@ -705,6 +709,52 @@ paths:
   (指示文を書くのに外は要らず、そのぶん速い)
 - **画面から足したものも止めた状態で作る**(REST の `POST /v1/collect` は有効で作る)。
   画面から足すのは書きながら考える場面で、送った瞬間に AI を呼び始めるのは驚きが大きい
+
+## 辞典への引き当て(`resolve`)と脇書きの書式(`formats`)
+
+使い方(定義に書くもの・AI の返す形・焼いたあとの欄)は `docs/api-reference.md`
+「辞典に引き当てて場所を決める(`resolve`)」「脇書きの値の書式(`formats`)」が正。実装側の要点:
+
+- **AI に場所の座標を書かせない**(`app/resolve.py`)。AI は `extra.<clue>` に名前・住所・
+  URL・辞典の見出しだけを返し、**焼く前に Chiezo が辞典を引いて**座標・住所・元の記録の鍵・
+  出どころのタグを運ぶ。名前だけで引くと同名の別店舗を掴む(実データで、本店の名前で
+  店舗辞典を引くと 3 件あり、素の見出しは 26 km 離れた別の町、1 件は住所が本店と同じなのに
+  座標が隣の県だった)。**条件は手がかりと辞典の両方から確かめられる事実だけ** ——
+  名前・県・市区町村・番地・サイト・辞典どうしの一致。食い違う候補は捨て、近さで束ね、
+  **確かな束がちょうど 1 つ**なら採る。確かな束が無ければ「名前の合う場所がただ 1 つで県が
+  合う」ときだけ採り、根拠(`basis`)に弱いことが残る。**2 か所以上残ったら決めない**
+- **掛けるのは焼く前の 1 か所**(`collect.check_collected`。`main._collect_material` と
+  `main.collect_preview`)。数える周と流す周に同じものを渡す約束(`bake_survey` /
+  `bake_lines`)を崩さないため。**機械で引いた名簿には掛けない**(見出しで引ける形は
+  AI の返りではない)
+- **辞典から運んだ値は AI の札(`extra`)に混ぜない**(`resolve.FACTS_KEY` の下に載せ、
+  `collect._to_doc` が最後に重ねる)。AI の札は入れ子を落とし(`_carried`)、鍵の数にも
+  天井があるので、そこへ入れると店の中身が消える。**重ねる順が優先順** —— 辞典の値が先で、
+  AI の書いた値は辞典に無いときだけ残る(`to_extra`)
+- **引き当てたものは AI の回で動かさない**。手がかりが前の店と同じ(名前・ref・住所。
+  AI が引き当てた中身を写してきたときも同じとみなす)なら引き直さない。AI の `lat` / `lon` は
+  捨てる(`ai_coords` を立てたときだけ残す)。**出どころのタグと `failed_tag` は店の状態から
+  付け直す**(AI がタグを書き直して落としても戻る)。店が変わったら、前の店から写した値
+  (`to_extra`)は外す(別の店の営業時間が残らないように)
+- **人が確かめた位置(`locks`)とは意味を混ぜない**。固定は `stream_docs` の最後に当て直すので
+  引き当てより強く、`座標確認済み` のタグも引き当てでは付けない。食事処はあの印から
+  「位置確認済み」を作っていて、機械が引き当てた位置に同じ印が付くとその区別が消える
+- **県の名前は辞典から読む**(`resolve.known_areas`。地図辞典の `area` の値の集まり)——
+  題材の知識を持たない。県を持たない辞典の点は周りの地物の県で読み(`area_at`)、
+  同数で並んだら決めない(県境の上で倒すと取り違えが通る)
+- **書式は鍵ごとに定義が書く**(`formats`。`months` / `opening_hours`)。合わない値は落とし、
+  **前から持っている値は消さない**(崩した回に正しい値まで消すと一歩後退)。空と「通年」は
+  「書かない」の意味で鍵を消す。営業時間は**文法を全部は追わない**(語・記号・時刻だけで
+  できているか)—— 止めたいのは書式の外の値(日本語の説明文・時刻の崩れ)
+- **控えは 2 つ**: 最後の 1 回ぶんは定義の `last_checks`(`record_result` の `checks`。渡さない
+  回は前のまま)、いま引き当てられていない 1 件は文書そのもの(`extra.<clue>.unresolved`。
+  `collect.unresolved_docs` / `GET /v1/collect/{name}/unresolved` / 収集の面の「引き当てと書式」)。
+  変更履歴の 1 行には件数を補足として添える(`checks_note`)。**次の回の AI には理由を渡す**
+  (`render_material` の `_resolved_note`)—— 渡さないと同じ手がかりで落ち続ける
+- **system で手がかりの形を教える**(`resolve_system_note`)。依頼文に書かせると収集ごとに
+  鍵の名前が割れる。引き当てる収集には `GEO_SYSTEM_NOTE` を足さない(捨てる座標を頼まない)
+- **置き場へ書く収集には書けない**(`_STORE_REFUSED_FIELDS`)。名前を変えたら `resolve.sources`
+  も書き換える(`_with_source_renamed`)
 
 ## 置き場へ書く収集(`store`)
 

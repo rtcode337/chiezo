@@ -68,7 +68,9 @@ from fastapi import HTTPException
 
 from app import collect_log, db, feeds, jst, machine_store, notes, search_queries, workers
 from app import extract as extraction
+from app import formats as formatting
 from app import partition as partitioning
+from app import resolve as resolving
 from app import thumbs as thumbnails
 from app.jst import to_jst
 from app.registry import generation_stamp, previous_generation
@@ -511,6 +513,17 @@ class Collection:
     # `doubt_reason` / `doubt_at` に置く(`_doubted`)。現地で確かめた店を、AI が
     # 「閉店した」と読んだだけで地図から消すと、確かめた人の手がかりごと無くなる
     locked_doubt_tag: str = ""
+    # **店の手がかりから辞典を引き当てて座標を決める指定**(`app/resolve.py`)。書けば、
+    # AI が返した 1 件の脇書き `<clue>` の手がかり(名前・住所・URL・辞典の見出し)から
+    # 辞典の 1 件を引き当て、座標・住所・元の記録の鍵・出どころのタグを機械で運ぶ。
+    # **AI が返した座標は捨てる**(`ai_coords` を立てたときだけ残す)。
+    # **人が現地で確かめた位置(`locks`)とは別物** —— あちらは焼く最後に当て直す固定で、
+    # 引き当ての結果より強い
+    resolve: dict | None = None
+    # **脇書きの値の書式**(`app/formats.py`)。`{"available_months": "months",
+    # "opening_hours": "opening_hours"}` と書くと、AI が書いた値・辞典から運んだ値を
+    # 焼く前に確かめ、書式に合わないものを落とす(理由は `last_checks` に残る)
+    formats: dict = field(default_factory=dict)
     # 誰が置いたか。外のアプリが名乗った文字列で、**印であって認証ではない**
     # (LAN 内・認証なしの前提なので偽れる)。有効にするか決める人の手がかり
     requested_by: str = ""
@@ -539,6 +552,10 @@ class Collection:
     # 「何が落ちたのか」が分からない
     last_removed: int = 0
     last_removed_titles: list[str] = field(default_factory=list)
+    # **最後の 1 回の引き当てと書式の確かめの控え**(`resolve` / `formats` を持つ収集だけ)。
+    # 引き当てた件数・引き当てられなかった見出しと理由・書式で落とした値。
+    # 件数だけ残すと、どの 1 件のどの店がなぜ落ちたのかを確かめに行けない
+    last_checks: dict | None = None
     next_run_at: str | None = None
 
     def due_at(self) -> datetime:
@@ -1395,6 +1412,8 @@ def _from_json(item: dict) -> Collection:
         verify_tags=normalize_verify_tags(item.get("verify_tags")),
         locks=normalize_locks(item.get("locks")),
         locked_doubt_tag=normalize_doubt_tag(item.get("locked_doubt_tag")),
+        resolve=resolving.to_json(resolving.normalize(item.get("resolve"))),
+        formats=formatting.normalize(item.get("formats")),
         requested_by=str(item.get("requested_by") or ""),
         store=str(item.get("store") or ""),
         store_tags=_store_tags_or_empty(item.get("store_tags")),
@@ -1408,6 +1427,7 @@ def _from_json(item: dict) -> Collection:
         last_skipped=int(item.get("last_skipped") or 0),
         last_removed=int(item.get("last_removed") or 0),
         last_removed_titles=[str(t) for t in (item.get("last_removed_titles") or [])],
+        last_checks=item.get("last_checks") if isinstance(item.get("last_checks"), dict) else None,
         next_run_at=item.get("next_run_at") or None,
     )
 
@@ -1734,6 +1754,8 @@ def create(
     locked_doubt_tag: str = "",
     store: str = "",
     store_tags=None,
+    resolve_spec=None,
+    formats_spec=None,
 ) -> Collection:
     if not NAME_RE.fullmatch(name):
         raise HTTPException(400, {
@@ -1777,6 +1799,8 @@ def create(
         feed=feeds.to_json(feeds.normalize(feed_spec)),
         sweeps=normalize_sweeps(sweeps),
         locked_doubt_tag=normalize_doubt_tag(locked_doubt_tag),
+        resolve=resolving.to_json(resolving.normalize(resolve_spec)),
+        formats=formatting.normalize(formats_spec),
         requested_by=requested_by.strip()[:80],
         store=str(store or "").strip(),
         store_tags=normalize_store_tags(store_tags),
@@ -1790,6 +1814,7 @@ def create(
         "partition": partition_spec, "extract": extract_spec, "thumbs": thumbs_spec,
         "links": links, "verify_tags": verify_tags, "feed": feed_spec,
         "locked_doubt_tag": locked_doubt_tag, "kind": kind, "keep_days": keep_days,
+        "resolve": resolve_spec, "formats": formats_spec,
     }, check_store=True)
     save([*existing, item])
     return item
@@ -1803,6 +1828,7 @@ def update(name: str, **fields) -> Collection:
         "backend", "model", "effort", "web", "cursor", "keep_ratio", "extract",
         "partition", "partitions", "sweeps", "feed", "verify_tags",
         "kind", "keep_days", "material", "thumbs", "links", "locked_doubt_tag",
+        "resolve", "formats",
         # **依頼元の名乗りも送り直しで変えられる**(アプリが名前を改めたとき。作ったときの
         # 名乗りのまま残ると、管理画面の依頼元と使用量の行が前の名前のまま並ぶ)
         "requested_by",
@@ -1880,6 +1906,12 @@ def update(name: str, **fields) -> Collection:
     if "locked_doubt_tag" in patch:
         # 空の文字列を渡したら外れる(固定した 1 件も、墓標で消えるようになる)
         patch["locked_doubt_tag"] = normalize_doubt_tag(patch["locked_doubt_tag"])
+    if "resolve" in patch:
+        # 空のオブジェクトを渡したら引き当てない側へ戻す(消す手段がここしかない)
+        patch["resolve"] = resolving.to_json(resolving.normalize(patch["resolve"] or None))
+    if "formats" in patch:
+        # 空のオブジェクトを渡したら確かめない側へ戻す
+        patch["formats"] = formatting.normalize(patch["formats"] or None)
     if "kind" in patch:
         patch["kind"] = normalize_kind(patch["kind"])
     if "thumbs" in patch:
@@ -1987,6 +2019,8 @@ _STORE_REFUSED_FIELDS = (
     ("feed", "外向きの道具(feed)"),
     ("locked_doubt_tag", "固定した 1 件の印(locked_doubt_tag)"),
     ("keep_days", "持つ日数(keep_days)"),
+    ("resolve", "辞典への引き当て(resolve)"),
+    ("formats", "脇書きの書式(formats)"),
 )
 # 同じく巡回の側。どれも「焼く」「区画を回る」「未確認の印を読む」ための指定
 _STORE_REFUSED_SWEEP_KEYS = (
@@ -2443,8 +2477,8 @@ def _with_source_renamed(item: Collection, name: str, new_name: str) -> Collecti
     """指定の中で `name` を指しているところを `new_name` に書き換えた 1 件。
     書き換えるところが無ければ None。
 
-    見るのは、別のソースを名指せる 5 か所 —— 材料(`material`。巡回ごとの材料も)・抽出(`extract`)・
-    区画の母集団(`partition`)・タグの確かめ(`verify_tags`)。
+    見るのは、別のソースを名指せる 6 か所 —— 材料(`material`。巡回ごとの材料も)・抽出(`extract`)・
+    区画の母集団(`partition`)・タグの確かめ(`verify_tags`)・引き当ての辞典(`resolve`)。
     """
     def swap(spec):
         if isinstance(spec, dict) and spec.get("source") == name:
@@ -2465,6 +2499,10 @@ def _with_source_renamed(item: Collection, name: str, new_name: str) -> Collecti
         extract=extract,
         partition=swap(item.partition),
         verify_tags=[swap(one) for one in item.verify_tags],
+        resolve=(
+            {**item.resolve, "sources": [swap(one) for one in item.resolve.get("sources") or []]}
+            if isinstance(item.resolve, dict) else item.resolve
+        ),
     )
     return changed if changed != item else None
 
@@ -2547,6 +2585,29 @@ GEO_SYSTEM_NOTE = (
 )
 
 
+def resolve_system_note(spec: dict | None) -> str:
+    """引き当てる収集(`resolve`)にだけ足す。**手がかりの形と、座標を書かないことを教える**。
+
+    依頼文に書かせると、収集ごとに書き方が割れる(`name` を `shop_name` と書く、など)——
+    読む側の決まりなので、こちらが system で教える。
+    """
+    if not spec:
+        return ""
+    key = spec["clue"]
+    note = (
+        f" **場所(店など)は extra.{key} に"
+        f" {{\"name\":\"名前\",\"address\":\"住所(都道府県から)\",\"url\":\"その場所の頁の URL\","
+        f"\"ref\":\"辞典の見出し(<ソース名>:<見出し>。引けたときだけ)\"}} の形で書く。**"
+        f" 手がかりから Chiezo が辞典を引いて場所を決めるので、名前は看板どおりに、"
+        f"住所は分かる限り番地まで書く。"
+        f" 場所を外すときは extra.{key} に null を書く。"
+        f" 引き当てられなかったものは、次の回に理由を添えて渡す。"
+    )
+    if not spec.get("ai_coords"):
+        note += " **座標(lat / lon)は書かない**(書いても使わない)。"
+    return note
+
+
 REFINE_SYSTEM_PROMPT = (
     "既にある内容を育てる。JSON だけで返し、前置き・説明・コードブロックの記号は付けない。"
     " 形式: {\"items\":[{\"title\":\"見出し\",\"body\":\"本文\","
@@ -2626,6 +2687,7 @@ def unarchived(docs: dict[str, dict]) -> dict[str, dict]:
 
 def render_material(
     previous: dict[str, dict], scoped: bool = False, seen: set[str] | None = None,
+    clue: str | None = None,
 ) -> tuple[str, int]:
     """前世代を、プロンプトへ差し込める形にする。差し込んだ件数も返す。
 
@@ -2642,6 +2704,10 @@ def render_material(
     **消えたものは別の一覧にして後ろに置く**(`_render_removed`)。混ぜていた頃は
     同じ枠を取り合うので、**消すほど直す相手が見えなくなった** —— 精査を頼む収集
     ほど墓標が増えるため。返す件数は生きているものだけを数える。
+
+    `clue` は引き当ての手がかりの鍵(`resolve`)。**引き当てた店と、引き当てられなかった
+    理由を 1 行に添える** —— 理由を渡さないと、次の回の AI は同じ手がかりを返し、
+    同じ理由で落ち続ける。
     """
     if not previous:
         return (
@@ -2659,6 +2725,7 @@ def render_material(
             f"- {doc['title']}"
             + (f" 【{'/'.join(str(t) for t in tags)}】" if tags else "")
             + (f" — {body}" if body else "")
+            + (_resolved_note(doc, clue) if clue else "")
         )
         if used + len(line) > MAX_MATERIAL_CHARS:
             break
@@ -2685,6 +2752,21 @@ def render_material(
     if gone:
         text += "\n\n" + _render_removed(gone)
     return text, shown
+
+
+def _resolved_note(doc: dict, clue: str) -> str:
+    """`{current}` の 1 行に添える、引き当ての状態(`render_material`)。"""
+    extra = doc.get("extra") if isinstance(doc.get("extra"), dict) else {}
+    shop = extra.get(clue)
+    if not isinstance(shop, dict):
+        return ""
+    if resolving.is_resolved(shop):
+        return f" 〔{clue}: {shop.get('name') or ''}({shop.get('ref') or ''})〕"
+    if why := shop.get("unresolved"):
+        given = shop.get("clue") if isinstance(shop.get("clue"), dict) else {}
+        hint = " / ".join(str(given[k]) for k in ("name", "address") if given.get(k))
+        return f" 〔{clue}: 引き当てられなかった —— {why}" + (f"(手がかり: {hint})" if hint else "") + "〕"
+    return ""
 
 
 def _render_removed(docs: list[dict]) -> str:
@@ -3162,7 +3244,9 @@ def build_messages(
         )
     if MATERIAL_PLACEHOLDER in user:
         docs, scoped = scoped_docs(item, previous or {}, partition_key, focus)
-        material_text, _shown = render_material(docs, scoped, seen)
+        material_text, _shown = render_material(
+            docs, scoped, seen, clue=(item.resolve or {}).get("clue"),
+        )
         user = user.replace(MATERIAL_PLACEHOLDER, material_text)
     if NEARBY_PLACEHOLDER in user:
         # **区画の外の近くにあるもの**(足し直さないように見せる)。区画の中のものは
@@ -3209,8 +3293,13 @@ def build_messages(
     # 割り込みは必ず直す側 —— 名指しで渡された 1 件を直せなければ意味が無い
     edits = focus is not None or edits_what_is_there(prompt, sweep.only_new if sweep else False)
     system = REFINE_SYSTEM_PROMPT if edits else SYSTEM_PROMPT
-    if spec and spec["by"] == partitioning.BY_GEO:
+    resolving_spec = resolving.normalize(item.resolve) if item.resolve else None
+    # **引き当てる収集には座標を頼まない**(AI の座標は捨てるので、頼むと手間だけ増える)
+    if spec and spec["by"] == partitioning.BY_GEO and not (
+        resolving_spec and not resolving_spec["ai_coords"]
+    ):
         system += GEO_SYSTEM_NOTE
+    system += resolve_system_note(resolving_spec)
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -3487,6 +3576,8 @@ def record_result(
     cut: list[str] | None = None,
     partitions: list[dict] | None = None,
     focus: bool = False,
+    # 引き当てと書式の確かめの控え(`check_collected`)。None なら前のまま
+    checks: dict | None = None,
 ) -> Collection:
     """1 回ぶんの結果を定義側へ書き戻し、次回の予定を入れる。
 
@@ -3560,6 +3651,7 @@ def record_result(
         last_skipped=skipped,
         last_removed=removed,
         last_removed_titles=list(removed_titles or []),
+        last_checks=checks if checks is not None else current.last_checks,
         updated_at=_iso(now),
         **({} if focus else _advance(current, this, now, status=status, error=error)),
         **(_note_on_demand(current, this, now, status, error) if focus else {}),
@@ -4525,7 +4617,13 @@ def plan_partitions(
     # **範囲を広げた・狭めたあとも割り直す**(`reach_changed`)。台帳は残してあるので、
     # 見終わっていた区画の印は引き継がれ、広げたところだけが「まだ」になる
     reach = partitioning.reach_changed(spec, item.partitions)
-    if item.partitions and not partitioning.outgrown(spec, counts) and not reach:
+    # **並べた値(`values`)と台帳が食い違えば組み直す**(足した・外した・並べ替えた)。
+    # 件数では割り直さない台帳なので、ここで見ないと並びを直しても台帳が動かない
+    regroup = bool(item.partitions) and partitioning.values_changed(spec, item.partitions)
+    if (
+        item.partitions and not partitioning.outgrown(spec, counts)
+        and not reach and not regroup
+    ):
         ledger = partitioning.merged(spec, partitioning.counted(item.partitions, counts))
         return _after_roster(spec, ledger, alive) if after_roster else ledger
     built = partitioning.build(spec, sources, alive)
@@ -5336,6 +5434,12 @@ def _to_doc(raw: dict, now: str, web: bool) -> dict | None:
     lat, lon = _coords(raw)
     if lat is not None:
         extra["lat"], extra["lon"] = lat, lon
+    # **機械が運んだ値は最後に重ねる**(`resolving.FACTS_KEY`。辞典から引き当てた店・座標)。
+    # AI の札より強い —— 辞典の値が先で、AI の書いた値は辞典に無いときだけ残る。
+    # 入れ子(店の中身)もここからは通す(AI の札の決まり `_carried` の外なので)。
+    # null は「この鍵を消して」の印のまま渡す(重ねるときに解く)
+    if isinstance(facts := raw.get(resolving.FACTS_KEY), dict):
+        extra.update(facts)
     return {
         "doc_id": 0,  # material が前世代から引き継ぐか、新しく振る
         "title": title,
@@ -5867,6 +5971,88 @@ def existing_extras(name: str, sources: dict, titles) -> dict[str, dict]:
         chunk = wanted[at:at + 500]
         found = _docs_where(src, f" AND title IN ({','.join('?' * len(chunk))})", tuple(chunk))
         out.update({title: doc.get("extra") or {} for title, doc in found.items()})
+    return out
+
+
+def check_collected(item: Collection, items, sources: dict) -> tuple:
+    """AI が返した 1 件ずつに、**辞典への引き当てと書式の確かめ**を掛ける。控えも返す。
+
+    `resolve` も `formats` も持たない収集・機械で引いた名簿(見出しで引ける形)には
+    何もしない(控えは None)。**順番は引き当て → 書式** —— 辞典から写した値
+    (営業時間など)も書式で確かめるため。書式に合わない辞典の値は写さない
+    (AI の書いた値が、合っていれば残る)。
+
+    **焼く前の 1 か所で掛ける**(`main._collect_material` / `main.collect_preview`)。
+    数える周と流す周の両方に同じものが渡る(`bake_survey` と `bake_lines` の約束)。
+    """
+    spec = resolving.normalize(item.resolve) if item.resolve else None
+    checks = formatting.normalize(item.formats)
+    if not isinstance(items, list) or not (spec or checks):
+        return items, None
+    now = _iso(_now())
+    report: dict = {}
+    if spec:
+        titles = [notes.title_key(d.get("title")) for d in items if isinstance(d, dict)]
+        previous = existing_extras(item.name, sources, titles)
+
+        def valid(key, value) -> bool:
+            return key not in checks or formatting.check(checks[key], value)[0] is not None
+
+        items, report = resolving.apply(spec, items, previous, sources, now, valid)
+    items, dropped = formatting.apply(checks, items, resolving.FACTS_KEY)
+    failures = report.pop("failures", [])
+    return items, {
+        "at": now,
+        **report,
+        "failures": failures[:MAX_TITLE_SAMPLE],
+        "dropped": len(dropped),
+        "dropped_values": dropped[:MAX_TITLE_SAMPLE],
+    }
+
+
+def checks_note(checks: dict | None) -> str:
+    """変更履歴の 1 行に添える、引き当てと書式の控えの要約。何も無ければ空。"""
+    if not checks:
+        return ""
+    parts = []
+    if checks.get("resolved") or checks.get("unresolved"):
+        parts.append(
+            f"引き当て {checks.get('resolved', 0)} 件・できず {checks.get('unresolved', 0)} 件"
+        )
+    if checks.get("dropped"):
+        parts.append(f"書式に合わず落とした値 {checks['dropped']} 件")
+    return " / ".join(parts)
+
+
+def unresolved_docs(item: Collection, sources: dict, limit: int = 200) -> list[dict]:
+    """**引き当てられなかった 1 件**の一覧(見出し・理由・手がかり・候補)。新しい順。
+
+    控え(`last_checks`)は最後の 1 回ぶんしか持たないので、「いま地図に置けないものは
+    どれか」はこちらで読む。消えたものは数えない。
+    """
+    spec = resolving.normalize(item.resolve) if item.resolve else None
+    src = sources.get(item.name)
+    if spec is None or src is None:
+        return []
+    path = f'$."{spec["clue"]}"'
+    rows = db.query(
+        src.path,
+        "SELECT title, updated_at, json_extract(extra, ?) AS shop FROM docs"
+        " WHERE json_extract(extra, ? || '.unresolved') IS NOT NULL"
+        " AND doc_id NOT IN (SELECT doc_id FROM doc_tags WHERE tag = ?)"
+        " ORDER BY updated_at DESC LIMIT ?",
+        (path, path, notes.REMOVED_TAG, max(1, min(limit, 1000))),
+    )
+    out = []
+    for row in rows:
+        shop = load_json(row["shop"]) or {}
+        out.append({
+            "title": row["title"],
+            "reason": shop.get("unresolved") or "",
+            "clue": shop.get("clue") or {},
+            "candidates": shop.get("candidates") or [],
+            "checked_at": shop.get("checked_at") or row["updated_at"],
+        })
     return out
 
 

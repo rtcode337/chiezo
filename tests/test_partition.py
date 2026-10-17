@@ -206,6 +206,98 @@ class TestSplittingByTag:
         assert not partition.belongs(spec, "地域:東京都", {"tags": ["地域:北海道"]})
 
 
+class TestTagValuesInOrder:
+    """**並べた値を、中身が 0 件でも区画にする**(`values`)。
+
+    タグで割ると、母集団にそのタグを持つ文書があるところにしか区画が生まれない ——
+    収集自身を母集団にすると、まだ 1 件も無い値は永遠に区画にならず、
+    「そこに足すべきものは無いか」を問えない。
+    """
+
+    PREFS = ("東京都", "神奈川県", "北海道")
+
+    def _spec(self, **more):
+        return partition.normalize(
+            {"by": "tag", "prefix": "地域:", "values": list(self.PREFS), **more}
+        )
+
+    def test_every_value_is_a_partition_even_when_empty(self):
+        own = {"A": {"title": "A", "tags": ["地域:北海道"]}}
+        built = partition.build(self._spec(), {}, own)
+        assert [p["key"] for p in built] == ["地域:東京都", "地域:神奈川県", "地域:北海道"]
+        assert [p["count"] for p in built] == [0, 0, 1]
+
+    def test_values_may_carry_the_prefix(self):
+        spec = partition.normalize(
+            {"by": "tag", "prefix": "地域:", "values": ["地域:東京都", "東京都", "北海道"]}
+        )
+        # 重なりは前のほうを残す
+        assert spec["values"] == ["東京都", "北海道"]
+
+    def test_unlisted_tags_make_no_partition(self):
+        """並びは閉じた一覧。表記の崩れたタグは区画にせず、行き場の無いものに数える。"""
+        spec = self._spec()
+        own = {
+            "A": {"title": "A", "tags": ["地域:東京"]},
+            "B": {"title": "B", "tags": ["地域:東京都"]},
+        }
+        built = partition.build(spec, {}, own)
+        assert "地域:東京" not in [p["key"] for p in built]
+        counts = partition.counts_of(spec, built, own)
+        assert counts[partition.HOMELESS] == 1
+
+    def test_counts_from_an_outside_source(self, source):
+        sources = source([{"title": "A", "tags": ["地域:神奈川県"]}])
+        built = partition.build(self._spec(source="osm_japan"), sources)
+        assert [p["count"] for p in built] == [0, 1, 0]
+
+    def test_handed_out_in_the_written_order(self):
+        """1 周目は並べた順(鍵の文字列順ではない)。"""
+        spec = self._spec()
+        built = partition.build(spec, {}, {})
+        ledger = partition.refresh(built, [], spec)
+        assert partition.pick(ledger, "ざっと", 3, spec) == [
+            "地域:東京都", "地域:神奈川県", "地域:北海道",
+        ]
+        # 見終えたものは後ろへ回る(2 周目からは古い順)
+        seen = partition.mark_visited(ledger, ["地域:東京都"], "ざっと", "2026-10-01T00:00:00+00:00")
+        assert partition.pick(seen, "ざっと", 1, spec) == ["地域:神奈川県"]
+
+    def test_empty_partitions_do_not_trigger_a_repartition(self):
+        spec = self._spec()
+        assert not partition.outgrown(spec, {"地域:東京都": 0, "地域:神奈川県": 0})
+
+    def test_order_and_membership_do_not_change_the_cut(self):
+        """並べ替え・足し引きでは台帳を捨てない(鍵の意味は変わらない)。"""
+        a = self._spec()
+        b = partition.normalize({"by": "tag", "prefix": "地域:", "values": ["北海道", "東京都"]})
+        assert partition.same_cut(a, b)
+
+    def test_a_changed_list_is_noticed_and_visits_are_kept(self):
+        spec = self._spec()
+        old = [
+            {"key": "地域:北海道", "count": 1, "visits": {"ざっと": "2026-10-01T00:00:00+00:00"}},
+            {"key": "地域:沖縄県", "count": 1, "visits": {}},
+        ]
+        assert partition.values_changed(spec, old)
+        ledger = partition.refresh(partition.build(spec, {}, {}), old, spec)
+        assert [p["key"] for p in ledger] == ["地域:東京都", "地域:神奈川県", "地域:北海道"]
+        assert ledger[2]["visits"] == {"ざっと": "2026-10-01T00:00:00+00:00"}
+        assert not partition.values_changed(spec, ledger)
+
+    def test_values_need_the_tag_split(self):
+        with pytest.raises(HTTPException):
+            partition.normalize({"by": "title", "values": ["東京都"]})
+        with pytest.raises(HTTPException):
+            partition.normalize({"by": "tag", "prefix": "地域:", "values": "東京都"})
+
+    def test_the_spec_round_trips(self):
+        spec = self._spec()
+        assert partition.normalize(partition.to_json(spec)) == spec
+        # 並べていない指定には鍵を残さない
+        assert "values" not in partition.to_json(partition.normalize({"by": "tag", "prefix": "地域:"}))
+
+
 class TestSplittingByTitle:
     def test_the_key_is_where_it_starts_and_ends(self):
         """番号で区切ると、1 件増えるたびに全部の区画が 1 つずつずれる。"""

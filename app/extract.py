@@ -154,6 +154,10 @@ MAX_PATTERNS_PER_RULE = 4
 MAX_PATTERN_CHARS = 200
 # 1 件から作るタグの上限(読み替えが総当たりで当たったときの歯止め)
 MAX_TAGS_PER_DOC = 30
+# 地名の所属で読み替えるときに絞れる地物の種別の数(`area_of`)
+MAX_AREA_FEATURES = 10
+# 1 件を接頭辞のタグごとに分けるとき、1 件から作れる数(`split`)
+MAX_SPLIT = 10
 # 別の文書を引いてくる読み替えで、1 件から取れる数の上限
 MAX_TAKE = 5
 # つながりの見方。**相互は片側よりずっと強い** —— 有名なものどうしは互いに名前が
@@ -338,6 +342,13 @@ def normalize_one(raw) -> dict | None:
     identity = [str(k).strip() for k in identity if str(k).strip()]
     if len(identity) > MAX_IDENTITY_KEYS:
         raise _bad(f"identity に書ける鍵は {MAX_IDENTITY_KEYS} 個までです")
+    split = _split_of(raw.get("split"))
+    if split and identity:
+        # 分けた 1 件ずつが同じ元の記録の鍵を持つと、焼く側が鍵で引き当てたときに
+        # どれが同じ 1 件なのか決まらない(`collect._found_by_record`)
+        raise _bad("split と identity は一緒に書けません(分けた 1 件が同じ元の記録を名乗るため)")
+    if split and of != DEFAULT_ROSTER_KIND:
+        raise _bad("split は文書の名簿(of を書かない指定)でだけ使えます")
 
     spec = {
         "source": source,
@@ -379,8 +390,54 @@ def normalize_one(raw) -> dict | None:
         # (`_reject_same_source`)ので、1 本の中で書けるようにする
         "min_extra_unless_tag": exempt,
         "cursor": str(raw.get("cursor") or DEFAULT_CURSOR).strip() or DEFAULT_CURSOR,
+        # **1 件を接頭辞のタグごとに分ける**(`{"prefix": "地域:", "title": "{title}({value})"}`)。
+        # 読み替えで同じ軸のタグが 2 つ以上付いた 1 件を、値ごとの 1 件にする
+        "split": split,
     }
     return spec
+
+
+def _split_of(raw) -> dict | None:
+    """`split` の読み方。書かなければ None。
+
+    **1 件 = 1 区画の名簿に要る。** 区画をタグで割る収集では、1 件に同じ軸のタグが
+    2 つ付くと、どちらか一方の区画にしか入らない(先に並んだ区画が取る)うえ、
+    読む側にはどちらの値の 1 件なのかが決まらない。元の記事が 2 つの値に当たるなら、
+    値ごとの 1 件にして、見出しに値を添える(見出しは収集の中で一意の鍵)。
+    **値が 1 つ以下の 1 件はそのまま**(見出しも変えない)。
+    """
+    if raw in (None, "", {}):
+        return None
+    if not isinstance(raw, dict):
+        raise _bad("split は {\"prefix\": \"地域:\", \"title\": \"{title}({value})\"} の形で書いてください")
+    prefix = str(raw.get("prefix") or "").strip()
+    title = str(raw.get("title") or "").strip()
+    if not prefix:
+        raise _bad("split には prefix(分ける軸のタグの頭)が要ります")
+    if "{title}" not in title or "{value}" not in title:
+        raise _bad("split の title には {title} と {value} の両方を書いてください")
+    return {"prefix": prefix, "title": title}
+
+
+def split_item(item: dict, split: dict | None) -> list[dict]:
+    """1 件を、`split` の接頭辞のタグごとの 1 件に分ける。分けなければ 1 件のまま。"""
+    if not split:
+        return [item]
+    prefix = split["prefix"]
+    tags = item.get("tags") or []
+    values = [t for t in tags if str(t).startswith(prefix)]
+    if len(values) < 2:
+        return [item]
+    others = [t for t in tags if not str(t).startswith(prefix)]
+    out = []
+    for tag in values[:MAX_SPLIT]:
+        value = str(tag)[len(prefix):]
+        out.append({
+            **item,
+            "title": _fill(split["title"], {"title": item["title"], "value": value}),
+            "tags": [*others, tag],
+        })
+    return out
 
 
 def _min_extra(raw) -> dict:
@@ -497,8 +554,11 @@ def _normalize_rule(raw) -> dict:
         single = str(raw.get("pattern") or "").strip()
         if not single:
             raise _bad("読み替えには pattern か patterns が要ります")
-        return {"kind": "each", "patterns": [_compile(single)], "format": fmt,
-                "fallback": _fallback_of(raw), "map": _map_of(raw)}
+        rule = {"kind": "each", "patterns": [_compile(single)], "format": fmt,
+                "fallback": _fallback_of(raw), "map": _map_of(raw), "area_of": _area_of(raw)}
+        if rule["map"] is not None and rule["area_of"] is not None:
+            raise _bad("map と area_of は一緒に書けません(どちらも {1} を読み替えるため)")
+        return rule
 
     if not isinstance(patterns, list) or not patterns:
         raise _bad("patterns は 1 つ以上の配列で書いてください")
@@ -551,6 +611,79 @@ def _map_of(raw: dict) -> dict[str, str] | None:
             raise _bad(f"map の値は 1〜{MAX_MAP_VALUE_CHARS} 文字の文字列で書いてください")
         out[str(key)] = text
     return out
+
+
+def _area_of(raw: dict) -> dict | None:
+    """`area_of` の読み方。**捕まえた値(`{1}`)を地名として引き、その地名の所属
+    (`area`。地図辞典では都道府県)に読み替える**。
+
+    「〇〇市の食文化」のように、カテゴリの名前に入っているのが市区町村のとき、
+    県を作るには市区町村から県への表が要る —— 数が多く(千を超える)、`map` の表には
+    書き切れないうえ、**表は書く側が思い出しで補うことになる**。地図辞典は
+    市区町村の名前と、それがどの県にあるかを知っているので、そちらで引く。
+
+    `{"source": "osm_japan", "feature": ["place=city", "place=town"]}` と書く。
+    `feature` は引く地物の種別(書かなければ種別で絞らない。同じ名前の店や駅が
+    混ざるので、ふつうは書く)。**所属が 1 つに決まらなければ作らない** ——
+    同じ名前の市が 2 つの県にあるとき、どちらかに倒すと取り違えが通る。
+    """
+    spec = raw.get("area_of")
+    if spec is None:
+        return None
+    if not isinstance(spec, dict) or not str(spec.get("source") or "").strip():
+        raise _bad("area_of は {\"source\": \"引くソース名\", \"feature\": [種別]} の形で書いてください")
+    features = spec.get("feature") or []
+    if isinstance(features, str):
+        features = split_tags(features)
+    if not isinstance(features, list) or len(features) > MAX_AREA_FEATURES:
+        raise _bad(f"area_of の feature は {MAX_AREA_FEATURES} 個までの配列で書いてください")
+    return {
+        "source": str(spec["source"]).strip(),
+        "feature": [str(f).strip() for f in features if str(f).strip()],
+    }
+
+
+_PAREN = re.compile(r"^(.*\S)\s*[(（]([^()（）]+)[)）]$")
+
+
+def _area_lookup(rule: dict, value: str, context: dict) -> str | None:
+    """地名 1 つの所属(`area_of`)。決まらなければ None。引いた結果は控えて使い回す。
+
+    **括弧の補足で同じ名前を見分ける**(「森町 (北海道)」)。百科事典の見出しは、
+    同じ名前の地名に所属を括弧で添えて書き分けることがある —— 括弧の中が
+    候補の所属のどれかなら、それを採る。
+    """
+    from app import db
+
+    cache = context.setdefault("areas", {})
+    key = (rule["source"], tuple(rule["feature"]), value)
+    if key in cache:
+        return cache[key]
+    src = (context.get("sources") or {}).get(rule["source"])
+    found = None
+    if src is not None:
+        name, hint = value, None
+        if paren := _PAREN.match(value):
+            name, hint = paren.group(1), paren.group(2).strip()
+        where, args = "", []
+        if rule["feature"]:
+            where = f" AND d.feature IN ({','.join('?' * len(rule['feature']))})"
+            args = list(rule["feature"])
+        rows = db.query(
+            src.path,
+            "SELECT DISTINCT d.area AS area FROM docs d WHERE d.area IS NOT NULL"
+            " AND (d.title = ? OR d.doc_id IN (SELECT doc_id FROM aliases WHERE alias = ?))"
+            + where,
+            (name, name, *args),
+            timeout=EXTRACT_TIMEOUT_SECONDS,
+        )
+        areas = {str(r["area"]) for r in rows if r["area"]}
+        if hint is not None and hint in areas:
+            found = hint
+        elif len(areas) == 1:
+            found = next(iter(areas))
+    cache[key] = found
+    return found
 
 
 def _prefix_of(fmt: str) -> str:
@@ -630,7 +763,8 @@ def to_json(spec) -> dict | list[dict] | None:
         elif rule["kind"] == "each":
             rules.append({"pattern": rule["patterns"][0].pattern, "format": rule["format"],
                           **({"fallback": True} if rule.get("fallback") else {}),
-                          **({"map": dict(rule["map"])} if rule.get("map") else {})})
+                          **({"map": dict(rule["map"])} if rule.get("map") else {}),
+                          **({"area_of": dict(rule["area_of"])} if rule.get("area_of") else {})})
         else:
             rules.append({
                 "patterns": [p.pattern for p in rule["patterns"]],
@@ -663,6 +797,8 @@ def to_json(spec) -> dict | list[dict] | None:
         written["min_extra"] = dict(spec["min_extra"])
     if spec.get("min_extra_unless_tag"):
         written["min_extra_unless_tag"] = spec["min_extra_unless_tag"]
+    if spec.get("split"):
+        written["split"] = dict(spec["split"])
     # **タグの名簿だけが持つものは、そのときだけ書く。** 文書の名簿に `min_docs` が
     # 並んでいると、効かない指定を読ませることになる
     if spec["of"] != DEFAULT_ROSTER_KIND:
@@ -1057,14 +1193,15 @@ def _run_one(spec: dict, sources: dict, retired: set[str] | None = None) -> tupl
     if any(rule["kind"] == "linked" for rule in spec["tags"]):
         for row in db.stream(src.path, sql, args, timeout=EXTRACT_TIMEOUT_SECONDS):
             links[(row["title"] or "").strip()] = _link_set(row["links"])
-    context = {"src": src, "links": links}
+    context = {"src": src, "links": links, "sources": sources}
 
     def items():
         seen = 0
         for row in db.stream(src.path, sql, args, timeout=EXTRACT_TIMEOUT_SECONDS):
             seen += 1
             if item := _to_item(dict(row), spec, context):
-                yield item
+                # **接頭辞のタグごとに分ける**(`split`)。読み替えでタグが決まってから分ける
+                yield from split_item(item, spec.get("split"))
         log.info("extract %s tag=%r: %d docs", spec["source"], spec["tag"], seen)
 
     return items(), spec["cursor"]
@@ -1175,7 +1312,7 @@ def _run_tags(
     """
     rows = _tag_rows(spec, sources, retired)
     linked = _tag_links(spec, sources, [row["tag"] for row in rows])
-    context = {"src": sources[spec["source"]], "links": {}}
+    context = {"src": sources[spec["source"]], "links": {}, "sources": sources}
 
     def items():
         for row in rows:
@@ -1327,6 +1464,12 @@ def _apply_rules(rules: list[dict], tags: list[str], title: str, context: dict) 
                     if first not in table:
                         continue
                     made = _fill(rule["format"], {"1": table[first]})
+                elif rule.get("area_of") is not None:
+                    # **地名の所属で読み替える**(`_area_of`)。決まらなければ作らない
+                    first = (found.groups() or (found.group(0),))[0] or ""
+                    if not (area := _area_lookup(rule["area_of"], first.strip(), context)):
+                        continue
+                    made = _fill(rule["format"], {"1": area})
                 else:
                     made = _fill_groups(rule["format"], [found])
                 out.append(made)

@@ -1874,6 +1874,8 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
     done: list = []
     # 答えが途中で切れた区画(印を付けない。`partition.note_cut`)
     cut: list = []
+    # 引き当てと書式の確かめの控え(`collect.check_collected`)
+    checks = None
     try:
         # **名指しの区画が台帳に無ければ、AI を呼ぶ前に降りる**(`missing_focus_partition`)。
         # 受け付けたあとに割り直されて消えることがあるので、走る時点でも見る。
@@ -1914,6 +1916,13 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
                     f"({'、'.join(dropped[:10])}{' ほか' if len(dropped) > 10 else ''})"
                 )
                 note = f"{note} / {why}" if note else why
+        # **辞典への引き当てと書式の確かめ**(`resolve` / `formats`)。AI の返した店の
+        # 手がかりから座標を引き、崩れた値を落とす。**焼く前のここ 1 か所** ——
+        # 数える周と流す周に同じものを渡すため(`bake_survey` と `bake_lines` の約束)。
+        # 引き当てられなかった件数は履歴の 1 行にも添える(控えは最後の 1 回ぶんだけ)
+        items, checks = await asyncio.to_thread(collect.check_collected, item, items, sources)
+        if summary := collect.checks_note(checks):
+            note = f"{note} / {summary}" if note else summary
         # **サムネイルを付ける**(有効にした収集だけ。`app/thumbs.py`)。焼く前に
         # 脇書きとして載せるので、1 件につき 1 回で済む(印は焼き直しても残る)
         if item.thumbs is not None and isinstance(items, list):
@@ -1997,6 +2006,7 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
         # 割り直した回は数えた値を渡さない —— そちらは割ったときの数を持っている
         partitions=partitioning.counted(ledger, diff.get("partition_counts") or {}),
         focus=focus is not None,
+        checks=checks,
     )
     await asyncio.to_thread(
         collect_log.record,
@@ -2112,6 +2122,8 @@ async def collect_preview(
     items, next_cursor, note = await _collect_items(
         item, for_prompt, sources, keys, sweep, None, feed
     )
+    # 焼く回と同じく、引き当てと書式の確かめを掛けてから数える(下見で結果が違わないように)
+    items, checks = await asyncio.to_thread(collect.check_collected, item, items, sources)
     edits = collect.edits_what_is_there(
         sweep.prompt or item.prompt, sweep.only_new
     )
@@ -2136,6 +2148,8 @@ async def collect_preview(
         "note": note,
         # 焼こうとしたら止まるかどうか。止まる理由もそのまま出す
         "blocked": collect.shrink_blocked(item, diff),
+        # 引き当てと書式の確かめ(持つ収集だけ。引き当てられなかった見出しと理由)
+        "checks": checks,
     }
 
 
@@ -3546,6 +3560,19 @@ class CollectionCreate(BaseModel):
         '[{"prefix": "代表作", "source": "jawiki"}] と書くと、'
         "`代表作:<見出し>` の見出しがそのソースに無いタグを焼く前に落とす",
     )
+    resolve: dict | None = PydField(
+        None,
+        description="**店の手がかりから辞典を引き当てて座標を決める指定**(app/resolve.py)。"
+        '{"clue": "shop", "sources": [{"source": "osm_japan", "identity": ["osm_type", "osm_id"],'
+        ' "tag": "出典:OSM"}], "area_tag": "地域:", "failed_tag": "状態:代表店未定"} と書くと、'
+        "AI が extra.shop に書いた名前・住所・URL・辞典の見出しから辞典の 1 件を引き当て、"
+        "座標・住所・元の記録の鍵・出どころのタグを焼くときに運ぶ。AI が返した座標は捨てる",
+    )
+    formats: dict | None = PydField(
+        None,
+        description='脇書きの値の書式。{"available_months": "months", "opening_hours":'
+        ' "opening_hours"} と書くと、焼く前に確かめて合わない値を落とす(理由は last_checks)',
+    )
     feed: dict | None = PydField(
         None,
         description="外向きの道具(RSS / Atom)。urls に取ってくる先を書く。"
@@ -3611,6 +3638,12 @@ class CollectionPatch(BaseModel):
     )
     verify_tags: list[dict] | None = PydField(
         None, description="タグの値が実在するかを確かめる指定。空の配列を渡すと外れる"
+    )
+    resolve: dict | None = PydField(
+        None, description="辞典への引き当ての指定。空のオブジェクトを渡すと外れる"
+    )
+    formats: dict | None = PydField(
+        None, description="脇書きの値の書式。空のオブジェクトを渡すと外れる"
     )
     locked_doubt_tag: str | None = PydField(
         None, description="座標を固定した 1 件に墓標が返ったとき、消す代わりに足すタグ。空の文字列で外れる"
@@ -3746,6 +3779,8 @@ def collect_create(request: Request, body: CollectionCreate):
         thumbs_spec=body.thumbs,
         links=bool(body.links),
         verify_tags=body.verify_tags,
+        resolve_spec=body.resolve,
+        formats_spec=body.formats,
         partition_spec=body.partition,
         feed_spec=body.feed,
         material_spec=body.material,
@@ -3978,6 +4013,27 @@ def collect_links(request: Request, name: str):
     src = request.app.state.sources.get(item.name)
     urls = link_checks.collection_urls(src.path) if src is not None else []
     return {"links": link_checks.lookup(urls)}
+
+
+@app.get("/v1/collect/{name}/unresolved")
+def collect_unresolved(request: Request, name: str, limit: int = Query(200, ge=1, le=1000)):
+    """**辞典に引き当てられなかった 1 件**の一覧(`resolve` を持つ収集だけ)。
+
+    `{"resolve": 指定, "last_checks": 最後の 1 回の控え, "total": 件数,
+    "unresolved": [{"title", "reason", "clue", "candidates", "checked_at"}]}`。
+    引き当てられなかったものは座標を持たないので、地図には置けない —— 読む側が
+    「置けないものがどれだけ・なぜか」を画面に出すための口。消えたものは入らない。
+    """
+    collect.require_enabled()
+    item = collect.get(name)
+    rows = collect.unresolved_docs(item, request.app.state.sources, limit)
+    return {
+        "name": item.name,
+        "resolve": item.resolve,
+        "last_checks": item.last_checks,
+        "total": len(rows),
+        "unresolved": rows,
+    }
 
 
 @app.get("/v1/collect/{name}")

@@ -920,6 +920,17 @@ VERIFY_TAGS_EXAMPLE = json.dumps(
     [{"prefix": "代表作", "source": "jawiki"}], ensure_ascii=False
 )
 
+RESOLVE_EXAMPLE = json.dumps(
+    {"clue": "shop", "sources": [
+        {"source": "osm_japan", "identity": ["osm_type", "osm_id"], "tag": "出典:OSM"},
+    ], "area_tag": "地域:", "failed_tag": "状態:未定"},
+    ensure_ascii=False,
+)
+
+FORMATS_EXAMPLE = json.dumps(
+    {"available_months": "months", "opening_hours": "opening_hours"}, ensure_ascii=False
+)
+
 FEED_EXAMPLE = json.dumps(
     {"urls": ["https://example.com/feed", "https://example.org/atom"], "since": "last_run"},
     ensure_ascii=False,
@@ -2111,6 +2122,7 @@ def _collect_detail_html(
         f"{_handoff_html(item, disabled)}"
         f"{_partition_html(item, (sources or {}).get(item.name), busy)}"
         f"{_removed_html(item, sources or {}, removed_page)}"
+        f"{_checks_html(item, sources or {})}"
         f"{_queries_html(item, disabled)}"
         f"<details><summary>編集する</summary>"
         f'<form method="post" action="/admin/collect/{esc(item.name)}/edit" class="collect-form">'
@@ -2150,6 +2162,19 @@ f"{_backend_hint()}"
         f"「タグがある = 押せば何か出る」と受け取るので、実在しない見出しが混ざると"
         f"押しても何も出ないものが並ぶ。<strong>既に入っているものにも掛かる</strong>"
         f"(1 回焼き直せば揃う)。</p>"
+        f'<p><label>辞典への引き当て(JSON。空なら引き当てない)<br>'
+        f'<textarea name="resolve" rows="6" spellcheck="false">'
+        f"{esc(_json_or_empty(item.resolve))}</textarea></label></p>"
+        f'<p class="muted"><code>{esc(RESOLVE_EXAMPLE)}</code> と書くと、AI が'
+        f"<code>extra.shop</code> に書いた名前・住所・URL から<strong>辞典の 1 件を引き当てて"
+        f"座標を運ぶ</strong>(AI の座標は捨てる)。同じ名前の別の店は、県・市区町村・番地・"
+        f"辞典どうしの一致で落とす。</p>"
+        f'<p><label>脇書きの書式(JSON。空なら確かめない)<br>'
+        f'<textarea name="formats" rows="3" spellcheck="false">'
+        f"{esc(_json_or_empty(item.formats))}</textarea></label></p>"
+        f'<p class="muted"><code>{esc(FORMATS_EXAMPLE)}</code> と書くと、'
+        f"その鍵の値が書式に合わなければ<strong>焼く前に落とす</strong>(理由は"
+        f"「引き当てと書式」の節に残る)。</p>"
         f'<p><label>外向きの道具(JSON。空なら道具なし)<br>'
         f'<textarea name="feed" rows="5" spellcheck="false">'
         f"{esc(_feed_json(item))}</textarea></label></p>"
@@ -4340,6 +4365,10 @@ async def admin_collect_edit(name: str, request: Request):
         feed=_parse_feed(form.get("feed")),
         # **空の配列で外せる**(消す手段がここしかない)
         verify_tags=_parse_verify_tags(form.get("verify_tags")),
+        # **欄が無いフォームからは触らない**(置き場へ書く収集の面は欄を持たない)。
+        # 空の欄は「使わない」(空のオブジェクトを渡して外す)
+        resolve=_parse_object(form.get("resolve"), "辞典への引き当て"),
+        formats=_parse_object(form.get("formats"), "脇書きの書式"),
         kind=collect.normalize_kind(form.get("kind")),
         keep_days=str(form.get("keep_days") or "").strip() or None,
         # 0 も意味のある値(守りを外す)なので、空のときだけ触らない
@@ -4854,6 +4883,86 @@ def _parse_partition(raw):
 
 def _parse_feed(raw):
     return _parse_spec(raw, "フィード")
+
+
+def _parse_object(raw, label: str):
+    """JSON のオブジェクトを書く欄。**欄が無ければ None**(触らない)、空なら `{}`(外す)。"""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return {}
+    try:
+        value = json.loads(text)
+    except ValueError as e:
+        raise HTTPException(400, {"error": f"{label}が JSON として読めません: {e}"}) from None
+    if not isinstance(value, dict):
+        raise HTTPException(400, {"error": f"{label}はオブジェクトで書いてください"})
+    return value
+
+
+def _json_or_empty(value) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=2) if value else ""
+
+
+def _checks_html(item, sources: dict) -> str:
+    """**引き当てと書式の確かめ**(`resolve` / `formats` を持つ収集だけ)。
+
+    最後の 1 回の控え(引き当てた件数・できなかった見出しと理由・書式で落とした値)と、
+    **いま引き当てられていない 1 件の一覧**。控えは最後の 1 回ぶんしか無いので、
+    「地図に置けないものがどれだけ残っているか」は一覧のほうで読む
+    (`GET /v1/collect/{name}/unresolved` と同じもの)。
+    """
+    if not item.resolve and not item.formats:
+        return ""
+    checks = item.last_checks or {}
+    parts = []
+    if checks:
+        when = jst.parse(str(checks.get("at") or ""))
+        head = (
+            f"最後の回({esc(jst.compact(when)) if when else '—'} JST): "
+            f"引き当て {int(checks.get('resolved') or 0)} 件・"
+            f"そのまま {int(checks.get('kept') or 0)} 件・"
+            f"できず {int(checks.get('unresolved') or 0)} 件・"
+            f"外した {int(checks.get('cleared') or 0)} 件・"
+            f"書式で落とした値 {int(checks.get('dropped') or 0)} 件"
+        )
+        parts.append(f'<p class="muted">{head}</p>')
+        if dropped := checks.get("dropped_values"):
+            parts.append(
+                "<table><tr><th>見出し</th><th>鍵</th><th>値</th><th>理由</th></tr>"
+                + "".join(
+                    f"<tr><td>{esc(d.get('title'))}</td><td>{esc(d.get('key'))}"
+                    f"({esc(d.get('from'))})</td><td>{esc(d.get('value'))}</td>"
+                    f"<td>{esc(d.get('reason'))}</td></tr>"
+                    for d in dropped
+                )
+                + "</table>"
+            )
+    else:
+        parts.append('<p class="muted">まだ 1 回も確かめていません。</p>')
+    if item.resolve:
+        rows = collect.unresolved_docs(item, sources, 100)
+        if rows:
+            parts.append(
+                f"<p>いま引き当てられていないもの: {len(rows)} 件"
+                f"{'(新しい 100 件)' if len(rows) >= 100 else ''}</p>"
+                "<table><tr><th>見出し</th><th>理由</th><th>手がかり</th></tr>"
+                + "".join(
+                    f"<tr><td>{esc(r['title'])}</td><td>{esc(r['reason'])}"
+                    + (
+                        f"<br><span class=\"muted\">{esc(' / '.join(r['candidates']))}</span>"
+                        if r["candidates"] else ""
+                    )
+                    + f"</td><td>{esc(' / '.join(str(v) for v in (r['clue'] or {}).values()))}"
+                    "</td></tr>"
+                    for r in rows
+                )
+                + "</table>"
+            )
+        else:
+            parts.append('<p class="muted">いま引き当てられていないものはありません。</p>')
+    return "<details><summary>引き当てと書式</summary>" + "".join(parts) + "</details>"
 
 
 def _parse_verify_tags(raw):
