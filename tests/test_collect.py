@@ -6991,6 +6991,23 @@ class TestTellingWhetherAnIngestIsRunning:
 
         assert client.get("/v1/ingest/status").status_code == 503
 
+    def test_a_finished_ingest_moves_the_queue_at_once(self, client, monkeypatch):
+        """**取り込みが終わった合図で、待ち行列をその場で 1 周進める。** 合図が無かった頃は
+        時計の次の周(既定 60 秒)まで気づけず、次の 1 本がそのぶん遅れて走った。"""
+        from app import main
+
+        ran = []
+
+        async def tick(app):
+            ran.append(app)
+
+        monkeypatch.setattr(main, "_collection_tick", tick)
+
+        res = client.post("/v1/ingest/finished", json={"source": "news"})
+
+        assert res.status_code == 200
+        assert len(ran) == 1
+
 
 class TestTheTwoInsertionLimits:
     """件数と文字数、どちらが先に当たるか。

@@ -144,6 +144,30 @@ class TestTheLine:
 
         assert ingest_queue.settle({"state": "idle", "jobs": []}) == []
 
+    def test_a_short_one_that_ended_is_settled_without_the_grace(self, state):
+        """**終わった回の一覧に載っていれば、猶予を待たずに片付ける。** 猶予を待つと、
+        数十秒で焼き終わる回のあと、次の 1 本がそのぶん遅れる。"""
+        entry, _, _ = ingest_queue.add("news", "ざっと", origin="schedule")
+        started = datetime.now(UTC) - timedelta(seconds=20)
+        ingest_queue.started(ingest_queue.take(entry["id"]), started.isoformat())
+
+        done = ingest_queue.settle({"state": "idle", "jobs": [], "recent": [
+            {"source": "news", "finished_at": datetime.now(UTC).isoformat()},
+        ]})
+
+        assert [e["collection"] for e in done] == ["news"]
+
+    def test_the_previous_run_ending_does_not_settle_the_new_one(self, state):
+        """同じ収集の前の回の終わりで、起こしたばかりの今の回を外さない。"""
+        entry, _, _ = ingest_queue.add("news", "ざっと", origin="schedule")
+        ingest_queue.started(ingest_queue.take(entry["id"]))
+
+        done = ingest_queue.settle({"state": "idle", "jobs": [], "recent": [
+            {"source": "news", "finished_at": (datetime.now(UTC) - timedelta(minutes=3)).isoformat()},
+        ]})
+
+        assert done == []
+
     def test_an_unreachable_trigger_settles_nothing(self, state):
         entry, _, _ = ingest_queue.add("news", "ざっと", origin="schedule")
         ingest_queue.started(ingest_queue.take(entry["id"]), "2020-01-01T00:00:00+00:00")

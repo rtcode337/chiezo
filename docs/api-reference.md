@@ -1469,6 +1469,10 @@ AI に返させる形は `{"items":[{"title","body","tags","url"}],"next_cursor"
 
 **`POST /v1/collect/{name}/run` も、埋まっていれば並ぶ**(202 と
 `{"queued": true, "position": 何番目}`)。空いていればその場で起こして 200。
+**取り込みが 1 本終わると、chiezo-trigger が `POST /v1/ingest/finished` で知らせ、待ち行列の次の
+1 本がその場で流れる**(時計の次の周を待たない)。合図は「1 周早く回して」の意味しか持たず、
+何が終わったかは Chiezo が取り込みの状態を読んで確かめる。
+
 `GET /v1/ingest/status` は `running`(何か走っているか)に加えて、`full`(空きが無いか)・
 `slots`・`jobs`・`waiting`(待っている数)を返す。**割り込み(`…/focus`)は並ばない** ——
 埋まっていれば 409 で断る(空きを見た直後に別の 1 本が入った擦れ違いも同じ 409。

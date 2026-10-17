@@ -121,6 +121,15 @@ def dump_busy(status: dict | None) -> bool:
     return any(j.get("lane") == "dump" for j in jobs(status))
 
 
+def _when(value) -> datetime | None:
+    """時刻の文字列を読む(読めなければ None)。時差が無ければ UTC とみなす。"""
+    try:
+        at = datetime.fromisoformat(str(value or ""))
+    except ValueError:
+        return None
+    return at if at.tzinfo else at.replace(tzinfo=UTC)
+
+
 def finished(status: dict | None) -> list[dict]:
     """終わった回(新しいものから)。古い trigger は、いまの 1 本が終わっていればそれ。"""
     if not status or status.get("state") == "unreachable":
@@ -317,15 +326,23 @@ def settle(status: dict | None, now: datetime | None = None) -> list[dict]:
         return []
     names = set(running_names(status))
     cutoff = (now or datetime.now(UTC)) - timedelta(seconds=SETTLE_GRACE_SECONDS)
+    # **終わった回の一覧に載っていれば、猶予を待たずに終わったとみなす。** 猶予は「起こした
+    # 直後で状態にまだ載っていない」を見誤らないためのもので、終わったと書いてあるものには
+    # 要らない —— 待つと、短い回(数十秒で焼き終わる)のあと次の 1 本がそのぶん遅れる
+    ended = {
+        str(job.get("source") or ""): _when(job.get("finished_at"))
+        for job in reversed(finished(status))
+    }
 
     def gone(entry: dict) -> bool:
         if entry.get("collection") in names:
             return False
-        try:
-            at = datetime.fromisoformat(str(entry.get("started_at") or ""))
-        except ValueError:
+        at = _when(entry.get("started_at"))
+        if at is None:
             return True
-        at = at if at.tzinfo else at.replace(tzinfo=UTC)
+        # 起こした後に終わった回だけ(同じ収集の前の回の終わりで、今の回を外さない)
+        if (end := ended.get(str(entry.get("collection") or ""))) is not None and end >= at:
+            return True
         return at <= cutoff
 
     def change(state: dict):

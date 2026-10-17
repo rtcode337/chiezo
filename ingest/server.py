@@ -229,6 +229,40 @@ def _run_job(source: str, credential: str | None = None, download_base: str | No
         core.bind(None)
         core.clear_stop(source)
         _bound.source = None
+        # **終わったことを chiezo-app へ知らせる**(どう終わったかは問わない)。
+        # 知らせないと、あちらは時計の次の周(既定 60 秒)まで終わったことに気づけず、
+        # 待ち行列の次の 1 本がそのぶん遅れて走る
+        _tell_app_finished(source)
+
+
+# 終わったことを知らせる先(収集の素材を取りに行くのと同じ chiezo-app)。空なら知らせない
+APP_URL = os.environ.get("CHIEZO_APP_URL", "").rstrip("/")
+# 知らせるのに待つ上限。**届かなくても困らない**(あちらの時計が次の周で気づく)ので短く
+NOTIFY_TIMEOUT = 5.0
+
+
+def _tell_app_finished(source: str) -> None:
+    """chiezo-app に「1 本終わった」を知らせる。**届かなくても何もしない**。
+
+    知らせは合図でしかなく、何が終わったかはあちらが `/status` を読んで確かめる
+    (片付けの判断は今までどおりあちら)。届かなければ時計の次の周で同じことが起きる。
+    """
+    if not APP_URL:
+        return
+    import json
+    import urllib.request
+
+    body = json.dumps({"source": source}).encode()
+    req = urllib.request.Request(
+        f"{APP_URL}/v1/ingest/finished", data=body, method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=NOTIFY_TIMEOUT):
+            pass
+    # 合図が届かなくても取り込みの結果は変わらない(あちらの時計が次の周で気づく)
+    except Exception as e:
+        log.info("could not tell chiezo-app that %s finished: %r", source, e)
 
 
 def _running_now(name: str) -> bool:

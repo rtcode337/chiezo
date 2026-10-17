@@ -198,6 +198,48 @@ class TestTheStatus:
         assert any("baking meals" in line for line in server._recent[-1]["log_tail"])
 
 
+class TestTellingTheAppItFinished:
+    """**終わったら chiezo-app へ知らせる。** 知らせないと、あちらは時計の次の周
+    (既定 60 秒)まで気づけず、待ち行列の次の 1 本がそのぶん遅れて走る。"""
+
+    @staticmethod
+    def _run(monkeypatch, tmp_path, urlopen):
+        import urllib.request
+
+        import server
+
+        monkeypatch.setattr(server, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(server, "APP_URL", "http://chiezo-app:7010")
+        monkeypatch.setitem(__import__("sys").modules, "main", _FakeMain())
+        monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+        server._jobs.clear()
+        server._jobs["meals"] = server._new_job("meals")
+        server._run_job("meals")
+        return server
+
+    def test_it_tells_the_app_when_a_job_ends(self, tmp_path, monkeypatch):
+        import contextlib
+
+        sent = []
+
+        def urlopen(req, timeout):
+            sent.append((req.full_url, req.get_method(), req.data))
+            return contextlib.nullcontext()
+
+        self._run(monkeypatch, tmp_path, urlopen)
+
+        assert sent == [("http://chiezo-app:7010/v1/ingest/finished", "POST", b'{"source": "meals"}')]
+
+    def test_an_unreachable_app_does_not_spoil_the_job(self, tmp_path, monkeypatch):
+        """合図が届かなくても取り込みの結果は変わらない(あちらの時計が次の周で気づく)。"""
+        def urlopen(req, timeout):
+            raise OSError("connection refused")
+
+        server = self._run(monkeypatch, tmp_path, urlopen)
+
+        assert server._recent[-1]["state"] == "done"
+
+
 class _FakeMain:
     def run(self, source, data_dir):
         logging.getLogger("chiezo.ingest").info("baking %s", source)

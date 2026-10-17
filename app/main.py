@@ -340,6 +340,18 @@ async def _run_collections(app: FastAPI) -> None:
     """
     while True:
         await asyncio.sleep(COLLECT_TICK_SECONDS)
+        await _collection_tick(app)
+
+
+# 収集の時計の 1 周を、時計と「取り込みが終わった」の知らせの両方から回すので、
+# 同じプロセスの中では重ねない(重なっても行列は `put_if` で守られるが、同じ確かめを
+# 2 度するだけで得が無い)
+_COLLECTION_TICK_LOCK = asyncio.Lock()
+
+
+async def _collection_tick(app: FastAPI) -> None:
+    """収集の時計の 1 周。**失敗しても止めない**(理由はログへ)。"""
+    async with _COLLECTION_TICK_LOCK:
         try:
             # **焼くところで落ちた回を、いちばん先に戻す。** 戻す前に次を起こすと、
             # 進んだままの印で次の区画が選ばれる
@@ -3640,6 +3652,21 @@ class CollectionPatch(BaseModel):
     store_tags: list[str] | None = PydField(
         None, description="置き場へ書く 1 件に必ず付けるタグ(丸ごと置き換える)",
     )
+
+
+@app.post("/v1/ingest/finished")
+async def ingest_finished(request: Request, background: BackgroundTasks):
+    """**取り込みが 1 本終わった**という合図(chiezo-trigger が送る)。待ち行列をその場で 1 周進める。
+
+    取り込みは終わったことを教えに来る道を持たなかったので、こちらは時計の次の周
+    (既定 60 秒)まで終わったことに気づけず、**待ち行列の次の 1 本がそのぶん遅れて走っていた**。
+    合図を受けたら時計の 1 周(`_collection_tick`)をすぐ回す。**何が終わったかは合図を
+    信じずに `/status` で確かめる**(片付けの判断は今までどおり)ので、誰が送ってきても
+    起きるのは「1 周早く回る」ことだけ。**待たずに返す**(trigger の取り込みのスレッドを
+    待たせない)。
+    """
+    background.add_task(_collection_tick, request.app)
+    return {"ok": True}
 
 
 @app.get("/v1/ingest/status")

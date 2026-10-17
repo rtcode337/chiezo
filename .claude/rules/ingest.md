@@ -303,6 +303,10 @@ chiezo-ingest(ワンショット構築バッチ)と chiezo-trigger、ソース�
     **ダンプの取り込みも 1 本ずつ**〔429。`dumps/` の付属データを共有する〕)。
     **ダンプは別の枠で走る**(`CHIEZO_INGEST_DUMP_LANE`、既定で有効。`ADAPTERS` に載っているもの)
     —— 再構築は何時間もかかり、1 つの枠を取り合うと、そのあいだ収集も一切流れなかった。
+    **1 本終わるたびに chiezo-app へ合図を送る**(`_tell_app_finished` →
+    `POST {CHIEZO_APP_URL}/v1/ingest/finished`。どう終わったかは問わない)。
+    あちらが待ち行列の次の 1 本をすぐ流すため。**届かなくても何もしない**(5 秒で諦める。
+    あちらの時計が次の周で気づく)
     ダンプは専用の 1 枠を使い、`CHIEZO_INGEST_SLOTS` は収集・プラグインのぶんに残る。
     `/status` は各 1 本に `lane`(`dump` / `general`)、全体に `dump_lane` を載せ、
     `GET /sources` はダンプのソースに `dump: true` を付ける。**app の空きの数え方は
