@@ -189,6 +189,33 @@ class TestPickingTheRightShop:
         assert result.ok
         assert result.shop["basis"] == ["名前", "県"]
 
+    def test_free_text_areas_do_not_become_the_prefecture(self, tmp_path):
+        """店舗辞典の `area` の自由記述(「〒…」「東京都/日本」)を県として読まない。
+
+        本番で、比べる形で空になる「〒343-0828」が長い順でいちばん先に選ばれ、
+        どの住所にも県として当たったので、東京都の候補が全部「県が違う」で落ちた。
+        候補自身の `area` が崩れていれば、周りの地物の県で読み直す。
+        """
+        noisy = overture_docs()
+        noisy[0] = {**noisy[0], "extra": {**noisy[0]["extra"], "area": "東京都/日本"}}
+        noisy += [
+            {"title": "郵便番号だけの店", "extra": {"area": "〒343-0828"}},
+            {"title": "崩れた県の店", "extra": {"area": "東京都/日本"}},
+            # 県らしい値は件数が桁違いに多い(崩れた値は 1 桁)
+            *({"title": f"都内の店 {i}", "extra": {"area": "東京都"}} for i in range(1200)),
+        ]
+        srcs = {
+            "osm_japan": make_source(tmp_path, "osm_japan", osm_docs()),
+            "overture_japan": make_source(tmp_path, "overture_japan", noisy),
+        }
+        assert "〒343-0828" not in resolve.known_areas(srcs["overture_japan"])
+        assert "東京都/日本" not in resolve.known_areas(srcs["overture_japan"])
+        result = resolve.resolve(
+            SPEC, {"name": "サンプル軒総本店", "address": "東京都千代田区丸の内1-9-1"},
+            "東京都", srcs, NOW,
+        )
+        assert result.ok, result.shop
+
     def test_an_unknown_name_says_so(self, sources):
         result = resolve.resolve(SPEC, {"name": "どこにも無い店"}, "東京都", sources, NOW)
         assert not result.ok

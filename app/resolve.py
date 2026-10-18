@@ -403,6 +403,13 @@ def _json(raw) -> dict:
 # 都道府県相当の行政区で、その値の集まりが「住所の頭に来うる県の名前」になる。
 # 焼き直さない限り変わらないので、ファイルの指紋で控える
 _AREAS: dict[tuple, frozenset[str]] = {}
+# **県として数える値は、いちばん多い値のこの割合以上の文書に付いているものだけ。**
+# 店舗辞典の `area` は自由記述が混ざる(実データで「〒343-0828」「東京都渋」「東京都/日本」が
+# それぞれ 1〜数件)。拾うと、比べる形で空になる「〒…」がどの住所の頭にも当たり、長い順に
+# 選ぶので**すべての候補が「県が違う」で落ちた**(東京都の 8 件が全滅した)。
+# 県なら数千〜数万件ある(最多の東京都が 9 万件・崩れた値は 1 桁)。1% にしても最少の県まで残る。件数を決め打ちに
+# しないのは、小さな辞典(試験用・地域を絞った辞典)で県まで落とさないため
+MIN_AREA_SHARE = 0.01
 
 
 def known_areas(src) -> frozenset[str]:
@@ -414,10 +421,16 @@ def known_areas(src) -> frozenset[str]:
     if mark not in _AREAS:
         try:
             rows = db.query(
-                src.path, "SELECT DISTINCT area FROM docs WHERE area IS NOT NULL",
+                src.path,
+                "SELECT area, COUNT(*) AS n FROM docs WHERE area IS NOT NULL GROUP BY area",
                 timeout=QUERY_TIMEOUT_SECONDS,
             )
-            _AREAS[mark] = frozenset(str(r["area"]) for r in rows if r["area"])
+            floor = max((r["n"] for r in rows), default=0) * MIN_AREA_SHARE
+            # 比べる形で空になる値(空白だけ・郵便番号だけ)は、どの住所の頭にも当たるので入れない
+            _AREAS[mark] = frozenset(
+                str(r["area"]) for r in rows
+                if r["area"] and r["n"] >= floor and address_key(r["area"])
+            )
         except Exception as e:  # 読めなければ、県の名前は使わない(落とさない側へ倒す)
             log.warning("resolve: %s の県の一覧を読めませんでした: %s", src.path, type(e).__name__)
             _AREAS[mark] = frozenset()
@@ -572,6 +585,11 @@ def resolve(spec: dict, clue: dict, area_hint: str | None, sources: dict, now: s
 def _check(cand: Candidate, target: str | None, address: str, clue: dict, area_sources) -> None:
     """候補 1 つを手がかりと突き合わせる(食い違えば `why_not` に書く)。"""
     if target:
+        # 候補の県が一覧に無い崩れた値(自由記述の「東京都/日本」など)なら、持っていないものとして
+        # 周りの地物から読み直す —— そのまま比べると、同じ県の店が「県が違う」で落ちる
+        known = {address_key(a) for src in area_sources for a in known_areas(src)}
+        if cand.area is not None and known and address_key(cand.area) not in known:
+            cand.area = None
         if cand.area is None:
             # 県を持たない辞典の点は、周りの地物の県で読む
             for src in area_sources:
