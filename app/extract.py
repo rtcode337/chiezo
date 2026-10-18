@@ -162,6 +162,8 @@ MAX_SPLIT = 10
 MAX_TAKE = 5
 # 組で絞る指定(`tag_pairs`)の数の天井
 MAX_TAG_PAIRS = 10
+# 規則の `fallback` で「前が作っていなければ、当たったタグごとに作る」(`_fallback_of`)
+FALLBACK_ALL = "all"
 # つながりの見方。**相互は片側よりずっと強い** —— 有名なものどうしは互いに名前が
 # 出てくるので、片側だと 12% が繋がって毛玉になった。相互は 7% まで落ちたうえ、
 # 残った組は実際に関係のある相手だった(人物 30 件で実測)
@@ -415,11 +417,20 @@ def _pairs_of(raw) -> list[dict]:
 
     **組の効くのは、pattern に当たるタグで入ってきた 1 件だけ**(`_paired`)。
     同じ指定の `tag` に並べたほかのタグで入ってきた 1 件は、今までどおり取る。
+
+    **相手は正規表現でも書ける**(`with_pattern`。`with` とはどちらか一方)。向きが逆の組 ——
+    値の付かない固定の括りで入ってきた 1 件を、値の付いた括りのどれか(「X の乙」のどれでも)も
+    持つときだけ採る —— は、捕まえた値で相手を組む `with` では書けない(入ってきたタグに
+    値が無い)。`with_pattern` は pattern の捕まえた値を読まない(`{1}` は正規表現の回数の
+    書き方と見分けがつかない)。入ってきたタグそのものは相手に数えない。
     """
     if raw in (None, "", []):
         return []
     if not isinstance(raw, list):
-        raise _bad('tag_pairs は [{"pattern": "…", "with": "…"}] の配列で書いてください')
+        raise _bad(
+            'tag_pairs は [{"pattern": "…", "with": "…"}] の配列で書いてください'
+            '(相手を正規表現で書くなら with の代わりに with_pattern)'
+        )
     if len(raw) > MAX_TAG_PAIRS:
         raise _bad(f"tag_pairs は {MAX_TAG_PAIRS} 個までです")
     out = []
@@ -428,9 +439,18 @@ def _pairs_of(raw) -> list[dict]:
             raise _bad("tag_pairs の要素はオブジェクトで書いてください")
         pattern = str(one.get("pattern") or "").strip()
         partner = str(one.get("with") or "").strip()
-        if not pattern or not partner:
-            raise _bad("tag_pairs には pattern(入ってきたタグ)と with(一緒に要るタグ)が要ります")
+        partner_pattern = str(one.get("with_pattern") or "").strip()
+        if partner and partner_pattern:
+            raise _bad("tag_pairs の with と with_pattern は一緒に書けません(相手はどちらか一方で書く)")
+        if not pattern or not (partner or partner_pattern):
+            raise _bad(
+                "tag_pairs には pattern(入ってきたタグ)と with か with_pattern"
+                "(一緒に要るタグ)が要ります"
+            )
         compiled = _compile(pattern)
+        if partner_pattern:
+            out.append({"pattern": compiled, "with_pattern": _compile(partner_pattern)})
+            continue
         # 捕まえていない番号を with が読むと、どの 1 件も組にならない(静かな 0 件)
         if any(int(n) > compiled.groups for n in re.findall(r"\{(\d+)\}", partner)):
             raise _bad(f"tag_pairs の with が、pattern の捕まえていない値を読んでいます: {partner}")
@@ -443,7 +463,8 @@ def _paired(tags: list[str], pairs: list[dict], wanted: set[str]) -> bool:
 
     入ってきたタグ(指定が引いたタグのうち、その 1 件が持つもの)のどれかが、
     ①どの組の pattern にも当たらない(組の要らないタグで入ってきた)か、
-    ②当たった pattern の捕まえた値で組んだ with のタグも持っているなら、採る。
+    ②当たった pattern の捕まえた値で組んだ with のタグも持っている、
+    ③当たった組の with_pattern に当たるタグを(入ってきたタグのほかに)持っているなら、採る。
     """
     if not pairs:
         return True
@@ -453,6 +474,10 @@ def _paired(tags: list[str], pairs: list[dict], wanted: set[str]) -> bool:
         if not hits:
             return True
         for pair, m in hits:
+            if (partner_pattern := pair.get("with_pattern")) is not None:
+                if any(other != tag and partner_pattern.search(other) for other in have):
+                    return True
+                continue
             partner = re.sub(
                 r"\{(\d+)\}", lambda g, m=m: m.group(int(g.group(1))) or "", pair["with"],
             )
@@ -636,20 +661,28 @@ def _normalize_rule(raw) -> dict:
     }
 
 
-def _fallback_of(raw: dict) -> bool:
+def _fallback_of(raw: dict) -> bool | str:
     """`fallback` の読み方。**前の規則が同じ接頭辞のタグを作っていれば、この規則は作らない**。
 
     同じ軸を何通りかの手掛かりから作るときに要る —— 生年と没年の両方 → 生年だけ →
     世紀だけ、のように手掛かりの確かな順に並べると、並べただけでは**当たった全部が
     足される**(両方を持つ人に年代のタグが 3 本付く)。読む側は最初の 1 本しか見ないので、
     残りは食い違いの種になるだけ。**確かな手掛かりが当たったら、そこで止める**。
+    `true` は当たったタグが 2 つあっても 1 本しか作らない。
+
+    **`"all"` は、作るかどうかだけを前の規則に譲り、作るときは当たったタグごとに作る**。
+    代わりの手掛かりが本筋と同じくらい確かで、値が 2 つあれば両方要るとき向け ——
+    県の付いた括りで県が決まらなかった 1 件を、別の県の付いた括りから読み、2 県に
+    当たったら 2 県とも作る(1 本に絞ると、どちらの県を採るかが並びで決まってしまう)。
     """
     value = raw.get("fallback")
     if value is None or value is False:
         return False
     if value is True:
         return True
-    raise _bad("fallback は true か false で書いてください")
+    if value == FALLBACK_ALL:
+        return FALLBACK_ALL
+    raise _bad(f'fallback は true か false か "{FALLBACK_ALL}" で書いてください')
 
 
 def _map_of(raw: dict) -> dict[str, str] | None:
@@ -826,14 +859,14 @@ def to_json(spec) -> dict | list[dict] | None:
             rules.append({"linked": rule["how"], "format": rule["format"]})
         elif rule["kind"] == "each":
             rules.append({"pattern": rule["patterns"][0].pattern, "format": rule["format"],
-                          **({"fallback": True} if rule.get("fallback") else {}),
+                          **({"fallback": rule["fallback"]} if rule.get("fallback") else {}),
                           **({"map": dict(rule["map"])} if rule.get("map") else {}),
                           **({"area_of": dict(rule["area_of"])} if rule.get("area_of") else {})})
         else:
             rules.append({
                 "patterns": [p.pattern for p in rule["patterns"]],
                 "format": rule["format"],
-                **({"fallback": True} if rule.get("fallback") else {}),
+                **({"fallback": rule["fallback"]} if rule.get("fallback") else {}),
             })
     written = {
         "source": spec["source"],
@@ -865,7 +898,10 @@ def to_json(spec) -> dict | list[dict] | None:
         written["split"] = dict(spec["split"])
     if spec.get("tag_pairs"):
         written["tag_pairs"] = [
-            {"pattern": pair["pattern"].pattern, "with": pair["with"]} for pair in spec["tag_pairs"]
+            {"pattern": pair["pattern"].pattern, "with_pattern": pair["with_pattern"].pattern}
+            if pair.get("with_pattern") is not None
+            else {"pattern": pair["pattern"].pattern, "with": pair["with"]}
+            for pair in spec["tag_pairs"]
         ]
     # **タグの名簿だけが持つものは、そのときだけ書く。** 文書の名簿に `min_docs` が
     # 並んでいると、効かない指定を読ませることになる
@@ -1561,8 +1597,9 @@ def _apply_rules(rules: list[dict], tags: list[str], title: str, context: dict) 
                 else:
                     made = _fill_groups(rule["format"], [found])
                 out.append(made)
-                # 手掛かりの代わりに使う規則は 1 本で足りる(2 つ当たっても 2 本作らない)
-                if rule.get("fallback"):
+                # 手掛かりの代わりに使う規則は 1 本で足りる(2 つ当たっても 2 本作らない)。
+                # `"all"` は当たったタグごとに作る(`_fallback_of`)
+                if rule.get("fallback") is True:
                     break
         elif rule["kind"] == "from_tag":
             out.extend(_from_tag(rule, title, context))

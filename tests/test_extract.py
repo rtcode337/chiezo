@@ -243,6 +243,34 @@ class TestPullingFromWhatIsAlreadyThere:
         with pytest.raises(HTTPException):
             spec(tags=[{"pattern": "^(.+)年生$", "format": "年代:{1}-", "fallback": "yes"}])
 
+    def test_a_fallback_of_all_makes_every_hit_when_the_axis_is_empty(self, source):
+        """**`"all"` は、作るかどうかだけを前の規則に譲り、当たったタグごとに作る**。
+
+        代わりの手掛かりが本筋と同じくらい確かなとき、`true` だと 2 つ当たっても
+        並びの先の 1 本しか作らない。
+        """
+        docs = [
+            {"title": "甲で決まる", "tags": ["福井県の甲", "群馬県の乙"], "rank": 0.9},
+            {"title": "乙が 2 県", "tags": ["福井県の乙", "群馬県の乙"], "rank": 0.8},
+        ]
+        rules = [
+            {"pattern": "^(.+県)の甲$", "format": "地域:{1}"},
+            {"pattern": "^(.+県)の乙$", "format": "地域:{1}", "fallback": "all"},
+        ]
+
+        given = spec(tag="福井県の甲,福井県の乙,群馬県の乙", tags=rules)
+        items, _cursor = run(given, source(docs))
+        areas = {i["title"]: [t for t in i["tags"] if t.startswith("地域:")] for i in items}
+
+        assert areas == {
+            # 前の規則が作っていれば作らない(true と同じ)
+            "甲で決まる": ["地域:福井県"],
+            # 作るときは当たった全部
+            "乙が 2 県": ["地域:福井県", "地域:群馬県"],
+        }
+        assert extract.to_json(given)["tags"][1]["fallback"] == "all"
+        assert extract.normalize(extract.to_json(given)) == given
+
     def test_a_rule_can_hit_more_than_once(self, source):
         docs = [
             {
@@ -1781,7 +1809,53 @@ class TestPairedTags:
             {"pattern": "^(.+県)の甲$"},
             {"pattern": "^(.+県)の甲$", "with": "{2}の乙"},
             {"pattern": "(", "with": "乙"},
+            # 相手はどちらか一方で書く
+            {"pattern": "^丙$", "with": "乙", "with_pattern": "の乙$"},
+            {"pattern": "^丙$", "with_pattern": "("},
             "甲",
         ):
             with pytest.raises(HTTPException):
                 spec(tag="丼", tag_pairs=[bad])
+
+    def test_a_fixed_tag_can_pair_with_any_tag_of_a_pattern(self, source):
+        """**向きが逆の組も書ける**(`with_pattern`)。値の付かない固定の括りで入ってきた
+        1 件を、値の付いた括りのどれかも持つときだけ採る —— 入ってきたタグに値が無いので、
+        捕まえた値で相手を組む `with` では書けない。
+        """
+        given = spec(
+            tag="丙,丼",
+            tags=[{"pattern": "^(.+県)の乙$", "format": "地域:{1}"}],
+            tag_pairs=[{"pattern": "^丙$", "with_pattern": "^(.+県)の乙$"}],
+        )
+        docs = [
+            {"title": "乙もある", "tags": ["丙", "福井県の乙"], "rank": 0.9},
+            {"title": "丙だけ", "tags": ["丙", "福井県の甲"], "rank": 0.8},
+            # 組の要らないタグで入ってきたものは、今までどおり取る
+            {"title": "丼で入った", "tags": ["丼", "丙"], "rank": 0.7},
+            {"title": "乙が 2 県", "tags": ["丙", "福井県の乙", "群馬県の乙"], "rank": 0.6},
+        ]
+        sources = source(docs)
+
+        items, _ = run(given, sources)
+
+        assert [i["title"] for i in items] == ["乙もある", "丼で入った", "乙が 2 県"]
+        assert extract.count(given, sources) == 3
+        assert extract.to_json(given)["tag_pairs"] == [
+            {"pattern": "^丙$", "with_pattern": "^(.+県)の乙$"},
+        ]
+        assert extract.normalize(extract.to_json(given)) == given
+
+    def test_the_entering_tag_is_not_its_own_partner(self, source):
+        """入ってきたタグが with_pattern にも当たるとき、それ自身は相手に数えない。"""
+        given = spec(
+            tag="福井県の乙",
+            tag_pairs=[{"pattern": "の乙$", "with_pattern": "の乙$"}],
+        )
+        docs = [
+            {"title": "1 つだけ", "tags": ["福井県の乙"], "rank": 0.9},
+            {"title": "2 つある", "tags": ["福井県の乙", "群馬県の乙"], "rank": 0.8},
+        ]
+
+        items, _ = run(given, source(docs))
+
+        assert [i["title"] for i in items] == ["2 つある"]
