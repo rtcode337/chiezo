@@ -32,7 +32,7 @@ services:
     # (起動スクリプトが /root/ComfyUI へ展開し、pip も /root/.local へ入れる)、
     # 非 root に切り替える口を持たない。代わりにホストへポートを出さず
     # (chiezo-app からだけ届く)、ComfyUI-Manager の安全度を下の command で固定する。
-    image: ${CHIEZO_IMAGE_IMAGE:-yanwk/comfyui-boot:cu126-slim-20261005}
+    image: ${CHIEZO_IMAGE_IMAGE:-yanwk/comfyui-boot:cu126-slim-20261012}
     # **ComfyUI-Manager の security_level を起動のたびに normal へ戻す。**
     # weak にすると、画面や API から任意の拡張(=任意のコード)を入れられる。
     # 設定は置き場(./models/comfyui/ComfyUI/user/__manager/config.ini)にあって
