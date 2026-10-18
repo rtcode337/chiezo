@@ -1865,6 +1865,25 @@ def clear_cuts(partitions: list[dict], keys: list[str], sweep_name: str) -> list
     return out
 
 
+def still_held(keys: list[str], before: dict[str, int], after: dict[str, int]) -> list[str]:
+    """見た区画のうち、**まだ見終わったことにしない区画**(`Sweep.hold_tag`)。
+
+    `before` / `after` はその回の前と後の「印の付いた生きている 1 件」の数(区画の鍵 →
+    件数)。印付きが残っていて(`after` が 1 件以上)、**その回で減った**区画だけを返す ——
+    印を付けずに置けば、古い順に配る `pick` が次の回もまた同じ区画を選ぶ
+    (1 周目は見ていない区画が先、2 周目からは前回の印がいちばん古いまま残るため)。
+
+    **減らなかった区画は見終わったことにする**(歯止め)。1 回に 1 件も片付かない区画
+    (調べても決まらないものだけが残った・相手が答えを返さなかった)を足止めし続けると、
+    その区画が先頭に居座って一周が永久に終わらない。区画の中で新しく足されたぶん
+    (足す回が入れたまだ決まっていない 1 件)で数が増えた回も、進んでいないとみなす。
+    """
+    return [
+        key for key in keys
+        if (left := int(after.get(key) or 0)) > 0 and left < int(before.get(key) or 0)
+    ]
+
+
 def oldest_visit(partitions: list[dict], sweep_name: str) -> str | None:
     """その巡回がいちばん長く見ていない区画の、前回の時刻。まだ一周していなければ None。
 

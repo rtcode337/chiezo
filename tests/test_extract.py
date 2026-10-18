@@ -1738,3 +1738,50 @@ class TestSplittingAnItemPerValue:
             spec(split={"prefix": "地域:", "title": "{title}"})
         with pytest.raises(HTTPException):
             self._spec(identity=["wikidata"])
+
+
+class TestPairedTags:
+    """**「X の甲」と、同じ X の「X の乙」の両方に入っているものだけを取る**(`tag_pairs`)。
+
+    X が何十通りもあると、和(`tag`)と外す(`not_tag`)では書けない。甲の X と乙の X が
+    食い違う 1 件も落としたい。
+    """
+
+    def _spec(self, **more):
+        return spec(
+            tag="福井県の甲,群馬県の甲,丼",
+            tags=[{"pattern": "^(.+県)の甲$", "format": "地域:{1}"}],
+            tag_pairs=[{"pattern": "^(.+県)の甲$", "with": "{1}の乙"}],
+            **more,
+        )
+
+    def test_only_the_pairs_of_the_same_value_are_taken(self, source):
+        docs = [
+            {"title": "組", "tags": ["福井県の甲", "福井県の乙"], "rank": 0.9},
+            {"title": "乙が別の県", "tags": ["福井県の甲", "群馬県の乙"], "rank": 0.8},
+            {"title": "甲だけ", "tags": ["群馬県の甲"], "rank": 0.7},
+            # 組の要らないタグで入ってきたものは、今までどおり取る
+            {"title": "丼で入った", "tags": ["丼", "群馬県の甲"], "rank": 0.6},
+            # 2 県の甲のうち、組になるのが 1 県でも採る
+            {"title": "片方だけ組", "tags": ["福井県の甲", "群馬県の甲", "群馬県の乙"], "rank": 0.5},
+        ]
+        sources = source(docs)
+        items, _ = run(self._spec(), sources)
+        assert [i["title"] for i in items] == ["組", "丼で入った", "片方だけ組"]
+        # 数えるのも組になったものだけ
+        assert extract.count(self._spec(), sources) == 3
+
+    def test_pairs_are_written_back_and_checked(self):
+        assert extract.to_json(self._spec())["tag_pairs"] == [
+            {"pattern": "^(.+県)の甲$", "with": "{1}の乙"},
+        ]
+        assert extract.normalize(extract.to_json(self._spec())) == self._spec()
+        assert "tag_pairs" not in extract.to_json(spec(tag="丼"))
+        for bad in (
+            {"pattern": "^(.+県)の甲$"},
+            {"pattern": "^(.+県)の甲$", "with": "{2}の乙"},
+            {"pattern": "(", "with": "乙"},
+            "甲",
+        ):
+            with pytest.raises(HTTPException):
+                spec(tag="丼", tag_pairs=[bad])

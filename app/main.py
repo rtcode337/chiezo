@@ -1874,6 +1874,8 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
     done: list = []
     # 答えが途中で切れた区画(印を付けない。`partition.note_cut`)
     cut: list = []
+    # 最後まで見たが、印付きの 1 件が残っていて見終わりにしない区画(`Sweep.hold_tag`)
+    held: list = []
     # 引き当てと書式の確かめの控え(`collect.check_collected`)
     checks = None
     try:
@@ -1892,6 +1894,11 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
             collect.prompt_docs, item, previous, keys, focus
         )
         phase = _phase_done("差し込むぶんを選ぶ", name, phase, len(for_prompt))
+        # **区画を足止めする印の、回の前の数**(`Sweep.hold_tag`)。差し込むぶんには
+        # 見る区画の文書が全部入っているので、前世代を読み直さずに数えられる
+        held_before = (
+            collect.held_counts(item, for_prompt, sweep.hold_tag) if keys and sweep.hold_tag else {}
+        )
         items, next_cursor, note = await _collect_items(
             item, for_prompt, sources, keys, sweep, focus, feed, shown, used, done, cut,
             # 区画ごとの補足は、割り込みには載せない(割り込みは自分の指示文を持つ)
@@ -1952,10 +1959,23 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
             # **足すだけの回は、既にある見出しに触らない。** 割り込みは別 ——
             # あれは名指しで「ここを直して」なので、必ず直す側で走る
             collect.bake_survey, baked_as, sources, previous, items,
-            focus is None and sweep.only_new, edits,
+            focus is None and sweep.only_new, edits, sweep.hold_tag if keys else "",
         )
         phase = _phase_done("焼く前に数える", name, phase, plan.get("total") or 0)
         diff = plan["diff"]
+        # **印付きの 1 件が残る区画は、見終わったことにしない**(`Sweep.hold_tag`)。
+        # 1 回に片付けられる数に上限のある仕事で、残りを一周先へ回さないため。
+        # その回で 1 件も減らなかった区画は見終わりにする(`partition.still_held` の歯止め)
+        if sweep.hold_tag and done:
+            after = diff.get("held_counts") or {}
+            held[:] = partitioning.still_held(list(done), held_before, after)
+            if held:
+                why = (
+                    f"「{sweep.hold_tag}」が残る区画は見終わりにしませんでした("
+                    + "、".join(f"{k} 残り {after.get(k, 0)} 件" for k in held[:10])
+                    + (" ほか" if len(held) > 10 else "") + ")"
+                )
+                note = f"{note} / {why}" if note else why
         # **機械で名簿を作り直した回は、その場で区画を割り直す。**
         # 台帳は次に走るまで古いままで、**1 回に何区画を見るかはそこから決まる** ——
         # 割り直さないと、次の巡回が AI を何回叩くのかが始まるまで誰にも見えない
@@ -1999,8 +2019,10 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
         removed_titles=diff["removed_titles"],
         next_cursor=next_cursor,
         sweep=sweep.name,
-        visited=done,
+        # **足止めした区画には印を付けない**(次の回もまた選ばれる)
+        visited=[k for k in done if k not in held],
         cut=cut,
+        held=held,
         # **焼いたあとの人数で台帳を書き直す。** 回の頭で数えた値のままにすると、
         # 見終わったばかりの区画が見る前の人数で出る(`collect.partition_counts`)。
         # 割り直した回は数えた値を渡さない —— そちらは割ったときの数を持っている
@@ -2013,7 +2035,8 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
         name, status=collect_log.STATUS_OK, diff=diff, sweep=label, scope=keys, error=note,
         # **見終えた区画も残す。** 途中で見送った回も状態は ok なので、見る予定だった
         # 区画(`scope`)だけでは、どこまで見たのかが外から読めない
-        ms=int((time.monotonic() - started) * 1000), visited=done, **who,
+        ms=int((time.monotonic() - started) * 1000),
+        visited=[k for k in done if k not in held], **who,
     )
     log.info(
         # **同じ URL で弾いたぶんも出す**(`collect.url_key`)。skipped に混ぜたままだと、

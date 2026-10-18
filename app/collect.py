@@ -99,6 +99,8 @@ DEFAULT_SWEEP_NAME = "既定"
 # 1 つの収集に持てる巡回の数。**2〜3 本で足りる** —— ざっと全体を拾うものと、
 # 少数をじっくり調べるもの。増やすほど同じ収集に対する AI の呼び出しが重なる
 MAX_SWEEPS = 8
+# 区画を見終わったことにしない印(`Sweep.hold_tag`)の長さの天井
+MAX_HOLD_TAG_CHARS = 60
 # 墓場に置ける見出しの数。**捨てたぶんはもう守らない**(足す回が連れ戻す)ので
 # 1 件の脇に運べる事実の数と長さ(`_carried`)。**札であって記事ではない**ので、
 # 際限なく運べるようにはしない
@@ -633,6 +635,13 @@ class Sweep:
     # 「この区画に居ない」を理由に見当違いのことをする —— 実際、名簿を作った直後の
     # 漏れ探しは、既に名簿に居る画家を 20 人挙げて終わった
     after: str = ""
+    # **区画を見終わったことにしない印**(タグ)。その区画にこのタグの付いた生きている
+    # 1 件が残っている間は、回っても区画に印を付けない(次の回もまた同じ区画が選ばれる)。
+    # 1 回に片付けられる数に上限のある仕事(1 回に数件ずつ決めていく)で、
+    # **残りを一周先(何十日も後)へ回さないため**にある。歯止めとして、その回で
+    # 区画の中のこのタグの件数が 1 件も減らなければ、印を付けて次へ進む
+    # (どうしても片付かない区画で巡回が止まらないように。`partition.still_held`)
+    hold_tag: str = ""
     # **誰に頼むかを、名前で外へ出す**(`app/workers.py`)。書いてあれば、
     # 上の `backend` / `model` / `effort` ではなく**ワーカーの並びから選ぶ** ——
     # 枠に余裕のある先頭に頼み、どれも詰まっていればその回は走らせない。
@@ -820,6 +829,7 @@ def _sweep_from_json(raw: dict, item: Collection) -> Sweep:
         once=bool(raw.get("once")),
         one_lap=bool(raw.get("one_lap")),
         after=str(raw.get("after") or "").strip()[:40],
+        hold_tag=str(raw.get("hold_tag") or "").strip()[:MAX_HOLD_TAG_CHARS],
         worker=str(raw.get("worker") or "").strip()[:40],
         store_tags=_store_tags_or_empty(raw.get("store_tags")),
         material=raw.get("material") if isinstance(raw.get("material"), dict) else None,
@@ -989,8 +999,29 @@ def normalize_sweeps(raw) -> list[dict]:
             # ワーカーを選んだままの巡回を手で回す回へ変えてそうなった)。
             # **相手とモデルも落とす**(機械で引く回と同じ理由で、読まれない)
             made.update(worker="", backend=None, model=None, effort=None)
+        if "hold_tag" in made:
+            made["hold_tag"] = _hold_tag(made["hold_tag"])
+            if not made["hold_tag"]:
+                made.pop("hold_tag")
         out.append(made)
     return out
+
+
+def _hold_tag(raw) -> str:
+    """区画を見終わったことにしない印を均す。**読めないものは断る**(黙って落とすと、
+    書いた人は効いていると思ったまま、区画が 1 回で次へ進む)。"""
+    if raw in (None, ""):
+        return ""
+    if not isinstance(raw, str):
+        raise HTTPException(400, {"error": "hold_tag はタグ 1 つ(文字列)で書いてください"})
+    tag = raw.strip()
+    if len(tag) > MAX_HOLD_TAG_CHARS or tag.startswith(notes.TAG_PREFIX):
+        raise HTTPException(400, {
+            "error": f"hold_tag に使えないタグです: {tag[:MAX_HOLD_TAG_CHARS]}",
+            "hint": f"{MAX_HOLD_TAG_CHARS} 文字までのタグにしてください"
+                    f"(「{notes.TAG_PREFIX}」で始まるものは Chiezo の印なので使えません)",
+        })
+    return tag
 
 
 def _worker_picked(raw: dict) -> dict:
@@ -2033,6 +2064,7 @@ _STORE_REFUSED_SWEEP_KEYS = (
     ("cover_days", "一周の日数(cover_days)"),
     ("unreviewed_per_run", "未確認を載せる数(unreviewed_per_run)"),
     ("unreviewed_by", "未確認を載せる順(unreviewed_by)"),
+    ("hold_tag", "区画を見終わりにしない印(hold_tag)"),
 )
 
 
@@ -2603,6 +2635,13 @@ def resolve_system_note(spec: dict | None) -> str:
         f" 場所を外すときは extra.{key} に null を書く。"
         f" 引き当てられなかったものは、次の回に理由を添えて渡す。"
     )
+    if none_tag := spec.get("none_tag"):
+        # **「無かった」は店を外す null と印の組で書かせる** —— 手がかりの形のまま
+        # 「無い」を書くと、読めない手がかりとして前の店が残る
+        note += (
+            f" 調べたうえで当てはまる場所が見つからなかったものは、extra.{key} に null を書き、"
+            f"tags に「{none_tag}」を入れる(場所が決まったら外れる)。"
+        )
     if not spec.get("ai_coords"):
         note += " **座標(lat / lon)は書かない**(書いても使わない)。"
     return note
@@ -2651,6 +2690,36 @@ def partition_counts(item: Collection, docs: list[dict]) -> dict[str, int]:
         item.partitions,
         living({doc["title"]: doc for doc in docs}),
     )
+
+
+def held_counts(item: Collection, docs, tag: str) -> dict[str, int]:
+    """区画ごとの「`tag` の付いた生きている 1 件」の数(`Sweep.hold_tag` の足止めに使う)。
+
+    **その回の前の数**を数える口(`main._collect_material` が差し込む前の文書で呼ぶ)。
+    後の数は焼く前の 1 周目(`bake_survey`)が同じ決まりで数える。
+    **印は焼くときと同じく状態から付け直してから見る**(`resolve.settle`)——
+    前の世代に印がまだ付いていない 1 件を「無い」と数えると、前後で物差しが変わる。
+    区画を持たない収集・印を書いていない巡回では空。
+    """
+    if not tag or not item.partition or not item.partitions:
+        return {}
+    spec = partitioning.normalize(item.partition)
+    find = partitioning.locator(spec, item.partitions)
+    settling = _settling_spec(item)
+    counts: dict[str, int] = {}
+    for doc in (docs.values() if isinstance(docs, dict) else docs):
+        if _holds(doc, tag, settling) and (key := find(doc)):
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _holds(doc: dict, tag: str, settling: dict | None = None) -> bool:
+    """その 1 件が区画を足止めする印を持っているか(生きているものだけ)。"""
+    if is_removed(doc) or is_archived(doc):
+        return False
+    if settling is not None:
+        doc = resolving.settle(settling, doc)
+    return tag in (doc.get("tags") or [])
 
 
 def is_removed(doc: dict) -> bool:
@@ -3574,6 +3643,9 @@ def record_result(
     visited: list[str] | None = None,
     # 答えが途中で切れた区画。**印は付けない**(その区画の残りは誰も見ていない)
     cut: list[str] | None = None,
+    # 最後まで見たが、**見終わったことにしない区画**(`Sweep.hold_tag`)。印は付けず、
+    # 切れた回の控えだけ消す(答えは最後まで返っている)。`visited` には入れずに渡す
+    held: list[str] | None = None,
     partitions: list[dict] | None = None,
     focus: bool = False,
     # 引き当てと書式の確かめの控え(`check_collected`)。None なら前のまま
@@ -3613,6 +3685,8 @@ def record_result(
     # **切れた区画には印を付けない。** 返ってきたのは途中までで、その先は誰も
     # 見ていない —— 付けると一周が嘘になる。ただし**続けて切れたら諦める**
     # (`MAX_CUTS`)。粘り続けると、その 1 区画が一周を永久に止める
+    if held and status == "ok":
+        ledger = partitioning.clear_cuts(ledger, held, this.name)
     if cut and status == "ok":
         ledger, give_up = partitioning.note_cut(ledger, cut, this.name)
         if give_up:
@@ -5030,15 +5104,41 @@ def stream_docs(
     facts: bool = False,
 ):
     """焼く素材を 1 件ずつ返す(中身は `_stream_docs`)。**人が確かめた座標は
-    最後に当て直す**(`held`)—— AI の直しでも機械の名簿でも、その 1 件の座標は動かない。"""
+    最後に当て直す**(`held`)—— AI の直しでも機械の名簿でも、その 1 件の座標は動かない。
+
+    **引き当ての状態の印も全部に付け直す**(`resolve.settle`。`failed_when_missing` /
+    `none_tag` を書いた収集だけ)—— 引き当ては AI がその回に返した 1 件にしか掛からない
+    ので、返らなかった 1 件の印が古いまま残る。数える周と流す周の両方がここを通るので、
+    2 周の食い違いは起きない。
+    """
     docs = _stream_docs(
         item, previous, collected, only_new, edits, diff, sweep, unreviewed, reviewed, facts,
     )
+    spec = _settling_spec(item)
+    if spec is not None:
+        docs = (resolving.settle(spec, doc) for doc in docs)
     if not item.locks:
         yield from docs
         return
     for doc in docs:
         yield held(doc, item.locks)
+
+
+def _settling_spec(item: Collection) -> dict | None:
+    """全部の 1 件に印を付け直す引き当ての指定(`resolve.settle`)。要らなければ None。
+
+    **保存済みの指定が読めなくても焼く側は止めない** —— 指定は保存するときに
+    確かめてあり、ここで断ると集めたぶんが焼けなくなる。
+    """
+    if not item.resolve:
+        return None
+    try:
+        spec = resolving.normalize(item.resolve)
+    except HTTPException:
+        return None
+    if spec and (spec.get("failed_when_missing") or spec.get("none_tag")):
+        return spec
+    return None
 
 
 def _stream_docs(
@@ -6158,7 +6258,9 @@ def _rows_of(previous):
     return lambda: iter(rows)
 
 
-def bake_survey(item, sources: dict, previous, collected, only_new=False, edits=False) -> dict:
+def bake_survey(
+    item, sources: dict, previous, collected, only_new=False, edits=False, hold_tag: str = "",
+) -> dict:
     """焼く前の 1 周目。**数えるだけで、何も持たない**。
 
     **流し始めたら断れない**(ステータスは 1 度しか送れない)。丸ごと組んでから
@@ -6168,6 +6270,8 @@ def bake_survey(item, sources: dict, previous, collected, only_new=False, edits=
 
     ついでに、**2 周目に要るものもここで用意する** —— 実在を確かめるタグの
     引き当て(`verified_docs` と同じ規則)と、区画ごとの件数と、見本の見出し。
+    `hold_tag` を渡すと、**焼いたあとの区画ごとの印付きの数**も数える
+    (`held_counts`。区画を見終わったことにするかの判断に使う)。
 
     **大きさは絞り込む前の値で見る。** タグを落とすと縮むだけなので、天井の
     判断としては安全側に倒れる。
@@ -6181,6 +6285,7 @@ def bake_survey(item, sources: dict, previous, collected, only_new=False, edits=
     # **索引は 1 回だけ組む**(`locator`)。ここも全件を舐めるところ
     find = partitioning.locator(spec, item.partitions) if spec and item.partitions else None
     counts: dict[str, int] = {}
+    held: dict[str, int] = {}
     used = 0
     total = 0
     expired = 0
@@ -6216,6 +6321,9 @@ def bake_survey(item, sources: dict, previous, collected, only_new=False, edits=
                     wanted[n].add(found)
         if find is not None and not is_removed(doc) and (key := find(doc)):
             counts[key] = counts.get(key, 0) + 1
+            # 流れてくる 1 件は印を付け直し済み(`stream_docs`)なので、そのまま見る
+            if hold_tag and _holds(doc, hold_tag):
+                held[key] = held.get(key, 0) + 1
 
     if not total:
         raise HTTPException(409, {
@@ -6224,6 +6332,7 @@ def bake_survey(item, sources: dict, previous, collected, only_new=False, edits=
         })
     diff["expired"] = expired
     diff["partition_counts"] = counts
+    diff["held_counts"] = held
     # **前世代が読めなかったのか、本当に空なのかを分ける。** 読めないまま通すと、
     # その回の成果だけで新しい世代ができて**長期記憶が丸ごと入れ替わる** ——
     # 本番で 597,068 件の収集が 3 件の世代に差し替わった(`stream_previous` は

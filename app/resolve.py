@@ -128,8 +128,16 @@ def normalize(raw) -> dict | None:
           "carry": ["address", "phone", "website", "opening_hours"],
           "to_extra": {"opening_hours": "opening_hours"},
           "failed_tag": "状態:代表店未定",
+          "failed_when_missing": false,
+          "none_tag": "状態:代表店なし",
           "ai_coords": false
         }
+
+    - `failed_when_missing` —— **手がかりがまだ無い 1 件にも** `failed_tag` を付ける
+      (既定は引き当てに失敗した 1 件だけ)。「まだ決まっていないもの」を 1 つの印で
+      数えたい・区画の足止め(巡回の `hold_tag`)に使いたい収集のため
+    - `none_tag` —— **「探したが無かった」の印**。これが付いた 1 件には `failed_tag` を
+      付けない(付いていれば外す)。引き当てた 1 件からはこの印も外す
     """
     if raw in (None, "", {}):
         return None
@@ -192,6 +200,16 @@ def normalize(raw) -> dict | None:
     failed = str(raw.get("failed_tag") or "").strip()
     if len(failed) > MAX_TAG_CHARS or failed.startswith("_chiezo_"):
         raise _bad(f"failed_tag は {MAX_TAG_CHARS} 文字までで、Chiezo の印(_chiezo_)は使えません")
+    none = str(raw.get("none_tag") or "").strip()
+    if len(none) > MAX_TAG_CHARS or none.startswith("_chiezo_"):
+        raise _bad(f"none_tag は {MAX_TAG_CHARS} 文字までで、Chiezo の印(_chiezo_)は使えません")
+    if none and none == failed:
+        raise _bad("none_tag と failed_tag は別のタグにしてください")
+    when_missing = bool(raw.get("failed_when_missing", False))
+    if when_missing and not failed:
+        # 付けるタグが無いのに「付ける」と書いても何も起きない。黙って通すと、
+        # 書いた人は効いていると思ったまま回る
+        raise _bad("failed_when_missing を使うときは failed_tag も書いてください")
     return {
         "clue": clue,
         "sources": written,
@@ -200,6 +218,8 @@ def normalize(raw) -> dict | None:
         "carry": [str(k).strip() for k in carry if str(k).strip()],
         "to_extra": lifted,
         "failed_tag": failed,
+        "failed_when_missing": when_missing,
+        "none_tag": none,
         "ai_coords": bool(raw.get("ai_coords", False)),
     }
 
@@ -211,9 +231,11 @@ def to_json(spec: dict | None) -> dict | None:
     out = {"clue": spec["clue"], "sources": [
         {k: v for k, v in one.items() if v} for one in spec["sources"]
     ]}
-    for key in ("area_tag", "failed_tag"):
+    for key in ("area_tag", "failed_tag", "none_tag"):
         if spec.get(key):
             out[key] = spec[key]
+    if spec.get("failed_when_missing"):
+        out["failed_when_missing"] = True
     if spec["agree_meters"] != DEFAULT_AGREE_METERS:
         out["agree_meters"] = spec["agree_meters"]
     if tuple(spec["carry"]) != DEFAULT_CARRY:
@@ -858,15 +880,60 @@ def _machine_tags(tags: list, state, marks: set[str], failed_tag: str, spec: dic
     """出どころのタグと、引き当てられなかった印のタグを、店の状態から付け直す。"""
     out = [t for t in tags if str(t).strip() not in marks]
     if is_resolved(state):
-        out = [t for t in out if str(t).strip() != failed_tag] if failed_tag else out
         by_source = {one["source"]: one["tag"] for one in spec["sources"]}
         for tag in [by_source.get(s) for s in (state.get("sources") or [state.get("source")])]:
             if tag and tag not in out:
                 out.append(tag)
-    elif isinstance(state, dict) and state.get("unresolved") and failed_tag:
-        if failed_tag not in out:
-            out.append(failed_tag)
+    return _state_tags(out, state, spec)
+
+
+def _state_tags(tags: list, state, spec: dict) -> list:
+    """`failed_tag` と `none_tag` を、店の状態と「無かった」の印から付け直す。
+
+    - 引き当てた 1 件 —— どちらも外す(店が見つかったのに「無い」が残ると食い違う)
+    - 「無かった」の印が付いた 1 件 —— `failed_tag` を外す(まだ決まっていないのではなく、
+      探したうえで無かった。数える側が「まだ」と取り違えない)
+    - 引き当てに失敗した 1 件 —— `failed_tag` を付ける
+    - 手がかりがまだ無い 1 件 —— `failed_when_missing` のときだけ付ける
+
+    **それ以外の形は触らない**(どちらの指定も無い収集で、AI が書いた印を動かさない)。
+    """
+    failed_tag = spec["failed_tag"]
+    none_tag = spec.get("none_tag") or ""
+    out = list(tags)
+    if is_resolved(state):
+        drop = {failed_tag, none_tag} - {""}
+        return [t for t in out if str(t).strip() not in drop]
+    if none_tag and none_tag in out:
+        return [t for t in out if str(t).strip() != failed_tag] if failed_tag else out
+    missing = not isinstance(state, dict) or not (state.get("unresolved") or state.get("clue"))
+    if failed_tag and failed_tag not in out and (
+        (isinstance(state, dict) and state.get("unresolved"))
+        or (missing and spec.get("failed_when_missing"))
+    ):
+        out.append(failed_tag)
     return out
+
+
+def settle(spec: dict, doc: dict) -> dict:
+    """焼く 1 件ずつに、`failed_tag` と `none_tag` を状態から付け直す(`collect.stream_docs`)。
+
+    `apply` が触るのは **AI がその回に返した 1 件だけ**なので、返らなかった 1 件の印は
+    前のまま残る —— 手がかりのまだ無い 1 件に `failed_tag` を付ける指定
+    (`failed_when_missing`)を後から足すと、名簿の大半は印を持たないまま、
+    数える側と区画の足止めから漏れる。**全部の 1 件に同じ決まりを当てる**。
+
+    どちらの指定も無ければ何もしない(今までの収集の焼き上がりを動かさない)。
+    **消えたものには触らない**(地図にも数にも出ないので、印を付け直す意味が無い)。
+    """
+    if not (spec.get("failed_when_missing") or spec.get("none_tag")):
+        return doc
+    tags = doc.get("tags") or []
+    if notes.REMOVED_TAG in tags:
+        return doc
+    extra = doc.get("extra") if isinstance(doc.get("extra"), dict) else {}
+    settled = _state_tags(list(tags), extra.get(spec["clue"]), spec)
+    return doc if settled == list(tags) else {**doc, "tags": settled}
 
 
 def unresolved_of(extra) -> str:

@@ -160,6 +160,8 @@ MAX_AREA_FEATURES = 10
 MAX_SPLIT = 10
 # 別の文書を引いてくる読み替えで、1 件から取れる数の上限
 MAX_TAKE = 5
+# 組で絞る指定(`tag_pairs`)の数の天井
+MAX_TAG_PAIRS = 10
 # つながりの見方。**相互は片側よりずっと強い** —— 有名なものどうしは互いに名前が
 # 出てくるので、片側だと 12% が繋がって毛玉になった。相互は 7% まで落ちたうえ、
 # 残った組は実際に関係のある相手だった(人物 30 件で実測)
@@ -342,6 +344,9 @@ def normalize_one(raw) -> dict | None:
     identity = [str(k).strip() for k in identity if str(k).strip()]
     if len(identity) > MAX_IDENTITY_KEYS:
         raise _bad(f"identity に書ける鍵は {MAX_IDENTITY_KEYS} 個までです")
+    pairs = _pairs_of(raw.get("tag_pairs"))
+    if pairs and of != DEFAULT_ROSTER_KIND:
+        raise _bad("tag_pairs は文書の名簿(of を書かない指定)でだけ使えます")
     split = _split_of(raw.get("split"))
     if split and identity:
         # 分けた 1 件ずつが同じ元の記録の鍵を持つと、焼く側が鍵で引き当てたときに
@@ -393,8 +398,67 @@ def normalize_one(raw) -> dict | None:
         # **1 件を接頭辞のタグごとに分ける**(`{"prefix": "地域:", "title": "{title}({value})"}`)。
         # 読み替えで同じ軸のタグが 2 つ以上付いた 1 件を、値ごとの 1 件にする
         "split": split,
+        # **組で絞る**(`[{"pattern": "^(.+)の甲$", "with": "{1}の乙"}]`)。pattern に当たる
+        # タグで入ってきた 1 件は、捕まえた値で組んだ with のタグも持つときだけ採る
+        "tag_pairs": pairs,
     }
     return spec
+
+
+def _pairs_of(raw) -> list[dict]:
+    """`tag_pairs` の読み方。書かなければ空。
+
+    **タグの和では表せない絞り方のため。** 「X の甲」と「X の乙」の**両方に入っている**
+    ものだけを取りたいとき、X が何十通りもあると、和(`tag`)で引いてから外す
+    (`not_tag`)形では書けない —— 欲しいのは「同じ X どうしの組」で、甲の X と
+    乙の X が食い違う 1 件は落としたい。捕まえた値で相手のタグを組み、持っているかを見る。
+
+    **組の効くのは、pattern に当たるタグで入ってきた 1 件だけ**(`_paired`)。
+    同じ指定の `tag` に並べたほかのタグで入ってきた 1 件は、今までどおり取る。
+    """
+    if raw in (None, "", []):
+        return []
+    if not isinstance(raw, list):
+        raise _bad('tag_pairs は [{"pattern": "…", "with": "…"}] の配列で書いてください')
+    if len(raw) > MAX_TAG_PAIRS:
+        raise _bad(f"tag_pairs は {MAX_TAG_PAIRS} 個までです")
+    out = []
+    for one in raw:
+        if not isinstance(one, dict):
+            raise _bad("tag_pairs の要素はオブジェクトで書いてください")
+        pattern = str(one.get("pattern") or "").strip()
+        partner = str(one.get("with") or "").strip()
+        if not pattern or not partner:
+            raise _bad("tag_pairs には pattern(入ってきたタグ)と with(一緒に要るタグ)が要ります")
+        compiled = _compile(pattern)
+        # 捕まえていない番号を with が読むと、どの 1 件も組にならない(静かな 0 件)
+        if any(int(n) > compiled.groups for n in re.findall(r"\{(\d+)\}", partner)):
+            raise _bad(f"tag_pairs の with が、pattern の捕まえていない値を読んでいます: {partner}")
+        out.append({"pattern": compiled, "with": partner})
+    return out
+
+
+def _paired(tags: list[str], pairs: list[dict], wanted: set[str]) -> bool:
+    """組の指定(`tag_pairs`)を満たすか。
+
+    入ってきたタグ(指定が引いたタグのうち、その 1 件が持つもの)のどれかが、
+    ①どの組の pattern にも当たらない(組の要らないタグで入ってきた)か、
+    ②当たった pattern の捕まえた値で組んだ with のタグも持っているなら、採る。
+    """
+    if not pairs:
+        return True
+    have = set(tags)
+    for tag in have & wanted:
+        hits = [(pair, m) for pair in pairs if (m := pair["pattern"].search(tag))]
+        if not hits:
+            return True
+        for pair, m in hits:
+            partner = re.sub(
+                r"\{(\d+)\}", lambda g, m=m: m.group(int(g.group(1))) or "", pair["with"],
+            )
+            if partner in have:
+                return True
+    return False
 
 
 def _split_of(raw) -> dict | None:
@@ -799,6 +863,10 @@ def to_json(spec) -> dict | list[dict] | None:
         written["min_extra_unless_tag"] = spec["min_extra_unless_tag"]
     if spec.get("split"):
         written["split"] = dict(spec["split"])
+    if spec.get("tag_pairs"):
+        written["tag_pairs"] = [
+            {"pattern": pair["pattern"].pattern, "with": pair["with"]} for pair in spec["tag_pairs"]
+        ]
     # **タグの名簿だけが持つものは、そのときだけ書く。** 文書の名簿に `min_docs` が
     # 並んでいると、効かない指定を読ませることになる
     if spec["of"] != DEFAULT_ROSTER_KIND:
@@ -862,6 +930,19 @@ def count(spec, sources: dict, retired: set[str] | None = None) -> int:
             total += len(_tag_rows(one, sources, retired))
             continue
         src, set_sql, params = _doc_ids(one, sources)
+        if one.get("tag_pairs"):
+            # **組で絞る指定は、組になったものだけを数える**(SQL では組めないので 1 件ずつ見る)
+            where, more = _min_extra_sql(one)
+            wanted = set(resolve_tags(one, src))
+            rows = db.stream(
+                src.path, f"SELECT tags FROM docs WHERE doc_id IN ({set_sql}){where}",
+                (*params, *more), timeout=EXTRACT_TIMEOUT_SECONDS,
+            )
+            total += sum(
+                1 for row in rows
+                if _paired([str(t) for t in _json_list(row["tags"])], one["tag_pairs"], wanted)
+            )
+            continue
         if one.get("min_extra"):
             where, more = _min_extra_sql(one)
             sql = f"SELECT COUNT(*) FROM docs WHERE doc_id IN ({set_sql}){where}"
@@ -1194,11 +1275,18 @@ def _run_one(spec: dict, sources: dict, retired: set[str] | None = None) -> tupl
         for row in db.stream(src.path, sql, args, timeout=EXTRACT_TIMEOUT_SECONDS):
             links[(row["title"] or "").strip()] = _link_set(row["links"])
     context = {"src": src, "links": links, "sources": sources}
+    pairs = spec.get("tag_pairs") or []
+    wanted = set(resolve_tags(spec, src)) if pairs else set()
 
     def items():
         seen = 0
         for row in db.stream(src.path, sql, args, timeout=EXTRACT_TIMEOUT_SECONDS):
             seen += 1
+            # **組で絞る**(`tag_pairs`)。読み替える前の元のタグで見る
+            if pairs and not _paired(
+                [str(t) for t in _json_list(row["tags"])], pairs, wanted,
+            ):
+                continue
             if item := _to_item(dict(row), spec, context):
                 # **接頭辞のタグごとに分ける**(`split`)。読み替えでタグが決まってから分ける
                 yield from split_item(item, spec.get("split"))
