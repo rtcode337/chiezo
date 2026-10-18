@@ -189,6 +189,11 @@ chiezo-ingest(ワンショット構築バッチ)と chiezo-trigger、ソース�
     `ramen_restaurant` などに分かれた)。**営業状態(`operating_status`)は読まない** ——
     列はあるが、日本の飲食店 49 万件で値が入っているのは 3 件(2026-09-23.1 で実測)。
     閉店の見分けには使えない
+  - `sources/holidays.py` — 日本の祝日アダプタ(`holidays_jp`。内閣府「国民の祝日」の CSV)。
+    1 日 = 1 文書で、`doc_id` は日付の数字(`20260921`)、見出しは `YYYY-MM-DD 名前`。
+    タグは `祝日`(全件を `filter` で引くための共通のタグ)と年・年月。CSV は CP932 で読む。
+    キーは要らず、世代の日付は `Last-Modified` から取る。**公表は翌年の分まで**なので、
+    それより先の年が無いのは欠けではない。古い祝日は消えないので `sample_titles` は固定の 1 件でよい
   - `sources/geonames.py` — GeoNames アダプタ(全世界の地名辞典)。
     `allCountries.zip`(約400MB・約1,200万件のタブ区切り19列)を zip のままストリーム読みする
     (イメージに unzip を入れないため `zipfile` + `io.TextIOWrapper`)。あわせて

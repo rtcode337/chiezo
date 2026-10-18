@@ -23,6 +23,7 @@ from collections.abc import Callable
 from core import SourceAdapter
 from sources import collect as collect_sources
 from sources.geonames import GeonamesAdapter
+from sources.holidays import HolidaysAdapter
 from sources.jquants import JquantsEarningsAdapter, JquantsMasterAdapter
 from sources.osm import DEFAULT_VALIDATION, OsmAdapter
 from sources.osm_regions import OSM_REGIONS, OsmRegion
@@ -54,6 +55,8 @@ ADAPTERS: dict[str, Callable[[], SourceAdapter]] = {
     "jquants_master": lambda: JquantsMasterAdapter(),
     # 決算発表予定日(J-Quants。3・9 月期決算の会社だけ。無料プランでも遅れない)
     "jquants_earnings": lambda: JquantsEarningsAdapter(),
+    # 日本の祝日・休日(内閣府「国民の祝日」の CSV)。カレンダーを出すアプリが読む
+    "holidays_jp": lambda: HolidaysAdapter(),
 }
 
 

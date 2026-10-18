@@ -13,7 +13,7 @@ Chiezo が貸し出すもの(知識・鍵と話せる AI・計算資源・時計
 ### 知識(溜めて引く)
 
 - **ためる** — `ingest/` がソースごとに独立した SQLite ファイル(`data/corpus/<source>.db`)を作る。
-  取得元は公開ダンプ(Wikipedia / OpenStreetMap / GeoNames / Overture)と、
+  取得元は公開ダンプ(Wikipedia / OpenStreetMap / GeoNames / Overture / 内閣府の祝日 `holidays_jp`)と、
   キーの要る API(J-Quants の上場銘柄一覧 `jquants_master` と決算発表予定日 `jquants_earnings`。
   後者は件数が時期で増減するので `allows_shrink` を名乗り、前の世代より大きく減っても焼く。後者は
   **全部が見えるのは有料プランのキーだけ** —— 参照範囲が公表日で決まり、無料プランでは先の予定がほぼ

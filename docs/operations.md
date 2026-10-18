@@ -101,6 +101,13 @@ J-Quants は個人の私的利用に限るサービスで、次の条件があ�
 焼きます(アダプタの `allows_shrink`)。予定日は発表の数週間前に出ることが多いので、定期再構築は
 「1 日おき」にしておくと、出たばかりの予定も翌日には入ります。
 
+### 日本の祝日
+
+`holidays_jp` は内閣府の `https://www8.cao.go.jp/chosei/shukujitsu/syukujitsu.csv`(Shift_JIS、1,000 行ほど)を
+1 回取るだけです。キーは要りません。世代の日付は CSV の `Last-Modified` から取ります。
+翌年の祝日は例年 2 月ごろに載るので、定期再構築は「30 日おき」で足ります。
+データは「政府標準利用規約(第 2.0 版)」で公開されており、読む側のアプリは出典(内閣府「国民の祝日について」)を示してください。
+
 **Wikipedia 系**は標準 XML ダンプ(`<wiki_id>-<date>-pages-articles.xml.bz2`、jawiki で
 確認時点 4.4GB)を取得し、wikitext をプレーンテキスト化して取り込みます
 (CirrusSearch ダンプを使わない理由は
