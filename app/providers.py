@@ -73,6 +73,11 @@ class Provider:
     # **欄そのものも出さない**(`selectable_efforts`)—— 名前の側で選ぶので、
     # 別の欄が残っていると「設定したつもり」を作る。
     model_carries_effort: bool = False
+    # **画像を見せられる相手か**(`/v1/ai/complete` に画像の部品を混ぜてよいか)。
+    # 確かめた相手だけ True にする —— 見られない相手に黙って渡すと、画像を落として
+    # 文字だけで答え、呼ぶ側は「見て答えた」と受け取ってしまう。CLI ブリッジは
+    # 文字しか中継しないので False
+    images: bool = False
     # **一覧に畳んだ名前が混ざる相手**(`sonnet-high` と `sonnet` が並ぶ)。
     # 欄は出さないが、**素の名前を選んだ回には今までどおり考える量を送る** ——
     # 前から保存されている「モデル + 考える量」の 2 つ組を黙って効かなくしないため。
@@ -156,6 +161,7 @@ PROVIDERS: tuple[Provider, ...] = (
         # 流した回のトークン数は頼まないと返らない(使用量が「不明」になっていた)。
         # 公式の OpenAI 互換の例(ai.google.dev/gemini-api/docs/openai)が送っている
         stream_usage=True,
+        images=True,
         # 枠を聞く口は無い。残量は Google Cloud の Quotas API 側にあり、
         # API キー 1 本では引けない（GCP のプロジェクトと別の認証が要る）。
         order=22,
@@ -171,6 +177,7 @@ PROVIDERS: tuple[Provider, ...] = (
         "画像だけに使うなら、話す相手としては off のままでよいです。",
         # 提供モデルは入れ替わるので控えにとどめる(実際の一覧は /v1/models から取る)。
         models=(),
+        images=True,
         order=24,
     ),
     Provider(
@@ -193,6 +200,7 @@ PROVIDERS: tuple[Provider, ...] = (
         efforts=("low", "medium", "high", "xhigh", "max"),
         folds_effort=True,
         api=API_ANTHROPIC,
+        images=True,
         order=20,
     ),
     Provider(

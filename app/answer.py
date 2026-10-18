@@ -844,8 +844,29 @@ def _note_transcript(
 
 def _prompt_bytes(messages: list[dict]) -> int:
     """送った依頼文の大きさ。**成功の控えと失敗の控えで同じ測り方**にする ——
-    別々に数えると、同じ呼び出しが 2 つの表で違う大きさになる。"""
-    return sum(len((m.get("content") or "").encode()) for m in messages)
+    別々に数えると、同じ呼び出しが 2 つの表で違う大きさになる。画像は送った URL(data URL なら中身)の長さで数える"""
+    total = 0
+    for m in messages:
+        content = m.get("content") or ""
+        if isinstance(content, str):
+            total += len(content.encode())
+            continue
+        for part in content:
+            total += len(str(part.get("text") or "").encode())
+            total += len(str((part.get("image_url") or {}).get("url") or "").encode())
+    return total
+
+
+def _prompt_text(content: object) -> str:
+    """控えに残す依頼文。画像は中身を書かず、[画像] の印にする(data URL を表に溜めない)"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            "[画像]" if isinstance(p, dict) and p.get("type") == "image_url" else str((p or {}).get("text") or "")
+            for p in content
+        )
+    return ""
 
 
 @contextmanager
@@ -872,7 +893,7 @@ def _inflight(cfg: Settings, messages: list[dict]):
         effort=cfg.effort,
         prompt_bytes=_prompt_bytes(messages),
         timeout=cfg.timeout,
-        prompt="\n\n".join((m.get("content") or "") for m in messages),
+        prompt="\n\n".join(_prompt_text(m.get("content")) for m in messages),
     )
     try:
         # **札を渡す。** 待っている側はこれで「自分を止めてくれと言われていないか」を

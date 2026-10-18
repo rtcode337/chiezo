@@ -156,6 +156,60 @@ class TestComplete:
         assert res.status_code == 400
 
 
+IMAGE_MESSAGES = (
+    {"role": "user", "content": [
+        {"type": "text", "text": "これは何?"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+    ]},
+)
+
+
+class TestCompleteImages:
+    """画像の部品(OpenAI 互換の image_url)。見られる相手にだけ渡し、見られない相手は断る。"""
+
+
+    def test_backends_tell_whether_images_can_be_shown(self, monkeypatch_env):
+        with make_client(monkeypatch_env, ToolLLM()) as client:
+            body = client.get("/v1/ai/backends").json()
+
+        assert next(b for b in body["backends"] if b["id"] == "local")["images"] is False
+
+    def test_images_are_refused_by_a_backend_that_cannot_see(self, monkeypatch_env):
+        """黙って画像を落とさない(文字だけで答えると、呼ぶ側は見て答えたと受け取る)。"""
+        fake = ToolLLM("見えません")
+        with make_client(monkeypatch_env, fake) as client:
+            res = complete(client, messages=list(IMAGE_MESSAGES))
+
+        assert res.status_code == 400
+        assert res.json()["error"] == "images are not supported"
+        assert fake.requests == []
+
+    def test_images_are_passed_through_to_a_backend_that_can_see(self, monkeypatch_env):
+        import dataclasses
+
+        from app import providers
+
+        original = providers.get
+        monkeypatch_env.setattr(
+            providers, "get",
+            lambda name: dataclasses.replace(original(name), images=True) if name == "local" else original(name),
+        )
+        fake = ToolLLM("猫の写真です")
+        with make_client(monkeypatch_env, fake) as client:
+            res = complete(client, messages=list(IMAGE_MESSAGES))
+
+        assert res.status_code == 200
+        assert res.json()["content"] == "猫の写真です"
+        assert fake.requests[0]["messages"] == list(IMAGE_MESSAGES)
+
+    def test_text_only_parts_are_accepted_by_any_backend(self, monkeypatch_env):
+        fake = ToolLLM("はい")
+        with make_client(monkeypatch_env, fake) as client:
+            res = complete(client, messages=[{"role": "user", "content": [{"type": "text", "text": "やあ"}]}])
+
+        assert res.status_code == 200
+
+
 class TestCompleteStream:
     """書かれた端から流す口(`stream=true`)。返事を待つ人がいる使い方で、書き終えるのを待たないため。"""
 

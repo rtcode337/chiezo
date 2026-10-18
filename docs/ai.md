@@ -1417,6 +1417,13 @@ curl -s "$BASE/v1/ai/complete" -H 'Content-Type: application/json' -d '{
 途中で失敗したら `error` を送ってから `done` で閉じます。道具を貸して往復を回すとき
 (API の相手に `knowledge` / `web` を頼んだとき)は、途中の発言が答えではないので流せず 400 です。
 
+**画像を見せるときは、`content` を部品の並びにします**(OpenAI 互換の形。文字は `{"type": "text", "text": "…"}`、
+画像は `{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,…"}}`。相手が取りに行ける
+http(s) の URL でもよい)。見せられるのは `/v1/ai/backends` で `images` が true の相手
+(Claude API・Gemini・OpenAI)だけで、それ以外は 400 で断ります —— 黙って画像を落として文字だけで
+答えさせると、呼ぶ側は「見て答えた」と受け取ってしまうためです。CLI ブリッジは文字しか中継しないので
+見せられません。
+
 **自分のプロンプトのまま、知識も引かせたいときは `"knowledge": true`** を足します
 (キャラクターと話すアプリなど)。API で直に叩く相手(Claude API・Gemini・OpenAI など)には
 Chiezo が知識を読む道具(search・doc など)を渡して往復を回し、相手が要ると判断したときだけ

@@ -4819,11 +4819,34 @@ async def _rag_events(cfg, q, queries, snippets, references, grounded, history=N
 # 呼ぶ側は鍵を持たずに済み、管理画面で on にした相手をそのまま使える。
 
 
+class AiImageUrl(BaseModel):
+    # `data:image/png;base64,...` か、相手が取りに行ける http(s) の URL
+    url: str
+
+
+class AiContentPart(BaseModel):
+    # OpenAI 互換の部品の形(文字と画像)。相手ごとの形への変換は Chiezo が持つ
+    # (Claude API は `app/anthropic_api.py` の `_user_blocks`)
+    type: Literal["text", "image_url"]
+    text: str | None = None
+    image_url: AiImageUrl | None = None
+
+
 class AiMessage(BaseModel):
     # `/v1/chat` の ChatMessage と違い system を許す。プロンプトを組むのは呼ぶ側で、
     # 役割の付け方までこちらで決めない
     role: str = PydField(pattern="^(system|user|assistant)$")
-    content: str
+    # 文字だけなら文字列。**画像を見せるときは部品の並び**(文字と image_url)。
+    # 部品の並びを受けるのは画像を見られる相手だけ(`Provider.images`)
+    content: str | list[AiContentPart]
+
+    def has_content(self) -> bool:
+        if isinstance(self.content, str):
+            return bool(self.content.strip())
+        return any((p.text or "").strip() or p.image_url for p in self.content)
+
+    def has_images(self) -> bool:
+        return not isinstance(self.content, str) and any(p.type == "image_url" for p in self.content)
 
 
 class AiCompleteRequest(BaseModel):
@@ -4896,6 +4919,8 @@ async def ai_backends() -> dict:
                 # 呼ぶ側はこれを見て「調べさせる仕事に使える相手」を絞れる ——
                 # 出さないと、選べてしまってから 400 で断られることになる
                 "web": bool(spec and spec.bridge) or websearch.is_enabled(),
+                # 画像を見せられるか(`/v1/ai/complete` の content に image_url を混ぜてよいか)
+                "images": bool(spec and spec.images),
             }
             for name, available, levels in zip(names, models, efforts, strict=True)
             for spec in (providers.get(name),)
@@ -4926,6 +4951,8 @@ def _worker_choices() -> list[dict]:
             "models": [],
             "efforts": [],
             "model_required": False,
+            # ワーカーは /v1/ai/complete の相手にならない
+            "images": False,
             # 段のどれかが web を開けるなら開ける
             "web": any(
                 bool((spec := providers.get(step.backend)) and spec.bridge)
@@ -5092,7 +5119,7 @@ async def ai_complete(body: AiCompleteRequest, request: Request) -> dict | Strea
     呼ぶ側はそれを「調べた結果」として受け取り、学習データから作った話が最新の材料として
     保存されてしまう(実際に「取得不可」と答えるべき場面で古い答えが返った)。
     """
-    messages = [m.model_dump() for m in body.messages if (m.content or "").strip()]
+    messages = [m.model_dump(exclude_none=True) for m in body.messages if m.has_content()]
     if not messages:
         raise HTTPException(400, {"error": "messages must not be empty"})
 
@@ -5100,6 +5127,13 @@ async def ai_complete(body: AiCompleteRequest, request: Request) -> dict | Strea
 
     spec = providers.get(cfg.name)
     via_bridge = bool(spec and spec.bridge)
+    if any(m.has_images() for m in body.messages) and not (spec and spec.images):
+        # **黙って画像を落とさない** —— 文字だけで答えさせると、呼ぶ側は「見て答えた」と受け取る
+        raise HTTPException(400, {
+            "error": "images are not supported",
+            "reason": f"{answer.backend_label(cfg.name)} には画像を見せられません",
+            "hint": "/v1/ai/backends で images が true の相手を選んでください",
+        })
     want_web = body.web is True
     if want_web and not via_bridge and not websearch.is_enabled():
         raise HTTPException(400, {
