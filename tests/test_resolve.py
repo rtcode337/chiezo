@@ -216,6 +216,41 @@ class TestPickingTheRightShop:
         )
         assert result.ok, result.shop
 
+    def test_decorations_and_branch_names_are_matched_with_the_address(self, tmp_path):
+        """飾りの記号・伸ばす音・末尾の支店名が辞典と違っても、住所が合えば採る。"""
+        overture = [{"title": "サンプルファーム", "extra": {
+            "overture_id": "ov-3001", "locality": "千代田区",
+            "lat": 35.6850, "lon": 139.7600, "address": "丸の内2-3-4",
+        }}]
+        srcs = {
+            "osm_japan": make_source(tmp_path, "osm_japan", osm_docs()),
+            "overture_japan": make_source(tmp_path, "overture_japan", overture),
+        }
+        result = resolve.resolve(
+            SPEC, {"name": "サンプルファ〜ム♪ 丸の内店", "address": "東京都千代田区丸の内2-3-4"},
+            "東京都", srcs, NOW,
+        )
+        assert result.ok, result.shop
+        # 住所が無ければ、寄せた名前だけでは採らない
+        result = resolve.resolve(SPEC, {"name": "サンプルファ〜ム♪ 丸の内店"}, "東京都", srcs, NOW)
+        assert not result.ok
+
+    def test_a_main_shop_name_finds_the_branch_spelling(self, tmp_path):
+        """「◯◯本店」と書いた店が、辞典では「◯◯店」の見出しのとき。"""
+        overture = [{"title": "サンプル麺 丸の内店", "extra": {
+            "overture_id": "ov-3002", "locality": "千代田区",
+            "lat": 35.6850, "lon": 139.7600, "address": "丸の内2-3-4",
+        }}]
+        srcs = {
+            "osm_japan": make_source(tmp_path, "osm_japan", osm_docs()),
+            "overture_japan": make_source(tmp_path, "overture_japan", overture),
+        }
+        result = resolve.resolve(
+            SPEC, {"name": "サンプル麺 丸の内本店", "address": "東京都千代田区丸の内2-3-4"},
+            "東京都", srcs, NOW,
+        )
+        assert result.ok, result.shop
+
     def test_an_unknown_name_says_so(self, sources):
         result = resolve.resolve(SPEC, {"name": "どこにも無い店"}, "東京都", sources, NOW)
         assert not result.ok
@@ -234,6 +269,15 @@ class TestAddresses:
         assert resolve._same_block(resolve.address_key("丸の内2-1-1"), ours, "") is False
         # 町の名前で位置を合わせられなければ、違うとは言わない
         assert resolve._same_block(resolve.address_key("大手町3-1-1"), ours, "") is None
+
+    def test_a_different_house_number_in_the_same_block_is_allowed(self):
+        """丁目と番が合えば、号の違いは同じ店として扱う。"""
+        ours = resolve.address_key("東京都千代田区丸の内1-9-2")
+        assert resolve._same_block(resolve.address_key("丸の内1丁目9-1"), ours, "") is True
+        assert resolve._same_block(resolve.address_key("丸の内1-8-2"), ours, "") is False
+        # 2 つしか無い番地(番地-号)は両方とも比べる
+        ours = resolve.address_key("東京都千代田区丸の内650-1")
+        assert resolve._same_block(resolve.address_key("丸の内650-2"), ours, "") is False
 
     def test_kanji_chome_and_postcode(self):
         assert resolve.address_key("〒100-0005 千代田区丸の内一丁目9-1") == "千代田区丸の内1-9-1"

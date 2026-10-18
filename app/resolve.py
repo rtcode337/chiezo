@@ -92,6 +92,10 @@ AREA_PROBES = (0.003, 0.01, 0.03)
 MAX_SHOWN_CANDIDATES = 5
 # 名前に寄せる揺れ。**付け外しで採るのは、住所か辞典どうしで確かめられたときだけ**
 LOOSE_SUFFIXES = ("本店", "店")
+# 名前の飾りの記号(辞典によって付いたり付かなかったりする)。比べるときは落とす
+DECORATIONS = "♪♫☆★♡♥❤"
+# 伸ばす音の書き分け(「〜」と「ー」)。比べるときは「ー」にそろえる
+WAVES = "〜～~"
 # 名前の 1 か所に空白を挟んだ形も引く上限の長さ(地図の見出しは「店名 支店名」の
 # ように空白で区切ることが多いのに、手がかりは詰めて書かれる)
 MAX_SPACED_NAME_CHARS = 24
@@ -265,9 +269,15 @@ def _nfkc(text) -> str:
     return unicodedata.normalize("NFKC", str(text or "")).strip()
 
 
+def _plain(text: str) -> str:
+    """飾りの記号を落とし、伸ばす音を「ー」にそろえた形。"""
+    text = "".join(c for c in text if c not in DECORATIONS)
+    return re.sub(f"[{WAVES}]", "ー", text)
+
+
 def name_key(text) -> str:
-    """名前を比べる形(NFKC・空白を詰める・英字は小文字)。"""
-    return _SPACE.sub("", _nfkc(text)).casefold()
+    """名前を比べる形(NFKC・空白を詰める・英字は小文字・飾りの記号と伸ばす音をそろえる)。"""
+    return _plain(_SPACE.sub("", _nfkc(text))).casefold()
 
 
 def base_name(title: str) -> str:
@@ -355,7 +365,15 @@ def _variants(name: str) -> tuple[set[str], set[str]]:
     """
     exact: set[str] = set()
     loose: set[str] = set()
-    for value in {name.strip(), _nfkc(name)}:
+    forms = {name.strip(), _nfkc(name)}
+    forms |= {_plain(v).strip() for v in forms}
+    # **支店名を外した形も付け外しで引く**(「店名 ◯◯店」と書かれても、辞典の
+    # 見出しは店名だけのことがある)。外したあとは住所で確かめるので、名前だけでは採らない
+    for value in list(forms):
+        head, _, tail = value.rpartition(" ")
+        if head.strip() and tail.endswith("店"):
+            loose |= {head.strip(), _plain(head).strip()}
+    for value in forms:
         if not value:
             continue
         exact.add(value)
@@ -370,6 +388,12 @@ def _variants(name: str) -> tuple[set[str], set[str]]:
                 loose.add(tight[: -len(suffix)])
             else:
                 loose |= {tight + suffix, tight + " " + suffix}
+        # 「◯◯本店」と書かれた支店の見出しが「◯◯店」のことがある
+        if tight.endswith("本店") and len(tight) > 2:
+            branch = tight[:-2] + "店"
+            loose.add(branch)
+            if len(branch) <= MAX_SPACED_NAME_CHARS:
+                loose |= {branch[:at] + " " + branch[at:] for at in range(1, len(branch))}
     return exact, {v for v in loose if v} - exact
 
 
@@ -660,6 +684,9 @@ def _same_block(theirs: str, ours: str, locality: str) -> bool | None:
     common = min(len(mine), len(numbers))
     if common < 2:
         return None
+    # **3 つ目(丁目-番-号 の号)の違いは許す。** 同じ番の区画の中で、建物の入口や
+    # 区画の割り方で号を書き分けることがあり、数十 m の内に収まる
+    common = min(common, 2) if common >= 3 else common
     return mine[:common] == numbers[:common]
 
 
