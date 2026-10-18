@@ -262,6 +262,8 @@ _SPACE = re.compile(r"\s+")
 # 辞典が同名の見出しに付ける見分けの札(「名前 (番号)」「名前 (node:123)」「名前 (町)」)
 _NUMBERED = re.compile(r"^(.*\S)\s*\([^()]*\)$")
 _POSTCODE = re.compile(r"^〒?\d{3}-?\d{4}")
+# 日本語の字(かな・漢字)。町の名前が日本語で書かれているかを見る
+_JAPANESE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
 _KANJI_DIGITS = {c: i for i, c in enumerate("〇一二三四五六七八九")}
 
 
@@ -649,6 +651,11 @@ def _check(cand: Candidate, target: str | None, address: str, clue: dict, area_s
                 return
     if address:
         locality = str(cand.extra.get("locality") or "")
+        if locality and not _JAPANESE.search(locality):
+            # **ローマ字の町の名前(「Nagoya-shi」)は持っていないものとして扱う。** 手がかりの
+            # 住所は日本語なので比べようがなく、比べると同じ町の店が「市区町村が違う」で落ちる
+            # (店舗辞典の 1 つは、一部の県で町の名前をローマ字で持っている)
+            locality = ""
         if locality:
             here = address_key(locality)
             # 郡を省いて書く住所がある(「〇〇郡〇〇町」を「〇〇町」と書く)

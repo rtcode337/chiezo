@@ -235,6 +235,22 @@ class TestPickingTheRightShop:
         result = resolve.resolve(SPEC, {"name": "サンプルファ〜ム♪ 丸の内店"}, "東京都", srcs, NOW)
         assert not result.ok
 
+    def test_a_romanized_locality_is_not_compared(self, tmp_path):
+        """町の名前がローマ字の店は、市区町村を比べずに番地で確かめる。"""
+        overture = [{"title": "サンプル漬本舗", "extra": {
+            "overture_id": "ov-3003", "locality": "Chiyoda-ku",
+            "lat": 35.6850, "lon": 139.7600, "address": "丸の内2-3-4",
+        }}]
+        srcs = {
+            "osm_japan": make_source(tmp_path, "osm_japan", osm_docs()),
+            "overture_japan": make_source(tmp_path, "overture_japan", overture),
+        }
+        result = resolve.resolve(
+            SPEC, {"name": "サンプル漬本舗", "address": "東京都千代田区丸の内2-3-4"},
+            "東京都", srcs, NOW,
+        )
+        assert result.ok, result.shop
+
     def test_a_main_shop_name_finds_the_branch_spelling(self, tmp_path):
         """「◯◯本店」と書いた店が、辞典では「◯◯店」の見出しのとき。"""
         overture = [{"title": "サンプル麺 丸の内店", "extra": {
