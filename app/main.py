@@ -78,6 +78,7 @@ from app import (
 )
 from app import partition as partitioning
 from app import talk as talk_api
+from app import tasks as todo_tasks
 from app.deps import (
     exact_title_first,
     get_source,
@@ -1027,6 +1028,15 @@ def _missing_partitions_error(missing: list[str]) -> HTTPException:
                 "(区画の面から選び直してください)",
     })
 
+def _nothing_seen_yet(item, sweep, keys: list[str]) -> None:
+    """`after_each` の巡回で、配れる区画が 1 つも無ければ断る(`collect.picks_after`)。
+
+    **区画の鍵が空のまま進めない** —— 空の鍵は「区画で絞らない」の意味になり、
+    収集の全部を差し込んで頼むことになる(前の巡回がまだ見ていない区画まで)。
+    """
+    if not keys and (after := collect.picks_after(item, sweep)):
+        raise HTTPException(409, {"error": f"「{after}」が見終えた区画がまだありません"})
+
 
 def run_or_queue(
     name: str, sweep: str | None = None, run_once: dict | None = None, by: str = "",
@@ -1710,7 +1720,9 @@ async def build_handoff(name: str, sources: dict, sweep_name: str = "") -> dict:
     keys = partitioning.pick(
         ledger, sweep.name, sweep.per_run(len(ledger)),
         partitioning.normalize(item.partition),
+        seen_by=collect.picks_after(item, sweep),
     ) if item.partition else []
+    _nothing_seen_yet(item, sweep, keys)
     for_prompt = await asyncio.to_thread(collect.prompt_docs, item, previous, keys, None)
     shown: set[str] = set()
     # **区画ごとに 1 節ずつ組む。** まとめて 1 つの依頼文にすると、範囲が
@@ -1842,7 +1854,9 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
             keys = partitioning.pick(
                 ledger, sweep.name, sweep.per_run(len(ledger)),
                 partitioning.normalize(item.partition),
+                seen_by=collect.picks_after(item, sweep),
             )
+            _nothing_seen_yet(item, sweep, keys)
         baked_as = item
     # **直す回かどうかは、その回の依頼文が語っている。** 収集ぜんたいの設定として
     # 持っていた頃(`mode`)は巡回ごとに決められなかった —— いまは巡回ごとに決まる
@@ -2139,7 +2153,11 @@ async def collect_preview(
     item = replace(item, partitions=ledger)
     # **下見は 1 区画だけ。** 何区画でも見られるが、下見は「この指示文でどうなるか」を
     # 見るためのもので、1 区画あれば分かる(そのぶん安く、待たされない)
-    keys = partitioning.pick(ledger, sweep.name, 1, partitioning.normalize(item.partition))
+    keys = partitioning.pick(
+        ledger, sweep.name, 1, partitioning.normalize(item.partition),
+        seen_by=collect.picks_after(item, sweep),
+    )
+    _nothing_seen_yet(item, sweep, keys)
     feed = await _harvest(item, sweep, sources, think=False)
     for_prompt = await asyncio.to_thread(collect.prompt_docs, item, previous, keys, None)
     items, next_cursor, note = await _collect_items(
@@ -5699,10 +5717,11 @@ app.include_router(views_browse.router)
 app.include_router(views_media_ask.router)
 app.include_router(views_media_compare.router)
 app.include_router(views_chat.router)
-# やること層(タスク・ルール)は管理画面の記憶の面の節(書き込みの口は `/admin/todo/...`)。**専用の REST も
-# 別プロセスも持たない** —— Chiezo は安全なネットワークの中からしか触らせない、と
-# 決めたので、外に出すための認証つきの面(旧 chiezo-tasks)ごと畳んである。
+# やること層(タスク・ルール)は管理画面の記憶の面の節(書き込みの口は `/admin/todo/...`)。
+# 外に出すための認証つきの面(旧 chiezo-tasks)と別プロセスは持たない —— Chiezo は安全な
+# ネットワークの中からしか触らせない。LAN の中のアプリが読み書きする口は `/v1/todo/...`(app/tasks.py)
 app.include_router(views_todo.router)
+app.include_router(todo_tasks.router)
 # 会話の口(`/v1/talk/...`)。REST だが量があるので別のモジュールに置く(`app/talk.py`)
 app.include_router(talk_api.router)
 

@@ -635,6 +635,11 @@ class Sweep:
     # 「この区画に居ない」を理由に見当違いのことをする —— 実際、名簿を作った直後の
     # 漏れ探しは、既に名簿に居る画家を 20 人挙げて終わった
     after: str = ""
+    # **一周を待たず、`after` の巡回が見終えた区画から回る**(`after` と組で使う)。
+    # 一周を待つ形だと、前の巡回が 1 区画に何度も戻る仕事(`hold_tag`)では後の巡回が
+    # 何週間も始まらない —— 見終えた区画から先に流したい。配るのは `after` の巡回の
+    # 印がある区画だけ(`picks_after`)で、その中では今までどおり古い順
+    after_each: bool = False
     # **区画を見終わったことにしない印**(タグ)。その区画にこのタグの付いた生きている
     # 1 件が残っている間は、回っても区画に印を付けない(次の回もまた同じ区画が選ばれる)。
     # 1 回に片付けられる数に上限のある仕事(1 回に数件ずつ決めていく)で、
@@ -829,6 +834,7 @@ def _sweep_from_json(raw: dict, item: Collection) -> Sweep:
         once=bool(raw.get("once")),
         one_lap=bool(raw.get("one_lap")),
         after=str(raw.get("after") or "").strip()[:40],
+        after_each=bool(raw.get("after_each")),
         hold_tag=str(raw.get("hold_tag") or "").strip()[:MAX_HOLD_TAG_CHARS],
         worker=str(raw.get("worker") or "").strip()[:40],
         store_tags=_store_tags_or_empty(raw.get("store_tags")),
@@ -4249,6 +4255,8 @@ def blocked_reason(item: Collection, sweep: Sweep) -> str:
     if lapped(item, sweep):
         return "一周して止まった"
     if not waited_for(item, sweep):
+        if sweep.after_each:
+            return f"「{sweep.after}」が見終えた区画待ち"
         return f"「{sweep.after}」の一周待ち"
     return ""
 
@@ -4276,8 +4284,25 @@ def waited_for(item: Collection, sweep: Sweep) -> bool:
     # 一度きりの回も同じ(`once`。もう走らないので、区画を回り切ることは無い)
     if not item.partitions or not before.walks_partitions() or before.once:
         return bool(before.last_run_at)
+    if sweep.after_each:
+        # 見終えた区画が 1 つでもあれば走れる(配るのはその区画だけ。`picks_after`)
+        return bool(partitioning.seen_by(item.partitions, sweep.after))
     visited, total = partitioning.progress(item.partitions, sweep.after)
     return bool(total) and visited >= total
+
+
+def picks_after(item: Collection, sweep: Sweep) -> str:
+    """区画を配るときに、**この巡回の印がある区画だけに絞る**相手の巡回の名前(無ければ空)。
+
+    `after_each` の巡回だけ。待つ相手が区画を歩かない回(機械で引く回・一度きり)なら
+    絞らない —— 区画に印を付けないので、絞ると何も配れなくなる(`waited_for` と同じ線)。
+    """
+    if not (sweep.after and sweep.after_each and item.partitions):
+        return ""
+    before = {s.name: s for s in sweeps_of(item)}.get(sweep.after)
+    if before is None or not before.walks_partitions() or before.once:
+        return ""
+    return sweep.after
 
 
 def due_collections(at: datetime | None = None) -> list[Collection]:

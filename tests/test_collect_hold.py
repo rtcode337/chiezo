@@ -278,3 +278,64 @@ class TestStateTags:
     def test_the_ai_is_told_how_to_say_none(self, dishes):
         system = collect.build_messages(collect.get("dishes"), {})[0]["content"]
         assert f"「{NONE}」" in system
+
+
+class TestFollowingPartitionByPartition:
+    """`after_each` —— 前の巡回の一周を待たず、見終えた区画から回る。"""
+
+    def _sweeps(self, after_each: bool):
+        return [
+            {"name": SWEEP, "interval_minutes": 60, "partitions_per_run": 1, "hold_tag": FAILED,
+             "one_lap": True},
+            {"name": "情報収集", "interval_minutes": 60, "partitions_per_run": 1, "after": SWEEP,
+             "after_each": after_each, "only_new": True},
+        ]
+
+    def test_it_runs_once_one_partition_is_seen(self, dishes):
+        collect.update("dishes", sweeps=self._sweeps(True), partitions=[
+            {"key": "地域:東京都", "count": 3},
+            {"key": "地域:大阪府", "count": 1, "visits": {SWEEP: "2026-10-01T00:00:00+00:00"}},
+        ])
+        item = collect.get("dishes")
+        _tidy, survey = collect.sweeps_of(item)
+        assert survey.after_each
+        assert collect.waited_for(item, survey)
+        assert collect.blocked_reason(item, survey) == ""
+        # 配るのは前の巡回が見終えた区画だけ(東京都はまだ足止めされている)
+        spec = partitioning.normalize(item.partition)
+        seen_by = collect.picks_after(item, survey)
+        assert seen_by == SWEEP
+        assert partitioning.pick(item.partitions, survey.name, 2, spec, seen_by=seen_by) == [
+            "地域:大阪府"
+        ]
+
+    def test_nothing_seen_waits(self, dishes):
+        collect.update("dishes", sweeps=self._sweeps(True), partitions=[
+            {"key": "地域:東京都", "count": 3}, {"key": "地域:大阪府", "count": 1},
+        ])
+        item = collect.get("dishes")
+        _tidy, survey = collect.sweeps_of(item)
+        assert not collect.waited_for(item, survey)
+        assert collect.blocked_reason(item, survey) == f"「{SWEEP}」が見終えた区画待ち"
+
+    def test_an_empty_pick_is_refused_rather_than_taking_everything(self, dishes):
+        from app import main
+
+        collect.update("dishes", sweeps=self._sweeps(True), partitions=[
+            {"key": "地域:東京都", "count": 3}, {"key": "地域:大阪府", "count": 1},
+        ])
+        item = collect.get("dishes")
+        _tidy, survey = collect.sweeps_of(item)
+        with pytest.raises(HTTPException) as caught:
+            main._nothing_seen_yet(item, survey, [])
+        assert caught.value.status_code == 409
+
+    def test_without_the_flag_it_still_waits_for_the_whole_lap(self, dishes):
+        collect.update("dishes", sweeps=self._sweeps(False), partitions=[
+            {"key": "地域:東京都", "count": 3},
+            {"key": "地域:大阪府", "count": 1, "visits": {SWEEP: "2026-10-01T00:00:00+00:00"}},
+        ])
+        item = collect.get("dishes")
+        _tidy, survey = collect.sweeps_of(item)
+        assert not collect.waited_for(item, survey)
+        assert collect.picks_after(item, survey) == ""

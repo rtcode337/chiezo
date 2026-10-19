@@ -1681,11 +1681,13 @@ def counted(partitions: list[dict], counts: dict[str, int]) -> list[dict]:
 
 
 def pick(
-    partitions: list[dict], sweep_name: str, count: int = 1, spec: dict | None = None
+    partitions: list[dict], sweep_name: str, count: int = 1, spec: dict | None = None,
+    seen_by: str = "",
 ) -> list[str]:
     """次に見る区画を、古い順に `count` 件。**まだ見ていないものが先**。
 
     一周の速さは巡回の側が決める(ここは順番だけを持つ)。
+    `seen_by` を渡すと、**その巡回の印がある区画だけ**から選ぶ(`Sweep.after_each`)。
 
     **`origin` があれば、そこから近い順に広げる**(矩形のときだけ)。既定は鍵の
     文字列順で、矩形の鍵は南西の角から始まるので**日本の地図なら八重山から北上する** ——
@@ -1696,11 +1698,18 @@ def pick(
     付くので、「古い順」がそのまま同じ広がり方をなぞる。
     """
     near = _distance_from(spec, partitions)
+    if seen_by:
+        partitions = [p for p in partitions if (p.get("visits") or {}).get(seen_by)]
     ordered = sorted(
         partitions,
         key=lambda p: ((p.get("visits") or {}).get(sweep_name) or "", near(p), p["key"]),
     )
     return [p["key"] for p in ordered[: max(0, count)]]
+
+
+def seen_by(partitions: list[dict], sweep_name: str) -> list[str]:
+    """その巡回の印がある区画の鍵(台帳の並び)。"""
+    return [p["key"] for p in partitions if (p.get("visits") or {}).get(sweep_name)]
 
 
 def _distance_from(spec: dict | None, partitions: list[dict]):
