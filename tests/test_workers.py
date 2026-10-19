@@ -600,6 +600,28 @@ class TestWhenASweepGoesIntoTheQueue:
         assert not main._due_for_queue(sweep, datetime(2026, 1, 1, 0, 30, tzinfo=UTC))
 
 
+class TestNotRunningTheSameRoundTwice:
+    """時計はプロセスごとに立っているので、走り始めた直後にもう片方の時計が古い控えで
+    同じ巡回を積み直すことがある。**走り終えた巡回は、間隔が空くまで流さない**。"""
+
+    def test_an_entry_for_a_round_that_just_finished_is_dropped(self, enabled, monkeypatch, tmp_path):
+        from app import collect, main
+
+        _define(monkeypatch, tmp_path, "news", "ざっと")
+        workers.save([workers.Worker("精査", (workers.Step("codex"),))])
+        workers.enqueue("精査", "news", "ざっと", "2026-01-01T00:00:00+00:00")
+        entry = workers.queued("精査")[0]
+        # 積まれたままなら流してよい
+        assert main._no_longer_due({**entry, "origin": "worker"}) in ("", None)
+
+        # その巡回が走り終えた(間隔はまだ空いていない)
+        collect.record_result("news", status="ok", sweep="ざっと")
+        assert "走り終えています" in main._no_longer_due({**entry, "origin": "worker"})
+
+        main._drop_stale_from_queues()
+        assert workers.queued("精査") == []
+
+
 class TestWhenAWorkerWakesUp:
     def test_the_first_time_is_now(self, enabled):
         from app import main
