@@ -111,6 +111,7 @@ BASIS_SITE = "サイト"
 BASIS_AGREE = "辞典の一致"
 BASIS_LOOSE = "名前の揺れ"
 BASIS_REF = "指した見出し"
+BASIS_ADDRESS = "住所"
 # **AI が指した見出しを、名前の書き方が違っても採る**ときの、名前の重なりの下限
 # (`_named_alike`)。共通の続いた字がこの字数以上、かつ短いほうの名前のこの割合以上。
 # 短いほうがまるごと長いほうに入っていれば字数は問わない。運営の名前を頭に付けた
@@ -217,6 +218,7 @@ def normalize(raw) -> dict | None:
         raise _bad(f"none_tag は {MAX_TAG_CHARS} 文字までで、Chiezo の印(_chiezo_)は使えません")
     if none and none == failed:
         raise _bad("none_tag と failed_tag は別のタグにしてください")
+    address = _address_spec(raw.get("address"), seen)
     when_missing = bool(raw.get("failed_when_missing", False))
     if when_missing and not failed:
         # 付けるタグが無いのに「付ける」と書いても何も起きない。黙って通すと、
@@ -233,7 +235,30 @@ def normalize(raw) -> dict | None:
         "failed_when_missing": when_missing,
         "none_tag": none,
         "ai_coords": bool(raw.get("ai_coords", False)),
+        "address": address,
     }
+
+
+def _address_spec(raw, taken: set[str]) -> dict | None:
+    """住所から座標を引く辞典の指定(`address`)。無ければ None。
+
+        {"source": "address_jp", "tag": "出典:位置参照情報"}
+
+    **店の辞典で引き当てられなかったときだけ使う最後の段**(`_by_address`)。
+    """
+    if raw in (None, "", {}):
+        return None
+    if isinstance(raw, str):
+        raw = {"source": raw}
+    if not isinstance(raw, dict) or not str(raw.get("source") or "").strip():
+        raise _bad("address は {\"source\": 住所の辞典, \"tag\": 出どころのタグ} で書いてください")
+    name = str(raw["source"]).strip()
+    if name in taken:
+        raise _bad(f"address の辞典は sources と別のものにしてください: {name}")
+    tag = str(raw.get("tag") or "").strip()
+    if len(tag) > MAX_TAG_CHARS or tag.startswith("_chiezo_"):
+        raise _bad(f"tag は {MAX_TAG_CHARS} 文字までで、Chiezo の印(_chiezo_)は使えません")
+    return {"source": name, "tag": tag}
 
 
 def to_json(spec: dict | None) -> dict | None:
@@ -256,12 +281,19 @@ def to_json(spec: dict | None) -> dict | None:
         out["to_extra"] = dict(spec["to_extra"])
     if spec["ai_coords"]:
         out["ai_coords"] = True
+    if spec.get("address"):
+        out["address"] = {k: v for k, v in spec["address"].items() if v}
     return out
 
 
 def source_tags(spec: dict) -> set[str]:
     """出どころのタグの全部(機械が付け替えるタグ)。"""
-    return {one["tag"] for one in spec["sources"] if one["tag"]}
+    return {one["tag"] for one in _tagged_sources(spec) if one["tag"]}
+
+
+def _tagged_sources(spec: dict) -> list[dict]:
+    """出どころのタグを持つ辞典の全部(店の辞典と、住所の辞典)。"""
+    return [*spec["sources"], *([spec["address"]] if spec.get("address") else [])]
 
 
 # ---- 文字の均し ----------------------------------------------------------------------
@@ -550,7 +582,20 @@ def clue_of(raw) -> dict:
 
 
 def resolve(spec: dict, clue: dict, area_hint: str | None, sources: dict, now: str) -> Result:
-    """手がかり 1 つを引き当てる。引き当てられなければ、理由を持った店を返す。"""
+    """手がかり 1 つを引き当てる。引き当てられなければ、理由を持った店を返す。
+
+    **店の辞典で引き当てられなければ、住所の辞典で引く**(`spec["address"]`。`_by_address`)。
+    店の辞典に載っていない店(小さな店・直売所)を AI が見つけても、座標の置き場が無いまま
+    だった —— AI が確かめた住所から、座標は機械で引く。引けなければ店の辞典の理由を残す。
+    """
+    result = _by_shops(spec, clue, area_hint, sources, now)
+    if result.ok or not spec.get("address"):
+        return result
+    return _by_address(spec, clue, area_hint, sources, now) or result
+
+
+def _by_shops(spec: dict, clue: dict, area_hint: str | None, sources: dict, now: str) -> Result:
+    """店の辞典(`spec["sources"]`)で引き当てる。"""
     name = clue.get("name") or ""
     if not name:
         return _failed(clue, "店の名前がありません", [], now)
@@ -808,6 +853,78 @@ def _resolved(
     return Result(shop=shop, lat=chosen.lat, lon=chosen.lon)
 
 
+def _by_address(
+    spec: dict, clue: dict, area_hint: str | None, sources: dict, now: str,
+) -> Result | None:
+    """住所の辞典で、手がかりの住所から街区の代表点を引く。引けなければ None。
+
+    **街区(番・地番)まで当たったときだけ採る** —— 町の名前までしか当たらない住所は、
+    郊外では数 km 離れた点になりうる。鍵の末尾の数を 1 つずつ落としながら、いちばん
+    細かく当たる鍵を探す(`…-1-31-12` の号は辞典に無いので `…-1-31` で当たる)。
+    **1 つの街区に決まらなければ採らない**(同じ鍵が 2 つの街区を指すとき)。
+    住所に都道府県が無ければ、1 件の県を頭に付けて引く。
+    """
+    address = str(clue.get("address") or "")
+    one = spec["address"]
+    src = sources.get(one["source"])
+    if not address or src is None:
+        return None
+    key = address_block_key(address)
+    if area_hint and not key.startswith(address_block_key(area_hint)) and not _has_prefecture(key):
+        key = address_block_key(area_hint) + key
+    found = re.match(r"^(.*?[^\d-])((?:-\d+)+)", key)
+    if not found:
+        return None
+    town, numbers = found.group(1), found.group(2).strip("-").split("-")
+    for size in range(len(numbers), 0, -1):
+        wanted = f"{town}-{'-'.join(numbers[:size])}"
+        rows = _rows_named(src, {wanted})
+        if len(rows) > 1:
+            return None
+        if rows and (cand := _candidate(one["source"], rows[0])) is not None:
+            shop = {
+                "name": clue.get("name") or "",
+                "ref": f"{one['source']}:{cand.title}",
+                "source": one["source"],
+                "address": cand.title,
+                "area": cand.extra.get("area") or "",
+                "sources": [one["source"]],
+                "basis": [BASIS_ADDRESS],
+                "clue": clue,
+                "resolved_at": now,
+            }
+            if version := cand.extra.get("version"):
+                shop["version"] = version
+            return Result(shop={k: v for k, v in shop.items() if v != ""}, lat=cand.lat, lon=cand.lon)
+    return None
+
+
+_PREFECTURE_HEAD = re.compile(r"^.{2,3}?[都道府県]")
+
+
+def _has_prefecture(key: str) -> bool:
+    return bool(_PREFECTURE_HEAD.match(key))
+
+
+# 住所の鍵(**`ingest/sources/isj.py` の `block_key` と同じ形にすること**。ingest と app は
+# 別のイメージで互いを import できない。食い違うと引けなくなるので、両方を通すテストがある)
+_DASHES = "‐‑‒–—―−ーｰ"
+
+
+def address_block_key(text) -> str:
+    """住所を街区の鍵の形にする(`東京都千代田区丸の内一丁目9番` → `東京都千代田区丸の内-1-9`)。"""
+    value = _SPACE.sub("", _nfkc(text))
+    value = _POSTCODE.sub("", value)
+    value = value.replace("ヶ", "ケ").replace("ヵ", "カ")
+    value = re.sub(r"([〇一二三四五六七八九十]+)(丁目)", _kanji_number, value)
+    value = re.sub(rf"(\d)[{_DASHES}](?=\d)", r"\1-", value)
+    value = re.sub(r"(\d)の(?=\d)", r"\1-", value)
+    value = re.sub(r"(丁目|番地|番|号)", "-", value)
+    value = re.sub(r"([^\d-])(?=\d)", r"\1-", value)
+    value = re.sub(r"-+", "-", value)
+    return value.strip("-")
+
+
 def _failed(clue: dict, why: str, cands: list[Candidate], now: str) -> Result:
     shop = {"clue": clue, "unresolved": why, "checked_at": now}
     if cands:
@@ -948,7 +1065,7 @@ def _machine_tags(tags: list, state, marks: set[str], failed_tag: str, spec: dic
     """出どころのタグと、引き当てられなかった印のタグを、店の状態から付け直す。"""
     out = [t for t in tags if str(t).strip() not in marks]
     if is_resolved(state):
-        by_source = {one["source"]: one["tag"] for one in spec["sources"]}
+        by_source = {one["source"]: one["tag"] for one in _tagged_sources(spec)}
         for tag in [by_source.get(s) for s in (state.get("sources") or [state.get("source")])]:
             if tag and tag not in out:
                 out.append(tag)

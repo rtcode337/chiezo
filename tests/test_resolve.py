@@ -319,6 +319,99 @@ class TestPickingTheRightShop:
         assert not result.ok
 
 
+ADDRESS_SPEC = resolve.normalize({
+    "clue": "shop",
+    "sources": [
+        {"source": "osm_japan", "identity": ["osm_type", "osm_id"], "tag": "出典:OSM"},
+        {"source": "overture_japan", "identity": ["overture_id"], "tag": "出典:Overture"},
+    ],
+    "area_tag": "地域:",
+    "failed_tag": "状態:代表店未定",
+    "address": {"source": "address_jp", "tag": "出典:位置参照情報"},
+})
+
+
+def address_docs():
+    return [
+        {"title": "東京都千代田区丸の内二丁目3", "aliases": ["東京都千代田区丸の内-2-3"], "extra": {
+            "lat": 35.6800, "lon": 139.7640, "feature": "isj=block", "area": "東京都",
+            "version": "24.0a",
+        }},
+        # 同じ鍵が 2 つの街区を指す(どちらか言えない)
+        {"title": "東京都見本市見本町5(甲)", "aliases": ["東京都見本市見本町-5"],
+         "extra": {"lat": 35.7, "lon": 139.7, "area": "東京都"}},
+        {"title": "東京都見本市見本町5(乙)", "aliases": ["東京都見本市見本町-5"],
+         "extra": {"lat": 35.8, "lon": 139.8, "area": "東京都"}},
+    ]
+
+
+class TestPlacingByAddress:
+    """店の辞典に無い店は、住所の辞典で街区の代表点を引く(最後の段)。"""
+
+    @pytest.fixture
+    def srcs(self, tmp_path):
+        return {
+            "osm_japan": make_source(tmp_path, "osm_japan", osm_docs()),
+            "overture_japan": make_source(tmp_path, "overture_japan", overture_docs()),
+            "address_jp": make_source(tmp_path, "address_jp", address_docs()),
+        }
+
+    def test_a_shop_missing_from_the_shop_dictionaries_is_placed_by_its_address(self, srcs):
+        result = resolve.resolve(ADDRESS_SPEC, {
+            "name": "どこにも無い店", "address": "東京都千代田区丸の内二丁目3番4号 見本ビル1F",
+        }, "東京都", srcs, NOW)
+        assert result.ok, result.shop
+        assert (result.lat, result.lon) == (35.68, 139.764)
+        assert result.shop["basis"] == [resolve.BASIS_ADDRESS]
+        assert result.shop["source"] == "address_jp"
+        assert result.shop["version"] == "24.0a"
+        assert result.shop["name"] == "どこにも無い店"
+
+    def test_a_missing_prefecture_is_read_from_the_item(self, srcs):
+        result = resolve.resolve(ADDRESS_SPEC, {
+            "name": "どこにも無い店", "address": "千代田区丸の内2-3-4",
+        }, "東京都", srcs, NOW)
+        assert result.ok, result.shop
+
+    def test_a_town_without_a_block_is_not_placed(self, srcs):
+        """町の名前までしか当たらない住所は置かない(郊外では数 km ずれうる)。"""
+        result = resolve.resolve(ADDRESS_SPEC, {
+            "name": "どこにも無い店", "address": "東京都千代田区丸の内二丁目",
+        }, "東京都", srcs, NOW)
+        assert not result.ok
+        assert result.shop["unresolved"] == "辞典に同じ名前がありません"
+
+    def test_an_ambiguous_block_is_not_placed(self, srcs):
+        result = resolve.resolve(ADDRESS_SPEC, {
+            "name": "どこにも無い店", "address": "東京都見本市見本町5番",
+        }, "東京都", srcs, NOW)
+        assert not result.ok
+
+    def test_the_shop_dictionaries_come_first(self, srcs):
+        result = resolve.resolve(ADDRESS_SPEC, {
+            "name": "サンプル軒総本店", "address": "東京都千代田区丸の内1-9-1",
+        }, "東京都", srcs, NOW)
+        assert result.ok
+        assert result.shop["source"] == "osm_japan"
+
+    def test_the_address_tag_is_put_on_the_item(self, srcs):
+        items, _report = resolve.apply(ADDRESS_SPEC, _items({
+            "title": "名物餅", "body": "説明", "tags": ["地域:東京都", "出典:OSM"],
+            "extra": {"shop": {"name": "どこにも無い店", "address": "東京都千代田区丸の内2-3"}},
+        }), {}, srcs, NOW)
+        tags = items[0]["tags"]
+        assert "出典:位置参照情報" in tags
+        assert "出典:OSM" not in tags
+        assert "状態:代表店未定" not in tags
+
+    def test_the_spec_round_trips_and_refuses_a_shop_dictionary(self):
+        assert resolve.to_json(ADDRESS_SPEC)["address"] == {
+            "source": "address_jp", "tag": "出典:位置参照情報",
+        }
+        with pytest.raises(HTTPException):
+            resolve.normalize({**resolve.to_json(ADDRESS_SPEC), "address": "osm_japan"})
+
+
 class TestAddresses:
     def test_blocks_are_compared_after_the_town(self):
         ours = resolve.address_key("東京都千代田区丸の内1丁目9番1号")

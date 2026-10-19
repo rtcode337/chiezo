@@ -24,6 +24,7 @@ from core import SourceAdapter
 from sources import collect as collect_sources
 from sources.geonames import GeonamesAdapter
 from sources.holidays import HolidaysAdapter
+from sources.isj import IsjAdapter
 from sources.jquants import JquantsEarningsAdapter, JquantsMasterAdapter
 from sources.osm import DEFAULT_VALIDATION, OsmAdapter
 from sources.osm_regions import OSM_REGIONS, OsmRegion
@@ -57,6 +58,9 @@ ADAPTERS: dict[str, Callable[[], SourceAdapter]] = {
     "jquants_earnings": lambda: JquantsEarningsAdapter(),
     # 日本の祝日・休日(内閣府「国民の祝日」の CSV)。カレンダーを出すアプリが読む
     "holidays_jp": lambda: HolidaysAdapter(),
+    # 日本の住所の位置(国土交通省「街区レベル位置参照情報」)。住所から座標を引く辞典で、
+    # 店の辞典に無い店を AI が確かめた住所で地図に置くために使う(app/resolve.py)
+    "address_jp": lambda: IsjAdapter(),
 }
 
 

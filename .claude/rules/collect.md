@@ -730,6 +730,10 @@ paths:
   **AI が指した見出し(`ref`)は名前が違っても採る**(候補が 1 か所・県が合う・名前が大きく重なる
   `_named_alike`。根拠 `指した見出し`)。住所の無い地図辞典の点は、寄せた名前を確かめる手立てが無く、
   AI が辞典で見つけて指した店まで落ちていた
+  **店の辞典で引き当てられなければ、住所の辞典で街区の代表点を引く**(`resolve.address` →
+  `_by_address`。`address_jp`)。座標は AI に書かせないまま、AI が確かめた住所から機械で引く ——
+  店の辞典に無い店(小さな店・直売所)を AI が見つけても、置き場が無かった。街区まで当たったときだけ採る。
+  鍵の作り方(`address_block_key`)は取り込み側(`ingest/sources/isj.py` の `block_key`)と同じに保つ
 - **掛けるのは焼く前の 1 か所**(`collect.check_collected`。`main._collect_material` と
   `main.collect_preview`)。数える周と流す周に同じものを渡す約束(`bake_survey` /
   `bake_lines`)を崩さないため。**機械で引いた名簿には掛けない**(見出しで引ける形は

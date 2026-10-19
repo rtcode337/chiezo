@@ -194,6 +194,13 @@ chiezo-ingest(ワンショット構築バッチ)と chiezo-trigger、ソース�
     タグは `祝日`(全件を `filter` で引くための共通のタグ)と年・年月。CSV は CP932 で読む。
     キーは要らず、世代の日付は `Last-Modified` から取る。**公表は翌年の分まで**なので、
     それより先の年が無いのは欠けではない。古い祝日は消えないので `sample_titles` は固定の 1 件でよい
+  - `sources/isj.py` — 日本の住所の位置アダプタ(`address_jp`。国交省「街区レベル位置参照情報」)。
+    県ごとの ZIP(Shift_JIS の CSV)を 47 本落とし、**代表の行だけ**を 1 街区 1 文書にする
+    (同じ街区に地番ごとの行が並ぶ。全部採ると 3 割増える)。見出しは人が読む形、**引く鍵は別名**
+    (`block_keys`。小字・`大字`・郡を省いた形も)。**鍵の作り方は `app/resolve.py` の
+    `address_block_key` と同じにする**(別のイメージで互いを import できないので書き写してあり、
+    `tests/test_ingest_isj.py` が両方を通して突き合わせる)。版は年 1 度上がるので、知っている版
+    から先を HEAD で確かめる。`sample_titles` は取り込んだ中から選ぶ(街区は区画整理で変わる)
   - `sources/geonames.py` — GeoNames アダプタ(全世界の地名辞典)。
     `allCountries.zip`(約400MB・約1,200万件のタブ区切り19列)を zip のままストリーム読みする
     (イメージに unzip を入れないため `zipfile` + `io.TextIOWrapper`)。あわせて
