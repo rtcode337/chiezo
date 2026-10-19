@@ -1349,6 +1349,12 @@ def normalize_ledger(raw) -> list[dict]:
             cut = {str(k): int(v) for k, v in raw_cut.items() if isinstance(v, int) and v > 0}
             if cut:
                 row["cut"] = cut
+        # **続けて足止めした回数も持ち越す**(`note_held`。落とすと `MAX_HOLDS` が効かない)
+        raw_held = item.get("held")
+        if isinstance(raw_held, dict):
+            held = {str(k): int(v) for k, v in raw_held.items() if isinstance(v, int) and v > 0}
+            if held:
+                row["held"] = held
         out.append(row)
     return out
 
@@ -1891,6 +1897,50 @@ def still_held(keys: list[str], before: dict[str, int], after: dict[str, int]) -
         key for key in keys
         if (left := int(after.get(key) or 0)) > 0 and left < int(before.get(key) or 0)
     ]
+
+
+# 印付きが残る区画を、**続けて何回まで足止めするか**(`Sweep.hold_tag`)。
+#
+# 歯止めは「その回で 1 件も減らなければ見終わりにする」だけだったので、**1 回に 1 件ずつ
+# しか片付けない相手だと、何回でも同じ区画に戻ってきた**(本番で、残り 9 → 7 → 5 → 4 と
+# 4 回続けて同じ県を回り、最後に残った 4 件はどの回でも手を付けられなかった)。1 回ごとに
+# 区画の全部を渡し直すので、戻るたびに 1 回ぶんの枠を食う。残りは時計の次の周か、
+# 粘りの強い別の巡回に任せる
+MAX_HOLDS = 3
+
+
+def within_hold_limit(partitions: list[dict], keys: list[str], sweep_name: str) -> list[str]:
+    """足止めしたい区画のうち、**続けて足止めした回数がまだ上限に届いていない**もの(`MAX_HOLDS`)。"""
+    counts = {p["key"]: int((p.get("held") or {}).get(sweep_name) or 0) for p in partitions}
+    return [key for key in keys if counts.get(key, 0) < MAX_HOLDS]
+
+
+def note_held(partitions: list[dict], keys: list[str], sweep_name: str) -> list[dict]:
+    """足止めした区画の、続けて足止めした回数を 1 つ進める。"""
+    held = set(keys)
+    out = []
+    for p in partitions:
+        if p["key"] not in held:
+            out.append(p)
+            continue
+        counts = {**(p.get("held") or {})}
+        counts[sweep_name] = int(counts.get(sweep_name) or 0) + 1
+        out.append({**p, "held": counts})
+    return out
+
+
+def clear_held(partitions: list[dict], keys: list[str], sweep_name: str) -> list[dict]:
+    """見終わった区画の、続けて足止めした回数を消す(次の周はまた 0 から数える)。"""
+    done = set(keys)
+    out = []
+    for p in partitions:
+        counts = p.get("held") or {}
+        if p["key"] not in done or sweep_name not in counts:
+            out.append(p)
+            continue
+        rest = {k: v for k, v in counts.items() if k != sweep_name}
+        out.append({**p, "held": rest} if rest else {k: v for k, v in p.items() if k != "held"})
+    return out
 
 
 def oldest_visit(partitions: list[dict], sweep_name: str) -> str | None:

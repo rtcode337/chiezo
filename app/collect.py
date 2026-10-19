@@ -3767,12 +3767,15 @@ def record_result(
     # すると、その区画の残りが誰にも見られなくなる(渡す `visited` が空になる)
     if visited and status == "ok":
         ledger = partitioning.clear_cuts(ledger, visited, this.name)
+        ledger = partitioning.clear_held(ledger, visited, this.name)
         ledger = partitioning.mark_visited(ledger, visited, this.name, _iso(now))
     # **切れた区画には印を付けない。** 返ってきたのは途中までで、その先は誰も
     # 見ていない —— 付けると一周が嘘になる。ただし**続けて切れたら諦める**
     # (`MAX_CUTS`)。粘り続けると、その 1 区画が一周を永久に止める
     if held and status == "ok":
         ledger = partitioning.clear_cuts(ledger, held, this.name)
+        # 続けて足止めした回数を数える(`partition.MAX_HOLDS` で打ち切る)
+        ledger = partitioning.note_held(ledger, held, this.name)
     if cut and status == "ok":
         ledger, give_up = partitioning.note_cut(ledger, cut, this.name)
         if give_up:

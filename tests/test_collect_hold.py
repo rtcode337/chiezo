@@ -339,3 +339,32 @@ class TestFollowingPartitionByPartition:
         _tidy, survey = collect.sweeps_of(item)
         assert not collect.waited_for(item, survey)
         assert collect.picks_after(item, survey) == ""
+
+
+class TestHoldingAtMostAFewTimes:
+    """続けて足止めするのは `MAX_HOLDS` 回まで(1 回に 1 件ずつしか片付けない相手で、
+    同じ区画に何回でも戻るのを止める)。"""
+
+    def test_the_count_goes_up_and_stops_at_the_limit(self):
+        ledger = [{"key": "地域:東京都"}, {"key": "地域:大阪府"}]
+        for _ in range(partitioning.MAX_HOLDS):
+            assert partitioning.within_hold_limit(ledger, ["地域:東京都"], SWEEP) == ["地域:東京都"]
+            ledger = partitioning.note_held(ledger, ["地域:東京都"], SWEEP)
+        assert partitioning.within_hold_limit(ledger, ["地域:東京都"], SWEEP) == []
+        # 巡回ごとに数える
+        assert partitioning.within_hold_limit(ledger, ["地域:東京都"], "情報収集") == ["地域:東京都"]
+
+    def test_a_visited_partition_counts_from_zero_again(self, dishes):
+        collect.update("dishes", partitions=[
+            {"key": "地域:東京都", "count": 3, "held": {SWEEP: 2}}, {"key": "地域:大阪府", "count": 1},
+        ])
+        collect.record_result("dishes", status="ok", sweep=SWEEP, visited=["地域:東京都"])
+        tokyo = next(p for p in collect.get("dishes").partitions if p["key"] == "地域:東京都")
+        assert "held" not in tokyo
+        assert tokyo["visits"][SWEEP]
+
+    def test_a_held_run_counts_up(self, dishes):
+        collect.record_result("dishes", status="ok", sweep=SWEEP, held=["地域:東京都"])
+        tokyo = next(p for p in collect.get("dishes").partitions if p["key"] == "地域:東京都")
+        assert tokyo["held"] == {SWEEP: 1}
+        assert not (tokyo.get("visits") or {}).get(SWEEP)

@@ -1986,6 +1986,16 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
         if sweep.hold_tag and done:
             after = diff.get("held_counts") or {}
             held[:] = partitioning.still_held(list(done), held_before, after)
+            # **続けて足止めするのは `MAX_HOLDS` 回まで**(1 回に 1 件ずつしか片付けない相手で、
+            # 同じ区画に何回でも戻るのを止める)。超えた区画は見終わりにする
+            gave_up = [k for k in held if k not in partitioning.within_hold_limit(ledger, held, sweep.name)]
+            held[:] = [k for k in held if k not in gave_up]
+            if gave_up:
+                why = (
+                    f"「{sweep.hold_tag}」が残るが、続けて {partitioning.MAX_HOLDS} 回足止めしたので"
+                    f"見終わりにしました({'、'.join(f'{k} 残り {after.get(k, 0)} 件' for k in gave_up[:10])})"
+                )
+                note = f"{note} / {why}" if note else why
             if held:
                 why = (
                     f"「{sweep.hold_tag}」が残る区画は見終わりにしませんでした("
