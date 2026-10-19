@@ -302,6 +302,28 @@ class TestPullingFromWhatIsAlreadyThere:
 
         assert [i["title"] for i in items] == ["本職の画家"]
 
+    def test_a_left_out_tag_can_be_kept_by_another_tag(self, source):
+        """会社の括りにも店の括りにも入る記事は、`not_tag_unless` で外さずに残せる。"""
+        docs = [
+            {"title": "見本の店", "tags": ["印象派の画家", "見本の会社", "見本の店舗"], "rank": 0.9},
+            {"title": "会社だけ", "tags": ["印象派の画家", "見本の会社"], "rank": 0.8},
+            {"title": "画家", "tags": ["印象派の画家"], "rank": 0.5},
+        ]
+
+        items, _cursor = run(
+            spec(not_tag="閉じた", not_tag_unless={"not_tag": "見本の会社", "unless": "見本の店舗"}),
+            source([*docs, {"title": "閉じた店", "tags": ["印象派の画家", "見本の店舗", "閉じた"], "rank": 0.7}]),
+        )
+
+        # 条件つきで外すタグは残すタグで外れず、いつも外すタグ(not_tag)には残すタグが効かない
+        assert [i["title"] for i in items] == ["見本の店", "画家"]
+
+    def test_keeping_needs_both_halves(self):
+        with pytest.raises(HTTPException):
+            extract.normalize(spec(not_tag_unless={"not_tag": "見本の会社"}))
+        with pytest.raises(HTTPException):
+            extract.normalize(spec(not_tag_unless="見本の店舗"))
+
     def test_it_can_pull_a_work_from_another_article(self, source):
         """「クロード・モネの作品」のようなカテゴリから、人気の順に代表作を取る。"""
         docs = [

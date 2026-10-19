@@ -277,6 +277,7 @@ def normalize_one(raw) -> dict | None:
     tag = str(raw.get("tag") or "").strip()
     tag_suffix = str(raw.get("tag_suffix") or "").strip()
     not_tag = str(raw.get("not_tag") or "").strip()
+    soft = _soft_not_tag(raw.get("not_tag_unless"))
     of = str(raw.get("of") or DEFAULT_ROSTER_KIND).strip()
     if not source:
         raise _bad("source(引くソース名)を入れてください")
@@ -369,6 +370,12 @@ def normalize_one(raw) -> dict | None:
         # **推測が要らず、あとからカテゴリが増えても勝手に入る**
         "tag_suffix": tag_suffix,
         "not_tag": not_tag,
+        # **条件つきで外すタグ**(`{"not_tag": 外すタグ, "unless": 残すタグ}`。どちらもカンマ区切り・
+        # 完全一致)。`unless` のどれかを持つ記事は外さない。会社の括りと店の括りの両方に入る
+        # 記事(看板の店を持つ菓子屋・パン屋・シウマイ屋)が、会社として外されていた ——
+        # 「会社だけの記事は外す」を書けるようにする。**`not_tag` とは別に持つ**(閉じた店の
+        # ように、何を持っていても外したいタグに「残す」が効かないように)
+        "not_tag_unless": soft,
         "limit": limit,
         "body": body_field,
         "url": str(raw.get("url") or "").strip(),
@@ -894,6 +901,8 @@ def to_json(spec) -> dict | list[dict] | None:
         written["min_extra"] = dict(spec["min_extra"])
     if spec.get("min_extra_unless_tag"):
         written["min_extra_unless_tag"] = spec["min_extra_unless_tag"]
+    if spec.get("not_tag_unless"):
+        written["not_tag_unless"] = dict(spec["not_tag_unless"])
     if spec.get("split"):
         written["split"] = dict(spec["split"])
     if spec.get("tag_pairs"):
@@ -946,7 +955,28 @@ def _doc_ids(spec: dict, sources: dict):
             f" EXCEPT SELECT doc_id FROM doc_tags WHERE tag IN ({','.join('?' * len(excluded))})"
         )
         params = [*params, *excluded]
+    if soft := spec.get("not_tag_unless"):
+        # 条件つきで外す(`not_tag_unless`)。残すタグを持つものは外さない
+        dropped, kept = split_tags(soft["not_tag"]), split_tags(soft["unless"])
+        set_sql += (
+            f" EXCEPT SELECT doc_id FROM doc_tags WHERE tag IN ({','.join('?' * len(dropped))})"
+            f" AND doc_id NOT IN (SELECT doc_id FROM doc_tags WHERE tag IN ({','.join('?' * len(kept))}))"
+        )
+        params = [*params, *dropped, *kept]
     return src, set_sql, list(params)
+
+
+def _soft_not_tag(raw) -> dict | None:
+    """条件つきで外すタグ(`not_tag_unless`)。無ければ None。**読めない指定は断る**。"""
+    if raw in (None, "", {}):
+        return None
+    if not isinstance(raw, dict):
+        raise _bad('not_tag_unless は {"not_tag": 外すタグ, "unless": 残すタグ} で書いてください')
+    dropped = str(raw.get("not_tag") or "").strip()
+    kept = str(raw.get("unless") or "").strip()
+    if not dropped or not kept:
+        raise _bad("not_tag_unless には not_tag(外すタグ)と unless(残すタグ)の両方が要ります")
+    return {"not_tag": dropped, "unless": kept}
 
 
 def count(spec, sources: dict, retired: set[str] | None = None) -> int:
@@ -1721,6 +1751,7 @@ SPEC_GUIDE = """依頼を読んで、**まず「手元の索引から機械的�
   "tag_suffix": "タグの末尾(これで終わるタグ全部。カンマ区切りで何個でも書ける。"
                "tag と併用でき、全部の和になる)",
   "not_tag": "外すタグ(カンマ区切り。これを持つものは、tag に当たっていても取らない)",
+  "not_tag_unless": {"not_tag": "条件つきで外すタグ", "unless": "これを持つものは外さない(どちらもカンマ区切り)"},
   "min_extra": {"pageviews_month": 10000},   ← 脇書きの値で下を切る(知名度で絞る)。要るときだけ
   "min_extra_unless_tag": "下限を免除するタグ(カンマ区切り。これを持つものは下限に届かなくても取る)",
   "limit": 30,   ← 書かなければ全部。AI に読ませる側の都合で絞るときだけ書く
