@@ -3598,6 +3598,10 @@ class CollectionCreate(BaseModel):
         None,
         description="座標を固定した 1 件に墓標が返ったとき、消す代わりに足すタグ。空なら消す",
     )
+    show_blanks: list[str] | None = PydField(
+        None,
+        description="{current} の 1 行に、空いている脇書きの鍵を「〔空: 鍵, 鍵〕」で添える(鍵の並び)",
+    )
     verify_tags: list[dict] | None = PydField(
         None,
         description="タグの値が実在するかを確かめる指定。"
@@ -3691,6 +3695,9 @@ class CollectionPatch(BaseModel):
     )
     locked_doubt_tag: str | None = PydField(
         None, description="座標を固定した 1 件に墓標が返ったとき、消す代わりに足すタグ。空の文字列で外れる"
+    )
+    show_blanks: list[str] | None = PydField(
+        None, description="{current} の 1 行に添える空欄の鍵の並び。空の配列で外れる"
     )
     kind: str | None = PydField(None, description="収集の種類(flow / stock)")
     keep_days: int | None = PydField(None, description="流れの収集が持つ日数。0 で落とさない")
@@ -3830,6 +3837,7 @@ def collect_create(request: Request, body: CollectionCreate):
         material_spec=body.material,
         sweeps=body.sweeps,
         locked_doubt_tag=body.locked_doubt_tag or "",
+        show_blanks=body.show_blanks,
         requested_by=body.requested_by,
         store=body.store,
         store_tags=body.store_tags,

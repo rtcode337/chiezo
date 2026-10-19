@@ -515,6 +515,12 @@ class Collection:
     # `doubt_reason` / `doubt_at` に置く(`_doubted`)。現地で確かめた店を、AI が
     # 「閉店した」と読んだだけで地図から消すと、確かめた人の手がかりごと無くなる
     locked_doubt_tag: str = ""
+    # **`{current}` の 1 行に「空いている脇書きの鍵」を添える指定**(鍵の並び)。
+    # 一覧に載るのは見出し・タグ・本文だけなので、**脇書きの空欄を埋める仕事を頼んでも、
+    # AI にはどれが空いているかが見えない** —— 実際、空欄を埋める段を頼んだ回が
+    # 1 件も埋めずに終えた(どれが空なのかを読む手立てが無かった)。値は載せない
+    # (差し込みの字数を食う)。空いている鍵の名前だけを「〔空: 鍵, 鍵〕」で添える
+    show_blanks: list[str] = field(default_factory=list)
     # **店の手がかりから辞典を引き当てて座標を決める指定**(`app/resolve.py`)。書けば、
     # AI が返した 1 件の脇書き `<clue>` の手がかり(名前・住所・URL・辞典の見出し)から
     # 辞典の 1 件を引き当て、座標・住所・元の記録の鍵・出どころのタグを機械で運ぶ。
@@ -1013,6 +1019,33 @@ def normalize_sweeps(raw) -> list[dict]:
     return out
 
 
+# 空欄を添える鍵の天井(脇書きの鍵の天井と同じ。それより多くは持てない)
+MAX_BLANK_KEYS = MAX_EXTRA_KEYS
+_BLANK_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,39}")
+
+
+def normalize_blank_keys(raw) -> list[str]:
+    """空欄を添える鍵の並び(`Collection.show_blanks`)。**読めない鍵は断る**。"""
+    if raw in (None, "", []):
+        return []
+    if not isinstance(raw, list) or not all(isinstance(k, str) for k in raw):
+        raise HTTPException(400, {"error": "show_blanks は脇書きの鍵(文字列)の並びで書いてください"})
+    keys = list(dict.fromkeys(k.strip() for k in raw if k.strip()))
+    if bad := [k for k in keys if not _BLANK_KEY_RE.fullmatch(k)]:
+        raise HTTPException(400, {"error": f"show_blanks に使えない鍵です: {bad[0][:40]}"})
+    if len(keys) > MAX_BLANK_KEYS:
+        raise HTTPException(400, {"error": f"show_blanks は {MAX_BLANK_KEYS} 個までです"})
+    return keys
+
+
+def _blank_keys_or_empty(raw) -> list[str]:
+    """保存済みの値を読む(壊れていたら持たない —— 読み出しで落とさない)。"""
+    try:
+        return normalize_blank_keys(raw)
+    except HTTPException:
+        return []
+
+
 def _hold_tag(raw) -> str:
     """区画を見終わったことにしない印を均す。**読めないものは断る**(黙って落とすと、
     書いた人は効いていると思ったまま、区画が 1 回で次へ進む)。"""
@@ -1449,6 +1482,7 @@ def _from_json(item: dict) -> Collection:
         verify_tags=normalize_verify_tags(item.get("verify_tags")),
         locks=normalize_locks(item.get("locks")),
         locked_doubt_tag=normalize_doubt_tag(item.get("locked_doubt_tag")),
+        show_blanks=_blank_keys_or_empty(item.get("show_blanks")),
         resolve=resolving.to_json(resolving.normalize(item.get("resolve"))),
         formats=formatting.normalize(item.get("formats")),
         requested_by=str(item.get("requested_by") or ""),
@@ -1789,6 +1823,7 @@ def create(
     material_spec=None,
     sweeps=None,
     locked_doubt_tag: str = "",
+    show_blanks=None,
     store: str = "",
     store_tags=None,
     resolve_spec=None,
@@ -1836,6 +1871,7 @@ def create(
         feed=feeds.to_json(feeds.normalize(feed_spec)),
         sweeps=normalize_sweeps(sweeps),
         locked_doubt_tag=normalize_doubt_tag(locked_doubt_tag),
+        show_blanks=normalize_blank_keys(show_blanks),
         resolve=resolving.to_json(resolving.normalize(resolve_spec)),
         formats=formatting.normalize(formats_spec),
         requested_by=requested_by.strip()[:80],
@@ -1865,7 +1901,7 @@ def update(name: str, **fields) -> Collection:
         "backend", "model", "effort", "web", "cursor", "keep_ratio", "extract",
         "partition", "partitions", "sweeps", "feed", "verify_tags",
         "kind", "keep_days", "material", "thumbs", "links", "locked_doubt_tag",
-        "resolve", "formats",
+        "resolve", "formats", "show_blanks",
         # **依頼元の名乗りも送り直しで変えられる**(アプリが名前を改めたとき。作ったときの
         # 名乗りのまま残ると、管理画面の依頼元と使用量の行が前の名前のまま並ぶ)
         "requested_by",
@@ -1940,6 +1976,9 @@ def update(name: str, **fields) -> Collection:
     if "verify_tags" in patch:
         # 空の配列を渡したら「確かめない」に戻す
         patch["verify_tags"] = normalize_verify_tags(patch["verify_tags"] or None)
+    if "show_blanks" in patch:
+        # 空の配列を渡したら添えない側へ戻す
+        patch["show_blanks"] = normalize_blank_keys(patch["show_blanks"])
     if "locked_doubt_tag" in patch:
         # 空の文字列を渡したら外れる(固定した 1 件も、墓標で消えるようになる)
         patch["locked_doubt_tag"] = normalize_doubt_tag(patch["locked_doubt_tag"])
@@ -2762,7 +2801,7 @@ def unarchived(docs: dict[str, dict]) -> dict[str, dict]:
 
 def render_material(
     previous: dict[str, dict], scoped: bool = False, seen: set[str] | None = None,
-    clue: str | None = None,
+    clue: str | None = None, blanks: list[str] | None = None,
 ) -> tuple[str, int]:
     """前世代を、プロンプトへ差し込める形にする。差し込んだ件数も返す。
 
@@ -2783,6 +2822,8 @@ def render_material(
     `clue` は引き当ての手がかりの鍵(`resolve`)。**引き当てた店と、引き当てられなかった
     理由を 1 行に添える** —— 理由を渡さないと、次の回の AI は同じ手がかりを返し、
     同じ理由で落ち続ける。
+
+    `blanks` は空いていれば添える脇書きの鍵(`Collection.show_blanks`)。
     """
     if not previous:
         return (
@@ -2801,6 +2842,7 @@ def render_material(
             + (f" 【{'/'.join(str(t) for t in tags)}】" if tags else "")
             + (f" — {body}" if body else "")
             + (_resolved_note(doc, clue) if clue else "")
+            + (_blanks_note(doc, blanks) if blanks else "")
         )
         if used + len(line) > MAX_MATERIAL_CHARS:
             break
@@ -2827,6 +2869,13 @@ def render_material(
     if gone:
         text += "\n\n" + _render_removed(gone)
     return text, shown
+
+
+def _blanks_note(doc: dict, keys: list[str]) -> str:
+    """`{current}` の 1 行に添える、空いている脇書きの鍵(`Collection.show_blanks`)。"""
+    extra = doc.get("extra") if isinstance(doc.get("extra"), dict) else {}
+    empty = [k for k in keys if extra.get(k) in (None, "", [], {})]
+    return f" 〔空: {', '.join(empty)}〕" if empty else ""
 
 
 def _resolved_note(doc: dict, clue: str) -> str:
@@ -3321,6 +3370,7 @@ def build_messages(
         docs, scoped = scoped_docs(item, previous or {}, partition_key, focus)
         material_text, _shown = render_material(
             docs, scoped, seen, clue=(item.resolve or {}).get("clue"),
+            blanks=item.show_blanks,
         )
         user = user.replace(MATERIAL_PLACEHOLDER, material_text)
     if NEARBY_PLACEHOLDER in user:

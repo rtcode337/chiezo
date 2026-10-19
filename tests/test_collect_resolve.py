@@ -211,6 +211,34 @@ class TestTheDefinition:
                 sweeps=[{"name": "天文", "by_caller": True}],
             )
 
+    def test_blank_keys_are_shown_on_each_line(self, gourmet):
+        """空欄を埋める仕事のために、空いている脇書きの鍵を 1 行に添える(値は載せない)。"""
+        collect.update("gourmet", show_blanks=["shop_reason", "opening_hours"])
+        item = collect.get("gourmet")
+        assert item.show_blanks == ["shop_reason", "opening_hours"]
+        docs = {
+            "名物丼": {"title": "名物丼", "body": "説明", "tags": [],
+                       "extra": {"shop_reason": "本店", "opening_hours": ""}},
+            "名物餅": {"title": "名物餅", "body": "説明", "tags": [], "extra": {}},
+            "名物汁": {"title": "名物汁", "body": "説明", "tags": [],
+                       "extra": {"shop_reason": "本店", "opening_hours": "Mo-Su 10:00-18:00"}},
+        }
+        text, _ = collect.render_material(docs, blanks=item.show_blanks)
+        lines = {line.split(" ")[1]: line for line in text.splitlines() if line.startswith("- ")}
+        assert lines["名物丼"].endswith("〔空: opening_hours〕")
+        assert lines["名物餅"].endswith("〔空: shop_reason, opening_hours〕")
+        assert "〔空" not in lines["名物汁"]
+        assert "本店" not in text
+        # 空の並びで外れる
+        collect.update("gourmet", show_blanks=[])
+        assert collect.get("gourmet").show_blanks == []
+
+    def test_unreadable_blank_keys_are_refused(self, gourmet):
+        with pytest.raises(HTTPException):
+            collect.update("gourmet", show_blanks=["shop reason"])
+        with pytest.raises(HTTPException):
+            collect.update("gourmet", show_blanks="shop_reason")
+
     def test_renaming_a_dictionary_follows(self, gourmet):
         moved = collect._with_source_renamed(collect.get("gourmet"), "osm_japan", "osm_jp")
         assert [one["source"] for one in moved.resolve["sources"]] == ["osm_jp", "overture_japan"]

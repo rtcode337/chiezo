@@ -770,7 +770,9 @@ paths:
   回は前のまま)、いま引き当てられていない 1 件は文書そのもの(`extra.<clue>.unresolved`。
   `collect.unresolved_docs` / `GET /v1/collect/{name}/unresolved` / 収集の面の「引き当てと書式」)。
   変更履歴の 1 行には件数を補足として添える(`checks_note`)。**次の回の AI には理由を渡す**
-  (`render_material` の `_resolved_note`)—— 渡さないと同じ手がかりで落ち続ける
+  (`render_material` の `_resolved_note`)—— 渡さないと同じ手がかりで落ち続ける。
+  **空いている脇書きの鍵も 1 行に添えられる**(収集の `show_blanks` → `_blanks_note`。「〔空: 鍵, …〕」。
+  値は載せない)—— 一覧は見出し・タグ・本文だけなので、空欄を埋める仕事を頼んでも AI にはどれが空か見えない
 - **system で手がかりの形を教える**(`resolve_system_note`)。依頼文に書かせると収集ごとに
   鍵の名前が割れる。引き当てる収集には `GEO_SYSTEM_NOTE` を足さない(捨てる座標を頼まない)
 - **置き場へ書く収集には書けない**(`_STORE_REFUSED_FIELDS`)。名前を変えたら `resolve.sources`
