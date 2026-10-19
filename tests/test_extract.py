@@ -543,6 +543,17 @@ class TestPickingAWholeFamilyOfTags:
         with pytest.raises(HTTPException):
             extract.normalize({"source": "jawiki", "tag_suffix": "家"})
 
+    def test_a_two_character_suffix_is_accepted(self, source):
+        """2 文字で族をなす分類がある(「イタリア料理」「麺料理」の「料理」)。"""
+        docs = [
+            {"title": "カルボナーラ", "tags": ["イタリア料理"]},
+            {"title": "ラーメン", "tags": ["麺料理"]},
+            {"title": "料理人", "tags": ["料理人"]},
+        ]
+        spec = extract.normalize({"source": "jawiki", "tag_suffix": "料理"})
+        items, _cursor = run(spec, source(docs))
+        assert sorted(i["title"] for i in items) == ["カルボナーラ", "ラーメン"]
+
     def test_neither_a_tag_nor_a_suffix_is_refused(self):
         with pytest.raises(HTTPException):
             extract.normalize({"source": "jawiki"})
