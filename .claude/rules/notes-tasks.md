@@ -169,6 +169,13 @@ paths:
     —— 前置きの完全一致だけで切ると、その場合にタイトル行が本文として画面に出て、
     保存でもう一度足されて二重になる
 
+- **LAN の中のアプリが読み書きする REST(`/v1/todo/...`)も `app/tasks.py` に置く**(`router`。
+  `main.py` が `todo_tasks` として組み込む。`tasks` と書くと、`main.py` の中で `BackgroundTasks` を
+  受ける引数の名前と紛れる)。**アプリの項目は `docs.extra` の `data` に丸ごと預かり、中身は見ない** ——
+  並び順・作成日時と同じ `extra` に同居させ、置き換えるときもほかの鍵は残す(`_set_data`)。
+  書き換えは `notes.update` を通すので `updated_at` が動き、読む側はそれで変わったかを見分ける
+  (並び替えの `set_extra` とは逆。こちらは中身が変わったので時系列に載せてよい)
+
 ## app/views/todo.py
 
 - `app/views/todo.py` — **ToDo の節(`section_html`)**。タスクとルールを 1 か所に出す

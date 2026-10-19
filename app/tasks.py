@@ -33,7 +33,8 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from fastapi import HTTPException
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from app import db, machine_store, notes, settings_store
 
@@ -1026,3 +1027,136 @@ def _import_into(
                 flagged=bool(item.get("flagged")),
             )
 
+
+
+# ---- REST(`/v1/todo/...`) ----------------------------------------------------
+#
+# **LAN の中のアプリ**(タスクと予定を扱うアプリなど)が、ここのタスクとプロジェクトを
+# 読み書きするための口。ほかの `/v1` と同じく認証は無く、安全なネットワークの中だけで使う
+# (外に出す面を畳んだ理由は「外へ出さない」ことで、LAN の中のアプリから読めないことではない)。
+#
+# **アプリが持ちたい項目(期日・繰り返しなど)は `data` として預かるだけで、中身は見ない。**
+# 置き場は `docs.extra` の `data`。Chiezo の画面や AI は今までどおりタイトル・本文・状態・印を
+# 読み書きでき、アプリの項目には触れない。書き換えたら `updated_at` が動くので、
+# 読む側はそれで変わったかどうかを見分けられる。
+
+router = APIRouter(prefix="/v1/todo", tags=["todo"])
+
+# アプリの項目の置きどころ(`docs.extra` の中)
+EXTRA_DATA_KEY = "data"
+
+
+class ProjectBody(BaseModel):
+    name: str
+    description: str | None = None
+
+
+class TaskBody(BaseModel):
+    title: str | None = None
+    body: str | None = None
+    # 所属プロジェクトの名前。空文字は「どこにも属さない」
+    project: str | None = None
+    status: str | None = None
+    flagged: bool | None = None
+    # アプリが持ちたい項目。中身は見ずに預かる(丸ごと置き換え)
+    data: dict | None = None
+
+
+def _project_json(p: Project) -> dict:
+    return {
+        "id": p.id,
+        "name": p.name,
+        "description": p.description,
+        "repoUrls": p.repo_urls,
+        "archived": p.archived,
+        "createdAt": p.created_at,
+        "updatedAt": p.updated_at,
+    }
+
+
+def _task_json(t: Task) -> dict:
+    row = _row(t.doc_id)
+    return {
+        "id": t.doc_id,
+        "title": t.title,
+        "body": body_rest(t),
+        "status": t.status,
+        "flagged": t.flagged,
+        "project": t.project,
+        "createdAt": t.created_at,
+        "updatedAt": t.updated_at,
+        "data": (_extra_of(row) if row else {}).get(EXTRA_DATA_KEY),
+    }
+
+
+def _set_data(doc_id: int, data: dict) -> None:
+    """アプリの項目を置き換える(ほかの `extra`、並び順や作成日時はそのまま)。"""
+    row = _row(doc_id)
+    extra = {**_extra_of(row), EXTRA_DATA_KEY: data}
+    notes.update(doc_id, extra=extra)
+
+
+@router.get("/projects")
+def api_list_projects(archived: bool | None = None) -> dict:
+    return {"projects": [_project_json(p) for p in list_projects(archived=archived)]}
+
+
+@router.post("/projects", status_code=201)
+def api_create_project(body: ProjectBody) -> dict:
+    return _project_json(create_project(body.name, description=body.description))
+
+
+@router.get("/tasks")
+def api_list_tasks(project: str | None = None, status: str | None = None) -> dict:
+    """タスクの一覧。`project` で絞る(空文字はどこにも属さないもの)。完了も含めて返す。"""
+    if project == "":
+        items = [t for t in list_tasks(status=status) if t.project is None]
+    else:
+        items = list_tasks(project=project, status=status)
+    return {"tasks": [_task_json(t) for t in items]}
+
+
+@router.get("/tasks/{doc_id}")
+def api_get_task(doc_id: int) -> dict:
+    return _task_json(require_task(doc_id))
+
+
+@router.post("/tasks", status_code=201)
+def api_create_task(body: TaskBody) -> dict:
+    task = create_task(
+        body.title or "",
+        body=body.body,
+        project=body.project or None,
+        status=body.status,
+        flagged=bool(body.flagged),
+    )
+    if body.data is not None:
+        _set_data(task.doc_id, body.data)
+    return _task_json(require_task(task.doc_id))
+
+
+@router.patch("/tasks/{doc_id}")
+def api_update_task(doc_id: int, body: TaskBody) -> dict:
+    """渡した項目だけを差し替える。`project` に空文字を渡すと所属を外す。"""
+    fields = (body.title, body.body, body.project, body.status, body.flagged)
+    if any(f is not None for f in fields):
+        update_task(
+            doc_id,
+            title=body.title,
+            body=body.body,
+            project=body.project or None,
+            status=body.status,
+            flagged=body.flagged,
+            unlink_project=body.project == "",
+        )
+    else:
+        require_task(doc_id)
+    if body.data is not None:
+        _set_data(doc_id, body.data)
+    return _task_json(require_task(doc_id))
+
+
+@router.delete("/tasks/{doc_id}", status_code=204)
+def api_delete_task(doc_id: int) -> None:
+    require_task(doc_id)
+    delete_task(doc_id)

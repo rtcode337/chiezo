@@ -133,7 +133,8 @@ Chiezo が貸し出すもの(知識・鍵と話せる AI・計算資源・時計
 - **生成物の置き場**(`/media/...`)と、**何案か作って人に選ばせる場**(`media_picks`)——
   音は AI 自身が聴けないので、聴き比べる手段がここにしかない
 - **ToDo**(`app/tasks.py` / 画面は `app/views/todo.py`)—— タスク・プロジェクト・ルールを
-  `chiezo_memory` の上にタグで載せたもの。専用のテーブルも列も持たない
+  `chiezo_memory` の上にタグで載せたもの。専用のテーブルも列も持たない。
+  LAN の中のアプリは `/v1/todo/...` で読み書きできる(アプリの項目は `data` として中身を見ずに預かる)
 
 現在の収録ソースは日本語 Wikipedia = `jawiki`、OpenStreetMap 日本抽出 = `osm_japan`、
 GeoNames 全世界地名辞典 = `geonames`(いずれも 348 言語版・195 か国から選んで増やせる)。
