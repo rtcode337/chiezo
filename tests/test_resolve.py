@@ -337,6 +337,9 @@ def address_docs():
             "lat": 35.6800, "lon": 139.7640, "feature": "isj=block", "area": "東京都",
             "version": "24.0a",
         }},
+        {"title": "東京都見本市大字見本1234",
+         "aliases": ["東京都見本市大字見本-1234", "東京都見本市見本-1234"],
+         "extra": {"lat": 35.75, "lon": 139.75, "area": "東京都"}},
         # 同じ鍵が 2 つの街区を指す(どちらか言えない)
         {"title": "東京都見本市見本町5(甲)", "aliases": ["東京都見本市見本町-5"],
          "extra": {"lat": 35.7, "lon": 139.7, "area": "東京都"}},
@@ -372,6 +375,14 @@ class TestPlacingByAddress:
             "name": "どこにも無い店", "address": "千代田区丸の内2-3-4",
         }, "東京都", srcs, NOW)
         assert result.ok, result.shop
+
+    def test_a_koaza_written_in_the_address_is_dropped(self, srcs):
+        """辞典の地番が小字を持たないとき、住所に書き足された小字を外して引く。"""
+        result = resolve.resolve(ADDRESS_SPEC, {
+            "name": "どこにも無い店", "address": "東京都見本市大字見本字黒石1234-5",
+        }, "東京都", srcs, NOW)
+        assert result.ok, result.shop
+        assert result.shop["address"] == "東京都見本市大字見本1234"
 
     def test_a_town_without_a_block_is_not_placed(self, srcs):
         """町の名前までしか当たらない住所は置かない(郊外では数 km ずれうる)。"""

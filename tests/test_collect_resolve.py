@@ -118,6 +118,50 @@ class TestBaking:
         text, _ = collect.render_material({"名物丼": doc}, clue="shop")
         assert "引き当てられなかった —— 辞典に同じ名前がありません" in text
 
+    def test_a_previously_failed_item_is_retried_when_a_dictionary_can_place_it(
+        self, gourmet, dictionaries, tmp_path,
+    ):
+        """前に落ちた 1 件は、AI が返さない回でも引き直す(辞典を足したあとに置けるように)。
+        本文と他のタグは動かさず、店・座標・出どころのタグだけを重ねる。"""
+        from tests.test_resolve import address_docs
+
+        dish = {**_dish(), "extra": {"shop": {"name": "どこにも無い店", "address": "東京都千代田区丸の内2-3-4"}}}
+        items, _ = collect.check_collected(gourmet, [dish], dictionaries)
+        first = _baked(collect.ndjson(gourmet, dictionaries, {}, items)[0])["名物丼"]
+        assert first["extra"]["shop"]["unresolved"]
+        previous = {"名物丼": {**first, "doc_id": 1}}
+        baked = make_source_for(gourmet, previous)
+
+        # 住所の辞典を足した。AI は何も返さない回
+        collect.update("gourmet", resolve={**RESOLVE, "address": {"source": "address_jp", "tag": "出典:位置参照情報"}})
+        gourmet = collect.get("gourmet")
+        srcs = {**dictionaries, **baked, "address_jp": make_source(tmp_path, "address_jp", address_docs())}
+        items, checks = collect.check_collected(gourmet, [], srcs)
+        body, diff = collect.ndjson(gourmet, srcs, previous, items, edits=True)
+        doc = _baked(body)["名物丼"]
+
+        assert checks["retried"] == 1
+        assert (doc["extra"]["lat"], doc["extra"]["lon"]) == (35.68, 139.764)
+        assert doc["extra"]["shop"]["basis"] == [resolve.BASIS_ADDRESS]
+        assert "出典:位置参照情報" in doc["tags"]
+        assert "状態:代表店未定" not in doc["tags"]
+        assert "種類:丼" in doc["tags"]
+        assert doc["body"] == first["body"]
+        assert diff["updated"] == 1 and diff["added"] == 0
+        assert collect.checks_note(checks).endswith("前に落ちたものを引き直して 1 件")
+
+    def test_a_retry_that_still_fails_changes_nothing(self, gourmet, dictionaries):
+        dish = {**_dish(), "extra": {"shop": {"name": "どこにも無い店"}}}
+        items, _ = collect.check_collected(gourmet, [dish], dictionaries)
+        first = _baked(collect.ndjson(gourmet, dictionaries, {}, items)[0])["名物丼"]
+        previous = {"名物丼": {**first, "doc_id": 1}}
+        srcs = {**dictionaries, **make_source_for(gourmet, previous)}
+
+        items, checks = collect.check_collected(gourmet, [], srcs)
+
+        assert items == []
+        assert checks["retried"] == 0
+
     def test_collections_without_the_specs_are_untouched(self, enabled, dictionaries):
         plain = collect.create("plain", prompt="x", interval_minutes=60)
         items = [_dish()]

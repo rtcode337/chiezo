@@ -5343,6 +5343,16 @@ def _stream_docs(
             if key in incoming_urls:
                 known_urls.add(key)
         raw = edits_of.take(title)
+        if raw is not None and raw.get(resolving.RETRY_KEY):
+            # **引き直して引き当たった 1 件**(`resolve.retry`)。店・座標・出どころのタグだけを
+            # 重ね、本文も他の脇書きも動かさない。AI の回ではないので署名は外す
+            if is_removed(before):
+                yield before
+                continue
+            updated += 1
+            updated_titles.append(title)
+            yield _stamped(_retried(before, raw), sweep, "updated", before)
+            continue
         if raw is None and (found := _found_by_record(edits_of, before)) is not None:
             # **見出しが変わっただけの同じ 1 件。** 元のソースを取り込み直すと、
             # 同じ名前の見分けの札(「名前 (番号)」)が付け直されることがある ——
@@ -5444,6 +5454,9 @@ def _stream_docs(
     next_id += 1
     for raw in edits_of.rest():
         title = notes.title_key(raw.get("title"))
+        if raw.get(resolving.RETRY_KEY):
+            # 引き直しは前の世代の 1 件に重ねるもので、新しい 1 件にはしない
+            continue
         if only_new and edits and _is_tombstone(raw):
             skipped += 1
             continue
@@ -5955,6 +5968,13 @@ def _with_new_facts(doc: dict, raw: dict) -> dict:
     return {**doc, "extra": _merge_extra(extra, fresh)} if fresh else doc
 
 
+def _retried(doc: dict, raw: dict) -> dict:
+    """引き直して引き当たった店を、前の世代の 1 件に重ねる(`resolve.retry`)。"""
+    extra = doc.get("extra") if isinstance(doc.get("extra"), dict) else {}
+    facts = raw.get(resolving.FACTS_KEY) if isinstance(raw.get(resolving.FACTS_KEY), dict) else {}
+    return {**doc, "tags": list(raw.get("tags") or []), "extra": _merge_extra(extra, facts)}
+
+
 def _with_facts(doc: dict, raw: dict) -> dict:
     """既にある 1 件の脇書きを、**機械が運んできた値で入れ替える**。
 
@@ -6204,6 +6224,16 @@ def check_collected(item: Collection, items, sources: dict) -> tuple:
             return key not in checks or formatting.check(checks[key], value)[0] is not None
 
         items, report = resolving.apply(spec, items, previous, sources, now, valid)
+        # **前に落ちた 1 件も引き直す**(`resolve.retry`)。辞典を足した・直したあとも、
+        # AI が触り直すまで落ちたままにしない
+        returned = {notes.title_key(d.get("title")) for d in items if isinstance(d, dict)}
+        retried = [
+            fix for one in _unresolved_rows(item, sources, spec)
+            if one["title"] not in returned
+            and (fix := resolving.retry(spec, one["title"], one["tags"], one["shop"], sources, now, valid))
+        ]
+        items = [*items, *retried]
+        report["retried"] = len(retried)
     items, dropped = formatting.apply(checks, items, resolving.FACTS_KEY)
     failures = report.pop("failures", [])
     return items, {
@@ -6224,9 +6254,47 @@ def checks_note(checks: dict | None) -> str:
         parts.append(
             f"引き当て {checks.get('resolved', 0)} 件・できず {checks.get('unresolved', 0)} 件"
         )
+    if checks.get("retried"):
+        parts.append(f"前に落ちたものを引き直して {checks['retried']} 件")
     if checks.get("dropped"):
         parts.append(f"書式に合わず落とした値 {checks['dropped']} 件")
     return " / ".join(parts)
+
+
+# 1 回の焼きで引き直す、引き当てられなかった 1 件の天井(1 件ごとに辞典を何度か引く)
+MAX_RETRIES_PER_BAKE = 500
+
+
+def _unresolved_rows(item: Collection, sources: dict, spec: dict) -> list[dict]:
+    """いま引き当てられていない生きている 1 件(見出し・タグ・店)。引き直す相手(`resolve.retry`)。"""
+    src = sources.get(item.name)
+    if src is None:
+        return []
+    path = f'$."{spec["clue"]}"'
+    try:
+        rows = db.query(
+            src.path,
+            "SELECT title, tags, json_extract(extra, ?) AS shop FROM docs"
+            " WHERE json_extract(extra, ? || '.unresolved') IS NOT NULL"
+            " AND doc_id NOT IN (SELECT doc_id FROM doc_tags WHERE tag = ?)"
+            " ORDER BY updated_at LIMIT ?",
+            (path, path, notes.REMOVED_TAG, MAX_RETRIES_PER_BAKE),
+        )
+    except Exception as e:  # 読めなければ引き直さない(焼く側は止めない)
+        log.warning("collect: %s の引き当てられなかった 1 件を読めませんでした: %s", item.name, type(e).__name__)
+        return []
+    return [
+        {"title": row["title"], "tags": _json_list(row["tags"]), "shop": load_json(row["shop"]) or {}}
+        for row in rows
+    ]
+
+
+def _json_list(raw) -> list:
+    try:
+        value = json.loads(raw or "[]")
+    except (ValueError, TypeError):
+        return []
+    return value if isinstance(value, list) else []
 
 
 def unresolved_docs(item: Collection, sources: dict, limit: int = 200) -> list[dict]:

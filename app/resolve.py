@@ -876,9 +876,12 @@ def _by_address(
     if not found:
         return None
     town, numbers = found.group(1), found.group(2).strip("-").split("-")
+    # 住所の書き方の揺れ: 小字(「字黒石」)を書き足した住所と、`大字` を省かずに書いた住所。
+    # 辞典は小字を持たない街区が多く、`大字` の無い形は辞典の側の別名にある
+    towns = {town, re.sub(r"字[^\d字-]+$", "", town), town.replace("大字", "")}
     for size in range(len(numbers), 0, -1):
-        wanted = f"{town}-{'-'.join(numbers[:size])}"
-        rows = _rows_named(src, {wanted})
+        tail = "-".join(numbers[:size])
+        rows = _rows_named(src, {f"{t}-{tail}" for t in towns if t})
         if len(rows) > 1:
             return None
         if rows and (cand := _candidate(one["source"], rows[0])) is not None:
@@ -1048,6 +1051,39 @@ def apply(
             raw[FACTS_KEY] = facts
         out.append(raw)
     return out, report
+
+
+# **引き直しの印**(`retry`)。AI が返した 1 件ではなく、前の世代の 1 件に「店と座標と
+# 出どころのタグだけ」を重ねる指示(`collect._stream_docs` が本文も他のタグも動かさずに重ねる)
+RETRY_KEY = "_chiezo_retry"
+
+
+def retry(
+    spec: dict, title: str, tags: list, shop, sources: dict, now: str, valid=None,
+) -> dict | None:
+    """**引き当てられなかった 1 件を、前の手がかりのまま引き直す**。引き当たれば重ねる形を返す。
+
+    引き当ては AI がその回に返した 1 件にしか掛からないので、**辞典を足しても・直しても、
+    前に落ちた 1 件は AI が触り直すまで落ちたまま**だった(住所の辞典を足した直後に、
+    引き当てできない 17 件が 1 件も動かなかった)。焼くたびに引き直し、引き当たったものだけを
+    返す(落ちたままのものは触らない —— 理由と日付を毎回書き換えない)。
+    """
+    if not is_resolved(shop) and isinstance(shop, dict) and (clue := clue_of(shop.get("clue"))):
+        result = resolve(spec, clue, _area_hint(spec, {"tags": tags}), sources, now)
+        if not result.ok:
+            return None
+        facts: dict = {spec["clue"]: result.shop, "lat": result.lat, "lon": result.lon}
+        for source_key, into in spec["to_extra"].items():
+            value = result.shop.get(source_key)
+            if value is not None and (valid is None or valid(into, value)):
+                facts[into] = value
+        return {
+            "title": title,
+            RETRY_KEY: True,
+            "tags": _machine_tags(list(tags or []), result.shop, source_tags(spec), spec["failed_tag"], spec),
+            FACTS_KEY: facts,
+        }
+    return None
 
 
 def _area_hint(spec: dict, raw: dict) -> str | None:
