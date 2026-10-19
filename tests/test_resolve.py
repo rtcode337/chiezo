@@ -251,6 +251,48 @@ class TestPickingTheRightShop:
         )
         assert result.ok, result.shop
 
+    def _pointed(self, tmp_path, osm_title: str):
+        """住所を持たない地図辞典の 1 点だけがある辞典(直売所や小さな店に多い形)。"""
+        extra_osm = [{"title": osm_title, "extra": {
+            "osm_type": "node", "osm_id": 3001, "feature": "shop=farm",
+            "lat": 35.6850, "lon": 139.7600, "area": "東京都",
+        }}]
+        return {
+            "osm_japan": make_source(tmp_path, "osm_japan", osm_docs(extra_osm)),
+            "overture_japan": make_source(tmp_path, "overture_japan", []),
+        }
+
+    def test_a_pointed_entry_with_a_longer_formal_name_is_taken(self, tmp_path):
+        """AI が辞典を見て指した見出しは、運営の名前が頭に付いた正式名でも採る(根拠に残す)。"""
+        srcs = self._pointed(tmp_path, "サンプルの郷")
+        result = resolve.resolve(SPEC, {
+            "name": "JAサンプル サンプルの郷", "address": "東京都千代田区丸の内2-3-4",
+            "ref": "osm_japan:サンプルの郷",
+        }, "東京都", srcs, NOW)
+        assert result.ok, result.shop
+        assert resolve.BASIS_REF in result.shop["basis"]
+
+    def test_names_alike(self):
+        assert resolve._named_alike("見本", "見本製菓")
+        assert resolve._named_alike("見本農協ファーマーズマーケット見本柑", "JA見本 ファーマーズマーケット 見本柑")
+        assert not resolve._named_alike("見本菓舗", "見本 本店")
+
+    def test_a_pointed_entry_with_little_in_common_is_not_taken(self, tmp_path):
+        """重なりが 2 字だけの名前は、指していても採らない(別の店を掴みうる)。"""
+        srcs = self._pointed(tmp_path, "見本菓舗")
+        result = resolve.resolve(SPEC, {
+            "name": "見本 本店", "address": "東京都千代田区丸の内2-3-4", "ref": "osm_japan:見本菓舗",
+        }, "東京都", srcs, NOW)
+        assert not result.ok
+
+    def test_a_similar_name_without_pointing_is_not_taken(self, tmp_path):
+        """指していなければ今までどおり(名前が似ているだけの点は採らない)。"""
+        srcs = self._pointed(tmp_path, "サンプルの郷")
+        result = resolve.resolve(SPEC, {
+            "name": "JAサンプル サンプルの郷", "address": "東京都千代田区丸の内2-3-4",
+        }, "東京都", srcs, NOW)
+        assert not result.ok
+
     def test_a_main_shop_name_finds_the_branch_spelling(self, tmp_path):
         """「◯◯本店」と書いた店が、辞典では「◯◯店」の見出しのとき。"""
         overture = [{"title": "サンプル麺 丸の内店", "extra": {

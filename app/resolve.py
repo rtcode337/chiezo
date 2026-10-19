@@ -54,6 +54,7 @@ import math
 import re
 import unicodedata
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 
 from fastapi import HTTPException
 
@@ -109,6 +110,13 @@ BASIS_BLOCK = "番地"
 BASIS_SITE = "サイト"
 BASIS_AGREE = "辞典の一致"
 BASIS_LOOSE = "名前の揺れ"
+BASIS_REF = "指した見出し"
+# **AI が指した見出しを、名前の書き方が違っても採る**ときの、名前の重なりの下限
+# (`_named_alike`)。共通の続いた字がこの字数以上、かつ短いほうの名前のこの割合以上。
+# 短いほうがまるごと長いほうに入っていれば字数は問わない。運営の名前を頭に付けた
+# 正式名と看板の名前だけの見出しは通り、屋号の頭 2 字だけが同じ名前は通らない
+MIN_SHARED_NAME_CHARS = 3
+MIN_SHARED_NAME_RATIO = 0.6
 
 
 def _bad(message: str) -> HTTPException:
@@ -614,6 +622,15 @@ def resolve(spec: dict, clue: dict, area_hint: str | None, sources: dict, now: s
     if len(clusters) == 1 and any(c.area_ok for c in clusters[0]) \
             and not all(c.loose for c in clusters[0]):
         return _resolved(spec, clusters[0], clue, now)
+    # **AI が辞典を見て指した見出し(`ref`)は、名前の書き方が違っても採る** —— 候補が
+    # その 1 か所だけで、県が合い、名前が大きく重なるとき。辞典の側に住所の無い点
+    # (地図辞典の直売所・小さな店に多い)は、名前を寄せると住所でも辞典どうしでも
+    # 確かめようがなく、**AI が辞典で見つけて指した店まで落ちていた**(運営の名前を
+    # 頭に付けた正式名と、看板の名前だけの見出し)
+    if len(clusters) == 1 and any(
+        c.by_ref and c.area_ok and _named_alike(base_name(c.title), name) for c in clusters[0]
+    ):
+        return _resolved(spec, clusters[0], clue, now, pointed=True)
     more = f"(候補が多すぎて {'・'.join(crowded)} は先頭の {MAX_CANDIDATES} 件だけ見ました)" \
         if crowded else ""
     if len(clusters) > 1:
@@ -724,7 +741,22 @@ def _is_strong(group: list[Candidate]) -> bool:
     return False
 
 
-def _resolved(spec: dict, group: list[Candidate], clue: dict, now: str) -> Result:
+def _named_alike(theirs: str, ours: str) -> bool:
+    """2 つの名前が大きく重なるか(続いた共通の字で見る。`MIN_SHARED_NAME_*`)。"""
+    a, b = name_key(theirs), name_key(ours)
+    if not a or not b:
+        return False
+    short, long_ = sorted((a, b), key=len)
+    # 短いほうがまるごと入っていれば重なりの字数は問わない(「鷹屋」と「鷹屋製菓」)
+    if len(short) >= 2 and short in long_:
+        return True
+    match = SequenceMatcher(None, a, b, autojunk=False).find_longest_match(0, len(a), 0, len(b))
+    return match.size >= MIN_SHARED_NAME_CHARS and match.size >= MIN_SHARED_NAME_RATIO * len(short)
+
+
+def _resolved(
+    spec: dict, group: list[Candidate], clue: dict, now: str, pointed: bool = False,
+) -> Result:
     order = {one["source"]: n for n, one in enumerate(spec["sources"])}
     group = sorted(group, key=lambda c: (order.get(c.source, 99), not c.by_ref, not c.strong))
     chosen = group[0]
@@ -742,6 +774,8 @@ def _resolved(spec: dict, group: list[Candidate], clue: dict, now: str) -> Resul
         basis.append(BASIS_AGREE)
     if all(c.loose for c in group):
         basis.append(BASIS_LOOSE)
+    if pointed:
+        basis.append(BASIS_REF)
     shop: dict = {
         "name": base_name(chosen.title),
         "ref": f"{chosen.source}:{chosen.title}",
