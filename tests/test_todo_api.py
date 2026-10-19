@@ -82,3 +82,18 @@ def test_delete_and_not_found(client: TestClient):
 def test_an_unknown_project_is_refused(client: TestClient):
     r = client.post("/v1/todo/tasks", json={"title": "どこか", "project": "ないプロジェクト"})
     assert r.status_code == 404
+
+
+def test_a_project_can_be_archived_only_when_its_tasks_are_done(client: TestClient):
+    project = client.post("/v1/todo/projects", json={"name": "sample-app"}).json()
+    task = client.post("/v1/todo/tasks", json={"title": "残り", "project": "sample-app"}).json()
+
+    r = client.patch(f"/v1/todo/projects/{project['id']}", json={"archived": True})
+    assert r.status_code == 400
+
+    client.patch(f"/v1/todo/tasks/{task['id']}", json={"status": "done"})
+    r = client.patch(f"/v1/todo/projects/{project['id']}", json={"archived": True})
+    assert r.status_code == 200
+    assert r.json()["archived"] is True
+    listed = client.get("/v1/todo/projects", params={"archived": False}).json()["projects"]
+    assert "sample-app" not in [p["name"] for p in listed]

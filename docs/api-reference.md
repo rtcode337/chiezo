@@ -173,7 +173,8 @@ curl -s -X DELETE "$BASE/v1/chiezo_memory/3"                             # 取�
 `決定`、`runbook`、`環境`、`本番`、`設計メモ`、`トラブルシュート`、
 `_chiezo_tombstone` = 長期記憶から落とす墓標。
 プロジェクトはリポジトリ名を小文字で)。`task` / `rule` を持つメモは
-[ToDo の画面](tasks.md)(記憶の面のいちばん下、`/admin/memory#tasks`)の担当で、どれも持たないメモは
+[ToDo](tasks.md)の担当(`task` はタスクと予定のアプリが `/v1/todo/...` で、`rule` は記憶の面のいちばん下
+`/admin/memory#rules` で扱う)で、どれも持たないメモは
 ブラウズ画面(`/search/chiezo_memory/`)で読みます。
 語彙は `app/notes.py` の `CANONICAL_TAGS` が 1 か所で持ち、MCP の `remember` の
 ツール定義として配られます —— 書き手が変わっても同じ意味に同じ表記が付くようにするためで、
@@ -227,12 +228,15 @@ notes を別ディレクトリに置いているのは、`/data` の変化を監
 
 **ToDo のタスクとプロジェクト(`docs/tasks.md`)を、LAN の中のアプリが読み書きする口。**
 タスクと予定を扱うアプリが、自分の手元の代わりに Chiezo の ToDo を保存先に選べるようにするためのもの。
+**プロジェクトとタスクの操作はこの口に一本化していて、管理画面には出さない**(画面にも同じ操作を置くと、
+同じタスクを 2 か所で直すことになり、どちらが正なのかが読めなくなる)。
 ほかの `/v1` と同じく認証は無く、安全なネットワークの中だけで使う。
 
 | 口 | 中身 |
 |---|---|
 | `GET /v1/todo/projects` | プロジェクトの一覧(`archived` で絞れる) |
 | `POST /v1/todo/projects` `{"name", "description"}` | プロジェクトを作る(201)。同じ名前は 409 |
+| `PATCH /v1/todo/projects/{id}` `{"name", "description", "archived"}` | 渡した項目だけ差し替える。アーカイブは未完了のタスクが 0 件のときだけ(残っていれば 400) |
 | `GET /v1/todo/tasks?project=名前` | タスクの一覧(完了も含む)。`project` に空文字でどこにも属さないもの。`status` で絞れる |
 | `GET /v1/todo/tasks/{id}` | 1 件 |
 | `POST /v1/todo/tasks` `{"title", "body", "project", "status", "flagged", "data"}` | 1 件足す(201) |
@@ -1912,7 +1916,7 @@ AI に返させる形は `{"items":[{"title","body","tags","url"}],"next_cursor"
 | 面 | 何があるか |
 |---|---|
 | `/admin/status` | 状況。ディスクの空き、取り込み、収集、AI(走っている依頼・依頼の履歴・使用量) |
-| `/admin/memory` | 記憶。短期記憶・長期記憶（再構築と削除）・定期再構築(長期記憶の表の列。`POST /admin/rebuild-schedule`。ダンプのソースを何日おき・何時に取り直すか)・取り込みに要るキーの案内(登録は API キーの面)・未初期化の初期化・ToDo(タスクとルール) |
+| `/admin/memory` | 記憶。短期記憶・長期記憶（再構築と削除）・定期再構築(長期記憶の表の列。`POST /admin/rebuild-schedule`。ダンプのソースを何日おき・何時に取り直すか)・取り込みに要るキーの案内(登録は API キーの面)・未初期化の初期化・ルール(ToDo のうち画面に出すのはルールだけ。プロジェクトとタスクは `/v1/todo/...` から) |
 | `/admin/collect` | 収集。無人で回る層の巡回・区画・変更履歴と、回す相手の並び（ワーカー） |
 | `/admin/ai` | AI。話せる相手・絵や音を作る相手と、その鍵(AI依頼の元栓もここ) |
 | `/admin/keys` | API キー。Chiezo 全体で使う外部 API のキーを名前で持つ(`POST /admin/keys`。登録・更新・削除。値は二度と出さない)。取り込みのソースは `credential_group` で名前を名乗って引き(J-Quants は `jquants`)、ソースが名乗らないキーも名前を付けて置いておける(収集の道具などが後から引く) |

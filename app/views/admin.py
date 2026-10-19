@@ -2658,10 +2658,10 @@ PAGES = (
     # **先頭に置く。** 毎回まず見に来るのは「いま何が動いているか」で、
     # 走らせるボタンを押したあとに連れてこられるのもここ
     (STATUS_PAGE, "状況", "いま動いているもの。取り込み・収集・AI(依頼・使用量)・ディスクの空き"),
-    # **ToDo は記憶の面のいちばん下の節**(`views/todo.py`)。タスクもルールも短期記憶の
-    # メモにタグで載っているだけで、別の置き場を持たない —— 面を分けていた頃は、
+    # **ルールは記憶の面のいちばん下の節**(`views/todo.py`)。短期記憶のメモに
+    # タグで載っているだけで、別の置き場を持たない —— 面を分けていた頃は、
     # 帯に同じ層の入口が 2 つ並んでいた
-    ("/admin/memory", "記憶", "溜めて引く。短期記憶・長期記憶・初期化・ToDo"),
+    ("/admin/memory", "記憶", "溜めて引く。短期記憶・長期記憶・初期化・ルール"),
     # **記憶から切り出した面。** 記憶の中に畳んでいた頃は、収集を 1 本見るのに
     # 長期記憶の一覧と初期化の表をまたいでいた —— 無人で回る層は毎日見に来る側で、
     # 一度入れたら開かない表と同じ高さに置く理由が無い。ワーカーも一緒に置く
@@ -2808,7 +2808,7 @@ def admin(request: Request):
         "/admin/memory": (
             f"長期 {len(long_term)} ソース / {docs:,} 文書、短期 {notes_docs:,} 件。"
             f"収集 {len(collections)} 件(有効 {len(enabled_collections)} 件)。"
-            f"ToDo: {_todo_summary()}"
+            f"{_rules_summary()}"
         ),
         "/admin/ai": f"話せる相手 {len(answer.backend_names())} 件",
         "/admin/server": esc(build_info.describe().splitlines()[0] if build_info.describe() else ""),
@@ -3129,18 +3129,17 @@ def _ai_section_html(request: Request, running: list[dict], job: dict | None) ->
     )
 
 
-def _todo_summary() -> str:
-    """トップに出す ToDo の概況。**短期記憶が無効なら数えない**(置き場が無い)。"""
+def _rules_summary() -> str:
+    """トップに出すルールの概況。**短期記憶が無効なら数えない**(置き場が無い)。
+
+    タスクの件数は出さない —— プロジェクトとタスクの操作はタスクと予定のアプリに
+    一本化したので、ここに数だけ出しても押して開ける先が無い。
+    """
     if not notes.is_enabled():
-        return '<span class="muted">短期記憶が無効なので置けません</span>'
-    active = tasks.list_active_tasks()
-    doing = sum(1 for t in active if t.status == tasks.STATUS_IN_PROGRESS)
+        return '<span class="muted">ルール: 短期記憶が無効なので置けません</span>'
     rules = tasks.list_rules()
     enabled = sum(1 for r in rules if r.enabled)
-    return (
-        f"未完了 {len(active)} 件(着手中 {doing} 件)。"
-        f"ルール {len(rules)} 本(有効 {enabled} 本)"
-    )
+    return f"ルール {len(rules)} 本(有効 {enabled} 本)"
 
 
 def _is_collection(name: str) -> bool:
@@ -3224,20 +3223,15 @@ def _running_html(running: list[dict], done: list[dict] | None = None) -> str:
 
 
 @router.get("/admin/memory", response_class=HTMLResponse)
-def admin_memory(
-    request: Request,
-    done_page: int = Query(0, ge=0, description="ToDo の完了の何ページ目か"),
-):
-    return memory_page(request, done_page=done_page)
+def admin_memory(request: Request):
+    return memory_page(request)
 
 
-def memory_page(
-    request: Request, *, done_page: int = 0, rules_preview: str = "", backup_preview: str = "",
-) -> HTMLResponse:
-    """記憶の面。**いちばん下に ToDo の節**(`views/todo.section_html`)。
+def memory_page(request: Request, *, rules_preview: str = "") -> HTMLResponse:
+    """記憶の面。**いちばん下にルールの節**(`views/todo.section_html`)。
 
-    ToDo の取り込みの下見(`rules_preview` / `backup_preview`)は書き込みの口が
-    組むので、そちらからもここを呼ぶ。
+    ルールの取り込みの下見(`rules_preview`)は書き込みの口が組むので、
+    そちらからもここを呼ぶ。
     """
     sources: dict[str, Source] = request.app.state.sources
     job = _fetch_trigger_status()
@@ -3393,9 +3387,7 @@ chiezo-trigger が立ち上がっていない場合、再構築と削除はで�
 </table>
 </details>
 
-{todo.section_html(
-    request, done_page=done_page, rules_preview=rules_preview, backup_preview=backup_preview,
-)}
+{todo.section_html(request, rules_preview=rules_preview)}
 """
     return HTMLResponse(content=page_shell("記憶", body, style=todo.TODO_STYLE))
 

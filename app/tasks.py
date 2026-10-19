@@ -18,13 +18,19 @@
 | ルール                   | tag `rule` の文書。本文が Markdown |
 | ルールの無効             | tag `無効` |
 
-タグで表せないものだけ `docs.extra`(JSON)に置く —— 並び順(`sort_order`)と、
+タグで表せないものだけ `docs.extra`(JSON)に置く —— 並び順(`sort_order`。いま手で
+並べ替えられるのはルールだけで、タスクのものはかつて画面で並べた値を読むだけ)と、
 `docs` が持たない作成日時(`created_at`)。並びに作成日時を使うのは、更新のたびに
 順番が入れ替わると探しづらいため(`updated_at` は書き換えで動く)。
 
 **書き込みは必ず `app/notes.py` を通す。** `docs` を直接 UPDATE すると FTS と
 `doc_tags` / `tag_counts` が本体とずれる。例外は `notes.set_extra()` だけで、
 これは `extra` が索引のどれにも関わらないから直接書いてよい。
+
+**画面に出すのはルールだけ**(`app/views/todo.py`)。プロジェクトとタスクは置き場と
+REST(末尾の `router`。`/v1/todo/...`)だけを持ち、操作は LAN の中のタスクと予定の
+アプリに一本化している —— 管理画面にも同じ操作を置くと、同じタスクを 2 か所で直す
+ことになり、どちらが正なのかが読めなくなる。
 """
 from __future__ import annotations
 
@@ -42,7 +48,7 @@ log = logging.getLogger("chiezo.app")
 
 # ---- タグの語彙(正は notes.CANONICAL_TAGS。ここは参照するための名前) ----------
 # タスクを表すタグ。**`todo` とは分けてある** —— あちらは「あとでやる」くらいの
-# 意味で普通のメモにも付くので、タスク画面に並べる基準にすると、メモがタスクに
+# 意味で普通のメモにも付くので、タスクとして扱う基準にすると、メモがタスクに
 # 化けてしまう。
 TAG_TASK = "task"
 TAG_IN_PROGRESS = "着手中"
@@ -68,9 +74,6 @@ STRUCTURAL_TAGS = frozenset({
     TAG_TASK, TAG_IN_PROGRESS, TAG_DONE, TAG_FLAGGED,
     TAG_RULE, TAG_RULE_DISABLED, TAG_PROJECT, TAG_ARCHIVED,
 })
-
-# 完了タスクの 1 ページ。画面で一度に読める程度の上限。
-DONE_PAGE_SIZE_MAX = 100
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
@@ -205,19 +208,6 @@ def list_active_tasks(project: str | None = None) -> list[Task]:
     return [t for t in list_tasks(project) if t.status != STATUS_DONE]
 
 
-def list_done_tasks(project: str | None = None, page: int = 0, size: int = 20) -> dict:
-    """完了タスクをページングで返す。
-
-    完了分は「片付いたものの記録」なので手動並び順は見ず、作成日時の新しい順で固定する。
-    """
-    size = min(max(int(size), 1), DONE_PAGE_SIZE_MAX)
-    page = max(int(page), 0)
-    done = [t for t in list_tasks(project) if t.status == STATUS_DONE]
-    done.sort(key=lambda t: (t.created_at, t.doc_id), reverse=True)
-    start = page * size
-    return {"items": done[start:start + size], "total": len(done), "page": page, "size": size}
-
-
 def require_task(doc_id: int) -> Task:
     row = _row(doc_id)
     if row is None or TAG_TASK not in _tags_of(row):
@@ -254,11 +244,11 @@ def create_task(
 ) -> Task:
     """タスクを 1 件足す。
 
-    `sort_order` は 0(未並び替え)。手で並べた分(1..n)より前に来るので、
+    `sort_order` は 0(未並び替え)。かつて手で並べた分(1..n)より前に来るので、
     放り込んだタスクはグループの先頭に積まれる。
 
-    `flagged` を渡すのは**取り込み(`import_tasks`)だけ**。印を付けるかは人の判断なので
-    放り込む時点では分からないが、書き出したものを戻すときは運ばないと失われる。
+    `flagged` は REST(`/v1/todo/tasks`)から渡ってくる。印を付けるかは人の判断なので、
+    アプリが作るときに付けて送ってきたものをそのまま載せる。
     """
     title = (title or "").strip()
     if not title:
@@ -352,29 +342,6 @@ def _is_title_line(line: str, task: Task) -> bool:
     return line == task.title or f"{line} ({task.doc_id})" == task.title
 
 
-def reorder_tasks(project: str | None, doc_ids: list[int]) -> list[Task]:
-    """プロジェクト内(未紐づけなら未分類のかたまり)の手動並び替え。
-
-    渡した順に 1, 2, 3, … と `sort_order` を振る。画面に出ていないタスクには
-    触らないので `doc_ids` は部分集合でよい。ただし別のプロジェクトのタスクを
-    混ぜると順序の意味が壊れるので、そこだけは弾く。
-    """
-    if not doc_ids:
-        raise _bad_request("doc_ids は必須です")
-    if len(set(doc_ids)) != len(doc_ids):
-        raise _bad_request("doc_ids に重複があります")
-    for index, doc_id in enumerate(doc_ids, start=1):
-        task = require_task(doc_id)
-        if task.project != project:
-            raise _bad_request(f"別のプロジェクトのタスクは同時に並び替えできません: doc_id={doc_id}")
-        row = _row(doc_id)
-        extra = _extra_of(row)
-        extra["sort_order"] = index
-        # 並び替えで updated_at を動かさない(recall の時系列を乱さないため)
-        notes.set_extra(doc_id, extra)
-    return list_tasks(project)
-
-
 def delete_task(doc_id: int) -> None:
     notes.delete(doc_id)
 
@@ -445,7 +412,7 @@ def _load_payload() -> tuple[list[Project], int]:
     """プロジェクトの並びと、次に配る id。
 
     **次の id を JSON に持つ**のは、消した番号を配り直さないため —— `max(id) + 1` だと
-    最後の 1 件を消した後に 1 から配り直してしまい、画面が持っている古い参照が
+    最後の 1 件を消した後に 1 から配り直してしまい、アプリが持っている古い参照が
     黙って別のプロジェクトを指す。
     """
     body = _projects_body()
@@ -628,32 +595,6 @@ def _rename_project_tag(old: str, new: str) -> None:
         notes.update(row["doc_id"], tags=",".join(tags))
 
 
-def delete_project(project_id: int) -> None:
-    """アーカイブ済みのプロジェクトを、紐づくタスクごと消す。
-
-    アーカイブしていないものは消せない —— アーカイブ自体が「未完了 0 件」を
-    条件にしているので、片付いたことを確かめる一段を必ず通させるため。
-    """
-    projects, next_id = _load_payload()
-    current = require_project(project_id)
-    if not current.archived:
-        raise _bad_request(f"アーカイブしてからでないと削除できません: {current.name}")
-    for task in list_tasks(current.name):
-        notes.delete(task.doc_id)
-    _save_projects([p for p in projects if p.id != current.id], next_id=next_id)
-
-
-def reorder_projects(project_ids: list[int]) -> list[Project]:
-    """並び替え。`project_ids` は全プロジェクト(アーカイブ含む)を望む順で過不足なく。"""
-    projects, next_id = _load_payload()
-    existing = {p.id for p in projects}
-    if not project_ids or set(project_ids) != existing or len(set(project_ids)) != len(project_ids):
-        raise _bad_request("ids には全プロジェクトの id を過不足なく指定してください")
-    by_id = {p.id: p for p in projects}
-    _save_projects([by_id[i] for i in project_ids], next_id=next_id)
-    return list_projects()
-
-
 # ---- ルール -----------------------------------------------------------------
 #
 # タスクと違い**本文が主役**なので、本文にタイトル行を混ぜない。
@@ -770,7 +711,7 @@ def delete_rule(doc_id: int) -> None:
 
 
 def reorder_rules(doc_ids: list[int]) -> list[Rule]:
-    """並び替え。`doc_ids` は全ルールを望む順で過不足なく(プロジェクトと同じ方式)。"""
+    """並び替え。`doc_ids` は全ルールを望む順で過不足なく。"""
     existing = {r.doc_id for r in list_rules()}
     if not doc_ids or set(doc_ids) != existing or len(set(doc_ids)) != len(doc_ids):
         raise _bad_request("doc_ids には全ルールの doc_id を過不足なく指定してください")
@@ -893,142 +834,6 @@ def set_rules_repo_url(value: str | None) -> str | None:
     return rules_repo_url()
 
 
-# ---- 持ち出しと取り込み -----------------------------------------------------
-#
-# DB を失っても打ち直さずに戻せるようにするための機能。**書き出したものをそのまま
-# 読み込める**(書き出し結果が読み込みの入力と同じ形)ので、テキストとして手元に
-# 置いておけばバックアップになる。
-#
-# 持ち出すのは未完了のタスクと、その所属プロジェクトの名前・リポジトリだけ。
-# 完了タスクは「片付いたものの記録」で復元する意味が薄く、プロジェクトの説明・
-# 並び順・アーカイブ状態も対象にしない(戻したいのは待ち行列であって画面の状態ではない)。
-
-# 書き出し形式の版。読み込み側は「これ以下なら読む」で判定する ——
-# 将来 2 を書き出すようになっても、古い 1 のファイルは読めるようにするため。
-EXPORT_FORMAT_VERSION = 1
-
-
-def _exported(items: list[Task]) -> list[dict]:
-    return [
-        {"title": t.title, "body": body_rest(t), "status": t.status, "flagged": t.flagged}
-        for t in items
-    ]
-
-
-def export_tasks() -> dict:
-    """未完了タスクを書き出す。プロジェクトは表示順、タスクは各プロジェクト内の並び順。
-
-    **中身が空でも、アーカイブしていないプロジェクトは書き出す** —— プロジェクトは
-    タスクの入れ物である前に、リポジトリと説明を持つ設定そのもの。作り直しのたびに
-    手で足し直すことになるので、いまタスクが無いという理由で落とさない。
-    **アーカイブ済みで中身も無いものだけ落とす**(戻したい箱ではないため。
-    タスクが残っているアーカイブ済みプロジェクトは、そのタスクごと書き出す)。
-    """
-    projects = []
-    for project in list_projects():
-        items = list_active_tasks(project.name)
-        if not items and project.archived:
-            continue
-        projects.append({
-            "name": project.name,
-            "description": project.description or "",
-            "repoUrls": project.repo_urls,
-            "tasks": _exported(items),
-        })
-    unassigned = [t for t in list_active_tasks() if t.project is None]
-    return {
-        "version": EXPORT_FORMAT_VERSION,
-        "exportedAt": _now(),
-        "projects": projects,
-        "unassignedTasks": _exported(unassigned),
-    }
-
-
-def _transfer_key(project_name: str, title: str) -> str:
-    # NUL 区切り。表示に使える文字でつなぐと、名前とタイトルの境目が違っても
-    # 同じキーになりうる(「A」+「B C」と「A B」+「C」)。
-    return f"{project_name}\0{title}"
-
-
-def import_tasks(data: dict | None, dry_run: bool = False) -> dict:
-    """書き出したものを読み込む。
-
-    プロジェクトは**名前で照合し、無ければ作る**(説明とリポジトリも一緒に登録する)。
-    既にあるものは触らない —— 復元のたびに手元の設定を上書きされると困る。
-    **タスクを持たないプロジェクトも作る**(書き出した側が空でも出しているため)。
-
-    タスクは**同じプロジェクトに同じタイトルの未完了タスクがあれば飛ばす**。
-    同じファイルを二度読んでも増えないようにするため(復元は繰り返し試すことがある)。
-    """
-    data = data or {}
-    entries = data.get("projects") or []
-    unassigned = data.get("unassignedTasks") or []
-    if not entries and not unassigned:
-        raise _bad_request(
-            "読み込めるプロジェクト・タスクがありません。書き出した JSON を貼り付けてください"
-        )
-    version = int(data.get("version") or EXPORT_FORMAT_VERSION)
-    if version > EXPORT_FORMAT_VERSION:
-        raise _bad_request(
-            f"対応していない形式です(version={version})。"
-            f"このアプリが読めるのは {EXPORT_FORMAT_VERSION} までです"
-        )
-
-    result: dict[str, list[str]] = {"createdProjects": [], "createdTasks": [], "skippedTasks": []}
-    # 既存の未完了タスクの (プロジェクト名, タイトル)。id ではなく名前で持つのは、
-    # dry_run ではまだ作っていないプロジェクトがあるため。
-    taken = {_transfer_key(t.project or "", t.title) for t in list_active_tasks()}
-    existing_names = {p.name for p in list_projects()}
-
-    for entry in entries:
-        name = (entry.get("name") or "").strip()
-        if not name:
-            raise _bad_request("プロジェクト名が空のものがあります")
-        if name not in existing_names:
-            result["createdProjects"].append(name)
-            existing_names.add(name)
-            if not dry_run:
-                create_project(
-                    name,
-                    description=entry.get("description") or None,
-                    repo_urls=entry.get("repoUrls"),
-                )
-        _import_into(name, entry.get("tasks"), taken, result, dry_run)
-    _import_into("", unassigned, taken, result, dry_run)
-    return result
-
-
-def _import_into(
-    project_name: str,
-    items: list[dict] | None,
-    taken: set[str],
-    result: dict[str, list[str]],
-    dry_run: bool,
-) -> None:
-    for item in items or []:
-        title = (item.get("title") or "").strip()
-        if not title:
-            continue
-        label = title if not project_name else f"{project_name} / {title}"
-        key = _transfer_key(project_name, title)
-        # 既にある、または同じファイル内での重複
-        if key in taken:
-            result["skippedTasks"].append(label)
-            continue
-        taken.add(key)
-        result["createdTasks"].append(label)
-        if not dry_run:
-            status = item.get("status") or STATUS_TODO
-            create_task(
-                title,
-                body=item.get("body") or None,
-                project=project_name or None,
-                status=status if status in STATUSES else STATUS_TODO,
-                flagged=bool(item.get("flagged")),
-            )
-
-
-
 # ---- REST(`/v1/todo/...`) ----------------------------------------------------
 #
 # **LAN の中のアプリ**(タスクと予定を扱うアプリなど)が、ここのタスクとプロジェクトを
@@ -1036,8 +841,8 @@ def _import_into(
 # (外に出す面を畳んだ理由は「外へ出さない」ことで、LAN の中のアプリから読めないことではない)。
 #
 # **アプリが持ちたい項目(期日・繰り返しなど)は `data` として預かるだけで、中身は見ない。**
-# 置き場は `docs.extra` の `data`。Chiezo の画面や AI は今までどおりタイトル・本文・状態・印を
-# 読み書きでき、アプリの項目には触れない。書き換えたら `updated_at` が動くので、
+# 置き場は `docs.extra` の `data`。Chiezo の AI(MCP の `remember` / `update`)は今までどおり
+# タイトル・本文・タグを読み書きでき、アプリの項目には触れない。書き換えたら `updated_at` が動くので、
 # 読む側はそれで変わったかどうかを見分けられる。
 
 router = APIRouter(prefix="/v1/todo", tags=["todo"])
@@ -1049,6 +854,12 @@ EXTRA_DATA_KEY = "data"
 class ProjectBody(BaseModel):
     name: str
     description: str | None = None
+
+
+class ProjectPatch(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    archived: bool | None = None
 
 
 class TaskBody(BaseModel):
@@ -1104,6 +915,16 @@ def api_list_projects(archived: bool | None = None) -> dict:
 @router.post("/projects", status_code=201)
 def api_create_project(body: ProjectBody) -> dict:
     return _project_json(create_project(body.name, description=body.description))
+
+
+@router.patch("/projects/{project_id}")
+def api_update_project(project_id: int, body: ProjectPatch) -> dict:
+    """渡した項目だけ差し替える。アーカイブは未完了のタスクが 0 件のときだけ通る(400)。"""
+    return _project_json(
+        update_project(
+            project_id, name=body.name, description=body.description, archived=body.archived
+        )
+    )
 
 
 @router.get("/tasks")

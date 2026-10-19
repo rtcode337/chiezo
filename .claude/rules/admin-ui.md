@@ -27,7 +27,7 @@ paths:
   Claude Code 連携設定の配布。`TRIGGER_URL` もここ)/ `browse.py`(`/search/{source}/`)/
   `chat.py`(`/ai/chat` と会話画面の JS)
 - **管理画面は面に分かれている**(`PAGES`)。`/admin/status`(状況)/
-  `/admin/memory`(記憶。いちばん下が ToDo)/ `/admin/collect`(収集)/
+  `/admin/memory`(記憶。いちばん下が ToDo のルール)/ `/admin/collect`(収集)/
   `/admin/ai`(AI。鍵を預ける面)/ `/admin/media`(AIへの依頼。会話の入口・見比べ・
   作ってもらう口)/ `/admin/server`(その他)で、
   `/admin` はトップ。**1 枚に積み上げない** ——

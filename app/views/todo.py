@@ -1,23 +1,16 @@
-"""管理画面の「ToDo」の節(記憶の面 `/admin/memory` のいちばん下。書き込みの口は `/admin/todo/...`)。
+"""管理画面の「ルール」の節(記憶の面 `/admin/memory` のいちばん下。書き込みの口は `/admin/todo/rules/...`)。
 
-タスクとルールを**1 画面に**出す。もとは Vue の SPA(`tasks-frontend/`)を別に持ち、
-外へ公開する面(`chiezo-tasks`)だけが Google のログインで守る作りだった。やめた理由は 2 つ:
+ToDo の層(`app/tasks.py`)のうち、画面に出すのは**ルールだけ**。プロジェクトとタスクは
+置き場(短期記憶のタグ・設定の置き場)と REST(`/v1/todo/...`)だけを持ち、**操作は
+LAN の中のタスクと予定のアプリに一本化した**。ここにも同じ操作を置くと、同じタスクを
+2 か所で直すことになり、どちらの画面が正なのかが読めなくなる。
 
-- **Chiezo は安全なネットワークの中からしか触らせない**、と決めた。外に出す面が
-  無くなれば、認証・CSRF・レート制限・リダイレクト URI の許可リストを持つ理由も、
-  それらを別コンテナで動かす理由も残らない
-- **画面の作りが 2 系統あった。** 管理画面はサーバーで組んだ HTML、やること層は
-  ビルドの要る SPA。同じサーバーの中で操作の見た目も配り方も違い、直すたびに
-  どちらの流儀かを思い出す必要があった
+もとはタスクとルールを Vue の SPA(`tasks-frontend/`)で別に持ち、外へ公開する面
+(`chiezo-tasks`)だけが Google のログインで守る作りだった。**Chiezo は安全な
+ネットワークの中からしか触らせない**と決めて管理画面に畳み、そのあとタスクの側を外へ出した。
 
-そこで**管理画面の 1 面に畳んだ**。持ち込まなかったのは、メモの一覧(短期記憶は
-記憶の面とブラウズ画面で読める)と見比べ(`/admin/media` に同じものがある)。
+この節の決めごと:
 
-この面の決めごと:
-
-- **1 か所に全部出す。** プロジェクトとタスク・完了・書き出し・ルールを縦に並べる。
-  **目次は置かない**(節は 4 つで、スクロールで届く)。タスクとルールは同じ日に触るもので、
-  画面を分けると「ルールを直してからタスクを流す」のたびに読み込み直しになる
 - **JS はインラインの `confirm` まで**(管理画面の流儀)。開閉は `<details>`、
   並び替えはドラッグではなく ↑↓ のフォーム。取り消せない操作にだけ確認を出す
 - **書いたら押した場所へ戻す**(303 + `#アンカー`)。断られた理由は `?error=` で
@@ -26,92 +19,24 @@
 """
 from __future__ import annotations
 
-import json
-import re
-from datetime import datetime
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app import notes, tasks
-from app.jst import JST
-from app.jst import format as format_jst
-from app.jst import parse as parse_jst
-from app.pages import doc_url, esc
+from app.pages import esc
 
 router = APIRouter()
 
 # 書き込みの口の置き場。**`/tasks` から移した**(もとは SPA の置き場)。
 PATH = "/admin/todo"
 # 画面の居場所。**記憶の面のいちばん下に節として置く**(`section_html`)。
-# タスクもルールも短期記憶のメモにタグで載っているだけなので、記憶の面の中にあれば
+# ルールは短期記憶のメモにタグで載っているだけなので、記憶の面の中にあれば
 # 帯の面を 1 つ減らせる。書いたらここへ戻す
 PAGE = "/admin/memory"
-# 節の頭の居場所(「プロジェクトとタスク」の見出し)
-SECTION_ANCHOR = "tasks"
-
-# 完了タスクの 1 ページ。溜まる一方のものなので頭打ちにする(遡るのは頁送りで)。
-DONE_PAGE_SIZE = 20
-
-
-# ---- Claude Code へ渡す ------------------------------------------------------
-#
-# タスクをそのまま Claude Code の入力に流し込むリンク。**やること層の主目的がこれ**で、
-# 画面から消すと「書いたタスクを人が手で貼り直す」に戻る。もとは
-# `tasks-frontend/src/lib/claudeCode.ts` にあったものを、そのまま写してある。
-
-# web 版 Claude Code のプリフィルの上限は約 5,000 文字。余裕を見て手前で切る
-PROMPT_LIMIT = 4500
-
-_GITHUB_URL = re.compile(
-    r"^(?:https?://(?:www\.)?|git@)github\.com[/:]([^/\s]+)/([^/\s]+?)(?:\.git)?/?$",
-    re.IGNORECASE,
-)
-_OWNER_REPO = re.compile(r"^([^/\s:]+)/([^/\s]+?)(?:\.git)?$")
-
-
-def github_slug(url: str) -> str | None:
-    """GitHub のリポジトリ URL を `owner/repo` にする。GitHub 以外は None。"""
-    m = _GITHUB_URL.match((url or "").strip())
-    return f"{m[1]}/{m[2]}" if m else None
-
-
-def repo_slug(value: str) -> str | None:
-    """URL でも `owner/repo` でも受けて `owner/repo` に揃える。どちらでもなければ None。"""
-    if slug := github_slug(value):
-        return slug
-    m = _OWNER_REPO.fullmatch((value or "").strip())
-    return f"{m[1]}/{m[2]}" if m else None
-
-
-def claude_code_url(task: tasks.Task, repo_urls: list[str], rules_repo: str | None) -> str:
-    """タスクをプリフィルした Claude Code の URL。
-
-    **タスク番号は渡さない** —— 向こうからこの画面を参照できないので、番号を渡しても
-    使い道が無い。代わりに規約リポジトリが設定されていれば「まず共通ルールに従う」の
-    一言を先頭に添える(セッションに含めるだけでは、他リポジトリの説明と誤読されうる)。
-    """
-    rules = repo_slug(rules_repo) if rules_repo else None
-    body = tasks.body_rest(task)
-    lines = [task.title, "", body] if body else [task.title]
-    if rules:
-        lines = [
-            f"まず、セッションに含まれる規約リポジトリ {rules} の CLAUDE.md(共通ルール)に"
-            "従ってください。",
-            "",
-            *lines,
-        ]
-    prompt = "\n".join(lines)
-    if len(prompt) > PROMPT_LIMIT:
-        prompt = f"{prompt[:PROMPT_LIMIT]}\n…(以下略。全文は ToDo の画面で)"
-    params = {"prompt": prompt}
-    slugs = [s for s in (github_slug(u) for u in repo_urls) if s]
-    if rules and rules not in slugs:
-        slugs.append(rules)
-    if slugs:
-        params["repositories"] = ",".join(slugs)
-    return "https://claude.ai/code?" + urlencode(params)
+# 節の頭の居場所(「ルール」の見出し)
+SECTION_ANCHOR = "rules"
 
 
 # ---- 書き込みの共通部品 ------------------------------------------------------
@@ -125,51 +50,20 @@ def _message(exc: HTTPException) -> str:
     return str(detail)
 
 
-def _redirect(
-    anchor: str = "", *, error: str = "", notice: str = "", opened: str = "",
-) -> RedirectResponse:
-    """押した場所へ戻す。**断られた理由も一緒に持って帰る**。
-
-    `opened` は**開いておくプロジェクトの行**(`project_anchor`)。タスクは畳んで
-    あるので、閉じたまま戻すと押した結果が見えない。
-    """
-    query = {
-        k: v for k, v in (("error", error), ("notice", notice), ("open", opened)) if v
-    }
+def _redirect(anchor: str = "", *, error: str = "", notice: str = "") -> RedirectResponse:
+    """押した場所へ戻す。**断られた理由も一緒に持って帰る**。"""
+    query = {k: v for k, v in (("error", error), ("notice", notice)) if v}
     url = PAGE + (f"?{urlencode(query)}" if query else "") + (f"#{anchor}" if anchor else "")
     return RedirectResponse(url, status_code=303)
 
 
-def _run(anchor: str, action, opened: str = "") -> RedirectResponse:
+def _run(anchor: str, action) -> RedirectResponse:
     """書き込みを 1 つ実行して戻す。断られたら帯に出す(JSON を返さない)。"""
     try:
         notice = action()
     except HTTPException as e:
-        return _redirect(anchor, error=_message(e), opened=opened)
-    return _redirect(anchor, notice=notice or "", opened=opened)
-
-
-def _row_of(project: str | None) -> str:
-    """タスクの戻り先 —— そのタスクが入っているプロジェクトの行。**知らない名前は未分類**。"""
-    if project:
-        for one in tasks.list_projects():
-            if one.name == project:
-                return project_anchor(one.id)
-    return project_anchor(None)
-
-
-def _task_run(project: str | None, action) -> RedirectResponse:
-    """タスクへの操作。**そのタスクのプロジェクトの行へ、開いたまま戻す**。"""
-    row = _row_of(project)
-    return _run(row, action, opened=row)
-
-
-def _task_project(doc_id: int) -> str | None:
-    """そのタスクのプロジェクト。**読めなければ None**(戻り先が未分類になるだけ)。"""
-    try:
-        return tasks.require_task(doc_id).project
-    except HTTPException:
-        return None
+        return _redirect(anchor, error=_message(e))
+    return _redirect(anchor, notice=notice or "")
 
 
 def _moved(ids: list[int], target: int, direction: str) -> list[int]:
@@ -191,11 +85,6 @@ def _checked(value: str | None) -> bool:
 # ---- 画面の部品 --------------------------------------------------------------
 
 
-def _when(raw: str) -> str:
-    at = parse_jst(raw)
-    return format_jst(at) if at else (raw or "")
-
-
 def _banner(request: Request) -> str:
     q = request.query_params
     if error := q.get("error"):
@@ -208,7 +97,7 @@ def _banner(request: Request) -> str:
 def _confirm(action: str, label: str, ask: str) -> str:
     """取り消せない操作のボタン 1 つぶん(押す前に一度訊く)。
 
-    **訊く文にタスクの題名が入る。** 題名は人が自由に書くので `'` が混ざりうるが、
+    **訊く文にルールの見出しが入る。** 見出しは人が自由に書くので `'` が混ざりうるが、
     ブラウザは属性値の実体参照を JS に渡す前に戻すので、`esc()` だけでは
     `onsubmit` の中の文字列が途中で閉じる(そこから先が構文エラーになって、
     押しても何も起きないボタンになる)。先に JS 側の逃がしを入れておく。
@@ -218,48 +107,6 @@ def _confirm(action: str, label: str, ask: str) -> str:
         f'<form class="todo-inline" method="post" action="{esc(action)}"'
         f" onsubmit=\"return confirm('{esc(js)}')\">"
         f'<button type="submit" class="todo-danger">{esc(label)}</button></form>'
-    )
-
-
-def _project_options(projects: list[tasks.Project], selected: str | None) -> str:
-    """プロジェクトの選択肢。先頭は未分類(紐づけを外す口を兼ねる)。"""
-    options = [
-        f'<option value=""{" selected" if not selected else ""}>(未分類)</option>'
-    ]
-    options += [
-        f'<option value="{esc(p.name)}"{" selected" if p.name == selected else ""}>'
-        f"{esc(p.name)}</option>"
-        for p in projects
-    ]
-    return "".join(options)
-
-
-def _status_cell(task: tasks.Task) -> str:
-    """状態の切り替え。**いまの状態はボタンにしない**(押しても変わらないため)。"""
-    cells = []
-    for value, label in (
-        (tasks.STATUS_TODO, "未着手"),
-        (tasks.STATUS_IN_PROGRESS, "着手中"),
-        (tasks.STATUS_DONE, "完了"),
-    ):
-        if task.status == value:
-            cells.append(f'<span class="todo-now">{label}</span>')
-            continue
-        cells.append(
-            f'<form class="todo-inline" method="post" action="{PATH}/tasks/{task.doc_id}/status">'
-            f'<input type="hidden" name="status" value="{value}">'
-            f'<button type="submit">{label}</button></form>'
-        )
-    return f'<div class="todo-actions">{"".join(cells)}</div>'
-
-
-def _flag_cell(task: tasks.Task) -> str:
-    """「直すのが大変そう」の印。状態とは別の軸なので、状態の隣に独立して置く。"""
-    return (
-        f'<form class="todo-inline" method="post" action="{PATH}/tasks/{task.doc_id}/flag">'
-        f'<input type="hidden" name="flagged" value="{0 if task.flagged else 1}">'
-        f'<button type="submit">{"難所を外す" if task.flagged else "難所にする"}</button>'
-        "</form>"
     )
 
 
@@ -284,278 +131,6 @@ def _move_cell(action: str, first: bool, last: bool) -> str:
         )
     )
     return f'<div class="todo-actions">{up}{down}</div>'
-
-
-def _task_row(
-    task: tasks.Task,
-    projects: list[tasks.Project],
-    repo_urls: list[str],
-    rules_repo: str | None,
-    first: bool,
-    last: bool,
-) -> str:
-    """タスク 1 つ。**開くと編集できる** —— 読むだけの行と編集の画面を分けない。
-
-    **表にしない**(`div` を並べる)。プロジェクトの表の 2 段目に入るので、表の中に
-    表を置くと、スマホで札に起こす下ごしらえ(`pages.as_cards`)が表の切れ目を
-    読み違える。
-    """
-    handoff = (
-        f'<a class="todo-handoff" href="{esc(claude_code_url(task, repo_urls, rules_repo))}"'
-        ' target="_blank" rel="noopener noreferrer"'
-        ' title="Claude Code で開く(内容をプリフィル)">✳</a>'
-    )
-    flag = '<span class="todo-flag" title="難所">⚑</span>' if task.flagged else ""
-    body = tasks.body_rest(task)
-    edit = f"""
-<form class="todo-edit" method="post" action="{PATH}/tasks/{task.doc_id}">
-  <label>タイトル<input type="text" name="title" value="{esc(task.title)}" required></label>
-  <label>本文<textarea name="body" rows="6">{esc(body)}</textarea></label>
-  <label>プロジェクト<select name="project">{_project_options(projects, task.project)}</select></label>
-  <div class="todo-actions">
-    <button type="submit">保存</button>
-    {_flag_cell(task)}
-    {_confirm(f"{PATH}/tasks/{task.doc_id}/delete", "削除",
-              f"「{task.title}」を消します。取り消せません。")}
-  </div>
-</form>
-<p class="muted">作成 {esc(_when(task.created_at))} / 更新 {esc(_when(task.updated_at))}
- / <a href="{esc(doc_url(notes.SOURCE_NAME, task.doc_id))}">元のメモ</a></p>
-"""
-    return f"""<div class="todo-task">
-<div class="todo-task-title"><details><summary>{flag}{esc(task.title)}</summary>{edit}</details></div>
-{_status_cell(task)}
-{_move_cell(f"{PATH}/tasks/{task.doc_id}/move", first, last)}
-{handoff}
-</div>"""
-
-
-def _task_list(
-    items: list[tasks.Task],
-    projects: list[tasks.Project],
-    repo_urls: list[str],
-    rules_repo: str | None,
-) -> str:
-    if not items:
-        return '<p class="muted">未完了のタスクはありません。</p>'
-    return "".join(
-        _task_row(t, projects, repo_urls, rules_repo, i == 0, i == len(items) - 1)
-        for i, t in enumerate(items)
-    )
-
-
-def _sorted_in_group(items: list[tasks.Task]) -> list[tasks.Task]:
-    """グループ内の並び。**手で並べた順 → 作成の新しい順**(`app/tasks.py` と同じ)。
-
-    `tasks.list_tasks()` はプロジェクトを指定したときしか手動の順を見ない
-    (番号がプロジェクトをまたぐと意味を成さないため)ので、未分類のかたまりは
-    ここで同じ 2 段の並びに揃える。
-    """
-    ordered = sorted(items, key=lambda t: (t.created_at, t.doc_id), reverse=True)
-    ordered.sort(key=lambda t: t.sort_order)
-    return ordered
-
-
-# プロジェクトを作る口の居場所(畳んだ `<details>`)
-CREATE_PROJECT_ANCHOR = "projects"
-
-
-def project_anchor(project_id: int | None) -> str:
-    """プロジェクトの行の居場所。**未分類は `project-none`**。"""
-    return f"project-{project_id if project_id is not None else 'none'}"
-
-
-def _board_section(
-    projects: list[tasks.Project],
-    rules_repo: str | None,
-    opened: str = "",
-) -> str:
-    """プロジェクトとタスク。**1 つの表に、プロジェクトを 1 段目、タスクを 2 段目に**。
-
-    タスクの節とプロジェクトの節に分けていた頃は、同じプロジェクトの話が画面の
-    上と下に離れていた —— 説明やリポジトリは下の表、そこに紐づくタスクは上、で、
-    「このプロジェクトに何が残っているか」を読むのに行き来した。
-
-    **タスクは畳む**(`<details>`)。プロジェクトの一覧として読めるように、
-    開くのは見たいものだけ。**押した操作の戻り先では、そのプロジェクトを開いておく**
-    (`opened`。閉じたまま戻すと、押した結果が見えない)。
-
-    **並びは保存されているとおり**(アーカイブを後ろへ寄せない)。
-    ↑↓ は `reorder_projects` に全件を渡すので、画面の並びが台帳の並びと
-    違うと、押した行が思ったところへ行かない。**未分類は末尾に、0 件でも出す** ——
-    放り込み先であり、プロジェクトを作る前のタスクが消えたように見えないようにする。
-    """
-    active = tasks.list_active_tasks()
-    by_project: dict[str | None, list[tasks.Task]] = {}
-    for task in active:
-        by_project.setdefault(task.project, []).append(task)
-    every = tasks.list_projects()
-    rows = []
-    for index, project in enumerate(every):
-        mine = _sorted_in_group(by_project.get(project.name, []))
-        repos = esc("\n".join(project.repo_urls))
-        edit = f"""
-<form class="todo-edit" method="post" action="{PATH}/projects/{project.id}">
-  <label>名前<input type="text" name="name" value="{esc(project.name)}" required></label>
-  <label>説明<input type="text" name="description" value="{esc(project.description)}"></label>
-  <label>リポジトリ(1 行に 1 つ)
-    <textarea name="repo_urls" rows="3">{repos}</textarea></label>
-  <div><button type="submit">保存</button></div>
-</form>"""
-        if project.archived:
-            toggle = (
-                f'<form class="todo-inline" method="post"'
-                f' action="{PATH}/projects/{project.id}/archive">'
-                '<input type="hidden" name="archived" value="0">'
-                "<button type=\"submit\">戻す</button></form>"
-                + _confirm(
-                    f"{PATH}/projects/{project.id}/delete",
-                    "削除",
-                    f"{project.name} を、紐づくタスクごと消します。取り消せません。",
-                )
-            )
-        else:
-            toggle = (
-                f'<form class="todo-inline" method="post"'
-                f' action="{PATH}/projects/{project.id}/archive">'
-                '<input type="hidden" name="archived" value="1">'
-                "<button type=\"submit\">アーカイブ</button></form>"
-            )
-        about = esc(project.description)
-        if project.repo_urls:
-            about += "<br>" + " / ".join(
-                f'<a href="{esc(u)}" target="_blank" rel="noopener noreferrer">{esc(u)}</a>'
-                for u in project.repo_urls
-            )
-        anchor = project_anchor(project.id)
-        rows.append(
-            f'<tr id="{anchor}"><td><details><summary>{esc(project.name)}</summary>{edit}</details></td>'
-            f'<td class="muted"><div>{about}</div></td>'
-            f"<td>{len(mine)} 件</td>"
-            f'<td>{"アーカイブ済み" if project.archived else "使用中"}</td>'
-            f'<td>{_move_cell(f"{PATH}/projects/{project.id}/move", index == 0, index == len(every) - 1)}</td>'
-            # **足す口はアーカイブの右に**(アーカイブ済みのものには足させない)
-            f'<td><div class="todo-actions">{toggle}'
-            f'{"" if project.archived else _add_task_button(anchor, project.name)}</div></td></tr>'
-        )
-        # **アーカイブしたものは、残っているときだけ 2 段目を出す**。アーカイブは
-        # 未完了 0 件が条件なので、ここに来るのは後から紐づけ直したタスクだけ ——
-        # 出さないと、どの一覧にも並ばずに消える
-        if project.archived and not mine:
-            continue
-        note = (
-            '<p class="muted">アーカイブ済みですが、未完了のタスクが残っています。</p>'
-            if project.archived else ""
-        )
-        rows.append(_tasks_row(
-            anchor, mine, note + _task_list(mine, projects, project.repo_urls, rules_repo),
-            opened,
-        ))
-    unsorted = _sorted_in_group(by_project.get(None, []))
-    anchor = project_anchor(None)
-    rows.append(
-        f'<tr id="{anchor}"><td>(未分類)</td>'
-        '<td class="muted">プロジェクトに紐づいていないタスク</td>'
-        f"<td>{len(unsorted)} 件</td><td></td><td></td>"
-        f'<td><div class="todo-actions">{_add_task_button(anchor, None)}</div></td></tr>'
-    )
-    rows.append(_tasks_row(
-        anchor, unsorted, _task_list(unsorted, projects, [], rules_repo), opened,
-    ))
-
-    # **作る口は畳んでおく**(毎回は使わない。「収集を追加する」と同じ畳み方)。
-    # **断られて戻ったときは開いておく**(書いた中身を直しに来るので)
-    create_open = " open" if opened == CREATE_PROJECT_ANCHOR else ""
-    add_project = f"""
-<details id="{CREATE_PROJECT_ANCHOR}"{create_open}><summary>プロジェクトを作る</summary>
-<form class="todo-entry" method="post" action="{PATH}/projects">
-  <label>名前<input type="text" name="name" required placeholder="リポジトリ名"></label>
-  <label>説明(任意)<input type="text" name="description"></label>
-  <label>リポジトリ(1 行に 1 つ・任意)<textarea name="repo_urls" rows="2"></textarea></label>
-  <div><button type="submit">作る</button></div>
-</form></details>"""
-    return f"""<h2 id="{SECTION_ANCHOR}">プロジェクトとタスク</h2>
-<p class="muted">プロジェクトはタスクの入れ物。<strong>名前がそのままタスクのタグ</strong>になるので、
-名前を変えると紐づくタスクのタグも付け替わります。アーカイブできるのは未完了が 0 件のときだけ、
-削除できるのはアーカイブしたものだけです。タスクは各プロジェクトの下に畳んであり、
-足すときは行の「タスク追加」から。</p>
-<table>
-<thead><tr><th>プロジェクト</th><th>説明</th><th>未完了</th><th>状態</th><th>並び</th><th></th></tr></thead>
-<tbody>{"".join(rows)}</tbody>
-</table>
-{add_project}"""
-
-
-def _add_task_button(anchor: str, project: str | None) -> str:
-    """その行のプロジェクトへタスクを足す口。**押すとモーダルで入力欄が出る**。
-
-    **JS は使わない**(`popover` 属性。開閉はブラウザが持つ)。表の上に 1 つだけ
-    置いていた頃は、プロジェクトを選び直す手間があり、足した先も表の中で探すことになった
-    —— 行から開けば、どこへ足すかは押した行で決まる。
-    **外側を押すか Esc で閉じる**(`popover` の既定)。書きかけは閉じても消えない。
-    """
-    ident = f"add-{anchor}"
-    where = esc(project) if project else "(未分類)"
-    return f"""<button type="button" popovertarget="{ident}">タスク追加</button>
-<div popover id="{ident}" class="todo-modal">
-<form class="todo-entry" method="post" action="{PATH}/tasks">
-  <p class="todo-modal-head">「{where}」にタスクを足す</p>
-  <input type="hidden" name="project" value="{esc(project or "")}">
-  <label>タイトル<input type="text" name="title" required placeholder="やること"></label>
-  <label>本文(任意)<textarea name="body" rows="5"></textarea></label>
-  <div class="todo-actions"><button type="submit">足す</button>
-  <button type="button" popovertarget="{ident}" popovertargetaction="hide">やめる</button></div>
-</form>
-</div>"""
-
-
-def _tasks_row(anchor: str, items: list[tasks.Task], inner: str, opened: str) -> str:
-    """プロジェクトの行の 2 段目(タスクを畳んだもの)。"""
-    is_open = " open" if opened == anchor else ""
-    return (
-        f'<tr class="todo-tasks"><td colspan="6"><details{is_open}>'
-        f"<summary>タスク({len(items)} 件)</summary>{inner}</details></td></tr>"
-    )
-
-
-def _done_section(page: int) -> str:
-    """完了したもの。**畳んでおく** —— 見に来るのは「あれは片付いたか」を確かめるときだけ。"""
-    paged = tasks.list_done_tasks(page=page, size=DONE_PAGE_SIZE)
-    total, items = paged["total"], paged["items"]
-    if not total:
-        inner = '<p class="muted">まだありません。</p>'
-    else:
-        cells = "".join(
-            f"<tr><td>{esc(t.title)}</td>"
-            f'<td class="muted">{esc(t.project or "(未分類)")}</td>'
-            f'<td class="muted">{esc(_when(t.updated_at))}</td>'
-            f'<td><form class="todo-inline" method="post"'
-            f' action="{PATH}/tasks/{t.doc_id}/status">'
-            f'<input type="hidden" name="status" value="{tasks.STATUS_TODO}">'
-            "<button type=\"submit\">戻す</button></form>"
-            f'{_confirm(f"{PATH}/tasks/{t.doc_id}/delete", "削除", f"「{t.title}」を消します。取り消せません。")}'
-            "</td></tr>"
-            for t in items
-        )
-        pages = (total + DONE_PAGE_SIZE - 1) // DONE_PAGE_SIZE
-        pager = []
-        # **ページの番号も逃がしてから書く**。数でしか来ないが、URL から来た値を
-        # そのまま HTML に書く形を残さない(読む側・検査する側に安全が読めるように)
-        if page > 0:
-            pager.append(f'<a href="{PAGE}?done_page={esc(page - 1)}#done">← 新しい</a>')
-        pager.append(f'<span class="muted">{esc(page + 1)} / {pages} 頁({total} 件)</span>')
-        if page + 1 < pages:
-            pager.append(f'<a href="{PAGE}?done_page={esc(page + 1)}#done">古い →</a>')
-        inner = (
-            "<table><thead><tr><th>タスク</th><th>プロジェクト</th><th>完了</th><th></th>"
-            f"</tr></thead><tbody>{cells}</tbody></table>"
-            f'<div class="pager">{"".join(pager)}</div>'
-        )
-    open_attr = " open" if page > 0 else ""
-    return (
-        f'<h3 id="done">完了</h3><details{open_attr}>'
-        f"<summary>片付いたもの({total} 件)</summary>{inner}</details>"
-    )
 
 
 def _rules_section(rules_repo: str | None, preview: str) -> str:
@@ -613,8 +188,8 @@ def _rules_section(rules_repo: str | None, preview: str) -> str:
            placeholder="https://github.com/owner/repo"></label>
   <div><button type="submit">保存</button></div>
 </form>
-<p class="muted">ここを設定すると、タスクの ✳(Claude Code へ渡す)が
-このリポジトリをセッションに含め、<strong>まず共通ルールに従う</strong>の一言を先頭に添えます。</p>"""
+<p class="muted">下の「まとめて表示」を貼り替える先の控えです。連結したルールは
+このリポジトリの CLAUDE.md として置き、Claude Code のセッションに含めて読ませます。</p>"""
     import_form = f"""
 <details><summary>取り込む(貼り付けたルールを戻す)</summary>
 <p class="muted"><code>## 見出し</code> で区切った Markdown を貼り付けます。
@@ -627,52 +202,28 @@ def _rules_section(rules_repo: str | None, preview: str) -> str:
 </form>
 {preview}
 </details>"""
-    return f"""<h2 id="rules">ルール</h2>
+    return f"""<h2 id="{SECTION_ANCHOR}">ルール</h2>
 <p class="muted">Claude Code に守らせる共通ルール。
 <strong>有効なものだけ</strong>が連結の対象です。</p>
 {repo_form}{table}{add}{combined_html}{import_form}"""
 
 
-def _backup_section(preview: str) -> str:
-    """書き出しと取り込み。**書き出したものがそのまま取り込みの入力**になる。"""
-    return f"""<h3 id="backup">書き出しと取り込み</h3>
-<p class="muted"><strong>未完了のタスク</strong>と、その入れ物(プロジェクトの名前・説明・
-リポジトリ)を JSON で持ち出します。完了タスク・並び順・アーカイブ状態は入りません ——
-戻したいのは待ち行列であって、画面の状態ではないためです。</p>
-<p><a href="{PATH}/export">→ JSON を書き出す</a></p>
-<details><summary>取り込む(書き出した JSON を戻す)</summary>
-<p class="muted">同じものを二度読み込んでも増えません((プロジェクト名, タイトル)で
-照合して飛ばします)。まず「下見」で何が入るかを確かめてください。</p>
-<form class="todo-entry" method="post" action="{PATH}/import">
-  <label>JSON<textarea name="payload" rows="10" required></textarea></label>
-  <div><button type="submit" name="confirm" value="">下見</button></div>
-</form>
-{preview}
-</details>"""
-
-
 TODO_STYLE = """
-  /* ToDo の面(`views/todo.py`)。**行を低く保つ** —— タスクもルールも溜まるもので、
+  /* ルールの節(`views/todo.py`)。**行を低く保つ** —— ルールは溜まるもので、
      1 行が本文の高さになると一覧として読めなくなる。中身は `<details>` の中。 */
   /* 表の中に置くフォームは、行の高さを増やさないように並べる */
   form.todo-inline { display: inline; }
   .todo-actions { display: flex; flex-wrap: wrap; gap: .3rem; align-items: baseline; }
   .todo-actions button { font-size: .8rem; padding: .15rem .5rem; white-space: nowrap; }
-  /* いまの状態。**ボタンにしない**(押しても変わらない)ので、字面で見せる */
-  .todo-now { font-size: .8rem; font-weight: 700; padding: .15rem .5rem;
-              border: 1px solid #5560E0; border-radius: .3rem; color: #333; white-space: nowrap; }
   /* 取り消せない操作だけ色を変える。**同じ見た目のボタンに混ぜない** */
   .todo-danger { color: #b42318; }
-  /* 難所の印。行の頭に出して、開かなくても見分けが付くようにする */
-  .todo-flag { color: #b9791f; margin-right: .35rem; }
-  .todo-handoff { font-size: 1.1rem; text-decoration: none; }
   /* 入力の並び。**器いっぱいには伸ばさない** —— 長い 1 行の入力欄は読みづらい */
   .todo-entry, .todo-edit { display: flex; flex-direction: column; gap: .5rem;
                             max-width: 48rem; margin: .8rem 0; }
   .todo-entry label, .todo-edit label { display: flex; flex-direction: column; gap: .2rem;
                                         font-size: .85rem; color: #444; }
   .todo-entry input[type=text], .todo-edit input[type=text],
-  .todo-entry textarea, .todo-edit textarea, .todo-entry select, .todo-edit select {
+  .todo-entry textarea, .todo-edit textarea {
     font: inherit; font-size: .9rem; padding: .3rem .4rem;
     border: 1px solid #ccc; border-radius: .3rem; }
   .todo-entry textarea, .todo-edit textarea { resize: vertical; }
@@ -681,61 +232,23 @@ TODO_STYLE = """
   .todo-combined { width: 100%; font-family: monospace; font-size: .8rem;
                    border: 1px solid #e5e2dc; background: #f7f6f3; }
   .note { color: #2f6f3e; }
-  /* プロジェクトの 2 段目(タスクを畳んだもの)。**上の行に続けて 1 つに見せる** */
-  tr.todo-tasks > td { border-top: 0; padding-top: 0; }
-  tr.todo-tasks > td > details { margin-top: 0; }
-  tr.todo-tasks > td > details > summary { font-weight: normal; padding: .1rem 0; }
-  /* タスク 1 つ。表にしない(表の中に表を置くと、札に起こす下ごしらえが崩れる) */
-  .todo-task { display: flex; flex-wrap: wrap; gap: .3rem .8rem; align-items: baseline;
-               padding: .35rem 0 .35rem .8rem; border-top: 1px solid #f0f0f4; }
-  .todo-task-title { flex: 1 1 16rem; min-width: 0; }
-  .todo-task-title > details { margin-top: 0; }
-  .todo-task-title > details > summary { font-weight: normal; padding: 0; }
-  /* タスクを足すモーダル(`popover`)。**画面の真ん中に、後ろを暗くして** */
-  .todo-modal { width: min(40rem, 92vw); padding: .4rem 1.2rem; border: 1px solid #ccc;
-                border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, .18); }
-  .todo-modal::backdrop { background: rgba(0, 0, 0, .35); }
-  .todo-modal { box-sizing: border-box; }
-  .todo-modal .todo-entry { max-width: none; }
-  .todo-modal input[type=text] { width: 100%; box-sizing: border-box; }
-  .todo-modal-head { font-weight: 700; margin: .4rem 0 0; }
-  @media (max-width: 40rem) {
-    /* 札では、上の札の下余白ぶん引き上げて 1 枚に見せる(巡回の設定と同じ) */
-    table.as-cards tr.todo-tasks { margin-top: -0.7rem; border-top: 0;
-                                   border-radius: 0 0 6px 6px; }
-    table.as-cards tr.todo-tasks > td:first-child { background: none; }
-    .todo-task { padding-left: 0; }
-  }
 """
 
 
-def section_html(
-    request: Request,
-    *,
-    done_page: int = 0,
-    rules_preview: str = "",
-    backup_preview: str = "",
-) -> str:
-    """記憶の面のいちばん下に置く ToDo(「プロジェクトとタスク」と「ルール」の 2 節)。
+def section_html(request: Request, *, rules_preview: str = "") -> str:
+    """記憶の面のいちばん下に置くルールの節。
 
     **短期記憶が無効なら、置けない理由だけ出す**(空にすると、消えたように見える)。
     """
     if not notes.is_enabled():
         return (
-            f'<h2 id="{SECTION_ANCHOR}">プロジェクトとタスク</h2>'
-            '<p class="muted">短期記憶が無効なので、タスクもルールも置けません。'
+            f'<h2 id="{SECTION_ANCHOR}">ルール</h2>'
+            '<p class="muted">短期記憶が無効なので、ルールを置けません。'
             "書き込み可能なディレクトリを <code>CHIEZO_NOTES_DIR</code>"
             "(または <code>CHIEZO_STATE_DIR</code>)に設定すると使えるようになります。</p>"
         )
-    projects = tasks.list_projects(archived=False)
-    rules_repo = tasks.rules_repo_url()
-    # **見出しは記憶の面の節と同じ段**(プロジェクトとタスク / ルール)。
-    # 完了と書き出しはタスクの話なので、プロジェクトとタスクの下に置く
     return f"""{_banner(request)}
-{_board_section(projects, rules_repo, request.query_params.get("open", ""))}
-{_done_section(done_page)}
-{_backup_section(backup_preview)}
-{_rules_section(rules_repo, rules_preview)}
+{_rules_section(tasks.rules_repo_url(), rules_preview)}
 """
 
 
@@ -744,173 +257,6 @@ def _render(request: Request, **previews) -> HTMLResponse:
     from app.views.admin import memory_page
 
     return memory_page(request, **previews)
-
-
-# ---- 読む --------------------------------------------------------------------
-
-
-@router.get(f"{PATH}/export")
-def export():
-    """未完了のタスクを JSON で書き出す。**そのまま取り込みの入力になる**。"""
-    if not notes.is_enabled():
-        raise HTTPException(503, {"error": "短期記憶が無効です"})
-    payload = tasks.export_tasks()
-    # 人が開くファイルなので、名前の日付は JST で数える(UTC だと朝 9 時まで前日になる)
-    name = f"chiezo-todo-{datetime.now(JST):%Y%m%d-%H%M}.json"
-    return JSONResponse(
-        content=payload,
-        headers={"Content-Disposition": f'attachment; filename="{name}"'},
-    )
-
-
-# ---- タスク ------------------------------------------------------------------
-
-
-@router.post(f"{PATH}/tasks")
-def create_task(
-    title: str = Form(""),
-    body: str = Form(""),
-    project: str = Form(""),
-):
-    return _task_run(
-        project or None,
-        lambda: (
-            tasks.create_task(title, body or None, project or None),
-            f"タスクを足しました: {title.strip()}",
-        )[1],
-    )
-
-
-@router.post(f"{PATH}/tasks/{{doc_id}}")
-def update_task(
-    doc_id: int,
-    title: str = Form(""),
-    body: str = Form(""),
-    project: str = Form(""),
-):
-    def action() -> str:
-        tasks.update_task(
-            doc_id,
-            title=title,
-            body=body,
-            project=project or None,
-            unlink_project=not project,
-        )
-        return "保存しました。"
-
-    # **付け替えたなら、付け替えた先を開く**
-    return _task_run(project or None, action)
-
-
-@router.post(f"{PATH}/tasks/{{doc_id}}/status")
-def set_task_status(doc_id: int, status: str = Form(...)):
-    return _task_run(
-        _task_project(doc_id),
-        lambda: (tasks.update_task(doc_id, status=status), "状態を変えました。")[1],
-    )
-
-
-@router.post(f"{PATH}/tasks/{{doc_id}}/flag")
-def set_task_flag(doc_id: int, flagged: str = Form("0")):
-    return _task_run(
-        _task_project(doc_id),
-        lambda: (tasks.update_task(doc_id, flagged=flagged == "1"), "印を変えました。")[1],
-    )
-
-
-@router.post(f"{PATH}/tasks/{{doc_id}}/move")
-def move_task(doc_id: int, dir: str = Form("up")):
-    def action() -> str:
-        task = tasks.require_task(doc_id)
-        group = [
-            t
-            for t in tasks.list_active_tasks()
-            if t.project == task.project
-        ]
-        ids = _moved([t.doc_id for t in _sorted_in_group(group)], doc_id, dir)
-        tasks.reorder_tasks(task.project, ids)
-        return "並びを変えました。"
-
-    return _task_run(_task_project(doc_id), action)
-
-
-@router.post(f"{PATH}/tasks/{{doc_id}}/delete")
-def delete_task(doc_id: int):
-    return _task_run(
-        _task_project(doc_id), lambda: (tasks.delete_task(doc_id), "消しました。")[1],
-    )
-
-
-# ---- プロジェクト ------------------------------------------------------------
-
-
-def _repo_lines(raw: str) -> list[str]:
-    """1 行 1 つのリポジトリ。空行は捨てる(重複は `app/tasks.py` が落とす)。"""
-    return [line.strip() for line in (raw or "").splitlines() if line.strip()]
-
-
-@router.post(f"{PATH}/projects")
-def create_project(
-    name: str = Form(""),
-    description: str = Form(""),
-    repo_urls: str = Form(""),
-):
-    # **作れたら、できた行へ**(作る口は畳んであり、そこへ戻しても結果が見えない)。
-    # **断られたら、作る口を開いたまま戻す**
-    try:
-        made = tasks.create_project(name, description, _repo_lines(repo_urls))
-    except HTTPException as e:
-        return _redirect(
-            CREATE_PROJECT_ANCHOR, error=_message(e), opened=CREATE_PROJECT_ANCHOR,
-        )
-    return _redirect(
-        project_anchor(made.id), notice=f"プロジェクトを作りました: {made.name}",
-    )
-
-
-@router.post(f"{PATH}/projects/{{project_id}}")
-def update_project(
-    project_id: int,
-    name: str = Form(""),
-    description: str = Form(""),
-    repo_urls: str = Form(""),
-):
-    return _run(
-        project_anchor(project_id),
-        lambda: (
-            tasks.update_project(project_id, name, description, _repo_lines(repo_urls)),
-            "保存しました。",
-        )[1],
-    )
-
-
-@router.post(f"{PATH}/projects/{{project_id}}/archive")
-def archive_project(project_id: int, archived: str = Form("1")):
-    return _run(
-        project_anchor(project_id),
-        lambda: (
-            tasks.update_project(project_id, archived=archived == "1"),
-            "アーカイブしました。" if archived == "1" else "戻しました。",
-        )[1],
-    )
-
-
-@router.post(f"{PATH}/projects/{{project_id}}/move")
-def move_project(project_id: int, dir: str = Form("up")):
-    def action() -> str:
-        ids = _moved([p.id for p in tasks.list_projects()], project_id, dir)
-        tasks.reorder_projects(ids)
-        return "並びを変えました。"
-
-    return _run(project_anchor(project_id), action)
-
-
-@router.post(f"{PATH}/projects/{{project_id}}/delete")
-def delete_project(project_id: int):
-    return _run(
-        "tasks",
-        lambda: (tasks.delete_project(project_id), "消しました(紐づくタスクも一緒に)。")[1],
-    )
 
 
 # ---- ルール ------------------------------------------------------------------
@@ -998,45 +344,3 @@ def move_rule(doc_id: int, dir: str = Form("up")):
 @router.post(f"{PATH}/rules/{{doc_id}}/delete")
 def delete_rule(doc_id: int):
     return _run("rules", lambda: (tasks.delete_rule(doc_id), "消しました。")[1])
-
-
-# ---- 書き出しと取り込み ------------------------------------------------------
-
-
-@router.post(f"{PATH}/import")
-def import_tasks(request: Request, payload: str = Form(""), confirm: str = Form("")):
-    """書き出した JSON を戻す。**下見を挟む**(何が新しく作られるかを先に見せる)。"""
-    try:
-        data = json.loads(payload or "")
-    except ValueError:
-        return _redirect("backup", error="JSON として読めません。書き出したものを貼り付けてください")
-    if not isinstance(data, dict):
-        return _redirect("backup", error="書き出した形(オブジェクト)ではありません")
-
-    if confirm != "yes":
-        try:
-            found = tasks.import_tasks(data, dry_run=True)
-        except HTTPException as e:
-            return _redirect("backup", error=_message(e))
-        preview = f"""
-<div class="job-status">
-<p>新しく作るプロジェクト {len(found["createdProjects"])} 件 /
-タスク {len(found["createdTasks"])} 件(既にあるので飛ばすもの
-{len(found["skippedTasks"])} 件)。</p>
-<form class="todo-inline" method="post" action="{PATH}/import">
-  <input type="hidden" name="payload" value="{esc(payload)}">
-  <input type="hidden" name="confirm" value="yes">
-  <button type="submit">この内容で読み込む</button>
-</form>
-</div>"""
-        return _render(request, backup_preview=preview)
-
-    def action() -> str:
-        done = tasks.import_tasks(data)
-        return (
-            f"プロジェクト {len(done['createdProjects'])} 件、"
-            f"タスク {len(done['createdTasks'])} 件を読み込みました"
-            f"(飛ばしたタスク {len(done['skippedTasks'])} 件)。"
-        )
-
-    return _run("backup", action)

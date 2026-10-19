@@ -1,4 +1,4 @@
-"""やること(タスク・プロジェクト)のテスト。
+"""ToDo の層(タスク・プロジェクト・ルール)のドメインのテスト。
 
 書き込みは `app/notes.py` を通すので、FTS と `doc_tags` / `tag_counts` が
 本体とずれないことも同時に確かめる。
@@ -91,13 +91,6 @@ class TestTasks:
         tasks.update_task(b.doc_id, status=tasks.STATUS_DONE)
         assert [t.doc_id for t in tasks.list_active_tasks()] == [a.doc_id]
 
-    def test_done_is_paged_newest_first(self, client):
-        for i in range(3):
-            t = tasks.create_task(f"済み {i}")
-            tasks.update_task(t.doc_id, status=tasks.STATUS_DONE)
-        page = tasks.list_done_tasks(page=0, size=2)
-        assert page["total"] == 3 and len(page["items"]) == 2
-
     def test_unknown_id_is_404(self, client):
         with pytest.raises(Exception) as e:
             tasks.require_task(9999)
@@ -113,48 +106,6 @@ class TestTasks:
         task = tasks.create_task("消す")
         tasks.delete_task(task.doc_id)
         assert client.get("/v1/chiezo_memory/recall").json()["total"] == 0
-
-
-class TestTaskOrdering:
-    def test_reorder_numbers_from_one(self, client):
-        project = tasks.create_project("sample-game")
-        a = tasks.create_task("あ", project=project.name)
-        b = tasks.create_task("い", project=project.name)
-        tasks.reorder_tasks(project.name, [b.doc_id, a.doc_id])
-        assert [t.doc_id for t in tasks.list_tasks(project.name)] == [b.doc_id, a.doc_id]
-
-    def test_reorder_does_not_bump_updated_at(self, client):
-        """並び替えでメモが recall の先頭に浮くと、時系列が乱れて使い物にならない。"""
-        project = tasks.create_project("sample-game")
-        a = tasks.create_task("あ", project=project.name)
-        b = tasks.create_task("い", project=project.name)
-        before = tasks.require_task(a.doc_id).updated_at
-        tasks.reorder_tasks(project.name, [b.doc_id, a.doc_id])
-        assert tasks.require_task(a.doc_id).updated_at == before
-
-    def test_reorder_rejects_a_foreign_task(self, client):
-        one = tasks.create_project("sample-game")
-        other = tasks.create_project("sample-tool")
-        mine = tasks.create_task("あ", project=one.name)
-        theirs = tasks.create_task("い", project=other.name)
-        with pytest.raises(Exception) as e:
-            tasks.reorder_tasks(one.name, [mine.doc_id, theirs.doc_id])
-        assert e.value.status_code == 400
-
-    def test_reorder_rejects_duplicates(self, client):
-        task = tasks.create_task("あ")
-        with pytest.raises(Exception) as e:
-            tasks.reorder_tasks(None, [task.doc_id, task.doc_id])
-        assert e.value.status_code == 400
-
-    def test_manual_order_is_ignored_in_the_overall_list(self, client):
-        """sort_order はプロジェクト内でしか意味を持たない。"""
-        project = tasks.create_project("sample-game")
-        a = tasks.create_task("あ", project=project.name)
-        b = tasks.create_task("い", project=project.name)
-        tasks.reorder_tasks(project.name, [a.doc_id, b.doc_id])
-        # 全体一覧は作成日時の新しい順(b が後に作られている)
-        assert [t.doc_id for t in tasks.list_tasks()] == [b.doc_id, a.doc_id]
 
 
 class TestProjects:
@@ -219,37 +170,6 @@ class TestProjects:
         task = tasks.create_task("片付ける", project=project.name)
         tasks.update_task(task.doc_id, status=tasks.STATUS_DONE)
         assert tasks.update_project(project.id, archived=True).archived is True
-
-    def test_delete_requires_archive_first(self, client):
-        project = tasks.create_project("sample-game")
-        with pytest.raises(Exception) as e:
-            tasks.delete_project(project.id)
-        assert e.value.status_code == 400
-
-    def test_delete_takes_its_tasks_with_it(self, client):
-        project = tasks.create_project("sample-game")
-        task = tasks.create_task("片付ける", project=project.name)
-        tasks.update_task(task.doc_id, status=tasks.STATUS_DONE)
-        tasks.update_project(project.id, archived=True)
-        tasks.delete_project(project.id)
-        assert tasks.list_projects() == []
-        assert tasks.list_tasks() == []
-        # **短期記憶には何も残らない** —— 定義は設定の置き場にあり、
-        # そこの 1 件は中身が空になるだけで残る
-        assert client.get("/v1/chiezo_memory/recall").json()["total"] == 0
-
-    def test_reorder_requires_every_id(self, client):
-        a = tasks.create_project("a")
-        tasks.create_project("b")
-        with pytest.raises(Exception) as e:
-            tasks.reorder_projects([a.id])
-        assert e.value.status_code == 400
-
-    def test_reorder_numbers_from_one(self, client):
-        a = tasks.create_project("a")
-        b = tasks.create_project("b")
-        assert [p.id for p in tasks.reorder_projects([b.id, a.id])] == [b.id, a.id]
-
 
 class TestTagCountsStayConsistent:
     def test_counts_follow_task_edits(self, client):
@@ -428,19 +348,6 @@ class TestProjectsAreOneRecord:
         first = tasks.create_project("one")
         second = tasks.create_project("two")
         assert [first.id, second.id] == [1, 2]
-
-    def test_ids_are_not_reused_after_a_delete(self, client):
-        """消した番号を配り直すと、画面が持つ古い参照が別のものを指す。"""
-        first = tasks.create_project("one")
-        tasks.update_project(first.id, archived=True)
-        tasks.delete_project(first.id)
-        assert tasks.create_project("two").id != first.id
-
-    def test_order_is_the_array_order(self, client):
-        a = tasks.create_project("a")
-        b = tasks.create_project("b")
-        assert [p.name for p in tasks.reorder_projects([b.id, a.id])] == ["b", "a"]
-        assert [p.name for p in tasks.list_projects()] == ["b", "a"]
 
     def test_tasks_keep_their_link_through_the_name(self, client):
         """紐づけはタグ(名前)のまま。JSON は入れ物の定義しか持たない。"""

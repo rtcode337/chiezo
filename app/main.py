@@ -5717,9 +5717,9 @@ app.include_router(views_browse.router)
 app.include_router(views_media_ask.router)
 app.include_router(views_media_compare.router)
 app.include_router(views_chat.router)
-# やること層(タスク・ルール)は管理画面の記憶の面の節(書き込みの口は `/admin/todo/...`)。
-# 外に出すための認証つきの面(旧 chiezo-tasks)と別プロセスは持たない —— Chiezo は安全な
-# ネットワークの中からしか触らせない。LAN の中のアプリが読み書きする口は `/v1/todo/...`(app/tasks.py)
+# ToDo の層のうち、画面はルールだけ(管理画面の記憶の面の節。書き込みの口は `/admin/todo/rules/...`)。
+# プロジェクトとタスクは LAN の中のアプリが `/v1/todo/...`(app/tasks.py)で読み書きし、操作はそちらに
+# 一本化している。外に出すための認証つきの面(旧 chiezo-tasks)と別プロセスは持たない
 app.include_router(views_todo.router)
 app.include_router(todo_tasks.router)
 # 会話の口(`/v1/talk/...`)。REST だが量があるので別のモジュールに置く(`app/talk.py`)
