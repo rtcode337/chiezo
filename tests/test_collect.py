@@ -2522,6 +2522,30 @@ class TestVerifyingTags:
         assert docs[0]["tags"] == ["影響元:クロード・モネ:光の扱い"]
         assert dropped == 1
 
+    def test_another_name_is_rewritten_to_the_title(self, sample, baked):
+        """旧名・通称(別名)で書かれた相手は、見出しに直して残す。2 つを指す別名は直さない。"""
+        import sqlite3
+
+        sources = baked([("見本花子", "歌手"), ("見本の曲", "曲"), ("見本の歌", "歌")], name="jawiki")
+        conn = sqlite3.connect(sources["jawiki"].path)
+        conn.executemany("INSERT INTO aliases (alias, doc_id) VALUES (?, ?)",
+                         [("旧姓花子", 1), ("見本", 2), ("見本", 3)])
+        conn.commit()
+        conn.close()
+        collect.update("news", verify_tags=[{"prefix": "影響元", "source": "jawiki"}])
+
+        docs, dropped = collect.verified_docs(
+            collect.get("news"),
+            [{"title": "誰か", "tags": [
+                "影響元:旧姓花子:歌い方", "影響元:見本花子:歌い方", "影響元:見本:何か",
+            ]}],
+            sources,
+        )
+
+        # 旧名は見出しに直り、同じものが 2 つになったら 1 つに畳む。どちらか言えない別名は落ちる
+        assert docs[0]["tags"] == ["影響元:見本花子:歌い方"]
+        assert dropped == 2
+
     def test_an_unbaked_source_changes_nothing(self, sample):
         """知らないものを「無い」と読むと、正しいタグまで落ちる。"""
         collect.update("news", verify_tags=[{"prefix": "代表作", "source": "jawiki"}])

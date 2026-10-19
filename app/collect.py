@@ -906,6 +906,7 @@ def normalize_verify_tags(raw) -> list[dict]:
 
 def verified_docs(item: Collection, docs: list[dict], sources: dict) -> tuple[list[dict], int]:
     """実在しない見出しを指すタグを落とす。落とした数も返す。
+    別名(転送)で書かれた名前は見出しに直して残す(`_alias_titles`)。
 
     **焼く前に、全部に対して掛ける**(集めたぶんだけではない)。既に入っているものにも
     同じ指定を当てないと、前に入った間違いが残り続ける —— 1 回焼き直せば揃う。
@@ -933,17 +934,46 @@ def verified_docs(item: Collection, docs: list[dict], sources: dict) -> tuple[li
         if not wanted:
             continue
         alive = _existing_titles(src.path, wanted)
+        # **見出しでない名前は、別名(転送)から見出しに直して残す**(1 つに決まるものだけ)。
+        # AI は旧名・通称・旧芸名で書くことがあり、見出しで照らすだけでは、実在する相手を
+        # 指す関係まで落ちていた(改名した人の旧名・略称で書かれた作品)
+        renamed = _alias_titles(src.path, wanted - alive)
         kept = []
         for doc in out:
             tags = doc.get("tags") or []
-            keep = [
-                tag for tag in tags
-                if not str(tag).startswith(head) or _tag_head(tag, head) in alive
-            ]
+            keep: list = []
+            for tag in tags:
+                if str(tag).startswith(head):
+                    name = _tag_head(tag, head)
+                    if name not in alive:
+                        if name not in renamed:
+                            continue
+                        tag = head + renamed[name] + str(tag)[len(head) + len(name):]
+                if tag not in keep:
+                    keep.append(tag)
             dropped += len(tags) - len(keep)
-            kept.append({**doc, "tags": keep} if len(keep) != len(tags) else doc)
+            kept.append({**doc, "tags": keep} if keep != list(tags) else doc)
         out = kept
     return out, dropped
+
+
+def _alias_titles(path, names: set[str]) -> dict[str, str]:
+    """別名(`aliases`)から見出しを引く。**1 つの見出しに決まるものだけ**を返す
+    (同じ別名が 2 つ以上の見出しを指すなら、どれのことか言えないので直さない)。"""
+    found: dict[str, set[str]] = {}
+    ordered = [n for n in names if n]
+    for start in range(0, len(ordered), VERIFY_CHUNK):
+        chunk = ordered[start:start + VERIFY_CHUNK]
+        marks = ",".join("?" * len(chunk))
+        rows = db.query(
+            path,
+            f"SELECT a.alias AS alias, d.title AS title FROM aliases a"
+            f" JOIN docs d ON d.doc_id = a.doc_id WHERE a.alias IN ({marks})",
+            tuple(chunk),
+        )
+        for row in rows:
+            found.setdefault(row["alias"], set()).add(row["title"])
+    return {alias: next(iter(titles)) for alias, titles in found.items() if len(titles) == 1}
 
 
 def _tag_head(tag, prefix: str) -> str:

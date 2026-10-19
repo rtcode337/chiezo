@@ -3606,7 +3606,8 @@ class CollectionCreate(BaseModel):
         None,
         description="タグの値が実在するかを確かめる指定。"
         '[{"prefix": "代表作", "source": "jawiki"}] と書くと、'
-        "`代表作:<見出し>` の見出しがそのソースに無いタグを焼く前に落とす",
+        "`代表作:<見出し>` の見出しがそのソースに無いタグを焼く前に落とす"
+        "(別名で書かれたものは、1 つの見出しに決まれば見出しに直して残す)",
     )
     resolve: dict | None = PydField(
         None,
