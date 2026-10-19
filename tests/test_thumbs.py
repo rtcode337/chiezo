@@ -180,6 +180,48 @@ class TestAttach:
         attach(True, items)
         assert "extra" not in items[0] and "extra" not in items[1]
 
+    def test_too_many_requests_is_retried_later(self, serve):
+        # 429 は一時的なもの。印を付けると二度と取りに行かず、絵が無いまま残っていた
+        serve({"https://example.org/a.png": httpx.Response(429)})
+        items = [{"title": "作品A", "image": "https://example.org/a.png"}]
+
+        attach(True, items)
+        assert "extra" not in items[0]
+
+    def test_docs_marked_429_before_are_tried_again(self, serve):
+        serve({"https://example.org/a.png": image_response()})
+        items = [{"title": "作品A", "body": "直した"}]
+        existing = {"作品A": {"image": "https://example.org/a.png", "thumb_failed": "HTTP 429"}}
+
+        assert attach(True, items, existing) == 1
+        assert items[0]["extra"]["thumb"]
+
+    def test_wikimedia_images_are_taken_from_the_scaled_copy(self, serve):
+        # 元の絵は数 MB あることがあり、続けて取ると 429 で断られやすい
+        original = "https://upload.wikimedia.org/wikipedia/commons/5/52/Kakiage.jpg"
+        scaled = (
+            "https://upload.wikimedia.org/wikipedia/commons/thumb/5/52/Kakiage.jpg/500px-Kakiage.jpg"
+        )
+        calls = serve({scaled: image_response()})
+        items = [{"title": "かき揚げ", "image": original}]
+
+        assert attach(True, items) == 1
+        assert calls == [scaled]
+        # 置き場の名前は元の URL から(同じ絵は 1 度だけ)
+        assert items[0]["extra"]["thumb"] == thumbs.public_path(
+            __import__("hashlib").sha1(original.encode()).hexdigest() + ".webp"
+        )
+
+    def test_falls_back_to_the_original_when_there_is_no_scaled_copy(self, serve):
+        # 元の絵が縮小版の幅より小さいと、縮小版は断られる
+        original = "https://upload.wikimedia.org/wikipedia/commons/a/ab/Small.png"
+        scaled = "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/Small.png/500px-Small.png"
+        calls = serve({scaled: httpx.Response(400), original: image_response()})
+        items = [{"title": "小さい絵", "image": original}]
+
+        assert attach(True, items) == 1
+        assert calls == [scaled, original]
+
     def test_refuses_the_local_network(self, serve):
         # URL は AI や外のページから来る。そのまま叩くと LAN の機器を叩かされうる
         calls = serve({})
@@ -323,6 +365,8 @@ def test_waiting_for_thumbs_picks_docs_without_a_thumb(tmp_path):
         (1, "待っている", {"url": "https://a.example/"}, []),
         (2, "もう持っている", {"url": "https://a.example/", "thumb": "/v1/thumbs/x.webp"}, []),
         (3, "作れなかった", {"url": "https://a.example/", "thumb_failed": "HTTP 404"}, []),
+        # 一時的な失敗(多すぎる)は取り直す
+        (6, "断られた", {"url": "https://a.example/", "thumb_failed": "HTTP 429"}, []),
         (4, "行き先が無い", {}, []),
         (5, "消えた", {"url": "https://a.example/"}, [notes.REMOVED_TAG]),
     ]
@@ -335,4 +379,4 @@ def test_waiting_for_thumbs_picks_docs_without_a_thumb(tmp_path):
     con.close()
 
     sources = {"x": SimpleNamespace(path=path)}
-    assert list(collect.waiting_for_thumbs("x", sources, 10)) == ["待っている"]
+    assert sorted(collect.waiting_for_thumbs("x", sources, 10)) == ["待っている", "断られた"]

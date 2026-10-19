@@ -23,8 +23,18 @@
 
 作ったら `extra.thumb`、作れなかったら `extra.thumb_failed`(理由)を書く。
 **どちらかが付いた 1 件には二度と取りに行かない**。脇書きは焼き直しても残るので
-(`collect._merge_extra`)、次の回も印が見える。**つながらなかった・相手が 5xx を
-返したときだけは印を付けない**(一時的なものなので、次の回に取り直す)。
+(`collect._merge_extra`)、次の回も印が見える。**つながらなかった・相手が 5xx か
+429(多すぎる)を返したときだけは印を付けない**(一時的なものなので、次の回に取り直す)。
+429 を「二度と取りに行かない」にしていた頃は、Wikimedia に続けて断られた 1 件が
+絵を持たないまま残った(料理の収集で 18 件中 5 件)。その印の付いた 1 件も取り直す
+(`RETRYABLE_FAILURES`)。
+
+## Wikimedia の絵は縮小版を取る
+
+`upload.wikimedia.org` の元の絵(数 MB のことがある)は取らず、Wikimedia が用意する
+縮小版(`/thumb/…/<幅>px-<名前>`。`wikimedia_thumb`)を取る —— 縮めるのは手元なので
+元の大きさは要らず、元の絵を続けて取ると 429 で断られやすい。縮小版が取れなければ
+(元の絵が小さいと断られる)元の絵を取る。置き場の名前は元の URL から作る(同じ絵は 1 度)。
 
 ## 外へ出る以上は守る(`app/feeds.py` と同じ契約)
 
@@ -79,6 +89,15 @@ QUALITY = 80
 MAX_PIXELS = 40_000_000
 # 転送を追う段数
 MAX_REDIRECTS = 3
+# 取り直す失敗(一時的なものなのに、前は印を付けていた)
+RETRYABLE_FAILURES = ("HTTP 429",)
+# Wikimedia の縮小版の幅。Wikimedia が用意している幅のうち、縮めた長辺(`SIZE`)より大きいもの
+WIKIMEDIA_WIDTH = 500
+_WIKIMEDIA_ORIGINAL = re.compile(
+    r"^https://upload\.wikimedia\.org/wikipedia/([a-z-]+)/([0-9a-f])/([0-9a-f]{2})/"
+    r"([^/?#]+\.(?:jpe?g|png|gif|webp))$",
+    re.I,
+)
 
 # 置いたものの名前(sha1 の 16 進 + .webp)。配るときもこの形しか通さない
 _NAME = re.compile(r"[0-9a-f]{40}\.webp")
@@ -158,7 +177,8 @@ def wants(spec: dict | None, extra: dict, image: str, url: str, from_feed: bool)
     公式サイトを指す収集(作品・イベント)のための口。**ただし配信が絵を運んできた
     1 件は読まない**(配信元が自分で配っている絵があるので、ページまで取りに行かない)。
     """
-    if spec is None or extra.get("thumb") or extra.get("thumb_failed"):
+    failed = extra.get("thumb_failed")
+    if spec is None or extra.get("thumb") or (failed and failed not in RETRYABLE_FAILURES):
         return ""
     if image and not from_feed:
         return "image"
@@ -211,13 +231,37 @@ async def _get(client: httpx.AsyncClient, url: str, limit: int) -> tuple[str, by
         raise Skip("転送が多すぎる") from e
     except outbound.Refused as e:
         raise Skip(str(e)) from e
-    if got.status >= 500:
+    # 多すぎる(429)も一時的なもの。印を付けずに次の回に取り直す
+    if got.status >= 500 or got.status == 429:
         raise httpx.HTTPStatusError(
             f"{got.status}", request=got.response.request, response=got.response
         )
     if got.status != 200:
         raise Skip(f"HTTP {got.status}")
     return got.url, got.body, got.content_type
+
+
+def wikimedia_thumb(url: str, width: int = WIKIMEDIA_WIDTH) -> str:
+    """Wikimedia の元の絵の URL を、縮小版の URL にする。当てはまらなければ空。"""
+    found = _WIKIMEDIA_ORIGINAL.match(url)
+    if not found:
+        return ""
+    project, a, ab, name = found.groups()
+    return (
+        f"https://upload.wikimedia.org/wikipedia/{project}/thumb/{a}/{ab}/{name}/{width}px-{name}"
+    )
+
+
+async def _get_image(client: httpx.AsyncClient, image: str) -> tuple[str, bytes, str]:
+    """絵を取る。Wikimedia の元の絵は縮小版を先に取り、取れなければ元の絵を取る。"""
+    thumb = wikimedia_thumb(image)
+    if thumb:
+        try:
+            return await _get(client, thumb, MAX_IMAGE_BYTES)
+        except Skip:
+            # 元の絵が縮小版の幅より小さいと断られる(元の絵なら取れる)
+            pass
+    return await _get(client, image, MAX_IMAGE_BYTES)
 
 
 def page_image_url(page: str, base: str) -> str:
@@ -263,7 +307,7 @@ async def make(client: httpx.AsyncClient, kind: str, source: str) -> tuple[str, 
     path = root / name
     # **同じ絵は 1 度だけ取る**(別の 1 件が同じ絵を指していることがある)
     if not path.is_file():
-        _url, data, content_type = await _get(client, image, MAX_IMAGE_BYTES)
+        _url, data, content_type = await _get_image(client, image)
         if not content_type.lower().startswith("image/"):
             raise Skip(f"絵ではない: {content_type or '型なし'}")
         small = await asyncio.to_thread(shrink, data)

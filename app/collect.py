@@ -6375,6 +6375,7 @@ def unresolved_docs(item: Collection, sources: dict, limit: int = 200) -> list[d
 
 def waiting_for_thumbs(name: str, sources: dict, limit: int) -> dict[str, dict]:
     """まだサムネイルを持たず、作れなかった印も無い 1 件(見出し → extra)。
+    一時的な失敗(429)の印が付いた 1 件も入れる(取り直す)。
 
     `thumbs.backfill` が後から作る相手。**新しい順に `limit` 件まで**(全件は読まない)。
     取りに行く先(URL か絵)を持つものだけで、消えたものは外す。
@@ -6385,7 +6386,9 @@ def waiting_for_thumbs(name: str, sources: dict, limit: int) -> dict[str, dict]:
     found = _docs_where(
         src,
         " AND json_extract(extra, '$.thumb') IS NULL"
-        " AND json_extract(extra, '$.thumb_failed') IS NULL"
+        " AND (json_extract(extra, '$.thumb_failed') IS NULL"
+        # 一時的な失敗の印(`thumbs.RETRYABLE_FAILURES`)が付いたものは取り直す
+        " OR json_extract(extra, '$.thumb_failed') = 'HTTP 429')"
         " AND (json_extract(extra, '$.url') IS NOT NULL"
         " OR json_extract(extra, '$.image') IS NOT NULL)"
         " ORDER BY doc_id DESC LIMIT ?",
