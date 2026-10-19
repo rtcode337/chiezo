@@ -18,8 +18,10 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
+from urllib.parse import urlparse
 
+import httpx
 from fastapi import (
     BackgroundTasks,
     Body,
@@ -48,6 +50,7 @@ from app import (
     ai_inflight,
     ai_log,
     answer,
+    bookmarks,
     capabilities,
     claude_config,
     collect,
@@ -5673,6 +5676,54 @@ async def media_picks(
 ) -> dict:
     """採用された案。**依頼した AI はここを見に来る。**"""
     return {"picks": media.picked_jobs(limit, group.strip())}
+
+
+# 縮小版を作ってよい絵の置き場(`POST /v1/thumbs`)。**ここに書いたホストの絵だけ取りに行く** ——
+# 読む側から URL を受け取って外へ出る口なので、何でも通すと外を叩かせる踏み台になる。
+# いまは Wikimedia の置き場だけ(百科事典の記事の写真。顔写真・代表作の絵)
+THUMB_HOSTS = ("upload.wikimedia.org",)
+
+
+class ThumbRequest(BaseModel):
+    url: str = PydField(description="縮小版を作る絵の URL(`upload.wikimedia.org` のものだけ)")
+
+
+@app.post("/v1/thumbs")
+async def make_thumb(body: ThumbRequest) -> dict:
+    """**外の絵を 1 回だけ取って縮め、Chiezo から配る**(`app/thumbs.py` の `make`)。
+
+    読む側のアプリが Wikimedia の写真を自分で取りに行っていた —— 外への通信先が
+    Chiezo のほかにも散らばり、見る人のブラウザに直に引かせているところもあった。
+    **同じ絵は 1 度しか取らない**(名前は元の URL の sha1。2 回目からは置き場の写しを返す)。
+    返すのは配る場所(`/v1/thumbs/<名前>.webp`。長辺 320px の WebP)で、絵そのものは
+    その場所から読む。
+    """
+    host = (urlparse(body.url).hostname or "").lower()
+    if not body.url.startswith("https://") or host not in THUMB_HOSTS:
+        raise HTTPException(400, {"error": "url not allowed", "hosts": list(THUMB_HOSTS)})
+    try:
+        async with thumbs._client() as client:
+            path, _source = await thumbs.make(client, "image", body.url)
+    except thumbs.Skip as e:
+        raise HTTPException(422, {"error": "cannot make thumb", "reason": str(e)}) from e
+    except httpx.HTTPError as e:
+        log.info("thumb fetch failed: %r", e)
+        raise HTTPException(502, {"error": "upstream unavailable", "reason": type(e).__name__}) from e
+    return {"thumb": path}
+
+
+@app.get("/v1/bookmarks")
+async def bookmark_counts(
+    url: Annotated[list[str], Query(description="数を知りたい URL(繰り返して書く。500 本まで)")],
+) -> dict:
+    """URL のはてなブックマーク数(`app/bookmarks.py`)。**読む側に外を叩かせないための口**。
+
+    1 時間覚えておき、引けなかった URL は返さない(0 とは書かない —— 0 は「誰も
+    ブックマークしていない」で、引けなかったこととは意味が違う)。
+    """
+    if len(url) > bookmarks.MAX_URLS:
+        raise HTTPException(400, {"error": f"too many urls (max {bookmarks.MAX_URLS})"})
+    return {"counts": await bookmarks.counts(url)}
 
 
 @app.get("/v1/thumbs/{name}", include_in_schema=False)

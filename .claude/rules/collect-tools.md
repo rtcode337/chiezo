@@ -4,12 +4,14 @@ paths:
   - "app/outbound.py"
   - "app/pihole.py"
   - "app/thumbs.py"
+  - "app/bookmarks.py"
   - "app/link_checks.py"
   - "app/handoff.py"
   - "app/search_queries.py"
   - "tests/test_feeds.py"
   - "tests/test_collect_pihole.py"
   - "tests/test_thumbs.py"
+  - "tests/test_bookmarks.py"
   - "tests/test_link_checks.py"
   - "tests/test_handoff.py"
   - "tests/test_search_queries.py"
@@ -89,6 +91,12 @@ paths:
 - **1 件ごとの絵も運ぶ**(`feeds._image` → `extra.image`)。読むのは
   **フィードが配っているものだけ**(`media:thumbnail` / `enclosure` /
   `hatena:imageurl`)—— ページを取りに行くのは本文を取ることになるのでしない
+- **読む側のアプリから頼まれて縮小版を作る口もある**(`POST /v1/thumbs`。`main.make_thumb`)。
+  アプリが Wikimedia の写真を自分で取りに行っていた(外への通信先が散らばる)ので、Chiezo が取り次ぐ。
+  中身は下の `thumbs.make` と同じ(同じ絵は 1 度だけ・置き場の写しを返す)。**取りに行けるホストは
+  `main.THUMB_HOSTS`(いまは `upload.wikimedia.org`)だけ** —— 読む側から URL を受け取って外へ出る口なので、
+  何でも通すと外を叩かせる踏み台になる。**はてなの件数も同じ考えで取り次ぐ**(`GET /v1/bookmarks` /
+  `app/bookmarks.py`。50 本ずつ・間を空け・1 時間覚える。引けなかった URL は返さない)
 - **サムネイルを持てる**(`Collection.thumbs` / `app/thumbs.py` / `GET /v1/thumbs/{name}`)。
   読む側の画面が `extra.image` をそのまま指すと、**開くたびに見る人のブラウザが
   知らない外のサイトへつなぎに行く**ので、焼く前に 1 回だけ取って縮め(長辺 320px の

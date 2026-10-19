@@ -200,7 +200,10 @@ docker compose -f docker-compose.yml -f docker-compose.llm.yml --profile llm up 
   **素の既定は `rag` + `grounded=1`**(小さな機械でも安全に動く側)。潤沢な環境では
   `CHIEZO_ASK_DEFAULT_MODE` / `_GROUNDED` で倒せるが、**素の既定は変えない**。
 - **外へ出るのは「使う」層だけ**。Chiezo 本体(知識ベース)は ingest がダンプを取る以外
-  外を叩かない。web 検索は使う側の機能として `app/websearch.py` に閉じ、既定は無効のまま保つ。
+  外を叩かない。**例外は読む側のアプリに外を叩かせないための取り次ぎ**(`POST /v1/thumbs` =
+  Wikimedia の絵の縮小版・`GET /v1/bookmarks` = はてなの件数。`app/bookmarks.py`)で、
+  取りに行ける相手は決め打ちに絞る(読む側から URL を受け取る口が、外を叩かせる踏み台にならないように)。
+  web 検索は使う側の機能として `app/websearch.py` に閉じ、既定は無効のまま保つ。
   有効にしたときも「どれが web 由来か分かる」ことを崩さない(出典の `source` が `web`)。
 - **会話の状態を chiezo-app に持たせない**。`/v1/chat` は履歴を毎回まるごと受け取る。
   セッションを持つと read-only・複数ワーカーの前提が崩れる(MCP をステートレスにしたのと同じ)。
