@@ -189,6 +189,8 @@ def normalize(raw) -> dict | None:
             "source": name,
             "identity": [str(k).strip() for k in identity if str(k).strip()],
             "tag": tag,
+            # 座標を住所の街区で確かめる辞典(`_checked_coords`。`address` が要る)
+            "check_coords": bool(one.get("check_coords", False)),
         })
     try:
         agree = int(raw.get("agree_meters") or DEFAULT_AGREE_METERS)
@@ -219,6 +221,9 @@ def normalize(raw) -> dict | None:
     if none and none == failed:
         raise _bad("none_tag と failed_tag は別のタグにしてください")
     address = _address_spec(raw.get("address"), seen)
+    if any(one["check_coords"] for one in written) and address is None:
+        # 確かめる相手が無いのに「確かめる」と書いても何も起きない(書いた人は効いていると思う)
+        raise _bad("check_coords を使うときは address(住所の辞典)も書いてください")
     when_missing = bool(raw.get("failed_when_missing", False))
     if when_missing and not failed:
         # 付けるタグが無いのに「付ける」と書いても何も起きない。黙って通すと、
@@ -589,9 +594,50 @@ def resolve(spec: dict, clue: dict, area_hint: str | None, sources: dict, now: s
     だった —— AI が確かめた住所から、座標は機械で引く。引けなければ店の辞典の理由を残す。
     """
     result = _by_shops(spec, clue, area_hint, sources, now)
-    if result.ok or not spec.get("address"):
+    if not spec.get("address"):
         return result
+    if result.ok:
+        return _checked_coords(spec, result, clue, area_hint, sources)
     return _by_address(spec, clue, area_hint, sources, now) or result
+
+
+# **座標を確かめる辞典の点が、住所の街区からこれ以上離れていたら住所の点を使う**(m)。
+# 街区の代表点は街区の真ん中で、大きな街区でも 1 辺 200 m 前後に収まる
+MAX_COORD_GAP_METERS = 300
+
+
+def _checked_coords(spec: dict, result: Result, clue: dict, area_hint, sources: dict) -> Result:
+    """**座標を確かめる指定の辞典(`check_coords`)だけで採った座標**を、住所の街区で確かめる。
+
+    店舗辞典の一部は、住所は合っているのに座標が数 km ずれた記録を持つ(市区町村の欄まで
+    隣の区になっていた記録もある)。ほかの辞典の点と重なっていればそのまま採り
+    (`辞典の一致`)、重ならずに住所の街区から `MAX_COORD_GAP_METERS` を超えて離れていれば、
+    **座標だけ**街区の代表点に替える(名前・電話・サイトはその辞典のまま)。
+    住所の辞典で引けなければ確かめようがないので、そのまま採る。
+    """
+    shop = result.shop
+    checked = {one["source"] for one in spec["sources"] if one.get("check_coords")}
+    if shop.get("source") not in checked or BASIS_AGREE in (shop.get("basis") or []):
+        return result
+    block = _block_point(spec, clue, area_hint, sources)
+    if block is None or _gap(result.lat, result.lon, block.lat, block.lon) <= MAX_COORD_GAP_METERS:
+        return result
+    moved = {
+        **shop,
+        "basis": [*(shop.get("basis") or []), BASIS_ADDRESS],
+        "sources": [*(shop.get("sources") or []), spec["address"]["source"]],
+        "coords_from": spec["address"]["source"],
+    }
+    if version := block.extra.get("version"):
+        moved["version"] = version
+    return Result(shop=moved, lat=block.lat, lon=block.lon)
+
+
+def _gap(lat_a, lon_a, lat_b, lon_b) -> float:
+    rad = math.radians
+    dlat, dlon = rad(lat_b - lat_a), rad(lon_b - lon_a)
+    h = math.sin(dlat / 2) ** 2 + math.cos(rad(lat_a)) * math.cos(rad(lat_b)) * math.sin(dlon / 2) ** 2
+    return 2 * 6_371_000 * math.asin(math.sqrt(h))
 
 
 def _by_shops(spec: dict, clue: dict, area_hint: str | None, sources: dict, now: str) -> Result:
@@ -864,6 +910,28 @@ def _by_address(
     **1 つの街区に決まらなければ採らない**(同じ鍵が 2 つの街区を指すとき)。
     住所に都道府県が無ければ、1 件の県を頭に付けて引く。
     """
+    one = spec["address"]
+    cand = _block_point(spec, clue, area_hint, sources)
+    if cand is None:
+        return None
+    shop = {
+        "name": clue.get("name") or "",
+        "ref": f"{one['source']}:{cand.title}",
+        "source": one["source"],
+        "address": cand.title,
+        "area": cand.extra.get("area") or "",
+        "sources": [one["source"]],
+        "basis": [BASIS_ADDRESS],
+        "clue": clue,
+        "resolved_at": now,
+    }
+    if version := cand.extra.get("version"):
+        shop["version"] = version
+    return Result(shop={k: v for k, v in shop.items() if v != ""}, lat=cand.lat, lon=cand.lon)
+
+
+def _block_point(spec: dict, clue: dict, area_hint: str | None, sources: dict) -> Candidate | None:
+    """手がかりの住所が指す街区の代表点(住所の辞典の 1 件)。引けなければ None。"""
     address = str(clue.get("address") or "")
     one = spec["address"]
     src = sources.get(one["source"])
@@ -884,21 +952,8 @@ def _by_address(
         rows = _rows_named(src, {f"{t}-{tail}" for t in towns if t})
         if len(rows) > 1:
             return None
-        if rows and (cand := _candidate(one["source"], rows[0])) is not None:
-            shop = {
-                "name": clue.get("name") or "",
-                "ref": f"{one['source']}:{cand.title}",
-                "source": one["source"],
-                "address": cand.title,
-                "area": cand.extra.get("area") or "",
-                "sources": [one["source"]],
-                "basis": [BASIS_ADDRESS],
-                "clue": clue,
-                "resolved_at": now,
-            }
-            if version := cand.extra.get("version"):
-                shop["version"] = version
-            return Result(shop={k: v for k, v in shop.items() if v != ""}, lat=cand.lat, lon=cand.lon)
+        if rows:
+            return _candidate(one["source"], rows[0])
     return None
 
 
@@ -1084,6 +1139,32 @@ def retry(
             FACTS_KEY: facts,
         }
     return None
+
+
+def recheck(
+    spec: dict, title: str, tags: list, shop, lat, lon, sources: dict,
+) -> dict | None:
+    """**前に座標を確かめずに採った 1 件**(`check_coords` の辞典だけで採った座標)を、住所の
+    街区で確かめ直す。座標を替えるときだけ重ねる形を返す(`retry` と同じ形)。
+
+    確かめる決まりを足す前に焼いた 1 件は、AI が触り直すまでずれた座標のまま残るため。
+    """
+    if not is_resolved(shop) or shop.get("coords_from"):
+        return None
+    try:
+        before = Result(shop=shop, lat=float(lat), lon=float(lon))
+    except (TypeError, ValueError):
+        return None
+    clue = clue_of(shop.get("clue"))
+    after = _checked_coords(spec, before, clue, _area_hint(spec, {"tags": tags}), sources)
+    if after is before:
+        return None
+    return {
+        "title": title,
+        RETRY_KEY: True,
+        "tags": _machine_tags(list(tags or []), after.shop, source_tags(spec), spec["failed_tag"], spec),
+        FACTS_KEY: {spec["clue"]: after.shop, "lat": after.lat, "lon": after.lon},
+    }
 
 
 def _area_hint(spec: dict, raw: dict) -> str | None:

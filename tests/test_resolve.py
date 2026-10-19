@@ -415,6 +415,49 @@ class TestPlacingByAddress:
         assert "出典:OSM" not in tags
         assert "状態:代表店未定" not in tags
 
+    def _checked(self, tmp_path, lat: float, lon: float):
+        """店舗辞典にだけ載っている店(住所と市区町村は合っている)。"""
+        overture = [{"title": "見本亭", "extra": {
+            "overture_id": "ov-4001", "locality": "千代田区", "address": "丸の内2-3-4",
+            "lat": lat, "lon": lon,
+        }}]
+        spec = resolve.normalize({
+            **resolve.to_json(ADDRESS_SPEC),
+            "sources": [
+                {"source": "osm_japan", "identity": ["osm_type", "osm_id"], "tag": "出典:OSM"},
+                {"source": "overture_japan", "identity": ["overture_id"], "tag": "出典:Overture",
+                 "check_coords": True},
+            ],
+        })
+        srcs = {
+            "osm_japan": make_source(tmp_path, "osm_japan", osm_docs()),
+            "overture_japan": make_source(tmp_path, "overture_japan", overture),
+            "address_jp": make_source(tmp_path, "address_jp", address_docs()),
+        }
+        clue = {"name": "見本亭", "address": "東京都千代田区丸の内2-3-4"}
+        return resolve.resolve(spec, clue, "東京都", srcs, NOW)
+
+    def test_far_coordinates_of_a_checked_dictionary_move_to_the_block(self, tmp_path):
+        """住所は合っているのに座標が数 km ずれた記録は、座標だけ街区の代表点に替える。"""
+        result = self._checked(tmp_path, 35.7200, 139.7000)
+        assert result.ok
+        assert (result.lat, result.lon) == (35.68, 139.764)
+        assert result.shop["ref"] == "overture_japan:見本亭"  # 名前などはその辞典のまま
+        assert resolve.BASIS_ADDRESS in result.shop["basis"]
+        assert result.shop["coords_from"] == "address_jp"
+        assert result.shop["sources"][-1] == "address_jp"
+
+    def test_near_coordinates_of_a_checked_dictionary_are_kept(self, tmp_path):
+        result = self._checked(tmp_path, 35.6805, 139.7645)
+        assert (result.lat, result.lon) == (35.6805, 139.7645)
+        assert "coords_from" not in result.shop
+
+    def test_check_coords_needs_an_address_dictionary(self):
+        with pytest.raises(HTTPException):
+            resolve.normalize({**resolve.to_json(SPEC), "sources": [
+                {"source": "overture_japan", "check_coords": True},
+            ]})
+
     def test_the_spec_round_trips_and_refuses_a_shop_dictionary(self):
         assert resolve.to_json(ADDRESS_SPEC)["address"] == {
             "source": "address_jp", "tag": "出典:位置参照情報",

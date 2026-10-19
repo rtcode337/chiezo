@@ -150,6 +150,43 @@ class TestBaking:
         assert diff["updated"] == 1 and diff["added"] == 0
         assert collect.checks_note(checks).endswith("前に落ちたものを引き直して 1 件")
 
+    def test_far_coordinates_baked_before_are_moved_to_the_block(self, gourmet, tmp_path):
+        """確かめる決まりを足す前に焼いた、店舗辞典だけの座標も確かめ直す。"""
+        from tests.test_resolve import address_docs
+
+        overture = [{"title": "見本亭", "extra": {
+            "overture_id": "ov-4001", "locality": "千代田区", "address": "丸の内2-3-4",
+            "lat": 35.7200, "lon": 139.7000,
+        }}]
+        srcs = {
+            "osm_japan": make_source(tmp_path, "osm_japan", osm_docs()),
+            "overture_japan": make_source(tmp_path, "overture_japan", overture),
+        }
+        dish = {**_dish(), "extra": {"shop": {"name": "見本亭", "address": "東京都千代田区丸の内2-3-4"}}}
+        items, _ = collect.check_collected(gourmet, [dish], srcs)
+        first = _baked(collect.ndjson(gourmet, srcs, {}, items)[0])["名物丼"]
+        assert (first["extra"]["lat"], first["extra"]["lon"]) == (35.72, 139.70)
+        previous = {"名物丼": {**first, "doc_id": 1}}
+
+        checked = {**RESOLVE, "address": {"source": "address_jp", "tag": "出典:位置参照情報"}}
+        checked["sources"] = [RESOLVE["sources"][0], {**RESOLVE["sources"][1], "check_coords": True}]
+        collect.update("gourmet", resolve=checked)
+        gourmet = collect.get("gourmet")
+        srcs = {**srcs, **make_source_for(gourmet, previous),
+                "address_jp": make_source(tmp_path, "address_jp", address_docs())}
+        items, checks = collect.check_collected(gourmet, [], srcs)
+        doc = _baked(collect.ndjson(gourmet, srcs, previous, items, edits=True)[0])["名物丼"]
+
+        assert checks["rechecked"] == 1
+        assert (doc["extra"]["lat"], doc["extra"]["lon"]) == (35.68, 139.764)
+        assert "出典:位置参照情報" in doc["tags"] and "出典:Overture" in doc["tags"]
+
+        # 直したものは 2 度目には確かめ直さない
+        again = {"名物丼": {**doc, "doc_id": 1}}
+        srcs = {**srcs, **make_source_for(gourmet, again)}
+        _items, checks = collect.check_collected(gourmet, [], srcs)
+        assert checks["rechecked"] == 0
+
     def test_a_retry_that_still_fails_changes_nothing(self, gourmet, dictionaries):
         dish = {**_dish(), "extra": {"shop": {"name": "どこにも無い店"}}}
         items, _ = collect.check_collected(gourmet, [dish], dictionaries)

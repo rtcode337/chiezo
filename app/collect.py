@@ -6232,8 +6232,17 @@ def check_collected(item: Collection, items, sources: dict) -> tuple:
             if one["title"] not in returned
             and (fix := resolving.retry(spec, one["title"], one["tags"], one["shop"], sources, now, valid))
         ]
-        items = [*items, *retried]
+        # **座標を確かめる辞典だけで採った座標も、住所の街区で確かめ直す**(`resolve.recheck`)
+        rechecked = [
+            fix for one in _unchecked_rows(item, sources, spec)
+            if one["title"] not in returned
+            and (fix := resolving.recheck(
+                spec, one["title"], one["tags"], one["shop"], one["lat"], one["lon"], sources,
+            ))
+        ]
+        items = [*items, *retried, *rechecked]
         report["retried"] = len(retried)
+        report["rechecked"] = len(rechecked)
     items, dropped = formatting.apply(checks, items, resolving.FACTS_KEY)
     failures = report.pop("failures", [])
     return items, {
@@ -6256,6 +6265,8 @@ def checks_note(checks: dict | None) -> str:
         )
     if checks.get("retried"):
         parts.append(f"前に落ちたものを引き直して {checks['retried']} 件")
+    if checks.get("rechecked"):
+        parts.append(f"ずれた座標を住所の街区に直して {checks['rechecked']} 件")
     if checks.get("dropped"):
         parts.append(f"書式に合わず落とした値 {checks['dropped']} 件")
     return " / ".join(parts)
@@ -6285,6 +6296,36 @@ def _unresolved_rows(item: Collection, sources: dict, spec: dict) -> list[dict]:
         return []
     return [
         {"title": row["title"], "tags": _json_list(row["tags"]), "shop": load_json(row["shop"]) or {}}
+        for row in rows
+    ]
+
+
+def _unchecked_rows(item: Collection, sources: dict, spec: dict) -> list[dict]:
+    """座標を確かめる指定の辞典(`check_coords`)だけで採り、まだ確かめていない生きている 1 件。"""
+    checked = [one["source"] for one in spec["sources"] if one.get("check_coords")]
+    src = sources.get(item.name)
+    if not checked or not spec.get("address") or src is None:
+        return []
+    path = f'$."{spec["clue"]}"'
+    marks = ",".join("?" * len(checked))
+    try:
+        rows = db.query(
+            src.path,
+            "SELECT title, tags, json_extract(extra, ?) AS shop, json_extract(extra, '$.lat') AS lat,"
+            " json_extract(extra, '$.lon') AS lon FROM docs"
+            f" WHERE json_extract(extra, ? || '.source') IN ({marks})"
+            " AND json_extract(extra, ? || '.resolved_at') IS NOT NULL"
+            " AND json_extract(extra, ? || '.coords_from') IS NULL"
+            " AND doc_id NOT IN (SELECT doc_id FROM doc_tags WHERE tag = ?)"
+            " ORDER BY updated_at LIMIT ?",
+            (path, path, *checked, path, path, notes.REMOVED_TAG, MAX_RETRIES_PER_BAKE),
+        )
+    except Exception as e:  # 読めなければ確かめ直さない(焼く側は止めない)
+        log.warning("collect: %s の確かめ直す 1 件を読めませんでした: %s", item.name, type(e).__name__)
+        return []
+    return [
+        {"title": row["title"], "tags": _json_list(row["tags"]), "shop": load_json(row["shop"]) or {},
+         "lat": row["lat"], "lon": row["lon"]}
         for row in rows
     ]
 
