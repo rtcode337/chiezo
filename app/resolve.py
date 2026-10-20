@@ -112,6 +112,8 @@ BASIS_AGREE = "辞典の一致"
 BASIS_LOOSE = "名前の揺れ"
 BASIS_REF = "指した見出し"
 BASIS_ADDRESS = "住所"
+BASIS_NEAR = "住所の近く"
+BASIS_MAIN = "本店"
 # **AI が指した見出しを、名前の書き方が違っても採る**ときの、名前の重なりの下限
 # (`_named_alike`)。共通の続いた字がこの字数以上、かつ短いほうの名前のこの割合以上。
 # 短いほうがまるごと長いほうに入っていれば字数は問わない。運営の名前を頭に付けた
@@ -316,6 +318,12 @@ def _nfkc(text) -> str:
     return unicodedata.normalize("NFKC", str(text or "")).strip()
 
 
+# **ひらがなとカタカナは同じ字として比べる**(「とんこつらーめん」と「とんこつラーメン」)。
+# 地図の見出しと店の頁で書き分けることがあり、別の字として比べると名前の揺れ扱いになる
+_TO_HIRA = str.maketrans({chr(c): chr(c - 0x60) for c in range(0x30A1, 0x30F7)})
+_TO_KATA = str.maketrans({chr(c): chr(c + 0x60) for c in range(0x3041, 0x3097)})
+
+
 def _plain(text: str) -> str:
     """飾りの記号を落とし、伸ばす音を「ー」にそろえた形。"""
     text = "".join(c for c in text if c not in DECORATIONS)
@@ -324,7 +332,7 @@ def _plain(text: str) -> str:
 
 def name_key(text) -> str:
     """名前を比べる形(NFKC・空白を詰める・英字は小文字・飾りの記号と伸ばす音をそろえる)。"""
-    return _plain(_SPACE.sub("", _nfkc(text))).casefold()
+    return _plain(_SPACE.sub("", _nfkc(text))).casefold().translate(_TO_HIRA)
 
 
 def base_name(title: str) -> str:
@@ -379,12 +387,16 @@ class Candidate:
     city_ok: bool | None = None
     block_ok: bool | None = None
     site_ok: bool | None = None
+    # 住所の街区の点から近い(住所を持たない辞典の点を、住所で確かめる道。`NEAR_METERS`)
+    near_ok: bool = False
+    # 手がかりも辞典の支店名(`branch`)も本店を名乗る
+    main_ok: bool = False
     why_not: str = ""
     agrees: bool = False
 
     @property
     def strong(self) -> bool:
-        return bool(self.city_ok or self.block_ok or self.site_ok)
+        return bool(self.city_ok or self.block_ok or self.site_ok or self.near_ok or self.main_ok)
 
     def label(self) -> str:
         where = self.extra.get("locality") or self.area or "所在不明"
@@ -414,12 +426,19 @@ def _variants(name: str) -> tuple[set[str], set[str]]:
     loose: set[str] = set()
     forms = {name.strip(), _nfkc(name)}
     forms |= {_plain(v).strip() for v in forms}
+    # かなの書き分け(ひらがな・カタカナ)も引く。索引は完全一致なので、形を並べる
+    forms |= {v.translate(_TO_HIRA) for v in forms} | {v.translate(_TO_KATA) for v in forms}
     # **支店名を外した形も付け外しで引く**(「店名 ◯◯店」と書かれても、辞典の
-    # 見出しは店名だけのことがある)。外したあとは住所で確かめるので、名前だけでは採らない
+    # 見出しは店名だけのことがある)。外したあとは住所で確かめるので、名前だけでは採らない。
+    # 地図の見出しは支店名を別の札(`branch`)に持ち、店名を詰めて書くことがあるので、
+    # 詰めた形とかなの書き分けも引く
     for value in list(forms):
         head, _, tail = value.rpartition(" ")
         if head.strip() and tail.endswith("店"):
-            loose |= {head.strip(), _plain(head).strip()}
+            heads = {head.strip(), _plain(head).strip()}
+            heads |= {_SPACE.sub("", h) for h in heads}
+            loose |= heads | {h.translate(_TO_HIRA) for h in heads} \
+                | {h.translate(_TO_KATA) for h in heads}
     for value in forms:
         if not value:
             continue
@@ -478,6 +497,13 @@ def _candidate(source: str, row, **flags) -> Candidate | None:
         source=source, title=row["title"], lat=lat, lon=lon, extra=extra,
         area=str(area) if area else None, **flags,
     )
+
+
+def _branch_of(extra: dict) -> str:
+    """地図の点の支店名(OSM の `branch` タグ)。無ければ空。"""
+    tags = extra.get("tags") if isinstance(extra.get("tags"), dict) else {}
+    value = tags.get("branch") or extra.get("branch") or ""
+    return _nfkc(value) if isinstance(value, str) else ""
 
 
 def _json(raw) -> dict:
@@ -601,6 +627,10 @@ def resolve(spec: dict, clue: dict, area_hint: str | None, sources: dict, now: s
     return _by_address(spec, clue, area_hint, sources, now) or result
 
 
+# **住所を持たない辞典の点を、住所の街区の点からこの距離(m)以内なら住所で確かめたとみなす。**
+# 街区の代表点は街区の真ん中で、大きな街区でも 1 辺 200 m 前後に収まる
+NEAR_METERS = 200
+
 # **座標を確かめる辞典の点が、住所の街区からこれ以上離れていたら住所の点を使う**(m)。
 # 街区の代表点は街区の真ん中で、大きな街区でも 1 辺 200 m 前後に収まる
 MAX_COORD_GAP_METERS = 300
@@ -669,14 +699,20 @@ def _by_shops(spec: dict, clue: dict, area_hint: str | None, sources: dict, now:
             by_ref = {r["doc_id"] for r in ref_rows}
             known = {r["doc_id"] for r in rows}
             rows += [r for r in ref_rows if r["doc_id"] not in known]
+        loose_keys = {name_key(v) for v in loose}
         for row in rows:
             key = name_key(base_name(row["title"]))
-            same = key == want or name_key(row["title"]) == want
-            close = not same and key in {name_key(v) for v in loose}
+            branch = _branch_of(_json(row["extra"]))
+            # **地図の見出しは支店名を別の札に持つ**(`branch=◯◯総本店`)。見出しに足した
+            # 名前でも比べる —— 看板どおりの「店名 支店名」が見出しだけでは合わない
+            same = key == want or name_key(row["title"]) == want \
+                or bool(branch and name_key(base_name(row["title"]) + branch) == want)
+            close = not same and key in loose_keys
             if not (same or close or row["doc_id"] in by_ref):
                 continue
             if (cand := _candidate(
                 one["source"], row, by_ref=row["doc_id"] in by_ref, loose=not same,
+                main_ok=bool(branch and "本店" in branch and "本店" in name),
             )) is not None:
                 found.append(cand)
     if not found:
@@ -693,6 +729,16 @@ def _by_shops(spec: dict, clue: dict, area_hint: str | None, sources: dict, now:
     target = target or area_hint
     for cand in found:
         _check(cand, target, address, clue, area_sources)
+    # **住所を持たない点は、住所の街区の点からの近さで確かめる**(`NEAR_METERS`)。
+    # 地図辞典の点は住所を持たないので番地では確かめられず、名前を寄せた候補は
+    # 採れなかった —— 座標の正しさは住所の辞典の側から測る(店舗辞典の座標は当てにしない)
+    if spec.get("address") and address:
+        block = _block_point(spec, clue, target, sources)
+        if block is not None:
+            for cand in found:
+                if not cand.why_not and cand.block_ok is None \
+                        and _gap(cand.lat, cand.lon, block.lat, block.lon) <= NEAR_METERS:
+                    cand.near_ok = True
 
     alive = [c for c in found if not c.why_not]
     clusters = _clusters(alive, spec["agree_meters"])
@@ -861,6 +907,10 @@ def _resolved(
         basis.append(BASIS_BLOCK)
     if any(c.site_ok for c in group):
         basis.append(BASIS_SITE)
+    if any(c.near_ok for c in group):
+        basis.append(BASIS_NEAR)
+    if any(c.main_ok for c in group):
+        basis.append(BASIS_MAIN)
     if any(c.agrees for c in group):
         basis.append(BASIS_AGREE)
     if all(c.loose for c in group):

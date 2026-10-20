@@ -405,6 +405,52 @@ class TestPlacingByAddress:
         assert result.ok
         assert result.shop["source"] == "osm_japan"
 
+    def _osm_only(self, tmp_path, *extra_docs):
+        return {
+            "osm_japan": make_source(tmp_path, "osm_japan", osm_docs(extra_docs)),
+            "overture_japan": make_source(tmp_path, "overture_japan", []),
+            "address_jp": make_source(tmp_path, "address_jp", address_docs()),
+        }
+
+    def test_the_branch_tag_and_kana_spelling_find_the_main_shop(self, tmp_path):
+        """地図の見出しは支店名を別の札に持ち、かなの書き分けも違う(「とんこつらーめん」)。
+        見出しに支店名を足し、ひらがなとカタカナを同じ字として比べれば住所が無くても当たる。"""
+        srcs = self._osm_only(tmp_path, {"title": "とんこつらーめん見本龍", "extra": {
+            "osm_type": "node", "osm_id": 7001, "feature": "amenity=restaurant",
+            "lat": 35.6801, "lon": 139.7641, "area": "東京都",
+            "tags": {"name": "とんこつらーめん見本龍", "branch": "丸の内総本店"},
+        }})
+        result = resolve.resolve(
+            ADDRESS_SPEC, {"name": "とんこつラーメン 見本龍 丸の内総本店"}, "東京都", srcs, NOW,
+        )
+        assert result.ok, result.shop
+        assert result.shop["ref"] == "osm_japan:とんこつらーめん見本龍"
+        assert resolve.BASIS_LOOSE not in result.shop["basis"]
+        assert resolve.BASIS_MAIN in result.shop["basis"]
+
+    def test_a_point_without_an_address_is_checked_by_the_nearby_block(self, tmp_path):
+        """住所を持たない地図の点でも、住所の街区の点から近ければ、寄せた名前で採る。"""
+        near = {"title": "見本そば", "extra": {
+            "osm_type": "node", "osm_id": 7002, "feature": "amenity=restaurant",
+            "lat": 35.6805, "lon": 139.7645, "area": "東京都",
+        }}
+        clue = {"name": "見本そば 丸の内店", "address": "東京都千代田区丸の内2-3-4"}
+        result = resolve.resolve(ADDRESS_SPEC, clue, "東京都", self._osm_only(tmp_path, near), NOW)
+        assert result.ok, result.shop
+        assert result.shop["source"] == "osm_japan"
+        assert resolve.BASIS_NEAR in result.shop["basis"]
+
+    def test_a_far_point_is_not_taken_by_nearness(self, tmp_path):
+        """街区から離れた同じ名前の点は採らず、住所の街区の点に置く。"""
+        far = {"title": "見本そば", "extra": {
+            "osm_type": "node", "osm_id": 7003, "feature": "amenity=restaurant",
+            "lat": 35.6900, "lon": 139.7645, "area": "東京都",
+        }}
+        clue = {"name": "見本そば 丸の内店", "address": "東京都千代田区丸の内2-3-4"}
+        result = resolve.resolve(ADDRESS_SPEC, clue, "東京都", self._osm_only(tmp_path, far), NOW)
+        assert result.ok, result.shop
+        assert result.shop["source"] == "address_jp"
+
     def test_the_address_tag_is_put_on_the_item(self, srcs):
         items, _report = resolve.apply(ADDRESS_SPEC, _items({
             "title": "名物餅", "body": "説明", "tags": ["地域:東京都", "出典:OSM"],
