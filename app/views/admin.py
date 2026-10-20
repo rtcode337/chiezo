@@ -703,6 +703,8 @@ def _thumbs_health_html() -> str:
 
     一時的な失敗は 1 件ごとの印に残らないので、相手に断られ続けても収集の中身からは
     読めない —— Wikimedia に 429 で断られ続けたのに、どの面にも出ていなかった。
+    **休んでいる間は、続けて取れなかった回数に関わらず期限を出す** —— 1 回断られただけでも
+    30 分は頼まないので、出さないと「最後に取れた時刻」が止まっている理由が読めない。
     まだ 1 度も取りに行っていなければ出さない。
     """
     state = thumbs.health()
@@ -710,16 +712,19 @@ def _thumbs_health_html() -> str:
         return ""
     ok = jst.parse(str(state.get("last_ok_at") or ""))
     ok_text = f"最後に取れたのは {esc(jst.format(ok))}" if ok else "まだ 1 枚も取れていません"
-    if not thumbs.failing(state):
-        return f'<p class="muted">外の絵の取得: {ok_text}</p>'
-    failed = jst.parse(str(state.get("last_failed_at") or ""))
     host = str(state.get("last_host") or "")
     until = jst.parse(thumbs.resting_until(host, state)) if host else None
     resting = (
-        f"{esc(host)} へは {esc(jst.format(until))} まで頼みません(断られたので休んでいます)。"
+        f"{esc(host)} に「{esc(state.get('last_reason') or '')}」と断られたので、"
+        f"{esc(jst.format(until))} まで頼みません。"
         if until
         else ""
     )
+    if not thumbs.failing(state):
+        css = "stale" if until else "muted"
+        mark = "⚠️ " if until else ""
+        return f'<p class="{css}">{mark}外の絵の取得: {ok_text}。{resting}</p>'
+    failed = jst.parse(str(state.get("last_failed_at") or ""))
     return (
         f'<p class="stale">⚠️ 外の絵(サムネイル)を {int(state.get("failing") or 0):,} 回続けて'
         f"取れていません(最後は {esc(jst.format(failed)) if failed else '不明'}・"

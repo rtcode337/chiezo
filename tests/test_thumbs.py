@@ -437,6 +437,10 @@ class TestHealth:
         attach(True, [{"title": "b", "image": "https://example.org/b.png"}])
         assert calls == ["https://example.org/a.png"]
 
+        # 1 回断られただけでも、休んでいる期限を状況の面に出す
+        from app.views import admin
+        assert "まで頼みません" in admin._thumbs_health_html()
+
         # 休み明けには頼む
         state = thumbs.health()
         state["resting"] = {"example.org": "2000-01-01T00:00:00+00:00"}
