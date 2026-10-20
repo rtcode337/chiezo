@@ -1916,7 +1916,13 @@ def within_hold_limit(partitions: list[dict], keys: list[str], sweep_name: str) 
 
 
 def note_held(partitions: list[dict], keys: list[str], sweep_name: str) -> list[dict]:
-    """足止めした区画の、続けて足止めした回数を 1 つ進める。"""
+    """足止めした区画の、続けて足止めした回数を 1 つ進め、**その巡回の前の印を外す**。
+
+    足止めは「印を付けない」だけだったので、**前の回で付いた印が残っている区画は、足止めしても
+    見終えたままに見えた** —— 1 品も減らなかった回(歯止め)で印が付いたあと、区画を名指しして
+    やり直した回が代表店を決めて足止めしても、印は前の回のまま残る。一周で止まる巡回はその区画に
+    二度と戻らず、画面にも見終えた区画として出ていた。外せば `pick` は印の無い区画として先に選ぶ。
+    """
     held = set(keys)
     out = []
     for p in partitions:
@@ -1925,7 +1931,11 @@ def note_held(partitions: list[dict], keys: list[str], sweep_name: str) -> list[
             continue
         counts = {**(p.get("held") or {})}
         counts[sweep_name] = int(counts.get(sweep_name) or 0) + 1
-        out.append({**p, "held": counts})
+        one = {**p, "held": counts}
+        visits = {k: v for k, v in (p.get("visits") or {}).items() if k != sweep_name}
+        if "visits" in p:
+            one["visits"] = visits
+        out.append(one)
     return out
 
 

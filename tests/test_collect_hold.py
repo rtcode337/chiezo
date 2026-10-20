@@ -368,3 +368,19 @@ class TestHoldingAtMostAFewTimes:
         tokyo = next(p for p in collect.get("dishes").partitions if p["key"] == "地域:東京都")
         assert tokyo["held"] == {SWEEP: 1}
         assert not (tokyo.get("visits") or {}).get(SWEEP)
+
+    def test_a_held_run_takes_off_an_earlier_mark(self, dishes):
+        """前の回で付いた印は、足止めした回で外す(一周で止まる巡回がその区画に戻れるように)。
+        ほかの巡回の印は残す。"""
+        collect.update("dishes", sweeps=[
+            {"name": SWEEP, "interval_minutes": 60, "partitions_per_run": 1, "hold_tag": FAILED},
+            {"name": "情報収集", "interval_minutes": 60, "partitions_per_run": 1},
+        ], partitions=[
+            {"key": "地域:東京都", "count": 3,
+             "visits": {SWEEP: "2026-10-01T00:00:00+00:00", "情報収集": "2026-10-02T00:00:00+00:00"}},
+            {"key": "地域:大阪府", "count": 1},
+        ])
+        collect.record_result("dishes", status="ok", sweep=SWEEP, held=["地域:東京都"])
+        tokyo = next(p for p in collect.get("dishes").partitions if p["key"] == "地域:東京都")
+        assert SWEEP not in tokyo["visits"]
+        assert tokyo["visits"]["情報収集"] == "2026-10-02T00:00:00+00:00"
