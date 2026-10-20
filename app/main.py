@@ -5733,8 +5733,24 @@ async def make_thumb(body: ThumbRequest) -> dict:
         raise HTTPException(422, {"error": "cannot make thumb", "reason": str(e)}) from e
     except httpx.HTTPError as e:
         log.info("thumb fetch failed: %r", e)
-        raise HTTPException(502, {"error": "upstream unavailable", "reason": type(e).__name__}) from e
+        # **相手が何と返したかを添える**(「HTTP 429」)。型の名前だけでは、断られたのか
+        # つながらなかったのかが呼んだ側から読めない
+        reason = str(e) if isinstance(e, httpx.HTTPStatusError) else type(e).__name__
+        raise HTTPException(502, {"error": "upstream unavailable", "reason": reason}) from e
     return {"thumb": path}
+
+
+@app.get("/v1/thumbs/health")
+def thumbs_health() -> dict:
+    """**外の絵を取れているか**(`app/thumbs.py` の `health`)。最後に取れた時刻・取れなかった
+    時刻と理由(「HTTP 429」など)・続けて取れなかった回数と、それが続いているか(`failing`)。
+
+    一時的な失敗は 1 件ごとの印に残らないので、相手に断られ続けても収集の中身からは
+    読めない。読む側のアプリが「写真が取れていない」と出すための口。
+    **`/v1/thumbs/{name}` より先に登録する**(でないと `health` が絵の名前として読まれる)。
+    """
+    state = thumbs.health()
+    return {**state, "failing_now": thumbs.failing(state)}
 
 
 @app.get("/v1/bookmarks")

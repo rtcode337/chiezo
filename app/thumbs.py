@@ -29,6 +29,15 @@
 絵を持たないまま残った(料理の収集で 18 件中 5 件)。その印の付いた 1 件も取り直す
 (`RETRYABLE_FAILURES`)。
 
+## 取れているかを控える
+
+外へ取りに行った結果を 1 つの控えに残す(`health` / 設定の置き場の `thumbs_health`)。
+取れた時刻・取れなかった時刻と理由・続けて取れなかった回数。**一時的な失敗は 1 件ごとの
+印に残らない**ので、相手に断られ続けても、どの 1 件を見ても「まだ作っていない」としか
+読めなかった(Wikimedia に 429 で断られ続けたのに、どこにも出ていなかった)。
+状況の面(`/admin/status`)と `GET /v1/thumbs/health` から読む。**相手に届いたうえでの
+404 などは数えない**(その 1 枚の事情で、取りに行けているかとは別)。
+
 ## Wikimedia の絵は縮小版を取る
 
 `upload.wikimedia.org` の元の絵(数 MB のことがある)は取らず、Wikimedia が用意する
@@ -53,10 +62,13 @@ import asyncio
 import hashlib
 import html
 import io
+import json
 import logging
 import os
 import re
+import sqlite3
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -89,6 +101,10 @@ QUALITY = 80
 MAX_PIXELS = 40_000_000
 # 転送を追う段数
 MAX_REDIRECTS = 3
+# 取れているかの控え(設定の置き場のフラグ。`--workers 2` なのでプロセスの中には持たない)
+HEALTH_FLAG = "thumbs_health"
+# 続けてこの回数取れなければ「取れていない」とみなして目立たせる
+FAILING_AFTER = 3
 # 取り直す失敗(一時的なものなのに、前は印を付けていた)
 RETRYABLE_FAILURES = ("HTTP 429",)
 # Wikimedia の縮小版の幅。Wikimedia が用意している幅のうち、縮めた長辺(`SIZE`)より大きいもの
@@ -218,6 +234,7 @@ async def _get(client: httpx.AsyncClient, url: str, limit: int) -> tuple[str, by
     """1 回取る(転送は 1 段ずつ確かめて追う)。`(最後の URL, 中身, Content-Type)`。
 
     上限を超えたら断る。**つながらない・5xx は例外のまま投げる**(印を付けない)。
+    取れたか・取れなかったかは控えに残す(`_note`)。
     """
     try:
         got = await outbound.fetch(
@@ -225,6 +242,9 @@ async def _get(client: httpx.AsyncClient, url: str, limit: int) -> tuple[str, by
             # ページは頭だけあればよい(`og:image` は `<head>` にある)
             truncate=limit == MAX_PAGE_BYTES, before_request=_throttle,
         )
+    except httpx.HTTPError as e:
+        _note(False, f"つながらない({type(e).__name__})", url)
+        raise
     except outbound.TooLarge as e:
         raise Skip("大きすぎる") from e
     except outbound.TooManyRedirects as e:
@@ -233,12 +253,55 @@ async def _get(client: httpx.AsyncClient, url: str, limit: int) -> tuple[str, by
         raise Skip(str(e)) from e
     # 多すぎる(429)も一時的なもの。印を付けずに次の回に取り直す
     if got.status >= 500 or got.status == 429:
+        _note(False, f"HTTP {got.status}", url)
         raise httpx.HTTPStatusError(
-            f"{got.status}", request=got.response.request, response=got.response
+            f"HTTP {got.status}", request=got.response.request, response=got.response
         )
     if got.status != 200:
         raise Skip(f"HTTP {got.status}")
+    _note(True)
     return got.url, got.body, got.content_type
+
+
+def health() -> dict:
+    """取れているかの控え。`last_ok_at` / `last_failed_at`(UTC の ISO)・`last_reason`・
+    `last_host`・`failing`(続けて取れなかった回数)。控えが無ければ空。"""
+    try:
+        raw = settings_store.get_flag(HEALTH_FLAG)
+        state = json.loads(raw) if raw else {}
+    # 控えが読めなくても絵を作るのは止めない(壊れた控えは無いものとして書き直す)
+    except (OSError, ValueError, sqlite3.Error):
+        log.warning("thumbs: 取れているかの控えを読めなかった", exc_info=True)
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def failing(state: dict | None = None) -> bool:
+    """続けて取れていないか(`FAILING_AFTER` 回以上)。"""
+    state = health() if state is None else state
+    return int(state.get("failing") or 0) >= FAILING_AFTER
+
+
+def _note(ok: bool, reason: str = "", url: str = "") -> None:
+    """1 回ぶんの結果を控える。**控えに失敗しても絵を作るのは止めない**。"""
+    if settings_store.db_path() is None:
+        return
+    try:
+        state = health()
+        now = datetime.now(UTC).isoformat(timespec="seconds")
+        if ok:
+            state.update(last_ok_at=now, failing=0)
+        else:
+            state.update(
+                last_failed_at=now,
+                last_reason=reason,
+                last_host=urlparse(url).hostname or "",
+                failing=int(state.get("failing") or 0) + 1,
+            )
+        settings_store.set_flag(HEALTH_FLAG, json.dumps(state, ensure_ascii=False))
+    except (OSError, sqlite3.Error):
+        log.warning("thumbs: 取れているかを控えられなかった", exc_info=True)
+
 
 
 def wikimedia_thumb(url: str, width: int = WIKIMEDIA_WIDTH) -> str:

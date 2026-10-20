@@ -380,3 +380,41 @@ def test_waiting_for_thumbs_picks_docs_without_a_thumb(tmp_path):
 
     sources = {"x": SimpleNamespace(path=path)}
     assert sorted(collect.waiting_for_thumbs("x", sources, 10)) == ["待っている", "断られた"]
+
+
+class TestHealth:
+    """取れているかの控え(`thumbs.health`)。一時的な失敗は 1 件ごとの印に残らないので、ここで数える。"""
+
+    def test_counts_failures_in_a_row_and_resets_when_one_is_taken(self, serve):
+        serve({
+            "https://example.org/a.png": httpx.Response(429),
+            "https://example.org/b.png": httpx.Response(503),
+            "https://example.org/c.png": httpx.ConnectError("つながらない"),
+        })
+        attach(True, [{"title": t, "image": f"https://example.org/{t}.png"} for t in "abc"])
+
+        state = thumbs.health()
+        assert state["failing"] == 3 and thumbs.failing(state)
+        assert state["last_reason"] == "つながらない(ConnectError)"
+        assert state["last_host"] == "example.org"
+
+        serve({"https://example.org/d.png": image_response()})
+        attach(True, [{"title": "d", "image": "https://example.org/d.png"}])
+        state = thumbs.health()
+        assert state["failing"] == 0 and state["last_ok_at"]
+        assert not thumbs.failing(state)
+
+    def test_a_missing_picture_is_not_a_failure_to_reach(self, serve):
+        # 相手に届いたうえでの 404 は、その 1 枚の事情
+        serve({"https://example.org/a.png": httpx.Response(404)})
+        attach(True, [{"title": "a", "image": "https://example.org/a.png"}])
+        assert thumbs.health().get("failing", 0) == 0
+
+    def test_the_status_page_warns_when_it_keeps_failing(self, serve):
+        from app.views import admin
+
+        serve({f"https://example.org/{t}.png": httpx.Response(429) for t in "abc"})
+        attach(True, [{"title": t, "image": f"https://example.org/{t}.png"} for t in "abc"])
+
+        html = admin._thumbs_health_html()
+        assert "3 回続けて" in html and "HTTP 429" in html

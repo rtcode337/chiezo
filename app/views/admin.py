@@ -46,6 +46,7 @@ from app import (
     search_queries,
     settings_store,
     tasks,
+    thumbs,
     usage,
     usage_store,
     workers,
@@ -695,6 +696,30 @@ def db_size_text(path: Path) -> str:
         if nbytes >= scale:
             return f"{nbytes / scale:,.1f} {unit}"
     return f"{nbytes} B"
+
+
+def _thumbs_health_html() -> str:
+    """外の絵(サムネイル)を取れているか(`thumbs.health`)。**続けて取れていなければ目立たせる**。
+
+    一時的な失敗は 1 件ごとの印に残らないので、相手に断られ続けても収集の中身からは
+    読めない —— Wikimedia に 429 で断られ続けたのに、どの面にも出ていなかった。
+    まだ 1 度も取りに行っていなければ出さない。
+    """
+    state = thumbs.health()
+    if not state:
+        return ""
+    ok = jst.parse(str(state.get("last_ok_at") or ""))
+    ok_text = f"最後に取れたのは {esc(jst.format(ok))}" if ok else "まだ 1 枚も取れていません"
+    if not thumbs.failing(state):
+        return f'<p class="muted">外の絵の取得: {ok_text}</p>'
+    failed = jst.parse(str(state.get("last_failed_at") or ""))
+    host = f"{esc(state.get('last_host') or '')} に" if state.get("last_host") else ""
+    return (
+        f'<p class="stale">⚠️ 外の絵(サムネイル)を {int(state.get("failing") or 0):,} 回続けて'
+        f"取れていません(最後は {esc(jst.format(failed)) if failed else '不明'}・"
+        f"{host}「{esc(state.get('last_reason') or '')}」)。{ok_text}。"
+        "取れなかった絵は、次の回に取り直します。</p>"
+    )
 
 
 def _disk_html(data_dir: Path) -> str:
@@ -3094,6 +3119,7 @@ def admin_status(
 {_stopped_providers_html()}
 {_paused_workers_html()}
 <p>{_disk_html(request.app.state.data_dir)}</p>
+{_thumbs_health_html()}
 {_job_status_html(job, heading=True)}
 {_ingest_history_html(job)}
 {_collect_history_html(sweep, page)}

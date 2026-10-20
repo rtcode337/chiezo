@@ -115,6 +115,30 @@ class TestThumbs:
         assert served.status_code == 200
         assert Image.open(io.BytesIO(served.content)).format == "WEBP"
 
+    def test_says_what_the_other_side_answered(self, client, monkeypatch):
+        """断られたら、相手が何と返したか(「HTTP 429」)を 502 に添える。取れているかの口にも出る。"""
+        monkeypatch.setattr(thumbs, "MIN_INTERVAL", 0.0)
+        monkeypatch.setattr(
+            socket, "getaddrinfo",
+            lambda host, *_a, **_k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))],
+        )
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(429)
+
+        monkeypatch.setattr(
+            thumbs, "_client",
+            lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=False),
+        )
+        for _ in range(thumbs.FAILING_AFTER):
+            got = client.post("/v1/thumbs", json={"url": self.URL})
+            assert got.status_code == 502
+            assert got.json()["reason"] == "HTTP 429"
+
+        health = client.get("/v1/thumbs/health").json()
+        assert health["failing_now"] is True
+        assert health["last_reason"] == "HTTP 429"
+
     def test_only_wikimedia(self, client, commons):
         """読む側から URL を受け取って外へ出る口なので、決めたホストの絵しか取りに行かない。"""
         for url in ("https://example.com/a.png", "http://upload.wikimedia.org/a.png",
