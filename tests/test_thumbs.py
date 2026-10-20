@@ -200,7 +200,7 @@ class TestAttach:
         # 元の絵は数 MB あることがあり、続けて取ると 429 で断られやすい
         original = "https://upload.wikimedia.org/wikipedia/commons/5/52/Kakiage.jpg"
         scaled = (
-            "https://upload.wikimedia.org/wikipedia/commons/thumb/5/52/Kakiage.jpg/250px-Kakiage.jpg"
+            "https://upload.wikimedia.org/wikipedia/commons/thumb/5/52/Kakiage.jpg/330px-Kakiage.jpg"
         )
         calls = serve({scaled: image_response()})
         items = [{"title": "かき揚げ", "image": original}]
@@ -215,7 +215,7 @@ class TestAttach:
     def test_falls_back_to_the_original_when_there_is_no_scaled_copy(self, serve):
         # 元の絵が縮小版の幅より小さいと、縮小版は断られる
         original = "https://upload.wikimedia.org/wikipedia/commons/a/ab/Small.png"
-        scaled = "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/Small.png/250px-Small.png"
+        scaled = "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/Small.png/330px-Small.png"
         calls = serve({scaled: httpx.Response(400), original: image_response()})
         items = [{"title": "小さい絵", "image": original}]
 

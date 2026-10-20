@@ -49,7 +49,8 @@ Wikimedia は作り置きの無い縮小版を作らせる頼みを回線ごと�
 ## Wikimedia の絵は縮小版を取る
 
 `upload.wikimedia.org` の元の絵(数 MB のことがある)は取らず、Wikimedia が用意する
-縮小版(`/thumb/…/<幅>px-<名前>`。`wikimedia_thumb`。幅は記事の写真の既定の 250px)を取る —— 縮めるのは手元なので
+縮小版(`/thumb/…/<幅>px-<名前>`。`wikimedia_thumb`。幅は記事の代表の写真のプレビューの 330px)を
+取る —— 縮めるのは手元なので
 元の大きさは要らず、元の絵を続けて取ると 429 で断られやすい。縮小版が取れなければ
 (元の絵が小さいと断られる)元の絵を取る。置き場の名前は元の URL から作る(同じ絵は 1 度)。
 
@@ -117,10 +118,10 @@ FAILING_AFTER = 3
 RESTING_SECONDS = 30 * 60
 # 取り直す失敗(一時的なものなのに、前は印を付けていた)
 RETRYABLE_FAILURES = ("HTTP 429",)
-# Wikimedia の縮小版の幅。**作り置きのありそうな幅**(百科事典の記事の写真の既定の幅)——
-# Wikimedia は作り置きの無い縮小版を作らせる頼みを回線ごとに数えて絞る(続けて頼むと 429)。
-# 縮めた長辺(`SIZE`)より少し小さいが、札に並べるには足りる(引き伸ばしはしない)
-WIKIMEDIA_WIDTH = 250
+# Wikimedia の縮小版の幅。**作り置きのありそうな幅**(記事の代表の写真をプレビューや検索で
+# 出すときの幅)—— Wikimedia は作り置きの無い縮小版を作らせる頼みを回線ごとに数えて絞る
+# (続けて頼むと 429)。試しに 330px を 12 枚続けて頼むと全部取れ、250px は 3 枚目から断られた
+WIKIMEDIA_WIDTH = 330
 _WIKIMEDIA_ORIGINAL = re.compile(
     r"^https://upload\.wikimedia\.org/wikipedia/([a-z-]+)/([0-9a-f])/([0-9a-f]{2})/"
     r"([^/?#]+\.(?:jpe?g|png|gif|webp))$",
