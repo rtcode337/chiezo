@@ -5735,7 +5735,11 @@ async def make_thumb(body: ThumbRequest) -> dict:
         log.info("thumb fetch failed: %r", e)
         # **相手が何と返したかを添える**(「HTTP 429」)。型の名前だけでは、断られたのか
         # つながらなかったのかが呼んだ側から読めない
-        reason = str(e) if isinstance(e, httpx.HTTPStatusError) else type(e).__name__
+        reason = (
+            str(e)
+            if isinstance(e, (httpx.HTTPStatusError, thumbs.Resting))
+            else type(e).__name__
+        )
         raise HTTPException(502, {"error": "upstream unavailable", "reason": reason}) from e
     return {"thumb": path}
 

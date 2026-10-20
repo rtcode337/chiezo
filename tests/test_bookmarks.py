@@ -130,14 +130,17 @@ class TestThumbs:
             thumbs, "_client",
             lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=False),
         )
-        for _ in range(thumbs.FAILING_AFTER):
-            got = client.post("/v1/thumbs", json={"url": self.URL})
-            assert got.status_code == 502
-            assert got.json()["reason"] == "HTTP 429"
+        got = client.post("/v1/thumbs", json={"url": self.URL})
+        assert got.status_code == 502
+        assert got.json()["reason"] == "HTTP 429"
+
+        # 断られたあとは外へ出ずに断り、休んでいることを返す
+        again = client.post("/v1/thumbs", json={"url": self.URL})
+        assert again.status_code == 502 and "まで頼みません" in again.json()["reason"]
 
         health = client.get("/v1/thumbs/health").json()
-        assert health["failing_now"] is True
         assert health["last_reason"] == "HTTP 429"
+        assert health["resting"]["upload.wikimedia.org"]
 
     def test_only_wikimedia(self, client, commons):
         """読む側から URL を受け取って外へ出る口なので、決めたホストの絵しか取りに行かない。"""

@@ -713,12 +713,18 @@ def _thumbs_health_html() -> str:
     if not thumbs.failing(state):
         return f'<p class="muted">外の絵の取得: {ok_text}</p>'
     failed = jst.parse(str(state.get("last_failed_at") or ""))
-    host = f"{esc(state.get('last_host') or '')} に" if state.get("last_host") else ""
+    host = str(state.get("last_host") or "")
+    until = jst.parse(thumbs.resting_until(host, state)) if host else None
+    resting = (
+        f"{esc(host)} へは {esc(jst.format(until))} まで頼みません(断られたので休んでいます)。"
+        if until
+        else ""
+    )
     return (
         f'<p class="stale">⚠️ 外の絵(サムネイル)を {int(state.get("failing") or 0):,} 回続けて'
         f"取れていません(最後は {esc(jst.format(failed)) if failed else '不明'}・"
-        f"{host}「{esc(state.get('last_reason') or '')}」)。{ok_text}。"
-        "取れなかった絵は、次の回に取り直します。</p>"
+        f"{esc(host) + ' に' if host else ''}「{esc(state.get('last_reason') or '')}」)。{ok_text}。"
+        f"{resting}取れなかった絵は、次の回に取り直します。</p>"
     )
 
 

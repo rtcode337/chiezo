@@ -38,10 +38,18 @@
 状況の面(`/admin/status`)と `GET /v1/thumbs/health` から読む。**相手に届いたうえでの
 404 などは数えない**(その 1 枚の事情で、取りに行けているかとは別)。
 
+## 断られたら休む
+
+**「多すぎる」(429)と言われたら、その相手へはしばらく頼まない**(`RESTING_SECONDS` か、
+相手の `Retry-After` の長いほう。`resting_until`)。休んでいる間の頼みは外へ出ずに断り
+(`Resting`)、収集の中で取っている回はその場で残りをやめる。断られているのに 1 回の
+巡回で 20 枚まで頼み続け、読む側のアプリからの頼みも 1.5 秒おきに通していた ——
+Wikimedia は作り置きの無い縮小版を作らせる頼みを回線ごとに数えるので、頼むほど長く絞られる。
+
 ## Wikimedia の絵は縮小版を取る
 
 `upload.wikimedia.org` の元の絵(数 MB のことがある)は取らず、Wikimedia が用意する
-縮小版(`/thumb/…/<幅>px-<名前>`。`wikimedia_thumb`)を取る —— 縮めるのは手元なので
+縮小版(`/thumb/…/<幅>px-<名前>`。`wikimedia_thumb`。幅は記事の写真の既定の 250px)を取る —— 縮めるのは手元なので
 元の大きさは要らず、元の絵を続けて取ると 429 で断られやすい。縮小版が取れなければ
 (元の絵が小さいと断られる)元の絵を取る。置き場の名前は元の URL から作る(同じ絵は 1 度)。
 
@@ -68,7 +76,7 @@ import os
 import re
 import sqlite3
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -105,10 +113,14 @@ MAX_REDIRECTS = 3
 HEALTH_FLAG = "thumbs_health"
 # 続けてこの回数取れなければ「取れていない」とみなして目立たせる
 FAILING_AFTER = 3
+# 「多すぎる」と言われたら、その相手へ頼まない長さ(秒。相手の Retry-After が長ければそちら)
+RESTING_SECONDS = 30 * 60
 # 取り直す失敗(一時的なものなのに、前は印を付けていた)
 RETRYABLE_FAILURES = ("HTTP 429",)
-# Wikimedia の縮小版の幅。Wikimedia が用意している幅のうち、縮めた長辺(`SIZE`)より大きいもの
-WIKIMEDIA_WIDTH = 500
+# Wikimedia の縮小版の幅。**作り置きのありそうな幅**(百科事典の記事の写真の既定の幅)——
+# Wikimedia は作り置きの無い縮小版を作らせる頼みを回線ごとに数えて絞る(続けて頼むと 429)。
+# 縮めた長辺(`SIZE`)より少し小さいが、札に並べるには足りる(引き伸ばしはしない)
+WIKIMEDIA_WIDTH = 250
 _WIKIMEDIA_ORIGINAL = re.compile(
     r"^https://upload\.wikimedia\.org/wikipedia/([a-z-]+)/([0-9a-f])/([0-9a-f]{2})/"
     r"([^/?#]+\.(?:jpe?g|png|gif|webp))$",
@@ -124,6 +136,10 @@ _CONTENT = re.compile(r"""content\s*=\s*["']([^"']+)["']""", re.I)
 
 _lock = asyncio.Lock()
 _last_call = 0.0
+
+
+class Resting(httpx.HTTPError):
+    """その相手は断られて休んでいる(外へは出ていない)。一時的なものとして扱う。"""
 
 
 class Skip(Exception):
@@ -234,8 +250,11 @@ async def _get(client: httpx.AsyncClient, url: str, limit: int) -> tuple[str, by
     """1 回取る(転送は 1 段ずつ確かめて追う)。`(最後の URL, 中身, Content-Type)`。
 
     上限を超えたら断る。**つながらない・5xx は例外のまま投げる**(印を付けない)。
-    取れたか・取れなかったかは控えに残す(`_note`)。
+    取れたか・取れなかったかは控えに残す(`_note`)。**休んでいる相手へは出ない**(`Resting`)。
     """
+    host = urlparse(url).hostname or ""
+    if until := resting_until(host):
+        raise Resting(f"断られたので {until} まで頼みません")
     try:
         got = await outbound.fetch(
             client, url, limit, max_redirects=MAX_REDIRECTS,
@@ -253,7 +272,8 @@ async def _get(client: httpx.AsyncClient, url: str, limit: int) -> tuple[str, by
         raise Skip(str(e)) from e
     # 多すぎる(429)も一時的なもの。印を付けずに次の回に取り直す
     if got.status >= 500 or got.status == 429:
-        _note(False, f"HTTP {got.status}", url)
+        rest = _retry_after(got.response) if got.status == 429 else 0
+        _note(False, f"HTTP {got.status}", url, rest=rest)
         raise httpx.HTTPStatusError(
             f"HTTP {got.status}", request=got.response.request, response=got.response
         )
@@ -276,13 +296,34 @@ def health() -> dict:
     return state if isinstance(state, dict) else {}
 
 
+def resting_until(host: str, state: dict | None = None) -> str:
+    """その相手へ頼まない期限(UTC の ISO)。休んでいなければ空。"""
+    state = health() if state is None else state
+    until = str((state.get("resting") or {}).get(host) or "")
+    try:
+        if until and datetime.fromisoformat(until) > datetime.now(UTC):
+            return until
+    except ValueError:
+        pass
+    return ""
+
+
+def _retry_after(response) -> int:
+    """休む長さ(秒)。相手の `Retry-After`(秒)と `RESTING_SECONDS` の長いほう。"""
+    try:
+        asked = int(response.headers.get("retry-after") or 0)
+    except (TypeError, ValueError):
+        asked = 0
+    return max(asked, RESTING_SECONDS)
+
+
 def failing(state: dict | None = None) -> bool:
     """続けて取れていないか(`FAILING_AFTER` 回以上)。"""
     state = health() if state is None else state
     return int(state.get("failing") or 0) >= FAILING_AFTER
 
 
-def _note(ok: bool, reason: str = "", url: str = "") -> None:
+def _note(ok: bool, reason: str = "", url: str = "", rest: int = 0) -> None:
     """1 回ぶんの結果を控える。**控えに失敗しても絵を作るのは止めない**。"""
     if settings_store.db_path() is None:
         return
@@ -292,12 +333,19 @@ def _note(ok: bool, reason: str = "", url: str = "") -> None:
         if ok:
             state.update(last_ok_at=now, failing=0)
         else:
+            host = urlparse(url).hostname or ""
             state.update(
                 last_failed_at=now,
                 last_reason=reason,
-                last_host=urlparse(url).hostname or "",
+                last_host=host,
                 failing=int(state.get("failing") or 0) + 1,
             )
+            if rest and host:
+                until = datetime.now(UTC) + timedelta(seconds=rest)
+                state["resting"] = {
+                    **(state.get("resting") or {}),
+                    host: until.isoformat(timespec="seconds"),
+                }
         settings_store.set_flag(HEALTH_FLAG, json.dumps(state, ensure_ascii=False))
     except (OSError, sqlite3.Error):
         log.warning("thumbs: 取れているかを控えられなかった", exc_info=True)
@@ -381,6 +429,13 @@ async def make(client: httpx.AsyncClient, kind: str, source: str) -> tuple[str, 
     return public_path(name), image
 
 
+def _told_to_wait(error: Exception) -> bool:
+    """「多すぎる」と言われた(か、休んでいる)か。**その回の残りは頼まない**。"""
+    if isinstance(error, Resting):
+        return True
+    return isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 429
+
+
 async def attach(spec: dict | None, items: list, existing: dict[str, dict], from_feed: bool) -> int:
     """返ってきた 1 件ずつに、まだ無ければサムネイルを付ける(`extra.thumb`)。作った数を返す。
 
@@ -414,6 +469,8 @@ async def attach(spec: dict | None, items: list, existing: dict[str, dict], from
             except (httpx.HTTPError, OSError) as e:
                 # **一時的なもの**。印を付けず、次の回に取り直す
                 log.info("thumbs: 取れなかった(次の回に取り直す): %s: %s", url or image, e)
+                if _told_to_wait(e):
+                    break
                 continue
             fresh = {"thumb": thumb}
             if kind == "page" and not known.get("image"):
@@ -461,6 +518,8 @@ async def backfill(
                 continue
             except (httpx.HTTPError, OSError) as e:
                 log.info("thumbs: 取れなかった(次の回に取り直す): %s: %s", url or image, e)
+                if _told_to_wait(e):
+                    break
                 continue
             fresh = {"thumb": thumb}
             if kind == "page" and not image:

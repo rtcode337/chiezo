@@ -200,7 +200,7 @@ class TestAttach:
         # 元の絵は数 MB あることがあり、続けて取ると 429 で断られやすい
         original = "https://upload.wikimedia.org/wikipedia/commons/5/52/Kakiage.jpg"
         scaled = (
-            "https://upload.wikimedia.org/wikipedia/commons/thumb/5/52/Kakiage.jpg/500px-Kakiage.jpg"
+            "https://upload.wikimedia.org/wikipedia/commons/thumb/5/52/Kakiage.jpg/250px-Kakiage.jpg"
         )
         calls = serve({scaled: image_response()})
         items = [{"title": "かき揚げ", "image": original}]
@@ -215,7 +215,7 @@ class TestAttach:
     def test_falls_back_to_the_original_when_there_is_no_scaled_copy(self, serve):
         # 元の絵が縮小版の幅より小さいと、縮小版は断られる
         original = "https://upload.wikimedia.org/wikipedia/commons/a/ab/Small.png"
-        scaled = "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/Small.png/500px-Small.png"
+        scaled = "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/Small.png/250px-Small.png"
         calls = serve({scaled: httpx.Response(400), original: image_response()})
         items = [{"title": "小さい絵", "image": original}]
 
@@ -387,7 +387,7 @@ class TestHealth:
 
     def test_counts_failures_in_a_row_and_resets_when_one_is_taken(self, serve):
         serve({
-            "https://example.org/a.png": httpx.Response(429),
+            "https://example.org/a.png": httpx.Response(503),
             "https://example.org/b.png": httpx.Response(503),
             "https://example.org/c.png": httpx.ConnectError("つながらない"),
         })
@@ -413,8 +413,35 @@ class TestHealth:
     def test_the_status_page_warns_when_it_keeps_failing(self, serve):
         from app.views import admin
 
-        serve({f"https://example.org/{t}.png": httpx.Response(429) for t in "abc"})
+        serve({f"https://example.org/{t}.png": httpx.Response(503) for t in "abc"})
         attach(True, [{"title": t, "image": f"https://example.org/{t}.png"} for t in "abc"])
 
         html = admin._thumbs_health_html()
-        assert "3 回続けて" in html and "HTTP 429" in html
+        assert "3 回続けて" in html and "HTTP 503" in html
+
+    def test_told_to_wait_stops_the_run_and_rests(self, serve):
+        """「多すぎる」と言われたら、その回の残りは頼まず、その相手へはしばらく出ない。"""
+        calls = serve({
+            "https://example.org/a.png": httpx.Response(429, headers={"retry-after": "10"}),
+            "https://example.org/b.png": image_response(),
+        })
+        items = [{"title": t, "image": f"https://example.org/{t}.png"} for t in "ab"]
+
+        assert attach(True, items) == 0
+        assert calls == ["https://example.org/a.png"]
+        # 相手の言う 10 秒より長く休む
+        until = thumbs.resting_until("example.org")
+        assert until and "extra" not in items[1]
+
+        # 休んでいる間は、次の回でも外へ出ない
+        attach(True, [{"title": "b", "image": "https://example.org/b.png"}])
+        assert calls == ["https://example.org/a.png"]
+
+        # 休み明けには頼む
+        state = thumbs.health()
+        state["resting"] = {"example.org": "2000-01-01T00:00:00+00:00"}
+        thumbs.settings_store.set_flag(thumbs.HEALTH_FLAG, __import__("json").dumps(state))
+        assert attach(True, [{"title": "b", "image": "https://example.org/b.png"}]) == 1
+
+        from app.views import admin
+        assert "まで頼みません" not in admin._thumbs_health_html()
