@@ -61,19 +61,48 @@ class TestDropUnseenEdits:
             {"title": "見せていない人", "tags": ["想像"]},
             {"title": "新しい人", "tags": ["足した"]},
         ]
-        kept, dropped = collect.drop_unseen_edits(
+        kept, dropped, renamed = collect.drop_unseen_edits(
             items, allowed={"見せた人"}, existing={"見せた人", "見せていない人"}
         )
+        assert renamed == []
         assert [d["title"] for d in kept] == ["見せた人", "新しい人"]
         assert dropped == ["見せていない人"]
 
     def test_a_new_one_passes_even_when_nothing_was_shown(self):
         """漏れを足す回の本分。居ない見出しは足すものなので通す。"""
-        kept, dropped = collect.drop_unseen_edits(
+        kept, dropped, _renamed = collect.drop_unseen_edits(
             [{"title": "新しい人"}], allowed=set(), existing=set()
         )
         assert [d["title"] for d in kept] == ["新しい人"]
         assert dropped == []
+
+
+    def test_a_same_name_far_away_is_added_with_a_number(self):
+        """見せていない区画の同じ名前の別の店は、番号を付けて別の 1 件として足す。
+        AI は自分の区画と隣しか見ていないので、遠くの同じ名前を知りようがない。"""
+        existing = {"和": {"lat": 35.50883, "lon": 139.67551}, "和 (2)": {}}
+        items = [{"title": "和", "body": "飲み屋", "lat": 35.50578, "lon": 139.67713}]
+
+        kept, dropped, renamed = collect.drop_unseen_edits(
+            items, allowed=set(), existing=existing, taken=lambda t: t == "和 (3)",
+        )
+
+        # 「和 (2)」は既にあり、「和 (3)」も使われているので「和 (4)」
+        assert [d["title"] for d in kept] == ["和 (4)"]
+        assert dropped == []
+        assert renamed == [("和", "和 (4)")]
+
+    def test_a_same_name_at_the_same_place_or_without_coords_is_still_dropped(self):
+        """近い点(隣の区画の 1 件を書き写した)と、座標の分からない返りは今までどおり落とす。"""
+        existing = {"和": {"lat": 35.50883, "lon": 139.67551}}
+        near = [{"title": "和", "extra": {"lat": 35.50890, "lon": 139.67560}}]
+        no_coords = [{"title": "和"}]
+
+        for items in (near, no_coords):
+            kept, dropped, renamed = collect.drop_unseen_edits(
+                items, allowed=set(), existing=existing,
+            )
+            assert kept == [] and dropped == ["和"] and renamed == []
 
 
 class TestFocusEndpoint:

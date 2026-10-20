@@ -1933,9 +1933,22 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
             allowed = set(for_prompt) | set(focus.titles if focus is not None else ())
             returned = [notes.title_key(d.get("title")) for d in items if isinstance(d, dict)]
             existing = await asyncio.to_thread(
-                collect.existing_titles, name, sources, [t for t in returned if t not in allowed]
+                collect.existing_extras, name, sources, [t for t in returned if t not in allowed]
             )
-            items, dropped = collect.drop_unseen_edits(items, allowed, existing)
+
+            def taken(title: str) -> bool:
+                return bool(collect.existing_titles(name, sources, [title]))
+
+            items, dropped, renamed = await asyncio.to_thread(
+                collect.drop_unseen_edits, items, allowed, existing, taken,
+            )
+            if renamed:
+                why = (
+                    "見せていない区画に同じ見出しの別の 1 件があるので、番号を付けて足しました("
+                    + "、".join(f"{old} → {new}" for old, new in renamed[:10])
+                    + (" ほか" if len(renamed) > 10 else "") + ")"
+                )
+                note = f"{note} / {why}" if note else why
             if dropped:
                 log.warning(
                     "collect %s: 見せていない既存の %d 件を置き換えませんでした: %s",
@@ -1943,7 +1956,8 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
                 )
                 why = (
                     f"見せていない既存の {len(dropped)} 件は置き換えませんでした"
-                    f"({'、'.join(dropped[:10])}{' ほか' if len(dropped) > 10 else ''})"
+                    f"(同じ見出しの 1 件が同じ場所か座標の分からない形で既にあるため。"
+                    f"{'、'.join(dropped[:10])}{' ほか' if len(dropped) > 10 else ''})"
                 )
                 note = f"{note} / {why}" if note else why
         # **辞典への引き当てと書式の確かめ**(`resolve` / `formats`)。AI の返した店の

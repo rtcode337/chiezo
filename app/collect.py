@@ -6421,7 +6421,15 @@ def waiting_for_thumbs(name: str, sources: dict, limit: int) -> dict[str, dict]:
     }
 
 
-def drop_unseen_edits(items: list[dict], allowed: set[str], existing: set[str]):
+# **同じ見出しでも、既存の 1 件からこれ以上離れた点を返したら別の 1 件とみなす**(m)。
+# 隣の区画に並べた 1 件(`{nearby}`)を AI が書き写したなら座標もほぼ同じ —— 離れているのは、
+# 見せていない区画にいる同じ名前の別の店を、AI が新しく見つけて返したとき
+DISTINCT_PLACE_METERS = 150
+
+
+def drop_unseen_edits(
+    items: list[dict], allowed: set[str], existing, taken=lambda title: False,
+):
     """返りのうち、**AI に見せていない既存の 1 件を置き換える**ものを落とす。
 
     直す回は、返した内容で 1 件が丸ごと置き換わる。見せていない 1 件は、AI が
@@ -6431,17 +6439,59 @@ def drop_unseen_edits(items: list[dict], allowed: set[str], existing: set[str]):
 
     **落とすのは既に居る見出しだけ。** 居ない見出しは新しく足すものなので通す。
     `allowed` は差し込んだ範囲(区画に入る文書と、割り込みで名指しされた見出し)。
-    返すのは (残す返り, 落とした見出し)。
+
+    **同じ見出しでも、座標が離れていれば別の 1 件として足す**(見出しに「 (2)」を付ける)。
+    `existing` は既に居る見出し → 脇書き(座標を読む)。見出しは収集の中で 1 件を指す鍵なので、
+    見せていない区画に同じ名前の別の店があると、区画の中で見つけた店を返しても既存の 1 件への
+    書き換えと読まれて落ちていた(短い名前ほどぶつかる)。AI は自分の区画と隣しか見ていない
+    ので、遠くの同じ名前の店を知りようがない。返りと既存の両方が座標を持ち、
+    `DISTINCT_PLACE_METERS` を超えて離れているときだけ別の 1 件とみなす —— 座標の無い収集・
+    近い点は今までどおり落とす。`taken` は見出しが既に使われているか(付け足す番号を選ぶため)。
+
+    返すのは (残す返り, 落とした見出し, 付け替えた `(元の見出し, 新しい見出し)`)。
     """
+    if not isinstance(existing, dict):
+        existing = {title: {} for title in existing}
     kept: list[dict] = []
     dropped: list[str] = []
+    renamed: list[tuple[str, str]] = []
+    used = {notes.title_key(d.get("title")) for d in items if isinstance(d, dict)}
     for doc in items:
         title = notes.title_key(doc.get("title") if isinstance(doc, dict) else "")
-        if title and title in existing and title not in allowed:
-            dropped.append(title)
+        if not (title and title in existing and title not in allowed):
+            kept.append(doc)
             continue
-        kept.append(doc)
-    return kept, dropped
+        if _distinct_place(doc, existing[title]):
+            new_title = _numbered_title(title, lambda t: t in used or t in existing or taken(t))
+            used.add(new_title)
+            renamed.append((title, new_title))
+            kept.append({**doc, "title": new_title})
+            continue
+        dropped.append(title)
+    return kept, dropped, renamed
+
+
+def _distinct_place(doc: dict, before) -> bool:
+    """返りの点が既存の 1 件の点から離れているか(両方が座標を持つときだけ真)。"""
+    mine = doc.get("extra") if isinstance(doc.get("extra"), dict) else {}
+    theirs = before if isinstance(before, dict) else {}
+    try:
+        lat, lon = float(doc.get("lat", mine.get("lat"))), float(doc.get("lon", mine.get("lon")))
+        lat0, lon0 = float(theirs["lat"]), float(theirs["lon"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return resolving._gap(lat, lon, lat0, lon0) > DISTINCT_PLACE_METERS
+
+
+def _numbered_title(title: str, taken) -> str:
+    """`title (2)`・`title (3)`… のうち、まだ使われていない見出し(長さは見出しの上限に収める)。"""
+    for n in range(2, 1000):
+        suffix = f" ({n})"
+        candidate = notes.title_key(title[: notes.TITLE_MAX_CHARS - len(suffix)].rstrip() + suffix)
+        if not taken(candidate):
+            return candidate
+    return title
+
 
 def _light_docs(previous) -> dict[str, dict]:
     """区画を割るためだけの、軽い写し(見出し・タグ・脇書き)。
