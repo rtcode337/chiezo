@@ -145,6 +145,10 @@ class TestThumbs:
     def test_only_wikimedia(self, client, commons):
         """読む側から URL を受け取って外へ出る口なので、決めたホストの絵しか取りに行かない。"""
         for url in ("https://example.com/a.png", "http://upload.wikimedia.org/a.png",
-                    "https://upload.wikimedia.org.example.com/a.png"):
+                    "https://upload.wikimedia.org.example.com/a.png",
+                    # 置き場の絵の場所の形でないもの・問い合わせや別のポートを付けたもの
+                    "https://upload.wikimedia.org/a.png",
+                    "https://upload.wikimedia.org/wikipedia/commons/a/ab/A.jpg?x=1",
+                    "https://upload.wikimedia.org:8443/wikipedia/commons/a/ab/A.jpg"):
             assert client.post("/v1/thumbs", json={"url": url}).status_code == 400
         assert commons == []

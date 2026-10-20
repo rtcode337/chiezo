@@ -5707,6 +5707,10 @@ async def media_picks(
 # 読む側から URL を受け取って外へ出る口なので、何でも通すと外を叩かせる踏み台になる。
 # いまは Wikimedia の置き場だけ(百科事典の記事の写真。顔写真・代表作の絵)
 THUMB_HOSTS = ("upload.wikimedia.org",)
+# 置き場の絵の場所の形(`/wikipedia/<プロジェクト>/[thumb/]<1 字>/<2 字>/<名前>…`)。
+# **受け取った URL をそのまま外へ投げない** —— 決めた宛先にこの形の場所だけをつなぎ直す
+# (問い合わせ・断片・ポート・利用者名の付いたものは断る)。CodeQL の py/full-ssrf が指したところ
+THUMB_PATH = re.compile(r"/wikipedia/[a-z-]+/(?:thumb/)?[0-9a-f]/[0-9a-f]{2}/[^?#\s]+")
 
 
 class ThumbRequest(BaseModel):
@@ -5723,12 +5727,22 @@ async def make_thumb(body: ThumbRequest) -> dict:
     返すのは配る場所(`/v1/thumbs/<名前>.webp`。長辺 320px の WebP)で、絵そのものは
     その場所から読む。
     """
-    host = (urlparse(body.url).hostname or "").lower()
-    if not body.url.startswith("https://") or host not in THUMB_HOSTS:
+    parsed = urlparse(body.url)
+    host = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme != "https"
+        # 宛先は名前だけで書いたものに限る(ポートや利用者名を付けたものは断る)
+        or parsed.netloc.lower() != host
+        or host not in THUMB_HOSTS
+        or parsed.query
+        or parsed.fragment
+        or not THUMB_PATH.fullmatch(parsed.path)
+    ):
         raise HTTPException(400, {"error": "url not allowed", "hosts": list(THUMB_HOSTS)})
+    url = f"https://{THUMB_HOSTS[0]}{parsed.path}"
     try:
         async with thumbs._client() as client:
-            path, _source = await thumbs.make(client, "image", body.url)
+            path, _source = await thumbs.make(client, "image", url)
     except thumbs.Skip as e:
         raise HTTPException(422, {"error": "cannot make thumb", "reason": str(e)}) from e
     except httpx.HTTPError as e:
