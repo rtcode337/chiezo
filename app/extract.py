@@ -788,8 +788,17 @@ def _area_lookup(rule: dict, value: str, context: dict) -> str | None:
             found = hint
         elif len(areas) == 1:
             found = next(iter(areas))
+        elif not areas and (ward := _WARD_OF_CITY.match(name)):
+            # **政令市の区は、市の所属で読む**(「札幌市東区」→ 札幌市)。地図辞典は区を
+            # 市と同じ種別で持たないことが多く、区のまま引くと何も当たらない
+            # (本番で、区の企業の括りしか持たない店が 108 件、どの区画にも入らなかった)
+            found = _area_lookup(rule, ward.group(1), context)
     cache[key] = found
     return found
+
+
+# 政令市の区(「札幌市東区」「堺市中区」)。市の名前まで(`_area_lookup`)
+_WARD_OF_CITY = re.compile(r"^(.+?市).+区$")
 
 
 def _prefix_of(fmt: str) -> str:

@@ -5365,8 +5365,9 @@ def _stream_docs(
             # (消えたものは消えたまま。脇書きは読むときに削られる)
             skipped += 1
             yield kept(
-                _with_facts(before, found) if facts else _with_new_facts(before, found), title,
-                was_skipped=True,
+                _homed(item, _with_facts(before, found), found) if facts
+                else _with_new_facts(before, found),
+                title, was_skipped=True,
             )
             continue
         if raw is None:
@@ -5380,8 +5381,9 @@ def _stream_docs(
             # **アーカイブ済みのものを AI が返してきたときは触る**(`_found_again`)
             skipped += 1
             yield kept(
-                _with_facts(before, raw) if facts else _with_new_facts(before, raw), title,
-                was_skipped=True,
+                _homed(item, _with_facts(before, raw), raw) if facts
+                else _with_new_facts(before, raw),
+                title, was_skipped=True,
             )
             continue
         if (
@@ -5997,6 +5999,26 @@ def _with_facts(doc: dict, raw: dict) -> dict:
         k: v for k, v in _carried(raw.get("extra")).items() if v is not None and k not in kept
     }
     return {**doc, "extra": _merge_extra(extra, fresh)} if fresh else doc
+
+
+def _homed(item, doc: dict, raw: dict) -> dict:
+    """区画の軸のタグを 1 つも持たない 1 件に、機械が運んだ軸のタグを渡す(タグで割る収集だけ)。
+
+    **タグは AI が育てるもので機械は触らない**が、軸のタグが無い 1 件はどの区画にも入らず、
+    どの回にも差し込まれない —— 名簿の読み替えを直しても、足すだけの回は既にいる 1 件の
+    タグに触らないので、直す前に入った 1 件はいつまでも行き場が無いままだった
+    (政令市の区の括りしか持たない店が、本番で 108 件そうなっていた)。
+    **軸のタグを 1 つでも持っていれば触らない**(AI の付け替えを機械で戻さない)。
+    """
+    spec = item.partition or {}
+    prefix = spec.get("prefix") if spec.get("by") == partitioning.BY_TAG else None
+    if not prefix or is_removed(doc):
+        return doc
+    tags = list(doc.get("tags") or [])
+    if any(str(t).startswith(prefix) for t in tags):
+        return doc
+    found = [t for t in raw.get("tags") or [] if str(t).startswith(prefix) and t not in tags]
+    return {**doc, "tags": tags + found} if found else doc
 
 
 def _carried(raw) -> dict:

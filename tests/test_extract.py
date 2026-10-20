@@ -1701,6 +1701,7 @@ class TestReadingTheAreaFromAPlaceName:
         {"title": "森町 (node:3)", "extra": {"feature": "place=town", "area": "静岡県"}},
         # 同じ名前の店は種別で外す
         {"title": "金沢市 (node:4)", "extra": {"feature": "amenity=pub", "area": "東京都"}},
+        {"title": "札幌市", "extra": {"feature": "place=city", "area": "北海道"}},
     )
 
     def _sources(self, source, dishes):
@@ -1748,6 +1749,24 @@ class TestReadingTheAreaFromAPlaceName:
             "二つある": [],
             "料理B": ["地域:北海道"],
         }
+
+    def test_a_ward_is_read_as_its_city(self, source):
+        """政令市の区は地図辞典に市と同じ種別で載らないことが多いので、市の所属で読む。"""
+        rules = [
+            {"const": "ご当地"},
+            {"pattern": r"^(.+?[市区町村])の企業$", "format": "地域:{1}", "fallback": True,
+             "area_of": {"source": "osm_japan", "feature": ["place=city", "place=town"]}},
+        ]
+        dishes = [
+            {"title": "店A", "tags": ["日本の郷土料理", "札幌市東区の企業"], "rank": 0.9},
+            # 市の名前が 2 県にあれば、区からも作らない
+            {"title": "店B", "tags": ["日本の郷土料理", "府中市南区の企業"], "rank": 0.8},
+            # 市の名前も辞典に無ければ作らない
+            {"title": "店C", "tags": ["日本の郷土料理", "架空市北区の企業"], "rank": 0.7},
+        ]
+        items, _ = run(spec(tag="日本の郷土料理", tags=rules), self._sources(source, dishes))
+        areas = {i["title"]: [t for t in i["tags"] if t.startswith("地域:")] for i in items}
+        assert areas == {"店A": ["地域:北海道"], "店B": [], "店C": []}
 
     def test_area_of_is_written_back_and_checked(self):
         rule = {"pattern": "^(.+)の文化$", "format": "地域:{1}",

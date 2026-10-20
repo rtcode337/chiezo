@@ -3418,6 +3418,43 @@ class TestCarryingFactsIntoTheDoc:
         assert docs[0]["body"] == "AI の説明（AI が書いた）"
         assert docs[0]["tags"] == ["トピック"]
 
+    def test_a_machine_round_gives_the_axis_tag_to_a_homeless_doc(self, sample):
+        """**区画の軸のタグを 1 つも持たない 1 件にだけ、機械が運んだ軸のタグを渡す。**
+
+        足すだけの回は既にいる 1 件のタグに触らないので、名簿の読み替えを直しても、
+        直す前に入った 1 件はどの区画にも入らないままだった。軸のタグを持っていれば
+        触らない(AI の付け替えを機械で戻さない)。
+        """
+        from dataclasses import replace
+
+        item = replace(collect.get("news"), partition={"by": "tag", "prefix": "地域:"})
+        previous = {
+            "行き場なし": {
+                "doc_id": 1, "title": "行き場なし", "opening": "冒頭", "body": "説明",
+                "tags": ["ラーメン"], "updated_at": "2026-01-01T00:00:00+00:00", "extra": {},
+            },
+            "付け替え済み": {
+                "doc_id": 2, "title": "付け替え済み", "opening": "冒頭", "body": "説明",
+                "tags": ["ラーメン", "地域:北海道"], "updated_at": "2026-01-01T00:00:00+00:00",
+                "extra": {},
+            },
+        }
+        collected = [
+            {"title": "行き場なし", "body": "名簿", "tags": ["地域:北海道", "名簿のタグ"]},
+            {"title": "付け替え済み", "body": "名簿", "tags": ["地域:不明"]},
+        ]
+
+        docs, _diff = collect.material(item, previous, collected, only_new=True, facts=True)
+        tags = {d["title"]: d["tags"] for d in docs}
+
+        assert tags == {
+            "行き場なし": ["ラーメン", "地域:北海道"],
+            "付け替え済み": ["ラーメン", "地域:北海道"],
+        }
+        # 機械の回でなければ渡さない
+        docs, _diff = collect.material(item, previous, collected, only_new=True)
+        assert {d["title"]: d["tags"] for d in docs}["行き場なし"] == ["ラーメン"]
+
     def test_a_held_location_is_put_back_and_marked(self):
         """**人が確かめた座標は、AI が動かしても戻す**(正しい位置に直した店が、
         別の回に動かされていた)。印のタグも付け、AI から見えるようにする。"""
