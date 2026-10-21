@@ -5772,6 +5772,60 @@ async def make_thumb(body: ThumbRequest) -> dict:
     return {"thumb": path}
 
 
+# 本の表紙を取りに行く先(`POST /v1/covers`)。**URL は ISBN から Chiezo が組み立てる**
+# (頼む側から URL を受け取らない)。上から順に試し、無ければ次へ。
+# - 版元ドットコム: 日本の本。無い本は 404(`img.hanmoto.com` へ転送される)
+# - Open Library: **日本の本(978-4)以外だけ**。ISBN で引くのは 5 分に 100 回までで、
+#   まとめて落とすことは断っている —— 本棚の海外の原書(十数冊)を 1 冊 1 回だけ頼むぶんに限る。
+#   `?default=false` で、無い本は 404(既定は白い画像を返すので見分けられない)
+# 国立国会図書館サーチの書影は Chiezo の外への取得を断り(403)、openBD は版元ドットコムと
+# 同じ元で増えないので使わない
+COVER_SOURCES = (
+    ("hanmoto", "https://www.hanmoto.com/bd/img/{isbn}.jpg", lambda isbn: True),
+    (
+        "openlibrary",
+        "https://covers.openlibrary.org/b/isbn/{isbn}-M.jpg?default=false",
+        lambda isbn: not isbn.startswith("9784"),
+    ),
+)
+
+
+class CoverRequest(BaseModel):
+    isbn: str = PydField(description="表紙を取る本の ISBN-13(数字 13 桁)")
+
+
+@app.post("/v1/covers")
+async def make_cover(body: CoverRequest) -> dict:
+    """**本の表紙を 1 回だけ取って縮め、Chiezo から配る**(`/v1/thumbs` と同じ置き場・同じ取り方)。
+
+    取りに行く先は ISBN から組み立てる(`COVER_SOURCES` を上から順に)。返すのは
+    `{"thumb": 配る場所, "from": 取れた先}`。**どこにも無ければ 404**(`no cover`。取り直しても
+    同じ)、相手につながらない・断られた・休んでいるなら 502(取り直せば取れるかもしれない)。
+    """
+    isbn = body.isbn.strip()
+    if not re.fullmatch(r"97[89]\d{10}", isbn):
+        raise HTTPException(400, {"error": "isbn must be 13 digits"})
+    try:
+        async with thumbs._client() as client:
+            for name, pattern, applies in COVER_SOURCES:
+                if not applies(isbn):
+                    continue
+                try:
+                    path, _source = await thumbs.make(client, "image", pattern.format(isbn=isbn))
+                except thumbs.Skip:
+                    continue
+                return {"thumb": path, "from": name}
+    except httpx.HTTPError as e:
+        log.info("cover fetch failed: %r", e)
+        reason = (
+            str(e)
+            if isinstance(e, (httpx.HTTPStatusError, thumbs.Resting))
+            else type(e).__name__
+        )
+        raise HTTPException(502, {"error": "upstream unavailable", "reason": reason}) from e
+    raise HTTPException(404, {"error": "no cover"})
+
+
 @app.get("/v1/thumbs/health")
 def thumbs_health() -> dict:
     """**外の絵を取れているか**(`app/thumbs.py` の `health`)。最後に取れた時刻・取れなかった

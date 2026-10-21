@@ -152,3 +152,67 @@ class TestThumbs:
                     "https://upload.wikimedia.org:8443/wikipedia/commons/a/ab/A.jpg"):
             assert client.post("/v1/thumbs", json={"url": url}).status_code == 400
         assert commons == []
+
+
+class TestCovers:
+    """本の表紙(`POST /v1/covers`)。URL は ISBN から Chiezo が組み立て、上から順に試す。"""
+
+    JP = "9784873115658"
+    EN = "9781492052203"
+
+    @pytest.fixture
+    def answer(self, monkeypatch):
+        monkeypatch.setattr(thumbs, "MIN_INTERVAL", 0.0)
+        monkeypatch.setattr(
+            socket, "getaddrinfo",
+            lambda host, *_a, **_k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))],
+        )
+        calls: list[str] = []
+
+        def install(responses: dict):
+            async def handler(request: httpx.Request) -> httpx.Response:
+                calls.append(str(request.url))
+                return responses.get(str(request.url), httpx.Response(404))
+
+            monkeypatch.setattr(
+                thumbs, "_client",
+                lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=False),
+            )
+            return calls
+
+        return install
+
+    def test_takes_the_cover_from_hanmoto(self, client, answer):
+        url = f"https://www.hanmoto.com/bd/img/{self.JP}.jpg"
+        calls = answer({url: httpx.Response(200, content=png(), headers={"content-type": "image/jpeg"})})
+
+        got = client.post("/v1/covers", json={"isbn": self.JP}).json()
+        assert got["from"] == "hanmoto" and got["thumb"].startswith("/v1/thumbs/")
+        assert calls == [url]
+
+    def test_books_abroad_also_try_open_library(self, client, answer):
+        ol = f"https://covers.openlibrary.org/b/isbn/{self.EN}-M.jpg?default=false"
+        calls = answer({ol: httpx.Response(200, content=png(), headers={"content-type": "image/jpeg"})})
+
+        got = client.post("/v1/covers", json={"isbn": self.EN}).json()
+        assert got["from"] == "openlibrary"
+        assert calls == [f"https://www.hanmoto.com/bd/img/{self.EN}.jpg", ol]
+
+    def test_no_cover_anywhere_is_404_and_japanese_books_skip_open_library(self, client, answer):
+        calls = answer({})
+
+        got = client.post("/v1/covers", json={"isbn": self.JP})
+        assert got.status_code == 404
+        assert calls == [f"https://www.hanmoto.com/bd/img/{self.JP}.jpg"]
+
+    def test_only_isbn13(self, client, answer):
+        calls = answer({})
+        for isbn in ("4873115655", "https://example.com/a.jpg", "978487311565X"):
+            assert client.post("/v1/covers", json={"isbn": isbn}).status_code == 400
+        assert calls == []
+
+    def test_being_told_to_wait_is_502(self, client, answer):
+        answer({f"https://www.hanmoto.com/bd/img/{self.JP}.jpg": httpx.Response(429)})
+
+        got = client.post("/v1/covers", json={"isbn": self.JP})
+        assert got.status_code == 502 and got.json()["reason"] == "HTTP 429"
