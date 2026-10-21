@@ -123,7 +123,7 @@ class TestCommand:
         server = bridge(CHIEZO_BRIDGE_CLI="antigravity", CHIEZO_BRIDGE_TIMEOUT="600")
         assert server.build_command("/tmp/out.txt", "こんにちは") == [
             "agy", "-p", "こんにちは", "--dangerously-skip-permissions",
-            "--print-timeout", "595s", "--output-format", "json",
+            "--print-timeout", "595s", "--output-format", "stream-json",
         ]
 
     def test_antigravity_skips_permissions_even_for_a_short_prompt(self, bridge):
@@ -2192,3 +2192,131 @@ class TestWhichLimitAWindowBelongsTo:
         })
 
         assert [w["group"] for w in found] == [""]
+
+
+class TestAgyStream:
+    """agy の手順を読みながら数える(`--output-format stream-json`。`_spawn_agy`)。
+
+    `json` では終わるまで 1 バイトも出ず、10 分を超える回が調べ続けているのか
+    止まっているのかが外から読めなかった。
+    """
+
+    @staticmethod
+    def fake(lines: list[str], returncode: int = 0, hold: float = 0.0):
+        import asyncio
+
+        class Stream:
+            def __init__(self, data: bytes):
+                self.data = data
+
+            async def read(self, _n):
+                if hold and not self.data:
+                    await asyncio.sleep(hold)
+                out, self.data = self.data[:7], self.data[7:]
+                return out
+
+        class Proc:
+            def __init__(self):
+                self.stdout = Stream("\n".join(lines).encode("utf-8") + b"\n")
+                self.stderr = Stream(b"")
+                self.returncode = None
+                self.killed = False
+
+            async def wait(self):
+                if hold:
+                    await asyncio.sleep(hold)
+                self.returncode = returncode
+                return returncode
+
+            def kill(self):
+                self.killed = True
+
+        return Proc()
+
+    @staticmethod
+    def tool(i: int, name: str) -> str:
+        return json.dumps({"event": "step_update", "step_update": {
+            "step_index": i, "state": "DONE", "step_type": "tool", "tool_name": name,
+            "duration_seconds": 0.5, "tool_info": {"name": name, "parameters": {"q": "秘密の依頼"}},
+        }}, ensure_ascii=False)
+
+    def test_counts_steps_and_tools_and_reads_the_final_answer(self, bridge):
+        import asyncio
+
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+        lines = [
+            json.dumps({"event": "init", "conversation_id": "c"}),
+            self.tool(1, "search_web"),
+            # 途中の(ACTIVE の)出来事は数えない
+            json.dumps({"event": "step_update", "step_update": {"state": "ACTIVE", "step_type": "tool"}}),
+            self.tool(2, "read_url_content"),
+            self.tool(3, "search_web"),
+            json.dumps({"event": "step_update", "step_update": {
+                "step_index": 4, "state": "DONE", "step_type": "agent_response", "text_delta": "答"}}),
+            json.dumps({"event": "result", "result": {
+                "conversation_id": "c", "status": "SUCCESS", "response": "答え",
+                "usage": {"input_tokens": 10, "output_tokens": 3, "cache_read_tokens": 2}}}),
+        ]
+        proc = self.fake(lines)
+
+        async def spawn(*_a, **_k):
+            return proc
+
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(asyncio, "create_subprocess_exec", spawn)
+            text, trace, usage, _ran = asyncio.run(server._spawn_agy(["agy"], 60))
+
+        assert text == "答え"
+        assert usage["prompt_tokens"] == 10 and usage["completion_tokens"] == 3
+        assert "手順 4・道具 search_web×2・read_url_content×1" in trace
+        # 道具の引数(依頼の中身)は途中経過に残さない
+        assert "秘密の依頼" not in trace
+        # 終わったら「いま走っている」から外れる
+        assert server.running_now() is None
+
+    def test_a_failure_says_what_agy_said(self, bridge):
+        import asyncio
+
+        import fastapi
+
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+        proc = self.fake([json.dumps({"event": "result", "result": {
+            "status": "ERROR", "response": "", "error": "invalid model selection"}})], returncode=1)
+
+        async def spawn(*_a, **_k):
+            return proc
+
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(asyncio, "create_subprocess_exec", spawn)
+            with pytest.raises(fastapi.HTTPException) as got:
+                asyncio.run(server._spawn_agy(["agy"], 60))
+        assert got.value.status_code == 502
+        assert "invalid model selection" in got.value.detail["stderr"]
+
+    def test_while_running_health_shows_the_steps_and_a_timeout_keeps_them(self, bridge):
+        import asyncio
+
+        import fastapi
+
+        server = bridge(CHIEZO_BRIDGE_CLI="antigravity")
+        proc = self.fake([self.tool(1, "search_web")], hold=5)
+        seen = {}
+
+        async def spawn(*_a, **_k):
+            return proc
+
+        async def go():
+            task = asyncio.ensure_future(server._spawn_agy(["agy"], 0.3))
+            await asyncio.sleep(0.1)
+            seen.update(server.running_now() or {})
+            with pytest.raises(fastapi.HTTPException) as got:
+                await task
+            return got.value
+
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(asyncio, "create_subprocess_exec", spawn)
+            error = asyncio.run(go())
+
+        assert seen["steps"] == 1 and seen["tools"] == {"search_web": 1}
+        assert error.status_code == 504 and "手順 1・道具 search_web×1" in error.detail["error"]
+        assert proc.killed and server.running_now() is None

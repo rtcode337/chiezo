@@ -222,6 +222,31 @@ async def bridge_builds(timeout: float = 3.0) -> list[dict]:
     return list(await asyncio.gather(*(ask(spec) for spec in specs)))
 
 
+def bridge_progress(backend_ids: set[str], timeout: float = 2.0) -> dict[str, dict]:
+    """CLI ブリッジの **いま走っている 1 本の様子と、後ろで待っている数**(相手 → `{running, waiting}`)。
+
+    ブリッジの `/health` の `running`(手順の数・使った道具・最後の動きからの秒数。agy だけ)と
+    `waiting`(1 本ずつしか通さない相手の、枠を待っている数)。**状況の面に走っている依頼が
+    あるときだけ、その相手にだけ聞く**(描くたびに全部の相手を叩かない)。聞けなければ入れない。
+    状況の面は同期で描くので、こちらも同期で聞く。
+    """
+    found: dict[str, dict] = {}
+    for spec in providers.all_providers():
+        if not spec.bridge or spec.id not in backend_ids:
+            continue
+        url = spec.url.rstrip("/")
+        base = url[: -len("/v1")] if url.endswith("/v1") else url
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                res = client.get(f"{base}/health")
+            body = res.json() if res.status_code == 200 else {}
+        except (httpx.HTTPError, ValueError):
+            continue
+        if isinstance(body, dict):
+            found[spec.id] = {"running": body.get("running"), "waiting": int(body.get("waiting") or 0)}
+    return found
+
+
 def normalize_effort(backend: str, effort: str | None) -> str:
     """選ばれたエフォートを検証する。知らない値は空（＝相手の既定）にする。
 

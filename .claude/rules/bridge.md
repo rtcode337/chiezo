@@ -81,8 +81,22 @@ Claude Code / Codex / Antigravity の CLI を OpenAI 互換の口に見せる別
     (504 の `said`)。**`readline()` は使わない** —— base64 を吐く相手がいるので
     限度超えで落ちて取りこぼす。標準入力へ渡すのは読み出しと同時に走らせる
     (先に書き切ろうとすると、相手が出力を吐き続けたときにパイプが詰まる)
-  - **CLI の出力は構造化して受け取る**(`_result_of`)。claude と antigravity は
-    `--output-format json`、codex は `--json`(JSONL。本文は今までどおり `-o` の
+  - **agy は手順ごとの出来事を読みながら数える**(`--output-format stream-json` / `_spawn_agy` /
+    `_read_event`)。出来事は `init` → `step_update`(`state` が DONE になった手順を数え、
+    `step_type` が tool なら `tool_name` を数える)→ `result`(中身は `json` と同じ形なので、
+    本文の読み方 `_result_of` は変わらない)。`json` では終わるまで 1 バイトも出ず、
+    **10 分を超える回が web を調べ続けているのか止まっているのかが外から読めなかった**
+    (収集の回は flash-high で 1 本 11〜13 分・入力 30 万トークン前後。1 時間の上限まで走った回もある)。
+    **数えるのは手順の数と道具の名前だけ**で、道具の引数・読んだ中身・答えの途中は残さない
+    (依頼の中身が入る)。手順はログ(`agy step N: tool …`)と `/health` の `running`
+    (始まった時刻・経過・手順・道具・最後の動きからの秒数)に出し、打ち切った 504 にも添える。
+    `/health` の `waiting` は 1 本ずつの枠(`cli_slot`)を待っている数 —— **長い 1 本の後ろで
+    待っている頼みは何も言わずに待つ**ので、外からは「終わらない」に見えていた。
+    Chiezo の状況の面の「いま走っている依頼」が、走っている依頼のある相手にだけ聞いて添える
+    (`answer.bridge_progress`)
+  - **CLI の出力は構造化して受け取る**(`_result_of`)。claude は
+    `--output-format json`、antigravity は `--output-format stream-json`(上の `_spawn_agy`。
+    最後の `result` が `json` と同じ形)、codex は `--json`(JSONL。本文は今までどおり `-o` の
     ファイルから取り、使ったぶんだけ標準出力から読む)。素のテキストは最終的な答えしか
     運ばないので、**トークン数も「エラーとして終わったか」も捨てていた** ——
     claude は `subtype` が "success" のまま `is_error` が立つ回があり(実測: 未サインイン)、

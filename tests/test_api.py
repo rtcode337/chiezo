@@ -2325,6 +2325,27 @@ class TestTheRoundShowsWhatAlreadyFinished:
 
         assert "9.0 秒" in html
 
+    def test_a_bridge_says_what_the_running_one_is_doing_and_how_many_wait(self, monkeypatch):
+        """agy は 1 本ずつしか通さない。長い 1 本の後ろで待っている頼みが「終わらない」に
+        見えていたので、いちばん古い 1 本に手順と道具と最後の動きを、後ろの待ちの数を添え、
+        後から来たほうには「枠を待っている」と出す。"""
+        from app import answer
+        from app.views import admin
+
+        monkeypatch.setattr(answer, "bridge_progress", lambda ids: {"antigravity": {
+            "running": {"summary": "手順 34・道具 search_web×12", "quiet_seconds": 420},
+            "waiting": 1,
+        }})
+        first = {"at": "2026-09-23T00:10:00+00:00", "kind": "chat", "backend": "antigravity",
+                 "model": "", "effort": "", "state": "走っている", "prompt_bytes": 1,
+                 "prompt": "", "caller": "collect:x"}
+        second = {**first, "at": "2026-09-23T00:20:00+00:00", "caller": "collect:y"}
+
+        html = admin._running_html([second, first])
+
+        assert "手順 34・道具 search_web×12・最後の動きから ⚠️ 420 秒・後ろに 1 本待ち" in html
+        assert "枠を待っている" in html
+
     def test_an_empty_round_still_shows_nothing(self):
         from app.views import admin
 

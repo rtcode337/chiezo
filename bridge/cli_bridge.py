@@ -54,6 +54,7 @@ import sqlite3
 import tempfile
 import time
 import uuid
+from collections import Counter
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
@@ -486,6 +487,9 @@ ROTATING_CREDENTIAL = frozenset({"codex", "antigravity"})
 #
 # 認証情報を環境変数で受け取る CLI は回転しないので、待たせない(素通りする)。
 _CLI_LOCK = asyncio.Lock()
+# 枠が空くのを待っている呼び出しの数(`/health` の `waiting`)。**1 本ずつしか通さないので、
+# 前の 1 本が長いと後ろは何も言わずに待つ** —— 外からは「終わらない」に見えていた
+_WAITING = 0
 
 # 枠が空くのを待つ上限。会話は待たせる(いつ終わるか分からないが、失敗させるよりよい)が、
 # 枠の確認のような短い問い合わせは待ち続けない —— 長い会話の後ろに並ぶと、
@@ -496,9 +500,11 @@ LOCK_WAIT = 30.0
 @asynccontextmanager
 async def cli_slot(wait: float | None = None) -> AsyncIterator[None]:
     """CLI を 1 本ずつ走らせる枠。要らない相手は素通りする。"""
+    global _WAITING
     if CLI not in ROTATING_CREDENTIAL:
         yield
         return
+    _WAITING += 1
     try:
         await asyncio.wait_for(_CLI_LOCK.acquire(), timeout=wait)
     except TimeoutError:
@@ -506,6 +512,8 @@ async def cli_slot(wait: float | None = None) -> AsyncIterator[None]:
             503, {"error": f"{CLI} は別の呼び出しを実行中です(認証情報の更新が競合するため"
                            f" 1 本ずつ動かしています)。しばらく待って試してください"},
         ) from None
+    finally:
+        _WAITING -= 1
     try:
         yield
     finally:
@@ -938,8 +946,11 @@ def build_command(
         # ブリッジの締め切りより数秒手前にして、切れたときは agy 自身の理由が返るようにする
         # (同時に切れるとブリッジが kill してしまい、agy が書いた理由が残らない)。
         cmd += ["--print-timeout", agy_print_timeout(resolve_timeout(timeout))]
-        # claude と同じ理由で構造化して受け取る。本文は `response` に入る(`_result_of`)
-        cmd += ["--output-format", "json"]
+        # **手順ごとの出来事を 1 行ずつ受け取る**(`stream-json`。`_spawn_agy` が読みながら
+        # 手順と道具を数え、`/health` の `running` とログに出す)。`json` では終わるまで
+        # 1 バイトも出ず、10 分を超える回が調べ続けているのか止まっているのかが読めなかった。
+        # 最後の `result` の出来事が `json` と同じ形を運ぶので、本文の読み方は変わらない
+        cmd += ["--output-format", "stream-json"]
         if model:
             cmd += ["--model", model]
         if effort:
@@ -1037,6 +1048,8 @@ async def run_cli(
         # agy はプロンプトを引数かファイルで受け取っているので、標準入力には流さない。
         payload = b"" if CLI == "antigravity" else prompt.encode("utf-8")
         async with cli_slot():
+            if CLI == "antigravity":
+                return await _spawn_agy(cmd, timeout)
             return await _spawn(cmd, payload, out_path, timeout)
     finally:
         # 中身はプロンプトそのものなので、答えを返す前に必ず消す。
@@ -1286,6 +1299,151 @@ def _result_of(raw: str) -> tuple[str, dict, str]:
     ), ""
 
 
+# ---- agy の手順を読みながら数える ------------------------------------------------
+#
+# agy の `--output-format stream-json` は 1 行 1 出来事(`init` → `step_update` … → `result`)。
+# 手順の出来事は `state`(ACTIVE / DONE)・`step_type`(agent_response / tool …)・
+# `tool_name` を持つ。**数えるのは終わった手順と使った道具の名前だけ**で、道具の引数・
+# 読んだ中身・答えの途中は残さない(依頼の中身が入る)。
+
+# いま走っている 1 本(`/health` の `running`)。agy は 1 本ずつしか走らないので 1 つで足りる
+_RUN: dict | None = None
+
+
+def _run_summary(run: dict) -> str:
+    """手順の数と使った道具(多い順)の一言。"""
+    tools = "・".join(f"{name}×{n}" for name, n in run["tools"].most_common(6))
+    return f"手順 {run['steps']}" + (f"・道具 {tools}" if tools else "")
+
+
+def running_now() -> dict | None:
+    """いま走っている 1 本の様子(始まった時刻・手順の数・使った道具・最後の動き)。"""
+    run = _RUN
+    if run is None:
+        return None
+    now = time.time()
+    return {
+        "started_at": run["started_at"],
+        "seconds": round(now - run["started"]),
+        "steps": run["steps"],
+        "tools": dict(run["tools"]),
+        "last_tool": run["last_tool"],
+        "quiet_seconds": round(now - run["last_event"]),
+        "summary": _run_summary(run),
+    }
+
+
+def _read_event(run: dict, line: str) -> dict | None:
+    """1 行を読んで数える。最後の答え(`result` の中身)ならそれを返す。"""
+    try:
+        event = json.loads(line)
+    except ValueError:
+        run["other"].append(line[:PROGRESS_LINE_MAX])
+        return None
+    if not isinstance(event, dict):
+        return None
+    run["last_event"] = time.time()
+    kind = event.get("event")
+    if kind == "result" and isinstance(event.get("result"), dict):
+        return event["result"]
+    step = event.get("step_update") if kind == "step_update" else None
+    if not isinstance(step, dict) or step.get("state") != "DONE":
+        return None
+    run["steps"] += 1
+    if step.get("step_type") == "tool":
+        info = step.get("tool_info") if isinstance(step.get("tool_info"), dict) else {}
+        name = str(step.get("tool_name") or info.get("name") or "?")
+        run["tools"][name] += 1
+        run["last_tool"] = name
+        error = info.get("error") if isinstance(info.get("error"), dict) else None
+        log.info(
+            "agy step %s: tool %s (%.1fs)%s", step.get("step_index"), name,
+            float(step.get("duration_seconds") or 0),
+            f" error {error.get('type') or ''!s} {str(error.get('message') or '')[:120]}"
+            if error else "",
+        )
+    return None
+
+
+async def _spawn_agy(cmd: list[str], timeout: float | None) -> tuple[str, str, dict, str]:
+    """agy を 1 回動かし、**手順を読みながら数える**(`_read_event`)。返すものは `_spawn` と同じ。
+
+    `communicate()` で終わりを待っていた頃は、10 分を超える回が web を調べ続けているのか、
+    何かを待って止まっているのかが外から読めなかった(上限の 1 時間まで走った回もある)。
+    **打ち切るときも、そこまでの手順を理由に添える**。
+    """
+    global _RUN
+    now = time.time()
+    run = {
+        "started": now,
+        "started_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "steps": 0, "tools": Counter(), "last_tool": "", "last_event": now, "other": [],
+    }
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _RUN = run
+    result: dict | None = None
+    errors: list[bytes] = []
+
+    async def read_stdout() -> None:
+        nonlocal result
+        buf = b""
+        while chunk := await proc.stdout.read(65536):
+            buf += chunk
+            *lines, buf = buf.split(b"\n")
+            for raw in lines:
+                if text := raw.decode("utf-8", "replace").strip():
+                    result = _read_event(run, text) or result
+        if text := buf.decode("utf-8", "replace").strip():
+            result = _read_event(run, text) or result
+
+    async def read_stderr() -> None:
+        while chunk := await proc.stderr.read(8192):
+            errors.append(chunk)
+
+    limit = resolve_timeout(timeout)
+    try:
+        await asyncio.wait_for(asyncio.gather(read_stdout(), read_stderr(), proc.wait()), timeout=limit)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise HTTPException(
+            504, {"error": f"{CLI} timed out after {limit:.0f}s({_run_summary(run)}・最後の道具 "
+                           f"{run['last_tool'] or 'なし'}・最後の動きから "
+                           f"{time.time() - run['last_event']:.0f} 秒)"},
+        ) from None
+    except asyncio.CancelledError:
+        log.warning("%s was dropped by the caller; killing it", CLI)
+        proc.kill()
+        with suppress(Exception):
+            await proc.wait()
+        raise
+    finally:
+        if _RUN is run:
+            _RUN = None
+
+    log.info("agy finished in %.0fs: %s", time.time() - run["started"], _run_summary(run))
+    stderr = b"".join(errors)
+    raw = json.dumps(result, ensure_ascii=False) if result is not None else "\n".join(run["other"])
+    if proc.returncode != 0 or (result is not None and result.get("status") not in (None, "SUCCESS")):
+        said = str((result or {}).get("error") or "")
+        detail = failure_detail(raw.encode("utf-8"), stderr)
+        detail = f"{said} / {detail}" if said and said not in detail else detail
+        log.error("%s exited %s: %s", CLI, proc.returncode, detail)
+        raise HTTPException(502, {"error": f"{CLI} failed", "exit_code": proc.returncode, "stderr": detail})
+    parsed, usage, ran_as = _result_of(raw)
+    text = parsed.strip()
+    if not text:
+        raise HTTPException(502, {"error": f"{CLI} returned an empty answer"})
+    # 途中経過は、手順の数・使った道具と最後の答えの出来事(`_trace` と同じ名札の形)
+    trace = _trace(f"{_run_summary(run)}\n{raw}".encode(), stderr)
+    return text, trace, usage, ran_as
+
+
 async def _spawn(
     cmd: list[str], payload: bytes, out_path: str, timeout: float | None
 ) -> tuple[str, str, dict, str]:
@@ -1456,6 +1614,10 @@ async def health(check: bool = False) -> dict:
         # 日時は別の鍵で足す(画面はこちらを先に出す)
         "build": BUILD_SHA, "built_at": BUILD_TIME,
     }
+    # **いま走っている 1 本と、後ろで待っている数**(CLI は起こさない。軽い)。
+    # 1 本ずつしか通さない相手では、前の 1 本が長いと後ろは何も言わずに待つ
+    body["running"] = running_now()
+    body["waiting"] = _WAITING
     if check:
         ok, reason = await check_auth()
         body["authenticated"] = ok

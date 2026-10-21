@@ -3247,6 +3247,30 @@ def _round_done(job: dict | None) -> list[dict]:
     return done
 
 
+def _bridge_progress_html(found: dict | None, row: dict) -> str:
+    """走っている依頼の状態の欄に添える、ブリッジの様子(手順・道具・最後の動き・後ろの待ち)。
+
+    **ブリッジが知っているのは、いま走っている 1 本のことだけ**。同じ相手へ 2 本以上が
+    走っている(片方は枠を待っている)ときに、どちらの話か言い切れないので、
+    手順は「いちばん古い 1 本」の行にだけ付ける(枠を取ったのは先に来たほう)。
+    """
+    if not found or row.get("ms") is not None:
+        return ""
+    parts = []
+    run = found.get("running")
+    if isinstance(run, dict) and row.get("_oldest"):
+        quiet = int(run.get("quiet_seconds") or 0)
+        mark = "⚠️ " if quiet >= 300 else ""
+        parts.append(
+            f"{esc(str(run.get('summary') or ''))}・最後の動きから {mark}{quiet:,} 秒"
+        )
+    if row.get("_oldest") and found.get("waiting"):
+        parts.append(f"後ろに {int(found['waiting']):,} 本待ち")
+    if not row.get("_oldest") and isinstance(run, dict):
+        parts.append("枠を待っている")
+    return f'<br><span class="muted">{"・".join(parts)}</span>' if parts else ""
+
+
 def _running_html(running: list[dict], done: list[dict] | None = None) -> str:
     """いま走っている AI への依頼。
 
@@ -3265,13 +3289,23 @@ def _running_html(running: list[dict], done: list[dict] | None = None) -> str:
     rows_in = list(running) + list(done or [])
     if not rows_in:
         return ""
+    # **CLI ブリッジの相手は、いま何手目で何を使っているかと、後ろの待ちを添える**
+    # (`answer.bridge_progress`)。agy は 1 本ずつしか通さず、長い 1 本の後ろで
+    # 待っている頼みが「終わらない」に見えていた
+    progress = answer.bridge_progress({r["backend"] for r in running})
+    # 相手ごとにいちばん古い 1 本(枠を取っているのは先に来たほう)
+    oldest: dict[str, dict] = {}
+    for r in running:
+        if r["backend"] not in oldest or str(r["at"]) < str(oldest[r["backend"]]["at"]):
+            oldest[r["backend"]] = r
+    rows_in = [{**r, "_oldest": oldest.get(r["backend"]) is r} for r in rows_in]
 
     rows = "".join(
         f"<tr><td>{esc(ai_log.kind_label(r['kind']))}</td>"
         # 相手とモデルの書き方は `ai_history` と共有する —— 別々に書くと、
         # 同じ依頼が状況の面と表で違って見える(経過の `elapsed` と同じ理由)
         f"<td>{ai_history.who_html(r['backend'], r.get('model') or '', r.get('effort') or '')}</td>"
-        f"<td>{esc(r['state'])}</td>"
+        f"<td>{esc(r['state'])}{_bridge_progress_html(progress.get(r['backend']), r)}</td>"
         # **終わったぶんは「かかった時間」を出す** —— 経過(いまとの差)だと、
         # 終わっているのに時計が進み続けているように見える
         f'<td class="muted">'
