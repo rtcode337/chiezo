@@ -190,20 +190,13 @@ class TestCovers:
         assert got["from"] == "hanmoto" and got["thumb"].startswith("/v1/thumbs/")
         assert calls == [url]
 
-    def test_books_abroad_also_try_open_library(self, client, answer):
-        ol = f"https://covers.openlibrary.org/b/isbn/{self.EN}-M.jpg?default=false"
-        calls = answer({ol: httpx.Response(200, content=png(), headers={"content-type": "image/jpeg"})})
-
-        got = client.post("/v1/covers", json={"isbn": self.EN}).json()
-        assert got["from"] == "openlibrary"
-        assert calls == [f"https://www.hanmoto.com/bd/img/{self.EN}.jpg", ol]
-
-    def test_no_cover_anywhere_is_404_and_japanese_books_skip_open_library(self, client, answer):
+    def test_no_cover_anywhere_is_404(self, client, answer):
+        # 海外の本も版元ドットコムだけ(Open Library は使わない)
         calls = answer({})
 
-        got = client.post("/v1/covers", json={"isbn": self.JP})
-        assert got.status_code == 404
-        assert calls == [f"https://www.hanmoto.com/bd/img/{self.JP}.jpg"]
+        for isbn in (self.JP, self.EN):
+            assert client.post("/v1/covers", json={"isbn": isbn}).status_code == 404
+        assert calls == [f"https://www.hanmoto.com/bd/img/{i}.jpg" for i in (self.JP, self.EN)]
 
     def test_only_isbn13(self, client, answer):
         calls = answer({})

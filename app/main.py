@@ -5775,19 +5775,13 @@ async def make_thumb(body: ThumbRequest) -> dict:
 # 本の表紙を取りに行く先(`POST /v1/covers`)。**URL は ISBN から Chiezo が組み立てる**
 # (頼む側から URL を受け取らない)。上から順に試し、無ければ次へ。
 # - 版元ドットコム: 日本の本。無い本は 404(`img.hanmoto.com` へ転送される)
-# - Open Library: **日本の本(978-4)以外だけ**。ISBN で引くのは 5 分に 100 回までで、
-#   まとめて落とすことは断っている —— 本棚の海外の原書(十数冊)を 1 冊 1 回だけ頼むぶんに限る。
-#   `?default=false` で、無い本は 404(既定は白い画像を返すので見分けられない)
-# 国立国会図書館サーチの書影は Chiezo の外への取得を断り(403)、openBD は版元ドットコムと
-# 同じ元で増えないので使わない
-COVER_SOURCES = (
-    ("hanmoto", "https://www.hanmoto.com/bd/img/{isbn}.jpg", lambda isbn: True),
-    (
-        "openlibrary",
-        "https://covers.openlibrary.org/b/isbn/{isbn}-M.jpg?default=false",
-        lambda isbn: not isbn.startswith("9784"),
-    ),
-)
+# 使わないもの:
+# - Open Library(海外の本)は、つながらない・応答が遅いことがあり、1 冊ごとに接続の時間切れを
+#   待つあいだに頼む側が先に諦める。ISBN で引くのは 5 分に 100 回までで、まとめて落とすことも
+#   断っている。海外の本は数が少ないので、版元ドットコムに無ければ「表紙なし」でよい
+# - 国立国会図書館サーチの書影は、プログラムからの取得を断る(403)
+# - openBD は版元ドットコムと同じ元で、表紙が増えない
+COVER_SOURCES = (("hanmoto", "https://www.hanmoto.com/bd/img/{isbn}.jpg", lambda isbn: True),)
 
 
 class CoverRequest(BaseModel):

@@ -27,7 +27,7 @@ chiezo-app の組み立てと、溜めた知識を引く REST(search / doc / fil
   - `app/main.py` — **機械向けの口とアプリの組み立て**(/, /healthz, /apple-touch-icon.png,
     /v1/sources, /v1/{source}/search|doc|filter|tags|titles|links|random, /v1/ask, /v1/chat,
     /v1/ai/backends, /v1/ai/complete, /v1/ai/failures, /v1/ai/inflight, /v1/ai/usage,
-    外の取り次ぎの /v1/thumbs(POST)・/v1/covers(本の表紙。URL は ISBN から組み立てる)・/v1/bookmarks(`collect-tools.md`)、
+    外の取り次ぎの /v1/thumbs(POST)・/v1/covers(本の表紙。URL は ISBN から組み立てる。版元ドットコムだけ)・/v1/bookmarks(`collect-tools.md`)、
     lifespan・例外ハンドラ・画面 router の登録・MCP の /mcp のマウント。
     MCP の実体は `app/mcp_server.py`。`.claude/rules/mcp-claude-config.md`)。
     **人間向けの HTML はここに置かない**(`app/views/`)。以前は 2,473 行の 1 ファイルに
