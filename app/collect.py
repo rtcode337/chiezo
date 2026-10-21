@@ -2717,7 +2717,14 @@ def resolve_system_note(spec: dict | None) -> str:
             f" 調べたうえで当てはまる場所が見つからなかったものは、extra.{key} に null を書き、"
             f"tags に「{none_tag}」を入れる(場所が決まったら外れる)。"
         )
-    if not spec.get("ai_coords"):
+    if spec.get("ai_fallback"):
+        # **辞典にも住所にも当たらないときだけ使う。** 記憶で書いた座標は数 km ずれるので、
+        # 地図サービスで確かめた値に限らせる
+        note += (
+            " 座標(lat / lon)は、**辞典にも住所にも当たらない場所に限って**、地図サービスで"
+            "確かめた値を数で書く(記憶で書かない。辞典に当たればそちらの座標を使う)。"
+        )
+    elif not spec.get("ai_coords"):
         note += " **座標(lat / lon)は書かない**(書いても使わない)。"
     return note
 
@@ -6288,6 +6295,8 @@ def checks_note(checks: dict | None) -> str:
         parts.append(
             f"引き当て {checks.get('resolved', 0)} 件・できず {checks.get('unresolved', 0)} 件"
         )
+    if checks.get("by_ai"):
+        parts.append(f"辞典に当たらず AI の座標で置いた {checks['by_ai']} 件")
     if checks.get("retried"):
         parts.append(f"前に落ちたものを引き直して {checks['retried']} 件")
     if checks.get("rechecked"):

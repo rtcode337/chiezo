@@ -567,6 +567,42 @@ class TestApplyingToCollectedItems:
         assert raw["tags"] == ["地域:東京都", "状態:代表店未定"]
         assert report["failures"] == [{"title": "名の無い料理", "reason": "辞典に同じ名前がありません"}]
 
+    def test_ai_coordinates_are_the_last_resort(self, sources):
+        """辞典にも住所にも当たらないときだけ、AI が地図で確かめた座標で置き、印を付ける。
+        辞典に当たれば辞典の座標が勝つ。"""
+        spec = resolve.normalize({**resolve.to_json(SPEC), "ai_fallback": {"tag": "座標:AI"}})
+        assert resolve.to_json(spec)["ai_fallback"] == {"tag": "座標:AI"}
+
+        items, report = resolve.apply(spec, _items({
+            "title": "名の無い料理", "body": "説明", "tags": ["地域:東京都", "出典:OSM"],
+            "extra": {"shop": {"name": "どこにも無い店"}, "lat": 35.70, "lon": 139.70},
+        }), {}, sources, NOW)
+        raw = items[0]
+        facts = raw[resolve.FACTS_KEY]
+        assert (facts["lat"], facts["lon"]) == (35.70, 139.70)
+        assert facts["shop"]["basis"] == [resolve.BASIS_AI]
+        assert facts["shop"]["fallback_reason"] == "辞典に同じ名前がありません"
+        assert raw["tags"] == ["地域:東京都", "座標:AI"]
+        assert report["by_ai"] == 1
+
+        # 辞典に当たれば AI の座標は使わない
+        items, _report = resolve.apply(spec, _items({
+            "title": "名物丼", "body": "説明", "tags": ["地域:東京都"],
+            "extra": {"shop": {"name": "サンプル軒総本店", "address": "東京都千代田区丸の内1-9-1"},
+                      "lat": 35.70, "lon": 139.70},
+        }), {}, sources, NOW)
+        facts = items[0][resolve.FACTS_KEY]
+        assert (facts["lat"], facts["lon"]) == HONTEN
+        assert "座標:AI" not in items[0]["tags"]
+
+        # 座標を書いていなければ、今までどおり決まらないまま
+        items, _report = resolve.apply(spec, _items({
+            "title": "名の無い料理", "body": "説明", "tags": ["地域:東京都"],
+            "extra": {"shop": {"name": "どこにも無い店"}},
+        }), {}, sources, NOW)
+        assert items[0][resolve.FACTS_KEY]["lat"] is None
+        assert "状態:代表店未定" in items[0]["tags"]
+
     def test_the_same_shop_is_not_resolved_again(self):
         """AI が前に引き当てた店をそのまま返しても、引き直さない(辞典が無くても動かない)。"""
         before = {"shop": {

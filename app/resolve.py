@@ -113,6 +113,9 @@ BASIS_LOOSE = "名前の揺れ"
 BASIS_REF = "指した見出し"
 BASIS_ADDRESS = "住所"
 BASIS_NEAR = "住所の近く"
+BASIS_AI = "AI の座標"
+# 辞典にも住所にも当たらず、AI が書いた座標を使った 1 件の座標の出どころ(`ai_fallback`)
+AI_SOURCE = "ai"
 BASIS_MAIN = "本店"
 # **AI が指した見出しを、名前の書き方が違っても採る**ときの、名前の重なりの下限
 # (`_named_alike`)。共通の続いた字がこの字数以上、かつ短いほうの名前のこの割合以上。
@@ -145,8 +148,14 @@ def normalize(raw) -> dict | None:
           "failed_tag": "状態:代表店未定",
           "failed_when_missing": false,
           "none_tag": "状態:代表店なし",
-          "ai_coords": false
+          "ai_coords": false,
+          "ai_fallback": {"tag": "座標:AI"}
         }
+
+    - `ai_fallback` —— **辞典にも住所の辞典にも当たらなかったときだけ、AI が書いた座標を使う**
+      (`tag` はその 1 件に付ける印)。辞典の点も間違うことがあり、辞典に載っていない場所
+      (小さな店・作品の舞台の場所)は辞典では置けない —— AI には地図サービスで確かめた
+      座標だけを書かせ、印で見分けられるようにする。辞典に当たれば辞典の座標が勝つ
 
     - `failed_when_missing` —— **手がかりがまだ無い 1 件にも** `failed_tag` を付ける
       (既定は引き当てに失敗した 1 件だけ)。「まだ決まっていないもの」を 1 つの印で
@@ -226,6 +235,18 @@ def normalize(raw) -> dict | None:
     if any(one["check_coords"] for one in written) and address is None:
         # 確かめる相手が無いのに「確かめる」と書いても何も起きない(書いた人は効いていると思う)
         raise _bad("check_coords を使うときは address(住所の辞典)も書いてください")
+    fallback = raw.get("ai_fallback")
+    if fallback in (None, False, "", {}):
+        fallback = None
+    else:
+        if fallback is True:
+            fallback = {}
+        if not isinstance(fallback, dict):
+            raise _bad("ai_fallback は {\"tag\": 印} で書いてください")
+        fallback_tag = str(fallback.get("tag") or "").strip()
+        if len(fallback_tag) > MAX_TAG_CHARS or fallback_tag.startswith("_chiezo_"):
+            raise _bad(f"tag は {MAX_TAG_CHARS} 文字までで、Chiezo の印(_chiezo_)は使えません")
+        fallback = {"source": AI_SOURCE, "tag": fallback_tag}
     when_missing = bool(raw.get("failed_when_missing", False))
     if when_missing and not failed:
         # 付けるタグが無いのに「付ける」と書いても何も起きない。黙って通すと、
@@ -243,6 +264,7 @@ def normalize(raw) -> dict | None:
         "none_tag": none,
         "ai_coords": bool(raw.get("ai_coords", False)),
         "address": address,
+        "ai_fallback": fallback,
     }
 
 
@@ -290,6 +312,8 @@ def to_json(spec: dict | None) -> dict | None:
         out["ai_coords"] = True
     if spec.get("address"):
         out["address"] = {k: v for k, v in spec["address"].items() if v}
+    if spec.get("ai_fallback"):
+        out["ai_fallback"] = {"tag": spec["ai_fallback"]["tag"]} if spec["ai_fallback"]["tag"] else {}
     return out
 
 
@@ -299,8 +323,12 @@ def source_tags(spec: dict) -> set[str]:
 
 
 def _tagged_sources(spec: dict) -> list[dict]:
-    """出どころのタグを持つ辞典の全部(店の辞典と、住所の辞典)。"""
-    return [*spec["sources"], *([spec["address"]] if spec.get("address") else [])]
+    """出どころのタグを持つ辞典の全部(店の辞典と、住所の辞典と、AI の座標)。"""
+    return [
+        *spec["sources"],
+        *([spec["address"]] if spec.get("address") else []),
+        *([spec["ai_fallback"]] if spec.get("ai_fallback") else []),
+    ]
 
 
 # ---- 文字の均し ----------------------------------------------------------------------
@@ -1045,6 +1073,37 @@ def _failed(clue: dict, why: str, cands: list[Candidate], now: str) -> Result:
 # ---- 集めた 1 件ずつに掛ける -----------------------------------------------------------
 
 
+def _point_of(lat, lon) -> tuple[float, float] | None:
+    """座標として読めれば `(緯度, 経度)`。"""
+    try:
+        point = (float(lat), float(lon))
+    except (TypeError, ValueError):
+        return None
+    if not (-90 <= point[0] <= 90 and -180 <= point[1] <= 180) or point == (0.0, 0.0):
+        return None
+    return point
+
+
+def _by_ai(clue: dict, point: tuple[float, float], failed: dict, now: str) -> Result:
+    """辞典にも住所にも当たらなかった 1 件を、AI が書いた座標で置く(`ai_fallback`)。
+
+    **辞典で決められなかった理由も残す**(`fallback_reason`)—— 辞典の側を直せば
+    引き当たるのか、辞典に無い場所なのかを後から読めるように。
+    """
+    shop = {
+        "name": clue.get("name") or "",
+        "source": AI_SOURCE,
+        "sources": [AI_SOURCE],
+        "basis": [BASIS_AI],
+        "clue": clue,
+        "fallback_reason": failed.get("unresolved") or "",
+        "resolved_at": now,
+    }
+    if address := clue.get("address"):
+        shop["address"] = address
+    return Result(shop={k: v for k, v in shop.items() if v != ""}, lat=point[0], lon=point[1])
+
+
 def is_resolved(shop) -> bool:
     return isinstance(shop, dict) and bool(shop.get("resolved_at")) and not shop.get("unresolved")
 
@@ -1103,6 +1162,8 @@ def apply(
             continue
         raw = dict(raw)
         extra = dict(raw["extra"]) if isinstance(raw.get("extra"), dict) else {}
+        # 捨てる前に控える(辞典にも住所にも当たらなかったときの最後の段。`ai_fallback`)
+        ai_point = _point_of(raw.get("lat", extra.get("lat")), raw.get("lon", extra.get("lon")))
         if not spec["ai_coords"]:
             raw.pop("lat", None)
             raw.pop("lon", None)
@@ -1132,6 +1193,9 @@ def apply(
                 report["kept"] += 1
             else:
                 result = resolve(spec, clue, _area_hint(spec, raw), sources, now)
+                if not result.ok and spec.get("ai_fallback") and ai_point is not None:
+                    result = _by_ai(clue, ai_point, result.shop, now)
+                    report["by_ai"] = report.get("by_ai", 0) + 1
                 state, changed = result.shop, True
                 facts = {clue_key: result.shop, "lat": result.lat, "lon": result.lon}
                 if result.ok:

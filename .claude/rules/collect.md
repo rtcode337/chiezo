@@ -739,6 +739,10 @@ paths:
   `_by_address`。`address_jp`)。座標は AI に書かせないまま、AI が確かめた住所から機械で引く ——
   店の辞典に無い店(小さな店・直売所)を AI が見つけても、置き場が無かった。街区まで当たったときだけ採る。
   鍵の作り方(`address_block_key`)は取り込み側(`ingest/sources/isj.py` の `block_key`)と同じに保つ
+- **最後の段は AI の座標**(`ai_fallback` → `resolve._by_ai`。書いた収集だけ)。店の辞典にも住所の辞典にも
+  当たらなかった 1 件に限り、捨てる前に控えた AI の `lat` / `lon` で置いて印を付ける(根拠 `AI の座標`・
+  `fallback_reason`)。辞典の点も間違い、辞典に無い場所は辞典では置けないため。system では地図サービスで
+  確かめた座標に限らせる(`resolve_system_note`)。辞典に当たれば辞典が勝つ
 - **前に落ちた 1 件は焼くたびに引き直す**(`resolve.retry` / `collect._unresolved_rows` / `_retried`)。
   引き当ては AI がその回に返した 1 件にしか掛からないので、辞典を足しても前に落ちた 1 件は動かなかった
   (住所の辞典を足した直後、17 件が 1 件も動かなかった)。引き当たったものだけを `RETRY_KEY` の付いた
