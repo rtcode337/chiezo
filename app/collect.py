@@ -1311,11 +1311,23 @@ class Focus:
     # どの巡回の設定(相手・モデル・考える量)で走らせるか。書かなければ
     # 時計を持たない巡回(`on_demand`)
     sweep: str | None = None
+    # **その回だけ頼む相手**(`asked_for_run` で巡回に重ねる。保存しない)。巡回の設定は
+    # 定時の回のために選んだもので、人が待っている 1 回は別の相手に頼みたいことがある
+    # (空いている相手・web 検索の得意な相手)
+    backend: str | None = None
+    model: str | None = None
+    worker: str | None = None
     requested_by: str = ""
     requested_at: str = ""
 
     def to_json(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if v}
+
+    def choice(self) -> dict | None:
+        """頼む相手の上書き(`asked_for_run` に渡す形)。書いていなければ None。"""
+        picked = {"backend": self.backend, "model": self.model, "worker": self.worker}
+        kept = {k: v for k, v in picked.items() if v}
+        return kept or None
 
 
 def normalize_focus(raw) -> Focus | None:
@@ -1339,6 +1351,9 @@ def normalize_focus(raw) -> Focus | None:
         titles=titles[:MAX_FOCUS_TITLES],
         prompt=str(raw.get("prompt") or "").strip()[:MAX_PROMPT_CHARS] or None,
         sweep=str(raw.get("sweep") or "").strip()[:40] or None,
+        backend=str(raw.get("backend") or "").strip()[:60] or None,
+        model=str(raw.get("model") or "").strip()[:80] or None,
+        worker=str(raw.get("worker") or "").strip()[:40] or None,
         requested_by=str(raw.get("requested_by") or "").strip()[:80],
         requested_at=str(raw.get("requested_at") or "") or _iso(_now()),
     )

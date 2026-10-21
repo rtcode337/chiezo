@@ -1830,6 +1830,10 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
         else collect.sweep_named(item, item.pending_sweep)
     )
     if focus is not None:
+        # **その回だけの相手**(`focus.backend` / `worker`)。巡回の設定は書き換えない
+        # (区画を名指しした 1 回の `asked_for_run` と同じ差し替え)
+        sweep = collect.asked_for_run(sweep, focus.choice())
+    if focus is not None:
         # **割り込みは 1 回きり。** 見るのは頼まれたところだけで、区画の順番には触らない
         keys = [focus.partition] if focus.partition else []
         # 割り込みは必ず「直す」側で焼く(名指しの 1 件を直せないと割り込みの意味が無い)
@@ -4397,6 +4401,11 @@ class CollectionFocus(BaseModel):
         description="どの巡回の設定(相手・モデル・考える量)で走らせるか。"
         "省くと、時計を持たない巡回(`on_demand`)がある収集ではそれを使う",
     )
+    backend: str | None = PydField(
+        None, description="この回だけ頼む相手(巡回の設定より優先。保存しない)"
+    )
+    model: str | None = PydField(None, description="この回だけのモデル(相手を書いたときだけ効く)")
+    worker: str | None = PydField(None, description="空いている相手に選ばせる(相手より優先)")
     requested_by: str = PydField("", description="依頼元の名乗り(画面に出る手がかり)")
 
 

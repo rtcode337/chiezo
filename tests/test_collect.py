@@ -4528,6 +4528,23 @@ class TestTheOnDemandSweep:
         picked = collect.sweep_for_focus(ready, focus)
         assert (picked.backend, picked.effort) == ("claude", "high")
 
+    def test_a_focus_can_pick_its_own_backend_for_that_run(self, ready):
+        """人が待っている 1 回は、巡回の設定と別の相手に頼みたいことがある。保存はしない。"""
+        focus = collect.normalize_focus(
+            {"note": "直して", "sweep": "じっくり", "backend": "codex", "model": "gpt-5"}
+        )
+        picked = collect.asked_for_run(collect.sweep_for_focus(ready, focus), focus.choice())
+        assert (picked.backend, picked.model, picked.effort) == ("codex", "gpt-5", None)
+        assert collect.sweep_named(ready, "じっくり").backend == "claude"
+
+        # ワーカーを選べばモデルは持たせない(渡る相手はそのときの枠で決まる)
+        focus = collect.normalize_focus({"note": "直して", "worker": "w-1", "model": "gpt-5"})
+        picked = collect.asked_for_run(collect.sweep_for_focus(ready, focus), focus.choice())
+        assert (picked.worker, picked.backend, picked.model) == ("w-1", None, None)
+
+        # 書かなければ巡回の設定のまま
+        assert collect.normalize_focus({"note": "直して"}).choice() is None
+
     def test_without_one_it_falls_back_to_the_next_scheduled_sweep(self, sample):
         """定義していない収集でも割り込みは頼める。"""
         collect.update("news", enabled=True, backend="codex")
