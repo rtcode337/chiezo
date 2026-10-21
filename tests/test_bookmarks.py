@@ -141,6 +141,9 @@ class TestThumbs:
         health = client.get("/v1/thumbs/health").json()
         assert health["last_reason"] == "HTTP 429"
         assert health["resting"]["upload.wikimedia.org"]
+        # 直近の依頼も添える(新しい順。休み中に断ったぶんも残る)
+        assert [e["result"].split("(")[0] for e in health["recent"]] == ["休み中", "取れない"]
+        assert health["recent"][0]["caller"] == "写真の依頼"
 
     def test_only_wikimedia(self, client, commons):
         """読む側から URL を受け取って外へ出る口なので、決めたホストの絵しか取りに行かない。"""

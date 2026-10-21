@@ -14,7 +14,7 @@ import shutil
 import time
 from contextlib import suppress
 from pathlib import Path
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Query, Request
@@ -730,6 +730,38 @@ def _thumbs_health_html() -> str:
         f"取れていません(最後は {esc(jst.format(failed)) if failed else '不明'}・"
         f"{esc(host) + ' に' if host else ''}「{esc(state.get('last_reason') or '')}」)。{ok_text}。"
         f"{resting}取れなかった絵は、次の回に取り直します。</p>"
+    )
+
+
+def _thumbs_log_html() -> str:
+    """**外の絵の依頼の控え**(`thumbs.recent_log`。新しい順)。畳んで置き、見出しに数をまとめる。
+
+    取れているかの 1 行(`_thumbs_health_html`)は最後の結果と回数だけなので、頼みが届いて
+    いるのか、届いて何が返っているのか(写しを返しただけか、外へ取りに行ったか、無いのか)が
+    読めなかった。誰の頼みか(写真・表紙の依頼か、どの収集の回か)も並べる。
+    """
+    entries = thumbs.recent_log()
+    if not entries:
+        return ""
+    taken = sum(1 for e in entries if e.get("result") == "取った")
+    cached = sum(1 for e in entries if e.get("result") == "写しを返した")
+    failed = sum(1 for e in entries if not e.get("ok"))
+    rows = []
+    for e in entries:
+        when = jst.parse(str(e.get("at") or ""))
+        target = str(e.get("target") or "")
+        parsed = urlparse(target)
+        short = f"{parsed.hostname or ''} …/{parsed.path.rsplit('/', 1)[-1]}" if parsed.hostname else target
+        css = "" if e.get("ok") else ' class="stale"'
+        rows.append(
+            f"<tr><td>{esc(jst.compact(when)) if when else ''}</td><td>{esc(e.get('caller') or '')}</td>"
+            f'<td title="{esc(target)}">{esc(short)}</td><td{css}>{esc(e.get("result") or "")}</td></tr>'
+        )
+    return (
+        f'<details id="thumbs-log"><summary>外の絵の依頼(直近 {len(entries):,} 件。'
+        f"取った {taken:,}・写しを返した {cached:,}・取れなかった {failed:,})</summary>"
+        "<table><thead><tr><th>時刻(JST)</th><th>誰の頼み</th><th>絵</th><th>結果</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table></details>"
     )
 
 
@@ -3131,6 +3163,7 @@ def admin_status(
 {_paused_workers_html()}
 <p>{_disk_html(request.app.state.data_dir)}</p>
 {_thumbs_health_html()}
+{_thumbs_log_html()}
 {_job_status_html(job, heading=True)}
 {_ingest_history_html(job)}
 {_collect_history_html(sweep, page)}

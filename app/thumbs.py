@@ -38,6 +38,14 @@
 状況の面(`/admin/status`)と `GET /v1/thumbs/health` から読む。**相手に届いたうえでの
 404 などは数えない**(その 1 枚の事情で、取りに行けているかとは別)。
 
+## 依頼の控え
+
+1 枚ごとの結果を、新しいほうから `MAX_LOG` 件まで控える(`recent_log` / 設定の置き場の
+`thumbs_log`)。いつ・誰の頼みで(写真・表紙の依頼か、どの収集の回か)・どの絵を・どうなったか
+(取った・写しを返した・無い・取れない・休み中)。**取れているかの控え(`health`)は最後の 1 回と
+回数だけ**なので、頼みが届いているのか、届いて何が返っているのかが読めなかった。
+状況の面に畳んで出す。
+
 ## 断られたら休む
 
 **「多すぎる」(429)と言われたら、その相手へはしばらく頼まない**(`RESTING_SECONDS` か、
@@ -114,6 +122,9 @@ MAX_REDIRECTS = 3
 HEALTH_FLAG = "thumbs_health"
 # 続けてこの回数取れなければ「取れていない」とみなして目立たせる
 FAILING_AFTER = 3
+# 依頼の控え(設定の置き場のフラグ)と、残す件数
+LOG_FLAG = "thumbs_log"
+MAX_LOG = 200
 # 「多すぎる」と言われたら、その相手へ頼まない長さ(秒。相手の Retry-After が長ければそちら)
 RESTING_SECONDS = 30 * 60
 # 取り直す失敗(一時的なものなのに、前は印を付けていた)
@@ -404,8 +415,59 @@ def shrink(data: bytes) -> bytes:
         raise Skip(f"絵として開けない: {type(e).__name__}") from e
 
 
-async def make(client: httpx.AsyncClient, kind: str, source: str) -> tuple[str, str]:
-    """1 件ぶん作る。`(配る場所, 元の絵の URL)`。作らない理由があれば `Skip`。"""
+async def make(
+    client: httpx.AsyncClient, kind: str, source: str, caller: str = ""
+) -> tuple[str, str]:
+    """1 件ぶん作る。`(配る場所, 元の絵の URL)`。作らない理由があれば `Skip`。
+    結果は依頼の控えに残す(`caller` は誰の頼みか。「写真の依頼」・収集の名前など)。"""
+    try:
+        thumb, image, cached = await _make(client, kind, source)
+    except Skip as e:
+        _log(caller, source, f"作れない({e})", ok=False)
+        raise
+    except Resting as e:
+        _log(caller, source, f"休み中({e})", ok=False)
+        raise
+    except httpx.HTTPError as e:
+        reason = str(e) if isinstance(e, httpx.HTTPStatusError) else type(e).__name__
+        _log(caller, source, f"取れない({reason})", ok=False)
+        raise
+    _log(caller, source, "写しを返した" if cached else "取った", ok=True)
+    return thumb, image
+
+
+def recent_log() -> list[dict]:
+    """依頼の控え(新しい順)。`at`(UTC の ISO)・`caller`・`target`(絵の URL)・`result`・`ok`。"""
+    try:
+        raw = settings_store.get_flag(LOG_FLAG)
+        entries = json.loads(raw) if raw else []
+    except (OSError, ValueError, sqlite3.Error):
+        log.warning("thumbs: 依頼の控えを読めなかった", exc_info=True)
+        return []
+    return entries if isinstance(entries, list) else []
+
+
+def _log(caller: str, target: str, result: str, ok: bool) -> None:
+    """1 枚ぶんの結果を控える。**控えに失敗しても絵を作るのは止めない**。"""
+    if settings_store.db_path() is None:
+        return
+    entry = {
+        "at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "caller": caller or "不明",
+        "target": target,
+        "result": result,
+        "ok": ok,
+    }
+    try:
+        settings_store.set_flag(
+            LOG_FLAG, json.dumps([entry, *recent_log()][:MAX_LOG], ensure_ascii=False)
+        )
+    except (OSError, sqlite3.Error):
+        log.warning("thumbs: 依頼の控えを残せなかった", exc_info=True)
+
+
+async def _make(client: httpx.AsyncClient, kind: str, source: str) -> tuple[str, str, bool]:
+    """`make` の中身。`(配る場所, 元の絵の URL, 置き場の写しを返したか)`。"""
     root = thumbs_dir()
     if root is None:
         raise Skip("置き場が無い")
@@ -418,7 +480,8 @@ async def make(client: httpx.AsyncClient, kind: str, source: str) -> tuple[str, 
     name = hashlib.sha1(image.encode("utf-8")).hexdigest() + ".webp"
     path = root / name
     # **同じ絵は 1 度だけ取る**(別の 1 件が同じ絵を指していることがある)
-    if not path.is_file():
+    cached = path.is_file()
+    if not cached:
         _url, data, content_type = await _get_image(client, image)
         if not content_type.lower().startswith("image/"):
             raise Skip(f"絵ではない: {content_type or '型なし'}")
@@ -427,7 +490,7 @@ async def make(client: httpx.AsyncClient, kind: str, source: str) -> tuple[str, 
         tmp = path.with_suffix(".tmp")
         tmp.write_bytes(small)
         tmp.replace(path)
-    return public_path(name), image
+    return public_path(name), image, cached
 
 
 def _told_to_wait(error: Exception) -> bool:
@@ -437,7 +500,9 @@ def _told_to_wait(error: Exception) -> bool:
     return isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 429
 
 
-async def attach(spec: dict | None, items: list, existing: dict[str, dict], from_feed: bool) -> int:
+async def attach(
+    spec: dict | None, items: list, existing: dict[str, dict], from_feed: bool, caller: str = ""
+) -> int:
     """返ってきた 1 件ずつに、まだ無ければサムネイルを付ける(`extra.thumb`)。作った数を返す。
 
     `existing` は見出し → いま持っている脇書き(既にある 1 件の絵と印を見るため)。
@@ -463,7 +528,9 @@ async def attach(spec: dict | None, items: list, existing: dict[str, dict], from
                 continue
             tried += 1
             try:
-                thumb, found = await make(client, kind, image if kind == "image" else url)
+                thumb, found = await make(
+                    client, kind, image if kind == "image" else url, caller
+                )
             except Skip as e:
                 raw["extra"] = {**extra_in, "thumb_failed": str(e)[:200]}
                 continue
@@ -482,7 +549,7 @@ async def attach(spec: dict | None, items: list, existing: dict[str, dict], from
 
 
 async def backfill(
-    spec: dict | None, items: list, waiting: dict[str, dict], from_feed: bool,
+    spec: dict | None, items: list, waiting: dict[str, dict], from_feed: bool, caller: str = "",
 ) -> int:
     """**今回返ってこなかった既にある 1 件**にも、まだ無ければサムネイルを付ける。
 
@@ -513,7 +580,9 @@ async def backfill(
                 continue
             tried += 1
             try:
-                thumb, found = await make(client, kind, image if kind == "image" else url)
+                thumb, found = await make(
+                    client, kind, image if kind == "image" else url, caller
+                )
             except Skip as e:
                 items.append({"title": title, "extra": {"thumb_failed": str(e)[:200]}})
                 continue

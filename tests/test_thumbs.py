@@ -449,3 +449,37 @@ class TestHealth:
 
         from app.views import admin
         assert "まで頼みません" not in admin._thumbs_health_html()
+
+
+class TestLog:
+    """依頼の控え(`thumbs.recent_log`)。誰の頼みで・どの絵が・どうなったかを新しい順に残す。"""
+
+    def test_keeps_who_asked_and_what_happened(self, serve):
+        serve({
+            "https://example.org/a.png": image_response(),
+            "https://example.org/b.png": httpx.Response(404),
+        })
+        attach(True, [{"title": t, "image": f"https://example.org/{t}.png"} for t in "ab"])
+        # 同じ絵をもう一度頼むと、置き場の写しを返すだけ(外へは出ない)
+        asyncio.run(thumbs.attach(
+            thumbs.normalize(True), [{"title": "c", "image": "https://example.org/a.png"}], {},
+            False, caller="写真の依頼",
+        ))
+
+        entries = thumbs.recent_log()
+        assert [(e["caller"], e["target"].rsplit("/", 1)[-1], e["result"]) for e in entries] == [
+            ("写真の依頼", "a.png", "写しを返した"),
+            ("不明", "b.png", "作れない(HTTP 404)"),
+            ("不明", "a.png", "取った"),
+        ]
+
+        from app.views import admin
+        html = admin._thumbs_log_html()
+        assert "取った 1・写しを返した 1・取れなかった 1" in html
+
+    def test_keeps_only_the_newest(self, serve, monkeypatch):
+        monkeypatch.setattr(thumbs, "MAX_LOG", 2)
+        serve({f"https://example.org/{t}.png": image_response() for t in "abc"})
+        attach(True, [{"title": t, "image": f"https://example.org/{t}.png"} for t in "abc"])
+
+        assert [e["target"][-5:] for e in thumbs.recent_log()] == ["c.png", "b.png"]
