@@ -1,7 +1,7 @@
 """外のアプリが自分の収集を止める・動かす(`collect.switch_from_outside` / `POST /v1/collect/{name}/enabled`)。
 
-動かすかどうかは Chiezo 側が決める —— **動かせるのは、管理画面で任せた依頼元が、自分で依頼した収集だけ**。
-止めるのは任せなくてもできる(止めて AI が勝手に動き出すことは無い)。
+動かすかどうかは Chiezo 側が決める —— **動かせるのは、管理画面で「外部からの有効化」を許可したときだけ**で、
+それも依頼元が自分で依頼した収集に限る。止めるのは許可しなくてもできる(止めて AI が勝手に動き出すことは無い)。
 """
 from __future__ import annotations
 
@@ -29,24 +29,26 @@ def switch(client, enabled: bool, who: str = "someapp"):
     return client.post("/v1/collect/app_news/enabled", json={"enabled": enabled, "requested_by": who})
 
 
-def test_enabling_needs_to_be_handed_over_in_chiezo(client):
+def test_enabling_needs_to_be_allowed_in_chiezo(client):
     res = switch(client, True)
     assert res.status_code == 403
-    assert "任せていません" in res.json()["error"]
+    assert "外部からの有効化を許可していません" in res.json()["error"]
     assert not collect.get("app_news").enabled
 
-    # 管理画面の収集の面で、依頼元に任せる
+    # 管理画面の収集の面のボタン 1 つで許可する(依頼元の名前は並べない)
     page = client.get("/admin/collect").text
-    assert "有効にすることを任せる依頼元" in page and 'value="someapp"' in page
-    client.post("/admin/collect/delegates", data={"requester": "someapp"})
-    assert collect.switch_delegates() == {"someapp"}
+    assert "外部からの有効化を許可する</button>" in page
+    assert 'value="someapp"' not in page
+    client.post("/admin/collect/outside-switch", data={"allowed": "1"})
+    assert collect.outside_switch_allowed()
+    assert "外部からの有効化をやめる</button>" in client.get("/admin/collect").text
 
     res = switch(client, True)
     assert res.status_code == 200 and res.json()["enabled"] is True
     assert collect.get("app_news").enabled
 
-    # チェックを外せば、また動かせなくなる(止めるのはできる)
-    client.post("/admin/collect/delegates", data={})
+    # やめれば、また動かせなくなる(止めるのはできる)
+    client.post("/admin/collect/outside-switch", data={"allowed": "0"})
     assert switch(client, False).status_code == 200
     assert switch(client, True).status_code == 403
 
@@ -58,7 +60,7 @@ def test_stopping_needs_no_handover(client):
 
 
 def test_only_the_requester_can_switch(client):
-    collect.set_switch_delegate("otherapp", True)
+    collect.set_outside_switch(True)
     collect.update("app_news", enabled=True)
     assert switch(client, False, who="otherapp").status_code == 403
     assert switch(client, True, who="otherapp").status_code == 403

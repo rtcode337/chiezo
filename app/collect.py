@@ -377,32 +377,32 @@ def require_enabled() -> None:
         )
 
 
-# 自分の収集を有効にすることを任せた依頼元(`requested_by`)。置き場は機械の側(1 依頼元 1 件)
+# 外のアプリからの有効化を許すかの印(置き場は機械の側。1 件だけ)
 SWITCH_KIND = "collect_switch"
+SWITCH_KEY = "outside"
 
 
-def switch_delegates() -> set[str]:
-    """自分の収集を外から有効にしてよい依頼元(Chiezo の管理画面で任せたもの)。"""
-    if not machine_store.is_enabled():
-        return set()
-    return set(machine_store.keys(SWITCH_KIND))
+def outside_switch_allowed() -> bool:
+    """外のアプリが自分の収集を有効にしてよいか(Chiezo の管理画面で許したとき)。既定は許さない。"""
+    return machine_store.is_enabled() and machine_store.get(SWITCH_KIND, SWITCH_KEY) == "1"
 
 
-def set_switch_delegate(requester: str, allowed: bool) -> None:
+def set_outside_switch(allowed: bool) -> None:
     if allowed:
-        machine_store.put(SWITCH_KIND, requester, "1")
+        machine_store.put(SWITCH_KIND, SWITCH_KEY, "1")
     else:
-        machine_store.drop(SWITCH_KIND, requester)
+        machine_store.drop(SWITCH_KIND, SWITCH_KEY)
 
 
 def switch_from_outside(name: str, enabled: bool, requested_by: str) -> Collection:
     """**外のアプリが自分の収集を止める・動かす**(`POST /v1/collect/{name}/enabled`)。
 
     動かすかどうかは Chiezo 側が決める、という線は崩さない —— **動かせるのは、管理画面で
-    任せた依頼元が、自分で依頼した収集だけ**(`switch_delegates`)。任せていなければ 403。
-    **止めるのは任せていなくても通す**(自分の収集に限る)—— 止めて AI が勝手に動き出すことは無い。
-    名乗りは印であって認証ではない(LAN 内・認証なしの前提)。防ぎたいのは「試しに叩いた
-    だけで動き出す」ことで、任せる操作を Chiezo を操作している人に残せば足りる。
+    「外部からの有効化」を許したときだけ**(`outside_switch_allowed`。既定は許さない)で、
+    それも依頼元が自分で依頼した収集に限る。**止めるのは許していなくても通す**(自分の収集に限る)
+    —— 止めて AI が勝手に動き出すことは無い。名乗りは印であって認証ではない(LAN 内・認証なしの
+    前提)。防ぎたいのは「試しに叩いただけで動き出す」ことで、許す操作を Chiezo を操作している人に
+    残せば足りる。
     """
     item = get(name)
     who = (requested_by or "").strip()
@@ -411,10 +411,10 @@ def switch_from_outside(name: str, enabled: bool, requested_by: str) -> Collecti
             "error": f"収集「{name}」は {item.requested_by or '(依頼元なし)'} の依頼です",
             "hint": "止める・動かすは、その収集を依頼した名乗り(requested_by)からだけ受けます",
         })
-    if enabled and who not in switch_delegates():
+    if enabled and not outside_switch_allowed():
         raise HTTPException(403, {
-            "error": f"{who} には収集を有効にすることを任せていません",
-            "hint": "Chiezo の管理画面の収集の面で「有効にすることを任せる」に入れると、自分の収集を動かせます",
+            "error": "外部からの有効化を許可していません",
+            "hint": "Chiezo の管理画面の収集の面で「外部からの有効化を許可する」を押すと、自分の収集を動かせます",
         })
     if item.enabled == enabled:
         return item
@@ -1940,7 +1940,7 @@ def create(
         # **必ず止めた状態で作る**。作るのは「依頼」で、動かすかは Chiezo 側が決める ——
         # 外のアプリが作った収集がその場で走り出すと、頼んでいない AI の呼び出しが
         # 枠を食う(悪意が無くても、試しに叩いただけで走ってしまう)。
-        # 有効にできるのは管理画面か、管理画面で任せた依頼元だけ(`switch_from_outside`)
+        # 有効にできるのは管理画面か、管理画面で外部からの有効化を許したときの依頼元だけ(`switch_from_outside`)
         enabled=False,
         backend=backend,
         model=model,

@@ -3631,45 +3631,39 @@ async def admin_collect(request: Request):
 
 <h2 id="collect-settings">収集の設定</h2>
 {_collect_html(request.app.state.sources)}
-{_switch_delegates_html()}
+{_outside_switch_html()}
 """
     return HTMLResponse(content=page_shell("収集", body))
 
 
-def _switch_delegates_html() -> str:
-    """**有効にすることを任せる依頼元**(`collect.switch_delegates`)。任せた依頼元は、自分で
-    依頼した収集を外から動かせる(`POST /v1/collect/{name}/enabled`)。止めるのは任せなくてもできる。
-    並べるのは、いま収集を依頼している名乗りだけ。"""
+def _outside_switch_html() -> str:
+    """**外部からの有効化を許すか**(`collect.outside_switch_allowed`。既定は許さない)。
+    許すと、収集を依頼したアプリが自分の収集を動かせる(`POST /v1/collect/{name}/enabled`)。
+    止めるのは許さなくてもできる。**ボタン 1 つで切り替える**(依頼元の名前は並べない)。"""
     if not collect.is_enabled():
         return ""
-    requesters = sorted({c.requested_by for c in collect.load() if c.requested_by})
-    if not requesters:
-        return ""
-    delegates = collect.switch_delegates()
-    boxes = " ".join(
-        f'<label><input type="checkbox" name="requester" value="{esc(r)}"'
-        f'{" checked" if r in delegates else ""}> {esc(r)}</label>'
-        for r in requesters
+    allowed = collect.outside_switch_allowed()
+    state = (
+        "許可しています(収集を依頼したアプリは、自分の収集をそのアプリの画面から動かせます)"
+        if allowed
+        else "許可していません(動かすのはこの面の「有効化」だけです)"
     )
+    label = "外部からの有効化をやめる" if allowed else "外部からの有効化を許可する"
     return (
-        '<h3 id="switch-delegates">有効にすることを任せる依頼元</h3>'
-        '<p class="muted">チェックを入れた依頼元は、自分で依頼した収集をそのアプリの画面から動かせます'
-        "(止めるのはチェックが無くてもできます)。任せなければ、動かすのはこの面の「有効化」だけです。</p>"
-        f'<form method="post" action="/admin/collect/delegates"><p>{boxes} '
-        '<button type="submit">保存</button></p></form>'
+        '<h3 id="outside-switch">外部からの有効化</h3>'
+        f"<p>{state}。止めるのは許可しなくてもできます。</p>"
+        '<form method="post" action="/admin/collect/outside-switch">'
+        f'<input type="hidden" name="allowed" value="{"0" if allowed else "1"}">'
+        f'<button type="submit">{label}</button></form>'
     )
 
 
-@router.post("/admin/collect/delegates")
-async def admin_collect_delegates(request: Request):
-    """有効にすることを任せる依頼元を保存する(チェックの無い依頼元は外す)。"""
+@router.post("/admin/collect/outside-switch")
+def admin_collect_outside_switch(allowed: str = Form("0")):
+    """外部からの有効化を許す・やめる。"""
     collect.require_enabled()
-    form = await request.form()
-    picked = {str(v) for v in form.getlist("requester")}
-    known = {c.requested_by for c in collect.load() if c.requested_by} | collect.switch_delegates()
-    for requester in known:
-        collect.set_switch_delegate(requester, requester in picked)
-    return RedirectResponse(url="/admin/collect#switch-delegates", status_code=303)
+    collect.set_outside_switch(allowed == "1")
+    return RedirectResponse(url="/admin/collect#outside-switch", status_code=303)
 
 
 @router.get("/admin/ai/transcripts/{ident}", response_class=PlainTextResponse)

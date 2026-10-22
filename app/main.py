@@ -3721,7 +3721,7 @@ class CollectionPatch(BaseModel):
     """渡した項目だけ差し替える(未指定は触らない)。
 
     **`enabled` はここに無い。** 動かすかどうかは Chiezo 側が決める
-    (`/admin` の「有効にする」か、管理画面で任せた依頼元からの `POST /v1/collect/{name}/enabled`)
+    (`/admin` の「有効にする」か、管理画面で外部からの有効化を許したときの `POST /v1/collect/{name}/enabled`)
     —— ここに置くと、外のアプリが自分で作った収集を誰の許しも無く動かせることになり、
     「依頼」を分けた意味が消える。
     """
@@ -4206,7 +4206,7 @@ class CollectionSwitch(BaseModel):
 @app.post("/v1/collect/{name}/enabled")
 def collect_switch(name: str, body: CollectionSwitch):
     """**自分の収集を止める・動かす**。止めるのはいつでも(依頼元から)、**動かすのは Chiezo の
-    管理画面で任せた依頼元だけ**(任せていなければ 403)。どちらも依頼元の違う収集は 403。"""
+    管理画面で「外部からの有効化」を許したときだけ**(許していなければ 403)。どちらも依頼元の違う収集は 403。"""
     collect.require_enabled()
     return collect.to_public(collect.switch_from_outside(name, body.enabled, body.requested_by))
 
@@ -4528,7 +4528,7 @@ def _refuse_stopped(name: str, manual: bool) -> None:
         raise HTTPException(403, {
             "error": f"収集「{name}」は止まっています",
             "hint": "動かすかどうかは Chiezo 側で決めます(管理画面の「有効にする」か、"
-                    "任せた依頼元からの POST /v1/collect/{name}/enabled)。"
+                    "外部からの有効化を許したときの POST /v1/collect/{name}/enabled)。"
                     "人が押した 1 回なら manual=true で頼めます",
         })
 
