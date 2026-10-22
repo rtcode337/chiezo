@@ -180,7 +180,10 @@ def _finish(source: str, state: str, error: str | None = None) -> dict | None:
         return job
 
 
-def _run_job(source: str, credential: str | None = None, download_base: str | None = None) -> None:
+def _run_job(
+    source: str, credential: str | None = None, download_base: str | None = None, work=None,
+) -> None:
+    """1 本を走らせる。`work` を渡せば取り込みの代わりにそれを呼ぶ(Wikipedia のオフライン版を落とす 1 本)。"""
     from main import run as ingest_run
 
     import core
@@ -197,7 +200,10 @@ def _run_job(source: str, credential: str | None = None, download_base: str | No
             **({"credential": credential} if credential else {}),
             **({"download_base": download_base} if download_base else {}),
         }
-        ingest_run(source, DATA_DIR, **extra)
+        if work is not None:
+            work()
+        else:
+            ingest_run(source, DATA_DIR, **extra)
         _finish(source, "done")
     # **止めたのは失敗ではない。** 切り替えより前で降りるので、いま配信している
     # 世代はそのまま —— 押し直せば続きから始まる(集めた素材は残してある)
@@ -822,7 +828,7 @@ def start_run(source: str, body: dict | None = Body(None)):
             })
         if source in _renaming:
             raise HTTPException(409, {"error": f"the source is being renamed: {source}"})
-        if is_dump and (dump := next((n for n in _jobs if n in ADAPTERS), None)):
+        if is_dump and (dump := next((n for n in _jobs if n in ADAPTERS or n == ZIM_JOB), None)):
             raise HTTPException(429, {
                 "error": f"another dump is being ingested: {dump}",
                 "running": running,
@@ -861,3 +867,48 @@ def start_run(source: str, body: dict | None = Body(None)):
     )
     thread.start()
     return JSONResponse(status_code=202, content={"status": "started", "source": source})
+
+
+# ---- Wikipedia のオフライン版 -------------------------------------------------
+#
+# chiezo-app が記事の絵を引く ZIM(`app/wiki_zim.py`)を、画面から落とせるようにする 1 本
+# (`zim_download.py`)。**ダンプの枠で走る** —— 数十 GB を何時間もかけて落とすので、
+# 収集の枠を塞がず、ダンプの取り込みとは並べない(どちらもディスクと回線を大きく使う)。
+ZIM_JOB = "wikipedia_zim"
+
+
+@app.get("/zim")
+def zim_status():
+    """Kiwix にある一番新しい版(`latest`)・置いてある版(`placed`)・空き(`free_bytes`)・
+    落とし切るのにあと要る空き(`needed_bytes`)。一覧は覚えた結果を返し、**外へ聞きに行くのを待たない**
+    (`zim_download.peek`。まだ読んでいなければ `latest` は null で、裏で読み始める)。"""
+    import zim_download
+
+    found = zim_download.peek()
+    return {
+        "latest": found,
+        "placed": zim_download.placed(),
+        "free_bytes": zim_download.free_bytes(),
+        "needed_bytes": zim_download.needed_bytes(found) if found else None,
+        "running": _running_now(ZIM_JOB),
+    }
+
+
+@app.post("/zim/run")
+def zim_run():
+    """一番新しい版を落とす 1 本を始める。走っていれば 409、ダンプの取り込みが走っていれば 429。"""
+    import zim_download
+
+    from core import clear_stop
+
+    with _lock:
+        if ZIM_JOB in _jobs:
+            raise HTTPException(409, {"error": "already downloading", "running": sorted(_jobs)})
+        from sources import ADAPTERS
+
+        if dump := next((n for n in _jobs if n in ADAPTERS), None):
+            raise HTTPException(429, {"error": f"another dump is being ingested: {dump}", "running": sorted(_jobs)})
+        _jobs[ZIM_JOB] = _new_job(ZIM_JOB, LANE_DUMP)
+    clear_stop(ZIM_JOB)
+    threading.Thread(target=_run_job, args=(ZIM_JOB,), kwargs={"work": zim_download.run}, daemon=True).start()
+    return JSONResponse(status_code=202, content={"status": "started", "source": ZIM_JOB})

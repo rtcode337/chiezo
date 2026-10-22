@@ -3,6 +3,7 @@ paths:
   - "ingest/**"
   - "tests/test_ingest*.py"
   - "tests/test_download.py"
+  - "tests/test_zim_download.py"
   - "tests/test_remote_plugins.py"
   - "tests/test_osm_mirror.py"
   - "tests/test_source_credentials.py"
@@ -306,6 +307,12 @@ chiezo-ingest(ワンショット構築バッチ)と chiezo-trigger、ソース�
     いるあいだ取り込みは返事を待っているだけで、印だけでは区画ごとに呼び続けた ——
     走っている往復に止める印を書き、`_collect_items` は区画を呼ぶ前に
     `caller_stop_wanted` を見て降りる(集めたぶんは焼く)
+  - `zim_download.py` — **Wikipedia のオフライン版(Kiwix の ZIM)を落とす 1 本**(trigger の `POST /zim/run`・様子は `GET /zim`)。
+    chiezo-app が記事の絵を引く置き場(`CHIEZO_ZIM_DIR`、既定 `/data/zim`。`app/wiki_zim.py`)へ、Kiwix の一覧から
+    日本語版の画像入りの一番新しい版を `download.fetch` で落とす(進み具合・止める・続きからはダンプと同じ)。
+    **ダンプの枠で走り、ダンプの取り込みとは並べない**(どちらもディスクと回線を大きく使う。job 名 `wikipedia_zim`)。
+    空きが足りなければ始めない、揃ったら古い版を消す。一覧は 6 時間覚え、`GET /zim` は**外を待たない**(`peek`。
+    状況の面から聞かれるので、まだ読んでいなければ null を返して裏で読む)
   - `server.py` — **chiezo-trigger**: 管理画面の初期化・再構築ボタンから叩かれる内部専用トリガー。
     ingest イメージを流用し、docker-compose.yml で CMD だけ `uvicorn server:app` に上書きする
     常駐コンテナ(`/data` に書き込み権限を持つ点だけ chiezo-ingest の one-shot 実行と異なる)。

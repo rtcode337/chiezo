@@ -734,21 +734,82 @@ def _thumbs_health_html() -> str:
     )
 
 
-def _wiki_zim_html() -> str:
+def _wiki_zim_html(job: dict | None = None) -> str:
     """Wikipedia のオフライン版(`wiki_zim.status`)を置いているか。**置いていなければそう言う** ——
-    置いていないと Wikimedia の絵を 1 枚ずつ外へ取りに行き、429 で絞られて埋まらない。"""
+    置いていないと Wikimedia の絵を 1 枚ずつ外へ取りに行き、429 で絞られて埋まらない。
+    その下に、Kiwix の一番新しい版と「最新版を落とす」(`_zim_offer_html`)。"""
     found = wiki_zim.status()
     if not found:
-        return (
+        line = (
             '<p class="muted">Wikipedia のオフライン版: 置いていません'
             f"(<code>{esc(str(wiki_zim.zim_dir()))}</code> に <code>.zim</code> を置くと、"
             "Wikimedia の絵を外へ取りに行かずに引きます)。</p>"
         )
-    names = "・".join(
-        f"{esc(z['name'])}({esc(z['date'] or '日付不明')}・絵 {int(z['media']):,} 枚・{_format_bytes(int(z["bytes"]))})"
-        for z in found
+    else:
+        names = "・".join(
+            f"{esc(z['name'])}({esc(z['date'] or '日付不明')}・絵 {int(z['media']):,} 枚・"
+            f"{_format_bytes(int(z['bytes']))})"
+            for z in found
+        )
+        line = f'<p class="muted">Wikipedia のオフライン版: {names}</p>'
+    return line + _zim_offer_html(job)
+
+
+def _fetch_zim_offer() -> dict | None:
+    """chiezo-trigger が知っている Kiwix の一番新しい版と、置き場の空き(`GET /zim`)。
+    trigger が居ない・古くて口が無い・届かないなら None(ボタンを出さない)。"""
+    if not TRIGGER_URL:
+        return None
+    try:
+        res = httpx.get(f"{TRIGGER_URL}/zim", timeout=TRIGGER_TIMEOUT)
+        if res.status_code == 404:
+            return None
+        res.raise_for_status()
+        return res.json()
+    except (httpx.HTTPError, ValueError) as e:
+        log.warning("chiezo-trigger zim status unreachable: %s", e)
+        return None
+
+
+def _zim_offer_html(job: dict | None) -> str:
+    """**画面から最新版を落とす口**(chiezo-trigger の `POST /zim/run`。進み具合は取り込みの塊に出る)。
+
+    押せないときは理由を添える —— もう最新版がある・置き場の空きが足りない・ダンプの取り込みか
+    ダウンロードが走っている(`run_buttons_disabled`。ダンプの枠で走るので並べない)。
+    数十 GB を落とすので、落とし切れない空きでは始めさせない(途中で置き場を使い切る)。
+    """
+    offer = _fetch_zim_offer()
+    if offer is None:
+        return ""
+    latest = offer.get("latest") if isinstance(offer.get("latest"), dict) else None
+    if latest is None:
+        return '<p class="muted">Kiwix の一番新しい版を確かめています(読み直すと出ます)。</p>'
+    placed = [p for p in offer.get("placed") or [] if isinstance(p, dict)]
+    name = str(latest.get("name") or "")
+    size = latest.get("bytes")
+    size_text = f"・{_format_bytes(int(size))}" if isinstance(size, int) else ""
+    if any(p.get("name") == name and not p.get("partial") for p in placed):
+        return f'<p class="muted">Kiwix の一番新しい版({esc(name)})を置いています。</p>'
+    partial = next((p for p in placed if p.get("name") == name and p.get("partial")), None)
+    notes = []
+    if partial:
+        notes.append(f"途中まで落としたもの {_format_bytes(int(partial.get('bytes') or 0))} の続きから落とします")
+    if found := wiki_zim.status():
+        notes.append(f"揃ったら古い版({esc('・'.join(z['name'] for z in found))})は消します")
+    disabled = run_buttons_disabled(job)
+    need, free = offer.get("needed_bytes"), offer.get("free_bytes")
+    if isinstance(need, int) and isinstance(free, int) and free < need:
+        disabled = " disabled"
+        notes.append(f"置き場の空きが足りません(あと {_format_bytes(need)} 要るのに、空きは {_format_bytes(free)})")
+    elif disabled:
+        notes.append("取り込みが走っている間は落とせません")
+    return (
+        f'<form method="post" action="/admin/zim/download" class="inline">'
+        f"<p>Kiwix の一番新しい版: {esc(name)}{size_text} "
+        f'<button type="submit"{disabled}>最新版を落とす</button>'
+        + (f'<br><span class="muted">{"。".join(notes)}。</span>' if notes else "")
+        + "</p></form>"
     )
-    return f'<p class="muted">Wikipedia のオフライン版: {names}</p>'
 
 
 def _thumbs_log_html() -> str:
@@ -3182,7 +3243,7 @@ def admin_status(
 {_paused_workers_html()}
 <p>{_disk_html(request.app.state.data_dir)}</p>
 {_thumbs_health_html()}
-{_wiki_zim_html()}
+{_wiki_zim_html(job)}
 {_thumbs_log_html()}
 {_job_status_html(job, heading=True)}
 {_ingest_history_html(job)}
@@ -3905,6 +3966,22 @@ def trigger_run(source: str) -> None:
         ) from e
     if res.status_code >= 400:
         raise HTTPException(res.status_code, res.json())
+
+
+@router.post("/admin/zim/download")
+def admin_zim_download():
+    """Wikipedia のオフライン版の最新版を落とし始める(`chiezo-trigger` の `POST /zim/run` へ取り次ぐ)。
+    **状況の面へ戻す**(進み具合は取り込みの塊に出る)。"""
+    if not TRIGGER_URL:
+        raise HTTPException(503, {"error": "取り込み(chiezo-trigger)が設定されていないので落とせません"})
+    try:
+        res = httpx.post(f"{TRIGGER_URL}/zim/run", timeout=TRIGGER_TIMEOUT)
+    except httpx.HTTPError as e:
+        log.warning("chiezo-trigger zim run request failed: %s", e)
+        raise HTTPException(502, {"error": "chiezo-trigger unreachable (details in app logs)"}) from e
+    if res.status_code >= 400:
+        raise HTTPException(res.status_code, res.json())
+    return RedirectResponse(url=STATUS_JOB, status_code=303)
 
 
 @router.post("/admin/ingest/stop")
