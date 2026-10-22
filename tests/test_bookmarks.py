@@ -108,7 +108,9 @@ class TestThumbs:
         first = client.post("/v1/thumbs", json={"url": self.URL}).json()
         second = client.post("/v1/thumbs", json={"url": self.URL}).json()
 
-        assert first == second
+        assert first["thumb"] == second["thumb"]
+        # どこから取ったか(2 回目は外へ出ていないので、頼む側は間を空けずに次を頼める)
+        assert (first["from"], second["from"]) == ("wikimedia", "cache")
         assert first["thumb"].startswith("/v1/thumbs/") and first["thumb"].endswith(".webp")
         assert commons == [self.URL]
         served = client.get(first["thumb"])

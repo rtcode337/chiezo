@@ -77,6 +77,7 @@ from app import (
     usage_store,
     web_guard,
     websearch,
+    wiki_zim,
     workers,
 )
 from app import partition as partitioning
@@ -5767,7 +5768,7 @@ async def make_thumb(body: ThumbRequest) -> dict:
     url = f"https://{THUMB_HOSTS[0]}{parsed.path}"
     try:
         async with thumbs._client() as client:
-            path, _source = await thumbs.make(client, "image", url, "写真の依頼")
+            path, _source, how = await thumbs.make(client, "image", url, "写真の依頼")
     except thumbs.Skip as e:
         raise HTTPException(422, {"error": "cannot make thumb", "reason": str(e)}) from e
     except httpx.HTTPError as e:
@@ -5780,7 +5781,10 @@ async def make_thumb(body: ThumbRequest) -> dict:
             else type(e).__name__
         )
         raise HTTPException(502, {"error": "upstream unavailable", "reason": reason}) from e
-    return {"thumb": path}
+    # **どこから取ったか**(`cache` = 置き場の写し・`offline` = Wikipedia のオフライン版・`wikimedia` = 外)。
+    # 外へ出なかった頼みなら、頼む側は間を空けずに次を頼める
+    origin = {thumbs.HOW_CACHED: "cache", thumbs.HOW_OFFLINE: "offline"}.get(how, "wikimedia")
+    return {"thumb": path, "from": origin}
 
 
 # 本の表紙を取りに行く先(`POST /v1/covers`)。**URL は ISBN から Chiezo が組み立てる**
@@ -5816,7 +5820,7 @@ async def make_cover(body: CoverRequest) -> dict:
                 if not applies(isbn):
                     continue
                 try:
-                    path, _source = await thumbs.make(
+                    path, _source, _how = await thumbs.make(
                         client, "image", pattern.format(isbn=isbn), "表紙の依頼"
                     )
                 except thumbs.Skip:
@@ -5845,7 +5849,12 @@ def thumbs_health() -> dict:
     """
     state = thumbs.health()
     # 直近の依頼(新しい順に 30 件まで)。読む側のアプリの画面に、Chiezo で何が起きたかを並べるため
-    return {**state, "failing_now": thumbs.failing(state), "recent": thumbs.recent_log()[:30]}
+    return {
+        **state,
+        "failing_now": thumbs.failing(state),
+        "recent": thumbs.recent_log()[:30],
+        "offline": wiki_zim.status(),
+    }
 
 
 @app.get("/v1/bookmarks")

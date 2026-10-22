@@ -12,6 +12,9 @@ mcp>=2.3.0,<3
 python-multipart>=0.0.20
 # 収集のサムネイルを縮める(`app/thumbs.py`)。WebP で書くのに使う
 pillow>=12.3
+# Wikipedia のオフライン版(Kiwix の ZIM)から記事の絵を引く(`app/wiki_zim.py`)。
+# 解凍せずに 1 件ずつ読めるので、置き場は ZIM のファイルそのものだけで済む
+libzim>=3.13
 # Claude API(`app/anthropic_api.py`)。Messages API を OpenAI 互換の形に包むのに使う。
 # 1.x は httpx2 の上に載っている(chiezo 本体の httpx とは別物として同居する)
 anthropic>=1.14.0,<2

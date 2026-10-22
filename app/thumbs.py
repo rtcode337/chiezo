@@ -62,6 +62,14 @@ Wikimedia は作り置きの無い縮小版を作らせる頼みを回線ごと�
 元の大きさは要らず、元の絵を続けて取ると 429 で断られやすい。縮小版が取れなければ
 (元の絵が小さいと断られる)元の絵を取る。置き場の名前は元の URL から作る(同じ絵は 1 度)。
 
+## Wikipedia のオフライン版にある絵は外へ出ない
+
+外へ取りに行く前に、置いてある Wikipedia のオフライン版(Kiwix の ZIM。`app/wiki_zim.py`)を
+引く。Wikimedia は作り置きの無い縮小版を作らせる頼みを回線ごとに数えて絞るので、1 枚ずつ
+取りに行くと断られて休むたびに埋まるのが止まり、写真が何日も埋まらなかった。オフライン版に
+無い絵だけ外へ取りに行く。どちらから取ったかは控えの結果(`HOW_OFFLINE` / `HOW_FETCHED`)と
+`POST /v1/thumbs` の `from` で分かる(外へ出なかった頼みなら、頼む側は間を空けずに次を頼める)。
+
 ## 外へ出る以上は守る(`app/feeds.py` と同じ契約)
 
 - **名乗りはプロジェクト名だけ**(`feeds.USER_AGENT`)
@@ -92,7 +100,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from fastapi import HTTPException
 
-from app import feeds, notes, outbound, settings_store
+from app import feeds, notes, outbound, settings_store, wiki_zim
 
 log = logging.getLogger("chiezo.app")
 
@@ -138,6 +146,11 @@ _WIKIMEDIA_ORIGINAL = re.compile(
     r"([^/?#]+\.(?:jpe?g|png|gif|webp))$",
     re.I,
 )
+
+# どうやって作ったか(依頼の控えの結果の言葉。`make` も返す)
+HOW_CACHED = "写しを返した"
+HOW_OFFLINE = "オフライン版から取った"
+HOW_FETCHED = "取った"
 
 # 置いたものの名前(sha1 の 16 進 + .webp)。配るときもこの形しか通さない
 _NAME = re.compile(r"[0-9a-f]{40}\.webp")
@@ -417,11 +430,12 @@ def shrink(data: bytes) -> bytes:
 
 async def make(
     client: httpx.AsyncClient, kind: str, source: str, caller: str = ""
-) -> tuple[str, str]:
-    """1 件ぶん作る。`(配る場所, 元の絵の URL)`。作らない理由があれば `Skip`。
+) -> tuple[str, str, str]:
+    """1 件ぶん作る。`(配る場所, 元の絵の URL, どうしたか)`。作らない理由があれば `Skip`。
+    どうしたかは控えの結果の言葉(`HOW_CACHED` / `HOW_OFFLINE` / `HOW_FETCHED`)。
     結果は依頼の控えに残す(`caller` は誰の頼みか。「写真の依頼」・収集の名前など)。"""
     try:
-        thumb, image, cached = await _make(client, kind, source)
+        thumb, image, how = await _make(client, kind, source)
     except Skip as e:
         _log(caller, source, f"作れない({e})", ok=False)
         raise
@@ -432,8 +446,8 @@ async def make(
         reason = str(e) if isinstance(e, httpx.HTTPStatusError) else type(e).__name__
         _log(caller, source, f"取れない({reason})", ok=False)
         raise
-    _log(caller, source, "写しを返した" if cached else "取った", ok=True)
-    return thumb, image
+    _log(caller, source, how, ok=True)
+    return thumb, image, how
 
 
 def recent_log() -> list[dict]:
@@ -466,8 +480,13 @@ def _log(caller: str, target: str, result: str, ok: bool) -> None:
         log.warning("thumbs: 依頼の控えを残せなかった", exc_info=True)
 
 
-async def _make(client: httpx.AsyncClient, kind: str, source: str) -> tuple[str, str, bool]:
-    """`make` の中身。`(配る場所, 元の絵の URL, 置き場の写しを返したか)`。"""
+async def _make(client: httpx.AsyncClient, kind: str, source: str) -> tuple[str, str, str]:
+    """`make` の中身。`(配る場所, 元の絵の URL, どうしたか)`。どうしたかは控えの結果の言葉
+    (「写しを返した」・「オフライン版から取った」・「取った」)。
+
+    **Wikipedia のオフライン版(`app/wiki_zim.py`)にある絵は外へ出ずに引く** —— Wikimedia は
+    作り置きの無い縮小版を作らせる頼みを回線ごとに数えて絞るので、1 枚ずつ取りに行くと
+    断られて休むたびに埋まるのが止まる。無い絵だけ外へ取りに行く。"""
     root = thumbs_dir()
     if root is None:
         raise Skip("置き場が無い")
@@ -480,17 +499,21 @@ async def _make(client: httpx.AsyncClient, kind: str, source: str) -> tuple[str,
     name = hashlib.sha1(image.encode("utf-8")).hexdigest() + ".webp"
     path = root / name
     # **同じ絵は 1 度だけ取る**(別の 1 件が同じ絵を指していることがある)
-    cached = path.is_file()
-    if not cached:
+    if path.is_file():
+        return public_path(name), image, HOW_CACHED
+    how = HOW_OFFLINE
+    data = await asyncio.to_thread(wiki_zim.image, image)
+    if data is None:
+        how = HOW_FETCHED
         _url, data, content_type = await _get_image(client, image)
         if not content_type.lower().startswith("image/"):
             raise Skip(f"絵ではない: {content_type or '型なし'}")
-        small = await asyncio.to_thread(shrink, data)
-        root.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_bytes(small)
-        tmp.replace(path)
-    return public_path(name), image, cached
+    small = await asyncio.to_thread(shrink, data)
+    root.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_bytes(small)
+    tmp.replace(path)
+    return public_path(name), image, how
 
 
 def _told_to_wait(error: Exception) -> bool:
@@ -528,7 +551,7 @@ async def attach(
                 continue
             tried += 1
             try:
-                thumb, found = await make(
+                thumb, found, _how = await make(
                     client, kind, image if kind == "image" else url, caller
                 )
             except Skip as e:
@@ -580,7 +603,7 @@ async def backfill(
                 continue
             tried += 1
             try:
-                thumb, found = await make(
+                thumb, found, _how = await make(
                     client, kind, image if kind == "image" else url, caller
                 )
             except Skip as e:

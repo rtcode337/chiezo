@@ -475,7 +475,7 @@ class TestLog:
 
         from app.views import admin
         html = admin._thumbs_log_html()
-        assert "取った 1・写しを返した 1・取れなかった 1" in html
+        assert "取った 1・オフライン版から 0・写しを返した 1・取れなかった 1" in html
 
     def test_keeps_only_the_newest(self, serve, monkeypatch):
         monkeypatch.setattr(thumbs, "MAX_LOG", 2)

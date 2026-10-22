@@ -4,6 +4,7 @@ paths:
   - "app/outbound.py"
   - "app/pihole.py"
   - "app/thumbs.py"
+  - "app/wiki_zim.py"
   - "app/bookmarks.py"
   - "app/link_checks.py"
   - "app/handoff.py"
@@ -11,6 +12,7 @@ paths:
   - "tests/test_feeds.py"
   - "tests/test_collect_pihole.py"
   - "tests/test_thumbs.py"
+  - "tests/test_wiki_zim.py"
   - "tests/test_bookmarks.py"
   - "tests/test_link_checks.py"
   - "tests/test_handoff.py"
@@ -111,7 +113,12 @@ paths:
   取れたか・断られたかは `thumbs.health`(設定の置き場のフラグ `thumbs_health`)に控え、状況の面と `GET /v1/thumbs/health` で読む。
   1 枚ごとの結果は `thumbs.recent_log`(フラグ `thumbs_log`。直近 200 件。`make` の `caller` が誰の頼みか)に残し、状況の面に畳んで出す。
   429 を言われたらその相手へは `RESTING_SECONDS`(30 分。Retry-After が長ければそちら)頼まず(`Resting`。外へ出ずに断る)、
-  収集の中で取っている回は残りをやめる。Wikimedia は作り置きの無い縮小版を作らせる頼みを回線ごとに数えて絞る
+  収集の中で取っている回は残りをやめる。Wikimedia は作り置きの無い縮小版を作らせる頼みを回線ごとに数えて絞る。
+  **Wikipedia のオフライン版(Kiwix の ZIM。`app/wiki_zim.py`・`CHIEZO_ZIM_DIR`)にある絵は外へ出ずに引く**(`thumbs._make` が外より先に聞く)。
+  断られて休むたびに埋まるのが止まり、写真が何日も埋まらなかったため。解凍せずに 1 件ずつ読み、置き換えはファイルの一覧と更新時刻で気づいて開き直す。
+  ZIM の中の名前は `_assets_/<md5("https://upload.wikimedia.org/wikipedia/<プロジェクト>/")>/<URL の名前を decodeURI した形>`
+  (作り手の mwoffliner の決まり。予約された文字 `,` `&` `?` は符号のまま。`asset_names`)。控えの結果は「オフライン版から取った」、
+  置いているかは状況の面(`_wiki_zim_html`)と `GET /v1/thumbs/health` の `offline`
   **URL は AI や外のページから来る**ので、名前を引いて手元・LAN のアドレスを断り、
   転送も 1 段ずつ確かめる(`app/outbound.py`。フィードと URL で渡された元も同じ関門を通る)。**置き場は状態ディレクトリ** ——
   生成物の置き場(`/media`)は日が経つと掃除されるので使えない。

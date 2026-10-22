@@ -67,7 +67,7 @@ Chiezo はそれが持てないものを預かる側にいる。
   - MCP と Claude Code 用の設定生成 —— `mcp_server.py`・`claude_config.py`・`hooks/` → `mcp-claude-config.md`
   - 覚える・ToDo —— `notes.py`・`tasks.py` → `notes-tasks.md`
   - 集める / 育てる —— `collect.py`・`partition.py`・`extract.py`・`resolve.py`(辞典への引き当て)・
-    `formats.py`(脇書きの書式)・`feeds.py`・`workers.py` ほか
+    `formats.py`(脇書きの書式)・`feeds.py`・`thumbs.py` / `wiki_zim.py`(絵の縮小版とオフライン版)・`workers.py` ほか
     → `collect.md`・`collect-sweeps.md`・`collect-tools.md`・`collect-extract.md`・`workers.md`
   - 話せる AI と鍵 —— `providers.py`・`settings_store.py`・`talk.py`・`ai_inflight.py` → `ai-backends.md`
   - 使用量と失敗の控え —— `usage.py`・`ai_log.py` → `ai-usage.md`
@@ -202,6 +202,7 @@ docker compose -f docker-compose.yml -f docker-compose.llm.yml --profile llm up 
 - **外へ出るのは「使う」層だけ**。Chiezo 本体(知識ベース)は ingest がダンプを取る以外
   外を叩かない。**例外は読む側のアプリに外を叩かせないための取り次ぎ**(`POST /v1/thumbs` =
   Wikimedia の絵の縮小版・`GET /v1/bookmarks` = はてなの件数。`app/bookmarks.py`)で、
+  Wikimedia の絵は Wikipedia のオフライン版(`app/wiki_zim.py`)にあればそこから引いて外へ出ない。
   取りに行ける相手は決め打ちに絞る(読む側から URL を受け取る口が、外を叩かせる踏み台にならないように)。
   web 検索は使う側の機能として `app/websearch.py` に閉じ、既定は無効のまま保つ。
   有効にしたときも「どれが web 由来か分かる」ことを崩さない(出典の `source` が `web`)。

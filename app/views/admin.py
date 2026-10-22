@@ -49,6 +49,7 @@ from app import (
     thumbs,
     usage,
     usage_store,
+    wiki_zim,
     workers,
 )
 from app import extract as extraction
@@ -733,6 +734,23 @@ def _thumbs_health_html() -> str:
     )
 
 
+def _wiki_zim_html() -> str:
+    """Wikipedia のオフライン版(`wiki_zim.status`)を置いているか。**置いていなければそう言う** ——
+    置いていないと Wikimedia の絵を 1 枚ずつ外へ取りに行き、429 で絞られて埋まらない。"""
+    found = wiki_zim.status()
+    if not found:
+        return (
+            '<p class="muted">Wikipedia のオフライン版: 置いていません'
+            f"(<code>{esc(str(wiki_zim.zim_dir()))}</code> に <code>.zim</code> を置くと、"
+            "Wikimedia の絵を外へ取りに行かずに引きます)。</p>"
+        )
+    names = "・".join(
+        f"{esc(z['name'])}({esc(z['date'] or '日付不明')}・絵 {int(z['media']):,} 枚・{_format_bytes(int(z["bytes"]))})"
+        for z in found
+    )
+    return f'<p class="muted">Wikipedia のオフライン版: {names}</p>'
+
+
 def _thumbs_log_html() -> str:
     """**外の絵の依頼の控え**(`thumbs.recent_log`。新しい順)。畳んで置き、見出しに数をまとめる。
 
@@ -743,8 +761,9 @@ def _thumbs_log_html() -> str:
     entries = thumbs.recent_log()
     if not entries:
         return ""
-    taken = sum(1 for e in entries if e.get("result") == "取った")
-    cached = sum(1 for e in entries if e.get("result") == "写しを返した")
+    taken = sum(1 for e in entries if e.get("result") == thumbs.HOW_FETCHED)
+    offline = sum(1 for e in entries if e.get("result") == thumbs.HOW_OFFLINE)
+    cached = sum(1 for e in entries if e.get("result") == thumbs.HOW_CACHED)
     failed = sum(1 for e in entries if not e.get("ok"))
     rows = []
     for e in entries:
@@ -759,7 +778,7 @@ def _thumbs_log_html() -> str:
         )
     return (
         f'<details id="thumbs-log"><summary>外の絵の依頼(直近 {len(entries):,} 件。'
-        f"取った {taken:,}・写しを返した {cached:,}・取れなかった {failed:,})</summary>"
+        f"取った {taken:,}・オフライン版から {offline:,}・写しを返した {cached:,}・取れなかった {failed:,})</summary>"
         "<table><thead><tr><th>時刻(JST)</th><th>誰の頼み</th><th>絵</th><th>結果</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table></details>"
     )
@@ -3163,6 +3182,7 @@ def admin_status(
 {_paused_workers_html()}
 <p>{_disk_html(request.app.state.data_dir)}</p>
 {_thumbs_health_html()}
+{_wiki_zim_html()}
 {_thumbs_log_html()}
 {_job_status_html(job, heading=True)}
 {_ingest_history_html(job)}

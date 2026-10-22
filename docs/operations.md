@@ -138,6 +138,29 @@ J-Quants は個人の私的利用に限るサービスで、次の条件があ�
 さらに数倍〜10 倍かかります)。メモリの潤沢なビルド機で `BUILD_PROFILE=fast` を付けると
 索引が RAM 上(`sparse_mmap_array`)になり最速です(日本抽出で 5〜10GB 使います)。
 
+## Wikipedia のオフライン版を置く
+
+記事の写真(Wikimedia の絵)を 1 枚ずつ外へ取りに行くと、作り置きの無い縮小版を作らせる頼みになり、
+Wikimedia に 429 で絞られて埋まらなくなります。[Kiwix](https://download.kiwix.org/zim/wikipedia/) が配る
+Wikipedia のオフライン版(ZIM)には記事の絵が縮めた形で入っているので、置いておくとそこから引きます
+(無い絵だけ外へ取りに行きます)。
+
+```bash
+mkdir -p data/zim
+# 日本語版の画像入り(maxi)。nopic・mini には絵が入っていません。年月は一覧で新しいものを選ぶ
+curl -L -o data/zim/wikipedia_ja_all_maxi_2026-06.zim.part \
+  https://download.kiwix.org/zim/wikipedia/wikipedia_ja_all_maxi_2026-06.zim
+mv data/zim/wikipedia_ja_all_maxi_2026-06.zim.part data/zim/wikipedia_ja_all_maxi_2026-06.zim
+```
+
+- **解凍しません。** ZIM は 1 件ずつ取り出して読める形式で、置き場はファイルそのもの(日本語版で 30GB ほど)だけです
+- 置き場は `CHIEZO_ZIM_DIR`(既定 `/data/zim` = ホストの `data/zim`)。`.zim` が複数あれば全部から引きます(ファイル名の新しいほうが先)
+- 落としている途中のファイルを `.zim` の名前で置かないでください(読みに行って失敗します)。上のように別の名前で落としてから付け替えます
+- 新しい版に替えるときは、新しいファイルを置いてから古いものを消します。再起動は要りません(次に引くときに開き直します)
+- 置いているかは状況の面の「Wikipedia のオフライン版」の行と `GET /v1/thumbs/health` の `offline` で確かめられます。
+  絵の依頼の控えに「オフライン版から取った」と出れば、そこから引けています
+- オフライン版を作ったあとの記事や差し替えられた絵は入っていないので、そのぶんはこれまでどおり外へ取りに行きます
+
 ## 古いスキーマの DB(schema_version 3 以前)
 
 app が読めるのは最新のスキーマバージョン(4)の DB だけです。それより古い DB は登録されず、
