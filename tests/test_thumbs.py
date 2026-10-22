@@ -483,3 +483,19 @@ class TestLog:
         attach(True, [{"title": t, "image": f"https://example.org/{t}.png"} for t in "abc"])
 
         assert [e["target"][-5:] for e in thumbs.recent_log()] == ["c.png", "b.png"]
+
+
+def test_the_status_page_puts_pictures_under_ai(tmp_path, monkeypatch, built_data_dir):
+    """外の絵の具合と依頼の控えは、状況の面の AI の節の下の「画像」の節に置く。"""
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+    from app.main import app
+
+    with TestClient(app) as client:
+        thumbs._log("写真の依頼", "https://example.org/a.png", "取った", ok=True)
+        html = client.get("/admin/status").text
+
+    ai, images = html.index('id="ai-head"'), html.index('id="images-head"')
+    assert ai < images < html.index('id="thumbs-log"')

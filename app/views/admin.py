@@ -357,6 +357,7 @@ JOB_HEADING = '<h2 id="job-head">取り込み(素材を長期記憶へ焼く)</h
 COLLECT_HEADING = '<h2 id="collect-head">収集</h2>'
 # 状況の面の AI の節の見出し(走っている依頼・依頼の履歴・使用量)
 AI_HEADING = '<h2 id="ai-head">AI</h2>'
+IMAGES_HEADING = '<h2 id="images-head">画像</h2>'
 
 
 def _running_sweep(source: str) -> str:
@@ -827,6 +828,14 @@ def _zim_offer_html(job: dict | None) -> str:
         + (f'<br><span class="muted">{"。".join(notes)}。</span>' if notes else "")
         + "</p></form>"
     )
+
+
+def _images_section_html() -> str:
+    """状況の面の「画像」の節(AI の節の下)。外の絵を取れているか(`_thumbs_health_html`)と、
+    外の絵の依頼の控え(`_thumbs_log_html`)をまとめる。ディスクの空きの下に並べていた頃は、
+    取り込み・収集・AI の節より前に絵の話が割り込んでいた。まだ 1 枚も頼んでいなければそう言う。"""
+    inner = _thumbs_health_html() + _thumbs_log_html()
+    return IMAGES_HEADING + (inner or '<p class="muted">まだ外の絵を頼んでいません。</p>')
 
 
 def _thumbs_log_html() -> str:
@@ -3259,12 +3268,11 @@ def admin_status(
 {_stopped_providers_html()}
 {_paused_workers_html()}
 <p>{_disk_html(request.app.state.data_dir)}</p>
-{_thumbs_health_html()}
-{_thumbs_log_html()}
 {_job_status_html(job, heading=True)}
 {_ingest_history_html(job)}
 {_collect_history_html(sweep, page)}
 {_ai_section_html(request, running, job)}
+{_images_section_html()}
 """
     return HTMLResponse(content=page_shell("状況", body))
 
