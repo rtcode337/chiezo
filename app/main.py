@@ -406,7 +406,13 @@ def _tick_rebuilds(app: FastAPI) -> None:
     何もせず次の周 —— 予定は起こせたときにだけ進めるので、飛ばされることは無い。
     **キーの要るソースは、登録したキーがそのまま渡る**(`trigger_run`)。
     """
-    from app.views.admin import TRIGGER_URL, _fetch_trigger_status, is_dump_source, trigger_run
+    from app.views.admin import (
+        TRIGGER_URL,
+        _fetch_trigger_status,
+        is_dump_source,
+        trigger_run,
+        trigger_zim_run,
+    )
 
     if not TRIGGER_URL:
         return
@@ -418,6 +424,18 @@ def _tick_rebuilds(app: FastAPI) -> None:
         return
     sources = app.state.sources
     for s in due:
+        # **Wikipedia の画像(Kiwix のオフライン版)も同じ時計で取り直す**(新しい版が出ていれば落とす。
+        # 持っていれば trigger がすぐ終える)。ソースではないので、下の「取り込み済みか」は見ない
+        if s.source == wiki_zim.JOB:
+            try:
+                trigger_zim_run()
+            except HTTPException as e:
+                if e.status_code in (409, 429):
+                    return
+                log.warning("scheduled offline Wikipedia refresh was refused: %s", _reason_of(e))
+            rebuilds.mark_started(s.source)
+            log.info("scheduled offline Wikipedia refresh started")
+            return
         # 消したソース・ダンプでないソースの予定は起こさない(残っていても害は無いが、
         # 毎分ここで断られ続けるのを避けて、予定ごと外す)
         if s.source not in sources or not is_dump_source(s.source):

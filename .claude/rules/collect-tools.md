@@ -118,8 +118,8 @@ paths:
   断られて休むたびに埋まるのが止まり、写真が何日も埋まらなかったため。解凍せずに 1 件ずつ読み、置き換えはファイルの一覧と更新時刻で気づいて開き直す。
   ZIM の中の名前は `_assets_/<md5("https://upload.wikimedia.org/wikipedia/<プロジェクト>/")>/<URL の名前を decodeURI した形>`
   (作り手の mwoffliner の決まり。予約された文字 `,` `&` `?` は符号のまま。`asset_names`)。控えの結果は「オフライン版から取った」、
-  置いているかは状況の面(`_wiki_zim_html`)と `GET /v1/thumbs/health` の `offline`。
-  落とすのは chiezo-trigger(状況の面の「最新版を落とす」。`ingest/zim_download.py`)
+  置いているかは記憶の面(`_wiki_zim_section_html`)と `GET /v1/thumbs/health` の `offline`。
+  落とすのは chiezo-trigger(記憶の面の「最新版を落とす」と定期の取り直し。`ingest/zim_download.py`)
   **URL は AI や外のページから来る**ので、名前を引いて手元・LAN のアドレスを断り、
   転送も 1 段ずつ確かめる(`app/outbound.py`。フィードと URL で渡された元も同じ関門を通る)。**置き場は状態ディレクトリ** ——
   生成物の置き場(`/media`)は日が経つと掃除されるので使えない。

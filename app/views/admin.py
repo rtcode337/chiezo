@@ -734,25 +734,41 @@ def _thumbs_health_html() -> str:
     )
 
 
-def _wiki_zim_html(job: dict | None = None) -> str:
-    """Wikipedia のオフライン版(`wiki_zim.status`)を置いているか。**置いていなければそう言う** ——
-    置いていないと Wikimedia の絵を 1 枚ずつ外へ取りに行き、429 で絞られて埋まらない。
-    その下に、Kiwix の一番新しい版と「最新版を落とす」(`_zim_offer_html`)。"""
+WIKI_ZIM_BACK = "/admin/memory#wiki-zim"
+
+
+def _wiki_zim_section_html(job: dict | None) -> str:
+    """記憶の面の「Wikipedia の画像」の節。**データを持ち込む操作は記憶の面に置く**(初期化・再構築と同じ)。
+
+    置いてある版(`wiki_zim.status`。置いていなければそう言う —— 置いていないと Wikimedia の絵を
+    1 枚ずつ外へ取りに行き、429 で絞られて埋まらない)・Kiwix の一番新しい版と「最新版を落とす」
+    (`_zim_offer_html`)・定期の取り直し(`rebuilds` の予定。名前は `wiki_zim.JOB`)。
+    状況の面に置いていた頃は、いま動いているものを見る面にデータを作るボタンが混ざっていた。
+    """
     found = wiki_zim.status()
     if not found:
-        line = (
-            '<p class="muted">Wikipedia のオフライン版: 置いていません'
-            f"(<code>{esc(str(wiki_zim.zim_dir()))}</code> に <code>.zim</code> を置くと、"
-            "Wikimedia の絵を外へ取りに行かずに引きます)。</p>"
+        placed = (
+            f"<p>置いていません(<code>{esc(str(wiki_zim.zim_dir()))}</code> に <code>.zim</code> を置くか、"
+            "下の「最新版を落とす」で落とします)。</p>"
         )
     else:
-        names = "・".join(
-            f"{esc(z['name'])}({esc(z['date'] or '日付不明')}・絵 {int(z['media']):,} 枚・"
+        placed = "<p>置いてある版: " + "・".join(
+            f"{esc(z['name'])}({esc(z['date'] or '日付不明')}に作られた版・写真 {int(z['media']):,} 枚・"
             f"{_format_bytes(int(z['bytes']))})"
             for z in found
-        )
-        line = f'<p class="muted">Wikipedia のオフライン版: {names}</p>'
-    return line + _zim_offer_html(job)
+        ) + "</p>"
+    schedule = (
+        f"<p>定期の取り直し(新しい版が出ていれば落とす): {_schedule_form(wiki_zim.JOB)}</p>"
+        if TRIGGER_URL and rebuilds.is_enabled()
+        else ""
+    )
+    return (
+        '<h3 id="wiki-zim">Wikipedia の画像(Kiwix のオフライン版)</h3>'
+        '<p class="muted">Wikipedia の記事の写真を縮めて 1 ファイルに詰めたもの(Kiwix が数か月おきに配る ZIM)。'
+        "外の絵の縮小版を作るとき、ここにある写真は Wikimedia に頼まずに引く。"
+        "記事は jawiki から引くので、ここから読むのは写真だけ。</p>"
+        + placed + _zim_offer_html(job) + schedule
+    )
 
 
 def _fetch_zim_offer() -> dict | None:
@@ -804,7 +820,8 @@ def _zim_offer_html(job: dict | None) -> str:
     elif disabled:
         notes.append("取り込みが走っている間は落とせません")
     return (
-        f'<form method="post" action="/admin/zim/download" class="inline">'
+        f'<form method="post" action="/admin/zim/download" class="inline" '
+        f"onsubmit=\"return confirm('{esc(name)} を落とします。数十 GB あり、何時間もかかります。よろしいですか?')\">"
         f"<p>Kiwix の一番新しい版: {esc(name)}{size_text} "
         f'<button type="submit"{disabled}>最新版を落とす</button>'
         + (f'<br><span class="muted">{"。".join(notes)}。</span>' if notes else "")
@@ -3243,7 +3260,6 @@ def admin_status(
 {_paused_workers_html()}
 <p>{_disk_html(request.app.state.data_dir)}</p>
 {_thumbs_health_html()}
-{_wiki_zim_html(job)}
 {_thumbs_log_html()}
 {_job_status_html(job, heading=True)}
 {_ingest_history_html(job)}
@@ -3555,6 +3571,8 @@ chiezo-trigger が立ち上がっていない場合、再構築と削除はで�
 </p>
 
 {_osm_mirror_html()}
+
+{_wiki_zim_section_html(job)}
 
 {_source_keys_note_html()}
 
@@ -3970,8 +3988,14 @@ def trigger_run(source: str) -> None:
 
 @router.post("/admin/zim/download")
 def admin_zim_download():
-    """Wikipedia のオフライン版の最新版を落とし始める(`chiezo-trigger` の `POST /zim/run` へ取り次ぐ)。
-    **状況の面へ戻す**(進み具合は取り込みの塊に出る)。"""
+    """Wikipedia のオフライン版の最新版を落とし始める(`trigger_zim_run`)。
+    **状況の面へ連れていく**(進み具合は取り込みの塊に出る。初期化・再構築のボタンと同じ)。"""
+    trigger_zim_run()
+    return RedirectResponse(url=STATUS_JOB, status_code=303)
+
+
+def trigger_zim_run() -> None:
+    """chiezo-trigger の `POST /zim/run` を叩く。失敗は HTTPException にする(定期の取り直しの時計も使う)。"""
     if not TRIGGER_URL:
         raise HTTPException(503, {"error": "取り込み(chiezo-trigger)が設定されていないので落とせません"})
     try:
@@ -3981,7 +4005,6 @@ def admin_zim_download():
         raise HTTPException(502, {"error": "chiezo-trigger unreachable (details in app logs)"}) from e
     if res.status_code >= 400:
         raise HTTPException(res.status_code, res.json())
-    return RedirectResponse(url=STATUS_JOB, status_code=303)
 
 
 @router.post("/admin/ingest/stop")
@@ -4240,6 +4263,11 @@ def _rebuild_schedule_cell(name: str) -> str:
         return '<span class="muted">収集の巡回が回す</span>'
     if not rebuilds.is_enabled():
         return '<span class="muted">—</span>'
+    return _schedule_form(name)
+
+
+def _schedule_form(name: str) -> str:
+    """定期の予定(何日おき・何時)を決める欄。長期記憶の表と、Wikipedia の画像の節で使う。"""
     s = rebuilds.get(name)
     interval = s.interval_days if s else 0
     hour = s.hour if s else rebuilds.DEFAULT_HOUR
@@ -4269,7 +4297,8 @@ def admin_rebuild_schedule(
 ):
     """定期再構築の予定を決める・外す(`interval_days` が空なら外す)。"""
     sources: dict[str, Source] = request.app.state.sources
-    if source not in sources or not is_dump_source(source):
+    zim = source == wiki_zim.JOB
+    if not zim and (source not in sources or not is_dump_source(source)):
         raise HTTPException(404, {"error": f"定期再構築を決められるのは取り込み済みのダンプのソースだけです: {source}"})
     machine_store.require_path()
     if not interval_days.strip():
@@ -4279,7 +4308,7 @@ def admin_rebuild_schedule(
             rebuilds.set_schedule(source, int(interval_days), hour)
         except ValueError as e:
             raise HTTPException(400, {"error": str(e)}) from e
-    return RedirectResponse(url=REBUILD_SCHEDULE_BACK, status_code=303)
+    return RedirectResponse(url=WIKI_ZIM_BACK if zim else REBUILD_SCHEDULE_BACK, status_code=303)
 
 
 def _rollback_cell(src: Source, back: str) -> str:

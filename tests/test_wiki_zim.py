@@ -143,13 +143,13 @@ class TestThumbs:
         assert calls == [scaled]
         assert thumbs.recent_log()[0]["result"] == "取った"
 
-    def test_the_status_page_says_whether_it_is_placed(self, serve, zim, tmp_path, monkeypatch):  # noqa: F811
+    def test_the_memory_page_says_whether_it_is_placed(self, serve, zim, tmp_path, monkeypatch):  # noqa: F811
         from app.views import admin
 
         monkeypatch.setenv("CHIEZO_ZIM_DIR", str(tmp_path / "none"))
-        assert "置いていません" in admin._wiki_zim_html()
+        assert "置いていません" in admin._wiki_zim_section_html(None)
 
         zim({f"{COMMONS}/A.jpg": webp()})
-        html = admin._wiki_zim_html()
+        html = admin._wiki_zim_section_html(None)
         assert "wikipedia_ja_all_maxi_2026-06.zim" in html
         assert "2026-06-07" in html

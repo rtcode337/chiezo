@@ -38,6 +38,8 @@ from urllib.parse import unquote
 log = logging.getLogger("chiezo.app")
 
 DEFAULT_DIR = "/data/zim"
+# 最新版を落とす 1 本の名前(chiezo-trigger の `ZIM_JOB` と同じ)。定期の取り直しの予定もこの名前で持つ
+JOB = "wikipedia_zim"
 # 1 枚の上限(バイト)。ZIM の中の絵は縮めてあるのでふつうは数十 KB
 MAX_BYTES = 8 * 1024 * 1024
 # `decodeURI` が戻さない文字(予約された文字)。ZIM の中の名前ではこれらが符号のまま残る

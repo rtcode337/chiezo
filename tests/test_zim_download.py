@@ -158,7 +158,7 @@ class TestTrigger:
         assert client.post("/run/jawiki").status_code == 429
 
 
-class TestStatusPage:
+class TestOffer:
     def offer(self, **over):
         return {
             "latest": {"name": "wikipedia_ja_all_maxi_2026-06.zim", "url": "u", "bytes": 30 * 1024**3},
@@ -204,3 +204,29 @@ class TestStatusPage:
     def test_no_trigger_no_button(self, admin, monkeypatch):
         monkeypatch.setattr(admin, "_fetch_zim_offer", lambda: None)
         assert admin._zim_offer_html(None) == ""
+
+
+class TestWhereItLives:
+    """データを持ち込む操作は記憶の面に置く(状況の面はいま動いているものを見る面)。"""
+
+    @pytest.fixture
+    def client(self, tmp_path, monkeypatch, built_data_dir):
+        monkeypatch.setenv("CHIEZO_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv("CHIEZO_DATA_DIR", str(built_data_dir))
+        monkeypatch.setenv("CHIEZO_ZIM_DIR", str(tmp_path / "none"))
+        from app.main import app
+        from app.views import admin
+
+        monkeypatch.setattr(admin, "TRIGGER_URL", "http://trigger.test")
+        monkeypatch.setattr(admin, "_fetch_trigger_status", lambda: {"state": "idle", "jobs": []})
+        monkeypatch.setattr(admin, "_fetch_zim_offer", lambda: TestOffer().offer())
+        with TestClient(app) as c:
+            yield c
+
+    def test_on_the_memory_page_not_the_status_page(self, client):
+        memory = client.get("/admin/memory").text
+        assert 'id="wiki-zim"' in memory
+        assert "最新版を落とす" in memory
+        assert "定期の取り直し" in memory
+        status = client.get("/admin/status").text
+        assert "最新版を落とす" not in status

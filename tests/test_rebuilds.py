@@ -108,6 +108,21 @@ class TestTheClock:
         assert started == []
         assert rebuilds.get("jawiki").last_started_at == "2026-01-01T00:00:00+00:00"
 
+    def test_the_offline_wikipedia_is_refreshed_by_the_same_clock(self, clock, monkeypatch):
+        """Wikipedia の画像(Kiwix のオフライン版)はソースではないが、同じ時計で取り直す。"""
+        from app import wiki_zim
+        from app.views import admin
+
+        main, app, _status, started = clock
+        asked: list[str] = []
+        monkeypatch.setattr(admin, "trigger_zim_run", lambda: asked.append("zim"))
+        self._overdue(wiki_zim.JOB)
+
+        main._tick_rebuilds(app)
+
+        assert asked == ["zim"] and started == []
+        assert rebuilds.get(wiki_zim.JOB).last_started_at.startswith(str(datetime.now(UTC).year))
+
     def test_a_schedule_for_a_gone_source_is_dropped(self, clock):
         main, app, _status, started = clock
         self._overdue("osm_france")
@@ -143,6 +158,15 @@ class TestTheScreen:
 
         client.post("/admin/rebuild-schedule", data={"source": name, "interval_days": ""})
         assert rebuilds.get(name) is None
+
+    def test_the_offline_wikipedia_can_be_scheduled(self, client):
+        from app import wiki_zim
+
+        res = client.post("/admin/rebuild-schedule", follow_redirects=False,
+                          data={"source": wiki_zim.JOB, "interval_days": "30", "hour": "4"})
+        assert res.status_code == 303
+        assert res.headers["location"] == "/admin/memory#wiki-zim"
+        assert rebuilds.get(wiki_zim.JOB).interval_days == 30
 
     def test_an_unknown_source_is_refused(self, client):
         res = client.post("/admin/rebuild-schedule",
