@@ -2587,7 +2587,7 @@ def _collect_html(sources: dict[str, Source]) -> str:
     rows = []
     for item, depth in _nested(items):
         parent = collect.derives_from(item, known)
-        # 止めている収集は行ごと薄くする(「AI の相手」の表と同じ扱い)
+        # **止めている収集は行に色を付け、名前の横に「停止中」と出す**(`table.collect-list tr.off`)
         cls = "" if item.enabled else ' class="off"'
         # 焼き先(長期記憶)の様子。まだ 1 度も焼いていなければそう出す
         src = sources.get(item.name)
@@ -2605,6 +2605,8 @@ def _collect_html(sources: dict[str, Source]) -> str:
         # 決まる —— 「整理」は返ってきた 1 件で何ができるかの話でしかなく、
         # そちらを目立たせていたせいで、種類のことだと読まれた
         kind_mark = f' <span class="stale">{esc(KIND_MARKS[item.kind])}</span>'
+        if not item.enabled:
+            kind_mark = '<span class="off-mark">停止中</span>' + kind_mark
         # 期限で落とすのは流れだけ。**消えることは押す前に見えている必要がある**
         if item.keep_days:
             kind_mark += f' <span class="muted">{item.keep_days} 日ぶん</span>'
@@ -2631,7 +2633,7 @@ def _collect_html(sources: dict[str, Source]) -> str:
             f"<td>{_collect_switches_html(item, src)}</td></tr>"
         )
     table = f"""
-<table>
+<table class="collect-list">
 <thead>
 <tr><th>名前</th><th>件数</th><th></th></tr>
 </thead>
@@ -3629,8 +3631,45 @@ async def admin_collect(request: Request):
 
 <h2 id="collect-settings">収集の設定</h2>
 {_collect_html(request.app.state.sources)}
+{_switch_delegates_html()}
 """
     return HTMLResponse(content=page_shell("収集", body))
+
+
+def _switch_delegates_html() -> str:
+    """**有効にすることを任せる依頼元**(`collect.switch_delegates`)。任せた依頼元は、自分で
+    依頼した収集を外から動かせる(`POST /v1/collect/{name}/enabled`)。止めるのは任せなくてもできる。
+    並べるのは、いま収集を依頼している名乗りだけ。"""
+    if not collect.is_enabled():
+        return ""
+    requesters = sorted({c.requested_by for c in collect.load() if c.requested_by})
+    if not requesters:
+        return ""
+    delegates = collect.switch_delegates()
+    boxes = " ".join(
+        f'<label><input type="checkbox" name="requester" value="{esc(r)}"'
+        f'{" checked" if r in delegates else ""}> {esc(r)}</label>'
+        for r in requesters
+    )
+    return (
+        '<h3 id="switch-delegates">有効にすることを任せる依頼元</h3>'
+        '<p class="muted">チェックを入れた依頼元は、自分で依頼した収集をそのアプリの画面から動かせます'
+        "(止めるのはチェックが無くてもできます)。任せなければ、動かすのはこの面の「有効化」だけです。</p>"
+        f'<form method="post" action="/admin/collect/delegates"><p>{boxes} '
+        '<button type="submit">保存</button></p></form>'
+    )
+
+
+@router.post("/admin/collect/delegates")
+async def admin_collect_delegates(request: Request):
+    """有効にすることを任せる依頼元を保存する(チェックの無い依頼元は外す)。"""
+    collect.require_enabled()
+    form = await request.form()
+    picked = {str(v) for v in form.getlist("requester")}
+    known = {c.requested_by for c in collect.load() if c.requested_by} | collect.switch_delegates()
+    for requester in known:
+        collect.set_switch_delegate(requester, requester in picked)
+    return RedirectResponse(url="/admin/collect#switch-delegates", status_code=303)
 
 
 @router.get("/admin/ai/transcripts/{ident}", response_class=PlainTextResponse)
@@ -5400,6 +5439,13 @@ def _preview_page_html(name: str, result: dict | None, error: str) -> str:
     )
 
 
+# 止めてある収集の面の頭に出す帯。**見出しの横の印だけでは、巡回の表を読み進めるうちに忘れる**
+STOPPED_BANNER = (
+    '<p class="stopped-banner">この収集は止まっています。時計では走りません'
+    "(人が押した 1 回だけは走ります)。</p>"
+)
+
+
 @router.get("/admin/collect/{name}", response_class=HTMLResponse)
 def admin_collect_detail(
     request: Request,
@@ -5433,7 +5479,8 @@ def admin_collect_detail(
         baked = _store_target_html(item)
     body = f"""
 {nav_html("/admin/collect", below=True)}
-<h1>{esc(name)}</h1>
+<h1>{esc(name)}{'' if item.enabled else ' <span class="off-mark">停止中</span>'}</h1>
+{'' if item.enabled else STOPPED_BANNER}
 <!-- **戻る口と止める / 消す口は見出しのすぐ下に**(下の端にしか無いと、巡回や区画の
      長い表をまたいで探すことになる)。ボタンは右へ寄せる -->
 <div class="page-topbar"><a href="/admin/collect">集める の一覧へ戻る</a>

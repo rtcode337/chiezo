@@ -5747,7 +5747,7 @@ class TestTheCollectSectionMarkup:
 
         with TestClient(app) as client:
             page = client.get("/admin/collect/news").text
-            top = page.split("<h1>news</h1>")[1].split("</div></div>")[0]
+            top = page.split("<h1>news")[1].split("</div></div>")[0]
             assert '<div class="page-topbar"><a href="/admin/collect">集める の一覧へ戻る</a>' in top
             assert 'action="/admin/collect/news/toggle"' in top
             assert '<input type="hidden" name="back" value="/admin/collect/news">' in top

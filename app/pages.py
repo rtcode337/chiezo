@@ -351,6 +351,13 @@ PAGE_STYLE = """
   table.ai-settings tr.off { background: #f7f7f7; }
   table.ai-settings tr.off td { color: #999; }
   table.ai-settings tr.off button:not([disabled]) { color: #111; }
+  /* 止めてある収集。**薄くするのではなく色を付ける** —— 収集の一覧は止めてある行が
+     多く、灰色にすると読みにくいうえ、動いている行との見分けも弱かった */
+  table.collect-list tr.off { background: #fdecea; }
+  .off-mark { display: inline-block; margin-left: 0.3rem; padding: 0 0.4rem; border-radius: 0.6rem;
+    background: #c0392b; color: #fff; font-size: 0.75rem; vertical-align: middle; }
+  .stopped-banner { margin: 0.5rem 0; padding: 0.5rem 0.7rem; border-left: 4px solid #c0392b;
+    background: #fdecea; }
   /* 押せないボタン（条件を満たしていない）は、見た目でもそう分かるようにする */
   table.ai-settings button[disabled] { color: #999; cursor: not-allowed; }
   /* 巡回の設定は、その巡回の行の続きとして出す。**上の余白と枠線を取る** ——
