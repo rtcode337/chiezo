@@ -153,7 +153,7 @@ paths:
   足してある(失敗の控えには元からあり、成功した行だけ持っていなかった)。
   **畳んだ回の考える量は、送ったモデルの名前から取り出す**
   (`answer._effort_of` / `providers.effort_in_model`)—— 畳んで送る相手
-  (`folds_effort` = claude / codex)では 2 つ組を送らないので `cfg.effort` が空で、
+  (`folds_effort` = claude / codex / Claude API / Gemini API)では 2 つ組を送らないので `cfg.effort` が空で、
   返ってくるのは相手が解決した素の名前(`claude-fable-5-1`)。**走っている間だけ
   見えて、終わると消えていた**(`/v1/ai/inflight` は送る値をそのまま出すため)。
   Antigravity だけ残っていたのは、あちらの slug に元から段が入っているから。

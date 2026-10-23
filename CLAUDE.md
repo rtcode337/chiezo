@@ -47,7 +47,7 @@ Chiezo はそれが持てないものを預かる側にいる。
 | `collect-tools.md` | 収集の道具(フィード・Pi-hole・サムネイル・リンク確認・手で回す巡回・検索文) | `app/feeds.py`・`outbound.py`・`pihole.py`・`thumbs.py`・`link_checks.py`・`handoff.py`・`search_queries.py` |
 | `collect-extract.md` | 機械で名簿を作る `extract` | `app/extract.py` |
 | `workers.md` | ワーカー(誰に頼むかを名前で外へ出す) | `app/workers.py`・`views/ai_workers.py` |
-| `ai-backends.md` | 話せる相手・鍵・素の口(`/v1/ai/*`)・走っている依頼・会話 | `app/providers.py`・`anthropic_api.py`・`settings_store.py`・`views/ai_settings.py`・`ai_inflight.py`・`ai_transcript.py`・`talk.py` |
+| `ai-backends.md` | 話せる相手・鍵・素の口(`/v1/ai/*`)・走っている依頼・会話 | `app/providers.py`・`anthropic_api.py`・`gemini_api.py`・`settings_store.py`・`views/ai_settings.py`・`ai_inflight.py`・`ai_transcript.py`・`talk.py` |
 | `ai-usage.md` | 使用量・失敗の控え・依頼の履歴 | `app/usage.py`・`usage_store.py`・`ai_log.py`・`views/ai_usage.py`・`views/ai_history.py` |
 | `answer-agent.md` | 「使う」層(`/v1/ask`・`/v1/chat`・`/ai/chat`・agent・web 検索) | `app/answer.py`・`agent.py`・`websearch.py`・`views/chat.py` |
 | `bridge.md` | CLI ブリッジと会話ブリッジ | `bridge/**` |

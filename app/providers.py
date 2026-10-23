@@ -40,6 +40,8 @@ USAGE_BRIDGE = "bridge"  # CLI ブリッジの /usage（CLI 自身に聞かせ�
 # Claude API だけは形が違うので、HTTP の出入口で形を変換する(`app/anthropic_api.py`)。
 API_OPENAI = "openai"
 API_ANTHROPIC = "anthropic"
+# OpenAI 互換の口だが、考える量をモデルの名前に畳んで取り次ぐ相手(`app/gemini_api.py`)
+API_GEMINI = "gemini"
 
 
 @dataclass(frozen=True)
@@ -162,6 +164,12 @@ PROVIDERS: tuple[Provider, ...] = (
         # 公式の OpenAI 互換の例(ai.google.dev/gemini-api/docs/openai)が送っている
         stream_usage=True,
         images=True,
+        # 考える量(`reasoning_effort`)。**他の相手と同じくモデルの名前に畳む**
+        # (`gemini-3.8-flash-high`)—— 受け付ける段はモデルごとに違うので、一覧には
+        # 段を受け付けるモデルのぶんだけ畳んだ名前を足す(`app/gemini_api.py` の `LEVELS`)
+        efforts=("minimal", "low", "medium", "high"),
+        folds_effort=True,
+        api=API_GEMINI,
         # 枠を聞く口は無い。残量は Google Cloud の Quotas API 側にあり、
         # API キー 1 本では引けない（GCP のプロジェクトと別の認証が要る）。
         order=22,

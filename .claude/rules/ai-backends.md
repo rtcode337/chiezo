@@ -2,6 +2,7 @@
 paths:
   - "app/providers.py"
   - "app/anthropic_api.py"
+  - "app/gemini_api.py"
   - "app/settings_store.py"
   - "app/views/ai_settings.py"
   - "app/ai_inflight.py"
@@ -9,6 +10,7 @@ paths:
   - "app/talk.py"
   - "tests/test_ai_api.py"
   - "tests/test_anthropic_api.py"
+  - "tests/test_gemini_api.py"
   - "tests/test_ai_inflight.py"
   - "tests/test_ai_transcript.py"
   - "tests/test_talk.py"
@@ -50,6 +52,11 @@ paths:
     `/models` はモデルごとに API が名乗る段(`capabilities.effort`)だけを並べる
   - **拒否(`refusal`)で本文が無ければ 422 で失敗として返す**(空の答えを保存させない)
   - **SDK の引き直しは切る**(`max_retries=0`。混雑の引き直しは `_post_with_retry` が持つ)
+- `app/gemini_api.py` — **Gemini API の考える量をモデルの名前に畳む出入口**(`Provider.api == API_GEMINI`。
+  `answer._llm_client` が挟む)。OpenAI 互換の口のまま、`/models` の答えに畳んだ名前(`gemini-3.8-flash-high`)を足し、
+  `/chat/completions` で素の名前と `reasoning_effort` に戻す。**受け付ける段はモデルごとに違う**ので、
+  足すのは `LEVELS`(Google の文書の表の写し)にあるモデルだけ —— 知らないモデルに畳んだ名前を並べると、
+  通らない組み合わせを作れてしまう。表に無い段を付けた名前は畳んだ名前とみなさず、そのまま送る
 - `app/settings_store.py` — 管理画面から入れた設定の置き場。**`CHIEZO_STATE_DIR` が
   機能フラグを兼ねる**。**依頼文の言語(`prompt_language`)もここ** ——
   絵・音・動画・声を頼むときのプロンプトを何語で書くかで、**相手ごとではなく

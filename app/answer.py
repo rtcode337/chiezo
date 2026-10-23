@@ -44,6 +44,7 @@ from app import (
     ai_log,
     ai_transcript,
     anthropic_api,
+    gemini_api,
     machine_store,
     providers,
     settings_store,
@@ -720,6 +721,10 @@ def _llm_client(cfg: Settings) -> httpx.AsyncClient:
         )
     if cfg.api_key:
         headers["Authorization"] = f"Bearer {cfg.api_key}"
+    if spec is not None and spec.api == providers.API_GEMINI:
+        # 考える量を名前に畳んだモデル(`gemini-3.8-flash-high`)を、素の名前と
+        # `reasoning_effort` に直して取り次ぐ。一覧にも畳んだ名前を足す
+        return httpx.AsyncClient(timeout=cfg.timeout, headers=headers, transport=gemini_api.Transport())
     return httpx.AsyncClient(timeout=cfg.timeout, headers=headers)
 
 

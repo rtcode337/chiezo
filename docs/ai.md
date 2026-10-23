@@ -788,6 +788,13 @@ chiezo の内部はどの相手も OpenAI 互換の形で話すので、HTTP の
 (`app/anthropic_api.py`)。Anthropic の OpenAI 互換の口を使わないのは、考える量や拒否されたときの
 切り替えが使えないためです。
 
+**Gemini API も考える量をモデルの名前に畳んで選びます**(`gemini-3.8-flash-high`)。Gemini の OpenAI 互換の口は
+`reasoning_effort`(minimal / low / medium / high)を受け付けますが、**受け付ける段はモデルごとに違う**ので、
+一覧には段を受け付けるモデルのぶんだけ畳んだ名前を足します(`gemini-3.8-flash` と `gemini-4-argon` は low / medium / high、
+`gemini-3.5-flash-lite` などは minimal も)。段の表は Google の文書(thinking の「Controlling thinking」)の写しで、
+`app/gemini_api.py` の `LEVELS` にあります。表に無いモデルは素の名前だけが並びます(考える量は相手の既定)。
+送るときに畳んだ名前を素の名前と `reasoning_effort` に戻します(`app/gemini_api.py` の出入口)。
+
 ### on にできる条件
 
 - **認証情報の要る相手（Gemini / Claude API / OpenRouter / Claude Code / Codex CLI）** … 未登録なら

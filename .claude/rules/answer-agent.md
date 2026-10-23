@@ -43,7 +43,7 @@ paths:
   - **考える量を選ばせる画面はもう無い**(`providers.selectable_efforts` が
     **どの相手でも空を返す**)。モデルの名前に埋まっている相手
     (Antigravity の `gemini-3.8-flash-high`。`model_carries_effort`)と、
-    一覧に畳んだ名前が混ざる相手(claude / codex。`folds_effort`)で全部なので、
+    一覧に畳んだ名前が混ざる相手(claude / codex / Claude API / Gemini API。`folds_effort`)で全部なので、
     **選べるのに効かない欄**しか残らなかった —— 会話画面・巡回の設定・
     相手ごとの案内から外した。**戻すときの根拠もここ**:
     `selectable_efforts` が空でない相手ができたら、その時点で欄を戻す。

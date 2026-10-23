@@ -1010,9 +1010,18 @@ class TestSelectableEfforts:
         assert answer.normalize_effort("claude", "high") == "high"
 
     def test_a_backend_that_does_not_fold_keeps_its_field(self):
+        """畳まない相手は欄を残す(いまは該当する相手が無いので、定義を差し替えて確かめる)。"""
+        from dataclasses import replace
+
         from app import providers
 
-        assert providers.selectable_efforts("gemini") == providers.efforts_of("gemini")
+        plain = replace(providers.get("gemini"), folds_effort=False)
+        original = providers.get
+        try:
+            providers.get = lambda provider_id: plain if provider_id == "gemini" else original(provider_id)
+            assert providers.selectable_efforts("gemini") == plain.efforts
+        finally:
+            providers.get = original
 
 
 class TestAnswerLayerSwitch:
@@ -1347,7 +1356,9 @@ class TestEffort:
         assert answer.normalize_effort("antigravity", "ultra") == ""
         # 持たない相手には何も送らない
         assert answer.normalize_effort("codex", "high") == ""
-        assert answer.normalize_effort("gemini", "high") == ""
+        # Gemini API は名前に畳むが、素の名前を選んだ回の考える量は受け取る
+        assert answer.normalize_effort("gemini", "high") == "high"
+        assert answer.normalize_effort("gemini", "xhigh") == ""
 
 
 class TestModelDefault:
