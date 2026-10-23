@@ -1750,6 +1750,22 @@ curl -s -X POST "$BASE/v1/collect/spot_kinds/preview?sweep=%E3%81%98%E3%81%A3%E3
 止めるのは許可しなくてもできる。どちらも依頼元の違う収集は 403。動かすかどうかを Chiezo 側が決める線は
 そのまま —— 許可するかどうかを決めるのは Chiezo を操作している人で、許可していなければ叩いても動き出さない。
 
+**管理画面のボタンと同じ操作も REST から頼める**(依頼元のアプリの画面だけで済むように。中身は画面と同じ関数):
+
+| 口 | すること |
+|---|---|
+| `POST /v1/collect/{name}/redo` | 最後の 1 回を巻き戻して(進み具合と区画の印だけ)もう一度走らせる。戻せる回が無ければ 409。止めている収集は `manual=true` のときだけ。埋まっていれば 202 で並ぶ |
+| `POST /v1/collect/{name}/restart?sweep=…` | その巡回の一周をやり直す(区画の印を全部外す。走らせない) |
+| `POST /v1/collect/{name}/requeue` | 今あるものを全部、まだ目を通していないものに戻すよう頼む(印を付けるのは次に焼く回) |
+| `POST /v1/collect/{name}/repartition` | 区画の割り直しだけを裏で始める(202。様子は `GET /v1/collect/{name}` の `repartition`)。焼いている最中・割り直している最中は 409 |
+| `POST /v1/collect/{name}/stop` | 走っているこの収集の取り込みを降ろす(AI の往復も止める) |
+| `GET` / `DELETE /v1/collect/{name}/queries` | 考えさせた検索文の控えを読む / 消す(`query` を渡せばその 1 つ、無ければ全部) |
+| `GET /v1/ai/workers` | ワーカーの一覧(並び・止めているか・待ち行列の数・前回起きた/流し終えた時刻) |
+| `POST /v1/ai/workers/{id}/paused` | `{"paused": true|false}` でワーカーを止める / 動かす(待ち行列は残る) |
+| `POST /v1/ai/workers/{id}/wake` | ワーカーを時計を待たずに起こす(行列が空なら 409、詰まっている・止めているなら 429) |
+
+**取り消せない操作は REST に出さない**(溜めたものの削除・世代を戻す・名前を変える・ワーカーの作成と変更)。
+
 ```bash
 # 依頼する(name はソース名になる。英小文字・数字・_)。止まった状態で作られる
 curl -s "$BASE/v1/collect" -H 'Content-Type: application/json' -d '{

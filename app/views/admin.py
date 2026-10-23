@@ -4062,12 +4062,17 @@ async def admin_ingest_stop(request: Request):
 
     **状況の面へ戻す。** 取り込みの塊を出しているのはそこだけ。
     """
+    form = await request.form()
+    stop_ingest(str(form.get("source") or "").strip())
+    return RedirectResponse(url=STATUS_JOB, status_code=303)
+
+
+def stop_ingest(source: str) -> None:
+    """走っている取り込みを降ろす(画面の「止める」と `POST /v1/collect/{name}/stop` の中身)。"""
     if not TRIGGER_URL:
         raise HTTPException(
             503, {"error": "取り込み(chiezo-trigger)が設定されていないので止められません"}
         )
-    form = await request.form()
-    source = str(form.get("source") or "").strip()
     # **収集なら、AI に集めさせているほうも止める。** 取り込みが印を見るのは素材が
     # 届き始めてからで、それまで本体は区画ごとに AI を呼び続ける —— 押しても
     # 止まらないように見えていた(走っている往復を止め、次の区画も呼ばせない)
@@ -4085,7 +4090,6 @@ async def admin_ingest_stop(request: Request):
         ) from e
     if res.status_code >= 400:
         raise HTTPException(res.status_code, res.json())
-    return RedirectResponse(url=STATUS_JOB, status_code=303)
 
 
 @router.post("/admin/ingest/queue/remove")
@@ -4993,7 +4997,14 @@ def admin_collect_repartition(name: str, request: Request, tasks: BackgroundTask
     どちらが残るかが順番次第になる。**画面でボタンを消すだけにしない** ——
     口が受け付けるなら、いつか誰かが叩く。
     """
+    start_repartition(name, request.app.state.sources, tasks)
+    return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
+
+
+def start_repartition(name: str, sources: dict, tasks: BackgroundTasks) -> None:
+    """区画の割り直しを裏で始める(画面と `POST /v1/collect/{name}/repartition` の中身)。"""
     collect.require_enabled()
+    collect.get(name)
     if _baking_now(_fetch_trigger_status(), name):
         raise HTTPException(
             status_code=409,
@@ -5010,8 +5021,7 @@ def admin_collect_repartition(name: str, request: Request, tasks: BackgroundTask
     # **走り始めた印は返す前に書く。** 書く前に走らせると、戻った画面が
     # 「押していない」ように見える(押した人はもう一度押す)
     repartition_job.start(name)
-    tasks.add_task(repartition_job.run, name, request.app.state.sources)
-    return RedirectResponse(url=collect_page(collect.get(name)), status_code=303)
+    tasks.add_task(repartition_job.run, name, sources)
 
 
 @router.post("/admin/collect/{name}/partition/run")

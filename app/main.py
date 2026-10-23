@@ -71,6 +71,7 @@ from app import (
     pihole,
     providers,
     rebuilds,
+    repartition_job,
     search_queries,
     settings_store,
     thumbs,
@@ -4186,6 +4187,8 @@ def collect_get(
         # **固定したのに、まだ焼いていない数**(`collect.pending_locks`)。固定の記録は
         # 反映したあとも残るので、記録の数では「いま焼けば変わるか」が読めない
         "locks_pending": collect.pending_locks(item, request.app.state.sources),
+        # 区画の割り直しの様子(`POST …/repartition` で始めたもの。押したことが無ければ空)
+        "repartition": repartition_job.state(name),
     }
 
 
@@ -4275,6 +4278,107 @@ def collect_sweep_clock(name: str, sweep: str, body: SweepClock):
     if body.interval_minutes is not None:
         item = collect.set_sweep_clock(name, sweep, body.interval_minutes, body.keep_per_run)
     return collect.to_public(item, with_partitions=False)
+
+
+# ---- 管理画面にしか無かった操作 ---------------------------------------------
+#
+# **依頼元のアプリの画面だけで済むようにする**ための口。中身は管理画面のボタンと
+# 同じ関数を呼ぶ(画面と REST で判断が食い違わないように)。取り消せない操作
+# (溜めたものの削除・世代を戻す)はここに出さない。
+
+
+@app.post("/v1/collect/{name}/redo")
+def collect_redo(
+    name: str,
+    manual: bool = Query(False, description="人が押した 1 回か(止めている収集でも走らせる)"),
+):
+    """**最後の 1 回を巻き戻してもう一度走らせる**(管理画面の「やり直す」と同じ)。
+
+    設定を直してからやり直したい、が普通に起きる。そのまま `run` を頼むと進み具合が
+    先へ進んでいるので次のぶんを集めてしまう。戻すのは進み具合と区画の印だけで、
+    焼いた中身と墓場は戻さない。戻せる回が無ければ 409。
+    **埋まっていれば行列に並べて 202**(`run` と同じ)。
+    """
+    collect.require_enabled()
+    _refuse_stopped(name, manual)
+    sweep = collect.rewind(name)
+    result = run_or_queue(name, sweep.name, by="api")
+    if result.get("queued"):
+        return JSONResponse(status_code=202, content=result)
+    return result
+
+
+@app.post("/v1/collect/{name}/restart")
+def collect_restart(
+    name: str,
+    sweep: str = Query(..., description="一周をやり直す巡回の名前"),
+):
+    """その巡回の**一周をやり直す**(区画の印を全部外す。管理画面の「一周をやり直す」と同じ)。
+
+    **走らせない** —— 印を外すだけなので、次の予定でそのまま先頭から回り直す。
+    中身も進み具合も動かさない。
+    """
+    collect.require_enabled()
+    collect.restart_cycle(name, sweep)
+    return collect.to_public(collect.get(name), with_partitions=False)
+
+
+@app.post("/v1/collect/{name}/requeue")
+def collect_requeue(name: str):
+    """**今あるものを全部、まだ目を通していないものに戻すよう頼む**(管理画面と同じ)。
+
+    印を付けるのは次に焼く回。依頼文を直して調べる中身を増やしたとき、印の付いた
+    ものは直す前の依頼文で調べたまま残るため。
+    """
+    collect.require_enabled()
+    collect.request_requeue(name)
+    return collect.to_public(collect.get(name), with_partitions=False)
+
+
+@app.post("/v1/collect/{name}/repartition", status_code=202)
+def collect_repartition(request: Request, name: str, tasks: BackgroundTasks):
+    """**区画の割り直しだけを裏で走らせる**(AI も焼きも動かさない。管理画面と同じ)。
+
+    待たずに返す(本番の規模では数分かかる)。様子は `GET /v1/collect/{name}` の
+    `repartition` で読む。焼いている最中・割り直している最中は 409。
+    """
+    views_admin.start_repartition(name, request.app.state.sources, tasks)
+    return {"ok": True, "repartition": repartition_job.state(name)}
+
+
+@app.post("/v1/collect/{name}/stop")
+def collect_stop(name: str):
+    """**走っているこの収集の取り込みを降ろす**(AI に集めさせている往復も止める)。
+
+    管理画面の状況の面の「止める」と同じ。走っていなければ取り込み側が断る。
+    """
+    collect.require_enabled()
+    collect.get(name)
+    views_admin.stop_ingest(name)
+    return {"ok": True}
+
+
+@app.get("/v1/collect/{name}/queries")
+def collect_queries(name: str):
+    """**考えさせた検索文の控え**(新しい順。いつ使い・何件入り・何件残ったか)。"""
+    collect.require_enabled()
+    item = collect.get(name)
+    return {"name": item.name, "queries": search_queries.history(item.name)}
+
+
+@app.delete("/v1/collect/{name}/queries")
+def collect_queries_forget(
+    name: str,
+    query: str | None = Query(None, description="消す検索文(省くと全部)"),
+):
+    """検索文の控えを消す(`query` があればその 1 つ、無ければ全部)。
+
+    消した検索文は「最近使った」から外れるので、次の回からまた使える。
+    """
+    collect.require_enabled()
+    item = collect.get(name)
+    forgot = search_queries.forget(item.name, (query or "").strip() or None)
+    return {"ok": True, "forgot": forgot}
 
 
 @app.delete("/v1/collect/{name}")
@@ -4990,6 +5094,50 @@ class AiCompleteRequest(BaseModel):
     # 返事を待つ人がいる使い方(声で話すアプリなど)で、書き終えるのを待たずに使い始めるため。
     # 書き終える時間は本文の長さでほぼ決まり、数百字で数秒〜十数秒かかる
     stream: bool | None = None
+
+
+class WorkerSwitch(BaseModel):
+    paused: bool = PydField(..., description="true で止める、false で動かす")
+
+
+@app.get("/v1/ai/workers")
+def ai_workers_list():
+    """ワーカーの一覧(並び・止めているか・待ち行列・前回起きた/流し終えた時刻)。
+
+    巡回の相手に `worker:<id>` と書いてあるものの中身を、依頼元のアプリが読むための口。
+    """
+    return {"workers": [
+        {
+            **w.to_json(),
+            "paused": w.paused,
+            "queued": len(workers.queued(w.key)),
+            "last_run_at": workers.last_at(w.key),
+            "finished_at": workers.finished_at(w.key),
+        }
+        for w in workers.load()
+    ]}
+
+
+@app.post("/v1/ai/workers/{ref}/paused")
+def ai_worker_pause(ref: str, body: WorkerSwitch):
+    """ワーカーを止める / 動かす(管理画面の「止める」「動かす」と同じ)。知らない id は 404。
+
+    止めているあいだは相手を 1 つも選ばないので、どの道からも流れない。待ち行列は残る。
+    """
+    try:
+        made = workers.set_paused(ref, body.paused)
+    except KeyError:
+        raise HTTPException(404, {"error": f"ワーカー「{ref}」がありません"}) from None
+    return {**made.to_json(), "paused": made.paused}
+
+
+@app.post("/v1/ai/workers/{ref}/wake")
+def ai_worker_wake(ref: str):
+    """ワーカーを**時計を待たずに起こす**(管理画面の「今すぐ起こす」と同じ)。
+
+    行列が空なら 409、枠が詰まっている・止めているなら 429(理由は書き分ける)。
+    """
+    return wake_worker(ref)
 
 
 @app.get("/v1/ai/backends")
