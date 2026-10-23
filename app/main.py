@@ -1999,8 +1999,10 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
                 collect.existing_extras, name, sources,
                 [notes.title_key(d.get("title")) for d in items if isinstance(d, dict)],
             )
+            # **流れの収集の絵は外の絵の置き場に覚えない**(1 件ごとの印で取り直しは止まり、記事ごと消える)
+            remember = item.kind != collect.KIND_FLOW
             made = await thumbs.attach(
-                item.thumbs, items, existing, from_feed=sweep.use_feed, caller=name
+                item.thumbs, items, existing, from_feed=sweep.use_feed, caller=name, remember=remember,
             )
             # **足すだけの回は、今回返ってこなかった既にある 1 件にも後から作る**
             # (`thumbs.backfill`)。足すだけの回なら脇書きしか受け取らないので、中身は動かない
@@ -2009,7 +2011,7 @@ async def _collect_material(name: str, sources: dict, data_dir: Path | None = No
                     collect.waiting_for_thumbs, name, sources, thumbs.BACKFILL_LOOKUP,
                 )
                 made += await thumbs.backfill(
-                    item.thumbs, items, waiting, from_feed=sweep.use_feed, caller=name,
+                    item.thumbs, items, waiting, from_feed=sweep.use_feed, caller=name, remember=remember,
                 )
             phase = _phase_done("サムネイルを作る", name, phase, made)
         # **控えに残すのは、決めた相手ではなく頼んだ相手。** ワーカーを使う回は

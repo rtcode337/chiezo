@@ -20,6 +20,11 @@
   `notes.update` を通す(索引がずれないように)。起動のときに置き場を作る(`main.lifespan`)
 - **無かった絵は `RECHECK_DAYS` 経ったら確かめ直す**(後から絵が置かれることがある)
 - **一時的な失敗は覚えない**(つながらない・5xx・429・休み中)—— 取り直せば取れるかもしれない
+- **Wikipedia のオフライン版から取れた絵・無かった絵も覚える**(写しがどこから来たかを辿れるように。
+  無かった絵はタグ `オフライン版に無い` を付け、新しい版を置けばその場で引けるよう断るのには使わない)
+- **残すのは読む側のアプリからの頼み(写真・表紙)と、溜めていく収集の回だけ**(`thumbs.make` の `remember`)。
+  流れの収集(ニュースなど)は 1 件ごとの「作れなかった」の印で取り直しを止めていて、記事ごと消えていくので、
+  記録だけが溜まり続ける
 - 置き場(`CHIEZO_NOTES_DIR`)が無い構成では覚えない(今までどおり毎回取りに行く)
 """
 from __future__ import annotations
@@ -36,6 +41,8 @@ log = logging.getLogger("chiezo.app")
 STORE = notes.IMAGES_STORE
 FOUND_TAG = "取れた"
 MISSING_TAG = "無かった"
+# Wikipedia のオフライン版に無かった(外へは取りに行っていない)。確かめ直す日まで断るのには使わない
+OFFLINE_MISSING_TAG = "オフライン版に無い"
 # 無かった絵を確かめ直すまでの日数
 RECHECK_DAYS = 30
 
@@ -74,6 +81,7 @@ def recall(url: str) -> dict | None:
     extra = notes.load_extra(row["extra"]) or {}
     return {
         "found": FOUND_TAG in (row["tags"] or ""),
+        "offline": bool(extra.get("offline")),
         "thumb": str(extra.get("thumb") or ""),
         "how": str(extra.get("how") or ""),
         "reason": str(extra.get("reason") or ""),
@@ -84,7 +92,7 @@ def recall(url: str) -> dict | None:
 def still_missing(url: str, now: datetime | None = None) -> dict | None:
     """無かったと覚えていて、確かめ直す日がまだ来ていなければその結果。それ以外は None。"""
     entry = recall(url)
-    if not entry or entry["found"]:
+    if not entry or entry["found"] or entry["offline"]:
         return None
     try:
         checked = datetime.fromisoformat(entry["checked_at"])
@@ -96,21 +104,34 @@ def still_missing(url: str, now: datetime | None = None) -> dict | None:
     return entry if fresh else None
 
 
-def remember(url: str, *, thumb: str = "", how: str = "", reason: str = "") -> None:
-    """結果を残す(`thumb` が空なら「無かった」)。**残せなくても絵を作るのは止めない**。"""
+def remember(url: str, *, thumb: str = "", how: str = "", reason: str = "", offline: bool = False) -> None:
+    """結果を残す(`thumb` が空なら「無かった」)。**残せなくても絵を作るのは止めない**。
+
+    `offline` は Wikipedia のオフライン版に無かった印(タグ `オフライン版に無い`)。**確かめ直す日まで
+    断るのには使わない**(`still_missing` が飛ばす)—— 新しい版を置けばその場で引けるように。
+    """
     if not is_enabled():
         return
     found = bool(thumb)
     now = datetime.now(UTC).isoformat(timespec="seconds")
     extra = {"url": url, "checked_at": now}
     extra.update({"thumb": thumb, "how": how} if found else {"reason": reason})
+    if offline:
+        extra["offline"] = True
     text = (
         f"{url}\n取れた({how})。写し: {thumb}"
         if found
+        else f"{url}\n取れなかった({reason})。新しいオフライン版を置けば引き直す"
+        if offline
         else f"{url}\n取れなかった({reason})。{RECHECK_DAYS} 日経ったら確かめ直す"
     )
     host = urlparse(url).hostname or ""
-    tags = ",".join(t for t in (FOUND_TAG if found else MISSING_TAG, f"ホスト:{host}" if host else "") if t)
+    marks = (
+        FOUND_TAG if found else MISSING_TAG,
+        OFFLINE_MISSING_TAG if offline else "",
+        f"ホスト:{host}" if host else "",
+    )
+    tags = ",".join(t for t in marks if t)
     try:
         notes.ensure_db(STORE)
         row = _row(key_of(url))

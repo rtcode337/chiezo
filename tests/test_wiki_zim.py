@@ -146,8 +146,12 @@ class TestThumbs:
         assert asyncio.run(thumbs.attach(thumbs.normalize(True), items, {}, False)) == 0
         assert calls == []
         assert items[0]["extra"]["thumb_failed"] == "Wikipedia のオフライン版に無い"
-        # 新しい版を置けばその場で引けるよう、外の絵の置き場には覚えない
-        assert image_memory.recall(url) is None
+        # 覚えるが(オフライン版に無い印つき)、確かめ直す日まで断るのには使わない
+        got = image_memory.recall(url)
+        assert got["found"] is False and got["offline"] is True
+        assert image_memory.still_missing(url) is None
+        zim({f"{COMMONS}/Kakiage.jpg": webp()}, name="wikipedia_ja_all_maxi_2026-09.zim")
+        assert asyncio.run(thumbs.attach(thumbs.normalize(True), [{"title": "x", "image": url}], {}, False)) == 1
 
     def test_without_the_offline_copy_wikimedia_is_asked(self, serve, tmp_path, monkeypatch):  # noqa: F811
         monkeypatch.setenv("CHIEZO_ZIM_DIR", str(tmp_path / "none"))

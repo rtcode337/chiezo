@@ -174,12 +174,15 @@ class Skip(Exception):
     """その 1 件には作らない(理由つき)。**印を付けて、二度と取りに行かない**。"""
 
 
+NOT_OFFLINE = "Wikipedia のオフライン版に無い"
+
+
 class NotOffline(Skip):
     """Wikipedia のオフライン版を置いているのに、その絵が入っていなかった。**Wikimedia へは取りに行かない**。
 
     オフライン版を置くのは Wikimedia に頼まないためなので、無い絵は諦めて次へ進む。
-    **外の絵の置き場(`image_memory`)には覚えない** —— 新しい版を置けばその場で引けるようにする
-    (オフライン版を引くのは手元で、外へは出ない)。
+    **外の絵の置き場(`image_memory`)には覚えるが、確かめ直す日まで断るのには使わない**
+    (`offline` の印。新しい版を置けばその場で引ける。オフライン版を引くのは手元で、外へは出ない)。
     """
 
 
@@ -441,13 +444,13 @@ def shrink(data: bytes) -> bytes:
 
 
 async def make(
-    client: httpx.AsyncClient, kind: str, source: str, caller: str = ""
+    client: httpx.AsyncClient, kind: str, source: str, caller: str = "", remember: bool = True,
 ) -> tuple[str, str, str]:
     """1 件ぶん作る。`(配る場所, 元の絵の URL, どうしたか)`。作らない理由があれば `Skip`。
     どうしたかは控えの結果の言葉(`HOW_CACHED` / `HOW_OFFLINE` / `HOW_FETCHED`)。
     結果は依頼の控えに残す(`caller` は誰の頼みか。「写真の依頼」・収集の名前など)。"""
     try:
-        thumb, image, how = await _make(client, kind, source)
+        thumb, image, how = await _make(client, kind, source, remember)
     except Skip as e:
         _log(caller, source, f"作れない({e})", ok=False)
         raise
@@ -492,7 +495,9 @@ def _log(caller: str, target: str, result: str, ok: bool) -> None:
         log.warning("thumbs: 依頼の控えを残せなかった", exc_info=True)
 
 
-async def _make(client: httpx.AsyncClient, kind: str, source: str) -> tuple[str, str, str]:
+async def _make(
+    client: httpx.AsyncClient, kind: str, source: str, remember: bool = True,
+) -> tuple[str, str, str]:
     """`make` の中身。`(配る場所, 元の絵の URL, どうしたか)`。どうしたかは控えの結果の言葉
     (「写しを返した」・「オフライン版から取った」・「取った」)。
 
@@ -521,7 +526,10 @@ async def _make(client: httpx.AsyncClient, kind: str, source: str) -> tuple[str,
     # **オフライン版を置いていれば、Wikimedia の絵はそこに無くても外へ取りに行かない**
     # (置くのは Wikimedia に頼まないため。置いていなければ今までどおり取りに行く)
     if data is None and wiki_zim.covers(image) and await asyncio.to_thread(wiki_zim.placed):
-        raise NotOffline("Wikipedia のオフライン版に無い")
+        if remember:
+            # 覚えるが、確かめ直す日まで断るのには使わない(新しい版を置けばその場で引ける)
+            await asyncio.to_thread(image_memory.remember, image, reason=NOT_OFFLINE, offline=True)
+        raise NotOffline(NOT_OFFLINE)
     try:
         if data is None:
             how = HOW_FETCHED
@@ -531,13 +539,15 @@ async def _make(client: httpx.AsyncClient, kind: str, source: str) -> tuple[str,
         small = await asyncio.to_thread(shrink, data)
     except Skip as e:
         # 取れないと分かった絵は覚える(一時的な失敗は `Skip` にならないので覚えない)
-        await asyncio.to_thread(image_memory.remember, image, reason=str(e))
+        if remember:
+            await asyncio.to_thread(image_memory.remember, image, reason=str(e))
         raise
     root.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_bytes(small)
     tmp.replace(path)
-    await asyncio.to_thread(image_memory.remember, image, thumb=public_path(name), how=how)
+    if remember:
+        await asyncio.to_thread(image_memory.remember, image, thumb=public_path(name), how=how)
     return public_path(name), image, how
 
 
@@ -549,7 +559,8 @@ def _told_to_wait(error: Exception) -> bool:
 
 
 async def attach(
-    spec: dict | None, items: list, existing: dict[str, dict], from_feed: bool, caller: str = ""
+    spec: dict | None, items: list, existing: dict[str, dict], from_feed: bool, caller: str = "",
+    remember: bool = True,
 ) -> int:
     """返ってきた 1 件ずつに、まだ無ければサムネイルを付ける(`extra.thumb`)。作った数を返す。
 
@@ -577,7 +588,7 @@ async def attach(
             tried += 1
             try:
                 thumb, found, _how = await make(
-                    client, kind, image if kind == "image" else url, caller
+                    client, kind, image if kind == "image" else url, caller, remember
                 )
             except Skip as e:
                 raw["extra"] = {**extra_in, "thumb_failed": str(e)[:200]}
@@ -598,6 +609,7 @@ async def attach(
 
 async def backfill(
     spec: dict | None, items: list, waiting: dict[str, dict], from_feed: bool, caller: str = "",
+    remember: bool = True,
 ) -> int:
     """**今回返ってこなかった既にある 1 件**にも、まだ無ければサムネイルを付ける。
 
@@ -629,7 +641,7 @@ async def backfill(
             tried += 1
             try:
                 thumb, found, _how = await make(
-                    client, kind, image if kind == "image" else url, caller
+                    client, kind, image if kind == "image" else url, caller, remember
                 )
             except Skip as e:
                 items.append({"title": title, "extra": {"thumb_failed": str(e)[:200]}})

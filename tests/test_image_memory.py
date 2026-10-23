@@ -73,3 +73,12 @@ def test_it_is_a_short_term_source(tmp_path, monkeypatch, built_data_dir, serve)
         assert got["results"][0]["title"] == image_memory.key_of("https://example.org/a.png")
         hosts = client.get("/v1/chiezo_images/filter", params={"tag": "ホスト:example.org"}).json()
         assert hosts["total"] == 1
+
+
+def test_flow_collections_are_not_remembered(serve, remembered):  # noqa: F811
+    """流れの収集(ニュースなど)の絵は覚えない(1 件ごとの印で止まり、記事ごと消えていく)。"""
+    serve({"https://example.org/a.png": httpx.Response(404)})
+    items = [{"title": "a", "image": "https://example.org/a.png"}]
+    asyncio.run(thumbs.attach(thumbs.normalize(True), items, {}, False, remember=False))
+    assert "thumb_failed" in items[0]["extra"]
+    assert remembered.recall("https://example.org/a.png") is None
