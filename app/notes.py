@@ -53,6 +53,10 @@ log = logging.getLogger("chiezo.app")
 # `memory` を選ばなかったのは、固化の層が焼いていたソース名がそれで、
 # 古い控えやログと history 上で混ざるため。
 SOURCE_NAME = "chiezo_memory"
+# 外の絵を確かめた結果の置き場(`app/image_memory.py`)。Chiezo が書く置き場なので、アプリの
+# 名前付きの置き場の一覧(`store_names`)には並べず、作り直しの口も断る
+IMAGES_STORE = "chiezo_images"
+SYSTEM_STORES = (SOURCE_NAME, IMAGES_STORE)
 SOURCE_KIND = "chiezo_memory"
 
 RECALL_LIMIT_DEFAULT = 20
@@ -368,11 +372,11 @@ STORE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,30}$")
 
 
 def store_names() -> list[str]:
-    """作ってある置き場の名前(短期記憶そのものは除く)。"""
+    """アプリが作った置き場の名前(短期記憶そのものと、Chiezo が書く置き場 `SYSTEM_STORES` は除く)。"""
     directory = notes_dir()
     if directory is None or not directory.is_dir():
         return []
-    return sorted(p.stem for p in directory.glob("*.db") if p.stem != SOURCE_NAME)
+    return sorted(p.stem for p in directory.glob("*.db") if p.stem not in SYSTEM_STORES)
 
 
 def is_store(name: str) -> bool:
@@ -396,7 +400,7 @@ def create_store(name: str, taken: set[str]) -> dict:
             "error": "name は英小文字で始まる 2〜31 文字(英小文字・数字・_)にしてください",
             "reason": "ソース名・ファイル名・URL にそのまま使うため",
         })
-    if name == SOURCE_NAME or is_store(name):
+    if name in SYSTEM_STORES or is_store(name):
         raise HTTPException(409, {"error": f"置き場「{name}」はすでにあります"})
     if name in taken:
         raise HTTPException(409, {"error": f"「{name}」は既にあるソースか収集の名前なので使えません"})

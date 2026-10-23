@@ -133,8 +133,24 @@ class TestThumbs:
         assert items[0]["extra"]["thumb"]
         assert thumbs.recent_log()[0]["result"] == "オフライン版から取った"
 
-    def test_pictures_missing_from_it_are_still_fetched(self, serve, zim):  # noqa: F811
+    def test_pictures_missing_from_it_are_not_fetched_from_wikimedia(self, serve, zim, tmp_path, monkeypatch):  # noqa: F811
+        """オフライン版を置いているなら、そこに無い Wikimedia の絵は諦めて次へ(Wikimedia に頼まない)。"""
+        monkeypatch.setenv("CHIEZO_NOTES_DIR", str(tmp_path / "notes"))
+        from app import image_memory
+
         zim({f"{COMMONS}/Other.jpg": webp()})
+        calls = serve({})
+        url = "https://upload.wikimedia.org/wikipedia/commons/5/52/Kakiage.jpg"
+        items = [{"title": "かき揚げ", "image": url}]
+
+        assert asyncio.run(thumbs.attach(thumbs.normalize(True), items, {}, False)) == 0
+        assert calls == []
+        assert items[0]["extra"]["thumb_failed"] == "Wikipedia のオフライン版に無い"
+        # 新しい版を置けばその場で引けるよう、外の絵の置き場には覚えない
+        assert image_memory.recall(url) is None
+
+    def test_without_the_offline_copy_wikimedia_is_asked(self, serve, tmp_path, monkeypatch):  # noqa: F811
+        monkeypatch.setenv("CHIEZO_ZIM_DIR", str(tmp_path / "none"))
         scaled = "https://upload.wikimedia.org/wikipedia/commons/thumb/5/52/Kakiage.jpg/330px-Kakiage.jpg"
         calls = serve({scaled: httpx.Response(200, content=webp(), headers={"content-type": "image/webp"})})
         items = [{"title": "かき揚げ", "image": "https://upload.wikimedia.org/wikipedia/commons/5/52/Kakiage.jpg"}]
@@ -142,6 +158,14 @@ class TestThumbs:
         assert asyncio.run(thumbs.attach(thumbs.normalize(True), items, {}, False)) == 1
         assert calls == [scaled]
         assert thumbs.recent_log()[0]["result"] == "取った"
+
+    def test_other_hosts_are_still_fetched(self, serve, zim):  # noqa: F811
+        zim({f"{COMMONS}/Other.jpg": webp()})
+        picture = httpx.Response(200, content=webp(), headers={"content-type": "image/webp"})
+        calls = serve({"https://example.org/a.png": picture})
+        items = [{"title": "a", "image": "https://example.org/a.png"}]
+        assert asyncio.run(thumbs.attach(thumbs.normalize(True), items, {}, False)) == 1
+        assert calls == ["https://example.org/a.png"]
 
     def test_the_memory_page_says_whether_it_is_placed(self, serve, zim, tmp_path, monkeypatch):  # noqa: F811
         from app.views import admin

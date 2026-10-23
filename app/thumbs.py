@@ -66,8 +66,11 @@ Wikimedia は作り置きの無い縮小版を作らせる頼みを回線ごと�
 
 外へ取りに行く前に、置いてある Wikipedia のオフライン版(Kiwix の ZIM。`app/wiki_zim.py`)を
 引く。Wikimedia は作り置きの無い縮小版を作らせる頼みを回線ごとに数えて絞るので、1 枚ずつ
-取りに行くと断られて休むたびに埋まるのが止まり、写真が何日も埋まらなかった。オフライン版に
-無い絵だけ外へ取りに行く。どちらから取ったかは控えの結果(`HOW_OFFLINE` / `HOW_FETCHED`)と
+取りに行くと断られて休むたびに埋まるのが止まり、写真が何日も埋まらなかった。**オフライン版を
+置いていれば、そこに無い Wikimedia の絵も外へ取りに行かずに諦める**(`NotOffline`。置くのは
+Wikimedia に頼まないためで、無い 1 枚のために頼むと 429 で絞られる)。置いていなければ今までどおり
+取りに行く。Wikimedia でない絵(表紙など)はオフライン版と関係なく取りに行く。
+どちらから取ったかは控えの結果(`HOW_OFFLINE` / `HOW_FETCHED`)と
 `POST /v1/thumbs` の `from` で分かる(外へ出なかった頼みなら、頼む側は間を空けずに次を頼める)。
 
 ## 外へ出る以上は守る(`app/feeds.py` と同じ契約)
@@ -100,7 +103,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from fastapi import HTTPException
 
-from app import feeds, notes, outbound, settings_store, wiki_zim
+from app import feeds, image_memory, notes, outbound, settings_store, wiki_zim
 
 log = logging.getLogger("chiezo.app")
 
@@ -169,6 +172,15 @@ class Resting(httpx.HTTPError):
 
 class Skip(Exception):
     """その 1 件には作らない(理由つき)。**印を付けて、二度と取りに行かない**。"""
+
+
+class NotOffline(Skip):
+    """Wikipedia のオフライン版を置いているのに、その絵が入っていなかった。**Wikimedia へは取りに行かない**。
+
+    オフライン版を置くのは Wikimedia に頼まないためなので、無い絵は諦めて次へ進む。
+    **外の絵の置き場(`image_memory`)には覚えない** —— 新しい版を置けばその場で引けるようにする
+    (オフライン版を引くのは手元で、外へは出ない)。
+    """
 
 
 def thumbs_dir() -> Path | None:
@@ -501,18 +513,31 @@ async def _make(client: httpx.AsyncClient, kind: str, source: str) -> tuple[str,
     # **同じ絵は 1 度だけ取る**(別の 1 件が同じ絵を指していることがある)
     if path.is_file():
         return public_path(name), image, HOW_CACHED
+    # **前に確かめて無かった絵は、確かめ直す日まで外へ出ない**(`app/image_memory.py`)
+    if missing := await asyncio.to_thread(image_memory.still_missing, image):
+        raise Skip(f"前に確かめて無かった({missing['reason']})")
     how = HOW_OFFLINE
     data = await asyncio.to_thread(wiki_zim.image, image)
-    if data is None:
-        how = HOW_FETCHED
-        _url, data, content_type = await _get_image(client, image)
-        if not content_type.lower().startswith("image/"):
-            raise Skip(f"絵ではない: {content_type or '型なし'}")
-    small = await asyncio.to_thread(shrink, data)
+    # **オフライン版を置いていれば、Wikimedia の絵はそこに無くても外へ取りに行かない**
+    # (置くのは Wikimedia に頼まないため。置いていなければ今までどおり取りに行く)
+    if data is None and wiki_zim.covers(image) and await asyncio.to_thread(wiki_zim.placed):
+        raise NotOffline("Wikipedia のオフライン版に無い")
+    try:
+        if data is None:
+            how = HOW_FETCHED
+            _url, data, content_type = await _get_image(client, image)
+            if not content_type.lower().startswith("image/"):
+                raise Skip(f"絵ではない: {content_type or '型なし'}")
+        small = await asyncio.to_thread(shrink, data)
+    except Skip as e:
+        # 取れないと分かった絵は覚える(一時的な失敗は `Skip` にならないので覚えない)
+        await asyncio.to_thread(image_memory.remember, image, reason=str(e))
+        raise
     root.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_bytes(small)
     tmp.replace(path)
+    await asyncio.to_thread(image_memory.remember, image, thumb=public_path(name), how=how)
     return public_path(name), image, how
 
 

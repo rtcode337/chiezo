@@ -105,6 +105,16 @@ def asset_names(url: str) -> list[str]:
     return [f"_assets_/{base}/{n}" for n in dict.fromkeys(names)]
 
 
+def placed() -> bool:
+    """オフライン版を 1 つでも置いているか。"""
+    return bool(_archives())
+
+
+def covers(url: str) -> bool:
+    """その URL がオフライン版で引ける種類の絵か(Wikimedia の置き場の絵)。"""
+    return bool(asset_names(url))
+
+
 def image(url: str) -> bytes | None:
     """置いた ZIM にその絵があれば中身を返す。無ければ None(外へ取りに行く)。"""
     names = asset_names(url)

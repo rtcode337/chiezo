@@ -33,6 +33,7 @@ from app import (
     collect_log,
     db,
     feeds,
+    image_memory,
     ingest_queue,
     jst,
     machine_store,
@@ -2730,6 +2731,10 @@ def _short_term_section_html(sources: dict[str, Source]) -> str:
     for store in notes.store_names():
         rows.append((store, notes.SOURCE_KIND, notes.count(store) or 0, notes.last_updated(store) or "",
                      "アプリが作って預けている置き場(POST /v1/stores)"))
+    if image_memory.is_enabled():
+        rows.append((image_memory.STORE, notes.SOURCE_KIND, notes.count(image_memory.STORE) or 0,
+                     notes.last_updated(image_memory.STORE) or "",
+                     "外の絵を確かめた結果(取れた・無かった)。Chiezo が書く"))
     if machine_store.is_enabled():
         kept = machine_store.records()
         rows.append((

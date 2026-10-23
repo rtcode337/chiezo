@@ -203,6 +203,40 @@ class TestCovers:
             assert client.post("/v1/covers", json={"isbn": isbn}).status_code == 404
         assert calls == [f"https://www.hanmoto.com/bd/img/{i}.jpg" for i in (self.JP, self.EN)]
 
+    @pytest.fixture
+    def remembered(self, monkeypatch, tmp_path):
+        """外の絵の結果を覚える置き場(短期記憶の `chiezo_images`)を使える形にする。"""
+        monkeypatch.setenv("CHIEZO_NOTES_DIR", str(tmp_path / "notes"))
+        from app import image_memory
+
+        return image_memory
+
+    def test_a_missing_cover_is_remembered(self, client, answer, remembered):
+        """無かった本は覚え、確かめ直す日までは外へ聞きに行かない(読む側が何度頼んでも)。"""
+        calls = answer({})
+
+        for _ in range(3):
+            assert client.post("/v1/covers", json={"isbn": self.JP}).status_code == 404
+        assert calls == [f"https://www.hanmoto.com/bd/img/{self.JP}.jpg"]
+        assert remembered.recall(f"https://www.hanmoto.com/bd/img/{self.JP}.jpg")["found"] is False
+
+    def test_a_missing_cover_is_checked_again_later(self, client, answer, remembered, monkeypatch):
+        calls = answer({})
+        client.post("/v1/covers", json={"isbn": self.JP})
+        # 確かめ直す日が来た
+        monkeypatch.setattr(remembered, "RECHECK_DAYS", 0)
+        client.post("/v1/covers", json={"isbn": self.JP})
+        assert len(calls) == 2
+
+    def test_a_found_cover_is_answered_from_memory(self, client, answer, remembered):
+        url = f"https://www.hanmoto.com/bd/img/{self.JP}.jpg"
+        calls = answer({url: httpx.Response(200, content=png(), headers={"content-type": "image/jpeg"})})
+
+        first = client.post("/v1/covers", json={"isbn": self.JP}).json()
+        second = client.post("/v1/covers", json={"isbn": self.JP}).json()
+        assert first == second and calls == [url]
+        assert remembered.recall(url)["thumb"] == first["thumb"]
+
     def test_only_isbn13(self, client, answer):
         calls = answer({})
         for isbn in ("4873115655", "https://example.com/a.jpg", "978487311565X"):

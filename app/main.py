@@ -59,6 +59,7 @@ from app import (
     extract,
     feeds,
     handoff,
+    image_memory,
     ingest_queue,
     link_checks,
     logs,
@@ -2260,6 +2261,9 @@ async def lifespan(app: FastAPI):
     app.state.data_fingerprint = _sources_fingerprint(data_dir)
     # notes(書き込めるソース)は ingest を回さずに使えるよう、無ければここで作る
     notes.ensure_db()
+    # 外の絵を確かめた結果の置き場(短期記憶の名前付きの置き場)も、ソースとして出すためにここで作る
+    if image_memory.is_enabled():
+        notes.ensure_db(image_memory.STORE)
     # CLI ブリッジ向けの認証情報の写し(相手ごとに 1 ファイル)を揃える。
     # ブリッジには設定 DB を渡さないので、書き出しの仕組みより前の登録もここで写す
     try:
@@ -5845,6 +5849,7 @@ async def make_cover(body: CoverRequest) -> dict:
     取りに行く先は ISBN から組み立てる(`COVER_SOURCES` を上から順に)。返すのは
     `{"thumb": 配る場所, "from": 取れた先}`。**どこにも無ければ 404**(`no cover`。取り直しても
     同じ)、相手につながらない・断られた・休んでいるなら 502(取り直せば取れるかもしれない)。
+    無かった本は外の絵の置き場(`app/image_memory.py`)が覚えるので、確かめ直す日までは外へ出ない。
     """
     isbn = body.isbn.strip()
     if not re.fullmatch(r"97[89]\d{10}", isbn):
