@@ -264,3 +264,59 @@ class TestThroughTheAnswerLayer:
         row = usage_store.recent_calls()[0]
         # 入力はキャッシュの読み書きのぶんも足した全体(10 + 100 + 20)
         assert (row["backend"], row["input_tokens"], row["output_tokens"]) == ("anthropic", 130, 5)
+
+
+class TestWeb:
+    """web を開けた回(`chiezo_web`)は、サーバー側の検索とページ取得を渡す。"""
+
+    SEARCH = (
+        {"type": "text", "text": "調べます。"},
+        {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {"query": "郷土料理 発祥"}},
+        {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": [
+            {"type": "web_search_result", "url": "https://example.com/a", "title": "a",
+             "encrypted_content": "x", "page_age": None},
+        ]},
+    )
+
+    def test_web_tools_only_when_asked(self):
+        asked = anthropic_api.to_request({
+            "model": "claude-opus-5", "messages": [{"role": "user", "content": "x"}], "chiezo_web": True,
+        })
+        assert [t["name"] for t in asked["tools"]] == ["web_search", "web_fetch"]
+        assert asked["tools"][0]["max_uses"] == anthropic_api.WEB_MAX_SEARCHES
+        plain = anthropic_api.to_request({"model": "claude-opus-5", "messages": [{"role": "user", "content": "x"}]})
+        assert "tools" not in plain
+
+    def test_the_answer_is_what_comes_after_the_last_result(self):
+        message = _message([*self.SEARCH, {"type": "text", "text": "答え"}])
+        assert anthropic_api.to_completion(message)["choices"][0]["message"]["content"] == "答え"
+
+    def test_a_paused_turn_is_continued(self):
+        async def run():
+            create = AsyncMock(side_effect=[
+                _message(list(self.SEARCH), stop="pause_turn"),
+                _message([{"type": "text", "text": "答え"}]),
+            ])
+            async with _client_with(create=create) as client:
+                res = await client.post("/v1/chat/completions", json={
+                    "model": "claude-opus-5", "messages": [{"role": "user", "content": "x"}], "chiezo_web": True,
+                })
+            assert res.status_code == 200
+            got = res.json()
+            # 途中で返ってきたものはそのまま送り返して続けさせる
+            assert create.await_count == 2
+            second = create.await_args_list[1].kwargs["messages"]
+            assert second[-1]["role"] == "assistant"
+            assert second[-1]["content"][1]["type"] == "server_tool_use"
+            # 答えは最後の道具の結果より後ろ。トークン数は 2 回ぶん
+            assert got["choices"][0]["message"]["content"] == "答え"
+            assert got["usage"]["completion_tokens"] == 10
+        asyncio.run(run())
+
+
+def test_claude_api_searches_the_web_itself():
+    from app import providers
+
+    assert providers.searches_web_itself("anthropic")
+    assert providers.searches_web_itself("antigravity")
+    assert not providers.searches_web_itself("gemini")

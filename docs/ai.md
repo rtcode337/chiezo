@@ -788,6 +788,14 @@ chiezo の内部はどの相手も OpenAI 互換の形で話すので、HTTP の
 (`app/anthropic_api.py`)。Anthropic の OpenAI 互換の口を使わないのは、考える量や拒否されたときの
 切り替えが使えないためです。
 
+**Claude API は自前の web 検索を持ちます**(`/v1/ai/complete` の `"web": true` と、web を開ける収集)。
+Claude API のサーバー側の web 検索とページ取得の道具を渡し、相手自身に調べさせます(`app/anthropic_api.py` の
+`WEB_TOOLS`)。検索は 1,000 回で 10 ドルかかり、取ってきた中身は入力のトークンとして数えられるので、1 回の依頼で
+使える検索とページ取得の回数に天井を置いています(20 回ずつ。1 ページの取り込みは 2 万トークンまで)。
+長く調べる回は相手が途中で返してくる(`pause_turn`)ので、そのまま送り返して続けさせます。
+答えを書かれた端から流す(`stream`)ときは開けません。管理画面(Claude Console)の組織の設定で web 検索を
+切っていると、頼んだときに 400 で断られます。
+
 **Gemini API も考える量をモデルの名前に畳んで選びます**(`gemini-3.8-flash-high`)。Gemini の OpenAI 互換の口は
 `reasoning_effort`(minimal / low / medium / high)を受け付けますが、**受け付ける段はモデルごとに違う**ので、
 一覧には段を受け付けるモデルのぶんだけ畳んだ名前を足します(`gemini-3.8-flash` と `gemini-4-argon` は low / medium / high、

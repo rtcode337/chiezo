@@ -1259,11 +1259,12 @@ async def _ask_for_collection(item, messages: list[dict]) -> tuple[str, str, str
     cfg = await answer.ensure_model(
         answer.require_settings(item.backend, item.model, item.effort)
     )
-    spec = providers.get(cfg.name)
-    via_bridge = bool(spec and spec.bridge)
-    if item.web and not via_bridge and websearch.is_enabled():
+    # **相手自身が調べられるなら任せる**(CLI ブリッジと、自前の検索を持つ Claude API)。
+    # そうでなければ Chiezo の SearXNG を道具として貸す
+    own_web = providers.searches_web_itself(cfg.name)
+    if item.web and not own_web and websearch.is_enabled():
         return await agent.complete_with_web(cfg, messages), cfg.name, cfg.model
-    extra = {"chiezo_web": True} if item.web and via_bridge else {}
+    extra = {"chiezo_web": True} if item.web and own_web else {}
     body = await answer.complete_message(cfg, messages, **extra)
     # **走ってから名乗るモデルを優先する**(`ran_model`)。送るのは別名のことが
     # あり、どの世代に解決されるかは相手が決める
@@ -5029,7 +5030,7 @@ async def ai_backends() -> dict:
                 # CLI ブリッジの相手は自前の検索を、それ以外は Chiezo の SearXNG を使う。
                 # 呼ぶ側はこれを見て「調べさせる仕事に使える相手」を絞れる ——
                 # 出さないと、選べてしまってから 400 で断られることになる
-                "web": bool(spec and spec.bridge) or websearch.is_enabled(),
+                "web": providers.searches_web_itself(name) or websearch.is_enabled(),
                 # 画像を見せられるか(`/v1/ai/complete` の content に image_url を混ぜてよいか)
                 "images": bool(spec and spec.images),
             }
@@ -5065,10 +5066,8 @@ def _worker_choices() -> list[dict]:
             # ワーカーは /v1/ai/complete の相手にならない
             "images": False,
             # 段のどれかが web を開けるなら開ける
-            "web": any(
-                bool((spec := providers.get(step.backend)) and spec.bridge)
-                for step in w.steps
-            ) or websearch.is_enabled(),
+            "web": any(providers.searches_web_itself(step.backend) for step in w.steps)
+            or websearch.is_enabled(),
         }
         for w in found
     ]
@@ -5246,7 +5245,8 @@ async def ai_complete(body: AiCompleteRequest, request: Request) -> dict | Strea
             "hint": "/v1/ai/backends で images が true の相手を選んでください",
         })
     want_web = body.web is True
-    if want_web and not via_bridge and not websearch.is_enabled():
+    own_web = providers.searches_web_itself(cfg.name)
+    if want_web and not own_web and not websearch.is_enabled():
         raise HTTPException(400, {
             "error": "web search is not available",
             "reason": f"{answer.backend_label(cfg.name)} は自前の web 検索を持たず、"
@@ -5277,7 +5277,7 @@ async def ai_complete(body: AiCompleteRequest, request: Request) -> dict | Strea
             "sources": body.sources or None, "sources_enforced": False,
         }))
     with ai_inflight.called_by(caller):
-        if (want_web or want_knowledge) and not via_bridge:
+        if (want_web and not own_web) or (want_knowledge and not via_bridge):
             # 道具を貸して往復を回す。知識は頼まれたときだけ、web は SearXNG を道具として
             content = await agent.complete_with_tools(
                 cfg, messages, request.app, knowledge=want_knowledge, web=want_web,

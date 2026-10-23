@@ -85,6 +85,10 @@ class Provider:
     # 前から保存されている「モデル + 考える量」の 2 つ組を黙って効かなくしないため。
     # ブリッジがどちらの形も受ける(`bridge/cli_bridge.py` の `split_model`)
     folds_effort: bool = False
+    # **自前の web 検索を持つ API の相手か**(Claude API のサーバー側の検索・ページ取得)。
+    # CLI ブリッジの相手と同じく、`web=true` の依頼に本文の印(`chiezo_web`)を付けて渡し、
+    # 相手自身に調べさせる(Chiezo の SearXNG を道具として貸すのではなく)
+    web_tools: bool = False
     # その相手に MCP（Chiezo の道具）を引かせられるか。 引けない相手では agent モードに
     # 意味が無い（道具を渡す先が無く、モデルの知識だけで答える）ので、rag に倒す。
     can_use_mcp: bool = True
@@ -207,6 +211,8 @@ PROVIDERS: tuple[Provider, ...] = (
         # (`app/anthropic_api.py` の `/models`)。Haiku 4.5 は受け付けない
         efforts=("low", "medium", "high", "xhigh", "max"),
         folds_effort=True,
+        # サーバー側の web 検索・ページ取得(`app/anthropic_api.py` の `WEB_TOOLS`)
+        web_tools=True,
         api=API_ANTHROPIC,
         images=True,
         order=20,
@@ -546,3 +552,9 @@ def bridge_hostnames() -> tuple[tuple[str, str], ...]:
         if host:
             found.append((spec.id, host))
     return tuple(found)
+
+
+def searches_web_itself(provider_id: str) -> bool:
+    """`web=true` の依頼で、相手自身に調べさせるか(CLI ブリッジの相手と、自前の検索を持つ API の相手)。"""
+    p = get(provider_id)
+    return bool(p and (p.bridge or p.web_tools))

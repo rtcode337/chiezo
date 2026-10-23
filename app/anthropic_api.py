@@ -60,6 +60,24 @@ FALLBACK_MODELS = ("claude-opus-5", "claude-fable-5-1")
 # 考える量の段(軽い順)。モデルの名前の末尾に畳んで選ばせる(`claude-opus-5-high`)
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
+# **web を開けた回に渡す道具**(Claude API のサーバー側の道具。`/v1/ai/complete` の `web=true` と、
+# web を開ける収集。Chiezo からは本文に `chiezo_web` の印が付いてくる)。検索は 1,000 回で 10 ドル、
+# 取ってきた中身は入力のトークンとして数えられる。1 回の往復で使える回数に天井を置く(調べ続けて枠を食わない)。
+# 版は呼び手の既定が直に呼べる版にする(新しい版は既定でコード実行から呼ぶ形になり、`allowed_callers` が要る)
+WEB_MAX_SEARCHES = 20
+WEB_MAX_FETCHES = 20
+# 1 ページから取り込む量の上限(トークン)。長い頁で 1 回の入力が膨らまないように
+WEB_FETCH_MAX_TOKENS = 20000
+WEB_TOOLS = (
+    {"type": "web_search_20250305", "name": "web_search", "max_uses": WEB_MAX_SEARCHES},
+    {"type": "web_fetch_20250910", "name": "web_fetch", "max_uses": WEB_MAX_FETCHES,
+     "max_content_tokens": WEB_FETCH_MAX_TOKENS},
+)
+# 長く調べる回は相手が途中で返してくる(`pause_turn`)。そのまま送り返して続けさせる回数の天井
+MAX_PAUSES = 8
+# 道具の結果のブロック(この後ろの文字が答え。前は「調べます」のような前置き)
+_RESULT_BLOCKS = {"web_search_tool_result", "web_fetch_tool_result"}
+
 # 考える量を受け付けないモデルの頭(送ると 400 になる)。
 NO_EFFORT_PREFIXES = ("claude-haiku-",)
 
@@ -122,9 +140,25 @@ class Transport(httpx.AsyncBaseTransport):
     async def _complete(self, request: httpx.Request, body: dict) -> httpx.Response:
         kwargs = to_request(body)
         message = await self._messages_api(kwargs).create(**kwargs)
+        # **長く調べる回は途中で返ってくる**(`pause_turn`)。受け取ったものをそのまま送り返して
+        # 続けさせ、続きを足していく(答えは最後の回に出る。前の回のブロックも答えの組み立てに使う)
+        earlier: list = []
+        usages = [message.usage]
+        for _ in range(MAX_PAUSES):
+            if message.stop_reason != "pause_turn":
+                break
+            earlier += list(message.content)
+            kwargs["messages"] = [*kwargs["messages"], {"role": "assistant", "content": [
+                _dump(b) for b in message.content
+            ]}]
+            message = await self._messages_api(kwargs).create(**kwargs)
+            usages.append(message.usage)
         if refused := _refusal_reason(message):
             return _error_response(422, refused, request)
-        return httpx.Response(200, json=to_completion(message), request=request)
+        completion = to_completion(message, earlier)
+        if len(usages) > 1:
+            completion["usage"] = _summed(usages)
+        return httpx.Response(200, json=completion, request=request)
 
     async def _stream(self, request: httpx.Request, body: dict) -> httpx.Response:
         kwargs = to_request(body)
@@ -226,7 +260,11 @@ def to_request(body: dict) -> dict[str, Any]:
         kwargs["system"] = system
     if stop := body.get("stop"):
         kwargs["stop_sequences"] = [stop] if isinstance(stop, str) else list(stop)
-    if tools := [t for t in (_convert_tool(t) for t in body.get("tools") or []) if t]:
+    tools = [t for t in (_convert_tool(t) for t in body.get("tools") or []) if t]
+    if body.get("chiezo_web"):
+        # **web を開けた回だけ、サーバー側の検索とページ取得を渡す**
+        tools += [dict(t) for t in WEB_TOOLS]
+    if tools:
         kwargs["tools"] = tools
         if body.get("tool_choice") == "none":
             kwargs["tool_choice"] = {"type": "none"}
@@ -352,8 +390,12 @@ def _arguments(raw: Any) -> dict:
 # ---- Messages API → OpenAI 互換 ---------------------------------------------
 
 
-def to_completion(message: Any) -> dict:
-    """`messages.create` の応答を、OpenAI 互換の `chat.completion` の形にする。"""
+def to_completion(message: Any, earlier: list | None = None) -> dict:
+    """`messages.create` の応答を、OpenAI 互換の `chat.completion` の形にする。
+
+    `earlier` は途中で返ってきた(`pause_turn`)回のブロック。web を調べた回の答えは、
+    **最後の道具の結果より後ろの文字**(前は「調べます」のような前置き)。
+    """
     blocks = _after_fallback(list(message.content))
     calls = [
         {
@@ -363,7 +405,9 @@ def to_completion(message: Any) -> dict:
         }
         for b in blocks if b.type == "tool_use"
     ]
-    reply: dict[str, Any] = {"role": "assistant", "content": _text_of_blocks(message.content)}
+    reply: dict[str, Any] = {
+        "role": "assistant", "content": _answer_text([*(earlier or []), *message.content]),
+    }
     if calls:
         reply["tool_calls"] = calls
         reply[RAW_KEY] = [_dump(b) for b in _echoable(list(message.content))]
@@ -381,6 +425,23 @@ def to_completion(message: Any) -> dict:
 
 def _text_of_blocks(blocks: list) -> str:
     return "".join(getattr(b, "text", "") or "" for b in blocks if b.type == "text")
+
+
+def _answer_text(blocks: list) -> str:
+    """答えの文字。web を調べた回は、最後の道具の結果より後ろだけ(前は前置き)。"""
+    marks = [i for i, b in enumerate(blocks) if b.type in _RESULT_BLOCKS]
+    return _text_of_blocks(blocks[marks[-1] + 1:] if marks else blocks)
+
+
+def _summed(usages: list) -> dict:
+    """途中で返ってきた回も含めた、トークン数の合計。"""
+    total = {"prompt_tokens": 0, "completion_tokens": 0, "prompt_tokens_details": {"cached_tokens": 0}}
+    for usage in usages:
+        one = _usage(usage)
+        total["prompt_tokens"] += one.get("prompt_tokens", 0)
+        total["completion_tokens"] += one.get("completion_tokens", 0)
+        total["prompt_tokens_details"]["cached_tokens"] += one.get("prompt_tokens_details", {}).get("cached_tokens", 0)
+    return total
 
 
 def _last_fallback(blocks: list) -> int:
