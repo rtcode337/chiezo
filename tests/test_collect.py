@@ -6294,6 +6294,28 @@ class TestWhatChangedInOneDoc:
         # 動いていない行は差分に出ない（n=2 の文脈としては出るので、印だけ見る）
         assert '<span class="added">' in html and '<span class="removed">' in html
 
+    def test_apps_get_the_same_diff_as_data(self, generations):
+        """**画面を持つアプリにも同じ比べ方で渡す**(`GET /v1/collect/{name}/diff`)。
+        管理画面へ飛ばさずに、アプリの画面で違いを見せられるように。
+        """
+        from app.views import admin
+
+        got = admin.doc_change("news", "残る店", collect.doc_versions("news", generations, "残る店"))
+        assert got["what"] == "changed"
+        assert got["compared"] == "generations"
+        assert (got["before_stamp"], got["now_stamp"]) == ("20260101000000", "20260102000000")
+        assert got["tags_added"] == ["移転"] and got["tags_removed"] == []
+        assert "-旧住所にあります。" in got["body_diff"]
+        assert "+新住所へ移転しました。" in got["body_diff"]
+        assert not any(line.startswith(("---", "+++")) for line in got["body_diff"])
+
+        added = admin.doc_change("news", "増える店", collect.doc_versions("news", generations, "増える店"))
+        assert added["what"] == "added" and added["body_full"] == "新しく入りました。"
+        removed = admin.doc_change("news", "消える店", collect.doc_versions("news", generations, "消える店"))
+        assert removed["what"] == "removed" and removed["doc_id"] is None
+        missing = admin.doc_change("news", "知らない店", collect.doc_versions("news", generations, "知らない店"))
+        assert missing["what"] == "missing"
+
     def test_the_page_links_to_what_is_in_there_now(self, generations):
         """差分に出るのは本文とタグだけ。出典も extra も、同じタグの他の文書への
         導線もここには無いので、いまの中身を開ける入口を添える。

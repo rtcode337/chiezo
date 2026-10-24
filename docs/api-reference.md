@@ -1759,6 +1759,7 @@ curl -s -X POST "$BASE/v1/collect/spot_kinds/preview?sweep=%E3%81%98%E3%81%A3%E3
 | `POST /v1/collect/{name}/requeue` | 今あるものを全部、まだ目を通していないものに戻すよう頼む(印を付けるのは次に焼く回) |
 | `POST /v1/collect/{name}/repartition` | 区画の割り直しだけを裏で始める(202。様子は `GET /v1/collect/{name}` の `repartition`)。焼いている最中・割り直している最中は 409 |
 | `POST /v1/collect/{name}/stop` | 走っているこの収集の取り込みを降ろす(AI の往復も止める) |
+| `GET /v1/collect/{name}/diff?title=…` | 1 件がどう書き換わったか(管理画面の差分の面と同じ比べ方。`what`・何と比べたか `compared`・タグの出入り・脇書きの変化・本文の行の差分) |
 | `GET` / `DELETE /v1/collect/{name}/queries` | 考えさせた検索文の控えを読む / 消す(`query` を渡せばその 1 つ、無ければ全部) |
 | `GET /v1/ai/workers` | ワーカーの一覧(並び・止めているか・待ち行列の数・前回起きた/流し終えた時刻) |
 | `POST /v1/ai/workers/{id}/paused` | `{"paused": true|false}` でワーカーを止める / 動かす(待ち行列は残る) |

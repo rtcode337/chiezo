@@ -5765,6 +5765,70 @@ def _doc_diff_page_html(name: str, title: str, versions: dict) -> str:
     )
 
 
+def doc_change(name: str, title: str, versions: dict) -> dict:
+    """1 件が**どう書き換わったか**を、画面を持つアプリ向けの形で返す(`GET /v1/collect/{name}/diff`)。
+
+    管理画面の差分の面(`_doc_diff_page_html`)と同じ比べ方 —— 1 件が控えている直す前の
+    中身があればそれと、無ければ世代どうしで比べる。**どちらと比べたかを必ず返す**
+    (`compared`)。書かないと、世代の差分をその回の変更として読まれる。
+    """
+    now, before, kept = versions["now"], versions["before"], versions.get("kept") or {}
+    if kept and now is not None:
+        before = {**now, **kept}
+    if now is None and before is None:
+        what = "missing"
+    elif kept:
+        what = "rewritten"
+    elif before is None:
+        what = "added"
+    elif now is None:
+        what = "removed"
+    elif (now["body"], sorted(now["tags"])) == (before["body"], sorted(before["tags"])):
+        what = "unchanged"
+    else:
+        what = "changed"
+
+    after_tags = set((now or {}).get("tags") or [])
+    prior_tags = set((before or {}).get("tags") or [])
+    after_facts = collect.facts_of(now or {})
+    prior_facts = collect.facts_of(before or {})
+    extra = [
+        {
+            "key": key,
+            "before": _short(prior_facts[key]) if key in prior_facts else None,
+            "after": _short(after_facts[key]) if key in after_facts else None,
+        }
+        for key in sorted(set(after_facts) | set(prior_facts))
+        if prior_facts.get(key) != after_facts.get(key)
+    ]
+    after_body = (now or {}).get("body") or ""
+    prior_body = (before or {}).get("body") or ""
+    if prior_body and after_body:
+        body_diff = list(difflib.unified_diff(
+            prior_body.splitlines(), after_body.splitlines(), lineterm="", n=2,
+        ))[2:]
+        body_full = ""
+    else:
+        body_diff, body_full = [], after_body or prior_body
+    return {
+        "name": name,
+        "title": title,
+        "what": what,
+        # 何と比べたか: 1 件が控えている直す前の中身(`kept`) / 世代どうし(`generations`)
+        "compared": "kept" if kept else "generations",
+        "changed_by": collect.changed_by(now or {}),
+        "now_stamp": versions.get("now_stamp") or "",
+        "before_stamp": versions.get("before_stamp") or "",
+        "tags_added": sorted(after_tags - prior_tags),
+        "tags_removed": sorted(prior_tags - after_tags),
+        "extra": extra,
+        # 本文の差分(unified diff の行。頭の `---` / `+++` は落とす)。片側しか無ければ全文
+        "body_diff": body_diff,
+        "body_full": body_full,
+        "doc_id": (now or {}).get("doc_id"),
+    }
+
+
 def _doc_now_link(name: str, now: dict | None) -> str:
     """**いま入っている中身への入口**。差分はタグと本文だけを切り出したものなので、
     出典も extra も、同じタグの他の文書への導線もここには出ない。

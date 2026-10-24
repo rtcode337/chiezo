@@ -701,7 +701,7 @@ paths:
   依頼元の違う収集はどちらも 403。読む側のアプリの画面から止めたい・動かしたいという要望に応えつつ、
   「試しに叩いただけで動き出さない」を許可する操作で守る
 - **管理画面のボタンと同じ操作を REST にも開けてある**(`main.collect_redo` / `collect_restart` /
-  `collect_requeue` / `collect_repartition` / `collect_stop` / `collect_queries*`)。依頼元のアプリの画面だけで
+  `collect_requeue` / `collect_repartition` / `collect_stop` / `collect_queries*` / `collect_doc_diff`)。1 件の差分は管理画面の面と同じ比べ方をデータで返す(`views.admin.doc_change`)。依頼元のアプリの画面だけで
   済むようにするためで、**中身は画面と同じ関数を呼ぶ**(割り直しと取り込みの停止は `views.admin.start_repartition` /
   `stop_ingest` に降ろして共有)—— 書き写すと、断る条件が片方だけ古くなる。やり直しは `run` と同じく
   止めている収集を `manual` のときだけ通す。**取り消せない操作は開けない**(削除・世代を戻す・名前を変える)

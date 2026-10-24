@@ -4358,6 +4358,25 @@ def collect_stop(name: str):
     return {"ok": True}
 
 
+@app.get("/v1/collect/{name}/diff")
+def collect_doc_diff(
+    request: Request,
+    name: str,
+    title: str = Query(..., description="見出し"),
+):
+    """**1 件がどう書き換わったか**(管理画面の差分の面と同じ比べ方)。
+
+    1 件が控えている直す前の中身があればそれと、無ければ 1 つ前の世代と比べる。
+    `compared` がどちらと比べたか、`what` が何が起きたか
+    (`rewritten` / `added` / `removed` / `changed` / `unchanged` / `missing`)。
+    タグの出入り・脇書きの変化(こちらが押す印は除く)・本文の行の差分を返す。
+    """
+    collect.require_enabled()
+    collect.get(name)
+    versions = collect.doc_versions(name, request.app.state.sources, title)
+    return views_admin.doc_change(name, title, versions)
+
+
 @app.get("/v1/collect/{name}/queries")
 def collect_queries(name: str):
     """**考えさせた検索文の控え**(新しい順。いつ使い・何件入り・何件残ったか)。"""

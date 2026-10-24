@@ -171,3 +171,15 @@ class TestWorkers:
 
         assert res.status_code == 409
         assert "待ち行列は空" in res.json()["error"]
+
+
+class TestDiff:
+    def test_a_doc_not_baked_yet_says_missing(self, client, made):
+        """まだ焼いていない収集でも落ちない(比べる相手が無いことを返す)。"""
+        res = client.get("/v1/collect/news/diff", params={"title": "どこにも無い"})
+
+        assert res.status_code == 200
+        assert res.json()["what"] == "missing"
+
+    def test_an_unknown_collection_is_404(self, client, made):
+        assert client.get("/v1/collect/nope/diff", params={"title": "x"}).status_code == 404
