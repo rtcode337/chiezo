@@ -1765,6 +1765,8 @@ curl -s -X POST "$BASE/v1/collect/spot_kinds/preview?sweep=%E3%81%98%E3%81%A3%E3
 | `POST /v1/ai/workers/{id}/paused` | `{"paused": true|false}` でワーカーを止める / 動かす(待ち行列は残る) |
 | `POST /v1/ai/workers/{id}/wake` | ワーカーを時計を待たずに起こす(行列が空なら 409、詰まっている・止めているなら 429) |
 
+**`GET /v1/collect/{name}` は `outside_switch_allowed`(外のアプリから動かせるか)も返す** —— 読む側は、許されていなければ「動かす」の代わりに管理画面の収集の面への入口を出せる。
+
 **取り消せない操作は REST に出さない**(溜めたものの削除・世代を戻す・名前を変える・ワーカーの作成と変更)。
 
 ```bash

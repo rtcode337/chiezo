@@ -4189,6 +4189,9 @@ def collect_get(
         "locks_pending": collect.pending_locks(item, request.app.state.sources),
         # 区画の割り直しの様子(`POST …/repartition` で始めたもの。押したことが無ければ空)
         "repartition": repartition_job.state(name),
+        # 外のアプリから動かせるか(管理画面の「外部からの有効化を許可する」)。読む側は、
+        # 許されていなければ「動かす」の代わりに管理画面の収集の面への入口を出す
+        "outside_switch_allowed": collect.outside_switch_allowed(),
     }
 
 

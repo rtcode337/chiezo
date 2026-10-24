@@ -183,3 +183,13 @@ class TestDiff:
 
     def test_an_unknown_collection_is_404(self, client, made):
         assert client.get("/v1/collect/nope/diff", params={"title": "x"}).status_code == 404
+
+
+class TestOutsideSwitch:
+    def test_the_detail_says_whether_apps_may_turn_it_on(self, client, made):
+        """読む側のアプリが、動かすボタンを出すか管理画面への入口を出すかを決められるように。"""
+        assert client.get("/v1/collect/news").json()["outside_switch_allowed"] is False
+
+        collect.set_outside_switch(True)
+        assert client.get("/v1/collect/news").json()["outside_switch_allowed"] is True
+
