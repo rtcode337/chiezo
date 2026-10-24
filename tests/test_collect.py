@@ -3455,6 +3455,46 @@ class TestCarryingFactsIntoTheDoc:
         docs, _diff = collect.material(item, previous, collected, only_new=True)
         assert {d["title"]: d["tags"] for d in docs}["行き場なし"] == ["ラーメン"]
 
+    def test_a_machine_round_fills_a_rule_marked_fill_into_docs_without_it(self, sample):
+        """**`fill` を書いた読み替えのタグは、その接頭辞を 1 つも持たない既にいる 1 件にも渡す。**
+
+        足すだけの回は既にいる 1 件のタグに触らないので、読み替えを後から足しても
+        前から居る 1 件には付かなかった。1 つでも持っていれば触らない。
+        """
+        from dataclasses import replace
+
+        item = replace(collect.get("news"), extract={
+            "source": "jawiki", "tag": "映画",
+            "tags": [{"pattern": "^(ホラー)映画$", "format": "ジャンル:{1}", "fill": True}],
+        })
+        previous = {
+            "まだ無い": {
+                "doc_id": 1, "title": "まだ無い", "opening": "冒頭", "body": "説明",
+                "tags": ["映画"], "updated_at": "2026-01-01T00:00:00+00:00", "extra": {},
+            },
+            "もう有る": {
+                "doc_id": 2, "title": "もう有る", "opening": "冒頭", "body": "説明",
+                "tags": ["映画", "ジャンル:コメディ"], "updated_at": "2026-01-01T00:00:00+00:00",
+                "extra": {},
+            },
+        }
+        collected = [
+            {"title": "まだ無い", "body": "名簿",
+             "tags": ["映画", "ジャンル:ホラー", "ジャンル:SF", "年代:1980"]},
+            {"title": "もう有る", "body": "名簿", "tags": ["ジャンル:ホラー"]},
+        ]
+
+        docs, _diff = collect.material(item, previous, collected, only_new=True, facts=True)
+        tags = {d["title"]: d["tags"] for d in docs}
+
+        assert tags == {
+            "まだ無い": ["映画", "ジャンル:ホラー", "ジャンル:SF"],
+            "もう有る": ["映画", "ジャンル:コメディ"],
+        }
+        # 機械の回でなければ渡さない
+        docs, _diff = collect.material(item, previous, collected, only_new=True)
+        assert {d["title"]: d["tags"] for d in docs}["まだ無い"] == ["映画"]
+
     def test_a_held_location_is_put_back_and_marked(self):
         """**人が確かめた座標は、AI が動かしても戻す**(正しい位置に直した店が、
         別の回に動かされていた)。印のタグも付け、AI から見えるようにする。"""

@@ -239,6 +239,25 @@ class TestPullingFromWhatIsAlreadyThere:
             {"pattern": "^(.+)年生$", "format": "年代:{1}-", "fallback": True}
         ]
 
+    def test_a_fill_is_written_back_and_names_its_prefix(self):
+        """`fill` は書いた形のまま残り、その規則が作る接頭辞を名指せる(`collect._filled` が読む)。"""
+        given = spec(tags=[
+            {"const": "映画"},
+            {"pattern": "^(?:日本の)?(ホラー)映画$", "format": "ジャンル:{1}",
+             "map": {"ホラー": "ホラー"}, "fill": True},
+            {"pattern": "^(\\d{4})年の映画$", "format": "年代:{1}"},
+        ])
+
+        written = extract.to_json(given)
+        assert written["tags"][1]["fill"] is True
+        assert "fill" not in written["tags"][2]
+        assert extract.normalize(written) == given
+        assert extract.fill_prefixes(written) == ["ジャンル:"]
+        assert extract.fill_prefixes([written, None]) == ["ジャンル:"]
+        assert extract.fill_prefixes(None) == []
+        with pytest.raises(HTTPException):
+            spec(tags=[{"pattern": "^(.+)映画$", "format": "ジャンル:{1}", "fill": "yes"}])
+
     def test_a_fallback_must_be_true_or_false(self):
         with pytest.raises(HTTPException):
             spec(tags=[{"pattern": "^(.+)年生$", "format": "年代:{1}-", "fallback": "yes"}])

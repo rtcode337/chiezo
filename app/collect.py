@@ -5432,7 +5432,7 @@ def _stream_docs(
             # (消えたものは消えたまま。脇書きは読むときに削られる)
             skipped += 1
             yield kept(
-                _homed(item, _with_facts(before, found), found) if facts
+                _filled(item, _homed(item, _with_facts(before, found), found), found) if facts
                 else _with_new_facts(before, found),
                 title, was_skipped=True,
             )
@@ -5448,7 +5448,7 @@ def _stream_docs(
             # **アーカイブ済みのものを AI が返してきたときは触る**(`_found_again`)
             skipped += 1
             yield kept(
-                _homed(item, _with_facts(before, raw), raw) if facts
+                _filled(item, _homed(item, _with_facts(before, raw), raw), raw) if facts
                 else _with_new_facts(before, raw),
                 title, was_skipped=True,
             )
@@ -6086,6 +6086,25 @@ def _homed(item, doc: dict, raw: dict) -> dict:
         return doc
     found = [t for t in raw.get("tags") or [] if str(t).startswith(prefix) and t not in tags]
     return {**doc, "tags": tags + found} if found else doc
+
+
+def _filled(item, doc: dict, raw: dict) -> dict:
+    """抽出の規則に `fill` を書いた接頭辞のタグを、1 つも持たない 1 件にだけ渡す
+    (`extract._fill_of`)。読み替えを後から足しても、既にいる 1 件に付くように。
+    **その接頭辞のタグを 1 つでも持っていれば触らない**(AI の付け替えを機械で戻さない)。
+    消えたものには触らない。
+    """
+    prefixes = extraction.fill_prefixes(item.extract)
+    if not prefixes or is_removed(doc):
+        return doc
+    tags = list(doc.get("tags") or [])
+    found = [
+        t for prefix in prefixes
+        if not any(str(x).startswith(prefix) for x in tags)
+        for t in raw.get("tags") or []
+        if str(t).startswith(prefix) and t not in tags
+    ]
+    return {**doc, "tags": tags + list(dict.fromkeys(found))} if found else doc
 
 
 def _carried(raw) -> dict:

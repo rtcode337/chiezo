@@ -653,7 +653,8 @@ def _normalize_rule(raw) -> dict:
         if not single:
             raise _bad("読み替えには pattern か patterns が要ります")
         rule = {"kind": "each", "patterns": [_compile(single)], "format": fmt,
-                "fallback": _fallback_of(raw), "map": _map_of(raw), "area_of": _area_of(raw)}
+                "fallback": _fallback_of(raw), "map": _map_of(raw), "area_of": _area_of(raw),
+                "fill": _fill_of(raw)}
         if rule["map"] is not None and rule["area_of"] is not None:
             raise _bad("map と area_of は一緒に書けません(どちらも {1} を読み替えるため)")
         return rule
@@ -667,6 +668,7 @@ def _normalize_rule(raw) -> dict:
         "patterns": [_compile(str(p or "")) for p in patterns],
         "format": fmt,
         "fallback": _fallback_of(raw),
+        "fill": _fill_of(raw),
     }
 
 
@@ -692,6 +694,38 @@ def _fallback_of(raw: dict) -> bool | str:
     if value == FALLBACK_ALL:
         return FALLBACK_ALL
     raise _bad(f'fallback は true か false か "{FALLBACK_ALL}" で書いてください')
+
+
+def _fill_of(raw: dict) -> bool:
+    """`fill` の読み方。**既にいる 1 件にも、この規則が作る接頭辞のタグが 1 つも無ければ足す**。
+
+    名簿を引き直す回は、既にいる 1 件のタグに触らない(タグは AI が育てるもので、
+    機械は持ち主ではない)。そのため**読み替えを後から足すと、足す前に入った 1 件には
+    いつまでも付かない** —— 映画の名簿にジャンルの読み替えを足したとき、既にいる
+    千数百本には 1 本も付かなかった。付けるのは**その接頭辞のタグを 1 つも持たない
+    1 件だけ**で、1 つでも持っていれば触らない(AI の付け替えを機械で戻さない)。
+    足すのは機械で引く回(`facts`)だけ(`collect._filled`)。
+    """
+    value = raw.get("fill")
+    if value is None or value is False:
+        return False
+    if value is True:
+        return True
+    raise _bad("fill は true か false で書いてください")
+
+
+def fill_prefixes(written) -> list[str]:
+    """`fill` を付けた規則が作るタグの接頭辞(書いた形の指定から。`collect._filled` が読む)。"""
+    out: list[str] = []
+    for spec in specs(written):
+        if not isinstance(spec, dict):
+            continue
+        for rule in spec.get("tags") or []:
+            if isinstance(rule, dict) and rule.get("fill") is True and rule.get("format"):
+                prefix = _prefix_of(str(rule["format"]))
+                if prefix not in out:
+                    out.append(prefix)
+    return out
 
 
 def _map_of(raw: dict) -> dict[str, str] | None:
@@ -879,12 +913,14 @@ def to_json(spec) -> dict | list[dict] | None:
             rules.append({"pattern": rule["patterns"][0].pattern, "format": rule["format"],
                           **({"fallback": rule["fallback"]} if rule.get("fallback") else {}),
                           **({"map": dict(rule["map"])} if rule.get("map") else {}),
-                          **({"area_of": dict(rule["area_of"])} if rule.get("area_of") else {})})
+                          **({"area_of": dict(rule["area_of"])} if rule.get("area_of") else {}),
+                          **({"fill": True} if rule.get("fill") else {})})
         else:
             rules.append({
                 "patterns": [p.pattern for p in rule["patterns"]],
                 "format": rule["format"],
                 **({"fallback": rule["fallback"]} if rule.get("fallback") else {}),
+                **({"fill": True} if rule.get("fill") else {}),
             })
     written = {
         "source": spec["source"],
