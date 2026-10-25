@@ -17,4 +17,4 @@ pillow>=12.3
 libzim>=3.13
 # Claude API(`app/anthropic_api.py`)。Messages API を OpenAI 互換の形に包むのに使う。
 # 1.x は httpx2 の上に載っている(chiezo 本体の httpx とは別物として同居する)
-anthropic>=1.14.0,<2
+anthropic>=2.1.0,<3
