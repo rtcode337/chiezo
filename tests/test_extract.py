@@ -258,6 +258,51 @@ class TestPullingFromWhatIsAlreadyThere:
         with pytest.raises(HTTPException):
             spec(tags=[{"pattern": "^(.+)映画$", "format": "ジャンル:{1}", "fill": "yes"}])
 
+    def test_a_rule_can_read_the_lead_sentence_instead_of_the_tags(self, source):
+        """**`on: "lead"` は本文の 1 文目に当てる**(カテゴリは記事の主題を選ばない)。
+
+        原作の記事にも映画の記事にも、互いの版のカテゴリが付く。何についての記事かは 1 文目に書いてある。
+        """
+        docs = [
+            {"title": "原作の漫画", "tags": ["2014年の漫画", "2020年の映画"], "rank": 0.9,
+             "opening": "『原作の漫画』(げんさく)は、作者による日本の漫画作品。2020年に実写映画化された。"},
+            {"title": "君の名は。", "tags": ["2016年の漫画", "2016年のアニメ映画"], "rank": 0.8,
+             "opening": "『君の名は。』(きみのなは)は、2016年公開の日本のアニメーション映画。漫画版もある。"},
+        ]
+        rules = [
+            {"const": "映画"},
+            {"pattern": "^[^。]*(?:小説|漫画)(?:(?!映画).)*$", "format": "記事:原作",
+             "on": "lead", "fill": True},
+        ]
+        given = spec(tag="2020年の映画,2016年のアニメ映画", tags=rules)
+        items, _cursor = run(given, source(docs))
+        tags = {i["title"]: i["tags"] for i in items}
+
+        assert tags["原作の漫画"] == ["映画", "記事:原作"]
+        # 題名の句点で切らない(切ると「『君の名は」で終わり、主語が読めない)
+        assert tags["君の名は。"] == ["映画"]
+        written = extract.to_json(given)
+        assert written["tags"][1]["on"] == "lead"
+        assert "on" not in written["tags"][0]
+        assert extract.normalize(written) == given
+        assert extract.fill_prefixes(written) == ["記事:"]
+
+    def test_the_lead_sentence_skips_periods_in_brackets_and_drops_readings(self):
+        text = "『君の名は。』（きみのなは。）は、日本の映画。続き。"
+        assert extract.lead_sentence(text) == "『君の名は。』は、日本の映画"
+        assert extract.lead_sentence("A (B (C) D) E。F") == "A  E"
+        assert extract.lead_sentence("") == ""
+        # 冒頭に残った情報欄の表の行は読まない
+        table = '|-\n| colspan="2" style="padding: 0;"|\n映画\n|-\n\n『作品』は、日本の漫画。'
+        assert extract.lead_sentence(table) == "『作品』は、日本の漫画"
+        assert len(extract.lead_sentence("あ" * 2000)) == extract.MAX_LEAD_CHARS
+
+    def test_on_must_be_tags_or_lead_and_only_on_a_single_pattern(self):
+        with pytest.raises(HTTPException):
+            spec(tags=[{"pattern": "^漫画$", "format": "記事:原作", "on": "body"}])
+        with pytest.raises(HTTPException):
+            spec(tags=[{"patterns": ["^漫画$"], "format": "記事:原作", "on": "lead"}])
+
     def test_a_fallback_must_be_true_or_false(self):
         with pytest.raises(HTTPException):
             spec(tags=[{"pattern": "^(.+)年生$", "format": "年代:{1}-", "fallback": "yes"}])

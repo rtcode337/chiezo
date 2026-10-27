@@ -654,11 +654,13 @@ def _normalize_rule(raw) -> dict:
             raise _bad("読み替えには pattern か patterns が要ります")
         rule = {"kind": "each", "patterns": [_compile(single)], "format": fmt,
                 "fallback": _fallback_of(raw), "map": _map_of(raw), "area_of": _area_of(raw),
-                "fill": _fill_of(raw)}
+                "fill": _fill_of(raw), "on": _on_of(raw)}
         if rule["map"] is not None and rule["area_of"] is not None:
             raise _bad("map と area_of は一緒に書けません(どちらも {1} を読み替えるため)")
         return rule
 
+    if raw.get("on") not in (None, ON_TAGS):
+        raise _bad("on は pattern 1 つの読み替えにだけ書けます")
     if not isinstance(patterns, list) or not patterns:
         raise _bad("patterns は 1 つ以上の配列で書いてください")
     if len(patterns) > MAX_PATTERNS_PER_RULE:
@@ -712,6 +714,83 @@ def _fill_of(raw: dict) -> bool:
     if value is True:
         return True
     raise _bad("fill は true か false で書いてください")
+
+
+ON_TAGS = "tags"
+ON_LEAD = "lead"
+
+
+def _on_of(raw: dict) -> str:
+    """`on` の読み方。**pattern を何に当てるか** —— 既定はタグ(カテゴリ)、`"lead"` は本文の 1 文目。
+
+    カテゴリは記事の主題を選ばない。映画の記事にも小説版・漫画版のカテゴリが付き、原作の記事にも
+    映画化のカテゴリが付くので、「この記事は何についての記事か」はカテゴリからは読めない ——
+    書いてあるのは 1 文目(「〜は、…の漫画作品。」)のほう。1 文目は `lead_sentence` で切り出す
+    (括弧の中の句点で切らず、読みや補足の丸括弧は除く)。当たったら 1 つ作る。
+    """
+    value = raw.get("on")
+    if value is None or value == ON_TAGS:
+        return ON_TAGS
+    if value == ON_LEAD:
+        return ON_LEAD
+    raise _bad(f'on は "{ON_TAGS}" か "{ON_LEAD}" で書いてください')
+
+
+# 1 文目の中で句点を探さない括弧(題名に句点を含むものがある)と、丸ごと除く括弧(読み・原題・補足)
+_LEAD_OPEN = "『「【(（"
+_LEAD_CLOSE = {"『": "』", "「": "」", "【": "】", "(": ")", "（": "）"}
+_LEAD_DROPPED = "(（"
+MAX_LEAD_CHARS = 400
+
+
+def lead_sentence(text: str) -> str:
+    """本文の 1 文目。**括弧の中の句点では切らず、丸括弧の中身は除く**(`_on_of`)。
+
+    題名が句点を含むことがあり(『君の名は。』)、素直に「。」で切ると題名の途中で終わる。
+    丸括弧は読み・原題・生没年の補足で、主語を読むときの雑音になる。長すぎる 1 文は頭で切る。
+    **表の残り(`|` や `!` で始まる行と、そのすぐ後ろの短い見出しの行)は除く** —— 冒頭に情報欄の表の行が
+    残っている記事があり、そこに並ぶ「映画」「漫画」のような欄の見出しを 1 文目として読んでしまう
+    (映画の名簿の 1600 本のうち 7 本)。
+    """
+    text = "\n".join(_without_table_rows((text or "")[: MAX_LEAD_CHARS * 8].splitlines()))
+    out: list[str] = []
+    stack: list[str] = []
+    for ch in text[: MAX_LEAD_CHARS * 4]:
+        if stack and ch == _LEAD_CLOSE[stack[-1]]:
+            opener = stack.pop()
+            if opener not in _LEAD_DROPPED and not any(o in _LEAD_DROPPED for o in stack):
+                out.append(ch)
+            continue
+        if ch in _LEAD_OPEN:
+            dropped = any(o in _LEAD_DROPPED for o in stack) or ch in _LEAD_DROPPED
+            stack.append(ch)
+            if not dropped:
+                out.append(ch)
+            continue
+        if not stack and ch == "。":
+            break
+        if not any(o in _LEAD_DROPPED for o in stack):
+            out.append(ch)
+    return "".join(out).strip()[:MAX_LEAD_CHARS]
+
+
+_TABLE_ROW = ("|", "!", "{|")
+# 表の行のすぐ後ろの短い 1 行は、表の欄の見出し(「映画」「テレビアニメ」)の残り
+MAX_TABLE_LABEL_CHARS = 20
+
+
+def _without_table_rows(lines: list[str]):
+    after_row = False
+    for line in lines:
+        bare = line.strip()
+        if bare.startswith(_TABLE_ROW):
+            after_row = True
+            continue
+        if after_row and bare and len(bare) <= MAX_TABLE_LABEL_CHARS and not any(c in bare for c in "。、"):
+            continue
+        if bare:
+            after_row = False
+        yield line
 
 
 def fill_prefixes(written) -> list[str]:
@@ -914,7 +993,8 @@ def to_json(spec) -> dict | list[dict] | None:
                           **({"fallback": rule["fallback"]} if rule.get("fallback") else {}),
                           **({"map": dict(rule["map"])} if rule.get("map") else {}),
                           **({"area_of": dict(rule["area_of"])} if rule.get("area_of") else {}),
-                          **({"fill": True} if rule.get("fill") else {})})
+                          **({"fill": True} if rule.get("fill") else {}),
+                          **({"on": rule["on"]} if rule.get("on", ON_TAGS) != ON_TAGS else {})})
         else:
             rules.append({
                 "patterns": [p.pattern for p in rule["patterns"]],
@@ -1566,7 +1646,7 @@ def _to_item(row: dict, spec: dict, context: dict) -> dict | None:
     item = {
         "title": title,
         "body": body,
-        "tags": _apply_rules(spec["tags"], tags, title, context),
+        "tags": _apply_rules(spec["tags"], tags, title, context, lead_sentence(body)),
     }
     if template := spec["url"]:
         item["url"] = _fill(template, {"title": title, **{
@@ -1639,8 +1719,12 @@ def _json_map(raw) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def _apply_rules(rules: list[dict], tags: list[str], title: str, context: dict) -> list[str]:
+def _apply_rules(
+    rules: list[dict], tags: list[str], title: str, context: dict, lead: str = ""
+) -> list[str]:
     """引いてきたタグを、依頼した側が読める形に読み替える。
+
+    `lead` は本文の 1 文目(`lead_sentence`)。`on: "lead"` の規則はタグの代わりにこれに当てる。
 
     **元のタグは持ち越さない。** カテゴリはソースの都合で付いているもので、
     そのまま渡すと読む側が「どれが意味のあるタグか」を選ぶことになる。
@@ -1656,7 +1740,8 @@ def _apply_rules(rules: list[dict], tags: list[str], title: str, context: dict) 
             out.append(rule["value"])
         elif rule["kind"] == "each":
             pattern = rule["patterns"][0]
-            for tag in tags:
+            targets = ([lead] if lead else []) if rule.get("on") == ON_LEAD else tags
+            for tag in targets:
                 if not (found := pattern.match(tag)):
                     continue
                 if (table := rule.get("map")) is not None:
