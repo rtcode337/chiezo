@@ -1441,6 +1441,162 @@ def outgrown(spec: dict, counts: dict[str, int]) -> bool:
     )
 
 
+def homeless(spec: dict, counts: dict[str, int]) -> bool:
+    """どの区画にも入らない文書が出たか(`HOMELESS`。帯で割るときだけ)。**台帳を一から
+    組み直すのはこのときだけ** —— 行き場の無い分類に置き場を作るには、その分類の帯を
+    組み直すしかない。帯以外では割り直しても行き場ができないので見ない(`outgrown`)。"""
+    return (
+        spec["by"] == BY_BAND
+        and bool(counts.get(HOMELESS))
+        and len(counts) - 1 < MAX_PARTITIONS
+        and not value_keys(spec)
+    )
+
+
+def split_outgrown(
+    spec: dict, partitions: list[dict], sources: dict, own: dict[str, dict],
+) -> list[dict]:
+    """**育ちすぎた区画だけを、その区画の中で割る**(目安の 2 倍を超えたもの)。
+    ほかの区画には触らない。
+
+    **子は親の印をそのまま継ぐ**(`visits`)—— 親を見終えていれば、その中身は全部
+    見終えている。続けて残した回数(`cut` / `held`)は親の区画の話なので持ち越さない。
+
+    台帳を一から組み直していた頃は、1 区画が育っただけで範囲じゅうの境目がずれ、
+    見終えた区画と見ていない区画をまたいだところで印が落ちていた(遠くの区画まで
+    一周が巻き戻る)。**空になった区画でも割り直さない**(`merged` が印の同じ隣とだけ
+    まとめる)。一から組み直すのは、割り直しを頼まれたとき・範囲や並べた値・割り方を
+    変えたときと、帯で行き場の無い文書が出たとき(`homeless`)だけ。
+
+    割れない区画(値ひとつの帯・寄せ集め・タグ)はそのまま残す。
+    """
+    if value_keys(spec) or spec["by"] == BY_TAG:
+        return partitions
+    limit = spec["target"] * 2
+    grown = {
+        p["key"] for p in partitions
+        if p.get("count", 0) > limit and not _single_value(spec, p["key"])
+    }
+    if not grown:
+        return partitions
+    if spec["by"] == BY_GEO:
+        children = _split_boxes(spec, grown, _points(spec, sources, own))
+    else:
+        find = locator(spec, partitions)
+        members: dict[str, list[tuple[str, dict]]] = {key: [] for key in grown}
+        for title, doc in _members_source(spec, sources, own):
+            key = find(doc)
+            if key in members:
+                members[key].append((title, doc))
+        children = {
+            key: (_split_band(spec, key, docs) if spec["by"] == BY_BAND
+                  else _split_titles(spec, key, [t for t, _d in docs]))
+            for key, docs in members.items()
+        }
+    out: list[dict] = []
+    for p in partitions:
+        kids = children.get(p["key"]) or []
+        if len(kids) < 2:
+            out.append(p)
+            continue
+        inherited = {k: v for k, v in p.items() if k not in ("key", "count", "cut", "held")}
+        out += [{**inherited, "key": kid["key"], "count": kid["count"]} for kid in kids]
+    log.info("partition: 育った %d 区画をその中で割った", len(grown))
+    return out[:MAX_PARTITIONS] if len(out) > MAX_PARTITIONS else out
+
+
+def _split_boxes(spec: dict, grown: set[str], points) -> dict[str, list[dict]]:
+    """育った矩形ごとに、中の点だけで二分し直す(`_split` と同じ割り方)。"""
+    boxes = {key: parse_geo_key(key) for key in grown}
+    inside: dict[str, list[tuple[float, float]]] = {key: [] for key in grown}
+    for lat, lon in points:
+        for key, box in boxes.items():
+            if box and box[0] <= lat < box[2] and box[1] <= lon < box[3]:
+                inside[key].append((lat, lon))
+                break
+    out: dict[str, list[dict]] = {}
+    for key, box in boxes.items():
+        if box is None:
+            continue
+        kids: list[dict] = []
+        _split(tuple(box), inside[key], spec["target"], kids, 0)
+        out[key] = kids
+    return out
+
+
+def _members_source(spec: dict, sources: dict, own: dict[str, dict]):
+    """割り直す区画の中身を数える相手(見出し → 文書)。見出しで割っていて母集団の
+    ソースがあればそちらの見出し、なければ収集自身(`_titles` / `_bands` と同じ)。"""
+    from app import db
+
+    src = _source_of(spec, sources) if spec["by"] != BY_BAND else None
+    if src is None:
+        yield from own.items()
+        return
+    where, args = _population_filter(spec)
+    for r in db.query(
+        src.path,
+        f"SELECT d.title FROM docs d WHERE 1=1{where} ORDER BY d.title LIMIT ?",
+        (*args, MAX_POINTS),
+    ):
+        yield r["title"], {"title": r["title"]}
+
+
+def _split_titles(spec: dict, key: str, titles: list[str]) -> list[dict]:
+    """見出しの区画を `target` 件ずつに。**最初の子は親の始まりを継ぐ**(区切りは
+    「どこから始まるか」で読むので、親の始まりより手前に落ちる見出しも引き受ける)。"""
+    bounds = parse_title_key(key)
+    ordered = sorted(titles)
+    if bounds is None or len(ordered) <= spec["target"]:
+        return []
+    chunks = [ordered[i:i + spec["target"]] for i in range(0, len(ordered), spec["target"])]
+    out = []
+    for i, chunk in enumerate(chunks):
+        first = bounds[0] if i == 0 else chunk[0]
+        last = bounds[1] if i == len(chunks) - 1 else chunk[-1]
+        out.append({"key": title_key(first, last), "count": len(chunk)})
+    return out
+
+
+def _split_band(spec: dict, key: str, docs: list[tuple[str, dict]]) -> list[dict]:
+    """帯の区画を、中の値だけで帯に切り直す(`_bands_of` と同じ割り方)。**最初の子は
+    親の始まりを、最後の子は親の終わりを継ぐ**(端を開いた帯は開いたまま)。
+    値の分からないものの置き場は見出しで切る。寄せ集めの区画は割らない。"""
+    parsed = parse_band_key(key)
+    if parsed is None or len(parsed[0]) != 1:
+        return []
+    name, lo, hi, titles_range = parsed[0][0], parsed[1], parsed[2], parsed[3]
+    if titles_range is not None:
+        bounds = parse_title_key(titles_range)
+        kids = _unknown_bands(spec, name, [t for t, _d in docs])
+        if bounds is None or len(kids) < 2:
+            return []
+        first = parse_band_key(kids[0]["key"])[3]
+        last = parse_band_key(kids[-1]["key"])[3]
+        kids[0]["key"] = band_key(
+            name, BAND_UNKNOWN, title_key(bounds[0], parse_title_key(first)[1])
+        )
+        kids[-1]["key"] = band_key(
+            name, BAND_UNKNOWN, title_key(parse_title_key(last)[0], bounds[1])
+        )
+        return kids
+    by_number: dict[int, list[str]] = {}
+    for title, doc in docs:
+        number = _number_in(tag_value(doc.get("tags") or [], spec["value"]))
+        if number is not None:
+            by_number.setdefault(number, []).append(title)
+    kids = _bands_of(spec, name, by_number)
+    if len(kids) < 2:
+        return []
+    spans = [parse_band_key(k["key"]) for k in kids]
+    out = []
+    for i, (kid, span) in enumerate(zip(kids, spans, strict=True)):
+        start = lo if i == 0 else span[1]
+        end = hi if i == len(kids) - 1 else span[2]
+        out.append({"key": band_key(name, start, end), "count": kid["count"]})
+    return out
+
+
 def _single_value(spec: dict, key: str) -> bool:
     """値ひとつだけの帯か(`日本|1800-1800`)。**これ以上は割れない**ので、
     育っても割り直しの引き金にしない —— 割り直しても同じ台帳になり、回ってくる

@@ -17,6 +17,7 @@ import sqlite3
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 from fastapi import HTTPException
@@ -2619,6 +2620,95 @@ class TestPerSweepPrompt:
         assert collect.edits_what_is_there(sweep.prompt, sweep.only_new) is False
 
 
+class TestOnlyTheGrownPartitionIsSplit:
+    """**育った区画だけを、その区画の中で割る**(`partition.split_outgrown`)。
+
+    1 区画が育った・空になっただけで台帳を一から組み直していた頃は、範囲じゅうの境目が
+    ずれ、見終えた区画と見ていない区画をまたいだところで印が落ちていた。
+    """
+
+    SPEC: ClassVar[dict] = {"by": "geo", "target": 10, "bbox": [35.0, 139.0, 36.0, 140.0]}
+
+    @staticmethod
+    def _shop(i: int, lat: float, lon: float) -> tuple[str, dict]:
+        title = f"店{i}"
+        return title, {"doc_id": i, "title": title, "tags": [], "extra": {"lat": lat, "lon": lon}}
+
+    def _ledger(self):
+        west = partitioning.geo_key((35.0, 139.0, 36.0, 139.5))
+        east = partitioning.geo_key((35.0, 139.5, 36.0, 140.0))
+        return west, east, [
+            {"key": west, "count": 10, "visits": {"ざっと": "2026-10-01T00:00:00+00:00"}},
+            {"key": east, "count": 10, "visits": {}},
+        ]
+
+    def test_a_grown_box_is_split_inside_and_the_children_keep_its_marks(self, sample):
+        west, east, ledger = self._ledger()
+        collect.update("news", partition=self.SPEC, partitions=ledger)
+        # 西だけが育つ(目安 10 の 2 倍を超える 25 件)。東は 10 件のまま
+        previous = dict(
+            [self._shop(i, 35.02 + i * 0.038, 139.02 + i * 0.018) for i in range(25)]
+            + [self._shop(100 + i, 35.05 + i * 0.09, 139.6 + i * 0.03) for i in range(10)]
+        )
+
+        out = collect.plan_partitions(collect.get("news"), {}, previous)
+
+        keys = [p["key"] for p in out]
+        assert east in keys and west not in keys
+        kids = [p for p in out if p["key"] != east]
+        assert len(kids) > 1
+        assert all(p["visits"] == {"ざっと": "2026-10-01T00:00:00+00:00"} for p in kids)
+        assert sum(p["count"] for p in kids) == 25
+        # 子は親の矩形の中にきっちり収まる
+        for p in kids:
+            s_, w_, n_, e_ = partitioning.parse_geo_key(p["key"])
+            assert s_ >= 35.0 and n_ <= 36.0 and w_ >= 139.0 and e_ <= 139.5
+        # 印の違う東は触らない
+        assert next(p for p in out if p["key"] == east)["visits"] == {}
+
+    def test_an_emptied_box_does_not_reshape_the_rest(self, sample):
+        west, east, ledger = self._ledger()
+        collect.update("news", partition=self.SPEC, partitions=ledger)
+        # 西の店がみな消えて空になった。印が違うので東とはまとめない
+        previous = dict([self._shop(100 + i, 35.05 + i * 0.09, 139.6 + i * 0.03) for i in range(10)])
+
+        out = collect.plan_partitions(collect.get("news"), {}, previous)
+
+        assert [p["key"] for p in out] == [west, east]
+        assert out[0]["count"] == 0
+        assert out[0]["visits"] == {"ざっと": "2026-10-01T00:00:00+00:00"}
+
+    def test_asking_to_repartition_still_builds_the_whole_ledger(self, sample):
+        _west, east, ledger = self._ledger()
+        collect.update("news", partition=self.SPEC, partitions=ledger)
+        previous = dict([self._shop(i, 35.02 + i * 0.03, 139.02 + i * 0.03) for i in range(30)])
+
+        out = collect.plan_partitions(collect.get("news"), {}, previous, rebuild=True)
+
+        # 一から組み直すので、東西の境目そのものが動く
+        assert east not in [p["key"] for p in out]
+
+    def test_a_grown_title_range_keeps_its_start(self, sample):
+        collect.update(
+            "news",
+            partition={"by": "title", "target": 10},
+            partitions=[
+                {"key": partitioning.title_key("あ", "う"), "count": 10, "visits": {"ざっと": "1"}},
+                {"key": partitioning.title_key("か", "こ"), "count": 10},
+            ],
+        )
+        names = [f"い{i:02d}" for i in range(25)] + [f"き{i:02d}" for i in range(10)]
+        previous = {t: {"doc_id": i, "title": t, "tags": []} for i, t in enumerate(names)}
+
+        out = collect.plan_partitions(collect.get("news"), {}, previous)
+
+        heads = [partitioning.parse_title_key(p["key"])[0] for p in out]
+        # 最初の子は親の始まりを継ぐ(手前に落ちる見出しも引き受ける)
+        assert heads[0] == "あ"
+        assert partitioning.title_key("か", "こ") in [p["key"] for p in out]
+        assert all(p["visits"] == {"ざっと": "1"} for p in out[:-1])
+
+
 class TestTheLedgerCountFollowsTheContents:
     """割り直さない回でも件数は取り直す。
 
@@ -3148,12 +3238,10 @@ class TestTheLedgerCountFollowsTheContents:
         assert kept[0]["visits"] == {"ざっと": "1"}
         assert kept[0]["count"] == 0
 
-    def test_an_emptied_range_is_taken_over_by_the_band_beside_it(self, sample):
-        """**同じ分類の中で空いた範囲は、残さない。**
-
-        帯は隙間なく並び、端は開いている(`-1910` / `1840-`)ので、空いた範囲は
-        必ずどれかの帯の受け持ちに入る —— 残すと、同じ範囲を 2 つの区画が抱えて、
-        どちらに入るかが並び順で決まってしまう。
+    def test_an_emptied_range_stays_until_a_neighbour_with_the_same_marks_takes_it(self, sample):
+        """**空いた範囲だけでは割り直さない。** 印の同じ隣とはまとめ(`merged`)、印の違う隣とは
+        まとめずに残す —— 一から組み直していた頃は、1 区画が空いただけで境目が動き、見終えた
+        区画の印まで落ちていた。育った隣はその中だけで割る(`split_outgrown`)。
         """
         spec = {"by": "band", "prefix": "地域", "value": "年代", "target": 10}
         emptied = partitioning.band_key("日本", 1800, 1850)
@@ -3172,8 +3260,13 @@ class TestTheLedgerCountFollowsTheContents:
 
         ledger = collect.plan_partitions(collect.get("news"), {}, previous)
 
-        assert emptied not in [p["key"] for p in ledger]
-        # それでも 1800 年生まれは回ってくる(いちばん下の帯が引き受ける)
+        kept = [p for p in ledger if p["key"] == emptied]
+        assert kept and kept[0]["visits"] == {"ざっと": "1"} and kept[0]["count"] == 0
+        # 育った隣は、その帯の中だけで割られる(始まりと終わりは親のまま)
+        rest = [p["key"] for p in ledger if p["key"] != emptied]
+        assert rest[0].startswith("日本|1900-") and rest[-1].endswith("-1950")
+        assert len(rest) > 1
+        # 1800 年生まれは今までどおり回ってくる
         assert partitioning.partition_of(
             partitioning.normalize(spec), ledger,
             {"title": "むかしの人", "tags": ["地域:日本", "年代:1800"]},

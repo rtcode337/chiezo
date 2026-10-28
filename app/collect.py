@@ -4814,6 +4814,7 @@ def load_json(raw) -> dict | None:
 
 def plan_partitions(
     item: Collection, sources: dict, previous: dict[str, dict], after_roster: bool = False,
+    rebuild: bool = False,
 ) -> list[dict]:
     """この回に使う区画の台帳。必要なら割り直す(`app/partition.py`)。
 
@@ -4824,8 +4825,14 @@ def plan_partitions(
     **毎回は割り直さない。** 母集団を外のソースから取っているなら、こちらが何件
     集めようと点の数は変わらないので、区画は動かないほうがよい —— 動かすと
     巡回の記録が毎回リセットされ、一周が永遠に終わらない。
-    自分自身を割っているときだけ、育って `target` を超えた区画や空になった区画が
-    出たら割り直す。
+
+    **育ちすぎた区画は、その区画の中だけで割る**(`partitioning.split_outgrown`。子は親の
+    印を継ぐ)。**空になった区画でも割り直さない**(印の同じ隣とだけまとめる `merged`)。
+    台帳を一から組み直すのは、割り直しを頼まれたとき(`rebuild`。画面の「区画を割り直す」)・
+    台帳が無いとき・範囲や並べた値を変えたとき・帯で行き場の無い文書が出たとき
+    (`partitioning.homeless`)だけ —— 1 区画が育った・空になっただけで一から組み直して
+    いた頃は、範囲じゅうの境目がずれ、見終えた区画と見ていない区画をまたいだところで
+    印が落ちていた(遠くの区画まで一周が巻き戻る)。
 
     **割り直さない回でも、件数だけは取り直す**(`partitioning.counted`)。
     台帳の数は割ったときの写しなので、中身が別の区画へ移っても古い数が出続ける ——
@@ -4870,10 +4877,13 @@ def plan_partitions(
     # 件数では割り直さない台帳なので、ここで見ないと並びを直しても台帳が動かない
     regroup = bool(item.partitions) and partitioning.values_changed(spec, item.partitions)
     if (
-        item.partitions and not partitioning.outgrown(spec, counts)
-        and not reach and not regroup
+        item.partitions and not rebuild and not reach and not regroup
+        and not partitioning.homeless(spec, counts)
     ):
-        ledger = partitioning.merged(spec, partitioning.counted(item.partitions, counts))
+        ledger = partitioning.split_outgrown(
+            spec, partitioning.counted(item.partitions, counts), sources, alive
+        )
+        ledger = partitioning.merged(spec, ledger)
         return _after_roster(spec, ledger, alive) if after_roster else ledger
     built = partitioning.build(spec, sources, alive)
     # 前の範囲(前の台帳が覆っていた矩形)からはみ出す区画には印を継がない
@@ -4954,9 +4964,11 @@ def repartition(name: str, sources: dict) -> list[dict]:
     - **焼かない**(長期記憶も世代も動かない)
     - **進み具合も次回の予定も動かさない** —— 動かすのは台帳だけ
 
-    **巡回の記録は引き継ぐ**(`partitioning.refresh`)ので、一周は巻き戻らない。
-    **割り直しが要らなければ数え直すだけ**(`plan_partitions` の判断そのまま)——
-    ここだけ別の規則にすると、ボタンで組んだ台帳と巡回が組む台帳が食い違う。
+    **ここは台帳を一から組み直す**(`plan_partitions` の `rebuild`)。巡回の回は育った区画を
+    その中で割るだけなので、境目は割ったときのまま動かない —— 区画の大きさが偏ってきたら
+    ここで全体を組み直す。**巡回の記録は引き継ぐ**(`partitioning.refresh` と
+    `carried_by_docs`)が、境目が動いて見終えた区画と見ていない区画をまたいだところでは
+    印が落ちる(一周がそのぶん巻き戻る)。
     """
     item = get(name)
     if item is None:
@@ -4966,7 +4978,9 @@ def repartition(name: str, sources: dict) -> list[dict]:
             status_code=400,
             detail="この収集は区画で回っていません(割り直すものがありません)",
         )
-    ledger = plan_partitions(item, sources, lambda: stream_previous(name, sources))
+    ledger = plan_partitions(
+        item, sources, lambda: stream_previous(name, sources), rebuild=True
+    )
     _replace_one(name, replace(get(name), partitions=ledger, updated_at=_iso(_now())))
     log.info("repartition %s: %d 区画", name, len(ledger))
     return ledger
