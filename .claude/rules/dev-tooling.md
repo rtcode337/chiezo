@@ -45,7 +45,7 @@ paths:
     バインドマウントなので大きさは関係ない。実行ユーザーを呼び出し元に合わせるのは、
     `__pycache__` が root 所有で残るとホスト側の実行が書き込めなくなるため
   - `refresh_rank_score.py` — 既存 DB の `rank_score` を `extra` から計算し直す
-    (wikipedia は `pageviews_month`(平均の `pageviews_avg` は見ない。取り込み直せば平均から作られる)、geonames は `population`。osm は元から 0〜1 なので
+    (wikipedia は `pageviews_month`(中央値の `pageviews_median` は見ない。取り込み直せば中央値から作られる)、geonames は `population`。osm は元から 0〜1 なので
     対象外)。スキーマは変わらないので `schema_version` は上げない。ダンプの取り直しも不要
   - `fts_lab.py` — trigram と形態素トークナイザの FTS を同じ文書集合の上で作って比べる
     実験台。索引サイズ・構築時間・ヒット数・順位を出す。人気度の重みを振るのにも使った。

@@ -5,12 +5,15 @@ Wikipedia の取り込みは、毎回その時点で最新の 1 か月分の閲�
 新作の映画が公開された月は、同じシリーズの旧作の記事まで何倍も読まれ、知名度が
 その月の話題で入れ替わった(2003 年公開の作品が、目録でいちばん多い月 18 万になった)。
 落とし直すのは重すぎる(12 か月分で 60GB 前後)ので、**取り込むたびにその月の分を控えて、
-控えてある月の平均を出す**。
+控えてある月の中央値を出す**。**平均にしない** —— 平均は跳ね上がった 1 か月にそのまま引っ張られる
+(普段 月 2 万の記事が新作公開の月だけ 18 万になると、12 か月平均でも 3.3 万になる)。中央値なら、
+跳ねた月が少しあってもほとんど動かない。
 
 置き場は取り込みの側だけが書ける `<CHIEZO_DATA_DIR>/pageviews/<ソース名>.db`
 (ソースとして読まれる `*.db` の並びとは別の階層)。**控えるのは月 `MIN_VIEWS` 回以上の
 記事だけ**(1 日 1 回に満たない裾まで控えると、1 か月が数百 MB になる)。控えていない月は
-0 回として平均に入る。**残すのは直近 `KEEP_MONTHS` か月**。
+0 回として数える。**残すのはいまの月から `KEEP_MONTHS` か月以内**(控えてある新しいほうから
+数えない —— 離れた月を足したとき、古い月が残り続けないように)。
 """
 
 from __future__ import annotations
@@ -62,9 +65,10 @@ class PageviewHistory:
         self._months = None
         return kept
 
-    def keep_latest(self, months: int = KEEP_MONTHS) -> list[str]:
-        """直近 `months` か月より古い月を捨てる。捨てた月を返す。"""
-        old = self.periods()[:-months] if months > 0 else self.periods()
+    def keep_within(self, period: str, months: int = KEEP_MONTHS) -> list[str]:
+        """`period` から `months` か月より前の月を捨てる(`period` を含めて `months` か月を残す)。捨てた月を返す。"""
+        oldest = months_before(period, months - 1)
+        old = [p for p in self.periods() if p < oldest]
         for period in old:
             self._conn.execute("DELETE FROM views WHERE period = ?", (period,))
             self._conn.execute("DELETE FROM periods WHERE period = ?", (period,))
@@ -73,18 +77,23 @@ class PageviewHistory:
             self._months = None
         return old
 
-    def average(self, page_id: int) -> tuple[int, int] | None:
-        """(控えてある月の平均, 何か月分か)。控えが無い記事は None。"""
+    def median(self, page_id: int) -> tuple[int, int] | None:
+        """(控えてある月の中央値, 何か月分か)。控えていない月は 0 回として数える。控えが無い記事は None。"""
         if self._months is None:
             self._months = len(self.periods())
         if not self._months:
             return None
-        row = self._conn.execute(
-            "SELECT SUM(views) FROM views WHERE page_id = ?", (int(page_id),)
-        ).fetchone()
-        if not row or not row[0]:
+        views = [
+            row[0]
+            for row in self._conn.execute("SELECT views FROM views WHERE page_id = ?", (int(page_id),))
+        ]
+        if not views:
             return None
-        return round(row[0] / self._months), self._months
+        values = sorted(views + [0] * (self._months - len(views)))
+        middle = len(values) // 2
+        if len(values) % 2:
+            return values[middle], self._months
+        return round((values[middle - 1] + values[middle]) / 2), self._months
 
     def close(self) -> None:
         self._conn.close()
@@ -96,13 +105,8 @@ class PageviewHistory:
         self.close()
 
 
-def previous_periods(period: str, count: int) -> list[str]:
-    """`period`(YYYY-MM)の前の `count` か月(新しい順)。"""
+def months_before(period: str, count: int) -> str:
+    """`period`(YYYY-MM)の `count` か月前(YYYY-MM)。"""
     year, month = (int(part) for part in period.split("-"))
-    out = []
-    for _ in range(count):
-        month -= 1
-        if month == 0:
-            year, month = year - 1, 12
-        out.append(f"{year:04d}-{month:02d}")
-    return out
+    index = year * 12 + (month - 1) - count
+    return f"{index // 12:04d}-{index % 12 + 1:02d}"

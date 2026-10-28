@@ -40,7 +40,7 @@ from typing import IO
 import download
 import mwparserfromhell as mwp
 from mwparserfromhell.nodes import Heading
-from pageview_history import KEEP_MONTHS, PageviewHistory, previous_periods
+from pageview_history import KEEP_MONTHS, PageviewHistory, months_before
 
 from core import (
     LOW_MEMORY_BUILD_GB,
@@ -55,11 +55,14 @@ log = logging.getLogger(__name__)
 
 DUMP_INDEX_URL = "https://dumps.wikimedia.org/{wiki_id}/"
 PAGEVIEW_INDEX_URL = "https://dumps.wikimedia.org/other/pageview_complete/monthly/"
-# 月の閲覧数の控え(`pageview_history`)に、前の月が無ければ落として足す数。**最初の取り込みから
-# 数か月の平均で始めるため**(控えるのは取り込むたびの 1 か月なので、足さないと平均が効くまで
-# 月に 1 か月ずつしか増えない)。1 か月 5〜6GB なので、落とすのは控えに無い月だけ。
-# `PAGEVIEW_BACKFILL` で変えられる(0 で落とさない)
-PAGEVIEW_BACKFILL_MONTHS = 2
+# 月の閲覧数の控え(`pageview_history`)が少ないうちに、いまの月から何か月前を落として足すか。
+# **最初の取り込みから数か月の中央値で始めるため**(控えるのは取り込むたびの 1 か月なので、足さないと
+# 中央値が効くまで月に 1 か月ずつしか増えない)。**続いた月ではなく離れた月にする** —— 新作の話題が
+# 2〜3 か月続くと、続いた 3 か月は全部跳ねていて中央値でも引っ張られる。4 か月前と 8 か月前なら、
+# いまの月と合わせてほぼ 1 年に散らした 3 点になる。1 か月 5〜6GB なので、落とすのは控えが
+# この点の数に満たないときの、控えに無い月だけ(毎月の取り込みで落とし続けない)。
+# `PAGEVIEW_BACKFILL` で変えられる(何か月前かをカンマ区切り。0 か空で落とさない)
+PAGEVIEW_BACKFILL_OFFSETS = (4, 8)
 
 # ページビュー突合用の wiki_id → pageview_complete のドメインコード対応表(不規則な
 # wiki の上書き用)。通常は URL 言語コード(lang)から `<lang>.wikipedia` と機械的に
@@ -189,6 +192,18 @@ DEFAULT_VALIDATION = {
         ],
     },
 }
+
+
+def _backfill_offsets() -> tuple[int, ...]:
+    """`PAGEVIEW_BACKFILL`(何か月前かのカンマ区切り)。無ければ既定、0 か空なら落とさない。"""
+    raw = os.environ.get("PAGEVIEW_BACKFILL")
+    if raw is None:
+        return PAGEVIEW_BACKFILL_OFFSETS
+    try:
+        offsets = tuple(int(part) for part in raw.split(",") if part.strip())
+    except ValueError:
+        return PAGEVIEW_BACKFILL_OFFSETS
+    return tuple(n for n in offsets if 0 < n < KEEP_MONTHS)
 
 
 def _read_pageviews(path: Path, domain: str) -> DiskLookup:
@@ -333,16 +348,18 @@ class WikipediaAdapter:
         return (Path(base) if base else workdir.parent / "pageviews") / f"{self.source}.db"
 
     def _backfill_history(self, workdir: Path, domain: str, period: str) -> None:
-        """控えに無い前の月を落として控える(`PAGEVIEW_BACKFILL_MONTHS`)。落としたダンプは控えたら消す。"""
-        try:
-            months = int(os.environ.get("PAGEVIEW_BACKFILL", PAGEVIEW_BACKFILL_MONTHS))
-        except ValueError:
-            months = PAGEVIEW_BACKFILL_MONTHS
-        if months <= 0:
+        """控えが少ないうちに、離れた前の月を落として控える(`PAGEVIEW_BACKFILL_OFFSETS`)。
+        落としたダンプは控えたら消す。"""
+        offsets = _backfill_offsets()
+        if not offsets:
             return
         with PageviewHistory(self._history_path) as history:
             have = set(history.periods())
-            for earlier in previous_periods(period, months):
+            # 控えの点(いまの月を含め、範囲の中)が揃っていれば落とさない
+            oldest = months_before(period, KEEP_MONTHS - 1)
+            if len({p for p in have if p >= oldest} | {period}) >= len(offsets) + 1:
+                return
+            for earlier in (months_before(period, n) for n in offsets):
                 if earlier in have:
                     continue
                 year = earlier.partition("-")[0]
@@ -429,7 +446,7 @@ class WikipediaAdapter:
             return None
         history = PageviewHistory(path)
         history.record(self._pageview_period, pageviews.items())
-        history.keep_latest(KEEP_MONTHS)
+        history.keep_within(self._pageview_period, KEEP_MONTHS)
         log.info("pageview history for %s: %s", self.source, ", ".join(history.periods()))
         return history
 
@@ -509,9 +526,9 @@ class WikipediaAdapter:
             if (views := pageviews.get(doc_id)) is not None:
                 extra["pageviews_month"] = views
                 extra["pageviews_period"] = self._pageview_period
-            # **控えてある月の平均**(`pageview_history`)。その月の話題に振られない知名度
-            if history is not None and (avg := history.average(doc_id)) is not None:
-                extra["pageviews_avg"], extra["pageviews_months"] = avg
+            # **控えてある月の中央値**(`pageview_history`)。その月の話題に振られない知名度
+            if history is not None and (typical := history.median(doc_id)) is not None:
+                extra["pageviews_median"], extra["pageviews_months"] = typical
             if qid := wikidata_ids.get(doc_id):
                 extra["wikidata"] = qid
             # **代表画像の URL。** 画像そのものは持たない(指すだけ)。
@@ -529,9 +546,9 @@ class WikipediaAdapter:
                 updated_at=timestamp_elem.text if timestamp_elem is not None else None,
                 # XML ダンプには CirrusSearch の popularity_score 相当が無いので、
                 # 突合した月間ページビューを正規化して知名度として使う(取れなければ 0)。
-                # **控えてある月の平均があればそちら**(その月の話題で検索の並びが入れ替わらない)
+                # **控えてある月の中央値があればそちら**(その月の話題で検索の並びが入れ替わらない)
                 rank_score=normalized_popularity(
-                    extra.get("pageviews_avg", extra.get("pageviews_month")),
+                    extra.get("pageviews_median", extra.get("pageviews_month")),
                     POPULARITY_LOG_MAX_PAGEVIEWS,
                 ),
                 extra=extra or None,

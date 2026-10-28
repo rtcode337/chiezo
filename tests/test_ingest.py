@@ -816,7 +816,7 @@ def test_osm_download_base_can_point_at_a_mirror(monkeypatch):
 
 
 class TestPageviewHistory:
-    """月の閲覧数を控えて、控えてある月の平均を出す(その月の話題に振られない知名度)。"""
+    """月の閲覧数を控えて、控えてある月の中央値を出す(その月の話題に振られない知名度)。"""
 
     @staticmethod
     def _write_pageviews(path, lines: str):
@@ -841,31 +841,44 @@ class TestPageviewHistory:
         adapter._history_path = history_path
         docs = {d.title: d for d in adapter.iter_docs(fixture_dump)}
 
-        # その月の値は今までどおり。平均は控えてある 2 か月ぶん(控えていない月は 0 回)
+        # その月の値は今までどおり。中央値は控えてある 2 か月ぶん(2 つなら真ん中の 2 つの平均。控えていない月は 0 回)
         assert docs["東京都"].extra["pageviews_month"] == 900
-        assert docs["東京都"].extra["pageviews_avg"] == 600
+        assert docs["東京都"].extra["pageviews_median"] == 600
         assert docs["東京都"].extra["pageviews_months"] == 2
-        assert docs["浅草寺"].extra["pageviews_avg"] == 50
-        # 検索の並び順の知名度も平均で決める
+        assert docs["浅草寺"].extra["pageviews_median"] == 50
+        # 検索の並び順の知名度も中央値で決める
         assert docs["東京都"].rank_score == round(math.log10(601) / 7, 4)
         # この月の分も控えに足される
         with PageviewHistory(history_path) as history:
             assert history.periods() == ["2026-05", "2026-06"]
 
     def test_history_keeps_only_the_latest_months(self, tmp_path):
-        from pageview_history import PageviewHistory, previous_periods
+        from pageview_history import PageviewHistory, months_before
 
-        assert previous_periods("2026-02", 3) == ["2026-01", "2025-12", "2025-11"]
+        assert months_before("2026-02", 3) == "2025-11"
+        assert months_before("2026-02", 0) == "2026-02"
         with PageviewHistory(tmp_path / "h.db") as history:
-            for period in ["2025-11", "2025-12", "2026-01", "2026-02"]:
+            for period in ["2025-01", "2025-12", "2026-01", "2026-02"]:
                 history.record(period, [(1, 100)])
-            assert history.keep_latest(3) == ["2025-11"]
+            # いまの月から数えて 3 か月より前を捨てる(控えてある新しいほうから数えない)
+            assert history.keep_within("2026-02", 3) == ["2025-01"]
             assert history.periods() == ["2025-12", "2026-01", "2026-02"]
-            assert history.average(1) == (100, 3)
-            assert history.average(99) is None
+            assert history.median(1) == (100, 3)
+            assert history.median(99) is None
+
+    def test_a_spiking_month_does_not_pull_the_median(self, tmp_path):
+        """新作の公開で 1 か月だけ跳ねても、中央値はほとんど動かない(平均なら引っ張られる)。"""
+        from pageview_history import PageviewHistory
+
+        with PageviewHistory(tmp_path / "h.db") as history:
+            history.record("2026-04", [(1, 20_000)])
+            history.record("2026-05", [(1, 21_000)])
+            history.record("2026-06", [(1, 180_000)])
+            assert history.median(1) == (21_000, 3)
 
     def test_missing_earlier_months_are_backfilled_once(self, tmp_path, monkeypatch):
-        """最初の取り込みは前の月も落として控える(数か月の平均で始めるため)。控えにある月は落とさない。"""
+        """最初の取り込みは、離れた前の月(4 か月前・8 か月前)も落として控える(数か月の中央値で始めるため。
+        続いた月だと、話題が数か月続いたときに全部跳ねている)。控えが揃えば落とさない。"""
         import download
         from pageview_history import PageviewHistory
 
@@ -884,14 +897,17 @@ class TestPageviewHistory:
 
         assert fetched == [
             "pageviews-202606-user.bz2",
-            "pageviews-202605-user.bz2",
-            "pageviews-202604-user.bz2",
+            "pageviews-202602-user.bz2",
+            "pageviews-202510-user.bz2",
         ]
         # 前の月のダンプは控えたら消す(この月のぶんは取り込みで使う)
         assert sorted(p.name for p in workdir.glob("pageviews-*.bz2")) == ["pageviews-202606-user.bz2"]
         with PageviewHistory(workdir.parent / "pageviews" / "jawiki.db") as history:
-            assert history.periods() == ["2026-04", "2026-05"]
+            assert history.periods() == ["2025-10", "2026-02"]
+            history.record("2026-06", [(1, 600)])
 
+        # 次の月の取り込みでは、控えが揃っているので前の月を落とさない
         fetched.clear()
+        monkeypatch.setenv("PAGEVIEW_PERIOD", "2026-07")
         adapter.fetch_pageviews(workdir)
-        assert fetched == ["pageviews-202606-user.bz2"]
+        assert fetched == ["pageviews-202607-user.bz2"]
