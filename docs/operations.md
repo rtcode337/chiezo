@@ -127,6 +127,10 @@ J-Quants は個人の私的利用に限るサービスで、次の条件があ�
 記事本文に加えて Wikimedia の月次ページビューダンプ(全プロジェクト合算で圧縮 5〜6GB)も
 ダウンロードし、`page_id` で突合して知名度(`rank_score`)と `extra.pageviews_month` に
 します。この分、初回取り込みのダウンロード量・所要時間は見積もりよりやや増えます。
+**その月の閲覧数は `pageviews/<ソース名>.db`(`CHIEZO_DATA_DIR` の下。`PAGEVIEW_HISTORY_DIR` で変更可)に控え**、
+直近 12 か月の平均を `extra.pageviews_avg` に入れます(`rank_score` も平均から作る)。控えに前の月が無ければ、
+**最初の取り込みで前の 2 か月分も落として控えます**(1 か月 5〜6GB。`PAGEVIEW_BACKFILL` で月数を変更・0 で無効)。
+控えは月 30 回以上の記事だけで、jawiki で 1 か月 20〜30MB 程度です。
 
 **OSM 系**(`osm_japan` 等)は Geofabrik の地域抽出
 `https://download.geofabrik.de/<region>-latest.osm.pbf` を取り込みます。取り込むのは

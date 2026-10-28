@@ -31,6 +31,9 @@ chiezo-ingest(ワンショット構築バッチ)と chiezo-trigger、ソース�
     上限(既定 32MiB)に固定される。中断時にも消えるよう `iter_docs` の finally で必ず close する。
     これにより wikipedia 系の取り込みは軽くなり、必要メモリは 3GiB 見当に収まる
     (下記「メモリ方針」を参照)
+  - `pageview_history.py` — 月ごとの閲覧数の控え(`<CHIEZO_DATA_DIR>/pageviews/<ソース名>.db`)。取り込みの
+    たびにその月の分を足し、直近 12 か月の平均を出す(wikipedia の `pageviews_avg`)。取り込みが終わっても
+    消さない唯一の付属データで、ソースとして読まれる `*.db` とは階層を分けてある
   - `core.py` — コアスキーマ DDL と `Doc` 型(全ソース共通)。`SCHEMA_VERSION` は 4。
     構築プロファイル(`build_profile()` / `is_low_memory_build()`、環境変数
     `BUILD_PROFILE`)もここに置く — main(PRAGMA)と各アダプタ(必要メモリ宣言・
@@ -89,7 +92,12 @@ chiezo-ingest(ワンショット構築バッチ)と chiezo-trigger、ソース�
     `popularity_score` 相当が無いため `rank_score` は `0.0` 固定。あわせて
     `other/pageview_complete/monthly/` の月次ページビュー(bot 除外・全プロジェクト合算、
     圧縮 5〜6GB)を `page_id`(`<page><id>`)で突合し、`docs.extra` に
-    `{"pageviews_month": ..., "pageviews_period": "YYYY-MM"}` として格納する
+    `{"pageviews_month": ..., "pageviews_period": "YYYY-MM"}` として格納する。
+    **その月の分は `pageviews/<ソース名>.db` に控え**(`ingest/pageview_history.py`。月 30 回以上の記事だけ・
+    直近 12 か月)、控えてある月の平均を `pageviews_avg` / `pageviews_months` に入れ、`rank_score` も平均から作る
+    (1 か月分だけだと、新作の公開に合わせて同じシリーズの旧作が何倍も読まれ、その月の話題で知名度が入れ替わった。
+    12 か月分を毎回落とすのは 60GB 前後で重すぎる)。控えに前の月が無ければ、`fetch_pageviews` が前の 2 か月分も
+    落として控える(`PAGEVIEW_BACKFILL`。落としたダンプは控えたら消す)
     (`WIKI_DOMAIN` 未登録の wiki_id では突合をスキップ)。あわせて `page_props` SQL ダンプから
     `wikibase_item`(wikidata の Q 番号)を正規表現で拾い `extra.wikidata` に入れる
     (`filter?wikidata=` での逆引き用。OSM 側の `wikidata` タグと突き合わせられる)。

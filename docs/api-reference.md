@@ -112,6 +112,11 @@ API 側はソース種別を意識しません。
 - ページビューを突合できた記事には
   `{"pageviews_month": <月間閲覧数>, "pageviews_period": "YYYY-MM"}` が入ります(Wikimedia の
   `pageview_complete` 月次ダンプ由来、bot 除外・全アクセス種別合算)。突合できなかった記事は `null`。
+  **控えてある月の平均**も `{"pageviews_avg": <平均>, "pageviews_months": <何か月分か>}` で入ります
+  (取り込むたびにその月の閲覧数を控え、直近 12 か月の平均を出す。月 30 回未満の月は 0 回として数える)。
+  1 か月分だけだとその月の話題に振られる —— 新作の公開に合わせて同じシリーズの旧作が何倍も読まれる ——
+  ので、知名度として使うならこちらを先に読み、無ければ `pageviews_month` を使ってください。
+  `rank_score` も平均があれば平均から作ります。
 - `page_props` ダンプから wikidata の Q 番号が取れた記事には `{"wikidata": "Q17221"}` も入り、
   `filter?wikidata=` で逆引きできます(OSM 側の `wikidata` タグと突き合わせられます)。
 

@@ -91,6 +91,10 @@ class DiskLookup:
         (n,) = self._conn.execute("SELECT COUNT(*) FROM kv").fetchone()
         return n
 
+    def items(self):
+        """全部の (ID, 値)。ID の順(閲覧数を月の控えへ写すのに使う)。"""
+        yield from self._conn.execute("SELECT k, v FROM kv ORDER BY k")
+
     # ---- 後始末 -----------------------------------------------------------
 
     def close(self) -> None:

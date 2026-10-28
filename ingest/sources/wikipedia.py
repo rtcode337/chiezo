@@ -40,6 +40,7 @@ from typing import IO
 import download
 import mwparserfromhell as mwp
 from mwparserfromhell.nodes import Heading
+from pageview_history import KEEP_MONTHS, PageviewHistory, previous_periods
 
 from core import (
     LOW_MEMORY_BUILD_GB,
@@ -54,6 +55,11 @@ log = logging.getLogger(__name__)
 
 DUMP_INDEX_URL = "https://dumps.wikimedia.org/{wiki_id}/"
 PAGEVIEW_INDEX_URL = "https://dumps.wikimedia.org/other/pageview_complete/monthly/"
+# 月の閲覧数の控え(`pageview_history`)に、前の月が無ければ落として足す数。**最初の取り込みから
+# 数か月の平均で始めるため**(控えるのは取り込むたびの 1 か月なので、足さないと平均が効くまで
+# 月に 1 か月ずつしか増えない)。1 か月 5〜6GB なので、落とすのは控えに無い月だけ。
+# `PAGEVIEW_BACKFILL` で変えられる(0 で落とさない)
+PAGEVIEW_BACKFILL_MONTHS = 2
 
 # ページビュー突合用の wiki_id → pageview_complete のドメインコード対応表(不規則な
 # wiki の上書き用)。通常は URL 言語コード(lang)から `<lang>.wikipedia` と機械的に
@@ -185,6 +191,35 @@ DEFAULT_VALIDATION = {
 }
 
 
+def _read_pageviews(path: Path, domain: str) -> DiskLookup:
+    """page_id → 月間合計閲覧数(アクセス種別 desktop/mobile-web/mobile-app 合算)。
+
+    pageview_complete はドメインコードでアルファベット順にソートされているため、
+    対象ドメインの行を通過し終えたら走査を打ち切れる(全体を読み切らずに済む)。
+    件数が数百万に達するので、ディスク上の一時 SQLite に置く(`accumulate=True` で合算)。
+    """
+    counts = DiskLookup(path.with_suffix(".lookup.db"), accumulate=True)
+    seen = False
+    with bz2.open(path, "rt", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            parts = line.rstrip("\n").split(" ", 5)
+            if len(parts) < 5 or parts[0] != domain:
+                if seen:
+                    break
+                continue
+            seen = True
+            page_id_str = parts[2]
+            if page_id_str == "null":
+                continue
+            try:
+                page_id = int(page_id_str)
+                total = int(parts[4])
+            except ValueError:
+                continue
+            counts.add(page_id, total)
+    return counts.finish()
+
+
 class WikipediaAdapter:
     source_kind = "wikipedia"
 
@@ -213,6 +248,8 @@ class WikipediaAdapter:
         )
         self._pageview_path: Path | None = None
         self._pageview_period: str | None = None
+        # 月の閲覧数の控えの置き場(`fetch_pageviews` が決める。無ければ控えない)
+        self._history_path: Path | None = None
         self._page_props_path: Path | None = None
 
     # ---- 取得 -------------------------------------------------------------
@@ -286,7 +323,39 @@ class WikipediaAdapter:
         download.fetch(url, dest, USER_AGENT)
         self._pageview_path = dest
         self._pageview_period = period
+        self._history_path = self.history_path(workdir)
+        self._backfill_history(workdir, domain, period)
         return dest
+
+    def history_path(self, workdir: Path) -> Path:
+        """月の閲覧数の控えの置き場(`dumps/` の隣の `pageviews/`)。`PAGEVIEW_HISTORY_DIR` で変えられる。"""
+        base = os.environ.get("PAGEVIEW_HISTORY_DIR")
+        return (Path(base) if base else workdir.parent / "pageviews") / f"{self.source}.db"
+
+    def _backfill_history(self, workdir: Path, domain: str, period: str) -> None:
+        """控えに無い前の月を落として控える(`PAGEVIEW_BACKFILL_MONTHS`)。落としたダンプは控えたら消す。"""
+        try:
+            months = int(os.environ.get("PAGEVIEW_BACKFILL", PAGEVIEW_BACKFILL_MONTHS))
+        except ValueError:
+            months = PAGEVIEW_BACKFILL_MONTHS
+        if months <= 0:
+            return
+        with PageviewHistory(self._history_path) as history:
+            have = set(history.periods())
+            for earlier in previous_periods(period, months):
+                if earlier in have:
+                    continue
+                year = earlier.partition("-")[0]
+                filename = f"pageviews-{earlier.replace('-', '')}-user.bz2"
+                dest = workdir / filename
+                download.fetch(f"{PAGEVIEW_INDEX_URL}{year}/{earlier}/{filename}", dest, USER_AGENT)
+                counts = _read_pageviews(dest, domain)
+                try:
+                    kept = history.record(earlier, counts.items())
+                finally:
+                    counts.close()
+                    dest.unlink(missing_ok=True)
+                log.info("backfilled pageviews for %s (%s): %d pages", self.source, earlier, kept)
 
     def fetch_page_props(self, workdir: Path) -> Path | None:
         """page_props ダンプ(記事 → wikidata の Q 番号の対応表)を取得する。
@@ -348,30 +417,21 @@ class WikipediaAdapter:
         domain = self.pageview_domain()
         if domain is None or self._pageview_path is None:
             return EMPTY
-        counts = DiskLookup(
-            self._pageview_path.with_suffix(".lookup.db"), accumulate=True
-        )
-        seen = False
-        with bz2.open(self._pageview_path, "rt", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                parts = line.rstrip("\n").split(" ", 5)
-                if len(parts) < 5 or parts[0] != domain:
-                    if seen:
-                        break
-                    continue
-                seen = True
-                page_id_str = parts[2]
-                if page_id_str == "null":
-                    continue
-                try:
-                    page_id = int(page_id_str)
-                    total = int(parts[4])
-                except ValueError:
-                    continue
-                counts.add(page_id, total)
-        counts.finish()
+        counts = _read_pageviews(self._pageview_path, domain)
         log.info("loaded pageviews for %d pages (%s, %s)", len(counts), domain, self._pageview_period)
         return counts
+
+    def _open_history(self, pageviews) -> PageviewHistory | None:
+        """月の閲覧数の控えを開き、この月の分を足して直近 `KEEP_MONTHS` か月に揃える。
+        控えの置き場が決まっていなければ None(ダンプを手で渡した取り込み・テスト)。"""
+        path = self._history_path
+        if path is None or self._pageview_period is None or not len(pageviews):
+            return None
+        history = PageviewHistory(path)
+        history.record(self._pageview_period, pageviews.items())
+        history.keep_latest(KEEP_MONTHS)
+        log.info("pageview history for %s: %s", self.source, ", ".join(history.periods()))
+        return history
 
     # ---- XML ストリーミング -------------------------------------------------
 
@@ -409,15 +469,20 @@ class WikipediaAdapter:
         """
         redirect_targets = self._collect_redirects(path)
         pageviews = self._load_pageviews()
+        history = self._open_history(pageviews)
         wikidata_ids, images = self._load_page_props()
         try:
-            yield from self._iter_docs(path, redirect_targets, pageviews, wikidata_ids, images)
+            yield from self._iter_docs(
+                path, redirect_targets, pageviews, wikidata_ids, images, history
+            )
         finally:
             for lookup in (redirect_targets, pageviews, wikidata_ids, images):
                 lookup.close()
+            if history is not None:
+                history.close()
 
     def _iter_docs(
-        self, path: Path, redirect_targets, pageviews, wikidata_ids, images=EMPTY
+        self, path: Path, redirect_targets, pageviews, wikidata_ids, images=EMPTY, history=None
     ) -> Iterator[Doc]:
         for elem in self._iter_pages(path):
             ns_elem = _child(elem, "ns")
@@ -444,6 +509,9 @@ class WikipediaAdapter:
             if (views := pageviews.get(doc_id)) is not None:
                 extra["pageviews_month"] = views
                 extra["pageviews_period"] = self._pageview_period
+            # **控えてある月の平均**(`pageview_history`)。その月の話題に振られない知名度
+            if history is not None and (avg := history.average(doc_id)) is not None:
+                extra["pageviews_avg"], extra["pageviews_months"] = avg
             if qid := wikidata_ids.get(doc_id):
                 extra["wikidata"] = qid
             # **代表画像の URL。** 画像そのものは持たない(指すだけ)。
@@ -461,8 +529,10 @@ class WikipediaAdapter:
                 updated_at=timestamp_elem.text if timestamp_elem is not None else None,
                 # XML ダンプには CirrusSearch の popularity_score 相当が無いので、
                 # 突合した月間ページビューを正規化して知名度として使う(取れなければ 0)。
+                # **控えてある月の平均があればそちら**(その月の話題で検索の並びが入れ替わらない)
                 rank_score=normalized_popularity(
-                    extra.get("pageviews_month"), POPULARITY_LOG_MAX_PAGEVIEWS
+                    extra.get("pageviews_avg", extra.get("pageviews_month")),
+                    POPULARITY_LOG_MAX_PAGEVIEWS,
                 ),
                 extra=extra or None,
             )

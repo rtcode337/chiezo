@@ -813,3 +813,85 @@ def test_osm_download_base_can_point_at_a_mirror(monkeypatch):
 
     monkeypatch.setenv(osm.OSM_DOWNLOAD_BASE_ENV, "https://download.openstreetmap.fr/extracts")
     assert adapter._latest_url() == "https://download.openstreetmap.fr/extracts/asia/japan-latest.osm.pbf"
+
+
+class TestPageviewHistory:
+    """月の閲覧数を控えて、控えてある月の平均を出す(その月の話題に振られない知名度)。"""
+
+    @staticmethod
+    def _write_pageviews(path, lines: str):
+        with bz2.open(path, "wt", encoding="utf-8") as f:
+            f.write(lines)
+        return path
+
+    def test_average_of_recorded_months_becomes_extra_and_rank(self, tmp_path, fixture_dump):
+        from pageview_history import PageviewHistory
+
+        history_path = tmp_path / "pageviews" / "jawiki.db"
+        with PageviewHistory(history_path) as history:
+            # 前の月: 東京都は 300 回、浅草寺は控える下限(月 30 回)に満たない
+            history.record("2026-05", [(1, 300), (2, 10)])
+
+        adapter = make_test_adapter()
+        adapter._pageview_path = self._write_pageviews(
+            tmp_path / "pageviews-202606-user.bz2",
+            "ja.wikipedia 東京都 1 desktop 900 X\nja.wikipedia 浅草寺 2 desktop 100 X\n",
+        )
+        adapter._pageview_period = "2026-06"
+        adapter._history_path = history_path
+        docs = {d.title: d for d in adapter.iter_docs(fixture_dump)}
+
+        # その月の値は今までどおり。平均は控えてある 2 か月ぶん(控えていない月は 0 回)
+        assert docs["東京都"].extra["pageviews_month"] == 900
+        assert docs["東京都"].extra["pageviews_avg"] == 600
+        assert docs["東京都"].extra["pageviews_months"] == 2
+        assert docs["浅草寺"].extra["pageviews_avg"] == 50
+        # 検索の並び順の知名度も平均で決める
+        assert docs["東京都"].rank_score == round(math.log10(601) / 7, 4)
+        # この月の分も控えに足される
+        with PageviewHistory(history_path) as history:
+            assert history.periods() == ["2026-05", "2026-06"]
+
+    def test_history_keeps_only_the_latest_months(self, tmp_path):
+        from pageview_history import PageviewHistory, previous_periods
+
+        assert previous_periods("2026-02", 3) == ["2026-01", "2025-12", "2025-11"]
+        with PageviewHistory(tmp_path / "h.db") as history:
+            for period in ["2025-11", "2025-12", "2026-01", "2026-02"]:
+                history.record(period, [(1, 100)])
+            assert history.keep_latest(3) == ["2025-11"]
+            assert history.periods() == ["2025-12", "2026-01", "2026-02"]
+            assert history.average(1) == (100, 3)
+            assert history.average(99) is None
+
+    def test_missing_earlier_months_are_backfilled_once(self, tmp_path, monkeypatch):
+        """最初の取り込みは前の月も落として控える(数か月の平均で始めるため)。控えにある月は落とさない。"""
+        import download
+        from pageview_history import PageviewHistory
+
+        fetched = []
+
+        def fake_fetch(url, dest, user_agent):
+            fetched.append(url.rsplit("/", 1)[-1])
+            self._write_pageviews(dest, "ja.wikipedia 東京都 1 desktop 600 X\n")
+
+        monkeypatch.setattr(download, "fetch", fake_fetch)
+        monkeypatch.setenv("PAGEVIEW_PERIOD", "2026-06")
+        workdir = tmp_path / "dumps"
+        workdir.mkdir()
+        adapter = make_test_adapter()
+        adapter.fetch_pageviews(workdir)
+
+        assert fetched == [
+            "pageviews-202606-user.bz2",
+            "pageviews-202605-user.bz2",
+            "pageviews-202604-user.bz2",
+        ]
+        # 前の月のダンプは控えたら消す(この月のぶんは取り込みで使う)
+        assert sorted(p.name for p in workdir.glob("pageviews-*.bz2")) == ["pageviews-202606-user.bz2"]
+        with PageviewHistory(workdir.parent / "pageviews" / "jawiki.db") as history:
+            assert history.periods() == ["2026-04", "2026-05"]
+
+        fetched.clear()
+        adapter.fetch_pageviews(workdir)
+        assert fetched == ["pageviews-202606-user.bz2"]
