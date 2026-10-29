@@ -285,3 +285,6 @@ jobs:
         run: gh workflow run ci.yml --ref main
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # この段はリポジトリを取り出していないので、gh にどのリポジトリかを渡す
+          # (渡さないと「not a git repository」で落ち、マージだけ済んでイメージが作られない)
+          GH_REPO: ${{ github.repository }}
