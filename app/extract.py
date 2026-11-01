@@ -564,6 +564,13 @@ def _min_extra_sql(spec: dict) -> tuple[str, list]:
     **値を持たない記事は落ちる**(下限を書いた以上、測れないものは入れない)。
     `min_extra_unless_tag` のタグを持つ記事だけは、下限に届かなくても通す。
     """
+    cond, params = _min_extra_cond(spec)
+    return (f" AND {cond}", params) if cond else ("", params)
+
+
+def _min_extra_cond(spec: dict) -> tuple[str, list]:
+    """`min_extra` の条件そのもの(`AND` を付けない形)。下限を書いていなければ空。
+    下限で外れた記事を引くとき(`_below_floor_facts`)は、これを `NOT` で包む。"""
     parts, params = [], []
     for key, value in (spec.get("min_extra") or {}).items():
         parts.append(f"COALESCE(json_extract(extra, '$.{key}'), -1) >= ?")
@@ -572,9 +579,9 @@ def _min_extra_sql(spec: dict) -> tuple[str, list]:
         return "", params
     exempt = split_tags(spec.get("min_extra_unless_tag") or "")
     if not exempt:
-        return "".join(f" AND {part}" for part in parts), params
+        return f"({' AND '.join(parts)})", params
     held = f"doc_id IN (SELECT doc_id FROM doc_tags WHERE tag IN ({','.join('?' * len(exempt))}))"
-    return f" AND (({' AND '.join(parts)}) OR {held})", [*params, *exempt]
+    return f"(({' AND '.join(parts)}) OR {held})", [*params, *exempt]
 
 
 def _tags_mode(raw) -> dict:
@@ -1194,6 +1201,10 @@ def run(spec, sources: dict, retired: set[str] | None = None) -> tuple[list[dict
             items, _cursor = _timed_run(one, sources, retired)
             for item in items:
                 roster.merge(item, PROVIDED_FIELDS)
+        # 3 周目。**下限で外れた記事の事実も控える**(`_below_floor_facts`)
+        for one in written:
+            for title, carried in _below_floor_facts(one, sources):
+                roster.put_facts(title, carried)
     except BaseException:
         roster.close()
         raise
@@ -1272,6 +1283,9 @@ class Roster:
             # **元の記録の鍵から見出しを引く。** 焼く側は、見出しで当たらなかった
             # 前世代の 1 件をここで引き直す(`find`)
             " CREATE TABLE record_keys (key TEXT PRIMARY KEY, title TEXT NOT NULL);"
+            # **下限で外れた記事の事実**(`put_facts` / `facts_for`)。名簿には入れない ——
+            # 新しい 1 件として足すためのものではなく、既にいる 1 件の脇書きを新しくするためのもの
+            " CREATE TABLE facts (title TEXT PRIMARY KEY, extra TEXT NOT NULL);"
         )
         self._seq = 0
 
@@ -1372,6 +1386,25 @@ class Roster:
                 return self.take(found["title"])
         return None
 
+    def put_facts(self, title: str, extra: dict) -> None:
+        """下限で外れた記事の運ぶ値を控える。**名簿に居る見出しは控えない**(名簿のほうが正)。"""
+        title = notes.title_key(title)
+        if not title or not extra:
+            return
+        if self.conn.execute("SELECT 1 FROM items WHERE title = ?", (title,)).fetchone():
+            return
+        self.conn.execute(
+            "INSERT OR IGNORE INTO facts (title, extra) VALUES (?, ?)",
+            (title, json.dumps(extra, ensure_ascii=False)),
+        )
+
+    def facts_for(self, title: str) -> dict | None:
+        """名簿に入らなかった 1 件の、元の記事の運ぶ値。無ければ None。"""
+        row = self.conn.execute(
+            "SELECT extra FROM facts WHERE title = ?", (notes.title_key(title),)
+        ).fetchone()
+        return json.loads(row["extra"]) if row is not None else None
+
     def rest(self) -> Iterator[dict]:
         rows = self.conn.execute(
             "SELECT title, body, url, tags, extra FROM items WHERE used = 0 ORDER BY seq"
@@ -1427,6 +1460,57 @@ def _merge_item(merged: dict[str, dict], item: dict, claims) -> None:
     if keys := (item.get("extra") or {}).get(RECORD_KEYS):
         into = existing.setdefault("extra", {})
         into[RECORD_KEYS] = merged_keys(into.get(RECORD_KEYS), keys)
+
+
+def _below_floor_facts(spec: dict, sources: dict) -> Iterator[tuple[str, dict]]:
+    """下限(`min_extra`)で外れた記事の、運ぶ値(`extra`)。`(見出し, 値)` を返す。
+
+    **名簿に入った 1 件は、いつまでも名簿に居るとは限らない。** 閲覧数で切る名簿では、
+    話題になった月に下限を超えて入り、そのあと下回った記事が、次の名簿の回から
+    当たらなくなる。当たらない 1 件には運ぶ値が届かないので、**入ったときの値が
+    そのまま残り続ける** —— テレビで流れた月に 2.7 万になった古い映画が、いまは
+    月 800 なのに、図の上では上位に居座っていた(映画の名簿 2,634 本のうち 372 本が
+    そうだった)。運ぶ値は元の記事の事実なので、下限で外れても新しくする
+    (外れた記事を名簿へ足すことはしない)。
+
+    **控えるのは下限で外れた記事だけ**(タグの条件には当たるもの)。見出しが同じだけの
+    別の記事の値を、別のものに写さないため。下限を書いていない指定・タグの名簿・
+    分ける指定(`split`。見出しが元の記事と変わる)では何もしない。
+    **読めなくても名簿の回は止めない**(新しくできないだけで、名簿は正しい)。
+    """
+    from app import db
+
+    if spec.get("of") == "tags" or spec.get("split") or not spec.get("extra"):
+        return
+    cond, more = _min_extra_cond(spec)
+    if not cond:
+        return
+    try:
+        src, set_sql, params = _doc_ids(spec, sources)
+        pairs = spec.get("tag_pairs") or []
+        wanted = set(resolve_tags(spec, src)) if pairs else set()
+        sql = (
+            f"SELECT title, tags, extra FROM docs"
+            f" WHERE doc_id IN ({set_sql}) AND NOT ({cond}) LIMIT ?"
+        )
+        seen = 0
+        for row in db.stream(
+            src.path, sql, (*params, *more, MAX_ROWS), timeout=EXTRACT_TIMEOUT_SECONDS,
+        ):
+            if pairs and not _paired([str(t) for t in _json_list(row["tags"])], pairs, wanted):
+                continue
+            extra = _json_map(row["extra"])
+            carried = {k: extra[k] for k in spec["extra"] if k in extra}
+            title = (row["title"] or "").strip()
+            if title and carried:
+                seen += 1
+                yield title, carried
+        log.info("extract %s: %d below the floor (facts only)", spec["source"], seen)
+    except (db.QueryTimeout, HTTPException) as error:
+        log.warning(
+            "extract %s: 下限で外れた記事の値を読めませんでした(%s)",
+            spec["source"], type(error).__name__,
+        )
 
 
 def _run_one(spec: dict, sources: dict, retired: set[str] | None = None) -> tuple[Iterator[dict], str]:

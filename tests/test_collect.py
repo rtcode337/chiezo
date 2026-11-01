@@ -7769,6 +7769,48 @@ class TestATitleCutAtTheBoundary:
         assert titles == [self.BAKED], f"同じ見出しが 2 度流れている: {titles}"
 
 
+class TestFactsReachWhatTheRosterNoLongerHits:
+    """**名簿に当たらなくなった 1 件も、運ぶ値だけは新しくする**(`_facts_for`)。
+    閲覧数で切る名簿では、話題になった月に入った記事が次の回から当たらなくなり、
+    入ったときの閲覧数が残り続けていた(月 800 の古い映画が 2.7 万のまま上位に居た)。"""
+
+    @staticmethod
+    def _previous():
+        return [{
+            "doc_id": 1, "title": "古い映画", "body": "育てた本文", "tags": ["映画", "主演:甲"],
+            "updated_at": "2026-01-01T00:00:00+00:00",
+            "extra": {"pageviews_month": 27021, "url": "https://example.com/a"},
+        }]
+
+    def _bake(self, **kwargs):
+        from app import extract
+
+        roster = extract.Roster()
+        try:
+            roster.put_facts("古い映画", {"pageviews_month": 2274, "pageviews_median": 808})
+            docs = list(collect.stream_docs(
+                collect.get("news"), iter(self._previous()), roster, True, False, **kwargs,
+            ))
+        finally:
+            roster.close()
+        return docs
+
+    def test_the_facts_are_refreshed(self, sample):
+        [doc] = self._bake(facts=True)
+
+        assert doc["extra"]["pageviews_month"] == 2274
+        assert doc["extra"]["pageviews_median"] == 808
+        # 本文・タグ・運ばれていない鍵は前世代のまま
+        assert doc["body"] == "育てた本文"
+        assert doc["tags"] == ["映画", "主演:甲"]
+        assert doc["extra"]["url"] == "https://example.com/a"
+
+    def test_a_run_that_does_not_carry_facts_leaves_it(self, sample):
+        [doc] = self._bake()
+
+        assert doc["extra"]["pageviews_month"] == 27021
+
+
 class TestDerivedCollectionsSitUnderTheirParent:
     """**溜めたものから作る収集は、元になるソース 1 つにつき 1 つ増えていく**
     (記事のタグから話題の索引、集めた店から系列、名簿から派閥)。一覧が平らな

@@ -5127,6 +5127,13 @@ def carries_facts(item: Collection, sweep=None) -> bool:
     return uses_extract(item, sweep) or bool(sweep is not None and sweep.use_pihole)
 
 
+def _facts_for(edits_of, title: str) -> dict | None:
+    """名簿に入らなかった 1 件の、元の記事の運ぶ値(`extract.Roster.facts_for`)。
+    機械で引いた名簿だけが持つ(AI の返りには無い)。"""
+    find = getattr(edits_of, "facts_for", None)
+    return find(title) if find is not None else None
+
+
 def _found_by_record(edits_of, before: dict) -> dict | None:
     """前世代の 1 件と**同じ元の記録から来た**、名簿の 1 件。無ければ None。
 
@@ -5452,7 +5459,12 @@ def _stream_docs(
             )
             continue
         if raw is None:
-            yield kept(_reviewed(before) if reviewed and title in reviewed else before, title)
+            doc = _reviewed(before) if reviewed and title in reviewed else before
+            # **名簿の下限で外れた 1 件も、運ぶ値だけは新しくする**(`Roster.facts_for`)。
+            # 当たらなくなった 1 件には値が届かず、入ったときの閲覧数が残り続けていた
+            if facts and (fresh := _facts_for(edits_of, title)):
+                doc = _with_facts(doc, {"extra": fresh})
+            yield kept(doc, title)
             continue
         if only_new and not _found_again(before, raw):
             # **足すだけの回。** 既にあるものには触らない(数えるだけ)。

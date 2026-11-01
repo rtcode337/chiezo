@@ -1749,6 +1749,57 @@ class TestExemptingTagsFromTheFloor:
             self.roster(min_extra=None)
 
 
+class TestRefreshingFactsBelowTheFloor:
+    """**下限で外れた記事も、運ぶ値だけは控える**(`_below_floor_facts` / `Roster.facts_for`)。
+    話題になった月に下限を超えて名簿に入り、そのあと下回った記事は名簿の回に当たらなくなり、
+    入ったときの閲覧数が残り続けていた。名簿には足さない(足すのは下限を超えたものだけ)。"""
+
+    @staticmethod
+    def films():
+        return [
+            {"title": "よく読まれる作品", "tags": ["甲の監督映画"],
+             "extra": {"pageviews_month": 9000, "pageviews_median": 8000, "image": "a.jpg"}},
+            {"title": "読まれなくなった作品", "tags": ["甲の監督映画"],
+             "extra": {"pageviews_month": 2274, "pageviews_median": 808, "image": "b.jpg"}},
+            # タグの条件に当たらない記事は控えない(見出しが同じだけの別の記事かもしれない)
+            {"title": "名簿の外の記事", "tags": ["乙の小説"], "extra": {"pageviews_month": 10}},
+        ]
+
+    @staticmethod
+    def spec(**overrides):
+        return extract.normalize({
+            "source": "jawiki", "tag_suffix": "の監督映画",
+            "min_extra": {"pageviews_month": 3000},
+            "extra": ["pageviews_month", "pageviews_median"], **overrides,
+        })
+
+    def roster(self, source, **overrides):
+        roster, _cursor = extract.run(self.spec(**overrides), source(self.films()))
+        return roster
+
+    def test_the_facts_of_an_article_below_the_floor_are_kept(self, source):
+        roster = self.roster(source)
+        try:
+            assert [i["title"] for i in roster] == ["よく読まれる作品"]
+            # 運ぶ鍵だけ(書いていない鍵は控えない)
+            assert roster.facts_for("読まれなくなった作品") == {
+                "pageviews_month": 2274, "pageviews_median": 808,
+            }
+            # 名簿に居るものは名簿のほうが正。タグに当たらない記事は控えない
+            assert roster.facts_for("よく読まれる作品") is None
+            assert roster.facts_for("名簿の外の記事") is None
+        finally:
+            roster.close()
+
+    def test_without_a_floor_nothing_is_kept_aside(self, source):
+        roster = self.roster(source, min_extra=None)
+        try:
+            assert len(roster) == 2
+            assert roster.facts_for("読まれなくなった作品") is None
+        finally:
+            roster.close()
+
+
 class TestReadingTheAreaFromAPlaceName:
     """**カテゴリの名前に入った地名から、その地名の所属(県)を読む**(`area_of`)。
 
