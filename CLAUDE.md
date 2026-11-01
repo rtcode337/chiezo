@@ -129,8 +129,13 @@ docker compose -f docker-compose.yml -f docker-compose.llm.yml --profile llm up 
   (純 Python のフォールバックに落とすと wikitext 解析が桁で遅くなるので、C 拡張は死守する)。
   ingest イメージにビルド道具の出し入れを常設することになり、イメージは +7MB(276→283MB)で
   済むがビルド時間を 2 アーキぶん恒久的に払う。**上流が cp314 wheel を出した時点で上げる** —
-  そのときは `FROM` の行と CI の `python-version` を変えるだけで済む(dependabot が週次で見ている)。
-  app 側の依存は 3.14 でも全部 wheel があるので、待っているのは ingest の都合だけ。
+  そのときは `FROM` の行と CI の `python-version` を変えるだけで済む。
+  **ベースイメージの Python の版上げは Dependabot に出させない**(`.github/dependabot.yml` の `ignore`)。
+  Docker のタグでは 3.12 → 3.15 が minor 扱いになり、PR の CI はイメージを作らない(3.12 の
+  setup-python でテストするだけ)ので、通ったまま自動でマージされる。2026-11 に 3.15 の PR が
+  そうして入り、main のイメージが作れなくなった —— 3.15 では `httptools`・`mwparserfromhell`・
+  `pydantic-core`・`pyyaml`・`uvloop` の wheel が無く、slim のイメージに C コンパイラが無いので
+  app も ingest も `pip install` で落ちる(app 側も 3.15 では待つ側になる)。上げどきは人が確かめる。
 - コアスキーマ(meta / docs / aliases / docs_fts)は全ソース共通。ソース固有情報は `docs.extra`(JSON)へ。
   変更は最終手段で、`schema_version` を上げる。app が読むのは `SUPPORTED_SCHEMA_VERSIONS` の版だけで、
   上げるときは配信中の DB が焼き直されるまで新旧を両方読めるようにし、焼き直し終えたら古い版の

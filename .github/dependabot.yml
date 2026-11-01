@@ -26,7 +26,7 @@ updates:
       interval: weekly
       timezone: Asia/Tokyo
 
-  # Dockerfile のベースイメージ(python:3.12-slim、ブリッジの node / debian)。
+  # Dockerfile のベースイメージ(python:3.12-slim の更新、ブリッジの node / debian)。
   # ブリッジの CLI(npm install の @版 と agy の下限)は追えないので、人が上げる
   - package-ecosystem: docker
     directories:
@@ -41,6 +41,10 @@ updates:
     ignore:
       - dependency-name: node
         versions: [">= 25, < 26", ">= 27, < 28", ">= 29, < 30", ">= 31, < 32"]
+      # Python の版は人が上げる(CLAUDE.md「Python は 3.12 に留める」)。タグの上では minor なので
+      # 自動でマージされ、wheel の無い版でイメージが作れなくなった(3.15 で実際に起きた)
+      - dependency-name: python
+        versions: [">= 3.13"]
 
   # compose が pull するイメージ(searxng・llama.cpp・alpine・ComfyUI)。
   # どれもタグを固定してあるので、上げるきっかけはここから来る。
