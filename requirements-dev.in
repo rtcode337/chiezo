@@ -3,6 +3,6 @@
 -r app/requirements.in
 -r ingest/requirements.in
 
-pytest>=8.4
+pytest>=9.2.0
 # lint。CI と手元で同じ版を使うため、ここで固定する(版が違うと指摘が増減する)。
 ruff>=0.17.1,<0.18
