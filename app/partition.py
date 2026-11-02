@@ -181,6 +181,9 @@ def normalize(raw) -> dict | None:
         "prefix": str(raw.get("prefix") or "").strip() or None,
         # 帯で割るときの数の軸(タグの頭)と、分類を持たないものの置き場の名前
         "value": str(raw.get("value") or "").strip() or None,
+        # 帯で割るときの、**値ひとつの帯をさらに割る細かい軸**(タグの頭。例: 「公開月:」)。
+        # 書いたときだけ、目安を超えた 1 年を月で割る(`_month_bands`)
+        "detail": str(raw.get("detail") or "").strip() or None,
         "other": str(raw.get("other") or "").strip() or DEFAULT_OTHER,
         # 巡回をどこから広げるか(矩形のときだけ)。書かなければ台帳の並び順
         "origin": _origin(raw.get("origin")),
@@ -190,6 +193,10 @@ def normalize(raw) -> dict | None:
     }
     if not spec["values"]:
         spec.pop("values")
+    if not spec["detail"]:
+        spec.pop("detail")
+    elif by != BY_BAND:
+        raise _bad("detail は by=band のときだけ使えます(値ひとつの帯をさらに割る軸です)")
     if spec["origin"] and by != BY_GEO:
         raise _bad("origin は by=geo のときだけ使えます(距離で並べるので座標が要ります)")
     if by == BY_TAG and not spec["prefix"]:
@@ -365,10 +372,12 @@ def _cut_of(spec: dict | None) -> dict | None:
     """割り方を比べるための形。**並べた値(`values`)も比べない** —— タグの区画の鍵は
     タグの文字列そのもので、値を足しても外しても並べ替えても、残る値の鍵の意味は
     変わらない(台帳は捨てずに組み直し、記録は鍵ごとに継ぐ。`values_changed`)。
+    **細かい軸(`detail`)も比べない** —— 足しても年の帯の鍵の意味は変わらず、育った
+    1 年が次に割られるときから月で割れるようになるだけ(割った月の帯は年の帯の記録を継ぐ)。
     """
     if not spec:
         return None
-    return {k: v for k, v in spec.items() if k not in ORDER_ONLY and k != "values"}
+    return {k: v for k, v in spec.items() if k not in ORDER_ONLY and k not in ("values", "detail")}
 
 
 def to_json(spec: dict | None) -> dict | None:
@@ -713,6 +722,7 @@ def _bands(spec: dict, own: dict[str, dict]) -> list[dict]:
     """
     groups: dict[str, dict[int, list[str]]] = {}
     unknown: dict[str, list[str]] = {}
+    months: dict[str, int | None] = {}
     for title, doc in own.items():
         tags = doc.get("tags") or []
         name = tag_value(tags, spec["prefix"]) or spec["other"]
@@ -720,9 +730,12 @@ def _bands(spec: dict, own: dict[str, dict]) -> list[dict]:
             unknown.setdefault(name, []).append(title)
         else:
             groups.setdefault(name, {}).setdefault(number, []).append(title)
+            if spec.get("detail"):
+                months[title] = month_in(tags, spec, number)
     out: list[dict] = []
     for name in sorted(groups) + [n for n in sorted(unknown) if n not in groups]:
-        out += _bands_of(spec, name, groups.get(name, {}))
+        out += _with_months(spec, name, _bands_of(spec, name, groups.get(name, {})),
+                            groups.get(name, {}), months)
         out += _unknown_bands(spec, name, unknown.get(name, []))
         if len(out) >= MAX_PARTITIONS:
             break
@@ -835,6 +848,133 @@ def _unknown_bands(spec: dict, name: str, titles: list[str]) -> list[dict]:
     ]
 
 
+# ---- 値ひとつの帯を月で割る(`detail`) -------------------------------------------
+#
+# **1 年より細かくは割らない、の例外。** 「この範囲の全員」が並ばなくなるのを避けるための
+# 約束だが、細かい軸のタグ(公開月)が付いていれば、月の幅でも「この範囲の全員」は言える。
+# 割るのは**値ひとつで目安を超えた帯だけ**(新作が何十本も並ぶ最近の 1 年)。ほかの帯の
+# 鍵も記録も動かさない。
+#
+# 鍵は `日本|2026|1-3月`。**最初の月の帯は手前を開き**(`-3月`)、月の分からないものも
+# 引き受ける。**最後の月の帯は先を開く**(`10-月`)。端の帯を開くのと同じ考え方で、
+# 1 年の中に誰の受け持ちでもない月を作らない。
+#
+# 数の軸の上では、月の帯は「年 + 月/13」で並ぶ(月の分からないものは「年 + 0」)。
+# 年の帯の終わりは「年 + 12/13」と読む(`band_span`)ので、年の帯と月の帯の重なり・
+# 含みはそのまま比べられる。
+MONTH_SCALE = 13
+_MONTH_PART = re.compile(r"^(\d*)-(\d*)月$")
+
+
+def month_in(tags, spec: dict, year: int) -> int | None:
+    """細かい軸のタグ(`公開月:2026-03`)から月を読む。**年が合わなければ読まない**
+    (年の分類と別の年を書いた値。分からないものとして最初の月の帯に入る)。"""
+    raw = tag_value(tags, spec.get("detail") or "") if spec.get("detail") else None
+    numbers = [int(n) for n in re.findall(r"\d+", raw or "")]
+    if len(numbers) >= 2 and numbers[0] >= 100:
+        if numbers[0] != year:
+            return None
+        month = numbers[1]
+    elif len(numbers) == 1 and numbers[0] < 100:
+        month = numbers[0]
+    else:
+        return None
+    return month if 1 <= month <= 12 else None
+
+
+def _month_number(year: int, month: int | None) -> float:
+    return year + (month or 0) / MONTH_SCALE
+
+
+def month_key(name, year: int, first: int | None, last: int | None) -> str:
+    """月の帯の鍵(`日本|2026|1-3月`。端は空)。"""
+    head = name if isinstance(name, str) else BAND_SEP.join(name)
+    lo = "" if first is None else first
+    hi = "" if last is None else last
+    return f"{head}{BAND_SEP}{year}{BAND_SEP}{lo}-{hi}月"
+
+
+def parse_month_key(key: str) -> tuple[list[str], int, int | None, int | None] | None:
+    """`(分類の並び, 年, 始まりの月, 終わりの月)`。月の帯でなければ None(端の月は None)。"""
+    parts = key.split(BAND_SEP)
+    if len(parts) < 3 or not parts[-2].isdigit():
+        return None
+    span = _MONTH_PART.fullmatch(parts[-1])
+    names = parts[:-2]
+    if span is None or not all(names):
+        return None
+    lo, hi = span.group(1), span.group(2)
+    return names, int(parts[-2]), int(lo) if lo else None, int(hi) if hi else None
+
+
+def _with_months(
+    spec: dict, name: str, bands: list[dict], by_number: dict[int, list[str]],
+    months: dict[str, int | None],
+) -> list[dict]:
+    """値ひとつで目安の上限を超えた帯を、月の帯に置き換える(`detail` を書いたときだけ)。"""
+    if not spec.get("detail"):
+        return bands
+    cap = _band_cap(spec)
+    out: list[dict] = []
+    for band in bands:
+        year = _only_year(band["key"], by_number)
+        kids = (
+            _month_bands(spec, name, year, by_number[year], months)
+            if year is not None and band["count"] > cap else []
+        )
+        if not kids:
+            out.append(band)
+            continue
+        out += _gap_before(name, band["key"], year, out) + kids
+    return out
+
+
+def _gap_before(name: str, key: str, year: int, before: list[dict]) -> list[dict]:
+    """月で割る年より手前を帯が引き受けていたら(`1991-` の中身が 2026 だけ)、その範囲の
+    受け持ちを残す。**手前の年の帯の終わりを延ばす**か、延ばせなければ空の帯にする ——
+    月の帯の鍵は 1 年しか言えないので、そのままでは手前の年が鍵から消える
+    (受け持ちは手前の帯に落ちるのに、鍵はそれを言わない)。"""
+    parsed = parse_band_key(key)
+    lo = parsed[1] if parsed else year
+    if lo is not None and lo >= year:
+        return []
+    prev = parse_band_key(before[-1]["key"]) if before else None
+    if prev is not None and prev[3] is None and parse_month_key(before[-1]["key"]) is None:
+        before[-1] = {**before[-1], "key": band_key(prev[0], prev[1], year - 1)}
+        return []
+    return [{"key": band_key(name, lo, year - 1), "count": 0}]
+
+
+def _only_year(key: str, by_number: dict[int, list[str]]) -> int | None:
+    """その帯に入っている値がひとつだけなら、その値(端を開いた帯も中身で見る)。"""
+    parsed = parse_band_key(key)
+    if parsed is None or parsed[3] is not None:
+        return None
+    lo, hi = band_span(parsed)
+    inside = [n for n in by_number if lo <= n <= hi]
+    return inside[0] if len(inside) == 1 else None
+
+
+def _month_bands(
+    spec: dict, name: str, year: int, titles: list[str], months: dict[str, int | None],
+) -> list[dict]:
+    """1 年ぶんを月で帯に切る(`_bands_of` と同じ足し方)。2 つに割れなければ空。"""
+    by_month: dict[int, list[str]] = {}
+    for title in titles:
+        by_month.setdefault(months.get(title) or 0, []).append(title)
+    kids = _bands_of(spec, name, by_month)
+    if len(kids) < 2:
+        return []
+    out = []
+    for kid in kids:
+        parsed = parse_band_key(kid["key"])
+        first = parsed[1] if parsed[1] not in (None, 0) else None
+        out.append({"key": month_key(name, year, first, parsed[2]), "count": kid["count"]})
+    # 最初の帯は手前(月の分からないものも)、最後の帯は先を引き受ける
+    out[0]["key"] = month_key(name, year, None, parse_month_key(out[0]["key"])[3])
+    return out
+
+
 def band_key(name, start, end) -> str:
     """区画の鍵。
 
@@ -874,6 +1014,15 @@ def parse_band_key(key: str) -> tuple[list[str], int | None, int | None, str | N
     取り違えないため —— 範囲は必ず `数字-数字`(端は空)の形で、見出しの範囲は
     `title_key` が `〜` を挟むので、この形にはならない。
     """
+    if (month := parse_month_key(key)) is not None:
+        # **月の帯は数の軸の上で読む**(年 + 月/13。端の月は年の頭と終わり)
+        names, year, first, last = month
+        return (
+            names,
+            _month_number(year, first),
+            _month_number(year, last if last is not None else MONTH_SCALE - 1),
+            None,
+        )
     parts = key.split(BAND_SEP)
     if len(parts) < 2:
         return None
@@ -889,8 +1038,14 @@ def parse_band_key(key: str) -> tuple[list[str], int | None, int | None, str | N
 
 
 def band_span(parsed) -> tuple[float, float]:
-    """帯の受け持ちを数の範囲で。**開いている端は ±∞**。"""
+    """帯の受け持ちを数の範囲で。**開いている端は ±∞**。
+
+    **年の帯の終わりはその年の終わりまで**(年 + 12/13)。月の帯(`parse_month_key`)は
+    年 + 月/13 の数で並ぶので、年の帯と月の帯の重なり・含みをそのまま比べられる。
+    """
     lo, hi = parsed[1], parsed[2]
+    if isinstance(hi, int):
+        hi = _month_number(hi, MONTH_SCALE - 1)
     return (BAND_LOW if lo is None else lo, BAND_HIGH if hi is None else hi)
 
 
@@ -1565,6 +1720,8 @@ def _split_band(spec: dict, key: str, docs: list[tuple[str, dict]]) -> list[dict
     parsed = parse_band_key(key)
     if parsed is None or len(parsed[0]) != 1:
         return []
+    if (month := parse_month_key(key)) is not None:
+        return _split_month_band(spec, month, docs)
     name, lo, hi, titles_range = parsed[0][0], parsed[1], parsed[2], parsed[3]
     if titles_range is not None:
         bounds = parse_title_key(titles_range)
@@ -1587,6 +1744,14 @@ def _split_band(spec: dict, key: str, docs: list[tuple[str, dict]]) -> list[dict
             by_number.setdefault(number, []).append(title)
     kids = _bands_of(spec, name, by_number)
     if len(kids) < 2:
+        # **値ひとつの年は月で割る**(細かい軸を書いたときだけ)。端を開いた帯は、
+        # 外側を引き受け続ける年の帯ごと置き換わるので、手前と先の年は次の割り直しで帯ができる
+        if spec.get("detail") and len(by_number) == 1:
+            (year,) = by_number
+            months = {t: month_in(d.get("tags") or [], spec, year) for t, d in docs}
+            kids = _month_bands(spec, name, year, by_number[year], months)
+            # 親が手前の年も引き受けていたら、その範囲は空の帯で残す(`_gap_before`)
+            return _gap_before(name, key, year, []) + kids if kids else []
         return []
     spans = [parse_band_key(k["key"]) for k in kids]
     out = []
@@ -1597,11 +1762,31 @@ def _split_band(spec: dict, key: str, docs: list[tuple[str, dict]]) -> list[dict
     return out
 
 
+def _split_month_band(spec: dict, month, docs: list[tuple[str, dict]]) -> list[dict]:
+    """月の帯を、中の月だけで切り直す。**最初の子は親の始まりを、最後の子は親の終わりを継ぐ**。"""
+    names, year, first, last = month
+    name = names[0]
+    months = {t: month_in(d.get("tags") or [], spec, year) for t, d in docs}
+    kids = _month_bands(spec, name, year, [t for t, _d in docs], months)
+    if len(kids) < 2:
+        return []
+    out = []
+    for i, kid in enumerate(kids):
+        _names, _year, lo, hi = parse_month_key(kid["key"])
+        lo = first if i == 0 else lo
+        hi = last if i == len(kids) - 1 else hi
+        out.append({"key": month_key(name, year, lo, hi), "count": kid["count"]})
+    return out
+
+
 def _single_value(spec: dict, key: str) -> bool:
     """値ひとつだけの帯か(`日本|1800-1800`)。**これ以上は割れない**ので、
     育っても割り直しの引き金にしない —— 割り直しても同じ台帳になり、回ってくる
     たびに全件を割り直すだけになる。"""
     if spec["by"] != BY_BAND:
+        return False
+    if spec.get("detail") and parse_month_key(key) is None:
+        # **細かい軸を書いていれば、値ひとつの年もまだ割れる**(月の帯へ)
         return False
     parsed = parse_band_key(key)
     return bool(parsed) and parsed[1] is not None and parsed[1] == parsed[2]
@@ -1796,6 +1981,12 @@ def _joined_key(spec: dict, left: str, right: str) -> str | None:
     if spec["by"] == BY_TITLE:
         a, b = parse_title_key(left), parse_title_key(right)
         return title_key(a[0], b[1]) if a and b else None
+    ma, mb = parse_month_key(left), parse_month_key(right)
+    if ma is not None or mb is not None:
+        # **月の帯は同じ年の月の帯とだけつなぐ**(年の帯とつなぐと、1 つの鍵で言えない)
+        if ma is None or mb is None or ma[0] != mb[0] or ma[1] != mb[1]:
+            return None
+        return month_key(ma[0], ma[1], ma[2], mb[3])
     a, b = parse_band_key(left), parse_band_key(right)
     if a is None or b is None or a[0] != b[0]:
         # 分類が違うものはここではまたがない(1 つの範囲では言えなくなる)。
@@ -2319,10 +2510,17 @@ def _band_locator(spec: dict, partitions: list[dict]):
     """帯。**分類ごとに、数の帯と「不明」の置き場を分けて並べておく。**"""
     bands: dict[str, list[tuple[float, str]]] = {}
     unknown: dict[str, list[tuple[str, str]]] = {}
+    # 月で割った年(分類ごと)と、月の帯の年
+    split_years: dict[str, set[int]] = {}
+    year_of: dict[str, int] = {}
     for p in partitions:
         parsed = parse_band_key(p["key"])
         if parsed is None:
             continue
+        if (month := parse_month_key(p["key"])) is not None:
+            year_of[p["key"]] = month[1]
+            for name in month[0]:
+                split_years.setdefault(name, set()).add(month[1])
         for name in parsed[0]:
             if parsed[3] is not None:
                 unknown.setdefault(name, []).append((parsed[3], p["key"]))
@@ -2342,9 +2540,18 @@ def _band_locator(spec: dict, partitions: list[dict]):
             if not here:
                 # 値はあるが、その分類にまだ帯が無い(割り直しの前に入った)
                 return None
+            at_number = float(number)
+            if number in split_years.get(name, ()):
+                # **月で割った年は、月の数で引く**(月の分からないものは最初の月の帯)
+                at_number = _month_number(number, month_in(tags, spec, number))
             # 始まりが自分以下のうち、いちばん大きい帯。手前が無ければいちばん下の帯
-            at = bisect.bisect_right([start for start, _ in here], float(number))
-            return here[max(at - 1, 0)][1]
+            at = bisect.bisect_right([start for start, _ in here], at_number)
+            key = here[max(at - 1, 0)][1]
+            # **月の帯は自分の年しか引き受けない**(端の年が月で割れていたら、その外の年の
+            # 帯はまだ無い —— 行き場が無いとして割り直しの引き金にする。`homeless`)
+            if key in year_of and year_of[key] != number:
+                return None
+            return key
         piles = unknown.get(name) or []
         if not piles:
             return None
@@ -2407,6 +2614,8 @@ def describe(spec: dict, key: str, sources: dict, partitions: list[dict] | None 
             return key
         names, first, last, bounds = parsed
         where = f"「{spec['prefix'].rstrip(':')}」が{'・'.join(names)}のもの"
+        if (month := parse_month_key(key)) is not None:
+            return _month_where(where, spec, month)
         if bounds is not None:
             return (
                 f"{where}のうち、「{spec['value'].rstrip(':')}」が分かっていないもの"
@@ -2457,6 +2666,23 @@ def _band_where(
         return f"{where}で、「{value}」が {first} 以上のもの"
     span = f"{first}" if first == last else f"{first}〜{last}"
     return f"{where}で、「{value}」が {span} のもの"
+
+
+def _month_where(where: str, spec: dict, month) -> str:
+    """月の帯の受け持ちを言葉にする。**最初の帯は月の分からないものも、最後の帯はその年の
+    残りを全部**引き受ける(端を開いた月)。"""
+    _names, year, first, last = month
+    value = spec["value"].rstrip(":")
+    detail = (spec.get("detail") or "").rstrip(":")
+    head = f"{where}で、「{value}」が {year} のうち"
+    if first is None and last is None:
+        return f"{head}すべて(「{detail}」は問いません)"
+    if first is None:
+        return f"{head}、「{detail}」が {last} 月までか、分かっていないもの"
+    if last is None:
+        return f"{head}、「{detail}」が {first} 月以降のもの"
+    span = f"{first} 月" if first == last else f"{first}〜{last} 月"
+    return f"{head}、「{detail}」が {span}のもの"
 
 
 def _title_where(bounds: tuple[str, str], partitions: list[dict] | None) -> str:

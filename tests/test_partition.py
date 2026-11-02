@@ -2079,3 +2079,130 @@ class TestOverlaps:
         assert not partition._overlaps(spec, left, right)
         assert partition._overlaps(spec, left, partition.geo_key((35.685, 139.765, 35.695, 139.775)))
 
+
+
+class TestSplittingAYearByMonth:
+    """**値ひとつで目安を超えた年は、月で割る**(`detail`)。最近の映画は新作の引き継ぎで
+    1 年に何十本も並び、「1 年より細かくは割らない」約束のままでは 1 区画が目安の 3 倍に
+    なった(日本の 2026 年に 70 本)。細かい軸のタグ(公開月)があれば月の幅でも
+    「この範囲の全員」が言えるので、そこだけ月の帯にする。"""
+
+    def spec(self, target=10, detail="公開月:"):
+        raw = {"by": "band", "prefix": "国:", "value": "年代:", "target": target}
+        if detail:
+            raw["detail"] = detail
+        return partition.normalize(raw)
+
+    @staticmethod
+    def film(title, year, month=None, country="日本"):
+        tags = [f"国:{country}", f"年代:{year}"]
+        if month is not None:
+            tags.append(f"公開月:{month}")
+        return title, {"title": title, "tags": tags}
+
+    def year_of_films(self):
+        rows = [self.film("昔の作品", 1990)]
+        rows += [self.film(f"春{i}", 2026, f"2026-0{1 + i % 3}") for i in range(12)]
+        rows += [self.film(f"秋{i}", 2026, f"2026-{10 + i % 3}") for i in range(12)]
+        rows += [self.film("月の分からない作品", 2026)]
+        rows += [self.film("年の違う月", 2026, "2025-12")]
+        return dict(rows)
+
+    def test_only_the_crowded_year_is_split(self):
+        built = partition.build(self.spec(), {}, self.year_of_films())
+        keys = [p["key"] for p in built]
+
+        # 月も年と同じ足し方で区切る(目安 10 本。月の分からない 2 本は最初の帯へ)
+        # 手前の年の帯は、月で割った年の手前まで受け持つ(`1991-` だった範囲を鍵から消さない)
+        assert keys == ["日本|-2025", "日本|2026|-2月", "日本|2026|3-11月", "日本|2026|12-月"]
+        # 細かい軸を書いていなければ今までどおり 1 年のまま
+        plain = partition.build(self.spec(detail=None), {}, self.year_of_films())
+        assert [p["key"] for p in plain] == ["日本|-1990", "日本|1991-"]
+
+    def test_each_film_lands_in_its_month(self):
+        own = self.year_of_films()
+        built = partition.build(self.spec(), {}, own)
+        find = partition.locator(self.spec(), built)
+
+        assert find(own["春0"]) == "日本|2026|-2月"
+        assert find(own["春2"]) == "日本|2026|3-11月"
+        assert find(own["秋2"]) == "日本|2026|12-月"
+        # 月の分からないもの・年の合わない月は、最初の月の帯が引き受ける
+        assert find(own["月の分からない作品"]) == "日本|2026|-2月"
+        assert find(own["年の違う月"]) == "日本|2026|-2月"
+        assert find(own["昔の作品"]) == "日本|-2025"
+        # 月で割った年より先の年は、まだ帯が無い(割り直しの引き金になる)
+        assert find(dict([self.film("来年", 2027, "2027-01")])["来年"]) is None
+
+    def test_the_months_are_described(self):
+        spec = self.spec()
+        assert partition.describe(spec, "日本|2026|-3月", {}) == (
+            "「国」が日本のもので、「年代」が 2026 のうち、「公開月」が 3 月までか、分かっていないもの"
+        )
+        assert partition.describe(spec, "日本|2026|4-9月", {}) == (
+            "「国」が日本のもので、「年代」が 2026 のうち、「公開月」が 4〜9 月のもの"
+        )
+        assert partition.describe(spec, "日本|2026|10-月", {}).endswith("「公開月」が 10 月以降のもの")
+
+    def test_a_grown_year_is_split_and_keeps_its_marks(self):
+        own = self.year_of_films()
+        spec = self.spec()
+        ledger = [
+            {"key": "日本|-1990", "count": 1, "visits": {"ざっと": "2026-10-01"}},
+            {"key": "日本|2026-", "count": 26, "visits": {"ざっと": "2026-10-02"}},
+        ]
+
+        split = partition.split_outgrown(spec, ledger, {}, own)
+
+        # 親(`2026-`)は 2026 年だけを引き受けていたので、手前の空きは無い
+        assert [p["key"] for p in split] == [
+            "日本|-1990", "日本|2026|-2月", "日本|2026|3-11月", "日本|2026|12-月",
+        ]
+        assert all(p["visits"] == {"ざっと": "2026-10-02"} for p in split[1:])
+
+    def test_a_split_keeps_the_years_before_it(self):
+        own = self.year_of_films()
+        ledger = [
+            {"key": "日本|-1990", "count": 1, "visits": {}},
+            {"key": "日本|1991-", "count": 26, "visits": {}},
+        ]
+
+        split = partition.split_outgrown(self.spec(), ledger, {}, own)
+
+        assert [p["key"] for p in split][:2] == ["日本|-1990", "日本|1991-2025"]
+
+    def test_a_rebuild_inherits_the_year_marks(self):
+        spec = self.spec()
+        built = partition.build(spec, {}, self.year_of_films())
+        current = [{"key": "日本|2026-", "count": 26, "visits": {"ざっと": "2026-10-02"}}]
+
+        refreshed = partition.refresh(built, current, spec)
+
+        months = [p for p in refreshed if "|2026|" in p["key"]]
+        assert months and all(p["visits"] == {"ざっと": "2026-10-02"} for p in months)
+        # 月の帯が年の帯を引き受けるので、古い年の帯は残さない
+        assert "日本|2026-" not in [p["key"] for p in refreshed]
+
+    def test_small_months_of_the_same_year_are_joined(self):
+        spec = self.spec(target=20)
+        joined = partition.merged(spec, [
+            {"key": "日本|2025-2025", "count": 3, "visits": {}},
+            {"key": "日本|2026|-3月", "count": 3, "visits": {}},
+            {"key": "日本|2026|4-月", "count": 3, "visits": {}},
+        ])
+
+        # 同じ年の月どうしはつなぎ、年の帯とはつながない
+        assert [p["key"] for p in joined] == ["日本|2025-2025", "日本|2026|-月"]
+
+    def test_a_single_year_with_months_is_not_a_dead_end(self):
+        spec = self.spec()
+        assert not partition._single_value(spec, "日本|2026-2026")
+        assert partition._single_value(spec, "日本|2026|3-3月")
+        assert partition._single_value(self.spec(detail=None), "日本|2026-2026")
+
+    def test_adding_the_detail_keeps_the_ledger(self):
+        assert partition.same_cut(self.spec(), self.spec(detail=None))
+
+    def test_the_detail_is_only_for_bands(self):
+        with pytest.raises(HTTPException):
+            partition.normalize({"by": "tag", "prefix": "国:", "detail": "公開月:"})
