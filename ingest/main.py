@@ -327,9 +327,12 @@ def validate_db(adapter: SourceAdapter, db_path: Path, now_docs: int = 0) -> Non
             # API 自体もその場合はタイトル前方一致にフォールバックするため、FTS 検証は対象外。
             if len(title) < 3:
                 continue
+            # **引用符は消さずに重ねる**(FTS5 のフレーズの中の `"` は `""` と書く)。消していた頃は、
+            # 見出しに `"` を含む記事(`に"設計書"を`)が索引の文字の並びと合わずに 0 件になり、
+            # 収集の取り込みがその見出しが先頭に来るたびに落ちた
             fts = conn.execute(
                 "SELECT rowid FROM docs_fts WHERE docs_fts MATCH ? LIMIT 1",
-                ('"' + title.replace('"', "") + '"',),
+                ('"' + title.replace('"', '""') + '"',),
             ).fetchone()
             if fts is None:
                 raise RuntimeError(f"validation failed: FTS search returned nothing for {title!r}")

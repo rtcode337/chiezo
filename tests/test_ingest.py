@@ -428,6 +428,29 @@ class TestBuild:
         with pytest.raises(RuntimeError, match="sample title not found"):
             ingest_main.validate_db(adapter, building)
 
+    def test_a_sample_title_with_quotes_is_found(self, tmp_path):
+        """**見出しの `"` を消さずに検索する。** 消すと `に"設計書"を` が `に設計書を` になり、
+        索引の文字の並びと合わずに 0 件になった(収集の先頭の記事がこれで、取り込みが落ちた)。"""
+        import sqlite3
+
+        from core import CORE_SCHEMA_DDL
+
+        title = '【ServiceNow】Build Agent に"設計書"を渡したら、占いアプリが本気の仕上がりになった🔮'
+        db = tmp_path / "quoted.db"
+        conn = sqlite3.connect(db)
+        conn.executescript(CORE_SCHEMA_DDL)
+        conn.execute(
+            "INSERT INTO docs (doc_id, title, opening, body, tags, extra, updated_at)"
+            " VALUES (1, ?, '', 'b', NULL, '{}', '2026-11-02')",
+            (title,),
+        )
+        conn.execute("INSERT INTO docs_fts (docs_fts) VALUES ('rebuild')")
+        conn.commit()
+        conn.close()
+
+        adapter = type("_Adapter", (), {"min_docs": 1, "sample_titles": (title,)})()
+        ingest_main.validate_db(adapter, db)  # 例外が出なければ通過
+
     def test_a_generation_that_shrank_is_refused(self, tmp_path, built_data_dir, fixture_dump):
         """**溜めたものが丸ごと入れ替わるのを止める。**
 
