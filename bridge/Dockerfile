@@ -38,9 +38,10 @@ FROM node:24-bookworm-slim AS cli
 # `opus` が Opus 5.5 を指すのは 2.1.280 から(CHANGELOG)。print モードの `/usage` が
 # 枠を返すのは 2.1.267 から。原則 `stable` のタグの版を選ぶ(`latest` は `next` と同じ版を
 # 指していることがあり、巻き戻されることがある)。
-# 固定した日(2026-10-15)の `stable` / `latest`: claude 2.1.292 / codex 0.162.1。
-ARG CLAUDE_VERSION=2.1.292
-ARG CODEX_VERSION=0.162.1
+# 固定した日(2026-11-07)の `stable`: claude 2.1.311。codex は出て 1 日の `latest`(0.167.0)を避けて、
+# 修正版が続かずに 1 週間経った 0.166.0。
+ARG CLAUDE_VERSION=2.1.311
+ARG CODEX_VERSION=0.166.0
 RUN set -eux; \
     npm install -g "@anthropic-ai/claude-code@${CLAUDE_VERSION}" "@openai/codex@${CODEX_VERSION}"; \
     installed="$(codex --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"; \
@@ -68,7 +69,7 @@ RUN set -eux; \
 # 1.1.27 でも出た。あれは版ではなく権限の確認の問題で、cli_bridge.py の
 # build_command が `--dangerously-skip-permissions` を常に付けることで避けている
 # (agy には道具を名指しで許す口が無い。守りはマウントとネットワークで取る)。
-ARG AGY_MIN_VERSION=1.4.0
+ARG AGY_MIN_VERSION=1.5.2
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl; \
