@@ -713,6 +713,27 @@ def _thumbs_health_html() -> str:
     state = thumbs.health()
     if not state:
         return ""
+    return _thumbs_status_html(state) + _thumbs_given_up_html(state)
+
+
+def _thumbs_given_up_html(state: dict) -> str:
+    """続けて取れなかったので、相手ごと頼んでいない相手(`thumbs.given_up_hosts`)。
+    **出さないと、その相手の絵が 1 枚も付かない理由が読めない**(1 件ごとの印は記事の中にしか無い)。"""
+    hosts = thumbs.given_up_hosts(state)
+    if not hosts:
+        return ""
+    rows = "、".join(
+        f"{esc(host)}(「{esc(entry['reason'])}」・{esc(jst.format(jst.parse(entry['until'])))} まで)"
+        for host, entry in sorted(hosts.items())
+    )
+    return (
+        f'<p class="muted">続けて取れなかったので、相手ごと頼んでいないサイト'
+        f"({thumbs.GIVE_UP_DAYS} 日): {rows}</p>"
+    )
+
+
+def _thumbs_status_html(state: dict) -> str:
+    """取れているかの 1 行(最後の結果と、続けて取れなかった回数)。"""
     ok = jst.parse(str(state.get("last_ok_at") or ""))
     ok_text = f"最後に取れたのは {esc(jst.format(ok))}" if ok else "まだ 1 枚も取れていません"
     host = str(state.get("last_host") or "")

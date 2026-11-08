@@ -54,6 +54,16 @@
 巡回で 20 枚まで頼み続け、読む側のアプリからの頼みも 1.5 秒おきに通していた ——
 Wikimedia は作り置きの無い縮小版を作らせる頼みを回線ごとに数えるので、頼むほど長く絞られる。
 
+## 断られ続けた相手は、相手ごと諦める
+
+**同じ相手に続けて `GIVE_UP_AFTER` 回取れなかったら、`GIVE_UP_DAYS` 日はその相手へ出ない**
+(`given_up_until`。数えるのは 401・403・429・5xx・つながらない。404 はその 1 枚の事情なので数えない。
+1 枚でも取れたら数え直す)。諦めている間の頼みは外へ出ずに `Skip` で断り、その 1 件には印が付く。
+**ボットを断るサイトは 1 件ずつ断る** —— 403 は 1 件ごとの印で止まるが、流れの収集は新しい記事が
+毎時入るので、記事ごとに 1 回ずつ同じサイトへ断られに行っていた(1 回の巡回で 11 件続けて 403)。
+429 と 5xx・つながらないは 1 件の印に残らない(一時的なものとして取り直す)ので、ボット避けで
+いつも 429 を返すサイトには、休み明けのたびに頼み続けていた。
+
 ## Wikimedia の絵は縮小版を取る
 
 `upload.wikimedia.org` の元の絵(数 MB のことがある)は取らず、Wikimedia が用意する
@@ -138,6 +148,11 @@ LOG_FLAG = "thumbs_log"
 MAX_LOG = 200
 # 「多すぎる」と言われたら、その相手へ頼まない長さ(秒。相手の Retry-After が長ければそちら)
 RESTING_SECONDS = 30 * 60
+# 同じ相手に続けてこの回数取れなければ、相手ごと `GIVE_UP_DAYS` 日は頼まない
+GIVE_UP_AFTER = 3
+GIVE_UP_DAYS = 7
+# 相手ごと諦める理由に数える応答(届いたうえで断られた。404 はその 1 枚の事情なので入れない)
+REFUSED_STATUSES = (401, 403)
 # 取り直す失敗(一時的なものなのに、前は印を付けていた)
 RETRYABLE_FAILURES = ("HTTP 429",)
 # Wikimedia の縮小版の幅。**作り置きのありそうな幅**(記事の代表の写真をプレビューや検索で
@@ -293,6 +308,8 @@ async def _get(client: httpx.AsyncClient, url: str, limit: int) -> tuple[str, by
     取れたか・取れなかったかは控えに残す(`_note`)。**休んでいる相手へは出ない**(`Resting`)。
     """
     host = urlparse(url).hostname or ""
+    if given_up := given_up_until(host):
+        raise Skip(f"続けて取れなかったので、このサイトへは頼みません({given_up['reason']})")
     if until := resting_until(host):
         raise Resting(f"断られたので {until} まで頼みません")
     try:
@@ -317,9 +334,12 @@ async def _get(client: httpx.AsyncClient, url: str, limit: int) -> tuple[str, by
         raise httpx.HTTPStatusError(
             f"HTTP {got.status}", request=got.response.request, response=got.response
         )
+    if got.status in REFUSED_STATUSES:
+        # 届いたうえで断られた。取れているかの回数には入れず(その相手の事情)、相手ごとに数える
+        _note_host(host, f"HTTP {got.status}")
     if got.status != 200:
         raise Skip(f"HTTP {got.status}")
-    _note(True)
+    _note(True, url=url)
     return got.url, got.body, got.content_type
 
 
@@ -357,6 +377,60 @@ def _retry_after(response) -> int:
     return max(asked, RESTING_SECONDS)
 
 
+def given_up_until(host: str, state: dict | None = None) -> dict:
+    """その相手を諦めている間なら `{"until", "reason"}`。諦めていなければ空。"""
+    state = health() if state is None else state
+    entry = (state.get("given_up") or {}).get(host)
+    if not isinstance(entry, dict):
+        return {}
+    try:
+        if datetime.fromisoformat(str(entry.get("until") or "")) > datetime.now(UTC):
+            return {"until": str(entry["until"]), "reason": str(entry.get("reason") or "")}
+    except ValueError:
+        pass
+    return {}
+
+
+def given_up_hosts(state: dict | None = None) -> dict[str, dict]:
+    """いま諦めている相手(ホスト → `{"until", "reason"}`)。"""
+    state = health() if state is None else state
+    return {
+        host: entry for host in (state.get("given_up") or {})
+        if (entry := given_up_until(host, state))
+    }
+
+
+def _counted(state: dict, host: str, reason: str) -> None:
+    """相手ごとに続けて取れなかった回数を 1 つ足し、`GIVE_UP_AFTER` に届いたら諦める。"""
+    if not host:
+        return
+    refusing = dict(state.get("refusing") or {})
+    count = int((refusing.get(host) or {}).get("count") or 0) + 1
+    if count >= GIVE_UP_AFTER:
+        refusing.pop(host, None)
+        until = datetime.now(UTC) + timedelta(days=GIVE_UP_DAYS)
+        state["given_up"] = {
+            **(state.get("given_up") or {}),
+            host: {"until": until.isoformat(timespec="seconds"), "reason": reason},
+        }
+        log.info("thumbs: %s に続けて取れなかったので %d 日は頼まない(%s)", host, GIVE_UP_DAYS, reason)
+    else:
+        refusing[host] = {"count": count, "reason": reason}
+    state["refusing"] = refusing
+
+
+def _note_host(host: str, reason: str) -> None:
+    """届いたうえで断られた(401・403)のを、相手ごとにだけ数える。"""
+    if settings_store.db_path() is None:
+        return
+    try:
+        state = health()
+        _counted(state, host, reason)
+        settings_store.set_flag(HEALTH_FLAG, json.dumps(state, ensure_ascii=False))
+    except (OSError, sqlite3.Error):
+        log.warning("thumbs: 取れているかを控えられなかった", exc_info=True)
+
+
 def failing(state: dict | None = None) -> bool:
     """続けて取れていないか(`FAILING_AFTER` 回以上)。"""
     state = health() if state is None else state
@@ -370,10 +444,16 @@ def _note(ok: bool, reason: str = "", url: str = "", rest: int = 0) -> None:
     try:
         state = health()
         now = datetime.now(UTC).isoformat(timespec="seconds")
+        host = urlparse(url).hostname or ""
         if ok:
             state.update(last_ok_at=now, failing=0)
+            # 1 枚でも取れた相手は数え直す
+            if host and host in (state.get("refusing") or {}):
+                state["refusing"] = {
+                    k: v for k, v in state["refusing"].items() if k != host
+                }
         else:
-            host = urlparse(url).hostname or ""
+            _counted(state, host, reason)
             state.update(
                 last_failed_at=now,
                 last_reason=reason,

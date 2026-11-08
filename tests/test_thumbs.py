@@ -398,8 +398,9 @@ class TestHealth:
         assert state["last_reason"] == "つながらない(ConnectError)"
         assert state["last_host"] == "example.org"
 
-        serve({"https://example.org/d.png": image_response()})
-        attach(True, [{"title": "d", "image": "https://example.org/d.png"}])
+        # (example.org は 3 回続けて取れなかったので相手ごと諦めている。別の相手で取れたら数え直す)
+        serve({"https://example.net/d.png": image_response()})
+        attach(True, [{"title": "d", "image": "https://example.net/d.png"}])
         state = thumbs.health()
         assert state["failing"] == 0 and state["last_ok_at"]
         assert not thumbs.failing(state)
@@ -449,6 +450,76 @@ class TestHealth:
 
         from app.views import admin
         assert "まで頼みません" not in admin._thumbs_health_html()
+
+
+class TestGivingUpOnAHost:
+    """同じ相手に続けて取れなければ、相手ごとしばらく頼まない(`given_up_until`)。"""
+
+    def _items(self, names, host="example.org"):
+        return [{"title": t, "image": f"https://{host}/{t}.png"} for t in names]
+
+    def test_a_site_that_keeps_refusing_is_left_alone(self, serve):
+        calls = serve({f"https://example.org/{t}.png": httpx.Response(403) for t in "abcde"})
+        items = self._items("abcde")
+        attach(True, items)
+        # 3 回続けて断られたら、残りは外へ出ずに印を付ける
+        assert len(calls) == thumbs.GIVE_UP_AFTER
+        assert all("thumb_failed" in item["extra"] for item in items)
+        assert "このサイトへは頼みません" in items[-1]["extra"]["thumb_failed"]
+        assert thumbs.given_up_until("example.org")["reason"] == "HTTP 403"
+
+        # 次の回の新しい 1 件も、外へ出ない
+        serve({"https://example.org/f.png": image_response()})
+        later = self._items("f")
+        assert attach(True, later) == 0
+        assert "このサイトへは頼みません" in later[0]["extra"]["thumb_failed"]
+
+        from app.views import admin
+        assert "相手ごと頼んでいないサイト" in admin._thumbs_health_html()
+        assert "example.org" in admin._thumbs_health_html()
+
+    def test_a_site_that_keeps_saying_too_many_is_left_alone(self, serve):
+        """いつも 429 を返すサイト(ボット避け)も、休み明けのたびに頼み続けない。"""
+        serve({"https://example.org/a.png": httpx.Response(429)})
+        for _ in range(thumbs.GIVE_UP_AFTER):
+            state = thumbs.health()
+            state["resting"] = {}
+            thumbs.settings_store.set_flag(thumbs.HEALTH_FLAG, __import__("json").dumps(state))
+            attach(True, self._items("a"))
+        assert thumbs.given_up_until("example.org")
+
+    def test_one_picture_taken_counts_again(self, serve):
+        serve({
+            "https://example.org/a.png": httpx.Response(403),
+            "https://example.org/b.png": httpx.Response(403),
+            "https://example.org/c.png": image_response(),
+            "https://example.org/d.png": httpx.Response(403),
+            "https://example.org/e.png": httpx.Response(403),
+        })
+        attach(True, self._items("abcde"))
+        assert not thumbs.given_up_until("example.org")
+
+    def test_a_missing_picture_does_not_count(self, serve):
+        serve({f"https://example.org/{t}.png": httpx.Response(404) for t in "abcd"})
+        attach(True, self._items("abcd"))
+        assert not thumbs.given_up_until("example.org")
+
+    def test_other_sites_are_still_asked(self, serve):
+        calls = serve({
+            **{f"https://example.org/{t}.png": httpx.Response(403) for t in "abc"},
+            "https://example.net/d.png": image_response(),
+        })
+        assert attach(True, self._items("abc") + self._items("d", "example.net")) == 1
+        assert calls[-1] == "https://example.net/d.png"
+
+    def test_the_site_is_asked_again_after_the_days(self, serve):
+        serve({f"https://example.org/{t}.png": httpx.Response(403) for t in "abc"})
+        attach(True, self._items("abc"))
+        state = thumbs.health()
+        state["given_up"]["example.org"]["until"] = "2000-01-01T00:00:00+00:00"
+        thumbs.settings_store.set_flag(thumbs.HEALTH_FLAG, __import__("json").dumps(state))
+        serve({"https://example.org/z.png": image_response()})
+        assert attach(True, self._items("z")) == 1
 
 
 class TestLog:
