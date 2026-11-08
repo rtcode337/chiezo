@@ -652,7 +652,20 @@ def resolve(spec: dict, clue: dict, area_hint: str | None, sources: dict, now: s
         return result
     if result.ok:
         return _checked_coords(spec, result, clue, area_hint, sources)
-    return _by_address(spec, clue, area_hint, sources, now) or result
+    placed = _by_address(spec, clue, area_hint, sources, now)
+    if placed is not None:
+        return placed
+    # **住所でも引けなかったことも理由に書く**(`ADDRESS_MISS_NOTE`)。書かないと、次の回の AI には
+    # 「辞典に同じ名前がありません」しか届かず、住所を番地まで書いた店でも同じ手がかりを返し続ける
+    # (番地の飛び飛びな地区は住所の辞典に無い番地が多い)。座標を書けば置ける段(`ai_fallback`)が
+    # あることを知る手がかりはここしか無い
+    if clue.get("address") and sources.get(spec["address"]["source"]) is not None:
+        result.shop["unresolved"] = f"{result.shop['unresolved']}{ADDRESS_MISS_NOTE}"
+    return result
+
+
+# 店の辞典に当たらず、住所の辞典でも街区まで引けなかったときに理由へ足す一言
+ADDRESS_MISS_NOTE = "。住所も住所の辞典で番地まで引けません"
 
 
 # **住所を持たない辞典の点を、住所の街区の点からこの距離(m)以内なら住所で確かめたとみなす。**
@@ -787,15 +800,19 @@ def _by_shops(spec: dict, clue: dict, area_hint: str | None, sources: dict, now:
     if len(clusters) == 1 and any(c.area_ok for c in clusters[0]) \
             and not all(c.loose for c in clusters[0]):
         return _resolved(spec, clusters[0], clue, now)
-    # **AI が辞典を見て指した見出し(`ref`)は、名前の書き方が違っても採る** —— 候補が
-    # その 1 か所だけで、県が合い、名前が大きく重なるとき。辞典の側に住所の無い点
+    # **AI が辞典を見て指した見出し(`ref`)は、名前の書き方が違っても採る** —— 指した候補の
+    # 束がちょうど 1 つで、県が合い、名前が大きく重なるとき。辞典の側に住所の無い点
     # (地図辞典の直売所・小さな店に多い)は、名前を寄せると住所でも辞典どうしでも
     # 確かめようがなく、**AI が辞典で見つけて指した店まで落ちていた**(運営の名前を
-    # 頭に付けた正式名と、看板の名前だけの見出し)
-    if len(clusters) == 1 and any(
-        c.by_ref and c.area_ok and _named_alike(base_name(c.title), name) for c in clusters[0]
-    ):
-        return _resolved(spec, clusters[0], clue, now, pointed=True)
+    # 頭に付けた正式名と、看板の名前だけの見出し)。**同じ名前の別の場所があっても採る** ——
+    # 住所の無い点どうしは住所で絞れず、見出しの札(`(way:…)`)で 1 つを指すしかない。
+    # 指した見出しが 2 つ以上の束にまたがる(札の無い同名の見出し)ときは採らない
+    pointed = [
+        group for group in clusters
+        if any(c.by_ref and c.area_ok and _named_alike(base_name(c.title), name) for c in group)
+    ]
+    if len(pointed) == 1:
+        return _resolved(spec, pointed[0], clue, now, pointed=True)
     more = f"(候補が多すぎて {'・'.join(crowded)} は先頭の {MAX_CANDIDATES} 件だけ見ました)" \
         if crowded else ""
     if len(clusters) > 1:

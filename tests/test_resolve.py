@@ -285,6 +285,40 @@ class TestPickingTheRightShop:
         }, "東京都", srcs, NOW)
         assert not result.ok
 
+    def _two_places(self, tmp_path):
+        """同じ名前の、住所を持たない地図の点が 2 か所(見出しは札で見分ける)。"""
+        twins = [
+            {"title": "見本屋 (way:4001)", "aliases": ["見本屋"], "extra": {
+                "osm_type": "way", "osm_id": 4001, "feature": "amenity=restaurant",
+                "lat": 35.6850, "lon": 139.7600, "area": "東京都",
+            }},
+            {"title": "見本屋 (way:4002)", "aliases": ["見本屋"], "extra": {
+                "osm_type": "way", "osm_id": 4002, "feature": "amenity=restaurant",
+                "lat": 35.7400, "lon": 139.8200, "area": "東京都",
+            }},
+        ]
+        return {
+            "osm_japan": make_source(tmp_path, "osm_japan", osm_docs(twins)),
+            "overture_japan": make_source(tmp_path, "overture_japan", []),
+        }
+
+    def test_a_pointed_entry_among_namesakes_is_taken(self, tmp_path):
+        """同じ名前の点が 2 か所あっても、AI が札つきの見出しで指した 1 か所を採る。"""
+        result = resolve.resolve(SPEC, {
+            "name": "見本屋", "address": "東京都見本市大字見本字山本34",
+            "ref": "osm_japan:見本屋 (way:4002)",
+        }, "東京都", self._two_places(tmp_path), NOW)
+        assert result.ok, result.shop
+        assert (result.lat, result.lon) == (35.74, 139.82)
+        assert resolve.BASIS_REF in result.shop["basis"]
+
+    def test_namesakes_without_pointing_stay_undecided(self, tmp_path):
+        result = resolve.resolve(SPEC, {
+            "name": "見本屋", "address": "東京都見本市大字見本字山本34",
+        }, "東京都", self._two_places(tmp_path), NOW)
+        assert not result.ok
+        assert "2 か所" in result.shop["unresolved"]
+
     def test_a_similar_name_without_pointing_is_not_taken(self, tmp_path):
         """指していなければ今までどおり(名前が似ているだけの点は採らない)。"""
         srcs = self._pointed(tmp_path, "サンプルの郷")
@@ -390,6 +424,12 @@ class TestPlacingByAddress:
             "name": "どこにも無い店", "address": "東京都千代田区丸の内二丁目",
         }, "東京都", srcs, NOW)
         assert not result.ok
+        # 住所でも引けなかったことも書く(次の回の AI が、座標を書く場面だと分かるように)
+        assert result.shop["unresolved"] == "辞典に同じ名前がありません" + resolve.ADDRESS_MISS_NOTE
+
+    def test_without_an_address_the_reason_stays_short(self, srcs):
+        """住所を書いていない手がかりには、住所の話を足さない。"""
+        result = resolve.resolve(ADDRESS_SPEC, {"name": "どこにも無い店"}, "東京都", srcs, NOW)
         assert result.shop["unresolved"] == "辞典に同じ名前がありません"
 
     def test_an_ambiguous_block_is_not_placed(self, srcs):
