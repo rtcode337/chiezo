@@ -325,11 +325,12 @@ class TestOneCallAtATime:
 
         assert self._run(scenario()) == 1
 
-    def test_a_credential_that_does_not_rotate_is_not_held_up(self, bridge):
-        """Claude は環境変数で受け取るので回らない。待たせる理由がない。"""
+    def test_a_credential_that_does_not_rotate_is_not_held_up(self, bridge, monkeypatch):
+        """長期トークンを登録した Claude は環境変数で受け取るので回らない。待たせる理由がない。"""
         import asyncio
 
         server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        monkeypatch.setattr(server, "stored_credential", lambda: "sk-ant-oat01-test")
 
         async def scenario():
             running = 0
@@ -347,6 +348,34 @@ class TestOneCallAtATime:
             return peak
 
         assert self._run(scenario()) == 4
+
+    def test_claude_signed_in_inside_runs_one_at_a_time(self, bridge, monkeypatch):
+        """登録が無ければコンテナの中のサインインを使い、そちらはホームで回る。
+
+        並行に走らせていた頃、2 本が同時に期限切れに当たって更新に失敗し、
+        サインインし直すまで全部落ちた。
+        """
+        import asyncio
+
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        monkeypatch.setattr(server, "stored_credential", lambda: "")
+
+        async def scenario():
+            running = 0
+            peak = 0
+
+            async def one():
+                nonlocal running, peak
+                async with server.cli_slot():
+                    running += 1
+                    peak = max(peak, running)
+                    await asyncio.sleep(0)
+                    running -= 1
+
+            await asyncio.gather(*(one() for _ in range(4)))
+            return peak
+
+        assert self._run(scenario()) == 1
 
     def test_short_questions_do_not_wait_forever(self, bridge):
         """枠の確認のような短い問い合わせは、長い会話の後ろで待ち続けない。"""
@@ -2003,6 +2032,27 @@ class TestClaudeCanUseItsOwnSignIn:
         assert server.apply_credential() == ""
         assert server.os.environ["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-test"
 
+    def test_a_removed_registration_stops_overriding_the_sign_in(self, bridge, monkeypatch):
+        """登録を消したら、前に置いた値を環境変数から外す(残るとそちらが優先される)。"""
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr(server, "stored_credential", lambda: "sk-ant-oat01-test")
+        server.apply_credential()
+        monkeypatch.setattr(server, "stored_credential", lambda: "")
+
+        assert server.apply_credential() == ""
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in server.os.environ
+
+    def test_a_token_from_the_environment_is_read_as_it_was_at_start(self, bridge, monkeypatch):
+        """あとから環境変数に置いた値を「compose で渡された値」と取り違えない。"""
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "from-compose")
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        monkeypatch.setattr(server, "CREDENTIAL_FILE", "/nonexistent/credential")
+        monkeypatch.setattr(server, "STATE_DB", "/nonexistent/state.db")
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "set-later")
+
+        assert server.stored_credential() == "from-compose"
+
     def test_codex_still_needs_something_registered(self, bridge, monkeypatch):
         """あちらは認証ファイルを置く方式で、置くものが無ければ動かない。"""
         server = bridge(CHIEZO_BRIDGE_CLI="codex")
@@ -2010,14 +2060,29 @@ class TestClaudeCanUseItsOwnSignIn:
 
         assert "未登録" in server.apply_credential()
 
-    def test_a_wrap_up_says_what_to_do(self, bridge):
+    def test_a_wrap_up_says_what_to_do(self, bridge, monkeypatch):
         """0 が並んだ集計を見せられても、壊れているのか頼み方が違うのか読めない。"""
         server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        monkeypatch.setattr(server, "stored_credential", lambda: "sk-ant-oat01-test")
         raw = json.dumps({"result": (
             "Total cost: $0.0000\nTotal duration (API): 0s\n"
             "Usage: 0 input, 0 output, 0 cache read, 0 cache write")})
 
-        assert "サインイン" in server._usage_reason(raw)
+        reason = server._usage_reason(raw)
+        assert "サインイン" in reason and "削除" in reason
+
+    def test_a_wrap_up_without_a_registration_means_the_sign_in_lapsed(self, bridge, monkeypatch):
+        """登録が無いのに締めの集計が返るのは、中のサインインが切れたとき。
+
+        「登録を削除して」と言っても当てはまらない(実際にそう出て、打つ手を誤らせた)。
+        """
+        server = bridge(CHIEZO_BRIDGE_CLI="claude")
+        monkeypatch.setattr(server, "stored_credential", lambda: "")
+        raw = json.dumps({"result": "Total cost: $0.0000\nUsage: 0 input, 0 output"})
+
+        reason = server._usage_reason(raw)
+        assert "切れています" in reason and "/login" in reason
+        assert "削除" not in reason
 
     def test_a_real_panel_is_not_mistaken_for_one(self, bridge):
         server = bridge(CHIEZO_BRIDGE_CLI="claude")

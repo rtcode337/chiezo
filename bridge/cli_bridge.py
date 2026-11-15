@@ -354,18 +354,25 @@ LONG_PROMPT_INSTRUCTION = (
 )
 
 
+# 起動したときに環境変数で渡されていた認証情報。**起動時に控えておく** ——
+# claude は登録された値を `apply_credential` が同じ環境変数へ置くので、あとから読むと
+# 「compose で渡された値」と「前に登録されていた値」の見分けが付かない。登録を消しても
+# 前の値が環境変数に残り、長期トークンのまま走り続けていた(サインインに切り替わらない)。
+_ENV_CREDENTIAL = os.environ.get(
+    {
+        "claude": "CLAUDE_CODE_OAUTH_TOKEN",
+        "codex": "CODEX_AUTH_JSON",
+    }.get(CLI, ""), ""
+).strip()
+
+
 def stored_credential() -> str:
     """管理画面から登録された認証情報。無ければ環境変数へ落ちる。
 
     要求のたびに読む(起動時に固めない)ので、管理画面で登録し直しても再起動が要らない。
-    読む順は 写し(CREDENTIAL_FILE)→ 以前の設定 DB(マウントされていれば)→ 環境変数。
+    読む順は 写し(CREDENTIAL_FILE)→ 以前の設定 DB(マウントされていれば)→ 起動時の環境変数。
     """
-    fallback = os.environ.get(
-        {
-            "claude": "CLAUDE_CODE_OAUTH_TOKEN",
-            "codex": "CODEX_AUTH_JSON",
-        }.get(CLI, ""), ""
-    ).strip()
+    fallback = _ENV_CREDENTIAL
     if value := _read_text(CREDENTIAL_FILE).strip():
         return value
     if not os.path.exists(STATE_DB):
@@ -402,6 +409,8 @@ def apply_credential() -> str:
         # コンテナの中で 1 回サインインするほうを選べる必要がある。
         # **サインインもしていなければ CLI 自身が断る**(`Not logged in · Please run
         # /login` が返り、`is_error` で捕まる)ので、ここで先回りして断らない。
+        # **前に登録されていた値は外す** —— 残すと CLI はそちらを優先し、サインインを使わない
+        os.environ.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
         return ""
     if not value:
         return (
@@ -472,7 +481,22 @@ def _write_seed(seed_path: str, seed: str) -> None:
 
 
 # 認証情報をホーム配下に持つ CLI。CLI 自身が中身を書き換える(トークンの回転)。
+# claude は登録の有無で変わるので `_rotates` で見る。
 ROTATING_CREDENTIAL = frozenset({"codex", "antigravity"})
+
+
+def _rotates() -> bool:
+    """この CLI の認証情報が、走るたびに回りうるか。
+
+    **claude は登録が無いときだけ回る。** 登録した長期トークンは環境変数で受け取るので
+    回らないが、コンテナの中でサインインしたぶんはホームに置かれ、codex と同じく
+    更新のたびに回る。並行に走らせていた頃、2 本が同時に期限切れに当たって
+    `OAuth session expired and could not be refreshed` で失効し、サインインし直すまで
+    会話も枠の確認も全部落ちた。
+    """
+    if CLI in ROTATING_CREDENTIAL:
+        return True
+    return CLI == "claude" and not stored_credential()
 
 # CLI の起動を 1 本ずつにする枠。理由は 2 つ。
 #
@@ -485,7 +509,8 @@ ROTATING_CREDENTIAL = frozenset({"codex", "antigravity"})
 # 置くことがあり、同時に走らせると「どれがこの実行のものか」が mtime では決まらない
 # —— 実際に 4 件を同時に頼んで、4 件とも同じ絵が返った。
 #
-# 認証情報を環境変数で受け取る CLI は回転しないので、待たせない(素通りする)。
+# 認証情報を環境変数で受け取る CLI(長期トークンを登録した claude)は回転しないので、
+# 待たせない(素通りする)。
 _CLI_LOCK = asyncio.Lock()
 # 枠が空くのを待っている呼び出しの数(`/health` の `waiting`)。**1 本ずつしか通さないので、
 # 前の 1 本が長いと後ろは何も言わずに待つ** —— 外からは「終わらない」に見えていた
@@ -501,7 +526,7 @@ LOCK_WAIT = 30.0
 async def cli_slot(wait: float | None = None) -> AsyncIterator[None]:
     """CLI を 1 本ずつ走らせる枠。要らない相手は素通りする。"""
     global _WAITING
-    if CLI not in ROTATING_CREDENTIAL:
+    if not _rotates():
         yield
         return
     _WAITING += 1
@@ -2163,6 +2188,14 @@ def _usage_reason(raw: str) -> str:
     if _looks_like_a_wrap_up(text):
         # **そのまま出しても打つ手が分からない。** 0 が並んだ集計を見せられても、
         # 壊れているのか、そもそも出せない頼み方をしているのかが読めない。
+        # **登録の有無で打つ手が違う。** 登録が無いのに締めの集計が返るのは、コンテナの中の
+        # サインインが切れたとき(実測: 同じ頃の会話が `OAuth session expired and could
+        # not be refreshed` で落ちていた)。そこへ「登録を削除して」と言っても当てはまらない
+        if not stored_credential():
+            return ("枠のパネルではなく、会話を始めずに終わった締めの集計が返っています。"
+                    "認証情報は未登録なので、コンテナの中のサインインが切れています。"
+                    "`docker exec -it <ブリッジのコンテナ> claude` で `/login` し直してください"
+                    "(このあいだは会話も通りません)。")
         return ("枠のパネルではなく、会話を始めずに終わった締めの集計が返っています。"
                 "登録してある `claude setup-token` の長期トークンは推論だけに"
                 "絞られていて、枠を出せません。コンテナの中でサインインし"
