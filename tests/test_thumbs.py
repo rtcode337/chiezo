@@ -476,7 +476,10 @@ class TestGivingUpOnAHost:
 
         from app.views import admin
         assert "相手ごと頼んでいないサイト" in admin._thumbs_health_html()
-        assert "example.org" in admin._thumbs_health_html()
+        # 相手の名前と、断られた理由が並んで出る。名前だけを `in` で探すと、URL を文字列の一部で
+        # 判定しているように見えて CodeQL が警告する(py/incomplete-url-substring-sanitization)ので、
+        # 画面に出る形のまま確かめる
+        assert "example.org(「HTTP 403」" in admin._thumbs_health_html()
 
     def test_a_site_that_keeps_saying_too_many_is_left_alone(self, serve):
         """いつも 429 を返すサイト(ボット避け)も、休み明けのたびに頼み続けない。"""
