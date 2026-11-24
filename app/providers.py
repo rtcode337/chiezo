@@ -339,10 +339,13 @@ PROVIDERS: tuple[Provider, ...] = (
         # **Claude と GPT は Gemini と別の枠**（週/5 時間がそれぞれに立つ）。
         # Gemini 側を使い切ったときの逃げ先になる。ただし同じ Google AI の契約なので、
         # 契約ごと替えたいときは claude や codex の相手のほうが効く。
-        # **Argon は Pro では Gemini とも別の、週だけの枠**(2026-10 から)。
+        # Argon は 2026-10 から Pro では別の週の枠だったが、2026-11-23 に Gemini の枠へ
+        # まとめられ、Argon と Gemini 3.8 Flash は 2026-11-30 に Antigravity から外れる
+        # (公式の「Choose a model」)。控えには後を継ぐ Gemini 4 の Neon と Hydrogen を並べる。
         models=(
-            "gemini-4-argon-medium", "gemini-4-argon-high", "gemini-4-argon-low",
-            "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
+            "gemini-4-neon-medium", "gemini-4-neon-high", "gemini-4-neon-low", "gemini-4-neon-xhigh",
+            "gemini-4-hydrogen-medium", "gemini-4-hydrogen-high", "gemini-4-hydrogen-low",
+            "gemini-4-hydrogen-xhigh",
             "claude-opus-5-5-low", "claude-opus-5-5-medium", "claude-opus-5-5-high",
             "claude-sonnet-5-5-low", "claude-sonnet-5-5-medium", "claude-sonnet-5-5-high",
             "gpt-oss-120b-medium",
