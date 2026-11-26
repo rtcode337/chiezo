@@ -5392,6 +5392,11 @@ def _stream_docs(
     # 記事 364 件のうち 22 件が同じ URL の複製だった)。
     incoming_urls = _incoming_urls(collected)
     known_urls: set[str] = set()
+    # この回で消した 1 件の URL。同じ回で同じ URL の新しい 1 件が返ってきたら、
+    # それは消したものが戻ったのではなく、名前が変わったということ(運営が同じなので
+    # 公式サイトも同じ)。前の店を消して新しい店を足す答えなのに、新しい店だけが
+    # 「同じ URL の 1 件が既にある」で弾かれ、消す方だけが通っていた
+    buried_urls: set[str] = set()
     # **足したぶんの見出し**。長期記憶は見出しに一意の索引を張るので、同じ見出しを
     # 2 度流すと**焼く段で索引が張れず、取り込みがまるごと落ちる**(世代は
     # 切り替わらないので、集めたぶんが静かに消えたように見える。本番で起きた)。
@@ -5497,6 +5502,10 @@ def _stream_docs(
             # 直した件数が「直した見出し + 消した件数」になり、見出しは直したぶんしか
             # 控えないので、読む側に毎回「ほか N 件」と消したぶんが余って出る
             removed_titles.append(title)
+            if not is_removed(before):
+                prev_extra = before.get("extra")
+                if key := url_key(prev_extra.get("url") if isinstance(prev_extra, dict) else ""):
+                    buried_urls.add(key)
             yield _stamped(
                 _reviewed(_buried(before, raw, now)), sweep, "removed", by=signed_by(raw),
             )
@@ -5568,7 +5577,10 @@ def _stream_docs(
             continue
         doc["extra"] = _merge_extra({}, doc["extra"])
         key = url_key(doc["extra"].get("url"))
-        if key and key in known_urls:
+        if key in buried_urls:
+            # 名前が変わった新しい 1 件(上の `buried_urls`)。通すのは 1 件だけ
+            buried_urls.discard(key)
+        elif key and key in known_urls:
             # **同じ URL の 1 件が既にある。** 見出しが違っても同じ記事なので足さない
             # —— 足すと、読む人には同じ記事が 2 件並ぶ。
             # **書き換えた見出しは通らない**(その 1 件は先に入った見出しのまま残る)

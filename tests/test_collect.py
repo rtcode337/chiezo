@@ -486,6 +486,28 @@ class TestMaterial:
         assert [d["title"] for d in docs] == ["外した見出し"]
         assert diff["duplicates"] == 1
 
+    def test_a_renamed_one_is_added_when_the_old_one_is_buried_in_the_same_run(self, sample):
+        """同じ回で前の 1 件を消して、同じ URL の新しい 1 件を返したら、名前が変わったもの。
+
+        店名が変わっても運営が同じなら公式サイトも同じ。消えたものの URL として弾くと、
+        前の店は消えるのに新しい店が入らない。
+        """
+        collect.update("news", prompt="いまの内容:\n{current}\n直して")
+        docs, diff = collect.material(
+            collect.get("news"),
+            _previous("前の名前", "https://example.com/a"),
+            [
+                {"title": "前の名前", "body": "名前が変わったため", "tags": [notes.TOMBSTONE_TAG]},
+                {"title": "新しい名前", "body": "本文", "url": "https://example.com/a"},
+                # 通すのは 1 件だけ(同じ URL の 2 件目は、これまでどおり重複)
+                {"title": "新しい名前 - サイト名", "body": "本文", "url": "https://example.com/a"},
+            ],
+            edits=True,
+        )
+        assert [d["title"] for d in docs] == ["前の名前", "新しい名前"]
+        assert notes.REMOVED_TAG in docs[0]["tags"]
+        assert (diff["added"], diff["removed"], diff["duplicates"]) == (1, 1, 1)
+
     def test_items_without_a_title_or_body_are_skipped(self, sample):
         docs, diff = collect.material(
             collect.get("news"), {}, [{"title": "", "body": "x"}, {"title": "y"}]
